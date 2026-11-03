@@ -2,7 +2,7 @@
 
 @AGENTS.md
 
-Guidance beyond the shared entry point imported above. `CONTRIBUTING.md` is the short form of the rules for people; this file wins where they disagree. Area conventions load on demand from `.claude/rules/` when you open matching files. Team workflow content (the review ledger, the test map, evidence checklists, designs, the coordination protocol) lives in the sibling repository `GameEngine-Workbench` (`GE_WORKBENCH`, default `../GameEngine-Workbench`, added with `--add-dir`).
+Guidance beyond the shared entry point imported above. `CONTRIBUTING.md` is the short form of the rules for people; this file wins where they disagree. Area conventions load on demand from `.claude/rules/` when you open matching files. General team workflow guidance, test maps, evidence checklists, and maintained designs belong in this repository under `docs/development/`, with reusable scripts under `Tools/`. Only restricted console code and documentation belong in the second, private repository. No Workbench checkout or `GE_WORKBENCH` setting is required.
 
 ## Engineering values
 
@@ -32,7 +32,7 @@ Get facts from a debugger, a capture or the live editor before theorizing, and c
 Engine/Include, Engine/Source   engine-level services           Apps/Editor    the editor (C++, CSS/XML UI)
 Engine/Modules/<Name>           one library per subsystem       Apps/Player    the runtime
 Engine/ECSModules               shared ECS components           Managed/       C# (CoreBridge, HotReload, Scripting.ABI, CompileServerHost)
-Engine/Tests, Tests/            engine-level and integration    docs/          user documentation only
+Engine/Tests, Tests/            engine-level and integration    docs/          user documentation and development guidance
 ```
 
 Modules are layered: Foundation (`Logger`, `GenerationalVector`, `Types`), core services (`AssetCore`, `JobSystem`, `Memory`, `Platform`, `FileWatcher`, `Mathematics`), content (`AssetDatabase`, `AssetRuntime`, `Audio`, `Input`, `Text`), world (`ECS`, `Physics`, `PhysicsECS`, `Rendering`, `UI`, `Scheduler`), integration (`Scripting`, `Graph`, the VCS modules). Assets are GUID-identified with pluggable parsers, a dependency graph for targeted hot reload and async streaming. `Engine` is a shared library: the Editor, the Player and `GameEngine.Native.dll` share one `Engine.dll` and its engine singleton; whoever calls `EngineCore::Initialize` first owns the lifecycle (`Engine/Source/Scripting/DllEngineBootstrap.h`).
@@ -55,11 +55,11 @@ Convention traps that invert habits from other engines, always called out when i
 
 Commit verified work to a feature branch early; main is strict. Size a pull request as one complete step of a feature, not the thinnest commit: the review and the critic judge the thing once (the rule in `AGENTS.md`, Land). A clean compile plus green unit tests is not proof for rendering, GPU or runtime changes: confirm in a running editor first, say what to look for (fps, flicker, the interaction), and verify builds from exit status and fresh binaries, never from a wrapper's output. Never push an unverified rendering, GPU or runtime change to main; when verification is hard, stage and ask.
 
-Review: direction fit comes before correctness: say whether the change is right for the engine at all, in the subsystem that owns the concept, in the shape the design agreed, and state that judgement separately from the findings. Security, input parsing, threading, lifetime, GPU resources and user-visible quality get the full adversarial review (`adversarial-review` skill: probes, mutants, a live check where owed); mechanical classes get the same skill at the depth the change needs. Whoever coordinates lanes, reviews or merges reads `GameEngine-Workbench/agent/coordination.md` first: the batched review round, review trees, the ledger, pull requests from the other platform's agents, and when a timing measurement may take the machine.
+Review: direction fit comes before correctness: say whether the change is right for the engine at all, in the subsystem that owns the concept, in the shape the design agreed, and state that judgement separately from the findings. Security, input parsing, threading, lifetime, GPU resources and user-visible quality get the full adversarial review (`adversarial-review` skill: probes, mutants, a live check where owed); mechanical classes get the same skill at the depth the change needs. Record review verdicts and evidence in the pull request, review the final head, and coordinate platform validation and exclusive timing windows with the relevant maintainers.
 
 ## Coordination
 
-Whoever coordinates lanes, reviews or merges runs the `coordinator` skill (`/coordinator`, under `.claude/skills/coordinator/`). The skill reads the project's values from the workbench's `agent/coordinator.md` (the workbench is `GE_WORKBENCH`, default `../GameEngine-Workbench`) and the process from the workbench's `agent/coordination.md`, `agent/pr-review-rules.md` (the kit's `reviews.md`), `agent/evidence-checklists.md` (the kit's `evidence.md`), `agent/owner.md`, `agent/timing.md` and `agent/other-teams.md`. A lane that only implements needs this file, `AGENTS.md` and its brief.
+Coordinate implementation, review, and merge work through the pull request and maintained guidance in this repository. State each task’s owner, branch, validation requirements, and timing reservations. Do not require private console access or an external workflow repository for general engine contributions.
 
 ## Working discipline
 
@@ -71,7 +71,7 @@ Whoever coordinates lanes, reviews or merges runs the `coordinator` skill (`/coo
 - Never reason from timestamps; verify by exit code, fresh files and running the result. Missing test scaffolding is work, not an excuse. Debug to root cause: reproduce, capture the failing state before rebuilding, verify the instrument, attribute before fixing, rule out the environment, change one variable at a time, prove the fix before/after under the same measurement.
 - A fold brief names the fold's checks as a list before the lane starts: the suites that hold a changed test (whole, one process each), the gate steps the fold touches (a subset, never the full gate), one focused capture pair where the look can change, or none. A brief without that list is not sent. A text, comment or documentation fold owes no gate, no capture and no check round. Main is merged into a branch once, at the end of its last fold, never mid-stream, and not at all when main's delta cannot reach the branch (AGENTS.md, Test, states the test); the fold check and the critics start together on the same head. Every extra check a fold runs is time the owner sees as the process creeping back.
 - Finish the whole task. A turn that ends with a plan, a question the request already answers, or "the build will wake me" leaves the work undone: wait in session for builds and suites, do the next step, and stop only when blocked on input only the owner can give or before a destructive action. Keep a checklist (`STATUS.md` in the evidence directory) that survives compaction.
-- A script other processes may be running is never edited in place: write the new file and move it over the old one. Evidence another team needs is published to the workbench, never cited by a path on one machine.
+- A script other processes may be running is never edited in place: write the new file and move it over the old one. Evidence another team needs is attached to the pull request, never cited only by a path on one machine; restricted console evidence stays in the private console repository.
 
 ## Reporting
 
@@ -83,4 +83,4 @@ The owner is a senior graphics engineer (Unity URP/HDRP and SRP internals, UE5 e
 
 ## Documentation
 
-`docs/` is for users of the engine (usage, authored formats, concepts). Designs, decisions, investigations, measurements, plans, post-mortems and review records live in the workbench and are cited from code by name only. The format and the one-canonical-file rule load from `.claude/rules/documentation.md` when you touch `docs/`.
+`docs/` is for users of the engine (usage, authored formats, concepts). Maintained designs, decisions, investigations, plans, and workflow guidance live under `docs/development/` in this repository. Generated measurements and per-change review records go in the pull request or its attachments. Restricted console documentation stays in the private console repository. The format and the one-canonical-file rule load from `.claude/rules/documentation.md` when you touch `docs/`.
