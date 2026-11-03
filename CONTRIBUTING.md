@@ -15,9 +15,13 @@ AI-assisted contributions are welcome and follow the same review standards as an
 
 There is no separate documentation or Workbench repository requirement. A general engine contribution must be buildable, testable, and reviewable using this repository and its documented dependencies, without private console access. `GE_WORKBENCH` and a sibling `GameEngine-Workbench` checkout are not required.
 
-## What does not get committed here
+## Generated files and contribution evidence
 
-Screenshots and comparison images, generated `.assetdb` files, build and test logs, hash lists, benchmark JSON, dated validation records, per-review notes, `Tools/ai/`-style scratch directories, standalone test projects nothing runs, roadmap or TODO files. If a pull request needs evidence, the numbers go in its body and the files go in pull request attachments or an external evidence folder. Maintained development documentation and reusable tools belong in this repository; generated evidence does not.
+Keep generated and temporary output out of Git: generated `.assetdb` files, build and test logs, hash lists, benchmark output, temporary screenshots and comparison images, per-review notes, scratch directories, and standalone test projects that are not part of the test suite.
+
+Put validation results and review summaries in the pull request. Attach supporting screenshots, logs, and reports there, or keep them in an external evidence folder when they are only needed locally. Restricted console evidence stays in the private console repository.
+
+Maintained documentation, design decisions, roadmaps, test maps, and reusable contributor tools belong in the general engine repository alongside the code they support. No separate Workbench repository is required.
 
 ## Documentation
 
