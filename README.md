@@ -52,7 +52,7 @@ build/                Build trees, one per preset (gitignored)
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The people behind the engine are named in [AUTHORS.md](AUTHORS.md). Third-party code keeps its own license, stated next to it: the libraries under `Engine/Source/ThirdParty/` and `ThirdParty/`, the benchmark sources under `Tools/Benchmarks/ECS/third_party/`, and the dependencies installed through vcpkg.
+Lucia Engine is available under the [MIT License](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for Open Engine attribution and its preserved license notice. The people behind the engine are named in [AUTHORS.md](AUTHORS.md). Third-party code keeps its own license, stated next to it: the libraries under `Engine/Source/ThirdParty/` and `ThirdParty/`, the benchmark sources under `Tools/Benchmarks/ECS/third_party/`, and the dependencies installed through vcpkg.
 
 ## Tests
 
