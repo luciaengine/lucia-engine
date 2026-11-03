@@ -1011,7 +1011,7 @@ class RenderServices
 
     // The post-opaque scene-colour grab the transmissive pass refracts. Lazily created; the
     // transmissive node calls DeclareForView on it (it has the ViewDeclare) before declaring
-    // its pass, and BuildPassResourcesRG binds its texture as ge_sceneColor.
+    // its pass, and BuildPassResourcesRG binds that view's pool import as ge_sceneColor.
     SceneColorGrab& GetOrCreateTransmissionSceneGrab();
     Rendering::RenderGraph::RGPass AddWorldDepthPrepassForView(Rendering::RenderGraph::RGFrame& frame,
                                                        Rendering::ViewId viewId,
@@ -2531,9 +2531,8 @@ class RenderServices
     // const GetFeature<T>() lookup can take a shared lock.
     mutable std::shared_mutex m_FeaturesMutex;
 
-    // The post-opaque scene-colour grab the dedicated transmissive pass refracts (Phase 1-B
-    // S4). Feature-owned device texture, lazily created on the first transmissive view; bound
-    // as ge_sceneColor (Transmission/SceneColorGrab-keyword passes only).
+    // Shared scene-colour copy machinery. Grab textures belong to the render-graph pool
+    // under per-view names; each transmissive pass binds its own SceneGrab import.
     std::unique_ptr<SceneColorGrab> m_TransmissionSceneGrab;
 
     // Sorted transparent (T2/S2) per-view staging, rebuilt once per view per
