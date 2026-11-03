@@ -24,6 +24,23 @@ A game engine written in C++20 with hot-reloadable C# scripting: a Vulkan-first 
 
 ## Build
 
+### macOS (Apple Silicon)
+
+Install full Xcode and finish its first-launch setup, then install the [.NET 10 SDK](https://dotnet.microsoft.com/en-us/download/dotnet/10.0) for macOS Arm64. With [Homebrew](https://brew.sh/) available:
+
+```bash
+brew install cmake ninja pkg-config autoconf autoconf-archive automake libtool molten-vk
+git clone https://github.com/luciaengine/lucia-engine.git
+cd lucia-engine
+cmake --preset macos-arm64-ninja
+cmake --build --preset macos-arm64-ninja --target Editor -j 8
+open build/macos-arm64-ninja/bin/DebugFast/Apps/Editor/Editor.app
+```
+
+On an Intel Mac, use `macos-x64-ninja` in both commands and the output path, and install the macOS x64 .NET SDK. These presets build **DebugFast**. Native Metal is selected by default; MoltenVK is also required by the default app-bundle staging for the Vulkan fallback. An installed [Vulkan SDK](https://vulkan.lunarg.com/) can supply MoltenVK instead of Homebrew. See [macOS setup](BUILD.md#macos) for prerequisites and the optional Xcode workflow.
+
+### Windows
+
 Prerequisites on Windows: Visual Studio 2026 with the *Desktop development with C++* workload (includes CMake, Ninja and Git), the .NET 10 SDK and a Vulkan-capable GPU driver.
 
 ```bat
@@ -33,7 +50,7 @@ cmake --build --preset vs2026-x64-local --config DebugFast --target Editor -j 12
 build\vs2026-x64-local\bin\DebugFast\Apps\Editor\Editor.exe
 ```
 
-The first configure bootstraps vcpkg and builds the third-party dependencies once (expect tens of minutes); every build after that is incremental. macOS and Linux build the same Editor through their own presets (`macos-arm64-local`, `linux-x64-local`); platform prerequisites, the Ninja fast build, Steam Deck, tests and troubleshooting are in [BUILD.md](BUILD.md). With the editor running, [Your first project](docs/first-project.html) creates a project, saves a scene and exports a game.
+The first configure bootstraps vcpkg and builds the third-party dependencies once (expect tens of minutes); every build after that is incremental. macOS and Linux build the same Editor through their own presets (`macos-arm64-ninja`, `linux-x64-local`); platform prerequisites, the Ninja fast build, Steam Deck, tests and troubleshooting are in [BUILD.md](BUILD.md). With the editor running, [Your first project](docs/first-project.html) creates a project, saves a scene and exports a game.
 
 ## Repository layout
 

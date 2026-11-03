@@ -65,16 +65,21 @@ build\ninja-x64-local\bin\DebugFast\Apps\Editor\Editor.exe
 
 ### macOS
 
-Xcode generator; the commands below build the Debug configuration (the presets build DebugFast when `--config` is omitted). On an Intel Mac use `macos-x64-local`. `-j 8` runs eight compile jobs in parallel; set it to your core count or lower. On macOS the `Editor` build also places a copy of `Player.app` inside the editor's bundle as the template it exports games from.
+The Ninja presets build **DebugFast** for command-line development. Install the [macOS prerequisites](#macos-1) first. The first configure bootstraps the pinned vcpkg checkout and restores or builds the dependencies; this can take tens of minutes with an empty cache. The `Editor` target also packages the Player template used when exporting games.
 
 ```bash
-git clone https://github.com/Game-Crafters-Guild/OpenEngine.git
-cd OpenEngine
-cmake --preset macos-arm64-local
-cmake --build --preset macos-arm64-local --config Debug --target Editor -j 8
-cmake --build --preset macos-arm64-local --target McpServer
-open build/macos-arm64-local/bin/Debug/Apps/Editor/Editor.app
+git clone https://github.com/luciaengine/lucia-engine.git
+cd lucia-engine
+cmake --preset macos-arm64-ninja
+cmake --build --preset macos-arm64-ninja --target Editor -j 8
+open build/macos-arm64-ninja/bin/DebugFast/Apps/Editor/Editor.app
 ```
+
+On an Intel Mac, replace `macos-arm64-ninja` with `macos-x64-ninja` in both commands and the output path. Use native Arm64 tools on Apple Silicon and native x64 tools on Intel. Reduce `-j 8` if memory is limited.
+
+For the Xcode IDE, use `cmake --preset macos-arm64-local`, then `cmake --build --preset macos-arm64-local --config DebugFast --target Editor -j 8`. Its bundle is `build/macos-arm64-local/bin/DebugFast/Apps/Editor/Editor.app`; the Intel preset is `macos-x64-local`.
+
+With Node.js and npm installed before configure, the optional MCP server is built with `cmake --build --preset macos-arm64-ninja --target McpServer`.
 
 ### Linux
 
@@ -110,11 +115,14 @@ The engine hosts .NET 10: the managed assemblies target `net10.0` and run on the
 | Requirement | Notes | Where |
 |---|---|---|
 | **Xcode**, full install | The presets use ad-hoc signing; no developer account needed. | Mac App Store |
-| **CMake 3.25 or newer** and **Ninja** | | `brew install cmake ninja` |
-| **Vulkan SDK for macOS** | Bundles MoltenVK. Detected under `~/VulkanSDK/<version>`; set `VULKAN_SDK` if it is elsewhere. Without it the build succeeds with the Vulkan backend disabled. | [vulkan.lunarg.com](https://vulkan.lunarg.com/) |
+| **CMake 3.25 or newer** and **Ninja** | Used by the command-line presets. | `brew install cmake ninja` |
+| **MoltenVK** | Required by the default Editor/Player bundle staging for the Vulkan fallback, even though native Metal is selected by default. Install Homebrew MoltenVK or the Vulkan SDK. vcpkg supplies the Vulkan headers and loader. | `brew install molten-vk`, or [Vulkan SDK](https://vulkan.lunarg.com/) |
+| **Dependency build tools** | Used by vcpkg ports on a fresh build. | `brew install pkg-config autoconf autoconf-archive automake libtool` |
 | **.NET 10 SDK** | C# scripting host and managed assemblies; the arm64 build on Apple Silicon. | [dotnet.microsoft.com](https://dotnet.microsoft.com/download/dotnet/10.0) |
 | **Node.js 20 or newer** *(optional)* | Same use as on Windows. | `brew install node` |
 | **Python 3.10 or newer** *(optional)* | Same use as on Windows, and the macOS editor's Steam Deck export. The `python3` that ships with Xcode is 3.9, which is too old. | `brew install python` |
+
+Open Xcode once to finish installing its tools. `xcode-select -p` should point at the selected full Xcode installation. The Vulkan SDK is discovered under `~/VulkanSDK/<version>/macOS`; set `VULKAN_SDK` to that SDK directory if installed elsewhere.
 
 Homebrew installs into `/opt/homebrew` on Apple Silicon; add `eval "$(/opt/homebrew/bin/brew shellenv)"` to `~/.zprofile` so new shells find its tools. To check:
 
@@ -152,7 +160,7 @@ On every platform (`cmake --list-presets` lists every configuration):
 
 ### macOS
 
-- To open a project directly: `build/macos-arm64-local/bin/Debug/Apps/Editor/Editor.app/Contents/MacOS/Editor --project ~/GameProjects/MyGame`.
+- To open a project directly: `build/macos-arm64-ninja/bin/DebugFast/Apps/Editor/Editor.app/Contents/MacOS/Editor --project ~/GameProjects/MyGame`.
 - IDE: `open build/macos-arm64-local/*.xcodeproj`, select the **Editor** scheme, press **⌘R**.
 - The Ninja presets (`macos-arm64-ninja`, `macos-x64-ninja`) are faster for command-line iteration and emit `compile_commands.json`. If you delete the `.app` in a Ninja tree, configure again to regenerate its `Info.plist`.
 - `macos-arm64-ninja-sccache` adds sccache (`brew install sccache`). Run `./Tools/Scripts/sccache-worktrees.sh` after `git worktree add`: it restarts the sccache server with every worktree as a base directory, so a fresh worktree reuses the objects another one compiled. It turns sccache's direct mode off, because with base directories direct mode can return another branch's object.
