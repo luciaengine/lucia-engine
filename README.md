@@ -10,6 +10,8 @@ A game engine written in C++20 with hot-reloadable C# scripting: a Vulkan-first 
 
 **Platforms:** Windows x64 and ARM64 (primary), macOS on Apple Silicon and Intel (through MoltenVK), Linux, Steam Deck.
 
+![Lucia Engine editor preview](docs/images/lucia-engine-editor.webp)
+
 ## Highlights
 
 - **Renderer**: Vulkan, GPU-driven: a render graph with automatic barriers and resource aliasing, clustered Forward+ lighting, cascaded shadow maps, schema-driven materials with composed shader variants (GLSL to SPIR-V), physical light units with an HDR pipeline, instanced draw batching, camera-relative rendering for planet-scale coordinates, reverse-Z depth.
