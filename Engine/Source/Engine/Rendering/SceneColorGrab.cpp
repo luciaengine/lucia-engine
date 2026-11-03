@@ -22,25 +22,20 @@ SceneColorGrab::SceneColorGrab(std::string sourceResourceName, std::string debug
     m_CopyLayoutName = m_DebugName + ".Copy.Set0";
     m_CopyPipelineName = m_DebugName + ".Copy";
     m_SamplerName = m_DebugName + "_Sampler";
-    m_SettleName = m_DebugName + "Settle";
 }
 
 SceneColorGrab::~SceneColorGrab()
 {
     if (!m_Device)
         return;
-    if (m_GrabTexture.IsValid())
-        m_Device->DestroyTexture(m_GrabTexture);
     if (m_Sampler.IsValid())
         m_Device->DestroySampler(m_Sampler);
 }
 
 void SceneColorGrab::OnDeviceRebuilt()
 {
-    m_GrabTexture = {};
+    m_GrabRG = {};
     m_Sampler = {};
-    m_Width = 0;
-    m_Height = 0;
     m_ReadyFrameIndex = UINT32_MAX;
 }
 
@@ -59,40 +54,6 @@ bool SceneColorGrab::EnsurePipeline(IDevice& device)
     if (!m_CopyPipelineId.IsValid() && !m_CopyPipeline.vertexShader.empty())
         m_CopyPipelineId = PipelineDescTranslator::InternGraphics(device, m_CopyPipeline);
     return m_CopyPipelineId.IsValid();
-}
-
-bool SceneColorGrab::EnsureTexture(IDevice& device, uint32_t width, uint32_t height)
-{
-    if (width == 0 || height == 0)
-        return false;
-    if (m_GrabTexture.IsValid() && width == m_Width && height == m_Height)
-        return true;
-
-    if (m_GrabTexture.IsValid())
-        device.DestroyTexture(m_GrabTexture);
-
-    TextureDesc td{};
-    td.width = width;
-    td.height = height;
-    td.depth = 1;
-    td.mipLevels = 1;
-    td.arrayLayers = 1;
-    td.sampleCount = 1;
-    td.format = m_Format;
-    td.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::ShaderResource);
-    // Resting state ShaderResource: the grab settles here so the transmissive pass's
-    // descriptor-direct sample sees a stable layout and next frame's import is well-defined.
-    td.initialState = ResourceState::ShaderResource;
-    td.debugName = m_DebugName.c_str();
-    m_GrabTexture = device.CreateTexture(td);
-    if (!m_GrabTexture.IsValid())
-        return false;
-    m_Width = width;
-    m_Height = height;
-
-    if (!m_Sampler.IsValid())
-        m_Sampler = device.CreateSampler(SamplerDesc::MaterialLinearClamp(m_SamplerName.c_str()));
-    return m_Sampler.IsValid();
 }
 
 bool SceneColorGrab::DeclareForView(Pipeline::ViewDeclare& d, uint32_t frameIndex)
@@ -119,32 +80,42 @@ bool SceneColorGrab::DeclareForView(Pipeline::ViewDeclare& d, uint32_t frameInde
     const RenderGraph::RGResourceDesc scd = d.Frame.Graph().ResourceDesc(sourceColor.Id);
     if (scd.SampleCount > 1)
         return false;
-    m_Format = scd.Format;
-
-    if (!EnsureTexture(*device, d.RenderWidth, d.RenderHeight))
+    if (d.RenderWidth == 0 || d.RenderHeight == 0 || !EnsurePipeline(*device))
         return false;
-    if (!EnsurePipeline(*device))
+    if (!m_Sampler.IsValid())
+        m_Sampler = device->CreateSampler(SamplerDesc::MaterialLinearClamp(m_SamplerName.c_str()));
+    if (!m_Sampler.IsValid())
         return false;
 
-    // Import the feature-owned grab as external (resting ShaderResource) so the render
-    // graph chains barriers against the copy + settle passes and the import is excluded
-    // from transient aliasing.
-    const RenderGraph::RGTexture grab = d.Frame.ImportExternalTexture(
-        m_DebugName.c_str(), m_GrabTexture, ResourceState::ShaderResource,
-        static_cast<TextureFormat>(m_Format));
+    // Views are declared before any pass executes. A shared backing texture would be
+    // resized and destroyed while earlier views still have queued copy and glass passes.
+    const std::string grabName = m_DebugName + ".View" + std::to_string(static_cast<uint32_t>(d.View.id));
+    TextureDesc desc{};
+    desc.width = d.RenderWidth;
+    desc.height = d.RenderHeight;
+    desc.depth = 1;
+    desc.mipLevels = 1;
+    desc.arrayLayers = 1;
+    desc.sampleCount = 1;
+    desc.format = scd.Format;
+    desc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::ShaderResource);
+    desc.debugName = m_DebugName.c_str();
+    const RenderGraph::RGTexture grab = d.Frame.ImportPersistentTexture(grabName.c_str(), desc);
+    if (!grab.IsValid())
+        return false;
 
     // Copy: sample the lit-opaque scene into the grab (read source, write grab → the RG
     // inserts the RenderTarget->Sampled edge). MSAA sources declined above, so the
     // sampler2DMS resolve fork is never taken — pass empty handles for it.
-    RenderGraph::AddCopyPass(d.Frame, sourceColor, grab, m_DebugName.c_str(),
+    RenderGraph::AddCopyPass(d.Frame, sourceColor, grab, grabName.c_str(),
                              Rendering::PassPhase::kWorldRender, m_CopyPipelineId,
                              GraphicsPipelineId{}, m_CopyLayout, DescriptorSetLayoutDesc{},
                              m_Sampler, d.RenderWidth, d.RenderHeight);
 
-    // Settle: a Sampled read with no writer transitions the grab back to ShaderResource
-    // so it rests in a well-defined layout for next frame's import. PreventCulling keeps it.
+    // Settle the pool-owned snapshot for descriptor-direct sampling and the next frame's
+    // import. Each view declares its own copy-to-consumer dependency.
     d.Frame.AddPass(
-        m_SettleName.c_str(), Rendering::PassPhase::kWorldRender,
+        (grabName + ".Settle").c_str(), Rendering::PassPhase::kWorldRender,
         [&](RenderGraph::RGPassBuilder& p)
         {
             p.Read(grab, RenderGraph::RGTextureRead::Sampled);

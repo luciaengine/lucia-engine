@@ -458,8 +458,8 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
     if (HasKeyword(passKeywords, MaterialKeyword::SceneColorGrab))
     {
         TextureHandle sceneColor = m_Textures->GetDefaultBlackTexture();
-        if (m_TransmissionSceneGrab && m_TransmissionSceneGrab->GetGrabTexture().IsValid())
-            sceneColor = m_TransmissionSceneGrab->GetGrabTexture();
+        if (targets && targets->SceneGrab.IsValid())
+            sceneColor = frame.PhysicalTexture(targets->SceneGrab);
         addTexture(HashStringId("ge_sceneColor"), sceneColor,
                    m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp));
     }

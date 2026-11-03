@@ -20,12 +20,12 @@ namespace Pipeline
 struct ViewDeclare;
 } // namespace Pipeline
 
-// Snapshots a scene-colour render target into a sampleable, feature-owned texture so a
+// Snapshots a scene-colour render target into a sampleable, pool-owned texture per view so a
 // later pass can refract / distort it. Generic over the SOURCE resource name so it is
 // reusable: the StandardPBR transmission lobe grabs the post-world "SceneColor" (lit
 // opaque) for the dedicated transmissive pass to refract; the ocean (later) can grab its
-// pre-world "View.Color". The grab texture is an imported external: the consuming pass
-// binds the physical descriptor-direct AND must declare an in-graph Read against the
+// pre-world "View.Color". Each view has a separate persistent-pool import: the consuming pass
+// binds that import's physical descriptor-direct AND declares an in-graph Read against the
 // frame-scoped RGTexture this class exposes (GetGrabTextureRG) — that read is the
 // copy->consumer RAW edge; without it ordering rides only the scheduler's
 // declaration-order tie-break. The transmissive world pass plumbs it through
@@ -45,29 +45,23 @@ public:
     // is available to bind/read this frame (false declines: source missing or multisampled).
     bool DeclareForView(Pipeline::ViewDeclare& d, uint32_t frameIndex);
 
-    // After an in-place device rebuild: the grab texture and the sampler died
-    // with the old device. Forgets them without destroying them; the next
-    // DeclareForView recreates both.
+    // After an in-place device rebuild: forget the old sampler and frame import.
+    // The render-graph pool recreates its view textures on the next declaration.
     void OnDeviceRebuilt();
     bool IsReady(uint32_t frameIndex) const
     {
-        return m_GrabTexture.IsValid() && m_ReadyFrameIndex == frameIndex;
+        return m_GrabRG.IsValid() && m_ReadyFrameIndex == frameIndex;
     }
-    ::GameEngine::Rendering::TextureHandle GetGrabTexture() const { return m_GrabTexture; }
     // Frame-scoped render-graph id of this frame's grab import — valid only for the
     // frame DeclareForView last succeeded on. The consuming pass declares its
     // Read(Sampled) against this id (the copy->consumer RAW edge).
     ::GameEngine::Rendering::RenderGraph::RGTexture GetGrabTextureRG() const { return m_GrabRG; }
     ::GameEngine::Rendering::SamplerHandle GetSampler() const { return m_Sampler; }
-    uint32_t GetFormat() const { return m_Format; }
 
 private:
-    // Lazily build the copy pipeline (stock copy.shaderpkg) + the linear-clamp sampler.
+    // Lazily build the copy pipeline (stock copy.shaderpkg).
     // Returns false (declines) when the package is unavailable.
     bool EnsurePipeline(::GameEngine::Rendering::IDevice& device);
-
-    // (Re)create the grab texture when the render-target size or format changes.
-    bool EnsureTexture(::GameEngine::Rendering::IDevice& device, uint32_t width, uint32_t height);
 
     std::string m_SourceName;
     std::string m_DebugName;
@@ -76,16 +70,11 @@ private:
     std::string m_CopyLayoutName;
     std::string m_CopyPipelineName;
     std::string m_SamplerName;
-    std::string m_SettleName;
 
     ::GameEngine::Rendering::IDevice* m_Device = nullptr;
-    ::GameEngine::Rendering::TextureHandle m_GrabTexture;
     // This frame's grab import id; reset at each DeclareForView (frame-scoped).
     ::GameEngine::Rendering::RenderGraph::RGTexture m_GrabRG{};
     ::GameEngine::Rendering::SamplerHandle m_Sampler;
-    uint32_t m_Width = 0;
-    uint32_t m_Height = 0;
-    uint32_t m_Format = 0; // matches the source colour format
     uint32_t m_ReadyFrameIndex = UINT32_MAX;
 
     ::GameEngine::Rendering::PipelineDesc m_CopyPipeline{};

@@ -6,6 +6,7 @@
 #include "Engine/Rendering/Pipeline/Nodes/TransmissivePassNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/WorldRenderNode.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/SceneColorGrab.h"
 #include "Engine/Rendering/WorldDrawTypes.h"
 #include "AssetCore/GUID.h"
 #include "Assets/ModelAsset.h" // Mesh + Vertex for the registry submesh
@@ -581,5 +582,50 @@ TEST(TransmissiveDepthAttachmentTests, LateTransparentAttachesACopyOfTheViewDept
         EXPECT_TRUE(d.CopyBeforeLatePass);
     }
 
+    device->Shutdown();
+}
+
+
+TEST(TransmissiveDepthAttachmentTests, SceneGrabsRemainLiveAndDistinctAcrossQuadViews)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    for (const bool equalExtents : {false, true})
+    {
+        SCOPED_TRACE(equalExtents ? "equal extents" : "unequal extents");
+        FramePools pools(device.get());
+        RenderGraph::RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        frame.BeginFrame(0);
+        SceneColorGrab grab("View.Color", "QuadTransmissionGrab");
+        std::vector<TextureHandle> textures;
+        for (uint32_t index = 0; index < 4u; ++index)
+        {
+            Rendering::ViewDesc view{};
+            view.id = static_cast<ViewId>(index + 1u);
+            TextureDesc desc = ColorTargetDesc(1u);
+            desc.width = 64u + (equalExtents ? 0u : index % 2u);
+            desc.height = 64u + (equalExtents ? 0u : index / 2u);
+            const std::string sourceName = "QuadSource.View" + std::to_string(index);
+            const auto source = frame.ImportPersistentTexture(sourceName.c_str(), desc);
+            Pipeline::ViewDeclare declare(frame, view, services, "QuadGrab");
+            declare.ViewColor = source;
+            declare.RenderWidth = desc.width;
+            declare.RenderHeight = desc.height;
+            ASSERT_TRUE(grab.DeclareForView(declare, 0u));
+            const auto texture = frame.PhysicalTexture(grab.GetGrabTextureRG());
+            ASSERT_TRUE(texture.IsValid());
+            for (const auto previous : textures)
+                EXPECT_NE(texture, previous) << "each view must retain its own opaque-color snapshot";
+            textures.push_back(texture);
+        }
+        for (const auto texture : textures)
+            EXPECT_TRUE(device->IsTextureHandleLive(texture))
+                << "declaring another view must not destroy a texture queued for this frame";
+    }
+    services.Shutdown();
     device->Shutdown();
 }
