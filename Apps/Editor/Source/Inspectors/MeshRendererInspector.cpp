@@ -560,7 +560,7 @@ void RegisterMeshRendererInspector()
             return;
         }
 
-        Editor::AddRenderSortingDiagnostic(ctx);
+        Editor::AddRenderSortingFields(ctx);
 
         using namespace InspectorDrag;
 

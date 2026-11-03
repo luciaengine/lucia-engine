@@ -231,7 +231,7 @@ void RegisterTileMapLayerInspector()
         if (!layerRef)
             return;
 
-        Editor::AddRenderSortingDiagnostic(ctx);
+        Editor::AddRenderSortingFields(ctx);
 
         ECS::World* w = ctx.World;
         ECS::EntityHandle e = ctx.Entity;

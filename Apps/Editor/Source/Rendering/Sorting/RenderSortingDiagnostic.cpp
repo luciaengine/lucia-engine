@@ -8,6 +8,7 @@
 #include "Engine/Rendering/SortingLayers.h"
 #include "InspectorRegistry.h"
 #include "UI/Controls/CollapsibleInfoCard.h"
+#include "UI/Layout/ElementOverrideHelpers.h"
 
 #include <memory>
 
@@ -30,7 +31,11 @@ void RefreshDiagnostic(DiagnosticState& state)
 {
     auto* world = state.GetWorld();
     if (!world || !world->IsValid(state.Entity))
+    {
+        UI::Layout::SetElementHidden(*state.Card, true);
+        state.LastWorld = nullptr;
         return;
+    }
     const uint64 revision = Rendering::SortingLayers::Revision();
     const uint64 version = world->GetGlobalSystemVersion();
     if (state.LastWorld == world && state.WorldVersion == version && state.LayerRevision == revision)
@@ -48,20 +53,16 @@ void RefreshDiagnostic(DiagnosticState& state)
             layerName = layer.Name;
             break;
         }
-    std::string text = "Effective sorting layer: " + layerName + ". Order in layer: " + std::to_string(sorting.Order) + ".";
-    if (sorting.Grouped)
-    {
-        const auto* name = world->GetComponent<Components::Name>(sorting.Group);
-        const std::string group = name && !name->View().empty() ? std::string(name->View()) :
-            "Entity " + std::to_string(sorting.Group.id);
-        text += " Sorting group: " + group + ". Member order: " + std::to_string(sorting.MemberOrder) + ".";
-    }
-    else
-        text += " No sorting group.";
-    if (!world->HasComponent<Components::RenderSorting>(state.Entity))
-        text += " Add Render Sorting from Add Component > Rendering to set this entity's sorting layer, order, or group.";
-    else
-        text += " Edit Sorting Layer, Order in Layer, and Group Children in the Render Sorting component.";
+    const bool parentOverrides = sorting.Grouped && sorting.Group != state.Entity;
+    UI::Layout::SetElementHidden(*state.Card, !parentOverrides);
+    if (!parentOverrides)
+        return;
+    const auto* name = world->GetComponent<Components::Name>(sorting.Group);
+    const std::string group = name && !name->View().empty() ? std::string(name->View()) :
+        "Entity " + std::to_string(sorting.Group.id);
+    const std::string text = "Parent sorting group: " + group + ". Effective layer: " + layerName +
+        ". Order in layer: " + std::to_string(sorting.Order) +
+        ". Your Order in Layer controls this entity's order within the group.";
     state.Card->SetText(text);
 }
 }
@@ -71,6 +72,7 @@ void AddRenderSortingDiagnostic(const InspectorContext& context)
     if (!context.Parent || !context.World)
         return;
     auto card = std::make_unique<EditorUI::CollapsibleInfoCard>("");
+    UI::Layout::SetElementHidden(*card, true);
     auto state = std::make_shared<DiagnosticState>();
     state->Card = card.get();
     state->Entity = context.Entity;

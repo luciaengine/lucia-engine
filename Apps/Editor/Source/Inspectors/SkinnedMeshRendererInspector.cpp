@@ -79,7 +79,7 @@ void RegisterSkinnedMeshRendererInspector()
             return;
         }
 
-        Editor::AddRenderSortingDiagnostic(ctx);
+        Editor::AddRenderSortingFields(ctx);
         AddLine(ctx.Parent, std::string("MeshId: ") + std::to_string(smr->meshId));
         // The rig is authored on the entity's SkeletonRef: the model it comes
         // from and the entity whose instance shares its pose. The numeric

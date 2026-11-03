@@ -2023,6 +2023,7 @@ add_executable(RenderSortingEditorTests
     RenderSortingEditorTests.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/CollapsibleInfoCard.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingDiagnostic.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingFields.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/SortingLayerSettingsWriter.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingEdit.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyLayerControls.cpp

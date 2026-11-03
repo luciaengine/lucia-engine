@@ -6152,7 +6152,7 @@ void InspectorPanel::TickSimulationRefresh()
     {
         std::vector<ECS::ComponentTypeId> current =
             CollectVisibleComponentSignature(m_World, m_Entity);
-        if (current != m_LastComponentSignature)
+        if (current != m_LastComponentSignature && !(m_Undo && m_Undo->HasOpenInteractiveEdit()))
         {
             m_LastComponentSignature = std::move(current);
             ShowEntity(m_World, m_Entity, /*force=*/true);

@@ -284,6 +284,7 @@ set(EDITOR_SOURCES
 	Source/Rendering/Sorting/RenderSortingEditor.cpp
     Source/Rendering/Sorting/RenderSortingEdit.cpp
     Source/Rendering/Sorting/RenderSortingDiagnostic.cpp
+    Source/Rendering/Sorting/RenderSortingFields.cpp
     Source/Rendering/Sorting/SortingLayerSettings.cpp
     Source/Rendering/Sorting/SortingLayerSettingsView.cpp
     Source/Rendering/Sorting/SortingLayerSettingsWriter.cpp

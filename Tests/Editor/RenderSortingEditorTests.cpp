@@ -17,7 +17,9 @@
 #include "UI/Controls/Dropdown.h"
 #include "UI/Controls/CollapsibleInfoCard.h"
 #include "UI/Controls/Label.h"
+#include "UI/Controls/IntField.h"
 #include "UI/UIElement.h"
+#include "UI/StyleProperties.h"
 #include "UndoRedo/UndoRedoService.h"
 
 namespace GameEngine::Editor
@@ -248,13 +250,146 @@ TEST_F(RenderSortingEditorTests, DiagnosticReportsEffectiveParentOrderAndRefresh
     ASSERT_EQ(content.GetChildren().size(), 1u);
     const auto* card = dynamic_cast<EditorUI::CollapsibleInfoCard*>(content.GetChildren().front().get());
     ASSERT_NE(card, nullptr);
-    EXPECT_NE(card->GetFullText().find("Foreground. Order in layer: 7. Sorting group:"), std::string::npos);
+    EXPECT_NE(card->GetFullText().find("Effective layer: Foreground. Order in layer: 7."), std::string::npos);
     group.Layer = -30;
     group.OrderInLayer = -2;
     World.AddComponentImmediate(parent, group);
     ASSERT_EQ(refresh.size(), 1u);
     refresh.front()();
-    EXPECT_NE(card->GetFullText().find("Background. Order in layer: -2. Sorting group:"), std::string::npos);
+    EXPECT_NE(card->GetFullText().find("Effective layer: Background. Order in layer: -2."), std::string::npos);
+}
+
+TEST_F(RenderSortingEditorTests, DiagnosticOnlyShowsAnEnabledAncestorGroup)
+{
+    const auto entity = Mesh();
+    UIElement content;
+    std::vector<std::function<void()>> refresh;
+    InspectorContext context;
+    context.World = &World;
+    context.Entity = entity;
+    context.Parent = &content;
+    context.SimulationRefreshCallbacks = &refresh;
+    AddRenderSortingDiagnostic(context);
+    auto* card = content.GetChildren().front().get();
+    const auto isHidden = [card]()
+    {
+        return card->Overrides().Get(Style::Display) == DisplayMode::None;
+    };
+    EXPECT_TRUE(isHidden());
+    Sorting group{};
+    group.GroupChildren = true;
+    World.AddComponentImmediate(entity, group);
+    refresh.front()();
+    EXPECT_TRUE(isHidden()) << "A group's own settings are not overridden";
+    const auto parent = Mesh();
+    World.AddComponentImmediate(parent, group);
+    World.AddComponentImmediate(entity, Components::Parent{parent});
+    refresh.front()();
+    EXPECT_FALSE(isHidden());
+    World.RemoveComponentImmediate<Sorting>(parent);
+    refresh.front()();
+    EXPECT_TRUE(isHidden());
+}
+
+template<typename Control>
+Control* FindControl(UIElement& element)
+{
+    if (auto* control = dynamic_cast<Control*>(&element))
+        return control;
+    for (const auto& child : element.GetChildren())
+        if (auto* control = FindControl<Control>(*child))
+            return control;
+    return nullptr;
+}
+
+TEST_F(RenderSortingEditorTests, DefaultFieldsEditWithoutAnExistingComponentAndUndoRestoresAbsence)
+{
+    const auto entity = Mesh();
+    UIElement content;
+    InspectorContext context;
+    context.World = &World;
+    context.Entity = entity;
+    context.Parent = &content;
+    context.Undo = &Undo;
+    AddRenderSortingFields(context);
+    auto* layer = FindControl<Dropdown>(content);
+    auto* order = FindControl<IntField>(content);
+    ASSERT_NE(layer, nullptr);
+    ASSERT_NE(order, nullptr);
+    EXPECT_EQ(layer->GetSelectedValue(), "0");
+    EXPECT_EQ(order->GetValue(), 0);
+    EXPECT_FALSE(World.HasComponent<Sorting>(entity));
+    EXPECT_FALSE(Undo.CanUndo());
+    layer->SetSelectedValue("10");
+    ASSERT_TRUE(World.HasComponent<Sorting>(entity));
+    EXPECT_EQ(World.GetComponent<Sorting>(entity)->Layer, 10);
+    Undo.Undo();
+    EXPECT_FALSE(World.HasComponent<Sorting>(entity));
+    order->SetValueWithoutNotify(12);
+    order->NotifyValueChanging();
+    ASSERT_TRUE(World.HasComponent<Sorting>(entity));
+    EXPECT_EQ(World.GetComponent<Sorting>(entity)->OrderInLayer, 12);
+    EXPECT_TRUE(Undo.HasOpenInteractiveEdit());
+    order->NotifyValueChanged();
+    EXPECT_FALSE(Undo.HasOpenInteractiveEdit());
+    Undo.Undo();
+    EXPECT_FALSE(World.HasComponent<Sorting>(entity));
+    EXPECT_FALSE(Undo.CanUndo());
+    Undo.Redo();
+    EXPECT_EQ(World.GetComponent<Sorting>(entity)->OrderInLayer, 12);
+}
+
+TEST_F(RenderSortingEditorTests, OrderGestureEditsMixedSelectionInOneUndoStep)
+{
+    const auto first = Mesh();
+    const auto second = Mesh();
+    Sorting initial{};
+    initial.Layer = 10;
+    initial.OrderInLayer = 17;
+    initial.GroupChildren = true;
+    World.AddComponentImmediate(second, initial);
+    InspectorContext context;
+    context.World = &World;
+    context.Entity = first;
+    context.Entities = {first, second};
+    context.Undo = &Undo;
+    auto handlers = MakeRenderSortingOrderHandlers(context);
+    handlers.first(3);
+    handlers.first(8);
+    handlers.second(8);
+    EXPECT_EQ(World.GetComponent<Sorting>(first)->OrderInLayer, 8);
+    EXPECT_EQ(World.GetComponent<Sorting>(second)->OrderInLayer, 8);
+    EXPECT_EQ(World.GetComponent<Sorting>(second)->Layer, 10);
+    EXPECT_TRUE(World.GetComponent<Sorting>(second)->GroupChildren);
+    Undo.Undo();
+    EXPECT_FALSE(World.HasComponent<Sorting>(first));
+    EXPECT_EQ(World.GetComponent<Sorting>(second)->OrderInLayer, 17);
+    EXPECT_FALSE(Undo.CanUndo());
+    Undo.Redo();
+    EXPECT_EQ(World.GetComponent<Sorting>(first)->OrderInLayer, 8);
+    EXPECT_EQ(World.GetComponent<Sorting>(second)->OrderInLayer, 8);
+}
+
+TEST_F(RenderSortingEditorTests, CancelAndDefaultOrderLeaveNoImplicitOverride)
+{
+    const auto entity = Mesh();
+    InspectorContext context;
+    context.World = &World;
+    context.Entity = entity;
+    context.Undo = &Undo;
+    {
+        auto handlers = MakeRenderSortingOrderHandlers(context);
+        handlers.first(4);
+        ASSERT_TRUE(World.HasComponent<Sorting>(entity));
+    }
+    EXPECT_FALSE(World.HasComponent<Sorting>(entity));
+    EXPECT_FALSE(Undo.CanUndo());
+    auto handlers = MakeRenderSortingOrderHandlers(context);
+    handlers.first(4);
+    handlers.second(0);
+    EXPECT_FALSE(World.HasComponent<Sorting>(entity));
+    EXPECT_FALSE(Undo.CanUndo());
+    EXPECT_FALSE(Undo.HasOpenInteractiveEdit());
 }
 
 }
