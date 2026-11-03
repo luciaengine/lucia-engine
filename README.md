@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Apps/Editor/Icon/AppIcon.png" width="128" alt="Lucia Engine flame logo">
+</p>
+
 # Lucia Engine
 
 Lucia Engine is a customized version of [Open Engine](https://github.com/Game-Crafters-Guild/OpenEngine). This checkout retains Open Engine’s published Git history and records the Lucia source snapshot as a new commit. It does not import the earlier private development history.
