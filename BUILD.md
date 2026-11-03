@@ -83,16 +83,17 @@ With Node.js and npm installed before configure, the optional MCP server is buil
 
 ### Linux
 
-Ninja, single configuration: the build type is set at configure.
+Use the prerequisites below, including a C++20 compiler, CMake 3.25 or newer, Ninja, and the .NET 10 SDK. Ninja sets the configuration at configure time.
 
 ```bash
-git clone https://github.com/Game-Crafters-Guild/OpenEngine.git
-cd OpenEngine
-cmake --preset linux-x64-local -DCMAKE_BUILD_TYPE=Debug
-cmake --build --preset linux-x64-local --target Editor
-cmake --build --preset linux-x64-local --target McpServer
-./build/linux-x64-local/bin/Debug/Apps/Editor/Editor
+git clone https://github.com/luciaengine/lucia-engine.git
+cd lucia-engine
+cmake --preset linux-x64-local -DCMAKE_BUILD_TYPE=DebugFast
+cmake --build --preset linux-x64-local --target Editor -j 8
+./build/linux-x64-local/bin/DebugFast/Apps/Editor/Editor
 ```
+
+Run the `Editor` launcher rather than `Editor.bin` so the supported runtime defaults are applied. With Node.js and npm installed before configure, the optional MCP server is built with `cmake --build --preset linux-x64-local --target McpServer`.
 
 ## Prerequisites
 
@@ -136,9 +137,10 @@ node --version && python3 --version    # optional tools
 | Requirement | Notes | Where |
 |---|---|---|
 | **C++20 toolchain** (recent GCC or Clang), **CMake 3.25 or newer**, **Ninja**, **pkg-config**, **Git** | | your distribution's packages |
-| **Windowing packages** | Required by vcpkg's `glfw3`. | `sudo apt install libxinerama-dev libxcursor-dev xorg-dev libglu1-mesa-dev pkg-config` |
+| **Dependency build tools** | Required or recommended by [vcpkg](https://learn.microsoft.com/en-us/vcpkg/concepts/supported-hosts). | `sudo apt install build-essential cmake ninja-build pkg-config git curl zip unzip tar autoconf autoconf-archive automake libtool` |
+| **Windowing packages** | X11 windowing and Vulkan surface headers. | `sudo apt install libxinerama-dev libxcursor-dev xorg-dev libglu1-mesa-dev libwayland-dev` |
 | **Vulkan driver and tools** | Runtime requirement, plus the validation layers. | `sudo apt install mesa-vulkan-drivers vulkan-tools vulkan-validationlayers` |
-| **.NET 10 SDK** | C# scripting host and managed assemblies. | [dotnet.microsoft.com](https://dotnet.microsoft.com/download/dotnet/10.0) |
+| **.NET 10 SDK** | C# scripting host and managed assemblies. | [Linux installation guide](https://learn.microsoft.com/en-us/dotnet/core/install/linux) |
 | **Node.js 20 or newer** *(optional)* | Same use as on Windows. | your distribution's `nodejs` package, or [nodejs.org](https://nodejs.org/) |
 | **Python 3.10 or newer** *(optional)* | Same use as on Windows. | your distribution's `python3` package |
 

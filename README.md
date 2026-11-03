@@ -4,17 +4,17 @@
 
 # Lucia Engine
 
-Lucia Engine is a customized version of [Open Engine](https://github.com/Game-Crafters-Guild/OpenEngine). This checkout retains Open Engine’s published Git history and records the Lucia source snapshot as a new commit.
+Lucia Engine is an open-source game engine sharing its foundations with [Open Engine](https://github.com/Game-Crafters-Guild/OpenEngine).
 
-A game engine written in C++20 with hot-reloadable C# scripting: a Vulkan-first GPU-driven renderer, an archetype ECS, and an editor whose UI is built from XML and CSS.
+Written in C++20, it combines hot-reloadable C# scripting, an archetype ECS, and an editor whose UI is built from XML and CSS.
 
-**Platforms:** Windows x64 and ARM64 (primary), macOS on Apple Silicon and Intel (through MoltenVK), Linux, Steam Deck.
+**Platforms:** Windows x64 and ARM64 (primary), macOS on Apple Silicon and Intel (native Metal, with a MoltenVK fallback), Linux, Steam Deck.
 
 ![Lucia Engine editor preview](docs/images/lucia-engine-editor.webp)
 
 ## Highlights
 
-- **Renderer**: Vulkan, GPU-driven: a render graph with automatic barriers and resource aliasing, clustered Forward+ lighting, cascaded shadow maps, schema-driven materials with composed shader variants (GLSL to SPIR-V), physical light units with an HDR pipeline, instanced draw batching, camera-relative rendering for planet-scale coordinates, reverse-Z depth.
+- **Renderer**: native Metal and Vulkan backends with GPU-driven rendering: a render graph with automatic barriers and resource aliasing, clustered Forward+ lighting, cascaded shadow maps, schema-driven materials with composed shader variants, physical light units with an HDR pipeline, instanced draw batching, camera-relative rendering for planet-scale coordinates, reverse-Z depth.
 - **ECS**: archetype-based with chunked SoA storage: cache-coherent iteration, chunk-level change tracking, parallel queries, deferred commands, generational handles.
 - **C# scripting**: CoreCLR (.NET 10) embedded in the engine. Save a script and it recompiles through a resident Roslyn compile server and hot-swaps into the running process, with no restart.
 - **Editor**: a dockable multi-window editor. All editor UI is XML and CSS with live hot reload, and the same UI runtime ships in games (flexbox layout through Yoga, GPU text rendering).
@@ -49,6 +49,29 @@ cmake --preset vs2026-x64-local
 cmake --build --preset vs2026-x64-local --config DebugFast --target Editor -j 12
 build\vs2026-x64-local\bin\DebugFast\Apps\Editor\Editor.exe
 ```
+
+### Linux (x64)
+
+Install the [.NET 10 SDK for your distribution](https://learn.microsoft.com/en-us/dotnet/core/install/linux). Use a C++20 compiler, CMake 3.25 or newer, and Ninja. On Ubuntu 24.04 or newer, install the native build and windowing dependencies:
+
+```bash
+sudo apt update
+sudo apt install build-essential cmake ninja-build pkg-config git curl zip unzip tar \
+  autoconf autoconf-archive automake libtool \
+  libxinerama-dev libxcursor-dev xorg-dev libglu1-mesa-dev libwayland-dev
+```
+
+Install a Vulkan-capable driver for your GPU. For Intel or AMD GPUs on Ubuntu, use `sudo apt install mesa-vulkan-drivers vulkan-tools`. NVIDIA GPUs need a compatible NVIDIA driver. The default windowing backend uses X11, so a Wayland desktop needs XWayland.
+
+```bash
+git clone https://github.com/luciaengine/lucia-engine.git
+cd lucia-engine
+cmake --preset linux-x64-local -DCMAKE_BUILD_TYPE=DebugFast
+cmake --build --preset linux-x64-local --target Editor -j 8
+./build/linux-x64-local/bin/DebugFast/Apps/Editor/Editor
+```
+
+Run the `Editor` launcher shown above. It starts the native executable with the supported runtime defaults. Other distributions can use the equivalent packages listed in [Linux setup](BUILD.md#linux).
 
 The first configure bootstraps vcpkg and builds the third-party dependencies once (expect tens of minutes); every build after that is incremental. macOS and Linux build the same Editor through their own presets (`macos-arm64-ninja`, `linux-x64-local`); platform prerequisites, the Ninja fast build, Steam Deck, tests and troubleshooting are in [BUILD.md](BUILD.md). With the editor running, [Your first project](docs/first-project.html) creates a project, saves a scene and exports a game.
 
