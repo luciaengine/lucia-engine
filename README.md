@@ -4,17 +4,17 @@
 
 # Lucia Engine
 
-Lucia Engine is an open-source game engine developed by Lars Steenhoff and contributors, sharing its foundations with [Open Engine](https://github.com/Game-Crafters-Guild/OpenEngine).
+Lucia Engine is an open-source game engine sharing its foundations with [Open Engine](https://github.com/Game-Crafters-Guild/OpenEngine).
 
-A game engine written in C++20 with hot-reloadable C# scripting: a Vulkan-first GPU-driven renderer, an archetype ECS, and an editor whose UI is built from XML and CSS.
+Written in C++20, it combines hot-reloadable C# scripting, an archetype ECS, and an editor whose UI is built from XML and CSS.
 
-**Platforms:** Windows x64 and ARM64 (primary), macOS on Apple Silicon and Intel (through MoltenVK), Linux, Steam Deck.
+**Platforms:** Windows x64 and ARM64 (primary), macOS on Apple Silicon and Intel (native Metal, with a MoltenVK fallback), Linux, Steam Deck.
 
 ![Lucia Engine editor preview](docs/images/lucia-engine-editor.webp)
 
 ## Highlights
 
-- **Renderer**: Vulkan, GPU-driven: a render graph with automatic barriers and resource aliasing, clustered Forward+ lighting, cascaded shadow maps, schema-driven materials with composed shader variants (GLSL to SPIR-V), physical light units with an HDR pipeline, instanced draw batching, camera-relative rendering for planet-scale coordinates, reverse-Z depth.
+- **Renderer**: native Metal and Vulkan backends with GPU-driven rendering: a render graph with automatic barriers and resource aliasing, clustered Forward+ lighting, cascaded shadow maps, schema-driven materials with composed shader variants, physical light units with an HDR pipeline, instanced draw batching, camera-relative rendering for planet-scale coordinates, reverse-Z depth.
 - **ECS**: archetype-based with chunked SoA storage: cache-coherent iteration, chunk-level change tracking, parallel queries, deferred commands, generational handles.
 - **C# scripting**: CoreCLR (.NET 10) embedded in the engine. Save a script and it recompiles through a resident Roslyn compile server and hot-swaps into the running process, with no restart.
 - **Editor**: a dockable multi-window editor. All editor UI is XML and CSS with live hot reload, and the same UI runtime ships in games (flexbox layout through Yoga, GPU text rendering).
