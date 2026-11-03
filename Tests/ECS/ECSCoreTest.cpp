@@ -9,7 +9,7 @@
 #include "ECS/Entity.h"
 #include "ECS/World.h"
 #include "ECS/Components.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "ECS/ECSTemplates.h"  // Enable auto-registration for components
 #include "Logger/Logger.h"
 #include "TestComponents.h"
@@ -179,7 +179,7 @@ TEST_F(ECSCoreTest, Scheduler_Sequencing_WriteVisibleToRead) {
     auto qRead  = w->Query<Read<Position>, Optional<Velocity>>();
 
     Scheduler sched(&js);
-    auto jWrite = Scheduler::SystemJob::Parallel(qWrite, [&](EntityHandle, Velocity& v){ v.x += 2.0f; }, 0).Name("Bump");
+    auto jWrite = Scheduler::SystemJob::Parallel(qWrite, [&](EntityHandle, Writable<Velocity> v){ v.Mutable().x += 2.0f; }, 0).Name("Bump");
     auto jRead  = Scheduler::SystemJob::ForEachChunk(qRead, [&](const Position* p, const Velocity* v, size_t count){
         if (!v) return;
         for (size_t i = 0; i < count; ++i) ASSERT_GE(v[i].x, 2.0f);

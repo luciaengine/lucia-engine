@@ -127,40 +127,6 @@ TEST(MaterialCookVariants, AHeightMappedMaterialCooksTheReliefDepthOnTheDesktopO
     }
 }
 
-TEST(MaterialCookVariants, TransmissionAddsAGrabRowForEveryColourRowTheTransmissivePassDraws)
-{
-    const auto colour = MaterialKeyword::Instanced | MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows;
-    const std::vector<VariantRequest> table = {
-        {"base", MaterialKeyword::None, VertexAttributeFlags::StandardMesh},
-        {"forward-color", colour, VertexAttributeFlags::StandardMesh},
-        {"forward-color-ibl", colour | MaterialKeyword::IBL, VertexAttributeFlags::SkinnedMesh},
-        {"forward-color-ibl-gtao", colour | MaterialKeyword::IBL | MaterialKeyword::GTAO,
-         VertexAttributeFlags::StandardMesh},
-        {"forward-color-sssr", colour | MaterialKeyword::SSSRNormalRoughness, VertexAttributeFlags::StandardMesh},
-        {"forward-color-ibl-ddgi", colour | MaterialKeyword::IBL | MaterialKeyword::DDGI,
-         VertexAttributeFlags::StandardMesh},
-        {"forward-color-contact-shadows", colour | MaterialKeyword::ScreenSpaceShadows,
-         VertexAttributeFlags::StandardMesh},
-        {"depth", MaterialKeyword::Instanced, VertexAttributeFlags::StandardMesh}};
-
-    auto opaque = table;
-    ExpandSceneColorGrabVariants(opaque, false);
-    EXPECT_EQ(opaque.size(), table.size()) << "an opaque material is never drawn by the transmissive pass";
-
-    auto glass = table;
-    ExpandSceneColorGrabVariants(glass, true);
-    ASSERT_EQ(glass.size(), table.size() + 3u);
-    EXPECT_EQ(glass[8].Name, "forward-color-scene-grab");
-    EXPECT_EQ(glass[8].PassKeywords, colour | MaterialKeyword::SceneColorGrab);
-    EXPECT_EQ(glass[9].Name, "forward-color-ibl-scene-grab");
-    EXPECT_EQ(glass[9].PassKeywords, colour | MaterialKeyword::IBL | MaterialKeyword::SceneColorGrab);
-    EXPECT_EQ(glass[9].VertexFlags, VertexAttributeFlags::SkinnedMesh);
-    // The transmissive pass of a view with screen-space reflections draws with their keyword.
-    EXPECT_EQ(glass[10].Name, "forward-color-sssr-scene-grab");
-    EXPECT_EQ(glass[10].PassKeywords,
-              colour | MaterialKeyword::SSSRNormalRoughness | MaterialKeyword::SceneColorGrab);
-}
-
 // Every alpha mode an imported mesh material can carry has a standard-PBR target, so a cooked-only
 // runtime finds a program for an opaque, a masked and an alpha-blended glTF material alike.
 TEST(MaterialCookVariants, EveryImportedAlphaModeHasAStandardPbrTarget)

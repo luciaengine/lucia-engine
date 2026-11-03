@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 3,
+  "materialName": "Lit Sprite",
+  "lightingModel": "StandardPBR",
+  "alphaMode": "Mask",
+  "doubleSided": true,
+  "surfaceShader": "Surfaces/lit_sprite.glsl",
+  "properties": {
+    "baseColor": [1, 1, 1, 1],
+    "alphaCutoff": 0.45
+  }
+}

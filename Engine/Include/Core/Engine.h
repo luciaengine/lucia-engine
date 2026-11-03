@@ -8,7 +8,6 @@
 #include <atomic>
 #include <cassert>
 #include <cstdint>
-#include <functional>
 #include <future>
 #include <mutex>
 #include <optional>
@@ -23,8 +22,6 @@ class WorkStealingThreadPool;
 // Forward declare ECS World to avoid heavy includes in header
 namespace GameEngine
 {
-class SceneLoadTracker;
-
 namespace Input
 {
 class InputSystem;
@@ -32,10 +29,6 @@ class InputSystem;
 namespace ECS
 {
 class World;
-}
-namespace Scene
-{
-class PrefabLibrary;
 }
 namespace NativeScripting
 {
@@ -120,13 +113,6 @@ class EngineCore
     void SetScriptsConfig(const ScriptsConfig& config);
 
     /**
-     * @brief Set the work the next Initialize runs once, on its own thread, after the job
-     * system and the startup channel exist and before the asset manager and the script
-     * manager start. Initialize clears the hook, also when it fails.
-     */
-    void SetStartupJobsHook(std::function<void(JobSystem::JobChannel&)> hook);
-
-    /**
      * @brief Shutdown the engine
      */
     void Shutdown();
@@ -176,42 +162,6 @@ class EngineCore
     bool HasEverInitialized() const { return m_EverInitialized.load(std::memory_order_acquire); }
 
     /**
-     * @brief True on the thread that ran the most recent Initialize(), the thread that runs
-     * the engine's frames. Recorded on every configuration, scripting on or off; false on
-     * every thread before the first Initialize().
-     */
-    bool IsMainThread() const { return m_MainThreadId.load(std::memory_order_acquire) == std::this_thread::get_id(); }
-
-    /**
-     * @brief True when the scripting ABI's bootstrap initialized this engine for a host with
-     * no frame loop (ApplicationConfig::StandaloneHosted): the caller is the only thread.
-     */
-    bool IsStandaloneHosted() const { return m_StandaloneHosted.load(std::memory_order_acquire); }
-
-    /// What a request to reach the main thread got.
-    enum class MainThreadPost : uint8
-    {
-        Queued,    ///< The main-thread pump runs it at the end of a frame.
-        RunInline, ///< No main-thread queue to wait for: no engine was initialized, a standalone-hosted one, or
-                   ///< one initialized with scripting off. The caller runs it.
-        Dropped,   ///< The engine shut down, or its Initialize failed; nothing pumps.
-    };
-
-    /**
-     * @brief Queue a task for the main-thread pump, through the post gate (see m_PostGate).
-     *
-     * Runs the task on the calling thread, after the gate is released, when the answer is
-     * RunInline, and drops it when the answer is Dropped. Never constructs a ScriptManager.
-     */
-    MainThreadPost PostMainThreadTask(std::function<void()> task);
-
-    /**
-     * @brief Ask the main-thread pump to run the managed MainThread.Post queue at its next
-     * call, through the post gate. Never constructs a ScriptManager.
-     */
-    MainThreadPost RequestManagedPostDrain();
-
-    /**
      * @brief Get asset manager.
      *
      * Precondition: Initialize() has constructed the manager. A host that drives
@@ -233,13 +183,6 @@ class EngineCore
     // run before/without a full engine init (e.g. loading a model from a bare test
     // harness) fall back to defaults instead of asserting on a manager it never had.
     AssetManager* TryGetAssetManager() noexcept { return m_AssetManager.get(); }
-
-    /// The prefab library (one per engine, beside the AssetManager), or null before Initialize.
-    /// Engine-internal: its header is private to the scene sources. Main thread only.
-    Scene::PrefabLibrary* TryGetPrefabLibrary() noexcept { return m_PrefabLibrary.get(); }
-
-    /// Test seam: whether a ScriptManager exists, read without constructing one.
-    bool HasScriptManagerForTests() const { return m_ScriptManager != nullptr; }
 
     /**
      * @brief Get script manager (lazily constructs if missing to support C-ABI test scenarios)
@@ -368,16 +311,11 @@ class EngineCore
 
     /// Enable the engine-owned rendering loop and its shared system schedule. A null
     /// `renderServices` (a headless host) runs the schedule with no render work: every
-    /// system skips what needs a device. Data only a render-side system produces is then
-    /// missing: terrain height (no terrain collider), ocean buoyancy, and the skeleton
-    /// binding of scene-loaded skinned meshes.
+    /// system skips what needs a device.
     bool EnableRenderingLoop(Engine::Renderer::RenderServices* renderServices);
     void DisableRenderingLoop();
     // Non-owning access to the RenderServices instance currently driving the engine-managed rendering loop (if enabled).
     Engine::Renderer::RenderServices* GetRenderServices() const { return m_RenderServices; }
-    /// The owners of loading work report it here; a game asks it if the scene is ready to
-    /// show (docs/scripting/scene-ready-to-show.mdx). Lives as long as the engine instance.
-    SceneLoadTracker& GetSceneLoadTracker() { return *m_SceneLoadTracker; }
     // Control whether Engine::Update automatically steps the rendering loop.
     // Default is true; tools like the Editor can disable this and drive the
     // rendering loop explicitly at a more appropriate point in their frame.
@@ -439,25 +377,6 @@ class EngineCore
     // Set on entry to Initialize(), before the lifecycle is claimed, so a reader that
     // sees Initializing or Initialized also sees this. Never cleared.
     std::atomic<bool> m_EverInitialized{false};
-    // The thread of the most recent Initialize(); default id before the first one.
-    std::atomic<std::thread::id> m_MainThreadId{};
-    std::atomic<bool> m_StandaloneHosted{false};
-
-    // The post gate: whether a request from any thread may reach m_ScriptManager's
-    // main-thread queue. Every Initialize() sets it under the mutex: Live once it constructed
-    // the manager, NoQueue when scripting is off. Shutdown() and the Initialize rollback set
-    // ShutDown under it before the manager shuts down and is reset, so no request holds a
-    // manager the reset frees or queues into one nothing pumps. Lock order: MainThread.Post's
-    // managed queue lock, then m_PostGateMutex, then ScriptManager's task-queue mutex.
-    enum class PostGate : uint8
-    {
-        NoQueue,  ///< No main-thread queue: before the first Initialize, or scripting off. Runs inline.
-        Live,     ///< The manager's queue, pumped by the frames. Runs inline when standalone-hosted.
-        ShutDown, ///< Shut down, or Initialize failed: nothing pumps until the next Initialize. Drops.
-    };
-    std::mutex m_PostGateMutex;
-    PostGate m_PostGate = PostGate::NoQueue;
-    void SetPostGate(PostGate state);
     ApplicationConfig m_Config;
     std::optional<ScriptsConfig> m_ScriptsConfig;
 
@@ -475,9 +394,6 @@ class EngineCore
     // Subsystems
     UniquePtr<JobSystem::WorkStealingThreadPool> m_JobSystem;
     UniquePtr<AssetManager> m_AssetManager;
-    // Built after the AssetManager and destroyed before it: it listens for changed files.
-    UniquePtr<Scene::PrefabLibrary> m_PrefabLibrary;
-    UniquePtr<SceneLoadTracker> m_SceneLoadTracker;
     // Engine-managed rendering loop state
     UniquePtr<Engine::Renderer::RenderingLoop> m_RenderingLoop;
     bool m_RenderingLoopEnabled = false;
@@ -497,8 +413,6 @@ class EngineCore
     // The "Engine startup" channel (GetStartupChannel); created by Initialize after the
     // job system, destroyed by Shutdown (and a failed Initialize) before it.
     UniquePtr<JobSystem::JobChannel> m_StartupChannel;
-    // SetStartupJobsHook's hook: called once by the next Initialize, then cleared.
-    std::function<void(JobSystem::JobChannel&)> m_StartupJobsHook;
 
     // Engine-owned AudioSystem/backend (may remain null if init fails).
     UniquePtr<Audio::AudioSystem> m_AudioSystem;

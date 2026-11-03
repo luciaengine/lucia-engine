@@ -4,8 +4,8 @@
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Camera/CameraTypes.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/CameraTypes.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 #include "Rendering/Core/RecomputeElision.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "TerrainGrass/GrassPlacementModel.h"
@@ -26,14 +26,13 @@ class RenderServices;
 namespace GameEngine::TerrainECS
 {
 class TerrainRenderFeature;
-class TerrainPageFeature;
+struct AtlasGrassSource;
 } // namespace GameEngine::TerrainECS
 
 namespace GameEngine::TerrainGrass
 {
 
 class TerrainGrassForwardContributor;
-struct SurfacePageSource;
 struct TerrainGrassForwardContributorDeleter
 {
     void operator()(TerrainGrassForwardContributor* ptr) const;
@@ -86,6 +85,37 @@ public:
     // and the dispatch cannot disagree about the pool.
     const GrassPlacementPlan& GetPlan(Rendering::ViewId viewId, uint32 frameIndex) const;
 
+    // What to bind for the atlas params UBO + indirection rows.
+    struct AtlasBinding
+    {
+        Rendering::BufferHandle ParamsUBO;
+        Rendering::BufferHandle Rows;
+        uint64 RowsRangeBytes = 0;
+        // The eight atlas maps as handles, for a profile with no binding arrays (WebGPU), where the
+        // placement shader reads them as named bindings instead of bindless indices. Left invalid
+        // on the bindless path, which never reads them.
+        Rendering::TextureHandle HeightTexture;
+        Rendering::TextureHandle HeightCoarseTexture;
+        Rendering::TextureHandle NormalTexture;
+        Rendering::TextureHandle NormalCoarseTexture;
+        Rendering::TextureHandle SplatTexture;
+        Rendering::TextureHandle SplatCoarseTexture;
+        Rendering::TextureHandle GrassTexture;
+        Rendering::TextureHandle GrassCoarseTexture;
+    };
+
+    // The atlas binding this frame's PLACEMENT resolved through, for the draw to bind to the grass
+    // surface's set 2. Read-only and side-effect-free: the compute's EnsureAtlasBinding already
+    // uploaded this slot's params and rows earlier in the frame, and returning the cached result is
+    // what makes the blade's ground colour resolve through the same rows its placement mask did —
+    // re-deriving it here could hand the two stages different residency.
+    //
+    // Always returns bindable handles. A slot no placement has ensured yet answers with the
+    // zero-initialized params UBO (Enabled == 0, so the surface stays on the unified path) and the
+    // 1-row NO_SLOT default buffer, because an unbound set-2 buffer makes MaterialBinder drop the
+    // draw — silently deleting the grass rather than mis-colouring it.
+    AtlasBinding GetAtlasBindingForDraw(uint32 frameIndex) const;
+
     // RenderGraph: ensure the per-view placement buffers exist and resolve this view's plan at
     // DECLARATION, so the node can ImportExternalBuffer them before the placement pass writes them.
     // Returns true when all three handles are valid. Also flushes the deferred-destroy ring (the
@@ -102,10 +132,8 @@ public:
     //
     // Must run after EnsurePlacementBuffersForViewRG, which is what resolves the plan and the GPU
     // params this compares.
-    // `pages` may be null (no page feature yet).
     bool ShouldSkipPlacement(TerrainECS::TerrainRenderFeature& terrainFeature,
-                             const TerrainECS::TerrainPageFeature* pages, Rendering::ViewId viewId,
-                             uint32 frameIndex);
+                             Rendering::ViewId viewId, uint32 frameIndex);
 
     // Per-view instance ceiling. Placement is camera-relative, so this is a property of the VIEW,
     // not of how many terrains exist or how large they are: one budget buys one view's grass at
@@ -131,18 +159,15 @@ public:
         // it: two views drawn in one frame have two viewports, and a width sized for the wrong one
         // is wrong on screen.
         float ViewRotCol0[4] = {}; // [3] = viewport height in pixels, 0 = no world pass yet
-        float ViewRotCol1[4] = {}; // [3] = viewport height for the ground footprint, negated when orthographic
+        float ViewRotCol1[4] = {};
         float ViewRotCol2[4] = {}; // [3] = projection Y scale (CameraData::proj[5], = uP[1][1])
         // Worst case across every active grass terrain: [0] = densest blades/m² at the camera,
         // [1] = flattest falloff. The plan kernel's budget fit needs terms that DOMINATE every
         // per-terrain value, which is what makes its per-ring total a bound the per-cell scan
         // cannot exceed — and so removes any need for a runtime clamp when slots are handed out.
         float Summary[4] = {};
-        // This view's render origin: xyz = sector, [3] = sector size in metres. The placement
-        // compute anchors the root colour's projection UVs to it, as the draw's stages do.
-        int32 RenderOriginSector[4] = {};
     };
-    static_assert(sizeof(GrassPlaceParamsGPU) == 224);
+    static_assert(sizeof(GrassPlaceParamsGPU) == 208);
 
     // std140 mirror of GrassDrawParamsBuffer in terrain_grass_vertex_modifier.glsl.
     //
@@ -157,6 +182,48 @@ public:
         float _Pad[3] = {};
     };
     static_assert(sizeof(GrassDrawParamsGPU) == 16);
+
+    // std140 mirror of the GrassAtlasParamsBuffer UBO in grass_atlas_splat.glsl (shared by the placement compute and the surface shader): the single
+    // atlas-backed terrain's resolve geometry + bindless height/normal/splat indices the placement
+    // compute needs to snap roots + bake normals through the resident-window atlas. Enabled == 0
+    // when no atlas terrain is present this frame (the per-terrain Flags bit gates it either way).
+    struct alignas(16) GrassAtlasParamsGPU
+    {
+        uint32 Enabled = 0;
+        uint32 AtlasDim = 0;
+        uint32 SlotStride = 0;
+        uint32 SlotsPerRow = 0;
+        uint32 TileRes = 0;
+        uint32 TilesPerAxisX = 0;
+        uint32 TilesPerAxisZ = 0;
+        uint32 CoarseDim = 0;
+        uint32 HeightBindless = 0;
+        uint32 HeightCoarseBindless = 0;
+        uint32 NormalBindless = 0;
+        uint32 NormalCoarseBindless = 0;
+        uint32 SplatBindless = 0;
+        uint32 SplatCoarseBindless = 0;
+        uint32 RowCount = 0;
+        uint32 GrassEnabled = 0;
+        uint32 GrassBindless = 0;
+        uint32 GrassCoarseBindless = 0;
+        uint32 _Pad0 = 0;
+        uint32 _Pad1 = 0;
+    };
+    static_assert(sizeof(GrassAtlasParamsGPU) == 80);
+
+    // Pure builder: pack a TerrainRenderFeature::AtlasGrassSource into the GPU UBO struct (RowCount
+    // clamped to the ring capacity the shader indexes). Enabled follows the source's Valid flag.
+    // Exposed for the un-gate oracle (an atlas source produces Enabled != 0 + a valid height index).
+    static GrassAtlasParamsGPU BuildAtlasParams(const TerrainECS::AtlasGrassSource& src,
+                                                uint32 rowCapacity);
+
+    // Pure gate (D1): the per-slot row-version cache must be invalidated whenever the atlas terrain's
+    // IDENTITY changes (destroy+recreate — a new controller can hand back a table version that
+    // numerically equals a retained slot version, so the version gate alone would skip the upload
+    // forever and grass would resolve through the dead terrain's rows) OR the atlas goes away (so a
+    // later re-enable re-uploads instead of trusting a stale slot). Returns true to reset all slots.
+    static bool AtlasSlotsNeedReset(bool hasAtlas, uint64 currentIdentity, uint64 lastIdentity);
 
     // Placed-blade instrumentation. The placement compute writes its atomicAdd totals into
     // the indirect args' InstanceCount; the node copies that word into a per-view
@@ -224,30 +291,29 @@ private:
     // backend keeps below this bound.
     static constexpr uint32 kMaxFrames = Rendering::IDevice::kMaxSupportedFramesInFlight;
 
-    // The paged terrain's surface params, one per frame slot (placement binding 4). Binding 5 takes the
-    // page feature's table ring slot, or m_DefaultPageTable (one word) while no terrain is paged.
-    Rendering::BufferHandle m_SurfaceParamsUBO[kMaxFrames] = {};
-    Rendering::BufferHandle m_DefaultPageTable;
+    // Resident-window atlas grass source (bindings 4 + 5 of the placement set). The atlas params UBO
+    // is a per-frame ring; the indirection rows ride per-frame-slot host-visible buffers (each bound
+    // at offset 0, so no storage-buffer-offset-alignment concern), rewritten
+    // only when this slot holds a stale table version (a parked camera writes nothing). Separate
+    // per-slot buffers mean an in-flight frame never reads a slot the CPU is rewriting.
+    // m_DefaultAtlasRows is a 1-row NO_SLOT buffer bound when no atlas terrain exists.
+    // Both rings are written only while the render node declares or executes, behind
+    // IDevice::BeginFrame, so a depth of the device's pacing suffices; they are FrameSlotted.
+    Rendering::BufferHandle m_AtlasParamsUBO[kMaxFrames] = {};
+    Rendering::BufferHandle m_AtlasRows[kMaxFrames] = {}; // m_AtlasRowsCapacity rows each, host-visible
+    Rendering::BufferHandle m_DefaultAtlasRows;           // 1 NO_SLOT row, no-atlas fallback binding
+    uint32 m_AtlasRowsCapacity = 0;                       // rows per slot buffer (grow-only)
+    uint64 m_AtlasRowsSlotVersion[kMaxFrames] = {};       // last table version uploaded to each slot
+    uint64 m_AtlasIdentity = 0;                           // last-seen atlas terrain identity (D1 ABA guard)
+    // Rebuild/upload the atlas params UBO + this frame's rows buffer from the terrain feature's
+    // single atlas source. Returns the UBO + rows buffer + range to bind (the 1-row default when
+    // no atlas terrain exists), so the placement descriptor's bindings 4/5 are always valid, and
+    // records it in m_AtlasBindingBySlot for the draw to bind the identical pair.
+    AtlasBinding EnsureAtlasBinding(TerrainECS::TerrainRenderFeature& terrainFeature, uint32 frameIndex);
 
-    // What the placement binds for the paged terrain this frame.
-    struct SurfaceBinding
-    {
-        Rendering::BufferHandle ParamsUBO;
-        Rendering::BufferHandle Table;
-        uint64 TableOffset = 0;
-        uint64 TableBytes = 0;
-        Rendering::TextureHandle HeightCache;
-        std::array<Rendering::TextureHandle, 4> Planes{}; // splat, normal, grass control, color
-    };
-    // The drawn terrain's page tables and caches from the page feature; false when its height is not
-    // paged (the wide arm only: the narrow arm publishes no table).
-    static bool ReadSurfacePageSource(const TerrainECS::TerrainPageFeature& pages,
-                                      const TerrainECS::TerrainRenderFeature& terrainFeature,
-                                      SurfacePageSource& source, SurfaceBinding* textures);
-    // Writes this frame slot's params from `source`, binds the page feature's table ring slot, and
-    // returns what to bind (the one-word default table and invalid textures when no terrain is paged).
-    SurfaceBinding EnsureSurfaceBinding(TerrainECS::TerrainPageFeature* pages, const SurfacePageSource& source,
-                                        const SurfaceBinding& textures, uint32 frameIndex);
+    // Last binding EnsureAtlasBinding resolved for each frame slot; GetAtlasBindingForDraw serves
+    // the draw from here so the two stages cannot resolve different atlas rows in one frame.
+    AtlasBinding m_AtlasBindingBySlot[kMaxFrames] = {};
 
     Rendering::ComputePipelineId m_ComputePipelineId{};
     Rendering::PipelineHandle m_ComputePipeline{};
@@ -261,6 +327,8 @@ private:
     Rendering::PipelineHandle m_PlanPipeline{};
     bool m_ComputePipelineAttempted = false;
 
+    // Atlas maps the placement taps: height, normal and splat, each with its coarse fallback.
+    static constexpr uint32 kGrassAtlasMapCount = 8u;
     // What EnsureIndirectConstants writes into the args block: index count, first index and vertex
     // offset for each LOD, then the shared pool size.
     static constexpr uint32 kSeededIndirectWordsPerLod = 3u;
@@ -307,7 +375,8 @@ private:
         bool GateLogState = false;
         // Hoisted so the per-frame blob build does not allocate.
         std::vector<uint8> TerrainParamsScratch;
-        std::vector<uint8> TerrainMaterialScratch;
+        // The atlas map indices, as a span source for the same reason.
+        std::array<uint32, kGrassAtlasMapCount> AtlasBindlessScratch{};
         // The words EnsureIndirectConstants seeds into the args block, as a span source for the
         // same reason. Gathered as words rather than as the struct below, because the gate compares
         // raw bytes and a struct's padding bytes are indeterminate.

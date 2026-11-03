@@ -135,6 +135,13 @@ void UnregisterRuntimeMesh(Rendering::MeshGPURegistry& meshRegistry,
 
 } // namespace
 
+MorphTargetSystem::MorphTargetSystem(RenderServices* renderServices)
+    : m_RenderServices(renderServices)
+{
+}
+
+MorphTargetSystem::~MorphTargetSystem() = default;
+
 void MorphTargetSystem::Update(ECS::World& world, float32 /*deltaTime*/)
 {
     if (!m_RenderServices)
@@ -184,13 +191,14 @@ void MorphTargetSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     query.IncludeDisabled<Components::MorphTargetWeights>();
     query.Each([&](ECS::EntityHandle entity,
                    const Components::MeshRenderer& meshRenderer,
-                   Components::MorphTargetWeights& morph,
+                   ECS::Writable<Components::MorphTargetWeights> morphRow,
                    const Components::LocalBounds* localBounds,
                    const ECS::ComponentDisabled<Components::MorphTargetWeights>* morphOff)
     {
         const GUID modelGuid = meshRenderer.modelAssetGuid.ToGuid();
         if (modelGuid.IsNull())
             return;
+        Components::MorphTargetWeights& morph = morphRow.Mutable();
 
         const GUID previousSourceGuid = GUID::FromBytes(morph.sourceModelGuid);
         const bool sourceChanged =
@@ -256,14 +264,31 @@ void MorphTargetSystem::Update(ECS::World& world, float32 /*deltaTime*/)
             return;
         }
 
+        ApplyMorphTargets(sourceMesh, morph.weights, targetCount, m_MorphedVertices);
+
+        // A weight change on a live runtime mesh rewrites its vertices in place:
+        // the handle, the GPUScene row and the index data stay.
+        if (!runtimeMissing && !runtimeGuidChanged &&
+            meshRegistry.RewriteSubmeshVertices(runtimeHandle, sourceMesh, m_MorphedVertices))
+        {
+            AssignMeshGpuHandle(world, entity, meshRenderer, static_cast<uint64>(runtimeHandle));
+            MarkWeightsApplied(morph, targetCount);
+            WriteBounds(world, entity, localBounds, meshRegistry.Find(runtimeHandle));
+            return;
+        }
+
         if (!previousRuntimeGuid.IsNull())
             meshRegistry.UnregisterSubmesh({previousRuntimeGuid, 0});
 
-        Mesh morphedMesh = CreateMorphedMesh(sourceMesh, morph.weights, targetCount);
-        runtimeHandle = meshRegistry.RegisterSubmesh({runtimeGuid, 0}, morphedMesh);
-        if (!runtimeHandle.IsValid())
+        // A new runtime mesh starts as an upload of the source mesh under its own
+        // key and takes the morphed vertices through the same rewrite.
+        runtimeHandle = meshRegistry.RegisterSubmesh({runtimeGuid, 0}, sourceMesh);
+        if (!runtimeHandle.IsValid() ||
+            !meshRegistry.RewriteSubmeshVertices(runtimeHandle, sourceMesh, m_MorphedVertices))
         {
             Logger::Log::Warning("MorphTargetSystem: failed to upload morphed mesh for entity {}", entity.id);
+            if (runtimeHandle.IsValid())
+                meshRegistry.UnregisterSubmesh({runtimeGuid, 0});
             if (sourceHandle.IsValid())
                 AssignMeshGpuHandle(world, entity, meshRenderer, static_cast<uint64>(sourceHandle));
             ClearGuid(morph.runtimeModelGuid);

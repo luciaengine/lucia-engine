@@ -72,7 +72,7 @@ NineSliceField::NineSliceField()
 {
     AddClass("nine-slice-field");
     SetFocusable(false);
-    Style()
+    Overrides()
         .Set(Style::Height, StyleLength::Px(kFieldHeightPx))
         .Set(Style::MinHeight, StyleLength::Px(kFieldHeightPx));
 }
@@ -378,7 +378,7 @@ void NineSliceField::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx, const R
     if (ctx.Manager && ctx.Textures && !m_Guid.IsNull())
     {
         uint32_t tw = 0, th = 0;
-        const Rendering::TextureHandle tex = ctx.Manager->BackgroundImages().TryGetHandle(m_Guid, &tw, &th);
+        const Rendering::TextureHandle tex = ctx.Manager->TryGetBackgroundTextureHandleByGuid(m_Guid, &tw, &th);
         if (tex.IsValid())
             slot = ctx.Textures->Register(tex);
     }

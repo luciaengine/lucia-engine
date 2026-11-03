@@ -20,11 +20,9 @@
 #include <condition_variable>
 #include <cstdio>
 #include <functional>
-#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <random>
-#include <span>
 #include <thread>
 #include <vector>
 
@@ -64,11 +62,21 @@ struct GateGuard {
     ~GateGuard() { Gate.store(true, std::memory_order_release); }
 };
 
-/** Submits `body` as a graph task that runs after `dependencies` (none: a graph root). */
-TaskHandle SubmitInGraph(WorkStealingThreadPool& pool, std::function<void()> body,
-                         std::initializer_list<TaskHandle> dependencies = {}) {
-    return pool.Submit(std::move(body), std::span<const TaskHandle>(dependencies.begin(), dependencies.size()));
-}
+/** Pool-level dependency-managed task whose body is supplied by the test. */
+class ScriptedTask : public Task {
+public:
+    ScriptedTask(WorkStealingThreadPool* pool, std::function<void()> body)
+        : Task(pool), m_Body(std::move(body)) {}
+
+    void Execute() override {
+        if (m_Body) {
+            m_Body();
+        }
+    }
+
+private:
+    std::function<void()> m_Body;
+};
 
 // Parks `count` workers on `gate`, returning once all of them are inside
 // their blocker bodies (i.e. the pool cannot dequeue anything else).
@@ -305,16 +313,20 @@ TEST_F(CancellationTest, CancelParkedDependentFiresExactlyOnce) {
 
     std::atomic<bool> gate{false};
     GateGuard gateGuard{gate};
-    TaskHandle depHandle = SubmitInGraph(pool, [&gate] {
+    auto dep = MakeUnique<ScriptedTask>(&pool, [&gate] {
         while (!gate.load(std::memory_order_acquire)) {
             std::this_thread::yield();
         }
     });
+    const TaskId depId = dep->GetTaskId();
+    TaskHandle depHandle = pool.Submit(std::move(dep));
 
     std::atomic<bool> dependentRan{false};
-    TaskHandle dependentHandle = SubmitInGraph(pool, [&dependentRan] {
+    auto dependent = MakeUnique<ScriptedTask>(&pool, [&dependentRan] {
         dependentRan.store(true, std::memory_order_release);
-    }, {depHandle}); // parked
+    });
+    dependent->AddDependency(depId);
+    TaskHandle dependentHandle = pool.Submit(std::move(dependent)); // parked
 
     std::atomic<int> failureFires{0};
     dependentHandle.OnFailure([&failureFires](const String&) { failureFires.fetch_add(1); });
@@ -371,11 +383,15 @@ TEST_F(ShutdownContractTest, ShutdownWakesAllWaiters) {
     TaskHandle queuedHandle = pool.Submit([&queuedRan] { queuedRan.store(true); });
 
     // Victims 2+3: a queued graph task and a dependent parked on it.
-    TaskHandle depHandle = SubmitInGraph(pool, [] {});
+    auto dep = MakeUnique<ScriptedTask>(&pool, [] {});
+    const TaskId depId = dep->GetTaskId();
+    TaskHandle depHandle = pool.Submit(std::move(dep));
     std::atomic<bool> dependentRan{false};
-    TaskHandle dependentHandle = SubmitInGraph(pool, [&dependentRan] {
+    auto dependent = MakeUnique<ScriptedTask>(&pool, [&dependentRan] {
         dependentRan.store(true, std::memory_order_release);
-    }, {depHandle}); // parked
+    });
+    dependent->AddDependency(depId);
+    TaskHandle dependentHandle = pool.Submit(std::move(dependent)); // parked
 
     // Waiters block in TaskHandle::Wait before Shutdown is requested.
     std::array<std::atomic<bool>, 3> waiterReturned{};
@@ -418,7 +434,8 @@ TEST_F(ShutdownContractTest, ShutdownWakesAllWaiters) {
 
 /**
  * @brief B7 pin: bare EnqueueWork tasks enqueued around Shutdown always
- * execute — a hand-rolled caller barrier over them must always release, before, during, and after shutdown.
+ * execute — the hand-rolled caller barrier (the DispatchAndWait/ParallelFor
+ * shape) must always release, before, during, and after shutdown.
  */
 TEST_F(ShutdownContractTest, ShutdownExecutesBareBarrierTasks) {
     WorkStealingThreadPool pool(4);
@@ -476,8 +493,8 @@ TEST_F(ShutdownContractTest, ShutdownExecutesBareBarrierTasks) {
 }
 
 /**
- * @brief F13b: ParallelFor (both overloads) and ParallelSort against a
- * shut-down pool fall back to sequential execution on the caller — correct results, no hang.
+ * @brief F13b: ParallelFor / DispatchAndWait against a shut-down pool fall
+ * back to sequential execution on the caller — correct results, no hang.
  */
 TEST_F(ShutdownContractTest, ParallelForDuringShutdownFallsBackSequential) {
     WorkStealingThreadPool pool(4);
@@ -486,7 +503,7 @@ TEST_F(ShutdownContractTest, ParallelForDuringShutdownFallsBackSequential) {
     constexpr size_t kCount = 100000;
     std::vector<int> data(kCount, 0);
     JobSystem::ParallelFor(
-        &pool, kCount,
+        &pool, 0, kCount,
         [&data](size_t begin, size_t end) {
             for (size_t i = begin; i < end; ++i) {
                 data[i] = static_cast<int>(i);
@@ -502,7 +519,7 @@ TEST_F(ShutdownContractTest, ParallelForDuringShutdownFallsBackSequential) {
     for (auto& task : tasks) {
         task = [&dispatched] { dispatched.fetch_add(1); };
     }
-    JobSystem::ParallelFor(&pool, 4, [&](size_t task) { tasks[task](); });
+    JobSystem::DispatchAndWait(&pool, tasks, 4);
     EXPECT_EQ(dispatched.load(), 4);
 
     std::vector<int> toSort(20000);
@@ -535,7 +552,7 @@ TEST_F(ShutdownContractTest, ShutdownWhileStormingStress) {
             std::vector<int> buffer(20000, 0);
             while (!stop.load(std::memory_order_acquire)) {
                 JobSystem::ParallelFor(
-                    pool.get(), buffer.size(),
+                    pool.get(), 0, buffer.size(),
                     [&buffer](size_t begin, size_t end) {
                         for (size_t i = begin; i < end; ++i) {
                             ++buffer[i];
@@ -559,8 +576,11 @@ TEST_F(ShutdownContractTest, ShutdownWhileStormingStress) {
         const auto stormDeadline =
             SteadyClock::now() + std::chrono::microseconds(stormUs(rng));
         while (SteadyClock::now() < stormDeadline) {
-            TaskHandle dep = SubmitInGraph(*pool, [] {});
-            SubmitInGraph(*pool, [] {}, {dep});
+            auto dep = MakeUnique<ScriptedTask>(pool.get(), [] {});
+            auto dependent = MakeUnique<ScriptedTask>(pool.get(), [] {});
+            dependent->AddDependency(dep->GetTaskId());
+            pool->Submit(std::move(dep));
+            pool->Submit(std::move(dependent));
         }
 
         pool->Shutdown();
@@ -604,8 +624,11 @@ TEST_F(ShutdownContractTest, SubmitRacingShutdownNeverStrandsWaiter) {
                     TaskHandle voidHandle = pool->Submit([] {});
                     TaskHandle valueHandle = pool->Submit([] { return 42; });
 
-                    TaskHandle depHandle = SubmitInGraph(*pool, [] {});
-                    TaskHandle dependentHandle = SubmitInGraph(*pool, [] {}, {depHandle});
+                    auto dep = MakeUnique<ScriptedTask>(pool.get(), [] {});
+                    auto dependent = MakeUnique<ScriptedTask>(pool.get(), [] {});
+                    dependent->AddDependency(dep->GetTaskId());
+                    TaskHandle depHandle = pool->Submit(std::move(dep));
+                    TaskHandle dependentHandle = pool->Submit(std::move(dependent));
 
                     for (TaskHandle* handle :
                          {&voidHandle, &valueHandle, &depHandle, &dependentHandle}) {
@@ -668,7 +691,8 @@ TEST_F(ShutdownContractTest, DrainedBareTaskWaitingOnQueuedHandleTaskReturns) {
     // reaches AFTER the lock-free queue the bare task lands in (the exact
     // pre-fix wedge order).
     std::atomic<bool> victimRan{false};
-    TaskHandle victimHandle = SubmitInGraph(pool, [&victimRan] { victimRan.store(true); });
+    auto victim = MakeUnique<ScriptedTask>(&pool, [&victimRan] { victimRan.store(true); });
+    TaskHandle victimHandle = pool.Submit(std::move(victim));
 
     // Bare task that joins the handle task — the caller-barrier-body shape.
     std::atomic<bool> bareReturned{false};

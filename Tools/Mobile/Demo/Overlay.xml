@@ -1,0 +1,7 @@
+<UIElement class="demo-overlay">
+    <Label id="demo-statistics" class="demo-tile demo-statistics">FPS: warming up</Label>
+    <Label class="demo-tile demo-instructions">Drag to orbit</Label>
+    <Label class="demo-tile demo-zoom-in">Hold: zoom in</Label>
+    <Label class="demo-tile demo-reset">Reset view</Label>
+    <Label class="demo-tile demo-zoom-out">Hold: zoom out</Label>
+</UIElement>

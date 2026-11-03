@@ -1,0 +1,54 @@
+[scene name="LightmapBake" version=1]
+
+[entity id="camera"]
+Name.value = "Bake Camera"
+Transform.position = (0, 4, -7)
+Transform.rotation = (0.1950903, 0, 0, 0.9807853)
+Camera.enabled = true
+Camera.fovY = 55
+Camera.nearZ = 0.1
+Camera.farZ = 100
+
+[entity id="sun"]
+Name.value = "Bake Sun"
+Transform.rotation = (0.7071068, 0, 0, 0.7071068)
+Light.type = 0
+Light.enabled = true
+Light.intensity = 1
+Light.color = (1, 1, 1)
+Light.castsShadows = true
+
+[entity id="floor"]
+Name.value = "Bake Floor"
+Transform.position = (0, 0, 0)
+Transform.scale = (3, 1, 3)
+MeshRenderer.meshAsset = [path="Models/Quad.gltf"]
+MeshRenderer.material = [path="Materials/Floor.material"]
+MeshRenderer.enabled = true
+MeshRenderer.castShadows = true
+
+[entity id="blocker"]
+Name.value = "Bake Blocker"
+Transform.position = (0, 1, 0)
+Transform.scale = (0.7, 1, 0.7)
+MeshRenderer.meshAsset = [path="Models/Quad.gltf"]
+MeshRenderer.material = [path="Materials/Blocker.material"]
+MeshRenderer.enabled = true
+MeshRenderer.castShadows = true
+
+[entity id="emitter"]
+Name.value = "Bake Emitter"
+Transform.position = (-1.8, 1.7, 0)
+Transform.scale = (0.6, 1, 0.6)
+MeshRenderer.meshAsset = [path="Models/Quad.gltf"]
+MeshRenderer.material = [path="Materials/Emitter.material"]
+MeshRenderer.enabled = true
+MeshRenderer.castShadows = true
+
+[entity id="missing-lightmap-uv"]
+Name.value = "No Lightmap UVs"
+Transform.position = (1000, 0, 0)
+MeshRenderer.meshAsset = [path="Models/QuadWithoutLightmapUV.gltf"]
+MeshRenderer.material = [path="Materials/Floor.material"]
+MeshRenderer.enabled = true
+MeshRenderer.castShadows = true

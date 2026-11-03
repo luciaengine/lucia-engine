@@ -77,13 +77,6 @@ public:
     // already active for its id is an idempotent no-op (no late-replay re-fire).
     void RegisterPlugin(IEnginePlugin& plugin);
 
-    // Detaches the exact instance from all future dispatch. Refused (loud,
-    // returns false) when the instance is not the active registration for its
-    // id — a stale, already-replaced instance must not knock out its
-    // successor. Unregistering does not retire scheduled systems; callers
-    // about to unmap a module must also satisfy the module quiesce check.
-    bool UnregisterPlugin(IEnginePlugin& plugin);
-
     // C12 load-abort purge: unregister every plugin stamped with exactly
     // {moduleId, generation} (see ECS/ModuleRegistration.h — RegisterPlugin
     // stamps entries from the loader's active-module bracket). Called before a
@@ -96,9 +89,6 @@ public:
     // Non-zero blocks unmapping the superseded image.
     std::size_t CountSupersededModulePlugins(std::string_view moduleId,
                                              std::uint64_t currentGeneration) const;
-
-    // Ids of the plugins currently attributed to `moduleId` (any generation).
-    std::vector<std::string> GetModulePluginIds(std::string_view moduleId) const;
 
     void SetLateRegistrationHandler(LateRegistrationHandler handler);
 
@@ -115,7 +105,6 @@ public:
     void BeginRegistrationHold();
     void EndRegistrationHold();
 
-    std::vector<IEnginePlugin*> GetPlugins() const;
     std::vector<IEnginePlugin*> GetEnabledPlugins() const;
 
     void SetEnabledResolver(EnabledResolver resolver);

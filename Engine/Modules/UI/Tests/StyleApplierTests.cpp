@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "../Source/StyleApplier.h"
 #include "UI/ResolvedStyle.h"
-#include "UI/StyleDeclaration.h"
+#include "UI/StyleOverrides.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIStyle.h"
 
@@ -10,7 +10,7 @@ using namespace GameEngine;
 TEST(StyleApplierTests, GapOverrideSetsRowAndColumnGap)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::Gap, StyleLength::Px(12.0f));
 
     ApplyOverridesToResolvedStyle(rs, overrides);
@@ -23,7 +23,7 @@ TEST(StyleApplierTests, GapOverrideSetsRowAndColumnGap)
 TEST(StyleApplierTests, RowGapOverrideOnlySetsRowGap)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::RowGap, StyleLength::Px(5.0f));
 
     ApplyOverridesToResolvedStyle(rs, overrides);
@@ -35,7 +35,7 @@ TEST(StyleApplierTests, RowGapOverrideOnlySetsRowGap)
 TEST(StyleApplierTests, ColumnGapOverrideOnlySetsColumnGap)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::ColumnGap, StyleLength::Px(7.0f));
 
     ApplyOverridesToResolvedStyle(rs, overrides);
@@ -52,7 +52,7 @@ TEST(StyleApplierTests, ColumnGapOverrideOnlySetsColumnGap)
 TEST(StyleApplierTests, LineHeightOverrideMarksItExplicitlySet)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::LineHeight, 1.5f);
 
     ApplyOverridesToResolvedStyle(rs, overrides);
@@ -64,7 +64,7 @@ TEST(StyleApplierTests, LineHeightOverrideMarksItExplicitlySet)
 TEST(StyleApplierTests, PaddingTopOverrideSetsTopOnly)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::PaddingTop, StyleLength::Px(10.0f));
 
     ApplyOverridesToResolvedStyle(rs, overrides);
@@ -78,7 +78,7 @@ TEST(StyleApplierTests, PaddingTopOverrideSetsTopOnly)
 TEST(StyleApplierTests, MarginTopOverrideSetsTopOnly)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::MarginTop, StyleLength::Px(8.0f));
 
     ApplyOverridesToResolvedStyle(rs, overrides);
@@ -92,7 +92,7 @@ TEST(StyleApplierTests, MarginTopOverrideSetsTopOnly)
 TEST(StyleApplierTests, BorderRadiusOverrideSetsAllCorners)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::BorderRadius, CornerRadiiTLTRBRBL{4.0f, 4.0f, 4.0f, 4.0f});
 
     ApplyOverridesToResolvedStyle(rs, overrides);
@@ -112,7 +112,7 @@ TEST(StyleApplierTests, BorderRadiusOverrideSetsAllCorners)
 TEST(StyleApplierTests, BorderWidthOverrideSetsAllEdges)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::BorderWidth, Box4{2.0f, 2.0f, 2.0f, 2.0f});
 
     ApplyOverridesToResolvedStyle(rs, overrides);
@@ -126,7 +126,7 @@ TEST(StyleApplierTests, BorderWidthOverrideSetsAllEdges)
 TEST(StyleApplierTests, BorderColorOverrideSetsAllEdges)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::BorderColor, BorderColorsTRBL{0xFF0000FFu, 0xFF0000FFu, 0xFF0000FFu, 0xFF0000FFu});
 
     ApplyOverridesToResolvedStyle(rs, overrides);
@@ -140,7 +140,7 @@ TEST(StyleApplierTests, BorderColorOverrideSetsAllEdges)
 TEST(StyleApplierTests, BackgroundColorOverrideSetsValue)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::BackgroundColor, 0xFF3C3C43u);
 
     ApplyOverridesToResolvedStyle(rs, overrides);
@@ -151,7 +151,7 @@ TEST(StyleApplierTests, BackgroundColorOverrideSetsValue)
 TEST(StyleApplierTests, OpacityOverrideSetsValue)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::Opacity, 0.5f);
 
     ApplyOverridesToResolvedStyle(rs, overrides);
@@ -162,7 +162,7 @@ TEST(StyleApplierTests, OpacityOverrideSetsValue)
 TEST(StyleApplierTests, WidthAndHeightOverridesSetValues)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::Width, StyleLength::Px(200.0f));
     overrides.Set(Style::Height, StyleLength::Px(100.0f));
 
@@ -175,7 +175,7 @@ TEST(StyleApplierTests, WidthAndHeightOverridesSetValues)
 TEST(StyleApplierTests, FlexPropertiesSetValues)
 {
     ResolvedStyle rs;
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::FlexGrow, 1.0f);
     overrides.Set(Style::FlexShrink, 0.0f);
     overrides.Set(Style::FlexDir, FlexDirection::Column);
@@ -193,9 +193,9 @@ TEST(StyleApplierTests, FlexPropertiesSetValues)
 
 // --- Dirty flag and NeedsCascadeRerun tests ---
 
-TEST(StyleDeclarationDirtyTests, SetLayoutPropertyMarksLayoutDirty)
+TEST(StyleOverridesDirtyTests, SetLayoutPropertyMarksLayoutDirty)
 {
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     EXPECT_FALSE(overrides.IsLayoutDirty());
     overrides.Set(Style::Width, StyleLength::Px(100.0f));
     EXPECT_TRUE(overrides.IsLayoutDirty());
@@ -203,9 +203,9 @@ TEST(StyleDeclarationDirtyTests, SetLayoutPropertyMarksLayoutDirty)
     EXPECT_FALSE(overrides.NeedsCascadeRerun());
 }
 
-TEST(StyleDeclarationDirtyTests, SetVisualPropertyMarksVisualDirty)
+TEST(StyleOverridesDirtyTests, SetVisualPropertyMarksVisualDirty)
 {
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     EXPECT_FALSE(overrides.IsVisualDirty());
     overrides.Set(Style::BackgroundColor, 0xFF000000u);
     EXPECT_TRUE(overrides.IsVisualDirty());
@@ -213,9 +213,9 @@ TEST(StyleDeclarationDirtyTests, SetVisualPropertyMarksVisualDirty)
     EXPECT_FALSE(overrides.NeedsCascadeRerun());
 }
 
-TEST(StyleDeclarationDirtyTests, ResetLayoutPropertySetsCascadeRerun)
+TEST(StyleOverridesDirtyTests, ResetLayoutPropertySetsCascadeRerun)
 {
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::Display, DisplayMode::None);
     overrides.ClearDirty();
 
@@ -225,9 +225,9 @@ TEST(StyleDeclarationDirtyTests, ResetLayoutPropertySetsCascadeRerun)
     EXPECT_EQ(overrides.PropCount(), 0u);
 }
 
-TEST(StyleDeclarationDirtyTests, ResetVisualPropertySetsCascadeRerun)
+TEST(StyleOverridesDirtyTests, ResetVisualPropertySetsCascadeRerun)
 {
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::BackgroundColor, 0xFF000000u);
     overrides.ClearDirty();
 
@@ -237,17 +237,17 @@ TEST(StyleDeclarationDirtyTests, ResetVisualPropertySetsCascadeRerun)
     EXPECT_EQ(overrides.PropCount(), 0u);
 }
 
-TEST(StyleDeclarationDirtyTests, ResetNonexistentPropertyDoesNotSetDirty)
+TEST(StyleOverridesDirtyTests, ResetNonexistentPropertyDoesNotSetDirty)
 {
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Reset(Style::Display);
     EXPECT_FALSE(overrides.IsLayoutDirty());
     EXPECT_FALSE(overrides.NeedsCascadeRerun());
 }
 
-TEST(StyleDeclarationDirtyTests, ClearDirtyClearsAllFlags)
+TEST(StyleOverridesDirtyTests, ClearDirtyClearsAllFlags)
 {
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::Width, StyleLength::Px(100.0f));
     overrides.Set(Style::BackgroundColor, 0xFF000000u);
     overrides.Reset(Style::Width);
@@ -263,9 +263,9 @@ TEST(StyleDeclarationDirtyTests, ClearDirtyClearsAllFlags)
     EXPECT_FALSE(overrides.NeedsCascadeRerun());
 }
 
-TEST(StyleDeclarationDirtyTests, SetThenResetSameFrameSetsCascadeRerun)
+TEST(StyleOverridesDirtyTests, SetThenResetSameFrameSetsCascadeRerun)
 {
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::Display, DisplayMode::Flex);
     overrides.Reset(Style::Display);
 
@@ -274,9 +274,9 @@ TEST(StyleDeclarationDirtyTests, SetThenResetSameFrameSetsCascadeRerun)
     EXPECT_EQ(overrides.PropCount(), 0u);
 }
 
-TEST(StyleDeclarationDirtyTests, ResetLastOverrideLeavesZeroPropCount)
+TEST(StyleOverridesDirtyTests, ResetLastOverrideLeavesZeroPropCount)
 {
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::Display, DisplayMode::None);
     overrides.ClearDirty();
 
@@ -289,9 +289,9 @@ TEST(StyleDeclarationDirtyTests, ResetLastOverrideLeavesZeroPropCount)
     EXPECT_FALSE(overrides.NeedsCascadeRerun());
 }
 
-TEST(StyleDeclarationDirtyTests, ClearRemovesPropsAndMarksDirty)
+TEST(StyleOverridesDirtyTests, ClearRemovesPropsAndMarksDirty)
 {
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Set(Style::Width, StyleLength::Px(100.0f));
     overrides.Set(Style::BackgroundColor, 0xFFFFFFFFu);
 
@@ -305,9 +305,9 @@ TEST(StyleDeclarationDirtyTests, ClearRemovesPropsAndMarksDirty)
     EXPECT_EQ(overrides.PropCount(), 0u);
 }
 
-TEST(StyleDeclarationDirtyTests, ClearOnEmptyIsNoOp)
+TEST(StyleOverridesDirtyTests, ClearOnEmptyIsNoOp)
 {
-    StyleDeclaration overrides;
+    StyleOverrides overrides;
     overrides.Clear();
 
     EXPECT_FALSE(overrides.IsLayoutDirty());

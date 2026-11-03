@@ -1,10 +1,10 @@
 #include "PathfindingECS/Systems/NavigationWorldHooks.h"
 
-#include "Components/Navigation/NavigationAgent.h"
+#include "PathfindingECS/Components/NavigationAgent.h"
 #include "PathfindingECS/Components/NavigationAgentState.h"
-#include "Components/Navigation/NavigationSurface.h"
+#include "PathfindingECS/Components/NavigationGrid.h"
+#include "PathfindingECS/Components/NavigationMesh.h"
 #include "PathfindingECS/NavigationService.h"
-#include "PathfindingECS/NavigationSurfaceRuntime.h"
 
 #include "ECS/Entity.h"
 #include "Pathfinding/GridMap.h"
@@ -13,19 +13,45 @@
 namespace GameEngine::PathfindingECS
 {
 
-void ClearNavigationAgentReservations(Components::NavigationAgentState& state)
+namespace
 {
-    if (state.CellReservationOwner == 0)
+
+// Also runs from ~World at process shutdown, where the navigation service may
+// already be gone. Clear the handle either way: leaving it set would hand a
+// revived component (undo of a delete) a map index that names nothing.
+void ReleaseMap(uint32& mapIndex, uint32& mapGeneration, bool& initialized)
+{
+    if (initialized)
+    {
+        if (auto* navWorld = NavigationService::TryGet())
+            navWorld->RemoveMap(Pathfinding::NavMapHandle{mapIndex, mapGeneration});
+    }
+
+    mapIndex = 0;
+    mapGeneration = 0;
+    initialized = false;
+}
+
+} // namespace
+
+void ReleaseNavigationMeshMap(Components::NavigationMesh& mesh)
+{
+    ReleaseMap(mesh.NavMapIndex, mesh.NavMapGeneration, mesh.Initialized);
+    mesh.NeedsRebuild = true;
+}
+
+void ClearNavigationAgentReservations(const Components::NavigationAgent& agent)
+{
+    if (agent.AgentId == 0)
         return;
 
     auto* navWorld = NavigationService::TryGet();
     if (!navWorld)
         return;
 
-    Pathfinding::NavMapHandle mapHandle{state.NavMapIndex, state.NavMapGeneration};
+    Pathfinding::NavMapHandle mapHandle{agent.NavMapIndex, agent.NavMapGeneration};
     if (auto* gridMap = navWorld->GetGridMap(mapHandle))
-        gridMap->ClearReservationsForAgent(state.CellReservationOwner);
-    state.CellReservationOwner = 0;
+        gridMap->ClearReservationsForAgent(agent.AgentId);
 }
 
 void StampNavigationAgentOccupancy(const Components::NavigationAgent& agent,
@@ -37,13 +63,13 @@ void StampNavigationAgentOccupancy(const Components::NavigationAgent& agent,
     auto* navWorld = NavigationService::TryGet();
     if (!navWorld)
         return;
-    Pathfinding::NavMapHandle mapHandle{state.NavMapIndex, state.NavMapGeneration};
+    Pathfinding::NavMapHandle mapHandle{agent.NavMapIndex, agent.NavMapGeneration};
     auto* gridMap = navWorld->GetGridMap(mapHandle);
     if (!gridMap)
         return;
 
     gridMap->ClearReservationsForAgent(agent.AgentId);
-    state.CellReservationOwner = 0;
+    state.HasCellReservations = false;
 
     uint32 hereX = 0;
     uint32 hereZ = 0;
@@ -64,35 +90,19 @@ void StampNavigationAgentOccupancy(const Components::NavigationAgent& agent,
                                      agent.AgentId, expirationTime, true);
         }
     }
-    state.CellReservationOwner = agent.AgentId;
+    state.HasCellReservations = true;
 }
 
-// The world a surface leaves releases its map only when that world owns it: a copy of the
-// component's bytes in another world names the original's map.
-void ReleaseNavigationSurfaceInWorld(const ECS::World& world, ECS::EntityHandle /*entity*/,
-                                     Components::NavigationSurface& surface)
+void ReleaseNavigationAgentReservations(Components::NavigationAgent& agent)
 {
-    ResetNavigationSurfaceMap(world, surface);
-}
-
-// The state names the agent's map, the id its cells are stamped under and its crowd agent, which
-// an arrived agent keeps. A hook runs under the world's lock, so it reads only the component it is
-// given.
-void ReleaseNavigationAgentState(Components::NavigationAgentState& state)
-{
-    ClearNavigationAgentReservations(state);
-    // A handle from an earlier crowd names a slot another agent may now hold.
-    auto* navigation = NavigationService::TryGet();
-    if (navigation && state.CrowdAgentHandle >= 0 &&
-        state.CrowdGeneration == navigation->GetCrowdManager().GetGeneration())
-        navigation->GetCrowdManager().RemoveAgent(state.CrowdAgentHandle);
-    state.CrowdAgentHandle = -1;
+    ClearNavigationAgentReservations(agent);
 }
 
 void RegisterNavigationWorldHooks(ECS::World& world)
 {
-    world.RegisterOnRemove<Components::NavigationSurface>(&ReleaseNavigationSurfaceInWorld);
-    world.RegisterOnRemove<Components::NavigationAgentState>(&ReleaseNavigationAgentState);
+    world.RegisterOnRemove<Components::NavigationGrid>(&ReleaseNavigationGridMap);
+    world.RegisterOnRemove<Components::NavigationMesh>(&ReleaseNavigationMeshMap);
+    world.RegisterOnRemove<Components::NavigationAgent>(&ReleaseNavigationAgentReservations);
 }
 
 } // namespace GameEngine::PathfindingECS

@@ -36,7 +36,6 @@ class InterceptableContextMenu final : public INativeContextMenu
         bool IsSeparator = false;
         std::string Icon;  // resolved image path, empty when the row carries none
         std::string Color; // "#RRGGBB" from SetItemColor, empty when the row carries none
-        std::string Shortcut; // the key text from SetItemShortcut, empty when the row carries none
     };
 
     struct Capture
@@ -75,8 +74,6 @@ class InterceptableContextMenu final : public INativeContextMenu
     void SetItemColor(uint32_t commandId, const std::string& hexColor) override;
     void SetItemIcon(uint32_t commandId, const std::string& imagePath) override;
     void SetSubMenuIcon(uint32_t submenuId, const std::string& imagePath) override;
-    void SetItemShortcut(uint32_t commandId, const std::string& keyText) override;
-    void SetItemTooltip(uint32_t commandId, const std::string& text) override;
     void Show(Platform::Window* window, int x, int y) override;
 
   private:
@@ -91,7 +88,6 @@ class InterceptableContextMenu final : public INativeContextMenu
         bool StaticChecked = false;
         std::string IconPath;
         std::string ColorHex;
-        std::string Shortcut;
     };
 
     std::string PathFor(const ShadowItem& item) const;

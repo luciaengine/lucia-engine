@@ -36,7 +36,7 @@ FloatingPanel::FloatingPanel()
     AddClass("floating-panel");
     SetOverlayLayer(OverlayLayer::Modal);
     RequestSubtreeStyleAssetPath(kStyleAssetPath, "editor");
-    Style()
+    Overrides()
         .Set(Style::Display, DisplayMode::None)
         .Set(Style::ZIndex, kBaseZIndex);
 
@@ -103,12 +103,12 @@ void FloatingPanel::BindChrome()
         return;
     }
 
-    m_TitleBar = FindById("floating-panel-titlebar"_sid);
-    m_TitleIcon = FindById("floating-panel-icon"_sid);
-    m_TitleLabel = dynamic_cast<Label*>(FindById("floating-panel-title"_sid));
-    m_CloseButton = dynamic_cast<Button*>(FindById("floating-panel-close"_sid));
-    m_BodyHost = FindById("floating-panel-body"_sid);
-    m_ResizeGrip = FindById("floating-panel-resize"_sid);
+    m_TitleBar = FindById("floating-panel-titlebar");
+    m_TitleIcon = FindById("floating-panel-icon");
+    m_TitleLabel = dynamic_cast<Label*>(FindById("floating-panel-title"));
+    m_CloseButton = dynamic_cast<Button*>(FindById("floating-panel-close"));
+    m_BodyHost = FindById("floating-panel-body");
+    m_ResizeGrip = FindById("floating-panel-resize");
     if (!m_TitleBar || !m_TitleIcon || !m_TitleLabel || !m_CloseButton || !m_BodyHost || !m_ResizeGrip)
     {
         Logger::Log::Error("FloatingPanel: {} is missing a chrome element; the frame has no chrome.",
@@ -176,7 +176,7 @@ void FloatingPanel::Show(std::string panelId, UIElement* panel, std::string titl
     m_Mount->SetTarget(panel);
 
     m_Open = true;
-    Style().Set(Style::Display, DisplayMode::Flex);
+    Overrides().Set(Style::Display, DisplayMode::Flex);
     ClampFullyInside(x, y, width, height);
     Place(x, y, width, height);
     Raise();
@@ -199,7 +199,7 @@ void FloatingPanel::Hide()
     m_Title.clear();
     m_IconClass.clear();
     ApplyChromeState();
-    Style().Set(Style::Display, DisplayMode::None);
+    Overrides().Set(Style::Display, DisplayMode::None);
 }
 
 UIElement* FloatingPanel::GetMountedPanel() const
@@ -224,7 +224,7 @@ void FloatingPanel::AssignChromeIds(const std::string& panelId)
 
 void FloatingPanel::Raise()
 {
-    Style().Set(Style::ZIndex, ++s_TopZIndex);
+    Overrides().Set(Style::ZIndex, ++s_TopZIndex);
     // Reparenting mid-drag changes tree generation; capture is restored by id
     // on the next Update. Stay put until the gesture ends.
     if (m_Dragging || m_Resizing)
@@ -248,7 +248,7 @@ void FloatingPanel::Raise()
 void FloatingPanel::Place(float x, float y, float width, float height)
 {
     ClampToParent(x, y, width, height);
-    Style()
+    Overrides()
         .Set(Style::PositionLeft, StyleLength::Px(x))
         .Set(Style::PositionTop, StyleLength::Px(y))
         .Set(Style::Width, StyleLength::Px(width))

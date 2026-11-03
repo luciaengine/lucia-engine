@@ -6,7 +6,6 @@
 #include "Core/CpuProfiler.h"
 #include "Engine/Rendering/AntiAliasingEnvOverrides.h"
 #include "Engine/Rendering/ExposureReadbackFeature.h"
-#include "Engine/Rendering/HeightFogParamsUBO.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Engine/Rendering/RTShadowMaskService.h"
 #include "Engine/Rendering/SceneAccelerationStructureService.h"
@@ -19,7 +18,6 @@
 #include "Engine/Rendering/MaterialCompiler.h"
 #include "Engine/Rendering/ShaderGraphMaterial.h"
 #include "Engine/Rendering/MeshReprovisionSource.h"
-#include "Rendering/Core/ReverseZ.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
@@ -32,6 +30,7 @@
 #include "Assets/Packages/PackageResolver.h"
 #include "Assets/TextureAsset.h"
 #include "Engine/Rendering/DepthDrawRecorder.h"
+#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "Engine/Rendering/HlodRuntime.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
@@ -48,9 +47,9 @@
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/Pipeline/PipelineCache.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
-#include "Rendering/Camera/CameraDerivation.h"
+#include "Rendering/Core/PipelineCache.h"
+#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/CameraDerivation.h"
 #include "Rendering/Core/CullingStrategy.h"
 #include "Rendering/Core/FrustumCullingStrategy.h"
 #include "Rendering/Core/GPUCulling.h"
@@ -58,14 +57,14 @@
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "Rendering/Materials/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
-#include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
-#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
+#include "Rendering/Utils/CubeLutFileParser.h"
+#include "Rendering/Utils/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
@@ -214,15 +213,13 @@ bool RenderServices::Initialize(Rendering::IDevice* device)
     // frees per-view GPU buffers through a live device.
     m_ViewRegistry.SetDevice(m_Device);
     // The one cross-subsystem lifecycle edge (sec 3.3): ReleaseView clears the
-    // view's draw-builder submissions, temporal history and scatter buffers
-    // after tearing down its own state.
+    // view's draw-builder submissions and temporal history after tearing
+    // down its own state.
     m_ViewRegistry.SetViewReleasedCallback(
         [this](Rendering::ViewId id)
         {
             m_WorldDrawBuilder.ClearView(id);
             m_ViewTemporalHistory.ReleaseView(id);
-            if (m_DrawStreamBuilder)
-                m_DrawStreamBuilder->ReleaseView(static_cast<uint32_t>(id));
         });
     Rendering::IDevice* const dev = m_Device;
 
@@ -258,6 +255,22 @@ bool RenderServices::Initialize(Rendering::IDevice* device)
             Logger::Log::Warning("GE_TAA_RENDER_SCALE '{}' out of range [{}, 1.0]; keeping {}", env,
                                  kMinRenderScale, m_DefaultRenderScale);
     }
+
+    // Which producer arm writes deforming motion vectors. Three independent
+    // switches, every one off by default, so a run that sets none records
+    // nothing and the frame is the frame it was before this work. They select
+    // between the options the producer comparison measures; enabling more than
+    // one is refused (they share one target). The measurement slice replaces
+    // the switches with the winner.
+    SetDeformationMotionArm(ResolveDeformationMotionArm(
+        Platform::EnvironmentSwitchEnabled("GE_DEFORMATION_MOTION_COLOR_PASS_TARGET", false),
+        Platform::EnvironmentSwitchEnabled("GE_DEFORMATION_MOTION_PREPASS_TARGET", false),
+        Platform::EnvironmentSwitchEnabled("GE_DEFORMATION_MOTION_SEPARATE_PASS", false)));
+    // Stated once, so a run that enabled a switch and sees no motion can tell
+    // "the arm is off" from "the arm ran and recorded nothing" without a build.
+    if (m_DeformationMotionArm != DeformationMotionArm::None)
+        Logger::Log::Info("Deformation motion: producing through the {} arm.",
+                          DeformationMotionArmName(m_DeformationMotionArm));
 
     // Texture residency + binding service: bindless array, GPU texture cache,
     // samplers, defaults, LUTs, async upload pump.
@@ -540,12 +553,6 @@ void RenderServices::CreateFallbackBuffers()
         const ExposureReadbackFeature::State unmetered{};
         registerFallback("ExposureHistory", Rendering::BufferUsage::Storage, sizeof(unmetered),
                          "RenderServices.Fallback.ExposureHistory", &unmetered);
-        // HeightFogParams: intensity 0, which the fog term reads as no fog, for a draw keyed with the
-        // HeightFog keyword in a pass whose view uploads no parameters (a contributor that chose its
-        // keywords a frame earlier than the pass it draws in).
-        const HeightFogParamsUBO noHeightFog{};
-        registerFallback("HeightFogParams", Rendering::BufferUsage::Uniform, sizeof(noHeightFog),
-                         "RenderServices.Fallback.HeightFogParams", &noHeightFog);
 
         // ShadowData fallback: zero-filled means numCascades=0, so GE_SampleShadow returns 1.0 (no shadow).
         {
@@ -579,7 +586,7 @@ void RenderServices::CreateFallbackBuffers()
         }
 
         // MotionParams fallback: the motion variant's per-view block, zeroed. A
-        // view whose producer did not run this frame must bind zeros
+        // view whose producer arm did not run this frame must bind zeros
         // rather than another view's previous view-projection — a stale matrix
         // would be a wrong motion vector, which is worse than none. Nothing
         // draws with it: a producer that cannot fill the block records no
@@ -669,9 +676,10 @@ void RenderServices::CreateDeviceDefaultBuffers()
 // same rule sets the shadow sampler's border to 0 in Device.cpp with the note
 // "reverse-Z far depth -> OOB considered lit".
 //
-// The fill is a clear through a depth-only render pass per layer, the route
-// every backend supports without a staging buffer, and it runs once per device
-// (creation + rebuild) on a 1x1 image.
+// A depth image cannot be filled through the texture-upload helpers:
+// CopyBufferToTextureSubresource hard-codes VK_IMAGE_ASPECT_COLOR_BIT. Clearing
+// through a depth-only render pass per layer is the portable route, and it runs
+// once per device (creation + rebuild) on a 1x1 image.
 //
 // Assumes dynamic rendering (DeviceDesc::enableDynamicRendering, default true).
 // Without it each BeginRenderPass caches a framebuffer + render pass that
@@ -725,7 +733,7 @@ static void ClearDepthArrayToFar(Rendering::IDevice* dev, Rendering::TextureHand
         rp.colorStoreOp[0] = Rendering::RenderPassDesc::StoreOp::DontCare;
         rp.depthTarget = tex;
         rp.clearDepth = true;
-        rp.clearDepthValue = Rendering::ReverseZ::kClearFar; // reverse-Z far == lit
+        rp.clearDepthValue = 0.0f; // reverse-Z far == lit
         rp.depthLoadOp = Rendering::RenderPassDesc::LoadOp::Clear;
         rp.depthStoreOp = Rendering::RenderPassDesc::StoreOp::Store;
         // Dynamic rendering records one layer per pass, so each layer gets its
@@ -1053,9 +1061,8 @@ void RenderServices::OnDeviceRebuilt()
     //     ImageBasedLightingFeature (env cubes + BRDF LUT, re-armed for re-bake),
     //     SkyRenderFeature (atmosphere LUTs), RetargetRenderFeature (retarget SSBOs),
     //     LensFlareRenderFeature (mapped instance rings + atlas sampler),
-    //     ExposureReadbackFeature and IrradianceReadbackFeature (mapped readback
-    //     rings). Features holding only RG-transient resources inherit the default
-    //     no-op.
+    //     ExposureReadbackFeature (mapped readback rings). Features holding only
+    //     RG-transient resources inherit the default no-op.
     //
     //     Module-owned features: CBTTerrain's CBTRenderFeature now overrides this — it
     //     forgets its dead kernel pipelines + instance buffers and re-arms its lazy

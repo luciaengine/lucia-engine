@@ -1,5 +1,5 @@
 #include "UI/Controls/SceneViewToolbar.h"
-#include "SceneView/SceneViewController.h"
+#include "SceneViewController.h"
 
 #include "Editor/Settings/SceneViewSettings.h"
 #include "UI/Controls/Button.h"
@@ -7,7 +7,6 @@
 #include "UI/ContextMenuLabels.h"
 #include "UI/EditorIcons.h"
 #include "UI/Interaction/ContextMenuManipulator.h"
-#include "UI/Controls/Mount.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIManager.h"
 #include "UI/Registration/ElementRegistration.h"
@@ -94,7 +93,7 @@ void SceneViewToolbar::OnPostLayout()
 
 void SceneViewToolbar::UpdateGizmoButtonState()
 {
-    if (Button* gizmoBtn = HeldButton(m_GizmoButton, "GizmoToggle"_sid))
+    if (auto* gizmoBtn = dynamic_cast<Button*>(FindById("GizmoToggle")))
     {
         if (m_Controller && m_Controller->AreGizmosVisible())
         {
@@ -109,7 +108,7 @@ void SceneViewToolbar::UpdateGizmoButtonState()
 
 void SceneViewToolbar::UpdateGridButtonState()
 {
-    if (Button* gridBtn = HeldButton(m_GridButton, "GridToggle"_sid))
+    if (auto* gridBtn = dynamic_cast<Button*>(FindById("GridToggle")))
     {
         if (m_Controller && m_Controller->IsGridVisible())
             gridBtn->AddClass("icon-active");
@@ -120,7 +119,7 @@ void SceneViewToolbar::UpdateGridButtonState()
 
 void SceneViewToolbar::UpdateSnapButtonState()
 {
-    if (Button* btn = HeldButton(m_SnapButton, "SnapToggle"_sid))
+    if (auto* btn = dynamic_cast<Button*>(FindById("SnapToggle")))
     {
         if (m_Controller && m_Controller->IsGridSnapEnabled())
             btn->AddClass("icon-active");
@@ -131,7 +130,7 @@ void SceneViewToolbar::UpdateSnapButtonState()
 
 void SceneViewToolbar::UpdateView2DButtonState()
 {
-    if (Button* btn = HeldButton(m_View2DButton, "View2DToggle"_sid))
+    if (auto* btn = dynamic_cast<Button*>(FindById("View2DToggle")))
     {
         if (m_Controller && m_Controller->Is2DTarget())
             btn->AddClass("icon-active");
@@ -142,7 +141,7 @@ void SceneViewToolbar::UpdateView2DButtonState()
 
 void SceneViewToolbar::UpdatePickModeButtonState()
 {
-    if (Button* btn = HeldButton(m_PickModeButton, "PickModeToggle"_sid))
+    if (auto* btn = dynamic_cast<Button*>(FindById("PickModeToggle")))
     {
         if (Editor::SceneViewSettings::Get().GetExactPickMode())
             btn->AddClass("icon-active");
@@ -153,7 +152,7 @@ void SceneViewToolbar::UpdatePickModeButtonState()
 
 void SceneViewToolbar::UpdatePostProcessButtonState()
 {
-    if (Button* btn = HeldButton(m_PostProcessButton, "PostProcessToggle"_sid))
+    if (auto* btn = dynamic_cast<Button*>(FindById("PostProcessToggle")))
     {
         if (m_Controller && m_Controller->IsPostProcessingEnabled())
             btn->AddClass("icon-active");
@@ -164,7 +163,7 @@ void SceneViewToolbar::UpdatePostProcessButtonState()
 
 void SceneViewToolbar::UpdateProjectionButtonState()
 {
-    if (Button* btn = HeldButton(m_ProjectionButton, "ProjectionToggle"_sid))
+    if (auto* btn = dynamic_cast<Button*>(FindById("ProjectionToggle")))
     {
         if (m_Controller && m_Controller->IsOrthographic())
             btn->AddClass("icon-active");
@@ -175,22 +174,13 @@ void SceneViewToolbar::UpdateProjectionButtonState()
 
 void SceneViewToolbar::UpdateRotationGizmoButtonState()
 {
-    if (Button* btn = HeldButton(m_RotationGizmoButton, "RotationGizmoToggle"_sid))
+    if (auto* btn = dynamic_cast<Button*>(FindById("RotationGizmoToggle")))
     {
         if (Editor::SceneViewSettings::Get().GetShowRotationGizmo())
             btn->AddClass("icon-active");
         else
             btn->RemoveClass("icon-active");
     }
-}
-
-Button* SceneViewToolbar::HeldButton(UIElement::WeakRef<Button>& held, StringId id)
-{
-    if (Button* button = held.Get())
-        return button;
-    Button* button = dynamic_cast<Button*>(FindById(id));
-    held = MakeWeakRef(button);
-    return button;
 }
 
 void SceneViewToolbar::RefreshButtonStates()
@@ -280,10 +270,7 @@ void SceneViewToolbar::ResolveWiredButtons()
             }
         }
 
-        for (const auto& child : el->GetChildren())
-            self(self, child.get());
-        if (el->Kind() == UIElementKind::Mount)
-            self(self, static_cast<Mount*>(el)->GetTarget());
+        el->ForEachLogicalChild([&](UIElement* child) { self(self, child); });
     };
     visit(visit, this);
 
@@ -311,7 +298,7 @@ Button* SceneViewToolbar::AcquireUnwiredButton(std::string_view id)
         // First time any pass has asked for this id. Register it and resolve it on its
         // own; the batch walk covers it from the next pass on. Learning the wanted set
         // from the call sites is what keeps it from drifting out of step with them.
-        m_WiredButtons.push_back(WiredButton{key, 0, dynamic_cast<Button*>(FindById(HashStringId(id)))});
+        m_WiredButtons.push_back(WiredButton{key, 0, dynamic_cast<Button*>(FindById(id))});
         wired = &m_WiredButtons.back();
         if (!wired->Resolved)
             m_WiringAllResolved = false;
@@ -702,8 +689,8 @@ void SceneViewToolbar::WireControls()
                 panel = panel->GetParent();
             if (!panel)
                 return;
-            auto* overlay = panel->FindById("SceneToolOverlay"_sid);
-            auto* inlineButtons = FindById("InlineToolButtons"_sid);
+            auto* overlay = panel->FindById("SceneToolOverlay");
+            auto* inlineButtons = FindById("InlineToolButtons");
             bool isActive = b.HasClass("icon-active");
             if (isActive)
             {
@@ -738,7 +725,7 @@ void SceneViewToolbar::WireControls()
         btn->AddManipulator(ContextMenuManipulator::Create(
             [this]() -> std::vector<ContextMenuManipulator::Item> {
                 return Editor::BuildScenePostFxMenuItems(m_Controller, this,
-                                                         m_OnExposureModeChanged);
+                                                         m_OnPostFxAutoExposureToggled);
             }));
     }
 

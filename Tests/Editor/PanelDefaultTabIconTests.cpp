@@ -171,23 +171,18 @@ struct ClassInfo {
     bool declaresOverride = false;
 };
 
-// Scans every header under Include/Panels, Include/SceneView and Include/ShaderGraph once. A class's region runs
-// from its `class X` line to the next top-level `class ` in the same header, which is how these headers are
+// Scans every panel header once. A class's region runs from its `class X` line to
+// the next top-level `class ` in the same header, which is how these headers are
 // laid out (one panel per header, plus small derived panels appended).
 std::map<std::string, ClassInfo> ScanPanelHeaders()
 {
     std::map<std::string, ClassInfo> out;
-    std::vector<std::filesystem::path> headers;
-    for (const char* folder : {"Panels", "SceneView", "ShaderGraph"})
+    const std::filesystem::path dir = EditorSourceRoot() / "Include" / "Panels";
+    for (const auto& entry : std::filesystem::directory_iterator(dir))
     {
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(EditorSourceRoot() / "Include" / folder))
-            headers.push_back(entry.path());
-    }
-    for (const std::filesystem::path& header : headers)
-    {
-        if (header.extension() != ".h")
+        if (entry.path().extension() != ".h")
             continue;
-        const std::string text = ReadFile(header);
+        const std::string text = ReadFile(entry.path());
 
         std::vector<std::pair<size_t, std::string>> classes;
         size_t pos = 0;
@@ -422,7 +417,7 @@ TEST(PanelDefaultTabIcon, EveryDefaultIconClassResolvesInAuthoredCss)
 TEST(PanelDefaultTabIcon, KindResolvedIconsExistInAnimationPanelSource)
 {
     const std::string src =
-        ReadFile(EditorSourceRoot() / "Source" / "Panels" / "Animation" / "AnimationWindowPanel.cpp");
+        ReadFile(EditorSourceRoot() / "Source" / "Panels" / "AnimationWindowPanel.cpp");
     ASSERT_FALSE(src.empty());
     for (const auto& [typeKey, icon] : kKindResolvedIcons)
         EXPECT_NE(src.find("\"" + icon + "\""), std::string::npos)

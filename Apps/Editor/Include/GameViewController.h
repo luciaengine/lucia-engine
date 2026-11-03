@@ -1,23 +1,25 @@
 #pragma once
 
 #include "Editor/Settings/ProjectUIScaleBinding.h"
-#include "EditorChangeNotifications.h"
 #include "Engine/Rendering/CameraAspectRatio.h"
 #include "Engine/Rendering/Camera.h"
 #include "GameViewMovieCapture.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrameStamp.h"
 #include "Rendering/Core/RenderGraph/RGTypes.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "SceneView/ViewPresentationSnapshot.h"
 #include "UI/UITargetSpace.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
+#include <limits>
 #include <optional>
 
 namespace GameEngine
 {
+namespace Engine::Renderer::Pipeline { class RenderPipelineInstance; }
 namespace ECS
 {
 class World;
@@ -51,10 +53,8 @@ class GameUIHost;
 class GameViewController
 {
   public:
-    // The view rebuilds its HUD host when `notifications` reports a project switch, so the host
-    // resolves its font through the new project's mounts. Null notifications: the host is kept.
     GameViewController(Engine::Renderer::RenderServices* renderServices,
-                       Editor::EditorChangeNotifications* notifications);
+                       std::filesystem::path editorAssetsDirectory);
     ~GameViewController();
 
     GameViewController(const GameViewController&) = delete;
@@ -142,7 +142,6 @@ class GameViewController
     {
         Rendering::CameraData Data{};
         Components::ExposureMode ExposureMode = Components::ExposureMode::Auto;
-        Components::ExposureMeter ExposureMeter = Components::ExposureMeter::Picture;
         uint64_t FrameIndex = 0;
         uint32_t Width = 0;
         uint32_t Height = 0;
@@ -153,10 +152,7 @@ class GameViewController
 
     // Input-phase viewport events, normalized to the displayed rect. Use the
     // last UI extent even when scene extraction/compositing skips this frame.
-    // A move never presses; the button path below is the only thing that presses.
-    void HandleGameUiPointerMove(bool over, float x, float y, int mods);
-    // A button edge from the viewport element, forwarded to the host as-is, index included.
-    void HandleGameUiPointerButton(int button, bool pressed, int mods);
+    void HandleGameUiPointer(bool over, float x, float y, bool down, int mods);
 
     // The HUD host this view composites, for the input chain's play-surface
     // stage. Null until the view has been rendered once (the host is created
@@ -169,12 +165,10 @@ class GameViewController
                                                         uint32_t width,
                                                         uint32_t height);
     void EnsureGameUI();
-    void RebuildGameUI();
     void UpdateExposureReadback(bool enabled);
 
     Engine::Renderer::RenderServices* m_RenderServices = nullptr; // non-owning
-    Editor::EditorChangeNotifications* m_ChangeNotifications = nullptr; // non-owning
-    Editor::EditorChangeNotifications::SubscriptionToken m_ProjectSwitchedSub{};
+    std::filesystem::path m_EditorAssetsDirectory;
 
     // Composite the game UI (UIDocument entities) onto `target` in `targetSpace` —
     // ensuring the host exists, re-asserting it as the active one, and feeding the
@@ -189,6 +183,9 @@ class GameViewController
     // Game View is WYSIWYG vs the Player. Warmed during editor setup so opening the
     // Game View does not pay the UI/font initialization cost on its first frame.
     std::unique_ptr<GameUIHost> m_GameUI;
+    Engine::Renderer::Pipeline::RenderPipelineInstance* m_GameUiPostProcessPipeline = nullptr;
+    std::shared_ptr<uint8_t> m_GameUiPostProcessLifetime = std::make_shared<uint8_t>(0);
+    uint64_t m_GameUiCompositedFrameIndex = std::numeric_limits<uint64_t>::max();
     // The project's authored UI scale policy, re-applied every composite.
     Editor::ProjectUIScaleBinding m_GameUiScale;
     uint32_t m_GameUiWidth = 0;
@@ -201,6 +198,7 @@ class GameViewController
 
     std::optional<DeclaredCamera> m_DeclaredCamera;
     bool m_HadCameraThisFrame = false;
+    bool m_IncludeGameUiInPostProcessing = true;
     bool m_WaitingForExtractionRG = false;
     Editor::ViewPresentationSnapshot m_PresentationSnapshot;
     uint32_t m_PresentationWarmupFramesRemaining = 4;

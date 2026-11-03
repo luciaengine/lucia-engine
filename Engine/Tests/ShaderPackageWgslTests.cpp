@@ -7,6 +7,8 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
+#include "TestTempDir.h"
+
 #include <gtest/gtest.h>
 
 #include <cstdio>
@@ -40,7 +42,9 @@ std::vector<uint8_t> ReadFileBytes(const fs::path& path)
 
 TEST(ShaderPackageWgsl, RoundTripsSpvAndWgslChunks)
 {
-    const fs::path out = fs::temp_directory_path() / "ge_wgsl_chunk_test.shaderpkg";
+    const GameEngine::TestUtils::ScopedTempDir directory{
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge_wgsl_chunk_test")};
+    const fs::path out = directory.Path() / "ge_wgsl_chunk_test.shaderpkg";
 
     ShaderMeta meta{};
     meta.EntryPoints["vs"] = "main";
@@ -78,7 +82,9 @@ TEST(ShaderPackageWgsl, RoundTripsSpvAndWgslChunks)
 
 TEST(ShaderPackageWgsl, PackagesWithoutWgslStayValid)
 {
-    const fs::path out = fs::temp_directory_path() / "ge_wgsl_absent_test.shaderpkg";
+    const GameEngine::TestUtils::ScopedTempDir directory{
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge_wgsl_absent_test")};
+    const fs::path out = directory.Path() / "ge_wgsl_absent_test.shaderpkg";
 
     ShaderMeta meta{};
     meta.EntryPoints["cs"] = "main";
@@ -114,7 +120,9 @@ namespace
 // control with the public writer so each hostile input differs in one field.
 std::vector<uint8_t> ValidBoundsControl()
 {
-    const fs::path path = fs::temp_directory_path() / "ge_shader_bounds_control.shaderpkg";
+    const GameEngine::TestUtils::ScopedTempDir directory{
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge_shader_bounds_control")};
+    const fs::path path = directory.Path() / "ge_shader_bounds_control.shaderpkg";
     ShaderMeta meta{};
     meta.EntryPoints["cs"] = "main";
     std::string error;
@@ -206,7 +214,7 @@ TEST(ShaderPackageWgsl, RejectsChunksThatAliasTheTableOrOtherPayloads)
     std::memcpy(&metaSize, control.data() + 16 + 32, sizeof(metaSize));
     // Repeated aliases can amplify a small file into many separately allocated
     // stage payloads. The container writer gives each chunk its own span.
-    for (const auto& [offset, size] : {std::pair<uint64_t, uint64_t>{0, 16},
+    for (const auto [offset, size] : {std::pair<uint64_t, uint64_t>{0, 16},
                                      std::pair<uint64_t, uint64_t>{metaOffset, metaSize}})
     {
         auto bytes = control;

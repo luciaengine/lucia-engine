@@ -23,6 +23,8 @@
 #include "UI/UIManager.h"
 #include "UIRgTestHarness.h"
 
+#include "TestTempDir.h"
+
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -76,8 +78,8 @@ TextInput* FindEditor(FloatField& field)
 // before the order means anything.
 std::filesystem::path WriteFocusRowStylesheet()
 {
-    const std::filesystem::path css =
-        std::filesystem::temp_directory_path() / "ui_disabled_control_focus_row.css";
+    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("ui_disabled_control_focus_row")};
+    const std::filesystem::path css = directory.Path() / "ui_disabled_control_focus_row.css";
     std::ofstream file(css);
     file << "#root { display: flex; width: 400px; height: 40px; }\n"
          << "#group { display: flex; width: 200px; height: 20px; }\n"
@@ -100,7 +102,7 @@ TEST(DisabledControlInputTests, DisabledDropdownDoesNotOpenOnEnter)
     Dropdown dd;
     UILayoutAccess::SetLastLayoutRect(dd, 0.0f, 0.0f, 100.0f, 20.0f);
     dd.SetOptionsFromString("One,Two,Three");
-    dd.SetEnabled(false);
+    dd.SetDisabled(true);
 
     SendKey(dd, Input::kKeyCode_Enter);
     EXPECT_FALSE(dd.IsMenuOpen());
@@ -116,7 +118,7 @@ TEST(DisabledControlInputTests, DisabledDropdownDoesNotOpenOnHeaderClick)
     Dropdown dd;
     UILayoutAccess::SetLastLayoutRect(dd, 0.0f, 0.0f, 100.0f, 20.0f);
     dd.SetOptionsFromString("One,Two,Three");
-    dd.SetEnabled(false);
+    dd.SetDisabled(true);
 
     UIElement* header = dd.GetHeaderContainer();
     ASSERT_NE(header, nullptr);
@@ -133,11 +135,11 @@ TEST(DisabledControlInputTests, ReEnabledDropdownOpensAgain)
     UILayoutAccess::SetLastLayoutRect(dd, 0.0f, 0.0f, 100.0f, 20.0f);
     dd.SetOptionsFromString("One,Two,Three");
 
-    dd.SetEnabled(false);
+    dd.SetDisabled(true);
     SendKey(dd, Input::kKeyCode_Enter);
     ASSERT_FALSE(dd.HasClass("open"));
 
-    dd.SetEnabled(true);
+    dd.SetDisabled(false);
     SendKey(dd, Input::kKeyCode_Enter);
     EXPECT_TRUE(dd.HasClass("open"));
 }
@@ -147,7 +149,7 @@ TEST(DisabledControlInputTests, DisabledToggleDoesNotFlipOnClickOrSpace)
     Toggle toggle;
     UILayoutAccess::SetLastLayoutRect(toggle, 0.0f, 0.0f, 30.0f, 17.0f);
     toggle.SetChecked(true);
-    toggle.SetEnabled(false);
+    toggle.SetDisabled(true);
 
     SendMouse(toggle, kEventMouseDown, 10.0f, 8.0f, 0);
     SendMouse(toggle, kEventMouseUp, 10.0f, 8.0f, 0);
@@ -164,7 +166,7 @@ TEST(DisabledControlInputTests, DisabledTogglePressLeavesNoPressedClass)
 {
     Toggle toggle;
     UILayoutAccess::SetLastLayoutRect(toggle, 0.0f, 0.0f, 30.0f, 17.0f);
-    toggle.SetEnabled(false);
+    toggle.SetDisabled(true);
 
     SendMouse(toggle, kEventMouseDown, 10.0f, 8.0f, 0);
     EXPECT_FALSE(toggle.HasClass("pressed"));
@@ -175,11 +177,11 @@ TEST(DisabledControlInputTests, ReEnabledToggleFlipsAgain)
     Toggle toggle;
     UILayoutAccess::SetLastLayoutRect(toggle, 0.0f, 0.0f, 30.0f, 17.0f);
 
-    toggle.SetEnabled(false);
+    toggle.SetDisabled(true);
     SendKey(toggle, Input::kKeyCode_Space);
     ASSERT_FALSE(toggle.IsChecked());
 
-    toggle.SetEnabled(true);
+    toggle.SetDisabled(false);
     SendKey(toggle, Input::kKeyCode_Space);
     EXPECT_TRUE(toggle.IsChecked());
 }
@@ -188,7 +190,7 @@ TEST(DisabledControlInputTests, DisabledFloatFieldRefusesTypedInput)
 {
     FloatField field;
     field.SetValueWithoutNotify(3.0f);
-    field.SetEnabled(false);
+    field.SetDisabled(true);
 
     EXPECT_FALSE(field.OnChar('7'));
     EXPECT_FLOAT_EQ(field.GetValue(), 3.0f);
@@ -202,7 +204,7 @@ TEST(DisabledControlInputTests, DisabledFloatFieldDoesNotScrubOnDrag)
     FloatField field;
     field.SetValueWithoutNotify(3.0f);
     field.EnableDragToChange();
-    field.SetEnabled(false);
+    field.SetDisabled(true);
 
     TextInput* editor = FindEditor(field);
     ASSERT_NE(editor, nullptr);
@@ -229,10 +231,10 @@ TEST(DisabledControlInputTests, ReEnabledFloatFieldAcceptsTypedInput)
     FloatField field;
     field.SetValueWithoutNotify(3.0f);
 
-    field.SetEnabled(false);
+    field.SetDisabled(true);
     ASSERT_FALSE(field.OnChar('7'));
 
-    field.SetEnabled(true);
+    field.SetDisabled(false);
     EXPECT_TRUE(field.OnChar('7'));
 }
 
@@ -247,7 +249,7 @@ TEST(DisabledControlInputTests, TabPassesOverADisabledControl)
     root->SetId("root");
     root->AddChild(MakeFocusRowField("first"));
     auto refused = MakeFocusRowField("refused");
-    refused->SetEnabled(false);
+    refused->SetDisabled(true);
     root->AddChild(std::move(refused));
     root->AddChild(MakeFocusRowField("last"));
 
@@ -285,7 +287,7 @@ TEST(DisabledControlInputTests, TabPassesOverEveryControlInsideADisabledContaine
     group->SetId("group");
     group->AddChild(MakeFocusRowField("inGroupOne"));
     group->AddChild(MakeFocusRowField("inGroupTwo"));
-    group->SetEnabled(false);
+    group->SetDisabled(true);
     root->AddChild(std::move(group));
 
     root->AddChild(MakeFocusRowField("last"));
@@ -329,7 +331,7 @@ TEST(DisabledControlInputTests, DisablingTheFocusedControlTakesFocusOffIt)
     DriveUiRender(ui, rg);
     ASSERT_EQ(ui.GetFocusedElementId(), std::string("first"));
 
-    firstRaw->SetEnabled(false);
+    firstRaw->SetDisabled(true);
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
     EXPECT_TRUE(ui.GetFocusedElementId().empty());
@@ -360,7 +362,7 @@ TEST(DisabledControlInputTests, DisablingAContainerTakesFocusOffTheControlInside
     DriveUiRender(ui, rg);
     ASSERT_EQ(ui.GetFocusedElementId(), std::string("inGroupOne"));
 
-    groupRaw->SetEnabled(false);
+    groupRaw->SetDisabled(true);
     ui.Update(0.0f, /*interactive=*/false);
     DriveUiRender(ui, rg);
     EXPECT_TRUE(ui.GetFocusedElementId().empty());
@@ -378,7 +380,7 @@ TEST(DisabledControlInputTests, PressingADisabledControlDoesNotFocusIt)
     root->AddChild(MakeFocusRowField("first"));
     auto refused = MakeFocusRowField("refused");
     TextField* refusedRaw = refused.get();
-    refused->SetEnabled(false);
+    refused->SetDisabled(true);
     root->AddChild(std::move(refused));
 
     UIManager ui(dev);

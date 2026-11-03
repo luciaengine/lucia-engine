@@ -5,6 +5,7 @@
 #include "UI/UIElement.h"
 #include "UI/Controls/Button.h"
 #include "UI/StyleProperties.h"
+#include "UI/ThemeAccent.h"
 
 #include <algorithm>
 #include <cmath>
@@ -120,7 +121,7 @@ void ToolbarDragDrop::Setup(UIElement* ghostRoot, const std::vector<ContainerCon
                 for (const auto& cls : btn->GetClasses())
                     if (cls != "dragging") ghost->AddClass(cls);
                 ghost->AddClass("drag-ghost");
-                ghost->Style()
+                ghost->Overrides()
                     .Set(Style::Position,      PositionType::Absolute)
                     .Set(Style::PositionLeft,  StyleLength::Px(btnX))
                     .Set(Style::PositionTop,   StyleLength::Px(btnY))
@@ -134,7 +135,7 @@ void ToolbarDragDrop::Setup(UIElement* ghostRoot, const std::vector<ContainerCon
                 auto indicator = std::make_unique<UIElement>();
                 indicator->SetId("toolbar-insertion-indicator");
                 indicator->AddClass("toolbar-insertion-indicator");
-                indicator->Style()
+                indicator->Overrides()
                     .Set(Style::Position,      PositionType::Absolute)
                     .Set(Style::Display,       DisplayMode::None)
                     .Set(Style::PointerEvents, false);
@@ -149,7 +150,7 @@ void ToolbarDragDrop::Setup(UIElement* ghostRoot, const std::vector<ContainerCon
 
             if (m_DragGhostElement)
             {
-                m_DragGhostElement->Style()
+                m_DragGhostElement->Overrides()
                     .Set(Style::Position,      PositionType::Absolute)
                     .Set(Style::PositionLeft,  StyleLength::Px(e.X - btnW * 0.5f))
                     .Set(Style::PositionTop,   StyleLength::Px(e.Y - btnH * 0.5f))
@@ -183,7 +184,7 @@ void ToolbarDragDrop::Setup(UIElement* ghostRoot, const std::vector<ContainerCon
             if (!targetContainer)
             {
                 if (m_InsertionIndicator)
-                    m_InsertionIndicator->Style().Set(Style::Display, DisplayMode::None);
+                    m_InsertionIndicator->Overrides().Set(Style::Display, DisplayMode::None);
                 m_TargetButtonContainer = {};
                 m_CurrentDropIndex = -1;
                 e.Stop();
@@ -229,13 +230,16 @@ void ToolbarDragDrop::Setup(UIElement* ghostRoot, const std::vector<ContainerCon
 
             if (m_InsertionIndicator)
             {
-                m_InsertionIndicator->Style()
+                constexpr uint32_t kInsertionIndicatorAlpha = 0xCC000000u;
+                const uint32_t accentRgb =
+                    UI::ResolveAccentArgb(targetContainer->GetResolvedStyle()) & 0x00FFFFFFu;
+                m_InsertionIndicator->Overrides()
                     .Set(Style::Position,      PositionType::Absolute)
                     .Set(Style::PositionLeft,  StyleLength::Px(indicatorX))
                     .Set(Style::PositionTop,   StyleLength::Px(targetContainer->GetLayoutY()))
                     .Set(Style::Width,         StyleLength::Px(3.0f))
                     .Set(Style::Height,        StyleLength::Px(btnH))
-                    .Set(Style::BackgroundColor, (m_AccentColor & 0x00FFFFFFu) | 0xCC000000u)
+                    .Set(Style::BackgroundColor, kInsertionIndicatorAlpha | accentRgb)
                     .Set(Style::ZIndex,        9999)
                     .Set(Style::PointerEvents, false)
                     .Set(Style::Display,       DisplayMode::Block);

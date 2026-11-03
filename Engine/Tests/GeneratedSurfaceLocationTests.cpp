@@ -13,6 +13,7 @@
 #include "Engine/Rendering/ShaderGraphMaterial.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialDocument.h"
+#include "TestTempDir.h"
 
 #include <chrono>
 #include <filesystem>
@@ -55,10 +56,7 @@ protected:
     void SetUp() override
     {
         std::error_code ec;
-        m_Root = std::filesystem::temp_directory_path(ec) /
-                 ("ge_gen_surface_" + std::to_string(::testing::UnitTest::GetInstance()
-                                                         ->random_seed()) +
-                  "_" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+        m_Root = TestUtils::MakeUniqueTempDirectory("ge_gen_surface");
         m_MaterialDir = m_Root / "assets" / "materials";
         m_CacheRoot = m_Root / ".Cache" / "Shaders";
         std::filesystem::create_directories(m_MaterialDir, ec);
@@ -322,56 +320,6 @@ TEST_F(GeneratedSurfaceLocationTest, MissingCacheRootIsAnErrorNotAFallbackBeside
     EXPECT_EQ(CountBuiltGlsl(m_MaterialDir), 0u);
 }
 
-TEST_F(GeneratedSurfaceLocationTest, RegistrySpellingIdentifiesEditorGraphUnderMixedCaseMount)
-{
-    auto context = MakeContext();
-    const auto physicalRoot = m_Root / "EditorAssets";
-    const auto registryRoot = m_Root / "editorassets";
-    context.AssetSourceRoots = {{"editor", physicalRoot}};
-    const auto identity = Rendering::MaterialSourceIdentity(registryRoot / "materials/graph/test.material", context);
-    EXPECT_EQ(identity.generic_string(), "editor/materials/graph/test.material");
-    EXPECT_EQ(Rendering::ResolveShaderSourceIdentity(identity.generic_string(), context),
-              physicalRoot / "materials/graph/test.material");
-    EXPECT_TRUE(Rendering::MaterialSourceIdentity(m_Root / "editorassets-extra/test.material", context).empty());
-}
-
-// The asset registry returns a path in its key spelling, which is case-folded on a
-// case-insensitive host. A graph material at that path gets a surface name from its
-// mounted source, and the name resolves back to the file on disk.
-TEST_F(GeneratedSurfaceLocationTest, RegistryPathOfAGraphMaterialNamesItsSurfaceByTheMountedSource)
-{
-    const std::filesystem::path mountRoot = m_Root / "EditorAssets";
-    const std::filesystem::path material = mountRoot / "Materials" / "test.material";
-    std::error_code ec;
-    std::filesystem::create_directories(material.parent_path(), ec);
-    std::ofstream(material) << "{}";
-    std::ofstream(material.parent_path() / "test_graph.glsl") << kGraphSource;
-
-    AssetManager assets;
-    ASSERT_TRUE(assets.Initialize(m_Root / "assets", nullptr, m_Root / "registry.assetdb",
-                                  m_Root / "cache"));
-    AssetSourceDesc editor{};
-    editor.Alias = "editor";
-    editor.Root = mountRoot;
-    editor.Priority = 10;
-    editor.RequiresScan = false;
-    ASSERT_TRUE(assets.RegisterSource(editor));
-    ASSERT_TRUE(assets.GetRegistry().RegisterAsset(material));
-    AssetMetadata metadata;
-    ASSERT_TRUE(assets.GetRegistry().TryGetAssetMetadata(material, metadata));
-    Rendering::MaterialBuildContext context = MakeContext();
-    context.AssetSourceRoots = CollectAssetSourceRoots(assets);
-    assets.Shutdown();
-
-    const std::filesystem::path identity = Rendering::MaterialSourceIdentity(metadata.Path, context);
-    ASSERT_FALSE(identity.empty()) << metadata.Path.generic_string() << " is outside every source";
-    EXPECT_EQ(*identity.begin(), "editor");
-    EXPECT_TRUE(std::filesystem::exists(Rendering::ResolveShaderSourceIdentity(identity.generic_string(), context)));
-    std::vector<std::string> errors;
-    MaterialDocument doc = MakeGraphMaterial();
-    EXPECT_TRUE(PrepareMaterialDocumentForShaderPackage(doc, metadata.Path, context, errors));
-}
-
 // A generated surface is a build artifact. Carrying the authoring graph in its
 // tag block made a node drag or a canvas pan rewrite it, which misses the shader
 // cache and recompiles the material for an edit that cannot reach a shader.
@@ -430,4 +378,32 @@ TEST_F(GeneratedSurfaceLocationTest, MovingANodeDoesNotRewriteTheGeneratedSurfac
 
     EXPECT_EQ(std::filesystem::last_write_time(generated), firstWrite)
         << "a node move rewrote the generated surface — the shader cache entry dies with it";
+}
+
+// Registry paths may use different casing from the physical mount. Name the
+// generated artifact by the same mount alias and relative path in either case.
+TEST_F(GeneratedSurfaceLocationTest, RegistrySpellingIdentifiesGraphUnderMixedCaseMount)
+{
+    auto context = MakeContext();
+    const auto physicalRoot = m_Root / "EditorAssets";
+    const auto registryRoot = m_Root / "editorassets";
+    context.AssetSourceRoots = {{"editor", physicalRoot, registryRoot}};
+    auto registryDocument = MakeGraphMaterial();
+    registryDocument.surfaceShader = m_GraphPath.string();
+    std::vector<std::string> errors;
+    ASSERT_TRUE(PrepareMaterialDocumentForShaderPackage(
+        registryDocument, registryRoot / "materials/test.material", context, errors));
+
+    auto physicalDocument = MakeGraphMaterial();
+    physicalDocument.surfaceShader = m_GraphPath.string();
+    ASSERT_TRUE(PrepareMaterialDocumentForShaderPackage(
+        physicalDocument, physicalRoot / "materials/test.material", context, errors));
+    EXPECT_EQ(registryDocument.surfaceShader, physicalDocument.surfaceShader);
+    EXPECT_EQ(context.AssetSourceRoots.front().Root, physicalRoot)
+        << "registry identity must not change the physical source root";
+
+    auto outsideDocument = MakeGraphMaterial();
+    outsideDocument.surfaceShader = m_GraphPath.string();
+    EXPECT_FALSE(PrepareMaterialDocumentForShaderPackage(
+        outsideDocument, m_Root / "editorassets-extra/test.material", context, errors));
 }

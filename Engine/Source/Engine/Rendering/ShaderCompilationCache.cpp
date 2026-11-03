@@ -7,7 +7,6 @@
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialBuilder.h"
 #include "Rendering/Materials/MaterialKeywordDerivation.h"
-#include "Rendering/Materials/Shader/ShaderComposer.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include <algorithm>
@@ -20,23 +19,11 @@ namespace Engine::Renderer
 {
 using namespace ::GameEngine::Rendering;
 
-ShaderSourceKey MakeShaderSourceKey(const std::string& surfaceShaderPath,
-                                    const std::string& vertexModifierPath,
-                                    const std::filesystem::path& materialAssetPath)
-{
-    const std::filesystem::path materialDir =
-        materialAssetPath.empty() ? std::filesystem::path{} : materialAssetPath.parent_path();
-    return ShaderSourceKey{
-        surfaceShaderPath, vertexModifierPath,
-        ShaderComposer::ShaderLocalDirectory(surfaceShaderPath, vertexModifierPath, materialDir).lexically_normal()};
-}
-
 std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
     const ShaderCacheKey& key,
     const MaterialCompileSpec& spec,
     const Rendering::MaterialBuildContext& buildContext,
     const std::string& debugName,
-    const std::filesystem::path& materialAssetPath,
     Rendering::ShaderSourceKind kind)
 {
     // The build context may not be ready yet during early startup: the editor
@@ -62,7 +49,13 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
         std::lock_guard lock(m_Mutex);
         auto it = m_Cache.find(key);
         if (it != m_Cache.end())
+        {
+            // Another material in this resolution directory may have rebuilt
+            // the shared source after an error. Clear this caller's old row too.
+            if (it->second && m_ErrorLog)
+                m_ErrorLog->ReportSuccess(debugName, spec.surfaceShaderPath);
             return it->second;
+        }
         if (!contextReady)
             return nullptr; // transient — do NOT cache or register in-flight
         // Snapshot the invalidation epoch alongside the election: publish()
@@ -80,7 +73,12 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
         }
     }
     if (!myPromise)
-        return waitFuture.get(); // another thread is compiling this key — wait for it
+    {
+        auto shared = waitFuture.get(); // another material/thread owns the compile
+        if (shared && m_ErrorLog)
+            m_ErrorLog->ReportSuccess(debugName, spec.surfaceShaderPath);
+        return shared;
+    }
 
     if (compileEnteredHook)
         compileEnteredHook();
@@ -141,17 +139,8 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
     if (spec.parallax)
         doc.textures[Rendering::kParallaxHeightMapSlot] = "<height binding carried by the compile spec>";
 
-    // The requesting material's own path anchors the build's diagnostics (an
-    // unresolved surface names the material dir it probed). It cannot change
-    // what a shared key composes: the key's directory is empty exactly when no
-    // reference resolves in that directory, and the build reads the directory
-    // through ShaderComposer::ShaderLocalDirectory, the same rule.
-    assert((key.Source.MaterialDirectory.empty()
-            || key.Source.MaterialDirectory == materialAssetPath.parent_path().lexically_normal())
-           && "a directory-local key compiled for a material in another directory: build the key with "
-              "MakeShaderSourceKey from this material's asset path");
-    // A material with no asset path still needs a non-empty stand-in path
-    // (generated-package naming, debug names). Anchor
+    // When the key carries no material asset path, the build still needs a
+    // non-empty stand-in path (generated-package naming, debug names). Anchor
     // it under the CACHE root — a directory that contains no shaders — so its
     // parent can never masquerade as a materialDir and shadow the
     // project/package/engine resolution chain. (Anchoring it under
@@ -163,7 +152,8 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
     const fs::path syntheticPath =
         buildContext.CacheRoot / "Synthetic" /
         ("cache_" + std::to_string(key.VariantKey.Hash()) + ".material");
-    const fs::path buildMaterialPath = materialAssetPath.empty() ? syntheticPath : materialAssetPath;
+    const fs::path buildMaterialPath =
+        key.Source.MaterialAssetPath.empty() ? syntheticPath : key.Source.MaterialAssetPath;
 
     auto reportFailure = [&](const std::vector<std::string>& errors)
     {
@@ -171,10 +161,10 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
         // deleted fails against a path that no longer exists. That failure
         // describes an identity nothing can recompile — reporting it would
         // plant an error row no later success can ever clear.
-        if (!materialAssetPath.empty())
+        if (!key.Source.MaterialAssetPath.empty())
         {
             std::error_code ec;
-            if (!fs::exists(materialAssetPath, ec))
+            if (!fs::exists(key.Source.MaterialAssetPath, ec))
             {
                 Logger::Log::Info(
                     "ShaderCompilationCache '{}': material file vanished mid-build "
@@ -189,13 +179,9 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
             ShaderCompileErrorLog::Entry entry;
             entry.MaterialName = debugName;
             entry.SurfaceShaderPath = spec.surfaceShaderPath;
-            entry.MaterialAssetPath = materialAssetPath;
+            entry.MaterialAssetPath = key.Source.MaterialAssetPath;
             entry.Errors = errors;
             m_ErrorLog->ReportFailure(std::move(entry));
-            std::lock_guard lock(m_Mutex);
-            std::vector<std::string>& reportedAs = m_FailureReportedAs[key];
-            if (std::find(reportedAs.begin(), reportedAs.end(), debugName) == reportedAs.end())
-                reportedAs.push_back(debugName);
         }
     };
 
@@ -215,23 +201,7 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
     }
 
     if (m_ErrorLog)
-    {
-        std::vector<std::string> reportedAs;
-        {
-            std::lock_guard lock(m_Mutex);
-            if (auto failed = m_FailureReportedAs.find(key); failed != m_FailureReportedAs.end())
-            {
-                reportedAs = std::move(failed->second);
-                m_FailureReportedAs.erase(failed);
-            }
-        }
         m_ErrorLog->ReportSuccess(debugName, spec.surfaceShaderPath);
-        for (const std::string& name : reportedAs)
-        {
-            if (name != debugName)
-                m_ErrorLog->ReportSuccess(name, spec.surfaceShaderPath);
-        }
-    }
 
     const auto& pkg = *buildResult.package;
     auto variant = std::make_shared<SharedShaderVariant>();
@@ -264,12 +234,15 @@ void ShaderCompilationCache::Clear()
     // epoch is NOT the repair: it leaks the entry and pins every later request to
     // the pre-clear future (see m_InFlight).
     m_InFlight.clear();
-    m_FailureReportedAs.clear();
     // m_SurfaceClosures is deliberately NOT cleared: every material that outlives
     // this call keeps its live pipeline and is never recompiled, so dropping its
     // row strands it. See the declaration for the full argument.
-    // A compile that elected before this call must not reinstate its entry. See
-    // MaterialSystem::OnProjectSwitched for a compile that elects after it.
+    //
+    // Bar the same resurrection the sweep bars: a compile that ELECTED before
+    // this call must not reinstate its entry afterwards. A compile that only
+    // QUEUED before it and elects after snapshots this new value, compares
+    // equal, and does publish — see MaterialSystem::OnProjectSwitched for the
+    // residual that leaves.
     ++m_InvalidationEpoch;
 }
 
@@ -326,9 +299,13 @@ ShaderFileDependents ShaderCompilationCache::InvalidateEntriesForShaderFile(
             matched.insert(source);
     }
 
-    // Bump the epoch even when the sweep drops nothing: an in-flight compile's
-    // entry is not in m_Cache yet. The bump does not cancel the in-flight
-    // election (see m_InFlight).
+    // Bump the epoch before the sweep and regardless of what the sweep finds:
+    // the entry a compile currently in flight is about to publish is NOT in
+    // m_Cache yet, so a zero-drop invalidation is precisely the case the
+    // resurrection guard exists for. publish() compares against the snapshot it
+    // took, so any compile that started before this point is now barred from
+    // re-populating the cache. It does not cancel the in-flight ELECTION — see
+    // the m_InFlight declaration for why not.
     ++m_InvalidationEpoch;
     for (auto it = m_Cache.begin(); it != m_Cache.end();)
     {

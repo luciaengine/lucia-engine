@@ -1,18 +1,17 @@
 import { z } from "zod";
 import { editorCall } from "../editor-call.js";
 import { defineTool, type ToolDef, type ToolOutput } from "../registry.js";
-import { formatCaptureRecord, recordFromBytes, recordFromFile } from "./capture-record.js";
 import { proxyTool } from "./proxy.js";
 
 /**
  * Split a capture response into the PNG and everything else. The base64 payload
- * never travels in `data`: the CLI writes it to disk and MCP sends it as an
- * image block only when `inline`, so leaving it in the structured result would
- * only mean megabytes of base64 on stdout.
+ * never travels in `data`: MCP sends it as an image block and the CLI writes it
+ * to disk, so leaving it in the structured result would only mean megabytes of
+ * base64 on stdout.
  */
-function splitImage(result: any, inline: boolean): { image: NonNullable<ToolOutput["image"]>; data: Record<string, unknown> } {
+function splitImage(result: any): { image: ToolOutput["image"]; data: unknown } {
   const { pngBase64, ...rest } = result;
-  return { image: { base64: pngBase64, mimeType: "image/png", filePath: result.filePath, inline }, data: rest };
+  return { image: { base64: pngBase64, mimeType: "image/png", filePath: result.filePath }, data: rest };
 }
 
 export const tools: ToolDef[] = [
@@ -20,7 +19,7 @@ export const tools: ToolDef[] = [
     name: "take_screenshot",
     category: "capture",
     ipcMethod: "take_screenshot",
-    description: "Capture a PNG screenshot of the editor. Default target is the entire editor window (UI + viewport composited). Other targets crop to a specific region of the same composite. Returns the record line: the file path where the PNG was saved, its size in bytes, its SHA-256, the scene view camera pose and the graphics validation counts. The image is not in the response: open the file to look at it, or pass includeImage=true when the client cannot read files. " +
+    description: "Capture a PNG screenshot of the editor. Default target is the entire editor window (UI + viewport composited). Other targets crop to a specific region of the same composite. Returns an image that Claude can view, plus the file path where the PNG was saved. " +
       "BEFORE DRAWING A VISUAL CONCLUSION, CHECK `pendingMaterialTextureBinds`. It is 0 on a settled frame, and non-zero while that many material texture slots are still waiting on a decode — those materials render their bindless default (white albedo, flat normal) instead of the authored texture. " +
       "On screen the two states are identical, so a capture taken inside that window reads as 'this material never binds'. A texture's first material bind also tags its cook usage, so on a cold derived cache the window is as wide as the block-compression encode: seconds to minutes, not frames. " +
       "Poll get_editor_state until it reports 0 before capturing anything you intend to measure or A/B. " +
@@ -36,19 +35,16 @@ export const tools: ToolDef[] = [
       h: z.coerce.number().int().optional().describe("target='rect': height."),
       coords: z.enum(["logical", "physical"]).optional()
         .describe("target='rect' coordinate space. 'logical' (default) matches get_ui_tree / get_panel_tree output and panel/element bounds. 'physical' is the saved PNG's pixel grid (useful for cropping a previously-saved screenshot)."),
-      includeImage: z.boolean().optional()
-        .describe("Also return the PNG inline as an image block (default false: the record line only). For a client that cannot open the saved file."),
       allowWindowCapture: z.boolean().optional()
         .describe("Accept an OS window capture (method: 'printwindow', with fallbackReason) when the render graph cannot hand over the frame. Default false: an unavailable frame is an error naming the reason, because a window picture looks like a valid capture while showing whatever the compositor holds — including other windows' pixels and stale content."),
     },
-    run: async ({ includeImage, ...args }) => {
+    run: async (args) => {
       const params: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(args)) if (v !== undefined) params[k] = v;
       const result = await editorCall("take_screenshot", params) as any;
       if (!result?.pngBase64) return { data: result };
       const tgt = result.target ?? args.target ?? "window";
-      const { image, data } = splitImage(result, includeImage ?? false);
-      const record = recordFromBytes(result, Buffer.from(image.base64, "base64"));
+      const { image, data } = splitImage(result);
       // Surfaced in the summary, not just the payload: an unsettled frame is a
       // plausible PNG, never an error, so the warning has to reach the reader
       // who did not think to look for it.
@@ -62,11 +58,7 @@ export const tools: ToolDef[] = [
       const substitute = result.method === "printwindow"
         ? ` — WARNING: this is an OS window capture, not the rendered frame (${result.fallbackReason ?? "reason not stated"})`
         : "";
-      return {
-        data: { ...data, ...record },
-        image,
-        summary: `${formatCaptureRecord(`Screenshot (${tgt}) ${result.width}x${result.height}`, record)}${warn}${substitute}`,
-      };
+      return { data, image, summary: `Screenshot (${tgt}) ${result.width}x${result.height} saved to ${result.filePath}${warn}${substitute}` };
     },
   }),
 
@@ -74,7 +66,7 @@ export const tools: ToolDef[] = [
     name: "capture_resource",
     category: "capture",
     ipcMethod: "capture_resource",
-    description: "Capture a named render graph resource from the live frame: a texture as a PNG, a buffer as bytes. Use get_render_graph_resources to discover names. The name matches exactly, else as a unique case-insensitive substring; a miss or an ambiguity reports the frame's candidate names. Textures support depth (grayscale), float (normalized), packed and color formats — adjust rangeMin/rangeMax for float/depth visualization. No transfer curve is applied, so the pixel values are the ones the graph holds. Scene colour textures (the view's colour target, the render graph's preExposed textures, and the scene-colour textures passes create: TAA, SSR, depth of field, the ocean overlays, the scene grabs, a fullscreen pass's history and ping-pong chain) are stored at the frame's pre-exposure: the response reports preExposed and preExposure, the PNG maps scene-linear values (texel / preExposure), and raw texels are returned as stored, to be divided by preExposure.",
+    description: "Capture a named render graph resource from the live frame: a texture as a PNG, a buffer as bytes. Use get_render_graph_resources to discover names. The name matches exactly, else as a unique case-insensitive substring; a miss or an ambiguity reports the frame's candidate names. Textures support depth (grayscale), float (normalized), packed and color formats — adjust rangeMin/rangeMax for float/depth visualization. No transfer curve is applied, so the pixel values are the ones the graph holds.",
     schema: {
       name: z.string().describe("Render graph resource name (e.g. 'SceneView.Color', 'SceneView.Depth')"),
       rangeMin: z.coerce.number().optional().describe("Textures: value mapped to black (default 0.0). For depth: near plane value."),
@@ -90,7 +82,7 @@ export const tools: ToolDef[] = [
       for (const [k, v] of Object.entries(args)) if (v !== undefined) params[k] = v;
       const result = await editorCall("capture_resource", params) as any;
       if (result?.pngBase64) {
-        const { image, data } = splitImage(result, true);
+        const { image, data } = splitImage(result);
         return {
           data, image,
           summary: `Captured ${result.resourceName} (${result.width}x${result.height}, ${result.format}, ${result.channels}ch, mip ${result.mip} layer ${result.layer}) → ${result.filePath}`,
@@ -108,43 +100,18 @@ export const tools: ToolDef[] = [
     },
   }),
 
-  defineTool({
+  proxyTool({
     name: "trigger_capture",
     category: "capture",
-    ipcMethod: "trigger_capture",
-    description: "Trigger a RenderDoc frame capture and return the record line: the .rdc path, its size in bytes, its SHA-256, the scene view camera pose and the graphics validation counts. The editor must be running under RenderDoc — launch_editor with renderdoc=true does that. Waits for the capture to finish writing (a large scene serializes >100 MB over many frames). The .rdc lands at the editor's capture path template: GE_RENDERDOC_CAPTURE_DIR if set, else <editor exe dir>/Captures/editor_frameN.rdc. When RenderDoc is not attached the call fails with an error naming the reason. If the wait times out, the capture is still completing: call get_capture_status to recover its path.",
+    description: "Trigger a RenderDoc frame capture. The editor must be running under RenderDoc — launch_editor with renderdoc=true does that. Waits for the capture to finish writing (a large scene serializes >100 MB over many frames) and returns {captured, captureIndex, filePath}. The .rdc lands at the editor's capture path template: GE_RENDERDOC_CAPTURE_DIR if set, else <editor exe dir>/Captures/editor_frameN.rdc. When RenderDoc is not attached the call fails with an error naming the reason. If the wait times out, the capture is still completing: call get_capture_status to recover its path.",
     schema: {},
-    run: async () => {
-      const result = await editorCall("trigger_capture", {}) as any;
-      if (!result?.filePath) return { data: result };
-      const record = await recordFromFile(result, String(result.filePath));
-      return {
-        data: { captured: result.captured, captureIndex: result.captureIndex, ...record },
-        summary: formatCaptureRecord(`RenderDoc capture ${result.captureIndex}`, record),
-      };
-    },
   }),
 
-  defineTool({
+  proxyTool({
     name: "get_capture_status",
     category: "capture",
-    ipcMethod: "get_capture_status",
-    description: "Report RenderDoc capture state immediately: whether RenderDoc is attached, the capture count, and the record line of the newest capture (path, size in bytes, SHA-256). Use it to recover a capture whose trigger_capture call timed out before RenderDoc finished writing the .rdc, and to check whether the editor is running under RenderDoc at all before triggering.",
+    description: "Report RenderDoc capture state immediately: {available, captureCount, lastCapturePath}. Use it to recover a capture whose trigger_capture call timed out before RenderDoc finished writing the .rdc, and to check whether the editor is running under RenderDoc at all before triggering.",
     schema: {},
-    run: async () => {
-      const result = await editorCall("get_capture_status", {}) as any;
-      if (!result?.available) {
-        return { data: result, summary: "RenderDoc is not attached: no captures. launch_editor renderdoc=true starts the editor under RenderDoc." };
-      }
-      if (!result.lastCapturePath) {
-        return { data: result, summary: `RenderDoc attached; ${result.captureCount} capture(s); none on disk yet.` };
-      }
-      const record = await recordFromFile({}, String(result.lastCapturePath));
-      return {
-        data: { available: true, captureCount: result.captureCount, ...record },
-        summary: `RenderDoc attached; ${result.captureCount} capture(s). ${formatCaptureRecord("Newest", record)}`,
-      };
-    },
   }),
 
   proxyTool({
@@ -155,28 +122,5 @@ export const tools: ToolDef[] = [
       frames: z.coerce.number().int().min(1).max(60).optional()
         .describe("Number of consecutive frames to capture, starting at the next present (default 1, max 60)."),
     },
-  }),
-
-  proxyTool({
-    name: "start_frame_recording",
-    category: "capture",
-    description: "Start writing the frames of the Scene View (or the whole editor window) to a new folder as numbered PNG or raw RGBA8 files, for a video of live interaction. Returns the folder. The frames come from the render graph's readback, not the screen. While a recording runs, each frame it takes costs one GPU encode of the target to RGBA8 and its readback, the window composite every frame, and one write on a job worker (a PNG compress, or a raw byte write that is faster and larger on disk); while it takes frames at a positive frameRate, the editor presents at twice that rate, so each tick of the clock has a frame; frames that the readback ring or the encode queue cannot take are dropped, counted, and named in the log once per second. Call stop_frame_recording to end it and get the counts. The recording also ends by itself at maxFrames.",
-    schema: {
-      target: z.enum(["viewport", "window"]).optional()
-        .describe("What to record: 'viewport' (the Scene View's rendered image, default) or 'window' (the full editor, UI included)."),
-      format: z.enum(["png", "raw"]).optional()
-        .describe("'png' (default) or 'raw': the RGBA8 bytes with no header, row 0 first, named frame_NNNNNN.rgba; each frames.csv row gives its file's width and height. Use raw when the stop reply's encodeMsMean shows PNG cannot keep the frame rate."),
-      maxFrames: z.coerce.number().int().min(1).max(36000).optional()
-        .describe("Frames taken after which the recording ends by itself (default 3600: 120 s at the default frame rate). The recording lasts maxFrames / frameRate seconds."),
-      frameRate: z.coerce.number().min(0).max(240).optional()
-        .describe("Frames per second (default 30). The recording takes the first presented frame at or after each tick of a clock at that rate, so the frames are evenly spaced; the frames between ticks are counted as skipped, not dropped. A higher rate gives a smoother sequence and costs one encode and one file write per added frame. 0 takes every presented frame."),
-    },
-  }),
-
-  proxyTool({
-    name: "stop_frame_recording",
-    category: "capture",
-    description: "Stop the frame recording, wait for the frames in flight to finish writing, and write frames.csv in the recording folder: one row per written frame with its index, render-graph frame index, ms since the start, ms since the previous row, width, height and file name. Returns the folder, the listing path, the format, the width and height of the last frame, the presented, written, skipped, dropped and failed counts, the presented and written frame rates, and the mean and longest encode time in ms. If the recording already ended at maxFrames, returns that recording's counts.",
-    schema: {},
   }),
 ];

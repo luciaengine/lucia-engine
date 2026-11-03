@@ -3,11 +3,10 @@
 #include "DebugServer/DebugServerReply.h"
 #include "DebugServer/EditorDebugServer.h"
 #include "Components/Name.h"
-#include "Components/Transform.h"
 #include "Core/Engine.h"
 #include "ECS/World.h"
-#include "SplineRecipes/PlacementGroundGap.h"
-#include "TerrainECS/SurfaceHeightQuery.h"
+#include "Placement/PlacementGroundGap.h"
+#include "TerrainECS/PlanarHeightQuery.h"
 #include "TerrainECS/TerrainGpuBake.h"
 
 #include <nlohmann/json.hpp>
@@ -26,35 +25,28 @@ namespace
 {
 
 // One request samples a route, not a scene: a few thousand stations is the whole
-// of a long approach road at 0.5 m spacing, and the cap keeps a typo from asking
+// of a Hobbiton arrival at 0.5 m spacing, and the cap keeps a typo from asking
 // the editor to bilinear-sample a million points on the main thread.
 constexpr std::size_t kMaxGroundSamples = 8192u;
 
 // The composed-ground description shared by every handler in this file. Reported
 // alongside the samples so a reading carries the terrain it was taken against:
 // two runs that disagree are usually two different terrains, not two heights.
-// What the query reads: a whole-map heightfield, a paged terrain's CPU pages, or a paged terrain
-// whose pages have no source yet (a height store still cooking), which samples nothing.
-const char* SurfaceKind(const TerrainECS::SurfaceHeightQuery& query)
-{
-    if (query.WholeMap())
-        return "single";
-    return query.Edits().Source != 0 ? "paged" : "pagedNoSourceYet";
-}
-
-json DescribeSurface(const TerrainECS::SurfaceHeightQuery& query)
+json DescribeSurface(const TerrainECS::PlanarHeightQuery& query)
 {
     // Every footprint number comes from the query's own accessors, which report
-    // the extent it SAMPLES over. The lattice origin is the footprint origin, so
-    // it is reported once.
+    // the extent it SAMPLES over. Reading the fields directly would mix a
+    // component-derived origin with a residency-derived lattice on a tiled
+    // terrain, where the two disagree. The lattice origin is the footprint
+    // origin, so it is reported once.
     return json{
-        {"kind", SurfaceKind(query)},
+        {"kind", query.Tiled ? "tiled" : "single"},
         {"originX", query.FootprintOriginX()},
         {"originZ", query.FootprintOriginZ()},
-        {"originY", query.OriginY()},
+        {"originY", query.OriginY},
         {"sizeX", query.FootprintSizeX()},
         {"sizeZ", query.FootprintSizeZ()},
-        {"heightScale", query.HeightScale()},
+        {"heightScale", query.HeightScale},
         {"latticeSpacingX", query.LatticeSpacingX()},
         {"latticeSpacingZ", query.LatticeSpacingZ()},
         // A tiled terrain whose modifiers are all GPU-bakeable leaves the CPU
@@ -69,17 +61,17 @@ json DescribeSurface(const TerrainECS::SurfaceHeightQuery& query)
 // A piece with no gap numbers says which cause left it that way, because the
 // fixes differ: wait out a streaming tile, move a piece off the terrain edge,
 // and stop asking a wall how far above the ground its underside floats.
-const char* DescribeGapStatus(SplineRecipes::GroundGapStatus status)
+const char* DescribeGapStatus(Editor::GroundGapStatus status)
 {
     switch (status)
     {
-    case SplineRecipes::GroundGapStatus::Measured:
+    case Editor::GroundGapStatus::Measured:
         return "measured";
-    case SplineRecipes::GroundGapStatus::NoGroundSampled:
+    case Editor::GroundGapStatus::NoGroundSampled:
         return "noGroundSampled";
-    case SplineRecipes::GroundGapStatus::UndersideNearVertical:
+    case Editor::GroundGapStatus::UndersideNearVertical:
         return "undersideNearVertical";
-    case SplineRecipes::GroundGapStatus::DegenerateFootprint:
+    case Editor::GroundGapStatus::DegenerateFootprint:
         return "degenerateFootprint";
     }
     return "unknown";
@@ -137,11 +129,8 @@ void RegisterGroundQueryDebugHandlers(EditorDebugServer& server)
         if (!world)
             return Editor::RefuseRequest("No world available");
 
-        // The terrain under the first point answers every point.
-        const Mathematics::Vector3 first =
-            points.empty() ? Mathematics::Vector3{}
-                           : Mathematics::Vector3(points[0][0].get<float32>(), 0.0f, points[0][1].get<float32>());
-        const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(*world, first);
+        const TerrainECS::PlanarHeightQuery query =
+            TerrainECS::ResolvePlanarHeightQuery(*world);
         if (!query.IsValid())
             return UnresolvedSurface();
 
@@ -152,23 +141,16 @@ void RegisterGroundQueryDebugHandlers(EditorDebugServer& server)
             const auto z = point[1].get<float32>();
 
             // Outside the footprint there is no ground and never will be;
-            // inside it but unsampled means no page is on the CPU there yet.
+            // inside it but unsampleable means the tile has not streamed in.
             // Collapsing those into one "false" is how a caller ends up bedding
-            // geometry into a streaming hole, so they stay separate. A coarse
-            // answer is reported (AcceptCoarse) with its level and `finest`
-            // false, so a caller judging precision reads both.
+            // geometry into a streaming hole, so they stay separate.
             const bool inside = query.ContainsXZ(x, z);
-            TerrainECS::SurfaceHeightSample height;
-            const bool sampled = query.SampleHeight(Mathematics::Vector3(x, 0.0f, z),
-                                                    TerrainECS::SurfaceHeightPolicy::AcceptCoarse, height);
+            float32 y = 0.0f;
+            const bool sampled = query.SampleHeight(x, z, y);
 
             json sample{{"x", x}, {"z", z}, {"inside", inside}, {"sampled", sampled}};
             if (sampled)
-            {
-                sample["y"] = height.Height;
-                sample["level"] = height.Level;
-                sample["finest"] = height.Detail == TerrainECS::SurfaceHeightDetail::Finest;
-            }
+                sample["y"] = y;
             samples.push_back(std::move(sample));
         }
 
@@ -201,14 +183,13 @@ void RegisterGroundQueryDebugHandlers(EditorDebugServer& server)
         if (!world->IsValid(route))
             return Editor::RefuseRequest("Invalid entity");
 
-        const auto* routeTransform = world->GetComponent<Components::WorldTransform>(route);
-        const TerrainECS::SurfaceHeightQuery query = TerrainECS::ResolveSurfaceHeightQuery(
-            *world, routeTransform ? routeTransform->GetPosition() : Mathematics::Vector3{});
+        const TerrainECS::PlanarHeightQuery query =
+            TerrainECS::ResolvePlanarHeightQuery(*world);
         if (!query.IsValid())
             return UnresolvedSurface();
 
-        std::vector<SplineRecipes::PieceGroundGap> gaps;
-        SplineRecipes::MeasureRouteGroundGaps(*world, route, query, gaps);
+        std::vector<Editor::PieceGroundGap> gaps;
+        Editor::MeasureRouteGroundGaps(*world, route, query, gaps);
 
         json pieces = json::array();
         float32 worstFloating = std::numeric_limits<float32>::lowest();
@@ -216,7 +197,7 @@ void RegisterGroundQueryDebugHandlers(EditorDebugServer& server)
         uint32_t worstFloatingPiece = 0u;
         uint32_t worstBuriedPiece = 0u;
         uint32 measured = 0u;
-        for (const SplineRecipes::PieceGroundGap& gap : gaps)
+        for (const Editor::PieceGroundGap& gap : gaps)
         {
             json piece{
                 {"entityId", gap.Piece.id},
@@ -237,7 +218,7 @@ void RegisterGroundQueryDebugHandlers(EditorDebugServer& server)
             if (gap.ProbesRequested > 0u)
             {
                 json probes = json::array();
-                for (const SplineRecipes::GroundGapProbe& probe : gap.Probes)
+                for (const Editor::GroundGapProbe& probe : gap.Probes)
                 {
                     json entry{{"x", probe.X},
                                {"z", probe.Z},
@@ -253,7 +234,7 @@ void RegisterGroundQueryDebugHandlers(EditorDebugServer& server)
                 piece["probes"] = std::move(probes);
             }
 
-            if (gap.Status == SplineRecipes::GroundGapStatus::Measured)
+            if (gap.Status == Editor::GroundGapStatus::Measured)
             {
                 piece["minGap"] = gap.MinGap;
                 piece["maxGap"] = gap.MaxGap;

@@ -18,7 +18,6 @@
 #include <algorithm>
 #include <cstdlib>
 #include <format>
-#include <limits>
 #include <string>
 #include <vector>
 
@@ -47,36 +46,6 @@ int RankAdapter(const WGPUAdapterInfo& info)
     default: break;
     }
     return score;
-}
-
-// GE_WEBGPU_MAX_COMPUTE_INVOCATIONS=<n> requests at most n invocations per compute workgroup,
-// and at most n along each workgroup dimension, as a phone's browser grants them (256, the
-// WebGPU default, on a Pixel 6's Mali), so a kernel past a mobile adapter's limits fails on the
-// desktop too. A value above the adapter's own limit leaves that limit as it is.
-void ClampComputeInvocationsFromEnvironment(WGPULimits& limits)
-{
-    const char* value = std::getenv("GE_WEBGPU_MAX_COMPUTE_INVOCATIONS");
-    if (value == nullptr || value[0] == '\0')
-    {
-        return;
-    }
-    char* end = nullptr;
-    const long parsed = std::strtol(value, &end, 10);
-    if (end == value || *end != '\0' || parsed <= 0)
-    {
-        Logger::Log::Warning("WebGpuDevice: GE_WEBGPU_MAX_COMPUTE_INVOCATIONS='{}' is not a positive whole number; "
-                             "ignoring",
-                             value);
-        return;
-    }
-    const uint32_t cap = static_cast<uint32_t>(
-        std::min<unsigned long long>(static_cast<unsigned long long>(parsed), std::numeric_limits<uint32_t>::max()));
-    limits.maxComputeInvocationsPerWorkgroup = std::min(limits.maxComputeInvocationsPerWorkgroup, cap);
-    limits.maxComputeWorkgroupSizeX = std::min(limits.maxComputeWorkgroupSizeX, cap);
-    limits.maxComputeWorkgroupSizeY = std::min(limits.maxComputeWorkgroupSizeY, cap);
-    limits.maxComputeWorkgroupSizeZ = std::min(limits.maxComputeWorkgroupSizeZ, cap);
-    Logger::Log::Info("WebGpuDevice: GE_WEBGPU_MAX_COMPUTE_INVOCATIONS caps compute workgroups at {} invocations",
-                      limits.maxComputeInvocationsPerWorkgroup);
 }
 
 bool ReadAdapterIndexOverride(uint32_t& outIndex)
@@ -379,9 +348,6 @@ bool WebGpuDevice::CreateLogicalDevice(const DeviceDesc& desc)
     // WebGPU default, which the BonePalette pool (256 MB) needs.
     WGPULimits requiredLimits = m_AdapterLimits;
     requiredLimits.nextInChain = nullptr;
-#if !defined(__EMSCRIPTEN__)
-    ClampComputeInvocationsFromEnvironment(requiredLimits);
-#endif
 
     std::vector<WGPUFeatureName> features;
     // GPU-generated draws select slices of shared instance buffers with a
@@ -568,8 +534,6 @@ void WebGpuDevice::PopulateCapabilities()
 #endif
     caps.supportsDualSourceBlending =
         wgpuDeviceHasFeature(m_Device, WGPUFeatureName_DualSourceBlending) != 0;
-    // Each colour target of a WebGPU pipeline carries its own blend and write mask.
-    caps.supportsIndependentBlend = true;
     caps.supportsTextureCompressionBC =
         wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TextureCompressionBC) != 0;
 
@@ -579,7 +543,7 @@ void WebGpuDevice::PopulateCapabilities()
     caps.maxPerStageSampledImages = m_DeviceLimits.maxSampledTexturesPerShaderStage;
     caps.maxPerStageResources = m_DeviceLimits.maxBindingsPerBindGroup;
     caps.maxPerStageStorageBuffers = m_DeviceLimits.maxStorageBuffersPerShaderStage;
-    caps.maxComputeWorkGroupSize = m_DeviceLimits.maxComputeInvocationsPerWorkgroup;
+    caps.maxComputeWorkGroupSize = m_DeviceLimits.maxComputeWorkgroupSizeX;
     caps.maxComputeSharedMemorySize = m_DeviceLimits.maxComputeWorkgroupStorageSize;
     // WebGPU core guarantees 4x MSAA only.
     caps.maxMSAASamples = 4;
@@ -1019,8 +983,6 @@ bool WebGpuDevice::BeginFrame()
             DestroyDescriptorSet(handle);
         }
     }
-    // This slot's previous frame has finished, so the set cache ages one frame here.
-    AgeCachedDescriptorSets();
 
     ReportPushConstantRefusals();
     if (m_PushConstantSliceBytes != 0)

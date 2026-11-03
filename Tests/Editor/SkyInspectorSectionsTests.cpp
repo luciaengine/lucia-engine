@@ -13,8 +13,6 @@
 // What is locked is the routing — which container each group's rows are added to — not the
 // declarations. Restyle and reword freely.
 
-#include "Types/StringUtils.h"
-
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -38,7 +36,7 @@ std::string ReadEditorFile(const std::string& relativePath)
 
 std::string SkyInspector()
 {
-    return ReadEditorFile("Source/Sky/SkyEnvironment/SkyEnvironmentInspector.cpp");
+    return ReadEditorFile("Source/Inspectors/SkyEnvironmentInspector.cpp");
 }
 
 // The source with every run of whitespace collapsed to one space and the space after an open
@@ -75,6 +73,15 @@ std::string Span(const std::string& source, const std::string& from, const std::
     return source.substr(start, end - start);
 }
 
+size_t CountOf(const std::string& haystack, const std::string& needle)
+{
+    size_t n = 0;
+    for (size_t pos = haystack.find(needle); pos != std::string::npos;
+         pos = haystack.find(needle, pos + needle.size()))
+        ++n;
+    return n;
+}
+
 // Every container a sky row is added to. A row names its container as the first argument of the
 // call that adds it, so this is the form to search a span for.
 constexpr const char* kSkyContainers[] = {"physical", "stylistic", "fallingStars", "stars",
@@ -86,18 +93,6 @@ std::string AddedTo(const std::string& container)
 }
 
 } // namespace
-
-// The Falling stars section takes its look from the Stars section (the glow, the core, the spikes, the
-// limit and Seen by), so it reads after it: the sections show in the order they are built.
-TEST(SkyInspectorSections, TheFallingStarsSectionFollowsTheStarsSection)
-{
-    const std::string flat = Flattened(SkyInspector());
-    const size_t stars = flat.find("AddSkySection(ctx.Parent, \"Stars\"");
-    const size_t fallingStars = flat.find("AddSkySection(ctx.Parent, \"Falling stars\"");
-    ASSERT_NE(stars, std::string::npos);
-    ASSERT_NE(fallingStars, std::string::npos);
-    EXPECT_LT(stars, fallingStars) << "the Falling stars section is built before the Stars section it depends on";
-}
 
 // The three groups are sections, built by the SAME helper the two original sections use. Going
 // through AddSkySection is the whole guarantee: it is what routes them to
@@ -132,21 +127,19 @@ TEST(SkyInspectorSections, TheThreeGroupsAreSectionsBuiltByTheSharedHelper)
 // section nobody can close — which is exactly the complaint the split was meant to fix.
 TEST(SkyInspectorSections, SectionsRememberTheirExpansionRatherThanHardcodingIt)
 {
-    const std::string helper = ReadEditorFile("Source/Inspectors/InspectorComponent/InspectorComponentSection.cpp");
+    const std::string helper = ReadEditorFile("Source/Inspectors/InspectorComponentSection.cpp");
     ASSERT_FALSE(helper.empty()) << "the shared section helper did not read; this test is vacuous";
     EXPECT_NE(helper.find("SetExpanded(expanded)"), std::string::npos)
         << "the shared helper no longer seeds a section from its remembered state";
     EXPECT_NE(helper.find("SetOnExpandedChanged"), std::string::npos)
         << "the shared helper no longer records the user's choice, so nothing is remembered";
 
-    // And nothing in the sky panel pins an expansion to a literal. The panel does call
-    // SetExpanded once, for the preset foldout, but it seeds that from a remembered flag too --
-    // so the property to hold is "no hardcoded state", not "no call".
+    // And nothing in the sky panel pins an expansion to a literal.
     const std::string panel = SkyInspector();
     ASSERT_FALSE(panel.empty());
-    EXPECT_EQ(GameEngine::CountOccurrences(panel, "SetExpanded(true)"), 0u)
+    EXPECT_EQ(CountOf(panel, "SetExpanded(true)"), 0u)
         << "a sky foldout is pinned open, so it reopens on every panel rebuild";
-    EXPECT_EQ(GameEngine::CountOccurrences(panel, "SetExpanded(false)"), 0u)
+    EXPECT_EQ(CountOf(panel, "SetExpanded(false)"), 0u)
         << "a sky foldout is pinned shut, so the user's choice to open it is discarded on every "
            "panel rebuild";
 }
@@ -167,18 +160,20 @@ TEST(SkyInspectorSections, EachSectionContainsTheRowsItTook)
         std::initializer_list<const char*> rows;
     };
     const Group groups[] = {
-        {"fallingStars", "addSkyDiskToggle(fallingStars, \"Show falling stars\"",
-         "AddSkyStarLookRow(stars",
-         {"\"Interval (seconds)\""}},
+        {"fallingStars", "addSkyDiskToggle(fallingStars, \"Falling stars\"",
+         "\"Star density\"",
+         {"\"Falling amount\"", "\"Falling frequency\"", "\"Falling speed\"", "\"Falling length\"",
+          "\"Falling thickness\"", "\"Falling dot size\""}},
         // The star rows end where the Sun Dir override rows begin. Those go to `physical`, so a
         // span that runs past them reads three of its rows as stars that landed elsewhere.
-        {"stars", "AddSkyStarLookRow(stars", "if (!sky->AutoSunMoon)",
-         {"AddSkyStarSeenByRow(stars", "\"Visibility\"", "\"Limit\"", "\"Twinkle\"", "\"Artistic\"", "\"Highlights\"", "\"Glow\"",
-          "\"Twinkle rate\"", "\"Shape\"", "\"Core\"", "\"Spikes\"", "\"Spike length\""}},
+        {"stars", "AddComponentFloatRowWithDrag<Components::SkyEnvironment>(stars, \"Star density\"",
+         "if (!sky->AutoSunMoon)",
+         {"\"Brightness\"", "\"Size\"", "\"Diamond Shape\"", "\"Core Size\"", "\"Glow Falloff\"",
+          "\"Twinkle Speed\"", "\"Twinkle Intensity\""}},
         // Sun size 2D leads the group: it belongs with the other 2D-only knobs rather than beside
         // the sun's real size, because it is a screen fraction and not an angle.
         {"backdrop2D", "(backdrop2D, \"Sun size 2D\"", "",
-         {"\"Sun size 2D\"", "\"Sky pan 2D\"", "\"Moon size 2D\""}},
+         {"\"Sun size 2D\"", "\"Sky pan 2D\"", "\"Moon size 2D\"", "\"Falling dot size 2D\""}},
     };
 
     for (const Group& g : groups)
@@ -196,12 +191,12 @@ TEST(SkyInspectorSections, EachSectionContainsTheRowsItTook)
         {
             if (std::string(container) == g.container)
                 continue;
-            EXPECT_EQ(GameEngine::CountOccurrences(span, AddedTo(container)), 0u)
+            EXPECT_EQ(CountOf(span, AddedTo(container)), 0u)
                 << "a row inside the " << g.container << " group is added to " << container
                 << " instead, so it renders outside its section while its siblings moved";
         }
         // The old shared container, in any call shape rather than only the first-argument one.
-        EXPECT_EQ(GameEngine::CountOccurrences(span, "stylistic"), 0u)
+        EXPECT_EQ(CountOf(span, "stylistic"), 0u)
             << "a row inside the " << g.container
             << " group is still added to the Stylistic container, so it renders outside its "
                "section while its siblings moved";
@@ -271,7 +266,7 @@ TEST(SkyInspectorSections, SunIlluminanceRowIsRoutedThroughTheHelper)
     ASSERT_NE(row, std::string::npos) << "the Sun illuminance row is not in the Physical section";
     EXPECT_GT(row, picker) << "the Sun illuminance row must follow the Sun Light picker";
 
-    const std::string rowSource = Flattened(ReadEditorFile("Source/Sky/SkySun/SkySunIlluminanceRow.cpp"));
+    const std::string rowSource = Flattened(ReadEditorFile("Source/Inspectors/SkySunIlluminanceRow.cpp"));
     ASSERT_FALSE(rowSource.empty()) << "the row source did not read; this test is vacuous";
     for (const char* call : {"SunIlluminance::EditableSunLight(", "SunIlluminance::ResolvedSunLight(",
                              "SunIlluminance::LuxFromLightIntensity(", "SunIlluminance::LightIntensityFromLux(",
@@ -302,7 +297,7 @@ TEST(SkyInspectorSections, MoonlightIsRoutedInTheSunAndMoonGroup)
     EXPECT_GT(moonlight, showMoon) << "Moonlight must follow Show Moon";
     EXPECT_EQ(panel.find("AddTextBlock(", showMoon) > moonlight, true)
         << "Moonlight must sit in the Moon rows, before the next sub-header";
-    EXPECT_EQ(GameEngine::CountOccurrences(panel, "AddSkyMoonlightRow("), 1u) << "one Moonlight row";
+    EXPECT_EQ(CountOf(panel, "AddSkyMoonlightRow("), 1u) << "one Moonlight row";
 }
 
 // The ground albedo, brightness and night color feed the ground bounce in every Below Horizon mode

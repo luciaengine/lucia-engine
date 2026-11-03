@@ -119,22 +119,29 @@ namespace Rendering {
     }
 
     void VulkanQueryPool::ResetTimestampPoolSlice(uint32_t frameIndex) {
+        if (m_ResetQueryPool == nullptr)
+        {
+            m_ResetQueryPool = reinterpret_cast<PFN_vkResetQueryPool>(vkGetDeviceProcAddr(m_Device, "vkResetQueryPool"));
+            if (m_ResetQueryPool == nullptr)
+                m_ResetQueryPool = reinterpret_cast<PFN_vkResetQueryPool>(vkGetDeviceProcAddr(m_Device, "vkResetQueryPoolEXT"));
+            if (m_ResetQueryPool == nullptr) return;
+        }
         if (frameIndex >= m_FramesInFlight)
             return;
 
         if (m_TimestampSupported && m_TimestampPool != VK_NULL_HANDLE) {
             const uint32_t frameOffset = frameIndex * m_Config.MaxTimestampQueries;
-            vkResetQueryPool(m_Device, m_TimestampPool, frameOffset, m_Config.MaxTimestampQueries);
+            m_ResetQueryPool(m_Device, m_TimestampPool, frameOffset, m_Config.MaxTimestampQueries);
         }
 
         if (m_OcclusionSupported && m_OcclusionPool != VK_NULL_HANDLE) {
             const uint32_t frameOffset = frameIndex * m_Config.MaxOcclusionQueries;
-            vkResetQueryPool(m_Device, m_OcclusionPool, frameOffset, m_Config.MaxOcclusionQueries);
+            m_ResetQueryPool(m_Device, m_OcclusionPool, frameOffset, m_Config.MaxOcclusionQueries);
         }
 
         if (m_PipelineStatsSupported && m_PipelineStatsPool != VK_NULL_HANDLE) {
             const uint32_t frameOffset = frameIndex * m_Config.MaxPipelineStatsQueries;
-            vkResetQueryPool(m_Device, m_PipelineStatsPool, frameOffset, m_Config.MaxPipelineStatsQueries);
+            m_ResetQueryPool(m_Device, m_PipelineStatsPool, frameOffset, m_Config.MaxPipelineStatsQueries);
         }
     }
 

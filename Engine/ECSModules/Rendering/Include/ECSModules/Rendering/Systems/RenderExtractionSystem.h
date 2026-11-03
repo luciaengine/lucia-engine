@@ -1,4 +1,6 @@
 #pragma once
+#include "Engine/Rendering/RenderSortKey.h"
+#include "Engine/Rendering/SortingLayers.h"
 
 #include "Particles/Rendering/ParticleExtraction.h"
 #include "Types/ScopedSubscription.h"
@@ -6,7 +8,6 @@
 #include "ECS/Systems.h"
 #include "ECS/SwapGenerationGuard.h"
 #include "ECS/World.h"
-#include "ECSModules/Rendering/Systems/KeyedWorldSubmissions.h"
 #include "Engine/Rendering/PointShadowAtlasPlanner.h" // ShadowCasterChangeSphere
 #include "Engine/Rendering/PostProcessVolumeExtract.h"
 #include "Engine/Rendering/DrawCommand.h"
@@ -24,13 +25,12 @@
 #include <atomic>
 #include <deque>
 #include <memory>
-#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace GameEngine { namespace Components { struct MeshGPUData; } }
-namespace GameEngine { namespace Rendering { class GPUScene; class MeshGPURegistry; struct GPUInstance; struct ViewDesc; } }
+namespace GameEngine { namespace Rendering { class GPUScene; class MeshGPURegistry; struct GPUInstance; } }
 
 namespace GameEngine::Particles { struct ParticleWorldState; }
 
@@ -72,13 +72,7 @@ public:
         GameEngine::Components::MeshRenderer meshRenderer;
         // Components::GIEmitter presence, resolved once at gather time.
         bool giEmitter = false;
-        // Hidden by the Scene View eye (Components::SceneViewHidden or
-        // SceneViewHiddenInHierarchy), resolved once at gather time.
-        bool editorHidden = false;
-        // Holds a component that puts it in the always-refresh subset
-        // (SkinnedMeshRenderer, SkeletonRef or AnimatorRef; morph carriers
-        // are found by their own column).
-        bool alwaysRefreshCarrier = false;
+        RenderSortingData Sorting{};
         bool hasBounds = false;
         GameEngine::Components::LocalBounds bounds{};
         // E.5.2: optional sector authoring. When hasSectorCoord is true, the
@@ -93,11 +87,14 @@ public:
         float lodBias = 0.0f;       // LODGroup.Bias (log2 coverage scale for ge_SelectLOD)
 
         // Cached GPUScene-index component pointer, captured cache-coherently by
-        // the gather query; never null (MeshRenderer requires MeshGPUData).
-        // Reading it in the parallel prepare pass avoids the per-entity
-        // shared_lock in World::GetComponent; it is only ever WRITTEN back on
-        // the serial apply thread. The pointer is stable for the frame:
-        // extraction makes no structural change.
+        // the gather query. Non-null after the entity's first extraction. Reading
+        // this in the parallel prepare pass avoids the per-entity shared_lock in
+        // World::GetComponent; it is only ever WRITTEN back on the serial apply
+        // thread. Null means the entity has no MeshGPUData yet (first frame /
+        // freshly spawned) — the serial apply adds it. The pointer is stable for
+        // the frame: extraction's only structural change is adding MeshGPUData to
+        // entities that lack it, which relocates only other lacking entities, not
+        // the has-component entities whose pointers are cached here.
         GameEngine::Components::MeshGPUData* meshGpu = nullptr;
     };
 
@@ -111,10 +108,10 @@ public:
     const std::vector<WorldRenderableRecord>& GetRecords() const { return m_Records; }
 
     // Test-only seam for the lane-parity locks (fusion T4): the per-view
-    // submissions most recently handed to SubmitWorldSubmissions — rebuilt on
-    // full-lane frames, edited for the instances a structural delta frame
-    // touched, replayed verbatim on fast frames.
-    std::span<const WorldSubmissionRecord> GetSubmissionsForTest() const { return m_Submissions.Records(); }
+    // submissions most recently handed to SubmitWorldSubmissions — freshly
+    // built on full-lane frames, replayed verbatim from the cache on fast
+    // frames.
+    const std::vector<WorldSubmissionRecord>& GetSubmissionsForTest() const { return m_Submissions; }
 
     // Escalation reason bits published in RenderExtractionStats (fusion D7).
     // E-numbers per the extraction-fusion design §3.3; E9 is split out so
@@ -163,44 +160,6 @@ private:
     // this system object (the image-split rule concerns inline globals, not
     // object members).
     bool EvaluateFastPathPreconditions(ECS::World& world, uint64 worldId, uint32& reasons);
-
-    // --- Structural delta lane (S8b) ---
-    // A frame whose only escalations are a structural change (E4) and the four
-    // column probes (E5) re-prepares only the renderables in the chunks those
-    // columns changed in (placement and archetype moves stamp whole chunks, so
-    // new and moved renderables are among them) and drops the submissions of
-    // the slots GPUScene freed since the last run. Everything else the fast
-    // lane does runs as on a fast frame. The lane checks the world's enabled
-    // renderable count against what it tracks; any case it cannot account for
-    // (a disable, a MeshRenderer removed from a live entity, a carrier of the
-    // always-refresh subset that is not yet in it) falls back to the full lane
-    // the same frame.
-    bool IsStructuralDeltaEligible(uint32 reasons) const;
-    struct StructuralDeltaResult
-    {
-        bool Applied = false;
-        uint32 Prepared = 0;
-        uint32 Rebuilt = 0;
-        uint32 Skipped = 0;
-        double PrepareMs = 0.0;
-        double ApplyMs = 0.0;
-    };
-    StructuralDeltaResult RunStructuralDelta(ECS::World& world, Rendering::GPUScene& scene, RenderServices& rs,
-                                             uint64 worldId,
-                                             const std::vector<const Rendering::ViewDesc*>& matchingViews,
-                                             Rendering::MeshGPURegistry& meshReg, MaterialRegistry& matReg,
-                                             bool extractDiag);
-    // Records of the enabled renderables in the chunks a probed column changed
-    // in since m_ProbeSince, one per entity. False when one is HLOD-evicted or
-    // is a carrier of the always-refresh subset that is not in it yet.
-    bool GatherStructuralDeltaRecords(ECS::World& world, std::vector<WorldRenderableRecord>& out) const;
-    // Full lane: the slot-keyed state the delta lane edits, rebuilt from the
-    // pass's records.
-    void RebuildKeyedRenderableState(const Rendering::GPUScene& scene, uint32 hlodSkipped);
-    // Releases or tombstones the GPUScene slots of renderables the gather no
-    // longer sees (MeshRenderer gone, entity or renderer disabled). Runs before
-    // every full lane.
-    void ReleaseUngatheredInstances(ECS::World& world, Rendering::GPUScene& scene);
     uint32 PatchDirtyInstances(ECS::World& world, Rendering::GPUScene& scene);
     uint32 RefreshAlwaysRefreshSubset(ECS::World& world, Rendering::GPUScene& scene,
                                       Rendering::MeshGPURegistry& meshReg,
@@ -234,11 +193,15 @@ private:
     ECS::ChangeGate m_ProbeGateLocalBounds;
     ECS::ChangeGate m_ProbeGateSectorCoord;
     ECS::ChangeGate m_ProbeGateLodGroup;
-    // The oldest of the four probe gates before this frame's probes advanced
-    // them: what the structural delta lane's changed-chunk query compares against.
-    ECS::ChangeGate m_ProbeSince;
-    std::size_t m_FullPassStructuralVersion = 0;  // E4 — the entry version of the last full pass
-    std::size_t m_FrameStructuralVersion = 0;     // E4 — this frame's entry version
+    ECS::ChangeGate m_ProbeGateSectorCoordSorting;
+    ECS::ChangeGate m_ProbeGateSorting;
+    ECS::ChangeGate m_ProbeGateSortingParents;
+    ECS::ChangeGate m_ProbeGateSortingTransforms;
+    uint64 m_SortingRevision = 0;
+    bool m_HadSorting = false;
+    Rendering::SortingLayers m_SortingLayers;
+    uint64 m_SortingSnapshotRevision = 0;
+    std::size_t m_FullPassStructuralVersion = 0;  // E4 — sampled at full-lane END (post-apply)
     std::atomic<bool> m_MeshReloadPending{false}; // E6
     // Unsubscribes on destruction; safe even if the registry died first.
     ScopedSubscription m_MeshReloadSubscription;
@@ -267,7 +230,6 @@ private:
     uint32 m_LastPendingMaterialLoad = 0;
     uint32 m_LastPendingPipeline = 0;
     uint32 m_LastPendingSentinelIndex = 0;
-    uint32 m_LastPendingUnresolvedTransform = 0;
     bool m_CachesPrimed = false;                  // E11
     uint64 m_CachesWorldId = 0;
     uint64 m_CachedMeshDigest = 0;                // mesh-only digest term (ocean re-added per frame)
@@ -289,25 +251,7 @@ private:
 #endif
 
     std::vector<WorldRenderableRecord> m_Records;
-    KeyedWorldSubmissions m_Submissions;          // retained, keyed by GPUScene slot
-    std::vector<WorldSubmissionRecord> m_LaneSubmissions; // one lane's emissions, before keying
-
-    // Slot-keyed renderable state the structural delta lane edits; the full
-    // lane rebuilds it. m_SlotDigest holds each tracked slot's membership
-    // digest term (m_CachedMeshDigest is their sum plus the slotless records').
-    std::vector<uint64> m_SlotDigest;
-    std::vector<uint8> m_SlotTracked;
-    uint32 m_TrackedSlots = 0;          // gathered renderables that own a slot
-    uint32 m_TrackedSlotless = 0;       // gathered renderables without one (pending or unrenderable)
-    uint32 m_TrackedHlodSkipped = 0;    // renderables the last gather skipped as HLOD-evicted
-    bool m_KeyedStatePrimed = false;    // the full lane built the state above for this world
-    uint64 m_ReleaseCursor = 0;         // GPUScene release-log entries already applied
-    std::vector<uint32> m_ReleasedScratch;
-    std::vector<uint32> m_EraseSlots; // slots whose retained records the delta lane drops
-    std::vector<WorldRenderableRecord> m_DeltaRecords;
-    // Entities the delta lane prepared this run, sorted. It runs before the
-    // patch lane, which leaves them alone (see PatchDirtyInstances).
-    std::vector<ECS::EntityId> m_DeltaPreparedIds;
+    std::vector<WorldSubmissionRecord> m_Submissions;
 
     // Sub-phase timing window (A2.1). Rolling ring of the last N ticks so a
     // single get_render_stats poll returns a stable mean/max under the bench's

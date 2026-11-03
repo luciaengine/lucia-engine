@@ -1,5 +1,6 @@
 #include "ClaudeSessionProvider.h"
 
+#include "ClaudeUserContent.h"
 #include "CliSessionFiles.h"
 #include "JsonFields.h"
 
@@ -48,10 +49,26 @@ std::string VersionText(const Version& version)
 }
 } // namespace
 
+std::string ClaudeSessionProvider::TurnInput(const AgentTurnRequest& request) const
+{
+    if (request.Images.empty())
+        return request.UserText;
+    const nlohmann::json message = {{"type", "user"},
+                                    {"message", {{"role", "user"}, {"content", ClaudeUserContent(request)}}}};
+    // One line: the CLI reads stream-json input a line at a time.
+    return message.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace) + "\n";
+}
+
 std::vector<std::string> ClaudeSessionProvider::TurnArguments(const AgentTurnRequest& request) const
 {
     std::vector<std::string> arguments = {"-p", "--output-format", "stream-json", "--verbose",
                                           "--include-partial-messages"};
+    if (!request.Images.empty())
+    {
+        // Images travel only as content blocks: the session has no tool that could read a path.
+        arguments.push_back("--input-format");
+        arguments.push_back("stream-json");
+    }
     if (!request.SessionId.empty())
     {
         arguments.push_back("--resume");
@@ -75,11 +92,6 @@ std::vector<std::string> ClaudeSessionProvider::TurnArguments(const AgentTurnReq
         arguments.push_back("--model");
         arguments.push_back(request.Model);
     }
-    if (!request.Effort.empty())
-    {
-        arguments.push_back("--effort");
-        arguments.push_back(request.Effort);
-    }
     if (!request.SystemPrompt.empty())
     {
         arguments.push_back("--append-system-prompt");
@@ -101,8 +113,6 @@ void ClaudeSessionProvider::ReadLine(std::string_view line, TurnState& turn) con
         const std::string sessionId = JsonFields::String(record, "session_id");
         if (!sessionId.empty())
             turn.Events.OnSessionId(sessionId);
-        // The model the alias or the user's own setting resolved to.
-        turn.Result.Model = JsonFields::String(record, "model");
     }
     else if (type == "stream_event")
     {
@@ -139,11 +149,10 @@ void ClaudeSessionProvider::ReadToolCalls(const nlohmann::json& record, TurnStat
 }
 
 // The first line of a tool_result's text (a string, or the first text block), at most
-// kMaxErrorBytes and then ending in an ellipsis; empty when it carries no text. The call's
-// row shows two lines of it and its Details the whole.
+// kMaxErrorBytes; empty when it carries no text.
 std::string ClaudeSessionProvider::FirstErrorLine(const nlohmann::json& toolResult)
 {
-    constexpr size_t kMaxErrorBytes = 4096;
+    constexpr size_t kMaxErrorBytes = 200;
     const auto content = toolResult.find("content");
     std::string text;
     if (content != toolResult.end() && content->is_string())
@@ -162,7 +171,6 @@ std::string ClaudeSessionProvider::FirstErrorLine(const nlohmann::json& toolResu
         while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80)
             --end;
         text.resize(end);
-        text += "\xE2\x80\xA6";
     }
     return text;
 }
@@ -282,27 +290,15 @@ std::string ClaudeSessionProvider::CheckReadiness(const CancelToken& cancel) con
 void ClaudeSessionProvider::ReadTextDelta(const nlohmann::json& record, TurnState& turn)
 {
     const nlohmann::json& event = JsonFields::Object(record, "event");
-    const std::string type = JsonFields::String(event, "type");
-    std::string text;
-    if (type == "content_block_start")
-    {
-        // A text block after another (the text after a tool call, in the same message or the
-        // next) is a paragraph of its own.
-        const nlohmann::json& block = JsonFields::Object(event, "content_block");
-        if (JsonFields::String(block, "type") != "text")
-            return;
-        turn.TextBlocks.BeginBlock();
-        text = JsonFields::String(block, "text");
-    }
-    else if (type == "content_block_delta")
-    {
-        const nlohmann::json& delta = JsonFields::Object(event, "delta");
-        if (JsonFields::String(delta, "type") != "text_delta")
-            return;
-        text = JsonFields::String(delta, "text");
-    }
-    const std::string_view appended = turn.TextBlocks.Append(turn.Result.Text, text);
-    if (!appended.empty())
-        turn.Events.OnTextDelta(appended);
+    if (JsonFields::String(event, "type") != "content_block_delta")
+        return;
+    const nlohmann::json& delta = JsonFields::Object(event, "delta");
+    if (JsonFields::String(delta, "type") != "text_delta")
+        return;
+    const std::string text = JsonFields::String(delta, "text");
+    if (text.empty())
+        return;
+    turn.Result.Text += text;
+    turn.Events.OnTextDelta(text);
 }
 } // namespace GameEngine

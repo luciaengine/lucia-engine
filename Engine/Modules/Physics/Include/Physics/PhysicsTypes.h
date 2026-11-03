@@ -193,6 +193,14 @@ struct BodySettings
 
     // User data (typically packed EntityId)
     uint64 userData = 0;
+
+    // Snapshotted at body creation and handed back to the contact-modify
+    // callback (see PhysicsWorld::SetContactModifyCallback). Both are opaque
+    // here: Physics never interprets them, it only carries them to the
+    // callback, which owns their meaning. userData is NOT reused for this —
+    // PhysicsECS already defines it as the ECS entity id.
+    uint32 contactFlags = 0;
+    uint32 materialIndex = 0;
 };
 
 struct PhysicsWorldSettings

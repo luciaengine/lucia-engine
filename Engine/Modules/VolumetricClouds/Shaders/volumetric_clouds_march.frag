@@ -25,7 +25,6 @@ layout(set = 0, binding = 3, std140) uniform ViewParamsBlock
 #undef GE_VP_VEC4
 #undef GE_VP_MAT4
 } ViewParams;
-#include "../../Rendering/Shaders/Includes/reverse_z.glsl"
 
 layout(set = 0, binding = 4, std140) uniform CloudParamsBlock
 {
@@ -299,7 +298,7 @@ void main()
 
     // Reverse-Z: near -> 1.0, far/sky -> 0.0.
     float rawDepth = texture(uDepth, vUV).r;
-    bool sky = IsBackgroundDepth(rawDepth);
+    bool sky = rawDepth <= 0.000001;
     vec2 ndc = ViewportUvToNdc(vUV);
     vec4 pV = ViewParams.ge_invProj * vec4(ndc, sky ? 0.5 : rawDepth, 1.0);
     pV.xyz /= max(pV.w, 1e-6);

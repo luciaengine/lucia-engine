@@ -8,7 +8,7 @@
 #include <gtest/gtest.h>
 
 #include "Rendering/ShaderCache/ShaderMetaBinary.h"
-#include "Rendering/Materials/Shader/ShaderMetaJson.h"
+#include "Rendering/Materials/ShaderMetaJson.h"
 #include "Types/Fnv1a.h"
 
 #include <nlohmann/json.hpp>

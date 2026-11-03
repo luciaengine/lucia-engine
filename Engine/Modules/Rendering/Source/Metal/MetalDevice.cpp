@@ -3,7 +3,7 @@
 #include "MetalAccelerationStructures.h"
 #include "MetalCommandList.h"
 #include "MetalHdrOutput.h"
-#include "MetalIndirectCount/MetalIndirectCountResources.h"
+#include "MetalIndirectCountResources.h"
 #include "MetalLayerBridge.h"
 #include "MetalQueryPool.h"
 #include "MetalSwapchain.h"
@@ -11,10 +11,12 @@
 #include <chrono>
 
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Rendering/Core/RendererProfile.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderCompileService.h"
 
 #include <cstring>
+#include <objc/runtime.h>
 
 namespace GameEngine
 {
@@ -72,7 +74,9 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     // capability gate; on failure we keep the proven per-encoder useResources
     // path. Enabled by default where supported; GE_METAL_RESIDENCY_SET=0 forces
     // the legacy useResources path.
-    if (const char* env = std::getenv("GE_METAL_RESIDENCY_SET"); env == nullptr || env[0] != '0')
+    if (Platform::EnvironmentSwitchEnabled("GE_METAL_RESIDENCY_SET", true) &&
+        class_respondsToSelector(object_getClass(reinterpret_cast<id>(m_Device)),
+                                 sel_registerName("newResidencySetWithDescriptor:error:")))
     {
         MTL::ResidencySetDescriptor* rsDesc = MTL::ResidencySetDescriptor::alloc()->init();
         NS::Error* rsError = nullptr;
@@ -98,10 +102,15 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
         }
     }
 
+    const bool tier2ArgumentBuffers = m_Device->argumentBuffersSupport() >= MTL::ArgumentBuffersTier2;
+    if (tier2ArgumentBuffers)
+    {
     m_IndirectCountResources = std::make_shared<MetalIndirectCountResources>(m_Device);
     if (!m_IndirectCountResources->Initialize({m_GraphicsQueue, m_ComputeQueue, m_TransferQueue}))
     {
         m_IndirectCountResources.reset();
+    }
+
     }
 
     m_FrameSemaphore = dispatch_semaphore_create(kFramesInFlight);
@@ -112,20 +121,17 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
         m_QueryPool.reset();
     }
 
-    // Honest milestone-1 capabilities: GPU-driven features arrive in later
-    // milestones; the engine gates on these flags.
     m_Capabilities = {};
+    m_Capabilities.supportsFilterableFloat32 = m_Device->supports32BitFloatFiltering();
     // Bindless: the engine's texture/sampler arrays map onto Tier2 argument
-    // buffers (all Apple Silicon); descriptor writes are raw 8-byte slot
+    // buffers where supported; descriptor writes are raw 8-byte slot
     // stores, so update-after-bind semantics hold trivially.
-    m_Capabilities.supportsBindlessResources = true;
-    m_Capabilities.maxBindlessTextures = 16384;
-    m_Capabilities.maxBindlessBuffers = 16384;
+    m_Capabilities.supportsBindlessResources = tier2ArgumentBuffers;
+    m_Capabilities.maxBindlessTextures = tier2ArgumentBuffers ? 16384 : 0;
+    m_Capabilities.maxBindlessBuffers = tier2ArgumentBuffers ? 16384 : 0;
     // MTLBuffer::gpuAddress + per-encoder useResource residency (see
     // DeclareDeviceAddressResidency) back the engine's BDA contract.
-    m_Capabilities.supportsBufferDeviceAddress = true;
-    // Each colour attachment of a Metal pipeline carries its own blend and write mask.
-    m_Capabilities.supportsIndependentBlend = true;
+    m_Capabilities.supportsBufferDeviceAddress = tier2ArgumentBuffers;
     // Mesh shaders need Metal 3 + an Apple-family-7 GPU (M1/A14 and later);
     // both Apple7 and Metal3 capability imply the drawMeshThreadgroups API.
     m_Capabilities.supportsMeshShaders =
@@ -157,7 +163,7 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     ShaderCompileService::SetMaxSupportedSpirv(ShaderCompileService::SpirvTarget::Spirv_1_6);
     m_Capabilities.maxPerStageSamplers = 16;
     // Metal's per-stage buffer argument table.
-    m_Capabilities.maxPerStageStorageBuffers = 31;
+    m_Capabilities.maxPerStageStorageBuffers = tier2ArgumentBuffers ? 31 : 25;
 
     // Per-stage sampled-image / resource limits. Callers (e.g. the UI texture
     // registry) size their bindless sampled-image arrays against these. The
@@ -172,8 +178,6 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     // limit there.
     static constexpr uint32_t kDirectFragmentSampledImageLimit = 96;
     static constexpr uint32_t kNonImageFragmentBindingHeadroom = 16;
-    const bool tier2ArgumentBuffers =
-        m_Device->argumentBuffersSupport() >= MTL::ArgumentBuffersTier2;
     if (tier2ArgumentBuffers)
     {
         m_Capabilities.maxPerStageSampledImages = m_Capabilities.maxBindlessTextures;
@@ -494,12 +498,7 @@ bool MetalDevice::SetHdrOutputMode(HdrOutputMode mode, const HdrStaticMetadata* 
     {
         MetalLayerBridge::GetWindowEdrHeadroom(swapchain->GetWindow(), headroom.current, headroom.potential);
     }
-    // GE_METAL_FORCE_EDR=1 lets the EDR path run on SDR displays for
-    // verification (output simply clips at headroom 1.0).
-    static const bool kForceEdr = []() {
-        const char* env = std::getenv("GE_METAL_FORCE_EDR");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool kForceEdr = Platform::EnvironmentSwitchEnabled("GE_METAL_FORCE_EDR", false);
     headroom.forced = kForceEdr;
 
     m_HdrState = ResolveMetalHdrOutputState(m_HdrState, mode, metadata, bitDepth, headroom);
@@ -678,13 +677,13 @@ void MetalDevice::ScrubResidency(MTL::Resource* resource)
     }
     std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
     m_DescriptorSets.ForEach([resource](Handle, MetalDescriptorSet& set) {
-        for (size_t slot = 0; slot < set.residentResources.Size(); ++slot)
+        for (size_t i = 0; i < set.residentResources.size(); ++i)
         {
-            if (set.residentResources[slot] == resource)
+            if (set.residentResources[i] == resource)
             {
-                set.residentResources[slot] = nullptr;
-                set.residentWritable[slot] = 0;
-                set.residentIndirectArguments[slot] = 0;
+                set.residentResources[i] = nullptr;
+                set.residentWritable[i] = 0;
+                set.residentIndirectArguments[i] = 0;
                 set.residentsDirty = true;
             }
         }
@@ -1045,7 +1044,7 @@ MTL::SamplerState* MetalDevice::GetMipBlitSampler()
 }
 
 void MetalDevice::DeclareDeviceAddressResidency(MTL::RenderCommandEncoder* encoder,
-                                                FastHashMap<MTL::Resource*, MTL::ResourceUsage>& residentCache)
+                                                std::unordered_map<MTL::Resource*, MTL::ResourceUsage>& residentCache)
 {
     // Residency-set path declares residency once per frame on the queue and
     // orders compute->draw with the fence; the per-encoder blanket is skipped.
@@ -1072,7 +1071,7 @@ void MetalDevice::DeclareDeviceAddressResidency(MTL::RenderCommandEncoder* encod
 }
 
 void MetalDevice::DeclareDeviceAddressResidency(MTL::ComputeCommandEncoder* encoder,
-                                                FastHashMap<MTL::Resource*, MTL::ResourceUsage>& residentCache)
+                                                std::unordered_map<MTL::Resource*, MTL::ResourceUsage>& residentCache)
 {
     if (m_UseResidencySet)
     {
@@ -1136,10 +1135,7 @@ MTL::Buffer* MetalDevice::FindBufferByGpuAddress(uint64_t address, uint64_t& out
 
 void MetalDevice::ArmGpuCaptureIfRequested()
 {
-    static bool s_Requested = []() {
-        const char* env = std::getenv("GE_METAL_GPU_CAPTURE");
-        return env != nullptr && env[0] != '0';
-    }();
+    static bool s_Requested = Platform::EnvironmentSwitchEnabled("GE_METAL_GPU_CAPTURE", false);
     static bool s_Done = false;
     // Capture the 120th frame: the scene view is fully up by then.
     static int s_FrameCountdown = 120;
@@ -1387,8 +1383,6 @@ bool MetalDevice::BeginFrame()
         transientSets.clear();
         m_TransientDescriptorArenas[m_FrameIndex].Reset();
     }
-    // This slot's previous frame has finished, so the set cache ages one frame here.
-    AgeCachedDescriptorSets();
 
     MetalSwapchain* swapchain = GetSwapchain(m_ActiveWindowTarget);
     if (swapchain != nullptr && m_Desc.enableSwapchain)

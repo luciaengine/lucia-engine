@@ -35,7 +35,7 @@ using TaskId = uint64;
 // asserts in Debug.
 inline constexpr size_t kMaxBlockingThreadBudget = 64;
 
-class TaskBase;
+class Task;
 class TaskHandle;
 class WorkStealingThreadPool;
 class TaskDependencyGraph;

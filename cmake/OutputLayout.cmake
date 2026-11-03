@@ -148,17 +148,8 @@ function(ge_refresh_application_copies library_target)
   )
 endfunction()
 
-# Also marks the target as a test executable, which receives the allocation counter's
-# hook in every configuration (cmake/AllocationHook.cmake).
 function(ge_set_output_tests target_name)
   ge_set_target_runtime_output_dir(${target_name} "Tests")
-  set_property(TARGET ${target_name} PROPERTY GE_TEST_EXECUTABLE TRUE)
-  # A test compares or opens paths from __FILE__, so its own sources keep the full path in Release too.
-  get_target_property(_ge_test_options ${target_name} COMPILE_OPTIONS)
-  if(_ge_test_options)
-    list(FILTER _ge_test_options EXCLUDE REGEX "d1trimfile|macro-prefix-map")
-    set_property(TARGET ${target_name} PROPERTY COMPILE_OPTIONS "${_ge_test_options}")
-  endif()
 endfunction()
 
 function(ge_set_output_demos target_name)
@@ -173,7 +164,7 @@ endfunction()
 # staged as resources in Contents/Resources. Contents/MacOS holds code only:
 # codesign seals every file there as code, and refuses a directory whose name
 # looks like a nested bundle. The runtime half of this rule is
-# ApplicationPaths::InstallContentRootFor.
+# PathUtils::InstallContentRootFor.
 #
 function(ge_get_staged_content_dir target_name out_var)
   get_target_property(_ge_is_bundle ${target_name} MACOSX_BUNDLE)
@@ -294,9 +285,9 @@ function(ge_stage_runtime_dependencies target_name)
 
   # All platforms use the same scan-based staging: `file(GET_RUNTIME_DEPENDENCIES)`
   # reads the binary's import table and locates each needed library in the search
-  # dirs. This catches every transitive vcpkg DLL — including those of libraries
-  # linked without an imported SHARED target (e.g. the FFmpeg libraries, parts of
-  # FindVulkan in older SDKs), which CMake's `TARGET_RUNTIME_DLLS` would
+  # dirs. This catches every transitive vcpkg DLL — including those exposed via
+  # find_package modules that don't create imported SHARED targets (e.g. FindFFMPEG,
+  # parts of FindVulkan in older SDKs) which CMake's `TARGET_RUNTIME_DLLS` would
   # otherwise miss.
   #
   # vcpkg's own applocal.ps1 post-build step is gated off project-wide via
@@ -318,9 +309,9 @@ function(ge_stage_runtime_dependencies target_name)
   # Fresh build-output dirs come before the staged app dir so NEW dependencies
   # resolve to fresh binaries. Note this ordering alone does NOT protect the
   # scan from stale ALREADY-STAGED copies: on Windows the PE scanner probes a
-  # scanned module's own directory before this list, so StageRuntimeDependencies
-  # refreshes staged libraries from these dirs before scanning (see the
-  # pre-refresh pass there for the full failure mode).
+  # scanned module's own directory before this list. StageRuntimeDependencies
+  # stages this host's imports and also scans their fresh source binaries until
+  # the current transitive import closure has been discovered.
   set(_ge_search_dirs
       "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
       "${CMAKE_BINARY_DIR}/lib/$<CONFIG>"
@@ -397,6 +388,10 @@ function(ge_stage_runtime_dependencies target_name)
       OUTPUT "${_ge_script}"
       CONTENT "${_ge_script_content}"
   )
+  set_property(TARGET ${target_name} APPEND PROPERTY LINK_DEPENDS
+      "${_ge_script}"
+      "${CMAKE_SOURCE_DIR}/cmake/StageRuntimeDependencies.cmake"
+      "${CMAKE_SOURCE_DIR}/cmake/GeStagedCopy.cmake")
 
   add_custom_command(TARGET ${target_name} POST_BUILD
       COMMAND "${CMAKE_COMMAND}" -P "${_ge_script}"
@@ -420,7 +415,7 @@ endfunction()
 # Stage one source file at relative_dest under a target's runtime layout
 # directory (bin/<Config>/Tests for ge_set_output_tests targets) — the
 # exe-anchored root a test reads staged content from
-# (ApplicationPaths::GetInstallAssetsRoot() is <exe>/Assets for a test executable).
+# (PathUtils::GetInstallAssetsRoot() is <exe>/Assets for a test executable).
 # Every executable in one layout directory shares that tree, so several targets
 # may name the same destination: keyed by layout directory + relative_dest, the
 # copy is made once and each declaring target depends on it — building any one

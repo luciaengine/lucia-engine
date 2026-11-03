@@ -80,16 +80,16 @@ DropdownPopupRoom PlaceDropdownPopup(UIElement& header, UIElement& popup, float 
     offset = std::max(offset, std::min(0.0f, leftLimit));
     if (offset < 0.0f)
     {
-        popup.Style().Set(Style::PositionLeft, StyleLength::Px(offset / windowPerLayoutX));
+        popup.Overrides().Set(Style::PositionLeft, StyleLength::Px(offset / windowPerLayoutX));
         // A popup that has to be pulled back does not fit where it was anchored, and it was sized against
         // the header, not the panel: give it the panel's width so its rows use the space that is there.
         if (available > 0.0f)
-            popup.Style().Set(Style::MinWidth, StyleLength::Px(available / windowPerLayoutX));
+            popup.Overrides().Set(Style::MinWidth, StyleLength::Px(available / windowPerLayoutX));
     }
     else
     {
-        popup.Style().Reset(Style::PositionLeft);
-        popup.Style().Reset(Style::MinWidth);
+        popup.Overrides().Reset(Style::PositionLeft);
+        popup.Overrides().Reset(Style::MinWidth);
     }
 
     return {std::max(0.0f, (upward ? roomAbove : roomBelow) - kPopupEdgeClearance), windowPerLayoutY};

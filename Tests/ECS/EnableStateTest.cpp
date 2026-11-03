@@ -16,7 +16,7 @@
 #include "Components/Transform.h"
 #include "ECS/AutoRegistration.h"
 #include "ECS/CachedQuery.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "ECS/Components.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
@@ -187,7 +187,7 @@ TEST(EnableStateTest, AParentRelationOffsetOutsideTheComponentAsserts)
     AutoComponentRegistrar<TestParentLink>::EnsureRegistered();
     EXPECT_DEATH(
         {
-            GameEngine::TestUtils::SuppressCrtDialogsInDeathTestChild();
+            SuppressCrtDialogsInDeathTestChild();
             World w(nullptr);
             w.SetParentRelation(GetComponentTypeId<TestParentLink>(), static_cast<uint32>(sizeof(TestParentLink)));
         },
@@ -200,7 +200,7 @@ TEST(EnableStateTest, AParentRelationOnAnUnregisteredTypeAsserts)
     ASSERT_EQ(ComponentRegistry::GetComponentInfo(GetComponentTypeId<UnregisteredParentLink>()), nullptr);
     EXPECT_DEATH(
         {
-            GameEngine::TestUtils::SuppressCrtDialogsInDeathTestChild();
+            SuppressCrtDialogsInDeathTestChild();
             World w(nullptr);
             w.SetParentRelation(GetComponentTypeId<UnregisteredParentLink>(),
                                 static_cast<uint32>(offsetof(UnregisteredParentLink, Parent)));

@@ -1,6 +1,7 @@
 #include "Jobs/FileChangeTracker.h"
 #include "AssetCore/SharedFileRead.h"
 #include "Logger/Logger.h"
+#include "Types/Fnv1a.h"
 #include <filesystem>
 #include <sstream>
 #include <regex>
@@ -10,15 +11,6 @@
 #include <functional>
 
 namespace GameEngine {
-
-FileChangeTracker::FileChangeTracker(const std::string& cacheFilePath)
-    : m_CacheFilePath(cacheFilePath.empty() ? "file_change_cache.json" : cacheFilePath) {
-    LoadCache();
-}
-
-FileChangeTracker::~FileChangeTracker() {
-    SaveCache();
-}
 
 FileChangeTracker::ChangeDetectionResult FileChangeTracker::DetectChanges(
     const std::string& sourceDirectory, bool recursive) {
@@ -129,14 +121,7 @@ std::string FileChangeTracker::CalculateFileHash(const std::string& filePath) {
         return "";
     }
 
-    // FNV-1a hash (64-bit)
-    uint64_t hash = 14695981039346656037ULL; // FNV offset basis
-    const uint64_t prime = 1099511628211ULL;  // FNV prime
-
-    for (uint8 byte : buffer) {
-        hash ^= static_cast<uint64_t>(byte);
-        hash *= prime;
-    }
+    const uint64_t hash = Hashing::Fnv1a64(buffer.data(), buffer.size());
 
     // Convert to hex string
     std::stringstream ss;
@@ -301,18 +286,6 @@ std::string FileChangeTracker::GetChangeTypeDescription(ChangeType changeType) {
         case ChangeType::Structural: return "Structural";
         default: return "Unknown";
     }
-}
-
-bool FileChangeTracker::SaveCache() {
-    // TODO: Implement JSON serialization
-    Logger::Log::Debug("[FileChangeTracker] Cache save not yet implemented");
-    return true;
-}
-
-bool FileChangeTracker::LoadCache() {
-    // TODO: Implement JSON deserialization
-    Logger::Log::Debug("[FileChangeTracker] Cache load not yet implemented");
-    return true;
 }
 
 const FileChangeTracker::FileMetadata* FileChangeTracker::GetCachedMetadata(const std::string& filePath) const {

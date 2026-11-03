@@ -108,11 +108,9 @@ struct UnityImportEditorModuleRegistrar
                  return modal;
              }});
 
-        m_ImportMenuItem = Editor::EditorMenuRegistry::Get().RegisterMenuItem(
+        Editor::EditorMenuRegistry::Get().RegisterMenuItem(
             {"Tools/Import Unity Package...", 0, [] { ShowImportModal(); }});
     }
-
-    GameEngine::ScopedSubscription m_ImportMenuItem;
 };
 
 UnityImportEditorModuleRegistrar s_Registrar;

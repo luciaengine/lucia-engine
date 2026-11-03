@@ -1,6 +1,7 @@
 #include "Rendering/Core/GPUCulling.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -10,7 +11,7 @@
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 namespace GameEngine
@@ -61,8 +62,7 @@ constexpr uint32_t kOcclusionPhaseANameCode = 0xFCu; // "GPUCulling.View{n}.C252
 constexpr uint32_t kOcclusionPhaseBNameCode = 0xFDu; // "GPUCulling.View{n}.C253"
 
 // set 0 for hzb_culling.comp: instance/cullingData/visibility/prevVisible SSBOs,
-// the HZB combined image sampler, the stats SSBO and the per-material
-// deformation margins.
+// the HZB combined image sampler, and the stats SSBO.
 DescriptorSetLayoutDesc MakeHzbCullingDescriptorSetLayout()
 {
     DescriptorSetLayoutDesc layout{};
@@ -89,7 +89,6 @@ DescriptorSetLayoutDesc MakeHzbCullingDescriptorSetLayout()
     hzb.debugName = "HZB";
     layout.bindings.push_back(hzb);
     addStorage(5, "OcclusionStatsBuffer");
-    addStorage(6, "DeformationMarginBuffer");
     return layout;
 }
 
@@ -114,16 +113,13 @@ void FillCullingDataFromView(const ViewCullingInput& view, uint32_t sliceInstanc
     cd.farPlane = view.farPlane;
     cd.firstInstance = view.firstInstance;
     cd.instanceCount = sliceInstanceCount;
-    cd.renderLayerMask = view.renderLayerMask.Bits;
+    cd.renderLayerMask = view.renderLayerMask;
     cd.frameIndex = view.frameIndex;
     cd.deltaTime = view.deltaTime;
     // Shadow dispatches (area light = kAreaShadowCullingIndex, or any per-view
     // cascade) must drop non-casters; the main camera / reflection / thumbnail
-    // views (kCullingCascadeIndexNone) are color dispatches and drop shadows-only
-    // instances instead.
-    cd.passFlags = (view.cascadeIndex != kCullingCascadeIndexNone) ? kCullPassShadowDispatch : 0u;
-    if (view.dropEditorHidden)
-        cd.passFlags |= kCullPassDropEditorHidden;
+    // views (kCullingCascadeIndexNone) keep everything.
+    cd.cullShadowCasters = (view.cascadeIndex != kCullingCascadeIndexNone) ? 1u : 0u;
     // Single-view dispatches (main / probe / area / spot / point faces)
     // stay conservative — a false cull here pops on screen.
     for (uint32_t m = 0; m < kMaxViewsPerCullingDispatch; ++m)
@@ -463,7 +459,8 @@ RenderGraph::RGBuffer GPUCullingPipeline::ImportPrevVisible(RenderGraph::RGFrame
         return {};
     PrevVisibleView& pv = m_PrevVisible[viewId];
     // Sized for the global instance index the shader addresses (prevVisible[i]);
-    // grown like m_VisibilityBufferU.
+    // grown like m_VisibilityBufferU, to the next power of two, so a scene that
+    // streams in keeps this history across most new instance-count maxima.
     const size_t kMinBytes = 4096;
     const size_t needBytes =
         std::max(kMinBytes, static_cast<size_t>(instanceCount) * sizeof(uint32_t));
@@ -472,14 +469,15 @@ RenderGraph::RGBuffer GPUCullingPipeline::ImportPrevVisible(RenderGraph::RGFrame
     {
         if (pv.buffer.IsValid())
             m_Device->DestroyBuffer(pv.buffer); // deferred-destroy device-side
+        const size_t allocBytes = std::bit_ceil(needBytes);
         BufferDesc d{};
-        d.size = needBytes;
+        d.size = allocBytes;
         d.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::TransferDst);
         d.memoryUsage = BufferMemoryUsage::DeviceLocal;
         pv.importName = "GPUCulling.PrevVisible.V" + std::to_string(static_cast<uint32_t>(viewId));
         d.debugName = pv.importName.c_str();
         pv.buffer = m_Device->CreateBuffer(d);
-        pv.bytes = pv.buffer.IsValid() ? needBytes : 0;
+        pv.bytes = pv.buffer.IsValid() ? allocBytes : 0;
         freshlyCreated = true;
     }
     if (!pv.buffer.IsValid())
@@ -582,7 +580,6 @@ void GPUCullingPipeline::ScheduleHzbCullPass(RenderGraph::RGFrame& frame,
                                              uint32_t prevVisibleBytes, RenderGraph::RGBuffer stats,
                                              RenderGraph::RGTexture hzb,
                                              const GPUCullingData& cullingData,
-                                             const CullDeformationMargins& margins,
                                              uint32_t sliceOffsetElements, uint32_t firstInstance,
                                              uint32_t sliceInstanceCount, uint64_t sliceStableKey)
 {
@@ -592,7 +589,7 @@ void GPUCullingPipeline::ScheduleHzbCullPass(RenderGraph::RGFrame& frame,
         return;
     const SamplerHandle sampler = EnsureHzbSampler();
     if (!sampler.IsValid() || !instances.IsValid() || !visibility.IsValid() ||
-        !prevVisible.IsValid() || !stats.IsValid() || !hzb.IsValid() || !margins.Valid())
+        !prevVisible.IsValid() || !stats.IsValid() || !hzb.IsValid())
         return;
 
     // Per-dispatch culling params via the frame upload ring (same as the
@@ -646,7 +643,7 @@ void GPUCullingPipeline::ScheduleHzbCullPass(RenderGraph::RGFrame& frame,
             }
         },
         [pipeline, sampler, instances, visibility, prevVisible, stats, hzb, cdBuf = cd.Buffer,
-         cdOff = cd.Offset, margins, pc, instanceBytes, visBytes, prevVisibleBytes, isPhaseB,
+         cdOff = cd.Offset, pc, instanceBytes, visBytes, prevVisibleBytes, statsBytes, isPhaseB,
          instanceCount = sliceInstanceCount](RenderGraph::RGContext& ctx)
         {
             DescriptorSetDesc setDesc{};
@@ -680,7 +677,6 @@ void GPUCullingPipeline::ScheduleHzbCullPass(RenderGraph::RGFrame& frame,
                                                         prevVisibleBytes);
             ctx.GetDevice()->UpdateCombinedImageSamplerBinding(set, 4, ctx.GetTexture(hzb), sampler);
             ctx.GetDevice()->UpdateStorageBufferBinding(set, 5, ctx.GetBuffer(stats), 0, statsBytes);
-            ctx.GetDevice()->UpdateStorageBufferBinding(set, 6, margins.Buffer, margins.Offset, margins.Bytes);
 
             ctx.Cmd->SetPipeline(pipeline);
             ctx.Cmd->BindDescriptorSet(0, set, pipeline);
@@ -718,31 +714,11 @@ void GPUCullingPipeline::BeginFrame(RenderGraph::RGFrame* frame, GPUScene* scene
     m_ViewVisibilityLayout.clear();
     m_OcclusionReservations.clear();
     m_FrameVisTotalBytes = 0;
-    m_FrameDeformationMargins = {};
     m_LastPublishArm = PublishArm::None;
     m_FrameRGOwner = frame;
     m_FrameVisRG = {};
     m_FrameAnyVisRG = {};
     m_FrameRuntimeVisRG = {};
-}
-
-const CullDeformationMargins& GPUCullingPipeline::FrameDeformationMargins(RenderGraph::RGFrame& frame)
-{
-    if (m_FrameDeformationMargins.Valid())
-        return m_FrameDeformationMargins;
-    // At least one float, so an empty material set still binds a valid range
-    // whose length() the kernels bound their read with.
-    const size_t count = std::max<size_t>(m_MaterialDeformationMargins.size(), 1u);
-    const uint64_t bytes = count * sizeof(float);
-    const RenderGraph::RGUploadRing::Alloc upload = frame.AllocUpload(bytes);
-    if (!upload.Ptr)
-        return m_FrameDeformationMargins;
-    if (m_MaterialDeformationMargins.empty())
-        *static_cast<float*>(upload.Ptr) = 0.0f;
-    else
-        std::memcpy(upload.Ptr, m_MaterialDeformationMargins.data(), bytes);
-    m_FrameDeformationMargins = {upload.Buffer, upload.Offset, bytes};
-    return m_FrameDeformationMargins;
 }
 
 void GPUCullingPipeline::BuildCullingElisionBlob(ElisionInputBlob& blob,
@@ -803,8 +779,6 @@ void GPUCullingPipeline::BuildCullingElisionBlob(ElisionInputBlob& blob,
     // (startup async shader load; frustum_culling.comp hot-reload) and keeps
     // skipping after the PSO becomes available.
     blob.Append(scene.CullingPipelineValidityMask());
-    blob.Append(static_cast<uint32_t>(m_MaterialDeformationMargins.size()));
-    blob.AppendBytes(m_MaterialDeformationMargins.data(), m_MaterialDeformationMargins.size() * sizeof(float));
 
     blob.Append(static_cast<uint32_t>(m_PendingViews.size()));
     for (size_t i = 0; i < m_PendingViews.size(); ++i)
@@ -823,7 +797,7 @@ void GPUCullingPipeline::BuildCullingElisionBlob(ElisionInputBlob& blob,
         appendVec3(v.cameraRelativeOrigin);
         blob.Append(v.firstInstance);
         blob.Append(v.instanceCount);
-        blob.Append(v.renderLayerMask.Bits);
+        blob.Append(v.renderLayerMask);
         blob.Append(v.reserveOcclusionSlice);
         if (i < m_ViewVisibilityLayout.size())
         {
@@ -864,7 +838,7 @@ void GPUCullingPipeline::BuildCullingElisionBlob(ElisionInputBlob& blob,
         appendVec3(g.cameraRelativeOrigin);
         blob.Append(g.firstInstance);
         blob.Append(g.instanceCount);
-        blob.Append(g.renderLayerMask.Bits);
+        blob.Append(g.renderLayerMask);
     }
 
     blob.Append(static_cast<uint32_t>(m_OcclusionReservations.size()));
@@ -971,7 +945,9 @@ void GPUCullingPipeline::EndFrameRG()
     }
 
     // ONE visibility buffer (the per-slot ring collapses — RenderGraph's first-touch
-    // import dependency provides the cross-frame WAR ordering).
+    // import dependency provides the cross-frame WAR ordering). It grows to the
+    // next power of two: every dispatch sizes its work by instance count, and
+    // the byte size is only a binding range.
     const size_t kMinVisBytes = 4096;
     size_t requiredBytes =
         std::max(kMinVisBytes, static_cast<size_t>(std::min<uint64_t>(
@@ -981,14 +957,15 @@ void GPUCullingPipeline::EndFrameRG()
     {
         if (m_VisibilityBufferU.IsValid())
             m_Device->DestroyBuffer(m_VisibilityBufferU); // deferred-destroy device-side
+        const size_t allocBytes = std::bit_ceil(requiredBytes);
         BufferDesc d{};
-        d.size = requiredBytes;
+        d.size = allocBytes;
         d.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::TransferSrc |
                                         BufferUsage::TransferDst);
         d.memoryUsage = BufferMemoryUsage::DeviceLocal;
         d.debugName = "GPUCulling_Visibility.RenderGraph";
         m_VisibilityBufferU = m_Device->CreateBuffer(d);
-        m_VisibilityBufferUBytes = m_VisibilityBufferU.IsValid() ? requiredBytes : 0;
+        m_VisibilityBufferUBytes = m_VisibilityBufferU.IsValid() ? allocBytes : 0;
     }
     if (!m_VisibilityBufferU.IsValid())
         return;
@@ -1060,9 +1037,6 @@ void GPUCullingPipeline::EndFrameRG()
             r.consumed = true;
     }
 
-    const CullDeformationMargins margins =
-        elide.Skip ? CullDeformationMargins{} : FrameDeformationMargins(*frame);
-
     // Per-view dispatches.
     const size_t kMinInstanceBufferSize = 1024;
     const uint32_t instanceBytes = static_cast<uint32_t>(std::max(
@@ -1112,7 +1086,7 @@ void GPUCullingPipeline::EndFrameRG()
                     (static_cast<uint64_t>(view.viewId) << 16) | kOcclusionPhaseANameCode;
                 ScheduleHzbCullPass(*frame, sceneRG.Instances, instanceBytes, m_FrameVisRG, prevVis,
                                     static_cast<uint32_t>(pvIt->second.bytes), statsRG, sentinel, cd,
-                                    margins, layout.offset, view.firstInstance, sliceInstanceCount, keyA);
+                                    layout.offset, view.firstInstance, sliceInstanceCount, keyA);
                 continue;
             }
         }
@@ -1121,7 +1095,7 @@ void GPUCullingPipeline::EndFrameRG()
                              static_cast<uint64_t>(view.cascadeIndex);
         scene->ScheduleCullingPassForRange(*frame, sceneRG, m_FrameVisRG, visTotalBytes,
                                            layout.offset, view.firstInstance, sliceInstanceCount,
-                                           cd, margins, key);
+                                           cd, key);
     }
 
     // Fused cascade-group dispatches.
@@ -1147,14 +1121,12 @@ void GPUCullingPipeline::EndFrameRG()
         cd.farPlane = g.farPlane;
         cd.firstInstance = g.firstInstance;
         cd.instanceCount = g.instanceCount;
-        cd.renderLayerMask = g.renderLayerMask.Bits;
+        cd.renderLayerMask = g.renderLayerMask;
         cd.frameIndex = g.frameIndex;
         cd.deltaTime = g.deltaTime;
-        // Shadow groups drop non-casters; a color fan-out (probe faces) drops
-        // shadows-only instances, matching the single-view dispatch above.
-        cd.passFlags = g.shadowCasterDispatch ? kCullPassShadowDispatch : 0u;
-        if (g.dropEditorHidden)
-            cd.passFlags |= kCullPassDropEditorHidden;
+        // Shadow groups drop non-casters; a color fan-out (probe faces) keeps
+        // everything, matching the single-view dispatch above.
+        cd.cullShadowCasters = g.shadowCasterDispatch ? 1u : 0u;
         // Cascade 0 keeps the conservative margin (closest shadows, edge pops
         // most visible); distant cascades 1..3 run tight — the 50% inflation
         // was passing ~50% extra casters into every cascade slice (SCALE-11).
@@ -1175,7 +1147,7 @@ void GPUCullingPipeline::EndFrameRG()
 
         scene->ScheduleCullingPassForCascadeGroup(*frame, sceneRG, m_FrameVisRG, visTotalBytes,
                                                   sliceOffsets, g.cascadeCount, g.firstInstance,
-                                                  g.instanceCount, cd, margins, key);
+                                                  g.instanceCount, cd, key);
     }
 
     // Dispatches were declared: the visibility content generation advances so
@@ -1273,8 +1245,7 @@ void GPUCullingPipeline::ScheduleOcclusionCullPass(RenderGraph::RGFrame& frame, 
             (static_cast<uint64_t>(r.input.viewId) << 16) | kOcclusionPhaseBNameCode;
         ScheduleHzbCullPass(frame, sceneRG.Instances, instanceBytes, m_FrameVisRG, prevVis,
                             static_cast<uint32_t>(pvIt->second.bytes), statsRG, hzb, cd,
-                            FrameDeformationMargins(frame), r.visibilityOffset, r.input.firstInstance,
-                            r.sliceInstanceCount, key);
+                            r.visibilityOffset, r.input.firstInstance, r.sliceInstanceCount, key);
         // Phase B writes the visibility buffer (and rewrites prevVisible):
         // advance the content generation so the phase-B scatter gate — whose
         // call follows this dispatch in declaration order — recomputes.
@@ -1314,7 +1285,7 @@ RenderGraph::RGBuffer GPUCullingPipeline::ImportRuntimeVisible(RenderGraph::RGFr
                       static_cast<int32_t>(PassPhase::kEarlySetup),
                       [&](RenderGraph::RGPassBuilder& p)
                       { p.Write(rvRG, RenderGraph::RGBufferWrite::CopyDst); },
-                      [rvRG](RenderGraph::RGContext& ctx)
+                      [rvRG, cap](RenderGraph::RGContext& ctx)
                       { ctx.Cmd->FillBuffer(ctx.GetBuffer(rvRG), 0, cap * sizeof(uint32_t), 1u); });
     }
     return m_FrameRuntimeVisRG;
@@ -1355,13 +1326,15 @@ void GPUCullingPipeline::ScheduleVisibilityUnion(RenderGraph::RGFrame& frame, GP
     {
         if (m_AnyViewVisibleU.IsValid())
             m_Device->DestroyBuffer(m_AnyViewVisibleU);
+        // Next power of two, like the visibility buffer it is the union of.
+        const size_t allocBytes = std::bit_ceil(flagsBytes);
         BufferDesc d{};
-        d.size = flagsBytes;
+        d.size = allocBytes;
         d.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::TransferDst);
         d.memoryUsage = BufferMemoryUsage::DeviceLocal;
         d.debugName = "GPUCulling_AnyViewVisible.RenderGraph";
         m_AnyViewVisibleU = m_Device->CreateBuffer(d);
-        m_AnyViewVisibleUBytes = m_AnyViewVisibleU.IsValid() ? flagsBytes : 0;
+        m_AnyViewVisibleUBytes = m_AnyViewVisibleU.IsValid() ? allocBytes : 0;
     }
     if (!m_AnyViewVisibleU.IsValid())
         return;
@@ -1502,7 +1475,7 @@ void GPUCullingPipeline::ScheduleRuntimeVisibilityAggregate(RenderGraph::RGFrame
                       // barrier in the exec handles fill-before-dispatch.
                       p.Write(rvRG, RenderGraph::RGBufferWrite::CopyDst);
                   },
-                  [pipeline, anyRG, rvRG, instances = sceneRG.Instances, flagsBytesU, instBytes,
+                  [pipeline, anyRG, rvRG, instances = sceneRG.Instances, cap, flagsBytesU, instBytes,
                    instanceCount](RenderGraph::RGContext& ctx)
                   {
                       BufferHandle rv = ctx.GetBuffer(rvRG);

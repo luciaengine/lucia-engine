@@ -198,9 +198,8 @@ void main()
 
     // The unbaked base, mirroring the CPU's ResetSplatmap: ALL ZERO, in byte units. Zero is not
     // "no data" — the surface resolves an all-zero texel to channel 0 — and it is the only base
-    // the rows can composite onto faithfully, because GE_CompositeSplatTexel with Replace off
-    // adds then renormalizes, so a channel-0-full base would cap any row targeting another
-    // channel at 50%.
+    // the rows can composite onto faithfully, because GE_CompositeSplatTexel adds then
+    // renormalizes, so a channel-0-full base would cap any row targeting another channel at 50%.
     vec4 bytes = vec4(0.0);
 
     // Authored SURFACE RULE rows composite onto that base, in buffer order — which the packer

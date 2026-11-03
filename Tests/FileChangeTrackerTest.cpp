@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "Jobs/FileChangeTracker.h"
 #include "Logger/Logger.h"
+#include "TestTempDir.h"
 #include <filesystem>
 #include <fstream>
 #include <thread>
@@ -14,11 +15,11 @@ protected:
         Logger::Log::SetLogLevel(Logger::LogLevel::Debug);
         
         // Create test directory
-        testDir = std::filesystem::temp_directory_path() / "file_change_tracker_test";
+        testDir = TestUtils::MakeUniqueTempDirectory("file_change_tracker_test");
         std::filesystem::create_directories(testDir);
         
         // Initialize tracker
-        tracker = std::make_unique<FileChangeTracker>((testDir / "cache.json").string());
+        tracker = std::make_unique<FileChangeTracker>();
     }
     
     void TearDown() override {

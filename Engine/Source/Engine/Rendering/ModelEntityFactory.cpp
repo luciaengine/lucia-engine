@@ -13,6 +13,7 @@
 #include "Components/Rendering/Camera.h"
 #include "Components/Rendering/Light.h"
 #include "Components/Rendering/LocalBounds.h"
+#include "Components/Rendering/MeshGPUData.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Rendering/MorphTargetWeights.h"
 #include "Components/Rendering/SkinnedMeshRenderer.h"
@@ -287,7 +288,7 @@ ModelEntityResult ModelEntityFactory::CreateFromModel(
                 if (parentEntity.IsValid())
                 {
                     Components::Parent parent{};
-                    parent.Entity = parentEntity;
+                    parent.parent = parentEntity;
                     bundle.Add(parent);
                 }
 
@@ -371,13 +372,13 @@ ModelEntityResult ModelEntityFactory::CreateFromModel(
             if (sceneParentIt != sceneNodeEntities.end() && sceneParentIt->second.IsValid())
             {
                 Components::Parent parent{};
-                parent.Entity = sceneParentIt->second;
+                parent.parent = sceneParentIt->second;
                 bundle.Add(parent);
             }
             else if (needsContainerRoot && result.rootEntity.IsValid())
             {
                 Components::Parent parent{};
-                parent.Entity = result.rootEntity;
+                parent.parent = result.rootEntity;
                 bundle.Add(parent);
             }
 
@@ -460,6 +461,10 @@ ModelEntityResult ModelEntityFactory::CreateFromModel(
                 bundle.Add(lb);
             }
 
+            // Pre-allocate the GPUScene-index cache so RenderExtractionSystem
+            // doesn't trigger a first-frame archetype migration to add it.
+            bundle.Add(Components::MeshGPUData{});
+
             // Without a container root the sole submesh entity becomes the root,
             // so the root Animator folds into this bundle.
             if (!needsContainerRoot && needsRootAnimator)
@@ -501,7 +506,7 @@ ModelEntityResult ModelEntityFactory::CreateFromModel(
         if (!needsContainerRoot || !result.rootEntity.IsValid())
             return;
         Components::Parent parent{};
-        parent.Entity = result.rootEntity;
+        parent.parent = result.rootEntity;
         bundle.Add(parent);
     };
 

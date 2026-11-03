@@ -1,3 +1,4 @@
+#include "Localization/LocalizationAsset.h"
 #include <gtest/gtest.h>
 #include "Assets/AudioAsset.h"
 #include "Assets/ModelAsset.h"
@@ -371,4 +372,25 @@ TEST_F(AssetTypeLoadingTest, BinaryAsset_NonExistentFile_LoadFailure) {
     
     EXPECT_FALSE(binaryAsset.Load());
     EXPECT_EQ(binaryAsset.GetState(), AssetState::Failed);
+}
+
+TEST_F(AssetTypeLoadingTest, LocalizationReloadPreservesValidCatalogOnMalformedSave)
+{
+    const auto path = testDir / "interface.localization";
+    { std::ofstream output(path); output << R"({"en":{"play":"Play"}})"; }
+    Localization::LocalizationAsset asset(GUID::Generate(), path);
+    ASSERT_TRUE(asset.Load());
+    { std::ofstream output(path); output << "{"; }
+    EXPECT_EQ(asset.Reload(), ReloadOutcome::Failed);
+    ASSERT_TRUE(asset.IsLoaded());
+    std::string error;
+    auto catalog = asset.CreateCatalog(error);
+    ASSERT_NE(catalog, nullptr);
+    EXPECT_EQ(catalog->Resolve(HashStringId("play"), "missing"), "Play");
+    { std::ofstream output(path); output << R"({"en":{"play":"Start"}})"; }
+    EXPECT_EQ(asset.Reload(), ReloadOutcome::Reloaded);
+    auto replacement = asset.CreateCatalog(error);
+    ASSERT_NE(replacement, nullptr);
+    EXPECT_EQ(replacement->Resolve(HashStringId("play"), "missing"), "Start");
+    EXPECT_EQ(catalog->Resolve(HashStringId("play"), "missing"), "Play");
 }

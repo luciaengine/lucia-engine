@@ -10,13 +10,12 @@
 
 #include "Rendering/Common/Math.h"
 #include "Rendering/Core/BatchRegistry.h"
-#include "Rendering/Core/CullDeformationMargins.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Types/FunctionRef.h"
 
 #include <atomic>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -214,12 +213,6 @@ static_assert(offsetof(GPUMesh, lodSseScaleCeil) == 124, "GPUMesh.lodSseScaleCei
  */
 static constexpr uint32_t kMaxViewsPerCullingDispatch = 4;
 
-/// GPUCullingData::passFlags bits, mirrored in cull_pass_membership.glsl.
-/// A shadow dispatch: keep casters (instance flags bit 0) rather than drawn instances.
-inline constexpr uint32_t kCullPassShadowDispatch = 1u << 0;
-/// A dispatch of the editor Scene View: drop what its eye hides (kInstanceFlagEditorHidden).
-inline constexpr uint32_t kCullPassDropEditorHidden = 1u << 1;
-
 struct GPUCullingData
 {
     Matrix4x4 viewMatrix;     // View matrix
@@ -239,14 +232,11 @@ struct GPUCullingData
 	    uint32_t instanceCount;   // Number of candidate instances for this pass
     uint32_t frameIndex;      // Current frame index
     float deltaTime;          // Frame delta time (MUST match shader!)
-    // Pass membership, kCullPass* bits (cull_pass_membership.glsl). Without
-    // kCullPassShadowDispatch the dispatch is a color dispatch (main view,
-    // reflection, thumbnail): it drops shadows-only instances
-    // (kInstanceFlagShadowsOnly). With it, a shadow dispatch (cascade, spot,
-    // point or area light) drops instances whose cast bit (flags & 1) is clear.
-    // kCullPassDropEditorHidden, set by the editor Scene View's dispatches only,
-    // drops instances its eye hides (kInstanceFlagEditorHidden) from both kinds.
-    uint32_t passFlags;
+	    // 1 = this is a shadow dispatch (cascade or area light): cull instances
+	    // whose cast-shadows bit (flags & 1) is clear so non-casters stay out of
+	    // the shadow map. 0 = main/reflection/thumbnail view: keep everything.
+	    // (Reuses the former trailing padding slot — layout/size unchanged.)
+	    uint32_t cullShadowCasters;
 	    // Per-frustum radius inflation applied in the sphere/frustum test.
 	    // Conservative (1.5) for the main view and cascade 0 — false culls there
 	    // are the most visible; tight (1.05) for distant cascades 1..3, whose
@@ -259,17 +249,17 @@ struct GPUCullingData
     uint32_t hzbMode;
     uint32_t hzbMipCount;
     // Active layers of the requesting view, shared by its color/shadow slices.
-    // The final std430 word: the GPU block is 656 bytes.
+    // Uses the final std430 tail word; GPU block stride remains 656 bytes.
     uint32_t renderLayerMask = 0xFFFFFFFFu;
 };
-// Complete shared std430 mirror of gpu_culling_data_fields.glsl.
+// Complete shared std430 mirror, including the former final padding word.
 static_assert(sizeof(GPUCullingData) == 656,
               "GPUCullingData must match the culling shaders' std430 layout");
 static_assert(offsetof(GPUCullingData, frustumPlanes) == 192, "GPUCullingData.frustumPlanes offset drift");
 static_assert(offsetof(GPUCullingData, cameraPosition) == 576, "GPUCullingData.cameraPosition offset drift");
 static_assert(offsetof(GPUCullingData, cameraForward) == 592, "GPUCullingData.cameraForward offset drift");
 static_assert(offsetof(GPUCullingData, firstInstance) == 608, "GPUCullingData.firstInstance offset drift");
-static_assert(offsetof(GPUCullingData, passFlags) == 624, "GPUCullingData.passFlags offset drift");
+static_assert(offsetof(GPUCullingData, cullShadowCasters) == 624, "GPUCullingData.cullShadowCasters offset drift");
 static_assert(offsetof(GPUCullingData, cullMargins) == 628, "GPUCullingData.cullMargins offset drift");
 static_assert(offsetof(GPUCullingData, hzbMode) == 644, "GPUCullingData.hzbMode offset drift");
 static_assert(offsetof(GPUCullingData, hzbMipCount) == 648, "GPUCullingData.hzbMipCount offset drift");
@@ -289,7 +279,7 @@ inline constexpr float kCullMarginTightCascade = 1.05f;
  * vary per frame once true multi-frame-in-flight support is enabled.
  *
  * Initially, all frames alias a single shared physical buffer for each
- * resource type (see docs/contributing/gpu-buffers-and-frames-in-flight.mdx).
+ * resource type (see docs/RENDERING_GPU_BUFFERS_AND_FRAMES_IN_FLIGHT.md).
  * This keeps behavior backward compatible while providing a clear
  * extension point for future per-frame buffers.
  */
@@ -371,7 +361,8 @@ class GPUScene
     // Runs body(begin, end) over [0, count), possibly concurrently on disjoint
     // ranges, and returns once every range has run. The caller owns the threads:
     // this module has no job system.
-    using RangeRunner = FunctionRef<void(size_t count, FunctionRef<void(size_t begin, size_t end)> body)>;
+    using RangeRunner = std::function<void(size_t count,
+                                           const std::function<void(size_t begin, size_t end)>& body)>;
     // Batched UpdateInstance for bulk motion. The scene afterwards equals calling
     // UpdateInstance for each write in span order: the same rows, scatter-hot
     // mirror rows, batch-registry membership, and the same set of dirty words
@@ -381,7 +372,7 @@ class GPUScene
     // scene is reported and skipped. Only the writes that changed a batch key
     // then update the registry, on the calling thread, in span order. No other
     // GPUScene mutator may run until it returns: debug builds assert that.
-    void UpdateInstances(std::span<const InstanceWrite> writes, RangeRunner runRanges);
+    void UpdateInstances(std::span<const InstanceWrite> writes, const RangeRunner& runRanges);
 
     // Batched removal for HLOD cluster flips. The single-index path guards
     // double-removes with an O(free-list) std::find and trims trailing free
@@ -395,17 +386,6 @@ class GPUScene
     // skipped; a slot appearing twice in the span is folded to one remove.
     // RemoveInstance delegates here with a 1-span so behavior can't drift.
     void RemoveInstances(std::span<const uint32_t> instanceIndices);
-
-    // Release log: every slot RemoveInstances freed, in order, numbered from 0
-    // over the scene's life. A consumer that keys state by slot (a world's
-    // retained submissions) keeps the count it has read and reads what was
-    // freed since, whichever world freed it. The log keeps the most recent
-    // kReleaseLogRetention entries; a consumer whose cursor is older reads
-    // false and must rebuild what it keyed by slot. AddInstance reserves an
-    // entry for every live row, so removal never allocates.
-    static constexpr uint64_t kReleaseLogRetention = 1u << 18;
-    uint64_t GetReleasedSlotCount() const { return m_ReleaseLogStart + m_ReleaseLog.size(); }
-    bool ReadReleasedSlotsSince(uint64_t cursor, std::vector<uint32_t>& out) const;
 
     // Per-slot continuity stamp: a per-frame consumer that carries state
     // derived from an instance across frames (a previous-frame endpoint) may
@@ -582,14 +562,12 @@ class GPUScene
                                      RenderGraph::RGBuffer visibility, uint32_t visibilityTotalBytes,
                                      uint32_t visibilityOffsetElements,
                                      uint32_t firstInstance, uint32_t instanceCount,
-                                     const GPUCullingData& cullingData,
-                                     const CullDeformationMargins& margins, uint64_t sliceStableKey);
+                                     const GPUCullingData& cullingData, uint64_t sliceStableKey);
     void ScheduleCullingPassForCascadeGroup(RenderGraph::RGFrame& frame, const GPUSceneFrameRG& sceneRG,
                                             RenderGraph::RGBuffer visibility, uint32_t visibilityTotalBytes,
                                             const uint32_t* sliceOffsetsElements, uint32_t viewCount,
                                             uint32_t firstInstance, uint32_t instanceCount,
-                                            const GPUCullingData& cullingData,
-                                            const CullDeformationMargins& margins, uint64_t groupStableKey);
+                                            const GPUCullingData& cullingData, uint64_t groupStableKey);
 
     // Resource access (current-frame views)
     BufferHandle GetInstanceBuffer() const
@@ -765,8 +743,6 @@ class GPUScene
     // prevVisible may be dirty and needs reset on reuse); index == high-water is
     // a genuinely fresh slot still holding the buffer's 0xFFFFFFFF first-touch.
     std::vector<uint32_t> m_PrevVisibleResetSlots;
-    std::vector<uint32_t> m_ReleaseLog;   // freed slots, oldest first
-    uint64_t m_ReleaseLogStart = 0;       // log number of m_ReleaseLog[0]
     uint32_t m_InstanceSlotHighWater = 0;
 
     // Cached world-space AABB over all live instances. Lazily recomputed in
@@ -898,8 +874,7 @@ class GPUScene
                                  PipelineHandle pipeline,
                                  const uint32_t* sliceOffsetsElements, uint32_t viewCount,
                                  uint32_t firstInstance, uint32_t instanceCount,
-                                 const GPUCullingData& cullingData, const CullDeformationMargins& margins,
-                                 uint64_t sliceStableKey);
+                                 const GPUCullingData& cullingData, uint64_t sliceStableKey);
     uint32_t AllocateInstanceSlot();
     uint32_t AllocateMeshSlot();
     void FreeInstanceSlot(uint32_t slot);

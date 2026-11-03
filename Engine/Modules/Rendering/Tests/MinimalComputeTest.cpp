@@ -4,7 +4,7 @@
 #include <cassert>
 #include <fstream>
 
-#include "Vulkan/VulkanDevice/VulkanDevice.h"
+#include "Vulkan/VulkanDevice.h"
 using GameEngine::Rendering::VulkanDevice;
 
 #include <Rendering/Core/Device.h>

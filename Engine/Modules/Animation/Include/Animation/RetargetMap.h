@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Animation/Humanoid/HumanoidRig.h"
+#include "Animation/HumanoidRig.h"
 #include "AssetCore/Asset.h"
 #include "AssetCore/GUID.h"
 #include "Types/Types.h"
@@ -8,7 +8,6 @@
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace GameEngine
@@ -120,8 +119,6 @@ class RetargetMap : public ::GameEngine::Asset
 
   private:
     bool ParseJson(const std::string& text);
-    // Logs that the file is not loaded and why and fails the asset; returns false.
-    bool Refuse(std::string_view reason);
     std::string SerializeJson() const;
 
     int32 m_Version = 0;

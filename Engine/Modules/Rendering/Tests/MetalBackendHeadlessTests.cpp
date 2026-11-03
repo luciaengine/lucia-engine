@@ -2,23 +2,26 @@
 // SPIRV-Cross pipeline + argument-buffer descriptor path (milestone 3).
 
 #include <gtest/gtest.h>
+#include "Logger/Logger.h"
 
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/QueryPool.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "Rendering/Materials/ShaderReflection.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 
 #include "Mathematics/HalfFloat.h"
-#include "Memory/AllocationCountScope.h"
 
 #include "../Source/Metal/MetalArgumentBufferLayout.h"
 #include "../Source/Metal/MetalDevice.h"
 #include "../Source/Metal/MetalShaderTranslator.h"
 #include "PushBlockMslLayout.h"
-#include "TestGlslCompile.h"
+
+#if RENDERING_HAS_SHADERC
+#include <shaderc/shaderc.hpp>
+#endif
 
 #include <objc/runtime.h>
 
@@ -40,6 +43,19 @@ using namespace GameEngine::Rendering;
 namespace
 {
 
+struct ScopedMetalCompatibility
+    {
+        bool HadValue = std::getenv("GE_FORCE_COMPAT") != nullptr;
+        std::string Value = HadValue ? std::getenv("GE_FORCE_COMPAT") : "";
+        ~ScopedMetalCompatibility()
+        {
+            if (HadValue) setenv("GE_FORCE_COMPAT", Value.c_str(), 1);
+            else unsetenv("GE_FORCE_COMPAT");
+        }
+    ScopedMetalCompatibility() { setenv("GE_FORCE_COMPAT", "1", 1); }
+};
+
+
 std::unique_ptr<IDevice> CreateHeadlessMetalDevice()
 {
     DeviceDesc desc{};
@@ -54,7 +70,21 @@ std::unique_ptr<IDevice> CreateHeadlessMetalDevice()
 }
 
 #if RENDERING_HAS_SHADERC
-using Tests::CompileGlsl;
+std::vector<uint8_t> CompileGlsl(const char* source, shaderc_shader_kind kind, const char* name)
+{
+    shaderc::Compiler compiler;
+    shaderc::CompileOptions options;
+    options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_3);
+    const auto result = compiler.CompileGlslToSpv(source, kind, name, options);
+    if (result.GetCompilationStatus() != shaderc_compilation_status_success)
+    {
+        ADD_FAILURE() << "GLSL compile failed: " << result.GetErrorMessage();
+        return {};
+    }
+    const auto* begin = reinterpret_cast<const uint8_t*>(result.cbegin());
+    const auto* end = reinterpret_cast<const uint8_t*>(result.cend());
+    return std::vector<uint8_t>(begin, end);
+}
 #endif
 
 // Metal's own answer for the GPU the engine's device runs on.
@@ -754,6 +784,45 @@ void main() { uOut.values[gl_GlobalInvocationID.x] = uPush.base + gl_GlobalInvoc
     EXPECT_NE(translation.Msl.find("main0"), std::string::npos) << translation.Msl;
 }
 
+TEST(MetalSpirvPipeline, CombinedDepthFormatBindsWithoutExplicitStencilFormat)
+{
+    auto device = CreateHeadlessMetalDevice();
+    ASSERT_TRUE(device);
+    const auto vertex = CompileGlsl(
+        "#version 450\nvoid main() { gl_Position = vec4(0.0, 0.0, 0.5, 1.0); }",
+        shaderc_vertex_shader, "combined-depth.vert");
+    ASSERT_FALSE(vertex.empty());
+    PipelineDesc pipelineDesc{};
+    pipelineDesc.type = PipelineType::Graphics;
+    pipelineDesc.vertexShader = vertex;
+    pipelineDesc.depthAttachmentFormat = static_cast<uint32_t>(TextureFormat::D32_SFLOAT_S8_UINT);
+    pipelineDesc.depthStencilState.depthTestEnable = true;
+    pipelineDesc.depthStencilState.depthWriteEnable = true;
+    pipelineDesc.debugName = "CombinedDepthWithoutStencil";
+    const auto pipeline = device->CreatePipeline(pipelineDesc);
+    ASSERT_TRUE(pipeline.IsValid());
+    TextureDesc texture{};
+    texture.width = 16;
+    texture.height = 16;
+    texture.format = pipelineDesc.depthAttachmentFormat;
+    texture.usage = static_cast<uint32_t>(TextureUsage::DepthStencil);
+    const auto depth = device->CreateTexture(texture);
+    ASSERT_TRUE(depth.IsValid());
+    auto commands = device->CreateCommandList(IDevice::QueueType::Graphics);
+    commands->Begin();
+    RenderPassDesc pass{};
+    pass.depthTarget = depth;
+    commands->BeginRenderPass(pass);
+    commands->SetPipeline(pipeline);
+    commands->EndRenderPass();
+    commands->End();
+    device->ExecuteCommandLists({commands.get()});
+    device->WaitForIdle();
+    device->DestroyPipeline(pipeline);
+    device->DestroyTexture(depth);
+    device->Shutdown();
+}
+
 // The whole DescriptorType::AccelerationStructure chain in one pass: SPIR-V
 // reflection must classify a descriptor-bound accelerationStructureEXT as its
 // own type (it used to fall through to UniformBuffer, silently), the Metal
@@ -849,7 +918,7 @@ void main()
     EXPECT_NE(translation.Msl.find("uTlas [[id(3)]]"), std::string::npos) << translation.Msl;
 }
 
-TEST(MetalSpirvPipeline, TexturedQuadWithDescriptorSet)
+static void ExpectTexturedQuadWithDescriptorSet(bool indirect = false, uint32_t indirectCount = 1)
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)
@@ -883,15 +952,17 @@ void main()
     ASSERT_FALSE(vertSpv.empty());
     ASSERT_FALSE(fragSpv.empty());
 
-    // 4x4 solid green source texture, uploaded through the transfer queue.
-    constexpr uint32_t kTexDim = 4;
+    // A green source: uploaded for direct draws, rendered and copied for counted draws.
+    const uint32_t kTexDim = indirect ? 127 : 4;
     TextureDesc texDesc{};
     texDesc.width = kTexDim;
     texDesc.height = kTexDim;
-    texDesc.format = static_cast<uint32_t>(TextureFormat::RGBA8_UNORM);
-    texDesc.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::TransferDst);
+    texDesc.format = static_cast<uint32_t>(indirect ? TextureFormat::R16G16B16A16_FLOAT : TextureFormat::RGBA8_UNORM);
+    texDesc.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::TransferDst | TextureUsage::RenderTarget | TextureUsage::TransferSrc);
     TextureHandle texture = device->CreateTexture(texDesc);
     ASSERT_TRUE(texture.IsValid());
+    TextureHandle copy = indirect ? device->CreateTexture(texDesc) : texture;
+    ASSERT_TRUE(copy.IsValid());
 
     std::vector<uint8_t> pixels(kTexDim * kTexDim * 4);
     for (uint32_t i = 0; i < kTexDim * kTexDim; ++i)
@@ -907,8 +978,11 @@ void main()
     request.Width = kTexDim;
     request.Height = kTexDim;
     request.RowPitchBytes = kTexDim * 4;
-    const IDevice::GpuSyncToken token = device->SubmitTextureUploads(&request, 1);
-    ASSERT_TRUE(device->WaitGpuSyncToken(token, 5'000'000'000ull));
+    if (!indirect)
+    {
+        const IDevice::GpuSyncToken token = device->SubmitTextureUploads(&request, 1);
+        ASSERT_TRUE(device->WaitGpuSyncToken(token, 5'000'000'000ull));
+    }
 
     SamplerHandle sampler = device->CreateSampler(SamplerDesc::PointClamp());
     ASSERT_TRUE(sampler.IsValid());
@@ -957,6 +1031,21 @@ void main()
     pipelineDesc.depthStencilState.depthTestEnable = false;
     pipelineDesc.depthStencilState.depthWriteEnable = false;
     pipelineDesc.debugName = "MetalSpirvQuad";
+    if (!device->GetCapabilities().supportsBindlessResources)
+    {
+        const auto vertex = TranslateSpirvToMsl(vertSpv, MetalShaderStage::Vertex, {&layout}, nullptr, false);
+        ASSERT_TRUE(vertex.Success) << vertex.Error;
+        const auto fragment = TranslateSpirvToMsl(fragSpv, MetalShaderStage::Fragment, {&layout}, nullptr, false);
+        ASSERT_TRUE(fragment.Success) << fragment.Error;
+    }
+    if (indirect)
+    {
+        ColorBlendAttachmentState blend{};
+        blend.blendEnable = true;
+        blend.dstColorBlendFactor = BlendFactor::One;
+        blend.dstAlphaBlendFactor = BlendFactor::One;
+        pipelineDesc.colorBlendState.attachments = {blend};
+    }
     PipelineHandle pipeline = device->CreatePipeline(pipelineDesc);
     ASSERT_TRUE(pipeline.IsValid());
 
@@ -969,25 +1058,54 @@ void main()
         DescriptorSetUpdate update{};
         update.binding = 0;
         update.type = DescriptorType::CombinedImageSampler;
-        update.textures = {texture};
+        update.textures = {copy};
         update.samplers = {sampler};
         device->UpdateDescriptorSet(set, update);
     }
     device->UpdateBufferBinding(set, 1, ubo, 0, sizeof(tint));
-
     BufferDesc readbackDesc{};
     readbackDesc.size = static_cast<size_t>(kRtDim) * kRtDim * 4;
     readbackDesc.usage = static_cast<uint32_t>(BufferUsage::TransferDst);
     BufferHandle readback = device->CreateBuffer(readbackDesc);
     ASSERT_TRUE(readback.IsValid());
 
+    BufferHandle indices{}, records{}, count{};
+    if (indirect)
+    {
+        BufferDesc desc{};
+        desc.size = 64;
+        desc.usage = static_cast<uint32_t>(BufferUsage::Index | BufferUsage::Storage);
+        indices = device->CreateBuffer(desc);
+        const uint32_t indexData[] = {0, 1, 2};
+        device->UpdateBuffer(indices, 0, sizeof(indexData), indexData);
+        desc.usage = static_cast<uint32_t>(BufferUsage::Indirect | BufferUsage::Storage);
+        records = device->CreateBuffer(desc);
+        count = device->CreateBuffer(desc);
+        const uint32_t record[] = {3, 1, 0, 0, 0, 3, 1, 0, 0, 0};
+        device->UpdateBuffer(records, 0, sizeof(record), record);
+        device->UpdateBuffer(count, 0, sizeof(indirectCount), &indirectCount);
+    }
     auto cl = device->CreateCommandList(IDevice::QueueType::Graphics);
     cl->Begin();
+    if (indirect)
+    {
+        RenderPassDesc src{};
+        src.colorTargets[0] = texture;
+        src.colorTargetCount = 1;
+        src.clearColor[0] = true;
+        src.clearColorValue[0][0] = 0;
+        src.clearColorValue[0][1] = 1;
+        src.clearColorValue[0][2] = 0;
+        src.clearColorValue[0][3] = 1;
+        cl->BeginRenderPass(src);
+        cl->EndRenderPass();
+        cl->CopyTexture(texture, copy);
+    }
     RenderPassDesc pass{};
     pass.colorTargets[0] = rt;
     pass.colorTargetCount = 1;
     pass.clearColor[0] = true;
-    pass.clearColorValue[0][0] = 1.0f; // red clear (overdrawn by the quad)
+    pass.clearColorValue[0][0] = indirect ? 0.0f : 1.0f;
     pass.clearColorValue[0][1] = 0.0f;
     pass.clearColorValue[0][2] = 0.0f;
     pass.clearColorValue[0][3] = 1.0f;
@@ -998,7 +1116,15 @@ void main()
     cl->BindDescriptorSet(0, set, pipeline);
     cl->SetViewport(0.0f, 0.0f, static_cast<float>(kRtDim), static_cast<float>(kRtDim));
     cl->SetScissor(0, 0, kRtDim, kRtDim);
-    cl->Draw(3);
+    if (indirect)
+    {
+        cl->SetIndexBuffer(indices, IndexType::Uint32);
+        cl->DrawIndexedIndirectCount(records, count, 2, 20, 0, 0);
+    }
+    else
+    {
+        cl->Draw(3);
+    }
     cl->EndRenderPass();
     cl->CopyTextureToBuffer(rt, readback, kRtDim, kRtDim);
     cl->End();
@@ -1010,17 +1136,50 @@ void main()
     // Center pixel, BGRA: green 255 * tint 0.5 = ~128.
     const uint8_t* center = mapped + ((kRtDim / 2) * kRtDim + kRtDim / 2) * 4;
     EXPECT_EQ(center[0], 0u) << "B";
-    EXPECT_NEAR(center[1], 128, 2) << "G (texture * UBO tint)";
+    EXPECT_NEAR(center[1], indirect ? std::min(indirectCount, 2u) * 127.5f : 127.5f, 2)
+        << "G (counted texture * UBO tint)";
     EXPECT_EQ(center[2], 0u) << "R";
     EXPECT_EQ(center[3], 255u) << "A";
 
+    if (indirect)
+    {
+        device->DestroyBuffer(indices);
+        device->DestroyBuffer(records);
+        device->DestroyBuffer(count);
+    }
     device->DestroyBuffer(readback);
     device->DestroyBuffer(ubo);
     device->DestroyDescriptorSet(set);
     device->DestroySampler(sampler);
     device->DestroyTexture(rt);
+    if (indirect)
+    {
+        device->DestroyTexture(copy);
+    }
     device->DestroyTexture(texture);
     device->Shutdown();
+}
+
+TEST(MetalSpirvPipeline, TexturedQuadWithDescriptorSet)
+{
+    ExpectTexturedQuadWithDescriptorSet();
+}
+
+TEST(MetalSpirvPipeline, IndirectCountSamplesCopiedHdrTextureAndHonorsCount)
+{
+    for (uint32_t count : {0u, 1u, 2u, 3u})
+    {
+        SCOPED_TRACE(count);
+        ExpectTexturedQuadWithDescriptorSet(true, count);
+    }
+}
+
+TEST(MetalSpirvPipeline, CompatibilityDirectBindingsSampleTextureAndUniformBuffer)
+{
+    ScopedMetalCompatibility compatibility;
+    Logger::Log::Initialize({});
+    ExpectTexturedQuadWithDescriptorSet();
+    Logger::Log::Shutdown();
 }
 
 namespace
@@ -2669,7 +2828,7 @@ void main()
     device->Shutdown();
 }
 
-TEST(MetalSpirvPipeline, ComputeWritesStorageBuffer)
+static void ExpectComputeWritesStorageBuffer()
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)
@@ -2684,7 +2843,8 @@ layout(set = 0, binding = 0, std430) buffer Out { uint values[]; } uOut;
 layout(push_constant) uniform Push { uint base; } uPush;
 void main()
 {
-    uOut.values[gl_GlobalInvocationID.x] = uPush.base + gl_GlobalInvocationID.x;
+    if (gl_GlobalInvocationID.x < uOut.values.length())
+        uOut.values[gl_GlobalInvocationID.x] = uPush.base + gl_GlobalInvocationID.x;
 }
 )";
     std::vector<uint8_t> compSpv = CompileGlsl(kComp, shaderc_compute_shader, "fill.comp");
@@ -2743,6 +2903,17 @@ void main()
     device->DestroyDescriptorSet(set);
     device->DestroyBuffer(buffer);
     device->Shutdown();
+}
+
+TEST(MetalSpirvPipeline, ComputeWritesStorageBuffer)
+{
+    ExpectComputeWritesStorageBuffer();
+}
+
+TEST(MetalSpirvPipeline, CompatibilityDirectBindingsWriteStorageBufferAndReadItsLength)
+{
+    ScopedMetalCompatibility compatibility;
+    ExpectComputeWritesStorageBuffer();
 }
 
 // The CBT kernel set's shape on Metal: 23 compute pipelines specialised from one
@@ -2975,279 +3146,6 @@ TEST(MetalDescriptorSets, TransientSetsInOneComputeEncoderReadTheirOwnTables)
 TEST(MetalDescriptorSets, PersistentSetsInOneComputeEncoderReadTheirOwnTables)
 {
     ExpectSetsInOneComputeEncoderReadTheirOwnTables(false);
-}
-
-namespace
-{
-constexpr size_t kBindingBufferSize = 256;
-
-// Set 0: a uniform buffer at binding 0 and a storage buffer at binding 1.
-DescriptorSetLayoutDesc MakeUniformStorageLayout()
-{
-    DescriptorSetLayoutDesc layout{};
-    DescriptorBinding uniform{};
-    uniform.binding = 0;
-    uniform.type = DescriptorType::UniformBuffer;
-    uniform.shaderStages = kShaderStageCompute;
-    layout.bindings.push_back(uniform);
-    DescriptorBinding storage{};
-    storage.binding = 1;
-    storage.type = DescriptorType::StorageBuffer;
-    storage.shaderStages = kShaderStageCompute;
-    layout.bindings.push_back(storage);
-    return layout;
-}
-
-// A compute pipeline over MakeUniformStorageLayout. The residency tests only bind sets with it and never dispatch.
-PipelineHandle CreateUniformStoragePipeline(IDevice& device, const DescriptorSetLayoutDesc& layout)
-{
-    static const char* kComp = R"(
-#version 450
-layout(local_size_x = 1) in;
-layout(set = 0, binding = 0) uniform In { uint value; } uIn;
-layout(set = 0, binding = 1, std430) buffer Out { uint values[]; } uOut;
-void main()
-{
-    uOut.values[0] = uIn.value;
-}
-)";
-    std::vector<uint8_t> compSpv = CompileGlsl(kComp, shaderc_compute_shader, "uniform-storage.comp");
-    if (compSpv.empty())
-    {
-        return {};
-    }
-    PipelineDesc pipelineDesc{};
-    pipelineDesc.type = PipelineType::Compute;
-    pipelineDesc.computeShader = compSpv;
-    pipelineDesc.descriptorSetLayouts = {layout};
-    pipelineDesc.debugName = "MetalEncoderResidents";
-    return device.CreatePipeline(pipelineDesc);
-}
-
-BufferHandle CreateBindingBuffer(IDevice& device, uint32_t usage)
-{
-    BufferDesc bufferDesc{};
-    bufferDesc.size = kBindingBufferSize;
-    bufferDesc.usage = usage;
-    return device.CreateBuffer(bufferDesc);
-}
-
-// A persistent set over MakeUniformStorageLayout.
-DescriptorSetHandle CreateUniformStorageSet(IDevice& device, const DescriptorSetLayoutDesc& layout,
-                                            BufferHandle uniform, BufferHandle storage)
-{
-    DescriptorSetDesc setDesc{};
-    setDesc.layout = layout;
-    DescriptorSetHandle set = device.CreateDescriptorSet(setDesc);
-    if (set.IsValid())
-    {
-        device.UpdateBufferBinding(set, 0, uniform, 0, kBindingBufferSize);
-        device.UpdateStorageBufferBinding(set, 1, storage, 0, kBindingBufferSize);
-    }
-    return set;
-}
-
-struct DeclaredResident
-{
-    MTL::Resource* Resource = nullptr;
-    MTL::ResourceUsage Usage = 0;
-
-    bool operator==(const DeclaredResident&) const = default;
-};
-
-// Replaces useResources:count:usage: of the compute encoder class while it lives, and records each
-// declared resource instead. The driver then does no work, and the records fill a reserved buffer.
-class ComputeResidencyRecorder
-{
-  public:
-    explicit ComputeResidencyRecorder(MTL::Device* device)
-    {
-        NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
-        MTL::CommandQueue* queue = device->newCommandQueue();
-        MTL::ComputeCommandEncoder* encoder = queue->commandBuffer()->computeCommandEncoder();
-        m_Method = class_getInstanceMethod(object_getClass(reinterpret_cast<id>(encoder)),
-                                           sel_registerName("useResources:count:usage:"));
-        encoder->endEncoding();
-        queue->release();
-        pool->release();
-        if (m_Method != nullptr)
-        {
-            m_Records.reserve(kCapacity);
-            s_Active = this;
-            m_Original = method_setImplementation(m_Method, reinterpret_cast<IMP>(&Record));
-        }
-    }
-
-    ~ComputeResidencyRecorder()
-    {
-        if (m_Method != nullptr)
-        {
-            method_setImplementation(m_Method, m_Original);
-            s_Active = nullptr;
-        }
-    }
-
-    ComputeResidencyRecorder(const ComputeResidencyRecorder&) = delete;
-    ComputeResidencyRecorder& operator=(const ComputeResidencyRecorder&) = delete;
-
-    bool IsArmed() const { return m_Method != nullptr; }
-    const std::vector<DeclaredResident>& Records() const { return m_Records; }
-    void Clear() { m_Records.clear(); }
-
-  private:
-    static constexpr size_t kCapacity = 64;
-
-    static void Record(id, SEL, MTL::Resource* const* resources, NS::UInteger count, MTL::ResourceUsage usage)
-    {
-        for (NS::UInteger i = 0; i < count && s_Active->m_Records.size() < kCapacity; ++i)
-        {
-            s_Active->m_Records.push_back({resources[i], usage});
-        }
-    }
-
-    static inline ComputeResidencyRecorder* s_Active = nullptr;
-    Method m_Method = nullptr;
-    IMP m_Original = nullptr;
-    std::vector<DeclaredResident> m_Records;
-};
-} // namespace
-
-// The renderer binds the same persistent sets on a new encoder in every pass of every frame. Once one
-// encoder has used the command list's resident map, a bind on a later encoder must not allocate.
-TEST(MetalDescriptorSets, BindingSetsOnANewComputeEncoderAllocatesNothingOnceWarm)
-{
-    auto device = CreateHeadlessMetalDevice();
-    if (!device)
-    {
-        GTEST_SKIP() << "Metal backend unavailable";
-    }
-    const DescriptorSetLayoutDesc layout = MakeUniformStorageLayout();
-    PipelineHandle pipeline = CreateUniformStoragePipeline(*device, layout);
-    ASSERT_TRUE(pipeline.IsValid());
-
-    constexpr uint32_t kSets = 8;
-    std::vector<BufferHandle> buffers;
-    std::vector<DescriptorSetHandle> sets;
-    ASSERT_TRUE(device->BeginFrame());
-    while (sets.size() < kSets)
-    {
-        buffers.push_back(CreateBindingBuffer(*device, static_cast<uint32_t>(BufferUsage::Uniform)));
-        buffers.push_back(CreateBindingBuffer(*device, static_cast<uint32_t>(BufferUsage::Storage)));
-        ASSERT_TRUE(buffers[buffers.size() - 2].IsValid() && buffers.back().IsValid());
-        sets.push_back(CreateUniformStorageSet(*device, layout, buffers[buffers.size() - 2], buffers.back()));
-        ASSERT_TRUE(sets.back().IsValid());
-    }
-
-    ComputeResidencyRecorder recorder(static_cast<MetalDevice&>(*device).GetMTLDevice());
-    ASSERT_TRUE(recorder.IsArmed());
-    auto cl = device->CreateCommandList(IDevice::QueueType::Graphics);
-    cl->Begin();
-    // Cycle 0 fills the map and the scratch lists for the first time.
-    constexpr uint32_t kCycles = 4;
-    for (uint32_t cycle = 0; cycle < kCycles; ++cycle)
-    {
-        cl->SetPipeline(pipeline);
-        recorder.Clear();
-        uint64_t allocations = 0;
-        {
-            const GameEngine::Memory::AllocationCountScope scope(GameEngine::Memory::CountWindow::ThisThread);
-            for (DescriptorSetHandle set : sets)
-            {
-                cl->BindDescriptorSet(0, set, pipeline);
-            }
-            allocations = scope.Count();
-        }
-        EXPECT_EQ(recorder.Records().size(), 2 * kSets) << "cycle " << cycle << ": each resident is declared once";
-        if (cycle > 0)
-        {
-            EXPECT_EQ(allocations, 0u) << "cycle " << cycle << ": binding " << kSets << " sets allocated "
-                                       << allocations << " times";
-        }
-        // A blit ends the compute encoder, so the next SetPipeline opens a new one.
-        cl->CopyBuffer(buffers[1], buffers[3], kBindingBufferSize);
-    }
-    cl->End();
-    device->ExecuteCommandLists({cl.get()});
-    device->FinalizeFrame();
-    device->WaitForIdle();
-
-    for (DescriptorSetHandle set : sets)
-    {
-        device->DestroyDescriptorSet(set);
-    }
-    for (BufferHandle buffer : buffers)
-    {
-        device->DestroyBuffer(buffer);
-    }
-    device->Shutdown();
-}
-
-// An encoder declares a bound resource when a set first uses it, and again with the union of the usages
-// when a set needs more. A known usage declares nothing. A new encoder declares every resident again.
-TEST(MetalDescriptorSets, EncoderDeclaresAResidentOnlyWhenItIsNewOrItsUsageGrows)
-{
-    auto device = CreateHeadlessMetalDevice();
-    if (!device)
-    {
-        GTEST_SKIP() << "Metal backend unavailable";
-    }
-    auto& metalDevice = static_cast<MetalDevice&>(*device);
-    const DescriptorSetLayoutDesc layout = MakeUniformStorageLayout();
-    PipelineHandle pipeline = CreateUniformStoragePipeline(*device, layout);
-    ASSERT_TRUE(pipeline.IsValid());
-
-    ASSERT_TRUE(device->BeginFrame());
-    BufferHandle shared = CreateBindingBuffer(
-        *device, static_cast<uint32_t>(BufferUsage::Uniform) | static_cast<uint32_t>(BufferUsage::Storage));
-    BufferHandle storage = CreateBindingBuffer(*device, static_cast<uint32_t>(BufferUsage::Storage));
-    BufferHandle uniform = CreateBindingBuffer(*device, static_cast<uint32_t>(BufferUsage::Uniform));
-    ASSERT_TRUE(shared.IsValid() && storage.IsValid() && uniform.IsValid());
-    DescriptorSetHandle readsShared = CreateUniformStorageSet(*device, layout, shared, storage);
-    DescriptorSetHandle writesShared = CreateUniformStorageSet(*device, layout, uniform, shared);
-    ASSERT_TRUE(readsShared.IsValid() && writesShared.IsValid());
-
-    ComputeResidencyRecorder recorder(metalDevice.GetMTLDevice());
-    ASSERT_TRUE(recorder.IsArmed());
-    auto cl = device->CreateCommandList(IDevice::QueueType::Graphics);
-    cl->Begin();
-    // The test clears the records after SetPipeline, because a new encoder can declare device-address buffers first.
-    cl->SetPipeline(pipeline);
-    recorder.Clear();
-    cl->BindDescriptorSet(0, readsShared, pipeline);
-    cl->BindDescriptorSet(0, writesShared, pipeline);
-    cl->BindDescriptorSet(0, readsShared, pipeline);
-    std::vector<DeclaredResident> declared = recorder.Records();
-    cl->CopyBuffer(uniform, storage, kBindingBufferSize);
-    cl->SetPipeline(pipeline);
-    recorder.Clear();
-    cl->BindDescriptorSet(0, readsShared, pipeline);
-    declared.insert(declared.end(), recorder.Records().begin(), recorder.Records().end());
-    cl->End();
-    device->ExecuteCommandLists({cl.get()});
-    device->FinalizeFrame();
-    device->WaitForIdle();
-
-    MTL::Resource* sharedResource = metalDevice.GetMetalBuffer(shared)->buffer;
-    MTL::Resource* storageResource = metalDevice.GetMetalBuffer(storage)->buffer;
-    MTL::Resource* uniformResource = metalDevice.GetMetalBuffer(uniform)->buffer;
-    const MTL::ResourceUsage read = MTL::ResourceUsageRead;
-    const MTL::ResourceUsage readWrite = MTL::ResourceUsageRead | MTL::ResourceUsageWrite;
-    const std::vector<DeclaredResident> expected = {
-        {sharedResource, read},       // first encoder, readsShared
-        {storageResource, readWrite},
-        {uniformResource, read},      // writesShared: the uniform is new and the shared buffer gains Write
-        {sharedResource, readWrite},
-        {sharedResource, read},       // readsShared again declares nothing; a new encoder declares again
-        {storageResource, readWrite},
-    };
-    EXPECT_EQ(declared, expected);
-
-    device->DestroyDescriptorSet(writesShared);
-    device->DestroyDescriptorSet(readsShared);
-    device->DestroyBuffer(uniform);
-    device->DestroyBuffer(storage);
-    device->DestroyBuffer(shared);
-    device->Shutdown();
 }
 
 // The render-pass form of the test above: two draws in one pass, each with its
@@ -3857,6 +3755,12 @@ TEST(MetalTimestampSpans, SpanSamplesItsOwnEncoderBoundaries)
     TextureHandle rt = device->CreateTexture(td);
     ASSERT_TRUE(rt.IsValid());
 
+#if RENDERING_HAS_SHADERC
+    const PipelineHandle pipeline = CreateCellQuadPipeline(*device, TextureFormat::RGBA8_UNORM, false);
+    ASSERT_TRUE(pipeline.IsValid());
+#else
+    GTEST_SKIP() << "shaderc is required to issue render work for the encoder timestamp test";
+#endif
     const uint32_t slot = device->GetFrameIndex();
     pool->BeginFrame(slot);
 
@@ -3882,6 +3786,12 @@ TEST(MetalTimestampSpans, SpanSamplesItsOwnEncoderBoundaries)
     pass.depthTarget = INVALID_TEXTURE_HANDLE;
     pass.clearDepth = false;
     cl->BeginRenderPass(pass);
+#if RENDERING_HAS_SHADERC
+    cl->SetPipeline(pipeline);
+    cl->SetViewport(0.0f, 0.0f, 32.0f, 32.0f);
+    cl->SetScissor(0, 0, 32, 32);
+    cl->Draw(3);
+#endif
     cl->EndRenderPass();
     drawSpan.EndQuery = pool->WriteTimestamp(cl.get(), TimestampPoint::SpanEnd);
 
@@ -3947,6 +3857,9 @@ TEST(MetalTimestampSpans, SpanSamplesItsOwnEncoderBoundaries)
         pool->TimestampToMs(std::max(drawSpan.EndTicks, sharedB.EndTicks) - copySpan.BeginTicks);
     EXPECT_LE(pool->TimestampToMs(drawSpan.EndTicks - drawSpan.BeginTicks), commandBufferMs);
 
+#if RENDERING_HAS_SHADERC
+    device->DestroyPipeline(pipeline);
+#endif
     device->DestroyTexture(rt);
     device->DestroyBuffer(src);
     device->DestroyBuffer(dst);

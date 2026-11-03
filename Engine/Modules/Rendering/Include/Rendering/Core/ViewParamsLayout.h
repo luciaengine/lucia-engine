@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-// C++ mirror of the per-view ViewParams UBO (std140, 480 B, set 0 binding 7).
+// C++ mirror of the per-view ViewParams UBO (std140, 496 B, set 0 binding 7).
 // The field list lives in Shaders/Includes/view_params_fields.glsl and is shared
 // verbatim with the canonical GLSL block (view_params.glsl) and every truncated
 // prefix the packaged Forward+/post-FX shaders declare, so the layout is defined
@@ -27,7 +27,7 @@ struct ViewParamsUBO
 // reorder/insert — which would silently desync the shader's std140 reads — into
 // a compile error here. The packaged shaders' prefixes are additionally checked
 // against these offsets by ShaderReflectionDiffTests.
-static_assert(sizeof(ViewParamsUBO) == 480, "ViewParamsUBO must be 480 bytes (std140)");
+static_assert(sizeof(ViewParamsUBO) == 496, "ViewParamsUBO must be 496 bytes (std140)");
 static_assert(offsetof(ViewParamsUBO, ge_invProj) == 0, "ge_invProj offset moved");
 static_assert(offsetof(ViewParamsUBO, ge_view) == 64, "ge_view offset moved");
 static_assert(offsetof(ViewParamsUBO, ge_nearFar) == 128, "ge_nearFar offset moved");
@@ -40,5 +40,6 @@ static_assert(offsetof(ViewParamsUBO, ge_prevViewProj) == 320, "ge_prevViewProj 
 static_assert(offsetof(ViewParamsUBO, ge_invView) == 384, "ge_invView offset moved");
 static_assert(offsetof(ViewParamsUBO, ge_taaJitter) == 448, "ge_taaJitter offset moved");
 static_assert(offsetof(ViewParamsUBO, ge_exposureParams) == 464, "ge_exposureParams offset moved");
+static_assert(offsetof(ViewParamsUBO, ge_pixelationBand) == 480, "ge_pixelationBand offset moved");
 
 } // namespace GameEngine::Rendering

@@ -11,13 +11,13 @@
 #include "Rendering/Core/BatchRegistry.h"
 #include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/GPUScene.h"
-#include "Types/FunctionRef.h"
 
 #include "EngineLogCapture.h"
 #include "TestDeviceHelper.h"
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <future>
 #include <string>
 #include <vector>
@@ -40,7 +40,7 @@ GPUInstance MakeRow(uint32_t i)
 
 // Runs the ranges on separate threads, last range first, so the row phase is
 // exercised out of span order and concurrently.
-void RunRangesConcurrentlyInReverse(size_t count, FunctionRef<void(size_t, size_t)> body)
+void RunRangesConcurrentlyInReverse(size_t count, const std::function<void(size_t, size_t)>& body)
 {
     constexpr size_t kRanges = 5;
     const size_t step = (count + kRanges - 1) / kRanges;

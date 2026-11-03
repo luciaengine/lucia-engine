@@ -1,5 +1,4 @@
 #include "EditorContextMenu/UIContextMenu.h"
-#include "Assets/AssetSourceAlias.h"
 #include "UI/UIManager.h"
 #include "UI/UIElement.h"
 #include "UI/Controls/Label.h"
@@ -10,7 +9,8 @@
 #include "Platform/Window.h"
 #include "Input/KeyCodes.h"
 #include "Logger/Logger.h"
-#include "Types/StringUtils.h"
+#include "Platform/Environment.h"
+#include <cctype>
 #include <cstdlib>
 #include <cmath>
 #include <functional>
@@ -27,16 +27,27 @@ std::unordered_map<Platform::Window*, UIManager*> s_WindowRegistry;
 
 constexpr float kContextMenuViewportMargin = 4.0f;
 constexpr float kContextMenuMinWidth = 150.0f;
-// Space between a submenu and the panel it opens from: enough that the two
-// rounded panels read as separate surfaces, never so much that the pointer
-// crosses dead space on its way in.
-constexpr float kSubmenuGap = 2.0f;
+// Border (1px) + top padding (4px) of .context-menu: the submenu panel rises by
+// this so its FIRST ROW top-aligns with the parent item, the way NSMenu aligns
+// a submenu. Must track the .context-menu padding in widgets.css.
+constexpr float kSubmenuAlignInset = 5.0f;
 
 // Stable id so the query field can be focused by id and driven by automation.
 // One context menu is open at a time, so one id suffices.
 constexpr const char* kSearchFieldId = "context-menu-search-field";
 // Separates submenu titles in a filtered row's origin path.
 constexpr const char* kMenuPathSeparator = " > ";
+
+// Menu titles are editor UI strings, so ASCII folding is enough to make the
+// filter case-insensitive.
+std::string ToLower(std::string_view text)
+{
+    std::string lowered;
+    lowered.reserve(text.size());
+    for (char c : text)
+        lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    return lowered;
+}
 
 // Each menu surface — the root panel and every open submenu — registers as a
 // DismissablePopup. That is what makes the manager gate pointer targets to the
@@ -98,7 +109,7 @@ public:
             std::max(1.0f, viewportWidth - 2.0f * kContextMenuViewportMargin);
         const float availableHeight =
             std::max(1.0f, viewportHeight - 2.0f * kContextMenuViewportMargin);
-        Style()
+        Overrides()
             .Set(Style::MinWidth, StyleLength::Px(std::min(kContextMenuMinWidth, availableWidth)))
             .Set(Style::MaxWidth, StyleLength::Px(availableWidth))
             .Set(Style::MaxHeight, StyleLength::Px(availableHeight));
@@ -111,13 +122,12 @@ public:
         m_PreferredX = x;
         m_PreferredY = y;
         m_Anchor = nullptr;
-        m_AnchorPanel = nullptr;
         // Applied immediately, not just recorded: the first layout runs before
         // the fit-content size settles, and a clamp computed from an oversized
         // panel renders one frame at the viewport margin before snapping here.
         // Starting at the cursor makes the first frame right; the post-layout
         // pass then only moves the panel when clamping actually demands it.
-        Style()
+        Overrides()
             .Set(Style::PositionLeft, StyleLength::Px(x))
             .Set(Style::PositionTop, StyleLength::Px(y))
             .Set(Style::PositionRight, StyleLength::Auto())
@@ -126,20 +136,17 @@ public:
         m_LastAppliedY = y;
     }
 
-    /// `anchor` is the parent row, `parentPanel` the panel holding it: the
-    /// submenu opens beside the panel, level with the row.
-    void SetSubmenuAnchor(UIElement* anchor, UIElement* parentPanel)
+    void SetSubmenuAnchor(UIElement* anchor)
     {
         m_Anchor = anchor;
-        m_AnchorPanel = parentPanel;
-        if (anchor && parentPanel)
+        if (anchor)
         {
             // Same reason SetPreferredPosition applies immediately: the first
             // frame renders before the clamp pass can run on a settled size,
             // and a submenu must not spend it at the panel default position.
-            const float x = parentPanel->GetLayoutX() + parentPanel->GetLayoutWidth() + kSubmenuGap;
-            const float y = anchor->GetLayoutY();
-            Style()
+            const float x = anchor->GetLayoutX() + anchor->GetLayoutWidth();
+            const float y = anchor->GetLayoutY() - kSubmenuAlignInset;
+            Overrides()
                 .Set(Style::PositionLeft, StyleLength::Px(x))
                 .Set(Style::PositionTop, StyleLength::Px(y))
                 .Set(Style::PositionRight, StyleLength::Auto())
@@ -173,10 +180,8 @@ public:
         // dirty again. The loop is invisible on screen but not to hit-testing:
         // the element under the cursor alternates between the row and the panel
         // frame by frame, so :hover never settles and no row stays lit.
-        const bool anchored = m_Anchor && m_AnchorPanel;
-        const float anchorX = anchored ? m_AnchorPanel->GetLayoutX() : m_PreferredX;
-        const float anchorY = anchored ? m_Anchor->GetLayoutY() : m_PreferredY;
-        const float anchorWidth = anchored ? m_AnchorPanel->GetLayoutWidth() : 0.0f;
+        const float anchorX = m_Anchor ? m_Anchor->GetLayoutX() : m_PreferredX;
+        const float anchorY = m_Anchor ? m_Anchor->GetLayoutY() : m_PreferredY;
         // The clamp works from GetLayoutWidth/Height, and the first layouts
         // run before the fit-content size settles. Clamping against an
         // oversized panel drags it to the viewport margin and it visibly
@@ -196,7 +201,7 @@ public:
             // ghost swallow hover meant for rows beneath it. Bounded so a
             // size that never stops oscillating cannot keep the menu hidden.
             ++m_MeasurePasses;
-            Style().Set(Style::Opacity, 0.0f).Set(Style::PointerEvents, false);
+            Overrides().Set(Style::Opacity, 0.0f).Set(Style::PointerEvents, false);
             MarkDirty(LayoutDirty);
             // The converge loop dispatches OnPostLayout a bounded number of
             // times per frame; when that budget runs out mid-measure, the
@@ -207,18 +212,16 @@ public:
             PostSafeAction([this] { MarkDirty(LayoutDirty); });
             return;
         }
-        Style().Set(Style::Opacity, 1.0f).Set(Style::PointerEvents, true);
+        Overrides().Set(Style::Opacity, 1.0f).Set(Style::PointerEvents, true);
         const bool inputsUnchanged = m_Placed &&
             std::abs(m_LastViewportWidth - viewport.Width) <= 0.5f &&
             std::abs(m_LastViewportHeight - viewport.Height) <= 0.5f &&
             std::abs(m_LastAnchorX - anchorX) <= 0.5f &&
-            std::abs(m_LastAnchorY - anchorY) <= 0.5f &&
-            std::abs(m_LastAnchorWidth - anchorWidth) <= 0.5f;
+            std::abs(m_LastAnchorY - anchorY) <= 0.5f;
         if (inputsUnchanged)
             return;
         m_LastAnchorX = anchorX;
         m_LastAnchorY = anchorY;
-        m_LastAnchorWidth = anchorWidth;
 
         const float availableWidth =
             std::max(1.0f, viewport.Width - 2.0f * kContextMenuViewportMargin);
@@ -229,7 +232,7 @@ public:
         if (std::abs(m_LastViewportWidth - viewport.Width) > 0.5f ||
             std::abs(m_LastViewportHeight - viewport.Height) > 0.5f)
         {
-            Style()
+            Overrides()
                 .Set(Style::MinWidth,
                      StyleLength::Px(std::min(kContextMenuMinWidth, availableWidth)))
                 .Set(Style::MaxWidth, StyleLength::Px(availableWidth))
@@ -240,16 +243,13 @@ public:
         }
 
         UI::Layout::PopupPosition position{};
-        if (anchored)
+        if (m_Anchor)
         {
-            const UI::Layout::SubmenuAnchor anchor{
-                {
-                    m_AnchorPanel->GetLayoutX(),
-                    m_AnchorPanel->GetLayoutY(),
-                    m_AnchorPanel->GetLayoutWidth(),
-                    m_AnchorPanel->GetLayoutHeight(),
-                },
+            const UI::Layout::PopupRect anchor{
+                m_Anchor->GetLayoutX(),
                 m_Anchor->GetLayoutY(),
+                m_Anchor->GetLayoutWidth(),
+                m_Anchor->GetLayoutHeight(),
             };
             position = UI::Layout::PlaceSubmenuInViewport(
                 viewport,
@@ -257,8 +257,7 @@ public:
                 GetLayoutWidth(),
                 GetLayoutHeight(),
                 kContextMenuViewportMargin,
-                kSubmenuGap,
-                FirstRowInset());
+                kSubmenuAlignInset);
         }
         else
         {
@@ -276,7 +275,7 @@ public:
         if (std::abs(m_LastAppliedX - localX) > 0.5f ||
             std::abs(m_LastAppliedY - localY) > 0.5f)
         {
-            Style()
+            Overrides()
                 .Set(Style::PositionLeft, StyleLength::Px(localX))
                 .Set(Style::PositionTop, StyleLength::Px(localY))
                 .Set(Style::PositionRight, StyleLength::Auto())
@@ -292,59 +291,24 @@ public:
     }
 
 private:
-    // How far this panel's first row sits below its top edge (border plus top
-    // padding), measured from the layout rather than restated from the sheet.
-    float FirstRowInset() const
-    {
-        for (const auto& child : GetChildren())
-        {
-            if (child && child->HasClass("dropdown-item"))
-                return child->GetLayoutY() - GetLayoutY();
-        }
-        return 0.0f;
-    }
-
     std::function<void()> m_OnDismiss;
     std::function<bool(const UIElement*)> m_GroupContainment;
     bool m_Dismissed = false;
     bool m_Placed = false;
     float m_LastAnchorX = std::numeric_limits<float>::infinity();
     float m_LastAnchorY = std::numeric_limits<float>::infinity();
-    float m_LastAnchorWidth = std::numeric_limits<float>::infinity();
     float m_LastPanelWidth = std::numeric_limits<float>::infinity();
     float m_LastPanelHeight = std::numeric_limits<float>::infinity();
     static constexpr int kMaxMeasurePasses = 4;
     int m_MeasurePasses = 0;
     float m_PreferredX = 0.0f;
     float m_PreferredY = 0.0f;
-    UIElement* m_Anchor = nullptr;      // the parent row of a submenu; null for the root panel
-    UIElement* m_AnchorPanel = nullptr; // the panel holding m_Anchor
+    UIElement* m_Anchor = nullptr;
     float m_LastViewportWidth = std::numeric_limits<float>::infinity();
     float m_LastViewportHeight = std::numeric_limits<float>::infinity();
     float m_LastAppliedX = std::numeric_limits<float>::infinity();
     float m_LastAppliedY = std::numeric_limits<float>::infinity();
 };
-
-// The image an item's icon path names. `alias:path` (`editor:Icons/x.svg`,
-// `ai-assistant:Editor/Icons/x.svg`) names a mounted source; anything else is a
-// file loaded as given. A one-letter prefix is a Windows drive (`C:\...`), never
-// an alias, as AssetPathSyntax::TrySplitAssetSourcePrefix reads it, and a prefix
-// that is not an alias spelling (a POSIX path with a colon in it) is not split.
-BackgroundImageSource IconImageSource(const std::string& iconPath)
-{
-    BackgroundImageSource source{};
-    source.Kind = BackgroundImageSource::SourceKind::Path;
-    source.Value = iconPath;
-    const size_t colon = iconPath.find(':');
-    if (colon == std::string::npos || colon == 1)
-        return source;
-    const std::string_view prefix(iconPath.data(), colon);
-    if (!AssetPathSyntax::IsValidAssetSourceAlias(prefix))
-        return source;
-    source.SourceAlias = std::string(prefix);
-    source.Value = iconPath.substr(colon + 1);
-    return source;
-}
 } // namespace
 
 
@@ -508,18 +472,6 @@ UIContextMenu::UIContextMenu() = default;
         if (item) item->iconPath = imagePath;
     }
 
-    void UIContextMenu::SetItemShortcut(uint32_t commandId, const std::string& keyText)
-    {
-        auto* item = FindItem(commandId, m_RootItems);
-        if (item) item->shortcut = keyText;
-    }
-
-    void UIContextMenu::SetItemTooltip(uint32_t commandId, const std::string& text)
-    {
-        auto* item = FindItem(commandId, m_RootItems);
-        if (item) item->tooltip = text;
-    }
-
     // Submenu rows draw from the same icon field as leaves; ids never collide
     // because submenus number from kFirstSubMenuId.
     void UIContextMenu::SetSubMenuIcon(uint32_t submenuId, const std::string& imagePath)
@@ -612,14 +564,9 @@ UIContextMenu::UIContextMenu() = default;
         // Submenus mount under this blocker, so the whole menu rides this layer.
         blocker->SetOverlayLayer(OverlayLayer::ContextMenu);
 
-        // Every press inside the menu bubbles here too. Only one that landed on
-        // the blocker itself, outside every panel, closes the menu: a press on a
-        // submenu parent, a separator, a disabled row or a panel's padding does
-        // nothing, as in a native menu.
         blocker->RegisterEventHandler(kEventMouseDown, [this](UIEvent& e)
         {
-            if (e.Target == e.CurrentTarget)
-                CloseAll();
+            CloseAll();
             e.Stop();
         });
 
@@ -654,8 +601,8 @@ UIContextMenu::UIContextMenu() = default;
         menuPanel->AddClass("fit-content");
         menuPanel->AddClass("context-menu-panel");
         menuPanel->AddClass("open");
-        menuPanel->Style().Set(Style::PositionLeft, StyleLength::Px(static_cast<float>(x)));
-        menuPanel->Style().Set(Style::PositionTop, StyleLength::Px(static_cast<float>(y)));
+        menuPanel->Overrides().Set(Style::PositionLeft, StyleLength::Px(static_cast<float>(x)));
+        menuPanel->Overrides().Set(Style::PositionTop, StyleLength::Px(static_cast<float>(y)));
 
         m_RootPanel = panelRaw;
         if (m_SearchEnabled)
@@ -774,7 +721,7 @@ UIContextMenu::UIContextMenu() = default;
             // container), and the accent ring blinks off with it.
             if (manager)
                 if (UIElement* root = manager->GetRootElement())
-                    if (UIElement* input = root->FindById(HashStringId(kSearchFieldId)))
+                    if (UIElement* input = root->FindById(kSearchFieldId))
                         manager->FocusElement(input);
             e.Stop();
         });
@@ -782,7 +729,7 @@ UIContextMenu::UIContextMenu() = default;
         {
             if (manager)
                 if (UIElement* root = manager->GetRootElement())
-                    if (UIElement* input = root->FindById(HashStringId(kSearchFieldId)))
+                    if (UIElement* input = root->FindById(kSearchFieldId))
                         manager->FocusElement(input);
             e.Stop();
         });
@@ -852,7 +799,7 @@ UIContextMenu::UIContextMenu() = default;
 
             // The path counts as well as the title, so a query naming the group
             // ("transform") lists the commands inside it.
-            if (ToLowerAscii(path).find(lowerQuery) == std::string::npos)
+            if (ToLower(path).find(lowerQuery) == std::string::npos)
                 continue;
 
             matches.push_back(LeafMatch{item.get(), pathPrefix});
@@ -862,7 +809,7 @@ UIContextMenu::UIContextMenu() = default;
     void UIContextMenu::BuildFilteredRows(UIElement* container, const std::string& query)
     {
         std::vector<LeafMatch> matches;
-        CollectLeafMatches(m_RootItems, ToLowerAscii(query), {}, matches);
+        CollectLeafMatches(m_RootItems, ToLower(query), {}, matches);
 
         // Commands only: a filtered menu has no submenus to open and no groups to
         // rule off, so separators and submenu parents have nothing left to mark.
@@ -951,14 +898,20 @@ UIContextMenu::UIContextMenu() = default;
         UIElement* panelRaw = menuPanel.get();
         if (auto* root = m_UIManager ? m_UIManager->GetRootElement() : nullptr)
             menuPanel->SetViewportConstraints(root->GetLayoutWidth(), root->GetLayoutHeight());
-        // The close loop above left exactly `level` panels open; the last is
-        // the one holding the parent row.
-        menuPanel->SetSubmenuAnchor(anchorElement, m_OpenMenus.empty() ? nullptr : m_OpenMenus.back());
+        menuPanel->SetSubmenuAnchor(anchorElement);
         menuPanel->AddClass("dropdown-items");
         menuPanel->AddClass("context-menu");
         menuPanel->AddClass("fit-content");
         menuPanel->AddClass("context-menu-panel");
         menuPanel->AddClass("open");
+
+        // GetLayoutX/Y return absolute window coordinates, so use them directly.
+        float ax = anchorElement->GetLayoutX();
+        float ay = anchorElement->GetLayoutY();
+        float aw = anchorElement->GetLayoutWidth();
+
+        menuPanel->Overrides().Set(Style::PositionLeft, StyleLength::Px(ax + aw));
+        menuPanel->Overrides().Set(Style::PositionTop, StyleLength::Px(ay - kSubmenuAlignInset));
 
         BuildMenuLevel(panelRaw, *list, level);
 
@@ -1048,24 +1001,34 @@ UIContextMenu::UIContextMenu() = default;
         // suppression and light an inert row's text.
         if (inSelectionGroup && enabled)
             raw->AddClass(checked ? "row-selected" : "dim-unselected");
-        raw->Style().Set(Style::Display, DisplayMode::Flex);
-        raw->Style().Set(Style::FlexDir, FlexDirection::Row);
-        raw->Style().Set(Style::AlignItems, AlignItems::Center);
+        raw->Overrides().Set(Style::Display, DisplayMode::Flex);
+        raw->Overrides().Set(Style::FlexDir, FlexDirection::Row);
+        raw->Overrides().Set(Style::AlignItems, AlignItems::Center);
 
         // The icon column is reserved on every row, iconed or not, so labels
         // line up down the menu instead of stepping right wherever an icon
         // happens to resolve.
         auto icon = std::make_unique<UIElement>();
         icon->AddClass("context-menu-item-icon");
-        icon->Style().Set(Style::PointerEvents, false);
+        icon->Overrides().Set(Style::PointerEvents, false);
         const std::string& iconPath = item.iconPath;
         if (!iconPath.empty())
         {
-            icon->Style()
-                .Set(Style::BackgroundImage, IconImageSource(iconPath))
+            BackgroundImageSource source{};
+            source.Kind = BackgroundImageSource::SourceKind::Path;
+            source.Value = iconPath;
+            const auto colon = iconPath.find(':');
+            if (colon != std::string::npos)
+            {
+                source.SourceAlias = iconPath.substr(0, colon);
+                source.Value = iconPath.substr(colon + 1);
+            }
+
+            icon->Overrides()
+                .Set(Style::BackgroundImage, std::move(source))
                 .Set(Style::BackgroundRepeatProp, BackgroundRepeat::NoRepeat)
                 .Set(Style::BackgroundSize, BackgroundSizeValue{BackgroundSizeMode::Contain})
-                .Set(Style::BackgroundPosition, BackgroundPositionValue::Percent(50.0f, 50.0f));
+                .Set(Style::BackgroundPosition, BackgroundPositionValue{50.0f, true, 50.0f, true});
         }
         raw->AddChild(std::move(icon));
 
@@ -1073,27 +1036,17 @@ UIContextMenu::UIContextMenu() = default;
         // The row carries .dropdown-item and therefore the :hover rule. A
         // child under the cursor becomes the hover target instead, and the
         // row never lights up — so the contents stay out of hit-testing.
-        lbl->Style().Set(Style::PointerEvents, false);
-        lbl->Style().Set(Style::FlexGrow, 1.0f);
+        lbl->Overrides().Set(Style::PointerEvents, false);
+        lbl->Overrides().Set(Style::FlexGrow, 1.0f);
         lbl->SetText(item.title);
         raw->AddChild(std::move(lbl));
 
-        if (!item.shortcut.empty() && !item.isSubMenu)
-        {
-            auto key = std::make_unique<Label>();
-            key->AddClass("dropdown-item-shortcut");
-            key->Style().Set(Style::PointerEvents, false);
-            key->SetText(item.shortcut);
-            raw->AddChild(std::move(key));
-        }
-
-        // A filtered row shows only its icon and name, and two commands can share a name under different
-        // submenus, so its tooltip starts with its submenu path. The item's own tooltip text follows.
-        std::string tooltip = path.empty() ? std::string() : path + kMenuPathSeparator + item.title;
-        if (!item.tooltip.empty())
-            tooltip += (tooltip.empty() ? "" : "\n") + item.tooltip;
-        if (!tooltip.empty())
-            raw->SetTooltip(std::move(tooltip));
+        // Two commands can share a name under different submenus, so a filtered
+        // row says where it came from.
+        // Filtered rows show icon + command name only; the submenu the match
+        // came from stays available as a tooltip rather than a trailing label.
+        if (!path.empty())
+            raw->SetTooltip(path + kMenuPathSeparator + item.title);
 
         if (!item.colorHex.empty())
         {
@@ -1109,7 +1062,7 @@ UIContextMenu::UIContextMenu() = default;
             }
             auto swatch = std::make_unique<UIElement>();
             swatch->AddClass("dropdown-item-swatch");
-            swatch->Style()
+            swatch->Overrides()
                 .Set(Style::BackgroundColor, 0xFF000000u | rgb)
                 .Set(Style::PointerEvents, false);
             raw->AddChild(std::move(swatch));
@@ -1129,14 +1082,14 @@ UIContextMenu::UIContextMenu() = default;
             // that says "selectable, not selected".
             auto mark = std::make_unique<UIElement>();
             mark->AddClass(checked ? "dropdown-item-check" : "dropdown-item-check-slot");
-            mark->Style().Set(Style::PointerEvents, false);
+            mark->Overrides().Set(Style::PointerEvents, false);
             raw->AddChild(std::move(mark));
         }
         else if (checked && !item.isSubMenu)
         {
             auto check = std::make_unique<UIElement>();
             check->AddClass("dropdown-item-check");
-            check->Style().Set(Style::PointerEvents, false);
+            check->Overrides().Set(Style::PointerEvents, false);
             raw->AddChild(std::move(check));
         }
 
@@ -1149,7 +1102,7 @@ UIContextMenu::UIContextMenu() = default;
             arrow->SetText("\xE2\x80\xBA"); // U+203A as UTF-8; \u escape trips MSVC C4566
             arrow->AddClass("dropdown-item-arrow");
             arrow->AddClass("dropdown-item-arrow-glyph");
-            arrow->Style().Set(Style::PointerEvents, false);
+            arrow->Overrides().Set(Style::PointerEvents, false);
             raw->AddChild(std::move(arrow));
         }
 
@@ -1183,20 +1136,7 @@ UIContextMenu::UIContextMenu() = default;
                                           });
                                       });
 
-            if (item.isSubMenu)
-            {
-                // A press opens the submenu at once, without waiting for the
-                // hover's deferred open, and keeps it open when it already is.
-                raw->RegisterEventHandler(kEventMouseDown, [this, itemId = item.id, raw, level](UIEvent& e)
-                {
-                    if (e.Button != 0)
-                        return;
-                    ++m_SubMenuRequestSerial;
-                    OpenSubMenu(itemId, raw, level + 1);
-                    e.Stop();
-                });
-            }
-            else
+            if (!item.isSubMenu)
             {
                 // A selection click can stay open so several choices can be
                 // made; an independent toggle closes the menu the way any other
@@ -1207,7 +1147,7 @@ UIContextMenu::UIContextMenu() = default;
                                           [this, id = item.id, raw, stickyEligible, radio](UIEvent& e)
                 {
                     if (e.Button != 0) return;
-                    if (const char* v = std::getenv("GE_UI_HOVER_TRACE"); v && v[0] == '1')
+                    if (Platform::EnvironmentSwitchEnabled("GE_UI_HOVER_TRACE", false))
                         Logger::Log::Info("[MenuTrace] command id={} dispatched={}", id,
                                           m_CommandHandler != nullptr);
                     if (m_CommandHandler) m_CommandHandler(id);

@@ -2,7 +2,6 @@
 
 #include "UI/Layout/Docking.h"
 
-#include <algorithm>
 #include <utility>
 
 namespace GameEngine
@@ -13,23 +12,20 @@ DockLayoutController::DockLayoutController(DockingManager& docking)
 {
 }
 
-bool DockLayoutController::KeepPanel(const std::string& panelId,
-                                     std::span<const std::string> keptPanelIds) const
+bool DockLayoutController::KeepPanel(const std::string& panelId) const
 {
-    return m_Docking.GetPanel(panelId) != nullptr ||
-           std::find(keptPanelIds.begin(), keptPanelIds.end(), panelId) != keptPanelIds.end();
+    return m_Docking.GetPanel(panelId) != nullptr;
 }
 
 std::unique_ptr<DockNode> DockLayoutController::CloneForRegisteredPanels(
-    const DockNode* source, std::span<const std::string> keptPanelIds) const
+    const DockNode* source) const
 {
-    return CloneForRegisteredPanelsRecursive(source, keptPanelIds);
+    return CloneForRegisteredPanelsRecursive(source);
 }
 
-bool DockLayoutController::ApplyForRegisteredPanels(const DockNode* source,
-                                                    std::span<const std::string> keptPanelIds)
+bool DockLayoutController::ApplyForRegisteredPanels(const DockNode* source)
 {
-    auto sanitized = CloneForRegisteredPanels(source, keptPanelIds);
+    auto sanitized = CloneForRegisteredPanels(source);
     if (!sanitized)
         return false;
 
@@ -38,7 +34,7 @@ bool DockLayoutController::ApplyForRegisteredPanels(const DockNode* source,
 }
 
 std::unique_ptr<DockNode> DockLayoutController::CloneForRegisteredPanelsRecursive(
-    const DockNode* source, std::span<const std::string> keptPanelIds) const
+    const DockNode* source) const
 {
     if (!source)
         return nullptr;
@@ -48,12 +44,12 @@ std::unique_ptr<DockNode> DockLayoutController::CloneForRegisteredPanelsRecursiv
         auto result = DockNode::MakeLeaf();
         for (const auto& panelId : source->GetTabs())
         {
-            if (KeepPanel(panelId, keptPanelIds))
+            if (KeepPanel(panelId))
                 result->AddTab(panelId);
         }
 
         const std::string& active = source->GetActivePanelId();
-        if (!active.empty() && KeepPanel(active, keptPanelIds))
+        if (!active.empty() && KeepPanel(active))
             (void)result->ActivateTab(active);
 
         if (result->GetTabs().empty())
@@ -61,8 +57,8 @@ std::unique_ptr<DockNode> DockLayoutController::CloneForRegisteredPanelsRecursiv
         return result;
     }
 
-    auto first = CloneForRegisteredPanelsRecursive(source->First(), keptPanelIds);
-    auto second = CloneForRegisteredPanelsRecursive(source->Second(), keptPanelIds);
+    auto first = CloneForRegisteredPanelsRecursive(source->First());
+    auto second = CloneForRegisteredPanelsRecursive(source->Second());
     if (!first)
         return second;
     if (!second)

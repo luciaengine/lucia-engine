@@ -24,25 +24,25 @@ namespace GameEngine.CoreBridgeTests
             return path;
         }
 
-        internal static int ManagedPreload(string dllPath)
+        private static int ManagedPreload(string dllPath)
         {
             var mi = CoreBridgeType.GetMethod("ManagedPreloadAssemblyContext", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
             return (int)mi.Invoke(null, new object?[] { dllPath })!;
         }
 
-        internal static int ManagedSwap()
+        private static int ManagedSwap()
         {
             var mi = CoreBridgeType.GetMethod("ManagedSwapPreloadedContext", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
             return (int)mi.Invoke(null, null)!;
         }
 
-        internal static int ManagedCall(string fqn)
+        private static int ManagedCall(string fqn)
         {
             var mi = CoreBridgeType.GetMethod("ManagedCallUserScriptsMethod", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!;
             return (int)mi.Invoke(null, new object?[] { fqn })!;
         }
 
-        internal static int Unload()
+        private static int Unload()
         {
             var mi = CoreBridgeType.GetMethod("Demo_UnloadUserScriptsAssembly", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public)!;
             return (int)mi.Invoke(null, null)!;

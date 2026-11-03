@@ -1,14 +1,12 @@
 #include "SceneView/MeasureSceneGizmo.h"
 
-#include "Components/Hierarchy.h"
 #include "Components/Measure/MeasureComponent.h"
 #include "Components/Transform.h"
 #include "Core/Engine.h"
 #include "ECS/Components.h"
 #include "ECS/ECS.h"
 #include "ECS/ECSTemplates.h"
-#include "Mathematics/Geometry.h"
-#include "Mathematics/Interpolation.h"
+#include "Editor/Entities/EntityWorldPose.h"
 #include "Mathematics/MatrixOps.h"
 #include "Mathematics/Ray.h"
 #include "Mathematics/Vector3.h"
@@ -34,10 +32,15 @@ using Mathematics::Vector3;
 
 Color MeasureColor(const Components::MeasureComponent& measure, float alphaScale)
 {
-    return Color(Math::Clamp01(measure.Color[0]),
-                 Math::Clamp01(measure.Color[1]),
-                 Math::Clamp01(measure.Color[2]),
-                 Math::Clamp01(measure.Color[3] * alphaScale));
+    return Color(std::clamp(measure.Color[0], 0.0f, 1.0f),
+                 std::clamp(measure.Color[1], 0.0f, 1.0f),
+                 std::clamp(measure.Color[2], 0.0f, 1.0f),
+                 std::clamp(measure.Color[3] * alphaScale, 0.0f, 1.0f));
+}
+
+Vector3 Lerp(const Vector3& a, const Vector3& b, float t)
+{
+    return a + (b - a) * t;
 }
 
 void DrawDottedWorldLine(GizmoRenderContext& context,
@@ -54,8 +57,8 @@ void DrawDottedWorldLine(GizmoRenderContext& context,
     const float period = std::max(segmentLength, 0.001f) * 2.0f;
     for (float d = 0.0f; d < length; d += period)
     {
-        context.DrawColoredLine(Mathematics::Lerp(from, to, d / length),
-                                Mathematics::Lerp(from, to, std::min(d + segmentLength, length) / length),
+        context.DrawColoredLine(Lerp(from, to, d / length),
+                                Lerp(from, to, std::min(d + segmentLength, length) / length),
                                 color, thickness);
     }
 }
@@ -67,54 +70,14 @@ float DistancePointToRaySq(const Vector3& point, const GizmoRay& ray, float& out
     return (point - Mathematics::RayPointAt(ray, t)).LengthSquared();
 }
 
-bool GetEntityWorldMatrix(ECS::World* world,
-                          ECS::EntityHandle entity,
-                          Mathematics::Matrix4x4& out,
-                          int depth = 0)
-{
-    if (!world || !entity.IsValid() || !world->IsValid(entity) || depth > 64)
-        return false;
-
-    if (const auto* transform = world->GetComponent<Components::Transform>(entity))
-    {
-        Mathematics::Matrix4x4 local = Mathematics::Matrix4x4::FromColumnMajor(transform->matrix);
-        if (const auto* parent = world->GetComponent<Components::Parent>(entity);
-            parent && parent->Entity.IsValid())
-        {
-            Mathematics::Matrix4x4 parentWorld;
-            if (GetEntityWorldMatrix(world, parent->Entity, parentWorld, depth + 1))
-            {
-                out = parentWorld * local;
-                return true;
-            }
-        }
-
-        out = local;
-        return true;
-    }
-
-    if (const auto* worldTransform = world->GetComponent<Components::WorldTransform>(entity))
-    {
-        out = Mathematics::Matrix4x4::FromColumnMajor(worldTransform->matrix);
-        return true;
-    }
-
-    return false;
-}
-
 bool GetEntityWorldPosition(ECS::World* world, ECS::EntityHandle entity, Vector3& out)
 {
-    if (!world || !entity.IsValid() || !world->IsValid(entity))
+    Mathematics::Matrix4x4 worldMatrix;
+    if (!Editor::TryComputeEntityWorldMatrix(world, entity, worldMatrix))
         return false;
 
-    Mathematics::Matrix4x4 worldMatrix;
-    if (GetEntityWorldMatrix(world, entity, worldMatrix))
-    {
-        out = Vector3(worldMatrix[3].x, worldMatrix[3].y, worldMatrix[3].z);
-        return true;
-    }
-
-    return false;
+    out = Vector3(worldMatrix[3].x, worldMatrix[3].y, worldMatrix[3].z);
+    return true;
 }
 
 ECS::EntityHandle ResolveMeasureEndpointEntity(ECS::World* world,
@@ -281,7 +244,7 @@ void MeasureSceneGizmo::Render(GizmoRenderContext& context)
                     const Color hoverLineColor(lineColor.r + (1.0f - lineColor.r) * 0.35f,
                                                lineColor.g + (1.0f - lineColor.g) * 0.35f,
                                                lineColor.b + (1.0f - lineColor.b) * 0.35f,
-                                               Math::Clamp01(lineColor.a * 1.15f));
+                                               std::clamp(lineColor.a * 1.15f, 0.0f, 1.0f));
                     DrawDottedWorldLine(context, start, end, hoverLineColor, 2.4f, 0.12f);
                 }
                 DrawDottedWorldLine(context, start, end, lineColor, 1.5f, 0.12f);

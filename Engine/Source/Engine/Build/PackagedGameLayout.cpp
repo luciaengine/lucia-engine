@@ -44,7 +44,6 @@ ScriptsConfig BuildPlayerScriptsConfig(const PackagedGameLayout& layout, bool us
     if (!useNativeAOT && layout.PrebuiltScriptAssemblyExists)
         config.prebuiltAssemblyPath = layout.PrebuiltScriptAssembly;
 
-    config.nativeAot = useNativeAOT;
     config.disableClr = useNativeAOT || config.prebuiltAssemblyPath.empty();
     return config;
 }
@@ -73,8 +72,6 @@ std::optional<AssetSourceDesc> BuildPlayerEditorSourceDesc(
     editorSource.DerivedIdentity = true;
     editorSource.Priority = 50;
     editorSource.RegisterFileWatcher = false;
-    // The mount has no metadata store, so a bind cannot save inferred settings.
-    editorSource.InfersTextureImportSettings = false;
 
     if (canonicalAssetRoot(editorRoot) != canonicalAssetRoot(projectAssetsRoot))
         return editorSource;

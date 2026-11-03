@@ -140,19 +140,9 @@ std::string UserProjectGenerator::BuildCMakeListsContent(const NativeBuildConfig
         out << "if(NOT IS_DIRECTORY \"${GAMEENGINE_SDK_DIR}\")\n";
         out << "    message(FATAL_ERROR \"GameEngine SDK not found at '${GAMEENGINE_SDK_DIR}'. "
                "The Editor/SDK moved or was deleted since this file was generated. "
-               "Reopen the project in the Open Engine Editor to refresh it, or configure with "
+               "Reopen the project in the GameEngine Editor to refresh it, or configure with "
                "-DGAMEENGINE_SDK_DIR=<Editor dir>/SDK.\")\n";
         out << "endif()\n";
-    }
-
-    // CMake reads the deployment target only before project() configures the toolchain.
-    if (!config.MacOSDeploymentTarget.empty())
-    {
-        out << "\n";
-        out << "# The oldest macOS the engine SDK runs on. The module loads only where the engine\n";
-        out << "# loads, so the SDK's value replaces a cached one.\n";
-        out << "set(CMAKE_OSX_DEPLOYMENT_TARGET \"" << config.MacOSDeploymentTarget
-            << "\" CACHE STRING \"Minimum macOS version the module runs on\" FORCE)\n";
     }
 
     out << "\n";
@@ -311,10 +301,6 @@ std::string UserProjectGenerator::BuildCMakeListsContent(const NativeBuildConfig
     out << "else()\n";
     out << "    target_compile_options(" << config.ModuleName
         << " PRIVATE $<$<NOT:$<CONFIG:Debug>>:-g>)\n";
-    // GCC reports -Wchanges-meaning as an error by default, and the SDK's UI headers
-    // reuse type names as member names. The engine builds with the same flag.
-    out << "    target_compile_options(" << config.ModuleName
-        << " PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-Wno-changes-meaning>)\n";
     out << "endif()\n\n";
 
     out << "target_include_directories(" << config.ModuleName << " PRIVATE\n";

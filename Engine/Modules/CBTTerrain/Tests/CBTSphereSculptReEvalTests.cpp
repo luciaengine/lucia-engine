@@ -103,20 +103,6 @@ class CBTSphereSculptReEval : public ::testing::Test
         m_Device->WaitForIdle();
     }
 
-    // One gated update with `dirty` as the sphere's face list, then one quiescent update. Returns the
-    // bisectors the first update re-evaluated.
-    int32_t GatedDirtyEvalCount(CBTInstance& inst, const SphereSculptLayer& layer, CBTClassifyDesc desc,
-                                const CBTFrameParams& params, const SphereEditRegions& dirty, uint32_t frame)
-    {
-        desc.GateVertexEval = 1u;
-        desc.SphereDirty = dirty;
-        RunFrame(inst, layer, /*uploadSculpt=*/false, desc, params, frame);
-        const int32_t evaluated = inst.ReadVertexEvalCount();
-        desc.SphereDirty = {};
-        RunFrame(inst, layer, /*uploadSculpt=*/false, desc, params, frame + 1u);
-        return evaluated;
-    }
-
     std::vector<float> ReadVerts(CBTInstance& inst)
     {
         const auto words =
@@ -138,47 +124,6 @@ class CBTSphereSculptReEval : public ::testing::Test
     std::unique_ptr<IDevice> m_Device;
     CBTKernelSet m_KernelSet;
 };
-
-// Two faces listed in one update both reclassify in it: the update re-evaluates the bisectors of
-// each face alone, summed (a one-face rule re-evaluates the first face's only).
-TEST_F(CBTSphereSculptReEval, EveryListedFaceReclassifiesInTheSameUpdate)
-{
-    CBTInstance inst;
-    ASSERT_TRUE(inst.Initialize(*m_Device, m_KernelSet));
-    ASSERT_TRUE(inst.InitializeRoots(kDomainSpherical));
-    const float radius = 20000.0f;
-    const auto geom = MakeSphereSculptGeometry(radius, ResolveSculptPagePoolCount());
-    SphereSculptLayer layer;
-    layer.Configure(geom);
-    const CBTFrameParams p = SphereParamsWithSculpt(radius, 125.0f, 6.0f, 4u, geom);
-
-    // Uniform depth-target refinement: a churn-free tree, so a quiescent gated update evaluates none.
-    CBTClassifyDesc c{};
-    c.Mode = kClassifyDepthTarget;
-    c.FocusRoot = kFocusRootAll;
-    c.TargetDepth = inst.GetBaseDepth() + 6u;
-    for (uint32_t f = 0; f <= 24u; ++f)
-    {
-        c.GateVertexEval = (f == 0u) ? 0u : 1u;
-        RunFrame(inst, layer, /*uploadSculpt=*/false, c, p, f);
-    }
-    ASSERT_EQ(GatedDirtyEvalCount(inst, layer, c, p, SphereEditRegions{}, 25u), 0) << "the tree is at rest";
-
-    SphereEditRegions faceA{};
-    faceA.Rects[faceA.Count++] = SphereFaceUVRect{0u, 0.0f, 0.0f, 1.0f, 1.0f};
-    SphereEditRegions faceB{};
-    faceB.Rects[faceB.Count++] = SphereFaceUVRect{3u, 0.0f, 0.0f, 1.0f, 1.0f};
-    SphereEditRegions both = faceA;
-    both.Rects[both.Count++] = faceB.Rects[0];
-
-    const int32_t a = GatedDirtyEvalCount(inst, layer, c, p, faceA, 27u);
-    const int32_t b = GatedDirtyEvalCount(inst, layer, c, p, faceB, 29u);
-    const int32_t ab = GatedDirtyEvalCount(inst, layer, c, p, both, 31u);
-    std::printf("[dirty-list] face 0 %d, face 3 %d, both %d\n", a, b, ab);
-    ASSERT_GT(a, 0);
-    ASSERT_GT(b, 0);
-    EXPECT_EQ(ab, a + b) << "a listed face did not reclassify in the update it was listed in";
-}
 
 // Step a flatten modifier A -> B across a planet and assert the region-scoped gated re-eval strands
 // the vacated footprint's bisectors while a full-pool re-eval leaves none stale. Reproduces the
@@ -258,9 +203,11 @@ TEST_F(CBTSphereSculptReEval, FlattenMoveStrandsVerticesUntilFullReEval)
     const SphereEditRegions rbRect = ClassifySphereCapEdit(dirB[0], dirB[1], dirB[2], ang);
     ASSERT_GT(rbRect.Count, 0u);
     c.GateVertexEval = 1u;
-    c.SphereDirty = SphereEditRegions{};
-    c.SphereDirty.Rects[0] = rbRect.Rects[0];
-    c.SphereDirty.Count = 1u;
+    c.DirtyFace = rbRect.Rects[0].Face;
+    c.DirtyMinU = rbRect.Rects[0].MinU;
+    c.DirtyMinV = rbRect.Rects[0].MinV;
+    c.DirtyMaxU = rbRect.Rects[0].MaxU;
+    c.DirtyMaxV = rbRect.Rects[0].MaxV;
     RunFrame(inst, layer, /*uploadSculpt=*/true, c, p, 26u);
     const std::vector<float> gated = ReadVerts(inst);
 
@@ -362,8 +309,7 @@ TEST_F(CBTSphereSculptReEval, ResizeRemapKeepsConformityAndAnchorsContent)
 
     // Max |vertex| - radius over live corners inside/outside the cap around the dab direction.
     auto probe = [&](float radius, float& maxInCap, float& maxOutCap) {
-        const auto words =
-            inst.DebugReadWords(CBTBinding::CurrentVertex, kDefaultBisectorPoolSize * kVertexWordsPerSlot);
+        const std::vector<float> v = ReadVerts(inst);
         const std::vector<uint64_t> heap = ReadHeap(inst);
         const float capCos = std::cos(ang);
         maxInCap = -1e9f;
@@ -374,12 +320,11 @@ TEST_F(CBTSphereSculptReEval, ResizeRemapKeepsConformityAndAnchorsContent)
                 continue;
             for (uint32_t corner = 0; corner < 3u; ++corner)
             {
-                double p[3];
-                ReadCornerWorld(words, s, corner, p);
-                const float len = static_cast<float>(std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]));
+                const float* p = &v[s * kVertexWordsPerSlot + corner * 4u];
+                const float len = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
                 if (len <= 0.0f)
                     continue;
-                const float d = static_cast<float>(p[0] * nx + p[1] * ny + p[2] * nz) / len;
+                const float d = (p[0] * nx + p[1] * ny + p[2] * nz) / len;
                 const float h = len - radius;
                 if (d >= capCos)
                     maxInCap = std::max(maxInCap, h);

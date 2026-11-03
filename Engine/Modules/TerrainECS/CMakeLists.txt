@@ -4,10 +4,10 @@ project(TerrainECS LANGUAGES CXX)
 
 add_library(TerrainECS OBJECT
     Source/TerrainService.cpp
-    Source/CoarseTileStandIn.cpp
     Source/TerrainBakeCache.cpp
     Source/BakeWarningLatch.cpp
-    Source/PlanarHeightfieldEditCursor.cpp
+    Source/TerrainCollisionReadiness.cpp
+    Source/PlanarHeightQuery.cpp
     Source/TerrainHandleHygiene.cpp
     Source/TerrainGpuBake.cpp
     Source/TerrainEntityProvisioning.cpp
@@ -20,20 +20,14 @@ add_library(TerrainECS OBJECT
     Source/TerrainUploadNode.cpp
     Source/PlanetFaceCollider.cpp
     Source/TerrainAtlas.cpp
-    Source/AtlasTileNormal.cpp
     Source/TerrainSizingPlan.cpp
     Source/RawHeightmap.cpp
     Source/AtlasResidencyController.cpp
     Source/PageLevelRule.cpp
-    Source/PlanetPageRequester.cpp
-    Source/PageTable.cpp
     Source/PagedHeightSampler.cpp
-    Source/SurfaceHeightQuery.cpp
-    Source/TerrainSkyline.cpp
     Source/TerrainHeightSource.cpp
-    Source/TerrainPages.cpp
-    Source/TerrainPageFeature.cpp
-    Source/TerrainPageTableRing.cpp
+    Source/TerrainHeightPages.cpp
+    Source/TerrainHeightPageFeature.cpp
     Source/TerrainHeightPageDriver.cpp
     Source/HeightPageStoreLoader.cpp
     Source/Systems/TerrainExtractionSystem.cpp
@@ -42,22 +36,11 @@ add_library(TerrainECS OBJECT
     Source/Systems/TerrainWorldHooks.cpp
     Source/Systems/TerrainModifierSystem.cpp
     Source/Systems/TerrainModifierPageOverlay.cpp
-    Source/Systems/TerrainModifierSurfacePages.cpp
-    Source/TerrainSurface/TerrainSurfacePageBaker.cpp
-    Source/TerrainSurface/TerrainSurfacePageDriver.cpp
-    Source/TerrainSurface/TerrainSurfacePages.cpp
-    Source/TerrainSurface/TerrainSurfaceStore.cpp
     Source/TileStreamingManager.cpp
     Source/TerrainModifierComponents.cpp
-    Source/TerrainColorMap/TerrainColorMap.cpp
-    Source/TerrainColorMap/TerrainColorMapBaker.cpp
-    Source/TerrainGrass/TerrainGrassField.cpp
-    Source/TerrainGrass/TerrainGrassCompose.cpp
-    Source/TerrainFieldUploader.cpp
-    Source/TerrainRowBands.cpp
+    Source/TerrainGrassField.cpp
+    Source/TerrainGrassFieldUploader.cpp
     Source/TerrainRoutePolyline.cpp
-    Source/AreaFlatten/AreaReferenceSurface.cpp
-    Source/AreaFlatten/AreaReferenceSurfaceCache.cpp
     Source/TerrainZonePayload.cpp
     Source/TerrainZoneAuthoring.cpp
     Source/Scene/TerrainSceneSchemas.cpp
@@ -88,9 +71,6 @@ target_link_libraries(TerrainECS
         # TerrainService.h exposes the asset-reload lane + decoded heightmap
         # cache (AssetReloadInvalidator / GUID members) in its public surface.
         AssetCore
-        # The height page store, its cooker and loader (the paged height source); SurfaceHeightQuery.h
-        # and TerrainService.h expose its page types.
-        PageStreaming
     PRIVATE
         # Engine intentionally NOT listed: Engine is now SHARED (Phase 1) and
         # PRIVATE-links TerrainECS itself. A direct TerrainECS -> Engine link
@@ -100,6 +80,8 @@ target_link_libraries(TerrainECS
         # expression below.
         JobSystem
         FileSystem
+        # The height page store, its cooker and loader (the paged height source).
+        PageStreaming
         Physics
         PhysicsECS
         Spline

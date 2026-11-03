@@ -175,14 +175,14 @@ TEST_F(GPUSceneBufferCapacityTest, UploadBeyondDeclaredCapacityIsClampedNotCorru
 TEST_F(GPUSceneBufferCapacityTest, ClampedUploadReportsDroppedRowsOnce)
 {
     Logger::Log::Initialize({});
-    auto sink = std::make_unique<Logger::CallbackSink>();
+    auto sink = Logger::MakeUnique<Logger::CallbackSink>();
     auto* sinkPtr = sink.get();
     auto errorCount = std::make_shared<std::atomic<int>>(0);
-    const std::uint64_t callbackId = sinkPtr->RegisterCallback(
+    const Logger::uint64 callbackId = sinkPtr->RegisterCallback(
         [errorCount](const Logger::LogMessage& msg)
         {
             if (msg.Level == Logger::LogLevel::Error &&
-                msg.Message.find("exceed the declared capacity") != std::string::npos)
+                msg.Message.find("exceed the declared capacity") != Logger::String::npos)
                 errorCount->fetch_add(1);
         });
     Logger::Log::AddSink(std::move(sink));
@@ -360,14 +360,14 @@ TEST_F(GPUSceneBufferCapacityTest, DirtyTailRemovalAndReuseUploadOnlyLiveChanged
 TEST_F(GPUSceneBufferCapacityTest, InstanceCapacityClampPreservesValidSparseWritesAndReportsOnce)
 {
     Logger::Log::Initialize({});
-    auto sink = std::make_unique<Logger::CallbackSink>();
+    auto sink = Logger::MakeUnique<Logger::CallbackSink>();
     auto* sinkPtr = sink.get();
     auto errorCount = std::make_shared<std::atomic<int>>(0);
-    const std::uint64_t callbackId = sinkPtr->RegisterCallback(
+    const Logger::uint64 callbackId = sinkPtr->RegisterCallback(
         [errorCount](const Logger::LogMessage& msg)
         {
             if (msg.Level == Logger::LogLevel::Error &&
-                msg.Message.find("instances exceed the declared capacity") != std::string::npos)
+                msg.Message.find("instances exceed the declared capacity") != Logger::String::npos)
                 errorCount->fetch_add(1);
         });
     Logger::Log::AddSink(std::move(sink));

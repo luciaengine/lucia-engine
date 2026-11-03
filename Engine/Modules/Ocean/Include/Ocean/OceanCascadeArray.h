@@ -129,7 +129,7 @@ private:
     // The anchored coarsest layer: origin X, origin Z, texel size, scale (the
     // layer's extent / baseScale), as in a CascadeOriginScale entry.
     bool m_CoarsestAnchored = false;
-    Mathematics::Vector4 m_CoarsestAnchor;
+    float m_CoarsestAnchor[4] = {};
 };
 
 } // namespace GameEngine::Ocean

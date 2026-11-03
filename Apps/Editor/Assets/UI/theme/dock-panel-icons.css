@@ -16,23 +16,23 @@
  * restating the URL here. */
 
 .dock-assets-icon {
-	background-image: url("editor:Icons/folder.svg");
+	background-image: url("editor:Icons/folder.png");
 }
 
 .dock-asset-view-icon {
-	background-image: url("editor:Icons/eye.svg");
+	background-image: url("editor:Icons/eye.png");
 }
 
 .dock-hierarchy-icon {
-	background-image: url("editor:Icons/list.svg");
+	background-image: url("editor:Icons/list.png");
 }
 
 .dock-inspector-icon {
-	background-image: url("editor:Icons/options.svg");
+	background-image: url("editor:Icons/options.png");
 }
 
 .dock-scene-view-icon {
-	background-image: url("editor:Icons/sceneicon.svg");
+	background-image: url("editor:Icons/sceneicon.png");
 }
 
 .dock-game-view-icon {
@@ -40,11 +40,11 @@
 }
 
 .dock-ui-demo-icon {
-	background-image: url("editor:Icons/desktop.svg");
+	background-image: url("editor:Icons/desktop.png");
 }
 
 .dock-diff-icon {
-	background-image: url("editor:Icons/codeicon.svg");
+	background-image: url("editor:Icons/codeicon.png");
 }
 
 .dock-web-icon {
@@ -67,6 +67,20 @@
 	background-image: url("editor:Icons/DockClipEditor.svg");
 }
 
+/* The tile set and rules editors get their own silhouettes — a sliced atlas
+   sheet and a pattern feeding a tile — so the three tile tabs are telling
+   apart at tab size; the palette itself shares tile-palette-icon with its
+   toolbar button. */
+.dock-tile-set-editor-icon {
+	background-image: url("editor:Icons/TileSet.svg");
+}
+
+
+
+.dock-tile-rules-icon {
+	background-image: url("editor:Icons/TileRules.svg");
+}
+
 /* Primary workspace tabs read clearly from their labels alone. Keep these
    icon mappings available to the Panels launcher, but hide the icon element
    when the same class is mounted inside a dock tab. */
@@ -76,4 +90,20 @@
 .dock-inspector-icon,
 .dock-scene-view-icon {
 	display: none;
+}
+
+/* Shared by the top toolbar button and the Tile Palette dock tab, like
+   node-icon; all tile workspace icon styling belongs in this stylesheet. */
+.tile-palette-icon {
+	background-image: url("editor:Icons/TilePalette.svg");
+	background-size: contain;
+	background-repeat: no-repeat;
+	background-position: center;
+	background-image-tint: var(--ui_icon_tint_standard);
+	background-color: transparent;
+}
+
+.tile-palette-icon:hover {
+	background-image-tint: var(--ui_icon_tint_hover);
+	background-color: transparent;
 }

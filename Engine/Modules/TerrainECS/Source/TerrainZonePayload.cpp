@@ -1,8 +1,5 @@
 #include "TerrainECS/TerrainZonePayload.h"
 
-#include "Logger/Logger.h"
-
-#include <cmath>
 #include <cstring>
 
 namespace GameEngine::TerrainECS
@@ -35,7 +32,9 @@ uint32 ReadU32(const uint8* data, std::size_t offset)
 
 std::vector<uint8> EncodeZonePayload(const TerrainZonePayload& payload)
 {
-    const std::size_t dataBytes = payload.TexelCount() * ZonePayloadBytesPerTexel(payload.Format);
+    const bool sculpt = payload.IsSculpt();
+    const std::size_t texelCount = payload.TexelCount();
+    const std::size_t dataBytes = sculpt ? texelCount * sizeof(float32) : texelCount;
 
     std::vector<uint8> out;
     out.reserve(kHeaderBytes + dataBytes);
@@ -48,7 +47,12 @@ std::vector<uint8> EncodeZonePayload(const TerrainZonePayload& payload)
     const std::size_t offset = out.size();
     out.resize(offset + dataBytes);
     if (dataBytes > 0)
-        std::memcpy(out.data() + offset, payload.TexelBytes(), dataBytes);
+    {
+        if (sculpt)
+            std::memcpy(out.data() + offset, payload.Offsets.data(), dataBytes);
+        else
+            std::memcpy(out.data() + offset, payload.Mask.data(), dataBytes);
+    }
     return out;
 }
 
@@ -62,7 +66,7 @@ bool DecodeZonePayload(const uint8* data, std::size_t size, TerrainZonePayload& 
     const uint32 formatRaw = ReadU32(data, 2 * sizeof(uint32));
     const uint32 width = ReadU32(data, 3 * sizeof(uint32));
     const uint32 height = ReadU32(data, 4 * sizeof(uint32));
-    if (formatRaw > static_cast<uint32>(kLastZonePayloadFormat))
+    if (formatRaw > static_cast<uint32>(ZonePayloadFormat::PaintMaskR8))
         return false;
     // Cap dimensions before any width*height math so a crafted header can't
     // overflow the texel count or force a huge allocation.
@@ -70,25 +74,20 @@ bool DecodeZonePayload(const uint8* data, std::size_t size, TerrainZonePayload& 
         return false;
 
     const auto format = static_cast<ZonePayloadFormat>(formatRaw);
-    const std::size_t dataBytes = static_cast<std::size_t>(width) * height * ZonePayloadBytesPerTexel(format);
+    const bool sculpt = format == ZonePayloadFormat::SculptOffsetR32F;
+    const std::size_t texelCount = static_cast<std::size_t>(width) * height;
+    const std::size_t dataBytes = sculpt ? texelCount * sizeof(float32) : texelCount;
     if (size - kHeaderBytes < dataBytes)
         return false;
 
     TerrainZonePayload decoded;
     decoded.Allocate(format, width, height);
     if (dataBytes > 0)
-        std::memcpy(decoded.MutableTexelBytes(), data + kHeaderBytes, dataBytes);
-    // A colour value or weight that is NaN or infinite would paint a wrong colour or erase what the
-    // map holds under the zone, so the payload is refused whole.
-    for (std::size_t i = 0; i < decoded.Color.size(); ++i)
     {
-        if (!std::isfinite(decoded.Color[i]))
-        {
-            Logger::Log::Warning("Terrain zone payload: texel {} of a color zone holds NaN or infinity. Delete the "
-                                 "zone's .tzone file so the zone loads empty.",
-                                 i / kZonePayloadColorChannels);
-            return false;
-        }
+        if (sculpt)
+            std::memcpy(decoded.Offsets.data(), data + kHeaderBytes, dataBytes);
+        else
+            std::memcpy(decoded.Mask.data(), data + kHeaderBytes, dataBytes);
     }
     out = std::move(decoded);
     return true;

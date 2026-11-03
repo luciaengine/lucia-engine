@@ -2,7 +2,6 @@
 
 #include "Inspectors/ComponentPresets.h"
 
-#include "Components/Rendering/Light.h"
 #include "Components/Rendering/Particles.h"
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Terrain/TerrainModifierVolume.h"
@@ -26,9 +25,10 @@
 // sixth row is covered here the moment it exists.
 //
 // What that leaves untested is stated rather than implied: AddPresetComponentsCommand
-// lives in InspectorPanel.cpp, which no test target compiles. Its terrain branch
-// is now three assignments and two notifications over ApplyTerrainAreaPreset,
-// which is covered below; the notification wiring itself is editor-runtime only.
+// lives in InspectorPanel.cpp, which no test target compiles. Its Redo is
+// ApplyComponentPreset plus one notification per added type, and its Undo removes
+// that list in reverse; ApplyComponentPreset is covered below, and the
+// notification wiring itself is editor-runtime only.
 namespace
 {
 using namespace GameEngine;
@@ -266,11 +266,53 @@ TEST(ComponentPresetApply, ASecondRowStacksOnTheVolumeAlreadyThere)
     EXPECT_EQ(TerrainECS::NextEffectStackOrder(world, entity), 2);
 }
 
-// A directional light from Create > Directional Light or the Light preset is a sun, and a sun
-// casts shadows; the component default (off) is for point and spot lights.
-TEST(ComponentPresetLight, ANewDirectionalLightCastsShadows)
+// ---------------------------------------------------------------------------
+// Applying any offered preset: the add command's whole Redo, and the list its
+// Undo removes in reverse.
+// ---------------------------------------------------------------------------
+
+TEST(ComponentPresetApply, EveryOfferedPresetAddsOnlyWhatItReports)
 {
-    const Components::Light light = Editor::MakeDefaultDirectionalLight();
-    EXPECT_EQ(light.Type, Components::LightType::Directional);
-    EXPECT_TRUE(light.CastsShadows);
+    for (const Editor::ComponentPresetEntry& entry : Editor::ComponentPresetCatalog())
+    {
+        ECS::World world;
+        const ECS::EntityHandle entity = world.CreateEntity();
+
+        const std::vector<ECS::ComponentTypeId> added = Editor::ApplyComponentPreset(world, entity, entry.Preset);
+        EXPECT_FALSE(added.empty()) << "preset '" << entry.Label << "' added nothing to a bare entity";
+
+        const std::vector<ECS::ComponentTypeId> reported = Editor::ComponentTypeIdsForPreset(entry.Preset);
+        for (ECS::ComponentTypeId typeId : added)
+        {
+            EXPECT_NE(std::find(reported.begin(), reported.end(), typeId), reported.end())
+                << "preset '" << entry.Label << "' added a component ComponentTypeIdsForPreset does not report";
+            EXPECT_TRUE(world.HasComponent(entity, typeId)) << "preset '" << entry.Label << "' reported an add it did not make";
+        }
+    }
+}
+
+TEST(ComponentPresetApply, ReapplyingAnOfferedPresetAddsNothingForUndoToRemove)
+{
+    for (const Editor::ComponentPresetEntry& entry : Editor::ComponentPresetCatalog())
+    {
+        ECS::World world;
+        const ECS::EntityHandle entity = world.CreateEntity();
+
+        Editor::ApplyComponentPreset(world, entity, entry.Preset);
+        EXPECT_TRUE(Editor::ApplyComponentPreset(world, entity, entry.Preset).empty())
+            << "preset '" << entry.Label << "' re-reported components the entity already carried";
+    }
+}
+
+TEST(ComponentPresetCatalogTests, TheModifierVolumeKeepsItsOwnPickerEntry)
+{
+    const std::vector<ECS::ComponentTypeId> presetOnly = Editor::ComponentTypeIdsOfferedOnlyByPresets();
+    EXPECT_EQ(std::find(presetOnly.begin(), presetOnly.end(), VolumeTypeId()), presetOnly.end())
+        << "an empty modifier volume is authored on its own, so the picker must list it";
+
+    for (const TerrainAreaPreset& area : Editor::TerrainAreaPresets())
+    {
+        EXPECT_NE(std::find(presetOnly.begin(), presetOnly.end(), area.EffectTypeId), presetOnly.end())
+            << "row '" << area.Label << "' effect must not also appear as a single component";
+    }
 }

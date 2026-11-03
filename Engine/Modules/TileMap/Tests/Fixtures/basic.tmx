@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" orientation="orthogonal" renderorder="right-down" width="4" height="3" tilewidth="16" tileheight="16" infinite="0">
+ <tileset firstgid="1" source="terrain.tsx"/>
+ <layer id="1" name="Ground" width="4" height="3">
+  <data encoding="csv">
+1,2147483649,1073741825,3221225473,
+536870913,2684354561,1610612737,3758096385,
+2,0,0,3
+  </data>
+ </layer>
+</map>

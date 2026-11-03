@@ -3,10 +3,11 @@
 #include "Editor/EditorPaths.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
-#include "Image/Encode.h"
 #include "Logger/Logger.h"
 #include "Core/Engine.h"
 #include "JobSystem/WorkStealingThreadPool.h"
+
+#include <stb_image_write.h>
 
 #include <algorithm>
 #include <cmath>
@@ -150,7 +151,14 @@ void SceneThumbnailCapture::CommitResult(const Rendering::ViewReadbackResult& re
                                  static_cast<int>(fmt));
             return;
         }
-        if (!Image::WritePngFile(cachePathStr, rgba8, w, h2))
+        const uint8_t* pngSrc = rgba8.data();
+
+        if (!stbi_write_png(cachePathStr.c_str(),
+                            static_cast<int>(w),
+                            static_cast<int>(h2),
+                            4,
+                            pngSrc,
+                            static_cast<int>(w * 4)))
         {
             Logger::Log::Warning("SceneThumbnailCapture: failed to write '{}'", cachePathStr);
             return;
@@ -159,7 +167,8 @@ void SceneThumbnailCapture::CommitResult(const Rendering::ViewReadbackResult& re
         Logger::Log::Info("Editor: wrote scene thumbnail '{}'", cachePathStr);
 
         // Also update the fixed-name card thumbnail the picker reads without a walk.
-        Image::WritePngFile(cardPathStr, rgba8, w, h2);
+        stbi_write_png(cardPathStr.c_str(), static_cast<int>(w), static_cast<int>(h2), 4,
+                       pngSrc, static_cast<int>(w * 4));
 
         std::lock_guard<std::mutex> lock(ready->Mutex);
         ready->CachePath = cachePathStr;

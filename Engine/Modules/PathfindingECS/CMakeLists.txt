@@ -3,16 +3,11 @@ cmake_minimum_required(VERSION 3.20)
 project(PathfindingECS LANGUAGES CXX)
 
 add_library(PathfindingECS OBJECT
-    Source/Navigation.cpp
-    Source/NavigationAgentRequests.cpp
-    Source/NavigationBakedData.cpp
     Source/NavigationComponentInstantiations.cpp
-    Source/NavigationGridBake.cpp
-    Source/NavigationMeshBake.cpp
     Source/NavigationService.cpp
-    Source/NavigationSourceCollector.cpp
-    Source/NavigationSurfaceRuntime.cpp
-    Source/Systems/NavigationSurfaceSystem.cpp
+    Source/NavigationGridRuntime.cpp
+    Source/SceneGeometryCollector.cpp
+    Source/Systems/NavigationBuildSystem.cpp
     Source/Systems/NavigationPathfindingSystem.cpp
     Source/Systems/NavigationMovementSystem.cpp
     Source/Systems/NavigationDebugSystem.cpp
@@ -26,15 +21,12 @@ target_compile_features(PathfindingECS PUBLIC cxx_std_20)
 target_include_directories(PathfindingECS
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/Include
-        # NavigationSurfaceSystem.h includes Assets/FileWatchingService.h, which
+        # NavigationBuildSystem.h includes Assets/FileWatchingService.h, which
         # includes FileWatcher/FileWatcher.h. Headers only: the FileWatcher
         # objects reach the binary through the Engine module splice.
         $<TARGET_PROPERTY:FileWatcher,INTERFACE_INCLUDE_DIRECTORIES>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Source
-        # The bake waits for the spline recipes (SplineRecipesScriptApi.h). Headers only: the
-        # SplineRecipes objects reach the binary through the Engine module splice.
-        $<TARGET_PROPERTY:SplineRecipes,INTERFACE_INCLUDE_DIRECTORIES>
 )
 
 target_link_libraries(PathfindingECS
@@ -51,36 +43,25 @@ target_link_libraries(PathfindingECS
         # link would create a SHARED↔STATIC cycle, which CMake forbids. Engine's
         # symbols get resolved when Engine.dll links PathfindingECS.lib. The
         # Engine/Include headers the sources use arrive through ECSComponents.
-        # AssetManager.h includes Events/Event.h (header-only).
-        Events
         PhysicsECS
-        # The surface bake reads the terrain's height (SurfaceHeightQuery).
-        TerrainECS
-        JobSystem
 )
 
 # Tests
 if(BUILD_TESTING)
     find_package(GTest REQUIRED)
     add_executable(PathfindingECSTests
-        Tests/NavigationAgentTests.cpp
         Tests/NavigationServiceTests.cpp
         Tests/NavSystemIntegrationTests.cpp
         Tests/NavigationComprehensiveTests.cpp
         Tests/NavigationRepathingTests.cpp
-        Tests/NavigationSolveBudgetTests.cpp
-        Tests/NavigationParallelSolveTests.cpp
+        Tests/NavigationRequestReplacementTests.cpp
         Tests/NavigationInitialOccupancyTests.cpp
         Tests/NavigationOccupiedStartTests.cpp
         Tests/AssetSerializationTests.cpp
         Tests/PathfindingScheduleTests.cpp
-        Tests/NavigationSurfaceGatingTests.cpp
-        Tests/NavigationSurfaceOwnershipTests.cpp
-        Tests/NavigationSurfaceTests.cpp
-        Tests/NavigationSurfacePagedTerrainTests.cpp
-        Tests/NavigationSurfaceBakedDataTests.cpp
-        Tests/NavigationSurfaceDirtyTileTests.cpp
-        Tests/NavigationGridJobTests.cpp
+        Tests/NavigationBuildGatingTests.cpp
+        Tests/NavigationTerrainReadinessTests.cpp
+        Tests/NavigationGridOwnershipTests.cpp
         ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
     )
     # Test files each declare anonymous-namespace constants (kDeltaTime,
@@ -93,10 +74,7 @@ if(BUILD_TESTING)
     # exports the GE_* hot-reload dispatcher, so no local stub compile is
     # needed either.
     target_link_libraries(PathfindingECSTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-    target_include_directories(PathfindingECSTests PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/Source # NavigationSourceCollector.h
-        ${CMAKE_SOURCE_DIR}/Tests          # TestTempDir.h
-        ${CMAKE_SOURCE_DIR}/Engine/Tests)  # EngineLogCapture.h
+    target_include_directories(PathfindingECSTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     ge_set_output_tests(PathfindingECSTests)
     ge_stage_runtime_dependencies(PathfindingECSTests)
     add_test(NAME PathfindingECSTests COMMAND PathfindingECSTests)

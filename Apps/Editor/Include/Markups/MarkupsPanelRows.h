@@ -62,10 +62,9 @@ struct MarkupRowActions
 // "crosses itself"; its tooltip names the fix), who changed it last and when, the unseen dot and
 // the eye, which hides or shows this row's mark-up
 // (a view state, not a scene edit).
-// Hovering the row outlines its mark-up in the Scene View; a right-click opens the menu of the
-// actions modules register on mark-ups (MarkupActionRegistry), none while none is. A `selected`
-// row (its mark-up is in the editor's selection, which the Inspector shows) carries the
-// "selected" class; the unseen dot is a state of its own.
+// Hovering the row outlines its mark-up in the Scene View. A `selected` row (its mark-up is in
+// the editor's selection, which the Inspector shows) carries the "selected" class; the unseen
+// dot is a state of its own.
 std::unique_ptr<UIElement> BuildMarkupRow(MarkupEditorBridge& bridge, const ECS::World& world, ECS::EntityHandle entity,
                                           int64 now, bool selected, const MarkupRowActions& actions);
 
@@ -73,7 +72,7 @@ std::unique_ptr<UIElement> BuildMarkupRow(MarkupEditorBridge& bridge, const ECS:
 // the kind's marker (BuildMarkupEntryMarker), what was said or done, when, and the Mark-ups
 // tab's unseen dot. It carries its kind's class (MarkupEntryKindClass) and, for
 // an action, markup-entry-action, styled as the inspector's Thread styles them; `alternate`
-// rows take the alternating plate. Highlighted while it is an agent entry the viewer has not
+// rows take the theme's secondary list stripe. Highlighted while it is an agent entry the viewer has not
 // seen (MarkupEditorBridge::FirstUnseenEntry), which also carries the dot. A comment's links and
 // entity links work in it (BuildMarkupCommentText).
 std::unique_ptr<UIElement> BuildActivityRow(MarkupEditorBridge& bridge, ECS::World& world,

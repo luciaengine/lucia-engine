@@ -1,7 +1,23 @@
 #include "JobSystem/TaskSlabPool.h"
 
-#include "JobSystem/ConcurrentQueue.h"
-#include <type_traits>
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 6326 6011)
+#endif
+
+#if __has_include(<concurrentqueue/moodycamel/concurrentqueue.h>)
+#include <concurrentqueue/moodycamel/concurrentqueue.h>
+#elif __has_include(<concurrentqueue/concurrentqueue.h>)
+#include <concurrentqueue/concurrentqueue.h>
+#elif __has_include(<concurrentqueue.h>)
+#include <concurrentqueue.h>
+#else
+#error "moodycamel concurrentqueue headers not found - ensure vcpkg concurrentqueue package is installed"
+#endif
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 namespace JobSystem::Detail
 {
@@ -22,21 +38,7 @@ struct SlabStats
 // static destruction are safe: the storage persists and no destructor runs.
 SlabStats s_Stats;
 
-// Every release is a tokenless (implicit-producer) enqueue: each releasing
-// thread fills its own sub-queue, built with its block index on the thread's
-// first release; the index never grows on try_enqueue. The default index (32
-// blocks of 32) would let one thread hold only 1,024 slabs, a quarter of the
-// cap; this one indexes the whole cap, so a single releasing thread can fill
-// the freelist.
-struct SlabFreelistTraits : QueueAllocationTraits
-{
-    static const size_t IMPLICIT_INITIAL_INDEX_SIZE =
-        kTaskSlabPoolCapacity / QueueAllocationTraits::BLOCK_SIZE;
-};
-
-using SlabFreelist = moodycamel::ConcurrentQueue<void*, SlabFreelistTraits>;
-static_assert(std::is_base_of_v<QueueAllocationTraits, SlabFreelistTraits>,
-              "the slab freelist allocates through the counted queue traits");
+using SlabFreelist = moodycamel::ConcurrentQueue<void*>;
 
 SlabFreelist& Freelist()
 {
@@ -48,7 +50,6 @@ SlabFreelist& Freelist()
     // The constructed capacity is the retention cap: try_enqueue never
     // allocates new blocks, so the freelist can never hold more than
     // kTaskSlabPoolCapacity slabs (512KB) — overflow frees go to the heap.
-    // Any one releasing thread can reach the cap (SlabFreelistTraits).
     static SlabFreelist* const s_Freelist = new SlabFreelist(kTaskSlabPoolCapacity);
     return *s_Freelist;
 }
@@ -115,10 +116,9 @@ void ReleaseTaskSlab(void* slab) noexcept
 
     s_Stats.Live.fetch_sub(1, std::memory_order_relaxed);
 
-    // Bounded retention (see Freelist()). A thread's first release builds its
-    // producer once (nothrow); every later one allocates nothing. Safe from
-    // noexcept context — on a full freelist, or a failed first build, the
-    // slab goes back to the heap.
+    // Non-allocating enqueue: bounded retention (see Freelist()), and safe
+    // from noexcept context — on a full freelist the slab goes back to the
+    // heap.
     if (Freelist().try_enqueue(slab))
     {
         return;
@@ -126,22 +126,6 @@ void ReleaseTaskSlab(void* slab) noexcept
 
     s_Stats.HeapFrees.fetch_add(1, std::memory_order_relaxed);
     ::operator delete(slab);
-}
-
-void ProvisionTaskSlabs(size_t count)
-{
-    for (size_t i = 0; i < count; ++i)
-    {
-        s_Stats.HeapAllocs.fetch_add(1, std::memory_order_relaxed);
-        void* slab = ::operator new(kTaskSlabSize);
-        if (!Freelist().try_enqueue(slab))
-        {
-            // At the cap: the rest would go straight back to the heap too.
-            s_Stats.HeapFrees.fetch_add(1, std::memory_order_relaxed);
-            ::operator delete(slab);
-            return;
-        }
-    }
 }
 
 TaskSlabStatsSnapshot GetTaskSlabStatsForTests()

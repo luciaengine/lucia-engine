@@ -1,9 +1,8 @@
 #include "Engine/Rendering/SceneResolveService.h"
-#include "SceneLoadTracker/SceneLoadTracker.h"
 
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
-#include "Assets/ModelAsset.h"
+#include "Assets/MaterialAsset.h"
 #include "Components/Animation/SkeletonRef.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Rendering/SkinnedMeshRenderer.h"
@@ -12,15 +11,15 @@
 #include "ECS/Query.h"
 #include "ECS/World.h"
 #include "Engine/Rendering/MaterialRegistry.h"
+#include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/ModelRenderSetup.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Engine/Rendering/MaterialSystem.h"
-#include "SceneDrawWarm.h"
 #include "Logger/Logger.h"
 
 #include <algorithm>
 #include <optional>
+#include <future>
 #include <string>
 #include <utility>
 
@@ -51,6 +50,8 @@ struct SceneResolveService::MaterialWork
     std::unique_ptr<AssetFuture> Load;
     SharedPtr<Asset> LandedAsset;
     std::vector<SceneResolveBatch> Batches;
+    std::shared_future<void> SourceRead;
+    bool SourceReadStarted = false;
 };
 
 // A model registration kept for later spawns. The asset is referenced weakly:
@@ -139,23 +140,12 @@ class StepScope
     bool& m_InStep;
 };
 
-// Notes each submesh of a registered model with the material the model draws it with, the pairs
-// its entities draw unless they author their own material.
-void NoteModelDraws(SceneDrawWarm& warm, const ModelRenderResources& resources)
-{
-    if (!resources.modelAsset)
-        return;
-    const uint32 meshCount = static_cast<uint32>(resources.meshHandles.size());
-    for (uint32 submesh = 0; submesh < meshCount && submesh < resources.modelAsset->GetMeshCount(); ++submesh)
-    {
-        const uint32 materialIndex = resources.modelAsset->GetMesh(submesh).MaterialIndex;
-        if (materialIndex < resources.materials.size())
-            warm.Note(resources.meshHandles[submesh], resources.materials[materialIndex].derivedGuid);
-    }
-}
 } // namespace
 
-SceneResolveService::SceneResolveService() = default;
+SceneResolveService::SceneResolveService(bool prefetchMaterialSources)
+    : m_PrefetchMaterialSources(prefetchMaterialSources)
+{
+}
 
 // Out of line: the work records are complete types only here.
 SceneResolveService::~SceneResolveService() = default;
@@ -247,7 +237,7 @@ void SceneResolveService::Enqueue(ECS::World& world, RenderServices& renderServi
         return;
     if (!NeedsModel(*meshRenderer))
     {
-        RequestMaterial(renderServices, meshRenderer->materialAssetGuid.ToGuid(), SceneResolveBatch::None);
+        RequestEntityMaterial(world, renderServices, entity, meshRenderer->materialAssetGuid.ToGuid(), SceneResolveBatch::None);
         return;
     }
     const GUID modelGuid = meshRenderer->modelAssetGuid.ToGuid();
@@ -261,11 +251,14 @@ SceneResolveBatch SceneResolveService::EnqueueWorld(ECS::World& world, RenderSer
     ObserveWorld(world);
     const auto batch = static_cast<SceneResolveBatch>(m_NextBatch++);
     m_Batches.emplace(static_cast<uint32>(batch), BatchState{});
-    // Asset resolution binds handles for the scene as authored: an entity that
-    // is switched off still needs its mesh and material when it comes back.
-    world.Query<ECS::Read<Components::MeshRenderer>>()
-        .IncludeDisabled()
-        .Each([&](ECS::EntityHandle entity, const Components::MeshRenderer& meshRenderer)
+    // Match incremental resolution: opted-in Players leave disabled content
+    // unloaded until enabling its renderer hands it to the per-frame resolver.
+    // Editors retain eager authored-scene binding under the default policy.
+    auto query = world.Query<ECS::Read<Components::MeshRenderer>>();
+    query.IncludeDisabled();
+    if (GetDeferredDisabledRendererLoading())
+        query.Without<ECS::ComponentDisabled<Components::MeshRenderer>>();
+    query.Each([&](ECS::EntityHandle entity, const Components::MeshRenderer& meshRenderer)
         {
             if (NeedsModel(meshRenderer))
                 Hold(entity, meshRenderer.modelAssetGuid.ToGuid(), batch);
@@ -368,9 +361,6 @@ SceneResolveService::KeptBinding SceneResolveService::Keep(RenderServices& rende
     kept->Resources = std::move(*resources);
     kept->CheckedAtStep = m_Steps;
     const ModelRenderResources* stored = &kept->Resources;
-    // The pipelines of the model's draws are requested as it lands (SceneDrawWarm), not at each
-    // draw's first record.
-    NoteModelDraws(renderServices.Materials().SceneWarm(), *stored);
     m_Kept.insert_or_assign(modelGuid, std::move(kept));
     return {asset, stored};
 }
@@ -394,12 +384,7 @@ void SceneResolveService::BindEntity(ECS::World& world, RenderServices& renderSe
     // After the model registered its own materials, so an embedded one is not
     // requested as a standalone .material.
     if (const auto* resolved = world.GetComponent<Components::MeshRenderer>(entity))
-    {
-        // An entity's own material (an authored override) draws its mesh too.
-        renderServices.Materials().SceneWarm().Note(Rendering::MeshGPUHandle(resolved->meshGpuHandleId),
-                                                    resolved->materialAssetGuid.ToGuid());
-        RequestMaterial(renderServices, resolved->materialAssetGuid.ToGuid(), batch);
-    }
+        RequestEntityMaterial(world, renderServices, entity, resolved->materialAssetGuid.ToGuid(), batch);
 }
 
 void SceneResolveService::EvictModels(const std::vector<GUID>& invalidatedModels)
@@ -423,6 +408,15 @@ void SceneResolveService::EvictModels(const std::vector<GUID>& invalidatedModels
             m_LoadingModels.push_back(modelGuid);
         }
     }
+}
+
+void SceneResolveService::RequestEntityMaterial(ECS::World& world, RenderServices& renderServices,
+                                                ECS::EntityHandle entity, const GUID& materialGuid,
+                                                SceneResolveBatch batch)
+{
+    if (!GetDeferredDisabledRendererLoading() ||
+        !world.HasComponent<ECS::ComponentDisabled<Components::MeshRenderer>>(entity))
+        RequestMaterial(renderServices, materialGuid, batch);
 }
 
 void SceneResolveService::RequestMaterial(RenderServices& renderServices, const GUID& materialGuid,
@@ -513,7 +507,7 @@ std::size_t SceneResolveService::Step(ECS::World& world, RenderServices& renderS
 }
 
 std::size_t SceneResolveService::Run(ECS::World& world, RenderServices& renderServices,
-                                     std::chrono::steady_clock::time_point deadline)
+                                     std::chrono::steady_clock::time_point deadline, bool waitForSources)
 {
     if (m_InStep)
         return 0;
@@ -527,9 +521,16 @@ std::size_t SceneResolveService::Run(ECS::World& world, RenderServices& renderSe
     std::size_t taken = 0;
     do
     {
-        if (!ResolveNextEntity(world, renderServices) && !RegisterNextMaterial(renderServices))
-            break;
-        ++taken;
+        if (ResolveNextEntity(world, renderServices))
+            ++taken;
+        else
+        {
+            const MaterialProgress progress = RegisterNextMaterial(renderServices, waitForSources);
+            if (progress == MaterialProgress::None)
+                break;
+            if (progress == MaterialProgress::Registered)
+                ++taken;
+        }
     } while (std::chrono::steady_clock::now() < deadline);
     ++m_Steps;
     return taken;
@@ -579,7 +580,7 @@ void SceneResolveService::ResolveHeldEntity(ECS::World& world, RenderServices& r
     if (!NeedsModel(*meshRenderer))
     {
         // Resolved by another owner meanwhile, or it no longer names a model.
-        RequestMaterial(renderServices, meshRenderer->materialAssetGuid.ToGuid(), batch);
+        RequestEntityMaterial(world, renderServices, entity, meshRenderer->materialAssetGuid.ToGuid(), batch);
         ReleaseEntity(world, entity, batch, false);
         return;
     }
@@ -604,7 +605,7 @@ void SceneResolveService::ResolveHeldEntity(ECS::World& world, RenderServices& r
     if (!kept)
     {
         ++m_Counts.MissedEntities;
-        RequestMaterial(renderServices, meshRenderer->materialAssetGuid.ToGuid(), batch);
+        RequestEntityMaterial(world, renderServices, entity, meshRenderer->materialAssetGuid.ToGuid(), batch);
         ReleaseEntity(world, entity, batch, false);
         return;
     }
@@ -612,16 +613,45 @@ void SceneResolveService::ResolveHeldEntity(ECS::World& world, RenderServices& r
     ReleaseEntity(world, entity, batch, true);
 }
 
-bool SceneResolveService::RegisterNextMaterial(RenderServices& renderServices)
+SceneResolveService::MaterialProgress SceneResolveService::RegisterNextMaterial(
+    RenderServices& renderServices, bool waitForSources)
 {
     while (!m_ReadyMaterials.empty())
     {
         const GUID materialGuid = m_ReadyMaterials.front();
-        m_ReadyMaterials.pop_front();
         auto found = m_Materials.find(materialGuid);
         if (found == m_Materials.end())
+        {
+            m_ReadyMaterials.pop_front();
             continue;
+        }
         MaterialWork& work = *found->second;
+        if (m_PrefetchMaterialSources && waitForSources
+            && !IsMaterialRegistered(renderServices, materialGuid)
+            && (!work.SourceReadStarted
+                || (work.SourceRead.valid()
+                    && work.SourceRead.wait_for(std::chrono::seconds(0)) != std::future_status::ready)))
+        {
+            // Keep registration order. While the head's read runs, start one
+            // later read per budgeted work unit, without waiting on a worker.
+            for (const GUID& pending : m_ReadyMaterials)
+            {
+                auto entry = m_Materials.find(pending);
+                if (entry == m_Materials.end() || entry->second->SourceReadStarted)
+                    continue;
+                MaterialWork& next = *entry->second;
+                next.SourceReadStarted = true;
+                if (const auto* material = dynamic_cast<const MaterialAsset*>(next.LandedAsset.get());
+                    material && !IsMaterialRegistered(renderServices, pending))
+                    next.SourceRead = renderServices.Materials().PrefetchMaterialShaderSources(
+                        material->GetDocument(), material->GetPath());
+                return MaterialProgress::Prefetched;
+            }
+            if (work.SourceRead.valid()
+                && work.SourceRead.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+                return MaterialProgress::None;
+        }
+        m_ReadyMaterials.pop_front();
         if (!work.LandedAsset)
         {
             ++m_Counts.MissedMaterials;
@@ -635,9 +665,9 @@ bool SceneResolveService::RegisterNextMaterial(RenderServices& renderServices)
         for (SceneResolveBatch batch : work.Batches)
             FinishBatchItem(batch);
         m_Materials.erase(found);
-        return true;
+        return MaterialProgress::Registered;
     }
-    return false;
+    return MaterialProgress::None;
 }
 
 void SceneResolveService::ReleaseEntity(const ECS::World& world, ECS::EntityHandle entity, SceneResolveBatch batch,
@@ -682,7 +712,7 @@ std::size_t SceneResolveService::DrainNow(ECS::World& world, RenderServices& ren
     std::size_t taken = 0;
     do
     {
-        taken += Run(world, renderServices, std::chrono::steady_clock::time_point::max());
+        taken += Run(world, renderServices, std::chrono::steady_clock::time_point::max(), false);
     } while (!m_InStep && WaitForOneLoad());
     return taken;
 }
@@ -737,32 +767,6 @@ SceneResolveCounts SceneResolveService::Counts() const
     counts.PendingMaterials = m_Materials.size();
     counts.KeptModels = m_Kept.size();
     return counts;
-}
-
-struct SceneResolveService::LoadReport
-{
-    static SceneLoadTracker::GateReport Evaluate(const SceneResolveService& service);
-
-    SceneLoadTracker::Category Category;
-    SceneLoadTracker::Gate Gate;
-};
-
-void SceneResolveService::ReportLoadingWork(SceneLoadTracker& tracker)
-{
-    auto report = std::make_shared<LoadReport>();
-    report->Category = tracker.RegisterCategory(
-        {.Id = "scene.resolve", .Label = "Preparing the scene", .Unit = SceneLoadTracker::CostUnit::Entities});
-    report->Gate = report->Category.RegisterGate([this] { return LoadReport::Evaluate(*this); });
-    m_LoadReport = std::move(report);
-}
-
-SceneLoadTracker::GateReport SceneResolveService::LoadReport::Evaluate(const SceneResolveService& service)
-{
-    if (service.m_Held.empty() && service.m_Materials.empty())
-        return {};
-    return {.State = SceneLoadTracker::GateState::Waiting,
-            .Reason = "entities wait for their model or materials for registration",
-            .Pending = service.m_Held.size() + service.m_Materials.size()};
 }
 
 } // namespace GameEngine::Engine::Renderer

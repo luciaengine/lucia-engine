@@ -41,8 +41,6 @@ target_link_libraries(AssetDatabase
     PRIVATE
         Platform
         FileSystem
-        # Large store and snapshot loads parse on the pool; objects link once into Engine.
-        JobSystem
 )
 
 # JSON is used for the authoritative JSONL store (implementation-only).

@@ -100,7 +100,6 @@ struct GE_DDGIMaterialData
     vec4 TextureST[8];
     vec4 TextureST2[8];
     uint SamplerIndices;
-    uint NormalVarianceIndex; // bindless index of the normal map's BC4 variance companion (black when none)
 };
 layout(std430, set = 0, binding = 1) readonly buffer DDGIMaterialBuffer
 {

@@ -11,8 +11,8 @@
 //
 // Only the file name is corrected — that is what the Script Editor titles its tab with.
 
-#include "Types/StringUtils.h"
-
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <string>
 
@@ -29,6 +29,14 @@ inline std::string OnDiskFileName(const std::filesystem::path& path)
     if (parent.empty())
         return name;
 
+    auto foldedEquals = [](std::string_view a, std::string_view b)
+    {
+        if (a.size() != b.size())
+            return false;
+        return std::equal(a.begin(), a.end(), b.begin(), [](unsigned char x, unsigned char y)
+                          { return std::tolower(x) == std::tolower(y); });
+    };
+
     std::error_code ec;
     std::filesystem::directory_iterator it(parent, ec);
     if (ec)
@@ -39,7 +47,7 @@ inline std::string OnDiskFileName(const std::filesystem::path& path)
         const std::string candidate = entry.path().filename().string();
         if (candidate == name)
             return name; // exact match on disk; nothing to correct
-        if (EqualsIgnoreCase(candidate, name))
+        if (foldedEquals(candidate, name))
             return candidate;
     }
     return name;

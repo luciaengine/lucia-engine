@@ -4,7 +4,7 @@
 #include "Engine/Rendering/ParallaxReliefDepth.h"
 #include "Rendering/Materials/MaterialAlphaMode.h"
 #include "Rendering/Materials/MaterialKeywordDerivation.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 #include "Types/Types.h"
 
 #include <algorithm>
@@ -57,9 +57,19 @@ namespace GameEngine::Engine::Renderer
 // inline in that pass (previewKeywords); keep this in step with it.
 inline constexpr Rendering::MaterialKeyword kAssetPreviewPassKeywords = Rendering::MaterialKeyword::Instanced;
 
+// Whether the LOD-crossfade tails are warmed. A runtime with no shader compiler only finds cooked
+// programs, and the material cook ships no crossfade variant, so warming a tail there composes the
+// shader for a key that can never resolve; the world pass draws a cold tail with its head variant.
+enum class CrossfadeTailWarmup
+{
+    Warm,
+    Skip
+};
+
 inline Vector<Rendering::ShaderVariantKey> MaterialPrewarmVariantKeys(
     const Rendering::ShaderVariantKey& base, Rendering::MaterialKeyword worldPass,
-    bool customVertexShader, MaterialAlphaMode alphaMode, bool ignoresVertexColor = false)
+    bool customVertexShader, MaterialAlphaMode alphaMode, CrossfadeTailWarmup crossfadeTails,
+    bool ignoresVertexColor = false)
 {
     using Rendering::MaterialKeyword;
     using Rendering::VertexAttributeFlags;
@@ -102,7 +112,7 @@ inline Vector<Rendering::ShaderVariantKey> MaterialPrewarmVariantKeys(
         add(layout, previewPass);
         if (transmission)
             add(layout, colorPass | MaterialKeyword::SceneColorGrab);
-        if (customVertexShader)
+        if (customVertexShader || crossfadeTails == CrossfadeTailWarmup::Skip)
             continue;
         add(layout, colorPass | MaterialKeyword::LodCrossfade);
         add(layout, colorPassSingleSample | MaterialKeyword::LodCrossfade);
@@ -139,7 +149,8 @@ inline Vector<Rendering::ShaderVariantKey> MaterialPrewarmVariantKeys(
         // The heads that keep the colour stream of a colour layout that has one: a vertex-modified
         // material's heads draw with the colour layout itself instead, and are not warmed on it.
         const bool warmsVertexColorHeads = coverageReadsVertexColor && !ignoresVertexColor && !vertexModified;
-        const bool drawsTails = !customVertexShader && DepthPassDrawsCrossfadeTails(pass);
+        const bool drawsTails = !customVertexShader && crossfadeTails == CrossfadeTailWarmup::Warm &&
+                                DepthPassDrawsCrossfadeTails(pass);
         const MaterialKeyword tailKeywords =
             drawsTails
                 ? ChooseDepthSegmentPipeline(head.Keywords, head.UseSharedDepth, head.ComposesFragment, true).Keywords

@@ -1,0 +1,19 @@
+.sorting-layers-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.sorting-layer-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.sorting-layer-definition {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.sorting-layer-error {
+    color: var(--ui_color_error_text);
+    font-size: 12px;
+}

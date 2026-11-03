@@ -27,6 +27,7 @@
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Common/MatrixUtils.h"
 #include "Rendering/Core/DeviceFrameCounter.h"
+#include "Rendering/Core/HashUtils.h"
 #include "Types/ScopedSubscription.h"
 
 #include <algorithm>
@@ -221,8 +222,7 @@ struct ParticleExtraction::Impl
         const Material* MaterialPtr = nullptr;
         GameEngine::Rendering::MeshGPUHandle Mesh{};
         ECS::EntityId Emitter = 0;
-        uint32 SpawnIndex = 0;
-        GameEngine::Rendering::RenderLayerMask Layers;
+        uint32 SpawnIndex = 0, LayerMask = 1;
         // The emitter's particles moved since the previous frame (its clock or transform changed).
         bool Moving = false;
         Components::ParticleDrawOrder Order = Components::ParticleDrawOrder::ViewDepth;
@@ -479,7 +479,7 @@ struct ParticleExtraction::Impl
         item.Emitter = entity.id;
         item.Moving = moving;
         item.Order = renderer.DrawOrder;
-        item.Layers = renderer.RenderLayers;
+        item.LayerMask = renderer.RenderLayerMask;
         item.LodStart = renderer.ThinningStart;
         item.LodEnd = renderer.ThinningEnd;
         std::copy_n(xf.matrix + 12, 3, &item.EmitterPosition.x);
@@ -529,7 +529,7 @@ struct ParticleExtraction::Impl
                 ++particleLights;
             }
             const float age = Lerp(previousAges[index], ages[index], interpolation);
-            const float t = Math::Clamp01(age / std::max(lifetimes[index], 0.001f));
+            const float t = std::clamp(age / std::max(lifetimes[index], 0.001f), 0.0f, 1.0f);
             const float size = Lerp(previousSizes[index], sizes[index], interpolation);
             data.PositionSize = {position.x, position.y, position.z, size};
             const Mathematics::Vector3 velocity = local ? EmitterVector(emitterTransform, velocities[index]) : velocities[index];
@@ -719,12 +719,12 @@ void ParticleExtraction::Extract(ECS::World& world, uint64 worldId, RenderServic
     if (!m_Impl->m_ParticleForwardProducer)
         m_Impl->m_ParticleForwardProducer = rs->RegisterForwardEmit(
             [this](ForwardEmitContext& context)
-            { EmitForwardCommands(context); }, false);
+            { EmitForwardCommands(context); }, {.WritesDepth = false});
     const auto& views = rs->Views().GetViews();
     auto& matchingViews = m_Impl->m_MatchingViews;
     matchingViews.clear();
     for (const auto& view : views)
-        if ((view.worldId == 0 || view.worldId == worldId) && view.ActiveRenderLayerMask() != GameEngine::Rendering::RenderLayerMask::None())
+        if ((view.worldId == 0 || view.worldId == worldId) && view.ActiveRenderLayerMask() != 0)
             matchingViews.push_back(&view);
     if (matchingViews.empty())
         return;
@@ -734,7 +734,7 @@ void ParticleExtraction::Extract(ECS::World& world, uint64 worldId, RenderServic
         meshHandle = meshReg.RegisterSubmesh({PrimitiveGenerator::PlaneSpriteUvGuid(), 0u}, PrimitiveGenerator::GeneratePlaneSpriteUv());
     const uint64 frameId = ++m_Impl->m_ParticleFrameCounter;
     const uint32 frameSlot =
-        static_cast<uint32>(m_Impl->m_SortedIndirectionFrameCounter.Tick(device->GetFrameIndex()) % Impl::kSortedIndirectionSlots);
+        m_Impl->m_SortedIndirectionFrameCounter.Tick(device->GetFrameIndex()) % Impl::kSortedIndirectionSlots;
     const uint32 recordBudget = std::min(m_Impl->m_ParticleState->Budget * 4u, 262144u);
     uint32 particleLights = 0;
 
@@ -808,23 +808,25 @@ void ParticleExtraction::Extract(ECS::World& world, uint64 worldId, RenderServic
         const auto* camera = rs->Views().FindCameraData(view->cameraId);
         if (!camera)
             continue;
+        Rendering::Matrix4x4 viewProjection;
+        std::copy_n(camera->viewProj, 16, viewProjection.Data());
         Rendering::Vector4 planes[6];
-        Rendering::ExtractFrustumPlanes(camera->viewProj, planes);
+        Rendering::ExtractFrustumPlanes(viewProjection, planes);
         m_Impl->m_Indices.clear();
         bool viewSeesMotion = false;
         for (uint32 i = 0; i < m_Impl->m_Particles.size(); ++i)
         {
             const auto& item = m_Impl->m_DrawItems[i];
             const auto& particle = m_Impl->m_Particles[i];
-            if (!item.Layers.Intersects(view->ActiveRenderLayerMask()))
+            if ((item.LayerMask & view->ActiveRenderLayerMask()) == 0)
                 continue;
             const auto& p = particle.PositionSize;
             if (!Rendering::TestSphereFrustum(Rendering::Vector3(p[0], p[1], p[2]), item.Radius, planes))
                 continue;
             if (item.LodEnd > item.LodStart)
             {
-                const float dx = p[0] - camera->cameraPos.x, dy = p[1] - camera->cameraPos.y, dz = p[2] - camera->cameraPos.z;
-                const float fraction = Math::Clamp01((item.LodEnd - std::sqrt(dx * dx + dy * dy + dz * dz)) / (item.LodEnd - item.LodStart));
+                const float dx = p[0] - camera->cameraPos[0], dy = p[1] - camera->cameraPos[1], dz = p[2] - camera->cameraPos[2];
+                const float fraction = std::clamp((item.LodEnd - std::sqrt(dx * dx + dy * dy + dz * dz)) / (item.LodEnd - item.LodStart), 0.0f, 1.0f);
                 uint32 hash = item.SpawnIndex * 747796405u + static_cast<uint32>(item.Emitter) * 2891336453u;
                 hash = (hash ^ (hash >> 16)) * 2246822519u;
                 if (static_cast<float>(hash & 0xFFFFFFu) / 16777216.0f >= fraction)

@@ -6,6 +6,7 @@
 #include "Assets/Packages/PackagesLockFile.h"
 #include "Engine/Build/CancellableShellProcess.h"
 #include "Logger/Logger.h"
+#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <chrono>
@@ -27,16 +28,6 @@ namespace fs = std::filesystem;
 // hung remote, not a slow one.
 constexpr std::chrono::milliseconds kGitTimeout{300000};
 
-std::string Trimmed(std::string text)
-{
-    while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' '))
-        text.pop_back();
-    size_t start = 0;
-    while (start < text.size() && (text[start] == ' ' || text[start] == '\t'))
-        ++start;
-    return text.substr(start);
-}
-
 bool RunGit(const std::string& gitExe,
             const std::vector<std::string>& args,
             std::string& outOutput,
@@ -54,7 +45,7 @@ bool RunGit(const std::string& gitExe,
         commandText += arg;
     }
     outError = "'" + commandText + "' failed (exit " + std::to_string(result.exitCode) + ")";
-    const std::string trimmedOutput = Trimmed(result.output);
+    const std::string trimmedOutput = TrimWhitespace(result.output);
     if (!trimmedOutput.empty())
         outError += ": " + trimmedOutput;
     return false;
@@ -180,20 +171,16 @@ bool AcquireGitPackage(const std::string& gitExe,
         ~TempCleanup() { RemoveTreeForce(Dir); }
     } cleanup{workDir};
 
-    // The clone and the staged entry are siblings: a package at the repository
-    // root copies the whole checkout, so staging inside it would copy into itself.
-    const fs::path checkoutDir = workDir / "checkout";
-    const fs::path stagingDir = workDir / "entry";
-    const std::string checkoutDirText = checkoutDir.generic_string();
+    const std::string workDirText = workDir.generic_string();
     std::string output;
 
     // init + fetch <ref> handles tags, branches, AND commit shas uniformly —
     // `clone --branch` cannot take a sha. Shallow: exactly one commit's tree.
-    if (!RunGit(gitExe, {"init", "-q", checkoutDirText}, output, outError))
+    if (!RunGit(gitExe, {"init", "-q", workDirText}, output, outError))
         return false;
-    if (!RunGit(gitExe, {"-C", checkoutDirText, "remote", "add", "origin", spec.Url}, output, outError))
+    if (!RunGit(gitExe, {"-C", workDirText, "remote", "add", "origin", spec.Url}, output, outError))
         return false;
-    if (!RunGit(gitExe, {"-C", checkoutDirText, "fetch", "-q", "--depth", "1", "origin", spec.Ref},
+    if (!RunGit(gitExe, {"-C", workDirText, "fetch", "-q", "--depth", "1", "origin", spec.Ref},
                 output, outError))
     {
         outError = "package '" + packageName + "': cannot fetch ref '" + spec.Ref + "' from '" +
@@ -201,13 +188,13 @@ bool AcquireGitPackage(const std::string& gitExe,
         return false;
     }
     if (!RunGit(gitExe,
-                {"-C", checkoutDirText, "-c", "advice.detachedHead=false", "checkout", "-q",
+                {"-C", workDirText, "-c", "advice.detachedHead=false", "checkout", "-q",
                  "--detach", "FETCH_HEAD"},
                 output, outError))
         return false;
-    if (!RunGit(gitExe, {"-C", checkoutDirText, "rev-parse", "HEAD"}, output, outError))
+    if (!RunGit(gitExe, {"-C", workDirText, "rev-parse", "HEAD"}, output, outError))
         return false;
-    const std::string commit = Trimmed(output);
+    const std::string commit = TrimWhitespace(output);
     if (commit.size() < 12)
     {
         outError = "package '" + packageName + "': git rev-parse returned no commit sha";
@@ -215,7 +202,7 @@ bool AcquireGitPackage(const std::string& gitExe,
     }
 
     // Read the package manifest out of the checkout (monorepo subdir or root).
-    fs::path payloadDir = checkoutDir;
+    fs::path payloadDir = workDir;
     if (!spec.Subdir.empty())
         payloadDir /= fs::path(spec.Subdir);
     const fs::path manifestFile = payloadDir / "package.json";
@@ -248,6 +235,7 @@ bool AcquireGitPackage(const std::string& gitExe,
     std::error_code ec;
     if (!fs::exists(entryDir, ec))
     {
+        const fs::path stagingDir = workDir / ".entry-staging";
         if (!CopyPackagePayload(payloadDir, stagingDir, outError))
             return false;
         fs::rename(stagingDir, entryDir, ec);
@@ -310,7 +298,7 @@ bool QueryGitRemoteRefCommit(const std::string& gitExe,
         if (tab == std::string::npos || tab < 40)
             continue;
         const std::string sha = line.substr(0, 40);
-        const std::string refName = Trimmed(line.substr(tab + 1));
+        const std::string refName = TrimWhitespace(line.substr(tab + 1));
         if (refName.size() >= 3 && refName.compare(refName.size() - 3, 3, "^{}") == 0)
             peeledSha = sha;
         else

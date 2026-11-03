@@ -19,7 +19,6 @@ using GameEngine::Engine::Renderer::ExtractedLight;
 using GameEngine::Engine::Renderer::RenderServices;
 using GameEngine::Rendering::ElisionCause;
 using GameEngine::Rendering::ElisionInputBlob;
-using GameEngine::Rendering::ParseIdleElisionLoggingEnabled;
 using GameEngine::Rendering::RecomputeElisionGate;
 using LightType = GameEngine::Components::LightType;
 
@@ -288,20 +287,4 @@ TEST(RecomputeElisionGate, DisengageReasonNamesTheDisabledStateRatherThanSkipped
     EXPECT_STREQ(ElisionDisengageReason(disabled.Cause, disabled.Skip),
                  "Disabled (inputs settled)")
         << "a disengage line must not report the cause 'Skipped' as its reason";
-}
-
-// GE_IDLE_ELISION_LOG is an opt-in diagnostic, so its polarity is the OPPOSITE
-// of the GE_IDLE_ELISION kill switches next to it: unset means "do not log".
-// A predicate copied from a kill switch reads every non-"0" string as on, which
-// turns GE_IDLE_ELISION_LOG=false into a request FOR the logs.
-TEST(RecomputeElisionGate, LoggingTogglePolicyIsOffByDefault)
-{
-    EXPECT_FALSE(ParseIdleElisionLoggingEnabled(nullptr));
-    EXPECT_FALSE(ParseIdleElisionLoggingEnabled(""));
-    EXPECT_FALSE(ParseIdleElisionLoggingEnabled("0"));
-    EXPECT_FALSE(ParseIdleElisionLoggingEnabled("false"));
-    EXPECT_FALSE(ParseIdleElisionLoggingEnabled("False"));
-    EXPECT_TRUE(ParseIdleElisionLoggingEnabled("1"));
-    EXPECT_TRUE(ParseIdleElisionLoggingEnabled("true"));
-    EXPECT_TRUE(ParseIdleElisionLoggingEnabled("on"));
 }

@@ -21,8 +21,8 @@
 //
 // Call shapes (both real):
 //   external  Query::Parallel from a persistent non-worker caller thread —
-//             the caller participates in its counter's tagged tasks; wave
-//             stubs ride the caller's moodycamel implicit-producer sub-queue.
+//             the F17 external waiter PARKS on the counter; wave stubs ride
+//             the caller's moodycamel implicit-producer sub-queue.
 //   worker    Query::Parallel from inside a pool job (the Scheduler::
 //             MakeJobParallel production shape) — the F17 participating
 //             waiter executes same-counter envelopes from the counter's
@@ -262,8 +262,8 @@ double OneParallelCall(World& w, JobSystem::WorkStealingThreadPool& js, int enti
         js.Run(
             [&] {
                 w.Query<Write<Position>, Read<Velocity>>().Parallel(
-                    [&cnt](EntityHandle, Position& p, const Velocity& v) {
-                        p.x += v.x * 0.016f;
+                    [&cnt](EntityHandle, Writable<Position> p, const Velocity& v) {
+                        p.Mutable().x += v.x * 0.016f;
                         cnt.fetch_add(1, std::memory_order_relaxed);
                     },
                     0); // 0 -> policy default (1000) or the pressured floor
@@ -274,8 +274,8 @@ double OneParallelCall(World& w, JobSystem::WorkStealingThreadPool& js, int enti
     else
     {
         w.Query<Write<Position>, Read<Velocity>>().Parallel(
-            [&cnt](EntityHandle, Position& p, const Velocity& v) {
-                p.x += v.x * 0.016f;
+            [&cnt](EntityHandle, Writable<Position> p, const Velocity& v) {
+                p.Mutable().x += v.x * 0.016f;
                 cnt.fetch_add(1, std::memory_order_relaxed);
             },
             0);

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "Animation/AllocationGuard.h"
 #include "Animation/AnimGraphNode.h"
 #include "Animation/AnimationPose.h"
 #include "Animation/EvaluationContext.h"
@@ -12,9 +13,6 @@
 #include <Mathematics/Quaternion.h>
 #include <Mathematics/Vector3.h>
 
-#include "Memory/AllocationCountScope.h"
-
-#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -71,21 +69,24 @@ void BuildStraightChain4(AnimationPose& pose, std::vector<int32_t>& parents)
 
 } // namespace
 
-// Every test executable carries the allocation counter's hook in every
-// configuration. HookCatchesAllocation proves this one counts, so the
-// '0 allocations' arms below are not vacuous.
+// AllocationGuard hook lives in Engine/Source/Memory/MimallocOverrides.cpp
+// under GE_DEV_DIAG. Debug + DebugFast + RelWithDebInfo wire it; Release
+// trivially passes. The HookCatchesAllocation test below verifies the
+// hook is active by intentionally allocating inside a guarded scope.
+
+#if defined(GE_DEV_DIAG)
 TEST(IKAllocationTests, HookCatchesAllocation)
 {
-    GameEngine::Memory::AllocationCountScope allocations(GameEngine::Memory::CountWindow::ThisThread);
-    // Force a heap allocation that the hook MUST observe: a direct call, which
-    // an optimizer may not drop the way it may drop an unused new-expression.
-    void* const memory = ::operator new[](64 * sizeof(int));
-    const std::uint64_t observed = allocations.Count();
-    ::operator delete[](memory);
+    AllocationGuard guard;
+    // Force a heap allocation that the hook MUST observe.
+    auto* p = new int[64];
+    std::size_t observed = guard.Count();
+    delete[] p;
     EXPECT_GE(observed, 1u)
-        << "the allocation counter did not see a new[] on this thread; the IK '0 allocations' tests"
-           " would be vacuous. See Engine/Modules/Memory/Source/AllocationHook.cpp.";
+        << "AllocationGuard hook is not wired; the IK '0 allocations' tests"
+           " would be vacuous. See MimallocOverrides.cpp.";
 }
+#endif
 
 TEST(IKAllocationTests, TwoBoneIK_NoAllocsAfterWarmup)
 {
@@ -109,10 +110,10 @@ TEST(IKAllocationTests, TwoBoneIK_NoAllocsAfterWarmup)
     for (int i = 0; i < 4; ++i)
         ik.Evaluate(ctx, result);
 
-    GameEngine::Memory::AllocationCountScope allocations(GameEngine::Memory::CountWindow::ThisThread);
+    AllocationGuard guard;
     for (int i = 0; i < 32; ++i)
         ik.Evaluate(ctx, result);
-    EXPECT_EQ(allocations.Count(), 0u);
+    EXPECT_EQ(guard.Count(), 0u);
 }
 
 TEST(IKAllocationTests, FABRIK_NoAllocsAfterWarmup)
@@ -136,10 +137,10 @@ TEST(IKAllocationTests, FABRIK_NoAllocsAfterWarmup)
     for (int i = 0; i < 4; ++i)
         fabrik.Evaluate(ctx, result);
 
-    GameEngine::Memory::AllocationCountScope allocations(GameEngine::Memory::CountWindow::ThisThread);
+    AllocationGuard guard;
     for (int i = 0; i < 32; ++i)
         fabrik.Evaluate(ctx, result);
-    EXPECT_EQ(allocations.Count(), 0u);
+    EXPECT_EQ(guard.Count(), 0u);
 }
 
 TEST(IKAllocationTests, LookAt_NoAllocsAfterWarmup)
@@ -166,10 +167,10 @@ TEST(IKAllocationTests, LookAt_NoAllocsAfterWarmup)
     for (int i = 0; i < 4; ++i)
         lookAt.Evaluate(ctx, result);
 
-    GameEngine::Memory::AllocationCountScope allocations(GameEngine::Memory::CountWindow::ThisThread);
+    AllocationGuard guard;
     for (int i = 0; i < 32; ++i)
         lookAt.Evaluate(ctx, result);
-    EXPECT_EQ(allocations.Count(), 0u);
+    EXPECT_EQ(guard.Count(), 0u);
 }
 
 TEST(IKAllocationTests, FootIK_NoAllocsAfterWarmup)
@@ -208,8 +209,8 @@ TEST(IKAllocationTests, FootIK_NoAllocsAfterWarmup)
     for (int i = 0; i < 4; ++i)
         footIK.Evaluate(ctx, result);
 
-    GameEngine::Memory::AllocationCountScope allocations(GameEngine::Memory::CountWindow::ThisThread);
+    AllocationGuard guard;
     for (int i = 0; i < 32; ++i)
         footIK.Evaluate(ctx, result);
-    EXPECT_EQ(allocations.Count(), 0u);
+    EXPECT_EQ(guard.Count(), 0u);
 }

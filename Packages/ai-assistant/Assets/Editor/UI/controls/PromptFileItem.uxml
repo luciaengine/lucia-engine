@@ -1,0 +1,4 @@
+<UIElement class="prompt-panel-file-item">
+  <Label id="PromptFileItemLabel" class="prompt-panel-file-label" />
+  <Button id="PromptFileItemRemove" class="icon-button prompt-panel-icon-button xclose-icon prompt-panel-file-remove" focusable="false" />
+</UIElement>

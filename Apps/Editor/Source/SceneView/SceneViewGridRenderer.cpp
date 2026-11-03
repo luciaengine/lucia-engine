@@ -1,12 +1,11 @@
 #include "SceneView/SceneViewGridRenderer.h"
 
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Core/ReverseZ.h"
 
 #include <cstring>
 #include <vector>
@@ -33,7 +32,7 @@ struct GridPC
 struct Grid2DPC
 {
     float invVP[16];
-    float cameraPos[4]; // unused by 2D shader; kept for layout parity with GridPC
+    float cells[4]; // xy = grid origin, zw = cell size; z <= 0 selects zoom decades
     float gridColor[4]; // rgb = non-axis line color, a unused
     float opacity;
     float camDistance;
@@ -109,7 +108,7 @@ static GraphicsPipelineDesc BuildGridPipelineDesc(const std::vector<uint8_t>& vs
     // OFF so the grid doesn't occlude gizmos drawn after it.
     gd.DepthStencil.depthTestEnable  = true;
     gd.DepthStencil.depthWriteEnable = false;
-    gd.DepthStencil.depthCompareOp   = ReverseZ::kNearerOrEqual;
+    gd.DepthStencil.depthCompareOp   = CompareOp::GreaterOrEqual;
 
     ColorBlendAttachmentState blend{};
     blend.blendEnable = true;
@@ -131,7 +130,7 @@ static void FillGridPCCommon(float invVPOut[16], float cameraPosOut[4], float gr
                              float& opacityOut, const Rendering::CameraData& cam,
                              const float camPos[3], float gridOpacity, uint32_t gridColor)
 {
-    Mathematics::Matrix4x4 invVP = Mathematics::Inverse(cam.viewProj);
+    Mathematics::Matrix4x4 invVP = Mathematics::Inverse(Mathematics::Matrix4x4::FromColumnMajor(cam.viewProj));
     std::memcpy(invVPOut, invVP.Data(), sizeof(float) * 16);
 
     cameraPosOut[0] = camPos[0];
@@ -161,7 +160,8 @@ void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ct
                                       float camDistance,
                                       float viewportH,
                                       float gridOpacity,
-                                      uint32_t gridColor)
+                                      uint32_t gridColor,
+                                      const float cells2D[4])
 {
     if (!cam)
         return;
@@ -197,8 +197,10 @@ void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ct
     else
     {
         Grid2DPC pc{};
-        FillGridPCCommon(pc.invVP, pc.cameraPos, pc.gridColor, pc.opacity, *cam, camPos,
+        float unusedCameraPos[4];
+        FillGridPCCommon(pc.invVP, unusedCameraPos, pc.gridColor, pc.opacity, *cam, camPos,
                          gridOpacity, gridColor);
+        std::memcpy(pc.cells, cells2D, sizeof(pc.cells));
         pc.camDistance = camDistance;
         pc.viewportH = viewportH;
         cl->SetPushConstants(pc);

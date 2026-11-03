@@ -1,8 +1,7 @@
-#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice.h"
 
 #include <gtest/gtest.h>
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -16,13 +15,11 @@
 #include <vector>
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/CommandList.h"
-#include "Logger/CallbackSink.h"
-#include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Source/Vulkan/ValidationStats.h"
 #include "Source/Vulkan/VulkanDebugUtilsLabels.h"
-#include "Source/Vulkan/VulkanDevice/VulkanDeviceFault.h"
-#include "Source/Vulkan/VulkanGpu/VulkanGpuCheckpoints.h"
-#include "Source/Vulkan/VulkanHandleHelpers.h"
+#include "Source/Vulkan/VulkanDeviceFault.h"
+#include "Source/Vulkan/VulkanGpuCheckpoints.h"
 #include "Source/Vulkan/VulkanSharedInstance.h"
 #include "Source/Vulkan/VulkanToolingInfo.h"
 #include "Source/Vulkan/VulkanValidationLayerSettings.h"
@@ -326,234 +323,6 @@ TEST(DeviceDiagnostics, RegionCopyPreservesUntouchedTexels)
         }
     }
 
-    dev->DestroyBuffer(seedBuf);
-    dev->DestroyBuffer(bandBuf);
-    dev->DestroyBuffer(readback);
-    dev->DestroyTexture(tex);
-    dev->Present();
-}
-
-namespace
-{
-constexpr uint32_t kSecondListReadbackSize = 4u;
-constexpr float kReadbackSentinel = -1.0f;
-
-float SecondListSeedTexel(uint32_t x, uint32_t y)
-{
-    return static_cast<float>(y * 10u + x);
-}
-
-// Seeds a texture on one command list and leaves it at rest in ShaderResource, then reads
-// it back on a second list, whose layout record starts empty. When `readerMovesTheTexture`
-// is set, the second list first barriers the texture into UnorderedAccess, so its record
-// holds that layout at the copy. The readback buffer starts filled with kReadbackSentinel,
-// so a refused copy is visible in the result.
-std::vector<float> ReadBackOnASecondList(IDevice& dev, bool readerMovesTheTexture)
-{
-    constexpr uint32_t kSize = kSecondListReadbackSize;
-    constexpr size_t kRowPitch = static_cast<size_t>(kSize) * sizeof(float);
-    TextureDesc td{};
-    td.width = kSize;
-    td.height = kSize;
-    td.depth = 1u;
-    td.mipLevels = 1u;
-    td.arrayLayers = 1u;
-    td.sampleCount = 1u;
-    td.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
-    td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::TransferSrc |
-                                     TextureUsage::TransferDst);
-    td.debugName = "SecondListReadback.Tex";
-    const TextureHandle tex = dev.CreateTexture(td);
-    EXPECT_TRUE(tex.IsValid());
-
-    std::vector<float> seed(static_cast<size_t>(kSize) * kSize);
-    for (uint32_t y = 0; y < kSize; ++y)
-        for (uint32_t x = 0; x < kSize; ++x)
-            seed[y * kSize + x] = SecondListSeedTexel(x, y);
-    const size_t bytes = seed.size() * sizeof(float);
-    const BufferHandle seedBuf = dev.CreateUploadBuffer(bytes, "SecondListReadback.Seed");
-    dev.UpdateBuffer(seedBuf, 0, bytes, seed.data());
-    const BufferHandle readback = dev.CreateReadbackBuffer(bytes, "SecondListReadback.Read");
-    const std::vector<float> sentinel(seed.size(), kReadbackSentinel);
-    if (void* mapped = dev.MapBuffer(readback))
-    {
-        std::memcpy(mapped, sentinel.data(), bytes);
-        dev.UnmapBuffer(readback);
-    }
-
-    auto writer = dev.CreateCommandList(IDevice::QueueType::Graphics);
-    writer->Begin();
-    writer->CopyBufferToTextureSubresource(seedBuf, tex, 0, 0, kSize, kSize, 0, kRowPitch);
-    writer->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopyDest,
-                                                          ResourceState::ShaderResource));
-    writer->End();
-
-    auto reader = dev.CreateCommandList(IDevice::QueueType::Graphics);
-    reader->Begin();
-    if (readerMovesTheTexture)
-        reader->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::ShaderResource,
-                                                              ResourceState::UnorderedAccess));
-    reader->CopyTextureSubresourceToBuffer(tex, 0, 0, readback, kSize, kSize, 0, 0, 0, 0);
-    reader->End();
-
-    dev.ExecuteCommandLists({writer.get(), reader.get()});
-    dev.WaitForIdle();
-
-    std::vector<float> result(seed.size(), 0.0f);
-    if (const void* mapped = dev.MapBuffer(readback))
-    {
-        std::memcpy(result.data(), mapped, bytes);
-        dev.UnmapBuffer(readback);
-    }
-    dev.DestroyBuffer(seedBuf);
-    dev.DestroyBuffer(readback);
-    dev.DestroyTexture(tex);
-    return result;
-}
-} // namespace
-
-// With no layout recorded on the list, the layout is unknown, and a transition from UNDEFINED
-// may discard the texels. The copy is refused: the readback buffer keeps the values it held
-// before, and the refusal is reported once.
-TEST(DeviceDiagnostics, ReadbackWithNoKnownLayoutIsRefused)
-{
-    SetEnvHeadless();
-    DeviceDesc dd{}; dd.preferredAPI = GraphicsAPI::Vulkan; dd.enableDynamicRendering = true;
-    auto dev = DeviceFactory::CreateDevice(dd);
-    ASSERT_TRUE(dev);
-    ASSERT_TRUE(dev->Initialize(dd));
-    ASSERT_TRUE(dev->BeginFrame());
-
-    Logger::Log::Initialize({});
-    auto sink = std::make_unique<Logger::CallbackSink>();
-    auto* sinkPtr = sink.get();
-    auto refusals = std::make_shared<std::atomic<int>>(0);
-    const std::uint64_t callbackId = sinkPtr->RegisterCallback(
-        [refusals](const Logger::LogMessage& msg)
-        {
-            if (msg.Message.find("the copy is refused") != std::string::npos)
-                refusals->fetch_add(1);
-        });
-    Logger::Log::AddSink(std::move(sink));
-
-    const std::vector<float> result = ReadBackOnASecondList(*dev, false);
-    Logger::Log::Flush(); // delivery to sinks is asynchronous
-    sinkPtr->UnregisterCallback(callbackId);
-    for (size_t i = 0; i < result.size(); ++i)
-        EXPECT_FLOAT_EQ(result[i], kReadbackSentinel) << "texel " << i << " was copied";
-    EXPECT_EQ(refusals->load(), 1) << "a refused copy must be reported once";
-    dev->Present();
-}
-
-// When the reading list moves the texture before the copy, the copy transitions from the layout
-// the list recorded: the texels come back and the validation layer reports no layout mismatch.
-TEST(DeviceDiagnostics, ReadbackAfterTheListMovedTheTextureCopiesFromTheRecordedLayout)
-{
-    SetEnvHeadless();
-    ScopedEnvVar validation("GE_VK_VALIDATION", "1");
-    ScopedEnvVar validationAssert("GE_VK_VALIDATION_ASSERT", "0");
-    DeviceDesc dd{}; dd.preferredAPI = GraphicsAPI::Vulkan; dd.enableDynamicRendering = true;
-    dd.enableDebugLayer = true;
-    auto dev = DeviceFactory::CreateDevice(dd);
-    ASSERT_TRUE(dev);
-    ASSERT_TRUE(dev->Initialize(dd));
-    ASSERT_TRUE(dev->GetValidationStats().Enabled);
-    ASSERT_TRUE(dev->BeginFrame());
-    dev->ResetValidationStats();
-
-    const std::vector<float> result = ReadBackOnASecondList(*dev, true);
-    for (uint32_t y = 0; y < kSecondListReadbackSize; ++y)
-        for (uint32_t x = 0; x < kSecondListReadbackSize; ++x)
-            EXPECT_FLOAT_EQ(result[y * kSecondListReadbackSize + x], SecondListSeedTexel(x, y))
-                << "texel (" << x << "," << y << ")";
-    EXPECT_EQ(dev->GetValidationStats().ErrorCount, 0u);
-    dev->Present();
-}
-
-// A region upload on a list that moved the texture first transitions from the layout the list
-// recorded, not from the resting state the caller states: the band lands, the rows outside it
-// survive, and the validation layer reports no layout mismatch.
-TEST(DeviceDiagnostics, RegionUploadAfterTheListMovedTheTextureUsesTheRecordedLayout)
-{
-    SetEnvHeadless();
-    ScopedEnvVar validation("GE_VK_VALIDATION", "1");
-    ScopedEnvVar validationAssert("GE_VK_VALIDATION_ASSERT", "0");
-    DeviceDesc dd{}; dd.preferredAPI = GraphicsAPI::Vulkan; dd.enableDynamicRendering = true;
-    dd.enableDebugLayer = true;
-    auto dev = DeviceFactory::CreateDevice(dd);
-    ASSERT_TRUE(dev);
-    ASSERT_TRUE(dev->Initialize(dd));
-    ASSERT_TRUE(dev->GetValidationStats().Enabled);
-    ASSERT_TRUE(dev->BeginFrame());
-    dev->ResetValidationStats();
-
-    constexpr uint32_t kSize = kSecondListReadbackSize;
-    constexpr uint32_t kBandRow = 1u;
-    constexpr uint32_t kBandRows = 2u;
-    constexpr float kBandOffset = 500.0f;
-    constexpr size_t kRowPitch = static_cast<size_t>(kSize) * sizeof(float);
-    TextureDesc td{};
-    td.width = kSize;
-    td.height = kSize;
-    td.depth = 1u;
-    td.mipLevels = 1u;
-    td.arrayLayers = 1u;
-    td.sampleCount = 1u;
-    td.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
-    td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::TransferSrc |
-                                     TextureUsage::TransferDst);
-    td.debugName = "RegionUploadAfterMove.Tex";
-    const TextureHandle tex = dev->CreateTexture(td);
-    ASSERT_TRUE(tex.IsValid());
-
-    std::vector<float> seed(static_cast<size_t>(kSize) * kSize);
-    for (uint32_t y = 0; y < kSize; ++y)
-        for (uint32_t x = 0; x < kSize; ++x)
-            seed[y * kSize + x] = SecondListSeedTexel(x, y);
-    std::vector<float> band(static_cast<size_t>(kSize) * kBandRows);
-    for (uint32_t r = 0; r < kBandRows; ++r)
-        for (uint32_t x = 0; x < kSize; ++x)
-            band[r * kSize + x] = kBandOffset + SecondListSeedTexel(x, kBandRow + r);
-    const size_t bytes = seed.size() * sizeof(float);
-    const BufferHandle seedBuf = dev->CreateUploadBuffer(bytes, "RegionUploadAfterMove.Seed");
-    dev->UpdateBuffer(seedBuf, 0, bytes, seed.data());
-    const BufferHandle bandBuf = dev->CreateUploadBuffer(band.size() * sizeof(float), "RegionUploadAfterMove.Band");
-    dev->UpdateBuffer(bandBuf, 0, band.size() * sizeof(float), band.data());
-    const BufferHandle readback = dev->CreateReadbackBuffer(bytes, "RegionUploadAfterMove.Read");
-
-    auto writer = dev->CreateCommandList(IDevice::QueueType::Graphics);
-    writer->Begin();
-    writer->CopyBufferToTextureSubresource(seedBuf, tex, 0, 0, kSize, kSize, 0, kRowPitch);
-    writer->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopyDest,
-                                                          ResourceState::ShaderResource));
-    writer->End();
-
-    auto reader = dev->CreateCommandList(IDevice::QueueType::Graphics);
-    reader->Begin();
-    reader->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::ShaderResource,
-                                                          ResourceState::UnorderedAccess));
-    reader->CopyBufferToTextureSubresource(bandBuf, tex, 0, 0, kSize, kBandRows, 0, kRowPitch, 1, 0, 0,
-                                           kBandRow, ResourceState::ShaderResource);
-    reader->CopyTextureSubresourceToBuffer(tex, 0, 0, readback, kSize, kSize);
-    reader->End();
-
-    dev->ExecuteCommandLists({writer.get(), reader.get()});
-    dev->WaitForIdle();
-
-    std::vector<float> result(seed.size(), 0.0f);
-    if (const void* mapped = dev->MapBuffer(readback))
-    {
-        std::memcpy(result.data(), mapped, bytes);
-        dev->UnmapBuffer(readback);
-    }
-    for (uint32_t y = 0; y < kSize; ++y)
-    {
-        const bool inBand = y >= kBandRow && y < kBandRow + kBandRows;
-        for (uint32_t x = 0; x < kSize; ++x)
-            EXPECT_FLOAT_EQ(result[y * kSize + x], (inBand ? kBandOffset : 0.0f) + SecondListSeedTexel(x, y))
-                << "texel (" << x << "," << y << ")";
-    }
-    EXPECT_EQ(dev->GetValidationStats().ErrorCount, 0u);
     dev->DestroyBuffer(seedBuf);
     dev->DestroyBuffer(bandBuf);
     dev->DestroyBuffer(readback);
@@ -931,18 +700,6 @@ TEST(ValidationLogPolicy, OverflowOrdinalsAreThinnedOnTheSameStride)
     EXPECT_FALSE(ShouldLogValidationOccurrence(outcome));
 }
 
-TEST(ValidationAssertPolicy, LayerErrorsTrapButLoaderErrorsDoNot)
-{
-    // On a machine with two drivers, one that fails enumeration gives a loader ERROR of GENERAL type.
-    // That ERROR must not trap a Debug Player. A validation-layer ERROR still traps.
-    constexpr VkDebugUtilsMessageSeverityFlagsEXT kError = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    constexpr VkDebugUtilsMessageSeverityFlagsEXT kWarning = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
-    EXPECT_TRUE(ValidationMessageTraps(kError, VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT, false));
-    EXPECT_FALSE(ValidationMessageTraps(kError, VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT, false));
-    EXPECT_FALSE(ValidationMessageTraps(kWarning, VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT, false));
-    EXPECT_FALSE(ValidationMessageTraps(kError, VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT, true));
-}
-
 TEST(VuidSuppressions, TableSeedsEmptyAndLookupMatchesExactly)
 {
     // The checked-in table ships empty: burn-down fixes errors instead of hiding them.
@@ -1310,19 +1067,6 @@ TEST(SharedVulkanInstance, AVerboseRequestingDeviceDoesNotInheritATerseMessenger
 // fault: the toggle policy, the payload-lifetime contract that makes a pointer
 // still resolvable after a device loss, the post-loss formatter, and (device
 // gated) extension detection plus actual recording.
-
-TEST(GpuCheckpoints, TogglePolicyIsOffByDefault)
-{
-    // Opposite polarity to ParseDeviceRecoveryEnabled: unset means OFF, because
-    // emission costs a GPU command on per-frame marker paths.
-    EXPECT_FALSE(ParseGpuCheckpointsEnabled(nullptr));
-    EXPECT_FALSE(ParseGpuCheckpointsEnabled(""));
-    EXPECT_FALSE(ParseGpuCheckpointsEnabled("0"));
-    EXPECT_FALSE(ParseGpuCheckpointsEnabled("false"));
-    EXPECT_FALSE(ParseGpuCheckpointsEnabled("False"));
-    EXPECT_TRUE(ParseGpuCheckpointsEnabled("1"));
-    EXPECT_TRUE(ParseGpuCheckpointsEnabled("true"));
-}
 
 TEST(GpuCheckpoints, InternIsStableAndResolvesBack)
 {
@@ -1805,20 +1549,6 @@ TEST(GpuCheckpoints, EnabledEmissionRecordsCheckpointsForMarkers)
 // policy, that the off arm leaves the pre-existing layer settings byte-identical,
 // and that the on arm appends exactly one well-formed entry.
 
-TEST(SyncValidation, TogglePolicyIsOffByDefault)
-{
-    // Same polarity and idiom as ParseGpuCheckpointsEnabled: unset means OFF,
-    // because sync-val costs multiples of the frame time.
-    EXPECT_FALSE(ParseSyncValidationEnabled(nullptr));
-    EXPECT_FALSE(ParseSyncValidationEnabled(""));
-    EXPECT_FALSE(ParseSyncValidationEnabled("0"));
-    EXPECT_FALSE(ParseSyncValidationEnabled("false"));
-    EXPECT_FALSE(ParseSyncValidationEnabled("False"));
-    EXPECT_TRUE(ParseSyncValidationEnabled("1"));
-    EXPECT_TRUE(ParseSyncValidationEnabled("true"));
-    EXPECT_TRUE(ParseSyncValidationEnabled("on"));
-}
-
 namespace {
 
 constexpr const char* kTestLayerName = "VK_LAYER_KHRONOS_validation";
@@ -1911,17 +1641,6 @@ TEST(SyncValidation, SettingValuesLiveInsideTheOwningObject)
 // validation; shader instrumentation is force-disabled by the layer whenever the
 // extension is enabled. These pin the toggle policy and that the request the
 // engine sends matches what it claims in the log.
-
-TEST(GpuAssistedValidation, TogglePolicyIsOffByDefault)
-{
-    EXPECT_FALSE(ParseGpuAssistedValidationEnabled(nullptr));
-    EXPECT_FALSE(ParseGpuAssistedValidationEnabled(""));
-    EXPECT_FALSE(ParseGpuAssistedValidationEnabled("0"));
-    EXPECT_FALSE(ParseGpuAssistedValidationEnabled("false"));
-    EXPECT_FALSE(ParseGpuAssistedValidationEnabled("F"));
-    EXPECT_TRUE(ParseGpuAssistedValidationEnabled("1"));
-    EXPECT_TRUE(ParseGpuAssistedValidationEnabled("on"));
-}
 
 TEST(GpuAssistedValidation, OffArmChainsNoGpuAvSettings)
 {
@@ -2044,11 +1763,13 @@ TEST(GpuAvShaderInstrumentation, ModeDefaultsToAutoAndParsesBothOverrides)
     EXPECT_EQ(ParseGpuAvShaderInstrumentationMode(nullptr), Mode::Auto);
     EXPECT_EQ(ParseGpuAvShaderInstrumentationMode(""), Mode::Auto);
     EXPECT_EQ(ParseGpuAvShaderInstrumentationMode("auto"), Mode::Auto);
-    EXPECT_EQ(ParseGpuAvShaderInstrumentationMode("A"), Mode::Auto);
+    EXPECT_EQ(ParseGpuAvShaderInstrumentationMode("AUTO"), Mode::Auto);
 
+    // The off values every environment switch shares, in any case.
     EXPECT_EQ(ParseGpuAvShaderInstrumentationMode("0"), Mode::ForceOff);
     EXPECT_EQ(ParseGpuAvShaderInstrumentationMode("false"), Mode::ForceOff);
-    EXPECT_EQ(ParseGpuAvShaderInstrumentationMode("F"), Mode::ForceOff);
+    EXPECT_EQ(ParseGpuAvShaderInstrumentationMode("off"), Mode::ForceOff);
+    EXPECT_EQ(ParseGpuAvShaderInstrumentationMode("No"), Mode::ForceOff);
 
     EXPECT_EQ(ParseGpuAvShaderInstrumentationMode("1"), Mode::ForceOn);
     EXPECT_EQ(ParseGpuAvShaderInstrumentationMode("on"), Mode::ForceOn);
@@ -2538,47 +2259,6 @@ TEST(DeviceFaultQuery, ACountQueryFailureKeepsTheDiagnosticString)
     EXPECT_EQ(driver.RetrievalCalls, 0u);
 }
 
-// The toggle resolves against a config default rather than being plain on/off,
-// so both directions of the override and the fall-through are pinned here.
-TEST(DeviceFault, TogglePolicyOverridesTheConfigDefaultInBothDirections)
-{
-    // Unset says nothing: the config default decides.
-    EXPECT_TRUE(ParseDeviceFaultEnabled(nullptr, true));
-    EXPECT_FALSE(ParseDeviceFaultEnabled(nullptr, false));
-    EXPECT_TRUE(ParseDeviceFaultEnabled("", true));
-    EXPECT_FALSE(ParseDeviceFaultEnabled("", false));
-
-    // Arm a Release investigation.
-    EXPECT_TRUE(ParseDeviceFaultEnabled("1", false));
-    EXPECT_TRUE(ParseDeviceFaultEnabled("on", false));
-
-    // Disarm a developer build, to A/B whether the extension itself changed
-    // anything — worthless if the toggle could only ever turn it on.
-    EXPECT_FALSE(ParseDeviceFaultEnabled("0", true));
-    EXPECT_FALSE(ParseDeviceFaultEnabled("false", true));
-    EXPECT_FALSE(ParseDeviceFaultEnabled("F", true));
-}
-
-// The one toggle in this file whose polarity is inverted — GE_VK_NO_DEBUG_UTILS
-// names what it removes — so the unset case is pinned in the direction that
-// matters: saying nothing leaves labels ON in every config.
-TEST(DebugUtilsLabels, TogglePolicyIsOnByDefaultAndNamedForWhatItRemoves)
-{
-    EXPECT_FALSE(ParseDebugUtilsDisabled(nullptr));
-    EXPECT_FALSE(ParseDebugUtilsDisabled(""));
-
-    EXPECT_TRUE(ParseDebugUtilsDisabled("1"));
-    EXPECT_TRUE(ParseDebugUtilsDisabled("true"));
-    EXPECT_TRUE(ParseDebugUtilsDisabled("on"));
-
-    // Spelling the escape hatch off is not the same as never setting it, and both
-    // have to leave the extension enabled — a "GE_VK_NO_DEBUG_UTILS=0" that killed
-    // labels would read as the opposite of what it says.
-    EXPECT_FALSE(ParseDebugUtilsDisabled("0"));
-    EXPECT_FALSE(ParseDebugUtilsDisabled("false"));
-    EXPECT_FALSE(ParseDebugUtilsDisabled("False"));
-}
-
 // A freshly constructed or half-resolved set is unavailable: Available() demands
 // all three entry points, so a set that could open labels it cannot close never
 // reports usable.
@@ -2606,7 +2286,7 @@ TEST(DebugUtilsLabels, AnUnresolvedSetIsUnavailable)
 TEST(DebugUtilsLabels, ResolveWithoutTheValidationLayerAndAllOrNone)
 {
     SetEnvHeadless();
-    if (ParseDebugUtilsDisabled(std::getenv("GE_VK_NO_DEBUG_UTILS")))
+    if (GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_NO_DEBUG_UTILS", false))
     {
         // The toggle is memoized at first instance creation, so an environment
         // that already carries a truthy value cannot be undone from inside this
@@ -3141,37 +2821,187 @@ TEST(DeviceDiagnostics, FillNewTargetsNaNFillsNewStorageBuffers)
     dev->DestroyBuffer(storage);
 }
 
-// A depth-stencil image must not share a memory block with other resources:
-// on NVIDIA the first bind of a depth image into a shared block costs about 700 ms (#5331).
-TEST(DeviceDiagnostics, ADepthStencilTextureOwnsADedicatedAllocation)
+TEST(DeviceDiagnostics, SubmittedLegacyFramebufferOutlivesItsCommandList)
 {
     SetEnvHeadless();
-    DeviceDesc dd{}; dd.preferredAPI = GraphicsAPI::Vulkan; dd.enableDynamicRendering = true;
-    auto dev = DeviceFactory::CreateDevice(dd);
-    ASSERT_TRUE(dev);
-    ASSERT_TRUE(dev->Initialize(dd));
-    auto* vk = static_cast<VulkanDevice*>(dev.get());
-    ASSERT_NE(vk->GetVmaAllocator(), nullptr);
+    ScopedEnvVar validationAssert("GE_VK_VALIDATION_ASSERT", "0");
+    DeviceDesc desc{};
+    desc.preferredAPI = GraphicsAPI::Vulkan;
+    desc.enableDebugLayer = true;
+    desc.enableDynamicRendering = false;
+    desc.descriptorBuffers = DescriptorBufferMode::Disabled;
+    auto device = DeviceFactory::CreateDevice(desc);
+    ASSERT_TRUE(device);
+    ASSERT_TRUE(device->Initialize(desc));
+    ASSERT_TRUE(device->GetValidationStats().Enabled);
+    TextureDesc texture{};
+    texture.width = 64;
+    texture.height = 64;
+    texture.format = static_cast<uint32_t>(TextureFormat::RGBA8_UNORM);
+    texture.usage = static_cast<uint32_t>(TextureUsage::RenderTarget);
+    const auto target = device->CreateTexture(texture);
+    ASSERT_TRUE(target.IsValid());
+    ASSERT_TRUE(device->BeginFrame());
+    auto commands = device->CreateCommandList(IDevice::QueueType::Graphics);
+    commands->Begin();
+    RenderPassDesc pass{};
+    pass.colorTargetCount = 1;
+    pass.colorTargets[0] = target;
+    pass.useColorView[0] = true;
+    commands->BeginRenderPass(pass);
+    commands->EndRenderPass();
+    commands->End();
+    device->ExecuteCommandLists({commands.get()});
+    commands.reset();
+    device->WaitForIdle();
+    EXPECT_EQ(device->GetValidationStats().ErrorCount, 0u);
+    device->DestroyTexture(target);
+    device->Shutdown();
+}
 
-    TextureDesc td{};
-    td.width = 1u;
-    td.height = 1u;
-    td.depth = 1u;
-    td.mipLevels = 1u;
-    td.arrayLayers = 1u;
-    td.sampleCount = 1u;
-    td.format = static_cast<uint32_t>(TextureFormat::D32_FLOAT);
-    td.usage = static_cast<uint32_t>(TextureUsage::DepthStencil | TextureUsage::ShaderResource);
-    td.debugName = "DedicatedDepthTest.Depth";
-    const TextureHandle depth = dev->CreateTexture(td);
+// Adreno Vulkan 1.1 drivers dereference an unbound graphics pipeline when
+// viewport/scissor commands dirty raster state before the first compute dispatch.
+TEST(DeviceDiagnostics, ViewportAndScissorBeforeComputeAreSafe)
+{
+    SetEnvHeadless();
+    DeviceDesc description{};
+    description.preferredAPI = GraphicsAPI::Vulkan;
+    description.enableDynamicRendering = false;
+    auto device = DeviceFactory::CreateDevice(description);
+    ASSERT_TRUE(device);
+    ASSERT_TRUE(device->Initialize(description));
+    // #version 450; layout(local_size_x=1) in; void main() {}
+    constexpr uint32_t kCompute[] = {
+        0x07230203, 0x00010300, 0x000d000b, 0x0000000a, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+        0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+        0x0005000f, 0x00000005, 0x00000004, 0x6e69616d, 0x00000000, 0x00060010, 0x00000004, 0x00000011,
+        0x00000001, 0x00000001, 0x00000001, 0x00030003, 0x00000002, 0x000001c2, 0x000a0004, 0x475f4c47,
+        0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f, 0x69746365, 0x00006576,
+        0x00080004, 0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572, 0x00657669,
+        0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00040047, 0x00000009, 0x0000000b, 0x00000019,
+        0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00040015, 0x00000006, 0x00000020,
+        0x00000000, 0x00040017, 0x00000007, 0x00000006, 0x00000003, 0x0004002b, 0x00000006, 0x00000008,
+        0x00000001, 0x0006002c, 0x00000007, 0x00000009, 0x00000008, 0x00000008, 0x00000008, 0x00050036,
+        0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x000100fd, 0x00010038
+    };
+    PipelineDesc pipelineDescription{};
+    pipelineDescription.type = PipelineType::Compute;
+    pipelineDescription.computeShader.resize(sizeof(kCompute));
+    std::memcpy(pipelineDescription.computeShader.data(), kCompute, sizeof(kCompute));
+    const auto pipeline = device->CreatePipeline(pipelineDescription);
+    ASSERT_TRUE(pipeline.IsValid());
+    device->ResetValidationStats();
+    for (uint32_t frame = 0; frame < 3; ++frame)
+    {
+        auto commands = device->CreateCommandList(IDevice::QueueType::Graphics);
+        commands->Begin();
+        commands->SetViewport(0, 0, 16, 16);
+        commands->SetScissor(0, 0, 16, 16);
+        commands->SetPipeline(pipeline);
+        commands->Dispatch(1, 1, 1);
+        commands->End();
+        device->ExecuteCommandLists({commands.get()});
+        device->WaitForIdle();
+    }
+    EXPECT_EQ(device->GetValidationStats().ErrorCount, 0u);
+    device->DestroyPipeline(pipeline);
+    device->Shutdown();
+}
+
+TEST(DeviceDiagnostics, LegacyColorResolveRecordsWithoutRenderPass2)
+{
+    SetEnvHeadless();
+    DeviceDesc description{};
+    description.preferredAPI = GraphicsAPI::Vulkan;
+    description.enableDebugLayer = true;
+    description.enableDynamicRendering = false;
+    auto device = DeviceFactory::CreateDevice(description);
+    ASSERT_TRUE(device);
+    ASSERT_TRUE(device->Initialize(description));
+    if (device->GetCapabilities().maxMSAASamples < 4)
+        GTEST_SKIP() << "Four-sample color attachments are unavailable";
+    TextureDesc descriptionTexture{};
+    descriptionTexture.width = 16;
+    descriptionTexture.height = 16;
+    descriptionTexture.format = static_cast<uint32_t>(TextureFormat::RGBA8_UNORM);
+    descriptionTexture.usage = static_cast<uint32_t>(TextureUsage::RenderTarget);
+    const auto resolve = device->CreateTexture(descriptionTexture);
+    descriptionTexture.sampleCount = 4;
+    const auto color = device->CreateTexture(descriptionTexture);
+    ASSERT_TRUE(resolve.IsValid());
+    ASSERT_TRUE(color.IsValid());
+    ASSERT_TRUE(device->BeginFrame());
+    device->ResetValidationStats();
+    auto commands = device->CreateCommandList(IDevice::QueueType::Graphics);
+    commands->Begin();
+    RenderPassDesc pass{};
+    pass.colorTargetCount = 1;
+    pass.colorTargets[0] = color;
+    pass.resolveColorTargets[0] = resolve;
+    pass.clearColor[0] = true;
+    commands->BeginRenderPass(pass);
+    commands->EndRenderPass();
+    commands->End();
+    device->ExecuteCommandLists({commands.get()});
+    device->WaitForIdle();
+    EXPECT_EQ(device->GetValidationStats().ErrorCount, 0u);
+    device->DestroyTexture(color);
+    device->DestroyTexture(resolve);
+    device->Shutdown();
+}
+
+TEST(DeviceDiagnostics, StaticDepthWritePipelineSupportsReadOnlyLegacyPass)
+{
+    SetEnvHeadless();
+    const ScopedEnvVar staticDepth("GE_VK_NO_DYNAMIC_DEPTH_WRITE", "1");
+    const ScopedEnvVar validationAssert("GE_VK_VALIDATION_ASSERT", "0");
+    DeviceDesc description{};
+    description.preferredAPI = GraphicsAPI::Vulkan;
+    description.enableDebugLayer = true;
+    description.enableDynamicRendering = false;
+    auto device = DeviceFactory::CreateDevice(description);
+    ASSERT_TRUE(device);
+    ASSERT_TRUE(device->Initialize(description));
+    ASSERT_TRUE(device->GetValidationStats().Enabled);
+    PipelineDesc pipelineDescription{};
+    pipelineDescription.vertexShader = GameEngine::Rendering::Tests::ReadSpirvBytes("fullscreen_noinput.vert.spv");
+    ASSERT_FALSE(pipelineDescription.vertexShader.empty());
+    pipelineDescription.depthAttachmentFormat = static_cast<uint32_t>(TextureFormat::D32_SFLOAT_S8_UINT);
+    pipelineDescription.depthStencilState.depthTestEnable = true;
+    pipelineDescription.depthStencilState.depthWriteEnable = true;
+    const auto pipeline = device->CreatePipeline(pipelineDescription);
+    ASSERT_TRUE(pipeline.IsValid());
+    TextureDesc texture{};
+    texture.width = 16;
+    texture.height = 16;
+    texture.format = pipelineDescription.depthAttachmentFormat;
+    texture.usage = static_cast<uint32_t>(TextureUsage::DepthStencil);
+    const auto depth = device->CreateTexture(texture);
     ASSERT_TRUE(depth.IsValid());
-    const VulkanTexture* texture = GetVulkanTextureConst(depth);
-    ASSERT_NE(texture, nullptr);
-    ASSERT_NE(texture->allocation, nullptr);
-
-    VmaAllocationInfo2 info{};
-    vmaGetAllocationInfo2(vk->GetVmaAllocator(), texture->allocation, &info);
-    EXPECT_EQ(info.dedicatedMemory, VK_TRUE) << "a depth-stencil image was placed in a shared memory block";
-
-    dev->DestroyTexture(depth);
+    ASSERT_TRUE(device->BeginFrame());
+    device->ResetValidationStats();
+    auto commands = device->CreateCommandList(IDevice::QueueType::Graphics);
+    commands->Begin();
+    RenderPassDesc pass{};
+    pass.depthTarget = depth;
+    pass.clearDepth = true;
+    commands->BeginRenderPass(pass);
+    commands->EndRenderPass();
+    // Bind outside the pass too: the draw must select using the current pass.
+    commands->SetPipeline(pipeline);
+    pass.clearDepth = false;
+    pass.depthReadOnly = true;
+    pass.depthLoadOp = RenderPassDesc::LoadOp::Load;
+    commands->BeginRenderPass(pass);
+    commands->SetViewport(0, 0, 16, 16);
+    commands->SetScissor(0, 0, 16, 16);
+    commands->Draw(3, 1);
+    commands->EndRenderPass();
+    commands->End();
+    device->ExecuteCommandLists({commands.get()});
+    device->WaitForIdle();
+    EXPECT_EQ(device->GetValidationStats().ErrorCount, 0u);
+    device->DestroyTexture(depth);
+    device->DestroyPipeline(pipeline);
+    device->Shutdown();
 }

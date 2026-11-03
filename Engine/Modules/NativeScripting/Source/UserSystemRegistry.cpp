@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <exception>
 #include <string>
-#include <tuple>
 #include <vector>
 
 namespace GameEngine
@@ -45,13 +44,6 @@ struct PostSimulationTick
 // No world pointer or user-module callback is retained here.
 uint64 s_StartedWorldId = 0;
 PostSimulationTick s_PendingPostSimulation;
-
-// The run order: ascending Order, then name, then module id. It does not depend on which module
-// loaded first or reloaded last, so a reload puts a module's systems back in their places.
-bool RunsBefore(const UserSystemEntry& a, const UserSystemEntry& b)
-{
-    return std::tie(a.Order, a.Name, a.ModuleId) < std::tie(b.Order, b.Name, b.ModuleId);
-}
 
 // Invoke a lifecycle hook on every registered system, isolated so a buggy script can't take down
 // the host (most importantly not during play-exit teardown, where a crash would lose unsaved scene
@@ -108,19 +100,7 @@ bool RegisterUserSystem(IUserSystem* system)
 {
     if (!system)
         return false;
-    if (!system->Name())
-    {
-        Logger::Log::Error("[NativeScripting] a user system in module '{}' has no name (IUserSystem::Name returned "
-                           "null); it is not registered",
-                           ActiveModule());
-        return false;
-    }
-    // Kept sorted as it grows, so every hook walks it in order. A disabled entry (null System)
-    // keeps its Order and Name, so a hard fault does not move the systems around it.
-    std::vector<UserSystemEntry>& systems = Systems();
-    UserSystemEntry entry{system, ActiveModule(), system->Order(), system->Name()};
-    const auto at = std::upper_bound(systems.begin(), systems.end(), entry, RunsBefore);
-    systems.insert(at, std::move(entry));
+    Systems().push_back(UserSystemEntry{system, ActiveModule()});
     return true;
 }
 

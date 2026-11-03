@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -23,27 +22,24 @@
 #include "Components/Rendering/MorphTargetWeights.h"
 #include "Components/RuntimeOnlyEntity.h"
 #include "Components/Spline/SplineComponent.h"
-#include "Components/Spline/SplineNetworkMember.h"
-#include "Components/Spline/SplineNetworkOverrides.h"
-#include "Components/Spline/SplinePaving.h"
 #include "Components/Terrain/Terrain.h"
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "ECSModules/Rendering/SkeletonStore.h"
 #include "Animation/AnimationEventCollectorStore.h"
-#include "Animation/AnimationGraph/AnimationGraphPlayer.h"
-#include "Animation/AnimationGraph/AnimationGraphStore.h"
+#include "Animation/AnimationGraphPlayer.h"
+#include "Animation/AnimationGraphStore.h"
 #include "Assets/AssetManager.h"
 #include "Assets/ModelAsset.h"
 #include "Engine/Rendering/ModelRenderSetup.h"
 #include "Engine/Rendering/RenderWorldHooks.h"
 #include "Mathematics/Quaternion.h"
 #include "Mathematics/Vector3.h"
-#include "Components/Navigation/NavigationSurface.h"
-#include "PathfindingECS/NavigationSurfaceRuntime.h"
+#include "PathfindingECS/Components/NavigationGrid.h"
+#include "PathfindingECS/NavigationGridRuntime.h"
 #include "PathfindingECS/NavigationService.h"
-#include "PathfindingECS/Systems/NavigationSurfaceSystem.h"
+#include "PathfindingECS/Systems/NavigationBuildSystem.h"
 #include "PathfindingECS/Systems/NavigationWorldHooks.h"
 #include "Pathfinding/NavigationWorld.h"
 #include "Physics/PhysicsWorld.h"
@@ -60,11 +56,10 @@
 #include "PhysicsECS/Systems/PhysicsWritebackSystem.h"
 #include "Scene/SceneIO.h"
 #include "Spline/SplineData.h"
-#include "SplineECS/SplineNetwork.h"
 #include "SplineECS/SplineService.h"
 #include "Terrain/TerrainTypes.h"
-#include "TerrainECS/Components/TerrainPageCollider.h"
 #include "TerrainECS/Components/TerrainPlanetFaceCollider.h"
+#include "TerrainECS/Components/TerrainTileCollider.h"
 #include "TerrainECS/Systems/TerrainWorldHooks.h"
 #include "TerrainECS/TerrainService.h"
 
@@ -249,46 +244,45 @@ GameEngine::ECS::EntityHandle FindEntityByName(World& world, const char* name)
     return {};
 }
 
-TEST_F(EntityDuplicateTests, DuplicatedNavigationSurfaceCreatesItsOwnMap)
+TEST_F(EntityDuplicateTests, DuplicatedNavigationGridCreatesItsOwnMap)
 {
-    using GameEngine::Components::NavigationSurface;
+    using GameEngine::Components::NavigationGrid;
     using GameEngine::PathfindingECS::NavigationService;
     if (!NavigationService::IsInitialized())
         NavigationService::Initialize();
     World world;
     GameEngine::PathfindingECS::RegisterNavigationWorldHooks(world);
-    GameEngine::PathfindingECS::NavigationSurfaceSystem build;
+    GameEngine::PathfindingECS::NavigationBuildSystem build;
 
-    NavigationSurface surface{};
-    surface.Mode = GameEngine::Components::NavigationSurfaceMode::Grid;
-    surface.FitBounds = false;
-    surface.Extent = {2.0f, 1.0f, 2.0f};
-    const EntityHandle original = world.Create(surface, Name{"Surface"}).GetHandle();
+    NavigationGrid grid{};
+    grid.Width = grid.Depth = 4;
+    grid.BakeSource = GameEngine::Components::NavigationBakeSource::Manual;
+    const EntityHandle original = world.Create(grid, Name{"Grid"}).GetHandle();
     build.Update(world, 0.0f);
-    const auto* bound = world.GetComponent<NavigationSurface>(original);
+    const auto* bound = world.GetComponent<NavigationGrid>(original);
     ASSERT_NE(bound, nullptr);
-    const GameEngine::Pathfinding::NavMapHandle originalMap =
-        GameEngine::PathfindingECS::ResolveNavigationSurfaceMap(world, *bound);
-    ASSERT_TRUE(originalMap.IsValid());
+    ASSERT_TRUE(bound->Initialized);
+    const GameEngine::Pathfinding::NavMapHandle originalMap{bound->NavMapIndex, bound->NavMapGeneration};
+    ASSERT_NE(NavigationService::Get().GetGridMap(originalMap), nullptr);
 
     const auto duplicate = GameEngine::Editor::DuplicateEntitySubtreeRoots(world, {original});
     ASSERT_EQ(duplicate.NewRoots.size(), 1u);
     const EntityHandle copy = duplicate.NewRoots[0];
-    const auto* copied = world.GetComponent<NavigationSurface>(copy);
+    const auto* copied = world.GetComponent<NavigationGrid>(copy);
     ASSERT_NE(copied, nullptr);
-    EXPECT_EQ(copied->OwnerWorldId, 0u);
-    EXPECT_FLOAT_EQ(copied->Extent.x, 2.0f);
+    EXPECT_FALSE(copied->Initialized);
+    EXPECT_EQ(copied->Width, 4u);
 
     build.Update(world, 0.0f);
-    copied = world.GetComponent<NavigationSurface>(copy);
-    const GameEngine::Pathfinding::NavMapHandle copyMap =
-        GameEngine::PathfindingECS::ResolveNavigationSurfaceMap(world, *copied);
-    ASSERT_TRUE(copyMap.IsValid());
+    copied = world.GetComponent<NavigationGrid>(copy);
+    ASSERT_TRUE(copied->Initialized);
+    const GameEngine::Pathfinding::NavMapHandle copyMap{copied->NavMapIndex, copied->NavMapGeneration};
     EXPECT_NE(copyMap, originalMap);
+    EXPECT_NE(NavigationService::Get().GetGridMap(copyMap), nullptr);
 
     world.DestroyEntityImmediate(copy);
-    EXPECT_NE(NavigationService::Get().GetMap(originalMap), nullptr);
-    EXPECT_EQ(NavigationService::Get().GetMap(copyMap), nullptr);
+    EXPECT_NE(NavigationService::Get().GetGridMap(originalMap), nullptr);
+    EXPECT_EQ(NavigationService::Get().GetGridMap(copyMap), nullptr);
 }
 
 TEST_F(EntityDuplicateTests, DuplicatingSplineCreatesIndependentSplineData)
@@ -374,13 +368,13 @@ TEST_F(EntityDuplicateTests, DuplicatedSplineStaysIndependentAfterSceneSaveLoad)
         GameEngine::TestUtils::MakeUniqueTempDirectory("GameEngine_EntityDuplicateTests")};
     const auto scenePath = sceneDir.Path() / "duplicated_spline_roundtrip.scene";
 
-    ASSERT_TRUE(GameEngine::Scene::WriteSceneFile(*world, scenePath, GameEngine::Scene::SceneWriteOptions{}));
+    ASSERT_TRUE(GameEngine::Scene::SaveSceneToFile(*world, scenePath, GameEngine::Scene::SaveOptions{}));
 
     World loadedWorld;
-    ASSERT_TRUE(GameEngine::Scene::ReadSceneInto(
+    ASSERT_TRUE(GameEngine::Scene::LoadSceneFromFile(
         loadedWorld,
         scenePath,
-        GameEngine::Scene::SceneReadOptions{}));
+        GameEngine::Scene::LoadOptions{GameEngine::Scene::LoadMode::Replace}));
 
     const auto loadedOriginalEntity = FindEntityByName(loadedWorld, "Spline");
     const auto loadedCloneEntity = FindEntityByName(loadedWorld, "Spline (1)");
@@ -448,7 +442,7 @@ TEST_F(EntityDuplicateTests, DuplicateUndoRemovesClonesAndKeepsOriginalsIntact)
     EXPECT_EQ(CaptureTransformBytes(*world, dup.OriginalChild), childBytesBefore);
     const auto* childParent = world->GetComponent<Parent>(dup.OriginalChild);
     ASSERT_NE(childParent, nullptr);
-    EXPECT_EQ(childParent->Entity.id, dup.OriginalRoot.id);
+    EXPECT_EQ(childParent->parent.id, dup.OriginalRoot.id);
 }
 
 TEST_F(EntityDuplicateTests, DuplicateUndoRedoRevivesSameHandlesWithSameBytes)
@@ -499,7 +493,7 @@ TEST_F(EntityDuplicateTests, ParentedSubtreeCloneParentLinksSurviveUndoRedo)
     {
         const auto* p = world->GetComponent<Parent>(cloneChild);
         ASSERT_NE(p, nullptr);
-        EXPECT_EQ(p->Entity.id, dup.CloneRoot.id);
+        EXPECT_EQ(p->parent.id, dup.CloneRoot.id);
     }
 
     UndoRedoService svc;
@@ -514,8 +508,8 @@ TEST_F(EntityDuplicateTests, ParentedSubtreeCloneParentLinksSurviveUndoRedo)
     ASSERT_TRUE(world->IsValid(dup.CloneRoot));
     const auto* p = world->GetComponent<Parent>(cloneChild);
     ASSERT_NE(p, nullptr);
-    EXPECT_EQ(p->Entity.id, dup.CloneRoot.id);
-    EXPECT_NE(p->Entity.id, dup.OriginalRoot.id);
+    EXPECT_EQ(p->parent.id, dup.CloneRoot.id);
+    EXPECT_NE(p->parent.id, dup.OriginalRoot.id);
 }
 
 namespace
@@ -587,7 +581,7 @@ TEST_F(EntityDuplicateTests, DuplicateSkipsGeneratedChildren)
     world->Query<GameEngine::ECS::Read<Parent>>().Each(
         [&](EntityHandle, const Parent& p)
         {
-            if (p.Entity.id == clone.id)
+            if (p.parent.id == clone.id)
                 ++clonedChildren;
         });
     EXPECT_EQ(clonedChildren, 0);
@@ -950,8 +944,8 @@ EntityHandle DuplicateOnce(World& world, EntityHandle root)
 // ---------------------------------------------------------------------------
 
 using GameEngine::Components::Terrain;
-using GameEngine::Components::TerrainPageCollider;
 using GameEngine::Components::TerrainPlanetFaceCollider;
+using GameEngine::Components::TerrainTileCollider;
 using GameEngine::TerrainECS::TerrainService;
 
 GameEngine::Terrain::TerrainConfig SingleTerrainConfig()
@@ -1184,7 +1178,7 @@ TEST_F(TerrainEntityDuplicateTests, DuplicateDoesNotInheritTheSourcesHeightField
     EXPECT_NE(svc.GetTerrainData(handle), nullptr);
 }
 
-// The per-page and per-face collider entities are runtime provisioning links
+// The per-tile and per-face collider entities are runtime provisioning links
 // that carry a heightfield physics handle. They are standalone roots rather
 // than children of the terrain, so Ctrl+D reaches them only by selecting one
 // directly — the hierarchy lists them, so that is a real two-keystroke path.
@@ -1193,15 +1187,15 @@ TEST_F(TerrainEntityDuplicateTests, DuplicateDoesNotInheritColliderPhysicsHandle
     World world;
     GameEngine::TerrainECS::RegisterTerrainWorldHooks(world);
 
-    const auto pageEntity = world.CreateEntity();
-    TerrainPageCollider page{};
-    page.TiledIndex = 7;
-    page.TiledGeneration = 2;
-    page.PageX = 3;
-    page.PageZ = 4;
-    page.PhysicsHandleIndex = 11;
-    page.PhysicsHandleGeneration = 5;
-    world.AddComponentImmediate(pageEntity, page);
+    const auto tileEntity = world.CreateEntity();
+    TerrainTileCollider tile{};
+    tile.TiledIndex = 7;
+    tile.TiledGeneration = 2;
+    tile.TileX = 3;
+    tile.TileZ = 4;
+    tile.PhysicsHandleIndex = 11;
+    tile.PhysicsHandleGeneration = 5;
+    world.AddComponentImmediate(tileEntity, tile);
 
     const auto faceEntity = world.CreateEntity();
     TerrainPlanetFaceCollider face{};
@@ -1212,14 +1206,14 @@ TEST_F(TerrainEntityDuplicateTests, DuplicateDoesNotInheritColliderPhysicsHandle
     face.PhysicsHandleGeneration = 6;
     world.AddComponentImmediate(faceEntity, face);
 
-    const auto pageClone = DuplicateOne(world, pageEntity);
-    ASSERT_TRUE(pageClone.IsValid());
-    const auto* clonedPage = world.GetComponent<TerrainPageCollider>(pageClone);
-    ASSERT_NE(clonedPage, nullptr);
-    EXPECT_EQ(clonedPage->PhysicsHandleIndex, 0u)
-        << "the copy names the source page's heightfield physics handle";
-    EXPECT_EQ(clonedPage->PhysicsHandleGeneration, 0u);
-    EXPECT_EQ(clonedPage->PageX, 3u) << "only the runtime handle is cleared";
+    const auto tileClone = DuplicateOne(world, tileEntity);
+    ASSERT_TRUE(tileClone.IsValid());
+    const auto* clonedTile = world.GetComponent<TerrainTileCollider>(tileClone);
+    ASSERT_NE(clonedTile, nullptr);
+    EXPECT_EQ(clonedTile->PhysicsHandleIndex, 0u)
+        << "the copy names the source tile's heightfield physics handle";
+    EXPECT_EQ(clonedTile->PhysicsHandleGeneration, 0u);
+    EXPECT_EQ(clonedTile->TileX, 3) << "only the runtime handle is cleared";
 
     const auto faceClone = DuplicateOne(world, faceEntity);
     ASSERT_TRUE(faceClone.IsValid());
@@ -1231,9 +1225,9 @@ TEST_F(TerrainEntityDuplicateTests, DuplicateDoesNotInheritColliderPhysicsHandle
     EXPECT_EQ(clonedFace->Face, 4u) << "only the runtime handle is cleared";
 
     // The originals are untouched.
-    const auto* sourcePage = world.GetComponent<TerrainPageCollider>(pageEntity);
-    ASSERT_NE(sourcePage, nullptr);
-    EXPECT_EQ(sourcePage->PhysicsHandleIndex, 11u);
+    const auto* sourceTile = world.GetComponent<TerrainTileCollider>(tileEntity);
+    ASSERT_NE(sourceTile, nullptr);
+    EXPECT_EQ(sourceTile->PhysicsHandleIndex, 11u);
     const auto* sourceFace = world.GetComponent<TerrainPlanetFaceCollider>(faceEntity);
     ASSERT_NE(sourceFace, nullptr);
     EXPECT_EQ(sourceFace->PhysicsHandleIndex, 13u);
@@ -2432,209 +2426,6 @@ TEST_F(ModelBackedSkinnedDuplicateTests, DuplicateOwnsItsOwnGroupThroughTheShare
     EXPECT_EQ(store.GetRuntimeRefCount(cloneRuntime), 2u)
         << "the clone's two SkeletonRefs must hold exactly two references";
     if (cloneRuntime != repaired)
-    {
         EXPECT_EQ(store.GetRuntime(repaired), nullptr)
             << "the repaired runtime is orphaned: resident forever, named by nobody";
-    }
 }
-
-namespace
-{
-using GameEngine::Components::SplineNetworkOverride;
-using GameEngine::Components::SplineNetworkOverrides;
-using GameEngine::Components::SplineNodeRule;
-using GameEngine::SplineECS::SplineNetwork;
-using GameEngine::SplineECS::SplineNode;
-
-// A junction record names the other member of its junction: a duplicate, a delete and its undo
-// keep every rule on its meeting (CopiedEntityRuntimeRefs::RepairSplineNetworkOverrides).
-class SplineNetworkDuplicateTests : public ::testing::Test
-{
-protected:
-    void SetUp() override
-    {
-        m_OwnsSplines = !GameEngine::SplineECS::SplineService::IsInitialized();
-        if (m_OwnsSplines)
-            GameEngine::SplineECS::SplineService::Initialize();
-        m_OwnsNetwork = !SplineNetwork::IsInitialized();
-        if (m_OwnsNetwork)
-            SplineNetwork::Initialize();
-        m_World = std::make_unique<World>();
-    }
-
-    void TearDown() override
-    {
-        m_World.reset();
-        if (m_OwnsNetwork)
-            SplineNetwork::Shutdown();
-        if (m_OwnsSplines)
-            GameEngine::SplineECS::SplineService::Shutdown();
-    }
-
-    EntityHandle AddRoad(const std::vector<Vector3>& points)
-    {
-        auto& splines = GameEngine::SplineECS::SplineService::Get();
-        const auto handle = splines.CreateSpline(GameEngine::Spline::SplineType::Linear, false);
-        auto* data = splines.GetSplineData(handle);
-        for (const Vector3& point : points)
-            data->AddPoint(point, 3.0f);
-        splines.RebuildCache(handle);
-        const EntityHandle entity = m_World->CreateEntity();
-        SplineComponent spline{};
-        spline.SplineDataIndex = handle.Index();
-        spline.SplineDataGeneration = handle.Generation();
-        m_World->AddComponentImmediate(entity, spline);
-        m_World->AddComponentImmediate(entity, Transform{});
-        m_World->AddComponentImmediate(entity, WorldTransform{});
-        m_World->AddComponentImmediate(
-            entity, GameEngine::Components::SplineNetworkMember{GameEngine::Components::SplineNetworkMemberKind::Road});
-        return entity;
-    }
-
-    void SetPoints(EntityHandle entity, const std::vector<Vector3>& points)
-    {
-        auto& splines = GameEngine::SplineECS::SplineService::Get();
-        const auto* spline = m_World->GetComponent<SplineComponent>(entity);
-        const GameEngine::SplineECS::SplineHandle handle(spline->SplineDataIndex, spline->SplineDataGeneration);
-        auto* data = splines.GetSplineData(handle);
-        data->Points.clear();
-        for (const Vector3& point : points)
-            data->AddPoint(point, 3.0f);
-        splines.RebuildCache(handle);
-    }
-
-    void WriteAtGrade(EntityHandle holder, EntityHandle other, float arc, float otherArc)
-    {
-        SplineNetworkOverrides overrides{};
-        overrides.Records[0] = {other, arc, otherArc, SplineNodeRule::AtGrade, {}};
-        m_World->AddComponentImmediate(holder, overrides);
-    }
-
-    void Derive() { SplineNetwork::Get().Update(*m_World); }
-
-    // The node of the pair within 1 m of (x, z), or null.
-    const SplineNode* NodeAt(EntityHandle a, EntityHandle b, float x, float z) const
-    {
-        for (const SplineNode& node : SplineNetwork::Get().GetNodes(*m_World))
-        {
-            const bool pair = (node.Members[0] == a && node.Members[1] == b) || (node.Members[0] == b && node.Members[1] == a);
-            if (pair && std::hypot(node.Position.x - x, node.Position.z - z) <= 1.0f)
-                return &node;
-        }
-        return nullptr;
-    }
-
-    std::unique_ptr<World> m_World;
-
-private:
-    bool m_OwnsSplines = false;
-    bool m_OwnsNetwork = false;
-};
-
-TEST_F(SplineNetworkDuplicateTests, ARoadDuplicatedAloneKeepsItsRuleAgainstTheOriginalPartnerUntilMovedAway)
-{
-    const EntityHandle high = AddRoad({{-50.0f, 0.0f, 0.0f}, {50.0f, 0.0f, 0.0f}});
-    const EntityHandle ford = AddRoad({{10.0f, 0.0f, -50.0f}, {10.0f, 0.0f, 50.0f}});
-    WriteAtGrade(high, ford, 60.0f, 50.0f);
-    Derive();
-    ASSERT_NE(NodeAt(high, ford, 10.0f, 0.0f), nullptr);
-    ASSERT_EQ(NodeAt(high, ford, 10.0f, 0.0f)->Rule, SplineNodeRule::AtGrade);
-
-    const auto duplicate = GameEngine::Editor::DuplicateEntitySubtreeRoots(*m_World, {high});
-    ASSERT_EQ(duplicate.NewRoots.size(), 1u);
-    const EntityHandle copy = duplicate.NewRoots.front();
-    EXPECT_EQ(m_World->GetComponent<SplineNetworkOverrides>(copy)->Records[0].Other, ford);
-    Derive();
-    ASSERT_NE(NodeAt(copy, ford, 10.0f, 0.0f), nullptr);
-    EXPECT_EQ(NodeAt(copy, ford, 10.0f, 0.0f)->Rule, SplineNodeRule::AtGrade);
-    EXPECT_EQ(NodeAt(copy, ford, 10.0f, 0.0f)->RuleHolder, copy);
-    EXPECT_EQ(NodeAt(high, ford, 10.0f, 0.0f)->RuleHolder, high);
-
-    SetPoints(copy, {{-50.0f, 0.0f, 80.0f}, {50.0f, 0.0f, 80.0f}});
-    Derive();
-    EXPECT_EQ(NodeAt(copy, ford, 10.0f, 80.0f), nullptr);
-    ASSERT_EQ(SplineNetwork::Get().GetHeldRecords(*m_World).size(), 1u);
-    EXPECT_EQ(SplineNetwork::Get().GetHeldRecords(*m_World)[0].Holder, copy);
-    EXPECT_EQ(NodeAt(high, ford, 10.0f, 0.0f)->Rule, SplineNodeRule::AtGrade);
-    EXPECT_EQ(NodeAt(high, ford, 10.0f, 0.0f)->RuleHolder, high);
-}
-
-TEST_F(SplineNetworkDuplicateTests, APairDuplicatedTogetherAndMovedCarriesItsRuleOnTheCopiedJunction)
-{
-    const EntityHandle high = AddRoad({{-50.0f, 0.0f, 0.0f}, {50.0f, 0.0f, 0.0f}});
-    const EntityHandle ford = AddRoad({{10.0f, 0.0f, -50.0f}, {10.0f, 0.0f, 50.0f}});
-    WriteAtGrade(high, ford, 60.0f, 50.0f);
-    Derive();
-
-    const auto duplicate = GameEngine::Editor::DuplicateEntitySubtreeRoots(*m_World, {high, ford});
-    ASSERT_EQ(duplicate.NewRoots.size(), 2u);
-    EntityHandle highCopy{};
-    EntityHandle fordCopy{};
-    for (const EntityHandle root : duplicate.NewRoots)
-        (m_World->GetComponent<SplineNetworkOverrides>(root) ? highCopy : fordCopy) = root;
-    ASSERT_TRUE(highCopy.IsValid());
-    ASSERT_TRUE(fordCopy.IsValid());
-    EXPECT_EQ(m_World->GetComponent<SplineNetworkOverrides>(highCopy)->Records[0].Other, fordCopy);
-
-    SetPoints(highCopy, {{50.0f, 0.0f, 100.0f}, {150.0f, 0.0f, 100.0f}});
-    SetPoints(fordCopy, {{110.0f, 0.0f, 50.0f}, {110.0f, 0.0f, 150.0f}});
-    Derive();
-    ASSERT_NE(NodeAt(highCopy, fordCopy, 110.0f, 100.0f), nullptr);
-    EXPECT_EQ(NodeAt(highCopy, fordCopy, 110.0f, 100.0f)->Rule, SplineNodeRule::AtGrade);
-    EXPECT_EQ(NodeAt(highCopy, fordCopy, 110.0f, 100.0f)->RuleHolder, highCopy);
-    ASSERT_NE(NodeAt(high, ford, 10.0f, 0.0f), nullptr);
-    EXPECT_EQ(NodeAt(high, ford, 10.0f, 0.0f)->Rule, SplineNodeRule::AtGrade);
-    EXPECT_EQ(NodeAt(high, ford, 10.0f, 0.0f)->RuleHolder, high);
-    EXPECT_TRUE(SplineNetwork::Get().GetHeldRecords(*m_World).empty());
-}
-
-TEST_F(SplineNetworkDuplicateTests, AMemberDeletedThenRestoredKeepsItsRecords)
-{
-    const EntityHandle high = AddRoad({{-50.0f, 0.0f, 0.0f}, {50.0f, 0.0f, 0.0f}});
-    const EntityHandle ford = AddRoad({{10.0f, 0.0f, -50.0f}, {10.0f, 0.0f, 50.0f}});
-    WriteAtGrade(high, ford, 60.0f, 50.0f);
-    Derive();
-    const SplineNetworkOverride before = m_World->GetComponent<SplineNetworkOverrides>(high)->Records[0];
-
-    UndoRedoService svc;
-    svc.Execute(std::make_unique<DeleteEntitiesCommand>("Delete Entity", m_World.get(), nullptr,
-                                                        DeleteEntitiesCommand::CollectSubtree(*m_World, high)));
-    Derive();
-    EXPECT_TRUE(SplineNetwork::Get().GetNodes(*m_World).empty());
-
-    svc.Undo();
-    Derive();
-    ASSERT_TRUE(m_World->IsValid(high));
-    EXPECT_EQ(m_World->GetComponent<SplineNetworkOverrides>(high)->Records[0], before);
-    ASSERT_NE(NodeAt(high, ford, 10.0f, 0.0f), nullptr);
-    EXPECT_EQ(NodeAt(high, ford, 10.0f, 0.0f)->Rule, SplineNodeRule::AtGrade);
-    EXPECT_EQ(NodeAt(high, ford, 10.0f, 0.0f)->RuleHolder, high);
-}
-
-// A paving's members are byte-copied: a bed duplicated with its square is the copy's member;
-// a square duplicated alone keeps excluding the original bed
-// (CopiedEntityRuntimeRefs::RepairPavingMembers).
-TEST_F(SplineNetworkDuplicateTests, APavingDuplicatedWithItsBedExcludesTheCopiedBed)
-{
-    const EntityHandle square = AddRoad({{-20.0f, 0.0f, -20.0f}, {20.0f, 0.0f, -20.0f}, {20.0f, 0.0f, 20.0f}});
-    const EntityHandle bed = AddRoad({{-2.0f, 0.0f, -2.0f}, {2.0f, 0.0f, -2.0f}, {2.0f, 0.0f, 2.0f}});
-    GameEngine::Components::SplinePaving paved{};
-    paved.MemberCount = 1;
-    paved.Members[0] = {bed, GameEngine::Components::SplinePavingMemberMode::Exclude};
-    m_World->AddComponentImmediate(square, paved);
-
-    const auto together = GameEngine::Editor::DuplicateEntitySubtreeRoots(*m_World, {square, bed});
-    ASSERT_EQ(together.NewRoots.size(), 2u);
-    EntityHandle squareCopy{};
-    EntityHandle bedCopy{};
-    for (const EntityHandle root : together.NewRoots)
-        (m_World->GetComponent<GameEngine::Components::SplinePaving>(root) ? squareCopy : bedCopy) = root;
-    ASSERT_TRUE(squareCopy.IsValid());
-    ASSERT_TRUE(bedCopy.IsValid());
-    EXPECT_EQ(m_World->GetComponent<GameEngine::Components::SplinePaving>(squareCopy)->Members[0].Entity, bedCopy);
-
-    const auto alone = GameEngine::Editor::DuplicateEntitySubtreeRoots(*m_World, {square});
-    ASSERT_EQ(alone.NewRoots.size(), 1u);
-    EXPECT_EQ(m_World->GetComponent<GameEngine::Components::SplinePaving>(alone.NewRoots.front())->Members[0].Entity, bed);
-}
-} // namespace

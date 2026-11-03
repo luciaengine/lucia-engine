@@ -196,11 +196,22 @@ void RGGraph::Schedule()
     }
 
     // ── Weakly-connected components over hazard edges (union-find) ──
-    auto& components = m_ScratchComponents;
-    components.Reset(passCount);
+    auto& uf = m_ScratchUnionFind;
+    uf.resize(passCount);
+    for (uint32_t i = 0; i < passCount; ++i)
+        uf[i] = i;
+    auto find = [&](uint32_t x)
+    {
+        while (uf[x] != x)
+        {
+            uf[x] = uf[uf[x]];
+            x = uf[x];
+        }
+        return x;
+    };
     for (RGPassId p = 0; p < passCount; ++p)
         for (RGPassId s : succ[p])
-            components.Join(p, s);
+            uf[find(p)] = find(s);
     constexpr auto kMaxPhase = std::numeric_limits<int32_t>::max();
     auto& compRank = m_ScratchCompRank;
     compRank.assign(passCount, {kMaxPhase, std::numeric_limits<uint32_t>::max()});
@@ -208,7 +219,7 @@ void RGGraph::Schedule()
     {
         if (!live(p))
             continue;
-        const uint32_t root = components.Find(p);
+        const uint32_t root = find(p);
         const std::pair<int32_t, uint32_t> cand{m_Passes[p].Desc.Phase, p};
         if (cand < compRank[root])
             compRank[root] = cand;
@@ -270,7 +281,7 @@ void RGGraph::Schedule()
                 bool violation = false;
                 if (!cur.empty())
                 {
-                    if (components.Find(m) != components.Find(cur[0]))
+                    if (find(m) != find(cur[0]))
                         violation = true; // never cluster across components
                     for (uint32_t z = 0; z < passCount && !violation; ++z)
                     {
@@ -361,7 +372,7 @@ void RGGraph::Schedule()
                 minPhase = std::min(minPhase, m_Passes[m].Desc.Phase);
                 minIns = std::min(minIns, m);
             }
-            const auto rank = compRank[components.Find(clusters[ci][0])];
+            const auto rank = compRank[find(clusters[ci][0])];
             ckey[ci] = CKey{rank.first, rank.second, minPhase, minIns};
             std::sort(clusters[ci].begin(), clusters[ci].end(),
                       [&](RGPassId a, RGPassId b)

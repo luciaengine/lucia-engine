@@ -1,24 +1,12 @@
 #include "SceneView/SceneViewPostProcessSwitches.h"
 
-#include "Components/Rendering/Look.h"
 #include "Engine/Rendering/PostProcessSettings.h"
 
 namespace GameEngine::Editor
 {
 
-namespace
-{
-void SwitchTonemappingOff(bool hdrOutputActive, Engine::Renderer::PostProcessSettings& settings)
-{
-    if (hdrOutputActive)
-        settings.ViewOutput = Engine::Renderer::PostProcessViewOutput::NoLook;
-    else
-        settings.Look = static_cast<int32_t>(Components::Look::Neutral);
-}
-} // namespace
-
 void ApplySceneViewPostProcessSwitches(const SceneViewPostProcessSwitches& switches,
-                                       bool hdrOutputActive,
+                                       int32_t offTonemapMode,
                                        Engine::Renderer::PostProcessSettings& settings)
 {
     if (!switches.PostProcessing)
@@ -34,13 +22,13 @@ void ApplySceneViewPostProcessSwitches(const SceneViewPostProcessSwitches& switc
         settings.VolumetricFogIntensity = 0.0f;
         settings.VolumetricFogTemporalEnabled = 0;
         settings.VolumetricFogTemporalBlend = 0.0f;
-        SwitchTonemappingOff(hdrOutputActive, settings);
+        settings.TonemapMode = offTonemapMode;
         return;
     }
     if (!switches.Bloom)
         settings.DisableBloom();
     if (!switches.Tonemap)
-        SwitchTonemappingOff(hdrOutputActive, settings);
+        settings.TonemapMode = offTonemapMode;
     if (!switches.ColorFilter)
         settings.ColorFilterIntensity = 0.0f;
     if (!switches.ContrastAdaptiveSharpening)

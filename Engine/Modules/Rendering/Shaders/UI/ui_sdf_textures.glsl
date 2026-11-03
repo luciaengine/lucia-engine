@@ -16,6 +16,14 @@
 #ifndef UI_SDF_TEXTURES_GLSL
 #define UI_SDF_TEXTURES_GLSL
 
+// Linear UI images sample one mip level sharper than the footprint asks for: the level
+// read is about twice the drawn size and bilinear filtering resolves it, so an icon keeps
+// crisp edges at every source size (a 32 px PNG or a 256 px SVG raster shown at 16 px)
+// without the stair steps of sampling level 0. A bias of -1 is a gradient scale of 0.5;
+// the compat profile passes explicit gradients, so it applies the scale instead.
+#define GE_UI_IMAGE_LOD_BIAS -1.0
+#define GE_UI_IMAGE_GRADIENT_SCALE 0.5
+
 #if defined(GE_COMPAT_PROFILE)
 
 // Must match UI::kUiCompatTextureSlots / kUiCompatGlyphSlots and the layout
@@ -84,7 +92,8 @@ vec4 uiSampleTextureSlotNearest(uint slot, vec2 uv, vec2 ddx, vec2 ddy)
 // unused argument never reaches the GLSL parser, so a compat-only varying costs
 // the full-profile shader nothing.
 #define GE_UI_TEX_LINEAR(texIdx, texSlot, uv) \
-    uiSampleTextureSlot(texSlot, uv, ge_UiDeriv.UvDdx, ge_UiDeriv.UvDdy)
+    uiSampleTextureSlot(texSlot, uv, ge_UiDeriv.UvDdx * GE_UI_IMAGE_GRADIENT_SCALE, \
+                        ge_UiDeriv.UvDdy * GE_UI_IMAGE_GRADIENT_SCALE)
 #define GE_UI_TEX_NEAREST(texIdx, texSlot, uv) \
     uiSampleTextureSlotNearest(texSlot, uv, ge_UiDeriv.UvDdx, ge_UiDeriv.UvDdy)
 #define GE_UI_SLUG(curveIdx, bandIdx, texSlot, emCoord, bandTransform, glyphData) \
@@ -144,7 +153,7 @@ layout(set = 1, binding = 2) uniform sampler uiLinearSampler;
 layout(set = 1, binding = 3) uniform sampler uiNearestSampler;
 
 #define GE_UI_TEX_LINEAR(texIdx, texSlot, uv) \
-    texture(sampler2D(textures[nonuniformEXT(texIdx)], uiLinearSampler), uv)
+    texture(sampler2D(textures[nonuniformEXT(texIdx)], uiLinearSampler), uv, GE_UI_IMAGE_LOD_BIAS)
 #define GE_UI_TEX_NEAREST(texIdx, texSlot, uv) \
     texture(sampler2D(textures[nonuniformEXT(texIdx)], uiNearestSampler), uv)
 #define GE_UI_SLUG(curveIdx, bandIdx, texSlot, emCoord, bandTransform, glyphData) \

@@ -14,6 +14,7 @@
 namespace GameEngine {
 
 namespace Editor { class UndoRedoService; }
+namespace ECS { struct EntityHandle; }
 
 // Constants for bookmarks persistence (file name and SettingsStore keys).
 // Single place for names used in SaveBookmarks/LoadBookmarks/SaveRowHeight/LoadRowHeight.
@@ -110,7 +111,8 @@ public:
     void HandleAssetDrops(const std::vector<std::filesystem::path>& assetPaths);
     /** Add multiple assets at a specific insert index (first at insertIndex, then insertIndex+1, ...). */
     void HandleAssetDrops(const std::vector<std::filesystem::path>& assetPaths, int insertIndex);
-    void HandleEntityDrop(const std::string& scenePath, const std::string& entityId);
+    /** Add live entities from the active scene through the panel's normal persistence and duplicate checks. */
+    void AddEntityBookmarks(const std::vector<ECS::EntityHandle>& entities);
     
     // Refresh bookmarks (reload from disk and rebuild UI)
     // Call after asset scanning completes to validate bookmarks against updated registry
@@ -129,8 +131,6 @@ public:
 private:
     void BuildUI();
     void RebuildBookmarkRows();
-    // RebuildBookmarkRows, then marks the list, its scroll view and the panel for relayout.
-    void RebuildRowsAndRelayout();
     void CreateBookmarkRow(size_t index, UIElement* container);
     void SetupDragAndDrop(UIElement* row, UIElement* dragHandle, size_t index);
     void SetupDropHandlers(UIElement* container);
@@ -144,11 +144,10 @@ private:
     void NavigateToScene(const std::string& guid);
     void NavigateToEntity(const std::string& scenePath, const std::string& entityId);
     void SelectEntityById(const std::string& entityId);
-    // Selects `entityId` once `drains` deferred drains have run; nothing when the panel is unattached.
-    void SelectEntityAfterDrains(std::string entityId, int drains);
 
     // Drop handler for hierarchy entity drags
     void HandleEntityPayloadDrop(const std::vector<std::uint64_t>& treeIds, int insertIndex);
+    std::string GetCurrentScenePathString() const;
     
     // Icon helpers
     void UpdateBookmarkIcon(UIElement* iconEl, const Bookmark& bookmark);

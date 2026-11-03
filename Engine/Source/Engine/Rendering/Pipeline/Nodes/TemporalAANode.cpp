@@ -4,8 +4,6 @@
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
-#include "Engine/Rendering/Pipeline/ViewExposureHistory.h"
-#include "Engine/Rendering/Pipeline/ViewMotionVectors.h"
 #include "Engine/Rendering/RenderServices.h"
 
 #include "Logger/Logger.h"
@@ -15,7 +13,7 @@
 #include "Rendering/Core/GPUInstanceWorldKey.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Passes/TemporalAAOptions.h"
@@ -169,6 +167,31 @@ uint32_t TaaDebugMode()
 
 } // namespace
 
+bool TemporalAANode::ViewHasMovers(const RenderServices& rs, Rendering::ViewId viewId,
+                                   uint64_t worldId)
+{
+    if (rs.HasUnversionedMotion(viewId))
+        return true;
+    const auto movers = rs.GetFrameMovers();
+    if (movers.empty())
+        return false;
+    if (worldId == 0u)
+        return true;
+    const auto* scene = rs.GetGPUScene();
+    if (scene == nullptr)
+        return true;
+    const uint32_t viewWorldKey = Rendering::PackWorldKey16(worldId);
+    const auto& instances = scene->GetInstances();
+    for (const auto& mover : movers)
+    {
+        if (mover.InstanceIndex >= instances.size())
+            continue;
+        if (((instances[mover.InstanceIndex].flags >> 16u) & 0xFFFFu) == viewWorldKey)
+            return true;
+    }
+    return false;
+}
+
 float TemporalAANode::HistoryClipMode(bool hasMovers, bool contentChanged, bool stationaryScene)
 {
     return hasMovers || contentChanged ? 1.0f : stationaryScene ? -1.0f : 0.0f;
@@ -221,16 +244,6 @@ bool TemporalAANode::ComputeHistoryValid(uint64_t lastWrittenFrame, uint64_t fra
 
 void TemporalAANode::DeclareForView(ViewDeclare& d)
 {
-    // The history is stored at the pre-exposure P of the frame that wrote it, and the resolve
-    // rescales it by P over the previous frame's P. A frame of this view that renders without the
-    // resolve (another AA mode, a letterbox, an input missing) advances that P without writing the
-    // history, so the history state is dropped: the next resolve starts it from scratch.
-    if (!DeclareResolve(d))
-        m_ViewHistory.Erase(static_cast<uint32_t>(d.View.id));
-}
-
-bool TemporalAANode::DeclareResolve(ViewDeclare& d)
-{
     const RenderGraph::RGTexture input = d.ResolveTexture(m_InputKey);
     // Stitch-through: the output name must resolve for downstream consumers
     // whether TAA runs or not (the FullscreenShader chain binds it
@@ -240,9 +253,9 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
 
     const auto* taa = d.Services.Views().FindViewAntiAliasing(d.View.id);
     if (taa == nullptr)
-        return false; // AA mode is not TAA for this view: passthrough
+        return; // AA mode is not TAA for this view: passthrough
     if (taa->Mode != AntiAliasingMode::TAA)
-        return false; // FXAA jitters the same raster but resolves in the LDR chain: passthrough here
+        return; // FXAA jitters the same raster but resolves in the LDR chain: passthrough here
     if (!input.IsValid())
     {
         if (!m_WarnedUnresolvedInput)
@@ -253,30 +266,34 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
                 "inactive",
                 m_Id, m_InputKey);
         }
-        return false;
+        return;
     }
     if (!m_ShadersLoaded)
-        return false; // not staged yet: passthrough, retry next frame
+        return; // not staged yet: passthrough, retry next frame
     if (!d.ViewDepthResolved.IsValid() || !d.ViewDepth.IsValid())
-        return false;
+        return;
     // Letterboxed views render into a sub-rect; the P0 resolve assumes the
     // full extent. Passthrough (documented limitation, game-view aspect
     // presets keep MSAA-or-off semantics for now).
     if (d.Services.Views().GetViewLetterbox(d.View.id).active)
-        return false;
+        return;
 
     const uint64_t frameIndex = d.Frame.FrameIndex();
     const uint32_t w = d.RenderWidth;
     const uint32_t h = d.RenderHeight;
     if (w == 0 || h == 0)
-        return false;
+        return;
 
     // TAAU (render scale < 1): the pre-pass redirected the raster to the
     // internal extent (w, h) and preserved the caller's display targets. The
     // resolve becomes resolve+upscale: history/output at the display extent,
     // the current frame jitter-sampled from the internal extent. Outside TAAU
     // every value below equals the native path.
-    const bool taau = d.ViewOutputColor.IsValid() && d.OutputWidth > 0 && d.OutputHeight > 0 &&
+    // A pixel-perfect view also runs Output* > Render*, but its crossing is the
+    // integer zoom and belongs to PixelPerfectUpscaleNode — a temporal resample
+    // there would smear the art grid it exists to preserve.
+    const bool taau = d.ViewOutputColor.IsValid() && !d.PixelPerfectCrossing &&
+                      d.OutputWidth > 0 && d.OutputHeight > 0 &&
                       (d.OutputWidth != w || d.OutputHeight != h);
     const uint32_t outW = taau ? d.OutputWidth : w;
     const uint32_t outH = taau ? d.OutputHeight : h;
@@ -296,7 +313,7 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
                     "inactive (bilinear passthrough) until they load",
                     m_Id);
             }
-            return false;
+            return;
         }
     }
 
@@ -304,9 +321,9 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
     // rotated this frame) and snapshot what the resolve needs.
     const auto* state = d.Services.Views().AdvanceViewAntiAliasing(d.View.id, frameIndex);
     if (state == nullptr)
-        return false;
+        return;
 
-    ViewHistory& vh = m_ViewHistory.GetOrInsert(static_cast<uint32_t>(d.View.id));
+    ViewHistory& vh = m_ViewHistory[static_cast<uint32_t>(d.View.id)];
     // Folded with the pool's freshness answer once the history import below has
     // reported it; declared here because the snapshot fields are overwritten
     // further down.
@@ -345,7 +362,7 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
         ComputeHistoryValid(prevWrittenFrame, frameIndex, prevOutWidth, prevOutHeight, outW, outH,
                             prevCameraValid, historyReadFresh);
     if (!historyWrite.IsValid() || !historyRead.IsValid())
-        return false;
+        return;
 
     const auto mvTex = m_MotionVectors.Declare(d);
 
@@ -358,12 +375,7 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
     const RenderGraph::RGTexture outColor =
         d.Frame.ImportPersistentTexture((base + ".Output").c_str(), outDesc);
     if (!mvTex.IsValid() || !outColor.IsValid())
-        return false;
-    // The output and the histories hold scene colour stored at the frame's pre-exposure (the
-    // histories' alpha is depth, which a resource capture leaves alone).
-    d.MarkPreExposed(outColor);
-    d.MarkPreExposed(historyRead);
-    d.MarkPreExposed(historyWrite);
+        return;
 
     // Certified-stationary history: raster jitter can miss a whole subpixel
     // object over finite-depth ground, and depth alone cannot distinguish that
@@ -372,12 +384,20 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
     // revoke the exemption.
     const auto* viewDesc = d.Services.Views().FindViewDesc(d.View.id);
     const uint64_t worldId = viewDesc != nullptr ? viewDesc->worldId : 0u;
-    const bool hasMovers = ViewMotionVectors::ViewHasMovers(d.Services, d.View.id, worldId);
-    const ViewContentStamp content = ViewContentStamp::Capture(d.Services, worldId);
-    const bool contentUnchanged = historyValid && worldId != 0u && vh.Content.SameContent(content);
-    const bool stationaryScene = historyValid && vh.RenderWidth == w && vh.RenderHeight == h &&
-        ViewContentStamp::ViewIsStill(vh.Content, content, state->PrevCamera, state->CurrCamera,
-                                      hasMovers);
+    const bool hasMovers = ViewHasMovers(d.Services, d.View.id, worldId);
+    const uint64_t renderVersion = d.Services.RenderContentVersion(worldId);
+    const uint64_t casterVersion = d.Services.ShadowCasterContentVersion(worldId);
+    const uint64_t lightVersion = d.Services.WorldLightListVersion(worldId);
+    // Procedural depth contributors (terrain/ocean/grass) are outside the
+    // instance extraction epochs; their frame-spine signal is conservative.
+    const uint64_t dynamicEpoch = d.Services.GetIdleElisionFrameState().DepthDynamicEpoch;
+    const bool contentUnchanged = historyValid && worldId != 0u && vh.WorldId == worldId &&
+        vh.RenderContentVersion == renderVersion &&
+        vh.ShadowCasterContentVersion == casterVersion && vh.LightListVersion == lightVersion &&
+        vh.DepthDynamicEpoch == dynamicEpoch;
+    const bool stationaryScene = contentUnchanged && !hasMovers &&
+        vh.RenderWidth == w && vh.RenderHeight == h &&
+        std::memcmp(state->CurrCamera.viewProj, state->PrevCamera.viewProj, sizeof(float) * 16) == 0;
     // ── Resolve ────────────────────────────────────────────────────────────
     // Common fields once; the native and TAAU upscale blocks differ only by
     // the extra OutExtent (and the shader that consumes them).
@@ -385,10 +405,12 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
     {
         // UNJITTERED inverse view-proj — reprojection must be phase-stable
         // (see the shader-side comment on uInvViewProj).
-        const GameEngine::Rendering::Matrix4x4 invVp = GameEngine::Mathematics::Inverse(state->CurrCamera.viewProj);
+        GameEngine::Rendering::Matrix4x4 vp;
+        std::memcpy(vp.Data(), state->CurrCamera.viewProj, sizeof(float) * 16);
+        const GameEngine::Rendering::Matrix4x4 invVp = GameEngine::Mathematics::Inverse(vp);
         std::memcpy(params.InvViewProj, invVp.Data(), sizeof(float) * 16);
         std::memcpy(params.PrevViewProj,
-                    (state->PrevValid ? state->PrevCamera.viewProj : state->CurrCamera.viewProj).Data(),
+                    state->PrevValid ? state->PrevCamera.viewProj : state->CurrCamera.viewProj,
                     sizeof(float) * 16);
         params.Extent[0] = static_cast<float>(w);
         params.Extent[1] = static_cast<float>(h);
@@ -427,7 +449,7 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
     {
         auto alloc = d.Frame.AllocUpload<TaaUpscaleParamsCPU>();
         if (!alloc.Valid())
-            return false;
+            return;
         TaaUpscaleParamsCPU up{};
         std::memcpy(up.InvViewProj, params.InvViewProj, sizeof(up.InvViewProj));
         std::memcpy(up.PrevViewProj, params.PrevViewProj, sizeof(up.PrevViewProj));
@@ -448,7 +470,7 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
     {
         auto alloc = d.Frame.AllocUpload<TaaResolveParamsCPU>();
         if (!alloc.Valid())
-            return false;
+            return;
         *alloc.Ptr = params;
         paramsBuffer = alloc.Buffer;
         paramsOffset = alloc.Offset;
@@ -456,17 +478,11 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
     }
 
     const RenderGraph::RGTexture depthResolved = d.ViewDepthResolved;
-    // The input is stored at this frame's pre-exposure and the history at the previous frame's:
-    // the resolve rescales the history by their ratio.
-    const PipelineBufferBindingRG exposure = ResolveViewExposureHistory(d);
-    if (!exposure.IsValid())
-        return false;
     d.Frame.AddComputePass(
         d.PassName("TAAResolve").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
             p.Read(input, RenderGraph::RGTextureRead::Sampled);
-            p.Read(exposure.Graph, RenderGraph::RGBufferRead::Storage);
             p.Read(depthResolved, RenderGraph::RGTextureRead::Sampled);
             p.Read(mvTex, RenderGraph::RGTextureRead::Sampled);
             p.Read(historyRead, RenderGraph::RGTextureRead::Sampled);
@@ -474,7 +490,7 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
             p.Write(outColor, RenderGraph::RGTextureWrite::Storage);
         },
         [this, input, depthResolved, mvTex, historyRead, historyWrite, outColor, paramsBuffer,
-         paramsOffset, paramsSize, taau, outW, outH, exposure](RenderGraph::RGContext& ctx)
+         paramsOffset, paramsSize, taau, outW, outH](RenderGraph::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice();
             auto* cl = ctx.Cmd;
@@ -508,7 +524,6 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
                 ok &= wd.TryAddCombinedImageSampler("uMV", mv, m_LinearClampSampler);
                 ok &= wd.TryAddCombinedImageSampler("uHistory", histR, m_LinearClampSampler);
                 ok &= wd.TryAddUniformBuffer("Taa", paramsBuffer, paramsOffset, paramsSize);
-                ok &= wd.TryAddStorageBuffer("uExposure", exposure.Buffer, exposure.Offset, exposure.Size);
                 if (!ok)
                 {
                     if (!m_WarnedBindingMismatch)
@@ -538,7 +553,11 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
     // freshness arm on a frame that never declared the rewrite, and the next
     // frame would blend against an undefined physical as "resident" history.
     d.Frame.MarkPersistentTextureInitialized(historyWrite);
-    vh.Content = content;
+    vh.WorldId = worldId;
+    vh.RenderContentVersion = renderVersion;
+    vh.ShadowCasterContentVersion = casterVersion;
+    vh.LightListVersion = lightVersion;
+    vh.DepthDynamicEpoch = dynamicEpoch;
     vh.RenderWidth = w;
     vh.RenderHeight = h;
 
@@ -558,7 +577,6 @@ bool TemporalAANode::DeclareResolve(ViewDeclare& d)
         m_DepthUpsample.Declare(d.Frame, d.ViewDepth, d.ViewOutputDepth, outW, outH,
                                 d.PassName("TAAUDepthUpsample"));
     }
-    return true;
 }
 
 TemporalAANode::~TemporalAANode()

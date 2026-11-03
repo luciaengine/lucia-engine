@@ -21,7 +21,7 @@ struct PackagedGameLayout
 {
     bool IsPackaged = false;
 
-    // Directory holding game.config + Assets/: ApplicationPaths::InstallContentRootFor
+    // Directory holding game.config + Assets/: PathUtils::InstallContentRootFor
     // the executable directory (the exe dir on Windows/Linux, Contents/Resources
     // inside a mac bundle).
     std::filesystem::path ContentRoot;
@@ -42,8 +42,7 @@ PackagedGameLayout DetectPackagedGameLayout(const std::filesystem::path& content
 // Managed/Packages/ load beside it) and hard-disables every compile and
 // project-generation path in ScriptManager. Non-packaged (dev) runs keep the
 // CLR off unless a prebuilt assembly is explicitly staged. `useNativeAOT`
-// (scripts shipped as a native library) disables the CLR outright and sets
-// nativeAot, which keeps a ScriptManager for the main-thread queue.
+// (scripts shipped as a native library) disables the CLR outright.
 ScriptsConfig BuildPlayerScriptsConfig(const PackagedGameLayout& layout, bool useNativeAOT);
 
 // True when the Player must register ManagedSystemBridge so C# GameSystems tick
@@ -57,7 +56,7 @@ bool PlayerNeedsManagedSystemBridge(const ScriptsConfig& config, bool useNativeA
 
 // The Player's 'editor' asset source for a run whose project mount roots at
 // `projectAssetsRoot`, with the runtime-staged engine assets at
-// `stagedAssetsRoot`, the install assets root (ApplicationPaths::GetInstallAssetsRoot).
+// `stagedAssetsRoot`, the install assets root (PathUtils::GetInstallAssetsRoot).
 // Three layouts:
 //  - distinct staged root: a real second mount (dev --asset-root run; engine
 //    shaders/defaults ship in the install assets root, project content elsewhere);

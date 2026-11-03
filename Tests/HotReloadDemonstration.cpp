@@ -41,6 +41,7 @@ private:
         
         ApplicationConfig config{
             .Name = "Hot Reload Demo",
+            .Version = "1.0.0",
             .WindowWidth = 800,
             .WindowHeight = 600,
             .Fullscreen = false,

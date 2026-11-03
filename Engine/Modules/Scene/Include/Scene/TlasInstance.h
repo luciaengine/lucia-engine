@@ -2,7 +2,6 @@
 
 #include "ECS/Entity.h"
 #include "Mathematics/Geometry.h"
-#include "Rendering/RenderLayerMask.h"
 #include "Types/Types.h"
 
 namespace GameEngine::Scene
@@ -15,7 +14,7 @@ struct TlasInstance
 {
     GameEngine::ECS::EntityHandle Entity{};
     Mathematics::AABB             WorldBounds{};
-    Rendering::RenderLayerMask    LayerMask    = Rendering::RenderLayerMask::All();
+    uint32                        LayerMask    = 0xFFFFFFFFu;
     uint8                         InstanceMask = 0xFFu;  // 8-bit projection of LayerMask for future HW RT
     uint8                         _pad[3]      = {};
 };

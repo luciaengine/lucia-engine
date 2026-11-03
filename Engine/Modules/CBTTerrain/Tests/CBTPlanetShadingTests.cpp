@@ -15,10 +15,7 @@
 //   * The multi-octave relief keeps the +/- 1.5*amplitude envelope for any octave count
 //     (so CBTSphereDomainTests' on-shell bound stays valid) while adding real variation.
 
-#include "CBTTerrain/CBTPlanetShading.h"
-#include "CBTTerrain/CBTSphereFaceMap.h"
-#include "CBTTerrain/CBTSphereRoots.h"
-#include "CBTTerrain/SphereSculptLayer.h"
+#include <gtest/gtest.h>
 
 #include <array>
 #include <cmath>
@@ -26,7 +23,10 @@
 #include <random>
 #include <vector>
 
-#include <gtest/gtest.h>
+#include "CBTTerrain/CBTPlanetShading.h"
+#include "CBTTerrain/CBTSphereFaceMap.h"
+#include "CBTTerrain/CBTSphereRoots.h"
+#include "CBTTerrain/SphereSculptLayer.h"
 
 using namespace GameEngine::CBTTerrain;
 
@@ -617,11 +617,6 @@ bool BaseSphereHit(const Vec3& o, const Vec3& d, float radius, float& t)
         t = -b + sq;
     return t >= 0.0f;
 }
-
-GameEngine::Mathematics::Vector3 ToVector3(const Vec3& v)
-{
-    return GameEngine::Mathematics::Vector3(v[0], v[1], v[2]);
-}
 } // namespace
 
 // A constant additive height inflates the surface to a sphere of radius + bump. The base hit
@@ -639,7 +634,7 @@ TEST(RefinePlanetHit, ConstantHeightLandsOnInflatedSphere)
     EXPECT_NEAR(Length(baseP), radius, 0.5f);
 
     auto heightFn = [bump](float, float, float) { return bump; };
-    ASSERT_TRUE(RefinePlanetHit(ToVector3(o), ToVector3(d), radius, heightFn, t));
+    ASSERT_TRUE(RefinePlanetHit(o, d, radius, heightFn, t));
     const Vec3 p = Add(o, Scale(d, t));
 
     EXPECT_NEAR(Length(p), radius + bump, 0.5f);                        // lands on the displaced surface
@@ -666,7 +661,7 @@ TEST(RefinePlanetHit, TracksReliefSurface)
     auto heightFn = [&](float dx, float dy, float dz) {
         return PlanetRelief(dx, dy, dz, amp, freq, oct);
     };
-    ASSERT_TRUE(RefinePlanetHit(ToVector3(o), ToVector3(d), radius, heightFn, t));
+    ASSERT_TRUE(RefinePlanetHit(o, d, radius, heightFn, t));
     const Vec3 p = Add(o, Scale(d, t));
     const Vec3 dir = Normalize(p);
     const float refinedResidual =
@@ -683,16 +678,15 @@ TEST(RefinePlanetHit, RejectsNonPositiveRadius)
     const Vec3 d = Normalize({0.0f, 0.0f, 1.0f});
     float t = 42.0f;
     auto heightFn = [](float, float, float) { return 0.0f; };
-    EXPECT_FALSE(RefinePlanetHit(ToVector3(o), ToVector3(d), 0.0f, heightFn, t));
+    EXPECT_FALSE(RefinePlanetHit(o, d, 0.0f, heightFn, t));
     EXPECT_FLOAT_EQ(t, 42.0f);
 }
 
 // --- Untextured-fallback layer variation (round-8e: purple grass / cliff banding fixes) ----------
 namespace
 {
-// A green grass tint and the default rock entry (Terrain::kDefaultTerrainMaterials, TerrainMaterialRecord.h)
-// with their (scale, strength, saturation): a saturated green is where the purple-grass hue drift
-// showed, so the variation is pinned on it rather than on the default grass channel.
+// Default grass / rock palette entries (Terrain::kDefaultTerrainMaterials, TerrainMaterialRecord.h)
+// — the tint + (scale, strength, saturation) the untextured planet shades with.
 constexpr Vec3 kGrassTint = {0.35f, 0.55f, 0.18f};
 constexpr float kGrassScale = 0.030f, kGrassStrength = 0.16f, kGrassSat = 0.10f;
 constexpr Vec3 kRockTint = {0.55f, 0.50f, 0.42f};

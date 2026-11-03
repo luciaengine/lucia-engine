@@ -14,7 +14,7 @@
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/LegacyMaterialLanes.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
-#include "Rendering/Materials/Shader/ShaderPropertyTable.h"
+#include "Rendering/Materials/ShaderPropertyTable.h"
 #include "SceneBvh/UberMaterial.h"
 
 #include <gtest/gtest.h>
@@ -187,8 +187,8 @@ TEST_F(DDGIUberMaterialBakeTest, UndeclaredSurfaceReadsTheLegacyLanes)
     EXPECT_FLOAT_EQ(baked.Roughness, 0.7f);
 
     // The same fold the raster surface and the hardware kernel apply.
-    const DDGIEmissive expected = ComputeDDGIEmissive(ColorLinear(1.0f, 0.5f, 0.25f), 203.0f);
-    EXPECT_FLOAT_EQ(baked.EmissiveR, expected.Color.r);
+    const DDGIEmissive expected = ComputeDDGIEmissive(1.0f, 0.5f, 0.25f, 203.0f);
+    EXPECT_FLOAT_EQ(baked.EmissiveR, expected.Color[0]);
 
     // And those offsets are the legacy table's, not a second copy of them.
     const auto* lane = GameEngine::Rendering::FindLegacyMaterialLane("baseColor");

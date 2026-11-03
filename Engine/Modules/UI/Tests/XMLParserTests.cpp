@@ -1,12 +1,6 @@
 #include <gtest/gtest.h>
-#include <algorithm>
-#include <cstdint>
-#include <iterator>
 #include <string>
 #include <memory>
-#include <vector>
-#include "Logger/CallbackSink.h"
-#include "Logger/Logger.h"
 #include "UI/Parsers/XMLParser.h"
 #include "UI/UIElement.h"
 #include "UI/Registration/ElementRegistration.h"
@@ -85,17 +79,17 @@ TEST(XMLParserTests, TextAreaReadonlyAndTextInputResolveFromMarkup)
     ASSERT_TRUE(XMLParser::ParseLayoutFromString(xml, root));
     ASSERT_TRUE((bool)root);
 
-    auto* readOnly = dynamic_cast<TextArea*>(root->FindById("ro"_sid));
+    auto* readOnly = dynamic_cast<TextArea*>(root->FindById("ro"));
     ASSERT_NE(readOnly, nullptr);
     EXPECT_TRUE(readOnly->IsReadOnly());
 
     // The negative control: without it, a SetReadOnly bound to the wrong default would pass
     // the arm above for the wrong reason.
-    auto* writable = dynamic_cast<TextArea*>(root->FindById("rw"_sid));
+    auto* writable = dynamic_cast<TextArea*>(root->FindById("rw"));
     ASSERT_NE(writable, nullptr);
     EXPECT_FALSE(writable->IsReadOnly());
 
-    EXPECT_NE(dynamic_cast<TextInput*>(root->FindById("ti"_sid)), nullptr);
+    EXPECT_NE(dynamic_cast<TextInput*>(root->FindById("ti")), nullptr);
 }
 
 TEST(XMLParserTests, UnknownTagFallsBackToUIElementWithOriginalName)
@@ -134,7 +128,7 @@ TEST(XMLParserTests, AccordionModeParsesFromAttribute)
     ASSERT_TRUE(XMLParser::ParseLayoutFromString(xml, root));
     ASSERT_TRUE((bool)root);
 
-    UIElement* el = root->FindById("acc"_sid);
+    UIElement* el = root->FindById("acc");
     ASSERT_NE(el, nullptr);
     auto* acc = dynamic_cast<Accordion*>(el);
     ASSERT_NE(acc, nullptr);
@@ -152,7 +146,7 @@ TEST(XMLParserTests, DropdownModeParsesFromAttribute)
     ASSERT_TRUE(XMLParser::ParseLayoutFromString(xml, root));
     ASSERT_TRUE((bool)root);
 
-    UIElement* el = root->FindById("dd"_sid);
+    UIElement* el = root->FindById("dd");
     ASSERT_NE(el, nullptr);
     auto* dd = dynamic_cast<Dropdown*>(el);
     ASSERT_NE(dd, nullptr);
@@ -171,88 +165,17 @@ TEST(XMLParserTests, FindByIdUsesCanonicalId)
     ASSERT_TRUE(XMLParser::ParseLayoutFromString(xml, root));
     ASSERT_TRUE((bool)root);
 
-    UIElement* byNameOnly = root->FindById("childA"_sid);
+    UIElement* byNameOnly = root->FindById("childA");
     ASSERT_NE(byNameOnly, nullptr);
     EXPECT_EQ(UIAttributeAccess::GetDebugTypeName(*byNameOnly), "Panel");
     EXPECT_EQ(byNameOnly->GetId(), "childA");
 
     // When both id and name are provided, id remains canonical (name is ignored).
-    UIElement* byAlias = root->FindById("alias"_sid);
+    UIElement* byAlias = root->FindById("alias");
     EXPECT_EQ(byAlias, nullptr);
 
-    UIElement* byId = root->FindById("x"_sid);
+    UIElement* byId = root->FindById("x");
     ASSERT_NE(byId, nullptr);
     EXPECT_EQ(UIAttributeAccess::GetDebugTypeName(*byId), "Panel");
     EXPECT_EQ(byId->GetId(), "x");
-}
-
-// Parses the layout the given number of times and returns the log messages that name its file.
-static std::vector<std::string> LogMessagesWhileParsing(const std::string& xml, const std::string& file, int loads)
-{
-    Logger::Log::Initialize({});
-    auto sink = std::make_unique<Logger::CallbackSink>();
-    auto* sinkPtr = sink.get();
-    auto messages = std::make_shared<std::vector<std::string>>();
-    const std::uint64_t callbackId = sinkPtr->RegisterCallback(
-        [messages](const Logger::LogMessage& msg) { messages->emplace_back(msg.Message.c_str()); });
-    Logger::Log::AddSink(std::move(sink));
-
-    for (int load = 0; load < loads; ++load)
-    {
-        std::unique_ptr<UIElement> root;
-        EXPECT_TRUE(XMLParser::ParseLayoutFromString(xml, root, file));
-    }
-    Logger::Log::Flush();
-    sinkPtr->UnregisterCallback(callbackId);
-
-    std::vector<std::string> naming;
-    std::copy_if(messages->begin(), messages->end(), std::back_inserter(naming),
-                 [&file](const std::string& m) { return m.find(file) != std::string::npos; });
-    return naming;
-}
-
-// A name no handler takes reaches nothing: the loader names the file, the line, the element and
-// the attribute, once for each, however often the layout loads.
-TEST(XMLParserTests, UnknownAttributeIsReportedOnceWithFileLineElementAndName)
-{
-    const std::string xml = "<UIElement id=\"root\">\n"
-                            "  <Label id=\"caption\" class=\"row\" text=\"Name\" disabled=\"true\"/>\n"
-                            "</UIElement>\n";
-    const std::vector<std::string> reports = LogMessagesWhileParsing(xml, "UnknownAttributeProbe.uxml", 2);
-    ASSERT_EQ(reports.size(), 1u);
-    EXPECT_NE(reports[0].find("'disabled'"), std::string::npos) << reports[0];
-    EXPECT_NE(reports[0].find("<label>"), std::string::npos) << reports[0];
-    EXPECT_NE(reports[0].find("line 2"), std::string::npos) << reports[0];
-}
-
-// Stylesheets read data- names and dir through attribute selectors, so the loader keeps them on
-// the element and does not report them.
-TEST(XMLParserTests, DataAndDirAttributesAreNotReportedUnknown)
-{
-    const std::string xml = "<UIElement id=\"root\">\n"
-                            "  <Label id=\"tab\" data-role=\"assets\" dir=\"rtl\" disabled=\"true\"/>\n"
-                            "</UIElement>\n";
-    const std::vector<std::string> reports = LogMessagesWhileParsing(xml, "SelectorAttributeProbe.uxml", 1);
-    ASSERT_EQ(reports.size(), 1u);
-    EXPECT_NE(reports[0].find("'disabled'"), std::string::npos) << reports[0];
-
-    std::unique_ptr<UIElement> root;
-    ASSERT_TRUE(XMLParser::ParseLayoutFromString(xml, root, "SelectorAttributeProbe.uxml"));
-    UIElement* tab = root->FindById("tab"_sid);
-    ASSERT_NE(tab, nullptr);
-    const std::string* role = UIAttributeAccess::FindAuthoredAttribute(*tab, "data-role");
-    ASSERT_NE(role, nullptr);
-    EXPECT_EQ(*role, "assets");
-}
-
-// The report comes when a template is instantiated, so each template node keeps its file and the
-// line of its start tag.
-TEST(XMLParserTests, TemplateNodeKeepsItsFileAndLine)
-{
-    const std::string xml = "<UIElement>\n  <Label/>\n\n  <Label/>\n</UIElement>\n";
-    std::unique_ptr<UITemplateNode> root;
-    ASSERT_TRUE(XMLParser::ParseLayoutTemplateFromString(xml, root, "TemplateLines.uxml"));
-    ASSERT_EQ(root->Children.size(), 2u);
-    EXPECT_EQ(root->Children[1]->SourceLine, 4);
-    EXPECT_EQ(root->Children[1]->SourceFileName(), "TemplateLines.uxml");
 }

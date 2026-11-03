@@ -15,6 +15,7 @@
 #include "Scripting/ScriptingABI.h"
 #include "Assets/FileWatchingService.h"
 #include "Jobs/MockHotReloadDependencies.h"
+#include "TestTempDir.h"
 
 // GE_* stubs come from Engine/Source/HotReloadNativeStubs.cpp, added to this
 // target via CMake with /wd4273 (silences the dllimport-vs-definition warning).
@@ -35,7 +36,7 @@ protected:
         Logger::Log::SetLogLevel(Logger::LogLevel::Debug);
 
         // Create test directory
-        testDir = std::filesystem::temp_directory_path() / "hotreload_stress_test";
+        testDir = TestUtils::MakeUniqueTempDirectory("hotreload_stress_test");
         std::filesystem::create_directories(testDir);
 
         // Create test assembly file
@@ -115,7 +116,7 @@ TEST_F(HotReloadStressTest, RapidFileChanges) {
 
     // Launch multiple threads that rapidly trigger hot-reload
     for (int t = 0; t < numConcurrentThreads; ++t) {
-        threads.emplace_back([this, &successCount, &failureCount, &cancelledCount, t]() {
+        threads.emplace_back([this, &successCount, &failureCount, &cancelledCount, numChanges, t]() {
             std::random_device rd;
             std::mt19937 gen(rd());
             std::uniform_int_distribution<> delay(1, 10); // 1-10ms delay
@@ -150,7 +151,7 @@ TEST_F(HotReloadStressTest, RapidFileChanges) {
 
                     if (stats.result == HotReloadResult::Success) {
                         successCount.fetch_add(1);
-                    } else if (IsCancellation(stats.result)) {
+                    } else if (stats.result == HotReloadResult::Cancelled) {
                         cancelledCount.fetch_add(1);
                     } else {
                         failureCount.fetch_add(1);
@@ -290,22 +291,33 @@ TEST_F(HotReloadStressTest, ThreadPoolTaskStressTest) {
 
     std::vector<std::thread> threads;
 
+    // Simple task for stress testing
+    class StressTask : public JobSystem::Task {
+    public:
+        StressTask(JobSystem::WorkStealingThreadPool* jobSystem, std::atomic<int>* counter)
+            : JobSystem::Task(jobSystem), m_Counter(counter) {}
+
+        void Execute() override {
+            // Simulate some work
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            m_Counter->fetch_add(1);
+        }
+
+    private:
+        std::atomic<int>* m_Counter;
+    };
+
     // Launch threads that concurrently submit tasks to the thread pool
     for (int t = 0; t < numThreads; ++t) {
-        threads.emplace_back([this, &tasksProcessed, &errors]() {
+        threads.emplace_back([this, &tasksProcessed, &errors, numTasks, numThreads, t]() {
             std::random_device rd;
             std::mt19937 gen(rd());
 
             for (int i = 0; i < numTasks / numThreads; ++i) {
                 try {
                     // Submit tasks to the thread pool
-                    // A graph task with no dependency that simulates 100 us of work.
-                    auto handle = threadPool->Submit(
-                        [&tasksProcessed] {
-                            std::this_thread::sleep_for(std::chrono::microseconds(100));
-                            tasksProcessed.fetch_add(1);
-                        },
-                        std::span<const JobSystem::TaskHandle>());
+                    auto task = std::make_unique<StressTask>(threadPool.get(), &tasksProcessed);
+                    auto handle = threadPool->Submit(std::move(task));
 
                     // Occasionally wait for task completion to test status queries
                     if (gen() % 10 == 0) {
@@ -369,7 +381,7 @@ TEST_F(HotReloadStressTest, FileWatcherDebouncingTest) {
     ASSERT_TRUE(fws.StartWatching());
 
     // Simulate rapid file changes
-    std::thread fileChangeThread([this, changeIntervalMs]() {
+    std::thread fileChangeThread([this, numFileChanges, changeIntervalMs]() {
         for (int i = 0; i < numFileChanges; ++i) {
             modifyTestAssembly();
             std::this_thread::sleep_for(std::chrono::milliseconds(changeIntervalMs));
@@ -435,7 +447,7 @@ TEST_F(HotReloadStressTest, CancellationStressTest) {
                 }
                 auto stats = future.get();
 
-                if (IsCancellation(stats.result)) {
+                if (stats.result == HotReloadResult::Cancelled) {
                     cancelledOperations.fetch_add(1);
                 } else {
                     completedOperations.fetch_add(1);

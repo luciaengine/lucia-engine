@@ -18,12 +18,6 @@ layout(set = 0, binding = 13) uniform sampler2D uMotionVectors;
 // reprojected, so reflections contain last frame's reflections (cheap
 // multi-bounce) and late-frame shading the pre-SSR input lacks.
 layout(set = 0, binding = 11) uniform sampler2D uPrevScene;
-// The view's exposure state (ExposureHistory). Scene colour, the specular
-// radiance and the rays' radiance are stored at this frame's pre-exposure P; the previous
-// frame's composited scene at the previous P, so a bounce read from it is rescaled by their ratio.
-// The firefly knee is absolute scene-linear luminance.
-#define GE_EXPOSURE_HISTORY_BINDING 14
-#include "Includes/exposure_history.glsl"
 layout(std430, set = 0, binding = 5) readonly buffer RayListBuffer { uint rays[]; } RayList;
 #include "ScreenSpaceReflections/sssr_common.glsl"
 #include "ScreenSpaceReflections/sssr_reprojection.glsl"
@@ -135,7 +129,7 @@ void main()
     // a delta anyway, and per-frame jitter only turns thin-feature hits into
     // hit/miss flicker (speckle) the denoiser must fight. Only genuinely glossy
     // lobes are worth a stochastic sample.
-    bool isMirror = GE_SssrIsMirrorLobe(roughness);
+    bool isMirror = roughness < 0.06;
     vec3 H = lobeNormal;
     if (!isMirror)
     {
@@ -159,11 +153,13 @@ void main()
     float traceDistance = GE_SssrTraceDistance(origin.z, rayDir.z, ge_nearFar.x, maxDistance);
     int maxSteps = clamp(sssr.sssrMaxSteps, 8, 192);
     float baseStep = max(traceDistance / float(maxSteps), max(abs(origin.z) * 0.001, 0.015));
-    // The start offset dithers the sampling grid along the ray per pixel, so the
-    // refine residual is noise, not a screen-coherent pattern. Spanning a full
-    // step gives it a uniform phase. A mirror lobe takes no frame term here.
-    float startJitter = GE_BlueNoise(uBlueNoise, uvec2(pixel),
-                                     GE_SssrStartOffsetFrame(roughness, sssr.frameIndex)).x;
+    // The start offset dithers the sampling GRID along an already-fixed ray, so
+    // unlike the VNDF direction above it applies to mirrors too: pinning it
+    // would give every pixel the same t-grid, making the refine residual
+    // screen-coherent instead of noise the prefilter and temporal accumulation
+    // resolve. Spanning a FULL step gives that residual a uniform phase, at a
+    // mean start of one baseStep.
+    float startJitter = GE_BlueNoise(uBlueNoise, uvec2(pixel), sssr.frameIndex + 17u).x;
     float t = baseStep * (0.5 + startJitter);
     float previousT = 0.0;
     vec2 sizeF = vec2(extent);
@@ -269,13 +265,13 @@ void main()
                     float prevDepth = texelFetch(uPrevScene, prevPix, 0).a;
                     float depthTol = max(0.002, abs(expectedPrevDepth) * 0.02);
                     if (abs(prevDepth - expectedPrevDepth) <= depthTol)
-                        radiance = textureLod(uPrevScene, prevUv, 0.0).rgb * GE_PreExposureHistoryScale();
+                        radiance = textureLod(uPrevScene, prevUv, 0.0).rgb;
                 }
                 // Soft firefly clamp: an emissive hit can be orders of magnitude
                 // brighter than its neighborhood; one such single-sample spike
                 // defeats the temporal variance clamp and sparkles. Compressing
                 // (not truncating) above the knee keeps highlights readable.
-                float lum = GE_Luminance(radiance) / GE_PreExposure();
+                float lum = GE_Luminance(radiance);
                 const float kFireflyKnee = 4.0;
                 if (lum > kFireflyKnee)
                     radiance *= (kFireflyKnee + sqrt(lum - kFireflyKnee)) / lum;

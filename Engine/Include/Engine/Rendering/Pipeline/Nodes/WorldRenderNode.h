@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 #include "Rendering/Core/RenderGraph/RGBarrier.h"
 
 // Explicit imports from the Rendering module (CodingStyle: no namespace-scope using-directives in headers).

@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <variant>
 
 namespace ed = GameEngine::Editor;
 namespace gr = GameEngine::Rendering;
@@ -80,6 +81,23 @@ TEST_F(LodSettingsPageTest, BothViewClassesGetAnEnableAndAPercentRow)
         EXPECT_FLOAT_EQ(s.MaxValue, gr::kMaxLodBudgetPercent);
         EXPECT_FLOAT_EQ(s.DefaultValue, gr::kDefaultLodBudgetPercent);
     }
+}
+
+TEST_F(LodSettingsPageTest, EverySliderPreviewsWhileDragging)
+{
+    // A slider without Preview applies nothing until release. Every LOD knob
+    // changes the picture, so each follows the thumb and commits on release.
+    size_t sliderCount = 0;
+    for (const auto& field : m_Category.Fields)
+    {
+        const auto* slider = std::get_if<ed::SettingsFieldDescriptor::SliderField>(&field.Control);
+        if (!slider)
+            continue;
+        ++sliderCount;
+        EXPECT_TRUE(static_cast<bool>(slider->Preview)) << field.Label << " has no Preview";
+        EXPECT_TRUE(static_cast<bool>(slider->Set)) << field.Label << " has no Set";
+    }
+    EXPECT_GT(sliderCount, 0u);
 }
 
 TEST_F(LodSettingsPageTest, NoRowIsOfferedForPreviewOrThumbnailViews)

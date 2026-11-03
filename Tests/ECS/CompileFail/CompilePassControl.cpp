@@ -10,7 +10,7 @@ void Case(CompileFailCase::World& world)
     GameEngine::ECS::ChangeGate gate;
     auto q = world.Query<Read<Position>, Write<Velocity>>();
     q.Changed<Position>(gate);
-    q.Each([](EntityHandle, const Position&, Velocity&) {});
+    q.Each([](EntityHandle, const Position&, Writable<Velocity> v) { v.Mutable().x = 1.0f; });
     world.Query<Read<Position>>().Each([](EntityHandle, auto&) {}); // qualified deduced = OK
     world.Query<Position>().BatchEach([](const Position*, std::size_t) {});
     GameEngine::ECS::Entity(&world, world.CreateEntity()).SetEnabled<Position>(false); // a toggleable type = OK

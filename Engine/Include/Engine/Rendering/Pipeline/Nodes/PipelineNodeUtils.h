@@ -9,10 +9,43 @@
 #include "Logger/Logger.h"
 #include "Rendering/Core/Device.h"
 #include "Types/StringUtils.h"
-#include "Rendering/Materials/Shader/ShaderMeta.h"
+#include "Rendering/Materials/ShaderMeta.h"
 
 namespace GameEngine::Engine::Renderer::Pipeline::Nodes::Detail
 {
+inline bool RequiresPointSampling(Rendering::TextureFormat format,
+                                  const Rendering::RenderingDeviceCapabilities& capabilities)
+{
+    if (Rendering::IsDepthFormat(format))
+        return true;
+    return !capabilities.supportsFilterableFloat32 &&
+        (format == Rendering::TextureFormat::R32_FLOAT ||
+         format == Rendering::TextureFormat::R32G32B32A32_FLOAT);
+}
+
+inline bool TryGetSet0BindingByName(const GameEngine::Rendering::ShaderMeta& meta,
+                                   const std::string& name,
+                                   uint32_t& outBinding,
+                                   GameEngine::Rendering::DescriptorType& outType)
+{
+    for (const auto& s : meta.Sets)
+    {
+        if (s.Set != 0)
+            continue;
+        for (const auto& b : s.Bindings)
+        {
+            if (b.Name == name)
+            {
+                outBinding = b.Binding;
+                outType = static_cast<GameEngine::Rendering::DescriptorType>(b.Type);
+                return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
 // Resolve a set0 binding's reflected name (for diagnostics) by binding index.
 inline std::string Set0BindingName(const GameEngine::Rendering::ShaderMeta& meta, uint32_t binding)
 {
@@ -58,7 +91,7 @@ inline bool BindStorageImageByName(GameEngine::Rendering::IDevice* device,
         return false;
     uint32_t binding = 0;
     GameEngine::Rendering::DescriptorType reflectedType{};
-    if (!GameEngine::Rendering::TryGetSet0BindingByName(meta, name, binding, reflectedType))
+    if (!TryGetSet0BindingByName(meta, name, binding, reflectedType))
         return false;
     GameEngine::Rendering::DescriptorSetUpdate u{};
     u.binding = binding;

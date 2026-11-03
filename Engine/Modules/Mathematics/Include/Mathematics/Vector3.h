@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cstddef>
 #include <glm/glm.hpp>
-#include <limits>
 #include <type_traits>
 
 namespace GameEngine {
@@ -27,9 +26,9 @@ struct Vector3
         float v[3];
     };
 
-    constexpr Vector3() : x(0.0f), y(0.0f), z(0.0f) {}
-    constexpr Vector3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
-    constexpr explicit Vector3(const glm::vec3& vec) : x(vec.x), y(vec.y), z(vec.z) {}
+    Vector3() : x(0.0f), y(0.0f), z(0.0f) {}
+    Vector3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
+    explicit Vector3(const glm::vec3& vec) : x(vec.x), y(vec.y), z(vec.z) {}
 
     /// Component by index: 0 is `x`, 1 is `y`, 2 is `z`. The caller keeps the index below 3.
     float& operator[](std::size_t index) { return v[index]; }
@@ -60,20 +59,14 @@ struct Vector3
         return Vector3(n);
     }
 
-    /// Unit-length copy, or @p fallback when the squared length is under the smallest normal float
-    /// (too short to give a unit result; Normalize() gives NaN for zero).
-    Vector3 NormalizeOr(const Vector3& fallback) const
-    {
-        const float lengthSquared = LengthSquared();
-        if (lengthSquared < std::numeric_limits<float>::min())
-            return fallback;
-        return *this * (1.0f / std::sqrt(lengthSquared));
-    }
-
-    /// Unit-length copy, or the zero vector where NormalizeOr() gives its fallback.
+    // Unit-length copy, or the zero vector when this vector has zero length
+    // (where Normalize() yields NaN components).
     Vector3 NormalizeOrZero() const
     {
-        return NormalizeOr(Vector3());
+        const float lengthSquared = LengthSquared();
+        if (lengthSquared <= 0.0f)
+            return Vector3();
+        return *this * (1.0f / std::sqrt(lengthSquared));
     }
 
     static float Dot(const Vector3& a, const Vector3& b)

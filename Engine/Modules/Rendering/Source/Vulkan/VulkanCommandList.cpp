@@ -4,7 +4,7 @@
  */
 
 #include "VulkanCommandList.h"
-#include "VulkanDevice/VulkanDevice.h"
+#include "VulkanDevice.h"
 #include "VulkanMappings.h"
 #include <algorithm>
 #include <cassert>
@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/RenderingDebugFlags.h"
 
@@ -35,10 +36,10 @@ VkFormat GetVulkanFormat(TextureFormat format);
 namespace
 {
 #if !defined(NDEBUG)
-// Debug diagnostic for a render-graph barrier whose source or destination stage the recording
+// Debug diagnostic for a render-graph barrier whose source stage the recording
 // queue cannot express: log the first occurrence and every stride-th repeat, so a
 // per-barrier condition cannot flood the log.
-constexpr uint64_t kGraphQueueFloorLogStride = 256;
+constexpr uint64_t kGraphSrcClampLogStride = 256;
 #endif
 
 // Map a VkImageLayout to the pipeline stage + access mask that should be used
@@ -237,6 +238,9 @@ void VulkanCommandList::BeginSecondary(const SecondaryInheritance& inheritance)
     VkResult result = vkBeginCommandBuffer(m_CommandBuffer, &beginInfo);
     if (result == VK_SUCCESS)
     {
+        m_BoundGraphicsPipeline = VK_NULL_HANDLE;
+        m_ViewportPending = false;
+        m_ScissorPending = false;
         m_IsRecording = true;
         m_HasBegun = true;
         m_HasEnded = false;
@@ -325,8 +329,10 @@ void VulkanCommandList::ReleaseAttachmentViews(bool destroyAll)
     }
 }
 
-void VulkanCommandList::OnSubmitted()
+void VulkanCommandList::OnSubmitted(SemaphoreHandle timeline, uint64_t timelineValue)
 {
+    m_Device->RetireLegacyRenderObjects(m_QueueType, m_PendingFramebufferDestroys,
+                                      m_PendingRenderPassDestroys, timeline, timelineValue);
     ReleaseAttachmentViews(false);
     m_CommandBuffer = VK_NULL_HANDLE;
 }
@@ -361,6 +367,9 @@ void VulkanCommandList::Begin()
     VkResult result = vkBeginCommandBuffer(m_CommandBuffer, &beginInfo);
     if (result == VK_SUCCESS)
     {
+        m_BoundGraphicsPipeline = VK_NULL_HANDLE;
+        m_ViewportPending = false;
+        m_ScissorPending = false;
         m_IsRecording = true;
         m_HasBegun = true;
         m_HasEnded = false;
@@ -642,6 +651,13 @@ void VulkanCommandList::SetPipeline(PipelineHandle pipeline)
         else
             m_Device->DebugIncPipelineBindCompute();
 
+        if (bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS)
+        {
+            if (const auto* native = GetVulkanPipeline(pipeline);
+                m_DepthReadOnly && native && native->readOnlyDepthPipeline != VK_NULL_HANDLE)
+                vkPipeline = native->readOnlyDepthPipeline;
+            m_BoundGraphicsPipeline = vkPipeline;
+        }
         vkCmdBindPipeline(m_CommandBuffer, bindPoint, vkPipeline);
 
         // Set dynamic depth write enable per-pipeline (Vulkan 1.3+).
@@ -658,7 +674,7 @@ void VulkanCommandList::SetPipeline(PipelineHandle pipeline)
         // reads it off the same RenderPassDesc the primary is begun with); a
         // forked pass that attaches depth read-only is not hypothetical.
         if (bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS
-            && (m_DynamicRenderingBegun || m_IsSecondary)
+            && (m_DynamicRenderingBegun || m_LegacyRenderPassBegun || m_IsSecondary)
             && m_Device->GetCmdSetDepthWriteEnable())
         {
             auto setDepthWriteEnable = m_Device->GetCmdSetDepthWriteEnable();
@@ -1301,6 +1317,7 @@ void VulkanCommandList::Draw(uint32_t vertexCount, uint32_t instanceCount)
             boundSets.empty() ? "<none>" : boundSets);
     }
 
+    ApplyRasterState();
     MaybeCaptureDescriptorState();
     vkCmdDraw(m_CommandBuffer, vertexCount, instanceCount, 0, 0);
 }
@@ -1325,6 +1342,7 @@ void VulkanCommandList::Draw(uint32_t vertexCount, uint32_t instanceCount,
 
     // Validate at draw as well
     ValidatePipelineMatchesActiveScope(m_CurrentPipelineHandle);
+    ApplyRasterState();
     MaybeCaptureDescriptorState();
     vkCmdDraw(m_CommandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
 }
@@ -1347,6 +1365,7 @@ void VulkanCommandList::DrawIndexed(uint32_t indexCount, uint32_t instanceCount,
 
     // Additional runtime validation at draw time to ensure visibility even if pipeline was bound pre-rendering
     ValidatePipelineMatchesActiveScope(m_CurrentPipelineHandle);
+    ApplyRasterState();
     MaybeCaptureDescriptorState();
     vkCmdDrawIndexed(m_CommandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
 }
@@ -1358,6 +1377,7 @@ void VulkanCommandList::DrawIndexed(uint32_t indexCount, uint32_t instanceCount)
         return;
     }
 
+    ApplyRasterState();
     MaybeCaptureDescriptorState();
     vkCmdDrawIndexed(m_CommandBuffer, indexCount, instanceCount, 0, 0, 0);
 }
@@ -1368,6 +1388,7 @@ void VulkanCommandList::DrawMeshTasks(uint32_t taskCount)
     {
         return;
     }
+    ApplyRasterState();
     if (m_Device && m_Device->SupportsMeshShadersEXT() && m_Device->GetCmdDrawMeshTasksEXT())
     {
         m_Device->GetCmdDrawMeshTasksEXT()(m_CommandBuffer, taskCount, 0, 0);
@@ -1389,6 +1410,7 @@ void VulkanCommandList::DrawIndirect(BufferHandle commandBuffer, uint32_t drawCo
     VkBuffer vkBuffer = m_Device->GetVkBuffer(commandBuffer);
     if (vkBuffer != VK_NULL_HANDLE)
     {
+        ApplyRasterState();
         MaybeCaptureDescriptorState();
         vkCmdDrawIndirect(m_CommandBuffer, vkBuffer, 0, drawCount, stride);
     }
@@ -1404,6 +1426,7 @@ void VulkanCommandList::DrawIndexedIndirect(BufferHandle commandBuffer, uint32_t
     VkBuffer vkBuffer = m_Device->GetVkBuffer(commandBuffer);
     if (vkBuffer != VK_NULL_HANDLE)
     {
+        ApplyRasterState();
         MaybeCaptureDescriptorState();
         vkCmdDrawIndexedIndirect(m_CommandBuffer, vkBuffer, 0, drawCount, stride);
     }
@@ -1428,6 +1451,7 @@ void VulkanCommandList::DrawIndexedIndirectCount(BufferHandle commandBuffer,
         return;
     }
 
+    ApplyRasterState();
     MaybeCaptureDescriptorState();
     if (m_Device && !m_Device->SupportsDrawIndirectCount())
     {
@@ -1472,9 +1496,8 @@ void VulkanCommandList::DrawIndexedIndirectCount(BufferHandle commandBuffer,
         return;
     }
 
-    // Core in Vulkan 1.2+; engine requires API ≥ 1.2 for descriptor indexing
-    // anyway (see VulkanDevice apiVersion gate), so no fallback path needed.
-    vkCmdDrawIndexedIndirectCount(
+    // The promoted command table resolves the core or KHR entry point.
+    m_Device->GetPromotedCommands().CmdDrawIndexedIndirectCount(
         m_CommandBuffer,
         vkCmdBuf,   static_cast<VkDeviceSize>(commandBufferOffset),
         vkCountBuf, static_cast<VkDeviceSize>(countBufferOffset),
@@ -1510,6 +1533,12 @@ void VulkanCommandList::Dispatch(uint32_t x, uint32_t y, uint32_t z)
     if (!RequireComputePipelineBound("Dispatch"))
     {
         return;
+    }
+    if (RenderingDebugFlags::Get().traceRendering)
+    {
+        Logger::Log::Info("Vulkan Dispatch: pass='{}' pipeline={} groups={}x{}x{}",
+                          m_LastMarkerName, m_CurrentPipelineHandle.id, x, y, z);
+        Logger::Log::Flush();
     }
     vkCmdDispatch(m_CommandBuffer, x, y, z);
 }
@@ -1584,16 +1613,11 @@ void VulkanCommandList::BeginRenderPass(const RenderPassDesc& desc)
     m_LegacyRenderPassBegun = false;
     m_LegacySwapchainAttachment = INVALID_HANDLE;
     m_LegacyOneOffUsesRP2 = false;
+    m_DepthReadOnly = desc.depthReadOnly;
 
-    // StoreOp::None means "preserve, write nothing" — the only op a read-only
-    // attachment may carry, and it preserves the contents only while nothing
-    // writes the attachment. What suppresses the writes is
-    // vkCmdSetDepthWriteEnable(VK_FALSE), which SetPipeline issues only inside a
-    // dynamic render pass or a secondary inheriting one; a legacy render pass
-    // leaves every pipeline's compiled depthWriteEnable in force, so NONE there
-    // could leave the contents undefined. Falling back to STORE keeps them
-    // (never DONT_CARE, which discards them): it costs the sync-hazard freedom,
-    // not the pixels.
+    // Dynamic read-only passes may preserve depth without a store operation.
+    // Legacy passes retain STORE for compatibility; their static pipeline pair
+    // still disables writes while the attachment is read-only.
     const bool storeOpNoneUsable = m_Device->SupportsAttachmentStoreOpNone()
                                    && m_DynamicRenderingActive
                                    && m_Device->GetCmdSetDepthWriteEnable() != nullptr;
@@ -2129,12 +2153,38 @@ void VulkanCommandList::BeginRenderPass(const RenderPassDesc& desc)
             rpci2.subpassCount = 1;
             rpci2.pSubpasses = &subpass2;
 
-            if (vkCreateRenderPass2(m_Device->GetVkDevice(), &rpci2, nullptr, &renderPass) != VK_SUCCESS)
+            if (!anyDSResolve)
             {
-                return;
+                // Color resolves are core Vulkan 1.0; they do not require
+                // VK_KHR_create_renderpass2 (absent on Vulkan 1.1 Android devices).
+                VkSubpassDescription subpass{};
+                subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+                subpass.colorAttachmentCount = colorCount;
+                subpass.pColorAttachments = colorRefs.data();
+                subpass.pResolveAttachments = colorResolveCount ? colorResolveRefs.data() : nullptr;
+                VkAttachmentReference depthReference{};
+                depthReference.attachment = static_cast<uint32_t>(depthAttachIndex);
+                depthReference.layout = depthRefLayout;
+                subpass.pDepthStencilAttachment = hasDepth ? &depthReference : nullptr;
+                VkRenderPassCreateInfo info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+                info.attachmentCount = static_cast<uint32_t>(attachments.size());
+                info.pAttachments = attachments.data();
+                info.subpassCount = 1;
+                info.pSubpasses = &subpass;
+                if (vkCreateRenderPass(m_Device->GetVkDevice(), &info, nullptr, &renderPass) != VK_SUCCESS)
+                    return;
+            }
+            else
+            {
+                if (m_Device->GetPromotedCommands().CreateRenderPass2 == nullptr ||
+                    m_Device->GetPromotedCommands().CreateRenderPass2(m_Device->GetVkDevice(), &rpci2, nullptr, &renderPass) != VK_SUCCESS)
+                {
+                    Logger::Log::Error("Vulkan: depth/stencil resolve requires render pass 2 support");
+                    return;
+                }
+                m_LegacyOneOffUsesRP2 = true;
             }
             m_PendingRenderPassDestroys.push_back(renderPass);
-            m_LegacyOneOffUsesRP2 = true;
 
             legacyExtraAttachments = colorResolveCount + ((hasDepth && depthResolveAttachIndex >= 0) ? 1u : 0u);
             framebuffer = createTransientFramebuffer(renderPass,
@@ -2705,13 +2755,15 @@ void VulkanCommandList::BeginRenderPass(const RenderPassDesc& desc)
             viewport.width = static_cast<float>(extent.width);
             viewport.minDepth = 0.0f;
             viewport.maxDepth = 1.0f;
-            vkCmdSetViewport(m_CommandBuffer, 0, 1, &viewport);
+            m_Viewport = viewport;
+            m_ViewportPending = true;
 
             VkRect2D scissor{};
             scissor.offset.x = 0;
             scissor.offset.y = 0;
             scissor.extent = extent;
-            vkCmdSetScissor(m_CommandBuffer, 0, 1, &scissor);
+            m_Scissor = scissor;
+            m_ScissorPending = true;
         }
         // If any color target is the swapchain backbuffer, mark for Present wait selection
         for (uint32_t i = 0; i < 8; ++i)
@@ -2816,7 +2868,7 @@ void VulkanCommandList::BeginRenderPass(const RenderPassDesc& desc)
         VkSubpassBeginInfo subpassBegin{};
         subpassBegin.sType = VK_STRUCTURE_TYPE_SUBPASS_BEGIN_INFO;
         subpassBegin.contents = VK_SUBPASS_CONTENTS_INLINE;
-        vkCmdBeginRenderPass2(m_CommandBuffer, &renderPassInfo, &subpassBegin);
+        m_Device->GetPromotedCommands().CmdBeginRenderPass2(m_CommandBuffer, &renderPassInfo, &subpassBegin);
     }
     else
     {
@@ -2851,7 +2903,7 @@ void VulkanCommandList::EndRenderPass()
         {
             VkSubpassEndInfo subpassEnd{};
             subpassEnd.sType = VK_STRUCTURE_TYPE_SUBPASS_END_INFO;
-            vkCmdEndRenderPass2(m_CommandBuffer, &subpassEnd);
+            m_Device->GetPromotedCommands().CmdEndRenderPass2(m_CommandBuffer, &subpassEnd);
         }
         else
         {
@@ -2868,6 +2920,7 @@ void VulkanCommandList::EndRenderPass()
     }
 
     m_LegacyOneOffUsesRP2 = false;
+    m_DepthReadOnly = false;
 
     m_LastMarkerName.clear();
 
@@ -2880,6 +2933,30 @@ void VulkanCommandList::EndRenderPass()
     // Present transition is handled at the device Present() stage
     m_LastRenderPassWasPresent = false;
     m_LastRenderPassImage = VK_NULL_HANDLE;
+}
+
+void VulkanCommandList::ApplyRasterState()
+{
+    if (const auto* pipeline = GetVulkanPipeline(m_CurrentPipelineHandle);
+        pipeline && pipeline->type != PipelineType::Compute && pipeline->readOnlyDepthPipeline != VK_NULL_HANDLE)
+    {
+        const VkPipeline selected = m_DepthReadOnly ? pipeline->readOnlyDepthPipeline : pipeline->pipeline;
+        if (m_BoundGraphicsPipeline != selected)
+        {
+            vkCmdBindPipeline(m_CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, selected);
+            m_BoundGraphicsPipeline = selected;
+        }
+    }
+    if (m_ViewportPending)
+    {
+        vkCmdSetViewport(m_CommandBuffer, 0, 1, &m_Viewport);
+        m_ViewportPending = false;
+    }
+    if (m_ScissorPending)
+    {
+        vkCmdSetScissor(m_CommandBuffer, 0, 1, &m_Scissor);
+        m_ScissorPending = false;
+    }
 }
 
 void VulkanCommandList::SetViewport(float x, float y, float width, float height)
@@ -2907,7 +2984,8 @@ void VulkanCommandList::SetViewport(float x, float y, float width, float height)
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
 
-    vkCmdSetViewport(m_CommandBuffer, 0, 1, &viewport);
+    m_Viewport = viewport;
+    m_ViewportPending = true;
 }
 
 void VulkanCommandList::SetScissor(uint32_t x, uint32_t y, uint32_t width, uint32_t height)
@@ -2937,7 +3015,8 @@ void VulkanCommandList::SetScissor(uint32_t x, uint32_t y, uint32_t width, uint3
     scissor.extent.width = width;
     scissor.extent.height = height;
 
-    vkCmdSetScissor(m_CommandBuffer, 0, 1, &scissor);
+    m_Scissor = scissor;
+    m_ScissorPending = true;
 }
 
 void VulkanCommandList::SetDepthBounds(float minDepth, float maxDepth)
@@ -3230,63 +3309,6 @@ void VulkanCommandList::Barrier(const ResourceBarrier& barrier)
     BarrierBatch({barrier});
 }
 
-void VulkanCommandList::RecordStateAfterBarriers(const std::vector<ResourceBarrier>& barriers)
-{
-    for (const ResourceBarrier& barrier : barriers)
-    {
-        if (barrier.type != ResourceBarrier::Texture)
-            continue;
-        const VkImageLayout layout = VulkanMappings::TranslateResourceStateToLayout(barrier.stateAfter);
-        const ResourceBarrier::Subresource& range = barrier.subresource;
-        for (uint32_t mip = range.baseMip; mip < range.baseMip + range.levelCount; ++mip)
-            for (uint32_t layer = range.baseLayer; layer < range.baseLayer + range.layerCount; ++layer)
-                m_SubresourceLayouts[MakeSubKey(barrier.textureHandle, mip, layer)] = layout;
-    }
-}
-
-VkPipelineStageFlags VulkanCommandList::QueueExpressibleStages(VkPipelineStageFlags stages) const
-{
-    if (m_QueueType == IDevice::QueueType::Graphics)
-        return stages;
-    VkPipelineStageFlags allowed = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT |
-                                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT |
-                                   VK_PIPELINE_STAGE_TRANSFER_BIT;
-    if (m_QueueType == IDevice::QueueType::Compute)
-        allowed |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-    return stages & allowed;
-}
-
-// Removes the stages this queue cannot run from one side of a barrier; a side with no
-// stage left also loses its access bits. The submission's semaphore wait orders the other queue.
-// A clamp on a render-graph barrier is a graph defect: Debug builds log it.
-void VulkanCommandList::ApplyQueueFloor(const ResourceBarrier& barrier, VkPipelineStageFlags& stage,
-                                        VkAccessFlags& access) const
-{
-    const VkPipelineStageFlags clamped = QueueExpressibleStages(stage);
-    if (clamped == stage)
-        return;
-#if !defined(NDEBUG)
-    if (barrier.rgAuthoritativeLayout)
-    {
-        static thread_local uint64_t s_GraphClampCount = 0;
-        if (s_GraphClampCount++ % kGraphQueueFloorLogStride == 0)
-        {
-            Logger::Log::Warning(
-                "VulkanCommandList: render-graph barrier stage 0x{:x} is not expressible on "
-                "queue type {} (floored to 0x{:x}) — the graph derived a scope this queue "
-                "cannot name. Occurrence {}.",
-                static_cast<uint64_t>(stage), static_cast<int>(m_QueueType),
-                static_cast<uint64_t>(clamped), s_GraphClampCount);
-        }
-    }
-#else
-    (void)barrier;
-#endif
-    if (clamped == 0)
-        access = 0;
-    stage = clamped;
-}
-
 void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barriers)
 {
     if (m_CommandBuffer == VK_NULL_HANDLE || !m_IsRecording)
@@ -3310,6 +3332,67 @@ void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barrier
             return VulkanMappings::TranslateResourceStateToAccess(s);
         }
         return VulkanMappings::TranslateResourceAccessMask(explicitMask);
+    };
+    // Clamp a barrier's SOURCE stage mask to what this command buffer's queue
+    // family can express. A src stage the queue lacks (e.g. FRAGMENT_SHADER on a
+    // compute queue) can only have come from a producer on ANOTHER queue — a
+    // same-queue producer's stages are queue-valid by construction — and that
+    // cross-queue dependency is carried by the submission's timeline-semaphore
+    // wait, not by this barrier. Masking the foreign stage out is therefore a
+    // correctness-preserving floor that keeps an illegal stage off the queue
+    // (VUID-vkCmdPipelineBarrier2-srcStageMask-09675), independent of render-graph
+    // queue bookkeeping. The graphics (universal) queue supports every stage.
+    auto clampSrcStageToQueue = [&](VkPipelineStageFlags stage) -> VkPipelineStageFlags
+    {
+        if (m_QueueType == IDevice::QueueType::Graphics)
+            return stage;
+        VkPipelineStageFlags allowed = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT |
+                                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT |
+                                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT |
+                                       VK_PIPELINE_STAGE_HOST_BIT |
+                                       VK_PIPELINE_STAGE_TRANSFER_BIT;
+        if (m_QueueType == IDevice::QueueType::Compute)
+            allowed |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
+                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        return stage & allowed;
+    };
+    // Applies the floor and drops the source access scope with it when nothing
+    // survives — a foreign producer's writes are made available by the timeline
+    // wait, so keeping its access bits against an empty stage mask would name a
+    // dependency this barrier does not express.
+    //
+    // On a RENDER-GRAPH barrier the floor must never be load-bearing: the graph
+    // sanitizes the source scope at the producing submission's tail, so a clamp
+    // here means it derived an edge this queue cannot name. Debug builds report
+    // that rather than repairing it quietly. Barriers recorded outside the graph
+    // (a transfer-queue upload naming ShaderResource, say) are clamped by design
+    // and stay silent.
+    auto applySrcQueueFloor = [&](const ResourceBarrier& barrier, VkPipelineStageFlags& srcStage,
+                                  VkAccessFlags& srcAccess)
+    {
+        const VkPipelineStageFlags clamped = clampSrcStageToQueue(srcStage);
+        if (clamped == srcStage)
+            return;
+#if !defined(NDEBUG)
+        if (barrier.rgAuthoritativeLayout)
+        {
+            static thread_local uint64_t s_GraphClampCount = 0;
+            if (s_GraphClampCount++ % kGraphSrcClampLogStride == 0)
+            {
+                Logger::Log::Warning(
+                    "VulkanCommandList: render-graph barrier src stage 0x{:x} is not expressible on "
+                    "queue type {} (floored to 0x{:x}) — the graph derived a source scope this queue "
+                    "cannot name. Occurrence {}.",
+                    static_cast<uint64_t>(srcStage), static_cast<int>(m_QueueType),
+                    static_cast<uint64_t>(clamped), s_GraphClampCount);
+            }
+        }
+#else
+        (void)barrier;
+#endif
+        if (clamped == 0)
+            srcAccess = 0;
+        srcStage = clamped;
     };
     // The single oldLayout rule, shared by the sync2 and sync1 paths:
     //   graph-owned texture -> compiled stateBefore verbatim. The render graph's
@@ -3378,8 +3461,7 @@ void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barrier
             VkPipelineStageFlags dstStage = resolveStage(barrier.stateAfter, barrier.dstStageMask);
             VkAccessFlags srcAccess = resolveAccess(barrier.stateBefore, barrier.srcAccessMask);
             VkAccessFlags dstAccess = resolveAccess(barrier.stateAfter, barrier.dstAccessMask);
-            ApplyQueueFloor(barrier, srcStage, srcAccess);
-            ApplyQueueFloor(barrier, dstStage, dstAccess);
+            applySrcQueueFloor(barrier, srcStage, srcAccess);
 
             // Accumulate stage masks for the global barrier call
             srcStageMaskTotal |= srcStage;
@@ -3523,8 +3605,7 @@ void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barrier
             VkPipelineStageFlags dstStage = resolveStage(barrier.stateAfter, barrier.dstStageMask);
             VkAccessFlags srcAccess = resolveAccess(barrier.stateBefore, barrier.srcAccessMask);
             VkAccessFlags dstAccess = resolveAccess(barrier.stateAfter, barrier.dstAccessMask);
-            ApplyQueueFloor(barrier, srcStage, srcAccess);
-            ApplyQueueFloor(barrier, dstStage, dstAccess);
+            applySrcQueueFloor(barrier, srcStage, srcAccess);
             // Swapchain fresh from acquire (Undefined): force safe
             // synchronization points (acquire happens outside the graph).
             const bool isSwapchainImage = m_Device->IsSwapchainTextureHandle(barrier.textureHandle);
@@ -3610,8 +3691,7 @@ void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barrier
             VkPipelineStageFlags dstStage = resolveStage(barrier.stateAfter, barrier.dstStageMask);
             VkAccessFlags srcAccess = resolveAccess(barrier.stateBefore, barrier.srcAccessMask);
             VkAccessFlags dstAccess = resolveAccess(barrier.stateAfter, barrier.dstAccessMask);
-            ApplyQueueFloor(barrier, srcStage, srcAccess);
-            ApplyQueueFloor(barrier, dstStage, dstAccess);
+            applySrcQueueFloor(barrier, srcStage, srcAccess);
 
             VkBufferMemoryBarrier2 buf2{};
             buf2.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
@@ -3644,8 +3724,7 @@ void VulkanCommandList::BarrierBatch(const std::vector<ResourceBarrier>& barrier
             VkPipelineStageFlags dstStage = resolveStage(barrier.stateAfter, barrier.dstStageMask);
             VkAccessFlags srcAccess = resolveAccess(barrier.stateBefore, barrier.srcAccessMask);
             VkAccessFlags dstAccess = resolveAccess(barrier.stateAfter, barrier.dstAccessMask);
-            ApplyQueueFloor(barrier, srcStage, srcAccess);
-            ApplyQueueFloor(barrier, dstStage, dstAccess);
+            applySrcQueueFloor(barrier, srcStage, srcAccess);
 
             VkMemoryBarrier2 mem2{};
             mem2.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
@@ -4011,26 +4090,25 @@ void VulkanCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture,
     // Two-step barrier collapsed to single: oldLayout -> TRANSFER_SRC_OPTIMAL
     // Be conservatively correct for visibility: assume any prior producer and make writes visible
     VkAccessFlags srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-    // The old layout is this list's layout record. It starts empty at every Begin and
-    // holds what barriers and copies on this list left, plus what the render graph
-    // noted through RecordStateAfterBarriers for transitions it placed on another list.
     VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (auto it = m_SubresourceLayouts.find(MakeSubKey(srcTexture, mip, rangeCopy.baseArrayLayer));
-        it != m_SubresourceLayouts.end())
     {
-        oldLayout = it->second;
+        uint64_t key = MakeSubKey(srcTexture, mip, rangeCopy.baseArrayLayer);
+        auto it = m_SubresourceLayouts.find(key);
+        oldLayout = (it != m_SubresourceLayouts.end()) ? it->second : VK_IMAGE_LAYOUT_UNDEFINED;
     }
     if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
     {
-        // A transition from UNDEFINED lets the driver discard the subresource, so the
-        // copy would read back whatever the driver left. Refuse it and report.
-        Logger::Log::Error(
+        // An UNDEFINED source layout lets the driver satisfy this transition by
+        // DISCARDING the subresource, so the readback can legally return blank
+        // data — intermittently, which reads as a flaky test rather than a bug.
+        // Render-graph passes journal a layout via their Read/Write edges; a
+        // caller recording straight onto a CommandList must barrier the
+        // subresource into its real state before reading it back.
+        Logger::Log::Warning(
             "CopyTextureSubresourceToBuffer: mip {} layer {} has no recorded layout on this "
-            "command list; the copy is refused, because a transition from UNDEFINED may discard "
-            "its contents. Barrier the subresource into its current state on this command list "
-            "before the copy (in a render-graph pass, declare the read and the graph records it).",
+            "command list; the UNDEFINED -> TRANSFER_SRC transition may discard its contents. "
+            "Barrier the subresource into its actual state before the copy.",
             mip, rangeCopy.baseArrayLayer);
-        return;
     }
     VkImageMemoryBarrier toSrc{};
     toSrc.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -4059,8 +4137,8 @@ void VulkanCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture,
         1, &toSrc);
     m_SubresourceLayouts[MakeSubKey(srcTexture, mip, rangeCopy.baseArrayLayer)] = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     // Optional diagnostic: clear depth to 0.5 right before readback to validate copy path
-    const char* dbgClr = std::getenv("GE_DEBUG_CLEAR_DEPTH_BEFORE_READBACK");
-    if (dbgClr && aspectSingle == VK_IMAGE_ASPECT_DEPTH_BIT)
+    if (GameEngine::Platform::EnvironmentSwitchEnabled("GE_DEBUG_CLEAR_DEPTH_BEFORE_READBACK", false) &&
+        aspectSingle == VK_IMAGE_ASPECT_DEPTH_BIT)
     {
         // Transition to TRANSFER_DST_OPTIMAL (barrier must include both aspects for combined formats)
         VkImageMemoryBarrier toDst{};
@@ -4153,7 +4231,6 @@ void VulkanCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture,
 
     // If requested via env var, perform a diagnostic blit of the source mip into a temporary 1-mip image,
     // then use the known-good CopyTextureToBuffer path on that temp. This is to isolate readback behavior.
-    const char* dbgBlit = std::getenv("GE_DEBUG_BLIT_READBACK");
     vkFmt = m_Device->GetVkImageFormat(srcTexture);
     // Single source of truth for texel size — see BytesPerPixel(TextureFormat) in
     // Device.h. bpp sizes the trailing transfer→host buffer barrier: a table that
@@ -4162,7 +4239,7 @@ void VulkanCommandList::CopyTextureSubresourceToBuffer(TextureHandle srcTexture,
     // 4-byte fallback. Returns 0 only for block-compressed sources.
     uint32_t bpp = BytesPerPixel(m_Device->GetTextureFormat(srcTexture));
 
-    if (dbgBlit && dbgBlit[0] == '1' && mip != 0)
+    if (GameEngine::Platform::EnvironmentSwitchEnabled("GE_DEBUG_BLIT_READBACK", false) && mip != 0)
     {
         // Create a transient temp image (1 mip) with transfer src/dst usage
         TextureDesc td{};
@@ -4582,29 +4659,24 @@ void VulkanCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, T
     // subresource discard otherwise). Without a caller state the old layout comes from
     // command-list-local tracking, which for a fresh list means UNDEFINED — correct only
     // for whole-subresource rewrites.
-    // The barrier covers every aspect of the format (depth and stencil together for a
-    // combined format); a buffer copy writes exactly one, the depth for a depth format.
     VkImageSubresourceRange range{};
-    range.aspectMask = GetVkImageAspectFlags(dstTexture);
+    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     range.baseMipLevel = mip;
     range.levelCount = 1;
     range.baseArrayLayer = is3DTexture ? 0 : layer;
     range.layerCount = 1;
-    const VkImageAspectFlags copyAspect =
-        (range.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
 
-    // The same rule as the readback: this list's layout record first, because it holds
-    // what this list did after the caller last knew the state; the caller's stated
-    // state only for a subresource this list has not touched.
     VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (auto it = m_SubresourceLayouts.find(MakeSubKey(dstTexture, mip, range.baseArrayLayer));
-        it != m_SubresourceLayouts.end())
-    {
-        oldLayout = it->second;
-    }
-    else if (currentState != ResourceState::Undefined)
+    if (currentState != ResourceState::Undefined)
     {
         oldLayout = VulkanMappings::TranslateResourceStateToLayout(currentState);
+    }
+    else
+    {
+        uint64_t key = MakeSubKey(dstTexture, mip, range.baseArrayLayer);
+        auto it = m_SubresourceLayouts.find(key);
+        if (it != m_SubresourceLayouts.end())
+            oldLayout = it->second;
     }
 
     if (isSubRegion && oldLayout == VK_IMAGE_LAYOUT_UNDEFINED)
@@ -4621,15 +4693,7 @@ void VulkanCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, T
             width, height, mipW, mipH);
     }
 
-    // A source stage this queue cannot run is another queue's access to the image, which
-    // the submission's semaphore wait orders. The transfer stage keeps this list's own
-    // earlier copies to the subresource ordered (a repeated upload in one list).
-    SrcStageAccess src = SrcMasksForOldLayout(oldLayout);
-    if (const VkPipelineStageFlags queueStages = QueueExpressibleStages(src.Stage); queueStages != src.Stage)
-    {
-        src.Stage = queueStages | VK_PIPELINE_STAGE_TRANSFER_BIT;
-        src.Access = VK_ACCESS_TRANSFER_WRITE_BIT;
-    }
+    const SrcStageAccess src = SrcMasksForOldLayout(oldLayout);
 
     VkImageMemoryBarrier toDst{};
     toDst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -4657,7 +4721,7 @@ void VulkanCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, T
     region.bufferOffset = srcOffsetBytes;
     region.bufferRowLength = (srcRowPitchBytes && bpp) ? static_cast<uint32_t>(srcRowPitchBytes / bpp) : 0;
     region.bufferImageHeight = (srcSlicePitchBytes && srcRowPitchBytes) ? static_cast<uint32_t>(srcSlicePitchBytes / srcRowPitchBytes) : 0;
-    region.imageSubresource.aspectMask = copyAspect;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.mipLevel = mip;
     region.imageSubresource.baseArrayLayer = is3DTexture ? 0 : layer;
     region.imageSubresource.layerCount = 1;

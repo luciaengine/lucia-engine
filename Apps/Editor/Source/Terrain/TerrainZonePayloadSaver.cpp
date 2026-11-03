@@ -8,11 +8,11 @@
 #include "ECS/World.h"
 #include "FileSystem/FileSystem.h"
 #include "Logger/Logger.h"
-#include "TerrainECS/TerrainModifierComponents.h"
 #include "TerrainECS/TerrainService.h"
 #include "TerrainECS/TerrainZonePayload.h"
-#include "Types/PathUtils.h"
 
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <string>
 #include <system_error>
@@ -24,21 +24,14 @@ namespace GameEngine::Editor
 namespace
 {
 
-// Points the zone component of kind `typeId` on `entity` at `guid`.
-void SetZonePayloadRef(ECS::World& world, ECS::EntityHandle entity, ECS::ComponentTypeId typeId, const GUID& guid)
+std::string LowerExtension(const std::filesystem::path& path)
 {
-    TerrainECS::ForEachZoneKind([&]<typename TZone>()
-    {
-        if (typeId != ECS::GetComponentTypeId<TZone>())
-            return;
-        if (const auto* c = world.GetComponent<TZone>(entity))
-        {
-            TZone updated = *c;
-            updated.PayloadRef.Set(guid);
-            world.AddComponentImmediate(entity, updated);
-        }
-    });
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext;
 }
+
 } // namespace
 
 // The autosave backup runs this on a timer inside the very crash window the
@@ -92,17 +85,17 @@ uint32_t FlushDirtyZonePayloads(ECS::World& world, const std::filesystem::path& 
     const std::filesystem::path zonesDir = SceneZonesFolderFor(scenePath);
 
     // Collect zones first — the swap below mutates components, so don't iterate
-    // and mutate in the same pass. (entity, payload GUID, zone kind).
-    std::vector<std::tuple<ECS::EntityHandle, GUID, ECS::ComponentTypeId>> zones;
-    TerrainECS::ForEachZoneKind([&]<typename TZone>()
-    {
-        world.Query<ECS::Read<TZone>>().IncludeDisabled().Each(
-            [&](ECS::EntityHandle e, const TZone& z)
-            { zones.emplace_back(e, z.PayloadRef.ToGuid(), ECS::GetComponentTypeId<TZone>()); });
-    });
+    // and mutate in the same pass. (entity, payload GUID, isPaint).
+    std::vector<std::tuple<ECS::EntityHandle, GUID, bool>> zones;
+    world.Query<ECS::Read<Components::TerrainSculptZone>>().IncludeDisabled().Each(
+        [&](ECS::EntityHandle e, const Components::TerrainSculptZone& z)
+        { zones.emplace_back(e, z.PayloadRef.ToGuid(), false); });
+    world.Query<ECS::Read<Components::TerrainPaintZone>>().IncludeDisabled().Each(
+        [&](ECS::EntityHandle e, const Components::TerrainPaintZone& z)
+        { zones.emplace_back(e, z.PayloadRef.ToGuid(), true); });
 
     uint32_t written = 0;
-    for (const auto& [entity, guid, kind] : zones)
+    for (const auto& [entity, guid, isPaint] : zones)
     {
         if (guid.IsNull())
             continue;
@@ -116,7 +109,7 @@ uint32_t FlushDirtyZonePayloads(ECS::World& world, const std::filesystem::path& 
         bool hasExisting = false;
         AssetMetadata meta{};
         if (registry.TryGetAssetMetadata(guid, meta) && !meta.Path.empty()
-            && LowerCaseExtension(meta.Path) == ".tzone")
+            && LowerExtension(meta.Path) == ".tzone")
         {
             liveTarget = meta.Path;
             hasExisting = true;
@@ -175,7 +168,24 @@ uint32_t FlushDirtyZonePayloads(ECS::World& world, const std::filesystem::path& 
             {
                 // Swap the component reference + re-key the store to the file-backed
                 // (derived) GUID so a reload resolves it from the path.
-                SetZonePayloadRef(world, entity, kind, fileGuid);
+                if (isPaint)
+                {
+                    if (const auto* c = world.GetComponent<Components::TerrainPaintZone>(entity))
+                    {
+                        Components::TerrainPaintZone u = *c;
+                        u.PayloadRef.Set(fileGuid);
+                        world.AddComponentImmediate(entity, u);
+                    }
+                }
+                else
+                {
+                    if (const auto* c = world.GetComponent<Components::TerrainSculptZone>(entity))
+                    {
+                        Components::TerrainSculptZone u = *c;
+                        u.PayloadRef.Set(fileGuid);
+                        world.AddComponentImmediate(entity, u);
+                    }
+                }
                 TerrainECS::TerrainZonePayload moved = *payload;
                 service.SetZonePayload(fileGuid, std::move(moved));
                 service.EvictZonePayload(guid);

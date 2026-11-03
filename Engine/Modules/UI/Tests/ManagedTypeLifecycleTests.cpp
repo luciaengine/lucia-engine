@@ -32,7 +32,6 @@
 #include <string>
 #include <span>
 #include <string_view>
-#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -112,8 +111,9 @@ struct StubRuntime
     }
 };
 
-// Stands in for "may this thread mutate the UI tree now", which the unload sweep asks. Off by
-// default in the arms that install it.
+// Stands in for "is this the thread that owns the UI tree". Off by default in the arms that
+// install it, so a call has to be inside a window to be allowed — which is exactly the shape the
+// ABI's ScriptManager-backed predicate has in the editor.
 bool g_OnMainThread = false;
 
 // Stands in for ScriptManager's main-thread queue. Holding the tasks rather than running them is
@@ -169,8 +169,8 @@ protected:
                                         { g_Queued.push_back(std::move(task)); });
     }
 
-    // Route the sweep's main-thread question through g_OnMainThread. Without this the predicate is
-    // unset and every thread is the main thread, which is the native-only host's answer.
+    // Route the main-thread question through g_OnMainThread. Without this the predicate is unset
+    // and every thread is the main thread, which is the native-only host's answer.
     static void InstallThreadPredicate()
     {
         Types().SetMainThreadPredicate([] { return g_OnMainThread; });
@@ -179,11 +179,9 @@ protected:
     // Register in the ORDER the managed binding registers in: the caller learns a tag id only
     // as the registration call returns, and can publish its binding only after that. Every arm
     // goes through these rather than calling RegisterType directly, so no arm can accidentally
-    // assume a runtime that could answer sooner. Each claims where the binding claims, from a
-    // registration window's callback.
+    // assume a runtime that could answer sooner.
     static StringId Register(std::string_view tagName, std::uint64_t owner)
     {
-        const ManagedElementTypes::ScopedWindowForTests window;
         const StringId id = Types().RegisterType(tagName, owner);
         if (id != 0)
             StubRuntime::Publish(id);
@@ -193,7 +191,6 @@ protected:
     static std::vector<StringId> RegisterBatch(std::span<const std::string_view> tagNames,
                                                std::uint64_t owner)
     {
-        const ManagedElementTypes::ScopedWindowForTests window;
         std::vector<StringId> ids = Types().RegisterTypes(tagNames, owner);
         for (StringId id : ids)
         {
@@ -201,21 +198,6 @@ protected:
                 StubRuntime::Publish(id);
         }
         return ids;
-    }
-
-    // A claim whose id the caller does not publish, made from a registration window's callback.
-    static StringId Claim(std::string_view tagName, std::uint64_t owner)
-    {
-        const ManagedElementTypes::ScopedWindowForTests window;
-        return Types().RegisterType(tagName, owner);
-    }
-
-    // Close an owner's reload verdict where the binding closes it, from a registration window's
-    // callback.
-    static void Verdict(std::uint64_t owner)
-    {
-        const ManagedElementTypes::ScopedWindowForTests window;
-        Types().NotifyReloadCompleted(owner);
     }
 
     // Build one element for an already-registered tag and keep it alive past its registration,
@@ -368,18 +350,17 @@ TEST_F(ManagedTypeLifecycleTest, ATypeThatComesBackEndsTheReloadUnbadgedWhatever
     ASSERT_EQ(Types().OrphanTypesOwnedBy(kNativeOwner), 1u);
     ASSERT_EQ(g_Queued.size(), 1u) << "the orphan badge is queued first";
 
-    // The reload's window re-registers the tag and then announces its verdict, which is the
-    // only thing that re-materializes and runs inline in the window. The badge task, queued
-    // before the window, runs after it.
+    // The reload re-registers the tag and then announces its verdict, which is the only thing
+    // that re-materializes. Both halves are now queued, and the badge task is ahead of the
+    // verdict: the element is genuinely orphaned in between, so it may be badged there.
     constexpr std::uint64_t kSecondOwner = 0xBEE5u;
     ASSERT_NE(Register("FastBar", kSecondOwner), StringId(0));
-    Verdict(kNativeOwner);
-    ASSERT_EQ(g_Queued.size(), 1u) << "the orphan badge is still queued; the verdict ran inline";
-    EXPECT_EQ(proxy->State(), ManagedTypeState::Live);
+    Types().NotifyReloadCompleted(kNativeOwner);
+    ASSERT_EQ(g_Queued.size(), 2u) << "one task for the orphan badge, one for the verdict";
 
     // What must be true once the queue has drained: the element is back, on the new owner, and
-    // carries neither badge. The badge task re-derives from the live index, so it does not badge
-    // an element whose type came back before it ran.
+    // carries neither badge. The verdict re-derives from the live index, so it corrects a badge
+    // the earlier task applied rather than being confused by it.
     DrainQueued();
     EXPECT_EQ(proxy->State(), ManagedTypeState::Live);
     EXPECT_EQ(proxy->Owner(), kSecondOwner) << "the proxy joins whoever holds its tag now";
@@ -479,7 +460,7 @@ TEST_F(ManagedTypeLifecycleTest, TheVerdictReMaterializesOrphansOfEveryTagThatCa
     const std::uint64_t aId = a->GetInstanceId();
     const std::uint64_t bId = b->GetInstanceId();
     ASSERT_EQ(RegisterBatch(tags, kReloadedOwner).size(), 2u);
-    Verdict(kNativeOwner);
+    Types().NotifyReloadCompleted(kNativeOwner);
 
     EXPECT_EQ(a->State(), ManagedTypeState::Live);
     EXPECT_EQ(b->State(), ManagedTypeState::Live);
@@ -502,7 +483,7 @@ TEST_F(ManagedTypeLifecycleTest, TheVerdictMaterializesEachOrphanExactlyOnce)
     StubRuntime::s_Created = 0;
     constexpr std::uint64_t kReloadedOwner = 0xBEE9u;
     ASSERT_EQ(RegisterBatch(tags, kReloadedOwner).size(), 2u);
-    Verdict(kNativeOwner);
+    Types().NotifyReloadCompleted(kNativeOwner);
     EXPECT_EQ(StubRuntime::s_Created, 2);
 }
 
@@ -570,7 +551,7 @@ TEST_F(ManagedTypeLifecycleTest, AReloadReMaterializesWhenTheCallerLearnsTheTagI
     constexpr std::uint64_t kReloadedOwner = 0xBEEDu;
     const StringId reloadedTagId = Register("Revive", kReloadedOwner);
     ASSERT_EQ(reloadedTagId, tagId) << "the tag id is derived from the name and must be stable";
-    Verdict(kNativeOwner);
+    Types().NotifyReloadCompleted(kNativeOwner);
 
     EXPECT_EQ(StubRuntime::s_Declined, 0)
         << "the engine asked for an instance before the caller could know the tag id";
@@ -595,7 +576,7 @@ TEST_F(ManagedTypeLifecycleTest, AVerdictWithTheTagStillAbsentFaultsAndBadges)
 
     // The other half of the same verdict: nothing re-registered this tag, so absence is now a
     // fact rather than a reload still running.
-    Verdict(kNativeOwner);
+    Types().NotifyReloadCompleted(kNativeOwner);
     EXPECT_EQ(proxy->State(), ManagedTypeState::Faulted);
     EXPECT_TRUE(proxy->HasClass(ManagedElementTypes::kMissingClass));
     EXPECT_FALSE(proxy->HasClass(ManagedElementTypes::kOrphanedClass));
@@ -621,36 +602,69 @@ TEST_F(ManagedTypeLifecycleTest, AnotherOwnersPendingElementsAreNotFaultedByThis
     StubRuntime::Retract(mine);
     StubRuntime::Retract(theirs);
 
-    Verdict(kNativeOwner);
+    Types().NotifyReloadCompleted(kNativeOwner);
     EXPECT_EQ(a->State(), ManagedTypeState::Faulted);
     EXPECT_EQ(b->State(), ManagedTypeState::Pending) << "not this reload's verdict to give";
     EXPECT_FALSE(b->HasClass(ManagedElementTypes::kMissingClass));
 }
 
+TEST_F(ManagedTypeLifecycleTest, TheVerdictIsOneMarshalledTaskForTheWholeOwner)
+{
+    const std::string_view tags[] = {"MarshalA", "MarshalB"};
+    ASSERT_EQ(RegisterBatch(tags, kNativeOwner).size(), 2u);
+    for (int i = 0; i < 16; ++i)
+    {
+        ASSERT_NE(MakeProxy("marshala"), nullptr);
+        ASSERT_NE(MakeProxy("marshalb"), nullptr);
+    }
+    ASSERT_EQ(Types().OrphanTypesOwnedBy(kNativeOwner), 32u);
+
+    // Reconciling re-attaches instances and edits badge classes, both of which recompute style,
+    // and the verdict arrives on the reload thread. It is queued — and as ONE task, because the
+    // main-thread queue's budget drops to a single task per frame during a hot reload.
+    InstallCapturingMarshaller();
+    constexpr std::uint64_t kReloadedOwner = 0xBEA9u;
+    ASSERT_EQ(RegisterBatch(tags, kReloadedOwner).size(), 2u);
+    Types().NotifyReloadCompleted(kNativeOwner);
+
+    EXPECT_EQ(g_Queued.size(), 1u) << "32 elements across 2 tags is still one verdict";
+    EXPECT_EQ(Types().CountProxiesInState(ManagedTypeState::Pending), 32u)
+        << "nothing tree-visible may happen before the task runs";
+
+    DrainQueued();
+    EXPECT_EQ(Types().CountProxiesInState(ManagedTypeState::Live), 32u);
+}
+
 // ---------------------------------------------------------------------------
-// The registration window: where a tag may be claimed, and what a refusal costs.
+// The registration window: which thread may claim a tag, and what a refusal costs.
 //
 // Registration cannot marshal itself. It must return the tag id synchronously — the caller keys
 // its tag -> type table on the returned value — and the id cannot even be COMPUTED off-thread,
-// because it is read from the same canonical map the claim writes. So the entry points are
-// admitted only inside a registration window, which runs on the thread that owns the UI tree, and
-// refused everywhere else, on every thread.
+// because it is read from the same canonical map the claim writes. So the entry points refuse
+// off-main instead, and the caller reaches them through a window that runs on the main thread.
+//
+// These arms drive the predicate directly, which is what lets them assert the contract without a
+// frame loop or a CLR.
 // ---------------------------------------------------------------------------
 
-TEST_F(ManagedTypeLifecycleTest, RegistrationOutsideAWindowIsRefusedAndTheRefusalIsObservable)
+TEST_F(ManagedTypeLifecycleTest, RegistrationOffTheMainThreadIsRefusedAndTheRefusalIsObservable)
 {
-    ASSERT_EQ(Types().RefusedOutsideWindowCount(), 0u);
+    InstallThreadPredicate();
+    ASSERT_FALSE(g_OnMainThread);
+    ASSERT_EQ(Types().RefusedOffMainThreadCount(), 0u);
 
     EXPECT_EQ(Types().RegisterType("OffMainOnly", kNativeOwner), 0u)
         << "claiming a tag writes the factory registry that document builds read";
-    EXPECT_EQ(Types().RefusedOutsideWindowCount(), 1u)
+    EXPECT_EQ(Types().RefusedOffMainThreadCount(), 1u)
         << "a refusal that is not recorded is indistinguishable from a call with nothing to do";
     EXPECT_EQ(Factories().Create("offmainonly"), nullptr)
         << "the refusal must leave no factory behind";
 }
 
-TEST_F(ManagedTypeLifecycleTest, ABatchOutsideAWindowClaimsNothingAtAll)
+TEST_F(ManagedTypeLifecycleTest, AnOffMainBatchClaimsNothingAtAll)
 {
+    InstallThreadPredicate();
+
     // The whole batch or none of it: a partial claim would hand back some ids and leave the
     // caller's tag -> type table disagreeing with the registry about the rest.
     const std::string_view tags[] = {"OffBatchA", "OffBatchB", "OffBatchC"};
@@ -660,63 +674,45 @@ TEST_F(ManagedTypeLifecycleTest, ABatchOutsideAWindowClaimsNothingAtAll)
         EXPECT_EQ(id, 0u);
 
     EXPECT_EQ(Types().CountTypesOwnedBy(kNativeOwner), 0u);
-    EXPECT_EQ(Types().RefusedOutsideWindowCount(), 1u) << "one refusal for the batch, not one per tag";
+    EXPECT_EQ(Types().RefusedOffMainThreadCount(), 1u) << "one refusal for the batch, not one per tag";
 }
 
-TEST_F(ManagedTypeLifecycleTest, TheVerdictOutsideAWindowIsRefusedAndDecidesNothing)
+TEST_F(ManagedTypeLifecycleTest, TheVerdictOffTheMainThreadIsRefusedAndDecidesNothing)
 {
     ASSERT_NE(Register("VerdictThread", kNativeOwner), 0u);
     ASSERT_NE(MakeProxy("verdictthread"), nullptr);
     ASSERT_EQ(Types().OrphanTypesOwnedBy(kNativeOwner), 1u);
 
+    InstallThreadPredicate();
     Types().NotifyReloadCompleted(kNativeOwner);
 
-    EXPECT_EQ(Types().RefusedOutsideWindowCount(), 1u);
+    EXPECT_EQ(Types().RefusedOffMainThreadCount(), 1u);
     EXPECT_EQ(Types().CountProxiesInState(ManagedTypeState::Pending), 1u)
         << "a refused verdict decides nothing - the element is still merely waiting, not Faulted";
 }
 
-TEST_F(ManagedTypeLifecycleTest, ABatchRefusedOutsideAWindowComesBackOnTheNextVerdict)
+TEST_F(ManagedTypeLifecycleTest, ABatchLostToTheWrongThreadComesBackOnTheNextVerdict)
 {
     ASSERT_NE(Register("Stalled", kNativeOwner), 0u);
     ASSERT_NE(MakeProxy("stalled"), nullptr);
     ASSERT_EQ(Types().OrphanTypesOwnedBy(kNativeOwner), 1u);
 
-    // A reload whose registration was made outside any window. Refused.
+    // A reload whose registration landed off the main thread - the watchdog case. Refused.
+    InstallThreadPredicate();
     EXPECT_EQ(Types().RegisterType("Stalled", 0xBEA1u), 0u);
     EXPECT_EQ(Types().CountProxiesInState(ManagedTypeState::Pending), 1u);
 
     // THE COST OF REFUSING IS BOUNDED, NOT PERMANENT, and this is the property that makes
-    // refusing an acceptable answer at all. The next reload registers inside a window, and its
+    // refusing an acceptable answer at all. The next reload registers on the main thread, and its
     // verdict revives the element even though the owner that defined it is long retired - the
     // revive branch is deliberately not owner-filtered.
+    g_OnMainThread = true;
     constexpr std::uint64_t kLaterOwner = 0xBEA2u;
     ASSERT_NE(Register("Stalled", kLaterOwner), 0u);
-    Verdict(kLaterOwner);
+    Types().NotifyReloadCompleted(kLaterOwner);
 
     EXPECT_EQ(Types().CountProxiesInState(ManagedTypeState::Live), 1u);
-    EXPECT_EQ(Types().RefusedOutsideWindowCount(), 1u) << "only the one refused call";
-}
-
-// A window open on one thread admits that thread only: a claim from another thread while the
-// window runs is refused, because it would write the registry under the window's own writes.
-TEST_F(ManagedTypeLifecycleTest, AClaimFromAnotherThreadDuringAnOpenWindowIsRefused)
-{
-    StringId fromOtherThread = 1;
-    StringId fromWindow = 0;
-    StubRuntime::s_Window = [&]
-    {
-        std::thread other([&] { fromOtherThread = Types().RegisterType("OtherThreadTag", 0xBEA3u); });
-        other.join();
-        fromWindow = Types().RegisterType("WindowThreadTag", kNativeOwner);
-    };
-    Types().RequestRegistrationWindow();
-
-    ASSERT_EQ(StubRuntime::s_WindowsRun, 1);
-    EXPECT_EQ(fromOtherThread, 0u) << "the open window belongs to the thread running it";
-    EXPECT_NE(fromWindow, 0u);
-    EXPECT_EQ(Types().RefusedOutsideWindowCount(), 1u);
-    EXPECT_FALSE(Factories().HasFactory("otherthreadtag"));
+    EXPECT_EQ(Types().RefusedOffMainThreadCount(), 1u) << "only the one refused call";
 }
 
 TEST_F(ManagedTypeLifecycleTest, OrphaningOffTheMainThreadIsRefusedAndSweepsNothing)
@@ -763,14 +759,18 @@ TEST_F(ManagedTypeLifecycleTest, InstallationIsFirstWinsAndASecondInstallIsRefus
 
 TEST_F(ManagedTypeLifecycleTest, TheSameCallIsRefusedOutsideTheWindowAndSucceedsInsideIt)
 {
+    InstallThreadPredicate();
+
     // Outside: refused.
     EXPECT_EQ(Types().RegisterType("WindowGated", kNativeOwner), 0u);
 
     // Inside: the identical call, allowed. The window is the only thing that changed.
     StubRuntime::s_Window = []
     {
+        g_OnMainThread = true;
         const StringId id = Types().RegisterType("WindowGated", kNativeOwner);
-        EXPECT_NE(id, 0u) << "the window IS the main-thread slot; registration belongs here";
+        EXPECT_NE(id, 0u) << "the window IS the main thread; registration belongs here";
+        g_OnMainThread = false;
     };
     Types().RequestRegistrationWindow();
 
@@ -793,9 +793,7 @@ TEST_F(ManagedTypeLifecycleTest, TheRegistrationWindowClaimsAndDecidesInOneMainT
     constexpr std::uint64_t kReloadedOwner = 0xBEA7u;
     StubRuntime::s_Window = []
     {
-        const StringId id = Types().RegisterType("Windowed", kReloadedOwner);
-        ASSERT_NE(id, 0u);
-        StubRuntime::Publish(id);
+        ASSERT_NE(Register("Windowed", kReloadedOwner), 0u);
         Types().NotifyReloadCompleted(kReloadedOwner);
     };
 
@@ -838,7 +836,7 @@ TEST_F(ManagedTypeLifecycleTest, ARefusedClaimNamesAHolderWhoseContextIsStillLiv
     ASSERT_EQ(Types().RefusedTagClaimCount(), 0u);
 
     constexpr std::uint64_t kClaimant = 0xBED1u;
-    EXPECT_EQ(Claim("Poisoned", kClaimant), StringId(0));
+    EXPECT_EQ(Types().RegisterType("Poisoned", kClaimant), StringId(0));
 
     EXPECT_EQ(Types().RefusedTagClaimCount(), 1u)
         << "a refusal that is not recorded is indistinguishable from a claim with nothing to do";
@@ -859,7 +857,7 @@ TEST_F(ManagedTypeLifecycleTest, ARefusedClaimReportsAHolderWhoseContextHasBeenR
     ASSERT_NE(Register("Stale", holder), StringId(0));
     ASSERT_TRUE(Owners().Release(holder));
 
-    EXPECT_EQ(Claim("Stale", 0xBED3u), StringId(0));
+    EXPECT_EQ(Types().RegisterType("Stale", 0xBED3u), StringId(0));
     ASSERT_TRUE(Types().LastRefusedTagClaim().has_value());
     EXPECT_EQ(Types().LastRefusedTagClaim()->Holder, holder);
     EXPECT_FALSE(Types().LastRefusedTagClaim()->HolderContextLive);
@@ -874,7 +872,7 @@ TEST_F(ManagedTypeLifecycleTest, EveryRefusedClaimIsCountedThoughTheLogNamesItOn
     ASSERT_NE(Register("Repeated", holder), StringId(0));
 
     for (int i = 0; i < 50; ++i)
-        EXPECT_EQ(Claim("Repeated", 0xBED5u), StringId(0));
+        EXPECT_EQ(Types().RegisterType("Repeated", 0xBED5u), StringId(0));
     EXPECT_EQ(Types().RefusedTagClaimCount(), 50u);
 }
 
@@ -889,7 +887,7 @@ TEST_F(ManagedTypeLifecycleTest, ClaimingAnEngineTagIsRefusedAndNamesTheEngine)
     UIRegistration::RegisterBuiltInControls();
     ASSERT_TRUE(Factories().HasFactory("button"));
 
-    EXPECT_EQ(Claim("Button", 0xBED7u), StringId(0));
+    EXPECT_EQ(Types().RegisterType("Button", 0xBED7u), StringId(0));
     ASSERT_TRUE(Types().LastRefusedTagClaim().has_value());
     EXPECT_EQ(Types().LastRefusedTagClaim()->Holder, 0u);
     EXPECT_FALSE(Types().LastRefusedTagClaim()->HolderContextLive);
@@ -921,7 +919,7 @@ TEST_F(ManagedTypeLifecycleTest, RestoringADeletedTypeRecoversOnTheFirstReloadTh
     // element, because nothing brought the tag back.
     ASSERT_EQ(Types().OrphanTypesOwnedBy(kNativeOwner), 1u);
     StubRuntime::Retract(tagId);
-    Verdict(kNativeOwner);
+    Types().NotifyReloadCompleted(kNativeOwner);
     ASSERT_EQ(proxy->State(), ManagedTypeState::Faulted);
     ASSERT_TRUE(proxy->HasClass(ManagedElementTypes::kMissingClass));
 

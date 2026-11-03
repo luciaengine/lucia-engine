@@ -187,8 +187,9 @@ void ReleaseProvisionedTerrains(GameEngine::ECS::World& world,
                                 TerrainECS::TerrainService& service)
 {
     world.Query<GameEngine::ECS::Write<Components::Terrain>>().Each(
-        [&](Components::Terrain& terrain)
+        [&](GameEngine::ECS::Writable<Components::Terrain> terrainRow)
         {
+            Components::Terrain& terrain = terrainRow.Mutable();
             if (terrain.TerrainDataHandle != 0 || terrain.TerrainDataGeneration != 0)
             {
                 TerrainECS::TerrainHandle h{terrain.TerrainDataHandle,
@@ -281,8 +282,8 @@ TEST_F(TerrainMaterialLibraryEditorScene, ExtractionCarriesTheLibrarysAuthoredGr
         // The real load path over the real file.
         GameEngine::Scene::EnsureTerrainSceneSchemasRegistered();
         GameEngine::ECS::World world;
-        ASSERT_TRUE(GameEngine::Scene::ReadSceneInto(
-            world, m_ScenePath, GameEngine::Scene::SceneReadOptions{}))
+        ASSERT_TRUE(GameEngine::Scene::LoadSceneFromFile(
+            world, m_ScenePath, GameEngine::Scene::LoadOptions{GameEngine::Scene::LoadMode::Replace}))
             << GameEngine::Scene::GetLastSceneIOError().message;
 
         // Chain link 0, asserted before any extraction: the loaded island component carries the
@@ -306,30 +307,20 @@ TEST_F(TerrainMaterialLibraryEditorScene, ExtractionCarriesTheLibrarysAuthoredGr
         GameEngine::Engine::Renderer::TransformHierarchySystem transforms;
         TerrainECS::TerrainExtractionSystem extraction(&rs);
 
-        // Pump until the library cache resolves (the asset load it requests is asynchronous) and
-        // the layer textures it binds have uploaded (each loads and cooks on a worker, and the
-        // render thread's drain uploads it), then a few settle frames so the table was rebuilt
-        // FROM the resolved library. Bounded: a chain that never resolves falls through with
-        // resolved=false and the record assertions below say which half died.
-        const auto layersUploaded = [&rs]()
-        {
-            for (const FixtureAsset& asset : kFixtureAssets)
-                if (asset.Type == GameEngine::AssetType::Texture &&
-                    !rs.Textures().GetOrUpload(GUID(asset.Guid)).IsValid())
-                    return false;
-            return true;
-        };
+        // Pump until the library cache resolves (the asset load it requests is asynchronous),
+        // then a few settle frames so the table was rebuilt FROM the resolved library. Bounded:
+        // a chain that never resolves falls through with resolved=false and the record
+        // assertions below say which half died.
         bool resolved = false;
         int settleFrames = 0;
-        for (int frame = 0; frame < 6000; ++frame)
+        for (int frame = 0; frame < 600; ++frame)
         {
             engine.GetAssetManager().Update();
             transforms.Update(world, 0.016f);
             extraction.Update(world, 0.016f);
-            rs.Textures().FlushPendingUploads();
             if (!resolved && feature.MaterialLibraries().Get(GUID(kIslandLibraryGuid), {}) != nullptr)
                 resolved = true;
-            if (resolved && layersUploaded() && ++settleFrames >= 5)
+            if (resolved && ++settleFrames >= 5)
                 break;
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
@@ -524,8 +515,8 @@ TEST_F(TerrainMaterialLibraryEditorScene, AnEditAndItsUndoReachATerrainBoundThro
 
         GameEngine::Scene::EnsureTerrainSceneSchemasRegistered();
         GameEngine::ECS::World world;
-        ASSERT_TRUE(GameEngine::Scene::ReadSceneInto(
-            world, m_ScenePath, GameEngine::Scene::SceneReadOptions{}))
+        ASSERT_TRUE(GameEngine::Scene::LoadSceneFromFile(
+            world, m_ScenePath, GameEngine::Scene::LoadOptions{GameEngine::Scene::LoadMode::Replace}))
             << GameEngine::Scene::GetLastSceneIOError().message;
 
         GameEngine::Engine::Renderer::TransformHierarchySystem transforms;

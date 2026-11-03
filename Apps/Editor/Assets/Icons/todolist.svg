@@ -1,8 +1,6 @@
-<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-<path d="M6.00195 4.50195H14.0001" stroke="white" stroke-width="1.00189" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M6.00146 8.00195H13.9996" stroke="white" stroke-width="1.00189" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M6.00146 11.5039H13.9996" stroke="white" stroke-width="1.00189" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M2.50558 5.01117C2.78427 5.01117 3.01019 4.78525 3.01019 4.50656C3.01019 4.22787 2.78427 4.00195 2.50558 4.00195C2.2269 4.00195 2.00098 4.22787 2.00098 4.50656C2.00098 4.78525 2.2269 5.01117 2.50558 5.01117Z" stroke="white" stroke-width="1.00189" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M2.50558 8.51117C2.78427 8.51117 3.01019 8.28525 3.01019 8.00656C3.01019 7.72787 2.78427 7.50195 2.50558 7.50195C2.2269 7.50195 2.00098 7.72787 2.00098 8.00656C2.00098 8.28525 2.2269 8.51117 2.50558 8.51117Z" stroke="white" stroke-width="1.00189" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M2.50558 12.0131C2.78427 12.0131 3.01019 11.7872 3.01019 11.5085C3.01019 11.2298 2.78427 11.0039 2.50558 11.0039C2.2269 11.0039 2.00098 11.2298 2.00098 11.5085C2.00098 11.7872 2.2269 12.0131 2.50558 12.0131Z" stroke="white" stroke-width="1.00189" stroke-linecap="round" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+<path d="M9.094 5H21.225M9.094 12H21.225M9.094 19H21.225"/>
+<path d="M4.039 5C4.039 4.442 3.586 3.989 3.028 3.989C2.47 3.989 2.017 4.442 2.017 5C2.017 5.558 2.47 6.011 3.028 6.011C3.586 6.011 4.039 5.558 4.039 5Z" fill="white" stroke="none"/>
+<path d="M4.039 12C4.039 11.442 3.586 10.989 3.028 10.989C2.47 10.989 2.017 11.442 2.017 12C2.017 12.558 2.47 13.011 3.028 13.011C3.586 13.011 4.039 12.558 4.039 12Z" fill="white" stroke="none"/>
+<path d="M4.039 19C4.039 18.442 3.586 17.989 3.028 17.989C2.47 17.989 2.017 18.442 2.017 19C2.017 19.558 2.47 20.011 3.028 20.011C3.586 20.011 4.039 19.558 4.039 19Z" fill="white" stroke="none"/>
 </svg>

@@ -5,7 +5,7 @@
 
 #include "Rendering/Core/Device.h" // DescriptorSetLayoutDesc
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 
 #include <cstdint>
 
@@ -156,7 +156,7 @@ private:
     OceanClipParamsGPU m_Params;
     bool m_HasSpline = false;
     bool m_HasSplineBounds = false;
-    Mathematics::Vector4 m_SplineBounds;
+    float m_SplineBounds[4] = {};
     bool m_DispatchDirty = true;
 };
 

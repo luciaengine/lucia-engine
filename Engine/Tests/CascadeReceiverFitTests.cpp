@@ -28,7 +28,7 @@
 #include "Mathematics/Geometry.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Common/Frustum.h"
 
 #include <gtest/gtest.h>
@@ -109,12 +109,12 @@ Rendering::CameraData MakeCamera(const Pose& pose, const Lens& lens = {})
             ? MakeOrthographicLH_ZO_ReverseZ(-halfY * lens.Aspect, halfY * lens.Aspect, -halfY, halfY, kNear, kFar)
             : MakePerspectiveLH_ZO_ReverseZ(lens.FovYDeg * kPi / 180.0f, lens.Aspect, kNear, kFar);
     const Matrix4x4 viewProj = proj * view;
-    cam.view = view;
-    cam.proj = proj;
-    cam.viewProj = viewProj;
-    cam.cameraPos.x = pose.Position.x;
-    cam.cameraPos.y = pose.Position.y;
-    cam.cameraPos.z = pose.Position.z;
+    std::memcpy(cam.view, view.Data(), sizeof(cam.view));
+    std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
+    std::memcpy(cam.viewProj, viewProj.Data(), sizeof(cam.viewProj));
+    cam.cameraPos[0] = pose.Position.x;
+    cam.cameraPos[1] = pose.Position.y;
+    cam.cameraPos[2] = pose.Position.z;
     return cam;
 }
 
@@ -309,9 +309,7 @@ TEST(CascadeReceiverFit, Cascade0StartsAtTheNearestMeasuredReceiver)
     for (const Receiver& r : receivers)
     {
         if (r.ViewDepth < fd.SplitDistances[0])
-        {
             EXPECT_LE(MaxLightNdc(fd, 0, r.Position), 1.0f) << "receiver at depth " << r.ViewDepth;
-        }
     }
 }
 
@@ -386,7 +384,11 @@ void CascadeDepthWindow(const CascadeFrameData& fd, uint32_t c, float& lo, float
 {
     lo = 0.0f;
     if (c > 0)
-        lo = fd.SplitDistances[c - 1] - ShadowMapRenderFeature::CascadeBlendBand(fd, c - 1);
+    {
+        const float prevStart = c == 1 ? 0.0f : fd.SplitDistances[c - 2];
+        const float band = std::max((fd.SplitDistances[c - 1] - prevStart) * 0.1f, 3.0f);
+        lo = fd.SplitDistances[c - 1] - band;
+    }
     hi = c + 1 == fd.NumCascades ? kMaxShadowDistance : fd.SplitDistances[c];
 }
 
@@ -958,7 +960,7 @@ TEST(CascadeReceiverFit, TheWindowCheckSeesTheFieldOfViewAspectOrthographicSizeA
         Rendering::CameraData cam = MakeCamera(pose);
         const Matrix4x4 proj = MakeOrthographicLH_ZO_ReverseZ(-halfHeight * kAspect, halfHeight * kAspect,
                                                               -halfHeight, halfHeight, kNear, kFar);
-        cam.proj = proj;
+        std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
         ShadowReceiverMeasurement::Context c{};
         Renderer::SetShadowReceiverCamera(cam, true, c);
         return c;

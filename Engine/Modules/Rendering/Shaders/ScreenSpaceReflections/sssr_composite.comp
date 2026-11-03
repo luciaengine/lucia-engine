@@ -10,6 +10,8 @@ layout(set = 0, binding = 5) uniform sampler2D uSpecularRadiance;
 layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D uSceneHistoryOut;
 layout(set = 0, binding = 8) uniform sampler2D uSpecularWeight;
 
+layout(set = 0, binding = 9) uniform sampler2D uPlanarMask;
+
 #include "ScreenSpaceReflections/sssr_common.glsl"
 #include "ScreenSpaceReflections/sssr_composite_policy.glsl"
 
@@ -26,7 +28,8 @@ void main()
     // the fallback state, so the fetches can be skipped — except for the debug
     // views, which exist to explain that very state and are written past this
     // exit, at the end of main().
-    if (rawDepth <= kSssrMinRawDepth || (reflection.a <= 1e-5 && sssr.debugMode == 0u))
+    bool planarOwned = sssr.hasPlanarMask != 0u && texelFetch(uPlanarMask, pixel, 0).r > 1e-5;
+    if (planarOwned || rawDepth <= kSssrMinRawDepth || (reflection.a <= 1e-5 && sssr.debugMode == 0u))
     {
         imageStore(uOutput, pixel, scene);
         imageStore(uSceneHistoryOut, pixel, vec4(scene.rgb, rawDepth));

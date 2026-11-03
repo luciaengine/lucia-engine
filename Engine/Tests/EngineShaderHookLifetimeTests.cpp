@@ -23,21 +23,21 @@ struct HookSnapshot
     Rendering::Utils::ShaderFileLoaderFunc Loader = Rendering::Utils::GetShaderFileLoader();
     Rendering::Utils::ShaderPathResolverFunc Resolver = Rendering::Utils::GetShaderPathResolver();
     Rendering::ShaderPackageRebuildActionFunc Rebuild = Rendering::GetShaderPackageRebuildAction();
-    ShaderCacheRoots Cache = ShaderProgramAsset::GetShaderCacheRoots();
+    fs::path Cache = ShaderProgramAsset::GetShaderCacheRoot();
 
     void ExpectCurrent() const
     {
         EXPECT_EQ(Rendering::Utils::GetShaderFileLoader(), Loader);
         EXPECT_EQ(Rendering::Utils::GetShaderPathResolver(), Resolver);
         EXPECT_EQ(Rendering::GetShaderPackageRebuildAction(), Rebuild);
-        EXPECT_EQ(ShaderProgramAsset::GetShaderCacheRoots(), Cache);
+        EXPECT_EQ(ShaderProgramAsset::GetShaderCacheRoot(), Cache);
     }
     void Restore() const
     {
         Rendering::Utils::SetShaderFileLoader(Loader);
         Rendering::Utils::SetShaderPathResolver(Resolver);
         Rendering::SetShaderPackageRebuildAction(Rebuild);
-        ShaderProgramAsset::SetShaderCacheRoots(Cache);
+        ShaderProgramAsset::SetShaderCacheRoot(Cache);
     }
 };
 
@@ -58,7 +58,7 @@ protected:
         Rendering::Utils::SetShaderFileLoader(&HostLoader);
         Rendering::Utils::SetShaderPathResolver(&HostResolver);
         Rendering::SetShaderPackageRebuildAction(&HostRebuild);
-        ShaderProgramAsset::SetShaderCacheRoots({{Temporary.Path() / "HostBundle"}, Temporary.Path() / "HostCache"});
+        ShaderProgramAsset::SetShaderCacheRoot(Temporary.Path() / "HostCache");
     }
     void TearDown() override
     {
@@ -81,7 +81,7 @@ TEST_F(EngineShaderHookLifetimeTest, ShutdownRestoresAllFourHostValues)
     EXPECT_NE(Rendering::Utils::GetShaderFileLoader(), host.Loader);
     EXPECT_NE(Rendering::Utils::GetShaderPathResolver(), host.Resolver);
     EXPECT_NE(Rendering::GetShaderPackageRebuildAction(), host.Rebuild);
-    EXPECT_NE(ShaderProgramAsset::GetShaderCacheRoots(), host.Cache);
+    EXPECT_NE(ShaderProgramAsset::GetShaderCacheRoot(), host.Cache);
     Engine.Shutdown();
     host.ExpectCurrent();
 }
@@ -93,7 +93,7 @@ TEST_F(EngineShaderHookLifetimeTest, RepeatedInitializeAndShutdownPreserveTheCap
     ASSERT_TRUE(Engine.Initialize(Config));
     Engine.Shutdown();
     host.ExpectCurrent();
-    ShaderProgramAsset::SetShaderCacheRoots({{}, Temporary.Path() / "NextHostCache"});
+    ShaderProgramAsset::SetShaderCacheRoot(Temporary.Path() / "NextHostCache");
     const HookSnapshot afterShutdown;
     Engine.Shutdown();
     afterShutdown.ExpectCurrent();
@@ -108,7 +108,7 @@ TEST_F(EngineShaderHookLifetimeTest, EachLifetimeCapturesItsOwnHostIncludingNull
     Rendering::Utils::SetShaderFileLoader(nullptr);
     Rendering::Utils::SetShaderPathResolver(nullptr);
     Rendering::SetShaderPackageRebuildAction(nullptr);
-    ShaderProgramAsset::SetShaderCacheRoots({});
+    ShaderProgramAsset::SetShaderCacheRoot({});
     const HookSnapshot second;
     ASSERT_TRUE(Engine.Initialize(Config));
     Engine.Shutdown();

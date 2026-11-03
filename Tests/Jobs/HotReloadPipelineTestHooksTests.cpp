@@ -7,9 +7,7 @@
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "MockHotReloadDependencies.h"
 #include "ScopedHotReloadTestHooks.h"
-#include "Scripting/PathResolver.h"
 #include "Scripting/ScriptManager.h"
-#include "TestEnvVar.h"
 #include "TestTempDir.h"
 #include <algorithm>
 #include <atomic>
@@ -82,27 +80,13 @@ std::filesystem::path WorkspaceAssemblyPath(const std::filesystem::path& workspa
     return workspace / "Assemblies" / "GameEngine.Scripts.dll";
 }
 
-// Answers every compile request with a failed compile and returns the count of
-// compile requests the fake answered.
-std::shared_ptr<std::atomic<int>> InstallCountingFakeTransport()
-{
-    auto compileRequests = std::make_shared<std::atomic<int>>(0);
-    SetCompileServerTransportFactoryForTests(
-        [compileRequests](const std::string&)
-        {
-            return std::make_unique<FakeTransport>("{\"Success\":false}", true, compileRequests);
-        });
-    return compileRequests;
-}
-} // namespace
-
-// A server that reports success without sending an assembly is a failed
-// compile: the pipeline fails with the compiler's message and never runs the
-// later stages, which would otherwise reload whatever assembly is on disk.
-TEST(HotReloadPipelineTestHooks, ServerSuccessButNoPayloadFailsPipeline)
-{
-    const GameEngine::TestUtils::ScopedTempDir workspace(
-        GameEngine::TestUtils::MakeUniqueTempDirectory("GE_Pipeline_Seam_NoPayload"));
+TEST(HotReloadPipelineTestHooks, ServerSuccessButNoPayloadFailsPipeline) {
+#ifdef _WIN32
+    // Arrange temp workspace with a simple C# file
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_Pipeline_Seam_NoPayload"));
+    std::filesystem::path ws = workspace.Path();
+    std::error_code ec;
+    auto sourcePath = ws / "Foo.cs";
     {
         std::ofstream source(workspace.Path() / "Foo.cs");
         source << "public static class Foo { public static int Smoke(){ return 1; } }";
@@ -137,8 +121,9 @@ TEST(HotReloadPipelineTestHooks, ServerSuccessButNoPayloadFailsPipeline)
 
 TEST(HotReloadPipelineTestHooks, ServerConnectFailsTriggersPipelineFailure) {
 #ifdef _WIN32
-    std::filesystem::path ws = std::filesystem::temp_directory_path() / "GE_Pipeline_Seam_ConnFail";
-    std::error_code ec; std::filesystem::create_directories(ws, ec);
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_Pipeline_Seam_ConnFail"));
+    std::filesystem::path ws = workspace.Path();
+    std::error_code ec;
     auto sourcePath = ws / "Foo.cs";
     {
         std::ofstream f(sourcePath);
@@ -179,11 +164,8 @@ TEST(HotReloadPipelineTestHooks, ChangedFilesHookIncludedInRequest)
 {
 #ifdef _WIN32
     // Arrange temp workspace with a simple C# file
-    // A workspace of its own per run: the compiler enumerates every .cs file under
-    // it, so a file left by an earlier run would stand in for one this test forgot.
-    const GameEngine::TestUtils::ScopedTempDir workspace(
-        GameEngine::TestUtils::MakeUniqueTempDirectory("GE_Pipeline_Seam_ChangedFiles"));
-    const std::filesystem::path& ws = workspace.Path();
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_Pipeline_Seam_ChangedFiles"));
+    std::filesystem::path ws = workspace.Path();
     auto sourcePath = ws / "Bar.cs";
     {
         std::ofstream f(sourcePath);
@@ -237,12 +219,6 @@ TEST(HotReloadPipelineTestHooks, ChangedFilesHookIncludedInRequest)
     EXPECT_TRUE(j.contains("PreferredStrategy") && j["PreferredStrategy"].get<std::string>() == "Incremental");
     EXPECT_TRUE(j.contains("Config"));
     EXPECT_TRUE(j.contains("Tfm") && j["Tfm"].get<std::string>() == "net10.0");
-    // The engine's script surface rides on the hot-reload request as on every other: the server
-    // holds no list of its own.
-    ASSERT_TRUE(j.contains("ScriptSurface"));
-    EXPECT_EQ(j["ScriptSurface"].get<std::vector<std::string>>(),
-              std::vector<std::string>(GameEngine::ScriptingPaths::kScriptSurfaceAssemblyFileNames.begin(),
-                                       GameEngine::ScriptingPaths::kScriptSurfaceAssemblyFileNames.end()));
 #else
     GTEST_SKIP() << "Windows-only in this environment";
 #endif
@@ -254,11 +230,8 @@ TEST(HotReloadPipelineTestHooks, CsprojChangeForcesFullAndAffectsList)
 #ifdef _WIN32
     using nlohmann::json;
     // Arrange temp workspace with a dummy project file
-    // A workspace of its own per run: the compiler enumerates every .cs file under
-    // it, so a file left by an earlier run would stand in for one this test forgot.
-    const GameEngine::TestUtils::ScopedTempDir workspace(
-        GameEngine::TestUtils::MakeUniqueTempDirectory("GE_Pipeline_Seam_Csproj"));
-    const std::filesystem::path& ws = workspace.Path();
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_Pipeline_Seam_Csproj"));
+    std::filesystem::path ws = workspace.Path();
     auto projPath = ws / "Foo.csproj";
     {
         std::ofstream f(projPath); f << "<Project Sdk=\"Microsoft.NET.Sdk\"/>"; f.close();
@@ -325,11 +298,8 @@ TEST(HotReloadPipelineTestHooks, ChangedFilesDefaultsAffectsListAndIncremental)
 #ifdef _WIN32
     using nlohmann::json;
     // Arrange temp workspace with a simple C# file
-    // A workspace of its own per run: the compiler enumerates every .cs file under
-    // it, so a file left by an earlier run would stand in for one this test forgot.
-    const GameEngine::TestUtils::ScopedTempDir workspace(
-        GameEngine::TestUtils::MakeUniqueTempDirectory("GE_Pipeline_Seam_DefaultAffects"));
-    const std::filesystem::path& ws = workspace.Path();
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_Pipeline_Seam_DefaultAffects"));
+    std::filesystem::path ws = workspace.Path();
     auto sourcePath = ws / "Baz.cs";
     { std::ofstream f(sourcePath); f << "public static class Baz { public static int X()=>3; }"; }
     auto asmPath = WorkspaceAssemblyPath(ws);
@@ -386,11 +356,8 @@ TEST(HotReloadPipelineTestHooks, AffectedFilesInferenceAddsGeneratedAndCsproj)
 {
 #ifdef _WIN32
     using nlohmann::json;
-    // A workspace of its own per run: the compiler enumerates every .cs file under
-    // it, so a file left by an earlier run would stand in for one this test forgot.
-    const GameEngine::TestUtils::ScopedTempDir workspace(
-        GameEngine::TestUtils::MakeUniqueTempDirectory("GE_Pipeline_Seam_AffectsInference"));
-    const std::filesystem::path& ws = workspace.Path();
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_Pipeline_Seam_AffectsInference"));
+    std::filesystem::path ws = workspace.Path();
     auto sourcePath = ws / "Qux.cs";
     { std::ofstream f(sourcePath); f << "public static class Qux { public static int V()=>4; }"; }
     auto genPath = ws / "Qux.g.cs"; { std::ofstream f(genPath); f << "// generated"; }
@@ -481,19 +448,19 @@ private:
     int m_DelayMs;
 };
 
-// Recording compile stage + hermetic mock loader so stages 2-4 are
+// Recording compile stage + hermetic mock loader/swapper so stages 2-4 are
 // deterministic (no real dotnet, no CoreCLR, no disk dependency).
 void ConfigureMockStages(HotReloadPipeline& pipeline, std::shared_ptr<RecordingCompilerLog> log, int compileDelayMs) {
     pipeline.SetCompilerFactory([log, compileDelayMs] {
         return std::make_unique<RecordingCompiler>(log, compileDelayMs);
     });
     pipeline.SetAssemblyLoaderFactory([] { return std::make_unique<GameEngine::Tests::MockAssemblyLoader>(); });
+    pipeline.SetSwapperFactory([] { return std::make_unique<GameEngine::Tests::MockAssemblySwapper>(true, 1); });
 }
 
 std::filesystem::path MakeSupersedeWorkspace(const char* name) {
-    auto ws = std::filesystem::temp_directory_path() / name;
+    auto ws = TestUtils::MakeUniqueTempDirectory(name);
     std::error_code ec;
-    std::filesystem::remove_all(ws, ec);
     std::filesystem::create_directories(ws, ec);
     return ws;
 }
@@ -558,29 +525,6 @@ public:
 private:
     std::string m_Response;
     std::shared_ptr<Gate> m_Gate;
-};
-
-// Polls until a compile request reaches the gate. Returns false at the timeout.
-bool WaitForCompileRequest(const GatedFakeTransport::Gate& gate, std::chrono::seconds timeout) {
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (!gate.CompileRequestSeen.load() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    return gate.CompileRequestSeen.load();
-}
-
-// Opens a gate when the scope ends, on every exit path, so a failed assertion
-// cannot leave a compile parked on the gate. Declare it after the pipeline: it
-// then opens the gate before the pipeline's destructor waits for the compile.
-class ScopedGateRelease {
-public:
-    explicit ScopedGateRelease(std::shared_ptr<GatedFakeTransport::Gate> gate) : m_Gate(std::move(gate)) {}
-    ~ScopedGateRelease() { m_Gate->Release(); }
-    ScopedGateRelease(const ScopedGateRelease&) = delete;
-    ScopedGateRelease& operator=(const ScopedGateRelease&) = delete;
-
-private:
-    std::shared_ptr<GatedFakeTransport::Gate> m_Gate;
 };
 
 } // namespace
@@ -648,8 +592,8 @@ TEST(HotReloadPipelineSupersede, QueuedRunIsSupersededWithoutEverCompiling) {
         ConfigureMockStages(pipeline, log, 0);
 
         auto futA = pipeline.ExecuteAsync(pathA.string());
-        // ExecuteAsync queued run A's compile. The channel's slot is held, so
-        // the compile can only wait in the channel, and the supersede below
+        // Let the launcher queue run A's compile; with the channel's slot held
+        // it can only wait in the channel, so the supersede below
         // deterministically hits the queued case.
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
@@ -686,6 +630,7 @@ TEST(HotReloadPipelineSupersede, QueuedRunIsSupersededWithoutEverCompiling) {
 }
 
 TEST(HotReloadPipelineSupersede, SupersededRunningCompileNeverWritesStaleDll) {
+#ifdef _WIN32
     auto ws = MakeSupersedeWorkspace("GE_Supersede_StaleWrite");
     {
         std::ofstream f(ws / "Foo.cs");
@@ -695,21 +640,20 @@ TEST(HotReloadPipelineSupersede, SupersededRunningCompileNeverWritesStaleDll) {
     std::filesystem::create_directories(asmDir);
     auto asmPath = asmDir / "GameEngine.Scripts.dll";
 
-    GameEngine::Testing::SetEnvVar("GE_DISABLE_COMPILE_SERVER", "0");
+    _putenv_s("GE_DISABLE_COMPILE_SERVER", "0");
 
-    // Each compile blocks inside the server round-trip until its gate opens.
-    // The first compile (stale) answers "MZOLD"; the later ones (fresh) answer "MZNEW".
+    // First compile (stale): blocks inside the server round-trip, answers
+    // "MZOLD". Second compile (fresh): answers "MZNEW" immediately.
     GameEngine::Tests::ScopedHotReloadTestHooks hookGuard;
-    auto staleGate = std::make_shared<GatedFakeTransport::Gate>();
-    auto freshGate = std::make_shared<GatedFakeTransport::Gate>();
+    auto gate = std::make_shared<GatedFakeTransport::Gate>();
     auto transportCount = std::make_shared<std::atomic<int>>(0);
     SetCompileServerTransportFactoryForTests(
-        [staleGate, freshGate, transportCount](const std::string&) -> std::unique_ptr<IHotReloadTransport> {
+        [gate, transportCount](const std::string&) -> std::unique_ptr<IHotReloadTransport> {
             const int index = transportCount->fetch_add(1);
             if (index == 0) {
-                return std::make_unique<GatedFakeTransport>(R"({"Success":true,"AssemblyBytes":"TVpPTEQ="})", staleGate); // "MZOLD"
+                return std::make_unique<GatedFakeTransport>(R"({"Success":true,"AssemblyBytes":"TVpPTEQ="})", gate); // "MZOLD"
             }
-            return std::make_unique<GatedFakeTransport>(R"({"Success":true,"AssemblyBytes":"TVpORVc="})", freshGate); // "MZNEW"
+            return std::make_unique<GatedFakeTransport>(R"({"Success":true,"AssemblyBytes":"TVpORVc="})", nullptr); // "MZNEW"
         });
 
     auto readDll = [&]() {
@@ -721,47 +665,51 @@ TEST(HotReloadPipelineSupersede, SupersededRunningCompileNeverWritesStaleDll) {
     {
         JobSystem::JobChannel compiles(*pool, JobSystem::JobChannelDesc{.Name = "Script compiles", .MaxRunning = 1});
         HotReloadPipeline pipeline(*pool, compiles);
-        ScopedGateRelease releaseStaleGate(staleGate);
-        ScopedGateRelease releaseFreshGate(freshGate);
-        // Real CompileServerCompiler (default) for stage 1; hermetic mock loader for stages 2-4.
+        // Real CompileServerCompiler (default) for stage 1; hermetic mocks for stages 2-4.
         pipeline.SetAssemblyLoaderFactory([] { return std::make_unique<GameEngine::Tests::MockAssemblyLoader>(); });
+        pipeline.SetSwapperFactory([] { return std::make_unique<GameEngine::Tests::MockAssemblySwapper>(true, 1); });
 
         auto futA = pipeline.ExecuteAsync(asmPath.string());
-        ASSERT_TRUE(WaitForCompileRequest(*staleGate, std::chrono::seconds(10)))
-            << "stale compile never reached the server round-trip";
+
+        // Wait until the stale compile is genuinely Running (blocked mid round-trip).
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!gate->CompileRequestSeen.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        ASSERT_TRUE(gate->CompileRequestSeen.load()) << "stale compile never reached the server round-trip";
 
         // Supersede while stage 1 is Running: Cancel() loses the F12
         // arbitration, the stale compile keeps running, and only the pre-write
         // token check keeps its output off the disk.
         auto futB = pipeline.ExecuteAsync(asmPath.string());
 
+        ASSERT_EQ(futB.wait_for(std::chrono::seconds(15)), std::future_status::ready);
+        auto statsB = futB.get();
+        EXPECT_TRUE(statsB.success) << statsB.errorMessage;
+
         ASSERT_EQ(futA.wait_for(std::chrono::seconds(15)), std::future_status::ready);
         auto statsA = futA.get();
         EXPECT_FALSE(statsA.success);
         EXPECT_EQ(statsA.result, HotReloadResult::CancelledByNewOperation);
 
-        // The cap-1 "Script compiles" channel starts the fresh compile only when
-        // the stale compile ends. At the fresh round-trip, the stale compile has
-        // passed its write gate and the fresh compile has not written yet.
-        staleGate->Release();
-        ASSERT_TRUE(WaitForCompileRequest(*freshGate, std::chrono::seconds(15)))
-            << "fresh compile never reached the server round-trip";
-        EXPECT_TRUE(staleGate->CompileResponseDelivered.load())
-            << "stale compile should have completed normally (Cancel cannot abort a Running stage)";
-        EXPECT_NE(readDll(), "MZOLD") << "superseded compile must not write its DLL";
+        // Fresh DLL is on disk while the stale compile is still in flight.
+        EXPECT_EQ(readDll(), "MZNEW");
 
-        freshGate->Release();
-        ASSERT_EQ(futB.wait_for(std::chrono::seconds(15)), std::future_status::ready);
-        auto statsB = futB.get();
-        EXPECT_TRUE(statsB.success) << statsB.errorMessage;
+        gate->Release(); // let the stale compile complete its round-trip
     }
-    // Pool teardown joins every worker, so no compile writes after this.
+    // Pool teardown joins the worker running the stale compile; after this
+    // the stale run has fully completed.
     pool.reset();
 
-    EXPECT_EQ(readDll(), "MZNEW") << "the fresh compile's DLL must end on disk";
+    EXPECT_TRUE(gate->CompileResponseDelivered.load())
+        << "stale compile should have completed normally (Cancel cannot abort a Running stage)";
+    EXPECT_EQ(readDll(), "MZNEW") << "superseded compile must not overwrite the newer DLL";
 
     std::error_code ec;
     std::filesystem::remove_all(ws, ec);
+#else
+    GTEST_SKIP() << "Windows-only in this environment";
+#endif
 }
 
 TEST(HotReloadPipelineSupersede, RapidFireSupersedeLastWinsAndNothingHangs) {

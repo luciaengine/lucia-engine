@@ -104,10 +104,13 @@ void GamepadCameraControllerSystem::Update(ECS::World& world, float32 deltaTime)
 
     bool updated = false;
     world.Query<ECS::Write<Transform>, ECS::Write<WorldTransform>, ECS::Read<GameEngine::Components::Camera>>().Each(
-        [&](ECS::EntityHandle entity, Transform& transform, WorldTransform& worldTransform, const GameEngine::Components::Camera&)
+        [&](ECS::EntityHandle entity, ECS::Writable<Transform> transformRow, ECS::Writable<WorldTransform> worldTransformRow,
+            const GameEngine::Components::Camera&)
         {
             if (updated)
                 return;
+            Transform& transform = transformRow.Mutable();
+            WorldTransform& worldTransform = worldTransformRow.Mutable();
 
             if (!m_OrientationInitialized)
             {

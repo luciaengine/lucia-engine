@@ -1,6 +1,11 @@
 # Apps/Player/CMakeLists.txt
 # Standalone Player runtime — lightweight game executable without Editor.
 
+if(GE_MOBILE)
+    include(Mobile.cmake)
+    return()
+endif()
+
 # Web Player (wasm): the same PlayerApplication driven by the browser's rAF
 # loop from WebMain.cpp instead of main.cpp's desktop loop. The canvas comes
 # from Tools/Web/shell.html and the WebGPU device binds to it. ASYNCIFY is
@@ -22,8 +27,6 @@ if(EMSCRIPTEN)
         Source/WebPackReader.h
         Source/PlayerApplication.cpp
         Source/PlayerApplication.h
-        Source/PlayerStartupReadiness.cpp
-        Source/PlayerStartupReadiness.h
     )
     target_include_directories(WebPlayer PRIVATE Source)
     target_compile_features(WebPlayer PRIVATE cxx_std_20)
@@ -61,7 +64,6 @@ if(APPLE)
 else()
     add_executable(Player WIN32 ${_desktop_player_sources})
 endif()
-ge_add_production_allocation_hook(Player)
 
 target_include_directories(Player PRIVATE Source)
 target_compile_features(Player PRIVATE cxx_std_20)
@@ -138,58 +140,61 @@ endif()
 # owning packages (e.g. Packages/eztree), not from the engine tree.
 add_custom_command(TARGET Player POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/Adapters"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Adapters"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/Adapters"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/Includes"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Includes"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/Includes"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/Surfaces"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Surfaces"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/Surfaces"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Particles"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/Particles"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/GPUFogParticles/Surfaces"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/Engine/Modules/GPUFogParticles/Shaders/Surfaces"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/GPUFogParticles/Surfaces"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/TerrainGrass"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Shaders/TerrainGrass"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/TerrainGrass"
     # Ocean GLSL sources compile at runtime (shaderc) through the material adapter
     # pipeline + the sim compute drivers, so the whole source dir must ship.
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/Ocean"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Ocean"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/Ocean"
-    # CBT terrain shader sources + both compiled compute kernel arms, the same
-    # set the Editor stages (Apps/Editor/CMakeLists.txt). The sources #include
-    # their siblings, so the whole directory ships. Three runtime consumers
+    # CBT terrain shader sources + the compiled compute kernel, mirroring the
+    # Editor's staging (Apps/Editor/CMakeLists.txt). Three runtime consumers
     # resolve this exact directory from the exe:
-    #   - CBTRenderFeature::FindCBTShaderDir loads cbt_kernels.comp.spv from it,
-    #     or cbt_kernels_heap32.comp.spv on a device without 64-bit integers.
+    #   - CBTRenderFeature::FindCBTShaderDir loads cbt_kernels.comp.spv from it.
     #   - TerrainRenderFeature::EnsureGpuBakePipeline loads terrain_height_bake.comp
-    #     from it.
+    #     from it, which includes cbt_atlas.glsl and terrain_surface_rules.glsl as
+    #     siblings.
     #   - The terrain-grass shaders #include cbt_atlas.glsl out of it under both
     #     spellings in use — "CBT/cbt_atlas.glsl" against the Assets/Shaders include
     #     root (terrain_grass_surface.glsl) and the bare "cbt_atlas.glsl" against
     #     the CBT dir itself (terrain_grass_place.comp).
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/CBT"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-            "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT"
-            "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/CBT"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT/cbt_vertex_modifier.glsl"
+            "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT/cbt_surface.glsl"
+            "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT/cbt_layout.glsl"
+            "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT/cbt_domain.glsl"
+            "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT/cbt_atlas.glsl"
+            "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT/cbt_sculpt.glsl"
+            "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT/cbt_analytic.glsl"
+            "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT/terrain_height_bake.comp"
+            "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT/terrain_surface_rules.glsl"
             "${CMAKE_BINARY_DIR}/Shaders/cbt_kernels.comp.spv"
             "${CMAKE_BINARY_DIR}/Shaders/cbt_kernels_heap32.comp.spv"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders/CBT"
     COMMAND ${CMAKE_COMMAND} "-DPLAYER_CONTENT_DIR=${_GE_PLAYER_CONTENT_DIR}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/Tests/VerifyParticleShaderStaging.cmake"
-    COMMAND ${CMAKE_COMMAND} "-DPLAYER_CONTENT_DIR=${_GE_PLAYER_CONTENT_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/Tests/VerifyShaderIncludeStaging.cmake"
     COMMENT "Staging engine shaders (Adapters/Includes/Surfaces/Particles/GPUFogParticles/TerrainGrass/Ocean/CBT) for Player"
     VERBATIM
 )
@@ -198,9 +203,6 @@ if(BUILD_TESTING)
     add_test(NAME PlayerParticleShaderStaging
         COMMAND ${CMAKE_COMMAND} "-DPLAYER_CONTENT_DIR=${_GE_PLAYER_CONTENT_DIR}"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/Tests/VerifyParticleShaderStaging.cmake")
-    add_test(NAME PlayerShaderIncludeStaging
-        COMMAND ${CMAKE_COMMAND} "-DPLAYER_CONTENT_DIR=${_GE_PLAYER_CONTENT_DIR}"
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/Tests/VerifyShaderIncludeStaging.cmake")
 endif()
 
 # Shader-graph node helpers. ShaderGraphMaterial lives in the shared Engine
@@ -209,39 +211,23 @@ endif()
 # ship it like any other runtime shader source.
 ge_stage_shader_graph_nodes(Player)
 
-# Stage the bundled UI faces into <install assets root>/Fonts, the 'editor' mount of a development
-# Player. UIManager's default atlas reads Roboto-Regular.ttf there, and so does the HUD of a project
-# without its own copy. The list names each runtime face, so an editor-only font does not ship.
-set(_GE_PLAYER_FONT_FILES
-    Roboto-Regular.ttf Roboto-Medium.ttf Roboto-Bold.ttf
-    Roboto-Italic.ttf Roboto-MediumItalic.ttf Roboto-BoldItalic.ttf
-    RobotoMono-Regular.ttf RobotoMono-Bold.ttf
-    RobotoMono-Italic.ttf RobotoMono-BoldItalic.ttf
-    LICENSE.txt)
-list(TRANSFORM _GE_PLAYER_FONT_FILES PREPEND "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/"
-     OUTPUT_VARIABLE _GE_PLAYER_FONT_SOURCES)
+# Stage the UI fonts into the Player's staged Assets: the default faces, the multilingual
+# Noto set and their license notices. GameUIHost's default HUD font load and UIManager's
+# default-atlas resolver read <install assets root>/Fonts; a project that ships its own
+# Assets/Fonts overrides these via --asset-root.
 add_custom_command(TARGET Player POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/Fonts"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${_GE_PLAYER_FONT_SOURCES}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/Fonts"
-    COMMAND ${CMAKE_COMMAND} "-DPLAYER_CONTENT_DIR=${_GE_PLAYER_CONTENT_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/Tests/VerifyFontStaging.cmake"
-    COMMENT "Staging bundled UI font families for Player"
+    COMMENT "Staging UI fonts and license notices"
     VERBATIM
 )
-
-if(BUILD_TESTING)
-    add_test(NAME PlayerFontStaging
-        COMMAND ${CMAKE_COMMAND} "-DPLAYER_CONTENT_DIR=${_GE_PLAYER_CONTENT_DIR}"
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/Tests/VerifyFontStaging.cmake")
-endif()
 
 # Runtime animation defaults are needed even when the project supplies no profile.
 add_custom_target(StagePlayerHumanoidProfile
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/SkeletonProfiles"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/Engine/Assets/SkeletonProfiles/HumanoidStandard.profile.json"
+            "${CMAKE_SOURCE_DIR}/Assets/SkeletonProfiles/HumanoidStandard.profile.json"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/SkeletonProfiles/HumanoidStandard.profile.json"
     COMMENT "Staging the runtime humanoid profile for Player"
     VERBATIM)
@@ -255,24 +241,9 @@ add_dependencies(Player StagePlayerHumanoidProfile)
 add_custom_command(TARGET Player POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/Textures"
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-            "${CMAKE_SOURCE_DIR}/Engine/Assets/Textures"
+            "${CMAKE_SOURCE_DIR}/Assets/Textures"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/Textures"
     COMMENT "Staging engine texture assets for Player"
-    VERBATIM
-)
-
-# Stage engine-level materials into the Player's staged Assets.
-# Scenes reference built-in materials by their 'editor' mount GUID (the grid ground of the New
-# Scene and the Basic 3D template), and a Player run from the build tree resolves them from
-# this tree.
-# A POST_BUILD copy runs only when the Player relinks: an edited material stays stale and a
-# deleted one is not pruned until then. The dependency-tracked mirror is issue #2473.
-add_custom_command(TARGET Player POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/Materials"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-            "${CMAKE_SOURCE_DIR}/Engine/Assets/Materials"
-            "${_GE_PLAYER_CONTENT_DIR}/Assets/Materials"
-    COMMENT "Staging engine material assets for Player"
     VERBATIM
 )
 
@@ -287,7 +258,7 @@ add_custom_command(TARGET Player POST_BUILD
 add_custom_command(TARGET Player POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_GE_PLAYER_CONTENT_DIR}/Assets/RenderPipelines"
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-            "${CMAKE_SOURCE_DIR}/Engine/Assets/RenderPipelines"
+            "${CMAKE_SOURCE_DIR}/Assets/RenderPipelines"
             "${_GE_PLAYER_CONTENT_DIR}/Assets/RenderPipelines"
     COMMENT "Staging engine render pipelines for Player"
     VERBATIM
@@ -313,6 +284,41 @@ add_custom_command(TARGET Player POST_BUILD
 option(GE_PLAYER_SKIP_SHADERPKG_DEP "Skip Player dependency on CompileShaderPkgs" OFF)
 if(TARGET CompileShaderPkgs AND NOT GE_PLAYER_SKIP_SHADERPKG_DEP)
     add_dependencies(Player CompileShaderPkgs)
+    # Ordering alone leaves POST_BUILD staging idle after a shader-only edit.
+    # Generated outputs must invalidate the Player link so staging, signing and
+    # the Editor SDK template copy all consume the shaders just built.
+    get_property(_GE_PLAYER_SHADERPKG_OUTPUTS GLOBAL PROPERTY GE_SHADERPKG_OUTPUTS)
+    get_property(_GE_PLAYER_SHADER_SPV_OUTPUTS GLOBAL PROPERTY GE_SHADER_SPV_OUTPUTS)
+    set_property(TARGET Player APPEND PROPERTY LINK_DEPENDS
+        ${_GE_PLAYER_SHADERPKG_OUTPUTS} ${_GE_PLAYER_SHADER_SPV_OUTPUTS})
+endif()
+# Runtime material compilation consumes these source trees, including surfaces
+# that no fixed shader package compiles. Refresh those on source-only edits too.
+file(GLOB_RECURSE _GE_PLAYER_SHADER_SOURCE_INPUTS CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/*"
+    "${CMAKE_SOURCE_DIR}/Engine/Modules/GPUFogParticles/Shaders/Surfaces/*"
+    "${CMAKE_SOURCE_DIR}/Engine/Modules/TerrainGrass/Shaders/TerrainGrass/*"
+    "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT/*")
+set_property(TARGET Player APPEND PROPERTY LINK_DEPENDS ${_GE_PLAYER_SHADER_SOURCE_INPUTS})
+if(TARGET CBTCompileShaders AND NOT GE_PLAYER_SKIP_SHADERPKG_DEP)
+    add_dependencies(Player CBTCompileShaders)
+    set_property(TARGET Player APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_BINARY_DIR}/Shaders/cbt_kernels.comp.spv"
+        "${CMAKE_BINARY_DIR}/Shaders/cbt_kernels_heap32.comp.spv")
+endif()
+if(BUILD_TESTING AND TARGET CompileShaderPkgs AND NOT GE_PLAYER_SKIP_SHADERPKG_DEP)
+    set(_ge_player_template_shader_check "")
+    if(APPLE AND TARGET Editor)
+        set(_ge_player_template_shader_check
+            "-DTEMPLATE_SHADER_DIR=$<TARGET_FILE_DIR:Editor>/SDK/templates/Player.app/Contents/Resources/Assets/Shaders")
+    endif()
+    add_test(NAME PlayerShaderStaging
+        COMMAND ${CMAKE_COMMAND}
+            "-DCOMPILED_SHADER_DIR=${CMAKE_BINARY_DIR}/Shaders"
+            "-DENGINE_MODULES_DIR=${CMAKE_SOURCE_DIR}/Engine/Modules"
+            "-DPLAYER_SHADER_DIR=${_GE_PLAYER_CONTENT_DIR}/Assets/Shaders"
+            ${_ge_player_template_shader_check}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/Tests/VerifyShaderStaging.cmake")
 endif()
 set(_GE_PLAYER_SHADER_STAGE_SCRIPT "${CMAKE_BINARY_DIR}/cmake/StagePlayerShaders.cmake")
 file(WRITE "${_GE_PLAYER_SHADER_STAGE_SCRIPT}" "\
@@ -334,28 +340,34 @@ if(ENABLE_SCRIPTING)
     if(NOT APPLE)
         add_custom_command(TARGET Player POST_BUILD
             # CoreBridge (stable bridge, needed for CLR hosting)
-            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${CMAKE_SOURCE_DIR}/Managed/CoreBridge/bin/$<CONFIG>/net10.0"
                     "$<TARGET_FILE_DIR:Player>"
             # HotReload (provides the .runtimeconfig.json needed for CLR initialization;
             # the Player doesn't use hot-reload but needs the config to bootstrap the runtime)
-            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${CMAKE_SOURCE_DIR}/Managed/HotReload/bin/$<CONFIG>/net10.0"
                     "$<TARGET_FILE_DIR:Player>"
             # Scripting ABI surfaces (no editor-specific assemblies)
-            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${CMAKE_SOURCE_DIR}/Managed/Scripting.ABI/bin/$<CONFIG>"
                     "$<TARGET_FILE_DIR:Player>"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${CMAKE_SOURCE_DIR}/Managed/ECS.ABI/bin/$<CONFIG>"
                     "$<TARGET_FILE_DIR:Player>"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-                    "${CMAKE_SOURCE_DIR}/Managed/Scripting.Bindings/bin/$<CONFIG>"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_SOURCE_DIR}/Managed/Input.ABI/bin/$<CONFIG>"
                     "$<TARGET_FILE_DIR:Player>"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_SOURCE_DIR}/Managed/Physics.ABI/bin/$<CONFIG>"
+                    "$<TARGET_FILE_DIR:Player>"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_SOURCE_DIR}/Managed/TileMap.ABI/bin/$<CONFIG>"
+                    "$<TARGET_FILE_DIR:Player>"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${CMAKE_SOURCE_DIR}/Managed/Platform.ABI/bin/$<CONFIG>"
                     "$<TARGET_FILE_DIR:Player>"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${CMAKE_SOURCE_DIR}/Managed/Scripting.Runtime/bin/$<CONFIG>"
                     "$<TARGET_FILE_DIR:Player>"
             COMMENT "Staging managed assemblies (CoreBridge/ABI/Scripting.Runtime) next to Player.exe"
@@ -380,7 +392,9 @@ if(ENABLE_SCRIPTING)
                 # Scripting ABI surfaces (no editor-specific assemblies)
                 "${CMAKE_SOURCE_DIR}/Managed/Scripting.ABI/bin/$<CONFIG>"
                 "${CMAKE_SOURCE_DIR}/Managed/ECS.ABI/bin/$<CONFIG>"
-                "${CMAKE_SOURCE_DIR}/Managed/Scripting.Bindings/bin/$<CONFIG>"
+                "${CMAKE_SOURCE_DIR}/Managed/Input.ABI/bin/$<CONFIG>"
+                "${CMAKE_SOURCE_DIR}/Managed/Physics.ABI/bin/$<CONFIG>"
+                "${CMAKE_SOURCE_DIR}/Managed/TileMap.ABI/bin/$<CONFIG>"
                 "${CMAKE_SOURCE_DIR}/Managed/Platform.ABI/bin/$<CONFIG>"
                 # GameSystem runner (ManagedSystemBridge resolves it beside CoreBridge)
                 "${CMAKE_SOURCE_DIR}/Managed/Scripting.Runtime/bin/$<CONFIG>"
@@ -401,7 +415,7 @@ endif()
 if(ENABLE_SCRIPTING)
     set(_ge_player_managed_deps
         CoreBridgeAssembly HotReloadAssembly ScriptingAbiAssembly
-        EcsAbiAssembly ScriptingBindingsAssembly PlatformAbiAssembly
+        EcsAbiAssembly InputAbiAssembly PhysicsAbiAssembly TileMapAbiAssembly PlatformAbiAssembly
         ScriptingRuntimeAssembly)
     add_dependencies(Player ${_ge_player_managed_deps})
 
@@ -426,11 +440,11 @@ set_target_properties(Player PROPERTIES
 if(APPLE)
     set_target_properties(Player PROPERTIES
         MACOSX_BUNDLE TRUE
-        MACOSX_BUNDLE_BUNDLE_NAME "Open Engine Player"
+        MACOSX_BUNDLE_BUNDLE_NAME "GameEngine Player"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.gameengine.player"
-        MACOSX_BUNDLE_BUNDLE_VERSION "${GE_ENGINE_VERSION_NUMERIC}"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "${GE_ENGINE_VERSION_NUMERIC}"
-        MACOSX_BUNDLE_INFO_STRING "Open Engine Player ${GE_ENGINE_VERSION}"
+        MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+        MACOSX_BUNDLE_INFO_STRING "GameEngine Player 1.0"
         # Load bundled dylibs from Contents/Frameworks (staged by
         # ge_stage_runtime_dependencies). BUILD_WITH_INSTALL_RPATH keeps dev
         # builds run from the build tree consistent with the staged layout.

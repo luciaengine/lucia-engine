@@ -22,7 +22,6 @@
 #include "CBTTerrain/CBTTreeAudit.h"
 #include "CBTTerrain/CBTSphereRoots.h"
 #include "Rendering/Core/CommandList.h"
-#include "CBTReliefHeightSource.h"
 #include "CBTTestHarness.h"
 
 using namespace GameEngine::CBTTerrain;
@@ -116,7 +115,14 @@ TEST_F(CBTInstanceTest, RefreshTerrainSourcesDropsRetiredHeightmapAfterUpdate)
     ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
     ASSERT_TRUE(instance.InitializeRoots());
 
-    const TextureHandle retired = MakeR32Texture(*m_Device, 4, 4, {}, "ReproInstanceHeightmap");
+    TextureDesc td{};
+    td.width = 4;
+    td.height = 4;
+    td.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
+    td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource) |
+               static_cast<uint32_t>(TextureUsage::TransferDst);
+    td.debugName = "ReproInstanceHeightmap";
+    const TextureHandle retired = m_Device->CreateTexture(td);
     ASSERT_TRUE(retired.IsValid());
 
     // Bind the heightmap into the ring the way BuildFrameParams does, then run an update so the
@@ -666,8 +672,8 @@ TEST_F(CBTInstanceTest, OverflowTelemetrySaturatesUnderConcurrentRollbacks)
     }
 }
 
-// A restart refines the fresh roots to one uniform depth, the seed RefineToView then starts from: every
-// leaf at that depth, the tree conforming, the sum tree counting exactly those leaves.
+// A restart refines the fresh roots to one uniform depth before the first draw: every leaf at that
+// depth, the tree conforming, the sum tree counting exactly those leaves.
 TEST_F(CBTInstanceTest, RefineUniformReachesOneDepthEverywhere)
 {
     CBTInstance instance;
@@ -738,15 +744,16 @@ TEST_F(CBTInstanceTest, ReseedIgnoresPoisonedDeadPayloadAcrossDomains)
         {
             for (uint32_t corner = 0; corner < 3u; ++corner)
             {
-                double xyz[3];
-                ReadCornerWorld(vertices, slot, corner, xyz);
-                for (double coordinate : xyz)
+                float xyz[3];
+                std::memcpy(xyz, vertices.data() + slot * kVertexWordsPerSlot + corner * 4u,
+                            sizeof(xyz));
+                for (float coordinate : xyz)
                     EXPECT_TRUE(std::isfinite(coordinate));
                 if (domain == kDomainSpherical)
                     EXPECT_NEAR(std::sqrt(xyz[0]*xyz[0] + xyz[1]*xyz[1] + xyz[2]*xyz[2]),
-                                50.0, 0.01);
+                                50.0f, 0.01f);
                 else
-                    EXPECT_EQ(xyz[1], 0.0);
+                    EXPECT_EQ(xyz[1], 0.0f);
             }
         }
         classify.TargetDepth = base;
@@ -825,7 +832,7 @@ TEST_F(CBTInstanceTest, GatedVertexEvalUsesCompactModifiedStream)
     PoisonWord(*m_Device, resources.GetBuffer(CBTBinding::IndirectDraw),
                kDrawStreamModified * kDrawStreamStride, 3u);
     PoisonWord(*m_Device, resources.GetBuffer(CBTBinding::WorkQueue), kWQVertexEvalCounter, 0u);
-    resources.UploadFrameParams(0u, CBTIdentityFrameParams(), SphereEditRegions{});
+    resources.UploadFrameParams(0u, CBTIdentityFrameParams());
     CBTPushConstants pc = DefaultPlanarPush();
     pc.GateVertexEval = 1u;
     DispatchSingleKernel(*m_Device, m_KernelSet, instance, CBTKernel::VertexEval, pc);

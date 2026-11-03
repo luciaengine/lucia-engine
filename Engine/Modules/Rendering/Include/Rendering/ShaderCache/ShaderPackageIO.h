@@ -8,7 +8,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "Rendering/Materials/Shader/ShaderMeta.h"
+#include "Rendering/Materials/ShaderMeta.h"
 #include "Rendering/ShaderCache/ShaderPackageContainer.h"
 
 namespace GameEngine::Rendering

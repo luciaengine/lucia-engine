@@ -1,8 +1,5 @@
 #include "Video/VideoWriter.h"
 
-#include "Types/PathUtils.h"
-#include "Types/StringUtils.h"
-
 extern "C"
 {
 #include <libavcodec/avcodec.h>
@@ -17,10 +14,10 @@ extern "C"
 }
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
-#include <format>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -35,20 +32,12 @@ namespace
 // common frame rates (24/25/30/50/60 and their NTSC variants).
 constexpr int kVideoTimeScale = 60000;
 
-// With no bitrate given, H264 and HEVC record at constant quality: the encoder
-// spends the bits each frame needs, so a soft gradient keeps its quality across
-// the keyframe interval instead of starting sharp and softening under a fixed
-// rate target. Media Foundation takes a 0-100 quality (100 best); x264 and x265
-// take a constant rate factor, where 18 is visually lossless. On the showcase
-// sky take at 1080p30, quality 70 holds the soft sky steady (about 14 Mbit/s);
-// 50 still steps at keyframes.
-constexpr int kMediaFoundationQuality = 70;
-constexpr const char* kConstantRateFactor = "18";
-// The rate target for an encoder with neither control: 0.12 bits per pixel per
+// Encoder-default bitrate when the caller passes 0. libavcodec's own default
+// (200 kbit/s) is unusable at any real resolution; 0.12 bits per pixel per
 // frame lands 1080p60 near 15 Mbit/s, in the range screen recorders pick.
-constexpr double kFallbackH264BitsPerPixel = 0.12;
+constexpr double kDefaultH264BitsPerPixel = 0.12;
 // HEVC reaches similar quality at a fraction of the H264 rate.
-constexpr double kFallbackHevcBitrateScale = 0.6;
+constexpr double kDefaultHevcBitrateScale = 0.6;
 constexpr double kKeyframeIntervalSeconds = 2.0;
 
 std::string AvErrorToString(int errorCode)
@@ -86,6 +75,18 @@ const std::vector<const char*>& EncoderCandidates(VideoCodec codec)
     }
 }
 
+std::string JoinCandidateNames(const std::vector<const char*>& names)
+{
+    std::string joined;
+    for (const char* name : names)
+    {
+        if (!joined.empty())
+            joined += ", ";
+        joined += name;
+    }
+    return joined;
+}
+
 const AVCodec* FindEncoder(VideoCodec codec)
 {
     for (const char* name : EncoderCandidates(codec))
@@ -94,33 +95,6 @@ const AVCodec* FindEncoder(VideoCodec codec)
             return encoder;
     }
     return nullptr;
-}
-
-bool HasPrivateOption(const AVCodecContext* context, const char* name)
-{
-    return context->priv_data && av_opt_find(context->priv_data, name, nullptr, 0, 0);
-}
-
-// Sets the encoder's own constant-quality control. False when the encoder has
-// none, and the caller falls back to a rate target.
-bool ApplyConstantQuality(AVCodecContext* context, const AVCodec* encoder)
-{
-    if (IsMediaFoundationEncoder(encoder))
-    {
-        av_opt_set(context->priv_data, "rate_control", "quality", 0);
-        av_opt_set_int(context->priv_data, "quality", kMediaFoundationQuality, 0);
-        // Media Foundation also receives any bit_rate as the mean rate, and the
-        // context starts at libavcodec's 200 kbit/s default.
-        context->bit_rate = 0;
-        return true;
-    }
-    if (HasPrivateOption(context, "crf"))
-    {
-        av_opt_set(context->priv_data, "crf", kConstantRateFactor, 0);
-        context->bit_rate = 0;
-        return true;
-    }
-    return false;
 }
 
 bool IsProResCodec(VideoCodec codec)
@@ -137,8 +111,11 @@ bool IsHdr(const VideoWriterOptions& options)
 // container-by-extension rule as the AVFoundation writer.
 const char* ContainerFormatName(const std::string& path)
 {
-    const std::string extension = LowerCaseExtension(std::filesystem::path(path));
-    if (extension == ".mp4" || extension == ".m4v")
+    std::string ext = std::filesystem::path(path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (ext == ".mp4" || ext == ".m4v")
         return "mp4";
     return "mov";
 }
@@ -519,16 +496,12 @@ struct VideoWriter::Impl
 
         if (options.codec == VideoCodec::H264 || options.codec == VideoCodec::HEVC)
         {
-            if (options.bitrateKbps > 0)
-            {
-                videoCodecCtx->bit_rate = static_cast<int64_t>(options.bitrateKbps) * 1000;
-            }
-            else if (!ApplyConstantQuality(videoCodecCtx, encoder))
-            {
-                videoCodecCtx->bit_rate = static_cast<int64_t>(
-                    static_cast<double>(options.width) * options.height * options.fps * kFallbackH264BitsPerPixel *
-                    (options.codec == VideoCodec::HEVC ? kFallbackHevcBitrateScale : 1.0));
-            }
+            const double defaultBits = static_cast<double>(options.width) * options.height *
+                                       options.fps * kDefaultH264BitsPerPixel *
+                                       (options.codec == VideoCodec::HEVC ? kDefaultHevcBitrateScale : 1.0);
+            videoCodecCtx->bit_rate = options.bitrateKbps > 0
+                                          ? static_cast<int64_t>(options.bitrateKbps) * 1000
+                                          : static_cast<int64_t>(defaultBits);
             videoCodecCtx->gop_size =
                 static_cast<int>(std::max(1.0, std::round(options.fps * kKeyframeIntervalSeconds)));
         }
@@ -840,7 +813,7 @@ bool VideoWriter::Open(const VideoWriterOptions& options)
     if (!encoder)
     {
         m_Impl->lastError = std::string("This ffmpeg build has no ") + ToString(m_Impl->options.codec) +
-                            " encoder (checked " + Join(EncoderCandidates(m_Impl->options.codec), ", ") +
+                            " encoder (checked " + JoinCandidateNames(EncoderCandidates(m_Impl->options.codec)) +
                             "). Rebuild ffmpeg with one of them enabled, or pick a supported codec";
         return false;
     }
@@ -859,8 +832,8 @@ bool VideoWriter::Open(const VideoWriterOptions& options)
                                                 options.path.c_str());
     if (result < 0 || !m_Impl->formatCtx)
     {
-        m_Impl->lastError = std::format("Failed to create the {} container ({})", containerName,
-                                       AvErrorToString(result));
+        m_Impl->lastError = std::string("Failed to create the ") + containerName + " container (" +
+                            AvErrorToString(result) + ")";
         return fail();
     }
 
@@ -895,8 +868,8 @@ bool VideoWriter::Open(const VideoWriterOptions& options)
     av_dict_free(&muxerOptions);
     if (result < 0)
     {
-        m_Impl->lastError = std::format("Failed to write the {} header ({})", containerName,
-                                       AvErrorToString(result));
+        m_Impl->lastError = std::string("Failed to write the ") + containerName + " header (" +
+                            AvErrorToString(result) + ")";
         return fail();
     }
     m_Impl->headerWritten = true;

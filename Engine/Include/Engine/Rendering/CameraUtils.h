@@ -1,7 +1,5 @@
 #pragma once
 
-#include "Mathematics/Matrix4x4.h"
-
 #include <cmath>
 
 namespace GameEngine
@@ -9,18 +7,27 @@ namespace GameEngine
 namespace Engine::Renderer
 {
 
-inline bool IsOrthographicProjectionLH_ZO(const Mathematics::Matrix4x4& proj)
+inline bool IsOrthographicProjectionLH_ZO(const float proj[16])
 {
-    return std::abs(proj[3][3] - 1.0f) < 1e-4f && std::abs(proj[2][3]) < 1e-4f;
+    return std::abs(proj[15] - 1.0f) < 1e-4f && std::abs(proj[11]) < 1e-4f;
 }
 
-// Extract near and far planes from a finite LH reverse-Z [1,0] projection, perspective
-// or orthographic, addressed as proj[column][row]. Perspective: near = proj[3][2] /
-// (1 - proj[2][2]), far = -proj[3][2] / proj[2][2]. Degenerate input gives defaults.
-inline void ExtractNearFarLH_ZO(const Mathematics::Matrix4x4& proj, float& outNear, float& outFar)
+// Extract near and far planes from a left-handed [1,0] reverse-Z projection
+// matrix. `proj` is column-major 4x4. Supports the engine's finite perspective
+// and orthographic projection builders, and falls back to sensible defaults on
+// degenerate input.
+//
+// Reverse-Z LH ZO finite (MakePerspectiveLH_ZO_ReverseZ):
+//   m22 = -near/(far-near)        → col 2, row 2 → index 10
+//   m32 = (near*far)/(far-near)   → col 3, row 2 → index 14
+// =>
+//   1 - m22 = (far-near)/(far-near) + near/(far-near) = far/(far-near)
+//   m32/(1 - m22) = near
+//   -m32/m22 = far
+inline void ExtractNearFarLH_ZO(const float proj[16], float& outNear, float& outFar)
 {
-    const float m22 = proj[2][2];
-    const float m32 = proj[3][2];
+    const float m22 = proj[10];
+    const float m32 = proj[14];
 
     float zn = 0.1f;
     float zf = 1000.0f;

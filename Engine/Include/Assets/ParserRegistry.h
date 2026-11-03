@@ -4,7 +4,6 @@
 #include "AssetCore/Asset.h"
 #include "AssetCore/GUID.h"
 #include "AssetCore/DepEdge.h"
-#include "Assets/AssetDecodeInputFiles.h"
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -90,18 +89,6 @@ namespace GameEngine {
                                                       [[maybe_unused]] const AssetManager& assetManager) const
         {
             return metadata.Path;
-        }
-
-        /// The files a decode of `bytes` (the read path's contents) reads besides them, and what
-        /// the parser resolved to name them. The AssetIOService reads the files on its reader
-        /// thread before the decode, and the decode takes them through ReadAssetDecodeInputFile
-        /// and the plan through CurrentAssetDecodePlan (Assets/AssetDecodeInputFiles.h): a path
-        /// not named here reads as absent inside the decode. Runs on a reader thread.
-        virtual AssetDecodeInputs ResolveDecodeInputs(
-            [[maybe_unused]] const AssetMetadata& metadata, [[maybe_unused]] const Vector<uint8>& bytes,
-            [[maybe_unused]] AssetManager& assetManager) const
-        {
-            return {};
         }
 
         /**
@@ -244,10 +231,6 @@ namespace GameEngine {
 
         /// Resolve the parser-owned payload before an asynchronous read.
         std::filesystem::path ResolveReadPath(const AssetMetadata& metadata, const AssetManager& assetManager) const;
-
-        /// The decode inputs the parser for `metadata` names (AssetParser::ResolveDecodeInputs).
-        AssetDecodeInputs ResolveDecodeInputs(const AssetMetadata& metadata, const Vector<uint8>& bytes,
-                                              AssetManager& assetManager) const;
 
         /**
          * @brief Find all parsers for a file extension

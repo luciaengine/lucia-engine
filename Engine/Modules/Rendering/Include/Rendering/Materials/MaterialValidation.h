@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "Rendering/Materials/Shader/ShaderMetaValidation.h"
+#include "Rendering/Materials/ShaderMetaValidation.h"
 
 namespace GameEngine { namespace Rendering {
 

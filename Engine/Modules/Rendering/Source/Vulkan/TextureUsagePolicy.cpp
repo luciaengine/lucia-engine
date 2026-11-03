@@ -1,10 +1,10 @@
 #include "TextureUsagePolicy.h"
 
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "VulkanHandleHelpers.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
 #include <format>
 #include <mutex>
@@ -132,16 +132,6 @@ AuditState& State()
     return state;
 }
 
-bool EnvIsTrue(const char* name, bool valueWhenUnset)
-{
-    const char* value = std::getenv(name);
-    if (value == nullptr || value[0] == '\0')
-    {
-        return valueWhenUnset;
-    }
-    return std::strcmp(value, "0") != 0;
-}
-
 bool ResolveAuditEnabled()
 {
     // Developer configs detect by default: the drift is cheap to see the day it
@@ -153,7 +143,7 @@ bool ResolveAuditEnabled()
 #else
     constexpr bool kDefault = false;
 #endif
-    return EnvIsTrue("GE_TEXTURE_USAGE_AUDIT", kDefault);
+    return Platform::EnvironmentSwitchEnabled("GE_TEXTURE_USAGE_AUDIT", kDefault);
 }
 
 // The per-operation tally is diagnostic detail, and Report() runs once per device
@@ -194,7 +184,7 @@ bool TextureUsagePolicy::IsAuditEnabled()
 
 bool TextureUsagePolicy::IsStrict()
 {
-    static const bool strict = EnvIsTrue("GE_STRICT_TEXTURE_USAGE", false);
+    static const bool strict = Platform::EnvironmentSwitchEnabled("GE_STRICT_TEXTURE_USAGE", false);
     return strict;
 }
 

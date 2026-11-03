@@ -16,7 +16,6 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/DrawCommandProducer.h"
 #include "Engine/Rendering/SceneAccelerationStructureService.h"
-#include "Engine/Rendering/StagingViewPool.h"
 #include "Rendering/Core/AccelerationStructure.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialRegistry.h"
@@ -28,8 +27,8 @@
 
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Passes/TonemapPass.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -303,7 +302,9 @@ TEST(RenderServicesDeviceRecovery, PerViewLightBufferIsForgottenSoItIsRecreatedA
 
     const auto* pv = rs.Views().FindPerView(viewId);
     ASSERT_NE(pv, nullptr);
-    ASSERT_TRUE(pv->HasLiveLightBuffer())
+    const auto beforeSlot = std::find_if(pv->LightBuffers.begin(), pv->LightBuffers.end(),
+                                         [](const auto& b) { return b.IsValid(); });
+    ASSERT_NE(beforeSlot, pv->LightBuffers.end())
         << "the fixture must have created a light buffer, or the test proves nothing";
 
     // Drive the injected loss and the rebuild that follows it. Loop on the
@@ -323,8 +324,9 @@ TEST(RenderServicesDeviceRecovery, PerViewLightBufferIsForgottenSoItIsRecreatedA
     // IsValid(), which is exactly why the lazy create could not re-fire.
     const auto* pvAfter = rs.Views().FindPerView(viewId);
     ASSERT_NE(pvAfter, nullptr);
-    EXPECT_FALSE(pvAfter->HasLiveLightBuffer())
-        << "a handle surviving the rebuild leaves the lazy create permanently inert";
+    for (const auto& buf : pvAfter->LightBuffers)
+        EXPECT_FALSE(buf.IsValid())
+            << "a handle surviving the rebuild leaves the lazy create permanently inert";
 
     // And the lazy path must actually produce a live buffer on the new device.
     // Inside an acquired frame, as production does: the light buffer is one slot
@@ -334,7 +336,10 @@ TEST(RenderServicesDeviceRecovery, PerViewLightBufferIsForgottenSoItIsRecreatedA
     rs.WriteViewLightBuffer(viewId);
     const auto* pvRecreated = rs.Views().FindPerView(viewId);
     ASSERT_NE(pvRecreated, nullptr);
-    EXPECT_TRUE(pvRecreated->HasLiveLightBuffer())
+    const auto afterSlot = std::find_if(pvRecreated->LightBuffers.begin(),
+                                        pvRecreated->LightBuffers.end(),
+                                        [](const auto& b) { return b.IsValid(); });
+    EXPECT_NE(afterSlot, pvRecreated->LightBuffers.end())
         << "forgetting is only half the fix: the write must recreate on the live device";
 
     rs.Shutdown();
@@ -494,9 +499,7 @@ TEST(RenderServicesDeviceRecovery, ReadbackTicketsAcrossDeviceRebuild)
             << "post-rebuild readback must resolve — a stale RGFrame queue "
                "timeline wedges every later readback for the process lifetime";
         if (!postRes.pixels.empty())
-        {
             EXPECT_EQ(postRes.width, 8u);
-        }
     }
     device->Shutdown();
     UnsetEnvVar("GE_VK_FORCE_DEVICE_LOST");
@@ -611,73 +614,6 @@ TEST(RenderServicesDeviceRecovery, AccelerationStructuresAreReleasedWithTheLostD
     device->DestroyBuffer(instances);
 
     sceneAS->ReleaseTlasChannel(channel);
-    rs.Shutdown();
-    device->Shutdown();
-    UnsetEnvVar("GE_VK_FORCE_DEVICE_LOST");
-}
-
-namespace
-{
-// Declares one staging output into a frame that never executes: DeclareOutput creates the output
-// texture before it adds the tonemap pass.
-void DeclareStagingOutput(IDevice& device, StagingView& view)
-{
-    RenderGraph::RGResourcePool persistent(&device);
-    RenderGraph::RGTransientPool transient(&device);
-    RenderGraph::RGUploadRing uploadRing(&device, 2, 4096);
-    RenderGraph::RGFrame frame(&device, &persistent, &transient, &uploadRing);
-    frame.BeginFrame(0);
-    TextureDesc desc{};
-    desc.width = view.RenderWidth();
-    desc.height = view.RenderHeight();
-    desc.format = static_cast<uint32_t>(TextureFormat::R16G16B16A16_FLOAT);
-    desc.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::RenderTarget);
-    const RenderGraph::RGTexture source = frame.CreateTexture("StagingRebuild.Source", desc);
-    view.DeclareOutput(frame, source, Passes::TonemapParams{});
-}
-} // namespace
-
-// A staging view's output across an in-place rebuild. The rebuild destroys the output texture, and
-// the old handle still reports IsValid(): the pool must forget it, report no output, and create a
-// new one on the next declared frame.
-TEST(RenderServicesDeviceRecovery, StagingViewOutputIsForgottenAndRecreatedAfterRebuild)
-{
-    SetEnvVar("GE_VK_FORCE_DEVICE_LOST", "2");
-    auto device = CreateVulkanDeviceFast();
-    if (!device)
-    {
-        UnsetEnvVar("GE_VK_FORCE_DEVICE_LOST");
-        GTEST_SKIP() << "No Vulkan device available";
-    }
-
-    RenderServices rs;
-    ASSERT_TRUE(rs.Initialize(device.get()));
-    {
-        constexpr uint32_t kSize = 16;
-        StagingViewPool& pool = rs.EnsureFeature<StagingViewPool>(rs);
-        StagingView view = pool.Acquire(StagingViewDesc{kSize, kSize, "StagingRebuild"});
-        DeclareStagingOutput(*device, view);
-        ASSERT_TRUE(view.OutputTexture().IsValid())
-            << "the fixture must have created the output, or the test proves nothing";
-
-        bool rebuilt = false;
-        for (int i = 0; i < 16 && !rebuilt; ++i)
-        {
-            RunDeviceFrame(*device);
-            rebuilt = (device->GetDeviceRebuildGeneration() != 0u);
-        }
-        ASSERT_TRUE(rebuilt) << "the injected loss should rebuild the device in place";
-        ASSERT_EQ(device->GetDeviceHealth(), DeviceHealth::Healthy);
-
-        EXPECT_FALSE(view.OutputTexture().IsValid()) << "a UI must not import the destroyed output";
-        EXPECT_EQ(view.OutputWidth(), 0u) << "the owner sees no output at the view size, so it renders again";
-
-        // Inside an acquired frame, as production declares it.
-        ASSERT_TRUE(device->BeginFrame());
-        DeclareStagingOutput(*device, view);
-        EXPECT_TRUE(view.OutputTexture().IsValid()) << "the next declared frame creates the output on the live device";
-        EXPECT_EQ(view.OutputWidth(), kSize);
-    }
     rs.Shutdown();
     device->Shutdown();
     UnsetEnvVar("GE_VK_FORCE_DEVICE_LOST");

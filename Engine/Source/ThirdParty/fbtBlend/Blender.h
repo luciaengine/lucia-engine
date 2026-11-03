@@ -29,7 +29,8 @@ extern "C"	{
 #endif // __cplusplus
 
 
-struct raw_data;
+struct raw_data	{
+};
 
 struct IDPropertyUIData	{
 	char	*description;

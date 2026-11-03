@@ -2,7 +2,7 @@
 
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 
 #include <algorithm>
 #include <fstream>

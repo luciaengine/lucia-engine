@@ -12,14 +12,14 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/TerrainShadowMap.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Mathematics/MatrixOps.h"
-#include "Mathematics/Vector4.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/PassPhase.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
@@ -351,14 +351,8 @@ void RTShadowMaskService::Schedule(Rendering::RenderGraph::RGFrame& frame, uint6
 
         // FNV-1a over the record bytes, seeded with the count so N zeroed
         // records can never alias N-1 of them.
-        refreshHash = 1469598103934665603ull ^ count;
-        const auto* bytes = reinterpret_cast<const uint8_t*>(m_InstanceScratch.data());
-        const size_t byteCount = count * sizeof(Rendering::TlasInstanceData);
-        for (size_t b = 0; b < byteCount; ++b)
-        {
-            refreshHash ^= bytes[b];
-            refreshHash *= 1099511628211ull;
-        }
+        refreshHash = Hashing::Fnv1a64(m_InstanceScratch.data(), count * sizeof(Rendering::TlasInstanceData),
+                                       Hashing::kFnv1a64OffsetBasis ^ count);
         doTlasBuild = !m_TlasContentValid || refreshHash != m_BuiltInstanceHash;
     }
 
@@ -421,11 +415,7 @@ void RTShadowMaskService::Schedule(Rendering::RenderGraph::RGFrame& frame, uint6
     // but skips the TLAS build entirely, splitting the two halves of the
     // pipeline for device-loss triage. (TLAS content never confirms in that
     // lane, so the mask pass gate stays closed — by design.)
-    static const bool s_BlasOnly = []
-    {
-        const char* v = std::getenv("GE_RT_SHADOW_MASK_BLAS_ONLY");
-        return v && std::strcmp(v, "0") != 0;
-    }();
+    static const bool s_BlasOnly = Platform::EnvironmentSwitchEnabled("GE_RT_SHADOW_MASK_BLAS_ONLY", false);
 
     // 6. The build pass, on the graphics queue: build-order hazards (scratch
     //    reuse, BLAS->TLAS, prior frames) are handled with AS-stage barriers on
@@ -651,7 +641,7 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
         return {};
     // Thumbnail cameras before their first update: inverting a zero proj
     // produces NaN that propagates into every ray.
-    if (cam.proj[0][0] == 0.0f && cam.proj[1][1] == 0.0f)
+    if (cam.proj[0] == 0.0f && cam.proj[5] == 0.0f)
         return {};
 
     LoadMaskShader();
@@ -707,17 +697,17 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
         float TerrainGrid1[4];
         float TerrainGrid2[4];
         float TerrainGrid3[4];
-        uint32_t TerrainSource[4]; // x = 1 when present; y = map side (texels); z = lit field levels (0: none)
-        Mathematics::Vector4 TerrainView; // x = the terrain draw's level scale (TerrainShadowMap::DrawLevelScale)
+        uint32_t TerrainSource[4]; // x = 1 when present; y = map side (texels)
     };
-    static_assert(sizeof(MaskParamsUBO) == 272, "must match rt_shadow_mask.comp's RTShadowMaskParams");
     auto ub = frame.AllocUpload<MaskParamsUBO>();
     if (!ub.Valid())
         return {};
 
-    GameEngine::Mathematics::Matrix4x4 projM = cam.proj;
+    GameEngine::Mathematics::Matrix4x4 projM;
+    std::memcpy(projM.Data(), cam.proj, sizeof(cam.proj));
     const GameEngine::Mathematics::Matrix4x4 invProjM = GameEngine::Mathematics::Inverse(projM);
-    GameEngine::Mathematics::Matrix4x4 viewM = cam.view;
+    GameEngine::Mathematics::Matrix4x4 viewM;
+    std::memcpy(viewM.Data(), cam.view, sizeof(cam.view));
     const GameEngine::Mathematics::Matrix4x4 invViewM = GameEngine::Mathematics::Inverse(viewM);
 
     MaskParamsUBO ubo{};
@@ -742,7 +732,6 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
     ubo.Temporal[3]   = 0.0f;
     RG::RGTexture terrainMap{};
     RG::RGTexture terrainHeight{};
-    RG::RGTexture terrainField{};
     if (terrainShadow && terrainShadow->Map.IsValid() && terrainShadow->HeightTexture.IsValid() &&
         m_TerrainSampler.IsValid())
     {
@@ -767,12 +756,6 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
         ubo.TerrainGrid3[3] = terrainShadow->HeightScale;
         ubo.TerrainSource[0] = terrainHeight.IsValid() ? 1u : 0u;
         ubo.TerrainSource[1] = terrainShadow->MapSide;
-        if (terrainHeight.IsValid() && terrainShadow->FieldLit.IsValid())
-        {
-            terrainField = terrainShadow->FieldLit;
-            ubo.TerrainSource[2] = terrainShadow->FieldLitLevels;
-            ubo.TerrainView[0] = terrainShadow->DrawLevelScale;
-        }
     }
     *ub.Ptr = ubo;
 
@@ -794,10 +777,8 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
                 p.Read(terrainMap, RG::RGTextureRead::Sampled);
                 p.Read(terrainHeight, RG::RGTextureRead::Sampled);
             }
-            if (terrainField.IsValid())
-                p.Read(terrainField, RG::RGTextureRead::Sampled);
         },
-        [this, depth, mask, terrainMap, terrainHeight, terrainField, ubBuffer = ub.Buffer, ubOffset = ub.Offset, gx, gy,
+        [this, depth, mask, terrainMap, terrainHeight, ubBuffer = ub.Buffer, ubOffset = ub.Offset, gx, gy,
          tlasSlot = m_TlasSlot](RG::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice();
@@ -820,9 +801,8 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
                 wd.AddCombinedImageSampler("uDepth", depthTex, m_MaskSampler);
             wd.AddUniformBuffer("RTShadowMaskParams", ubBuffer, ubOffset,
                                 sizeof(MaskParamsUBO));
-            // The terrain's clearance map, height texture and lit field; the depth stands in for each
-            // that is not published (the shader reads the first two only when uTerrainSource.x is set,
-            // the field only when uTerrainSource.z is).
+            // The terrain's clearance map and height texture; the depth stands in for both when no
+            // map is published (the shader reads them only when uTerrainSource.x is set).
             const bool terrain = terrainHeight.IsValid();
             if (wd.Has("uTerrainClearance") && m_TerrainSampler.IsValid())
                 wd.AddCombinedImageSampler("uTerrainClearance",
@@ -830,10 +810,6 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
             if (wd.Has("uTerrainHeight") && m_TerrainSampler.IsValid())
                 wd.AddCombinedImageSampler("uTerrainHeight",
                                            terrain ? ctx.GetTexture(terrainHeight) : depthTex, m_TerrainSampler);
-            if (wd.Has("uTerrainField") && m_TerrainSampler.IsValid())
-                wd.AddCombinedImageSampler("uTerrainField",
-                                           terrainField.IsValid() ? ctx.GetTexture(terrainField) : depthTex,
-                                           m_TerrainSampler);
             // Bound TLAS (no address cast): the one AS-access form both Vulkan
             // and Metal can translate. A reflection miss is fatal to the query,
             // not a dimmer frame, so skip the dispatch rather than trace an
@@ -867,11 +843,7 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
     // entirely and hand back the raw mask.
     // A/B + debugging kill switch: GE_RT_SHADOW_DENOISE=0 returns the raw
     // (grainy) mask so the denoise can be compared against it from one binary.
-    static const bool s_DenoiseEnabled = []
-    {
-        const char* v = std::getenv("GE_RT_SHADOW_DENOISE");
-        return !(v && std::strcmp(v, "0") == 0);
-    }();
+    static const bool s_DenoiseEnabled = Platform::EnvironmentSwitchEnabled("GE_RT_SHADOW_DENOISE", true);
 
     if (s_DenoiseEnabled && tanHalfAngle > 0.0f)
     {
@@ -941,7 +913,8 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareDenoisePass(
     if (!ub.Valid())
         return {};
 
-    GameEngine::Mathematics::Matrix4x4 projM = cam.proj;
+    GameEngine::Mathematics::Matrix4x4 projM;
+    std::memcpy(projM.Data(), cam.proj, sizeof(cam.proj));
     const GameEngine::Mathematics::Matrix4x4 invProjM = GameEngine::Mathematics::Inverse(projM);
 
     DenoiseParamsUBO ubo{};

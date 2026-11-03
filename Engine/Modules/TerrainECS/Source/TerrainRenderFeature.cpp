@@ -1,18 +1,16 @@
 #include "TerrainECS/TerrainRenderFeature.h"
-#include "Mathematics/Interpolation.h"
 #include "TerrainECS/TerrainAtlas.h"
-#include "TerrainECS/TerrainColorMap/TerrainColorMap.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
-#include "Core/ApplicationPaths.h"
+#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Materials/ShaderCompileService.h"
+#include "Core/Application.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <utility>
@@ -71,10 +69,9 @@ TerrainRenderFeature::~TerrainRenderFeature()
             m_Device->DestroyTexture(entry.Texture);
     }
     m_Splatmaps.clear();
-    for (auto& field : m_Fields)
-        for (auto& entries : field)
-            for (auto& entry : entries)
-                if (m_Device && entry.Texture.IsValid()) m_Device->DestroyTexture(entry.Texture);
+    for (auto& entries : m_GrassFields)
+        for (auto& entry : entries)
+            if (m_Device && entry.Texture.IsValid()) m_Device->DestroyTexture(entry.Texture);
 }
 
 void TerrainRenderFeature::DeferBufferDestroy(Rendering::BufferHandle buf)
@@ -118,12 +115,10 @@ void TerrainRenderFeature::DeferTextureViewDestroy(Rendering::TextureViewHandle 
     m_DeferredViewDestroys.push_back({view, m_MonotonicFrame});
 }
 
-void TerrainRenderFeature::CopyLastTerrainParamsAndMaterialBytes(std::vector<uint8>& params,
-                                                                 std::vector<uint8>& materials) const
+void TerrainRenderFeature::CopyLastTerrainParamsBytes(std::vector<uint8>& out) const
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    params.assign(m_LastTerrainParamsBytes.begin(), m_LastTerrainParamsBytes.end());
-    materials.assign(m_LastTerrainMaterialBytes.begin(), m_LastTerrainMaterialBytes.end());
+    out.assign(m_LastTerrainParamsBytes.begin(), m_LastTerrainParamsBytes.end());
 }
 
 void TerrainRenderFeature::ReleaseTerrainResources(TerrainHandle handle)
@@ -133,17 +128,88 @@ void TerrainRenderFeature::ReleaseTerrainResources(TerrainHandle handle)
     // Retiring a texture changes what grass would sample as surely as writing to one.
     m_GrassContentEpoch.fetch_add(1, std::memory_order_release);
 
-    ReleaseFieldResourcesLocked(TerrainField::GrassControl, handle);
-    ReleaseFieldResourcesLocked(TerrainField::Color, handle);
+    ReleaseGrassFieldResourcesLocked(handle);
 
-    // The unified maps, the Phase E atlas height + coarse fields, and the atlas splat/normal surface
-    // sources + their coarse fields share the terrain's lifetime.
-    for (std::vector<TextureEntry>* vec :
-         {&m_Heightmaps, &m_Splatmaps, &m_Normalmaps, &m_AtlasHeights, &m_AtlasCoarse, &m_AtlasSplats,
-          &m_AtlasNormals, &m_AtlasSplatCoarse, &m_AtlasNormalCoarse})
+    if (handle.Index < m_Heightmaps.size())
     {
-        if (handle.Index < vec->size())
-            RetireTextureEntry((*vec)[handle.Index]);
+        auto& entry = m_Heightmaps[handle.Index];
+        if (entry.Texture.IsValid())
+        {
+            DeferTextureDestroy(entry.Texture, entry.Bytes);
+            entry.Texture = {};
+            entry.Width = 0;
+            entry.Height = 0;
+            entry.BindlessIndex = 0;
+        }
+    }
+
+    if (handle.Index < m_Splatmaps.size())
+    {
+        auto& entry = m_Splatmaps[handle.Index];
+        if (entry.Texture.IsValid())
+        {
+            DeferTextureDestroy(entry.Texture, entry.Bytes);
+            entry.Texture = {};
+            entry.Width = 0;
+            entry.Height = 0;
+            entry.BindlessIndex = 0;
+        }
+    }
+
+    if (handle.Index < m_Normalmaps.size())
+    {
+        auto& entry = m_Normalmaps[handle.Index];
+        if (entry.Texture.IsValid())
+        {
+            DeferTextureDestroy(entry.Texture, entry.Bytes);
+            entry.Texture = {};
+            entry.Width = 0;
+            entry.Height = 0;
+            entry.BindlessIndex = 0;
+        }
+    }
+
+    if (handle.Index < m_AtlasHeights.size())
+    {
+        auto& entry = m_AtlasHeights[handle.Index];
+        if (entry.Texture.IsValid())
+        {
+            DeferTextureDestroy(entry.Texture, entry.Bytes);
+            entry.Texture = {};
+            entry.Width = 0;
+            entry.Height = 0;
+            entry.BindlessIndex = 0;
+        }
+    }
+
+    if (handle.Index < m_AtlasCoarse.size())
+    {
+        auto& entry = m_AtlasCoarse[handle.Index];
+        if (entry.Texture.IsValid())
+        {
+            DeferTextureDestroy(entry.Texture, entry.Bytes);
+            entry.Texture = {};
+            entry.Width = 0;
+            entry.Height = 0;
+            entry.BindlessIndex = 0;
+        }
+    }
+
+    // Phase E atlas splat/normal surface sources + their coarse fields share the same lifetime.
+    for (std::vector<TextureEntry>* vec :
+         {&m_AtlasSplats, &m_AtlasNormals, &m_AtlasSplatCoarse, &m_AtlasNormalCoarse})
+    {
+        if (handle.Index >= vec->size())
+            continue;
+        auto& entry = (*vec)[handle.Index];
+        if (entry.Texture.IsValid())
+        {
+            DeferTextureDestroy(entry.Texture, entry.Bytes);
+            entry.Texture = {};
+            entry.Width = 0;
+            entry.Height = 0;
+            entry.BindlessIndex = 0;
+        }
     }
 
     // Drop any accumulated dirty rect so a reused slot starts clean (a stale rect would
@@ -186,23 +252,7 @@ void TerrainRenderFeature::ReleaseTerrainResources(TerrainHandle handle)
     // heightmap from its own descriptor ring (a separate path from the bindless slots this frees)
     // before the frames-in-flight quarantine above frees the image. Bumped after the retires so a
     // consumer that observes the new value is guaranteed to see the cleared entries.
-    const uint64 retireGeneration = m_TerrainTextureRetireGeneration.fetch_add(1, std::memory_order_release) + 1;
-    if (handle.Index >= m_RetireGenerationByIndex.size())
-        m_RetireGenerationByIndex.resize(static_cast<size_t>(handle.Index) + 1, 0);
-    m_RetireGenerationByIndex[handle.Index] = retireGeneration;
-}
-
-uint64 TerrainRenderFeature::GetTerrainRetireGeneration(uint32 handleIndex) const
-{
-    std::lock_guard<std::mutex> lock(m_Mutex);
-    return handleIndex < m_RetireGenerationByIndex.size() ? m_RetireGenerationByIndex[handleIndex] : 0;
-}
-
-void TerrainRenderFeature::RetireTextureEntry(TextureEntry& entry)
-{
-    DeferTextureDestroy(entry.Texture, entry.Bytes);
-    DeferTextureViewDestroy(entry.StorageView);
-    entry = TextureEntry{};
+    m_TerrainTextureRetireGeneration.fetch_add(1, std::memory_order_release);
 }
 
 void TerrainRenderFeature::OnDeviceRebuilt(Rendering::IDevice* device)
@@ -215,13 +265,10 @@ void TerrainRenderFeature::OnDeviceRebuilt(Rendering::IDevice* device)
 
     for (std::vector<TextureEntry>* entries :
          {&m_Heightmaps, &m_Splatmaps, &m_Normalmaps, &m_AtlasHeights, &m_AtlasCoarse, &m_AtlasSplats,
-          &m_AtlasNormals, &m_AtlasSplatCoarse, &m_AtlasNormalCoarse})
+          &m_AtlasNormals, &m_AtlasSplatCoarse, &m_AtlasNormalCoarse, &m_GrassFields[0], &m_GrassFields[1],
+          &m_GrassFields[2]})
         for (TextureEntry& entry : *entries)
             entry = TextureEntry{};
-    for (auto& field : m_Fields)
-        for (auto& entries : field)
-            for (TextureEntry& entry : entries)
-                entry = TextureEntry{};
     m_UnifiedHeightDirty.clear();
     m_CompatLayerTextures = {};
     // The terrains stay described; only their device handles go (the extraction republishes
@@ -244,9 +291,6 @@ void TerrainRenderFeature::OnDeviceRebuilt(Rendering::IDevice* device)
         terrain.AtlasGrassBindlessIndex = 0;
         terrain.AtlasGrassCoarseBindlessIndex = 0;
         terrain.GrassControlBindlessIndex = 0;
-        terrain.ColorMapBindlessIndex = 0;
-        terrain.AtlasColorBindlessIndex = 0;
-        terrain.AtlasColorCoarseBindlessIndex = 0;
     }
 
     // Work queued against the dead resources, and the quarantine of resources already freed.
@@ -736,7 +780,7 @@ bool TerrainRenderFeature::EnsureUnifiedTiledTextures(TerrainHandle handle,
     // GE_TERRAIN_NO_VRAM_STAGING disables the barrier (allocate immediately, old + new coexist):
     // the kill-switch, and the way to measure the un-staged transient peak with this same
     // instrumentation for the before/after pair.
-    static const bool kNoVramStaging = std::getenv("GE_TERRAIN_NO_VRAM_STAGING") != nullptr;
+    static const bool kNoVramStaging = Platform::EnvironmentSwitchEnabled("GE_TERRAIN_NO_VRAM_STAGING", false);
     if (!kNoVramStaging && m_UnifiedReprovisionDrainFrame != 0)
     {
         if (m_MonotonicFrame < m_UnifiedReprovisionDrainFrame)
@@ -1155,76 +1199,50 @@ uint32 TerrainRenderFeature::GetAtlasCoarseBindlessIndex(TerrainHandle handle) c
     return handle.Index < m_AtlasCoarse.size() ? m_AtlasCoarse[handle.Index].BindlessIndex : 0u;
 }
 
-namespace
-{
-// A field texel's GPU format and size, the value a fresh texture clears to (the field's neutral:
-// grass controls (1, 1), an identity colour texel 0), and the names its textures carry in captures.
-struct FieldFormat
-{
-    Rendering::TextureFormat Format;
-    uint32 BytesPerTexel;
-    float32 ClearValue;
-    const char* Name;
-    const char* UploadName;
-};
-
-FieldFormat FieldFormatOf(TerrainField field)
-{
-    if (field == TerrainField::Color)
-        return {Rendering::TextureFormat::RGBA8_SRGB, kTerrainColorMapChannels, 0.0f, "Terrain_ColorMap",
-                "Terrain_ColorMap_Upload"};
-    return {Rendering::TextureFormat::R8G8_UNORM, kTerrainGrassFieldChannels, 1.0f, "Terrain_GrassControl",
-            "Terrain_GrassControl_Upload"};
-}
-} // namespace
-
-bool TerrainRenderFeature::EnsureFieldTexture(TerrainField field, TerrainHandle handle, TerrainFieldMap map,
-                                              uint32 width, uint32 height)
+bool TerrainRenderFeature::EnsureGrassFieldTexture(TerrainHandle handle, TerrainGrassMap map,
+                                                  uint32 width, uint32 height)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
     if (!m_Device || !width || !height) return false;
-    const FieldFormat format = FieldFormatOf(field);
-    return EnsureUnifiedEntry(m_Fields.at(static_cast<size_t>(field)).at(static_cast<size_t>(map)), handle, width,
-                              height, static_cast<uint32>(format.Format), format.BytesPerTexel, format.Name, false,
-                              format.ClearValue);
+    return EnsureUnifiedEntry(m_GrassFields.at(static_cast<size_t>(map)), handle, width, height,
+                              static_cast<uint32>(Rendering::TextureFormat::R8G8_UNORM),
+                              kTerrainGrassFieldChannels, "Terrain_GrassControl", false, 1.0f);
 }
 
-bool TerrainRenderFeature::UploadField(TerrainField field, TerrainHandle handle, TerrainFieldMap map,
-                                       const uint8* data, uint32 width, uint32 height, uint32 dstX, uint32 dstY)
+bool TerrainRenderFeature::UploadGrassField(TerrainHandle handle, TerrainGrassMap map,
+                                           const uint8* data, uint32 width, uint32 height,
+                                           uint32 dstX, uint32 dstY)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    auto& entries = m_Fields.at(static_cast<size_t>(field)).at(static_cast<size_t>(map));
+    auto& entries = m_GrassFields.at(static_cast<size_t>(map));
     if (!m_Device || !data || !width || !height || handle.Index >= entries.size()) return false;
     const auto& entry = entries[handle.Index];
     if (!entry.Texture.IsValid() || dstX > entry.Width || width > entry.Width - dstX
         || dstY > entry.Height || height > entry.Height - dstY) return false;
-    const FieldFormat format = FieldFormatOf(field);
     const size_t before = m_PendingUploads.size();
-    QueueRegionUpload(entry.Texture, data, width, height, format.BytesPerTexel, dstX, dstY, format.UploadName);
+    QueueRegionUpload(entry.Texture, data, width, height, kTerrainGrassFieldChannels, dstX, dstY,
+                      "Terrain_GrassControl_Upload");
     return m_PendingUploads.size() != before;
 }
 
-Rendering::TextureHandle TerrainRenderFeature::GetFieldTexture(TerrainField field, TerrainHandle handle,
-                                                               TerrainFieldMap map) const
+Rendering::TextureHandle TerrainRenderFeature::GetGrassFieldTexture(TerrainHandle handle, TerrainGrassMap map) const
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    const auto& entries = m_Fields.at(static_cast<size_t>(field)).at(static_cast<size_t>(map));
+    const auto& entries = m_GrassFields.at(static_cast<size_t>(map));
     return handle.Index < entries.size() ? entries[handle.Index].Texture : Rendering::TextureHandle{};
 }
 
-uint32 TerrainRenderFeature::GetFieldBindlessIndex(TerrainField field, TerrainHandle handle,
-                                                   TerrainFieldMap map) const
+uint32 TerrainRenderFeature::GetGrassFieldBindlessIndex(TerrainHandle handle, TerrainGrassMap map) const
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    const auto& entries = m_Fields.at(static_cast<size_t>(field)).at(static_cast<size_t>(map));
+    const auto& entries = m_GrassFields.at(static_cast<size_t>(map));
     return handle.Index < entries.size() ? entries[handle.Index].BindlessIndex : 0u;
 }
 
-void TerrainRenderFeature::RegisterFieldsBindless(TerrainHandle handle, Engine::Renderer::RenderServices& rs)
+void TerrainRenderFeature::RegisterGrassFieldsBindless(TerrainHandle handle, Engine::Renderer::RenderServices& rs)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    for (auto& field : m_Fields)
-        for (auto& entries : field) RegisterBindless(entries, handle, rs);
+    for (auto& entries : m_GrassFields) RegisterBindless(entries, handle, rs);
 }
 
 Rendering::TextureHandle TerrainRenderFeature::GetInitializedCbtHeightTexture(TerrainHandle handle,
@@ -1240,19 +1258,19 @@ Rendering::TextureHandle TerrainRenderFeature::GetInitializedCbtHeightTexture(Te
     return AwaitsGpuInit(texture) ? Rendering::TextureHandle{} : texture;
 }
 
-bool TerrainRenderFeature::FieldCanBeSampled(TerrainField field, TerrainHandle handle, TerrainFieldMap map) const
+bool TerrainRenderFeature::GrassFieldCanBeSampled(TerrainHandle handle, TerrainGrassMap map) const
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    const auto& entries = m_Fields.at(static_cast<size_t>(field)).at(static_cast<size_t>(map));
+    const auto& entries = m_GrassFields.at(static_cast<size_t>(map));
     if (handle.Index >= entries.size()) return false;
     const auto texture = entries[handle.Index].Texture;
     return texture.IsValid() && (!AwaitsGpuInit(texture) || (UploadPassIsLive() && HasQueuedGpuInit(texture)));
 }
 
-void TerrainRenderFeature::ReleaseFieldResourcesLocked(TerrainField field, TerrainHandle handle)
+void TerrainRenderFeature::ReleaseGrassFieldResourcesLocked(TerrainHandle handle)
 {
     bool retired = false;
-    for (auto& entries : m_Fields.at(static_cast<size_t>(field)))
+    for (auto& entries : m_GrassFields)
     {
         if (handle.Index >= entries.size()) continue;
         auto& entry = entries[handle.Index];
@@ -1261,14 +1279,13 @@ void TerrainRenderFeature::ReleaseFieldResourcesLocked(TerrainField field, Terra
         entry = {};
         retired = true;
     }
-    // Grass samples both fields: the controls at placement, the colour map at the blade root.
     if (retired) m_GrassContentEpoch.fetch_add(1, std::memory_order_release);
 }
 
-void TerrainRenderFeature::ReleaseFieldResources(TerrainField field, TerrainHandle handle)
+void TerrainRenderFeature::ReleaseGrassFieldResources(TerrainHandle handle)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    ReleaseFieldResourcesLocked(field, handle);
+    ReleaseGrassFieldResourcesLocked(handle);
 }
 
 bool TerrainRenderFeature::TryGetUnifiedGrassMaps(Rendering::TextureHandle& height,
@@ -1293,8 +1310,70 @@ bool TerrainRenderFeature::TryGetUnifiedGrassMaps(Rendering::TextureHandle& heig
     height = GetHeightmapTexture(chosen);
     normal = GetNormalmapTexture(chosen);
     splat = GetSplatmapTexture(chosen);
-    if (controls) *controls = GetFieldTexture(TerrainField::GrassControl, chosen, TerrainFieldMap::Unified);
+    if (controls) *controls = GetGrassFieldTexture(chosen, TerrainGrassMap::Unified);
     return true;
+}
+
+bool TerrainRenderFeature::TryGetAtlasGrassSource(AtlasGrassSource& out) const
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    const TerrainInstanceInfo* chosen = nullptr;
+    uint32 atlasCount = 0;
+    for (const auto& t : m_ActiveTerrains)
+    {
+        if (!t.AtlasBacked || t.AtlasDim == 0)
+            continue;
+        ++atlasCount;
+        if (!chosen)
+            chosen = &t;
+    }
+    if (atlasCount > 1 && !m_MultiAtlasGrassWarned.exchange(true))
+        Logger::Log::Warning("TerrainGrass: {} atlas-backed terrains active; grass resolves ALL of "
+                             "them through the first terrain's atlas — other atlas terrains' blades "
+                             "would snap to the wrong heights. Single atlas terrain is supported.",
+                             atlasCount);
+    if (chosen)
+    {
+        const TerrainInstanceInfo& t = *chosen;
+        out.Valid = true;
+        out.Identity = (static_cast<uint64>(t.Handle.Index) << 32) | t.Handle.Generation;
+        out.AtlasDim = t.AtlasDim;
+        out.AtlasSlotStride = t.AtlasSlotStride;
+        out.AtlasSlotsPerRow = t.AtlasSlotsPerRow;
+        out.AtlasTileRes = t.AtlasTileRes;
+        out.AtlasTilesPerAxisX = t.AtlasTilesPerAxisX;
+        out.AtlasTilesPerAxisZ = t.AtlasTilesPerAxisZ;
+        out.AtlasCoarseDim = t.AtlasCoarseDim;
+        out.HeightBindless = t.AtlasHeightBindlessIndex;
+        out.HeightCoarseBindless = t.AtlasCoarseBindlessIndex;
+        out.NormalBindless = t.AtlasNormalBindlessIndex;
+        out.NormalCoarseBindless = t.AtlasNormalCoarseBindlessIndex;
+        out.SplatBindless = t.AtlasSplatBindlessIndex;
+        out.SplatCoarseBindless = t.AtlasSplatCoarseBindlessIndex;
+        out.GrassRegionsActive = t.GrassRegionsActive;
+        out.GrassBindless = t.AtlasGrassBindlessIndex;
+        out.GrassCoarseBindless = t.AtlasGrassCoarseBindlessIndex;
+        // Read the registries directly rather than through GetAtlas*Texture: m_Mutex is already
+        // held here and those getters take it again.
+        const auto textureAt = [&](const std::vector<TextureEntry>& entries) {
+            return t.Handle.Index < entries.size() ? entries[t.Handle.Index].Texture
+                                                   : Rendering::TextureHandle{};
+        };
+        out.HeightTexture = textureAt(m_AtlasHeights);
+        out.HeightCoarseTexture = textureAt(m_AtlasCoarse);
+        out.NormalTexture = textureAt(m_AtlasNormals);
+        out.NormalCoarseTexture = textureAt(m_AtlasNormalCoarse);
+        out.SplatTexture = textureAt(m_AtlasSplats);
+        out.SplatCoarseTexture = textureAt(m_AtlasSplatCoarse);
+        out.GrassTexture = textureAt(m_GrassFields[static_cast<size_t>(TerrainGrassMap::Atlas)]);
+        out.GrassCoarseTexture = textureAt(m_GrassFields[static_cast<size_t>(TerrainGrassMap::Coarse)]);
+        out.TableVersion = t.AtlasTableVersion;
+        out.RowCount = t.AtlasRowCount;
+        out.RowBytes = t.AtlasRowBytes;
+        return true;
+    }
+    out.Valid = false;
+    return false;
 }
 
 void TerrainRenderFeature::AccumulateAtlasHeightDirtyUV(TerrainHandle handle, float32 minU,
@@ -1304,10 +1383,10 @@ void TerrainRenderFeature::AccumulateAtlasHeightDirtyUV(TerrainHandle handle, fl
     if (handle.Index >= m_UnifiedHeightDirty.size())
         m_UnifiedHeightDirty.resize(handle.Index + 1);
     auto& d = m_UnifiedHeightDirty[handle.Index];
-    const float32 u0 = Math::Clamp01(minU);
-    const float32 v0 = Math::Clamp01(minV);
-    const float32 u1 = Math::Clamp01(maxU);
-    const float32 v1 = Math::Clamp01(maxV);
+    const float32 u0 = std::clamp(minU, 0.0f, 1.0f);
+    const float32 v0 = std::clamp(minV, 0.0f, 1.0f);
+    const float32 u1 = std::clamp(maxU, 0.0f, 1.0f);
+    const float32 v1 = std::clamp(maxV, 0.0f, 1.0f);
     if (!d.HasRect)
     {
         d.MinU = u0;
@@ -1348,10 +1427,10 @@ void TerrainRenderFeature::AccumulateUnifiedHeightDirty(TerrainHandle handle, ui
     // footprint) closes it; the clamp keeps an edge-touching rect inside [0,1].
     const float32 invW = 1.0f / static_cast<float32>(texW);
     const float32 invH = 1.0f / static_cast<float32>(texH);
-    const float32 u0 = Math::Clamp01((static_cast<float32>(dstX) - 1.0f) * invW);
-    const float32 v0 = Math::Clamp01((static_cast<float32>(dstY) - 1.0f) * invH);
-    const float32 u1 = Math::Clamp01((static_cast<float32>(dstX + srcW) + 1.0f) * invW);
-    const float32 v1 = Math::Clamp01((static_cast<float32>(dstY + srcH) + 1.0f) * invH);
+    const float32 u0 = std::clamp((static_cast<float32>(dstX) - 1.0f) * invW, 0.0f, 1.0f);
+    const float32 v0 = std::clamp((static_cast<float32>(dstY) - 1.0f) * invH, 0.0f, 1.0f);
+    const float32 u1 = std::clamp((static_cast<float32>(dstX + srcW) + 1.0f) * invW, 0.0f, 1.0f);
+    const float32 v1 = std::clamp((static_cast<float32>(dstY + srcH) + 1.0f) * invH, 0.0f, 1.0f);
 
     if (!d.HasRect)
     {
@@ -1647,14 +1726,6 @@ std::vector<TerrainInstanceInfo> TerrainRenderFeature::GetActiveTerrains() const
     return m_ActiveTerrains;
 }
 
-std::optional<TerrainInstanceInfo> TerrainRenderFeature::GetDrawnTerrain() const
-{
-    std::lock_guard<std::mutex> lock(m_Mutex);
-    if (m_ActiveTerrains.empty())
-        return std::nullopt;
-    return m_ActiveTerrains.front();
-}
-
 TerrainRenderFeature::ActiveHeightSource TerrainRenderFeature::GetActiveHeightSource() const
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
@@ -1662,12 +1733,6 @@ TerrainRenderFeature::ActiveHeightSource TerrainRenderFeature::GetActiveHeightSo
         return {};
     const TerrainInstanceInfo& terrain = m_ActiveTerrains.front();
     return {true, terrain.HeightmapTexture, terrain.AtlasBacked, terrain.AtlasHeightTexture};
-}
-
-bool TerrainRenderFeature::ViewDrawsActiveTerrain(Rendering::RenderLayerMask viewLayers) const
-{
-    std::lock_guard<std::mutex> lock(m_Mutex);
-    return !m_ActiveTerrains.empty() && m_ActiveTerrains.front().RenderLayers.Intersects(viewLayers);
 }
 
 void TerrainRenderFeature::EnsureMaterialTableBuffer(uint32 fi, uint32 capacity)
@@ -1715,7 +1780,7 @@ void TerrainRenderFeature::WarnIfUploadPassMissing()
         "than bindlessly, so it is not gated at all and reads an image nothing has written — "
         "undefined per driver, which on MoltenVK comes back zero and renders as flat terrain. "
         "Add a TerrainUpload node to the pipeline's .rendergraph (see "
-        "Engine/Assets/RenderPipelines/ForwardPlus.rendergraph).",
+        "Assets/RenderPipelines/ForwardPlus.rendergraph).",
         m_TexturesAwaitingGpuInit.size(), m_FramesAwaitingUploadPass);
 }
 
@@ -1734,7 +1799,7 @@ void TerrainRenderFeature::UploadTerrainParamsArray(const Terrain::TerrainGPUPar
     // reuse-distance argument on the declaration. The unwrapped counter doubles as the
     // extraction clock the bindless gate dates the upload pass against: published here, at the
     // END of the tick, so the registrars earlier in the same tick still read the previous value.
-    const uint32 extractionFrame = static_cast<uint32>(m_ParamsFrameCounter.Tick(deviceFrameIndex));
+    const uint32 extractionFrame = m_ParamsFrameCounter.Tick(deviceFrameIndex);
     m_ExtractionFrame.store(extractionFrame, std::memory_order_relaxed);
     const uint32 fi = extractionFrame % kMaxFrames;
     m_TerrainParamsCount[fi] = count;
@@ -1756,13 +1821,6 @@ void TerrainRenderFeature::UploadTerrainParamsArray(const Terrain::TerrainGPUPar
     // records then stay whatever the element last held; the buffer is zero-filled on creation so
     // that reads as the definite black material rather than as reinterpreted memory.
     m_TerrainMaterialCount[fi] = (params && count != 0 && materials) ? materialCount : 0u;
-    {
-        const size_t materialBytes =
-            static_cast<size_t>(m_TerrainMaterialCount[fi]) * sizeof(Terrain::TerrainMaterialRecord);
-        m_LastTerrainMaterialBytes.resize(materialBytes);
-        if (materialBytes != 0)
-            std::memcpy(m_LastTerrainMaterialBytes.data(), materials, materialBytes);
-    }
     uint32 activeGrassCount = 0;
     uint32 maxBladeSegments = 5u;
     GrassPlacementSummary placement{};
@@ -1817,7 +1875,7 @@ void TerrainRenderFeature::UploadTerrainParamsArray(const Terrain::TerrainGPUPar
     // GetLastTerrainParamsSlot + the count it derives. If the grass node logs a DIFFERENT slot/active
     // than the LAST line here, a later UploadTerrainParamsArray (a second world/registry, or the
     // single-terrain path) overwrote the slot with 0 grass -> the node declares nothing. Throttled.
-    static const bool kUpDbg = std::getenv("GE_TERRAIN_GRASS_DEBUG") != nullptr;
+    static const bool kUpDbg = Platform::EnvironmentSwitchEnabled("GE_TERRAIN_GRASS_DEBUG", false);
     static uint32 s_LastUpKey = 0xFFFFFFFFu;
     // Key on (count, activeGrass) only — NOT the cyclic frame slot fi, which changes every frame and
     // would re-log the idle count==0 case forever, flooding the log ring at boot.
@@ -1900,7 +1958,7 @@ bool TerrainRenderFeature::EnsureGpuBakePipeline()
         return false;
 
     namespace fs = std::filesystem;
-    const fs::path shaderDir = ApplicationPaths::GetInstallAssetsRoot() / "Shaders" / "CBT";
+    const fs::path shaderDir = PathUtils::GetInstallAssetsRoot() / "Shaders" / "CBT";
     std::error_code ec;
     if (!fs::exists(shaderDir / "terrain_height_bake.comp", ec))
     {

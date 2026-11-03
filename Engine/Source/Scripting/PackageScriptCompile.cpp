@@ -1,5 +1,4 @@
 #include "Scripting/PackageScriptCompile.h"
-#include "Scripting/PathResolver.h"
 #include "Scripting/ScriptTargetFramework.h"
 
 #include "Logger/Logger.h"
@@ -87,18 +86,6 @@ void AppendJsonSourceFiles(std::ostringstream& json, const std::vector<std::file
 
 } // namespace
 
-std::string ScriptSurfaceRequestField()
-{
-    std::string field = "\"ScriptSurface\":[";
-    bool first = true;
-    for (std::string_view assembly : ScriptingPaths::kScriptSurfaceAssemblyFileNames)
-    {
-        field += std::string(first ? "" : ",") + "\"" + std::string(assembly) + "\"";
-        first = false;
-    }
-    return field + "],";
-}
-
 std::string BuildCompileServerRequestJson(const CompileServerRequestDesc& desc)
 {
     std::ostringstream json;
@@ -110,7 +97,6 @@ std::string BuildCompileServerRequestJson(const CompileServerRequestDesc& desc)
     json << "\"Tfm\":\"" << desc.Tfm << "\",";
     if (!desc.EngineBinDir.empty())
         json << "\"EngineBinDir\":\"" << desc.EngineBinDir.generic_string() << "\",";
-    json << ScriptSurfaceRequestField();
     if (!desc.References.empty())
         AppendJsonPathArray(json, "References", desc.References);
     if (!desc.Defines.empty())
@@ -211,7 +197,8 @@ std::string GeneratePackageModuleCsprojXml(const PackageCodeModule& module,
             if (!it->is_regular_file())
                 continue;
             const std::string fn = it->path().filename().string();
-            if (ScriptingPaths::IsScriptSurfaceAssembly(fn))
+            if (fn.size() > 19 && fn.rfind("GameEngine.", 0) == 0 &&
+                fn.compare(fn.size() - 8, 8, ".ABI.dll") == 0)
             {
                 xml << "    <Reference Include=\"" << fn.substr(0, fn.size() - 4) << "\">\n";
                 xml << "      <HintPath>$(EngineBinDir)" << fn << "</HintPath>\n";

@@ -9,6 +9,7 @@
 
 #include "Core/CpuProfiler.h"
 #include "Mathematics/Ray.h"
+#include "Scene/FunctionRef.h"
 #include "Scene/SceneTlas.h"
 #include "Scene/TlasInstance.h"
 

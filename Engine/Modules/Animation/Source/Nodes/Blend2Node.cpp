@@ -2,7 +2,6 @@
 
 #include "Animation/AnimationPose.h"
 #include "Animation/EvaluationContext.h"
-#include "Mathematics/Interpolation.h"
 
 #include <algorithm>
 
@@ -23,7 +22,7 @@ void Blend2Node::SetInputB(std::unique_ptr<AnimGraphNode> node)
 
 void Blend2Node::SetWeight(float weight)
 {
-    m_Weight = Math::Clamp01(weight);
+    m_Weight = std::clamp(weight, 0.0f, 1.0f);
 }
 
 float Blend2Node::GetWeight() const

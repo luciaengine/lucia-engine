@@ -60,7 +60,7 @@ void UndoHistoryPanel::BuildUI()
 
     auto historyNav = std::make_unique<UIElement>();
     historyNav->AddClass("inspector-header-history");
-    historyNav->Style()
+    historyNav->Overrides()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Center)
@@ -73,7 +73,7 @@ void UndoHistoryPanel::BuildUI()
     backBtn->AddClass("inspector-history-back-btn");
     backBtn->SetText("");
     backBtn->SetTooltip("Undo");
-    backBtn->Style().Set(Style::FlexShrink, 0.0f);
+    backBtn->Overrides().Set(Style::FlexShrink, 0.0f);
     backBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) {
         if (m_Undo)
             m_Undo->Undo();
@@ -87,7 +87,7 @@ void UndoHistoryPanel::BuildUI()
     fwdBtn->AddClass("inspector-history-forward-btn");
     fwdBtn->SetText("");
     fwdBtn->SetTooltip("Redo");
-    fwdBtn->Style().Set(Style::FlexShrink, 0.0f);
+    fwdBtn->Overrides().Set(Style::FlexShrink, 0.0f);
     fwdBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) {
         if (m_Undo)
             m_Undo->Redo();

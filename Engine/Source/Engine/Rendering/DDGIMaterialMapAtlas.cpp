@@ -4,11 +4,12 @@
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/MaterialSystem.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Rendering/Core/Device.h"
+#include "Types/Fnv1a.h"
 #include "Types/StringId.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <unordered_map>
 
 namespace GameEngine::Engine::Renderer
@@ -34,21 +35,13 @@ constexpr StringId kEmissiveSlotName = HashStringId("emissiveMap");
 // the blit stores its channels untouched.
 constexpr StringId kMetallicSlotName = HashStringId("metallicRoughnessMap");
 
+// Sentinel for Material::GetGpuSceneMaterialIndex on a material with no SSBO
+// row. Mirrors Material::kInvalidSSBOIndex, which is private (same duplication,
+// same reason, as DDGISceneService's copy).
+constexpr uint32_t kUnassignedMaterialSlot = 0xFFFFFFFFu;
+
 // Guards against a corrupt slot index turning into a multi-gigabyte table.
 constexpr uint32_t kMaxMaterialSlots = 65536u;
-
-constexpr uint64_t kFnvOffsetBasis = 1469598103934665603ull;
-constexpr uint64_t kFnvPrime       = 1099511628211ull;
-
-void HashBytes(uint64_t& hash, const void* data, size_t bytes)
-{
-    const auto* cursor = static_cast<const uint8_t*>(data);
-    for (size_t i = 0; i < bytes; ++i)
-    {
-        hash ^= cursor[i];
-        hash *= kFnvPrime;
-    }
-}
 
 const DDGIMaterialMapAtlas::MaterialRecord kDefaultRecord{};
 
@@ -61,27 +54,22 @@ const DDGIMaterialMapAtlas::MaterialRecord kDefaultRecord{};
 // established GE_DDGI_FORCE_SOFTWARE / GE_VK_* env-var convention rather than
 // adding an end-user settings page for a developer switch. Read once per
 // process.
-bool EnvFlagEnabled(const char* name)
-{
-    const char* v = std::getenv(name);
-    return !(v && v[0] == '0');
-}
 
 bool AlbedoMapsEnabled()
 {
-    static const bool enabled = EnvFlagEnabled("GE_DDGI_ALBEDO_MAPS");
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_DDGI_ALBEDO_MAPS", true);
     return enabled;
 }
 
 bool EmissiveMapsEnabled()
 {
-    static const bool enabled = EnvFlagEnabled("GE_DDGI_EMISSIVE_MAPS");
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_DDGI_EMISSIVE_MAPS", true);
     return enabled;
 }
 
 bool MetallicMapsEnabled()
 {
-    static const bool enabled = EnvFlagEnabled("GE_DDGI_METALLIC_MAPS");
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_DDGI_METALLIC_MAPS", true);
     return enabled;
 }
 
@@ -123,18 +111,6 @@ void DDGIMaterialMapAtlas::Refresh()
     ++m_FrameClock;
     CollectRetired();
 
-    // The layout is a function of the registry alone, so an unchanged stamp
-    // means the sweep below would find the same layout: skip it, but keep
-    // re-arming, which is what fills a layer whose blit has not landed yet.
-    const MaterialRegistryStamp stamp = m_Materials->GetRegistryStamp();
-    if (m_HaveSweptStamp && stamp == m_SweptStamp && m_Texture.IsValid())
-    {
-        RearmPendingBlits();
-        return;
-    }
-    m_SweptStamp = stamp;
-    m_HaveSweptStamp = true;
-
     // Sweep: every material holding a GPU-scene SSBO row contributes one
     // record; distinct source textures are deduplicated into layers in
     // first-seen order, which is what the layout hash below is taken over.
@@ -175,7 +151,7 @@ void DDGIMaterialMapAtlas::Refresh()
         [&](const GUID&, const Material& material)
         {
             const uint32_t slot = material.GetGpuSceneMaterialIndex();
-            if (slot == Material::kInvalidSSBOIndex || slot >= kMaxMaterialSlots)
+            if (slot == kUnassignedMaterialSlot || slot >= kMaxMaterialSlots)
                 return;
 
             MaterialRecord record{};
@@ -196,11 +172,11 @@ void DDGIMaterialMapAtlas::Refresh()
             records[slot] = record;
         });
 
-    uint64_t hash = kFnvOffsetBasis;
+    uint64_t hash = Hashing::kFnv1a64OffsetBasis;
     for (const Rendering::TextureHandle& source : layerSources)
-        HashBytes(hash, &source.id, sizeof(source.id));
+        hash = Hashing::Fnv1a64(&source.id, sizeof(source.id), hash);
     for (const MaterialRecord& record : records)
-        HashBytes(hash, &record, sizeof(record));
+        hash = Hashing::Fnv1a64(&record, sizeof(record), hash);
 
     // A settled layout still falls through to the re-arm below: the layer set
     // being unchanged says nothing about whether every layer's contents landed.
@@ -239,7 +215,7 @@ void DDGIMaterialMapAtlas::Refresh()
     UploadTable();
     RearmPendingBlits();
 
-    if (const char* v = std::getenv("GE_DDGI_ATLAS_TRACE"); v && v[0] != '\0' && v[0] != '0')
+    if (Platform::EnvironmentSwitchEnabled("GE_DDGI_ATLAS_TRACE", false))
     {
         std::string ids;
         for (size_t i = 0; i < m_LayerSources.size(); ++i)
@@ -360,7 +336,6 @@ void DDGIMaterialMapAtlas::UploadTable()
         float Layers[4];       // x = albedo, y = emissive, z = metallic-roughness
         float UvTransform[4];  // xy = scale, zw = offset
     };
-    static_assert(sizeof(TableRow) == 32, "must match ddgi_hit_shade.glsl's GE_DDGIMaterialMapRecord");
 
     if (m_TableBuffer.IsValid())
     {
@@ -431,7 +406,6 @@ void DDGIMaterialMapAtlas::ReleaseAll()
     m_RecordsByMaterialSlot.clear();
     m_PendingBlits.clear();
     m_LayoutHash = 0;
-    m_HaveSweptStamp = false;
 }
 
 }  // namespace GameEngine::Engine::Renderer

@@ -4,18 +4,14 @@
 #include "Ocean/OceanShapeSampleInputs.h"
 
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
-#include "Engine/Rendering/Pipeline/ReflectionsProvider.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
-#include "Mathematics/Matrix4x4.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <span>
 #include <string>
@@ -49,7 +45,7 @@ namespace
 
     for (const auto& view : rs.Views().GetViews())
     {
-        if (!view.activeRenderPipeline || view.ActiveRenderLayerMask() == Rendering::RenderLayerMask::None())
+        if (!view.activeRenderPipeline || view.ActiveRenderLayerMask() == 0u)
             continue;
         if (view.purpose == ::GameEngine::Rendering::ViewPurpose::EditorScene &&
             view.cameraId != 0 && rs.Views().FindCameraData(view.cameraId))
@@ -75,8 +71,7 @@ bool IsReflectedCausticsBandInView(const Engine::Renderer::RenderServices& rs,
     if (!camera)
         return true;
     const float maxHeightAboveSurface = bandHeight + 2.0f * displacement;
-    return feature.IsWaterFootprintInView(camera->viewProj,
-                                          params.SeaLevel - displacement,
+    return feature.IsWaterFootprintInView(camera->viewProj, params.SeaLevel - displacement,
                                           params.SeaLevel + displacement + bandHeight,
                                           maxHeightAboveSurface / kReflectedCausticsMinRise);
 }
@@ -93,8 +88,7 @@ bool IsWaterSurfaceInView(const Engine::Renderer::RenderServices& rs,
     if (!camera)
         return true;
     const float displacement = ReflectedCausticsSurfaceDisplacementBound(params, nullptr);
-    return feature.IsWaterFootprintInView(camera->viewProj,
-                                          params.SeaLevel - displacement,
+    return feature.IsWaterFootprintInView(camera->viewProj, params.SeaLevel - displacement,
                                           params.SeaLevel + displacement,
                                           std::max(params.MaxHorizontalDisplacement, 0.0f));
 }
@@ -134,8 +128,12 @@ bool OceanRenderNode::Initialize(std::string nodeId, std::string nodeJson, std::
     }
     if (m_UnderwaterMode)
     {
-        Engine::Renderer::Pipeline::Nodes::InitializePostWorldDepthResolve(m_PostOceanDepthResolve,
-                                                                           m_Id + ".PostOceanDepthResolve");
+        namespace Names = Engine::Renderer::Pipeline::Names;
+        m_PostOceanDepthResolve.Initialize(
+            m_Id + ".PostOceanDepthResolve",
+            std::string(R"({"output":")") + Names::View::DepthResolvedPostOcean +
+                R"(","poolName":"Pipeline.DepthResolvedPostOcean.View"})",
+            nullptr);
     }
     // Migration tripwire, not a fallback: project .rendergraph copies predating
     // the explicit mode field would silently lose the ocean surface + underwater
@@ -194,35 +192,23 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
                 feature.GetSceneGrab().DeclareForView(d, frameIndex);
             }
 
-            // The surface draws into the view's targets with the world pass's keywords this frame,
-            // the height fog among them: the surface takes the fog by its own distance. The water
-            // keeps writing the screen-space reflection slices the world pass started, so the
-            // reflections replace the water's own reflection; it takes that keyword only with the
-            // slices attached to this pass. The compatibility profile's surface has no environment
-            // term and no cooked reflection variant, so it keeps the world pass's slices as they are.
-            Engine::Renderer::RenderServices::WorldPassTargetsRG targets{};
-            targets.Color = d.ViewColor;
-            targets.Depth = d.ViewDepth;
-            targets.Resolve = d.ViewResolve;
-            targets.BloomSampleDelta = d.ViewBloomSampleDelta;
-            targets.DepthResolved = d.ViewDepthResolved;
-            targets.SkyBackdrop = d.ResolveTexture(Engine::Renderer::Pipeline::Names::Res::SkyBackdrop);
-            targets.ResolveFromPipeline = d.ResolveFromPipeline;
-            auto passKeywords = ::GameEngine::Rendering::MaterialKeyword::None;
-            if (auto kw = rs.GetWorldPassKeywords(d.View.id))
-                passKeywords = *kw;
-            passKeywords = passKeywords & ~::GameEngine::Rendering::MaterialKeyword::SSSRNormalRoughness;
-
             Engine::Renderer::DrawCommand surfaceCommand{};
             std::span<const RenderGraph::RGTexture> sampledCascades{};
-            if (waterInView && !::GameEngine::Rendering::IsCompatShaderProfile())
-                passKeywords = passKeywords |
-                               Engine::Renderer::Pipeline::ReflectionsProvider::ContributeLateForwardPassTargets(
-                                   d, targets);
             if (waterInView &&
-                feature.BuildSurfaceCommandForView(rs, d.Frame, d.View.id, frameIndex, passKeywords,
+                feature.BuildSurfaceCommandForView(rs, d.Frame, d.View.id, frameIndex,
                                                    surfaceCommand, &sampledCascades))
             {
+                Engine::Renderer::RenderServices::WorldPassTargetsRG targets{};
+                targets.Color = d.ViewColor;
+                targets.Depth = d.ViewDepth;
+                targets.Resolve = d.ViewResolve;
+                targets.DepthResolved = d.ViewDepthResolved;
+                targets.ResolveFromPipeline = d.ResolveFromPipeline;
+
+                auto passKeywords = ::GameEngine::Rendering::MaterialKeyword::None;
+                if (auto kw = rs.GetWorldPassKeywords(d.View.id))
+                    passKeywords = *kw;
+
                 // Declared sampled reads for every dynamic texture the surface
                 // draw binds descriptor-direct (grab, planar reflection, and all
                 // sim cascades — collected by BuildForwardCommand at the bind
@@ -333,8 +319,7 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
                 // a frame that cannot see one declares no pass at all.
                 const auto* viewCamera = rs.Views().FindCameraData(d.View.cameraId);
                 if (portalData.Enabled && viewCamera &&
-                    IsUnderwaterPortalInView(portalData,
-                                             viewCamera->viewProj))
+                    IsUnderwaterPortalInView(portalData, viewCamera->viewProj))
                     feature.GetUnderwater().DeclareForView(d, uwParams, 0.0f, shape,
                                                            underwaterCaustics,
                                                            underwaterCausticsSampler, uwSettings,
@@ -363,9 +348,9 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
     auto snapCameraId = ResolveOceanSnapCamera(rs, d.View);
     if (const auto* cam = rs.Views().FindCameraData(snapCameraId))
     {
-        cameraX = cam->cameraPos.x;
-        cameraY = cam->cameraPos.y;
-        cameraZ = cam->cameraPos.z;
+        cameraX = cam->cameraPos[0];
+        cameraY = cam->cameraPos[1];
+        cameraZ = cam->cameraPos[2];
         haveCamera = true;
     }
 
@@ -417,13 +402,13 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
     bool isOrthographicSceneView = false;
     if (const auto* viewCam = rs.Views().FindCameraData(d.View.cameraId))
     {
-        viewCameraX = viewCam->cameraPos.x;
-        viewCameraY = viewCam->cameraPos.y;
-        viewCameraZ = viewCam->cameraPos.z;
+        viewCameraX = viewCam->cameraPos[0];
+        viewCameraY = viewCam->cameraPos[1];
+        viewCameraZ = viewCam->cameraPos[2];
         haveViewCamera = true;
         // cameraPos.w == 1 is the editor 2D-ortho marker (CameraTypes.h) — the
         // explicit signal the old name+projection sniffing approximated.
-        isOrthographicSceneView = viewCam->cameraPos.w == 1.0f;
+        isOrthographicSceneView = viewCam->cameraPos[3] == 1.0f;
     }
 
     // Underwater gate: this view's camera is submerged when it sits below the
@@ -486,32 +471,27 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
         submerged || IsWaterSurfaceInView(rs, feature, d.View, feature.GetParams());
     if (!waterInView)
         feature.ForgetSimulationClaimsBefore(frameIndex);
-    // The surface changes this view's depth only while the view sees the water.
-    if (waterInView && feature.SurfaceDepthInputsChanged())
-        rs.NotifyUnversionedMotion(d.View.id);
     const bool simulateWaves =
         waterInView || feature.HasRecentSurfaceQueries() ||
         (feature.IsGPUQueryReady() && feature.GetGPUQuery().HasPending());
 
     // Planar reflection capture: re-render the opaque world mirrored across the
     // sea plane into a scaled target the surface samples for mirror reflections.
-    // Pre-world (the surface binds it on the world draw), once per view that sees
-    // water: each view gets its own mirror of its own camera, so two views that
-    // both see water cost two reflection world passes. Hidden capture views
-    // (probes, mirrors, depth captures) get none; the surface they draw, if any,
-    // keeps the procedural sky dome. Gated by the authored PlanarReflections
-    // toggle. Degrades to the procedural sky dome when it declines (no camera,
-    // the GPU-driven spine isn't stamped this frame). A view's reflection view is
-    // fed by extraction starting the frame after it is first allocated, so that
-    // view's first frame is sky-only.
-    if (haveCamera && waterInView && d.View.purpose != ::GameEngine::Rendering::ViewPurpose::UtilityCapture)
+    // Pre-world (the surface binds it on the world draw), once per frame (a full
+    // world pass; views share the single reflection target). Gated by the authored
+    // PlanarReflections toggle and by this view seeing water. Degrades to the
+    // procedural sky dome when it declines (no camera, the GPU-driven spine isn't
+    // stamped this frame). The
+    // reflection view is fed by extraction starting the frame after it is first
+    // allocated, so the very first frame is sky-only.
+    if (haveCamera && waterInView)
     {
         const OceanParamsGPU reflParams = feature.GetParams();
-        if (reflParams.PlanarReflections != 0u)
+        if (reflParams.PlanarReflections != 0u && feature.TryClaimReflectionDispatch(frameIndex))
             feature.GetPlanarReflection().DeclareForView(
-                d, reflParams.SeaLevel, feature.GetPlanarReflectionScale(), frameIndex,
-                std::chrono::steady_clock::now());
+                d, reflParams.SeaLevel, feature.GetPlanarReflectionScale(), frameIndex);
     }
+
 
     // Sea-floor depth bake: independent of the FFT dispatch (it drives the shallow-
     // water colour + shoreline foam), so it has its own once-per-frame claim.

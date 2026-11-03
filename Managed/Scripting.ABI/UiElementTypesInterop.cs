@@ -91,7 +91,7 @@ namespace GameEngine.Scripting
             {
                 // A throwing constructor is a Faulted element, not a dead engine. The native
                 // side reads 0 and says so on screen and in the log.
-                ConsoleDiagnostics.Report("Ui.ElementTypes", $"constructing a UI element type failed: {ex}");
+                UiElementTypeLog.Report($"constructing a UI element type failed: {ex}");
                 return 0;
             }
         }
@@ -121,8 +121,7 @@ namespace GameEngine.Scripting
             }
             catch (Exception ex)
             {
-                ConsoleDiagnostics.Report("Ui.ElementTypes",
-                    $"applying a .uxml attribute to a UI element type failed: {ex}");
+                UiElementTypeLog.Report($"applying a .uxml attribute to a UI element type failed: {ex}");
             }
         }
 

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio mute</title>
+<style>
+:root { color-scheme: dark; --bg:#10141b; --panel:#18202b; --border:#334155; --text:#e5edf7; --muted:#a9b8cd; --accent:#8ac4ff; }
+body { margin:0 auto; max-width:900px; padding:32px 24px; background:var(--bg); color:var(--text); font:16px/1.6 system-ui,sans-serif; }
+a { color:var(--accent); } .lede,footer { color:var(--muted); } h1 { line-height:1.2; } h2 { border-top:1px solid var(--border); padding-top:20px; margin-top:32px; }
+.panel,pre { background:var(--panel); border:1px solid var(--border); padding:16px; border-radius:8px; } code { font-family:ui-monospace,monospace; } pre { overflow:auto; }
+table { width:100%; border-collapse:collapse; } th,td { text-align:left; vertical-align:top; border-bottom:1px solid var(--border); padding:10px; } th { color:var(--accent); }
+</style>
+</head>
+<body>
+<header><p class="lede">GUIDE · Audio</p><h1>Mute speaker output</h1><p>Silence engine audio without stopping voices or changing the mix.</p></header>
+<main>
+<h2>In the editor</h2>
+<p>Right-click the top toolbar’s <strong>Play</strong> button and toggle <strong>Audio Enabled</strong>. The checked row and speaker icon show the current state. A speaker with an X means muted. The menu is available in Edit, Play and Paused states; a left click enters play mode only from Edit.</p>
+<p>Audio starts enabled on a fresh profile. The choice is saved as <code>audio.enabled</code> in the editor preferences and applied at startup. Entering or leaving play mode keeps it. The Play button’s tooltip reports a mute made through the menu.</p>
+<div class="panel">A recording keeps its sound: the output capture tap receives the full mix before speaker mute is applied.</div>
+<h2>In C++</h2>
+<pre><code>#include "Audio/AudioSystem.h"
+#include "Core/Engine.h"
+
+if (auto* audio = GameEngine::EngineCore::GetInstance().GetAudioSystem())
+{
+    audio-&gt;SetMasterMuted(true);
+    const bool muted = audio-&gt;IsMasterMuted();
+    audio-&gt;SetMasterMuted(false);
+}</code></pre>
+<p>Call this API from the thread that owns the audio system. The engine API changes the live state; the editor menu also saves its choice to the editor preferences. There is no managed binding for master mute.</p>
+<table><thead><tr><th>While muted</th><th>Behavior</th></tr></thead><tbody>
+<tr><td>Voices</td><td>Keep playing and advancing. Unmuting uses the current mix, without restarting sounds.</td></tr>
+<tr><td>Mixer volumes</td><td>Stay unchanged. New bus volume settings still apply when unmuted.</td></tr>
+<tr><td>Speakers and meters</td><td>Speaker samples and the Master meter are zero. Child bus meters keep their own levels.</td></tr>
+<tr><td>Output capture</td><td>The capture tap receives the original mix.</td></tr>
+<tr><td>Initialization</td><td>A mute set before <code>Initialize</code> is applied to the backend. The choice survives <code>Shutdown</code> and a later <code>Initialize</code>.</td></tr>
+</tbody></table>
+<h2>Changelog</h2><p>2026-11-02 — Added speaker mute, persisted editor preference, and the Play-button audio menu.</p>
+</main><footer>Audio mute guide · Version 1 · 2026-11-02</footer>
+</body></html>

@@ -1,5 +1,0 @@
-[scene name="Main" version=1]
-[include path="Scenes/common.scene"]
-
-[blueprint id="inst" source="bp"]
-Name.value = "Over"

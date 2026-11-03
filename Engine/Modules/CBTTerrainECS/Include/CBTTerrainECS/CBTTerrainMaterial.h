@@ -2,7 +2,7 @@
 
 #include "AssetCore/GUID.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 
 namespace GameEngine::CBTTerrainECS
 {

@@ -5,7 +5,6 @@
 #include "Animation/BoneMask.h"
 #include "Animation/EvaluationContext.h"
 #include "Animation/MontageInstance.h"
-#include "Mathematics/Interpolation.h"
 
 #include <algorithm>
 #include <cassert>
@@ -106,7 +105,7 @@ void MontageSlotNode::Evaluate(EvaluationContext& ctx, AnimationPose& outPose)
         for (uint32_t i = 0; i < boneCount; ++i)
         {
             const float maskWeight = (i < maskCount) ? mask->Weights[i] : 0.0f;
-            const float boneWeight = Math::Clamp01(maskWeight * blendWeight);
+            const float boneWeight = std::clamp(maskWeight * blendWeight, 0.0f, 1.0f);
             if (boneWeight <= 0.0f)
                 continue;
 

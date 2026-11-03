@@ -41,8 +41,9 @@ void AppendCapped(ConversationMessage& message, std::string_view text)
 }
 } // namespace
 
-Conversation::TurnId Conversation::AddTurn(std::string userText, SentMarkups markups, std::string providerId,
-                                           std::string model, std::string effort,
+Conversation::TurnId Conversation::AddTurn(std::string userText, std::vector<PromptFile> files,
+                                           std::string providerId,
+                                           std::string model,
                                            std::chrono::system_clock::time_point now)
 {
     const TurnId turn = m_NextTurn++;
@@ -50,7 +51,7 @@ Conversation::TurnId Conversation::AddTurn(std::string userText, SentMarkups mar
     ConversationMessage user;
     user.Role = MessageRole::User;
     AppendCapped(user, userText);
-    user.Markups = std::move(markups);
+    user.Files = std::move(files);
     user.Time = now;
     m_Messages.push_back(std::move(user));
     m_Turns.push_back(turn);
@@ -59,7 +60,6 @@ Conversation::TurnId Conversation::AddTurn(std::string userText, SentMarkups mar
     reply.Role = MessageRole::Assistant;
     reply.ProviderId = std::move(providerId);
     reply.Model = std::move(model);
-    reply.Effort = std::move(effort);
     reply.Time = now;
     reply.Status = MessageStatus::Queued;
     m_Messages.push_back(std::move(reply));
@@ -111,7 +111,6 @@ void Conversation::Finish(TurnId turn, const TurnResult& result)
     AppendCapped(*reply, result.Text);
     reply->Status = StatusOf(result.Outcome);
     reply->Notice = result.Outcome == TurnOutcome::Failed ? result.Error : result.Note;
-    reply->AnsweredModel = result.Model;
     reply->CostUsd = result.CostUsd;
     reply->InputTokens = result.InputTokens;
     reply->OutputTokens = result.OutputTokens;

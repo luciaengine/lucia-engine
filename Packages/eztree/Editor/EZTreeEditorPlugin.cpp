@@ -1046,7 +1046,7 @@ bool ResolveTreePick(ECS::World& world, ECS::EntityHandle entity, Editor::Pickin
         return false;
     outPick.MeshGpuHandleId = tree->RuntimeMeshHandleId;
     outPick.ModelAssetGuid = GuidFromArray(tree->RuntimeMeshGuid);
-    outPick.RenderLayers = Rendering::RenderLayerMask::Default();
+    outPick.RenderLayerMask = 1u;
     return true;
 }
 

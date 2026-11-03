@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "DebugServer/Components/ComponentValueReader.h"
+#include "DebugServer/ComponentValueReader.h"
 
 #include <nlohmann/json.hpp>
 
@@ -140,21 +140,21 @@ std::string ReadSource(const std::filesystem::path& path)
 TEST(ComponentValueKeyContract, ComponentWritesReadKeysThroughTheTrackingReader)
 {
     const std::filesystem::path path =
-        std::filesystem::path(GE_EDITOR_SOURCE_DIR) / "Source" / "DebugServer" / "DebugHandlers.cpp";
-    const std::string src = ReadSource(path);
+        std::filesystem::path(GE_EDITOR_SOURCE_DIR) / "Source" / "DebugServer" / "DebugHandlerHelpers.h";
+    const std::string src = ReadSource(path) + ReadSource(path.parent_path() / "SceneEntityDebugHandlers.cpp");
     ASSERT_FALSE(src.empty()) << "could not read " << path.string();
 
     // Instrument check first: a scan whose patterns match nothing anywhere would pass on
     // any file at all. The reader's own name must be present, or the scan is vacuous.
     ASSERT_NE(src.find("ComponentValueReader"), std::string::npos)
-        << "DebugHandlers.cpp no longer mentions ComponentValueReader — this scan would pass "
+        << "The split debug handlers no longer mention ComponentValueReader — this scan would pass "
            "vacuously; re-point it at whatever replaced the reader.";
 
     for (const char* banned : {"values.contains(", "values[\"", "values.value("})
     {
         const std::size_t at = src.find(banned);
         EXPECT_EQ(at, std::string::npos)
-            << "DebugHandlers.cpp reads a component-values key through raw `" << banned
+            << "The split debug handlers read a component-values key through raw `" << banned
             << "` — an unmatched key is then indistinguishable from an absent one and the "
                "write reports ok while changing nothing. Read it through "
                "ComponentValueReader::Has/Value so the tail can report the leftovers.";

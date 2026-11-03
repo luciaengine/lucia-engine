@@ -10,17 +10,12 @@
 
 #include "Rendering/Materials/MaterialKeywordDerivation.h"
 #include "Rendering/Materials/MaterialShaderIncludeRoots.h"
-#include "Rendering/Materials/Shader/ShaderCapabilityDetector.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
-#include "Rendering/Materials/Shader/ShaderComposer.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
-#include "Logger/Logger.h"
+#include "Rendering/Materials/ShaderCapabilityDetector.h"
+#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderComposer.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
-#include "Rendering/ShaderCache/ShaderProgramIndex.h"
-#include "Shader/ShaderIncludeClosure.h"
-#include "Shader/ShaderSourceCache.h"
-
-#include <atomic>
+#include "ShaderIncludeClosure.h"
 
 namespace GameEngine::Rendering
 {
@@ -76,85 +71,14 @@ std::optional<TextureSlotResolution> ResolveDeclaredSurfaceSlots(const GameEngin
                                                                  const std::filesystem::path& materialDir,
                                                                  const MaterialBuildContext& context)
 {
-    const std::filesystem::path surfacePath =
-        ShaderComposer::ResolveSurfaceShaderPath(doc.surfaceShader, materialDir, context);
-    const ShaderSourceCache::EntryPtr source =
-        ShaderSourceCache::Get().Read(surfacePath, ShaderSourceCache::NormalizedKey(surfacePath));
-    if (!source)
+    std::string source;
+    if (!ReadShaderFileText(ShaderComposer::ResolveSurfaceShaderPath(doc.surfaceShader, materialDir, context), source,
+                            nullptr))
         return std::nullopt;
-    TextureSlotResolution slots = ShaderComposer::ResolveTextureSlots(source->Bytes);
+    TextureSlotResolution slots = ShaderComposer::ResolveTextureSlots(source);
     if (slots.Rejected)
         return std::nullopt;
     return slots;
-}
-// A shader reference as the program index keys it: a file generated under the cache root (a graph
-// material's surface) by its path under that root, which a relocated or shipped cache keeps; any
-// other reference as authored.
-std::string IndexedShaderReference(const std::string& reference, const MaterialBuildContext& context)
-{
-    const std::filesystem::path path(reference);
-    if (!path.is_absolute() || context.CacheRoot.empty())
-        return reference;
-    const std::filesystem::path relative =
-        path.lexically_normal().lexically_relative(context.CacheRoot.lexically_normal());
-    if (relative.empty() || *relative.begin() == "..")
-        return reference;
-    return "<cache>/" + relative.generic_string();
-}
-
-// The program index key of a build (MaterialBuildResult::programIndexKey): every input that decides
-// the program once the variant key is derived. The material's source identity stands for the
-// directory its references resolve from first; the derived key carries the pass keywords, the
-// layout, the alpha mode, the vertex modifier's form, the relief and the lighting model; the
-// references and the user keywords are composed as authored. Changing what enters here changes
-// which programs an index addresses: bump kShaderProgramIndexVersion with it.
-uint64_t ProgramIndexInputKey(const GameEngine::MaterialDocument& doc, const ShaderVariantKey& variantKey,
-                              const std::filesystem::path& materialPath, const MaterialBuildContext& context)
-{
-    uint64_t h = kShaderHashOffsetBasis;
-    h = HashShaderString(h, MaterialSourceIdentity(materialPath, context).generic_string());
-    h = HashShaderBytes(&variantKey.vertexFlags, sizeof(variantKey.vertexFlags), h);
-    h = HashShaderBytes(&variantKey.materialKeywords, sizeof(variantKey.materialKeywords), h);
-    h = HashShaderBytes(&variantKey.lightingModel, sizeof(variantKey.lightingModel), h);
-    h = HashShaderBytes(&variantKey.userKeywordHash, sizeof(variantKey.userKeywordHash), h);
-    h = HashShaderString(h, IndexedShaderReference(doc.surfaceShader, context));
-    h = HashShaderString(h, IndexedShaderReference(doc.vertexModifier, context));
-    const uint8_t customVertexShader = doc.customVertexShader ? 1 : 0;
-    h = HashShaderBytes(&customVertexShader, sizeof(customVertexShader), h);
-    for (const std::string& keyword : doc.keywords)
-        h = HashShaderString(h, keyword);
-    return h;
-}
-
-// Serves the variant from the context's program index when it holds `out.programIndexKey`. A miss
-// is counted by the index and logged at its first occurrence and every power of two after, naming
-// the material whose variant composes and hashes instead.
-bool TryServeFromProgramIndex(const ShaderProgramIndex& index, const std::string& debugName, ShaderSourceKind kind,
-                              MaterialBuildResult& out)
-{
-    const std::filesystem::path packagePath = index.Find(out.programIndexKey);
-    ShaderProgramCompileResult served{};
-    const bool fromIndex = !packagePath.empty() && ShaderCompileService::ServeCachedProgram(packagePath, kind, served);
-    index.CountLookup(fromIndex);
-    if (!fromIndex)
-    {
-        static std::atomic<uint64_t> missCount{0};
-        const uint64_t n = missCount.fetch_add(1, std::memory_order_relaxed) + 1;
-        if ((n & (n - 1)) == 0)
-            Logger::Log::Info("[ShaderCache] program index miss '{}' ({}{}x): composing and hashing it", debugName,
-                              packagePath.empty() ? "" : "its package is missing or stale; ", n);
-        return false;
-    }
-    auto package = std::unique_ptr<ShaderPackage, ShaderPackageDeleter>(new ShaderPackage());
-    package->version = 1;
-    package->meta = std::move(served.meta);
-    package->stageBytes = std::move(served.stageBytes);
-    package->cacheInfoJson = std::move(served.cacheInfoJson);
-    out.package = std::move(package);
-    out.generatedShaderPkgPath = served.shaderPkgPath.string();
-    out.includeClosurePaths = std::move(served.includeClosurePaths);
-    out.success = true;
-    return true;
 }
 } // namespace
 
@@ -192,7 +116,6 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
         ShaderProgramCompileRequest creq{};
         creq.debugName = debugName.empty() ? materialPath.stem().string() : debugName;
         creq.baseDirectory = materialPath.parent_path();
-        creq.readOnlyCacheRoots = context.ReadOnlyCacheRoots;
         creq.cacheRoot = cacheRoot;
 
         ShaderVariantKey variantKey{};
@@ -200,7 +123,7 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
         if (meshVertexFlags != VertexAttributeFlags::None)
             variantKey.vertexFlags = meshVertexFlags;
         variantKey.materialKeywords = pipelineKeywords;
-        ApplyAlphaModeKeywords(variantKey, doc.alphaMode, doc.blend);
+        ApplyAlphaModeKeyword(variantKey, doc.alphaMode);
         // Unconditional: pipelineKeywords arrive from a caller's key, which may already
         // carry a modifier bit. This is the authority on the form, so it clears both and
         // sets the one the resolved file actually implements rather than merging on top.
@@ -227,18 +150,11 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
             ? LightingModel::kUnlit
             : HashStringId(GameEngine::ToLowerAscii(doc.lightingModel));
 
-        out.programIndexKey = ProgramIndexInputKey(doc, variantKey, materialPath, context);
-        if (context.ProgramIndex &&
-            TryServeFromProgramIndex(*context.ProgramIndex, creq.debugName, kind, out))
-            return out;
-
         if (adapterDir.empty())
         {
             out.errors.push_back("Material build failed: MaterialBuildContext has empty AdapterShaderDir.");
             return out;
         }
-        const std::filesystem::path shaderLocalDir = ShaderComposer::ShaderLocalDirectory(
-            doc.surfaceShader, doc.vertexModifier, materialPath.parent_path());
 
         std::vector<std::string> composeErrors;
         auto composed = ShaderComposer::Compose(
@@ -273,8 +189,7 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
         // The same roots ShaderComposer spelled its substituted #include
         // literals against (BuildMaterialIncludeRoots is the single authority),
         // so every literal it emitted resolves here.
-        creq.includeDirs = BuildMaterialIncludeRoots(context, shaderLocalDir);
-        out.composedIncludeRoots = creq.includeDirs;
+        creq.includeDirs = BuildMaterialIncludeRoots(context, materialPath.parent_path());
 
         // Compile the composed source in-memory. The path is the logical name only
         // (diagnostics + #include search base); it is intentionally NOT written. Writing
@@ -337,7 +252,7 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
                 out.errors.push_back(
                     "Hint: the surface shader '" + doc.surfaceShader +
                     "' must define exactly: SurfaceOutput EvaluateSurface(SurfaceInput). "
-                    "See docs/rendering/surface-shader-authoring.mdx.");
+                    "See Engine/Modules/Rendering/docs/SurfaceShaderAuthoring.html.");
             }
             // Dump only the stage that failed (CompileProgramToCache stops at
             // the first failing stage — "Compile failed (<stage>):"). If the
@@ -374,7 +289,7 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
             // its shader root, never by this machine's path to it.
             for (ShaderProperty& p : pkg->meta.DeclaredProperties)
                 p.SourceFile =
-                    ShaderComposer::ShaderRootRelative(p.SourceFile, shaderLocalDir, context);
+                    ShaderComposer::ShaderRootRelative(p.SourceFile, materialPath.parent_path(), context);
         }
         pkg->stageBytes = std::move(cres.stageBytes);
         pkg->cacheInfoJson = std::move(cres.cacheInfoJson);

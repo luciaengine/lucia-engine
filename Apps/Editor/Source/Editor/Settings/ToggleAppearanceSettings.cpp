@@ -2,8 +2,11 @@
 
 #include "Editor/Settings/EditorSettingsRegistry.h"
 #include "Editor/Settings/SettingsStore.h"
+#include "UI/Controls/Toggle.h"
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
+
+#include <unordered_set>
 
 namespace GameEngine::Editor
 {
@@ -13,18 +16,22 @@ namespace
 constexpr const char* kInnerShadowPrefKey = "ui.toggleInnerShadow";
 constexpr const char* kInnerShadowRootClass = "toggle-inner-shadow";
 
-void ApplyClass(UIManager* ui, bool enabled)
+void SetCheckmarkClass(UIElement* element, bool enabled, std::unordered_set<UIElement*>& visited)
 {
-    if (!ui)
+    if (!element || !visited.insert(element).second)
         return;
-    UIElement* root = ui->GetRootElement();
-    if (!root)
-        return;
-    if (enabled)
-        root->AddClass(kInnerShadowRootClass);
-    else
-        root->RemoveClass(kInnerShadowRootClass);
-    ui->MarkStyleDirtyAll();
+
+    if (auto* toggle = dynamic_cast<Toggle*>(element))
+    {
+        if (enabled)
+            toggle->AddClass("toggle-checkmark");
+        else
+            toggle->RemoveClass("toggle-checkmark");
+    }
+
+    for (const auto& child : element->GetChildren())
+        SetCheckmarkClass(child.get(), enabled, visited);
+    SetCheckmarkClass(element->GetMountTarget(), enabled, visited);
 }
 
 } // namespace
@@ -49,46 +56,43 @@ ToggleAppearanceSettings::ToggleAppearanceSettings()
     std::string error;
     prefs.Load(&error);
     prefs.TryGetBool(kInnerShadowPrefKey, m_InnerShadowEnabled);
+    prefs.TryGetBool(kPrefKeyCheckmarks, m_CheckmarksEnabled);
+}
+
+void ToggleAppearanceSettings::SetCheckmarksEnabled(bool enabled)
+{
+    m_CheckmarksEnabled = enabled;
+    m_Windows.ForEachLive([this](UIManager& ui) { ApplyCheckmarks(ui); });
 }
 
 void ToggleAppearanceSettings::SetInnerShadowEnabled(bool enabled)
 {
     m_InnerShadowEnabled = enabled;
-    ApplyToTrackedManagers();
+    m_Windows.ForEachLive([this](UIManager& ui)
+                          { TrackedEditorWindows::SetRootClass(ui, kInnerShadowRootClass, m_InnerShadowEnabled); });
 }
 
 void ToggleAppearanceSettings::ApplyTo(UIManager* ui)
 {
     if (!ui)
         return;
-
-    bool alreadyTracked = false;
-    for (const UIManagerRef& tracked : m_TrackedManagers)
-    {
-        if (tracked.Get() == ui)
-        {
-            alreadyTracked = true;
-            break;
-        }
-    }
-    if (!alreadyTracked)
-        m_TrackedManagers.push_back(UIManagerRef(ui));
-
-    ApplyClass(ui, m_InnerShadowEnabled);
+    m_Windows.Add(ui);
+    ApplyCheckmarks(*ui);
+    TrackedEditorWindows::SetRootClass(*ui, kInnerShadowRootClass, m_InnerShadowEnabled);
 }
 
-void ToggleAppearanceSettings::ApplyToTrackedManagers()
+// Stamps toggle-checkmark on every Toggle in the window, including docked
+// panels reached through their mount targets; new toggles read the
+// process-wide presentation flag.
+void ToggleAppearanceSettings::ApplyCheckmarks(UIManager& ui) const
 {
-    size_t write = 0;
-    for (const UIManagerRef& tracked : m_TrackedManagers)
-    {
-        UIManager* ui = tracked.Get();
-        if (!ui)
-            continue;
-        ApplyClass(ui, m_InnerShadowEnabled);
-        m_TrackedManagers[write++] = tracked;
-    }
-    m_TrackedManagers.resize(write);
+    Toggle::SetCheckmarkPresentationEnabled(m_CheckmarksEnabled);
+
+    std::unordered_set<UIElement*> visited;
+    SetCheckmarkClass(ui.GetRootElement(), m_CheckmarksEnabled, visited);
+
+    ui.MarkStyleDirtyAll();
+    ui.RequestRelayout();
 }
 
 void RegisterToggleAppearanceSettings()

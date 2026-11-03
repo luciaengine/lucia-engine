@@ -1,7 +1,6 @@
 #include "PageStreaming/PageCache.h"
 
 #include <algorithm>
-#include <cassert>
 #include <limits>
 
 namespace GameEngine::PageStreaming
@@ -14,6 +13,11 @@ std::size_t PageAddressHash::operator()(const PageAddress& address) const noexce
                                     (static_cast<uint64>(address.Face) << 61u));
 }
 
+std::size_t CachedPageHash::operator()(const CachedPage& page) const noexcept
+{
+    return PageAddressHash{}(page.Address) ^ (static_cast<std::size_t>(page.Stream) * 0xC2B2AE3D27D4EB4Full);
+}
+
 void PageCache::Configure(uint32 slotCount, uint32 framesInFlight, float32 fadeSeconds)
 {
     m_Pool.Initialize(slotCount, framesInFlight);
@@ -24,17 +28,9 @@ void PageCache::Configure(uint32 slotCount, uint32 framesInFlight, float32 fadeS
     m_Order.clear();
     m_Uploads.clear();
     m_Transitions.clear();
-    // Sized for every slot once, so a frame that changes each slot once allocates nothing.
-    m_Uploads.reserve(slotCount);
-    m_Transitions.reserve(slotCount);
     m_Rewrites.clear();
     m_FadeChanges.clear();
     m_FadeSeconds = fadeSeconds;
-    m_LastFrame = 0;
-    m_UnwantedResident = 0;
-    m_FadesPending = false;
-    m_Visits = 0;
-    m_Deferred = 0;
 }
 
 float32 PageCache::FadeOf(const CachedPage& page) const
@@ -48,8 +44,6 @@ void PageCache::Release(const CachedPage& page)
     const uint32 parent = m_Pool.SlotOf(page.Parent());
     if (parent != kNoResidentSlot)
         --m_Slots[parent].ResidentChildren;
-    if (!m_Slots[m_Pool.SlotOf(page)].Wanted)
-        --m_UnwantedResident;
     m_Pool.Release(page, m_Pool.Find(page).Generation);
     ++m_Releases;
 }
@@ -71,54 +65,16 @@ void PageCache::ReleaseStream(uint32 stream)
     m_Resident.resize(kept);
 }
 
-void PageCache::BeginFrame(uint64 frameIndex)
-{
-    m_Uploads.clear();
-    m_Transitions.clear();
-    m_Rewrites.clear();
-    m_Releases = 0;
-    m_Visits = 0;
-    m_Pool.BeginFrame(frameIndex);
-}
-
-void PageCache::MarkWanted(uint64 frameIndex, std::span<const PageWant> wanted)
-{
-    // A page wanted through the last frame and not now was last wanted then.
-    for (const CachedPage& page : m_Resident)
-    {
-        SlotPage& state = m_Slots[m_Pool.SlotOf(page)];
-        if (state.Wanted)
-            state.LastWantedFrame = m_LastFrame;
-        state.Wanted = false;
-    }
-    m_UnwantedResident = static_cast<uint32>(m_Resident.size());
-    for (const PageWant& want : wanted)
-    {
-        const uint32 slot = m_Pool.SlotOf(want.Page());
-        if (slot == kNoResidentSlot || m_Slots[slot].Wanted)
-            continue;
-        m_Slots[slot].Wanted = true;
-        m_Slots[slot].LastWantedFrame = frameIndex;
-        m_Slots[slot].Distance = want.Distance;
-        --m_UnwantedResident;
-    }
-    m_Visits += static_cast<uint32>(m_Resident.size() + wanted.size());
-}
-
 void PageCache::ReleaseStale(uint64 frameIndex)
 {
-    if (m_UnwantedResident == 0)
-        return;
     // Finest first, so a page's children are released before it is considered; compacted in place,
     // keeping the order.
-    m_Visits += static_cast<uint32>(m_Resident.size());
     std::size_t kept = 0;
     for (std::size_t i = 0; i < m_Resident.size(); ++i)
     {
         const CachedPage page = m_Resident[i];
         const SlotPage& state = m_Slots[m_Pool.SlotOf(page)];
-        if (!state.Wanted && frameIndex - state.LastWantedFrame > kPageReleaseHysteresisFrames &&
-            state.ResidentChildren == 0)
+        if (frameIndex - state.LastWantedFrame > kPageReleaseHysteresisFrames && state.ResidentChildren == 0)
         {
             Release(page);
             m_Transitions.push_back(page);
@@ -133,9 +89,8 @@ void PageCache::TickFades(float32 deltaSeconds)
 {
     m_ActiveFades = 0;
     m_FadeChanges.clear();
-    if (m_FadeSeconds <= 0.0f || !m_FadesPending)
+    if (m_FadeSeconds <= 0.0f)
         return;
-    m_Visits += static_cast<uint32>(m_Resident.size());
     for (const CachedPage& page : m_Resident)
     {
         float32& fade = m_Slots[m_Pool.SlotOf(page)].Fade;
@@ -146,7 +101,6 @@ void PageCache::TickFades(float32 deltaSeconds)
         if (fade < 1.0f)
             ++m_ActiveFades;
     }
-    m_FadesPending = m_ActiveFades != 0;
 }
 
 void PageCache::SortCandidates(std::span<const PageWant> wanted)
@@ -165,7 +119,7 @@ void PageCache::SortCandidates(std::span<const PageWant> wanted)
     });
 }
 
-bool PageCache::EvictFor(const PageWant& want)
+bool PageCache::EvictFor(const PageWant& want, uint64 frameIndex)
 {
     // The farthest settled page of the wanted page's level or finer with no resident child, farther
     // than the wanted page (a page no longer wanted counts as infinitely far).
@@ -179,7 +133,8 @@ bool PageCache::EvictFor(const PageWant& want)
         const SlotPage& state = m_Slots[slot];
         if (state.Fade < 1.0f || state.ResidentChildren != 0)
             continue;
-        const float32 distance = state.Wanted ? state.Distance : std::numeric_limits<float32>::infinity();
+        const float32 distance =
+            state.LastWantedFrame == frameIndex ? state.Distance : std::numeric_limits<float32>::infinity();
         if (distance > victimDistance)
         {
             victim = slot;
@@ -198,12 +153,9 @@ bool PageCache::EvictFor(const PageWant& want)
 void PageCache::Assign(const PageWant& want, uint32 slot, uint64 frameIndex)
 {
     SlotPage& state = m_Slots[slot];
-    state = SlotPage{frameIndex, want.Distance, 1.0f, 0, true};
+    state = SlotPage{frameIndex, want.Distance, 1.0f, 0};
     if (m_FadeSeconds > 0.0f && !want.Top)
-    {
         state.Fade = 0.0f;
-        m_FadesPending = true;
-    }
     const CachedPage page = want.Page();
     const uint32 parent = m_Pool.SlotOf(page.Parent());
     if (parent != kNoResidentSlot && !want.Top)
@@ -218,15 +170,26 @@ void PageCache::Assign(const PageWant& want, uint32 slot, uint64 frameIndex)
 
 void PageCache::Update(uint64 frameIndex, float32 deltaSeconds, std::span<const PageWant> wanted, uint32 maxAssigns)
 {
-    BeginFrame(frameIndex);
+    m_Uploads.clear();
+    m_Transitions.clear();
+    m_Rewrites.clear();
+    m_Releases = 0;
     m_Deferred = 0;
-    MarkWanted(frameIndex, wanted);
+    m_Pool.BeginFrame(frameIndex);
+
+    for (const PageWant& want : wanted)
+    {
+        const uint32 slot = m_Pool.SlotOf(want.Page());
+        if (slot == kNoResidentSlot)
+            continue;
+        m_Slots[slot].LastWantedFrame = frameIndex;
+        m_Slots[slot].Distance = want.Distance;
+    }
     ReleaseStale(frameIndex);
     TickFades(deltaSeconds);
 
     SortCandidates(wanted);
     uint32 evictions = 0;
-    m_Visits += static_cast<uint32>(m_Order.size());
     for (const uint32 index : m_Order)
     {
         const PageWant& want = wanted[index];
@@ -241,32 +204,22 @@ void PageCache::Update(uint64 frameIndex, float32 deltaSeconds, std::span<const 
         if (m_Pool.FreeCount() == 0)
         {
             // The freed slot is quarantined for the frames in flight; the page takes it then.
-            evictions += EvictFor(want) ? 1u : 0u;
+            evictions += EvictFor(want, frameIndex) ? 1u : 0u;
             ++m_Deferred;
             continue;
         }
         const ResidentSlotRef slot = m_Pool.Acquire(want.Page(), want.Distance * want.Distance);
         Assign(want, slot.Slot, frameIndex);
     }
-    m_LastFrame = frameIndex;
 }
 
-void PageCache::Tick(uint64 frameIndex, float32 deltaSeconds)
-{
-    assert(m_Deferred == 0 && "Tick after an Update that left wanted pages without a slot");
-    BeginFrame(frameIndex);
-    ReleaseStale(frameIndex);
-    TickFades(deltaSeconds);
-    m_LastFrame = frameIndex;
-}
-
-bool PageCache::Rewrite(const CachedPage& page, const PageSampleRect& level0Rect)
+bool PageCache::Rewrite(const CachedPage& page)
 {
     const uint32 slot = m_Pool.SlotOf(page);
     if (slot == kNoResidentSlot)
         return false;
     m_Uploads.push_back(PageUploadRequest{page, slot});
-    m_Rewrites.push_back(PageRewrite{page, level0Rect});
+    m_Rewrites.push_back(page);
     return true;
 }
 

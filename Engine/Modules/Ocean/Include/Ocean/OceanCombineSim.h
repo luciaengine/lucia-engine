@@ -5,7 +5,7 @@
 
 #include "Rendering/Core/Device.h" // DescriptorSetLayoutDesc
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 
 #include <cstdint>
 
@@ -18,7 +18,7 @@ class CommandList;
 namespace GameEngine::Ocean
 {
 
-// Displacement-combine cascade (optional, OceanRenderer.CombineCascade).
+// Displacement-combine cascade (optional, OceanRenderer.CombineDisplacementCascade).
 // Each frame it sums the tileable FFT displacement cascades into a single
 // camera-snapped, viewer-centered Texture2DArray (one slice per LOD), per LOD only
 // summing the cascades resolvable at that layer's texel (an anti-aliased LOD

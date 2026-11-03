@@ -1,12 +1,7 @@
 #pragma once
 
-#include "Mathematics/Interpolation.h"
-#include "TerrainECS/AreaFlatten/AreaReferenceSurfaceCache.h"
-#include "TerrainECS/TerrainColorMap/TerrainColorMapBaker.h"
-#include "TerrainECS/TerrainSurface/TerrainSurfacePageDriver.h"
 #include "TerrainECS/BakeWarningLatch.h"
 #include "TerrainECS/TerrainService.h"
-#include "PageStreaming/PageSampleRect.h"
 #include "TerrainECS/TerrainRoutePolyline.h"
 #include "TerrainECS/Erosion/ErosionFilter.h"
 #include "Components/Terrain/TerrainModifierEffects.h"
@@ -28,7 +23,6 @@
 #include <deque>
 #include <memory>
 #include <functional>
-#include <limits>
 #include <span>
 #include <unordered_map>
 #include <unordered_set>
@@ -36,23 +30,9 @@
 
 namespace JobSystem { class WorkStealingThreadPool; class TaskHandle; }
 
-namespace GameEngine::PageStreaming
-{
-struct PageAddress;
-struct PageStoreLevel;
-enum class PageFieldFormat : uint8;
-enum class PageFieldKind : uint8;
-} // namespace GameEngine::PageStreaming
-
 namespace GameEngine::TerrainECS
 {
-class AreaReferenceSurface;
-struct BakeBandRegion;
 struct BakeStoreSnapshot;
-struct TerrainColorGroundWrite;
-struct TerrainSurfaceBakeInputs;
-struct TerrainGrassComposeRequest;
-struct TerrainGrassComposeTarget;
 
 // ---- Shape falloff ---------------------------------------------------------
 
@@ -81,18 +61,18 @@ inline float32 ShapeFalloffWeight(float32 distFromEdge, float32 falloff, float32
         // One ramp across [-falloff, +falloffInward], the edge falling wherever
         // the two widths put it rather than at a fixed parameter value.
         const float32 t = (distFromEdge + falloff) / (falloff + falloffInward);
-        return smooth(Math::Clamp01(t));
+        return smooth(std::clamp(t, 0.0f, 1.0f));
     }
     if (distFromEdge <= 0.0f)
     {
         // Outside the shape, or exactly on the edge.
         if (falloff <= 0.0f)
             return 0.0f;
-        return smooth(Math::Clamp01(1.0f + distFromEdge / falloff));
+        return smooth(std::clamp(1.0f + distFromEdge / falloff, 0.0f, 1.0f));
     }
     if (falloffInward <= 0.0f)
         return 1.0f;
-    return smooth(Math::Clamp01(distFromEdge / falloffInward));
+    return smooth(std::clamp(distFromEdge / falloffInward, 0.0f, 1.0f));
 }
 
 // ---- World position -> sample index ----------------------------------------
@@ -101,9 +81,6 @@ inline float32 ShapeFalloffWeight(float32 distFromEdge, float32 falloff, float32
 // heightfield the engine can allocate, and small enough that the +1 and the
 // small pads the call sites add on top cannot overflow int32.
 constexpr int32 kMaxModifierSampleIndex = 1 << 24;
-
-// A region bound past every grid: the bake passes clamp it to the grid they work on.
-constexpr int32 kRegionUnbounded = std::numeric_limits<int32>::max();
 
 // Heightfield/splatmap sample index for a world coordinate, clamped in FLOAT
 // space before the cast.
@@ -154,8 +131,8 @@ struct ModifierFlattenParams
     // PLANAR bake: a true world-space target Y, or — when UseVolumeHeight is set
     // — an offset from the volume's per-sample reference height, itself a world
     // Y (the volume entity's for circle/rectangle volumes, the route's own Y at
-    // the nearest station for a SplinePath volume, the area's reference surface
-    // for a closed SplineArea one). Either way the resolved target is a world Y,
+    // the nearest station for a SplinePath volume, the curve's Y at the closest
+    // point for a SplineArea one). Either way the resolved target is a world Y,
     // which the bake converts with NormalizedHeightForWorldY.
     //
     // SPHERE bake: read radially instead (FillSphereFlattenEffect) — a planet has
@@ -287,12 +264,6 @@ struct ModifierPaintZoneParams
     uint32 LayerIndex; float32 Strength;
 };
 
-// Straight linear colour and weight, kZonePayloadColorChannels floats per texel.
-struct ModifierColorZoneParams
-{
-    const float32* Color; uint32 Width; uint32 Height;
-};
-
 // One entry of a modifier volume's effect stack: what to do, and where in the
 // stack to do it. Deliberately carries no shape — the volume owns that, and the
 // bake hands the effect a scalar weight (plus, for Flatten, a reference height).
@@ -303,26 +274,12 @@ struct ResolvedEffect
     // static_asserts on: a new kind whose parameters are not folded into the
     // geometry hash edits silently and never re-bakes. Keep it last.
     enum class Kind : uint8 { Flatten, HeightOffset, Noise, Stamp, PaintLayer, Rules,
-                              GroundClaim, Grass, Color, Count };
+                              GroundClaim, Grass, Count };
 
     // Effects that only touch the splatmap, never the height. Both bake arms read this: the
     // HEIGHT pack skips these kinds rather than refusing on them (they contribute no height at
     // all), and the SPLAT packer walks exactly this set to decide what the kernel must reproduce.
     static bool IsSplat(Kind k) { return k == Kind::PaintLayer || k == Kind::Rules; }
-
-    struct GrassParams
-    {
-        float32 HeightScale;
-        float32 DensityScale;
-        float32 GroundDarkeningScale;
-    };
-
-    // Linear colour and strength, each [0,1]: composed into the colour map only.
-    struct ColorParams
-    {
-        float32 Linear[3];
-        float32 Strength;
-    };
 
     Kind EffectKind = Kind::Flatten;
     int32 StackOrder = 0;
@@ -336,8 +293,7 @@ struct ResolvedEffect
         ModifierPaintLayerParams PaintLayer;
         ModifierSurfaceRulesParams Rules;
         ModifierGroundClaimParams GroundClaim;
-        GrassParams Grass;
-        ColorParams Color;
+        struct { float32 HeightScale; float32 DensityScale; } Grass;
     };
 
     ResolvedEffect() : Flatten{} {}
@@ -359,20 +315,14 @@ struct StampSampleBasis
 // combined with its world-space transform. Built once per frame from ECS queries.
 struct ResolvedModifier
 {
-    // A ColorZone never enters the height and splat bake's stack: it composes into the
-    // colour map only (TerrainColorMap.h), as a volume's Color effect does.
-    enum class Type : uint8 { SculptZone, PaintZone, Volume, ColorZone };
+    enum class Type : uint8 { SculptZone, PaintZone, Volume };
 
-    static bool IsZone(Type t) { return t == Type::SculptZone || t == Type::PaintZone || t == Type::ColorZone; }
+    static bool IsZone(Type t) { return t == Type::SculptZone || t == Type::PaintZone; }
     // Zones that only touch the splatmap, never the height.
     static bool IsSplatOnly(Type t) { return t == Type::PaintZone; }
 
     // Source entity, used to match modifiers across bakes for region diffing.
     ECS::EntityHandle Entity{};
-    // The equal-priority bake order: tagged modifiers first, by the FNV-1a hash of their
-    // SceneEntityTag, then by Entity.id. Never the query's archetype order.
-    uint64 SceneIdHash = 0;
-    bool HasSceneId = false;
 
     Type ModType;
     Components::TerrainModifierShape Shape;
@@ -429,7 +379,6 @@ struct ResolvedModifier
     {
         ModifierSculptZoneParams SculptZone;
         ModifierPaintZoneParams PaintZone;
-        ModifierColorZoneParams ColorZone;
     };
 
     // Type::Volume only: the entity's effect components in stack order. Empty
@@ -475,11 +424,6 @@ struct ResolvedModifier
     // weight, reference height, world AABB — stays on ResolvedSpline's analytic
     // curve for both spline shapes.
     const RoutePolyline* Route = nullptr;
-
-    // A closed SplineArea volume's reference surface, owned by the modifier
-    // system's AreaReferenceSurfaceCache and valid until the next gather. Non-null
-    // for exactly the areas whose flatten grades to the volume's height.
-    const AreaReferenceSurface* AreaSurface = nullptr;
 
     // ---- Zone change tracking (non-union: applies only to zones) ----
     // DataVersion mirrors the store payload's version; the region diff folds it
@@ -559,45 +503,11 @@ struct ModifierBakeSnapshot
     bool SphereSupported = false; // had a sphere bake path
 };
 
-// The world position of each column and row of a splat grid, and the grid's spacing. A surface
-// page takes each texel's position from the tile that owns the sample, so it matches the tile bake.
-struct SplatTexelLattice
-{
-    std::vector<float32> WorldX; // one per texel column
-    std::vector<float32> WorldZ; // one per texel row
-    float32 SpacingX = 0.0f;
-    float32 SpacingZ = 0.0f;
-};
-
-// The lattice of a grid of width x height texels that spans the world rect at (originX, originZ).
-SplatTexelLattice MakeGridSplatLattice(float32 originX, float32 originZ, float32 worldSizeX, float32 worldSizeZ,
-                                       uint32 width, uint32 height);
-
-// Level-0 heights over a rect of a tiled terrain's lattice, normalized as the tiles hold them.
-struct SurfaceHeightWindow
-{
-    PageStreaming::PageSampleRect Rect; // inclusive
-    std::vector<float32> Heights;       // row-major over Rect
-};
-
-// The heights surface page (pageX, pageZ) of `format` reads at a level shaped `level`: the page's
-// stride and one more sample on each side, clipped to the level.
-PageStreaming::PageSampleRect SurfaceHeightRect(const PageStreaming::PageStoreLevel& level, uint32 pageX, uint32 pageZ,
-                                                PageStreaming::PageFieldFormat format);
-
-// Bakes the normal of surface page `address` of a level shaped `level`: per texel of the Bc5 stride,
-// the central difference of `heights` (over SurfaceHeightRect) at the level's spacing, as the tile
-// bake makes it, stored by EncodeNormalSample. False when the window does not match.
-bool BakeSurfaceNormalPage(const TiledTerrainConfig& config, const PageStreaming::PageAddress& address,
-                           const PageStreaming::PageStoreLevel& level, const SurfaceHeightWindow& heights,
-                           std::vector<uint8>& outTexels);
-
 // ECS system that discovers terrain modifier entities, resolves their parameters,
 // and applies them to the heightfield and splatmap of affected terrains.
 // Scheduled after TransformHierarchy and SplineExtraction (declared edges) and
-// BEFORE TerrainExtraction, which depends on it — so a ground edit reaches the
-// GPU in the same frame it is made. A grass edit composes off the frame and
-// reaches it at the start of the first update after its job finishes.
+// BEFORE TerrainExtraction, which depends on it — so a modifier edit reaches the
+// GPU in the same frame it is made.
 class TerrainModifierSystem : public ECS::ISystem
 {
 public:
@@ -611,7 +521,7 @@ public:
     // saved as `savedScene` (the editor's save step). Restamps the document's own
     // terrains, those whose Terrain.BakeOriginScene is `previousScene` or null, with
     // `savedScene` (a Save As, or a first save, moves them to the new scene's identity);
-    // a terrain from a subscene or a prefab keeps the nested file's identity, which a
+    // a terrain from a subscene or a blueprint keeps the nested file's identity, which a
     // load stamps and a save of the parent leaves unchanged. Then asks the first settled
     // update to store each of the document's single terrains under its current key and
     // to prune the saved scene's cache folder to them (TerrainBakeCache.h). Settled means no
@@ -636,7 +546,8 @@ public:
     // (WorldOriginX + (firstLatticeX + i) * spacing, ...) where spacing is
     // TileWorldSize / (HeightmapWidth - 1). Heights come back NORMALIZED — the
     // units the tile heightfield stores — so a caller scales by HeightScale and
-    // offsets by the terrain's world Y.
+    // offsets by the terrain's world Y exactly as SampleTiledHeightNormalized's
+    // callers do.
     //
     // Indices outside the tile grid are left untouched in `outNormalized`; the
     // caller owns "outside the footprint", which is a wall rather than a hole.
@@ -663,39 +574,6 @@ public:
     // composition returns has in fact moved.
     [[nodiscard]] uint64 GetAppliedGroundRevision() const { return m_AppliedGroundRevision; }
 
-    // A copy of what the surface page bake of `tiled` reads (TerrainSurfaceBakeInputs): its lattice,
-    // its splat range, the ground `write` and the stacks the last bake applied. Main thread only.
-    std::shared_ptr<const TerrainSurfaceBakeInputs> SnapshotSurfaceBake(const TiledTerrainData& tiled,
-                                                                        const TerrainColorGroundWrite& write) const;
-
-    // Bakes the splat of surface page `address` of a level shaped `level` from `heights` (SurfaceHeightRect)
-    // under the stack of `inputs`: kPageSampleCount RGBA8 texels, apron included. False when the window
-    // does not match or no splat range is committed. Safe on many threads at once.
-    static bool BakeSurfaceSplatPage(const TerrainSurfaceBakeInputs& inputs, const PageStreaming::PageAddress& address,
-                                     const PageStreaming::PageStoreLevel& level, const SurfaceHeightWindow& heights,
-                                     std::vector<uint8>& outTexels);
-
-    // Bakes the grass control of surface page `address` of a level shaped `level` under the grass
-    // regions of `inputs`: kPageSampleCount Rg8 texels (the height and density targets), apron
-    // included, by ComposeTerrainGrassField's rule. Reads no heights. Safe on many threads.
-    static bool BakeSurfaceGrassPage(const TerrainSurfaceBakeInputs& inputs, const PageStreaming::PageAddress& address,
-                                     const PageStreaming::PageStoreLevel& level, std::vector<uint8>& outTexels);
-
-    // Bakes the color of surface page `address` of a level shaped `level` over its splat page
-    // `splatTexels`: kPageSampleCount RGBA8 texels by ComposeTerrainColorMap's rule, with the ground
-    // write, the grass regions and the color zones of `inputs`. Safe on many threads.
-    static bool BakeSurfaceColorPage(const TerrainSurfaceBakeInputs& inputs, const PageStreaming::PageAddress& address,
-                                     const PageStreaming::PageStoreLevel& level, std::span<const uint8> splatTexels,
-                                     std::vector<uint8>& outTexels);
-
-    // The bake key of `tiled`'s `plane` store: height source `heightKey`, the lattice, the height scale, the
-    // world Y `originY`, the splat range and every writer the last bake applied. Zero when nothing writes the
-    // plane (GrassControl needs a grass region, Color the ground `write` or a color zone).
-    uint64 SurfaceStoreKey(const TiledTerrainData& tiled, PageStreaming::PageFieldKind plane, uint64 heightKey,
-                           float32 originY, const TerrainColorGroundWrite& write) const;
-    // The driver that keeps the surface stores of the tiled terrains current.
-    const TerrainSurfacePageDriver& SurfacePages() const { return m_SurfacePages; }
-
     // Test seam: unit tests run without an AssetManager, so they inject
     // decoded masks directly. Runtime population goes through the gather-time
     // GUID -> path -> TextureAsset decode into the same cache.
@@ -716,10 +594,6 @@ public:
     // whose edits live in SplineService rather than in any ECS column.
     static uint64 GetGatherCountForTests();
 
-    // Test seam: the closed areas' reference surfaces built since construction. A
-    // gather whose areas' inputs did not change builds none.
-    uint32 GetAreaSurfaceBuildCountForTests() const { return m_AreaSurfaces.GetBuildCountForTests(); }
-
     // Test seams for the spread settle renormalize (Fix 2). GetSplatRenormalizeTexelCount
     // is a monotonic count of procedural-splat texels the band-spread flush regenerated;
     // the settle-spike bound oracle asserts the per-frame delta never exceeds the budget
@@ -739,18 +613,15 @@ public:
     uint32 GetDragPreviewBakeCountForTests() const { return m_DragPreviewBakeCount; }
     // Row bands the last bake pass fanned out across the pool; 0 when it ran whole.
     uint32 GetLastBakeBandCountForTests() const { return m_LastBakeBandCount; }
-    // Blocks until the grass compose in flight, if any, has finished; its result swaps in at the
-    // start of the next update.
-    void WaitForGrassComposeForTests();
 
-
-    // Splat rows one terrain's streamed-in tiles composite a frame at most, across its arrivals. An eighth
-    // of a 1025-row tile: on a single-thread build the whole-tile surface-rules splat measured
-    // 72 ms (#3408), so a frame pays about 9 ms of it; a threaded build spreads the rows over the
-    // pool. A tile shows its coarse splat until its last row is in (ArrivalSplatStandIn).
-    static constexpr uint32 kArrivalSplatRowsPerFrame = 128;
+    // Row-band height for splitting a large region bake across pool workers (RunBakeRowBands). A
+    // wide bake is dominated by per-texel noise + modifier + splat evaluation, all pure functions of
+    // the sample's world position, so partitioning a region's rows is byte-identical to one
+    // whole-region call (the region-vs-full oracles lock it) while keeping every worker busy.
+    static constexpr int32 kBakeBandRows = 32;
 
 private:
+    void PrepareModifierFrame(ECS::World& world, TerrainService& terrainService);
     // Decoded stamp mask: R channel normalized to [0,1], row-major.
     struct DecodedStampMask
     {
@@ -818,35 +689,32 @@ private:
                                    const std::vector<ResolvedModifier>& modifiers,
                                    int32 minX, int32 minZ, int32 maxX, int32 maxZ);
 
-    // Where BuildLatticeBlock takes a tile's heights from.
-    enum class LatticeBlockSource : uint8
-    {
-        Compose,    // compose the base and `modifiers` for every tile
-        BakedTiles, // read each tile the bake applied the modifiers to; compose the others
-    };
+    // ComposeTiledGroundBlock's composition under `modifiers`: the normalized height of every
+    // sample of a block of the terrain's global tile lattice, row-major.
+    static bool ComposeLatticeBlock(const TiledTerrainData& tiled, float32 heightScale, float32 terrainOriginY,
+                                    const std::vector<ResolvedModifier>& modifiers, int64 firstLatticeX,
+                                    int64 firstLatticeZ, uint32 countX, uint32 countZ,
+                                    std::vector<float32>& outNormalized);
 
-    // The normalized height under `modifiers` of each sample of a block of the tile lattice, row-major;
-    // `outComposedSamples` counts the samples composed, not read. BakedTiles is exact only while the
-    // tiles hold these modifiers and their CPU heights are current (no GPU bake writes them).
-    static bool BuildLatticeBlock(const TiledTerrainData& tiled, float32 heightScale, float32 terrainOriginY,
-                                  const std::vector<ResolvedModifier>& modifiers, int64 firstLatticeX,
-                                  int64 firstLatticeZ, uint32 countX, uint32 countZ, LatticeBlockSource source,
-                                  std::vector<float32>& outNormalized, uint64& outComposedSamples);
-
-    // Applies every splat effect (surface rules, paint) to `splatmap` in stack order, clamped like
-    // ApplyHeightModifiers. The rules measure `heightfield` (normalized: meters need `heightScale`) on the
-    // splat grid against the (splatMinH, splatMaxH) range. Each problem warns once per latch Reset.
-    static void ApplySplatModifiers(std::vector<uint8>& splatmap,
+    // Apply every splat-writing effect — surface rules and paint — to the
+    // splatmap, in stack order, clamped like ApplyHeightModifiers.
+    //
+    // `heightfield`, `heightScale` and the (splatMinH, splatMaxH) range are what
+    // surface rules measure: the splat grid is the heightfield grid, so a texel's
+    // slope and height come from the same indices; the heightfield stores height
+    // normalized to [0,1], so metres need the scale; and the range is the one the
+    // procedural pass just normalized against. Every call site generates the
+    // procedural splat immediately before this and therefore already holds them.
+    void ApplySplatModifiers(std::vector<uint8>& splatmap,
                              uint32 splatmapWidth, uint32 splatmapHeight,
                              const Terrain::HeightfieldData& heightfield,
-                             const SplatTexelLattice& lattice,
+                             float32 worldSizeX, float32 worldSizeZ,
+                             float32 terrainOriginX, float32 terrainOriginZ,
                              float32 heightScale,
                              float32 splatMinH, float32 splatMaxH,
                              const std::vector<ResolvedModifier>& modifiers,
                              int32 regionMinX, int32 regionMinZ,
-                             int32 regionMaxX, int32 regionMaxZ,
-                             BakeWarningLatch& layerClampWarnings,
-                             BakeWarningLatch& unaddressableRulesWarnings);
+                             int32 regionMaxX, int32 regionMaxZ);
 
     // World-space accumulated dirty bounds (union of changed modifier
     // footprints). Shared by the single-terrain and tiled bake paths.
@@ -872,26 +740,13 @@ private:
     };
 
     // Brings the tiled terrain's height page overlay (TiledTerrainData::PageOverlay) up to
-    // `modifiers` after a bake: the composed height minus the base under each height modifier's
-    // lattice bounds, written into the layer it holds over `heightDirty` only after an edit
+    // `modifiers` after a bake: the composed height minus the base over the lattice rect the
+    // height modifiers reach, recomputed only over `heightDirty` when the rect still holds it
     // (TerrainModifierPageOverlay.cpp). Builds nothing for a terrain with no overlay cap (one that
-    // keeps its height texture) and refuses an overlay whose pages pass the cap (TiledTerrainData::PageOverlayByteCap).
-    // `readBakedTiles`: the tiles' CPU heights are current, so the overlay reads them, not composes.
+    // keeps its height texture) and refuses an overlay over the cap (TiledTerrainData::PageOverlayByteCap).
     void BakeHeightPageOverlay(TiledTerrainData& tiled, float32 heightScale, float32 terrainOriginY,
                                const std::vector<ResolvedModifier>& modifiers, bool fullBake,
-                               const DirtyUnion& heightDirty, bool readBakedTiles);
-    // The height from `source` minus the composed base over band [x0, x1] x [z0, z1] of lattice rect `write`,
-    // into `deltas` (row-major over `write`). Returns the samples `source` composed; leaves `deltas`
-    // unchanged when the block does not build.
-    static uint64 ComposeLatticeDeltaBand(const TiledTerrainData& tiled, float32 heightScale, float32 terrainOriginY,
-                                          const std::vector<ResolvedModifier>& modifiers,
-                                          const PageStreaming::PageSampleRect& write, int32 x0, int32 x1, int32 z0,
-                                          int32 z1, LatticeBlockSource source, std::span<float32> deltas);
-
-    // Publishes the level-0 rect a bake of `tiled` changed on its surface (TiledTerrainData::
-    // SurfaceChanged): every sample on a full bake, else the samples the height and splat dirt reach.
-    static void PublishSurfaceChanged(TiledTerrainData& tiled, bool fullBake, const DirtyUnion& heightDirty,
-                                      const DirtyUnion& splatDirty);
+                               const DirtyUnion& heightDirty);
 
     // BakeHeightPageOverlay for every tiled terrain that awaits its overlay
     // (TiledTerrainData::AwaitsPageOverlay) under an unchanged modifier set.
@@ -923,8 +778,18 @@ private:
                          const DirtyUnion& heightDirty, const DirtyUnion& splatDirty,
                          std::vector<TileCoord>& outBakedTiles, bool gpuEvalSkip);
 
-    // RunRowBands over m_JobPool, under the GE_TERRAIN_MODIFIER_PARALLEL switch; records the band
-    // count in m_LastBakeBandCount. Returns true when it fanned out.
+    // One inclusive sample rectangle [MinX, MaxX] x [MinZ, MaxZ] of a bake pass.
+    struct BakeBandRegion
+    {
+        int32 MinX = 0;
+        int32 MinZ = 0;
+        int32 MaxX = 0;
+        int32 MaxZ = 0;
+    };
+    // Applies rowFn(regionIndex, minX, maxX, z0, z1) over every region. With a pool
+    // and enough texels the rows are split into kBakeBandRows bands fanned across
+    // m_JobPool and joined; otherwise each region runs whole on this thread. Each
+    // band writes a disjoint row range of its region. Returns true when it fanned out.
     bool RunBakeRowBands(std::span<const BakeBandRegion> regions,
                          const std::function<void(std::size_t, int32, int32, int32, int32)>& rowFn);
 
@@ -983,9 +848,11 @@ private:
                                 const std::vector<ResolvedModifier>& modifiers,
                                 std::vector<TileCoord>& outBakedTiles);
 
-    // The height a flatten levels toward under UseVolumeHeight: the route's Y at the nearest station
-    // for a SplinePath volume, the area's reference surface for a closed SplineArea one, the curve's Y
-    // at the closest XZ point for an open spline, and the entity's Y for every other shape.
+    // The height a flatten effect levels toward when it asks for the volume's
+    // reference: the route's own Y at the nearest station for a SplinePath
+    // volume, the curve's own Y at the closest XZ point for a SplineArea one (so
+    // a sloped road flattens to its own profile either way), and the entity's Y
+    // for every other shape. Only called when a flatten effect is present.
     //
     // `routeSample` is the caller's already-computed polyline scan, non-null
     // exactly when mod.Route is: the SplinePath answer IS that sample's Height,
@@ -1127,22 +994,7 @@ private:
     // Same gather/arena lifetime as m_AppliedModifiers, containing only grass
     // effects. Kept separate so grass-only changes cannot dirty physics/materials.
     std::vector<ResolvedModifier> m_GrassModifiers;
-
-    // The colour writers of the last gather, in priority order: the colour zones, and
-    // the volumes that carry a Color effect (with that effect alone). Same lifetime as
-    // m_AppliedModifiers; never part of the height and splat stack.
-    std::vector<ResolvedModifier> m_ColorZones;
-    // Every colour zone's state folded, for the colour maps' input stamps.
-    uint64 m_ColorZonesStamp = 0;
-    TerrainColorMapBaker m_ColorMapBaker;
-    // The surface stores of the tiled terrains, kept current after each bake.
-    TerrainSurfacePageDriver m_SurfacePages;
     void BakeGrassFields(ECS::World& world, TerrainService& terrainService);
-    // Adds one field's target to `request`: the whole field, the part of it `dirty` covers, or (when
-    // the edit misses it) a record that it shows the requested stack. A lattice under 2 x 2 adds none.
-    void AddGrassComposeTarget(TerrainGrassComposeRequest& request, TerrainGrassComposeTarget target,
-                               const TerrainGrassField& field, uint32 w, uint32 h, float32 sizeX, float32 sizeZ,
-                               float32 originX, float32 originZ, bool full, const DirtyUnion& dirty) const;
     struct GrassBakeSnapshot
     {
         ECS::EntityHandle Entity;
@@ -1153,31 +1005,6 @@ private:
     uint64 m_LastGrassHash = 0;
     uint64 m_LastGrassTerrainHash = 0;
     bool m_HasGrassBaseline = false;
-    // True when m_GrassModifiers is the stack `snapshot` records, in order.
-    bool GrassStackMatches(const std::vector<GrassBakeSnapshot>& snapshot) const;
-    // The grass compose runs as a job on m_JobPool, off the frame. m_LastGrass* above is the stack
-    // the fields show; m_RequestedGrassBaseline is the one the newest request composes, and becomes
-    // m_LastGrass* when its result swaps in. A field keeps showing its last result meanwhile, and
-    // one that never had a result holds its terrain's grass back (TerrainGrassField::GatesPlacement).
-    struct GrassBaseline
-    {
-        std::vector<GrassBakeSnapshot> Snapshot;
-        uint64 Hash = 0;
-        uint64 TerrainHash = 0;
-    };
-    GrassBaseline m_RequestedGrassBaseline;
-    // The request in flight and its job; null when none. The job holds the request too.
-    std::shared_ptr<TerrainGrassComposeRequest> m_GrassCompose;
-    std::unique_ptr<JobSystem::TaskHandle> m_GrassComposeTask;
-    std::chrono::steady_clock::time_point m_GrassComposeRequestedAt{};
-    // Bumped by an edit that lands while a compose is in flight: a result of an older generation
-    // is dropped when it lands.
-    uint64 m_GrassGeneration = 0;
-    // A gather landed while a compose ran, or a result was dropped or never ran: one request of the
-    // newest stack follows.
-    bool m_GrassComposeOwed = false;
-    // At the start of an update: swaps a finished compose's fields in, or drops a stale one.
-    void ApplyGrassCompose(TerrainService& terrainService);
 
     // See GetAppliedGroundRevision.
     uint64 m_AppliedGroundRevision = 0;
@@ -1232,11 +1059,6 @@ private:
     // Resampled routes, same lifetime and same reason as the two above:
     // ResolvedModifier::Route points into this.
     std::deque<RoutePolyline> m_RoutePolylines;
-
-    // The closed areas' reference surfaces, kept across gathers and rebuilt when
-    // an area's rim or a road at one of its openings changes.
-    // ResolvedModifier::AreaSurface points into this.
-    AreaReferenceSurfaceCache m_AreaSurfaces;
 
     // Entities already warned about a Shape::Spline with no SplineComponent to
     // resolve it against — a scene-authoring error that cannot fix itself, so it

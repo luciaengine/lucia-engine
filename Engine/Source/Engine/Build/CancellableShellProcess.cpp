@@ -554,7 +554,6 @@ ShellProcessResult CancellableShellProcess::Run(const std::string& command,
 
     {
         std::lock_guard<std::mutex> lock(m_HandleMutex);
-        result.cancelled = result.cancelled || m_KillRequested.load();
         m_ProcessHandle = nullptr;
     }
     ::CloseHandle(pi.hProcess);
@@ -714,7 +713,6 @@ ShellProcessResult CancellableShellProcess::Run(const ProcessLaunch& launch,
 
     {
         std::lock_guard<std::mutex> lock(m_HandleMutex);
-        result.cancelled = result.cancelled || m_KillRequested.load();
         m_ProcessHandle = nullptr;
     }
     ::CloseHandle(pi.hProcess);
@@ -964,7 +962,6 @@ ShellProcessResult CancellableShellProcess::Run(const std::string& command,
 
     {
         std::lock_guard<std::mutex> lock(m_HandleMutex);
-        result.cancelled = result.cancelled || m_KillRequested.load();
         m_Pid = -1;
     }
     ::close(readFd);
@@ -1204,6 +1201,8 @@ ShellProcessResult CancellableShellProcess::Run(const ProcessLaunch& launch,
 
     {
         std::lock_guard<std::mutex> lock(m_HandleMutex);
+        // Kill can close both pipes before the read loop observes its request.
+        // Preserve that outcome even when the final poll exits directly on EOF.
         result.cancelled = result.cancelled || m_KillRequested.load();
         m_Pid = -1;
     }

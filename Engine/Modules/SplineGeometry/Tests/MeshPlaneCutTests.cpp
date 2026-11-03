@@ -127,8 +127,8 @@ PieceMesh KitWall(LongFaceUnwrap unwrap, bool reversed = false)
     return mesh;
 }
 
-// The plane a miter cuts the kit wall on: vertical, oblique to the wall.
-CutPlane KitWallMiter()
+// The plane a mitre cuts the kit wall on: vertical, oblique to the wall.
+CutPlane KitWallMitre()
 {
     const V3 normal = V3(-1.0f, 0.0f, -0.4f).Normalize();
     return {normal, V3::Dot(normal, V3(0.5f, 1.0f, 0.25f))};
@@ -320,9 +320,7 @@ TEST(MeshPlaneCut, UnitCubeCutKeepsThreeQuartersAndSixClosedFaces)
         // it is there to keep the outline's edges shared.
         const V3 geometric = V3::Cross(Corner(cut.Mesh, t, 1) - a, Corner(cut.Mesh, t, 2) - a);
         if (geometric.Length() > 1e-9f)
-        {
             EXPECT_LT(geometric.x, 0.0f) << "cap wound inward";
-        }
         const SplineVertex& v = cut.Mesh.Vertices[cut.Mesh.Indices[t * 3u]];
         EXPECT_NEAR(v.Normal.x, -1.0f, 1e-6f);
         EXPECT_NEAR(std::abs(v.Tangent.x), 0.0f, 1e-6f) << "cap tangent must lie in the plane";
@@ -458,7 +456,7 @@ TEST(MeshPlaneCut, ACapIsUnwrappedInItsPlaneAtThePiecesTexelDensity)
 }
 
 // A kit wall whose top, bottom and ends are palette-mapped and whose two long
-// faces carry the unwrap, cut across its length as a miter cuts it: most cut
+// faces carry the unwrap, cut across its length as a mitre cuts it: most cut
 // edges lie on palette faces and change no UV (eight of twelve here, as on the
 // castle kit's wall), and the cap still reads at the
 // long faces' density, continuing their texture, rather than collapsing onto
@@ -518,7 +516,7 @@ TEST(MeshPlaneCut, ACapMeetsItsAnchorFaceInPhase)
 {
     for (const LongFaceUnwrap unwrap : {LongFaceUnwrap::VFallsWithHeight, LongFaceUnwrap::UVertical})
     {
-        const CutPlane plane = KitWallMiter();
+        const CutPlane plane = KitWallMitre();
         const MeshCutResult cut = CutMeshByPlane(KitWall(unwrap), plane);
         ASSERT_EQ(cut.CappedLoops, 1u);
         const std::vector<const SplineVertex*> cap = CapVertices(cut.Mesh, plane.Normal);
@@ -556,7 +554,7 @@ TEST(MeshPlaneCut, ACapMeetsItsAnchorFaceInPhase)
 // cap, vertex for vertex.
 TEST(MeshPlaneCut, TheCapsAnchorDoesNotDependOnTriangleOrder)
 {
-    const CutPlane plane = KitWallMiter();
+    const CutPlane plane = KitWallMitre();
     const MeshCutResult forward = CutMeshByPlane(KitWall(LongFaceUnwrap::VFallsWithHeight), plane);
     const MeshCutResult backward =
         CutMeshByPlane(KitWall(LongFaceUnwrap::VFallsWithHeight, true), plane);

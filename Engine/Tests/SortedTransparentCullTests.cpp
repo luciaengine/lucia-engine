@@ -10,12 +10,11 @@
 #include "Engine/Rendering/SortedTransparentCull.h"
 
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/Camera/CameraDerivation.h" // DeriveCameraData (Forward convention pin)
+#include "Rendering/CameraDerivation.h" // DeriveCameraData (Forward convention pin)
 #include "Rendering/Common/Frustum.h" // ExtractFrustumPlanes
 
 #include <cmath>
 #include <cstring>
-#include <memory_resource>
 #include <vector>
 
 using namespace GameEngine::Engine::Renderer;
@@ -60,7 +59,7 @@ TEST(SortedTransparentCull, KeepsInside_DropsOutsideAndBehind)
         MakeSphere(3, 0.0f, 0.0f, -10.0f, 1.0f),   // behind the camera -> culled
     };
 
-    std::pmr::vector<TransparentCentroid> visible;
+    std::vector<TransparentCentroid> visible;
     const uint32_t culled = CullTransparentsToFrustum(candidates, planes, kNoOrigin, visible);
 
     EXPECT_EQ(culled, 3u);
@@ -83,12 +82,12 @@ TEST(SortedTransparentCull, EdgeStraddlingSphereIsKept)
     // A sphere fully past the plane by many radii must be culled (sanity contrast).
     const std::vector<TransparentSphere> fullyOut = {MakeSphere(8, 20.0f, 0.0f, 10.0f, 1.0f)};
 
-    std::pmr::vector<TransparentCentroid> keep;
+    std::vector<TransparentCentroid> keep;
     EXPECT_EQ(CullTransparentsToFrustum(straddle, planes, kNoOrigin, keep), 0u);
     ASSERT_EQ(keep.size(), 1u);
     EXPECT_EQ(keep[0].Key, 7u);
 
-    std::pmr::vector<TransparentCentroid> drop;
+    std::vector<TransparentCentroid> drop;
     EXPECT_EQ(CullTransparentsToFrustum(fullyOut, planes, kNoOrigin, drop), 1u);
     EXPECT_TRUE(drop.empty());
 }
@@ -109,7 +108,7 @@ TEST(SortedTransparentCull, CulledInstancesNeverReachTheDrain)
     for (uint32_t i = 0; i < 20; ++i)
         candidates.push_back(MakeSphere(100u + i, 0.0f, 0.0f, -50.0f, 1.0f));
 
-    std::pmr::vector<TransparentCentroid> visible;
+    std::vector<TransparentCentroid> visible;
     const uint32_t culled = CullTransparentsToFrustum(candidates, planes, kNoOrigin, visible);
     EXPECT_EQ(culled, 20u);
     ASSERT_EQ(visible.size(), 3u);
@@ -126,7 +125,7 @@ TEST(SortedTransparentCull, AllCulledYieldsEmpty)
     for (uint32_t i = 0; i < 5; ++i)
         candidates.push_back(MakeSphere(i, 0.0f, 0.0f, -20.0f, 1.0f)); // all behind
 
-    std::pmr::vector<TransparentCentroid> visible;
+    std::vector<TransparentCentroid> visible;
     EXPECT_EQ(CullTransparentsToFrustum(candidates, planes, kNoOrigin, visible), 5u);
     EXPECT_TRUE(visible.empty());
 }
@@ -147,7 +146,7 @@ TEST(SortedTransparentCull, CameraRelativeRebaseMatchesNearOriginDecisions)
         MakeSphere(2, 0.0f, 0.0f, -5.0f, 1.0f),  // behind
         MakeSphere(3, 9.0f, 0.0f, 10.0f, 1.0f),  // near the edge, inside
     };
-    std::pmr::vector<TransparentCentroid> refVisible;
+    std::vector<TransparentCentroid> refVisible;
     const uint32_t refCulled =
         CullTransparentsToFrustum(refCandidates, refPlanes, kNoOrigin, refVisible);
 
@@ -163,7 +162,7 @@ TEST(SortedTransparentCull, CameraRelativeRebaseMatchesNearOriginDecisions)
         c.Center[1] += origin.y;
         c.Center[2] += origin.z;
     }
-    std::pmr::vector<TransparentCentroid> farVisible;
+    std::vector<TransparentCentroid> farVisible;
     const uint32_t farCulled =
         CullTransparentsToFrustum(farCandidates, farPlanes, origin, farVisible);
 
@@ -189,9 +188,9 @@ TEST(SortedTransparentCull, DerivedCameraForwardPointsIntoTheView)
     const Math::Matrix4x4 viewProj = proj * view;
 
     Rndr::CameraData cam{};
-    cam.view = view;
-    cam.proj = proj;
-    cam.viewProj = viewProj;
+    std::memcpy(cam.view, view.Data(), sizeof(cam.view));
+    std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
+    std::memcpy(cam.viewProj, viewProj.Data(), sizeof(cam.viewProj));
 
     const Rndr::CameraDerivedData derived = Rndr::DeriveCameraData(cam);
 

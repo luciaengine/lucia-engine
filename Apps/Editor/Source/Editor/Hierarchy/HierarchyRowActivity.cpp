@@ -2,7 +2,6 @@
 
 #include "ECS/Entity.h"
 #include "ECS/World.h"
-#include "SceneView/SceneViewEye.h"
 #include "UI/Controls/TreeView.h"
 #include "UI/UIElement.h"
 
@@ -16,10 +15,6 @@ constexpr const char* kEntityDisabledRowClass = "entity-disabled";
 constexpr const char* kTitleSwitchedOffClass = "hierarchy-title-off";
 constexpr const char* kTitleInactiveClass = "hierarchy-title-inactive";
 constexpr const char* kIconSwitchedOffClass = "hierarchy-preview-icon-off";
-// The Scene View eye's classes (UI/panels/HierarchyPanel.css): closed by the entity itself, or by an ancestor.
-constexpr const char* kEyeClass = "hierarchy-eye";
-constexpr const char* kEyeHiddenClass = "eye-closed";
-constexpr const char* kEyeHiddenByParentClass = "eye-closed-by-parent";
 
 void SetRowStateClass(UIElement& element, const char* className, bool present)
 {
@@ -52,29 +47,13 @@ void ApplyRowActivity(UIElement& row, ECS::World& world, const EntityActivity& a
         }
     }
 }
-
-// The eye shows its own state closed, an ancestor's dimmer, and an open eye only on hover; its
-// tooltip says what a click does or which ancestor hides the entity.
-void ApplyRowEye(UIElement& row, ECS::World& world, const SceneViewEyeState& eye)
-{
-    for (const auto& child : row.GetChildren())
-    {
-        if (!child || !child->HasClass(kEyeClass))
-            continue;
-        SetRowStateClass(*child, kEyeHiddenClass, eye.HiddenSelf);
-        SetRowStateClass(*child, kEyeHiddenByParentClass, eye.HiddenByParent);
-        child->SetTooltip(SceneViewEyeTooltip(world, eye));
-    }
-}
 } // namespace
 
 void HierarchyRowActivity::Present(ECS::World& world, ECS::EntityHandle entity, std::uint64_t treeId, UIElement& row)
 {
     const EntityActivity activity = DescribeEntityActivity(world, entity);
-    const SceneViewEyeState eye = DescribeSceneViewEye(world, entity);
-    m_Shown[treeId] = {entity, activity, eye, m_Refreshes};
+    m_Shown[treeId] = {entity, activity, m_Refreshes};
     ApplyRowActivity(row, world, activity);
-    ApplyRowEye(row, world, eye);
 }
 
 void HierarchyRowActivity::Refresh(ECS::World& world, const TreeView& tree, TreeChangeTrackingProvider& provider)
@@ -97,11 +76,9 @@ void HierarchyRowActivity::Refresh(ECS::World& world, const TreeView& tree, Tree
         if (!world.IsValid(shown->second.Entity))
             continue;
         const EntityActivity activity = DescribeEntityActivity(world, shown->second.Entity);
-        const SceneViewEyeState eye = DescribeSceneViewEye(world, shown->second.Entity);
-        if (activity == shown->second.Activity && eye == shown->second.Eye)
+        if (activity == shown->second.Activity)
             continue;
         shown->second.Activity = activity;
-        shown->second.Eye = eye;
         m_Moved.push_back(id);
     }
     std::erase_if(m_Shown, [this](const auto& entry) { return entry.second.HeldAtRefresh != m_Refreshes; });

@@ -54,7 +54,7 @@ std::vector<Vector3> SampleOutline(const std::vector<Vector2>& corners, float (*
 float Flat(float, float) { return 0.0f; }
 float Slope(float x, float) { return 0.2f * x; }
 
-SplineGeometry::GroundSampler SamplerOf(float (*ground)(float, float))
+MarkupECS::MarkupGroundSampler SamplerOf(float (*ground)(float, float))
 {
     return [ground](const Vector2& xz) { return ground(xz.x, xz.y); };
 }
@@ -180,20 +180,17 @@ TEST(MarkupRegionMesh, TheCacheRebuildsOnlyWhatAChangedKeyNeedsAndEvictsUnseenRe
         ++groundBuilds;
         return BuildMarkupRegionGround(outline, true, SamplerOf(Flat));
     };
-    const MarkupRegionDisplayCache::MemberKeyReader noMember = [](ECS::EntityHandle) {
-        return MarkupECS::MarkupFootprintKey{};
-    };
     MarkupRegionDisplayCache cache;
     const ECS::EntityHandle region(7u);
     MarkupRegionGroundKey key;
     key.SplineVersion = 1;
 
-    const uint64 first = cache.Resolve(region, key, kHeight, 1, noMember, build).MeshRevision;
-    cache.Resolve(region, key, kHeight, 2, noMember, build);
+    const uint64 first = cache.Resolve(region, key, kHeight, 1, build).MeshRevision;
+    cache.Resolve(region, key, kHeight, 2, build);
     EXPECT_EQ(groundBuilds, 1) << "an unchanged key rebuilt the ground";
-    EXPECT_EQ(cache.Resolve(region, key, kHeight, 3, noMember, build).MeshRevision, first) << "an unchanged key rebuilt the mesh";
+    EXPECT_EQ(cache.Resolve(region, key, kHeight, 3, build).MeshRevision, first) << "an unchanged key rebuilt the mesh";
 
-    const uint64 taller = cache.Resolve(region, key, kHeight * 2.0f, 4, noMember, build).MeshRevision;
+    const uint64 taller = cache.Resolve(region, key, kHeight * 2.0f, 4, build).MeshRevision;
     EXPECT_EQ(groundBuilds, 1) << "a height change rebuilt the ground";
     EXPECT_NE(taller, first) << "a height change kept the old mesh";
 
@@ -204,7 +201,7 @@ TEST(MarkupRegionMesh, TheCacheRebuildsOnlyWhatAChangedKeyNeedsAndEvictsUnseenRe
     {
         const int before = groundBuilds;
         change(key);
-        cache.Resolve(region, key, kHeight, 5, noMember, build);
+        cache.Resolve(region, key, kHeight, 5, build);
         EXPECT_EQ(groundBuilds, before + 1) << "a key change did not rebuild the ground";
     }
 
@@ -247,59 +244,6 @@ TEST(MarkupRegionMesh, AStraightSampledEdgeKeepsTheLidLeanAndCrackFree)
     }
 }
 
-// The cache rebuilds a drawn region when its member list changes (a member's mode flips, a member
-// is appended), and a region whose list dropped a member is no longer rebuilt when that member
-// moves, though another region still listing it is.
-TEST(MarkupRegionMesh, TheCacheFollowsTheMemberListAndForgetsADroppedMember)
-{
-    const std::vector<Vector3> outline = SampleOutline({{0, 0}, {20, 0}, {20, 20}, {0, 20}}, Flat);
-    const MarkupRegionDisplayCache::GroundBuilder build = [&]() {
-        return BuildMarkupRegionGround(outline, true, SamplerOf(Flat));
-    };
-    // The members' footprint keys, as the world would give them: moving a member changes its matrix.
-    std::vector<MarkupECS::MarkupFootprintKey> footprints(2);
-    for (MarkupECS::MarkupFootprintKey& footprint : footprints)
-        footprint.Shape = MarkupECS::MarkupFootprintKey::Kind::Box;
-    const MarkupRegionDisplayCache::MemberKeyReader readMember = [&](ECS::EntityHandle member) {
-        return footprints[member.id - 1u];
-    };
-    const ECS::EntityHandle pond(1u);
-    const ECS::EntityHandle yard(2u);
-    MarkupRegionDisplayCache cache;
-    const ECS::EntityHandle forest(7u);
-    const ECS::EntityHandle village(8u);
-    MarkupRegionGroundKey forestKey;
-    forestKey.MemberCount = 1;
-    forestKey.Members[0] = {pond, Components::MarkupMemberMode::Exclude};
-    MarkupRegionGroundKey villageKey = forestKey;
-    uint64 frame = 1;
-    const auto revisionOf = [&](ECS::EntityHandle region, const MarkupRegionGroundKey& key) {
-        return cache.Resolve(region, key, kHeight, frame, readMember, build).MeshRevision;
-    };
-    uint64 forestRevision = revisionOf(forest, forestKey);
-    revisionOf(village, villageKey);
-
-    ++frame;
-    forestKey.Members[0].Mode = Components::MarkupMemberMode::Include;
-    EXPECT_NE(revisionOf(forest, forestKey), forestRevision) << "a mode flip kept the old ground";
-    forestRevision = revisionOf(forest, forestKey);
-
-    ++frame;
-    forestKey.Members[forestKey.MemberCount++] = {yard, Components::MarkupMemberMode::Exclude};
-    EXPECT_NE(revisionOf(forest, forestKey), forestRevision) << "an appended member kept the old ground";
-
-    ++frame;
-    forestKey.MemberCount = 1;
-    forestKey.Members[0] = {yard, Components::MarkupMemberMode::Exclude};
-    forestRevision = revisionOf(forest, forestKey);
-    const uint64 villageRevision = revisionOf(village, villageKey);
-
-    ++frame;
-    footprints[pond.id - 1u].Matrix[12] += 5.0f;
-    EXPECT_NE(revisionOf(village, villageKey), villageRevision) << "the region still listing the pond kept its ground";
-    EXPECT_EQ(revisionOf(forest, forestKey), forestRevision) << "the region that dropped the pond was rebuilt";
-}
-
 // A path's display is its open line: no walls, no lid, the line through every sample, and its
 // label halfway along it, not at its start.
 TEST(MarkupRegionMesh, AnOpenOutlineDrawsItsLineAndLabelsItsMiddle)
@@ -316,16 +260,7 @@ TEST(MarkupRegionMesh, AnOpenOutlineDrawsItsLineAndLabelsItsMiddle)
     EXPECT_TRUE(ground.LidTriangles.empty());
     const MarkupRegionMesh mesh = BuildMarkupRegionMesh(ground, 0.0f);
     EXPECT_TRUE(mesh.Vertices.empty());
-    EXPECT_EQ(ground.Outline.size(), line.size());
+    EXPECT_EQ(mesh.BaseOutline.size(), line.size());
     EXPECT_NEAR(mesh.Label.x, 50.0f, 1.0e-3f);
     EXPECT_NEAR(mesh.Label.y, Slope(50.0f, 0.0f), 1.0e-3f);
-}
-
-// An open outline (a path) has no area: no point lies in it, not even one its ring would enclose
-// if it were closed.
-TEST(MarkupRegionMesh, AnOpenOutlineContainsNoPoint)
-{
-    const std::vector<Vector3> line{{0.0f, 0.0f, 0.0f}, {10.0f, 0.0f, 0.0f}, {10.0f, 0.0f, 10.0f}};
-    const MarkupRegionGround ground = BuildMarkupRegionGround(line, false, SamplerOf(Slope));
-    EXPECT_FALSE(ground.Contains(Vector2(7.0f, 3.0f)));
 }

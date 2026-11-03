@@ -2,6 +2,7 @@
 #include "AssetCore/SharedFileRead.h"
 
 #include "InspectorRegistry.h"
+#include "Editor/Entities/EditorComponentTraits.h"
 
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
@@ -9,15 +10,14 @@
 #include "Assets/LensFlareDefinitionAsset.h"
 #include "Components/Rendering/LensFlareSource.h"
 #include "Core/Engine.h"
-#include "Mathematics/Interpolation.h"
 #include "UI/EditorIcons.h"
 #include "Editor/Assets/AsyncAssetHelpers.h"
 #include "ECS/Entity.h"
 #include "Inspectors/DefaultComponentInspector.h"
 #include "Inspectors/InspectorColorSwatchRow.h"
+#include "Inspectors/InspectorComponentSection.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
-#include "Panels/ColorPicker.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/CurveField.h"
 #include "UI/Controls/CurvePresetPicker.h"
@@ -25,8 +25,8 @@
 #include "UI/Controls/Dropdown.h"
 #include "UI/Controls/Foldout.h"
 #include "UI/Controls/Toggle.h"
-#include "UI/Interaction/DragDrop/DragDropGhostRendererRegistry.h"
-#include "UI/Interaction/DragDrop/DragDropManager.h"
+#include "UI/Interaction/DragDropGhostRendererRegistry.h"
+#include "UI/Interaction/DragDropManager.h"
 #include "UI/Interaction/DropTarget.h"
 #include "UI/Interaction/Payload.h"
 #include "UI/StyleProperties.h"
@@ -185,8 +185,8 @@ void AddFlareToggle(UIElement* parent,
         }, tooltip);
 }
 
+constexpr float kFlareColorPickerMaxIntensity = 8.0f;
 constexpr float kFlareElementPreviewSize = 24.0f;
-constexpr float kFlareElementHeaderSwatchSize = 10.0f;
 using FlareColorAccess = std::function<LensFlare::Color*(FlareAsset&)>;
 using FlareColorUiChanged = std::function<void(const LensFlare::Color&)>;
 
@@ -209,7 +209,7 @@ class FlareElementPreview : public UIElement
         // Static previews do not participate in hit testing by default. Drag
         // sources and drop targets opt in once when they are constructed, so
         // later visual refreshes cannot accidentally disable interaction.
-        Style().Set(Style::PointerEvents, false);
+        Overrides().Set(Style::PointerEvents, false);
     }
 
     void SetSprite(const GUID& textureGuid,
@@ -256,7 +256,7 @@ class FlareElementPreview : public UIElement
             return;
 
         const Rendering::TextureHandle texture =
-            ctx.Manager->BackgroundImages().TryGetHandle(m_TextureGuid);
+            ctx.Manager->TryGetBackgroundTextureHandleByGuid(m_TextureGuid);
         if (!texture.IsValid())
             return;
         const uint32_t textureSlot = ctx.Textures->Register(texture);
@@ -335,10 +335,10 @@ public:
     {
         if (!state.Visible)
         {
-            Style().Set(Style::BackgroundColor, 0xFF111111u);
+            Overrides().Set(Style::BackgroundColor, 0xFF111111u);
             return;
         }
-        Style().Set(Style::BackgroundColor,
+        Overrides().Set(Style::BackgroundColor,
                         state.Allowed ? 0xFF245C3Bu : 0xFF5C2424u);
     }
 
@@ -360,13 +360,13 @@ void RenderFlareAtlasSpriteGhost(const UI::Interaction::DragPayload& dragPayload
         return;
 
     constexpr const char* kPreviewId = "flare-atlas-sprite-drag-ghost";
-    auto* preview = dynamic_cast<FlareElementPreview*>(icon.FindById(HashStringId(kPreviewId)));
+    auto* preview = dynamic_cast<FlareElementPreview*>(icon.FindById(kPreviewId));
     if (!preview)
     {
         auto ownedPreview = std::make_unique<FlareElementPreview>();
         preview = ownedPreview.get();
         preview->SetId(kPreviewId);
-        preview->Style()
+        preview->Overrides()
             .Set(Style::Width, StyleLength::Px(64.0f))
             .Set(Style::Height, StyleLength::Px(64.0f))
             .Set(Style::MinWidth, StyleLength::Px(64.0f))
@@ -382,12 +382,12 @@ void RenderFlareAtlasSpriteGhost(const UI::Interaction::DragPayload& dragPayload
 
     // The typed preview draws the atlas UV rectangle directly. Remove the
     // full-texture background installed from the thumbnail identity string.
-    icon.Style()
-        .Reset(Style::BackgroundImage)
-        .Reset(Style::BackgroundSize)
-        .Reset(Style::BackgroundPosition)
-        .Reset(Style::BackgroundRepeatProp)
-        .Reset(Style::BackgroundTint);
+    icon.Styles()
+        .ResetBackgroundImage()
+        .ResetBackgroundSize()
+        .ResetBackgroundPosition()
+        .ResetBackgroundRepeat();
+    icon.Overrides().Reset(Style::BackgroundTint);
     if (badge)
     {
         badge->SetText("");
@@ -488,14 +488,14 @@ private:
 void FlareColorToPickerState(const LensFlare::Color& color, uint32_t& outArgb, float& outIntensity)
 {
     const auto state =
-        InspectorUI::HdrColorToPickerState({color.R, color.G, color.B, color.A}, kColorPickerMaxIntensity);
+        InspectorUI::HdrColorToPickerState({color.R, color.G, color.B, color.A}, kFlareColorPickerMaxIntensity);
     outArgb = state.Argb;
     outIntensity = state.Intensity;
 }
 
 LensFlare::Color PickerStateToFlareColor(uint32_t argb, float intensity)
 {
-    const ColorLinear linear = InspectorUI::PickerStateToHdrColor(argb, intensity, kColorPickerMaxIntensity);
+    const ColorLinear linear = InspectorUI::PickerStateToHdrColor(argb, intensity, kFlareColorPickerMaxIntensity);
     LensFlare::Color color;
     color.R = linear.r;
     color.G = linear.g;
@@ -512,24 +512,6 @@ std::string FormatFlareColor(const LensFlare::Color& color)
     return buffer;
 }
 
-void StyleFlareElementHeaderSwatch(UIElement* swatch, uint32_t argb)
-{
-    if (!swatch)
-        return;
-    constexpr uint32_t borderColor = 0xFF666666u;
-    swatch->Style()
-        .Set(Style::Width, StyleLength::Px(kFlareElementHeaderSwatchSize))
-        .Set(Style::Height, StyleLength::Px(kFlareElementHeaderSwatchSize))
-        .Set(Style::MinWidth, StyleLength::Px(kFlareElementHeaderSwatchSize))
-        .Set(Style::MinHeight, StyleLength::Px(kFlareElementHeaderSwatchSize))
-        .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{2.0f, 2.0f, 2.0f, 2.0f})
-        .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
-        .Set(Style::BorderColor,
-             BorderColorsTRBL{borderColor, borderColor, borderColor, borderColor})
-        .Set(Style::BackgroundColor, argb)
-        .Set(Style::PointerEvents, false);
-}
-
 void ConfigureFlareElementPreview(FlareElementPreview* preview,
                                   const FlareAtlasAsset* atlas,
                                   const LensFlare::FlareElement& element,
@@ -539,7 +521,7 @@ void ConfigureFlareElementPreview(FlareElementPreview* preview,
     if (!preview)
         return;
 
-    preview->Style()
+    preview->Overrides()
         .Set(Style::Width, StyleLength::Px(previewSize))
         .Set(Style::Height, StyleLength::Px(previewSize))
         .Set(Style::MinWidth, StyleLength::Px(previewSize))
@@ -582,7 +564,7 @@ void UpdateFlareElementHeaderColor(FlareElementPreview* preview,
     FlareColorToPickerState(color, argb, intensity);
     if (preview)
         preview->SetTint(0xFF000000u | (argb & 0x00FFFFFFu));
-    StyleFlareElementHeaderSwatch(swatch, argb);
+    InspectorUI::SetColorSwatchColor(swatch, argb);
     if (swatch)
         swatch->SetTooltip("Tint " + FormatFlareColor(color));
 }
@@ -600,31 +582,14 @@ void AddFlareColorPickerRow(UIElement* parent,
     if (!parent || !flare || !access)
         return;
 
-    UIElement* row = InspectorUI::AddRow(parent);
-    Label* rowLabel = InspectorUI::AddLabel(
-        row, label, tooltip ? tooltip : "Click to open the HDR color picker");
-    if (rowLabel)
-        rowLabel->AddClass("inspector-label-no-drag");
-    UIElement* field = InspectorUI::AddFieldContainer(row);
-    field->Style()
-        .Set(Style::FlexDir, FlexDirection::Row)
-        .Set(Style::AlignItems, AlignItems::Center)
-        .Set(Style::Gap, StyleLength::Px(6.0f));
-
     uint32_t argb = 0u;
     float intensity = 1.0f;
     FlareColorToPickerState(value, argb, intensity);
-    auto swatch = std::make_unique<UIElement>();
-    UIElement* swatchRaw = swatch.get();
-    InspectorUI::StyleColorSwatch(swatchRaw, argb);
-    field->AddChild(std::move(swatch));
-
-    auto valueLabel = std::make_unique<Label>();
-    valueLabel->AddClass("inspector-text");
-    valueLabel->SetText(FormatFlareColor(value));
-    valueLabel->Style().Set(Style::Cursor, CursorStyle::Pointer);
-    Label* valueLabelRaw = valueLabel.get();
-    field->AddChild(std::move(valueLabel));
+    const InspectorUI::ColorSwatchRow colorRow = InspectorUI::AddColorSwatchRow(
+        parent, label, tooltip ? tooltip : "Click to open the HDR color picker", argb,
+        FormatFlareColor(value));
+    UIElement* swatchRaw = colorRow.Swatch;
+    Label* valueLabelRaw = colorRow.Value;
 
     // The picker's callbacks outlive an inspector rebuild: resolve the row through weak
     // refs instead of holding the freed widgets.
@@ -639,7 +604,7 @@ void AddFlareColorPickerRow(UIElement* parent,
         uint32_t currentArgb = 0u;
         float currentIntensity = 1.0f;
         FlareColorToPickerState(*current, currentArgb, currentIntensity);
-        InspectorUI::StyleColorSwatch(swatch, currentArgb);
+        InspectorUI::SetColorSwatchColor(swatch, currentArgb);
         valueLabel->SetText(FormatFlareColor(*current));
         if (onColorUiChanged)
             onColorUiChanged(*current);
@@ -725,15 +690,6 @@ void AddFlareColorPickerRow(UIElement* parent,
     valueLabelRaw->RegisterEventHandler(kEventMouseDown, clickHandler);
 }
 
-std::unique_ptr<Foldout> MakeFoldout(const std::string& title, bool expanded)
-{
-    auto foldout = std::make_unique<Foldout>();
-    foldout->SetTitle(title);
-    foldout->AddClass("rp-foldout");
-    foldout->SetExpanded(expanded);
-    return foldout;
-}
-
 void AddButton(UIElement* parent, const std::string& text, std::function<void()> action)
 {
     auto button = std::make_unique<Button>();
@@ -797,7 +753,7 @@ std::vector<Math::CurveKey> NormalizeFlareEditorKeys(std::vector<Math::CurveKey>
                 outTangent = Math::ResolveKeySlope(source.data(), static_cast<uint32_t>(source.size()),
                                                    static_cast<uint32_t>(i), false);
         }
-        keys[i].Time = Math::Clamp01(keys[i].Time);
+        keys[i].Time = std::clamp(keys[i].Time, 0.0f, 1.0f);
         keys[i].InTangent = inTangent;
         keys[i].OutTangent = outTangent;
         keys[i].Interp = Math::CurveInterp::Smooth;
@@ -875,13 +831,13 @@ void BuildCurveEditor(UIElement* parent,
     auto expanded = std::make_shared<bool>(FlareCurveExpandedStates()[stateKey]);
 
     UIElement* row = InspectorUI::AddRow(parent);
-    row->Style().Set(Style::AlignItems, AlignItems::FlexStart);
+    row->Overrides().Set(Style::AlignItems, AlignItems::FlexStart);
     if (Label* rowLabel = InspectorUI::AddLabel(row, label,
             "Drag keys and tangent handles. Right-click empty space to add a key."))
         rowLabel->AddClass("inspector-label-no-drag");
 
     UIElement* field = InspectorUI::AddFieldContainer(row);
-    field->Style()
+    field->Overrides()
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::AlignItems, AlignItems::Stretch)
         .Set(Style::Gap, StyleLength::Px(4.0f));
@@ -900,7 +856,7 @@ void BuildCurveEditor(UIElement* parent,
     config.MaxKeys = Math::Curve::Capacity;
     graph->SetConfig(config);
     graph->SetKeys(FlareEditorKeys(*flare, angleCurve));
-    graph->Style()
+    graph->Overrides()
         .Set(Style::FlexGrow, 1.0f)
         .Set(Style::Height, StyleLength::Px(kFlareCurveCompactHeightPx))
         .Set(Style::MinHeight, StyleLength::Px(kFlareCurveCompactHeightPx))
@@ -1032,7 +988,8 @@ void BuildCurveEditor(UIElement* parent,
         menu->Show(window, static_cast<int>(x), static_cast<int>(y));
     });
 
-    auto presetFoldout = MakeFoldout("Presets", false);
+    Foldout* presetFoldout =
+        InspectorUI::AddComponentSection(field, "LensFlareCurve/" + stateKey + "/Presets", "Presets", false);
     presetFoldout->AddClass("curve-preset-foldout");
     UIElement* presetContent = presetFoldout->GetContentContainer();
     auto picker = std::make_unique<CurvePresetPicker>();
@@ -1053,14 +1010,13 @@ void BuildCurveEditor(UIElement* parent,
         curve.Keys = graphRaw->GetKeys();
         for (Math::CurveKey& key : curve.Keys)
         {
-            key.Time = Math::Clamp01(key.Time);
-            key.Value = Math::Clamp01(key.Value);
+            key.Time = std::clamp(key.Time, 0.0f, 1.0f);
+            key.Value = std::clamp(key.Value, 0.0f, 1.0f);
         }
         CurvePresets::UserPresetLibrary::Get().Add(CurvePresets::NextUserPresetName(), curve);
         pickerRaw->Refresh();
     });
     presetContent->AddChild(std::move(picker));
-    field->AddChild(std::move(presetFoldout));
 
     const auto applyExpanded = [row, field, graphRaw, expanded, stateKey](bool value)
     {
@@ -1069,12 +1025,12 @@ void BuildCurveEditor(UIElement* parent,
         if (value)
         {
             row->AddClass("sky-scalar-curve-expanded");
-            row->Style().Set(Style::FlexDir, FlexDirection::Column)
+            row->Overrides().Set(Style::FlexDir, FlexDirection::Column)
                             .Set(Style::AlignItems, AlignItems::Stretch);
-            field->Style().Set(Style::Width, StyleLength::Percent(100.0f))
+            field->Overrides().Set(Style::Width, StyleLength::Percent(100.0f))
                               .Set(Style::MaxWidth, StyleLength::Percent(100.0f))
                               .Set(Style::AlignSelf, AlignItems::Stretch);
-            graphRaw->Style().Set(Style::Width, StyleLength::Percent(100.0f))
+            graphRaw->Overrides().Set(Style::Width, StyleLength::Percent(100.0f))
                                  .Set(Style::Height, StyleLength::Auto())
                                  .Set(Style::MinHeight, StyleLength::Px(kFlareCurveCompactHeightPx))
                                  .Set(Style::MaxHeight, StyleLength::Auto())
@@ -1083,9 +1039,9 @@ void BuildCurveEditor(UIElement* parent,
         else
         {
             row->RemoveClass("sky-scalar-curve-expanded");
-            row->Style().Reset(Style::FlexDir).Set(Style::AlignItems, AlignItems::FlexStart);
-            field->Style().Reset(Style::Width).Reset(Style::MaxWidth).Reset(Style::AlignSelf);
-            graphRaw->Style().Reset(Style::Width)
+            row->Overrides().Reset(Style::FlexDir).Set(Style::AlignItems, AlignItems::FlexStart);
+            field->Overrides().Reset(Style::Width).Reset(Style::MaxWidth).Reset(Style::AlignSelf);
+            graphRaw->Overrides().Reset(Style::Width)
                                  .Set(Style::Height, StyleLength::Px(kFlareCurveCompactHeightPx))
                                  .Set(Style::MinHeight, StyleLength::Px(kFlareCurveCompactHeightPx))
                                  .Set(Style::MaxHeight, StyleLength::Px(kFlareCurveCompactHeightPx))
@@ -1106,7 +1062,7 @@ void BuildGlobalSettings(UIElement* parent,
 {
     const LensFlare::FlareGlobals& g = flare->GetGlobals();
 
-    auto general = MakeFoldout("General", true);
+    Foldout* general = InspectorUI::AddComponentSection(parent, "LensFlare/General", "General", true);
     UIElement* generalContent = general->GetContentContainer();
     AddFlareFloatValue(generalContent, flare, undo, "Scale", g.GlobalScale,
         [](FlareAsset& a, float v) { a.EditGlobals().GlobalScale = std::max(0.0f, v); }, 1.0f,
@@ -1123,9 +1079,8 @@ void BuildGlobalSettings(UIElement* parent,
         [](FlareAsset& a, float v) { a.EditGlobals().OffScreenFadeDist = std::max(0.0f, v); }, 0.4f, nullptr, 0.0f);
     AddFlareToggle(generalContent, flare, undo, "Never Cull", g.NeverCull,
         [](FlareAsset& a, bool v) { a.EditGlobals().NeverCull = v; });
-    parent->AddChild(std::move(general));
 
-    auto angle = MakeFoldout("Angle Falloff", false);
+    Foldout* angle = InspectorUI::AddComponentSection(parent, "LensFlare/Angle Falloff", "Angle Falloff", false);
     UIElement* angleContent = angle->GetContentContainer();
     AddFlareToggle(angleContent, flare, undo, "Use Angle Limit", g.UseAngleLimit,
         [](FlareAsset& a, bool v) { a.EditGlobals().UseAngleLimit = v; }, rebuild);
@@ -1142,9 +1097,8 @@ void BuildGlobalSettings(UIElement* parent,
         if (g.UseAngleCurve)
             BuildCurveEditor(angleContent, flare, undo, true, window);
     }
-    parent->AddChild(std::move(angle));
 
-    auto distance = MakeFoldout("Distance Falloff", false);
+    Foldout* distance = InspectorUI::AddComponentSection(parent, "LensFlare/Distance Falloff", "Distance Falloff", false);
     UIElement* distanceContent = distance->GetContentContainer();
     AddFlareToggle(distanceContent, flare, undo, "Use Max Distance", g.UseMaxDistance,
         [](FlareAsset& a, bool v) { a.EditGlobals().UseMaxDistance = v; }, rebuild);
@@ -1157,9 +1111,8 @@ void BuildGlobalSettings(UIElement* parent,
         AddFlareToggle(distanceContent, flare, undo, "Affect Brightness", g.UseDistanceFade,
             [](FlareAsset& a, bool v) { a.EditGlobals().UseDistanceFade = v; });
     }
-    parent->AddChild(std::move(distance));
 
-    auto dynamics = MakeFoldout("Dynamic Boost", false);
+    Foldout* dynamics = InspectorUI::AddComponentSection(parent, "LensFlare/Dynamic Boost", "Dynamic Boost", false);
     UIElement* dynamicsContent = dynamics->GetContentContainer();
     AddFlareToggle(dynamicsContent, flare, undo, "Use Edge Brightness", g.UseDynamicEdgeBoost,
         [](FlareAsset& a, bool v) { a.EditGlobals().UseDynamicEdgeBoost = v; }, rebuild);
@@ -1198,7 +1151,6 @@ void BuildGlobalSettings(UIElement* parent,
         AddFlareFloatValue(dynamicsContent, flare, undo, "Center Bias", g.DynamicCenterBias,
             [](FlareAsset& a, float v) { a.EditGlobals().DynamicCenterBias = v; }, 0.0f);
     }
-    parent->AddChild(std::move(dynamics));
 }
 
 struct FlareVisibilityPaintEdit
@@ -1293,12 +1245,23 @@ void BuildElementSettings(UIElement* parent,
         const std::string title = e.SpriteName.empty()
             ? "Element " + std::to_string(i)
             : "Element " + std::to_string(i) + " - " + e.SpriteName;
-        auto elementFoldout = MakeFoldout(title, i == 0);
+        // The header summary shows only while the element is collapsed; the holder lets the
+        // section's toggle reach the summary built into its header below.
+        auto summaryHolder = std::make_shared<UIElement*>(nullptr);
+        Foldout* elementFoldout = InspectorUI::AddComponentSection(
+            parent, "LensFlare/Element" + std::to_string(i), title, i == 0,
+            [summaryHolder](Foldout&, bool expanded)
+            {
+                // Preserve the accessory width in both states so opening an
+                // element cannot reflow its header by a few pixels.
+                if (*summaryHolder)
+                    (*summaryHolder)->Overrides().Set(Style::Visibility, !expanded);
+            });
         FlareElementPreview* headerPreviewRaw = nullptr;
         UIElement* headerSwatchRaw = nullptr;
         if (UIElement* header = elementFoldout->GetHeader())
         {
-            header->Style()
+            header->Overrides()
                 .Set(Style::PaddingTop, StyleLength::Px(2.0f))
                 .Set(Style::PaddingRight, StyleLength::Px(6.0f))
                 .Set(Style::PaddingBottom, StyleLength::Px(2.0f))
@@ -1307,7 +1270,7 @@ void BuildElementSettings(UIElement* parent,
 
             auto accessories = std::make_unique<UIElement>();
             UIElement* accessoriesRaw = accessories.get();
-            accessoriesRaw->Style()
+            accessoriesRaw->Overrides()
                 .Set(Style::Display, DisplayMode::Flex)
                 .Set(Style::FlexDir, FlexDirection::Row)
                 .Set(Style::AlignItems, AlignItems::Center)
@@ -1316,7 +1279,8 @@ void BuildElementSettings(UIElement* parent,
 
             auto summary = std::make_unique<UIElement>();
             UIElement* summaryRaw = summary.get();
-            summaryRaw->Style()
+            *summaryHolder = summaryRaw;
+            summaryRaw->Overrides()
                 .Set(Style::Display, DisplayMode::Flex)
                 .Set(Style::Visibility, !elementFoldout->IsExpanded())
                 .Set(Style::FlexDir, FlexDirection::Row)
@@ -1334,7 +1298,8 @@ void BuildElementSettings(UIElement* parent,
 
             auto swatch = std::make_unique<UIElement>();
             headerSwatchRaw = swatch.get();
-            StyleFlareElementHeaderSwatch(headerSwatchRaw, tintArgb);
+            headerSwatchRaw->AddClass("flare-element-header-swatch");
+            InspectorUI::SetColorSwatchColor(headerSwatchRaw, tintArgb);
             headerSwatchRaw->SetTooltip("Tint " + FormatFlareColor(e.Tint));
             summaryRaw->AddChild(std::move(swatch));
 
@@ -1431,14 +1396,6 @@ void BuildElementSettings(UIElement* parent,
                 menu->Show(window, x, y);
             });
             header->AddChild(std::move(menuButton));
-
-            elementFoldout->SetOnExpandedChanged(
-                [summaryRaw](Foldout&, bool expanded)
-                {
-                    // Preserve the accessory width in both states so opening an
-                    // element cannot reflow its header by a few pixels.
-                    summaryRaw->Style().Set(Style::Visibility, !expanded);
-                });
         }
         UIElement* content = elementFoldout->GetContentContainer();
         FlareElementPreview* expandedPreviewRaw = nullptr;
@@ -1452,7 +1409,7 @@ void BuildElementSettings(UIElement* parent,
             std::vector<std::string> DropdownValues;
         };
         auto spriteUi = std::make_shared<ElementSpriteUiState>();
-        spriteUi->ElementFoldout = elementFoldout.get();
+        spriteUi->ElementFoldout = elementFoldout;
         spriteUi->HeaderPreview = headerPreviewRaw;
 
         const auto selectSprite = [flare, undo, atlas, i, spriteUi](const std::string& value)
@@ -1529,7 +1486,7 @@ void BuildElementSettings(UIElement* parent,
                 previewRow, "Preview",
                 "Drop a sprite from the Atlas Sprites palette below");
             UIElement* previewField = InspectorUI::AddFieldContainer(previewRow);
-            previewField->Style()
+            previewField->Overrides()
                 .Set(Style::FlexDir, FlexDirection::Row)
                 .Set(Style::JustifyContent, JustifyContent::FlexEnd);
             auto expandedPreview = std::make_unique<FlareSpriteDropPreview>();
@@ -1537,7 +1494,7 @@ void BuildElementSettings(UIElement* parent,
             expandedPreviewRaw = dropPreview;
             spriteUi->ExpandedPreview = dropPreview;
             ConfigureFlareElementPreview(dropPreview, atlas, e, tintArgb, 80.0f);
-            dropPreview->Style()
+            dropPreview->Overrides()
                 .Set(Style::PointerEvents, true)
                 .Set(Style::Cursor, CursorStyle::Grab);
             dropPreview->SetTooltip("Drop an atlas sprite here");
@@ -1545,9 +1502,11 @@ void BuildElementSettings(UIElement* parent,
             dropPreview->SetOnSpriteDropped(selectSprite);
             previewField->AddChild(std::move(expandedPreview));
 
-            auto atlasSprites = MakeFoldout("Atlas Sprites - drag onto Preview", false);
+            Foldout* atlasSprites = InspectorUI::AddComponentSection(
+                content, "LensFlare/Element" + std::to_string(i) + "/AtlasSprites",
+                "Atlas Sprites - drag onto Preview", false);
             UIElement* palette = atlasSprites->GetContentContainer();
-            palette->Style()
+            palette->Overrides()
                 .Set(Style::FlexDir, FlexDirection::Row)
                 .Set(Style::FlexWrap, true)
                 .Set(Style::Gap, StyleLength::Px(5.0f))
@@ -1560,14 +1519,13 @@ void BuildElementSettings(UIElement* parent,
                 FlareSpriteDragPreview* palettePreviewRaw = palettePreview.get();
                 ConfigureFlareElementPreview(
                     palettePreviewRaw, atlas, paletteElement, 0xFFFFFFFFu, 34.0f);
-                palettePreviewRaw->Style()
+                palettePreviewRaw->Overrides()
                     .Set(Style::PointerEvents, true)
                     .Set(Style::Cursor, CursorStyle::Grab);
                 palettePreviewRaw->SetTooltip(atlasSprite.Name + " - drag onto Preview");
                 palettePreviewRaw->SetDragSprite(atlas->GetGUID(), atlasSprite.Name);
                 palette->AddChild(std::move(palettePreview));
             }
-            content->AddChild(std::move(atlasSprites));
         }
         else
         {
@@ -1638,7 +1596,6 @@ void BuildElementSettings(UIElement* parent,
                 addElementFloat(boost.Label, e.*(boost.Member), boost.Member, 0.0f);
         }
 
-        parent->AddChild(std::move(elementFoldout));
     }
 
     AddButton(parent, "Add Flare Element", [flare, undo, atlas, rebuild]
@@ -1703,6 +1660,13 @@ void BuildDefinitionEditor(UIElement* parent,
 
 void RegisterLensFlareSourceInspector()
 {
+    {
+        Editor::EditorComponentTraits traits;
+        traits.InspectorIconClass = "inspector-section-icon-lens-flare";
+        Editor::EditorComponentTraitsRegistry::Get().Register(
+            ECS::GetComponentTypeId<Components::LensFlareSource>(), std::move(traits));
+    }
+
     InspectorRegistry::Get().RegisterComponentInspector<Components::LensFlareSource>(
         [](const InspectorContext& ctx)
         {

@@ -1,9 +1,5 @@
 #include "Rendering/Materials/MaterialPropertyBinding.h"
 
-#include "UniformNameUtils.h"
-
-#include "Types/StringUtils.h"
-
 #include <algorithm>
 #include <cctype>
 
@@ -13,6 +9,21 @@ namespace
 {
 static bool IsUpper(char c) { return std::isupper((unsigned char)c) != 0; }
 static bool IsAlphaNum(char c) { return std::isalnum((unsigned char)c) != 0; }
+
+static std::string StripCommonPrefixes(std::string_view s)
+{
+    // Strip common coding-style prefixes once (best-effort).
+    // Examples: uBaseColor -> BaseColor, m_baseColor -> baseColor, gColor -> Color
+    if (s.size() >= 2 && (s[0] == 'u' || s[0] == 'm' || s[0] == 'g' || s[0] == 's') && IsUpper(s[1]))
+    {
+        return std::string(s.substr(1));
+    }
+    if (s.size() >= 3 && (s[0] == 'u' || s[0] == 'm' || s[0] == 'g' || s[0] == 's') && s[1] == '_')
+    {
+        return std::string(s.substr(2));
+    }
+    return std::string(s);
+}
 
 static std::string NormalizeForCompare(std::string_view s)
 {
@@ -37,19 +48,6 @@ static std::string ToLowerCamel(std::string_view s)
 }
 } // namespace
 
-std::string StripUniformPrefix(std::string_view s)
-{
-    if (s.size() >= 2 && (s[0] == 'u' || s[0] == 'm' || s[0] == 'g' || s[0] == 's') && IsUpper(s[1]))
-    {
-        return std::string(s.substr(1));
-    }
-    if (s.size() >= 3 && (s[0] == 'u' || s[0] == 'm' || s[0] == 'g' || s[0] == 's') && s[1] == '_')
-    {
-        return std::string(s.substr(2));
-    }
-    return std::string(s);
-}
-
 bool NamesEquivalent(std::string_view a, std::string_view b)
 {
     if (a.empty() || b.empty())
@@ -63,8 +61,8 @@ bool NamesEquivalent(std::string_view a, std::string_view b)
     if (!a0.empty() && a0 == b0)
         return true;
 
-    const std::string as = NormalizeForCompare(StripUniformPrefix(a));
-    const std::string bs = NormalizeForCompare(StripUniformPrefix(b));
+    const std::string as = NormalizeForCompare(StripCommonPrefixes(a));
+    const std::string bs = NormalizeForCompare(StripCommonPrefixes(b));
     if (!as.empty() && as == bs)
         return true;
 
@@ -83,29 +81,8 @@ std::string SuggestPropertyKeyForUniform(std::string_view uniformName)
         return {};
 
     // Prefer stripping prefixes then lowerCamel.
-    const std::string stripped = StripUniformPrefix(uniformName);
+    const std::string stripped = StripCommonPrefixes(uniformName);
     return ToLowerCamel(stripped);
-}
-
-std::string PropertyKeyLabel(std::string_view key)
-{
-    if (key == "ao")
-        return "AO";
-    constexpr std::string_view kSrgbWord = "sRGB";
-    std::string words;
-    if (key.starts_with(kSrgbWord))
-    {
-        const std::string rest = IdentifierToWords(key.substr(kSrgbWord.size()));
-        words = rest.empty() ? std::string(kSrgbWord) : std::string(kSrgbWord) + " " + rest;
-    }
-    else
-    {
-        words = IdentifierToWords(key);
-    }
-    constexpr std::string_view kIorWord = " Ior";
-    if (words.ends_with(kIorWord))
-        words.replace(words.size() - kIorWord.size(), kIorWord.size(), " IOR");
-    return words;
 }
 
 std::string ResolvePropertyKeyForUniform(const MaterialDocument& doc, std::string_view uniformName)
@@ -140,6 +117,31 @@ std::string ResolvePropertyKeyForUniform(const MaterialDocument& doc, std::strin
 
     // 4) Suggested new key
     return SuggestPropertyKeyForUniform(uniformName);
+}
+
+bool TryGetFloat4(const MaterialDocument& doc, std::string_view uniformName, float out4[4])
+{
+    if (!out4)
+        return false;
+    const std::string key = ResolvePropertyKeyForUniform(doc, uniformName);
+    if (key.empty())
+        return false;
+
+    auto it = doc.properties.find(key);
+    if (it == doc.properties.end())
+        return false;
+
+    if (auto* arr = std::get_if<std::vector<float>>(&it->second))
+    {
+        if (arr->size() < 4)
+            return false;
+        out4[0] = (*arr)[0];
+        out4[1] = (*arr)[1];
+        out4[2] = (*arr)[2];
+        out4[3] = (*arr)[3];
+        return true;
+    }
+    return false;
 }
 } // namespace GameEngine::Rendering::MaterialPropertyBinding
 

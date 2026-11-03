@@ -95,7 +95,7 @@ struct GateOpener {
 };
 
 uint64 TotalComputePops(const WorkStealingThreadPool& pool) {
-    const JobSystemStatistics census = pool.GetStatistics();
+    const WorkStealingThreadPool::TopologyCensus census = pool.GetTopologyCensusForTests();
     return census.GlobalPops + census.LocalPops + census.StealPops + census.BackgroundPops;
 }
 

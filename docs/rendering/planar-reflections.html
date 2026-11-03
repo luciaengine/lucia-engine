@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Planar reflections</title><style>
+:root{--bg:#10151d;--panel:#19212c;--panel-light:#222e3b;--border:#344255;--text:#e5edf6;--muted:#a2b3c8;--accent:#84baff;--bad:#ff8d8d;--good:#94dcb1;--warn:#ffd38b}
+body{background:var(--bg);color:var(--text);font:16px/1.65 system-ui;max-width:1000px;margin:3rem auto;padding:0 1.5rem}h2{border-top:1px solid var(--border);padding-top:1rem}a{color:var(--accent)}code,pre{background:var(--panel-light);padding:.15em .3em}table{border-collapse:collapse;width:100%}th,td{text-align:left;border-bottom:1px solid var(--border);padding:.6rem}tr:hover{background:var(--panel-light)}.panel{background:var(--panel);border:1px solid var(--border);padding:1rem;margin:1rem 0}.warn{border-left:4px solid var(--warn)}.lede,footer{color:var(--muted)}</style></head><body>
+<header><p class="lede">RENDERING · PLANAR REFLECTIONS</p><h1>One mirror capture path, two consumers</h1>
+<p>Flat mirrors and oceans share mirrored-camera construction, reverse-Z clipping,
+view winding, extraction gating, forward-contributor submission and directional-shadow reuse.
+The component mirror remains independent of reflection probes.</p></header>
+<h2>Authoring</h2>
+<p>Add <code>Rendering → Planar Reflection</code> to a flat mesh. Its local XZ plane
+faces +Y; translation and rotation place it, and X/Z scale defines its rectangular
+extent. A separate entity may define a plane over a coplanar surface. Matching
+surface positions and normals receive the capture, ahead of SSR. Component mirrors
+are one-sided. Geometry occluded from the reflected camera stays occluded.
+Switching the component off stops its capture and composition and keeps its settings.</p>
+<table><tr><th>Control</th><th>Meaning</th></tr>
+<tr><td>Resolution Scale</td><td>0.125–1; default 0.5. Capture pixel count scales quadratically.</td></tr>
+<tr><td>Maximum Roughness</td><td>Surface eligibility ceiling, default 0.35. Material roughness drives filtering.</td></tr>
+<tr><td>Priority</td><td>Descending selection priority; entity ID breaks ties. At most four planes per world.</td></tr>
+<tr><td>Cull Mask</td><td>Intersected with the source camera's render layers.</td></tr></table>
+<p>Reflection intensity comes from the surface's physical specular response; there
+is no independent dimmer. Component clip bias is 0.01 m, surface tolerance 0.02 m,
+and local edge fade 0.02. Ocean retains its 0.02 m clipping bias and above-water
+clipping convention. Blur Radius and these low-level controls are not exposed.</p>
+<h2>Capture and shadows</h2>
+<p>A capture owns an on-demand utility view with no recursive render pipeline.
+The shared path refuses stale extraction, writes view lighting, schedules the
+GPU draw stream and emits capture-safe forward contributors. Both consumers use
+directional and image-based lighting. The ocean does not reflect its own surface.</p>
+<p>Directional shadows reuse only the source camera's same-frame, same-world
+cascade depth, glass transmittance, MSM moments and PCSS pyramid resources. Explicit
+render-graph reads order the capture after those producers. Shadow matrices are
+rebased to the reflected camera's render origin. Cascade selection uses the
+source camera's depth plane, not the reflected camera's view depth. The shadow
+uniform grows by one vec4; zero reference depth preserves ordinary-view behavior.</p>
+<div class="panel warn">Shared shadows cover the source camera's existing cascade
+volume, not all geometry visible to a mirror. Reflected objects outside that
+volume remain unshadowed. Captures do not render extra cascades, independent
+clustered lights, transparency or post-processing.</div>
+<h2>Filtering</h2>
+<p>Reduced-resolution component captures use 4× MSAA before resolving. A separable,
+normalized Gaussian filters premultiplied HDR and coverage together. Its maximum
+sigma is <code>min(4, 12 × MaxRoughness² × ResolutionScale)</code> capture pixels.
+Paired bilinear taps extend to three sigma, bounded to 13 samples per axis.</p>
+<p>The composite interpolates the sharp and Gaussian captures using material
+roughness: <code>(roughness / MaxRoughness)^4</code> is the variance weight. Zero
+roughness always uses the sharp capture, reconstructed with the bounded 4×4 filter
+below full resolution. This is a two-level roughness approximation, not a GGX
+convolution. A zero eligibility ceiling skips the Gaussian passes entirely.</p>
+<h2>Cost and integration</h2>
+<p>Each selected mirror/main-view pair adds an opaque world render, optional
+two-pass blur and full-resolution composite. Half resolution has one quarter of
+the source pixels, but the second world submission is still real work. MSAA color,
+depth and resolved color total 56 bytes per capture pixel; full-resolution single
+sampling uses 12. Blur scratch adds 16. Composition requires an 8-byte HDR output
+and 2-byte mask per main-view pixel per plane. Shared shadows add no shadow atlas.</p>
+<p>ForwardPlus includes the node before SSR. Custom pipelines can add a
+<code>PlanarReflection</code> node with HDR input/output and the standard normal,
+roughness and specular material outputs. MSAA-resolved data and TAA are supported;
+SSR may be disabled.</p>
+<h2>Changelog</h2><p>2026-09-17: reduced controls; shared ocean/component capture;
+source-cascade shadow reuse; roughness-derived filtering; converted the former
+<code>PlanarReflections.md</code> into this canonical HTML guide.</p>
+<p>For masked puddles, rain, runoff and camera droplets, see <a href="rain-wet-surfaces.html">Rain and wet surfaces</a>.</p>
+<footer>Planar reflections · version 2 · 2026-09-17</footer></body></html>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Particles/ParticleProcessor/ParticleProcessorRegistry.h"
+#include "Particles/ParticleProcessorRegistry.h"
 
 #include <vector>
 

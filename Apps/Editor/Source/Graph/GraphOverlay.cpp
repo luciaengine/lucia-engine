@@ -13,7 +13,7 @@ GraphOverlay::GraphOverlay()
 {
     AddClass("graph-overlay");
     SetFocusable(false);
-    Style()
+    Overrides()
         .Set(Style::PointerEvents, false)
         .Set(Style::ZIndex, 1)
         .Set(Style::Width, StyleLength::Percent(100.0f))

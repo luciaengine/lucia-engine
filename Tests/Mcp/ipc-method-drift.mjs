@@ -1,6 +1,8 @@
 // Drift guard between the editor's debug-server handlers and the agent tool
-// registry. The C++ side (Apps/Editor/Source/DebugServer/**/*.cpp, RegisterHandler)
-// is authoritative; mcp/src/tools/**/*.ts is what MCP and the CLI expose.
+// registry. The C++ side (Apps/Editor/Source/DebugServer/*.cpp, RegisterHandler)
+// is authoritative; mcp/src/tools/*.ts is what MCP and the CLI expose. Before
+// this check the two lists — plus a help catalog and a spec doc — drifted
+// independently for months.
 //
 // Both sides are read as TEXT, never imported or executed, so this runs in CI
 // before anything is built. That works only because ToolDef carries ipcMethod
@@ -34,7 +36,7 @@ if (process.argv.length > 3 || (process.argv.length === 3 && !listOnly)) {
 function readAll(dir, suffix) {
     let entries;
     try {
-        entries = fs.readdirSync(dir, { recursive: true });
+        entries = fs.readdirSync(dir);
     } catch (err) {
         console.error(`cannot read ${dir}: ${err.message}`);
         process.exit(2);

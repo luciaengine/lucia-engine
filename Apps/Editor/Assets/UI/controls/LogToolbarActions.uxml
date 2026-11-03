@@ -1,0 +1,11 @@
+<UIElement class="log-toolbar-main-actions">
+  <Button id="LogPause" class="small secondary log-action-button log-pause-button" text="Pause">
+    <UIElement id="LogPauseIcon" class="log-action-icon log-action-pause-icon" />
+  </Button>
+  <Button id="LogCopy" class="small secondary log-action-button log-copy-button" text="Copy">
+    <UIElement class="log-action-icon log-action-copy-icon" />
+  </Button>
+  <Button id="LogClear" class="small secondary log-action-button log-clear-button" text="Clear">
+    <UIElement class="log-action-icon log-action-clear-icon" />
+  </Button>
+</UIElement>

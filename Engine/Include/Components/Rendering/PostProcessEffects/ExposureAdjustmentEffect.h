@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Components/Rendering/PostProcessVolume.h" // kDefaultAutoExposureMinEv
 #include "Types/Types.h"
 
 namespace GameEngine {
@@ -22,9 +21,9 @@ struct ExposureAdjustmentEffect {
     static constexpr bool KeepsOwnEnabledField = true;
     float32 Compensation {0.0f}; // ± EV stops
     bool ClampMin {false};
-    float32 MinEv {kDefaultAutoExposureMinEv}; // used when ClampMin; the camera's default floor
+    float32 MinEv {4.0f}; // used when ClampMin; keep in lockstep with Camera::AutoExposureMinEv
     bool ClampMax {false};
-    float32 MaxEv {18.0f}; // used when ClampMax; the camera's default ceiling
+    float32 MaxEv {18.0f}; // used when ClampMax; keep in lockstep with Camera::AutoExposureMaxEv
 };
 
 } // namespace Components

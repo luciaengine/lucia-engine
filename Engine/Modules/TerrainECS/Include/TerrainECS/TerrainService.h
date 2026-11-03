@@ -1,14 +1,10 @@
 #pragma once
 
-#include "TerrainECS/CoarseTileStandIn.h"
 #include "TerrainECS/DirtyRegionLog.h"
-#include "TerrainECS/TerrainSurface/TerrainSurfacePageSource.h"
-#include "TerrainECS/SurfaceHeightQuery.h"
 #include "TerrainECS/TerrainBakeCache.h"
-#include "TerrainECS/TerrainColorMap/TerrainColorMap.h"
 #include "TerrainECS/TerrainZonePayload.h"
 #include "TerrainECS/TerrainGpuBake.h"
-#include "TerrainECS/TerrainGrass/TerrainGrassField.h"
+#include "TerrainECS/TerrainGrassField.h"
 #include "TerrainECS/TerrainReprovisionDebounce.h" // TiledTerrainEdit
 #include "CBTTerrain/SphereAnalyticModifiers.h"
 #include "CBTTerrain/SphereSculptLayer.h"
@@ -17,10 +13,7 @@
 #include "Terrain/CDLODQuadtree.h"
 #include "AssetCore/AssetReloadInvalidator.h"
 #include "AssetCore/GUID.h"
-#include "PageStreaming/Height/HeightPageLayer.h"
-#include "PageStreaming/PageAddress.h"
-#include "Types/FlatMap.h"
-#include "GenerationalVector/GenerationalVector.h"
+#include "PageStreaming/HeightPageOverlay.h"
 
 #include <algorithm>
 #include <array>
@@ -30,7 +23,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <span>
 #include <unordered_map>
 #include <vector>
 
@@ -44,11 +36,18 @@ namespace GameEngine::Components
 {
 enum class TerrainBaseSource : uint8;
 struct Terrain;
-struct WorldTransform;
 }
 
 namespace GameEngine::TerrainECS
 {
+
+// Pre-computed quadtree node min/max for a single finest-level node.
+// Computed on job threads to avoid scanning heightfield on the main thread.
+struct NodeMinMax
+{
+    float32 MinH = 0.0f;
+    float32 MaxH = 0.0f;
+};
 
 // Noise parameters of a tiled terrain's ProceduralNoise base: FillTiledBaseRegion's
 // noise branch and the GPU height bake's base (TerrainModifierSystem), which must agree.
@@ -78,27 +77,6 @@ struct TerrainData
     uint32 SplatmapWidth = 0;
     uint32 SplatmapHeight = 0;
     bool SplatmapDirty = false;
-
-    // The texels whose splat changed since the colour map last composed over them
-    // (TerrainColorMapBaker consumes and clears it). Exclusive max.
-    DirtyRegionLog::Region SplatColorDirty;
-    bool SplatColorDirtyFull = false;
-
-    // Record a splat write for the GPU upload and the colour map: the whole splat,
-    // or one rect of it.
-    void MarkSplatChanged()
-    {
-        SplatmapDirty = true;
-        SplatColorDirtyFull = true;
-    }
-    void MarkSplatChanged(const DirtyRegionLog::Region& region)
-    {
-        SplatmapDirty = true;
-        SplatColorDirty.Union(region);
-    }
-
-    // The colour map composed from the splat and its writers (TerrainColorMap.h).
-    TerrainColorMap ColorMap;
 
     // Set by a full splat re-bake (ResetSplatmapAndCommitRange): every texel was
     // reset against the global height range, so the GPU upload must be
@@ -204,7 +182,8 @@ enum class TileLodState : uint8
     Full     // Full-resolution heightfield + splatmap + normalmap loaded
 };
 
-// Per-tile data within a tiled terrain. Each tile has its own heightfield and splatmap.
+// Per-tile data within a tiled terrain. Each tile has its own heightfield
+// and splatmap, but shares the single global CDLOD quadtree for selection.
 struct TerrainTileData
 {
     TerrainGrassField GrassField;
@@ -220,17 +199,6 @@ struct TerrainTileData
     uint32 SplatmapHeight = 0;
     bool SplatmapDirty = false;
 
-    // Splat writes the colour map has not composed over yet; see TerrainData.
-    bool SplatColorDirtyFull = false;
-    void MarkSplatChanged()
-    {
-        SplatmapDirty = true;
-        SplatColorDirtyFull = true;
-    }
-
-    // This tile's colour map, on the tile's own lattice (TerrainColorMap.h).
-    TerrainColorMap ColorMap;
-
     std::vector<uint8> Normalmap;
     uint32 NormalmapWidth = 0;
     uint32 NormalmapHeight = 0;
@@ -244,10 +212,10 @@ struct TerrainTileData
     uint64 HeightfieldVersion = 0;
 
     // Per-version dirty-region journal for this tile's heightfield, consumed by
-    // the extraction's normal regeneration. Mirrors TerrainData::HeightfieldDirtyLog:
-    // the consumer keeps its own cursor and unions everything newer, so a region
-    // bake that touches only this tile regenerates only that region's normals.
-    // HeightfieldDirty (above) stays the whole-tile GPU-upload flag.
+    // the per-tile physics collider (E6). Mirrors TerrainData::HeightfieldDirtyLog:
+    // the collider keeps its own cursor and unions everything newer, so a region
+    // bake that touches only this tile drives a region-scoped in-place collider
+    // update. HeightfieldDirty (above) stays the whole-tile GPU-upload flag.
     DirtyRegionLog HeightfieldDirtyLog;
 
     // Cached per-tile height range for incremental global min/max tracking.
@@ -269,10 +237,9 @@ struct TerrainTileData
     std::vector<float32> HeightBlockMaxH;
     uint32 HeightBlockDim = 0; // blocks per axis (0 = grid not built)
 
-    // A Coarse tile's full-resolution heights and normal, built by the coarse streaming job.
-    // The extraction consumes it on the tile's first coarse patch and releases it; a new
-    // heightfield (SetTileHeightfield) releases it too.
-    std::shared_ptr<const CoarseTileStandIn> CoarseStandIn;
+    // Pre-computed quadtree node min/max (populated by job threads via streaming manager).
+    std::vector<NodeMinMax> PrecomputedQuadtreeNodes;
+    uint32 PrecomputedQuadtreeNodesPerAxis = 0;
 
     // Async streaming LOD state. Only Full tiles patch the unified GPU source.
     TileLodState LodState = TileLodState::Empty;
@@ -281,7 +248,7 @@ struct TerrainTileData
     // tile. A tile arrives from streaming with the terrain's base only (the streaming
     // job never sees modifiers), so the modifier system bakes it ONCE, scoped to
     // this tile (BakeTiledStreamedTiles) — rather than re-baking (and version-
-    // bumping, which regenerates the normals of) every resident tile whenever one tile
+    // bumping, hence collider re-cooking) every resident tile whenever one tile
     // streams in. Reset to false whenever streaming (re)sets this tile's
     // heightfield content (SetTileHeightfield); set true by the modifier bake.
     bool ModifiersApplied = false;
@@ -293,39 +260,6 @@ struct TerrainTileData
     // ModifiersApplied because that flag gates the FULL bake, which must still run on
     // upgrade. Reset with ModifiersApplied whenever streaming (re)sets this tile's content.
     bool CoarseSplatBaked = false;
-
-    // While a Full arrival's splat bake runs over several frames (the per-frame row budget,
-    // TerrainModifierSystem::kArrivalSplatRowsPerFrame), the tile shows the splat it showed
-    // while Coarse: SetTileHeightfield keeps it here (ArrivalSplatStandInDim square), and the
-    // uploaders draw it instead of the partly baked Splatmap, and the colour map waits for the
-    // bake's end. Empty when no arrival bake runs.
-    std::vector<uint8> ArrivalSplatStandIn;
-    uint32 ArrivalSplatStandInDim = 0;
-    // The first Splatmap row the arrival bake has not composited yet.
-    uint32 ArrivalSplatNextRow = 0;
-    // The height range every row of the arrival bake normalizes against: the resident range on
-    // the bake's first frame (ArrivalSplatNextRow == 0), held for its later frames so a tile
-    // departing mid-bake does not split the arrival's rows across two ranges. A renormalize that
-    // rewrites the tile mid-bake sets it to the renormalize's range.
-    float32 ArrivalSplatMinH = 0.0f;
-    float32 ArrivalSplatMaxH = 0.0f;
-    // The arrival bake has composed this tile's heights, on its first bake frame; a tile waiting
-    // for the row budget is not composed again.
-    bool ArrivalHeightsComposed = false;
-
-    // The authored modifiers are baked into this tile. Ends a pending arrival bake: the
-    // stand-in goes, and the splat is marked changed so the uploaders send the baked one.
-    void MarkModifiersApplied()
-    {
-        ModifiersApplied = true;
-        ArrivalSplatNextRow = 0;
-        ArrivalHeightsComposed = false;
-        if (ArrivalSplatStandIn.empty())
-            return;
-        ArrivalSplatStandIn = {};
-        ArrivalSplatStandInDim = 0;
-        MarkSplatChanged();
-    }
 
     void MarkFullDirty()
     {
@@ -393,26 +327,14 @@ struct TiledTerrainConfig
     uint32 TilesPerAxisZ = 0;
 };
 
-/// How the surface stream shows a changed surface rect: an edit at once, a refinement faded in.
-enum class SurfaceRefreshReason : uint8
-{
-    Edit,
-    Refinement,
-};
-
-// All data for a tiled terrain: the tile grid and the whole-terrain fields built over it.
+// All data for a tiled terrain. Owns the tile grid, the single global
+// CDLOD quadtree, and a stitched heightfield used to build it.
 struct TiledTerrainData
 {
     // Analytic whole-terrain fallback includes regions on never-streamed tiles.
     TerrainGrassField GrassCoarseField;
     TerrainGrassField GrassUnifiedField;
     bool GrassRegionsActive = false;
-    // The colour map of a terrain whose unified textures fit (TiledRenderExtent's unified lattice),
-    // assembled from the tiles' maps; and the coarse map an atlas-backed terrain reads out of the
-    // resident window. ColorMapActive: a texel of either, or of a tile's map, holds a weight.
-    TerrainColorMap ColorUnifiedMap;
-    TerrainColorMap ColorCoarseMap;
-    bool ColorMapActive = false;
     TiledTerrainConfig Config;
     float32 WorldOriginX = 0.0f;     // world-space corner of tile (0,0)
     float32 WorldOriginZ = 0.0f;
@@ -425,11 +347,34 @@ struct TiledTerrainData
     // full tile map each frame.
     uint64 Revision = 0;
 
-    // Whole-terrain GPU terrain handle: the TerrainData the render feature and the
-    // height pages address the tiled terrain by. Created by the extraction system on its
-    // first update of the terrain.
+    // Single global CDLOD quadtree spanning the entire terrain.
+    // Built from per-tile min/max data (no stitched heightfield needed);
+    // rebuilt when tiles load/unload.
+    Terrain::CDLODQuadtree GlobalQuadtree;
+
+    // Tracks whether the global quadtree needs a full rebuild (structural change:
+    // tile loaded/unloaded, first bake, terrain-set change).
+    bool QuadtreeDirty = true;
+
+    // Tiles whose heightfields were edited since the last quadtree sync. Their
+    // finest-level node min/max are patched into the global quadtree incrementally
+    // (FinalizeGlobalQuadtreeUpdates), avoiding the O(all-samples) full rebuild a
+    // brush stroke would otherwise force every dab. Cleared once consumed.
+    std::vector<TileCoord> DirtyQuadtreeTiles;
+
+    // Global GPU terrain handle (holds the global quadtree, accessed by render node).
+    // Created once by the extraction system; quadtree is synced when dirty.
     uint32 GlobalGpuHandleIndex = 0;
     uint32 GlobalGpuHandleGeneration = 0;
+
+    // Morph ranges for the global quadtree. Within-tile levels use normal
+    // chained ranges. Tile-level and above use FLT_MAX to prevent multi-tile patches.
+    float32 VisRanges[Terrain::kMaxLODLevels] = {};
+    float32 MorphStart[Terrain::kMaxLODLevels] = {};
+    float32 MorphEnd[Terrain::kMaxLODLevels] = {};
+    bool MorphRangesComputed = false;
+    float32 CachedLODRangeScale = 0.0f;
+    float32 CachedFarClip = 0.0f;
 
     // Cached global height range that splat normalization is keyed on (the only
     // consumer). Seeded to the deterministic procedural-noise output range
@@ -443,6 +388,7 @@ struct TiledTerrainData
     // instead made the first-streamed tile fall back to a per-tile local range and
     // every later tile widen the aggregate, so the SAME tile's splat drifted across
     // stream-out/in cycles (bytes depended on stream order).
+    bool GlobalHeightRangeDirty = true;
     float32 CachedGlobalMinH = 0.0f;
     float32 CachedGlobalMaxH = kTileNoiseAmplitude;
 
@@ -492,28 +438,25 @@ struct TiledTerrainData
     // eval); drained by TerrainExtractionSystem, which resolves each tile's atlas slot and hands
     // the dispatches to TerrainRenderFeature. Transient per bake.
     GpuHeightBakeBatch GpuBakeBatch;
-    // The last height bake's path and refusals (TerrainModifierSystem); read by the debug readback
-    // and the volume inspector.
-    TerrainHeightBakeReport HeightBakeReport;
 
     // ---- Height page overlay (TerrainModifierSystem, BakeHeightPageOverlay) ----
-    // What the modifiers add to this terrain's base height pages: the baked minus the base under
-    // each height modifier's bounds, on the tile lattice (level 0 of the terrain's pages), held as
-    // the pages those bounds reach. Null when no height modifier reaches the terrain.
-    // PageOverlayVersion takes a new process-wide value on every change (zero until the first: two
-    // terrains' data never share a non-zero version) and PageOverlayChanged is the level-0 rect that
-    // change touched relative to version PageOverlayChangedSince; PageOverlayCurrent is set once the
+    // What the modifiers add to this terrain's base height pages: the baked minus the base over the
+    // rect the height modifiers reach, on the tile lattice (level 0 of the terrain's pages). Null
+    // when no height modifier reaches the terrain. PageOverlayVersion takes a new process-wide
+    // value on every change (zero until the first: two terrains' data never share a non-zero
+    // version) and PageOverlayChanged is the level-0 rect that change touched relative to version
+    // PageOverlayChangedSince; PageOverlayCurrent is set once the
     // overlay reflects the gathered modifier set, so the terrain pages only with its modifiers.
     // PageOverlayByteCap is set by the height page driver each frame: the platform's overlay cap
-    // (HeightPageProfile::OverlayByteCap) when the terrain has CPU pages (TerrainHeightHasCpuPages), zero
-    // when it has no page source: only a terrain with a cap holds an overlay.
-    // PageOverlayRefusedBytes is what the overlay's pages would hold when they are over the cap, zero
+    // (HeightPageProfile::OverlayByteCap) when the terrain would page but for its modifiers, zero
+    // when it keeps its height texture: only a terrain with a cap holds an overlay.
+    // PageOverlayRefusedBytes is what the overlay would hold when it is over the cap, zero
     // otherwise: such a terrain keeps its texture and the driver logs OverlayRefusal.
     // PageOverlayOffGrid (set by the driver, PageOverlayAllowance) says the terrain's pages are not
     // on the tile lattice the overlay is baked on; PageOverlayRefusedOffGrid is set when a height
     // modifier reaches such a terrain: it keeps its texture and the driver logs OverlayGridRefusal.
-    // The modifier system owns PageOverlay and writes it in place; the height pages hold it read-only.
-    std::shared_ptr<PageStreaming::HeightPageLayer> PageOverlay;
+    // The modifier system owns PageOverlay and rebakes it in place; the height pages hold it read-only.
+    std::shared_ptr<PageStreaming::HeightPageOverlay> PageOverlay;
     uint64 PageOverlayVersion = 0;
     PageStreaming::PageSampleRect PageOverlayChanged;
     uint64 PageOverlayChangedSince = 0;
@@ -523,17 +466,7 @@ struct TiledTerrainData
     bool PageOverlayOffGrid = false;
     bool PageOverlayRefusedOffGrid = false;
 
-    // Surface pages (TerrainModifierSystem): each bake that changes the surface increments SurfaceVersion
-    // and sets the level-0 sample rect it changed relative to SurfaceChangedSince.
-    // The surface pages that read SurfaceChanged bake again (TerrainSurfacePageDriver).
-    uint64 SurfaceVersion = 0;
-    PageStreaming::PageSampleRect SurfaceChanged;
-    uint64 SurfaceChangedSince = 0;
-    SurfaceRefreshReason SurfaceRefresh = SurfaceRefreshReason::Edit;
-    // The surface stores as the surface page stream reads them: set by TerrainSurfacePageDriver each frame.
-    TerrainSurfacePageSource SurfacePages;
-
-    /// True when the terrain has height pages and its overlay is neither built nor refused: the
+    /// True when the terrain would page and its overlay is neither built nor refused: the
     /// modifier system bakes it at its next update.
     bool AwaitsPageOverlay() const
     {
@@ -541,13 +474,6 @@ struct TiledTerrainData
                !PageOverlayRefusedOffGrid;
     }
 };
-
-// The world position of the first sample of tile `tile` along one axis, for a terrain whose tile 0
-// starts at `terrainOrigin`. Every tile and every surface page place their samples from it.
-inline float32 TileWorldOrigin(float32 terrainOrigin, int32 tile, float32 tileWorldSize)
-{
-    return terrainOrigin + static_cast<float32>(tile) * tileWorldSize;
-}
 
 // Handle to a tiled terrain within TerrainService.
 struct TiledTerrainHandle
@@ -573,9 +499,7 @@ struct TerrainHandle
     bool operator!=(const TerrainHandle& other) const { return !(*this == other); }
 };
 
-class TerrainPages;
-class TerrainRenderFeature;
-class TerrainPageFeature;
+class TerrainHeightPages;
 class HeightPageStoreLoader;
 struct HeightPageStoreLocation;
 
@@ -652,7 +576,7 @@ public:
     // Access tiled terrain data. Returns nullptr if handle is invalid/stale.
     TiledTerrainData* GetTiledTerrainData(TiledTerrainHandle handle);
 
-    // Load a tile at the given coordinate. Creates its heightfield.
+    // Load a tile at the given coordinate. Creates heightfield, builds quadtree.
     // The tile is filled from the terrain's base (FillTiledBaseRegion).
     TerrainTileData* LoadTile(TiledTerrainHandle handle, TileCoord coord);
 
@@ -662,19 +586,73 @@ public:
     // Check if a tile is loaded.
     bool IsTileLoaded(TiledTerrainHandle handle, TileCoord coord) const;
 
+    // Rebuild the single global CDLOD quadtree from all loaded tiles.
+    // Called after tiles are loaded or unloaded.
+    void RebuildGlobalQuadtree(TiledTerrainHandle handle);
+
+    // ---- Per-tile physics collider addressing (E6) ----
+    //
+    // A tiled terrain is one entity but needs one Jolt heightfield body per
+    // tile. The physics HeightFieldDataProvider is keyed by a single
+    // (handle, generation) pair, so each tile gets a stable generational
+    // "tile-physics handle" that resolves to its live heightfield. The top bit
+    // (kTilePhysicsHandleBit) marks a tile handle vs a single-terrain slot
+    // index; the physics provider routes on it. Single-terrain slot indices are
+    // tiny, so the top bit is always free.
+
+    // dataHandle discriminator: set on HeightFieldColliderShape.dataHandle to
+    // mark a tile-physics handle. Cleared to reach the raw slot index.
+    static constexpr uint32 kTilePhysicsHandleBit = 0x80000000u;
+
+    struct TilePhysicsHandle
+    {
+        uint32 Index = 0;      // slot index OR'd with kTilePhysicsHandleBit
+        uint32 Generation = 0;
+    };
+
+    // Acquire a stable handle addressing one tile's heightfield for physics.
+    // TerrainPhysicsSystem owns the (tile -> handle) mapping via the
+    // TerrainTileCollider component, so this is a plain slot allocation (not
+    // idempotent per coord); the caller stores Index directly in
+    // HeightFieldColliderShape.dataHandle.
+    TilePhysicsHandle AcquireTilePhysicsHandle(TiledTerrainHandle tiled, TileCoord coord);
+
+    // Release a tile-physics handle (tile unloaded / collider torn down).
+    // handleIndex includes kTilePhysicsHandleBit; generation must match the
+    // slot's current generation or the release is refused and logged (a stale
+    // index alone would silently free whichever slot now owns it). No-op for
+    // non-tile handles.
+    void ReleaseTilePhysicsHandle(uint32 handleIndex, uint32 generation);
+
+    // Release every tile-physics slot. Called at world-transition seams
+    // (Play-exit shuts physics down and snapshot-restore destroys the collider
+    // entities without the per-tile teardown sweep ever running, so the slots
+    // would otherwise leak across Play sessions). Safe any time — a released
+    // handle simply resolves to nullptr. The service outlives Play sessions.
+    void ReleaseAllTilePhysicsHandles();
+
+    // Resolve a tile-physics handle to its live tile, or nullptr when the slot
+    // is stale, the tiled terrain is gone, or the tile is no longer loaded.
+    // handleIndex includes kTilePhysicsHandleBit. Used by the physics provider.
+    TerrainTileData* ResolveTilePhysicsTile(uint32 handleIndex, uint32 generation);
+
+    // Test seam: size of the tile-physics slot pool (live + free). Tests assert
+    // it stays flat across acquire/release churn (no per-session leak).
+    uint32 GetTilePhysicsSlotCountForTests() const;
+
     // ---- Per-face planet collider addressing (planet-collider slice) ----
     //
     // A spherical (planet) terrain is one entity but needs one Jolt heightfield body per
     // cube face (6). Each face gets a stable generational "planet-face physics handle" that
-    // the physics HeightFieldDataProvider resolves to its live sample buffer. Like pages,
+    // the physics HeightFieldDataProvider resolves to its live sample buffer. Like tiles,
     // the handle carries a discriminator bit (kPlanetFacePhysicsHandleBit) so the provider
-    // routes single-terrain / page / planet-face handles apart. TerrainService owns the
+    // routes single-terrain / tile / planet-face handles apart. TerrainService owns the
     // sample buffers (regenerated by TerrainPhysicsSystem from the planet height field);
     // the provider returns raw samples + version + a dirty-region log for the E1 two-tier
-    // in-place/rebuild path — identical machinery to single terrains and pages.
+    // in-place/rebuild path — identical machinery to single terrains and tiles.
 
-    // dataHandle discriminator marking a planet-face handle. Distinct from the page bit;
-    // single-terrain slot indices are tiny, so neither bit collides with them.
+    // dataHandle discriminator marking a planet-face handle. Distinct from the tile bit;
+    // single-terrain slot indices are tiny, so neither top bit collides with them.
     static constexpr uint32 kPlanetFacePhysicsHandleBit = 0x40000000u;
 
     struct PlanetFacePhysicsHandle
@@ -733,85 +711,6 @@ public:
     // Test seam: size of the planet-face slot pool (live + free). Tests assert it stays
     // flat across acquire/release churn (no per-session leak).
     uint32 GetPlanetFacePhysicsSlotCountForTests() const;
-
-    // ---- Per-page collider addressing (design page-streaming D3) ----
-    //
-    // A paged terrain gets one Jolt heightfield body per finest page inside a CPU window. A body's
-    // samples live in a slot here from the frame its page is provisioned until its collider is torn
-    // down; the physics HeightFieldDataProvider resolves a handle carrying kPagePhysicsHandleBit to
-    // the slot. TerrainPhysicsSystem owns the page -> handle mapping (TerrainPageCollider).
-
-    // dataHandle discriminator marking a page handle. Distinct from the planet-face bit.
-    static constexpr uint32 kPagePhysicsHandleBit = 0x20000000u;
-
-    struct PagePhysicsHandle
-    {
-        uint32 Index = 0;      // slot index OR'd with kPagePhysicsHandleBit; 0 for no slot
-        uint32 Generation = 0;
-    };
-
-    // One page body's height data and where its samples were read.
-    struct PageColliderData
-    {
-        // kFinestPageGridSamples squared, normalized (SurfaceHeightQuery::FillFinestPage), with
-        // Physics::kHeightFieldNoCollision past the field's last sample: no ground past the edge.
-        std::vector<float32> Samples;
-        uint64 Version = 0;
-        DirtyRegionLog DirtyLog;
-        // The terrain's CPU page record and overlay version when the samples were read: a region
-        // update reads the page changes and the overlay edits since (CollectPageChanges).
-        SurfaceHeightPageStamp ReadAt;
-        uint64 OverlayVersion = 0;
-    };
-
-    // Reads finest page (pageX, pageZ) of the paged terrain `query` reads into a new slot. No slot
-    // (Index 0) when that page is not on the CPU at level 0 or owns no cell (the last page on an
-    // axis owns the field's last sample alone; its neighbor's body covers it).
-    PagePhysicsHandle AcquirePagePhysicsHandle(const SurfaceHeightQuery& query, uint32 pageX, uint32 pageZ);
-
-    // Brings page body `handle` (finest page (pageX, pageZ) of the terrain `query` reads) up to the
-    // page and the modifier overlay as they are now. When the page changed in the CPU page record, or
-    // an overlay edit reached its samples, since they were read, it reads them again and records the
-    // samples that differ as one region of a new version: the physics region update
-    // (PhysicsWorld::UpdateHeightFieldRegion) then rewrites only those, never the whole body for a
-    // small edit. A page not on the CPU at level 0 keeps its samples and its read position, so a
-    // later frame reads it. Main thread; a stale handle does nothing.
-    void RefreshPagePhysicsHandle(const SurfaceHeightQuery& query, uint32 pageX, uint32 pageZ,
-                                  PagePhysicsHandle handle);
-
-    // Release a page handle (the page left every window, or its collider was torn down). The
-    // release is generation-checked, so a stale handle frees nothing. No-op for other handles.
-    void ReleasePagePhysicsHandle(uint32 handleIndex, uint32 generation);
-
-    // Release every page slot, at the world-transition seams that destroy the collider entities
-    // without the teardown sweep (Play-exit), as ReleaseAllPlanetFacePhysicsHandles.
-    void ReleaseAllPagePhysicsHandles();
-
-    // The page body data a handle names, or null when the slot is stale. handleIndex includes the
-    // discriminator bit. Used by the physics provider.
-    const PageColliderData* ResolvePageCollider(uint32 handleIndex, uint32 generation) const;
-
-    // ---- Planet height page layer ----
-    /// What a planet's layer adds to its height pages, the version the pages compare, and the face
-    /// rect the version changed relative to version ChangedSince (zero: the layer is new).
-    struct PlanetPageOverlay
-    {
-        std::shared_ptr<PageStreaming::HeightPageLayer> Layer;
-        uint64 Version = 0;
-        uint8 ChangedFace = 0;
-        PageStreaming::PageSampleRect Changed;
-        uint64 ChangedSince = 0;
-    };
-    /// Writes `deltas` (row-major over level-0 rect `rect` of face `face`) into the layer of the planet
-    /// whose terrain entity id is `planet`, a six-face layer of the pyramid `levels`; a layer made for
-    /// another pyramid is replaced. The pages the write reaches are rewritten. Main thread, as the
-    /// page requests read it.
-    void WritePlanetPageLayer(uint32 planet, std::span<const PageStreaming::PageStoreLevel> levels, uint8 face,
-                              const PageStreaming::PageSampleRect& rect, std::span<const float32> deltas);
-    /// Removes the layer of planet `planet`: the pages it reached are rewritten without it.
-    void ClearPlanetPageLayer(uint32 planet);
-    /// The layer of planet `planet`, or null when it has none.
-    const PlanetPageOverlay* FindPlanetPageOverlay(uint32 planet) const;
 
     // ---- Editable spherical sculpt (planet editing) ----
     //
@@ -976,8 +875,7 @@ public:
     // collapsing to only the last edit's footprint, which would leave the earlier dabs' geometry
     // stale until a later edit overlaps them (the same neighbour-stale seam class as the cross-face
     // fix). Separate from the physics accumulator (m_PlanetSculptFaces) so the two consumers drain
-    // at their own rates. The union also holds the planet's height page changes
-    // (AccumulatePlanetPageDirtyRegions). Non-const — it clears what it returns.
+    // at their own rates. Non-const — it clears what it returns.
     bool ConsumeSphereSculptDirtyRegions(CBTTerrain::SphereEditRegions& out);
 
     // The CPU-authoritative sculpt height (metres) at a world direction — the editable layer
@@ -1072,6 +970,18 @@ public:
                      std::vector<uint8>&& splatmap, uint32 splatW, uint32 splatH,
                      std::vector<uint8>&& normalmap, uint32 normW, uint32 normH);
 
+    // Patch finest-level quadtree nodes for a single tile (no coarse propagation).
+    // Call FinalizeGlobalQuadtreeUpdates() after patching all tiles in a batch.
+    void PatchTileInGlobalQuadtree(TiledTerrainHandle handle, TileCoord coord);
+
+    // Patch finest-level nodes from pre-computed min/max data (avoids heightfield scan).
+    // The nodes array has nodesPerAxis^2 entries in row-major order.
+    void PatchTileInGlobalQuadtreePrecomputed(TiledTerrainHandle handle, TileCoord coord,
+                                              const NodeMinMax* nodes, uint32 nodesPerAxis);
+
+    // Propagate coarse levels from children after a batch of PatchTileInGlobalQuadtree calls.
+    void FinalizeGlobalQuadtreeUpdates(TiledTerrainHandle handle);
+
     // ---- Base-source heightmap assets + asset-reload lane ----
 
     // Decoded base-source heightmap cache, keyed by asset GUID. Decodes once
@@ -1107,22 +1017,10 @@ public:
     // Every call passes the same job system, which outlives this service.
     JobSystem::JobChannel& BakeStoreChannel(JobSystem::WorkStealingThreadPool& jobSystem);
 
-    // ---- Height pages (TerrainPages.h; design page-streaming D-c) ----
+    // ---- Height pages (TerrainHeightPages.h; design page-streaming D-c) ----
 
     // The process's one height-page residency, created on first use with the engine's job pool.
-    TerrainPages& GetTerrainPages();
-    /// The CPU height of the planar terrain `terrain` describes (its component, placed by `transform`),
-    /// valid until the next height-page Update: its pages when it is tiled (unsampled while they have no
-    /// source), its heightfield when it is one map; an invalid query when it has no height data yet.
-    SurfaceHeightQuery SurfaceQuery(const Components::Terrain& terrain, const Components::WorldTransform& transform);
-    /// Fetches the finest CPU height page under `worldPoint` of the paged terrain `terrain` describes
-    /// now, on the main thread (TerrainPages::FetchFinestPage): a pick reads the finest height
-    /// where it lands, wherever the cameras are. Returns whether that page is then on the CPU.
-    bool FetchFinestHeightPage(const Components::Terrain& terrain, const Mathematics::Vector3& worldPoint);
-    /// The level-0 pages of the CPU windows of the paged terrain `terrain` describes
-    /// (TerrainPages::CpuWindowPages): the pages its colliders stand on. Empty when it is not
-    /// paged.
-    std::span<const PageStreaming::PageAddress> FinestWindowPages(const Components::Terrain& terrain);
+    TerrainHeightPages& GetHeightPages();
     // The cooked height stores of the heightmaps paged terrains read.
     HeightPageStoreLoader& GetHeightPageStores();
     // Where height stores are found or cooked; set at startup by the engine, like SetBakeCache.
@@ -1311,16 +1209,6 @@ public:
     }
 
 private:
-    // UpdateHeightPages adds the planets' height page changes to the render dirty union.
-    friend void UpdateHeightPages(TerrainService& service, TerrainRenderFeature& terrainFeature,
-                                  TerrainPageFeature& pages, uint64 frameIndex, float32 deltaSeconds,
-                                  uint32 framesInFlight);
-
-    /// Adds the planet's height page changes (TerrainPages::PlanetDirtyRegions) to the render
-    /// per-face dirty union ConsumeSphereSculptDirtyRegions drains, so the CBT re-evaluates the
-    /// bisectors over them. The physics union does not take them: no collider reads the pages.
-    void AccumulatePlanetPageDirtyRegions(const CBTTerrain::SphereEditRegions& regions);
-
     // Subscribe the texture + heightmap reload invalidators. No-op until the
     // engine (and its AssetManager) is initialized — unit tests construct the
     // service standalone and the lane stays inactive there.
@@ -1383,6 +1271,19 @@ private:
     std::vector<TiledSlot> m_TiledSlots;
     std::vector<uint32> m_TiledFreeList;
 
+    // Per-tile physics handle slots (E6). Each maps a stable generational
+    // handle to a (tiled terrain, tile coord); the physics provider resolves
+    // through it to the live tile heightfield.
+    struct TilePhysicsSlot
+    {
+        TiledTerrainHandle Tiled;
+        TileCoord Coord;
+        uint32 Generation = 0;
+        bool Active = false;
+    };
+    std::vector<TilePhysicsSlot> m_TilePhysicsSlots;
+    std::vector<uint32> m_TilePhysicsFreeList;
+
     // Per-face planet collider slots (planet-collider slice). Each holds one cube face's
     // collider sample buffer + version + dirty log; the physics provider resolves through
     // the generational handle to the live buffer.
@@ -1394,13 +1295,6 @@ private:
     };
     std::vector<PlanetFacePhysicsSlot> m_PlanetFacePhysicsSlots;
     std::vector<uint32> m_PlanetFacePhysicsFreeList;
-
-    GenerationalVector::GenerationalVector<PageColliderData> m_PagePhysicsSlots;
-    // The page a refresh reads before it compares (RefreshPagePhysicsHandle), kept across calls.
-    std::vector<float32> m_PageColliderScratch;
-
-    FlatMap<uint32, PlanetPageOverlay> m_PlanetPageOverlays; // by terrain entity id
-    uint64 m_PlanetPageOverlayVersion = 0;                   // the last version given, from 1
 
     // The authoritative editable sphere sculpt layer (dab + baked modifier stack). Guarded so
     // the render-thread GPU upload (CopySphereSculptUpload) never tears against a main-thread
@@ -1476,7 +1370,7 @@ private:
     // from the queue, and compact the transient arrays. Lock held by the caller.
     void FlushSphereStrokePrefixLocked(uint32 entries);
 
-    std::unique_ptr<TerrainPages> m_TerrainPages;
+    std::unique_ptr<TerrainHeightPages> m_HeightPages;
     std::unique_ptr<HeightPageStoreLoader> m_HeightPageStores;
     bool m_HeightModifiersGathered = false;
     bool m_HeightModifiersPresent = false;
@@ -1488,10 +1382,10 @@ private:
 };
 
 // Real render geometry for a tiled terrain's unified GPU source. WorldSizeX/Z is the
-// REAL per-axis extent (tilesPerAxis * tileWorldSize) the tile grid covers — NOT a
-// power-of-2 square. CBT maps
-// world = origin + uv*size and samples the unified heightmap at that uv 1:1, so a
-// squared/pow2 size would stretch a non-square or non-pow2-tile-count terrain
+// REAL per-axis extent (tilesPerAxis * tileWorldSize) the tile grid covers — NOT the
+// power-of-2 square the global CDLOD quadtree rounds up to. CBT maps
+// world = origin + uv*size and samples the unified heightmap at that uv 1:1, so the
+// squared/pow2 quadtree size would stretch a non-square or non-pow2-tile-count terrain
 // (a 3-tile axis would render 4/3 too wide with a phantom clamped-edge band). Unified
 // resolution = tilesPerAxis * (tileRes-1) + 1 — the grid an untiled terrain of equal
 // content uses. Pure function of the config so it is directly unit-testable.
@@ -1507,6 +1401,18 @@ struct TiledRenderExtent
     uint32 UnifiedHeight = 0;
 };
 TiledRenderExtent ComputeTiledRenderExtent(const TiledTerrainConfig& config);
+
+// Sample a tiled terrain's normalized height (nominally [0,1]; modifier bakes
+// accumulate unclamped, so values outside that range are real terrain — before
+// HeightScale/WorldOriginY) at world XZ: select the resident tile containing the
+// point and bilinearly sample its heightfield at the tile-local UV. Returns false
+// when the point is outside the terrain footprint or the containing tile is not
+// resident (Empty/missing). The editor terrain ray-march (TerrainPicking) uses this
+// for tiled terrains, mirroring HeightfieldData::SampleBilinear for the single path,
+// so brush/zone strokes hit tiled terrains too. Caller must hold the tiled data
+// alive for the call (extraction/modifier/tool paths run sequentially).
+bool SampleTiledHeightNormalized(const TiledTerrainData& tiled,
+                                 float32 worldX, float32 worldZ, float32& outHeight);
 
 // Fill heightfield samples in [minX, maxX] x [minZ, maxZ] (inclusive,
 // clamped) from a terrain's base source (bake stage A, design §3.1):
@@ -1552,8 +1458,7 @@ void FillAtlasCoarseBaseField(Terrain::HeightfieldData& field, const TiledTerrai
 // Surface rules composite the material placement on top (ApplySplatModifiers).
 //
 // ZERO IS THE ONLY CORRECT BASE, for two independent reasons. CompositeSplatTexel
-// with Replace off adds a row's weight then renormalizes the texel (with Replace on it
-// reads an all-zero texel as the first material at 255), so a channel-0-full base would
+// adds a row's weight then renormalizes the texel, so a channel-0-full base would
 // pin channel 0 at 1.0 in the accumulator and cap any row targeting another channel
 // at 50%. And an all-zero texel is not "no data" — the surface resolves it to
 // channel 0 (cbt_surface.glsl's wSum guard, normalizeLayerWeights in the grass

@@ -17,32 +17,80 @@
 // on purpose, and demands the exact difference. Every zero here is worthless without it, so it
 // must not be deleted, and must not be loosened from an equality to a bound.
 //
-// Its own target on purpose: the measurement is a process-wide allocation window, and the UI
-// test executables each share one process across hundreds of tests. Same isolation rule as
+// Its own target on purpose: replacing global operator new is process-wide, and the UI test
+// executables each share one process across hundreds of tests. Same isolation rule as
 // ToolbarDragDropAllocationTests.
 #include <gtest/gtest.h>
 
 #include "UI/Controls/BaseField.h"
 #include "UI/UIElement.h"
 #include "UI/UIEvents.h"
-#include "Memory/AllocationCountScope.h"
 
+#include <atomic>
 #include <cstddef>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <new>
 
 using namespace GameEngine;
 
 namespace
 {
-// WHAT THE PROBE CAN AND CANNOT SEE — the limit that decides how these arms are written.
+// Armed only around the window under measurement, so gtest's bookkeeping and the fixture's own
+// construction never enter the count.
+std::atomic<bool> g_Armed{false};
+std::atomic<size_t> g_Allocations{0};
+
+struct AllocationProbe
+{
+    AllocationProbe()
+    {
+        g_Allocations.store(0, std::memory_order_relaxed);
+        g_Armed.store(true, std::memory_order_relaxed);
+    }
+    ~AllocationProbe() { g_Armed.store(false, std::memory_order_relaxed); }
+    static size_t Count() { return g_Allocations.load(std::memory_order_relaxed); }
+};
+} // namespace
+
+// Replaced as matched pairs; the aligned and nothrow forms are left to the default library
+// implementations so every new/delete pairing stays internally consistent.
+void* operator new(size_t size)
+{
+    if (g_Armed.load(std::memory_order_relaxed))
+        g_Allocations.fetch_add(1, std::memory_order_relaxed);
+    void* p = std::malloc(size != 0 ? size : 1);
+    if (!p)
+        throw std::bad_alloc();
+    return p;
+}
+
+void* operator new[](size_t size)
+{
+    if (g_Armed.load(std::memory_order_relaxed))
+        g_Allocations.fetch_add(1, std::memory_order_relaxed);
+    void* p = std::malloc(size != 0 ? size : 1);
+    if (!p)
+        throw std::bad_alloc();
+    return p;
+}
+
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, size_t) noexcept { std::free(p); }
+void operator delete[](void* p, size_t) noexcept { std::free(p); }
+
+namespace
+{
+// WHAT THIS PROBE CAN AND CANNOT SEE — the limit that decides how these arms are written.
 //
-// The allocation counter sees an image's allocations only where that image carries the
-// allocation hook, and Engine.dll carries it only under GE_DEBUG_INSTRUMENTATION. On Windows
-// every image's operator new is its own, so without the instrumentation a Slider-driven
-// measurement (Slider::SetValue lives in Engine.dll, and the whole notify-and-dispatch chain
-// inlines there) reads zero whether the path allocates or not: a false zero for a path that
-// provably copies a vector, which would equally make the no-subscriber arm a vacuous pass.
+// Replacing global operator new only intercepts allocations made by code compiled INTO THIS
+// EXECUTABLE. Slider::SetValue lives in Engine.dll, and the whole notify-and-dispatch chain
+// inlines there, so a Slider-driven measurement reads zero whether the path allocates or not.
+// The first cut of this file did exactly that and reported a confident "0 allocations with a
+// subscriber" for a path that provably copies a vector — a false zero that would equally have
+// made the no-subscriber arm a vacuous pass.
 //
 // So the measured control is declared HERE. Field<T> is a template and NotifyValue is
 // header-inline, so a local Field<float> instantiates the shipped chain in this binary:
@@ -55,8 +103,7 @@ class MeasuredField : public Field<float>
 public:
     // Exactly what Slider::SetValue does around the base setter: early-out on an unchanged
     // value, store, then notify both events. Reproduced rather than called, because calling
-    // Slider's would put the chain inside Engine.dll, which the probe sees only where Engine
-    // carries the allocation hook.
+    // Slider's would put the chain back inside Engine.dll where the probe is blind.
     void SetValueNotifying(float v)
     {
         if (GetValue() == v)
@@ -71,15 +118,15 @@ public:
 // nothing while looking identical to a free path.
 size_t AllocationsPerValueChange(MeasuredField& field, int iterations)
 {
-    const Memory::AllocationCountScope probe(Memory::CountWindow::Process);
+    AllocationProbe probe;
     for (int i = 0; i < iterations; ++i)
         field.SetValueNotifying((i % 2 == 0) ? 1.0f : 2.0f);
-    return probe.Count();
+    return AllocationProbe::Count();
 }
 
 // The string-payload chain, instantiated in this binary for the same reason MeasuredField is:
-// the dispatch-window copy (ScopedValueText) is header-inline precisely so it is measured in
-// this binary, where a control-driven measurement through Engine.dll could read a false zero.
+// the dispatch-window copy (ScopedValueText) is header-inline precisely so this probe can see
+// it, and a control-driven measurement through Engine.dll would read a false zero.
 class MeasuredTextField : public Field<std::string>
 {
 public:
@@ -103,10 +150,10 @@ const std::string kTextB(48, 'b');
 
 size_t AllocationsPerTextChange(MeasuredTextField& field, int iterations)
 {
-    const Memory::AllocationCountScope probe(Memory::CountWindow::Process);
+    AllocationProbe probe;
     for (int i = 0; i < iterations; ++i)
         field.SetValueNotifying((i % 2 == 0) ? kTextA : kTextB);
-    return probe.Count();
+    return AllocationProbe::Count();
 }
 } // namespace
 
@@ -137,9 +184,9 @@ TEST(UIDispatchAllocationTests, AValueChangeWithNoSubscriberAllocatesNothing)
 // arms below are what test the path's own cost.
 //
 // This is the difference between "the count was zero" and "the counter was never armed on this
-// path" — which is not hypothetical: a measurement through an image without the allocation
-// hook reads a confident zero for a path that provably copies a vector. If this fails, no
-// other arm in this file is evidence of anything.
+// path" — which is not hypothetical: the first cut of this file measured through Engine.dll,
+// where the probe is blind, and reported a confident zero for a path that provably copied a
+// vector. If this fails, no other arm in this file is evidence of anything.
 TEST(UIDispatchAllocationTests, AnAllocatingSubscriberMovesTheCountByExactlyItsOwnAllocations)
 {
     constexpr int kIterations = 256;
@@ -154,15 +201,12 @@ TEST(UIDispatchAllocationTests, AnAllocatingSubscriberMovesTheCountByExactlyItsO
 
     MeasuredField loudField;
     int loudSeen = 0;
-    // Allocated and released immediately: exactly one operator new per call, and nothing
-    // accumulated that could be measured instead of the dispatch. A direct call to the
-    // replaceable function, because an optimizer may drop a new-expression whose result does
-    // not escape (clang does in Release once the replacement lives in another translation
-    // unit), but never a call.
+    // Heap-allocated and released immediately: exactly one operator new per call, and nothing
+    // accumulated that could be measured instead of the dispatch. The value is read back into
+    // `sink`, which the assertion below observes, so the allocation is not dead code.
     auto allocateOnce = [&](UIEvent&) {
-        void* const memory = ::operator new(sizeof(int));
-        sink += static_cast<size_t>(++loudSeen);
-        ::operator delete(memory);
+        const auto p = std::make_unique<int>(++loudSeen);
+        sink += static_cast<size_t>(*p);
     };
     loudField.RegisterEventHandler(kEventValueChanging, allocateOnce);
     loudField.RegisterEventHandler(kEventValueChanged, allocateOnce);

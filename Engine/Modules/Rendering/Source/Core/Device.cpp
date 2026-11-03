@@ -1,15 +1,13 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Core/Pipeline/PipelineCache.h"
-#include "Pipeline/PipelineBuildTable.h"
-#include "DescriptorSetCache.h"
-#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
+#include "Rendering/Core/PipelineCache.h"
+#include "PipelineBuildTable.h"
+#include "Rendering/Core/PipelineDescTranslator.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/Pipeline/PipelineManager.h"
+#include "Rendering/Core/PipelineManager.h"
 #include "Rendering/Core/RendererProfile.h"
-#include "Rendering/Core/ReverseZ.h"
 #if defined(RENDERING_HAS_VULKAN)
-#include "../Vulkan/VulkanDevice/VulkanDevice.h"
+#include "../Vulkan/VulkanDevice.h"
 #endif
 #if defined(RENDERING_HAS_DIRECTX12)
 #include "../DirectX12/D3D12Device.h"
@@ -21,7 +19,6 @@
 #include "../Metal/MetalDevice.h"
 #endif
 #include "Logger/Logger.h"
-#include <algorithm>
 #include <cassert>
 #include <cctype>
 #include <chrono>
@@ -76,7 +73,7 @@ std::unique_ptr<CommandList> IDevice::CreateSecondaryCommandList(QueueType /*que
         d.minFilter = 1; d.magFilter = 1; d.mipFilter = 0;          // linear (hardware 2x2 PCF), no mip
         d.addressModeU = 3; d.addressModeV = 3; d.addressModeW = 3; // CLAMP_TO_BORDER
         d.borderColor = 0;                                         // reverse-Z far depth -> OOB considered lit
-        d.compareEnable = true; d.compareOp = ReverseZ::kNearerOrEqual;
+        d.compareEnable = true; d.compareOp = CompareOp::GreaterOrEqual;  // reverse-Z
         return d;
     }
 
@@ -277,108 +274,11 @@ std::unique_ptr<CommandList> IDevice::CreateSecondaryCommandList(QueueType /*que
 
     IDevice::IDevice()
         : m_PipelineCache(std::make_unique<PipelineCache>()),
-          m_PipelineBuilds(std::make_shared<PipelineBuildTable>()),
-          m_DescriptorSetCache(std::make_unique<DescriptorSetCache>())
+          m_PipelineBuilds(std::make_unique<PipelineBuildTable>())
     {
     }
 
     IDevice::~IDevice() = default;
-
-    namespace
-    {
-    // Fill `update` with one write. The vectors keep their storage from the previous write.
-    void AssignDescriptorWrite(DescriptorSetUpdate& update, const DescriptorWrite& write)
-    {
-        update.binding = write.Binding;
-        update.arrayElement = write.ArrayElement;
-        update.type = write.Type;
-        update.buffers.clear();
-        update.bufferOffsets.clear();
-        update.bufferRanges.clear();
-        update.textures.clear();
-        update.textureViews.clear();
-        update.samplers.clear();
-        if (write.Buffer.IsValid())
-        {
-            update.buffers.push_back(write.Buffer);
-            update.bufferOffsets.push_back(static_cast<size_t>(write.Offset));
-            if (write.Range > 0)
-                update.bufferRanges.push_back(static_cast<size_t>(write.Range));
-        }
-        if (write.View.IsValid())
-            update.textureViews.push_back(write.View);
-        else if (write.Texture.IsValid())
-            update.textures.push_back(write.Texture);
-        if (write.Sampler.IsValid())
-            update.samplers.push_back(write.Sampler);
-    }
-    } // namespace
-
-    DescriptorSetHandle IDevice::GetOrCreateDescriptorSet(const DescriptorSetLayoutDesc& layout,
-                                                          std::span<const DescriptorWrite> writes,
-                                                          const char* debugName)
-    {
-        const bool bindsAccelerationStructure =
-            std::any_of(writes.begin(), writes.end(), [](const DescriptorWrite& write)
-                        { return write.Type == DescriptorType::AccelerationStructure; });
-        if (bindsAccelerationStructure)
-            return {};
-        const uint64_t key = DescriptorSetCache::HashContent(layout, writes);
-        if (const DescriptorSetHandle cached = m_DescriptorSetCache->Find(key, layout, writes); cached.IsValid())
-            return cached;
-
-        // A miss builds through the backend's own create and update, outside the cache lock.
-        DescriptorSetDesc desc{};
-        desc.layout = layout;
-        desc.debugName = debugName;
-        const DescriptorSetHandle built = CreateDescriptorSet(desc);
-        if (!built.IsValid())
-            return {};
-        WriteDescriptorSet(built, writes);
-        const DescriptorSetHandle kept = m_DescriptorSetCache->Insert(key, layout, writes, built);
-        if (kept != built)
-            DestroyDescriptorSet(built);
-        return kept;
-    }
-
-    void IDevice::WriteDescriptorSet(DescriptorSetHandle set, std::span<const DescriptorWrite> writes)
-    {
-        // One list per thread, because parallel recording writes sets concurrently. The updates keep their storage.
-        thread_local std::vector<DescriptorSetUpdate> updates;
-        if (updates.size() < writes.size())
-            updates.resize(writes.size());
-        for (size_t i = 0; i < writes.size(); ++i)
-            AssignDescriptorWrite(updates[i], writes[i]);
-        UpdateDescriptorSetBatch(set, std::span<const DescriptorSetUpdate>(updates.data(), writes.size()));
-    }
-
-    void IDevice::AgeCachedDescriptorSets()
-    {
-        std::vector<DescriptorSetHandle> expired;
-        m_DescriptorSetCache->Age(expired);
-        for (const DescriptorSetHandle set : expired)
-            DestroyDescriptorSet(set);
-    }
-
-    void IDevice::EvictCachedDescriptorSetsUsing(BufferHandle buffer)
-    {
-        m_DescriptorSetCache->EvictUsing(buffer);
-    }
-
-    void IDevice::EvictCachedDescriptorSetsUsing(TextureHandle texture)
-    {
-        m_DescriptorSetCache->EvictUsing(texture);
-    }
-
-    void IDevice::EvictCachedDescriptorSetsUsing(TextureViewHandle view)
-    {
-        m_DescriptorSetCache->EvictUsing(view);
-    }
-
-    void IDevice::EvictCachedDescriptorSetsUsing(SamplerHandle sampler)
-    {
-        m_DescriptorSetCache->EvictUsing(sampler);
-    }
 
     void IDevice::RegisterPerDeviceCacheCleanup(const char* id, std::function<void(IDevice*)> cleanup)
     {
@@ -401,11 +301,6 @@ std::unique_ptr<CommandList> IDevice::CreateSecondaryCommandList(QueueType /*que
         // anything they use is destroyed. Queued ones are cancelled: their jobs
         // find no request and do nothing.
         m_PipelineBuilds->Quiesce();
-
-        std::vector<DescriptorSetHandle> cachedSets;
-        m_DescriptorSetCache->TakeAll(cachedSets);
-        for (const DescriptorSetHandle set : cachedSets)
-            DestroyDescriptorSet(set);
 
         std::vector<std::pair<std::string, std::function<void(IDevice*)>>> cleanups;
         {
@@ -614,23 +509,13 @@ std::unique_ptr<CommandList> IDevice::CreateSecondaryCommandList(QueueType /*que
         PipelineBuildRequest job = request;
         job.Ticket = queued.Ticket;
         job.InvalidationEpoch = epoch;
-        // The job holds the table, not the device: it may run or be destroyed
-        // after the device is gone, and then its claim fails (Shutdown cancelled
-        // the row) before anything of the device is reached.
-        std::shared_ptr<PipelineBuildTable> builds = m_PipelineBuilds;
         // Fires when the last copy of the job is destroyed. After the job ran
         // its ticket no longer names a queued request and this does nothing;
         // a job the dispatcher destroyed unrun releases the request here.
         auto releaseIfUnrun = std::shared_ptr<void>(
-            nullptr, [builds, key = job.Key, ticket = job.Ticket](void*) { builds->ReleaseUnrun(key, ticket); });
+            nullptr, [this, key = job.Key, ticket = job.Ticket](void*) { m_PipelineBuilds->ReleaseUnrun(key, ticket); });
         // Called outside every device lock: a dispatcher may run the job inline.
-        (*dispatcher)(
-            [this, builds, job, releaseIfUnrun]()
-            {
-                // Cancelled, or a synchronous caller took the build over.
-                if (builds->ClaimQueued(job.Key, job.Ticket))
-                    RunClaimedPipelineBuild(job);
-            });
+        (*dispatcher)([this, job, releaseIfUnrun]() { RunQueuedPipelineBuild(job); });
 
         if (TryGetWarmPipeline(request).IsValid())
             return PipelineBuildState::Warm;
@@ -668,8 +553,10 @@ std::unique_ptr<CommandList> IDevice::CreateSecondaryCommandList(QueueType /*que
         }
     }
 
-    void IDevice::RunClaimedPipelineBuild(const PipelineBuildRequest& request)
+    void IDevice::RunQueuedPipelineBuild(const PipelineBuildRequest& request)
     {
+        if (!m_PipelineBuilds->ClaimQueued(request.Key, request.Ticket))
+            return; // cancelled, or a synchronous caller took the build over
         bool published = false;
         const PipelineHandle h = CreateAndPublishPipeline(request, published);
         if (h.IsValid() && !published)

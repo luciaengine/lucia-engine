@@ -1,21 +1,18 @@
 #pragma once
 
-#include "Engine/Rendering/Pipeline/Nodes/DepthResolveNode.h"
-#include "Engine/Rendering/Pipeline/Nodes/HZBBuildNode.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Engine/Rendering/Pipeline/ViewContentStamp.h"
 #include "Engine/Rendering/Pipeline/ViewMotionVectors.h"
 #include "Engine/Rendering/PostProcessSettings.h"
 
 #include "Mathematics/Rect.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
-#include "Rendering/Materials/Shader/ShaderMeta.h"
-#include "Types/FlatMap.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Materials/ShaderMeta.h"
 
 #include <array>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -28,11 +25,6 @@ namespace GameEngine::Engine::Renderer::Pipeline::Nodes
 // compact indirect ray list, stochastic GGX VNDF HiZ intersection, dedicated
 // reflection reprojection/prefilter/temporal accumulation, then BRDF-aware HDR
 // composite. The history is independent of the engine's TAA implementation.
-//
-// The chain traces View.DepthResolvedPostOcean, the view depth after its last
-// writer, and marches the nearest-surface pyramid (View.SSRHiZ) this node builds
-// from that same depth, so the march and the hit test see the same surfaces (the
-// water and the phase-B recover among them).
 class ScreenSpaceReflectionsNode final : public IRenderPipelineNode
 {
   public:
@@ -47,19 +39,6 @@ class ScreenSpaceReflectionsNode final : public IRenderPipelineNode
     void Declare(RenderPipelineInstance& instance, const PipelineDeclareContext& ctx) override;
     void DeclareForView(ViewDeclare& d) override;
 
-    // The camera's viewport inside the render target, in target UV. A
-    // letterboxed view rasterizes the world into a sub-rectangle of a
-    // full-size target, and the SSR kernels convert between target UV and the
-    // camera's NDC on every ray, so they are handed this rather than assuming
-    // the viewport fills the target. Degenerate inputs fall back to the whole
-    // target, which is what an inactive letterbox means.
-    static Mathematics::Rect ComputeViewportRect(const ViewLetterbox& letterbox,
-                                                 uint32_t targetWidth, uint32_t targetHeight);
-
-    /// The frame index the view's last declared SSSR passes push as `frameIndex`. It holds while
-    /// the view is still (ViewContentStamp::ViewIsStill), so the trace repeats its samples; a
-    /// frame that can change the image advances it. 0 for a view the node has not declared.
-    uint32_t TraceFrameIndex(Rendering::ViewId view) const;
 
   private:
     enum Program : size_t
@@ -87,13 +66,8 @@ class ScreenSpaceReflectionsNode final : public IRenderPipelineNode
         uint64_t HistoryFrame = 0;
         uint32_t Width = 0;
         uint32_t Height = 0;
-        ViewContentStamp Content{};
-        uint32_t NoiseFrame = 0;
-        uint32_t TraceFrame = 0; // NoiseFrame, or GE_SSSR_FRAME_PIN when set
     };
 
-    // Declares the SSSR chain for the view; false when the view renders without it this frame.
-    bool DeclareChain(ViewDeclare& d);
     void LoadShaders(Rendering::IDevice* device);
     Rendering::DescriptorSetHandle NewSet(Rendering::IDevice* device, Program program,
                                            const char* debugName) const;
@@ -103,17 +77,13 @@ class ScreenSpaceReflectionsNode final : public IRenderPipelineNode
                                             const PostProcessSettings& settings,
                                             uint32_t frameIndex,
                                             bool historyValid,
-                                            const Mathematics::Rect& viewportRect) const;
+                                            const Mathematics::Rect& viewportRect,
+                                            bool hasPlanarMask = false) const;
 
     // Non-owning; retained from LoadShaders so the destructor can release the
     // device objects created there.
     Rendering::IDevice* m_Device = nullptr;
     ViewMotionVectors m_MotionVectors;
-    // The trace depth when the ocean step published no View.DepthResolvedPostOcean: that copy,
-    // taken here after every pass that writes the view depth, and published under the same name.
-    DepthResolveNode m_TraceDepthResolve;
-    // The nearest-surface (MAX) pyramid of View.DepthResolvedPostOcean, published as View.SSRHiZ.
-    HZBBuildNode m_TracePyramid;
     std::string m_Id;
     std::string m_InputKey = "SceneColor";
     std::string m_OutputKey = "HDRSSSR";
@@ -130,6 +100,6 @@ class ScreenSpaceReflectionsNode final : public IRenderPipelineNode
     // Precomputed void-and-cluster blue-noise tile (RG8), uploaded once in
     // LoadShaders and sampled by the intersect pass with a per-frame R2 rotation.
     Rendering::TextureHandle m_BlueNoiseTexture{};
-    FlatMap<uint32_t, ViewHistory> m_ViewHistory;
+    std::unordered_map<uint32_t, ViewHistory> m_ViewHistory;
 };
 } // namespace GameEngine::Engine::Renderer::Pipeline::Nodes

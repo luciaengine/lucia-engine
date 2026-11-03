@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Types/Types.h"
+#include "AssetCore/Types.h"
 
 #include <string_view>
 
@@ -53,6 +53,7 @@ namespace GameEngine {
     X(Video) \
     /* Navigation formats */ \
     X(NavigationGrid) \
+    X(NavigationMesh) \
     /* Saved world-space ocean depth grid (.oceandepth) */ \
     X(OceanDepthCache) \
     /* Asset-backed ocean wave spectrum override (.oceanspectrum) */ \
@@ -99,17 +100,14 @@ namespace GameEngine {
     X(TerrainMaterialLibrary) \
     /* Pose graph (.animgraph JSON). Evaluated at runtime; node-graph authoring is later. */ \
     X(AnimationGraph) \
+    X(Localization) \
     /* A particle processor stack (.particlestack): JSON as authored, cooked binary in a \
        packaged game. GUID-referenced from ParticleEmitter3D. */ \
     X(ParticleStack) \
-    /* A navigation surface's baked tiles (.navsurface), written beside the scene \
-       when it is saved. GUID-referenced from NavigationSurface's BakedData. */ \
-    X(NavigationSurfaceData) \
-    /* A Day Cycle profile (.daycycle.json): tracks keyed over the sun's elevation, \
-       edited in the Day Cycle window. */ \
-    X(DayCycleProfile) \
-    /* Reusable entity hierarchy placed in scenes (.prefab, scene text with one root) */ \
-    X(Prefab)
+    /* Shared contact surface (.physmat JSON). */ \
+    X(PhysicsMaterial) \
+    X(TileSet) \
+    X(TileMap)
 
 /**
  * @brief Asset types supported by the engine
@@ -214,17 +212,6 @@ AssetType GetAssetTypeFromExtension(const String& extension);
  *         Empty string when the path has no extension.
  */
 String GetCompoundExtensionFromPath(const String& path);
-
-/**
- * @brief The asset's name: the file name without its extension, a compound extension taken off whole
- *
- * `Marsh.daycycle.json` is `Marsh` and `Hero.profile.json` is `Hero`; `Rock.png` is `Rock`.
- *
- * @param path The asset path (absolute or relative; only the filename is read)
- * @return The filename without the extension GetCompoundExtensionFromPath() returns, or the whole
- *         filename when it is all extension (`.gitignore`)
- */
-String GetAssetNameFromPath(const String& path);
 
 /**
  * @brief Convert asset state to string

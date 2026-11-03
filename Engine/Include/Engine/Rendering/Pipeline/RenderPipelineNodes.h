@@ -72,8 +72,6 @@ struct ViewDeclare
     Rendering::RenderGraph::RGTexture ViewColor{};
     Rendering::RenderGraph::RGTexture ViewDepth{};         // EFFECTIVE (prepass override published)
     Rendering::RenderGraph::RGTexture ViewResolve{};
-    // The MSAA resolve's second output for bloom (Names::View::BloomSampleDelta); invalid = none.
-    Rendering::RenderGraph::RGTexture ViewBloomSampleDelta{};
     Rendering::RenderGraph::RGTexture ViewDepthResolved{}; // aliases ViewDepth until DepthResolve publishes
     // Names::View::OccluderDepthResolved, or ViewDepthResolved where nothing published it (no
     // DepthResolve yet, so no non-occluding heads are in the view depth either).
@@ -94,6 +92,8 @@ struct ViewDeclare
     // at scale 1.0). See Names::View::OutputColor/OutputDepth.
     Rendering::RenderGraph::RGTexture ViewOutputColor{};
     Rendering::RenderGraph::RGTexture ViewOutputDepth{};
+    // Integer pixel-perfect upscale owns the render-to-display crossing for this view.
+    bool PixelPerfectCrossing = false;
     // True if this pipeline contains a TransmissiveRender node. The world pass only peels glass into
     // the dedicated transmissive pass when one exists; otherwise glass renders inline (env-cube
     // fallback) so it never vanishes on pipelines/previews that lack the node.
@@ -108,18 +108,12 @@ struct ViewDeclare
     // publication overwrites (a node republishing "View.Depth" redirects every
     // LATER node in blueprint order — declaration order is the only ordering).
     Rendering::RenderGraph::RGTexture ResolveTexture(const std::string& ref) const;
+    // Lookup only: read another view's published output from THIS pipeline/frame.
+    // Missing output returns an invalid handle; it never allocates a fallback.
+    Rendering::RenderGraph::RGTexture FindPublishedViewTexture(Rendering::ViewId view, const std::string& ref) const;
     PipelineBufferBindingRG ResolveBuffer(const std::string& ref) const;
     void PublishTexture(const std::string& name, Rendering::RenderGraph::RGTexture t);
     void PublishBuffer(const std::string& name, const PipelineBufferBindingRG& b);
-    // Records that `t` holds this view's scene colour stored at its pre-exposure P, for a texture
-    // the node creates itself (a temporal history, a scene grab): readers of absolute values, such
-    // as the editor's resource capture, then divide it by P. Blueprint textures say so in the
-    // render graph ("preExposed").
-    void MarkPreExposed(Rendering::RenderGraph::RGTexture t);
-    // Whether `t` holds this view's scene colour at its pre-exposure P (declared "preExposed" by
-    // the render graph, the view's colour target, or marked by a node), for a node whose own
-    // textures hold what another texture holds.
-    bool IsPreExposed(Rendering::RenderGraph::RGTexture t) const;
 
     // Queue a declaration to run AFTER the node loop (terminal overlays that
     // must attach the chain's FINAL output). Drained by Declare before the
@@ -158,6 +152,10 @@ class IRenderPipelineNode
     {
     }
     virtual void DeclareForView(ViewDeclare& /*d*/) {}
+
+    // A view-color filter lets the host composite game UI before the effect.
+    // Nodes that replace/discard the incoming view color must return false.
+    virtual bool IsViewColorPostEffect() const { return false; }
 
     // Return the base PipelineDesc for PSO pre-warming, or nullptr if this node
     // Returns the interned base pipeline id for nodes that drive a graphics

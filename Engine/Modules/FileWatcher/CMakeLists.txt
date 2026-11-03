@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(FileWatcher LANGUAGES CXX)
+project(FileWatcher VERSION 1.0.0 LANGUAGES CXX)
 
 set(FILEWATCHER_SOURCES
     Source/FileIdentity.cpp
@@ -34,7 +34,7 @@ target_link_libraries(FileWatcher
     PUBLIC Logger Types
 )
 
-if(APPLE)
+if(APPLE AND NOT GE_MOBILE)
     # FSEvents wakes the polling loop the moment the filesystem reports a change
     # instead of leaving detection latency to the poll interval alone.
     target_link_libraries(FileWatcher PUBLIC "-framework CoreServices")

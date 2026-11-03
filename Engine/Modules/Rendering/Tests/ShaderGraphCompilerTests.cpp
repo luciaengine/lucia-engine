@@ -6,6 +6,7 @@
 #include "Rendering/ShaderGraph/SgPropertyBinding.h"
 #include "Rendering/ShaderGraph/SgPseudoNodes.h"
 #include "Rendering/ShaderGraph/SgTagParser.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -318,7 +319,6 @@ TEST(ShaderGraphCompilerTests, ApplyPublicPropertiesToMaterialDocument)
     EXPECT_EQ(doc.shaderGraphPublicProperties[0].Type, "vec3");
     ASSERT_EQ(doc.shaderGraphPublicProperties[0].MaterialPropertyKeys.size(), 3u);
     EXPECT_EQ(PrettyGraphPropertyLabel("uRimColor"), "Rim Color");
-    EXPECT_EQ(PrettyGraphPropertyLabel("uDetailUVScale"), "Detail UV Scale");
     EXPECT_TRUE(UsesDedicatedShaderGraphInspectorRow(*ResolvePublicPropertyBinding("uRimColor", "vec3"),
                                                      "uRimColor"));
     EXPECT_FALSE(UsesDedicatedShaderGraphInspectorRow(*ResolvePublicPropertyBinding("uBaseColor", "vec3"),
@@ -328,17 +328,6 @@ TEST(ShaderGraphCompilerTests, ApplyPublicPropertiesToMaterialDocument)
     ApplyShaderGraphPropertiesToMaterialDocument({rim}, doc);
     EXPECT_EQ(doc.properties.find("flipbookColumns"), doc.properties.end());
     EXPECT_TRUE(doc.shaderGraphPublicProperties.empty());
-}
-
-// The label reads the name after its prefix, so an acronym that opens the name stays one word. The
-// "s" of a leading "sRGB" is part of the name; any other leading "s" is a sampler prefix.
-TEST(ShaderGraphCompilerTests, GraphPropertyLabelKeepsALeadingAcronym)
-{
-    EXPECT_EQ(PrettyGraphPropertyLabel("uUVScale"), "UV Scale");
-    EXPECT_EQ(PrettyGraphPropertyLabel("uAOStrength"), "AO Strength");
-    EXPECT_EQ(PrettyGraphPropertyLabel("uHDRExposure"), "HDR Exposure");
-    EXPECT_EQ(PrettyGraphPropertyLabel("sRGBTint"), "sRGB Tint");
-    EXPECT_EQ(PrettyGraphPropertyLabel("sColor"), "Color");
 }
 
 // The signature reader must match EXACT function names only — a name that
@@ -444,12 +433,9 @@ TEST(ShaderGraphCompilerTests, CompilesSampleTexture2DGraphAgainstRealSignature)
 TEST(ShaderGraphCompilerTests, SaveGraphFileSkipsRewriteWhenContentUnchanged)
 {
     namespace fs = std::filesystem;
-    const fs::path path =
-        fs::temp_directory_path() /
-        ("ge_sg_save_norewrite_" +
-         std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + ".glsl");
-    std::error_code ec;
-    fs::remove(path, ec);
+    const GameEngine::TestUtils::ScopedTempDir tempDir(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge_sg_save_norewrite"));
+    const fs::path path = tempDir.Path() / "ge_sg_save_norewrite.glsl";
 
     SgGraphDocument doc;
     doc.GraphName = "NoRewrite";
@@ -474,8 +460,6 @@ TEST(ShaderGraphCompilerTests, SaveGraphFileSkipsRewriteWhenContentUnchanged)
     const std::string onDisk((std::istreambuf_iterator<char>(in)),
                              std::istreambuf_iterator<char>());
     EXPECT_NE(onDisk.find("// changed"), std::string::npos);
-
-    fs::remove(path, ec);
 }
 
 // ---- Minimal walkthrough examples: smallest v2 tag-block graph that parses

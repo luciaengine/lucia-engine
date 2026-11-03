@@ -3,6 +3,7 @@
 #include "Logger/Logger.h"
 #include "Scripting/CoreCLRHost.h"
 #include "Scripting/PathResolver.h"
+#include "Types/Fnv1a.h"
 
 #include <cstring>
 #include <filesystem>
@@ -56,23 +57,13 @@ ScriptMenuRegistry& ScriptMenuRegistry::Get()
 void ScriptMenuRegistry::ReplaceFromSnapshot(const EditorMenuItemNative* items, uint32_t count)
 {
     auto fnv1a64_append = [](uint64_t h, const void* data, size_t len) -> uint64_t
-    {
-        const uint8_t* p = static_cast<const uint8_t*>(data);
-        constexpr uint64_t kPrime = 1099511628211ull;
-        for (size_t i = 0; i < len; ++i)
-        {
-            h ^= (uint64_t)p[i];
-            h *= kPrime;
-        }
-        return h;
-    };
-    auto fnv1a64_u32 = [&](uint64_t h, uint32_t v) -> uint64_t { return fnv1a64_append(h, &v, sizeof(v)); };
-    auto fnv1a64_u64 = [&](uint64_t h, uint64_t v) -> uint64_t { return fnv1a64_append(h, &v, sizeof(v)); };
+    { return Hashing::Fnv1a64(data, len, h); };
+    auto fnv1a64_u32 = [](uint64_t h, uint32_t v) -> uint64_t { return Hashing::Fnv1a64Value(h, v); };
+    auto fnv1a64_u64 = [](uint64_t h, uint64_t v) -> uint64_t { return Hashing::Fnv1a64Value(h, v); };
 
     // Compute per-kind fingerprints from the raw snapshot first (avoids unnecessary rebuilds).
-    constexpr uint64_t kOffset = 14695981039346656037ull;
-    uint64_t fpToolbar = kOffset;
-    uint64_t fpContext = kOffset;
+    uint64_t fpToolbar = Hashing::kFnv1a64OffsetBasis;
+    uint64_t fpContext = Hashing::kFnv1a64OffsetBasis;
     uint64_t dom = 0;
     if (items && count > 0)
     {

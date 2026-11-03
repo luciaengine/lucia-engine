@@ -5,6 +5,7 @@
 #include "AssetCore/SharedFileRead.h"
 #include "Assets/AssetManager.h"
 #include "CssImports.h"
+#include "Types/StringUtils.h"
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -115,15 +116,7 @@ static std::unordered_map<std::string, int> BuildUrlToLineMap(const std::string&
             i++;
         }
         size_t end = i;
-        std::string inner = cssText.substr(start, end - start);
-        // Trim whitespace
-        auto trim = [](std::string& s){
-            size_t a = 0, b = s.size();
-            while (a < b && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n')) ++a;
-            while (b > a && (s[b-1] == ' ' || s[b-1] == '\t' || s[b-1] == '\r' || s[b-1] == '\n')) --b;
-            s = s.substr(a, b - a);
-        };
-        trim(inner);
+        const std::string inner = TrimWhitespace(cssText.substr(start, end - start));
         if (!inner.empty() && !map.count(inner)) {
             map.emplace(inner, ComputeLineNumber(cssText, pos));
         }

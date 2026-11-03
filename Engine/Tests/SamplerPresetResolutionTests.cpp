@@ -7,6 +7,7 @@
 
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RendererProfile.h"
+#include "Engine/Rendering/Pipeline/Nodes/PipelineNodeUtils.h"
 
 #include <array>
 #include <fstream>
@@ -137,4 +138,18 @@ TEST(SamplerPresetResolution, EveryOtherPresetStaysIsotropic)
                 << "preset " << static_cast<int>(preset) << ", bindless " << caps.supportsBindlessResources;
         }
     }
+}
+
+TEST(SamplerPresetResolution, PipelineDepthAndUnfilterableFloatUsePointSampling)
+{
+    namespace Detail = GameEngine::Engine::Renderer::Pipeline::Nodes::Detail;
+    RenderingDeviceCapabilities capabilities{};
+    EXPECT_TRUE(Detail::RequiresPointSampling(TextureFormat::D32_FLOAT, capabilities));
+    EXPECT_TRUE(Detail::RequiresPointSampling(TextureFormat::D32_SFLOAT_S8_UINT, capabilities));
+    EXPECT_FALSE(Detail::RequiresPointSampling(TextureFormat::R32_FLOAT, capabilities));
+    capabilities.supportsFilterableFloat32 = false;
+    EXPECT_TRUE(Detail::RequiresPointSampling(TextureFormat::R32_FLOAT, capabilities));
+    EXPECT_TRUE(Detail::RequiresPointSampling(TextureFormat::R32G32B32A32_FLOAT, capabilities));
+    EXPECT_FALSE(Detail::RequiresPointSampling(TextureFormat::R16G16B16A16_FLOAT, capabilities));
+    EXPECT_FALSE(Detail::RequiresPointSampling(TextureFormat::RGBA8_UNORM, capabilities));
 }

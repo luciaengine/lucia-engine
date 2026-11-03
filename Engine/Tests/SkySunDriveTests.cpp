@@ -41,6 +41,7 @@ namespace SunDrive = Components::SkySunDrive;
 namespace SunIlluminance = Components::SkySunIlluminance;
 
 constexpr float kShippedSunLux = 100000.0f;
+constexpr float kSkyIrradianceScale = 1.33f; // mirrors SkyEnvironmentSystem.cpp, so a drift shows
 
 // A sky linked to one directional light, driving it from its curve.
 struct CurveRig
@@ -91,10 +92,11 @@ Math::Curve FlatCurve(float lux)
     return curve;
 }
 
-float GroundLuminance(const ColorLinear& source, float upDot)
+float GroundLuminance(const float source[3], float upDot)
 {
-    return ColorUtils::LinearRec709Luminance(
-        Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), source, upDot));
+    float ground[3];
+    Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), source, upDot, ground);
+    return ColorUtils::LinearRec709Luminance(ground);
 }
 
 // The wave of the execution plan the system named `systemName` runs in, or -1 when it is not in the plan.
@@ -164,13 +166,14 @@ TEST(SkySunDrive, TheCurveSetsTheIntensityInTheLightsUnitAndTheColourIsHueOnly)
             << "hour " << hours;
 
         const Components::Light light = lux.Light();
-        EXPECT_NEAR(ColorUtils::LinearRec709Luminance({light.Color[0], light.Color[1], light.Color[2]}), 1.0f, 1e-6f) << "hour " << hours;
-        const ColorLinear ground = Rendering::EvaluateGroundLevelSunColor(
-            Rendering::ScatteringAtmosphere(), ColorLinear(1.0f, 1.0f, 1.0f), lux.Settings().scatteringSunDir[1]);
+        EXPECT_NEAR(ColorUtils::LinearRec709Luminance(light.Color), 1.0f, 1e-6f) << "hour " << hours;
+        const float white[3] = {1.0f, 1.0f, 1.0f};
+        float ground[3];
+        Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), white,
+                                               lux.Settings().scatteringSunDir[1], ground);
         const float groundLuminance = ColorUtils::LinearRec709Luminance(ground);
-        EXPECT_NEAR(light.Color[0], ground.r / groundLuminance, 1e-5f) << "hour " << hours;
-        EXPECT_NEAR(light.Color[1], ground.g / groundLuminance, 1e-5f) << "hour " << hours;
-        EXPECT_NEAR(light.Color[2], ground.b / groundLuminance, 1e-5f) << "hour " << hours;
+        for (int c = 0; c < 3; ++c)
+            EXPECT_NEAR(light.Color[c], ground[c] / groundLuminance, 1e-5f) << "hour " << hours << ", channel " << c;
         ++checked;
     }
     EXPECT_GT(checked, 90);
@@ -186,7 +189,7 @@ TEST(SkySunDrive, TheCurveSetsTheIntensityInTheLightsUnitAndTheColourIsHueOnly)
     float resolved[3];
     float unitlessIntensity = 0.0f;
     Components::ResolveLightColorIntensity(lux.Light(), resolved, unitlessIntensity);
-    EXPECT_NEAR(ColorUtils::LinearRec709Luminance({resolved[0], resolved[1], resolved[2]}), 1.0f, 1e-6f);
+    EXPECT_NEAR(ColorUtils::LinearRec709Luminance(resolved), 1.0f, 1e-6f);
 }
 
 // Below the twilight floor the light is the moon's: whatever the curve reads at midnight, the light
@@ -198,7 +201,7 @@ TEST(SkySunDrive, AtNightTheMoonlightOwnsTheLight)
     rig.SetHours(0.0f);
     rig.Tick();
     const float moonlight = SunDrive::MoonlightLux(rig.Rig.Sky(), rig.Settings().moonDirWS[1]);
-    ASSERT_GT(moonlight, 0.01f);
+    ASSERT_GT(moonlight, 1.0f);
     EXPECT_NEAR(SunIlluminance::DeliveredLux(rig.Light()), moonlight, moonlight * 1e-4f);
 }
 
@@ -253,11 +256,9 @@ TEST(SkySunDrive, TheSkyFollowsTheCurvesNoon)
         // primarySunIntensity is the sky's day source while the moon has not taken over.
         const float expected = Components::LightIntensityToUnitless(SunDrive::SkySourceLux(rig.Rig.Sky(), hours),
                                                                     Components::LightUnit::Lux) *
-                               Rendering::SkySourceIlluminanceScale(Rendering::ScatteringAtmosphere());
+                               kSkyIrradianceScale;
         if (hours < 15.5f)
-        {
             EXPECT_EQ(rig.Settings().primarySunIntensity, expected) << "hour " << hours;
-        }
     }
     // At noon the sky's source is the noon reference.
     EXPECT_NEAR(SunDrive::SkySourceLux(rig.Rig.Sky(), 12.0f), reference, reference * 1e-4f);
@@ -265,15 +266,12 @@ TEST(SkySunDrive, TheSkyFollowsTheCurvesNoon)
     // The sky's sun at noon delivers the curve's noon: the reference times the noon extinction.
     const Components::SkyEnvironment sky = rig.Rig.Sky();
     const float noonElevation = Rendering::SolarNoonElevationDegrees(Components::SkySunPath::PathAngles(sky));
-    const float noonDelivered =
-        reference * GroundLuminance(ColorLinear(1.0f, 1.0f, 1.0f), std::sin(noonElevation * 0.01745329252f));
+    const float white[3] = {1.0f, 1.0f, 1.0f};
+    const float noonDelivered = reference * GroundLuminance(white, std::sin(noonElevation * 0.01745329252f));
     const float curveNoon = SunDrive::CurveIlluminanceLux(sky.SunIlluminanceCurve, 12.0f);
     EXPECT_NEAR(noonDelivered, curveNoon, curveNoon * 1e-5f);
 
     // Continuous across the 1.15-degree floor: on 21 December the noon sun crosses it near 65.4 N.
-    // A low sun's extinction is steep through haze: near the floor, 0.022 stops per 0.01 degree of
-    // latitude through the default crisp day's and 0.054 through a typical day's (optical depth 0.15),
-    // against a jump of whole stops if the floor broke continuity.
     Components::SkyEnvironment polar = sky;
     polar.SunIlluminanceCurve = FlatCurve(10000.0f);
     float previous = 0.0f;
@@ -282,9 +280,7 @@ TEST(SkySunDrive, TheSkyFollowsTheCurvesNoon)
         polar.Latitude = latitude;
         const float r = SunDrive::NoonReferenceLux(polar);
         if (previous > 0.0f)
-        {
-            EXPECT_LT(std::abs(std::log2(r / previous)), 0.08f) << "latitude " << latitude;
-        }
+            EXPECT_LT(std::abs(std::log2(r / previous)), 0.05f) << "latitude " << latitude;
         previous = r;
     }
 }
@@ -448,22 +444,16 @@ TEST(SkySunDrive, TheSeedIsMonotoneAndFollowsThePhysicalCurve)
             const float value = SunDrive::CurveIlluminanceLux(seed, hours);
             constexpr float kLogRoundTrip = 1e-5f;
             if (minute > 0 && minute <= 12 * 60)
-            {
                 EXPECT_GE(value, previous * (1.0f - kLogRoundTrip))
                     << "latitude " << site.Latitude << " day " << site.Day << " at " << hours;
-            }
             if (minute > 12 * 60)
-            {
                 EXPECT_LE(value, previous * (1.0f + kLogRoundTrip))
                     << "latitude " << site.Latitude << " day " << site.Day << " at " << hours;
-            }
             previous = value;
             const float model = SunDrive::PhysicalIlluminanceLux(sky, kShippedSunLux, hours);
             if (model > 0.01f)
-            {
                 EXPECT_LE(std::abs(std::log2(std::max(value, SunDrive::kCurveFloorLux) / model)), 0.5f)
                     << "latitude " << site.Latitude << " day " << site.Day << " at " << hours;
-            }
         }
     }
 }

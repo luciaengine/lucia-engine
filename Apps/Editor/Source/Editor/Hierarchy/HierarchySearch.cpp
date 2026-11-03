@@ -1,5 +1,4 @@
 #include "Editor/Hierarchy/HierarchySearch.h"
-#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <cctype>
@@ -7,6 +6,14 @@
 
 namespace GameEngine::Editor {
 namespace {
+
+std::string Lower(std::string_view value)
+{
+    std::string result(value);
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c)
+                   { return static_cast<char>(std::tolower(c)); });
+    return result;
+}
 
 std::vector<std::string> Tokenize(std::string_view text)
 {
@@ -52,7 +59,7 @@ std::vector<std::string> Tokenize(std::string_view text)
 
 bool TextMatches(std::string_view candidate, std::string_view value, bool exact)
 {
-    const std::string lowerCandidate = ToLowerAscii(candidate);
+    const std::string lowerCandidate = Lower(candidate);
     return exact ? lowerCandidate == value : lowerCandidate.find(value) != std::string::npos;
 }
 
@@ -83,7 +90,7 @@ HierarchySearchQuery HierarchySearchQuery::Parse(std::string_view text)
 
         if (separator != std::string::npos)
         {
-            const std::string field = ToLowerAscii(std::string_view(token).substr(0, separator));
+            const std::string field = Lower(std::string_view(token).substr(0, separator));
             Field parsedField = Field::Any;
             bool recognized = true;
             if (field == "n" || field == "name")
@@ -105,7 +112,7 @@ HierarchySearchQuery HierarchySearchQuery::Parse(std::string_view text)
             }
         }
 
-        term.Value = ToLowerAscii(token);
+        term.Value = Lower(token);
         if (!term.Value.empty())
             query.m_Terms.push_back(std::move(term));
     }

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <vector>
 
 namespace GameEngine
 {
@@ -22,6 +23,10 @@ namespace NativeScripting
 // translation units the generated project compiles (.cpp/.cc/.cxx/.c) plus every
 // header the ComponentScanner reflects from (.h/.hpp/.hxx/.hh). Case-insensitive.
 bool IsWatchedNativeSourceExtension(const std::filesystem::path& path);
+
+/// Sorted source/header paths using the same ignore rules as native builds and their watcher.
+std::vector<std::filesystem::path> CollectWatchedNativeSources(const std::filesystem::path& sourceRoot,
+                                                             const std::filesystem::path& packageRoot);
 
 // True when at least one watched native source lives under `sourceRoot` — the
 // gate that lets a package-only project skip the empty user-module build. The

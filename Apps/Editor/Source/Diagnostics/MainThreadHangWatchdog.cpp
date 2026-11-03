@@ -1,11 +1,9 @@
 #include "Diagnostics/MainThreadHangWatchdog.h"
 
-#include "JobSystem/JobSystemStatistics.h"
-#include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/Backtrace.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -13,7 +11,6 @@
 #include <mutex>
 #include <string>
 #include <thread>
-#include <vector>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -50,64 +47,6 @@ std::thread g_Thread;
 
 const char* const kShutdownPhase = "shutdown";
 
-// The job system whose occupancy a stall report carries, and the snapshot
-// buffer sized for it at Start, so a report never allocates to read the pool.
-// The loop holds the mutex across the read; BeginShutdownWatch and Stop take
-// it to detach, so the pool is never read after either returns.
-std::mutex g_JobSystemMutex;
-const JobSystem::WorkStealingThreadPool* g_JobSystem = nullptr; // guarded by g_JobSystemMutex
-// Sized by Start under g_JobSystemMutex before the loop thread exists, and
-// afterwards filled and read only by the loop thread, which formats the
-// entries after releasing the mutex.
-std::vector<JobSystem::JobSystemStatistics::Occupancy> g_Occupancy;
-
-void DetachJobSystem()
-{
-    std::lock_guard<std::mutex> lock(g_JobSystemMutex);
-    g_JobSystem = nullptr;
-}
-
-// One line per pool thread, named as the thread is ("Job Worker #3"), with
-// what it runs and, for Background and channel jobs, for how long. Empty when
-// no job system is attached. A job that started after nowNs was read reports
-// 0.0s, never a negative time.
-std::string DescribeJobSystem(long long nowNs)
-{
-    size_t count = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_JobSystemMutex);
-        if (g_JobSystem == nullptr)
-            return {};
-        count = g_JobSystem->SnapshotOccupancy(g_Occupancy);
-    }
-    // The entries are plain values once read; formatting them allocates,
-    // which is fine here because the main thread is not suspended.
-    std::string out = "\n  job system threads:";
-    for (size_t i = 0; i < count; ++i)
-    {
-        const JobSystem::JobSystemStatistics::Occupancy& thread = g_Occupancy[i];
-        const bool worker = thread.Kind == JobSystem::JobSystemStatistics::ThreadKind::Worker;
-        out += "\n    ";
-        out += worker ? "Job Worker #" : "Job Blocking #";
-        out += std::to_string(thread.Index);
-        out += ": ";
-        if (thread.Running == nullptr)
-        {
-            out += "idle";
-            continue;
-        }
-        out += thread.Running;
-        if (thread.SinceNs != 0)
-        {
-            char seconds[48];
-            const long long elapsedNs = std::max(0LL, nowNs - static_cast<long long>(thread.SinceNs));
-            std::snprintf(seconds, sizeof(seconds), " for %.1fs", static_cast<double>(elapsedNs) / 1e9);
-            out += seconds;
-        }
-    }
-    return out;
-}
-
 // Env overrides share one shape: a positive integer, anything else ignored.
 int ThresholdFromEnv(const char* name, int fallback)
 {
@@ -121,14 +60,6 @@ int ThresholdFromEnv(const char* name, int fallback)
 }
 
 #ifdef _WIN32
-// Opt-in flags share one shape: exactly "1" arms, anything else leaves the
-// flag disarmed.
-bool FlagFromEnv(const char* name)
-{
-    const char* env = std::getenv(name);
-    return env && env[0] == '1' && env[1] == '\0';
-}
-
 // Whether a stall report may suspend the main thread and walk it. True for the
 // frame window; teardown decides separately — see BeginShutdownWatch.
 //
@@ -314,8 +245,6 @@ void WatchdogLoop()
 
         const char* phase = g_Phase.load(std::memory_order_relaxed);
         const double stalledS = static_cast<double>(silentMs) / 1000.0;
-        // Read after any stack capture below has resumed the main thread.
-        std::string jobSystem;
 #ifdef _WIN32
         bool captured = false;
         std::string stack;
@@ -331,15 +260,14 @@ void WatchdogLoop()
                 captured = true;
             }
         }
-        jobSystem = DescribeJobSystem(now);
 
         if (captured)
         {
             Logger::Log::Warning(
                 "[HangWatchdog] main thread unresponsive for {:.1f}s (phase: {}); "
-                "main-thread stack:{}{}",
+                "main-thread stack:{}",
                 stalledS, phase ? phase : "unknown",
-                stack.empty() ? "\n    <no frames captured>" : stack.c_str(), jobSystem);
+                stack.empty() ? "\n    <no frames captured>" : stack.c_str());
         }
         else
         {
@@ -350,14 +278,13 @@ void WatchdogLoop()
                 "thread holds the CRT heap or loader lock. Attach out of process "
                 "instead: cdb -pv -p {} -c \"~*k; qd\". "
                 "GE_HANG_WATCHDOG_SHUTDOWN_STACKS=1 arms in-process capture and "
-                "accepts that risk.{}",
-                stalledS, phase ? phase : "unknown", GetCurrentProcessId(), jobSystem);
+                "accepts that risk.",
+                stalledS, phase ? phase : "unknown", GetCurrentProcessId());
         }
 #else
-        jobSystem = DescribeJobSystem(now);
         Logger::Log::Warning(
-            "[HangWatchdog] main thread unresponsive for {:.1f}s (phase: {}){}",
-            stalledS, phase ? phase : "unknown", jobSystem);
+            "[HangWatchdog] main thread unresponsive for {:.1f}s (phase: {})",
+            stalledS, phase ? phase : "unknown");
 #endif
     }
 
@@ -368,13 +295,12 @@ void WatchdogLoop()
 
 } // namespace
 
-void MainThreadHangWatchdog::Start(const JobSystem::WorkStealingThreadPool* jobSystem)
+void MainThreadHangWatchdog::Start()
 {
     if (g_Running.load(std::memory_order_relaxed))
         return;
 
-    if (const char* env = std::getenv("GE_HANG_WATCHDOG");
-        env && env[0] == '0' && env[1] == '\0')
+    if (!Platform::EnvironmentSwitchEnabled("GE_HANG_WATCHDOG", true))
         return;
 
     const int thresholdMs = ThresholdFromEnv("GE_HANG_WATCHDOG_MS", kDefaultThresholdMs);
@@ -387,7 +313,7 @@ void MainThreadHangWatchdog::Start(const JobSystem::WorkStealingThreadPool* jobS
         std::lock_guard<std::mutex> modeLock(g_CaptureModeMutex);
         g_StackCaptureArmed = true;
     }
-    g_ShutdownStacksArmed.store(FlagFromEnv("GE_HANG_WATCHDOG_SHUTDOWN_STACKS"),
+    g_ShutdownStacksArmed.store(Platform::EnvironmentSwitchEnabled("GE_HANG_WATCHDOG_SHUTDOWN_STACKS", false),
                                 std::memory_order_relaxed);
 
     if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
@@ -401,13 +327,6 @@ void MainThreadHangWatchdog::Start(const JobSystem::WorkStealingThreadPool* jobS
     }
 #endif
 
-    {
-        std::lock_guard<std::mutex> lock(g_JobSystemMutex);
-        g_JobSystem = jobSystem;
-        // Every compute worker plus the most blocking threads any pool has.
-        g_Occupancy.resize(jobSystem ? jobSystem->GetWorkerCount() + JobSystem::kMaxBlockingThreadBudget : 0);
-    }
-
     g_LastBeatNs.store(0, std::memory_order_relaxed);
     g_Phase.store(nullptr, std::memory_order_relaxed);
     g_ThresholdMs.store(thresholdMs, std::memory_order_relaxed);
@@ -419,9 +338,6 @@ void MainThreadHangWatchdog::BeginShutdownWatch()
 {
     if (!g_Running.load(std::memory_order_relaxed))
         return;
-
-    // Teardown destroys the job system; detach before it can.
-    DetachJobSystem();
 
     // Restart the clock: the stall being timed is the shutdown, not whatever
     // held the last frame (a modal dialog, say) before the loop exited.
@@ -461,7 +377,6 @@ void MainThreadHangWatchdog::Stop()
         return;
     if (g_Thread.joinable())
         g_Thread.join();
-    DetachJobSystem();
 #ifdef _WIN32
     if (g_MainThread)
     {

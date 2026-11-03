@@ -35,12 +35,6 @@ struct EditorAssetActions
     /// the live render if it is drawing, or carries kThumbnailUnavailableClass. An image file
     /// larger than `sizePx` is shown as the service's downscaled copy, never loaded at full size.
     std::function<void(UIElement& element, const std::filesystem::path& asset, int sizePx)> ShowThumbnail;
-    /// Shows `image` (an image file the editor wrote, a capture) as `element`'s background at about
-    /// its display size: the thumbnail service's copy at most 1024 px on its long edge, or the file
-    /// itself when it is no larger, on the element's UI thread, provided the element still exists
-    /// then; meanwhile the element carries kThumbnailPendingClass, and kThumbnailUnavailableClass
-    /// when there is no picture.
-    std::function<void(UIElement& element, const std::filesystem::path& image)> ShowImage;
     /// Opens `asset` the way an Assets browser double-click does (a material is selected with the
     /// Inspector brought forward, a graph opens in its graph panel, a file nothing in the editor
     /// takes goes to the operating system's application).

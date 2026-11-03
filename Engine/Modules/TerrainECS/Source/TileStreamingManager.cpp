@@ -2,15 +2,47 @@
 #include "TerrainECS/TerrainService.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
 #include <limits>
 
 namespace GameEngine::TerrainECS
 {
+
+// Pre-compute per-node min/max for the global quadtree finest level.
+// Runs on job threads to avoid scanning heightfield on the main thread.
+static void ComputeQuadtreeNodesFromHeightfield(
+    const Terrain::HeightfieldData& hf,
+    uint32 tileFinestNodes,
+    std::vector<NodeMinMax>& outNodes,
+    uint32& outNodesPerAxis)
+{
+    outNodesPerAxis = tileFinestNodes;
+    outNodes.resize(static_cast<size_t>(tileFinestNodes) * tileFinestNodes);
+
+    const uint32 hfW = hf.GetWidth();
+    const uint32 hfH = hf.GetHeight();
+    const uint32 samplesPerNodeX = std::max(1u, (hfW - 1) / tileFinestNodes);
+    const uint32 samplesPerNodeZ = std::max(1u, (hfH - 1) / tileFinestNodes);
+
+    for (uint32 nz = 0; nz < tileFinestNodes; ++nz)
+    {
+        for (uint32 nx = 0; nx < tileFinestNodes; ++nx)
+        {
+            float32 nodeMinH, nodeMaxH;
+            hf.GetMinMax(static_cast<int32>(nx * samplesPerNodeX),
+                         static_cast<int32>(nz * samplesPerNodeZ),
+                         static_cast<int32>(samplesPerNodeX + 1),
+                         static_cast<int32>(samplesPerNodeZ + 1),
+                         nodeMinH, nodeMaxH);
+
+            outNodes[nz * tileFinestNodes + nx] = {nodeMinH, nodeMaxH};
+        }
+    }
+}
 
 TileStreamingManager::TileStreamingManager(JobSystem::WorkStealingThreadPool* jobSystem,
                                            const StreamingConfig& config)
@@ -267,14 +299,13 @@ void TileStreamingManager::DispatchCoarseJob(TerrainStream& stream,
         return;
 
     auto result = tracker.Result;
-    const float32 worldOriginX = TileWorldOrigin(tiled.WorldOriginX, coord.X, tiled.Config.TileWorldSize);
-    const float32 worldOriginZ = TileWorldOrigin(tiled.WorldOriginZ, coord.Z, tiled.Config.TileWorldSize);
+    const float32 worldOriginX = tiled.WorldOriginX + coord.X * tiled.Config.TileWorldSize;
+    const float32 worldOriginZ = tiled.WorldOriginZ + coord.Z * tiled.Config.TileWorldSize;
     const float32 terrainOriginX = tiled.WorldOriginX;
     const float32 terrainOriginZ = tiled.WorldOriginZ;
     const float32 tileWorld = tiled.Config.TileWorldSize;
     const uint32 coarseRes = m_Config.CoarseResolution;
-    const uint32 tileRes = tiled.Config.TileConfig.HeightmapWidth;
-    const float32 heightScale = tiled.Config.HeightScale;
+    const uint32 tileLODLevels = tiled.Config.TileConfig.LODLevels;
     // By value: the copy shares the base heightmap, so the job reads it safely even
     // if the terrain is re-provisioned or the decode cache evicts it meanwhile.
     const TiledTerrainConfig config = tiled.Config;
@@ -285,8 +316,8 @@ void TileStreamingManager::DispatchCoarseJob(TerrainStream& stream,
 
     tracker.ActiveJob = m_JobSystem->Submit([result, worldOriginX, worldOriginZ,
                                              terrainOriginX, terrainOriginZ, config,
-                                             tileWorld, coarseRes, tileRes, heightScale, coord,
-                                             completedQueue]()
+                                             tileWorld, coarseRes, coord,
+                                             tileLODLevels, completedQueue]()
     {
         result->Coord = coord;
         result->CoarseHeightfield.Resize(coarseRes, coarseRes, 0.0f);
@@ -307,18 +338,21 @@ void TileStreamingManager::DispatchCoarseJob(TerrainStream& stream,
         result->MinHeight = minH;
         result->MaxHeight = maxH;
 
-        // The full-resolution heights and normal the tile renders while Coarse, built here so
-        // the frame that integrates the tile only copies them.
-        auto standIn = std::make_shared<CoarseTileStandIn>();
-        BuildCoarseTileStandIn(result->CoarseHeightfield, tileRes, tileWorld, heightScale, *standIn);
-        result->CoarseStandIn = std::move(standIn);
-
         // Size the coarse splatmap so the streaming tile has one to upload. It stays
         // unbaked (reads as channel 0) until the modifier bake composites the surface
-        // rules on arrival; the extraction bilinear-upsamples it into the tile's region.
+        // rules on arrival. Extraction bilinear-upsamples this (and the coarse
+        // heightfield) into the unified tile region; the coarse NORMAL is
+        // intentionally not generated — the tile is distant (streaming edge) where
+        // flat-up lighting is imperceptible, and Full uploads the real normal on upgrade.
         ResetSplatmap(
             result->CoarseHeightfield,
             result->Splatmap, result->SplatmapWidth, result->SplatmapHeight);
+
+        // Pre-compute quadtree node min/max for main-thread integration.
+        const uint32 tileFinestNodes = 1u << (tileLODLevels - 1);
+        ComputeQuadtreeNodesFromHeightfield(
+            result->CoarseHeightfield, tileFinestNodes,
+            result->QuadtreeNodes, result->QuadtreeNodesPerAxis);
 
         result->CompletedStage = TileState::CoarseReady;
 
@@ -339,8 +373,8 @@ void TileStreamingManager::DispatchFullJob(TerrainStream& stream,
         return;
 
     auto result = tracker.Result;
-    const float32 worldOriginX = TileWorldOrigin(tiled.WorldOriginX, coord.X, tiled.Config.TileWorldSize);
-    const float32 worldOriginZ = TileWorldOrigin(tiled.WorldOriginZ, coord.Z, tiled.Config.TileWorldSize);
+    const float32 worldOriginX = tiled.WorldOriginX + coord.X * tiled.Config.TileWorldSize;
+    const float32 worldOriginZ = tiled.WorldOriginZ + coord.Z * tiled.Config.TileWorldSize;
     const float32 terrainOriginX = tiled.WorldOriginX;
     const float32 terrainOriginZ = tiled.WorldOriginZ;
     const float32 tileWorld = tiled.Config.TileWorldSize;
@@ -351,11 +385,13 @@ void TileStreamingManager::DispatchFullJob(TerrainStream& stream,
 
     auto completedQueue = stream.Completed;
     const float32 heightScale = tiled.Config.HeightScale;
+    const uint32 tileLODLevels = tiled.Config.TileConfig.LODLevels;
 
     tracker.ActiveJob = m_JobSystem->Submit([result, worldOriginX, worldOriginZ,
                                              terrainOriginX, terrainOriginZ, config,
                                              tileWorld, fullW, fullH, coord,
-                                             heightScale, completedQueue]()
+                                             heightScale,
+                                             tileLODLevels, completedQueue]()
     {
         result->Coord = coord;
         result->FullHeightfield.Resize(fullW, fullH, 0.0f);
@@ -386,6 +422,12 @@ void TileStreamingManager::DispatchFullJob(TerrainStream& stream,
         GenerateNormalmapFromHeightfield(
             result->FullHeightfield, tileWorld, tileWorld, heightScale,
             result->Normalmap, result->NormalmapWidth, result->NormalmapHeight);
+
+        // Pre-compute quadtree node min/max for main-thread integration.
+        const uint32 tileFinestNodes = 1u << (tileLODLevels - 1);
+        ComputeQuadtreeNodesFromHeightfield(
+            result->FullHeightfield, tileFinestNodes,
+            result->QuadtreeNodes, result->QuadtreeNodesPerAxis);
 
         result->CompletedStage = TileState::FullReady;
 
@@ -499,9 +541,10 @@ void TileStreamingManager::IntegrateCompletedTiles(TerrainStream& stream,
                                        std::move(result->CoarseHeightfield),
                                        result->MinHeight, result->MaxHeight);
 
-            // Move the coarse splatmap with an empty normal: a coarse tile shows its
-            // stand-in's normal (CoarseStandIn below). The extraction bilinear-upsamples
-            // this splat into the tile's region.
+            // Move the coarse splatmap only — the coarse job generates no normalmap
+            // (extraction uploads a flat-up normal for the coarse region), so pass an
+            // empty normal rather than shipping/wiping one. Extraction bilinear-
+            // upsamples this splat into the unified tile region.
             if (!result->Splatmap.empty())
             {
                 service.SetTileMaps(tiledHandle, result->Coord,
@@ -510,27 +553,27 @@ void TileStreamingManager::IntegrateCompletedTiles(TerrainStream& stream,
                                     std::vector<uint8>{}, 0, 0);
             }
 
-            // Store the job's coarse stand-in on the tile for the extraction system.
+            // Store pre-computed data on the tile for the extraction system.
             {
                 auto tileIt = tiled.Tiles.find(result->Coord);
                 if (tileIt != tiled.Tiles.end() && tileIt->second)
                 {
                     auto& t = *tileIt->second;
-                    if (result->CoarseStandIn)
-                    {
-                        // The stand-in belongs to the heightfield just set, whose version
-                        // SetTileHeightfield bumped.
-                        result->CoarseStandIn->HeightfieldVersion = t.HeightfieldVersion;
-                        t.CoarseStandIn = std::move(result->CoarseStandIn);
-                    }
+                    t.PrecomputedQuadtreeNodes = std::move(result->QuadtreeNodes);
+                    t.PrecomputedQuadtreeNodesPerAxis = result->QuadtreeNodesPerAxis;
                 }
             }
 
             stream.IntegratedThisFrame.push_back(result->Coord);
 
-            // Widen the global height range by the arriving tile's range.
-            tiled.CachedGlobalMinH = std::min(tiled.CachedGlobalMinH, result->MinHeight);
-            tiled.CachedGlobalMaxH = std::max(tiled.CachedGlobalMaxH, result->MaxHeight);
+            // Update global height range incrementally.
+            if (result->MinHeight < tiled.CachedGlobalMinH ||
+                result->MaxHeight > tiled.CachedGlobalMaxH)
+            {
+                tiled.CachedGlobalMinH = std::min(tiled.CachedGlobalMinH, result->MinHeight);
+                tiled.CachedGlobalMaxH = std::max(tiled.CachedGlobalMaxH, result->MaxHeight);
+                tiled.GlobalHeightRangeDirty = false; // We just updated it.
+            }
 
             // Dispatch full upgrade immediately if job slots are available,
             // but reserve 2 slots for new coarse tile loading to prevent
@@ -571,9 +614,21 @@ void TileStreamingManager::IntegrateCompletedTiles(TerrainStream& stream,
                                     result->NormalmapWidth, result->NormalmapHeight);
             }
 
+            // Store pre-computed data on the tile.
+            {
+                auto tileIt = tiled.Tiles.find(result->Coord);
+                if (tileIt != tiled.Tiles.end() && tileIt->second)
+                {
+                    auto& t = *tileIt->second;
+                    t.PrecomputedQuadtreeNodes = std::move(result->QuadtreeNodes);
+                    t.PrecomputedQuadtreeNodesPerAxis = result->QuadtreeNodesPerAxis;
+                }
+            }
+
             // Update global height range.
             tiled.CachedGlobalMinH = std::min(tiled.CachedGlobalMinH, result->MinHeight);
             tiled.CachedGlobalMaxH = std::max(tiled.CachedGlobalMaxH, result->MaxHeight);
+            tiled.GlobalHeightRangeDirty = false;
 
             tracker.State = TileState::Active;
             tracker.Result.reset();
@@ -737,7 +792,7 @@ void TileStreamingManager::UnloadDistantTiles(
         // unified sub-rect simply stops being refreshed until it streams back in.
         service.UnloadTile(stream.Handle, coord);
 
-        static const bool kTileStreamDebug = std::getenv("GE_TERRAIN_TILE_DEBUG") != nullptr;
+        static const bool kTileStreamDebug = Platform::EnvironmentSwitchEnabled("GE_TERRAIN_TILE_DEBUG", false);
         if (kTileStreamDebug)
             Logger::Log::Info("Terrain.TileStream out tile=({},{})", coord.X, coord.Z);
 

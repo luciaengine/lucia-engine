@@ -10,8 +10,6 @@
 #include "Rendering/Core/GPUCulling.h" // MakeFrustumPlanesCameraRelative
 
 #include <cstdint>
-#include <memory_resource>
-#include <span>
 #include <vector>
 
 namespace GameEngine::Engine::Renderer
@@ -62,10 +60,10 @@ struct TransparentSphere
 // visible transparent at a screen edge (unacceptable).
 //
 // Returns the number culled (for diagnostics).
-inline uint32_t CullTransparentsToFrustum(std::span<const TransparentSphere> candidates,
+inline uint32_t CullTransparentsToFrustum(const std::vector<TransparentSphere>& candidates,
                                           const Rendering::Vector4* worldPlanes,
                                           const Rendering::Vector3& origin,
-                                          std::pmr::vector<TransparentCentroid>& outVisible)
+                                          std::vector<TransparentCentroid>& outVisible)
 {
     Rendering::Vector4 planes[6];
     for (int p = 0; p < 6; ++p)

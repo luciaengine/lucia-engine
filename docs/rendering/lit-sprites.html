@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lit Sprites</title><style>body{color:#e6edf3;background:#101720;font:16px/1.6 system-ui;max-width:980px;margin:40px auto;padding:0 24px}pre{padding:16px;background:#1c2633;overflow:auto}a{color:#8cc8ff}</style><main><p>---</p>
+<p>title: Lit sprites</p>
+<p>description: Light planar artwork with albedo and normal atlases.</p>
+<p>---</p>
+<p>The `LitSprite.material` preset uses `Surfaces/lit_sprite.glsl` for mesh-based planar artwork. Set the albedo atlas and a matching normal atlas, then assign the material to the mesh. Atlas rectangles, negative UV scale, rotation and mirrored transforms move the painted normal directions with the artwork. The shader reconstructs the tangent frame from position and UV derivatives, so a mesh tangent attribute is unnecessary. Degenerate UV frames use the geometric normal.</p>
+<p>Use alpha mask for hard cutouts. Soft edges require alpha blend and the pipeline&#x27;s transparent composition pass. HUD and loading-screen artwork can keep unlit materials.</p>
+<p>Add directional lighting for broad illumination and point lights for local sources. Emissive pixels brighten their own surface; attach a point light when they should illuminate nearby artwork.</p>
+<p>`Sprite2D` supports an albedo atlas, optional normal atlas, tint, pivot, texture filtering and scene ambient, directional and point lighting. Its optional material supplies albedo and normal textures, base color and opacity; arbitrary material surface shaders are not evaluated by the sprite pass. `AnimatedSprite2D` selects frames from a `.spriteframes` asset and remains unlit.</p>
+<h2>Sprite frame playback</h2>
+<p>A `.spriteframes` asset contains named animations with frame durations and normalized atlas rectangles. Each frame may author `pivotX` and `pivotY`; omitted pivots use the component&#x27;s pivot. A bottom pivot keeps a character&#x27;s feet anchored as trimmed frame dimensions change. `PixelsPerUnit` controls the artwork&#x27;s world size, while the transform carries rotation and scale.</p>
+<p>Positive playback speed advances frames, negative speed plays backward. Looping animations wrap; nonlooping animations hold their terminal frame. Hiding a sprite does not stop its animation clock.</p>
+<h2>Earlier 2D branch scenes</h2>
+<p>For scenes saved with the earlier, unmerged 2D branch, rename a sprite’s serialized `RenderLayerMask` field to `RenderLayers`, keeping its numeric mask. An omitted mask now defaults to visibility layer 0, matching other rendering components. Set an explicit mask when the artwork should appear on additional visibility layers.</p>
+</main></html>

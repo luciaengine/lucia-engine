@@ -1,4 +1,0 @@
-[scene name="Chunk" version=1]
-
-[entity id="root"]
-Name.value = "Chunk"

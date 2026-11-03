@@ -1,3 +1,4 @@
+#include "Editor/Registries/EditorPluginRegistry.h"
 #include "DebugServer/EditorDebugServer.h"
 #include "DebugServer/DebugServerReply.h"
 #include "Editor/Registries/DebugRequestGateRegistry.h"
@@ -19,7 +20,7 @@
 #include <cerrno>
 #endif
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h"
 
 #include <Logger/Logger.h>
 
@@ -76,7 +77,7 @@ static void AppendServerDiag(const char* what, int err, size_t clientCount)
     // Anchored to the exe, not the cwd — the editor may be launched from
     // anywhere and runtime artifacts must not land in the source tree.
     static const std::string s_DiagPath =
-        (ApplicationPaths::GetExecutableDirectory() / "EditorDebugServer-diag.txt").string();
+        (PathUtils::GetExecutableDirectory() / "EditorDebugServer-diag.txt").string();
     if (FILE* f = std::fopen(s_DiagPath.c_str(), "a"))
     {
         const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -395,12 +396,6 @@ void EditorDebugServer::DropHeldRequests(const std::vector<uint32_t>& closedClie
 bool EditorDebugServer::Dispatch(PendingRequest& req)
 {
     const auto handler = m_Handlers.find(req.method);
-    if (handler == m_Handlers.end())
-    {
-        SendErrorResponse(req.clientId, req.id, "Unknown method: " + req.method);
-        return false;
-    }
-
     const Editor::DebugRequestGateContext gateContext{req.method, req.clientId, &req.params, req.requestId, m_Undo};
     nlohmann::json result;
     try
@@ -419,8 +414,11 @@ bool EditorDebugServer::Dispatch(PendingRequest& req)
         else
         {
             // A copy: the gates' context still reads the held request's parameters.
-            const RequestContext ctx{req.id, req.params, req.clientId};
-            result = handler->second(ctx);
+            const RequestContext ctx{req.id, req.params};
+            if (handler != m_Handlers.end())
+                result = handler->second(ctx);
+            else if (!Editor::EditorPluginRegistry::Get().TryInvokeCommand(req.method, ctx.params, result))
+                result = Editor::RefuseRequest("Unknown method: " + req.method);
         }
     }
     catch (const std::exception& e)
@@ -517,7 +515,7 @@ try
                   "answering everything, so this editor (pid {}, {}) runs on WITHOUT a debug "
                   "server. Give it its own port via GE_EDITOR_DEBUG_PORT, and find the current "
                   "owner with `netstat -ano | findstr :{}`.",
-                  port, CurrentProcessId(), ApplicationPaths::GetExecutableDirectory().string(), port);
+                  port, CurrentProcessId(), PathUtils::GetExecutableDirectory().string(), port);
         SocketClose(listenSock);
         m_Running.store(false, std::memory_order_relaxed);
         SignalStartupComplete(false);
@@ -536,7 +534,7 @@ try
     // Provenance on the hello line: several editors share this machine, and the
     // first question about any of them is which process and which staged tree.
     LOG_INFO("EditorDebugServer: Listening on port {} (pid {}, {})", port, CurrentProcessId(),
-             ApplicationPaths::GetExecutableDirectory().string());
+             PathUtils::GetExecutableDirectory().string());
 
     uint16_t wakePort = 0;
     SocketType wakeSock = CreateWakeSocket(wakePort);

@@ -1,6 +1,6 @@
 #include "TerrainECS/TerrainUploadNode.h"
 
-#include "TerrainECS/TerrainPageFeature.h"
+#include "TerrainECS/TerrainHeightPageFeature.h"
 #include "TerrainECS/TerrainRenderFeature.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
@@ -42,8 +42,8 @@ void TerrainUploadNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& 
 
     // The height pages published since the last frame: their staged slot uploads ride this pass,
     // and the page tables latched with them become readable once the pass is declared
-    // (TerrainPageFeature::CommitLatch).
-    auto& pages = rs.EnsureFeature<TerrainPageFeature>();
+    // (TerrainHeightPageFeature::CommitLatch).
+    auto& pages = rs.EnsureFeature<TerrainHeightPageFeature>();
     pages.Latch(*device, rgFrame);
 
     // Heightmap/splatmap/normalmap upload: ONCE per frame across views (feature-owned

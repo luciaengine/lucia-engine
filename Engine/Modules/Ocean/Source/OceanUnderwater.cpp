@@ -1,22 +1,21 @@
 #include "Ocean/OceanUnderwater.h"
 #include "Ocean/OceanFootprintFrustum.h"
-#include "Ocean/OceanShader/OceanShaderProgram.h"
-#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "Ocean/OceanShaderProgram.h"
+#include "Rendering/Materials/ShaderLayoutShape.h"
 #include "Ocean/OceanTypes.h"
-#include "OceanShader/OceanShaderDirectory.h"
+#include "OceanShaderDirectory.h"
 
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Engine/Rendering/Pipeline/ViewExposureHistory.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
+#include "Rendering/Core/PipelineDescTranslator.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/RenderGraph/RGFullscreen.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderCompileService.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 
 #include <algorithm>
@@ -40,31 +39,31 @@ constexpr uint32_t kUnderwaterFragmentStage = kShaderStageFragment;
 // side each frame; the shader reads it at set 0 binding 2.
 struct alignas(16) OceanUnderwaterParamsGPU
 {
-    Mathematics::Matrix4x4 InvViewProj;
-    Mathematics::Matrix4x4 ViewProj;    // world -> clip (god-ray sun projection)
-    Mathematics::Matrix4x4 View;        // world -> view (shadow cascade selection)
-    Mathematics::Vector4 CameraPos;    // xyz world camera; w unused
-    Mathematics::Vector4 FogDensity;   // rgb extinction; w = max fog distance (m)
-    Mathematics::Vector4 FogFalloff;   // x start, y end, z power, w mode
-    Mathematics::Vector4 DeepTint;     // rgb deep body colour; a unused
-    Mathematics::Vector4 ShallowTint;  // rgb shallow scatter; a = meniscus brightness
-    Mathematics::Vector4 Misc;         // x seaLevel, y meniscusWidth, z submergedDepth, w time
-    Mathematics::Vector4 SunDirection; // xyz toward the sun
-    Mathematics::Vector4 SunColor;     // rgb light colour * intensity
-    Mathematics::Vector4 FFTParams;    // x waveMode, y fftCascadeCount, z shapeWeight, w maxVertical
-    Mathematics::Vector4 LocalFFT; // x = ready local FFT stream bit mask, yzw pad
-    Mathematics::Vector4 LocalFFTMaskCascadeOriginScale[kMaxOceanLodCascades];
-    Mathematics::Vector4 LocalFFTMaskCascadeMeta; // x lod count
-    Mathematics::Vector4 Shape;        // x maxHorizontal, y iorWater, z probeReach, w waterlineEdge
-    Mathematics::Vector4 Inscatter;    // x enable, y strength, z HG phase g, w camera-depth falloff
-    Mathematics::Vector4 Distortion;   // x enable, y lensK1, z lensK2, w intersection strength
-    Mathematics::Vector4 GodRays;      // x mode, y strength, z density, w secondary density
-    Mathematics::Vector4 ReflectedCaustics; // x strength, y height, z falloff, w pad
-    Mathematics::Vector4 Caustics;     // scale, average, strength, focal depth
-    Mathematics::Vector4 CausticsFocus; // depth of field, distortion strength/scale, pad
-    Mathematics::Vector4 Gerstner;     // pad
-    Mathematics::Vector4 Portal;       // x enabled, y volume count, z exclusion count, w polygon count
-    Mathematics::Vector4 PortalExtra;  // x occluder count, y ribbon count, z 1 = dry camera (portal-only), w pad
+    float InvViewProj[16]{};
+    float ViewProj[16]{};    // world -> clip (god-ray sun projection)
+    float View[16]{};        // world -> view (shadow cascade selection)
+    float CameraPos[4]{};    // xyz world camera; w unused
+    float FogDensity[4]{};   // rgb extinction; w = max fog distance (m)
+    float FogFalloff[4]{};   // x start, y end, z power, w mode
+    float DeepTint[4]{};     // rgb deep body colour; a unused
+    float ShallowTint[4]{};  // rgb shallow scatter; a = meniscus brightness
+    float Misc[4]{};         // x seaLevel, y meniscusWidth, z submergedDepth, w time
+    float SunDirection[4]{}; // xyz toward the sun
+    float SunColor[4]{};     // rgb light colour * intensity
+    float FFTParams[4]{};    // x legacy waveMode, y fftCascadeCount, z shapeWeight, w maxVertical
+    float LocalFFT[4]{}; // x = ready local FFT stream bit mask, yzw pad
+    float LocalFFTMaskCascadeOriginScale[kMaxOceanLodCascades * 4]{};
+    float LocalFFTMaskCascadeMeta[4]{}; // x lod count
+    float Shape[4]{};        // x maxHorizontal, y iorWater, z probeReach, w waterlineEdge
+    float Inscatter[4]{};    // x enable, y strength, z HG phase g, w camera-depth falloff
+    float Distortion[4]{};   // x enable, y lensK1, z lensK2, w intersection strength
+    float GodRays[4]{};      // x mode, y strength, z density, w secondary density
+    float ReflectedCaustics[4]{}; // x strength, y height, z falloff, w pad
+    float Caustics[4]{};     // scale, average, strength, focal depth
+    float CausticsFocus[4]{}; // depth of field, distortion strength/scale, pad
+    float Gerstner[4]{};     // legacy ABI pad
+    float Portal[4]{};       // x enabled, y volume count, z exclusion count, w polygon count
+    float PortalExtra[4]{};  // x occluder count, y ribbon count, z 1 = dry camera (portal-only), w pad
     float PortalVolumeBoxes[kMaxOceanUnderwaterPortalVolumes * 8]{};       // min/max vec4 pairs
     float PortalExclusionBoxes[kMaxOceanUnderwaterPortalExclusions * 8]{}; // min/max vec4 pairs
     float PortalOccluderBoxes[kMaxOceanUnderwaterPortalOccluders * 8]{};   // min/max vec4 pairs
@@ -164,8 +163,7 @@ bool OceanUnderwater::EnsurePipeline(IDevice& device)
                         {15, DescriptorType::CombinedImageSampler, 1, kUnderwaterFragmentStage},
                         {16, DescriptorType::CombinedImageSampler, 1, kUnderwaterFragmentStage},
                         {17, DescriptorType::StorageBuffer, 1, kUnderwaterFragmentStage},
-                        {18, DescriptorType::StorageBuffer, 1, kUnderwaterFragmentStage},
-                        {19, DescriptorType::StorageBuffer, 1, kUnderwaterFragmentStage}};
+                        {18, DescriptorType::StorageBuffer, 1, kUnderwaterFragmentStage}};
                     m_Pipeline = RenderGraph::MakeFullscreenPipelineDesc("Ocean.Underwater");
                     m_Pipeline.vertexShader = vs->second;
                     m_Pipeline.pixelShader = fs->second;
@@ -218,8 +216,7 @@ bool OceanUnderwater::EnsurePipeline(IDevice& device)
                         {15, DescriptorType::CombinedImageSampler, 1, kUnderwaterFragmentStage},
                         {16, DescriptorType::CombinedImageSampler, 1, kUnderwaterFragmentStage},
                         {17, DescriptorType::StorageBuffer, 1, kUnderwaterFragmentStage},
-                        {18, DescriptorType::StorageBuffer, 1, kUnderwaterFragmentStage},
-                        {19, DescriptorType::StorageBuffer, 1, kUnderwaterFragmentStage}};
+                        {18, DescriptorType::StorageBuffer, 1, kUnderwaterFragmentStage}};
                     m_ShadowPipeline =
                         RenderGraph::MakeFullscreenPipelineDesc("Ocean.Underwater.Shadowed");
                     m_ShadowPipeline.vertexShader = vs->second;
@@ -305,17 +302,16 @@ namespace
 // in a render-graph upload-ring allocation and the composite pass captures only
 // {buffer, offset} — no per-class buffer ring.
 void FillUnderwaterParams(OceanUnderwaterParamsGPU& out, const OceanParamsGPU& params,
-                          float submergedDepth, const Mathematics::Matrix4x4& invViewProj,
-                          const Mathematics::Matrix4x4& viewProj, const Mathematics::Matrix4x4& view,
-                          const Mathematics::Vector3& cameraPos, bool causticsAvailable,
+                          float submergedDepth, const float* invViewProj, const float* viewProj,
+                          const float* view, const float* cameraPos, bool causticsAvailable,
                           const OceanUnderwaterSettings& settings, uint32_t localFFTReadyMask,
                           const OceanCascadeLayoutGPU* localFFTMaskLayout,
                           const OceanUnderwaterPortalData* portalData)
 {
     OceanUnderwaterParamsGPU u{};
-    u.InvViewProj = invViewProj;
-    u.ViewProj = viewProj;
-    u.View = view;
+    std::memcpy(u.InvViewProj, invViewProj, sizeof(float) * 16);
+    std::memcpy(u.ViewProj, viewProj, sizeof(float) * 16);
+    std::memcpy(u.View, view, sizeof(float) * 16);
     u.CameraPos[0] = cameraPos[0];
     u.CameraPos[1] = cameraPos[1];
     u.CameraPos[2] = cameraPos[2];
@@ -337,7 +333,7 @@ void FillUnderwaterParams(OceanUnderwaterParamsGPU& out, const OceanParamsGPU& p
     if (authoredFogEnd == 0.0f && portalData)
         for (const auto& material : portalData->Materials)
         {
-            const float localDensity = std::max({material.Fog.x, material.Fog.y, material.Fog.z, 1e-3f});
+            const float localDensity = std::max({material.Fog[0], material.Fog[1], material.Fog[2], 1e-3f});
             u.FogDensity[3] = std::max(u.FogDensity[3], fogStart + 8.0f / localDensity);
         }
     u.FogFalloff[0] = fogStart;
@@ -347,15 +343,15 @@ void FillUnderwaterParams(OceanUnderwaterParamsGPU& out, const OceanParamsGPU& p
 
     // Deep body = the authored deep-water colour; the alpha lane carries an
     // overall tint strength that ramps with how deep the camera sits.
-    u.DeepTint[0] = params.DeepColor.r;
-    u.DeepTint[1] = params.DeepColor.g;
-    u.DeepTint[2] = params.DeepColor.b;
+    u.DeepTint[0] = params.DeepColor[0];
+    u.DeepTint[1] = params.DeepColor[1];
+    u.DeepTint[2] = params.DeepColor[2];
 
     // Shallow scatter tint (the near-surface "alive" colour) also drives the
     // meniscus brightness in the alpha lane.
-    u.ShallowTint[0] = params.SubSurfaceShallowCol.r;
-    u.ShallowTint[1] = params.SubSurfaceShallowCol.g;
-    u.ShallowTint[2] = params.SubSurfaceShallowCol.b;
+    u.ShallowTint[0] = params.SubSurfaceShallowCol[0];
+    u.ShallowTint[1] = params.SubSurfaceShallowCol[1];
+    u.ShallowTint[2] = params.SubSurfaceShallowCol[2];
     u.ShallowTint[3] = 0.9f;
 
     u.Misc[0] = params.SeaLevel;
@@ -372,9 +368,9 @@ void FillUnderwaterParams(OceanUnderwaterParamsGPU& out, const OceanParamsGPU& p
     u.SunDirection[0] = params.SunDirection[0];
     u.SunDirection[1] = params.SunDirection[1];
     u.SunDirection[2] = params.SunDirection[2];
-    u.SunColor[0] = params.SunColor.r;
-    u.SunColor[1] = params.SunColor.g;
-    u.SunColor[2] = params.SunColor.b;
+    u.SunColor[0] = params.SunColor[0];
+    u.SunColor[1] = params.SunColor[1];
+    u.SunColor[2] = params.SunColor[2];
 
     // FFT surface-height inputs so the waterline conforms to the same shaped/clamped
     // wave height the visible surface uses.
@@ -389,7 +385,8 @@ void FillUnderwaterParams(OceanUnderwaterParamsGPU& out, const OceanParamsGPU& p
             std::min<uint32_t>(localFFTMaskLayout->LodCount, kMaxOceanLodCascades);
         for (uint32_t i = 0; i < lodCount; ++i)
         {
-            u.LocalFFTMaskCascadeOriginScale[i] = localFFTMaskLayout->CascadeOriginScale[i];
+            std::memcpy(u.LocalFFTMaskCascadeOriginScale + i * 4u,
+                        localFFTMaskLayout->CascadeOriginScale[i], sizeof(float) * 4u);
         }
         u.LocalFFTMaskCascadeMeta[0] = static_cast<float>(lodCount);
     }
@@ -505,36 +502,9 @@ void FillUnderwaterParams(OceanUnderwaterParamsGPU& out, const OceanParamsGPU& p
     // upload-ring memory rather than field-by-field writes.
     out = u;
 }
-
-// The overlay's fullscreen inputs, collected in a list of fixed capacity. An input past the
-// capacity is written to a slot outside the list and marks it overflowed, so a collection that
-// grows past what the pass can bind never writes out of bounds: the overlay refuses the pass.
-template <class Input, size_t Capacity>
-class OverlayInputs
-{
-  public:
-    Input& Add()
-    {
-        if (m_Count == Capacity)
-        {
-            m_Overflowed = true;
-            m_Discard = {};
-            return m_Discard;
-        }
-        return m_Items[m_Count++];
-    }
-    bool Overflowed() const { return m_Overflowed; }
-    std::span<const Input> Inputs() const { return {m_Items.data(), m_Count}; }
-
-  private:
-    std::array<Input, Capacity> m_Items{};
-    Input m_Discard{};
-    uint32_t m_Count = 0;
-    bool m_Overflowed = false;
-};
 } // namespace
 
-bool IsUnderwaterPortalInView(const OceanUnderwaterPortalData& data, const Mathematics::Matrix4x4& viewProj)
+bool IsUnderwaterPortalInView(const OceanUnderwaterPortalData& data, const float* viewProj)
 {
     const OceanFootprintFrustum frustum(viewProj);
     // The ribbon tree's first record is its root branch, whose A/B carry the
@@ -618,7 +588,8 @@ bool OceanUnderwater::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
     if (!camera)
         return false;
 
-    Mathematics::Matrix4x4 vp = camera->viewProj;
+    Mathematics::Matrix4x4 vp{};
+    std::memcpy(vp.Data(), camera->viewProj, sizeof(float) * 16);
     const Mathematics::Matrix4x4 invVp = Mathematics::Inverse(vp);
 
     uint32_t validLocalFFTMask =
@@ -652,9 +623,8 @@ bool OceanUnderwater::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
     const auto paramsAlloc = d.Frame.AllocUpload<OceanUnderwaterParamsGPU>();
     if (!paramsAlloc.Valid())
         return false;
-    const Mathematics::Vector3 cameraPos(camera->cameraPos.x, camera->cameraPos.y, camera->cameraPos.z);
-    FillUnderwaterParams(*paramsAlloc.Ptr, params, submergedDepth, invVp, vp,
-                         camera->view, cameraPos, caustics.IsValid(), settings,
+    FillUnderwaterParams(*paramsAlloc.Ptr, params, submergedDepth, invVp.Data(), vp.Data(),
+                         camera->view, camera->cameraPos, caustics.IsValid(), settings,
                          validLocalFFTMask, shape.LocalFFTMaskLayout, portalData);
 
     const uint32_t renderW = d.RenderWidth;
@@ -694,9 +664,6 @@ bool OceanUnderwater::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
         msaa ? d.Frame.CreateTexture((base + ".CompositeColor").c_str(), copyDesc) : sceneColor;
     if (!compositeTarget.IsValid())
         return false;
-    // The snapshot and a separate composite target hold scene colour at the frame's pre-exposure.
-    d.MarkPreExposed(sceneCopy);
-    d.MarkPreExposed(compositeTarget);
 
     const GraphicsPipelineId overlayPipe = useShadowedGodRays ? m_ShadowPipelineId : m_PipelineId;
     const DescriptorSetLayoutDesc overlayLayout = useShadowedGodRays ? m_ShadowLayout : m_Layout;
@@ -718,23 +685,24 @@ bool OceanUnderwater::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
     // absent caustics) still need valid descriptors, so they fall back to the
     // never-read dummies — a per-input fallback, hence the dedicated 2D dummy
     // for caustics instead of reusing another binding's physical.
-    OverlayInputs<RenderGraph::RGFullscreenTextureInput, RenderGraph::kMaxFullscreenTextureInputs> textureInputs;
+    std::array<RenderGraph::RGFullscreenTextureInput, 15> textureInputs{};
+    uint32_t textureCount = 0;
     {
-        auto& in = textureInputs.Add(); // scene snapshot
+        auto& in = textureInputs[textureCount++]; // scene snapshot
         in.Binding = 0;
         in.Texture = sceneCopy;
         in.Sampler = sampler;
         in.Required = true;
     }
     {
-        auto& in = textureInputs.Add(); // resolved depth
+        auto& in = textureInputs[textureCount++]; // resolved depth
         in.Binding = 1;
         in.Texture = depth;
         in.Sampler = sampler;
         in.Required = true;
     }
     {
-        auto& in = textureInputs.Add(); // FFT displacement cascades
+        auto& in = textureInputs[textureCount++]; // FFT displacement cascades
         in.Binding = 3;
         in.Texture = shape.DisplacementRG; // declared read: orders after the FFT sim
         in.RawTexture = shape.Displacement;
@@ -743,7 +711,7 @@ bool OceanUnderwater::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
         in.FallbackSampler = sampler;
     }
     {
-        auto& in = textureInputs.Add(); // caustics web (uShape.x gates use)
+        auto& in = textureInputs[textureCount++]; // caustics web (uShape.x gates use)
         in.Binding = 4;
         in.RawTexture = caustics;
         in.Sampler = causticsSampler;
@@ -754,7 +722,7 @@ bool OceanUnderwater::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
         {5u, 6u, 7u, 10u, 12u, 13u, 14u, 15u};
     for (uint32_t stream = 0; stream < kMaxOceanLocalFFTStreams; ++stream)
     {
-        auto& in = textureInputs.Add(); // local FFT displacement streams
+        auto& in = textureInputs[textureCount++]; // local FFT displacement streams
         in.Binding = kLocalBindings[stream];
         if ((validLocalFFTMask & (1u << stream)) != 0u)
         {
@@ -768,7 +736,7 @@ bool OceanUnderwater::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
     constexpr uint32_t kLocalMaskBindings[kOceanLocalFFTMaskPages] = {11u, 16u};
     for (uint32_t page = 0; page < kOceanLocalFFTMaskPages; ++page)
     {
-        auto& in = textureInputs.Add(); // local FFT mask pages
+        auto& in = textureInputs[textureCount++]; // local FFT mask pages
         in.Binding = kLocalMaskBindings[page];
         if (shape.LocalFFTMasks[page].IsValid() && shape.LocalFFTMaskSamplers[page].IsValid())
         {
@@ -781,16 +749,17 @@ bool OceanUnderwater::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
     }
     if (useShadowedGodRays)
     {
-        auto& in = textureInputs.Add(); // CSM array for god-ray shafts
+        auto& in = textureInputs[textureCount++]; // CSM array for god-ray shafts
         in.Binding = 9;
         in.Texture = shadowArr;
         in.Sampler = shadowSampler;
         in.Required = true;
     }
 
-    OverlayInputs<RenderGraph::RGFullscreenBufferInput, RenderGraph::kMaxFullscreenBufferInputs> bufferInputs;
+    std::array<RenderGraph::RGFullscreenBufferInput, 4> bufferInputs{};
+    uint32_t bufferCount = 0;
     {
-        auto& b = bufferInputs.Add(); // params UBO (frame upload ring)
+        auto& b = bufferInputs[bufferCount++]; // params UBO (frame upload ring)
         b.Binding = 2;
         b.Buffer = paramsAlloc.Buffer;
         b.Offset = paramsAlloc.Offset;
@@ -798,7 +767,7 @@ bool OceanUnderwater::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
     }
     if (useShadowedGodRays)
     {
-        auto& b = bufferInputs.Add(); // shadow cascade data
+        auto& b = bufferInputs[bufferCount++]; // shadow cascade data
         b.Binding = 8;
         b.Buffer = shadowData.Buffer;
         b.Offset = shadowData.Offset;
@@ -819,7 +788,7 @@ bool OceanUnderwater::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
     paramsAlloc.Ptr->PortalExtra[1] = static_cast<float>(ribbonCount);
     if (ribbonCount > 0u)
         paramsAlloc.Ptr->Portal[0] = 1.0f;
-    auto &ribbonBinding = bufferInputs.Add();
+    auto &ribbonBinding = bufferInputs[bufferCount++];
     ribbonBinding.Binding = 17;
     ribbonBinding.IsStorage = true;
     ribbonBinding.Buffer = ribbons.Buffer;
@@ -836,50 +805,28 @@ bool OceanUnderwater::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
     if (materialCount)
         std::memcpy(static_cast<uint8 *>(materials.Ptr) + 16, portalData->Materials.data(),
                     materialBytes - 16);
-    auto &materialBinding = bufferInputs.Add();
+    auto &materialBinding = bufferInputs[bufferCount++];
     materialBinding.Binding = 18;
     materialBinding.IsStorage = true;
     materialBinding.Buffer = materials.Buffer;
     materialBinding.Offset = materials.Offset;
     materialBinding.Size = materialBytes;
 
-    // The view's ExposureHistory: the overlay reads the scene back to absolute units and stores
-    // its result at the frame's pre-exposure P.
-    const Engine::Renderer::Pipeline::PipelineBufferBindingRG exposure =
-        Engine::Renderer::Pipeline::ResolveViewExposureHistory(d);
-    if (!exposure.IsValid())
-        return false;
-    auto& exposureBinding = bufferInputs.Add();
-    exposureBinding.Binding = 19;
-    exposureBinding.IsStorage = true;
-    exposureBinding.Buffer = exposure.Buffer;
-    exposureBinding.Offset = exposure.Offset;
-    exposureBinding.Size = exposure.Size;
-    exposureBinding.Declare = exposure.Graph;
-
-    if (textureInputs.Overflowed() || bufferInputs.Overflowed())
-    {
-        Logger::Log::Error("OceanUnderwater '{}': more inputs than a fullscreen pass binds ({} textures, {} "
-                           "buffers; RGFullscreen.h); the overlay is not drawn",
-                           compositeName, RenderGraph::kMaxFullscreenTextureInputs,
-                           RenderGraph::kMaxFullscreenBufferInputs);
-        return false;
-    }
-
     RenderGraph::RGFullscreenDesc composite{};
     composite.Name = compositeName.c_str();
     composite.Phase = Rendering::PassPhase::kPostProcess;
     composite.Pipeline = overlayPipe;
     composite.Layout = overlayLayout;
-    composite.Textures = textureInputs.Inputs();
-    composite.Buffers = bufferInputs.Inputs();
+    composite.Textures =
+        std::span<const RenderGraph::RGFullscreenTextureInput>(textureInputs.data(), textureCount);
+    composite.Buffers =
+        std::span<const RenderGraph::RGFullscreenBufferInput>(bufferInputs.data(), bufferCount);
     composite.Target = compositeTarget;
     composite.Ops.Load = RenderGraph::RGLoadOp::DontCare;
     composite.Ops.Store = RenderGraph::RGStoreOp::Store;
     composite.Width = renderW;
     composite.Height = renderH;
-    if (!RenderGraph::AddFullscreenPass(d.Frame, composite).IsValid())
-        return false;
+    RenderGraph::AddFullscreenPass(d.Frame, composite);
 
     if (compositeTarget.Id != sceneColor.Id)
         d.PublishTexture(Engine::Renderer::Pipeline::Names::Res::SceneColor, compositeTarget);

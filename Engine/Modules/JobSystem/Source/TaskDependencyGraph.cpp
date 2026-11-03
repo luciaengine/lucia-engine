@@ -1,5 +1,6 @@
 #include "JobSystem/TaskDependencyGraph.h"
 #include "JobSystem/WorkStealingThreadPool.h"
+#include "Platform/Environment.h"
 
 #include <algorithm>
 #include <cassert>
@@ -10,9 +11,9 @@ namespace JobSystem {
 
 TaskDependencyGraph::~TaskDependencyGraph() = default;
 
-UniquePtr<TaskBase> TaskDependencyGraph::Register(UniquePtr<TaskBase> task,
-                                                  std::span<const TaskId> dependencies) {
+UniquePtr<Task> TaskDependencyGraph::Register(UniquePtr<Task> task) {
     const TaskId taskId = task->GetTaskId();
+    const Vector<TaskId>& declaredDependencies = task->GetDependencies();
 
     std::lock_guard<std::mutex> lock(m_Mutex);
 
@@ -28,7 +29,7 @@ UniquePtr<TaskBase> TaskDependencyGraph::Register(UniquePtr<TaskBase> task,
     }
 
     TaskNode& node = it->second;
-    for (TaskId dependencyId : dependencies) {
+    for (TaskId dependencyId : declaredDependencies) {
         if (dependencyId == taskId || dependencyId == 0) {
             continue; // self-dependency / invalid id
         }
@@ -40,9 +41,8 @@ UniquePtr<TaskBase> TaskDependencyGraph::Register(UniquePtr<TaskBase> task,
             // section that flips them). The dependent runs; it observes the
             // dependency's outcome through its handle.
 #if GE_DEBUG_INSTRUMENTATION
-            // F7: an id the graph never saw is a linking defect, because
-            // Submit(fn, deps) links only submitted dependencies. The
-            // dependent would silently run early. Loud but
+            // F7: a never-submitted dependency id is a submit-order
+            // violation — the dependent would silently run early. Loud but
             // NON-FATAL by default: the tombstone ring is a bounded
             // "recently terminal" heuristic, so a dependency held long past
             // terminal (or evicted in an extreme retirement burst) is legal
@@ -51,16 +51,17 @@ UniquePtr<TaskBase> TaskDependencyGraph::Register(UniquePtr<TaskBase> task,
             if (!IsRecentlyTerminalLocked(dependencyId)) {
                 std::fprintf(stderr,
                              "TaskDependencyGraph: task %llu depends on task %llu which is not "
-                             "recently terminal: either a dependency id that was never "
-                             "submitted (a linking defect) or a handle held long past "
+                             "recently terminal — either a submit-order violation (submit "
+                             "dependencies before dependents), a plain Submit(F&&) lambda id "
+                             "passed to AddDependency directly (plain lambda submits never "
+                             "graph-register; route lambda dependencies through Submit(fn, "
+                             "deps), which bridges them), or a handle held long past "
                              "terminal.\n",
                              static_cast<unsigned long long>(taskId),
                              static_cast<unsigned long long>(dependencyId));
                 std::fflush(stderr);
-                static const bool kStrict = [] {
-                    const char* e = std::getenv("GE_JOB_TOMBSTONE_STRICT");
-                    return e && e[0] == '1';
-                }();
+                static const bool kStrict =
+                    GameEngine::Platform::EnvironmentSwitchEnabled("GE_JOB_TOMBSTONE_STRICT", false);
                 if (kStrict) {
                     std::abort();
                 }

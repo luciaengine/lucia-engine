@@ -2,28 +2,22 @@
 
 #include <algorithm>
 #include <cctype>
-#include <concepts>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
-#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
 
-#include "Logger/Logger.h"
 #include "UI/AssetField.h"
 #include "UI/Controls/CollapsibleInfoCard.h"
 #include "UI/Controls/Dropdown.h"
 #include "UI/Controls/EnumField.h"
 #include "UI/Controls/FloatField.h"
-#include "UI/Controls/InspectorNotice.h"
 #include "UI/Controls/IntField.h"
 #include "UI/Controls/Label.h"
-#include "UI/Controls/MaskField.h"
-#include "UI/Controls/PictureChoiceField.h"
 #include "UI/Controls/TextArea.h"
 #include "UI/Controls/TextField.h"
 #include "UI/Controls/Toggle.h"
@@ -74,39 +68,6 @@ inline UIElement* AddFieldContainer(UIElement* row)
     return raw;
 }
 
-// Shows or hides the marks of a field that differs from the entity's source on `row`: a bold label,
-// and the override edge, which its modifier class moves from the row's left to the Inspector's gutter.
-inline void SetRowOverridden(UIElement* row, bool overridden)
-{
-    if (!row)
-        return;
-    UIElement* mark = nullptr;
-    for (const auto& cell : row->GetChildren())
-    {
-        if (cell->HasClass("inspector-override-mark"))
-            mark = cell.get();
-        if (!cell->HasClass("inspector-label-cell"))
-            continue;
-        for (const auto& label : cell->GetChildren())
-        {
-            if (!label->HasClass("inspector-label"))
-                continue;
-            if (overridden)
-                label->AddClass("inspector-label-overridden");
-            else
-                label->RemoveClass("inspector-label-overridden");
-        }
-    }
-    if (!overridden && mark)
-        row->RemoveChild(mark);
-    if (!overridden || mark)
-        return;
-    auto newMark = std::make_unique<UIElement>();
-    newMark->AddClass("inspector-override-mark");
-    newMark->AddClass("inspector-override-mark-row");
-    row->AddChild(std::move(newMark));
-}
-
 // A row that holds one action in the value column: an empty label cell and one field cell. Adds
 // `rowClass` to the row and returns the field cell, whose parent is the row.
 inline UIElement* AddActionRow(UIElement* parent, const char* rowClass)
@@ -130,54 +91,24 @@ inline void SetRowLabelsEnabled(UIElement* node, bool enabled)
     }
 }
 
-// Sets `tooltip` on every row label (class "inspector-label") under `node`.
-inline void SetRowLabelsTooltip(UIElement* node, const char* tooltip)
-{
-    for (const auto& child : node->GetChildren())
-    {
-        if (child->HasClass("inspector-label"))
-            child->SetTooltip(tooltip);
-        SetRowLabelsTooltip(child.get(), tooltip);
-    }
-}
-
-// Enables or disables `node` and every element under it.
-inline void SetSubtreeEnabled(UIElement* node, bool enabled)
-{
-    node->SetEnabled(enabled);
-    for (const auto& child : node->GetChildren())
-        SetSubtreeEnabled(child.get(), enabled);
-}
-
-// The nearest ancestor of `control` that is an inspector row (class "inspector-row"), or null when
-// `control` is null or sits in no row.
-inline UIElement* RowOfControl(UIElement* control)
-{
-    if (!control)
-        return nullptr;
-    for (UIElement* up = control->GetParent(); up; up = up->GetParent())
-    {
-        if (up->HasClass("inspector-row"))
-            return up;
-    }
-    return nullptr;
-}
-
 // Makes the inspector row holding `control` active or inactive. The disabled row is what blocks
 // input to everything in it, label scrub included (the UI manager delivers no press, key or focus
-// into a disabled element). The control, every element inside it and the row's labels are disabled
-// too only for their look (Toggle.css, FloatField.css, Dropdown.css, inspector.css:
-// .inspector-label:disabled, .inspector-row:disabled), which keys off each element's own state: an
-// EnumField's look is its inner .dropdown's.
+// into a disabled element). The control and the row's labels are disabled too only for their look
+// (Toggle.css, FloatField.css, inspector.css: .inspector-label:disabled, .inspector-row:disabled),
+// which keys off each element's own state.
 inline void SetRowOfControlEnabled(UIElement* control, bool enabled)
 {
     if (!control)
         return;
-    SetSubtreeEnabled(control, enabled);
-    if (UIElement* row = RowOfControl(control))
+    control->SetEnabled(enabled);
+    for (UIElement* up = control->GetParent(); up; up = up->GetParent())
     {
-        row->SetEnabled(enabled);
-        SetRowLabelsEnabled(row, enabled);
+        if (up->HasClass("inspector-row"))
+        {
+            up->SetEnabled(enabled);
+            SetRowLabelsEnabled(up, enabled);
+            break;
+        }
     }
 }
 
@@ -190,21 +121,6 @@ inline void DisableRowOfControl(UIElement* control, const char* reason = nullptr
     SetRowOfControlEnabled(control, false);
     if (reason)
         control->SetTooltip(reason);
-}
-
-// Makes the inspector row `row` and everything in it inactive: the whole-row form of
-// DisableRowOfControl, for rows whose controls the caller does not hold (reflected rows). Every
-// element under the row is disabled, as each control's inactive look keys off its own state. A
-// non-empty `reason` becomes the tooltip of the row and of its labels, so a hover on the label shows it too.
-inline void DisableRow(UIElement* row, const char* reason = nullptr)
-{
-    if (!row)
-        return;
-    SetSubtreeEnabled(row, false);
-    if (!reason)
-        return;
-    row->SetTooltip(reason);
-    SetRowLabelsTooltip(row, reason);
 }
 
 inline FloatField* AddFloat(UIElement* parent, float value)
@@ -249,45 +165,6 @@ inline TextField* AddTextRow(UIElement* parent, const std::string& labelText,
     return result;
 }
 
-// A row with the label cell and `field` in its field cell, for a field the caller builds. Returns the
-// field, or null when `parent` is null.
-template <typename T>
-T* AddFieldRow(UIElement* parent, const std::string& labelText, std::unique_ptr<T> field,
-               const char* tooltip = nullptr)
-{
-    UIElement* row = AddRow(parent);
-    if (!row)
-        return nullptr;
-    AddLabel(row, labelText, tooltip);
-    T* raw = field.get();
-    AddFieldContainer(row)->AddChild(std::move(field));
-    return raw;
-}
-
-// A row for a picture choice field. The row's modifier class keeps the label at the top of the
-// tiles, not at their middle. Returns the field, or null when `parent` is null.
-inline EditorUI::PictureChoiceField* AddPictureChoiceRow(UIElement* parent, const std::string& labelText,
-                                                         std::unique_ptr<EditorUI::PictureChoiceField> field,
-                                                         const char* tooltip = nullptr)
-{
-    EditorUI::PictureChoiceField* raw = AddFieldRow(parent, labelText, std::move(field), tooltip);
-    if (raw)
-        RowOfControl(raw)->AddClass("picture-choice-row");
-    return raw;
-}
-
-// Adds `control`, a control that builds itself from its own layout, to `parent`. Returns the control,
-// or null when `parent` is null.
-template <typename T>
-T* AddControl(UIElement* parent, std::unique_ptr<T> control)
-{
-    if (!parent)
-        return nullptr;
-    T* raw = control.get();
-    parent->AddChild(std::move(control));
-    return raw;
-}
-
 inline Dropdown* AddDropdownRow(UIElement* parent, const std::string& labelText,
                                 const std::vector<Dropdown::Option>& options, int selectedIndex,
                                 const char* tooltip = nullptr)
@@ -301,24 +178,6 @@ inline Dropdown* AddDropdownRow(UIElement* parent, const std::string& labelText,
     dropdown->AddClass("inspector-dropdown");
     Dropdown* raw = dropdown.get();
     fieldContainer->AddChild(std::move(dropdown));
-    return raw;
-}
-
-// A row whose value is a set of options, each with its own bit: the label cell and a MaskField. The
-// caller wires SetOnBitsChanged and, for a multi-selection, SetMixedBits.
-inline MaskField* AddMaskRow(UIElement* parent, const std::string& labelText, std::span<const MaskOption> options,
-                             uint32_t value, const char* tooltip = nullptr)
-{
-    UIElement* row = AddRow(parent);
-    AddLabel(row, labelText, tooltip);
-    UIElement* fieldContainer = AddFieldContainer(row);
-
-    auto field = std::make_unique<MaskField>();
-    field->SetOptions(options);
-    field->SetValueWithoutNotify(value);
-    field->AddClass("inspector-dropdown");
-    MaskField* raw = field.get();
-    fieldContainer->AddChild(std::move(field));
     return raw;
 }
 
@@ -464,36 +323,12 @@ inline void AddSourceFileRow(UIElement* parent, const std::filesystem::path& sou
 
 // Explanatory copy in the panel's info-card treatment. A card reads as a note ABOUT the rows near
 // it, which is what this kind of text is; loose text reads as one more row and competes with the
-// controls it explains. Use AddLine for a plain line and AddNotice for a state or a problem.
+// controls it explains. Use AddLine for a plain line and EditorUI::InspectorNotice for a problem.
 inline void AddInfoCard(UIElement* parent, const std::string& text)
 {
     if (!parent)
         return;
     parent->AddChild(std::make_unique<EditorUI::CollapsibleInfoCard>(text));
-}
-
-// A full-width row for `control`, a preview of what the rows around it set, such as a recipe's
-// preview strip under its build notice. Returns the control, or null when `parent` is null.
-template <typename T>
-    requires std::derived_from<T, UIElement>
-T* AddPreviewRow(UIElement* parent, std::unique_ptr<T> control)
-{
-    if (!parent)
-        return nullptr;
-    auto row = std::make_unique<UIElement>();
-    row->AddClass("inspector-preview-row");
-    T* raw = control.get();
-    row->AddChild(std::move(control));
-    parent->AddChild(std::move(row));
-    return raw;
-}
-
-// A notice of `kind` with `text`: a state or a problem of the inspected object. Returns the
-// notice, or null when `parent` is null.
-inline EditorUI::InspectorNotice* AddNotice(UIElement* parent, const std::string& text,
-                                            EditorUI::InspectorNotice::Kind kind)
-{
-    return AddControl(parent, std::make_unique<EditorUI::InspectorNotice>(text, kind));
 }
 
 inline const char* BoolToString(bool v) { return v ? "true" : "false"; }

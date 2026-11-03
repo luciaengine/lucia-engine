@@ -16,6 +16,7 @@
 #include "Editor/Vcs/EditorVcsProviderRegistry.h"
 #include "VCSIntegration/IVCSIntegration.h"
 #include "VersionControl/EditorVersionControlService.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -88,8 +89,9 @@ ed::EditorVcsProviderDescriptor MakeGateDescriptor(const std::string& typeId, in
 std::filesystem::path MakeMixedWorkspace(const std::string& name,
                                          const std::vector<std::string>& markers)
 {
-    const std::filesystem::path root =
-        std::filesystem::temp_directory_path() / "ge_vcs_gate_tests" / name;
+    static const GameEngine::TestUtils::ScopedTempDir testsRoot(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge_vcs_gate_tests"));
+    const std::filesystem::path root = testsRoot.Path() / name;
     std::filesystem::remove_all(root);
     for (const std::string& marker : markers)
         std::filesystem::create_directories(root / marker);

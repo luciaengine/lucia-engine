@@ -9,9 +9,11 @@
 #include "ECS/Query.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "Logger/Logger.h"
-#include "SceneView/SceneViewController.h"
+#include "SceneViewController.h"
 #include "MarkupECS/MarkupService.h"
 #include "Markups/MarkupPresentation.h"
+#include "SceneView/SceneViewCameraRig.h"
+#include "SceneView/SceneViewFraming.h"
 #include "Spline/SplineData.h"
 #include "SplineECS/SplineService.h"
 
@@ -369,20 +371,11 @@ uint8 MarkupEditorBridge::TakeEditChanges(const ECS::World& world, ECS::EntityHa
 MarkupEditorBridge::WorldState& MarkupEditorBridge::StateOf(const ECS::World& world) const
 {
     WorldState& state = m_Worlds[world.GetWorldId()];
-    const uint64 epoch = world.GetEntityHandleEpoch();
-    const uint64 reset = world.GetLifecycleResetGeneration();
-    if (state.HandleEpoch != epoch)
+    const uint64 generation = world.GetLifecycleResetGeneration();
+    if (state.Generation != generation)
     {
         state = WorldState{};
-        state.HandleEpoch = epoch;
-        state.ResetGeneration = reset;
-    }
-    else if (state.ResetGeneration != reset)
-    {
-        state.Baselines.clear();
-        state.RegionDisplays.Clear();
-        state.FrameGroundFrame.reset();
-        state.ResetGeneration = reset;
+        state.Generation = generation;
     }
     return state;
 }
@@ -658,13 +651,29 @@ void MarkupEditorBridge::SaveViewerFile() const
         Logger::Log::Warning("Mark-ups: could not save the hidden and seen state: {}", error);
 }
 
-void MarkupEditorBridge::SelectMarkup(ECS::World& world, ECS::EntityHandle entity)
+void MarkupEditorBridge::SelectMarkup(ECS::World& world, ECS::EntityHandle entity, bool frame)
 {
     SceneViewController* view = m_SceneViewProvider ? m_SceneViewProvider() : nullptr;
     if (!view || !world.IsValid(entity))
         return;
     view->OnEntityPicked(entity);
     MarkSeen(world, entity);
+    if (!frame)
+        return;
+    // The volume, not the entity's origin: a mark-up carries no bounds the Scene View's
+    // own framing reads. Its bounding sphere fits the view's field of view.
+    const std::optional<MarkupWorldVolume> volume = ReadMarkupWorldVolume(world, entity);
+    if (!volume)
+    {
+        view->FrameOrigin();
+        return;
+    }
+    SceneViewCameraPose pose = view->GetCameraPose();
+    const CameraRig::Vec3d look = CameraRig::LookDirection(pose.YawDeg, pose.PitchDeg);
+    const Mathematics::Vector3 direction(static_cast<float>(look.X), static_cast<float>(look.Y),
+                                         static_cast<float>(look.Z));
+    if (ComputeLookAtPose(volume->Center, direction, MarkupFrameDistance(*volume, MarkupFrameTanHalfFov(view)), pose))
+        view->SetCameraPose(pose);
 }
 
 MarkupHighlightState MarkupEditorBridge::GetHighlight() const

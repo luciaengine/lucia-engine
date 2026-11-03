@@ -16,8 +16,9 @@
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
+#include "JobSystem/JobCounter.h"
 #include "JobSystem/WorkStealingThreadPool.h"
-#include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
 #include "TlasInternal.h"
 
@@ -73,7 +74,7 @@ inline Mathematics::AABB DeriveWorldAabb(
 
 // Auto-serial threshold (review A2): below this many deduped candidates
 // SyncEntities never forks. Fork overhead is ~50-100 us (chunk submission,
-// worker wake, join); the post-S1b serial body costs
+// worker wake, participating-Wait join); the post-S1b serial body costs
 // ~0.5-0.7 us/candidate, so the paper break-even is ~200 candidates — the
 // clamp sits an order higher, where the serial cost first exceeds ~1 ms:
 // below that, forking buys under a millisecond per frame and wakes the
@@ -105,29 +106,22 @@ uint32 ParallelChunkOverrideFromEnv()
 
 RefitExecution SceneTlas::DefaultRefitExecution()
 {
-    // ON unless "0" (house idiom, mirrors GE_TLAS_DIRTY_GATE); latched once
+    // ON unless switched off (mirrors GE_TLAS_DIRTY_GATE); latched once
     // per process so a mid-run env change cannot split behavior. The
     // update system reads the same variable at its construction and passes
     // its policy explicitly — this default serves direct-API callers.
-    static const RefitExecution s_Default = []
-    {
-        if (const char* v = std::getenv("GE_TLAS_PARALLEL_REFIT");
-            v && std::strcmp(v, "0") == 0)
-            return RefitExecution::Serial;
-        return RefitExecution::Parallel;
-    }();
+    static const RefitExecution s_Default = Platform::EnvironmentSwitchEnabled("GE_TLAS_PARALLEL_REFIT", true)
+                                                ? RefitExecution::Parallel
+                                                : RefitExecution::Serial;
     return s_Default;
 }
 
 SceneTlas::SceneTlas() : m_Impl(std::make_unique<Internal::SceneTlasImpl>()) {}
 SceneTlas::~SceneTlas()
 {
-    // Work still in flight reads and writes this TLAS. Work no worker has
-    // started is cancelled, since it would only update a tree that is going
-    // away; work that is running is waited for.
-    JobSystem::TaskHandle& work = m_Impl->InFlight;
-    if (m_Impl->IsWorkInFlight() && !work.Cancel())
-        work.Wait();
+    // Work still in flight reads and writes this TLAS: join it first.
+    if (!m_Impl->InFlight.IsZero() && m_Impl->InFlightPool)
+        m_Impl->InFlightPool->Wait(m_Impl->InFlight);
 }
 
 uint32 SceneTlas::TraverseRay(const Mathematics::Ray3D& ray,
@@ -137,7 +131,7 @@ uint32 SceneTlas::TraverseRay(const Mathematics::Ray3D& ray,
                                                float32 tExit)> visit) const
 {
     GE_CPU_PROFILE_SCOPE("SceneTlas.TraverseRay");
-    assert(!m_Impl->IsWorkInFlight() &&
+    assert(m_Impl->InFlight.IsZero() &&
            "SceneTlas traversed while work is in flight: wait for RequestCurrent to report Ready "
            "(or call WaitCurrent) first");
     std::shared_lock lock(m_Impl->Mutex);
@@ -150,7 +144,7 @@ uint32 SceneTlas::TraverseSphere(const Mathematics::Vector3& center,
                                  FunctionRef<void(const TlasInstance&)> visit) const
 {
     GE_CPU_PROFILE_SCOPE("SceneTlas.TraverseSphere");
-    assert(!m_Impl->IsWorkInFlight() &&
+    assert(m_Impl->InFlight.IsZero() &&
            "SceneTlas traversed while work is in flight: wait for RequestCurrent to report Ready "
            "(or call WaitCurrent) first");
     std::shared_lock lock(m_Impl->Mutex);
@@ -162,7 +156,7 @@ uint32 SceneTlas::TraverseFrustum(std::span<const Mathematics::Plane> planes,
                                   FunctionRef<void(const TlasInstance&)> visit) const
 {
     GE_CPU_PROFILE_SCOPE("SceneTlas.TraverseFrustum");
-    assert(!m_Impl->IsWorkInFlight() &&
+    assert(m_Impl->InFlight.IsZero() &&
            "SceneTlas traversed while work is in flight: wait for RequestCurrent to report Ready "
            "(or call WaitCurrent) first");
     std::shared_lock lock(m_Impl->Mutex);
@@ -233,7 +227,6 @@ void SceneTlas::Clear()
     m_Impl->Sectors.clear();
     m_Impl->EntityToSectors.clear();
     m_Impl->EntityStableAabb.clear();
-    m_Impl->Version.fetch_add(1u, std::memory_order_release);
 }
 
 void SceneTlas::SyncFromRecords(
@@ -243,7 +236,6 @@ void SceneTlas::SyncFromRecords(
     std::unique_lock lock(m_Impl->Mutex);
     Internal::ReconcileFromRecords(*m_Impl, records);
     ++m_Impl->ReconcileCount;
-    m_Impl->Version.fetch_add(1u, std::memory_order_release);
 }
 
 namespace
@@ -257,7 +249,7 @@ void RefitLeaf(Internal::SceneTlasImpl& impl,
                Internal::SectorState& sector,
                uint32 leafIndex,
                const Internal::SceneTlasImpl::RefitInput& candidate,
-               std::span<const Internal::SectorKey> replicas,
+               const Internal::SceneTlasImpl::ReplicaSet* replicas,
                float32 sectorSize,
                bool& needsReconcile)
 {
@@ -270,11 +262,11 @@ void RefitLeaf(Internal::SceneTlasImpl& impl,
     // cannot migrate replicas. If the new bounds now reach a sector
     // the entity has no replica in, flag a reconcile for next tick.
     // `replicas` is the caller-held EntityToSectors entry (S1.b — no
-    // re-find); an entity without an entry is never refit (Sync never
-    // inserts), so the caller skips it before calling here.
-    if (!needsReconcile
+    // re-find); null means the entity has no current replicas, for which
+    // the answer was always false (Sync never inserts).
+    if (!needsReconcile && replicas
         && Internal::ReplicaSetWouldChange(
-               impl, replicas, leaf.Entity.id, leaf.WorldBounds, sectorSize))
+               impl, *replicas, leaf.Entity.id, leaf.WorldBounds, sectorSize))
     {
         needsReconcile = true;
     }
@@ -430,7 +422,7 @@ SceneTlas::SyncResult SceneTlas::RefitResolvedCandidates(JobSystem::WorkStealing
             if (candidate.Version == sector->Leaves[leafIt->second].CachedXfVersion)
                 continue;
 
-            RefitLeaf(*m_Impl, *sector, leafIt->second, candidate, replicaIt->second, sectorSize,
+            RefitLeaf(*m_Impl, *sector, leafIt->second, candidate, &replicaIt->second, sectorSize,
                       reconcileFlag);
             pushDirty(sector, leafIt->second);
         }
@@ -473,9 +465,10 @@ SceneTlas::SyncResult SceneTlas::RefitResolvedCandidates(JobSystem::WorkStealing
 
     if (numChunks > 1)
     {
-        // Fork-join strictly inside the TLAS unique_lock (I6), one unit per
-        // chunk; ParallelFor is legal on a worker and on the main thread alike.
-        // Chunks are contiguous ranges of the deduped array.
+        // Fork-join strictly inside the TLAS unique_lock (I6): Run +
+        // participating Wait on a JobCounter — never ParallelFor (the
+        // extraction A2.1 precedent). Chunks are contiguous ranges of the
+        // deduped array.
         ++m_Impl->ParallelForkCount;
         auto& chunks = m_Impl->ChunkScratch;
         if (chunks.size() < numChunks)
@@ -499,21 +492,17 @@ SceneTlas::SyncResult SceneTlas::RefitResolvedCandidates(JobSystem::WorkStealing
             }
         };
 
-        try
-        {
-            JobSystem::ParallelFor(pool, numChunks, runChunk);
-        }
-        catch (...)
-        {
-            // A failed chunk means a partial leaf pass where the serial loop
-            // would have propagated: force the reconcile path, whose full
-            // gather supersedes everything (impl review F8). Chunks that never
-            // started still hold an earlier frame's scratch, so none is merged.
-            Logger::Log::Error("SceneTlas: a parallel refit chunk threw; reconciling");
-            needsReconcile = true;
-            for (std::size_t c = 0; c < numChunks; ++c)
-                chunks[c].Dirty.clear();
-        }
+        JobSystem::JobCounter counter;
+        for (std::size_t c = 0; c < numChunks; ++c)
+            pool->Run([&runChunk, c] { runChunk(c); }, counter);
+        // On a worker this participates (runs only same-counter chunks); on
+        // the main thread it parks while workers drain. Deadlock-free
+        // either way (extraction CONC-F3 argument).
+        pool->Wait(counter);
+        // A failed chunk (job-body exception) means a partial leaf pass where
+        // the serial loop would have propagated — force the reconcile path,
+        // whose full gather supersedes everything (impl review F8).
+        needsReconcile = needsReconcile || counter.HasAnyFailed();
 
         // Merge in chunk-index order: the concatenation of contiguous
         // ranges reproduces the serial visit order exactly, so per-sector
@@ -542,12 +531,9 @@ SceneTlas::SyncResult SceneTlas::RefitResolvedCandidates(JobSystem::WorkStealing
         }
     }
 
-    const uint64 refitLeavesBefore = m_Impl->RefitLeafCount;
     m_Impl->RefitLeafCount += m_Impl->PrimarySector.DirtyLeavesScratch.size();
     for (auto& kv : m_Impl->Sectors)
         m_Impl->RefitLeafCount += kv.second->DirtyLeavesScratch.size();
-    if (m_Impl->RefitLeafCount != refitLeavesBefore)
-        m_Impl->Version.fetch_add(1u, std::memory_order_release);
 
     if (!m_Impl->PrimarySector.DirtyLeavesScratch.empty())
         Internal::RefitDirty(m_Impl->PrimarySector);
@@ -645,11 +631,6 @@ void SceneTlas::SetParallelRefitChunkCountForTesting(uint32 chunks)
     m_Impl->ForcedParallelChunks = chunks;
 }
 
-uint64 SceneTlas::Version() const
-{
-    return m_Impl->Version.load(std::memory_order_acquire);
-}
-
 uint64 SceneTlas::GetRefitLeafCountForTesting() const
 {
     std::shared_lock lock(m_Impl->Mutex);
@@ -667,12 +648,7 @@ uint64 SceneTlas::GetLeafCountForTesting() const
 
 bool SceneTlas::IsWorkInFlightForTesting() const
 {
-    return m_Impl->IsWorkInFlight();
-}
-
-uint64 SceneTlas::GetRequestCountForTesting() const
-{
-    return m_Impl->RequestCount;
+    return !m_Impl->InFlight.IsZero();
 }
 
 uint64 SceneTlas::GetReconcileCountForTesting() const
@@ -726,7 +702,7 @@ void SceneTlas::SnapshotTreeForTesting(std::vector<uint8>& out) const
         {
             append(leaf.Entity.id);
             appendAabb(leaf.WorldBounds);
-            append(leaf.LayerMask.Bits);
+            append(leaf.LayerMask);
             append(leaf.InstanceMask);
             append(leaf.CachedXfVersion);
             append(leaf.ParentNode);
@@ -844,8 +820,8 @@ TlasLeaf MakeLeafFromRecord(
     TlasLeaf leaf{};
     leaf.Entity          = rec.entity;
     leaf.WorldBounds     = worldBounds;
-    leaf.LayerMask       = rec.meshRenderer.RenderLayers;
-    leaf.InstanceMask    = static_cast<uint8>(rec.meshRenderer.RenderLayers.Bits & 0xFFu);
+    leaf.LayerMask       = rec.meshRenderer.renderLayerMask;
+    leaf.InstanceMask    = static_cast<uint8>(rec.meshRenderer.renderLayerMask & 0xFFu);
     leaf.CachedXfVersion = rec.worldTransform.Version;
     leaf.OwningSector    = owningSector;
     return leaf;
@@ -881,7 +857,7 @@ void CompactAndRebuildSector(SectorState& sector)
 // row-major iteration order, AND because E.5.4 hysteresis keeps the
 // previous (already row-major) replica set verbatim when held — it
 // never injects out-of-order keys.
-bool ReplicaSetsEqual(std::span<const SectorKey> a, std::span<const SectorKey> b)
+bool ReplicaSetsEqual(const SceneTlasImpl::ReplicaSet& a, const SceneTlasImpl::ReplicaSet& b)
 {
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); ++i)
@@ -889,7 +865,7 @@ bool ReplicaSetsEqual(std::span<const SectorKey> a, std::span<const SectorKey> b
     return true;
 }
 
-bool ReplicaSetContains(std::span<const SectorKey> set, const SectorKey& key)
+bool ReplicaSetContains(const SceneTlasImpl::ReplicaSet& set, const SectorKey& key)
 {
     for (const auto& k : set) if (k == key) return true;
     return false;
@@ -920,7 +896,7 @@ bool BuildReplicaSet(const AABB& worldAabb,
                      float32 sectorSize,
                      SceneTlasImpl::ReplicaSet& out)
 {
-    out.Clear();
+    out.clear();
     const SectorRange range = SectorRangeForAabb(worldAabb, sectorSize);
     const uint32 count = range.Count();
     if (count == 0u)
@@ -933,7 +909,7 @@ bool BuildReplicaSet(const AABB& worldAabb,
             (worldAabb.min.y + worldAabb.max.y) * 0.5f,
             (worldAabb.min.z + worldAabb.max.z) * 0.5f,
         };
-        out.PushBack(SectorKey{
+        out.push_back(SectorKey{
             SectorIndexForCoord(c.x, sectorSize),
             SectorIndexForCoord(c.y, sectorSize),
             SectorIndexForCoord(c.z, sectorSize),
@@ -942,11 +918,11 @@ bool BuildReplicaSet(const AABB& worldAabb,
     }
     if (count > kMaxReplicaSectors)
         return true;
-    out.Reserve(count);
+    out.reserve(count);
     for (int32 z = range.Min.Z; z <= range.Max.Z; ++z)
     for (int32 y = range.Min.Y; y <= range.Max.Y; ++y)
     for (int32 x = range.Min.X; x <= range.Max.X; ++x)
-        out.PushBack(SectorKey{x, y, z});
+        out.push_back(SectorKey{x, y, z});
     return false;
 }
 
@@ -954,7 +930,7 @@ bool BuildReplicaSet(const AABB& worldAabb,
 
 bool ReplicaSetWouldChange(
     SceneTlasImpl& impl,
-    std::span<const SectorKey> currentReplicas,
+    const SceneTlasImpl::ReplicaSet& currentReplicas,
     GameEngine::ECS::EntityId eid,
     const AABB& newBounds,
     float32 sectorSize)
@@ -1064,8 +1040,8 @@ void ReconcileFromRecords(
                         TlasLeaf& leaf = sec->Leaves[leafIdx];
                         leaf.WorldBounds     = worldBounds;
                         leaf.CachedXfVersion = rec.worldTransform.Version;
-                        leaf.LayerMask       = rec.meshRenderer.RenderLayers;
-                        leaf.InstanceMask    = static_cast<uint8>(rec.meshRenderer.RenderLayers.Bits & 0xFFu);
+                        leaf.LayerMask       = rec.meshRenderer.renderLayerMask;
+                        leaf.InstanceMask    = static_cast<uint8>(rec.meshRenderer.renderLayerMask & 0xFFu);
                         sec->DirtyLeavesScratch.push_back(leafIdx);
                         sectorsRefit.insert(key);
                     }
@@ -1079,7 +1055,7 @@ void ReconcileFromRecords(
 
         auto& currentReplicas = impl.EntityToSectors[eid];
 
-        if (currentReplicas.Empty())
+        if (currentReplicas.empty())
         {
             // Brand new entity: insert leaves into each replica sector.
             for (const auto& key : newReplicas)
@@ -1130,8 +1106,8 @@ void ReconcileFromRecords(
                 if (leafIt == sec->EntityToLeaf.end()) continue;
                 const uint32 leafIdx = leafIt->second;
                 TlasLeaf& leaf = sec->Leaves[leafIdx];
-                leaf.LayerMask    = rec.meshRenderer.RenderLayers;
-                leaf.InstanceMask = static_cast<uint8>(rec.meshRenderer.RenderLayers.Bits & 0xFFu);
+                leaf.LayerMask    = rec.meshRenderer.renderLayerMask;
+                leaf.InstanceMask = static_cast<uint8>(rec.meshRenderer.renderLayerMask & 0xFFu);
                 const auto& wb = worldBounds;
                 const auto& lb = leaf.WorldBounds;
                 const bool boundsChanged =
@@ -1174,8 +1150,8 @@ void ReconcileFromRecords(
                 TlasLeaf& leaf = sec.Leaves[leafIdx];
                 leaf.WorldBounds     = worldBounds;
                 leaf.CachedXfVersion = rec.worldTransform.Version;
-                leaf.LayerMask       = rec.meshRenderer.RenderLayers;
-                leaf.InstanceMask    = static_cast<uint8>(rec.meshRenderer.RenderLayers.Bits & 0xFFu);
+                leaf.LayerMask       = rec.meshRenderer.renderLayerMask;
+                leaf.InstanceMask    = static_cast<uint8>(rec.meshRenderer.renderLayerMask & 0xFFu);
                 sec.DirtyLeavesScratch.push_back(leafIdx);
                 sectorsRefit.insert(newKey);
             }

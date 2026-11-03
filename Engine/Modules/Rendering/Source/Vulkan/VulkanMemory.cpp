@@ -3,7 +3,7 @@
  * @brief Vulkan memory management utilities
  */
 
-#include "VulkanDevice/VulkanDevice.h"
+#include "VulkanDevice.h"
 #include <iostream>
 #include <algorithm>
 

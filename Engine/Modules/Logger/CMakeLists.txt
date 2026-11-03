@@ -1,32 +1,28 @@
 cmake_minimum_required(VERSION 3.20)
 
 # Logger Library - Unified logging system for all modules
-project(Logger LANGUAGES CXX)
+project(Logger VERSION 1.0.0 LANGUAGES CXX)
 
 # Core Logger source files
 set(LOGGER_SOURCES
     Source/Logger.cpp
-    Source/LogChannelTable.cpp
     Source/ConsoleSink.cpp
     Source/CallbackSink.cpp
     Source/DeferredSink.cpp
     Source/RingBufferSink.cpp
     Source/Backtrace.cpp
-    Source/LibcxxVerboseAbort.cpp
 )
 
 # Core Logger header files
 set(LOGGER_HEADERS
     Include/Logger/Logger.h
-    Include/Logger/LogChannel.h
     Include/Logger/LogLevel.h
     Include/Logger/LogSink.h
     Include/Logger/CallbackSink.h
     Include/Logger/DeferredSink.h
     Include/Logger/RingBufferSink.h
     Include/Logger/Backtrace.h
-    Source/LogChannelTable.h
-    Source/LoggerInternals.h
+    Include/Logger/Types.h
 )
 
 # Optional features (can be excluded for minimal builds)
@@ -120,8 +116,17 @@ message(STATUS "Logger: Source files: ${LOGGER_SOURCES}")
 message(STATUS "Logger: Header files: ${LOGGER_HEADERS}")
 
 # Performance and debugging options
+option(LOGGER_ENABLE_THREAD_SAFETY "Enable thread-safe logging (slight performance cost)" ON)
 option(LOGGER_ENABLE_TIMESTAMPS "Enable timestamp logging" ON)
 option(LOGGER_ENABLE_SOURCE_LOCATION "Enable source file/line logging (debug builds only)" ON)
+
+if(LOGGER_ENABLE_THREAD_SAFETY)
+    target_compile_definitions(Logger PUBLIC LOGGER_THREAD_SAFE=1)
+    message(STATUS "Logger: Thread safety enabled")
+else()
+    target_compile_definitions(Logger PUBLIC LOGGER_THREAD_SAFE=0)
+    message(STATUS "Logger: Thread safety disabled (better performance)")
+endif()
 
 if(LOGGER_ENABLE_TIMESTAMPS)
     target_compile_definitions(Logger PUBLIC LOGGER_ENABLE_TIMESTAMPS=1)

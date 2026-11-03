@@ -2,13 +2,10 @@
 #include "Editor/Registries/BuildExporterRegistry.h"
 #include "Editor/Settings/BuildFolderDefaults.h"
 #include "Editor/Settings/BuildRenderPipelineSettings.h"
-#include "Editor/Settings/BuildSettingsStore.h"
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h"
 #include "Core/Engine.h"
-#include "Core/EngineVersion.h"
-#include "Editor/Settings/Render/RenderPipelineSettings.h"
+#include "Editor/Settings/RenderPipelineSettings.h"
 #include "Editor/Settings/SettingsStore.h"
-#include "Projects/ProjectStartupScene.h"
 #include "Engine/Build/BuildPipeline.h"
 #include "Engine/Build/PlayerSourcePreparation.h"
 #include "Engine/Build/BuildPlatforms.h"
@@ -31,6 +28,7 @@
 
 #include <array>
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -251,7 +249,7 @@ void BuildPanel::BuildUI()
     {
         auto outputRow = std::make_unique<UIElement>();
         outputRow->AddClass("build-panel-output-row");
-        outputRow->Style()
+        outputRow->Overrides()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Row)
             .Set(Style::FlexWrap, false)
@@ -265,7 +263,7 @@ void BuildPanel::BuildUI()
         auto outputLabel = std::make_unique<Label>();
         outputLabel->SetText("Build path:");
         outputLabel->AddClass("build-panel-output-label");
-        outputLabel->Style()
+        outputLabel->Overrides()
             .Set(Style::MinWidth, StyleLength::Px(52.0f))
             .Set(Style::Height, StyleLength::Px(kBuildPanelOutputControlHeightPx))
             .Set(Style::MinHeight, StyleLength::Px(kBuildPanelOutputControlHeightPx))
@@ -299,7 +297,7 @@ void BuildPanel::BuildUI()
         outputField->SetValue(currentOutputDir);
         outputField->SetTooltip("Output folder used for generated build artifacts.");
         outputField->AddClass("build-panel-output-field");
-        outputField->Style()
+        outputField->Overrides()
             .Set(Style::FlexGrow, 1.0f)
             .Set(Style::MinWidth, StyleLength::Px(0.0f))
             .Set(Style::Height, StyleLength::Px(kBuildPanelOutputControlHeightPx))
@@ -314,7 +312,7 @@ void BuildPanel::BuildUI()
         browseButton->SetText("Browse");
         browseButton->SetTooltip("Choose build output folder");
         browseButton->AddClass("build-panel-output-browse-button");
-        browseButton->Style()
+        browseButton->Overrides()
             .Set(Style::Width, StyleLength::Px(68.0f))
             .Set(Style::MinWidth, StyleLength::Px(68.0f))
             .Set(Style::MaxWidth, StyleLength::Px(68.0f))
@@ -337,14 +335,14 @@ void BuildPanel::BuildUI()
     // Build status label
     {
         auto statusRow = std::make_unique<UIElement>();
-        statusRow->Style()
+        statusRow->Overrides()
             .Set(Style::PaddingLeft, StyleLength::Px(12.0f))
             .Set(Style::PaddingRight, StyleLength::Px(12.0f))
             .Set(Style::PaddingBottom, StyleLength::Px(4.0f));
 
         auto statusLabel = std::make_unique<Label>();
         statusLabel->AddClass("build-panel-status-label");
-        statusLabel->Style()
+        statusLabel->Overrides()
             .Set(Style::FontSize, StyleLength::Px(11.0f))
             .Set(Style::Opacity, 0.6f);
         m_StatusLabel = statusLabel.get();
@@ -466,7 +464,7 @@ void BuildPanel::RebuildHeader()
         auto sortIcon = std::make_unique<UIElement>();
         sortIcon->AddClass("header-sort-icon");
         {
-            sortIcon->Style().Set(Style::Display, DisplayMode::None);
+            sortIcon->Overrides().Set(Style::Display, DisplayMode::None);
         }
         m_HeaderSortIcons.push_back(sortIcon.get());
         cell->AddChild(std::move(sortIcon));
@@ -551,7 +549,7 @@ void BuildPanel::RebuildRows()
         if (Editor::BuildExporterRegistry::Get().TryFindForPlatform(entry.Name, exporter))
             row->AddClass("build-panel-row-selected");
 
-        row->Style()
+        row->Overrides()
             .Set(Style::MinHeight, StyleLength::Px(24.0f))
             .Set(Style::Height, StyleLength::Px(24.0f));
 
@@ -628,7 +626,7 @@ void BuildPanel::RebuildRows()
                 track->AddClass("build-panel-progress-track");
                 auto fill = std::make_unique<UIElement>();
                 fill->AddClass("build-panel-progress-fill");
-                fill->Style()
+                fill->Overrides()
                     .Set(Style::Width, StyleLength::Percent(entry.Progress * 100.0f))
                     .Set(Style::FlexGrow, 0.0f)
                     .Set(Style::FlexShrink, 0.0f);
@@ -737,7 +735,7 @@ void BuildPanel::UpdateBuildHeaderSortIndicators()
             continue;
         if (logicalCol == m_SortColumn)
         {
-            icon->Style().Set(Style::Display, DisplayMode::Block);
+            icon->Overrides().Set(Style::Display, DisplayMode::Block);
             cell->AddClass("sorted");
             if (m_SortAscending)
             {
@@ -752,7 +750,7 @@ void BuildPanel::UpdateBuildHeaderSortIndicators()
         }
         else
         {
-            icon->Style().Set(Style::Display, DisplayMode::None);
+            icon->Overrides().Set(Style::Display, DisplayMode::None);
             cell->RemoveClass("sorted");
             icon->RemoveClass("ascending");
             icon->RemoveClass("descending");
@@ -765,7 +763,7 @@ void BuildPanel::ApplyColumnWidths()
     auto apply = [](UIElement* el, float width) {
         if (!el || width <= 0.0f)
             return;
-        el->Style()
+        el->Overrides()
             .Set(Style::FlexGrow, 0.0f)
             .Set(Style::FlexShrink, 0.0f)
             .Set(Style::FlexBasis, StyleLength::Px(width))
@@ -800,6 +798,33 @@ void BuildPanel::ApplyColumnWidths()
 // Build Pipeline Integration
 // ---------------------------------------------------------------------------
 
+// Helper: load build scenes for the first enabled platform.
+static std::vector<std::string> ParseSceneList(const std::string& raw)
+{
+    if (raw.empty())
+        return {};
+    std::vector<std::string> out;
+    for (size_t start = 0; start < raw.size(); )
+    {
+        size_t end = raw.find('\n', start);
+        if (end == std::string::npos)
+            end = raw.size();
+        std::string line = raw.substr(start, end - start);
+        // Trim whitespace
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+            line.pop_back();
+        size_t s = 0;
+        while (s < line.size() && (line[s] == ' ' || line[s] == '\t'))
+            ++s;
+        if (s < line.size())
+            line = line.substr(s);
+        if (!line.empty())
+            out.push_back(std::move(line));
+        start = end + (end < raw.size() ? 1u : 0u);
+    }
+    return out;
+}
+
 static std::string LoadBuildIconForPlatform(const std::string& platformName)
 {
     const auto& root = EngineCore::GetInstance().GetWorkspaceRoot();
@@ -823,27 +848,33 @@ static std::string LoadBuildIconForPlatform(const std::string& platformName)
     return iconPath;
 }
 
-// The refusal of a build with no scene: the list the platform reads, and a startup scene that is gone.
-static std::string DescribeMissingBuildScene(const std::string& platformName)
+static std::vector<std::string> LoadBuildScenesForPlatform(const std::string& platformName)
 {
-    const std::string sceneList = Editor::LoadBuildPlatformUseGlobalScenes(platformName)
-                                      ? std::string("the Global scene list")
-                                      : "the " + BuildPlatformDisplayName(platformName) + " scene list";
-    std::string message = "No scene to build. In Settings > Build, drop a scene on " + sceneList + ".";
     const auto& root = EngineCore::GetInstance().GetWorkspaceRoot();
-    Editor::SettingsStore prefs = root.empty() ? Editor::OpenEditorPreferences() : Editor::OpenProjectSettings(root);
+    auto prefs = root.empty() ? Editor::OpenEditorPreferences() : Editor::OpenProjectSettings(root);
     std::string err;
     prefs.Load(&err);
-    // LoadEffectiveBuildScenes logs the nested-key instruction on the same click, so this path puts it in the message only.
-    const std::string nestedFix = Editor::DescribeNestedProjectStartupScene(prefs);
-    if (!nestedFix.empty())
-        return message + " " + nestedFix + ".";
-    const std::string startupScene = Editor::ReadProjectStartupScene(prefs);
-    if (!startupScene.empty())
-        message += " The project's startup scene '" + startupScene +
-                   "' is not a scene file in the Assets folder: correct " + Editor::kProjectStartupSceneKey +
-                   " in .Editor/ProjectSettings.json.";
-    return message;
+
+    // Check if this platform uses the global scene list (default: true).
+    std::string useGlobalKey = "build.platform." + platformName + ".useGlobalScenes";
+    bool useGlobal = true;
+    prefs.TryGetBool(useGlobalKey, useGlobal);
+
+    if (useGlobal)
+    {
+        // Read from global scene list.
+        std::string raw;
+        prefs.TryGetString("build.globalScenes", raw);
+        auto scenes = ParseSceneList(raw);
+        if (!scenes.empty())
+            return scenes;
+    }
+
+    // Read from platform-specific scene list.
+    std::string raw;
+    std::string prefKey = "build.platform." + platformName + ".scenes";
+    prefs.TryGetString(prefKey, raw);
+    return ParseSceneList(raw);
 }
 
 static bool RelativePathStartsWithParentTraversal(const std::filesystem::path& rel)
@@ -932,7 +963,7 @@ BuildSettings BuildPanel::GatherBuildSettings()
         if (plat.Enabled)
         {
             settings.platformName = plat.Name;
-            settings.scenes = Editor::LoadEffectiveBuildScenes(plat.Name);
+            settings.scenes = LoadBuildScenesForPlatform(plat.Name);
             break;
         }
     }
@@ -940,7 +971,7 @@ BuildSettings BuildPanel::GatherBuildSettings()
     {
         // Fallback to first platform if none enabled.
         settings.platformName = m_Platforms[0].Name;
-        settings.scenes = Editor::LoadEffectiveBuildScenes(settings.platformName);
+        settings.scenes = LoadBuildScenesForPlatform(settings.platformName);
     }
 
     settings.applicationIconPath = LoadBuildIconForPlatform(settings.platformName);
@@ -965,8 +996,8 @@ BuildSettings BuildPanel::GatherBuildSettings()
 
     // Project and SDK paths.
     settings.projectRoot = wsRoot;
-    settings.editorSDKPath = ApplicationPaths::GetExecutableDirectory() / "SDK";
-    settings.runtimeDepsPath = ApplicationPaths::GetExecutableDirectory();
+    settings.editorSDKPath = PathUtils::GetExecutableDirectory() / "SDK";
+    settings.runtimeDepsPath = PathUtils::GetExecutableDirectory();
 
     // Player config derived from project settings.
     GameConfig& cfg = settings.playerConfig;
@@ -1014,7 +1045,10 @@ BuildSettings BuildPanel::GatherBuildSettings()
                             cfg.hdrSwapchainBitDepth = Rendering::HdrSwapchainBitDepth::Float16;
                         else if (hdr["swapchainBitDepth"].is_string())
                         {
-                            std::string bitDepth = ToLowerAscii(hdr["swapchainBitDepth"].get<std::string>());
+                            std::string bitDepth = hdr["swapchainBitDepth"].get<std::string>();
+                            std::transform(bitDepth.begin(), bitDepth.end(), bitDepth.begin(), [](unsigned char c) {
+                                return static_cast<char>(std::tolower(c));
+                            });
                             bitDepth.erase(std::remove_if(bitDepth.begin(), bitDepth.end(), [](char c) {
                                 return c == '-' || c == '_' || c == ' ';
                             }), bitDepth.end());
@@ -1078,7 +1112,9 @@ BuildSettings BuildPanel::GatherBuildSettings()
 #endif
 
     // Engine version for SDK compatibility check.
-    settings.engineVersion = kEngineVersion;
+#ifdef GE_ENGINE_VERSION
+    settings.engineVersion = GE_ENGINE_VERSION;
+#endif
 
     // Vcpkg toolchain — look for it relative to the Editor's SDK or project root.
     // The Engine build tree has dependencies/vcpkg/ at repo root.
@@ -1107,7 +1143,7 @@ BuildSettings BuildPanel::GatherBuildSettings()
         }
         else
         {
-            const std::filesystem::path exeDir = ApplicationPaths::GetExecutableDirectory();
+            const std::filesystem::path exeDir = PathUtils::GetExecutableDirectory();
             for (const std::filesystem::path& candidate :
                  {exeDir / "../../../../vcpkg_installed", exeDir / "../../../../../vcpkg_installed"})
             {
@@ -1159,15 +1195,14 @@ void BuildPanel::OnBuildClicked()
 
     if (settings.scenes.empty())
     {
-        const std::string message = DescribeMissingBuildScene(settings.platformName);
-        Logger::Log::Error("Build: {}", message);
+        Logger::Log::Warning("Build: No scenes configured for platform '{}'. Add scenes in Build Settings.", settings.platformName);
         if (m_StatusLabel)
-            m_StatusLabel->SetText(message);
+            m_StatusLabel->SetText("No scenes configured. Add scenes in Settings > Build > " +
+                                   BuildPlatformDisplayName(settings.platformName) + ".");
         {
             std::lock_guard<std::mutex> lock(m_ProgressMutex);
             m_LatestProgress.currentStage = BuildProgress::Stage::Failed;
-            m_LatestProgress.statusMessage = message;
-            m_LatestProgress.errors.push_back(message);
+            m_LatestProgress.statusMessage = "No scenes configured in Build Settings";
             m_BuildRunning.store(false);
         }
         return;
@@ -1349,30 +1384,37 @@ void BuildPanel::ScheduleBuildTimerTick()
     if (m_BuildTimerTickScheduled || !m_BuildRunning.load())
         return;
 
-    UIManager* owner = GetOwnerManager();
-    if (Scheduler::IScheduler* scheduler = owner ? owner->GetScheduler() : nullptr)
+    auto tick = [this]() {
+        m_BuildTimerTickScheduled = false;
+        UpdateRunningBuildDurations();
+        RebuildRows();
+        if (m_BuildRunning.load())
+            ScheduleBuildTimerTick();
+    };
+
+    if (Scheduler::IScheduler* scheduler = GetScheduler())
     {
         m_BuildTimerTickScheduled = true;
-        // The task lives in the manager's scheduler, so it cannot outlive the manager; the
-        // weak reference covers the panel being destroyed first.
-        scheduler->ScheduleAfter(std::chrono::seconds(1), [panel = MakeWeakRef(this)]() {
-            if (BuildPanel* live = panel.Get())
-                live->RunBuildTimerTick();
+        UIManager* owner = GetOwnerManager();
+        const uint64_t instanceId = GetInstanceId();
+        scheduler->ScheduleAfter(std::chrono::seconds(1), [owner, instanceId]() {
+            if (!owner)
+                return;
+            UIElement* element = owner->FindElementByInstanceId(instanceId);
+            auto* panel = dynamic_cast<BuildPanel*>(element);
+            if (!panel)
+                return;
+            panel->m_BuildTimerTickScheduled = false;
+            panel->UpdateRunningBuildDurations();
+            panel->RebuildRows();
+            if (panel->m_BuildRunning.load())
+                panel->ScheduleBuildTimerTick();
         });
         return;
     }
 
     m_BuildTimerTickScheduled = true;
-    PostSafeAction([this]() { RunBuildTimerTick(); });
-}
-
-void BuildPanel::RunBuildTimerTick()
-{
-    m_BuildTimerTickScheduled = false;
-    UpdateRunningBuildDurations();
-    RebuildRows();
-    if (m_BuildRunning.load())
-        ScheduleBuildTimerTick();
+    PostSafeAction(std::move(tick));
 }
 
 void BuildPanel::TriggerBuild()

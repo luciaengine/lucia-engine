@@ -17,6 +17,7 @@
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/UIManager.h"
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -27,10 +28,10 @@ namespace
 
 std::filesystem::path MakeTempCssPath(const char* prefix)
 {
-    const auto tmpDir = std::filesystem::temp_directory_path();
+    static const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_idle_gate"));
     const uint64_t t = (uint64_t)std::chrono::high_resolution_clock::now().time_since_epoch().count();
     const uint64_t tid = (uint64_t)std::hash<std::thread::id>{}(std::this_thread::get_id());
-    return tmpDir / (std::string(prefix) + "_" + std::to_string(t) + "_" + std::to_string(tid) + ".css");
+    return tempDir.Path() / (std::string(prefix) + "_" + std::to_string(t) + "_" + std::to_string(tid) + ".css");
 }
 
 bool LastFrameWasIdle(const UIManager& ui)
@@ -184,8 +185,8 @@ TEST(UIIdleGateTests, DirtyMarkDeclinesGateAndChangeApplies)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* a = r->FindById("a"_sid);
-    UIElement* b = r->FindById("b"_sid);
+    UIElement* a = r->FindById("a");
+    UIElement* b = r->FindById("b");
     ASSERT_NE(a, nullptr);
     ASSERT_NE(b, nullptr);
     EXPECT_NEAR(b->GetLayoutX(), 100.0f, 0.5f);
@@ -238,7 +239,7 @@ TEST(UIIdleGateTests, ActiveTransitionsDeclineGateUntilComplete)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* a = r->FindById("a"_sid);
+    UIElement* a = r->FindById("a");
     ASSERT_NE(a, nullptr);
     EXPECT_NEAR(a->GetResolvedStyle().Visual.LocalOpacity, 1.0f, 0.01f);
 
@@ -299,7 +300,7 @@ TEST(UIIdleGateTests, InheritedColorPropagatesAfterIdleStretch)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* child = r->FindById("child"_sid);
+    UIElement* child = r->FindById("child");
     ASSERT_NE(child, nullptr);
 
     // ResolveStyles (the inheritance walk) is gated on the resolve-dirty
@@ -365,8 +366,8 @@ TEST(UIIdleGateTests, PassiveHostTakesCleanFramesAndAppliesDirtyChanges)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* a = r->FindById("a"_sid);
-    UIElement* b = r->FindById("b"_sid);
+    UIElement* a = r->FindById("a");
+    UIElement* b = r->FindById("b");
     ASSERT_NE(a, nullptr);
     ASSERT_NE(b, nullptr);
     EXPECT_NEAR(b->GetLayoutX(), 100.0f, 0.5f);
@@ -423,7 +424,7 @@ TEST(UIIdleGateTests, PassiveHostActiveTransitionsDeclineGateUntilComplete)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* a = r->FindById("a"_sid);
+    UIElement* a = r->FindById("a");
     ASSERT_NE(a, nullptr);
     EXPECT_NEAR(a->GetResolvedStyle().Visual.LocalOpacity, 1.0f, 0.01f);
 

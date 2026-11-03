@@ -1,14 +1,21 @@
 #pragma once
 
-#include "ECS/ECS.h"
 #include "Types/Types.h"
 
 #include <cstdlib>
 #include <vector>
 
-// The CPU side of the GPU terrain height bake: the kill switch, the rows the kernel
-// (terrain_height_bake.comp) reads, and the report of why a bake stays on the CPU. A bake that holds
-// one modifier or tile the kernel cannot express runs whole on the CPU.
+// GPU-resident terrain modifier bake — slice 1 (planar height-only), the CPU-side
+// contract shared by the bake kernel (terrain_height_bake.comp), the dispatch node,
+// and the device-oracle test.
+//
+// Slice 1 moves the planar HEIGHT evaluation (base value-noise fill + the pure-math
+// modifier stack) onto a compute pass that writes THROUGH the resident-window atlas
+// slot indirection, gated by GE_TERRAIN_GPU_BAKE (default ON, kill switch =0; inert without the
+// resident-window atlas + a whole-resident terrain, so a default no-atlas build is unaffected). Only self-contained
+// modifier types (Flatten, Noise) are GPU-bakeable in slice 1; payload zones, stamps,
+// splines, and paint layers stay on the CPU (design slices 4-5). When any modifier or
+// tile in a bake is ineligible the whole bake falls back to the byte-identical CPU path.
 
 namespace GameEngine::TerrainECS
 {
@@ -23,77 +30,6 @@ bool IsGpuHeightBakeEnabled();
 // env (state -1). The env gate caches on first read, so a test can't arm the path by setting the
 // env after the first Update() already latched it off — this drives it deterministically instead.
 void SetGpuHeightBakeEnabledForTests(int state);
-
-// Why a tiled terrain's height bake runs on the CPU instead of the GPU kernel. The order of the
-// enumerators is not the check order: the terrain gates (Disabled, TextureLayout, BaseSource) are
-// checked first, then each modifier in priority order (PackModifiersForGpuBake).
-enum class GpuHeightBakeRefusalReason : uint8
-{
-    None,
-    // Terrain gates.
-    Disabled,              // GE_TERRAIN_GPU_BAKE=0
-    TextureLayout,         // the heights are not in an atlas that holds every tile (Single, Unified)
-    BaseSource,            // the base is not the procedural noise the kernel composes
-    // Modifier gates, one modifier and one effect at a time.
-    SplineShape,
-    GlobalVolume,
-    InwardFeatherOrWeight, // an inward feather, or a master weight other than 1
-    PooledBlend,           // an effect with the Average blend
-    HeightFromVolume,      // a flatten that takes its height from the volume
-    Erosion,               // a noise effect with erosion armed
-    HeightOffset,
-    Stamp,
-    GroundClaim,
-    OtherEffect,           // an effect kind the GPU bake has no code for (grass, color)
-    SculptZone,
-};
-
-// The reason in plain words, for the debug readback and the log.
-const char* GpuHeightBakeRefusalName(GpuHeightBakeRefusalReason reason);
-
-// The first refusal and the volume or zone entity that holds it. Entity is invalid for a terrain gate.
-struct GpuHeightBakeRefusal
-{
-    GpuHeightBakeRefusalReason Reason = GpuHeightBakeRefusalReason::None;
-    ECS::EntityHandle Entity{};
-
-    bool operator==(const GpuHeightBakeRefusal&) const = default;
-};
-
-enum class TerrainHeightBakePath : uint8
-{
-    NotBaked,
-    Gpu,
-    Cpu,
-};
-
-// The path in one word, for the debug readback.
-const char* TerrainHeightBakePathName(TerrainHeightBakePath path);
-
-// What the last height bake of a tiled terrain did (TerrainModifierSystem writes it; the debug
-// readback and the volume inspector read it). The modifier refusal is found even when a terrain gate
-// refuses first, so a reader sees both walls.
-struct TerrainHeightBakeReport
-{
-    TerrainHeightBakePath Path = TerrainHeightBakePath::NotBaked;
-    GpuHeightBakeRefusalReason TerrainRefusal = GpuHeightBakeRefusalReason::None;
-    GpuHeightBakeRefusal ModifierRefusal;
-    // The refusing effects after ModifierRefusal; a modifier that refuses as a whole counts once.
-    uint32 OtherModifierRefusals = 0;
-    // Increases each time the path or a refusal changes, so a reader can follow the report.
-    uint32 Revision = 0;
-    // Lattice samples the page overlay composed with the modifier stack itself in its last build.
-    // Zero when the overlay read every sample from the baked tiles.
-    uint64 PageOverlayComposedSamples = 0;
-
-    // The refusal a reader acts on: the terrain gate when one refuses, else the modifier refusal.
-    GpuHeightBakeRefusal FirstRefusal() const
-    {
-        if (TerrainRefusal != GpuHeightBakeRefusalReason::None)
-            return GpuHeightBakeRefusal{TerrainRefusal, ECS::EntityHandle{}};
-        return ModifierRefusal;
-    }
-};
 
 // GPU-bakeable modifier kinds (slice 1). Mirror the branch ids in terrain_height_bake.comp.
 enum class ModifierGpuType : uint32

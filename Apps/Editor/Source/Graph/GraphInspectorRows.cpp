@@ -1,9 +1,6 @@
 #include "Graph/GraphInspectorRows.h"
 
-#include "Graph/GraphTransitionStore.h"
 #include "Graph/GraphTypeRegistry.h"
-#include "Inspectors/InspectorUIHelpers.h"
-#include "Types/StringUtils.h"
 #include "UI/Controls/FloatField.h"
 
 #include <cstdlib>
@@ -104,7 +101,7 @@ GraphInspectorRowKind ScalarKindFromSchemaOrText(const NodeParamSpec* spec, cons
 {
     if (spec)
     {
-        if (spec->AssetReference != AssetType::Unknown)
+        if (spec->Default.IsGuid() && spec->Id == "clipGuid")
             return GraphInspectorRowKind::NodeAsset;
         if (spec->Default.IsInt())
             return GraphInspectorRowKind::NodeInt;
@@ -119,15 +116,6 @@ GraphInspectorRowKind ScalarKindFromSchemaOrText(const NodeParamSpec* spec, cons
     if (FloatField::TryParseFloat(text, floatValue))
         return GraphInspectorRowKind::NodeFloat;
     return GraphInspectorRowKind::NodeText;
-}
-
-// An asset row reads its key without the "Guid" suffix: "clipGuid" is the "Clip" row.
-std::string AssetRowLabel(std::string_view key)
-{
-    constexpr std::string_view kGuidSuffix = "Guid";
-    if (key.size() > kGuidSuffix.size() && key.ends_with(kGuidSuffix))
-        key.remove_suffix(kGuidSuffix.size());
-    return IdentifierToWords(key);
 }
 
 } // namespace
@@ -241,15 +229,7 @@ std::vector<GraphInspectorRow> PlanGraphInspectorRows(
         row.Kind = (spec && !spec->Options.empty()) ? GraphInspectorRowKind::NodeEnum
                                                     : ScalarKindFromSchemaOrText(spec, value);
         row.Key = key;
-        if (row.Kind == GraphInspectorRowKind::NodeAsset)
-        {
-            row.AssetReference = spec->AssetReference;
-            row.Label = AssetRowLabel(key);
-        }
-        else
-        {
-            row.Label = IdentifierToWords(key);
-        }
+        row.Label = (row.Kind == GraphInspectorRowKind::NodeAsset) ? "Clip" : key;
         rows.push_back(std::move(row));
     };
 
@@ -267,14 +247,6 @@ std::vector<GraphInspectorRow> PlanGraphInspectorRows(
         emitScalar(key, value, FindSchemaParam(schema, key));
 
     return rows;
-}
-
-void AddGraphTransitionConditionsNotice(UIElement* conditions, const GraphTransitionDesc& transition)
-{
-    if (!transition.Conditions.empty())
-        return;
-    InspectorUI::AddNotice(conditions, "Add at least one condition. A transition with no condition is skipped when the graph compiles.",
-                           EditorUI::InspectorNotice::Kind::Warning);
 }
 
 } // namespace GameEngine

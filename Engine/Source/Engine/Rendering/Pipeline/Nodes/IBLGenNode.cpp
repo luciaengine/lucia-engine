@@ -10,7 +10,7 @@
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <algorithm>
@@ -165,6 +165,12 @@ void IBLGenNode::Declare(RenderPipelineInstance& /*instance*/, const PipelineDec
         bakeCtx.DeltaTimeSeconds = ctx.DeltaTimeSeconds;
         source->ScheduleBake(bakeCtx);
     }
+    EnvironmentBakeContext localCtx{};
+    localCtx.Frame = &ctx.Frame;
+    localCtx.Device = device;
+    localCtx.Feature = &feature;
+    localCtx.DeltaTimeSeconds = ctx.DeltaTimeSeconds;
+    feature.ScheduleLocalProbeBakes(localCtx);
 }
 
 } // namespace GameEngine::Engine::Renderer::Pipeline::Nodes

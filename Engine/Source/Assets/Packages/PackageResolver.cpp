@@ -5,7 +5,7 @@
 #include "Assets/Packages/PackagesLockFile.h"
 #include "Assets/Packages/ProjectPackagesManifest.h"
 #include "AssetCore/PathNormalization.h"
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h" // PathUtils::GetExecutableDirectory
 #include "Logger/Logger.h"
 
 #include <algorithm>
@@ -254,7 +254,7 @@ PackageResolution PackageResolver::Resolve(const std::filesystem::path& projectR
     std::filesystem::path enginePackageAuthoringRoot;
     {
         const std::filesystem::path engineRoot =
-            enginePackagesRoot.empty() ? ApplicationPaths::GetExecutableDirectory() / kStagedEnginePackagesDirName
+            enginePackagesRoot.empty() ? PathUtils::GetExecutableDirectory() / kStagedEnginePackagesDirName
                                        : enginePackagesRoot;
         enginePackageAuthoringRoot = ReadEnginePackageAuthoringRoot(engineRoot);
         std::error_code ec;
@@ -423,7 +423,8 @@ PackageResolution PackageResolver::Resolve(const std::filesystem::path& projectR
             if (std::filesystem::is_directory(authored, authoringEc))
                 pkg.AuthoringRootDir = AssetPaths::NormalizeMountRoot(authored);
         }
-        pkg.Disabled = projectManifest.Disabled.count(name) != 0;
+        pkg.Disabled = projectManifest.Disabled.count(name) != 0 ||
+                       (!pkg.Manifest.EnabledByDefault && projectManifest.Enabled.count(name) == 0);
         aliasOwners.emplace(pkg.Alias, name);
         located.emplace(name, std::move(pkg));
     }

@@ -22,7 +22,7 @@
 
 #pragma once
 
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 
 #include <cstddef>
 #include <cstdint>

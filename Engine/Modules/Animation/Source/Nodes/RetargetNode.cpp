@@ -4,8 +4,8 @@
 #include "Animation/EvaluationContext.h"
 #include "Animation/PoseStack.h"
 #include "Animation/QuaternionMath.h"
-#include "Animation/Skeleton/SkeletonData.h"
-#include "Animation/Skeleton/SkeletonProfile.h"
+#include "Animation/SkeletonData.h"
+#include "Animation/SkeletonProfile.h"
 
 #include <algorithm>
 #include <cmath>

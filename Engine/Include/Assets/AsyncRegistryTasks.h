@@ -1,15 +1,14 @@
 #pragma once
 
 #include "Assets/AssetRegistry.h"
-#include "JobSystem/TaskHandle.h"
 #include "JobSystem/TaskTypes.h"
+#include "JobSystem/Task.h"
 #include "Types/Types.h"
 #include <atomic>
 #include <filesystem>
 #include <future>
 #include <memory>
 #include <stdexcept>
-#include <vector>
 
 namespace GameEngine
 {
@@ -53,21 +52,21 @@ struct ScannedFileInfo
  * @brief Directory Scan Task - Recursively scans directories for assets
  * Runs on background thread, 10-100ms execution time
  */
-class DirectoryScanTask
+class DirectoryScanTask : public JobSystem::Task
 {
   public:
-    DirectoryScanTask(const std::filesystem::path& directory,
+    DirectoryScanTask(JobSystem::WorkStealingThreadPool* jobSystem,
+                      const std::filesystem::path& directory,
                       bool recursive,
                       const AssetIgnoreRules& ignoreRules,
                       std::promise<Vector<ScannedFileInfo>> foundAssetsPromise,
                       std::shared_ptr<const std::atomic<bool>> cancelRequested,
                       std::unordered_map<std::string, int64_t> snapshotDirMtimes = {});
 
-    void operator()();
+    void Execute() override;
+    bool IsCancelled() const override { return m_CancelRequested->load(); }
 
   private:
-    bool IsCancelled() const { return m_CancelRequested->load(); }
-
     std::filesystem::path m_Directory;
     bool m_Recursive;
     AssetIgnoreRules m_IgnoreRules;
@@ -91,10 +90,10 @@ class DirectoryScanTask
  * @brief Metadata Batch Processing Task - Processes multiple asset metadata files
  * Runs on worker thread, 5-20ms execution time
  */
-class MetadataBatchProcessingTask
+class MetadataBatchProcessingTask : public JobSystem::Task
 {
   public:
-    MetadataBatchProcessingTask(JobSystem::WorkStealingThreadPool& jobSystem,
+    MetadataBatchProcessingTask(JobSystem::WorkStealingThreadPool* jobSystem,
                                 std::future<Vector<ScannedFileInfo>> assetInfosFuture,
                                 AssetRegistry& registry,
                                 std::promise<Vector<AssetMetadata>> processedMetadataPromise,
@@ -102,14 +101,10 @@ class MetadataBatchProcessingTask
                                 std::unordered_map<std::string, AssetRegistry::SnapshotFingerprint> snapshotByPath,
                                 std::shared_ptr<const std::atomic<bool>> cancelRequested);
 
-    void operator()();
+    void Execute() override;
+    bool IsCancelled() const override { return m_CancelRequested->load(); }
 
   private:
-    bool IsCancelled() const { return m_CancelRequested->load(); }
-    bool ProcessChunk(const Vector<ScannedFileInfo>& assetInfos, size_t chunk, Vector<AssetMetadata>& out) const;
-
-    // The pool this stage runs on; its chunks fan out over the same pool.
-    JobSystem::WorkStealingThreadPool& m_JobSystem;
     std::future<Vector<ScannedFileInfo>> m_AssetInfosFuture;
     AssetRegistry& m_Registry;
     std::promise<Vector<AssetMetadata>> m_ProcessedMetadataPromise;
@@ -127,7 +122,7 @@ class MetadataBatchProcessingTask
  * @brief Registry Update Task - Updates registry with processed metadata
  * Runs on main thread, 1-2ms execution time
  */
-class RegistryUpdateTask
+class RegistryUpdateTask : public JobSystem::Task
 {
   public:
     // scanRoot: the directory this scan covered. After the final register
@@ -136,23 +131,17 @@ class RegistryUpdateTask
     // batches' !hadExisting registrations as rename-heal candidates — a
     // full-mount scan matches its source's root and reconciles; partial
     // scans match nothing. A cancelled scan skips the reconcile.
-    RegistryUpdateTask(JobSystem::WorkStealingThreadPool& jobSystem,
+    RegistryUpdateTask(JobSystem::WorkStealingThreadPool* jobSystem,
                        std::future<Vector<AssetMetadata>> metadataFuture,
                        AssetRegistry& registry,
                        std::promise<size_t> registeredCountPromise,
                        std::filesystem::path scanRoot,
                        std::shared_ptr<const std::atomic<bool>> cancelRequested);
 
-    void operator()();
+    void Execute() override;
+    bool IsCancelled() const override { return m_CancelRequested->load(); }
 
   private:
-    bool IsCancelled() const { return m_CancelRequested->load(); }
-    bool RegisterChunk(Vector<AssetMetadata>& metadataList, size_t chunk,
-                       std::vector<AssetDatabase::ReconcileScanNewFile>& newFiles,
-                       std::atomic<size_t>& registeredCount);
-
-    // The pool this stage runs on; its chunks fan out over the same pool.
-    JobSystem::WorkStealingThreadPool& m_JobSystem;
     std::future<Vector<AssetMetadata>> m_MetadataFuture;
     AssetRegistry& m_Registry;
     std::promise<size_t> m_RegisteredCountPromise;
@@ -175,7 +164,7 @@ class AsyncRegistryCoordinator
 
     /**
      * @brief Stop every scan this coordinator started. Each stage stops at its next file or chunk
-     * boundary, starts only after the stage before it, and fails its future with AssetScanCancelled, so a
+     * boundary, waits for the stage before it, and fails its future with AssetScanCancelled, so a
      * scan's future still resolves only after all of the scan's tasks are done with the registry.
      * Irreversible: a scan started afterwards stops at once.
      */
@@ -200,13 +189,13 @@ class AsyncRegistryCoordinator
     std::shared_ptr<std::atomic<bool>> m_CancelRequested = std::make_shared<std::atomic<bool>>(false);
 
     // Helper methods
-    JobSystem::TaskHandle SubmitDirectoryScanTask(const std::filesystem::path& directory, bool recursive,
-                                                  std::promise<Vector<ScannedFileInfo>> foundAssetsPromise);
+    void SubmitDirectoryScanTask(const std::filesystem::path& directory, bool recursive,
+                                 std::promise<Vector<ScannedFileInfo>> foundAssetsPromise);
     void SubmitMetadataProcessingTask(const Vector<ScannedFileInfo>& assetInfos,
                                       std::promise<Vector<AssetMetadata>> processedMetadataPromise);
     void SubmitRegistryUpdateTask(std::future<Vector<AssetMetadata>> metadataFuture,
                                   std::promise<size_t> registeredCountPromise,
-                                  const std::filesystem::path& scanRoot, const JobSystem::TaskHandle& metadataStage);
+                                  const std::filesystem::path& scanRoot);
 };
 
 /**

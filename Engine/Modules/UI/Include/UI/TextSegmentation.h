@@ -15,9 +15,8 @@ struct ByteRange
     size_t End = 0;
 };
 
-// The segment a caret boundary sits in, under the subset of UAX #29 word
-// boundaries documented at the top of TextSegmentation.cpp: a run of word
-// characters, a run of whitespace, or a single character of anything else.
+// The segment a caret boundary sits in. Unicode text uses ICU word/dictionary
+// boundaries; ASCII preserves the editor punctuation rules.
 // `boundary` is a caret position, so at a junction between two segments this
 // reports the one to its right. A boundary inside a multi-byte character is
 // snapped back to its lead byte, and one at or past the end reports the final
@@ -30,6 +29,11 @@ ByteRange SegmentAt(std::string_view text, size_t boundary);
 // "Player Character" selects "Player ", space included, and clicking the comma
 // in "hello, world" selects ", ".
 ByteRange DoubleClickSelectionAt(std::string_view text, size_t boundary);
+
+// Extended grapheme boundaries for editing. Combining sequences, emoji ZWJ
+// sequences, flags and CRLF pairs stay intact. Offsets are UTF-8 bytes.
+size_t PrevGrapheme(std::string_view text, size_t byteIndex);
+size_t NextGrapheme(std::string_view text, size_t byteIndex);
 
 // Ctrl+Left destination: back over any separators, then over the word they
 // follow, so the caret lands on the start of the previous word.

@@ -106,18 +106,6 @@ std::string ShadowPcssDecisionsSource()
 #endif
 }
 
-// The cross-cascade blend band every cascade lookup with a blend shares.
-std::string ShadowCascadeBlendSource()
-{
-#ifndef GE_RENDERER_REPO_ROOT
-    return {};
-#else
-    const std::filesystem::path path = std::filesystem::path(GE_RENDERER_REPO_ROOT) /
-                                       "Engine/Modules/Rendering/Shaders/Includes/shadow_cascade_blend.glsl";
-    return StripLineComments(ReadTextFile(path));
-#endif
-}
-
 // The local (area / spot / point) families live in a different file and use a
 // different filter entirely — see the LocalShadowWorldRadiusContract tests.
 std::string ClusteredLightingSource()
@@ -551,48 +539,4 @@ TEST(ShadowDistanceFadeContract, ContactTermSharesTheCascadeBand)
     // One definition of the band: a second literal drifts from the first.
     EXPECT_EQ(src.find("ge_shadowParams.w * 0.9"), std::string::npos)
         << "the fade band must come from GE_ShadowDistanceFade only";
-}
-
-// ── Cross-cascade blend band ──
-//
-// A receiver this close before its cascade's far split also samples the next
-// cascade. A band with a world-unit floor (3 m) outgrew every cascade at viewer
-// scale, where SDSM fits cascades a few tenths of a metre deep: the finer
-// cascade never won and most of the screen evaluated the filter twice. The
-// band is a fraction of each cascade's own range, on the GPU and in the
-// receiver fit's CPU mirror alike.
-
-TEST(CascadeBlendBandContract, BandIsTheShaderFractionOfEachCascadeRangeWithNoFloor)
-{
-    const std::string blend = ShadowCascadeBlendSource();
-    ASSERT_FALSE(blend.empty()) << "shadow_cascade_blend.glsl not found via GE_RENDERER_REPO_ROOT";
-    std::smatch m;
-    ASSERT_TRUE(std::regex_search(blend, m, std::regex(R"(const float kCascadeBlendFraction\s*=\s*([0-9.]+)\s*;)")));
-    const float fraction = std::stof(m[1].str());
-    ASSERT_GT(fraction, 0.0f);
-    ASSERT_LT(fraction, 1.0f) << "a band as long as the cascade leaves the finer cascade nothing";
-    EXPECT_NE(blend.find("return cascadeRange * kCascadeBlendFraction;"), std::string::npos);
-    const std::string sampling = ShadowSamplingSource();
-    EXPECT_NE(sampling.find("float blendBand = GE_CascadeBlendBand(cascadeRange);"), std::string::npos)
-        << "the cascade lookup must take its band from GE_CascadeBlendBand";
-
-    // SDSM splits at a viewer-scale pose (a scene a few metres across seen
-    // from about 2 m) and the fitted splits without SDSM at the same pose.
-    using GameEngine::Engine::Renderer::CascadeFrameData;
-    using GameEngine::Engine::Renderer::ShadowMapRenderFeature;
-    for (const auto& splits : {std::vector<float>{1.231f, 1.474f, 1.751f, 2.068f},
-                               std::vector<float>{0.456f, 1.026f, 2.230f, 6.650f}})
-    {
-        CascadeFrameData frame{};
-        frame.NumCascades = 4;
-        for (uint32_t c = 0; c < 4; ++c)
-            frame.SplitDistances[c] = splits[c];
-        for (uint32_t c = 0; c < 3; ++c)
-        {
-            const float range = splits[c] - (c == 0 ? 0.0f : splits[c - 1]);
-            EXPECT_FLOAT_EQ(ShadowMapRenderFeature::CascadeBlendBand(frame, c), range * fraction)
-                << "cascade " << c << " of " << splits[3] << " m";
-        }
-        EXPECT_EQ(ShadowMapRenderFeature::CascadeBlendBand(frame, 3), 0.0f) << "the last cascade blends into nothing";
-    }
 }

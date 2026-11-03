@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "Graph/GraphNode/GraphNodeRegistry.h"
+#include "Graph/GraphNodeRegistry.h"
 #include "Graph/GraphTypeRegistry.h"
 #include "Graph/GraphValue.h"
 
@@ -459,9 +459,7 @@ TEST(GraphNodeRegistryTests, ParameterSwizzleAndComponentParamsCarryEnumOptions)
     for (const NodeParamSpec& param : vec3Param->Parameters)
     {
         if (param.Id == "variableName")
-        {
             EXPECT_TRUE(param.Options.empty());
-        }
     }
 }
 

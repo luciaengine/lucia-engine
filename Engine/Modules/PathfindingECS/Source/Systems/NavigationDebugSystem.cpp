@@ -1,9 +1,10 @@
 #include "PathfindingECS/Systems/NavigationDebugSystem.h"
 #include "PathfindingECS/NavigationService.h"
-#include "PathfindingECS/NavigationSurfaceRuntime.h"
-#include "Components/Navigation/NavigationAgent.h"
+#include "PathfindingECS/NavigationGridRuntime.h"
+#include "PathfindingECS/Components/NavigationAgent.h"
 #include "PathfindingECS/Components/NavigationAgentState.h"
-#include "Components/Navigation/NavigationSurface.h"
+#include "PathfindingECS/Components/NavigationGrid.h"
+#include "PathfindingECS/Components/NavigationMesh.h"
 #include "PathfindingECS/Components/NavigationDebugSettings.h"
 #include "Components/Transform.h"
 #include "ECS/Query.h"
@@ -288,17 +289,15 @@ void NavigationDebugSystem::Update(ECS::World& world, float32 deltaTime)
     // Grid visualization
     if (showGrid || showReservations || showCellCosts)
     {
-        world.Query<ECS::Read<Components::NavigationSurface>>().Each(
-            [&](ECS::EntityHandle, const Components::NavigationSurface& source)
+        world.Query<ECS::Read<Components::NavigationGrid>>().Each(
+            [&](ECS::EntityHandle, const Components::NavigationGrid& source)
             {
-                auto* gridMap = ResolveNavigationSurfaceGrid(world, source);
+                auto* gridMap = ResolveNavigationGridMap(world, source);
                 if (!gridMap)
                     return;
 
-                // A re-bake replaces the grid behind the same handle, so the bake version is part of
-                // what the cached lines were drawn from.
                 uint64 key = (static_cast<uint64>(source.NavMapGeneration) << 32) | source.NavMapIndex;
-                uint32 currentVersion = gridMap->GetTopologyVersion() + (static_cast<uint32>(source.BakeVersion) << 16);
+                uint32 currentVersion = gridMap->GetTopologyVersion();
                 auto it = m_GridVersionCache.find(key);
                 bool needsRegen = (it == m_GridVersionCache.end() ||
                                    it->second != currentVersion ||
@@ -322,10 +321,14 @@ void NavigationDebugSystem::Update(ECS::World& world, float32 deltaTime)
     // NavMesh visualization
     if (showNavMesh)
     {
-        world.Query<ECS::Read<Components::NavigationSurface>>().Each(
-            [&](ECS::EntityHandle /*e*/, const Components::NavigationSurface& source)
+        world.Query<ECS::Read<Components::NavigationMesh>>().Each(
+            [&](ECS::EntityHandle /*e*/, const Components::NavigationMesh& source)
             {
-                auto* detourMap = ResolveNavigationSurfaceMesh(world, source);
+                if (!source.Initialized)
+                    return;
+
+                Pathfinding::NavMapHandle mapHandle{source.NavMapIndex, source.NavMapGeneration};
+                auto* detourMap = navWorld->GetDetourNavMap(mapHandle);
                 if (detourMap && detourMap->IsBuilt())
                 {
                     AddNavMeshDebugTriangles(debugData, *detourMap);
@@ -349,7 +352,7 @@ void NavigationDebugSystem::Update(ECS::World& world, float32 deltaTime)
 
                 if (showPaths)
                 {
-                    const Pathfinding::PathStatus status = state.Status;
+                    auto status = static_cast<Pathfinding::PathStatus>(state.Status);
                     if (status == Pathfinding::PathStatus::Complete ||
                         status == Pathfinding::PathStatus::Partial)
                     {

@@ -20,8 +20,6 @@ namespace
 // (BorderWidth, BorderRadius, BorderColor) that overlap with per-edge variants.
 static constexpr StylePropertyId kLeafInterpolableProperties[] = {
     StylePropertyId::Opacity,
-    StylePropertyId::Transform,
-    StylePropertyId::TransformOrigin,
     StylePropertyId::FontSize,
     StylePropertyId::LineHeight,
     StylePropertyId::LetterSpacing,

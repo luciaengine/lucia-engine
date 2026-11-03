@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Procedural mesh colliders</title><style>
+:root{--bg:#10141b;--panel:#19212d;--panel-light:#222d3d;--border:#344359;--text:#e7edf6;--muted:#b3c0d2;--accent:#89c4ff;--danger:#ff9191;--ok:#8ce1b0;--warn:#f0cd83}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 system-ui,sans-serif}main{max-width:960px;margin:auto;padding:40px 24px}.lede,footer{color:var(--muted)}h1{line-height:1.2}h2{border-top:1px solid var(--border);padding-top:24px;margin-top:32px}.panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:20px;margin:20px 0}.warn{border-left:4px solid var(--warn)}code,pre{font-family:ui-monospace,monospace;background:var(--panel-light);border-radius:4px}code{padding:2px 5px}pre{padding:18px;overflow:auto}pre code{padding:0}a{color:var(--accent)}hr{border:0;border-top:1px solid var(--border)}
+</style></head><body><main>
+<header><p class="lede">GUIDE · PhysicsECS</p><h1>Procedural mesh colliders</h1><p>Supply immutable CPU triangle geometry to a static physics body without a renderer or GPU mesh.</p></header>
+<h2>Register geometry</h2><p><code>PhysicsECS::MeshColliderData::Register</code> takes a <code>Physics::MeshShapeDef</code> by value and returns a generational handle. It rejects fewer than three vertices, empty or incomplete index triples, out-of-range indices and non-finite vertex positions. Check the handle before attaching a collider.</p>
+<pre><code>Physics::MeshShapeDef triangles;
+triangles.vertices = {{-1, 0, -1}, {1, 0, -1}, {0, 0, 1}};
+triangles.indices = {0, 2, 1};
+auto data = PhysicsECS::MeshColliderData::Register(std::move(triangles));
+if (!data.IsValid())
+    return;
+Components::MeshColliderShape shape;
+shape.DataIndex = data.Index();
+shape.DataGeneration = data.Generation();</code></pre>
+<h2>Attach and replace</h2><p>Attach the shape to an entity with <code>Transform</code>, <code>WorldTransform</code>, <code>PhysicsCollider</code> and a static <code>PhysicsBody</code>. Physics initialization builds the backend shape through the normal body lifecycle. Replace <code>DataIndex</code> and <code>DataGeneration</code> with a newly registered immutable mesh to request a rebuild. The physics system owns <code>BuiltDataIndex</code> and <code>BuiltDataGeneration</code>.</p>
+<div class="panel warn"><strong>Static, self-owned body.</strong> This component describes a static triangle mesh on its own body entity. It does not route through a separate <code>PhysicsColliderOwner</code>. Dynamic triangle meshes are rejected. Use the normal convex or primitive shapes for dynamic bodies.</div>
+<h2>Own the lifetime</h2><p>Keep each data handle alive until every referencing collider has been removed or changed to replacement data. Then call <code>MeshColliderData::Release(handle)</code>. Registration, reads and release are thread-safe; <code>Read</code> returns shared immutable data that survives release. A stale handle cannot resolve to replacement geometry.</p>
+<p>Generated entities should carry <code>RuntimeOnlyEntity</code>. Recreate their data and colliders from the generator's authored settings after loading a scene. Runtime geometry handles are not serialized. Keeping CPU geometry registered also supports rebuilding after the physics world restarts.</p>
+<h2>Contact materials</h2><p>A mesh collider uses the same <code>PhysicsCollider</code> material assignment as other collider shapes. See <a href="../Physics_Events_Guide.md#contact-surfaces-and-physics-materials">contact surfaces and physics materials</a> for authored <code>.physmat</code> assets and combine rules.</p>
+<h2>Changelog</h2><p>2026-11-01: Added immutable generated triangle data and static MeshColliderShape integration.</p><hr><footer>Procedural mesh colliders · version 1 · 2026-11-01</footer>
+</main></body></html>

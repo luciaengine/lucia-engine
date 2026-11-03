@@ -24,7 +24,7 @@
 #include "UI/UIPrimitive.h"
 #include "UI/UIStyle.h"
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h"
 
 #include <gtest/gtest.h>
 
@@ -40,7 +40,7 @@
 
 using GameEngine::BorderStyle;
 using GameEngine::CSSRule;
-using GameEngine::ApplicationPaths;
+using GameEngine::PathUtils;
 using GameEngine::PseudoClass;
 using GameEngine::StylePropertyId;
 using GameEngine::Stylesheet;
@@ -58,7 +58,7 @@ namespace
 // executable directory, never back into the source tree.
 std::filesystem::path ShippedCssRoot()
 {
-    return ApplicationPaths::GetExecutableDirectory() / "Assets" / "UI";
+    return PathUtils::GetExecutableDirectory() / "Assets" / "UI";
 }
 
 std::string ReadShippedCss(const std::filesystem::path& relative)

@@ -117,7 +117,7 @@ class PipelineRegistrationTest : public testing::Test
         services = std::make_unique<RenderServices>();
         ASSERT_TRUE(services->Initialize(device.get()));
         view = services->Views().AllocateView("Registration", services->Views().AllocateCamera("Registration"));
-        services->Views().SetViewRenderLayerMask(view, GameEngine::Rendering::RenderLayerMask::Default());
+        services->Views().SetViewRenderLayerMask(view, 1u);
         services->Views().SetViewTargets(view, 0, 0, 0, ViewClearConfig{});
         persistent = std::make_unique<RenderGraph::RGResourcePool>(device.get());
         transient = std::make_unique<RenderGraph::RGTransientPool>(device.get());
@@ -156,12 +156,27 @@ class PipelineRegistrationTest : public testing::Test
         fs::remove_all(root, ec);
     }
 
-    void Write(const char* passes, const char* name = "AuthoredLatePipeline")
+    void Write(const char* passes, const char* name = "AuthoredLatePipeline", bool preload = true)
     {
         std::ofstream out(pipelineFile, std::ios::binary | std::ios::trunc);
         out << "{\"schemaVersion\":2,\"pipelineName\":\"" << name << "\",\"passes\":[" << passes
             << "],\"outputs\":{\"FinalColor\":\"View.Color\"}}";
         ASSERT_TRUE(out.good());
+        out.close();
+        // Registration tests exercise compilation of resident sources. Loading
+        // itself is asynchronous and covered separately below.
+        if (preload)
+            AwaitSource();
+    }
+
+    void AwaitSource()
+    {
+        auto& assets = EngineCore::GetInstance().GetAssetManager();
+        const auto guid = assets.ResolveAssetGuid("RenderPipelines/ForwardPlus.rendergraph");
+        ASSERT_FALSE(guid.IsNull());
+        auto loading = assets.LoadAssetAsync(guid);
+        ASSERT_EQ(loading.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+        ASSERT_TRUE(loading.get());
     }
 
     void Build()
@@ -182,6 +197,16 @@ class PipelineRegistrationTest : public testing::Test
         params.ViewTargets = std::span<const ViewTargetsRG>(&targets, 1);
         services->Spine().BuildFrameGraph(*frame, params);
         Logger::Log::Flush();
+    }
+
+    // A frame refresh polls the requested pipeline's load instead of waiting on it: frames draw
+    // the current pipeline until the load lands. Builds frames until the outcome is applied.
+    void BuildUntilStandIn()
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        do
+            Build();
+        while (!services->Spine().ActivePipelineStandIn().IsActive() && std::chrono::steady_clock::now() < deadline);
     }
 
     bool Register(const char* name)
@@ -230,6 +255,24 @@ class PipelineRegistrationTest : public testing::Test
         ASSERT_TRUE(out.good());
     }
 };
+
+TEST_F(PipelineRegistrationTest, DefaultPathAdoptsAsyncSourceWithoutExplicitRefresh)
+{
+    ASSERT_TRUE(Register("Ready"));
+    Write(R"({"id":"Ready","type":"Ready"})", "AsyncDefault", false);
+    // First frame may draw the builtin while loading. A subsequent frame must
+    // adopt the source without a path edit or registration event, including
+    // when the default-path builtin is not classified as a fallback.
+    Build();
+    ASSERT_NE(services->Spine().ActiveBlueprint(), nullptr);
+    AwaitSource();
+    Build();
+    ASSERT_EQ(services->Spine().ActiveBlueprint()->pipelineName, "AsyncDefault");
+    EXPECT_FALSE(services->Spine().LastCompileReport().Rejected);
+    const auto generation = services->Spine().ActiveBlueprintGen();
+    Build();
+    EXPECT_EQ(services->Spine().ActiveBlueprintGen(), generation);
+}
 
 TEST_F(PipelineRegistrationTest, DefaultPathRecoversAfterFirstModuleRegistrationWithoutSourceEdit)
 {
@@ -530,7 +573,7 @@ TEST_F(PipelineRegistrationTest, AStandInForAMalformedPipelineNamesTheParseError
 {
     WriteAsset("RenderPipelines/Malformed.rendergraph", "{ this is not json");
     services->Spine().SetActiveRenderPipelinePath("RenderPipelines/Malformed.rendergraph");
-    Build();
+    BuildUntilStandIn();
     const PipelineStandIn& standIn = services->Spine().ActivePipelineStandIn();
     ASSERT_TRUE(standIn.IsActive()) << "the views draw a stand-in and the spine does not say so";
     EXPECT_EQ(standIn.StandInName, "EngineStandIn");
@@ -824,7 +867,7 @@ TEST_F(PackagedGameRegistrationTest, ARefusedPipelineDrawsNothingAndIsReportedOn
     std::vector<std::string> errors;
     capture.reset();
     capture = std::make_unique<TestLog::ScopedEngineLogCapture>(&errors, Logger::LogLevel::Error);
-    Build();
+    BuildUntilStandIn();
     Build();
     const PipelineStandIn& standIn = services->Spine().ActivePipelineStandIn();
     ASSERT_TRUE(standIn.IsActive());

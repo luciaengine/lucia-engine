@@ -1,9 +1,7 @@
 #include "TerrainECS/Systems/TerrainPhysicsSystem.h"
 #include "TerrainECS/TerrainService.h"
-#include "TerrainECS/TerrainRenderPublication.h"
-#include "TerrainECS/SurfaceHeightQuery.h"
 #include "TerrainECS/PlanetFaceCollider.h"
-#include "TerrainECS/Components/TerrainPageCollider.h"
+#include "TerrainECS/Components/TerrainTileCollider.h"
 #include "TerrainECS/Components/TerrainPlanetFaceCollider.h"
 #include "Components/Terrain/Terrain.h"
 #include "Components/Terrain/TerrainPlanetRelief.h"
@@ -17,11 +15,11 @@
 #include "PhysicsECS/Components/PhysicsBody.h"
 #include "PhysicsECS/Components/PhysicsCollider.h"
 #include "PhysicsECS/Components/HeightFieldColliderShape.h"
+#include "PhysicsECS/Systems/PhysicsWorldHooks.h"
 
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <span>
 #include <vector>
 
 namespace GameEngine::TerrainECS
@@ -99,29 +97,14 @@ uint64 HashPlanetShape(const PlanetColliderParams& params)
 
 // Frees the entity's backend body now. Entity destruction and component removal
 // are deferred to the next frame's flush, so the entity stays live for the rest
-// of THIS frame with a freed Jolt body; clearing the runtime state keeps anything
-// from dereferencing the freed handle before the removal lands (PhysicsInit's
-// initialized/valid early-out is incidental, not a guarantee), and the
-// OnRemove<PhysicsBody> hook then finds the handles already cleared.
+// of THIS frame; ReleasePhysicsBody also clears the runtime handles, which keeps
+// anything from dereferencing the freed body before the removal lands
+// (PhysicsInit's initialized/valid early-out is incidental, not a guarantee), and
+// the OnRemove<PhysicsBody> hook then finds the handles already cleared.
 void ReleaseColliderBody(ECS::World& world, ECS::EntityHandle entity)
 {
-    auto* pw = PhysicsECS::PhysicsWorldService::TryGet();
-    auto* body = world.GetComponentForWrite<Components::PhysicsBody>(entity);
-    if (!pw || !body || !body->initialized)
-        return;
-    if (body->body.IsValid())
-        pw->DestroyBody(body->body);
-    if (body->shape.IsValid())
-        pw->DestroyShape(body->shape);
-    for (uint16 i = 0; i < body->childShapeCount; ++i)
-        if (body->childShapes[i].IsValid())
-            pw->DestroyShape(body->childShapes[i]);
-    body->body = {};
-    body->shape = {};
-    for (uint16 i = 0; i < body->childShapeCount; ++i)
-        body->childShapes[i] = {};
-    body->childShapeCount = 0;
-    body->initialized = false;
+    if (auto* body = world.GetComponentForWrite<Components::PhysicsBody>(entity); body && body->initialized)
+        PhysicsECS::ReleasePhysicsBody(*body);
 }
 
 // Points the collider at the terrain's current data and dimensions and clears its
@@ -145,115 +128,6 @@ void ResyncTerrainCollider(ECS::World& world, ECS::EntityHandle entity)
     shape->inPlaceFailedVersion = 0;
     Logger::Log::Info("TerrainPhysicsSystem: terrain {} changed its data or dimensions; rebuilding its collider",
                       entity.id);
-}
-
-// A static heightfield collider entity centred at (x, y, z) over `sizeX` x `sizeZ` meters, its samples
-// resolved through `dataHandle`. CreateEntity allocates the handle immediately; the AddComponent calls
-// are deferred. The engine's per-frame ProcessCommands flush runs at the START of the next frame, before
-// any system (Engine.cpp), so PhysicsInit sees the fully-formed collider entity on frame N+1, one frame
-// after provisioning. (Tests flush explicitly via world.ProcessCommands().) Engine-created runtime
-// state, rebuilt from the terrain on load: RuntimeOnlyEntity keeps it out of every scene file, or a
-// save during Play would write a ghost collider entity per body.
-ECS::EntityHandle CreateTerrainColliderEntity(ECS::World& world, float32 x, float32 y, float32 z, uint32 dataHandle,
-                                              uint32 dataGeneration, float32 sizeX, float32 sizeZ, float32 heightScale)
-{
-    ECS::EntityHandle e = world.CreateEntity();
-    world.AddComponent(e, MakeTranslation(x, y, z));
-    world.AddComponent(e, MakeWorldTranslation(x, y, z));
-
-    Components::PhysicsBody body{};
-    body.motionType = Physics::MotionType::Static;
-    body.mass = 0.0f;
-    body.gravityScale = 0.0f;
-    body.allowSleep = true;
-    world.AddComponent(e, body);
-
-    Components::PhysicsCollider collider{};
-    collider.layer = Physics::Layers::Static;
-    world.AddComponent(e, collider);
-
-    Components::HeightFieldColliderShape shape{};
-    shape.dataHandle = dataHandle;
-    shape.dataGeneration = dataGeneration;
-    shape.sizeX = sizeX;
-    shape.sizeZ = sizeZ;
-    shape.heightScale = heightScale;
-    world.AddComponent(e, shape);
-    world.AddComponent(e, Components::RuntimeOnlyEntity{});
-    return e;
-}
-
-// A level-0 page as one sortable value.
-uint64 PageKey(uint32 pageX, uint32 pageZ)
-{
-    return (static_cast<uint64>(pageZ) << 32u) | pageX;
-}
-
-// A paged planar terrain (the first entity of its tiled handle) with its window pages sorted for lookup.
-struct PagedTerrain
-{
-    TiledTerrainHandle Tiled;
-    SurfaceHeightQuery Query;
-    std::span<const PageStreaming::PageAddress> Window;
-    std::vector<uint64> SortedWindow;
-};
-
-// Adds the terrain unless it is spherical, has no page source yet, or shares the tiled handle of one
-// already added (a duplicated entity: the first one's colliders serve it).
-void AddPagedTerrain(std::vector<PagedTerrain>& terrains, TerrainService& service, const Components::Terrain& terrain,
-                     const Components::WorldTransform& transform)
-{
-    if (terrain.Domain == Components::TerrainDomain::Spherical)
-        return;
-    const TiledTerrainHandle tiled{terrain.TiledTerrainHandle, terrain.TiledTerrainGeneration};
-    for (const PagedTerrain& paged : terrains)
-        if (paged.Tiled == tiled)
-            return;
-    SurfaceHeightQuery query = service.SurfaceQuery(terrain, transform);
-    if (!query.HasPageSource())
-        return;
-    PagedTerrain& paged = terrains.emplace_back(PagedTerrain{tiled, std::move(query), {}, {}});
-    paged.Window = service.FinestWindowPages(terrain);
-    for (const PageStreaming::PageAddress& page : paged.Window)
-        paged.SortedWindow.push_back(PageKey(page.X, page.Z));
-    std::sort(paged.SortedWindow.begin(), paged.SortedWindow.end());
-}
-
-PagedTerrain* FindPagedTerrain(std::vector<PagedTerrain>& terrains, uint32 index, uint32 generation)
-{
-    for (PagedTerrain& paged : terrains)
-        if (paged.Tiled.Index == index && paged.Tiled.Generation == generation)
-            return &paged;
-    return nullptr;
-}
-
-// The page colliders the sweep tears down, with the page slots to release after their bodies.
-struct PageColliderOrphans
-{
-    std::vector<ECS::EntityHandle> Entities;
-    std::vector<TerrainService::PagePhysicsHandle> Slots;
-};
-
-// Keeps a collider whose page is still in its terrain's window and whose samples come from the
-// stream it reads now: it leaves the window list (not provisioned again) and takes the edits to its
-// page as a region of its body. Any other collider is an orphan.
-void SweepPageCollider(TerrainService& service, std::vector<PagedTerrain>& terrains, PageColliderOrphans& orphans,
-                       ECS::EntityHandle entity, const Components::TerrainPageCollider& tag)
-{
-    PagedTerrain* paged = FindPagedTerrain(terrains, tag.TiledIndex, tag.TiledGeneration);
-    const uint64 key = PageKey(tag.PageX, tag.PageZ);
-    const TerrainService::PageColliderData* data =
-        service.ResolvePageCollider(tag.PhysicsHandleIndex, tag.PhysicsHandleGeneration);
-    const bool current = paged && data && data->ReadAt.Epoch == paged->Query.PageStamp().Epoch;
-    if (current && std::binary_search(paged->SortedWindow.begin(), paged->SortedWindow.end(), key))
-    {
-        std::erase(paged->SortedWindow, key);
-        service.RefreshPagePhysicsHandle(paged->Query, tag.PageX, tag.PageZ,
-                                         {tag.PhysicsHandleIndex, tag.PhysicsHandleGeneration});
-        return;
-    }
-    orphans.Entities.push_back(entity);
-    orphans.Slots.push_back({tag.PhysicsHandleIndex, tag.PhysicsHandleGeneration});
 }
 
 } // namespace
@@ -296,7 +170,7 @@ void TerrainPhysicsSystem::Update(ECS::World& world, float32 /*deltaTime*/)
             if (terrain.Domain == Components::TerrainDomain::Spherical)
                 return;
 
-            // Tiled terrains are provisioned per page below (extraction clears
+            // Tiled terrains are provisioned per-tile below (extraction clears
             // their single TerrainDataHandle, so this block finds no data).
             if (terrain.TiledTerrainHandle != 0 || terrain.TiledTerrainGeneration != 0)
                 return;
@@ -345,69 +219,195 @@ void TerrainPhysicsSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         ResyncTerrainCollider(world, entity);
     RemoveOrphanedPlanarColliders(world);
 
-    // ---- Paged terrain provisioning (design page-streaming D3): one collider entity per window page ----
-    UpdatePageColliders(world, *terrainService);
+    // ---- Tiled terrain provisioning (E6): one collider entity per Full tile ----
+
+    struct TileKey
+    {
+        uint32 TiledIndex, TiledGeneration;
+        int32 X, Z;
+        bool operator==(const TileKey& o) const
+        {
+            return TiledIndex == o.TiledIndex && TiledGeneration == o.TiledGeneration
+                && X == o.X && Z == o.Z;
+        }
+    };
+
+    // 1. Walk existing tile-collider entities: keep those whose tile is still a
+    //    resident Full tile; tear down (destroy + release handle) the orphans
+    //    (tile unloaded, dropped below Full, or the tiled terrain is gone).
+    //    Every collider entity this system owns is walked whatever its enable
+    //    state: one switched off still claims its tile, so the tile is not
+    //    provisioned a second collider.
+    std::vector<TileKey> live;
+    std::vector<ECS::EntityHandle> orphanEntities;
+    std::vector<TerrainService::TilePhysicsHandle> orphanHandles;
+    world.Query<ECS::Read<Components::TerrainTileCollider>>()
+        .IncludeDisabled()
+        .Each([&](ECS::EntityHandle e, const Components::TerrainTileCollider& tc)
+        {
+            bool alive = false;
+            TiledTerrainHandle th{tc.TiledIndex, tc.TiledGeneration};
+            if (auto* tiled = terrainService->GetTiledTerrainData(th))
+            {
+                auto it = tiled->Tiles.find(TileCoord{tc.TileX, tc.TileZ});
+                if (it != tiled->Tiles.end() && it->second
+                    && it->second->LodState == TileLodState::Full
+                    && !it->second->Heightfield.IsEmpty())
+                    alive = true;
+            }
+
+            if (alive)
+                live.push_back(TileKey{tc.TiledIndex, tc.TiledGeneration, tc.TileX, tc.TileZ});
+            else
+            {
+                orphanEntities.push_back(e);
+                orphanHandles.push_back(
+                    TerrainService::TilePhysicsHandle{tc.PhysicsHandleIndex, tc.PhysicsHandleGeneration});
+            }
+        });
+
+    auto hasCollider = [&](const TileKey& k) {
+        for (const auto& l : live)
+            if (l == k)
+                return true;
+        return false;
+    };
+
+    // 2. Find Full tiles without a collider entity yet.
+    struct PendingTile
+    {
+        TiledTerrainHandle Tiled;
+        TileCoord Coord;
+        float32 CenterX, CenterY, CenterZ;
+        float32 TileSize, HeightScale;
+    };
+    std::vector<PendingTile> pending;
+    // Tiled handles already provisioned this frame. Duplicating a terrain entity
+    // copies the runtime TiledTerrainHandle, so two entities would each enumerate
+    // the same tiles and provision double bodies. First entity wins; later ones
+    // sharing its handle are skipped.
+    std::vector<TiledTerrainHandle> claimedTiled;
+    world.Query<ECS::Read<Components::Terrain>, ECS::Read<Components::WorldTransform>>()
+        .Each([&](ECS::EntityHandle /*entity*/,
+                  const Components::Terrain& terrain,
+                  const Components::WorldTransform& wt)
+        {
+            if (terrain.Domain == Components::TerrainDomain::Spherical)
+                return; // planets use per-face colliders, not planar tile colliders
+            if (terrain.TiledTerrainHandle == 0 && terrain.TiledTerrainGeneration == 0)
+                return;
+
+            TiledTerrainHandle th{terrain.TiledTerrainHandle, terrain.TiledTerrainGeneration};
+            auto* tiled = terrainService->GetTiledTerrainData(th);
+            if (!tiled)
+                return;
+
+            if (std::find(claimedTiled.begin(), claimedTiled.end(), th) != claimedTiled.end())
+            {
+                if (!m_WarnedDuplicateTiledClaim)
+                {
+                    Logger::Log::Warning(
+                        "TerrainPhysicsSystem: multiple terrain entities share tiled handle "
+                        "(index={}, gen={}) — provisioning colliders for the first only",
+                        th.Index, th.Generation);
+                    m_WarnedDuplicateTiledClaim = true;
+                }
+                return;
+            }
+            claimedTiled.push_back(th);
+
+            const float32 tileSize = tiled->Config.TileWorldSize;
+            const float32 terrainWorldY = wt.matrix[13];
+            for (auto& [coord, tilePtr] : tiled->Tiles)
+            {
+                if (!tilePtr || tilePtr->LodState != TileLodState::Full)
+                    continue;
+                if (tilePtr->Heightfield.IsEmpty() || tilePtr->HeightfieldVersion == 0)
+                    continue;
+
+                const TileKey key{th.Index, th.Generation, coord.X, coord.Z};
+                if (hasCollider(key))
+                    continue;
+
+                pending.push_back(PendingTile{
+                    th, coord,
+                    tilePtr->WorldOriginX + tileSize * 0.5f,
+                    terrainWorldY,
+                    tilePtr->WorldOriginZ + tileSize * 0.5f,
+                    tileSize, terrain.HeightScale});
+                // Mark provisioned this frame so a second tile map entry (or a
+                // duplicate handle that slipped past the claim guard) can't
+                // enqueue the same (terrain, tile) twice.
+                live.push_back(key);
+            }
+        });
+
+    // 3. Apply structural changes after the queries. Tear down orphans first so
+    //    a re-loaded tile can re-acquire a fresh slot the same frame. The
+    //    OnRemove<PhysicsBody> hook would free the body, but DestroyEntity is
+    //    deferred to the next frame's flush — so free it here, in the same
+    //    window PhysicsInit mutates bodies in and before the step, and let the
+    //    hook find the handles already cleared.
+    for (ECS::EntityHandle e : orphanEntities)
+    {
+        ReleaseColliderBody(world, e);
+        world.DestroyEntity(e);
+    }
+    for (const TerrainService::TilePhysicsHandle& handle : orphanHandles)
+        terrainService->ReleaseTilePhysicsHandle(handle.Index, handle.Generation);
+
+    for (const PendingTile& p : pending)
+    {
+        const auto physHandle = terrainService->AcquireTilePhysicsHandle(p.Tiled, p.Coord);
+
+        // CreateEntity allocates the handle immediately; the AddComponent calls
+        // are deferred. The engine's per-frame ProcessCommands flush runs at the
+        // START of the next frame, before any system (Engine.cpp) — so
+        // PhysicsInit sees the fully-formed collider entity on frame N+1, one
+        // frame after provisioning, not the same frame. (Tests flush explicitly
+        // via world.ProcessCommands().)
+        ECS::EntityHandle e = world.CreateEntity();
+
+        world.AddComponent(e, MakeTranslation(p.CenterX, p.CenterY, p.CenterZ));
+        world.AddComponent(e, MakeWorldTranslation(p.CenterX, p.CenterY, p.CenterZ));
+
+        Components::PhysicsBody body{};
+        body.motionType = Physics::MotionType::Static;
+        body.mass = 0.0f;
+        body.gravityScale = 0.0f;
+        body.allowSleep = true;
+        world.AddComponent(e, body);
+
+        Components::PhysicsCollider collider{};
+        collider.layer = Physics::Layers::Static;
+        world.AddComponent(e, collider);
+
+        Components::HeightFieldColliderShape shape{};
+        shape.dataHandle = physHandle.Index;         // includes kTilePhysicsHandleBit
+        shape.dataGeneration = physHandle.Generation;
+        shape.sizeX = p.TileSize;
+        shape.sizeZ = p.TileSize;
+        shape.heightScale = p.HeightScale;
+        world.AddComponent(e, shape);
+
+        Components::TerrainTileCollider tag{};
+        tag.TiledIndex = p.Tiled.Index;
+        tag.TiledGeneration = p.Tiled.Generation;
+        tag.TileX = p.Coord.X;
+        tag.TileZ = p.Coord.Z;
+        tag.PhysicsHandleIndex = physHandle.Index;
+        tag.PhysicsHandleGeneration = physHandle.Generation;
+        world.AddComponent(e, tag);
+
+        // Engine-created runtime state: reconstructed from the tiled terrain on
+        // load, so it must never be written to a scene file (SaveSceneToFile
+        // excludes RuntimeOnlyEntity-tagged entities). Without this, a
+        // save-during-Play would persist N ghost collider entities per save.
+        world.AddComponent(e, Components::RuntimeOnlyEntity{});
+    }
 
     // ---- Spherical (planet) provisioning + sculpt-edit refresh ----
     UpdatePlanetColliders(world);
-}
-
-void TerrainPhysicsSystem::UpdatePageColliders(ECS::World& world, TerrainService& service)
-{
-    std::vector<PagedTerrain> terrains;
-    world.Query<ECS::Read<Components::Terrain>, ECS::Read<Components::WorldTransform>>().Each(
-        [&terrains, &service](const Components::Terrain& terrain, const Components::WorldTransform& transform) {
-            AddPagedTerrain(terrains, service, terrain, transform);
-        });
-
-    // Every page collider this system owns, whatever its enable state: one switched off still claims
-    // its page. A collider whose page left every window of its terrain, whose terrain is no longer
-    // paged, or whose samples were read from a stream since restarted (a new source) is torn down and
-    // its page slot released here (its OnRemove hook then finds the slot gone).
-    PageColliderOrphans orphans;
-    world.Query<ECS::Read<Components::TerrainPageCollider>>().IncludeDisabled().Each(
-        [&service, &terrains, &orphans](ECS::EntityHandle entity, const Components::TerrainPageCollider& tag) {
-            SweepPageCollider(service, terrains, orphans, entity, tag);
-        });
-    // The body is freed now, in the window PhysicsInit mutates bodies in and before the step; the
-    // entity's destruction is deferred to the next flush (ReleaseColliderBody).
-    for (ECS::EntityHandle entity : orphans.Entities)
-    {
-        ReleaseColliderBody(world, entity);
-        world.DestroyEntity(entity);
-    }
-    for (const TerrainService::PagePhysicsHandle& slot : orphans.Slots)
-        service.ReleasePagePhysicsHandle(slot.Index, slot.Generation);
-
-    // A window page without a collider gets one once it is on the CPU at level 0; the residency's
-    // window fetch brings it (design D3), so a page still on its way is provisioned a later frame.
-    // Its body is built on the job pool (PhysicsInitSystem) from the samples read here.
-    constexpr float32 kOwned = static_cast<float32>(PageStreaming::kPageOwnedSamples);
-    for (const PagedTerrain& paged : terrains)
-        for (const PageStreaming::PageAddress& page : paged.Window)
-        {
-            if (!std::binary_search(paged.SortedWindow.begin(), paged.SortedWindow.end(), PageKey(page.X, page.Z)))
-                continue;
-            const TerrainService::PagePhysicsHandle handle = service.AcquirePagePhysicsHandle(paged.Query, page.X, page.Z);
-            if (handle.Index == 0)
-                continue;
-            const SurfaceHeightQuery& query = paged.Query;
-            const float32 sizeX = kOwned * query.LatticeSpacingX();
-            const float32 sizeZ = kOwned * query.LatticeSpacingZ();
-            const float32 centerX = query.FootprintOriginX() + (static_cast<float32>(page.X) + 0.5f) * sizeX;
-            const float32 centerZ = query.FootprintOriginZ() + (static_cast<float32>(page.Z) + 0.5f) * sizeZ;
-            const ECS::EntityHandle entity =
-                CreateTerrainColliderEntity(world, centerX, query.OriginY(), centerZ, handle.Index, handle.Generation,
-                                            sizeX, sizeZ, query.HeightScale());
-            Components::TerrainPageCollider tag{};
-            tag.TiledIndex = paged.Tiled.Index;
-            tag.TiledGeneration = paged.Tiled.Generation;
-            tag.PageX = page.X;
-            tag.PageZ = page.Z;
-            tag.PhysicsHandleIndex = handle.Index;
-            tag.PhysicsHandleGeneration = handle.Generation;
-            world.AddComponent(entity, tag);
-        }
 }
 
 void TerrainPhysicsSystem::RemoveOrphanedPlanarColliders(ECS::World& world)
@@ -484,79 +484,55 @@ void TerrainPhysicsSystem::UpdatePlanetColliders(ECS::World& world)
             }
         });
 
-    auto* pw = PhysicsECS::PhysicsWorldService::TryGet();
     for (size_t i = 0; i < orphanEntities.size(); ++i)
     {
         ECS::EntityHandle e = orphanEntities[i];
-        if (pw)
-        {
-            if (auto* body = world.GetComponentForWrite<Components::PhysicsBody>(e);
-                body && body->initialized)
-            {
-                // The OnRemove<PhysicsBody> hook frees the body, but DestroyEntity is
-                // deferred to the next frame's flush — free it here (same window
-                // PhysicsInit mutates bodies in, before the step) and clear the runtime
-                // handles so nothing dereferences the freed body meanwhile.
-                if (body->body.IsValid())
-                    pw->DestroyBody(body->body);
-                if (body->shape.IsValid())
-                    pw->DestroyShape(body->shape);
-                body->body = {};
-                body->shape = {};
-                body->initialized = false;
-            }
-        }
+        ReleaseColliderBody(world, e);
         world.DestroyEntity(e);
         terrainService->ReleasePlanetFacePhysicsHandle(orphanTags[i].PhysicsHandleIndex,
                                                        orphanTags[i].PhysicsHandleGeneration);
     }
 
-    // 2. Find the active planet: the enabled spherical terrain with the smallest DrawOrderKey.
-    //    Only one planet gets face colliders, as only one terrain draws; a second is warned once.
+    // 2. Find the active planet: the first enabled spherical terrain. Only one planet gets
+    //    face colliders (CBT likewise renders terrain 0); a second is warned once.
     ECS::EntityHandle activePlanet{};
-    uint64 activePlanetKey = 0;
-    uint32 planetCount = 0;
+    PlanetColliderParams params{};
+    float32 centerX = 0.0f, centerY = 0.0f, centerZ = 0.0f;
+    bool foundPlanet = false;
     world.Query<ECS::Read<Components::Terrain>, ECS::Read<Components::WorldTransform>>()
-        .Each([&](ECS::EntityHandle entity, const Components::Terrain& terrain, const Components::WorldTransform&)
+        .Each([&](ECS::EntityHandle entity, const Components::Terrain& terrain,
+                  const Components::WorldTransform& wt)
         {
             if (terrain.Domain != Components::TerrainDomain::Spherical)
                 return;
-            ++planetCount;
-            const uint64 key = DrawOrderKey(terrain, entity);
-            if (!activePlanet.IsValid() || key < activePlanetKey)
+            if (foundPlanet)
             {
-                activePlanet = entity;
-                activePlanetKey = key;
+                if (!m_WarnedDuplicatePlanetClaim)
+                {
+                    Logger::Log::Warning(
+                        "TerrainPhysicsSystem: multiple spherical terrains — provisioning "
+                        "planet colliders for the first only");
+                    m_WarnedDuplicatePlanetClaim = true;
+                }
+                return;
             }
+            foundPlanet = true;
+            activePlanet = entity;
+            params.Radius = terrain.PlanetRadius;
+            // Base relief is the companion TerrainPlanetRelief component (default when
+            // absent) — the same values CBTUpdateSystem feeds the renderer. Reading them is
+            // not sufficient on its own: these params only reach a face patch when something
+            // re-cooks it, so an edit to them must cross the shape baseline below.
+            Components::TerrainPlanetRelief relief{};
+            if (const auto* r = world.GetComponent<Components::TerrainPlanetRelief>(entity))
+                relief = *r;
+            params.ReliefAmplitude = relief.Amplitude;
+            params.ReliefFrequency = relief.Frequency;
+            params.ReliefOctaves = relief.Octaves;
+            centerX = wt.matrix[12];
+            centerY = wt.matrix[13];
+            centerZ = wt.matrix[14];
         });
-    if (planetCount > 1 && !m_WarnedDuplicatePlanetClaim)
-    {
-        Logger::Log::Warning("TerrainPhysicsSystem: multiple spherical terrains — provisioning "
-                             "planet colliders for the one added first only");
-        m_WarnedDuplicatePlanetClaim = true;
-    }
-    const bool foundPlanet = activePlanet.IsValid();
-    PlanetColliderParams params{};
-    float32 centerX = 0.0f, centerY = 0.0f, centerZ = 0.0f;
-    if (foundPlanet)
-    {
-        const auto& terrain = *world.GetComponent<Components::Terrain>(activePlanet);
-        const auto& wt = *world.GetComponent<Components::WorldTransform>(activePlanet);
-        params.Radius = terrain.PlanetRadius;
-        // Base relief is the companion TerrainPlanetRelief component (default when
-        // absent) — the same values CBTUpdateSystem feeds the renderer. Reading them is
-        // not sufficient on its own: these params only reach a face patch when something
-        // re-cooks it, so an edit to them must cross the shape baseline below.
-        Components::TerrainPlanetRelief relief{};
-        if (const auto* r = world.GetComponent<Components::TerrainPlanetRelief>(activePlanet))
-            relief = *r;
-        params.ReliefAmplitude = relief.Amplitude;
-        params.ReliefFrequency = relief.Frequency;
-        params.ReliefOctaves = relief.Octaves;
-        centerX = wt.matrix[12];
-        centerY = wt.matrix[13];
-        centerZ = wt.matrix[14];
-    }
 
     if (!foundPlanet)
         return; // no planet — nothing to provision or refresh (orphans already torn down)
@@ -566,18 +542,7 @@ void TerrainPhysicsSystem::UpdatePlanetColliders(ECS::World& world)
     // planet never carries a stray planar body under its six face colliders.
     if (world.HasComponent<Components::HeightFieldColliderShape>(activePlanet))
     {
-        if (pw)
-            if (auto* body = world.GetComponentForWrite<Components::PhysicsBody>(activePlanet);
-                body && body->initialized)
-            {
-                if (body->body.IsValid())
-                    pw->DestroyBody(body->body);
-                if (body->shape.IsValid())
-                    pw->DestroyShape(body->shape);
-                body->body = {};
-                body->shape = {};
-                body->initialized = false;
-            }
+        ReleaseColliderBody(world, activePlanet);
         world.RemoveComponent<Components::HeightFieldColliderShape>(activePlanet);
         world.RemoveComponent<Components::PhysicsBody>(activePlanet);
         world.RemoveComponent<Components::PhysicsCollider>(activePlanet);
@@ -606,7 +571,7 @@ void TerrainPhysicsSystem::UpdatePlanetColliders(ECS::World& world)
     const size_t preExistingFaceCount = liveFaces.size();
 
     // 3. Provision any missing faces (0-5) for the active planet. Deferred component adds,
-    //    like the page path; PhysicsInit builds the bodies on the next flush.
+    //    like the tiled path; PhysicsInit builds the bodies on the next flush.
     for (uint32 face = 0; face < kPlanetFaceCount; ++face)
     {
         if (faceIsLive(face))

@@ -13,6 +13,7 @@
 
 #include "Editor/Vcs/EditorVcsProviderRegistry.h"
 #include "VCSIntegration/IVCSIntegration.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -88,8 +89,9 @@ ed::EditorVcsProviderDescriptor MakeDescriptor(const std::string& typeId, int de
 std::filesystem::path MakeTempWorkspace(const std::string& name,
                                         const std::vector<std::string>& markers)
 {
-    const std::filesystem::path root =
-        std::filesystem::temp_directory_path() / "ge_vcs_registry_tests" / name;
+    static const GameEngine::TestUtils::ScopedTempDir testsRoot(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge_vcs_registry_tests"));
+    const std::filesystem::path root = testsRoot.Path() / name;
     std::filesystem::remove_all(root);
     for (const std::string& marker : markers)
         std::filesystem::create_directories(root / marker);

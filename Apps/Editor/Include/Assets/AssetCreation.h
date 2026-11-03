@@ -2,7 +2,6 @@
 
 #include <filesystem>
 #include <functional>
-#include <span>
 #include <string>
 #include <vector>
 
@@ -25,12 +24,6 @@ namespace GameEngine::Editor
 std::filesystem::path MakeUniqueFilePath(const std::filesystem::path& dir,
                                          const std::string& baseStem,
                                          const std::string& extensionWithDot);
-
-// The path of `fileName` in `dir`, or of "Stem (1).ext", "Stem (2).ext" and on while that is taken, as a
-// paste names a copy. A path in `reserved` counts as taken, so a batch names each file once. Empty when
-// 9999 numbers are taken.
-std::filesystem::path MakeNumberedFilePath(const std::filesystem::path& dir, const std::filesystem::path& fileName,
-                                           std::span<const std::filesystem::path> reserved = {});
 
 struct AssetFileResult
 {
@@ -56,6 +49,12 @@ AssetFileResult CreateDefaultMaterialFile(const std::filesystem::path& dir,
 
 // Create a default navigation grid asset (.navgrid) with default GridSettings and empty cost/blocked data.
 AssetFileResult CreateDefaultNavGridFile(const std::filesystem::path& dir,
+                                         const std::string& baseName,
+                                         UndoRedoService* undo,
+                                         AssetManager* assets);
+
+// Create a default navigation mesh asset (.navmesh) with default NavMeshSettings and no source geometry.
+AssetFileResult CreateDefaultNavMeshFile(const std::filesystem::path& dir,
                                          const std::string& baseName,
                                          UndoRedoService* undo,
                                          AssetManager* assets);

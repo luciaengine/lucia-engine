@@ -6,11 +6,13 @@
 #include "MetalDevice.h"
 #include "MetalMappings.h"
 #include "MetalShaderTranslator.h"
+#include "MetalDirectBindings.h"
 
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/SpecializationConstants.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
 #include <algorithm>
 #include <chrono>
@@ -26,6 +28,15 @@ namespace Rendering
 namespace
 {
 constexpr uint32_t kSpirvMagic = 0x07230203u;
+
+MTL::PixelFormat StencilAttachmentFormat(const PipelineFormatKey& formats)
+{
+    const auto stencil = MetalMappings::ToMTLPixelFormat(formats.StencilFormat);
+    if (stencil != MTL::PixelFormatInvalid)
+        return stencil;
+    const auto depth = MetalMappings::ToMTLPixelFormat(formats.DepthFormat);
+    return depth == MTL::PixelFormatDepth32Float_Stencil8 ? depth : MTL::PixelFormatInvalid;
+}
 
 bool IsSpirv(const std::vector<uint8_t>& bytes)
 {
@@ -64,10 +75,7 @@ MTL::CompileOptions* MakeCompileOptions()
     // Fast math matches what the Vulkan path gets (MoltenVK compiles its MSL
     // with fast math on by default) and what GLSL-without-precise implies.
     // GE_METAL_PRECISE_MATH=1 flips it off when bisecting NaN/precision bugs.
-    static const bool kPreciseMath = []() {
-        const char* env = std::getenv("GE_METAL_PRECISE_MATH");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool kPreciseMath = Platform::EnvironmentSwitchEnabled("GE_METAL_PRECISE_MATH", false);
     options->setFastMathEnabled(!kPreciseMath);
     return options;
 }
@@ -100,10 +108,7 @@ void DumpFailedMsl(const std::string& msl, const std::string& debugName)
 
 bool ShouldDumpAllMsl()
 {
-    static const bool kDump = []() {
-        const char* env = std::getenv("GE_METAL_DUMP_MSL");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool kDump = Platform::EnvironmentSwitchEnabled("GE_METAL_DUMP_MSL", false);
     return kDump;
 }
 
@@ -178,7 +183,6 @@ BufferHandle MetalDevice::CreateBuffer(const BufferDesc& desc)
 
 void MetalDevice::DestroyBuffer(BufferHandle handle)
 {
-    EvictCachedDescriptorSetsUsing(handle);
     std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
     MetalBuffer* buf = m_Buffers.Get(ToGeneric(handle));
     if (buf == nullptr)
@@ -429,7 +433,6 @@ TextureHandle MetalDevice::CreateTexture(const TextureDesc& desc)
 
 void MetalDevice::DestroyTexture(TextureHandle handle)
 {
-    EvictCachedDescriptorSetsUsing(handle);
     std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
     MetalTexture* tex = m_Textures.Get(ToGeneric(handle));
     if (tex == nullptr)
@@ -637,7 +640,6 @@ TextureViewHandle MetalDevice::CreateTextureView(TextureHandle texture, const Te
 
 void MetalDevice::DestroyTextureView(TextureViewHandle handle)
 {
-    EvictCachedDescriptorSetsUsing(handle);
     std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
     MetalTextureView* view = m_TextureViews.Get(ToGeneric(handle));
     if (view == nullptr)
@@ -703,16 +705,33 @@ SamplerHandle MetalDevice::CreateSampler(const SamplerDesc& desc)
     sd->setMinFilter(MetalMappings::ToMTLMinMagFilter(desc.minFilter));
     sd->setMagFilter(MetalMappings::ToMTLMinMagFilter(desc.magFilter));
     sd->setMipFilter(MetalMappings::ToMTLMipFilter(desc.mipFilter));
-    sd->setSAddressMode(MetalMappings::ToMTLAddressMode(desc.addressModeU));
-    sd->setTAddressMode(MetalMappings::ToMTLAddressMode(desc.addressModeV));
-    sd->setRAddressMode(MetalMappings::ToMTLAddressMode(desc.addressModeW));
+    const bool supportsBorderColor = m_Device->supportsFamily(MTL::GPUFamilyApple7) ||
+        m_Device->supportsFamily(MTL::GPUFamilyMac1) || m_Device->supportsFamily(MTL::GPUFamilyMac2);
+    const bool usesBorder = desc.addressModeU == 3 || desc.addressModeV == 3 || desc.addressModeW == 3;
+    if (!supportsBorderColor && usesBorder && desc.borderColor != 0)
+    {
+        sd->release();
+        Logger::Log::Error("MetalDevice::CreateSampler: white border color requires Apple GPU family 7 or Mac GPU family 1.");
+        return INVALID_SAMPLER_HANDLE;
+    }
+    // Older Apple GPUs support the reverse-Z shadow border (depth zero)
+    // through clamp-to-zero, but reject even setting an opaque border color.
+    auto addressMode = [supportsBorderColor](uint32_t mode) {
+        const auto address = MetalMappings::ToMTLAddressMode(mode);
+        return !supportsBorderColor && address == MTL::SamplerAddressModeClampToBorderColor
+            ? MTL::SamplerAddressModeClampToZero : address;
+    };
+    sd->setSAddressMode(addressMode(desc.addressModeU));
+    sd->setTAddressMode(addressMode(desc.addressModeV));
+    sd->setRAddressMode(addressMode(desc.addressModeW));
     sd->setLodMinClamp(desc.minLod);
     sd->setLodMaxClamp(desc.maxLod);
     sd->setMaxAnisotropy(static_cast<NS::UInteger>(std::max(1.0f, desc.maxAnisotropy)));
     // Required for writing the sampler's gpuResourceID into argument buffers.
     sd->setSupportArgumentBuffers(true);
-    sd->setBorderColor(desc.borderColor == 1 ? MTL::SamplerBorderColorOpaqueWhite
-                                             : MTL::SamplerBorderColorOpaqueBlack);
+    if (supportsBorderColor)
+        sd->setBorderColor(desc.borderColor == 1 ? MTL::SamplerBorderColorOpaqueWhite
+                                               : MTL::SamplerBorderColorOpaqueBlack);
     if (desc.compareEnable)
     {
         sd->setCompareFunction(MetalMappings::ToMTLCompareFunction(desc.compareOp));
@@ -742,7 +761,6 @@ SamplerHandle MetalDevice::CreateSampler(const SamplerDesc& desc)
 
 void MetalDevice::DestroySampler(SamplerHandle handle)
 {
-    EvictCachedDescriptorSetsUsing(handle);
     std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
     MetalSampler* sampler = m_Samplers.Get(ToGeneric(handle));
     if (sampler == nullptr)
@@ -795,6 +813,9 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
     const SpecializationConstants* specialization =
         gd.Specialization.has_value() ? &gd.Specialization.value() : nullptr;
 
+    // GE_METAL_DUMP_PIPELINE_TIMING=1: per-pipeline stage costs (translate /
+    // newLibrary / PSO) for attributing first-frame creation hitches.
+    static const bool kDumpPipelineTiming = Platform::EnvironmentSwitchEnabled("GE_METAL_DUMP_PIPELINE_TIMING", false);
     const auto creationStart = std::chrono::steady_clock::now();
     double translateMs = 0.0;
     double libraryMs = 0.0;
@@ -814,7 +835,7 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
         if (IsSpirv(source))
         {
             const auto translateStart = std::chrono::steady_clock::now();
-            MetalShaderTranslation translation = TranslateSpirvToMsl(source, stage, setLayouts, specialization);
+            MetalShaderTranslation translation = TranslateSpirvToMsl(source, stage, setLayouts, specialization, m_Capabilities.supportsBindlessResources);
             translateMs += msSince(translateStart);
             if (!translation.Success)
             {
@@ -928,8 +949,8 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
         }
         if (static_cast<uint32_t>(fk.DepthFormat) != 0)
             md->setDepthAttachmentPixelFormat(MetalMappings::ToMTLPixelFormat(fk.DepthFormat));
-        if (static_cast<uint32_t>(fk.StencilFormat) != 0)
-            md->setStencilAttachmentPixelFormat(MetalMappings::ToMTLPixelFormat(fk.StencilFormat));
+        if (const auto stencil = StencilAttachmentFormat(fk); stencil != MTL::PixelFormatInvalid)
+            md->setStencilAttachmentPixelFormat(stencil);
 
         NS::Error* meshError = nullptr;
         pso = m_Device->newRenderPipelineState(md, MTL::PipelineOptionNone, nullptr, &meshError);
@@ -978,7 +999,8 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
     // DrawIndexedIndirectCount runs indirect command buffer commands that
     // inherit this pipeline from the render encoder; Metal requires the
     // pipeline to opt in, and any graphics pipeline may issue such a draw.
-    pd->setSupportIndirectCommandBuffers(true);
+    pd->setSupportIndirectCommandBuffers(m_Capabilities.supportsDrawIndirectCountNative &&
+                                        m_Capabilities.supportsBindlessResources);
 
     for (uint8_t i = 0; i < fk.ColorCount && i < PipelineFormatKey::kMaxColors; ++i)
     {
@@ -1001,9 +1023,9 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
     {
         pd->setDepthAttachmentPixelFormat(MetalMappings::ToMTLPixelFormat(fk.DepthFormat));
     }
-    if (static_cast<uint32_t>(fk.StencilFormat) != 0)
+    if (const auto stencil = StencilAttachmentFormat(fk); stencil != MTL::PixelFormatInvalid)
     {
-        pd->setStencilAttachmentPixelFormat(MetalMappings::ToMTLPixelFormat(fk.StencilFormat));
+        pd->setStencilAttachmentPixelFormat(stencil);
     }
 
     if (!gd.VertexAttributes.empty())
@@ -1065,6 +1087,18 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
     wrapper.renderPipeline = pso;
     wrapper.type = PipelineType::Graphics;
     wrapper.isMeshPipeline = isMesh;
+    for (const DescriptorSetLayoutDesc& layout : layoutValues)
+    {
+        for (const DescriptorBinding& binding : layout.bindings)
+        {
+            if ((binding.shaderStages & kShaderStageFragment) != 0 &&
+                (binding.type == DescriptorType::CombinedImageSampler ||
+                 binding.type == DescriptorType::Texture))
+            {
+                wrapper.fragmentSamplesTextures = true;
+            }
+        }
+    }
     if (isMesh)
     {
         wrapper.localSizeX = meshThreadsX;
@@ -1077,6 +1111,10 @@ PipelineHandle MetalDevice::CreateConcreteGraphicsPipeline(const GraphicsPipelin
         wrapper.setLayouts.push_back(ComputeMetalArgumentBufferLayout(layout));
     }
     wrapper.primitiveType = MetalMappings::ToMTLPrimitiveType(gd.Topology);
+    if (!m_Capabilities.supportsBindlessResources)
+    {
+        wrapper.directSetLayouts = ComputeMetalDirectBindings(wrapper.setLayouts);
+    }
     wrapper.cullMode = MetalMappings::ToMTLCullMode(gd.Rasterization.cullMode);
     wrapper.winding = MetalMappings::ToMTLWinding(gd.Rasterization.frontFace);
     wrapper.fillMode = MetalMappings::ToMTLFillMode(gd.Rasterization.polygonMode);
@@ -1160,7 +1198,7 @@ PipelineHandle MetalDevice::CreateConcreteComputePipeline(const ComputePipelineD
         const SpecializationConstants* specialization =
             cd.Specialization.has_value() ? &cd.Specialization.value() : nullptr;
         MetalShaderTranslation translation =
-            TranslateSpirvToMsl(*cd.ComputeShader, MetalShaderStage::Compute, setLayouts, specialization);
+            TranslateSpirvToMsl(*cd.ComputeShader, MetalShaderStage::Compute, setLayouts, specialization, m_Capabilities.supportsBindlessResources);
         if (!translation.Success)
         {
             Logger::Log::Error("MetalDevice: SPIR-V->MSL translation failed for compute '{}': {}", cd.DebugName,
@@ -1225,6 +1263,10 @@ PipelineHandle MetalDevice::CreateConcreteComputePipeline(const ComputePipelineD
         wrapper.setLayouts.push_back(ComputeMetalArgumentBufferLayout(layout));
     }
     wrapper.localSizeX = localSizeX;
+    if (!m_Capabilities.supportsBindlessResources)
+    {
+        wrapper.directSetLayouts = ComputeMetalDirectBindings(wrapper.setLayouts);
+    }
     wrapper.localSizeY = localSizeY;
     wrapper.localSizeZ = localSizeZ;
     wrapper.debugName = cd.DebugName;
@@ -1308,12 +1350,28 @@ DescriptorSetHandle MetalDevice::CreateDescriptorSet(const DescriptorSetDesc& de
         Logger::Log::Warning("MetalSetLayout '{}': total={}{}", desc.debugName, set.layout.TotalSlotCount, mapping);
     }
     const size_t tableBytes = ArgumentTableBytes(set.layout);
-    set.residentResources.Resize(set.layout.TotalSlotCount, nullptr);
-    set.residentWritable.Resize(set.layout.TotalSlotCount, 0);
-    set.residentIndirectArguments.Resize(set.layout.TotalSlotCount, 0);
+    set.residentResources.resize(set.layout.TotalSlotCount, nullptr);
+    set.residentWritable.resize(set.layout.TotalSlotCount, 0);
+    set.residentIndirectArguments.resize(set.layout.TotalSlotCount, 0);
     if (desc.debugName != nullptr)
     {
         set.debugName = desc.debugName;
+    }
+
+    if (!m_Capabilities.supportsBindlessResources)
+    {
+        const auto count = set.layout.TotalSlotCount;
+        set.directBuffers.resize(count);
+        set.directBufferOffsets.resize(count);
+        set.directTextures.resize(count);
+        set.directSamplers.resize(count);
+        set.directBufferSizes.resize(count);
+        set.sizeConstants = set.directBufferSizes.data();
+        std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
+        const auto handle = FromGeneric<DescriptorSetTag>(m_DescriptorSets.Create(std::move(set)));
+        if (desc.transient)
+            m_TransientDescriptorSets[m_FrameIndex.load(std::memory_order_relaxed)].push_back(handle);
+        return handle;
     }
 
     if (!desc.transient)
@@ -1357,7 +1415,7 @@ void MetalDevice::UpdateDescriptorSet(DescriptorSetHandle descriptorSet, const D
 {
     std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
     MetalDescriptorSet* set = m_DescriptorSets.Get(ToGeneric(descriptorSet));
-    if (set == nullptr || set->entries == nullptr)
+    if (set == nullptr || (set->entries == nullptr && set->directBuffers.empty()))
     {
         return;
     }
@@ -1367,11 +1425,19 @@ void MetalDevice::UpdateDescriptorSet(DescriptorSetHandle descriptorSet, const D
         Logger::Log::Error("MetalDevice::UpdateDescriptorSet: binding {} not in layout", update.binding);
         return;
     }
+    const size_t remaining = update.arrayElement < slot->Count ? slot->Count - update.arrayElement : 0;
+    if (update.type != slot->Type || update.buffers.size() > remaining || update.textures.size() > remaining
+        || update.textureViews.size() > remaining || update.samplers.size() > remaining
+        || update.accelerationStructures.size() > remaining)
+    {
+        Logger::Log::Error("Metal descriptor update does not fit binding {}.", update.binding);
+        return;
+    }
     uint64_t* entries = set->entries;
     set->residentsDirty = true;
 
     auto setResident = [&](uint32_t slotId, MTL::Resource* resource, bool writable, bool indirectArguments) {
-        if (slotId < set->residentResources.Size())
+        if (slotId < set->residentResources.size())
         {
             set->residentResources[slotId] = resource;
             set->residentWritable[slotId] = writable ? 1 : 0;
@@ -1389,11 +1455,18 @@ void MetalDevice::UpdateDescriptorSet(DescriptorSetHandle descriptorSet, const D
             continue;
         }
         const size_t offset = i < update.bufferOffsets.size() ? update.bufferOffsets[i] : 0;
+        if (offset > buf->size) continue;
         const size_t range = i < update.bufferRanges.size() && update.bufferRanges[i] > 0
                                  ? update.bufferRanges[i]
                                  : buf->size - offset;
+        if (range > buf->size - offset) continue;
         const uint32_t slotId = slot->BufferId + update.arrayElement + static_cast<uint32_t>(i);
-        entries[slotId] = buf->buffer->gpuAddress() + offset;
+        if (!set->directBuffers.empty())
+        {
+            set->directBuffers[slotId] = buf->buffer;
+            set->directBufferOffsets[slotId] = offset;
+        }
+        else entries[slotId] = buf->buffer->gpuAddress() + offset;
         if (slotId < set->layout.TotalSlotCount)
         {
             sizeConstants[slotId] = static_cast<uint32_t>(range);
@@ -1422,7 +1495,8 @@ void MetalDevice::UpdateDescriptorSet(DescriptorSetHandle descriptorSet, const D
             continue;
         }
         const uint32_t slotId = slot->TextureId + update.arrayElement + static_cast<uint32_t>(i);
-        entries[slotId] = texture->gpuResourceID()._impl;
+        if (!set->directTextures.empty()) set->directTextures[slotId] = texture;
+        else entries[slotId] = texture->gpuResourceID()._impl;
         setResident(slotId, texture, update.type == DescriptorType::StorageImage, /*indirectArguments=*/false);
     }
 
@@ -1469,7 +1543,8 @@ void MetalDevice::UpdateDescriptorSet(DescriptorSetHandle descriptorSet, const D
             continue;
         }
         const uint32_t slotId = slot->SamplerId + update.arrayElement + static_cast<uint32_t>(i);
-        entries[slotId] = sampler->sampler->gpuResourceID()._impl;
+        if (!set->directSamplers.empty()) set->directSamplers[slotId] = sampler->sampler;
+        else entries[slotId] = sampler->sampler->gpuResourceID()._impl;
         // Samplers need no residency.
     }
 }
@@ -1489,7 +1564,7 @@ void MetalDevice::DestroyDescriptorSet(DescriptorSetHandle descriptorSet)
     set->argumentBuffer = nullptr;
     set->entries = nullptr;
     set->sizeConstants = nullptr;
-    set->residentResources.Clear();
+    set->residentResources.clear();
     set->extraResidentReads.clear();
     m_DescriptorSets.Destroy(ToGeneric(descriptorSet));
 }

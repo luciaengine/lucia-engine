@@ -31,7 +31,11 @@ bool VolumetricFogNode::Initialize(std::string nodeId, std::string nodeJson, std
         return false;
     }
 
-    InitializePostWorldDepthResolve(m_PostWorldDepthResolve, "VolumetricFog.PostWorldDepthResolve");
+    m_PostWorldDepthResolve.Initialize(
+        "VolumetricFog.PostWorldDepthResolve",
+        std::string(R"({"output":")") + Names::View::DepthResolvedPostOcean +
+            R"(","poolName":"Pipeline.DepthResolvedPostOcean.View"})",
+        nullptr);
     return true;
 }
 
@@ -87,10 +91,15 @@ void VolumetricFogNode::DeclareForView(ViewDeclare& d)
 
     // EFFECTIVE depth: the view depth after the world and the water. The ocean surface step
     // publishes it when the water draws (the fog then uses the water's own distance, not the sky
-    // behind the transparent ocean), and the reflections when they trace; otherwise resolve it
-    // here, after every world depth writer, so fragments written after the prepass copy are not
-    // fogged as the far plane. Fall back to the early resolved depth, then the raw view depth.
-    RenderGraph::RGTexture depthForFog = DeclarePostWorldDepth(d, m_PostWorldDepthResolve);
+    // behind the transparent ocean); otherwise resolve it here, after every world depth writer, so
+    // fragments written after the prepass copy are not fogged as the far plane. Fall back to the
+    // early resolved depth, then the raw view depth.
+    RenderGraph::RGTexture depthForFog = d.ResolveTexture(Names::View::DepthResolvedPostOcean);
+    if (!depthForFog.IsValid())
+    {
+        m_PostWorldDepthResolve.DeclareForView(d);
+        depthForFog = d.ResolveTexture(Names::View::DepthResolvedPostOcean);
+    }
     if (!depthForFog.IsValid())
         depthForFog = d.ViewDepthResolved.IsValid() ? d.ViewDepthResolved : d.ViewDepth;
     feature->DeclareForView(d, sceneColor, depthForFog);

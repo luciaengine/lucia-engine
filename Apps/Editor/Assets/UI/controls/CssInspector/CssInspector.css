@@ -1,0 +1,60 @@
+/* CssInspector (Apps/Editor/Modules/CssInspector/CssInspector.h).
+ *
+ * The Ctrl+I hover card and the outline around the inspected element. CssInspector
+ * requests this sheet on both elements it adds to the window root. The C++ sets only
+ * their per-frame placement and visibility, their pointer-events (off from the first
+ * frame, before this sheet resolves), and each colour chip's own colour.
+ */
+
+/* Outline around the inspected element's border box. */
+.css-inspector-highlight {
+	position: absolute;
+	left: 0px;
+	top: 0px;
+	z-index: 9998;
+	background-color: transparent;
+	border-width: 2px;
+	border-color: var(--ui_color_css_inspector_outline);
+}
+
+/* Hover card that follows the pointer. */
+.css-inspector-card {
+	position: absolute;
+	left: 0px;
+	top: 0px;
+	z-index: 9999;
+	background-color: var(--ui_color_css_inspector_card);
+	border-radius: var(--ui_radius_md);
+	padding: 16px;
+}
+
+.css-inspector-lines {
+	display: flex;
+	flex-direction: column;
+}
+
+.css-inspector-line {
+	display: flex;
+	flex-direction: row;
+}
+
+/* Property names, punctuation and headings. */
+.css-inspector-label {
+	font-size: 14px;
+	color: var(--ui_color_text_soft);
+}
+
+/* Selectors and property values. */
+.css-inspector-value {
+	font-size: 14px;
+	color: var(--ui_color_text_bright);
+}
+
+/* Chip before a colour value; its fill is the value itself. */
+.css-inspector-swatch {
+	width: 14px;
+	height: 14px;
+	margin-right: 4px;
+	border-width: 1px;
+	border-color: var(--ui_color_swatch_border);
+}

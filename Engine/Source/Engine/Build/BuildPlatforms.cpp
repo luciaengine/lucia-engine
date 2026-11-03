@@ -8,11 +8,11 @@ namespace {
 
 constexpr std::array<BuildPlatformInfo, 7> kBuildPlatforms = {{
     {"Windows", "Windows", "1.0", true, true, "platform-row"},
-    {"Nintendo", "Nintendo", ".", false, false, "platform-row"},
-    {"Sony", "Sony", ".", false, false, "platform-row"},
     {"Steam", "Steam Deck", ".", false, true, "platform-row"},
     {"Linux", "Linux", ".", false, true, "platform-linux-row"},
     {"Mac", "Mac", ".", false, true, "platform-row"},
+    {"Android", "Android", "1.0", false, true, "platform-row"},
+    {"iOS", "iOS", "1.0", false, true, "platform-row"},
     {kWebBuildPlatformName, "Web", ".", false, true, "platform-row"},
 }};
 

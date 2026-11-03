@@ -1,15 +1,14 @@
 #include "Engine/Rendering/RetargetGPUDataStore.h"
 
 #include "Animation/AnimationClip.h"
-#include "Animation/Humanoid/HumanoidRig.h"
+#include "Animation/HumanoidRig.h"
 #include "Animation/Nodes/RetargetNode.h"
-#include "Animation/Skeleton/SkeletonData.h"
+#include "Animation/SkeletonData.h"
 #include "AssetCore/AssetEvents.h"
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/GUID.h"
 #include "Logger/Logger.h"
-#include "Mathematics/Interpolation.h"
-#include "Memory/TrackedBytes.h"
+#include "Memory/AllocationCategory.h"
 #include "Rendering/Core/Device.h"
 
 #include <algorithm>
@@ -19,9 +18,6 @@ namespace GameEngine { namespace Engine { namespace Renderer {
 
 namespace
 {
-
-// The resident bytes of every live store, summed: each store reports its own changes.
-Memory::TrackedBytes s_ResidentBytes{"Animation.RetargetGPUData", Memory::Residency::Gpu};
 
 // GUID -> 64-bit hash key for the per-asset upload tables. GUID is 128 bits;
 // folding to 64 with a multiplicative mix is collision-safe for our cardinality
@@ -130,7 +126,7 @@ Mathematics::Quaternion SampleRotation(const Animation::AnimChannel& ch, float t
     const auto& hi = *it;
     const auto& lo = *(it - 1);
     const float dt = std::max(1e-6f, hi.time - lo.time);
-    const float a = Math::Clamp01((time - lo.time) / dt);
+    const float a = std::clamp((time - lo.time) / dt, 0.0f, 1.0f);
     const Mathematics::Quaternion qLo(glm::quat(lo.rotation[3], lo.rotation[0], lo.rotation[1], lo.rotation[2]));
     const Mathematics::Quaternion qHi(glm::quat(hi.rotation[3], hi.rotation[0], hi.rotation[1], hi.rotation[2]));
     return ShortLerp(qLo, qHi, a);
@@ -154,7 +150,7 @@ Mathematics::Vector3 SampleTranslation(const Animation::AnimChannel& ch, float t
     const auto& hi = *it;
     const auto& lo = *(it - 1);
     const float dt = std::max(1e-6f, hi.time - lo.time);
-    const float a = Math::Clamp01((time - lo.time) / dt);
+    const float a = std::clamp((time - lo.time) / dt, 0.0f, 1.0f);
     return LerpVec3(
         Mathematics::Vector3(lo.translation[0], lo.translation[1], lo.translation[2]),
         Mathematics::Vector3(hi.translation[0], hi.translation[1], hi.translation[2]),
@@ -178,7 +174,7 @@ bool RetargetGPUDataStore::Initialize(GameEngine::Rendering::IDevice* device)
     m_RigBufCapacity = 0;
     m_CharsBufCapacity = 0;
 
-    UpdateResidentBytes();
+    UpdateCategoryBytes();
     return true;
 }
 
@@ -201,11 +197,6 @@ void RetargetGPUDataStore::ReprovisionAfterDeviceRebuild()
     m_RigDirty   = !m_RigData.empty();
     m_CharsDirty = !m_Chars.empty();
     FlushIfDirty();
-}
-
-RetargetGPUDataStore::~RetargetGPUDataStore()
-{
-    s_ResidentBytes.Subtract(m_ResidentBytes);
 }
 
 void RetargetGPUDataStore::Shutdown()
@@ -237,7 +228,7 @@ void RetargetGPUDataStore::Shutdown()
     m_ActiveCharCount = 0;
     m_DispatchScheduledThisFrame = false;
     m_Device = nullptr;
-    UpdateResidentBytes();
+    UpdateCategoryBytes();
 }
 
 void RetargetGPUDataStore::BeginFrame(uint32_t /*frameIndex*/)
@@ -414,7 +405,7 @@ uint32_t RetargetGPUDataStore::EnsureClipUploaded(const GUID& guid, const Animat
     // [clipHeaderIdx + 0] and [clipHeaderIdx + 1].
     m_ClipGuidToHeaderIdx[key] = headerVec4Off;
     m_ClipDirty = true;
-    UpdateResidentBytes();
+    UpdateCategoryBytes();
     return headerVec4Off;
 }
 
@@ -577,7 +568,7 @@ uint32_t RetargetGPUDataStore::EnsureRigPairUploaded(const GUID& mapGuid,
 
     m_RigGuidToHeaderIdx[key] = headerVec4Off;
     m_RigDirty = true;
-    UpdateResidentBytes();
+    UpdateCategoryBytes();
     return headerVec4Off;
 }
 
@@ -640,7 +631,7 @@ void RetargetGPUDataStore::AppendCharacterParams(std::span<const GPURetargetChar
     m_Chars.insert(m_Chars.end(), params.begin(), params.end());
     m_ActiveCharCount = static_cast<uint32_t>(m_Chars.size());
     m_CharsDirty = true;
-    UpdateResidentBytes();
+    UpdateCategoryBytes();
 }
 
 GameEngine::Rendering::BufferHandle RetargetGPUDataStore::CreateOrGrowBuffer(
@@ -717,11 +708,15 @@ void RetargetGPUDataStore::FlushIfDirty()
         m_CharsDirty = false;
     }
 
-    UpdateResidentBytes();
+    UpdateCategoryBytes();
 }
 
-void RetargetGPUDataStore::UpdateResidentBytes()
+void RetargetGPUDataStore::UpdateCategoryBytes()
 {
+    using ::GameEngine::Memory::AllocationCategory;
+    using ::GameEngine::Memory::TrackAllocation;
+    using ::GameEngine::Memory::TrackDeallocation;
+
     const uint64_t cpuBytes =
         m_ClipData.size() * sizeof(uint32_t)
       + m_RigData.size() * sizeof(uint32_t)
@@ -733,9 +728,9 @@ void RetargetGPUDataStore::UpdateResidentBytes()
     const uint64_t newBytes = std::max(cpuBytes, devBytes);
 
     if (newBytes > m_ResidentBytes)
-        s_ResidentBytes.Add(newBytes - m_ResidentBytes);
+        TrackAllocation(AllocationCategory::Animation, newBytes - m_ResidentBytes);
     else if (newBytes < m_ResidentBytes)
-        s_ResidentBytes.Subtract(m_ResidentBytes - newBytes);
+        TrackDeallocation(AllocationCategory::Animation, m_ResidentBytes - newBytes);
     m_ResidentBytes = newBytes;
 }
 

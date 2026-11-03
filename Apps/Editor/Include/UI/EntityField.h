@@ -16,9 +16,7 @@ namespace ECS { class World; }
 /// Inspector field for selecting an entity reference (EntityHandle).
 ///
 /// Displays the referenced entity's Name (falling back to "Entity <id>", or
-/// "None" when unset/invalid) and supports:
-///   - The picker button: a SearchDialog of the world's entities
-///   - A click on the field: reveals the entity (SetOnReveal), or opens the picker
+/// "(None)" when unset/invalid) and supports:
 ///   - Drag-drop of a HierarchyEntityDragPayload (drag an entity from the Hierarchy)
 ///   - Clear button to remove the reference
 ///   - An optional required-components filter: only entities that have ALL of the
@@ -34,7 +32,6 @@ class EntityField : public ReferenceFieldBase
 {
 public:
     using ValueChangedCallback = std::function<void(ECS::EntityHandle newValue)>;
-    using RevealCallback = std::function<void(ECS::EntityHandle entity)>;
 
     EntityField();
 
@@ -51,11 +48,6 @@ public:
     /// Callback invoked when the value changes (drop or clear).
     void SetOnValueChanged(ValueChangedCallback cb) { m_OnValueChanged = std::move(cb); }
 
-    /// A click on the field calls \p cb with the referenced entity, so the owner can
-    /// select it, and the name reads as a link. Without it, or while the field holds
-    /// no valid entity, a click opens the picker.
-    void SetOnReveal(RevealCallback cb);
-
     /// Restrict accepted entities to those that have ALL of these components
     /// (empty = any entity). Drops failing the filter are rejected.
     void SetRequiredComponents(std::vector<ECS::ComponentTypeId> required);
@@ -71,8 +63,6 @@ protected:
     void PositionDialog(SearchDialog& dialog) override;
     SearchItemId CurrentResultId() const override;
     void OnClearRequested() override { Clear(); }
-    bool CanReveal() const override;
-    void Reveal() override;
 
 private:
     void UpdateDisplay();
@@ -83,7 +73,6 @@ private:
     ECS::EntityHandle m_Value;
     std::vector<ECS::ComponentTypeId> m_Required;
     ValueChangedCallback m_OnValueChanged;
-    RevealCallback m_OnReveal;
 };
 
 } // namespace GameEngine

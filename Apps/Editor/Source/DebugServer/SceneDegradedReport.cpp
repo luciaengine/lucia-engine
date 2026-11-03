@@ -1,6 +1,5 @@
 #include "SceneDegradedReport.h"
 
-#include <algorithm>
 #include <cstddef>
 #include <utility>
 
@@ -8,8 +7,7 @@ namespace GameEngine::Editor
 {
 
 nlohmann::json BuildSceneDegradedReport(const std::optional<SceneLoadDegraded>& atLoad,
-                                        const std::optional<SceneLoadDegraded>& outstanding,
-                                        std::size_t skipsOffset)
+                                        const std::optional<SceneLoadDegraded>& outstanding)
 {
     if (!atLoad.has_value())
         return nlohmann::json();
@@ -17,12 +15,8 @@ nlohmann::json BuildSceneDegradedReport(const std::optional<SceneLoadDegraded>& 
     nlohmann::json skips = nlohmann::json::array();
     if (outstanding.has_value())
     {
-        const auto& rows = outstanding->Census.skips;
-        const std::size_t first = std::min(skipsOffset, rows.size());
-        const std::size_t last = first + std::min(kSceneDegradedSkipsPerPage, rows.size() - first);
-        for (std::size_t index = first; index < last; ++index)
+        for (const Scene::SceneLoadSkip& skip : outstanding->Census.skips)
         {
-            const Scene::SceneDegradation::Skip& skip = rows[index];
             skips.push_back(nlohmann::json{{"entity", skip.entityId},
                                            {"component", skip.component},
                                            {"field", skip.field},
@@ -37,8 +31,7 @@ nlohmann::json BuildSceneDegradedReport(const std::optional<SceneLoadDegraded>& 
         {"path", atLoad->DocumentPath.string()},
         {"loadTimeCount", atLoad->SkippedCount()},
         {"outstandingCount", outstanding.has_value() ? outstanding->SkippedCount() : std::size_t{0}},
-        {"droppedCount", outstanding.has_value() ? outstanding->DroppedCount() : std::size_t{0}},
-        {"skipsOffset", skipsOffset},
+        {"droppedCount", atLoad->DroppedCount()},
         {"skips", std::move(skips)}};
 }
 

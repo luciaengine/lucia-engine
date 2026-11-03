@@ -30,8 +30,9 @@
 
 namespace GameEngine { namespace Rendering { namespace SlangLane {
 
-// GE_SHADER_SLANG_LANE is set (and not "0"). Read fresh on every call so tests
-// can toggle it in-process; never called from per-frame code.
+// GE_SHADER_SLANG_LANE is on (Platform::EnvironmentSwitchEnabled, default off).
+// Read fresh on every call so tests can toggle it in-process; never called from
+// per-frame code.
 bool Enabled();
 
 // Enabled() + GE_SLANGC resolves to an existing file + a version probe

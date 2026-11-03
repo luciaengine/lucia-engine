@@ -1,10 +1,9 @@
 #include <gtest/gtest.h>
 
-#include "Components/GameLogicGraphRef.h"
 #include "Components/Measure/MeasureComponent.h"
 #include "Components/Spline/SplineComponent.h"
-#include "ECS/Component/ComponentFactory.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFactory.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "Scene/SceneSchemaRegistry.h"
 
@@ -35,7 +34,6 @@ TEST_F(SceneSchemaOwnership, TokenOwnedTypeHasOneSchemaReachedByItsToken)
     const Owned owned[] = {
         {"Spline", "SplineComponent", ECS::GetComponentTypeId<Components::SplineComponent>()},
         {"Measure", "MeasureComponent", ECS::GetComponentTypeId<Components::MeasureComponent>()},
-        {"GameLogicGraph", "GameLogicGraphRef", ECS::GetComponentTypeId<Components::GameLogicGraphRef>()},
     };
     for (const Owned& o : owned)
     {
@@ -58,7 +56,7 @@ TEST_F(SceneSchemaOwnership, RegistrationLookupNeverSynthesizesAReflectionSchema
     // A reflected type with no hand-written schema: the loader reaches it through the reflection
     // fallback, but a registration guard must not mistake that fallback for a registered schema.
     const char* reflectedOnly = nullptr;
-    for (const char* candidate : {"SkeletonRef", "AnimatorRef"})
+    for (const char* candidate : {"SkeletonRef", "AnimatorRef", "RenderLayer"})
     {
         const ECS::ComponentTypeId typeId = ECS::ComponentFieldRegistry::FindByName(candidate);
         if (typeId != 0 && Scene::SceneSchemaRegistry::FindForComponentType(typeId) == nullptr &&

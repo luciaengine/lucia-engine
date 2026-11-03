@@ -16,7 +16,7 @@ class CollapseArrowElement : public UIElement {
 public:
     CollapseArrowElement()
     {
-        Style()
+        Overrides()
             .Set(Style::Position, PositionType::Absolute)
             .Set(Style::PositionRight, StyleLength::Px(8.0f))
             .Set(Style::PositionBottom, StyleLength::Px(-6.0f))
@@ -74,9 +74,9 @@ void InspectorSection::SetHeaderIconTint(uint32_t argb)
     if (!m_Icon)
         return;
     if (argb == 0)
-        m_Icon->Style().Reset(Style::BackgroundTint);
+        m_Icon->Overrides().Reset(Style::BackgroundTint);
     else
-        m_Icon->Style().Set(Style::BackgroundTint, argb);
+        m_Icon->Overrides().Set(Style::BackgroundTint, argb);
     m_Icon->MarkDirty(StyleDirty | VisualDirty);
 }
 
@@ -101,7 +101,7 @@ const std::string& InspectorSection::AssignHeaderIconId(const std::string& id)
     return id;
 }
 
-void InspectorSection::SetHeaderBadge(const std::string& text, const std::string& tooltip, BadgeKind kind)
+void InspectorSection::SetHeaderBadge(const std::string& text, const std::string& tooltip)
 {
     if (!m_HeaderRow)
         return;
@@ -112,7 +112,8 @@ void InspectorSection::SetHeaderBadge(const std::string& text, const std::string
         badge->AddClass("inspector-section-header-badge");
         m_HeaderBadge = badge.get();
 
-        // Insert just before the options affordance so the badge follows the title.
+        // Insert just before the options affordance so the badge sits on the
+        // right of the title (the title flex-grows and pushes it over).
         const auto& children = m_HeaderRow->GetChildren();
         size_t insertIndex = children.size();
         for (size_t i = 0; i < children.size(); ++i)
@@ -128,29 +129,15 @@ void InspectorSection::SetHeaderBadge(const std::string& text, const std::string
 
     m_HeaderBadge->SetText(text);
     m_HeaderBadge->SetTooltip(tooltip);
-    m_HeaderBadge->RemoveClass("inspector-section-header-badge-error");
-    m_HeaderBadge->RemoveClass("inspector-section-header-badge-success");
-    m_HeaderBadge->RemoveClass("inspector-section-header-badge-neutral");
-    m_HeaderBadge->RemoveClass("inspector-section-header-badge-override");
-    if (kind == BadgeKind::Error)
-        m_HeaderBadge->AddClass("inspector-section-header-badge-error");
-    else if (kind == BadgeKind::Success)
-        m_HeaderBadge->AddClass("inspector-section-header-badge-success");
-    else if (kind == BadgeKind::Neutral)
-        m_HeaderBadge->AddClass("inspector-section-header-badge-neutral");
-    else if (kind == BadgeKind::Override)
-        m_HeaderBadge->AddClass("inspector-section-header-badge-override");
     if (text.empty())
     {
         m_HeaderBadge->AddClass("hidden");
-        if (m_TitleLabel)
-            m_TitleLabel->RemoveClass("inspector-section-header-badged");
+        m_HeaderRow->RemoveClass("has-header-badge");
     }
     else
     {
         m_HeaderBadge->RemoveClass("hidden");
-        if (m_TitleLabel)
-            m_TitleLabel->AddClass("inspector-section-header-badged");
+        m_HeaderRow->AddClass("has-header-badge");
     }
 }
 
@@ -302,29 +289,6 @@ void InspectorSection::SetShowEnabledToggle(bool show)
     if (!show)
         m_EnabledTogglePlaceholder = false;
     RefreshEnabledDotPresentation();
-}
-
-void InspectorSection::SetOverridden(bool overridden)
-{
-    if (!m_HeaderRow)
-        return;
-    if (overridden)
-        m_HeaderRow->AddClass("inspector-section-header-row-overridden");
-    else
-        m_HeaderRow->RemoveClass("inspector-section-header-row-overridden");
-}
-
-void InspectorSection::Fade()
-{
-    AddClass("inspector-section-faded");
-    if (m_Icon)
-        m_Icon->AddClass("inspector-section-icon-faded");
-}
-
-void InspectorSection::HideOptions()
-{
-    if (m_Options)
-        m_Options->AddClass("hidden");
 }
 
 void InspectorSection::SetEnabledTogglePlaceholder(bool placeholder)
@@ -731,7 +695,7 @@ bool InspectorSection::IsPointInHeader(float x, float y) const
 
 bool InspectorSection::IsPointInOptions(float x, float y) const
 {
-    if (!m_Options || m_Options->HasClass("hidden"))
+    if (!m_Options)
         return false;
     float ox = m_Options->GetLayoutX();
     float oy = m_Options->GetLayoutY();

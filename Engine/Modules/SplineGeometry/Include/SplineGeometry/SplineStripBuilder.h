@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Mathematics/Vector2.h"
 #include "Mathematics/Vector3.h"
 #include "SplineGeometry/SplineProfile.h"
 #include "SplineGeometry/SplineStation.h"
@@ -71,11 +70,9 @@ struct SplineStripParams
     // |x| wherever U reads a face turn: a sweep built in a placer's local space
     // and measured in world metres passes the placer's scale.
     float32 LateralMetresPerUnit = 1.0f;
-    // Whether the first and the last ring get an end cap. Honoured only for a
-    // closed profile. An open strip has no polygon to triangulate and capping
-    // it would emit a degenerate sliver.
-    bool CapStart = true;
-    bool CapEnd = true;
+    // Honoured only for a closed profile. An open strip has no polygon to
+    // triangulate and capping it would emit a degenerate sliver.
+    bool GenerateCaps = true;
     // Finite: the side faces (those whose edge normal is more lateral than
     // vertical) and the caps take V as the vertex's height above this datum
     // times TilesPerMetreV, so coursed stone stays level on a slope and meets
@@ -124,22 +121,5 @@ struct SplineStripMesh
 [[nodiscard]] SplineStripMesh BuildSplineStrip(const SplineProfile& profile,
                                                std::span<const SplineStripStation> stations,
                                                const SplineStripParams& params);
-
-// How a strip scales its profile at one station. A point scales across by the factor of the side of
-// travel its x falls on, and its height by the same factor when ScaleVertical is set. Rise multiplies
-// every height above zero.
-struct SplineStripScale
-{
-    float32 Left = 1.0f;
-    float32 Right = 1.0f;
-    bool ScaleVertical = false;
-    float32 Rise = 1.0f;
-};
-
-// The V of each point of `profile` under `scale`, in meters before tiling: the scaled profile's
-// perimeter from its first point. Writes the scaled points to `scaledPoints` and the V values to
-// `pointV`; each span holds one entry per profile point.
-void StripProfileV(const SplineProfile& profile, const SplineStripScale& scale,
-                   std::span<Mathematics::Vector2> scaledPoints, std::span<float32> pointV);
 
 } // namespace GameEngine::SplineGeometry

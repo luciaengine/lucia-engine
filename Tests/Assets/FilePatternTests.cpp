@@ -19,8 +19,6 @@ using namespace GameEngine;
 namespace
 {
 constexpr auto kEventDeadline = std::chrono::seconds(10);
-// Lets the test thread enter a blocking call before another thread releases it.
-constexpr auto kGateDelay = std::chrono::milliseconds(200);
 
 /// Rewrites @p file until @p done holds or kEventDeadline passes. One write can
 /// be lost to the watcher's arming window, so a single write would decide by luck.
@@ -525,9 +523,11 @@ TEST(FileWatchingService, CallbackCanRemoveTheLastSubscriptionOnItsWatcher)
     fs::remove_all(root, ec);
 }
 
-// Unsubscribe waits only for its own subscription's calls. The other subscription drops
-// its handle in its callback and keeps running, so this unsubscribe empties the watcher.
-// The service parks the emptied watcher and does not join it; StopWatching joins it.
+// Unsubscribe waits only for its own subscription's calls. The other
+// subscription on the watcher drops its own handle inside its callback and
+// keeps running, so unsubscribing the remaining one empties the watcher.
+// Joining the watcher thread there would wait for the other subscription's
+// callback; the emptied watcher is parked instead and StopWatching joins it.
 TEST(FileWatchingService, UnsubscribeDoesNotWaitForAnotherSubscriptionsCallback)
 {
     namespace fs = std::filesystem;
@@ -546,7 +546,6 @@ TEST(FileWatchingService, UnsubscribeDoesNotWaitForAnotherSubscriptionsCallback)
     std::promise<void> gate;
     const std::shared_future<void> gateOpen = gate.get_future().share();
     std::atomic<int> runningCalls{0};
-    std::atomic<bool> callbackReturned{false};
 
     std::optional<FileWatchSubscription> remaining;
     remaining.emplace(service.Subscribe(FilePattern(root, ".*", {".txt"}, true), [](const FileChangeEvent&) {}));
@@ -559,7 +558,6 @@ TEST(FileWatchingService, UnsubscribeDoesNotWaitForAnotherSubscriptionsCallback)
             running.reset();
             entered.set_value();
             gateOpen.wait();
-            callbackReturned = true;
         }));
     ASSERT_EQ(service.GetStats().TotalDirectories, before.TotalDirectories + 1)
         << "both subscriptions must share one watcher";
@@ -583,11 +581,7 @@ TEST(FileWatchingService, UnsubscribeDoesNotWaitForAnotherSubscriptionsCallback)
 
     const bool returnedWhileOtherRuns =
         unsubscribedFuture.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
-    // The gate opens after StopWatching starts, so StopWatching must wait for the callback.
-    std::thread gateOpener([&gate] {
-        std::this_thread::sleep_for(kGateDelay);
-        gate.set_value();
-    });
+    gate.set_value();
     if (unsubscribedFuture.wait_for(kEventDeadline) != std::future_status::ready)
         AbortOnDeadlock("Unsubscribe did not return after the other subscription's callback returned");
     unsubscriber.join();
@@ -598,83 +592,7 @@ TEST(FileWatchingService, UnsubscribeDoesNotWaitForAnotherSubscriptionsCallback)
 
     // Joins the parked watcher.
     service.StopWatching();
-    EXPECT_TRUE(callbackReturned.load()) << "StopWatching returned before the parked watcher's thread";
-    gateOpener.join();
     EXPECT_EQ(runningCalls.load(), 1);
 
-    fs::remove_all(root, ec);
-}
-
-
-TEST(FileWatchingService, StopWatchingOwnsTheWatchersItJoins)
-{
-    namespace fs = std::filesystem;
-
-    FileWatchingService& service = FileWatchingService::GetInstance();
-    service.StopWatching();
-
-    const auto before = service.GetStats();
-
-    const fs::path root = TestUtils::MakeUniqueTempDirectory("ge_filewatcher_stop_owns_join");
-    const fs::path runnerDir = root / "runner";
-    const fs::path leavingDir = root / "leaving";
-    const fs::path spareDir = root / "spare";
-    std::error_code ec;
-    fs::create_directories(runnerDir, ec);
-    fs::create_directories(leavingDir, ec);
-    fs::create_directories(spareDir, ec);
-
-    std::promise<void> entered;
-    std::future<void> enteredFuture = entered.get_future();
-    std::atomic<int> runningCalls{0};
-    std::atomic<bool> stopSeen{false};
-    std::atomic<bool> callbackReturned{false};
-
-    // The runner subscribes first. With MSVC's map order, StopWatching then joins the
-    // runner watcher before the leaving watcher.
-    std::optional<FileWatchSubscription> leaving;
-    std::optional<FileWatchSubscription> runner;
-    runner.emplace(service.Subscribe(
-        FilePattern(runnerDir, ".*", {".txt"}, true),
-        [&](const FileChangeEvent&) {
-            if (runningCalls.fetch_add(1) != 0)
-                return;
-            entered.set_value();
-            const auto deadline = std::chrono::steady_clock::now() + kEventDeadline;
-            while (service.IsWatching() && std::chrono::steady_clock::now() < deadline)
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            stopSeen = !service.IsWatching();
-            // During StopWatching: park the leaving watcher, let its thread return, then
-            // run another unsubscribe that collects parked watchers on this thread.
-            leaving.reset();
-            std::this_thread::sleep_for(kGateDelay);
-            {
-                const FileWatchSubscription spare =
-                    service.Subscribe(FilePattern(spareDir, ".*", {".txt"}, true), [](const FileChangeEvent&) {});
-            }
-            callbackReturned = true;
-        }));
-    leaving.emplace(service.Subscribe(FilePattern(leavingDir, ".*", {".txt"}, true), [](const FileChangeEvent&) {}));
-    ASSERT_EQ(service.GetStats().TotalDirectories, before.TotalDirectories + 2);
-
-    ASSERT_TRUE(service.StartWatching());
-    if (!RewriteUntil(runnerDir / "probe.txt", [&enteredFuture] {
-            return enteredFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
-        }))
-    {
-        service.StopWatching();
-        FAIL() << "no event reached the runner subscription, so no callback was running";
-    }
-
-    // Joins the runner while its callback removes the leaving watcher.
-    service.StopWatching();
-
-    EXPECT_TRUE(stopSeen.load()) << "the callback did not run during StopWatching";
-    EXPECT_TRUE(callbackReturned.load()) << "StopWatching returned before the runner's callback";
-    EXPECT_EQ(service.GetStats().TotalDirectories, before.TotalDirectories + 1)
-        << "only the runner watcher stays registered";
-    EXPECT_EQ(runningCalls.load(), 1);
-
-    runner.reset();
     fs::remove_all(root, ec);
 }

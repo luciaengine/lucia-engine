@@ -221,18 +221,6 @@ public static unsafe partial class CoreBridge
         catch { return -1; }
     }
 
-        /// <summary>
-        /// Swap the process's current runtime domain to <paramref name="newDomain"/>.
-        /// Returns 0 on success; non-zero on failure.
-        /// </summary>
-
-    [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-    public static int SwapRuntimeDomain(ulong newDomain)
-    {
-        try { var b = GetCurrentBinding(); return b?.TryScriptsDomainSwap(newDomain) ?? -1; }
-        catch { return -1; }
-    }
-
     /// <summary>
     /// Unload a managed scripting domain identified by domain id. Returns 0 on success.
     /// </summary>
@@ -1280,22 +1268,6 @@ HRM_READY:
                 return val is ulong u ? u : 0UL;
             }
             catch { return 0UL; }
-        }
-
-        /// <summary>
-        /// The number of C# components and systems the loaded scripts assembly defines
-        /// (HotReloadManager.CountScriptTypes); 0 when none is loaded or the count is unavailable.
-        /// </summary>
-        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
-        public static int GetCurrentScriptTypeCount()
-        {
-            try
-            {
-                if (!EnsureHotReloadTypeLoaded()) return 0;
-                var method = s_hotReloadType!.GetMethod("CountScriptTypes", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                return method?.Invoke(null, null) is int count ? count : 0;
-            }
-            catch { return 0; }
         }
 
         /// <summary>

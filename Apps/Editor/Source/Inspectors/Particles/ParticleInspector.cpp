@@ -9,16 +9,16 @@
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "InspectorRegistry.h"
 #include "Inspectors/DefaultComponentInspector.h"
-#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
-#include "Inspectors/InspectorComponent/InspectorComponentSection.h"
+#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponentSection.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "Inspectors/Particles/Controls/ParticlePreviewControls.h"
 #include "Inspectors/Particles/ParticleEmitterStackSection.h"
 #include "Inspectors/Particles/ParticleRendererInspector.h"
-#include "Inspectors/Particles/ParticleStack/ParticleStackInspector.h"
+#include "Inspectors/Particles/ParticleStackInspector.h"
 #include "Particles/Assets/ParticleStackAsset.h"
 #include "Particles/ParticleRuntime.h"
-#include "Particles/ParticleStack/ParticleStackDocument.h"
+#include "Particles/ParticleStackDocument.h"
 #include "SceneView/Gizmos/ParticleEmitterGizmo.h"
 #include "UI/Controls/Foldout.h"
 
@@ -181,29 +181,29 @@ void RegisterParticleComponentTraits()
     auto& registry = Editor::EditorComponentTraitsRegistry::Get();
     Editor::EditorComponentTraits emitter;
     emitter.DisplayName = "Particle Emitter";
-    emitter.InspectorCategory = "Rendering";
+    emitter.Category = "Rendering";
     emitter.InspectorIconClass = "inspector-section-icon-particles";
-    emitter.InspectorTooltip = "When and how fast the particles simulate, and the stack that says what they do";
+    emitter.Tooltip = "When and how fast the particles simulate, and the stack that says what they do";
     registry.Register(ECS::GetComponentTypeId<ParticleEmitter3D>(), emitter);
 
     auto renderer = emitter;
     renderer.DisplayName = "Particle Renderer";
-    renderer.InspectorTooltip = "How the emitter's particles draw";
+    renderer.Tooltip = "How the emitter's particles draw";
     registry.Register(ECS::GetComponentTypeId<Components::ParticleRenderer>(), std::move(renderer));
 
     auto collisions = emitter;
     collisions.DisplayName = "Particle Collision Events";
-    collisions.InspectorTooltip = "The particle collisions of the frame, for gameplay";
+    collisions.Tooltip = "The particle collisions of the frame, for gameplay";
     registry.Register(ECS::GetComponentTypeId<Components::ParticleCollisionEventsBuffer>(), std::move(collisions));
 
     auto budget = emitter;
     budget.DisplayName = "Particle World Settings";
-    budget.InspectorTooltip = "The most live particles every emitter in the world together simulates";
+    budget.Tooltip = "The most live particles every emitter in the world together simulates";
     registry.Register(ECS::GetComponentTypeId<Components::ParticleWorldSettings>(), std::move(budget));
 
     Editor::EditorComponentTraits playback;
     // The emitter inspector's preview controls show and drive it.
-    playback.HideInInspector = true;
+    playback.HiddenInInspector = true;
     registry.Register(ECS::GetComponentTypeId<Components::ParticlePlayback>(), std::move(playback));
 }
 

@@ -5,15 +5,13 @@ project(Pathfinding LANGUAGES CXX)
 add_library(Pathfinding OBJECT
     Source/PathBuffer.cpp
     Source/GridMap.cpp
-    Source/GridRegions.cpp
     Source/AStarSolver.cpp
-    Source/AStarSolverPool.cpp
     Source/HexGridHelpers.cpp
     Source/DetourNavMap.cpp
-    Source/NavSurfaceFile.cpp
     Source/ObstacleAvoidance.cpp
     Source/NavigationWorld.cpp
     Source/PathSmoother.cpp
+    Source/NavCacheManager.cpp
 )
 
 target_compile_features(Pathfinding PUBLIC cxx_std_20)
@@ -69,34 +67,24 @@ if(BUILD_TESTING)
         Tests/PathBufferTests.cpp
         Tests/GridMapTests.cpp
         Tests/AStarSolverTests.cpp
-        Tests/AStarSolverPoolTests.cpp
         Tests/HexGridHelpersTests.cpp
         Tests/NavigationWorldTests.cpp
         Tests/DetourNavMapTests.cpp
-        Tests/DetourNavMapChartTests.cpp
-        Tests/NavSurfaceFileTests.cpp
         Tests/PathSmootherTests.cpp
     )
     # CMake contributes an OBJECT library's .obj files only for DIRECT link
-    # dependencies, so Pathfinding's own PUBLIC OBJECT deps (and JobSystem's
-    # Memory) must be named again here or their definitions never reach the exe.
+    # dependencies, so Pathfinding's own PUBLIC OBJECT deps must be named again
+    # here or their definitions never reach the exe.
     target_link_libraries(PathfindingTests PRIVATE
         Pathfinding
         Logger
         JobSystem
-        Memory
         AssetCore
         FileSystemObjects
         GTest::gtest
         GTest::gtest_main
     )
     target_include_directories(PathfindingTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
-    # The chart tests hold raw Detour polygon references.
-    if(GE_PATHFINDING_BACKEND_DETOUR)
-        target_link_libraries(PathfindingTests PRIVATE RecastNavigation::Detour)
-    else()
-        set_source_files_properties(Tests/DetourNavMapChartTests.cpp PROPERTIES HEADER_FILE_ONLY ON)
-    endif()
     ge_set_output_tests(PathfindingTests)
     ge_stage_runtime_dependencies(PathfindingTests)
     add_test(NAME PathfindingTests COMMAND PathfindingTests)

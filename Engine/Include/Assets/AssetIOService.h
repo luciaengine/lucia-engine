@@ -3,7 +3,6 @@
 #include "AssetCore/Asset.h"
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/GUID.h"
-#include "Assets/AssetDecodeInputFiles.h"
 #include "Types/Types.h"
 #include <atomic>
 #include <condition_variable>
@@ -29,8 +28,7 @@ class AssetDecodeGate;
  *
  * Owns a small number of reader threads that do exactly one thing: claim the
  * highest-priority read request the decode gate admits, run the blocking file
- * read (including the hot-reload rename/write retry window) and the reads of the
- * files its decode needs besides (ResolveDecodeInputs), then submit the
+ * read (including the hot-reload rename/write retry window), then submit the
  * CPU continuation to the JobSystem as a JobPriority::Background job and forget. Blocking file
  * I/O never runs on JobSystem workers; the continuation's TaskHandle is the
  * load's completion and cancellation surface.
@@ -65,23 +63,16 @@ class AssetIOService
         uint64 RangeBytes = 0;
 
         // Shared cancel flag (the in-flight load's CancelRequested). Checked
-        // when a reader claims the request, after the read and before each of
-        // its decode inputs, and once more before the decode continuation is
-        // submitted: a cancelled request resolves through OnFailure and never
-        // produces a decode job. Null = not cancellable.
+        // when a reader claims the request and again after the read, before
+        // the decode continuation is submitted: a cancelled request resolves
+        // through OnFailure and never produces a decode job. Null = not
+        // cancellable.
         std::shared_ptr<std::atomic<bool>> CancelRequested;
 
         // Parses and registers the asset from the raw file bytes. Runs as a
         // JobPriority::Background pool job; the return value becomes the
         // continuation handle's result (null = processing failure).
         Function<SharedPtr<Asset>(Vector<uint8>)> ProcessData;
-
-        // The files ProcessData reads besides Metadata.Path (a texture's cooked artifact, a
-        // glTF's external buffers), resolved from the read bytes. Runs on the reader thread
-        // after the read; the reader reads each file and ProcessData's call tree takes them
-        // through ReadAssetDecodeInputFile (Assets/AssetDecodeInputFiles.h), and the plan the
-        // resolver returns with them through CurrentAssetDecodePlan. Null = none.
-        Function<AssetDecodeInputs(const Vector<uint8>&)> ResolveDecodeInputs;
 
         // Invoked on the reader thread right after the continuation is
         // submitted, with its TaskHandle — the caller's cancellation surface.
@@ -163,10 +154,9 @@ class AssetIOService
     // The gate caps how many pool workers asset work occupies at once. The
     // frame's ECS waves run on the SAME pool; Background priority only orders
     // the queue — it cannot preempt a running cook. A cold-asset storm (bulk
-    // import: hundreds of texture/model cooks) otherwise occupies every worker,
-    // and the main thread, which runs its own wave's jobs while it waits in
-    // SystemManager::UpdateWaveBased, runs every forked system of the frame
-    // serially for the storm's duration.
+    // import: hundreds of texture/model cooks) otherwise occupies every worker
+    // and the main thread parks in SystemManager::UpdateWaveBased for the
+    // storm's duration (observed live: 62-minute wedge, AppHangTransient).
     // Texture decodes, and the helper bands of their cooks, take only the gate's
     // texture share: a texture decode that misses the cook cache holds its slot
     // for the whole cook, minutes for a large texture, so without the share a
@@ -208,12 +198,6 @@ class AssetIOService
     // One seek + read of a request's byte range; non-throwing, as ReadFileWithRetry. No retry: a
     // range is read from a cooked store, which only its writer replaces, by rename.
     static bool ReadFileRange(const ReadRequest& request, Vector<uint8>& outData, String& outError);
-
-    // Reads each file the request's ResolveDecodeInputs names for `bytes` (a missing one is recorded as absent),
-    // checks the cancel flag before each read and after the last, and keeps the resolver's plan. False on a cancel,
-    // a resolver throw or a read's std::exception; `outError` names the file. No throw reaches the reader thread.
-    static bool ReadDecodeInputs(const ReadRequest& request, const Vector<uint8>& bytes,
-                                 AssetDecodeInputFiles& outFiles, String& outError);
 
     JobSystem::WorkStealingThreadPool* m_JobSystem = nullptr;
     std::shared_ptr<Admission> m_Admission = std::make_shared<Admission>();

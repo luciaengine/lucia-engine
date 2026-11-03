@@ -17,7 +17,7 @@
 
 #include "Assets/TerrainMaterialLibraryAsset.h"
 #include "Components/Terrain/Terrain.h"
-#include "Terrain/TerrainMaterialLibraryInspector.h"
+#include "Inspectors/TerrainMaterialLibraryInspector.h"
 #include "Platform/SystemMetrics.h"
 #include "Terrain/TerrainRoleMaterials.h"
 #include "UI/Controls/Button.h"
@@ -79,12 +79,12 @@ std::string RoleRowId(int role, const char* suffix)
 
 Label* RoleRowName(UIElement& root, int role)
 {
-    return dynamic_cast<Label*>(root.FindById(HashStringId(RoleRowId(role, "-name"))));
+    return dynamic_cast<Label*>(root.FindById(RoleRowId(role, "-name")));
 }
 
 Dropdown* RoleRowPicker(UIElement& root, int role)
 {
-    return dynamic_cast<Dropdown*>(root.FindById(HashStringId(RoleRowId(role, "-material"))));
+    return dynamic_cast<Dropdown*>(root.FindById(RoleRowId(role, "-material")));
 }
 
 std::string CardId(int slot, const char* suffix)
@@ -381,7 +381,7 @@ TEST(TerrainRoleMaterials, TheGridIsOneCardPerLiveMaterialThenTheAddTile)
     UIElement root("div");
     UIElement* grid = Roles::AddMaterialGrid(&root, &library, {}, {});
     ASSERT_NE(grid, nullptr);
-    EXPECT_EQ(root.FindById("terrain-material-grid"_sid), grid);
+    EXPECT_EQ(root.FindById("terrain-material-grid"), grid);
 
     const auto& cells = grid->GetChildren();
     ASSERT_EQ(cells.size(), 3u) << "two live materials and the add tile";
@@ -389,20 +389,23 @@ TEST(TerrainRoleMaterials, TheGridIsOneCardPerLiveMaterialThenTheAddTile)
     EXPECT_EQ(cells[1]->GetId(), CardId(7, "-card"));
     EXPECT_EQ(cells[2]->GetId(), "terrain-material-add") << "the add tile is not last";
 
-    EXPECT_EQ(root.FindById(HashStringId(CardId(4, "-card"))), nullptr) << "a retired material has a card";
+    EXPECT_EQ(root.FindById(CardId(4, "-card")), nullptr) << "a retired material has a card";
 
     // Wrapping is what makes the grid answer to the panel's width; a single row that overflows is
-    // the failure a fixed card width otherwise guarantees.
-    EXPECT_EQ(grid->Style().Get(Style::FlexWrap), std::optional<bool>(true));
+    // the failure a fixed card width otherwise guarantees. .terrain-role-material-grid wraps it.
+    EXPECT_TRUE(grid->HasClass("terrain-role-material-grid"));
 }
 
 // The row has to reach the width the fields beside it reach. Cards of one fixed width divide it
 // with a remainder, and the remainder showed as a dead third on the right of the only row.
 //
-// BOUNDARY: this asserts the inputs Yoga wraps and distributes on — the grid's stretch and wrap,
-// and each cell's basis, growth and cap. It does NOT measure the laid-out result: no layout pass
-// runs in this process, so the number of rows at a given panel width is not observable here and is
-// not claimed.
+// The stretch, the wrap and each cell's basis, growth and cap are the stylesheet's
+// (.terrain-role-material-grid and .terrain-role-material-card in inspector.css). This asserts
+// that every cell takes the card class and that code no longer sizes a cell itself: a size set
+// from code would beat the stylesheet, and the two would drift.
+//
+// BOUNDARY: no stylesheet is loaded and no layout pass runs in this process, so the number of
+// rows at a given panel width is not observable here and is not claimed.
 TEST(TerrainRoleMaterials, CardsShareOutTheRowRatherThanLeavingItShort)
 {
     TerrainMaterialLibraryAsset library(GUID(kLibraryGuid), "Assets/Lib.terrainmatlib");
@@ -413,30 +416,18 @@ TEST(TerrainRoleMaterials, CardsShareOutTheRowRatherThanLeavingItShort)
     UIElement root("div");
     UIElement* grid = Roles::AddMaterialGrid(&root, &library, {}, {});
     ASSERT_NE(grid, nullptr);
-
-    // Stretched to the section body's width, which is what gives wrapping something to wrap
-    // against — content-sized, the row would end wherever its cards happened to end.
-    EXPECT_EQ(grid->Style().Get(Style::AlignSelf),
-              std::optional<AlignItems>(AlignItems::Stretch));
+    EXPECT_TRUE(grid->HasClass("terrain-role-material-grid"));
+    EXPECT_FALSE(grid->Overrides().Get(Style::AlignSelf).has_value())
+        << "the grid stretches itself from code instead of the stylesheet";
 
     const auto& cells = grid->GetChildren();
     ASSERT_EQ(cells.size(), 7u) << "six materials and the add tile";
     for (const auto& cell : cells)
     {
-        const std::optional<float> grow = cell->Style().Get(Style::FlexGrow);
-        ASSERT_TRUE(grow.has_value()) << cell->GetId() << " cannot take up slack";
-        EXPECT_GT(*grow, 0.0f) << cell->GetId() << " leaves the row short";
-
-        // Bounded on both ends: never below a card, never grown past one.
-        const std::optional<StyleLength> basis = cell->Style().Get(Style::FlexBasis);
-        const std::optional<StyleLength> minimum = cell->Style().Get(Style::MinWidth);
-        const std::optional<StyleLength> maximum = cell->Style().Get(Style::MaxWidth);
-        ASSERT_TRUE(basis.has_value() && minimum.has_value() && maximum.has_value())
-            << cell->GetId();
-        EXPECT_FLOAT_EQ(basis->Value, minimum->Value) << cell->GetId() << " starts off its floor";
-        EXPECT_GT(maximum->Value, minimum->Value) << cell->GetId() << " cannot grow at all";
-        EXPECT_LE(maximum->Value, minimum->Value * 2.0f)
-            << cell->GetId() << " may grow past a card into a banner";
+        EXPECT_TRUE(cell->HasClass("terrain-role-material-card")) << cell->GetId();
+        EXPECT_FALSE(cell->Overrides().Get(Style::FlexGrow).has_value()) << cell->GetId();
+        EXPECT_FALSE(cell->Overrides().Get(Style::FlexBasis).has_value()) << cell->GetId();
+        EXPECT_FALSE(cell->Overrides().Get(Style::MaxWidth).has_value()) << cell->GetId();
     }
 }
 
@@ -445,11 +436,12 @@ TEST(TerrainRoleMaterials, CardsShareOutTheRowRatherThanLeavingItShort)
 // Limestone Scre", which names no material at all.
 //
 // Two lines are RESERVED rather than grown into, so every card keeps one height and a row of them
-// stays a grid. A third line is clipped: the UI module has no line-clamp and no text-overflow, so
-// an ellipsis cannot be asked for — losing the tail of a very long name beats losing its start.
+// stays a grid; .terrain-role-material-name in inspector.css holds the wrap, the alignment, the
+// word breaking and the two-line height, and the card clips what spills past them.
 //
-// BOUNDARY: this asserts the inputs the text layout acts on, not the laid-out lines. No layout pass
-// runs in this process, so "it occupies exactly two lines" is not observable here.
+// BOUNDARY: no stylesheet is loaded and no layout pass runs in this process, so "it occupies
+// exactly two lines" is not observable here. This asserts the class hooks, that code no longer
+// styles the name itself, and that the name is carried whole.
 TEST(TerrainRoleMaterials, ALongNameWrapsToASecondLineFromItsStart)
 {
     TerrainMaterialLibraryAsset library(GUID(kLibraryGuid), "Assets/Lib.terrainmatlib");
@@ -460,53 +452,26 @@ TEST(TerrainRoleMaterials, ALongNameWrapsToASecondLineFromItsStart)
     UIElement root("div");
     ASSERT_NE(Roles::AddMaterialGrid(&root, &library, {}, {}), nullptr);
 
-    UIElement* card = root.FindById(HashStringId(CardId(2, "-card")));
-    Label* name = dynamic_cast<Label*>(root.FindById(HashStringId(CardId(2, "-name"))));
+    UIElement* card = root.FindById(CardId(2, "-card"));
+    Label* name = dynamic_cast<Label*>(root.FindById(CardId(2, "-name")));
     ASSERT_NE(card, nullptr);
     ASSERT_NE(name, nullptr);
 
     // The name is carried whole — what the card does is a display decision, not a truncation of
     // the data, so the tooltip and any later widening still have all of it.
     EXPECT_EQ(name->GetText(), "Weathered Limestone Scree");
-
-    // Wraps instead of being cut mid-line...
-    EXPECT_EQ(name->Style().Get(Style::WhiteSpaceProp),
-              std::optional<WhiteSpace>(WhiteSpace::Normal))
-        << "the name is still one clipped line";
-    // ...starts at the beginning, which is the half the centred clip was eating...
-    EXPECT_EQ(name->Style().Get(Style::TextAlignProp), std::optional<TextAlign>(TextAlign::Left))
-        << "a name that overruns loses its start again";
-    // ...and a word with no break in it breaks rather than escaping the card.
-    EXPECT_EQ(name->Style().Get(Style::OverflowWrapProp),
-              std::optional<OverflowWrap>(OverflowWrap::BreakWord))
-        << "an unbreakable name runs past its card";
-
-    // Two lines, reserved: fixed height, so a one-word card and a five-word card are the same size.
-    const std::optional<StyleLength> height = name->Style().Get(Style::Height);
-    const std::optional<StyleLength> minHeight = name->Style().Get(Style::MinHeight);
-    const std::optional<StyleLength> maxHeight = name->Style().Get(Style::MaxHeight);
-    const std::optional<float> lineHeight = name->Style().Get(Style::LineHeight);
-    ASSERT_TRUE(height.has_value() && minHeight.has_value() && maxHeight.has_value());
-    ASSERT_TRUE(lineHeight.has_value());
-    EXPECT_FLOAT_EQ(height->Value, *lineHeight * 2.0f) << "the name block is not two lines tall";
-    EXPECT_FLOAT_EQ(minHeight->Value, height->Value);
-    EXPECT_FLOAT_EQ(maxHeight->Value, height->Value) << "a third line grows the card past its row";
-    // A line has to fit the glyphs it holds, or two lines of reserve show one and a half.
-    const std::optional<StyleLength> font = name->Style().Get(Style::FontSize);
-    ASSERT_TRUE(font.has_value());
-    EXPECT_GT(*lineHeight, font->Value) << "the line box is tighter than the type in it";
-
-    // Whatever spills past line two is caught by the card, not painted over its neighbour.
-    EXPECT_EQ(name->Style().Get(Style::OverflowProp), std::optional<Overflow>(Overflow::Hidden));
-    EXPECT_EQ(card->Style().Get(Style::OverflowProp), std::optional<Overflow>(Overflow::Hidden))
-        << "a long name escapes its card";
+    EXPECT_TRUE(name->HasClass("terrain-role-material-name"));
+    EXPECT_TRUE(card->HasClass("terrain-role-material-card"));
+    EXPECT_FALSE(name->Overrides().Get(Style::WhiteSpaceProp).has_value())
+        << "the name wraps from code instead of the stylesheet";
+    EXPECT_FALSE(name->Overrides().Get(Style::Height).has_value())
+        << "the name reserves its lines from code instead of the stylesheet";
 
     // The unbreakable name gets the same treatment rather than a special case.
-    Label* unbroken = dynamic_cast<Label*>(root.FindById(HashStringId(CardId(3, "-name"))));
+    Label* unbroken = dynamic_cast<Label*>(root.FindById(CardId(3, "-name")));
     ASSERT_NE(unbroken, nullptr);
     EXPECT_EQ(unbroken->GetText(), "Unbrokenlimestonescreename");
-    EXPECT_EQ(unbroken->Style().Get(Style::OverflowWrapProp),
-              std::optional<OverflowWrap>(OverflowWrap::BreakWord));
+    EXPECT_TRUE(unbroken->HasClass("terrain-role-material-name"));
 }
 
 // A card has to say which material it is, in both the way you scan a palette and the way you read
@@ -524,28 +489,26 @@ TEST(TerrainRoleMaterials, ACardShowsItsMaterialsTintAndName)
     UIElement root("div");
     ASSERT_NE(Roles::AddMaterialGrid(&root, &library, {}, {}), nullptr);
 
-    UIElement* swatch = root.FindById(HashStringId(CardId(5, "-swatch")));
+    UIElement* swatch = root.FindById(CardId(5, "-swatch"));
     ASSERT_NE(swatch, nullptr);
     // The tint is linear and a background colour is an sRGB byte triple, so the swatch must show
     // the ENCODED value — the same one the library inspector's own swatch shows.
-    EXPECT_EQ(swatch->Style().Get(Style::BackgroundColor),
+    EXPECT_EQ(swatch->Overrides().Get(Style::BackgroundColor),
               std::optional<std::uint32_t>(TerrainMaterialTintToSwatchArgb(*authored)));
 
-    Label* name = dynamic_cast<Label*>(root.FindById(HashStringId(CardId(5, "-name"))));
+    Label* name = dynamic_cast<Label*>(root.FindById(CardId(5, "-name")));
     ASSERT_NE(name, nullptr);
     EXPECT_EQ(name->GetText(), "Packed Snow");
-    const std::optional<StyleLength> size = name->Style().Get(Style::FontSize);
-    ASSERT_TRUE(size.has_value());
-    EXPECT_EQ(size->Unit, StyleLength::UnitType::Px);
-    // Editor UI floor — a card is the smallest text in this panel, so it is where a shrink lands.
-    EXPECT_GE(size->Value, 12.0f);
-    // And it reads at the panel's own label size (.inspector-label, 13px) rather than at the
-    // floor: a name a size below every label beside it looked like a caption, not an identity.
-    EXPECT_FLOAT_EQ(size->Value, 13.0f);
+    // The name reads at the panel's own label size (.inspector-label, 13px), set by its class in
+    // inspector.css: a name a size below every label beside it looked like a caption.
+    EXPECT_TRUE(name->HasClass("terrain-role-material-name"));
+    EXPECT_FALSE(name->Overrides().Get(Style::FontSize).has_value())
+        << "the name sizes its text from code instead of the stylesheet";
+    EXPECT_TRUE(swatch->HasClass("terrain-role-material-swatch"));
 
     // The slot is still reachable — it is what painted ground stores — without being printed on
     // the card, which is what read as hardcoded.
-    UIElement* card = root.FindById(HashStringId(CardId(5, "-card")));
+    UIElement* card = root.FindById(CardId(5, "-card"));
     ASSERT_NE(card, nullptr);
     EXPECT_NE(card->GetTooltip().find("slot 5"), std::string::npos);
     EXPECT_EQ(name->GetText().find("slot"), std::string::npos);
@@ -568,26 +531,23 @@ TEST(TerrainRoleMaterials, ASwatchSaysItIsATintEvenWhenTheTintIsWhite)
     ASSERT_NE(Roles::AddMaterialGrid(&root, &library, {}, {}), nullptr);
 
     // The state that made the fix necessary: this swatch is pure white.
-    UIElement* swatch = root.FindById(HashStringId(CardId(0, "-swatch")));
+    UIElement* swatch = root.FindById(CardId(0, "-swatch"));
     ASSERT_NE(swatch, nullptr);
-    EXPECT_EQ(swatch->Style().Get(Style::BackgroundColor),
+    EXPECT_EQ(swatch->Overrides().Get(Style::BackgroundColor),
               std::optional<std::uint32_t>(0xFFFFFFFFu));
 
-    Label* chip = dynamic_cast<Label*>(root.FindById(HashStringId(CardId(0, "-tintchip"))));
+    Label* chip = dynamic_cast<Label*>(root.FindById(CardId(0, "-tintchip")));
     ASSERT_NE(chip, nullptr) << "a white swatch says nothing about what it is";
     EXPECT_EQ(chip->GetText(), "Tint");
     EXPECT_EQ(chip->GetParent(), swatch) << "the chip is not on the swatch it describes";
 
     // It rides on an arbitrary colour, so it brings its own contrast rather than inheriting the
-    // panel's: an opaque-enough plate under light text reads over white and over black alike.
-    const std::optional<std::uint32_t> plate = chip->Style().Get(Style::BackgroundColor);
-    ASSERT_TRUE(plate.has_value()) << "the chip has no plate, so it vanishes into a pale tint";
-    EXPECT_GE(*plate >> 24, 0x80u) << "the plate is too sheer to carry text over any tint";
-    EXPECT_TRUE(chip->Style().Get(Style::Color).has_value());
-
-    const std::optional<StyleLength> size = chip->Style().Get(Style::FontSize);
-    ASSERT_TRUE(size.has_value());
-    EXPECT_GE(size->Value, 12.0f) << "the chip is under the editor's font floor";
+    // panel's: .terrain-role-material-tint-chip in inspector.css puts light text on a near-opaque
+    // dark plate, at the editor's 12px font floor. Code sets none of it.
+    EXPECT_TRUE(chip->HasClass("terrain-role-material-tint-chip"));
+    EXPECT_FALSE(chip->Overrides().Get(Style::BackgroundColor).has_value())
+        << "the chip paints its plate from code instead of the stylesheet";
+    EXPECT_FALSE(chip->Overrides().Get(Style::FontSize).has_value());
 }
 
 // Double click, the idiom the asset browser's own grid uses (GridView activates a cell on the
@@ -615,8 +575,8 @@ TEST(TerrainRoleMaterials, ACardOpensTheLibraryOnTheSecondClickOnly)
                                      }),
               nullptr);
 
-    UIElement* first = root.FindById(HashStringId(CardId(0, "-card")));
-    UIElement* second = root.FindById(HashStringId(CardId(1, "-card")));
+    UIElement* first = root.FindById(CardId(0, "-card"));
+    UIElement* second = root.FindById(CardId(1, "-card"));
     ASSERT_NE(first, nullptr);
     ASSERT_NE(second, nullptr);
 
@@ -667,7 +627,7 @@ TEST(TerrainRoleMaterials, TheAddTileRunsItsAddActionOnOneClick)
                                      {}),
               nullptr);
 
-    UIElement* tile = root.FindById("terrain-material-add"_sid);
+    UIElement* tile = root.FindById("terrain-material-add");
     ASSERT_NE(tile, nullptr);
 
     // Controls: building the grid must not have added anything, and a non-left button is not a
@@ -702,8 +662,8 @@ TEST(TerrainRoleMaterials, CardsAndTheAddTileSwallowNothingWhenTheyCannotAct)
     UIElement inert("div");
     ASSERT_NE(Roles::AddMaterialGrid(&inert, &library, {}, {}), nullptr);
 
-    UIElement* card = inert.FindById(HashStringId(CardId(0, "-card")));
-    UIElement* tile = inert.FindById("terrain-material-add"_sid);
+    UIElement* card = inert.FindById(CardId(0, "-card"));
+    UIElement* tile = inert.FindById("terrain-material-add");
     ASSERT_NE(card, nullptr);
     ASSERT_NE(tile, nullptr);
 
@@ -723,7 +683,7 @@ TEST(TerrainRoleMaterials, CardsAndTheAddTileSwallowNothingWhenTheyCannotAct)
     UIElement wired("div");
     ASSERT_NE(Roles::AddMaterialGrid(&wired, &library, {}, [](const std::filesystem::path&) {}),
               nullptr);
-    UIElement* live = wired.FindById(HashStringId(CardId(0, "-card")));
+    UIElement* live = wired.FindById(CardId(0, "-card"));
     ASSERT_NE(live, nullptr);
 
     UIEvent handled{};
@@ -749,7 +709,7 @@ TEST(TerrainRoleMaterials, NoAddTileWhenEverySlotIsTaken)
     ASSERT_NE(grid, nullptr);
 
     EXPECT_EQ(grid->GetChildren().size(), 256u) << "the cards are the materials, and nothing else";
-    EXPECT_EQ(root.FindById("terrain-material-add"_sid), nullptr);
+    EXPECT_EQ(root.FindById("terrain-material-add"), nullptr);
 }
 
 // An unmigrated terrain resolves no library: there are no materials to show, and it authors its
@@ -759,7 +719,7 @@ TEST(TerrainRoleMaterials, NoGridWithoutALibrary)
     UIElement root("div");
     EXPECT_EQ(Roles::AddMaterialGrid(&root, nullptr, {}, {}), nullptr);
     EXPECT_TRUE(root.GetChildren().empty());
-    EXPECT_EQ(root.FindById("terrain-material-grid"_sid), nullptr);
+    EXPECT_EQ(root.FindById("terrain-material-grid"), nullptr);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -780,7 +740,7 @@ TEST(TerrainRoleMaterials, TheLayerRoleBlockStartsOpenWithOneRowPerChannel)
     ASSERT_NE(block.Block, nullptr);
     ASSERT_EQ(block.Pickers.size(), 4u);
 
-    EXPECT_EQ(root.FindById("terrain-layer-roles"_sid), block.Block);
+    EXPECT_EQ(root.FindById("terrain-layer-roles"), block.Block);
     EXPECT_EQ(block.Block->GetTitle(), "Layer Materials");
     EXPECT_TRUE(block.Block->IsExpanded())
         << "the binding is shut away where nothing tells the author it exists";
@@ -873,9 +833,9 @@ TEST(TerrainRoleMaterials, LayerRoleRowsCarryNoRowTint)
 
     for (int role = 0; role < 4; ++role)
     {
-        UIElement* row = root.FindById(HashStringId(RoleRowId(role, "-row")));
+        UIElement* row = root.FindById(RoleRowId(role, "-row"));
         ASSERT_NE(row, nullptr) << "channel " << role;
-        EXPECT_FALSE(row->Style().Get(Style::BackgroundColor).has_value())
+        EXPECT_FALSE(row->Overrides().Get(Style::BackgroundColor).has_value())
             << "channel " << role << " carries a row tint";
         EXPECT_TRUE(row->HasClass("inspector-row"))
             << "channel " << role << " is not an ordinary inspector row";
@@ -955,7 +915,7 @@ TEST(TerrainRoleMaterials, NoLayerRoleBlockWithoutALibrary)
     EXPECT_EQ(block.Block, nullptr);
     EXPECT_TRUE(block.Pickers.empty());
     EXPECT_TRUE(root.GetChildren().empty());
-    EXPECT_EQ(root.FindById("terrain-role-0-row"_sid), nullptr);
+    EXPECT_EQ(root.FindById("terrain-role-0-row"), nullptr);
 }
 
 // The terrain panel's route into the library. The panel told the user to "open the library asset"
@@ -981,7 +941,7 @@ TEST(TerrainRoleMaterials, OpenLibraryButtonHandsTheLibrarysPathToTheAssetOpener
                                                   openedPath = p;
                                               });
     ASSERT_NE(button, nullptr);
-    EXPECT_EQ(root.FindById("terrain-open-material-library"_sid), button)
+    EXPECT_EQ(root.FindById("terrain-open-material-library"), button)
         << "the row is unreachable by id, so nothing can drive it";
     EXPECT_EQ(opened, 0) << "building the row already opened something";
 
@@ -1001,11 +961,11 @@ TEST(TerrainRoleMaterials, OpenLibraryRowIsNotBuiltWithoutALibraryOrAnOpener)
 
     UIElement noLibrary("div");
     EXPECT_EQ(Roles::AddOpenLibraryRow(&noLibrary, nullptr, opener), nullptr);
-    EXPECT_EQ(noLibrary.FindById("terrain-open-material-library"_sid), nullptr);
+    EXPECT_EQ(noLibrary.FindById("terrain-open-material-library"), nullptr);
 
     UIElement noOpener("div");
     EXPECT_EQ(Roles::AddOpenLibraryRow(&noOpener, &library, {}), nullptr);
-    EXPECT_EQ(noOpener.FindById("terrain-open-material-library"_sid), nullptr);
+    EXPECT_EQ(noOpener.FindById("terrain-open-material-library"), nullptr);
 
     // A library with no path on disk cannot be selected in the asset browser either.
     TerrainMaterialLibraryAsset unsaved(GUID(kLibraryGuid), "");

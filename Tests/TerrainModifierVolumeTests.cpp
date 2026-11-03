@@ -45,7 +45,7 @@
 #include "Components/Terrain/TerrainModifierVolume.h"
 #include "Components/Terrain/TerrainModifiers.h"
 #include "Components/Transform.h"
-#include "ECS/Component/ComponentFactory.h"
+#include "ECS/ComponentFactory.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Scene/SceneIOContext.h"
@@ -442,7 +442,7 @@ void ApplyLegacyBlock(ECS::World& world, ECS::EntityHandle entity,
     for (const auto& kv : block)
         pairs.emplace_back(kv.first, kv.second);
 
-    Scene::SceneReadContext ctx{};
+    Scene::SceneLoadContext ctx{};
     std::string err;
     std::size_t failed = 0;
     ASSERT_TRUE(schema->ApplyProperties(world, entity, ctx, pairs, &err, &failed))
@@ -1863,7 +1863,7 @@ enum class EditPath
 };
 
 // The set_component write reproduced exactly: capture, patch, apply back.
-// Mirrors SetReflectedComponentFields (DebugHandlers.cpp:403-442).
+// Mirrors SetReflectedComponentFields (SceneEntityDebugHandlers.cpp).
 void ApplyBlendViaComponentBytes(ECS::World& world, ECS::EntityHandle entity,
                                  Components::TerrainModifierBlend blend, float32 smoothing)
 {
@@ -3101,7 +3101,6 @@ TEST(TerrainEffectRegistry, ListContainsExactlyTheCanonicalEffectComponents)
         ECS::GetComponentTypeId<Components::TerrainSurfaceRulesEffect>(),
         ECS::GetComponentTypeId<Components::TerrainGroundClaimEffect>(),
         ECS::GetComponentTypeId<Components::TerrainGrassEffect>(),
-        ECS::GetComponentTypeId<Components::TerrainColorEffect>(),
     };
 
     const auto effects = TerrainECS::TerrainEffectTypes();

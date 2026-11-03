@@ -1,18 +1,17 @@
 #include "SceneView/SceneViewRenderCoordinator.h"
 
-#include "SceneView/MountedViewPanels.h"
-
 #include "Core/Engine.h"
+#include "EditorPanelIds.h"
 #include "Editor/Settings/SceneViewSettings.h"
 #include "Engine/Rendering/Pipeline/PipelineFrameResources.h"
 #include "Engine/Rendering/RenderDeviceContext.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/ViewFinalize.h"
 #include "Logger/Logger.h"
-#include "SceneView/SceneViewPanel.h"
+#include "Panels/SceneViewPanel.h"
 #include "Scene/SceneThumbnailCapture.h"
-#include "SceneView/SceneViewController.h"
-#include "UI/Layout/ElementOverrideHelpers.h"
+#include "SceneViewController.h"
+#include "UI/Controls/Mount.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
@@ -79,6 +78,21 @@ const char* ExternalSceneNameForController(SceneViewRenderCoordinator::EditorWin
     return nullptr;
 }
 
+template <typename TPanel>
+TPanel* ResolveMountedPanelForWindow(SceneViewRenderCoordinator::EditorWindowContext* ctx, const char* mountId)
+{
+    if (!ctx || !ctx->ui || !mountId)
+        return nullptr;
+
+    UIElement* root = ctx->ui->GetRootElement();
+    if (!root)
+        return nullptr;
+
+    if (auto* mount = dynamic_cast<Mount*>(root->FindById(mountId)))
+        return dynamic_cast<TPanel*>(mount->GetTarget());
+    return nullptr;
+}
+
 UIElement* FindHdrTestPatternOverlay(UIElement* viewport)
 {
     if (!viewport)
@@ -96,15 +110,15 @@ void HideHdrTestPatternOverlay(UIElement* viewport)
     UIElement* overlay = FindHdrTestPatternOverlay(viewport);
     if (!overlay)
         return;
-    overlay->Style()
+    overlay->Overrides()
         .Set(Style::Display, DisplayMode::None)
         .Set(Style::PointerEvents, false);
-    overlay->Style()
-        .Reset(Style::BackgroundImage)
-        .Reset(Style::BackgroundSize)
-        .Reset(Style::BackgroundPosition)
-        .Reset(Style::BackgroundRepeatProp)
-        .Reset(Style::BackgroundTint);
+    overlay->Styles()
+        .ResetBackgroundImage()
+        .ResetBackgroundSize()
+        .ResetBackgroundPosition()
+        .ResetBackgroundRepeat()
+        .ResetBackgroundTint();
 }
 } // namespace
 
@@ -113,7 +127,7 @@ SceneViewPanel* SceneViewRenderCoordinator::SyncMountedPanelControllers(EditorWi
     if (!ctx)
         return nullptr;
 
-    SceneViewPanel* svPanel = ctx->mountedViewPanels.SceneView(ctx->ui.get());
+    SceneViewPanel* svPanel = ResolveMountedPanelForWindow<SceneViewPanel>(ctx, EditorPanelIds::MountSceneView);
     if (!svPanel)
         return nullptr;
 
@@ -128,17 +142,17 @@ SceneViewPanel* SceneViewRenderCoordinator::SyncMountedPanelControllers(EditorWi
     return svPanel;
 }
 
-void SceneViewRenderCoordinator::ForEachController(EditorWindowContext* windowContext,
-                                                   FunctionRef<void(SceneViewController*)> visit)
+void SceneViewRenderCoordinator::ForEachController(EditorWindowContext* ctx,
+                                                   const std::function<void(SceneViewController*)>& fn)
 {
-    if (!windowContext)
+    if (!ctx || !fn)
         return;
-    if (windowContext->scene)
-        visit(windowContext->scene.get());
-    for (auto& quadScene : windowContext->sceneQuadViews)
+    if (ctx->scene)
+        fn(ctx->scene.get());
+    for (auto& quadScene : ctx->sceneQuadViews)
     {
         if (quadScene)
-            visit(quadScene.get());
+            fn(quadScene.get());
     }
 }
 
@@ -394,7 +408,8 @@ void SceneViewRenderCoordinator::DeclareOverlaysRG(
     if (!rs)
         return;
 
-    SceneViewPanel* svPanel = ctx->mountedViewPanels.SceneView(ctx->ui.get());
+    SceneViewPanel* svPanel =
+        ResolveMountedPanelForWindow<SceneViewPanel>(ctx, EditorPanelIds::MountSceneView);
     if (!svPanel)
         return;
     SceneViewController* activeController =
@@ -442,7 +457,8 @@ void SceneViewRenderCoordinator::BindRG(EditorWindowContext* ctx, Rendering::Ren
     if (!device)
         return;
 
-    SceneViewPanel* svPanel = ctx->mountedViewPanels.SceneView(ctx->ui.get());
+    SceneViewPanel* svPanel =
+        ResolveMountedPanelForWindow<SceneViewPanel>(ctx, EditorPanelIds::MountSceneView);
     if (!svPanel)
         return;
 
@@ -612,12 +628,33 @@ void SceneViewRenderCoordinator::BindRG(EditorWindowContext* ctx, Rendering::Ren
         }
         if (!bound)
         {
-            viewport->Style().Reset(Style::BackgroundImage);
+            ctx->ui->ClearElementBackgroundTexture(*viewport);
             continue;
         }
         HideHdrTestPatternOverlay(viewport);
-        // A slot kind reassignment re-points the element on the frame the name changes.
-        UI::Layout::BindViewportTexture(*viewport, name);
+        // Rebind only when the binding actually changes. The unconditional
+        // Reset/Set cycle here dirtied the viewport element every rendered
+        // frame (StyleOverrides::Reset erases a present override), which —
+        // via the sibling-combinator conservative invalidation in
+        // BuildYogaRecursive — kept the whole UI tree perpetually dirty:
+        // idle frames never converged and pointer-only frames could never
+        // gate. Slot kind reassignment still re-points the element the frame
+        // the name changes.
+        const auto currentBg = viewport->Overrides().Get(Style::BackgroundImage);
+        const bool alreadyBound = currentBg.has_value() &&
+                                  currentBg->Kind == BackgroundImageSource::SourceKind::ResourceName &&
+                                  currentBg->Value == name &&
+                                  !viewport->HasBackgroundImageTextureOverride();
+        if (!alreadyBound)
+        {
+            ctx->ui->ClearElementBackgroundTexture(*viewport);
+            viewport->Styles()
+                .SetBackgroundResourceName(name)
+                .SetBackgroundRepeat(BackgroundRepeat::NoRepeat)
+                .SetBackgroundSizeCover()
+                .SetBackgroundPositionPercent(50.0f, 50.0f)
+                .ResetBackgroundTint();
+        }
         boundAnyViewport = true;
     }
 

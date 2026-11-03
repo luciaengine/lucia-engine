@@ -1,7 +1,7 @@
 #pragma once
 
+#include "AssetCore/Types.h"
 #include "Types/StringId.h"
-#include "Types/Types.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -28,7 +28,7 @@ constexpr AssetTypeId HashAssetTypeId(std::string_view sv)
 
 // User-defined literal for compile-time type ids, e.g.:
 //   constexpr AssetTypeId kMyType = "MyPlugin.MyType"_assetTypeId;
-constexpr AssetTypeId operator""_assetTypeId(const char* s, size_t n)
+constexpr AssetTypeId operator"" _assetTypeId(const char* s, size_t n)
 {
     return HashAssetTypeId(std::string_view{s, n});
 }

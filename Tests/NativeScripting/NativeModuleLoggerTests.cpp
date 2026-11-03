@@ -1,7 +1,6 @@
 #include "Core/EngineLoggerBridge.h"
 #include "Logger/Logger.h"
 #include "LoggerModuleProbe.h"
-#include "LoggerInternals.h"
 #include "NativeScripting/BuildCacheRecord.h"
 #include "NativeScripting/EngineBuildIdentity.h"
 #include "NativeScripting/NativeScriptManager.h"
@@ -29,7 +28,7 @@ class CaptureSink : public Logger::LogSink
     void Write(const Logger::LogMessage& message) override { Messages.push_back(message); }
     void Flush() override {}
     bool ShouldLog(Logger::LogLevel) const override { return true; }
-    std::string GetName() const override { return "NativeModuleCapture"; }
+    Logger::String GetName() const override { return "NativeModuleCapture"; }
 };
 
 void RejectLoggingModule(bool drainFirst, bool logOnDetach)
@@ -92,7 +91,7 @@ void RejectLoggingModule(bool drainFirst, bool logOnDetach)
     bool rejectionSeen = false;
     for (const auto& message : spy->Messages)
     {
-        if (message.Message == "probe value 29" && message.Channel == ProbeLog().Index)
+        if (message.Message == "probe value 29")
             ++probeMessages;
         if (message.Message == "detach log 71")
             ++detachMessages;

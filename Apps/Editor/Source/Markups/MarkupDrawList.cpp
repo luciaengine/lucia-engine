@@ -8,14 +8,13 @@
 #include "ECS/World.h"
 #include "Components/Spline/SplineComponent.h"
 #include "Markups/MarkupEditorBridge.h"
-#include "Markups/MarkupRegion/MarkupRegionDisplay.h"
+#include "Markups/MarkupRegionDisplay.h"
 #include "Mathematics/Geometry.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector4.h"
 #include "Rendering/Common/Frustum.h"
 #include "Spline/SplineData.h"
 #include "SplineECS/SplineService.h"
-#include "Types/Color.h"
 
 #include <algorithm>
 #include <cmath>
@@ -32,13 +31,6 @@ using Mathematics::Vector3;
 
 namespace
 {
-
-// MarkupDisplayRgb as the draw item's channels.
-std::array<float32, 3> DisplayRgb(const Markup& markup)
-{
-    const ColorSRGB color = MarkupDisplayRgb(markup);
-    return {color.r, color.g, color.b};
-}
 
 // What one collection reads per mark-up.
 struct ItemSource
@@ -65,7 +57,7 @@ void AddDrawItem(const ItemSource& source, ECS::EntityHandle entity, const Marku
     MarkupDrawItem& item = source.Items.emplace_back();
     item.Entity = entity;
     item.Volume = *volume;
-    item.Rgb = DisplayRgb(markup);
+    item.Rgb = MarkupDisplayRgb(markup);
     item.DistanceSq = (volume->Center - source.CameraPos).LengthSquared();
     item.Selected = source.Highlight.IsSelected(entity);
     item.Hovered = source.Highlight.IsHovered(entity);
@@ -106,11 +98,12 @@ bool SplineShapeMayBeInView(const ItemSource& source, ECS::EntityHandle entity, 
     return Rendering::TestSphereFrustum(center, radius, source.FrustumPlanes);
 }
 
-// Whether `point` stands inside the region's prism: inside its area and below its highest top.
+// Whether `point` stands inside the region's prism: inside its ring and below its highest top.
 bool InsideRegion(const MarkupECS::MarkupRegionDisplayCache::Entry& display, const Vector3& point)
 {
     const MarkupECS::MarkupRegionGround& ground = display.Ground;
-    return point.y < ground.Top + display.ExtrudeHeight && ground.Contains(Vector2(point.x, point.z));
+    return ground.Closed && point.y < ground.Top + display.ExtrudeHeight &&
+           Mathematics::PointInPolygon(Vector2(point.x, point.z), ground.Ring);
 }
 
 // A region (its walls and lid) or a path (`path`: its draped line), whose display the bridge's
@@ -137,7 +130,7 @@ void AddSplineShapeItem(ItemSource& source, ECS::EntityHandle entity, const Mark
     item.Volume.Center = ground.Center + Vector3(0.0f, halfHeight, 0.0f);
     item.Volume.BoundingRadius = std::sqrt(ground.Radius * ground.Radius + halfHeight * halfHeight) + halfHeight;
     item.Volume.TopY = display->Mesh.Label.y;
-    item.Rgb = DisplayRgb(markup);
+    item.Rgb = MarkupDisplayRgb(markup);
     item.DistanceSq = (item.Volume.Center - source.CameraPos).LengthSquared();
     item.Selected = source.Highlight.IsSelected(entity);
     item.Hovered = source.Highlight.IsHovered(entity);
@@ -146,31 +139,8 @@ void AddSplineShapeItem(ItemSource& source, ECS::EntityHandle entity, const Mark
                                                                           source.FrustumPlanes);
 }
 
-// Marks the items that are an Exclude member of a region the viewer has not hidden; `excluded` is
-// scratch, kept by the caller to reuse its allocation.
-void MarkExcludeMembers(ECS::World& world, const MarkupEditorBridge& bridge, std::vector<MarkupDrawItem>& items,
-                        std::vector<uint32>& excluded)
-{
-    excluded.clear();
-    world.Query<ECS::Read<Markup>, ECS::Read<MarkupRegion>>().Each(
-        [&world, &bridge, &excluded](ECS::EntityHandle region, const Markup&, const MarkupRegion& component) {
-            if (bridge.IsHidden(world, region))
-                return;
-            for (uint32 i = 0; i < std::min(component.MemberCount, Components::kMaxRegionMembers); ++i)
-            {
-                if (component.Members[i].Mode == Components::MarkupMemberMode::Exclude)
-                    excluded.push_back(component.Members[i].Entity.id);
-            }
-        });
-    if (excluded.empty())
-        return;
-    std::sort(excluded.begin(), excluded.end());
-    for (MarkupDrawItem& item : items)
-        item.ExcludeMember = std::binary_search(excluded.begin(), excluded.end(), item.Entity.id);
-}
-
 // The body cap's order: selected and hovered mark-ups first, then the nearest; the ones that
-// draw no body (the camera inside, out of view, or an Exclude member at rest) last.
+// draw no body (the camera inside, or out of view) last.
 bool BodiesFirst(const MarkupDrawItem& a, const MarkupDrawItem& b)
 {
     if (a.DrawsBody() != b.DrawsBody())
@@ -186,7 +156,7 @@ bool BodiesFirst(const MarkupDrawItem& a, const MarkupDrawItem& b)
 std::size_t CollectMarkupDrawItems(ECS::World& world, const MarkupEditorBridge& bridge,
                                    const MarkupHighlightState& highlight, const Vector3& cameraPos,
                                    const Mathematics::Vector4* frustumPlanes, uint64 frame,
-                                   std::vector<MarkupDrawItem>& items, std::vector<uint32>& excludedScratch)
+                                   std::vector<MarkupDrawItem>& items)
 {
     GE_CPU_PROFILE_SCOPE("Markups.CollectDrawItems");
     items.clear();
@@ -210,7 +180,6 @@ std::size_t CollectMarkupDrawItems(ECS::World& world, const MarkupEditorBridge& 
                 AddSplineShapeItem(source, entity, markup, 0.0f, true, transform);
         });
     bridge.RegionDisplaysOf(world).EvictUnseen(frame);
-    MarkExcludeMembers(world, bridge, items, excludedScratch);
 
     const std::size_t bodies = std::min(items.size(), kMarkupBodyCap);
     if (bodies < items.size())

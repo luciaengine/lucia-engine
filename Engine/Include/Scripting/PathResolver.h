@@ -12,10 +12,6 @@ namespace ScriptingPaths
 /// in a packaged build's Managed/ directory.
 inline constexpr std::string_view kScriptsAssemblyFileName = "GameEngine.Scripts.dll";
 
-/// The folder beside the scripts assembly that holds the runtime assemblies of the project's
-/// NuGet packages. The scripts' dependency context loads it; the export ships it.
-inline constexpr std::string_view kScriptDependenciesFolderName = "Dependencies";
-
 /// Engine assemblies native code loads by file name from the engine managed directory:
 /// CoreBridge (the CLR entry point, ResolveCoreBridgeDll), HotReload (its runtimeconfig.json
 /// boots the CLR, ResolveHotReloadDll) and Scripting.Runtime (the GameSystem runner
@@ -27,31 +23,10 @@ inline constexpr std::string_view kScriptingRuntimeAssemblyFileName = "GameEngin
 inline constexpr std::array<std::string_view, 3> kHostLoadedEngineAssemblyFileNames = {
     kCoreBridgeAssemblyFileName, kHotReloadAssemblyFileName, kScriptingRuntimeAssemblyFileName};
 
-/// The generated C# bindings of the engine's script API (Managed/Scripting.Bindings).
-inline constexpr std::string_view kScriptBindingsAssemblyFileName = "GameEngine.Scripting.Bindings.dll";
-
-/// The assemblies scripts compile against, by file name: the generated bindings and the
-/// hand-written engine ABI surfaces, the editor's own (GameEngine.Editor.Scripting.ABI.dll)
-/// included. A list, not a pattern: a file the build no longer stages, left in an existing
-/// output folder, is never referenced or shipped. Compile-server requests carry it
-/// (ScriptSurfaceRequestField), so the server holds no copy.
-inline constexpr std::array<std::string_view, 5> kScriptSurfaceAssemblyFileNames = {
-    kScriptBindingsAssemblyFileName, "GameEngine.Scripting.ABI.dll", "GameEngine.ECS.ABI.dll",
-    "GameEngine.Platform.ABI.dll", "GameEngine.Editor.Scripting.ABI.dll"};
-
-/// True for an assembly of kScriptSurfaceAssemblyFileNames.
-inline bool IsScriptSurfaceAssembly(std::string_view fileName)
-{
-    for (std::string_view name : kScriptSurfaceAssemblyFileNames)
-        if (name == fileName)
-            return true;
-    return false;
-}
-
 /**
  * @brief Directory holding the engine's managed assemblies.
  *
- * The script surface (IsScriptSurfaceAssembly), CoreBridge, HotReload, Scripting.Runtime and SourceGenerators/ —
+ * GameEngine.*.ABI.dll, CoreBridge, HotReload, Scripting.Runtime and SourceGenerators/ —
  * the EngineBinDir every generated csproj, compile-server request and dotnet build resolves
  * engine references from. The executable directory, except inside a macOS app bundle, where
  * the assemblies are staged as resources under Contents/Resources/Managed (Contents/MacOS
@@ -88,7 +63,7 @@ std::filesystem::path ResolveScriptsRuntimeConfig();
 /**
  * @brief Directory where script assemblies (e.g. GameEngine.Scripts.dll) are emitted.
  *
- * <exe>/ScriptAssemblies — ApplicationPaths::GetScriptsAssemblyDirectory(), which creates it on demand.
+ * <exe>/ScriptAssemblies — PathUtils::GetScriptsAssemblyDirectory(), which creates it on demand.
  */
 std::filesystem::path ResolveScriptsAssemblyDirectory();
 
@@ -111,19 +86,15 @@ std::filesystem::path ResolveNativeLibraryDirectory();
 std::filesystem::path ResolveNativeLibraryPath();
 
 /**
- * @brief ResolveNativeLibraryPath() for explicit executable and working directories; same
- *        probing rules. An empty @p currentDir probes no working directory.
+ * @brief ResolveNativeLibraryPath() for an explicit executable directory; same probing rules.
+ *        The process working directory is never probed.
  */
-std::filesystem::path ResolveNativeLibraryPathFrom(
-    const std::filesystem::path& exeDir,
-    const std::filesystem::path& currentDir);
+std::filesystem::path ResolveNativeLibraryPathFrom(const std::filesystem::path& exeDir);
 
 /**
- * @brief ResolveNativeLibraryDirectory() for explicit executable and working directories
- *        (tests and specialized hosts); same probing rules.
+ * @brief ResolveNativeLibraryDirectory() for an explicit executable directory (tests and
+ *        specialized hosts); same probing rules.
  */
-std::filesystem::path ResolveNativeLibraryDirectoryFrom(
-    const std::filesystem::path& exeDir,
-    const std::filesystem::path& currentDir);
+std::filesystem::path ResolveNativeLibraryDirectoryFrom(const std::filesystem::path& exeDir);
 } // namespace ScriptingPaths
 } // namespace GameEngine

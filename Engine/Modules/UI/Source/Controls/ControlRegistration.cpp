@@ -7,13 +7,10 @@
 #include "UI/Controls/Vector3Field.h"
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/UIElement.h"
-#include "UI/UIPrimitive.h"
 
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Checkbox.h"
 #include "UI/Controls/Dropdown.h"
-#include "UI/Controls/MaskField.h"
-#include "UI/Controls/PopoverArrow.h"
 #include "UI/Controls/ScrollView.h"
 #include "UI/Controls/Scrollbar.h"
 #include "UI/Controls/Slider.h"
@@ -52,22 +49,6 @@ struct Parser<Dropdown::Mode>
 };
 
 template<>
-struct Parser<UI::ArrowDirection>
-{
-    static UI::ArrowDirection Parse(std::string_view s)
-    {
-        const std::string lower = ToLowerAscii(s);
-        if (lower == "down")
-            return UI::ArrowDirection::Down;
-        if (lower == "left")
-            return UI::ArrowDirection::Left;
-        if (lower == "right")
-            return UI::ArrowDirection::Right;
-        return UI::ArrowDirection::Up;
-    }
-};
-
-template<>
 struct Parser<Accordion::Mode>
 {
     static Accordion::Mode Parse(std::string_view s)
@@ -99,11 +80,13 @@ void DefineBuiltInControls()
                                    { return std::make_unique<UIElement>(); })
         .Attr("tabindex", &UIElement::SetTabIndex)
         .Attr("focusable", &UIElement::SetFocusable)
-        .Attr("enabled", &UIElement::SetEnabled);
+        .Attr("enabled", &UIElement::SetEnabled)
+        .Attr("disabled", &UIElement::SetDisabled);
 
+    Register<MarkdownText>("MarkdownText");
     Register<Label>("label")
-        .Text(&Label::SetText)
-        .Attr("text", &Label::SetText);
+        .Text(&Label::SetAuthoredText)
+        .Attr("text", &Label::SetAuthoredText);
 
     // Public string field element. Uses TextField (string-based typed field)
     // and keeps legacy aliases for backwards compatibility.
@@ -134,9 +117,6 @@ void DefineBuiltInControls()
     Register<TextArea>("textarea")
         .Attr("value", &BaseField::SetValue)
         .Attr("readonly", &TextArea::SetReadOnly);
-
-    // Read-only Markdown; its text is set from code (SetMarkdown), never from the layout file.
-    Register<MarkdownText>("MarkdownText");
 
     RegisterWithFactory<Scrollbar>("scrollbar", []()
                                    { return std::make_unique<Scrollbar>(Scrollbar::Orientation::Vertical); });
@@ -188,9 +168,6 @@ void DefineBuiltInControls()
         .Attr("checked", &Toggle::SetChecked)
         .TagAlias("toggle");
 
-    RegisterWithFactory<MaskField>("MaskField", []()
-                                   { return std::make_unique<MaskField>(); });
-
     RegisterWithFactory<Slider>("Slider", []()
                                 { return std::make_unique<Slider>(); })
         .Attr("min", &Slider::SetMin)
@@ -203,10 +180,6 @@ void DefineBuiltInControls()
         .Attr("range", &Slider::SetRangeMode)
         .Attr("rangestart", &Slider::SetRangeStart)
         .TagAlias("slider");
-
-    Register<PopoverArrow>("PopoverArrow")
-        .Attr("side", &PopoverArrow::SetSide)
-        .TagAlias("popoverarrow");
 
     RegisterWithFactory<Dropdown>("Dropdown", []()
                                   { return std::make_unique<Dropdown>(); })

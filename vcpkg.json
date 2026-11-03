@@ -4,20 +4,21 @@
 
   "dependencies": [
     "freetype",
+    "icu",
     {
       "name": "harfbuzz",
       "platform": "!nothreads",
       "$wasm-note": "nothreads is defined by cmake/triplets/wasm32-emscripten-nothreads.cmake (VCPKG_DEP_INFO_OVERRIDE_VARS): harfbuzz's meson build mixes -pthread across subtargets on that ABI and fails to link; Text falls back to GE_HAVE_HARFBUZZ=0 there."
     },
     "miniaudio",
-    "libvorbis",
+    { "name": "sdl2", "default-features": false, "platform": "!wasm32" },
     "nlohmann-json",
+    "zlib",
     "sqlite3",
     "concurrentqueue",
     "cgltf",
     "stb",
     "meshoptimizer",
-    "clipper2",
     "tinyexpr",
     "ez-tree-upstream",
     "diharaw-volumetric-fog-upstream",
@@ -35,13 +36,19 @@
     },
     "glm",
     {
-      "name": "glfw3",
-      "platform": "!wasm32 & !linux"
+      "name": "sdl3",
+      "default-features": false,
+      "features": [ "vulkan" ],
+      "platform": "android"
+    },
+    {
+      "name": "sdl3",
+      "default-features": false,
+      "platform": "ios"
     },
     {
       "name": "glfw3",
-      "features": ["wayland"],
-      "platform": "linux"
+      "platform": "!wasm32 & !android & !ios"
     },
     {
       "name": "vulkan-memory-allocator",
@@ -58,11 +65,11 @@
     },
     {
       "name": "vulkan",
-      "platform": "!wasm32"
+      "platform": "!wasm32 & !ios"
     },
     {
       "name": "vulkan-headers",
-      "platform": "wasm32"
+      "platform": "wasm32 | ios"
     },
     {
       "name": "wgpu-native",
@@ -76,7 +83,7 @@
     },
     {
       "name": "spirv-cross",
-      "platform": "osx"
+      "platform": "osx | ios"
     },
     "ktx",
     {
@@ -87,10 +94,6 @@
     {
       "name": "bc7e",
       "platform": "(windows & (x64 | arm64) & !uwp) | (linux & (x64 | arm64)) | osx"
-    },
-    {
-      "name": "webview2",
-      "platform": "windows"
     },
     {
       "name": "mimalloc",
@@ -130,7 +133,7 @@
     },
 
     "ui-extras": {
-      "description": "Optional UI helpers: HTML parsing via lexbor (used by the editor's docs/AI tooling) and SVG rasterization via thorvg (used by SvgRasterizer). Both have QUIET find_package's so opting out degrades gracefully.",
+      "description": "Optional UI helpers: HTML parsing via lexbor, SVG parsing/rasterization via thorvg. The integrations use QUIET find_package calls so opting out degrades gracefully.",
       "dependencies": [ "lexbor", "thorvg" ]
     },
 

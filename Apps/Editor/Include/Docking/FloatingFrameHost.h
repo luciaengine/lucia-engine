@@ -1,6 +1,6 @@
 #pragma once
 
-#include "EditorApplication/EditorApplication.h" // EditorApplication::EditorWindowContext
+#include "EditorApplication.h" // EditorApplication::EditorWindowContext
 
 #include <functional>
 #include <string>
@@ -53,9 +53,6 @@ class FloatingFrameHost
     /// Unmount every frame without restoring tabs. A layout apply places the
     /// panels itself.
     void DismissAll();
-
-    /// The panel id of every frame shown now.
-    std::vector<std::string> PanelIds() const;
 
   private:
     void TearOff(const std::string& panelId, float cursorX, float cursorY);

@@ -173,11 +173,11 @@ ShadowReceiverReduce::Setup ShadowReceiverReduce::MakeSetup(const CameraData& ca
 
     // Positions are reconstructed render-origin-relative, against the same
     // origin the cascade fit derives from the camera.
-    Matrix4x4 viewRel;
-    Matrix4x4 viewProjRel;
+    float viewRel[16];
+    float viewProjRel[16];
     int32 originSector[4];
-    ComputeRebasedView(camera.view, camera.proj, camera.viewProj, camera.cameraPos.x,
-                       camera.cameraPos.y, camera.cameraPos.z, viewRel, viewProjRel,
+    ComputeRebasedView(camera.view, camera.proj, camera.viewProj, camera.cameraPos[0],
+                       camera.cameraPos[1], camera.cameraPos[2], viewRel, viewProjRel,
                        originSector);
     float originX = 0.0f;
     float originY = 0.0f;
@@ -188,7 +188,9 @@ ShadowReceiverReduce::Setup ShadowReceiverReduce::MakeSetup(const CameraData& ca
         measured.RenderOriginSector[axis] = originSector[axis];
 
     ParamsGPU& params = setup.Params;
-    const Matrix4x4 invViewProj = Mathematics::Inverse(viewProjRel);
+    Matrix4x4 viewProj;
+    std::memcpy(viewProj.Data(), viewProjRel, sizeof(viewProjRel));
+    const Matrix4x4 invViewProj = Mathematics::Inverse(viewProj);
     std::memcpy(params.InvViewProjRel, invViewProj.Data(), sizeof(params.InvViewProjRel));
     // Rows of the column-major light rotation: light-space axis i of a position
     // p is dot(row i, p).
@@ -202,9 +204,9 @@ ShadowReceiverReduce::Setup ShadowReceiverReduce::MakeSetup(const CameraData& ca
         rows[i][2] = m[8 + i];
         rows[i][3] = 0.0f;
     }
-    params.CameraPosRel[0] = camera.cameraPos.x - originX;
-    params.CameraPosRel[1] = camera.cameraPos.y - originY;
-    params.CameraPosRel[2] = camera.cameraPos.z - originZ;
+    params.CameraPosRel[0] = camera.cameraPos[0] - originX;
+    params.CameraPosRel[1] = camera.cameraPos[1] - originY;
+    params.CameraPosRel[2] = camera.cameraPos[2] - originZ;
     params.CameraForward[0] = measured.CameraForward.x;
     params.CameraForward[1] = measured.CameraForward.y;
     params.CameraForward[2] = measured.CameraForward.z;
@@ -330,7 +332,7 @@ void ShadowReceiverReduce::Record(RenderGraph::RGContext& ctx, ShadowMapRenderFe
 
     uint32_t binding = 0;
     DescriptorType type{};
-    if (Rendering::TryGetSet0BindingByName(*pipeline.Meta, "ReceiverBoundsBuffer", binding, type))
+    if (Detail::TryGetSet0BindingByName(*pipeline.Meta, "ReceiverBoundsBuffer", binding, type))
     {
         DescriptorSetUpdate u{};
         u.binding = binding;
@@ -338,7 +340,7 @@ void ShadowReceiverReduce::Record(RenderGraph::RGContext& ctx, ShadowMapRenderFe
         u.buffers = {slot};
         dev->UpdateDescriptorSet(set0, u);
     }
-    if (Rendering::TryGetSet0BindingByName(*pipeline.Meta, "ReceiverReduceParams", binding, type))
+    if (Detail::TryGetSet0BindingByName(*pipeline.Meta, "ReceiverReduceParams", binding, type))
     {
         DescriptorSetUpdate u{};
         u.binding = binding;

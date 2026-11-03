@@ -97,6 +97,8 @@ class TextInput : public BaseField, public ITextMeasurable
     void SetOnCommit(const std::function<void()>& cb) { m_OnCommit = cb; }
 
   private:
+    int HorizontalCaretStop(const std::string& text, size_t pos, bool forward, bool byWord);
+
     // caret/selection in UTF-8 byte indices
     int m_CaretIndex = 0;
     int m_SelectionStart = -1;

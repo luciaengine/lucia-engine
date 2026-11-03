@@ -101,6 +101,7 @@ const SettingsNameIndex& NameIndex()
 struct SettingsFieldTable
 {
     std::vector<EffectSettingsField> Fields;
+    std::vector<EffectViewPreparation> ViewPreparations;
 };
 std::atomic<const SettingsFieldTable*>& FieldTable()
 {
@@ -175,7 +176,7 @@ const EffectSettingsGate* PostProcessEffectRegistry::FindGate(std::string_view s
     return it == index.Gates.end() ? nullptr : &it->second;
 }
 
-std::span<const EffectSettingsField> PostProcessEffectRegistry::AllSettingsFields()
+static const SettingsFieldTable* GetSettingsFieldTable()
 {
     EnsureBuiltInsRegistered();
     const SettingsFieldTable* table = FieldTable().load(std::memory_order_acquire);
@@ -192,6 +193,9 @@ std::span<const EffectSettingsField> PostProcessEffectRegistry::AllSettingsField
                 const auto it = m.find(type);
                 if (it == m.end())
                     continue;
+                const auto& hooks = it->second.ViewPreparation;
+                if (hooks.AfterWorldExtraction || hooks.PrepareFrameTargets)
+                    built->ViewPreparations.push_back(hooks);
                 for (const EffectSettingsField& field : it->second.SettingsFields)
                     built->Fields.push_back(field);
             }
@@ -199,7 +203,17 @@ std::span<const EffectSettingsField> PostProcessEffectRegistry::AllSettingsField
             table = built.release();
         }
     }
-    return table->Fields;
+    return table;
+}
+
+std::span<const EffectSettingsField> PostProcessEffectRegistry::AllSettingsFields()
+{
+    return GetSettingsFieldTable()->Fields;
+}
+
+std::span<const EffectViewPreparation> PostProcessEffectRegistry::AllViewPreparations()
+{
+    return GetSettingsFieldTable()->ViewPreparations;
 }
 
 const EffectFieldIO* PostProcessEffectRegistry::FindFieldIO(const PostProcessEffectDescriptor& descriptor,

@@ -18,9 +18,22 @@ class ModifierKeyState
     /// with the event; `released` distinguishes key-up from press and repeat.
     void ApplyKeyEvent(int key, bool released, int mods);
 
-    /// Reconcile against the platform's live modifier state: a live query, or the mask
-    /// on a mouse event. The live state outranks the tracked key state: a modifier the
-    /// mask omits is released (its key-up was lost), and one it reports is held.
+    /// Reconcile against the platform mask on an event that is not a key event,
+    /// such as a mouse button. The mask is the OS's live modifier state at that
+    /// instant, so it is authoritative both ways: it is the only report of a
+    /// modifier held from before the window took focus (no key event ever
+    /// arrives for it), and it releases a modifier whose key-up this manager
+    /// never saw — a release swallowed by a native menu's nested loop, or one
+    /// delivered to another window. Without that release the modifier would
+    /// stick, and every later plain click would arrive as a modifier-click.
+    void ApplyEventMask(int mods);
+
+    /// Reconcile against a live query of the platform's modifier state, which
+    /// outranks the physical key state this object tracked from events. A
+    /// release can be lost to the host without a focus change (a browser page
+    /// while Cmd+Space opens Spotlight, a desktop app while an OS overlay takes
+    /// the key-up), and the tracked key then stays held until the next release.
+    /// A modifier the live mask omits is released here; one it reports is held.
     void ApplyLiveMask(int mods);
 
     /// Drop all held state, for the host window's focus-loss boundary.

@@ -1,8 +1,7 @@
 #include "SlangCompileLane.h"
 
-#include "Shader/ShaderSourceCache.h"
-
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
 #include <atomic>
 #include <cstdlib>
@@ -31,8 +30,8 @@ constexpr uint32_t kSlangcTimeoutMs = 60000u;
 std::string GetEnvString(const char* name)
 {
 #ifdef _WIN32
-    // getenv reads the CRT's startup snapshot; tests toggle the lane in-process
-    // via _putenv_s, which GetEnvironmentVariable sees live.
+    // GetEnvironmentVariableA reads the Win32 process environment, which both
+    // _putenv_s and SetEnvironmentVariable update.
     char buf[1024];
     const DWORD n = ::GetEnvironmentVariableA(name, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
@@ -282,6 +281,15 @@ std::vector<std::string> ParseDepfile(const std::string& text)
     return deps;
 }
 
+std::string CanonicalAbs(const fs::path& p)
+{
+    std::error_code ec;
+    fs::path abs = fs::absolute(p, ec);
+    if (ec)
+        abs = p;
+    return abs.lexically_normal().string();
+}
+
 bool MapStageName(const std::string& stageKey, std::string& outSlangStage)
 {
     if (stageKey == "vs") { outSlangStage = "vertex"; return true; }
@@ -296,8 +304,7 @@ bool MapStageName(const std::string& stageKey, std::string& outSlangStage)
 
 bool Enabled()
 {
-    const std::string v = GetEnvString("GE_SHADER_SLANG_LANE");
-    return !v.empty() && v != "0";
+    return Platform::EnvironmentSwitchEnabled("GE_SHADER_SLANG_LANE", false);
 }
 
 bool EnsureAvailable(std::string* outError)
@@ -486,11 +493,11 @@ bool CompileStage(const StageInput& in, std::vector<uint32_t>& outWords,
         {
             std::string text((std::istreambuf_iterator<char>(f)),
                              std::istreambuf_iterator<char>());
-            const std::string rootA = ShaderSourceCache::NormalizedKey(srcArg);
-            const std::string rootB = ShaderSourceCache::NormalizedKey(in.sourcePath);
+            const std::string rootA = CanonicalAbs(srcArg);
+            const std::string rootB = CanonicalAbs(in.sourcePath);
             for (const auto& dep : ParseDepfile(text))
             {
-                const std::string canonical = ShaderSourceCache::NormalizedKey(fs::path(dep));
+                const std::string canonical = CanonicalAbs(fs::path(dep));
                 if (canonical == rootA || canonical == rootB)
                     continue;
                 outModuleDeps.push_back(canonical);

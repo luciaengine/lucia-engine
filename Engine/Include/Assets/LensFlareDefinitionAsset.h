@@ -4,7 +4,6 @@
 #include "Assets/LensFlareTypes.h"
 
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -45,8 +44,6 @@ public:
 
 private:
     bool ParseFromText(const std::string& text);
-    // Logs that the file is not loaded and why, and clears the definition; returns false.
-    bool Refuse(std::string_view reason);
 
     std::string m_AtlasRef; // guid or mount-relative path, resolver-healed
     LensFlare::FlareGlobals m_Globals;

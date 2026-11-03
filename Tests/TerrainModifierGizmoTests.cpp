@@ -11,7 +11,7 @@
 
 #include <gtest/gtest.h>
 
-#include "Terrain/TerrainModifier/TerrainModifierGizmoGeometry.h"
+#include "SceneView/TerrainModifierGizmoGeometry.h"
 
 namespace Geo = GameEngine::Editor::SceneTools::ModifierGizmoGeometry;
 

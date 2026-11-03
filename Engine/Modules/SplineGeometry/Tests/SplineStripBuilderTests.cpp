@@ -1,4 +1,5 @@
 #include "SplineGeometry/SplineStripBuilder.h"
+#include "Types/Fnv1a.h"
 
 #include <gtest/gtest.h>
 
@@ -97,7 +98,7 @@ SplineProfile WallProfile(float32 thickness, float32 height)
 }
 
 // The engine's front-face rule, read off a primitive that renders correctly
-// (PrimitiveGenerator::GeneratePlane, whose every triangle faces +Y): for a triangle
+// today (PrimitiveGenerator::GeneratePlane, an up-facing quad): for a triangle
 // (a, b, c), cross(b - a, c - a) is the outward normal. It is also the CCW
 // winding a Jolt mesh shape expects, so collision inherits whatever this pins.
 V3 TriangleNormal(const SplineStripMesh& mesh, size_t triangle)
@@ -180,8 +181,7 @@ TEST(SplineStrip, AWallFacesOutwardOnEverySide)
     const auto stations = StraightStations(4u, 2.0f, 0.5f);
 
     SplineStripParams params;
-    params.CapStart = false;
-    params.CapEnd = false; // side faces only, so "outward" means lateral
+    params.GenerateCaps = false; // side faces only, so "outward" means lateral
     const SplineStripMesh mesh = BuildSplineStrip(profile, stations, params);
 
     ASSERT_TRUE(mesh.IsValid());
@@ -260,30 +260,6 @@ TEST(SplineStrip, VFollowsTheWidthChannelSoATaperKeepsItsTexelDensity)
     // perimeter would stretch the texture across the wide end instead.
     EXPECT_NEAR(mesh.Vertices[1].UV.y, 2.0f, 1e-5f);
     EXPECT_NEAR(mesh.Vertices[mesh.RingVertexCount + 1u].UV.y, 6.0f, 1e-5f);
-}
-
-TEST(SplineStrip, StripProfileVIsTheVTheSweepGivesEachProfilePoint)
-{
-    const SplineProfile profile = FlatRibbon(2.0f); // nominal half-width 1 m
-    auto stations = StraightStations(2u, 4.0f, 1.0f);
-    stations[1].HalfWidthLeft = 2.0f;
-    stations[1].HalfWidthRight = 0.5f;
-    const SplineStripMesh mesh = BuildSplineStrip(profile, stations, {});
-    SplineStripScale scale;
-    scale.Left = 2.0f;
-    scale.Right = 0.5f;
-    std::vector<Mathematics::Vector2> scaledPoints(profile.Points.size());
-    std::vector<float32> pointV(profile.Points.size());
-
-    StripProfileV(profile, scale, scaledPoints, pointV);
-
-    ASSERT_TRUE(mesh.IsValid());
-    ASSERT_EQ(mesh.RingVertexCount, 2u);
-    ASSERT_EQ(pointV.size(), 2u);
-    // 2 m left of the centerline and 0.5 m right of it.
-    EXPECT_NEAR(pointV[1], 2.5f, 1e-5f);
-    for (uint32 point = 0; point < 2u; ++point)
-        EXPECT_FLOAT_EQ(mesh.Vertices[mesh.RingVertexCount + point].UV.y, pointV[point]);
 }
 
 TEST(SplineStrip, TheWidthChannelScalesLaterallyWithoutChangingHeight)
@@ -389,8 +365,7 @@ TEST(SplineStrip, EveryRingVertexOfAClosedProfileIsReferencedByTheStitch)
     // orphaned vertex per ring — never indexed, only wasting a vertex-buffer
     // column on every ring of every wall.
     SplineStripParams params;
-    params.CapStart = false;
-    params.CapEnd = false;
+    params.GenerateCaps = false;
     const SplineStripMesh wall =
         BuildSplineStrip(WallProfile(1.0f, 2.0f), StraightStations(3u, 1.0f, 0.5f), params);
 
@@ -402,23 +377,6 @@ TEST(SplineStrip, EveryRingVertexOfAClosedProfileIsReferencedByTheStitch)
         referenced[index] = true;
     for (size_t v = 0; v < referenced.size(); ++v)
         EXPECT_TRUE(referenced[v]) << "vertex " << v << " is orphaned";
-}
-
-// Each end caps on its own: a run that meets another sweep at one end leaves only that end open.
-TEST(SplineStrip, OnlyTheEndsAskedForAreCapped)
-{
-    const auto stations = StraightStations(3u, 1.0f, 0.5f);
-    SplineStripParams startOnly;
-    startOnly.CapEnd = false;
-    const SplineStripMesh both = BuildSplineStrip(WallProfile(1.0f, 2.0f), stations, {});
-    const SplineStripMesh start = BuildSplineStrip(WallProfile(1.0f, 2.0f), stations, startOnly);
-
-    ASSERT_TRUE(start.IsValid());
-    const size_t rings = static_cast<size_t>(start.RingCount) * start.RingVertexCount;
-    const size_t capVertices = (both.Vertices.size() - rings) / 2u;
-    EXPECT_EQ(start.Vertices.size(), rings + capVertices);
-    for (size_t i = rings; i < start.Vertices.size(); ++i)
-        EXPECT_LT(start.Vertices[i].Normal.z, -0.99f) << "the cap left is not the start's";
 }
 
 TEST(SplineStrip, CapUVsTileAtTheSidesDensityOnTheScaledCrossSection)
@@ -863,24 +821,18 @@ TEST(SplineStripBuilder, AZeroHalfWidthCollapsesOnlyItsOwnSide)
 namespace
 {
 
+// Seed the frozen digests below were captured with. It is not the FNV-1a offset
+// basis (one digit short); keep it, or every frozen literal must be re-baselined.
+constexpr uint64 kFrozenDigestSeed = 1469598103934665603ull;
+
 // FNV-1a over the mesh's raw bytes: one ULP anywhere changes it.
 uint64 MeshDigest(const SplineStripMesh& mesh)
 {
-    uint64 value = 1469598103934665603ull;
-    const auto fold = [&value](const void* data, size_t size)
-    {
-        const auto* p = static_cast<const unsigned char*>(data);
-        for (size_t i = 0; i < size; ++i)
-        {
-            value ^= static_cast<uint64>(p[i]);
-            value *= 1099511628211ull;
-        }
-    };
-    fold(mesh.Vertices.data(), mesh.Vertices.size() * sizeof(SplineVertex));
-    fold(mesh.Indices.data(), mesh.Indices.size() * sizeof(uint32));
-    fold(&mesh.MinBounds, sizeof(mesh.MinBounds));
-    fold(&mesh.MaxBounds, sizeof(mesh.MaxBounds));
-    return value;
+    uint64 value = Hashing::Fnv1a64(mesh.Vertices.data(), mesh.Vertices.size() * sizeof(SplineVertex),
+                                    kFrozenDigestSeed);
+    value = Hashing::Fnv1a64(mesh.Indices.data(), mesh.Indices.size() * sizeof(uint32), value);
+    value = Hashing::Fnv1a64Value(value, mesh.MinBounds);
+    return Hashing::Fnv1a64Value(value, mesh.MaxBounds);
 }
 
 // A capped wall and a crowned road over rolling, curving ground, with roll and a
@@ -961,36 +913,6 @@ TEST(SplineStripBuilder, OnlyGroundedPointsTakeTheGroundOffset)
     EXPECT_GT(moved, 0u);
 }
 
-// RiseScale scales the heights above zero only: at 0.5 a crown's apex stands at half its rise and at 0
-// on the level of its edges; the edges and the shoulders below them do not move.
-TEST(SplineStripBuilder, RiseScaleLowersOnlyTheProfileAboveZero)
-{
-    SplineProfileParams params;
-    params.Shape = SplineProfileShape::Crown;
-    params.Width = 4.0f;
-    params.CrownRise = 0.12f;
-    const SplineProfile crown = BuildProfile(params);
-
-    for (const float32 rise : {0.5f, 0.0f})
-    {
-        const std::vector<SplineStripStation> whole = StraightStations(3u, 1.0f, crown.NominalHalfWidth);
-        std::vector<SplineStripStation> eased = whole;
-        for (SplineStripStation& station : eased)
-            station.RiseScale = rise;
-        const SplineStripMesh before = BuildSplineStrip(crown, whole, {});
-        const SplineStripMesh after = BuildSplineStrip(crown, eased, {});
-        ASSERT_EQ(before.Vertices.size(), after.Vertices.size());
-        for (size_t v = 0; v < before.Vertices.size(); ++v)
-        {
-            const V3& a = before.Vertices[v].Position;
-            const V3& b = after.Vertices[v].Position;
-            EXPECT_FLOAT_EQ(b.x, a.x);
-            EXPECT_FLOAT_EQ(b.z, a.z);
-            EXPECT_NEAR(b.y, a.y > 0.0f ? a.y * rise : a.y, 1.0e-6f) << "vertex " << v << " at rise " << rise;
-        }
-    }
-}
-
 // ---- V on the side faces --------------------------------------------------
 
 // Without a datum a wall's V runs around its cross-section: 0 at the left base,
@@ -1011,17 +933,11 @@ TEST(SplineStripBuilder, WithoutADatumVRunsAroundThePerimeter)
         const bool top = std::abs(vertex.Normal.y - 1.0f) < 1.0e-5f;
         const bool rightFace = std::abs(vertex.Normal.x - 1.0f) < 1.0e-5f;
         if (leftFace)
-        {
             EXPECT_NEAR(vertex.UV.y, y, 1.0e-5f);
-        }
         else if (top)
-        {
             EXPECT_NEAR(vertex.UV.y, 3.0f + (x + 0.5f), 1.0e-5f);
-        }
         else if (rightFace)
-        {
             EXPECT_NEAR(vertex.UV.y, 4.0f + (3.0f - y), 1.0e-5f);
-        }
         EXPECT_EQ(vertex.Tangent.w, 1.0f);
     }
 }

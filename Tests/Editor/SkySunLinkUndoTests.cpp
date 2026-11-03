@@ -25,13 +25,13 @@
 #include "Editor/Entities/ComponentEnabledToggle.h"
 #include "Editor/Entities/ComponentRemoval.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Sky/SkyEnvironment/SkyEnvironmentComponentTraits.h"
-#include "Sky/SkyEnvironment/SkyEnvironmentCreation.h"
-#include "Sky/SkySun/SkySunLinkUndo.h"
+#include "Sky/SkyEnvironmentComponentTraits.h"
+#include "Sky/SkyEnvironmentCreation.h"
+#include "Sky/SkySunLinkUndo.h"
 #include "UndoRedo/MultiEntityComponentSnapshot.h"
 #include "UndoRedo/UndoRedoService.h"
 
-#include <cstdio>
+#include <cstring>
 #include <string>
 
 using namespace GameEngine;
@@ -261,7 +261,7 @@ TEST(SkySunLinkUndo, UndoingTheRemovalOfAnHdriSkyboxPutsTheAuthorsColorBack)
     rig.World.AddComponentImmediate(rig.Sky, linked);
     const ECS::EntityHandle skybox = rig.World.CreateEntity();
     Components::Skybox hdri{};
-    std::snprintf(hdri.HDRIAssetGuid, sizeof(hdri.HDRIAssetGuid), "%s", kHdriAssetGuid);
+    std::strncpy(hdri.HDRIAssetGuid, kHdriAssetGuid, sizeof(hdri.HDRIAssetGuid) - 1);
     rig.World.AddComponentImmediate(skybox, hdri);
     ASSERT_FALSE(Components::SkySunIlluminance::DrivenSunLight(rig.World).IsValid())
         << "an HDRI skybox is drawn instead of the sky, so the light is not driven";

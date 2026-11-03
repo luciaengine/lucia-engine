@@ -24,11 +24,11 @@ void CharacterControllerSystem::ReleaseDisabledCharacters(ECS::World& world)
                              ECS::Optional<ECS::DisabledInHierarchy>,
                              ECS::Optional<ECS::ComponentDisabled<GameEngine::Components::CharacterController>>>();
         q.IncludeDisabled();
-        q.Each([](GameEngine::Components::CharacterController& cc, const ECS::Disabled* disabled,
+        q.Each([](ECS::Writable<GameEngine::Components::CharacterController> cc, const ECS::Disabled* disabled,
                   const ECS::DisabledInHierarchy* inactive,
                   const ECS::ComponentDisabled<GameEngine::Components::CharacterController>* controllerOff) {
-            if (cc.character.IsValid() && (disabled || inactive || controllerOff))
-                ReleaseCharacterController(cc);
+            if (cc->character.IsValid() && (disabled || inactive || controllerOff))
+                ReleaseCharacterController(cc.Mutable());
         });
         return;
     }
@@ -52,9 +52,10 @@ void CharacterControllerSystem::Update(ECS::World& world, float32 deltaTime)
     world.Query<ECS::Write<GameEngine::Components::CharacterController>,
                 ECS::Read<GameEngine::Components::WorldTransform>>()
         .Each([&](ECS::EntityHandle e,
-                  GameEngine::Components::CharacterController& cc,
+                  ECS::Writable<GameEngine::Components::CharacterController> controllerRow,
                   const GameEngine::Components::WorldTransform& worldTransform)
               {
+                  GameEngine::Components::CharacterController& cc = controllerRow.Mutable();
                   if (world.GetComponent<GameEngine::Components::PhysicsBody>(e) != nullptr)
                   {
                       if (cc.character.IsValid())

@@ -12,7 +12,6 @@
 #include "Engine/Rendering/MaterialColorClassify.h"
 
 #include <algorithm>
-#include <memory_resource>
 #include <random>
 #include <vector>
 
@@ -101,8 +100,7 @@ TEST(SortedTransparentRuns, PartitionOrdersRunsByFarthestMember)
         MakeRecord(0, 10.0f), MakeRecord(1, 90.0f), MakeRecord(2, 50.0f),
         MakeRecord(0, 30.0f), MakeRecord(1, 5.0f),  MakeRecord(2, 40.0f),
     };
-    SortedTransparentRunPartition part;
-    BuildSortedTransparentRunPartition(records, 3, *std::pmr::new_delete_resource(), part);
+    const auto part = BuildSortedTransparentRunPartition(records, 3);
 
     // Slot order: group 1 (max 90) -> group 2 (max 50) -> group 0 (max 30).
     ASSERT_EQ(part.GroupOfSlot.size(), 3u);
@@ -131,8 +129,7 @@ TEST(SortedTransparentRuns, PartitionTieOnFarthestBreaksByDiscoveryOrder)
         MakeRecord(0, 25.0f),
         MakeRecord(1, 25.0f), // same farthest member as group 0
     };
-    SortedTransparentRunPartition part;
-    BuildSortedTransparentRunPartition(records, 2, *std::pmr::new_delete_resource(), part);
+    const auto part = BuildSortedTransparentRunPartition(records, 2);
     EXPECT_EQ(part.GroupOfSlot[0], 0u); // discovery order wins the tie, deterministically
     EXPECT_EQ(part.GroupOfSlot[1], 1u);
 }
@@ -154,8 +151,7 @@ TEST(SortedTransparentRuns, WithinRunOrderIsGlobalSortedOrder)
     records.push_back(MakeRecord(1, 123.5f));
     records.push_back(MakeRecord(1, 123.5f)); // exact duplicate -> index tiebreak
 
-    SortedTransparentRunPartition part;
-    BuildSortedTransparentRunPartition(records, 4, *std::pmr::new_delete_resource(), part);
+    const auto part = BuildSortedTransparentRunPartition(records, 4);
     const auto order = BuildSortedTransparentCpuOrder(records, part);
     ExpectDrainOrderInvariants(records, part, order);
 }
@@ -170,8 +166,7 @@ TEST(SortedTransparentRuns, EqualDepthKeysAreUniqueAtFullCapacity)
     for (uint32_t i = 0; i < kSortedTransparentSortCapacity; ++i)
         records.push_back(MakeRecord(0, 42.0f, /*instanceIndex=*/i * 70000u));
 
-    SortedTransparentRunPartition part;
-    BuildSortedTransparentRunPartition(records, 1, *std::pmr::new_delete_resource(), part);
+    const auto part = BuildSortedTransparentRunPartition(records, 1);
 
     SortedTransparentKey prev{};
     for (uint32_t i = 0; i < records.size(); ++i)
@@ -203,8 +198,7 @@ TEST(SortedTransparentRuns, PastOldCeiling300RecordsDrawSorted)
     for (uint32_t i = 0; i < 300; ++i)
         records.push_back(MakeRecord(0, depth(rng), i));
 
-    SortedTransparentRunPartition part;
-    BuildSortedTransparentRunPartition(records, 1, *std::pmr::new_delete_resource(), part);
+    const auto part = BuildSortedTransparentRunPartition(records, 1);
     const auto order = BuildSortedTransparentCpuOrder(records, part);
     ExpectDrainOrderInvariants(records, part, order);
 }
@@ -224,8 +218,7 @@ TEST(SortedTransparentRuns, PastGpuCapacityCpuTwinStaysCorrect)
     for (uint32_t i = 0; i < count; ++i)
         records.push_back(MakeRecord(group(rng), depth(rng), i));
 
-    SortedTransparentRunPartition part;
-    BuildSortedTransparentRunPartition(records, 6, *std::pmr::new_delete_resource(), part);
+    const auto part = BuildSortedTransparentRunPartition(records, 6);
     const auto order = BuildSortedTransparentCpuOrder(records, part);
     ExpectDrainOrderInvariants(records, part, order);
 }
@@ -253,6 +246,15 @@ Material MakeRunMaterial(const char* name, const char* surface,
     return mat;
 }
 } // namespace
+
+TEST(SortedTransparentRuns, CompatibilityKeepsDistinctMaterialBindingsInSeparateRuns)
+{
+    const Material a = MakeRunMaterial("atlasA", "standard_pbr.surface", std::nullopt);
+    const Material b = MakeRunMaterial("atlasB", "standard_pbr.surface", std::nullopt);
+    EXPECT_EQ(MakeSortedTransparentRunMaterialKey(a), MakeSortedTransparentRunMaterialKey(b));
+    EXPECT_NE(MakeSortedTransparentRunMaterialKey(a, true), MakeSortedTransparentRunMaterialKey(b, true));
+    EXPECT_EQ(MakeSortedTransparentRunMaterialKey(a, true), MakeSortedTransparentRunMaterialKey(a, true));
+}
 
 TEST(SortedTransparentRuns, MaterialKeySharesAcrossParamOnlyVariance)
 {

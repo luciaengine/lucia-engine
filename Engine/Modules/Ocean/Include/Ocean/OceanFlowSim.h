@@ -7,7 +7,7 @@
 
 #include "Rendering/Core/Device.h" // DescriptorSetLayoutDesc
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 
 #include <array>
 #include <cstdint>

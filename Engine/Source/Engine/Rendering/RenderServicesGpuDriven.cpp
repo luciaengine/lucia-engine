@@ -25,7 +25,8 @@
 #include "Assets/MaterialAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/TextureAsset.h"
-#include "Core/ApplicationPaths.h"
+#include "Engine/Rendering/EmbeddedImageDecoder.h"
+#include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Engine/Rendering/RenderOrigin.h"
@@ -36,12 +37,13 @@
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
-#include "Rendering/Camera/CameraDerivation.h"
+#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/CameraDerivation.h"
 #include "Rendering/Core/CullingStrategy.h"
 #include "Rendering/Core/FrustumCullingStrategy.h"
 #include "Rendering/Core/GPUCulling.h"
@@ -50,14 +52,14 @@
 #include "Rendering/Core/GPUInstanceWorldKey.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "Rendering/Materials/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
-#include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
-#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
+#include "Rendering/Utils/CubeLutFileParser.h"
+#include "Rendering/Utils/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
@@ -75,7 +77,6 @@
 #include <cmath>
 #include <cassert>
 #include <cstring>
-#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -92,7 +93,7 @@ using namespace ::GameEngine::Rendering;
 
 // Build per-view LOD selection params from a resolved camera. Disables LOD
 // (forces LOD0) for editor 2D ortho views (cameraPos.w == 1). projScaleY is
-// |proj[1][1]| — the focal term used to estimate the
+// |proj[1][1]| (column-major proj[5]) — the focal term used to estimate the
 // bounding sphere's screen-space coverage in draw_command_scatter.comp. The
 // SSE scales convert that coverage into projected-error pixels for the
 // SSE-normalized threshold slots (MeshLODThresholds.h); shadow buckets pass
@@ -104,11 +105,11 @@ static Rendering::GPUDrawStreamBuilder::ViewLODParams MakeViewLODParams(
     float lodHysteresisBand)
 {
     Rendering::GPUDrawStreamBuilder::ViewLODParams p{};
-    p.cameraPos.x = cam.cameraPos.x;
-    p.cameraPos.y = cam.cameraPos.y;
-    p.cameraPos.z = cam.cameraPos.z;
-    const bool is2DOrtho = cam.cameraPos.w == 1.0f;
-    p.projScaleY    = is2DOrtho ? 0.0f : std::abs(cam.proj[1][1]);
+    p.cameraPos[0] = cam.cameraPos[0];
+    p.cameraPos[1] = cam.cameraPos[1];
+    p.cameraPos[2] = cam.cameraPos[2];
+    const bool is2DOrtho = cam.cameraPos[3] == 1.0f;
+    p.projScaleY    = is2DOrtho ? 0.0f : std::abs(cam.proj[5]);
     p.lodBiasGlobal = globalBias;
     p.forceLod      = forceLevel;
     p.smallCullCoverage = smallCullCoverage;
@@ -194,7 +195,6 @@ std::span<const uint32_t> RenderServices::MeshPoolGroupSpanForDraws() const
 
 void RenderServices::BuildWorldBatchKeys()
 {
-    GE_CPU_PROFILE_SCOPE("RenderServices.BuildWorldBatchKeys");
     // Refresh the P2 color-class map (no-op unless the material set changed or
     // the merge flag is off) so the derived keys, the scatter color table, and
     // the scatter routing SSBO all key on one consistent per-frame snapshot.
@@ -212,8 +212,8 @@ void RenderServices::BuildWorldBatchKeys()
     const std::span<const uint32_t> colorClassMap =
         m_Profile.IsCompat() ? std::span<const uint32_t>{}
                              : m_MaterialSystem.MaterialColorClassSpan();
-    const uint32_t sortViewCount = m_WorldDrawBuilder.BuildBatchKeys(
-        GetMeshGPURegistry(), colorClassMap, m_MaterialSystem.MaterialSSBOGeneration());
+    const uint32_t sortViewCount =
+        m_WorldDrawBuilder.BuildBatchKeys(GetMeshGPURegistry(), colorClassMap);
     m_RenderTimelineStats.SortMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sortBegin).count();
     m_RenderTimelineStats.SortViewCount = sortViewCount;
@@ -233,7 +233,6 @@ void RenderServices::BuildWorldBatchKeys()
     const uint64_t frameIdx = m_GpuScene ? static_cast<uint64_t>(m_GpuScene->GetFrameIndex()) : 0ull;
     m_WorldDrawListsBuiltFrameIndex = frameIdx;
 
-    GE_CPU_PROFILE_SCOPE("RenderServices.BuildWorldBatchKeys.EmitProducers");
     EmitProducerForwardCommands();
     EmitProducerDepthCommands();
 }
@@ -265,11 +264,7 @@ void RenderServices::ScheduleWorldBucketerDispatches(Rendering::RenderGraph::RGF
     if (m_GpuCullingPipeline->LastPublishArm() !=
         Rendering::GPUCullingPipeline::PublishArm::RenderGraph)
         return;
-    uint32_t instanceCount = 0;
-    {
-        GE_CPU_PROFILE_SCOPE("RenderServices.Bucketer.Common");
-        instanceCount = ScheduleWorldBucketerCommon();
-    }
+    const uint32_t instanceCount = ScheduleWorldBucketerCommon();
     if (instanceCount == 0u)
         return;
 
@@ -295,7 +290,6 @@ void RenderServices::ScheduleWorldBucketerDispatches(Rendering::RenderGraph::RGF
     // Captured snapshot: the spine flushed GPUScene just before this call
     // (BuildFrameGraph gate), so the registry snapshot matches the instance
     // buffer content this call's dispatches read.
-    GE_CPU_PROFILE_SCOPE("RenderServices.Bucketer.UnifiedScatter");
     RefreshScatterElisionContext();
     const ScatterGroupMaps groupMaps = MeshPoolGroupMapsForScatter();
     m_FrameRG.DrawStreamOrdering = m_DrawStreamBuilder->ScheduleUnifiedScatter(
@@ -342,20 +336,11 @@ void RenderServices::UpdateIdleElisionFrameState()
     // cull family left ON. Every line those measurements read — windows and
     // engage/disengage edges — is opt-in: GE_IDLE_ELISION_LOG=1
     // (IdleElisionLoggingEnabled).
-    static const bool kMaster = []
-    {
-        const char* v = std::getenv("GE_IDLE_ELISION");
-        return !v || std::strcmp(v, "0") != 0;
-    }();
-    auto familyEnabled = [](const char* name)
-    {
-        const char* v = std::getenv(name);
-        return !v || std::strcmp(v, "0") != 0;
-    };
-    static const bool kCull = familyEnabled("GE_IDLE_ELISION_CULL");
-    static const bool kScatter = familyEnabled("GE_IDLE_ELISION_SCATTER");
-    static const bool kCluster = familyEnabled("GE_IDLE_ELISION_CLUSTER");
-    static const bool kSdsm = familyEnabled("GE_IDLE_ELISION_SDSM");
+    static const bool kMaster = Platform::EnvironmentSwitchEnabled("GE_IDLE_ELISION", true);
+    static const bool kCull = Platform::EnvironmentSwitchEnabled("GE_IDLE_ELISION_CULL", true);
+    static const bool kScatter = Platform::EnvironmentSwitchEnabled("GE_IDLE_ELISION_SCATTER", true);
+    static const bool kCluster = Platform::EnvironmentSwitchEnabled("GE_IDLE_ELISION_CLUSTER", true);
+    static const bool kSdsm = Platform::EnvironmentSwitchEnabled("GE_IDLE_ELISION_SDSM", true);
 
     m_IdleElision.AllowCull = kMaster && kCull;
     m_IdleElision.AllowScatter = kMaster && kScatter;
@@ -406,7 +391,7 @@ void RenderServices::UpdateIdleElisionFrameState()
     //      some view (OceanRenderFeature::PublishDepthClaim).
     bool anyDepthWritingProducer = !m_DrawProducers->Depth.empty();
     for (const ForwardProducerEntry& e : m_DrawProducers->Forward)
-        anyDepthWritingProducer = anyDepthWritingProducer || e.WritesDepth;
+        anyDepthWritingProducer = anyDepthWritingProducer || e.Options.WritesDepth;
     const bool skinPaletteChanged = m_SkinPaletteContentChanged;
     m_SkinPaletteContentChanged = false;
     bool anyDynamicDepthFeature = false;
@@ -646,9 +631,11 @@ uint32_t RenderServices::ScheduleWorldBucketerCommon()
                                         isShadowBucket ? 0.0f : m_LODHysteresisBand);
         // The deforming-motion producer reads this view's rendered level and
         // phase history for per-instance validity, so the camera slices of a
-        // view keep it. Shadow buckets never do: no producer draws into a
-        // cascade.
-        if (!isShadowBucket)
+        // view keep it while an arm is enabled. Shadow buckets never do: no
+        // producer draws into a cascade. With every arm off no view asks, the
+        // scatter allocates nothing and binds its stand-in, which is the state
+        // the history shipped in.
+        if (!isShadowBucket && m_DeformationMotionArm != DeformationMotionArm::None)
             s.lod.renderedLevelHistoryRequested = true;
         // Fit-freeze lane: a directional cascade slice selects LODs with the
         // FROZEN camera captured at that cascade's last refit (the value the
@@ -663,10 +650,10 @@ uint32_t RenderServices::ScheduleWorldBucketerCommon()
                 if (const CascadeFrameData* fd = feature->GetCachedFrameData(viewId);
                     fd && cascadeIdx < fd->NumCascades)
                 {
-                    s.lod.cameraPos.x = fd->LodCameraPos[cascadeIdx].x;
-                    s.lod.cameraPos.y = fd->LodCameraPos[cascadeIdx].y;
-                    s.lod.cameraPos.z = fd->LodCameraPos[cascadeIdx].z;
-                    const bool is2DOrtho = fd->LodCameraPos[cascadeIdx].w == 1.0f;
+                    s.lod.cameraPos[0] = fd->LodCameraPos[cascadeIdx][0];
+                    s.lod.cameraPos[1] = fd->LodCameraPos[cascadeIdx][1];
+                    s.lod.cameraPos[2] = fd->LodCameraPos[cascadeIdx][2];
+                    const bool is2DOrtho = fd->LodCameraPos[cascadeIdx][3] == 1.0f;
                     s.lod.projScaleY = is2DOrtho ? 0.0f : fd->LodProjScaleY[cascadeIdx];
                 }
             }
@@ -676,10 +663,10 @@ uint32_t RenderServices::ScheduleWorldBucketerCommon()
 
     for (const auto& view : m_ViewRegistry.GetViews())
     {
-        // A view with no active layer (asleep, or on no layer) gets no slice: the
-        // culling loop skips it too, and its pipeline declares only its clear and
-        // sky. A cull-less slice would still scatter every instance of its world.
-        if (view.ActiveRenderLayerMask() == Rendering::RenderLayerMask::None())
+        // A view with no active layer declares no pass that reads a slice (the
+        // culling loop and the pipeline skip it too); its cull-less slice would
+        // still scatter every instance of its world.
+        if (view.ActiveRenderLayerMask() == 0u)
             continue;
 
         // Main-view / thumbnail / picking slice (cascadeIndex = none).
@@ -963,8 +950,9 @@ bool RenderServices::ScheduleWorldOcclusionRecoverScatterForView(
                               ComputeViewSseScales(viewId), m_LODCrossfadeDuration,
                               m_LODHysteresisBand);
     // Phase B shares this view's history buffer with phase A (the comment
-    // above), so it asks for it too.
-    s.lod.renderedLevelHistoryRequested = true;
+    // above), so it asks for it on the same condition.
+    if (m_DeformationMotionArm != DeformationMotionArm::None)
+        s.lod.renderedLevelHistoryRequested = true;
     m_DrawStreamBuilder->RegisterSlice(s);
 
     // LATE pass phase (after world render): PassPhase is a scheduling tiebreak,
@@ -1015,7 +1003,7 @@ void RenderServices::EnsureAnimComputePass()
     if (spirv.empty())
     {
         spirv = Rendering::Utils::ReadFile(
-            (ApplicationPaths::GetInstallAssetsRoot() / "Shaders" / "animation_skinning.comp.spv").string());
+            (PathUtils::GetInstallAssetsRoot() / "Shaders" / "animation_skinning.comp.spv").string());
     }
     if (spirv.empty() && resolverAnswered)
     {
@@ -1062,12 +1050,7 @@ void RenderServices::ScheduleGpuSkinningAndRetarget(Rendering::RenderGraph::RGFr
         // Runtime ids beyond kRuntimeVisibleCapacity bypass the gate and
         // always animate, so overflow degrades to the pre-gate behavior.
         // GE_SKINNING_VISIBILITY_GATE=0 is the kill-switch.
-        static const bool kSkinningGateEnabled = []()
-        {
-            if (const char* env = std::getenv("GE_SKINNING_VISIBILITY_GATE"))
-                return env[0] != '0';
-            return true;
-        }();
+        static const bool kSkinningGateEnabled = Platform::EnvironmentSwitchEnabled("GE_SKINNING_VISIBILITY_GATE", true);
         // Spawn-frame guard: the gate consumes the PREVIOUS frame's
         // visibility aggregate (deliberate WAR lag), so a runtime created
         // this frame — new or free-list reused — has a stale word. Gating on
@@ -1132,7 +1115,6 @@ void RenderServices::ScheduleViewCullingDispatches(Rendering::RenderGraph::RGFra
     UpdateIdleElisionFrameState();
 
     m_GpuCullingPipeline->BeginFrame(&frame, scene);
-    m_GpuCullingPipeline->SetMaterialDeformationMargins(m_MaterialSystem.MaterialDeformationMarginSpan());
 
     const std::vector<Rendering::CameraInfo>& cameras = m_ViewRegistry.GetCameras();
     auto findCamera = [&cameras](Rendering::CameraId id) -> const Rendering::CameraData*
@@ -1152,7 +1134,7 @@ void RenderServices::ScheduleViewCullingDispatches(Rendering::RenderGraph::RGFra
     {
         if (view.cameraId == 0)
             continue;
-        if (view.ActiveRenderLayerMask() == Rendering::RenderLayerMask::None())
+        if (view.ActiveRenderLayerMask() == 0u)
             continue;
 
         const Rendering::CameraData* camData = findCamera(view.cameraId);
@@ -1180,7 +1162,7 @@ void RenderServices::ScheduleViewCullingDispatches(Rendering::RenderGraph::RGFra
         // byte-identical to the world-space one (dark-ship).
         {
             const auto originSector = ComputeRenderOriginSector(
-                camData->cameraPos.x, camData->cameraPos.y, camData->cameraPos.z);
+                camData->cameraPos[0], camData->cameraPos[1], camData->cameraPos[2]);
             float ox, oy, oz;
             SectorToWorld(originSector, ox, oy, oz);
             ctx.CameraRelativeOrigin = Mathematics::Vector3{ox, oy, oz};
@@ -1189,8 +1171,7 @@ void RenderServices::ScheduleViewCullingDispatches(Rendering::RenderGraph::RGFra
         ctx.FarPlane = camera.FarPlane;
         ctx.FirstInstance = 0;
         ctx.InstanceCount = instanceCount;
-        ctx.Layers = view.ActiveRenderLayerMask();
-        ctx.DropEditorHidden = view.DropsEditorHidden();
+        ctx.RenderLayerMask = view.ActiveRenderLayerMask();
         ctx.FrameIndex = thisFrame;
         ctx.DeltaTime = deltaTime;
         ctx.CullingPipeline = m_GpuCullingPipeline.get();
@@ -1216,19 +1197,51 @@ void RenderServices::ScheduleViewCullingDispatches(Rendering::RenderGraph::RGFra
         strategy->ScheduleCulling(ctx);
 
         const auto areaShadow = BuildAreaShadowFrameInfo(GetWorldLights(view.worldId));
-        if (areaShadow.valid && view.ActiveRenderLayerMask() != Rendering::RenderLayerMask::None() && HasShadowCasters(view.id))
+        if (areaShadow.valid && view.ActiveRenderLayerMask() != 0u && HasShadowCasters(view.id))
         {
-            s_DefaultFrustum.ScheduleCulling(MakeShadowSliceCullingContext(
-                ctx, {kAreaShadowCullingIndex, areaShadow.lightView, areaShadow.lightProj, areaShadow.lightVP,
-                      areaShadow.position, areaShadow.direction, areaShadow.nearPlane, areaShadow.farPlane}));
+            Rendering::ViewCullingContext areaCtx{};
+            areaCtx.Id = view.id;
+            areaCtx.CascadeIndex = kAreaShadowCullingIndex;
+            areaCtx.ViewMatrix = areaShadow.lightView;
+            areaCtx.ProjMatrix = areaShadow.lightProj;
+            areaCtx.ViewProjMatrix = areaShadow.lightVP;
+            Rendering::ExtractFrustumPlanes(areaShadow.lightVP, areaCtx.FrustumPlanes);
+            areaCtx.CameraPosition = areaShadow.position;
+            areaCtx.CameraForward = areaShadow.direction;
+            areaCtx.NearPlane = areaShadow.nearPlane;
+            areaCtx.FarPlane = areaShadow.farPlane;
+            areaCtx.FirstInstance = 0;
+            areaCtx.InstanceCount = instanceCount;
+            areaCtx.RenderLayerMask = view.ActiveRenderLayerMask();
+            areaCtx.FrameIndex = thisFrame;
+            areaCtx.DeltaTime = deltaTime;
+            areaCtx.CullingPipeline = m_GpuCullingPipeline.get();
+            areaCtx.Scene = scene;
+            s_DefaultFrustum.ScheduleCulling(areaCtx);
         }
 
         const auto spotShadow = BuildSpotShadowFrameInfo(GetWorldLights(view.worldId));
-        if (spotShadow.valid && view.ActiveRenderLayerMask() != Rendering::RenderLayerMask::None() && HasShadowCasters(view.id))
+        if (spotShadow.valid && view.ActiveRenderLayerMask() != 0u && HasShadowCasters(view.id))
         {
-            s_DefaultFrustum.ScheduleCulling(MakeShadowSliceCullingContext(
-                ctx, {kSpotShadowCullingIndex, spotShadow.lightView, spotShadow.lightProj, spotShadow.lightVP,
-                      spotShadow.position, spotShadow.direction, spotShadow.nearPlane, spotShadow.farPlane}));
+            Rendering::ViewCullingContext spotCtx{};
+            spotCtx.Id = view.id;
+            spotCtx.CascadeIndex = kSpotShadowCullingIndex;
+            spotCtx.ViewMatrix = spotShadow.lightView;
+            spotCtx.ProjMatrix = spotShadow.lightProj;
+            spotCtx.ViewProjMatrix = spotShadow.lightVP;
+            Rendering::ExtractFrustumPlanes(spotShadow.lightVP, spotCtx.FrustumPlanes);
+            spotCtx.CameraPosition = spotShadow.position;
+            spotCtx.CameraForward = spotShadow.direction;
+            spotCtx.NearPlane = spotShadow.nearPlane;
+            spotCtx.FarPlane = spotShadow.farPlane;
+            spotCtx.FirstInstance = 0;
+            spotCtx.InstanceCount = instanceCount;
+            spotCtx.RenderLayerMask = view.ActiveRenderLayerMask();
+            spotCtx.FrameIndex = thisFrame;
+            spotCtx.DeltaTime = deltaTime;
+            spotCtx.CullingPipeline = m_GpuCullingPipeline.get();
+            spotCtx.Scene = scene;
+            s_DefaultFrustum.ScheduleCulling(spotCtx);
         }
 
         // M1: schedule one cull context per (slot, face) of the SHARED atlas
@@ -1237,7 +1250,7 @@ void RenderServices::ScheduleViewCullingDispatches(Rendering::RenderGraph::RGFra
         // per (view, frame) — the declaration path reads the identical result, so
         // the per-face mask and slot set cannot diverge (they are one computation,
         // not two pure re-derives). Casters stay culled to the LIGHT frustum.
-        if (view.ActiveRenderLayerMask() != Rendering::RenderLayerMask::None() && HasShadowCasters(view.id))
+        if (view.ActiveRenderLayerMask() != 0u && HasShadowCasters(view.id))
         {
             const auto& assignment = EnsurePointShadowAssignment(
                 view.id, view.worldId, m_ViewRegistry.ResolveCameraData(view.id));
@@ -1257,10 +1270,25 @@ void RenderServices::ScheduleViewCullingDispatches(Rendering::RenderGraph::RGFra
                 {
                     if ((fi.faceMask & (1u << face)) == 0u)
                         continue; // camera-culled face: no GPU cull context, no draws
-                    s_DefaultFrustum.ScheduleCulling(MakeShadowSliceCullingContext(
-                        ctx, {PointShadowCullingIndex(PointShadowSlotFaceLayer(slot, face)), fi.lightView[face],
-                              fi.lightProj, fi.lightVP[face], fi.position, fi.direction[face], fi.nearPlane,
-                              fi.farPlane}));
+                    Rendering::ViewCullingContext pointCtx{};
+                    pointCtx.Id = view.id;
+                    pointCtx.CascadeIndex = PointShadowCullingIndex(PointShadowSlotFaceLayer(slot, face));
+                    pointCtx.ViewMatrix = fi.lightView[face];
+                    pointCtx.ProjMatrix = fi.lightProj;
+                    pointCtx.ViewProjMatrix = fi.lightVP[face];
+                    Rendering::ExtractFrustumPlanes(fi.lightVP[face], pointCtx.FrustumPlanes);
+                    pointCtx.CameraPosition = fi.position;
+                    pointCtx.CameraForward = fi.direction[face];
+                    pointCtx.NearPlane = fi.nearPlane;
+                    pointCtx.FarPlane = fi.farPlane;
+                    pointCtx.FirstInstance = 0;
+                    pointCtx.InstanceCount = instanceCount;
+                    pointCtx.RenderLayerMask = view.ActiveRenderLayerMask();
+                    pointCtx.FrameIndex = thisFrame;
+                    pointCtx.DeltaTime = deltaTime;
+                    pointCtx.CullingPipeline = m_GpuCullingPipeline.get();
+                    pointCtx.Scene = scene;
+                    s_DefaultFrustum.ScheduleCulling(pointCtx);
                 }
             }
         }
@@ -1348,18 +1376,19 @@ void RenderServices::RaiseAnimatedVertexModifierContentSignals(Rendering::ViewId
     if (castsShadows)
     {
         entry->CastsShadows = true;
-        // Without this advance the shadow caches keep a layer at an older
-        // deformation. It names no caster spheres, so every point light
-        // refreshes; the cascade cache defers it as CasterDeformed.
-        NotifyShadowCasterContentChanged(view->worldId, {},
-                                         ShadowCasterChangeScope::VertexDeformation);
+        // Same argument one step further: the shadow caches would retain a
+        // cascade layer rasterized at an older deformation, and the canopy
+        // would sway while its shadow held still. The advance is unattributed:
+        // the deforming casters are not named by a sphere set here, so the
+        // atlas planner treats every light in the world as dirty.
+        NotifyShadowCasterContentChanged(
+            view->worldId, std::span<const ShadowCasterChangeSphere>{}, /*unattributed=*/true);
     }
 }
 
-void RenderServices::SubmitWorldSubmissions(std::span<const WorldSubmissionRecord> records,
-                                            uint64_t setRevision)
+void RenderServices::SubmitWorldSubmissions(std::span<const WorldSubmissionRecord> records)
 {
-    m_WorldDrawBuilder.Submit(records, setRevision);
+    m_WorldDrawBuilder.Submit(records);
     m_WorldSubmissionCountThisFrame.fetch_add(static_cast<uint32_t>(records.size()), std::memory_order_relaxed);
 }
 

@@ -29,7 +29,6 @@
 #include <thread>
 #include <vector>
 
-#include "LatencyBudget.h"
 #include "TestPlatform.h"
 
 using namespace JobSystem;
@@ -100,8 +99,8 @@ void LogTimerResolution()
 }
 
 // The homogeneous batch closure used across these tests: a POD functor (not a
-// lambda) so tests can build plain stack arrays of it — the same pattern
-// ParallelFor's helpers use.
+// lambda) so tests can build plain stack arrays of it — the same pattern the
+// rewired ParallelFor/DispatchAndWait internals use.
 struct CountingFn
 {
     std::atomic<uint64_t>* Counter = nullptr;
@@ -194,11 +193,11 @@ TEST(BatchEnqueueTest, BatchWakeBoundedAndPropagatesToFullWidth)
 {
     constexpr size_t kWorkers = 8;
     constexpr size_t kTasks = 200;
+    constexpr long long kStrandLineUs = 100000; // 100ms << 500ms backstop
 
     WorkStealingThreadPool pool(kWorkers);
-    pool.SetSpinConfigForTest(0, 0);                 // no spinners: sleepers only
-    pool.SetSleepBackstopForTest(kStressBackstopUs); // a lost wake stalls until a backstop
-    const LatencyBudget budget = ReadLatencyBudget();
+    pool.SetSpinConfigForTest(0, 0);        // no spinners: sleepers only
+    pool.SetSleepBackstopForTest(500000);   // a lost wake = unmissable 500ms stall
 
     // Cycle the workers once, then let all of them park.
     std::atomic<uint64_t> warm{0};
@@ -263,9 +262,8 @@ TEST(BatchEnqueueTest, BatchWakeBoundedAndPropagatesToFullWidth)
         << "the caller's wake fan-out must be exactly min(need, sleepers, kMaxWakePerBatch)";
     EXPECT_EQ(minSleeping, 0u)
         << "F3 propagation never reached full width — the wake chain stalled";
-    const double maxWait = static_cast<double>(maxWaitUs.load());
-    EXPECT_LT(maxWait, kLostWakeupLineUs) << "a task waited for a backstop: a wake was lost or absorbed";
-    ExpectWithinBudget(maxWait, kStressLatencyLineUs, budget, "BatchWakeBounded max task wait");
+    EXPECT_LT(maxWaitUs.load(), kStrandLineUs)
+        << "a task waited past the strand line: a wake was lost or absorbed";
 
     pool.Shutdown();
 }
@@ -274,8 +272,8 @@ TEST(BatchEnqueueTest, BatchWakeBoundedAndPropagatesToFullWidth)
  * @brief Batches racing Shutdown() strand nothing (F13c): every batched
  * callable runs exactly once — on a worker, in Shutdown()'s post-join drain,
  * in the publisher's post-publish self-drain, or inline via the up-front gate
- * once shutdown is visible. A racing ParallelFor caller (whose helpers
- * publish through the batch path) must never hang on its join. Mirrors
+ * once shutdown is visible. A racing DispatchAndWait caller (whose internals
+ * now publish through the batch path) must never hang on its barrier. Mirrors
  * ShutdownWhileStormingStress + the slice-3 wait-on-handles variant shape.
  */
 TEST(BatchEnqueueTest, BatchVsShutdownNothingStranded)
@@ -325,7 +323,7 @@ TEST(BatchEnqueueTest, BatchVsShutdownNothingStranded)
                 task = [&dispatchRan] { dispatchRan.fetch_add(1, std::memory_order_relaxed); };
             }
             while (!stop.load(std::memory_order_acquire)) {
-                JobSystem::ParallelFor(pool.get(), 8, [&](size_t task) { tasks[task](); });
+                JobSystem::DispatchAndWait(pool.get(), tasks, 8);
             }
             threadsDone.fetch_add(1, std::memory_order_acq_rel);
         });
@@ -372,7 +370,6 @@ TEST(BatchEnqueueTest, BatchVsShutdownNothingStranded)
  */
 TEST(JobSystemBench, BENCHMARK_BatchCallerCost)
 {
-    const LatencyBudget budget = ReadLatencyBudget();
     LogTimerResolution();
 
     WorkStealingThreadPool pool(8);
@@ -495,22 +492,17 @@ TEST(JobSystemBench, BENCHMARK_BatchCallerCost)
 
     // Absolute ceilings are calibrated on the Windows bench box (macOS sits
     // right at the storm line and crosses it on box noise) — REPORT-only off
-    // Windows. The relative gate asserts on every platform; the machine load can widen or skip all three.
-    if (budget.Verdict == LatencyBudgetVerdict::Skip)
-    {
-        pool.Shutdown();
-        GTEST_SKIP() << budget.Describe();
-    }
+    // Windows. The structural relative gate asserts everywhere.
 #if defined(_WIN32)
     // The §3 "200-task burst" spec gate, asserted directly.
-    EXPECT_LT(burstMedian, budget.Scale(30.0)) << budget.Describe();
+    EXPECT_LT(burstMedian, 30.0);
     // The 13-run storm pays 13 legitimate bounded-wake decisions; assert the
     // structural wins (large factor over per-task, sane ceiling) and report
     // the spec line above for the PR table (TrueColdFork convention).
-    EXPECT_LT(stormMedian, budget.Scale(100.0)) << budget.Describe();
+    EXPECT_LT(stormMedian, 100.0);
 #endif
-    EXPECT_LT(stormMedian, budget.Scale(singlesMedian / 3.0))
-        << "batch publication no longer meaningfully beats the per-task loop; " << budget.Describe();
+    EXPECT_LT(stormMedian, singlesMedian / 3.0)
+        << "batch publication no longer meaningfully beats the per-task loop";
 
     pool.Shutdown();
 }

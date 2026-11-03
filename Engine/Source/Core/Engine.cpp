@@ -1,7 +1,5 @@
 #include "EngineShaderPath.h"
-#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
-#include "SceneLoadTracker/SceneLoadTracker.h"
 
 #include "EngineShaderHookState.h"
 #include "Logger/Logger.h"
@@ -33,8 +31,6 @@
 #include "Assets/TextureAsset.h"
 #include "Assets/RenderPipelineAsset.h"
 
-#include "Memory/FrameJoinedScope.h"
-#include "Memory/ImagePins.h"
 #include "NativeScripting/NativeScriptManager.h"
 #include "UI/ModuleOwnedHandlers.h"
 
@@ -69,29 +65,29 @@
 #include "CBTTerrainECS/Systems/RegisterCBTSystems.h"
 #include "TerrainGrass/RegisterTerrainGrass.h"
 #include "Ocean/Systems/RegisterOceanSystems.h"
+#include "TileMapECS/RegisterTileMap.h"
+#include "TileMapECS/TileMapRuntimeStore.h"
 #include "MarkupECS/MarkupService.h"
-#include "SplineECS/SplineNetwork.h"
 #include "SplineECS/SplineService.h"
 #include "SplineECS/Systems/RegisterSplineSystems.h"
-#include "SplineRecipes/SplineRecipeSystem.h"
 #include "PathfindingECS/NavigationService.h"
 #include "PathfindingECS/Systems/RegisterPathfindingSystems.h"
 // ECS integration
 #include "Components/Components.h"
 #include "Components/Audio/AudioEmitter.h"
 #include "Components/Hierarchy.h" // Components::Parent — lifecycle-event subscription (hierarchy incremental sync)
-#include "ECS/Component/ComponentFieldRegistry.h" // C12 load-abort purge
-#include "ECS/Component/ComponentRegistry.h"
-#include "Particles/ParticleProcessor/ParticleProcessorRegistry.h" // C12 load-abort purge, unload ledger
+#include "ECS/ComponentFieldRegistry.h" // C12 load-abort purge
+#include "ECS/ComponentRegistry.h"
+#include "Particles/ParticleProcessorRegistry.h" // C12 load-abort purge, unload ledger
 #include "ECS/ECS.h"
 #include "ECS/Entity.h"
 #include "ECS/SystemScheduling.h"
 #include "ECS/World.h"
-#include "Scene/PrefabLibrary.h"
 #include "Scene/SceneSchemaRegistry.h" // built-in schema registration, C12 load-abort purge
 #include "Engine/Rendering/FrameOrchestrator.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/Systems/LensFlareExtractionSystem.h"
+#include "Engine/Rendering/2D/Systems/SpriteAnimationSystem.h"
 #include "Engine/Rendering/RenderWorldHooks.h"
 #include "Engine/Video/VideoTextureSystem.h"
 #include "PluginAPI/EnginePlugin.h"
@@ -173,7 +169,7 @@ void DiagnoseAssetRootBeforeCreation(const std::filesystem::path& workspaceRoot,
 // relative directory is interpreted against the executable directory.
 std::filesystem::path ResolveWorkspaceRoot(const std::filesystem::path& directory)
 {
-    const std::filesystem::path exeDir = ApplicationPaths::GetExecutableDirectory();
+    const std::filesystem::path exeDir = PathUtils::GetExecutableDirectory();
     std::filesystem::path root = directory.empty() ? exeDir : directory;
     if (!root.is_absolute())
         root = exeDir / root;
@@ -223,7 +219,7 @@ static std::filesystem::path ResolveEngineShaderPath(const std::filesystem::path
 
 static std::string ShaderPackageRebuildAction(const std::string& packageName)
 {
-    return Detail::ShaderPackageRebuildAction(packageName, ApplicationPaths::GetExecutableDirectory());
+    return Detail::ShaderPackageRebuildAction(packageName, PathUtils::GetExecutableDirectory());
 }
 
 static std::vector<uint8_t> EngineShaderBytecodeLoaderFromAssets(const char* name)
@@ -279,12 +275,12 @@ const WorldServiceLifecycle kWorldServices[] = {
      &TerrainECS::TerrainService::Shutdown},
     {&SplineECS::SplineService::IsInitialized, &SplineECS::SplineService::Initialize,
      &SplineECS::SplineService::Shutdown},
-    {&SplineECS::SplineNetwork::IsInitialized, &SplineECS::SplineNetwork::Initialize,
-     &SplineECS::SplineNetwork::Shutdown},
     {&MarkupECS::MarkupService::IsInitialized, &MarkupECS::MarkupService::Initialize,
      &MarkupECS::MarkupService::Shutdown},
     {&PathfindingECS::NavigationService::IsInitialized, &PathfindingECS::NavigationService::Initialize,
      &PathfindingECS::NavigationService::Shutdown},
+    {&TileMapECS::TileMapRuntimeStore::IsInitialized, &TileMapECS::TileMapRuntimeStore::Initialize,
+     &TileMapECS::TileMapRuntimeStore::Shutdown},
 };
 
 void InitializeWorldServices()
@@ -305,13 +301,12 @@ void ShutdownWorldServices()
     }
 }
 
-// Opens the audio output. False (audio disabled) when the init fails or throws.
-bool InitializeAudio(Audio::AudioSystem& audio, Audio::AudioOutput output)
+// Opens the audio device. False (audio disabled) when the init fails or throws.
+bool InitializeAudio(Audio::AudioSystem& audio)
 {
     try
     {
         Audio::AudioSystemConfig audioCfg{};
-        audioCfg.output = output;
         if (!audio.Initialize(audioCfg))
         {
             Logger::Log::Warning("AudioSystem init failed; audio disabled");
@@ -324,22 +319,6 @@ bool InitializeAudio(Audio::AudioSystem& audio, Audio::AudioOutput output)
         Logger::Log::Warning("AudioSystem init threw: {}", e.what());
         return false;
     }
-}
-
-// The image-pin answer for the arenas that still hold a destructor in [base, base + size):
-// "N arena(s) holding destructors: <names>", or empty when none does.
-std::string DescribeArenaImagePins(uint64 base, uint64 size)
-{
-    const std::vector<std::string> arenas = Memory::Detail::DescribeArenasPinningImage(base, size);
-    if (arenas.empty())
-        return {};
-    std::string pins = std::to_string(arenas.size()) + " arena(s) holding destructors:";
-    for (std::size_t index = 0; index < arenas.size(); ++index)
-    {
-        pins += index == 0 ? " " : ", ";
-        pins += arenas[index];
-    }
-    return pins;
 }
 
 } // namespace
@@ -358,10 +337,7 @@ class EngineCore::InitializeTransaction
             return;
         m_Engine.DiscardAudioInitAfterFailedInitialize();
         m_Engine.m_StartupChannel.reset();
-        m_Engine.m_StartupJobsHook = nullptr;
         m_Engine.m_ShaderHookState.reset();
-        // The manager this Initialize may have opened the gate on is never pumped.
-        m_Engine.SetPostGate(PostGate::ShutDown);
         m_Engine.m_InitializingThread.store(std::thread::id{}, std::memory_order_release);
         m_Engine.m_Lifecycle.store(EngineLifecycleState::Uninitialized, std::memory_order_release);
     }
@@ -380,50 +356,6 @@ class EngineCore::InitializeTransaction
 
 EngineCore* EngineCore::s_Instance = nullptr;
 
-void EngineCore::SetPostGate(PostGate state)
-{
-    std::lock_guard<std::mutex> lock(m_PostGateMutex);
-    m_PostGate = state;
-}
-
-EngineCore::MainThreadPost EngineCore::PostMainThreadTask(std::function<void()> task)
-{
-    MainThreadPost answer = MainThreadPost::Dropped;
-    {
-        std::lock_guard<std::mutex> lock(m_PostGateMutex);
-        if (m_PostGate == PostGate::NoQueue || (m_PostGate == PostGate::Live && IsStandaloneHosted()))
-        {
-            answer = MainThreadPost::RunInline;
-        }
-        else if (m_PostGate == PostGate::Live)
-        {
-            m_ScriptManager->QueueMainThreadTask(std::move(task));
-            return MainThreadPost::Queued;
-        }
-    }
-    // Outside the gate: the task may itself reach the main thread.
-    if (answer == MainThreadPost::RunInline)
-    {
-        task();
-    }
-    return answer;
-}
-
-EngineCore::MainThreadPost EngineCore::RequestManagedPostDrain()
-{
-    std::lock_guard<std::mutex> lock(m_PostGateMutex);
-    if (m_PostGate == PostGate::NoQueue || (m_PostGate == PostGate::Live && IsStandaloneHosted()))
-    {
-        return MainThreadPost::RunInline;
-    }
-    if (m_PostGate == PostGate::ShutDown)
-    {
-        return MainThreadPost::Dropped;
-    }
-    m_ScriptManager->RequestManagedPostDrain();
-    return MainThreadPost::Queued;
-}
-
 EngineCore::EngineCore()
 {
     if (s_Instance != nullptr)
@@ -431,7 +363,6 @@ EngineCore::EngineCore()
         Logger::Log::Critical("Engine instance already exists!");
     }
     s_Instance = this;
-    m_SceneLoadTracker = MakeUnique<SceneLoadTracker>();
 }
 
 EngineCore::~EngineCore()
@@ -446,11 +377,6 @@ EngineCore::~EngineCore()
 void EngineCore::SetScriptsConfig(const ScriptsConfig& config)
 {
     m_ScriptsConfig = config;
-}
-
-void EngineCore::SetStartupJobsHook(std::function<void(JobSystem::JobChannel&)> hook)
-{
-    m_StartupJobsHook = std::move(hook);
 }
 
 bool EngineCore::Initialize(const ApplicationConfig& config)
@@ -471,7 +397,6 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
             "engine it runs with: SDK consumers get the value from "
             "find_package(GameEngine), in-tree targets from the repository's CMake.",
             config.HostDebugInstrumentation, static_cast<uint32>(GE_DEBUG_INSTRUMENTATION));
-        m_StartupJobsHook = nullptr;
         return false;
     }
 
@@ -488,10 +413,6 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         return false;
     }
     m_InitializingThread.store(std::this_thread::get_id(), std::memory_order_release);
-    // The frames run on this thread, whatever the configuration. Recorded before anything
-    // that can run a script, so the scripting ABI's thread predicates answer from the start.
-    m_MainThreadId.store(std::this_thread::get_id(), std::memory_order_release);
-    m_StandaloneHosted.store(config.StandaloneHosted, std::memory_order_release);
     InitializeTransaction transaction(*this);
 
     // Unreachable by construction: Shutdown() and the Initialize rollback both join
@@ -521,7 +442,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     {
         // The shader-graph node library ships with the engine assets; the
         // Rendering module cannot locate the executable itself on every host.
-        const std::filesystem::path installAssets = ApplicationPaths::GetInstallAssetsRoot();
+        const std::filesystem::path installAssets = PathUtils::GetInstallAssetsRoot();
         if (!installAssets.empty())
             ShaderGraph::SetEngineGraphNodesRoot(installAssets / "Shaders" / "Graph" / "Nodes");
     }
@@ -544,7 +465,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
 
     // Ensure process working directory matches the resolved workspace root.
     // This keeps relative path usage project-centric and avoids accidental writes into app bundles.
-    GameEngine::ApplicationPaths::EnsureWorkingDirectoryMatches(resolvedWorkspaceRoot);
+    GameEngine::PathUtils::EnsureWorkingDirectoryMatches(resolvedWorkspaceRoot);
 
     // Resolve the configured asset directory and asset database locations against the
     // workspace root, and publish them for consumers (Editor, tools).
@@ -603,15 +524,6 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         Logger::Log::Info("[Startup] Primary world pool: backfilled (world predates JobSystem)");
     }
 
-    m_StartupChannel = MakeUnique<JobSystem::JobChannel>(
-        *m_JobSystem, JobSystem::JobChannelDesc{.Name = "Engine startup", .MaxRunning = 2});
-    if (m_StartupJobsHook)
-    {
-        const std::function<void(JobSystem::JobChannel&)> hook = std::move(m_StartupJobsHook);
-        m_StartupJobsHook = nullptr;
-        hook(*m_StartupChannel);
-    }
-
     // Create asset manager instance. We register core asset types *before*
     // initializing/scanning so startup indexing can assign correct types.
     tPhase = std::chrono::high_resolution_clock::now();
@@ -636,7 +548,6 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         return false;
     }
     Logger::Log::Info("[Startup] AssetManager: {:.1f}ms", MsSince(tPhase));
-    m_PrefabLibrary = MakeUnique<Scene::PrefabLibrary>(*m_AssetManager);
 
     // Native C++ user-script manager (watches sources; build/load pipeline lands in C10+).
     // After AssetManager + FileWatchingService so its watch subscriptions are valid.
@@ -724,7 +635,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     // dispatch before any liveness flag is read. Engine.dll and Editor.exe are
     // never in the set these ranges describe, so an engine-registered handler
     // cannot be revoked here; the discrimination is structural.
-    m_NativeScriptManager->SetModuleImageObserver([this] {
+    m_NativeScriptManager->SetModuleImageObserver([] {
         NativeScripting::NativeScriptManager::ModuleImageObserver observer;
         observer.ImageMapBegin = [] { UI::OpenImageAttribution(); };
         observer.ImageMapEnd = [](uint64 base, uint64 size) {
@@ -743,22 +654,10 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
                     pins += ", ";
                 pins += std::to_string(hooks) + " ECS component hook(s)";
             }
-            // Arenas holding a destructor from the image run it at their owner's Reset or
-            // destruction; until then the code must stay mapped.
-            const std::string arenas = DescribeArenaImagePins(base, size);
-            if (!arenas.empty())
-            {
-                if (!pins.empty())
-                    pins += ", ";
-                pins += arenas;
-            }
             return pins;
         };
-        // A finished job's result and callbacks can be the image's code; the pool
-        // releases the ones only its registry still holds.
-        observer.ImageUnmapping = [this](uint64 base, uint64 size) {
+        observer.ImageUnmapping = [](uint64 base, uint64 size) {
             UI::RevokeHandlersOwnedByImage(base, size);
-            m_JobSystem->ReleaseFinishedTasks();
         };
         observer.ImageUnmapped = [](uint64 base) { UI::RetractHotSwappableImage(base); };
         return observer;
@@ -781,13 +680,13 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     Rendering::Utils::SetShaderPathResolver(&ResolveEngineShaderPath);
     Rendering::SetShaderPackageRebuildAction(&ShaderPackageRebuildAction);
     {
-        // The cooked cache a runtime ships is probed before the workspace's own, so a persisted
-        // workspace cache never shadows it; a program it lacks compiles into the workspace.
-        ShaderCacheRoots shaderCacheRoots;
-        if (const auto bundleCache = ApplicationPaths::GetBundledShaderCacheRoot(); !bundleCache.empty())
-            shaderCacheRoots.ReadOnly.push_back(bundleCache);
-        shaderCacheRoots.Writable = resolvedWorkspaceRoot / ".Cache" / "Shaders";
-        ShaderProgramAsset::SetShaderCacheRoots(std::move(shaderCacheRoots));
+        std::filesystem::path shaderCacheRoot = resolvedWorkspaceRoot / ".Cache" / "Shaders";
+        // Runtimes without a compiler read the current bundled packages for
+        // every project. A persisted project cache can contain older variants
+        // or metadata and must not shadow that authoritative bundle.
+        if (const auto bundleCache = PathUtils::GetBundledShaderCacheRoot(); !bundleCache.empty())
+            shaderCacheRoot = bundleCache;
+        ShaderProgramAsset::SetShaderCacheRoot(shaderCacheRoot);
     }
 
     // Initialize script manager (only when scripting is enabled at build time).
@@ -796,7 +695,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     ScriptsConfig scriptsConfig;
     std::filesystem::path scriptsNativeDllPath;
     {
-        using GameEngine::ApplicationPaths;
+        using GameEngine::PathUtils;
 
         const std::filesystem::path& workspaceRoot = resolvedWorkspaceRoot;
 
@@ -835,15 +734,13 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         if (scriptsNativeDllPath.empty())
         {
             // Fallback for unusual dev layouts; prefer the platform-specific resolver above.
-            scriptsNativeDllPath = ApplicationPaths::GetExecutableDirectory() / "GameEngine.Native.dll";
+            scriptsNativeDllPath = PathUtils::GetExecutableDirectory() / "GameEngine.Native.dll";
         }
     }
 
     // If scripting is effectively disabled by config, skip ScriptManager initialization entirely.
     // This keeps headless tools/tests fast and avoids unnecessary file watcher + hot reload pipeline setup.
-    // A NativeAOT Player runs scripts with the CLR off, and keeps the manager for its main-thread queue.
     const bool scriptingFullyDisabled =
-        !scriptsConfig.nativeAot &&
         scriptsConfig.disableClr &&
         !scriptsConfig.enableHotReload &&
         !scriptsConfig.enableAsyncHotReload &&
@@ -859,9 +756,9 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         {
             m_ScriptManager = MakeUnique<ScriptManager>();
         }
-        // Before the manager initializes: the CLR's initial load can post to the main thread,
-        // and the pump inside ScriptManager::Initialize runs what it posted.
-        SetPostGate(PostGate::Live);
+        // Engine init and Update run on this thread; record it so off-main-thread
+        // pumping of main-thread tasks gets diagnosed instead of passing silently.
+        m_ScriptManager->MarkMainThread();
 
         if (!scriptsNativeDllPath.empty())
         {
@@ -904,15 +801,14 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     }
     else
     {
-        SetPostGate(PostGate::NoQueue);
         Logger::Log::Info("ScriptManager disabled by config; skipping ScriptManager initialization");
     }
 #else
-    SetPostGate(PostGate::NoQueue);
-    // Asset hot reloading (UI CSS and layouts, textures, shaders, terrain material libraries)
-    // does not depend on C# scripting: the same default as a scripting build (on unless the
-    // engine-level scripts config turns it off).
-    if (!m_ScriptsConfig.has_value() || m_ScriptsConfig->enableHotReload)
+    // Even when scripting is compiled out, we still want asset hot
+    // reloading (e.g., UI CSS/layout, textures, shaders) to work when
+    // requested via ScriptsConfig. Honor the engine-level scripts config
+    // for the AssetManager here.
+    if (m_ScriptsConfig.has_value() && m_ScriptsConfig->enableHotReload)
     {
         m_AssetManager->SetHotReloadEnabled(true);
         Logger::Log::Info("Asset hot reloading enabled (scripting disabled at build time)");
@@ -935,6 +831,8 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     // A headless host opens no audio device: the engine runs as it does when the device
     // fails to open, with no AudioSystem and no audio systems in the schedule.
     tPhase = std::chrono::high_resolution_clock::now();
+    m_StartupChannel = MakeUnique<JobSystem::JobChannel>(
+        *m_JobSystem, JobSystem::JobChannelDesc{.Name = "Engine startup", .MaxRunning = 2});
     if (config.Headless)
     {
         Logger::Log::Info("[Startup] AudioSystem: none (headless)");
@@ -948,8 +846,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         if (Platform::SupportsTransientThreads())
         {
             Audio::AudioSystem* audioRaw = m_AudioSystem.get();
-            const Audio::AudioOutput output = config.AudioOutput;
-            m_AudioInit = m_StartupChannel->Submit([audioRaw, output]() -> bool { return InitializeAudio(*audioRaw, output); });
+            m_AudioInit = m_StartupChannel->Submit([audioRaw]() -> bool { return InitializeAudio(*audioRaw); });
         }
         else
         {
@@ -1067,7 +964,7 @@ bool EngineCore::JoinAudioInitLocked()
     if (m_AudioInitDeferred)
     {
         m_AudioInitDeferred = false;
-        return m_AudioSystem && InitializeAudio(*m_AudioSystem, m_Config.AudioOutput);
+        return m_AudioSystem && InitializeAudio(*m_AudioSystem);
     }
     if (!m_AudioInit.IsValid())
         return true;
@@ -1133,9 +1030,7 @@ void EngineCore::Shutdown()
         PhysicsECS::PhysicsWorldService::Shutdown();
     }
 
-    // Shutdown subsystems in reverse order. The gate closes first, so a request that races
-    // this teardown is dropped instead of reaching the manager the reset below frees.
-    SetPostGate(PostGate::ShutDown);
+    // Shutdown subsystems in reverse order
     if (m_ScriptManager)
     {
         m_ScriptManager->Shutdown();
@@ -1155,8 +1050,8 @@ void EngineCore::Shutdown()
     // Join the async audio init before tearing audio down: the init job must
     // not outlive the AudioSystem it is initializing.
     (void)GetAudioSystem();
-    // The startup jobs that use engine state are joined (the audio init above, an application's
-    // preloads by the application). The package-cache maintenance job uses process state only.
+    // The startup jobs are joined (the audio init above, an application's
+    // preloads by the application before this Shutdown).
     m_StartupChannel.reset();
     // Shutdown audio before AssetManager so any clip resolution/handles are no longer used.
     if (m_AudioSystem)
@@ -1166,7 +1061,6 @@ void EngineCore::Shutdown()
         Logger::Log::Info("Audio system shutdown");
     }
 
-    m_PrefabLibrary.reset();
     if (m_AssetManager)
     {
         // If we registered the rendering hot-reload bridge, unregister it before tearing down assets
@@ -1181,19 +1075,6 @@ void EngineCore::Shutdown()
                 Logger::Log::Warning("Failed to unregister shader hot-reload bridge: {}", e.what());
             }
             m_ShaderHotReloadHandle = 0;
-        }
-
-        // Unregister core engine asset types
-        try
-        {
-            auto& typeRegistry = m_AssetManager->GetAssetTypeRegistry();
-            typeRegistry.UnregisterAssetType(AssetType::Audio);
-            typeRegistry.UnregisterAssetType(AssetType::Model);
-            Logger::Log::Info("Core asset types unregistered");
-        }
-        catch (const std::exception& e)
-        {
-            Logger::Log::Error("Exception unregistering core asset types: {}", e.what());
         }
 
         m_AssetManager->Shutdown();
@@ -1291,17 +1172,11 @@ void EngineCore::Update(float64 deltaTime)
         return;
     }
 
-    // The frame boundary of the load snapshot: it reads what the previous frame left pending.
-    m_SceneLoadTracker->Tick(std::chrono::steady_clock::now());
-
     // Update asset manager (process loading queue, check for file changes)
     if (m_AssetManager)
     {
         m_AssetManager->Update();
     }
-    // The library's frame boundary, after the reloads the update completed.
-    if (m_PrefabLibrary)
-        m_PrefabLibrary->CollectAtFrameBoundary();
 
     // Update audio system once per frame on the main thread.
     if (m_AudioSystem)
@@ -1350,10 +1225,6 @@ void EngineCore::Update(float64 deltaTime)
     // CRITICAL: Process main thread tasks for hot reload system
     if (m_ScriptManager)
     {
-#if GE_DEBUG_INSTRUMENTATION
-        // Scripting posts these from work that can outlive the frame, so they never get frame memory.
-        const Memory::Detail::FrameJoinedScope notFrameJoined(false);
-#endif
         size_t tasksProcessed = m_ScriptManager->ProcessMainThreadTasks();
         if (tasksProcessed > 0)
         {
@@ -1483,12 +1354,6 @@ bool EngineCore::EnableRenderingLoop(Engine::Renderer::RenderServices* renderSer
             m_RenderServices = nullptr;
             return false;
         }
-        m_RenderingLoop->GetSceneResolveService().ReportLoadingWork(*m_SceneLoadTracker);
-        if (renderServices)
-        {
-            renderServices->Materials().ReportLoadingWork(*m_SceneLoadTracker);
-            renderServices->Textures().ReportLoadingWork(*m_SceneLoadTracker);
-        }
         m_RenderingLoopEnabled = true;
         (void)EnsurePrimaryWorld();
 
@@ -1496,8 +1361,7 @@ bool EngineCore::EnableRenderingLoop(Engine::Renderer::RenderServices* renderSer
         InitializeWorldServices();
         ApplyTerrainBakeCacheLocation();
         // A headless host passes no render services: there are no pipeline node types
-        // to register, and every scheduled system skips its render work, including the
-        // render-side systems that also produce terrain height and ocean buoyancy.
+        // to register, and every scheduled system skips its render work.
         if (!renderServices)
         {
             Logger::Log::Info("EnableRenderingLoop: no render services (headless); the schedule "
@@ -1528,6 +1392,10 @@ bool EngineCore::EnableRenderingLoop(Engine::Renderer::RenderServices* renderSer
         TerrainECS::AddTerrainSystemsToSchedule(schedule, renderServices);
         CBTTerrainECS::AddCBTSystemsToSchedule(schedule, renderServices);
         Ocean::AddOceanSystemsToSchedule(schedule, renderServices);
+        TileMapECS::AddTileMapSystemsToSchedule(schedule, renderServices);
+        schedule.Add<Engine::Renderer::SpriteAnimationSystem>(
+            "SpriteAnimation", ECS::SystemPhase::Extraction, 7,
+            {"TransformHierarchy"}, renderServices);
         schedule.Add<Engine::Renderer::LensFlareExtractionSystem>(
             "LensFlareExtraction", ECS::SystemPhase::Extraction, 7,
             {"TransformHierarchy", "Camera"}, renderServices);
@@ -1539,10 +1407,9 @@ bool EngineCore::EnableRenderingLoop(Engine::Renderer::RenderServices* renderSer
         // wave 0 alongside every other dependency-free system.
         schedule.Add<Video::VideoTextureSystem>(
             "VideoTexture", ECS::SystemPhase::Extraction, 8,
-            {"RenderExtraction", "TerrainExtraction"},
+            {"RenderExtraction", "TerrainExtraction", "SpriteAnimation", "TileMapExtraction"},
             renderServices ? renderServices->GetDevice() : nullptr, renderServices);
         SplineECS::AddSplineSystemsToSchedule(schedule);
-        SplineRecipes::AddSplineRecipeSystemsToSchedule(schedule, renderServices);
         PathfindingECS::AddPathfindingSystemsToSchedule(schedule);
         // Associate contributions with their plugin so reload reconciliation
         // can replace or retire that plugin's systems.

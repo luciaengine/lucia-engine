@@ -1,7 +1,7 @@
 #include "UI/Controls/ReorderableSectionList.h"
 
 #include "UI/Controls/Foldout.h"
-#include "UI/Interaction/DragDrop/DragDropManager.h"
+#include "UI/Interaction/DragDropManager.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
@@ -141,7 +141,7 @@ void ReorderableSectionList::SetDropPreview(const UI::Interaction::DropPreviewSt
             continue;
         const bool after = state.Hit.Location == UI::Interaction::DropLocation::AfterItem;
         const float y = section->GetLayoutY() - GetLayoutY() + (after ? section->GetLayoutHeight() : 0.0f);
-        m_Line->Style()
+        m_Line->Overrides()
             .Set(Style::PositionTop, StyleLength::Px(y))
             .Set(Style::Width, StyleLength::Px(GetLayoutWidth()));
         m_Line->AddClass(kLineShownClass);

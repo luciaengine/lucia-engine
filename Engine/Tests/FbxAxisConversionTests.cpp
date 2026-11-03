@@ -102,7 +102,7 @@ TEST(FbxAxisConversion, DoesNotNegateFrontOnYupPlusZ)
     axes.front = UFBX_COORDINATE_AXIS_POSITIVE_Z;
 
     const AxisConversion c = Make(axes);
-    const ufbx_vec3 front = GameEngine::FbxImport::ConvertVec3({{{0.0, 0.0, 1.0}}}, c, 1.0f);
+    const ufbx_vec3 front = GameEngine::FbxImport::ConvertVec3({0.0, 0.0, 1.0}, c, 1.0f);
     EXPECT_NEAR(front.x, 0.0, 1e-6);
     EXPECT_NEAR(front.y, 0.0, 1e-6);
     EXPECT_NEAR(front.z, 1.0, 1e-6);
@@ -117,7 +117,7 @@ TEST(FbxAxisConversion, Bake180YTurnsFrontToMinusZ)
 
     AxisConversion c = Make(axes);
     ComposeEngineEulerDegrees(c, 0.0f, 180.0f, 0.0f);
-    const ufbx_vec3 front = GameEngine::FbxImport::ConvertVec3({{{0.0, 0.0, 1.0}}}, c, 1.0f);
+    const ufbx_vec3 front = GameEngine::FbxImport::ConvertVec3({0.0, 0.0, 1.0}, c, 1.0f);
     EXPECT_NEAR(front.x, 0.0, 1e-5);
     EXPECT_NEAR(front.y, 0.0, 1e-5);
     EXPECT_NEAR(front.z, -1.0, 1e-5);
@@ -132,7 +132,7 @@ TEST(FbxAxisConversion, BakeIdentityLeavesFront)
 
     AxisConversion c = Make(axes);
     ComposeEngineEulerDegrees(c, 0.0f, 0.0f, 0.0f);
-    const ufbx_vec3 front = GameEngine::FbxImport::ConvertVec3({{{0.0, 0.0, 1.0}}}, c, 1.0f);
+    const ufbx_vec3 front = GameEngine::FbxImport::ConvertVec3({0.0, 0.0, 1.0}, c, 1.0f);
     EXPECT_NEAR(front.x, 0.0, 1e-6);
     EXPECT_NEAR(front.y, 0.0, 1e-6);
     EXPECT_NEAR(front.z, 1.0, 1e-6);
@@ -147,7 +147,7 @@ TEST(FbxAxisConversion, ZupMayaMapsUpToEngineY)
     axes.front = UFBX_COORDINATE_AXIS_NEGATIVE_Y;
 
     const AxisConversion c = Make(axes);
-    const ufbx_vec3 up = GameEngine::FbxImport::ConvertVec3({{{0.0, 0.0, 1.0}}}, c, 1.0f);
+    const ufbx_vec3 up = GameEngine::FbxImport::ConvertVec3({0.0, 0.0, 1.0}, c, 1.0f);
     EXPECT_NEAR(up.x, 0.0, 1e-6);
     EXPECT_NEAR(up.y, 1.0, 1e-6);
     EXPECT_NEAR(up.z, 0.0, 1e-6);
@@ -185,19 +185,24 @@ bool LoadFixture(const Vector<uint8>& bytes, const FbxLoaderOptions& options, Mo
     return ModelAssetFbxTestAccess::Load(out, bytes, options);
 }
 
-// A store-licensed FBX from the optional, gitignored Assets/Models/FBXTest/ payload
-// (staged by StageTestAssets); empty when this machine has no copy.
-std::filesystem::path LicensedFbx(const char* fileName)
+std::filesystem::path AshenCrownFbx(const char* relative)
 {
-    const auto p = GameEngine::TestPaths::StagedRoot() / "Assets/Models/FBXTest" / fileName;
-    std::error_code ec;
-    if (std::filesystem::exists(p, ec) && !ec)
-        return p;
+    const std::filesystem::path roots[] = {
+        std::filesystem::path(R"(C:\Dev\Games\AshenCrown)"),
+        std::filesystem::path(R"(C:/Dev/Games/AshenCrown)"),
+    };
+    for (const auto& root : roots)
+    {
+        const auto p = root / relative;
+        std::error_code ec;
+        if (std::filesystem::exists(p, ec) && !ec)
+            return p;
+    }
     return {};
 }
 
 // Y-up +Z-front Null whose Lcl Translation is keyed (0,0,0) -> (10,0,100).
-// In-tree so the clip pin does not depend on the licensed FBX payload or StageTestAssets.
+// In-tree so the clip pin does not depend on Ashen Crown or StageTestAssets.
 Vector<uint8> IsolatedPlusZTranslateAscii()
 {
     static const char kAscii[] = R"(; FBX 7.5.0 project file
@@ -548,7 +553,7 @@ TEST(FbxAxisConversion, EngineConversionKeepsPlusZFront)
     axes.front = UFBX_COORDINATE_AXIS_POSITIVE_Z;
 
     const AxisConversion c = GameEngine::FbxImport::MakeEngineConversion(axes, DefaultFbxOptions());
-    const ufbx_vec3 front = GameEngine::FbxImport::ConvertVec3({{{0.0, 0.0, 1.0}}}, c, 1.0f);
+    const ufbx_vec3 front = GameEngine::FbxImport::ConvertVec3({0.0, 0.0, 1.0}, c, 1.0f);
     EXPECT_NEAR(front.x, 0.0, 1e-6);
     EXPECT_NEAR(front.y, 0.0, 1e-6);
     EXPECT_NEAR(front.z, 1.0, 1e-6);
@@ -563,7 +568,7 @@ TEST(FbxAxisConversion, LegacyNegZFrontFlipsZ)
 
     AxisConversion legacy = Make(axes);
     ApplyEngineMirrors(legacy, true, false, true);
-    const ufbx_vec3 front = GameEngine::FbxImport::ConvertVec3({{{0.0, 0.0, 1.0}}}, legacy, 1.0f);
+    const ufbx_vec3 front = GameEngine::FbxImport::ConvertVec3({0.0, 0.0, 1.0}, legacy, 1.0f);
     EXPECT_NEAR(front.z, -1.0, 1e-6);
 }
 
@@ -594,9 +599,9 @@ TEST(FbxAxisConversion, IsolatedAsciiClipKeysKeepPlusZFront)
 
 TEST(FbxAxisConversion, ClipKeysMatchEngineConversionNotLegacyNegZ_Sheep)
 {
-    const auto path = LicensedFbx("Sheep.fbx");
+    const auto path = AshenCrownFbx("Assets/Models/Fantasy/Creatures/Sheep.fbx");
     if (path.empty())
-        GTEST_SKIP() << "Sheep.fbx not in Assets/Models/FBXTest";
+        GTEST_SKIP() << "Ashen Crown Sheep.fbx not present";
     Vector<uint8> bytes;
     ASSERT_TRUE(ReadAllBytes(path, bytes)) << path.string();
     ASSERT_NO_FATAL_FAILURE(ExpectClipKeysUseEngineConversion(bytes, path));
@@ -604,9 +609,9 @@ TEST(FbxAxisConversion, ClipKeysMatchEngineConversionNotLegacyNegZ_Sheep)
 
 TEST(FbxAxisConversion, ClipKeysMatchEngineConversionNotLegacyNegZ_SyntyWalk)
 {
-    const auto path = LicensedFbx("A_Walk_F_Masc.fbx");
+    const auto path = AshenCrownFbx("Assets/Animations/Synty/a_walk_f_masc.fbx");
     if (path.empty())
-        GTEST_SKIP() << "A_Walk_F_Masc.fbx not in Assets/Models/FBXTest";
+        GTEST_SKIP() << "Ashen Crown Synty walk FBX not present";
     Vector<uint8> bytes;
     ASSERT_TRUE(ReadAllBytes(path, bytes)) << path.string();
     ASSERT_NO_FATAL_FAILURE(ExpectClipKeysUseEngineConversion(bytes, path));
@@ -680,7 +685,7 @@ TEST(FbxAxisConversion, BlendDefaultMirrorsMatchLegacyBtoE)
 std::filesystem::path BlendSamplePendulum()
 {
     return GameEngine::TestPaths::StagedRoot()
-        / "Tests/BlendSamples/anim-fund-rigs"
+        / "Tools/ai/retarget-redesign/blend-samples/anim-fund-rigs"
         / "animation_fundamental_rigs_release_01/pendulum.blend";
 }
 
@@ -843,9 +848,9 @@ TEST(FbxAxisConversion, IsolatedGltfClipKeysMirrorX)
 
 TEST(FbxAxisConversion, SheepBakeXChangesAabb)
 {
-    const auto path = LicensedFbx("Sheep.fbx");
+    const auto path = AshenCrownFbx("Assets/Models/Fantasy/Creatures/Sheep.fbx");
     if (path.empty())
-        GTEST_SKIP() << "Sheep.fbx not in Assets/Models/FBXTest";
+        GTEST_SKIP() << "Ashen Crown Sheep.fbx not present";
     Vector<uint8> bytes;
     ASSERT_TRUE(ReadAllBytes(path, bytes)) << path.string();
 
@@ -907,9 +912,9 @@ TEST(FbxAxisConversion, SheepBakeXChangesAabb)
 
 TEST(FbxAxisConversion, ReloadBakeReusesSkeletonAndRebindsClips)
 {
-    const auto path = LicensedFbx("Sheep.fbx");
+    const auto path = AshenCrownFbx("Assets/Models/Fantasy/Creatures/Sheep.fbx");
     if (path.empty())
-        GTEST_SKIP() << "Sheep.fbx not in Assets/Models/FBXTest";
+        GTEST_SKIP() << "Ashen Crown Sheep.fbx not present";
     Vector<uint8> bytes;
     ASSERT_TRUE(ReadAllBytes(path, bytes)) << path.string();
 
@@ -969,9 +974,9 @@ TEST(FbxAxisConversion, ReloadBakeReusesSkeletonAndRebindsClips)
 
 TEST(FbxAxisConversion, AdoptReloadBakeKeepsSkeletonIdentity)
 {
-    const auto path = LicensedFbx("Sheep.fbx");
+    const auto path = AshenCrownFbx("Assets/Models/Fantasy/Creatures/Sheep.fbx");
     if (path.empty())
-        GTEST_SKIP() << "Sheep.fbx not in Assets/Models/FBXTest";
+        GTEST_SKIP() << "Ashen Crown Sheep.fbx not present";
     Vector<uint8> bytes;
     ASSERT_TRUE(ReadAllBytes(path, bytes)) << path.string();
 
@@ -1019,9 +1024,9 @@ TEST(FbxAxisConversion, AdoptReloadBakeKeepsSkeletonIdentity)
 
 TEST(FbxAxisConversion, StagingDecodeDoesNotReplaceLiveClipsUntilAdopt)
 {
-    const auto path = LicensedFbx("Sheep.fbx");
+    const auto path = AshenCrownFbx("Assets/Models/Fantasy/Creatures/Sheep.fbx");
     if (path.empty())
-        GTEST_SKIP() << "Sheep.fbx not in Assets/Models/FBXTest";
+        GTEST_SKIP() << "Ashen Crown Sheep.fbx not present";
     Vector<uint8> bytes;
     ASSERT_TRUE(ReadAllBytes(path, bytes)) << path.string();
 

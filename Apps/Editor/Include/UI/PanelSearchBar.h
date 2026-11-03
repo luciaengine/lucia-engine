@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "UI/UIEvents.h"
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
 #include "UI/Controls/Button.h"
@@ -23,10 +24,9 @@ struct PanelSearchBarBuilt {
     Dropdown* FilterPtr = nullptr;
 };
 
-// Builds the standard editor panel search bar: a `.panel-search-bar` field with the "Search"
-// placeholder, the search icon, the clear action and an optional filter dropdown. The field
-// reads as a field at rest (theme/widgets.css); focus and query styling come from
-// SearchFieldWithFilter.
+// Builds the standard editor panel search bar:
+// - `.panel-search-bar` root with search field, icon, clear action, and an optional filter dropdown
+// - Handles focus/active styling and the "auto-hide when empty & globally hidden" behavior
 //
 // `fieldId` names the TextField for automation (debug-server input_text /
 // click_element target by element id) — unique per window, e.g.
@@ -37,6 +37,7 @@ struct PanelSearchBarBuilt {
 // - Registering/unregistering the returned `rootPtr` with SettingsPanel::RegisterSearchBar/UnregisterSearchBar
 inline PanelSearchBarBuilt BuildPanelSearchBar(
     const std::string& fieldId,
+    std::function<bool()> getGlobalVisible,
     std::function<void(const std::string&)> onTextChanged = {},
     std::function<void(const std::string&)> onTextChanging = {},
     const std::vector<Dropdown::Option>& filterOptions = {},
@@ -46,10 +47,11 @@ inline PanelSearchBarBuilt BuildPanelSearchBar(
 
     auto searchBar = std::make_unique<SearchFieldWithFilter>();
     searchBar->AddClass("panel-search-bar");
+    if (getGlobalVisible && !getGlobalVisible())
+        searchBar->AddClass("hidden");
 
     SearchFieldWithFilter* searchBarPtr = searchBar.get();
     searchBar->SetFieldId(fieldId);
-    searchBar->SetPlaceholder("Search");
     searchBar->SetValue("");
     searchBar->SetFilterOptions(filterOptions, 0);
     searchBar->SetOnFilterChanged(std::move(onFilterChanged));
@@ -62,11 +64,39 @@ inline PanelSearchBarBuilt BuildPanelSearchBar(
     searchBar->GetFilter()->AddClass("panel-search-filter");
     searchBar->GetClearButton()->AddClass("panel-search-clear");
 
-    if (onTextChanging)
-        searchBar->SetOnQueryChanging(std::move(onTextChanging));
-    else
-        searchBar->SetOnQueryChanging(onTextChanged);
+    searchBar->SetOnQueryChanging(
+        [searchBarPtr, getGlobalVisible, onTextChanged, onTextChanging](const std::string& value) {
+            if (!value.empty() && searchBarPtr->HasClass("hidden"))
+                searchBarPtr->RemoveClass("hidden");
+            if (value.empty() && getGlobalVisible && !getGlobalVisible())
+                searchBarPtr->AddClass("hidden");
+            if (onTextChanging)
+                onTextChanging(value);
+            else if (onTextChanged)
+                onTextChanged(value);
+        });
     searchBar->SetOnQueryChanged(std::move(onTextChanged));
+
+    // Focus styling (keep consistent with typing behavior)
+    fieldPtr->RegisterEventHandler(kEventFocusIn, [searchBarPtr, iconPtr](UIEvent&) {
+        if (searchBarPtr->HasClass("hidden"))
+            searchBarPtr->RemoveClass("hidden");
+        if (!searchBarPtr->HasClass("active"))
+            searchBarPtr->AddClass("active");
+        if (iconPtr && !iconPtr->HasClass("icon-active"))
+            iconPtr->AddClass("icon-active");
+    });
+
+    fieldPtr->RegisterEventHandler(kEventFocusOut, [searchBarPtr, iconPtr, getGlobalVisible, fieldPtr](UIEvent&) {
+        if (fieldPtr && fieldPtr->GetValue().empty())
+        {
+            if (getGlobalVisible && !getGlobalVisible() && !searchBarPtr->HasClass("hidden"))
+                searchBarPtr->AddClass("hidden");
+            searchBarPtr->RemoveClass("active");
+            if (iconPtr)
+                iconPtr->RemoveClass("icon-active");
+        }
+    });
 
     out.RootPtr = searchBarPtr;
     out.IconPtr = iconPtr;

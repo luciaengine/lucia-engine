@@ -13,8 +13,8 @@
 #include "TerrainECS/TerrainSizingPlan.h"
 #include "Types/StringUtils.h"
 
-#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
-#include "Inspectors/InspectorComponent/InspectorComponentSection.h"
+#include "Inspectors/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponentSection.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "UI/AssetField.h"
 #include "UI/Controls/Dropdown.h"

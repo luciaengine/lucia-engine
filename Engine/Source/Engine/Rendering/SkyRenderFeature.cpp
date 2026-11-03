@@ -1,6 +1,6 @@
 #include "Engine/Rendering/SkyRenderFeature.h"
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h"
 
 namespace GameEngine
 {
@@ -17,7 +17,7 @@ bool SkyRenderFeature::Initialize(Rendering::IDevice* device)
     // Resolving the install layout is the host's job: the rendering module has no
     // dependency that can answer where this process was installed.
     SkyRenderer::Config config{};
-    config.installAssetsRoot = ApplicationPaths::GetInstallAssetsRoot();
+    config.installAssetsRoot = PathUtils::GetInstallAssetsRoot();
 
     if (!m_Renderer.Initialize(device, config))
         return false;
@@ -26,10 +26,11 @@ bool SkyRenderFeature::Initialize(Rendering::IDevice* device)
     return true;
 }
 
-void SkyRenderFeature::SetSettings(const Rendering::SkySettings& settings, const Rendering::SkySunState& sunState)
+void SkyRenderFeature::SetSettings(const Rendering::SkySettings& settings,
+                                   const Rendering::SkySystemState& state)
 {
     m_Settings = settings;
-    m_SunState = sunState;
+    m_State = state;
     m_HasSettings = true;
 }
 

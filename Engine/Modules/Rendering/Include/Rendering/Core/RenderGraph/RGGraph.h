@@ -10,11 +10,9 @@
 // barrier generation, and the submission plan — all over flat dense-id arrays.
 // Physical realization and command recording live in RGFrame/RGRecord.
 
-#include "Memory/Arena.h"
+#include "Rendering/Core/RenderGraph/RGArena.h"
 #include "Rendering/Core/RenderGraph/RGBarrier.h"
-#include "Rendering/Core/RenderGraph/RGCrossFrameAccesses.h"
 #include "Rendering/Core/RenderGraph/RGTypes.h"
-#include "Types/DisjointSets.h"
 
 #include <cstdint>
 #include <tuple>
@@ -110,9 +108,6 @@ struct RGAccessRecord
     RGResourceId Resource = kInvalidId;
     RGAccess Access = RGAccess::Sampled;
     RGRange Range{}; // subresource granularity (whole resource by default)
-    // A write that replaces every pixel of the resource, so an earlier write is dead unless a pass
-    // reads it in between. Set only through RGGraph::WriteEveryPixel.
-    bool WritesEveryPixel = false;
 };
 
 // A GPU submission: a maximal run of consecutive same-queue passes in the
@@ -161,25 +156,6 @@ class RGGraph
     // Undefined (import-at-tracked-layout; no execute-time staleness).
     void MarkImported(RGResourceId id, RGImageLayout initialLayout);
 
-    // The device handle behind an imported resource, which BuildSubmissionPlan uses to order this
-    // frame's accesses on one physical queue after earlier frames' conflicting accesses on the
-    // others (RGCrossFrameAccesses). A resource without one is not ordered across frames.
-    void SetCrossFramePhysical(RGResourceId id, uint64_t physical);
-
-    // The value each physical queue's timeline has signaled. BuildSubmissionPlan drops a cross-frame
-    // wait on a value at or below it: that work has finished.
-    void SetCompletedTimelineValues(const uint64_t (&completedValues)[kQueueCount])
-    {
-        m_CrossFrameAccesses.SetCompleted(completedValues);
-    }
-
-    // Forgets the cross-frame accesses: the timeline values they name belong to semaphores that
-    // died with the device.
-    void ResetCrossFrameAccesses() { m_CrossFrameAccesses.Clear(); }
-
-    // The accesses earlier plans recorded, which the next plan orders its own accesses after.
-    const RGCrossFrameAccesses& CrossFrameAccesses() const { return m_CrossFrameAccesses; }
-
     // Contractual final layout for an exported texture (UI-sampled outputs):
     // GenerateBarriers emits one trailing transition after the resource's last
     // access, and FinalLayout()/the pool write-back then carry it. Only
@@ -189,9 +165,6 @@ class RGGraph
     RGPassId AddPass(const RGPassDesc& desc);
     void Read(RGPassId pass, RGResourceId resource, RGAccess access, RGRange range = RGRange::All());
     void Write(RGPassId pass, RGResourceId resource, RGAccess access, RGRange range = RGRange::All());
-    // A color attachment write that replaces every pixel of a one-mip, one-layer texture and reads
-    // none. Compile culls an earlier write to it with no read in between (RGCullReason::Overwritten).
-    void WriteEveryPixel(RGPassId pass, RGResourceId resource);
     // Force a pass to survive cull even with no consumed output (side effects,
     // queries, debug). Equivalent intent to RDG's PreventCulling.
     void PreventCulling(RGPassId pass);
@@ -319,10 +292,6 @@ class RGGraph
     bool IsExternal(RGResourceId r) const { return m_ResourceExternal[r] != 0; }
     // True for cross-frame pool imports (MarkImported): the "persistent" class.
     bool IsImported(RGResourceId r) const { return m_ResourceImported[r] != 0; }
-    // The layout the importer claimed for r (MarkImported); Undefined for a resource the graph creates.
-    RGImageLayout ImportLayout(RGResourceId r) const { return m_ResourceInitLayout[r]; }
-    // r's contractual final layout (SetExportLayout); Undefined when r has none.
-    RGImageLayout ExportLayout(RGResourceId r) const { return m_ResourceExportLayout[r]; }
     // True when any LIVE pass accesses r. This is the REALIZATION gate: a live
     // pass's depth attachment must exist even if nothing downstream reads it
     // (needed = reaches a sink, drives culling; used = must be allocated).
@@ -353,7 +322,7 @@ class RGGraph
     RGQueue PassQueue(RGPassId p) const { return m_Passes[p].Desc.Queue; }
     int32_t PassPhase(RGPassId p) const { return m_Passes[p].Desc.Phase; }
 
-    Memory::Arena& Arena() { return m_Arena; }
+    RGArena& Arena() { return m_Arena; }
 
   private:
     struct RGPassRec
@@ -364,23 +333,12 @@ class RGGraph
         RGCullReason CullReason = RGCullReason::NotCulled;
     };
 
-    // What one pass does to one resource, merged over the pass's accesses to it (Compile scratch).
-    struct RGPassTouch
-    {
-        RGPassId Pass = kInvalidId;
-        bool Reads = false;
-        bool Writes = false;
-        bool WritesEveryPixel = false;
-    };
-    void CollectLiveWriters();
-
     // Per-frame declarations (cleared in BeginFrame, capacity retained).
     std::vector<RGResourceDesc> m_Resources;
     std::vector<uint8_t> m_ResourceExternal;       // parallel to m_Resources
     std::vector<uint8_t> m_ResourceImported;       // parallel; 1 if imported with a known layout
     std::vector<RGImageLayout> m_ResourceInitLayout; // parallel; layout for imported resources
     std::vector<RGImageLayout> m_ResourceExportLayout; // parallel; Undefined = no export contract
-    std::vector<uint64_t> m_ResourceCrossFramePhysical; // parallel; 0 = not ordered across frames
     std::vector<RGPassRec> m_Passes;
     std::vector<RGAccessRecord> m_Accesses;
     std::vector<std::pair<RGPassId, RGPassId>> m_OrderingEdges; // {before, after}
@@ -451,15 +409,6 @@ class RGGraph
     // overlap in flight, so per-frame values would collide with frame N-1's
     // still-pending signals.
     uint64_t m_QueueTimelineNext[kQueueCount] = {0, 0, 0};
-    // Accesses earlier frames' plans made to imported physicals, by queue; deliberately NOT reset
-    // per frame for the same reason.
-    RGCrossFrameAccesses m_CrossFrameAccesses;
-    // Adds to `consumer` the waits an access of this plan to an imported physical needs, so it runs
-    // after the conflicting accesses earlier frames made on other queues.
-    void AddCrossFrameWaits(RGSubmission& consumer, RGResourceId resource, bool writes);
-    // Records an access of this plan to an imported physical, made by `submission`, for the next
-    // frames' plans.
-    void RecordCrossFrameAccess(RGResourceId resource, const RGSubmission& submission, bool writes);
 
     // Submission plan (per frame).
     std::vector<RGSubmission> m_Submissions;
@@ -474,8 +423,6 @@ class RGGraph
     std::vector<std::vector<RGPassId>> m_ScratchWritersOf;
     std::vector<std::vector<RGResourceId>> m_ScratchReadsOf;
     std::vector<uint8_t> m_ScratchResHasReader;
-    std::vector<std::vector<RGPassTouch>> m_ScratchTouchesOf;
-    std::vector<uint8_t> m_ScratchPassOverwritten;
     // Schedule:
     std::vector<std::vector<RGResourceId>> m_ScratchAttSet;
     std::vector<std::vector<RGPassId>> m_ScratchSucc;
@@ -485,7 +432,7 @@ class RGGraph
     std::vector<std::vector<RGPassId>> m_ScratchReadersSince;
     std::vector<RGPassId> m_ScratchTopo;
     std::vector<uint64_t> m_ScratchReach;
-    DisjointSets m_ScratchComponents;
+    std::vector<uint32_t> m_ScratchUnionFind;
     std::vector<uint32_t> m_ScratchClusterOf;
     std::vector<uint64_t> m_ScratchUnionReach;
     std::vector<uint64_t> m_ScratchGroupMask;
@@ -522,7 +469,7 @@ class RGGraph
     // when callers build names dynamically).
     const char* CopyName(const char* name);
 
-    Memory::Arena m_Arena;
+    RGArena m_Arena;
 };
 
 } // namespace GameEngine::Rendering::RenderGraph

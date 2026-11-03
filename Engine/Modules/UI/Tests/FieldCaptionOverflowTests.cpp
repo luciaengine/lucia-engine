@@ -13,7 +13,7 @@
 
 #include "IsolatedUIFixture.h"
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h"
 #include "UI/Controls/FloatField.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/TextField.h"
@@ -29,11 +29,10 @@
 
 using GameEngine::FloatField;
 using GameEngine::Label;
-using GameEngine::ApplicationPaths;
+using GameEngine::PathUtils;
 using GameEngine::SuffixAlignment;
 using GameEngine::SuffixRole;
 using GameEngine::UIElement;
-using GameEngine::operator""_sid;
 using GameEngine::UITesting::IsolatedUIFixture;
 
 namespace
@@ -46,7 +45,7 @@ constexpr float kLayoutTolerance = 0.5f;
 
 std::string ReadShippedCss(const char* relative)
 {
-    std::ifstream in(ApplicationPaths::GetExecutableDirectory() / "Assets" / "UI" / relative, std::ios::binary);
+    std::ifstream in(PathUtils::GetExecutableDirectory() / "Assets" / "UI" / relative, std::ios::binary);
     if (!in)
         return {};
     std::ostringstream ss;
@@ -159,8 +158,8 @@ struct Columns
         for (int i = 0; i < kFrames; ++i)
             Fixture.StepFrame();
         UIElement* root = Fixture.Manager().GetRootElement();
-        const UIElement* bubble = root->FindById("ui-tooltip"_sid);
-        const auto* text = dynamic_cast<const Label*>(root->FindById("ui-tooltip-text"_sid));
+        const UIElement* bubble = root->FindById("ui-tooltip");
+        const auto* text = dynamic_cast<const Label*>(root->FindById("ui-tooltip-text"));
         if (!bubble || !text || bubble->GetLayoutX() < 0.0f || bubble->GetLayoutY() < 0.0f)
             return {};
         return text->GetText();

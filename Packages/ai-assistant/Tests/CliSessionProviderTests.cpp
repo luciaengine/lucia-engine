@@ -8,11 +8,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace GameEngine
 {
@@ -58,13 +61,12 @@ TEST(CliSessionProviderTests, ClaudeTurnArgumentsAreTheDesignCommandLine)
     AgentTurnRequest request = Request("hello");
     request.SessionId = "session-1";
     request.Model = "opus";
-    request.Effort = "high";
     request.SystemPrompt = "Be brief.";
 
     const std::vector<std::string> expected = {
         "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--resume", "session-1",
         "--permission-prompts", "none", "--tools", "", "--strict-mcp-config", "--system-prompt-snapshot", "off",
-        "--model", "opus", "--effort", "high", "--append-system-prompt", "Be brief."};
+        "--model", "opus", "--append-system-prompt", "Be brief."};
     EXPECT_EQ(provider.TurnArguments(request), expected);
 }
 
@@ -99,7 +101,6 @@ TEST(CliSessionProviderTests, RecordedClaudeTurnYieldsTheSessionIdTheDeltasInOrd
         "delta:ated with calm, tr", "delta:ust, and stability.", "finished:" + reply};
     EXPECT_EQ(events.Log, expected);
     EXPECT_EQ(events.Result.Outcome, TurnOutcome::Succeeded);
-    EXPECT_EQ(events.Result.Model, "claude-fable-5-1") << "the model the init record names";
     EXPECT_DOUBLE_EQ(events.Result.CostUsd, 0.08598599999999999);
     EXPECT_EQ(events.Result.ModelRoundTrips, 1u);
     EXPECT_EQ(events.Result.InputTokens, 2u + 4189u + 544u);
@@ -147,28 +148,6 @@ TEST(CliSessionProviderTests, AnUnknownClaudeSessionFailsTheTurnWithTheClisMessa
     EXPECT_TRUE(events.Result.SessionNotFound);
 }
 
-// The recorded answer of `claude -p --model not-a-model` (claude 2.1.296): an init, the
-// error as a synthetic assistant message and a failed result carrying the same text.
-TEST(CliSessionProviderTests, AnUnknownModelFailsTheTurnWithTheClisMessage)
-{
-    ScopedEnvironmentVariable mode("FAKE_AGENT_CLI_MODE", "replay");
-    const std::string fixture = Fixture("claude-unknown-model.stdout");
-    ScopedEnvironmentVariable replay("FAKE_AGENT_CLI_REPLAY", fixture.c_str());
-    ClaudeSessionProvider provider(FakeCli(), {});
-    RecordingTurnEvents events;
-    CancelToken cancel;
-
-    AgentTurnRequest request = Request("hello");
-    request.Model = "not-a-model";
-    provider.RunTurn(request, events, cancel);
-
-    EXPECT_EQ(events.Result.Outcome, TurnOutcome::Failed);
-    EXPECT_EQ(events.Result.Error, "Claude Code reported an error: There's an issue with the selected model "
-                                   "(not-a-model). It may not exist or you may not have access to it. Run "
-                                   "--model to pick a different model.");
-    EXPECT_FALSE(events.Result.SessionNotFound);
-}
-
 // `codex exec resume <unknown id>` prints no record; its stderr says the thread is unknown.
 TEST(CliSessionProviderTests, AnUnknownCodexThreadFailsTheTurnAsSessionNotFound)
 {
@@ -184,6 +163,55 @@ TEST(CliSessionProviderTests, AnUnknownCodexThreadFailsTheTurnAsSessionNotFound)
     EXPECT_EQ(events.Result.Outcome, TurnOutcome::Failed);
     EXPECT_NE(events.Result.Error.find("no rollout found for thread id"), std::string::npos) << events.Result.Error;
     EXPECT_TRUE(events.Result.SessionNotFound);
+}
+
+// The session has no tool that could read a file, so its images travel as content blocks: the turn
+// switches to stream-json input and writes one user message with the images before the text.
+TEST(CliSessionProviderTests, ClaudeImagesGoAsAStreamJsonMessage)
+{
+    const ClaudeSessionProvider provider("claude", {});
+    PromptFile shot;
+    shot.Kind = PromptFileKind::Image;
+    shot.MediaType = "image/png";
+    shot.Bytes = "foo";
+    AgentTurnRequest request = Request("what is this?");
+
+    EXPECT_EQ(provider.TurnInput(request), "what is this?");
+    const std::vector<std::string> textArguments = provider.TurnArguments(request);
+    EXPECT_EQ(std::find(textArguments.begin(), textArguments.end(), "--input-format"), textArguments.end());
+
+    request.Images = std::span<const PromptFile>(&shot, 1);
+    const std::vector<std::string> arguments = provider.TurnArguments(request);
+    const auto format = std::find(arguments.begin(), arguments.end(), "--input-format");
+    ASSERT_NE(format, arguments.end());
+    ASSERT_NE(format + 1, arguments.end());
+    EXPECT_EQ(*(format + 1), "stream-json");
+
+    const std::string input = provider.TurnInput(request);
+    ASSERT_FALSE(input.empty());
+    EXPECT_EQ(input.back(), '\n');
+    EXPECT_EQ(nlohmann::json::parse(input), nlohmann::json::parse(R"({"type":"user","message":{"role":"user","content":[
+        {"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}},
+        {"type":"text","text":"what is this?"}]}})"));
+}
+
+// Codex takes images by path; they go last, before the prompt's `-`, so on a resumed thread they
+// belong to `resume`.
+TEST(CliSessionProviderTests, CodexImagesGoAsImageArgumentsBeforeThePrompt)
+{
+    const CodexSessionProvider provider("codex", "C:/Project");
+    PromptFile shot;
+    shot.Kind = PromptFileKind::Image;
+    shot.Path = "C:/Project/shot.png";
+    AgentTurnRequest request = Request("hello");
+    request.SessionId = "thread-1";
+    request.Images = std::span<const PromptFile>(&shot, 1);
+
+    const std::vector<std::string> expected = {
+        "exec", "--json", "--skip-git-repo-check", "-C", std::filesystem::path("C:/Project").string(),
+        "-s", "read-only", "resume", "thread-1",
+        "--image=" + std::filesystem::path("C:/Project/shot.png").string(), "-"};
+    EXPECT_EQ(provider.TurnArguments(request), expected);
 }
 
 TEST(CliSessionProviderTests, ThePromptGoesOnStdin)
@@ -407,52 +435,23 @@ TEST(CliSessionProviderTests, ALoggedOutSessionRefusesTheTurnWithTheFix)
     EXPECT_EQ(events.Result.Outcome, TurnOutcome::Failed);
     EXPECT_EQ(events.Result.Error, "Not logged in: run `codex login`.");
 }
-
-// A reply whose text comes in two blocks around a tool call (issue #3435): the second block
-// starts a new paragraph, as the model wrote them, instead of running on from the first's
-// last word. The break travels with the second block's first delta.
-TEST(CliSessionProviderTests, TextBlocksAroundAToolCallAreSeparatedByAParagraphBreak)
+TEST(CliSessionProviderTests, CodexDirectoryAndImagePathsUseUtf8)
 {
-    ScopedEnvironmentVariable mode("FAKE_AGENT_CLI_MODE", "replay");
-    const std::string fixture = Fixture("claude-two-text-blocks.stdout");
-    ScopedEnvironmentVariable replay("FAKE_AGENT_CLI_REPLAY", fixture.c_str());
-    ClaudeSessionProvider provider(FakeCli(), {});
-    RecordingTurnEvents events;
-    CancelToken cancel;
-
-    provider.RunTurn(Request("Make a lantern and save."), events, cancel);
-
-    const std::string reply = "I'll create the lantern, then save the scene.\n\nThe create_entity call succeeded.";
-    const std::vector<std::string> expected = {std::string("session:") + kFixtureSession,
-                                               "delta:I'll create the lantern,",
-                                               "delta: then save the scene.",
-                                               "tool:mcp__gameengine__create_entity",
-                                               "delta:\n\nThe create_entity call succeeded.",
-                                               "finished:" + reply};
-    EXPECT_EQ(events.Log, expected);
-    EXPECT_EQ(events.Result.Text, reply);
+    const std::filesystem::path project(u8"C:/Project/\u65e5\u672c\u8a9e");
+    const CodexSessionProvider provider("codex", project);
+    auto request = Request("describe");
+    PromptFile image;
+    image.Kind = PromptFileKind::Image;
+    image.Path = project / std::filesystem::path(u8"\u5192.png");
+    request.Images = std::span<const PromptFile>(&image, 1);
+    auto args = provider.TurnArguments(request);
+    for (auto& arg : args)
+        std::replace(arg.begin(), arg.end(), '\\', '/');
+    const auto directory = std::find(args.begin(), args.end(), "-C");
+    ASSERT_NE(directory, args.end());
+    ASSERT_NE(std::next(directory), args.end());
+    EXPECT_EQ(*std::next(directory), "C:/Project/\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E");
+    EXPECT_NE(std::find(args.begin(), args.end(), "--image=C:/Project/\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E/\xE5\x86\x92.png"), args.end());
 }
 
-// Codex reports each message whole; a later message (after a command it ran) starts a new
-// paragraph, as with Claude's text blocks.
-TEST(CliSessionProviderTests, CodexMessagesAroundACommandAreSeparatedByAParagraphBreak)
-{
-    ScopedEnvironmentVariable mode("FAKE_AGENT_CLI_MODE", "replay");
-    const std::string fixture = Fixture("codex-two-messages.stdout");
-    ScopedEnvironmentVariable replay("FAKE_AGENT_CLI_REPLAY", fixture.c_str());
-    CodexSessionProvider provider(FakeCli(), {});
-    RecordingTurnEvents events;
-    CancelToken cancel;
-
-    provider.RunTurn(Request("What is in the scene?"), events, cancel);
-
-    const std::string reply = "I will look at the scene first.\n\nIt holds seven entities.";
-    const std::vector<std::string> expected = {std::string("session:") + kFixtureSession,
-                                               "delta:I will look at the scene first.",
-                                               "tool:command_execution",
-                                               "delta:\n\nIt holds seven entities.",
-                                               "finished:" + reply};
-    EXPECT_EQ(events.Log, expected);
-    EXPECT_EQ(events.Result.Text, reply);
-}
 } // namespace GameEngine

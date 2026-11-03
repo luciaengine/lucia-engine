@@ -3,10 +3,9 @@
 #include "Engine/Rendering/DrawBindings.h"
 #include "Engine/Rendering/DrawCommand.h"
 #include "Engine/Rendering/DrawCommandProducer.h"
-#include "Ocean/OceanSurfaceMaterial.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Types/Types.h"
 
@@ -52,6 +51,7 @@ public:
     OceanForwardContributor(OceanRenderFeature& feature,
                             Engine::Renderer::RenderServices& renderServices);
 
+    bool EnsureMaterial();
     // Builds the surface draw. Every DYNAMIC sim cascade the command binds is
     // also RG-imported (when a frame stream is active) so the consuming pass
     // can declare the sampled reads (the bind alone forms no producer->consumer
@@ -60,32 +60,22 @@ public:
     // per-view scratch — valid until the next BuildForwardCommand for the same
     // view. Static textures (caustics, user assets, IBL) are excluded: they
     // rest in ShaderResource and are never graph-written.
-    // `passKeywords` are the keywords of the pass the surface draws in: those among
-    // kOceanSurfacePassKeywords pick the material registration.
     bool BuildForwardCommand(Engine::Renderer::ForwardEmitContext& ctx,
-                             ::GameEngine::Rendering::MaterialKeyword passKeywords,
                              Engine::Renderer::DrawCommand& outCommand,
                              std::span<const ::GameEngine::Rendering::RenderGraph::RGTexture>*
                                  outSampledCascades = nullptr);
 
 private:
-    // The surface material for a pass with `passKeywords`, registered on first use with the pass
-    // keywords among kOceanSurfacePassKeywords. Null when the registration failed.
-    Engine::Renderer::Material* EnsureMaterial(::GameEngine::Rendering::MaterialKeyword passKeywords);
-
     OceanRenderFeature& m_Feature;
     Engine::Renderer::RenderServices& m_RenderServices;
-    // The surface registrations, one per subset of kOceanSurfacePassKeywords, indexed by
-    // OceanSurfacePassKeywordSetIndex.
-    static constexpr size_t kMaterialCount = kOceanSurfacePassKeywordSetCount;
-    Engine::Renderer::Material* m_Materials[kMaterialCount]{};
-    bool m_MaterialInitAttempted[kMaterialCount]{};
+    Engine::Renderer::Material* m_Material = nullptr;
+    bool m_MaterialInitAttempted = false;
 
-    // Lazy-interned pipeline variants for the ocean's vec2 grid-pos vertex layout, per material:
-    // [material][sided], sided 0 = one-sided above water, 1 = two-sided underwater. Keeping both
+    // Lazy-interned pipeline variants for the ocean's vec2 grid-pos vertex layout.
+    // Index 0 = one-sided above water, index 1 = two-sided underwater. Keeping both
     // avoids quad-view cameras repeatedly replacing one shared pipeline variant.
-    ::GameEngine::Rendering::GraphicsPipelineId m_OceanPipelineIds[kMaterialCount][2]{};
-    uint32_t m_PipelineMaterialVersions[kMaterialCount]{};
+    ::GameEngine::Rendering::GraphicsPipelineId m_OceanPipelineIds[2]{};
+    uint32_t m_PipelineMaterialVersion = 0;
 
     // 1x1 zeroed cascade-array stand-in for uOceanDisplacement / uOceanFoam when
     // their sims are unavailable. The compat shader profile declares exactly

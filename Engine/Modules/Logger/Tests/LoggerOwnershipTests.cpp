@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 #include "Logger/Logger.h"
-#include "LoggerInternals.h"
 
 #include <array>
 #include <cstdio>
@@ -49,7 +48,7 @@ class CaptureSink : public LogSink
     void Write(const LogMessage& message) override { Messages.push_back(message); }
     void Flush() override {}
     bool ShouldLog(LogLevel) const override { return true; }
-    std::string GetName() const override { return "Capture"; }
+    String GetName() const override { return "Capture"; }
     // Tests read only after Flush has acknowledged all writes.
     const std::vector<LogMessage>& GetMessages() const { return Messages; }
     size_t GetCount() const { return Messages.size(); }
@@ -77,22 +76,25 @@ class LoggerOwnershipTestFixture : public ::testing::Test
 TEST_F(LoggerOwnershipTestFixture, FormatterAndBorrowedDataAreConsumedBeforeReturn)
 {
     char text[] = "producer text";
+    char file[] = "producer.cpp";
+    char function[] = "ProducerFunction";
     int formatted = 0;
-    int line = 0;
     {
         std::unique_lock sinkLock(Log::GetStateForSharing()->Mutex);
-        line = __LINE__ + 1;
-        GE_LOG(CoreLog, Info, "value: {}", LoggerOwnershipTest::BorrowedValue{text, &formatted});
+        Log::LogWithSource(LogLevel::Info, file, 17, function, "value: {}",
+                           LoggerOwnershipTest::BorrowedValue{text, &formatted});
         EXPECT_EQ(formatted, 1);
         std::memset(text, 'x', sizeof(text) - 1);
+        std::memset(file, 'x', sizeof(file) - 1);
+        std::memset(function, 'x', sizeof(function) - 1);
     }
     Log::Flush();
     const auto messages = Spy->GetMessages();
     ASSERT_EQ(messages.size(), 1u);
     EXPECT_EQ(messages[0].Message, "value: producer text");
-    EXPECT_EQ(messages[0].SourceFile, __FILE__);
-    EXPECT_TRUE(messages[0].Function.ends_with("TestBody")) << messages[0].Function;
-    EXPECT_EQ(messages[0].SourceLine, line);
+    EXPECT_EQ(messages[0].SourceFile, "producer.cpp");
+    EXPECT_EQ(messages[0].Function, "ProducerFunction");
+    EXPECT_EQ(messages[0].SourceLine, 17);
     EXPECT_EQ(formatted, 1);
 }
 
@@ -106,16 +108,39 @@ TEST_F(LoggerOwnershipTestFixture, FilteredMessagesDoNotInvokeUserFormatters)
     EXPECT_EQ(Spy->GetCount(), 0u);
 }
 
-TEST_F(LoggerOwnershipTestFixture, ChannelRecordKeepsItsSourceWhenFormattingFails)
+TEST_F(LoggerOwnershipTestFixture, OwnedSourceConsumesFormatterBeforeProducerReturns)
 {
-    const int line = __LINE__ + 1;
-    EXPECT_NO_THROW(GE_LOG(CoreLog, Info, "{}", LoggerOwnershipTest::ThrowingValue{}));
+    char text[] = "producer text";
+    int formatted = 0;
+    {
+        std::unique_lock sinkLock(Log::GetStateForSharing()->Mutex);
+        const OwnedSourceLocation source("owned.cpp", "OwnedProducer");
+        Log::LogWithSource(LogLevel::Info, source, 23, "value: {}",
+                           LoggerOwnershipTest::BorrowedValue{text, &formatted});
+        EXPECT_EQ(formatted, 1);
+        std::memset(text, 'x', sizeof(text) - 1);
+    }
+    Log::Flush();
+    const auto messages = Spy->GetMessages();
+    ASSERT_EQ(messages.size(), 1u);
+    EXPECT_EQ(messages[0].Message, "value: producer text");
+    EXPECT_EQ(messages[0].SourceFile, "owned.cpp");
+    EXPECT_EQ(messages[0].Function, "OwnedProducer");
+    EXPECT_EQ(messages[0].SourceLine, 23);
+    EXPECT_EQ(formatted, 1);
+}
+
+TEST_F(LoggerOwnershipTestFixture, OwnedSourcePreservesFormattingFailureRecord)
+{
+    const OwnedSourceLocation source("owned.cpp", "OwnedProducer");
+    EXPECT_NO_THROW(Log::LogWithSource(LogLevel::Info, source, 29, "{}",
+                                       LoggerOwnershipTest::ThrowingValue{}));
     Log::Flush();
     const auto messages = Spy->GetMessages();
     ASSERT_EQ(messages.size(), 1u);
     EXPECT_EQ(messages[0].Message, "[FORMAT ERROR: deliberate formatter failure]");
-    EXPECT_EQ(messages[0].SourceFile, __FILE__);
-    EXPECT_EQ(messages[0].SourceLine, line);
+    EXPECT_EQ(messages[0].SourceFile, "owned.cpp");
+    EXPECT_EQ(messages[0].SourceLine, 29);
 }
 
 TEST_F(LoggerOwnershipTestFixture, FormattingFailureStillProducesAnErrorRecord)

@@ -11,7 +11,7 @@
 // and user components share this one code path; hand-written schemas remain only as overrides for
 // components with genuine non-field logic.
 
-#include "ECS/Component/ComponentFieldRegistry.h" // ComponentTypeId
+#include "ECS/ComponentFieldRegistry.h" // ComponentTypeId
 #include "Scene/SceneSchemaRegistry.h"  // ISceneComponentSchema
 
 #include <cstddef>
@@ -32,11 +32,11 @@ class ReflectionSceneSchema final : public ISceneComponentSchema
 
     std::string_view GetComponentName() const override { return m_Name; }
     bool IsPresent(const ECS::World& world, ECS::EntityHandle entity) const override;
-    void Serialize(const ECS::World& world, ECS::EntityHandle entity, const SceneWriteContext& ctx,
+    void Serialize(const ECS::World& world, ECS::EntityHandle entity, const SceneSaveContext& ctx,
                    std::vector<std::string>& outLines) const override;
-    bool ApplyProperty(ECS::World& world, ECS::EntityHandle entity, const SceneReadContext& ctx,
+    bool ApplyProperty(ECS::World& world, ECS::EntityHandle entity, const SceneLoadContext& ctx,
                        std::string_view property, std::string_view value, std::string* outError) const override;
-    bool ApplyProperties(ECS::World& world, ECS::EntityHandle entity, const SceneReadContext& ctx,
+    bool ApplyProperties(ECS::World& world, ECS::EntityHandle entity, const SceneLoadContext& ctx,
                          std::span<const std::pair<std::string_view, std::string_view>> props,
                          std::string* outError, std::size_t* outFailedIndex) const override;
     bool AddDefault(ECS::World& world, ECS::EntityHandle entity, std::string* outError) const override;

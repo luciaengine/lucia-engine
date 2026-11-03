@@ -7,12 +7,11 @@
 #include "Input/KeyCodes.h"
 #include "Inspectors/AnimationPreviewManager.h"
 #include "Logger/Logger.h"
-#include "Panels/Script/ScriptEditorPanel.h" // For ScriptVariable, ScriptMethod
+#include "Panels/ScriptEditorPanel.h" // For ScriptVariable, ScriptMethod
 #include "Panels/OnDiskFileName.h"
-#include "Panels/Script/ScriptVariablesEmptyState.h"
+#include "Panels/ScriptVariablesEmptyState.h"
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cctype>
 #include <chrono>
@@ -25,13 +24,15 @@
 #include <limits>
 #include <optional>
 #include <set>
-#include <span>
 #include <sstream>
-#include <string_view>
 #include <type_traits>
 
+#if defined(__GNUG__)
+#include <cxxabi.h>
+#endif
+
 #include "Editor/EditorTreeTitleIconVars.h"
-#include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityIcon.h"
+#include "Editor/Hierarchy/HierarchyEntityIcon.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "Editor/Vcs/EditorVcsProviderRegistry.h"
 #include "Editor/Hierarchy/HierarchyEnableState.h"
@@ -43,13 +44,10 @@
 #include "Platform/Window.h"
 #include "PlayMode/PlayModeManager.h"
 #include "Scene/WorldSnapshotCommand.h"
-#include "Types/FormatNumber.h"
-#include "Types/PathUtils.h"
 #include "Types/StringUtils.h"
 
 #include "Panels/ConfirmActionModal.h"
 #include "Panels/SettingsPanel.h"
-#include "UI/ControlLayoutLoader.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Dropdown.h"
 #include "UI/Controls/Foldout.h"
@@ -67,18 +65,16 @@
 #include "UndoRedo/UndoRedoService.h"
 
 #include "Thumbnails/IThumbnailProvider.h"
-#include "UI/Interaction/FocusQueries.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
 
 #include "InspectorRegistry.h"
-#include "Inspectors/ComponentIconClass.h"
 #include "Inspectors/ComponentPresets.h"
 #include "Inspectors/GeneratedEntityNotice.h"
 #include "Inspectors/InspectorEntityActivity.h"
-#include "Inspectors/PendingAssetHeader.h"
 #include "Graph/GraphInspectorRows.h"
+#include "Inspectors/InspectorColorSwatchRow.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorSectionHosts.h"
 #include "Inspectors/InspectorUIHelpers.h"
@@ -98,76 +94,18 @@
 #include "Assets/AssetRegistry.h"
 #include "Audio/AudioSystem.h"
 #include "Components/Hierarchy.h"
-#include "Components/Measure/MeasureComponent.h"
 #include "Components/Name.h"
-#include "Components/Rendering/Camera.h"
-#include "Components/Rendering/Light.h"
-#include "Components/Rendering/MeshGPUData.h"
 #include "Components/Rendering/MeshRenderer.h"
-#include "Components/Rendering/SkinnedMeshRenderer.h"
-#include "Components/RuntimeOnlyEntity.h"
 #include "Components/Transform.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "ECS/Components.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/UnresolvedComponentStore.h"  // preserved (unloaded) component rows
 #include "ECS/World.h"
 
-// Physics authoring components (for minimal Add Component UX)
-#include "PhysicsECS/Components/BoxColliderShape.h"
-#include "PhysicsECS/Components/CapsuleColliderShape.h"
-#include "PhysicsECS/Components/CharacterController.h"
-#include "PhysicsECS/Components/HeightFieldColliderShape.h"
-#include "PhysicsECS/Components/PhysicsBody.h"
-#include "PhysicsECS/Components/PhysicsCollider.h"
-#include "PhysicsECS/Components/PhysicsColliderOwner.h"
-#include "PhysicsECS/Components/PhysicsWorldSettingsComponent.h"
-#include "PhysicsECS/Components/PlaneColliderShape.h"
-#include "PhysicsECS/Components/SphereColliderShape.h"
-
-#include "Components/Animation/AnimatedNodeRef.h"
-#include "Components/Animation/AnimatedSprite2D.h"
-#include "Components/Animation/Animator.h"
-#include "Components/Animation/AnimatorRef.h"
-#include "Components/Animation/HumanoidRetargeterComponent.h"
-#include "Components/Animation/SkeletonRef.h"
-#include "Components/Animation/ValueCurve.h"
-#include "Components/Audio/AudioEmitter.h"
-#include "Components/Audio/AudioListener.h"
-#include "Components/Rendering/LODGroup.h"
-#include "Components/Rendering/LensFlareSource.h"
-#include "Components/Rendering/LocalBounds.h"
-#include "Components/Rendering/Ocean.h"
-#include "Components/Rendering/Particles.h"
-// Post-process effect chrome comes from PostProcessEffectRegistry; the typed
-// includes that remain serve the scanner-unreflectable Enabled fallbacks
-// (VolumetricFog, HeightFog, AtmosphericCloudLayer), the LDR StackOrder sync
-// (CAS, Vignette), and HeightFog's add-time tuning.
-#include "Components/Rendering/PostProcessEffects/AtmosphericCloudLayer.h"
-#include "Components/Rendering/PostProcessEffects/VolumetricClouds.h"
-#include "Components/Rendering/PostProcessEffects/ContrastAdaptiveSharpenEffect.h"
-#include "Components/Rendering/PostProcessEffects/VignetteEffect.h"
-#include "Components/Rendering/ReflectionProbe.h"
-#include "Components/Rendering/PostProcessEffects/HeightFogEffect.h"
-#include "Components/Rendering/PostProcessEffects/VolumetricFogEffect.h"
-#include "Components/Rendering/PostProcessVolume.h"
-#include "Components/Rendering/SkyEnvironment.h"
-#include "Components/Rendering/Skybox.h"
-#include "Components/Rendering/WindVolume.h"
-#include "Components/PrefabInstance.h"
-#include "Components/SceneEntityTag.h"
-#include "Components/SceneSubsceneInstance.h"
-#include "Components/Spline/SplineComponent.h"
-#include "Components/Terrain/Terrain.h"
-#include "Components/Terrain/TerrainGrass.h"
-#include "Components/Terrain/TerrainModifierEffects.h"
-#include "Components/Terrain/TerrainModifierVolume.h"
-#include "Components/Terrain/TerrainModifiers.h"
-#include "Components/Terrain/TerrainPlanetRelief.h"
-#include "Components/Video/VideoTextureComponent.h"
 #include "Editor/Entities/ComponentEnabledToggle.h"
 #include "Editor/Entities/ComponentRemoval.h"
 #include "Editor/Entities/EditorComponentTraits.h"
@@ -175,11 +113,10 @@
 #include "Editor/Entities/EntityDisplayName.h"
 #include "Editor/Entities/EditorInspectorPseudoComponents.h"
 #include "Engine/Rendering/PostProcessEffectRegistry.h"
-#include "TerrainECS/TerrainModifierComponents.h"
-#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponentRowHelpers.h"
 #include "Inspectors/DefaultComponentInspector.h"
-#include "ECS/Component/ComponentFactory.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFactory.h"
+#include "ECS/ComponentFieldRegistry.h"
 
 #include <unordered_set>
 
@@ -193,8 +130,6 @@ using InspectorUI::AddTextBlock;
 // The Add Component preset vocabulary, its catalog and the table pairing a
 // terrain preset with its effect live in Inspectors/ComponentPresets.h; this
 // panel is their UI.
-using Editor::ComponentIconClass;
-using Editor::ComponentPickerIcon;
 using Editor::ComponentPreset;
 using Editor::ComponentPresetCatalog;
 using Editor::ComponentPresetEntry;
@@ -213,15 +148,6 @@ std::size_t MaterialSlotOrderKeyHash::operator()(const MaterialSlotOrderKey& k) 
 
 namespace
 {
-
-// The end of the header row: the override badge and the selection history arrows.
-constexpr const char* kHeaderTrailingLayoutAssetPath = "UI/inspectors/EntityHeader/EntityHeader.uxml";
-constexpr std::array<std::string_view, 4> kHeaderTrailingRequiredIds = {
-    "inspector-header-badge",
-    "inspector-header-history",
-    "inspector-history-back",
-    "inspector-history-forward",
-};
 
 // Icon for an Add Component category submenu row.
 const char* CategoryIcon(const std::string& category)
@@ -364,22 +290,6 @@ static void ArgbIntensityToGraphColor(uint32_t argb, float intensity, float& r, 
     b = static_cast<float>(argb & 0xFF) * scale;
 }
 
-static void StyleGraphColorSwatch(UIElement* swatch, uint32_t argb)
-{
-    if (!swatch)
-        return;
-    swatch->Style()
-        .Set(Style::Width, StyleLength::Px(20.0f))
-        .Set(Style::Height, StyleLength::Px(20.0f))
-        .Set(Style::MinWidth, StyleLength::Px(20.0f))
-        .Set(Style::MinHeight, StyleLength::Px(20.0f))
-        .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{3.0f, 3.0f, 3.0f, 3.0f})
-        .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
-        .Set(Style::BorderColor, BorderColorsTRBL{0xFF555555u, 0xFF555555u, 0xFF555555u, 0xFF555555u})
-        .Set(Style::BackgroundColor, argb)
-        .Set(Style::Cursor, CursorStyle::Pointer);
-}
-
 static std::string FormatGraphVariableVec3(float r, float g, float b)
 {
     char buf[64];
@@ -444,16 +354,11 @@ static void AddGraphColorSwatchRow(UIElement* parent,
 
     auto fieldContainer = std::make_unique<UIElement>();
     fieldContainer->AddClass("inspector-field");
-    fieldContainer->Style()
-        .Set(Style::Display, DisplayMode::Flex)
-        .Set(Style::FlexDir, FlexDirection::Row)
-        .Set(Style::AlignItems, AlignItems::Center)
-        .Set(Style::Gap, StyleLength::Px(6.0f));
+    fieldContainer->AddClass("inspector-color-swatch-field");
     UIElement* fieldContainerRaw = fieldContainer.get();
 
-    auto swatch = std::make_unique<UIElement>();
+    auto swatch = InspectorUI::MakeColorSwatch(argb);
     UIElement* swatchRaw = swatch.get();
-    StyleGraphColorSwatch(swatchRaw, argb);
     fieldContainerRaw->AddChild(std::move(swatch));
 
     auto applyWithSwatch = [applyColor = std::move(applyColor), swatchRaw](uint32_t newArgb, float newIntensity, bool commitUndo)
@@ -464,7 +369,7 @@ static void AddGraphColorSwatchRow(UIElement* parent,
         float ng = 1.0f;
         float nb = 1.0f;
         ArgbIntensityToGraphColor(newArgb, newIntensity, nr, ng, nb);
-        StyleGraphColorSwatch(swatchRaw, GraphColorToArgb(nr, ng, nb, 1.0f, std::max(1.0f, newIntensity)));
+        InspectorUI::SetColorSwatchColor(swatchRaw, GraphColorToArgb(nr, ng, nb, 1.0f, std::max(1.0f, newIntensity)));
     };
 
     auto clickHandler = [argb, intensity, openPicker, applyWithSwatch](UIEvent& e)
@@ -559,11 +464,6 @@ constexpr uint32_t kCmdInspectorRestoreLastSettings = 0x5243;
 constexpr uint32_t kCmdInspectorResetComponentValues = 0x5244;
 constexpr uint32_t kCmdInspectorRestoreSavedSettingsBase = 0x5260;
 constexpr uint32_t kCmdInspectorRestoreSavedSettingsMax = 16;
-constexpr uint32_t kCmdInspectorOverrideMenuBase = 0x5280;
-constexpr uint32_t kCmdInspectorOverrideMenuMax = 16;
-// The override entries lead the component header menu, before Copy (-3), with a separator after them.
-constexpr int kOverrideMenuPriority = -6;
-constexpr int kOverrideMenuSeparatorPriority = -5;
 constexpr size_t kMaxSavedComponentSettingsPerType = 24;
 constexpr size_t kMaxSavedComponentSettingsMenuItems = 10;
 constexpr const char* kProjectInspectorSavedSettingsKey = "inspector.componentSavedSettings";
@@ -576,16 +476,10 @@ constexpr float kInspectorPickerWidthPx = 360.0f;
 constexpr float kInspectorAssetContentHorizontalInsetPx = 16.0f;
 // Vertical inset when framing script-variable empty state (matches type-line spacing).
 constexpr float kInspectorAssetContentVerticalInsetPx = 8.0f;
-// What a selected asset shows while its load runs: the "Loading <file>..." line and the header
-// suffix after the name (Editor::kPendingAssetSuffixLabelId); PollPendingAssetLoad updates both
-// by id.
-constexpr const char* kPendingAssetLoadLabelId = "InspectorPendingAssetLoad";
-// How often that state is re-read while the load runs.
-constexpr std::chrono::milliseconds kPendingAssetLineRefreshInterval{250};
 static std::unique_ptr<UIElement> MakeInspectorPaddedContentColumn()
 {
     auto column = std::make_unique<UIElement>();
-    column->Style()
+    column->Overrides()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::PaddingLeft, StyleLength::Px(kInspectorAssetContentHorizontalInsetPx))
@@ -601,7 +495,7 @@ static void AddInspectorPaddedContent(UIElement* contentRoot, std::unique_ptr<T>
 {
     auto wrap = std::make_unique<UIElement>();
     wrap->AddClass("inspector-asset-content");
-    wrap->Style()
+    wrap->Overrides()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::PaddingLeft, StyleLength::Px(kInspectorAssetContentHorizontalInsetPx))
@@ -636,179 +530,83 @@ std::string GetDefaultValueForType(const std::string& typeName)
     return "0";
 }
 
-// Titles of built-in components. TryFindComponentTypeIdByName reads a title back to its type for the
-// component clipboard and the saved component settings, so a title here is also that type's key.
-static const std::unordered_map<ECS::ComponentTypeId, std::string>& GetComponentDisplayNames()
+static void StripLeading(std::string& s, const char* prefix)
 {
-    static std::unordered_map<ECS::ComponentTypeId, std::string> s_Names;
-    static bool s_Init = false;
-    if (!s_Init)
+    if (!prefix)
+        return;
+    const size_t n = std::strlen(prefix);
+    if (s.size() >= n && s.compare(0, n, prefix) == 0)
     {
-        s_Init = true;
-        s_Names[ECS::GetComponentTypeId<Transform>()] = "Transform";
-        s_Names[ECS::GetComponentTypeId<Components::WorldTransform>()] = "World Transform";
-        s_Names[ECS::GetComponentTypeId<Name>()] = "Name";
-        s_Names[ECS::GetComponentTypeId<Parent>()] = "Parent";
-        s_Names[ECS::GetComponentTypeId<MeshRenderer>()] = "Mesh Renderer";
-        s_Names[ECS::GetComponentTypeId<SkinnedMeshRenderer>()] = "Skinned Mesh Renderer";
-        s_Names[ECS::GetComponentTypeId<Camera>()] = "Camera";
-        s_Names[ECS::GetComponentTypeId<Light>()] = "Light";
-        s_Names[ECS::GetComponentTypeId<PhysicsBody>()] = "Physics Body";
-        s_Names[ECS::GetComponentTypeId<CharacterController>()] = "Character Controller";
-        s_Names[ECS::GetComponentTypeId<PhysicsCollider>()] = "Physics Collider";
-        s_Names[ECS::GetComponentTypeId<PhysicsColliderOwner>()] = "Physics Collider Owner";
-        s_Names[ECS::GetComponentTypeId<PhysicsWorldSettingsComponent>()] = "Physics World Settings";
-        s_Names[ECS::GetComponentTypeId<BoxColliderShape>()] = "Box Collider";
-        s_Names[ECS::GetComponentTypeId<SphereColliderShape>()] = "Sphere Collider";
-        s_Names[ECS::GetComponentTypeId<PlaneColliderShape>()] = "Plane Collider";
-        s_Names[ECS::GetComponentTypeId<CapsuleColliderShape>()] = "Capsule Collider";
-
-        s_Names[ECS::GetComponentTypeId<LODGroup>()] = "LOD Group";
-        s_Names[ECS::GetComponentTypeId<SkyEnvironment>()] = "Sky Environment";
-        s_Names[ECS::GetComponentTypeId<Skybox>()] = "Skybox";
-        s_Names[ECS::GetComponentTypeId<Components::ReflectionProbe>()] = "Reflection Probe";
-        s_Names[ECS::GetComponentTypeId<PostProcessVolume>()] = "Post Process Volume";
-        s_Names[ECS::GetComponentTypeId<Components::WindVolume>()] = "Wind Volume";
-        // Post-process effect names come from the PostProcessEffectRegistry
-        // descriptors (ComponentTitle consults it before this map).
-        s_Names[ECS::GetComponentTypeId<LocalBounds>()] = "World Bounds";
-
-        s_Names[ECS::GetComponentTypeId<AudioEmitter>()] = "Audio Emitter";
-        s_Names[ECS::GetComponentTypeId<AudioListener>()] = "Audio Listener";
-
-        s_Names[ECS::GetComponentTypeId<Animator>()] = "Animator";
-        s_Names[ECS::GetComponentTypeId<ValueCurve>()] = "Value Curve";
-        s_Names[ECS::GetComponentTypeId<AnimatedNodeRef>()] = "Animated Node";
-
-        s_Names[ECS::GetComponentTypeId<SceneEntityTag>()] = "Scene Entity Tag";
-        s_Names[ECS::GetComponentTypeId<PrefabInstance>()] = "Prefab Instance";
-        s_Names[ECS::GetComponentTypeId<SceneSubsceneInstance>()] = "Scene Subscene Instance";
-
-        s_Names[ECS::GetComponentTypeId<Components::Terrain>()] = "Terrain";
-        s_Names[ECS::GetComponentTypeId<Components::TerrainPlanetRelief>()] = "Planet Relief";
-        s_Names[ECS::GetComponentTypeId<Components::TerrainGrass>()] = "Terrain Grass";
-        s_Names[ECS::GetComponentTypeId<Components::TerrainModifierVolume>()] = "Terrain Modifier Volume";
-        // Terrain effect names come from the canonical effect list in TerrainECS
-        // (ComponentTitle consults it before this map), as post-process effect
-        // names come from the PostProcessEffectRegistry.
-        s_Names[ECS::GetComponentTypeId<Components::SplineComponent>()] = "Spline";
-        s_Names[ECS::GetComponentTypeId<Components::VideoTextureComponent>()] = "Video Texture";
-
-        s_Names[ECS::GetComponentTypeId<Editor::MeshRendererMaterialInspectorSection>()] = "Material";
+        s.erase(0, n);
     }
-    return s_Names;
 }
 
+static std::string PrettifyTypeName(const char* typeName)
+{
+    std::string s = typeName ? std::string(typeName) : std::string();
+
+#if defined(__GNUG__)
+    int status = 0;
+    if (char* demangled = abi::__cxa_demangle(s.c_str(), nullptr, nullptr, &status))
+    {
+        if (status == 0)
+            s = demangled;
+        std::free(demangled);
+    }
+#endif
+
+    // MSVC often prefixes with "struct " / "class ".
+    StripLeading(s, "struct ");
+    StripLeading(s, "class ");
+
+    // Strip common namespaces for UI display.
+    StripLeading(s, "GameEngine::Components::");
+    StripLeading(s, "GameEngine::ECS::");
+    StripLeading(s, "GameEngine::");
+    StripLeading(s, "Components::");
+    StripLeading(s, "ECS::");
+
+    std::string pretty;
+    pretty.reserve(s.size() + 8);
+    for (size_t i = 0; i < s.size(); ++i)
+    {
+        const unsigned char ch = static_cast<unsigned char>(s[i]);
+        if (i > 0 && std::isupper(ch))
+        {
+            const unsigned char prev = static_cast<unsigned char>(s[i - 1]);
+            const bool prevIsLowerOrDigit = std::islower(prev) || std::isdigit(prev);
+            const bool nextIsLower = (i + 1 < s.size()) &&
+                                     std::islower(static_cast<unsigned char>(s[i + 1]));
+            if (prevIsLowerOrDigit || nextIsLower)
+                pretty.push_back(' ');
+        }
+        pretty.push_back(s[i]);
+    }
+
+    return pretty.empty() ? std::string("Component") : pretty;
+}
+
+// Add Component picker category a component registers in its editor traits.
 static std::string ComponentCategory(ECS::ComponentTypeId typeId)
 {
     if (Editor::EditorComponentTraits traits;
-        Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits) && !traits.InspectorCategory.empty())
-        return traits.InspectorCategory;
-    static const ECS::ComponentTypeId transformId = ECS::GetComponentTypeId<Transform>();
-
-    static const ECS::ComponentTypeId meshRendererId = ECS::GetComponentTypeId<MeshRenderer>();
-    static const ECS::ComponentTypeId skinnedMeshRendererId = ECS::GetComponentTypeId<SkinnedMeshRenderer>();
-    static const ECS::ComponentTypeId lodGroupId = ECS::GetComponentTypeId<LODGroup>();
-    static const ECS::ComponentTypeId skyEnvId = ECS::GetComponentTypeId<SkyEnvironment>();
-    static const ECS::ComponentTypeId skyboxId = ECS::GetComponentTypeId<Skybox>();
-    static const ECS::ComponentTypeId reflectionProbeId = ECS::GetComponentTypeId<Components::ReflectionProbe>();
-    static const ECS::ComponentTypeId postProcessId = ECS::GetComponentTypeId<PostProcessVolume>();
-    static const ECS::ComponentTypeId windVolumeId = ECS::GetComponentTypeId<Components::WindVolume>();
-    static const ECS::ComponentTypeId videoTextureId = ECS::GetComponentTypeId<Components::VideoTextureComponent>();
-
-
-    static const ECS::ComponentTypeId physicsBodyId = ECS::GetComponentTypeId<PhysicsBody>();
-    static const ECS::ComponentTypeId physicsColliderId = ECS::GetComponentTypeId<PhysicsCollider>();
-    static const ECS::ComponentTypeId physicsColliderOwnerId = ECS::GetComponentTypeId<PhysicsColliderOwner>();
-    static const ECS::ComponentTypeId physicsWorldSettingsId = ECS::GetComponentTypeId<PhysicsWorldSettingsComponent>();
-    static const ECS::ComponentTypeId boxColliderId = ECS::GetComponentTypeId<BoxColliderShape>();
-    static const ECS::ComponentTypeId sphereColliderId = ECS::GetComponentTypeId<SphereColliderShape>();
-    static const ECS::ComponentTypeId planeColliderId = ECS::GetComponentTypeId<PlaneColliderShape>();
-    static const ECS::ComponentTypeId capsuleColliderId = ECS::GetComponentTypeId<CapsuleColliderShape>();
-
-    static const ECS::ComponentTypeId audioEmitterId = ECS::GetComponentTypeId<AudioEmitter>();
-    static const ECS::ComponentTypeId audioListenerId = ECS::GetComponentTypeId<AudioListener>();
-
-    static const ECS::ComponentTypeId animatorId = ECS::GetComponentTypeId<Animator>();
-    static const ECS::ComponentTypeId valueCurveId = ECS::GetComponentTypeId<ValueCurve>();
-    static const ECS::ComponentTypeId animatedNodeRefId = ECS::GetComponentTypeId<AnimatedNodeRef>();
-    static const ECS::ComponentTypeId animatedSpriteId = ECS::GetComponentTypeId<AnimatedSprite2D>();
-    static const ECS::ComponentTypeId humanoidRetargeterId = ECS::GetComponentTypeId<HumanoidRetargeterComponent>();
-
-    static const ECS::ComponentTypeId terrainId = ECS::GetComponentTypeId<Components::Terrain>();
-    static const ECS::ComponentTypeId terrainGrassId = ECS::GetComponentTypeId<Components::TerrainGrass>();
-    static const ECS::ComponentTypeId terrainModifierVolumeId =
-        ECS::GetComponentTypeId<Components::TerrainModifierVolume>();
-    static const ECS::ComponentTypeId splineId = ECS::GetComponentTypeId<Components::SplineComponent>();
-
-    static const ECS::ComponentTypeId measureId = ECS::GetComponentTypeId<MeasureComponent>();
-
-    if (typeId == transformId)
-        return "Transform";
-
-    if (typeId == meshRendererId || typeId == skinnedMeshRendererId || typeId == lodGroupId ||
-        typeId == skyEnvId || typeId == skyboxId ||
-        typeId == reflectionProbeId || typeId == postProcessId || typeId == windVolumeId || typeId == videoTextureId)
-        return "Rendering";
-
-    // Post-process effects don't reach the generic component picker (they add
-    // through the Volume inspector), so they need no category here.
-
-    if (typeId == physicsBodyId || typeId == physicsColliderId || typeId == physicsColliderOwnerId ||
-        typeId == physicsWorldSettingsId || typeId == boxColliderId || typeId == sphereColliderId ||
-        typeId == planeColliderId || typeId == capsuleColliderId)
-        return "Physics";
-
-    if (typeId == audioEmitterId || typeId == audioListenerId)
-        return "Audio";
-
-    if (typeId == animatorId || typeId == valueCurveId || typeId == animatedNodeRefId ||
-        typeId == animatedSpriteId || typeId == humanoidRetargeterId)
-        return "Animation";
-
-    // Terrain EFFECTS are absent: they add through the volume inspector's Add
-    // Effect picker rather than the Add Component one, so they reach no category.
-    if (typeId == terrainId || typeId == terrainGrassId || typeId == terrainModifierVolumeId)
-        return "Terrain";
-
-    if (typeId == splineId)
-        return "Spline";
-
-    if (typeId == measureId)
-        return "Tools";
-
+        Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits) && !traits.Category.empty())
+        return traits.Category;
     return "Component";
 }
 
 static bool ShouldHideComponent(ECS::ComponentTypeId typeId)
 {
-    if (Editor::EditorComponentTraits traits;
-        Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits) && traits.HideInInspector)
-        return true;
-    static const ECS::ComponentTypeId meshGpuId = ECS::GetComponentTypeId<MeshGPUData>();
-    static const ECS::ComponentTypeId nameId = ECS::GetComponentTypeId<Name>();
-    static const ECS::ComponentTypeId parentId = ECS::GetComponentTypeId<Parent>();
-    static const ECS::ComponentTypeId sceneEntityTagId = ECS::GetComponentTypeId<SceneEntityTag>();
-    static const ECS::ComponentTypeId localBoundsId = ECS::GetComponentTypeId<LocalBounds>();
-    static const ECS::ComponentTypeId heightFieldColliderId = ECS::GetComponentTypeId<HeightFieldColliderShape>();
-    static const ECS::ComponentTypeId worldTransformId = ECS::GetComponentTypeId<Components::WorldTransform>();
-    static const ECS::ComponentTypeId hierarchyOrderId = ECS::GetComponentTypeId<Components::HierarchyOrder>();
-    static const ECS::ComponentTypeId animatorRefId = ECS::GetComponentTypeId<AnimatorRef>();
-    static const ECS::ComponentTypeId skeletonRefId = ECS::GetComponentTypeId<SkeletonRef>();
-    static const ECS::ComponentTypeId runtimeOnlyId = ECS::GetComponentTypeId<RuntimeOnlyEntity>();
-
     return ECS::ComponentRegistry::IsEnableStateTag(typeId) || // shown as the entity toggle and the section dots
-           typeId == meshGpuId ||
-           typeId == nameId ||                // Name is shown and edited in the header; no separate section
-           typeId == parentId ||              // Hierarchy relationship; managed by the Hierarchy panel, no inspector UI
-           typeId == sceneEntityTagId ||      // Serialization ID; assigned automatically by SceneIO, not user-editable
-           typeId == localBoundsId ||         // Derived from mesh geometry; no user-editable state
-           typeId == heightFieldColliderId || // Auto-wired from TerrainService; all fields system-managed
-           typeId == worldTransformId ||      // System-computed from Transform + hierarchy; read-only, no section
-           typeId == hierarchyOrderId ||      // Editor sibling order; maintained by hierarchy reparent/reorder
-           typeId == animatorRefId ||         // Internal runtime playback state; exposed via Animator inspector
-           typeId == skeletonRefId ||         // Internal skeleton handle; not user-editable
-           typeId == runtimeOnlyId;           // Generator-output marker; surfaced as the notice above the sections
+           Editor::EditorComponentTraitsRegistry::Get().IsHiddenInInspector(typeId);
+}
+
+// Every component type on a live entity.
+static std::vector<ECS::ComponentTypeId> EntityComponentTypeIds(ECS::World& world, ECS::EntityHandle entity)
+{
+    if (ECS::Archetype* archetype = world.GetEntityArchetype(entity))
+        return archetype->GetSignature().GetComponents();
+    return {};
 }
 
 // The entity's sorted component signature restricted to types that render a section.
@@ -818,136 +616,34 @@ static bool ShouldHideComponent(ECS::ComponentTypeId typeId)
 static std::vector<ECS::ComponentTypeId> CollectVisibleComponentSignature(ECS::World* world,
                                                                           ECS::EntityHandle entity)
 {
-    std::vector<ECS::ComponentTypeId> ids;
     if (!world || !entity.IsValid() || !world->IsValid(entity))
-        return ids;
-    if (ECS::Archetype* a = world->GetEntityArchetype(entity))
-    {
-        ids = a->GetSignature().GetComponents();
-        ids.erase(std::remove_if(ids.begin(), ids.end(), ShouldHideComponent), ids.end());
-        std::sort(ids.begin(), ids.end());
-    }
+        return {};
+    std::vector<ECS::ComponentTypeId> ids = EntityComponentTypeIds(*world, entity);
+    ids.erase(std::remove_if(ids.begin(), ids.end(), ShouldHideComponent), ids.end());
+    std::sort(ids.begin(), ids.end());
     return ids;
 }
 
 static int SortKeyForComponent(ECS::ComponentTypeId typeId)
 {
-    // Stable, human-friendly ordering: core -> rendering -> everything else.
-    static const ECS::ComponentTypeId transformId = ECS::GetComponentTypeId<Transform>();
-    static const ECS::ComponentTypeId nameId = ECS::GetComponentTypeId<Name>();
-    static const ECS::ComponentTypeId parentId = ECS::GetComponentTypeId<Parent>();
-
-    static const ECS::ComponentTypeId terrainId = ECS::GetComponentTypeId<Components::Terrain>();
-    static const ECS::ComponentTypeId terrainReliefId = ECS::GetComponentTypeId<Components::TerrainPlanetRelief>();
-    static const ECS::ComponentTypeId terrainGrassId = ECS::GetComponentTypeId<Components::TerrainGrass>();
-    static const ECS::ComponentTypeId physicsBodyId = ECS::GetComponentTypeId<PhysicsBody>();
-    static const ECS::ComponentTypeId physicsColliderId = ECS::GetComponentTypeId<PhysicsCollider>();
-    static const ECS::ComponentTypeId physicsColliderOwnerId = ECS::GetComponentTypeId<PhysicsColliderOwner>();
-    static const ECS::ComponentTypeId boxColliderId = ECS::GetComponentTypeId<BoxColliderShape>();
-    static const ECS::ComponentTypeId sphereColliderId = ECS::GetComponentTypeId<SphereColliderShape>();
-    static const ECS::ComponentTypeId planeColliderId = ECS::GetComponentTypeId<PlaneColliderShape>();
-    static const ECS::ComponentTypeId capsuleColliderId = ECS::GetComponentTypeId<CapsuleColliderShape>();
-
-    static const ECS::ComponentTypeId meshRendererId = ECS::GetComponentTypeId<MeshRenderer>();
-    static const ECS::ComponentTypeId meshMaterialInspectorSectionId =
-        ECS::GetComponentTypeId<Editor::MeshRendererMaterialInspectorSection>();
-    static const ECS::ComponentTypeId skinnedMeshRendererId = ECS::GetComponentTypeId<SkinnedMeshRenderer>();
-    static const ECS::ComponentTypeId animatorId = ECS::GetComponentTypeId<Animator>();
-    static const ECS::ComponentTypeId valueCurveId = ECS::GetComponentTypeId<ValueCurve>();
-    static const ECS::ComponentTypeId animatedNodeRefId = ECS::GetComponentTypeId<AnimatedNodeRef>();
-    static const ECS::ComponentTypeId cameraId = ECS::GetComponentTypeId<Camera>();
-    static const ECS::ComponentTypeId lightId = ECS::GetComponentTypeId<Light>();
-    static const ECS::ComponentTypeId reflectionProbeId = ECS::GetComponentTypeId<Components::ReflectionProbe>();
-
-    if (Editor::EditorComponentTraits traits;
-        Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits) && traits.LeadsInspector)
-        return -1;
-    if (typeId == transformId)
-        return 0;
-    if (typeId == nameId)
-        return 10;
-    if (typeId == parentId)
-        return 20;
-
-    // Mesh/skinned renderer sit directly under Transform for primitive and
-    // model entities. Terrain (mutually exclusive with MeshRenderer on the
-    // same entity) shares the same slot, with physics body/collider family
-    // immediately below.
-    if (typeId == meshRendererId)
-        return 30;
-    if (typeId == meshMaterialInspectorSectionId)
-        return 31;
-    if (typeId == skinnedMeshRendererId)
-        return 32;
-    if (typeId == animatorId)
-        return 33;
-    if (typeId == valueCurveId)
-        return 34;
-    if (typeId == animatedNodeRefId)
-        return 35;
-    if (typeId == terrainId)
-        return 37;
-    if (typeId == terrainReliefId)
-        return 38;
-    if (typeId == terrainGrassId)
-        return 39;
-
-    if (typeId == physicsBodyId)
-        return 40;
-    if (typeId == physicsColliderId)
-        return 41;
-    if (typeId == physicsColliderOwnerId)
-        return 42;
-    if (typeId == boxColliderId)
-        return 43;
-    if (typeId == sphereColliderId)
-        return 44;
-    if (typeId == planeColliderId)
-        return 45;
-    if (typeId == capsuleColliderId)
-        return 46;
-
-    // A modifier volume sits above the effects that stack inside it, so the
-    // section order the user drags is already the stack order. Effects take
-    // consecutive keys in canonical-list order, derived rather than restated, so
-    // one added to ModifierEffectComponents sorts among its siblings with no
-    // edit here.
-    constexpr int kModifierVolumeSortKey = 50;
-    constexpr int kFirstTerrainEffectSortKey = kModifierVolumeSortKey + 1;
-    constexpr int kCameraSortKey = 120;
-    static_assert(kFirstTerrainEffectSortKey
-                          + static_cast<int>(TerrainECS::kTerrainEffectTypeCount)
-                      <= kCameraSortKey,
-                  "the terrain effect band grew into the camera's section slot: move the keys "
-                  "below apart before adding another effect.");
-
-    if (typeId == ECS::GetComponentTypeId<Components::TerrainModifierVolume>())
-        return kModifierVolumeSortKey;
-    int effectSortKey = kFirstTerrainEffectSortKey;
-    for (const TerrainECS::TerrainEffectTypeInfo& info : TerrainECS::TerrainEffectTypes())
-    {
-        if (info.TypeId == typeId)
-            return effectSortKey;
-        ++effectSortKey;
-    }
-
-    if (typeId == cameraId)
-        return kCameraSortKey;
-    if (typeId == lightId)
-        return 130;
-    if (typeId == reflectionProbeId)
-        return 140;
-
-    return 1000;
+    Editor::EditorComponentTraits traits;
+    if (!Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits))
+        return Editor::kDefaultInspectorSortKey;
+    return traits.LeadsInspector ? Editor::kLeadingInspectorSortKey : traits.SortKey;
 }
 
 // --- Component clipboard (copy/paste an entire component as text) ----------
 
 static std::string ToHex(const std::vector<uint8_t>& bytes)
 {
+    static const char kHex[] = "0123456789abcdef";
     std::string s;
     s.reserve(bytes.size() * 2);
-    AppendHexBytes(s, bytes);
+    for (uint8_t b : bytes)
+    {
+        s.push_back(kHex[(b >> 4) & 0xF]);
+        s.push_back(kHex[b & 0xF]);
+    }
     return s;
 }
 
@@ -1057,25 +753,13 @@ static bool DecodeComponentsClipboard(const std::string& clip,
 
 static bool TryFindComponentTypeIdByName(const std::string& name, ECS::ComponentTypeId& out)
 {
-    const auto& displayNames = GetComponentDisplayNames();
-    for (const auto& kv : displayNames)
+    // Registered display names, built-in and package alike (clipboard paste and
+    // preset resolution round-trip them, e.g. "Tree Generator").
+    if (const ECS::ComponentTypeId traitsId = Editor::EditorComponentTraitsRegistry::Get().FindByDisplayName(name);
+        traitsId != ECS::ComponentTypeId{})
     {
-        if (kv.second == name)
-        {
-            out = kv.first;
-            return true;
-        }
-    }
-    // Plugin-registered display names (clipboard paste / preset resolution
-    // must round-trip package components, e.g. "Tree Generator").
-    const auto registered = Editor::EditorComponentTraitsRegistry::Get().Snapshot();
-    for (const auto& [typeId, traits] : *registered)
-    {
-        if (traits.DisplayName == name)
-        {
-            out = typeId;
-            return true;
-        }
+        out = traitsId;
+        return true;
     }
     // Post-process effect display names live in the effect registry.
     ECS::ComponentTypeId effectId{};
@@ -1095,9 +779,8 @@ static bool TryFindComponentTypeIdByName(const std::string& name, ECS::Component
 
 static std::string ComponentTitle(ECS::ComponentTypeId typeId)
 {
-    // 0. Plugin-registered traits (editor package modules) — checked live, not
-    //    folded into the static map: modules register at project open, after
-    //    the map's one-time build.
+    // 0. Registered traits, built-in and package alike — checked live:
+    //    modules register at project open.
     if (Editor::EditorComponentTraits traits;
         Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits) && !traits.DisplayName.empty())
         return traits.DisplayName;
@@ -1105,38 +788,33 @@ static std::string ComponentTitle(ECS::ComponentTypeId typeId)
     if (const auto* effect = Rendering::PostProcessEffectRegistry::Find(typeId);
         effect && !effect->DisplayName.empty())
         return std::string(effect->DisplayName);
-    // 0c. Terrain effects carry theirs in the canonical effect list, so the
-    //     section header and the Add Effect picker cannot drift apart.
-    if (const auto* terrainEffect = TerrainECS::FindTerrainEffectType(typeId))
-        return std::string(terrainEffect->Title);
-    // 1. The built-in titles (LocalBounds reads "World Bounds"). An entry that equals the
-    //    derived title stays: it is the type's clipboard and saved-settings key.
-    const auto& displayNames = GetComponentDisplayNames();
-    auto it = displayNames.find(typeId);
-    if (it != displayNames.end())
-        return it->second;
-    // 2. Reflected components carry a normalized, cross-compiler-stable name;
+    // 1. Reflected components carry a normalized, cross-compiler-stable name;
     //    derive the title from it so no per-component map entry is needed.
     if (const std::string_view canonical = ECS::ComponentFieldRegistry::GetCanonicalName(typeId); !canonical.empty())
-        return Editor::ComponentTypeNameAsWords(canonical);
-    // 3. Fallback for a component with no reflected field table: the handler's
+        return PrettifyTypeName(std::string(canonical).c_str());
+    // 2. Fallback for a component with no reflected field table: the handler's
     //    canonical type name, which is the same normalized spelling on every
     //    compiler.
     if (ECS::IComponentHandler* handler = ECS::ComponentRegistry::GetHandler(typeId))
-        return Editor::ComponentTypeNameAsWords(handler->GetTypeName());
+        return PrettifyTypeName(handler->GetTypeName());
     return "Component " + std::to_string(static_cast<std::size_t>(typeId));
 }
 
-// Inspector header context menu — Transform copy/paste wording reflects local-space TRS.
+// " (<note>)" for a component that registers a ClipboardValuesNote, else empty.
+static std::string ClipboardValuesNoteSuffix(ECS::ComponentTypeId typeId)
+{
+    Editor::EditorComponentTraits traits;
+    if (!Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits) || traits.ClipboardValuesNote.empty())
+        return {};
+    return " (" + traits.ClipboardValuesNote + ")";
+}
+
 static std::string BuildInspectorCopyMenuLabel(const std::vector<ECS::ComponentTypeId>& selection)
 {
-    static const ECS::ComponentTypeId transformId = ECS::GetComponentTypeId<Transform>();
     if (selection.empty())
         return "Copy Component";
-    if (selection.size() == 1 && selection[0] == transformId)
-        return "Copy Transform (local position, rotation & scale)";
     if (selection.size() == 1)
-        return "Copy " + ComponentTitle(selection[0]);
+        return "Copy " + ComponentTitle(selection[0]) + ClipboardValuesNoteSuffix(selection[0]);
     return "Copy " + std::to_string(selection.size()) + " Components";
 }
 
@@ -1147,87 +825,21 @@ static std::string BuildInspectorPasteMenuLabel(bool multiClipValid,
                                                 bool entityHasClipType,
                                                 ECS::ComponentTypeId clipTypeId)
 {
-    static const ECS::ComponentTypeId transformId = ECS::GetComponentTypeId<Transform>();
-
     if (multiClipValid && multiClipEntryCount > 0)
         return "Paste " + std::to_string(multiClipEntryCount) + " component values";
     if (!clipValid)
         return "Paste Component";
-
-    const bool clipboardIsTransform = (clipTypeId == transformId);
-
-    if (entityHasClipType && clipboardIsTransform)
-        return "Paste Transform component values (local position, rotation & scale)";
     if (entityHasClipType)
-        return "Paste " + clipTypeName + " component values";
-    if (clipboardIsTransform)
-        return "Paste Transform as New Component";
+        return "Paste " + clipTypeName + " component values" + ClipboardValuesNoteSuffix(clipTypeId);
     return "Paste " + clipTypeName + " as New Component";
 }
 
-static const char* ComponentTooltip(ECS::ComponentTypeId typeId)
+static std::string ComponentTooltip(ECS::ComponentTypeId typeId)
 {
-    static const ECS::ComponentTypeId transformId = ECS::GetComponentTypeId<Transform>();
-    static const ECS::ComponentTypeId meshRendererId = ECS::GetComponentTypeId<MeshRenderer>();
-    static const ECS::ComponentTypeId meshMaterialInspectorSectionId =
-        ECS::GetComponentTypeId<Editor::MeshRendererMaterialInspectorSection>();
-    static const ECS::ComponentTypeId skinnedMeshId = ECS::GetComponentTypeId<SkinnedMeshRenderer>();
-    static const ECS::ComponentTypeId cameraId = ECS::GetComponentTypeId<Camera>();
-    static const ECS::ComponentTypeId lightId = ECS::GetComponentTypeId<Light>();
-    static const ECS::ComponentTypeId physicsBodyId = ECS::GetComponentTypeId<PhysicsBody>();
-    static const ECS::ComponentTypeId physicsColliderId = ECS::GetComponentTypeId<PhysicsCollider>();
-    static const ECS::ComponentTypeId boxColliderId = ECS::GetComponentTypeId<BoxColliderShape>();
-    static const ECS::ComponentTypeId sphereColliderId = ECS::GetComponentTypeId<SphereColliderShape>();
-    static const ECS::ComponentTypeId planeColliderId = ECS::GetComponentTypeId<PlaneColliderShape>();
-    static const ECS::ComponentTypeId capsuleColliderId = ECS::GetComponentTypeId<CapsuleColliderShape>();
-    static const ECS::ComponentTypeId audioEmitterId = ECS::GetComponentTypeId<AudioEmitter>();
-    static const ECS::ComponentTypeId audioListenerId = ECS::GetComponentTypeId<AudioListener>();
-    static const ECS::ComponentTypeId animatorId = ECS::GetComponentTypeId<Animator>();
-    static const ECS::ComponentTypeId valueCurveId = ECS::GetComponentTypeId<ValueCurve>();
-    static const ECS::ComponentTypeId skyEnvId = ECS::GetComponentTypeId<SkyEnvironment>();
-    static const ECS::ComponentTypeId skyboxId = ECS::GetComponentTypeId<Skybox>();
-    static const ECS::ComponentTypeId postProcessId = ECS::GetComponentTypeId<PostProcessVolume>();
-
-    if (typeId == transformId)
-        return "Position, rotation, and scale in local space";
-    if (typeId == meshRendererId)
-        return "Renders a static mesh with a material";
-    if (typeId == meshMaterialInspectorSectionId)
-        return "Material slots and shader properties for this mesh renderer";
-    if (typeId == skinnedMeshId)
-        return "Renders a mesh deformed by a skeleton for animation";
-    if (typeId == cameraId)
-        return "Defines a view frustum used to render the scene";
-    if (typeId == lightId)
-        return "Emits light into the scene (directional, point, spot, or ambient)";
-    if (typeId == physicsBodyId)
-        return "Simulated rigid body with mass, damping, and collision response";
-    if (typeId == physicsColliderId)
-        return "Collision shape attached to a physics body";
-    if (typeId == boxColliderId)
-        return "Axis-aligned box collision shape";
-    if (typeId == sphereColliderId)
-        return "Sphere collision shape";
-    if (typeId == planeColliderId)
-        return "Infinite plane collision shape";
-    if (typeId == capsuleColliderId)
-        return "Capsule (cylinder + hemispherical caps) collision shape";
-    if (typeId == audioEmitterId)
-        return "Plays audio clips from this entity's position";
-    if (typeId == audioListenerId)
-        return "Marks this entity as the audio listener (usually the camera)";
-    if (typeId == animatorId)
-        return "Controls playback of skeletal animations on a mesh";
-    if (typeId == valueCurveId)
-        return "Tween curve with easing, duration, and looping behavior";
-    if (typeId == skyEnvId)
-        return "Procedural sky with atmospheric scattering and stars";
-    if (typeId == skyboxId)
-        return "HDRI skybox rendered as the scene background";
-    if (typeId == postProcessId)
-        return "Post-processing volume for spatial blending and core overrides";
-    // Post-process effect tooltips come from the effect registry (Description).
-    return nullptr;
+    Editor::EditorComponentTraits traits;
+    if (!Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits))
+        return {};
+    return traits.Tooltip;
 }
 
 static std::string_view RequiredPackageForComponent(ECS::ComponentTypeId typeId)
@@ -1237,26 +849,34 @@ static std::string_view RequiredPackageForComponent(ECS::ComponentTypeId typeId)
     return {};
 }
 
+// The CSS class that controls a component's inspector header icon, from its
+// registered traits. `world` may be null (the Add Component picker), which
+// skips the per-entity resolver.
+static std::string ComponentIconClass(ECS::World* world, ECS::EntityHandle entity, ECS::ComponentTypeId typeId)
+{
+    constexpr const char* kDefaultIconClass = "inspector-section-icon-default";
+    Editor::EditorComponentTraits traits;
+    if (!Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits))
+        return kDefaultIconClass;
+    if (world && world->IsValid(entity) && traits.InspectorIconClassForEntity)
+    {
+        std::string entityIconClass = traits.InspectorIconClassForEntity(*world, entity);
+        if (!entityIconClass.empty())
+            return entityIconClass;
+    }
+    return traits.InspectorIconClass.empty() ? std::string(kDefaultIconClass) : traits.InspectorIconClass;
+}
+
 static bool IsRemovableComponent(ECS::ComponentTypeId typeId)
 {
-    // Preserve core authoring invariants: most entities assume Transform + Name.
-    static const ECS::ComponentTypeId transformId = ECS::GetComponentTypeId<Transform>();
-    static const ECS::ComponentTypeId nameId = ECS::GetComponentTypeId<Name>();
-    static const ECS::ComponentTypeId meshMaterialInspectorSectionId =
-        ECS::GetComponentTypeId<Editor::MeshRendererMaterialInspectorSection>();
-    if (typeId == transformId || typeId == nameId || typeId == meshMaterialInspectorSectionId)
-    {
-        return false;
-    }
-    return true;
+    Editor::EditorComponentTraits traits;
+    return !Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits) || traits.Removable;
 }
 
 static bool ShouldCollapseByDefault(ECS::ComponentTypeId typeId)
 {
-    static const ECS::ComponentTypeId skeletonRefId = ECS::GetComponentTypeId<SkeletonRef>();
-    static const ECS::ComponentTypeId animatorRefId = ECS::GetComponentTypeId<AnimatorRef>();
-    static const ECS::ComponentTypeId animatedNodeRefId = ECS::GetComponentTypeId<AnimatedNodeRef>();
-    return typeId == skeletonRefId || typeId == animatorRefId || typeId == animatedNodeRefId;
+    Editor::EditorComponentTraits traits;
+    return Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits) && traits.CollapsedByDefault;
 }
 
 static void NotifyComponentChanged(Editor::EditorChangeNotifications* notifications,
@@ -1411,119 +1031,18 @@ class AddPresetComponentsCommand final : public Editor::IEditorCommand
     const char* GetName() const override { return m_Name.c_str(); }
     void Do() override { Redo(); }
 
+    // Removes only what Redo added, newest first.
     void Undo() override
     {
         if (!m_World || !m_Entity.IsValid() || !m_World->IsValid(m_Entity))
             return;
 
-        // Remove only what we added in Redo().
-        if (m_AddedCamera)
+        for (auto it = m_AddedTypeIds.rbegin(); it != m_AddedTypeIds.rend(); ++it)
         {
-            m_World->RemoveComponentImmediate<Components::Camera>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::Camera>());
+            if (m_World->RemoveComponentByTypeIdImmediate(m_Entity, *it))
+                NotifyComponentChanged(m_Notifications, m_World, m_Entity, *it);
         }
-        if (m_AddedLight)
-        {
-            m_World->RemoveComponentImmediate<Components::Light>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::Light>());
-        }
-        if (m_AddedSkyEnvironment)
-        {
-            m_World->RemoveComponentImmediate<Components::SkyEnvironment>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::SkyEnvironment>());
-        }
-        if (m_AddedSkybox)
-        {
-            m_World->RemoveComponentImmediate<Components::Skybox>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::Skybox>());
-        }
-        if (m_AddedPhysicsBody)
-        {
-            m_World->RemoveComponentImmediate<Components::PhysicsBody>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::PhysicsBody>());
-        }
-        if (m_AddedCharacterController)
-        {
-            m_World->RemoveComponentImmediate<Components::CharacterController>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::CharacterController>());
-        }
-        if (m_AddedBoxShape)
-        {
-            m_World->RemoveComponentImmediate<Components::BoxColliderShape>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::BoxColliderShape>());
-        }
-        if (m_AddedSphereShape)
-        {
-            m_World->RemoveComponentImmediate<Components::SphereColliderShape>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::SphereColliderShape>());
-        }
-        if (m_AddedPlaneShape)
-        {
-            m_World->RemoveComponentImmediate<Components::PlaneColliderShape>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::PlaneColliderShape>());
-        }
-        // After the shapes: a collider shape requires the collider.
-        if (m_AddedPhysicsCollider)
-        {
-            m_World->RemoveComponentImmediate<Components::PhysicsCollider>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::PhysicsCollider>());
-        }
-        if (m_AddedAudioEmitter)
-        {
-            m_World->RemoveComponentImmediate<Components::AudioEmitter>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::AudioEmitter>());
-        }
-        if (m_AddedAudioListener)
-        {
-            m_World->RemoveComponentImmediate<Components::AudioListener>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::AudioListener>());
-        }
-        if (m_AddedPostProcessVolume)
-        {
-            m_World->RemoveComponentImmediate<Components::PostProcessVolume>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::PostProcessVolume>());
-        }
-        if (m_AddedWindVolume)
-        {
-            m_World->RemoveComponentImmediate<Components::WindVolume>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::WindVolume>());
-        }
-        if (m_AddedParticleEmitter)
-        {
-            m_World->RemoveComponentImmediate<Components::ParticleEmitter3D>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::ParticleEmitter3D>());
-        }
-        if (m_AddedParticleCollisionEvents)
-        {
-            m_World->RemoveComponentImmediate<Components::ParticleCollisionEventsBuffer>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::ParticleCollisionEventsBuffer>());
-        }
-        if (m_AddedTerrainEffectTypeId != 0
-            && m_World->RemoveComponentByTypeIdImmediate(m_Entity, m_AddedTerrainEffectTypeId))
-        {
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, m_AddedTerrainEffectTypeId);
-        }
-        if (m_AddedTerrainModifierVolume)
-        {
-            m_World->RemoveComponentImmediate<Components::TerrainModifierVolume>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity,
-                                   ECS::GetComponentTypeId<Components::TerrainModifierVolume>());
-        }
-        if (m_AddedSplineComponent)
-        {
-            m_World->RemoveComponentImmediate<Components::SplineComponent>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::SplineComponent>());
-        }
-        if (m_AddedValueCurve)
-        {
-            m_World->RemoveComponentImmediate<Components::ValueCurve>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::ValueCurve>());
-        }
-        if (m_AddedVideoTexture)
-        {
-            m_World->RemoveComponentImmediate<Components::VideoTextureComponent>(m_Entity);
-            NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<Components::VideoTextureComponent>());
-        }
+        m_AddedTypeIds.clear();
     }
 
     void Redo() override
@@ -1531,224 +1050,19 @@ class AddPresetComponentsCommand final : public Editor::IEditorCommand
         if (!m_World || !m_Entity.IsValid() || !m_World->IsValid(m_Entity))
             return;
 
-        // Reset "added" flags on redo so repeated redo/undo behaves correctly.
-        m_AddedCamera = false;
-        m_AddedLight = false;
-        m_AddedSkyEnvironment = false;
-        m_AddedSkybox = false;
-        m_AddedPhysicsBody = false;
-        m_AddedCharacterController = false;
-        m_AddedPhysicsCollider = false;
-        m_AddedBoxShape = false;
-        m_AddedSphereShape = false;
-        m_AddedPlaneShape = false;
-        m_AddedAudioEmitter = false;
-        m_AddedAudioListener = false;
-        m_AddedPostProcessVolume = false;
-        m_AddedWindVolume = false;
-        m_AddedParticleEmitter = false;
-        m_AddedParticleCollisionEvents = false;
-        m_AddedTerrainModifierVolume = false;
-        m_AddedTerrainEffectTypeId = 0;
-        m_AddedSplineComponent = false;
-        m_AddedValueCurve = false;
-        m_AddedVideoTexture = false;
-
-        auto addIfMissing = [&](auto tag, auto value)
-        {
-            using T = typename decltype(tag)::type;
-            if (!m_World->HasComponent<T>(m_Entity))
-            {
-                m_World->AddComponentImmediate<T>(m_Entity, value);
-                NotifyComponentChanged(m_Notifications, m_World, m_Entity, ECS::GetComponentTypeId<T>());
-                return true;
-            }
-            return false;
-        };
-
-        // Terrain area presets are answered by the table that pairs a preset
-        // with its effect, never by a case label: a sixth canonical effect
-        // reaches this command from its table row alone.
-        if (const Editor::TerrainAreaPreset* area = Editor::FindTerrainAreaPreset(m_Preset))
-        {
-            const Editor::TerrainAreaPresetAdditions added =
-                Editor::ApplyTerrainAreaPreset(*m_World, m_Entity, *area);
-            m_AddedTerrainModifierVolume = added.AddedVolume;
-            m_AddedTerrainEffectTypeId = added.AddedEffectTypeId;
-            m_AddedSplineComponent = added.AddedSpline;
-            if (added.AddedSpline)
-            {
-                NotifyComponentChanged(m_Notifications, m_World, m_Entity,
-                                       ECS::GetComponentTypeId<Components::SplineComponent>());
-            }
-            if (added.AddedVolume)
-            {
-                NotifyComponentChanged(m_Notifications, m_World, m_Entity,
-                                       ECS::GetComponentTypeId<Components::TerrainModifierVolume>());
-            }
-            if (added.AddedEffectTypeId != 0)
-                NotifyComponentChanged(m_Notifications, m_World, m_Entity, added.AddedEffectTypeId);
-            return;
-        }
-
-        switch (m_Preset)
-        {
-        case ComponentPreset::TerrainFlattenArea:
-        case ComponentPreset::TerrainHeightOffsetArea:
-        case ComponentPreset::TerrainNoiseArea:
-        case ComponentPreset::TerrainStampArea:
-        case ComponentPreset::TerrainPaintArea:
-        case ComponentPreset::TerrainRulesArea:
-        case ComponentPreset::TerrainGroundClaimArea:
-        case ComponentPreset::TerrainGrassArea:
-        case ComponentPreset::TerrainColorArea:
-            break; // Handled by FindTerrainAreaPreset above.
-        case ComponentPreset::Count:
-            break; // Sentinel, not a preset.
-        case ComponentPreset::Camera:
-            m_AddedCamera = addIfMissing(ECS::TypeTag<Components::Camera>{}, Components::Camera{});
-            break;
-        case ComponentPreset::Light:
-            m_AddedLight = addIfMissing(ECS::TypeTag<Components::Light>{}, Editor::MakeDefaultDirectionalLight());
-            break;
-        case ComponentPreset::SkyEnvironment:
-            m_AddedSkyEnvironment = addIfMissing(ECS::TypeTag<Components::SkyEnvironment>{}, Components::SkyEnvironment{});
-            break;
-        case ComponentPreset::Skybox:
-            m_AddedSkybox = addIfMissing(ECS::TypeTag<Components::Skybox>{}, Components::Skybox{});
-            break;
-        case ComponentPreset::PhysicsDynamicBox:
-        {
-            Components::PhysicsBody body{};
-            body.motionType = Physics::MotionType::Dynamic;
-            m_AddedPhysicsBody = addIfMissing(ECS::TypeTag<Components::PhysicsBody>{}, body);
-            m_AddedPhysicsCollider = addIfMissing(ECS::TypeTag<Components::PhysicsCollider>{}, Components::PhysicsCollider{});
-            m_AddedBoxShape = addIfMissing(ECS::TypeTag<Components::BoxColliderShape>{}, Components::BoxColliderShape{});
-            break;
-        }
-        case ComponentPreset::PhysicsDynamicSphere:
-        {
-            Components::PhysicsBody body{};
-            body.motionType = Physics::MotionType::Dynamic;
-            m_AddedPhysicsBody = addIfMissing(ECS::TypeTag<Components::PhysicsBody>{}, body);
-            m_AddedPhysicsCollider = addIfMissing(ECS::TypeTag<Components::PhysicsCollider>{}, Components::PhysicsCollider{});
-            m_AddedSphereShape = addIfMissing(ECS::TypeTag<Components::SphereColliderShape>{}, Components::SphereColliderShape{});
-            break;
-        }
-        case ComponentPreset::PhysicsStaticPlane:
-        {
-            Components::PhysicsBody body{};
-            body.motionType = Physics::MotionType::Static;
-            m_AddedPhysicsBody = addIfMissing(ECS::TypeTag<Components::PhysicsBody>{}, body);
-            m_AddedPhysicsCollider = addIfMissing(ECS::TypeTag<Components::PhysicsCollider>{}, Components::PhysicsCollider{});
-            Components::PlaneColliderShape plane{};
-            plane.normalX = 0.0f;
-            plane.normalY = 1.0f;
-            plane.normalZ = 0.0f;
-            plane.d = 0.0f;
-            plane.halfExtent = 50.0f;
-            m_AddedPlaneShape = addIfMissing(ECS::TypeTag<Components::PlaneColliderShape>{}, plane);
-            break;
-        }
-        case ComponentPreset::PhysicsStaticBox:
-        {
-            Components::PhysicsBody body{};
-            body.motionType = Physics::MotionType::Static;
-            m_AddedPhysicsBody = addIfMissing(ECS::TypeTag<Components::PhysicsBody>{}, body);
-            m_AddedPhysicsCollider = addIfMissing(ECS::TypeTag<Components::PhysicsCollider>{}, Components::PhysicsCollider{});
-            m_AddedBoxShape = addIfMissing(ECS::TypeTag<Components::BoxColliderShape>{}, Components::BoxColliderShape{});
-            break;
-        }
-        case ComponentPreset::PhysicsCharacterController:
-            m_AddedCharacterController =
-                addIfMissing(ECS::TypeTag<Components::CharacterController>{}, Components::CharacterController{});
-            break;
-        case ComponentPreset::AudioEmitter:
-            m_AddedAudioEmitter = addIfMissing(ECS::TypeTag<Components::AudioEmitter>{}, Components::AudioEmitter{});
-            break;
-        case ComponentPreset::AudioListener:
-            m_AddedAudioListener = addIfMissing(ECS::TypeTag<Components::AudioListener>{}, Components::AudioListener{});
-            break;
-        case ComponentPreset::PostProcessVolume:
-            m_AddedPostProcessVolume = addIfMissing(ECS::TypeTag<Components::PostProcessVolume>{}, Components::PostProcessVolume{});
-            break;
-        case ComponentPreset::WindVolume:
-            m_AddedWindVolume = addIfMissing(ECS::TypeTag<Components::WindVolume>{}, Components::WindVolume{});
-            break;
-        case ComponentPreset::ParticleEmitter2D:
-            m_AddedParticleEmitter = addIfMissing(ECS::TypeTag<Components::ParticleEmitter3D>{}, Components::MakeParticleEmitter2DDefaults());
-            break;
-        case ComponentPreset::ParticleEmitter3D:
-            m_AddedParticleEmitter = addIfMissing(ECS::TypeTag<Components::ParticleEmitter3D>{}, Components::ParticleEmitter3D{});
-            break;
-        case ComponentPreset::ParticleCollisionEvents:
-            m_AddedParticleCollisionEvents = addIfMissing(ECS::TypeTag<Components::ParticleCollisionEventsBuffer>{}, Components::ParticleCollisionEventsBuffer{});
-            break;
-        case ComponentPreset::TerrainSplineFlatten:
-        {
-            // The spline supplies the region, so the volume takes its shape from
-            // it. Adding the SplineComponent here is the point: the pre-volume
-            // spline preset added a modifier that silently did nothing without one.
-            m_AddedSplineComponent = addIfMissing(
-                ECS::TypeTag<Components::SplineComponent>{}, Components::SplineComponent{});
-            Components::TerrainModifierVolume volume{};
-            volume.Shape = Components::TerrainVolumeShape::SplineArea;
-            m_AddedTerrainModifierVolume =
-                addIfMissing(ECS::TypeTag<Components::TerrainModifierVolume>{}, volume);
-            AddTerrainEffect(ECS::GetComponentTypeId<Components::TerrainFlattenEffect>());
-            break;
-        }
-        case ComponentPreset::SplineComponent:
-            m_AddedSplineComponent = addIfMissing(ECS::TypeTag<Components::SplineComponent>{}, Components::SplineComponent{});
-            break;
-        case ComponentPreset::ValueCurve:
-            m_AddedValueCurve = addIfMissing(ECS::TypeTag<Components::ValueCurve>{}, Components::ValueCurve{});
-            break;
-        case ComponentPreset::VideoTexture:
-            m_AddedVideoTexture = addIfMissing(ECS::TypeTag<Components::VideoTextureComponent>{}, Components::VideoTextureComponent{});
-            break;
-        }
+        m_AddedTypeIds = Editor::ApplyComponentPreset(*m_World, m_Entity, m_Preset);
+        for (ECS::ComponentTypeId addedTypeId : m_AddedTypeIds)
+            NotifyComponentChanged(m_Notifications, m_World, m_Entity, addedTypeId);
     }
 
   private:
-    // Adds one terrain effect by type id, stacked above any already there.
-    // Records it so Undo removes exactly what this preset created.
-    void AddTerrainEffect(ECS::ComponentTypeId effectTypeId)
-    {
-        const int32 stackOrder = TerrainECS::NextEffectStackOrder(*m_World, m_Entity);
-        if (!TerrainECS::AddTerrainEffectDefault(*m_World, m_Entity, effectTypeId, stackOrder))
-            return;
-        m_AddedTerrainEffectTypeId = effectTypeId;
-        NotifyComponentChanged(m_Notifications, m_World, m_Entity, effectTypeId);
-    }
-
     std::string m_Name;
     ECS::World* m_World = nullptr;                                // not owned
     Editor::EditorChangeNotifications* m_Notifications = nullptr; // not owned
     ECS::EntityHandle m_Entity{};
     ComponentPreset m_Preset{};
-
-    bool m_AddedCamera = false;
-    bool m_AddedLight = false;
-    bool m_AddedSkyEnvironment = false;
-    bool m_AddedSkybox = false;
-    bool m_AddedPhysicsBody = false;
-    bool m_AddedCharacterController = false;
-    bool m_AddedPhysicsCollider = false;
-    bool m_AddedBoxShape = false;
-    bool m_AddedSphereShape = false;
-    bool m_AddedPlaneShape = false;
-    bool m_AddedAudioEmitter = false;
-    bool m_AddedAudioListener = false;
-    bool m_AddedTerrainModifierVolume = false;
-    ECS::ComponentTypeId m_AddedTerrainEffectTypeId = 0;
-    bool m_AddedSplineComponent = false;
-    bool m_AddedValueCurve = false;
-    bool m_AddedPostProcessVolume = false;
-    bool m_AddedWindVolume = false;
-    bool m_AddedParticleEmitter = false;
-    bool m_AddedParticleCollisionEvents = false;
-    bool m_AddedVideoTexture = false;
+    // What the last Redo added, in add order; the entity already carried the rest.
+    std::vector<ECS::ComponentTypeId> m_AddedTypeIds;
 };
 
 // Map context menu add-command IDs to ComponentPreset (kCmdInspectorAddPresetBase + ordinal).
@@ -1762,6 +1076,127 @@ static bool TryGetAddPreset(uint32_t cmd, ComponentPreset& outPreset)
         return false;
     outPreset = static_cast<ComponentPreset>(ord);
     return true;
+}
+
+static const char* ComponentPickerFallbackIconClass(const std::string& category)
+{
+    if (category == "Animation")
+        return "inspector-section-icon-animator";
+    if (category == "Atmosphere")
+        return "inspector-section-icon-post-process";
+    if (category == "Audio")
+        return "inspector-section-icon-audio-emitter";
+    if (category == "Physics")
+        return "inspector-section-icon-physics";
+    if (category == "Post FX")
+        return "inspector-section-icon-post-process";
+    if (category == "Rendering")
+        return "inspector-section-icon-mesh-renderer";
+    if (category == "Spline")
+        return "inspector-section-icon-spline";
+    if (category == "Terrain")
+        return "inspector-section-icon-terrain";
+    return "inspector-section-icon-default";
+}
+
+static std::string ComponentPickerIconClass(ECS::ComponentTypeId typeId, const std::string& category)
+{
+    std::string iconClass = ComponentIconClass(nullptr, ECS::EntityHandle{}, typeId);
+    if (!iconClass.empty() && iconClass != "inspector-section-icon-default")
+        return iconClass;
+    return ComponentPickerFallbackIconClass(category);
+}
+
+static std::string ComponentPickerIconClass(ComponentPreset preset, const std::string& category)
+{
+    const std::vector<ECS::ComponentTypeId> typeIds = ComponentTypeIdsForPreset(preset);
+    for (auto it = typeIds.rbegin(); it != typeIds.rend(); ++it)
+    {
+        std::string iconClass = ComponentIconClass(nullptr, ECS::EntityHandle{}, *it);
+        if (!iconClass.empty() && iconClass != "inspector-section-icon-default")
+            return iconClass;
+    }
+    return ComponentPickerFallbackIconClass(category);
+}
+
+static const char* ComponentPickerIconPathForClass(const std::string& iconClass)
+{
+    if (iconClass == "inspector-section-icon-transform")
+        return "Icons/vector.png";
+    if (iconClass == "inspector-section-icon-mesh-renderer")
+        return "Icons/Sphere.png";
+    if (iconClass == "inspector-section-icon-skinned-mesh")
+        return "Icons/person.png";
+    if (iconClass == "inspector-section-icon-material")
+        return "Icons/material.png";
+    if (iconClass == "inspector-section-icon-camera")
+        return "Icons/videocam.png";
+    if (iconClass == "inspector-section-icon-light-ambient")
+        return "Icons/AmbientLight.png";
+    if (iconClass == "inspector-section-icon-light-directional")
+        return "Icons/DirectionalLight.png";
+    if (iconClass == "inspector-section-icon-light-spot")
+        return "Icons/SpotLight.png";
+    if (iconClass == "inspector-section-icon-light-point")
+        return "Icons/PointLight.png";
+    if (iconClass == "inspector-section-icon-light-area")
+        return "Icons/arealight.png";
+    if (iconClass == "inspector-section-icon-light-volume")
+        return "Icons/PointLight.png";
+    if (iconClass == "inspector-section-icon-sky")
+        return "Icons/skyenvironment.png";
+    if (iconClass == "inspector-section-icon-reflection-probe")
+        return "Icons/probe.png";
+    if (iconClass == "inspector-section-icon-post-process")
+        return "Icons/postfx.png";
+    if (iconClass == "inspector-section-icon-post-process-volume")
+        return "Icons/color-filter.svg";
+    if (iconClass == "inspector-section-icon-wind-volume")
+        return "Icons/wind.svg";
+    if (iconClass == "inspector-section-icon-terrain")
+        return "Icons/terrain.png";
+    if (iconClass == "inspector-section-icon-grass")
+        return "Icons/grass.png";
+    if (iconClass == "inspector-section-icon-tree-generator")
+        return "Icons/leaf.svg";
+    if (iconClass == "inspector-section-icon-ocean")
+        return "Icons/ocean.svg";
+    if (iconClass == "inspector-section-icon-particles")
+        return "Icons/sparkles.png";
+    if (iconClass == "inspector-section-icon-video-texture")
+        return "Icons/film.svg";
+    if (iconClass == "inspector-section-icon-lens-flare")
+        return "Icons/flame.png";
+    if (iconClass == "inspector-section-icon-spline")
+        return "Icons/GizmoSpline.png";
+    if (iconClass == "inspector-section-icon-measure")
+        return "Icons/Ruler.png";
+    if (iconClass == "inspector-section-icon-physics" || iconClass == "inspector-section-icon-physics-settings")
+        return "Icons/PhysicsSettings.png";
+    if (iconClass == "inspector-section-icon-shape-cube")
+        return "Icons/Cube.png";
+    if (iconClass == "inspector-section-icon-shape-sphere")
+        return "Icons/Sphere.png";
+    if (iconClass == "inspector-section-icon-shape-capsule")
+        return "Icons/Capsule.png";
+    if (iconClass == "inspector-section-icon-shape-plane")
+        return "Icons/Plane.png";
+    if (iconClass == "inspector-section-icon-audio-emitter" || iconClass == "inspector-section-icon-audio-listener")
+        return "Icons/music-note-icon@32px.png";
+    if (iconClass == "inspector-section-icon-animator" || iconClass == "inspector-section-icon-animated-node")
+        return "Icons/film.svg";
+    if (iconClass == "inspector-section-icon-lod-group")
+        return "Icons/layout3split.png";
+    if (iconClass == "inspector-section-icon-render-layer")
+        return "Icons/list.png";
+    return "Icons/node.svg";
+}
+
+static SearchIcon ComponentPickerSearchIcon(const std::string& iconClass)
+{
+    SearchIcon icon = SearchIcon::FromClass(iconClass);
+    icon.ImagePath = ComponentPickerIconPathForClass(iconClass);
+    return icon;
 }
 
 // A reflection-discoverable single component, chosen by runtime type id. Stored
@@ -1862,7 +1297,7 @@ class ComponentPresetSearchProvider : public ISearchProvider
             item.Id = static_cast<SearchItemId>(i + 1);
             item.Label = entry.Label;
             item.Detail = entry.Category;
-            item.Icon = ComponentPickerIcon(ComponentTypeIdsForPreset(entry.Preset), entry.Category);
+            item.Icon = ComponentPickerSearchIcon(ComponentPickerIconClass(entry.Preset, entry.Category));
             item.UserData = entry.Preset;
             results.push_back(std::move(item));
         }
@@ -1878,7 +1313,7 @@ class ComponentPresetSearchProvider : public ISearchProvider
             item.Id = static_cast<SearchItemId>(m_Entries.size() + i + 1);
             item.Label = entry.Label;
             item.Detail = entry.Category;
-            item.Icon = ComponentPickerIcon(std::span<const ECS::ComponentTypeId>(&entry.TypeId, 1), entry.Category);
+            item.Icon = ComponentPickerSearchIcon(ComponentPickerIconClass(entry.TypeId, entry.Category));
             item.UserData = AddSingleComponentChoice{entry.TypeId};
             results.push_back(std::move(item));
         }
@@ -1916,20 +1351,12 @@ private:
 
         // Components a curated preset already adds shouldn't also appear as a
         // standalone single (avoids Camera/Light duplicating their presets).
-        std::unordered_set<ECS::ComponentTypeId> presetCovered;
-        for (const auto& preset : ComponentPresetCatalog())
-            for (ECS::ComponentTypeId id : ComponentTypeIdsForPreset(preset.Preset))
-                presetCovered.insert(id);
-
-        // The modifier volume is the exception: every terrain preset adds one,
-        // but none of them IS one. An empty volume authored on its own — region
-        // first, effects from its Add Effect picker after — is a real flow, so
-        // it keeps its standalone entry instead of being deduplicated away.
-        presetCovered.erase(ECS::GetComponentTypeId<Components::TerrainModifierVolume>());
+        const std::vector<ECS::ComponentTypeId> presetOnly = Editor::ComponentTypeIdsOfferedOnlyByPresets();
+        const std::unordered_set<ECS::ComponentTypeId> presetCovered(presetOnly.begin(), presetOnly.end());
 
         // Any component with a default-construct factory is addable, unless the
-        // inspector hides it, a preset covers it, or it is a volume-owned stack
-        // effect (post-process effects add only through Add Post FX, terrain
+        // inspector hides it, a preset covers it, or another component hosts its
+        // section (post-process effects add only through Add Post FX, terrain
         // effects only through the modifier volume's Add Effect). Title +
         // filtering are derived (reflection + ShouldHideComponent) — no
         // per-component chrome.
@@ -1937,9 +1364,9 @@ private:
         {
             if (ShouldHideComponent(typeId) || presetCovered.count(typeId) != 0)
                 continue;
-            if (Rendering::PostProcessEffectRegistry::Find(typeId) != nullptr)
-                continue;
-            if (TerrainECS::IsTerrainEffectComponent(typeId))
+            ECS::ComponentTypeId hostTypeId{};
+            Editor::EditorComponentTraits hostTraits;
+            if (Editor::EditorComponentTraitsRegistry::Get().TryGetSectionHost(typeId, hostTypeId, hostTraits))
                 continue;
             m_Singles.push_back({ComponentTitle(typeId), ComponentCategory(typeId), typeId});
         }
@@ -1982,9 +1409,11 @@ InspectorPanel::InspectorPanel()
     m_BottomRoot = bottom.get();
     AddChild(std::move(bottom));
 
-    // Search bar placement is controlled via Settings.
+    // Search bar placement and visibility are controlled via Settings.
     auto built = BuildPanelSearchBar(
         "inspector-search-field",
+        []()
+        { return SettingsPanel::GetSearchBarsVisible(); },
         {}, // onTextChanged (on Enter)
         [this](const std::string& text)
         { ApplySearchFilter(text); }, // onTextChanging (real-time)
@@ -1997,7 +1426,6 @@ InspectorPanel::InspectorPanel()
     );
     m_SearchBar = built.RootPtr;
     m_SearchField = built.FieldPtr;
-    AddClass("panel-search-host");
     AddChild(std::move(built.Root));
     SettingsPanel::RegisterSearchBar(m_SearchBar, built.IconPtr);
 
@@ -2023,14 +1451,14 @@ void InspectorPanel::EnsureInspectorTabLockMounted()
         m_LockButton = nullptr;
         return;
     }
-    UIElement* tab = root->FindById(HashStringId("tab:" + m_DockTabPanelId));
+    UIElement* tab = root->FindById("tab:" + m_DockTabPanelId);
     if (!tab)
     {
         m_LockButton = nullptr;
         return;
     }
 
-    if (UIElement* existing = tab->FindById("inspector-tab-lock"_sid))
+    if (UIElement* existing = tab->FindById("inspector-tab-lock"))
     {
         m_LockButton = existing;
         m_LockButton->AddClass("icon-button");
@@ -2340,19 +1768,53 @@ void InspectorPanel::ExecuteRemoveComponent(ECS::ComponentTypeId typeId)
     ShowEntity(m_World, m_Entity, /*force=*/true);
 }
 
-void InspectorPanel::EnsurePostProcessVolumeRemoveModal()
+void InspectorPanel::RequestRemoveComponent(ECS::ComponentTypeId typeId)
 {
-    if (m_RemovePostProcessConfirmModal)
+    if (!IsRemovableComponent(typeId))
+        return;
+
+    // A volume that takes its stack effects with it asks first when it has any.
+    Editor::EditorComponentTraits traits;
+    bool hasStackEffects = false;
+    if (m_World && Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits) &&
+        traits.RemovingRemovesStackEffects && traits.HostsInspectorSection)
+    {
+        const std::vector<ECS::ComponentTypeId> entityComponents = EntityComponentTypeIds(*m_World, m_Entity);
+        hasStackEffects =
+            std::any_of(entityComponents.begin(), entityComponents.end(), traits.HostsInspectorSection);
+    }
+    if (!hasStackEffects)
+    {
+        ExecuteRemoveComponent(typeId);
+        return;
+    }
+
+    m_PendingRemoveComponentTypeId = typeId;
+    EnsureStackVolumeRemoveModal();
+    if (m_RemoveStackVolumeConfirmModal)
+    {
+        const std::string title = ComponentTitle(typeId);
+        m_RemoveStackVolumeConfirmModal->Show("Remove " + title,
+                                              "This entity still has volume effect components.\n"
+                                              "Removing the volume also removes those effect components.\n\n"
+                                              "Remove " + title + " anyway?",
+                                              "Remove");
+    }
+}
+
+void InspectorPanel::EnsureStackVolumeRemoveModal()
+{
+    if (m_RemoveStackVolumeConfirmModal)
         return;
 
     auto modal = std::make_unique<ConfirmActionModal>();
-    m_RemovePostProcessConfirmModal = modal.get();
-    m_RemovePostProcessConfirmModal->SetOnConfirm([this]()
+    m_RemoveStackVolumeConfirmModal = modal.get();
+    m_RemoveStackVolumeConfirmModal->SetOnConfirm([this]()
                                                   {
         if (m_PendingRemoveComponentTypeId)
             ExecuteRemoveComponent(m_PendingRemoveComponentTypeId);
         m_PendingRemoveComponentTypeId = {}; });
-    m_RemovePostProcessConfirmModal->SetOnCancel([this]()
+    m_RemoveStackVolumeConfirmModal->SetOnCancel([this]()
                                                  { m_PendingRemoveComponentTypeId = {}; });
 
     UIManager* ui = GetOwnerManager();
@@ -2502,9 +1964,6 @@ void InspectorPanel::ClearContent()
     m_HistoryForwardButton = nullptr;
     m_HeaderIconHost = nullptr;
     m_HeaderTitleField = nullptr;
-    m_EntityNameHeader = nullptr;
-    m_EntityNameField = nullptr;
-    m_EntityRefreshAfterTextEdit = false;
     m_SectionTypeIds.clear();
     m_SectionDragSource = nullptr;
     m_SectionDragIndicatorTarget = nullptr;
@@ -2565,61 +2024,6 @@ void InspectorPanel::RequestEntityRefresh()
     // A dropped action never runs to clear the latch, and every later request would be ignored.
     if (!posted)
         m_EntityRefreshPosted = false;
-}
-
-void InspectorPanel::RequestEntityRefreshAfterTextEdit()
-{
-    m_EntityRefreshAfterTextEdit = true;
-}
-
-bool InspectorPanel::HasTextEditFocus() const
-{
-    const UIManager* ui = GetOwnerManager();
-    return ui && (UI::FocusIsInTextInput(*ui, m_TopRoot) || UI::FocusIsInTextInput(*ui, m_ContentRoot));
-}
-
-void InspectorPanel::AddOverrideMenuEntries(ContextMenuBuilder& builder, ECS::ComponentTypeId typeId)
-{
-    m_ContextOverrideMenuEntries.clear();
-    if (!m_World || m_Entities.size() > 1)
-        return;
-    const OverrideMenuTarget target{m_World, m_Entity, typeId, {}, m_Undo, m_ChangeNotifications};
-    m_ContextOverrideMenuEntries = InspectorRegistry::Get().QueryOverrideMenu(target);
-    if (m_ContextOverrideMenuEntries.size() > kCmdInspectorOverrideMenuMax)
-        m_ContextOverrideMenuEntries.resize(kCmdInspectorOverrideMenuMax);
-    if (m_ContextOverrideMenuEntries.empty())
-        return;
-    for (uint32_t index = 0; index < m_ContextOverrideMenuEntries.size(); ++index)
-        builder.AddItem(m_ContextOverrideMenuEntries[index].Label, kCmdInspectorOverrideMenuBase + index,
-                        MenuItemFlag_None, kOverrideMenuPriority, m_ContextOverrideMenuEntries[index].IconPath);
-    builder.AddItem("---override", 0, MenuItemFlag_None, kOverrideMenuSeparatorPriority);
-}
-
-bool InspectorPanel::RunOverrideMenuCommand(uint32_t commandId)
-{
-    if (commandId < kCmdInspectorOverrideMenuBase ||
-        commandId >= kCmdInspectorOverrideMenuBase + m_ContextOverrideMenuEntries.size())
-        return false;
-    // A copy: the entry's edit can rebuild the panel, which clears the kept entries.
-    const std::function<void()> run = m_ContextOverrideMenuEntries[commandId - kCmdInspectorOverrideMenuBase].Run;
-    m_ContextOverrideMenuEntries.clear();
-    if (run)
-        run();
-    ShowEntity(m_World, m_Entity, /*force=*/true);
-    return true;
-}
-
-void InspectorPanel::RefreshOverrideMarks()
-{
-    if (!m_World || !m_World->IsValid(m_Entity) || m_Entities.size() > 1)
-        return;
-    if (m_EntityNameHeader && m_EntityNameField)
-        UpdateEntityNameOverrideMark(*m_EntityNameHeader, *m_EntityNameField, *m_World, m_Entity);
-    for (const auto& [section, typeId] : m_SectionTypeIds)
-        section->SetOverridden(InspectorRegistry::Get().QueryComponentOverrides(*m_World, m_Entity, typeId).Overridden);
-    for (auto& entry : m_SectionRefreshCallbacks)
-        for (auto& callback : entry.second.OverrideMarks)
-            callback();
 }
 
 void InspectorPanel::ReShowAssetAfterItsReload()
@@ -2762,14 +2166,6 @@ bool InspectorSelectionHistoryEntry::Equals(const InspectorSelectionHistoryEntry
     return false;
 }
 
-void InspectorPanel::ClearInspectorHistory()
-{
-    m_InspectorSelectionHistory.clear();
-    m_InspectorHistoryIndex = 0;
-    m_HistoryHasCursor = false;
-    m_SuppressInspectorHistory = false;
-}
-
 void InspectorPanel::RecordInspectorHistory(InspectorSelectionHistoryEntry entry)
 {
     // Truncate any "future" entries when appending after navigating back.
@@ -2799,31 +2195,46 @@ void InspectorPanel::RecordInspectorHistory(InspectorSelectionHistoryEntry entry
     }
 }
 
-void InspectorPanel::MountHeaderTrailingSlot(UIElement& headerContainer)
+void InspectorPanel::MountHistoryButtons(UIElement& headerContainer)
 {
-    std::unique_ptr<UIElement> slot = Editor::ControlLayoutLoader::Load(kHeaderTrailingLayoutAssetPath,
-                                                                        kHeaderTrailingRequiredIds);
-    if (!slot)
-        return;
-    m_HistoryButtonsRow = slot->FindById("inspector-header-history"_sid);
-    m_HistoryBackButton = dynamic_cast<Button*>(slot->FindById("inspector-history-back"_sid));
-    m_HistoryForwardButton = dynamic_cast<Button*>(slot->FindById("inspector-history-forward"_sid));
-    if (m_HistoryBackButton)
-    {
-        m_HistoryBackButton->SetTooltip("Previous selection");
-        m_HistoryBackButton->RegisterEventHandler(kEventButtonClick,
-                                                  [this](UIEvent&) { NavigateSelectionHistoryBack(); });
-    }
-    if (m_HistoryForwardButton)
-    {
-        m_HistoryForwardButton->SetTooltip("Next selection");
-        m_HistoryForwardButton->RegisterEventHandler(kEventButtonClick,
-                                                     [this](UIEvent&) { NavigateSelectionHistoryForward(); });
-    }
-    headerContainer.AddChild(std::move(slot));
-    // The name mark writes the badge, so it runs here, after the badge exists.
-    if (&headerContainer == m_EntityNameHeader && m_EntityNameField && m_World)
-        UpdateEntityNameOverrideMark(headerContainer, *m_EntityNameField, *m_World, m_Entity);
+    auto historyRow = std::make_unique<UIElement>();
+    historyRow->SetId("inspector-header-history");
+    historyRow->AddClass("inspector-header-history");
+    historyRow->Overrides()
+        .Set(Style::Display, DisplayMode::Flex)
+        .Set(Style::FlexDir, FlexDirection::Row)
+        .Set(Style::AlignItems, AlignItems::Center)
+        .Set(Style::Gap, StyleLength::Px(2.0f))
+        .Set(Style::FlexShrink, 0.0f);
+    m_HistoryButtonsRow = historyRow.get();
+
+    auto backBtn = std::make_unique<Button>();
+    backBtn->SetId("inspector-history-back");
+    backBtn->AddClass("icon-button");
+    backBtn->AddClass("inspector-header-history-icon");
+    backBtn->AddClass("inspector-history-back-btn");
+    backBtn->SetText("");
+    backBtn->SetTooltip("Previous selection");
+    backBtn->Overrides().Set(Style::FlexShrink, 0.0f);
+    m_HistoryBackButton = backBtn.get();
+    backBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&)
+                        { NavigateSelectionHistoryBack(); });
+
+    auto fwdBtn = std::make_unique<Button>();
+    fwdBtn->SetId("inspector-history-forward");
+    fwdBtn->AddClass("icon-button");
+    fwdBtn->AddClass("inspector-header-history-icon");
+    fwdBtn->AddClass("inspector-history-forward-btn");
+    fwdBtn->SetText("");
+    fwdBtn->SetTooltip("Next selection");
+    fwdBtn->Overrides().Set(Style::FlexShrink, 0.0f);
+    m_HistoryForwardButton = fwdBtn.get();
+    fwdBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&)
+                       { NavigateSelectionHistoryForward(); });
+
+    historyRow->AddChild(std::move(backBtn));
+    historyRow->AddChild(std::move(fwdBtn));
+    headerContainer.AddChild(std::move(historyRow));
 }
 
 namespace
@@ -2834,7 +2245,9 @@ const char* ClassifyAssetHeaderKind(const std::filesystem::path& p)
 {
     if (!p.has_extension())
         return "inspector-header-kind-asset";
-    const std::string ext = LowerCaseExtension(p);
+    std::string ext = p.extension().string();
+    for (auto& c : ext)
+        c = (char)std::tolower((unsigned char)c);
     if (ext == ".scene")
         return "inspector-header-kind-scene";
     if (ext == ".cs" || GetAssetTypeFromExtension(ext) == AssetType::NativeSource)
@@ -2851,7 +2264,9 @@ std::string FriendlyAssetTypeLabel(AssetType type, const std::filesystem::path& 
 {
     if (type == AssetType::NativeSource)
     {
-        const std::string ext = LowerCaseExtension(path);
+        std::string ext = path.extension().string();
+        for (auto& c : ext)
+            c = (char)std::tolower((unsigned char)c);
         if (ext == ".h" || ext == ".hpp" || ext == ".hxx" || ext == ".hh")
             return "C++ Header";
         if (ext == ".c")
@@ -2897,7 +2312,7 @@ void InspectorPanel::ApplyAssetIconToHeader(UIElement* iconHost, const std::file
                 return;
             post.Post([this, iconId, rel, applyThumb]()
                              {
-                if (UIElement* host = this->FindById(HashStringId(iconId)))
+                if (UIElement* host = this->FindById(iconId))
                 {
                     applyThumb(host, rel);
                     host->AddClass("has-thumbnail");
@@ -2941,13 +2356,13 @@ void InspectorPanel::BuildSimpleTopHeader(const std::string& titleText,
     m_HeaderTitleField = title.get();
     headerContainer->AddChild(std::move(title));
 
-    MountHeaderTrailingSlot(*headerContainer);
+    MountHistoryButtons(*headerContainer);
 
     // Reserve space where the entity enable/disable toggle would sit so the arrows
     // keep a consistent horizontal position across all inspector modes.
     auto togglePlaceholder = std::make_unique<UIElement>();
     togglePlaceholder->AddClass("inspector-header-toggle-placeholder");
-    togglePlaceholder->Style()
+    togglePlaceholder->Overrides()
         .Set(Style::Width, StyleLength::Px(36.0f))
         .Set(Style::MinWidth, StyleLength::Px(36.0f))
         .Set(Style::MaxWidth, StyleLength::Px(36.0f))
@@ -3072,7 +2487,7 @@ void InspectorPanel::SyncInspectorHistoryButtonState()
     const bool showChrome = !m_Locked;
     if (m_HistoryButtonsRow)
     {
-        m_HistoryButtonsRow->Style().Set(Style::Visibility, showChrome);
+        m_HistoryButtonsRow->Overrides().Set(Style::Visibility, showChrome);
     }
     if (m_HistoryBackButton)
         m_HistoryBackButton->SetEnabled(showChrome && canBack);
@@ -3151,34 +2566,24 @@ void InspectorPanel::PersistComponentOrderFromSections()
     if (!m_World || !m_Entity.IsValid() || !m_World->IsValid(m_Entity))
         return;
 
-    // Keep reorderable LDR post-FX components in sync with the visual order.
-    static const ECS::ComponentTypeId casId = ECS::GetComponentTypeId<Components::ContrastAdaptiveSharpenEffect>();
-    static const ECS::ComponentTypeId vignetteId = ECS::GetComponentTypeId<Components::VignetteEffect>();
-
-    int nextOrder = 0;
+    // Each stack numbers its entries from zero in the visual order, through its
+    // host's writer. Sections the writer declines (another stack's entries,
+    // entries that keep no order) consume no slot.
+    std::vector<ECS::ComponentTypeId> numberedHosts;
     for (ECS::ComponentTypeId orderedId : m_ComponentOrder)
     {
-        if (orderedId == casId)
-        {
-            if (auto* c = m_World->GetComponentForWrite<Components::ContrastAdaptiveSharpenEffect>(m_Entity))
-                c->StackOrder = nextOrder++;
-        }
-        else if (orderedId == vignetteId)
-        {
-            if (auto* c = m_World->GetComponentForWrite<Components::VignetteEffect>(m_Entity))
-                c->StackOrder = nextOrder++;
-        }
+        ECS::ComponentTypeId hostTypeId{};
+        Editor::EditorComponentTraits hostTraits;
+        if (!Editor::EditorComponentTraitsRegistry::Get().TryGetSectionHost(orderedId, hostTypeId, hostTraits) ||
+            !hostTraits.SetStackEffectOrder ||
+            std::find(numberedHosts.begin(), numberedHosts.end(), hostTypeId) != numberedHosts.end())
+            continue;
+        numberedHosts.push_back(hostTypeId);
+        int32 nextOrder = 0;
+        for (ECS::ComponentTypeId entryId : m_ComponentOrder)
+            if (hostTraits.SetStackEffectOrder(*m_World, m_Entity, entryId, nextOrder))
+                ++nextOrder;
     }
-
-    // Terrain modifier effects run their own stack under their own volume, so
-    // they number from zero independently of the LDR post-FX chain above. The
-    // stamp folds the canonical effect list, so a section for an effect added
-    // there is renumbered without an edit here; sections that are not effects on
-    // this entity decline and consume no stack slot.
-    int32 nextTerrainOrder = 0;
-    for (ECS::ComponentTypeId orderedId : m_ComponentOrder)
-        if (TerrainECS::SetTerrainEffectStackOrder(*m_World, m_Entity, orderedId, nextTerrainOrder))
-            ++nextTerrainOrder;
 }
 
 void InspectorPanel::BindSectionHeaderDragReorder(
@@ -3203,7 +2608,7 @@ void InspectorPanel::BindSectionHeaderDragReorder(
         if (!m_SectionDragHoverBlocker)
         {
             auto blocker = std::make_unique<UIElement>();
-            blocker->Style()
+            blocker->Overrides()
                 .Set(Style::Position, PositionType::Absolute)
                 .Set(Style::PositionLeft, StyleLength::Px(0.0f))
                 .Set(Style::PositionTop, StyleLength::Px(0.0f))
@@ -3221,7 +2626,7 @@ void InspectorPanel::BindSectionHeaderDragReorder(
                 ghost->AddClass("inspector-section-drag-ghost");
                 ghost->SetText(sectionRaw->GetTitle());
                 ghost->SetOverlayLayer(OverlayLayer::DragPreview);
-                ghost->Style()
+                ghost->Overrides()
                     .Set(Style::Position, PositionType::Absolute)
                     .Set(Style::PointerEvents, false)
                     .Set(Style::PositionLeft, StyleLength::Px(x + 12.0f))
@@ -3231,11 +2636,11 @@ void InspectorPanel::BindSectionHeaderDragReorder(
             }
         } });
 
-    sectionRaw->SetOnHeaderDragMoved([this, reorderRoot, restrictToMaterialSlotSections](float x, float y)
+    sectionRaw->SetOnHeaderDragMoved([this, sectionRaw, reorderRoot, restrictToMaterialSlotSections](float x, float y)
                                      {
         if (m_SectionDragGhost)
         {
-            m_SectionDragGhost->Style()
+            m_SectionDragGhost->Overrides()
                 .Set(Style::PositionLeft, StyleLength::Px(x + 12.0f))
                 .Set(Style::PositionTop, StyleLength::Px(y - 12.0f));
             m_SectionDragGhost->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
@@ -3319,7 +2724,7 @@ void InspectorPanel::BindSectionHeaderDragReorder(
         if (dropIndex < 0 || !reorderRoot)
             return;
 
-        sectionRaw->PostAction([sectionRaw, dropIndex, reorderRoot, persistCopy]() {
+        sectionRaw->PostAction([this, sectionRaw, dropIndex, reorderRoot, persistCopy]() {
             if (!reorderRoot)
                 return;
 
@@ -3531,20 +2936,13 @@ void InspectorPanel::ShowSelectedAssets(const std::vector<std::filesystem::path>
         // it lands. Waiting here would hold the main thread for the asset's cook or import.
         m_PendingAssetLoad = std::make_unique<AssetFuture>(assetManager.LoadAssetAsync(guid, AssetLoadPriority::High));
         m_PendingAssetPath = selectedPath;
-        m_PendingAssetGuid = guid;
-        AssetMetadata pendingMeta{};
-        m_PendingAssetType = assetManager.GetRegistry().TryGetAssetMetadata(guid, pendingMeta) ? pendingMeta.Type
-                                                                                              : AssetType::Unknown;
         m_SelectedAsset = nullptr;
-        BuildSimpleTopHeader(GetAssetNameFromPath(selectedPath.string()), ClassifyAssetHeaderKind(selectedPath));
+        BuildSimpleTopHeader(selectedPath.stem().string(), ClassifyAssetHeaderKind(selectedPath));
         ApplyAssetIconToHeader(m_HeaderIconHost, selectedPath);
-        ShowPendingAssetHeaderTitle(GetAssetNameFromPath(selectedPath.string()));
         auto label = std::make_unique<Label>();
         label->AddClass("inspector-text");
-        label->SetId(kPendingAssetLoadLabelId);
         label->SetText("Loading " + selectedPath.filename().string() + "...");
         AddInspectorPaddedContent(m_ContentRoot, std::move(label));
-        RefreshPendingAssetLoadState();
         return;
     }
     m_SelectedAsset = asset;
@@ -3561,16 +2959,17 @@ void InspectorPanel::ShowSelectedAssets(const std::vector<std::filesystem::path>
         return;
     }
 
-    // The selected path: it came from the asset browser's directory enumeration and carries the
-    // on-disk spelling, the same string the browser row shows, and the two branches above already
-    // header from it. (Asset::GetPath() is the registry's case-folded key; Asset::GetName() keeps
-    // the spelling too.)
-    BuildSimpleTopHeader(GetAssetNameFromPath(selectedPath.string()), ClassifyAssetHeaderKind(selectedPath));
+    // The selected path, not Asset::GetName(): an asset's own path is the registry's key, which
+    // NormalizePathForMap case-folds on Windows and macOS (AssetRegistry.cpp:69-78), so its stem
+    // spells "hobbitonterrain" for a file named HobbitonTerrain. This path came from the asset
+    // browser's directory enumeration and carries the real on-disk spelling — the same string the
+    // browser row shows. The two branches above already header from it.
+    BuildSimpleTopHeader(selectedPath.stem().string(), ClassifyAssetHeaderKind(selectedPath));
     ApplyAssetIconToHeader(m_HeaderIconHost, selectedPath);
 
     auto assetContentRoot = std::make_unique<UIElement>();
     assetContentRoot->AddClass("inspector-asset-content");
-    assetContentRoot->Style()
+    assetContentRoot->Overrides()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::PaddingLeft, StyleLength::Px(kInspectorAssetContentHorizontalInsetPx))
@@ -3677,7 +3076,6 @@ void InspectorPanel::BuildComponentSectionBody(InspectorSection* section, ECS::C
     SectionRefreshCallbacks& refreshCallbacks = m_SectionRefreshCallbacks[typeId];
     ctx.SimulationRefreshCallbacks = &refreshCallbacks.Simulation;
     ctx.FrameRefreshCallbacks = &refreshCallbacks.Frame;
-    ctx.OverrideMarkRefreshCallbacks = &refreshCallbacks.OverrideMarks;
     ctx.PingAsset = m_PingAsset;
     ctx.PingAssetPreserveInspector = m_PingAssetPreserveInspector;
     ctx.SelectEntity = m_SelectEntity;
@@ -3789,7 +3187,8 @@ bool InspectorPanel::RebuildComponentSection(ECS::ComponentTypeId typeId)
     // The section header stays alive across the rebuild; re-sync its enabled dot
     // in case the change being reflected also flipped the component's flag.
     bool currentEnabled = true;
-    if (Editor::TryGetComponentEnabled(m_World, m_Entity, typeId, currentEnabled))
+    if (IsRemovableComponent(typeId) &&
+        Editor::TryGetComponentEnabled(m_World, m_Entity, typeId, currentEnabled))
     {
         section->SetEnabled(currentEnabled);
         if (Editor::IsComponentEnabledMixed(m_World, m_Entities, typeId))
@@ -3848,44 +3247,7 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
 
     if (UIElement::IsInEventDispatch())
     {
-        // Coalesce: store the latest request and queue a single dispatch.
-        // A `force=true` request must not be downgraded by a later !force
-        // request for the *same* entity. When the entity/world target
-        // changes mid-coalesce, reset the force bit — a force flag attached
-        // to E1 must not leak to E2 (would bypass m_Locked / same-entity
-        // skip on a different target than the caller asked for).
-        const bool targetChanged =
-            (m_PendingShowWorld != world) || (m_PendingShowEntity != entity);
-        m_PendingShowWorld = world;
-        m_PendingShowEntity = entity;
-        m_PendingShowForce = targetChanged ? force : (m_PendingShowForce || force);
-        m_PendingShowSuppressHistory = m_SuppressInspectorHistory;
-        // Latest request's intent wins: a later "collapse to single" (keep=false)
-        // must not be lost when coalesced with an earlier refresh.
-        m_PendingShowKeepMultiSelection = keepMultiSelection;
-        if (!m_ShowEntityCoalescePending)
-        {
-            m_ShowEntityCoalescePending = true;
-            this->PostAction([this]()
-                             {
-                m_ShowEntityCoalescePending = false;
-                World* pendingWorld = m_PendingShowWorld;
-                EntityHandle pendingEntity = m_PendingShowEntity;
-                bool pendingForce = m_PendingShowForce;
-                bool pendingSuppress = m_PendingShowSuppressHistory;
-                bool pendingKeep = m_PendingShowKeepMultiSelection;
-                m_PendingShowWorld = nullptr;
-                m_PendingShowEntity = {};
-                m_PendingShowForce = false;
-                m_PendingShowSuppressHistory = false;
-                m_PendingShowKeepMultiSelection = true;
-
-                const bool prev = m_SuppressInspectorHistory;
-                m_SuppressInspectorHistory = pendingSuppress;
-                this->ShowEntity(pendingWorld, pendingEntity, pendingForce, pendingKeep);
-                m_SuppressInspectorHistory = prev;
-            });
-        }
+        CoalesceShowEntityRequest(world, entity, force, keepMultiSelection);
         return;
     }
 
@@ -3907,6 +3269,96 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
     const uint64_t previousWorldId = hadPreviousEntity ? m_World->GetWorldId() : 0;
     const uint32_t previousEntityId = hadPreviousEntity ? m_Entity.id : ECS::kInvalidEntity;
 
+    SetInspectedEntity(world, entity, keepMultiSelection);
+
+    SubscribeToEntityChanges(entity);
+
+    // Snapshot section collapse states before clearing so they survive rebuilds.
+    if (hadPreviousEntity)
+    {
+        SaveSectionCollapseStates(previousWorldId, previousEntityId);
+    }
+
+    ClearContent();
+    if (!m_ContentRoot && !m_TopRoot && !m_BottomRoot)
+    {
+        return;
+    }
+
+    if (!m_World || !entity.IsValid() || !m_World->IsValid(entity))
+    {
+        ShowInvalidEntityNotice();
+        return;
+    }
+
+    const bool isMultiEdit = BuildEntityHeader(entity);
+
+    std::vector<ECS::ComponentTypeId> displayComponentIds;
+    if (!CollectDisplayComponentIds(entity, isMultiEdit, displayComponentIds))
+        return;
+
+    int shown = BuildComponentSections(entity, displayComponentIds);
+
+    shown += BuildPreservedComponentSections(entity, isMultiEdit);
+
+    // Enable drag-on-label for all FloatField/IntField rows in component sections
+    InspectorDrag::AutoSetupDragForInspector(m_ContentRoot);
+
+    if (m_SoloSectionsEnabled)
+    {
+        WireSoloHandlersForSections();
+    }
+
+    AddComponentButton(entity);
+
+    FinalizeComponentSections(shown);
+}
+
+void InspectorPanel::CoalesceShowEntityRequest(ECS::World* world, ECS::EntityHandle entity, bool force, bool keepMultiSelection)
+{
+    // Coalesce: store the latest request and queue a single dispatch.
+    // A `force=true` request must not be downgraded by a later !force
+    // request for the *same* entity. When the entity/world target
+    // changes mid-coalesce, reset the force bit — a force flag attached
+    // to E1 must not leak to E2 (would bypass m_Locked / same-entity
+    // skip on a different target than the caller asked for).
+    const bool targetChanged =
+        (m_PendingShowWorld != world) || (m_PendingShowEntity != entity);
+    m_PendingShowWorld = world;
+    m_PendingShowEntity = entity;
+    m_PendingShowForce = targetChanged ? force : (m_PendingShowForce || force);
+    m_PendingShowSuppressHistory = m_SuppressInspectorHistory;
+    // Latest request's intent wins: a later "collapse to single" (keep=false)
+    // must not be lost when coalesced with an earlier refresh.
+    m_PendingShowKeepMultiSelection = keepMultiSelection;
+    if (!m_ShowEntityCoalescePending)
+    {
+        m_ShowEntityCoalescePending = true;
+        this->PostAction([this]()
+                         {
+            m_ShowEntityCoalescePending = false;
+            World* pendingWorld = m_PendingShowWorld;
+            EntityHandle pendingEntity = m_PendingShowEntity;
+            bool pendingForce = m_PendingShowForce;
+            bool pendingSuppress = m_PendingShowSuppressHistory;
+            bool pendingKeep = m_PendingShowKeepMultiSelection;
+            m_PendingShowWorld = nullptr;
+            m_PendingShowEntity = {};
+            m_PendingShowForce = false;
+            m_PendingShowSuppressHistory = false;
+            m_PendingShowKeepMultiSelection = true;
+
+            const bool prev = m_SuppressInspectorHistory;
+            m_SuppressInspectorHistory = pendingSuppress;
+            this->ShowEntity(pendingWorld, pendingEntity, pendingForce, pendingKeep);
+            m_SuppressInspectorHistory = prev;
+        });
+    }
+    return;
+}
+
+void InspectorPanel::SetInspectedEntity(ECS::World* world, ECS::EntityHandle entity, bool keepMultiSelection)
+{
     // Close any open add-component dialog before rebuilding.
     if (m_AddComponentDialog)
     {
@@ -3954,7 +3406,10 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
     // Track the last component signature so we can rebuild only when the set changes
     // (e.g. component add/remove during undo/redo).
     RefreshTrackedComponentSignature();
+}
 
+void InspectorPanel::SubscribeToEntityChanges(ECS::EntityHandle entity)
+{
     // Subscribe to component changes so the inspector rebuilds after undo/redo
     // or when the component signature changes for the active entity.
     if (m_ChangeNotifications)
@@ -4054,87 +3509,117 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
                 m_UpdatingToggle = false;
             });
     }
+}
 
-    // Snapshot section collapse states before clearing so they survive rebuilds.
-    if (hadPreviousEntity)
+void InspectorPanel::SaveSectionCollapseStates(uint64_t previousWorldId, uint32_t previousEntityId)
+{
+    for (const auto& [section, typeId] : m_SectionTypeIds)
     {
-        for (const auto& [section, typeId] : m_SectionTypeIds)
-        {
-            const EntityComponentStateKey key{previousWorldId, previousEntityId, typeId};
-            m_SectionCollapseStates[key] = section->IsCollapsed();
-        }
+        const EntityComponentStateKey key{previousWorldId, previousEntityId, typeId};
+        m_SectionCollapseStates[key] = section->IsCollapsed();
     }
+}
 
-    ClearContent();
-    if (!m_ContentRoot && !m_TopRoot && !m_BottomRoot)
-    {
-        return;
-    }
+void InspectorPanel::ShowInvalidEntityNotice()
+{
+    BuildSimpleTopHeader("Nothing selected", "inspector-header-kind-empty");
+    auto label = std::make_unique<Label>();
+    label->AddClass("inspector-text");
+    label->SetText("Entity is not valid");
+    m_ContentRoot->AddChild(std::move(label));
+    return;
+}
 
-    if (!m_World || !entity.IsValid() || !m_World->IsValid(entity))
-    {
-        BuildSimpleTopHeader("Nothing selected", "inspector-header-kind-empty");
-        auto label = std::make_unique<Label>();
-        label->AddClass("inspector-text");
-        label->SetText("Entity is not valid");
-        m_ContentRoot->AddChild(std::move(label));
-        return;
-    }
-
+bool InspectorPanel::BuildEntityHeader(ECS::EntityHandle entity)
+{
     // Create header container with entity name and toggle
     auto headerContainer = std::make_unique<UIElement>();
     headerContainer->AddClass("inspector-header-container");
 
+    AddEntityHeaderIcon(headerContainer.get(), entity);
+
+    const bool isMultiEdit = m_Entities.size() > 1;
+    AddEntityHeaderName(headerContainer.get(), entity, isMultiEdit);
+
+    // Selection history arrows, rendered between the name and the toggle.
+    MountHistoryButtons(*headerContainer);
+
+    AddEntityEnableToggle(headerContainer.get(), entity);
+
+    // Under the header: why an entity that is switched on does not run.
+    auto reasonLine = std::make_unique<Label>();
+    reasonLine->AddClass("inspector-entity-activity-reason");
+    m_EntityActivity.Bind(m_EntityToggle, reasonLine.get(), isMultiEdit);
+    m_PresentedEntityActive = m_EntityActivity.Present(*m_World, entity).ActiveInHierarchy;
+
+    if (UIElement* headerParent = m_TopRoot ? m_TopRoot : m_ContentRoot)
     {
-        double iconPrefStored = 20.0;
-        Editor::OpenEditorPreferences().TryGetDouble("ui.hierarchyTreeIconSize", iconPrefStored);
-        const float treeIconPx = std::clamp(static_cast<float>(iconPrefStored),
-                                            kMinEditorTreeIconSizePx, kMaxEditorHierarchyTreeIconSizePx);
-        ApplyTreeTitleIconLayoutVars(headerContainer.get(), treeIconPx);
-
-        // Resolve the asset backing the header icon (sprite texture / model).
-        // If present, the icon becomes clickable and reveals the asset in the
-        // Assets panel; otherwise it's a plain static glyph (CSS-only icons).
-        AssetManager* assets = m_Context ? m_Context->Assets : nullptr;
-        const std::filesystem::path headerAssetPath =
-            Editor::TryResolveInspectorIconAssetPath(m_World, entity, assets);
-
-        std::unique_ptr<UIElement> iconHost;
-        if (!headerAssetPath.empty() && m_PingAsset)
-        {
-            auto pingAsset = m_PingAsset;
-            auto path = headerAssetPath;
-            iconHost = std::make_unique<InspectorHeaderIconClickable>(
-                [pingAsset, path]()
-                { pingAsset(path); });
-            iconHost->AddClass("clickable");
-            iconHost->Style().Set(Style::Cursor, CursorStyle::Pointer);
-        }
-        else
-        {
-            iconHost = std::make_unique<UIElement>();
-        }
-        iconHost->AddClass("inspector-hierarchy-entity-icon");
-        // Lock icon slot to 32×32 so header row height is constant regardless
-        // of whether a sprite icon or model thumbnail is shown.
-        constexpr float kInspectorIconSlotPx = 32.0f;
-        iconHost->Style()
-            .Set(Style::Width, StyleLength::Px(kInspectorIconSlotPx))
-            .Set(Style::Height, StyleLength::Px(kInspectorIconSlotPx));
-        UIElement* iconHostRaw = iconHost.get();
-        headerContainer->AddChild(std::move(iconHost));
-
-        Editor::ApplyInspectorEntityIcon(m_World, m_Context, *iconHostRaw, entity, treeIconPx, GetOwnerManager(),
-                                         m_Context != nullptr && m_Context->UIReplayActive, this);
+        headerParent->AddChild(std::move(headerContainer));
+        headerParent->AddChild(std::move(reasonLine));
     }
 
+    // Generator output says so before its fields are read. It goes in the
+    // scrolling content rather than the pinned strip: the notice wraps, and a
+    // multi-line banner in `inspector-top` would shorten the section area for
+    // every entity, generated or not.
+    Editor::AddGeneratedEntityNotice(m_ContentRoot, *m_World, entity, m_SelectEntity);
+
+    SyncInspectorHistoryButtonState();
+    return isMultiEdit;
+}
+
+void InspectorPanel::AddEntityHeaderIcon(UIElement* headerContainer, ECS::EntityHandle entity)
+{
+    double iconPrefStored = 20.0;
+    Editor::OpenEditorPreferences().TryGetDouble("ui.hierarchyTreeIconSize", iconPrefStored);
+    const float treeIconPx = std::clamp(static_cast<float>(iconPrefStored),
+                                        kMinEditorTreeIconSizePx, kMaxEditorHierarchyTreeIconSizePx);
+    ApplyTreeTitleIconLayoutVars(headerContainer, treeIconPx);
+
+    // Resolve the asset backing the header icon (sprite texture / model).
+    // If present, the icon becomes clickable and reveals the asset in the
+    // Assets panel; otherwise it's a plain static glyph (CSS-only icons).
+    AssetManager* assets = m_Context ? m_Context->Assets : nullptr;
+    const std::filesystem::path headerAssetPath =
+        Editor::TryResolveInspectorIconAssetPath(m_World, entity, assets);
+
+    std::unique_ptr<UIElement> iconHost;
+    if (!headerAssetPath.empty() && m_PingAsset)
+    {
+        auto pingAsset = m_PingAsset;
+        auto path = headerAssetPath;
+        iconHost = std::make_unique<InspectorHeaderIconClickable>(
+            [pingAsset, path]()
+            { pingAsset(path); });
+        iconHost->AddClass("clickable");
+        iconHost->Overrides().Set(Style::Cursor, CursorStyle::Pointer);
+    }
+    else
+    {
+        iconHost = std::make_unique<UIElement>();
+    }
+    iconHost->AddClass("inspector-hierarchy-entity-icon");
+    // Lock icon slot to 32×32 so header row height is constant regardless
+    // of whether a sprite icon or model thumbnail is shown.
+    constexpr float kInspectorIconSlotPx = 32.0f;
+    iconHost->Overrides()
+        .Set(Style::Width, StyleLength::Px(kInspectorIconSlotPx))
+        .Set(Style::Height, StyleLength::Px(kInspectorIconSlotPx));
+    UIElement* iconHostRaw = iconHost.get();
+    headerContainer->AddChild(std::move(iconHost));
+
+    Editor::ApplyInspectorEntityIcon(m_World, m_Context, *iconHostRaw, entity, treeIconPx, GetOwnerManager(),
+                                     m_Context != nullptr && m_Context->UIReplayActive, this);
+}
+
+void InspectorPanel::AddEntityHeaderName(UIElement* headerContainer, ECS::EntityHandle entity, bool isMultiEdit)
+{
     // Entity name: editable field when single-select (always) or multi-select with a
     // Name on the primary entity. The Name component is created lazily on the first edit
     // (applyHeaderNameToWorld), so single-select entities are editable even before one
     // exists. Live typing updates come through SetOnValueChanging — not SetOnValueChanged —
     // because SetOnCommit replaces TextInput's hook and bypasses TextFieldBase::OnTextCommit
     // (see wiring below).
-    const bool isMultiEdit = m_Entities.size() > 1;
     std::string headerText = Editor::EntityDisplayName(*m_World, entity);
     auto* nameComponent = m_World->GetComponent<Name>(entity);
     if (isMultiEdit)
@@ -4214,11 +3699,6 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
             e.kind = Editor::EditorChangeNotifications::ChangeKind::Commit;
             m_ChangeNotifications->NotifyWorldStructureChanged(e); });
         headerContainer->AddChild(std::move(headerField));
-        if (!isMultiEdit)
-        {
-            m_EntityNameHeader = headerContainer.get();
-            m_EntityNameField = headerFieldRaw;
-        }
     }
     else
     {
@@ -4227,11 +3707,10 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
         header->SetText(headerText);
         headerContainer->AddChild(std::move(header));
     }
+}
 
-    // The badge and the selection history arrows, between the name and the toggle. The mount also sets
-    // the name's override mark on the badge.
-    MountHeaderTrailingSlot(*headerContainer);
-
+void InspectorPanel::AddEntityEnableToggle(UIElement* headerContainer, ECS::EntityHandle entity)
+{
     // Toggle control for enable/disable: the entity's own state.
     ECS::Entity entityObj(m_World, entity);
     auto toggle = std::make_unique<Toggle>();
@@ -4255,42 +3734,11 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
         Editor::CommitEntityEnabledToggle(*m_World, m_Undo, m_ChangeNotifications, entities, enabled); });
 
     headerContainer->AddChild(std::move(toggle));
+}
 
-    // Under the header: why an entity that is switched on does not run.
-    auto reasonLine = std::make_unique<Label>();
-    reasonLine->AddClass("inspector-entity-activity-reason");
-    m_EntityActivity.Bind(m_EntityToggle, reasonLine.get(), isMultiEdit);
-    m_PresentedEntityActive = m_EntityActivity.Present(*m_World, entity).ActiveInHierarchy;
-
-    if (UIElement* headerParent = m_TopRoot ? m_TopRoot : m_ContentRoot)
-    {
-        headerParent->AddChild(std::move(headerContainer));
-        headerParent->AddChild(std::move(reasonLine));
-    }
-
-    // Generator output says so before its fields are read. It goes in the
-    // scrolling content rather than the pinned strip: the notice wraps, and a
-    // multi-line banner in `inspector-top` would shorten the section area for
-    // every entity, generated or not.
-    Editor::AddGeneratedEntityNotice(m_ContentRoot, *m_World, entity, m_SelectEntity);
-
-    InspectorContext bannerContext{};
-    bannerContext.Parent = m_ContentRoot;
-    bannerContext.World = m_World;
-    bannerContext.Entity = entity;
-    bannerContext.Entities = m_Entities;
-    bannerContext.Undo = m_Undo;
-    bannerContext.ChangeNotifications = m_ChangeNotifications;
-    bannerContext.PingAsset = m_PingAsset;
-    bannerContext.SelectEntity = m_SelectEntity;
-    bannerContext.EditorCtx = m_Context;
-    bannerContext.RequestInspectorRefresh = [this]() { RequestEntityRefreshAfterTextEdit(); };
-    bannerContext.RefreshOverrideMarks = [this]() { RefreshOverrideMarks(); };
-    for (const InspectorFn& banner : InspectorRegistry::Get().GetEntityBanners(EntityBannerPlacement::BeforeComponents))
-        banner(bannerContext);
-
-    SyncInspectorHistoryButtonState();
-
+bool InspectorPanel::CollectDisplayComponentIds(ECS::EntityHandle entity, bool isMultiEdit,
+                                           std::vector<ECS::ComponentTypeId>& displayComponentIds)
+{
     // Enumerate the entity's components from its archetype signature and build one
     // inspector section per component.
     ECS::Archetype* archetype = m_World->GetEntityArchetype(entity);
@@ -4300,7 +3748,7 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
         label->AddClass("inspector-text");
         label->SetText("(Entity has no archetype)");
         m_ContentRoot->AddChild(std::move(label));
-        return;
+        return false;
     }
 
     std::vector<ECS::ComponentTypeId> componentIds = archetype->GetSignature().GetComponents();
@@ -4310,7 +3758,7 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
         label->AddClass("inspector-text");
         label->SetText("(Entity has no components)");
         m_ContentRoot->AddChild(std::move(label));
-        return;
+        return false;
     }
 
     // Capture once, before any inspector control can edit the component. Forced
@@ -4347,9 +3795,14 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
         componentIds = std::move(shared);
     }
 
+    // Keys looked up once: each lookup copies the component's registered traits.
+    std::unordered_map<ECS::ComponentTypeId, int> sortKeys;
+    sortKeys.reserve(componentIds.size());
+    for (ECS::ComponentTypeId typeId : componentIds)
+        sortKeys.emplace(typeId, SortKeyForComponent(typeId));
     std::stable_sort(componentIds.begin(), componentIds.end(),
-                     [](ECS::ComponentTypeId a, ECS::ComponentTypeId b)
-                     { return SortKeyForComponent(a) < SortKeyForComponent(b); });
+                     [&sortKeys](ECS::ComponentTypeId a, ECS::ComponentTypeId b)
+                     { return sortKeys.at(a) < sortKeys.at(b); });
 
     // Apply persisted drag-reorder for this entity on top of the default sort.
     if (m_ComponentOrderEntity == entity && !m_ComponentOrder.empty())
@@ -4373,7 +3826,6 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
     static const ECS::ComponentTypeId meshMaterialInspectorSectionTypeId =
         ECS::GetComponentTypeId<Editor::MeshRendererMaterialInspectorSection>();
 
-    std::vector<ECS::ComponentTypeId> displayComponentIds;
     displayComponentIds.reserve(componentIds.size() + 1);
     for (ECS::ComponentTypeId cid : componentIds)
     {
@@ -4384,7 +3836,14 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
 
     // A hosted section attaches to its host's section, which must exist first.
     Editor::LeadWithSectionHosts(displayComponentIds);
+    return true;
+}
 
+int InspectorPanel::BuildComponentSections(ECS::EntityHandle entity, const std::vector<ECS::ComponentTypeId>& displayComponentIds)
+{
+    static const ECS::ComponentTypeId meshRendererTypeId = ECS::GetComponentTypeId<MeshRenderer>();
+    static const ECS::ComponentTypeId meshMaterialInspectorSectionTypeId =
+        ECS::GetComponentTypeId<Editor::MeshRendererMaterialInspectorSection>();
     m_TransformSection = nullptr;
 
     int shown = 0;
@@ -4433,28 +3892,19 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
         m_ComponentSectionOrder.push_back(typeId);
         if (m_ComponentSelectionAnchor == ECS::ComponentTypeId{})
             m_ComponentSelectionAnchor = typeId;
-        // Effects carry a per-effect icon image in their registration; every other
-        // component styles its header icon through a CSS class. This runs before the
+        // Apply registered icon metadata before the
         // orphan/missing-package warnings below: those tint the icon, and assigning an
         // image path resets the tint override.
-        if (effectDesc && !effectDesc->IconPath.empty())
+        if (effectDesc && !effectDesc->IconClass.empty())
+            sectionRaw->SetHeaderIconClass(std::string(effectDesc->IconClass));
+        else if (effectDesc && !effectDesc->IconPath.empty())
             sectionRaw->SetHeaderIconImagePath(std::string(effectDesc->IconPath));
         else
             sectionRaw->SetHeaderIconClass(ComponentIconClass(m_World, entity, typeId));
         if (effectDesc && !effectDesc->Description.empty())
             sectionRaw->SetHeaderTooltip(std::string(effectDesc->Description));
-        else if (!traits.InspectorTooltip.empty())
-            sectionRaw->SetHeaderTooltip(traits.InspectorTooltip);
-        else if (const char* tip = ComponentTooltip(typeId))
-            sectionRaw->SetHeaderTooltip(tip);
-        if (!isMultiEdit)
-        {
-            const ComponentOverrides overrides =
-                InspectorRegistry::Get().QueryComponentOverrides(*m_World, entity, typeId);
-            sectionRaw->SetOverridden(overrides.Overridden);
-            if (!overrides.Badge.empty())
-                sectionRaw->SetHeaderBadge(overrides.Badge, overrides.BadgeTooltip, InspectorSection::BadgeKind::Override);
-        }
+        else if (std::string tip = ComponentTooltip(typeId); !tip.empty())
+            sectionRaw->SetHeaderTooltip(std::move(tip));
         if (hostSection)
         {
             sectionRaw->AddClass("inspector-hosted-section");
@@ -4510,11 +3960,14 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
             m_TransformSection = sectionRaw;
         }
 
-        // The enable dot shows and switches the component's on/off state. A component with none
-        // (a NotToggleable type such as Transform) gets a transparent placeholder, so its title
-        // still aligns with the titles beside a dot instead of shifting left.
+        // Show/hide the enabled dot and wire it to the component's switch. A component
+        // every entity keeps (not Removable), or one without a switch, gets a
+        // transparent placeholder so its title still aligns with toggleable component
+        // titles instead of shifting left.
         bool currentEnabled = true;
-        if (!Editor::TryGetComponentEnabled(m_World, entity, typeId, currentEnabled))
+        const bool hasEnabledField = IsRemovableComponent(typeId) &&
+                                     Editor::TryGetComponentEnabled(m_World, entity, typeId, currentEnabled);
+        if (!hasEnabledField)
         {
             sectionRaw->SetEnabledTogglePlaceholder(true);
         }
@@ -4540,576 +3993,10 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
 
         sectionRaw->SetInactive(!m_PresentedEntityActive);
 
-        sectionRaw->SetOnHeaderContextMenu([this, typeId, title](float x, float y)
+        sectionRaw->SetOnHeaderContextMenu([this, typeId, title, pseudoMaterialSectionId](float x, float y)
                                            {
-                                               if (!m_Window)
-                                                   return;
-                                               if (!m_World || !m_Entity.IsValid() || !m_World->IsValid(m_Entity))
-                                                   return;
-                                               EnsureComponentSettingsStorageLoaded();
-
-                                               m_ContextComponentTypeId = typeId;
-                                               if (m_SelectedComponentTypes.find(typeId) == m_SelectedComponentTypes.end())
-                                                   SelectSingleComponentSection(typeId);
-
-                                               if (!m_ContextMenu)
-                                               {
-                                                   m_ContextMenu = CreateContextMenu();
-                                                   if (m_ContextMenu)
-                                                   {
-                                                       m_ContextMenu->SetCommandHandler([this](uint32_t cmd)
-                                                                                        {
-                                                                                            if (!m_World || !m_Entity.IsValid() || !m_World->IsValid(m_Entity))
-                                                                                                return;
-
-                                                                                            if (RunOverrideMenuCommand(cmd))
-                                                                                                return;
-
-                                                                                            if (cmd == kCmdInspectorCopyComponent)
-                                                                                            {
-                                                                                                const std::vector<ECS::ComponentTypeId> selection = GetContextCopySelection();
-                                                                                                if (selection.size() <= 1)
-                                                                                                {
-                                                                                                    std::vector<uint8_t> bytes;
-                                                                                                    if (!m_World->CaptureComponentBytes(m_Entity, m_ContextComponentTypeId, bytes))
-                                                                                                        return;
-                                                                                                    const std::string name = ComponentTitle(m_ContextComponentTypeId);
-                                                                                                    Platform::SetClipboardText(EncodeComponentClipboard(name, bytes).c_str());
-                                                                                                }
-                                                                                                else
-                                                                                                {
-                                                                                                    std::vector<ComponentClipboardEntry> entries;
-                                                                                                    entries.reserve(selection.size());
-                                                                                                    for (ECS::ComponentTypeId typeId : selection)
-                                                                                                    {
-                                                                                                        std::vector<uint8_t> bytes;
-                                                                                                        if (!m_World->CaptureComponentBytes(m_Entity, typeId, bytes))
-                                                                                                            continue;
-                                                                                                        entries.emplace_back(ComponentTitle(typeId), std::move(bytes));
-                                                                                                    }
-                                                                                                    if (!entries.empty())
-                                                                                                        Platform::SetClipboardText(EncodeComponentsClipboard(entries).c_str());
-                                                                                                }
-                                                                                                return;
-                                                                                            }
-
-                                                                                            if (cmd == kCmdInspectorPasteComponent)
-                                                                                            {
-                                                                                                std::string clip = Platform::GetClipboardText();
-                                                                                                std::vector<ComponentClipboardEntry> entries;
-                                                                                                if (DecodeComponentsClipboard(clip, entries))
-                                                                                                {
-                                                                                                    std::vector<PasteComponentsCommand::Item> items;
-                                                                                                    items.reserve(entries.size());
-                                                                                                    for (auto& entry : entries)
-                                                                                                    {
-                                                                                                        ECS::ComponentTypeId tid{};
-                                                                                                        if (!TryFindComponentTypeIdByName(entry.first, tid))
-                                                                                                            continue;
-                                                                                                        PasteComponentsCommand::Item item{};
-                                                                                                        item.TypeId = tid;
-                                                                                                        item.NewBytes = std::move(entry.second);
-                                                                                                        items.push_back(std::move(item));
-                                                                                                    }
-                                                                                                    if (items.empty())
-                                                                                                        return;
-                                                                                                    const std::string undoName = std::string("Paste ") +
-                                                                                                        std::to_string(items.size()) + " Components";
-                                                                                                    if (m_Undo)
-                                                                                                    {
-                                                                                                        m_Undo->Execute(std::make_unique<PasteComponentsCommand>(
-                                                                                                            undoName,
-                                                                                                            m_World,
-                                                                                                            m_ChangeNotifications,
-                                                                                                            m_Entity,
-                                                                                                            std::move(items)));
-                                                                                                    }
-                                                                                                    else
-                                                                                                    {
-                                                                                                        PasteComponentsCommand cmdObj(
-                                                                                                            undoName,
-                                                                                                            m_World,
-                                                                                                            m_ChangeNotifications,
-                                                                                                            m_Entity,
-                                                                                                            std::move(items));
-                                                                                                        cmdObj.Redo();
-                                                                                                    }
-                                                                                                }
-                                                                                                else
-                                                                                                {
-                                                                                                    std::string typeName;
-                                                                                                    std::vector<uint8_t> bytes;
-                                                                                                    if (!DecodeComponentClipboard(clip, typeName, bytes))
-                                                                                                        return;
-                                                                                                    ECS::ComponentTypeId tid{};
-                                                                                                    if (!TryFindComponentTypeIdByName(typeName, tid))
-                                                                                                        return;
-
-                                                                                                    std::vector<uint8_t> dummy;
-                                                                                                    const bool entityHasIt =
-                                                                                                        m_World->CaptureComponentBytes(m_Entity, tid, dummy);
-                                                                                                    const std::string undoName = entityHasIt
-                                                                                                        ? std::string("Paste ") + typeName + " Values"
-                                                                                                        : std::string("Paste ") + typeName + " as New Component";
-
-                                                                                                    if (m_Undo)
-                                                                                                    {
-                                                                                                        m_Undo->Execute(std::make_unique<PasteComponentCommand>(
-                                                                                                            undoName,
-                                                                                                            m_World,
-                                                                                                            m_ChangeNotifications,
-                                                                                                            m_Entity,
-                                                                                                            tid,
-                                                                                                            std::move(bytes)));
-                                                                                                    }
-                                                                                                    else
-                                                                                                    {
-                                                                                                        PasteComponentCommand cmdObj(
-                                                                                                            undoName,
-                                                                                                            m_World,
-                                                                                                            m_ChangeNotifications,
-                                                                                                            m_Entity,
-                                                                                                            tid,
-                                                                                                            std::move(bytes));
-                                                                                                        cmdObj.Redo();
-                                                                                                    }
-                                                                                                }
-                                                                                                this->ShowEntity(m_World, m_Entity, /*force=*/true);
-                                                                                                return;
-                                                                                            }
-
-                                                                                            if (cmd == kCmdInspectorSaveComponentSettings)
-                                                                                            {
-                                                                                                std::vector<uint8_t> bytes;
-                                                                                                if (!m_World->CaptureComponentBytes(m_Entity, m_ContextComponentTypeId, bytes))
-                                                                                                    return;
-
-                                                                                                auto& settingsList = m_SavedComponentSettingsByType[m_ContextComponentTypeId];
-                                                                                                SavedComponentSettings saved{};
-                                                                                                saved.Name = "Setting " + std::to_string(settingsList.size() + 1);
-                                                                                                saved.Bytes = std::move(bytes);
-                                                                                                settingsList.push_back(std::move(saved));
-
-                                                                                                if (settingsList.size() > kMaxSavedComponentSettingsPerType)
-                                                                                                {
-                                                                                                    const size_t trimCount =
-                                                                                                        settingsList.size() - kMaxSavedComponentSettingsPerType;
-                                                                                                    settingsList.erase(settingsList.begin(),
-                                                                                                                      settingsList.begin() + trimCount);
-                                                                                                }
-                                                                                                SaveComponentSettingsToProject();
-                                                                                                return;
-                                                                                            }
-
-                                                                                            if (cmd == kCmdInspectorRestoreLastSettings)
-                                                                                            {
-                                                                                                const auto it = m_SavedComponentSettingsByType.find(m_ContextComponentTypeId);
-                                                                                                if (it == m_SavedComponentSettingsByType.end() || it->second.empty())
-                                                                                                    return;
-
-                                                                                                const SavedComponentSettings& saved = it->second.back();
-                                                                                                std::vector<uint8_t> restoreBytes = saved.Bytes;
-                                                                                                const std::string undoName =
-                                                                                                    "Restore " + ComponentTitle(m_ContextComponentTypeId) + " " + saved.Name;
-                                                                                                if (m_Undo)
-                                                                                                {
-                                                                                                    m_Undo->Execute(std::make_unique<PasteComponentCommand>(
-                                                                                                        undoName,
-                                                                                                        m_World,
-                                                                                                        m_ChangeNotifications,
-                                                                                                        m_Entity,
-                                                                                                        m_ContextComponentTypeId,
-                                                                                                        std::move(restoreBytes)));
-                                                                                                }
-                                                                                                else
-                                                                                                {
-                                                                                                    PasteComponentCommand cmdObj(
-                                                                                                        undoName,
-                                                                                                        m_World,
-                                                                                                        m_ChangeNotifications,
-                                                                                                        m_Entity,
-                                                                                                        m_ContextComponentTypeId,
-                                                                                                        std::move(restoreBytes));
-                                                                                                    cmdObj.Redo();
-                                                                                                }
-                                                                                                this->ShowEntity(m_World, m_Entity, /*force=*/true);
-                                                                                                return;
-                                                                                            }
-
-                                                                                            if (cmd == kCmdInspectorResetComponentValues)
-                                                                                            {
-                                                                                                std::vector<uint8_t> resetBytes;
-                                                                                                if (!TryGetLoadedComponentValues(
-                                                                                                        m_World,
-                                                                                                        m_Entity,
-                                                                                                        m_ContextComponentTypeId,
-                                                                                                        resetBytes) &&
-                                                                                                    !ECS::ComponentFactory::GetDefaultBytes(
-                                                                                                        m_ContextComponentTypeId,
-                                                                                                        resetBytes))
-                                                                                                    return;
-
-                                                                                                const std::string undoName =
-                                                                                                    "Reset " + ComponentTitle(m_ContextComponentTypeId) + " values";
-                                                                                                if (m_Undo)
-                                                                                                {
-                                                                                                    m_Undo->Execute(std::make_unique<PasteComponentCommand>(
-                                                                                                        undoName,
-                                                                                                        m_World,
-                                                                                                        m_ChangeNotifications,
-                                                                                                        m_Entity,
-                                                                                                        m_ContextComponentTypeId,
-                                                                                                        std::move(resetBytes)));
-                                                                                                }
-                                                                                                else
-                                                                                                {
-                                                                                                    PasteComponentCommand cmdObj(
-                                                                                                        undoName,
-                                                                                                        m_World,
-                                                                                                        m_ChangeNotifications,
-                                                                                                        m_Entity,
-                                                                                                        m_ContextComponentTypeId,
-                                                                                                        std::move(resetBytes));
-                                                                                                    cmdObj.Redo();
-                                                                                                }
-                                                                                                this->ShowEntity(m_World, m_Entity, /*force=*/true);
-                                                                                                return;
-                                                                                            }
-
-                                                                                            if (cmd >= kCmdInspectorRestoreSavedSettingsBase &&
-                                                                                                cmd < (kCmdInspectorRestoreSavedSettingsBase + kCmdInspectorRestoreSavedSettingsMax))
-                                                                                            {
-                                                                                                const uint32_t menuOffset = cmd - kCmdInspectorRestoreSavedSettingsBase;
-                                                                                                if (menuOffset >= m_ContextSavedSettingsMenuIndices.size())
-                                                                                                    return;
-
-                                                                                                const auto it = m_SavedComponentSettingsByType.find(m_ContextComponentTypeId);
-                                                                                                if (it == m_SavedComponentSettingsByType.end())
-                                                                                                    return;
-
-                                                                                                const size_t slotIndex = m_ContextSavedSettingsMenuIndices[menuOffset];
-                                                                                                if (slotIndex >= it->second.size())
-                                                                                                    return;
-
-                                                                                                const SavedComponentSettings& saved = it->second[slotIndex];
-                                                                                                std::vector<uint8_t> restoreBytes = saved.Bytes;
-                                                                                                const std::string undoName =
-                                                                                                    "Restore " + ComponentTitle(m_ContextComponentTypeId) + " " + saved.Name;
-                                                                                                if (m_Undo)
-                                                                                                {
-                                                                                                    m_Undo->Execute(std::make_unique<PasteComponentCommand>(
-                                                                                                        undoName,
-                                                                                                        m_World,
-                                                                                                        m_ChangeNotifications,
-                                                                                                        m_Entity,
-                                                                                                        m_ContextComponentTypeId,
-                                                                                                        std::move(restoreBytes)));
-                                                                                                }
-                                                                                                else
-                                                                                                {
-                                                                                                    PasteComponentCommand cmdObj(
-                                                                                                        undoName,
-                                                                                                        m_World,
-                                                                                                        m_ChangeNotifications,
-                                                                                                        m_Entity,
-                                                                                                        m_ContextComponentTypeId,
-                                                                                                        std::move(restoreBytes));
-                                                                                                    cmdObj.Redo();
-                                                                                                }
-                                                                                                this->ShowEntity(m_World, m_Entity, /*force=*/true);
-                                                                                                return;
-                                                                                            }
-
-                                                                                            if (cmd == kCmdInspectorClearMeshRendererMaterial)
-                                                                                            {
-                                                                                                static const ECS::ComponentTypeId kMaterialSectionId =
-                                                                                                    ECS::GetComponentTypeId<Editor::MeshRendererMaterialInspectorSection>();
-                                                                                                if (m_ContextComponentTypeId != kMaterialSectionId)
-                                                                                                    return;
-
-                                                                                                std::vector<ECS::EntityHandle> extras;
-                                                                                                for (const auto& e : m_Entities)
-                                                                                                {
-                                                                                                    if (e != m_Entity && e.IsValid() && m_World->IsValid(e))
-                                                                                                        extras.push_back(e);
-                                                                                                }
-
-                                                                                                std::optional<Editor::UndoRedoService::InteractiveEdit> clearMatEdit;
-                                                                                                if (m_Undo)
-                                                                                                {
-                                                                                                    auto target = InspectorDrag::MakeMultiComponentSnapshotTarget<MeshRenderer>(
-                                                                                                        m_World, m_Entity, extras, m_ChangeNotifications, "Remove Material");
-                                                                                                    clearMatEdit.emplace(m_Undo->BeginInteractiveEdit("Remove Material", std::move(target)));
-                                                                                                }
-
-                                                                                                auto clearMaterial = [&](ECS::EntityHandle ent) {
-                                                                                                    auto* mr = m_World->GetComponent<MeshRenderer>(ent);
-                                                                                                    if (!mr)
-                                                                                                        return;
-                                                                                                    MeshRenderer updated = *mr;
-                                                                                                    updated.materialAssetGuid.Clear();
-                                                                                                    Editor::CommitComponentUpdate(m_World, ent, m_ChangeNotifications, updated);
-                                                                                                };
-
-                                                                                                clearMaterial(m_Entity);
-                                                                                                for (auto& ex : extras)
-                                                                                                    clearMaterial(ex);
-
-                                                                                                if (clearMatEdit)
-                                                                                                    clearMatEdit->Commit();
-
-                                                                                                this->ShowEntity(m_World, m_Entity, /*force=*/true);
-                                                                                                return;
-                                                                                            }
-
-                                                                                            if (cmd == kCmdInspectorRemoveComponent)
-                                                                                            {
-                                                                                                if (!IsRemovableComponent(m_ContextComponentTypeId))
-                                                                                                    return;
-
-                                                                                                const ECS::ComponentTypeId postProcessVolumeId =
-                                                                                                    ECS::GetComponentTypeId<Components::PostProcessVolume>();
-                                                                                                const bool removingPostProcessVolume =
-                                                                                                    (m_ContextComponentTypeId == postProcessVolumeId);
-                                                                                                bool hasPostProcessEffects = false;
-                                                                                                if (m_World)
-                                                                                                {
-                                                                                                    Rendering::PostProcessEffectRegistry::ForEach(
-                                                                                                        [&](const Rendering::PostProcessEffectDescriptor& d)
-                                                                                                        {
-                                                                                                            if (!hasPostProcessEffects && m_World->HasComponent(m_Entity, d.Type))
-                                                                                                                hasPostProcessEffects = true;
-                                                                                                        });
-                                                                                                }
-                                                                                                if (removingPostProcessVolume && hasPostProcessEffects)
-                                                                                                {
-                                                                                                    m_PendingRemoveComponentTypeId = m_ContextComponentTypeId;
-                                                                                                    EnsurePostProcessVolumeRemoveModal();
-                                                                                                    if (m_RemovePostProcessConfirmModal)
-                                                                                                    {
-                                                                                                        m_RemovePostProcessConfirmModal->Show(
-                                                                                                            "Remove Post Process Volume",
-                                                                                                            "This entity still has volume effect components.\n"
-                                                                                                            "Removing the volume also removes those effect components.\n\n"
-                                                                                                            "Remove Post Process Volume anyway?",
-                                                                                                            "Remove");
-                                                                                                    }
-                                                                                                    return;
-                                                                                                }
-
-                                                                                                ExecuteRemoveComponent(m_ContextComponentTypeId);
-                                                                                                return;
-                                                                                            }
-
-                                                                                            ComponentPreset preset{};
-                                                                                            if (TryGetAddPreset(cmd, preset))
-                                                                                            {
-                                                                                                const std::string sel = PresetUndoDisplayName(preset);
-                                                                                                if (m_Undo)
-                                                                                                {
-                                                                                                    m_Undo->Execute(std::make_unique<AddPresetComponentsCommand>(
-                                                                                                        std::string("Add ") + sel,
-                                                                                                        m_World,
-                                                                                                        m_ChangeNotifications,
-                                                                                                        m_Entity,
-                                                                                                        preset));
-                                                                                                }
-                                                                                                else
-                                                                                                {
-                                                                                                    AddPresetComponentsCommand addCmd(
-                                                                                                        std::string("Add ") + sel,
-                                                                                                        m_World,
-                                                                                                        m_ChangeNotifications,
-                                                                                                        m_Entity,
-                                                                                                        preset);
-                                                                                                    addCmd.Redo();
-                                                                                                }
-                                                                                                if (m_ComponentOrderEntity != m_Entity)
-                                                                                                {
-                                                                                                    m_ComponentOrderEntity = m_Entity;
-                                                                                                    m_ComponentOrder.clear();
-                                                                                                }
-                                                                                                if (m_ComponentOrder.empty() && m_ContentRoot)
-                                                                                                {
-                                                                                                    const ECS::ComponentTypeId pseudoMaterialId =
-                                                                                                        ECS::GetComponentTypeId<Editor::MeshRendererMaterialInspectorSection>();
-                                                                                                    for (const auto& child : m_ContentRoot->GetChildren())
-                                                                                                    {
-                                                                                                        if (auto* sec = dynamic_cast<InspectorSection*>(child.get()))
-                                                                                                        {
-                                                                                                            auto it = m_SectionTypeIds.find(sec);
-                                                                                                            if (it != m_SectionTypeIds.end() && it->second != pseudoMaterialId)
-                                                                                                                m_ComponentOrder.push_back(it->second);
-                                                                                                        }
-                                                                                                    }
-                                                                                                }
-                                                                                                for (ECS::ComponentTypeId addedId : ComponentTypeIdsForPreset(preset))
-                                                                                                {
-                                                                                                    std::vector<uint8_t> dummy;
-                                                                                                    if (!m_World->CaptureComponentBytes(m_Entity, addedId, dummy))
-                                                                                                        continue;
-                                                                                                    if (std::find(m_ComponentOrder.begin(), m_ComponentOrder.end(), addedId) == m_ComponentOrder.end())
-                                                                                                        m_ComponentOrder.push_back(addedId);
-                                                                                                }
-                                                                                                this->ShowEntity(m_World, m_Entity, /*force=*/true);
-                                                                                            }
-                                                                                        });
-
-                                                       m_ContextMenu->SetStateProvider([this](uint32_t cmdId) -> MenuItemState
-                                                                                       {
-                                                                                           MenuItemState st{};
-                                                                                           if (cmdId == kCmdInspectorRemoveComponent)
-                                                                                               st.Enabled = IsRemovableComponent(m_ContextComponentTypeId);
-                                                                                           return st;
-                                                                                       });
-                                                   }
-                                               }
-
-                                               if (!m_ContextMenu)
-                                                   return;
-
-                                               m_ContextMenu->Clear();
-                                               ContextMenuBuilder builder;
-                                               m_ContextSavedSettingsMenuIndices.clear();
-                                               AddOverrideMenuEntries(builder, typeId);
-
-                                               // Component settings snapshots + copy/paste (skip the pseudo material section, which isn't a real component).
-                                               if (typeId != pseudoMaterialSectionId)
-                                               {
-                                                   const std::vector<ECS::ComponentTypeId> selection = GetContextCopySelection();
-                                                   std::string clipTypeName;
-                                                   std::vector<uint8_t> clipBytes;
-                                                   ECS::ComponentTypeId clipTypeId{};
-                                                   bool clipValid = false;
-                                                   std::vector<ComponentClipboardEntry> clipEntries;
-                                                   bool multiClipValid = false;
-                                                   bool entityHasClipType = false;
-                                                   // A peek-only read (this menu's Paste label and enabled-state, not a
-                                                   // real paste) risks a permission prompt on web for every right-click.
-                                                   // Skip it there: the label falls back to the generic "Paste
-                                                   // Component" below, the item stays enabled, and
-                                                   // kCmdInspectorPasteComponent's own read still validates for real.
-                                                   const bool canPasteComponent = Platform::ClipboardReadCanPromptUser()
-                                                       ? true
-                                                       : [&] {
-                                                             const std::string clip = Platform::GetClipboardText();
-                                                             clipValid = DecodeComponentClipboard(clip, clipTypeName, clipBytes) &&
-                                                                        TryFindComponentTypeIdByName(clipTypeName, clipTypeId);
-                                                             multiClipValid = DecodeComponentsClipboard(clip, clipEntries);
-                                                             if (clipValid)
-                                                             {
-                                                                 std::vector<uint8_t> dummy;
-                                                                 entityHasClipType =
-                                                                     m_World->CaptureComponentBytes(m_Entity, clipTypeId, dummy);
-                                                             }
-                                                             return clipValid || multiClipValid;
-                                                         }();
-
-                                                   builder.AddItem(BuildInspectorCopyMenuLabel(selection),
-                                                                   kCmdInspectorCopyComponent,
-                                                                   MenuItemFlag_None,
-                                                                   -3,
-                                                                   EditorIcons::kCopy);
-                                                   const std::string pasteLabel = BuildInspectorPasteMenuLabel(multiClipValid,
-                                                                                                               clipEntries.size(),
-                                                                                                               clipValid,
-                                                                                                               clipTypeName,
-                                                                                                               entityHasClipType,
-                                                                                                               clipTypeId);
-                                                   builder.AddItem(pasteLabel,
-                                                                   kCmdInspectorPasteComponent,
-                                                                   canPasteComponent ? MenuItemFlag_None : MenuItemFlag_Disabled,
-                                                                   -2,
-                                                                   EditorIcons::kPaste);
-                                               }
-
-                                               if (typeId == pseudoMaterialSectionId)
-                                                   builder.AddItem("Remove Material", kCmdInspectorClearMeshRendererMaterial, MenuItemFlag_None, 0, EditorIcons::kTrash);
-                                               else
-                                                   builder.AddItem(std::string("Remove ") + title + " Component", kCmdInspectorRemoveComponent, MenuItemFlag_None, 0, EditorIcons::kTrash);
-
-                                               if (typeId != pseudoMaterialSectionId)
-                                               {
-                                                   std::vector<uint8_t> resetDefaults;
-                                                   const bool canReset =
-                                                       TryGetLoadedComponentValues(
-                                                           m_World, m_Entity, typeId, resetDefaults) ||
-                                                       ECS::ComponentFactory::GetDefaultBytes(typeId, resetDefaults);
-                                                   builder.AddItem(std::string("Reset ") + title + " values",
-                                                                   kCmdInspectorResetComponentValues,
-                                                                   canReset ? MenuItemFlag_None : MenuItemFlag_Disabled,
-                                                                   1,
-                                                                   EditorIcons::kReset);
-                                               }
-
-                                               if (typeId != pseudoMaterialSectionId)
-                                               {
-                                                   int addPresetPriority = 10;
-                                                   builder.AddItem("Add", 0, MenuItemFlag_None, 9,
-                                                                   EditorIcons::kPlus);
-                                                   std::set<std::string> presetCategories;
-                                                   for (const auto& presetEntry : ComponentPresetCatalog())
-                                                   {
-                                                       if (presetCategories.insert(presetEntry.Category).second)
-                                                           builder.AddItem("Add/" + presetEntry.Category, 0,
-                                                                           MenuItemFlag_None, addPresetPriority,
-                                                                           CategoryIcon(presetEntry.Category));
-                                                       const uint32_t presetCmd =
-                                                           kCmdInspectorAddPresetBase +
-                                                           static_cast<uint32_t>(presetEntry.Preset);
-                                                       builder.AddItem(std::string("Add/") + presetEntry.Category + "/" + presetEntry.Label,
-                                                                       presetCmd,
-                                                                       MenuItemFlag_None,
-                                                                       addPresetPriority++,
-                                                                       presetEntry.Icon);
-                                                   }
-                                               }
-
-                                               if (typeId != pseudoMaterialSectionId)
-                                               {
-                                                   const auto savedIt = m_SavedComponentSettingsByType.find(typeId);
-                                                   const bool hasSavedSettings =
-                                                       (savedIt != m_SavedComponentSettingsByType.end() &&
-                                                        !savedIt->second.empty());
-                                                   builder.AddItem("Settings", 0, MenuItemFlag_None, 19,
-                                                                   EditorIcons::kSettings);
-                                                   builder.AddItem("Settings/Save Current Settings",
-                                                                   kCmdInspectorSaveComponentSettings,
-                                                                   MenuItemFlag_None,
-                                                                   100,
-                                                                   EditorIcons::kSave);
-                                                   builder.AddItem("Settings/Restore Last Saved",
-                                                                   kCmdInspectorRestoreLastSettings,
-                                                                   hasSavedSettings ? MenuItemFlag_None : MenuItemFlag_Disabled,
-                                                                   101,
-                                                                   EditorIcons::kReset);
-                                                   if (hasSavedSettings)
-                                                   {
-                                                       const auto& settingsList = savedIt->second;
-                                                       const size_t startIndex =
-                                                           settingsList.size() > kMaxSavedComponentSettingsMenuItems
-                                                               ? settingsList.size() - kMaxSavedComponentSettingsMenuItems
-                                                               : 0;
-                                                       int savedPriority = 102;
-                                                       for (size_t i = startIndex; i < settingsList.size(); ++i)
-                                                       {
-                                                           if (m_ContextSavedSettingsMenuIndices.size() >= kCmdInspectorRestoreSavedSettingsMax)
-                                                               break;
-                                                           const uint32_t cmdId =
-                                                               kCmdInspectorRestoreSavedSettingsBase +
-                                                               static_cast<uint32_t>(m_ContextSavedSettingsMenuIndices.size());
-                                                           m_ContextSavedSettingsMenuIndices.push_back(i);
-                                                           builder.AddItem(std::string("Settings/Saved/") + settingsList[i].Name,
-                                                                           cmdId,
-                                                                           MenuItemFlag_None,
-                                                                           savedPriority++,
-                                                                           EditorIcons::kSettings);
-                                                       }
-                                                   }
-                                               }
-
-                                               builder.Build(m_ContextMenu.get());
-                                               m_ContextMenu->Show(m_Window, (int)x, (int)y); });
+            ShowComponentSectionContextMenu(typeId, title, pseudoMaterialSectionId, x, y);
+        });
         if (m_SoloSectionsEnabled)
         {
             sectionRaw->SetOnCollapsedChanged([this](InspectorSection& self, bool collapsed)
@@ -5161,7 +4048,551 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
 
         ++shown;
     }
+    return shown;
+}
 
+void InspectorPanel::ShowComponentSectionContextMenu(ECS::ComponentTypeId typeId, const std::string& title,
+                                                ECS::ComponentTypeId pseudoMaterialSectionId, float x, float y)
+{
+    if (!m_Window)
+        return;
+    if (!m_World || !m_Entity.IsValid() || !m_World->IsValid(m_Entity))
+        return;
+    EnsureComponentSettingsStorageLoaded();
+
+    m_ContextComponentTypeId = typeId;
+    if (m_SelectedComponentTypes.find(typeId) == m_SelectedComponentTypes.end())
+        SelectSingleComponentSection(typeId);
+
+    if (!m_ContextMenu)
+    {
+        m_ContextMenu = CreateContextMenu();
+        if (m_ContextMenu)
+        {
+            m_ContextMenu->SetCommandHandler([this](uint32_t cmd)
+                                             { HandleComponentContextMenuCommand(cmd); });
+
+            m_ContextMenu->SetStateProvider([this](uint32_t cmdId) -> MenuItemState
+                                            {
+                                                MenuItemState st{};
+                                                if (cmdId == kCmdInspectorRemoveComponent)
+                                                    st.Enabled = IsRemovableComponent(m_ContextComponentTypeId);
+                                                return st;
+                                            });
+        }
+    }
+
+    if (!m_ContextMenu)
+        return;
+
+    m_ContextMenu->Clear();
+    ContextMenuBuilder builder;
+    m_ContextSavedSettingsMenuIndices.clear();
+
+    // Component settings snapshots + copy/paste (skip the pseudo material section, which isn't a real component).
+    if (typeId != pseudoMaterialSectionId)
+    {
+        const std::vector<ECS::ComponentTypeId> selection = GetContextCopySelection();
+        std::string clipTypeName;
+        std::vector<uint8_t> clipBytes;
+        ECS::ComponentTypeId clipTypeId{};
+        bool clipValid = false;
+        std::vector<ComponentClipboardEntry> clipEntries;
+        bool multiClipValid = false;
+        bool entityHasClipType = false;
+        // A peek-only read (this menu's Paste label and enabled-state, not a
+        // real paste) risks a permission prompt on web for every right-click.
+        // Skip it there: the label falls back to the generic "Paste
+        // Component" below, the item stays enabled, and
+        // kCmdInspectorPasteComponent's own read still validates for real.
+        const bool canPasteComponent = Platform::ClipboardReadCanPromptUser()
+            ? true
+            : [&] {
+                  const std::string clip = Platform::GetClipboardText();
+                  clipValid = DecodeComponentClipboard(clip, clipTypeName, clipBytes) &&
+                             TryFindComponentTypeIdByName(clipTypeName, clipTypeId);
+                  multiClipValid = DecodeComponentsClipboard(clip, clipEntries);
+                  if (clipValid)
+                  {
+                      std::vector<uint8_t> dummy;
+                      entityHasClipType =
+                          m_World->CaptureComponentBytes(m_Entity, clipTypeId, dummy);
+                  }
+                  return clipValid || multiClipValid;
+              }();
+
+        builder.AddItem(BuildInspectorCopyMenuLabel(selection),
+                        kCmdInspectorCopyComponent,
+                        MenuItemFlag_None,
+                        -3,
+                        EditorIcons::kCopy);
+        const std::string pasteLabel = BuildInspectorPasteMenuLabel(multiClipValid,
+                                                                    clipEntries.size(),
+                                                                    clipValid,
+                                                                    clipTypeName,
+                                                                    entityHasClipType,
+                                                                    clipTypeId);
+        builder.AddItem(pasteLabel,
+                        kCmdInspectorPasteComponent,
+                        canPasteComponent ? MenuItemFlag_None : MenuItemFlag_Disabled,
+                        -2,
+                        EditorIcons::kPaste);
+    }
+
+    if (typeId == pseudoMaterialSectionId)
+        builder.AddItem("Remove Material", kCmdInspectorClearMeshRendererMaterial, MenuItemFlag_None, 0, EditorIcons::kTrash);
+    else
+        builder.AddItem(std::string("Remove ") + title + " Component", kCmdInspectorRemoveComponent, MenuItemFlag_None, 0, EditorIcons::kTrash);
+
+    if (typeId != pseudoMaterialSectionId)
+    {
+        std::vector<uint8_t> resetDefaults;
+        const bool canReset =
+            TryGetLoadedComponentValues(
+                m_World, m_Entity, typeId, resetDefaults) ||
+            ECS::ComponentFactory::GetDefaultBytes(typeId, resetDefaults);
+        builder.AddItem(std::string("Reset ") + title + " values",
+                        kCmdInspectorResetComponentValues,
+                        canReset ? MenuItemFlag_None : MenuItemFlag_Disabled,
+                        1,
+                        EditorIcons::kReset);
+    }
+
+    if (typeId != pseudoMaterialSectionId)
+    {
+        int addPresetPriority = 10;
+        builder.AddItem("Add", 0, MenuItemFlag_None, 9,
+                        EditorIcons::kPlus);
+        std::set<std::string> presetCategories;
+        for (const auto& presetEntry : ComponentPresetCatalog())
+        {
+            if (presetCategories.insert(presetEntry.Category).second)
+                builder.AddItem("Add/" + presetEntry.Category, 0,
+                                MenuItemFlag_None, addPresetPriority,
+                                CategoryIcon(presetEntry.Category));
+            const uint32_t presetCmd =
+                kCmdInspectorAddPresetBase +
+                static_cast<uint32_t>(presetEntry.Preset);
+            builder.AddItem(std::string("Add/") + presetEntry.Category + "/" + presetEntry.Label,
+                            presetCmd,
+                            MenuItemFlag_None,
+                            addPresetPriority++,
+                            presetEntry.Icon);
+        }
+    }
+
+    if (typeId != pseudoMaterialSectionId)
+    {
+        const auto savedIt = m_SavedComponentSettingsByType.find(typeId);
+        const bool hasSavedSettings =
+            (savedIt != m_SavedComponentSettingsByType.end() &&
+             !savedIt->second.empty());
+        builder.AddItem("Settings", 0, MenuItemFlag_None, 19,
+                        EditorIcons::kSettings);
+        builder.AddItem("Settings/Save Current Settings",
+                        kCmdInspectorSaveComponentSettings,
+                        MenuItemFlag_None,
+                        100,
+                        EditorIcons::kSave);
+        builder.AddItem("Settings/Restore Last Saved",
+                        kCmdInspectorRestoreLastSettings,
+                        hasSavedSettings ? MenuItemFlag_None : MenuItemFlag_Disabled,
+                        101,
+                        EditorIcons::kReset);
+        if (hasSavedSettings)
+        {
+            const auto& settingsList = savedIt->second;
+            const size_t startIndex =
+                settingsList.size() > kMaxSavedComponentSettingsMenuItems
+                    ? settingsList.size() - kMaxSavedComponentSettingsMenuItems
+                    : 0;
+            int savedPriority = 102;
+            for (size_t i = startIndex; i < settingsList.size(); ++i)
+            {
+                if (m_ContextSavedSettingsMenuIndices.size() >= kCmdInspectorRestoreSavedSettingsMax)
+                    break;
+                const uint32_t cmdId =
+                    kCmdInspectorRestoreSavedSettingsBase +
+                    static_cast<uint32_t>(m_ContextSavedSettingsMenuIndices.size());
+                m_ContextSavedSettingsMenuIndices.push_back(i);
+                builder.AddItem(std::string("Settings/Saved/") + settingsList[i].Name,
+                                cmdId,
+                                MenuItemFlag_None,
+                                savedPriority++,
+                                EditorIcons::kSettings);
+            }
+        }
+    }
+
+    builder.Build(m_ContextMenu.get());
+    m_ContextMenu->Show(m_Window, (int)x, (int)y);
+}
+
+void InspectorPanel::HandleComponentContextMenuCommand(uint32_t cmd)
+{
+    if (!m_World || !m_Entity.IsValid() || !m_World->IsValid(m_Entity))
+        return;
+
+    if (cmd == kCmdInspectorCopyComponent)
+    {
+        const std::vector<ECS::ComponentTypeId> selection = GetContextCopySelection();
+        if (selection.size() <= 1)
+        {
+            std::vector<uint8_t> bytes;
+            if (!m_World->CaptureComponentBytes(m_Entity, m_ContextComponentTypeId, bytes))
+                return;
+            const std::string name = ComponentTitle(m_ContextComponentTypeId);
+            Platform::SetClipboardText(EncodeComponentClipboard(name, bytes).c_str());
+        }
+        else
+        {
+            std::vector<ComponentClipboardEntry> entries;
+            entries.reserve(selection.size());
+            for (ECS::ComponentTypeId typeId : selection)
+            {
+                std::vector<uint8_t> bytes;
+                if (!m_World->CaptureComponentBytes(m_Entity, typeId, bytes))
+                    continue;
+                entries.emplace_back(ComponentTitle(typeId), std::move(bytes));
+            }
+            if (!entries.empty())
+                Platform::SetClipboardText(EncodeComponentsClipboard(entries).c_str());
+        }
+        return;
+    }
+
+    if (cmd == kCmdInspectorPasteComponent)
+    {
+        std::string clip = Platform::GetClipboardText();
+        std::vector<ComponentClipboardEntry> entries;
+        if (DecodeComponentsClipboard(clip, entries))
+        {
+            std::vector<PasteComponentsCommand::Item> items;
+            items.reserve(entries.size());
+            for (auto& entry : entries)
+            {
+                ECS::ComponentTypeId tid{};
+                if (!TryFindComponentTypeIdByName(entry.first, tid))
+                    continue;
+                PasteComponentsCommand::Item item{};
+                item.TypeId = tid;
+                item.NewBytes = std::move(entry.second);
+                items.push_back(std::move(item));
+            }
+            if (items.empty())
+                return;
+            const std::string undoName = std::string("Paste ") +
+                std::to_string(items.size()) + " Components";
+            if (m_Undo)
+            {
+                m_Undo->Execute(std::make_unique<PasteComponentsCommand>(
+                    undoName,
+                    m_World,
+                    m_ChangeNotifications,
+                    m_Entity,
+                    std::move(items)));
+            }
+            else
+            {
+                PasteComponentsCommand cmdObj(
+                    undoName,
+                    m_World,
+                    m_ChangeNotifications,
+                    m_Entity,
+                    std::move(items));
+                cmdObj.Redo();
+            }
+        }
+        else
+        {
+            std::string typeName;
+            std::vector<uint8_t> bytes;
+            if (!DecodeComponentClipboard(clip, typeName, bytes))
+                return;
+            ECS::ComponentTypeId tid{};
+            if (!TryFindComponentTypeIdByName(typeName, tid))
+                return;
+
+            std::vector<uint8_t> dummy;
+            const bool entityHasIt =
+                m_World->CaptureComponentBytes(m_Entity, tid, dummy);
+            const std::string undoName = entityHasIt
+                ? std::string("Paste ") + typeName + " Values"
+                : std::string("Paste ") + typeName + " as New Component";
+
+            if (m_Undo)
+            {
+                m_Undo->Execute(std::make_unique<PasteComponentCommand>(
+                    undoName,
+                    m_World,
+                    m_ChangeNotifications,
+                    m_Entity,
+                    tid,
+                    std::move(bytes)));
+            }
+            else
+            {
+                PasteComponentCommand cmdObj(
+                    undoName,
+                    m_World,
+                    m_ChangeNotifications,
+                    m_Entity,
+                    tid,
+                    std::move(bytes));
+                cmdObj.Redo();
+            }
+        }
+        this->ShowEntity(m_World, m_Entity, /*force=*/true);
+        return;
+    }
+
+    if (cmd == kCmdInspectorSaveComponentSettings)
+    {
+        std::vector<uint8_t> bytes;
+        if (!m_World->CaptureComponentBytes(m_Entity, m_ContextComponentTypeId, bytes))
+            return;
+
+        auto& settingsList = m_SavedComponentSettingsByType[m_ContextComponentTypeId];
+        SavedComponentSettings saved{};
+        saved.Name = "Setting " + std::to_string(settingsList.size() + 1);
+        saved.Bytes = std::move(bytes);
+        settingsList.push_back(std::move(saved));
+
+        if (settingsList.size() > kMaxSavedComponentSettingsPerType)
+        {
+            const size_t trimCount =
+                settingsList.size() - kMaxSavedComponentSettingsPerType;
+            settingsList.erase(settingsList.begin(),
+                              settingsList.begin() + trimCount);
+        }
+        SaveComponentSettingsToProject();
+        return;
+    }
+
+    if (cmd == kCmdInspectorRestoreLastSettings)
+    {
+        const auto it = m_SavedComponentSettingsByType.find(m_ContextComponentTypeId);
+        if (it == m_SavedComponentSettingsByType.end() || it->second.empty())
+            return;
+
+        const SavedComponentSettings& saved = it->second.back();
+        std::vector<uint8_t> restoreBytes = saved.Bytes;
+        const std::string undoName =
+            "Restore " + ComponentTitle(m_ContextComponentTypeId) + " " + saved.Name;
+        if (m_Undo)
+        {
+            m_Undo->Execute(std::make_unique<PasteComponentCommand>(
+                undoName,
+                m_World,
+                m_ChangeNotifications,
+                m_Entity,
+                m_ContextComponentTypeId,
+                std::move(restoreBytes)));
+        }
+        else
+        {
+            PasteComponentCommand cmdObj(
+                undoName,
+                m_World,
+                m_ChangeNotifications,
+                m_Entity,
+                m_ContextComponentTypeId,
+                std::move(restoreBytes));
+            cmdObj.Redo();
+        }
+        this->ShowEntity(m_World, m_Entity, /*force=*/true);
+        return;
+    }
+
+    if (cmd == kCmdInspectorResetComponentValues)
+    {
+        std::vector<uint8_t> resetBytes;
+        if (!TryGetLoadedComponentValues(
+                m_World,
+                m_Entity,
+                m_ContextComponentTypeId,
+                resetBytes) &&
+            !ECS::ComponentFactory::GetDefaultBytes(
+                m_ContextComponentTypeId,
+                resetBytes))
+            return;
+
+        const std::string undoName =
+            "Reset " + ComponentTitle(m_ContextComponentTypeId) + " values";
+        if (m_Undo)
+        {
+            m_Undo->Execute(std::make_unique<PasteComponentCommand>(
+                undoName,
+                m_World,
+                m_ChangeNotifications,
+                m_Entity,
+                m_ContextComponentTypeId,
+                std::move(resetBytes)));
+        }
+        else
+        {
+            PasteComponentCommand cmdObj(
+                undoName,
+                m_World,
+                m_ChangeNotifications,
+                m_Entity,
+                m_ContextComponentTypeId,
+                std::move(resetBytes));
+            cmdObj.Redo();
+        }
+        this->ShowEntity(m_World, m_Entity, /*force=*/true);
+        return;
+    }
+
+    if (cmd >= kCmdInspectorRestoreSavedSettingsBase &&
+        cmd < (kCmdInspectorRestoreSavedSettingsBase + kCmdInspectorRestoreSavedSettingsMax))
+    {
+        const uint32_t menuOffset = cmd - kCmdInspectorRestoreSavedSettingsBase;
+        if (menuOffset >= m_ContextSavedSettingsMenuIndices.size())
+            return;
+
+        const auto it = m_SavedComponentSettingsByType.find(m_ContextComponentTypeId);
+        if (it == m_SavedComponentSettingsByType.end())
+            return;
+
+        const size_t slotIndex = m_ContextSavedSettingsMenuIndices[menuOffset];
+        if (slotIndex >= it->second.size())
+            return;
+
+        const SavedComponentSettings& saved = it->second[slotIndex];
+        std::vector<uint8_t> restoreBytes = saved.Bytes;
+        const std::string undoName =
+            "Restore " + ComponentTitle(m_ContextComponentTypeId) + " " + saved.Name;
+        if (m_Undo)
+        {
+            m_Undo->Execute(std::make_unique<PasteComponentCommand>(
+                undoName,
+                m_World,
+                m_ChangeNotifications,
+                m_Entity,
+                m_ContextComponentTypeId,
+                std::move(restoreBytes)));
+        }
+        else
+        {
+            PasteComponentCommand cmdObj(
+                undoName,
+                m_World,
+                m_ChangeNotifications,
+                m_Entity,
+                m_ContextComponentTypeId,
+                std::move(restoreBytes));
+            cmdObj.Redo();
+        }
+        this->ShowEntity(m_World, m_Entity, /*force=*/true);
+        return;
+    }
+
+    if (cmd == kCmdInspectorClearMeshRendererMaterial)
+    {
+        static const ECS::ComponentTypeId kMaterialSectionId =
+            ECS::GetComponentTypeId<Editor::MeshRendererMaterialInspectorSection>();
+        if (m_ContextComponentTypeId != kMaterialSectionId)
+            return;
+
+        std::vector<ECS::EntityHandle> extras;
+        for (const auto& e : m_Entities)
+        {
+            if (e != m_Entity && e.IsValid() && m_World->IsValid(e))
+                extras.push_back(e);
+        }
+
+        std::optional<Editor::UndoRedoService::InteractiveEdit> clearMatEdit;
+        if (m_Undo)
+        {
+            auto target = InspectorDrag::MakeMultiComponentSnapshotTarget<MeshRenderer>(
+                m_World, m_Entity, extras, m_ChangeNotifications, "Remove Material");
+            clearMatEdit.emplace(m_Undo->BeginInteractiveEdit("Remove Material", std::move(target)));
+        }
+
+        auto clearMaterial = [&](ECS::EntityHandle ent) {
+            auto* mr = m_World->GetComponent<MeshRenderer>(ent);
+            if (!mr)
+                return;
+            MeshRenderer updated = *mr;
+            updated.materialAssetGuid.Clear();
+            Editor::CommitComponentUpdate(m_World, ent, m_ChangeNotifications, updated);
+        };
+
+        clearMaterial(m_Entity);
+        for (auto& ex : extras)
+            clearMaterial(ex);
+
+        if (clearMatEdit)
+            clearMatEdit->Commit();
+
+        this->ShowEntity(m_World, m_Entity, /*force=*/true);
+        return;
+    }
+
+    if (cmd == kCmdInspectorRemoveComponent)
+    {
+        RequestRemoveComponent(m_ContextComponentTypeId);
+        return;
+    }
+
+    ComponentPreset preset{};
+    if (TryGetAddPreset(cmd, preset))
+    {
+        const std::string sel = PresetUndoDisplayName(preset);
+        if (m_Undo)
+        {
+            m_Undo->Execute(std::make_unique<AddPresetComponentsCommand>(
+                std::string("Add ") + sel,
+                m_World,
+                m_ChangeNotifications,
+                m_Entity,
+                preset));
+        }
+        else
+        {
+            AddPresetComponentsCommand addCmd(
+                std::string("Add ") + sel,
+                m_World,
+                m_ChangeNotifications,
+                m_Entity,
+                preset);
+            addCmd.Redo();
+        }
+        if (m_ComponentOrderEntity != m_Entity)
+        {
+            m_ComponentOrderEntity = m_Entity;
+            m_ComponentOrder.clear();
+        }
+        if (m_ComponentOrder.empty() && m_ContentRoot)
+        {
+            const ECS::ComponentTypeId pseudoMaterialId =
+                ECS::GetComponentTypeId<Editor::MeshRendererMaterialInspectorSection>();
+            for (const auto& child : m_ContentRoot->GetChildren())
+            {
+                if (auto* sec = dynamic_cast<InspectorSection*>(child.get()))
+                {
+                    auto it = m_SectionTypeIds.find(sec);
+                    if (it != m_SectionTypeIds.end() && it->second != pseudoMaterialId)
+                        m_ComponentOrder.push_back(it->second);
+                }
+            }
+        }
+        for (ECS::ComponentTypeId addedId : ComponentTypeIdsForPreset(preset))
+        {
+            std::vector<uint8_t> dummy;
+            if (!m_World->CaptureComponentBytes(m_Entity, addedId, dummy))
+                continue;
+            if (std::find(m_ComponentOrder.begin(), m_ComponentOrder.end(), addedId) == m_ComponentOrder.end())
+                m_ComponentOrder.push_back(addedId);
+        }
+        this->ShowEntity(m_World, m_Entity, /*force=*/true);
+    }
+}
+
+int InspectorPanel::BuildPreservedComponentSections(ECS::EntityHandle entity, bool isMultiEdit)
+{
+    int shown = 0;
     // Preserved (unloaded) components: scene components whose native module wasn't
     // registered at load time. They live in the World's UnresolvedComponentStore (off
     // archetype storage) keyed by entity, so they only make sense in single-entity edit.
@@ -5171,18 +4602,9 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
     // (ShowEntity runs on selection/refresh — no extra load-event hook needed here).
     if (!isMultiEdit)
     {
-#if GE_ENABLE_SCRIPTING
         const char* const kUnloadedTooltip =
             "No loaded code registers this component, so it does nothing. Its values are kept in "
             "the scene and applied when a module that registers it loads; remove it if none does.";
-#else
-        // A C# component can never register in a build without C# scripting, so "remove it"
-        // would delete authored data a scripting build still reads.
-        const char* const kUnloadedTooltip =
-            "No loaded code registers this component, so it does nothing. This build has no C# "
-            "scripting: a C# component's values are kept in the scene and apply when the project "
-            "opens in a build with scripting.";
-#endif
         if (const ECS::UnresolvedComponentStore* store = m_World->TryGetUnresolvedComponents())
         {
             const auto& table = store->Map();
@@ -5237,19 +4659,11 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
             }
         }
     }
+    return shown;
+}
 
-    if (!isMultiEdit)
-        for (const InspectorFn& banner : InspectorRegistry::Get().GetEntityBanners(EntityBannerPlacement::AfterComponents))
-            banner(bannerContext);
-
-    // Enable drag-on-label for all FloatField/IntField rows in component sections
-    InspectorDrag::AutoSetupDragForInspector(m_ContentRoot);
-
-    if (m_SoloSectionsEnabled)
-    {
-        WireSoloHandlersForSections();
-    }
-
+void InspectorPanel::AddComponentButton(ECS::EntityHandle entity)
+{
     // Add Component button — opens a SearchDialog picker.
     if (m_BottomRoot)
     {
@@ -5257,7 +4671,7 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
         addBtn->SetText("Add Component");
         addBtn->SetTooltip("Add a component to the selected entity.");
         addBtn->AddClass("inspector-add-component-button");
-        addBtn->Style()
+        addBtn->Overrides()
             .Set(Style::Width, StyleLength::Px(kInspectorPickerWidthPx))
             .Set(Style::AlignSelf, AlignItems::Center);
 
@@ -5398,7 +4812,10 @@ void InspectorPanel::ShowEntity(World* world, EntityHandle entity, bool force, b
 
         m_BottomRoot->AddChild(std::move(addBtn));
     }
+}
 
+void InspectorPanel::FinalizeComponentSections(int shown)
+{
     if (shown == 0)
     {
         m_SelectedComponentTypes.clear();
@@ -5684,7 +5101,6 @@ void InspectorPanel::ShowScriptVariables(const std::filesystem::path& scriptPath
                 m_DragStartX = e.X;
                 m_DragStartValue = fieldPtr->GetValue();
                 m_DragVariableName = varName;
-                m_DragBegun = false;
                 
                 // Highlight the field when dragging starts
                 HighlightVariableField(varName);
@@ -5703,8 +5119,6 @@ void InspectorPanel::ShowScriptVariables(const std::filesystem::path& scriptPath
                                            {
             if (m_LeftMouseDragging && m_DraggingLabel == nameLabelPtr && m_DraggingField == fieldPtr) {
                 float totalDeltaX = e.X - m_DragStartX;
-                if (!InspectorDrag::BeginLabelDragPastThreshold(nameLabelPtr, m_DragBegun, totalDeltaX))
-                    return;
                 AdjustValueByDrag(varName, fieldPtr, totalDeltaX);
                 HighlightVariableField(varName);
             } });
@@ -5741,9 +5155,6 @@ void InspectorPanel::ShowScriptVariables(const std::filesystem::path& scriptPath
                 }
                 e.Stop();
             } });
-
-        nameLabelPtr->RegisterEventHandler(kEventMouseCancel, [this, varName, fieldPtr, nameLabelPtr](UIEvent& e)
-                                           { CancelScriptVariableDrag(e, varName, fieldPtr, nameLabelPtr); });
 
         sectionContent->AddChild(std::move(row));
     }
@@ -5809,60 +5220,6 @@ void InspectorPanel::ClearVariableFieldHighlight()
         m_HighlightedScriptValueChrome->RemoveClass("inspector-field-highlighted");
         m_HighlightedScriptValueChrome = nullptr;
     }
-}
-
-void InspectorPanel::FocusScriptVariableField(const std::string& varName)
-{
-    if (varName.empty())
-    {
-        return;
-    }
-
-    auto apply = [this, varName]()
-    {
-        HighlightVariableField(varName);
-        auto it = m_ScriptVariableFields.find(varName);
-        if (it == m_ScriptVariableFields.end() || !it->second)
-        {
-            return;
-        }
-        TextField* field = it->second;
-        const std::string& id = field->GetId();
-        if (id.empty())
-        {
-            return;
-        }
-        if (UIManager* ui = field->GetOwnerManager())
-        {
-            ui->SetFocusById(id);
-        }
-    };
-
-    if (UIElement::IsInEventDispatch())
-    {
-        PostAction(std::move(apply));
-    }
-    else
-    {
-        apply();
-    }
-}
-
-void InspectorPanel::CancelScriptVariableDrag(UIEvent& e, const std::string& varName, TextField* field,
-                                              UIElement* label)
-{
-    if (!m_LeftMouseDragging || m_DraggingLabel != label)
-        return;
-    m_LeftMouseDragging = false;
-    m_DraggingLabel = nullptr;
-    m_DraggingField = nullptr;
-    if (field->GetValue() != m_DragStartValue)
-    {
-        field->SetValue(m_DragStartValue);
-        if (m_OnVariableEdited)
-            m_OnVariableEdited(varName, m_DragStartValue);
-    }
-    e.Stop();
 }
 
 void InspectorPanel::AdjustValueByDrag(const std::string& varName, TextField* field, float totalDeltaX)
@@ -6305,16 +5662,16 @@ void InspectorPanel::ShowGraphNode(const std::string& nodeId, const std::string&
                 auto valueIt = parameters.find(key);
                 const std::string value = (valueIt != parameters.end()) ? valueIt->second : std::string();
                 AssetManager& am = EngineCore::GetInstance().GetAssetManager();
-                AssetField* field = InspectorUI::AddAssetFieldRow(
-                    sectionContent, plannedRow.Label, GUID(value), {plannedRow.AssetReference},
+                InspectorUI::AddAssetFieldRow(
+                    sectionContent, plannedRow.Label, GUID(value), {AssetType::Animation},
                     &am.GetRegistry(),
                     [this, nodeId, key](const GUID& picked)
                     {
                         const std::string text = picked.IsNull() ? std::string{} : picked.ToString();
                         if (m_OnGraphNodeParameterChanged)
                             m_OnGraphNodeParameterChanged(nodeId, key, text, true);
-                    });
-                field->SetOnReveal(m_PingAssetPreserveInspector);
+                    },
+                    nullptr, "Animation clip");
                 break;
             }
             case GraphInspectorRowKind::NodeInt:
@@ -6488,7 +5845,11 @@ void InspectorPanel::ShowGraphTransition(const std::string& linkId,
         UIElement* conditionsContent = conditionsSection->GetContentRoot();
         m_ContentRoot->AddChild(std::move(conditionsSection));
 
-        AddGraphTransitionConditionsNotice(conditionsContent, m_GraphTransitionDesc);
+        if (m_GraphTransitionDesc.Conditions.empty() && GetInspectorShowInfoCardsPreference())
+        {
+            InspectorUI::AddInfoCard(conditionsContent,
+                                     "Add at least one condition. Compile skips unconditioned transitions.");
+        }
 
         for (size_t i = 0; i < m_GraphTransitionDesc.Conditions.size(); ++i)
         {
@@ -6631,7 +5992,8 @@ void InspectorPanel::ApplySearchFilter(const std::string& searchText)
         return;
 
     // Convert search text to lowercase for case-insensitive matching
-    const std::string searchLower = ToLowerAscii(searchText);
+    std::string searchLower = searchText;
+    std::transform(searchLower.begin(), searchLower.end(), searchLower.begin(), ::tolower);
 
     std::unordered_map<UIElement*, bool> subtreeMatches;
     std::unordered_set<UIElement*> directMatches;
@@ -6650,7 +6012,8 @@ void InspectorPanel::ApplySearchFilter(const std::string& searchText)
         {
             if (auto* label = dynamic_cast<Label*>(el))
             {
-                const std::string textLower = ToLowerAscii(label->GetText());
+                std::string textLower = label->GetText();
+                std::transform(textLower.begin(), textLower.end(), textLower.begin(), ::tolower);
 
                 if (textLower.find(searchLower) != std::string::npos)
                 {
@@ -6667,7 +6030,8 @@ void InspectorPanel::ApplySearchFilter(const std::string& searchText)
         {
             if (auto* foldout = dynamic_cast<Foldout*>(el))
             {
-                const std::string titleLower = ToLowerAscii(foldout->GetTitle());
+                std::string titleLower = foldout->GetTitle();
+                std::transform(titleLower.begin(), titleLower.end(), titleLower.begin(), ::tolower);
 
                 if (titleLower.find(searchLower) != std::string::npos)
                 {
@@ -6737,52 +6101,6 @@ void InspectorPanel::SyncEntityActivityPresentation()
         section->SetInactive(!active);
 }
 
-void InspectorPanel::ShowPendingAssetHeaderTitle(const std::string& name)
-{
-    // The editable name field cannot ellipsise its value (an input scrolls), and nothing can be
-    // renamed before the asset loads, so a pending asset's header shows its name as a label with
-    // the state suffix right after it.
-    UIElement* headerRow = m_HeaderTitleField ? m_HeaderTitleField->GetParent() : nullptr;
-    if (!headerRow)
-        return;
-    const auto& children = headerRow->GetChildren();
-    const auto field = std::find_if(children.begin(), children.end(), [this](const auto& child)
-                                    { return child.get() == m_HeaderTitleField; });
-    if (field == children.end())
-        return;
-    const size_t fieldIndex = static_cast<size_t>(field - children.begin());
-    Editor::PendingAssetHeaderLabels labels = Editor::MakePendingAssetHeaderLabels(name);
-    headerRow->InsertChild(fieldIndex + 1, std::move(labels.Name));
-    headerRow->InsertChild(fieldIndex + 2, std::move(labels.Suffix));
-    headerRow->RemoveChild(m_HeaderTitleField);
-    m_HeaderTitleField = nullptr;
-}
-
-void InspectorPanel::RefreshPendingAssetLoadState()
-{
-    // By id, so a rebuilt header or content root never leaves a dangling label.
-    auto* suffix = m_TopRoot ? dynamic_cast<Label*>(m_TopRoot->FindById(HashStringId(Editor::kPendingAssetSuffixLabelId)))
-                             : nullptr;
-    UIElement* line = m_ContentRoot ? m_ContentRoot->FindById(HashStringId(kPendingAssetLoadLabelId)) : nullptr;
-    const std::string text = InspectorRegistry::Get().AssetLoadingSuffix(m_PendingAssetType, m_PendingAssetGuid);
-    if (suffix)
-    {
-        suffix->SetText(text);
-        if (text.empty())
-            suffix->AddClass("hidden");
-        else
-            suffix->RemoveClass("hidden");
-    }
-    // While the header says what the load is doing, the line would only repeat the name above it.
-    if (line)
-    {
-        if (text.empty())
-            line->RemoveClass("hidden");
-        else
-            line->AddClass("hidden");
-    }
-}
-
 void InspectorPanel::PollPendingAssetLoad()
 {
     if (!m_PendingAssetLoad)
@@ -6794,17 +6112,7 @@ void InspectorPanel::PollPendingAssetLoad()
     }
     if (!m_PendingAssetLoad->Valid() ||
         m_PendingAssetLoad->wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
-    {
-        // The state follows the load while it runs (a texture's cook starts after its load was
-        // queued), a few times a second rather than every frame.
-        const auto now = std::chrono::steady_clock::now();
-        if (now - m_PendingAssetLineRefreshedAt >= kPendingAssetLineRefreshInterval)
-        {
-            m_PendingAssetLineRefreshedAt = now;
-            RefreshPendingAssetLoadState();
-        }
         return;
-    }
     // Held until the presentation below takes it from the asset manager.
     const SharedPtr<Asset> landed = m_PendingAssetLoad->get();
     m_PendingAssetLoad.reset();
@@ -6823,12 +6131,6 @@ void InspectorPanel::TickSimulationRefresh()
 
     // The derived state lands with the hierarchy pass, a frame after the switch that caused it.
     SyncEntityActivityPresentation();
-
-    if (m_EntityRefreshAfterTextEdit && !HasTextEditFocus())
-    {
-        m_EntityRefreshAfterTextEdit = false;
-        RequestEntityRefresh();
-    }
 
     for (auto& entry : m_SectionRefreshCallbacks)
     {

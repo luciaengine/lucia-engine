@@ -1,7 +1,5 @@
 #include "TerrainGrass/TerrainGrassRenderNode.h"
 
-#include "GrassBladeInstanceGPU.h"
-#include "TerrainECS/TerrainPageFeature.h"
 #include "TerrainECS/TerrainRenderFeature.h"
 #include "TerrainGrass/TerrainGrassPlacementStats.h"
 #include "TerrainGrass/TerrainGrassRenderFeature.h"
@@ -10,8 +8,8 @@
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/CommandList.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
-#include <cstdlib>
 #include <cstring>
 #include <memory>
 
@@ -97,7 +95,7 @@ void TerrainGrassRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDecl
     // returns here nothing downstream runs (no forward contributor, no placement pass) -> total silence
     // on both the emit + dispatch traces. The counts are renderer-blind (the params SSBO the
     // extraction fills); log the slot + counts the node reads vs what the extraction reports.
-    static const bool kDbg = std::getenv("GE_TERRAIN_GRASS_DEBUG") != nullptr;
+    static const bool kDbg = Platform::EnvironmentSwitchEnabled("GE_TERRAIN_GRASS_DEBUG", false);
     {
         static uint32 s_LastActive = 0xFFFFFFFFu, s_LastParams = 0xFFFFFFFFu;
         if (kDbg && (activeGrassCount != s_LastActive || terrainParamsCount != s_LastParams))
@@ -152,8 +150,7 @@ void TerrainGrassRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDecl
     // re-run would write, so the pass is not declared at all. The imports, the world-read emit and the
     // readback below still happen — an elided frame's grass is drawn from retained buffers and the
     // instrument keeps reporting the numbers that describe them, rather than going dark.
-    if (!grass.ShouldSkipPlacement(*terrainFeature, rs.GetFeature<TerrainECS::TerrainPageFeature>(), viewId,
-                                    frameIndex))
+    if (!grass.ShouldSkipPlacement(*terrainFeature, viewId, frameIndex))
     {
         const RenderGraph::RGPass placePass = d.Frame.AddPass(
             d.PassName("Place").c_str(), Rendering::PassPhase::kEarlySetup,
@@ -284,22 +281,20 @@ void TerrainGrassRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDecl
         }
 
         // Instance root positions (WorldX, WorldZ, RootY of the first 3 blades) — proves whether the
-        // baked roots sit on the terrain surface. The first 3 fields of a GrassBladeInstance are the
-        // world XZ + RootY.
+        // baked roots sit on the terrain surface. GrassBladeInstance is 48 bytes; the first 3 fields
+        // are the world XZ + RootY.
         //
         // The placement compute never rewrites the instance buffer when it places 0 blades, so this readback
         // would otherwise echo the last non-zero frame's roots as if they were live. Gate on the
         // resolved placed count: only a readback whose placed count is known > 0 may print roots;
         // placed == 0 prints its own line (on state change), and an unresolved count prints nothing.
-        constexpr uint32 kFloats = kGrassBladeInstanceBytes / sizeof(float);
-        constexpr uint32 kRootsReadbackBytes = kGrassBladeInstanceBytes * 3u;
         static std::shared_ptr<Rendering::RGBufferReadbackTicket> s_RootTicket;
         static float s_LastRootY = -1e9f;
         static bool s_RootsIdle = false;
         if (s_RootTicket)
         {
             Rendering::BufferReadbackResult res{};
-            if (s_RootTicket->TryGet(res) && res.bytes.size() >= kRootsReadbackBytes)
+            if (s_RootTicket->TryGet(res) && res.bytes.size() >= 48u * 3u)
             {
                 if (s_LastPlaced == 0)
                 {
@@ -322,8 +317,8 @@ void TerrainGrassRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDecl
                         s_LastRootY = f[2];
                         Logger::Log::Info(
                             "TerrainGrass.Roots view={} i0=({},{},{}) i1=({},{},{}) i2=({},{},{})",
-                            static_cast<uint32>(viewId), f[0], f[1], f[2], f[kFloats], f[kFloats + 1],
-                            f[kFloats + 2], f[2 * kFloats], f[2 * kFloats + 1], f[2 * kFloats + 2]);
+                            static_cast<uint32>(viewId), f[0], f[1], f[2], f[12], f[13], f[14],
+                            f[24], f[25], f[26]);
                     }
                 }
                 s_RootTicket.reset();
@@ -331,7 +326,7 @@ void TerrainGrassRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDecl
         }
         if (!s_RootTicket)
             s_RootTicket = Rendering::RequestBufferReadbackRG(device, d.Frame, instancesRG, 0u,
-                                                             kRootsReadbackBytes, "TerrainGrass.Roots");
+                                                             48u * 3u, "TerrainGrass.Roots");
     }
 }
 

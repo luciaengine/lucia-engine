@@ -214,7 +214,7 @@ class ListView : public UIElement
 
     void OnEvent(UIEvent& e) override;
 
-    // IVirtualizedControl (C-8 per-frame provider change pump).
+    // IVirtualizedControl (per-frame provider change pump).
     uint64_t ProviderChangeVersion() const override { return m_Provider ? m_Provider->GetChangeVersion() : 0; }
     void EnqueuePumpWork(UIManager& ui) override;
 
@@ -266,7 +266,7 @@ class ListView : public UIElement
     uint64_t m_LastProviderChangeVersion = 0;
     // Last provider StructureVersion the consume path acted on. Movement means a
     // structural mutation (add/remove/reorder) that must rebuild the window and
-    // the height cache — see ChangeTrackingProviderBase's contract note (C-7).
+    // the height cache — see ChangeTrackingProviderBase's contract note.
     uint64_t m_LastProviderStructureVersion = 0;
     ListChangeSet m_PendingChangeSet;
     bool m_PendingChangeSetValid = false;

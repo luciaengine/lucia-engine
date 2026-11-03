@@ -39,7 +39,7 @@ layout(std430, set = 0, binding = 5) writeonly buffer ProbeResults
     float Heights[];
 };
 
-uint CBT_PageTableWord(uint index)
+uint CBT_PageTableEntry(uint index)
 {
     return Entries[index];
 }
@@ -47,10 +47,6 @@ uint CBT_PageTableWord(uint index)
 float CBT_PageSlotFade(uint slot)
 {
     return SlotFade[slot];
-}
-
-void CBT_PageUnresolved()
-{
 }
 
 CBTPageLevel CBT_PageLevelShape(uint level)

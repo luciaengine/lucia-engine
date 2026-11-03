@@ -1,12 +1,12 @@
 #include "Ocean/OceanGPUQuery.h"
-#include "Ocean/OceanShader/OceanShaderProgram.h"
-#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
-#include "OceanShader/OceanShaderDirectory.h"
+#include "Ocean/OceanShaderProgram.h"
+#include "Rendering/Materials/ShaderLayoutShape.h"
+#include "OceanShaderDirectory.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Materials/ShaderCompileService.h"
 
 #include <algorithm>
 #include <cstring>
@@ -208,10 +208,9 @@ void OceanGPUQuery::PollCompleted(IDevice* device)
         OceanSurfaceSample& sample = samples[i];
         sample.Valid = true;
         sample.Source = OceanQuerySource::GPUQuery;
-        sample.PositionWS = Mathematics::Vector3(mapped[i].Position.x, mapped[i].Position.y, mapped[i].Position.z);
-        sample.NormalWS = Mathematics::Vector3(mapped[i].Normal.x, mapped[i].Normal.y, mapped[i].Normal.z);
-        sample.DisplacementWS =
-            Mathematics::Vector3(mapped[i].Displacement.x, mapped[i].Displacement.y, mapped[i].Displacement.z);
+        std::memcpy(sample.PositionWS, mapped[i].Position, sizeof(float32) * 3u);
+        std::memcpy(sample.NormalWS, mapped[i].Normal, sizeof(float32) * 3u);
+        std::memcpy(sample.DisplacementWS, mapped[i].Displacement, sizeof(float32) * 3u);
         sample.Height = sample.PositionWS[1];
     }
     m_Readback.Unmap(device);

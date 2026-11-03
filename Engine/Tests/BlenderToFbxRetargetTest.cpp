@@ -10,7 +10,7 @@
 // via auto-imported HumanoidRig sidecars on both sides + AutoCreateRetargetMap.
 //
 // Skip-gated when:
-//   * Tests/BlendSamples/ellie/...ellie_animation.blend
+//   * Tools/ai/retarget-redesign/blend-samples/ellie/...ellie_animation.blend
 //     is not extracted on this machine (the bundle is large + user-local +
 //     gitignored).
 //   * Assets/Models/FBXTest/BusinessMale.fbx is not present.
@@ -30,13 +30,13 @@
 #include "Animation/AnimationPose.h"
 #include "Animation/EvaluationContext.h"
 #include "Animation/HumanBone.h"
-#include "Animation/Humanoid/HumanoidImport.h"
-#include "Animation/Humanoid/HumanoidNameMatcher.h"
-#include "Animation/Humanoid/HumanoidRig.h"
+#include "Animation/HumanoidImport.h"
+#include "Animation/HumanoidNameMatcher.h"
+#include "Animation/HumanoidRig.h"
 #include "Animation/PoseStack.h"
 #include "Animation/RetargetMap.h"
-#include "Animation/Skeleton/SkeletonData.h"
-#include "Animation/Skeleton/SkeletonProfile.h"
+#include "Animation/SkeletonData.h"
+#include "Animation/SkeletonProfile.h"
 
 #include "Components/Animation/HumanoidRetargeterComponent.h"
 
@@ -68,7 +68,7 @@ namespace
 constexpr const char* kBusinessMaleRel  = "Assets/Models/FBXTest/BusinessMale.fbx";
 constexpr const char* kSkeletonProfile  = "Assets/SkeletonProfiles/HumanoidStandard.profile.json";
 constexpr const char* kEllieBlendRel    =
-    "Tests/BlendSamples/ellie/asset-demo-bundle-4.0-ellie-animation/ellie_animation/ellie_animation.blend";
+    "Tools/ai/retarget-redesign/blend-samples/ellie/asset-demo-bundle-4.0-ellie-animation/ellie_animation/ellie_animation.blend";
 
 fs::path StagedRoot()
 {

@@ -135,7 +135,7 @@ TEST(SubtreeDirtyTests, IntegrationClearsOnRootAfterUpdate)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* leaf = r->FindById("leaf"_sid);
+    UIElement* leaf = r->FindById("leaf");
     ASSERT_NE(leaf, nullptr);
 
     EXPECT_FALSE(r->IsDirty(UIElement::SubtreeDirty))
@@ -185,7 +185,7 @@ TEST(SubtreeDirtyTests, FastPathFiresOnSteadyState)
     // way production frames do: one element dirty, sibling subtrees clean.
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* b = r->FindById("b"_sid);
+    UIElement* b = r->FindById("b");
     ASSERT_NE(b, nullptr);
     b->MarkDirty(UIElement::StyleDirty);
     ui.Update(0.0f, /*interactive=*/true);
@@ -222,7 +222,7 @@ TEST(SubtreeDirtyTests, FastPathRespectsDisabledFlag)
     // slow-paths under the disabled flag.
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* a = r->FindById("a"_sid);
+    UIElement* a = r->FindById("a");
     ASSERT_NE(a, nullptr);
     a->MarkDirty(UIElement::StyleDirty);
     ui.Update(0.0f, /*interactive=*/true);
@@ -323,7 +323,7 @@ TEST(SubtreeDirtyTests, MountHostFastPathsWhenTargetClean)
 
     UIElement* r = ui.GetRootElement();
     ASSERT_NE(r, nullptr);
-    UIElement* b = r->FindById("b"_sid);
+    UIElement* b = r->FindById("b");
     ASSERT_NE(b, nullptr);
 
     // Heavy frame with the Mount-host subtree clean: container must skip.
@@ -338,7 +338,7 @@ TEST(SubtreeDirtyTests, MountHostFastPathsWhenTargetClean)
 
     // Counter-check: dirt INSIDE the target forces the host chain back
     // onto the slow path that frame (the skip must not hide it).
-    UIElement* targetLeaf = targetOwner->FindById("target-leaf"_sid);
+    UIElement* targetLeaf = targetOwner->FindById("target-leaf");
     ASSERT_NE(targetLeaf, nullptr);
     targetLeaf->MarkDirty(UIElement::StyleDirty);
     ui.Update(0.0f, /*interactive=*/true);
@@ -398,7 +398,7 @@ TEST(SubtreeDirtyTests, MountSwapWithPendingInsertNoUaf)
     ASSERT_NO_FATAL_FAILURE(ui.Update(0.0f, /*interactive=*/true));
 }
 
-// Style-override mutation must propagate SubtreeDirty via the StyleDeclaration
+// Style-override mutation must propagate SubtreeDirty via the StyleOverrides
 // dirty callback wired in UIElement's constructor. Before this was added,
 // Override().Set/Reset/Clear flipped internal flags without routing through
 // MarkDirty, so the fast-path had to abort mid-iteration via a per-entry
@@ -415,7 +415,7 @@ TEST(SubtreeDirtyTests, OverrideSetPropagatesSubtreeDirty)
     leaf->ClearDirty(~0u);
 
     // Layout-impact override on leaf — must propagate SubtreeDirty all the way up.
-    leaf->Style().Set(Style::Width, StyleLength::Px(42.0f));
+    leaf->Overrides().Set(Style::Width, StyleLength::Px(42.0f));
 
     EXPECT_TRUE(leaf->IsDirty(UIElement::LayoutDirty));
     EXPECT_TRUE(leaf->IsDirty(UIElement::SubtreeDirty));
@@ -438,7 +438,7 @@ TEST(SubtreeDirtyTests, OverrideSetVisualPropagates)
     leaf->ClearDirty(~0u);
 
     // Visual-impact override (BackgroundColor).
-    leaf->Style().Set(Style::BackgroundColor, 0xFFFFFFFFu);
+    leaf->Overrides().Set(Style::BackgroundColor, 0xFFFFFFFFu);
 
     EXPECT_TRUE(leaf->IsDirty(UIElement::VisualDirty));
     // Visual-only propagation deliberately does NOT set SubtreeDirty (paint-only).
@@ -504,15 +504,15 @@ TEST(SubtreeDirtyTests, DisplayNoneDescendantClearsAncestorSubtreeDirty)
     ui.Update(0.0f, true);
 
     UIElement* r = ui.GetRootElement();
-    UIElement* hidden = r->FindById("hidden"_sid);
-    UIElement* leaf = r->FindById("leaf"_sid);
+    UIElement* hidden = r->FindById("hidden");
+    UIElement* leaf = r->FindById("leaf");
     ASSERT_NE(hidden, nullptr);
     ASSERT_NE(leaf, nullptr);
 
     // Dirty the leaf, then hide its parent via inline display:none. Both
     // actions mark SubtreeDirty up the ancestor chain.
     leaf->MarkDirty(UIElement::StyleDirty);
-    hidden->Style().Set(Style::Display, DisplayMode::None);
+    hidden->Overrides().Set(Style::Display, DisplayMode::None);
     EXPECT_TRUE(r->IsDirty(UIElement::SubtreeDirty));
 
     // Frame 2: the hidden subtree's slow path hits the display:none branch
@@ -567,35 +567,35 @@ TEST(SubtreeDirtyTests, DisplayNoneFlipRebuildsIndicesForAdjacentSiblings)
     ui.Update(0.0f, true);
 
     UIElement* r = ui.GetRootElement();
-    UIElement* a = r->FindById("a"_sid);
-    UIElement* b = r->FindById("b"_sid);
+    UIElement* a = r->FindById("a");
+    UIElement* b = r->FindById("b");
     ASSERT_NE(a, nullptr);
     ASSERT_NE(b, nullptr);
 
     // Hide 'a' via inline display:none. Its descendants (a1/a2/a3) vanish
     // from ctx.nodes via the display:none early-return. 'b' stays.
-    a->Style().Set(Style::Display, DisplayMode::None);
+    a->Overrides().Set(Style::Display, DisplayMode::None);
     ui.Update(0.0f, true);
 
     // b must still be known to the manager — if the IndicesAndClips skip
     // gate had wrongly fired, nodeIndexByElement might still have entries
     // pointing at indices that no longer match ctx.nodes (because a1/a2/a3
     // are gone but nodeIndexByElement wasn't rebuilt).
-    EXPECT_EQ(r->FindById("b"_sid), b);
+    EXPECT_EQ(r->FindById("b"), b);
     EXPECT_TRUE(b->IsEnabled());
 
     // Show 'a' again. a1/a2/a3 re-appear in ctx.nodes, ctx.nodes size grows.
-    a->Style().Reset(Style::Display);
+    a->Overrides().Reset(Style::Display);
     ui.Update(0.0f, true);
 
-    EXPECT_EQ(r->FindById("a1"_sid), a->GetChildren()[0].get());
-    EXPECT_EQ(r->FindById("a3"_sid), a->GetChildren()[2].get());
+    EXPECT_EQ(r->FindById("a1"), a->GetChildren()[0].get());
+    EXPECT_EQ(r->FindById("a3"), a->GetChildren()[2].get());
 
     // One more steady-state frame to confirm the skip gate now reuses
     // correctly-populated maps.
     ui.Update(0.0f, true);
-    EXPECT_EQ(r->FindById("a2"_sid), a->GetChildren()[1].get());
-    EXPECT_EQ(r->FindById("b"_sid), b);
+    EXPECT_EQ(r->FindById("a2"), a->GetChildren()[1].get());
+    EXPECT_EQ(r->FindById("b"), b);
 }
 
 // ---------------------------------------------------------------------------
@@ -767,8 +767,8 @@ TEST(ProductionPathTests, OrderClassChangeReordersYogaChildren)
     ui.Update(0.0f, /*interactive=*/true);
 
     UIElement* r = ui.GetRootElement();
-    UIElement* a = r->FindById("a"_sid);
-    UIElement* b = r->FindById("b"_sid);
+    UIElement* a = r->FindById("a");
+    UIElement* b = r->FindById("b");
     ASSERT_NE(a, nullptr);
     ASSERT_NE(b, nullptr);
     YGNodeRef rootYg = r->m_YogaState ? r->m_YogaState->Node : nullptr;
@@ -811,8 +811,8 @@ TEST(ProductionPathTests, OrderOverrideReordersYogaChildren)
     ui.Update(0.0f, /*interactive=*/true);
 
     UIElement* r = ui.GetRootElement();
-    UIElement* a = r->FindById("a"_sid);
-    UIElement* b = r->FindById("b"_sid);
+    UIElement* a = r->FindById("a");
+    UIElement* b = r->FindById("b");
     ASSERT_NE(a, nullptr);
     ASSERT_NE(b, nullptr);
     YGNodeRef rootYg = r->m_YogaState ? r->m_YogaState->Node : nullptr;
@@ -824,7 +824,7 @@ TEST(ProductionPathTests, OrderOverrideReordersYogaChildren)
     ASSERT_EQ(YGNodeGetChild(rootYg, 0), aYg) << "Document order before override";
 
     // LayoutDirty-only mutation: no class, no stylesheet, no StyleDirty.
-    a->Style().Set(Style::Order, 5);
+    a->Overrides().Set(Style::Order, 5);
     EXPECT_FALSE(a->IsDirty(UIElement::StyleDirty));
     ui.Update(0.0f, /*interactive=*/true);
     ui.Update(0.0f, /*interactive=*/true);
@@ -835,14 +835,16 @@ TEST(ProductionPathTests, OrderOverrideReordersYogaChildren)
     EXPECT_EQ(YGNodeGetChild(rootYg, 1), aYg);
 
     // And back: clearing the override restores document order.
-    a->Style().Reset(Style::Order);
+    a->Overrides().Reset(Style::Order);
     ui.Update(0.0f, /*interactive=*/true);
     ui.Update(0.0f, /*interactive=*/true);
     EXPECT_EQ(YGNodeGetChild(rootYg, 0), aYg)
         << "resetting the order override must restore document order";
 }
 
-// A WeightedPane::SetFlexWeight change reaches Yoga on the next Update.
+// Splitter regression: a WeightedPane::SetFlexWeight change must reach Yoga on
+// the next Update — a weight that never reached the node caused the
+// docked-panel splitter snap-back bug in the Editor.
 TEST(ProductionPathTests, WeightedPaneFlexWeightReachesYoga)
 {
     auto* dev = SharedHeadlessDevice();
@@ -863,7 +865,6 @@ TEST(ProductionPathTests, WeightedPaneFlexWeightReachesYoga)
     // Mimic Splitter::UpdateDrag: change only the flex weight.
     paneRaw->SetFlexWeight(0.75f);
     EXPECT_TRUE(paneRaw->IsDirty(UIElement::LayoutDirty));
-    EXPECT_FALSE(paneRaw->IsDirty(UIElement::StyleDirty));
 
     ui.Update(0.0f, /*interactive=*/true);
 
@@ -875,37 +876,6 @@ TEST(ProductionPathTests, WeightedPaneFlexWeightReachesYoga)
     EXPECT_FALSE(paneRaw->IsDirty(UIElement::LayoutDirty))
         << "Update must clear LayoutDirty or the element stays dirty every "
            "frame";
-}
-
-// The weight is the pane's resolved flex-grow and wins over a CSS flex-grow.
-TEST(ProductionPathTests, WeightedPaneWeightIsTheResolvedFlexGrow)
-{
-    auto* dev = SharedHeadlessDevice();
-    if (!dev) GTEST_SKIP() << "Device init failed";
-    UIRegistration::RegisterBuiltInControls();
-
-    auto root = std::make_unique<UIElement>("root");
-    auto paneOwner = std::make_unique<WeightedPane>(0.25f);
-    WeightedPane* paneRaw = paneOwner.get();
-    paneRaw->AddClass("split-pane");
-    root->AddChild(std::move(paneOwner));
-
-    UIManager ui(dev);
-    ui.SetRoot(std::move(root));
-
-    auto sheet = std::make_shared<Stylesheet>();
-    ASSERT_TRUE(CSSParser::ParseStylesFromString(".split-pane { flex-grow: 4; }\n", *sheet));
-    ui.AddStylesheet(StylesheetHandle(sheet));
-
-    ui.Update(0.0f, /*interactive=*/true);
-    EXPECT_FLOAT_EQ(paneRaw->GetResolvedStyle().Layout.FlexGrow, 0.25f);
-
-    paneRaw->SetFlexWeight(0.6f);
-    ui.Update(0.0f, /*interactive=*/true);
-    EXPECT_FLOAT_EQ(paneRaw->GetResolvedStyle().Layout.FlexGrow, 0.6f);
-    YGNodeRef paneYg = paneRaw->m_YogaState ? paneRaw->m_YogaState->Node : nullptr;
-    ASSERT_NE(paneYg, nullptr);
-    EXPECT_FLOAT_EQ(YGNodeStyleGetFlexGrow(paneYg), 0.6f);
 }
 
 // Text elements whose measure context was wiped must get the Yoga measure
@@ -965,11 +935,11 @@ TEST(ProductionPathTests, InheritedFontSizeFansOutOnUpdate)
     ui.Update(0.0f, /*interactive=*/true);
 
     UIElement* r = ui.GetRootElement();
-    UIElement* b1 = r->FindById("b1"_sid);
+    UIElement* b1 = r->FindById("b1");
     ASSERT_NE(b1, nullptr);
     ASSERT_NE(b1->GetResolvedStyle().Visual.FontSize, 24.0f);
 
-    r->Style().Set(Style::FontSize, StyleLength::Px(24.0f));
+    r->Overrides().Set(Style::FontSize, StyleLength::Px(24.0f));
     ui.Update(0.0f, /*interactive=*/true);
     ui.Update(0.0f, /*interactive=*/true);
 
@@ -1003,9 +973,9 @@ TEST(ProductionPathTests, SiblingCombinatorStyleAppliesOnUpdate)
     ui.Update(0.0f, /*interactive=*/true);
 
     UIElement* r = ui.GetRootElement();
-    UIElement* a = r->FindById("a"_sid);
-    UIElement* b = r->FindById("b"_sid);
-    UIElement* c = r->FindById("c"_sid);
+    UIElement* a = r->FindById("a");
+    UIElement* b = r->FindById("b");
+    UIElement* c = r->FindById("c");
     ASSERT_NE(a, nullptr);
     ASSERT_NE(b, nullptr);
     ASSERT_NE(c, nullptr);
@@ -1054,7 +1024,7 @@ TEST(ProductionPathTests, NoSiblingSmearWithoutCombinator)
     ui.Update(0.0f, /*interactive=*/true);
 
     UIElement* r = ui.GetRootElement();
-    UIElement* b = r->FindById("b"_sid);
+    UIElement* b = r->FindById("b");
     ASSERT_NE(b, nullptr);
 
     b->MarkDirty(UIElement::StyleDirty);

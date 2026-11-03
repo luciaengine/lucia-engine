@@ -58,7 +58,7 @@ struct PseudoClass {
     NthPattern Nth{};
     std::vector<std::shared_ptr<SelectorChain>> SelectorList;
     std::string CustomName;
-    // Stage 5 Block C: hashed lowercase form of CustomName, populated by
+    // Hashed lowercase form of CustomName, populated by
     // the CSS parser when Kind == Custom. Lets MatchesSelectorChain compare
     // by StringId against UIElement::m_CustomStateIds without per-match
     // string hashing or allocation.
@@ -94,7 +94,7 @@ struct SelectorTerm {
 // CSS specificity triple. Compared lexicographically (A, then B, then C) —
 // never flattened into one integer: a packed encoding gives each tier a
 // finite radix, so e.g. 100 class selectors would overflow into the id tier
-// and out-rank a genuine #id rule (C-10).
+// and out-rank a genuine #id rule.
 struct Specificity {
     int A = 0;
     int B = 0;

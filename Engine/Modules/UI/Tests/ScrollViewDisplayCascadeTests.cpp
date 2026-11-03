@@ -1,8 +1,8 @@
 // GitHub #1382 — a stylesheet must be able to hide a ScrollView.
 //
-// ScrollView's constructor used to set `display` in the element's code style,
-// Style(). Style() lands on the resolved style AFTER the cascade
-// (UIManager::FinalizeElementStyle), so no rule could outrank it and every
+// ScrollView used to set `display` as an inline style override in its
+// constructor. Overrides land on the resolved style AFTER the cascade
+// (UIManager_StyleResolve.cpp), so no rule could outrank them and every
 // `... scrollview { display: none; }` in the shipped theme was dead. The
 // graph panel's collapsed palette is the specimen: double-clicking the title
 // hid the search row and the content, and left the scroller behind.
@@ -18,7 +18,7 @@
 #include "UI/ResolvedStyle.h"
 #include "UI/UIStyle.h"
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h"
 
 #include <filesystem>
 #include <fstream>
@@ -27,7 +27,7 @@
 #include <string>
 
 using GameEngine::DisplayMode;
-using GameEngine::ApplicationPaths;
+using GameEngine::PathUtils;
 using GameEngine::UITesting::IsolatedUIFixture;
 
 namespace
@@ -38,7 +38,7 @@ namespace
 // executable directory, never back into the source tree.
 std::string ReadShippedCss(const std::string& relative)
 {
-    std::ifstream in(ApplicationPaths::GetExecutableDirectory() / "Assets" / "UI" / relative,
+    std::ifstream in(PathUtils::GetExecutableDirectory() / "Assets" / "UI" / relative,
                      std::ios::binary);
     if (!in)
         return {};

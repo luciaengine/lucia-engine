@@ -1,7 +1,6 @@
 #include "Components/Rendering/Particles.h"
 
 #include "Components/Rendering/ParticleRenderer.h"
-#include "Mathematics/Interpolation.h"
 #include "Particles/ParticleFlipbook.h"
 
 #include <algorithm>
@@ -31,7 +30,7 @@ float FlipbookFrame(const ParticleRenderer& renderer, float age, float lifetime,
     // frames - 1 would reach that cell only at death.
     const float phase = renderer.FrameRate > 0.0f
                             ? std::max(0.0f, age) * renderer.FrameRate
-                            : Math::Clamp01(age / std::max(lifetime, 0.001f)) * static_cast<float>(frames);
+                            : std::clamp(age / std::max(lifetime, 0.001f), 0.0f, 1.0f) * static_cast<float>(frames);
     float frame = renderer.StartFrame + offset * frames + phase * speed;
     if (!std::isfinite(frame))
         return 0.0f;

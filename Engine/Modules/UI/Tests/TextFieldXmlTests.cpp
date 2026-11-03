@@ -12,7 +12,7 @@ using namespace GameEngine::UIParsing;
 
 namespace {
 
-UIElement* FindById(UIElement* root, StringId id)
+UIElement* FindById(UIElement* root, const std::string& id)
 {
     return root ? root->FindById(id) : nullptr;
 }
@@ -33,7 +33,7 @@ TEST(TextFieldXmlTests, TextFieldElementParsesToTextField)
     ASSERT_TRUE(XMLParser::ParseLayoutFromString(xml, root));
     ASSERT_TRUE(root);
 
-    UIElement* el = FindById(root.get(), "field"_sid);
+    UIElement* el = FindById(root.get(), "field");
     ASSERT_NE(el, nullptr);
 
     auto* tf = dynamic_cast<TextField*>(el);
@@ -55,7 +55,7 @@ TEST(TextFieldXmlTests, InputTagAliasesToTextField)
     ASSERT_TRUE(XMLParser::ParseLayoutFromString(xml, root));
     ASSERT_TRUE(root);
 
-    UIElement* el = FindById(root.get(), "legacy"_sid);
+    UIElement* el = FindById(root.get(), "legacy");
     ASSERT_NE(el, nullptr);
 
     auto* tf = dynamic_cast<TextField*>(el);
@@ -81,9 +81,9 @@ TEST(TextFieldXmlTests, SelectAllOnMouseFocusAttributeOverridesTheDefault)
     ASSERT_TRUE(XMLParser::ParseLayoutFromString(xml, root));
     ASSERT_TRUE(root);
 
-    auto* byDefault = dynamic_cast<TextField*>(FindById(root.get(), "default"_sid));
-    auto* optedIn = dynamic_cast<TextField*>(FindById(root.get(), "optedIn"_sid));
-    auto* optedOut = dynamic_cast<TextField*>(FindById(root.get(), "optedOut"_sid));
+    auto* byDefault = dynamic_cast<TextField*>(FindById(root.get(), "default"));
+    auto* optedIn = dynamic_cast<TextField*>(FindById(root.get(), "optedIn"));
+    auto* optedOut = dynamic_cast<TextField*>(FindById(root.get(), "optedOut"));
     ASSERT_NE(byDefault, nullptr);
     ASSERT_NE(optedIn, nullptr);
     ASSERT_NE(optedOut, nullptr);
@@ -107,7 +107,7 @@ TEST(TextFieldXmlTests, LowercaseTextfieldTagAlsoWorks)
     ASSERT_TRUE(XMLParser::ParseLayoutFromString(xml, root));
     ASSERT_TRUE(root);
 
-    UIElement* el = FindById(root.get(), "lower"_sid);
+    UIElement* el = FindById(root.get(), "lower");
     ASSERT_NE(el, nullptr);
 
     auto* tf = dynamic_cast<TextField*>(el);

@@ -25,6 +25,12 @@ namespace ECS {
 // The authored "this entity is off" marker, serialised as `Disabled.present`.
 struct Disabled {};
 
+// Transient construction barrier, not authored enable state. Native and
+// type-erased queries exclude these rows even when including disabled objects.
+// Direct handle access remains available to the owner-thread scene builder.
+// Never serialize this tag or remove it before scene publication is requested.
+struct PendingActivation {};
+
 // Derived state: set on an entity that is itself disabled or has a disabled
 // ancestor. Never authored and never serialised — it is re-derived from the
 // Parent chain whenever the hierarchy or an enable state changes (the engine's

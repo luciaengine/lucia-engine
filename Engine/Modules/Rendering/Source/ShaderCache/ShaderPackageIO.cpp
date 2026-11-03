@@ -4,7 +4,7 @@
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/Device.h"
 #include "Types/StringUtils.h"
-#include "Rendering/Materials/Shader/ShaderMetaJson.h"
+#include "Rendering/Materials/ShaderMetaJson.h"
 #include "Rendering/ShaderCache/ShaderMetaBinary.h"
 #include "Rendering/ShaderCache/ShaderPackageContainer.h"
 

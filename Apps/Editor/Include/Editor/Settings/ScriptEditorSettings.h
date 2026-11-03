@@ -1,8 +1,14 @@
 #pragma once
 
 #include "Editor/Settings/SettingsStore.h"
+#include "Editor/Settings/TrackedEditorWindows.h"
 
 #include <algorithm>
+
+namespace GameEngine
+{
+class UIManager;
+}
 
 namespace GameEngine::Editor
 {
@@ -12,6 +18,11 @@ namespace GameEngine::Editor
 class ScriptEditorSettings
 {
 public:
+    static constexpr bool kDefaultOpenInScriptInspector = true;
+    static constexpr bool kDefaultOpenShaderGraphGlslInMaterialGraph = true;
+    static constexpr float kDefaultLineHeight = 1.0f;
+    static constexpr float kMinLineHeight = 0.5f;
+    static constexpr float kMaxLineHeight = 4.0f;
     static ScriptEditorSettings& Get()
     {
         static ScriptEditorSettings instance;
@@ -80,13 +91,19 @@ public:
         Save();
     }
 
-    // Line height multiplier for the script editor textarea (default 1.0).
+    // Line height multiplier for the script editor textarea (default 1.0), in
+    // multiples of the script face's own line. Setting it persists and restyles
+    // every editor window the line height has been applied to.
     float GetLineHeight() const { return m_LineHeight; }
-    void SetLineHeight(float value)
-    {
-        m_LineHeight = std::clamp(value, 0.5f, 4.0f);
-        Save();
-    }
+    void SetLineHeight(float value);
+
+    // Push the script line height into `ui` and track it for later changes.
+    // Call once per editor window, after its font preferences are applied.
+    void ApplyTo(UIManager* ui);
+
+    // Re-derive the line height in every tracked window: the multiplier is
+    // relative to the script face, so a font change needs a new value.
+    void ReapplyLineHeight();
 
     // Text size percentage for the main script editor (default 100%).
     float GetTextScalePercent() const { return m_TextScalePercent; }
@@ -104,11 +121,14 @@ private:
     ScriptEditorSettings(const ScriptEditorSettings&) = delete;
     ScriptEditorSettings& operator=(const ScriptEditorSettings&) = delete;
 
+    void ApplyLineHeightToWindow(UIManager& ui) const;
+
     bool  m_OpenInScriptInspector = true;
     bool  m_OpenNativeSourceInScriptInspector = false; // native C/C++ defaults to the external IDE
     bool  m_OpenShaderGraphGlslInMaterialGraph = true;
     float m_LineHeight = 1.0f;
     float m_TextScalePercent = 100.0f;
+    TrackedEditorWindows m_Windows;
 };
 
 } // namespace GameEngine::Editor

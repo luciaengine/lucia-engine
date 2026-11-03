@@ -10,7 +10,6 @@
 // albedoMap is provided by the adapter's bindless slot macro.
 
 #include "Includes/gpu_fog_shape.glsl"
-#include "Includes/reverse_z.glsl"
 
 SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 {
@@ -42,7 +41,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         vec2 depthSize = vec2(textureSize(ge_sceneDepth, 0));
         vec2 screenUV = clamp(gl_FragCoord.xy / max(depthSize, vec2(1.0)), vec2(0.0), vec2(1.0));
         float sceneRawDepth = texelFetch(ge_sceneDepth, ivec2(gl_FragCoord.xy), 0).r;
-        if (!IsBackgroundDepth(sceneRawDepth))
+        if (sceneRawDepth > 1e-6)
         {
             float sceneEyeDepth = GPUFogSceneEyeDepth(sceneRawDepth, screenUV);
             float fragmentEyeDepth = GPUFogSceneEyeDepth(gl_FragCoord.z, screenUV);

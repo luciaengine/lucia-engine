@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Ocean/OceanDepthCacheAsset.h"
-#include "Rendering/RenderLayerMask.h"
 #include "Types/Types.h"
 
 #include <filesystem>
@@ -16,7 +15,7 @@ namespace Engine::Renderer
 
 struct OceanSceneDepthBakeOptions
 {
-    Rendering::RenderLayerMask Layers = Rendering::RenderLayerMask::All();
+    uint32 RenderLayerMask = 0xFFFFFFFFu;
     bool LoadMissingAssets = true;
     bool IncludeDisabledRenderers = false;
     bool IncludeSkinnedMeshes = false;
@@ -36,14 +35,11 @@ struct OceanSceneDepthBakeStats
     uint32 SkippedSkinned = 0;
     uint32 SkippedTerrain = 0;
     uint32 SkippedUntagged = 0;
-    uint32 UnsampledTerrainTexels = 0; ///< texels on a terrain with no finest height yet: the bake fails
 };
 
-// Bakes the current scene's MeshRenderer geometry and planar terrains into a
-// saved ocean depth cache. Sources are filtered by Layers, transformed by
-// WorldTransform, and sampled top-down into Ocean's .oceandepth format. A terrain
-// is read at its finest height (SurfaceHeightQuery, RequireFinest), streamed out
-// or not; a texel on a terrain whose height store is still cooking fails the bake.
+// Bakes the current scene's MeshRenderer geometry and terrain heightfields into a
+// saved ocean depth cache. Sources are filtered by renderLayerMask, transformed by
+// WorldTransform, and sampled top-down into Ocean's .oceandepth format.
 bool BakeOceanDepthCacheFromSceneMeshes(ECS::World& world,
                                         const Ocean::OceanDepthCacheBakeDesc& desc,
                                         const OceanSceneDepthBakeOptions& options,

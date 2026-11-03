@@ -18,7 +18,6 @@ using GameEngine::Engine::Renderer::Material;
 using GameEngine::Engine::Renderer::RenderServices;
 using GameEngine::Engine::Renderer::SceneProbeRecaptureSchedule;
 using GameEngine::Engine::Renderer::SceneProbeWorldEpochs;
-using GameEngine::Engine::Renderer::ShadowCasterChangeScope;
 
 namespace
 {
@@ -32,14 +31,13 @@ constexpr GameEngine::StringId kRoughness = "roughness"_sid;
 constexpr int kBakesPerChange = 1 + static_cast<int>(SceneProbeRecaptureSchedule::kConvergenceBakes);
 
 // Ticks `frames` frames, baking whenever the schedule is due; returns the bake count.
-// `building`: a pipeline build is in flight on every one of those frames.
 int RunFrames(SceneProbeRecaptureSchedule& schedule, const SceneProbeWorldEpochs& epochs,
-              float interval, int frames, bool building = false)
+              float interval, int frames)
 {
     int bakes = 0;
     for (int frame = 0; frame < frames; ++frame)
     {
-        schedule.Tick(kFrameSeconds, epochs, building);
+        schedule.Tick(kFrameSeconds);
         if (!schedule.Due(kInputs, epochs, interval))
             continue;
         schedule.ConsumeBake(kInputs, epochs, interval >= 0.0f);
@@ -67,9 +65,9 @@ TEST(SceneProbeRecaptureSchedule, EveryWorldEpochRecapturesAtTheIntervalThenConv
 
     schedule.ConsumeBake(kInputs, epochs, /*realtime=*/true);
     ++epochs.Lights;
-    schedule.Tick(kInterval / 2.0f, epochs, false);
+    schedule.Tick(kInterval / 2.0f);
     EXPECT_FALSE(schedule.Due(kInputs, epochs, kInterval)) << "no faster than the interval";
-    schedule.Tick(kInterval / 2.0f, epochs, false);
+    schedule.Tick(kInterval / 2.0f);
     EXPECT_TRUE(schedule.Due(kInputs, epochs, kInterval));
     RunFrames(schedule, epochs, kInterval, kTenSecondsOfFrames);
 
@@ -82,7 +80,7 @@ TEST(SceneProbeRecaptureSchedule, EveryWorldEpochRecapturesAtTheIntervalThenConv
     }
 }
 
-TEST(SceneProbeRecaptureSchedule, OnceProbesIgnoreWorldContentAndIntervalZeroCapturesEveryFrame)
+TEST(SceneProbeRecaptureSchedule, OnceProbesIgnoreTheWorldAndIntervalZeroCapturesEveryFrame)
 {
     SceneProbeRecaptureSchedule once;
     SceneProbeWorldEpochs epochs{};
@@ -96,47 +94,6 @@ TEST(SceneProbeRecaptureSchedule, OnceProbesIgnoreWorldContentAndIntervalZeroCap
     EXPECT_FALSE(everyFrame.Due(0, SceneProbeWorldEpochs{}, 0.0f)) << "no content, no capture";
 }
 
-// A capture taken while a pipeline built is missing that draw. When the draw
-// can draw, a settled probe of either mode recaptures and converges again, or
-// how long the build took decides what the probe keeps.
-TEST(SceneProbeRecaptureSchedule, SettledProbesRecaptureWhenASkippedDrawCanDraw)
-{
-    for (const float interval : {kInterval, kOnceProbe})
-    {
-        SceneProbeRecaptureSchedule schedule;
-        SceneProbeWorldEpochs epochs{};
-        RunFrames(schedule, epochs, interval, kTenSecondsOfFrames);
-        ASSERT_EQ(RunFrames(schedule, epochs, interval, kTenSecondsOfFrames), 0) << "settled";
-
-        ++epochs.Pipelines;
-        EXPECT_EQ(RunFrames(schedule, epochs, interval, kTenSecondsOfFrames), kBakesPerChange)
-            << (interval < 0.0f ? "Once" : "realtime") << " probe after a pipeline landed";
-    }
-}
-
-// A level's shaders compiling land pipelines for seconds, sometimes further
-// apart than any fixed window. A Once probe waits until no build is in flight
-// and the Pipelines epoch has rested, then recaptures once with its
-// convergence bakes, instead of a full six-face bake per landing.
-TEST(SceneProbeRecaptureSchedule, OnceProbeRecapturesOnceAfterABurstOfPipelineLandings)
-{
-    constexpr int kLandings = 20;
-    constexpr int kFramesBetweenLandings = 4 * SceneProbeRecaptureSchedule::kPipelineRestFrames;
-    SceneProbeRecaptureSchedule schedule;
-    SceneProbeWorldEpochs epochs{};
-    RunFrames(schedule, epochs, kOnceProbe, kTenSecondsOfFrames);
-
-    int burstBakes = 0;
-    for (int landing = 0; landing < kLandings; ++landing)
-    {
-        ++epochs.Pipelines;
-        burstBakes += RunFrames(schedule, epochs, kOnceProbe, kFramesBetweenLandings, /*building=*/true);
-    }
-    EXPECT_EQ(burstBakes, 0) << "no recapture while pipelines are still building";
-    EXPECT_EQ(RunFrames(schedule, epochs, kOnceProbe, kTenSecondsOfFrames), kBakesPerChange)
-        << "one recapture and its convergence bakes once the builds are done";
-}
-
 TEST(SceneProbeRecaptureSchedule, EpochsReadContentCasterLightAndMaterialVersions)
 {
     RenderServices rs;
@@ -148,7 +105,7 @@ TEST(SceneProbeRecaptureSchedule, EpochsReadContentCasterLightAndMaterialVersion
     EXPECT_NE(SceneProbeWorldEpochs::Read(rs, kWorld).RenderContent, before.RenderContent);
 
     before = SceneProbeWorldEpochs::Read(rs, kWorld);
-    rs.NotifyShadowCasterContentChanged(kWorld, {}, ShadowCasterChangeScope::Unbounded);
+    rs.NotifyShadowCasterContentChanged(kWorld, {}, /*unattributed=*/true);
     EXPECT_NE(SceneProbeWorldEpochs::Read(rs, kWorld).ShadowCasters, before.ShadowCasters);
 
     before = SceneProbeWorldEpochs::Read(rs, kWorld);

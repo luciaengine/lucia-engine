@@ -200,7 +200,7 @@ struct VisualStyle
     // accent on :root.
     uint32_t SelectionColor = 0xFF3A8FFFu;
 
-    // Effects (for future SDF renderer — Phase 6 enables via CSS)
+    // Effects (CSS `box-shadow` and `glow`)
     float GlowRadius = 0.0f;
     uint32_t GlowColor = 0x00000000u;
     float ShadowOffsetX = 0.0f;
@@ -210,12 +210,6 @@ struct VisualStyle
     bool ShadowInset = false;
 
     UI::TextEffects TextEffects;
-
-    // Paint-time transform (not inherited; reaches descendants at emit time
-    // through the transform slot chain). Percentages in both are of the
-    // element's own border box. UI/UITransform.h turns them into a matrix.
-    TransformValue Transform{};
-    TransformOriginValue TransformOrigin{};
 
     // Interaction / visibility
     float LocalOpacity = 1.0f;

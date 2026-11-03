@@ -1,15 +1,14 @@
 #include "Ocean/OceanSeabedDepth.h"
-#include "Mathematics/Interpolation.h"
-#include "Ocean/OceanShader/OceanShaderProgram.h"
-#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
-#include "OceanShader/OceanShaderDirectory.h"
+#include "Ocean/OceanShaderProgram.h"
+#include "Rendering/Materials/ShaderLayoutShape.h"
+#include "OceanShaderDirectory.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderCompileService.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 
 #include <algorithm>
@@ -831,7 +830,7 @@ bool OceanSeabedDepth::SampleDepth(float worldX, float worldZ, float& outDepth) 
             (1.0f - std::sqrt((relX / extentX) * (relX / extentX) +
                               (relZ / extentZ) * (relZ / extentZ))) *
             std::min(extentX, extentZ);
-        const float32 roundness = Math::Clamp01(dc.DepthShape[2]);
+        const float32 roundness = std::clamp(dc.DepthShape[2], 0.0f, 1.0f);
         const float32 edge = rectEdge * (1.0f - roundness) + ellipseEdge * roundness;
         const float32 feather = std::max(dc.DepthShape[1], 0.0f);
         depth = std::min(depth, OceanDepthBandDepth(std::max(dc.DepthShape[0], 0.0f), params.DepthBandSaturation,

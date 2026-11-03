@@ -5,41 +5,52 @@ namespace GameEngine::Engine::Renderer
 
 using namespace ::GameEngine::Rendering;
 
-std::optional<Mathematics::Vector3> ProjectToNdc(const CameraData& camera, const Mathematics::Vector3& position)
+bool ProjectToNdc(const float* viewProj, float x, float y, float z, float& outNdcX,
+                  float& outNdcY, float& outNdcDepth)
 {
-    const float x = position.x;
-    const float y = position.y;
-    const float z = position.z;
-    const float cx = camera.viewProj[0][0] * x + camera.viewProj[1][0] * y + camera.viewProj[2][0] * z + camera.viewProj[3][0];
-    const float cy = camera.viewProj[0][1] * x + camera.viewProj[1][1] * y + camera.viewProj[2][1] * z + camera.viewProj[3][1];
-    const float cz = camera.viewProj[0][2] * x + camera.viewProj[1][2] * y + camera.viewProj[2][2] * z + camera.viewProj[3][2];
-    const float cw = camera.viewProj[0][3] * x + camera.viewProj[1][3] * y + camera.viewProj[2][3] * z + camera.viewProj[3][3];
+    const float cx = viewProj[0] * x + viewProj[4] * y + viewProj[8] * z + viewProj[12];
+    const float cy = viewProj[1] * x + viewProj[5] * y + viewProj[9] * z + viewProj[13];
+    const float cz = viewProj[2] * x + viewProj[6] * y + viewProj[10] * z + viewProj[14];
+    const float cw = viewProj[3] * x + viewProj[7] * y + viewProj[11] * z + viewProj[15];
     if (cw <= 1e-5f)
-        return std::nullopt;
-    return Mathematics::Vector3(cx / cw, cy / cw, cz / cw);
+        return false;
+    outNdcX = cx / cw;
+    outNdcY = cy / cw;
+    outNdcDepth = cz / cw;
+    return true;
 }
 
-std::optional<Mathematics::Vector3> ProjectSunDirectionToNdc(const CameraData& camera, const Mathematics::Vector3& direction)
+bool ProjectSunDirectionToNdc(const CameraData& cam, const float direction[3], float& outNdcX,
+                              float& outNdcY, float& outNdcDepth)
 {
-    if (camera.cameraPos.w < 0.5f)
+    if (cam.cameraPos[3] < 0.5f)
     {
-        const float cx = camera.viewProj[0][0] * direction.x + camera.viewProj[1][0] * direction.y +
-                         camera.viewProj[2][0] * direction.z;
-        const float cy = camera.viewProj[0][1] * direction.x + camera.viewProj[1][1] * direction.y +
-                         camera.viewProj[2][1] * direction.z;
-        const float cw = camera.viewProj[0][3] * direction.x + camera.viewProj[1][3] * direction.y +
-                         camera.viewProj[2][3] * direction.z;
+        const float cx = cam.viewProj[0] * direction[0] + cam.viewProj[4] * direction[1] +
+                         cam.viewProj[8] * direction[2];
+        const float cy = cam.viewProj[1] * direction[0] + cam.viewProj[5] * direction[1] +
+                         cam.viewProj[9] * direction[2];
+        const float cw = cam.viewProj[3] * direction[0] + cam.viewProj[7] * direction[1] +
+                         cam.viewProj[11] * direction[2];
         if (cw <= 1e-5f)
-            return std::nullopt;
-        return Mathematics::Vector3(cx / cw, cy / cw, 0.0f);
+            return false;
+
+        outNdcX = cx / cw;
+        outNdcY = cy / cw;
+    }
+    else
+    {
+        constexpr float kOrthoSunDistance = 1000.0f;
+        if (!ProjectToNdc(cam.viewProj, cam.cameraPos[0] + direction[0] * kOrthoSunDistance,
+                          cam.cameraPos[1] + direction[1] * kOrthoSunDistance,
+                          cam.cameraPos[2] + direction[2] * kOrthoSunDistance, outNdcX, outNdcY,
+                          outNdcDepth))
+        {
+            return false;
+        }
     }
 
-    constexpr float kOrthoSunDistance = 1000.0f;
-    const Mathematics::Vector3 cameraPosition(camera.cameraPos.x, camera.cameraPos.y, camera.cameraPos.z);
-    const std::optional<Mathematics::Vector3> ndc = ProjectToNdc(camera, cameraPosition + direction * kOrthoSunDistance);
-    if (!ndc)
-        return std::nullopt;
-    return Mathematics::Vector3(ndc->x, ndc->y, 0.0f);
+    outNdcDepth = 0.0f;
+    return true;
 }
 
 } // namespace GameEngine::Engine::Renderer

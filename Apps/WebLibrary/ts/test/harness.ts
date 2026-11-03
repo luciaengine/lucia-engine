@@ -11,7 +11,6 @@ export class FakeHost implements Host {
     isolated = false;
     webGpu = true;
     dpr = 2;
-    mobile = false;
     readonly logs: string[] = [];
     readonly frames = new Map<number, (timeMs: number) => void>();
     readonly timers = new Map<number, { callback: () => void; delayMs: number }>();
@@ -48,11 +47,7 @@ export class FakeHost implements Host {
         return () => this.m_ResizeListeners.delete(callback);
     }
 
-    /** How many resize observers are subscribed. */
-    resizeListenerCount(): number { return this.m_ResizeListeners.size; }
-
     devicePixelRatio(): number { return this.dpr; }
-    isMobile(): boolean { return this.mobile; }
     crossOriginIsolated(): boolean { return this.isolated; }
     hasWebGPU(): boolean { return this.webGpu; }
     resolveUrl(url: string): string { return new URL(url, 'https://page.test/demo/').href; }
@@ -93,9 +88,9 @@ export function fakeCanvas(): HTMLCanvasElement {
 }
 
 /** A started engine over a fresh stub. */
-export async function startEngine(options: Partial<EngineOptions> = {}, stamp: ReleaseStamp = { version: '0.1.0', fingerprint: null },
-                                  host: FakeHost = new FakeHost()) {
+export async function startEngine(options: Partial<EngineOptions> = {}, stamp: ReleaseStamp = { version: '0.1.0', fingerprint: null }) {
     const abi = new StubAbi();
+    const host = new FakeHost();
     const canvas = options.canvas ?? fakeCanvas();
     const engine: EngineImpl = await createEngine({ ...options, canvas }, host, async () => abi, stamp);
     return { abi, host, engine, canvas };

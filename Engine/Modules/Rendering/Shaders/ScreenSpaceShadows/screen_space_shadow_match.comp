@@ -1,7 +1,6 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 #include "Includes/screen_position.glsl"
-#include "Includes/shadow_cascade_blend.glsl"
 
 // Project the active grid-PCF kernel onto this depth receiver. Using the same
 // light-space footprint keeps the contact/map handoff's softness consistent
@@ -121,7 +120,7 @@ void main()
         {
             float end = Shadow.shadowSplits[cascade];
             float start = cascade == 0 ? 0 : Shadow.shadowSplits[cascade - 1];
-            float band = GE_CascadeBlendBand(end - start);
+            float band = max((end - start) * 0.1, 3.0);
             float distance = end - linearDepth;
             if (distance < band)
             {

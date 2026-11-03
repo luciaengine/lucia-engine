@@ -3,7 +3,6 @@
 #include "Editor/Settings/CurveEditorSettings.h"
 #include "Input/KeyCodes.h"
 #include "Logger/Logger.h"
-#include "Mathematics/Interpolation.h"
 #include "Platform/SystemMetrics.h"
 #include "Rendering/Text/FontAtlas.h"
 #include "UI/Controls/CurveTangents.h"
@@ -12,8 +11,6 @@
 #include "UI/StyleProperties.h"
 
 #include <algorithm>
-#include <limits>
-#include <optional>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -69,11 +66,9 @@ constexpr int kLabelMinutesPerDay = 24 * kLabelMinutesPerHour;
 const StringId kReferenceLineColorVar = HashStringId("--curve-field-reference-line-color");
 const StringId kPlaybackLabelBackgroundVar = HashStringId("--curve-field-playback-label-background");
 const StringId kPlaybackLabelColorVar = HashStringId("--curve-field-playback-label-color");
-const StringId kSecondaryLabelColorVar = HashStringId("--curve-field-secondary-label-color");
 const StringId kShadedSpanColorVar = HashStringId("--curve-field-shaded-span-color");
 const StringId kValueMarkColorVar = HashStringId("--curve-field-value-mark-color");
 const StringId kPlotHeightVar = HashStringId("--curve-field-plot-height");
-const StringId kInteriorKeyColorVar = HashStringId("--curve-field-interior-key-color");
 
 // Palette shared with the value-curve editor so the curve UIs read consistently.
 const uint32_t kCurveLineColor = UI::PackColor(0.32f, 0.68f, 1.0f, 1.0f);
@@ -109,19 +104,18 @@ float ClampHandleCenter(float min, float max, float value, float logicalSizePx, 
     return std::clamp(value, min + half, max - half);
 }
 
-float TimeLabelStripPx(const CurveField::Config& config, float fontSizePx)
+float TimeLabelStripPx(CurveField::TimeLabels labels, float fontSizePx)
 {
-    if (config.TimeAxisLabels == CurveField::TimeLabels::None)
-        return 0.0f;
-    const float lines = config.SecondaryTimeLabel ? 2.0f : 1.0f;
-    return kPlaybackDotRadiusPx + kPlaybackDotClearancePx + lines * fontSizePx * kLabelLineHeightRatio + kLabelGapPx;
+    return labels == CurveField::TimeLabels::None
+               ? 0.0f
+               : kPlaybackDotRadiusPx + kPlaybackDotClearancePx + fontSizePx * kLabelLineHeightRatio + kLabelGapPx;
 }
 
 // "06:00" for 6 hours, to the minute. 24:00 stays 24:00 so the axis end reads as the day's end.
 std::string HoursOfDayLabel(float hours)
 {
     const int minutes = std::clamp(static_cast<int>(std::lround(hours * kLabelMinutesPerHour)), 0, kLabelMinutesPerDay);
-    char text[16];
+    char text[8];
     std::snprintf(text, sizeof(text), "%02d:%02d", minutes / kLabelMinutesPerHour, minutes % kLabelMinutesPerHour);
     return text;
 }
@@ -139,7 +133,7 @@ CurveField::CurveField() : m_PlotHeightPx(kFieldHeightPx)
     AddClass("curve-field");
     RequestSubtreeStyleAssetPath(kCurveFieldStyleAssetPath, "editor");
     SetFocusable(true);
-    Style()
+    Overrides()
         .Set(Style::Height, StyleLength::Px(kFieldHeightPx))
         .Set(Style::MinHeight, StyleLength::Px(kFieldHeightPx));
     // Cursor is set per hover/drag state in UpdateCursor (grab only over a point), not statically.
@@ -151,11 +145,9 @@ void CurveField::SetConfig(const Config& config)
            "a logarithmic CurveField needs LogarithmicFloor above 0, the floor its keys are evaluated with");
     // The time-label strip is added under the plot, not taken out of it: the control grows by the
     // strip when labels are switched on and shrinks back when they are switched off. Only a change of
-    // the option, of the second label line (or, with labels on, of their font size) touches the
-    // height, so a host that sets its own height on a graph without labels keeps it.
-    const bool labelsChanged = config.TimeAxisLabels != m_Config.TimeAxisLabels ||
-                               static_cast<bool>(config.SecondaryTimeLabel) !=
-                                   static_cast<bool>(m_Config.SecondaryTimeLabel);
+    // the option (or, with labels on, of their font size) touches the height, so a host that sets its
+    // own height on a graph without labels keeps it.
+    const bool labelsChanged = config.TimeAxisLabels != m_Config.TimeAxisLabels;
     m_Config = config;
     if (labelsChanged)
         ApplyLabelStripHeight();
@@ -165,8 +157,8 @@ void CurveField::SetConfig(const Config& config)
 
 void CurveField::ApplyLabelStripHeight()
 {
-    const float height = m_PlotHeightPx + TimeLabelStripPx(m_Config, m_TimeLabelFontSizePx);
-    Style().Set(Style::Height, StyleLength::Px(height)).Set(Style::MinHeight, StyleLength::Px(height));
+    const float height = m_PlotHeightPx + TimeLabelStripPx(m_Config.TimeAxisLabels, m_TimeLabelFontSizePx);
+    Overrides().Set(Style::Height, StyleLength::Px(height)).Set(Style::MinHeight, StyleLength::Px(height));
 }
 
 // The labels' font size and the plot's height come from the resolved style (CurveField.css, or a
@@ -307,7 +299,7 @@ CurveField::GraphRect CurveField::ComputeGraphRect(float x, float y, float w, fl
     // hit-test does not expect them on HiDPI.
     // The top and the floor sit on whole pixels: a horizontal curve segment on a half pixel spreads
     // over three rows, and the overlap at each segment join beads the line.
-    const float padBottom = kPadBottomPx + TimeLabelStripPx(m_Config, m_TimeLabelFontSizePx);
+    const float padBottom = kPadBottomPx + TimeLabelStripPx(m_Config.TimeAxisLabels, m_TimeLabelFontSizePx);
     const float top = std::round(y + kPadTopPx * scale);
     const float floorY = std::round(y + h - padBottom * scale);
     return {x + (kPadLeftPx + kEndpointAxisInsetPx) * scale,
@@ -353,7 +345,7 @@ float CurveField::EffectiveValueMax() const
 float CurveField::ToScreenX(const GraphRect& r, float time) const
 {
     const float n = (time - m_Config.TimeMin) / SpanOrEpsilon(m_Config.TimeMin, m_Config.TimeMax);
-    return r.X + Math::Clamp01(n) * r.W;
+    return r.X + std::clamp(n, 0.0f, 1.0f) * r.W;
 }
 
 float CurveField::ToScreenY(const GraphRect& r, float value) const
@@ -364,22 +356,22 @@ float CurveField::ToScreenY(const GraphRect& r, float value) const
         const float logLo = std::log2(lo);
         const float logValue = std::log2(std::max(value, lo));
         const float n = (logValue - logLo) / SpanOrEpsilon(logLo, std::log2(std::max(EffectiveValueMax(), lo)));
-        return r.Y + (1.0f - Math::Clamp01(n)) * r.H;
+        return r.Y + (1.0f - std::clamp(n, 0.0f, 1.0f)) * r.H;
     }
     const float n = (value - lo) / SpanOrEpsilon(lo, EffectiveValueMax());
-    return r.Y + (1.0f - Math::Clamp01(n)) * r.H;
+    return r.Y + (1.0f - std::clamp(n, 0.0f, 1.0f)) * r.H;
 }
 
 float CurveField::FromScreenTime(const GraphRect& r, float px) const
 {
-    const float n = Math::Clamp01((px - r.X) / r.W);
+    const float n = std::clamp((px - r.X) / r.W, 0.0f, 1.0f);
     return m_Config.TimeMin + n * SpanOrEpsilon(m_Config.TimeMin, m_Config.TimeMax);
 }
 
 float CurveField::FromScreenValue(const GraphRect& r, float py) const
 {
     const float lo = EffectiveValueMin();
-    const float n = Math::Clamp01(1.0f - (py - r.Y) / r.H);
+    const float n = std::clamp(1.0f - (py - r.Y) / r.H, 0.0f, 1.0f);
     if (m_Config.LogarithmicValues)
     {
         const float logLo = std::log2(lo);
@@ -495,7 +487,7 @@ void CurveField::UpdateCursor()
     const CursorStyle cursor = (m_Drag >= 0)      ? CursorStyle::Grabbing
                                : (m_Hover >= 0)   ? CursorStyle::Grab
                                                   : CursorStyle::Auto;
-    Style().Set(Style::Cursor, cursor);
+    Overrides().Set(Style::Cursor, cursor);
 }
 
 bool CurveField::TryHandleCurveDoubleClick(float globalX, float globalY)
@@ -572,11 +564,7 @@ void CurveField::ApplyDrag(float globalX, float globalY)
         const float gap = kMinTimeGapFrac * std::abs(SpanOrEpsilon(m_Config.TimeMin, m_Config.TimeMax));
         const float lo = (m_Drag > 0) ? m_Keys[m_Drag - 1].Time + gap : m_Config.TimeMin;
         const float hi = (m_Drag < n - 1) ? m_Keys[m_Drag + 1].Time - gap : m_Config.TimeMax;
-        // The time moves by the pointer's horizontal travel only, so a drag that moves only the value
-        // leaves the time exactly as it was.
-        const float startAnchorX = m_DragStartX + m_GrabOffsetX;
-        const float time = m_DragStartTime + (FromScreenTime(r, anchorX) - FromScreenTime(r, startAnchorX));
-        k.Time = (lo <= hi) ? std::clamp(time, lo, hi) : k.Time;
+        k.Time = (lo <= hi) ? std::clamp(FromScreenTime(r, anchorX), lo, hi) : k.Time;
     }
 
     m_DragMoved = true;
@@ -798,7 +786,6 @@ void CurveField::OnEvent(UIEvent& e)
         const float hy = ToScreenY(r, m_Keys[hit].Value);
         m_GrabOffsetX = hx - e.X;
         m_GrabOffsetY = hy - e.Y;
-        m_DragStartTime = m_Keys[hit].Time;
         m_HudValue = m_Keys[hit].Value;
         m_HudTime = m_Keys[hit].Time;
 
@@ -971,19 +958,7 @@ void CurveField::DrawValueAxisMarks(UI::PrimitiveEmitContext& ctx, const Resolve
     }
 }
 
-// A time as the axis writes it: hours of the day, or the host's format.
-std::string CurveField::TimeLabelText(float time) const
-{
-    if (m_Config.TimeAxisLabels == TimeLabels::HoursOfDay)
-        return HoursOfDayLabel(time);
-    if (m_Config.TimeLabel)
-        return m_Config.TimeLabel(time);
-    char text[16];
-    std::snprintf(text, sizeof(text), "%g", time);
-    return text;
-}
-
-// Time labels follow the vertical grid, omitting alternate labels when space is tight.
+// Hour labels follow the vertical grid, omitting alternate labels when space is tight.
 // The playback time appears in a pill
 // where the playback line meets them; an hour label the pill would cover is left out.
 void CurveField::DrawTimeLabels(UI::PrimitiveEmitContext& ctx, const ResolvedStyle& style, const GraphRect& r,
@@ -999,17 +974,14 @@ void CurveField::DrawTimeLabels(UI::PrimitiveEmitContext& ctx, const ResolvedSty
     const float left = x + kLabelGapPx * cs;
     const float right = x + w - kLabelGapPx * cs;
     const uint32_t labelArgb = style.Visual.Color;
-    const uint32_t secondaryArgb = style.GetCustomColor(kSecondaryLabelColorVar).value_or(labelArgb);
-    const float lineHeight = fontSize * kLabelLineHeightRatio * cs;
 
     float pillLeft = 0.0f;
     float pillRight = 0.0f;
     std::string playbackText;
-    const bool showPlayback =
-        m_Config.ShowPlaybackIndicator && m_PlaybackIndicatorVisible && m_Config.ShowPlaybackTimeLabel;
+    const bool showPlayback = m_Config.ShowPlaybackIndicator && m_PlaybackIndicatorVisible;
     if (showPlayback)
     {
-        playbackText = TimeLabelText(m_PlaybackTime);
+        playbackText = HoursOfDayLabel(m_PlaybackTime);
         const float padding = kPlaybackLabelPaddingPx * cs;
         const float textW = ctx.FontAtlas->MeasureUtf8(playbackText, pixelSize).width;
         const float pillW = textW + 2.0f * padding;
@@ -1017,48 +989,24 @@ void CurveField::DrawTimeLabels(UI::PrimitiveEmitContext& ctx, const ResolvedSty
         pillRight = pillLeft + pillW;
     }
 
-    const float labelWidth = std::max(ctx.FontAtlas->MeasureUtf8(TimeLabelText(m_Config.TimeMin), pixelSize).width,
-                                      ctx.FontAtlas->MeasureUtf8(TimeLabelText(m_Config.TimeMax), pixelSize).width);
+    const float labelWidth = ctx.FontAtlas->MeasureUtf8("00:00", pixelSize).width;
     const float minimumGap = ctx.FontAtlas->MeasureUtf8("000", pixelSize).width;
     const int labelStep = r.W / static_cast<float>(kGridSpans) < labelWidth + minimumGap ? 2 : 1;
-    std::vector<float> times;
-    if (m_Config.TimeTicks.empty())
+    for (int i = 0; i <= kGridSpans; i += labelStep)
     {
-        for (int i = 0; i <= kGridSpans; i += labelStep)
-            times.push_back(m_Config.TimeMin + (m_Config.TimeMax - m_Config.TimeMin) * static_cast<float>(i) /
-                                                   static_cast<float>(kGridSpans));
-    }
-    else
-    {
-        for (const float tick : m_Config.TimeTicks)
-            if (tick >= m_Config.TimeMin && tick <= m_Config.TimeMax)
-                times.push_back(tick);
-    }
-    float previousRight = -std::numeric_limits<float>::max();
-    for (const float time : times)
-    {
-        const std::string text = TimeLabelText(time);
+        const float time = m_Config.TimeMin + (m_Config.TimeMax - m_Config.TimeMin) * static_cast<float>(i) /
+                                                  static_cast<float>(kGridSpans);
+        const std::string text = HoursOfDayLabel(time);
         const float textW = ctx.FontAtlas->MeasureUtf8(text, pixelSize).width;
         const float textX = std::clamp(ToScreenX(r, time) - 0.5f * textW, left, std::max(left, right - textW));
         if (showPlayback && textX < pillRight && textX + textW > pillLeft)
             continue;
-        const std::string secondary = m_Config.SecondaryTimeLabel ? m_Config.SecondaryTimeLabel(time) : std::string();
-        const float secondaryW = secondary.empty() ? 0.0f : ctx.FontAtlas->MeasureUtf8(secondary, pixelSize).width;
-        const float secondaryX =
-            std::clamp(ToScreenX(r, time) - 0.5f * secondaryW, left, std::max(left, right - secondaryW));
-        // A tick's box spans both of its lines.
-        const float boxLeft = secondary.empty() ? textX : std::min(textX, secondaryX);
-        const float boxRight = secondary.empty() ? textX + textW : std::max(textX + textW, secondaryX + secondaryW);
-        if (!m_Config.TimeTicks.empty() && boxLeft < previousRight + 0.5f * minimumGap)
-            continue;
-        previousRight = boxRight;
         ctx.EmitText(text, textX, textY, fontSize, labelArgb, ctx.FontAtlas);
-        if (!secondary.empty())
-            ctx.EmitText(secondary, secondaryX, textY + lineHeight, fontSize, secondaryArgb, ctx.FontAtlas);
     }
 
     if (!showPlayback)
         return;
+    const float lineHeight = fontSize * kLabelLineHeightRatio * cs;
     UI::UIPrimitive pill = UI::MakeRect(pillLeft, textY, pillRight - pillLeft, lineHeight,
                                         StyledColor(style, kPlaybackLabelBackgroundVar),
                                         4.0f * cs, 4.0f * cs, 4.0f * cs, 4.0f * cs);
@@ -1103,16 +1051,8 @@ void CurveField::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx, const Resol
         const float gy = r.Y + t * r.H;
         const float thick = (i == 0 || i == kGridSpans) ? 1.4f * cs : 1.0f * cs;
         const uint32_t color = (i == kGridSpans / 2) ? gridMajor : gridMinor;
-        if (m_Config.TimeTicks.empty() || i == 0 || i == kGridSpans)
-            ctx.Emit(UI::MakeLine(gx, r.Y, gx, r.Y + r.H, thick, color));
+        ctx.Emit(UI::MakeLine(gx, r.Y, gx, r.Y + r.H, thick, color));
         ctx.Emit(UI::MakeLine(r.X, gy, r.X + r.W, gy, thick, color));
-    }
-    for (const float tick : m_Config.TimeTicks)
-    {
-        if (tick <= m_Config.TimeMin || tick >= m_Config.TimeMax)
-            continue;
-        const float gx = ToScreenX(r, tick);
-        ctx.Emit(UI::MakeLine(gx, r.Y, gx, r.Y + r.H, 1.0f * cs, gridMinor));
     }
 
     DrawShadedSpans(ctx, style, r);
@@ -1152,8 +1092,6 @@ void CurveField::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx, const Resol
 
     if (!m_Config.ReadOnly)
     {
-        const std::optional<uint32_t> interiorArgb = style.GetCustomColor(kInteriorKeyColorVar);
-        const uint32_t interiorColor = interiorArgb ? UI::PackFromARGB(*interiorArgb) : kInteriorHandleColor;
         for (size_t i = 0; i < m_Keys.size(); ++i)
         {
             const bool endpoint = (i == 0 || i + 1 == m_Keys.size());
@@ -1165,7 +1103,7 @@ void CurveField::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx, const Resol
             const float hx = ToScreenX(r, m_Keys[i].Time);
             const float hy = ClampHandleCenter(r.Y, r.Y + r.H, ToScreenY(r, m_Keys[i].Value), handleSize, cs);
             DrawHandle(ctx, hx, hy,
-                       endpoint ? kEndpointHandleColor : interiorColor, active, maxHandleSize);
+                       endpoint ? kEndpointHandleColor : kInteriorHandleColor, active, maxHandleSize);
         }
     }
 

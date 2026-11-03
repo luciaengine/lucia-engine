@@ -18,17 +18,17 @@
 
 namespace GameEngine {
 
-IncrementalCompilationTask::IncrementalCompilationTask(CoreCLRHost& clrHost, const CompilationConfig& config)
-    : m_Config(config)
+IncrementalCompilationTask::IncrementalCompilationTask(JobSystem::WorkStealingThreadPool* jobSystem,
+                                                     CoreCLRHost& clrHost,
+                                                     const CompilationConfig& config)
+    : Task(jobSystem)
+    , m_Config(config)
     , m_ClrHost(clrHost)
     , m_LastFullCompilation(std::chrono::steady_clock::now()) {
 
     Logger::Log::Debug("[IncrementalCompilationTask] Initializing with project: {}", config.ProjectPath);
 
-    // Initialize file change tracker
-    std::filesystem::path cachePath = std::filesystem::path(config.ProjectPath).parent_path() / "file_change_cache.json";
-    std::string cacheFile = cachePath.string();
-    m_FileChangeTracker = std::make_unique<FileChangeTracker>(cacheFile);
+    m_FileChangeTracker = std::make_unique<FileChangeTracker>();
 
     // Initialize dependency analyzer
     m_DependencyAnalyzer = std::make_unique<DependencyGraphAnalyzer>();
@@ -468,9 +468,10 @@ void IncrementalCompilationTask::UpdateConfig(const CompilationConfig& config) {
 }
 
 std::unique_ptr<IncrementalCompilationTask> CreateIncrementalCompilationTask(
+    JobSystem::WorkStealingThreadPool* jobSystem,
     CoreCLRHost& clrHost,
     const IncrementalCompilationTask::CompilationConfig& config) {
-    return std::make_unique<IncrementalCompilationTask>(clrHost, config);
+    return std::make_unique<IncrementalCompilationTask>(jobSystem, clrHost, config);
 }
 
 } // namespace GameEngine

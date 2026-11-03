@@ -5,15 +5,13 @@
 #include "Components/Rendering/Particles.h"
 #include "ECS/ModuleRegistration.h"
 #include "ECS/Reflection.h"
-#include "ParticleProcessor/ParticleProcessorRevision.h"
-#include "Mathematics/Matrix4x4.h"
 #include "Particles/CompiledParticleStack.h"
 #include "Particles/ParticleFlipbook.h"
-#include "Particles/ParticleProcessor/ParticleProcessorRegistry.h"
+#include "Particles/ParticleProcessorRegistry.h"
 #include "Particles/ParticleRuntime.h"
-#include "Particles/ParticleStack/ParticleStackAuthoring.h"
-#include "Particles/ParticleStack/ParticleStackBinary.h"
-#include "Particles/ParticleStack/ParticleStackDocument.h"
+#include "Particles/ParticleStackAuthoring.h"
+#include "Particles/ParticleStackBinary.h"
+#include "Particles/ParticleStackDocument.h"
 #include "Particles/Processors/ParticleAccelerationProcessor.h"
 #include "Particles/Processors/ParticleCollisionProcessor.h"
 #include "Particles/Processors/ParticleDragProcessor.h"
@@ -29,7 +27,6 @@
 #include "Particles/Processors/ParticleTrailProcessor.h"
 #include "Particles/Processors/ParticleVelocityConeProcessor.h"
 #include "Types/StringId.h"
-#include "Memory/AllocationCountScope.h"
 
 #include <gtest/gtest.h>
 
@@ -43,6 +40,33 @@
 #include <optional>
 #include <string>
 #include <vector>
+
+namespace
+{
+// Counts the allocations of the thread that armed it. The replaced operators serve the whole test
+// process, including the particle module, which links statically.
+thread_local bool t_CountAllocations = false;
+thread_local size_t t_Allocations = 0;
+} // namespace
+
+void* operator new(std::size_t size)
+{
+    if (t_CountAllocations)
+        ++t_Allocations;
+    if (void* memory = std::malloc(size == 0 ? 1 : size))
+        return memory;
+    throw std::bad_alloc();
+}
+
+void operator delete(void* memory) noexcept
+{
+    std::free(memory);
+}
+
+void operator delete(void* memory, std::size_t) noexcept
+{
+    std::free(memory);
+}
 
 namespace ParticleRuntimeTestTypes
 {
@@ -65,7 +89,6 @@ GE_REFLECT(ParticleRuntimeTestTypes::GustySpinParameters, Rate, Gust);
 
 using namespace GameEngine;
 using namespace GameEngine::Particles;
-using Mathematics::Matrix4x4;
 using Mathematics::Vector3;
 using Mathematics::Vector4;
 
@@ -926,12 +949,8 @@ TEST(ParticleRuntime, ANewbornHoldsTheValueItsLifetimeCurvesGiveAtAgeZero)
     EXPECT_GE(newborns, 40u) << "the emitter did not spawn, so nothing was checked";
     const auto colors = runtime.Channels().Colors();
     for (uint32 index = 0; index < runtime.Count(); ++index)
-    {
         if (runtime.Channels().Ages()[index] > 0.5f)
-        {
             EXPECT_GT(colors[index].w, 0.0f) << "the curve did not fade the particle in";
-        }
-    }
 }
 
 // The pass runs after the Enter processors and sees what they wrote: an Enter value is the entry
@@ -994,11 +1013,11 @@ TEST(ParticleRuntime, SwitchedOffEmissionSpawnsNothingAndRestartsFromTheBeginnin
 
 TEST(ParticleRuntime, ViewDepthDoesNotConfuseSidewaysDistanceWithDepth)
 {
-    const Matrix4x4 view = Matrix4x4::Identity();
+    const float view[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     const Vector3 nearSideways{100, 0, 2};
     const Vector3 farCentered{0, 0, 10};
     EXPECT_LT(ViewDepth(view, nearSideways), ViewDepth(view, farCentered));
-    const Matrix4x4 turned{glm::mat4(0, 0, 1, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, -5, 1)};
+    const float turned[16] = {0, 0, 1, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0, -5, 1};
     EXPECT_GT(ViewDepth(turned, nearSideways), ViewDepth(turned, farCentered));
 }
 
@@ -1281,12 +1300,13 @@ TEST(ParticleRuntime, SteadyStateFramesAllocateNothing)
     runtime.Bind(Compile(document), 1024);
     AdvanceFrames(runtime, Input(), 240);
     ASSERT_GT(runtime.Count(), 100u);
-    // The particle module links statically, so the executable's allocation hook sees it.
-    const GameEngine::Memory::AllocationCountScope allocations(GameEngine::Memory::CountWindow::ThisThread);
+    t_Allocations = 0;
+    t_CountAllocations = true;
     AdvanceFrames(runtime, Input(), 120);
     runtime.SendEvent("Flash"_sid);
     AdvanceFrames(runtime, Input(), 2);
-    EXPECT_EQ(allocations.Count(), 0u);
+    t_CountAllocations = false;
+    EXPECT_EQ(t_Allocations, 0u);
 }
 
 TEST(ParticleStack, JsonAndCookedFormsRoundTripEveryBuiltInProcessor)
@@ -2143,44 +2163,6 @@ TEST(ParticleProcessorRegistry, AModuleReloadSwapsItsProcessorCodeInPlace)
     EXPECT_EQ(ParticleProcessorRegistry::PurgeModuleProcessors(kReloadModule, 3), 2u);
     EXPECT_EQ(SpinAfterATick(runtime), 2.0f) << "the aborted load gives back the code it replaced";
     EXPECT_EQ(ParticleProcessorRegistry::Find("test.reload.added"), nullptr);
-}
-
-// The revision tells a stack that failed for an unknown id whether loading it again could succeed:
-// it grows when an id becomes findable that was not, and only then. The built-ins count, so a
-// revision of 0 means "never asked".
-TEST(ParticleProcessorRegistry, TheRevisionGrowsWhenAnIdIsRegisteredForTheFirstTime)
-{
-    const uint64 before = ParticleProcessorRevision();
-    EXPECT_GT(before, 0u) << "the built-ins are registered ids";
-    ASSERT_TRUE(ParticleProcessorRegistry::Register(ReloadedSpin("test.revision.spin", SpinAtGenerationOne)));
-    const uint64 added = ParticleProcessorRevision();
-    EXPECT_GT(added, before);
-    ASSERT_TRUE(ParticleProcessorRegistry::Register(ReloadedSpin("test.revision.spin", SpinAtGenerationTwo)));
-    EXPECT_EQ(ParticleProcessorRevision(), added) << "a registration in place adds no id";
-    ParticleProcessorDescriptor gusty = ReloadedSpin("test.revision.spin", SpinAtGenerationTwo);
-    BindParticleParameters<ParticleRuntimeTestTypes::GustySpinParameters>(gusty, kGustySpinFields);
-    EXPECT_FALSE(ParticleProcessorRegistry::Register(gusty));
-    EXPECT_EQ(ParticleProcessorRevision(), added) << "a refused registration adds no id";
-}
-
-// An id an aborted module load added is dropped; the next load registers it again, and it counts
-// as an id becoming findable.
-TEST(ParticleProcessorRegistry, TheRevisionGrowsWhenAnIdAnAbortedLoadDroppedIsRegisteredAgain)
-{
-    ASSERT_EQ(ParticleProcessorRegistry::Find("test.revision.purged"), nullptr) << "the built-ins register outside the load";
-    {
-        ModuleLoadScope aborted(20);
-        ASSERT_TRUE(ParticleProcessorRegistry::Register(ReloadedSpin("test.revision.purged", SpinAtGenerationOne)));
-    }
-    ASSERT_EQ(ParticleProcessorRegistry::PurgeModuleProcessors(kReloadModule, 20), 1u);
-    ASSERT_EQ(ParticleProcessorRegistry::Find("test.revision.purged"), nullptr);
-    const uint64 afterPurge = ParticleProcessorRevision();
-    {
-        ModuleLoadScope reload(21);
-        ASSERT_TRUE(ParticleProcessorRegistry::Register(ReloadedSpin("test.revision.purged", SpinAtGenerationTwo)));
-    }
-    ASSERT_NE(ParticleProcessorRegistry::Find("test.revision.purged"), nullptr);
-    EXPECT_GT(ParticleProcessorRevision(), afterPurge);
 }
 
 #if !defined(NDEBUG)

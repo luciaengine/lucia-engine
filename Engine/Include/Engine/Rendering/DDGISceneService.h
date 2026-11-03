@@ -24,7 +24,6 @@ class Asset;
 namespace Rendering
 {
 class GPUScene;
-struct GPUInstance;
 class IDevice;
 namespace RenderGraph
 {
@@ -39,12 +38,6 @@ namespace GameEngine::Engine::Renderer
 class MaterialSystem;
 class DDGIMaterialMapAtlas;
 
-/// Whether the DDGI lanes trace `instance`. A shadows-only instance
-/// (Rendering::kInstanceFlagShadowsOnly) is a shadow proxy for geometry another
-/// renderer draws, and that geometry already bounces and occludes indirect light:
-/// tracing the proxy as well would count it twice.
-bool DDGITracesInstance(const Rendering::GPUInstance& instance);
-
 // CPU-built scene geometry for the DDGI SOFTWARE trace lane
 // (Shaders/ddgi_trace_sw.comp) — the portable counterpart of
 // SceneAccelerationStructureService, which serves the hardware ray-query lane.
@@ -58,8 +51,7 @@ bool DDGITracesInstance(const Rendering::GPUInstance& instance);
 // DDGIProbeFeature::DeclareProbePasses) so a scene traces the same geometry
 // whichever lane is active: skinned instances are excluded (their vertices
 // move after upload and nothing refits them), and so are camera-relative
-// sector-tagged instances (neither lane rebases them yet), and shadows-only
-// instances (DDGITracesInstance).
+// sector-tagged instances (neither lane rebases them yet).
 //
 // PER-INSTANCE MATERIALS. One BLAS per mesh, shared by every instance of it;
 // the material a hit shades with rides on the INSTANCE record (TlasPacker.h

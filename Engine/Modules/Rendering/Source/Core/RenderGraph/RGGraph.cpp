@@ -2,7 +2,6 @@
 
 #include "Rendering/Core/RenderGraph/RGScratch.h"
 
-#include <algorithm>
 #include <cassert>
 #include <cstring>
 
@@ -10,7 +9,6 @@ namespace GameEngine::Rendering::RenderGraph
 {
 
 RGGraph::RGGraph()
-    : m_Arena("RenderGraph.Frame")
 {
     m_Resources.reserve(256);
     m_ResourceExternal.reserve(256);
@@ -26,7 +24,6 @@ void RGGraph::BeginFrame()
     m_ResourceImported.clear();
     m_ResourceInitLayout.clear();
     m_ResourceExportLayout.clear();
-    m_ResourceCrossFramePhysical.clear();
     m_Passes.clear();
     m_Accesses.clear();
     m_OrderingEdges.clear();
@@ -54,7 +51,7 @@ const char* RGGraph::CopyName(const char* name)
     if (!name)
         return nullptr;
     const size_t len = std::strlen(name) + 1;
-    char* dst = static_cast<char*>(m_Arena.Allocate(len, 1));
+    char* dst = static_cast<char*>(m_Arena.AllocRaw(len, 1));
     std::memcpy(dst, name, len);
     return dst;
 }
@@ -93,7 +90,6 @@ RGResourceId RGGraph::CreateResource(const RGResourceDesc& desc)
     m_ResourceImported.push_back(0);
     m_ResourceInitLayout.push_back(RGImageLayout::Undefined);
     m_ResourceExportLayout.push_back(RGImageLayout::Undefined);
-    m_ResourceCrossFramePhysical.push_back(0);
     return id;
 }
 
@@ -118,13 +114,6 @@ void RGGraph::MarkImported(RGResourceId id, RGImageLayout initialLayout)
     m_ResourceImported[id] = 1;
     m_ResourceInitLayout[id] = initialLayout;
     m_ResourceExternal[id] = 1; // imported resources are sinks/sources -> not culled
-}
-
-void RGGraph::SetCrossFramePhysical(RGResourceId id, uint64_t physical)
-{
-    assert(id < m_Resources.size() && "SetCrossFramePhysical: unknown resource");
-    assert(m_ResourceImported[id] != 0 && "SetCrossFramePhysical: imported resources only");
-    m_ResourceCrossFramePhysical[id] = physical;
 }
 
 RGPassId RGGraph::AddPass(const RGPassDesc& desc)
@@ -155,16 +144,6 @@ void RGGraph::Write(RGPassId pass, RGResourceId resource, RGAccess access, RGRan
     m_PassAccValid = false; // CSR index covers a snapshot; new accesses invalidate it
 }
 
-void RGGraph::WriteEveryPixel(RGPassId pass, RGResourceId resource)
-{
-    assert(pass < m_Passes.size() && "WriteEveryPixel: unknown pass");
-    assert(resource < m_Resources.size() && "WriteEveryPixel: unknown resource");
-    assert(m_Resources[resource].Kind == RGResourceKind::Texture && m_Resources[resource].MipLevels == 1 &&
-           m_Resources[resource].ArrayLayers == 1 && "WriteEveryPixel: needs a one-mip, one-layer texture");
-    m_Accesses.push_back(RGAccessRecord{pass, resource, RGAccess::ColorAttachment, RGRange::All(), true});
-    m_PassAccValid = false; // CSR index covers a snapshot; new accesses invalidate it
-}
-
 void RGGraph::PreventCulling(RGPassId pass)
 {
     assert(pass < m_Passes.size() && "PreventCulling: unknown pass");
@@ -192,7 +171,19 @@ void RGGraph::Compile()
 
     // Dense-indexed adjacency rebuilt from the flat access list (member scratch:
     // capacity retained across frames).
-    CollectLiveWriters();
+    PrepareNested(m_ScratchWritersOf, resCount);
+    PrepareNested(m_ScratchReadsOf, passCount);
+    m_ScratchResHasReader.assign(resCount, 0);
+    for (const RGAccessRecord& a : m_Accesses)
+    {
+        if (IsWrite(a.Access))
+            m_ScratchWritersOf[a.Resource].push_back(a.Pass);
+        else
+        {
+            m_ScratchReadsOf[a.Pass].push_back(a.Resource);
+            m_ScratchResHasReader[a.Resource] = 1;
+        }
+    }
 
     m_ScratchPassNeeded.assign(passCount, 0);
     m_ScratchWorklist.clear();
@@ -269,11 +260,8 @@ void RGGraph::Compile()
                     }
                 }
             }
-            if (m_ScratchPassOverwritten[p])
-                m_Passes[p].CullReason = RGCullReason::Overwritten;
-            else
-                m_Passes[p].CullReason =
-                    anyOutputRead ? RGCullReason::ProducerCulled : RGCullReason::NoConsumer;
+            m_Passes[p].CullReason =
+                anyOutputRead ? RGCullReason::ProducerCulled : RGCullReason::NoConsumer;
         }
     }
 
@@ -284,73 +272,6 @@ void RGGraph::Compile()
     for (const RGAccessRecord& a : m_Accesses)
         if (!m_Passes[a.Pass].Culled)
             m_ResourceUsedByLive[a.Resource] = 1;
-}
-
-// Fills the cull's adjacency: each pass's reads, and each resource's writers whose write some pass
-// can see. A write is dead when the next pass to touch the resource writes every pixel of it and
-// reads none of it; that writer is left out and marked for RGCullReason::Overwritten.
-void RGGraph::CollectLiveWriters()
-{
-    const size_t passCount = m_Passes.size();
-    const size_t resCount = m_Resources.size();
-    PrepareNested(m_ScratchWritersOf, resCount);
-    PrepareNested(m_ScratchReadsOf, passCount);
-    PrepareNested(m_ScratchTouchesOf, resCount);
-    m_ScratchResHasReader.assign(resCount, 0);
-    m_ScratchPassOverwritten.assign(passCount, 0);
-    for (const RGAccessRecord& a : m_Accesses)
-    {
-        const bool write = IsWrite(a.Access);
-        if (!write)
-        {
-            m_ScratchReadsOf[a.Pass].push_back(a.Resource);
-            m_ScratchResHasReader[a.Resource] = 1;
-        }
-        std::vector<RGPassTouch>& touches = m_ScratchTouchesOf[a.Resource];
-        if (touches.empty() || touches.back().Pass != a.Pass)
-            touches.push_back(RGPassTouch{a.Pass});
-        RGPassTouch& touch = touches.back();
-        touch.Reads = touch.Reads || !write;
-        touch.Writes = touch.Writes || write;
-        touch.WritesEveryPixel = touch.WritesEveryPixel || a.WritesEveryPixel;
-    }
-
-    for (RGResourceId r = 0; r < resCount; ++r)
-    {
-        std::vector<RGPassTouch>& touches = m_ScratchTouchesOf[r];
-        // RGFrame declares in pass order; a raw graph may not, and then the touches are sorted and
-        // a pass's split entries merged.
-        const auto earlier = [](const RGPassTouch& a, const RGPassTouch& b) { return a.Pass < b.Pass; };
-        if (!std::is_sorted(touches.begin(), touches.end(), earlier))
-        {
-            std::stable_sort(touches.begin(), touches.end(), earlier);
-            size_t merged = 0;
-            for (size_t i = 1; i < touches.size(); ++i)
-            {
-                RGPassTouch& last = touches[merged];
-                if (touches[i].Pass != last.Pass)
-                {
-                    touches[++merged] = touches[i];
-                    continue;
-                }
-                last.Reads = last.Reads || touches[i].Reads;
-                last.Writes = last.Writes || touches[i].Writes;
-                last.WritesEveryPixel = last.WritesEveryPixel || touches[i].WritesEveryPixel;
-            }
-            touches.resize(merged + 1);
-        }
-        for (size_t i = 0; i < touches.size(); ++i)
-        {
-            if (!touches[i].Writes)
-                continue;
-            const bool overwritten = i + 1 < touches.size() && touches[i + 1].WritesEveryPixel &&
-                                     !touches[i + 1].Reads;
-            if (overwritten)
-                m_ScratchPassOverwritten[touches[i].Pass] = 1;
-            else
-                m_ScratchWritersOf[r].push_back(touches[i].Pass);
-        }
-    }
 }
 
 } // namespace GameEngine::Rendering::RenderGraph

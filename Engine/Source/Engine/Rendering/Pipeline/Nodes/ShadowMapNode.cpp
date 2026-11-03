@@ -10,10 +10,10 @@
 #include "Components/Rendering/Light.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Vector3.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
@@ -388,6 +388,7 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
     // A terrain map published after this node (CBTRender declared later) is written into this
     // upload by the feature, so the declare order does not decide whether the term arrives.
     feature->AttachShadowDataUpload(viewId, d.Frame.FrameIndex(), sd.Ptr);
+    rs->PublishDirectionalShadowDataRG(d.Frame, viewId, sd);
     d.PublishBuffer(m_BufferRef.empty() ? std::string(Names::Res::ShadowData) : m_BufferRef,
                     {sd.Buffer, sd.Offset, sizeof(ShadowDataGPU), /*Graph*/ {}});
 
@@ -432,7 +433,7 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
         return;
     // Thumbnail cameras before their first update: inverting a zero viewProj
     // produces NaN that propagates everywhere.
-    if (camData->proj[0][0] == 0.0f && camData->proj[1][1] == 0.0f)
+    if (camData->proj[0] == 0.0f && camData->proj[5] == 0.0f)
         return;
 
     // This frame's fit: computed when the caster cull was scheduled, ahead of

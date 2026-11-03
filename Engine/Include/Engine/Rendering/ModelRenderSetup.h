@@ -36,6 +36,12 @@ struct SkeletonResolveState;
 class RenderServices;
 class SceneResolveService;
 
+// Opt-in for players that explicitly stream inactive destinations. Set before
+// scene loading, not during a frame. Default false preserves editor/prewarm
+// behavior. Enabling a MeshRenderer later still uses normal change-filter binding.
+void SetDeferredDisabledRendererLoading(bool deferred);
+bool GetDeferredDisabledRendererLoading();
+
 // Result of registering a model's render resources (meshes + materials).
 struct ModelRenderResources
 {
@@ -76,12 +82,6 @@ std::optional<ModelRenderResources> RegisterModelRenderResourcesForSubmesh(
 // scene-load case (meshId == 0, MeshNameId == 0) resolves to submesh 0 — never a skip.
 uint32 ResolveSubmeshIndex(const GUID& modelGuid, const ModelAsset& model,
                            const Components::MeshRenderer& mr);
-
-// The registry entry `mr` draws: by its mesh handle, else by the key of its model and `mr.meshId`.
-// Like MeshGPURegistry::Find, the entry is valid only until the next registration: inside an ECS
-// wave, hold a TableScope across the lookup and the use.
-const Rendering::MeshGPUEntry* FindRendererMeshEntry(const Rendering::MeshGPURegistry& registry,
-                                                     const Components::MeshRenderer& mr);
 
 // Policy for how PopulateMeshRenderer sets MeshRenderer.materialAssetGuid.
 enum class MeshMaterialFill

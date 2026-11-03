@@ -28,6 +28,7 @@ class CameraCustomAspectModal final : public UIElement
     void OnCancelClicked();
 
     UIElement* m_Backdrop = nullptr;
+    UIElement* m_Window = nullptr;
     FloatField* m_WidthField = nullptr;
     FloatField* m_HeightField = nullptr;
 

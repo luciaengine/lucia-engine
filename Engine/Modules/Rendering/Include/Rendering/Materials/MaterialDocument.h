@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Rendering/Materials/MaterialAlphaMode.h"
-#include "Rendering/Materials/MaterialBlend/MaterialBlend.h"
+#include "Rendering/Materials/MaterialBlend.h"
 
 #include <array>
 #include <cstdint>

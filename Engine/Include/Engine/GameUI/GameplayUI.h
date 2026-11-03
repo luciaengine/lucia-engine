@@ -1,9 +1,8 @@
 #pragma once
 
-#include "Types/StringId.h"
-
 #include <cstdint>
 #include <functional>
+#include <string_view>
 
 namespace GameEngine {
 
@@ -32,8 +31,8 @@ UIManager* GetUIManager();
 // bound on the gameplay host.
 UIElement* FindDocumentRoot(uint64_t entityId);
 
-// Element `id` in any bound document, or nullptr: FindElementById("score"_sid),
-// or FindElementById(HashStringId(name)) for an id built at runtime. An id two
+// Element `id` in any bound document, or nullptr: FindElementById("score").
+// An id two
 // documents share resolves to the one owned by the lowest entity id, so the
 // winner is stable. On a match, outOwnerEntityId (if non-null) receives that
 // owning UIDocument entity, so a game with several documents can pin later
@@ -41,8 +40,16 @@ UIElement* FindDocumentRoot(uint64_t entityId);
 // while that document loads or after play stops: check it before FindById.
 // outOwnerEntityId is untouched when nothing matches.
 //
-// An empty id is never registered; FindElementById(0) returns nullptr.
-UIElement* FindElementById(StringId id, uint64_t* outOwnerEntityId = nullptr);
+// An EMPTY id matches the first element that has no id, which is most of a tree
+// — callers taking an id from outside must reject empty before calling.
+UIElement* FindElementById(std::string_view id, uint64_t* outOwnerEntityId = nullptr);
+
+// Cozy compatibility shim for game code written before upstream #4168 renamed
+// the every-document search; forwards to FindElementById(id, outOwnerEntityId).
+inline UIElement* FindElementByIdAny(std::string_view id, uint64_t* outOwnerEntityId = nullptr)
+{
+    return FindElementById(id, outOwnerEntityId);
+}
 
 // Bumps when a document layout binds, a subtree is removed, or a .uxml hot
 // reload reconciles a bound subtree. A bump does not imply the old elements

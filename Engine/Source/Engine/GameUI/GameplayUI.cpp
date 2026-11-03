@@ -38,7 +38,7 @@ UIElement* FindDocumentRoot(uint64_t entityId)
     return g_Host ? g_Host->FindDocumentRoot(entityId) : nullptr;
 }
 
-UIElement* FindElementById(StringId id, uint64_t* outOwnerEntityId)
+UIElement* FindElementById(std::string_view id, uint64_t* outOwnerEntityId)
 {
     return g_Host ? g_Host->FindElementById(id, outOwnerEntityId) : nullptr;
 }

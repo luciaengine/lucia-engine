@@ -1,11 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Graph/GraphInspectorRows.h"
-#include "Graph/GraphTransitionStore.h"
 #include "Graph/GraphValue.h"
-#include "UI/Controls/CollapsibleInfoCard.h"
-#include "UI/Controls/InspectorNotice.h"
-#include "UI/UIElement.h"
 
 #include <string>
 #include <unordered_map>
@@ -292,7 +288,7 @@ TEST(GraphInspectorRowsTests, ClipGuidSchemaPlansAssetRow)
     NodeTypeMeta schema;
     schema.TypeId = "ClipPlayer";
     schema.Parameters = {
-        {.Id = "clipGuid", .Default = Graph::GraphValue::FromGuid(""), .AssetReference = AssetType::Animation},
+        {"clipGuid", Graph::GraphValue::FromGuid("")},
         {"speed", 1.0f},
         {"looping", true},
     };
@@ -308,17 +304,7 @@ TEST(GraphInspectorRowsTests, ClipGuidSchemaPlansAssetRow)
     }
     ASSERT_NE(clip, nullptr);
     EXPECT_EQ(clip->Label, "Clip");
-    EXPECT_EQ(clip->AssetReference, AssetType::Animation);
     EXPECT_TRUE(HasKeyKind(rows, "speed", GraphInspectorRowKind::NodeFloat));
-}
-
-TEST(GraphInspectorRowsTests, ParameterLabelReadsTheKeyAsWords)
-{
-    const std::unordered_map<std::string, std::string> parameters = {{"seconds", "1"}, {"boolVar", "isOpen"}};
-    const auto rows = PlanGraphInspectorRows(parameters, nullptr);
-    ASSERT_EQ(rows.size(), 2u);
-    for (const GraphInspectorRow& row : rows)
-        EXPECT_EQ(row.Label, row.Key == "seconds" ? "Seconds" : "Bool Var");
 }
 
 TEST(GraphInspectorRowsTests, OtherGuidStaysText)
@@ -347,25 +333,6 @@ TEST(GraphInspectorRowsTests, RegistryClipPlayerPlansClipAssetRow)
     }
     ASSERT_NE(clip, nullptr);
     EXPECT_EQ(clip->Label, "Clip");
-    EXPECT_EQ(clip->AssetReference, AssetType::Animation);
-}
-
-TEST(GraphInspectorRowsTests, RegistrySpawnPrefabPlansPrefabAssetRow)
-{
-    (void)GraphNodeRegistry::Get();
-    const NodeTypeMeta* meta = FindNodeTypeMeta("game_logic", "SpawnPrefab");
-    ASSERT_NE(meta, nullptr);
-    const auto parameters = GraphNodeRegistry::Get().GetDefaultParameters("game_logic", "SpawnPrefab");
-    const auto rows = PlanGraphInspectorRows(parameters, meta);
-    EXPECT_TRUE(HasKeyKind(rows, "prefab", GraphInspectorRowKind::NodeAsset));
-    EXPECT_FALSE(HasKeyKind(rows, "prefab", GraphInspectorRowKind::NodeText));
-    for (const GraphInspectorRow& row : rows)
-    {
-        if (row.Key != "prefab")
-            continue;
-        EXPECT_EQ(row.Label, "Prefab");
-        EXPECT_EQ(row.AssetReference, AssetType::Prefab);
-    }
 }
 
 TEST(GraphInspectorRowsTests, FindUniqueReturnsNullOnKindCollision)
@@ -393,30 +360,4 @@ TEST(GraphInspectorRowsTests, FindNodeTypeMetaUsesKindIdOnCollision)
     EXPECT_EQ(material->DisplayName, "Material Copy");
     EXPECT_EQ(animation->DisplayName, "Animation Copy");
     EXPECT_EQ(FindNodeTypeMeta("", "AdvInspectorKindIdLookup"), nullptr);
-}
-
-// A transition with no condition is a state of that transition (compile skips it), so the inspector
-// says so with a notice, which the "Show Info Cards" switch does not hide.
-TEST(GraphTransitionConditionsNotice, ATransitionWithNoConditionShowsAWarningNotice)
-{
-    UIElement conditions;
-    AddGraphTransitionConditionsNotice(&conditions, GraphTransitionDesc{});
-
-    ASSERT_EQ(conditions.GetChildren().size(), 1u);
-    const UIElement* child = conditions.GetChildren()[0].get();
-    EXPECT_EQ(dynamic_cast<const EditorUI::CollapsibleInfoCard*>(child), nullptr)
-        << "the state is an info card, so the switch hides it";
-    const auto* notice = dynamic_cast<const EditorUI::InspectorNotice*>(child);
-    ASSERT_NE(notice, nullptr) << "the state is not a notice";
-    EXPECT_TRUE(notice->HasClass("inspector-notice-warning"));
-}
-
-TEST(GraphTransitionConditionsNotice, ATransitionWithAConditionShowsNothing)
-{
-    UIElement conditions;
-    GraphTransitionDesc transition;
-    transition.Conditions.push_back(GraphTransitionStore::MakeDefaultCondition());
-    AddGraphTransitionConditionsNotice(&conditions, transition);
-
-    EXPECT_TRUE(conditions.GetChildren().empty());
 }

@@ -302,7 +302,7 @@ void WebGpuCommandList::SetPipeline(PipelineHandle pipeline)
 // each draw.
 void WebGpuCommandList::SetVertexBuffer(BufferHandle buffer, uint32_t slot)
 {
-    if (slot >= m_VertexBuffers.size())
+    if (slot >= kMaxVertexBufferSlots)
     {
         return;
     }
@@ -349,7 +349,7 @@ void WebGpuCommandList::ApplyRenderState()
         for (uint32_t slot = 0; slot < pipeline->vertexBindings.size(); ++slot)
         {
             const uint32_t binding = pipeline->vertexBindings[slot];
-            if (binding >= m_VertexBuffers.size())
+            if (binding >= kMaxVertexBufferSlots)
             {
                 continue;
             }

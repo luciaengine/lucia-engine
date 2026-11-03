@@ -10,22 +10,6 @@ namespace GameEngine::Rendering::Text
 #if defined(GE_HAVE_FREETYPE)
 namespace
 {
-// A face + hb_font pair, already sized for shaping. Wraps the atlas's primary
-// face so the measurement cores below share one implementation across the
-// public measure entry points.
-struct MeasureFaceRef
-{
-    FT_Face Face = nullptr;
-#if defined(GE_HAVE_HARFBUZZ)
-    hb_font_t* Hb = nullptr;
-#endif
-};
-
-// cache (optional): shaped-width LRU keyed on (utf8, atlasPx, ligature arm) — a
-// hit skips shaping entirely; only the advance width and the cluster count are
-// cached (heights come from the design-unit metrics below, which need no
-// shaping, and the spacing itself is applied per request on top).
-
 // The three design-unit parts of a CSS `normal` line box.
 struct NormalLineUnits
 {
@@ -108,283 +92,6 @@ static LineMetrics ExactLineMetricsWithFace(FT_Face face, float renderPixelSize)
     return lm;
 }
 
-// No default for the spacing on these internal seams: the bug the argument
-// exists to fix was a call site that silently measured without it.
-TextMetrics MeasureUtf8WithFace(const MeasureFaceRef& f, std::string_view utf8,
-                                float geometryScale, float renderPixelSize,
-                                ShapedWidthCache* cache, unsigned atlasPx,
-                                float letterSpacingPx)
-{
-    TextMetrics m{};
-    float wAtlas = 0.0f;
-    uint32_t clusterCount = 0;
-    uint64_t cacheKey = 0;
-    bool haveWidth = false;
-    const bool tracked = (letterSpacingPx != 0.0f);
-    if (cache)
-    {
-        cacheKey = ShapedWidthKey(utf8, atlasPx, tracked);
-        haveWidth = ShapedWidthLookup(*cache, cacheKey, wAtlas, clusterCount);
-    }
-#if defined(GE_HAVE_HARFBUZZ)
-    if (!haveWidth && f.Hb)
-    {
-        hb_buffer_t* s_HbBuf = Detail::GetThreadLocalHBBuffer();
-        hb_buffer_add_utf8(s_HbBuf, utf8.data(), (int)utf8.size(), 0, (int)utf8.size());
-        Detail::HBDirScript r = Detail::DetectDirScriptUtf8(utf8);
-        if (r.script != HB_SCRIPT_INVALID)
-        {
-            hb_buffer_set_direction(s_HbBuf, r.dir);
-            hb_buffer_set_script(s_HbBuf, r.script);
-            if (r.lang)
-                hb_buffer_set_language(s_HbBuf, hb_language_from_string(r.lang, -1));
-        }
-        else
-        {
-            hb_buffer_guess_segment_properties(s_HbBuf);
-        }
-        hb_feature_t features[2];
-        const unsigned featureCount = Detail::LetterSpacingFeatures(letterSpacingPx, features);
-        hb_shape(f.Hb, s_HbBuf, featureCount ? features : nullptr, featureCount);
-        unsigned count = 0;
-        const hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(s_HbBuf, &count);
-        const hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(s_HbBuf, &count);
-        for (unsigned i = 0; i < count; ++i)
-        {
-            wAtlas += pos[i].x_advance / 64.0f;
-            if (i == 0 || infos[i].cluster != infos[i - 1].cluster)
-                ++clusterCount;
-        }
-        if (cache)
-            ShapedWidthInsert(*cache, cacheKey, wAtlas, clusterCount);
-        haveWidth = true;
-    }
-#endif
-    if (!haveWidth)
-    {
-        // Degraded byte-wise fallback (no HarfBuzz font): never published to
-        // the shared cache — a persisted approximation would be served to
-        // hb-capable consumers too, converting a self-healing per-call
-        // fallback into sticky cross-producer poison.
-        size_t codepoints = 0;
-        for (unsigned char c : utf8)
-        {
-            if (FT_Load_Char(f.Face, c, FT_LOAD_DEFAULT) == 0)
-                wAtlas += f.Face->glyph->advance.x / 64.0f;
-            if ((c & 0xC0u) != 0x80u) // UTF-8 codepoint start = pseudo-cluster
-                ++codepoints;
-        }
-        clusterCount = (uint32_t)codepoints;
-    }
-    // Tracking is applied in render px on top of the shaped width: exactly
-    // clusterCount x spacing, immune to the atlas-ppem scaling.
-    m.width = wAtlas * geometryScale + (float)clusterCount * letterSpacingPx;
-
-    // Exact design-unit line metrics at the render size — must agree with
-    // GetFontLineMetrics so single-line and multi-line heights share one
-    // definition. The width above comes from the atlas ppem scaled by
-    // geometryScale; the line box comes from the caller's fractional device
-    // size, which is where CSS rounds it.
-    const LineMetrics lm = ExactLineMetricsWithFace(f.Face, renderPixelSize);
-    m.ascender = lm.ascender;
-    m.descender = lm.descender;
-    m.height = lm.height;
-    m.baseline = m.ascender;
-    return m;
-}
-
-#if defined(GE_HAVE_HARFBUZZ)
-// Code points the first caret-map shaping of a tail starts before its first
-// byte, so the common case (a rewrap after a space) finds a safe break in one
-// shaping.
-constexpr size_t kCaretAnchorLookbackCodePoints = 8;
-
-static size_t StepBackCodePoints(std::string_view utf8, size_t byte, size_t count)
-{
-    for (; count > 0 && byte > 0; --count)
-    {
-        --byte;
-        while (byte > 0 && (static_cast<unsigned char>(utf8[byte]) & 0xC0u) == 0x80u)
-            --byte;
-    }
-    return byte;
-}
-
-// True when the shaping in `buffer`, which starts at `anchor`, has a cluster
-// start in (anchor, firstByte] that HarfBuzz marks safe to break at. The glyphs
-// from that cluster on are then the whole string's: a ligature or an attached
-// mark that a split at firstByte would sever starts at or after it.
-static bool HasSafeBreakAfterAnchor(hb_buffer_t* buffer, size_t anchor, size_t firstByte)
-{
-    unsigned count = 0;
-    const hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(buffer, &count);
-    for (unsigned i = 0; i < count; ++i)
-    {
-        const size_t cluster = infos[i].cluster;
-        if (cluster > anchor && cluster <= firstByte &&
-            (hb_glyph_info_get_glyph_flags(&infos[i]) & HB_GLYPH_FLAG_UNSAFE_TO_BREAK) == 0)
-            return true;
-    }
-    return false;
-}
-#endif
-
-bool BuildCaretMapWithFace(const MeasureFaceRef& f, std::string_view utf8,
-                           float geometryScale, std::vector<float>& outXByByte,
-                           float letterSpacingPx, size_t firstByte)
-{
-    const std::string_view tail = utf8.substr(firstByte);
-    outXByByte.clear();
-    outXByByte.resize(tail.size() + 1, 0.0f);
-    if (!f.Face)
-        return false;
-
-    // Tracking accumulates along the pen in atlas space so the final scale to
-    // render pixels converts every position in one pass. The round-trip
-    // (ls / gs) * gs is spacing-exact to a ulp; ls == 0 leaves the math
-    // byte-identical to the untracked path.
-    const float lsAtlas = (geometryScale != 0.0f) ? letterSpacingPx / geometryScale : 0.0f;
-
-#if defined(GE_HAVE_HARFBUZZ)
-    if (f.Hb)
-    {
-        // A tail is shaped in the whole string's direction and script, never
-        // in what its own first strong character would infer. Resolve them
-        // before the shared buffer is filled: the guess uses it.
-        const bool tailOnly = firstByte > 0;
-        Detail::HBDirScript r = Detail::DetectDirScriptUtf8(utf8);
-        if (tailOnly && r.script == HB_SCRIPT_INVALID)
-            r = Detail::GuessDirScriptUtf8(utf8);
-        hb_feature_t features[2];
-        const unsigned featureCount = Detail::LetterSpacingFeatures(letterSpacingPx, features);
-        // A tail can start inside a ligature or before a combining mark, which
-        // shaping from firstByte would sever. Shaping starts at an earlier
-        // anchor instead, stepped back (doubling the span) until a safe break
-        // lies between the anchor and firstByte, or the anchor reaches 0.
-        size_t anchor = StepBackCodePoints(utf8, firstByte, kCaretAnchorLookbackCodePoints);
-        hb_buffer_t* s_HbBuf = nullptr;
-        for (;;)
-        {
-            s_HbBuf = Detail::GetThreadLocalHBBuffer();
-            hb_buffer_add_utf8(s_HbBuf, utf8.data(), (int)utf8.size(), (unsigned)anchor,
-                               (int)(utf8.size() - anchor));
-            if (r.script != HB_SCRIPT_INVALID || tailOnly)
-            {
-                hb_buffer_set_direction(s_HbBuf, r.dir);
-                hb_buffer_set_script(s_HbBuf, r.script);
-                hb_buffer_set_language(s_HbBuf, r.lang ? hb_language_from_string(r.lang, -1)
-                                                       : hb_language_get_default());
-            }
-            else
-            {
-                hb_buffer_guess_segment_properties(s_HbBuf);
-            }
-            hb_shape(f.Hb, s_HbBuf, featureCount ? features : nullptr, featureCount);
-            if (anchor == 0 || HasSafeBreakAfterAnchor(s_HbBuf, anchor, firstByte))
-                break;
-            anchor = StepBackCodePoints(utf8, anchor, firstByte - anchor);
-        }
-        // The map is built over [anchor, end), then its first firstByte - anchor
-        // entries are dropped.
-        const size_t spanSize = utf8.size() - anchor;
-        outXByByte.resize(spanSize + 1);
-        unsigned count = 0;
-        const hb_glyph_position_t* pos = hb_buffer_get_glyph_positions(s_HbBuf, &count);
-        const hb_glyph_info_t* infos = hb_buffer_get_glyph_infos(s_HbBuf, &count);
-        // Map from byte index -> x position in pixels (ink advance space).
-        // Clusters are byte offsets into the whole string.
-        float xAtlas = 0.0f;
-        // Initialize all undefined to -1 so we can fill gaps
-        std::fill(outXByByte.begin(), outXByByte.end(), -1.0f);
-        for (unsigned i = 0; i < count; ++i)
-        {
-            const unsigned cluster = infos[i].cluster - (unsigned)anchor; // byte index in span
-            if (cluster <= spanSize)
-            {
-                if (outXByByte[cluster] < 0.0f)
-                    outXByByte[cluster] = xAtlas;
-            }
-            xAtlas += pos[i].x_advance / 64.0f;
-            // Spacing goes after each cluster's last glyph, including the run's
-            // final one — the caret at end-of-text carries the trailing gap and
-            // so equals the measured width.
-            if (i + 1 == count || infos[i + 1].cluster != infos[i].cluster)
-                xAtlas += lsAtlas;
-        }
-        // Ensure the last insertion point is set to total width
-        outXByByte[spanSize] = xAtlas;
-        // Backfill any gaps (bytes within a cluster share the same x)
-        float last = 0.0f;
-        for (size_t i = 0; i < outXByByte.size(); ++i)
-        {
-            if (outXByByte[i] >= 0.0f)
-                last = outXByByte[i];
-            else
-                outXByByte[i] = last;
-        }
-        if (tailOnly)
-        {
-            outXByByte.erase(outXByByte.begin(),
-                             outXByByte.begin() + (std::ptrdiff_t)(firstByte - anchor));
-            const float origin = outXByByte[0];
-            for (float& v : outXByByte)
-                v -= origin;
-        }
-        // Convert atlas-space X positions to render pixels
-        if (geometryScale != 1.0f)
-        {
-            for (float& v : outXByByte)
-                v *= geometryScale;
-        }
-        return true;
-    }
-#endif
-    // Fallback without HarfBuzz: approximate using glyph advances for ASCII
-    float xAtlas = 0.0f;
-    outXByByte[0] = 0.0f;
-    size_t bi = 0;
-    while (bi < tail.size())
-    {
-        unsigned char c = (unsigned char)tail[bi];
-        unsigned codepoint = c;
-        size_t step = 1;
-        if (c >= 0x80)
-        { // naive UTF-8 step
-            if ((c >> 5) == 0x6 && bi + 1 < tail.size())
-            {
-                codepoint = ((c & 0x1F) << 6) | ((unsigned char)tail[bi + 1] & 0x3F);
-                step = 2;
-            }
-            else if ((c >> 4) == 0xE && bi + 2 < tail.size())
-            {
-                codepoint = ((c & 0x0F) << 12) | (((unsigned char)tail[bi + 1] & 0x3F) << 6) | ((unsigned char)tail[bi + 2] & 0x3F);
-                step = 3;
-            }
-            else if ((c >> 3) == 0x1E && bi + 3 < tail.size())
-            {
-                codepoint = ((c & 0x07) << 18) | (((unsigned char)tail[bi + 1] & 0x3F) << 12) | (((unsigned char)tail[bi + 2] & 0x3F) << 6) | ((unsigned char)tail[bi + 3] & 0x3F);
-                step = 4;
-            }
-        }
-        // Use FreeType advance (atlas size)
-        FT_Load_Char(f.Face, codepoint, FT_LOAD_DEFAULT);
-        xAtlas += f.Face->glyph->advance.x / 64.0f;
-        bi += step;
-        xAtlas += lsAtlas; // per-codepoint pseudo-clusters, one gap each
-        outXByByte[bi] = xAtlas;
-    }
-    // Fill any gaps (should not be necessary but safe)
-    for (size_t i = 1; i < outXByByte.size(); ++i)
-        if (outXByByte[i] == 0.0f && i > 0)
-            outXByByte[i] = outXByByte[i - 1];
-    // Convert atlas-space X positions to render pixels
-    if (geometryScale != 1.0f)
-    {
-        for (float& v : outXByByte)
-            v *= geometryScale;
-    }
-    return true;
-}
 } // namespace
 #endif // GE_HAVE_FREETYPE
 
@@ -465,6 +172,27 @@ bool FontAtlas::GetTypographicHeights(unsigned pixelSize,
 #endif
 }
 
+bool FontAtlas::RendersAllGlyphs(std::string_view utf8)
+{
+    if (utf8.empty()) return true;
+#if defined(GE_HAVE_FREETYPE)
+    if (!m_FtFace.IsValid()) return false;
+#else
+    return false;
+#endif
+    constexpr uint32_t kGlyphIndexMask = 0x00FFFFFFu;
+    constexpr float kProbePixelSize = 16.0f;
+    ShapingOutput shaped;
+    ShapeGlyphs(utf8, kProbePixelSize, false, shaped, 0.0f);
+    for (size_t index = 0; index < shaped.glyphIds.size(); ++index)
+    {
+        const uint32_t start = index < shaped.clusterStart.size() ? shaped.clusterStart[index] : 0;
+        if (start < utf8.size() && static_cast<unsigned char>(utf8[start]) < 0x20u) continue;
+        if ((shaped.glyphIds[index] & kGlyphIndexMask) == 0) return false;
+    }
+    return true;
+}
+
 bool FontAtlas::HasGlyph(uint32_t codepoint) const
 {
 #if !defined(GE_HAVE_FREETYPE)
@@ -481,41 +209,104 @@ bool FontAtlas::HasGlyph(uint32_t codepoint) const
 TextMetrics FontAtlas::MeasureUtf8(std::string_view utf8, float pixelSize,
                                    float letterSpacingPx)
 {
-#if !defined(GE_HAVE_FREETYPE)
-    (void)utf8;
-    (void)pixelSize;
-    (void)letterSpacingPx;
-    return {};
-#else
+    TextMetrics metrics{};
+#if defined(GE_HAVE_FREETYPE)
     if (!m_FtFace.IsValid())
-        return {};
-
-    // Always shape at the atlas generation size and scale to the requested render size.
-    // This keeps measurement, caret mapping and ShapeText rendering in lock-step.
-    const unsigned rasterPx = RasterPixelSize(pixelSize);
-    const unsigned atlasSize = (m_AtlasPixelSize > 0) ? m_AtlasPixelSize : rasterPx;
-    const float geometryScale = std::max(1.0f, pixelSize) / static_cast<float>(atlasSize);
-
-    const bool sized = m_FtFace.SetPixelSizes(atlasSize);
-#if defined(GE_HAVE_HARFBUZZ)
-    // CRITICAL: Notify HarfBuzz that the FreeType face size has changed!
-    if (m_HbFont.Get())
+        return metrics;
+    const unsigned rasterSize = RasterPixelSize(pixelSize);
+    const unsigned atlasSize = m_AtlasPixelSize > 0 ? m_AtlasPixelSize : rasterSize;
+    const float scale = std::max(1.0f, pixelSize) / atlasSize;
+    const auto key = ShapedWidthKey(utf8, atlasSize, letterSpacingPx != 0.0f);
+    float width = 0.0f;
+    uint32_t clusterCount = 0;
+    if (!m_ShapedWidthCache || !ShapedWidthLookup(*m_ShapedWidthCache, key, width, clusterCount))
     {
-        hb_ft_font_changed(m_HbFont.Get());
+        ShapingOutput shaped;
+        ShapeGlyphs(utf8, pixelSize, false, shaped, letterSpacingPx);
+        for (size_t index = 0; index < shaped.xAdv.size(); ++index)
+        {
+            width += shaped.baseXAdv.empty() ? shaped.xAdv[index] : shaped.baseXAdv[index];
+            if (shaped.clusterStart.empty() || index + 1 == shaped.xAdv.size() ||
+                shaped.clusterStart[index + 1] != shaped.clusterStart[index])
+                ++clusterCount;
+        }
+        if (shaped.baseXAdv.empty()) width -= clusterCount * letterSpacingPx / scale;
+        if (m_ShapedWidthCache)
+            ShapedWidthInsert(*m_ShapedWidthCache, key, width, clusterCount);
     }
+    const auto line = GetLineMetrics(pixelSize);
+    metrics.width = width * scale + clusterCount * letterSpacingPx;
+    metrics.ascender = line.ascender;
+    metrics.descender = line.descender;
+    metrics.height = line.height;
+    metrics.baseline = line.ascender;
 #endif
+    return metrics;
+}
 
-    MeasureFaceRef f{m_FtFace.Face()
-#if defined(GE_HAVE_HARFBUZZ)
-                     , m_HbFont.Get()
-#endif
-    };
-    // A width shaped at an unverified pixel size must not enter the shared
-    // cache under the atlasSize key.
-    return MeasureUtf8WithFace(f, utf8, geometryScale, pixelSize,
-                               sized ? m_ShapedWidthCache.get() : nullptr, atlasSize,
-                               letterSpacingPx);
-#endif
+namespace
+{
+std::vector<size_t> VisualCaretStops(const FontAtlas::MeasureResult& measurement)
+{
+    std::vector<size_t> stops;
+    if (measurement.caretXByByte.empty()) return stops;
+    stops.push_back(0);
+    stops.push_back(measurement.caretXByByte.size() - 1);
+    for (const auto& cluster : measurement.Clusters)
+    {
+        if (cluster.ByteStart < measurement.caretXByByte.size()) stops.push_back(cluster.ByteStart);
+        if (cluster.ByteEnd < measurement.caretXByByte.size()) stops.push_back(cluster.ByteEnd);
+    }
+    std::sort(stops.begin(), stops.end());
+    stops.erase(std::unique(stops.begin(), stops.end()), stops.end());
+    std::stable_sort(stops.begin(), stops.end(), [&](size_t left, size_t right)
+    {
+        return measurement.caretXByByte[left] < measurement.caretXByByte[right];
+    });
+    return stops;
+}
+}
+
+size_t FontAtlas::MeasureResult::NextVisualCaret(size_t current, bool right) const
+{
+    const auto stops = VisualCaretStops(*this);
+    if (stops.empty()) return 0;
+    const auto found = std::find(stops.begin(), stops.end(), current);
+    if (found == stops.end())
+        return CaretAtX(caretXByByte[std::min(current, caretXByByte.size() - 1)]);
+    if (right) return std::next(found) == stops.end() ? *found : *std::next(found);
+    return found == stops.begin() ? *found : *std::prev(found);
+}
+
+size_t FontAtlas::MeasureResult::CaretAtX(float x) const
+{
+    const auto stops = VisualCaretStops(*this);
+    if (stops.empty()) return 0;
+    return *std::min_element(stops.begin(), stops.end(), [&](size_t left, size_t right)
+    {
+        return std::abs(caretXByByte[left] - x) < std::abs(caretXByByte[right] - x);
+    });
+}
+
+std::vector<std::pair<float, float>> FontAtlas::MeasureResult::SelectionRanges(size_t start, size_t end) const
+{
+    if (start > end) std::swap(start, end);
+    std::vector<std::pair<float, float>> ranges;
+    if (start == end) return ranges;
+    for (const auto& cluster : Clusters)
+        if (cluster.ByteStart < end && cluster.ByteEnd > start && cluster.Right > cluster.Left)
+            ranges.emplace_back(cluster.Left, cluster.Right);
+    std::sort(ranges.begin(), ranges.end());
+    size_t count = 0;
+    for (const auto& range : ranges)
+    {
+        if (count && range.first <= ranges[count - 1].second + 0.001f)
+            ranges[count - 1].second = std::max(ranges[count - 1].second, range.second);
+        else
+            ranges[count++] = range;
+    }
+    ranges.resize(count);
+    return ranges;
 }
 
 FontAtlas::MeasureResult FontAtlas::MeasureText(std::string_view utf8, float pixelSize,
@@ -523,7 +314,7 @@ FontAtlas::MeasureResult FontAtlas::MeasureText(std::string_view utf8, float pix
 {
     MeasureResult r{};
     r.metrics = MeasureUtf8(utf8, pixelSize, letterSpacingPx);
-    BuildCaretMapUtf8(utf8, pixelSize, r.caretXByByte, letterSpacingPx);
+    BuildCaretMapUtf8(utf8, pixelSize, r.caretXByByte, letterSpacingPx, &r.Clusters);
     return r;
 }
 
@@ -546,44 +337,45 @@ LineMetrics FontAtlas::GetFontLineMetrics(float pixelSize) const
 
 bool FontAtlas::BuildCaretMapUtf8(std::string_view utf8, float pixelSize,
                                   std::vector<float>& outXByByte, float letterSpacingPx,
-                                  size_t firstByte)
+                                  std::vector<TextCluster>* outClusters)
 {
-#if !defined(GE_HAVE_FREETYPE)
-    (void)utf8;
-    (void)pixelSize;
-    (void)outXByByte;
-    (void)letterSpacingPx;
-    (void)firstByte;
-    return false;
-#else
+    if (outClusters) outClusters->clear();
+    outXByByte.assign(utf8.size() + 1, 0.0f);
+#if defined(GE_HAVE_FREETYPE)
     if (!m_FtFace.IsValid())
-    {
-        outXByByte.clear();
-        outXByByte.resize(utf8.size() - firstByte + 1, 0.0f);
         return false;
-    }
-
-    // Shape at atlas generation size, but report caret X in render pixels.
-    // Caret X retains the requested fractional render size.
-    const unsigned rasterPx = RasterPixelSize(pixelSize);
-    const unsigned atlasSize = (m_AtlasPixelSize > 0) ? m_AtlasPixelSize : rasterPx;
-    const float geometryScale = std::max(1.0f, pixelSize) / static_cast<float>(atlasSize);
-
-    m_FtFace.SetPixelSizes(atlasSize);
-
-#if defined(GE_HAVE_HARFBUZZ)
-    if (m_HbFont.Get())
+    ShapingOutput shaped;
+    const float scale = ShapeGlyphs(utf8, pixelSize, false, shaped, letterSpacingPx);
+    struct CaretCluster { uint32_t Start; uint32_t End; float StartX; float EndX; };
+    std::vector<CaretCluster> clusters;
+    float pen = 0.0f;
+    for (size_t index = 0; index < shaped.clusterStart.size();)
     {
-        hb_ft_font_changed(m_HbFont.Get());
+        const size_t first = index;
+        const float left = pen;
+        do
+        {
+            pen += shaped.xAdv[index++] * scale;
+        } while (index < shaped.clusterStart.size() &&
+                 shaped.clusterStart[index] == shaped.clusterStart[first]);
+        const bool rtl = shaped.clusterRTL[first];
+        if (outClusters)
+            outClusters->push_back({shaped.clusterStart[first], shaped.clusterEnd[first], std::min(left, pen), std::max(left, pen)});
+        clusters.push_back({shaped.clusterStart[first], shaped.clusterEnd[first],
+                            rtl ? pen : left, rtl ? left : pen});
     }
-#endif
-
-    MeasureFaceRef f{m_FtFace.Face()
-#if defined(GE_HAVE_HARFBUZZ)
-                     , m_HbFont.Get()
-#endif
-    };
-    return BuildCaretMapWithFace(f, utf8, geometryScale, outXByByte, letterSpacingPx, firstByte);
+    // At a bidi boundary prefer the following logical cluster's leading edge.
+    for (const auto& cluster : clusters)
+        if (cluster.End < outXByByte.size())
+            outXByByte[cluster.End] = cluster.EndX;
+    for (const auto& cluster : clusters)
+        for (size_t byte = cluster.Start; byte < cluster.End && byte < outXByByte.size(); ++byte)
+            outXByByte[byte] = cluster.StartX;
+    return true;
+#else
+    (void)pixelSize;
+    (void)letterSpacingPx;
+    return false;
 #endif
 }
 

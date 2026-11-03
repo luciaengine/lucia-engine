@@ -3,7 +3,6 @@
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Logger/Logger.h"
-#include "Mathematics/Interpolation.h"
 
 #include <algorithm>
 #include <cmath>
@@ -27,6 +26,11 @@ struct CellHash
     float OffsetY;
 };
 
+float Fract(float v)
+{
+    return v - std::floor(v);
+}
+
 CellHash HashCell(int cx, int cy, int period)
 {
     // Wrap the cell so the feature-point field is tileable.
@@ -36,7 +40,7 @@ CellHash HashCell(int cx, int cy, int period)
     const float fy = static_cast<float>(wy);
     float a = std::sin(fx * 127.1f + fy * 311.7f) * 43758.5453f;
     float b = std::sin(fx * 269.5f + fy * 183.3f) * 43758.5453f;
-    return {Math::Fract(a), Math::Fract(b)};
+    return {Fract(a), Fract(b)};
 }
 
 // Voronoi "edge" response at a point in lattice space, evaluated tileably over a

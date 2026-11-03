@@ -1,10 +1,12 @@
 <UIElement id="PromptPanelContainer" class="prompt-panel-root">
-  <UIElement class="prompt-panel-toolbar">
-    <Button id="PromptSettingsToggle" class="icon-button prompt-panel-settings-button" />
-  </UIElement>
+  <UIElement class="prompt-panel-header">
+    <UIElement class="prompt-panel-toolbar">
+      <Button id="PromptSettingsToggle" class="icon-button prompt-panel-settings-button" />
+    </UIElement>
 
-  <UIElement id="PromptProviderSettings" class="prompt-panel-provider-settings hidden">
-    <Button id="PromptClearSession" class="icon-button prompt-panel-icon-button trash-icon" />
+    <UIElement id="PromptProviderSettings" class="prompt-panel-provider-settings hidden">
+      <Button id="PromptClearSession" class="icon-button prompt-panel-icon-button trash-icon" />
+    </UIElement>
   </UIElement>
 
   <SplitView class="prompt-panel-body">
@@ -15,13 +17,17 @@
           <Label id="PromptHistoryEmpty" class="prompt-panel-history-empty" text="Your conversation appears here. Send a prompt below: the reply streams in under it, and prompts sent while it runs wait their turn." />
         </UIElement>
       </ScrollView>
+      <PromptFileDropZone id="PromptFileStrip" class="prompt-panel-files hidden">
+        <UIElement id="PromptFileItems" class="prompt-panel-file-items" />
+      </PromptFileDropZone>
     </pane>
 
     <UIElement id="PromptPanelInputSplitter" class="prompt-panel-input-splitter" focusable="true" />
 
     <UIElement id="PromptInputPane" class="pane prompt-panel-input-pane">
       <UIElement class="prompt-panel-input-column">
-        <UIElement id="PromptInputRow" class="prompt-panel-input-row">
+        <PromptFileDropZone id="PromptInputRow" class="prompt-panel-input-row">
+          <Button id="PromptAttachButton" class="icon-button plus-icon prompt-panel-attach-button" focusable="false" />
           <UIElement class="prompt-panel-input-field">
             <ScrollView id="PromptInputScroll" class="prompt-panel-input-scroll">
               <PromptTextArea id="PromptInputText" class="script-editor-textarea prompt-panel-input" value="" />
@@ -33,32 +39,15 @@
             <Dropdown id="PromptModeDropdown" class="prompt-panel-mode prompt-panel-input-task hidden" />
             <Button id="PromptSessionButton" class="secondary hidden" text="Session…" focusable="false" />
             <Dropdown id="PromptProviderDropdown" class="prompt-panel-task prompt-panel-input-task" />
-            <Button id="PromptModelButton" class="secondary hidden" text="Opus (latest) · High" focusable="false" />
-            <UIElement id="PromptSpeechLevelsLeft" class="prompt-panel-speech-levels hidden">
-              <UIElement class="prompt-panel-speech-bar" />
-              <UIElement class="prompt-panel-speech-bar" />
-              <UIElement class="prompt-panel-speech-bar" />
-              <UIElement class="prompt-panel-speech-bar" />
-              <UIElement class="prompt-panel-speech-bar" />
-            </UIElement>
-            <PromptMicButton id="PromptMicButton" class="icon-button prompt-panel-mic-button hidden" focusable="false" />
-            <UIElement id="PromptSpeechLevelsRight" class="prompt-panel-speech-levels hidden">
-              <UIElement class="prompt-panel-speech-bar" />
-              <UIElement class="prompt-panel-speech-bar" />
-              <UIElement class="prompt-panel-speech-bar" />
-              <UIElement class="prompt-panel-speech-bar" />
-              <UIElement class="prompt-panel-speech-bar" />
-            </UIElement>
             <Button id="PromptSendButton" class="icon-button prompt-panel-send-button" />
           </UIElement>
-        </UIElement>
+        </PromptFileDropZone>
       </UIElement>
     </UIElement>
   </SplitView>
 
   <UIElement class="prompt-panel-status-row">
     <Label id="PromptStatusLabel" class="prompt-panel-status" text="Ready" />
-    <UIElement class="prompt-panel-text-size-glyph" />
     <UIElement id="PromptTextSizeHost" class="prompt-panel-text-size-host" />
   </UIElement>
 </UIElement>

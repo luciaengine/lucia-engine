@@ -1,7 +1,7 @@
 #include "Assets/Packages/PackageGitSource.h"
 
 #include "Assets/Packages/PackageResolver.h"
-#include "Logger/Logger.h"
+#include "Types/Fnv1a.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -19,17 +19,6 @@ constexpr std::string_view kHttpPrefix = "http://";
 constexpr std::string_view kPathParam = "&path=";
 constexpr size_t kShortShaLength = 12;
 constexpr size_t kDerivedNativePrefixLength = 8;
-
-std::uint64_t Fnv1a(std::string_view text)
-{
-    std::uint64_t hash = 14695981039346656037ULL;
-    for (const char c : text)
-    {
-        hash ^= static_cast<unsigned char>(c);
-        hash *= 1099511628211ULL;
-    }
-    return hash;
-}
 
 std::string ShortHash(std::uint64_t hash)
 {
@@ -182,7 +171,7 @@ std::filesystem::path PackageCacheDerivedNativeRoot(const std::filesystem::path&
     // readable prefix. The generation beneath it identifies the Engine binary.
     std::string shortName(entryName.substr(0, kDerivedNativePrefixLength));
     shortName += '-';
-    shortName += ShortHash(Fnv1a(packageIdentity));
+    shortName += ShortHash(Hashing::Fnv1a64(entryName));
 
 #if defined(__EMSCRIPTEN__)
     // Browser stays on its established, no-lock derived-data layout.
@@ -191,8 +180,8 @@ std::filesystem::path PackageCacheDerivedNativeRoot(const std::filesystem::path&
     // A generation remains isolated by the exact running Engine binary. A
     // dedicated segment avoids conflating this build identity with the package
     // scope while adding only thirteen characters to the deep CMake path.
-    const std::string generation = ShortHash(Fnv1a(engineBuildId));
-    return nativeRoot / ".native" / shortName / generation;
+    const std::string generation = ShortHash(Hashing::Fnv1a64(engineBuildId));
+    return cacheRoot / ".native" / shortName / generation;
 #endif
 }
 

@@ -45,25 +45,6 @@ bool ValidArtifact(const Vector<uint8>& bytes, TextureCookOutput output,
                texture.GetWidth(), texture.GetHeight(), inputs.Settings);
 }
 
-// A normal-variance companion (HasNormalVarianceCompanion): single-channel BC4, linear.
-bool ValidVarianceCompanion(const Vector<uint8>& bytes)
-{
-    TextureAsset texture(GUID::Null(), "cooked-variance-validation.ktx2");
-    return !bytes.empty() && texture.LoadFromData(bytes) && texture.GetWidth() && texture.GetHeight() &&
-           texture.GetFormat() == TextureFormat::BC4 && texture.GetColorSpace() == TextureColorSpace::Linear;
-}
-
-// The artifact at `file`, and its companion beside it when `withCompanion`; both valid or neither read.
-bool ReadArtifactPair(const fs::path& file, bool withCompanion, TextureCookOutput output,
-                      const TextureCookInputs& inputs, bool hdr, Vector<uint8>& cooked, Vector<uint8>& companion)
-{
-    if (!ReadFileBytesShared(file, cooked) || !ValidArtifact(cooked, output, inputs, hdr))
-        return false;
-    companion.clear();
-    return !withCompanion ||
-           (ReadFileBytesShared(TextureCookVarianceCompanionPath(file), companion) && ValidVarianceCompanion(companion));
-}
-
 bool PublishArtifact(const fs::path& destination, const Vector<uint8>& bytes, std::string& error)
 {
     static std::atomic<uint64> sequence{0};
@@ -110,19 +91,10 @@ bool PublishArtifact(const fs::path& destination, const Vector<uint8>& bytes, st
 void RemoveSupersededArtifacts(const fs::path& kept, const GUID& guid)
 {
     const std::string prefix = guid.ToString() + "-";
-    const fs::path keptCompanion = TextureCookVarianceCompanionPath(kept);
     std::error_code error;
     for (fs::directory_iterator it(kept.parent_path(), error), end; !error && it != end; it.increment(error))
-        if (it->path() != kept && it->path() != keptCompanion && it->path().filename().string().rfind(prefix, 0) == 0)
+        if (it->path() != kept && it->path().filename().string().rfind(prefix, 0) == 0)
             fs::remove(it->path(), error);
-}
-
-// The companion first, so a published parent always has its companion beside it.
-bool PublishArtifactPair(const fs::path& destination, const Vector<uint8>& cooked, const Vector<uint8>& companion,
-                         std::string& error)
-{
-    return (companion.empty() || PublishArtifact(TextureCookVarianceCompanionPath(destination), companion, error)) &&
-           PublishArtifact(destination, cooked, error);
 }
 
 // One usage for every slot that binds a texture, one bit per usage. An unknown slot may read the
@@ -231,7 +203,6 @@ bool StagePackagedTextureCooks(const fs::path& contentRoot,
                               const AssetManifest& manifest,
                               const AssetRegistry& sourceRegistry,
                               TextureCookWorkers* encodeWorkers,
-                              JobSystem::WorkStealingThreadPool* manifestParsePool,
                               const std::function<bool()>& cancelRequested,
                               TexturePackageCookStats& stats,
                               std::string& error)
@@ -267,7 +238,7 @@ bool StagePackagedTextureCooks(const fs::path& contentRoot,
             auto& store = stores[mountRoot];
             if (!store)
             {
-                store = std::make_unique<AssetDatabase::AssetStore_TextJsonl>(manifestParsePool);
+                store = std::make_unique<AssetDatabase::AssetStore_TextJsonl>();
                 if (!store->LoadFromFile(assetRoot / ".assetmanifest", &error))
                     return false;
             }
@@ -343,44 +314,44 @@ bool StagePackagedTextureCooks(const fs::path& contentRoot,
                 const bool sourceCooks = cacheRoot && sourceRegistry.GetDerivedArtifactPolicy(entry.guid).CooksOnMiss;
                 const auto sourceCacheFile = cacheRoot
                     ? *cacheRoot / AssetDatabase::kTextureCacheDirectoryName / filename : fs::path{};
-                // A normal map's variance companion travels with it (TextureAsset::LoadPackagedTexture).
-                const bool withCompanion = HasNormalVarianceCompanion(inputs, output);
                 Vector<uint8> cooked;
-                Vector<uint8> companion;
                 bool inSourceCache = false;
-                bool reused = ReadArtifactPair(destination, withCompanion, output, inputs, hdr, cooked, companion);
+                const bool alreadyStaged = ReadFileBytesShared(destination, cooked) &&
+                                           ValidArtifact(cooked, output, inputs, hdr);
+                bool reused = alreadyStaged;
                 if (!reused && cacheRoot)
-                    reused = inSourceCache =
-                        ReadArtifactPair(sourceCacheFile, withCompanion, output, inputs, hdr, cooked, companion);
+                    reused = inSourceCache = ReadFileBytesShared(sourceCacheFile, cooked) &&
+                                             ValidArtifact(cooked, output, inputs, hdr);
                 if (!reused)
                 {
                     Logger::Log::Info("Build: Baking texture '{}' ({})", entry.outputPath.string(), filename);
                     std::vector<uint8> encoded;
-                    std::vector<uint8> encodedCompanion;
-                    if (!CookTexture(sourceBytes.data(), sourceBytes.size(), source.string(), extension,
+                    if (!CookTexture(sourceBytes.data(), sourceBytes.size(), extension,
                                      inputs, output, encoded, error, cancelRequested,
-                                     encodeWorkers, &encodedCompanion))
+                                     encodeWorkers))
                     {
                         if (error != kTextureCookCancelledError)
                             error = "Texture bake failed for '" + entry.outputPath.string() + "': " + error;
                         return false;
                     }
                     cooked.assign(encoded.begin(), encoded.end());
-                    companion.assign(encodedCompanion.begin(), encodedCompanion.end());
-                    if (!ValidArtifact(cooked, output, inputs, hdr) ||
-                        (withCompanion && !ValidVarianceCompanion(companion)))
+                    if (!ValidArtifact(cooked, output, inputs, hdr))
                     {
                         error = "Cooked texture failed validation: " + entry.outputPath.string();
                         return false;
                     }
                 }
                 if (cancelled()) { error = kTextureCookCancelledError; return false; }
-                if (!PublishArtifactPair(destination, cooked, companion, error))
+                // Valid staged artifacts already have the required recipe key
+                // and format. Republishing them would allocate new storage for
+                // APFS/reflink clones and turn validation into a full cache rewrite.
+                // Authoring-cache hits still need publication into this mount.
+                if (!alreadyStaged && !PublishArtifact(destination, cooked, error))
                     return false;
                 std::string cacheError;
                 if (sourceCooks && !inSourceCache)
                 {
-                    if (PublishArtifactPair(sourceCacheFile, cooked, companion, cacheError))
+                    if (PublishArtifact(sourceCacheFile, cooked, cacheError))
                         RemoveSupersededArtifacts(sourceCacheFile, entry.guid);
                     else
                         Logger::Log::Warning("Build: {}; the editor cooks '{}' again on its next load",
@@ -388,7 +359,7 @@ bool StagePackagedTextureCooks(const fs::path& contentRoot,
                 }
                 ++stats.Artifacts;
                 stats.ReusedArtifacts += reused ? 1 : 0;
-                stats.Bytes += cooked.size() + companion.size();
+                stats.Bytes += cooked.size();
             }
             if (!store->UpsertAsset(record, &error))
                 return false;

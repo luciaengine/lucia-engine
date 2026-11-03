@@ -26,9 +26,7 @@
 #pragma once
 
 #include "AssetCore/AssetReloadInvalidator.h"
-#include "Engine/Rendering/MaterialDeformationMargins.h"
 #include "Engine/Rendering/MaterialRegistry.h"
-#include "Engine/Rendering/MaterialRegistryStamp.h"
 #include "Engine/Rendering/ShaderCompilationCache.h"
 #include "Engine/Rendering/ShaderCompileErrorLog.h"
 #include "Rendering/Core/Device.h"
@@ -38,7 +36,7 @@
 #include "JobSystem/JobCounter.h"
 #include "JobSystem/TaskTypes.h"
 #include "Rendering/Materials/MaterialBuildService.h" // MaterialBuildContext
-#include "Rendering/Materials/Shader/ShaderVariantKey.h" // MaterialKeyword
+#include "Rendering/Materials/ShaderVariantKey.h" // MaterialKeyword
 #include "Types/StringId.h"
 
 #include <atomic>
@@ -46,6 +44,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -67,7 +66,6 @@ namespace GameEngine
 // GUID, MaterialDocument, AssetEventDispatcher come in fully via the includes
 // above (MaterialRegistry.h -> GUID.h / MaterialDocument.h; AssetReloadInvalidator.h
 // -> AssetEvents.h).
-class SceneLoadTracker;
 
 namespace Engine::Renderer
 {
@@ -87,7 +85,6 @@ class PerFrameWritePool;
 class PipelineVariantCache;
 class ProjectMaterialPrewarmService;
 class RenderServices;
-class SceneDrawWarm;
 class TextureService;
 
 // Owns the material stack behind rs.Materials(). See file header.
@@ -127,6 +124,9 @@ class MaterialSystem
     // order (adjacent in the current spine at :945 / :950-951). Ends by pumping
     // the project material warm-up.
     void BeginFrame();
+    // The active render pipeline blueprint (RenderServices-owned) just swapped:
+    // drain in-flight PSO prewarm before the old nodes are destroyed.
+    void OnActiveRenderPipelineChanged();
     // A different project was just opened in this process. Every material-side
     // cache keyed on the old project's paths has to go; the reasons differ per
     // cache and are stated at the definition.
@@ -144,11 +144,8 @@ class MaterialSystem
     void InstallReloadInvalidator(AssetEventDispatcher& dispatcher);
 
     // A shader source file (surface .glsl, vertex modifier) changed on disk.
-    // Empties the held shader sources at once, so the next build reads every file
-    // again, and enqueues the file (thread-safe): the next BeginFrame invalidates
-    // every cached shader referencing it and recompiles the registered materials
-    // that use it. An empty path stands for the default surface, which a material
-    // that authors no surface composes with.
+    // Thread-safe enqueue; the next BeginFrame invalidates every cached shader
+    // referencing the file and recompiles the registered materials that use it.
     // Direct-call seam (editor recompile button, tests) — the asset event path
     // enqueues GUIDs via the subscriber instead.
     void NotifyShaderSourceEdited(const std::filesystem::path& sourcePath);
@@ -252,18 +249,9 @@ class MaterialSystem
     PrewarmProgress GetPrewarmProgress() const { return m_OnDemandPrewarm.Read(); }
     PrewarmProgress GetProjectWarmUpProgress() const { return m_ProjectWarmUp.Read(); }
 
-    /// Report each compile task as a ticket: base compiles and variant-set prewarms in
-    /// shader.base-compile (the project warm-up as Background work), the device's pipeline
-    /// builds in gpu.pipeline, and the variant cache's draw compiles in shader.variant.
-    /// Owner thread, before the first submit.
-    void ReportLoadingWork(SceneLoadTracker& tracker);
-
     // --- per-frame ---
     void FinalizeFrameBuffers();
     uint64_t GetMaterialSSBOPackCount() const { return m_MaterialSSBOPackCount; }
-    // Material rows written into MaterialParams ring slots: every row on a full
-    // pack, only the rows whose material changed on a delta pack.
-    uint64_t GetMaterialSSBORowWriteCount() const { return m_MaterialSSBORowWriteCount; }
     // Frames whose material rows did not fit the MaterialParams ring, each of
     // which shaded from the zero-filled fallback instead of real parameters.
     uint64_t GetMaterialParamsOverflowCount() const { return m_MaterialParamsOverflowCount; }
@@ -302,29 +290,8 @@ class MaterialSystem
     // equal (generation, depth-class bytes) implies the extraction-visible
     // derived material state did not move.
     uint64_t MaterialSSBOGeneration() const { return m_MaterialSSBOGeneration; }
-
-    /// The stamp per-frame consumers gate their registry sweeps on (see
-    /// MaterialRegistryStamp).
-    MaterialRegistryStamp GetRegistryStamp() const
-    {
-        return MaterialRegistryStamp{m_MaterialSSBOGeneration, Material::GetGlobalContentEpoch()};
-    }
     // Rebuilds the color-class map if the material set changed, then returns it.
     std::span<const uint32_t> MaterialColorClassSpan();
-    // The culling margin per materialIndex, in local meters
-    // (MaterialDeformationMargins.h); rebuilt when the registry stamp moves.
-    std::span<const float> MaterialDeformationMarginSpan()
-    {
-        return m_DeformationMargins.Refresh(m_MaterialsBySSBOIndex, GetRegistryStamp());
-    }
-
-    /// Moves whenever a draw the publish gate skipped can draw: a pipeline
-    /// variant publish lands, or a backend pipeline a draw found cold for its
-    /// pass turns warm (a failed build does not move it). A consumer that keeps
-    /// a rendered frame, such as a scene reflection probe's capture, compares it
-    /// across the frames it keeps: no content, light or material epoch moves
-    /// when a skipped draw becomes drawable. One per render services; any thread may read.
-    uint64_t PipelineReadinessEpoch() const { return m_PipelineReadinessEpoch.load(std::memory_order_relaxed); }
 
     // --- component access ---
     MaterialRegistry& Registry() { return m_RuntimeMaterialRegistry; }
@@ -333,8 +300,6 @@ class MaterialSystem
     MaterialBinder& Binder();
     const MaterialBinder& Binder() const;
     PipelineVariantCache& Variants() { return *m_PipelineVariants; }
-    // The scene warm every scene resolve notes its draws into; stepped at each BeginFrame.
-    SceneDrawWarm& SceneWarm() { return *m_SceneWarm; }
     const PipelineVariantCache& Variants() const { return *m_PipelineVariants; }
 
     // The declared-property table of the program this document composes:
@@ -370,11 +335,6 @@ class MaterialSystem
     bool IsSurfaceProjectOwned(const MaterialDocument& doc,
                                const std::filesystem::path& materialAssetPath);
 
-    // The program index of the shipped shader cache that material builds resolve through
-    // (MaterialBuildContext::ProgramIndex), with its hit and miss counts; null until the build
-    // context is derived, and when no read-only cache root carries a valid index.
-    const Rendering::ShaderProgramIndex* GetProgramIndex() const { return m_MaterialBuildContext.ProgramIndex.get(); }
-
     void SetMaterialBuildContext(const Rendering::MaterialBuildContext& ctx)
     {
         m_MaterialBuildContext = ctx;
@@ -386,6 +346,15 @@ class MaterialSystem
   private:
     // The registration/prewarm parity test reads DeriveShaderIdentity directly.
     friend class MaterialShaderIdentityTest;
+    friend class SceneResolveService;
+    friend class MaterialSourcePrefetchTest;
+
+    // Advisory tracked worker reads for the editor's scene-open resolve. No
+    // registry state crosses to the worker. A failed or dropped read is ready
+    // too, leaving normal registration to report errors. Owner thread only.
+    std::shared_future<void> PrefetchMaterialShaderSources(
+        const MaterialDocument& doc, const std::filesystem::path& materialAssetPath);
+
 
     // The base variant key, compile inputs and drawn alpha mode of a material
     // registered from `doc` at `materialAssetPath` (before caller-injected keywords).
@@ -414,17 +383,11 @@ class MaterialSystem
     // clip once per save burst instead of once per frame.
     size_t SpendShaderEditRecompileBudget();
     // One material's shader-edit recompile: inspector-lane clear, document
-    // re-synthesis from the live compile spec, then the resubmit. The shared
-    // cache entry is not invalidated again: the edit's file sweep already did.
+    // re-synthesis from the live compile spec, then the public async recompile.
     // No eviction: the submit's version bump retires the pass-variant PSO rows,
     // and PipelineVariantCache stale-serves them while workers rebuild. A
     // registry miss (material freed since the scan) is a no-op.
     void RecompileMaterialForShaderEdit(const GUID& guid);
-    // The part of RecompileMaterialPipeline after the cache invalidation: drops
-    // the material's own variant memos, refreshes its texture slots, retires its
-    // pipeline id and submits the base compile. `resolved` has its shader
-    // references reconciled. Main-thread only; `mat` is registered under `guid`.
-    void ResubmitMaterialPipeline(const GUID& guid, Material* mat, const MaterialDocument& resolved);
     // Demotes an authored Mask that provably cannot discard to Opaque on the
     // registration-local document copy. Runtime-only by design: the authored
     // asset/document is never mutated, so editor saves re-emit the authored
@@ -507,16 +470,6 @@ class MaterialSystem
     void SubmitTrackedPrewarm(std::function<void()> work,
                               JobSystem::JobPriority priority = JobSystem::JobPriority::Normal,
                               PrewarmOrigin origin = PrewarmOrigin::OnDemand);
-    // The load category of a compile task that the material system submits.
-    enum class LoadWork : uint8_t
-    {
-        BaseCompile,
-        PipelineBuild,
-    };
-    // `work` wrapped in a ticket of `kind` named `name`, Background for the project warm-up;
-    // `work` as is before ReportLoadingWork and from ShutdownPhaseA on. Any thread.
-    std::function<void()> TrackLoadWork(LoadWork kind, std::string_view name, PrewarmOrigin origin,
-                                        std::function<void()> work);
     void DrainPrewarmJobs();
     // The device's pipeline build dispatcher (IDevice::SetPipelineBuildDispatcher).
     void DispatchPipelineBuild(std::function<void()> build);
@@ -583,10 +536,6 @@ class MaterialSystem
     Rendering::IDevice* GetDevice() const { return m_Device; }
     Rendering::CullModeFlags DebugCullMode() const;
     Rendering::FrontFace DebugFrontFace() const;
-    // PipelineReadinessEpoch's writer: the variant cache's publish drain and its
-    // concrete-build waits (record workers included).
-    void NotePipelineReady() { m_PipelineReadinessEpoch.fetch_add(1, std::memory_order_relaxed); }
-    std::atomic<uint64_t> m_PipelineReadinessEpoch{0};
 
     // Injected dependencies (design §0.4). Pointers, not references, because the
     // facade is default-constructed then Initialize()d.
@@ -601,7 +550,6 @@ class MaterialSystem
     ShaderCompileErrorLog m_ShaderErrors;
     std::unique_ptr<MaterialCompiler> m_MaterialCompiler;
     std::unique_ptr<PipelineVariantCache> m_PipelineVariants;
-    std::unique_ptr<SceneDrawWarm> m_SceneWarm;
     std::unique_ptr<MaterialBinder> m_MaterialBinder;
     // Idle-time warm-up of the open project's material shaders; pumped by
     // BeginFrame for the engine's primary RenderServices only.
@@ -614,9 +562,7 @@ class MaterialSystem
     // under it, so a shutdown (flag set under the same mutex) can never miss a
     // racing submit when it drains.
     JobSystem::JobCounter m_PrewarmCounter;
-    // Written under m_PrewarmDrainMutex. A running variant-set prewarm reads it without
-    // the lock between variants and stops, so shutdown waits for one compile, not a set.
-    std::atomic<bool> m_PrewarmShutdown{false};
+    bool m_PrewarmShutdown = false;      // guarded by m_PrewarmDrainMutex
     bool m_PrewarmEverSubmitted = false; // guarded by m_PrewarmDrainMutex
     std::mutex m_PrewarmDrainMutex;
 
@@ -655,11 +601,6 @@ class MaterialSystem
     };
     PrewarmCounters m_OnDemandPrewarm;
     PrewarmCounters m_ProjectWarmUp;
-    // The load categories of the compile tasks, guarded by m_PrewarmDrainMutex. ReportLoadingWork
-    // sets them once; ShutdownPhaseA revokes them before it cancels the queued tasks. While
-    // null, a submitted task carries no ticket.
-    struct LoadReport;
-    std::shared_ptr<LoadReport> m_LoadReport;
 
     // Materials whose Mask demotion has been logged this session (main thread,
     // like registration).
@@ -721,7 +662,6 @@ class MaterialSystem
     std::vector<uint8_t> m_MaterialDepthClass;
     std::vector<uint8_t> m_MaterialDeformationMotion;
     std::vector<uint32_t> m_MaterialColorClass;
-    MaterialDeformationMargins m_DeformationMargins;
     // Sentinel meaning "no valid build": m_MaterialSSBOGeneration counts up from
     // 0, so it can never compare equal to this.
     static constexpr uint64_t kInvalidColorClassGeneration = ~0ull;
@@ -732,23 +672,13 @@ class MaterialSystem
     {
         Rendering::BufferHandle Buffer{};
         size_t Offset = 0;
-        // Layout stamp: the slot mapping, the row count and the unassigned-row
-        // defaults. Equal stamp and placement means only rows can differ.
         uint64_t Stamp = 0;
-        // Material::GetGlobalContentEpoch at the last pack. Equal means no row
-        // can differ, so the pack is skipped without scanning rows.
-        uint64_t ContentEpoch = 0;
-        // Per row, Material::GetContentRevision at the last write (0 for an
-        // unassigned row). The material at a row cannot change under an equal
-        // stamp: every write to the slot mapping moves m_MaterialSSBOGeneration.
-        std::vector<uint32_t> RowRevisions;
     };
     // Indexed by PerFrameWritePool::GetCurrentSlot(MaterialParams), a RING slot —
     // deeper than the device's pacing, so this is sized by the deepest ring any
     // caller can ask for rather than by frames in flight.
     PackedMaterialSlot m_PackedMaterialSlots[Rendering::FrameBufferAllocator::kMaxRingSlots] = {};
     uint64_t m_MaterialSSBOPackCount = 0;
-    uint64_t m_MaterialSSBORowWriteCount = 0;
     uint64_t m_MaterialParamsOverflowCount = 0;
     bool m_FallbackRowSeeded = false;
     Rendering::BufferHandle m_MaterialParamsSSBOBuffer{};

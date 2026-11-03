@@ -16,6 +16,7 @@
 #include "Input/InputSystem.h" // kKeyActionRelease
 #include "Input/KeyCodes.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Rendering/Common/Utils.h"                // Rendering::Utils::ReadFile
 #include "Rendering/Core/RenderGraph/RGFrame.h"     // RGLoadOp, RGTexture (full)
 #include "UI/Assets/UILayoutAsset.h"
@@ -28,7 +29,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -45,11 +45,7 @@ static constexpr float kMaxAnimationStepSeconds = 0.1f;
 // HUD-verify aid. Off by default.
 static bool GameUiDiagEnabled()
 {
-    static const bool kEnabled = []
-    {
-        const char* v = std::getenv("GE_GAMEUI_DIAG");
-        return v && v[0] == '1';
-    }();
+    static const bool kEnabled = Platform::EnvironmentSwitchEnabled("GE_GAMEUI_DIAG", false);
     return kEnabled;
 }
 
@@ -99,10 +95,11 @@ GameUIHost::~GameUIHost()
 
 std::unique_ptr<GameUIHost> GameUIHost::CreateForHost(
     Rendering::IDevice* device, AssetManager* assetManager,
-    JobSystem::WorkStealingThreadPool* jobSystem, bool neverClearTarget)
+    JobSystem::WorkStealingThreadPool* jobSystem, const std::filesystem::path& fontsDir,
+    bool neverClearTarget)
 {
     auto host = std::make_unique<GameUIHost>(device, assetManager, jobSystem);
-    host->ConfigureFonts();
+    host->ConfigureFonts(fontsDir);
     host->SetNeverClearTarget(neverClearTarget);
     return host;
 }
@@ -122,18 +119,17 @@ static const std::vector<uint8_t>& ReadDefaultFontBytesCached(const std::string&
     return it->second;
 }
 
-void GameUIHost::ConfigureFonts()
+void GameUIHost::ConfigureFonts(const std::filesystem::path& assetsDir)
 {
     if (!m_AssetManager || !m_UI)
         return;
 
     auto& reg = m_AssetManager->GetRegistry();
-    const std::filesystem::path fontPath = m_AssetManager->ResolveAssetPath(kDefaultFontPath);
+    const std::filesystem::path fontPath = assetsDir / kDefaultFontPath;
     if (!reg.IsAssetRegistered(fontPath))
         reg.RegisterAsset(fontPath);
     const GUID fontGuid = reg.GetAssetGUID(fontPath);
-    const std::string fontPathString = fontPath.string();
-    const std::vector<uint8_t>& bytes = ReadDefaultFontBytesCached(fontPathString);
+    const std::vector<uint8_t>& bytes = ReadDefaultFontBytesCached(fontPath.string());
     if (!m_UI->SetDefaultFontBytes(bytes, fontGuid))
         Logger::Log::Warning("Game UI: failed to install default font '{}'", fontPath.string());
 
@@ -197,7 +193,7 @@ void GameUIHost::SyncFromWorld(ECS::World& world)
             if (st.SortOrder != doc.SortOrder)
             {
                 st.SortOrder = doc.SortOrder;
-                st.Root->Style().Set(Style::ZIndex, static_cast<int>(doc.SortOrder));
+                st.Root->Overrides().Set(Style::ZIndex, static_cast<int>(doc.SortOrder));
             }
 
             // Layout (.uxml): kick an async load on change, poll GetAsset, bind on the UI thread.
@@ -358,9 +354,9 @@ void GameUIHost::ApplyFullscreenOverlaySuppression()
         if (hide == st.OverlayHidden)
             continue;
         if (hide)
-            st.Root->Style().Set(Style::Display, DisplayMode::None);
+            st.Root->Overrides().Set(Style::Display, DisplayMode::None);
         else
-            st.Root->Style().Reset(Style::Display);
+            st.Root->Overrides().Reset(Style::Display);
         st.OverlayHidden = hide;
     }
 }
@@ -373,7 +369,7 @@ void GameUIHost::DropFocusInside(const UIElement& subtreeRoot)
     // Resolve the id the way the manager's own dispatch does, so this asks
     // exactly "is the element that would receive the next key inside the subtree
     // leaving the tree".
-    UIElement* focused = root ? root->FindById(HashStringId(m_UI->GetFocusedElementId())) : nullptr;
+    UIElement* focused = root ? root->FindById(m_UI->GetFocusedElementId()) : nullptr;
     for (UIElement* p = focused; p; p = p->GetParent())
     {
         if (p == &subtreeRoot)
@@ -413,7 +409,7 @@ UIElement* GameUIHost::FindDocumentRoot(uint64_t entityId) const
     return it != m_Subtrees.end() ? it->second.Root : nullptr;
 }
 
-UIElement* GameUIHost::FindElementById(StringId id, uint64_t* outOwnerEntityId)
+UIElement* GameUIHost::FindElementById(std::string_view id, uint64_t* outOwnerEntityId)
 {
     // Lowest owning entity id wins a shared id. m_Subtrees is an unordered_map whose
     // iteration order changes across rehashes (documents mount/unmount every
@@ -443,7 +439,7 @@ UIElement* GameUIHost::FindElementById(StringId id, uint64_t* outOwnerEntityId)
 
 void GameUIHost::ResetBoundDocuments()
 {
-    OnPointerLeave();
+    UpdatePointer(nullptr);
     if (m_Subtrees.empty())
         return;
     std::vector<uint64_t> ids;
@@ -463,10 +459,36 @@ bool GameUIHost::PointerTreeReplacedUnderPress() const
     return m_PointerBindGeneration != GetBindGeneration() || m_PointerRootInstanceId != rootId;
 }
 
-void GameUIHost::OnPointerLeave()
+void GameUIHost::UpdatePointer(const PointerState* pointer)
 {
-    CancelPointer(m_PrimaryDown || m_WaitForPrimaryRelease ? PrimaryButtonState::Held
-                                                           : PrimaryButtonState::Released);
+    if (!m_UI)
+        return;
+    UIElement* root = m_UI->GetRootElement();
+    if (!pointer || !root || !std::isfinite(pointer->X) || !std::isfinite(pointer->Y) ||
+        PointerTreeReplacedUnderPress())
+    {
+        const bool sourceHoldsPrimary =
+            pointer ? pointer->PrimaryDown : (m_PrimaryDown || m_WaitForPrimaryRelease);
+        CancelPointer(sourceHoldsPrimary ? PrimaryButtonState::Held : PrimaryButtonState::Released);
+        if (!pointer || !root)
+            return;
+    }
+    if (!std::isfinite(pointer->X) || !std::isfinite(pointer->Y))
+        return;
+    // This host has its own UIManager; it may never receive platform key events.
+    // Replace the previous snapshot so a later plain click cannot inherit modifiers.
+    m_UI->ReconcileModifierKeys(pointer->Modifiers);
+    if (m_WaitForPrimaryRelease)
+    {
+        // A move carrying the old held state cannot arm a new document. Consume
+        // its release too: raw MouseUp handlers must not see an orphan release.
+        m_WaitForPrimaryRelease = pointer->PrimaryDown;
+        OnMouseMove({pointer->X, pointer->Y});
+        m_Interactive = true;
+        m_PointerWasOver = true;
+        return;
+    }
+    SetPointer(pointer->X, pointer->Y, pointer->PrimaryDown);
 }
 
 void GameUIHost::OnMouseMove(Mathematics::Vector2 position)
@@ -489,7 +511,7 @@ bool GameUIHost::OnMouseButton(int button, bool pressed, int mods)
         return false;
     // The click's mask is live platform state, and it is the only report of a
     // modifier that was already held when the window took focus.
-    m_UI->ReconcileModifierKeys(mods);
+    m_UI->SyncModifierKeys(mods);
     return DispatchMouseButton(button, pressed);
 }
 
@@ -571,18 +593,26 @@ void GameUIHost::ResetKeyboardState()
     m_UI->ResetModifierKeys();
 }
 
+void GameUIHost::SetPointer(float x, float y, bool primaryDown)
+{
+    OnMouseMove({x, y});
+    if (primaryDown != m_PrimaryDown)
+        DispatchMouseButton(Input::kMouseButton_Left, primaryDown);
+}
+
 void GameUIHost::PointerLeftSurface()
 {
     if (!m_UI)
         return;
-    // Cancel, not release: the user is still holding the button, just not over this
-    // surface, and the release they eventually make will never reach this UIManager.
-    // Reporting it as a release would resolve at the last known position — still
-    // inside the armed control — and activate it. The press is cancelled whatever
-    // button began it: if the manager's pressed latch stayed set, it would swallow the
-    // next press of any button. CancelPress does nothing when no press is in flight.
-    m_PrimaryDown = false;
-    m_UI->CancelPress();
+    if (m_PrimaryDown)
+    {
+        // Cancel, not release: the user is still holding the button, just not over this
+        // surface, and the release they eventually make will never reach this UIManager.
+        // Reporting it as a release would resolve at the last known position — still
+        // inside the armed control — and activate it.
+        m_PrimaryDown = false;
+        m_UI->CancelPress();
+    }
     m_UI->OnCursorEnter(false);
     m_PointerWasOver = false;
     // Drop back to the cheaper passive Update path: with the cursor gone there's
@@ -604,7 +634,7 @@ void GameUIHost::Update(float deltaTime, uint32_t extentW, uint32_t extentH)
     if (GameUiDiagEnabled() && (m_FrameCounter <= 10 || (m_FrameCounter % 180) == 0))
     {
         UIElement* root = m_UI->GetRootElement();
-        UIElement* panel = root ? root->FindById("hud-panel"_sid) : nullptr;
+        UIElement* panel = root ? root->FindById("hud-panel") : nullptr;
         if (root)
             Logger::Log::Info("[GameUI] Update override={}x{} rootRect=({},{},{},{}) panel={}", extentW, extentH,
                               root->GetLayoutX(), root->GetLayoutY(), root->GetLayoutWidth(),

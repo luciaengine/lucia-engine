@@ -1,8 +1,9 @@
 #include "Inspectors/CharacterControllerInspector.h"
 
 #include "InspectorRegistry.h"
+#include "Editor/Entities/EditorComponentTraits.h"
 #include "Inspectors/InspectorUIHelpers.h"
-#include "Inspectors/Physics/PhysicsInspectorShared.h"
+#include "Inspectors/PhysicsInspectorShared.h"
 
 #include "ECS/ECSTemplates.h"
 #include "Editor/Entities/EditorComponentTraits.h"
@@ -15,6 +16,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <utility>
 
 namespace GameEngine
 {
@@ -452,6 +454,14 @@ class CharacterControllerInspectorSection final : public UIElement
 
 void RegisterCharacterControllerInspector()
 {
+    {
+        Editor::EditorComponentTraits traits;
+        traits.DisplayName = "Character Controller";
+        traits.EnableToggleTooltip = "Off removes its physics character; on rebuilds it from these values.";
+        Editor::EditorComponentTraitsRegistry::Get().Register(
+            ECS::GetComponentTypeId<Components::CharacterController>(), std::move(traits));
+    }
+
     InspectorFn fn = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())
@@ -460,12 +470,6 @@ void RegisterCharacterControllerInspector()
         ctx.Parent->AddChild(std::move(section));
     };
     InspectorRegistry::Get().RegisterComponentInspector<Components::CharacterController>(std::move(fn));
-
-    Editor::EditorComponentTraits traits;
-    traits.EnableToggleTooltip =
-        "Switch this component on or off. Off removes its physics character; on rebuilds it from these values.";
-    Editor::EditorComponentTraitsRegistry::Get().Register(
-        ECS::GetComponentTypeId<Components::CharacterController>(), std::move(traits));
 }
 
 } // namespace GameEngine

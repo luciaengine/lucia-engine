@@ -9,9 +9,9 @@
 
 #include "Engine/Rendering/SceneAccelerationStructureService.h"
 #include "Rendering/Core/AccelerationStructure.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 
 namespace GameEngine::Rendering
 {

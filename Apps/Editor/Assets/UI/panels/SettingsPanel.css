@@ -1,6 +1,7 @@
 /* Settings Panel Styles */
 .settings-panel {
     --settings-row-gap: 4px;
+    --settings-color-swatch-border: #555555;
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -49,23 +50,23 @@
 /* Custom icons for settings tree */
 .settings-tree-pane .project-settings-row .tree-title {
     background-image: url("editor:Icons/computer.svg");
-    font-weight: 500;
+    font-weight: bold;
     color: #FFFFFF;
 }
 
 .settings-tree-pane .user-settings-row .tree-title {
-    background-image: url("editor:Icons/person.svg");
-    font-weight: 500;
+    background-image: url("editor:Icons/person.png");
+    font-weight: bold;
     color: #FFFFFF;
 }
 
 /* Project Settings children icons */
 .settings-tree-pane .audio-settings-row .tree-title {
-    background-image: url("editor:Icons/music-note-icon@32px.svg");
+    background-image: url("editor:Icons/music-note-icon@32px.png");
 }
 
 .settings-tree-pane .camera-row .tree-title {
-    background-image: url("editor:Icons/camera.svg");
+    background-image: url("editor:Icons/camera.png");
 }
 
 .settings-tree-pane .animation-row .tree-title {
@@ -77,11 +78,11 @@
 }
 
 .settings-tree-pane .asset-import-row .tree-title {
-    background-image: url("editor:Icons/SettingsAssetImport.svg");
+    background-image: url("editor:Icons/SettingsAssetImport.png");
 }
 
 .settings-tree-pane .rendering-row .tree-title {
-    background-image: url("editor:Icons/SettingsRendering.svg");
+    background-image: url("editor:Icons/SettingsRendering.png");
 }
 
 .settings-tree-pane .hdr-row .tree-title {
@@ -89,23 +90,23 @@
 }
 
 .settings-tree-pane .recording-row .tree-title {
-    background-image: url("editor:Icons/record.svg");
+    background-image: url("editor:Icons/record.png");
 }
 
 .settings-tree-pane .level-of-detail-row .tree-title {
-    background-image: url("editor:Icons/sorting.svg");
+    background-image: url("editor:Icons/sorting.png");
 }
 
 .settings-tree-pane .game-ui-scaling-row .tree-title {
-    background-image: url("editor:Icons/SettingsGameUIScaling.svg");
+    background-image: url("editor:Icons/SettingsGameUIScaling.png");
 }
 
 .settings-tree-pane .scene-row .tree-title {
-    background-image: url("editor:Icons/SettingsScene.svg");
+    background-image: url("editor:Icons/SettingsScene.png");
 }
 
 .settings-tree-pane .tags-row .tree-title {
-    background-image: url("editor:Icons/SettingsTags.svg");
+    background-image: url("editor:Icons/SettingsTags.png");
 }
 
 .settings-tree-pane .build-row .tree-title,
@@ -114,11 +115,11 @@
 }
 
 .settings-tree-pane .platform-linux-row .tree-title {
-    background-image: url("editor:Icons/SettingsLinux.svg");
+    background-image: url("editor:Icons/SettingsLinux.png");
 }
 
 .settings-tree-pane .version-control-row .tree-title {
-    background-image: url("editor:Icons/SettingsVersionControl.svg");
+    background-image: url("editor:Icons/SettingsVersionControl.png");
 }
 
 /* Provider rows (.git-row, .svn-row, …) are styled by each VCS package's
@@ -126,35 +127,35 @@
 
 /* User Settings children icons */
 .settings-tree-pane .script-row .tree-title {
-    background-image: url("editor:Icons/SettingsScript.svg");
+    background-image: url("editor:Icons/SettingsScript.png");
 }
 
 .settings-tree-pane .ui-row .tree-title {
-    background-image: url("editor:Icons/SettingsUI.svg");
+    background-image: url("editor:Icons/SettingsUI.png");
 }
 
 .settings-tree-pane .ui-appearance-row .tree-title {
-    background-image: url("editor:Icons/SettingsAppearance.svg");
+    background-image: url("editor:Icons/SettingsAppearance.png");
 }
 
 .settings-tree-pane .ui-font-rendering-row .tree-title {
-    background-image: url("editor:Icons/SettingsFontRendering.svg");
+    background-image: url("editor:Icons/SettingsFontRendering.png");
 }
 
 .settings-tree-pane .ui-trees-row .tree-title {
-    background-image: url("editor:Icons/SettingsTrees.svg");
+    background-image: url("editor:Icons/SettingsTrees.png");
 }
 
 .settings-tree-pane .ui-assets-row .tree-title {
-    background-image: url("editor:Icons/SettingsAssets.svg");
+    background-image: url("editor:Icons/SettingsAssets.png");
 }
 
 .settings-tree-pane .ui-inspector-row .tree-title {
-    background-image: url("editor:Icons/SettingsInspector.svg");
+    background-image: url("editor:Icons/SettingsInspector.png");
 }
 
 .settings-tree-pane .ui-hidpi-row .tree-title {
-    background-image: url("editor:Icons/SettingsHiDPI.svg");
+    background-image: url("editor:Icons/SettingsHiDPI.png");
 }
 
 .settings-tree-pane .ui-node-graph-row .tree-title {
@@ -162,31 +163,31 @@
 }
 
 .settings-tree-pane .ui-asset-preview-row .tree-title {
-    background-image: url("editor:Icons/SettingsAssetPreview.svg");
+    background-image: url("editor:Icons/SettingsAssetPreview.png");
 }
 
 .settings-tree-pane .shortcuts-row .tree-title {
-    background-image: url("editor:Icons/SettingsShortcuts.svg");
+    background-image: url("editor:Icons/SettingsShortcuts.png");
 }
 
 .settings-tree-pane .gizmo-row .tree-title {
-    background-image: url("editor:Icons/Gizmo.svg");
+    background-image: url("editor:Icons/gizmo.png");
 }
 
 .settings-tree-pane .physics-row .tree-title {
-    background-image: url("editor:Icons/PhysicsSettings.svg");
+    background-image: url("editor:Icons/PhysicsSettings.png");
 }
 
 .settings-tree-pane .grid-snapping-row .tree-title {
-    background-image: url("editor:Icons/grid-icon.svg");
+    background-image: url("editor:Icons/grid-icon.png");
 }
 
 .settings-tree-pane .tooltips-row .tree-title {
-    background-image: url("editor:Icons/SettingsTooltips.svg");
+    background-image: url("editor:Icons/SettingsTooltips.png");
 }
 
 .settings-tree-pane .online-assets-row .tree-title {
-    background-image: url("editor:Icons/SettingsOnlineAssets.svg");
+    background-image: url("editor:Icons/SettingsOnlineAssets.png");
 }
 
 .settings-tree-pane .universal-search-row .tree-title {
@@ -194,16 +195,39 @@
 }
 
 .settings-tree-pane .performance-row .tree-title {
-    background-image: url("editor:Icons/SettingsPerformance.svg");
+    background-image: url("editor:Icons/SettingsPerformance.png");
 }
 
 .settings-tree-pane .experimental-row .tree-title {
-    background-image: url("editor:Icons/SettingsExperimental.svg");
+    background-image: url("editor:Icons/SettingsExperimental.png");
 }
 
 /* Tags settings: fixed-size name field and icon-only delete button (toolbar style) */
 .settings-tag-row {
     min-height: 32px;
+}
+
+/* Colour setting swatch; the background is the setting's colour, set per swatch. */
+.settings-color-swatch {
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    min-height: 16px;
+    flex-shrink: 0;
+    border: 1px solid var(--settings-color-swatch-border);
+    border-radius: 2px;
+    cursor: pointer;
+}
+
+.settings-tag-color-swatch {
+    width: 20px;
+    height: 20px;
+    min-width: 20px;
+    min-height: 20px;
+    flex-shrink: 0;
+    border: 1px solid var(--settings-color-swatch-border);
+    border-radius: 4px;
+    cursor: pointer;
 }
 
 .settings-tag-name-field,
@@ -220,7 +244,7 @@
 .trash-icon,
 button.trash-icon,
 .button.trash-icon {
-    background-image: url("editor:Icons/trash.svg");
+    background-image: url("editor:Icons/trash.png");
     background-size: 16px 16px;
     background-repeat: no-repeat;
     background-position: center;
@@ -297,12 +321,12 @@ button.trash-icon.pressed,
 }
 
 /* Give Settings-only explanatory cards extra breathing room and depth. The
-   right margin is the row's inset, so a card ends at the right edge of the
-   value fields. */
+   larger right margin also reserves the vertical scrollbar's 6px overlay, so
+   both visible side insets remain equal. */
 .settings-content-body .editor-info-card {
     width: auto;
     margin-left: 6px;
-    margin-right: var(--ui_spacing_md);
+    margin-right: 12px;
     padding: 10px 12px;
 }
 
@@ -375,17 +399,6 @@ button.trash-icon.pressed,
     margin-bottom: var(--settings-row-gap);
     width: 100%;
     box-sizing: border-box;
-}
-
-/* Why a text row refused the value typed into it, under the row, beside the
-   label column (37% of the row). */
-.settings-row-refusal {
-    padding: 0px var(--ui_spacing_md);
-    margin: 0px 0px var(--settings-row-gap) 37%;
-    color: var(--ui_color_error_text);
-    font-size: 13px;
-    line-height: 16px;
-    white-space: normal;
 }
 
 .settings-row-label {
@@ -876,7 +889,7 @@ button.settings-vcs-refresh-button,
 /* Subsection headers (e.g. Build â†’ platform names) */
 .settings-subsection-header {
     font-size: var(--ui_font_size_base);
-    font-weight: 500;
+    font-weight: 600;
     color: var(--ui_color_text);
     padding: 0px var(--ui_spacing_md);
     margin-top: 0px;
@@ -895,6 +908,139 @@ button.settings-vcs-refresh-button,
     flex-basis: 80px;
     width: 80px;
     /* Note: Don't use font-family: monospace - causes font corruption if font not loaded */
+}
+
+/* Search Bar (bottom by default; the user preference can anchor it at the top) */
+.settings-search-bar {
+    position: absolute;
+    bottom: 8px;
+    left: 8px;
+    right: 8px;
+    height: 22px;
+    background-color: var(--settings-value-box-bg, #171717);
+    border: 1px solid transparent;
+    border-radius: 4px;
+}
+
+.settings-search-bar.search-bar-at-top {
+    top: 8px;
+    bottom: unset;
+}
+
+.settings-search-bar.hidden {
+    /* Override generic .hidden { display: none } - we still want the search bar visible */
+    display: flex;
+    background-color: transparent;
+    border-color: transparent;
+}
+
+.settings-search-bar.hidden.settings-search-bar-active {
+    background-color: var(--settings-value-box-bg, #171717) !important;
+    border: 1px solid var(--ui_color_accent_pressed) !important;
+}
+
+.settings-search-bar-active {
+    background-color: var(--settings-value-box-bg, #171717) !important;
+    border: 1px solid var(--ui_color_accent_pressed) !important;
+}
+
+.settings-search-bar:focus-within {
+    border: 1px solid #666;
+}
+
+.settings-search-bar.active {
+    border: 1px solid var(--ui_color_accent_pressed);
+}
+
+.settings-search-bar.search-accent-focus:focus-within {
+    border-color: var(--ui_color_accent);
+}
+
+.settings-search-field {
+    width: 100%;
+    height: 100%;
+    padding-right: 32px;
+    position: relative;
+    z-index: 10;
+}
+
+.settings-search-field TextInput {
+    background-color: transparent;
+    border: none;
+    color: var(--ui_color_text);
+    font-size: 12px;
+    padding: 4px 24px 4px 8px;
+    height: 100%;
+    width: 100%;
+}
+
+.settings-search-field TextInput:focus {
+    outline: none;
+    border: none;
+    background-color: transparent;
+}
+
+.settings-search-icon {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    margin-top: -6px;
+    width: 12px;
+    height: 12px;
+    background-image: url("editor:Icons/search.png");
+    background-size: 12px 12px;
+    background-repeat: no-repeat;
+    background-position: center;
+    opacity: 0.5;
+    pointer-events: none !important;
+    z-index: 1;
+}
+
+.settings-search-icon.icon-active {
+    opacity: 1 !important;
+}
+
+.settings-search-clear,
+button.settings-search-clear,
+.button.settings-search-clear,
+.button.icon-button.settings-search-clear {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    margin-top: -8px;
+    width: 16px;
+    height: 16px;
+    min-width: 16px;
+    min-height: 16px;
+    padding: 0;
+    background-color: transparent;
+    border-width: 0;
+    border-style: none;
+    background-size: 12px 12px;
+    background-position: center;
+    opacity: 0.7;
+    z-index: 20;
+}
+
+.settings-search-clear:hover,
+button.settings-search-clear:hover,
+.button.settings-search-clear:hover,
+.button.icon-button.settings-search-clear:hover {
+    background-color: transparent;
+    opacity: 1.0;
+}
+
+.settings-search-bar.has-query .settings-search-icon {
+    display: none;
+}
+
+.settings-search-bar:hover .settings-search-icon {
+    opacity: 1 !important;
+}
+
+.settings-search-bar:focus-within .settings-search-icon,
+.settings-search-bar.active .settings-search-icon {
+    opacity: 1 !important;
 }
 
 /* Horizontal Layout Styles */
@@ -933,11 +1079,9 @@ button.settings-vcs-refresh-button,
     margin-bottom: 38px; /* Make room for search bar */
 }
 
-/* A top search row, as in the other panels (theme/views.css): the field (6px inset + 24px)
-   and 6px below it. The search's container carries .settings-search-host: the panel itself in
-   the stacked layout, the right-hand container in the side-by-side one. */
-.settings-search-host.search-bars-at-top {
-    padding-top: 36px;
+.settings-panel.search-bars-at-top,
+.settings-right-container.search-bars-at-top {
+    padding-top: 38px;
 }
 
 /* In the stacked layout the top search sits directly above the Settings tree;
@@ -946,7 +1090,8 @@ button.settings-vcs-refresh-button,
     background-color: #222222;
 }
 
-.settings-search-host.search-bars-at-top > .settings-content-pane {
+.settings-panel.search-bars-at-top > .settings-content-pane,
+.settings-right-container.search-bars-at-top > .settings-content-pane {
     margin-bottom: 0;
 }
 
@@ -1146,7 +1291,7 @@ button.settings-vcs-refresh-button,
 }
 
 .shortcut-reset-button {
-    background-image: url("editor:Icons/ResetReload.svg");
+    background-image: url("editor:Icons/ResetReload.png");
     background-image-tint: rgba(200, 200, 200, 1.0);
     width: 22px;
     height: 22px;
@@ -1170,4 +1315,61 @@ button.settings-vcs-refresh-button,
 
 .shortcut-remove-button:hover {
     color: var(--ui_color_accent);
+}
+
+/* Shortcut conflict confirmation (Reassign / Swap / Add alternate / Cancel) */
+.shortcut-conflict-overlay {
+    position: absolute;
+    left: 0px;
+    top: 0px;
+    width: 100%;
+    height: 100%;
+    z-index: 10000;
+    background-color: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+}
+
+.shortcut-conflict-window {
+    display: flex;
+    flex-direction: column;
+    background-color: #252526;
+    border: 1px solid var(--ui_color_border_subtle);
+    border-radius: 10px;
+    width: 500px;
+    max-width: 85%;
+    overflow: hidden;
+}
+
+.shortcut-conflict-header {
+    padding: 16px 20px 14px 20px;
+    background-color: #1E1E1E;
+    border-bottom: 1px solid #2E2E2E;
+}
+
+.shortcut-conflict-title {
+    color: #EDEDED;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.shortcut-conflict-body {
+    padding: 20px;
+}
+
+.shortcut-conflict-message {
+    color: #CFCFCF;
+    font-size: 13px;
+}
+
+.shortcut-conflict-footer {
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 14px 20px;
+    background-color: #1E1E1E;
+    border-top: 1px solid #2E2E2E;
 }

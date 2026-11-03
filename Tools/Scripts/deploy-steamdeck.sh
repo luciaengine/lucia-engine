@@ -13,7 +13,7 @@ host="${GE_STEAMDECK_HOST:-}"
 user="${GE_STEAMDECK_SSH_USER:-deck}"
 ssh_key="${GE_STEAMDECK_SSH_KEY:-}"
 remote_dir="${GE_STEAMDECK_REMOTE_DIR:-/home/deck/devkit-game/GameEnginePlayer_Linux}"
-app_name="${GE_STEAMDECK_APP_NAME:-Open Engine Player}"
+app_name="${GE_STEAMDECK_APP_NAME:-GameEngine Player}"
 register_shortcut=1
 launch_after=0
 
@@ -29,7 +29,7 @@ Options:
   --user USER           SSH user (default: deck)
   --ssh-key PATH        SSH private key. If omitted, the script tries common keys.
   --remote-dir DIR      Install folder on Deck (default: /home/deck/devkit-game/GameEnginePlayer_Linux)
-  --app-name NAME       Steam shortcut name (default: Open Engine Player)
+  --app-name NAME       Steam shortcut name (default: GameEngine Player)
   --no-shortcut         Skip Steam shortcut registration
   --launch              Launch after deploy when devkit utilities are present
   -h, --help            Show this help
@@ -169,8 +169,6 @@ rsync -az --delete --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r --exclude='.DS_Store' \
 
 ssh "${ssh_args[@]}" "$ssh_target" "chmod +x '$remote_dir/Player' '$remote_dir/launch.sh' 2>/dev/null || true; if [[ ! -x '$remote_dir/$app_name' ]]; then printf '%s\\n' '#!/usr/bin/env bash' 'exec \"\$(dirname \"\$0\")/launch.sh\" \"\$@\"' > '$remote_dir/$app_name' && chmod +x '$remote_dir/$app_name'; fi"
 
-# In the desktop entries below, Version= is the Desktop Entry Specification version the file
-# follows, not the game's or the engine's version.
 install_desktop_cmd=$(cat <<EOF
 set -euo pipefail
 remote_dir='$remote_dir'
@@ -186,7 +184,7 @@ elif [[ -f "\$remote_dir/icon.png" ]]; then
 Type=Application
 Version=1.0
 Name=\$app_name
-Comment=Open Engine Player
+Comment=GameEngine Player
 Exec="\$remote_dir/\$app_name"
 Path=\$remote_dir
 Icon=\$remote_dir/icon.png

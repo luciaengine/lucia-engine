@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Common/Math.h"
 #include "Rendering/Core/GPUCulling.h"
 
@@ -47,11 +47,7 @@ struct ViewCullingContext
     // subrange without having to plumb a parallel API.
     uint32_t FirstInstance = 0;
     uint32_t InstanceCount = 0;
-    Rendering::RenderLayerMask Layers = Rendering::RenderLayerMask::All();
-    // Copied verbatim into ViewCullingInput::dropEditorHidden: set for the
-    // editor Scene View's culls, its shadow culls included
-    // (ViewDesc::DropsEditorHidden).
-    bool DropEditorHidden = false;
+    uint32_t RenderLayerMask = 0xFFFFFFFFu;
 
     uint32_t FrameIndex = 0;
     float DeltaTime = 0.0f;

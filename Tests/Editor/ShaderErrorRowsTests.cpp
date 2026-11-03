@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "Panels/ShaderErrors/ShaderErrorRows.h"
+#include "Panels/ShaderErrorRows.h"
 
 #include "AssetCore/PathNormalization.h"
 

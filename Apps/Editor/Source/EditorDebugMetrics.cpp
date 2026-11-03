@@ -8,7 +8,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/RenderGraph/RGGraph.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderCompileService.h"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <sys/resource.h>
@@ -120,8 +120,6 @@ void CollectEditorDebugMetrics(Rendering::IDevice* device,
                            static_cast<float>(PhysicsECS::PhysicsWorldService::GetLastBodiesComposed()));
         metrics.PushSample("Physics/CharactersComposed",
                            static_cast<float>(PhysicsECS::PhysicsWorldService::GetLastCharactersComposed()));
-        metrics.PushSample("Physics/KinematicBodiesMoving",
-                           static_cast<float>(PhysicsECS::PhysicsWorldService::GetLastKinematicBodiesMoving()));
     }
 
     if (auto* audio = EngineCore::GetInstance().GetAudioSystem())

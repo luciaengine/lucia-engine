@@ -28,7 +28,7 @@ constexpr float kMinGrabbableTitlePx = 64.0f;
 ColorPickerPopup::ColorPickerPopup()
     : DismissablePopup(this)
 {
-    Style()
+    Overrides()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(0.0f)).Set(Style::PositionTop, StyleLength::Px(0.0f))
         .Set(Style::Width, StyleLength::Percent(100.0f)).Set(Style::Height, StyleLength::Percent(100.0f))
@@ -44,7 +44,7 @@ ColorPickerPopup::ColorPickerPopup()
     auto panelHost = std::make_unique<UIElement>();
     panelHost->SetId("colorpicker-popup-panel-host");
     panelHost->AddClass("colorpicker-popup-panel-host");
-    panelHost->Style()
+    panelHost->Overrides()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(0.0f)).Set(Style::PositionTop, StyleLength::Px(0.0f))
         .Set(Style::Width, StyleLength::Percent(100.0f)).Set(Style::Height, StyleLength::Percent(100.0f))
@@ -58,7 +58,7 @@ ColorPickerPopup::ColorPickerPopup()
     auto panel = std::make_unique<UIElement>();
     panel->SetId("colorpicker-popup-panel");
     panel->AddClass("colorpicker-popup-panel");
-    panel->Style()
+    panel->Overrides()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::Gap, StyleLength::Px(12.0f))
@@ -77,7 +77,7 @@ ColorPickerPopup::ColorPickerPopup()
     auto titleBar = std::make_unique<UIElement>();
     titleBar->SetId("colorpicker-popup-titlebar");
     titleBar->AddClass("colorpicker-popup-titlebar");
-    titleBar->Style()
+    titleBar->Overrides()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Center)
@@ -87,7 +87,7 @@ ColorPickerPopup::ColorPickerPopup()
     BindDragHandle(titleBar.get());
     auto titleLabel = std::make_unique<Label>();
     titleLabel->SetText("Color Picker");
-    titleLabel->Style()
+    titleLabel->Overrides()
         .Set(Style::Color, (uint32_t)0xFFCCCCCC)
         .Set(Style::FontSize, StyleLength::Px(13.0f))
         // The label is inert so a grab that lands on the text still drags.
@@ -103,7 +103,7 @@ ColorPickerPopup::ColorPickerPopup()
 
     // Button row: Apply, Cancel.
     auto buttonRow = std::make_unique<UIElement>();
-    buttonRow->Style()
+    buttonRow->Overrides()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::JustifyContent, JustifyContent::FlexEnd)
@@ -112,7 +112,7 @@ ColorPickerPopup::ColorPickerPopup()
     applyBtn->SetId("colorpicker-apply");
     applyBtn->SetText("Apply");
     applyBtn->AddClass("primary");
-    applyBtn->Style()
+    applyBtn->Overrides()
         .Set(Style::PaddingTop, StyleLength::Px(6.0f)).Set(Style::PaddingRight, StyleLength::Px(16.0f))
         .Set(Style::PaddingBottom, StyleLength::Px(6.0f)).Set(Style::PaddingLeft, StyleLength::Px(16.0f))
         .Set(Style::Color, (uint32_t)0xFFFFFFFF)
@@ -123,7 +123,7 @@ ColorPickerPopup::ColorPickerPopup()
     auto cancelBtn = std::make_unique<Button>();
     cancelBtn->SetId("colorpicker-cancel");
     cancelBtn->SetText("Cancel");
-    cancelBtn->Style()
+    cancelBtn->Overrides()
         .Set(Style::PaddingTop, StyleLength::Px(6.0f)).Set(Style::PaddingRight, StyleLength::Px(16.0f))
         .Set(Style::PaddingBottom, StyleLength::Px(6.0f)).Set(Style::PaddingLeft, StyleLength::Px(16.0f))
         .Set(Style::BackgroundColor, (uint32_t)0xFF555555)
@@ -152,7 +152,7 @@ void ColorPickerPopup::Show(const ColorPickerValue& initialValue)
                                       m_OnValueChanging(v);
                               });
     }
-    Style()
+    Overrides()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::PointerEvents, true);
     MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
@@ -195,7 +195,7 @@ void ColorPickerPopup::PlaceWindow(float x, float y)
         y = std::clamp(y, kEdgePaddingPx, std::max(kEdgePaddingPx, hostH - kMinGrabbableTitlePx));
     }
 
-    m_Panel->Style()
+    m_Panel->Overrides()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(x))
         .Set(Style::PositionTop, StyleLength::Px(y));
@@ -204,7 +204,7 @@ void ColorPickerPopup::PlaceWindow(float x, float y)
     // centring back.
     if (m_PanelHost)
     {
-        m_PanelHost->Style()
+        m_PanelHost->Overrides()
             .Set(Style::AlignItems, AlignItems::FlexStart)
             .Set(Style::JustifyContent, JustifyContent::FlexStart);
     }
@@ -246,18 +246,18 @@ void ColorPickerPopup::Hide()
     // Reset panel to centered position for future Show() calls.
     if (m_Panel)
     {
-        m_Panel->Style()
+        m_Panel->Overrides()
             .Reset(Style::Position)
             .Reset(Style::PositionLeft)
             .Reset(Style::PositionTop);
     }
     if (m_PanelHost)
     {
-        m_PanelHost->Style()
+        m_PanelHost->Overrides()
             .Set(Style::AlignItems, AlignItems::Center)
             .Set(Style::JustifyContent, JustifyContent::Center);
     }
-    Style()
+    Overrides()
         .Set(Style::Display, DisplayMode::None)
         .Set(Style::PointerEvents, false);
 }

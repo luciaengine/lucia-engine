@@ -18,13 +18,6 @@
 
 #extension GL_EXT_nonuniform_qualifier : require
 
-// The terrain's inputs are continuous across its facets, so it reads them at the pixel center
-// (MaterialKeyword::SurfaceInputsAtPixelCenter). A centroid input moves off the center on a partly
-// covered MSAA pixel: the splat and the shadow then read another place, a line along each facet edge.
-#if defined(GE_SURFACE_INPUTS_AT_CENTROID)
-#error "cbt_surface.glsl: register the terrain material with MaterialKeyword::SurfaceInputsAtPixelCenter"
-#endif
-
 // Global bindless arrays + GE_BTEX — single declaration site (guarded include).
 #include "Includes/bindless_textures.glsl"
 
@@ -93,9 +86,6 @@ layout(set = 2, binding = 29) uniform texture2D cbt_Layer1Albedo;
 layout(set = 2, binding = 30) uniform texture2D cbt_Layer1Normal;
 layout(set = 2, binding = 31) uniform texture2D cbt_Layer1Orm;
 layout(set = 2, binding = 32) uniform sampler cbt_MapSampler;
-// The unified colour map (TerrainColorMap.h). The atlas colour map and its coarse map are not bound
-// on this profile: an atlas-backed terrain reads no colour map here.
-layout(set = 2, binding = 33) uniform texture2D cbt_Colormap;
 
 // A data-map lookup: explicit LOD, UV clamped in place of the clamp sampler this profile cannot
 // afford.
@@ -143,7 +133,6 @@ vec3 CBT_CompatLayerSample(uint slot, vec2 uv, vec2 ddx, vec2 ddy)
 // full profile gives before an index is published.
 const uint kCBTTerrainFlagHasNormalmap = 8u;
 const uint kCBTTerrainFlagHasSplatmap = 16u;
-const uint kCBTTerrainFlagHasColorMap = 64u;
 #define CBT_HAS_NORMALMAP(tp, idx) ((tp.Flags & kCBTTerrainFlagHasNormalmap) != 0u)
 #define CBT_HAS_SPLATMAP(tp) ((tp.Flags & kCBTTerrainFlagHasSplatmap) != 0u)
 #define CBT_HAS_ATLAS_MAP(idx) true
@@ -171,31 +160,6 @@ const uint kCBTLayerTexPerMaterial = 3u;
 #define CBT_HAS_NORMALMAP(tp, idx) ((idx) != 0u)
 #define CBT_HAS_SPLATMAP(tp) (tp.SplatmapBindless != 0u)
 #define CBT_HAS_ATLAS_MAP(idx) ((idx) != 0u)
-
-// The far-field normal chain: mip m holds the normal of height chain level m + 1, the surface the draw
-// shows there (cbt_height_chain.glsl CBT_ChainNormal, built beside the height chain). A far fragment
-// reads its normal at the level of its own distance with an explicit level, from level 2 on: one fetch,
-// the hardware blending two mips, instead of the level-0 map, whose one mip aliases into a moire where the far ridges
-// are drawn as their mean surface. The draw's level rule rides gCbtDrawLevel; scale 0 or a lattice the
-// chain was not built for keeps the level-0 map everywhere.
-#define CBT_DRAW_NORMAL_CHAIN 1
-// The level-0 map at its one mip, explicitly: the same texels as the implicit tap (a one-mip texture
-// filters mip 0 whatever the derivatives say), legal inside the branch that skips it far away.
-#define CBT_SAMPLE_NORMALMAP_LOD0(idx, uv) \
-    textureLod(GE_BTEX(idx, GE_TS_CLAMP), \
-               CBT_LatticeTextureUV(uv, vec2(textureSize(GE_BTEX(idx, GE_TS_CLAMP), 0))), 0.0)
-#define CBT_CHAIN_LEVEL_RULE_ONLY 1
-#include "cbt_height_chain.glsl"
-#include "cbt_draw_level.glsl"
-// The normal chain's mip for a fragment at continuous level `lambda`: mip m holds level m + 1, read
-// from level 2 on.
-float CBT_SurfaceNormalChainLod(float lambda, uint normalMips)
-{
-    return clamp(lambda - 1.0, 1.0, float(max(normalMips, 2u) - 1u));
-}
-// The smallest view cosine the grazing spread reads: at most 64 times the head-on footprint.
-const float kCBTMinGrazingCos = 1.0 / 64.0;
-layout(set = 2, binding = 33) uniform sampler2D cbt_NormalChain;
 
 #endif // GE_COMPAT_PROFILE
 
@@ -263,22 +227,18 @@ struct TerrainParamsEntry
     float GrassTextureCardsPerSquareMeter;
     float GrassTextureSize;
     float GrassPlacementSeed;
-    float GrassBladeTilt;
-    float GrassBladeBend;
-    float GrassBladeTwist;
-    float GrassBladeTaperStart;
-    float GrassTuftFan;
+    float GrassMaxWidthRatio;
     float GrassClumpSize;
     float GrassClumpHeightVariance;
     float GrassClumpAlignment;
-    float GrassClumpTaper;
+    float GrassClumpGather;
     float GrassHueVariation;
-    float GrassCanopyOcclusion;
+    float GrassRootShade;
+    float GrassBladeNormalForm;
+    float GrassBladeScatterGain;
     float GrassRootFadeStart;
     float GrassRootFadeEnd;
     uint GrassControlBindless;
-    uint ColorMapBindless;
-    float GrassGroundTintHeight;
 };
 
 layout(std430, set = 2, binding = 1) readonly buffer TerrainParamsBuffer
@@ -406,31 +366,13 @@ struct CBTSurfaceParamsData
     uint AtlasNormalBindless;
     uint AtlasSplatCoarseBindless;
     uint AtlasNormalCoarseBindless;
-    // The atlas grass control field and its coarse field, then the atlas colour map and its coarse
-    // map (mirror CBTSurfaceParams in CBTLayout.h).
-    uint AtlasGrassBindless;
-    uint AtlasGrassCoarseBindless;
-    uint AtlasColorBindless;
-    uint AtlasColorCoarseBindless;
     // Analytic sphere modifiers (sculpt shape-accuracy S2/S3 — mirror CBTSurfaceParams tail in
-    // CBTLayout.h; math in cbt_analytic.glsl). DabCount keeps the vec4-struct array 16-aligned
-    // (std430: 104 + 4 + 4 = 112); transient brush dabs occupy slots [Count, Count+DabCount). Both
-    // 0 = every analytic branch below is skipped (flag-off dark-ship).
+    // CBTLayout.h; math in cbt_analytic.glsl). DabCount (S3, the old pad slot) keeps the
+    // vec4-struct array 16-aligned (std430: 88 + 4 + 4 = 96); transient brush dabs occupy slots
+    // [Count, Count+DabCount). Both 0 = every analytic branch below is skipped (flag-off dark-ship).
     uint SphereAnalyticCount;
     uint SphereAnalyticDabCount;
     CBTSphereAnalyticFlatten SphereAnalytic[CBT_MAX_SPHERE_ANALYTIC];
-    // The planet's height pages (mirror the CBTSurfaceParams tail, cbt_planet_page.glsl): per cube face
-    // the anchor (x, y its texels, z, w the bits of its fractions), the eye planet-local and relative to
-    // the render origin, and PlanetPaged 1 when the fragment shades from the pages. A planar terrain whose
-    // surface is paged: the first word of its surface table in gPageTable, and a bit per plane it has
-    // (CBT_SURF_PLANE_*); 0 reads the surface textures.
-    ivec4 PageAnchors[6];
-    vec4 PageEye;
-    vec4 PageEyeRelative;
-    uint PlanetPaged;
-    uint SurfacePageBase;
-    uint SurfacePagedPlanes;
-    uint PlanetPagePad2;
 };
 
 // CBT debug visualization modes (mirror TerrainDebugView in Terrain.h — keep in lockstep).
@@ -441,7 +383,7 @@ const uint CBT_DEBUG_ATLAS_SLOTS = 2u; // tint by the per-pixel resolved atlas s
 // guarantees only 10 storage buffers per stage, and this surface reaches exactly that on its own
 // (6 here + 4 from the lit path) — so the moment the lit path adds one, the terrain pipeline fails
 // to CREATE and the terrain is not degraded but absent. Uniform buffers have their own, separate
-// budget. The record fits: 880 B against the 64 KiB uniform binding limit, and the ring's
+// budget. The record fits: 864 B against the 64 KiB uniform binding limit, and the ring's
 // per-slot stride is already 256-aligned, which is what a uniform offset-bind needs.
 //
 // One element, because the fragment only ever reads element 0 — CBTRenderFeature offset-binds this
@@ -487,42 +429,6 @@ layout(std430, set = 2, binding = 7) readonly buffer CBTAtlasRowsSurfBuffer
     CBTTileAtlasSlot Rows[];
 } gAtlasRows;
 // CBT_ATLAS_MAX_TILES comes from cbt_atlas.glsl (included above) — single-sourced with the compute path.
-
-#if !defined(GE_COMPAT_PROFILE)
-// The planet's height pages (cbt_page.glsl, cbt_planet_page.glsl), the compute's bindings 22 and 23 here
-// on set 2: gPageTable is offset-bound to this frame's ring slot, gPageCache is this frame's cache texture
-// (CBTRenderFeature). The slot holds the height table, then a paged planar terrain's surface table at
-// gCbtSurf.Params.SurfacePageBase.
-layout(std430, set = 2, binding = 22) readonly buffer CBTPageTableBuffer
-{
-    uint Words[];
-} gPageTable;
-layout(set = 2, binding = 23) uniform sampler2D gPageCache;
-// The surface plane caches, read by cbt_surface_pages.glsl. A plane the terrain does not have binds a
-// default texture and is not read.
-layout(set = 2, binding = 34) uniform sampler2D cbt_SurfaceSplat;
-layout(set = 2, binding = 35) uniform sampler2D cbt_SurfaceNormal;
-layout(set = 2, binding = 36) uniform sampler2D cbt_SurfaceGrass;
-layout(set = 2, binding = 37) uniform sampler2D cbt_SurfaceColor;
-#endif
-#include "cbt_surface_pages.glsl"
-#if !defined(GE_COMPAT_PROFILE)
-#include "cbt_planet_page.glsl"
-
-// The planet's paged height and gradient at a fragment whose pixel spans `pixelArc` radians: the level
-// of one level-0 texel of arc per pixel, so the central difference steps one pixel's footprint.
-CBTPlanetPageSurface CBT_SurfPlanetPages(SurfaceInput sIn, float pixelArc, CBTSurfaceParamsData sp)
-{
-    CBTPageField field = CBT_SurfPageField(0u);
-    float texelArc = 1.5707963 / float(max(field.Level0SamplesX, 2u) - 1u);
-    float lambda = log2(max(pixelArc / texelArc, 1.0));
-    uint face = CBT_PlanetFaceOf(sIn.positionWS);
-    ivec4 anchor = sp.PageAnchors[face];
-    return CBT_PlanetPageSurfaceAt(sIn.positionWS, sIn.positionRelWS - sp.PageEyeRelative.xyz, sp.PageEye.xyz,
-                                   anchor.x, anchor.y, intBitsToFloat(anchor.z), intBitsToFloat(anchor.w),
-                                   lambda, field);
-}
-#endif
 
 // Build the atlas params from the surface params (mirror CBTRenderFeature::BuildFrameParams).
 CBTAtlasParams CBT_SurfAtlasParams(CBTSurfaceParamsData sp)
@@ -796,27 +702,20 @@ bool CBT_SphereAnalyticCoversSurf(CBTSurfaceParamsData sp, vec3 dir)
     return false;
 }
 
-// The base relief at a tap's unit direction `ud`: the closed form, or on the paged arm the fragment's
-// paged relief `base` at `center` carried along its gradient `slope`, so a flatten cancels the gradient
-// the fragment shades with.
-float CBT_SurfTapRelief(CBTSurfaceParamsData sp, vec3 ud, vec3 center, float base, vec3 slope)
-{
-    if (sp.PlanetPaged != 0u)
-        return base + dot(slope, ud - center);
-    return CBT_PlanetRelief(ud, sp.ReliefAmplitude, sp.ReliefFrequency, max(sp.ReliefOctaves, 1u));
-}
-
-// The composed sculpt sample for the gradient stencil taps: the store plus the analytic set, the fragment twin
-// of SampleSphereSculptComposed. The analytic term takes the base relief at the tap direction, so a flatten's
-// offset cancels it and the composed gradient flattens the pad's shading; a store-only planet reads no relief.
-float CBT_SampleSculptComposedSurf(CBTSurfaceParamsData sp, CBTSculptGeom g, vec3 d, vec3 center, float base,
-                                   vec3 slope)
+// COMPOSED sculpt sample for the gradient stencil taps: store + the analytic set, the fragment twin
+// of the CPU chokepoint SampleSphereSculptComposed. The analytic term needs the closed-form base
+// relief at the TAP direction (a flatten's offset cancels it, so the finite-difference gradient of
+// the composed field flattens the pad's shading exactly like its geometry) — evaluated here only
+// when a set exists, so a store-only planet pays no extra relief eval per tap.
+float CBT_SampleSculptComposedSurf(CBTSurfaceParamsData sp, CBTSculptGeom g, vec3 d)
 {
     float s = CBT_SampleSculptDirSurf(d, g);
     if (CBT_SphereAnalyticTotalSurf(sp) != 0u)
     {
         vec3 ud = normalize(d);
-        s += CBT_SphereAnalyticOffsetSurf(sp, ud, CBT_SurfTapRelief(sp, ud, center, base, slope));
+        float reliefAtTap = CBT_PlanetRelief(ud, sp.ReliefAmplitude, sp.ReliefFrequency,
+                                             max(sp.ReliefOctaves, 1u));
+        s += CBT_SphereAnalyticOffsetSurf(sp, ud, reliefAtTap);
     }
     return s;
 }
@@ -980,76 +879,6 @@ vec3 CBT_MaterialOrm(uint layerOrd, TerrainMaterialRecordData mat, CBTTriplanarC
 // the functions ExtractShaderBlock.cmake lifts out of that file for CBTMaterialBlendTests to compile
 // as C++, so the tests execute them exactly as they ship here.
 #include "Includes/terrain_blend_resolve.glsl"
-// The grass canopy's coverage and occlusion, shared with the placement and the blade surface.
-#include "Includes/terrain_grass_canopy.glsl"
-// The colour map's apply, shared with the blade root.
-#include "Includes/terrain_color_map.glsl"
-
-// The terrain's colour map at a terrain UV (TerrainColorMap.h): the ground's final colour times its
-// weight (rgb, decoded from sRGB by the sampler) and the weight (a). The ground becomes
-// ground x (1 - a) + rgb; vec4(0) is identity. Read where the splat is read: the unified map on a
-// planar terrain, the resident atlas slot (crossfading in from the coarse map on an upgrade, as the
-// splat does) or the coarse map out of the window on an atlas-backed one. The compat profile binds
-// the unified map only (cbt_Colormap above).
-vec4 CBT_ColorMapTap(TerrainParamsEntry tp, vec2 uv)
-{
-#if defined(GE_COMPAT_PROFILE)
-    if (gCbtSurf.Params.AtlasBacked != 0u || (tp.Flags & kCBTTerrainFlagHasColorMap) == 0u)
-        return vec4(0.0);
-    return CBT_COMPAT_LATTICE_TAP(cbt_Colormap, uv);
-#else
-    if (gCbtSurf.Params.AtlasBacked != 0u)
-    {
-        CBTSurfaceParamsData sp = gCbtSurf.Params;
-        if (sp.AtlasColorBindless == 0u && sp.AtlasColorCoarseBindless == 0u)
-            return vec4(0.0);
-        AtlasResolve r = CBT_SurfResolve(uv, sp);
-        const bool haveSlot = r.Resident && sp.AtlasColorBindless != 0u;
-        const bool haveCoarse = sp.AtlasColorCoarseBindless != 0u;
-        vec4 coarse = haveCoarse ? textureLod(GE_BTEX(sp.AtlasColorCoarseBindless, GE_TS_CLAMP),
-                                              CBT_SurfCoarseUV(uv, sp.AtlasCoarseDim), 0.0)
-                                 : vec4(0.0);
-        if (!haveSlot)
-            return coarse;
-        vec4 slot = textureLod(GE_BTEX(sp.AtlasColorBindless, GE_TS_CLAMP), r.SlotUV, 0.0);
-        return (haveCoarse && r.Fade < 1.0) ? mix(coarse, slot, r.Fade) : slot;
-    }
-    if (tp.ColorMapBindless == 0u)
-        return vec4(0.0);
-    // One level: the map carries no mip chain, so the tap is the bilinear texel at any distance.
-    return textureLod(GE_BTEX(tp.ColorMapBindless, GE_TS_CLAMP),
-                      CBT_LatticeTextureUV(uv, vec2(textureSize(GE_BTEX(tp.ColorMapBindless, GE_TS_CLAMP), 0))),
-                      0.0);
-#endif
-}
-
-// The grass control field (RG8: height, density) at a terrain UV, read where the placement reads it:
-// the unified map on a planar terrain, the resident atlas slot or its coarse field on an
-// atlas-backed one, (1, 1) where no region is authored. The compat profile binds no control map on
-// this surface and reads (1, 1): under a grass region its ground takes the field's splat coverage.
-vec2 CBT_GrassRegionControls(TerrainParamsEntry tp, vec2 uv)
-{
-#if defined(GE_COMPAT_PROFILE)
-    return vec2(1.0);
-#else
-    if (gCbtSurf.Params.AtlasBacked != 0u)
-    {
-        CBTSurfaceParamsData sp = gCbtSurf.Params;
-        if (sp.AtlasGrassBindless == 0u && sp.AtlasGrassCoarseBindless == 0u)
-            return vec2(1.0);
-        AtlasResolve r = CBT_SurfResolve(uv, sp);
-        if (r.Resident && sp.AtlasGrassBindless != 0u)
-            return texture(GE_BTEX(sp.AtlasGrassBindless, GE_TS_CLAMP), r.SlotUV).rg;
-        if (sp.AtlasGrassCoarseBindless != 0u)
-            return texture(GE_BTEX(sp.AtlasGrassCoarseBindless, GE_TS_CLAMP),
-                           CBT_SurfCoarseUV(uv, sp.AtlasCoarseDim)).rg;
-        return vec2(1.0);
-    }
-    if (tp.GrassControlBindless == 0u)
-        return vec2(1.0);
-    return CBT_LATTICE_TAP(tp.GrassControlBindless, uv).rg;
-#endif
-}
 
 SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 {
@@ -1081,8 +910,6 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     // unlike derivatives of the huge world position). 0 => no fade (the pre-slice full-variation look).
     float pixelFootprintWS = 0.0;
     const bool isSphere = sIn.custom0.w < -0.5;
-    // A paged planar surface at this fragment (one locate serves the normal, splat, grass and color).
-    CBTSurfacePages surfPages = CBT_SurfPagesNone();
 #if defined(GE_COMPAT_PROFILE)
     // BOTH footprints, before the branch. `isSphere` varies per fragment and a static uniformity
     // analysis cannot see through it, so a derivative taken inside either arm is non-uniform
@@ -1094,9 +921,14 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 #endif
     if (isSphere)
     {
-        // Spherical planet: the surface is dir * (R + h(dir)), h the relief plus the sculpt, and its
-        // outward normal is normalize(dir - gradTangential(h) / (R + h)). The relief and its gradient come
-        // from the height pages or the closed form; the sculpt adds a central difference by direction.
+        // Spherical planet (plan §planet-shading): per-pixel ANALYTIC normal. The surface is
+        // dir*(R + h(dir)) with h = multi-octave relief (+ the editable sculpt layer); its
+        // outward normal is normalize(dir - gradTangential(h)/(R+h)). The relief gradient is
+        // closed-form (CBT_PlanetReliefGradient); the sculpt gradient is a central finite
+        // difference of the direction-sampled sculpt height along an orthonormal tangent frame
+        // (seam-free — sampling by direction agrees across cube faces). This kills the facet
+        // look the old screen-space-derivative normal produced, and reveals the relief/sculpt
+        // detail between vertices. Falls back to the pure radial normal where h is smooth.
         CBTSurfaceParamsData sp = gCbtSurf.Params;
         vec3 dir = normalize(sIn.positionWS);
 #if defined(GE_COMPAT_PROFILE)
@@ -1110,27 +942,10 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         float pixelArc = length(fwidth(dir));
 #endif
         pixelFootprintWS = pixelArc * sp.Radius; // arc (rad) * radius (m) = surface footprint (m)
-        float h;
-        vec3 gradTangential;
-#if !defined(GE_COMPAT_PROFILE)
-        if (sp.PlanetPaged != 0u)
-        {
-            // The relief from the planet's height pages, as VertexEval draws it (planets 3.6).
-            CBTPlanetPageSurface paged = CBT_SurfPlanetPages(sIn, pixelArc, sp);
-            h = paged.Height;
-            gradTangential = paged.Gradient;
-        }
-        else
-#endif
-        {
-            // The closed-form relief (the narrow arm, and a planet before its pages are drawn).
-            uint oct = max(sp.ReliefOctaves, 1u);
-            h = CBT_PlanetRelief(dir, sp.ReliefAmplitude, sp.ReliefFrequency, oct);
-            vec3 g3 = CBT_PlanetReliefGradient(dir, sp.ReliefAmplitude, sp.ReliefFrequency, oct);
-            gradTangential = g3 - dot(g3, dir) * dir;
-        }
-        const float reliefBase = h;
-        const vec3 reliefSlope = gradTangential;
+        uint oct = max(sp.ReliefOctaves, 1u);
+        float h = CBT_PlanetRelief(dir, sp.ReliefAmplitude, sp.ReliefFrequency, oct);
+        vec3 g3 = CBT_PlanetReliefGradient(dir, sp.ReliefAmplitude, sp.ReliefFrequency, oct);
+        vec3 gradTangential = g3 - dot(g3, dir) * dir;
         if (sp.SphereSculptEnabled != 0u)
         {
             // Sample the sculpt height at the pixel once (needed for the R+h scale + the splat
@@ -1140,8 +955,11 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
             // so the taps are skipped (the perf gate the old height threshold stood in for).
             CBTSculptGeom sg = CBT_SurfSculptGeom(sp);
             float centerSculpt = CBT_SampleSculptDirSurf(dir, sg);
-            // Analytic sphere modifiers (S2/S3): compose the closed-form set on the relief h, the pages or
-            // the closed form, as VertexEval composes it on its base height. An empty set adds no float op.
+            // Analytic sphere modifiers (S2/S3): compose the closed-form set (flattens + transient
+            // brush dabs) at the pixel, reusing the relief already evaluated at this dir (h still
+            // holds the pure closed form here) — the same composition VertexEval displaced the
+            // geometry with, so the splat altitude and the R+h normal scale agree with the mesh.
+            // Total 0 (dark-ship) adds no float op.
             if (CBT_SphereAnalyticTotalSurf(sp) != 0u)
                 centerSculpt += CBT_SphereAnalyticOffsetSurf(sp, dir, h);
             h += centerSculpt;
@@ -1171,13 +989,11 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
                 // so a flatten's gradient cancels the relief gradient on the pad interior (flat
                 // shading on the flat pad) and tilts the rim exactly where the geometry does. With
                 // no analytic set the composed tap IS the plain store tap — byte-identical.
-                vec3 s1 = t1 * sculptStep;
-                vec3 s2 = t2 * sculptStep;
-                float g1 = (CBT_SampleSculptComposedSurf(sp, sg, dir + s1, dir, reliefBase, reliefSlope) -
-                            CBT_SampleSculptComposedSurf(sp, sg, dir - s1, dir, reliefBase, reliefSlope)) /
+                float g1 = (CBT_SampleSculptComposedSurf(sp, sg, dir + t1 * sculptStep) -
+                            CBT_SampleSculptComposedSurf(sp, sg, dir - t1 * sculptStep)) /
                            (2.0 * sculptStep);
-                float g2 = (CBT_SampleSculptComposedSurf(sp, sg, dir + s2, dir, reliefBase, reliefSlope) -
-                            CBT_SampleSculptComposedSurf(sp, sg, dir - s2, dir, reliefBase, reliefSlope)) /
+                float g2 = (CBT_SampleSculptComposedSurf(sp, sg, dir + t2 * sculptStep) -
+                            CBT_SampleSculptComposedSurf(sp, sg, dir - t2 * sculptStep)) /
                            (2.0 * sculptStep);
                 gradTangential += g1 * t1 + g2 * t2;
             }
@@ -1193,93 +1009,13 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 #if defined(GE_COMPAT_PROFILE)
         pixelFootprintWS = planarFootprintWS;
 #else
-        pixelFootprintWS = CBT_SurfPixelFootprint(dFdx(sIn.positionWS), dFdy(sIn.positionWS));
+        pixelFootprintWS = length(fwidth(sIn.positionWS)); // planar posWS is not at planetary scale
 #endif
         uint normalmapIdx = uint(sIn.custom0.w);
         CBTSurfaceParamsData spN = gCbtSurf.Params;
-#if !defined(GE_COMPAT_PROFILE)
-        if (spN.SurfacePagedPlanes != 0u)
-            surfPages = CBT_SurfPagesAt(sIn.uv0, pixelFootprintWS, tp.WorldSizeX, tp.WorldSizeZ,
-                                        spN.SurfacePageBase, spN.SurfacePagedPlanes);
-#endif
-        if (surfPages.Resolved)
+        if (CBT_HAS_NORMALMAP(tp, normalmapIdx))
         {
-            // The normal pyramid filters the far field, so the paged arm reads no normal chain.
-            vec2 nXZ = surfPages.NormalXZ;
-            float ny = sqrt(max(1.0 - dot(nXZ, nXZ), 0.0));
-            normalWS = normalize(vec3(nXZ.x, ny, nXZ.y));
-        }
-        else if (CBT_HAS_NORMALMAP(tp, normalmapIdx))
-        {
-            // Near the eye (weight 0) the level-0 map alone, read at its one mip: the same texels as the
-            // implicit tap, and legal where the far branch skips it; far away the normal chain at the
-            // fragment's level (see cbt_NormalChain above).
-#if defined(CBT_DRAW_NORMAL_CHAIN)
-            vec4 eye = gCbtDrawLevel.Params.eye;
-            uint normalMips = gCbtDrawLevel.Params.lattice.y;
-            float lambda = 0.0;
-            float eyeDistance = 0.0;
-            float pixelAngle = 0.0;
-            if (eye.w > 0.0 && normalMips > 0u)
-            {
-                eyeDistance = distance(sIn.positionWS, eye.xyz);
-                lambda = CBT_ChainLevel(eyeDistance, eye.w);
-                // The view ray's angle per pixel: smooth across facets, unlike a derivative of the
-                // position, which changes with each facet's tilt.
-                pixelAngle = length(fwidth(normalize(sIn.positionWS - eye.xyz)));
-            }
-            float chainWeight = eye.w > 0.0 && normalMips > 0u ? CBT_ChainNormalWeight(lambda) : 0.0;
-            float chainLod = CBT_SurfaceNormalChainLod(lambda, normalMips);
-            vec2 level0XZ = vec2(0.0);
-            if (chainWeight < 1.0)
-                level0XZ = CBT_SAMPLE_NORMALMAP_LOD0(normalmapIdx, sIn.uv0).rg;
-            // At most two chain reads per fragment: the smooth surface at the distance's level, then the
-            // normal at the level of the ground the pixel covers, which is that same read when the two
-            // levels agree. Both levels are clamped to the chain's top mip, so the farthest ground, where
-            // both reach it, reads the chain once.
-            float readWeight = chainWeight;
-            float readLod = chainLod;
-            float smoothLod = -1.0;
-            vec2 smoothXZ = vec2(0.0);
-            if (eye.w > 0.0 && normalMips > 0u && lambda > 0.0)
-            {
-                // A pixel seen at a grazing angle covers 1 / cos more ground along the view than a
-                // head-on pixel at its distance. The cosine is taken against the chain's surface at the
-                // distance's level, which neighboring facets share, and the pixel reads the chain at
-                // the level of the ground it covers: its normal then averages the relief there instead
-                // of taking one phase of it per screen row. The terrain shadow averages the same
-                // footprint: it takes the head-on footprint, the cosine and lambda, and widens by the
-                // same rule (terrain_shadow.glsl GE_TerrainShadowFootprint). The footprint takes over from
-                // lambda 0 to lambda 1 (CBT_GrazingShare), so nearer than lambda 0 there is nothing to
-                // read here. The grazing level is never finer than the distance's, so it replaces the
-                // distance's read.
-                // Clamped to the top mip as the sampler clamps the fetch: the same texel, and a level
-                // that compares equal to the grazing level once both reach the top.
-                smoothLod = clamp(lambda - 1.0, 0.0, float(max(normalMips, 2u) - 1u));
-                smoothXZ = textureLod(cbt_NormalChain, sIn.uv0, smoothLod).rg;
-                vec3 smoothNormal = vec3(smoothXZ.x, sqrt(max(1.0 - dot(smoothXZ, smoothXZ), 0.0)), smoothXZ.y);
-                vec3 toEye = normalize(eye.xyz - sIn.positionWS);
-                float cosView = abs(dot(normalize(smoothNormal), toEye));
-                float spread = 1.0 / max(cosView, kCBTMinGrazingCos);
-                float grazingLambda = CBT_GrazingLevel(lambda, spread);
-                readWeight = CBT_ChainNormalWeight(grazingLambda);
-                readLod = CBT_SurfaceNormalChainLod(grazingLambda, normalMips);
-#ifdef GE_TERRAIN_SHADOW_RECEIVER_DECLARED
-                ge_ShadowReceiverFootprint = eyeDistance * pixelAngle;
-                ge_ShadowReceiverViewCos = cosView;
-                ge_ShadowReceiverToEye = toEye;
-                ge_ShadowReceiverDrawLevel = lambda;
-#endif
-            }
-            vec2 nXZ = level0XZ;
-            if (readWeight > 0.0)
-            {
-                vec2 chainXZ = readLod == smoothLod ? smoothXZ : textureLod(cbt_NormalChain, sIn.uv0, readLod).rg;
-                nXZ = mix(level0XZ, chainXZ, readWeight);
-            }
-#else
             vec2 nXZ = CBT_SAMPLE_NORMALMAP(normalmapIdx, sIn.uv0).rg;
-#endif
             float ny = sqrt(max(1.0 - dot(nXZ, nXZ), 0.0));
             normalWS = normalize(vec3(nXZ.x, ny, nXZ.y));
         }
@@ -1344,10 +1080,6 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         // the true surface between vertices, so rock/snow/grass bands stay crisp on sculpted mesas.
         weights = CBT_PlanetSlopeAltitudeWeights(normalWS, dir, sphereAltitude, sp.ReliefAmplitude);
     }
-    else if (surfPages.Resolved)
-    {
-        weights = surfPages.Splat;
-    }
     else if (CBT_HAS_SPLATMAP(tp))
     {
         weights = CBT_SAMPLE_SPLATMAP(tp.SplatmapBindless, sIn.uv0);
@@ -1398,24 +1130,6 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         weights /= wSum;
     else
         weights.x = 1.0;
-
-    // The grass canopy over this ground: the field coverage here, the probability the placement
-    // spawns a blade with. The splat half reads the CHANNEL weights (the placement's mask reads the
-    // grass layer as a channel, before any role resolve) with the same splat-or-not answer the
-    // placement takes; the region half reads the same grass control field. A sphere places no grass
-    // and carries a zero canopy depth. A terrain with no grass pays nothing for the reads.
-    float grassCanopy = 1.0;
-    if (tp.GrassCanopyOcclusion > 0.0)
-    {
-        grassCanopy = GrassGroundCanopyOcclusion(
-            tp.GrassCanopyOcclusion,
-            GrassFieldCoverage(
-                GrassSplatCoverage(weights, min(tp.GrassLayerIndex, 3u), tp.GrassMaskThreshold,
-                                   !isSphere && (surfPages.Resolved || CBT_HAS_SPLATMAP(tp)
-                                                || (gCbtSurf.Params.AtlasBacked != 0u
-                                                    && CBT_HAS_ATLAS_MAP(gCbtSurf.Params.AtlasSplatBindless)))),
-                surfPages.Resolved ? surfPages.Grass : CBT_GrassRegionControls(tp, sIn.uv0)));
-    }
 
     // The channel -> material indirection (SF2 telemetry seam): the splat carries four channel
     // weights and this is where a weight stops meaning "layer i" and starts meaning "whatever
@@ -1482,21 +1196,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         anyNormalMap = anyNormalMap || CBT_MAT_HAS_NORMAL(mat);
     }
 
-    // The colour map over the blended ground: its premultiplied colour mixes the ground toward the
-    // painted colour by its weight, the same expression the blade root applies
-    // (grass_root_ground_color.glsl). A planet carries no map.
-    if (!isSphere)
-    {
-        vec4 colorMap = surfPages.Resolved ? surfPages.Color : CBT_ColorMapTap(tp, sIn.uv0);
-        baseColor = TerrainApplyColorMap(baseColor, colorMap);
-    }
-
-    // The canopy shade of the grass standing here, the same depth its blade roots take
-    // (terrain_grass_surface.glsl): the soil under a field gets less of the sun and the sky than open
-    // ground, and the contact is shaded on both sides or on neither. It is the share of the light that
-    // reaches the ground (lightVisibility), so it dims the ground's specular as it dims its diffuse.
     o.baseColor = baseColor;
-    o.lightVisibility = grassCanopy;
     // Renormalize only when a map actually contributed. With none bound the accumulation is just
     // normalWS scaled by the weight sum, so leaving it alone keeps every untextured terrain
     // byte-identical to the pre-Phase-B path rather than routing it through a normalize().

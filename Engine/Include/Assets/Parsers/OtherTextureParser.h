@@ -11,7 +11,7 @@ class OtherTextureParser final : public TextureParser
   public:
     std::vector<std::string> GetSupportedExtensions() const override
     {
-        return {".bmp", ".tga", ".dds", ".hdr", ".exr", ".ktx", ".svg"};
+        return {".bmp", ".tga", ".hdr", ".exr", ".ktx", ".svg"};
     }
 
     std::string GetName() const override { return "OtherTextureParser"; }

@@ -16,12 +16,12 @@
 #include <vector>
 
 #include "InspectorLayoutFixture.h"
+#include "UI/Controls/Button.h"
 #include "UI/Controls/CollapsibleInfoCard.h"
+#include "UI/InfoCard.h"
 #include "UI/Controls/Label.h"
-#include "UI/Parsers/XMLParser.h"
-#include "UI/ResolvedStyle.h"
 #include "UI/UIElement.h"
-#include "UI/UIStyle.h"
+#include "UI/UIEvents.h"
 
 using GameEngine::Label;
 using GameEngine::UIElement;
@@ -91,18 +91,6 @@ TEST(CollapsibleInfoCard, SetTextReplacesTheCopyInTheTree)
     EXPECT_FALSE(HoldsText(card, "The first thing it said."));
 }
 
-// A layout file declares a card by its tag, and the text attribute is the copy.
-TEST(CollapsibleInfoCard, ALayoutDeclaresACardByItsTagAndText)
-{
-    std::unique_ptr<UIElement> root;
-    ASSERT_TRUE(GameEngine::UIParsing::XMLParser::ParseLayoutFromString(
-        R"(<CollapsibleInfoCard text="Bake &amp; save. Then reload." />)", root));
-
-    const auto* card = dynamic_cast<const CollapsibleInfoCard*>(root.get());
-    ASSERT_NE(card, nullptr) << "the layout tag does not make a CollapsibleInfoCard";
-    EXPECT_EQ(card->GetFullText(), "Bake & save. Then reload.");
-}
-
 // Cards read expanded, and one that was never laid out was never measured — so it has made no
 // fold decision and offers no action to undo one.
 TEST(CollapsibleInfoCard, AnUnmeasuredCardIsExpandedAndNotFoldable)
@@ -142,7 +130,7 @@ TEST(CollapsibleInfoCardFold, NewCopyKeepsTheChevronUntilItIsMeasured)
 
     cardRaw->SetText(otherTwoRows);
     EXPECT_TRUE(cardRaw->IsFoldable()) << "new copy dropped the fold state before it was measured";
-    EXPECT_FALSE(chevron->HasClass("blank")) << "new copy blanked the chevron before it was measured";
+    EXPECT_FALSE(chevron->HasClass("hidden")) << "new copy hid the chevron before it was measured";
 
     for (int frame = 0; frame < 3; ++frame)
         fixture.Ui->Update(1.0f / 60.0f, /*interactive=*/true);
@@ -152,48 +140,40 @@ TEST(CollapsibleInfoCardFold, NewCopyKeepsTheChevronUntilItIsMeasured)
     for (int frame = 0; frame < 3; ++frame)
         fixture.Ui->Update(1.0f / 60.0f, /*interactive=*/true);
     EXPECT_FALSE(cardRaw->IsFoldable()) << "the measurement of one row still ends the fold";
-    EXPECT_TRUE(chevron->HasClass("blank"));
+    EXPECT_TRUE(chevron->HasClass("hidden"));
 }
 
-// A card that fits one row shows no chevron glyph but keeps the chevron's box, so its copy starts
-// at the same x as the copy of a card that wraps and folds.
-TEST(CollapsibleInfoCardFold, OneRowAndWrappedCardsStartTheirCopyAtOneX)
+// A card's action stays hidden until the card is given one; a click on it runs the action and never
+// folds the card.
+TEST(CollapsibleInfoCard, SetActionShowsTheButtonAndAClickRunsIt)
 {
-    auto root = std::make_unique<UIElement>();
-    auto oneRow = std::make_unique<CollapsibleInfoCard>("Short.");
-    auto wrapped = std::make_unique<CollapsibleInfoCard>(
-        "A long explanation that has to wrap onto a second row at this width, so the card folds and "
-        "shows its chevron beside the copy.");
-    CollapsibleInfoCard* oneRowRaw = oneRow.get();
-    CollapsibleInfoCard* wrappedRaw = wrapped.get();
-    root->AddChild(std::move(oneRow));
-    root->AddChild(std::move(wrapped));
+    CollapsibleInfoCard card("Sky Environment sets this light's direction and colour from the time of day.");
+    auto* action = dynamic_cast<GameEngine::Button*>(FindByClass(&card, "editor-info-card-action"));
+    ASSERT_NE(action, nullptr);
+    EXPECT_TRUE(action->HasClass("hidden"));
 
-    InspectorLayoutFixture fixture;
-    fixture.ViewportW = 360;
-    fixture.ExtraSheets = {"Assets/UI/theme/core.css", "Assets/UI/controls/CollapsibleInfoCard/CollapsibleInfoCard.css"};
-    if (!fixture.Build(std::move(root)))
-        GTEST_SKIP() << fixture.Diagnostic;
-    ASSERT_FALSE(oneRowRaw->IsFoldable()) << "the short copy wrapped, so the fixture cannot show a one-row card";
-    ASSERT_TRUE(wrappedRaw->IsFoldable()) << "the long copy did not wrap, so the fixture cannot show a fold";
+    int invoked = 0;
+    card.SetAction("Select sky", "Select the sky.", [&invoked]() { ++invoked; });
+    EXPECT_FALSE(action->HasClass("hidden"));
+    EXPECT_EQ(action->GetText(), "Select sky");
 
-    const UIElement* oneRowCopy = FindByClass(oneRowRaw, "editor-info-card-copy");
-    const UIElement* wrappedCopy = FindByClass(wrappedRaw, "editor-info-card-copy");
-    ASSERT_NE(oneRowCopy, nullptr);
-    ASSERT_NE(wrappedCopy, nullptr);
-    EXPECT_FLOAT_EQ(oneRowCopy->GetLayoutX(), wrappedCopy->GetLayoutX())
-        << "the one-row card's copy does not start where the wrapped card's copy starts";
+    action->TriggerClick();
+    EXPECT_EQ(invoked, 1);
+    EXPECT_TRUE(card.IsExpanded());
 }
 
-// A folded card cuts its one line with an ellipsis, never mid-word with no mark, and its "show more"
-// starts at least 24 px after the cut copy, wider than a word space, so the two do not read as one line.
-TEST(CollapsibleInfoCardFold, AFoldedLineEndsInAnEllipsisClearOfShowMore)
+// A left release on a measured, foldable card's action presses the action and leaves the fold alone,
+// while the same release on the card's own row still folds it. The card sees the release as it
+// bubbles up from the action, so it is dispatched to the card with the action as its target.
+TEST(CollapsibleInfoCardFold, AReleaseOnTheActionRunsItAndNeverFoldsTheCard)
 {
-    constexpr float kMinShowMoreGap = 24.0f;
+    const std::string twoRows =
+        "Sky Environment sets this light's direction and colour from the time of day, so the line is "
+        "long enough to wrap onto a second row at this width beside the action.";
     auto root = std::make_unique<UIElement>();
-    auto card = std::make_unique<CollapsibleInfoCard>(
-        "A first sentence long enough that a folded card cannot hold it on one line at this width, so the "
-        "line is cut before the action. A second sentence.");
+    auto card = std::make_unique<CollapsibleInfoCard>(twoRows);
+    int invoked = 0;
+    card->SetAction("Select sky", "Select the sky.", [&invoked]() { ++invoked; });
     CollapsibleInfoCard* cardRaw = card.get();
     root->AddChild(std::move(card));
 
@@ -202,24 +182,68 @@ TEST(CollapsibleInfoCardFold, AFoldedLineEndsInAnEllipsisClearOfShowMore)
     fixture.ExtraSheets = {"Assets/UI/theme/core.css", "Assets/UI/controls/CollapsibleInfoCard/CollapsibleInfoCard.css"};
     if (!fixture.Build(std::move(root)))
         GTEST_SKIP() << fixture.Diagnostic;
+    auto* action = dynamic_cast<GameEngine::Button*>(FindByClass(cardRaw, "editor-info-card-action"));
+    ASSERT_NE(action, nullptr);
     ASSERT_TRUE(cardRaw->IsFoldable()) << "the long copy did not wrap, so the fixture cannot show a fold";
-    cardRaw->SetExpanded(false);
-    for (int frame = 0; frame < 3; ++frame)
-        fixture.Ui->Update(1.0f / 60.0f, /*interactive=*/true);
+    ASSERT_GT(action->GetLayoutWidth(), 0.0f);
+    ASSERT_GT(action->GetLayoutHeight(), 0.0f);
 
-    const UIElement* copy = FindByClass(cardRaw, "editor-info-card-copy");
-    const UIElement* showMore = FindByClass(cardRaw, "editor-info-card-toggle");
-    ASSERT_NE(copy, nullptr);
-    ASSERT_NE(showMore, nullptr);
-    ASSERT_TRUE(copy->HasClass("clamped"));
-    ASSERT_FALSE(showMore->HasClass("hidden"));
-    const GameEngine::ResolvedStyle& copyStyle = copy->GetResolvedStyle();
-    EXPECT_EQ(copyStyle.Visual.WhiteSpace, GameEngine::WhiteSpace::NoWrap);
-    EXPECT_EQ(copyStyle.Layout.Overflow, GameEngine::Overflow::Hidden);
-    EXPECT_EQ(copyStyle.Visual.TextOverflow, GameEngine::TextOverflowMode::Ellipsis)
-        << "the folded line is cut with no ellipsis";
+    const float x = action->GetLayoutX() + action->GetLayoutWidth() * 0.5f;
+    const float y = action->GetLayoutY() + action->GetLayoutHeight() * 0.5f;
+    auto mouse = [x, y](GameEngine::EventId id, UIElement* target, UIElement* current) {
+        GameEngine::UIEvent e{};
+        e.Id = id;
+        e.Button = 0;
+        e.X = x;
+        e.Y = y;
+        e.Target = target;
+        e.CurrentTarget = current;
+        return e;
+    };
 
-    const float copyRight = copy->GetLayoutX() + copy->GetLayoutWidth();
-    const float showMoreTextLeft = showMore->GetLayoutX() + showMore->GetResolvedStyle().Layout.Padding.Left;
-    EXPECT_GE(showMoreTextLeft - copyRight, kMinShowMoreGap) << "\"show more\" sits too close to the cut copy";
+    const bool expanded = cardRaw->IsExpanded();
+    GameEngine::UIEvent press = mouse(GameEngine::kEventMouseDown, action, action);
+    action->DispatchEvent(press);
+    GameEngine::UIEvent release = mouse(GameEngine::kEventMouseUp, action, action);
+    action->DispatchEvent(release);
+    GameEngine::UIEvent bubbled = mouse(GameEngine::kEventMouseUp, action, cardRaw);
+    cardRaw->DispatchEvent(bubbled);
+    EXPECT_EQ(invoked, 1) << "the release on the action did not run it";
+    EXPECT_EQ(cardRaw->IsExpanded(), expanded) << "a release on the action folded the card";
+
+    GameEngine::UIEvent onCard = mouse(GameEngine::kEventMouseUp, cardRaw, cardRaw);
+    cardRaw->DispatchEvent(onCard);
+    EXPECT_NE(cardRaw->IsExpanded(), expanded) << "a release on the card's own row no longer folds it";
+    EXPECT_EQ(invoked, 1);
+}
+
+// With "Show Info Cards" off, a card with an action keeps its action on screen and drops its copy, so
+// the state the action names stays visible; a card without one is gone.
+TEST(CollapsibleInfoCardFold, AHiddenCardKeepsItsActionAndDropsItsCopy)
+{
+    auto root = std::make_unique<UIElement>();
+    auto withAction = std::make_unique<CollapsibleInfoCard>("Sky Environment sets this light's direction.");
+    withAction->SetAction("Select sky", "Select the sky.", []() {});
+    withAction->AddClass(GameEngine::EditorUI::kInfoCardOffClass);
+    CollapsibleInfoCard* withActionRaw = withAction.get();
+    auto plain = std::make_unique<CollapsibleInfoCard>("An explanation and nothing else.");
+    plain->AddClass(GameEngine::EditorUI::kInfoCardOffClass);
+    CollapsibleInfoCard* plainRaw = plain.get();
+    root->AddChild(std::move(withAction));
+    root->AddChild(std::move(plain));
+
+    InspectorLayoutFixture fixture;
+    fixture.ViewportW = 360;
+    fixture.ExtraSheets = {"Assets/UI/theme/core.css", "Assets/UI/controls/CollapsibleInfoCard/CollapsibleInfoCard.css"};
+    if (!fixture.Build(std::move(root)))
+        GTEST_SKIP() << fixture.Diagnostic;
+    UIElement* action = FindByClass(withActionRaw, "editor-info-card-action");
+    UIElement* line = FindByClass(withActionRaw, "editor-info-card-line");
+    ASSERT_NE(action, nullptr);
+    ASSERT_NE(line, nullptr);
+
+    EXPECT_GT(action->GetLayoutWidth(), 0.0f) << "the hidden card dropped its action";
+    EXPECT_GT(action->GetLayoutHeight(), 0.0f);
+    EXPECT_EQ(line->GetLayoutHeight(), 0.0f) << "the hidden card still shows its copy";
+    EXPECT_EQ(plainRaw->GetLayoutHeight(), 0.0f) << "a hidden card without an action still takes space";
 }

@@ -10,7 +10,6 @@
 #include "Components/SceneEntityTag.h"
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Terrain/Terrain.h"
-#include "Components/Terrain/TerrainGrass.h"
 #include "Components/Terrain/TerrainModifierEffects.h"
 #include "Components/Terrain/TerrainModifierVolume.h"
 #include "Components/Terrain/TerrainModifiers.h"
@@ -49,6 +48,21 @@ constexpr uint32 kDim = 129;
 constexpr float32 kWorldSize = 256.0f;
 constexpr float32 kHeightScale = 64.0f;
 
+// The fixtures generate their heightmaps and erosion with floating-point math.
+// Apple ARM's contraction and math-library results differ from the scalar reference
+// producer. Each reference pins that producer's exact bytes without changing the
+// evaluator or the cache format; authored content still hashes its actual bytes.
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+constexpr uint64 kPinnedBakeKey = 0xbb6921e35ad93cf4ull;
+constexpr uint64 kPinnedBakeOutput = 0x22bf76c390a627a5ull;
+constexpr uint64 kPinnedProceduralOutput = 0xd64e992494511367ull;
+#else
+constexpr uint64 kPinnedBakeKey = 0xdcc535cfbbbe9a3full;
+constexpr uint64 kPinnedBakeOutput = 0xf19e25b84ba58001ull;
+constexpr uint64 kPinnedProceduralOutput = 0xe901d8350a11b30full;
+#endif
+
+
 // Every input class of a single terrain's bake, at values a test changes one at a time.
 struct SceneInputs
 {
@@ -60,9 +74,6 @@ struct SceneInputs
     float32 SplineX = -100.0f;
     float32 MaskScale = 1.0f;
     float32 PayloadScale = 30.0f;
-    // Darken Ground on a TerrainGrass the terrain carries when above 0: an input of the colour
-    // section alone.
-    float32 GroundDarkening = 0.0f;
 };
 
 struct BakeResult
@@ -71,7 +82,6 @@ struct BakeResult
     std::vector<uint8> Splat;
     float32 SplatMinH = 0.0f;
     float32 SplatMaxH = 0.0f;
-    std::vector<uint8> Color;
 };
 
 // Asset identities never reach the key (it hashes content), so any GUIDs serve.
@@ -244,12 +254,6 @@ struct BakeSession
         for (uint32 i = 0; i < mask.size(); ++i)
             mask[i] = in.MaskScale * (0.15f + 0.7f * static_cast<float32>(i % 16u) / 15.0f);
         system.SeedDecodedStampMaskForTests(kMaskGuid, mask, 16, 16);
-        if (in.GroundDarkening > 0.0f)
-        {
-            Components::TerrainGrass grass{};
-            grass.GroundDarkening = in.GroundDarkening;
-            world.AddComponentImmediate<Components::TerrainGrass>(terrainEntity, grass);
-        }
         Update();
     }
 
@@ -269,7 +273,6 @@ struct BakeSession
         result.Splat = data->Splatmap;
         result.SplatMinH = data->SplatBakeMinH;
         result.SplatMaxH = data->SplatBakeMaxH;
-        result.Color = data->ColorMap.Pixels;
         return result;
     }
 };
@@ -478,40 +481,6 @@ TEST(TerrainBakeCache, AHitServesTheStoredArtifactInsteadOfBaking)
     EXPECT_EQ(served.Heights[0], fresh.Heights[0] + 1.0f) << "a hit must apply the stored heights, not bake";
 }
 
-// Darken Ground is an input of the colour section alone: changing it between two opens serves the
-// stored heights and splat (a height hit) and composes the colour map again (a colour miss), and an
-// unchanged amount serves the stored colour map as well.
-TEST(TerrainBakeCache, ADarkenGroundChangeIsAColourMissAndAHeightHit)
-{
-    TempDirectory dir;
-    SceneInputs soil;
-    soil.GroundDarkening = 0.5f;
-    const BakeResult stored = BakeScene(soil, {dir.Path, true});
-    ASSERT_FALSE(stored.Color.empty()) << "the soil write left no colour map";
-    const fs::path file = Artifacts(dir.Path).at(0);
-    const uint64 key = StoredKey(file);
-    TerrainBakeArtifact artifact;
-    ASSERT_EQ(ReadTerrainBake(file, key, kDim, kDim, artifact), TerrainBakeCacheStatus::Hit);
-    ASSERT_NE(artifact.ColorKey, 0u) << "the store carried no colour section";
-    ASSERT_EQ(artifact.Color, stored.Color);
-    // Mark both sections, so a served one is told from a baked or a composed one.
-    for (float32& height : artifact.Heights)
-        height += 1.0f;
-    for (size_t i = 3; i < artifact.Color.size(); i += 4)
-        artifact.Color[i] = 7;
-    ASSERT_TRUE(WriteTerrainBake(file, key, artifact));
-
-    SceneInputs more = soil;
-    more.GroundDarkening = 0.8f;
-    const BakeResult changed = BakeScene(more, {dir.Path, false});
-    EXPECT_EQ(changed.Heights[0], stored.Heights[0] + 1.0f) << "the heights must be served: a height hit";
-    EXPECT_EQ(changed.Color, BakeScene(more, {}).Color) << "the colour map must be composed again: a colour miss";
-
-    const BakeResult same = BakeScene(soil, {dir.Path, false});
-    ASSERT_FALSE(same.Color.empty());
-    EXPECT_EQ(same.Color[3], 7) << "an unchanged colour key must serve the stored colour map";
-}
-
 TEST(TerrainBakeCache, TheSameInputsGiveTheSameKey)
 {
     EXPECT_EQ(KeyOf({}), KeyOf({}));
@@ -651,12 +620,12 @@ TEST(TerrainBakeCache, MalformedArtifactsAreMissesNotCrashes)
 }
 
 // A writer that died between its write and its rename leaves a temporary sibling;
-// the next store of that terrain removes it. The writer id is one no process has: process 1
-// is the init process on macOS and Linux, so it is always running there.
+// the next store of that terrain removes it.
 TEST(TerrainBakeCache, AStoreRemovesTemporarySiblingsOfDeadWriters)
 {
     TempDirectory dir;
     const fs::path file = TerrainBakeFile(dir.Path, kSceneGuid, kTerrainTag);
+    // PID 1 is a live system process on POSIX; use the absent writer ID shared by FileSystemTests.
     const fs::path orphan = file.string() + ".2147483600-1-0.tmp";
     WriteBytes(orphan, {1, 2, 3});
     fs::last_write_time(orphan, fs::last_write_time(orphan) - std::chrono::hours(24));
@@ -930,17 +899,15 @@ TEST(TerrainBakeCache, ASaveStoresNothingForATerrainWithoutATag)
 // the new values from the failure message.
 TEST(TerrainBakeCache, TheKeyAndTheBakeOutputArePinnedToTheFormatVersion)
 {
-    constexpr uint64 kPinnedKey = 0xd8de17d9994ee485ull;
-    constexpr uint64 kPinnedOutput = 0xf19e25b84ba58001ull;
     TempDirectory dir;
     const BakeResult bake = BakeScene({}, {dir.Path, true});
     const std::vector<fs::path> files = Artifacts(dir.Path);
     ASSERT_EQ(files.size(), 1u);
     const uint64 key = StoredKey(files[0]);
     const uint64 output = OutputHash(bake);
-    EXPECT_EQ(key, kPinnedKey) << std::hex << "the bake key changed (now 0x" << key
+    EXPECT_EQ(key, kPinnedBakeKey) << std::hex << "the bake key changed (now 0x" << key
                                << "): bump kTerrainBakeFormatVersion, then pin the new value";
-    EXPECT_EQ(output, kPinnedOutput) << std::hex << "the bake output changed (now 0x" << output
+    EXPECT_EQ(output, kPinnedBakeOutput) << std::hex << "the bake output changed (now 0x" << output
                                      << "): bump kTerrainBakeFormatVersion, then pin the new value";
 }
 
@@ -948,8 +915,7 @@ TEST(TerrainBakeCache, TheKeyAndTheBakeOutputArePinnedToTheFormatVersion)
 // noise or to any of these evaluators changes this output.
 TEST(TerrainBakeCache, TheProceduralBakeOutputIsPinnedToTheFormatVersion)
 {
-    constexpr uint64 kPinnedOutput = 0xe901d8350a11b30full;
     const uint64 output = OutputHash(BakeProceduralScene());
-    EXPECT_EQ(output, kPinnedOutput) << std::hex << "the procedural bake output changed (now 0x" << output
+    EXPECT_EQ(output, kPinnedProceduralOutput) << std::hex << "the procedural bake output changed (now 0x" << output
                                      << "): bump kTerrainBakeFormatVersion, then pin the new value";
 }

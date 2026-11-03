@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "Terrain/TerrainZoneStrokeCommand.h"
+#include "SceneView/TerrainZoneStrokeCommand.h"
 
 #include "EditorChangeNotifications.h"
 #include "AssetCore/GUID.h"

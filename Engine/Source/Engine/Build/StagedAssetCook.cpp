@@ -10,14 +10,13 @@ namespace GameEngine
 bool CookStagedContent(const std::filesystem::path& contentRoot, const AssetManifest& manifest,
                        const AssetRegistry& registry, const ParserRegistry& parsers,
                        TextureCookWorkers* textureWorkers,
-                       JobSystem::WorkStealingThreadPool* manifestParsePool,
                        const std::function<bool()>& cancelRequested, TexturePackageCookStats& textureStats,
                        std::string& error)
 {
     if (!StripEditorOnlyComponentsFromStagedScenes(contentRoot, manifest, cancelRequested, error))
         return false;
-    if (!StagePackagedTextureCooks(contentRoot, manifest, registry, textureWorkers,
-                                   manifestParsePool, cancelRequested, textureStats, error))
+    if (!StagePackagedTextureCooks(contentRoot, manifest, registry, textureWorkers, cancelRequested,
+                                   textureStats, error))
         return false;
     return CookStagedAssets(contentRoot, manifest, parsers, cancelRequested, error);
 }

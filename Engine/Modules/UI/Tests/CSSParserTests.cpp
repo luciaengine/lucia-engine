@@ -1285,9 +1285,7 @@ void ExpectFlex(const FlexExpectation& e)
     EXPECT_NEAR(DeclaredShrink(s), e.Shrink, 0.001f) << "flex: " << e.Declaration;
     EXPECT_EQ(s.Layout.FlexBasis.Unit, e.BasisUnit) << "flex: " << e.Declaration;
     if (e.BasisUnit != StyleLength::UnitType::Auto)
-    {
         EXPECT_NEAR(s.Layout.FlexBasis.Value, e.BasisValue, 0.001f) << "flex: " << e.Declaration;
-    }
 }
 
 constexpr auto kAuto = StyleLength::UnitType::Auto;
@@ -1689,13 +1687,13 @@ TEST(CSSParserTests, InlineStyleImportantMarkerStrippedFromStoredValue)
     // always win, so the importance bit is dropped — but the value must
     // still parse cleanly.)
     UIElement el;
-    StyleDeclaration ov;
+    StyleOverrides ov;
     CSSParser::ParseInlineStyleToOverrides("width: 50px !important", ov);
 
     // The override should be present with the parsed numeric value.
     EXPECT_TRUE(ov.Has(StylePropertyId::Width));
 
-    StyleDeclaration ovEmpty;
+    StyleOverrides ovEmpty;
     // A value that's only the marker should be skipped entirely.
     CSSParser::ParseInlineStyleToOverrides("width: !important", ovEmpty);
     EXPECT_FALSE(ovEmpty.Has(StylePropertyId::Width));
@@ -1800,37 +1798,6 @@ TEST(CSSParserTests, ParsesBackgroundImageAndSupportingProperties)
     EXPECT_NEAR(s.Visual.BackgroundImage.PosY, 100.0f, 0.001f);
 }
 
-
-TEST(CSSParserTests, BackgroundPositionMixesALengthWithAnAxisKeyword)
-{
-    // The icon-left-of-label button shape: inset the image from the left edge,
-    // center it vertically. A keyword read as a length is 0 and pins the image
-    // to the top; each vertical keyword takes its own percent.
-    struct Case
-    {
-        const char* Keyword;
-        float ExpectedY;
-    };
-    const Case cases[] = {{"top", 0.0f}, {"center", 50.0f}, {"bottom", 100.0f}};
-    for (const Case& c : cases)
-    {
-        const std::string css =
-            std::string("#bg { background-image: url(\"textures/icon.png\");\n"
-                        "      background-position: 6px ") + c.Keyword + "; }\n";
-        Stylesheet sheet{};
-        ASSERT_TRUE(CSSParser::ParseStylesFromString(css, sheet)) << c.Keyword;
-
-        ElementState st{};
-        UIElement el;
-        el.SetId("bg");
-        auto s = CSSParser::ComputeStyleFor(el, sheet, st);
-
-        EXPECT_FALSE(s.Visual.BackgroundImage.PosXIsPercent) << c.Keyword;
-        EXPECT_NEAR(s.Visual.BackgroundImage.PosX, 6.0f, 0.001f) << c.Keyword;
-        EXPECT_TRUE(s.Visual.BackgroundImage.PosYIsPercent) << c.Keyword;
-        EXPECT_NEAR(s.Visual.BackgroundImage.PosY, c.ExpectedY, 0.001f) << c.Keyword;
-    }
-}
 
 TEST(CSSParserTests, ParsesBackgroundTintColorWithAlpha)
 {
@@ -2308,7 +2275,7 @@ TEST(CSSParserTests, CustomVarStyleDeltaOverridesParticipateInVarResolution)
 
     ElementState st{};
     UIElement el; el.SetId("e");
-    el.Style().SetCustom(HashStringId("--c"), "#112233");
+    el.Overrides().SetCustom(HashStringId("--c"), "#112233");
     const auto parentStyle = CSSParser::ComputeStyleFor(el, sheet, st);
     EXPECT_EQ(parentStyle.Visual.Color, 0xFF112233u);
 
@@ -3213,10 +3180,10 @@ TEST(CSSParserTests, InvalidTextShadowsPreservePreviousDeclaration) {
 // the engine takes: it is ignored with a warning that names the fix.
 TEST(CSSParserTests, IgnoredTextShadowWarnsWithTheAcceptedForm) {
     Logger::Log::Initialize({});
-    auto sink = std::make_unique<Logger::CallbackSink>();
+    auto sink = Logger::MakeUnique<Logger::CallbackSink>();
     auto* sinkPtr = sink.get();
     auto warnings = std::make_shared<std::vector<std::string>>();
-    const std::uint64_t callbackId = sinkPtr->RegisterCallback(
+    const Logger::uint64 callbackId = sinkPtr->RegisterCallback(
         [warnings](const Logger::LogMessage& msg) { warnings->emplace_back(msg.Message.c_str()); });
     Logger::Log::AddSink(std::move(sink));
 

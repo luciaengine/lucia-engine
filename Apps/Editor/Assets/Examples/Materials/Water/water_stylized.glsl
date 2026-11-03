@@ -87,7 +87,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec2 uvBase = GE_TransformUV(sIn.uv0, sIn.textureST[0], sIn.textureST2[0]);
     vec2 uvMain = uvBase + scrollSpeed * elapsed;
 
-    // --- Albedo: source-graph ground truth (Waterfall_Emissive 88fd8f21 BaseColor block):
+    // --- Albedo: Unity ground truth (Waterfall_Emissive 88fd8f21 BaseColor block):
     //   Base      = Emission * (Water_Color * Color_Mask)                       (Multiply 39902b / 4cd40e)
     //   BaseColor = lerp(Base, Screen(Base, Water_Color), Water_Overlay_Power)  (Blend node, m_BlendMode 17)
     // The mask BRIGHTENS via Screen; it never multiplies the floor toward black — mask-black texels
@@ -113,10 +113,10 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     o.coatNormalWS = o.normalWS;
 
     // --- Emissive: the authored luminous overlay, UNCONDITIONAL ---
-    // Source-graph ground truth: the FLOW graph's Water_Color x Color_Mask x Emission product is
+    // Unity ground truth: the FLOW graph's Water_Color x Color_Mask x Emission product is
     // authored bright unconditionally (it Screen-blends into BaseColor at Water_Overlay_Power,
     // and the sibling FALLS graph 87c14512 routes the same shape straight through
-    // surface.Emission). The source's display-referred night reads that overlay as luminous; under
+    // surface.Emission). Unity's display-referred night reads that overlay as luminous; under
     // our physically exposed night a lit albedo cannot glow, so the faithful translation
     // expresses it through the OpenPBR emission lobe: scene-linear 1.0 == 203 nits
     // (GE_EMISSION_PAPERWHITE_NITS), emissionScale ("Emission" in the .mat) carried 1:1.
@@ -129,7 +129,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec2  uvStreak = uvBase + scrollSpeed * (elapsed * 1.7);        // same direction, faster layer
     float streak   = texture(albedoMap, uvStreak).r;
     float overlay  = 1.0 - (1.0 - colorMask.r) * (1.0 - streak);    // Screen(base, streak)
-    // Rim: the source FLOW graph's Emission block is exactly Fresnel_Color * min(fresnelEffect,
+    // Rim: Unity's FLOW Emission block is exactly Fresnel_Color * min(fresnelEffect,
     // _Fresnel_Power) — the authored cap (user8, 0.01..0.012 in the corpus) bounds it to a
     // subtle sheen; the pow-3 falloff (fresnelPower) keeps the port's verified rim shape.
     vec3 rim = Props.enableFresnel ? fresnelColor * min(fresnel, fresnelRimCap) : vec3(0.0);

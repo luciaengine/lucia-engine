@@ -2,7 +2,7 @@
 
 #include "Engine/Rendering/Camera.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Rendering/Camera/CameraPixelGrid.h"
+#include "Rendering/CameraPixelGrid.h"
 
 #include <algorithm>
 #include <cmath>
@@ -39,6 +39,23 @@ float ResolveTargetAspect(const Components::Camera& camera)
 }
 
 } // namespace
+
+Mathematics::Rect ComputeViewportRect(const ViewLetterbox& letterbox,
+                                                                  uint32_t targetWidth,
+                                                                  uint32_t targetHeight)
+{
+    const Mathematics::Rect wholeTarget{0.0f, 0.0f, 1.0f, 1.0f};
+    if (!letterbox.active || targetWidth == 0 || targetHeight == 0 || letterbox.width == 0 ||
+        letterbox.height == 0)
+        return wholeTarget;
+    const float w = static_cast<float>(targetWidth);
+    const float h = static_cast<float>(targetHeight);
+    return Mathematics::Rect{static_cast<float>(letterbox.x) / w,
+                             static_cast<float>(letterbox.y) / h,
+                             static_cast<float>(letterbox.width) / w,
+                             static_cast<float>(letterbox.height) / h};
+}
+
 
 float GetCameraAspectPresetRatio(CameraAspectPreset preset)
 {
@@ -238,8 +255,12 @@ PixelPerfectResult ComputePixelPerfect(const Components::Camera& camera,
     result.state.PaddedWidth = paddedW;
     result.state.PaddedHeight = paddedH;
     result.state.Zoom = zoom;
+    result.state.WorldUnitsPerTexel = 1.0f / ppu;
+    result.state.DisplayWidth = viewportWidth;
+    result.state.DisplayHeight = viewportHeight;
     return result;
 }
+
 } // namespace
 
 PixelPerfectViewState ComputePixelPerfectViewState(const Components::Camera& camera,
@@ -270,7 +291,7 @@ void ApplyActiveCameraAspect(RenderServices& rs,
         auto cameraData = activeCamera.ToCameraData(rtAspect, pp.orthoHeight);
         if (activeCamera.params.PixelPerfectPixelSnap)
         {
-            Mathematics::Vector4 uvTransform;
+            std::array<float, 4> uvTransform;
             // The pixel-perfect raster already includes its guard cells.
             cameraData = Rendering::StabilizeCameraToPixelGrid(cameraData,
                 pp.state.PaddedWidth, pp.state.PaddedHeight, 1.0f, uvTransform, 0);

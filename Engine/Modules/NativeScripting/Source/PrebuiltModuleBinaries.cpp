@@ -1,6 +1,7 @@
 #include "NativeScripting/PrebuiltModuleBinaries.h"
 
 #include "NativeScripting/BuildCacheRecord.h"
+#include "Types/Fnv1a.h"
 
 #include <system_error>
 
@@ -57,7 +58,7 @@ std::string ToolchainFingerprintShortHash(const GE_ToolchainFingerprint& fingerp
         text += std::to_string(field);
         text += ':';
     }
-    return ToHexDigest(Fnv1aHash(text)).substr(0, 8);
+    return ToHexDigest(Hashing::Fnv1a64(text)).substr(0, 8);
 }
 
 std::string PrebuiltPlatformDirName(const GE_ToolchainFingerprint& fingerprint)
@@ -118,16 +119,8 @@ PrebuiltModuleLookup FindPrebuiltModule(const std::filesystem::path& prebuiltRoo
 
     // Optional engine-ABI marker: when the author pinned the engine identity,
     // a mismatch means the DLL was built against a different engine build —
-    // do not use it (the source fallback will rebuild against this engine). A
-    // host that cannot identify its engine (empty digest) cannot verify a marker
-    // either; a marker-less prebuilt is still usable, gated by its own handshake.
+    // do not use it (the source fallback will rebuild against this engine).
     const std::string marker = ReadEngineAbiMarker(lookup.PlatformDir);
-    if (!marker.empty() && hostEngineAbiDigest.empty())
-    {
-        lookup.Reason = "this engine's ABI digest is unavailable (an SDK binary has no readable "
-                        "link stamp), so the prebuilt's engine_abi marker cannot be verified";
-        return lookup;
-    }
     if (!marker.empty() && marker != hostEngineAbiDigest)
     {
         lookup.Reason = "engine_abi marker mismatch (prebuilt=" + marker +

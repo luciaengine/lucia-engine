@@ -1,7 +1,6 @@
 #include "WebLibraryApplication.h"
 
 #include "Assets/AssetManager.h"
-#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "Engine/Build/PackagedGameLayout.h"
 #include "Engine/Hosting/RuntimeHost.h"
@@ -66,7 +65,7 @@ bool WebLibraryApplication::Start(std::string& outError)
     auto& engine = EngineCore::GetInstance();
     auto& assets = engine.GetAssetManager();
     if (const auto editorSource =
-            BuildPlayerEditorSourceDesc(engine.GetResolvedAssetRoot(), ApplicationPaths::GetInstallAssetsRoot()))
+            BuildPlayerEditorSourceDesc(engine.GetResolvedAssetRoot(), PathUtils::GetInstallAssetsRoot()))
         assets.RegisterSource(*editorSource);
 
     if (!m_Host->InitRendering())
@@ -93,13 +92,10 @@ bool WebLibraryApplication::Start(std::string& outError)
     return true;
 }
 
-void WebLibraryApplication::Resize(int width, int height, double devicePixelRatio)
+void WebLibraryApplication::Resize(int width, int height)
 {
     if (Platform::Window* window = m_Host->GetWindow())
-    {
         window->SetWindowSize(width, height);
-        window->SetWebPixelRatio(devicePixelRatio);
-    }
 }
 
 Engine::Renderer::RenderServices* WebLibraryApplication::GetRenderServices() const

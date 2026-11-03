@@ -17,6 +17,7 @@
 #include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/ViewRegistry.h"
 #include "Engine/Rendering/WorldDrawBuilder.h"
+#include "Platform/Environment.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUDrawStreamBuilder.h"
@@ -29,7 +30,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
 #include <span>
 #include <unordered_set>
 #include <utility>
@@ -131,10 +131,7 @@ std::span<const DrawCommand> NonOccludingPrepassHeads(const ViewRegistry& views,
 // way.
 bool PrepassSharedDepthEnabled()
 {
-    static const bool kEnabled = [] {
-        const char* v = std::getenv("GE_PREPASS_SHARED_DEPTH");
-        return !(v && v[0] == '0');
-    }();
+    static const bool kEnabled = Platform::EnvironmentSwitchEnabled("GE_PREPASS_SHARED_DEPTH", true);
     return kEnabled;
 }
 
@@ -284,10 +281,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
     // on the frame path) and can be up to frames-in-flight (3) stale, so a caster
     // crossing into an emptied face's light frustum shows its shadow up to a few
     // frames late, then self-heals. Force off with GE_SHADOW_WALK_EARLYOUT=0.
-    static const bool kShadowWalkEarlyOut = [] {
-        const char* v = std::getenv("GE_SHADOW_WALK_EARLYOUT");
-        return !(v && v[0] == '0');
-    }();
+    static const bool kShadowWalkEarlyOut = Platform::EnvironmentSwitchEnabled("GE_SHADOW_WALK_EARLYOUT", true);
     const bool isOpaqueShadowSlice =
         params.PassType == DepthPassType::ShadowCascade ||
         params.PassType == DepthPassType::AreaShadow ||
@@ -474,7 +468,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
             head.Keywords);
         const OptionalStreamBinds optionalStreams = CollectOptionalStreamBinds(drawVertexFlags, entryBindings);
         const Rendering::CullModeFlags depthCullMode = material->IsDoubleSided()
-            ? static_cast<Rendering::CullModeFlags>(Rendering::CullModeFlagBits::None)
+            ? Rendering::CullModeFlagBits::None
             : services.CullMode;
         const bool isSkinnedDepth = Rendering::HasFlag(
             depthVertexFlags,

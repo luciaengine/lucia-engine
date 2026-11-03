@@ -15,9 +15,9 @@
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 
 #include <cstdint>
 #include <span>

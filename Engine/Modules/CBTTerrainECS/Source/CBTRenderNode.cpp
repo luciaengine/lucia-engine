@@ -11,17 +11,14 @@
 
 #include "Engine/Rendering/DrawCommand.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Engine/Rendering/Pipeline/ForwardFogKeywords.h"
 #include "Engine/Rendering/Pipeline/ReflectionsProvider.h"
 
-#include "Rendering/Camera/CameraTypes.h" // ViewPurpose
+#include "Rendering/CameraTypes.h" // ViewPurpose
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include "Logger/Logger.h"
-
-#include <cstdlib> // getenv (GE_CBT_DESC_DEBUG)
-#include <utility>
+#include "Platform/Environment.h"
 
 namespace GameEngine::CBTTerrainECS
 {
@@ -38,7 +35,7 @@ void EmitCbtForwardDraw(Pipeline::ViewDeclare& d, CBTRenderFeature& feature)
     const void* graph = &d.Frame;
     const uint64_t rgFrame = d.Frame.FrameIndex();
 
-    static const bool kCbtViewDebug = std::getenv("GE_CBT_DESC_DEBUG") != nullptr;
+    static const bool kCbtViewDebug = Platform::EnvironmentSwitchEnabled("GE_CBT_DESC_DEBUG", false);
     if (kCbtViewDebug)
     {
         Logger::Log::Info("CBT.View id={} purpose={} rgFrame={} graph={} instance=0",
@@ -52,12 +49,9 @@ void EmitCbtForwardDraw(Pipeline::ViewDeclare& d, CBTRenderFeature& feature)
     // (GPU time / barriers). The device-lost is engine-side in frame N+1's consumption
     // of frame N's scatter/culling state (RenderDoc proved frame N healthy); this
     // narrows CBT's trigger for the engine-side fix.
-    static const bool kCbtNoDraw = std::getenv("GE_CBT_NO_DRAW") != nullptr;
+    static const bool kCbtNoDraw = Platform::EnvironmentSwitchEnabled("GE_CBT_NO_DRAW", false);
     if (kCbtNoDraw)
         return;
-    // The terrain draws into this view, so an update that is not at rest can change the view's depth.
-    if (feature.WritesDynamicDepth())
-        rs.NotifyUnversionedMotion(d.View.id);
 
     // Re-import the update outputs for THIS view's forward reads (idempotent per
     // frame -> the same RGBuffers -> the compute->graphics edge forms).
@@ -82,8 +76,6 @@ void EmitCbtForwardDraw(Pipeline::ViewDeclare& d, CBTRenderFeature& feature)
     // both the recorded world-pass keywords and the published *Written texture
     // names are still empty at this point every frame.
     passKeywords |= Engine::Renderer::Pipeline::ReflectionsProvider::WorldPassKeyword(d);
-    // The height fog the same way: this frame's answer, not the one the world pass recorded last frame.
-    passKeywords = (passKeywords & ~MaterialKeyword::HeightFog) | Engine::Renderer::Pipeline::HeightFogPassKeyword(d);
 
     DrawCommand cmd{};
     if (!feature.BuildDrawCommand(rs, d.View.id, passKeywords, cmd))
@@ -108,8 +100,8 @@ void EmitCbtForwardDraw(Pipeline::ViewDeclare& d, CBTRenderFeature& feature)
     rs.EmitForwardCommand(d.View.id, cmd, hasHead ? ForwardDrawDepth::Prepass : ForwardDrawDepth::ColourPass,
                           hasHead ? &head : nullptr);
     // Order CBT.Update before the draws: the indirect args need an Indirect read edge,
-    // the VISIBLE index stream, the per-bisector vertex buffer and the height chain a
-    // Storage read (all vertex-stage SSBOs). The camera draw rides the VISIBLE stream (Classify frustum-
+    // the VISIBLE index stream + per-bisector vertex buffer a Storage read (both
+    // vertex-stage SSBOs). The camera draw rides the VISIBLE stream (Classify frustum-
     // culls into it); the ALL stream is still MarkOutput'd by the update for the (later)
     // shadow path, which reads it instead. The identity index + count buffers are static
     // (settled at init), so they are not declared. The world pass and the prepass declare
@@ -118,28 +110,11 @@ void EmitCbtForwardDraw(Pipeline::ViewDeclare& d, CBTRenderFeature& feature)
         {outputs.IndirectDraw, RG::RGBufferRead::Indirect},
         {outputs.IndicesVisible, RG::RGBufferRead::Storage},
         {outputs.CurrentVertex, RG::RGBufferRead::Storage},
-        {outputs.HeightChain, RG::RGBufferRead::Storage},
     };
     const ForwardBufferReaders readers =
         hasHead ? ForwardBufferReaders::WorldPassAndPrepass : ForwardBufferReaders::WorldPass;
     for (const auto& [buffer, access] : drawReads)
         rs.EmitForwardSampledBufferRead(d.Frame, d.View.id, buffer, access, readers);
-    // The surface samples the far-field normal chain the update writes (fragment stage, world pass).
-    if (outputs.NormalChain.IsValid())
-        rs.EmitForwardSampledRead(d.Frame, d.View.id, outputs.NormalChain);
-    // The planet surface samples the page cache the update samples (gPageCache, full profile only). The import
-    // dedups by handle, so the world pass reads the update's "CBT.HeightSource".
-    const TextureHandle pageCache = feature.GetDrawPageCache();
-    if (pageCache.IsValid() && !rs.GetProfile().IsCompat())
-        rs.EmitForwardSampledRead(
-            d.Frame, d.View.id,
-            d.Frame.ImportExternalTexture("CBT.HeightSource", pageCache, ResourceState::ShaderResource));
-    // A paged planar surface samples its plane caches, which the terrain upload pass leaves in ShaderResource.
-    for (const TextureHandle plane : feature.GetDrawSurfacePlanes())
-        if (plane.IsValid())
-            rs.EmitForwardSampledRead(
-                d.Frame, d.View.id,
-                d.Frame.ImportExternalTexture("Terrain.SurfacePageCache", plane, ResourceState::ShaderResource));
 }
 
 // The terrain's shadow on the directional light (TerrainShadowBake): declares this frame's bake
@@ -159,7 +134,6 @@ void DeclareTerrainShadow(Pipeline::ViewDeclare& d, CBTRenderFeature& feature,
     inputs.SizeX = params.TerrainSize[0];
     inputs.SizeZ = params.TerrainSize[1];
     inputs.HeightScale = params.TerrainSize[2];
-    inputs.DrawLevelScale = params.HeightChain[0];
     const CBTTerrain::CBTClassifyDesc& classify = feature.GetClassify();
     inputs.DirtyMinU = classify.DirtyMinU;
     inputs.DirtyMinV = classify.DirtyMinV;
@@ -206,10 +180,6 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
     auto& feature = rs.EnsureFeature<CBTRenderFeature>();
     if (!feature.IsActive())
         return;
-    // A view whose layers miss the terrain's declares nothing of it: no update, draw or shadow.
-    const auto* terrainRender = rs.GetFeature<TerrainECS::TerrainRenderFeature>();
-    if (!terrainRender || !terrainRender->ViewDrawsActiveTerrain(d.View.ActiveRenderLayerMask()))
-        return;
     if (!feature.EnsureInitialized(*device, rs))
         return;
 
@@ -227,14 +197,14 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
     // drop the retired views from every ring element this frame — before the quarantine frees the
     // image. No-op when nothing retired since last frame.
     if (auto* terrainFeature = rs.GetFeature<TerrainECS::TerrainRenderFeature>())
-        feature.ConsumeTerrainRetire(*terrainFeature);
+        feature.ConsumeTerrainRetire(terrainFeature->GetTerrainTextureRetireGeneration());
 
     // C7 planet observability (GE_CBT_PLANET_DEBUG): the falsifiable "planet is active"
     // signal for a runtime verify. The seed/re-seed already logs GE_CBT.Planet with the
     // domain + root count; this re-affirms it periodically (stall-free — no GPU readback
     // in the render path; live-bisector counts are covered by CBTTerrainTests). Idle
     // runs (env unset) pay nothing.
-    static const bool kCBTPlanetDebug = std::getenv("GE_CBT_PLANET_DEBUG") != nullptr;
+    static const bool kCBTPlanetDebug = Platform::EnvironmentSwitchEnabled("GE_CBT_PLANET_DEBUG", false);
     if (kCBTPlanetDebug)
     {
         static uint32_t sPlanetLogThrottle = 0u;
@@ -257,9 +227,9 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
     // write-after-fence margin (see CBTFrameRingSlot). Per view, so idempotent within a frame.
     const uint32_t frameCounter = feature.GetInstance().AdvanceFrameCounter(device->GetFrameIndex());
 
-    // Restart the tree from its roots when the domain changed, the drawn terrain was retired above or
-    // replaced in the last BuildFrameParams, or the depth cap was lowered. Repeats within CBTTreeSeed's
-    // window wait until they settle. Waits only its graphics submissions; no-op when nothing changed.
+    // Restart the tree from its roots when the domain changed, a terrain was retired above, or
+    // the depth cap was lowered: at once, or, for repeats within CBTTreeSeed's window, once they
+    // settle. Waits only its graphics submissions; no-op when nothing changed.
     feature.EnsureSeeded(frameCounter);
 
     // C4: gather this view's camera + the active terrain's heightmap/world-size (the
@@ -268,8 +238,6 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
     CBTTerrain::CBTFrameParams params{};
     if (!feature.BuildFrameParams(rs, d.View.id, d.RenderWidth, d.RenderHeight, frameCounter, params))
         return;
-    // A tree restarted above draws its settled shape at this camera from this frame on.
-    feature.RefineRestartedTree(params, frameCounter);
 
     const void* graph = &d.Frame;
     const uint64_t rgFrame = d.Frame.FrameIndex(); // monotonic, per-graph, stale-safe
@@ -334,7 +302,6 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
         // the point the update actually records, so a change on a non-recording frame is kept.
         CBTTerrain::CBTClassifyDesc classify = feature.GetClassify();
         classify.GateVertexEval = feature.ConsumeForceVertexEval() ? 0u : 1u;
-        classify.Settle = feature.InputsHeld() ? 1u : 0u;
         // Forward the bound heightmap so the update pass declares its read edge on
         // the texture VertexEval samples (plan §8 C5 — live-edit region uploads).
         const CBTTerrain::CBTActivitySlot activitySlot =
@@ -358,7 +325,7 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
         }
 
         // GE_CBT_VALIDATE: log the Validate kernel's error counters (CBTValidationReadback).
-        static const bool kCbtValidateDbg = std::getenv("GE_CBT_VALIDATE") != nullptr;
+        static const bool kCbtValidateDbg = Platform::EnvironmentSwitchEnabled("GE_CBT_VALIDATE", false);
         if (kCbtValidateDbg)
             feature.GetValidationReadback().Tick(d.Frame, device, feature.GetInstance());
 
@@ -372,19 +339,21 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
         // (ConsumeDirtyRegion always early-returning) produced an empty rect, so this
         // line would never fire on an edit; a real edit that reaches the GPU update
         // fires it. Idle frames (empty rect) stay silent. Rect only — a per-frame
-        // MODIFIED-count readback would block the declare on a GPU submission mid-graph.
-        static const bool kCbtEditDebug = std::getenv("GE_CBT_EDIT_DEBUG") != nullptr;
+        // MODIFIED-count readback would stall the frame (WaitForIdle mid-graph).
+        static const bool kCbtEditDebug = Platform::EnvironmentSwitchEnabled("GE_CBT_EDIT_DEBUG", false);
         if (kCbtEditDebug)
         {
             const CBTTerrain::CBTClassifyDesc& c = classify;
             if (c.DirtyMaxU > c.DirtyMinU && c.DirtyMaxV > c.DirtyMinV)
-                Logger::Log::Info("CBT.Edit rect=({},{},{},{})", c.DirtyMinU, c.DirtyMinV, c.DirtyMaxU,
-                                  c.DirtyMaxV);
-            // The sphere names the cube face each face-local rect lies on.
-            for (uint32_t i = 0; i < c.SphereDirty.Count; ++i)
             {
-                const CBTTerrain::SphereFaceUVRect& r = c.SphereDirty.Rects[i];
-                Logger::Log::Info("CBT.Edit face={} rect=({},{},{},{})", r.Face, r.MinU, r.MinV, r.MaxU, r.MaxV);
+                // Planet editing (plan §planet-editing): the spherical form names the cube
+                // face the (face-local) rect lies on; planar keeps the rect-only form.
+                if (feature.GetDomainConfig().DomainMode == CBTTerrain::kDomainSpherical)
+                    Logger::Log::Info("CBT.Edit face={} rect=({},{},{},{})", c.DirtyFace,
+                                      c.DirtyMinU, c.DirtyMinV, c.DirtyMaxU, c.DirtyMaxV);
+                else
+                    Logger::Log::Info("CBT.Edit rect=({},{},{},{})", c.DirtyMinU, c.DirtyMinV,
+                                      c.DirtyMaxU, c.DirtyMaxV);
             }
         }
     }

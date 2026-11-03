@@ -23,15 +23,8 @@ struct CBTUpdateActivity
     int32_t MergeServed = 0;        // kWQSimplifyCounter: merge groups PrepareSimplify built
     int32_t PressureStep = 0;       // kWQPressureStep: planar pool-pressure scale step
     int32_t OffFrustumKeepStep = 0; // kWQOffFrustumKeepStep
-    int32_t OffFrustumKeepFloor = 0; // kWQOffFrustumKeepFloor: the rest's keep floor (>= 0) or its phase
     int32_t VertexEvalCount = 0;    // kWQVertexEvalCounter: bisectors a gated VertexEval re-evaluated
-    int32_t UnresolvedPageSamples = 0; // kWQUnresolvedPageSamples: page samples no resident page answered
 };
-
-// True while the planar keep step's rest search has a step left to take: the last update moved and a probe
-// can start, a probe has no measured tree, or the keep step sits above its floor. Such a tree is not at rest
-// even when one update split and merged nothing.
-bool CBTKeepSearchOpen(int32_t offFrustumKeepStep, int32_t offFrustumKeepFloor);
 
 class CBTUpdateRestGate
 {
@@ -43,10 +36,6 @@ class CBTUpdateRestGate
     // True when this frame's update, with `inputs`, can be skipped. Inputs that differ from the
     // previous call's restart the count; their first update is the first one counted.
     bool CanSkip(std::span<const uint8_t> inputs);
-
-    // True when the last CanSkip saw the same inputs as the call before it: the camera and every
-    // other input hold still, so the update may apply the rest rule (CBTClassifyDesc::Settle).
-    bool InputsHeld() const { return m_InputsHeld; }
 
     // An update was declared; returns the sequence number its reading carries. A forced update (a
     // full vertex re-evaluation after a re-seed, a retired heightmap or a planet change) moves
@@ -64,7 +53,6 @@ class CBTUpdateRestGate
 
     std::vector<uint8_t> m_Inputs;
     bool m_HasInputs = false;
-    bool m_InputsHeld = false;
     uint64_t m_NextSequence = 0;
     uint64_t m_FirstCountedSequence = 0;
     uint32_t m_QuietReadings = 0;

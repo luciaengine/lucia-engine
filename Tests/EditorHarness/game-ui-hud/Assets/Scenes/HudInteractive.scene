@@ -47,8 +47,8 @@ Transform.scale = (1, 1, 1)
 
 [entity id="e_1010"]
 MeshRenderer.meshPrimitive = Plane
-MeshRenderer.renderLayers = [0]
-MeshRenderer.shadowCasting = Off
+MeshRenderer.renderLayerMask = 1
+MeshRenderer.castShadows = false
 MeshRenderer.receiveShadows = true
 Name.value = "Ground"
 Transform.position = (0, 0, 0)
@@ -58,8 +58,8 @@ Transform.scale = (40, 1, 40)
 
 [entity id="e_1011"]
 MeshRenderer.meshPrimitive = Cube
-MeshRenderer.renderLayers = [0]
-MeshRenderer.shadowCasting = On
+MeshRenderer.renderLayerMask = 1
+MeshRenderer.castShadows = true
 MeshRenderer.receiveShadows = true
 Name.value = "CubeA"
 Transform.position = (-1.5, 1, 0)

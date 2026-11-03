@@ -14,14 +14,11 @@
 // which is what lets them run in UITests rather than needing a live CoreCLR.
 
 #include "../Source/UIAttributeAccess.h"
-#include "Logger/CallbackSink.h"
-#include "Logger/Logger.h"
 #include "Scripting/ManagedElementTypes.h"
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/UIElement.h"
 #include "Types/StringId.h"
 #include <gtest/gtest.h>
-#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -125,22 +122,14 @@ protected:
         return UIRegistration::ElementFactoryRegistry::Instance();
     }
 
-    // Register the way the managed binding does, from a registration window's callback: the
-    // caller learns the tag id as the call RETURNS, and can publish its binding only after that.
+    // Register the way the managed binding does: the caller learns the tag id as the call
+    // RETURNS, and can publish its binding only after that.
     static StringId Register(std::string_view tagName, std::uint64_t owner)
     {
-        const ManagedElementTypes::ScopedWindowForTests window;
         const StringId id = Types().RegisterType(tagName, owner);
         if (id != 0)
             StubRuntime::Publish(id);
         return id;
-    }
-
-    // Close the verdict where the binding closes it, from a registration window's callback.
-    static void Verdict(std::uint64_t owner)
-    {
-        const ManagedElementTypes::ScopedWindowForTests window;
-        Types().NotifyReloadCompleted(owner);
     }
 
     // Owns the elements a test creates, so they outlive the registrations that made them —
@@ -199,7 +188,7 @@ TEST_F(ManagedElementOrphanTest, ReRegisteringTheTypeReAttachesToTheSameElement)
     // attributes at all — which is not a state any document can produce, and re-materialization
     // replays the element's attributes.
     UIAttributeAccess::SetAuthoredAttribute(*proxy, "percent", "40", /*markDirty=*/false);
-    Factories().ApplyAttributes(*proxy, {{"percent", "40"}}, std::string{}, {}, 0);
+    Factories().ApplyAttributes(*proxy, {{"percent", "40"}}, std::string{});
 
     const uint64_t instanceId = proxy->GetInstanceId();
     const uint64_t childId = proxy->GetChildren()[0]->GetInstanceId();
@@ -216,7 +205,7 @@ TEST_F(ManagedElementOrphanTest, ReRegisteringTheTypeReAttachesToTheSameElement)
     StubRuntime::s_Applied.clear();
     const std::uint64_t reloadedOwner = kOwner + 1;
     ASSERT_NE(Register("HealthBar", reloadedOwner), StringId(0));
-    Verdict(kOwner);
+    Types().NotifyReloadCompleted(kOwner);
 
     EXPECT_EQ(StubRuntime::s_Declined, 0) << "the engine asked only once the caller could answer";
     EXPECT_EQ(proxy->State(), ManagedTypeState::Live);
@@ -239,33 +228,6 @@ TEST_F(ManagedElementOrphanTest, ReRegisteringTheTypeReAttachesToTheSameElement)
     m_Elements.push_back(std::move(el));
 }
 
-// Only the managed type knows which authored names it uses, so the load reports none of them.
-TEST_F(ManagedElementOrphanTest, AuthoredNamesOnAManagedElementAreNotReportedUnknown)
-{
-    ASSERT_NE(Register("HealthBar", kOwner), StringId(0));
-    std::unique_ptr<UIElement> el = Factories().Create("healthbar");
-    ASSERT_NE(el, nullptr);
-
-    Logger::Log::Initialize({});
-    auto sink = std::make_unique<Logger::CallbackSink>();
-    auto* sinkPointer = sink.get();
-    auto reports = std::make_shared<std::atomic<int>>(0);
-    const std::uint64_t callbackId = sinkPointer->RegisterCallback(
-        [reports](const Logger::LogMessage& message)
-        {
-            if (message.Message.find("ManagedProbe.uxml") != std::string::npos)
-                reports->fetch_add(1);
-        });
-    Logger::Log::AddSink(std::move(sink));
-    UIAttributeAccess::SetAuthoredAttribute(*el, "percent", "40", /*markDirty=*/false);
-    Factories().ApplyAttributes(*el, {{"percent", "40"}}, std::string{}, "ManagedProbe.uxml", 3);
-    Logger::Log::Flush();
-    sinkPointer->UnregisterCallback(callbackId);
-
-    EXPECT_EQ(reports->load(), 0);
-    m_Elements.push_back(std::move(el));
-}
-
 TEST_F(ManagedElementOrphanTest, RemovedIsNotDecidedFromAbsenceAlone)
 {
     ASSERT_NE(Register("HealthBar", kOwner), StringId(0));
@@ -282,7 +244,7 @@ TEST_F(ManagedElementOrphanTest, RemovedIsNotDecidedFromAbsenceAlone)
     EXPECT_FALSE(proxy->HasClass(ManagedElementTypes::kMissingClass));
 
     // The reload completed without the type. NOW absence is a fact.
-    Verdict(kOwner);
+    Types().NotifyReloadCompleted(kOwner);
     EXPECT_EQ(proxy->State(), ManagedTypeState::Faulted);
     EXPECT_FALSE(proxy->HasClass(ManagedElementTypes::kOrphanedClass));
     EXPECT_TRUE(proxy->HasClass(ManagedElementTypes::kMissingClass));
@@ -293,7 +255,7 @@ TEST_F(ManagedElementOrphanTest, RemovedIsNotDecidedFromAbsenceAlone)
     // And it still comes back if the type is restored by a LATER reload — a verdict revives
     // whatever its tag has made available again, not only what this reload orphaned.
     ASSERT_NE(Register("HealthBar", kOwner + 1), StringId(0));
-    Verdict(kOwner);
+    Types().NotifyReloadCompleted(kOwner);
     EXPECT_EQ(proxy->State(), ManagedTypeState::Live);
     EXPECT_FALSE(proxy->HasClass(ManagedElementTypes::kMissingClass));
 
@@ -314,7 +276,7 @@ TEST_F(ManagedElementOrphanTest, ReloadCompletingWithTheTypeBackLeavesNothingFau
 
     // The ordinary hot-reload shape: every tag claimed during the reload, then one verdict,
     // which must re-attach the type that came back rather than fault it.
-    Verdict(kOwner);
+    Types().NotifyReloadCompleted(kOwner);
     EXPECT_EQ(proxy->State(), ManagedTypeState::Live);
     EXPECT_EQ(Types().CountProxiesInState(ManagedTypeState::Faulted), 0u);
 
@@ -340,7 +302,7 @@ TEST_F(ManagedElementOrphanTest, BadgeIsDevOnlyAndNeverPerturbsLayout)
     EXPECT_FALSE(shippingProxy->HasClass(ManagedElementTypes::kOrphanedClass));
     EXPECT_EQ(shippingProxy->GetChildren().size(), childCountBefore);
 
-    Verdict(kOwner);
+    Types().NotifyReloadCompleted(kOwner);
     EXPECT_EQ(shippingProxy->State(), ManagedTypeState::Faulted);
     EXPECT_FALSE(shippingProxy->HasClass(ManagedElementTypes::kMissingClass));
 

@@ -184,25 +184,6 @@ class UndoRedoService
         CommitInternal(std::move(cmd));
     }
 
-    // True when a command can join the newest undo entry: an entry exists, no redo entry waits and
-    // no compound is open.
-    bool CanJoinTop() const { return !m_Undo.empty() && m_Undo.back() && m_Redo.empty() && m_CompoundStack.empty(); }
-
-    // Adds `cmd`, already applied to the world, to the newest undo entry, which keeps its name and
-    // id: one undo reverts both. For the consequence of an edit that lands a frame after it. Does
-    // nothing unless CanJoinTop.
-    void CommitJoiningTop(std::unique_ptr<IEditorCommand> cmd)
-    {
-        if (!cmd || !CanJoinTop())
-            return;
-        FireBeforeMutation();
-        auto joined = std::make_unique<CompoundCommand>(m_Undo.back()->GetName());
-        joined->Add(std::move(m_Undo.back()));
-        joined->Add(std::move(cmd));
-        m_Undo.back() = std::move(joined);
-        NotifyHistoryChanged();
-    }
-
     // Push a command that has already been applied to the world (typical for
     // interactive edits where Preview(...) updates state live).
     void CommitAlreadyApplied(std::unique_ptr<IEditorCommand> cmd)

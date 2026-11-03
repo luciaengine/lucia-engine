@@ -19,8 +19,9 @@
 // The only per-image state here is the consumer-lane env switch below
 // (process-constant, identical in every image).
 
+#include "Platform/Environment.h"
+
 #include <cstdint>
-#include <cstdlib>
 
 namespace GameEngine::ECS
 {
@@ -47,19 +48,15 @@ struct ChangeGate
 namespace ChangeFilter
 {
 
-// Consumer-lane kill switch: GE_ECS_CHANGE_FILTER=0 disables every gated
-// consumer (each checks Enabled() before trusting its gate), restoring
-// pre-filter behavior exactly.
+// Consumer-lane kill switch: GE_ECS_CHANGE_FILTER=0 disables the gated
+// consumers (TransformHierarchySystem's flat gate, ensure gate, and the
+// serial all-or-nothing skip), restoring pre-filter behavior exactly.
 // Stamping itself is always on — the write grants are the production
 // mechanism and their cost is one relaxed uint64 store per visited chunk
 // column (design R12: noise next to the callback).
 inline bool Enabled()
 {
-    static const bool enabled = []
-    {
-        const char* v = std::getenv("GE_ECS_CHANGE_FILTER");
-        return !(v && v[0] == '0');
-    }();
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_ECS_CHANGE_FILTER", true);
     return enabled;
 }
 

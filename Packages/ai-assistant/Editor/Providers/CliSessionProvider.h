@@ -2,7 +2,6 @@
 
 #include "CliSessionList.h"
 #include "IAgentProvider.h"
-#include "ReplyTextBlocks.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -81,8 +80,6 @@ protected:
     {
         AgentTurnEvents& Events;
         TurnResult Result;
-        /// Joins the reply's text blocks into Result.Text.
-        ReplyTextBlocks TextBlocks;
         /// Set by ReadLine() on the record that ends the turn, with Result.Outcome
         /// Succeeded or Failed (Result.Error then says why).
         bool Completed = false;
@@ -107,6 +104,9 @@ protected:
     virtual std::string_view DisplayName() const = 0;
     /// The arguments of one turn; the prompt itself goes on stdin.
     virtual std::vector<std::string> TurnArguments(const AgentTurnRequest& request) const = 0;
+    /// What one turn writes to the CLI's stdin: the prompt's text, unless the CLI takes the turn's
+    /// images there too.
+    virtual std::string TurnInput(const AgentTurnRequest& request) const { return request.UserText; }
     /// Reads one stdout line of the turn and reports through `turn.Events`.
     virtual void ReadLine(std::string_view line, TurnState& turn) const = 0;
     /// Empty when the CLI can run a turn; otherwise the refusal with its fix. Returns

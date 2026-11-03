@@ -34,29 +34,37 @@ DeviceLostEcsRecoveryReport RecoverEcsComponentHandlesAfterDeviceRebuild(
     // included: their handles are just as dead, and they are re-enabled later.
     world.Query<ECS::Write<Components::MorphTargetWeights>>()
         .IncludeDisabled()
-        .Each([&](ECS::EntityHandle, Components::MorphTargetWeights& morph)
+        .Each([&](ECS::EntityHandle, ECS::Writable<Components::MorphTargetWeights> morph)
         {
-            if (morph.runtimeMeshGpuHandleId != 0u)
+            if (morph->runtimeMeshGpuHandleId != 0u)
             {
-                morph.runtimeMeshGpuHandleId = 0u;
+                morph.Mutable().runtimeMeshGpuHandleId = 0u;
                 ++report.MorphRuntimeHandlesCleared;
             }
         });
 
     // (2) Force-dirty the render columns extraction's Changed<> probes read. A
-    //     visiting Write<> query takes one NextGlobalSystemVersion() stamp per
-    //     visited chunk (strictly greater than any pre-loss gate), so E5 fires and
-    //     the first extraction after rendering resumes rebuilds every entity's
-    //     records — including static ones a rebuild would otherwise never re-touch.
-    //     MeshRenderer is the universal renderable column; LocalBounds is the other
-    //     probe column an asset mesh always carries. The lambdas intentionally do
-    //     not write — the Write grant stamps the chunk regardless (stamp-at-visit).
+    //     write grant stamps each granted chunk with the dispatch's
+    //     NextGlobalSystemVersion() (strictly greater than any pre-loss gate), so
+    //     E5 fires and the first extraction after rendering resumes rebuilds every
+    //     entity's records — including static ones a rebuild would otherwise never
+    //     re-touch. MeshRenderer is the universal renderable column; LocalBounds is
+    //     the other probe column an asset mesh always carries. The lambdas take the
+    //     grant (Mutable()) without changing the row: the grant is the signal.
     world.Query<ECS::Write<Components::MeshRenderer>>()
         .IncludeDisabled()
-        .Each([&](ECS::EntityHandle, Components::MeshRenderer&) { ++report.MeshRenderersDirtied; });
+        .Each([&](ECS::EntityHandle, ECS::Writable<Components::MeshRenderer> renderer)
+              {
+                  renderer.Mutable();
+                  ++report.MeshRenderersDirtied;
+              });
     world.Query<ECS::Write<Components::LocalBounds>>()
         .IncludeDisabled()
-        .Each([&](ECS::EntityHandle, Components::LocalBounds&) { ++report.LocalBoundsDirtied; });
+        .Each([&](ECS::EntityHandle, ECS::Writable<Components::LocalBounds> bounds)
+              {
+                  bounds.Mutable();
+                  ++report.LocalBoundsDirtied;
+              });
 
     report.ColumnStampsTaken = world.GetColumnStampCount() - stampsBefore;
 

@@ -1,10 +1,7 @@
 #pragma once
 
-#include "Mathematics/Vector3.h"
-#include "Rendering/Core/Handle.h"
-#include "Types/Color.h"
-
 #include <cstdint>
+#include "Rendering/Core/Handle.h"
 
 namespace GameEngine {
 namespace Rendering {
@@ -27,11 +24,6 @@ enum class SkyBelowHorizonMode : uint32_t
 // The sun's apparent angular RADIUS from Earth: half its ~0.533 degree apparent diameter, radians.
 inline constexpr float kSunAngularRadiusRad = 0.004651f;
 
-/// The planet floor's default reflectance, neutral: typical land (grass about 0.25, bare soil 0.17,
-/// concrete 0.3 to 0.45). The sky's ground albedo keys, its settings and its default atmosphere
-/// all start from it.
-inline constexpr float kDefaultGroundAlbedo = 0.3f;
-
 // High-level sky configuration for a frame.
 // For now we keep this tightly focused on a primary sun and exposure; we
 // will extend it with more detailed atmospheric parameters as we move to
@@ -45,11 +37,11 @@ struct SkySettings
     float padding0 = 0.0f;
 
     // Continuous sun direction used for atmosphere scattering LUT generation.
-    Mathematics::Vector3 scatteringSunDir = { 0.0f, 1.0f, 0.0f };
+    float scatteringSunDir[3] = { 0.0f, 1.0f, 0.0f };
     float paddingScatteringSunDir = 0.0f;
 
     // Primary blended light direction used by disk/lighting presentation.
-    Mathematics::Vector3 primarySunDir = { 0.0f, 1.0f, 0.0f };
+    float primarySunDir[3] = { 0.0f, 1.0f, 0.0f };
     float padding1 = 0.0f;
 
     /// Colour of the primary celestial source ABOVE the atmosphere: the sun's white scaled by the
@@ -58,17 +50,13 @@ struct SkySettings
     /// themselves — the sky-view LUT multiplies the transmittance into its in-scatter source term
     /// per march step, the sun disc multiplies it along the view ray — so this value stays
     /// un-attenuated or sunset reddening is applied twice.
-    ColorLinear primarySunColor{1.0f, 1.0f, 1.0f};
+    float primarySunColor[3] = { 1.0f, 1.0f, 1.0f };
     /// The same source AFTER that extinction: the colour a GROUND-level surface is lit by, so warm
     /// and dim at low elevation, unchanged overhead (the light's authored illuminance is already a
     /// ground value, so the extinction is taken relative to the zenith path), near-black below the
     /// horizon. Drives the linked directional light and the fog sun; never a sky-shader input.
-    ColorLinear primarySunGroundColor{1.0f, 1.0f, 1.0f};
+    float primarySunGroundColor[3] = { 1.0f, 1.0f, 1.0f };
     float primarySunIntensity = 10.0f;
-    /// The sun's own source, colour above the atmosphere and intensity on primarySunIntensity's
-    /// scale, without the handover to the moon: the sky-view LUT's sun term.
-    ColorLinear sunSourceColor{1.0f, 1.0f, 1.0f};
-    float sunSourceIntensity = 10.0f;
     bool showSunDisk = true;
     /// Stylistic multiplier on the DRAWN sun disk radius (CPU clamps from
     /// SkyEnvironment::SunSize; 1 = kSunAngularRadiusRad, the physical radius). Scales the disk
@@ -76,11 +64,11 @@ struct SkySettings
     /// are all independent of it.
     float sunSize = 1.0f;
 
-    // The moon: the world-space direction toward it, and its source on primarySunIntensity's scale
-    // (its illuminance for the phase, lifted to the top of the atmosphere as the sun's is). It
-    // lights the sky-view LUT as its second source and sets the disc's radiance; 0 = no moon.
-    Mathematics::Vector3 moonDirWS = { 0.0f, -1.0f, 0.0f };
-    float moonIntensity = 0.0f;
+    // Moon disk presentation. Direction is the world-space vector from the
+    // viewer toward the moon; the disk is rendered when it sits above the
+    // horizon. Intensity is a multiplier in the same scale as primarySunIntensity.
+    float moonDirWS[3] = { 0.0f, -1.0f, 0.0f };
+    float moonIntensity = 0.5f;
 
     /// Apparent moon disk radius in radians (CPU sets from SkyEnvironment.MoonSize).
     float moonAngularRadius = 0.026f;
@@ -91,30 +79,28 @@ struct SkySettings
     float moonExposureEV = 1.29f;
 
     float moonArcPosition = 0.5f;
+    float moonPhase01 = 0.5f;
     bool fallingStarsEnabled = true;
-    float fallingStarIntervalSeconds = 5.0f; // the mean time between two falling stars
+    float fallingStarAmount = 0.35f;
+    float fallingStarFrequency = 0.35f;
+    float fallingStarSpeed = 1.0f;
+    float fallingStarLength = 1.0f;
+    float fallingStarThickness = 1.0f;
+    float fallingStarDotSize = 1.0f;
+    float fallingStarDotSize2D = 1.0f;
 
     float nightSkyBlend = 0.0f;
     float skyTimeSeconds = 0.0f;
-    /// The faintest star drawn, as a visual magnitude against a natural moonless sky.
-    float starLimitingMagnitude = 7.25f;
-    /// Artistic: the exponent on a star's energy relative to a magnitude 6.5 star (1 = physical).
-    float starHighlightCompression = 0.775f;
-    /// The twinkle's amplitude at airmass 10 (about 6 degrees up); none at the zenith.
-    float starTwinkleAmount = 0.3f;
-    /// Artistic: the brightest stars' soft glow, as a multiple of their light added around them (0 = none).
-    float starGlow = 0.9f;
-    /// Artistic: the twinkle's rate, a multiple of a slow twinkle (real scintillation is tens of hertz).
-    float starTwinkleRate = 1.0f;
-    /// Artistic: the core's size (1 = physical), the spikes' share of the glow, their length in glow
-    /// radii, and the shape (0 = the round point, 1 = the sparkle).
-    float starCoreScale = 0.75f;
-    float starSpikes = 0.2f;
-    float starSpikeLength = 0.6f;
-    uint32_t starShape = 0;
-    /// The observer: 0 = a dark-adapted eye (the glare, faint stars fading to white), 1 = a camera
-    /// (the same stars without the glare, each in its catalog color).
-    uint32_t starObserver = 0;
+    float starDensity = 0.5f;
+    float starBrightness = 0.6f;
+
+    float starSize = 1.0f;
+    float starDiamondShape = 0.5f;
+    float starCoreSize = 0.15f;
+    float starGlowFalloff = 10.0f;
+
+    float twinkleSpeed = 0.5f;
+    float twinkleIntensity = 0.3f;
     float hdriIntensity = 1.0f;
     float skyboxRotationRadians = 0.0f;
     /// Linear multiplier on the image-based-lighting ambient + reflections
@@ -128,9 +114,9 @@ struct SkySettings
     /// only. Blended by world-normal.y (up=Sky, horizon=Equator, down=Ground). Mirrors
     /// SkyEnvironment.AmbientTint*. White = identity. Consumed at IBL sampling time via the
     /// EnvData UBO (NOT baked into the cubes), so editing it never triggers a re-bake.
-    ColorLinear ambientTintSky{1.0f, 1.0f, 1.0f};
-    ColorLinear ambientTintEquator{1.0f, 1.0f, 1.0f};
-    ColorLinear ambientTintGround{1.0f, 1.0f, 1.0f};
+    float ambientTintSky[3]     = {1.0f, 1.0f, 1.0f};
+    float ambientTintEquator[3] = {1.0f, 1.0f, 1.0f};
+    float ambientTintGround[3]  = {1.0f, 1.0f, 1.0f};
 
     /// Gradient sky (SkyEnvironment.Mode == Gradient). 0 = Physical atmosphere (default),
     /// 1 = stylized 3-color gradient. The gradient colors below are scene-linear radiance
@@ -138,14 +124,14 @@ struct SkySettings
     /// blended by view-direction.y (up=Top, horizon=Horizon, down=Bottom) for BOTH the visible
     /// dome and the IBL capture, so the ambient/reflections derive from the same gradient.
     uint32_t skyMode = 0;
-    ColorLinear gradientSkyTopColor{0.0f, 0.0f, 0.0f};
-    ColorLinear gradientSkyHorizonColor{0.0f, 0.0f, 0.0f};
-    ColorLinear gradientSkyBottomColor{0.0f, 0.0f, 0.0f};
+    float gradientSkyTopColor[3]    = {0.0f, 0.0f, 0.0f};
+    float gradientSkyHorizonColor[3] = {0.0f, 0.0f, 0.0f};
+    float gradientSkyBottomColor[3]  = {0.0f, 0.0f, 0.0f};
 
     /// Matches `SkyEnvironment.GroundAlbedo`; used for the procedural sky below-horizon blend (`sky_render.frag`).
-    ColorLinear groundAlbedo{kDefaultGroundAlbedo, kDefaultGroundAlbedo, kDefaultGroundAlbedo};
+    float groundAlbedo[3] = {0.3f, 0.3f, 0.3f};
     /// Scene-linear below-horizon ground tint used at night.
-    ColorLinear groundNightColor{0.025f, 0.025f, 0.035f};
+    float groundNightColor[3] = {0.025f, 0.025f, 0.035f};
     /// Multiplier on `groundAlbedo` for the below-horizon tint (legacy default 0.8).
     float groundBrightness = 0.8f;
     /// Selects the below-horizon LUT bake mode (continue horizon / lit planet ground / stylized ground).
@@ -156,22 +142,37 @@ struct SkySettings
     /// Strength of the dark sky-view LUT band below the horizon. 0 = remove it, 1 = current physically-derived darkness.
     float belowHorizonDarkness = 1.0f;
     /// Color used for the dark sky-view LUT band below the horizon.
-    ColorLinear belowHorizonDarkColor{0.02f, 0.02f, 0.025f};
+    float belowHorizonDarkColor[3] = {0.02f, 0.02f, 0.025f};
     /// PlanetGround floor haze: multiplier on the physical aerial-perspective extinction.
     /// 1 = crisp ground to the horizon; higher softens the ground/horizon transition.
     float groundHazeStrength = 1.0f;
     /// Tint mixed over the sky LUT in a band just under the horizon (replaces the default dark fringe).
-    ColorLinear groundHorizonColor{0.04f, 0.05f, 0.07f};
+    float groundHorizonColor[3] = {0.04f, 0.05f, 0.07f};
     /// Rim tint at night; shaders mix with `groundHorizonColor` using `nightSkyBlend`. Default matches sRGB `#020305` (scene-linear).
-    ColorLinear groundHorizonNightColor{0.000607054f, 0.000910581f, 0.001517635f};
+    float groundHorizonNightColor[3] = {0.000607054f, 0.000910581f, 0.001517635f};
     /// Procedural night sky gradient at the horizon (`sky_render` / Tier 2).
-    ColorLinear nightSkyHorizonColor{0.12f, 0.035f, 0.19f};
+    float nightSkyHorizonColor[3] = {0.12f, 0.035f, 0.19f};
     /// Day rim half-width in cosine space (larger = wider rim; typical 0.02–0.06).
     float groundHorizonCosWidth = 0.035f;
     /// Night rim half-width; shaders mix with `groundHorizonCosWidth` using `nightSkyBlend`.
     float groundHorizonNightCosWidth = 0.035f;
 
     TextureHandle environmentTexture{};
+};
+
+// Derived per-frame environment state used by the renderer.
+// This is separated from SkySettings so we can cache computed values
+// (sun direction from time/latitude, exposure multipliers, etc.).
+struct SkyEnvironmentState
+{
+    float primarySunDir[3] = { 0.0f, 1.0f, 0.0f };
+    float padding0 = 0.0f;
+
+    float primarySunColor[3] = { 1.0f, 1.0f, 1.0f };
+    float primarySunIntensity = 10.0f;
+
+    float exposureMultiplier = 1.0f;
+    float padding1[3] = { 0.0f, 0.0f, 0.0f };
 };
 
 } // namespace Rendering

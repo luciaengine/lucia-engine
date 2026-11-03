@@ -2,7 +2,7 @@
 #include <cassert>
 
 // SkeletonData methods now live in
-// Engine/Modules/Animation/Source/Skeleton/SkeletonData.cpp; Engine links the
+// Engine/Modules/Animation/Source/SkeletonData.cpp; Engine links the
 // Animation static lib publicly so the symbols still resolve here.
 
 namespace GameEngine { namespace Engine { namespace Renderer {

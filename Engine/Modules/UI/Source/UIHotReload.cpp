@@ -9,7 +9,6 @@
 #include "UI/Controls/AccordionItem.h"
 #include "UI/Controls/BaseField.h"
 #include "UI/Controls/Foldout.h"
-#include "UI/Controls/Mount.h"
 #include "UI/Controls/Slider.h"
 #include "UI/Controls/Toggle.h"
 #include "UI/Registration/ElementRegistration.h"
@@ -143,7 +142,7 @@ static std::unique_ptr<UIElement> CloneFromTemplate(const UITemplateNode& templ,
     std::string innerText;
     if (const std::string* t = templ.FindAttribute("text"))
         innerText = *t;
-    reg.ApplyAttributes(*out, templ.Attributes, innerText, templ.SourceFileName(), templ.SourceLine);
+    reg.ApplyAttributes(*out, templ.Attributes, innerText);
 
     // Recurse
     for (const auto& child : templ.Children)
@@ -447,7 +446,7 @@ static bool ReconcileElement(UIElement& existing, const UITemplateNode& templ, u
     std::string innerText;
     if (const std::string* t = templ.FindAttribute("text"))
         innerText = *t;
-    reg.ApplyAttributes(existing, attrsLower, innerText, templ.SourceFileName(), templ.SourceLine);
+    reg.ApplyAttributes(existing, attrsLower, innerText);
 
     // Reconcile children.
     ReconcileChildren(existing, templ, bindingId);
@@ -470,18 +469,7 @@ static UIElement* FindByInstanceId(UIElement* root, uint64 instanceId)
 
     // Mount targets are not part of the child list but must still participate in
     // hot reload target discovery (Dockspace mounts panels via Mount).
-    if (auto* m = dynamic_cast<Mount*>(root))
-    {
-        if (UIElement* tgt = m->GetTarget())
-        {
-            if (auto* found = FindByInstanceId(tgt, instanceId))
-            {
-                return found;
-            }
-        }
-    }
-
-    return nullptr;
+    return FindByInstanceId(root->GetMountTarget(), instanceId);
 }
 
 void DispatchLayoutReconciled(UIElement& target)
@@ -1099,7 +1087,7 @@ void UIHotReload::ApplyStyleReload(const GUID& styleGuid)
     }
 
     // Gather transitive importers and mark all impacted bindings dirty so CSS is recomputed.
-    // With the @import segment model, we no longer need to reload importers on leaf changes.
+    // With the @import segment model, importers are not reloaded on leaf changes.
     std::unordered_set<GUID> visited;
     visited.reserve(16);
 

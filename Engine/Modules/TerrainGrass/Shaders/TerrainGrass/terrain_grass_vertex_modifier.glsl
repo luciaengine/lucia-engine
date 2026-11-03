@@ -5,19 +5,8 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 // Procedural grass has no tangent vertex attribute (VertexFlags::None), so reuse the
-// adapter's unused tangent location. Keep locations below 16 for WebGPU compatibility. The full
-// profile carries the blade's ROOT GROUND COLOUR in the same location, beside the wind gate: one
-// colour per blade, which the surface blends the blade's base into (#4206), resolved by the
-// placement compute and read from the blade instance. The compat profile resolves that colour per
-// fragment in the surface and carries the wind gate alone.
-#if defined(GE_COMPAT_PROFILE)
+// adapter's unused tangent location. Keep locations below 16 for WebGPU compatibility.
 layout(location = 3) flat out float vGrassWindStrength;
-#else
-layout(location = 3) flat out vec4 vGrassBlade; // x = wind gate, yzw = root ground colour
-#endif
-// The field coverage at the blade's site, for the surface's canopy occlusion. Location 4 is the
-// adapter's vertex-colour slot, which procedural blades never set (HAS_COLOR).
-layout(location = 4) flat out float vGrassCoverage;
 
 layout(location = 0) in vec2 aBlade; // x = side -1..1, y = height fraction 0..1
 
@@ -76,22 +65,18 @@ struct TerrainParamsEntry
     float GrassTextureCardsPerSquareMeter;
     float GrassTextureSize;
     float GrassPlacementSeed;
-    float GrassBladeTilt;
-    float GrassBladeBend;
-    float GrassBladeTwist;
-    float GrassBladeTaperStart;
-    float GrassTuftFan;
+    float GrassMaxWidthRatio;
     float GrassClumpSize;
     float GrassClumpHeightVariance;
     float GrassClumpAlignment;
-    float GrassClumpTaper;
+    float GrassClumpGather;
     float GrassHueVariation;
-    float GrassCanopyOcclusion;
+    float GrassRootShade;
+    float GrassBladeNormalForm;
+    float GrassBladeScatterGain;
     float GrassRootFadeStart;
     float GrassRootFadeEnd;
     uint GrassControlBindless;
-    uint ColorMapBindless;
-    float GrassGroundTintHeight;
 };
 
 layout(std430, set = 2, binding = 1) readonly buffer TerrainParamsBuffer
@@ -107,18 +92,19 @@ struct GrassBladeInstance
     float BladeHeight;
     float BladeWidth;
     float Yaw;
-    uint RandAndCoverage; // grass_clump.glsl owns the layout (per-blade random, field coverage)
-    uint BladeShape; // grass_clump.glsl owns the bit layout (tilt, twist, tuft fan)
+    float Rand;
+    float GrassWeight;
     uint TerrainIndex;
-    // Terrain surface normal (world nx/nz; ny reconstructed) baked by the placement compute for a blade
-    // on surface pages (Flags kGrassFlagGroundFromPages). 0 otherwise: the stage re-samples it below.
+    // Terrain surface normal baked by the placement compute for atlas terrains (world nx/nz; ny
+    // reconstructed). 0 for non-atlas terrains, which re-sample the normal below (path unchanged).
     float NormalX;
     float NormalZ;
     uint Flags; // LOD index + clump colour code; grass_clump.glsl owns the bit layout
-    // The ground colour under the root, resolved once per blade by the placement compute on the
-    // full profile (grass_root_ground_color.glsl); grass_clump.glsl owns the packing. 0 on compat.
-    uint RootColor;
 };
+
+// TerrainGPUParams::Flags bit1 (mirror Terrain::kTerrainFlagAtlasBacked): height/normal come from
+// the atlas, not a unified bindless heightmap/normalmap (both bindless indices are 0 on this path).
+const uint kTerrainFlagAtlasBacked = 2u;
 
 layout(std430, set = 2, binding = 3) readonly buffer TerrainGrassInstances
 {
@@ -211,16 +197,9 @@ const mat2 kWindRot = mat2(0.86, 0.50, -0.50, 0.86) * 1.93;
 // Lod1StartDistance from the fitted radius and hands it to the compute as Place.Bounds.z, so a band
 // built on the authored radius would start the colour blend somewhere the geometry LOD does not.
 const float kGrassLod1RadiusFraction = 0.18;
-// Mirror of kGrassMinPixelWidth in terrain_grass_place.comp: the projected width of the whole leaf,
-// in pixels, the floor holds a blade to.
-const float kGrassMinPixelWidth = 1.5;
-// The lean a blade takes toward one of its faces, in the same angle units as the wind's resting
-// lean: what breaks one field-wide lean direction into many (a field leaning one way draws as a
-// starburst straight down).
-const float kGrassLeanJitter = 0.3;
-// The largest tilt a blade takes at its root once its tuft's fan is added: past it the base lies on
-// the ground. Mirror of Components::kMaxTerrainGrassBladeTilt.
-const float kGrassMaxBladeTilt = 1.2;
+// Width taper along the blade, pow(1 - t, e). Below 1 the profile is concave, so the blade holds
+// its width through the lower half and narrows late instead of thinning immediately off the root.
+const float kGrassBladeTaperExponent = 0.85;
 // The root sinks slightly INTO the terrain along its normal rather than standing on it: a blade
 // that starts exactly at the surface still shows a lit sliver of its own base through the ground
 // silhouette at grazing angles. Negative = embed.
@@ -354,149 +333,6 @@ vec3 sampleTerrainNormalWS(TerrainParamsEntry tp, vec2 uv)
     ));
 }
 
-// THE BLADE'S SHAPE at one vertex: the spine at angle tilt + bend t^2 + droop t^4 from the terrain
-// normal over the height fraction t, the leaf's side bent with the spine and twisted about it, the
-// edge offset across it, the rounded shading normal at that edge, and the point this vertex takes
-// its GROUND COLOUR from. Lifted verbatim into the host suite (GrassBladeVertexTests), so its
-// literals carry the `f` suffix and it reads no buffer, texture or global.
-// GE_SHARED_GRASS_BLADE_VERTEX_BEGIN
-// A blade's leaf is never wider than this fraction of its height, so a short blade cannot become a
-// square whatever BladeWidth asks for. A leaf is 3 to 8 mm wide on a 0.4 to 0.8 m blade, so a
-// fifth is well above any leaf and only intervenes at extreme aspect ratios.
-const float kGrassMaxBladeAspect = 0.2f;
-// The tip droop as a share of the bend: a cantilever loaded by its own weight bends more toward
-// its free end than a uniform curvature does.
-const float kGrassBladeDroopRatio = 0.6f;
-// How far the shading normal turns about the spine at each edge of the leaf: a shallow channel, as a
-// grass leaf is. Shading only: the strip stays two vertices wide and the hardware interpolates the
-// two edge normals across it, so the normal turns smoothly from one edge to the other and the leaf
-// shades as a rounded surface. A wider turn splits a blade into a sunlit half and a dark half.
-const float kGrassBladeFoldRadians = 0.34906585f; // 20 degrees
-// Projected leaf width in pixels over which the fold fades in: none at 3 px, all of it from 8 px.
-const float kGrassFoldFadePixels0 = 3.0f;
-const float kGrassFoldFadePixels1 = 8.0f;
-
-struct GrassBladeVertex
-{
-    vec3 Position;          // world position of this vertex
-    vec3 Tangent;           // unit spine direction at this height
-    vec3 Normal;            // unit folded shading normal at this vertex's edge (unflipped)
-};
-
-// The spine's angle from the terrain normal at height fraction t, in radians.
-float GrassBladeSpineAngle(float tilt, float bend, float t)
-{
-    float t2 = t * t;
-    return tilt + bend * t2 + bend * kGrassBladeDroopRatio * t2 * t2;
-}
-
-// The angle of the chord from the root to height fraction t: the spine angle's mean over [0, t].
-// A vertex placed along it lies on the arc the angle law describes, to first order in how far the
-// angle turns over the blade, with one sine and cosine instead of a sum over the rows below it.
-float GrassBladeChordAngle(float tilt, float bend, float t)
-{
-    float t2 = t * t;
-    return tilt + bend * t2 * (1.0f / 3.0f) + bend * kGrassBladeDroopRatio * t2 * t2 * 0.2f;
-}
-
-// The largest angle the chord from the root to the tip may take from the terrain normal: the tip
-// stays above the ground plane, short of horizontal, in the strongest gust at a tuft's edge.
-const float kGrassMaxTipChordRadians = 1.4f; // 80 degrees
-
-// The tilt a blade of this bend may take: what is left of the tip's chord angle after the bend
-// takes its share (GrassBladeChordAngle at t = 1). Applied after the fan, the wind and the per-blade
-// draws are summed.
-float GrassBladeCappedTilt(float tilt, float bend)
-{
-    float bendShare = bend * (1.0f / 3.0f) + bend * kGrassBladeDroopRatio * 0.2f;
-    return clamp(tilt, 0.0f, max(kGrassMaxTipChordRadians - bendShare, 0.0f));
-}
-
-// The leaf's width at height fraction t as a fraction of its base width: parallel sides up to
-// taperStart, then a smooth taper to a point at the tip. taperStart stays below 1
-// (kMaxTerrainGrassBladeTaperStart), where smoothstep's span would be empty.
-float GrassBladeWidthProfile(float taperStart, float t)
-{
-    float s = smoothstep(taperStart, 1.0f, t);
-    return 1.0f - s * s;
-}
-
-// Half the leaf's width at height fraction t, in metres: the strip spans this on each side of the
-// spine. `bladeWidth` is the whole leaf's width at its base (TerrainGrass::BladeWidth), capped at
-// kGrassMaxBladeAspect of the height.
-float GrassBladeHalfWidth(float bladeWidth, float bladeHeight, float taperStart, float t)
-{
-    return 0.5f * min(bladeWidth, bladeHeight * kGrassMaxBladeAspect) * GrassBladeWidthProfile(taperStart, t);
-}
-
-// The pixel floor and the fold's fade, per vertex. The placement measures how wide a blade projects
-// from its ROOT facing (`sideDir`, terrain_grass_place.comp) and hands over the half-width that
-// keeps the leaf kGrassMinPixelWidth wide there; the twist turns the face along the blade, so the
-// floor is rescaled by how far this vertex's face is turned toward the camera against the root's.
-// A blade widened while edge-on at its root keeps a thin edge where it twists face-on, instead of
-// opening into a leaf several times its width. The fold fades out as the leaf's projected width
-// falls toward a few pixels, where its two shades would only draw noise.
-struct GrassBladeFloor
-{
-    float MinHalfWidth;  // half-width that projects to the pixel floor at the root facing; 0 = none
-    float MaxExpansion;  // ceiling on the widening, a multiple of the blade's own half-width
-    float RootPixels;    // projected width in pixels of the whole authored leaf at the root facing; 0 = unknown
-    vec3 CameraPos;      // world
-};
-
-// Projected pixels of the vertex's face against the root's: |side x view| is how far a side
-// direction is turned across the view. For a unit side and any view vector w, |side x w|^2 is
-// |w|^2 - (side . w)^2, so the ratio needs no normalize and no cross product. The root edge has a
-// floor that stays above zero for a zero-length or underflowing view, so the ratio is always finite.
-float GrassBladeFacingRatio(vec3 rootSide, vec3 vertexSide, vec3 view)
-{
-    float viewSq = dot(view, view);
-    float rootDot = dot(rootSide, view);
-    float vertexDot = dot(vertexSide, view);
-    float rootEdgeSq = max(viewSq - rootDot * rootDot, 1e-6f * viewSq + 1e-12f);
-    return sqrt(max(viewSq - vertexDot * vertexDot, 0.0f) / rootEdgeSq);
-}
-
-// `bendDir` and `sideDir` are unit vectors in the terrain's tangent plane; `side` is the vertex's
-// edge, -1 or +1, and `halfWidth` the half-width at this height before the pixel floor.
-// `twistRadians` is the torsion over the whole blade, applied in proportion to t.
-GrassBladeVertex GrassBuildBladeVertex(vec3 root, vec3 terrainNormal, vec3 bendDir, vec3 sideDir,
-                                       float tilt, float bend, float twistRadians, float t,
-                                       float bladeHeight, float side, float halfWidth,
-                                       GrassBladeFloor pixelFloor)
-{
-    float angle = GrassBladeSpineAngle(tilt, bend, t);
-    float chord = GrassBladeChordAngle(tilt, bend, t);
-    float ca = cos(angle);
-    float sa = sin(angle);
-    vec3 spine = root + (terrainNormal * cos(chord) + bendDir * sin(chord)) * (t * bladeHeight);
-    vec3 tangent = terrainNormal * ca + bendDir * sa;
-
-    // The side direction bends WITH the spine: rotated about the bend axis by the spine's own
-    // angle, so it stays perpendicular to the tangent however the blade leans relative to its face.
-    vec3 axis = cross(terrainNormal, bendDir);
-    vec3 bentSide = sideDir * ca + cross(axis, sideDir) * sa + axis * (dot(axis, sideDir) * (1.0f - ca));
-    // Then the leaf's torsion, about the spine.
-    float twist = twistRadians * t;
-    vec3 twistedSide = bentSide * cos(twist) + cross(tangent, bentSide) * sin(twist);
-    vec3 face = cross(twistedSide, tangent);
-
-    float facing = GrassBladeFacingRatio(sideDir, twistedSide, spine - pixelFloor.CameraPos);
-    float floorHalf = pixelFloor.MinHalfWidth / max(facing, 1e-3f);
-    float width = max(halfWidth, min(floorHalf, halfWidth * pixelFloor.MaxExpansion));
-    float pixels = pixelFloor.RootPixels > 0.0f ? pixelFloor.RootPixels * facing : 1e6f;
-    float fold = kGrassBladeFoldRadians * smoothstep(kGrassFoldFadePixels0, kGrassFoldFadePixels1, pixels);
-
-    GrassBladeVertex bv;
-    bv.Position = spine + twistedSide * (side * width);
-    bv.Tangent = normalize(tangent);
-    // The face normal rotated about the tangent by +fold at the edge side = -1 and by -fold at
-    // side = +1: rotating `face` about the tangent by an angle f gives face cos f + twistedSide sin f.
-    bv.Normal = normalize(face * cos(fold) - twistedSide * (side * sin(fold)));
-    return bv;
-}
-// GE_SHARED_GRASS_BLADE_VERTEX_END
-
 vec3 tangentPlaneDir(vec3 dir, vec3 normalWS)
 {
     vec3 projected = dir - normalWS * dot(dir, normalWS);
@@ -519,14 +355,15 @@ void ModifyVertex(inout VertexOutput v, InstanceData inst)
         (worldX - tp.WorldOriginX) / max(tp.WorldSizeX, 0.0001),
         (worldZ - tp.WorldOriginZ) / max(tp.WorldSizeZ, 0.0001)
     ), vec2(0.0), vec2(1.0));
-    // A blade on surface pages carries its ground: the placement compute read the root height and
-    // the normal from the pages the terrain draws. Other blades re-sample the unified maps.
-    bool groundFromPages = (blade.Flags & kGrassFlagGroundFromPages) != 0u;
+    // Atlas terrains have no unified heightmap/normalmap (both bindless indices are 0): the
+    // placement compute already snapped RootY through the atlas and baked the surface normal into
+    // the instance, so use those directly. Non-atlas terrains re-sample exactly as before.
+    bool atlasBacked = (tp.Flags & kTerrainFlagAtlasBacked) != 0u;
     float rootY = blade.RootY;
-    if (!groundFromPages && tp.HeightmapBindless != 0u)
+    if (tp.HeightmapBindless != 0u)
         rootY = tp.WorldOriginY + sampleHeight01(tp, terrainUV) * tp.HeightScale;
     vec3 terrainNormal;
-    if (groundFromPages)
+    if (atlasBacked)
     {
         float ny = sqrt(max(1.0 - blade.NormalX * blade.NormalX - blade.NormalZ * blade.NormalZ, 0.0));
         terrainNormal = normalize(vec3(blade.NormalX, ny, blade.NormalZ));
@@ -535,8 +372,8 @@ void ModifyVertex(inout VertexOutput v, InstanceData inst)
     {
         terrainNormal = sampleTerrainNormalWS(tp, terrainUV);
     }
-    float r = GrassUnpackRand(blade.RandAndCoverage);
-    uint shape = blade.BladeShape;
+    float r = blade.Rand;
+    float grassWeight = blade.GrassWeight;
     vec3 sideDir = tangentPlaneDir(vec3(cos(blade.Yaw), 0.0, sin(blade.Yaw)), terrainNormal);
 
     tp = grassApplyWindVolumes(tp, vec3(worldX, rootY, worldZ));
@@ -549,20 +386,23 @@ void ModifyVertex(inout VertexOutput v, InstanceData inst)
     vec2 leanDirStatic = restingLeanDir(tp, vec2(worldX, worldZ));
 
     float bladeHeight = max(0.0, blade.BladeHeight);
-    // The whole leaf's width at its base (a card's edge for a textured card).
     float bladeWidth = max(0.0, blade.BladeWidth);
-    // Half-width this blade may not project narrower than, sized once per blade by the placement
-    // compute and carried as a multiple of half the width above. Taken from the AUTHORED width,
-    // before the aspect cap, because the floor is a screen-space quantity: it is the same number of
-    // world metres whichever width the blade goes on to take. 0 = no floor.
-    float minWidthScale = GrassMinWidthScaleFromFlags(blade.Flags);
-    float minWidth = 0.5 * bladeWidth * minWidthScale;
+    // World width this blade may not project narrower than, sized once per blade by the placement
+    // compute and carried as a multiple of the width above. Taken from the AUTHORED width, before
+    // the aspect cap and the textured-card halving below, because the floor is a screen-space
+    // quantity: it is the same number of world metres whichever of those two the blade goes on to
+    // take. 0 = no floor.
+    float minWidth = bladeWidth * GrassMinWidthScaleFromFlags(blade.Flags);
     float t = clamp(aBlade.y, 0.0, 1.0);
     bool texturedCard = (tp.GrassEnabled & 4u) != 0u;
     if (texturedCard)
+    {
         bladeHeight = max(bladeWidth, 0.001);
-    float width = texturedCard ? 0.5 * bladeWidth
-                               : GrassBladeHalfWidth(bladeWidth, bladeHeight, tp.GrassBladeTaperStart, t);
+        bladeWidth *= 0.5;
+    }
+    else
+        bladeWidth = min(bladeWidth, bladeHeight * max(0.0, tp.GrassMaxWidthRatio));
+    float width = texturedCard ? bladeWidth : bladeWidth * pow(1.0 - t, kGrassBladeTaperExponent);
     float flutterPhase =
         snoise(vec2(worldX, worldZ) * 0.37 + windSeedOffset(tp.GrassWindSeed)
                + inst.deformationTimeSeconds * max(0.0, tp.GrassWindFlutterSpeed));
@@ -571,6 +411,7 @@ void ModifyVertex(inout VertexOutput v, InstanceData inst)
     // meadow at WindStrength 0 still animates at the component's non-zero default FlutterAmount.
     // Same gate as the surface's wind shading: identity at strength >= 1, zero at 0.
     float windGate = clamp(tp.GrassWindStrength, 0.0, 1.0);
+    vGrassWindStrength = windGate;
     // Per-blade ±4% lean variation from data that is a pure function of the blade's site.
     // NEVER from gl_InstanceIndex: the compacted slot a blade lands in is reallocated by a
     // subgroup atomicAdd every frame, so anything derived from it re-rolls per frame and reads
@@ -584,67 +425,27 @@ void ModifyVertex(inout VertexOutput v, InstanceData inst)
         + wind.dir * (wind.strength * windStrength
                       + tp.GrassWindFlutterAmount * windGate * (wind.detail + flutterPhase * 0.35));
     float leanMag = length(leanVec);
-
-    // The blade's own shape, from its site: tilt and bend about the authored values, a twist in
-    // one direction or the other, a lean toward one of its faces, and, in a tuft, a fan away from
-    // the tuft's site that grows with the distance from it. A textured card is a picture of
-    // blades, so it keeps the wind's lean alone and stays flat.
-    float tilt = 0.0;
-    float bendShape = 0.0;
-    float twistRadians = 0.0;
-    vec2 shapeLean = vec2(0.0);
-    if (!texturedCard)
-    {
-        tilt = tp.GrassBladeTilt * mix(0.6, 1.4, GrassBladeShapeTiltRand(shape));
-        bendShape = tp.GrassBladeBend * mix(0.6, 1.4, GrassBladeShapeBendRand(shape));
-        float twistSigned = GrassBladeShapeTwistSigned(shape);
-        twistRadians = tp.GrassBladeTwist * 6.28318530718 * (twistSigned < 0.0 ? -1.0 : 1.0)
-            * (0.5 + abs(twistSigned));
-        vec3 faceDir = cross(sideDir, terrainNormal);
-        shapeLean = faceDir.xz * (kGrassLeanJitter * GrassBladeShapeJitterSign(shape));
-        if (tp.GrassClumpSize > 0.0)
-        {
-            float distanceCells = GrassBladeShapeDistanceCells(shape);
-            float fanTurn = GrassBladeShapeFanTurn(shape) * 6.28318530718;
-            float fanAngle = tp.GrassTuftFan * distanceCells;
-            shapeLean += vec2(cos(fanTurn), sin(fanTurn)) * fanAngle;
-            tilt += fanAngle;
-        }
-    }
-    // One lean plane per blade, from the sum of every reason to lean: the shape's above and the
-    // wind's. A windless field keeps its blades where their shape puts them, and a gust swings the
-    // plane toward the wind as its share of the sum grows.
-    vec2 planeVec = shapeLean + leanVec;
-    float planeLen = length(planeVec);
-    vec2 leanDir2 = planeLen > 0.0001 ? planeVec / planeLen : leanDirStatic;
+    vec2 leanDir2 = leanMag > 0.0001 ? leanVec / leanMag : leanDirStatic;
     vec3 bendDir = tangentPlaneDir(vec3(leanDir2.x, 0.0, leanDir2.y), terrainNormal);
-    // The wind bends the blade on top of its shape. The sign of a backward gust lives in the
-    // direction, so the magnitude clamp keeps only an upper bound.
-    float bend = min(bendShape + leanMag * bladeLean, 1.15);
-    tilt = GrassBladeCappedTilt(min(tilt, kGrassMaxBladeTilt), bend);
+    // The sign of a backward gust lives in the direction now, so the magnitude clamp keeps only
+    // the old upper bound.
+    float bend = min(leanMag * bladeLean, 1.15);
+    float lean = bend * t * t;
+    float ct = cos(lean);
+    float st = sin(lean);
 
     vec3 root = vec3(worldX, rootY, worldZ) + terrainNormal * kGrassRootEmbed;
-    // Hold the blade to a minimum projected width, per vertex, inside GrassBuildBladeVertex: the
-    // floor lifts the TAPERED width where it has gone sub-pixel, rescaled by how far that vertex's
-    // twisted face is turned toward the camera. The expansion ceiling is a multiple of the same
-    // width, which keeps the tip a point (zero times anything is zero). Where the blade already
-    // exceeds the floor, or there is no floor (minWidth 0), the width is unchanged.
-    GrassBladeFloor pixelFloor;
-    pixelFloor.MinHalfWidth = minWidth;
-    pixelFloor.MaxExpansion = kGrassMaxWidthExpansion;
-    pixelFloor.RootPixels = minWidthScale > 0.0 ? kGrassMinPixelWidth / minWidthScale : 0.0;
-    pixelFloor.CameraPos = Cam.uCameraPos.xyz;
-    GrassBladeVertex bladeVertex = GrassBuildBladeVertex(root, terrainNormal, bendDir, sideDir, tilt,
-                                                         bend, twistRadians, t, bladeHeight,
-                                                         aBlade.x, width, pixelFloor);
-    vGrassCoverage = GrassUnpackCoverage(blade.RandAndCoverage);
-#if defined(GE_COMPAT_PROFILE)
-    vGrassWindStrength = windGate;
-#else
-    // Every vertex of the blade reads the same instance word, so the flat varying carries one
-    // ground colour for the whole blade whichever vertex provokes a triangle.
-    vGrassBlade = vec4(windGate, GrassUnpackRootColor(blade.RootColor));
-#endif
+    vec3 spine = root + terrainNormal * (ct * t * bladeHeight) + bendDir * (st * t * bladeHeight);
+    // Hold the blade to a minimum projected width. The floor is applied to the TAPERED width, per
+    // vertex, so it lifts exactly the part of the blade that has gone sub-pixel; the expansion
+    // ceiling is a multiple of that same width, which keeps the tip a point (zero times anything
+    // is zero) instead of blunting every blade into a rectangle.
+    //
+    // Needs no guard. Where the blade already exceeds the floor — and where there is no floor at
+    // all, minWidth 0 — the lower bound loses and clamp returns this vertex's own `width` operand
+    // unchanged, so those blades are bit-identical to not having the feature.
+    width = clamp(minWidth, width, width * kGrassMaxWidthExpansion);
+    vec3 pos = spine + sideDir * (aBlade.x * width);
 
     // Distance LOD term the surface reads: 1 at the camera, 0 at the range placement actually
     // spawned to. It drives the blade-to-ground COLOUR blend, which keeps the far field from
@@ -658,8 +459,9 @@ void ModifyVertex(inout VertexOutput v, InstanceData inst)
     float lodStart = fieldRange * kGrassLod1RadiusFraction;
     float farLodTerm = 1.0 - smoothstep(lodStart, max(lodStart + 1.0, fieldRange), dist);
 
-    v.position = bladeVertex.Position;
-    v.normal = bladeVertex.Normal;
+    v.position = pos;
+    vec3 tangent = normalize(terrainNormal * ct + bendDir * st);
+    v.normal = normalize(cross(sideDir, tangent) + sideDir * (aBlade.x * 0.56));
     v.uv0 = vec2(t, aBlade.x * 0.5 + 0.5);
     // Three of the four components carry packed payloads — grass_clump.glsl owns the whole
     // layout and states why each field is sized the way it is.

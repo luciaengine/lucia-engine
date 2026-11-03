@@ -51,10 +51,12 @@ TEST(ContextMenuBackendSwap, TheCloseHandlerSurvivesTheInnerBackendSwap)
     UIContextMenu::Register(FakeWindow(), &manager);
 
     SetContextMenuBackend(ContextMenuBackend::BuiltIn);
+    // Declared before the menu: destroying an open menu reports its dismissal,
+    // so the handler runs from the menu's destructor at the end of this scope.
+    bool closed = false;
     auto menu = CreateContextMenu();
     ASSERT_NE(menu, nullptr);
 
-    bool closed = false;
     menu->SetCloseHandler([&closed]() { closed = true; });
 
     // Two changes so the generation moves on every platform and the selection
@@ -72,6 +74,37 @@ TEST(ContextMenuBackendSwap, TheCloseHandlerSurvivesTheInnerBackendSwap)
     menu->AddItem(0, "Item", 1);
     menu->Show(FakeWindow(), 20, 20);
     EXPECT_TRUE(closed) << "the swapped-in backend never got the close handler";
+
+    UIContextMenu::Unregister(FakeWindow());
+}
+
+// A menu that another menu displaces stays open, parked, until the next drain
+// releases it; its destructor is the only place its dismissal is reported.
+TEST(ContextMenuBackendSwap, ADisplacedMenuReportsItsCloseWhenReleased)
+{
+    BackendGuard restoreBackend;
+    UIManager manager{nullptr};
+    manager.SetRoot(std::make_unique<UIElement>());
+    UIContextMenu::Register(FakeWindow(), &manager);
+    SetContextMenuBackend(ContextMenuBackend::BuiltIn);
+
+    bool firstClosed = false;
+    {
+        auto first = CreateContextMenu();
+        ASSERT_NE(first, nullptr);
+        first->SetCloseHandler([&firstClosed]() { firstClosed = true; });
+        first->AddItem(0, "First", 1);
+        first->Show(FakeWindow(), 10, 10);
+    }
+    ASSERT_FALSE(firstClosed) << "the parked menu outlives its caller's wrapper";
+
+    auto second = CreateContextMenu();
+    ASSERT_NE(second, nullptr);
+    second->AddItem(0, "Second", 1);
+    second->Show(FakeWindow(), 20, 20);
+    ASSERT_FALSE(firstClosed) << "the displaced menu is parked until the drain";
+    DrainShowingContextMenus();
+    EXPECT_TRUE(firstClosed) << "the displaced menu was released without reporting its close";
 
     UIContextMenu::Unregister(FakeWindow());
 }

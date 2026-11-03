@@ -25,14 +25,14 @@
 #include "ECS/World.h"
 #include "ECS/Entity.h"
 #include "ECS/Components.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 
-#include "Components/SceneViewHidden.h"
 #include "Components/Transform.h"
+#include "Components/Hierarchy.h"
+#include "Components/Rendering/RenderSorting.h"
+#include "Engine/Rendering/SortingLayers.h"
 #include "Components/Animation/AnimatorRef.h"
 #include "Components/Animation/SkeletonRef.h"
-#include "Components/Rendering/GIEmitter.h"
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/LODGroup.h"
 #include "Components/Rendering/MeshGPUData.h"
@@ -50,7 +50,6 @@
 #include "Assets/ModelAsset.h" // Mesh/Vertex for registry fixtures
 #include "AssetCore/GUID.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialDocument.h"
 
@@ -62,9 +61,6 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
-#include <map>
-#include <random>
-#include <span>
 #include <tuple>
 #include <vector>
 
@@ -107,7 +103,7 @@ struct SubmissionSnapshot
 };
 
 std::vector<SubmissionSnapshot> SnapshotSubmissions(
-    std::span<const WorldSubmissionRecord> subs)
+    const std::vector<WorldSubmissionRecord>& subs)
 {
     std::vector<SubmissionSnapshot> out;
     out.reserve(subs.size());
@@ -118,7 +114,7 @@ std::vector<SubmissionSnapshot> SnapshotSubmissions(
         snap.meshHandle = static_cast<uint64>(s.meshHandle);
         snap.materialGuid = s.material ? s.material->GetGuid() : GUID::Null();
         snap.instanceIndex = s.instanceIndex;
-        snap.renderLayerMask = s.renderLayerMask.Bits;
+        snap.renderLayerMask = s.renderLayerMask;
         snap.flagsMasked = s.flags & 0x0000FFFFu;
         out.push_back(snap);
     }
@@ -253,366 +249,6 @@ TEST_F(ExtractionFastPathTest, SpawnEscalatesViaStructuralVersion)
     ASSERT_TRUE(h.PrimeToFastPath());
 }
 
-// Transform requires WorldTransform and MeshRenderer requires MeshGPUData: a
-// spawned renderable holds both from its creation, so the tick that first
-// draws it moves no archetype (no lazy add from the hierarchy or extraction).
-TEST_F(ExtractionFastPathTest, SpawnHoldsItsDerivedComponentsBeforeTheFirstTick)
-{
-    ExtractionHarness h;
-    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
-    h.SpawnRenderable(0.0f, 0.0f, 0.0f);
-    ASSERT_TRUE(h.PrimeToFastPath());
-
-    MeshRenderer mr{};
-    mr.meshGpuHandleId = static_cast<uint64>(h.meshHandle);
-    mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
-    mr.materialAssetGuid.Set(h.materialGuid);
-    constexpr size_t kSpawned = 256;
-    const std::vector<EntityHandle> batch =
-        h.world->CreateBatchHandle(kSpawned, MakeTransformAt(1.0f, 2.0f, 3.0f), mr);
-    const ECS::Entity single = h.SpawnRenderable(4.0f, 0.0f, 0.0f);
-
-    for (const EntityHandle entity : batch)
-    {
-        ASSERT_NE(h.world->GetComponent<WorldTransform>(entity), nullptr);
-        const auto* mg = h.world->GetComponent<MeshGPUData>(entity);
-        ASSERT_NE(mg, nullptr);
-        EXPECT_EQ(mg->instanceIndex, 0xFFFFFFFFu) << "a new MeshGPUData starts unassigned";
-    }
-    ASSERT_NE(h.world->GetComponent<WorldTransform>(single.GetHandle()), nullptr);
-    ASSERT_NE(h.world->GetComponent<MeshGPUData>(single.GetHandle()), nullptr);
-
-    const std::size_t structuralBefore = h.world->GetStructuralChangeVersion();
-    h.StepFrame();
-    EXPECT_EQ(h.world->GetStructuralChangeVersion(), structuralBefore)
-        << "the tick after the spawn moved archetypes";
-    for (const EntityHandle entity : batch)
-        EXPECT_NE(h.world->GetComponent<MeshGPUData>(entity)->instanceIndex, 0xFFFFFFFFu);
-    EXPECT_NE(h.world->GetComponent<MeshGPUData>(single.GetHandle())->instanceIndex, 0xFFFFFFFFu);
-}
-
-namespace
-{
-MeshRenderer HarnessRenderer(const ExtractionHarness& h)
-{
-    MeshRenderer mr{};
-    mr.meshGpuHandleId = static_cast<uint64>(h.meshHandle);
-    mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
-    mr.materialAssetGuid.Set(h.materialGuid);
-    return mr;
-}
-
-// The harness's GPUScene for the release hook production registers on the
-// engine world (RenderWorldHooks): a destroyed renderable frees its slot.
-GPUScene* g_ReleaseScene = nullptr;
-void ReleaseHarnessSlot(MeshGPUData& meshGpu)
-{
-    if (g_ReleaseScene && meshGpu.instanceIndex != 0xFFFFFFFFu)
-        g_ReleaseScene->RemoveInstance(meshGpu.instanceIndex);
-    meshGpu.instanceIndex = 0xFFFFFFFFu;
-}
-} // namespace
-
-// S8b counter: k renderables spawned into a primed world of N re-prepare the
-// chunks they landed in, not all N.
-TEST_F(ExtractionFastPathTest, SpawnIntoAPrimedWorldPreparesOnlyTheChangedChunks)
-{
-    ExtractionHarness h;
-    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
-    constexpr uint32 kPrimed = 2000;
-    constexpr uint32 kSpawned = 4;
-    h.world->CreateBatchHandle(kPrimed, MakeTransformAt(0.0f, 0.0f, 0.0f), HarnessRenderer(h));
-    ASSERT_TRUE(h.PrimeToFastPath());
-
-    const std::vector<EntityHandle> spawned =
-        h.world->CreateBatchHandle(kSpawned, MakeTransformAt(1.0f, 0.0f, 0.0f), HarnessRenderer(h));
-    h.StepFrame();
-
-    const uint32 prepared = h.Stats().RebuildCount + h.Stats().SkippedCount;
-    EXPECT_GE(prepared, kSpawned);
-    EXPECT_LT(prepared, kPrimed / 2) << "a spawn of " << kSpawned << " re-prepared " << prepared
-                                    << " of " << kPrimed + kSpawned << " renderables";
-    for (const EntityHandle entity : spawned)
-        EXPECT_NE(h.world->GetComponent<MeshGPUData>(entity)->instanceIndex, 0xFFFFFFFFu);
-    EXPECT_EQ(h.extraction->GetSubmissionsForTest().size(), static_cast<size_t>(kPrimed + kSpawned));
-}
-
-// A destroyed renderable's freed slot drops exactly its submissions on the
-// delta lane; a disable (no slot freed) sends the frame to the full lane,
-// which tombstones it.
-TEST_F(ExtractionFastPathTest, DeltaLaneDropsReleasedSlotsAndDefersDisablesToTheFullLane)
-{
-    ExtractionHarness h;
-    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
-    g_ReleaseScene = h.rs.GetGPUScene();
-    h.world->RegisterOnRemove<MeshGPUData>(&ReleaseHarnessSlot);
-    const std::vector<EntityHandle> entities =
-        h.world->CreateBatchHandle(64, MakeTransformAt(0.0f, 0.0f, 0.0f), HarnessRenderer(h));
-    ASSERT_TRUE(h.PrimeToFastPath());
-
-    h.world->DestroyEntityImmediate(entities[3]);
-    h.world->DestroyEntityImmediate(entities[40]);
-    h.StepFrame();
-    EXPECT_EQ(h.Stats().DeltaFrame, 1u);
-    EXPECT_EQ(h.extraction->GetSubmissionsForTest().size(), 62u);
-
-    ECS::Entity(h.world.get(), entities[10]).SetEnabled(false);
-    h.world->ProcessCommands();
-    h.StepFrame();
-    EXPECT_EQ(h.Stats().DeltaFrame, 0u) << "a disable has no freed slot to account for it";
-    EXPECT_EQ(h.Stats().FastFrame, 0u);
-    EXPECT_EQ(h.extraction->GetSubmissionsForTest().size(), 61u);
-    g_ReleaseScene = nullptr;
-}
-
-// A carrier of the always-refresh subset that moves in a frame the delta lane
-// re-prepares its chunk keeps its motion vector: the subset refresh that runs
-// after the delta lane must not read the latch the delta rebuild just set as a
-// stopped mover's settle.
-TEST_F(ExtractionFastPathTest, DeltaLaneKeepsAMovingCarriersMotionVector)
-{
-    ExtractionHarness h;
-    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
-    ECS::Entity carrier = h.SpawnRenderable(0.0f, 0.0f, 0.0f);
-    carrier.Set(AnimatorRef{});
-    LocalBounds bounds{};
-    bounds.Box.halfExtents = {1.0f, 1.0f, 1.0f};
-    carrier.Set(bounds);
-    h.world->ProcessCommands();
-    ASSERT_TRUE(h.PrimeToFastPath());
-
-    // Moved and its LocalBounds edited in one frame: the probe sends the frame
-    // to the delta lane, which re-prepares the carrier's chunk.
-    *h.world->GetComponentForWrite<Transform>(carrier.GetHandle()) = MakeTransformAt(5.0f, 0.0f, 0.0f);
-    h.world->GetComponentForWrite<LocalBounds>(carrier.GetHandle())->Box.halfExtents = {2.0f, 2.0f, 2.0f};
-    h.StepFrame();
-    ASSERT_EQ(h.Stats().DeltaFrame, 1u) << "the frame did not take the delta lane";
-
-    const MeshGPUData* meshGpu = h.world->GetComponent<MeshGPUData>(carrier.GetHandle());
-    ASSERT_NE(meshGpu, nullptr);
-    const GPUInstance& row = h.rs.GetGPUScene()->GetInstances()[meshGpu->instanceIndex];
-    EXPECT_FLOAT_EQ(row.transform.Data()[12], 5.0f);
-    EXPECT_FLOAT_EQ(row.prevTransform.Data()[12], 0.0f) << "the delta frame zeroed the moving carrier's motion vector";
-}
-
-// A renderable created after the hierarchy ran this tick (an OnPostSimulation
-// spawn) has an unresolved WorldTransform (Version 0). Extraction does not draw
-// it at the origin: it gets no slot this frame, and on the next frame it
-// appears at its placed pose with no motion from anywhere else.
-TEST_F(ExtractionFastPathTest, RenderableSpawnedAfterTheHierarchyWaitsForItsPose)
-{
-    ExtractionHarness h;
-    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
-    h.SpawnRenderable(0.0f, 0.0f, 0.0f);
-    ASSERT_TRUE(h.PrimeToFastPath());
-
-    h.world->ProcessCommands();
-    h.hierarchy.Update(*h.world, kDt);
-    MeshRenderer mr{};
-    mr.meshGpuHandleId = static_cast<uint64>(h.meshHandle);
-    mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
-    mr.materialAssetGuid.Set(h.materialGuid);
-    const EntityHandle late = h.world->CreateHandle(MakeTransformAt(50.0f, 0.0f, 0.0f), mr);
-    h.extraction->Update(*h.world, kDt);
-    h.world->SwapComponentDirtyFeed();
-    EXPECT_EQ(h.world->GetComponent<MeshGPUData>(late)->instanceIndex, 0xFFFFFFFFu)
-        << "an unresolved pose was given a slot (drawn at the origin)";
-
-    h.StepFrame();
-    const uint32 slot = h.world->GetComponent<MeshGPUData>(late)->instanceIndex;
-    ASSERT_NE(slot, 0xFFFFFFFFu) << "the renderable never appeared once its pose resolved";
-    const GPUInstance& row = h.rs.GetGPUScene()->GetInstances()[slot];
-    EXPECT_FLOAT_EQ(row.transform.Data()[12], 50.0f);
-    EXPECT_EQ(std::memcmp(row.prevTransform.Data(), row.transform.Data(), sizeof(float) * 16), 0)
-        << "the first drawn frame carries motion from a pose it never had";
-}
-
-namespace
-{
-// What one lane left for every live entity, independent of slot numbering:
-// each renderable's instance row (flags masked as the lane-parity locks do)
-// and its submissions, keyed by entity.
-struct LaneState
-{
-    std::map<uint32, std::vector<uint8>> rows;
-    std::vector<std::tuple<uint32, uint32, uint32, uint32, uint64, GUID>> submissions;
-    uint64 digest = 0;
-    bool operator==(const LaneState&) const = default;
-};
-
-LaneState CaptureLane(ExtractionHarness& h)
-{
-    LaneState state;
-    std::map<uint32, uint32> entityOfSlot;
-    const auto& instances = h.rs.GetGPUScene()->GetInstances();
-    h.world->Query<ECS::Read<MeshGPUData>>().IncludeDisabled().Each(
-        [&](ECS::EntityHandle e, const MeshGPUData& mg)
-        {
-            if (mg.instanceIndex == 0xFFFFFFFFu || mg.instanceIndex >= instances.size())
-                return;
-            entityOfSlot[mg.instanceIndex] = e.id;
-            GPUInstance row = instances[mg.instanceIndex];
-            row.flags &= 0x0000FFFFu;
-            std::vector<uint8> bytes(sizeof(GPUInstance));
-            std::memcpy(bytes.data(), &row, sizeof(GPUInstance));
-            state.rows[e.id] = std::move(bytes);
-        });
-    for (const auto& sub : h.extraction->GetSubmissionsForTest())
-    {
-        const auto owner = entityOfSlot.find(sub.instanceIndex);
-        state.submissions.emplace_back(owner == entityOfSlot.end() ? ~0u : owner->second,
-                                       static_cast<uint32>(sub.viewId), sub.renderLayerMask.Bits,
-                                       sub.flags & 0x0000FFFFu, static_cast<uint64>(sub.meshHandle),
-                                       sub.material ? sub.material->GetGuid() : GUID{});
-    }
-    std::sort(state.submissions.begin(), state.submissions.end());
-    state.digest = h.rs.GetWorldRenderContentDigest(h.worldId);
-    return state;
-}
-
-struct ParityRun
-{
-    std::vector<LaneState> frames;
-    uint32 deltaFrames = 0;
-};
-
-EntityHandle PickLive(const std::vector<EntityHandle>& live, std::mt19937& rng)
-{
-    return live[std::uniform_int_distribution<size_t>(0, live.size() - 1)(rng)];
-}
-
-// One seeded sequence of spawns, destroys, layer edits, moves and disable
-// toggles, applied identically on either lane.
-ParityRun RunStructuralParity(Rendering::IDevice* device, bool fastPath, uint32 seed)
-{
-    ParityRun run;
-    ExtractionHarness h;
-    if (!h.Initialize(device, fastPath))
-        return run;
-    g_ReleaseScene = h.rs.GetGPUScene();
-    h.world->RegisterOnRemove<MeshGPUData>(&ReleaseHarnessSlot);
-    std::mt19937 rng(seed);
-    std::vector<EntityHandle> live =
-        h.world->CreateBatchHandle(200, MakeTransformAt(0.0f, 0.0f, 0.0f), HarnessRenderer(h));
-    for (int frame = 0; frame < 40; ++frame)
-    {
-        const int spawns = std::uniform_int_distribution<int>(0, 24)(rng);
-        for (const EntityHandle e : h.world->CreateBatchHandle(
-                 static_cast<size_t>(spawns), MakeTransformAt(static_cast<float>(frame), 0.0f, 0.0f),
-                 HarnessRenderer(h)))
-            live.push_back(e);
-        for (int i = std::uniform_int_distribution<int>(0, 8)(rng); i > 0 && live.size() > 1; --i)
-        {
-            const size_t index = std::uniform_int_distribution<size_t>(0, live.size() - 1)(rng);
-            h.world->DestroyEntityImmediate(live[index]);
-            live.erase(live.begin() + static_cast<std::ptrdiff_t>(index));
-        }
-        if (std::uniform_int_distribution<int>(0, 3)(rng) == 0)
-            h.world->GetComponentForWrite<MeshRenderer>(PickLive(live, rng))->RenderLayers.Bits ^= 0x2u;
-        for (int i = 0; i < 6; ++i)
-            *h.world->GetComponentForWrite<Transform>(PickLive(live, rng)) =
-                MakeTransformAt(static_cast<float>(i), static_cast<float>(frame), 1.0f);
-        if (std::uniform_int_distribution<int>(0, 5)(rng) == 0)
-        {
-            ECS::Entity toggled(h.world.get(), PickLive(live, rng));
-            toggled.SetEnabled(!toggled.IsEnabled());
-        }
-        h.world->ProcessCommands();
-        h.StepFrame();
-        run.deltaFrames += h.Stats().DeltaFrame;
-        run.frames.push_back(CaptureLane(h));
-    }
-    g_ReleaseScene = nullptr;
-    return run;
-}
-} // namespace
-
-// P1 parity guard: the delta lane leaves every renderable's instance row, its
-// submissions and the membership digest exactly where the full lane does.
-TEST_F(ExtractionFastPathTest, StructuralDeltaMatchesTheFullLaneOnRandomSequences)
-{
-    for (const uint32 seed : {11u, 29u, 47u})
-    {
-        const ParityRun delta = RunStructuralParity(m_Device.get(), true, seed);
-        const ParityRun full = RunStructuralParity(m_Device.get(), false, seed);
-        ASSERT_EQ(delta.frames.size(), full.frames.size());
-        EXPECT_GT(delta.deltaFrames, 10u) << "the sequence never exercised the delta lane";
-        for (size_t frame = 0; frame < delta.frames.size(); ++frame)
-        {
-            const LaneState& d = delta.frames[frame];
-            const LaneState& f = full.frames[frame];
-            ASSERT_TRUE(d == f) << "seed " << seed << " frame " << frame << ": rows " << d.rows.size() << " vs "
-                                << f.rows.size() << " (equal " << (d.rows == f.rows) << "), submissions "
-                                << d.submissions.size() << " vs " << f.submissions.size() << " (equal "
-                                << (d.submissions == f.submissions) << "), digest equal " << (d.digest == f.digest);
-        }
-    }
-}
-
-namespace
-{
-// One full-lane submission: the GPUScene slot and the view it draws into.
-struct SubmissionSlot
-{
-    uint32 InstanceIndex = 0;
-    uint32 ViewId = 0;
-    bool operator==(const SubmissionSlot&) const = default;
-};
-
-// The full lane's submissions after 2000 renderables spawn into a world that
-// already drew 3000, with `pool` as the world's job system. The harness runs
-// without the fast path, so the spawn frame takes the full lane (with it, a
-// spawn takes the structural delta lane). 5000 records split into prepare
-// chunks either way (four of 1250 run inline with no pool, five of 1000 on a
-// four-worker pool), so both runs go through the apply's splice across chunk
-// boundaries.
-std::vector<SubmissionSlot> FullLaneSubmissionsAfterSpawn(Rendering::IDevice* device,
-                                                          JobSystem::WorkStealingThreadPool* pool)
-{
-    ExtractionHarness h;
-    if (!h.Initialize(device, false, pool))
-        return {};
-    MeshRenderer mr{};
-    mr.meshGpuHandleId = static_cast<uint64>(h.meshHandle);
-    mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
-    mr.materialAssetGuid.Set(h.materialGuid);
-    h.world->CreateBatchHandle(3000, MakeTransformAt(0.0f, 0.0f, 0.0f), mr);
-    h.StepFrame();
-    h.world->CreateBatchHandle(2000, MakeTransformAt(1.0f, 0.0f, 0.0f), mr);
-    h.StepFrame();
-
-    std::vector<SubmissionSlot> slots;
-    for (const WorldSubmissionRecord& sub : h.extraction->GetSubmissionsForTest())
-        slots.push_back(SubmissionSlot{sub.instanceIndex, sub.viewId});
-    return slots;
-}
-
-void ExpectStrictlyIncreasingSlots(const std::vector<SubmissionSlot>& slots, const char* run)
-{
-    for (size_t i = 1; i < slots.size(); ++i)
-        ASSERT_LT(slots[i - 1].InstanceIndex, slots[i].InstanceIndex)
-            << run << ": submission " << i << " breaks slot order after a spawn";
-}
-} // namespace
-
-// The full lane's submissions leave in record order, a new instance's in place
-// beside its neighbours': after a spawn into a world that already drew, each
-// instance is emitted once, in slot order, and a pooled prepare emits exactly
-// what a serial one does.
-TEST_F(ExtractionFastPathTest, FullLaneEmitsTheSameRecordOrderPooledAndSerial)
-{
-    const std::vector<SubmissionSlot> serial = FullLaneSubmissionsAfterSpawn(m_Device.get(), nullptr);
-    JobSystem::WorkStealingThreadPool pool(4);
-    const std::vector<SubmissionSlot> pooled = FullLaneSubmissionsAfterSpawn(m_Device.get(), &pool);
-
-    ASSERT_EQ(serial.size(), 5000u);
-    ASSERT_EQ(pooled.size(), 5000u);
-    ExpectStrictlyIncreasingSlots(serial, "serial");
-    ExpectStrictlyIncreasingSlots(pooled, "pooled");
-    for (size_t i = 0; i < serial.size(); ++i)
-        ASSERT_EQ(serial[i], pooled[i]) << "submission " << i << " differs between the serial and pooled prepare";
-}
-
 TEST_F(ExtractionFastPathTest, DespawnEscalatesAndDropsSubmissions)
 {
     ExtractionHarness h;
@@ -646,11 +282,10 @@ TEST_F(ExtractionFastPathTest, MeshRendererValueEditEscalatesViaProbe)
     ASSERT_NE(mgBefore, nullptr);
     const uint32 flagsBefore =
         h.rs.GetGPUScene()->GetInstances()[mgBefore->instanceIndex].flags;
-    ASSERT_NE(flagsBefore & 1u, 0u) << "a mesh casts by default";
-    ASSERT_EQ(flagsBefore & Rendering::kInstanceFlagShadowsOnly, 0u);
+    ASSERT_NE(flagsBefore & 1u, 0u) << "castShadows expected on by default";
 
     if (auto* mr = h.world->GetComponentForWrite<MeshRenderer>(e.GetHandle()))
-        mr->shadowCasting = Components::ShadowCasting::ShadowsOnly;
+        mr->castShadows = false;
     h.StepFrame();
     EXPECT_EQ(h.Stats().FastFrame, 0u);
     EXPECT_NE(h.Stats().EscalationReasonBits &
@@ -658,89 +293,9 @@ TEST_F(ExtractionFastPathTest, MeshRendererValueEditEscalatesViaProbe)
               0u);
     auto* mg = h.world->GetComponent<MeshGPUData>(e.GetHandle());
     ASSERT_NE(mg, nullptr);
-    const uint32 flagsAfter = h.rs.GetGPUScene()->GetInstances()[mg->instanceIndex].flags;
-    EXPECT_NE(flagsAfter & Rendering::kInstanceFlagShadowsOnly, 0u)
-        << "the full pass must fold the Shadow Casting edit into instance flags";
-    EXPECT_NE(flagsAfter & 1u, 0u) << "a shadows-only mesh still casts";
+    EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[mg->instanceIndex].flags & 1u, 0u)
+        << "the full pass must fold the castShadows edit into instance flags";
     ASSERT_TRUE(h.PrimeToFastPath());
-}
-
-// A script switches a proxy to Shadows Only with ComponentType<MeshRenderer>.Set: a byte write of the
-// whole component, with a GPU handle the script read earlier. The probe sees the stamped column, and
-// the engine's GPU handle stays as the engine has it.
-TEST_F(ExtractionFastPathTest, MeshRendererScriptWriteEscalatesViaProbeAndKeepsTheGpuHandle)
-{
-    ExtractionHarness h;
-    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
-    ECS::Entity e = h.SpawnRenderable(0.0f, 0.0f, 0.0f);
-    ASSERT_TRUE(h.PrimeToFastPath());
-    const MeshRenderer* bound = h.world->GetComponent<MeshRenderer>(e.GetHandle());
-    ASSERT_NE(bound, nullptr);
-    const uint64 engineHandle = bound->meshGpuHandleId;
-
-    MeshRenderer script = *bound;
-    script.meshGpuHandleId = engineHandle + 1;
-    script.shadowCasting = Components::ShadowCasting::ShadowsOnly;
-    ASSERT_TRUE(h.world->SetComponentBytesFromScriptImmediate(
-        e.GetHandle(), ECS::GetComponentTypeId<MeshRenderer>(), &script, sizeof(script),
-        ECS::ComponentFieldRegistry::GetScriptWriteRule(ECS::GetComponentTypeId<MeshRenderer>()).Ranges));
-    h.StepFrame();
-
-    EXPECT_NE(h.Stats().EscalationReasonBits & RenderExtractionSystem::kEscalationProbeMeshRenderer, 0u);
-    EXPECT_EQ(h.world->GetComponent<MeshRenderer>(e.GetHandle())->meshGpuHandleId, engineHandle);
-    auto* mg = h.world->GetComponent<MeshGPUData>(e.GetHandle());
-    ASSERT_NE(mg, nullptr);
-    EXPECT_NE(h.rs.GetGPUScene()->GetInstances()[mg->instanceIndex].flags & Rendering::kInstanceFlagShadowsOnly, 0u);
-}
-
-// A GI emitter publishes a DDGI light only while it is drawn: set to Shadows Only, its instance
-// loses the emitter bit, so the light of the object it stands in for is not added twice.
-static uint32 InstanceFlagsOf(ExtractionHarness& h, const ECS::Entity& e)
-{
-    const auto* mg = h.world->GetComponent<MeshGPUData>(e.GetHandle());
-    return mg ? h.rs.GetGPUScene()->GetInstances()[mg->instanceIndex].flags : 0u;
-}
-
-TEST_F(ExtractionFastPathTest, AShadowsOnlyEmitterIsNotAGIEmitter)
-{
-    ExtractionHarness h;
-    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
-    ECS::Entity e = h.SpawnRenderable(0.0f, 0.0f, 0.0f);
-    e.Set(Components::GIEmitter{});
-    ASSERT_TRUE(h.PrimeToFastPath());
-    ASSERT_NE(InstanceFlagsOf(h, e) & Rendering::kInstanceFlagGIEmitter, 0u) << "the drawn emitter is a GI emitter";
-
-    if (auto* mr = h.world->GetComponentForWrite<MeshRenderer>(e.GetHandle()))
-        mr->shadowCasting = Components::ShadowCasting::ShadowsOnly;
-    h.StepFrame();
-    EXPECT_NE(InstanceFlagsOf(h, e) & Rendering::kInstanceFlagShadowsOnly, 0u);
-    EXPECT_EQ(InstanceFlagsOf(h, e) & Rendering::kInstanceFlagGIEmitter, 0u);
-}
-
-// The Scene View eye reaches the instance as bit 8 through the structural change its tag makes, for
-// the entity's own eye and for the derived one alike, and leaves the other bits alone: the cast bit
-// stays for the views that still draw it. Showing it again clears the bit.
-TEST_F(ExtractionFastPathTest, TheSceneViewEyeSetsAndClearsTheEditorHiddenBit)
-{
-    ExtractionHarness h;
-    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
-    ECS::Entity own = h.SpawnRenderable(0.0f, 0.0f, 0.0f);
-    ECS::Entity inherited = h.SpawnRenderable(2.0f, 0.0f, 0.0f);
-    ASSERT_TRUE(h.PrimeToFastPath());
-    const uint32 shownFlags = InstanceFlagsOf(h, own);
-    ASSERT_EQ(shownFlags & Rendering::kInstanceFlagEditorHidden, 0u);
-
-    h.world->AddComponentImmediate<Components::SceneViewHidden>(own.GetHandle(), {});
-    h.world->AddComponentImmediate<Components::SceneViewHiddenInHierarchy>(inherited.GetHandle(), {});
-    h.StepFrame();
-    EXPECT_EQ(InstanceFlagsOf(h, own), shownFlags | Rendering::kInstanceFlagEditorHidden);
-    EXPECT_NE(InstanceFlagsOf(h, inherited) & Rendering::kInstanceFlagEditorHidden, 0u);
-
-    h.world->RemoveComponentImmediate<Components::SceneViewHidden>(own.GetHandle());
-    h.world->RemoveComponentImmediate<Components::SceneViewHiddenInHierarchy>(inherited.GetHandle());
-    h.StepFrame();
-    EXPECT_EQ(InstanceFlagsOf(h, own), shownFlags);
-    EXPECT_EQ(InstanceFlagsOf(h, inherited) & Rendering::kInstanceFlagEditorHidden, 0u);
 }
 
 TEST_F(ExtractionFastPathTest, LayerOnlyChangesPublishPayloadAndInvalidateShadows)
@@ -754,7 +309,7 @@ TEST_F(ExtractionFastPathTest, LayerOnlyChangesPublishPayloadAndInvalidateShadow
     const auto siblingSlot = h.world->GetComponent<MeshGPUData>(sibling.GetHandle())->instanceIndex;
     const auto original = h.rs.GetGPUScene()->GetInstances()[slot];
     const auto epoch = h.rs.ShadowCasterContentVersion(h.worldId);
-    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->RenderLayers = GameEngine::Rendering::RenderLayerMask::None();
+    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->renderLayerMask = 0;
     h.StepFrame();
     EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[slot].renderLayerMask, 0u);
     EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[siblingSlot].renderLayerMask, 1u);
@@ -767,53 +322,12 @@ TEST_F(ExtractionFastPathTest, LayerOnlyChangesPublishPayloadAndInvalidateShadow
     h.StepFrame();
     EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[slot].renderLayerMask, 0u)
         << "transform feed must retain the authored mask";
-    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->RenderLayers = GameEngine::Rendering::RenderLayerMask::FromLayer(31);
-    h.rs.Views().SetViewRenderLayerMask(h.viewId, GameEngine::Rendering::RenderLayerMask{0x80000000u});
+    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->renderLayerMask = 0x80000000u;
+    h.rs.Views().SetViewRenderLayerMask(h.viewId, 0x80000000u);
     h.StepFrame();
     EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[slot].renderLayerMask, 0x80000000u);
     ASSERT_EQ(h.extraction->GetSubmissionsForTest().size(), 1u);
     EXPECT_EQ(h.extraction->GetSubmissionsForTest()[0].instanceIndex, slot);
-}
-
-// A renderer whose layers miss every view's is drawn by none of them. Moving it to another layer is a
-// write into its MeshRenderer: the entity keeps its archetype, and the next frame puts the new layers in
-// its GPU instance word.
-TEST_F(ExtractionFastPathTest, RendererOutsideTheViewLayersEmitsNoSubmissionAndALayerEditKeepsTheArchetype)
-{
-    ExtractionHarness h;
-    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
-    auto actor = h.SpawnRenderable(0, 0, 0);
-    h.SpawnRenderable(1, 0, 0);
-    ASSERT_TRUE(h.PrimeToFastPath());
-    ASSERT_EQ(h.extraction->GetSubmissionsForTest().size(), 2u);
-    const ECS::Archetype* archetype = h.world->GetEntityArchetype(actor.GetHandle());
-    ASSERT_NE(archetype, nullptr);
-
-    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->RenderLayers =
-        GameEngine::Rendering::RenderLayerMask::FromLayer(2);
-    h.StepFrame();
-
-    EXPECT_EQ(h.world->GetEntityArchetype(actor.GetHandle()), archetype) << "a layer edit never moves the entity";
-    const auto slot = h.world->GetComponent<MeshGPUData>(actor.GetHandle())->instanceIndex;
-    EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[slot].renderLayerMask, 1u << 2);
-    const auto& subs = h.extraction->GetSubmissionsForTest();
-    ASSERT_EQ(subs.size(), 1u) << "the view draws layer 0 only, so the renderer on layer 2 has no submission";
-    EXPECT_NE(subs[0].instanceIndex, slot);
-}
-
-// A view on no layer gets no submission but is still extracted this frame, so its controller presents its
-// clear and sky instead of holding its last image while it waits for an extraction that never comes.
-TEST_F(ExtractionFastPathTest, AViewOnNoLayerIsExtractedWithNoSubmission)
-{
-    ExtractionHarness h;
-    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
-    h.SpawnRenderable(0, 0, 0);
-    h.rs.Views().SetViewRenderLayerMask(h.viewId, GameEngine::Rendering::RenderLayerMask::None());
-    h.StepFrame();
-
-    EXPECT_TRUE(h.extraction->GetSubmissionsForTest().empty());
-    EXPECT_TRUE(h.rs.Views().IsViewExtractionCurrent(h.viewId))
-        << "the view on no layer was extracted this frame";
 }
 
 TEST_F(ExtractionFastPathTest, LayerPayloadRecoversAnOutOfRangeDerivedSlot)
@@ -824,7 +338,7 @@ TEST_F(ExtractionFastPathTest, LayerPayloadRecoversAnOutOfRangeDerivedSlot)
     MeshGPUData stale{};
     stale.instanceIndex = 64;
     actor.Set(stale);
-    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->RenderLayers = GameEngine::Rendering::RenderLayerMask::None();
+    h.world->GetComponentForWrite<MeshRenderer>(actor.GetHandle())->renderLayerMask = 0;
     h.StepFrame();
     const auto* gpu = h.world->GetComponent<MeshGPUData>(actor.GetHandle());
     ASSERT_NE(gpu, nullptr);
@@ -1086,7 +600,7 @@ TEST_F(ExtractionFastPathTest, UnregisterSubmeshEventEscalates)
     e.Set(MakeTransformAt(3.0f, 0.0f, 0.0f));
     MeshRenderer mr{};
     mr.meshGpuHandleId = static_cast<uint64>(second);
-    mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
+    mr.renderLayerMask = 0x1u;
     mr.materialAssetGuid.Set(h.materialGuid);
     e.Set(mr);
     h.world->ProcessCommands();
@@ -1136,7 +650,7 @@ TEST_F(ExtractionFastPathTest, ViewOpenCloseAndMaskEditEscalate)
     // Open a second matching view.
     ViewId second = h.rs.Views().AllocateView("FastPathView2", h.cameraId);
     h.rs.Views().SetViewWorldId(second, h.worldId);
-    h.rs.Views().SetViewRenderLayerMask(second, GameEngine::Rendering::RenderLayerMask::Default());
+    h.rs.Views().SetViewRenderLayerMask(second, 0x1u);
     h.StepFrame();
     EXPECT_EQ(h.Stats().FastFrame, 0u);
     EXPECT_NE(h.Stats().EscalationReasonBits & RenderExtractionSystem::kEscalationViewSet,
@@ -1146,7 +660,7 @@ TEST_F(ExtractionFastPathTest, ViewOpenCloseAndMaskEditEscalate)
     ASSERT_TRUE(h.PrimeToFastPath());
 
     // Layer-mask edit invalidates the cached per-view emission set.
-    h.rs.Views().SetViewRenderLayerMask(second, GameEngine::Rendering::RenderLayerMask{0x2u});
+    h.rs.Views().SetViewRenderLayerMask(second, 0x2u);
     h.StepFrame();
     EXPECT_EQ(h.Stats().FastFrame, 0u);
     EXPECT_NE(h.Stats().EscalationReasonBits & RenderExtractionSystem::kEscalationViewSet,
@@ -1176,7 +690,7 @@ TEST_F(ExtractionFastPathTest, OnDemandViewChurnLeavesContentVersions)
                                                Rendering::ViewPurpose::UtilityCapture,
                                                Rendering::ViewParticipation::OnDemand);
     h.rs.Views().SetViewWorldId(capture, h.worldId);
-    h.rs.Views().SetViewRenderLayerMask(capture, GameEngine::Rendering::RenderLayerMask::Default());
+    h.rs.Views().SetViewRenderLayerMask(capture, 0x1u);
     ASSERT_TRUE(h.PrimeToFastPath());
     const uint64_t renderVersion = h.rs.RenderContentVersion(h.worldId);
     const uint64_t casterVersion = h.rs.ShadowCasterContentVersion(h.worldId);
@@ -1197,7 +711,7 @@ TEST_F(ExtractionFastPathTest, OnDemandViewChurnLeavesContentVersions)
     EXPECT_EQ(h.rs.ShadowCasterContentVersion(h.worldId), casterVersion);
 
     ASSERT_TRUE(h.PrimeToFastPath());
-    h.rs.Views().SetViewRenderLayerMask(h.viewId, GameEngine::Rendering::RenderLayerMask{0x2u});
+    h.rs.Views().SetViewRenderLayerMask(h.viewId, 0x2u);
     h.StepFrame();
     EXPECT_GT(h.rs.RenderContentVersion(h.worldId), renderVersion);
     EXPECT_GT(h.rs.ShadowCasterContentVersion(h.worldId), casterVersion);
@@ -1214,7 +728,7 @@ TEST_F(ExtractionFastPathTest, OnDemandActivationWithAMoverStillBumps)
                                                Rendering::ViewPurpose::UtilityCapture,
                                                Rendering::ViewParticipation::OnDemand);
     h.rs.Views().SetViewWorldId(capture, h.worldId);
-    h.rs.Views().SetViewRenderLayerMask(capture, GameEngine::Rendering::RenderLayerMask::Default());
+    h.rs.Views().SetViewRenderLayerMask(capture, 0x1u);
     ASSERT_TRUE(h.PrimeToFastPath());
     const uint64_t renderVersion = h.rs.RenderContentVersion(h.worldId);
     const uint64_t casterVersion = h.rs.ShadowCasterContentVersion(h.worldId);
@@ -1345,13 +859,13 @@ TEST_F(ExtractionFastPathTest, UnsubscribedWorldStaysOnFullLane)
 
     ViewId thumbView = h.rs.Views().AllocateView("ThumbView", h.cameraId);
     h.rs.Views().SetViewWorldId(thumbView, thumbWorld->GetWorldId());
-    h.rs.Views().SetViewRenderLayerMask(thumbView, GameEngine::Rendering::RenderLayerMask::Default());
+    h.rs.Views().SetViewRenderLayerMask(thumbView, 0x1u);
 
     ECS::Entity e = thumbWorld->Create();
     e.Set(MakeTransformAt(0.0f, 0.0f, 0.0f));
     MeshRenderer mr{};
     mr.meshGpuHandleId = static_cast<uint64>(h.meshHandle);
-    mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
+    mr.renderLayerMask = 0x1u;
     mr.materialAssetGuid.Set(h.materialGuid);
     e.Set(mr);
     thumbWorld->ProcessCommands();
@@ -1583,7 +1097,7 @@ TEST_F(ExtractionFastPathTest, FirstMorphWeightEditSwapsSubmissionMeshHandle)
         MeshRenderer mr{};
         mr.modelAssetGuid.Set(modelGuid);
         mr.meshId = 0;
-        mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
+        mr.renderLayerMask = 0x1u;
         mr.materialAssetGuid.Set(h.materialGuid);
         morph.Set(mr);
     }
@@ -1763,7 +1277,7 @@ TEST_F(ExtractionFastPathTest, SubsetOverCeilingPinsFullLane)
         e.Set(MakeTransformAt(static_cast<float>(i % 64), 0.0f, static_cast<float>(i / 64)));
         MeshRenderer mr{};
         mr.meshGpuHandleId = static_cast<uint64>(h.meshHandle);
-        mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
+        mr.renderLayerMask = 0x1u;
         mr.materialAssetGuid.Set(h.materialGuid);
         e.Set(mr);
         e.Set(AnimatorRef{});
@@ -1795,7 +1309,7 @@ namespace
 struct CasterChangeCopy
 {
     uint64_t Version = 0;
-    ShadowCasterChangeScope Scope = ShadowCasterChangeScope::Unbounded;
+    bool Unattributed = true;
     std::vector<ShadowCasterChangeSphere> Spheres;
 };
 
@@ -1862,7 +1376,7 @@ PoolParityCapture RunPoolParityScenario(Rendering::IDevice* device, bool fastPat
         cap.moverIndicesPerFrame.push_back(std::move(movers));
         const ShadowCasterChangeSet changes = h.rs.GetShadowCasterChanges(h.worldId);
         cap.casterChangesPerFrame.push_back(
-            {changes.Version, changes.Scope, {changes.Spheres.begin(), changes.Spheres.end()}});
+            {changes.Version, changes.Unattributed, {changes.Spheres.begin(), changes.Spheres.end()}});
         if (h.Stats().FastFrame != 0)
             ++cap.fastFrames;
     }
@@ -1906,7 +1420,7 @@ TEST_F(ExtractionFastPathTest, PatchLaneOnAPoolMatchesTheFullLane)
         const CasterChangeCopy& a = poolPatch.casterChangesPerFrame[f];
         const CasterChangeCopy& b = inlinePatch.casterChangesPerFrame[f];
         EXPECT_EQ(a.Version, b.Version) << "caster version diverged at frame " << f;
-        EXPECT_EQ(a.Scope, b.Scope) << "caster attribution diverged at frame " << f;
+        EXPECT_EQ(a.Unattributed, b.Unattributed) << "caster attribution diverged at frame " << f;
         ASSERT_EQ(a.Spheres.size(), b.Spheres.size()) << "frame " << f;
         EXPECT_EQ(0, std::memcmp(a.Spheres.data(), b.Spheres.data(),
                                  a.Spheres.size() * sizeof(ShadowCasterChangeSphere)))
@@ -1938,7 +1452,7 @@ TEST_F(ExtractionFastPathTest, PatchLaneOutputsDoNotDependOnTheFeedOrder)
             << "the frame-mover list (in order) depends on the feed order at frame " << f;
         const CasterChangeCopy& a = reverse.casterChangesPerFrame[f];
         const CasterChangeCopy& b = forward.casterChangesPerFrame[f];
-        EXPECT_EQ(a.Scope, b.Scope) << "caster attribution depends on the feed order at frame " << f;
+        EXPECT_EQ(a.Unattributed, b.Unattributed) << "caster attribution depends on the feed order at frame " << f;
         ASSERT_EQ(a.Spheres.size(), b.Spheres.size()) << "frame " << f;
         EXPECT_EQ(0, std::memcmp(a.Spheres.data(), b.Spheres.data(),
                                  a.Spheres.size() * sizeof(ShadowCasterChangeSphere)))
@@ -2007,8 +1521,7 @@ TEST_F(ExtractionFastPathTest, PatchLaneAttributesCastersAgainstTheirPreviousPos
         ASSERT_EQ(expected.size(), kMovers) << "frame " << frame;
 
         const ShadowCasterChangeSet changes = h.rs.GetShadowCasterChanges(h.worldId);
-        ASSERT_EQ(changes.Scope, ShadowCasterChangeScope::Bounded)
-            << "frame " << frame << " lost attribution under the cap";
+        ASSERT_FALSE(changes.Unattributed) << "frame " << frame << " lost attribution under the cap";
         const std::vector<ShadowCasterChangeSphere> actual =
             SortedSpheres({changes.Spheres.begin(), changes.Spheres.end()});
         expected = SortedSpheres(std::move(expected));
@@ -2141,7 +1654,7 @@ TEST_F(ExtractionFastPathTest, DirtyBatchDeduplicatesHandlesAndGrantsOnlyActualW
 // ---------------------------------------------------------------------------
 // S0 composition assertion: the stats surface publishes the composition
 // counts the bench post-processing asserts on ("residual ~= CLEANUP" only
-// holds for particle/volume/ocean-free scenes), and they respond to content.
+// holds for smoke/volume-free scenes), and they respond to content.
 // ---------------------------------------------------------------------------
 TEST_F(ExtractionFastPathTest, CompositionCountsPublishedForResidualAttribution)
 {
@@ -2186,7 +1699,7 @@ TEST_F(ExtractionFastPathTest, MovingParticlesReportUnversionedMotionForTheViews
     ASSERT_TRUE(h.Initialize(m_Device.get(), true));
     // A second view of the same world whose clip volume is 100 units to the side.
     CameraData away = MakeIdentityCamera();
-    away.viewProj[3][0] = 100.0f;
+    away.viewProj[12] = 100.0f;
     const CameraId awayCamera = h.rs.Views().AllocateCamera("AwayCamera");
     h.rs.Views().SetCameraData(awayCamera, away);
     const ViewId awayView = h.rs.Views().AllocateView("AwayView", awayCamera);
@@ -2825,7 +2338,7 @@ TEST_F(ExtractionFastPathTest, ContinuityStampMovesOnAStableHandleMeshReload)
     e.Set(MakeTransformAt(0.0f, 0.0f, 0.0f));
     MeshRenderer mr{};
     mr.meshGpuHandleId = static_cast<uint64>(handles[0]);
-    mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::Default();
+    mr.renderLayerMask = 0x1u;
     mr.materialAssetGuid.Set(h.materialGuid);
     e.Set(mr);
     h.world->ProcessCommands();
@@ -2884,4 +2397,83 @@ TEST_F(ExtractionFastPathTest, ContinuityStampMovesOnMaterialRebind)
         mr->materialAssetGuid.Set(materialB);
     h.StepFrame();
     EXPECT_NE(StampOf(h, slot), stampBefore) << "a material rebind changes what the slot renders";
+}
+
+TEST_F(ExtractionFastPathTest, SortingEditsAndDisableRefreshStationarySubmissions)
+{
+    ExtractionHarness h;
+    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
+    auto actor = h.SpawnRenderable(0, 0, 0);
+    actor.Set(RenderSorting{10, 2, false});
+    ASSERT_TRUE(h.PrimeToFastPath());
+    auto readOrder = [&]()
+    {
+        const auto submissions = h.extraction->GetSubmissionsForTest();
+        EXPECT_FALSE(submissions.empty());
+        return submissions.empty() ? -999 : submissions.front().Sorting.Order;
+    };
+    EXPECT_EQ(readOrder(), 2);
+    actor.Set(RenderSorting{10, -5, false});
+    h.StepFrame();
+    EXPECT_EQ(readOrder(), -5);
+    h.world->SetComponentEnabledImmediate(actor.GetHandle(), ECS::GetComponentTypeId<RenderSorting>(), false);
+    h.StepFrame();
+    EXPECT_EQ(readOrder(), 0);
+}
+
+TEST_F(ExtractionFastPathTest, SortingParentMovementReparentAndRemovalRefreshDescendants)
+{
+    ExtractionHarness h;
+    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
+    auto actor = h.SpawnRenderable(0, 0, 0);
+    auto parent = h.world->Create();
+    parent.Set(MakeTransformAt(0, 0, 2));
+    parent.Set(RenderSorting{10, 3, true});
+    actor.Set(Parent{parent.GetHandle()});
+    ASSERT_TRUE(h.PrimeToFastPath());
+    ASSERT_FALSE(h.extraction->GetSubmissionsForTest().empty());
+    EXPECT_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.Group, parent.GetHandle());
+    parent.Set(MakeTransformAt(0, 0, 7));
+    h.StepFrame();
+    EXPECT_FLOAT_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.GroupPosition[2], 7);
+    auto other = h.world->Create();
+    other.Set(MakeTransformAt(0, 0, 4));
+    other.Set(RenderSorting{-10, -3, true});
+    actor.Set(Parent{other.GetHandle()});
+    h.StepFrame();
+    EXPECT_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.Group, other.GetHandle());
+    EXPECT_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.Order, -3);
+    other.Remove<RenderSorting>();
+    h.StepFrame();
+    EXPECT_FALSE(h.extraction->GetSubmissionsForTest().front().Sorting.Authored);
+}
+
+TEST_F(ExtractionFastPathTest, SortingLayerPriorityReorderRefreshesStationaryArtwork)
+{
+    struct RestoreLayers
+    {
+        Rendering::SortingLayers Saved = Rendering::SortingLayers::Current();
+        ~RestoreLayers()
+        {
+            std::string error;
+            Rendering::SortingLayers::SetCurrent(Saved, error);
+        }
+    } restore;
+    ExtractionHarness h;
+    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
+    auto actor = h.SpawnRenderable(0, 0, 0);
+    actor.Set(RenderSorting{10, 0, false});
+    ASSERT_TRUE(h.PrimeToFastPath());
+    auto layers = Rendering::SortingLayers::Defaults();
+    for (auto& layer : layers.Layers)
+        if (layer.Id == 10)
+            layer.Order = -100;
+    std::string error;
+    ASSERT_TRUE(Rendering::SortingLayers::SetCurrent(layers, error));
+    h.StepFrame();
+    ASSERT_FALSE(h.extraction->GetSubmissionsForTest().empty());
+    EXPECT_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.Layer, -100);
+    ASSERT_TRUE(Rendering::SortingLayers::SetCurrent(Rendering::SortingLayers::Defaults(), error));
+    h.StepFrame();
+    EXPECT_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.Layer, 10);
 }

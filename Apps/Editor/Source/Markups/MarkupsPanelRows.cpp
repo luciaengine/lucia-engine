@@ -1,11 +1,8 @@
 #include "Markups/MarkupsPanelRows.h"
 
-#include "Markups/MarkupActionMenuItems.h"
-
 #include "Components/Markup/Markup.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
-#include "Editor/Registries/MarkupActionRegistry.h"
 #include "MarkupECS/MarkupService.h"
 #include "Markups/MarkupCommentText.h"
 #include "Markups/MarkupEditorBridge.h"
@@ -56,7 +53,7 @@ std::unique_ptr<Label> MakeStatusPill(uint32 status)
     if (MarkupTagReadsDarkText(status))
         pill->AddClass("markups-status-pill-dark-text");
     // The fill is the vocabulary's color for the status: project data, not a theme color.
-    pill->Style().Set(Style::BackgroundColor, *fill);
+    pill->Overrides().Set(Style::BackgroundColor, *fill);
     return pill;
 }
 
@@ -111,22 +108,6 @@ void SortActivityNewestFirst(std::vector<MarkupActivityItem>& items)
     });
 }
 
-std::vector<ContextMenuManipulator::Item> BuildMarkupActionMenuItems(const ECS::World& world, ECS::EntityHandle entity)
-{
-    std::vector<ContextMenuManipulator::Item> items;
-    for (const MarkupAction* action : MarkupActionRegistry::Get().GetActions())
-    {
-        ContextMenuManipulator::Item item;
-        item.Path = action->Label;
-        item.IconPath = action->Icon;
-        item.OnActivate = [&world, entity, run = action->Action]() { run(world, entity); };
-        if (action->DisabledReason && !action->DisabledReason(world, entity).empty())
-            item.Flags = MenuItemFlag_Disabled;
-        items.push_back(std::move(item));
-    }
-    return items;
-}
-
 std::unique_ptr<UIElement> BuildMarkupRow(MarkupEditorBridge& bridge, const ECS::World& world, ECS::EntityHandle entity,
                                           int64 now, bool selected, const MarkupRowActions& actions)
 {
@@ -144,7 +125,7 @@ std::unique_ptr<UIElement> BuildMarkupRow(MarkupEditorBridge& bridge, const ECS:
     // The color the volume and its Scene View label draw in: its own, else its status's.
     auto swatch = std::make_unique<UIElement>();
     swatch->AddClass("markups-color-dot");
-    swatch->Style().Set(Style::BackgroundColor, MarkupDisplayArgb(markup));
+    swatch->Overrides().Set(Style::BackgroundColor, MarkupDisplayArgb(markup));
     row->AddChild(std::move(swatch));
     row->AddChild(BuildMarkupKindGlyph(ReadMarkupKind(world, entity)));
     row->AddChild(MakeLabel(MarkupTitle(world, entity), "markups-title"));
@@ -184,8 +165,6 @@ std::unique_ptr<UIElement> BuildMarkupRow(MarkupEditorBridge& bridge, const ECS:
                               });
     row->AddChild(std::move(eye));
     WireRowPointer(*row, bridge, entity, actions);
-    row->AddManipulator(ContextMenuManipulator::Create(
-        ContextMenuManipulator::ItemsProvider([&world, entity]() { return BuildMarkupActionMenuItems(world, entity); })));
     return row;
 }
 

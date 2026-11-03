@@ -1,5 +1,6 @@
 #pragma once
 
+#include "JobSystem/Task.h"
 #include "Jobs/FileChangeTracker.h"
 #include "Jobs/DependencyGraphAnalyzer.h"
 #include "Types/Types.h"
@@ -24,7 +25,7 @@ namespace GameEngine {
  * intelligent incremental compilation, achieving target performance of <15ms
  * compilation time vs 800-900ms for full compilation.
  */
-class IncrementalCompilationTask {
+class IncrementalCompilationTask : public JobSystem::Task {
 public:
     /**
      * @brief Compilation strategy to use
@@ -73,20 +74,24 @@ public:
 public:
     /**
      * @brief Constructor
+     * @param jobSystem Thread pool for task execution
+     * @param token Cancellation token
      * @param clrHost CoreCLR host for managed compilation
      * @param config Compilation configuration
      */
-    IncrementalCompilationTask(CoreCLRHost& clrHost, const CompilationConfig& config);
+    explicit IncrementalCompilationTask(JobSystem::WorkStealingThreadPool* jobSystem,
+                                       CoreCLRHost& clrHost,
+                                       const CompilationConfig& config);
 
     /**
      * @brief Destructor
      */
-    ~IncrementalCompilationTask();
+    ~IncrementalCompilationTask() override;
 
     /**
-     * @brief Run the compilation on the calling thread
+     * @brief Execute the incremental compilation task
      */
-    void Execute();
+    void Execute() override;
 
     /**
      * @brief Get the compilation result
@@ -229,11 +234,14 @@ private:
 
 /**
  * @brief Factory function to create incremental compilation task
+ * @param jobSystem Thread pool for task execution
+ * @param token Cancellation token
  * @param clrHost CoreCLR host for managed compilation
  * @param config Compilation configuration
  * @return Unique pointer to IncrementalCompilationTask
  */
 std::unique_ptr<IncrementalCompilationTask> CreateIncrementalCompilationTask(
+    JobSystem::WorkStealingThreadPool* jobSystem,
     CoreCLRHost& clrHost,
     const IncrementalCompilationTask::CompilationConfig& config);
 

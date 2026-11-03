@@ -10,7 +10,7 @@
  * ellipsis, and it gives up its width before the value gives up more than a fraction of a pixel.
  * It takes the pointer, so resting on a cut caption shows its whole text as the tooltip, unless the
  * field or an element above it carries a tooltip of its own, which answers first
- * (TooltipOverlay::FindTooltip); a press on it bubbles to the field, which handles it as a press
+ * (TooltipOverlay::FindTooltipText); a press on it bubbles to the field, which handles it as a press
  * on itself.
  */
 .field-suffix-slot {

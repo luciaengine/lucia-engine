@@ -23,6 +23,11 @@ public:
 
     void SetCacheRoot(const std::filesystem::path& root) override { m_CacheRoot = root; }
 
+    // Drops the in-flight set, which is keyed by paths from the project being
+    // closed. A running decode finishes against the old cache root and its
+    // result is discarded with the entry.
+    void ResetForProjectSwitch() override;
+
     std::string GetOrRequest(const std::filesystem::path& assetPath,
                              int desiredSize,
                              std::function<void(const std::string& relPath)> onReady,

@@ -313,32 +313,35 @@ async function scenarioRenderGraphEdit() {
 // SC: texture hot-reload — replace a UI icon with a clearly different one.
 // Edits BOTH the project source (Debug/...) and editor source (DebugFast/...)
 // because the same icon may load from either depending on resolution priority.
-// Targets skyenvironment.svg; swaps with AmbientLight.svg. Visual delta in
-// Hierarchy proves UI texture reload propagated.
+// Targets Sphere.png; swaps with Plane.png. Visual delta in Hierarchy proves
+// UI texture reload propagated.
 // =====================================================================
 async function scenarioTextureEdit() {
     const name = 'texture-edit-ui-icon';
-    // Swap source: skyenvironment.svg (the Sky Environment entity icon in Hierarchy).
-    // Swap target: AmbientLight.svg (a visually distinct sun glyph).
-    const skyAbs     = path.join(EDITOR_ASSETS_ROOT, 'Icons', 'skyenvironment.svg');
-    const ambientAbs = path.join(EDITOR_ASSETS_ROOT, 'Icons', 'AmbientLight.svg');
-    if (!fs.existsSync(skyAbs) || !fs.existsSync(ambientAbs)) {
-        return record(name, 'skip', 'skyenvironment.svg or AmbientLight.svg not found in editor Icons/');
+    // Swap source: Sphere.png (visible in Hierarchy as the Sphere entity icon).
+    // Swap target: Cube.png (visually distinct — solid filled cube glyph).
+    // Plane.png used to be the target but it's a near-blank icon; the hot-reload
+    // pipeline was technically working but the result looked indistinguishable
+    // from "icon disappeared." Cube produces an unambiguous visual delta.
+    const sphereAbs = path.join(EDITOR_ASSETS_ROOT, 'Icons', 'Sphere.png');
+    const cubeAbs   = path.join(EDITOR_ASSETS_ROOT, 'Icons', 'Cube.png');
+    if (!fs.existsSync(sphereAbs) || !fs.existsSync(cubeAbs)) {
+        return record(name, 'skip', 'Sphere.png or Cube.png not found in editor Icons/');
     }
 
     const hier = await ipc('get_scene_hierarchy', {}, { timeoutMs: 5000 });
-    const skyEnt = hier.entities.find(e => e.name === 'Sky Environment');
-    if (skyEnt) await ipc('select_entity', { entityId: skyEnt.id }, { timeoutMs: 5000 });
+    const sphereEnt = hier.entities.find(e => e.name === 'Sphere');
+    if (sphereEnt) await ipc('select_entity', { entityId: sphereEnt.id }, { timeoutMs: 5000 });
     await sleep(400);
 
     const before = await shootAndDecode(name, 'before', { target: 'panel', panelId: 'Hierarchy' });
 
     const backups = [];
-    backups.push(backupFile(skyAbs));
+    backups.push(backupFile(sphereAbs));
     for (const b of backups) trackForRestore(b);
 
-    fs.copyFileSync(ambientAbs, skyAbs);
-    logStep(name, 'replaced Icons/skyenvironment.svg with AmbientLight.svg bytes');
+    fs.copyFileSync(cubeAbs, sphereAbs);
+    logStep(name, 'replaced Icons/Sphere.png with Cube.png bytes');
     await waitForReload(3500);
 
     if (!await healthCheck()) {
@@ -546,10 +549,10 @@ async function scenarioSceneMaterialTexture() {
         await ipc('select_asset', { path: 'IntegrationTests/IT_TexB.material' }, { timeoutMs: 10000 });
         await sleep(2500);
 
-        // Point the Ground at material A and frame an empty stretch of it.
+        // Point the Plane at material A and frame an empty stretch of it.
         const hier = await ipc('get_scene_hierarchy', {}, { timeoutMs: 5000 });
-        const plane = hier.entities.find(e => e.name === 'Ground');
-        if (!plane) { cleanup(); return record(name, 'skip', 'no Ground entity in scene'); }
+        const plane = hier.entities.find(e => e.name === 'Plane');
+        if (!plane) { cleanup(); return record(name, 'skip', 'no Plane entity in scene'); }
         await ipc('set_component', {
             entityId: plane.id, component: 'MeshRenderer', values: { materialAssetGuid: matA },
         }, { timeoutMs: 5000 });

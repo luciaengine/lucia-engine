@@ -1,16 +1,15 @@
 #include "Assets/CoreAssetRegistrations.h"
 
-#include "Animation/Humanoid/HumanoidRig.h"
+#include "Animation/HumanoidRig.h"
 #include "Animation/AnimationController.h"
 #include "Animation/AnimationLibrary.h"
 #include "Animation/RetargetMap.h"
-#include "Animation/Skeleton/SkeletonProfile.h"
-#include "Animation/SpriteFrames.h"
+#include "Animation/SkeletonProfile.h"
+#include "Sprite2D/SpriteFrames.h"
 #include "Assets/AudioAsset.h"
 #include "Assets/AnimationClip.h"
 #include "Assets/BinaryAsset.h"
 #include "Assets/ClipSetAsset.h"
-#include "Assets/CubeLutAsset.h"
 #include "Assets/MaterialAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/RenderPipelineAsset.h"
@@ -21,10 +20,12 @@
 #include "Assets/TimelineAsset.h"
 #include "Assets/AnimationGraphAsset.h"
 #include "Assets/NavGridAsset.h"
-#include "Assets/DayCycleProfile.h"
-#include "Assets/NavSurfaceAsset.h"
+#include "Assets/NavMeshAsset.h"
 #include "Assets/SceneAsset.h"
 #include "Graph/GraphAsset.h"
+#include "TileMap/TileMapAsset.h"
+#include "TileMap/TileSetAsset.h"
+#include "PhysicsECS/PhysicsMaterialAsset.h"
 
 #include "AssetCore/AssetTypes.h"
 #include "Logger/Logger.h"
@@ -45,12 +46,6 @@ template <typename TAsset>
 SharedPtr<Asset> CreateAssetAtPath(const AssetMetadata& metadata)
 {
     return std::make_shared<TAsset>(metadata.Guid, metadata.Path);
-}
-
-// A scene or a prefab: one text asset class, typed by the file's registered type.
-SharedPtr<Asset> CreateSceneTextAsset(const AssetMetadata& metadata)
-{
-    return std::make_shared<SceneAsset>(metadata.Guid, metadata.Path, metadata.Type);
 }
 
 // BinaryAsset keeps the typed category with generic storage/path handling, for
@@ -101,7 +96,6 @@ void RegisterCoreAssetTypes(AssetTypeRegistry& typeRegistry)
 #endif
 
     RegisterCoreType(typeRegistry, AssetType::Texture, &CreateAssetAtPath<TextureAsset>, "Texture Asset");
-    RegisterCoreType(typeRegistry, AssetType::CubeLut, &CreateAssetAtPath<CubeLutAsset>, "Cube LUT Asset");
     RegisterCoreType(typeRegistry, AssetType::Animation, &CreateAssetAtPath<AnimationClip>, "Animation Asset");
 
     // Humanoid retargeting. The compound extensions (.profile.json /
@@ -118,7 +112,11 @@ void RegisterCoreAssetTypes(AssetTypeRegistry& typeRegistry)
     RegisterCoreType(typeRegistry, AssetType::AnimationController,
                      &CreateAssetAtPath<Animation::AnimationController>, "Animation Controller");
     RegisterCoreType(typeRegistry, AssetType::SpriteFrames,
-                     &CreateAssetAtPath<Animation::SpriteFrames>, "Sprite Frames");
+                     &CreateAssetAtPath<Sprite2D::SpriteFrames>, "Sprite Frames");
+    RegisterCoreType(typeRegistry, AssetType::TileSet, &CreateAssetAtPath<TileMap::TileSetAsset>, "Tile Set");
+    RegisterCoreType(typeRegistry, AssetType::TileMap, &CreateAssetAtPath<TileMap::TileMapAsset>, "Tile Map");
+    RegisterCoreType(typeRegistry, AssetType::PhysicsMaterial,
+                     &CreateAssetAtPath<PhysicsECS::PhysicsMaterialAsset>, "Physics Material");
     RegisterCoreType(typeRegistry, AssetType::Timeline, &CreateAssetAtPath<TimelineAsset>, "Timeline Asset");
     RegisterCoreType(typeRegistry, AssetType::AnimationGraph,
                      &CreateAssetAtPath<AnimationGraphAsset>, "Animation Graph");
@@ -137,15 +135,12 @@ void RegisterCoreAssetTypes(AssetTypeRegistry& typeRegistry)
                      kScriptAssetTypePriority);
 
     // Text content for inspector and tooling (runtime loads via SceneIO).
-    RegisterCoreType(typeRegistry, AssetType::Scene, &CreateSceneTextAsset, "Scene Asset");
-    RegisterCoreType(typeRegistry, AssetType::Prefab, &CreateSceneTextAsset, "Prefab Asset");
+    RegisterCoreType(typeRegistry, AssetType::Scene, &CreateAssetAtPath<SceneAsset>, "Scene Asset");
 
     RegisterCoreType(typeRegistry, AssetType::NavigationGrid, &CreateAssetAtPath<NavGridAsset>,
                      "Navigation Grid Asset");
-    RegisterCoreType(typeRegistry, AssetType::NavigationSurfaceData, &CreateAssetAtPath<NavSurfaceAsset>,
-                     "Navigation Surface Data");
-    RegisterCoreType(typeRegistry, AssetType::DayCycleProfile, &CreateAssetAtPath<DayCycleProfile>,
-                     "Day Cycle Profile");
+    RegisterCoreType(typeRegistry, AssetType::NavigationMesh, &CreateAssetAtPath<NavMeshAsset>,
+                     "Navigation Mesh Asset");
 
     // Ocean payloads are consumed by the ocean systems directly.
     RegisterCoreType(typeRegistry, AssetType::OceanDepthCache, &CreateBinaryAsset, "Ocean Depth Cache");
@@ -160,9 +155,8 @@ void RegisterCoreAssetTypes(AssetTypeRegistry& typeRegistry)
     // dims inferred from file size).
     RegisterCoreType(typeRegistry, AssetType::TerrainHeightmap, &CreateBinaryAsset, "Terrain Heightmap");
 
-    // One zone's brush-authored R32F offset field, R8 weight mask or RGBA32F
-    // colour, GUID-referenced from a TerrainSculptZone / TerrainPaintZone /
-    // TerrainColorZone component.
+    // One zone's brush-authored R32F offset field or R8 weight mask,
+    // GUID-referenced from a TerrainSculptZone / TerrainPaintZone component.
     // TerrainZonePayloadCodec decodes/encodes it in TerrainService at bake and
     // save time.
     RegisterCoreType(typeRegistry, AssetType::TerrainZoneData, &CreateBinaryAsset, "Terrain Zone Data");

@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 #include "Assets/AssetDecodeGate.h"
-#include "Assets/AssetDecodeInputFiles.h"
 #include "Assets/AssetIOService.h"
 #include "Assets/TextureCookWorkers.h"
 #include "JobSystem/TaskHandle.h"
@@ -15,12 +14,6 @@
 #include <mutex>
 #include <thread>
 #include <vector>
-
-#if !defined(_WIN32)
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#endif
 
 using namespace GameEngine;
 
@@ -75,13 +68,11 @@ class AssetIOServiceTest : public ::testing::Test
     }
 
     // A read request whose decode continuation stashes the bytes and whose
-    // failure path stores the first error and counts every call. Exactly one
-    // of the two futures resolves.
+    // failure path stores the error. Exactly one of the two futures resolves.
     struct CapturedRead
     {
         std::shared_ptr<std::promise<Vector<uint8>>> BytesPromise = std::make_shared<std::promise<Vector<uint8>>>();
         std::shared_ptr<std::promise<String>> FailurePromise = std::make_shared<std::promise<String>>();
-        std::shared_ptr<std::atomic<int>> FailureCount = std::make_shared<std::atomic<int>>(0);
         std::future<Vector<uint8>> Bytes = BytesPromise->get_future();
         std::future<String> Failure = FailurePromise->get_future();
     };
@@ -98,10 +89,9 @@ class AssetIOServiceTest : public ::testing::Test
             bytesPromise->set_value(std::move(data));
             return SharedPtr<Asset>{};
         };
-        request.OnFailure = [failurePromise = capture.FailurePromise, failureCount = capture.FailureCount](const String& error)
+        request.OnFailure = [failurePromise = capture.FailurePromise](const String& error)
         {
-            if (failureCount->fetch_add(1) == 0)
-                failurePromise->set_value(error);
+            failurePromise->set_value(error);
         };
         return request;
     }
@@ -120,28 +110,6 @@ class AssetIOServiceTest : public ::testing::Test
             queued = service->GetQueuedReadCount();
         }
         return queued;
-    }
-
-    // Poll until every decode-gate slot can be taken, then report how many could be. A reader
-    // gives its claimed slot back as it leaves the request, just after OnFailure, so the
-    // deadline only bounds a slot that is never given back.
-    size_t AwaitFreeDecodeSlots()
-    {
-        const std::shared_ptr<AssetDecodeGate> gate = service->GetDecodeGate();
-        if (!gate)
-            return 0;
-        const auto deadline = std::chrono::steady_clock::now() + kResultTimeout;
-        while (true)
-        {
-            size_t taken = 0;
-            while (taken < gate->MaxWorkers() && gate->TryAcquire(AssetDecodeGate::Work::Other))
-                ++taken;
-            for (size_t released = 0; released < taken; ++released)
-                gate->Release(AssetDecodeGate::Work::Other);
-            if (taken == gate->MaxWorkers() || std::chrono::steady_clock::now() > deadline)
-                return taken;
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
     }
 
     std::filesystem::path testDir;
@@ -476,261 +444,6 @@ TEST_F(AssetIOServiceTest, CancelledClaimedReadIsDiscardedBeforeDecodeSubmit)
     EXPECT_NE(capture.Failure.get().find("cancelled"), String::npos);
     EXPECT_EQ(capture.Bytes.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout)
         << "a cancelled request must never submit its decode continuation";
-}
-
-// The files a decode reads besides its asset's own are read by the reader thread, and the
-// decode job takes them from what was read: a named file deleted before the decode looks it up
-// is still served, a named prefix is all that is read of its file, and a file nobody named reads
-// as absent though it exists on disk.
-TEST_F(AssetIOServiceTest, DecodeTakesItsInputFilesFromTheReaderNotTheDisk)
-{
-    const auto path = testDir / "primary.txt";
-    const auto input = testDir / "input.bin";
-    const auto prefixed = testDir / "prefixed.bin";
-    const auto missing = testDir / "missing.bin";
-    const auto unnamed = testDir / "unnamed.bin";
-    WriteFile(path, "primary");
-    WriteFile(input, "input bytes");
-    WriteFile(prefixed, "head and a tail nobody uses");
-    WriteFile(unnamed, "on disk, never named");
-
-    struct Seen
-    {
-        String Input;
-        String Prefix;
-        bool MissingAbsent = false;
-        bool UnnamedAbsent = false;
-    };
-    auto seen = std::make_shared<std::promise<Seen>>();
-    CapturedRead capture;
-    auto request = MakeCapturedRequest(MakeMetadata(path, 7), capture);
-    request.ResolveDecodeInputs = [input, prefixed, missing](const Vector<uint8>&)
-    { return AssetDecodeInputs{.Files = {{input, std::nullopt}, {prefixed, 4}, {missing, std::nullopt}}}; };
-    request.ProcessData = [seen, input, prefixed, missing, unnamed](Vector<uint8>) -> SharedPtr<Asset>
-    {
-        std::filesystem::remove(input);
-        Seen result;
-        Vector<uint8> storage;
-        if (const Vector<uint8>* bytes = ReadAssetDecodeInputFile({input, std::nullopt}, storage))
-            result.Input.assign(bytes->begin(), bytes->end());
-        if (const Vector<uint8>* bytes = ReadAssetDecodeInputFile({prefixed, 4}, storage))
-            result.Prefix.assign(bytes->begin(), bytes->end());
-        result.MissingAbsent = ReadAssetDecodeInputFile({missing, std::nullopt}, storage) == nullptr;
-        result.UnnamedAbsent = ReadAssetDecodeInputFile({unnamed, std::nullopt}, storage) == nullptr;
-        seen->set_value(std::move(result));
-        return SharedPtr<Asset>{};
-    };
-    auto result = seen->get_future();
-    service->SubmitRead(std::move(request));
-
-    ASSERT_EQ(result.wait_for(kResultTimeout), std::future_status::ready);
-    const Seen decode = result.get();
-    EXPECT_EQ(decode.Input, "input bytes");
-    EXPECT_EQ(decode.Prefix, "head");
-    EXPECT_TRUE(decode.MissingAbsent);
-    EXPECT_TRUE(decode.UnnamedAbsent) << "the decode read a file from disk";
-}
-
-// A cancel that lands after the read, before its decode inputs are read, withdraws the decode:
-// OnFailure fires once, ProcessData never runs, and the claimed decode-gate slot is given back.
-TEST_F(AssetIOServiceTest, CancelBeforeTheInputReadsDiscardsTheDecodeAndFreesItsSlot)
-{
-    const auto path = testDir / "cancel_inputs.txt";
-    const auto input = testDir / "cancel_inputs.bin";
-    WriteFile(path, "primary");
-    WriteFile(input, "input");
-
-    CapturedRead capture;
-    auto request = MakeCapturedRequest(MakeMetadata(path, 7), capture);
-    auto cancelFlag = std::make_shared<std::atomic<bool>>(false);
-    request.CancelRequested = cancelFlag;
-    request.ResolveDecodeInputs = [cancelFlag, input](const Vector<uint8>&)
-    {
-        cancelFlag->store(true, std::memory_order_release);
-        return AssetDecodeInputs{.Files = {{input, std::nullopt}}};
-    };
-    service->SubmitRead(std::move(request));
-
-    ASSERT_EQ(capture.Failure.wait_for(kResultTimeout), std::future_status::ready);
-    EXPECT_NE(capture.Failure.get().find("cancelled"), String::npos);
-    EXPECT_EQ(capture.Bytes.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout)
-        << "a request cancelled before its input reads submitted its decode";
-    ASSERT_NE(service->GetDecodeGate(), nullptr);
-    EXPECT_EQ(AwaitFreeDecodeSlots(), service->GetDecodeGate()->MaxWorkers())
-        << "the cancelled read kept its decode-gate slot";
-}
-
-// A cancel that lands while the reader is inside one decode input stops it there: the next input
-// is never opened, ProcessData never runs, OnFailure fires once and the slot is given back. Both
-// inputs are FIFOs, whose open blocks the reader until a writer opens the other end, so the reader
-// waits inside the first input while the cancel lands; the first input's writer then lets it go.
-TEST_F(AssetIOServiceTest, CancelDuringAnInputReadStopsBeforeTheNextInput)
-{
-#if defined(_WIN32)
-    GTEST_SKIP() << "Holds the reader inside an input read with a POSIX FIFO";
-#else
-    const auto path = testDir / "fifo_inputs.txt";
-    const auto first = testDir / "first.fifo";
-    const auto second = testDir / "second.fifo";
-    WriteFile(path, "primary");
-    ASSERT_EQ(mkfifo(first.c_str(), 0600), 0);
-    ASSERT_EQ(mkfifo(second.c_str(), 0600), 0);
-
-    CapturedRead capture;
-    auto request = MakeCapturedRequest(MakeMetadata(path, 7), capture);
-    auto cancelFlag = std::make_shared<std::atomic<bool>>(false);
-    request.CancelRequested = cancelFlag;
-    auto resolving = std::make_shared<std::promise<void>>();
-    std::future<void> resolved = resolving->get_future();
-    request.ResolveDecodeInputs = [resolving, first, second](const Vector<uint8>&)
-    {
-        resolving->set_value();
-        return AssetDecodeInputs{.Files = {{first, std::nullopt}, {second, std::nullopt}}};
-    };
-    service->SubmitRead(std::move(request));
-    ASSERT_EQ(resolved.wait_for(kResultTimeout), std::future_status::ready);
-
-    // The reader is now on its way into the first FIFO's open, where it waits for a writer.
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    cancelFlag->store(true, std::memory_order_release);
-    // A non-blocking writer opens only while a reader is in the FIFO, and lets that reader's open
-    // return. Each writer stays open until the reader has moved on.
-    const int firstWriter = open(first.c_str(), O_WRONLY | O_NONBLOCK);
-    const bool failed = capture.Failure.wait_for(kResultTimeout) == std::future_status::ready;
-    const int secondWriter = open(second.c_str(), O_WRONLY | O_NONBLOCK);
-    EXPECT_LT(secondWriter, 0) << "the reader opened the next input after the cancel";
-    const bool failedAfterRelease =
-        failed || capture.Failure.wait_for(kResultTimeout) == std::future_status::ready;
-    for (const int writer : {firstWriter, secondWriter})
-    {
-        if (writer >= 0)
-            close(writer);
-    }
-
-    ASSERT_TRUE(failedAfterRelease);
-    EXPECT_NE(capture.Failure.get().find("cancelled"), String::npos);
-    EXPECT_EQ(capture.Bytes.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout)
-        << "a request cancelled during its input reads submitted its decode";
-    ASSERT_NE(service->GetDecodeGate(), nullptr);
-    EXPECT_EQ(AwaitFreeDecodeSlots(), service->GetDecodeGate()->MaxWorkers())
-        << "the cancelled read kept its decode-gate slot";
-#endif
-}
-
-// A cancel that lands while the reader is inside the last decode input withdraws the decode after
-// it: ProcessData never runs, OnFailure fires once and the slot is given back. The only input is a
-// FIFO, whose open blocks the reader until a writer opens the other end. The cancel is set before
-// any writer opens, and a non-blocking writer opens only while the reader waits inside that open,
-// so a writer that opens shows the reader passed the check before the input with the flag clear:
-// only the check after the last input can stop the request. An attempt whose cancel that first
-// check saw opens no writer and shows nothing, so it is made again.
-TEST_F(AssetIOServiceTest, CancelDuringTheLastInputReadWithdrawsTheDecode)
-{
-#if defined(_WIN32)
-    GTEST_SKIP() << "Holds the reader inside an input read with a POSIX FIFO";
-#else
-    constexpr int kAttempts = 20;
-    const auto path = testDir / "last_input.txt";
-    WriteFile(path, "primary");
-
-    for (int attempt = 0; attempt < kAttempts; ++attempt)
-    {
-        const auto fifo = testDir / ("last_input_" + std::to_string(attempt) + ".fifo");
-        ASSERT_EQ(mkfifo(fifo.c_str(), 0600), 0);
-
-        CapturedRead capture;
-        auto request = MakeCapturedRequest(MakeMetadata(path, 7), capture);
-        auto cancelFlag = std::make_shared<std::atomic<bool>>(false);
-        request.CancelRequested = cancelFlag;
-        auto resolving = std::make_shared<std::promise<void>>();
-        std::future<void> resolved = resolving->get_future();
-        request.ResolveDecodeInputs = [resolving, fifo](const Vector<uint8>&)
-        {
-            resolving->set_value();
-            return AssetDecodeInputs{.Files = {{fifo, std::nullopt}}};
-        };
-        service->SubmitRead(std::move(request));
-        ASSERT_EQ(resolved.wait_for(kResultTimeout), std::future_status::ready);
-        cancelFlag->store(true, std::memory_order_release);
-
-        // Open a writer as soon as the reader is inside the FIFO's open; a request that ends first
-        // was stopped by the check before the input.
-        int writer = -1;
-        const auto deadline = std::chrono::steady_clock::now() + kResultTimeout;
-        while (writer < 0 && capture.Failure.wait_for(std::chrono::milliseconds(1)) != std::future_status::ready &&
-               capture.Bytes.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready &&
-               std::chrono::steady_clock::now() < deadline)
-            writer = open(fifo.c_str(), O_WRONLY | O_NONBLOCK);
-        if (writer < 0)
-        {
-            ASSERT_EQ(capture.Failure.wait_for(std::chrono::milliseconds(0)), std::future_status::ready)
-                << "the request neither entered its input nor ended";
-            continue;
-        }
-
-        const auto ended = std::chrono::steady_clock::now() + kResultTimeout;
-        while (capture.Failure.wait_for(std::chrono::milliseconds(1)) != std::future_status::ready &&
-               capture.Bytes.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready &&
-               std::chrono::steady_clock::now() < ended)
-        {
-        }
-        close(writer);
-        EXPECT_EQ(capture.Bytes.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout)
-            << "a request cancelled during its last input read submitted its decode";
-        ASSERT_EQ(capture.Failure.wait_for(std::chrono::milliseconds(0)), std::future_status::ready)
-            << "a request cancelled during its last input read did not fail";
-        EXPECT_NE(capture.Failure.get().find("cancelled"), String::npos);
-        EXPECT_EQ(capture.FailureCount->load(), 1);
-        ASSERT_NE(service->GetDecodeGate(), nullptr);
-        EXPECT_EQ(AwaitFreeDecodeSlots(), service->GetDecodeGate()->MaxWorkers())
-            << "the cancelled read kept its decode-gate slot";
-        return;
-    }
-    FAIL() << "in " << kAttempts << " attempts no cancel landed while the reader was inside the input";
-#endif
-}
-
-// A decode input whose read throws fails its request once, with an error that names the file:
-// ProcessData never runs, the slot is given back, and the reader goes on to serve the next
-// request. The input is a sparse file of 1 PiB, more than the process's address space holds, so
-// reading it whole throws std::bad_alloc.
-TEST_F(AssetIOServiceTest, DecodeInputWhoseReadThrowsFailsTheRequestAndTheReaderGoesOn)
-{
-#if defined(_WIN32)
-    GTEST_SKIP() << "Needs a sparse file, which an NTFS file is only when it is marked so";
-#else
-    constexpr uintmax_t kSparseFileBytes = uintmax_t{1} << 50;
-    const auto path = testDir / "huge_input.txt";
-    const auto huge = testDir / "huge.bin";
-    WriteFile(path, "primary");
-    WriteFile(huge, "");
-    std::error_code sizeError;
-    std::filesystem::resize_file(huge, kSparseFileBytes, sizeError);
-    if (sizeError)
-        GTEST_SKIP() << "The temporary directory's file system holds no 1 PiB sparse file: " << sizeError.message();
-
-    CapturedRead capture;
-    auto request = MakeCapturedRequest(MakeMetadata(path, 7), capture);
-    request.ResolveDecodeInputs = [huge](const Vector<uint8>&)
-    { return AssetDecodeInputs{.Files = {{huge, std::nullopt}}}; };
-    service->SubmitRead(std::move(request));
-
-    ASSERT_EQ(capture.Failure.wait_for(kResultTimeout), std::future_status::ready);
-    const String error = capture.Failure.get();
-    EXPECT_NE(error.find(huge.string()), String::npos) << error;
-    EXPECT_EQ(capture.Bytes.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout)
-        << "a request whose input read threw submitted its decode";
-    ASSERT_NE(service->GetDecodeGate(), nullptr);
-    EXPECT_EQ(AwaitFreeDecodeSlots(), service->GetDecodeGate()->MaxWorkers())
-        << "the failed read kept its decode-gate slot";
-
-    CapturedRead next;
-    service->SubmitRead(MakeCapturedRequest(MakeMetadata(path, 7), next));
-    ASSERT_EQ(next.Bytes.wait_for(kResultTimeout), std::future_status::ready) << "the reader stopped serving reads";
-    const Vector<uint8> bytes = next.Bytes.get();
-    EXPECT_EQ(String(bytes.begin(), bytes.end()), "primary");
-    EXPECT_EQ(capture.FailureCount->load(), 1);
-#endif
 }
 
 TEST_F(AssetIOServiceTest, EmptyFileGetsOneRetryTickBeforeFailing)

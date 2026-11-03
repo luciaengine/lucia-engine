@@ -23,7 +23,7 @@
 
 #include "ECSModules/Rendering/SkeletonStore.h"
 #include "ECSModules/Rendering/ClipStore.h"
-#include "Animation/Skeleton/SkeletonData.h"
+#include "Animation/SkeletonData.h"
 #include "Types/StringId.h"
 
 #include <algorithm>

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Animation/AnimationPose.h"
-#include "Animation/Skeleton/SkeletonData.h"
+#include "Animation/SkeletonData.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>

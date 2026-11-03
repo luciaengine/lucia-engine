@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 #include <functional>
 
 namespace GameEngine
@@ -31,7 +31,6 @@ class MemoryAllocator;
 class IQueryPool;
 class PipelineCache;
 class PipelineBuildTable;
-class DescriptorSetCache;
 enum class TextureFormat : uint32_t;
 // New pipeline desc types — defined in PipelineTypes.h. Forward-declared
 // here so IDevice can take them by const-ref without pulling in the
@@ -375,11 +374,8 @@ struct DeviceDesc
     bool enableDescriptorValidation = true;
     // When true, the device will create and manage a presentation swapchain if supported by the active backend.
     bool enableSwapchain = true;
-    // Seed the backend pipeline cache from the user's on-disk cache at creation and
-    // write it back at destruction. Off by default: the cost is a read and a write of a
-    // machine-global file that reaches tens of MB, which only an application's
-    // long-lived device earns; a device that lives for a test keeps its cache in memory.
-    bool persistPipelineCache = false;
+    // Optional application-owned pipeline cache directory; empty uses the platform default.
+    std::string pipelineCacheDirectory;
     std::string applicationName = "GameEngine Application";
     uint32_t applicationVersion = 1;
     // Policy & features
@@ -910,12 +906,6 @@ struct RenderingDeviceCapabilities
     // subpixel RGB text AA. Callers must fall back to single-source blending
     // when false.
     bool supportsDualSourceBlending = false;
-    // True when the colour attachments of one pipeline may differ in blend
-    // state and write mask (Vulkan independentBlend, enabled at device creation
-    // when available; same support == enabled contract as shaderInt64). The
-    // transmissive pass's glass writes one of the screen-space reflection
-    // slices and masks the other two, which needs it.
-    bool supportsIndependentBlend = false;
     // True when sampleRateShading is enabled on the logical device (same
     // support == enabled contract as shaderInt64). It is what makes the SPIR-V
     // InterpolationFunction capability (interpolateAtOffset) legal; enabling it
@@ -932,11 +922,6 @@ struct RenderingDeviceCapabilities
     // maxPerStageDescriptorStorageBuffers, WebGPU maxStorageBuffersPerShaderStage).
     // 0 = the backend did not report it; callers treat 0 as unlimited.
     uint32_t maxPerStageStorageBuffers = 0;
-    // Most invocations one compute workgroup may hold (Vulkan maxComputeWorkGroupInvocations,
-    // WebGPU maxComputeInvocationsPerWorkgroup). Metal reports maxThreadsPerThreadgroup().width,
-    // the device's theoretical total (512 on the two oldest Apple GPU families, 1024 on the
-    // others); a pipeline's own maxTotalThreadsPerThreadgroup can be lower for a heavy kernel.
-    // 0 = the backend did not report it; callers treat 0 as unlimited.
     uint32_t maxComputeWorkGroupSize = 0;
     // Max shared/threadgroup memory per workgroup in bytes (Vulkan
     // maxComputeSharedMemorySize). 0 = the backend did not report it; callers
@@ -1339,10 +1324,6 @@ struct DescriptorBinding
     // filters (the sky LUT chain over rgba16f) says so here or WebGPU rejects
     // the pipeline for pairing an unfilterable layout with its sampler.
     bool imageFilterableFloat = false;
-    // The image fields above come from reflecting the shader's own usage, so an
-    // unset imageFilterableFloat means no stage filters this binding. False on a
-    // hand-built layout, which says nothing about usage.
-    bool imageUsageReflected = false;
     // Multisampled sampled image (GLSL sampler2DMS / WGSL texture_multisampled_2d), read with
     // texelFetch and never with a sampler. WebGPU bakes this into the bind group layout: a layout
     // that leaves it false rejects both the MSAA texture at bind time ("Sample count (4) ...
@@ -1404,24 +1385,6 @@ struct DescriptorSetUpdate
     // object a slot currently owns never has to be cached by the caller (a
     // capacity grow recreates it).
     std::vector<TlasSlotHandle> accelerationStructures;
-};
-
-// One write of a set that IDevice::GetOrCreateDescriptorSet builds from its content.
-// A valid View replaces Texture. Range 0 binds the buffer from Offset to its end.
-// Plain data, so a caller keeps its writes in a stack array.
-struct DescriptorWrite
-{
-    uint32_t Binding = 0;
-    uint32_t ArrayElement = 0;
-    DescriptorType Type = DescriptorType::UniformBuffer;
-    BufferHandle Buffer{};
-    uint64_t Offset = 0;
-    uint64_t Range = 0;
-    TextureHandle Texture{};
-    TextureViewHandle View{};
-    SamplerHandle Sampler{};
-
-    bool operator==(const DescriptorWrite&) const = default;
 };
 
 // Pipeline type enumeration
@@ -1577,8 +1540,9 @@ struct DepthStencilState
 {
     bool depthTestEnable = false;
     bool depthWriteEnable = false;
-    // Reverse-Z nearer-or-equal (ReverseZ::kNearerOrEqual): a pass that redraws the
-    // prepass depth keeps its fragments.
+    // Reverse-Z: GreaterOrEqual so enabling a depth prepass doesn't accidentally
+    // cause base passes (that didn't explicitly set compare op) to reject all
+    // fragments due to equal-depth (prepass wrote the same depth).
     CompareOp depthCompareOp = CompareOp::GreaterOrEqual;
     bool depthBoundsTestEnable = false;
     bool stencilTestEnable = false;
@@ -1688,7 +1652,7 @@ struct PipelineDesc
         rasterizationState.frontFace = frontFace;
     }
 
-    void EnableDepthTest(bool enable, CompareOp compareOp = DepthStencilState{}.depthCompareOp)
+    void EnableDepthTest(bool enable = true, CompareOp compareOp = CompareOp::Greater)
     {
         depthStencilState.depthTestEnable = enable;
         depthStencilState.depthWriteEnable = enable;
@@ -1863,9 +1827,6 @@ class IDevice
     // Device management
     virtual bool Initialize(const DeviceDesc& desc) = 0;
     virtual void Shutdown() = 0;
-    // Make the calling thread the owner of this device's frames and teardown.
-    // Call it before any other call when Initialize ran on a different thread.
-    virtual void BindOwnerThread() {}
     virtual const RenderingDeviceCapabilities& GetCapabilities() const = 0;
     virtual GraphicsAPI GetAPI() const = 0;
 
@@ -2224,9 +2185,6 @@ class IDevice
     // Returns a GpuSyncToken that becomes signaled when all transfers complete
     // on the GPU. Poll via QueryGpuSyncToken() or block via WaitGpuSyncToken().
     // After the token is signaled the textures are in ShaderResource state.
-    // Another queue must wait on this token in its submission, including
-    // when the host has already observed completion. The upload waits on no
-    // other queue: upload only to subresources that no submitted work still reads.
     //
     // Thread safety: may be called from any thread.
     //
@@ -2260,18 +2218,6 @@ class IDevice
     // Frames-in-flight introspection (for frame-safe transient allocation and resource reuse).
     // Defaults are conservative for backends without explicit multi-frame pacing.
     virtual uint32_t GetFramesInFlight() const { return 1u; }
-
-  private:
-    // Declared before kMaxFrameRingDepth: a static constexpr initializer reads only earlier members.
-    static constexpr uint32_t kFrameRingSlotsPastPacing = 2;
-
-  public:
-    // The depth of every per-frame ring: the pacing, one slot for a write in the update phase and
-    // one for a reader of the previous frame (FrameBufferAllocator::BeginFrame states the rule).
-    // All rings rotate at this one depth, so a set that binds several of them repeats every this many frames.
-    static constexpr uint32_t kMaxFrameRingDepth = kMaxSupportedFramesInFlight + kFrameRingSlotsPastPacing;
-    static constexpr uint32_t FrameRingDepth(uint32_t framesInFlight) { return framesInFlight + kFrameRingSlotsPastPacing; }
-    uint32_t GetFrameRingDepth() const { return FrameRingDepth(GetFramesInFlight()); }
     // Current frame slot index in [0, GetFramesInFlight()) when applicable (default 0).
     virtual uint32_t GetFrameIndex() const { return 0u; }
     // Multi-window frame slot index for a specific presentation target.
@@ -2434,14 +2380,6 @@ class IDevice
             UpdateDescriptorSet(descriptorSet, u);
     }
     virtual void DestroyDescriptorSet(DescriptorSetHandle descriptorSet) = 0;
-    // Return a set that holds `writes` in `layout`, for binding in this frame. The device returns
-    // the same set while the layout and every write, in order, stay the same. Do not update or
-    // destroy it. Thread-safe. An AccelerationStructure write is refused (invalid handle).
-    DescriptorSetHandle GetOrCreateDescriptorSet(const DescriptorSetLayoutDesc& layout,
-                                                 std::span<const DescriptorWrite> writes,
-                                                 const char* debugName = nullptr);
-    // Write `writes` into `set` as one batch update. Thread-safe for different sets.
-    void WriteDescriptorSet(DescriptorSetHandle set, std::span<const DescriptorWrite> writes);
 
     // Convenience descriptor helpers
     void UpdateBufferBinding(DescriptorSetHandle set, uint32_t binding, BufferHandle buffer, size_t offset, size_t size)
@@ -2734,8 +2672,8 @@ class IDevice
     // thread, or destroy it without running it (shutdown); a destroyed job
     // releases its request, so the pipeline reads as never requested. An empty
     // function removes the dispatcher; the owner removes it before it stops
-    // accepting jobs. A job still held when the device shuts down builds nothing
-    // when it runs, and may be run or destroyed after the device is destroyed.
+    // accepting jobs, and jobs it already holds must end before the device is
+    // destroyed.
     using PipelineBuildDispatcher = std::function<void(std::function<void()>)>;
     void SetPipelineBuildDispatcher(PipelineBuildDispatcher dispatcher);
 
@@ -3074,16 +3012,6 @@ class IDevice
     // the queued pipeline builds and waits for the running ones, so no build is
     // inside a backend create call while the objects it uses are destroyed.
     void InvokePerDeviceCacheCleanups();
-    // Advance the descriptor-set cache one frame and destroy the sets not used for more than
-    // kFramesKeptAfterLastUse frames. Backends call this in BeginFrame when the slot's previous frame is
-    // done: Metal and WebGPU after the transient-set recycle, Vulkan after the slot fence, D3D12 (no fences) first.
-    void AgeCachedDescriptorSets();
-    // Stop returning the cached sets that bind this resource. Backends call these first in
-    // each Destroy* of a resource that a set can bind.
-    void EvictCachedDescriptorSetsUsing(BufferHandle buffer);
-    void EvictCachedDescriptorSetsUsing(TextureHandle texture);
-    void EvictCachedDescriptorSetsUsing(TextureViewHandle view);
-    void EvictCachedDescriptorSetsUsing(SamplerHandle sampler);
     // Invoke the registered device-rebuilt callbacks (kept, not cleared — a device
     // can be rebuilt more than once). Backends call this at the end of a
     // successful RebuildDevice, AFTER entering AwaitingReprovision so the device is
@@ -3108,8 +3036,8 @@ class IDevice
     PipelineHandle TryGetWarmPipeline(const PipelineBuildRequest& request) const;
     // The single-flight join every synchronous miss goes through.
     PipelineHandle BuildPipelineOnCallingThread(const PipelineBuildRequest& request);
-    // The build of a queued request whose job claimed its ticket in the table.
-    void RunClaimedPipelineBuild(const PipelineBuildRequest& request);
+    // The job a queued request dispatches; builds only if its ticket still owns the key.
+    void RunQueuedPipelineBuild(const PipelineBuildRequest& request);
     // Builds through the backend and publishes into the concrete cache unless the
     // cache was invalidated since the request's epoch; `published` reports which.
     PipelineHandle CreateAndPublishPipeline(const PipelineBuildRequest& request, bool& published);
@@ -3118,11 +3046,8 @@ class IDevice
     PipelineHandle CreateAndPublishComputePipeline(ComputePipelineId id, uint64_t invalidationEpoch,
                                                    bool& published);
 
-    // Queued, running and failed builds by cache key (Source/Core/Pipeline/PipelineBuildTable.h).
-    // Shared with every dispatched job, which reaches the device only after
-    // claiming its row: Shutdown cancels the queued rows, so a job that outlives
-    // the device touches the table alone.
-    std::shared_ptr<PipelineBuildTable> m_PipelineBuilds;
+    // Queued, running and failed builds by cache key (Source/Core/PipelineBuildTable.h).
+    std::unique_ptr<PipelineBuildTable> m_PipelineBuilds;
     mutable std::mutex m_PipelineBuildDispatcherMutex;
     std::shared_ptr<const PipelineBuildDispatcher> m_PipelineBuildDispatcher;
 
@@ -3135,8 +3060,6 @@ class IDevice
     std::vector<std::pair<std::string, std::function<void(IDevice*)>>> m_DeviceRebuiltCallbacks;
     mutable std::mutex m_GraphicsPipelineFailureMutex;
     mutable std::string m_LastGraphicsPipelineFailure;
-    // The sets GetOrCreateDescriptorSet built, by content (Source/Core/DescriptorSetCache.h).
-    std::unique_ptr<DescriptorSetCache> m_DescriptorSetCache;
 };
 
 /**

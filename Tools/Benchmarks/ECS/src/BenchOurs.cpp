@@ -9,8 +9,6 @@
 //  - Changed<> gated iteration on a 1%-dirty workload (+ ungated baseline)
 //  - BatchEach (raw pointer + count per chunk)
 //  - ParallelBatchEach on a JobSystem-backed world
-//  - SystemManager::Update over one wave of eight forked systems (per-call
-//    samples, printed with its p99 beside the tables)
 
 #include "BenchCommon.h"
 
@@ -18,13 +16,10 @@
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/Query.h"
-#include "ECS/Systems.h"
 #include "ECS/World.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 
 #include <algorithm>
-#include <atomic>
-#include <cstdio>
 #include <memory>
 #include <random>
 
@@ -172,7 +167,7 @@ CaseResult IterateOneComponent(const BenchConfig& cfg, std::size_t n)
     auto handles = CreateWorld(world, n, true, false);
     auto q = world.Query<GE::Write<Position>>();
     SampleIteratePasses(r, cfg, n, [&] {
-        q.Each([](Position& p) { p.x += 1.0f; });
+        q.Each([](GE::Writable<Position> p) { p.Mutable().x += 1.0f; });
     });
     KeepAlive(world.GetComponent<Position>(handles[0])->x);
     r.Finalize();
@@ -187,7 +182,8 @@ CaseResult IterateTwoComponents(const BenchConfig& cfg, std::size_t n)
     auto handles = CreateWorld(world, n, true, false);
     auto q = world.Query<GE::Write<Position>, GE::Read<Velocity>>();
     SampleIteratePasses(r, cfg, n, [&] {
-        q.Each([](Position& p, const Velocity& v) {
+        q.Each([](GE::Writable<Position> row, const Velocity& v) {
+            Position& p = row.Mutable();
             p.x += v.x * kDeltaTime;
             p.y += v.y * kDeltaTime;
         });
@@ -205,7 +201,9 @@ CaseResult IterateThreeComponents(const BenchConfig& cfg, std::size_t n)
     auto handles = CreateWorld(world, n, true, false);
     auto q = world.Query<GE::Write<Position>, GE::Read<Velocity>, GE::Write<DataComp>>();
     SampleIteratePasses(r, cfg, n, [&] {
-        q.Each([](Position& p, const Velocity& v, DataComp& d) {
+        q.Each([](GE::Writable<Position> positionRow, const Velocity& v, GE::Writable<DataComp> dataRow) {
+            Position& p = positionRow.Mutable();
+            DataComp& d = dataRow.Mutable();
             p.x += v.x * kDeltaTime;
             p.y += v.y * kDeltaTime;
             d.thingy++;
@@ -232,12 +230,14 @@ CaseResult ComplexSystemsUpdate(const BenchConfig& cfg, std::size_t n)
     {
         const auto t0 = Clock::now();
         // MovementSystem
-        qMove.Each([](Position& p, const Velocity& v) {
+        qMove.Each([](GE::Writable<Position> row, const Velocity& v) {
+            Position& p = row.Mutable();
             p.x += v.x * kDeltaTime;
             p.y += v.y * kDeltaTime;
         });
         // DataSystem
-        qData.Each([](DataComp& d) {
+        qData.Each([](GE::Writable<DataComp> row) {
+            DataComp& d = row.Mutable();
             d.thingy++;
             d.dingy += 0.0001f;
         });
@@ -251,7 +251,8 @@ CaseResult ComplexSystemsUpdate(const BenchConfig& cfg, std::size_t n)
                 world.AddComponentImmediate(h, Damage{10});
         }
         // HealthSystem
-        qHealth.Each([](Health& h, const Damage& d) {
+        qHealth.Each([](GE::Writable<Health> row, const Damage& d) {
+            Health& h = row.Mutable();
             h.hp -= d.amount;
             if (h.hp <= 0)
                 h.hp = 100;
@@ -286,7 +287,7 @@ void ChangedGated(const BenchConfig& cfg, std::size_t n, std::vector<CaseResult>
     CaseResult base{"ours-extra", "Changed1pct_BaselineFullScan", n};
     base.Note = "same consumer, no Changed<> gate (full scan)";
     SampleIteratePasses(base, cfg, n, [&] {
-        q.Each([](const Position& p, Velocity& v) { v.x += p.x * 0.0001f; });
+        q.Each([](const Position& p, GE::Writable<Velocity> v) { v.Mutable().x += p.x * 0.0001f; });
     });
     base.Finalize();
     out.push_back(base);
@@ -313,7 +314,7 @@ void ChangedGated(const BenchConfig& cfg, std::size_t n, std::vector<CaseResult>
         const auto t0 = Clock::now();
         const auto versionBefore = world.GetGlobalSystemVersion();
         q.Changed<Position>(gate);
-        q.Each([](const Position& p, Velocity& v) { v.x += p.x * 0.0001f; });
+        q.Each([](const Position& p, GE::Writable<Velocity> v) { v.Mutable().x += p.x * 0.0001f; });
         gate.LastRunVersion = versionBefore;
         const auto t1 = Clock::now();
         if (run >= 0)
@@ -370,62 +371,6 @@ CaseResult ParallelBatchEachIterate(const BenchConfig& cfg, std::size_t n)
     return r;
 }
 
-// A system body with enough work that a wave's forks reach the workers.
-class SpinSystem : public GE::ISystem
-{
-public:
-    void Update(GE::World&, float) override
-    {
-        std::uint64_t value = 1;
-        for (int i = 0; i < 2000; ++i)
-            value = value * 6364136223846793005ull + 1442695040888963407ull;
-        s_Sink.fetch_add(value & 1u, std::memory_order_relaxed);
-    }
-    const char* GetName() const override { return "BenchSpin"; }
-
-    static inline std::atomic<std::uint64_t> s_Sink{0};
-};
-
-// SystemManager::Update over a plan of one wave of eight forked SpinSystems on an
-// eight-worker pool: one sample per call, after 100 warm-up calls. N is 1 (one
-// call); the median and p99 per call are printed on their own line.
-CaseResult UpdateWaveBasedOneWave8Systems()
-{
-    constexpr int kWarmupCalls = 100;
-    constexpr int kMeasuredCalls = 10000;
-    CaseResult r{"ours-extra", "UpdateWaveBased_OneWave8Systems", 1};
-    r.Note = "SystemManager::Update, one wave of 8 forked systems, 8-worker pool, per call";
-    JobSystem::WorkStealingThreadPool pool(8);
-    GE::World world(&pool);
-    GE::SystemManager manager(&pool);
-    GE::SystemExecutionPlan plan;
-    GE::SystemExecutionPlan::Wave wave;
-    for (std::size_t i = 0; i < 8; ++i)
-    {
-        manager.AddSystem<SpinSystem>();
-        wave.SystemIndices.push_back(i);
-    }
-    plan.Waves.push_back(wave);
-    manager.SetExecutionPlan(plan);
-    for (int call = 0; call < kWarmupCalls; ++call)
-        manager.Update(world, kDeltaTime);
-    r.SamplesMs.reserve(kMeasuredCalls);
-    for (int call = 0; call < kMeasuredCalls; ++call)
-    {
-        const auto t0 = Clock::now();
-        manager.Update(world, kDeltaTime);
-        r.SamplesMs.push_back(MsBetween(t0, Clock::now()));
-    }
-    std::vector<double> sorted = r.SamplesMs;
-    std::sort(sorted.begin(), sorted.end());
-    const double p99 = sorted[static_cast<std::size_t>(0.99 * static_cast<double>(sorted.size() - 1))];
-    r.Finalize();
-    std::printf("ours-extra/UpdateWaveBased_OneWave8Systems calls=%d median_us=%.3f p99_us=%.3f\n",
-                kMeasuredCalls, r.TotalMsMedian * 1000.0, p99 * 1000.0);
-    KeepAlive(static_cast<double>(SpinSystem::s_Sink.load(std::memory_order_relaxed)));
-    return r;
-}
-
 } // namespace
 
 std::vector<CaseResult> RunOursBenches(const BenchConfig& cfg)
@@ -448,7 +393,6 @@ std::vector<CaseResult> RunOursBenches(const BenchConfig& cfg)
         out.push_back(BatchEachIterate(cfg, n));
         out.push_back(ParallelBatchEachIterate(cfg, n));
     }
-    out.push_back(UpdateWaveBasedOneWave8Systems());
     return out;
 }
 

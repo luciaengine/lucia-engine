@@ -6,8 +6,8 @@
 
 #include "SceneView/SceneViewToolStrip.h"
 #include "SceneView/SceneViewToolStripRegistry.h"
-#include "SceneView/SplineTool/SplineToolStripEntry.h"
-#include "Terrain/TerrainBrushToolStripEntry.h"
+#include "SceneView/SplineToolStripEntry.h"
+#include "SceneView/TerrainBrushToolStripEntry.h"
 
 #include "Components/Terrain/Terrain.h"
 #include "ECS/Entity.h"
@@ -44,13 +44,13 @@ void Click(Button& button)
 
 bool IsHidden(const UIElement* element)
 {
-    const auto display = element ? element->Style().Get(Style::Display) : std::nullopt;
+    const auto display = element ? element->Overrides().Get(Style::Display) : std::nullopt;
     return display.has_value() && display.value() == DisplayMode::None;
 }
 
 UIElement* FindButton(UIElement& strip, ToolStripPlacement placement, std::string_view id)
 {
-    return strip.FindById(HashStringId(Editor::RegisteredToolButtonId(placement, id)));
+    return strip.FindById(Editor::RegisteredToolButtonId(placement, id));
 }
 
 } // namespace
@@ -63,8 +63,8 @@ TEST(SceneViewToolStrip, ARegisteredEntryIsAppendedActivatesItsToolAndShowsItsBa
     SceneViewToolStripEntry entry;
     entry.Id = "notes";
     entry.Tooltip = "Notes";
-    entry.Icon = "editor:Icons/marker.svg";
-    entry.BadgeButtonIcon = "editor:Icons/pulse.svg";
+    entry.Icon = "editor:Icons/marker.png";
+    entry.BadgeButtonIcon = "editor:Icons/pulse.png";
     int badgeReads = 0;
     entry.BadgeCount = [&unseen, &badgeReads]() {
         ++badgeReads;
@@ -97,18 +97,18 @@ TEST(SceneViewToolStrip, ARegisteredEntryIsAppendedActivatesItsToolAndShowsItsBa
     EXPECT_TRUE(strip.GetChildren()[1]->HasClass("scene-tool-divider"));
     auto* button = dynamic_cast<Button*>(strip.GetChildren()[2].get());
     EXPECT_TRUE(strip.GetChildren()[3]->HasClass("scene-tool-badge-host"));
-    auto* badgeButton = dynamic_cast<Button*>(strip.FindById(HashStringId(Editor::RegisteredToolBadgeButtonId(ToolStripPlacement::Floating, "notes"))));
+    auto* badgeButton = dynamic_cast<Button*>(strip.FindById(Editor::RegisteredToolBadgeButtonId(ToolStripPlacement::Floating, "notes")));
     ASSERT_NE(button, nullptr);
     ASSERT_NE(badgeButton, nullptr);
     EXPECT_EQ(button->GetId(), Editor::RegisteredToolButtonId(ToolStripPlacement::Floating, "notes"));
-    EXPECT_EQ(icons, (std::vector<std::string>{"editor:Icons/marker.svg", "editor:Icons/pulse.svg"}));
+    EXPECT_EQ(icons, (std::vector<std::string>{"editor:Icons/marker.png", "editor:Icons/pulse.png"}));
 
     Click(*button);
     EXPECT_EQ(toggled, std::vector<std::string>{"notes"});
     Click(*badgeButton);
     EXPECT_EQ(badgeOpened, 1);
 
-    auto* count = dynamic_cast<Label*>(strip.FindById(HashStringId(Editor::RegisteredToolBadgeCountId(ToolStripPlacement::Floating, "notes"))));
+    auto* count = dynamic_cast<Label*>(strip.FindById(Editor::RegisteredToolBadgeCountId(ToolStripPlacement::Floating, "notes")));
     ASSERT_NE(count, nullptr);
     kept.SetActiveEntry("notes");
     kept.Refresh(nullptr);
@@ -293,7 +293,7 @@ TEST(SceneViewToolStrip, TheSplineEntryMenuListsTheSplineSettingsInOrder)
     const std::vector<std::string> expected = {
         "Curve Type", "Selection Shape", "Control Render Shape", "Knot Size", "Knot Outline Thickness",
         "Spline Thickness", "Default Radius", "Simplify Tolerance", "Smoothing Passes", "Mesh Acceleration",
-        "Snap Ends to Nearby Splines", "Snap to Scene Meshes", "Pivot From Spline Center", "Spline Color...",
+        "Auto-Connect to Nearby Spline", "Snap to Scene Meshes", "Pivot From Spline Center", "Spline Color...",
         "Brush Stroke Color...", "Reset to Defaults"};
     std::size_t next = 0;
     for (const ContextMenuManipulator::Item& item : items)
@@ -301,9 +301,7 @@ TEST(SceneViewToolStrip, TheSplineEntryMenuListsTheSplineSettingsInOrder)
         if (next < expected.size() && item.Path == expected[next])
             ++next;
         if (item.Path == "Spline Color...")
-        {
             EXPECT_NE(item.Flags & MenuItemFlag_Disabled, 0u) << "a color row needs a picker";
-        }
     }
     EXPECT_EQ(next, expected.size()) << "first missing or out of order: "
                                      << (next < expected.size() ? expected[next] : std::string());
@@ -321,4 +319,37 @@ TEST(SceneViewToolStrip, TerrainAvailabilityUsesEachViewsWorld)
     EXPECT_FALSE(entry.IsAvailable(&empty));
     EXPECT_TRUE(entry.IsAvailable(&terrainWorld));
     EXPECT_FALSE(entry.IsAvailable(&empty));
+}
+
+TEST(SceneViewToolStrip, AToolRegisteredAfterABadgeGroupStaysBeforeItsDivider)
+{
+    for (const auto placement : {ToolStripPlacement::Floating, ToolStripPlacement::Inline})
+    {
+        SceneViewToolStripRegistry registry;
+        SceneViewToolStripEntry notes;
+        notes.Id = "notes";
+        notes.OnBadgeButton = [](UIElement&) {};
+        registry.Register(notes);
+
+        UIElement strip;
+        auto builtIn = std::make_unique<Button>();
+        UIElement* builtInPtr = builtIn.get();
+        strip.AddChild(std::move(builtIn));
+        Editor::RegisteredToolStrip kept;
+        kept.Populate(strip, placement, registry, {});
+        UIElement* divider = strip.GetChildren()[1].get();
+        UIElement* notesButton = FindButton(strip, placement, "notes");
+
+        SceneViewToolStripEntry paint;
+        paint.Id = "paint";
+        registry.Register(paint);
+        kept.Populate(strip, placement, registry, {});
+        kept.Populate(strip, placement, registry, {});
+
+        ASSERT_EQ(strip.GetChildren().size(), 5u);
+        EXPECT_EQ(strip.GetChildren()[0].get(), builtInPtr);
+        EXPECT_EQ(strip.GetChildren()[1].get(), FindButton(strip, placement, "paint"));
+        EXPECT_EQ(strip.GetChildren()[2].get(), divider);
+        EXPECT_EQ(strip.GetChildren()[3].get(), notesButton);
+    }
 }

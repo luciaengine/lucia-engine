@@ -4,15 +4,14 @@
 
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/WorldDrawTypes.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Types/FalseSharing.h"
-#include "Types/FlatMap.h"
 #include "Types/Types.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace JobSystem
@@ -46,18 +45,15 @@ class WorldDrawBuilder
     // when every submit comes from a single thread (hosts without a pool).
     explicit WorldDrawBuilder(const JobSystem::WorkStealingThreadPool* jobSystem);
 
-    // The setRevision of a submit that names no record set.
-    static constexpr uint64_t kNoRecordSet = 0;
-
     // Called once per frame on the render thread before any submissions.
     void BeginFrame();
 
-    // Submit a batch of records. Each worker of the construction pool appends to
-    // its own buffer. Off the pool, only the constructing thread may submit. Call
+    // Submit a batch of records. Thread-safe for concurrent callers on
+    // distinct workers of the construction pool, plus one caller off its
+    // workers at a time: each worker appends to its own buffer (no
+    // contention), and callers off the pool share the one extra buffer. Call
     // MergeSubmissions() on the render thread after all submissions are done.
-    // `setRevision` names an unchanged record set (KeyedWorldSubmissions::Revision);
-    // kNoRecordSet names none, and the next BuildBatchKeys derives every view again.
-    void Submit(std::span<const WorldSubmissionRecord> records, uint64_t setRevision = kNoRecordSet);
+    void Submit(std::span<const WorldSubmissionRecord> records);
 
     // Merge per-thread submission buffers into the per-view map, in worker-id
     // order with the off-pool buffer last. Must be called on the render thread
@@ -74,13 +70,8 @@ class WorldDrawBuilder
     // meshIndex) key identity (colorClassId == materialIndex), today's path.
     // Returns the number of views whose keys were (re)derived this call — the
     // A2 STEP-0 sort-bracket view count.
-    //
-    // Keeps the last build and returns 0 while the named sets, the mesh content revision, the generation
-    // (it guards the material pointers) and the key inputs of each material read stay the same. Call order
-    // in a frame: BeginFrame, the submits, one BuildBatchKeys; a repeat with no new submit keeps the views.
     uint32_t BuildBatchKeys(const Rendering::MeshGPURegistry& meshRegistry,
-                            std::span<const uint32_t> materialColorClass,
-                            uint64_t materialIndexGeneration); // MaterialSystem::MaterialSSBOGeneration
+                            std::span<const uint32_t> materialColorClass = {});
 
     // Build batch keys for a single view without touching other views. Used
     // by editor-driven one-shot views (e.g. thumbnail renders) so a late
@@ -114,8 +105,8 @@ class WorldDrawBuilder
     // lane (MaterialDeformationClassify.h). Derived in the same pass as the
     // keys, so it costs one predicate per surviving key and carries identical
     // staleness; empty for a view with no deforming material, which is what
-    // makes a frame with none pay one branch and no work. The deforming-motion
-    // producer records from this span and the mover lane excludes exactly its members.
+    // makes a frame with none pay one branch and no work. The producer arms
+    // record from this span and the mover lane excludes exactly its members.
     std::span<const BatchKey> GetDeformingBatchKeys(Rendering::ViewId viewId) const;
 
     // True when this view has at least one submission with the cast-shadows
@@ -126,7 +117,7 @@ class WorldDrawBuilder
     // True when this view has at least one drawable submission that is BOTH
     // transmissive and a shadow caster — the only way the glass-tint shadow
     // cascade can receive content, because the shadow cull drops non-casters
-    // (InstanceInPass in frustum_culling.comp and hzb_culling.comp) before the tint pass's
+    // (frustum_culling.comp:110, hzb_culling.comp:173) before the tint pass's
     // indirect draw ever reads a stream. Derived alongside the batch keys, so it
     // costs one branch in a loop the frame already walks; a submissions scan of
     // its own would cost more than the cascade it gates.
@@ -160,66 +151,19 @@ class WorldDrawBuilder
     void Clear();
 
   private:
-    // One view's merged submissions and everything derived from them in one pass.
-    struct ViewBatchState
-    {
-        std::vector<WorldSubmissionRecord> Submissions;
-        std::vector<BatchKey> Keys;
-        // The deforming subset of Keys.
-        std::vector<BatchKey> DeformingKeys;
-        bool ShadowCaster = false;
-        bool TransmissiveCaster = false;
-        bool AnimatedVertexModifier = false;
-        bool AnimatedVertexModifierCaster = false;
-
-        // Empties the state and keeps the vector capacity.
-        void Reset();
-    };
-
-    // The inputs of the last full BuildBatchKeys. The build is kept while they compare equal.
-    struct BuildInputs
-    {
-        std::vector<uint64_t> SubmissionRevisions; // sorted
-        uint64_t MeshContentRevision = 0;
-        uint64_t MaterialIndexGeneration = 0;
-        // False when a Submit named no set, a merge ran after the build, a view was cleared,
-        // or a frame ran no build.
-        bool Certified = false;
-
-        bool SameInputs(const BuildInputs& other) const;
-    };
-
-    // The key inputs one material gave the last full build.
-    struct MaterialKeyState
-    {
-        const Material* Source = nullptr;
-        uint32_t MaterialIndex = 0;
-        uint32_t ColorClassId = 0;
-        uint32_t Predicates = 0; // bits of MaterialKeyPredicates (WorldDrawBuilder.cpp)
-    };
-
     // Derive the unique (matIdx, mshIdx) batch-key set for a view from its
     // merged submissions. Shared by BuildBatchKeys + BuildBatchKeysForView.
-    // A non-null `materialsRead` collects every material the derivation reads.
-    void DeriveBatchKeysForView(ViewBatchState& view,
-                                const Rendering::MeshGPURegistry& meshRegistry,
-                                std::span<const uint32_t> materialColorClass,
-                                std::vector<const Material*>* materialsRead);
-
-    // Fills m_FrameInputs, reusing its capacity.
-    void CaptureInputs(const Rendering::MeshGPURegistry& meshRegistry, uint64_t materialIndexGeneration);
-    bool MaterialsGiveSameKeyInputs(std::span<const uint32_t> materialColorClass) const;
-    void CaptureMaterialKeyStates(std::span<const uint32_t> materialColorClass);
-    // Marks every submitted record as merged without merging it.
-    void DropUnmergedSubmissions();
+    void DeriveBatchKeysForView(
+        Rendering::ViewId viewId,
+        const std::vector<WorldSubmissionRecord>& submissions,
+        const Rendering::MeshGPURegistry& meshRegistry,
+        std::span<const uint32_t> materialColorClass);
 
     // --- Per-thread submission buffers (thread-safe Submit) ---
 
     struct ThreadSubmissionBuffer
     {
         std::vector<WorldSubmissionRecord> records;
-        // The record set each Submit of this frame named (kNoRecordSet: none).
-        std::vector<uint64_t> setRevisions;
         uint32 drained = 0; // records.size() at the time of last MergeSubmissions drain
     };
     // Null when the builder serves no pool; every submit then lands in the
@@ -228,29 +172,25 @@ class WorldDrawBuilder
     // The pool's worker count, which is also the index of the off-pool buffer.
     size_t m_OffPoolBufferIndex;
     // Indexed by worker id; the last entry takes every caller off the pool.
-    // Sized once at construction and never resized, so a buffer's address is
-    // stable while workers append to it.
+    // Each buffer is written by its own submitting thread, so each sits alone
+    // on its false-sharing span. Sized once at construction and never resized,
+    // so a buffer's address is stable while workers append to it.
     std::vector<FalseSharingPadded<ThreadSubmissionBuffer>> m_ThreadBuffers;
-    // The one thread off the pool that may submit. Debug builds assert it.
-    std::thread::id m_OwnerThreadId;
 
-    // This frame's per-view state, populated by MergeSubmissions and the key derivation.
-    FlatMap<Rendering::ViewId, ViewBatchState> m_Views;
-    // The previous frame's per-view state. BeginFrame swaps it with m_Views, so a kept
-    // build swaps it back instead of copying, and a full build reuses its capacity.
-    FlatMap<Rendering::ViewId, ViewBatchState> m_PreviousViews;
-    BuildInputs m_LastBuildInputs;
-    BuildInputs m_FrameInputs;
-    std::vector<MaterialKeyState> m_LastBuildMaterials;
-    // Scratch of the full build: the materials it read, and a mark per material index.
-    std::vector<const Material*> m_MaterialsRead;
-    std::vector<const Material*> m_MaterialReadByIndex;
-    // True when the full build read a material that has no material index yet.
-    bool m_ReadUnindexedMaterial = false;
-    // True once a merge took a record this frame.
-    bool m_MergedThisFrame = false;
-    // True once BuildBatchKeys ran this frame.
-    bool m_BuiltThisFrame = false;
+    // Per-view submission records built during extraction (populated by MergeSubmissions).
+    std::unordered_map<Rendering::ViewId, std::vector<WorldSubmissionRecord>> m_SubmissionsByView;
+    // Unique batch keys per view, derived from m_SubmissionsByView.
+    std::unordered_map<Rendering::ViewId, std::vector<BatchKey>> m_BatchKeysByView;
+    // Shadow-caster and transmissive-caster presence per view, derived in the
+    // same pass as the batch keys and therefore carrying identical staleness.
+    std::unordered_map<Rendering::ViewId, bool> m_ShadowCasterByView;
+    std::unordered_map<Rendering::ViewId, bool> m_TransmissiveCasterByView;
+    // Animated-vertex presence per view (any renderable, and the caster
+    // subset), same derivation and therefore the same staleness.
+    std::unordered_map<Rendering::ViewId, bool> m_AnimatedVertexModifierByView;
+    std::unordered_map<Rendering::ViewId, bool> m_AnimatedVertexModifierCasterByView;
+    // The deforming subset of m_BatchKeysByView, same derivation, same staleness.
+    std::unordered_map<Rendering::ViewId, std::vector<BatchKey>> m_DeformingKeysByView;
 };
 
 } // namespace Engine::Renderer

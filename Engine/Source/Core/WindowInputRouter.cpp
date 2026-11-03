@@ -27,16 +27,6 @@ bool PointerIsGrabbedElsewhere(const WindowInputRouterConfig& config)
 {
     return config.isPointerGrabbed && config.isPointerGrabbed();
 }
-
-// Where a locked pointer goes: the game's own sink, which is the window's
-// InputSystem when the surface is the whole window and has no separate one.
-Input::IRawInputSink* LockedPointerSink(const WindowInputRouterConfig& config,
-                                        const WindowInputRouterConfig::PlaySurface& play)
-{
-    if (play.gameplaySink)
-        return play.gameplaySink;
-    return config.getInput ? config.getInput() : nullptr;
-}
 } // namespace
 
 void WindowInputRouter::ClientToUiLogical(Platform::Window* window, UIManager* ui, float clientX, float clientY,
@@ -148,20 +138,6 @@ void WindowInputRouter::RouteMouseMove(const WindowInputRouterConfig& config, Pl
     if (PointerIsGrabbedElsewhere(config))
         return;
 
-    const WindowInputRouterConfig::PlaySurface play = config.getPlaySurface
-                                                          ? config.getPlaySurface()
-                                                          : WindowInputRouterConfig::PlaySurface{};
-    // A locked pointer's position runs on past the window and is no place on
-    // screen, so only gameplay hears it, in the window's client units: the
-    // surface mapping would scale the game's mouse delta by the editor's UI
-    // scale, and the Player delivers client units too, so the two agree.
-    if (play.pointerLocked)
-    {
-        if (Input::IRawInputSink* sink = LockedPointerSink(config, play))
-            sink->OnMouseMove({clientX, clientY});
-        return;
-    }
-
     UIManager* ui = config.getUi ? config.getUi() : nullptr;
     Input::InputSystem* input = config.getInput ? config.getInput() : nullptr;
 
@@ -169,6 +145,9 @@ void WindowInputRouter::RouteMouseMove(const WindowInputRouterConfig& config, Pl
         SendUiMouseFromClientPixels(window, ui, clientX, clientY);
     if (input)
         input->OnMouseMove({clientX, clientY});
+    const WindowInputRouterConfig::PlaySurface play = config.getPlaySurface
+                                                          ? config.getPlaySurface()
+                                                          : WindowInputRouterConfig::PlaySurface{};
     // A move is never consumed — hover is not a claim — so every stage that
     // tracks a pointer gets one, each in its own pixels.
     if (GameUIHost* surfaceUi = SurfaceUiPointedByThisRouter(play))
@@ -210,9 +189,9 @@ void WindowInputRouter::RouteCursorEnter(const WindowInputRouterConfig& config, 
     // nothing will reach it until the cursor comes back, so a press in flight
     // has to be cancelled rather than left armed on a control the user has
     // walked away from. The host answers for the button state itself, having
-    // been told every edge, and the window still reports the release.
+    // been told every edge — which is what handing it no pointer means.
     if (GameUIHost* surfaceUi = SurfaceUiPointedByThisRouter(play))
-        surfaceUi->OnPointerLeave();
+        surfaceUi->UpdatePointer(nullptr);
 }
 
 void WindowInputRouter::RouteKey(const WindowInputRouterConfig& config, int key, int action, int mods)
@@ -296,18 +275,6 @@ void WindowInputRouter::RouteMouseButton(const WindowInputRouterConfig& config, 
                                                           ? config.getPlaySurface()
                                                           : WindowInputRouterConfig::PlaySurface{};
 
-    // A locked pointer's presses are gameplay's. Its releases take the whole
-    // chain below, as every release does, so a button held into the lock still
-    // comes up wherever it went down.
-    if (play.pointerLocked && pressed)
-    {
-        if (Input::IRawInputSink* sink = LockedPointerSink(config, play))
-            sink->OnMouseButton(button, pressed, mods);
-        if (config.onMouseButtonPost)
-            config.onMouseButtonPost(button, pressed);
-        return;
-    }
-
     // The chain RouteKey walks, for the pointer: each stage answers whether it
     // acted, and the first that did stops the press. Releases are never
     // consumed — a stage that saw the press must see its release, and an
@@ -321,7 +288,7 @@ void WindowInputRouter::RouteMouseButton(const WindowInputRouterConfig& config, 
     {
         // The click's mask is live platform state, and it is the only report of
         // a modifier that was already held when this window took focus.
-        ui->ReconcileModifierKeys(mods);
+        ui->SyncModifierKeys(mods);
         consumed = ui->OnMouseButton(button, pressed) && pressed;
     }
 
@@ -355,27 +322,21 @@ void WindowInputRouter::RouteScroll(const WindowInputRouterConfig& config, float
     UIManager* ui = config.getUi ? config.getUi() : nullptr;
     if (ui)
     {
-        // The wheel's mask is live platform state. It releases a modifier whose
-        // key-up the window never saw (Cmd+Space, a lost browser key-up), so a
-        // plain wheel does not become the item resize gesture (Ctrl/Cmd + wheel).
+        // The platform callback supplies a live query of the OS modifier state,
+        // not an event mask, so it outranks the key events this UI tracked: a
+        // modifier whose release the window never saw (Cmd+Space to Spotlight,
+        // a browser page losing the key-up) would otherwise turn every later
+        // plain wheel into the item resize gesture (Ctrl/Cmd + wheel by default).
         ui->ReconcileModifierKeys(mods);
-    }
-
-    const WindowInputRouterConfig::PlaySurface play = config.getPlaySurface
-                                                          ? config.getPlaySurface()
-                                                          : WindowInputRouterConfig::PlaySurface{};
-    // A locked pointer's wheel is gameplay's, ahead of the host's own hook too.
-    if (play.pointerLocked)
-    {
-        if (Input::IRawInputSink* sink = LockedPointerSink(config, play))
-            sink->OnMouseScroll({dx, dy}, mods);
-        return;
     }
 
     if (config.onScrollPre && config.onScrollPre(dx, dy))
         return;
 
     Input::InputSystem* input = config.getInput ? config.getInput() : nullptr;
+    const WindowInputRouterConfig::PlaySurface play = config.getPlaySurface
+                                                          ? config.getPlaySurface()
+                                                          : WindowInputRouterConfig::PlaySurface{};
 
     // The same chain again. OnScroll answers honestly — a scrollable that
     // actually moved reports handled — and honouring that answer is what stops a

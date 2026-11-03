@@ -3,10 +3,7 @@
 layout(location=0) in vec2 vUV;
 layout(location=0) out vec4 oColor;
 layout(set=0,binding=0) uniform sampler2D uHDR;
-// The view's exposure state. The input is stored at the frame's pre-exposure P: stored values
-// reach display units through exposure / P, and the extracted highlights stay in stored units.
-#define GE_EXPOSURE_HISTORY_BINDING 1
-#include "Includes/exposure_history.glsl"
+layout(set=0,binding=1,std430) readonly buffer ExposureHistory { float exposureScale; uint valid; } uExposure;
 layout(push_constant) uniform PC { float exposure; int useAutoExposure; } pc;
 
 vec3 Highlight(ivec2 p, float scale)
@@ -24,8 +21,7 @@ vec3 Highlight(ivec2 p, float scale)
 
 void main()
 {
-    float scale = GE_ResolveExposureScale(pc.exposure, pc.useAutoExposure, uExposure.exposureScale) /
-                  GE_PreExposure();
+    float scale = GE_ResolveExposureScale(pc.exposure, pc.useAutoExposure, uExposure.exposureScale);
     ivec2 p = ivec2(floor(vUV * vec2(textureSize(uHDR, 0)) - 0.5));
     // Extract each original texel BEFORE reduction, so small highlights do not
     // disappear merely because the half-resolution footprint dilutes them.

@@ -9,8 +9,6 @@
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/Internal/AttachDetachInternal.h"
 #include "UI/Interaction/Manipulator.h"
-#include "UI/UITransform.h"
-#include "Mathematics/MatrixOps.h"
 
 #include "Logger/Logger.h"
 
@@ -20,23 +18,12 @@
 #include <atomic>
 #include <cassert>
 #include <cctype>
-#include <cstdint>
 #include <functional>
 #include <typeinfo>
 #include <unordered_set>
 
 using namespace GameEngine;
 
-// The element's exact size, pinned per standard library with 8-byte pointers (wasm32 is not pinned).
-// It may not grow; lower the pin when it shrinks. The MSVC STL sizes its containers by
-// _ITERATOR_DEBUG_LEVEL: 0 in DebugFast and Release, 2 in Debug (the ASan preset included).
-#if defined(_LIBCPP_VERSION) && UINTPTR_MAX == UINT64_MAX
-static_assert(sizeof(UIElement) == 1576, "sizeof(UIElement) changed (libc++): it may not grow; lower the pin when it shrinks");
-#elif defined(_MSC_VER) && defined(_WIN64) && _ITERATOR_DEBUG_LEVEL == 0
-static_assert(sizeof(UIElement) == 1664, "sizeof(UIElement) changed (MSVC STL): it may not grow; lower the pin when it shrinks");
-#elif defined(_MSC_VER) && defined(_WIN64) && _ITERATOR_DEBUG_LEVEL == 2
-static_assert(sizeof(UIElement) == 1832, "sizeof(UIElement) changed (MSVC STL, debug iterators): it may not grow; lower the pin when it shrinks");
-#endif
 
 // Stage 5 Block C: custom-state string-overload helpers. Mirror the
 // case-insensitive normalization used by CSSParser for :my-state names
@@ -64,11 +51,8 @@ void UIElement::AddCustomState(StringId stateId)
     // A custom-state flip changes selector matches like a class change. Route
     // the dirty mark through the owning manager's aggregate custom-state
     // analysis (MarkPseudoStateScope): it raises LayoutDirty when a
-    // custom-state rule is layout-affecting — the correctness mirror of the
-    // :focus-within generalization (#211), which the old blind
-    // StyleDirty|VisualDirty relied on the signature fallback for — and fans
-    // the mark out to descendants/siblings for combinator rules, which the old
-    // self-only mark never reached. The forwarder still applies the
+    // custom-state rule is layout-affecting and fans the mark out to
+    // descendants/siblings for combinator rules. The forwarder applies the
     // CustomStateRules narrowing (via MarkPseudoStateScope) and no-ops when the
     // stylesheet has no custom-state rules at all.
     UIManagerMarkCustomStateScope(m_OwnerManager, this);
@@ -105,7 +89,7 @@ bool UIElement::HasCustomState(std::string_view stateName) const
 UIElement::UIElement()
     : m_InstanceId(s_NextInstanceId.fetch_add(1, std::memory_order_relaxed))
 {
-    WireStyleDirtyCallback();
+    WireOverridesDirtyCallback();
 }
 
 UIElement::UIElement(const std::string& id)
@@ -113,115 +97,7 @@ UIElement::UIElement(const std::string& id)
       m_Id(id),
       m_IdHash(id.empty() ? StringId{0} : HashStringId(id))
 {
-    WireStyleDirtyCallback();
-}
-
-namespace
-{
-
-// The map from `el`'s layout space to the window: its own CSS transform and
-// every transformed ancestor's on the DFS chain (a Mount's target paints in
-// its host's space; an overlay in its owner's), innermost first. Only the
-// outermost UI::kMaxTransformChainDepth apply, as in the paint. False when
-// none applies.
-bool ComposeLayoutToWindow(const UIElement& el, Mathematics::Matrix3x3& out)
-{
-    int chain = 0;
-    for (const UIElement* e = &el; e; e = e->GetDfsParent())
-    {
-        if (!e->GetResolvedStyle().Visual.Transform.IsNone())
-            ++chain;
-    }
-    int ignored = std::max(0, chain - UI::kMaxTransformChainDepth);
-    bool transformed = false;
-    Mathematics::Matrix3x3 composed = Mathematics::Matrix3x3::Identity();
-    for (const UIElement* e = &el; e; e = e->GetDfsParent())
-    {
-        if (ignored > 0 && !e->GetResolvedStyle().Visual.Transform.IsNone())
-        {
-            --ignored;
-            continue;
-        }
-        Mathematics::Matrix3x3 own;
-        if (UI::ComputeElementTransform(e->GetResolvedStyle().Visual,
-                                        Mathematics::Rect{e->GetLayoutX(), e->GetLayoutY(), e->GetLayoutWidth(),
-                                                          e->GetLayoutHeight()},
-                                        1.0f, own))
-        {
-            composed = own * composed;
-            transformed = true;
-        }
-    }
-    if (transformed)
-        out = composed;
-    return transformed;
-}
-
-} // namespace
-
-Mathematics::Rect UIElement::GetWindowRect() const
-{
-    const Mathematics::Rect layout{m_LastX, m_LastY, m_LastW, m_LastH};
-    Mathematics::Matrix3x3 toWindow;
-    if (!ComposeLayoutToWindow(*this, toWindow))
-        return layout;
-    return Mathematics::TransformRectBounds2D(toWindow, layout);
-}
-
-bool UIElement::WindowToLayout(const Mathematics::Vector2& window, Mathematics::Vector2& out) const
-{
-    Mathematics::Matrix3x3 toWindow;
-    if (!ComposeLayoutToWindow(*this, toWindow))
-    {
-        out = window;
-        return true;
-    }
-    Mathematics::Matrix3x3 toLayout;
-    if (!Mathematics::TryInverseAffine2D(toWindow, toLayout))
-        return false;
-    out = toLayout.TransformPoint(window);
-    return true;
-}
-
-namespace
-{
-const std::string kNoTooltipText;
-} // namespace
-
-void UIElement::SetTooltip(std::string text)
-{
-    if (text.empty() && (!m_TooltipData || m_TooltipData->Template.LayoutPath.empty()))
-    {
-        m_TooltipData.reset();
-        return;
-    }
-    if (!m_TooltipData)
-        m_TooltipData = std::make_unique<TooltipData>();
-    m_TooltipData->Text = std::move(text);
-}
-
-const std::string& UIElement::GetTooltip() const
-{
-    return m_TooltipData ? m_TooltipData->Text : kNoTooltipText;
-}
-
-void UIElement::SetTooltipTemplate(std::string layoutPath, TooltipBinder binder)
-{
-    if (layoutPath.empty() && (!m_TooltipData || m_TooltipData->Text.empty()))
-    {
-        m_TooltipData.reset();
-        return;
-    }
-    if (!m_TooltipData)
-        m_TooltipData = std::make_unique<TooltipData>();
-    if (layoutPath.empty())
-        binder = nullptr;
-    m_TooltipData->Template = {std::move(layoutPath), std::move(binder)};
-}
-
-const UIElement::TooltipTemplate* UIElement::GetTooltipTemplate() const
-{
-    return m_TooltipData && !m_TooltipData->Template.LayoutPath.empty() ? &m_TooltipData->Template : nullptr;
+    WireOverridesDirtyCallback();
 }
 
 UIElement::~UIElement()
@@ -247,7 +123,7 @@ UIElement::~UIElement()
         UI::ForgetElementOwnsModuleHandler(this);
     }
 
-    // Step 2a (additive): notify the global Mount registry so any Mount
+    // Notify the global Mount registry so any Mount
     // currently targeting this element nulls its raw m_Target before the
     // pointer dangles. Constant-time hash-map probe; early-outs on
     // elements that were never targeted by a Mount.
@@ -308,7 +184,7 @@ UIElement::~UIElement()
     // destroyed. An element never outlives its manager with the owner still
     // set: ~UIManager detaches every survivor.
     if (m_OwnerManager &&
-        (m_PrimitiveRangeCap > 0 || m_ClipSlotIdx != 0xFFFFu || m_TransformSlotIdx != 0 ||
+        (m_PrimitiveRangeCap > 0 || m_ClipSlotIdx != 0xFFFFu ||
          m_DrawOrderIdx != 0xFFFFFFFFu))
     {
         UIManagerFreeRenderSlots(m_OwnerManager, this);
@@ -348,7 +224,7 @@ UIElement::~UIElement()
     // dispatch paths store ids instead of raw pointers for exactly this.
     if (m_OwnerManager)
     {
-        UIManagerUnregisterElementLookups(m_OwnerManager, this);
+        UIManagerUnregisterElementInstanceId(m_OwnerManager, this);
     }
 }
 
@@ -395,6 +271,165 @@ void UIElement::AddRequestedSubtreeStyleGuid(const GUID& guid)
     {
         m_RequestedSubtreeStyleAssetGuids.push_back(guid);
     }
+}
+
+namespace
+{
+static void ClearLiveTexture(UIElement::LiveTextureRef& r)
+{
+    r.Handle = 0;
+    r.Getter = {};
+}
+} // namespace
+
+UIElement::StyleWriter& UIElement::StyleWriter::SetBackgroundResourceName(const std::string& name)
+{
+    if (!el)
+        return *this;
+    BackgroundImageSource src{};
+    src.Kind = BackgroundImageSource::SourceKind::ResourceName;
+    src.Value = name;
+    el->Overrides().Set(Style::BackgroundImage, std::move(src));
+    ClearLiveTexture(el->m_BackgroundImageTextureRef);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::SetBackgroundImageNone()
+{
+    if (!el)
+        return *this;
+    BackgroundImageSource src{};
+    src.Kind = BackgroundImageSource::SourceKind::None;
+    el->Overrides().Set(Style::BackgroundImage, std::move(src));
+    ClearLiveTexture(el->m_BackgroundImageTextureRef);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::ResetBackgroundImage()
+{
+    if (!el)
+        return *this;
+    el->Overrides().Reset(Style::BackgroundImage);
+    ClearLiveTexture(el->m_BackgroundImageTextureRef);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::SetBackgroundTint(uint32_t argb)
+{
+    if (!el)
+        return *this;
+    el->Overrides().Set(Style::BackgroundTint, argb);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::ResetBackgroundTint()
+{
+    if (!el)
+        return *this;
+    el->Overrides().Reset(Style::BackgroundTint);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::SetBackgroundRepeat(BackgroundRepeat repeat)
+{
+    if (!el)
+        return *this;
+    el->Overrides().Set(Style::BackgroundRepeatProp, repeat);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::ResetBackgroundRepeat()
+{
+    if (!el)
+        return *this;
+    el->Overrides().Reset(Style::BackgroundRepeatProp);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::SetBackgroundSizeAuto()
+{
+    if (!el)
+        return *this;
+    BackgroundSizeValue v{};
+    v.Mode = BackgroundSizeMode::Auto;
+    el->Overrides().Set(Style::BackgroundSize, v);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::SetBackgroundSizeCover()
+{
+    if (!el)
+        return *this;
+    BackgroundSizeValue v{};
+    v.Mode = BackgroundSizeMode::Cover;
+    el->Overrides().Set(Style::BackgroundSize, v);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::SetBackgroundSizeContain()
+{
+    if (!el)
+        return *this;
+    BackgroundSizeValue v{};
+    v.Mode = BackgroundSizeMode::Contain;
+    el->Overrides().Set(Style::BackgroundSize, v);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::SetBackgroundSizeExplicit(float x, bool xIsPercent, float y, bool yIsPercent)
+{
+    if (!el)
+        return *this;
+    BackgroundSizeValue v{};
+    v.Mode = BackgroundSizeMode::Explicit;
+    v.SizeX = x;
+    v.SizeXIsPercent = xIsPercent;
+    v.SizeY = y;
+    v.SizeYIsPercent = yIsPercent;
+    el->Overrides().Set(Style::BackgroundSize, v);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::ResetBackgroundSize()
+{
+    if (!el)
+        return *this;
+    el->Overrides().Reset(Style::BackgroundSize);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::SetBackgroundPosition(float x, bool xIsPercent, float y, bool yIsPercent)
+{
+    if (!el)
+        return *this;
+    BackgroundPositionValue v{};
+    v.X = x;
+    v.XIsPercent = xIsPercent;
+    v.Y = y;
+    v.YIsPercent = yIsPercent;
+    el->Overrides().Set(Style::BackgroundPosition, v);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::SetBackgroundPositionPercent(float xPercent, float yPercent)
+{
+    if (!el)
+        return *this;
+    BackgroundPositionValue v{};
+    v.X = xPercent;
+    v.XIsPercent = true;
+    v.Y = yPercent;
+    v.YIsPercent = true;
+    el->Overrides().Set(Style::BackgroundPosition, v);
+    return *this;
+}
+
+UIElement::StyleWriter& UIElement::StyleWriter::ResetBackgroundPosition()
+{
+    if (!el)
+        return *this;
+    el->Overrides().Reset(Style::BackgroundPosition);
+    return *this;
 }
 
 void UIElement::AddStylesheet(const StylesheetHandle& sheet)
@@ -479,7 +514,7 @@ void UIElement::ReplaceStylesheetBlock(const std::vector<const Stylesheet*>& old
     // Prepare insertion list: dedupe within the new block AND against
     // survivors outside the removed block (shared @imports whose entry is
     // owned by another attached style would otherwise duplicate at a
-    // shifted cascade position — C-10; see the manager-side variant).
+    // shifted cascade position; see the manager-side variant).
     std::unordered_set<const Stylesheet*> surviving;
     surviving.reserve(replacement.size());
     for (const auto& h : replacement)
@@ -526,25 +561,6 @@ void UIElement::RequestRelayout() const
     {
         m_OwnerManager->RequestRelayout();
         m_OwnerManager->NotifyRelayoutRequested(this);
-    }
-}
-
-void UIElement::MarkCustomPropertyReadersDirty()
-{
-    for (const auto& child : m_Children)
-    {
-        if (!child)
-            continue;
-        child->MarkDirty(StyleDirty);
-        child->MarkCustomPropertyReadersDirty();
-    }
-    if (Kind() == UIElementKind::Mount)
-    {
-        if (UIElement* target = static_cast<Mount*>(this)->GetTarget())
-        {
-            target->MarkDirty(StyleDirty);
-            target->MarkCustomPropertyReadersDirty();
-        }
     }
 }
 
@@ -610,10 +626,6 @@ void UIElement::AddChild(std::unique_ptr<UIElement> child) {
     }
     UIElement* raw = child.get();
     child->m_Parent = this;
-    // The attached root is written here, before an owner callback can look the child up,
-    // and again once the child is in m_Children, after a callback may have moved an
-    // ancestor whose walk could not reach it yet (UI::ElementIdIndex).
-    child->NoteDfsParentChanged();
     // Propagate owning UIManager from parent to newly added child subtree
     if (m_OwnerManager) child->SetOwnerManager(m_OwnerManager);
     // A newly attached subtree must have its styles/layout computed at least once.
@@ -624,7 +636,6 @@ void UIElement::AddChild(std::unique_ptr<UIElement> child) {
     // child subtree's rule cache.
     child->InvalidateRuleCacheSubtree();
     m_Children.emplace_back(std::move(child));
-    raw->NoteDfsParentChanged();
     MarkDirty(ChildrenDirty | LayoutDirty | VisualDirty);
     RestyleAfterChildListChange(m_Children.size() - 1, /*inserted=*/true, typeid(*raw));
     if (raw->m_HasOverlayInSubtree && !m_HasOverlayInSubtree)
@@ -659,15 +670,12 @@ void UIElement::InsertChild(size_t index, std::unique_ptr<UIElement> child)
     }
     UIElement* raw = child.get();
     child->m_Parent = this;
-    // Written before the owner and again after the insert, as in AddChild.
-    child->NoteDfsParentChanged();
     if (m_OwnerManager)
         child->SetOwnerManager(m_OwnerManager);
     child->MarkDirtySubtree(StyleDirty | LayoutDirty | VisualDirty | ChildrenDirty);
     // Cascade-memoization Phase 2: same as AddChild — new ancestor context.
     child->InvalidateRuleCacheSubtree();
     m_Children.insert(m_Children.begin() + static_cast<ptrdiff_t>(index), std::move(child));
-    raw->NoteDfsParentChanged();
     MarkDirty(ChildrenDirty | LayoutDirty | VisualDirty);
     if (raw->m_HasOverlayInSubtree && !m_HasOverlayInSubtree)
         RefreshOverlaySubtreeBitAndPropagate();
@@ -718,8 +726,6 @@ bool UIElement::AddManipulator(const std::shared_ptr<Manipulator>& manipulator)
     if (!manipulator)
         return false;
 
-    const Manipulator* manipulatorInstance = manipulator.get();
-
     // One instance, one element. A manipulator records its subscriptions on itself with no
     // element attached to the record, and handler keys are minted per element — so a second
     // attach mixes two elements' tokens into one list, and detaching from either unregisters
@@ -731,7 +737,7 @@ bool UIElement::AddManipulator(const std::shared_ptr<Manipulator>& manipulator)
             "element (or its element was destroyed). One instance serves one element: its "
             "subscription records name no element, so removing it here would unregister the "
             "other element's handlers. Build a second instance for this element.",
-            GetId(), typeid(*manipulatorInstance).name());
+            GetId(), typeid(*manipulator).name());
         return false;
     }
 
@@ -753,15 +759,14 @@ bool UIElement::AddManipulator(const std::shared_ptr<Manipulator>& manipulator)
                 it = entries.erase(it);
                 continue;
             }
-            const Manipulator* existingInstance = existing.get();
-            if (typeid(*existingInstance) == typeid(*manipulatorInstance))
+            if (typeid(*existing) == typeid(*manipulator))
             {
                 Logger::Log::Warning(
                     "UI: AddManipulator refused on element '{}' — a {} is already attached. The "
                     "second one can never fire (the first claims the gesture and the dispatch "
                     "stops there). Remove the existing one first, or attach this instance to a "
                     "different element.",
-                    GetId(), typeid(*manipulatorInstance).name());
+                    GetId(), typeid(*manipulator).name());
                 return false;
             }
             ++it;
@@ -854,7 +859,6 @@ void UIElement::RemoveChildImpl(UIElement* child) {
 	        if (m_OwnerManager)
 	            m_OwnerManager->ClearHoverForSubtree(it->get());
         (*it)->m_Parent = nullptr;
-        (*it)->NoteDfsParentChanged();
         // Clear owner on the removed subtree to avoid dangling UIManager pointer
         if (m_OwnerManager) (*it)->SetOwnerManager(nullptr);
         const size_t removedIndex = static_cast<size_t>(it - m_Children.begin());
@@ -1019,14 +1023,13 @@ std::unique_ptr<UIElement> UIElement::TakeChild(UIElement* child)
         m_OwnerManager->ClearHoverForSubtree(it->get());
 
     std::unique_ptr<UIElement> out = std::move(*it);
-    // Step 2b followup: detach the Yoga node before clearing UIElement
+    // Detach the Yoga node before clearing UIElement
     // parent. Symmetric with RemoveChild — the moved subtree is alive
     // but no longer this parent's child, so its YGNode shouldn't stay
     // attached to this parent's Yoga node. The new parent's AddChild
     // will reinsert when the caller reparents.
     UIElementDetachYogaChild(this, out.get());
     out->m_Parent = nullptr;
-    out->NoteDfsParentChanged();
     if (m_OwnerManager)
         out->SetOwnerManager(nullptr);
 
@@ -1129,71 +1132,16 @@ bool UIElement::PostSafeAction(std::function<void()> action)
     });
 }
 
-void UIElement::SetMountHostAsDfsParent(UIElement* host)
-{
-    m_DfsParent = host;
-    NoteDfsParentChanged();
-}
-
-void UIElement::NoteDfsParentChanged()
-{
-    const UIElement* dfsParent = GetDfsParent();
-    const UIElement* root = dfsParent ? dfsParent->m_AttachedRoot : (m_IsManagerRoot ? this : nullptr);
-    // Every element below this edge already carries this element's value, so an unchanged
-    // value needs no walk. This keeps building a detached tree free: nothing changes there.
-    if (root != m_AttachedRoot)
-        AssignAttachedRootInSubtree(root);
-}
-
-void UIElement::AssignAttachedRootInSubtree(const UIElement* root)
-{
-    m_AttachedRoot = root;
-    // DFS children only: a child shown through another Mount belongs to that Mount's
-    // subtree, and a Mount target belongs to this one.
-    for (const auto& child : m_Children)
-    {
-        if (child && child->GetDfsParent() == this)
-            child->AssignAttachedRootInSubtree(root);
-    }
-    if (UIElement* target = GetMountTarget(); target && target->GetDfsParent() == this)
-        target->AssignAttachedRootInSubtree(root);
-}
-
-void UIElement::SetId(const std::string& id)
-{
-    if (m_Id == id)
-        return;
-    if (m_OwnerManager)
-        m_OwnerManager->m_ElementIdIndex.Unregister(*this);
-    m_Id = id;
-    m_IdHash = id.empty() ? StringId{0} : HashStringId(id);
-    if (m_OwnerManager)
-        m_OwnerManager->m_ElementIdIndex.Register(*this);
-    // Id selectors affect descendants and, when used, following sibling selectors.
-    InvalidateRuleCacheSubtree();
-    if (UIManagerUsesSiblingCombinators(m_OwnerManager))
-        InvalidateRuleCacheFollowingSiblings();
-}
-
-UIElement* UIElement::FindById(StringId id) {
-    if (id == 0)
-        return nullptr;
-    if (m_OwnerManager)
-        return m_OwnerManager->m_ElementIdIndex.Find(*this, id);
-
-    // Offline trees have no manager index; preserve their construction-time lookup.
+UIElement* UIElement::FindById(std::string_view id) {
     // Treat id and name as aliases (name is folded into m_Id during parsing).
-    if (m_IdHash == id) return this;
+    if (m_Id == id) return this;
     for (auto& c : m_Children) {
         if (auto* f = c->FindById(id)) return f;
     }
     // Include portal-like Mount targets in lookup so ids inside mounted panel subtrees
     // are discoverable by callers (automation, editor integration, debugging tools).
-    if (UIElement* target = GetMountTarget())
-    {
-        if (UIElement* found = target->FindById(id))
-            return found;
-    }
+    if (UIElement* tgt = GetMountTarget())
+        return tgt->FindById(id);
     return nullptr;
 }
 
@@ -1219,7 +1167,7 @@ void UIAttributeAccess::SetAuthoredAttribute(UIElement& el, std::string_view nam
     std::string key(name);
     NormalizeAttrNameInPlace(key);
     el.m_Attributes[std::move(key)] = std::string(value);
-    // P4 (C-10): [attr] selectors match against these values, and the
+    // [attr] selectors match against these values, and the
     // structural rule cache bakes the match result — without invalidation
     // the re-cascade reuses the stale rule set and attribute-driven rules
     // never re-match. Subtree because descendant chains ([a] .x) exist.
@@ -1238,7 +1186,7 @@ void UIAttributeAccess::SetSelectorAttribute(UIElement& el, std::string_view nam
     std::string key(name);
     NormalizeAttrNameInPlace(key);
     el.m_Attributes[std::move(key)] = std::string(value);
-    // P4 (C-10): see SetAuthoredAttribute — cached structural matches bake
+    // See SetAuthoredAttribute — cached structural matches bake
     // the attribute state and must be rebuilt.
     el.InvalidateRuleCacheSubtree();
     if (markDirty)
@@ -1277,11 +1225,11 @@ void UIAttributeAccess::SetInlineStyleAttribute(UIElement& el, std::string_view 
     el.m_InlineStyleText = trimmed;
     if (el.m_InlineStyleText.empty())
     {
-        el.m_InlineStyle.Clear();
+        el.m_InlineOverrides.Clear();
         el.MarkDirtySubtree(UIElement::StyleDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
         return;
     }
 
-    UIParsing::CSSParser::ParseInlineStyleToOverrides(el.m_InlineStyleText, el.m_InlineStyle);
+    UIParsing::CSSParser::ParseInlineStyleToOverrides(el.m_InlineStyleText, el.m_InlineOverrides);
     el.MarkDirtySubtree(UIElement::StyleDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
 }

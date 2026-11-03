@@ -83,32 +83,6 @@ void EnginePluginRegistry::EndRegistrationHold()
     }
 }
 
-bool EnginePluginRegistry::UnregisterPlugin(IEnginePlugin& plugin)
-{
-    const char* id = plugin.GetDescriptor().Id;
-    const auto slot = std::find_if(m_Plugins.begin(), m_Plugins.end(),
-                                   [&plugin](const Entry& e) { return e.Plugin == &plugin; });
-    if (slot == m_Plugins.end())
-    {
-        Logger::Log::Warning(
-            "[Plugins] UnregisterPlugin refused for '{}': instance is not the active registration "
-            "(never registered, already replaced, or already unregistered); "
-            "active registrations are unaffected",
-            id && id[0] != '\0' ? id : "<empty>");
-        return false;
-    }
-
-    m_Plugins.erase(slot);
-    m_HeldReplays.erase(std::remove(m_HeldReplays.begin(), m_HeldReplays.end(), &plugin),
-                        m_HeldReplays.end());
-    Logger::Log::Warning(
-        "[Plugins] Engine plugin '{}' unregistered: it receives no further hooks (including "
-        "OnRuntimeShutdown); ECS systems it already scheduled keep ticking until its module's "
-        "registrations are reconciled or purged",
-        id);
-    return true;
-}
-
 std::size_t EnginePluginRegistry::PurgeModulePlugins(std::string_view moduleId, std::uint64_t generation)
 {
     if (moduleId.empty())
@@ -157,29 +131,9 @@ std::size_t EnginePluginRegistry::CountSupersededModulePlugins(std::string_view 
     return stale;
 }
 
-std::vector<std::string> EnginePluginRegistry::GetModulePluginIds(std::string_view moduleId) const
-{
-    std::vector<std::string> ids;
-    for (const Entry& entry : m_Plugins)
-    {
-        if (entry.Plugin && entry.Module.ModuleId == moduleId)
-            ids.emplace_back(entry.Plugin->GetDescriptor().Id);
-    }
-    return ids;
-}
-
 void EnginePluginRegistry::SetLateRegistrationHandler(LateRegistrationHandler handler)
 {
     m_LateRegistrationHandler = std::move(handler);
-}
-
-std::vector<IEnginePlugin*> EnginePluginRegistry::GetPlugins() const
-{
-    std::vector<IEnginePlugin*> out;
-    out.reserve(m_Plugins.size());
-    for (const Entry& entry : m_Plugins)
-        out.push_back(entry.Plugin);
-    return out;
 }
 
 std::vector<IEnginePlugin*> EnginePluginRegistry::GetEnabledPlugins() const

@@ -1,0 +1,110 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Depth pixelation</title><style>:root{color-scheme:dark;--bg:#11151b;--panel:#1b222c;--panel-light:#222e3b;--bad:#ff8d8d;--good:#94dcb1;--warn:#ffd38b;--text:#e8edf4;--muted:#a9b6c6;--accent:#8bc4ff;--border:#354252}body{background:var(--bg);color:var(--text);font:16px/1.6 system-ui;margin:40px auto;padding:0 24px;max-width:1100px}h1,h2,h3{color:var(--accent)}pre{padding:20px;background:var(--panel);border:1px solid var(--border);overflow:auto}code{font-family:ui-monospace,monospace}table{border-collapse:collapse;width:100%}th,td{border:1px solid var(--border);padding:8px;text-align:left}a{color:var(--accent)}</style><main><h1 id="depth-pixelation">Depth pixelation</h1>
+<p>Add <strong>Depth Pixelation</strong> to a global or local <strong>Post Process Volume</strong>.
+The ForwardPlus pipeline rasterizes geometry into a separate low-resolution view
+for each active band, then combines those views with nearest-neighbor sampling.
+Geometry edges and shading follow each band's pixel grid.</p>
+<ul>
+<li><strong>Band Count:</strong> choose 1–10 distance bands. Only active bands get render targets.
+  The last band extends to the camera's visible distance; sky has a separate grid.</li>
+<li><strong>Band Shape:</strong> <strong>Straight (Depth)</strong> measures camera-forward depth.
+  <strong>Curved (Radial)</strong> measures distance from the camera, producing spherical
+  boundaries and curved transitions across a ground plane.</li>
+<li><strong>Band N End:</strong> distance where the next band begins, in world units.
+  Boundaries are interpreted in ascending order; an end below the preceding end
+  leaves an empty band. Inactive band settings are retained when the count changes.</li>
+<li><strong>Resolution Mode:</strong> <strong>Fixed Pixel Height</strong> uses a vertical pixel count and
+  derives width from viewport aspect ratio. <strong>Screen Divisor</strong> divides both
+  current viewport dimensions: 1920×1080 at ÷8 renders at 240×135. Dimensions round
+  up to whole pixels and update when the viewport resizes. ÷1 is native size.</li>
+<li><strong>Band N Resolution / Divisor:</strong> per-band settings for the selected mode.
+  Lower fixed resolutions or larger divisors produce larger pixels.</li>
+<li><strong>Sky Resolution / Divisor:</strong> the same choice for the sky.</li>
+<li><strong>Automatic Band Pixels:</strong> derive every band's resolution from the current
+  viewport. Choose <strong>Farthest Band Pixels</strong> as 1× or 2×; each closer band doubles
+  that size. Four bands at 2× use 16×, 8×, 4×, 2× from near to far. Sky matches
+  the farthest band. Manual resolution settings are retained when this is on.</li>
+<li><strong>Pixel-grid Stabilization:</strong> <strong>Auto</strong> snaps the render projection to a pixel
+  grid and compensates the snap when displaying it. Orthographic translation
+  uses a world-sized pixel grid. Perspective uses the midpoint of each finite
+  band, and 1.5 times the start of the final band (at least 10 units), as its
+  focus distance. This reduces lateral pixel creep near those depths; it does
+  not promise pixel-perfect perspective rotation or forward movement.
+  Raster rounding determines cell size at odd viewport dimensions; arbitrary
+  band grids may not nest. For a uniform uniform pixel-grid image use one band and
+  matching band/sky resolutions. Rotation, zoom, animated shading, moving objects,
+  and crossing distance-band boundaries can still change pixels.
+  <strong>Off</strong> uses the unmodified camera projection.</li>
+<li><strong>Enabled:</strong> toggle pixelation on or off. Pixelation replaces the scene image;
+  there is no intensity blend. </li>
+<li><strong>Debug Depth Ranges:</strong> color the band that owns each display cell; sky is purple.
+  Disable the component to turn both pixelation and debugging off.</li>
+</ul>
+<p>The default is three straight bands with fixed pixel heights. Existing scenes
+retain their near/middle/far settings. Both modes, all ten bands, and the sky
+settings save with the scene and support inspector undo.</p>
+<p>Geometry fragments are assigned to bands while rendering. A one-pixel depth
+footprint, including allowance for display-center snapping, overlaps cells that straddle a band boundary, preventing a clear strip
+between grids. The original triangles determine silhouette coverage, so this
+does not add a halo around objects. Each band writes its own depth; a full-scene
+depth prepass cannot occlude background behind rejected foreground fragments.
+Composition reads that frame's single-sample depth attachment directly. The
+first covered band owns its whole display cell. All finer bands are compared
+at that same cell center, and the nearest actual depth supplies one color and
+matching depth for the entire cell. This keeps fine fragments from cutting into
+large pixels while preserving depth ordering at the selected sample. Equal
+depths favor the owning band. Automatic grids share a screen origin and exact
+power-of-two pixel sizes, including on odd viewport sizes; edge cells can be
+partial. Arbitrary manual resolutions need not nest at band boundaries.
+The pipeline's early depth copy precedes band color rendering and must not be used
+as its coverage mask. Band cameras are synchronized before visibility culling
+so rotation uses the same pose for culling, color, and coverage.
+Perspective and orthographic cameras are supported.</p>
+<p>The parent view runs only the band composition and subsequent output passes;
+its full-resolution scene raster and pre-composite post effects are skipped.
+Composition also writes the selected band's depth for editor overlays. The
+parent's multisampled depth, when present, receives a fullscreen depth copy.
+Each active band still renders its own scene, so performance depends on band
+count, resolution, and scene complexity. Disabling the component releases the
+extra views and restores ordinary scene rendering.</p>
+<p>Auto stabilization includes a one-texel guard on all sides of each band target.
+The projection and sampling compensate that padding so the selected logical
+pixel resolution and framing are preserved. Color and depth use identical UV
+corrections at the selected cell center. Display-cell borders stay aligned to the
+screen grid while sampling compensates projection snapping. Snapping changes only
+the render projection; it does not move objects, physics, or the gameplay camera.
+Coverage follows opaque/cutout depth. Transparent-only pixels without opaque
+coverage require a separate coverage path.</p>
+<p>Custom graphs can use the <code>DepthPixelation</code> node with <code>source</code> referring to the
+completed color chain before composition. That chain must be produced for every
+band view before this node. No full-resolution scene-color sampler is bound.
+The node binds the active band color/depth textures automatically and shares
+one sampler across them, keeping all ten bands within the 16-sampler stage limit. Unused shader
+slots share the sky textures rather than allocating more views.</p>
+<p>In a free orthographic Scene View, right-drag looks around and Alt/Option +
+left-drag (or middle-drag) orbits. Space + left-drag pans; the mouse wheel zooms.
+Dragging the rotation widget also preserves orthographic projection. Fixed-axis
+and 2D views keep their pan/zoom controls. Stabilization adapts to the new angle
+once rotation stops; it cannot keep geometry samples unchanged during rotation.</p>
+<p>Clicking the center of the top-right orientation gizmo switches perspective to
+an angled orthographic game view (45° yaw, 30° downward pitch), centered on
+the current viewing target. Clicking it again restores the previous perspective
+angle while retaining the current target and zoom. The toolbar projection toggle
+continues to switch projection without changing the viewing angle.</p>
+<p>With <strong>Band Count = 1</strong>, <strong>Pixelation Size</strong> offers <strong>Screen Size</strong> (set the
+vertical <strong>Screen Height</strong>, with width following viewport aspect) or <strong>Pixel
+Scale</strong> (4 means one quarter of viewport width and height). These controls are
+always visible, including for scenes previously using automatic band pixels.
+Editing a size switches to manual sizing and applies it to both the scene band
+and sky. Existing sizing fields provide scene serialization and undo support.</p>
+<p>The single-band Pixel Scale control accepts whole-number multipliers only (1, 2, 3, …).</p>
+<h3 id="simple-screen-space-comparison">Simple screen-space comparison</h3>
+<p>Enable <strong>Simple Method</strong> to compare a depth-masked image pixelator with the default separately rendered bands. The comparison samples the parent color and depth at pixel-cell centers, accepts samples in each distance interval, and composites nearer bands over farther ones. It uses the same band count, shape, screen size, pixel scale, and sky controls. It renders one full-resolution source instead of separate distance-band views. Disabling the simple method restores the separate-band renderer.</p>
+
+<p>Orthographic Scene View wheel zoom uses discrete integer rendered-pixel scales (and reciprocal integer reductions below 1×). With depth pixelation enabled it uses the first band's rendering height, so a 4× pixel scale is accounted for when selecting zoom levels. Single and quad viewports share the behavior; camera position and viewing direction stay fixed while the visible height changes.</p>
+<p>Auxiliary-view preparation is registered with the post-process effect descriptor.
+After world extraction it creates, updates, or releases the active band's views;
+before frame culling it refreshes existing cameras and appends their targets.
+Disabled effects with no auxiliary views leave the frame target list untouched.
+The compositor reads published outputs from the current pipeline instance and
+frame, keyed by view. A missing output is an invalid handle and takes the existing
+passthrough path; the lookup never allocates a substitute texture.</p><h2 id="changelog">Changelog</h2><p>2026-11-02: Documented band rendering, sizing, stabilization, and pipeline composition.</p><hr><footer>Version 1 · 2026-11-02</footer></main></html>

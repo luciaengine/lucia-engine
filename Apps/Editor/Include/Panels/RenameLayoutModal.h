@@ -30,6 +30,7 @@ class RenameLayoutModal final : public UIElement
     void OnCancelClicked();
 
     UIElement* m_Backdrop = nullptr;
+    UIElement* m_Window = nullptr;
     Label* m_Title = nullptr;
     TextField* m_NameField = nullptr;
 

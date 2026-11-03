@@ -1,15 +1,15 @@
 #include "Ocean/OceanFoamSim.h"
 #include "Ocean/OceanInputDrawSource.h"
-#include "Ocean/OceanShader/OceanShaderProgram.h"
-#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
-#include "OceanShader/OceanShaderDirectory.h"
+#include "Ocean/OceanShaderProgram.h"
+#include "Rendering/Materials/ShaderLayoutShape.h"
+#include "OceanShaderDirectory.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderCompileService.h"
 
 #include <algorithm>
 #include <cmath>
@@ -306,7 +306,7 @@ void OceanFoamSim::FillParams(OceanFoamParamsGPU& out, uint32 writeIndex,
             DecayedDepositScale(m_Params.FadeRate * m_Params.ShorelineFadeRateScale, out.DeltaTime);
         for (uint32 i = 0u; i < out.AuthoredFoamSourceCount; ++i)
         {
-            Mathematics::Vector4& amountFeatherBlend = out.AuthoredFoamSources[i].AmountFeatherBlend;
+            float32* amountFeatherBlend = out.AuthoredFoamSources[i].AmountFeatherBlend;
             if (std::lround(amountFeatherBlend[2]) == static_cast<long>(OceanInputBlendMode::Additive))
                 amountFeatherBlend[0] *= waveScale;
         }

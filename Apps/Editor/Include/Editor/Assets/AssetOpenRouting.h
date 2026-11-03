@@ -20,6 +20,7 @@ enum class AssetOpenTarget : uint8_t
     Timeline,              // Timeline window
     ClipEditor,            // Clip Editor window
     Inspector,             // select the asset and bring the Inspector forward
+    TileSetEditor,         // TileSet Editor panel (tile sets)
     OperatingSystem,       // hand the file to the OS default application
 };
 

@@ -227,7 +227,7 @@ TEST(ReverseZMath, ExtractNearFarRoundTrips)
     auto proj = MakePerspectiveLH_ZO_ReverseZ(kPi / 3.0f, 16.0f / 9.0f, zNear, zFar);
 
     float recoveredNear = 0.0f, recoveredFar = 0.0f;
-    ExtractNearFarLH_ZO(proj, recoveredNear, recoveredFar);
+    ExtractNearFarLH_ZO(proj.Data(), recoveredNear, recoveredFar);
 
     EXPECT_NEAR(recoveredNear, zNear, zNear * kExtractRelTol);
     EXPECT_NEAR(recoveredFar, zFar, zFar * kExtractRelTol);
@@ -240,7 +240,7 @@ TEST(ReverseZMath, ExtractNearFarRoundTripsOrthographic)
     auto proj = MakeOrthographicLH_ZO_ReverseZ(-10.0f, 10.0f, -8.0f, 8.0f, zNear, zFar);
 
     float recoveredNear = 0.0f, recoveredFar = 0.0f;
-    ExtractNearFarLH_ZO(proj, recoveredNear, recoveredFar);
+    ExtractNearFarLH_ZO(proj.Data(), recoveredNear, recoveredFar);
 
     EXPECT_NEAR(recoveredNear, zNear, 1e-3f);
     EXPECT_NEAR(recoveredFar, zFar, 1e-3f);

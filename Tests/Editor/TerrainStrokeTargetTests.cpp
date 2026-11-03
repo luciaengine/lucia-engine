@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "DebugServer/Terrain/TerrainStrokeTarget.h"
+#include "DebugServer/TerrainStrokeTarget.h"
 
 #include <nlohmann/json.hpp>
 

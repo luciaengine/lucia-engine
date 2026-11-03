@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace GameEngine::Engine::Renderer
 {
 struct PostProcessSettings;
@@ -21,12 +23,11 @@ struct SceneViewPostProcessSwitches
     bool Crt = true;
 };
 
-/// Applies the switches to the view's blended settings. "Tonemapping off" depends on
-/// the display: with `hdrOutputActive` the view shows no look (the exposed linear image
-/// rolled into the headroom); on SDR, where no look would hard-clip highlights, the
-/// Neutral look.
+/// Applies the switches to the view's blended settings. `offTonemapMode` is the
+/// curve "tonemapping off" maps to on the current display (a Components::TonemapMode
+/// value).
 void ApplySceneViewPostProcessSwitches(const SceneViewPostProcessSwitches& switches,
-                                       bool hdrOutputActive,
+                                       int32_t offTonemapMode,
                                        Engine::Renderer::PostProcessSettings& settings);
 
 } // namespace GameEngine::Editor

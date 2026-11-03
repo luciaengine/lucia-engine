@@ -11,7 +11,6 @@
  */
 #pragma once
 
-#include "Mathematics/Vector3.h"
 #include "Rendering/Core/BatchRegistry.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
@@ -21,15 +20,12 @@
 
 #include <array>
 #include <atomic>
-#include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <memory_resource>
 #include <mutex>
 #include <span>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -154,7 +150,7 @@ class GPUDrawStreamBuilder
     // these from its camera before RegisterSlice.
     struct ViewLODParams
     {
-        Mathematics::Vector3 cameraPos{0.0f, 0.0f, 0.0f};
+        float    cameraPos[3] = {0.0f, 0.0f, 0.0f};
         float    projScaleY   = 0.0f;          // proj[1][1]; <= 0 forces LOD0
         float    lodBiasGlobal = 0.0f;         // log2 bias; positive keeps detail
         uint32_t forceLod     = 0xFFFFFFFFu;   // 0xFFFFFFFF = auto-select
@@ -306,15 +302,8 @@ class GPUDrawStreamBuilder
         uint32_t capacity;     // snapshot live-instance count = per-batch draw bound
     };
 
-    /// Rows a batch table of `registry` can hold: one per winding parity of
-    /// each batch. Every Build*BatchTable writes into a `table` span at least
-    /// this long.
-    static size_t BatchTableCapacity(const BatchRegistry& registry);
-
     /// Snapshot the registry into a sorted table with exclusive-prefix record
-    /// offsets, written to the front of `table` (BatchTableCapacity entries at
-    /// least) and returned; the merge map's memory comes from `scratch`.
-    /// `outTotalRecords` receives the per-slice record count
+    /// offsets. `outTotalRecords` receives the per-slice record count
     /// (Σ capacities = live instances at snapshot). `meshPoolGroup` (indexed
     /// by meshIndex, MeshPoolGroupPlan values) is the draw-consolidation mesh
     /// axis: non-empty remaps every row's mesh field to its pool-group id and
@@ -322,11 +311,9 @@ class GPUDrawStreamBuilder
     /// per (classKey, mesh). Σ capacities is invariant either way. An empty
     /// span is the consolidation-OFF signal: today's per-mesh table,
     /// bit-for-bit. Pure; no GPU work.
-    static std::span<BatchTableEntry> BuildBatchTable(const BatchRegistry& registry,
-                                                      std::span<const uint32_t> meshPoolGroup,
-                                                      std::span<BatchTableEntry> table,
-                                                      std::pmr::memory_resource& scratch,
-                                                      uint32_t* outTotalRecords = nullptr);
+    static std::vector<BatchTableEntry> BuildBatchTable(const BatchRegistry& registry,
+                                                        std::span<const uint32_t> meshPoolGroup,
+                                                        uint32_t* outTotalRecords = nullptr);
 
     /// Reserved materialIndex values (top of the 24-bit sort domain) that stand
     /// in for the two shared-depth class buckets in the SHADOW batch table.
@@ -370,12 +357,10 @@ class GPUDrawStreamBuilder
     /// the mesh's single/double-sided class sentinel, material-dependent ones
     /// keep their (materialIndex, mesh) identity. Σ capacities == the color
     /// table's total (merging only reduces the row count, never the record
-    /// count). Writes and returns the rows as BuildBatchTable does. Pure; no
-    /// GPU work.
-    static std::span<BatchTableEntry> BuildShadowBatchTable(
+    /// count). Pure; no GPU work.
+    static std::vector<BatchTableEntry> BuildShadowBatchTable(
         const BatchRegistry& registry, std::span<const uint8_t> materialDepthClass,
-        std::span<const uint32_t> meshPoolGroup, std::span<BatchTableEntry> table,
-        std::pmr::memory_resource& scratch, uint32_t* outTotalRecords = nullptr);
+        std::span<const uint32_t> meshPoolGroup, uint32_t* outTotalRecords = nullptr);
 
     /// Color twin of BuildShadowBatchTable for the cascade=None color/depth-
     /// prepass table (P2 cross-material merge). `materialColorClass` is indexed
@@ -386,12 +371,10 @@ class GPUDrawStreamBuilder
     /// preserved (only the row count drops, so the shadowRecords==colorRecords
     /// contract survives). Asserts the class-id domain never aliases a real
     /// materialIndex present in the same table. An empty span is the flag-OFF
-    /// signal (callers use BuildBatchTable instead). Writes and returns the
-    /// rows as BuildBatchTable does. Pure; no GPU work.
-    static std::span<BatchTableEntry> BuildColorBatchTable(
+    /// signal (callers use BuildBatchTable instead). Pure; no GPU work.
+    static std::vector<BatchTableEntry> BuildColorBatchTable(
         const BatchRegistry& registry, std::span<const uint32_t> materialColorClass,
-        std::span<const uint32_t> meshPoolGroup, std::span<BatchTableEntry> table,
-        std::pmr::memory_resource& scratch, uint32_t* outTotalRecords = nullptr);
+        std::span<const uint32_t> meshPoolGroup, uint32_t* outTotalRecords = nullptr);
 
     /// Lazily create the scatter compute pipeline
     /// (Shaders/draw_command_scatter.shaderpkg via the same loader as the
@@ -790,13 +773,6 @@ class GPUDrawStreamBuilder
         bool IsValid() const { return Buffer.IsValid() && Bytes > 0; }
     };
     RenderedHistoryRead GetRenderedHistoryForRead(uint32_t viewId) const;
-
-    /// Free every per-view buffer this builder keeps for `viewId`: the rendered
-    /// history pair, the LOD dwell-band history and the LOD crossfade state.
-    /// Call when the view is released; view ids are never reused, so nothing
-    /// else frees them before the device goes away. The buffers are retired,
-    /// not destroyed, so a frame still in flight keeps valid handles.
-    void ReleaseView(uint32_t viewId);
 
     /// True when this app frame published at least one range for the given
     /// (view, cascade, phase). A consumer that declares a pass per culling
@@ -1225,11 +1201,6 @@ class GPUDrawStreamBuilder
     std::vector<SliceRegistration> m_FrameSlices;
     // Keyed by MakeStreamKey(viewId, cascadeIndex, materialIndex, meshIndex, phase).
     std::unordered_map<uint64_t, BatchDrawRange> m_RangeMap;
-    // The (view, cascade, phase) part of every m_RangeMap key that holds a valid
-    // range this frame: MakeStreamKey with zero material and mesh fields.
-    // Filled and cleared with m_RangeMap, so HasPublishedRangesForPhase is one
-    // lookup instead of a scan of every published batch.
-    std::unordered_set<uint64_t> m_PublishedSliceKeys;
 
     // ── Idle recompute elision state ──
     // Settle mirrors GPUCullingPipeline::kElisionSettleFrames: two are the

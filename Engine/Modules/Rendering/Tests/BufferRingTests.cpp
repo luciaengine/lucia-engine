@@ -4,7 +4,7 @@
 #include <cstring>
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/BufferRing.h"
-#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice.h"
 
 using namespace GameEngine::Rendering;
 

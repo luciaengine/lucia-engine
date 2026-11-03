@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(FileSystem LANGUAGES CXX)
+project(FileSystem VERSION 1.0.0 LANGUAGES CXX)
 
 # File copying and publication: nothing behind them but the standard library
 # and Logger plus a header-only Platform process identity. Native copies through

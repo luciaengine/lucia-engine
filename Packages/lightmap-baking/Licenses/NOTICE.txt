@@ -1,0 +1,13 @@
+# Godot directional shadowmask and diffuse lightmapping
+
+Reference: Godot Engine, commit `1b4643ae7c8778cd9fd254d838f054f5d7a1e43c`.
+
+Source files inspected:
+
+- `modules/lightmapper_rd/lm_compute.glsl`: UV-space direct visibility and diffuse path tracing.
+- `modules/lightmapper_rd/lightmapper_rd.cpp`: shadowmask light selection, texture output and padding flow.
+- `servers/rendering/renderer_rd/shaders/forward_clustered/scene_forward_clustered.glsl`: Replace and Overlay shadowmask blending.
+
+License: MIT; see Godot-MIT.txt.
+
+Adaptation: a CPU baker using GameEngine's mesh/UV1 data, threaded BVH and scene-linear material/light conventions. Separate visibility and diffuse irradiance textures feed a Standard PBR surface. Godot's runtime Replace/Overlay blend equations are retained. Godot's RenderingDevice, resource types, GPU kernels, probe generation, SH encoding and denoiser are not vendored.

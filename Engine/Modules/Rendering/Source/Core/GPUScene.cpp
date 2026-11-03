@@ -5,13 +5,13 @@
 
 #include "Rendering/Core/GPUScene.h"
 #include "Logger/Logger.h"
-#include "Rendering/Common/MatrixUtils.h"
+#include "Platform/Environment.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUCulling.h"
 #include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Types/GeometricReserve.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/SpecializationConstants.h"
 
 static_assert(GameEngine::Rendering::kMaxCullingViewsPerDispatch ==
@@ -23,7 +23,6 @@ static_assert(GameEngine::Rendering::kMaxCullingViewsPerDispatch ==
 #include <algorithm>
 #include <bit>
 #include <cassert>
-#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <iostream>
@@ -48,7 +47,6 @@ GPUScene::CullingShaderLoaderFunc g_CullingShaderLoader = nullptr;
 //   set = 0, binding 0: GPUInstance buffer (SSBO)
 //   set = 0, binding 1: GPUCullingData buffer (SSBO)
 //   set = 0, binding 2: frustumResults / visibility buffer (SSBO)
-//   set = 0, binding 3: per-material deformation margins (SSBO)
 DescriptorSetLayoutDesc MakeCullingDescriptorSetLayout()
 {
     DescriptorSetLayoutDesc layout;
@@ -78,14 +76,6 @@ DescriptorSetLayoutDesc MakeCullingDescriptorSetLayout()
     visibilityBinding.debugName = "VisibilityResultsBuffer";
     layout.bindings.push_back(visibilityBinding);
 
-    DescriptorBinding marginBinding;
-    marginBinding.binding = 3;
-    marginBinding.type = DescriptorType::StorageBuffer;
-    marginBinding.count = 1;
-    marginBinding.shaderStages = kShaderStageCompute;
-    marginBinding.debugName = "DeformationMarginBuffer";
-    layout.bindings.push_back(marginBinding);
-
     return layout;
 }
 
@@ -104,11 +94,7 @@ GPUInstance MakeTombstoneInstance()
 // to pick the matching pipeline/binding, so they agree by construction.
 bool ScatterHotEnabledFromEnv()
 {
-    static const bool kEnabled = []()
-    {
-        const char* env = std::getenv("GE_SCATTER_COMPACT");
-        return env == nullptr || env[0] != '0';
-    }();
+    static const bool kEnabled = Platform::EnvironmentSwitchEnabled("GE_SCATTER_COMPACT", true);
     return kEnabled;
 }
 
@@ -269,10 +255,6 @@ void GPUScene::Shutdown()
     m_FreeMeshSlots.clear();
 
     m_PrevVisibleResetSlots.clear();
-    // Every slot is gone without a release entry: move the log's start past
-    // every cursor handed out, so each consumer rebuilds what it keyed by slot.
-    m_ReleaseLogStart = GetReleasedSlotCount() + 1u;
-    m_ReleaseLog.clear();
     m_InstanceContinuityStamps.clear();
     m_ContinuityResetSlots.clear();
     m_InstanceSlotHighWater = 0;
@@ -362,9 +344,6 @@ uint32_t GPUScene::AddInstance(const GPUInstance& instance)
     // free-slot and dirty-word storage before a new row becomes owned/live.
     const size_t rows = m_Instances.size() + (m_FreeInstanceSlots.empty() ? 1 : 0);
     ReserveGeometric(m_FreeInstanceSlots, rows);
-    // The release log takes one entry per removed row: room for every live row
-    // keeps RemoveInstances allocation-free (its trim only erases).
-    ReserveGeometric(m_ReleaseLog, m_ReleaseLog.size() + m_InstanceCount + 1u);
     const size_t words = (rows + 63) / 64;
     for (uint32_t slot = 0; slot < m_FramesInFlight; ++slot)
     {
@@ -484,7 +463,7 @@ void GPUScene::AssertEachRowWrittenOnce(std::span<const InstanceWrite> writes)
 }
 #endif
 
-void GPUScene::UpdateInstances(std::span<const InstanceWrite> writes, RangeRunner runRanges)
+void GPUScene::UpdateInstances(std::span<const InstanceWrite> writes, const RangeRunner& runRanges)
 {
     if (writes.empty())
         return;
@@ -648,7 +627,6 @@ void GPUScene::RemoveInstances(std::span<const uint32_t> instanceIndices)
             m_ScatterHot[index] = MakeScatterHot(m_Instances[index]);
         MarkInstanceDirtyAllSlots(index);
         FreeInstanceSlot(index);
-        m_ReleaseLog.push_back(index);
         if (m_InstanceCount > 0)
             --m_InstanceCount;
         anyRemoved = true;
@@ -656,15 +634,6 @@ void GPUScene::RemoveInstances(std::span<const uint32_t> instanceIndices)
 
     if (!anyRemoved)
         return;
-
-    // Bounded retention: drop the older half once the log doubles its window,
-    // so a trim is amortized O(1) per entry.
-    if (m_ReleaseLog.size() > 2u * kReleaseLogRetention)
-    {
-        const std::size_t dropped = m_ReleaseLog.size() - kReleaseLogRetention;
-        m_ReleaseLog.erase(m_ReleaseLog.begin(), m_ReleaseLog.begin() + static_cast<std::ptrdiff_t>(dropped));
-        m_ReleaseLogStart += dropped;
-    }
 
     // Single trailing-trim pass: strip the maximal suffix of free slots so the
     // instance array (and its mirrors) shrink back. O(1) membership per step
@@ -688,19 +657,6 @@ void GPUScene::RemoveInstances(std::span<const uint32_t> instanceIndices)
     m_InstancesDirty = true;
     m_InstancesAABBDirty = true;
     for (uint32_t s = 0; s < m_FramesInFlight; ++s) m_InstancesDirtySlots[s] = true;
-}
-
-bool GPUScene::ReadReleasedSlotsSince(uint64_t cursor, std::vector<uint32_t>& out) const
-{
-    out.clear();
-    if (cursor < m_ReleaseLogStart)
-        return false;
-    const uint64_t end = GetReleasedSlotCount();
-    if (cursor > end)
-        return false;
-    const auto first = m_ReleaseLog.begin() + static_cast<std::ptrdiff_t>(cursor - m_ReleaseLogStart);
-    out.assign(first, m_ReleaseLog.end());
-    return true;
 }
 
 void GPUScene::DrainPrevVisibleResetSlots(std::vector<uint32_t>& outSlots)
@@ -829,8 +785,7 @@ void GPUScene::ScheduleCullingPassForRange(RenderGraph::RGFrame& frame, const GP
                                            RenderGraph::RGBuffer visibility, uint32_t visibilityTotalBytes,
                                            uint32_t visibilityOffsetElements,
                                            uint32_t firstInstance, uint32_t instanceCount,
-                                           const GPUCullingData& cullingData,
-                                           const CullDeformationMargins& margins, uint64_t sliceStableKey)
+                                           const GPUCullingData& cullingData, uint64_t sliceStableKey)
 {
     if (!m_CullingPipeline.IsValid())
     {
@@ -841,15 +796,14 @@ void GPUScene::ScheduleCullingPassForRange(RenderGraph::RGFrame& frame, const GP
     const uint32_t sliceOffsets[1] = {visibilityOffsetElements};
     ScheduleCullingPassImpl(frame, sceneRG, visibility, visibilityTotalBytes, m_CullingPipeline,
                             sliceOffsets, /*viewCount=*/1u, firstInstance, instanceCount,
-                            cullingData, margins, sliceStableKey);
+                            cullingData, sliceStableKey);
 }
 
 void GPUScene::ScheduleCullingPassForCascadeGroup(RenderGraph::RGFrame& frame, const GPUSceneFrameRG& sceneRG,
                                                   RenderGraph::RGBuffer visibility, uint32_t visibilityTotalBytes,
                                                   const uint32_t* sliceOffsetsElements, uint32_t viewCount,
                                                   uint32_t firstInstance, uint32_t instanceCount,
-                                                  const GPUCullingData& cullingData,
-                                                  const CullDeformationMargins& margins, uint64_t groupStableKey)
+                                                  const GPUCullingData& cullingData, uint64_t groupStableKey)
 {
     if (instanceCount == 0u || viewCount == 0u)
         return;
@@ -877,7 +831,7 @@ void GPUScene::ScheduleCullingPassForCascadeGroup(RenderGraph::RGFrame& frame, c
     }
     ScheduleCullingPassImpl(frame, sceneRG, visibility, visibilityTotalBytes, pso,
                             sliceOffsetsElements, viewCount, firstInstance, instanceCount,
-                            cullingData, margins, groupStableKey);
+                            cullingData, groupStableKey);
 }
 
 void GPUScene::ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSceneFrameRG& sceneRG,
@@ -885,11 +839,9 @@ void GPUScene::ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSce
                                        PipelineHandle pipeline,
                                        const uint32_t* sliceOffsetsElements, uint32_t viewCount,
                                        uint32_t firstInstance, uint32_t instanceCount,
-                                       const GPUCullingData& cullingData,
-                                       const CullDeformationMargins& margins, uint64_t sliceStableKey)
+                                       const GPUCullingData& cullingData, uint64_t sliceStableKey)
 {
-    if (!visibility.IsValid() || !pipeline.IsValid() || !margins.Valid() || instanceCount == 0u ||
-        viewCount == 0u)
+    if (!visibility.IsValid() || !pipeline.IsValid() || instanceCount == 0u || viewCount == 0u)
         return;
 
     // Per-dispatch params written NOW, at declaration, into the frame's upload
@@ -930,7 +882,7 @@ void GPUScene::ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSce
                       p.Write(visibility);
                   },
                   [pipeline, cdBuf = cd.Buffer, cdOff = cd.Offset, instances = sceneRG.Instances,
-                   visibility, margins, pc, instBytes, visibilityTotalBytes, instanceCount](RenderGraph::RGContext& ctx)
+                   visibility, pc, instBytes, visibilityTotalBytes, instanceCount](RenderGraph::RGContext& ctx)
                   {
                       DescriptorSetLayoutDesc layout = MakeCullingDescriptorSetLayout();
                       DescriptorSetDesc setDesc{};
@@ -948,8 +900,6 @@ void GPUScene::ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSce
                                                                   sizeof(GPUCullingData));
                       ctx.GetDevice()->UpdateStorageBufferBinding(set, 2, ctx.GetBuffer(visibility), 0,
                                                                   visibilityTotalBytes);
-                      ctx.GetDevice()->UpdateStorageBufferBinding(set, 3, margins.Buffer, margins.Offset,
-                                                                  margins.Bytes);
                       ctx.Cmd->SetPipeline(pipeline);
                       ctx.Cmd->BindDescriptorSet(0, set, pipeline);
                       ctx.Cmd->SetPushConstants(pc);

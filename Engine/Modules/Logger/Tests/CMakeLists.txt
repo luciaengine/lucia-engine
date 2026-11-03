@@ -15,17 +15,13 @@ endif()
 add_executable(LoggerAsyncTests
     LoggerAsyncTests.cpp
     LoggerOwnershipTests.cpp
-    LogChannelTests.cpp
-    LogChannelSecondUnit.cpp
-    FunctionNameTests.cpp
     DeferredSinkTests.cpp
     FileLogLevelTests.cpp
     FileSinkFormatTests.cpp
     FileSinkRotationTests.cpp
     FileSinkOpenFailureTests.cpp
     LoggerCrashFlushTests.cpp
-    RingBufferSinkQueryTests.cpp
-    StdLibraryHardeningTests.cpp
+    SourceCStringTests.cpp
 )
 
 target_link_libraries(LoggerAsyncTests
@@ -34,12 +30,11 @@ target_link_libraries(LoggerAsyncTests
         GTest::gtest
         GTest::gtest_main
 )
+target_include_directories(LoggerAsyncTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
 target_include_directories(LoggerAsyncTests
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/../Source
-        ${CMAKE_SOURCE_DIR}/Tests  # DeathTestChild.h
 )
 
 ge_set_output_tests(LoggerAsyncTests)
@@ -77,7 +72,6 @@ if(WIN32)
     add_executable(LoggerModuleLifetimeTests LoggerModuleLifetimeTests.cpp)
     target_compile_definitions(LoggerModuleLifetimeTests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_link_libraries(LoggerModuleLifetimeTests PRIVATE LoggerModuleTestHost GTest::gtest_main)
-    target_include_directories(LoggerModuleLifetimeTests PRIVATE ../Source)
     add_dependencies(LoggerModuleLifetimeTests LoggerModuleProbe)
     ge_set_output_tests(LoggerModuleLifetimeTests)
     ge_stage_runtime_dependencies(LoggerModuleLifetimeTests)
@@ -85,8 +79,8 @@ if(WIN32)
     set_tests_properties(LoggerModuleLifetimeTests PROPERTIES TIMEOUT 60 LABELS "Logger;Unit;DLL")
 endif()
 
-add_executable(LoggerChannelBenchmark LogChannelBenchmark.cpp)
-target_link_libraries(LoggerChannelBenchmark PRIVATE Logger)
-target_compile_features(LoggerChannelBenchmark PRIVATE cxx_std_20)
-ge_set_output_tests(LoggerChannelBenchmark)
-ge_stage_runtime_dependencies(LoggerChannelBenchmark)
+add_executable(LoggerSourceLocationBenchmark SourceLocationBenchmark.cpp)
+target_link_libraries(LoggerSourceLocationBenchmark PRIVATE Logger)
+target_compile_features(LoggerSourceLocationBenchmark PRIVATE cxx_std_20)
+ge_set_output_tests(LoggerSourceLocationBenchmark)
+ge_stage_runtime_dependencies(LoggerSourceLocationBenchmark)

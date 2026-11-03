@@ -16,7 +16,9 @@
 #include "Engine/Rendering/Pipeline/Nodes/LensFlareRenderNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/LightUploadNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/OcclusionCullP2Node.h"
+#include "Engine/Rendering/Pipeline/Nodes/PlanarReflectionNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/RenderScaleUpscaleNode.h"
+#include "Engine/Rendering/Pipeline/Nodes/PixelPerfectUpscaleNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/ScatterBNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/ScreenSpaceReflectionsNode.h"
 #include "Engine/Rendering/Pipeline/Nodes/ShadowMapNode.h"
@@ -69,8 +71,7 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         "TransmissiveRender",
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<TransmissivePassNode>(); },
-        /*perView*/ true,
-        RenderPipelineNodeResourceFields{.RefKeys = {"output", "clouds"}});
+        /*perView*/ true);
 
     (void)registry.Register(
         "DepthPrepass",
@@ -94,14 +95,17 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         RenderPipelineNodeResourceFields{.RefKeys = {"output"}, .PublishKeys = {{"output", Names::View::GTAO}}});
 
     (void)registry.Register(
+        "PlanarReflection",
+        []() -> std::unique_ptr<IRenderPipelineNode>
+        { return std::make_unique<PlanarReflectionNode>(); },
+        /*perView*/ true);
+
+    (void)registry.Register(
         "ScreenSpaceReflections",
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<ScreenSpaceReflectionsNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{.RefKeys = {"input", "output"},
-                                         .PublishKeys = {{"output", "HDRSSSR"}},
-                                         .StaticPublishNames = {Names::View::DepthResolvedPostOcean,
-                                                                Names::View::SSRHiZ}});
+        RenderPipelineNodeResourceFields{.RefKeys = {"input", "output"}, .PublishKeys = {{"output", "HDRSSSR"}}});
 
     (void)registry.Register(
         "FidelityFXDepthOfField",
@@ -139,6 +143,13 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         { return std::make_unique<SmaaNode>(); },
         /*perView*/ true,
         RenderPipelineNodeResourceFields{.RefKeys = {"input", "output"}, .PublishKeys = {{"output", "LDRSmaa"}}});
+
+    (void)registry.Register(
+        "PixelPerfectUpscale",
+        []() -> std::unique_ptr<IRenderPipelineNode>
+        { return std::make_unique<PixelPerfectUpscaleNode>(); },
+        true,
+        RenderPipelineNodeResourceFields{.RefKeys = {"input", "output"}, .PublishKeys = {{"output", "HDRPixelPerfect"}}});
 
     (void)registry.Register(
         "RenderScaleUpscale",
@@ -197,6 +208,13 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         FullscreenShaderResourceFields());
 
     (void)registry.Register(
+        "DepthPixelation",
+        []() -> std::unique_ptr<IRenderPipelineNode>
+        { return std::make_unique<DepthPixelationNode>(); },
+        /*perView*/ true,
+        FullscreenShaderResourceFields());
+
+    (void)registry.Register(
         "TemporalFullscreenShader",
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<TemporalFullscreenShaderNode>(); },
@@ -217,23 +235,10 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<SkyRenderNode>(); },
         /*perView*/ true,
-        RenderPipelineNodeResourceFields{.RefKeys = {"output"},
-                                         .PublishKeys = {{"output", Names::View::Color}},
-                                         .StaticPublishNames = {Names::Res::SkyBackdrop,
-                                                                Names::Res::SkyStarLight}});
+        RenderPipelineNodeResourceFields{.RefKeys = {"output"}, .PublishKeys = {{"output", Names::View::Color}}});
 
     (void)registry.Register(
         "ShadowMap",
-        []() -> std::unique_ptr<IRenderPipelineNode>
-        { return std::make_unique<ShadowMapNode>(); },
-        /*perView*/ true,
-        ShadowMapResourceFields());
-
-    // Legacy alias: pre-Q4 projects serialize the type as "CascadedShadowMap".
-    // Registered identically so those blueprints still compile; ValidateBlueprint
-    // emits a deprecation warning nudging authors to the "ShadowMap" key.
-    (void)registry.Register(
-        "CascadedShadowMap",
         []() -> std::unique_ptr<IRenderPipelineNode>
         { return std::make_unique<ShadowMapNode>(); },
         /*perView*/ true,
@@ -276,14 +281,13 @@ void RegisterEngineNodeTypes(RenderPipelineNodeRegistry& registry)
         /*perView*/ true,
         RenderPipelineNodeResourceFields{.RefKeys = {"output"},
          .PublishKeys = {{"output", Names::View::Resolve}},
-         .StaticPublishNames = {Names::View::DepthResolvedPostOcean, Names::Res::VolumetricFogParams,
-                                Names::Res::VolumetricFog}});
+         .StaticPublishNames = {Names::View::DepthResolvedPostOcean}});
 
     // Two-phase HZB occlusion (R2.1) nodes, wired into the ForwardPlus
     // blueprints after WorldRender. HZBBuild builds the MIN/occlusion
-    // pyramid for a view that opted in via HzbCullingStrategy, nothing for
-    // any other view. (The MAX/nearest reflection pyramid is built by the
-    // reflections node from the final depth, with its own instance.) The phase-B
+    // pyramid for a view that opted in via HzbCullingStrategy, and the
+    // MAX/nearest SSR pyramid for a view with SSSR active — each
+    // independently, neither when a view needs neither. The phase-B
     // cull/scatter nodes stay inert without a slicePhase==1 reservation, so
     // probes and thumbnails still pay zero cost; scene panes and the Game
     // View DO opt in, so one frame commonly carries several HZB views

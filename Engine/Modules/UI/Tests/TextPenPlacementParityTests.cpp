@@ -53,6 +53,24 @@ namespace
 // 1px (halo/2) and 2px (halo) placement errors by two orders of magnitude.
 constexpr float kPlacementTolerancePx = 0.03f;
 
+// Where Chrome on macOS draws a glyph whose layout pen is `idealPen`: the pen
+// rounded to the nearest quarter device pixel (GlyphRunEmitter's
+// kGlyphPenPhasesPerPx). Layout, box widths and the caret stay at the
+// fractional ideal; only the ink takes the quarter step.
+float ChromeGlyphPen(float idealPen)
+{
+    return std::floor(idealPen * 4.0f + 0.5f) / 4.0f;
+}
+
+// The ink pen sits on a quarter device pixel and is the one nearest the
+// layout ideal. The quarter check is what fails if the rounding is dropped
+// and the pen stays at a fractional ideal.
+void ExpectChromeGlyphPen(float pen, float idealPen, const std::string& what)
+{
+    EXPECT_NEAR(pen * 4.0f, std::round(pen * 4.0f), 0.01f) << what << ": pen " << pen << " is not on a quarter pixel";
+    EXPECT_NEAR(pen, ChromeGlyphPen(idealPen), kPlacementTolerancePx) << what;
+}
+
 // The HUD geometry the defect was measured on (GameHudComplex.css .slot /
 // .slot-key): fixed slot, 2px border, shrink-wrapped caption centered both
 // ways, Roboto 22px.
@@ -213,7 +231,7 @@ label { font-family: Roboto; font-size: 22px; color: #ffffff; }
                     caps[i], slot.X, slot.W, contentX, contentW, cap.X, cap.W, advance,
                     cap.W - advance, probe.QuadX, probe.Pen, idealPen, probe.Pen - idealPen);
 
-        EXPECT_NEAR(probe.Pen, idealPen, kPlacementTolerancePx) << caps[i];
+        ExpectChromeGlyphPen(probe.Pen, idealPen, caps[i]);
     }
 
     // The sample must be able to disprove an integer-snapping engine: at least
@@ -280,7 +298,7 @@ label { font-family: Roboto; font-size: 22px; color: #ffffff; }
 
     const PenProbe probe = DeriveFirstGlyphPen(fx, "cap", *atlas, "R");
     ASSERT_TRUE(probe.Valid);
-    EXPECT_NEAR(probe.Pen, idealPen, kPlacementTolerancePx);
+    ExpectChromeGlyphPen(probe.Pen, idealPen, "caption");
 }
 
 // --- Control: fixed-width text-align centering was never the defect -----------
@@ -316,7 +334,7 @@ label { font-family: Roboto; font-size: 22px; color: #ffffff; width: 64px; text-
 
     const PenProbe probe = DeriveFirstGlyphPen(fx, "cap", *atlas, "Q");
     ASSERT_TRUE(probe.Valid);
-    EXPECT_NEAR(probe.Pen, idealPen, kPlacementTolerancePx);
+    ExpectChromeGlyphPen(probe.Pen, idealPen, "caption");
 }
 
 // --- The editable twin: ink and caret share one origin ------------------------
@@ -390,7 +408,7 @@ TEST(PenPlacement, ShrinkWrappedCentredFieldPutsInkAndCaretOnTheChromeIdeal)
                 slot.X, slot.W, field.X, field.W, advance, probe.Pen, caretX, idealPen,
                 probe.Pen - idealPen, caretX - idealPen);
 
-    EXPECT_NEAR(probe.Pen, idealPen, kPlacementTolerancePx) << "ink origin";
+    ExpectChromeGlyphPen(probe.Pen, idealPen, "ink origin");
     EXPECT_NEAR(caretX, idealPen, kPlacementTolerancePx) << "caret origin";
 }
 

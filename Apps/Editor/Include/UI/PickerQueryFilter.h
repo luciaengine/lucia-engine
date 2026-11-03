@@ -1,7 +1,6 @@
 #pragma once
 
-#include "Types/StringUtils.h"
-
+#include <cctype>
 #include <string>
 #include <string_view>
 
@@ -14,6 +13,15 @@ struct PickerQueryFilter
 {
     std::string Category;
     std::string LowerQuery;
+
+    static std::string ToLower(std::string_view text)
+    {
+        std::string out;
+        out.reserve(text.size());
+        for (char c : text)
+            out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        return out;
+    }
 
     static PickerQueryFilter Parse(const std::string& query)
     {
@@ -30,7 +38,7 @@ struct PickerQueryFilter
                 rest.remove_prefix(separator + 1);
             }
         }
-        filter.LowerQuery = ToLowerAscii(rest);
+        filter.LowerQuery = ToLower(rest);
         return filter;
     }
 
@@ -40,8 +48,8 @@ struct PickerQueryFilter
             return false;
         if (LowerQuery.empty())
             return true;
-        return ToLowerAscii(label).find(LowerQuery) != std::string::npos ||
-               ToLowerAscii(category).find(LowerQuery) != std::string::npos;
+        return ToLower(label).find(LowerQuery) != std::string::npos ||
+               ToLower(category).find(LowerQuery) != std::string::npos;
     }
 };
 

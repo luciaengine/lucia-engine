@@ -10,7 +10,11 @@
 #if defined(__APPLE__) || defined(__linux__)
 #include <cxxabi.h>
 #include <dlfcn.h>
+#if defined(__ANDROID__)
+#include <unwind.h>
+#else
 #include <execinfo.h>
+#endif
 #elif defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -33,23 +37,24 @@ namespace
 // On Linux they look like:
 //   "./Editor(_ZN9GameEngine3BarEv+0x24) [0x100001234]"
 // We best-effort parse a human-friendly {module, symbol} pair and demangle.
-std::string DemangleIfCxx(const char* mangled)
+String DemangleIfCxx(const char* mangled)
 {
     if (!mangled || !*mangled)
         return {};
     int status = 0;
-    char* demangled = abi::__cxa_demangle(mangled, nullptr, nullptr, &status);
-    if (status == 0 && demangled)
+    char* buf = abi::__cxa_demangle(mangled, nullptr, nullptr, &status);
+    if (status == 0 && buf)
     {
-        std::string out(demangled);
-        std::free(demangled);
+        String out(buf);
+        std::free(buf);
         return out;
     }
-    if (demangled)
-        std::free(demangled);
-    return std::string(mangled);
+    if (buf)
+        std::free(buf);
+    return String(mangled);
 }
 
+#if !defined(__ANDROID__)
 void ParseSymbolLineApple(const char* line, BacktraceFrame& out)
 {
     // skip leading frame index and whitespace
@@ -76,7 +81,7 @@ void ParseSymbolLineApple(const char* line, BacktraceFrame& out)
     // symbol up to " + offset"
     const char* symStart = p;
     const char* plus = std::strstr(p, " + ");
-    std::string mangled;
+    String mangled;
     if (plus)
         mangled.assign(symStart, plus - symStart);
     else
@@ -87,6 +92,25 @@ void ParseSymbolLineApple(const char* line, BacktraceFrame& out)
 
 #endif
 
+#if defined(__ANDROID__)
+struct AndroidUnwindState
+{
+    void** Addresses;
+    int Count = 0;
+    int Capacity;
+};
+
+_Unwind_Reason_Code CaptureAndroidFrame(_Unwind_Context* context, void* argument)
+{
+    auto& state = *static_cast<AndroidUnwindState*>(argument);
+    const auto address = _Unwind_GetIP(context);
+    if (address != 0)
+        state.Addresses[state.Count++] = reinterpret_cast<void*>(address);
+    return state.Count >= state.Capacity ? _URC_END_OF_STACK : _URC_NO_REASON;
+}
+#endif
+#endif
+
 } // namespace
 
 std::mutex& DbgHelpMutex()
@@ -95,9 +119,9 @@ std::mutex& DbgHelpMutex()
     return s_Mutex;
 }
 
-std::vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
+Vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
 {
-    std::vector<BacktraceFrame> out;
+    Vector<BacktraceFrame> out;
     if (maxFrames <= 0)
         return out;
     if (skipFrames < 0)
@@ -107,7 +131,13 @@ std::vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
     // Add 2 extra slots so we can reliably skip CaptureBacktrace itself.
     const int alloc = std::min(maxFrames + skipFrames + 2, 256);
     void* addrs[256];
+#if defined(__ANDROID__)
+    AndroidUnwindState state{addrs, 0, alloc};
+    _Unwind_Backtrace(CaptureAndroidFrame, &state);
+    const int captured = state.Count;
+#else
     int captured = ::backtrace(addrs, alloc);
+#endif
     if (captured <= 0)
         return out;
 
@@ -118,13 +148,16 @@ std::vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
     if (count <= 0)
         return out;
 
+#if !defined(__ANDROID__)
     char** symbols = ::backtrace_symbols(addrs + start, count);
+#endif
     out.reserve(static_cast<size_t>(count));
     for (int i = 0; i < count; ++i)
     {
         BacktraceFrame f;
         f.Address = reinterpret_cast<std::uintptr_t>(addrs[start + i]);
 
+#if !defined(__ANDROID__)
         if (symbols && symbols[i])
         {
 #if defined(__APPLE__)
@@ -135,6 +168,8 @@ std::vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
 #endif
         }
 
+#endif
+
         // Resolve module name via dladdr if not set yet.
         if (f.Module.empty())
         {
@@ -142,14 +177,21 @@ std::vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
             if (dladdr(addrs[start + i], &info) && info.dli_fname)
             {
                 const char* base = std::strrchr(info.dli_fname, '/');
-                f.Module = base ? std::string(base + 1) : std::string(info.dli_fname);
+                f.Module = base ? String(base + 1) : String(info.dli_fname);
             }
         }
 
+#if defined(__ANDROID__)
+        Dl_info symbolInfo{};
+        if (dladdr(addrs[start + i], &symbolInfo) && symbolInfo.dli_sname)
+            f.Symbol = DemangleIfCxx(symbolInfo.dli_sname);
+#endif
         out.push_back(std::move(f));
     }
+#if !defined(__ANDROID__)
     if (symbols)
         std::free(symbols);
+#endif
     return out;
 
 #elif defined(_WIN32)
@@ -203,7 +245,7 @@ std::vector<BacktraceFrame> CaptureBacktrace(int maxFrames, int skipFrames)
             if (GetModuleFileNameA(mod, modName, MAX_PATH))
             {
                 const char* base = std::strrchr(modName, '\\');
-                f.Module = base ? std::string(base + 1) : std::string(modName);
+                f.Module = base ? String(base + 1) : String(modName);
             }
         }
 

@@ -1,6 +1,5 @@
 #include "Video/VideoWriter.h"
 
-#include "Types/PathUtils.h"
 #include "Types/StringUtils.h"
 
 #include <filesystem>
@@ -10,26 +9,26 @@ namespace GameEngine::Video
 
 VideoCodec GuessCodecForMoviePath(const std::string& path)
 {
-    const std::string extension = LowerCaseExtension(std::filesystem::path(path));
-    if (extension == ".hevc" || extension == ".h265")
+    const std::string ext = ToLowerAscii(std::filesystem::path(path).extension().string());
+    if (ext == ".hevc" || ext == ".h265")
         return VideoCodec::HEVC;
-    if (extension == ".mov")
+    if (ext == ".mov")
         return VideoCodec::ProRes422;
     return VideoCodec::H264;
 }
 
 VideoCodec ParseVideoCodecName(const std::string& name, VideoCodec fallback)
 {
-    const std::string lowerName = ToLowerAscii(name);
-    if (lowerName == "auto")
+    const std::string n = ToLowerAscii(name);
+    if (n == "auto")
         return VideoCodec::Auto;
-    if (lowerName == "h264" || lowerName == "avc")
+    if (n == "h264" || n == "avc")
         return VideoCodec::H264;
-    if (lowerName == "h265" || lowerName == "hevc")
+    if (n == "h265" || n == "hevc")
         return VideoCodec::HEVC;
-    if (lowerName == "prores" || lowerName == "prores422" || lowerName == "prores_422")
+    if (n == "prores" || n == "prores422" || n == "prores_422")
         return VideoCodec::ProRes422;
-    if (lowerName == "prores4444" || lowerName == "prores_4444")
+    if (n == "prores4444" || n == "prores_4444")
         return VideoCodec::ProRes4444;
     return fallback;
 }

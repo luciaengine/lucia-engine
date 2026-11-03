@@ -1,9 +1,8 @@
 #pragma once
 #include "Components/Rendering/Ocean.h"
-#include "Mathematics/Vector3.h"
 #include "Ocean/OceanFrameStamp.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include <string>
 #include <unordered_map>
 namespace GameEngine::Engine::Renderer::Pipeline
@@ -33,7 +32,7 @@ class OceanSprayGPU
         // Ocean time of the last frame that could emit; once every droplet
         // born by then has landed, a calm view schedules no spray passes.
         float LastEmissionTime = 0;
-        Mathematics::Vector3 Origin;
+        float Origin[3]{};
         // Persistent render-graph buffer names, built on the view's first frame.
         std::string StateName, VisibleName, ArgsName;
         bool Active = false;
@@ -42,8 +41,7 @@ class OceanSprayGPU
     };
     Rendering::IDevice *m_Device = nullptr;
     Components::OceanSurface m_Surface{};
-    float m_WindSpeed = 0, m_WindDegrees = 0;
-    Mathematics::Vector3 m_Origin;
+    float m_WindSpeed = 0, m_WindDegrees = 0, m_Origin[3]{};
     Rendering::SamplerHandle m_Sampler{};
     bool m_LoadFailed = false;
     Rendering::ComputePipelineId m_Simulate{}, m_Cull{};

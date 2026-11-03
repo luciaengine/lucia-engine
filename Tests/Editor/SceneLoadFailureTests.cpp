@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include "DebugServer/SceneDegradedReport.h"
 #include "EditorChangeNotifications.h"
 #include "Scene/SceneDocumentManager.h"
 #include "Scene/SceneEditorController.h"
@@ -8,7 +7,6 @@
 #include "UndoRedo/UndoRedoService.h"
 
 #include "Assets/AssetManager.h"
-#include "Components/Transform.h"
 #include "Core/Engine.h"
 #include "ECS/UnresolvedComponentStore.h"
 #include "ECS/World.h"
@@ -51,7 +49,7 @@ using GameEngine::ECS::World;
 namespace fs = std::filesystem;
 
 // Parses and validates, then fails inside LoadParsedIntoWorld — after the clear — because the
-// prefab it instantiates cannot be read. ValidateDocument only checks that the [resource] id
+// blueprint it instantiates cannot be read. ValidateDocument only checks that the [resource] id
 // exists, so nothing catches this until the world is already gone.
 //
 // This used to be an unknown component property. It cannot be any more: a component or field this
@@ -60,12 +58,12 @@ namespace fs = std::filesystem;
 // loader genuinely cannot continue past. "good_one" still precedes it, so it lands in the world.
 constexpr const char* kFailsAfterClear =
     "[scene name=\"PartialLoad\" version=1]\n"
-    "[resource id=\"bp\" path=\"no_such_prefab.prefab\"]\n"
+    "[resource id=\"bp\" path=\"no_such_blueprint.blueprint\"]\n"
     "\n"
     "[entity id=\"good_one\"]\n"
     "Transform.position = (1, 2, 3)\n"
     "\n"
-    "[prefab id=\"bad_one\" source=\"bp\"]\n";
+    "[blueprint id=\"bad_one\" source=\"bp\"]\n";
 
 // Loads, but one assignment cannot be applied: SplineFence.SpanGrade is a reflected enum whose
 // enumerator names this build knows (Racked/Stepped/Sheared), and "Cantilevered" is what a scene
@@ -245,7 +243,7 @@ TEST_F(SceneLoadFailureTests, FailureAfterClearLeavesNoScenePathAndRecordsWhy)
     const auto& failure = *doc.GetLastLoadFailure();
     EXPECT_TRUE(failure.WorldCleared);
     EXPECT_EQ(failure.DocumentPath, bad);
-    EXPECT_NE(failure.Message.find("Prefab file not found"), std::string::npos) << failure.Message;
+    EXPECT_NE(failure.Message.find("Blueprint file not found"), std::string::npos) << failure.Message;
     EXPECT_GT(failure.EntitiesInWorld, 0u) << "the half-loaded entities are the whole problem";
 
     EXPECT_FALSE(doc.GetScenePath().has_value())
@@ -522,92 +520,6 @@ TEST_F(SceneLoadFailureTests, AutosaveDoesNotBackUpADocumentThatWouldLoseData)
     EXPECT_FALSE(fs::exists(m_Dir / "degraded_drop.backup.scene"));
 }
 
-namespace
-{
-
-// A Transform field this build does not know: the row is never preserved, and a save drops it.
-constexpr const char* kDropsOneField = "[scene name=\"Dropper\" version=1]\n"
-                                       "\n"
-                                       "[entity id=\"a\"]\n"
-                                       "Transform.position = (1, 2, 3)\n"
-                                       "Transform.noSuchProperty = 7\n";
-
-// Opens kDropsOneField and returns its one row, which must be never preserved and outstanding.
-Scene::SceneDegradation::Skip OpenTheDroppedRow(Editor::SceneDocumentManager& doc, const fs::path& scene)
-{
-    EXPECT_TRUE(doc.OpenSceneReplace(scene));
-    EXPECT_TRUE(doc.GetLastLoadDegraded().has_value());
-    if (!doc.GetLastLoadDegraded().has_value() || doc.GetLastLoadDegraded()->Census.skips.size() != 1u)
-    {
-        ADD_FAILURE() << "the corpus must load with exactly one row";
-        return {};
-    }
-    const Scene::SceneDegradation::Skip skip = doc.GetLastLoadDegraded()->Census.skips[0];
-    EXPECT_FALSE(skip.preserved) << "precondition: the row must be one a save drops";
-    EXPECT_EQ(doc.OutstandingDegradedSkipCount(), 1u) << "precondition: the row stands while its entity lives";
-    return skip;
-}
-
-} // namespace
-
-// A never-preserved row describes text on an entity. When the user deletes the entity, the row
-// leaves get_editor_state, the save guard and the dropped count on the next call.
-TEST_F(SceneLoadFailureTests, ANeverPreservedRowLeavesWithTheEntityItDescribes)
-{
-    const fs::path scene = WriteScene("drop_entity.scene", kDropsOneField);
-    World world;
-    Editor::SceneDocumentManager doc;
-    doc.SetWorld(&world);
-    const Scene::SceneDegradation::Skip skip = OpenTheDroppedRow(doc, scene);
-    ASSERT_TRUE(world.IsValid(skip.entityHandle)) << "the row must name the entity it describes";
-    ASSERT_FALSE(doc.Save()) << "precondition: the guard refuses while the row stands";
-
-    world.DestroyEntityImmediatePreserveHandle(skip.entityHandle);
-
-    const nlohmann::json report =
-        Editor::BuildSceneDegradedReport(doc.GetLastLoadDegraded(), doc.GetOutstandingLoadDegraded(), 0);
-    EXPECT_TRUE(report["skips"].empty()) << "a row about a deleted entity is not a row";
-    EXPECT_EQ(report["outstandingCount"], 0u);
-    EXPECT_EQ(report["droppedCount"], 0u) << "a save drops nothing now";
-    EXPECT_EQ(report["loadTimeCount"], 1u) << "the load-time record does not change";
-    EXPECT_EQ(doc.OutstandingDegradedSkipCount(), 0u);
-    EXPECT_TRUE(doc.Save()) << "the guard lifts: the text it protected went with the entity";
-}
-
-// A field row stands only while its component does: removing the component removes the row.
-TEST_F(SceneLoadFailureTests, ANeverPreservedFieldRowLeavesWithItsComponent)
-{
-    const fs::path scene = WriteScene("drop_component.scene", kDropsOneField);
-    World world;
-    Editor::SceneDocumentManager doc;
-    doc.SetWorld(&world);
-    const Scene::SceneDegradation::Skip skip = OpenTheDroppedRow(doc, scene);
-
-    const ECS::ComponentTypeId transformType = ECS::GetComponentTypeId<Components::Transform>();
-    ASSERT_TRUE(world.RemoveComponentByTypeIdImmediate(skip.entityHandle, transformType));
-
-    ASSERT_TRUE(world.IsValid(skip.entityHandle)) << "the entity stays; only its component left";
-    EXPECT_EQ(doc.OutstandingDegradedSkipCount(), 0u);
-    EXPECT_FALSE(doc.GetOutstandingLoadDegraded().has_value());
-}
-
-// Autosave refuses a scene that drops data, and the refusal follows the live rows: once the entity
-// with the dropped text is gone, the backup is written.
-TEST_F(SceneLoadFailureTests, AutosaveBacksUpOnceTheDroppedRowsEntityIsGone)
-{
-    const fs::path scene = WriteScene("drop_backup.scene", kDropsOneField);
-    World world;
-    Editor::SceneDocumentManager doc;
-    doc.SetWorld(&world);
-    const Scene::SceneDegradation::Skip skip = OpenTheDroppedRow(doc, scene);
-    doc.MarkDirty();
-    ASSERT_FALSE(doc.SaveBackupCopy()) << "precondition: a backup would drop the row's text";
-
-    world.DestroyEntityImmediatePreserveHandle(skip.entityHandle);
-
-    EXPECT_TRUE(doc.SaveBackupCopy());
-}
-
 // A missing asset is the commonest partial load, and it opens without a degraded record: the
 // reference loads, holding only its GUID. A plain Save must still write the path the scene authored,
 // or the one thing that would heal the reference once the file returns is gone from the user's file.
@@ -668,7 +580,7 @@ TEST_F(SceneLoadFailureTests, NewSceneClearsTheDegradedRecord)
     ASSERT_TRUE(doc.OpenSceneReplace(scene));
     ASSERT_TRUE(doc.GetLastLoadDegraded().has_value());
 
-    doc.NewSceneUntitled(nullptr);
+    doc.NewSceneUntitled();
     EXPECT_FALSE(doc.GetLastLoadDegraded().has_value());
 }
 

@@ -83,31 +83,6 @@ TEST(MenuCaptureColorTests, SetItemColorRidesTheCaptureAndOnlyOnItsRow)
     EXPECT_TRUE(plain->Color.empty()) << "the colour leaked onto a row it was never set on";
 }
 
-TEST(MenuCaptureShortcutTests, SetItemShortcutRidesTheCaptureAndOnlyOnItsRow)
-{
-    InterceptableContextMenu menu(std::make_unique<NoopBackendMenu>());
-    menu.AddItem(0, "Save Scene", 1, MenuItemFlag_None);
-    menu.AddItem(0, "Plain", 2, MenuItemFlag_None);
-    menu.SetItemShortcut(1, "Ctrl+S");
-
-    std::optional<InterceptableContextMenu::Capture> captured;
-    InterceptorGuard guard(
-        [&captured](InterceptableContextMenu::Capture&& capture)
-        {
-            captured = std::move(capture);
-            return true;
-        });
-    menu.Show(reinterpret_cast<Platform::Window*>(std::uintptr_t{1}), 0, 0);
-
-    ASSERT_TRUE(captured.has_value());
-    const auto* save = FindByPath(*captured, "Save Scene");
-    ASSERT_NE(save, nullptr);
-    EXPECT_EQ(save->Shortcut, "Ctrl+S");
-    const auto* plain = FindByPath(*captured, "Plain");
-    ASSERT_NE(plain, nullptr);
-    EXPECT_TRUE(plain->Shortcut.empty());
-}
-
 TEST(MenuCaptureColorTests, ClearDropsARowsColourWithTheRow)
 {
     InterceptableContextMenu menu(std::make_unique<NoopBackendMenu>());

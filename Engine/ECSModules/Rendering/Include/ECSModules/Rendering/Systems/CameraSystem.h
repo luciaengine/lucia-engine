@@ -2,7 +2,7 @@
 
 #include "ECS/Systems.h"
 #include "Types/Types.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 
 namespace GameEngine { namespace Engine::Renderer {
 

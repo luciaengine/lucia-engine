@@ -1,6 +1,7 @@
 #include "ECSModules/Rendering/Systems/RenderGraphBuildSystem.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Rendering/Core/Device.h"
 
 #include <cstring>
@@ -24,13 +25,10 @@ void RenderGraphBuildSystem::Update(ECS::World& /*world*/, float32 /*deltaTime*/
         return;
 
     // Allow examples to fully own the graph (skip system-authored passes/present)
-    if (const char* e = std::getenv("GE_EXAMPLE_OWNS_GRAPH"))
+    if (Platform::EnvironmentSwitchEnabled("GE_EXAMPLE_OWNS_GRAPH", false))
     {
-        if (e[0] == '1')
-        {
-            rs->BeginWorldDrawFrame();
-            return;
-        }
+        rs->BeginWorldDrawFrame();
+        return;
     }
 
     // Build per-view batch keys from this frame's submissions. The bucketer
@@ -40,7 +38,7 @@ void RenderGraphBuildSystem::Update(ECS::World& /*world*/, float32 /*deltaTime*/
     rs->Materials().FinalizeFrameBuffers();
 
     const auto& views = rs->Views().GetViews();
-    if (const char* v = std::getenv("GE_RENDER_DIAG_WORLD_PASSES"); v && !(v[0] == '0' && v[1] == '\0'))
+    if (Platform::EnvironmentSwitchEnabled("GE_RENDER_DIAG_WORLD_PASSES", false))
     {
         uint32_t totalWorldBatches = 0;
         for (const auto& view : views)

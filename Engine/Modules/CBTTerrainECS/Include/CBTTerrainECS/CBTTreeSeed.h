@@ -18,8 +18,7 @@ enum class CBTTreeRestart : uint8_t
 {
     None,
     DomainChanged,   // planar <-> spherical
-    TerrainRetired,  // the drawn terrain was replaced, re-provisioned or removed (every scene open does this),
-                     // or another terrain became the drawn one
+    TerrainRetired,  // a terrain was replaced, re-provisioned or removed (every scene open does this)
     DepthCapLowered, // the cap fell below the deepest cap the tree was allowed to reach
 };
 
@@ -36,33 +35,27 @@ class CBTTreeSeed
     // drawing; a retire forces a full VertexEval, so it draws the new heights.
     static constexpr uint32_t kRestartSettleFrames = 16u;
 
-    // The uniform heap depth a restarted tree is seeded to (or the terrain's cap when lower) before
-    // CBTRenderFeature::RefineRestartedTree refines it to the camera: 2^14 = 16,384 planar leaves, the
-    // start of that refine, which runs one synchronous update per level from here to the cap.
+    // The heap depth a restarted tree is refined to before its first draw (or the terrain's cap
+    // when lower): 2^14 = 16,384 planar leaves, about 1/90 of the terrain's width per facet, so
+    // a restart never draws the 4 or 24 root triangles that flatten every ridge and hill.
     static constexpr uint32_t kRestartSeedDepth = 14u;
     static_assert(kRestartSeedDepth >= 12u,
-                  "a shallower seed leaves the restart frame's refine more levels to split, one "
-                  "synchronous update each");
+                  "a restart seeded shallower than about 4,000 planar leaves draws facets too coarse "
+                  "for relief: the ridge-pose burst showed a 20 m wall vanish at 512 leaves");
     static_assert((1u << kRestartSeedDepth) <= CBTTerrain::kDefaultBisectorPoolSize / 32u,
                   "the restart seed must leave the pool to the screen-space refinement");
 
     // The tree was seeded from its roots for `domain` (kDomainPlanar / kDomainSpherical) under
-    // `maxDepth`. Clears a pending retire, the settle hold and the drawn terrain: the next
-    // NoteDrawnTerrain names the terrain the new tree grows on.
+    // `maxDepth`. Clears a pending retire and the settle hold.
     void Seeded(uint32_t domain, uint32_t maxDepth);
 
-    // The terrain under the tree is no longer the one it grew on: its texture set was retired
-    // (CBTRenderFeature::ConsumeTerrainRetire) or another terrain became the drawn one (NoteDrawnTerrain).
+    // A terrain texture set was retired (TerrainRenderFeature::GetTerrainTextureRetireGeneration
+    // advanced): the terrain under the tree is no longer the one it grew on.
     void NoteTerrainRetired()
     {
         m_TerrainRetired = true;
         ++m_RetireCount;
     }
-
-    // The tree draws terrain (`index`, `generation`) this frame (CBTRenderFeature::BuildFrameParams).
-    // A terrain other than the one drawn since the last seed restarts the tree, as a retire does,
-    // and returns true. A frame with no terrain keeps the last one.
-    [[nodiscard]] bool NoteDrawnTerrain(uint32_t index, uint32_t generation);
 
     // Why the tree must restart in frame `frameCounter`, or None. A cap that rises is remembered
     // without a restart, so lowering it later back to where the tree was seeded still restarts:
@@ -98,10 +91,6 @@ class CBTTreeSeed
     uint32_t m_DeepestAllowedDepth = 0;
     bool m_TerrainRetired = false;
     uint64_t m_RetireCount = 0;
-    // The terrain drawn since the last seed.
-    bool m_HasDrawnTerrain = false;
-    uint32_t m_DrawnTerrainIndex = 0;
-    uint32_t m_DrawnTerrainGeneration = 0;
     // The restart request as last seen, and the frame it was first seen in that form.
     bool m_Holding = false;
     Request m_HeldRequest{};

@@ -1,8 +1,8 @@
 #include "Engine/Rendering/RetargetSubmission.h"
 
+#include "Platform/Environment.h"
+
 #include <atomic>
-#include <cstdlib>
-#include <cstring>
 #include <mutex>
 
 namespace GameEngine { namespace Engine { namespace Renderer {
@@ -24,28 +24,8 @@ RetargetFrameStats    g_LastFrameStats{};
 
 bool ReadEnvFlag()
 {
-#if defined(_WIN32)
-    char* val = nullptr;
-    size_t len = 0;
-    if (_dupenv_s(&val, &len, "GE_RETARGET_CPU") == 0 && val)
-    {
-        const bool on = (len > 1 && val[0] == '1');
-        free(val);
-        if (on) return true;
-    }
-    if (_dupenv_s(&val, &len, "r.RetargetCPU") == 0 && val)
-    {
-        const bool on = (len > 1 && val[0] == '1');
-        free(val);
-        if (on) return true;
-    }
-#else
-    if (const char* v = std::getenv("GE_RETARGET_CPU"))
-        if (v[0] == '1') return true;
-    if (const char* v = std::getenv("r.RetargetCPU"))
-        if (v[0] == '1') return true;
-#endif
-    return false;
+    return Platform::EnvironmentSwitchEnabled("GE_RETARGET_CPU", false) ||
+           Platform::EnvironmentSwitchEnabled("r.RetargetCPU", false);
 }
 
 } // namespace

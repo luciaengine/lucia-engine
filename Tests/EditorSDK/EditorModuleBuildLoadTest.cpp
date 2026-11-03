@@ -15,7 +15,7 @@
 // project open) — the fixture's inspector must arrive via the late-plugin
 // replay, not by luck of ordering.
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h" // PathUtils::GetExecutableDirectory
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Registries/BuildExporterRegistry.h"
 #include "Editor/Registries/EditorMenuRegistry.h"
@@ -151,7 +151,7 @@ FixtureRegistrar s_Registrar;
 
 std::map<std::string, std::string> LoadConfigOrFail()
 {
-    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
     std::string cfgErr;
     auto kv = ReadConfigFile(exeDir / "editorsdk_config.txt", cfgErr);
     EXPECT_TRUE(cfgErr.empty()) << cfgErr;
@@ -176,7 +176,6 @@ ns::NativeBuildConfig MakeEditorModuleConfig(const std::map<std::string, std::st
     config.CMakeExe = kv.at("cmake");
     config.Config = kv.at("config");
     config.EngineImportLib = kv.at("importlib");
-    config.EngineBinary = kv.at("enginebinary");
     config.SdkEntrySource = kv.at("sdkentry");
     config.ModuleName = moduleName;
     for (const auto& d : SplitList(kv.at("includes"), ';'))
@@ -188,7 +187,6 @@ ns::NativeBuildConfig MakeEditorModuleConfig(const std::map<std::string, std::st
     for (const auto& d : SplitList(kv.count("globaldefs") ? kv.at("globaldefs") : "", ';'))
         config.CompileDefinitions.push_back(d);
     config.EditorImportLib = kv.at("editorimportlib");
-    config.EditorBinary = kv.at("editorbinary");
     for (const auto& d : SplitList(kv.at("editorincludes"), ';'))
         config.EditorIncludeDirs.emplace_back(d);
     return config;
@@ -223,7 +221,7 @@ bool PluginRegisteredWithId(std::string_view id)
 TEST(EditorModuleBuildLoad, AiAssistantEditorModuleBuildsAndRegistersPanel)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
     const fs::path sourceDir = exeDir / "TestData" / "Packages" / "ai-assistant" / "Editor";
     ASSERT_TRUE(fs::is_directory(sourceDir)) << sourceDir.string();
 
@@ -340,7 +338,7 @@ TEST(EditorModuleBuildLoad, EditorKindModuleBuildsAgainstEditorSdkAndRegisters)
 TEST(EditorModuleBuildLoad, EztreeEditorModuleBuildsAndRegistersRealPlugin)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
     const fs::path pkgRoot = exeDir / "TestData" / "Packages" / "eztree";
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Editor")) << (pkgRoot / "Editor").string();
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Native"));
@@ -365,16 +363,14 @@ TEST(EditorModuleBuildLoad, EztreeEditorModuleBuildsAndRegistersRealPlugin)
 
     // Traits registered at module load: find by display name (the test does
     // not compile against the package's component headers).
-    const auto traitsSnapshot = ed::EditorComponentTraitsRegistry::Get().Snapshot();
-    const auto treeTraits = std::find_if(traitsSnapshot->begin(), traitsSnapshot->end(),
-                                         [](const auto& entry) {
-                                             return entry.second.DisplayName == "Tree Generator";
-                                         });
-    ASSERT_NE(treeTraits, traitsSnapshot->end());
-    EXPECT_EQ(treeTraits->second.HierarchyRowClass, "hierarchy-entity-tree-generator");
-    EXPECT_EQ(treeTraits->second.InspectorIconClass, "inspector-section-icon-tree-generator");
-    EXPECT_TRUE(treeTraits->second.IsPickInstanceRoot);
-    EXPECT_TRUE(treeTraits->second.GizmoPivotAtEntityOrigin);
+    const auto treeTypeId = ed::EditorComponentTraitsRegistry::Get().FindByDisplayName("Tree Generator");
+    ASSERT_NE(treeTypeId, decltype(treeTypeId){});
+    ed::EditorComponentTraits treeTraits;
+    ASSERT_TRUE(ed::EditorComponentTraitsRegistry::Get().TryGet(treeTypeId, treeTraits));
+    EXPECT_EQ(treeTraits.HierarchyRowClass, "hierarchy-entity-tree-generator");
+    EXPECT_EQ(treeTraits.InspectorIconClass, "inspector-section-icon-tree-generator");
+    EXPECT_TRUE(treeTraits.IsPickInstanceRoot);
+    EXPECT_TRUE(treeTraits.GizmoPivotAtEntityOrigin);
 
     // Phase 2: the module registered its Tree Stats panel descriptor with the
     // package-mount-scoped UI asset paths, and its factory produces a real
@@ -419,7 +415,7 @@ TEST(EditorModuleBuildLoad, EztreeEditorModuleBuildsAndRegistersRealPlugin)
 TEST(EditorModuleBuildLoad, UnityImportEditorModuleBuildsAndRegistersMenuAndOverlay)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
     const fs::path pkgRoot = exeDir / "TestData" / "Packages" / "unity-import";
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Editor")) << (pkgRoot / "Editor").string();
 
@@ -479,7 +475,7 @@ TEST(EditorModuleBuildLoad, UnityImportEditorModuleBuildsAndRegistersMenuAndOver
 TEST(EditorModuleBuildLoad, GitVcsEditorModuleBuildsAndRegistersProvider)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
     const fs::path pkgRoot = exeDir / "TestData" / "Packages" / "git-vcs";
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Editor")) << (pkgRoot / "Editor").string();
 
@@ -568,7 +564,7 @@ TEST(EditorModuleBuildLoad, GitVcsEditorModuleBuildsAndRegistersProvider)
 TEST(EditorModuleBuildLoad, SvnVcsEditorModuleBuildsAndRegistersProvider)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
     const fs::path pkgRoot = exeDir / "TestData" / "Packages" / "svn-vcs";
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Editor")) << (pkgRoot / "Editor").string();
 
@@ -642,7 +638,7 @@ TEST(EditorModuleBuildLoad, SvnVcsEditorModuleBuildsAndRegistersProvider)
 TEST(EditorModuleBuildLoad, DiversionVcsEditorModuleBuildsAndRegistersProvider)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
     const fs::path pkgRoot = exeDir / "TestData" / "Packages" / "diversion-vcs";
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Editor")) << (pkgRoot / "Editor").string();
 
@@ -718,7 +714,7 @@ TEST(EditorModuleBuildLoad, DiversionVcsEditorModuleBuildsAndRegistersProvider)
 TEST(EditorModuleBuildLoad, LoreVcsEditorModuleBuildsAndRegistersProvider)
 {
     const auto kv = LoadConfigOrFail();
-    const fs::path exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
+    const fs::path exeDir = GameEngine::PathUtils::GetExecutableDirectory();
     const fs::path pkgRoot = exeDir / "TestData" / "Packages" / "lore-vcs";
     ASSERT_TRUE(fs::is_directory(pkgRoot / "Editor")) << (pkgRoot / "Editor").string();
 

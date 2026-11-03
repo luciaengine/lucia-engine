@@ -55,14 +55,9 @@ layout(set = 0, binding = 5) uniform sampler2D uAvgRadiance;
 layout(set = 0, binding = 8) uniform sampler2D uReprojectedMoments;
 
 #include "ScreenSpaceReflections/sssr_common.glsl"
-#include "ScreenSpaceReflections/sssr_history_policy.glsl"
 #define GE_SSSR_ARGS_BINDING 6
 #define GE_SSSR_ARGS_READONLY
 #include "ScreenSpaceReflections/sssr_dispatch.glsl"
-// The view's exposure state: radiance is stored at the frame's pre-exposure P, so the absolute
-// luminance floor below is scaled by it, as the temporal resolve's clip floor is.
-#define GE_EXPOSURE_HISTORY_BINDING 9
-#include "Includes/exposure_history.glsl"
 
 // Footprint radii, in texels. The narrow end is what this pass used on a
 // near-mirror; the wide end is the reach a dense-box prototype measured against
@@ -131,7 +126,7 @@ const float kRoughnessSigma = 16.0;
 // scale-invariance rule the depth stop follows.
 const float kRadianceWeightBias = 0.6;
 const float kRadianceWeightFloor = 1e-2;
-const float kRadianceSigmaFloor = 1e-4; // absolute luminance; scaled by P where used
+const float kRadianceSigmaFloor = 1e-4;
 
 // An untraced centre still anchors the result slightly, so a filtered value
 // never drifts entirely off the pixel it belongs to.
@@ -158,13 +153,13 @@ TileSample LoadTileSample(int index)
     s.Confidence = ba.y;
     s.NormalVS = GE_OctDecode(oct);
     s.Roughness = roughDepth.x;
-    s.LinearZ = LinearizeReverseZ(roughDepth.y, ge_nearFar.xy);
+    s.LinearZ = GE_LinearZ(roughDepth.y);
     return s;
 }
 
 float RadianceWeight(vec3 reference, float referenceLuminance, vec3 sampleRadiance)
 {
-    float sigma = max(referenceLuminance, kRadianceSigmaFloor * GE_PreExposure());
+    float sigma = max(referenceLuminance, kRadianceSigmaFloor);
     return max(exp(-kRadianceWeightBias * length(sampleRadiance - reference) / sigma),
                kRadianceWeightFloor);
 }
@@ -260,7 +255,7 @@ void main()
     TileSample center = LoadTileSample(centerIndex);
     float centerRoughness = GE_Roughness(centerNR);
     vec3 centerNormal = GE_DecodeNormalVS(centerNR);
-    float centerLinZ = LinearizeReverseZ(centerRawZ, ge_nearFar.xy);
+    float centerLinZ = GE_LinearZ(centerRawZ);
 
     // Block reference for the firefly gate. Sampling at
     // (pixel + 0.5) / (block * blocks) puts the bilinear tap between this block's
@@ -306,9 +301,9 @@ void main()
                            kDriveMax);
 
     // Temporal: variance of the accumulated luminance, reprojected into this
-    // frame. Zero on a converged still pose, within the moments' storage precision.
+    // frame. Zero on a converged static pose by construction.
     vec2 moments = texelFetch(uReprojectedMoments, pixel, 0).rg;
-    float temporalVariance = GE_SssrTemporalVariance(moments);
+    float temporalVariance = max(moments.g - moments.r * moments.r, 0.0);
     float temporalCoV =
         min(sqrt(temporalVariance) / max(moments.r, kDriveEpsilon), kDriveMax);
 

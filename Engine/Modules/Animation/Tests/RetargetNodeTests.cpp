@@ -1,20 +1,20 @@
 #include <gtest/gtest.h>
 
+#include "Animation/AllocationGuard.h"
 #include "Animation/AnimationPose.h"
 #include "Animation/EvaluationContext.h"
 #include "Animation/HumanBone.h"
-#include "Animation/Humanoid/HumanoidRig.h"
+#include "Animation/HumanoidRig.h"
 #include "Animation/Nodes/RetargetNode.h"
 #include "Animation/PoseStack.h"
 #include "Animation/QuaternionMath.h"
 #include "Animation/RetargetMap.h"
-#include "Animation/Skeleton/SkeletonData.h"
-#include "Animation/Skeleton/SkeletonProfile.h"
+#include "Animation/SkeletonData.h"
+#include "Animation/SkeletonProfile.h"
 
 #include "AssetCore/GUID.h"
 #include "Mathematics/Quaternion.h"
 #include "Mathematics/Vector3.h"
-#include "Memory/AllocationCountScope.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -450,9 +450,9 @@ TEST(RetargetNodeTests, ZeroAllocationsAfterWarmup)
     out.Resize(3); // warm-up
     node.Evaluate(ctx, out); // warm-up
 
-    GameEngine::Memory::AllocationCountScope allocations(GameEngine::Memory::CountWindow::ThisThread);
+    AllocationGuard guard;
     node.Evaluate(ctx, out);
-    EXPECT_EQ(allocations.Count(), 0u);
+    EXPECT_EQ(guard.Count(), 0u);
 }
 
 // Cross-rig chain count mismatch: 3-bone source spine, 5-bone target spine.

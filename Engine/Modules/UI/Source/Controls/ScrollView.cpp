@@ -49,7 +49,7 @@ class ScrollRowElement final : public UIElement
 public:
     ScrollRowElement()
     {
-        Style()
+        Overrides()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Row)
             .Set(Style::FlexGrow, 1.0f)
@@ -64,7 +64,7 @@ class ScrollClipViewportElement final : public UIElement
 public:
     ScrollClipViewportElement()
     {
-        Style()
+        Overrides()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Column)
             .Set(Style::FlexGrow, 1.0f)
@@ -80,7 +80,7 @@ class ScrollContentElement final : public UIElement
 public:
     explicit ScrollContentElement(const ScrollView* owner) : m_Owner(owner)
     {
-        Style()
+        Overrides()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Column)
             .Set(Style::FlexGrow, 0.0f)
@@ -149,7 +149,7 @@ ScrollView::ScrollView()
     // override outranks every rule. The rest is the scroller's own layout
     // structure -- a column that fills its parent and may shrink below its
     // content -- which no stylesheet is meant to restate.
-    Style()
+    Overrides()
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::FlexGrow, 1.0f)
         .Set(Style::FlexShrink, 1.0f)
@@ -408,13 +408,7 @@ void ScrollView::EnsureYVisible(float contentY, float viewTop, float viewHeight)
         // editor behavior and keeps wheel scrolling useful for single-line content (e.g. TextField).
         // When the pointer is over a scrollbar, do not remap vertical wheel to horizontal scroll —
         // that axis swap feels like a wrong scroll direction on the scrollbar.
-        // A view nested in a vertically scrolling page (a code block in a conversation) sets
-        // --ui_scrollview_keep_wheel_axis: 1 so the vertical wheel passes to the page, as Chrome
-        // does over a horizontally scrolling block.
-        const bool keepWheelAxis =
-            GetResolvedStyle().GetCustomNumber(HashStringId("--ui_scrollview_keep_wheel_axis")).value_or(0.0f) > 0.0f;
-        if (!keepWheelAxis && !IsScrollbarInTargetChain(e.Target) && dx == 0.0f && dy != 0.0f && maxY <= 0.0f &&
-            maxX > 0.0f)
+        if (!IsScrollbarInTargetChain(e.Target) && dx == 0.0f && dy != 0.0f && maxY <= 0.0f && maxX > 0.0f)
         {
             dx = dy;
             dy = 0.0f;
@@ -512,8 +506,10 @@ void ScrollView::EnsureYVisible(float contentY, float viewTop, float viewHeight)
                         if (!el)
                             continue;
 
-                        // Only consider labels; editable fields manage their own scrolling.
-                        if (typeid(*el) == typeid(Label))
+                        // Host-rendered text contributes its intrinsic width, including label
+                        // subclasses. Text controls with their own scrolling keep that responsibility.
+                        const ITextMeasurable* textMeasure = el->GetTextMeasurable();
+                        if (textMeasure && textMeasure->AllowWrapForMeasure() && !textMeasure->HandlesOwnTextRendering())
                         {
                             const ResolvedStyle* st = ui ? ui->TryGetResolvedStyleFor(el) : nullptr;
                             if (st)
@@ -572,5 +568,42 @@ void ScrollView::EnsureYVisible(float contentY, float viewTop, float viewHeight)
         if (m_VBar)
             (void)m_VBar->UpdateThumbLayout();
     }
+
+
+void ScrollView::AutoScrollNearEdge(float mouseX, float mouseY) const
+{
+    if (!m_ClipViewport)
+        return;
+
+    const float vx = m_ClipViewport->GetLayoutX();
+    const float vy = m_ClipViewport->GetLayoutY();
+    const float vw = m_ClipViewport->GetLayoutWidth();
+    const float vh = m_ClipViewport->GetLayoutHeight();
+    if (!(vh > 0.0f) || !(vw > 0.0f))
+        return;
+    if (mouseX < vx || mouseX >= vx + vw || mouseY < vy || mouseY >= vy + vh)
+        return;
+
+    constexpr float kEdgePx = 28.0f;
+    constexpr float kMaxSpeedPxPerFrame = 18.0f;
+
+    const float distTop = mouseY - vy;
+    const float distBot = (vy + vh) - mouseY;
+
+    float dy = 0.0f;
+    if (distTop < kEdgePx)
+    {
+        const float t = std::clamp((kEdgePx - distTop) / kEdgePx, 0.0f, 1.0f);
+        dy = -kMaxSpeedPxPerFrame * t;
+    }
+    else if (distBot < kEdgePx)
+    {
+        const float t = std::clamp((kEdgePx - distBot) / kEdgePx, 0.0f, 1.0f);
+        dy = kMaxSpeedPxPerFrame * t;
+    }
+
+    if (dy != 0.0f)
+        ScrollBy(0.0f, dy);
+}
 
 } // namespace GameEngine

@@ -1,9 +1,9 @@
 #include "MovieRecorderController.h"
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Editor/Settings/EditorSettingsRegistry.h"
-#include "Editor/Settings/Render/RenderPipelineSettings.h"
+#include "Editor/Settings/RenderPipelineSettings.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "Engine/Build/GameConfig.h"
 #include "Engine/GameUI/UIScaleProjectSettings.h"
@@ -13,11 +13,10 @@
 #include "PlayMode/PlayModeManager.h"
 #include "Platform/Shell.h"
 #include "Rendering/Passes/TemporalDither.h"
-#include "Types/PathUtils.h"
-#include "Types/StringUtils.h"
 #include "Video/VideoWriter.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <mutex>
 #include <string>
@@ -35,6 +34,24 @@ SettingsStore OpenSettingsStore()
     return root.empty() ? OpenEditorPreferences() : OpenProjectSettings(root);
 }
 
+std::string Trim(std::string value)
+{
+    while (!value.empty() && (value.back() == ' ' || value.back() == '\t' || value.back() == '\r' || value.back() == '\n'))
+    {
+        value.pop_back();
+    }
+    size_t start = 0;
+    while (start < value.size() && (value[start] == ' ' || value[start] == '\t' || value[start] == '\r' || value[start] == '\n'))
+    {
+        ++start;
+    }
+    if (start > 0)
+    {
+        value.erase(0, start);
+    }
+    return value;
+}
+
 bool CodecUsesBitrate(const std::string& codec)
 {
     return codec == "h265" || codec == "h264";
@@ -47,6 +64,15 @@ const char* CodecDefaultExtension(const std::string& codec)
         return ".mp4";
     }
     return ".mov";
+}
+
+std::string LowercaseExtension(const std::filesystem::path& path)
+{
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return ext;
 }
 
 constexpr MovieRecorderResolutionPreset kResolutionPresets[] = {
@@ -150,7 +176,7 @@ MovieRecorderController::Settings MovieRecorderController::LoadSettings()
     {
         prefs.TryGetString(MovieRecorderPrefs::kOutputPath, settings.OutputPath);
     }
-    settings.OutputPath = TrimWhitespace(settings.OutputPath);
+    settings.OutputPath = Trim(settings.OutputPath);
 
     auto loadInt = [&prefs](const char* key, int fallback) {
         int64_t value = fallback;
@@ -163,7 +189,7 @@ MovieRecorderController::Settings MovieRecorderController::LoadSettings()
     settings.Height = std::clamp(loadInt(MovieRecorderPrefs::kHeight, settings.Height), 16, 16384);
     settings.BitrateKbps = std::clamp(loadInt(MovieRecorderPrefs::kBitrateKbps, settings.BitrateKbps), 100, 1000000);
     settings.FadeDurationSeconds = std::clamp(loadInt(MovieRecorderPrefs::kFadeDurationSeconds, settings.FadeDurationSeconds), 0, 60);
-    prefs.TryGetBool(MovieRecorderPrefs::kConstantQuality, settings.ConstantQuality);
+    prefs.TryGetBool(MovieRecorderPrefs::kAutoBitrate, settings.AutoBitrate);
     prefs.TryGetBool(MovieRecorderPrefs::kRecordAudio, settings.RecordAudio);
     prefs.TryGetBool(MovieRecorderPrefs::kFadeIn, settings.FadeIn);
     prefs.TryGetBool(MovieRecorderPrefs::kFadeOut, settings.FadeOut);
@@ -178,7 +204,7 @@ std::filesystem::path MovieRecorderController::GetRecordingsDirectory()
     {
         return root / "MovieRecordings";
     }
-    return ApplicationPaths::GetUserDataDirectory() / "GameEngine" / "MovieRecordings";
+    return PathUtils::GetUserDataDirectory() / "GameEngine" / "MovieRecordings";
 }
 
 std::filesystem::path MovieRecorderController::ResolveRequestedOutputPath(const Settings& settings)
@@ -229,7 +255,7 @@ std::filesystem::path MovieRecorderController::NextAvailableOutputPath(const std
 
 std::filesystem::path MovieRecorderController::ResolvePlayerExecutable()
 {
-    const auto exeDir = ApplicationPaths::GetExecutableDirectory();
+    const auto exeDir = PathUtils::GetExecutableDirectory();
 #if defined(_WIN32)
     const std::vector<std::filesystem::path> candidates = {
         exeDir / "Player.exe",
@@ -418,9 +444,9 @@ void MovieRecorderController::ApplyResolutionPreset(const std::string& value)
     prefs.SetInt64(MovieRecorderPrefs::kWidth, preset->Width);
     prefs.SetInt64(MovieRecorderPrefs::kHeight, preset->Height);
     prefs.SetInt64(MovieRecorderPrefs::kFps, preset->Fps);
-    bool constantQuality = true;
-    prefs.TryGetBool(MovieRecorderPrefs::kConstantQuality, constantQuality);
-    if (constantQuality)
+    bool autoBitrate = true;
+    prefs.TryGetBool(MovieRecorderPrefs::kAutoBitrate, autoBitrate);
+    if (autoBitrate)
     {
         prefs.SetInt64(MovieRecorderPrefs::kBitrateKbps, preset->BitrateKbps);
     }
@@ -463,7 +489,7 @@ bool MovieRecorderController::IsSessionActive() const
 bool MovieRecorderController::StopActiveRecording()
 {
     GameViewController* gameView = GetGameView();
-    if (!gameView || !gameView->GetMovieCapture().IsSessionOpen())
+    if (!gameView || !gameView->GetMovieCapture().IsRecording())
     {
         return false;
     }
@@ -569,7 +595,7 @@ bool MovieRecorderController::StartPlayModeRecording()
         return fail("Game View is not available for play-mode recording.");
     }
 
-    if (gameView->GetMovieCapture().IsSessionOpen())
+    if (gameView->GetMovieCapture().IsRecording())
     {
         return StopActiveRecording();
     }
@@ -585,7 +611,7 @@ bool MovieRecorderController::StartPlayModeRecording()
         return true;
     }
 
-    if ((settings.Codec == "prores" || settings.Codec == "prores4444") && LowerCaseExtension(requestedOutput) != ".mov")
+    if ((settings.Codec == "prores" || settings.Codec == "prores4444") && LowercaseExtension(requestedOutput) != ".mov")
     {
         return fail("ProRes output must be saved as a .mov file.");
     }
@@ -613,7 +639,7 @@ bool MovieRecorderController::StartPlayModeRecording()
         options.hdrMode = Video::VideoHdrMode::HLG;
     if (options.hdrMode != Video::VideoHdrMode::Off)
         options.codec = Video::VideoCodec::HEVC; // HDR needs 10-bit Main10
-    const bool manualBitrate = CodecUsesBitrate(settings.Codec) && !settings.ConstantQuality;
+    const bool manualBitrate = CodecUsesBitrate(settings.Codec) && !settings.AutoBitrate;
     options.bitrateKbps = manualBitrate ? static_cast<uint32_t>(settings.BitrateKbps) : 0u;
     options.requireHardwareAcceleration = settings.EncoderMode != "software-ok";
     options.recordAudio = settings.RecordAudio;
@@ -666,7 +692,7 @@ void MovieRecorderController::StartStandaloneRecording(const Settings& settings,
     if (player.empty())
     {
         EmitStatus("Player executable not found. Build the Player target first.");
-        Logger::Log::Error("MovieRecorder: Player executable not found near '{}'", ApplicationPaths::GetExecutableDirectory().string());
+        Logger::Log::Error("MovieRecorder: Player executable not found near '{}'", PathUtils::GetExecutableDirectory().string());
         return;
     }
 
@@ -683,14 +709,14 @@ void MovieRecorderController::StartStandaloneRecording(const Settings& settings,
         EmitStatus("HDR recording is available in play-mode recording only.");
         return;
     }
-    if ((settings.Codec == "prores" || settings.Codec == "prores4444") && LowerCaseExtension(requestedOutput) != ".mov")
+    if ((settings.Codec == "prores" || settings.Codec == "prores4444") && LowercaseExtension(requestedOutput) != ".mov")
     {
         EmitStatus("ProRes output must be saved as a .mov file.");
         return;
     }
 
     const auto output = NextAvailableOutputPath(requestedOutput);
-    const bool manualBitrate = CodecUsesBitrate(settings.Codec) && !settings.ConstantQuality;
+    const bool manualBitrate = CodecUsesBitrate(settings.Codec) && !settings.AutoBitrate;
 
     std::error_code ec;
     if (!output.parent_path().empty())
@@ -919,10 +945,6 @@ void MovieRecorderController::HandleRecordAfterPlayStarts()
     }
 
     const auto state = m_PlayMode->GetState();
-    // Play waits for the script build: the recording starts when play does, or is dropped below
-    // once the wait ends without play (Cancel, a failed build).
-    if (state == PlayModeState::Edit && m_PlayMode->GetEntryGate().GetPhase() == PlayModeEntryGate::Phase::Waiting)
-        return;
     if (state == PlayModeState::Edit || state == PlayModeState::ChangeReview)
     {
         m_RecordAfterPlayStarts = false;
@@ -939,7 +961,7 @@ void MovieRecorderController::StopRecordingsOnPlayModeExit()
     if (!playingOrPaused && m_WasPlayModeActive && m_ForEachGameView)
     {
         m_ForEachGameView([](GameViewController& gameView) {
-            if (gameView.GetMovieCapture().IsSessionOpen())
+            if (gameView.GetMovieCapture().IsRecording())
             {
                 gameView.GetMovieCapture().StopRecording("Recording stopped: play mode exited.");
             }

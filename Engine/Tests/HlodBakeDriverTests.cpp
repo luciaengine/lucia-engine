@@ -18,6 +18,8 @@
 #include "ECS/Entity.h"
 #include "ECS/World.h"
 
+#include "TestTempDir.h"
+
 #include <gtest/gtest.h>
 
 #include <cstring>
@@ -89,8 +91,11 @@ LocalBounds BoxBounds(float extent) {
     return lb;
 }
 
+// Under this test process's own directory, removed at exit: a concurrent ctest process running
+// the same tests writes its own.
 std::filesystem::path TempPath(const char* name) {
-    return std::filesystem::temp_directory_path() / name;
+    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("hlod_bake_driver")};
+    return directory.Path() / name;
 }
 
 // Spawn `count` members in one cell, each a distinct model+material (r = 1, so

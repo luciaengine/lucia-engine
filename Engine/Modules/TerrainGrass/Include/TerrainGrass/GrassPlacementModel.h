@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Mathematics/Interpolation.h"
 #include "Types/Types.h"
 
 #include <algorithm>
@@ -33,15 +32,9 @@ namespace GameEngine::TerrainGrass
 inline constexpr float32 kGrassCellSize = 8.0f;
 inline constexpr float32 kGrassCellArea = kGrassCellSize * kGrassCellSize;
 
-// Hard per-cell slot ceiling: it bounds the emit kernel's loop over one cell and nothing else.
-// 16384 slots over a 64 m² cell is 256 blades/m² at the camera, dense short lawn. The ceiling costs
-// no memory: the instance pool is the per-view budget (TerrainGrassRenderFeature::
-// kMaxInstancesPerView) whatever this is, so a denser near field is paid for in RANGE by the budget
-// fit, never in more VRAM. Authored density above it is clamped to it (kGrassMaxBladesPerSquareMeter)
-// so the stored value is the value that renders.
-inline constexpr uint32 kGrassMaxSlotsPerCell = 16384u;
-inline constexpr float32 kGrassMaxBladesPerSquareMeter =
-    static_cast<float32>(kGrassMaxSlotsPerCell) / kGrassCellArea;
+// Hard per-cell slot ceiling; bounds the compute's inner loop and the worst-case cell cost.
+// 4096 slots over a 64 m² cell is 64 blades/m², above any density this system is meant to serve.
+inline constexpr uint32 kGrassMaxSlotsPerCell = 4096u;
 
 // Slots below this growth are skipped. A blade at 2 % of its authored height is sub-pixel wherever
 // the growth ramp puts it (the outermost metres of the fade radius), so dropping it is invisible
@@ -134,7 +127,7 @@ inline float32 GrassDensityAtDistance(const GrassPlacementParams& params, float3
 {
     if (params.FarRadius <= 0.0f)
         return 0.0f;
-    const float32 t = Math::Clamp01(1.0f - distanceMeters / params.FarRadius);
+    const float32 t = std::clamp(1.0f - distanceMeters / params.FarRadius, 0.0f, 1.0f);
     return std::max(params.NearDensity, 0.0f) * std::pow(t, std::max(params.Falloff, 0.0f));
 }
 
@@ -151,7 +144,7 @@ inline float32 GrassSlotsWantedForCell(const GrassPlacementParams& params, float
 inline float32 GrassGrowthForSlot(float32 slotsWanted, uint32 slot)
 {
     const float32 growWidth = std::max(1.0f, slotsWanted * kGrassGrowthSlotFraction);
-    return Math::Clamp01((slotsWanted - static_cast<float32>(slot)) / growWidth);
+    return std::clamp((slotsWanted - static_cast<float32>(slot)) / growWidth, 0.0f, 1.0f);
 }
 
 // Slots the compute iterates for a cell: every slot that could clear kGrassMinGrowth.
@@ -259,8 +252,6 @@ struct GrassSlotSample
     float32 ScaleRand = 0.0f;
     float32 WidthRand = 0.0f;
     float32 MaskRand = 0.0f; // Bernoulli draw for the splat-mask feather
-    float32 TiltRand = 0.0f; // the blade's tilt (and, rehashed, its bend) about the authored value
-    float32 TwistRand = 0.0f; // the blade's twist direction and amount
 };
 
 inline GrassSlotSample GrassSampleSlot(int32 cellX, int32 cellZ, uint32 slot, uint32 seed)
@@ -286,10 +277,6 @@ inline GrassSlotSample GrassSampleSlot(int32 cellX, int32 cellZ, uint32 slot, ui
     s.WidthRand = GrassHashToUnit(h);
     h = GrassHashNext(h);
     s.MaskRand = GrassHashToUnit(h);
-    h = GrassHashNext(h);
-    s.TiltRand = GrassHashToUnit(h);
-    h = GrassHashNext(h);
-    s.TwistRand = GrassHashToUnit(h);
     return s;
 }
 

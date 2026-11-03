@@ -1,8 +1,8 @@
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
-#include "Rendering/Materials/Shader/ShaderMetaValidation.h"
 #include <algorithm>
 #include <stdexcept>
+#include "Rendering/Materials/ShaderLayoutShape.h"
+#include "Rendering/Materials/ShaderMetaValidation.h"
 
 
 namespace GameEngine { namespace Rendering {

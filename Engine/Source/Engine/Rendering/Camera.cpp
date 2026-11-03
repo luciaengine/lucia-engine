@@ -1,13 +1,13 @@
 #include "Engine/Rendering/Camera.h"
 
 #include "Components/Transform.h"
-#include "Engine/Rendering/ViewRegistry.h"
 #include "ECS/ECSTemplates.h"
-#include "Mathematics/Angle.h"
+#include "Engine/Rendering/TileMapCameraPixelGrid.h"
 #include "Mathematics/MatrixOps.h"
 #include "Rendering/Common/Math.h"
 
 #include <algorithm>
+#include <glm/gtc/type_ptr.hpp>
 
 namespace GameEngine::Engine::Renderer { using namespace ::GameEngine::Rendering; }
 
@@ -25,7 +25,7 @@ Mathematics::Matrix4x4 Camera::ComputeProjectionMatrix(float aspectRatio,
     const float safeAspect = std::max(aspectRatio, 0.0001f);
     if (params.Perspective)
     {
-        const float fovRad = Mathematics::ToRadians(params.FovY);
+        const float fovRad = Rendering::Math::ToRadians(params.FovY);
         const float squeeze = std::clamp(params.AnamorphicSqueeze, 1.0f, 4.0f);
         return Mathematics::MakePerspectiveLH_ZO_ReverseZ(fovRad, safeAspect * squeeze, params.NearZ, params.FarZ);
     }
@@ -51,16 +51,22 @@ Rendering::CameraData Camera::ToCameraData(float aspectRatio,
     const Mathematics::Matrix4x4 viewProjM = projM * viewM;
 
     Rendering::CameraData data{};
-    data.view = viewM;
-    data.proj = projM;
-    data.viewProj = viewProjM;
+    const float* viewSrc = viewM.Data();
+    const float* projSrc = projM.Data();
+    const float* viewProjSrc = viewProjM.Data();
+    for (int i = 0; i < 16; ++i)
+    {
+        data.view[i] = viewSrc[i];
+        data.proj[i] = projSrc[i];
+        data.viewProj[i] = viewProjSrc[i];
+    }
 
     // Extract camera world position from the worldTransform translation column.
     const float* wt = worldTransform.Data();
-    data.cameraPos.x = wt[12];
-    data.cameraPos.y = wt[13];
-    data.cameraPos.z = wt[14];
-    data.cameraPos.w = 0.0f;
+    data.cameraPos[0] = wt[12];
+    data.cameraPos[1] = wt[13];
+    data.cameraPos[2] = wt[14];
+    data.cameraPos[3] = 0.0f;
 
     return data;
 }
@@ -77,19 +83,27 @@ std::optional<Camera> FindActiveCamera(ECS::World& world)
             return;
 
         // Extract world transform (prefer WorldTransform, fallback to Transform).
-        // A WorldTransform the hierarchy has not resolved yet (Version 0 beside
-        // a Transform) holds no pose; the camera's own Transform does.
-        const auto* worldXf = world.GetComponent<Components::WorldTransform>(e);
-        const bool hasLocal = world.HasComponent<Components::Transform>(e);
-        if (worldXf && (worldXf->Version != 0u || !hasLocal))
+        float matrix[16] = {
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1
+        };
+
+        if (world.HasComponent<Components::WorldTransform>(e))
         {
-            result.worldTransform = Mathematics::Matrix4x4::FromColumnMajor(worldXf->matrix);
+            if (auto* xf = world.GetComponent<Components::WorldTransform>(e))
+                for (int i = 0; i < 16; ++i)
+                    matrix[i] = xf->matrix[i];
         }
-        else if (hasLocal)
+        else if (world.HasComponent<Components::Transform>(e))
         {
             if (auto* xf = world.GetComponent<Components::Transform>(e))
-                result.worldTransform = Mathematics::Matrix4x4::FromColumnMajor(xf->matrix);
+                for (int i = 0; i < 16; ++i)
+                    matrix[i] = xf->matrix[i];
         }
+
+        result.worldTransform = Mathematics::Matrix4x4(glm::make_mat4(matrix));
         result.params = cam;
         result.entity = e;
         found = true;
@@ -97,15 +111,17 @@ std::optional<Camera> FindActiveCamera(ECS::World& world)
 
     if (!found)
         return std::nullopt;
-    return result;
-}
 
-void DeclareGameCameraView(ViewRegistry& views, Rendering::ViewId view, const Camera* activeCamera)
-{
-    if (!activeCamera)
-        return;
-    views.RequestViewFrame(view);
-    views.SetViewRenderLayerMask(view, activeCamera->params.VisibleLayers);
+    // Resolve the pixel grid against the scene the camera is about to render, the
+    // same way the far clip is resolved against an enabled planet: the authored
+    // component holds intent, the snapshot holds what this frame actually renders
+    // at. Gated on PixelPerfect so a normal camera never pays for the tilemap query.
+    if (result.params.PixelPerfect && !result.params.Perspective)
+    {
+        result.params.PixelPerfectPixelsPerUnit =
+            static_cast<uint32>(ResolvePixelPerfectPixelsPerUnit(world, result.params));
+    }
+    return result;
 }
 
 } // namespace GameEngine::Engine::Renderer

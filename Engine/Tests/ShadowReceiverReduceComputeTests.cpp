@@ -20,11 +20,11 @@
 #include "Mathematics/Geometry.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Common/Utils.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include "TestDeviceHelper.h"
@@ -105,12 +105,12 @@ PinholeCamera MakeCamera(const Vector3& position, float pitchDownDeg, float orth
             ? Mathematics::MakeOrthographicLH_ZO_ReverseZ(-halfX, halfX, -cam.HalfY, cam.HalfY, kNear, farPlane)
             : Mathematics::MakePerspectiveLH_ZO_ReverseZ(fovY, cam.Aspect, kNear, farPlane);
     cam.ViewProj = proj * view;
-    cam.Data.view = view;
-    cam.Data.proj = proj;
-    cam.Data.viewProj = cam.ViewProj;
-    cam.Data.cameraPos.x = position.x;
-    cam.Data.cameraPos.y = position.y;
-    cam.Data.cameraPos.z = position.z;
+    std::memcpy(cam.Data.view, view.Data(), sizeof(cam.Data.view));
+    std::memcpy(cam.Data.proj, proj.Data(), sizeof(cam.Data.proj));
+    std::memcpy(cam.Data.viewProj, cam.ViewProj.Data(), sizeof(cam.Data.viewProj));
+    cam.Data.cameraPos[0] = position.x;
+    cam.Data.cameraPos[1] = position.y;
+    cam.Data.cameraPos[2] = position.z;
     cam.Right = Vector3::Cross(Vector3{0.0f, 1.0f, 0.0f}, cam.Forward).Normalize();
     cam.Up = Vector3::Cross(cam.Forward, cam.Right);
     return cam;
@@ -379,9 +379,7 @@ void ReferenceBoxes(const std::vector<ReferenceSample>& samples, Vector3 Referen
 void ExpectBinBox(const AABB& got, const AABB& strict, const AABB& loose, float tolerance)
 {
     if (!strict.IsEmpty())
-    {
         ASSERT_FALSE(got.IsEmpty());
-    }
     if (got.IsEmpty())
         return;
     ASSERT_FALSE(loose.IsEmpty()) << "a bin no receiver reaches holds a box";

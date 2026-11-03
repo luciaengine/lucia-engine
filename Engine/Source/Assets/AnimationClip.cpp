@@ -2,17 +2,13 @@
 
 #include "AnimationClipSchema.h"
 #include "AssetCore/SharedFileRead.h"
-#include "Assets/AssetDecodeInputFiles.h"
 #include "Logger/Logger.h"
-#include "Mathematics/Interpolation.h"
-#include "Serialization/JsonRead.h"
-#include "Types/PathUtils.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
-#include <format>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -89,6 +85,14 @@ using json = nlohmann::json;
 
 constexpr float kKeyTimeEpsilon = 1e-5f;
 constexpr float kDefaultTangentWeight = 1.0f / 3.0f;
+
+std::string NormalizeExtension(std::string extension)
+{
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c)
+                   { return static_cast<char>(std::tolower(c)); });
+    return extension;
+}
 
 const char* ToString(AnimPath path)
 {
@@ -192,7 +196,7 @@ AnimInterp ParseAnimInterp(const std::string& value)
 
 void InitializeDefaultKeyframe(AnimKeyframe& keyframe)
 {
-    keyframe = AnimKeyframe{};
+    std::memset(&keyframe, 0, sizeof(keyframe));
     keyframe.rotation[3] = 1.0f;
     keyframe.scale[0] = 1.0f;
     keyframe.scale[1] = 1.0f;
@@ -289,7 +293,7 @@ AnimKeyframe MakeInterpolatedKeyframe(const AnimChannel& channel, float time)
             continue;
 
         const float span = std::max(kKeyTimeEpsilon, second.time - first.time);
-        const float alpha = Math::Clamp01((keyframe.time - first.time) / span);
+        const float alpha = std::clamp((keyframe.time - first.time) / span, 0.0f, 1.0f);
 
         keyframe = first;
         keyframe.time = std::max(0.0f, time);
@@ -343,8 +347,7 @@ json SerializeKeyframe(const AnimKeyframe& keyframe)
     return j;
 }
 
-void DeserializeFloatArray(const json& node, const char* key, float* outValues, size_t valueCount,
-                           Serialization::JsonFieldReader& reader)
+void DeserializeFloatArray(const json& node, const char* key, float* outValues, size_t valueCount)
 {
     if (!node.contains(key) || !node[key].is_array())
         return;
@@ -353,24 +356,7 @@ void DeserializeFloatArray(const json& node, const char* key, float* outValues, 
     const size_t count = std::min(valueCount, values.size());
     for (size_t index = 0; index < count; ++index)
     {
-        reader.ReadValue(values[index], std::format("{}[{}]", key, index), outValues[index]);
-    }
-}
-
-// The tangent types of array `key` of `node`, up to four; an element that is not a string is refused.
-void DeserializeTangentTypes(const json& node, const char* key, AnimTangentType* outTypes,
-                             Serialization::JsonFieldReader& reader)
-{
-    if (!node.contains(key) || !node[key].is_array())
-        return;
-
-    const json& types = node[key];
-    for (size_t index = 0; index < 4u && index < types.size(); ++index)
-    {
-        std::string name;
-        reader.ReadValue(types[index], std::format("{}[{}]", key, index), name);
-        if (types[index].is_string())
-            outTypes[index] = ParseAnimTangentType(name);
+        outValues[index] = values[index].get<float>();
     }
 }
 
@@ -400,10 +386,6 @@ bool AnimationClip::Load()
     if (GetState() == AssetState::Loaded)
         return true;
 
-    // A synchronous load reads its own inputs; one nested in a decode must not take the
-    // decode's (ScopedAssetDecodeInputFiles).
-    const ScopedAssetDecodeInputFiles readsTheDisk(nullptr);
-
     // Reuse cached file data when switching animation indices to avoid
     // re-reading the (potentially large) model file from disk.
     if (m_CachedFileData.empty())
@@ -432,7 +414,7 @@ bool AnimationClip::LoadFromData(const Vector<uint8>& data)
     m_Settings = {};
     m_EventTrack = {};
 
-    const std::string extension = LowerCaseExtension(GetPath());
+    const std::string extension = NormalizeExtension(GetExtension());
     bool success = false;
 
     if (extension == ".anim" || extension == ".animation")
@@ -890,7 +872,7 @@ bool AnimationClip::LoadFromData(const Vector<uint8>& data)
                     const auto& k = ch.keys[i];
                     // q = inv(k0) * k. Quaternion conjugate inv: (-x,-y,-z,w)
                     const float w_ = w0_*k.rotation[3] + x0_*k.rotation[0] + y0_*k.rotation[1] + z0_*k.rotation[2];
-                    const float w_clamped = Math::Clamp01(std::abs(w_));
+                    const float w_clamped = std::min(std::max(std::abs(w_), 0.0f), 1.0f);
                     const float ang = 2.0f * std::acos(w_clamped) * 57.29577951f;
                     if (ang > maxAngle) maxAngle = ang;
 
@@ -963,125 +945,105 @@ bool AnimationClip::LoadFromData(const Vector<uint8>& data)
 
 bool AnimationClip::LoadEditableData(const Vector<uint8>& data)
 {
-    const std::string text(reinterpret_cast<const char*>(data.data()), data.size());
-    json document;
-    std::string parseError;
-    if (!Serialization::ParseJson(text, document, parseError))
-        return RefuseEditableData(std::format("it is not JSON ({}); fix the text at that place", parseError));
-    if (!document.is_object())
-        return RefuseEditableData("its JSON is not an object; an .anim file is a JSON object");
-
-    m_Channels.clear();
-    m_Settings = {};
-    m_EventTrack = {};
-    Serialization::JsonFieldReader reader;
-    m_Duration = 0.0f;
-    reader.Read(document, "duration", m_Duration);
-    m_SelectedAnimation = 0u;
-    reader.Read(document, "selectedAnimationIndex", m_SelectedAnimation);
-
-    m_SourcePath.clear();
-    m_SourceAnimationIndex = 0u;
-    if (document.contains("source") && document["source"].is_object())
+    try
     {
-        const json& source = document["source"];
-        reader.SetContext("source.");
-        std::string sourcePath;
-        reader.Read(source, "path", sourcePath);
-        m_SourcePath = sourcePath;
-        reader.Read(source, "animationIndex", m_SourceAnimationIndex);
-    }
+        const std::string text(reinterpret_cast<const char*>(data.data()), data.size());
+        const json document = json::parse(text);
+        m_Channels.clear();
+        m_Settings = {};
+        m_EventTrack = {};
+        m_Duration = document.value("duration", 0.0f);
+        m_SelectedAnimation = document.value("selectedAnimationIndex", 0u);
 
-    if (document.contains("channels") && document["channels"].is_array())
-    {
-        const json& channels = document["channels"];
-        for (size_t channelIndex = 0; channelIndex < channels.size(); ++channelIndex)
+        if (document.contains("source") && document["source"].is_object())
         {
-            const json& channelJson = channels[channelIndex];
-            const std::string channelContext = std::format("channels[{}].", channelIndex);
-            reader.SetContext(channelContext);
-            AnimChannel channel{};
-            channel.boneIndex = 0u;
-            reader.Read(channelJson, "boneIndex", channel.boneIndex);
-            reader.Read(channelJson, "targetName", channel.targetName);
-            channel.targetNameId = channel.targetName.empty() ? 0u : HashStringId(channel.targetName);
-            std::string path = "Translation";
-            std::string interpolation = "Linear";
-            std::string preInfinity = "Constant";
-            std::string postInfinity = "Constant";
-            reader.Read(channelJson, "path", path);
-            reader.Read(channelJson, "interpolation", interpolation);
-            reader.Read(channelJson, "preInfinity", preInfinity);
-            reader.Read(channelJson, "postInfinity", postInfinity);
-            channel.path = ParseAnimPath(path);
-            channel.interp = ParseAnimInterp(interpolation);
-            channel.preInfinity = ParseAnimExtrapolation(preInfinity);
-            channel.postInfinity = ParseAnimExtrapolation(postInfinity);
-
-            if (channelJson.is_object() && channelJson.contains("keys") && channelJson["keys"].is_array())
-            {
-                const json& keys = channelJson["keys"];
-                for (size_t keyIndex = 0; keyIndex < keys.size(); ++keyIndex)
-                {
-                    const json& keyJson = keys[keyIndex];
-                    reader.SetContext(std::format("{}keys[{}].", channelContext, keyIndex));
-                    AnimKeyframe keyframe{};
-                    InitializeDefaultKeyframe(keyframe);
-                    keyframe.time = 0.0f;
-                    reader.Read(keyJson, "time", keyframe.time);
-                    if (!keyJson.is_object())
-                        continue;
-                    DeserializeFloatArray(keyJson, "translation", keyframe.translation, 3u, reader);
-                    DeserializeFloatArray(keyJson, "rotation", keyframe.rotation, 4u, reader);
-                    DeserializeFloatArray(keyJson, "scale", keyframe.scale, 3u, reader);
-                    DeserializeFloatArray(keyJson, "inTangent", keyframe.inTangent, 4u, reader);
-                    DeserializeFloatArray(keyJson, "outTangent", keyframe.outTangent, 4u, reader);
-                    DeserializeFloatArray(keyJson, "inWeight", keyframe.inWeight, 4u, reader);
-                    DeserializeFloatArray(keyJson, "outWeight", keyframe.outWeight, 4u, reader);
-                    for (uint32 componentIndex = 0; componentIndex < 4u; ++componentIndex)
-                    {
-                        keyframe.inWeight[componentIndex] = ClampTangentWeight(keyframe.inWeight[componentIndex]);
-                        keyframe.outWeight[componentIndex] = ClampTangentWeight(keyframe.outWeight[componentIndex]);
-                    }
-                    DeserializeTangentTypes(keyJson, "inTangentType", keyframe.inTangentType, reader);
-                    DeserializeTangentTypes(keyJson, "outTangentType", keyframe.outTangentType, reader);
-                    if (keyJson.contains("tangentBroken") && keyJson["tangentBroken"].is_number_unsigned())
-                        keyframe.tangentBroken = keyJson["tangentBroken"].get<uint8>();
-                    if (keyJson.contains("segmentInterp") && keyJson["segmentInterp"].is_string())
-                    {
-                        keyframe.segmentInterp = ParseAnimInterp(keyJson["segmentInterp"].get<std::string>());
-                        keyframe.hasSegmentInterpOverride = true;
-                    }
-                    channel.keys.push_back(keyframe);
-                }
-            }
-
-            std::sort(channel.keys.begin(), channel.keys.end(),
-                      [](const AnimKeyframe& left, const AnimKeyframe& right)
-                      {
-                          return left.time < right.time;
-                      });
-            m_Channels.push_back(std::move(channel));
+            const json& source = document["source"];
+            m_SourcePath = source.value("path", std::string{});
+            m_SourceAnimationIndex = source.value("animationIndex", 0u);
         }
+        else
+        {
+            m_SourcePath.clear();
+            m_SourceAnimationIndex = 0u;
+        }
+
+        if (document.contains("channels") && document["channels"].is_array())
+        {
+            for (const json& channelJson : document["channels"])
+            {
+                AnimChannel channel{};
+                channel.boneIndex = channelJson.value("boneIndex", 0u);
+                channel.targetName = channelJson.value("targetName", String{});
+                channel.targetNameId = channel.targetName.empty() ? 0u : HashStringId(channel.targetName);
+                channel.path = ParseAnimPath(channelJson.value("path", std::string{"Translation"}));
+                channel.interp = ParseAnimInterp(channelJson.value("interpolation", std::string{"Linear"}));
+                channel.preInfinity  = ParseAnimExtrapolation(channelJson.value("preInfinity",  std::string{"Constant"}));
+                channel.postInfinity = ParseAnimExtrapolation(channelJson.value("postInfinity", std::string{"Constant"}));
+
+                if (channelJson.contains("keys") && channelJson["keys"].is_array())
+                {
+                    for (const json& keyJson : channelJson["keys"])
+                    {
+                        AnimKeyframe keyframe{};
+                        InitializeDefaultKeyframe(keyframe);
+                        keyframe.time = keyJson.value("time", 0.0f);
+                        DeserializeFloatArray(keyJson, "translation", keyframe.translation, 3u);
+                        DeserializeFloatArray(keyJson, "rotation", keyframe.rotation, 4u);
+                        DeserializeFloatArray(keyJson, "scale", keyframe.scale, 3u);
+                        DeserializeFloatArray(keyJson, "inTangent", keyframe.inTangent, 4u);
+                        DeserializeFloatArray(keyJson, "outTangent", keyframe.outTangent, 4u);
+                        DeserializeFloatArray(keyJson, "inWeight", keyframe.inWeight, 4u);
+                        DeserializeFloatArray(keyJson, "outWeight", keyframe.outWeight, 4u);
+                        for (uint32 componentIndex = 0; componentIndex < 4u; ++componentIndex)
+                        {
+                            keyframe.inWeight[componentIndex] = ClampTangentWeight(keyframe.inWeight[componentIndex]);
+                            keyframe.outWeight[componentIndex] = ClampTangentWeight(keyframe.outWeight[componentIndex]);
+                        }
+                        if (keyJson.contains("inTangentType") && keyJson["inTangentType"].is_array())
+                        {
+                            const auto& arr = keyJson["inTangentType"];
+                            for (size_t ci = 0; ci < 4u && ci < arr.size(); ++ci)
+                                keyframe.inTangentType[ci] = ParseAnimTangentType(arr[ci].get<std::string>());
+                        }
+                        if (keyJson.contains("outTangentType") && keyJson["outTangentType"].is_array())
+                        {
+                            const auto& arr = keyJson["outTangentType"];
+                            for (size_t ci = 0; ci < 4u && ci < arr.size(); ++ci)
+                                keyframe.outTangentType[ci] = ParseAnimTangentType(arr[ci].get<std::string>());
+                        }
+                        if (keyJson.contains("tangentBroken") && keyJson["tangentBroken"].is_number_unsigned())
+                            keyframe.tangentBroken = keyJson["tangentBroken"].get<uint8>();
+                        if (keyJson.contains("segmentInterp") && keyJson["segmentInterp"].is_string())
+                        {
+                            keyframe.segmentInterp = ParseAnimInterp(keyJson["segmentInterp"].get<std::string>());
+                            keyframe.hasSegmentInterpOverride = true;
+                        }
+                        channel.keys.push_back(keyframe);
+                    }
+                }
+
+                std::sort(channel.keys.begin(), channel.keys.end(),
+                          [](const AnimKeyframe& left, const AnimKeyframe& right)
+                          {
+                              return left.time < right.time;
+                          });
+                m_Channels.push_back(std::move(channel));
+            }
+        }
+
+        RecomputeDuration();
+        return true;
     }
-
-    if (reader.Refused())
-        return RefuseEditableData(reader.Refusal());
-    RecomputeDuration();
-    return true;
-}
-
-bool AnimationClip::RefuseEditableData(std::string_view reason)
-{
-    Logger::Log::Error("AnimationClip: '{}' is not loaded: {}", GetPath().generic_string(), reason);
-    m_Channels.clear();
-    m_Duration = 0.0f;
-    return false;
+    catch (const std::exception& e)
+    {
+        Logger::Log::Error("AnimationClip: failed to parse .anim '{}': {}", GetPath().string(), e.what());
+        return false;
+    }
 }
 
 bool AnimationClip::IsEditable() const
 {
-    const std::string extension = LowerCaseExtension(GetPath());
+    const std::string extension = NormalizeExtension(GetExtension());
     return extension == ".anim" || extension == ".animation" || GetPath().empty();
 }
 
@@ -1587,7 +1549,7 @@ std::vector<std::string> AnimationClip::EnumerateAnimationNames() const
     if (GetPath().empty())
         return {};
 
-    const std::string extension = LowerCaseExtension(GetPath());
+    const std::string extension = NormalizeExtension(GetPath().extension().string());
     if (extension == ".anim" || extension == ".animation")
     {
         const std::string stem = GetPath().stem().string();

@@ -5,7 +5,6 @@
 #include "AssetCore/SubassetDeriveKeys.h"
 #include "Assets/AnimationClip.h"
 #include "Assets/AssetDecodeCancellation.h"
-#include "Assets/AssetDecodeInputFiles.h"
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
 #include "Core/Engine.h"
@@ -19,9 +18,9 @@
 #include "ECSModules/Rendering/ClipStore.h"
 #include "ECSModules/Rendering/SkeletonStore.h"
 
-#include "Animation/Humanoid/HumanoidImport.h"
-#include "Animation/Humanoid/HumanoidRig.h"
-#include "Animation/Skeleton/SkeletonProfile.h"
+#include "Animation/HumanoidImport.h"
+#include "Animation/HumanoidRig.h"
+#include "Animation/SkeletonProfile.h"
 #include "Assets/RuntimeHumanoidProfile.h"
 
 #include <glm/glm.hpp>
@@ -44,9 +43,9 @@
 
 namespace GameEngine {
 
-static bool MeshHasTangents(const Mesh& mesh)
+static bool VerticesHaveTangents(const Vector<Vertex>& vertices)
 {
-    for (const Vertex& v : mesh.Vertices)
+    for (const Vertex& v : vertices)
     {
         if ((v.Tangent[0] * v.Tangent[0] + v.Tangent[1] * v.Tangent[1] + v.Tangent[2] * v.Tangent[2]) > 1e-10f)
             return true;
@@ -70,28 +69,25 @@ static glm::vec3 BuildFallbackTangent(const glm::vec3& n)
     return SafeNormalize(glm::cross(axis, n), glm::vec3(1.0f, 0.0f, 0.0f));
 }
 
-void GenerateMeshTangents(Mesh& mesh, bool forceRegenerate)
+// Rewrites every vertex's tangent from the triangle list `indices` over `vertices`. Leaves the
+// tangents as they are when no triangle has a usable UV parameterization.
+static void GenerateTangents(Vector<Vertex>& vertices, const Vector<uint32>& indices)
 {
-    if (mesh.Vertices.empty() || mesh.Indices.size() < 3)
-        return;
-    if (!forceRegenerate && MeshHasTangents(mesh))
-        return;
-
-    std::vector<glm::vec3> tangent(mesh.Vertices.size(), glm::vec3(0.0f));
-    std::vector<glm::vec3> bitangent(mesh.Vertices.size(), glm::vec3(0.0f));
+    std::vector<glm::vec3> tangent(vertices.size(), glm::vec3(0.0f));
+    std::vector<glm::vec3> bitangent(vertices.size(), glm::vec3(0.0f));
     bool anyAccumulated = false;
 
-    for (size_t i = 0; i + 2 < mesh.Indices.size(); i += 3)
+    for (size_t i = 0; i + 2 < indices.size(); i += 3)
     {
-        const uint32 i0 = mesh.Indices[i + 0];
-        const uint32 i1 = mesh.Indices[i + 1];
-        const uint32 i2 = mesh.Indices[i + 2];
-        if (i0 >= mesh.Vertices.size() || i1 >= mesh.Vertices.size() || i2 >= mesh.Vertices.size())
+        const uint32 i0 = indices[i + 0];
+        const uint32 i1 = indices[i + 1];
+        const uint32 i2 = indices[i + 2];
+        if (i0 >= vertices.size() || i1 >= vertices.size() || i2 >= vertices.size())
             continue;
 
-        const Vertex& v0 = mesh.Vertices[i0];
-        const Vertex& v1 = mesh.Vertices[i1];
-        const Vertex& v2 = mesh.Vertices[i2];
+        const Vertex& v0 = vertices[i0];
+        const Vertex& v1 = vertices[i1];
+        const Vertex& v2 = vertices[i2];
         const glm::vec3 p0(v0.Position[0], v0.Position[1], v0.Position[2]);
         const glm::vec3 p1(v1.Position[0], v1.Position[1], v1.Position[2]);
         const glm::vec3 p2(v2.Position[0], v2.Position[1], v2.Position[2]);
@@ -118,9 +114,9 @@ void GenerateMeshTangents(Mesh& mesh, bool forceRegenerate)
     if (!anyAccumulated)
         return;
 
-    for (size_t i = 0; i < mesh.Vertices.size(); ++i)
+    for (size_t i = 0; i < vertices.size(); ++i)
     {
-        Vertex& v = mesh.Vertices[i];
+        Vertex& v = vertices[i];
         glm::vec3 n(v.Normal[0], v.Normal[1], v.Normal[2]);
         n = SafeNormalize(n, glm::vec3(0.0f, 1.0f, 0.0f));
 
@@ -135,16 +131,24 @@ void GenerateMeshTangents(Mesh& mesh, bool forceRegenerate)
     }
 }
 
-Mesh CreateMorphedMesh(const Mesh& sourceMesh, const float* weights, size_t weightCount)
+void GenerateMeshTangents(Mesh& mesh, bool forceRegenerate)
 {
-    Mesh out = sourceMesh;
-    out.MorphTargets.clear();
+    if (mesh.Vertices.empty() || mesh.Indices.size() < 3)
+        return;
+    if (!forceRegenerate && VerticesHaveTangents(mesh.Vertices))
+        return;
+    GenerateTangents(mesh.Vertices, mesh.Indices);
+}
+
+void ApplyMorphTargets(const Mesh& sourceMesh, const float* weights, size_t weightCount,
+                       Vector<Vertex>& outVertices)
+{
+    outVertices.assign(sourceMesh.Vertices.begin(), sourceMesh.Vertices.end());
 
     if (!weights || weightCount == 0 || sourceMesh.MorphTargets.empty() || sourceMesh.Vertices.empty())
-        return out;
+        return;
 
     const size_t vertexCount = sourceMesh.Vertices.size();
-    const bool hadTangents = MeshHasTangents(sourceMesh);
     bool normalsChanged = false;
     const size_t targetCount = std::min(weightCount, sourceMesh.MorphTargets.size());
 
@@ -165,7 +169,7 @@ Mesh CreateMorphedMesh(const Mesh& sourceMesh, const float* weights, size_t weig
                 const uint32 vertexIndex = target.VertexIndices[entry];
                 if (vertexIndex >= vertexCount)
                     continue;
-                Vertex& v = out.Vertices[vertexIndex];
+                Vertex& v = outVertices[vertexIndex];
                 const float* delta = target.PositionDeltas.data() + entry * 3u;
                 v.Position[0] += delta[0] * weight;
                 v.Position[1] += delta[1] * weight;
@@ -180,7 +184,7 @@ Mesh CreateMorphedMesh(const Mesh& sourceMesh, const float* weights, size_t weig
                 const uint32 vertexIndex = target.VertexIndices[entry];
                 if (vertexIndex >= vertexCount)
                     continue;
-                Vertex& v = out.Vertices[vertexIndex];
+                Vertex& v = outVertices[vertexIndex];
                 const float* delta = target.NormalDeltas.data() + entry * 3u;
                 v.Normal[0] += delta[0] * weight;
                 v.Normal[1] += delta[1] * weight;
@@ -191,7 +195,7 @@ Mesh CreateMorphedMesh(const Mesh& sourceMesh, const float* weights, size_t weig
 
     if (normalsChanged)
     {
-        for (Vertex& v : out.Vertices)
+        for (Vertex& v : outVertices)
         {
             const float len2 = v.Normal[0] * v.Normal[0] + v.Normal[1] * v.Normal[1] + v.Normal[2] * v.Normal[2];
             if (len2 > 1e-12f)
@@ -204,21 +208,8 @@ Mesh CreateMorphedMesh(const Mesh& sourceMesh, const float* weights, size_t weig
         }
     }
 
-    if (hadTangents)
-        GenerateMeshTangents(out, true);
-
-    out.MinBounds[0] = out.MinBounds[1] = out.MinBounds[2] = std::numeric_limits<float>::max();
-    out.MaxBounds[0] = out.MaxBounds[1] = out.MaxBounds[2] = std::numeric_limits<float>::lowest();
-    for (const Vertex& v : out.Vertices)
-    {
-        for (int c = 0; c < 3; ++c)
-        {
-            out.MinBounds[c] = std::min(out.MinBounds[c], v.Position[c]);
-            out.MaxBounds[c] = std::max(out.MaxBounds[c], v.Position[c]);
-        }
-    }
-
-    return out;
+    if (sourceMesh.Indices.size() >= 3 && VerticesHaveTangents(sourceMesh.Vertices))
+        GenerateTangents(outVertices, sourceMesh.Indices);
 }
 
 // Optional importer libraries
@@ -320,10 +311,7 @@ bool ModelAsset::Load() {
     }
 
     SetState(AssetState::Loading);
-    Logger::Log::Debug("Loading model: {}", GetPath().string());
-    // A synchronous load reads its own inputs; one nested in a decode must not take the
-    // decode's (ScopedAssetDecodeInputFiles).
-    const ScopedAssetDecodeInputFiles readsTheDisk(nullptr);
+    Logger::Log::Info("Loading model: {}", GetPath().string());
 
     if (!Exists()) {
         Logger::Log::Error("Model file does not exist: {}", GetPath().string());
@@ -431,8 +419,6 @@ bool ModelAsset::LoadFromData(const Vector<uint8>& data) {
         // counts so both reflect the consumed submesh array (format-agnostic — it
         // operates on the assembled submesh names every loader produced).
         ConsumeLodSuffixFamilies(m_Meshes);
-        for (EmbeddedImage& image : m_EmbeddedImages)
-            image.ContentHash = Hashing::Fnv1a64(image.Data.data(), image.Data.size());
         CalculateBoundingBox();
         CalculateCounts();
         SetState(AssetState::Loaded);
@@ -611,10 +597,7 @@ uint64 FoldSlotSourceIntoConfigHash(uint64 configHash, uint64 slotSourceHash)
 {
     if (slotSourceHash == 0)
         return configHash;
-    constexpr uint64 kFnvPrime = 1099511628211ull;
-    const auto* bytes = reinterpret_cast<const uint8*>(&slotSourceHash);
-    for (int i = 0; i < 8; ++i) { configHash ^= bytes[i]; configHash *= kFnvPrime; }
-    return configHash;
+    return Hashing::Fnv1a64Value(configHash, slotSourceHash);
 }
 
 // Editor iteration cache file for a model's cooked LODs. Loose files under the
@@ -949,10 +932,7 @@ bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
     std::swap(m_Cameras, other->m_Cameras);
     std::swap(m_Lights, other->m_Lights);
     std::swap(m_SceneNodes, other->m_SceneNodes);
-    {
-        std::scoped_lock lock(m_ExtrasMutex, other->m_ExtrasMutex);
-        std::swap(m_Extras, other->m_Extras);
-    }
+    std::swap(m_Extras, other->m_Extras);
     std::swap(m_TotalVertexCount, other->m_TotalVertexCount);
     std::swap(m_TotalIndexCount, other->m_TotalIndexCount);
     std::swap(m_SourceContentHash, other->m_SourceContentHash);
@@ -981,16 +961,6 @@ bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
     return true;
 }
 
-std::shared_ptr<const ModelExtras> ModelAsset::GetExtras() const {
-    std::lock_guard<std::mutex> lock(m_ExtrasMutex);
-    return m_Extras;
-}
-
-void ModelAsset::SetExtras(std::shared_ptr<const ModelExtras> extras) {
-    std::lock_guard<std::mutex> lock(m_ExtrasMutex);
-    m_Extras = std::move(extras);
-}
-
 void ModelAsset::Unload() {
     m_Meshes.clear();
     m_Materials.clear();
@@ -998,7 +968,7 @@ void ModelAsset::Unload() {
     m_Cameras.clear();
     m_Lights.clear();
     m_SceneNodes.clear();
-    SetExtras(std::make_shared<const ModelExtras>());
+    m_Extras = {};
     m_TotalVertexCount = 0;
     m_TotalIndexCount = 0;
     m_HasAnimations = false;

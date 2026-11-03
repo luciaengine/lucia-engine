@@ -41,8 +41,8 @@ class WebPanel : public DockPanel
 
     /// The host window the platform web views are children of. Setting it runs
     /// the setup that needs it, because the two arrive in either order: the
-    /// panel binds (and tries to set up) when it is first shown, while
-    /// ShowOrActivateWebPanel shows the panel and only then hands it the window.
+    /// panel binds (and tries to set up) when it is first shown, which may come
+    /// before the editor hands it the window.
     void SetWindow(Platform::Window* window);
 
     /// Show a URL without disturbing a page the user is browsing: activates an
@@ -79,7 +79,6 @@ class WebPanel : public DockPanel
     WebTab* ActiveTab();
     Platform::IWebView* ActiveView();
     bool CreateTabWebView(WebTab& tab);
-    void OnWebViewUnavailable(const std::string& message);
     void OpenBlankTab();
     void ActivateTab(size_t index);
     void CloseTab(size_t index);
@@ -111,8 +110,6 @@ class WebPanel : public DockPanel
     size_t m_ActiveTab = 0;
     Platform::Window* m_ParentWindow = nullptr;
     std::string m_PendingURL;
-    // Why the web view cannot be created, stating the fix; empty while it can.
-    std::string m_WebViewUnavailableMessage;
 };
 
 } // namespace GameEngine

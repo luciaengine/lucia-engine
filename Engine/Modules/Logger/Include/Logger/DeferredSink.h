@@ -1,9 +1,8 @@
 #pragma once
 
 #include "Logger/LogSink.h"
-#include <memory>
+#include "Logger/Types.h"
 #include <mutex>
-#include <vector>
 
 namespace Logger
 {
@@ -33,20 +32,20 @@ class DeferredSink : public LogSink
     /// Writes the held records to sink (those its ShouldLog accepts), then
     /// forwards every later record to it. Call once, with a sink; development
     /// builds assert on a second call or a null sink.
-    void Attach(std::unique_ptr<LogSink> sink);
+    void Attach(UniquePtr<LogSink> sink);
 
     void Write(const LogMessage& message) override;
     void Flush() override;
     // Holding takes every level; the attached sink filters when it receives.
     bool ShouldLog(LogLevel /*level*/) const override { return true; }
-    std::string GetName() const override { return "Deferred"; }
+    String GetName() const override { return "Deferred"; }
 
   private:
     void WriteToTarget(const LogMessage& message);
 
     mutable std::mutex m_Mutex;
-    std::unique_ptr<LogSink> m_Target;
-    std::vector<LogMessage> m_Held;
+    UniquePtr<LogSink> m_Target;
+    Vector<LogMessage> m_Held;
     size_t m_HeldRecordLimit;
     size_t m_DroppedRecordCount = 0;
 };

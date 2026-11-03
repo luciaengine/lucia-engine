@@ -4,13 +4,13 @@
 #include "ECS/Entity.h" // full World definition
 #include "Editor/DragDropPayloads.h"
 #include "Editor/Entities/EntityDisplayName.h"
-#include "Editor/Hierarchy/HierarchyEntity/HierarchyEntityDecode.h"
+#include "Editor/Hierarchy/HierarchyEntityDecode.h"
 #include "UI/Controls/SearchDialog.h"
 #include "UI/Interaction/Payload.h"
-#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <any>
+#include <cctype>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -20,6 +20,13 @@ namespace GameEngine
 
 namespace
 {
+std::string ToLowerCopy(std::string s)
+{
+    for (char& c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
 // True if the entity has every component in `required` (empty -> always true).
 bool EntityHasAll(ECS::World* world, ECS::EntityHandle e,
                   const std::vector<ECS::ComponentTypeId>& required)
@@ -45,13 +52,13 @@ public:
         {
             std::vector<ECS::EntityHandle> all;
             m_World->GetAliveEntitiesSnapshot(all);
-            const std::string q = ToLowerAscii(query);
+            const std::string q = ToLowerCopy(query);
             for (ECS::EntityHandle e : all)
             {
                 if (!EntityHasAll(m_World, e, m_Required))
                     continue;
                 std::string name = Editor::EntityDisplayName(*m_World, e);
-                if (!q.empty() && ToLowerAscii(name).find(q) == std::string::npos)
+                if (!q.empty() && ToLowerCopy(name).find(q) == std::string::npos)
                     continue;
 
                 // A named entity also shows its id, so two entities of one name can be told apart.
@@ -79,6 +86,7 @@ private:
 EntityField::EntityField()
 {
     AddClass("entity-field");
+    BuildNameAndClearButton();
 }
 
 void EntityField::SetWorld(ECS::World* world)
@@ -121,23 +129,7 @@ void EntityField::UpdateDisplay()
     if (!valid)
         ShowEmpty();
     else
-        ShowNamed(Editor::EntityDisplayName(*m_World, m_Value), {});
-}
-
-void EntityField::SetOnReveal(RevealCallback cb)
-{
-    m_OnReveal = std::move(cb);
-    RefreshLinkStyle();
-}
-
-bool EntityField::CanReveal() const
-{
-    return m_OnReveal && m_Value.IsValid() && m_World && m_World->IsValid(m_Value);
-}
-
-void EntityField::Reveal()
-{
-    m_OnReveal(m_Value);
+        ShowNamed(Editor::EntityDisplayName(*m_World, m_Value));
 }
 
 std::unique_ptr<ISearchProvider> EntityField::CreateProvider()

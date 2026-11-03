@@ -28,20 +28,6 @@ struct ShaderProgramDocument
     std::unordered_map<std::string, ShaderStageProgramEntry> stages;
 };
 
-/// Where compiled shader programs are cached. A program is looked up in each read-only root in
-/// order, then in the writable root; a miss compiles into the writable root, so nothing is ever
-/// written to a read-only one.
-struct ShaderCacheRoots
-{
-    /// Cooked caches that ship with the runtime (ApplicationPaths::GetBundledShaderCacheRoot), or the
-    /// editor cache an offline cook reuses; empty unless that folder exists.
-    std::vector<std::filesystem::path> ReadOnly;
-    /// <workspace>/.Cache/Shaders; empty until the engine resolves the workspace.
-    std::filesystem::path Writable;
-
-    bool operator==(const ShaderCacheRoots&) const = default;
-};
-
 class ShaderProgramAsset : public Asset
 {
 public:
@@ -50,8 +36,9 @@ public:
     {
     }
 
-    static void SetShaderCacheRoots(ShaderCacheRoots roots) noexcept;
-    static const ShaderCacheRoots& GetShaderCacheRoots();
+    static void SetShaderCacheRoot(std::filesystem::path root) noexcept;
+    // Empty until the engine resolves the workspace (<workspace>/.Cache/Shaders).
+    static const std::filesystem::path& GetShaderCacheRoot();
 
     bool Load() override;
     bool LoadFromData(const Vector<uint8>& data) override;

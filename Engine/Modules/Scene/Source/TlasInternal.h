@@ -4,11 +4,13 @@
 #include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <shared_mutex>
-#include <span>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -20,11 +22,10 @@
 #include "ECS/ChangeFilter.h"
 #include "ECS/Entity.h"
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
-#include "JobSystem/TaskHandle.h"
+#include "JobSystem/JobCounter.h"
 #include "Mathematics/Geometry.h"
 #include "Mathematics/Vector3.h"
 #include "Scene/SceneTlas.h"
-#include "Types/InlineVector.h"
 #include "Types/Types.h"
 
 namespace GameEngine::ECS { class World; }
@@ -59,6 +60,132 @@ constexpr uint32 kMaxRayDdaSteps = 1024u;
 // sector boundary, avoiding per-frame thrash on entities oscillating
 // exactly at edges. Picked at 10% to match the plan's specification.
 constexpr float32 kReplicaHysteresisFraction = 0.10f;
+
+// Trivially-copyable small-vector with N inline slots and a heap fallback
+// for the rare overflow case. Used by ReplicaSet so the ~99% K=1 path
+// pays no heap allocation; the rare boundary-spanning entity (K up to
+// kMaxReplicaSectors=64) heap-allocates the spill once per migration.
+//
+// T must be trivially copyable. The class is NOT a drop-in for std::vector
+// — it only exposes what ReplicaSet needs (size, empty, [], push_back,
+// clear, range-based iteration, copy/move).
+template<typename T, std::size_t N>
+class SmallVec
+{
+    static_assert(std::is_trivially_copyable_v<T>,
+                  "SmallVec<T,N> requires T to be trivially copyable; "
+                  "non-trivial destruction is not supported.");
+
+public:
+    SmallVec() noexcept = default;
+    ~SmallVec() noexcept { reset_storage(); }
+
+    SmallVec(const SmallVec& o) { copy_from(o); }
+    SmallVec(SmallVec&& o) noexcept { move_from(std::move(o)); }
+    SmallVec& operator=(const SmallVec& o)
+    {
+        if (this != &o) { reset_storage(); copy_from(o); }
+        return *this;
+    }
+    SmallVec& operator=(SmallVec&& o) noexcept
+    {
+        if (this != &o) { reset_storage(); move_from(std::move(o)); }
+        return *this;
+    }
+
+    std::size_t size()  const noexcept { return m_Size; }
+    bool        empty() const noexcept { return m_Size == 0; }
+
+    T*       begin()       noexcept { return data(); }
+    T*       end()         noexcept { return data() + m_Size; }
+    const T* begin() const noexcept { return data(); }
+    const T* end()   const noexcept { return data() + m_Size; }
+
+    T&       operator[](std::size_t i)       noexcept { return data()[i]; }
+    const T& operator[](std::size_t i) const noexcept { return data()[i]; }
+
+    void clear() noexcept { m_Size = 0; }
+
+    void reserve(std::size_t n)
+    {
+        if (n <= capacity()) return;
+        grow_to(n);
+    }
+
+    void push_back(const T& v)
+    {
+        if (m_Size == capacity())
+            grow_to(m_Size == 0 ? N : m_Size * 2);
+        data()[m_Size++] = v;
+    }
+
+private:
+    std::size_t capacity() const noexcept { return m_OnHeap ? m_HeapCap : N; }
+
+    T*       data()       noexcept { return m_OnHeap ? m_Heap : reinterpret_cast<T*>(&m_Inline); }
+    const T* data() const noexcept { return m_OnHeap ? m_Heap : reinterpret_cast<const T*>(&m_Inline); }
+
+    void grow_to(std::size_t newCap)
+    {
+        if (newCap < N) newCap = N;
+        T* newHeap = static_cast<T*>(::operator new(newCap * sizeof(T), std::align_val_t{alignof(T)}));
+        if (m_Size > 0)
+            std::memcpy(newHeap, data(), m_Size * sizeof(T));
+        if (m_OnHeap)
+            ::operator delete(m_Heap, std::align_val_t{alignof(T)});
+        m_Heap    = newHeap;
+        m_HeapCap = newCap;
+        m_OnHeap  = true;
+    }
+
+    void reset_storage() noexcept
+    {
+        if (m_OnHeap)
+            ::operator delete(m_Heap, std::align_val_t{alignof(T)});
+        m_OnHeap  = false;
+        m_Heap    = nullptr;
+        m_HeapCap = 0;
+        m_Size    = 0;
+    }
+
+    void copy_from(const SmallVec& o)
+    {
+        if (o.m_Size > N)
+            grow_to(o.m_Size);
+        if (o.m_Size > 0)
+            std::memcpy(data(), o.data(), o.m_Size * sizeof(T));
+        m_Size = o.m_Size;
+    }
+
+    void move_from(SmallVec&& o) noexcept
+    {
+        if (o.m_OnHeap)
+        {
+            // Steal the heap buffer; o becomes empty/inline.
+            m_Heap    = o.m_Heap;
+            m_HeapCap = o.m_HeapCap;
+            m_OnHeap  = true;
+            m_Size    = o.m_Size;
+            o.m_Heap    = nullptr;
+            o.m_HeapCap = 0;
+            o.m_OnHeap  = false;
+            o.m_Size    = 0;
+        }
+        else if (o.m_Size > 0)
+        {
+            // Inline-only — bytewise copy is correct for trivial T.
+            std::memcpy(&m_Inline, &o.m_Inline, o.m_Size * sizeof(T));
+            m_Size   = o.m_Size;
+            o.m_Size = 0;
+        }
+    }
+
+    alignas(T) std::byte m_Inline[sizeof(T) * N]{};
+    T*          m_Heap    = nullptr;
+    std::size_t m_HeapCap = 0;
+    std::size_t m_Size    = 0;
+    bool        m_OnHeap  = false;
+};
 
 // Compact 3D sector index. Plain int32 fields (round-2 N2 from the plan
 // audit chose three-int over packed bit-fields for portability and hash
@@ -105,7 +232,7 @@ struct TlasLeaf
 {
     GameEngine::ECS::EntityHandle Entity{};
     AABB                          WorldBounds{};
-    Rendering::RenderLayerMask    LayerMask        = Rendering::RenderLayerMask::All();
+    uint32                        LayerMask        = 0xFFFFFFFFu;
     uint8                         InstanceMask     = 0xFFu;
     uint8                         _pad             = 0u;
     uint32                        CachedXfVersion  = 0u;  // last-seen WorldTransform.Version
@@ -173,10 +300,10 @@ struct SceneTlasImpl
 
     // E.5.1: per-entity replica set. Typical K=1 (entity in one sector);
     // larger K covers boundary-spanning entities like a 60m bridge in a 50m
-    // sector grid. Four inline keys keep the K<=4 case (which covers every
-    // non-pathological case at sectorSize=100m+) heap-free; K up to
+    // sector grid. SmallVec<SectorKey, 4> keeps the K<=4 case (which covers
+    // every non-pathological case at sectorSize=100m+) heap-free; K up to
     // kMaxReplicaSectors=64 spills to a single per-replica-set heap allocation.
-    using ReplicaSet = InlineVector<SectorKey, 4>;
+    using ReplicaSet = SmallVec<SectorKey, 4>;
     std::unordered_map<GameEngine::ECS::EntityId, ReplicaSet> EntityToSectors;
 
     // E.5.4: per-entity world AABB snapshot taken when the current replica
@@ -250,8 +377,6 @@ struct SceneTlasImpl
     // Diagnostics: leaves refit by any path, and reconciles run.
     uint64                                                   RefitLeafCount = 0u;
     uint64                                                   ReconcileCount = 0u;
-    // SceneTlas::Version. Written under the unique lock; read without a lock.
-    std::atomic<uint64>                                      Version{0u};
 
     // ---- RequestCurrent (SceneTlasRequest.cpp) -------------------------
     // The moved renderables as of the kick: entity, version, world bounds.
@@ -271,11 +396,8 @@ struct SceneTlasImpl
     // The kick's chunk list, kept so a request does not allocate it.
     std::vector<MovedChunk>                                  MovedChunks;
     std::vector<Engine::Renderer::RenderExtractionSystem::WorldRenderableRecord> RecordSnapshot;
-    // The task a request published and which body it runs (reconcile or
-    // refit), the pool it runs and forks on, and what it found. Later
-    // requests poll the task; the frame does not join it.
-    JobSystem::TaskHandle                                    InFlight;
-    bool                                                     InFlightReconciles = false;
+    // The work in flight (one job), the pool it runs on, and what it found.
+    JobSystem::JobCounter                                    InFlight;
     JobSystem::WorkStealingThreadPool*                       InFlightPool = nullptr;
     std::atomic<bool>                                        InFlightNeedsReconcile{false};
     // What the last request saw: whether a reconcile has ever run, the
@@ -288,16 +410,6 @@ struct SceneTlasImpl
     // nothing changed, where every leaf must be current).
     uint32                                                   ValidateCounter = 0u;
     uint64                                                   ValidateCursor = 0u;
-    // Diagnostic: RequestCurrent calls, its own retries and WaitCurrent's included.
-    uint64                                                   RequestCount = 0u;
-
-    // True while the published task has not finished. No handle: nothing is
-    // in flight.
-    bool IsWorkInFlight() const { return InFlight.IsValid() && !InFlight.IsDone(); }
-    // True when the published task failed or was cancelled before it ran.
-    // TaskHandle reads an empty handle as failed; here it means nothing was
-    // published.
-    bool HasInFlightFailed() const { return InFlight.IsValid() && InFlight.HasFailed(); }
 };
 
 // Compute the (inclusive) sector index for a 1D world coordinate. Floor
@@ -405,7 +517,7 @@ void   ReconcileFromRecords(
 // caller's early-out (Sync never inserts).
 bool   ReplicaSetWouldChange(
     SceneTlasImpl& impl,
-    std::span<const SectorKey> currentReplicas,
+    const SceneTlasImpl::ReplicaSet& currentReplicas,
     GameEngine::ECS::EntityId eid,
     const AABB& newBounds,
     float32 sectorSize);

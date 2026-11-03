@@ -13,7 +13,7 @@
 // and quit prompts, and the MCP save_scene handler.
 //
 // The file-bytes assertions are what give the arms teeth: they fail if the guard
-// is removed, because the refused Save would then reach Scene::WriteSceneFile
+// is removed, because the refused Save would then reach Scene::SaveSceneToFile
 // and rewrite the file with the mutated world.
 
 #include <gtest/gtest.h>
@@ -161,7 +161,7 @@ TEST_F(SaveBlockedDuringPlayTests, SaveRefusedWhilePlaying_AuthoredFileUntouched
 
     EXPECT_FALSE(doc.Save());
     // Remove the guard in SceneDocumentManager::Save and this is what breaks:
-    // the refused save reaches WriteSceneFile and writes the 5-entity world.
+    // the refused save reaches SaveSceneToFile and writes the 5-entity world.
     EXPECT_EQ(ReadAllBytes(scenePath), authored);
 }
 
@@ -308,7 +308,7 @@ TEST(SaveBlockedDuringPlayWiring, EditorApplicationSuppliesThePlayStateProbe)
 {
     // Without this the probe is never set, every IsSaveBlockedByPlayMode() is
     // false, and all of the arms above pass while the editor still overwrites.
-    const std::string src = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication" / "EditorApplication.cpp");
+    const std::string src = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication.cpp");
     ASSERT_FALSE(src.empty());
     EXPECT_NE(src.find("m_SceneEditor->SetPlayModeProbe("), std::string::npos)
         << "EditorApplication never wires the scene editor's play-state probe";
@@ -318,7 +318,7 @@ TEST(SaveBlockedDuringPlayWiring, BothWriteInhibitsReadOnePredicate)
 {
     // The manual-save probe and the autosave tick must not carry two textual copies of
     // "is play mode running" — that is how one gains a state the other does not.
-    const std::string src = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication" / "EditorApplication.cpp");
+    const std::string src = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication.cpp");
     ASSERT_FALSE(src.empty());
 
     const std::string probeBody =

@@ -15,9 +15,8 @@
 //   3. SetFloat() etc -- StringId-keyed named access (Editor, scripting)
 //
 // Any content change bumps a process-wide content epoch (see MarkDirty /
-// GetGlobalContentEpoch) and the material's own revision (GetContentRevision);
-// PackMaterialSSBO skips a frame while the epoch is unchanged and otherwise
-// repacks the rows whose revision moved. There is no per-material GPU buffer:
+// GetGlobalContentEpoch); PackMaterialSSBO folds that epoch into its per-frame
+// skip stamp and repacks when it changes. There is no per-material GPU buffer:
 // material params live only in the shared SSBO, indexed per-instance.
 //
 // GPU state (pipeline id, shader meta) is private. Only MaterialRegistry has
@@ -32,14 +31,14 @@
 #include "Engine/Rendering/MaterialCompileSpec.h"
 #include "Engine/Rendering/WorldDrawTypes.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/Shader/ShaderPropertyTable.h"
+#include "Rendering/Materials/ShaderPropertyTable.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Materials/MaterialAlphaMode.h"
-#include "Rendering/Materials/MaterialBlend/MaterialBlend.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/MaterialBlend.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 #include "Types/StringId.h"
 #include "Types/Types.h"
 
@@ -58,7 +57,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include "Rendering/Materials/Shader/ShaderMeta.h"
+#include "Rendering/Materials/ShaderMeta.h"
 
 // Explicit imports from the Rendering module (CodingStyle: no namespace-scope using-directives in headers).
 namespace GameEngine::Engine::Renderer
@@ -220,9 +219,8 @@ class Material
     // evicted for a reload, or it failed): it carries no texture and samples
     // AwaitedSlotDefault. Consumers that read the slot's texture rather than its
     // bindless index (the Classic bind group, the DDGI map atlas) read this to
-    // tell it from an unassigned slot. Set by TextureService::BindAwaitedTexture,
-    // which drops any texture bound to the slot; any SetTexture on the slot
-    // clears it. Both transitions are content (MarkDirty); a repeated wait is not.
+    // tell it from an unassigned slot. Set by TextureService::BindAwaitedTexture;
+    // any SetTexture on the slot clears it.
     void MarkTextureAwaited(StringId name);
     bool IsTextureAwaited(uint32_t slotOrdinal) const;
     // The same question asked by the name's slot on this material's surface: a
@@ -284,13 +282,6 @@ class Material
     void SetDeclaredProperties(std::shared_ptr<const Rendering::ShaderPropertyTable> table);
     const Rendering::ShaderPropertyTable* GetDeclaredProperties() const { return m_DeclaredProperties.get(); }
 
-    // The @deformationEnvelope of the vertex modifier this material composes
-    // (ShaderDeformationEnvelope.h), installed with the program whether or not
-    // its surface declares properties. A different declaration moves the content
-    // revision, so the culling margin follows the shader in the frame it binds.
-    void SetDeformationEnvelope(const Rendering::DeformationEnvelopeDeclaration& envelope);
-    const Rendering::DeformationEnvelopeDeclaration& GetDeformationEnvelope() const { return m_DeformationEnvelope; }
-
     // Store one document value by its declared type: int/enum land as int bits,
     // bool as 0/1, vectors clamped to the declared width (missing components keep
     // the declared default). False when no declared property carries the name.
@@ -316,17 +307,6 @@ class Material
     // Returns the full bindless texture index array (kTextureSlotArraySize elements).
     // Used for bulk memcpy into the MaterialParams SSBO.
     const uint32_t (&GetBindlessTextureIndices() const)[kTextureSlotArraySize];
-
-    // True when `name` resolves to the normal slot (TextureSlot::kNormal) on this material.
-    bool IsNormalSlot(StringId name) const
-    {
-        return ResolveTextureSlotOrdinal(name) == static_cast<uint32_t>(TextureSlot::kNormal);
-    }
-    // The bindless index of the normal-variance companion of the normal slot's texture
-    // (TextureAsset::GetNormalVarianceCompanion). Any change of the normal slot's index
-    // resets it to the black default (sigma 0).
-    void SetNormalVarianceIndex(uint32_t descriptorIndex);
-    uint32_t GetNormalVarianceIndex() const { return m_NormalVarianceIndex; }
 
     // Per-texture UV transform. Legacy scale/offset setter stores:
     // {scaleX, 0, offsetX, 0, 0, scaleY, offsetY, 0} per slot.
@@ -413,8 +393,6 @@ class Material
     Rendering::GraphicsPipelineId GetGraphicsPipelineId() const { return m_GraphicsPipelineId; }
     const std::shared_ptr<Rendering::ShaderMeta>& GetShaderMeta() const { return m_ShaderMeta; }
 
-    // GetGpuSceneMaterialIndex of a material that has no GPUScene material index yet.
-    static constexpr uint32_t kInvalidSSBOIndex = 0xFFFFFFFFu;
     uint32_t GetGpuSceneMaterialIndex() const { return m_GpuSceneMaterialIndex; }
 
     // Pipeline-compilation generation: moves only when a shader recompile
@@ -433,20 +411,18 @@ class Material
     // --- Content-change tracking ---
 
     // Per-material content revision: moves on every MarkDirty() of THIS
-    // material (properties, textures, awaited slots, the texture slot map,
-    // bindless indices, UV transforms, sampler preset, double-sidedness) and on
-    // nothing else. A property, texture, awaited-slot or slot-map write of the
-    // value already there is no edit; a texture-transform write always is. A
-    // recompile leaves it alone, and another material's edit leaves it alone.
-    // Consumers that cache work derived from this material's content compare
-    // it; the global epoch below cannot tell them which material moved.
+    // material (properties, textures, bindless indices, UV transforms, sampler
+    // preset) and on nothing else — a recompile leaves it alone, and another
+    // material's edit leaves it alone. Consumers that cache work derived from
+    // this material's content compare it; the global epoch below cannot tell
+    // them which material moved.
     uint32_t GetContentRevision() const { return m_ContentRevision; }
 
-    // Process-wide epoch bumped by every MarkDirty() on any material (the list
-    // above). PackMaterialSSBO keeps it per ring slot, making the idle-frame skip
-    // check O(1): an unchanged epoch skips the pack without scanning rows, and a
-    // moved one makes the pack compare each row's GetContentRevision to rewrite
-    // only the rows that changed.
+    // Process-wide epoch bumped by every MarkDirty() on any material
+    // (properties, textures, bindless indices, UV transforms, sampler preset).
+    // PackMaterialSSBO folds it into its per-frame-slot stamp, making the
+    // idle-frame skip check O(1): any material content change anywhere
+    // invalidates the packed slots.
     //
     // Out-of-line on purpose: every module that includes this header would
     // instantiate a header-inline static separately (the generated exports.def
@@ -622,7 +598,6 @@ class Material
     // document values last applied — the inputs SetDeclaredProperties replays.
     std::shared_ptr<const Rendering::ShaderPropertyTable> m_DeclaredProperties;
     std::unordered_map<std::string, MaterialValue> m_AuthoredProperties;
-    Rendering::DeformationEnvelopeDeclaration m_DeformationEnvelope;
 
     void WriteDeclaredComponents(const Rendering::ShaderProperty& property, const float* components,
                                  uint32_t componentCount);
@@ -667,10 +642,6 @@ class Material
     // defaults can be re-applied when the @texture map arrives after registration
     // (and again after a device rebuild re-bakes fresh defaults).
     uint32_t m_DefaultWhiteIndex = 0;
-    uint32_t m_DefaultBlackIndex = 0;
-
-    // The variance companion of the normal slot's texture; black (sigma 0) when it has none.
-    uint32_t m_NormalVarianceIndex = 0;
     bool m_HasBindlessDefaults = false;
 
     // Per-texture UV affine transform rows:
@@ -711,6 +682,7 @@ class Material
                                VariantKeyHash> m_PerFlagsId;
 
     // GPUScene material index (for scene-buffer-backed materials).
+    static constexpr uint32_t kInvalidSSBOIndex = 0xFFFFFFFFu;
     uint32_t m_GpuSceneMaterialIndex = kInvalidSSBOIndex;
 };
 

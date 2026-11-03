@@ -1,59 +1,9 @@
-// Word segmentation for the text controls, as a documented subset of
-// UAX #29 (Unicode Text Segmentation) word boundaries, corrected against
-// measured Chrome behaviour where the two disagree.
-//
-// Implemented:
-//   * Word characters are letters, ASCII digits and ExtendNumLet connectors
-//     ("_" and friends). A word is a maximal run of them.
-//   * WB6/WB7  — MidLetter and MidNumLetQ join two letters  ("a·b", "don't").
-//   * WB11/12  — MidNum and MidNumLetQ join two digits      ("1,5", "1.5").
-//                This is what keeps a float field's "1.5" one word.
-//   * WB3d     — a run of whitespace is one segment.
-//   * WB4      — combining marks take the class of the character they follow.
-//   * WB999    — everything else (punctuation, symbols) breaks on both sides
-//                and is therefore a single-character segment.
-//
-// Two joiners are deliberately NOT classified as UAX #29 classifies them. Both
-// were measured in Chrome/150 with real double-clicks on a real <input> (the
-// oracle rows are in TextSegmentationTests). Parity with the browser is the
-// goal, so the measurement wins over the spec here — do not "correct" these
-// back to the UAX #29 tables:
-//
-//   * FULL STOP (U+002E) and its fullwidth form (U+FF0E) are MidNum, not
-//     MidNumLet. UAX #29 would join "a.b"; Chrome splits it, and that is the
-//     case that makes a double-click on "Player.fbx" select the stem. The other
-//     MidNumLet dots — U+2024, U+FE52 — do join letters, so this is FULL STOP
-//     specifically and not dots as a class.
-//   * The colons (U+003A, U+FF1A, U+FE55) join nothing at all. UAX #29 has them
-//     in MidLetter; Chrome splits "a:b", and splits "1:5" and "12:30" too. The
-//     rest of MidLetter (U+00B7, U+0387, U+2027, U+FE13) does join letters.
-//
-// The other two MidLetter entries, U+055F and U+05F4, keep the UAX #29
-// classification unmeasured: both are RTL-context characters, and the LTR
-// harness the rows above came from cannot place a pointer over one reliably.
-//
-// Not implemented, and worth knowing before relying on this for anything
-// beyond editing UI text:
-//   * Letters are recognised by the block ranges in kLetterRanges rather than
-//     by the Unicode general category. Scripts outside those blocks classify as
-//     Other, so a double-click there selects one character instead of a word.
-//   * Only ASCII 0-9 count as digits; Arabic-Indic and other decimal digits do
-//     not join across MidNum.
-//   * No dictionary segmentation for scripts that do not space their words
-//     (Chinese, Japanese, Thai, Khmer): a run of ideographs is one word, where
-//     ICU would find several.
-//   * No WB3c (ZWJ x Extended_Pictographic) or WB15/16 (regional indicators),
-//     so emoji sequences and flags segment per code point.
-//   * Whitespace is one class doing two jobs — a run of it is one segment, and
-//     a word takes the run that follows it — where Chrome uses two different
-//     sets. Measured 2026-07-26 by the method the joiner rows came from:
-//     U+0009, U+00A0 and U+2007 are *not* run-joiners in Chrome (each is its own
-//     segment) though a word does still take them as trailing space, and U+202F
-//     is not a separator at all but a word character, so Chrome selects
-//     "x<U+202F>y" whole. All four are plain whitespace here, so a run of them
-//     is one segment and a double-click over one selects too much.
-
+// ASCII word selection retains the editor's established punctuation rules.
+// Non-ASCII text uses ICU word boundaries and dictionary segmentation, with
+// the same dot/colon tailoring. ICU also supplies extended grapheme boundaries
+// for deletion in TextSegmentation_Unicode.cpp.
 #include "UI/TextSegmentation.h"
+#include "TextSegmentation_Unicode.h"
 
 #include "UI/Utf8Helpers.h"
 
@@ -392,6 +342,12 @@ ByteRange SegmentAt(std::string_view text, size_t boundary)
 {
     if (text.empty())
         return {};
+    if (auto segments = Detail::UnicodeWordSegments(text); segments && !segments->empty())
+    {
+        for (const auto& segment : *segments)
+            if (boundary < segment.Range.End) return segment.Range;
+        return segments->back().Range;
+    }
 
     size_t start = boundary >= text.size() ? Utf8::Prev(text, text.size()) : boundary;
     while (start > 0 && (static_cast<unsigned char>(text[start]) & 0xC0) == 0x80)
@@ -419,6 +375,12 @@ ByteRange DoubleClickSelectionAt(std::string_view text, size_t boundary)
 
 size_t PrevBoundary(std::string_view text, size_t byteIndex)
 {
+    if (auto segments = Detail::UnicodeWordSegments(text))
+    {
+        for (auto it = segments->rbegin(); it != segments->rend(); ++it)
+            if (it->Word && it->Range.Begin < byteIndex) return it->Range.Begin;
+        return 0;
+    }
     if (byteIndex > text.size())
         byteIndex = text.size();
     while (byteIndex > 0)
@@ -440,6 +402,12 @@ size_t PrevBoundary(std::string_view text, size_t byteIndex)
 
 size_t NextBoundary(std::string_view text, size_t byteIndex)
 {
+    if (auto segments = Detail::UnicodeWordSegments(text))
+    {
+        for (const auto& segment : *segments)
+            if (segment.Word && segment.Range.Begin > byteIndex) return segment.Range.Begin;
+        return text.size();
+    }
     if (byteIndex >= text.size())
         return text.size();
     while (byteIndex < text.size() && IsWordCharAt(text, byteIndex))

@@ -15,44 +15,21 @@ const float GE_SSS_POWER      = 4.0;   // transmission falloff sharpness; 1-12
 const float GE_SSS_SCALE      = 1.0;   // overall transmission strength
 const float GE_SSS_AMBIENT    = 0.04;  // small uniform translucent wrap floor (DICE subtle range); ungated, so keep it low
 
-// The literals carry the `f` suffix because the block is compiled as C++ by the host tests (GlslShim.h).
-// GE_SHARED_DIELECTRIC_FRESNEL_BEGIN
 // Scalar dielectric F0 from index of refraction (untinted, e.g. the clear coat).
-// ior 1.5 gives 0.04: ((1.5 - 1) / (1.5 + 1))^2.
+// Neutral ior 1.5 -> 0.04, reproducing the legacy GE_DIELECTRIC_F0: ((0.5/2.5)^2)=0.04.
 float GE_DielectricF0Scalar(float ior)
 {
-    float i = max(ior, 1.0f); // IOR < 1 is non-physical for a dielectric; avoid the F0 inversion
-    float r = (i - 1.0f) / (i + 1.0f);
+    float i = max(ior, 1.0); // IOR < 1 is non-physical for a dielectric; avoid the F0 inversion
+    float r = (i - 1.0) / (i + 1.0);
     return r * r;
 }
 
-// The base layer's dielectric F0: the F0 of specularIor, tinted by specularColor and scaled by specularWeight.
-// The weight scales F0 only; the rise toward grazing stays. Weight 1, white and ior 1.5 give 0.04.
+// OpenPBR dielectric F0 from index of refraction, tinted + weighted (the base layer).
+// Neutral (weight 1, white, ior 1.5) reproduces GE_DIELECTRIC_F0 exactly.
 vec3 GE_DielectricF0(float specularWeight, vec3 specularColor, float specularIor)
 {
     return specularWeight * specularColor * GE_DielectricF0Scalar(specularIor);
 }
-
-vec3 GE_SchlickFresnel(vec3 F0, float cosTheta)
-{
-    return F0 + (1.0f - F0) * pow(1.0f - cosTheta, 5.0f);
-}
-
-// Kulla-Conty F82-tint Fresnel (the OpenPBR / Adobe-Standard-Material metal model). Plain
-// Schlick drives every metal's grazing rim to pure white; real metals (gold, copper) keep a
-// tinted edge. This adds a single tinted dip at the ~82° peak-deviation angle (cosθ = 1/7):
-// F(1/7) = Schlick(1/7) * edgeTint. edgeTint == 1 makes `a` vanish, so it reduces to Schlick
-// EXACTLY — a true no-op for untinted metals and all dielectrics.
-vec3 GE_FresnelF82(vec3 F0, vec3 edgeTint, float cosTheta)
-{
-    const float kCos82 = 1.0f / 7.0f;                                   // cos(~81.8°), the peak deviation (acos(1/7))
-    const float kInvB  = 1.0f / (kCos82 * pow(1.0f - kCos82, 6.0f));    // 1 / B(1/7), B(μ)=μ(1-μ)^6
-    vec3 schlick   = F0 + (1.0f - F0) * pow(1.0f - cosTheta, 5.0f);
-    vec3 schlick82 = F0 + (1.0f - F0) * pow(1.0f - kCos82, 5.0f);       // Schlick evaluated at 82°
-    vec3 a         = schlick82 * (1.0f - edgeTint) * kInvB;             // per-channel dip magnitude
-    return max(schlick - a * (cosTheta * pow(1.0f - cosTheta, 6.0f)), 0.0f);
-}
-// GE_SHARED_DIELECTRIC_FRESNEL_END
 
 // Internal (dense->rare) hemispherical reflectance of the coat/base interface: the
 // per-bounce probability that light leaving the base is reflected BACK DOWN into the
@@ -79,6 +56,11 @@ vec3 GE_CoatDarkening(vec3 rho, float coatIor, float coatWeight, float coatDarke
     return mix(vec3(1.0), trapped, coatWeight * coatDarkening);
 }
 
+vec3 GE_SchlickFresnel(vec3 F0, float cosTheta)
+{
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
 // Thin-film iridescence evaluator — needs GE_PI + GE_DielectricF0Scalar (both above).
 // Included here so the direct lobe and (via ibl.glsl's include of this file) the IBL
 // path share one definition; the call sites are guarded by GE_IRIDESCENCE_ENABLED.
@@ -90,6 +72,21 @@ vec3 GE_CoatDarkening(vec3 rho, float coatIor, float coatWeight, float coatDarke
 vec3 GE_SchlickFresnelRoughness(vec3 F0, float cosTheta, float roughness)
 {
     return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - cosTheta, 5.0);
+}
+
+// Kulla-Conty F82-tint Fresnel (the OpenPBR / Adobe-Standard-Material metal model). Plain
+// Schlick drives every metal's grazing rim to pure white; real metals (gold, copper) keep a
+// tinted edge. This adds a single tinted dip at the ~82° peak-deviation angle (cosθ = 1/7):
+// F(1/7) = Schlick(1/7) * edgeTint. edgeTint == 1 makes `a` vanish, so it reduces to Schlick
+// EXACTLY — a true no-op for untinted metals and all dielectrics.
+vec3 GE_FresnelF82(vec3 F0, vec3 edgeTint, float cosTheta)
+{
+    const float kCos82 = 1.0 / 7.0;                                  // cos(~81.8°), the peak deviation (acos(1/7))
+    const float kInvB  = 1.0 / (kCos82 * pow(1.0 - kCos82, 6.0));    // 1 / B(1/7), B(μ)=μ(1-μ)^6
+    vec3 schlick   = F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+    vec3 schlick82 = F0 + (1.0 - F0) * pow(1.0 - kCos82, 5.0);       // Schlick evaluated at 82°
+    vec3 a         = schlick82 * (1.0 - edgeTint) * kInvB;           // per-channel dip magnitude
+    return max(schlick - a * (cosTheta * pow(1.0 - cosTheta, 6.0)), 0.0);
 }
 
 float GE_D_GGX(float NdotH, float a)
@@ -143,10 +140,9 @@ vec3 GE_SpecularIsotropic(float NdotH, float NdotV, float NdotL, float alpha, ve
     return D * Vis * F;
 }
 
-// Karis analytic fit of the split-sum scale and bias (.x = scale, .y = bias). The punctual
-// path has no BRDF table in scope, so this supplies Ess for multiscatter compensation; the
-// image-based path reads ge_brdfLUT (brdf_lut.comp). The fit is an approximation of that
-// table, not a copy: it differs from the table by up to 0.18 in scale, most facing the viewer.
+// Karis analytic fit of the split-sum DFG (.x=scale, .y=bias). The punctual path has no
+// BRDF LUT in scope, so this supplies Ess for multiscatter compensation; the IBL path uses
+// the real ge_brdfLUT, and the two agree to within the fit.
 vec2 GE_EnvBRDFApprox(float NdotV, float roughness)
 {
     const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
@@ -193,31 +189,6 @@ vec3 GE_SubsurfaceTransmission(SurfaceOutput so, vec3 V, vec3 L)
     return vec3(0.0);
 #endif
 }
-
-// Diffuse transmission through a thin surface (a leaf, paper, a lampshade): the light that crosses
-// the surface and leaves its far face. The far face is a Lambert surface of albedo
-// `transmittedAlbedo`; it takes the `transmission` share of the diffuse light, and the near face keeps
-// the rest (GE_EvaluateStandardPBR scales its diffuse by 1 - transmission under the same keyword). So
-// the light a back-lit face receives is light a front-lit face gives up, not light added: with a
-// transmittedAlbedo no brighter than the base colour and a share of at most one half, a surface lit
-// from behind sends no more light toward the viewer than the same surface lit from the front.
-// `NdotL` is the signed cosine between the shading normal, turned toward the viewer, and the
-// direction to the light: only a light behind the surface (NdotL < 0) reaches the far face. Returned
-// per unit of light, before the light's colour, intensity and shadow, like the BRDF; the shadow
-// applies, since whatever blocks the light from the near face blocks it from the far one. The
-// literals carry the `f` suffix because the block is lifted into the host tests (GlslShim.h).
-// GE_SHARED_DIFFUSE_TRANSMISSION_BEGIN
-// The share of the diffuse light the near face keeps.
-float GE_DiffuseTransmissionNearFaceShare(float transmission)
-{
-    return 1.0f - clamp(transmission, 0.0f, 1.0f);
-}
-
-vec3 GE_DiffuseTransmissionFarFace(vec3 transmittedAlbedo, float transmission, float NdotL)
-{
-    return transmittedAlbedo * (clamp(transmission, 0.0f, 1.0f) * max(-NdotL, 0.0f) * (1.0f / GE_PI));
-}
-// GE_SHARED_DIFFUSE_TRANSMISSION_END
 
 // Estevez-Kulla 2017 "Production Friendly Microfacet Sheen BRDF" shadowing-masking — the
 // visibility term the glTF KHR_materials_sheen reference uses. The cheap Ashikhmin form it
@@ -391,11 +362,6 @@ vec3 GE_EvaluateStandardPBR(SurfaceOutput so, vec3 V, vec3 L)
     float onS     = dot(L, V) - NdotL * NdotV;
     float onST    = onS > 0.0 ? onS / max(max(NdotL, NdotV), 1e-4) : onS;
     vec3 diffuse  = kd * baseColor * (onA + onB * onST);
-#ifdef GE_DIFFUSE_TRANSMISSION_ENABLED
-    // A thin surface gives the diffuse transmission share to its far face
-    // (GE_DiffuseTransmissionFarFace, added by GE_EvaluateSurfaceLight) and keeps the rest here.
-    diffuse *= GE_DiffuseTransmissionNearFaceShare(so.diffuseTransmission);
-#endif
 #ifdef GE_TRANSMISSION_ENABLED
     // Transmission takes its energy out of the DIFFUSE budget: light that refracts through the
     // surface leaves on the far side instead of scattering back to the viewer. ibl.glsl applies

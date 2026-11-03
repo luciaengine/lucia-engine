@@ -1,0 +1,46 @@
+{
+  "en": {
+    "menu.title": "Adventure — press F6 to change language",
+    "menu.coins": "{count, plural, one {# coin} other {# coins}}"
+  },
+  "nl": {
+    "menu.title": "Avontuur — druk op F6 om de taal te wijzigen",
+    "menu.coins": "{count, plural, one {# munt} other {# munten}}"
+  },
+  "pl": {
+    "menu.title": "Przygoda — F6 zmienia język",
+    "menu.coins": "{count, plural, one {# moneta} few {# monety} many {# monet} other {# monety}}"
+  },
+  "ja": {
+    "menu.title": "冒険 — F6で言語を変更",
+    "menu.coins": "コイン {count, number} 枚"
+  },
+  "ko": {
+    "menu.title": "모험 — F6 키로 언어 변경",
+    "menu.coins": "동전 {count, number}개"
+  },
+  "zh-Hans": {
+    "menu.title": "冒险 — 按 F6 切换语言",
+    "menu.coins": "{count, number} 枚金币"
+  },
+  "zh-Hant": {
+    "menu.title": "冒險 — 按 F6 切換語言",
+    "menu.coins": "{count, number} 枚金幣"
+  },
+  "ar": {
+    "menu.title": "مغامرة — اضغط F6 لتغيير اللغة",
+    "menu.coins": "العملات: {count, number}"
+  },
+  "he": {
+    "menu.title": "הרפתקה — F6 לשינוי שפה",
+    "menu.coins": "מטבעות: {count, number}"
+  },
+  "hi": {
+    "menu.title": "रोमांच — भाषा बदलने के लिए F6 दबाएँ",
+    "menu.coins": "सिक्के: {count, number}"
+  },
+  "th": {
+    "menu.title": "การผจญภัย — กด F6 เพื่อเปลี่ยนภาษา",
+    "menu.coins": "เหรียญ: {count, number}"
+  }
+}

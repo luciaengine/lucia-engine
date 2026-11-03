@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 3,
+  "materialName": "Puddle Ground",
+  "lightingModel": "StandardPBR",
+  "alphaMode": "Opaque",
+  "doubleSided": false,
+  "surfaceShader": "Surfaces/puddle_ground.glsl",
+  "properties": {
+    "groundColor": [
+      0.2,
+      0.18,
+      0.15
+    ],
+    "groundRoughness": 0.9,
+    "puddleCoverage": 0.46,
+    "puddleScale": 2.6,
+    "edgeSoftness": 0.035,
+    "wetDarkening": 0.78,
+    "waterRoughness": 0.045,
+    "grainStrength": 0.4,
+    "useMaskTexture": false,
+    "rainIntensity": 1,
+    "rainSpeed": 1.35,
+    "rippleStrength": 0.65,
+    "rainFieldMinX": -5.4,
+    "rainFieldMaxX": 5.4,
+    "rainFieldMinZ": -4.2,
+    "rainFieldMaxZ": 3.6,
+    "waterDropSizeOffset": 0.0
+  },
+  "textures": {
+    "puddleMask": ""
+  }
+}

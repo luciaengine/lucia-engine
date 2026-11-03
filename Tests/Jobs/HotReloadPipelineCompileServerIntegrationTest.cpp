@@ -5,6 +5,7 @@
 #include "Jobs/CompileServerClient.h"
 #include "JobSystem/JobChannel.h"
 #include "JobSystem/WorkStealingThreadPool.h"
+#include "TestTempDir.h"
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -18,8 +19,9 @@ TEST(HotReloadPipelineCompileServerIntegration, UsesCompileServerWhenFlagSet) {
 
 #ifdef _WIN32
     // Arrange workspace with a simple C# file
-    std::filesystem::path ws = std::filesystem::temp_directory_path() / "GE_Pipeline_CS_Integration";
-    std::error_code ec; std::filesystem::create_directories(ws, ec);
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_Pipeline_CS_Integration"));
+    std::filesystem::path ws = workspace.Path();
+    std::error_code ec;
     auto sourcePath = ws / "Foo.cs";
     {
         std::ofstream f(sourcePath);

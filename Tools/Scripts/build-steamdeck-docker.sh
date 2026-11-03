@@ -76,9 +76,9 @@ Environment overrides:
   GE_STEAMDECK_CONTAINER_DIST_DIR
                     Container output directory when host output is mounted
   GE_STEAMDECK_PROJECT_ROOT
-                    Host project root (default: the repository root, whose content is Engine/Assets/)
+                    Host project root containing Assets/ (default: repo root)
   GE_STEAMDECK_ASSET_ROOT
-                    Container asset root to package (default: /src/Engine/Assets, or /project/Assets when GE_STEAMDECK_PROJECT_ROOT is outside the repo)
+                    Container asset root to package (default: /src/Assets, or /project/Assets when GE_STEAMDECK_PROJECT_ROOT is outside the repo)
   GE_STEAMDECK_STARTUP_SCENE
                     Asset-relative startup scene, e.g. Scenes/Main.scene
   GE_STEAMDECK_RENDER_PIPELINE
@@ -233,7 +233,7 @@ else
   fi
 fi
 
-container_asset_root="${GE_STEAMDECK_ASSET_ROOT:-/src/Engine/Assets}"
+container_asset_root="${GE_STEAMDECK_ASSET_ROOT:-/src/Assets}"
 project_mount_args=()
 if [[ "$project_root" != "$repo_root" ]]; then
   project_mount_args=(-v "$project_root:/project:ro")
@@ -312,18 +312,6 @@ if [[ "\${GE_LINUX_CROSS_COMPILE_X64:-0}" == "1" ]]; then
     echo "ERROR: Host ShaderReflect was not built at \$host_sr_exe" >&2
     exit 1
   fi
-  # The component scanner runs on the build host too (Engine's generated reflection
-  # TU is its output); the standalone project needs no vcpkg dependency.
-  host_cs_dir="build/componentscanner-host-linux-arm64"
-  host_cs_exe="\${host_cs_dir}/ComponentScanner"
-    echo "Updating native host ComponentScanner (Tools/ComponentScanner)..."
-    cmake -S Tools/ComponentScanner -B "\$host_cs_dir" -G Ninja \
-      -DCMAKE_BUILD_TYPE=RelWithDebInfo
-    cmake --build "\$host_cs_dir" --target ComponentScanner -j "$jobs_expr"
-  if [[ ! -x "\$host_cs_exe" ]]; then
-    echo "ERROR: Host ComponentScanner was not built at \$host_cs_exe" >&2
-    exit 1
-  fi
 fi
 
 # Keep CMake's dependency graph: configure detects changed inputs and the
@@ -334,6 +322,7 @@ cmake_configure_args=(
   -DCMAKE_TOOLCHAIN_FILE="\$linux_vcpkg_root/scripts/buildsystems/vcpkg.cmake"
   -DVCPKG_ROOT="\$linux_vcpkg_root"
   -DGE_SKIP_VCPKG_VERIFY=ON
+  -DBUILD_TOOLS=ON
 )
 if [[ "\${GE_LINUX_CROSS_COMPILE_X64:-0}" == "1" ]]; then
   cmake_configure_args+=(
@@ -345,10 +334,13 @@ if [[ "\${GE_LINUX_CROSS_COMPILE_X64:-0}" == "1" ]]; then
   if [[ -n "\$host_sr_exe" ]]; then
     cmake_configure_args+=(-DGE_SHADERREFLECT_EXECUTABLE="\$host_sr_exe")
   fi
-  cmake_configure_args+=(-DGE_COMPONENT_SCANNER_EXECUTABLE="\$host_cs_exe")
 fi
 cmake "\${cmake_configure_args[@]}"
 cmake --build --preset "$build_preset" -j "$jobs_expr"
+# Keep the offline cooker at the exact same revision, library versions and
+# target configuration as the Player. External projects use it after staging
+# their authoritative manifest; running it on the generic template is premature.
+cmake --build "build/$preset" --target TexturePackageCook -j "$jobs_expr"
 rm -rf "$dist_dir/steamdeck-player"
 mkdir -p "$dist_dir/steamdeck-player"
 cp -a build/$preset/bin/RelWithDebInfo/Apps/Player/. "$dist_dir/steamdeck-player/"
@@ -365,12 +357,12 @@ rm -f "$dist_dir/steamdeck-player/libanl.so."* \
       "$dist_dir/steamdeck-player/librt.so."* \
       "$dist_dir/steamdeck-player/libutil.so."*
 
-asset_root="\${GE_STEAMDECK_ASSET_ROOT:-/src/Engine/Assets}"
+asset_root="\${GE_STEAMDECK_ASSET_ROOT:-/src/Assets}"
 if [[ -z "\$asset_root" ]]; then
-  asset_root="/src/Engine/Assets"
+  asset_root="/src/Assets"
 fi
-engine_asset_root="/src/Engine/Assets"
-game_name="\${GE_STEAMDECK_GAME_NAME:-Open Engine Player}"
+engine_asset_root="/src/Assets"
+game_name="\${GE_STEAMDECK_GAME_NAME:-GameEngine Player}"
 startup_scene="\${GE_STEAMDECK_STARTUP_SCENE:-}"
 render_pipeline="\${GE_STEAMDECK_RENDER_PIPELINE:-RenderPipelines/ForwardPlus.rendergraph}"
 
@@ -461,7 +453,7 @@ import os
 from pathlib import Path
 
 cfg = {
-    "gameName": os.environ.get("GE_GAME_CONFIG_GAME_NAME", "Open Engine Player"),
+    "gameName": os.environ.get("GE_GAME_CONFIG_GAME_NAME", "GameEngine Player"),
     "startupScene": os.environ.get("GE_GAME_CONFIG_STARTUP_SCENE", ""),
     "renderPipeline": os.environ.get("GE_GAME_CONFIG_RENDER_PIPELINE", ""),
     "scriptAssemblyPath": "",
@@ -510,14 +502,12 @@ else
   echo "WARNING: Player icon not found at \$player_icon_src"
 fi
 
-# Version= is the Desktop Entry Specification version the file follows, not the game's or the
-# engine's version.
 cat > "$dist_dir/steamdeck-player/gameengine-player.desktop" <<'DESKTOP'
 [Desktop Entry]
 Type=Application
 Version=1.0
 Name=__APP_NAME__
-Comment=Open Engine Player
+Comment=GameEngine Player
 Exec="__INSTALL_DIR__/__APP_NAME__"
 Path=__INSTALL_DIR__
 Icon=__INSTALL_DIR__/icon.png

@@ -9,6 +9,9 @@
 // Forward declare GLFW types to avoid exposing GLFW in public headers
 struct GLFWwindow;
 struct GLFWcursor;
+#if defined(GE_PLATFORM_MOBILE)
+union SDL_Event;
+#endif
 
 namespace GameEngine
 {
@@ -69,8 +72,7 @@ class Window
     void* GetNativeHandle() const;     // returns GLFWwindow*
     GLFWwindow* GetGLFWHandle() const; // convenience
 
-    // Window queries. Every window size and position is that of the client area, with or without
-    // a custom title bar: SetWindowSize(1920, 1080) gives a 1920x1080 client area.
+    // Window queries
     void GetFramebufferSize(int& outWidth, int& outHeight) const;   // pixels
     void GetWindowSize(int& outWidth, int& outHeight) const;        // screen coords (DIP)
     void SetWindowSize(int width, int height);                      // screen coords (DIP)
@@ -147,11 +149,6 @@ class Window
 #if defined(__EMSCRIPTEN__)
     // Called from the browser fullscreenchange event thunk.
     void NotifyWebFullscreenChanged(bool isFullscreen);
-    /// Device pixels per CSS pixel of the canvas's drawing buffer: the drawing buffer is the
-    /// canvas's CSS size times `ratio`. 0 follows the browser's devicePixelRatio. A page
-    /// lowers it to cap the drawing buffer (a phone's devicePixelRatio of 2.6 over a full
-    /// screen is over two megapixels).
-    void SetWebPixelRatio(double ratio);
 #endif
     void SetTitleBarRightClickHandler(TitleBarRightClickHandler h);
 
@@ -216,26 +213,6 @@ class Window
     void SetCursor(CursorType type);
     void ResetCursor(); // restore default arrow
 
-    // What a locked cursor reports as it moves.
-    enum class LockedCursorMotion
-    {
-        // Raw, unaccelerated device counts where the platform offers them
-        // (Windows, X11), otherwise the cursor's own motion. For a game that
-        // steers a camera with the mouse.
-        Raw,
-        // The cursor's own accelerated motion in window coordinates, the same
-        // motion an unlocked drag sees. For a UI drag that must not change feel
-        // when the lock begins.
-        Accelerated,
-    };
-
-    // Hides the cursor and holds it in this window: moves arrive as positions without bound, and
-    // UnlockCursor shows the cursor again where the lock began. Locking a locked window changes only
-    // its motion. The browser build does not lock.
-    void LockCursor(LockedCursorMotion motion);
-    void UnlockCursor();
-    bool IsCursorLocked() const { return m_CursorLocked; }
-
     // True fullscreen toggle backed by glfwSetWindowMonitor.
     void SetFullscreen(bool enable);
     bool IsFullscreen() const { return m_IsFullscreen; }
@@ -263,10 +240,15 @@ class Window
 #endif
 
     GLFWwindow* m_Handle = nullptr;
+#if defined(GE_PLATFORM_MOBILE)
+    void* m_MobileHandle = nullptr;
+    bool m_MobileShouldClose = false;
+    bool m_MobilePointerDown = false;
+    uint64_t m_MobileFinger = 0;
+    static void DispatchMobileEvent(const SDL_Event& event);
+#endif
     void* m_UserPtr = nullptr;
     struct GLFWcursor* m_Cursor = nullptr; // custom cursor (if set)
-    bool m_CursorLocked = false;
-    bool m_CursorHidden = false; // SetCursor(Hidden), restored when the lock ends
     float m_UiContentScale = 0.0f;         // 0 = unset; otherwise pushed by UI layer
 
     // Fullscreen bookkeeping for SetFullscreen.

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <cstdint>
@@ -62,8 +62,6 @@ struct RGFullscreenDesc
     std::span<const RGFullscreenTextureInput> Textures{};
     std::span<const RGFullscreenBufferInput> Buffers{};
     RGTexture Target{};
-    // Color attachment 1, with Ops and the size of Target. Invalid = one output.
-    RGTexture SecondTarget{};
     RGAttachmentOps Ops{}; // Load for blend-composite, DontCare for overwrite
     // Viewport/scissor. 0 => the Target's RGResourceDesc dimensions; pass the
     // view's render size explicitly when the physical target is larger (view
@@ -74,14 +72,9 @@ struct RGFullscreenDesc
 
 // Declares the reads/attachment and records the canonical fullscreen body.
 // Capacity: at most kMaxFullscreenTextureInputs/kMaxFullscreenBufferInputs
-// inputs — the exec lambda copies the spans into fixed arrays. The buffer cap is
-// the widest caller's need: the ocean's underwater overlay with shadowed god rays
-// binds params, shadow data, ribbons, materials and the view's ExposureHistory. A
-// caller that collects its inputs in a local array sizes it from these constants.
-// A declaration over either cap is refused: no pass is added, an error names the
-// pass and the cap, and the returned pass is invalid.
+// inputs (asserted) — the exec lambda copies the spans into fixed arrays.
 inline constexpr uint32_t kMaxFullscreenTextureInputs = 20;
-inline constexpr uint32_t kMaxFullscreenBufferInputs = 5;
+inline constexpr uint32_t kMaxFullscreenBufferInputs = 4;
 RGPass AddFullscreenPass(RGFrame& frame, const RGFullscreenDesc& desc);
 
 // The self-read snapshot: copy `source` into `dest` so a composite pass can

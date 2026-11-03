@@ -42,8 +42,16 @@ target_link_libraries(CBTTerrain
 # ---------------------------------------------------------------------------
 # int64 storage + spec constants target Vulkan 1.3 / SPIR-V 1.6 (matches the
 # engine's device). spirv-val runs explicitly to catch the findMSB(u64) trap
-# (plan §9) before the SPIR-V ever reaches a pipeline. GLSLC_EXECUTABLE and
-# SPIRV_VAL_EXECUTABLE come from the top level (cmake/GlslcCompiler.cmake).
+# (plan §9) before the SPIR-V ever reaches a pipeline.
+find_package(Vulkan QUIET)
+set(_CBT_GLSLC_HINTS "${Vulkan_INCLUDE_DIRS}/../bin")
+if(VCPKG_DIR AND VCPKG_ARCH)
+    list(APPEND _CBT_GLSLC_HINTS
+        "${VCPKG_DIR}/installed/${VCPKG_ARCH}/tools"
+        "${VCPKG_DIR}/installed/${VCPKG_ARCH}/tools/shaderc")
+endif()
+find_program(CBT_GLSLC_EXECUTABLE glslc HINTS ${_CBT_GLSLC_HINTS})
+find_program(CBT_SPIRV_VAL_EXECUTABLE spirv-val HINTS ${_CBT_GLSLC_HINTS})
 
 # The sources sit under Shaders/CBT so the repo layout MIRRORS the staged layout
 # (Assets/Shaders/CBT): material documents name their surface as 'CBT/cbt_surface.glsl',
@@ -53,22 +61,21 @@ set(CBT_SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/CBT)
 set(CBT_SHADER_OUTPUT_DIR ${CMAKE_BINARY_DIR}/Shaders)
 file(MAKE_DIRECTORY ${CBT_SHADER_OUTPUT_DIR})
 
-if(GLSLC_EXECUTABLE)
+if(CBT_GLSLC_EXECUTABLE)
     set(CBT_KERNELS_SRC ${CBT_SHADER_DIR}/cbt_kernels.comp)
     set(CBT_KERNELS_SPV ${CBT_SHADER_OUTPUT_DIR}/cbt_kernels.comp.spv)
     set(CBT_KERNELS_INCLUDES ${CBT_SHADER_DIR}/cbt_layout.glsl ${CBT_SHADER_DIR}/cbt_domain.glsl
         ${CBT_SHADER_DIR}/cbt_atlas.glsl ${CBT_SHADER_DIR}/cbt_sculpt.glsl
         ${CBT_SHADER_DIR}/cbt_analytic.glsl ${CBT_SHADER_DIR}/cbt_deep_decode.glsl
-        ${CBT_SHADER_DIR}/cbt_page.glsl ${CBT_SHADER_DIR}/cbt_height_chain.glsl
-        ${CBT_SHADER_DIR}/cbt_planar_demand.glsl)
+        ${CBT_SHADER_DIR}/cbt_page.glsl)
 
     set(_CBT_COMPILE_COMMANDS
-        COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.6
+        COMMAND ${CBT_GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.6
                 -I ${CBT_SHADER_DIR} ${CBT_KERNELS_SRC} -o ${CBT_KERNELS_SPV})
-    if(SPIRV_VAL_EXECUTABLE)
+    if(CBT_SPIRV_VAL_EXECUTABLE)
         list(APPEND _CBT_COMPILE_COMMANDS
-            COMMAND ${SPIRV_VAL_EXECUTABLE} --target-env vulkan1.3 ${CBT_KERNELS_SPV})
-        message(STATUS "CBTTerrain: spirv-val enabled (${SPIRV_VAL_EXECUTABLE})")
+            COMMAND ${CBT_SPIRV_VAL_EXECUTABLE} --target-env vulkan1.3 ${CBT_KERNELS_SPV})
+        message(STATUS "CBTTerrain: spirv-val enabled (${CBT_SPIRV_VAL_EXECUTABLE})")
     else()
         message(STATUS "CBTTerrain: spirv-val not found; relying on glslc validation")
     endif()
@@ -81,17 +88,16 @@ if(GLSLC_EXECUTABLE)
         VERBATIM
     )
     # The narrow-heap arm (GE_CBT_HEAP32) as a desktop Vulkan blob, spec-constant kernel
-    # select intact. CBTKernelSet loads it on a device without 64-bit integers (the Editor
-    # and the Player stage it beside cbt_kernels.comp.spv), and the golden decode oracles
-    # run it as the SAME arm the web cook compiles to WGSL.
+    # select intact. Nothing ships it: it exists so the golden decode oracles can run the
+    # SAME arm the web cook compiles to WGSL — before this, that arm never met any test.
     set(CBT_KERNELS_HEAP32_SPV ${CBT_SHADER_OUTPUT_DIR}/cbt_kernels_heap32.comp.spv)
     set(_CBT_COMPILE_HEAP32_COMMANDS
-        COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.6
+        COMMAND ${CBT_GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.6
                 -DGE_CBT_HEAP32 -I ${CBT_SHADER_DIR} ${CBT_KERNELS_SRC}
                 -o ${CBT_KERNELS_HEAP32_SPV})
-    if(SPIRV_VAL_EXECUTABLE)
+    if(CBT_SPIRV_VAL_EXECUTABLE)
         list(APPEND _CBT_COMPILE_HEAP32_COMMANDS
-            COMMAND ${SPIRV_VAL_EXECUTABLE} --target-env vulkan1.3 ${CBT_KERNELS_HEAP32_SPV})
+            COMMAND ${CBT_SPIRV_VAL_EXECUTABLE} --target-env vulkan1.3 ${CBT_KERNELS_HEAP32_SPV})
     endif()
     add_custom_command(
         OUTPUT ${CBT_KERNELS_HEAP32_SPV}
@@ -213,39 +219,7 @@ if(BUILD_TESTING)
             COMMENT "Extracting the terrain shadow block from terrain_shadow.glsl"
             VERBATIM)
 
-        # The draw's prefiltered height chain: its addressing, the level rule and the drawn height of a
-        # vertex (cbt_height_chain.glsl), the block the vertex modifier and the chain build both run.
-        set(CBT_HEIGHT_CHAIN_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/CBTHeightChainExtracted.h)
-        add_custom_command(
-            OUTPUT ${CBT_HEIGHT_CHAIN_HEADER}
-            COMMAND ${CMAKE_COMMAND} -DSRC=${CBT_SHADER_DIR}/cbt_height_chain.glsl
-                                     -DOUT=${CBT_HEIGHT_CHAIN_HEADER}
-                                     "-DBEGIN_MARKER=// GE_SHARED_HEIGHT_CHAIN_BEGIN"
-                                     "-DEND_MARKER=// GE_SHARED_HEIGHT_CHAIN_END"
-                                     -P ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ExtractShaderBlock.cmake
-            DEPENDS ${CBT_SHADER_DIR}/cbt_height_chain.glsl
-                    ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ExtractShaderBlock.cmake
-            COMMENT "Extracting the height chain block from cbt_height_chain.glsl"
-            VERBATIM)
-
-        # The planar split demand (cbt_planar_demand.glsl): the box's depth bound, the demand and the flat
-        # veto Kernel_Classify asks of a facet, its parent and its parent's twin.
-        set(CBT_PLANAR_DEMAND_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/CBTPlanarDemandExtracted.h)
-        add_custom_command(
-            OUTPUT ${CBT_PLANAR_DEMAND_HEADER}
-            COMMAND ${CMAKE_COMMAND} -DSRC=${CBT_SHADER_DIR}/cbt_planar_demand.glsl
-                                     -DOUT=${CBT_PLANAR_DEMAND_HEADER}
-                                     "-DBEGIN_MARKER=// GE_SHARED_PLANAR_DEMAND_BEGIN"
-                                     "-DEND_MARKER=// GE_SHARED_PLANAR_DEMAND_END"
-                                     -P ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ExtractShaderBlock.cmake
-            DEPENDS ${CBT_SHADER_DIR}/cbt_planar_demand.glsl
-                    ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ExtractShaderBlock.cmake
-            COMMENT "Extracting the planar split demand block from cbt_planar_demand.glsl"
-            VERBATIM)
-
         add_executable(CBTTerrainTests
-            ${CBT_PLANAR_DEMAND_HEADER}
-            ${CBT_HEIGHT_CHAIN_HEADER}
             ${CBT_TERRAIN_SHADOW_HEADER}
             ${CBT_HEX_LATTICE_HEADER}
             ${CBT_BLEND_SELECTION_HEADER}
@@ -262,7 +236,6 @@ if(BUILD_TESTING)
             Tests/CBTInstanceTests.cpp
             Tests/CBTUpdateNodeTests.cpp
             Tests/CBTUpdateRestGateTests.cpp
-            Tests/CBTRestSettleTests.cpp
             Tests/CBTScreenSpaceTests.cpp
             Tests/CBTHexTilingTests.cpp
             Tests/CBTDecodeGoldenTests.cpp
@@ -285,15 +258,12 @@ if(BUILD_TESTING)
             Tests/CBTLookBackPriorityTests.cpp
             Tests/CBTPlanarDemandGateTests.cpp
             Tests/CBTBringUpDrainTests.cpp
-            Tests/CBTRestartRefineTests.cpp
             Tests/CBTPoolHealthTests.cpp
             Tests/CBTPlanarScaleAuditTests.cpp
             Tests/CBTNearFieldMergeTests.cpp
             Tests/CBTParentMergeMetricTests.cpp
             Tests/CBTWatertightnessTests.cpp
             Tests/CBTContentAwareSplitTests.cpp
-            Tests/CBTHeightChainTests.cpp
-            Tests/CBTPlanarDemandTests.cpp
             Tests/TerrainShadowMapTests.cpp
         )
         set_target_properties(CBTTerrainTests PROPERTIES FOLDER "CBTTerrain/Tests")
@@ -314,10 +284,15 @@ if(BUILD_TESTING)
             GTest::gtest_main
         )
         # OBJECT->OBJECT object files are not spliced transitively on the VS
-        # generator: splice Logger, Memory and Image (whose decode SkyRenderer calls)
-        # in directly, as the Rendering tests do.
-        target_sources(CBTTerrainTests PRIVATE $<TARGET_OBJECTS:Logger> $<TARGET_OBJECTS:Memory>
-            $<TARGET_OBJECTS:Image>)
+        # generator: splice Logger in directly (the Rendering tests do the same)
+        # and provide the stb_image impl that SkyRenderer pulls into
+        # GameEngineRendering but does not export.
+        target_sources(CBTTerrainTests PRIVATE $<TARGET_OBJECTS:Logger>)
+        target_sources(CBTTerrainTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+        target_compile_definitions(CBTTerrainTests PRIVATE GE_HAVE_STB)
+        if(TARGET stb::stb)
+            target_link_libraries(CBTTerrainTests PRIVATE stb::stb)
+        endif()
         target_compile_definitions(CBTTerrainTests PRIVATE
             CBT_SHADER_OUTPUT_DIR="${CBT_SHADER_OUTPUT_DIR}"
             CBT_SHADER_SOURCE_DIR="${CBT_SHADER_DIR}"

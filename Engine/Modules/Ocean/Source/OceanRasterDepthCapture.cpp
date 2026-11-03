@@ -1,8 +1,7 @@
 #include "Ocean/OceanRasterDepthCapture.h"
-#include "Ocean/OceanShader/OceanShaderProgram.h"
-#include "Rendering/Core/ReverseZ.h"
-#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
-#include "OceanShader/OceanShaderDirectory.h"
+#include "Ocean/OceanShaderProgram.h"
+#include "Rendering/Materials/ShaderLayoutShape.h"
+#include "OceanShaderDirectory.h"
 
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -10,9 +9,9 @@
 #include "Mathematics/MatrixOps.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderCompileService.h"
 
 #include <algorithm>
 #include <cmath>
@@ -32,7 +31,7 @@ namespace
 {
 struct alignas(16) OceanRasterDepthParamsGPU
 {
-    Mathematics::Vector4 NearFarDeepResolution; // x near/top padding, y far, z deep, w resolution
+    float NearFarDeepResolution[4]{}; // x near/top padding, y far, z deep, w resolution
 };
 static_assert(sizeof(OceanRasterDepthParamsGPU) == 16);
 
@@ -357,12 +356,12 @@ CameraData OceanRasterDepthCapture::MakeTopDownCamera(
     const Matrix4x4 viewProj = proj * view;
 
     CameraData out{};
-    out.view = view;
-    out.proj = proj;
-    out.viewProj = viewProj;
-    out.cameraPos.x = eye.x;
-    out.cameraPos.y = eye.y;
-    out.cameraPos.z = eye.z;
+    std::memcpy(out.view, view.Data(), sizeof(float) * 16u);
+    std::memcpy(out.proj, proj.Data(), sizeof(float) * 16u);
+    std::memcpy(out.viewProj, viewProj.Data(), sizeof(float) * 16u);
+    out.cameraPos[0] = eye.x;
+    out.cameraPos[1] = eye.y;
+    out.cameraPos[2] = eye.z;
     return out;
 }
 
@@ -397,8 +396,8 @@ bool OceanRasterDepthCapture::DeclareForView(Engine::Renderer::Pipeline::ViewDec
     if (!EnsurePipeline(*device) || !EnsureOutput(*device, resolution))
         return false;
 
-    const Rendering::RenderLayerMask captureMask{settings.CaptureLayers.Bits & d.View.renderLayerMask.Bits};
-    if (captureMask == Rendering::RenderLayerMask::None())
+    const uint32 captureMask = settings.RenderLayerMask & d.View.renderLayerMask;
+    if (captureMask == 0u)
         return false;
 
     const float32 sizeX = std::max(settings.SizeX, 1.0f);
@@ -479,7 +478,7 @@ bool OceanRasterDepthCapture::DeclareForView(Engine::Renderer::Pipeline::ViewDec
     Rendering::ViewClearConfig clear{};
     clear.clearColor = true;
     clear.clearDepth = true;
-    clear.clearDepthValue = Rendering::ReverseZ::kClearFar;
+    clear.clearDepthValue = 0.0f;
     d.Services.Views().SetViewClearConfig(m_ViewId, clear);
 
     TextureDesc colorDesc{};

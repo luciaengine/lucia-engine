@@ -8,13 +8,11 @@
 #include "Assets/AssetManager.h"
 #include "Assets/TextureAsset.h"
 #include "Assets/TextureCook.h"
-#include "Assets/TextureCookActivity.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/TextureService.h"
 #include "EngineLogCapture.h"
 #include "Logger/LogSink.h"
-#include "TestTempDir.h"
 
 #include <atomic>
 #include <chrono>
@@ -47,7 +45,7 @@ class LogLineFlagSink final : public Logger::LogSink
     }
     void Flush() override {}
     bool ShouldLog(Logger::LogLevel) const override { return true; }
-    std::string GetName() const override { return "LogLineFlagSink"; }
+    Logger::String GetName() const override { return "LogLineFlagSink"; }
 
   private:
     std::atomic<bool>* m_Flag;
@@ -65,9 +63,7 @@ class TextureCookUsageTag : public testing::Test
 
     static void SetUpTestSuite()
     {
-        // The canonical temp root: the engine resolves the workspace root, and the registry
-        // stores meta values only for asset paths spelled under that resolved root.
-        s_Workspace = TestUtils::MakeUniqueTempDirectory("ge-cook-usage-tag");
+        s_Workspace = fs::temp_directory_path() / ("ge-cook-usage-tag-" + GUID::Generate().ToString());
         fs::create_directories(s_Workspace / "Assets");
         auto& engine = EngineCore::GetInstance();
         ScriptsConfig scripts;
@@ -98,17 +94,6 @@ class TextureCookUsageTag : public testing::Test
     // as they do in an occlusion-roughness-metallic map.
     static fs::path WriteTexture(GUID& guid, uint32 size = 4)
     {
-        std::vector<uint8> texels;
-        texels.reserve(size_t(size) * size * 4);
-        for (uint32 y = 0; y < size; ++y)
-            for (uint32 x = 0; x < size; ++x)
-                texels.insert(texels.end(), {uint8(x * 7 + y * 3), uint8(x ^ y), uint8((x * y) >> 5), uint8(255)});
-        return WriteTga(guid, size, texels);
-    }
-
-    // A fresh square source in the project with no usage tag, from `size` x `size` RGBA texels.
-    static fs::path WriteTga(GUID& guid, uint32 size, const std::vector<uint8>& texels)
-    {
         const fs::path path = s_Workspace / "Assets" / (GUID::Generate().ToString() + ".tga");
         std::vector<uint8> bytes(18, 0);
         bytes[2] = 2;
@@ -118,9 +103,10 @@ class TextureCookUsageTag : public testing::Test
         bytes[15] = uint8(size >> 8);
         bytes[16] = 32;
         bytes[17] = 0x28;
-        bytes.reserve(bytes.size() + texels.size());
-        for (size_t i = 0; i + 3 < texels.size(); i += 4)
-            bytes.insert(bytes.end(), {texels[i + 2], texels[i + 1], texels[i], texels[i + 3]});
+        bytes.reserve(bytes.size() + size_t(size) * size * 4);
+        for (uint32 y = 0; y < size; ++y)
+            for (uint32 x = 0; x < size; ++x)
+                bytes.insert(bytes.end(), {uint8(x * 7 + y * 3), uint8(x ^ y), uint8((x * y) >> 5), uint8(255)});
         std::ofstream(path, std::ios::binary)
             .write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
         const auto registered = Assets().GetRegistry().RegisterAssetByPath(path);
@@ -214,46 +200,6 @@ TEST_F(TextureCookUsageTag, WideningATagReloadsTheLoadedTexture)
     EXPECT_TRUE(Assets().IsReloadInFlight(texture));
 }
 
-// Changing a cooked texture's type in the texture inspector writes the usage and asks for a
-// recook (TextureInspector's WriteTextureCookMeta): the next load cooks under the new usage. A
-// normal map gets its variance companion and a colour texture has none, in both directions.
-TEST_F(TextureCookUsageTag, ChangingATexturesTypeRecooksItWithAndWithoutTheVarianceCompanion)
-{
-    if (!IsTextureCookEncoderAvailable())
-        GTEST_SKIP() << "BC encoder unavailable";
-    TextureAsset::SetGpuTranscodeTarget(TextureGpuTranscodeTarget::BC7);
-    constexpr uint32 kSize = 16;
-    std::vector<uint8> checker;
-    for (uint32 y = 0; y < kSize; ++y)
-        for (uint32 x = 0; x < kSize; ++x)
-            checker.insert(checker.end(), {uint8(128), uint8(((x + y) & 1u) ? 64 : 191), uint8(238), uint8(255)});
-    GUID texture;
-    const fs::path path = WriteTga(texture, kSize, checker);
-    ASSERT_FALSE(texture.IsNull());
-    const auto setType = [this, &path, &texture](const char* usage) {
-        ASSERT_TRUE(Assets().GetRegistry().SetMetaValue(path, kTextureUsageMetaKey, usage));
-        m_Textures.RequestRecook(texture, AssetLoadPriority::High);
-    };
-    const auto companionOf = [](const SharedPtr<Asset>& asset) {
-        const auto* cooked = dynamic_cast<const TextureAsset*>(asset.get());
-        return cooked ? cooked->GetNormalVarianceCompanion() : nullptr;
-    };
-    ASSERT_TRUE(Assets().GetRegistry().SetMetaValue(path, kTextureUsageMetaKey, "color"));
-    const AssetLoadHandle load = Assets().LoadAsset(texture, [](Result<SharedPtr<Asset>, AssetError>) {});
-    ASSERT_TRUE(PumpUntil([&] { return load.IsComplete(); }));
-    const SharedPtr<Asset> loaded = load.GetResult();
-    ASSERT_NE(loaded, nullptr);
-    ASSERT_EQ(companionOf(loaded), nullptr) << "a colour cook has no variance companion";
-
-    setType("normal");
-    EXPECT_TRUE(PumpUntil([&] { return ResidentFormat(loaded) == TextureFormat::BC5 && companionOf(loaded) != nullptr; }))
-        << "after the change to a normal map, the cook must write the variance companion";
-
-    setType("color");
-    EXPECT_TRUE(PumpUntil([&] { return ResidentFormat(loaded) == TextureFormat::BC7 && companionOf(loaded) == nullptr; }))
-        << "after the change back to colour, the companion must be gone";
-}
-
 // A colour texture a data slot also binds: no one cooked artefact serves both, so the tag the
 // texture carries stays, whether a bind or the texture inspector wrote it, and the conflict is
 // reported once however often it is bound again.
@@ -321,43 +267,6 @@ TEST_F(TextureCookUsageTag, ATagWrittenWhileTheFirstLoadCooksReachesTheLoadedTex
     ASSERT_NE(loaded, nullptr);
     EXPECT_TRUE(PumpUntil([&] { return ResidentFormat(loaded) == TextureFormat::BC4; }))
         << "resident format " << static_cast<int>(ResidentFormat(loaded)) << ", stored usage " << StoredUsage(path);
-}
-
-// A first load's cook on a miss is reported while it runs, by texture, and not once the cooked
-// payload has loaded: the editor's "Preparing N textures" status and a texture inspector waiting
-// on the load read it. The 2048 source keeps the cook running long enough to be seen.
-TEST_F(TextureCookUsageTag, AFirstLoadsCookIsReportedWhileItRunsAndNotAfter)
-{
-    if (!IsTextureCookEncoderAvailable())
-        GTEST_SKIP() << "BC encoder unavailable";
-    TextureAsset::SetGpuTranscodeTarget(TextureGpuTranscodeTarget::BC7);
-    GUID texture;
-    const fs::path path = WriteTexture(texture, 2048);
-    ASSERT_FALSE(texture.IsNull());
-    const TextureCookActivity& activity = Assets().GetTextureCookActivity();
-    ASSERT_EQ(activity.CookingCount(), 0u);
-
-    std::atomic<bool> cookStarted{false};
-    std::vector<std::string> lines;
-    TestLog::ScopedEngineLogCapture capture(&lines);
-    Logger::Log::AddSink(
-        std::make_unique<LogLineFlagSink>(&cookStarted, path.stem().string() + " -> Uncompressed started"));
-    AssetLoadHandle load = Assets().LoadAsset(texture, [](Result<SharedPtr<Asset>, AssetError>) {});
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-    while (!cookStarted.load() && !load.IsComplete() && std::chrono::steady_clock::now() < deadline)
-    {
-        Logger::Log::Flush();
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    ASSERT_TRUE(cookStarted.load()) << "the first load's cook start was never logged";
-    ASSERT_FALSE(load.IsComplete()) << "the load finished before it was read; the window was missed";
-    EXPECT_TRUE(activity.IsCooking(texture));
-    EXPECT_EQ(activity.CookingCount(), 1u);
-
-    ASSERT_TRUE(PumpUntil([&] { return load.IsComplete(); }));
-    ASSERT_NE(load.GetResult(), nullptr);
-    EXPECT_FALSE(activity.IsCooking(texture));
-    EXPECT_EQ(activity.CookingCount(), 0u);
 }
 
 } // namespace

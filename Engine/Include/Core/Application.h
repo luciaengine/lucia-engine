@@ -14,13 +14,145 @@
 #include "Core/WindowInputRouter.h"
 #include "Types/Types.h"
 #include <cstddef>
-#include <cstdint>
+#include <filesystem>
 #include <memory>
 
 namespace GameEngine {
 
-namespace Input { class GamepadEdgeTracker; class GamepadPoller; class InputSystem; }
-namespace Audio { enum class AudioOutput : std::uint8_t; }
+namespace Input { class GamepadEdgeTracker; class InputSystem; }
+
+/**
+ * @brief Utility functions for path resolution
+ */
+class PathUtils {
+public:
+    /**
+     * @brief Get the directory containing the current executable
+     * @return Absolute path to the executable directory
+     */
+    static std::filesystem::path GetExecutableDirectory();
+
+    /**
+     * @brief Get the root of the engine assets staged for the executable: beside it, or in
+     * Contents/Resources inside a macOS app bundle.
+     *
+     * This is where the build stages engine-owned runtime content (shaders, fonts,
+     * textures), so it is the only correct anchor for loading it. Staged content must never
+     * be resolved against the process working directory: a shipped or relocated build has
+     * no repo to walk up into, and the working directory is whatever happened to launch the
+     * process. The layout rule is InstallAssetsRootFor(), applied to GetExecutableDirectory()
+     * once per process and cached: callers may resolve through it on every load.
+     *
+     * @return Absolute path to the staged engine asset root, empty if the executable
+     *         directory cannot be determined
+     */
+    static std::filesystem::path GetInstallAssetsRoot();
+
+    /**
+     * @brief A cooked shader cache the build ships alongside the runtime, or empty
+     * where there is none. A runtime with no shader compiler (the browser) reads
+     * this instead of a project's own cache and seeds new projects from it.
+     */
+    static std::filesystem::path GetBundledShaderCacheRoot();
+
+    /**
+     * @brief The staged asset root for an executable that lives in @p executableDirectory:
+     * `InstallContentRootFor(executableDirectory) / "Assets"`.
+     *
+     * @return Absolute path to the staged asset root for that executable directory; empty
+     *         only when @p executableDirectory is empty
+     */
+    static std::filesystem::path InstallAssetsRootFor(const std::filesystem::path& executableDirectory);
+
+    /**
+     * @brief The directory that holds everything the build stages for an executable that
+     * lives in @p executableDirectory, apart from code: `Assets/`, and in a packaged game
+     * `game.config`, `Packages/` and `NativeScripts/`.
+     *
+     * The executable directory itself everywhere, with one exception: inside a macOS app
+     * bundle (GetBundleResourcesDirectory() is non-empty) it is the bundle's
+     * `Contents/Resources`, because `Contents/MacOS` holds code only. codesign seals a file
+     * there as code, and refuses a directory whose name looks like a nested bundle. The rule
+     * is structural, as GetBundleResourcesDirectory() is: nothing is probed for existence, so
+     * a flat layout (test executables, CLI tools) never moves to a `Resources/` sibling that
+     * happens to exist. A trailing separator on @p executableDirectory is ignored.
+     *
+     * @return The content root for that executable directory; empty only when
+     *         @p executableDirectory is empty
+     */
+    static std::filesystem::path InstallContentRootFor(const std::filesystem::path& executableDirectory);
+
+    /**
+     * @brief Resources directory of the macOS app bundle containing an executable directory.
+     *
+     * A bundled executable lives at <App>.app/Contents/MacOS; the bundle's resources at
+     * <App>.app/Contents/Resources. Structural only — nothing is probed for existence. A
+     * trailing separator on @p executableDirectory is ignored.
+     *
+     * @return The bundle's Contents/Resources directory; empty when @p executableDirectory is
+     *         not a bundle's Contents/MacOS, and always empty on platforms other than macOS,
+     *         whose layouts are executable-relative
+     */
+    static std::filesystem::path GetBundleResourcesDirectory(const std::filesystem::path& executableDirectory);
+
+    /**
+     * @brief Get the scripts assembly output directory relative to executable
+     * @return Path to where script assemblies should be built and loaded from
+     */
+    static std::filesystem::path GetScriptsAssemblyDirectory();
+
+    /**
+     * @brief Ensure working directory matches executable directory
+     * This fixes path resolution issues when the executable is launched from different directories
+     */
+    static void EnsureWorkingDirectoryMatchesExecutable();
+
+    /**
+     * @brief Ensure working directory matches the provided directory.
+     *
+     * Callers should typically pass an absolute path. When the directory does not exist,
+     * changing the working directory will fail; callers may create it first if appropriate.
+     */
+    static void EnsureWorkingDirectoryMatches(const std::filesystem::path& directory);
+
+    /**
+     * @brief Get a user-writable cache directory suitable for derived data, caches, thumbnails, etc.
+     *
+     * Windows: %LOCALAPPDATA% (fallback: %APPDATA%)
+     * macOS:   ~/Library/Caches
+     * Linux:   $XDG_CACHE_HOME (fallback: ~/.cache)
+     */
+    static std::filesystem::path GetUserCacheDirectory();
+
+    /**
+     * @brief Get a user-writable data directory suitable for save data and user settings.
+     *
+     * Windows: %APPDATA% (fallback: %LOCALAPPDATA%)
+     * macOS:   ~/Library/Application Support
+     * Linux:   $XDG_DATA_HOME (fallback: ~/.local/share)
+     */
+    static std::filesystem::path GetUserDataDirectory();
+
+    /**
+     * @brief Get a user-writable Documents directory suitable for user-facing save data.
+     *
+     * Windows: Known Folder Documents (fallback: %USERPROFILE%\\Documents)
+     * macOS:   ~/Documents
+     * Linux:   $XDG_DOCUMENTS_DIR via user-dirs.dirs when available (fallback: ~/Documents)
+     *
+     * NOTE: This is distinct from GetUserDataDirectory(), which is intended for application
+     * support data/config rather than user-facing documents.
+     */
+    static std::filesystem::path GetUserDocumentsDirectory();
+
+    /**
+     * @brief Sanitize an identifier for safe use as a single folder name.
+     *
+     * Replaces characters illegal or problematic on common filesystems with '_',
+     * trims trailing spaces/dots (Windows), and collapses empty to "App".
+     */
+    static std::string SanitizeForFolderName(std::string_view name);
+};
 
 // Default project layout, relative to the workspace root.
 inline constexpr const char* kDefaultAssetDirectory = "Assets";
@@ -46,6 +178,7 @@ struct ApplicationConfig {
     uint32 HostDebugInstrumentation = GE_DEBUG_INSTRUMENTATION;
 
     String Name = "Game Engine Application";
+    String Version = "1.0.0";
     uint32 WindowWidth = 1280;
     uint32 WindowHeight = 720;
     bool Fullscreen = false;
@@ -84,16 +217,6 @@ struct ApplicationConfig {
     // instead of running as fast as the CPU allows. For dedicated servers and
     // simulation runs; the host brings up no window or device of its own either.
     bool Headless = false;
-    // Where the engine's audio goes (Audio/AudioTypes.h). Value-initialized to
-    // AudioOutput::Silent, which mixes with no output device; an application that
-    // plays sound sets AudioOutput::Device. Ignored under Headless, which opens no audio.
-    Audio::AudioOutput AudioOutput{};
-    // Set only by the scripting ABI's bootstrap (DllBootstrap::EnsureEngineInitialized),
-    // which initializes an engine for a host that has no frame loop of its own (a
-    // `dotnet test` process): the caller is the only thread that drives the engine,
-    // nothing ever pumps the main-thread queue, and an export that asks for the main
-    // thread answers yes on every thread. No native host sets it.
-    bool StandaloneHosted = false;
 };
 
 /**
@@ -174,14 +297,6 @@ public:
     void RequestExit() { m_ShouldExit = true; }
 
     /**
-     * @brief Request the running game to end, on the main thread outside a job.
-     *
-     * A standalone application finishes its current frame and exits with exitCode.
-     * A host can override this to end its game session without closing the host.
-     */
-    virtual void RequestGameExit(int exitCode);
-
-    /**
      * @brief Set process exit code returned by Run()
      */
     void SetExitCode(int code) { m_ExitCode = code; }
@@ -204,10 +319,6 @@ public:
     void ClearFixedFrameRate();
     bool IsFixedFrameRateEnabled() const { return m_FixedDeltaTime > 0.0; }
     double GetFixedFrameRate() const { return m_FixedDeltaTime > 0.0 ? (1.0 / m_FixedDeltaTime) : 0.0; }
-
-    /// @brief Hold each frame to at most `fps` with the GE_FRAME_CAP wait; 0 removes the cap. Main thread only.
-    /// When GE_FRAME_CAP or a headless fixed frame rate also holds the frame, the lower rate applies.
-    void SetFrameRateCap(double fps);
 
     // Coarse per-frame phase timings (CPU), captured once per frame from the main loop.
     struct FramePhaseTimings
@@ -326,7 +437,6 @@ private:
 	    float64 m_TotalTime;
 	    uint64 m_FrameCount;
         float64 m_FixedDeltaTime = 0.0;
-        float64 m_FrameRateCap = 0.0; // 0: no cap from SetFrameRateCap
 
 	    // Sliding-window FPS state. Fixed-size ring instead of std::deque to
 	    // avoid per-block bookkeeping in Debug builds and per-frame heap
@@ -354,10 +464,6 @@ private:
 	    // The chain GamepadInputChain() answers with unless a derived application
 	    // names another: the shared InputSystem and nothing above it.
 	    WindowInputRouterConfig m_ApplicationInputChain;
-
-	    // Reads the gamepads once per frame; its first read (frame 0) skips the
-	    // platform's device enumeration.
-	    std::unique_ptr<Input::GamepadPoller> m_GamepadPoller;
 
 	    // Holds the previous poll so the buttons that changed since it become
 	    // edges, and everything else stays state.

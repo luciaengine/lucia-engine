@@ -3,11 +3,13 @@
 // infrastructure it introduces.
 
 #include <gtest/gtest.h>
-#include "Mathematics/Vector2.h"
 #include "UI/Layout/YogaLayout.h"
 #include "UI/ResolvedStyle.h"
 #include "UI/Controls/Mount.h"
 #include "UI/UIElement.h"
+
+#include <memory>
+#include <vector>
 
 #if defined(GE_HAVE_YOGA) && GE_HAVE_YOGA
 #include <yoga/Yoga.h>
@@ -20,16 +22,13 @@ using namespace GameEngine::UILayout;
 
 namespace {
 
-// The styles here hold px only, so no length reads the viewport.
-const Mathematics::Vector2 kNoViewportUnits{};
-
 YGNodeRef MakeFixed(float w, float h)
 {
     YGNodeRef n = YogaAdapter::CreateNode();
     ResolvedStyle s;
     s.Layout.Width = StyleLength::Px(w);
     s.Layout.Height = StyleLength::Px(h);
-    YogaAdapter::ApplyStyle(n, s, kNoViewportUnits);
+    YogaAdapter::ApplyStyle(n, s);
     return n;
 }
 
@@ -41,7 +40,7 @@ YGNodeRef MakeContainer(float w, float h)
     s.Layout.Height = StyleLength::Px(h);
     s.Layout.FlexDirection = FlexDirection::Row;
     s.Layout.HasFlexDirection = true;
-    YogaAdapter::ApplyStyle(n, s, kNoViewportUnits);
+    YogaAdapter::ApplyStyle(n, s);
     return n;
 }
 
@@ -424,4 +423,47 @@ TEST(MountRegistryTests, UIElementDestructionAutoClearsMountTarget)
     }
     EXPECT_EQ(mount->GetTarget(), nullptr);
     EXPECT_EQ(MountRegistry::Instance().Size(), before);
+}
+
+// ---------------------------------------------------------------------------
+// ForEachLogicalChild: the one walk that reaches mounted panels
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::vector<UIElement*> CollectLogicalChildren(const UIElement& element)
+{
+    std::vector<UIElement*> visited;
+    element.ForEachLogicalChild([&](UIElement* child) { visited.push_back(child); });
+    return visited;
+}
+
+} // namespace
+
+TEST(ForEachLogicalChildTests, PlainElementVisitsChildrenInOrder)
+{
+    UIElement parent;
+    auto first = std::make_unique<UIElement>();
+    auto second = std::make_unique<UIElement>();
+    UIElement* firstPtr = first.get();
+    UIElement* secondPtr = second.get();
+    parent.AddChild(std::move(first));
+    parent.AddChild(std::move(second));
+
+    EXPECT_EQ(CollectLogicalChildren(parent), (std::vector<UIElement*>{firstPtr, secondPtr}));
+}
+
+TEST(ForEachLogicalChildTests, MountVisitsChildrenThenTarget)
+{
+    auto target = std::make_unique<UIElement>();
+    Mount mount;
+    auto child = std::make_unique<UIElement>();
+    UIElement* childPtr = child.get();
+    mount.AddChild(std::move(child));
+    mount.SetTarget(target.get());
+
+    EXPECT_EQ(CollectLogicalChildren(mount), (std::vector<UIElement*>{childPtr, target.get()}));
+
+    mount.SetTarget(nullptr);
+    EXPECT_EQ(CollectLogicalChildren(mount), (std::vector<UIElement*>{childPtr}));
 }

@@ -1,30 +1,28 @@
 #include "Graph/GraphPortedNode.h"
 
+#include <Types/ParseNumber.h>
+
 #include "Core/Application.h"
 #include "Editor/EditorPaths.h"
 #include "Graph/GraphInspectorRows.h"
-#include "Graph/GraphNode/GraphNodeIcons.h"
-#include "Graph/GraphNode/GraphNodeMetrics.h"
-#include "Graph/GraphNode/GraphNodeRegistry.h"
-#include "Graph/GraphPort/GraphPortLabels.h"
-#include "Graph/GraphNode/GraphNodeSummary.h"
-#include "Graph/GraphPort/GraphPort.h"
-#include "Graph/GraphPort/GraphPortDropSlot.h"
+#include "Graph/GraphNodeIcons.h"
+#include "Graph/GraphNodeMetrics.h"
+#include "Graph/GraphNodeRegistry.h"
+#include "Graph/GraphPortLabels.h"
+#include "Graph/GraphNodeSummary.h"
+#include "Graph/GraphPort.h"
+#include "Graph/GraphPortDropSlot.h"
 #include "Graph/GraphVariableValues.h"
 #include "Graph/NodeColorSettings.h"
 #include "Input/KeyCodes.h"
 #include "Logger/Logger.h"
-#include "Mathematics/Interpolation.h"
-#include "Types/ParseNumber.h"
 #include "Types/StringId.h"
-#include "Types/StringUtils.h"
 #include "UI/Controls/Checkbox.h"
 #include "UI/Controls/Dropdown.h"
 #include "UI/Controls/FloatField.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/TextField.h"
 #include "UI/Controls/Vector3Field.h"
-#include "UI/AssetField.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/Parsers/XMLParser.h"
 #include "UI/Registration/ElementRegistration.h"
@@ -235,7 +233,7 @@ std::uint32_t PackSrgbArgb(float r, float g, float b)
 {
     auto toU8 = [](float v) -> std::uint32_t
     {
-        v = Math::Clamp01(v);
+        v = std::clamp(v, 0.0f, 1.0f);
         return static_cast<std::uint32_t>(v * 255.0f + 0.5f);
     };
     return (255u << 24) | (toU8(r) << 16) | (toU8(g) << 8) | toU8(b);
@@ -379,8 +377,6 @@ T* EnsureDirectChild(UIElement& host, const char* className, Make&& make)
         return dynamic_cast<T*>(child.get());
     }
     auto el = make();
-    if (!el)
-        return nullptr;
     DecorateInlineField(*el);
     el->AddClass(className);
     T* raw = el.get();
@@ -461,15 +457,6 @@ TextField* EnsureTextChild(UIElement& host)
     });
 }
 
-/* An asset reference on a pin is the Inspector's asset field: the same picker,
-   drop target and reveal, bound to the same node parameter. */
-AssetField* EnsureAssetFieldChild(UIElement& host)
-{
-    return EnsureDirectChild<AssetField>(host, "graph-asset-field", []() {
-        return std::make_unique<AssetField>();
-    });
-}
-
 Dropdown* EnsureDropdownChild(UIElement& host)
 {
     return EnsureDirectChild<Dropdown>(host, "graph-enum-dropdown", []() {
@@ -488,8 +475,8 @@ void ClearPortInlineEditor(GraphPort& port)
     HideElement(host);
     if (host)
     {
-        host->Style().Reset(Style::Width);
-        host->Style().Reset(Style::MaxWidth);
+        host->Overrides().Reset(Style::Width);
+        host->Overrides().Reset(Style::MaxWidth);
     }
     port.RemoveClass("has-inline-editor");
     port.RemoveClass("bool-editor");
@@ -695,7 +682,7 @@ void GraphPortedNode::BindModelPorts(const Graph::Node& node)
         const int portCount = isOutput ? outputCount : inputCount;
         const float nodeHeight = RectHeightGraph(node);
         const float nodeWidth = GraphNodeMetrics::GetNodeWidth(node);
-        widget->Style()
+        widget->Overrides()
             .Set(Style::PositionTop, StyleLength::Percent(
                 GraphNodeMetrics::PortTopPercent(portIndex, portCount, nodeHeight)))
             .Set(Style::Width, StyleLength::Percent(GraphNodeMetrics::PortWidthPercent(nodeWidth)))
@@ -704,10 +691,10 @@ void GraphPortedNode::BindModelPorts(const Graph::Node& node)
         /* The CSS -2.5% hang assumes the canonical width; the override keeps
            the dot centered on the edge whatever the rect width. */
         if (isOutput)
-            widget->Style().Set(Style::PositionRight,
+            widget->Overrides().Set(Style::PositionRight,
                 StyleLength::Percent(GraphNodeMetrics::PortSideHangPercent(nodeWidth)));
         else
-            widget->Style().Set(Style::PositionLeft,
+            widget->Overrides().Set(Style::PositionLeft,
                 StyleLength::Percent(GraphNodeMetrics::PortSideHangPercent(nodeWidth)));
         UI::Layout::SetElementHidden(*widget, false);
     }
@@ -894,7 +881,7 @@ void GraphPortedNode::BindDetailRows(const Graph::Node& node, std::string_view k
             return {nullptr, nullptr};
         const float centerUnits =
             GraphNodeMetrics::ExpandedRowCenterGraph(node, static_cast<int>(rowIndex));
-        rowEl->Style()
+        rowEl->Overrides()
             .Set(Style::PositionTop,
                  StyleLength::Percent((centerUnits - halfRow) / layoutHeight * 100.f))
             .Set(Style::Height,
@@ -905,7 +892,7 @@ void GraphPortedNode::BindDetailRows(const Graph::Node& node, std::string_view k
         UIElement* host = rowEl->GetChildren()[1].get();
         if (label)
         {
-            label->Style()
+            label->Overrides()
                 .Set(Style::PositionLeft,
                      StyleLength::Percent(GraphNodeMetrics::kInlineLabelStartGraph /
                                           nodeWidthGraph * 100.f))
@@ -918,7 +905,7 @@ void GraphPortedNode::BindDetailRows(const Graph::Node& node, std::string_view k
         {
             HideDirectChildren(*host);
             ShowElement(host);
-            host->Style()
+            host->Overrides()
                 .Set(Style::PositionLeft,
                      StyleLength::Percent(editorStartGraph / nodeWidthGraph * 100.f))
                 .Set(Style::Width,
@@ -939,7 +926,7 @@ void GraphPortedNode::BindDetailRows(const Graph::Node& node, std::string_view k
                 return;
             if (label)
             {
-                const std::string pretty = IdentifierToWords(key);
+                const std::string pretty = GraphPortLabels::PrettifyParamKey(key);
                 label->SetText(GraphPortLabels::AbbreviateForNode(pretty));
                 label->SetTooltip(pretty);
             }
@@ -1096,19 +1083,6 @@ void GraphPortedNode::BindDetailRows(const Graph::Node& node, std::string_view k
     }
 
     HideDetailRows(row);
-}
-
-void GraphPortedNode::BindAssetField(AssetField& field, AssetType type, const std::string& portId,
-                                     const std::string& guidText)
-{
-    field.SetAcceptedTypes({type});
-    field.SetAssetRegistry(m_EditHost.Assets);
-    field.SetThumbnailProvider(m_EditHost.Thumbnails);
-    field.SetOnReveal(m_EditHost.PingAsset);
-    field.SetValue(GUID(guidText));
-    field.SetOnValueChanged([this, portId](const GUID& picked) {
-        CommitParam(portId, Graph::GraphValue(picked.IsNull() ? std::string() : picked.ToString()));
-    });
 }
 
 void GraphPortedNode::CommitParam(const std::string& key, Graph::GraphValue value)
@@ -1514,8 +1488,8 @@ void GraphPortedNode::BindPortEditors(const Graph::Node& node, std::string_view 
         if (portKind == InlinePortKind::Bool)
         {
             /* Checkbox hosts keep their own compact CSS geometry. */
-            host->Style().Reset(Style::Width);
-            host->Style().Reset(Style::MaxWidth);
+            host->Overrides().Reset(Style::Width);
+            host->Overrides().Reset(Style::MaxWidth);
         }
         else
         {
@@ -1529,7 +1503,7 @@ void GraphPortedNode::BindPortEditors(const Graph::Node& node, std::string_view 
             const float leftPct = (startUnits + GraphNodeMetrics::kPortHangGraph) /
                 GraphNodeMetrics::kPortSizeGraph * 100.f;
             const float widthPct = widthUnits / GraphNodeMetrics::kPortSizeGraph * 100.f;
-            host->Style()
+            host->Overrides()
                 .Set(Style::PositionLeft, StyleLength::Percent(leftPct))
                 .Set(Style::Width, StyleLength::Percent(widthPct))
                 .Set(Style::MaxWidth, StyleLength::Percent(widthPct));
@@ -1540,7 +1514,7 @@ void GraphPortedNode::BindPortEditors(const Graph::Node& node, std::string_view 
             {
                 if (child && child->HasClass("graph-port-label"))
                 {
-                    child->Style().Set(Style::MaxWidth, StyleLength::Percent(
+                    child->Overrides().Set(Style::MaxWidth, StyleLength::Percent(
                         (startUnits - GraphNodeMetrics::kInlineLabelStartGraph) /
                         GraphNodeMetrics::kPortSizeGraph * 100.f));
                     child->MarkDirty(UIElement::StyleDirty | UIElement::LayoutDirty);
@@ -1647,13 +1621,6 @@ void GraphPortedNode::BindPortEditors(const Graph::Node& node, std::string_view 
 
         if (portKind == InlinePortKind::String)
         {
-            const NodeParamSpec* spec = FindSchemaParam(schemaMeta, portId);
-            if (spec && spec->AssetReference != AssetType::Unknown)
-            {
-                if (AssetField* field = EnsureAssetFieldChild(*host))
-                    BindAssetField(*field, spec->AssetReference, portId, node.Parameters.GetString(portId, ""));
-                continue;
-            }
             TextField* field = EnsureTextChild(*host);
             if (!field)
                 continue;
@@ -1691,7 +1658,7 @@ void GraphPortedNode::BindModel(const Graph::Node& node, std::string_view kindId
     if (m_Header)
     {
         const float nodeHeight = RectHeightGraph(node);
-        m_Header->Style().Set(Style::Height,
+        m_Header->Overrides().Set(Style::Height,
             StyleLength::Percent(GraphNodeMetrics::HeaderHeightPercent(nodeHeight)));
         m_Header->MarkDirty(UIElement::StyleDirty | UIElement::VisualDirty);
     }
@@ -1699,15 +1666,15 @@ void GraphPortedNode::BindModel(const Graph::Node& node, std::string_view kindId
     /* The node body and every box inside it read these variables
        (node-graph.css); published per node so they track the body-color
        preference. */
-    Style().SetCustomColor(HashStringId("--graph-node-bg"),
+    Overrides().SetCustomColor(HashStringId("--graph-node-bg"),
                                NodeColorSettings::GetNodeBodyColorArgb());
-    Style().SetCustomColor(HashStringId("--graph-node-header-bg"),
+    Overrides().SetCustomColor(HashStringId("--graph-node-header-bg"),
                                NodeColorSettings::GetNodeColorArgb(kindId, node.TypeId));
-    Style().SetCustomColor(HashStringId("--graph-value-bg"),
+    Overrides().SetCustomColor(HashStringId("--graph-value-bg"),
                                NodeColorSettings::GetNodeValueSurfaceColorArgb());
     /* Same deal for the plates that frame a rendered image: the preview plate
        and the texture drop slot. */
-    Style().SetCustomColor(HashStringId("--graph-plate-bg"),
+    Overrides().SetCustomColor(HashStringId("--graph-plate-bg"),
                                NodeColorSettings::GetNodePlateColorArgb());
 
     BindModelPorts(node);
@@ -1746,7 +1713,7 @@ void GraphPortedNode::Reset()
     HideValueEditors(true);
     HideElement(m_Value, true);
     if (m_Header)
-        m_Header->Style().Reset(Style::BackgroundColor);
+        m_Header->Overrides().Reset(Style::BackgroundColor);
     if (m_Preview)
         m_Preview->Reset();
     HideDetailRows(0);

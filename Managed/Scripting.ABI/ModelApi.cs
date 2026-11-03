@@ -6,9 +6,8 @@ namespace GameEngine.Scripting
 {
     /// <summary>
     /// What a model asset kept from its source file for a game to interpret. The engine reads none of it.
-    /// Callable from any thread while the engine runs; a thread of your own finishes its reads before the
-    /// engine shuts down. A hot reload replaces a model's extras whole, and a read sees either the extras
-    /// before the reload or the extras after it.
+    /// Call from the main thread, as a system's update does: a hot reload replaces a model's extras there,
+    /// and a call from another thread is refused.
     /// </summary>
     public static class ModelApi
     {
@@ -32,7 +31,7 @@ namespace GameEngine.Scripting
         /// </returns>
         /// <exception cref="ArgumentOutOfRangeException"><paramref name="kind"/> is not a <see cref="ModelObjectKind"/>.</exception>
         /// <exception cref="InvalidOperationException">
-        /// No loaded model has <paramref name="modelGuid"/>.
+        /// No loaded model has <paramref name="modelGuid"/>, or the call came from a thread other than the main thread.
         /// </exception>
         public static string GetExtras(Guid modelGuid, ModelObjectKind kind, string name)
         {
@@ -60,7 +59,7 @@ namespace GameEngine.Scripting
                     $"ModelApi.GetExtras: no loaded model has the GUID {modelGuid}; a model's extras are readable while it is loaded.");
             if (rc == (int)NativeResult.Fail)
                 throw new InvalidOperationException(
-                    "ModelApi.GetExtras failed; the engine log names the cause.");
+                    "ModelApi.GetExtras failed: it reads a model's extras only on the main thread (from a system's update); the engine log names any other cause.");
             if (rc != (int)NativeResult.Ok)
                 throw new InvalidOperationException($"ModelApi.GetExtras failed: {(NativeResult)rc}");
         }

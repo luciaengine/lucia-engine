@@ -35,7 +35,7 @@ std::string KeyCodeDisplayName(int keyCode)
         case kKeyCode_Escape:     return "Esc";
         case kKeyCode_Tab:        return "Tab";
         case kKeyCode_Backspace:  return "Backspace";
-        case kKeyCode_Delete:     return "Del";
+        case kKeyCode_Delete:     return "Delete";
         case kKeyCode_Insert:     return "Insert";
         case kKeyCode_Home:       return "Home";
         case kKeyCode_End:        return "End";
@@ -208,10 +208,10 @@ const std::vector<ShortcutCatalogEntry>& GetShortcutCatalog()
     const bool isApple = Platform::PrimaryShortcutModifierIsCommand();
     const int kDefaultPrimaryShortcutModifier = isApple ? kModSuper : kModControl;
     const int kAlternatePrimaryShortcutModifier = isApple ? kModControl : kModSuper;
-    // Finder renames on Return, so the Assets panel and the Hierarchy do too.
-    // F2 stays the cross-platform binding; elsewhere Return keeps its open
-    // behavior, which is what Explorer and the Linux file managers do.
-    const int kRenameAlternateKey = isApple ? kKeyCode_Enter : 0;
+    // Finder renames on Return, so the Assets panel does too. F2 stays the
+    // cross-platform binding; elsewhere Return keeps its open behaviour, which
+    // is what Explorer and the Linux file managers do.
+    const int kAssetsRenameAlternateKey = isApple ? kKeyCode_Enter : 0;
     static const std::vector<ShortcutCatalogEntry> kCatalog = {
         // --- Global (editable; consumed via MatchesCatalogShortcut / InputSystem) ---
         {"Global", "Save Scene",         kEditorGlobalContext, kEditorSaveScene,      kKeyCode_S,      kDefaultPrimaryShortcutModifier, false,
@@ -237,13 +237,6 @@ const std::vector<ShortcutCatalogEntry>& GetShortcutCatalog()
                                          kKeyCode_W,      kAlternatePrimaryShortcutModifier},
         {"Global", "CSS Inspector",      0, 0, kKeyCode_I, kModControl, false},
 
-        // --- Diagnostics (editable; consumed by Editor::DiagnosticShortcuts) ---
-#if GE_ENABLE_CPU_PROFILING
-        {"Diagnostics", "CPU Profiler",     kEditorGlobalContext, kEditorCpuProfiler,    kKeyCode_F2, 0,         false},
-        {"Diagnostics", "CPU Profiler Off", kEditorGlobalContext, kEditorCpuProfilerOff, kKeyCode_F2, kModShift, false},
-#endif
-        {"Diagnostics", "UI Demo",          kEditorGlobalContext, kEditorShowUIDemo,     kKeyCode_F3, 0,         false},
-
         // --- Scene View ---------------------------------------------------
         {"Scene View", "Move Forward",   kSceneViewContext, kSceneViewMoveForward,  kKeyCode_W, 0, false},
         {"Scene View", "Move Backward",  kSceneViewContext, kSceneViewMoveBackward, kKeyCode_S, 0, false},
@@ -264,19 +257,38 @@ const std::vector<ShortcutCatalogEntry>& GetShortcutCatalog()
         {"Transform Tool", "Scale Mode",         0, 0, kKeyCode_R, 0, false},
         {"Transform Tool", "Toggle World/Local", 0, 0, kKeyCode_X, 0, false},
 
+        // --- Tile Map Tool (consumed by TileMapPaintTool) -----------------
+        {"Tile Map Tool", "Brush Tool",      0, 0, kKeyCode_1, 0, false},
+        {"Tile Map Tool", "Eraser Tool",     0, 0, kKeyCode_2, 0, false},
+        {"Tile Map Tool", "Picker Tool",     0, 0, kKeyCode_3, 0, false},
+        {"Tile Map Tool", "Fill Tool",       0, 0, kKeyCode_4, 0, false},
+        {"Tile Map Tool", "Rect Tool",       0, 0, kKeyCode_5, 0, false},
+        {"Tile Map Tool", "Marquee Tool",    0, 0, kKeyCode_6, 0, false},
+        {"Tile Map Tool", "Terrain Tool",    0, 0, kKeyCode_7, 0, false},
+        {"Tile Map Tool", "IntGrid Tool",    0, 0, kKeyCode_8, 0, false},
+        {"Tile Map Tool", "Flip Horizontal", 0, 0, kKeyCode_H, 0, false},
+        {"Tile Map Tool", "Flip Vertical",   0, 0, kKeyCode_V, 0, false},
+        {"Tile Map Tool", "Rotate Stamp",    0, 0, kKeyCode_R, kModShift, false},
+        {"Tile Map Tool", "Clear Selection", 0, 0, kKeyCode_Escape, 0, false},
+        {"Tile Map Tool", "Erase Selection", 0, 0, kKeyCode_Delete, 0, false,
+                                             kKeyCode_Backspace, 0},
+        {"Tile Map Tool", "Copy Tiles",      0, 0, kKeyCode_C, kDefaultPrimaryShortcutModifier, false},
+        {"Tile Map Tool", "Cut Tiles",       0, 0, kKeyCode_X, kDefaultPrimaryShortcutModifier, false},
+        {"Tile Map Tool", "Paste Tiles",     0, 0, kKeyCode_V, kDefaultPrimaryShortcutModifier, false},
+        {"Tile Map Tool", "Nudge Left",      0, 0, kKeyCode_Left,  0, false},
+        {"Tile Map Tool", "Nudge Right",     0, 0, kKeyCode_Right, 0, false},
+        {"Tile Map Tool", "Nudge Up",        0, 0, kKeyCode_Up,    0, false},
+        {"Tile Map Tool", "Nudge Down",      0, 0, kKeyCode_Down,  0, false},
+
         // --- Hierarchy Panel (hardcoded) ----------------------------------
         {"Hierarchy", "Duplicate", 0, 0, kKeyCode_D,      kDefaultPrimaryShortcutModifier, false,
                                          kKeyCode_D,      kAlternatePrimaryShortcutModifier},
         {"Hierarchy", "Delete",    0, 0, kKeyCode_Delete, 0, false},
-        {"Hierarchy", "Rename",    0, 0, kKeyCode_F2,     0, false,
-                                   kRenameAlternateKey, 0},
-        {"Hierarchy", "Create Prefab", 0, 0, kKeyCode_P, kDefaultPrimaryShortcutModifier | kModShift, false,
-                                       kKeyCode_P, kAlternatePrimaryShortcutModifier | kModShift},
 
         // --- Assets Panel (hardcoded) -------------------------------------
         {"Assets", "Toggle Preview", 0, 0, kKeyCode_F, kModShift, false},
         {"Assets", "Rename",         0, 0, kKeyCode_F2, 0, false,
-                                     kRenameAlternateKey, 0},
+                                     kAssetsRenameAlternateKey, 0},
 
         // --- Asset Preview (editable wheel bindings; consumed by AssetViewPanel)
         {"Asset Preview", "Dolly In/Out",      0, 0, kShortcutKeyMouseScroll, 0,           false},
@@ -411,8 +423,8 @@ void ApplyShortcutBindings(Input::InputSystem& input,
         b.device = Input::DeviceType::Keyboard;
         b.code = c.key;
         b.scale = 1.0f;
-        b.requiredMods = static_cast<Input::ModifierFlags>(c.mods);
-        b.forbiddenMods = Input::kShortcutModifiers & ~b.requiredMods;
+        b.requiredMods = c.mods;
+        b.forbiddenMods = Input::kModShortcutMask & ~c.mods;
         input.BindKey(entry.context, entry.action, b);
     }
 }
@@ -537,8 +549,9 @@ std::string CatalogShortcutLabel(const char* groupLabel, const char* displayName
     const auto& cached = CachedCatalogBindings();
     for (size_t i = 0; i < catalog.size(); ++i)
     {
-        if (std::strcmp(catalog[i].groupLabel, groupLabel) != 0 ||
-            std::strcmp(catalog[i].displayName, displayName) != 0)
+        const auto& entry = catalog[i];
+        if (std::strcmp(entry.groupLabel, groupLabel) != 0 ||
+            std::strcmp(entry.displayName, displayName) != 0)
             continue;
         if (cached[i].empty())
             return {};

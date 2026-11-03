@@ -4,12 +4,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <span>
 #include "Mathematics/MatrixOps.h"
 #include "Engine/Rendering/Pipeline/Nodes/PipelineNodeUtils.h"
 #include "Engine/Rendering/ScreenSpaceShadows/ScreenSpaceShadowDispatch.h"
 #include "Logger/Logger.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/PassPhase.h"
@@ -40,61 +39,47 @@ ScreenSpaceShadowPasses::~ScreenSpaceShadowPasses()
         m_Device->DestroySampler(m_Sampler);
 }
 
-bool ScreenSpaceShadowPasses::LoadPassPipeline(const char* path, Rendering::ComputePipelineId& pipeline,
-                                               std::unique_ptr<Rendering::ShaderMeta>& meta,
-                                               Rendering::DescriptorSetLayoutDesc& layout,
-                                               std::span<const NamedBinding> bindings)
-{
-    if (pipeline.IsValid())
-        return m_Device->GetOrCreateComputePipeline(pipeline).IsValid();
-    Rendering::ShaderPackage package{};
-    std::string error;
-    if (!Rendering::LoadShaderPkg(path, m_Device->PreferredShaderSource(), package, &error))
-    {
-        if (!m_WarnedPackageLoadFailure)
-            Logger::Log::Warning("ScreenSpaceShadows: {}", error);
-        m_WarnedPackageLoadFailure = true;
-        return false;
-    }
-    auto stage = package.stageBytes.find("cs");
-    if (stage == package.stageBytes.end() || stage->second.empty())
-        return false;
-    meta = std::make_unique<Rendering::ShaderMeta>(std::move(package.meta));
-    Rendering::DescriptorType reflectedType{};
-    for (const NamedBinding& binding : bindings)
-    {
-        if (Rendering::TryGetSet0BindingByName(*meta, binding.Name, binding.Binding, reflectedType))
-            continue;
-        if (!m_LoggedMissingBinding)
-            Logger::Log::Error("ScreenSpaceShadows: {} declares no set-0 binding '{}'", path, binding.Name);
-        m_LoggedMissingBinding = true;
-        return false;
-    }
-    Rendering::ComputePipelineDesc desc{};
-    desc.ComputeShader = std::make_shared<const std::vector<uint8_t>>(std::move(stage->second));
-    desc.DebugName = path;
-    if (!Rendering::MaterialHelper::ApplyShaderMetaToComputeDesc(
-        *m_Device, *meta, desc, Rendering::MaterialBuilder::MergeMode::Auto,
-        {true, kPushConstantBudget}, [&layout](uint32_t set, Rendering::DescriptorSetLayoutDesc& value)
-        { if (set == 0) layout = value; }, &error))
-        return false;
-    pipeline = m_Device->InternComputePipeline(std::move(desc));
-    return m_Device->GetOrCreateComputePipeline(pipeline).IsValid();
-}
-
 bool ScreenSpaceShadowPasses::LoadShader()
 {
     if (!m_Device)
         return false;
-    const NamedBinding prepareBindings[] = {{"uDepth", m_PrepareDepthBinding},
-                                            {"Visibility", m_PrepareVisibilityBinding}};
-    const NamedBinding resolveBindings[] = {{"uDepth", m_ResolveDepthBinding},
-                                            {"Visibility", m_ResolveVisibilityBinding},
-                                            {"uMask", m_ResolveMaskBinding}};
-    if (!LoadPassPipeline(kTraceShader, m_Pipeline, m_Meta, m_Layout, {}) ||
-        !LoadPassPipeline(kPrepareShader, m_PreparePipeline, m_PrepareMeta, m_PrepareLayout, prepareBindings) ||
-        !LoadPassPipeline(kResolveShader, m_ResolvePipeline, m_ResolveMeta, m_ResolveLayout, resolveBindings) ||
-        !LoadPassPipeline(kMatchShader, m_MatchPipeline, m_MatchMeta, m_MatchLayout, {}))
+    const auto load = [this](const char* path, Rendering::ComputePipelineId& pipeline,
+                             std::unique_ptr<Rendering::ShaderMeta>& meta,
+                             Rendering::DescriptorSetLayoutDesc& layout)
+    {
+        if (pipeline.IsValid())
+            return m_Device->GetOrCreateComputePipeline(pipeline).IsValid();
+        Rendering::ShaderPackage package{};
+        std::string error;
+        if (!Rendering::LoadShaderPkg(path, m_Device->PreferredShaderSource(), package, &error))
+        {
+            if (!m_WarnedLoadFailure)
+                Logger::Log::Warning("ScreenSpaceShadows: {}", error);
+            m_WarnedLoadFailure = true;
+            return false;
+        }
+        auto stage = package.stageBytes.find("cs");
+        if (stage == package.stageBytes.end() || stage->second.empty())
+            return false;
+        meta = std::make_unique<Rendering::ShaderMeta>(std::move(package.meta));
+        Rendering::ComputePipelineDesc desc{};
+        desc.ComputeShader = std::make_shared<const std::vector<uint8_t>>(std::move(stage->second));
+        desc.DebugName = path;
+        if (!Rendering::MaterialHelper::ApplyShaderMetaToComputeDesc(
+            *m_Device, *meta, desc, Rendering::MaterialBuilder::MergeMode::Auto,
+            {true, kPushConstantBudget}, [&layout](uint32_t set, Rendering::DescriptorSetLayoutDesc& value)
+            { if (set == 0) layout = value; }, &error))
+            return false;
+        pipeline = m_Device->InternComputePipeline(std::move(desc));
+        return m_Device->GetOrCreateComputePipeline(pipeline).IsValid();
+    };
+    if (!load(kTraceShader, m_Pipeline, m_Meta, m_Layout) ||
+        !load(kPrepareShader, m_PreparePipeline,
+              m_PrepareMeta, m_PrepareLayout) ||
+        !load(kResolveShader, m_ResolvePipeline,
+              m_ResolveMeta, m_ResolveLayout) ||
+        !load(kMatchShader, m_MatchPipeline,
+              m_MatchMeta, m_MatchLayout))
         return false;
     if (!m_Sampler.IsValid())
         m_Sampler = m_Device->CreateSampler(Rendering::SamplerDesc::PointClamp("ScreenSpaceShadows"));
@@ -111,7 +96,7 @@ Rendering::RenderGraph::RGTexture ScreenSpaceShadowPasses::DeclareMaskPass(
     if (!depth.IsValid() || !towardLight || !std::isfinite(thickness) ||
         // The radial projection assumes perspective depth. Orthographic views
         // retain their existing directional shadow source.
-        std::abs(camera.proj[3][3]) > kPerspectiveEpsilon || camera.proj[0][0] == 0 || camera.proj[1][1] == 0)
+        std::abs(camera.proj[15]) > kPerspectiveEpsilon || camera.proj[0] == 0 || camera.proj[5] == 0)
         return {};
     const auto source = frame.Graph().ResourceDesc(depth.Id);
     if (source.SampleCount > 1 || !m_Device)
@@ -123,7 +108,7 @@ Rendering::RenderGraph::RGTexture ScreenSpaceShadowPasses::DeclareMaskPass(
     float clip[4]{};
     for (int row = 0; row < 4; ++row)
         for (int col = 0; col < 3; ++col)
-            clip[row] += camera.viewProj[col][row] * towardLight[col];
+            clip[row] += camera.viewProj[col * 4 + row] * towardLight[col];
     const auto plan = BuildScreenSpaceShadowDispatches(clip, source.Width, source.Height);
     if (!plan.Count ||
         !m_Device->IsTextureFormatSupported(Rendering::TextureFormat::R32_UINT,
@@ -197,18 +182,15 @@ Rendering::RenderGraph::RGTexture ScreenSpaceShadowPasses::DeclareMaskPass(
             const auto pipeline = context.GetOrCreatePipelineVariant(m_PreparePipeline);
             if (!pipeline.IsValid())
                 return;
-            const Rendering::DescriptorWrite writes[] = {
-                {.Binding = m_PrepareDepthBinding,
-                 .Type = Rendering::DescriptorType::CombinedImageSampler,
-                 .Texture = context.GetTexture(depth),
-                 .Sampler = m_Sampler},
-                {.Binding = m_PrepareVisibilityBinding,
-                 .Type = Rendering::DescriptorType::StorageBuffer,
-                 .Buffer = context.GetBuffer(visibility),
-                 .Range = bytes}};
-            const auto set = device->GetOrCreateDescriptorSet(m_PrepareLayout, writes, "ScreenSpaceShadows.Prepare.Set0");
-            if (!set.IsValid())
-                return;
+            Rendering::DescriptorSetDesc setDesc{};
+            setDesc.layout = m_PrepareLayout;
+            setDesc.transient = true;
+            setDesc.debugName = "ScreenSpaceShadows.Prepare.Set0";
+            auto set = device->CreateDescriptorSet(setDesc);
+            Rendering::NamedDescriptorWriter writer(device, set, *m_PrepareMeta, 0);
+            writer.AddCombinedImageSampler("uDepth", context.GetTexture(depth), m_Sampler);
+            writer.AddStorageBuffer("Visibility", context.GetBuffer(visibility), 0, bytes);
+            writer.Flush();
             command->SetPipeline(pipeline);
             command->BindDescriptorSet(0, set, pipeline);
             command->Dispatch((width + kImageGroupSize - 1) / kImageGroupSize, (height + kImageGroupSize - 1) / kImageGroupSize, 1);
@@ -268,19 +250,17 @@ Rendering::RenderGraph::RGTexture ScreenSpaceShadowPasses::DeclareMaskPass(
             const auto pipeline = context.GetOrCreatePipelineVariant(m_ResolvePipeline);
             if (!pipeline.IsValid())
                 return;
-            const Rendering::DescriptorWrite writes[] = {
-                {.Binding = m_ResolveDepthBinding,
-                 .Type = Rendering::DescriptorType::CombinedImageSampler,
-                 .Texture = context.GetTexture(depth),
-                 .Sampler = m_Sampler},
-                {.Binding = m_ResolveVisibilityBinding,
-                 .Type = Rendering::DescriptorType::StorageBuffer,
-                 .Buffer = context.GetBuffer(visibility),
-                 .Range = bytes},
-                {.Binding = m_ResolveMaskBinding, .Type = Rendering::DescriptorType::StorageImage, .Texture = context.GetTexture(mask)}};
-            const auto set = device->GetOrCreateDescriptorSet(m_ResolveLayout, writes, "ScreenSpaceShadows.Resolve.Set0");
-            if (!set.IsValid())
-                return;
+            Rendering::DescriptorSetDesc setDesc{};
+            setDesc.layout = m_ResolveLayout;
+            setDesc.transient = true;
+            setDesc.debugName = "ScreenSpaceShadows.Resolve.Set0";
+            auto set = device->CreateDescriptorSet(setDesc);
+            Rendering::NamedDescriptorWriter writer(device, set, *m_ResolveMeta, 0);
+            writer.AddCombinedImageSampler("uDepth", context.GetTexture(depth), m_Sampler);
+            writer.AddStorageBuffer("Visibility", context.GetBuffer(visibility), 0, bytes);
+            writer.Flush();
+            Pipeline::Nodes::Detail::BindStorageImageByName(
+                device, set, *m_ResolveMeta, "uMask", context.GetTexture(mask));
             command->SetPipeline(pipeline);
             command->BindDescriptorSet(0, set, pipeline);
             command->Dispatch((width + kImageGroupSize - 1) / kImageGroupSize, (height + kImageGroupSize - 1) / kImageGroupSize, 1);
@@ -295,11 +275,12 @@ Rendering::RenderGraph::RGTexture ScreenSpaceShadowPasses::DeclareMaskPass(
         auto upload = frame.AllocUpload<MatchParams>();
         if (matched.IsValid() && frame.PhysicalTexture(matched).IsValid() && upload.Valid())
         {
-            Mathematics::Matrix4x4 vp = camera.viewProjRel;
+            Mathematics::Matrix4x4 vp;
+            std::memcpy(vp.Data(), camera.viewProjRel, sizeof(float) * 16);
             const auto inverse = Mathematics::Inverse(vp);
             std::memcpy(upload.Ptr->Inverse, inverse.Data(), sizeof(float) * 16);
-            upload.Ptr->Projection[0] = camera.proj[2][2];
-            upload.Ptr->Projection[1] = camera.proj[3][2];
+            upload.Ptr->Projection[0] = camera.proj[10];
+            upload.Ptr->Projection[1] = camera.proj[14];
             upload.Ptr->Projection[2] = static_cast<float>(filter->Resolution);
             upload.Ptr->Projection[3] = 0;
             frame.AddComputePass(matchedName.c_str(), Rendering::PassPhase::kDefault,

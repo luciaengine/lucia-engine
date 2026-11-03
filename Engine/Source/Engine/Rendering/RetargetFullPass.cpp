@@ -1,6 +1,6 @@
 #include "Engine/Rendering/RetargetFullPass.h"
 #include "Engine/Rendering/RetargetGPUDataStore.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 
 namespace GameEngine { namespace Engine { namespace Renderer {
 

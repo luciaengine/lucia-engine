@@ -1,12 +1,13 @@
 #include "AssetCore/GUID.h"
-#include "Types/FormatNumber.h"
+#include "Types/Fnv1a.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <charconv>
 #include <cstring>
+#include <iomanip>
 #include <random>
-#include <span>
+#include <sstream>
 
 namespace GameEngine {
 
@@ -106,28 +107,28 @@ bool GUID::IsNull() const {
 }
 
 String GUID::ToString() const {
-    // 8-4-4-4-12 hex digits: the byte groups end at bytes 4, 6, 8, 10 and 16.
-    constexpr size_t kGroupEnds[] = { 4, 6, 8, 10, kSize };
-    const std::span<const uint8> bytes(m_Data);
+    std::stringstream ss;
+    ss << std::hex << std::setfill('0');
 
-    String text;
-    text.reserve(kSize * 2 + std::size(kGroupEnds) - 1);
-    size_t groupBegin = 0;
-    for (size_t groupEnd : kGroupEnds) {
-        if (groupBegin != 0) {
-            text += '-';
+    for (size_t i = 0; i < kSize; ++i) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) {
+            ss << '-';
         }
-        AppendHexBytes(text, bytes.subspan(groupBegin, groupEnd - groupBegin));
-        groupBegin = groupEnd;
+        ss << std::setw(2) << static_cast<int>(m_Data[i]);
     }
-    return text;
+
+    return ss.str();
 }
 
 String GUID::ToCompactString() const {
-    String text;
-    text.reserve(kSize * 2);
-    AppendHexBytes(text, m_Data);
-    return text;
+    std::stringstream ss;
+    ss << std::hex << std::setfill('0');
+
+    for (uint8 byte : m_Data) {
+        ss << std::setw(2) << static_cast<int>(byte);
+    }
+
+    return ss.str();
 }
 
 bool GUID::operator==(const GUID& other) const {
@@ -147,20 +148,6 @@ bool GUID::operator<(const GUID& other) const {
 namespace GameEngine {
 
 namespace {
-
-// FNV-1a over a byte sequence. Uses an explicit uint64_t accumulator (not size_t)
-// so the derived bits are identical on every platform — a 32-bit build must
-// produce the same GUID as the 64-bit editor, or cross-machine identity breaks.
-inline uint64_t FnvHash(const uint8* data, size_t length, uint64_t seed = 14695981039346656037ULL)
-{
-    uint64_t h = seed;
-    for (size_t i = 0; i < length; ++i)
-    {
-        h ^= static_cast<uint64_t>(data[i]);
-        h *= 1099511628211ULL; // FNV prime
-    }
-    return h;
-}
 
 // SplitMix64 finalizer — a strong bit-avalanche of a 64-bit value. Used to derive the
 // upper GUID word from the lower hash so it is well-distributed instead of correlated.
@@ -184,11 +171,12 @@ GUID GUID::Derive(const GUID& parent, const String& subKey) {
     // FROZEN — changing it re-keys every derived asset and requires a coordinated re-bake.
     const auto& parentBytes = parent.GetData();
 
-    // Lower 64 bits: FNV-1a over parentBytes || '|' || subKey.
-    uint64_t h1 = FnvHash(parentBytes.data(), kSize);
+    // Lower 64 bits: FNV-1a over parentBytes || '|' || subKey. Hashing::Fnv1a64 keeps a
+    // uint64_t accumulator, so a 32-bit build derives the same GUID as the 64-bit editor.
+    uint64_t h1 = Hashing::Fnv1a64(parentBytes.data(), kSize);
     const uint8 separator = '|';
-    h1 = FnvHash(&separator, 1, h1);
-    h1 = FnvHash(reinterpret_cast<const uint8*>(subKey.data()), subKey.size(), h1);
+    h1 = Hashing::Fnv1a64(&separator, 1, h1);
+    h1 = Hashing::Fnv1a64(subKey.data(), subKey.size(), h1);
 
     // Upper 64 bits: avalanche the lower hash with a SplitMix64 finalizer, so the upper
     // word is well distributed rather than correlated with the lower one. Identity

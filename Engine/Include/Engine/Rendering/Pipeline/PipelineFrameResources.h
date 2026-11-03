@@ -1,8 +1,8 @@
 #pragma once
 
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
+#include "Rendering/Core/HashUtils.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Core/RenderGraph/RGFullscreen.h"
 
 #include <string>
 #include <unordered_map>
@@ -32,17 +32,6 @@ struct PipelineBufferBindingRG
     uint64_t Size = 0;
     ::GameEngine::Rendering::RenderGraph::RGBuffer Graph{};
     bool IsValid() const { return Buffer.IsValid(); }
-    /// This range as a fullscreen pass's buffer input, with Graph as the buffer the pass declares a read of.
-    /// The caller sets Binding and IsStorage.
-    ::GameEngine::Rendering::RenderGraph::RGFullscreenBufferInput AsFullscreenInput() const
-    {
-        ::GameEngine::Rendering::RenderGraph::RGFullscreenBufferInput input{};
-        input.Buffer = Buffer;
-        input.Offset = Offset;
-        input.Size = Size;
-        input.Declare = Graph;
-        return input;
-    }
 };
 
 // The pipeline's per-frame blackboard, rebuilt from scratch on every Declare.
@@ -61,9 +50,9 @@ struct PipelineFrameResources
     {
         size_t operator()(const Key& k) const noexcept
         {
-            size_t h = std::hash<uint32_t>{}(static_cast<uint32_t>(k.ViewId));
-            h ^= std::hash<std::string>{}(k.Name) + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
-            return h;
+            const uint64_t h = ::GameEngine::Rendering::HashUtils::HashCombine(
+                static_cast<uint32_t>(k.ViewId), std::hash<std::string>{}(k.Name));
+            return static_cast<size_t>(h);
         }
     };
     // Per-view scalars the pre-pass derives once per frame.
@@ -78,6 +67,11 @@ struct PipelineFrameResources
         // against this ("extent.basis": "output" in the blueprint).
         uint32_t OutputWidth = 0;
         uint32_t OutputHeight = 0;
+        // The render->output crossing for this view is the pixel-perfect
+        // integer upscale, not the render-scale one: Render* is the camera's
+        // padded reference RT and Output* the panel it is zoomed into. The two
+        // crossings are mutually exclusive.
+        bool PixelPerfectCrossing = false;
     };
 
     ::GameEngine::Rendering::RenderGraph::RGFrame* Frame = nullptr;
@@ -89,10 +83,6 @@ struct PipelineFrameResources
     std::unordered_map<Key, ::GameEngine::Rendering::RenderGraph::RGTexture, KeyHash> Textures;
     std::unordered_map<Key, PipelineBufferBindingRG, KeyHash> Buffers;
     std::unordered_map<::GameEngine::Rendering::ViewId, ViewInfo> Views;
-    // Textures holding scene colour stored at a view's pre-exposure P (pre_exposure_snapshot.comp),
-    // by render graph resource id: the view's colour target, the blueprint's "preExposed" textures
-    // when they materialize, and the ones nodes create (ViewDeclare::MarkPreExposed).
-    std::unordered_map<uint32_t, ::GameEngine::Rendering::ViewId> PreExposedTextures;
 
     // Per-view entries first, then frame-scope — the enumeration shape the
     // old ForEachBufferRef had (per-view names shadow frame-scope ones at

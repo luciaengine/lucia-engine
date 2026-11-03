@@ -4,7 +4,6 @@
 #include "JobSystem/TaskTypes.h"
 #include <array>
 #include <mutex>
-#include <span>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -28,13 +27,13 @@ struct TaskGraphActions {
     Vector<StatusEvent> Events;
 
     /** Payloads whose last dependency just completed; enqueue after unlock. */
-    Vector<UniquePtr<TaskBase>> ReadyTasks;
+    Vector<UniquePtr<Task>> ReadyTasks;
 
     /**
      * Parked payloads of failed/cancelled dependents. They never run; their
      * destructors (user closures) must execute outside the graph mutex.
      */
-    Vector<UniquePtr<TaskBase>> RetiredTasks;
+    Vector<UniquePtr<Task>> RetiredTasks;
 };
 
 /**
@@ -73,11 +72,8 @@ public:
      * through their handles. Debug builds assert that an absent dependency id
      * is recently terminal (F7) — a never-submitted id is a submit-order
      * violation that would otherwise silently run the dependent early.
-     *
-     * @param task The payload; its TaskId names the node
-     * @param dependencies Tasks that must be terminal before the payload runs
      */
-    UniquePtr<TaskBase> Register(UniquePtr<TaskBase> task, std::span<const TaskId> dependencies);
+    UniquePtr<Task> Register(UniquePtr<Task> task);
 
     /**
      * @brief Completion-side critical section (F9).
@@ -161,7 +157,7 @@ private:
         std::unordered_set<TaskId> Dependents;
         size_t RemainingDependencies = 0;
         TaskStatus Status = TaskStatus::Pending;
-        UniquePtr<TaskBase> Parked; // non-null only while dependencies remain
+        UniquePtr<Task> Parked; // non-null only while dependencies remain
     };
 
     /**

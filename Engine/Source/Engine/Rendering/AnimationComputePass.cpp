@@ -1,6 +1,6 @@
 #include "Engine/Rendering/AnimationComputePass.h"
 #include "Engine/Rendering/GPUAnimationDataStore.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 
 namespace GameEngine { namespace Engine { namespace Renderer {
 

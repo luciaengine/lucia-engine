@@ -19,19 +19,17 @@
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Mathematics/Matrix4x4.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/RecomputeElision.h"
-#include "Rendering/Core/ReverseZ.h"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
-#include <memory>
 #include <string>
 
 #include "RenderServicesDetail.h"
@@ -45,33 +43,24 @@ using namespace ::GameEngine::Rendering;
 namespace
 {
 // GE_SHADOW_STATIC_CACHE=0 forces the always-render baseline (the A/B lane
-// and kill switch). Any other value (or unset) keeps static-scene cascade
-// shadow caching ON — the standard GE_ flag idiom, flipped from review-gated
-// default-OFF after the dual review's fixes landed and the runtime gates
-// (bit-exact static parity, orbit/dynamic invalidation, tint family, zero
-// validation errors) passed. Read once so the branch is stable for the
-// process lifetime.
+// and kill switch). Unset keeps static-scene cascade shadow caching ON,
+// flipped from review-gated default-OFF after the dual review's fixes landed
+// and the runtime gates (bit-exact static parity, orbit/dynamic invalidation,
+// tint family, zero validation errors) passed. Read once so the branch is
+// stable for the process lifetime.
 bool IsStaticShadowCacheEnabled()
 {
-    static const bool s_Enabled = []()
-    {
-        const char* env = std::getenv("GE_SHADOW_STATIC_CACHE");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
+    static const bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_SHADOW_STATIC_CACHE", true);
     return s_Enabled;
 }
 
 // Cache-key view of the caster-reduction lane. Mirrors the file-local
 // IsCasterReductionEnabled in ShadowMapRenderFeature.cpp (anonymous namespace
-// there — same env var, same ON-unless-"0" semantics): the lane changes the
+// there — same env var, same on-unless-switched-off semantics): the lane changes the
 // cull planes and therefore the rendered caster set, so it is a content input.
 bool CacheKeyCasterReductionLane()
 {
-    static const bool s_Enabled = []()
-    {
-        const char* env = std::getenv("GE_SHADOW_CASTER_REDUCTION");
-        return !env || std::strcmp(env, "0") != 0;
-    }();
+    static const bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_SHADOW_CASTER_REDUCTION", true);
     return s_Enabled;
 }
 
@@ -109,15 +98,13 @@ CascadeRenderInputs BuildCascadeCacheInputs(RenderServices& rs, ViewId viewId,
     if (const auto* viewDesc = rs.Views().FindViewDesc(viewId))
     {
         in.WorldId = viewDesc->worldId;
-        const CascadeShadowCache::CasterEpochs epochs = cache.TrackCasterChanges(viewId,
-            cacheSlot, in.WorldId, rs.GetShadowCasterChanges(in.WorldId), in.LightVP, resolution);
-        in.CasterEpoch = epochs.Content;
-        in.DeformationEpoch = epochs.Deformation;
-        in.Layers = viewDesc->ActiveRenderLayerMask();
+        in.CasterEpoch = cache.TrackCasterChanges(viewId, cacheSlot, in.WorldId,
+            rs.GetShadowCasterChanges(in.WorldId), in.LightVP, resolution);
+        in.RenderLayerMask = viewDesc->ActiveRenderLayerMask();
         if (!fitFreeze && viewDesc->cameraId != 0)
         {
             if (const auto* cam = rs.Views().FindCameraData(viewDesc->cameraId))
-                std::memcpy(in.CameraViewProj, cam->viewProj.Data(), sizeof(in.CameraViewProj));
+                std::memcpy(in.CameraViewProj, cam->viewProj, sizeof(in.CameraViewProj));
         }
     }
     in.PhysicalId = physicalId;
@@ -166,7 +153,7 @@ void ShadowMapRenderFeature::Declare(Rendering::RenderGraph::RGFrame& frame, Ren
         PlanCascadeMotionFrame(frame, rs, ctx);
         for (uint32_t c = 0; c < ctx.CascadeCount; ++c)
         {
-            char suffix[24];
+            char suffix[16];
             std::snprintf(suffix, sizeof(suffix), "Cascade%u", c);
             const std::string name = ctx.PassName ? ctx.PassName(suffix) : std::string(suffix);
             DeclareCascadePass(frame, rs, ctx, c, name.c_str());
@@ -193,10 +180,7 @@ void ShadowMapRenderFeature::Declare(Rendering::RenderGraph::RGFrame& frame, Ren
         // starves the shader's own pyramidIdx >= 0 guard automatically:
         // with no pyramid declared this frame, BuildShadowDataGPU finds nothing
         // to publish and leaves the negative sentinel in place.
-        // The shader reads the pyramid through bindless views only; the compat
-        // profile's PCSS runs unaccelerated, so it builds none.
         const bool buildPyramid = ctx.ViewNeedsCascades && IsInitialized() &&
-                                  rs.Textures().IsBindlessEnabled() &&
                                   ResolveEffectiveFilterQuality(rs, ctx.View) ==
                                       ShadowFilterQuality::PCSS;
         RenderGraph::RGTexture pyramidSrc{};
@@ -309,8 +293,6 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
     std::array<CascadeUpdateClass, CascadeMotionScheduler::kMaxCascades> classes{};
     std::array<uint64_t, CascadeMotionScheduler::kMaxCascades> staleness{};
     staleness.fill(CascadeMotionScheduler::kStalenessUnknown);
-    // CasterDeformation only when no Motion pair carries a camera or fit cause.
-    CascadeMotionSource source = CascadeMotionSource::CasterDeformation;
     for (uint32_t c = 0; c < numCascades; ++c)
     {
         const CascadeRenderInputs depthIn = BuildCascadeCacheInputs(
@@ -336,17 +318,15 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
                        std::memcmp((*fits)[c].LightVP.Data(), (*tintFits)[c].LightVP.Data(),
                                    16 * sizeof(float)) == 0;
         }
-        const CascadeCacheDirtyCause* pairTintCause = tintDeclares ? &tintCause : nullptr;
-        classes[c] = ClassifyCascadePair(depthCause, pairTintCause, lockstep);
-        if (IsCameraMotionPair(classes[c], depthCause, pairTintCause))
-            source = CascadeMotionSource::Camera;
+        classes[c] =
+            ClassifyCascadePair(depthCause, tintDeclares ? &tintCause : nullptr, lockstep);
         if (fits && (*fits)[c].Valid)
             staleness[c] = frame.FrameIndex() - (*fits)[c].FrameStamp;
     }
 
     plan.DeferMask = m_MotionScheduler
                          .PlanFrame(static_cast<uint32_t>(viewId), numCascades, classes, staleness,
-                                    cap, m_MotionMaxAge, source)
+                                    cap, m_MotionMaxAge)
                          .DeferMask;
     m_MotionPlanByView[viewId] = plan;
 }
@@ -450,10 +430,10 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     if (cam.Valid())
     {
         CameraData shadowCam{};
-        shadowCam.view = kIdentity4x4;
-        shadowCam.proj = kIdentity4x4;
-        shadowCam.viewProj = frameData->LightVP[cascadeIndex];
-        shadowCam.viewProjRel = frameData->LightVPRel[cascadeIndex];
+        std::memcpy(shadowCam.view, kIdentity4x4.Data(), 64);
+        std::memcpy(shadowCam.proj, kIdentity4x4.Data(), 64);
+        std::memcpy(shadowCam.viewProj, frameData->LightVP[cascadeIndex].Data(), 64);
+        std::memcpy(shadowCam.viewProjRel, frameData->LightVPRel[cascadeIndex].Data(), 64);
         shadowCam.renderOriginSector[0] = frameData->RenderOriginSector[0];
         shadowCam.renderOriginSector[1] = frameData->RenderOriginSector[1];
         shadowCam.renderOriginSector[2] = frameData->RenderOriginSector[2];
@@ -510,7 +490,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
             RenderGraph::RGAttachmentOps dops{};
             dops.Load = RenderGraph::RGLoadOp::Clear;
             dops.Store = RenderGraph::RGStoreOp::Store;
-            dops.Clear.Depth = Rendering::ReverseZ::kClearFar;
+            dops.Clear.Depth = 0.0f; // reverse-Z: clear to far
             // Per-layer attach: 2b-1 cell tracking keeps the four cascades from
             // self-serializing beyond their real hazards.
             p.AttachDepth(shadowArr, dops, RenderGraph::RGDepthAccess::ReadWrite,
@@ -638,10 +618,10 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
     if (cam.Valid())
     {
         CameraData shadowCam{};
-        shadowCam.view = kIdentity4x4;
-        shadowCam.proj = kIdentity4x4;
-        shadowCam.viewProj = frameData->LightVP[cascadeIndex];
-        shadowCam.viewProjRel = frameData->LightVPRel[cascadeIndex];
+        std::memcpy(shadowCam.view, kIdentity4x4.Data(), 64);
+        std::memcpy(shadowCam.proj, kIdentity4x4.Data(), 64);
+        std::memcpy(shadowCam.viewProj, frameData->LightVP[cascadeIndex].Data(), 64);
+        std::memcpy(shadowCam.viewProjRel, frameData->LightVPRel[cascadeIndex].Data(), 64);
         shadowCam.renderOriginSector[0] = frameData->RenderOriginSector[0];
         shadowCam.renderOriginSector[1] = frameData->RenderOriginSector[1];
         shadowCam.renderOriginSector[2] = frameData->RenderOriginSector[2];
@@ -650,9 +630,9 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
         // glass normal, so it needs the cascade light direction. cameraPos is
         // unused for an ortho light shadow camera, so carry the (caller-resolved,
         // shadow-casting) directional light's world direction there.
-        shadowCam.cameraPos.x = lightDirWS[0];
-        shadowCam.cameraPos.y = lightDirWS[1];
-        shadowCam.cameraPos.z = lightDirWS[2];
+        shadowCam.cameraPos[0] = lightDirWS[0];
+        shadowCam.cameraPos[1] = lightDirWS[1];
+        shadowCam.cameraPos[2] = lightDirWS[2];
         *cam.Ptr = shadowCam;
     }
 
@@ -801,13 +781,13 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareAreaPass(
     if (cam.Valid())
     {
         CameraData shadowCam{};
-        shadowCam.view = areaShadow.lightView;
-        shadowCam.proj = areaShadow.lightProj;
-        shadowCam.viewProj = areaShadow.lightVP;
-        shadowCam.cameraPos.x = areaShadow.position.x;
-        shadowCam.cameraPos.y = areaShadow.position.y;
-        shadowCam.cameraPos.z = areaShadow.position.z;
-        shadowCam.cameraPos.w = -areaShadow.farPlane;
+        std::memcpy(shadowCam.view, areaShadow.lightView.Data(), 64);
+        std::memcpy(shadowCam.proj, areaShadow.lightProj.Data(), 64);
+        std::memcpy(shadowCam.viewProj, areaShadow.lightVP.Data(), 64);
+        shadowCam.cameraPos[0] = areaShadow.position.x;
+        shadowCam.cameraPos[1] = areaShadow.position.y;
+        shadowCam.cameraPos[2] = areaShadow.position.z;
+        shadowCam.cameraPos[3] = -areaShadow.farPlane;
         *cam.Ptr = shadowCam;
     }
 
@@ -852,7 +832,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareAreaPass(
             RenderGraph::RGAttachmentOps dops{};
             dops.Load = RenderGraph::RGLoadOp::Clear;
             dops.Store = RenderGraph::RGStoreOp::Store;
-            dops.Clear.Depth = Rendering::ReverseZ::kClearFar;
+            dops.Clear.Depth = 0.0f;
             p.AttachDepth(areaMap, dops, RenderGraph::RGDepthAccess::ReadWrite);
             // No PreventCulling: the world pass's sampled Read anchors it.
         },
@@ -919,13 +899,13 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareSpotPass(
     if (cam.Valid())
     {
         CameraData shadowCam{};
-        shadowCam.view = spotShadow.lightView;
-        shadowCam.proj = spotShadow.lightProj;
-        shadowCam.viewProj = spotShadow.lightVP;
-        shadowCam.cameraPos.x = spotShadow.position.x;
-        shadowCam.cameraPos.y = spotShadow.position.y;
-        shadowCam.cameraPos.z = spotShadow.position.z;
-        shadowCam.cameraPos.w = spotShadow.farPlane;
+        std::memcpy(shadowCam.view, spotShadow.lightView.Data(), 64);
+        std::memcpy(shadowCam.proj, spotShadow.lightProj.Data(), 64);
+        std::memcpy(shadowCam.viewProj, spotShadow.lightVP.Data(), 64);
+        shadowCam.cameraPos[0] = spotShadow.position.x;
+        shadowCam.cameraPos[1] = spotShadow.position.y;
+        shadowCam.cameraPos[2] = spotShadow.position.z;
+        shadowCam.cameraPos[3] = spotShadow.farPlane;
         *cam.Ptr = shadowCam;
     }
 
@@ -970,7 +950,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareSpotPass(
             RenderGraph::RGAttachmentOps dops{};
             dops.Load = RenderGraph::RGLoadOp::Clear;
             dops.Store = RenderGraph::RGStoreOp::Store;
-            dops.Clear.Depth = Rendering::ReverseZ::kClearFar;
+            dops.Clear.Depth = 0.0f;
             p.AttachDepth(spotMap, dops, RenderGraph::RGDepthAccess::ReadWrite);
         },
         [rsPtr, params = std::move(params)](RenderGraph::RGContext& c) mutable
@@ -1074,7 +1054,7 @@ void ShadowMapRenderFeature::DeclarePointPasses(Rendering::RenderGraph::RGFrame&
     if (slotAlloc.Ptr)
     {
         auto* slots = static_cast<PointShadowSlotGPU*>(slotAlloc.Ptr);
-        std::uninitialized_value_construct_n(slots, budget);
+        std::memset(slots, 0, static_cast<size_t>(slotBytes));
         for (const PointShadowFrameInfo& fi : ctx.PointShadows)
         {
             if (fi.shadowSlot < 0 || static_cast<uint32_t>(fi.shadowSlot) >= budget)
@@ -1134,13 +1114,13 @@ void ShadowMapRenderFeature::DeclarePointPasses(Rendering::RenderGraph::RGFrame&
             if (cam.Valid())
             {
                 CameraData shadowCam{};
-                shadowCam.view = fi.lightView[face];
-                shadowCam.proj = fi.lightProj;
-                shadowCam.viewProj = fi.lightVP[face];
-                shadowCam.cameraPos.x = fi.position.x;
-                shadowCam.cameraPos.y = fi.position.y;
-                shadowCam.cameraPos.z = fi.position.z;
-                shadowCam.cameraPos.w = fi.farPlane;
+                std::memcpy(shadowCam.view, fi.lightView[face].Data(), 64);
+                std::memcpy(shadowCam.proj, fi.lightProj.Data(), 64);
+                std::memcpy(shadowCam.viewProj, fi.lightVP[face].Data(), 64);
+                shadowCam.cameraPos[0] = fi.position.x;
+                shadowCam.cameraPos[1] = fi.position.y;
+                shadowCam.cameraPos[2] = fi.position.z;
+                shadowCam.cameraPos[3] = fi.farPlane;
                 *cam.Ptr = shadowCam;
             }
 
@@ -1194,7 +1174,7 @@ void ShadowMapRenderFeature::DeclarePointPasses(Rendering::RenderGraph::RGFrame&
                     RenderGraph::RGAttachmentOps dops{};
                     dops.Load = RenderGraph::RGLoadOp::Clear;
                     dops.Store = RenderGraph::RGStoreOp::Store;
-                    dops.Clear.Depth = Rendering::ReverseZ::kClearFar;
+                    dops.Clear.Depth = 0.0f;
                     p.AttachDepth(atlas, dops, RenderGraph::RGDepthAccess::ReadWrite,
                                   RenderGraph::RGRange{.BaseLayer = globalSlice, .LayerCount = 1});
                 },

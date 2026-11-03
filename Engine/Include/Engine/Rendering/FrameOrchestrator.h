@@ -508,6 +508,9 @@ class FrameOrchestrator
     // cleared once the refresh runs. The fallback-retry arm re-arms via
     // m_ActiveRenderPipelineIsFallback while a transient fallback is applied.
     bool m_BlueprintRefreshNeeded = true;
+    // Retry asynchronous loads even when the requested path is the default or
+    // a last-good pipeline remains active. Neither case is marked fallback.
+    bool m_RenderPipelineLoadPending = false;
     // The asset backing the currently-applied blueprint (when it came from a
     // requested .rendergraph, not the stand-in). Captured at resolve inside
     // EnsureActiveRenderPipelineBlueprint; cleared on path switch / resolve

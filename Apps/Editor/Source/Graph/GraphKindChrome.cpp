@@ -1,12 +1,21 @@
 #include "Graph/GraphKindChrome.h"
 
-#include "Graph/GraphNode/GraphNodeRegistry.h"
-#include "Types/StringUtils.h"
+#include "Graph/GraphNodeRegistry.h"
 
 #include <algorithm>
+#include <cctype>
 
 namespace GameEngine {
 namespace {
+
+std::string LowerAscii(std::string_view value)
+{
+    std::string out(value);
+    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return out;
+}
 
 std::string EnsureLeadingDot(std::string_view ext)
 {
@@ -76,11 +85,11 @@ bool ExtensionOpensInGraphPanel(std::string_view extension)
 
 std::string KindIdFromGraphExtension(std::string_view extension)
 {
-    const std::string ext = ToLowerAscii(extension);
+    const std::string ext = LowerAscii(extension);
     (void)GraphNodeRegistry::Get();
     for (const Graph::GraphTypeDesc& desc : Graph::GraphTypeRegistry::Get().All())
     {
-        if (ToLowerAscii(EnsureLeadingDot(desc.FileExtension)) == ext)
+        if (LowerAscii(EnsureLeadingDot(desc.FileExtension)) == ext)
             return desc.Id;
     }
     return {};

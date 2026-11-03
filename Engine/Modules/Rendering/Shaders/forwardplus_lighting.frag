@@ -1,6 +1,5 @@
 #version 450
 
-
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 oColor;
 
@@ -50,24 +49,9 @@ layout(set = 0, binding = 5, std140) uniform ViewParamsBlock
 #undef GE_VP_MAT4
 } ViewParams;
 
-// The view's exposure state (ExposureHistory): the additive light lands in scene colour at the
-// frame's pre-exposure P.
-#define GE_EXPOSURE_HISTORY_BINDING 6
-#include "Includes/exposure_history.glsl"
-#include "Includes/reverse_z.glsl"
-
 float Saturate(float x) { return clamp(x, 0.0, 1.0); }
 
-float ViewZFromDepth_ReverseZ_LH(float depth, float zNear, float zFar)
-{
-    // For MakePerspectiveLH_ZO_ReverseZ:
-    //   depth = -n/(f-n) + (n*f/(f-n)) * (1/z)
-    //   => z = n*f / (depth*(f-n) + n)
-    // Guard against depth == 0 (cleared / sky / unwritten) to avoid div-by-zero;
-    // return a very-large finite value so downstream cluster slicing won't NaN.
-    const float denom = max(depth * (zFar - zNear) + zNear, 1e-6);
-    return (zNear * zFar) / denom;
-}
+#include "Includes/cluster_projection.glsl"
 
 void main()
 {
@@ -96,7 +80,8 @@ void main()
     vec3 nV = normalize(cross(dFdx(posV), dFdy(posV)));
 #endif
 
-    if (IsBackgroundDepth(depth))
+    // Reverse-Z: empty/sky pixels are at depth == 0.0.
+    if (depth <= 0.000001)
     {
         oColor = vec4(0.0);
         return;
@@ -113,7 +98,9 @@ void main()
     float zFar = ViewParams.ge_nearFar.y;
     if (zFar <= zNear + 1e-4) zFar = zNear + 1000.0;
 
-    const float viewZ = ViewZFromDepth_ReverseZ_LH(depth, zNear, zFar);
+    const float viewZ = GE_ClusterViewZ(depth,
+        ViewParams.ge_invProj[2][2], ViewParams.ge_invProj[3][2],
+        ViewParams.ge_invProj[2][3], ViewParams.ge_invProj[3][3]);
     const float invLogRatio = ViewParams.ge_nearFar.z;
     const float t = clamp(log(viewZ / zNear) * invLogRatio, 0.0, 0.999999);
     const uint slice = uint(floor(t * float(depthSlices)));
@@ -188,5 +175,5 @@ void main()
     }
 
     // Pure additive contribution.
-    oColor = vec4(accum * GE_PreExposure(), 1.0);
+    oColor = vec4(accum, 1.0);
 }

@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <cmath>
 
 #include "SceneView/SceneViewCameraRig.h"
@@ -51,13 +50,13 @@ Matrix4x4 LegacyViewMatrix(const float eye[3], float yawDeg, float pitchDeg)
 }
 
 // Angle between the view matrix's forward row and the exact double direction.
-double ForwardAngularError(const Matrix4x4& view, double yawDeg, double pitchDeg)
+double ForwardAngularError(const float view[16], double yawDeg, double pitchDeg)
 {
     const Vec3d f = LookDirection(yawDeg, pitchDeg);
-    // Forward row of the LH view matrix: row 2 of columns 0, 1 and 2.
-    const double vx = view[0][2];
-    const double vy = view[1][2];
-    const double vz = view[2][2];
+    // Forward row of the LH view matrix (column-major): elements 2, 6, 10.
+    const double vx = view[2];
+    const double vy = view[6];
+    const double vz = view[10];
     const double len = std::sqrt(vx * vx + vy * vy + vz * vz);
     double dot = (vx * f.X + vy * f.Y + vz * f.Z) / len;
     if (dot > 1.0)
@@ -152,9 +151,10 @@ TEST(SceneViewCameraRig, ViewDirectionQuantizationFailsBeforeAt5e4)
 
         const Matrix4x4 legacy =
             LegacyViewMatrix(eyeF, static_cast<float>(yaw), static_cast<float>(pitch));
-        maxLegacyErr = std::max(maxLegacyErr, ForwardAngularError(legacy, yaw, pitch));
+        maxLegacyErr = std::max(maxLegacyErr, ForwardAngularError(legacy.Data(), yaw, pitch));
 
-        const Matrix4x4 fresh = BuildViewMatrixLH(eyeD, yaw, pitch);
+        float fresh[16];
+        BuildViewMatrixLH(eyeD, yaw, pitch, fresh);
         maxNewErr = std::max(maxNewErr, ForwardAngularError(fresh, yaw, pitch));
     }
 
@@ -230,13 +230,14 @@ TEST(SceneViewCameraRig, SmallSceneViewMatrixMatchesLegacyWithinFloatNoise)
         for (const auto& pose : poses)
         {
             const Matrix4x4 legacy = LegacyViewMatrix(eye, pose[0], pose[1]);
-            const Matrix4x4 fresh = BuildViewMatrixLH(Vec3d{eye[0], eye[1], eye[2]}, pose[0], pose[1]);
+            float fresh[16];
+            BuildViewMatrixLH(Vec3d{eye[0], eye[1], eye[2]}, pose[0], pose[1], fresh);
 
             for (int i = 0; i < 16; ++i)
             {
                 const bool translation = (i >= 12 && i <= 14);
                 const float tol = translation ? transTol : rotTol;
-                EXPECT_NEAR(fresh.Data()[i], legacy.Data()[i], tol)
+                EXPECT_NEAR(fresh[i], legacy.Data()[i], tol)
                     << "element " << i << " diverges beyond legacy fp32 noise (eye " << eye[0]
                     << "," << eye[1] << "," << eye[2] << " yaw " << pose[0] << " pitch "
                     << pose[1] << ")";
@@ -303,7 +304,8 @@ TEST(SceneViewCameraRig, ViewDirectionStaysExactAtEarthRadius)
     {
         const double yaw = 0.5 * static_cast<double>(i);
         const double pitch = -30.0 + 0.25 * static_cast<double>(i);
-        const Matrix4x4 view = BuildViewMatrixLH(eyeD, yaw, pitch);
+        float view[16];
+        BuildViewMatrixLH(eyeD, yaw, pitch, view);
         maxErr = std::max(maxErr, ForwardAngularError(view, yaw, pitch));
     }
     EXPECT_LT(maxErr, 1.0e-6);

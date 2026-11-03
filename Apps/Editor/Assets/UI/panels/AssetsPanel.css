@@ -1,0 +1,25 @@
+.assets-left-pane {
+    padding-bottom: 0px;
+}
+
+.assets-folder-tree {
+    padding-right: 0px;
+}
+
+.assets-left-pane > .panel-search-bar {
+    position: relative;
+    bottom: 0px;
+    left: auto;
+    right: auto;
+    margin: 8px 13px;
+    flex-shrink: 0;
+}
+
+.assets-left-pane.search-bars-at-top > .panel-search-bar {
+    position: absolute;
+    top: 8px;
+    bottom: unset;
+    left: 13px;
+    right: 13px;
+    margin: 0px;
+}

@@ -96,12 +96,7 @@ shared uint sIndices[kLdsMaxLights];
 
 // ----- Helpers --------------------------------------------------------------
 
-// Reverse-Z LH-ZO depth -> view-space Z (matches forwardplus_lighting.frag's
-// ViewZFromDepth_ReverseZ_LH).
-float ViewZFromDepth(float depth, float zNear, float zFar)
-{
-    return (zNear * zFar) / max(depth * (zFar - zNear) + zNear, 1e-6);
-}
+#include "Includes/cluster_projection.glsl"
 
 // ----- Main -----------------------------------------------------------------
 
@@ -137,7 +132,7 @@ void main()
     bool clusterActive = true;
 #endif
 
-    // --- Tile frustum planes (identical math to placeholder cull) ---------------
+    // --- Tile frustum planes for perspective and orthographic views ------------
 
     const uvec2 tileSize = max(uvec2(ClusterParams.params0.xy), uvec2(1u, 1u));
     const float renderW = float(clustersX * tileSize.x);
@@ -159,16 +154,13 @@ void main()
     vec3 pBL = BL.xyz / max(abs(BL.w), 1e-6);
     vec3 pBR = BR.xyz / max(abs(BR.w), 1e-6);
 
-    vec3 rTL = normalize(pTL);
-    vec3 rTR = normalize(pTR);
-    vec3 rBL = normalize(pBL);
-    vec3 rBR = normalize(pBR);
-    vec3 rC  = normalize((rTL + rTR + rBL + rBR) * 0.25);
-
-    vec3 nLeft   = normalize(cross(rBL, rTL)); if (dot(nLeft, rC)   < 0.0) nLeft   = -nLeft;
-    vec3 nRight  = normalize(cross(rTR, rBR)); if (dot(nRight, rC)  < 0.0) nRight  = -nRight;
-    vec3 nTop    = normalize(cross(rTL, rTR)); if (dot(nTop, rC)    < 0.0) nTop    = -nTop;
-    vec3 nBottom = normalize(cross(rBR, rBL)); if (dot(nBottom, rC) < 0.0) nBottom = -nBottom;
+    vec4 nearTL = ViewParams.ge_invProj * vec4(x0, y1, 1.0, 1.0);
+    vec4 nearBR = ViewParams.ge_invProj * vec4(x1, y0, 1.0, 1.0);
+    vec3 pNearTL = nearTL.xyz / max(abs(nearTL.w), 1e-6);
+    vec3 pNearBR = nearBR.xyz / max(abs(nearBR.w), 1e-6);
+    vec3 inside = (pTL + pTR + pBL + pBR) * 0.125 + (pNearTL + pNearBR) * 0.25;
+    GE_ClusterSidePlanes sidePlanes = GE_ClusterBuildSidePlanes(
+        pTL, pTR, pBL, pBR, pNearTL, pNearBR, inside);
 
     // --- Z slice bounds (log partition in view Z) ------------------------------
 
@@ -193,7 +185,9 @@ void main()
     {
         // Reverse-Z: dmBits.x = smallest depth = farthest opaque.
         const float depthFarthestBits = uintBitsToFloat(dmBits.x);
-        const float viewZ_farthest = ViewZFromDepth(depthFarthestBits, zNear, zFar);
+        const float viewZ_farthest = GE_ClusterViewZ(depthFarthestBits,
+            ViewParams.ge_invProj[2][2], ViewParams.ge_invProj[3][2],
+            ViewParams.ge_invProj[2][3], ViewParams.ge_invProj[3][3]);
         // Skip ONLY slices entirely BEHIND the farthest opaque — nothing visible
         // is occluded back there. Do NOT skip slices in front of the nearest
         // opaque: transparent forward+ surfaces (e.g. the ocean water drawn over
@@ -278,10 +272,10 @@ void main()
         if (posV.z + radius < zNear) continue;
 
         // Sphere-vs-frustum-plane: reject if entire sphere outside any plane.
-        if (dot(nLeft,   posV) < -radius) continue;
-        if (dot(nRight,  posV) < -radius) continue;
-        if (dot(nTop,    posV) < -radius) continue;
-        if (dot(nBottom, posV) < -radius) continue;
+        if (GE_ClusterPlaneDistance(sidePlanes.Left, posV) < -radius) continue;
+        if (GE_ClusterPlaneDistance(sidePlanes.Right, posV) < -radius) continue;
+        if (GE_ClusterPlaneDistance(sidePlanes.Top, posV) < -radius) continue;
+        if (GE_ClusterPlaneDistance(sidePlanes.Bottom, posV) < -radius) continue;
 
         // Z slab.
         if (posV.z - radius > zSliceMax) continue;

@@ -3,9 +3,8 @@
 #include "InspectorRegistry.h"
 
 #include "Graph/GraphModel.h"
-#include "Graph/GraphNode/GraphNode.h"
+#include "Graph/GraphNode.h"
 
-#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -14,8 +13,6 @@
 
 namespace GameEngine {
 
-enum class AssetType;
-class AssetField;
 class AssetRegistry;
 class Checkbox;
 class Dropdown;
@@ -47,9 +44,6 @@ struct GraphNodeEditHost {
         Null outside a panel with an asset context. */
     AssetRegistry* Assets = nullptr;
     IThumbnailProvider* Thumbnails = nullptr;
-    /** Selects an asset in the Assets panel and keeps the Inspector; the asset
-        reference fields on pins reveal through it. Empty outside the editor. */
-    std::function<void(const std::filesystem::path&)> PingAsset;
 };
 
 /** Ported node: C++ shareable root, inner body from graph-ported-node.uxml. */
@@ -204,8 +198,6 @@ private:
     void HideValueEditors(bool force = false);
     void EnsureValueEditorHost();
     void CommitParam(const std::string& key, Graph::GraphValue value);
-    /** Bind a pin's asset field to the node parameter `portId` holds (a GUID string). */
-    void BindAssetField(AssetField& field, AssetType type, const std::string& portId, const std::string& guidText);
     /** Hand a still-dragging value to the host, which decides what reaches undo. */
     void EditLive(const std::string& key, Graph::GraphValue value);
     void EditLive(const std::function<void(Graph::Node&)>& write);

@@ -55,7 +55,7 @@ struct SkySunPathHarness
         EXPECT_TRUE(feature && feature->HasActiveSettings());
         if (!feature)
             return {};
-        const Mathematics::Vector3& sun = feature->GetSettings().scatteringSunDir;
+        const float* sun = feature->GetSettings().scatteringSunDir;
         return {sun[0], sun[1], sun[2]};
     }
 };
@@ -80,8 +80,8 @@ void ExpectSameDirection(const Mathematics::Vector3& actual, const Mathematics::
 
 // The sky's Latitude, DayOfYear and NorthHeading are what the renderer's sun follows: a London
 // winter noon is low and, with north turned to +X, leans to -X, whatever the sky entity's own
-// rotation. Its identity case is the equator on the March equinox with north at +Z: the great circle
-// with the sunrise due east.
+// rotation. Its identity case is every sky saved before the site existed: no Latitude, DayOfYear or
+// north, and the previous great circle with the sunrise due east.
 TEST(SkySunPath, TheSkysSiteFieldsPlaceTheRenderedSun)
 {
     {
@@ -105,13 +105,12 @@ TEST(SkySunPath, TheSkysSiteFieldsPlaceTheRenderedSun)
         const ECS::EntityHandle skyEntity = harness.World.CreateEntity();
         harness.World.AddComponentImmediate(skyEntity, Components::Transform{});
         Components::SkyEnvironment sky{};
-        sky.Latitude = 0.0f;
         sky.TimeOfDayHours = 7.0f;
         harness.World.AddComponentImmediate(skyEntity, sky);
 
         const Mathematics::Vector3 sun = harness.RenderedSun();
         ExpectSameDirection(sun, ExpectedSun({}, 7.0f));
-        EXPECT_EQ(sun.z, 0.0f) << "the equinox path at the equator stays in the east-up plane";
+        EXPECT_EQ(sun.z, 0.0f) << "the default path stays in the east-up plane";
         EXPECT_GT(sun.x, 0.9f);
     }
 }
@@ -141,7 +140,6 @@ TEST(SkySunPath, AFollowedLightReadsItsHourOnTheSkysPath)
     harness.World.AddComponentImmediate(lightEntity, lightTransform);
     Components::WorldTransform lightWorld{};
     std::copy(std::begin(lightTransform.matrix), std::end(lightTransform.matrix), std::begin(lightWorld.matrix));
-    lightWorld.Version = 1u; // resolved, as TransformHierarchySystem leaves it
     harness.World.AddComponentImmediate(lightEntity, lightWorld);
 
     const ECS::EntityHandle skyEntity = harness.World.CreateEntity();
@@ -226,7 +224,7 @@ TEST(SkySunPath, ThePreviewIsWhatTheDrivenLightDeliversByDay)
 
     const float overhead =
         Components::SkySunPath::PhysicalSunIlluminanceLux(Components::SkyEnvironment{}, 90.0f, kSunLux, 12.0f);
-    EXPECT_NEAR(overhead, kSunLux, kSunLux * kRelativeTolerance) << "a sun at 90 degrees delivers the light's lux";
+    EXPECT_NEAR(overhead, kSunLux, kSunLux * kRelativeTolerance) << "the default noon sun is overhead";
 }
 
 // The Sun path choice selects which fields place the sun. Under Earth the Custom fields do nothing;
@@ -262,12 +260,14 @@ TEST(SkySunPath, EachPathReadsOnlyItsOwnFields)
     }
     for (float hours = 0.5f; hours < 24.0f; hours += 1.5f)
     {
+        float sun[3];
         Rendering::SkySettings settings{};
         settings.timeOfDayHours = hours;
         Rendering::SkySystemState state{};
         const Rendering::SolarFrame frame = Rendering::MakeSolarFrame(Components::SkySunPath::PathAngles(sky));
         Rendering::ComputeSimpleSunMoon(settings, Rendering::SkySystemConfig{}, frame, state);
-        EXPECT_NEAR(Rendering::SolarHourFromDirection(frame, state.sunDirWS), hours, 1e-3f) << "hour " << hours;
+        std::copy(std::begin(state.sunDirWS), std::end(state.sunDirWS), sun);
+        EXPECT_NEAR(Rendering::SolarHourFromDirection(frame, sun), hours, 1e-3f) << "hour " << hours;
     }
 }
 
@@ -357,7 +357,7 @@ TEST(SkySunPath, TheSunsShareOfTheDrivenLightEndsAtTheTwilightFloor)
         {
             EXPECT_EQ(sunShare, 0.0f) << "hour " << hour.Hours;
             EXPECT_EQ(Components::SkySunPath::DrivenMoonBlend(sky, elevation), 1.0f);
-            // At the default equinox midnight the moon stands at its highest: the light gives the full-night value.
+            // At the default equinox midnight the moon is overhead: the light gives the full-night value.
             EXPECT_NEAR(Components::SkySunPath::FullNightMoonLux(sky), delivered, delivered * 1e-3f);
         }
         else
@@ -372,8 +372,9 @@ TEST(SkySunPath, TheSunsShareOfTheDrivenLightEndsAtTheTwilightFloor)
             ASSERT_LT(blend, 1.0f);
             const auto* feature = harness.Services.GetFeature<Engine::Renderer::SkyRenderFeature>();
             ASSERT_NE(feature, nullptr);
-            const ColorLinear moonGround = Rendering::EvaluateGroundLevelSunColor(
-                Rendering::ScatteringAtmosphere(), config.moonColor, feature->GetSettings().moonDirWS[1]);
+            float moonGround[3];
+            Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), config.moonColor,
+                                                   feature->GetSettings().moonDirWS[1], moonGround);
             const float moonTerm = kSunLux * blend * config.moonLightIlluminanceScale *
                                    ColorUtils::LinearRec709Luminance(moonGround);
             EXPECT_NEAR(sunShare, delivered - moonTerm, delivered * 1e-3f) << "hour " << hour.Hours;

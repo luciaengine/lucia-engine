@@ -1,10 +1,9 @@
 #include "PathfindingECS/NavigationService.h"
-#include "Components/Navigation/NavigationAgent.h"
+#include "PathfindingECS/Components/NavigationAgent.h"
 #include "PathfindingECS/Components/NavigationAgentState.h"
-#include "Components/Navigation/NavigationSurface.h"
-#include "NavigationTestSurfaces.h"
+#include "PathfindingECS/Components/NavigationGrid.h"
 #include "PathfindingECS/Components/NavigationDebugSettings.h"
-#include "PathfindingECS/Systems/NavigationSurfaceSystem.h"
+#include "PathfindingECS/Systems/NavigationBuildSystem.h"
 #include "PathfindingECS/Systems/NavigationPathfindingSystem.h"
 #include "PathfindingECS/Systems/NavigationMovementSystem.h"
 #include "PathfindingECS/Systems/NavigationDebugSystem.h"
@@ -14,7 +13,7 @@
 #include "ECS/Entity.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Systems.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "Pathfinding/NavigationWorld.h"
 #include "Pathfinding/GridMap.h"
 #include "Pathfinding/PathfindingTypes.h"
@@ -58,7 +57,20 @@ protected:
     // Helper: create a grid source entity and run init system so it gets baked
     ECS::Entity CreateGridSource()
     {
-        return Testing::CreateFlatGridSurface(*world, kTestGridWidth, kTestGridDepth, kTestCellSize);
+        auto entity = world->Create();
+        Components::NavigationGrid source{};
+        source.GridType = Pathfinding::GridType::Square;
+        source.CellSize = kTestCellSize;
+        source.Width = kTestGridWidth;
+        source.Depth = kTestGridDepth;
+        entity.Set(source);
+        world->ProcessCommands();
+
+        NavigationBuildSystem initSystem;
+        initSystem.Update(*world, kDeltaTime);
+        world->ProcessCommands();
+
+        return entity;
     }
 
     // Helper: create an agent entity at a given position with a destination
@@ -73,12 +85,12 @@ protected:
         agent.Acceleration = 100.0f; // High acceleration so velocity converges quickly in tests
         agent.StoppingDistance = 0.3f;
         agent.Radius = 0.25f;
+        agent.NavMapIndex = navMapIndex;
+        agent.NavMapGeneration = navMapGeneration;
         agent.AgentId = entity.GetHandle().id;
         entity.Set(agent);
 
         Components::NavigationAgentState state{};
-        state.NavMapIndex = navMapIndex;
-        state.NavMapGeneration = navMapGeneration;
         state.DestinationX = destX;
         state.DestinationY = 0.0f;
         state.DestinationZ = destZ;
@@ -102,10 +114,10 @@ protected:
         return entity;
     }
 
-    // Helper: read the NavigationSurface back from its entity
-    Components::NavigationSurface GetGridSource(ECS::Entity& entity)
+    // Helper: read NavigationGrid back from entity
+    Components::NavigationGrid GetGridSource(ECS::Entity& entity)
     {
-        auto* ptr = entity.Get<Components::NavigationSurface>();
+        auto* ptr = entity.Get<Components::NavigationGrid>();
         EXPECT_NE(ptr, nullptr);
         return *ptr;
     }
@@ -169,23 +181,23 @@ protected:
 
 TEST_F(NavSystemIntegrationTest, GridSourceInit)
 {
-    Testing::CreateGroundPlane(*world);
     auto gridEntity = world->Create();
-    Components::NavigationSurface source{};
-    source.Mode = Components::NavigationSurfaceMode::Grid;
+    Components::NavigationGrid source{};
+    source.GridType = Pathfinding::GridType::Square;
     source.CellSize = kTestCellSize;
-    source.FitBounds = false;
-    source.Center = {8.0f, 0.0f, 8.0f};
-    source.Extent = {8.0f, 1.0f, 8.0f};
+    source.Width = kTestGridWidth;
+    source.Depth = kTestGridDepth;
     gridEntity.Set(source);
     world->ProcessCommands();
 
-    EXPECT_FALSE(ResolveNavigationSurfaceMap(*world, GetGridSource(gridEntity)).IsValid());
+    EXPECT_FALSE(GetGridSource(gridEntity).Initialized);
 
-    Testing::BakeSurfaces(*world);
+    NavigationBuildSystem initSystem;
+    initSystem.Update(*world, kDeltaTime);
+    world->ProcessCommands();
 
     auto updatedSource = GetGridSource(gridEntity);
-    EXPECT_EQ(updatedSource.BakePhase, Components::NavigationBakePhase::Baked);
+    EXPECT_TRUE(updatedSource.Initialized);
     EXPECT_NE(updatedSource.NavMapGeneration, 0u);
 }
 
@@ -207,7 +219,7 @@ TEST_F(NavSystemIntegrationTest, PathfindingOnGrid)
     world->ProcessCommands();
 
     auto state = GetAgentState(agentEntity);
-    auto status = state.Status;
+    auto status = static_cast<Pathfinding::PathStatus>(state.Status);
     EXPECT_EQ(status, Pathfinding::PathStatus::Complete);
     EXPECT_FALSE(state.PathDirty);
 }
@@ -285,6 +297,63 @@ TEST_F(NavSystemIntegrationTest, AgentReachesDestination)
 }
 
 // ---------------------------------------------------------------------------
+// IdleAgentDoesNotStampTransformColumns
+// ---------------------------------------------------------------------------
+// The movement scan reads NavigationAgent and takes Transform and
+// WorldTransform as Writable, writing them only when the agent moves, so an
+// agent that does not move leaves their write-grant versions alone and
+// Changed<> consumers stay quiet. A moving agent is granted both transform
+// columns.
+
+TEST_F(NavSystemIntegrationTest, IdleAgentDoesNotStampTransformColumns)
+{
+    auto gridEntity = CreateGridSource();
+    auto src = GetGridSource(gridEntity);
+
+    auto agentEntity = CreateAgent(2.5f, 2.5f, 4.5f, 4.5f,
+                                   src.NavMapIndex, src.NavMapGeneration);
+    const ECS::EntityHandle agent = agentEntity.GetHandle();
+    const auto transformType = ECS::GetComponentTypeId<Components::Transform>();
+    const auto worldTransformType = ECS::GetComponentTypeId<Components::WorldTransform>();
+    const auto agentType = ECS::GetComponentTypeId<Components::NavigationAgent>();
+
+    NavigationPathfindingSystem pathSystem;
+    pathSystem.Update(*world, kDeltaTime);
+    world->ProcessCommands();
+
+    // Positive control: a moving tick grants both transform columns.
+    NavigationMovementSystem moveSystem;
+    const uint64 gateBeforeMove = world->GetGlobalSystemVersion();
+    moveSystem.Update(*world, kDeltaTime);
+    world->ProcessCommands();
+    EXPECT_GT(world->GetEntityColumnVersion(agent, transformType), gateBeforeMove);
+    EXPECT_GT(world->GetEntityColumnVersion(agent, worldTransformType), gateBeforeMove);
+
+    constexpr int kMaxIterations = 600;
+    for (int i = 0; i < kMaxIterations && GetAgentState(agentEntity).HasDestination; ++i)
+    {
+        moveSystem.Update(*world, kDeltaTime);
+        world->ProcessCommands();
+    }
+    ASSERT_FALSE(GetAgentState(agentEntity).HasDestination) << "agent never arrived";
+
+    const uint64 transformStamp = world->GetEntityColumnVersion(agent, transformType);
+    const uint64 worldTransformStamp = world->GetEntityColumnVersion(agent, worldTransformType);
+    const uint64 agentStamp = world->GetEntityColumnVersion(agent, agentType);
+    for (int i = 0; i < 4; ++i)
+    {
+        moveSystem.Update(*world, kDeltaTime);
+        world->ProcessCommands();
+    }
+    EXPECT_EQ(world->GetEntityColumnVersion(agent, transformType), transformStamp)
+        << "an idle movement update write-granted Transform";
+    EXPECT_EQ(world->GetEntityColumnVersion(agent, worldTransformType), worldTransformStamp)
+        << "an idle movement update write-granted WorldTransform";
+    EXPECT_EQ(world->GetEntityColumnVersion(agent, agentType), agentStamp)
+        << "an idle movement update write-granted NavigationAgent";
+}
+
+// ---------------------------------------------------------------------------
 // BlockedPathFails
 // ---------------------------------------------------------------------------
 
@@ -316,7 +385,7 @@ TEST_F(NavSystemIntegrationTest, BlockedPathFails)
     world->ProcessCommands();
 
     auto agentState = GetAgentState(agentEntity);
-    auto status = agentState.Status;
+    auto status = static_cast<Pathfinding::PathStatus>(agentState.Status);
     EXPECT_EQ(status, Pathfinding::PathStatus::Failed);
 }
 
@@ -392,7 +461,7 @@ TEST_F(NavSystemIntegrationTest, StandingOccupancyRemainsWhenDestinationCancelle
     ASSERT_TRUE(gridMap->WorldToCell(wt.matrix[12], wt.matrix[14], hereX, hereZ));
     EXPECT_EQ(gridMap->GetCellReservation(hereX, hereZ).AgentId, agentId);
     EXPECT_NE(gridMap->GetCellReservation(hereX, hereZ).Occupancy, 0u);
-    EXPECT_TRUE(GetAgentState(agentEntity).CellReservationOwner != 0u);
+    EXPECT_TRUE(GetAgentState(agentEntity).HasCellReservations);
 }
 
 TEST_F(NavSystemIntegrationTest, BodyStampRemainsOnPathDirtyRetarget)
@@ -442,7 +511,7 @@ TEST_F(NavSystemIntegrationTest, BodyStampRemainsOnPathDirtyRetarget)
     EXPECT_EQ(gridMap->GetCellReservation(hereX, hereZ).AgentId, agentId)
         << "Retarget must keep a body stamp so a neighbour cannot step through";
     EXPECT_NE(gridMap->GetCellReservation(hereX, hereZ).Occupancy, 0u);
-    EXPECT_TRUE(GetAgentState(agentEntity).CellReservationOwner != 0u);
+    EXPECT_TRUE(GetAgentState(agentEntity).HasCellReservations);
 }
 
 TEST_F(NavSystemIntegrationTest, ReservationsClearedWhenAgentDestroyed)
@@ -683,7 +752,7 @@ TEST_F(NavSystemIntegrationTest, FailedOccupancyReplansAfterBodyLeaves)
     pathSystem.Update(*world, kDeltaTime);
     world->ProcessCommands();
 
-    const auto occupiedStatus = GetAgentState(walker).Status;
+    const auto occupiedStatus = static_cast<Pathfinding::PathStatus>(GetAgentState(walker).Status);
     EXPECT_TRUE(occupiedStatus == Pathfinding::PathStatus::Complete ||
                 occupiedStatus == Pathfinding::PathStatus::Partial)
         << "Occupancy on the only corridor cell is a tax, not Failed when dest is walkable";
@@ -707,7 +776,7 @@ TEST_F(NavSystemIntegrationTest, FailedOccupancyReplansAfterBodyLeaves)
         world->ProcessCommands();
     }
 
-    const auto status = GetAgentState(walker).Status;
+    const auto status = static_cast<Pathfinding::PathStatus>(GetAgentState(walker).Status);
     EXPECT_TRUE(status == Pathfinding::PathStatus::Complete ||
                 status == Pathfinding::PathStatus::Partial)
         << "Walker must recover after the occupying body leaves";

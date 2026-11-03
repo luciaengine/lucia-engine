@@ -1,5 +1,5 @@
 #include "Scripting/PathResolver.h"
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h" // PathUtils
 #include <vector>
 
 namespace GameEngine
@@ -49,7 +49,7 @@ bool DirectoryHasNativeLibrary(const std::filesystem::path& dir)
 
 std::filesystem::path ResolveEngineManagedDirectoryFrom(const std::filesystem::path& exeDir)
 {
-    const std::filesystem::path bundleResources = ApplicationPaths::GetBundleResourcesDirectory(exeDir);
+    const std::filesystem::path bundleResources = PathUtils::GetBundleResourcesDirectory(exeDir);
     if (!bundleResources.empty())
     {
         std::error_code ec;
@@ -62,7 +62,7 @@ std::filesystem::path ResolveEngineManagedDirectoryFrom(const std::filesystem::p
 
 std::filesystem::path ResolveEngineManagedDirectory()
 {
-    return ResolveEngineManagedDirectoryFrom(ApplicationPaths::GetExecutableDirectory());
+    return ResolveEngineManagedDirectoryFrom(PathUtils::GetExecutableDirectory());
 }
 
 std::filesystem::path ResolveCoreBridgeDll(const std::filesystem::path& preferred)
@@ -84,11 +84,10 @@ std::filesystem::path ResolveHotReloadDll()
 std::filesystem::path ResolveScriptsAssemblyDirectory()
 {
     // Scripts assembly OUTPUT directory: <exe>/ScriptAssemblies
-    return ApplicationPaths::GetScriptsAssemblyDirectory();
+    return PathUtils::GetScriptsAssemblyDirectory();
 }
 
-std::filesystem::path ResolveNativeLibraryDirectoryFrom(const std::filesystem::path& exeDir,
-                                                        const std::filesystem::path& currentDir)
+std::filesystem::path ResolveNativeLibraryDirectoryFrom(const std::filesystem::path& exeDir)
 {
     using std::filesystem::path;
 
@@ -115,35 +114,26 @@ std::filesystem::path ResolveNativeLibraryDirectoryFrom(const std::filesystem::p
             return parent;
     }
 
-    // 3) During local development some hosts may copy the native shim next to the
-    //    working directory; respect that when present.
-    if (DirectoryHasNativeLibrary(currentDir))
-        return currentDir;
-
-    // 4) Conservative fallback: prefer the executable directory, even if the
-    //    library is currently missing. This keeps the result stable and
-    //    discoverable in diagnostics.
-    if (!exeDir.empty())
-        return exeDir;
-    return currentDir;
+    // 3) Fallback: the executable directory, even if the library is currently missing.
+    //    This keeps the result stable and discoverable in diagnostics.
+    return exeDir;
 }
 
 std::filesystem::path ResolveNativeLibraryDirectory()
 {
-    return ResolveNativeLibraryDirectoryFrom(ApplicationPaths::GetExecutableDirectory(), std::filesystem::current_path());
+    return ResolveNativeLibraryDirectoryFrom(PathUtils::GetExecutableDirectory());
 }
 
 std::filesystem::path ResolveNativeLibraryPath()
 {
-    return ResolveNativeLibraryPathFrom(ApplicationPaths::GetExecutableDirectory(), std::filesystem::current_path());
+    return ResolveNativeLibraryPathFrom(PathUtils::GetExecutableDirectory());
 }
 
-std::filesystem::path ResolveNativeLibraryPathFrom(const std::filesystem::path& exeDir,
-                                                   const std::filesystem::path& currentDir)
+std::filesystem::path ResolveNativeLibraryPathFrom(const std::filesystem::path& exeDir)
 {
     using std::filesystem::path;
 
-    path dir = ResolveNativeLibraryDirectoryFrom(exeDir, currentDir);
+    path dir = ResolveNativeLibraryDirectoryFrom(exeDir);
     if (dir.empty())
     {
         return {};
@@ -175,7 +165,7 @@ std::filesystem::path ResolveScriptsRuntimeConfig()
     const std::vector<std::filesystem::path> cands = {
         managedDir / "GameEngine.CoreBridge.runtimeconfig.json",
         managedDir / "GameEngine.HotReload.runtimeconfig.json",
-        ApplicationPaths::GetExecutableDirectory() / "ScriptAssemblies" / "GameEngine.Scripts.runtimeconfig.json"};
+        PathUtils::GetExecutableDirectory() / "ScriptAssemblies" / "GameEngine.Scripts.runtimeconfig.json"};
     return FirstExisting(cands);
 }
 

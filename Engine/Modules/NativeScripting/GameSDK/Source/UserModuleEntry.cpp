@@ -9,13 +9,6 @@
 
 #include "NativeScripting/NativeScriptingABI.h"
 
-// The allocation counter's hook, so this module's allocations count into the engine's
-// counter where the engine carries its instrumentation (the SDK defines
-// GE_DEBUG_INSTRUMENTATION to the engine's value).
-#if GE_DEBUG_INSTRUMENTATION
-#include "Memory/AllocationHook.inl"
-#endif
-
 extern "C" {
 
 GE_USERAPI uint32_t GE_UserModule_AbiVersion_v1(void)

@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include "Mathematics/Angle.h"
 #include "Rendering/Common/Math.h"
 #include "Rendering/Common/MatrixUtils.h"
 
@@ -22,7 +21,7 @@ protected:
 	{
 		identityMatrix = Matrix4x4::Identity();
 		translationMatrix = MakeTranslation(Vector3(1.0f, 2.0f, 3.0f));
-		rotationMatrix = MakeRotationY(GameEngine::Mathematics::ToRadians(45.0f));
+		rotationMatrix = MakeRotationY(GameEngine::Rendering::Math::ToRadians(45.0f));
 		scaleMatrix = MakeScale(Vector3(2.0f, 3.0f, 4.0f));
 
 		viewMatrix = MakeLookAtLH(
@@ -31,7 +30,7 @@ protected:
 			Vector3(0.0f, 1.0f, 0.0f));
 
 		projMatrix = MakePerspectiveLH_ZO_ReverseZ(
-			GameEngine::Mathematics::ToRadians(60.0f),
+			GameEngine::Rendering::Math::ToRadians(60.0f),
 			16.0f / 9.0f,
 			0.1f,
 			100.0f);
@@ -91,7 +90,7 @@ TEST_F(MatrixConversionValidationTest, CullingRenderingConsistency)
 	Vector3 cameraPos(0.0f, 30.0f, 80.0f);
 	Vector3 cameraTarget(0.0f, 0.0f, 0.0f);
 	float aspectRatio = 1920.0f / 1080.0f;
-	float fov = GameEngine::Mathematics::ToRadians(60.0f);
+	float fov = GameEngine::Rendering::Math::ToRadians(60.0f);
 
 	const float nearPlane = 1.0f;
 	const float farPlane = 500.0f;

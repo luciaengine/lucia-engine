@@ -43,8 +43,6 @@ class ToolbarDragDrop
     void Setup(UIElement* ghostRoot, const std::vector<ContainerConfig>& containers,
                UIElement* searchRoot = nullptr);
 
-    void SetAccentColor(uint32_t argb) { m_AccentColor = argb; }
-
     // Restore previously saved button order from SettingsStore.
     // searchRoot must reach the containers (same rule as Setup).
     void LoadButtonOrder(UIElement* searchRoot, const std::vector<ContainerConfig>& containers);
@@ -100,7 +98,6 @@ class ToolbarDragDrop
     bool        m_DragActive             = false;
     float       m_DragStartX             = 0.0f;
     float       m_DragStartY             = 0.0f;
-    uint32_t    m_AccentColor            = 0xFF3A8FFF;
 
     // Expires with this object. The drop action posted on mouse-up holds it weakly and
     // runs only while it is live.

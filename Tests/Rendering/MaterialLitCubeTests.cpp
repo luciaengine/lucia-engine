@@ -16,10 +16,7 @@
 #include "Assets/MaterialAsset.h"
 #include "Engine/Rendering/MaterialSsboLayout.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Mathematics/Angle.h"
-#include "Mathematics/Interpolation.h"
-#include "Rendering/Camera/CameraTypes.h"
-#include "Rendering/Core/ReverseZ.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/ViewParamsLayout.h"
 #include "Rendering/Common/Math.h"
 #include "Rendering/Common/Utils.h"
@@ -160,17 +157,17 @@ TEST(MaterialShaders, MaterialV2_RendersLitCube)
 #endif
 
     // Temp workspace with Assets/ so MaterialAsset can locate its workspace root.
-    const std::filesystem::path tmpRoot = std::filesystem::temp_directory_path() / "ge_material_lit_cube";
+    const TestUtils::ScopedTempDir tempWorkspace(TestUtils::MakeUniqueTempDirectory("ge_material_lit_cube"));
+    const std::filesystem::path& tmpRoot = tempWorkspace.Path();
     const std::filesystem::path assetsRoot = tmpRoot / "Assets";
     std::error_code ec;
-    std::filesystem::remove_all(tmpRoot, ec);
     std::filesystem::create_directories(assetsRoot, ec);
 
     const auto surfacePath = assetsRoot / "Shaders" / "test_surface.glsl";
     const auto materialPath = assetsRoot / "Materials" / "test.material";
 
     // Reads its parameters from the MaterialParams row the way the shipped
-    // surfaces do (Engine/Assets/Materials/Surfaces/standard_pbr.glsl), so a wrong row
+    // surfaces do (Assets/Materials/Surfaces/standard_pbr.glsl), so a wrong row
     // layout shows up as a wrong colour.
     WriteTextFile(surfacePath,
                   "SurfaceOutput EvaluateSurface(SurfaceInput sIn)\n"
@@ -257,20 +254,19 @@ TEST(MaterialShaders, MaterialV2_RendersLitCube)
     const Matrix4x4 V = Mathematics::MakeLookAtLH(eye, Vector3(0.0f, 0.0f, 0.0f), Vector3(0.0f, 1.0f, 0.0f)).ToVulkan();
     constexpr float kNear = 0.1f;
     constexpr float kFar = 10.0f;
-    constexpr float kVerticalFieldOfViewDeg = 60.0f;
-    const Matrix4x4 P = Mathematics::MakePerspectiveLH_ZO_ReverseZ(Mathematics::ToRadians(kVerticalFieldOfViewDeg), aspect, kNear, kFar).ToVulkan();
+    const Matrix4x4 P = Mathematics::MakePerspectiveLH_ZO_ReverseZ(Math::ToRadians(60.0f), aspect, kNear, kFar).ToVulkan();
     const Matrix4x4 VP = P * V;
 
     CameraData cam{};
-    cam.view = V;
-    cam.proj = P;
-    cam.viewProj = VP;
-    cam.cameraPos.x = eye.x;
-    cam.cameraPos.y = eye.y;
-    cam.cameraPos.z = eye.z;
+    std::memcpy(cam.view, V.Data(), sizeof(cam.view));
+    std::memcpy(cam.proj, P.Data(), sizeof(cam.proj));
+    std::memcpy(cam.viewProj, VP.Data(), sizeof(cam.viewProj));
+    cam.cameraPos[0] = eye.x;
+    cam.cameraPos[1] = eye.y;
+    cam.cameraPos[2] = eye.z;
     // Render origin inactive (sector 0): the rebased matrices equal the full-world ones.
-    cam.viewRel = V;
-    cam.viewProjRel = VP;
+    std::memcpy(cam.viewRel, V.Data(), sizeof(cam.viewRel));
+    std::memcpy(cam.viewProjRel, VP.Data(), sizeof(cam.viewProjRel));
     BufferHandle camBuf = CreateUploadBuffer(*dev, BufferUsage::Uniform, sizeof(CameraData), "MaterialLit.CameraUBO");
     ASSERT_TRUE(camBuf.IsValid());
     Upload(*dev, camBuf, &cam, sizeof(cam));
@@ -348,7 +344,7 @@ TEST(MaterialShaders, MaterialV2_RendersLitCube)
     pd.topology = PrimitiveTopology::TriangleList;
     pd.AddDynamicState(DynamicState::Viewport);
     pd.AddDynamicState(DynamicState::Scissor);
-    pd.EnableDepthTest(true, ReverseZ::kNearerOrEqual);
+    pd.EnableDepthTest(true, CompareOp::Greater); // reverse-Z: nearer is greater
     pd.SetCullingMode(CullModeFlagBits::None, FrontFace::CounterClockwise);
     pd.colorAttachmentFormats = {static_cast<uint32_t>(TextureFormat::RGBA8_UNORM)};
     pd.depthAttachmentFormat = static_cast<uint32_t>(TextureFormat::D32_FLOAT);
@@ -421,9 +417,7 @@ TEST(MaterialShaders, MaterialV2_RendersLitCube)
                 bytes = named->Bytes;
                 ++namedBound;
                 if (isUniform && b.Block)
-                {
                     EXPECT_EQ(b.Block->Size, bytes) << b.Name << " block size drifted from its C++ mirror";
-                }
                 if (b.Name == "MaterialParams")
                 {
                     // The runtime array's reflected std430 stride is the row stride the
@@ -434,17 +428,6 @@ TEST(MaterialShaders, MaterialV2_RendersLitCube)
                     ASSERT_TRUE(rows != b.Block->Members.end()) << "MaterialParams has no ge_Materials member";
                     ASSERT_TRUE(rows->ArrayStride) << "ge_Materials reflected without an array stride";
                     EXPECT_EQ(*rows->ArrayStride, kMaterialEntryStride) << "MaterialData std430 stride drifted from kMaterialEntryStride";
-                    // Struct members reflect without offsets. Two uints at the row's end put the
-                    // second at SamplerIndices + 4 under std430 (kNormalVarianceIndexOffset).
-                    const auto& rowMembers = rows->Type.StructMembers;
-                    ASSERT_GE(rowMembers.size(), 2u) << "MaterialData reflected without its members";
-                    const Member& sampler = rowMembers[rowMembers.size() - 2];
-                    const Member& variance = rowMembers.back();
-                    EXPECT_EQ(sampler.Name, "SamplerIndices");
-                    EXPECT_EQ(variance.Name, "NormalVarianceIndex") << "MaterialData does not end with the normal-variance lane";
-                    EXPECT_TRUE(variance.Type.Kind == TypeKind::Scalar && variance.Type.Base == BaseType::UInt &&
-                                variance.Type.ArrayDims.empty())
-                        << "the normal-variance lane is not one uint";
                 }
             }
             else
@@ -486,7 +469,7 @@ TEST(MaterialShaders, MaterialV2_RendersLitCube)
     rp.clearColorValue[0][3] = 1.0f;
     rp.colorStoreOp[0] = RenderPassDesc::StoreOp::Store;
     rp.clearDepth = true;
-    rp.clearDepthValue = ReverseZ::kClearFar;
+    rp.clearDepthValue = 0.0f; // reverse-Z far
     rp.depthStoreOp = RenderPassDesc::StoreOp::Store;
 
     cl->BeginRenderPass(rp);
@@ -523,7 +506,7 @@ TEST(MaterialShaders, MaterialV2_RendersLitCube)
     const uint8_t* px = static_cast<const uint8_t*>(dev->MapBuffer(rb));
     ASSERT_NE(px, nullptr);
 
-    auto toByte = [](float v) { return static_cast<uint8_t>(std::lround(Math::Clamp01(v) * 255.0f)); };
+    auto toByte = [](float v) { return static_cast<uint8_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
     const uint8_t clearR = toByte(rp.clearColorValue[0][0]);
     const uint8_t clearG = toByte(rp.clearColorValue[0][1]);
     const uint8_t clearB = toByte(rp.clearColorValue[0][2]);

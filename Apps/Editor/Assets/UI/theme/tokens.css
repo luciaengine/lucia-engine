@@ -9,33 +9,38 @@
   --ui_color_bg_scrollbar_thumb: #383838;
 
   --ui_color_bg_hover: #2A2A2A;
-  /* The plate under a hovered or focused title bar control: a menu heading or a caption button. */
-  --ui_color_caption_hover: rgba(255, 255, 255, 0.12);
-  /* The Windows caption color for a hovered close button, the one platform color in the editor. */
-  --ui_color_caption_close_hover: #C42B1C;
-  /* The fill of an inspector value field, one line or several. */
-  --ui_color_bg_field: #202020;
   --ui_color_bg_hover_alt: #242424;
   --ui_color_bg_item_hover: #2E2E2E;
   --ui_color_bg_selected: #333333;
   /* Backdrop for anything framing a rendered image: graph node preview plates,
      texture drop slots, the shader graph's preview panel. */
   --ui_color_bg_plate: #2A2A2C;
-  /* The plate under a row of segmented buttons (Button.css: segmented-button). */
-  --ui_color_segmented_plate: rgba(0, 0, 0, 0.28);
-  /* MarkdownText in the editor (its rules are the UI module's default sheet): a code block sits
-     darker than the panel it is on, an inline code span lifts its words off the text around it. */
-  --ui_color_markdown_link: var(--ui_color_accent_blue_hover);
-  --ui_color_markdown_link_hover: #8CC0FF;
-  --ui_color_markdown_muted: var(--ui_color_text_dim);
-  --ui_color_markdown_code_inline: #3F3F3F;
-  --ui_color_markdown_code_block: #1A1A1A;
-  --ui_color_markdown_line: #4A4A4A;
-  --ui_color_markdown_table_header: var(--ui_color_bg_plate);
+
+  /* Activity list stripe plates and log-level colors are theme-owned. */
+  --ui_color_list_stripe_primary: transparent;
+  --ui_color_list_stripe_secondary: var(--ui_color_bg_plate);
+  --ui_color_log_debug: #9cdcfe;
+  --ui_color_log_debug_fill: rgba(156, 220, 254, 0.1);
+  --ui_color_log_debug_edge: rgba(156, 220, 254, 0.7);
+  --ui_color_log_info: #d4d4d4;
+  --ui_color_log_info_fill: rgba(212, 212, 212, 0.1);
+  --ui_color_log_info_edge: rgba(245, 245, 245, 0.7);
+  --ui_color_log_warning: #dcdcaa;
+  --ui_color_log_warning_fill: rgba(220, 220, 170, 0.1);
+  --ui_color_log_warning_edge: rgba(255, 255, 194, 0.7);
+  --ui_color_log_error: #f48771;
+  --ui_color_log_error_fill: rgba(244, 135, 113, 0.1);
+  --ui_color_log_error_edge: rgba(244, 135, 113, 0.7);
 
   --ui_color_border: #272727;
   --ui_color_border_subtle: #3A3A3A;
   --ui_color_border_panel: #2f2f2f;
+  /* Outline and body of the dock drag ghost (core.css .dock-drag-ghost-*). */
+  --ui_color_dock_ghost_border: #555555;
+  --ui_color_dock_ghost_body: #222222;
+  /* TreeView insertion line while dragging (views.css .tree-drop-indicator). */
+  --ui_color_drop_indicator: rgba(0, 200, 255, 0.9);
+  --ui_color_drop_indicator_denied: rgba(255, 80, 80, 0.9);
   /* The outline of a status plate on the asset grid's background (the folder bake
      status): 3.2:1 against the grid (#222222). The plate's fill is barely lighter
      than the grid, so the outline is its edge. */
@@ -71,11 +76,7 @@
   --ui_color_text_muted: #E0E0E0;
   --ui_color_text_bright: #FFFFFF;
   --ui_color_text_dim: #b2b2b2;
-  /* Component icon glyphs (inspector headers, pickers) at rest. */
-  --ui_color_icon: rgba(200, 200, 200, 1.0);
   --ui_color_text_disabled: #666666;
-  /* The hint in an empty search field: quiet at rest, still 4.8:1 against the field fill. */
-  --ui_color_text_placeholder: #8C8C8C;
   /* Status banners drawn over a view's 3D content (ViewOverlayLayer.css): a translucent
      dark pill and its text. */
   --ui_color_view_banner_background: rgba(0, 0, 0, 0.55);
@@ -98,9 +99,6 @@
   /* Context menus only: their disabled rows read against the lighter menu
      surface at full opacity, so they take a step brighter than the global. */
   --ui_color_menu_text_disabled: #7A7A7A;
-  /* Context menus only: a row's key (F2, Ctrl+D), a step under the row's resting
-     text and still at least 4.5:1 over its glyph cores on the menu plate. */
-  --ui_color_menu_shortcut_text: #B0B0B0;
   /* Resting text of a .dropdown-item row — shared by dropdown popups and
      context menus, which both build rows from that class. Hover and selected
      rows use --ui_color_text_bright, disabled rows --ui_color_text_disabled. */
@@ -113,15 +111,9 @@
   --ui_color_accent: #006FFF;
   --ui_color_accent_highlight: rgba(0, 111, 255, 0.3);
   --ui_color_accent_translucent: rgba(0, 111, 255, 0.2);
+  /* Soft glow around accent-bordered highlights (box-shadow colour). */
+  --ui_color_accent_glow: rgba(0, 111, 255, 0.5);
   --ui_color_accent_green: #4CAF50;
-  /* Prefab instances in the Hierarchy: the glyph and the names. Teal, not the accent blue,
-     so an instance never reads as focused or selected. Icons/PrefabAsset.svg has the same color. */
-  --ui_color_prefab: #2EC4B6;
-  /* The fill of an override pill: the prefab color at 16 percent. */
-  --ui_color_prefab_background: rgba(46, 196, 182, 0.16);
-  /* The fill of an override pill on hover and while pressed. */
-  --ui_color_prefab_background_hover: rgba(46, 196, 182, 0.30);
-  --ui_color_prefab_background_pressed: rgba(46, 196, 182, 0.08);
   --ui_color_accent_blue: #006FFF;
   --ui_color_accent_blue_hover: #4C9AFF;
   --ui_color_accent_blue_pressed: #0053BF;
@@ -150,7 +142,7 @@
 
   /* Neutral sliders: a grey track and thumb for sliders that size chrome instead of editing a
      value (the item size sliders) and for the "Gray sliders" preference. */
-  --ui_color_slider_neutral_track: #4D4D4D;
+  --ui_color_slider_neutral_track: #3A3A3A;
   --ui_color_slider_neutral_track_fill: #6E6E6E;
   --ui_color_slider_neutral_thumb: #AEAEAE;
   --ui_color_slider_neutral_thumb_hover: #BCBCBC;
@@ -172,31 +164,19 @@
   --ui_color_vcs_modified: #549BFF;
   --ui_color_vcs_unchanged: #888888;
 
+  /* CSS inspector (Ctrl+I): its hover card and the outline around the inspected element. */
+  --ui_color_css_inspector_card: rgba(26, 26, 26, 0.933);
+  --ui_color_css_inspector_outline: #FFFF00;
   /* Inspector warnings: amber text on an amber wash over the panel (.inspector-warning and the
      inspector notice, controls/InspectorNotice/InspectorNotice.css). */
   --ui_color_warning_text: #e0b050;
   --ui_color_warning_background: rgba(215, 161, 59, 0.12);
-  /* The fill of a warning badge (.inspector-section-header-badge), and of one in a button on hover
-     and while pressed. */
-  --ui_color_warning_badge: #D7A13B;
-  --ui_color_warning_badge_hover: #E6B65C;
-  --ui_color_warning_badge_pressed: #B5852C;
-  /* A warning drawn as a line over the scene (a junction marker whose heights differ): the badge's
-     amber, darker, so it holds its edge on a light surface. */
-  --ui_color_warning_line: #B5852C;
-  /* Text, or a field's edge, that says something did not happen (an action or a typed value
-     refused, or a failure): the badge's red lightened to read as 12 px text on a panel (5.4:1
-     on #272727). */
+  /* Text that says something did not happen (an action refused or failed): the badge's red
+     lightened to read as 12 px text on a panel (5.4:1 on #272727). */
   --ui_color_error_text: #FF6B6B;
-  /* The neutral edge of a control in its mixed state (the selected objects disagree). */
-  --ui_color_mixed_indicator: #888888;
-  /* The wash behind an error notice: the badge's red over the panel, as the warning wash is amber. */
-  --ui_color_error_background: rgba(209, 52, 56, 0.14);
   /* A layer that sits over scrolled content casts this along its top edge (the AI
      Assistant's input pane over its conversation). */
-  --ui_shadow_layer_above: 0 -4px 10px rgba(0, 0, 0, 0.15);
-  /* A small plate that floats over content (the transient notice). */
-  --ui_shadow_floating_plate: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --ui_shadow_layer_above: 0 -4px 10px rgba(0, 0, 0, 0.35);
 
   /* A count badge over a button (the Scene View tool strip's Activity badge); white text
      on it is 4.9:1. */
@@ -247,8 +227,6 @@
   --ui_tree_foldout_size: 15px;
   --ui_tree_icon_padding: 28px;
   --ui_tree_icon_padding_rtl: 20px;
-  /* A badge on the tree icon's corner (EditorTreeTitleIconVars.cpp scales it with the icon). */
-  --ui_tree_icon_badge_size: 8px;
 
   /* Radii */
   --ui_radius_sm: 4px;

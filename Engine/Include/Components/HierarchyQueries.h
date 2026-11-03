@@ -1,14 +1,10 @@
 #pragma once
 
 #include "Components/Hierarchy.h"
-#include "Components/Transform.h"
 #include "ECS/Query.h"
 #include "ECS/RelationIndex.h"
 #include "ECS/World.h"
-#include "Mathematics/Matrix4x4.h"
-#include "Mathematics/MatrixOps.h"
 
-#include <cstring>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -39,7 +35,7 @@ namespace Components {
 // hold one of these as a long-lived member and pass it to the indexed
 // helpers below.
 struct ParentOfTag {};
-using ParentRelationIndex = ECS::RelationIndex<ParentOfTag, Parent, &Parent::Entity>;
+using ParentRelationIndex = ECS::RelationIndex<ParentOfTag, Parent, &Parent::parent>;
 
 inline void ChildrenOf(ECS::World& world, ECS::EntityHandle parent,
                        std::vector<ECS::EntityHandle>& out) {
@@ -49,7 +45,7 @@ inline void ChildrenOf(ECS::World& world, ECS::EntityHandle parent,
     // the editor lists them and scene IO writes them.
     world.Query<ECS::Read<Parent>>().IncludeDisabled().Each(
         [&](ECS::EntityHandle e, const Parent& p) {
-            if (p.Entity == parent) out.push_back(e);
+            if (p.parent == parent) out.push_back(e);
         });
 }
 
@@ -87,7 +83,7 @@ inline void DescendantsOf(ECS::World& world, ECS::EntityHandle ancestor,
         childrenByParent;
     world.Query<ECS::Read<Parent>>().IncludeDisabled().Each(
         [&](ECS::EntityHandle e, const Parent& p) {
-            if (p.Entity.IsValid()) childrenByParent[p.Entity].push_back(e);
+            if (p.parent.IsValid()) childrenByParent[p.parent].push_back(e);
         });
 
     std::unordered_set<ECS::EntityHandle, ECS::EntityHandleHash> visited;
@@ -147,51 +143,6 @@ inline void DescendantsOf(ECS::World& world, ECS::EntityHandle ancestor,
     }
 }
 
-// Destroys `root` and every entity under it in the Parent hierarchy, each one queued as World::DestroyEntity
-// queues it. It checks no marker: any live entity can be the root. A root that is not alive destroys nothing.
-inline void DestroySubtree(ECS::World& world, ECS::EntityHandle root) {
-    if (!world.IsValid(root)) return;
-    std::vector<ECS::EntityHandle> tree;
-    DescendantsOf(world, root, tree);
-    for (const ECS::EntityHandle entity : tree) world.DestroyEntity(entity);
-    world.DestroyEntity(root);
-}
-
-// Destroys `root` and every entity under it at once, in one World::DestroyEntitiesImmediate batch.
-// The batch prepares every entity before any OnRemove hook runs, so a failure leaves the whole tree alive.
-inline void DestroySubtreeImmediate(ECS::World& world, ECS::EntityHandle root) {
-    if (!world.IsValid(root)) return;
-    std::vector<ECS::EntityHandle> tree;
-    DescendantsOf(world, root, tree);
-    tree.push_back(root);
-    world.DestroyEntitiesImmediate(tree);
-}
-
-// Moves `entity` under `newParent` ({} = the scene root) and keeps its world pose: the local Transform
-// becomes the inverse of the new parent's WorldTransform times the entity's WorldTransform. When either
-// WorldTransform is missing, the local Transform stays as it was. The caller rules out cycles.
-inline void ReparentKeepingWorldPose(ECS::World& world, ECS::EntityHandle entity, ECS::EntityHandle newParent) {
-    if (!newParent.IsValid()) {
-        if (const auto* entityWorld = world.GetComponent<WorldTransform>(entity)) {
-            Transform local{};
-            std::memcpy(local.matrix, entityWorld->matrix, sizeof(local.matrix));
-            world.AddComponentImmediate(entity, local);
-        }
-        world.RemoveComponentImmediate<Parent>(entity);
-        return;
-    }
-    world.AddComponentImmediate(entity, Parent{newParent});
-    // Read after the add: adding Parent can move the entity to another archetype.
-    const auto* parentWorld = world.GetComponent<WorldTransform>(newParent);
-    const auto* entityWorld = world.GetComponent<WorldTransform>(entity);
-    if (!parentWorld || !entityWorld) return;
-    const Mathematics::Matrix4x4 local = Mathematics::Inverse(Mathematics::Matrix4x4::FromColumnMajor(parentWorld->matrix)) *
-                                         Mathematics::Matrix4x4::FromColumnMajor(entityWorld->matrix);
-    Transform transform{};
-    std::memcpy(transform.matrix, local.Data(), sizeof(transform.matrix));
-    world.AddComponentImmediate(entity, transform);
-}
-
 // Practical cap on hierarchy depth. Any real scene deeper than this is a
 // design smell — UI panels nest ~10 deep, scene-graph rigs top out around 30.
 // The cap bounds IsDescendantOf so a broken chain on a million-entity world
@@ -210,9 +161,9 @@ inline bool IsDescendantOf(ECS::World& world, ECS::EntityHandle entity,
     ECS::EntityHandle current = entity;
     for (std::size_t step = 0; step < kMaxHierarchyDepth; ++step) {
         const Parent* p = world.GetComponent<Parent>(current);
-        if (!p || !p->Entity.IsValid()) return false;
-        if (p->Entity == ancestor) return true;
-        current = p->Entity;
+        if (!p || !p->parent.IsValid()) return false;
+        if (p->parent == ancestor) return true;
+        current = p->parent;
     }
     return false;
 }

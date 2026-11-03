@@ -6,7 +6,6 @@
 // stay in RenderServicesDetail.h (§0a-A6), included below.
 #include "Engine/Rendering/MaterialSystem.h"
 
-#include "Core/CpuProfiler.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/CompileConcurrencyGate.h"
 #include "Engine/Rendering/Material.h"
@@ -17,14 +16,12 @@
 #include "Engine/Rendering/MaterialDeformationClassify.h"
 #include "Engine/Rendering/PackageShaderDirs.h"
 #include "Engine/Rendering/PerFrameWritePool.h"
+#include "Engine/Rendering/MaterialPrewarmPolicy.h"
 #include "Engine/Rendering/MaterialPrewarmVariants.h"
 #include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/ProjectMaterialPrewarmService.h"
-#include "SceneLoadTracker/SceneLoadTracker.h"
 #include "Engine/Rendering/ShaderGraphMaterial.h"
 #include "Engine/Rendering/TextureService.h"
-#include "Mathematics/Interpolation.h"
-#include "SceneDrawWarm.h"
 
 #include "AssetCore/AssetEvents.h"
 #include "Assets/AssetManager.h"
@@ -35,28 +32,26 @@
 #include "Assets/AlphaCutoffThreshold.h"
 #include "Assets/TextureAlphaDecodeProbe.h"
 #include "Assets/TextureAlphaProbe.h"
+#include "Core/CpuProfiler.h"
 #include "Core/Engine.h"
 #include "Logger/Logger.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
 #include "Rendering/Core/GPUDrawStreamBuilder.h"
-#include "Rendering/Core/HotReloadIntegration.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
-#include "Rendering/Core/ReverseZ.h"
+#include "Rendering/Core/HashUtils.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
-#include "Rendering/Materials/MaterialBlend/MaterialBlendDerive.h"
+#include "Rendering/Materials/MaterialBlendDerive.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialBuilder.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialKeywordDerivation.h"
 #include "AssetCore/SharedFileRead.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
-#include "Rendering/Materials/Shader/ShaderComposer.h"
-#include "Rendering/Materials/Shader/ShaderPropertyTableCache.h"
-#include "Rendering/ShaderCache/ShaderProgramIndex.h"
-#include "Types/FlatSet.h"
-#include "Types/Fnv1a.h"
+#include "Rendering/Materials/ShaderComposer.h"
+#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderPropertyTableCache.h"
 #include "Types/StringId.h"
 #include "Types/PathUtils.h"
 #include "Types/StringUtils.h"
@@ -83,6 +78,15 @@ namespace GameEngine
 {
 namespace Engine::Renderer
 {
+namespace { std::atomic<MaterialPrewarmPolicy> g_MaterialPrewarmPolicy{MaterialPrewarmPolicy::Full}; }
+void SetMaterialPrewarmPolicy(MaterialPrewarmPolicy policy)
+{
+    g_MaterialPrewarmPolicy.store(policy, std::memory_order_relaxed);
+}
+MaterialPrewarmPolicy GetMaterialPrewarmPolicy()
+{
+    return g_MaterialPrewarmPolicy.load(std::memory_order_relaxed);
+}
 using namespace ::GameEngine::Rendering;
 
 namespace
@@ -108,81 +112,38 @@ std::string SurfaceDisplayName(const std::filesystem::path& surfacePath, const s
     return relative.generic_string();
 }
 
-// The bindless indices an unassigned row carries: the slot defaults (as Material::InitBindlessDefaults
-// bakes them) and the black normal-variance texture. Index 0 is a descriptor that is never written:
-// a row left at 0 samples undefined data (on NVIDIA, the last descriptor written).
-struct UnassignedRowIndices
+// The bindless texture indices an UNASSIGNED material slot must carry, slot for
+// slot as Material::InitBindlessDefaults bakes them. Bindless index 0 is the
+// engine-wide "not set" sentinel and the texture array's descriptor[0] is never
+// written, so any row left at zero samples an unwritten descriptor: undefined
+// per Vulkan, and on NVIDIA an alias of the most recently written descriptor —
+// the stray-texture-leak symptom.
+std::array<uint32_t, kTextureSlotArraySize> UnassignedSlotTextureIndices(const TextureService& textures)
 {
-    std::array<uint32_t, kTextureSlotArraySize> Textures{};
-    uint32_t NormalVariance = 0;
-
-    bool IsComplete() const
-    {
-        return NormalVariance != 0u && std::find(Textures.begin(), Textures.end(), 0u) == Textures.end();
-    }
-};
-
-UnassignedRowIndices ResolveUnassignedRowIndices(const TextureService& textures)
-{
-    UnassignedRowIndices indices;
+    std::array<uint32_t, kTextureSlotArraySize> indices{};
     for (uint32_t ordinal = 0; ordinal < kTextureSlotArraySize; ++ordinal)
-        indices.Textures[ordinal] = textures.UnassignedSlotBindlessIndex(ordinal);
-    indices.NormalVariance = textures.DefaultBlackBindlessIndex();
+        indices[ordinal] = textures.UnassignedSlotBindlessIndex(ordinal);
     return indices;
 }
 
-// Writes the unassigned defaults over a zeroed row: the indices above and identity UV transforms.
-// TextureST[8] and TextureST2[8] are split arrays, not interleaved: identity is row0.x = 1 in the first
-// and row1.y = 1 in the second. The sampler word stays 0: preset 0 (LinearRepeat) is a real entry.
-void WriteUnassignedRowDefaults(uint8_t* rowPtr, const UnassignedRowIndices& indices)
+// Write one MaterialParams row's unassigned-slot defaults over an already
+// zeroed row: the texture indices above plus identity UV transforms. The SSBO
+// stores the transforms as two split arrays (TextureST[8] then TextureST2[8]),
+// NOT interleaved, so identity means row0.x = 1 in the first block and
+// row1.y = 1 in the second; addressing them as one interleaved array yields a
+// garbled transform that collapses UVs. The packed sampler word is left at
+// zero: sampler-preset 0 (LinearRepeat) is a real entry of the dense
+// sampler-preset array, unlike bindless texture 0.
+void WriteUnassignedRowDefaults(uint8_t* rowPtr,
+                                const std::array<uint32_t, kTextureSlotArraySize>& textureIndices)
 {
-    std::memcpy(rowPtr + kMaterialParamBytes, indices.Textures.data(), kTextureIndexBytes);
+    std::memcpy(rowPtr + kMaterialParamBytes, textureIndices.data(), kTextureIndexBytes);
     float* stPtr = reinterpret_cast<float*>(rowPtr + kMaterialParamBytes + kTextureIndexBytes);
     for (uint32_t s = 0; s < kTextureSlotArraySize; ++s)
     {
         stPtr[s * 4 + 0] = 1.0f;                           // TextureST[s].x  (row0)
         stPtr[(kTextureSlotArraySize + s) * 4 + 1] = 1.0f; // TextureST2[s].y (row1)
     }
-    std::memcpy(rowPtr + kNormalVarianceIndexOffset, &indices.NormalVariance, sizeof(uint32_t));
-}
-
-// Write one whole MaterialParams row: the material's parameters, texture
-// indices, UV transforms and sampler word, or the unassigned-slot defaults for a
-// null material. The row is cleared first, so the bytes match a full pack's
-// whatever the row held before.
-void WriteMaterialRow(uint8_t* rowPtr, const Material* mat, const UnassignedRowIndices& unassignedIndices)
-{
-    std::memset(rowPtr, 0, kMaterialEntryStride);
-    if (!mat)
-    {
-        WriteUnassignedRowDefaults(rowPtr, unassignedIndices);
-        return;
-    }
-
-    const uint32_t copyBytes = std::min(mat->GetCacheSize(), kMaterialParamBytes);
-    if (copyBytes > 0)
-        std::memcpy(rowPtr, mat->GetCacheData(), copyBytes);
-
-    std::memcpy(rowPtr + kMaterialParamBytes, mat->GetBindlessTextureIndices(), kTextureIndexBytes);
-
-    // Material stores texture transforms interleaved by slot:
-    //   slot0 row0, slot0 row1, slot1 row0, slot1 row1, ...
-    // The shader SSBO stores them as two arrays:
-    //   TextureST[8] row0s, then TextureST2[8] row1s.
-    // Repack instead of bulk-copying, otherwise default identity transforms
-    // become (u, u) for albedo in bindless draws.
-    const float* srcRows = mat->GetTextureTransforms();
-    float* dstRows = reinterpret_cast<float*>(rowPtr + kMaterialParamBytes + kTextureIndexBytes);
-    for (uint32_t slot = 0; slot < kTextureSlotArraySize; ++slot)
-    {
-        std::memcpy(dstRows + slot * 4u, srcRows + slot * 8u, 4u * sizeof(float));
-        std::memcpy(dstRows + (kTextureSlotArraySize + slot) * 4u, srcRows + slot * 8u + 4u, 4u * sizeof(float));
-    }
-
-    const uint32_t packedSamplers = mat->GetPackedSamplerIndices();
-    std::memcpy(rowPtr + kSamplerIndicesOffset, &packedSamplers, sizeof(uint32_t));
-    const uint32_t normalVarianceIndex = mat->GetNormalVarianceIndex();
-    std::memcpy(rowPtr + kNormalVarianceIndexOffset, &normalVarianceIndex, sizeof(uint32_t));
 }
 
 // Material recompiles a single shader-source drain runs before carrying the
@@ -221,7 +182,7 @@ Rendering::GraphicsPipelineId InternBaseMaterialPipeline(
     gd.Rasterization.cullMode  = cullMode;
     gd.Rasterization.frontFace = frontFace;
     gd.DepthStencil.depthTestEnable  = blend.DepthTestEnable;
-    gd.DepthStencil.depthCompareOp   = Rendering::ReverseZ::kNearerOrEqual;
+    gd.DepthStencil.depthCompareOp   = Rendering::CompareOp::GreaterOrEqual;
     gd.DepthStencil.depthWriteEnable = blend.DepthWriteEnable;
     gd.ColorBlend.attachments = {blend.Attachment};
     if (!blend.BlendEnable)
@@ -257,7 +218,7 @@ Rendering::GraphicsPipelineId InternBaseMaterialPipeline(
 }
 } // namespace
 
-MaterialSystem::MaterialSystem() : m_SceneWarm(std::make_unique<SceneDrawWarm>()) {}
+MaterialSystem::MaterialSystem() = default;
 
 MaterialSystem::~MaterialSystem()
 {
@@ -291,12 +252,12 @@ void MaterialSystem::Initialize(Rendering::IDevice* device, PerFrameWritePool& f
     m_ResolveWorldPassKeywords = std::move(resolveWorldPassKeywords);
     m_ProjectPrewarm = std::make_unique<ProjectMaterialPrewarmService>();
 
-    // The compile gate's cap is read once: the pool exists from before the renderer until after it,
-    // with a fixed worker count (none in a test without the engine). The dispatch reaches the pool
-    // through the engine singleton, only while the pool is up (SubmitTrackedPrewarm checks it).
-    GameEngine::EngineCore& engineCore = GameEngine::EngineCore::GetInstance();
-    const size_t workerCount = engineCore.IsInitialized() ? engineCore.GetJobSystem().GetWorkerCount() : 0;
-    const uint32_t compileCap = ComputeShaderCompileConcurrencyCap(workerCount);
+    // Global shader-compile admission gate. Bounds concurrent shaderc work so a
+    // cold-load prewarm burst leaves cores + worker lanes for extraction and the
+    // main thread. The dispatch closure captures nothing with lifetime concerns
+    // (it reaches the engine job system through the singleton) and is only
+    // invoked while the pool is up (SubmitTrackedPrewarm is guarded on that).
+    const uint32_t compileCap = ComputeShaderCompileConcurrencyCap();
     m_CompileGate = std::make_unique<CompileConcurrencyGate>(
         compileCap,
         [](std::function<void()> work, JobSystem::JobPriority priority)
@@ -304,7 +265,7 @@ void MaterialSystem::Initialize(Rendering::IDevice* device, PerFrameWritePool& f
             GameEngine::EngineCore::GetInstance().GetJobSystem().EnqueueWork(std::move(work),
                                                                             priority);
         });
-    Logger::Log::Info("MaterialSystem: shader-compile concurrency cap = {} ({} job workers)", compileCap, workerCount);
+    Logger::Log::Info("MaterialSystem: shader-compile concurrency cap = {}", compileCap);
 
     // The device's asynchronous pipeline builds (Request*Pipeline) run on the
     // tracked prewarm workers: capped by the compile gate, drained at shutdown.
@@ -377,28 +338,18 @@ void MaterialSystem::ShutdownPhaseA()
     // left holding GUIDs into a registry that is about to tear down.
     m_CarriedShaderEdits.clear();
 
-    // No new device pipeline builds reach this system. A build job it still
-    // holds may run or be destroyed after the drain below: the job owns only its
-    // build table and claims its row before it touches the device, so a device
-    // that is gone by then is never reached.
+    // No new device pipeline builds reach this system; the ones it holds end in
+    // the drain below, before the device is destroyed.
     if (m_Device)
         m_Device->SetPipelineBuildDispatcher({});
 
-    // Revoke the load reports first, so the tracker does not count a canceled job as failed.
-    // Then refuse new prewarm jobs, cancel the queued ones and wait for the running ones: they
-    // hold a raw pointer to m_ShaderCompilationCache.
-    if (m_PipelineVariants)
-        m_PipelineVariants->StopReportingLoadingWork();
+    // Stop accepting new shader-variant prewarm jobs and wait for in-flight ones
+    // to finish before anything they touch is torn down. They hold a raw pointer
+    // to m_ShaderCompilationCache and would lock/use it after free otherwise
+    // (ASan-confirmed shutdown heap-use-after-free). (was :1030-1038)
     {
         std::lock_guard<std::mutex> lk(m_PrewarmDrainMutex);
         m_PrewarmShutdown = true;
-        m_LoadReport.reset();
-    }
-    if (m_CompileGate)
-    {
-        const size_t canceled = m_CompileGate->Close();
-        Logger::Log::Info("MaterialSystem: shutdown canceled {} queued compile tasks; waiting for {} running",
-                          canceled, m_CompileGate->Running());
     }
     DrainPrewarmJobs();
 
@@ -410,13 +361,16 @@ void MaterialSystem::ShutdownPhaseA()
 
 void MaterialSystem::ShutdownPhaseB()
 {
-    // Drop the compiled shader entries.
+    // Drop the compiled shader entries. (was :1064)
     m_ShaderCompilationCache.Clear();
     m_ShaderErrors.Clear();
 
-    // Disarm the pre-unregister callback, then reset the variant cache it reads,
-    // then shut the registry down. Keep this order: feature teardown between the
-    // phases can unregister materials.
+    // Suppress the pre-unregister callback during shutdown: the SSBO free-list /
+    // reverse lookup are about to be cleared below. Only after the callback is
+    // disarmed reset the variant cache the callback dereferences
+    // (EnqueueEviction), then shut the registry down — feature teardown
+    // (RS-side, between the phases) can unregister materials, so this order is
+    // load-bearing. (was :1069-1073)
     m_RuntimeMaterialRegistry.SetPreUnregisterCallback(nullptr);
     m_PipelineVariants.reset();
     m_RuntimeMaterialRegistry.Shutdown();
@@ -479,10 +433,6 @@ void MaterialSystem::BeginFrame()
     EnsureMaterialBuildContextReady();
     m_PipelineVariants->PreloadSharedDepthShaders();
 
-    // The scene warm's requests join the compiles submitted just below.
-    if (m_RenderServices)
-        m_SceneWarm->Step(*m_RenderServices);
-
     // Publish-gate: submit the variant compiles a record worker enqueued on a cold
     // miss last frame (option c). Runs here on the serial thread — after the build
     // context is warm and before any parallel record window opens — so it can deref
@@ -525,6 +475,14 @@ void MaterialSystem::PumpProjectPrewarm()
                              std::chrono::steady_clock::now(), m_ResolveWorldPassKeywords);
 }
 
+void MaterialSystem::OnActiveRenderPipelineChanged()
+{
+    // Wait for any in-flight pre-warm work before the old nodes are destroyed by
+    // SetBlueprint/EnsureBuilt — the workers hold PipelineDesc copies whose
+    // debugName pointers reference the old nodes' string storage.
+    DrainPrewarmJobs();
+}
+
 void MaterialSystem::OnProjectSwitched()
 {
     // Cached material build paths: AdapterShaderDir / CacheRoot / IncludeDirs are
@@ -534,9 +492,6 @@ void MaterialSystem::OnProjectSwitched()
     m_MaterialBuildContext = Rendering::MaterialBuildContext{};
     m_AdapterShaderDirVerified = false;
     m_MaterialBuildContextSourceVersion = 0;
-    // Held shader sources: the new project's files may sit at the old ones' paths
-    // and may have been edited while no watcher reported them.
-    Rendering::NotifyShaderSourcesChanged();
 
     // Compiled SPIR-V: entries are keyed by PATH, not by content. An identity
     // with a material asset path cannot collide across projects, so for those
@@ -626,12 +581,6 @@ void MaterialSystem::InstallReloadInvalidator(AssetEventDispatcher& dispatcher)
         dispatcher, AssetType::Shader,
         [this](const GUID& guid)
         {
-            // Here on the watcher thread, before the frame's drain: a prewarm job
-            // or a shader-program reload that runs in between must already read the
-            // edited bytes. Every content event empties the whole source cache --
-            // a create or delete can change where any directive resolves, and a
-            // deleted file's GUID no longer names a path.
-            Rendering::NotifyShaderSourcesChanged();
             std::lock_guard<std::mutex> lk(m_PendingShaderEditsMutex);
             m_PendingShaderEditGuids.push_back(guid);
         },
@@ -640,10 +589,8 @@ void MaterialSystem::InstallReloadInvalidator(AssetEventDispatcher& dispatcher)
 
 void MaterialSystem::NotifyShaderSourceEdited(const std::filesystem::path& sourcePath)
 {
-    // The editor's Recompile button names the material's surface, which is empty for
-    // the default surface, but the edit it recovers may be in any include the watcher
-    // did not report: re-read every source, whatever the path.
-    Rendering::NotifyShaderSourcesChanged();
+    if (sourcePath.empty())
+        return;
     std::lock_guard<std::mutex> lk(m_PendingShaderEditsMutex);
     m_PendingShaderEditPaths.push_back(sourcePath);
 }
@@ -708,10 +655,7 @@ void MaterialSystem::DrainPendingShaderSourceEdits()
     std::vector<std::string> fileNames;
     for (const auto& p : paths)
     {
-        // An empty path is the Recompile button of a material that authors no
-        // surface: it names the default surface that material composes with.
-        const std::filesystem::path named = p.empty() ? ResolveSurfacePath(MaterialDocument{}, {}) : p;
-        std::string name = toLower(named.filename().string());
+        std::string name = toLower(p.filename().string());
         if (!name.empty()
             && std::find(fileNames.begin(), fileNames.end(), name) == fileNames.end())
             fileNames.push_back(std::move(name));
@@ -759,8 +703,9 @@ void MaterialSystem::DrainPendingShaderSourceEdits()
                 if (Engine::Renderer::IsGraphLivePreviewMaterialPath(mat.GetMaterialAssetPath()))
                     return;
                 if (references(spec.surfaceShaderPath) || references(spec.vertexModifierPath)
-                    || matched.count(MakeShaderSourceKey(spec.surfaceShaderPath, spec.vertexModifierPath,
-                                                         mat.GetMaterialAssetPath()))
+                    || matched.count(ShaderSourceKey{spec.surfaceShaderPath,
+                                                     spec.vertexModifierPath,
+                                                     mat.GetMaterialAssetPath()})
                            != 0)
                     affected.push_back(guid);
             });
@@ -827,8 +772,6 @@ void MaterialSystem::RecompileMaterialForShaderEdit(const GUID& guid)
     // against the edited source next time the material is viewed.
     if (m_MaterialCompiler)
         m_MaterialCompiler->Clear(guid);
-    if (!m_Device)
-        return;
     // A shader CONTENT edit leaves the material document unchanged, so
     // the live compile spec is the document for this purpose — same
     // synthesis GetOrCompile uses. This also covers materials without a
@@ -856,15 +799,7 @@ void MaterialSystem::RecompileMaterialForShaderEdit(const GUID& guid)
     // declared-property table follows the publish the same way: it is re-laid
     // where the new pipeline binds, so a failed compile keeps the lanes the
     // still-running shader was laid out for.
-    //
-    // No invalidation here: the edit's file sweep (InvalidateEntriesForShaderFile)
-    // already dropped every cache entry this material's identity reaches and
-    // bumped the epoch. Materials on one surface share an entry, so dropping it
-    // again per material would throw away the program the first of them just
-    // rebuilt and compose it once per material.
-    if (m_MaterialCompiler)
-        m_MaterialCompiler->ReconcileShaderReferences(doc);
-    ResubmitMaterialPipeline(guid, mat, doc);
+    RecompileMaterialPipeline(guid, doc);
 }
 
 MaterialCompiler& MaterialSystem::Compiler()
@@ -908,7 +843,6 @@ void MaterialSystem::FinalizeFrameBuffers()
     // Both indexing modes read the MaterialParams SSBO: it carries the material
     // param block and TextureST. Only its texture-index lane is bindless-only,
     // and Classic simply never reads that lane.
-    GE_CPU_PROFILE_SCOPE("MaterialSystem.FinalizeFrameBuffers");
     PackMaterialSSBO();
 }
 
@@ -921,16 +855,19 @@ void MaterialSystem::EnsureFallbackRowSeeded()
     // one: every draw in the scene collapses onto it, and zeroed texture
     // indices would point the whole scene at the never-written bindless
     // descriptor 0 (WriteUnassignedRowDefaults states the consequence).
-    const UnassignedRowIndices indices = ResolveUnassignedRowIndices(*m_Textures);
+    const auto textureIndices = UnassignedSlotTextureIndices(*m_Textures);
 
     // The TextureService publishes these indices when its default textures
     // register, which can be later than the first pack. Seeding before that
     // would latch the very zeros this seeding exists to avoid, so wait.
-    if (!indices.IsComplete())
-        return;
+    for (const uint32_t index : textureIndices)
+    {
+        if (index == 0u)
+            return;
+    }
 
     uint8_t row[kMaterialEntryStride]{};
-    WriteUnassignedRowDefaults(row, indices);
+    WriteUnassignedRowDefaults(row, textureIndices);
     if (void* ptr = m_Device->MapBuffer(m_MaterialParamsSSBOFallback))
     {
         std::memcpy(ptr, row, sizeof(row));
@@ -1012,69 +949,94 @@ void MaterialSystem::PackMaterialSSBO()
         return;
     }
 
-    // O(1) layout stamp over everything a row does not carry: the slot mapping
-    // (m_MaterialSSBOGeneration, bumped when that mapping moves — an index
-    // assigned, an index freed, or a shutdown clear; a re-registration keeps its
-    // index and does NOT bump it), the row count, and the default bindless
-    // indices seeded into unassigned rows. The process-wide content epoch
-    // (bumped by every MarkDirty — properties, bindless indices, UV transforms,
-    // sampler preset) is kept beside it: it says whether any row can differ, and
-    // each row's material revision says which.
-    // Seeded with the FNV-1a offset basis, the chain Hashing::Fnv1a64Value continues.
-    uint64_t stamp = Hashing::Fnv1a64Value(Hashing::kFnv1a64OffsetBasis, m_MaterialSSBOGeneration);
-    stamp = Hashing::Fnv1a64Value(stamp, materialCount);
-    stamp = Hashing::Fnv1a64Value(stamp, m_Textures->DefaultWhiteBindlessIndex());
-    stamp = Hashing::Fnv1a64Value(stamp, m_Textures->DefaultFlatNormalBindlessIndex());
-    stamp = Hashing::Fnv1a64Value(stamp, m_Textures->DefaultBlackBindlessIndex());
-    const uint64_t contentEpoch = Material::GetGlobalContentEpoch();
+    // O(1) content stamp over everything this function packs: the slot
+    // mapping (m_MaterialSSBOGeneration, bumped when that mapping moves — an
+    // index assigned, an index freed, or a shutdown clear; a re-registration
+    // keeps its index and does NOT bump it),
+    // the process-wide material content epoch (bumped by every MarkDirty —
+    // properties, bindless indices, UV transforms, sampler preset), and the
+    // default bindless indices seeded into unvisited rows. Equal stamp
+    // implies a byte-identical pack. Whole-array granularity matches the
+    // pack itself: any material change repacks everything.
+    uint64_t stamp = Rendering::HashUtils::HashValue(Hashing::kFnv1a64OffsetBasis, m_MaterialSSBOGeneration);
+    stamp = Rendering::HashUtils::HashValue(stamp, materialCount);
+    stamp = Rendering::HashUtils::HashValue(stamp, Material::GetGlobalContentEpoch());
+    stamp = Rendering::HashUtils::HashValue(stamp, m_Textures->DefaultWhiteBindlessIndex());
+    stamp = Rendering::HashUtils::HashValue(stamp, m_Textures->DefaultFlatNormalBindlessIndex());
+    stamp = Rendering::HashUtils::HashValue(stamp, m_Textures->DefaultBlackBindlessIndex());
 
     // Publish the SSBO binding every frame — buffer/offset differ per slot.
     m_MaterialParamsSSBOBuffer = alloc.buffer;
     m_MaterialParamsSSBOOffset = alloc.offset;
     m_MaterialParamsSSBOSize = totalBytes;
 
-    // The slot's ring memory still holds its last pack when the ring hands back
-    // the same {buffer, offset}. Valid because MaterialParams is this function's
-    // exclusive usage bucket and it runs once per pool BeginFrame — the ring
-    // hands back the same placement every cycle while sizes are stable; growth
-    // or buffer recreation fails the check and packs in full (a device rebuild
-    // destroys every buffer by handle, and a handle index never reissues a
-    // generation, so the rebuilt ring's buffer id can never equal the old one).
-    // A second call in
-    // one frame would allocate at a shifted offset and permanently disengage the
-    // delta — visible as m_MaterialSSBORowWriteCount climbing by whole tables.
+    // Skip the repack when this frame slot's ring memory already holds this
+    // exact pack. Valid because MaterialParams is this function's exclusive
+    // usage bucket and it runs once per pool BeginFrame — the ring hands back
+    // the same {buffer, offset} every cycle while sizes are stable (placement
+    // verified below; growth or buffer recreation fails the check and
+    // repacks). A second call in one frame would allocate at a shifted offset
+    // and permanently disengage the skip — visible as m_MaterialSSBOPackCount
+    // climbing while idle.
     auto& packedSlot =
         m_PackedMaterialSlots[m_FramePool->GetCurrentSlot(FrameWriteUsage::MaterialParams)];
-    const bool sameLayout = packedSlot.Stamp == stamp && packedSlot.Buffer == alloc.buffer
-                            && packedSlot.Offset == alloc.offset && packedSlot.RowRevisions.size() == materialCount;
-    if (sameLayout && packedSlot.ContentEpoch == contentEpoch)
+    if (packedSlot.Stamp == stamp && packedSlot.Buffer == alloc.buffer
+        && packedSlot.Offset == alloc.offset)
+    {
         return;
+    }
 
     ++m_MaterialSSBOPackCount;
 
-    // A delta pack rewrites only the rows whose revision moved since this slot
-    // was last packed; a full pack rewrites every row, so an unvisited or
-    // recycled row is never sampled as zero (see WriteUnassignedRowDefaults).
-    const UnassignedRowIndices defaultTexIdx = ResolveUnassignedRowIndices(*m_Textures);
-    if (!sameLayout)
-        packedSlot.RowRevisions.assign(materialCount, 0u);
+    // Zero-fill the entire allocation (default values for unvisited slots).
+    std::memset(alloc.ptr, 0, totalBytes);
+
+    // Seed every row with valid defaults so an unvisited/recycled row is never
+    // sampled as zero (see WriteUnassignedRowDefaults for why zero is unsafe).
+    // Populated rows overwrite these below.
+    const auto defaultTexIdx = UnassignedSlotTextureIndices(*m_Textures);
+    for (uint32_t i = 0; i < materialCount; ++i)
+        WriteUnassignedRowDefaults(static_cast<uint8_t*>(alloc.ptr) + i * kMaterialEntryStride,
+                                   defaultTexIdx);
+
+    // Sequential flat-vector scan replaces unordered_map ForEach for cache-friendly iteration.
     const uint32_t lookupSize = static_cast<uint32_t>(m_MaterialsBySSBOIndex.size());
-    for (uint32_t idx = 0; idx < materialCount; ++idx)
+    for (uint32_t idx = 0; idx < materialCount && idx < lookupSize; ++idx)
     {
-        const Material* mat = idx < lookupSize ? m_MaterialsBySSBOIndex[idx] : nullptr;
-        const uint32_t revision = mat ? mat->GetContentRevision() : 0u;
-        uint32_t& packedRevision = packedSlot.RowRevisions[idx];
-        if (sameLayout && packedRevision == revision)
+        const Material* mat = m_MaterialsBySSBOIndex[idx];
+        if (!mat)
             continue;
-        WriteMaterialRow(static_cast<uint8_t*>(alloc.ptr) + idx * kMaterialEntryStride, mat, defaultTexIdx);
-        packedRevision = revision;
-        ++m_MaterialSSBORowWriteCount;
+
+        uint8_t* entryPtr = static_cast<uint8_t*>(alloc.ptr) + idx * kMaterialEntryStride;
+
+        const uint32_t cacheSize = mat->GetCacheSize();
+        const uint32_t copyBytes = std::min(cacheSize, kMaterialParamBytes);
+        if (copyBytes > 0)
+            std::memcpy(entryPtr, mat->GetCacheData(), copyBytes);
+
+        std::memcpy(entryPtr + kMaterialParamBytes, mat->GetBindlessTextureIndices(), kTextureIndexBytes);
+
+        // Material stores texture transforms interleaved by slot:
+        //   slot0 row0, slot0 row1, slot1 row0, slot1 row1, ...
+        // The shader SSBO stores them as two arrays:
+        //   TextureST[8] row0s, then TextureST2[8] row1s.
+        // Repack instead of bulk-copying, otherwise default identity transforms
+        // become (u, u) for albedo in bindless draws.
+        const float* srcRows = mat->GetTextureTransforms();
+        float* dstRows = reinterpret_cast<float*>(entryPtr + kMaterialParamBytes + kTextureIndexBytes);
+        for (uint32_t slot = 0; slot < kTextureSlotArraySize; ++slot)
+        {
+            std::memcpy(dstRows + slot * 4u, srcRows + slot * 8u, 4u * sizeof(float));
+            std::memcpy(dstRows + (kTextureSlotArraySize + slot) * 4u,
+                        srcRows + slot * 8u + 4u,
+                        4u * sizeof(float));
+        }
+
+        const uint32_t packedSamplers = mat->GetPackedSamplerIndices();
+        std::memcpy(entryPtr + kSamplerIndicesOffset, &packedSamplers, sizeof(uint32_t));
     }
 
-    packedSlot.Buffer = alloc.buffer;
-    packedSlot.Offset = alloc.offset;
-    packedSlot.Stamp = stamp;
-    packedSlot.ContentEpoch = contentEpoch;
+    packedSlot = PackedMaterialSlot{alloc.buffer, alloc.offset, stamp};
 }
 
 Material* MaterialSystem::RegisterMaterialFromDocument(
@@ -1139,11 +1101,6 @@ Material* MaterialSystem::RegisterMaterialFromDocument(
     const auto tReg = Clock::now();
     Material* mat = m_RuntimeMaterialRegistry.Register(guid, resolved);
     const double regMs = msElapsed(tReg);
-    // Register() flips double-sidedness in place without touching a property,
-    // yet it is content to the tables derived from the registry (DDGI weights an
-    // emitter's power by it), so the edit moves the registry stamp.
-    if (mat && previousMat && mat->IsDoubleSided() != previousDoubleSided)
-        mat->MarkDirty();
 
     bool materialAssetPathChanged = false;
     // The surface's declared texture slots, read once per registration: the Parallax keyword and
@@ -1387,8 +1344,8 @@ Material* MaterialSystem::RegisterMaterialFromDocument(
         // A texGuidStr of "" or one that fails to parse counts as "removed"
         // — same handling as UpdateMaterialTextures (line ~3777).
         {
-            FlatSet<StringId> liveSlots;
-            liveSlots.Reserve(resolved.textures.size());
+            std::unordered_set<StringId> liveSlots;
+            liveSlots.reserve(resolved.textures.size());
             for (const auto& [texName, texGuidStr] : resolved.textures)
             {
                 if (texGuidStr.empty())
@@ -1403,13 +1360,13 @@ Material* MaterialSystem::RegisterMaterialFromDocument(
                 // Treat embedded refs (non-empty texGuidStr that doesn't
                 // parse as a GUID) as live — ResolveEmbeddedTextures binds
                 // them after this function returns.
-                liveSlots.Insert(nameId);
+                liveSlots.insert(nameId);
             }
 
             std::vector<StringId> slotsToClear;
             for (const auto& [slotName, _] : mat->GetTextureBindings())
             {
-                if (!liveSlots.Contains(slotName))
+                if (liveSlots.find(slotName) == liveSlots.end())
                     slotsToClear.push_back(slotName);
             }
 
@@ -1670,7 +1627,7 @@ ProvenAlwaysDiscardingMask(const MaterialDocument& doc)
     if (!std::isfinite(*baseAlpha) || !std::isfinite(*authoredCutoff))
         return std::nullopt;
 
-    const float cutoff = Math::Clamp01(*authoredCutoff);
+    const float cutoff = std::clamp(*authoredCutoff, 0.0f, 1.0f);
     if (*baseAlpha >= cutoff)
         return std::nullopt;
     return AlwaysDiscardingMask{*baseAlpha, cutoff};
@@ -1837,6 +1794,8 @@ std::span<const uint32_t> MaterialSystem::MaterialColorClassSpan()
 
 void MaterialSystem::RecompileMaterialPipeline(const GUID& guid, const MaterialDocument& doc)
 {
+    assert(std::this_thread::get_id() == m_OwnerThreadId
+           && "RecompileMaterialPipeline is main-thread-only (retires the pipeline id unlocked)");
     Material* mat = m_RuntimeMaterialRegistry.Find(guid);
     if (!mat || !m_Device)
         return;
@@ -1847,19 +1806,14 @@ void MaterialSystem::RecompileMaterialPipeline(const GUID& guid, const MaterialD
 
     ShaderCacheKey cacheKey{};
     cacheKey.VariantKey = mat->GetVariantKey();
-    cacheKey.Source = MakeShaderSourceKey(resolved.surfaceShader, resolved.vertexModifier, mat->GetMaterialAssetPath());
+    cacheKey.Source.SurfaceShaderPath = resolved.surfaceShader;
+    cacheKey.Source.VertexModifierPath = resolved.vertexModifier;
+    cacheKey.Source.MaterialAssetPath = mat->GetMaterialAssetPath();
 
     // The in-memory cache is keyed by paths, not bytes: a content edit behind an
     // unchanged path must invalidate here or the worker would re-serve the old
     // compile. (The on-disk layer hashes content and needs no help.)
     m_ShaderCompilationCache.InvalidateGlobalEntry(cacheKey);
-    ResubmitMaterialPipeline(guid, mat, resolved);
-}
-
-void MaterialSystem::ResubmitMaterialPipeline(const GUID& guid, Material* mat, const MaterialDocument& resolved)
-{
-    assert(std::this_thread::get_id() == m_OwnerThreadId
-           && "ResubmitMaterialPipeline is main-thread-only (retires the pipeline id unlocked)");
     if (auto slots = ResolveSurfaceTextureSlots(resolved, mat->GetMaterialAssetPath()))
         mat->SetTextureSlotMap(std::move(*slots));
 
@@ -1909,36 +1863,6 @@ void MaterialSystem::ResubmitMaterialPipeline(const GUID& guid, Material* mat, c
     }
 }
 
-namespace
-{
-// The program index of the first read-only shader cache root that carries one (the cook writes it
-// beside the programs it ships), or null. An index that cannot be used is reported, never trusted.
-std::shared_ptr<const Rendering::ShaderProgramIndex> LoadProgramIndex(
-    const Rendering::MaterialBuildContext& context)
-{
-    for (const std::filesystem::path& root : context.ReadOnlyCacheRoots)
-    {
-        const std::filesystem::path path = root / Rendering::kShaderProgramIndexFileName;
-        std::error_code ec;
-        if (!std::filesystem::is_regular_file(path, ec))
-            continue;
-        std::string reason;
-        const auto start = std::chrono::steady_clock::now();
-        if (auto index = Rendering::ShaderProgramIndex::Load(path, context, &reason))
-        {
-            Logger::Log::Info("Shader program index: {} cooked variant(s) resolve without composing, from '{}' "
-                              "(sources checked in {:.1f} ms)",
-                              index->Size(), path.string(),
-                              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
-            return index;
-        }
-        Logger::Log::Warning("Shader program index ignored: {}. Every variant composes and hashes its "
-                             "source to find its cooked program.", reason);
-    }
-    return nullptr;
-}
-} // namespace
-
 bool MaterialSystem::EnsureMaterialBuildContextReady()
 {
     // Lazy-init from the asset mount table. The asset sources can be registered
@@ -1952,20 +1876,19 @@ bool MaterialSystem::EnsureMaterialBuildContextReady()
             return false; // No Engine instance (e.g. unit-test harness).
         auto& am = engine.GetAssetManager();
         m_MaterialBuildContext.AdapterShaderDir = ResolveAdapterShaderDir(am);
-        // A packaged runtime's cooked cache is probed first; a miss compiles
-        // into the workspace's.
-        const ShaderCacheRoots& shaderCacheRoots = ShaderProgramAsset::GetShaderCacheRoots();
-        m_MaterialBuildContext.ReadOnlyCacheRoots = shaderCacheRoots.ReadOnly;
-        m_MaterialBuildContext.CacheRoot = shaderCacheRoots.Writable.empty()
+        // The bundle cache root wins when one is set: a compiler-less runtime
+        // (web) ships its cooked variants beside the binary, not under the
+        // workspace.
+        const std::filesystem::path& shaderCacheRoot = ShaderProgramAsset::GetShaderCacheRoot();
+        m_MaterialBuildContext.CacheRoot = shaderCacheRoot.empty()
             ? engine.GetWorkspaceRoot() / ".Cache" / "Shaders"
-            : shaderCacheRoots.Writable;
+            : shaderCacheRoot;
         m_MaterialBuildContext.IncludeDirs = {am.GetAssetRoot()};
         m_MaterialBuildContext.ProjectRoots = CollectProjectRoots(am);
         m_MaterialBuildContext.AssetSourceRoots = CollectAssetSourceRoots(am);
         m_MaterialBuildContext.PackageShaderDirs = CollectPackageShaderDirs(am);
         AppendStagedModuleShaderDirs(m_MaterialBuildContext.AdapterShaderDir,
                                      m_MaterialBuildContext.PackageShaderDirs);
-        m_MaterialBuildContext.ProgramIndex = LoadProgramIndex(m_MaterialBuildContext);
         m_MaterialBuildContextSourceVersion = am.GetSourceSetVersion();
     }
     else if (m_MaterialBuildContextSourceVersion != 0
@@ -2000,7 +1923,6 @@ bool MaterialSystem::EnsureMaterialBuildContextReady()
                 m_MaterialBuildContext.AdapterShaderDir = std::move(adapterDir);
                 m_AdapterShaderDirVerified = false;
                 m_ShaderCompilationCache.Clear();
-                Rendering::NotifyShaderSourcesChanged();
             }
 
             // After the re-derive, never before: the staged module roots hang off
@@ -2162,17 +2084,31 @@ bool MaterialSystem::IsSurfaceProjectOwned(const MaterialDocument& doc,
 std::optional<std::vector<std::pair<std::string, uint8_t>>> MaterialSystem::ResolveSurfaceTextureSlots(
     const MaterialDocument& doc, const std::filesystem::path& materialAssetPath)
 {
-    if (!EnsureMaterialBuildContextReady())
-        return std::nullopt; // headless / context not yet warm — leave the map as-is
+    GE_CPU_PROFILE_SCOPE("MaterialSystem.ResolveSurfaceTextureSlots");
+    {
+        GE_CPU_PROFILE_SCOPE("MaterialSystem.ResolveSurfaceTextureSlots.ContextSetup");
+        if (!EnsureMaterialBuildContextReady())
+            return std::nullopt; // headless / context not yet warm — leave the map as-is
+    }
 
-    const std::filesystem::path surfacePath = ResolveSurfacePath(doc, materialAssetPath);
+    std::filesystem::path surfacePath;
+    {
+        GE_CPU_PROFILE_SCOPE("MaterialSystem.ResolveSurfaceTextureSlots.ResolvePath");
+        surfacePath = ResolveSurfacePath(doc, materialAssetPath);
+    }
 
     std::string source;
-    if (!ReadFileTextShared(surfacePath, source))
-        return std::nullopt; // unresolved/unreadable — compose reports it; keep the old map
+    {
+        GE_CPU_PROFILE_SCOPE("MaterialSystem.ResolveSurfaceTextureSlots.ReadSource");
+        if (!ReadFileTextShared(surfacePath, source))
+            return std::nullopt; // unresolved/unreadable — compose reports it; keep the old map
+    }
 
-    Rendering::TextureSlotResolution slots =
-        Rendering::ShaderComposer::ResolveTextureSlots(source);
+    Rendering::TextureSlotResolution slots;
+    {
+        GE_CPU_PROFILE_SCOPE("MaterialSystem.ResolveSurfaceTextureSlots.ParseSlots");
+        slots = Rendering::ShaderComposer::ResolveTextureSlots(source);
+    }
     // A rejected surface fails the compose with a hard error (logged there). The
     // failed compile leaves the material's PREVIOUS pipeline running, so the old
     // routing map must survive with it — report no-result rather than empty.
@@ -2196,7 +2132,9 @@ void MaterialSystem::CompileMaterialPipeline(Material& mat, const MaterialDocume
 
     ShaderCacheKey cacheKey{};
     cacheKey.VariantKey = mergedKey;
-    cacheKey.Source = MakeShaderSourceKey(doc.surfaceShader, doc.vertexModifier, mat.GetMaterialAssetPath());
+    cacheKey.Source.SurfaceShaderPath = doc.surfaceShader;
+    cacheKey.Source.VertexModifierPath = doc.vertexModifier;
+    cacheKey.Source.MaterialAssetPath = mat.GetMaterialAssetPath();
 
     MaterialCompileSpec spec{};
     spec.surfaceShaderPath = doc.surfaceShader;
@@ -2210,7 +2148,7 @@ void MaterialSystem::CompileMaterialPipeline(Material& mat, const MaterialDocume
     using Clock = std::chrono::high_resolution_clock;
     const auto tShader = Clock::now();
     auto variant = m_ShaderCompilationCache.GetOrCompile(cacheKey, spec, m_MaterialBuildContext,
-                                                         mat.GetName(), mat.GetMaterialAssetPath(),
+                                                         mat.GetName(),
                                                          m_Device->PreferredShaderSource());
     const double shaderMs = std::chrono::duration<double, std::milli>(Clock::now() - tShader).count();
     if (!variant)
@@ -2229,7 +2167,7 @@ void MaterialSystem::CompileMaterialPipeline(Material& mat, const MaterialDocume
         mat.GetAlphaMode(), mat.GetBlendState(), mat.GetDepthWriteOverride(),
         mat.GetDepthTestOverride());
     const Rendering::CullModeFlags cullMode = mat.IsDoubleSided()
-        ? static_cast<Rendering::CullModeFlags>(Rendering::CullModeFlagBits::None)
+        ? Rendering::CullModeFlagBits::None
         : DebugCullMode();
 
     const Rendering::GraphicsPipelineId pipelineId = InternBaseMaterialPipeline(
@@ -2313,7 +2251,9 @@ void MaterialSystem::SubmitAsyncBaseCompile(const GUID& guid, Material& mat,
     const Rendering::ShaderVariantKey variantKey = mat.GetVariantKey();
     ShaderCacheKey cacheKey{};
     cacheKey.VariantKey = variantKey;
-    cacheKey.Source = MakeShaderSourceKey(doc.surfaceShader, doc.vertexModifier, mat.GetMaterialAssetPath());
+    cacheKey.Source.SurfaceShaderPath = doc.surfaceShader;
+    cacheKey.Source.VertexModifierPath = doc.vertexModifier;
+    cacheKey.Source.MaterialAssetPath = mat.GetMaterialAssetPath();
 
     // Coalesce duplicate submits: one base compile per GUID at a time. A re-
     // registration before the first publish still sees an invalid pipeline id and
@@ -2336,12 +2276,11 @@ void MaterialSystem::SubmitAsyncBaseCompile(const GUID& guid, Material& mat,
         mat.GetAlphaMode(), mat.GetBlendState(), mat.GetDepthWriteOverride(),
         mat.GetDepthTestOverride());
     const Rendering::CullModeFlags cullMode = mat.IsDoubleSided()
-        ? static_cast<Rendering::CullModeFlags>(Rendering::CullModeFlagBits::None)
+        ? Rendering::CullModeFlagBits::None
         : DebugCullMode();
     const Rendering::FrontFace frontFace = DebugFrontFace();
     const Rendering::VertexAttributeFlags vertexFlags = variantKey.vertexFlags;
     const std::string materialName = mat.GetName();
-    const std::filesystem::path materialAssetPath = mat.GetMaterialAssetPath();
     const Rendering::MaterialBuildContext buildContext = m_MaterialBuildContext;
     // Q6 RebuildDevice: the worker captures this raw IDevice*, which is safe
     // because the IDevice POINTER survives RebuildDevice by design (the rebuild
@@ -2354,14 +2293,13 @@ void MaterialSystem::SubmitAsyncBaseCompile(const GUID& guid, Material& mat,
     Rendering::IDevice* device = m_Device;
     auto* cache = &m_ShaderCompilationCache;
 
-    SubmitTrackedPrewarm(TrackLoadWork(
-        LoadWork::BaseCompile, materialName, PrewarmOrigin::OnDemand,
+    SubmitTrackedPrewarm(
         [this, guid, cacheKey, spec, buildContext, derivedBlend, cullMode, frontFace,
-         vertexFlags, materialName, materialAssetPath, device, cache]() mutable
+         vertexFlags, materialName, device, cache]() mutable
         {
             // Compile the SPIR-V (mutex-guarded, single-flight) and intern the base
             // pipeline (thread-safe device cache) entirely off the main thread.
-            auto variant = cache->GetOrCompile(cacheKey, spec, buildContext, materialName, materialAssetPath,
+            auto variant = cache->GetOrCompile(cacheKey, spec, buildContext, materialName,
                                                device->PreferredShaderSource());
             Rendering::GraphicsPipelineId pipelineId{};
             if (variant)
@@ -2373,7 +2311,7 @@ void MaterialSystem::SubmitAsyncBaseCompile(const GUID& guid, Material& mat,
             std::lock_guard<std::mutex> lk(m_PendingPublishMutex);
             m_PendingPipelinePublishes.push_back(
                 {guid, pipelineId, variant ? variant->meta : nullptr, cacheKey});
-        }));
+        });
 }
 
 void MaterialSystem::RedriveAsyncBaseCompile(const GUID& guid, Material& mat)
@@ -2482,7 +2420,9 @@ void MaterialSystem::ApplyPendingPipelinePublishes()
         // recompile from). Discard and re-drive for the current key instead.
         ShaderCacheKey liveKey{};
         liveKey.VariantKey = mat->GetVariantKey();
-        liveKey.Source = MakeShaderSourceKey(mat->GetCompileSpec().surfaceShaderPath, mat->GetCompileSpec().vertexModifierPath, mat->GetMaterialAssetPath());
+        liveKey.Source.SurfaceShaderPath = mat->GetCompileSpec().surfaceShaderPath;
+        liveKey.Source.VertexModifierPath = mat->GetCompileSpec().vertexModifierPath;
+        liveKey.Source.MaterialAssetPath = mat->GetMaterialAssetPath();
         if (!(rec.CompiledKey == liveKey))
         {
             RedriveAsyncBaseCompile(rec.Guid, *mat);
@@ -2541,6 +2481,46 @@ void MaterialSystem::FlushAsyncMaterialCompiles()
     m_PipelineVariants->ApplyPendingVariantPublishes();
 }
 
+std::shared_future<void> MaterialSystem::PrefetchMaterialShaderSources(
+    const MaterialDocument& doc, const std::filesystem::path& materialAssetPath)
+{
+    assert((m_OwnerThreadId == std::thread::id{} || IsOwnerThread())
+           && "Shader source prefetch submission requires the owner thread");
+    auto& engine = GameEngine::EngineCore::GetInstance();
+    if (!engine.IsInitialized() || engine.GetJobSystem().GetWorkerCount() == 0 ||
+        !EnsureMaterialBuildContextReady())
+    {
+        std::promise<void> unavailable;
+        unavailable.set_value();
+        return unavailable.get_future().share();
+    }
+
+    MaterialDocument resolved = doc;
+    if (m_MaterialCompiler)
+        m_MaterialCompiler->ReconcileShaderReferences(resolved);
+    const MaterialBuildContext context = m_MaterialBuildContext;
+    // No live registry, document or facade reference crosses to the worker. A
+    // failed read is left to registration, which reports the missing source.
+    // packaged_task makes a dropped task ready with broken_promise, so a
+    // polling caller cannot wait indefinitely.
+    auto task = std::make_shared<std::packaged_task<void()>>(
+        [surface = resolved.surfaceShader, modifier = resolved.vertexModifier,
+         materialDir = MaterialDirOf(materialAssetPath), context]() {
+            std::string source;
+            ReadFileTextShared(Rendering::ShaderComposer::ResolveShaderReference(
+                                   surface.empty() ? std::string("Surfaces/standard_surface.glsl") : surface,
+                                   materialDir, context),
+                               source);
+            if (!modifier.empty())
+                ReadFileTextShared(
+                    Rendering::ShaderComposer::ResolveShaderReference(modifier, materialDir, context),
+                    source);
+        });
+    auto result = task->get_future().share();
+    SubmitTrackedPrewarm([task = std::move(task)] { (*task)(); });
+    return result;
+}
+
 void MaterialSystem::PrewarmMaterialBaseShader(const MaterialDocument& doc,
                                                const std::filesystem::path& materialAssetPath)
 {
@@ -2565,56 +2545,22 @@ void MaterialSystem::PrewarmMaterialBaseShader(const MaterialDocument& doc,
 
     ShaderCacheKey cacheKey{};
     cacheKey.VariantKey = identity.Key;
-    // The identity the eventual draw-time key derives from the same document and asset path.
-    cacheKey.Source = MakeShaderSourceKey(spec.surfaceShaderPath, spec.vertexModifierPath, materialAssetPath);
+    cacheKey.Source.SurfaceShaderPath = spec.surfaceShaderPath;
+    cacheKey.Source.VertexModifierPath = spec.vertexModifierPath;
+    // Key identity must match the eventual draw-time key (which carries the
+    // asset path), and material-relative surface references need the anchor.
+    cacheKey.Source.MaterialAssetPath = materialAssetPath;
 
     const Rendering::MaterialBuildContext buildContext = m_MaterialBuildContext;
     auto* cache = &m_ShaderCompilationCache;
     const std::string materialName = doc.materialName.empty() ? std::string("<prewarm>") : doc.materialName;
     const Rendering::ShaderSourceKind sourceKind = m_Device->PreferredShaderSource();
 
-    SubmitTrackedPrewarm(TrackLoadWork(
-        LoadWork::BaseCompile, materialName, PrewarmOrigin::OnDemand,
-        [cache, cacheKey, spec, buildContext, materialName, materialAssetPath, sourceKind]() mutable
+    SubmitTrackedPrewarm(
+        [cache, cacheKey, spec, buildContext, materialName, sourceKind]() mutable
         {
-            cache->GetOrCompile(cacheKey, spec, buildContext, materialName, materialAssetPath, sourceKind);
-        }));
-}
-
-struct MaterialSystem::LoadReport
-{
-    SceneLoadTracker::Category BaseCompiles;
-    SceneLoadTracker::Category PipelineBuilds;
-};
-
-void MaterialSystem::ReportLoadingWork(SceneLoadTracker& tracker)
-{
-    {
-        // Once. A task on a worker can read the report while this runs.
-        std::lock_guard<std::mutex> lk(m_PrewarmDrainMutex);
-        if (m_LoadReport)
-            return;
-        m_LoadReport = std::make_shared<LoadReport>();
-        m_LoadReport->BaseCompiles = tracker.RegisterCategory(
-            {.Id = "shader.base-compile", .Label = "Compiling shaders", .Unit = SceneLoadTracker::CostUnit::Variants});
-        m_LoadReport->PipelineBuilds = tracker.RegisterCategory(
-            {.Id = "gpu.pipeline", .Label = "Building pipelines", .Unit = SceneLoadTracker::CostUnit::Pipelines});
-    }
-    Variants().ReportLoadingWork(tracker);
-}
-
-std::function<void()> MaterialSystem::TrackLoadWork(LoadWork kind, std::string_view name, PrewarmOrigin origin,
-                                                    std::function<void()> work)
-{
-    // Under the drain lock: the shutdown drops the report under it.
-    std::lock_guard<std::mutex> lk(m_PrewarmDrainMutex);
-    if (!m_LoadReport)
-        return work;
-    SceneLoadTracker::Category& category =
-        kind == LoadWork::PipelineBuild ? m_LoadReport->PipelineBuilds : m_LoadReport->BaseCompiles;
-    const SceneLoadTracker::Need need =
-        origin == PrewarmOrigin::ProjectWarmUp ? SceneLoadTracker::Need::Background : SceneLoadTracker::Need::Frame;
-    return category.Track(name, need, std::move(work));
+            cache->GetOrCompile(cacheKey, spec, buildContext, materialName, sourceKind);
+        });
 }
 
 void MaterialSystem::SubmitTrackedPrewarm(std::function<void()> work,
@@ -2695,9 +2641,7 @@ void MaterialSystem::DispatchPipelineBuild(std::function<void()> build)
         build();
         return;
     }
-    SubmitTrackedPrewarm(TrackLoadWork(LoadWork::PipelineBuild, "device pipeline build", PrewarmOrigin::OnDemand,
-                                       std::move(build)),
-                         JobSystem::JobPriority::Background);
+    SubmitTrackedPrewarm(std::move(build), JobSystem::JobPriority::Background);
 }
 
 void MaterialSystem::DrainPrewarmJobs()
@@ -2720,7 +2664,7 @@ void MaterialSystem::PrewarmMaterialVariants(Material& mat,
                                              Rendering::MaterialKeyword colorPassKeywords)
 {
     // The registered key and compile inputs are exactly what the draw path
-    // compiles its variants from (PipelineVariantCache::RunColorVariantCompile).
+    // compiles its variants from (PipelineVariantCache::SubmitPendingVariantCompiles).
     PrewarmMaterialVariantSet(mat.GetVariantKey(), mat.GetCompileSpec(), mat.GetAlphaMode(),
                               mat.IgnoresVertexColor(), mat.GetName(), mat.GetMaterialAssetPath(), colorPassKeywords,
                               PrewarmOrigin::OnDemand);
@@ -2889,32 +2833,46 @@ void MaterialSystem::PrewarmMaterialVariantSet(const Rendering::ShaderVariantKey
     // self-heal remains the safety net if the blueprint changes after prewarm.
     const MaterialKeyword colorPassKw = colorPassKeywords;
     const Rendering::ShaderSourceKind sourceKind = m_Device->PreferredShaderSource();
+    const auto prewarmPolicy = GetMaterialPrewarmPolicy();
+    const CrossfadeTailWarmup crossfadeTails = Rendering::ShaderCompileService::IsCompilerAvailable()
+                                                   ? CrossfadeTailWarmup::Warm
+                                                   : CrossfadeTailWarmup::Skip;
 
-    // ShutdownPhaseA waits for this task to end, so the flag pointer stays valid.
-    const std::atomic<bool>* shutdown = &m_PrewarmShutdown;
-
-    SubmitTrackedPrewarm(TrackLoadWork(
-        LoadWork::BaseCompile, materialName, origin,
+    SubmitTrackedPrewarm(
         [cache, variantKey, spec, alphaMode, ignoresVertexColor, buildContext, materialName, materialAssetPath,
-         colorPassKw, sourceKind, shutdown]() mutable
+         colorPassKw, sourceKind, prewarmPolicy, crossfadeTails]() mutable
         {
             using Clock = std::chrono::high_resolution_clock;
             const auto t0 = Clock::now();
-            const auto keys = MaterialPrewarmVariantKeys(variantKey, colorPassKw, spec.customVertexShader,
-                                                         alphaMode, ignoresVertexColor);
+            auto keys = MaterialPrewarmVariantKeys(variantKey, colorPassKw, spec.customVertexShader, alphaMode,
+                                                   crossfadeTails, ignoresVertexColor);
+            if (prewarmPolicy == MaterialPrewarmPolicy::StaticColor)
+            {
+                keys.clear();
+                ForEachMaterialPrewarmVariant(prewarmPolicy, variantKey.materialKeywords, colorPassKw,
+                    [&](Rendering::VertexAttributeFlags flags, Rendering::MaterialKeyword extra) {
+                        auto key = variantKey;
+                        key.vertexFlags = flags;
+                        key.materialKeywords |= extra;
+                        if (spec.customVertexShader)
+                            Rendering::ApplyCustomVertexShaderClamp(key);
+                        if (std::find(keys.begin(), keys.end(), key) == keys.end())
+                            keys.push_back(key);
+                    });
+            }
             for (const auto& key : keys)
             {
-                if (shutdown->load(std::memory_order_relaxed))
-                    return;
                 ShaderCacheKey ck{};
-                ck.Source = MakeShaderSourceKey(spec.surfaceShaderPath, spec.vertexModifierPath, materialAssetPath);
+                ck.Source.SurfaceShaderPath = spec.surfaceShaderPath;
+                ck.Source.VertexModifierPath = spec.vertexModifierPath;
+                ck.Source.MaterialAssetPath = materialAssetPath;
                 ck.VariantKey = key;
-                cache->GetOrCompile(ck, spec, buildContext, materialName, materialAssetPath, sourceKind);
+                cache->GetOrCompile(ck, spec, buildContext, materialName, sourceKind);
             }
 
             const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
             Logger::Log::Trace("[Prewarm] '{}' {} variants: {:.1f}ms (background)", materialName, keys.size(), ms);
-        }),
+        },
         origin == PrewarmOrigin::ProjectWarmUp ? JobSystem::JobPriority::Background
                                                : JobSystem::JobPriority::Normal,
         origin);

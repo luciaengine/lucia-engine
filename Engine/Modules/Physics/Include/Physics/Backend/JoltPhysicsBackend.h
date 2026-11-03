@@ -18,7 +18,6 @@ public:
     void OptimizeBroadphase() override;
 
     ShapeHandle CreateShape(const ShapeDefinition& definition, const Vector3& bakedScale) override;
-    HeightFieldShapeBuilder GetHeightFieldShapeBuilder() const override;
     void DestroyShape(ShapeHandle shape) override;
     bool IsShapeValid(ShapeHandle shape) const override;
 
@@ -65,6 +64,8 @@ public:
     bool RayCastAll(const RayCastQuery& query, std::vector<RayCastResult>& outResults, uint32 maxResults) const override;
     bool BoxOverlap(const BoxOverlapQuery& query, std::vector<OverlapResult>& outResults, uint32 maxResults) const override;
 
+    void SetContactModifyCallback(ContactModifyCallback callback, void* context) override;
+    void SetBodyContactFlags(BodyHandle body, uint32 contactFlags) override;
     void SetContactCallback(ContactCallback callback) override;
     void SetTriggerCallback(TriggerCallback callback) override;
     void ProcessEvents() override;

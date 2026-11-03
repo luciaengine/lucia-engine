@@ -90,15 +90,6 @@ ge_set_output_tests(SkeletonModifierStackTests)
 ge_stage_runtime_dependencies(SkeletonModifierStackTests)
 gtest_add_tests(TARGET SkeletonModifierStackTests)
 
-add_executable(SpriteFramesTests
-    SpriteFramesTests.cpp
-)
-target_compile_features(SpriteFramesTests PUBLIC cxx_std_20)
-target_link_libraries(SpriteFramesTests PRIVATE GTest::gtest GTest::gtest_main Animation AssetCore Logger GenerationalVector)
-ge_set_output_tests(SpriteFramesTests)
-ge_stage_runtime_dependencies(SpriteFramesTests)
-gtest_add_tests(TARGET SpriteFramesTests)
-
 add_executable(FootIKNodeTests
     FootIKNodeTests.cpp
 )
@@ -110,6 +101,11 @@ gtest_discover_tests(FootIKNodeTests)
 
 add_executable(IKAllocationTests
     IKAllocationTests.cpp
+    # AllocationGuardHook bumps the thread-local allocation counter on
+    # every operator new in the test process. Linked into the test exe
+    # directly (NOT into the Animation library) so it doesn't conflict
+    # with the Editor / GameEngine.Native MimallocOverrides hook.
+    ${CMAKE_SOURCE_DIR}/Engine/Modules/Animation/Source/AllocationGuardHook.cpp
 )
 target_compile_features(IKAllocationTests PUBLIC cxx_std_20)
 target_link_libraries(IKAllocationTests PRIVATE GTest::gtest GTest::gtest_main Animation AssetCore Logger GenerationalVector)
@@ -266,7 +262,7 @@ gtest_discover_tests(AutoImportDispatchTests)
 # via a path relative to its own exe location.
 add_custom_command(TARGET HumanoidStandardProfileTests POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_SOURCE_DIR}/Engine/Assets/SkeletonProfiles/HumanoidStandard.profile.json
+        ${CMAKE_SOURCE_DIR}/Assets/SkeletonProfiles/HumanoidStandard.profile.json
         $<TARGET_FILE_DIR:HumanoidStandardProfileTests>/TestAssets/SkeletonProfiles/HumanoidStandard.profile.json
     COMMENT "Staging HumanoidStandard.profile.json for HumanoidStandardProfileTests"
     VERBATIM
@@ -275,8 +271,3 @@ add_custom_command(TARGET HumanoidStandardProfileTests POST_BUILD
 gtest_discover_tests(HumanoidStandardProfileTests
     WORKING_DIRECTORY $<TARGET_FILE_DIR:HumanoidStandardProfileTests>
 )
-
-# The refusal tests capture the log through the engine tests' shared LogCapture.h.
-foreach(target AnimationLibraryTests AnimationControllerTests SpriteFramesTests SkeletonProfileTests HumanoidRigTests RetargetMapTests)
-    target_include_directories(${target} PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Tests)
-endforeach()

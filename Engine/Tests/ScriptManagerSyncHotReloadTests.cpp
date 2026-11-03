@@ -22,7 +22,6 @@
 
 #include "Assets/FileWatchingService.h"
 #include "Assets/Packages/PackageCodeModules.h"
-#include "EngineLogCapture.h" // Engine/Tests
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Jobs/CompileServerTestDoubles.h" // Tests/Jobs
 #include "Jobs/CompileServerVersion.h"
@@ -43,7 +42,6 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <string_view>
 #include <thread>
 
 using namespace GameEngine;
@@ -185,41 +183,6 @@ bool WaitForFlag(const std::atomic<bool>& flag, std::chrono::milliseconds timeou
     return true;
 }
 } // namespace
-
-// The first test of this file: the probe (`dotnet --version`) runs once per process, so a
-// compile in an earlier test would hide it. With deferInitialLoad, Initialize queues the
-// initial build on the compile channel; that build may probe on a worker inside the capture.
-TEST(ScriptManagerStartup, InitializeRunsNoDotnetProbeOnTheCallingThread)
-{
-    // No scripts project: the queued initial build stops after the probe and compiles nothing.
-    const std::filesystem::path workspace = PrepareWorkspace("StartupProbe");
-    std::filesystem::remove(workspace / "Scripts" / "GameEngine.Scripts.csproj");
-    ScriptsConfig config = MakeSyncHotReloadConfig(workspace, /*enableHotReload=*/false);
-    config.disableClr = false;
-    config.deferInitialLoad = true;
-
-    constexpr std::string_view kCallingThreadMarker = "StartupProbe: the calling thread";
-    std::vector<Logger::LogMessage> records;
-    JobSystem::WorkStealingThreadPool pool(kPoolWorkerCount);
-    ScriptManager manager;
-    {
-        TestLog::ScopedEngineLogCapture capture(&records, Logger::LogLevel::Debug);
-        Logger::Log::Info("{}", kCallingThreadMarker);
-        ASSERT_TRUE(manager.Initialize(config, pool));
-        Logger::Log::Flush();
-    }
-
-    const auto marker = std::find_if(records.begin(), records.end(), [kCallingThreadMarker](const Logger::LogMessage& record)
-                                     { return record.Message == kCallingThreadMarker; });
-    ASSERT_NE(marker, records.end()) << "The capture saw no line of the calling thread";
-    const std::string callingThread = marker->ThreadId;
-    for (const Logger::LogMessage& record : records)
-    {
-        if (record.ThreadId == callingThread)
-            EXPECT_EQ(record.Message.find("[DotnetHost]"), std::string::npos)
-                << "Initialize ran `dotnet --version` on the calling thread: " << record.Message;
-    }
-}
 
 TEST(ScriptManagerSyncHotReload, ChangeEventReturnsWhileTheReloadCompiles)
 {

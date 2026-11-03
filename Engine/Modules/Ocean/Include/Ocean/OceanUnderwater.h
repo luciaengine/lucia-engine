@@ -7,16 +7,11 @@
 
 #include "Rendering/Core/Device.h" // PipelineDesc, DescriptorSetLayoutDesc
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h" // GraphicsPipelineId
+#include "Rendering/Core/PipelineIdentifiers.h" // GraphicsPipelineId
 
 #include <array>
 #include <cstdint>
 #include <vector>
-
-namespace GameEngine::Mathematics
-{
-struct Matrix4x4;
-}
 
 namespace GameEngine::Rendering
 {
@@ -70,7 +65,7 @@ struct OceanUnderwaterPortalData
 /// may be visible through the view-projection `viewProj` (16 floats, the
 /// CameraData layout). A dry camera needs the underwater composite only then.
 /// Ribbons are tested by the bounds of their tree's root record.
-bool IsUnderwaterPortalInView(const OceanUnderwaterPortalData& data, const Mathematics::Matrix4x4& viewProj);
+bool IsUnderwaterPortalInView(const OceanUnderwaterPortalData& data, const float* viewProj);
 
 // Fullscreen underwater overlay (Phase 7). When the camera is submerged the
 // render node CPU-gates this pass on; it tints the frame with a submerged

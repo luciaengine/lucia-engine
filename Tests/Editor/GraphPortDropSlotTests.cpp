@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "Graph/GraphPort/GraphPortDropSlot.h"
+#include "Graph/GraphPortDropSlot.h"
 #include "UI/Interaction/DropTarget.h"
 
 #include <string>

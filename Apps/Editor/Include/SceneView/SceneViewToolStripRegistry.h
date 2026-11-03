@@ -31,7 +31,8 @@ namespace GameEngine::Editor
 
 // One button in the Scene View's tool strips (the floating strip and its inline mirror
 // in the toolbar), contributed by the module that owns the tool. The strips append
-// registered entries after their built-in buttons, in registration order; a click
+// regular entries after their built-in buttons and before badge groups, preserving
+// registration order within each group; a click
 // activates the entry's tool in that view (and a second click returns to the transform
 // tool).
 struct SceneViewToolStripEntry

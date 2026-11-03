@@ -1,0 +1,19 @@
+{
+  "identifier": "Level_0",
+  "pxWid": 32,
+  "pxHei": 32,
+  "layerInstances": [
+    {
+      "__identifier": "Tiles",
+      "__type": "Tiles",
+      "__cWid": 2,
+      "__cHei": 2,
+      "__gridSize": 16,
+      "__tilesetDefUid": 1,
+      "layerDefUid": 10,
+      "gridTiles": [
+        { "px": [16, 16], "src": [16, 0], "f": 0, "t": 1 }
+      ]
+    }
+  ]
+}

@@ -2,9 +2,9 @@
 #include "Rendering/Core/Device.h"
 
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
 
 namespace GameEngine
@@ -60,8 +60,7 @@ void RendererProfile::LogResolved() const
 
 bool ApplyForceCompatOverride(RenderingDeviceCapabilities& caps)
 {
-    const char* env = std::getenv("GE_FORCE_COMPAT");
-    if (env == nullptr || std::strcmp(env, "1") != 0)
+    if (!Platform::EnvironmentSwitchEnabled("GE_FORCE_COMPAT", false))
     {
         return false;
     }

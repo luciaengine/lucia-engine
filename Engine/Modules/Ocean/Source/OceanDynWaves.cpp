@@ -1,15 +1,14 @@
 #include "Ocean/OceanDynWaves.h"
-#include "Mathematics/Interpolation.h"
-#include "Ocean/OceanShader/OceanShaderProgram.h"
-#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
-#include "OceanShader/OceanShaderDirectory.h"
+#include "Ocean/OceanShaderProgram.h"
+#include "Rendering/Materials/ShaderLayoutShape.h"
+#include "OceanShaderDirectory.h"
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderCompileService.h"
 
 #include <algorithm>
 #include <cmath>
@@ -180,7 +179,7 @@ void OceanDynWaves::ConfigureSimulation(float32 frequency, uint32 maximumSubstep
     m_Params.Damping = std::max(damping, 0.0f);
     m_Params.CourantNumber = std::clamp(courantNumber, 0.01f, 1.0f);
     m_Params.Gravity = std::max(gravity, 0.01f);
-    m_Params.ShallowAttenuation = Math::Clamp01(shallowAttenuation);
+    m_Params.ShallowAttenuation = std::clamp(shallowAttenuation, 0.0f, 1.0f);
     m_Params.HorizontalDisplacement = std::max(horizontalDisplacement, 0.0f);
     m_Params.DisplacementClamp = std::max(displacementClamp, 0.01f);
     m_Params.MinimumCascade = std::min(minimumCascade, kMaxOceanLodCascades - 1u);

@@ -8,28 +8,13 @@
 #include "AssetCore/SharedFileRead.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/HotReloadIntegration.h"
+#include "Types/StringUtils.h"
 
 namespace GameEngine { namespace EngineIntegration {
 
 namespace {
-    // FNV-1a 64-bit
-    constexpr uint64_t kFNVOffsetBasis = 1469598103934665603ull;
-    constexpr uint64_t kFNVPrime = 1099511628211ull;
-
-    uint64_t HashBytes(const std::vector<uint8_t>& bytes) {
-        uint64_t h = kFNVOffsetBasis;
-        for (uint8_t b : bytes) { h ^= b; h *= kFNVPrime; }
-        return h;
-    }
-
     bool ReadFileAll(const std::filesystem::path& p, std::vector<uint8_t>& out) {
         return ReadFileBytesShared(p, out) && !out.empty();
-    }
-
-    static inline std::string ToLowerExt(const std::filesystem::path& p) {
-        std::string ext = p.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), [](char c){ return static_cast<char>(std::tolower(c)); });
-        return ext;
     }
 }
 
@@ -45,7 +30,7 @@ uint32_t RegisterShaderHotReloadBridge(Rendering::IDevice& device, AssetEventDis
         std::vector<uint64_t> tags;
         bool forceFullInvalidation = false;
         const std::filesystem::path path = e.AssetPath;
-        const std::string ext = ToLowerExt(path);
+        const std::string ext = ToLowerAscii(path.extension().string());
 
         if (e.Type == AssetType::Shader) {
             if (ext == ".shader") {

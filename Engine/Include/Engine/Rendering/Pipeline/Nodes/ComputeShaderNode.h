@@ -3,9 +3,9 @@
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 #include "Rendering/Core/RecomputeElision.h"
-#include "Rendering/Materials/Shader/ShaderMeta.h"
+#include "Rendering/Materials/ShaderMeta.h"
 
 #include <cstdint>
 #include <memory>
@@ -31,12 +31,9 @@ namespace GameEngine::Engine::Renderer::Pipeline::Nodes
 //   "id": "MyCompute",
 //   "type": "ComputeShader",
 //   "shaderPkg": "my_compute.shaderpkg",
-//   "shaderPkgFallbacks": ["my_compute_t16.shaderpkg"], // optional: the same kernel at smaller
-//                                // workgroups, largest first, for devices whose limit shaderPkg exceeds
 //   "dispatch": { "x": 8, "y": 8, "z": 1 }, // also supports string expressions for x/y/z
 //   "buffers": { "MySsbo": "SomeBufferRef" },
-//   "bufferUsages": { "MySsbo": "StorageRead" }, // optional; StorageRead (default), StorageWrite,
-//                                                // or StorageReadWrite (a read-modify-write)
+//   "bufferUsages": { "MySsbo": "StorageRead" }, // optional; defaults to StorageRead
     //   "uniformWrites": { "MyUbo": { "u32x4": [1,2,3,4] } },
     //   "postProcessUniformBuffers": ["PostFxParams"], // fill reflected UBO members from PostProcessSettings
 //   "targetTexture": "SomeTexture",
@@ -59,12 +56,6 @@ class ComputeShaderNode final : public IRenderPipelineNode
     std::string m_Json;
 
     std::string m_ShaderPkg;
-    // "shaderPkgFallbacks": the same kernel at smaller workgroups, largest first. The node runs
-    // the first package of shaderPkg and these whose workgroup the device can run; the last one
-    // is run regardless, and a device that cannot run it refuses it by name.
-    std::vector<std::string> m_ShaderPkgFallbacks;
-    // The package the pipeline was built from: shaderPkg or one of its fallbacks.
-    std::string m_ActiveShaderPkg;
     std::string m_TargetTextureRef;
     // Blueprint "targetTextureReadWrite": the dispatch imageLoads its target
     // before storing (read-modify-write), so the graph must give the pass
@@ -136,6 +127,7 @@ class ComputeShaderNode final : public IRenderPipelineNode
     GameEngine::Rendering::IDevice* m_Device = nullptr;
     GameEngine::Engine::Renderer::RenderServices* m_RenderServices = nullptr;
     GameEngine::Rendering::SamplerHandle m_LinearClampSampler{};
+    GameEngine::Rendering::SamplerHandle m_PointClampSampler{};
     std::unique_ptr<GameEngine::Rendering::ShaderMeta> m_ShaderMeta;
     GameEngine::Rendering::ComputePipelineId m_PipelineId{};
     GameEngine::Rendering::DescriptorSetLayoutDesc m_Set0Layout;
@@ -149,7 +141,6 @@ class ComputeShaderNode final : public IRenderPipelineNode
     // One-time validation logging to avoid per-frame spam.
     bool m_LoggedShaderPkgIssues = false;
     bool m_LoggedShaderPkgLoadFailure = false;
-    bool m_LoggedWorkgroupFallback = false;
     bool m_LoggedDispatchExprFailure = false;
     bool m_LoggedBindingsMissingFromMeta = false;
     bool m_LoggedMissingTextureBindings = false;

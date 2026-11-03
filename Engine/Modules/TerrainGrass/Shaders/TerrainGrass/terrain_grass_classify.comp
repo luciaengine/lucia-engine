@@ -67,22 +67,18 @@ struct TerrainParamsEntry
     float GrassTextureCardsPerSquareMeter;
     float GrassTextureSize;
     float GrassPlacementSeed;
-    float GrassBladeTilt;
-    float GrassBladeBend;
-    float GrassBladeTwist;
-    float GrassBladeTaperStart;
-    float GrassTuftFan;
+    float GrassMaxWidthRatio;
     float GrassClumpSize;
     float GrassClumpHeightVariance;
     float GrassClumpAlignment;
-    float GrassClumpTaper;
+    float GrassClumpGather;
     float GrassHueVariation;
-    float GrassCanopyOcclusion;
+    float GrassRootShade;
+    float GrassBladeNormalForm;
+    float GrassBladeScatterGain;
     float GrassRootFadeStart;
     float GrassRootFadeEnd;
     uint GrassControlBindless;
-    uint ColorMapBindless;
-    float GrassGroundTintHeight;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer TerrainParamsBuffer
@@ -109,7 +105,6 @@ layout(std140, set = 0, binding = 6) uniform GrassPlaceParamsBuffer
     vec4 ViewRotCol1;
     vec4 ViewRotCol2;
     vec4 Summary;
-    ivec4 RenderOriginSector; // read only by the emit kernel (terrain_grass_place.comp)
 } Place;
 
 bool cellOutsideFrustum(vec2 cellMin, vec2 cellMax)

@@ -2,7 +2,6 @@
 
 #include "Animation/AnimationPose.h"
 #include "Animation/EvaluationContext.h"
-#include "Mathematics/Interpolation.h"
 #include "Types/StringId.h"
 
 #include <algorithm>
@@ -131,7 +130,7 @@ void StateMachineNode::Evaluate(EvaluationContext& ctx, AnimationPose& outPose)
             return;
         }
 
-        float blendWeight = Math::Clamp01(m_TransitionElapsed / m_TransitionDuration);
+        float blendWeight = std::clamp(m_TransitionElapsed / m_TransitionDuration, 0.0f, 1.0f);
 
         AnimationPose poseFrom;
         AnimationPose poseTo;

@@ -73,7 +73,7 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("Build/SteamDeck"))
     parser.add_argument("--scene", default="")
     parser.add_argument("--pipeline", default="RenderPipelines/ForwardPlus.rendergraph")
-    parser.add_argument("--game-name", default="Open Engine Player")
+    parser.add_argument("--game-name", default="GameEngine Player")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--unity", action="store_true")
     parser.add_argument("--skip-image-build", action="store_true")

@@ -4,8 +4,6 @@
 #ifndef SDF_FUNCTIONS_GLSL
 #define SDF_FUNCTIONS_GLSL
 
-#include "../Includes/error_function.glsl"
-
 // --- Shadow quality tuning ---
 const bool kEnableShadowTwoSampleQuality = true;
 const float kShadowTwoSampleOffsetPx = 0.5;
@@ -79,21 +77,6 @@ float pixelFootprint(vec2 p)
     return max(sqrt(abs(dpdx.x * dpdy.y - dpdx.y * dpdy.x)), 1e-4);
 }
 
-// The footprint for the edge of `rect` nearest `p`: how far along that edge's
-// normal, in local units, one screen pixel reaches, from the local position's
-// screen derivatives. pixelFootprint's isotropic sqrt(det) is exact under a
-// rotation or a uniform scale and equals this there; under a non-uniform scale
-// or a skew it is not, and an edge across the stretched axis comes out a
-// fraction of a pixel too soft while the other one aliases. Inside the rect
-// the nearest edge decides; off a rounded corner the corner's direction does.
-float rectEdgeFootprint(vec2 p, vec4 rect, vec2 dpdx, vec2 dpdy)
-{
-    vec2 halfSize = rect.zw * 0.5;
-    vec2 q = abs(p - (rect.xy + halfSize)) - halfSize;
-    vec2 n = (q.x > 0.0 && q.y > 0.0) ? normalize(q) : (q.x > q.y ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
-    return max(length(vec2(dot(dpdx, n), dot(dpdy, n))), 1e-4);
-}
-
 // Box-filter coverage of the half-plane at signed distance `sd` (positive
 // inside) for a fragment whose pixel footprint spans `w` SDF units.
 //
@@ -111,6 +94,17 @@ float sdfCoverage(float sd, float w)
 
 // --- Gaussian shadow (CSS box-shadow) ---
 
+// Abramowitz & Stegun approximation of erf(x), max error ~1.5e-7.
+float erfApprox(float x)
+{
+    float s = sign(x);
+    float a = abs(x);
+    float t = 1.0 / (1.0 + 0.3275911 * a);
+    float y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t
+                      - 0.284496736) * t + 0.254829592) * t * exp(-a * a);
+    return s * y;
+}
+
 // Gaussian shadow falloff (sigma = blurRadius / 2).
 //
 // The pixel term is the fragment's screen footprint expressed in the units sd
@@ -126,7 +120,7 @@ float gaussianShadowAlphaIntegrated(float sd, float blurRadius)
     float pixelSigma = max(0.5 * fwidth(sd), 0.0);
 #endif
     float sigmaEff = sqrt(sigma * sigma + pixelSigma * pixelSigma);
-    return 0.5 + 0.5 * GE_Erf(sd / (sigmaEff * 1.4142135));
+    return 0.5 + 0.5 * erfApprox(sd / (sigmaEff * 1.4142135));
 }
 
 // Symmetric taps around center sample for quality.

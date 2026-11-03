@@ -11,7 +11,6 @@
 #include <thread>
 #include <vector>
 
-#include "DeathTestChild.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 
 #include "Components/Rendering/LocalBounds.h"
@@ -24,6 +23,7 @@
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
 #include "Mathematics/Geometry.h"
 #include "Mathematics/Vector3.h"
+#include "Scene/FunctionRef.h"
 #include "Scene/SceneTlas.h"
 
 namespace
@@ -56,7 +56,7 @@ RenderExtractionSystem::WorldRenderableRecord MakeRecord(
     rec.worldTransform.matrix[14] = worldPos.z;
     rec.worldTransform.Version = version;
 
-    rec.meshRenderer.RenderLayers = GameEngine::Rendering::RenderLayerMask{layerMask};
+    rec.meshRenderer.renderLayerMask = layerMask;
 
     rec.hasBounds = true;
     rec.bounds.Box.center      = {0.0f, 0.0f, 0.0f};
@@ -113,6 +113,17 @@ TEST_F(SceneTlasFixture, EmptyTlasReturnsZero)
     auto cb = [&](const TlasInstance&, float32, float32) { ++hits; return true; };
     tlas.TraverseRay(ray, {}, cb);
     EXPECT_EQ(hits, 0);
+}
+
+TEST_F(SceneTlasFixture, FunctionRefBindsLambda)
+{
+    int captured = 0;
+    auto lambda = [&captured](int x) { captured = x; return x > 0; };
+    FunctionRef<bool(int)> ref = lambda;
+    EXPECT_TRUE(ref(42));
+    EXPECT_EQ(captured, 42);
+    EXPECT_FALSE(ref(-1));
+    EXPECT_EQ(captured, -1);
 }
 
 // ---- SyncFromRecords structural correctness ----------------------------
@@ -296,7 +307,7 @@ TEST_F(SceneTlasFixture, TraverseRayLayerMaskFilters)
 
     // Only bit 1 — e2 only.
     TraverseRayOptions opts;
-    opts.LayerMask = GameEngine::Rendering::RenderLayerMask::FromLayer(1);
+    opts.LayerMask = 0x2u;
 
     std::vector<uint32> hits;
     auto cb = [&](const TlasInstance& inst, float32, float32) {
@@ -477,7 +488,7 @@ TEST_F(SceneTlasFixture, TraverseSphereLayerMaskFilters)
     });
 
     TraverseSphereOptions opts;
-    opts.LayerMask = GameEngine::Rendering::RenderLayerMask::FromLayer(1);
+    opts.LayerMask = 0x2u;
 
     std::vector<uint32> hits;
     auto cb = [&](const TlasInstance& inst) { hits.push_back(inst.Entity.id); };
@@ -1270,8 +1281,8 @@ TEST_F(SceneTlasFixture, ConcurrentTraverseAcrossMultiSectorIsSafe)
 // ===========================================================================
 //
 // These tests exercise picker-shaped flows across multiple TLAS features
-// without launching the editor binary. They mimic the patterns the scene
-// raycast (SceneRaycast) runs during click-pick, drop-placement, marquee
+// without launching the editor binary. They mimic the patterns the editor's
+// MeshPickingService runs during click-pick, drop-placement, marquee
 // selection, and hot-reload — but limited to the engine-level surface so
 // they run in CI on every commit.
 //
@@ -1629,7 +1640,7 @@ TEST_F(MeshPickingIntegrationFixture, LayerMaskFiltersAcrossSectors)
     ray.origin    = {0.0f, 0.0f, 0.0f};
     ray.direction = {1.0f, 0.0f, 0.0f};
     TraverseRayOptions opts;
-    opts.LayerMask = GameEngine::Rendering::RenderLayerMask::Default();  // only entities on layer 0
+    opts.LayerMask = 0x1u;  // only entities on layer 0x1
 
     std::vector<uint32> ids;
     tlas.TraverseRay(ray, opts, [&](const TlasInstance& inst, float32, float32) {
@@ -1692,7 +1703,7 @@ ECS::EntityHandle MakeRealEntity(ECS::World& world,
     world.AddComponentImmediate<Components::WorldTransform>(e, wt);
 
     Components::MeshRenderer mr{};
-    mr.RenderLayers = GameEngine::Rendering::RenderLayerMask::All();
+    mr.renderLayerMask = 0xFFFFFFFFu;
     world.AddComponentImmediate<Components::MeshRenderer>(e, mr);
 
     Components::LocalBounds lb{};
@@ -1767,8 +1778,8 @@ namespace
 {
 
 // Occupies a one-worker pool's only worker until released, so a job
-// submitted behind it stays in flight until the blocker is released or the
-// main thread joins that job itself.
+// submitted behind it stays in flight: the main thread runs nothing of the
+// pool's without a Wait on that job's counter.
 class WorkerBlocker
 {
 public:
@@ -1835,30 +1846,6 @@ TEST_F(SceneTlasRequestFixture, FirstRequestReconcilesAndIdleRequestsDoNothing)
         EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
     EXPECT_EQ(tlas.GetReconcileCountForTesting(), 1u);
     EXPECT_EQ(tlas.GetRefitLeafCountForTesting(), refits);
-}
-
-// The version goes up when the tree changes and holds while it does not.
-TEST_F(SceneTlasRequestFixture, VersionChangesOnlyWithTheTree)
-{
-    ECS::World world;
-    auto e = MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
-    SceneTlas& tlas = GetSceneTlas(world);
-    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
-    const uint64 reconciled = tlas.Version();
-    EXPECT_NE(reconciled, 0u) << "the first reconcile did not change the version";
-
-    for (int i = 0; i < 3; ++i)
-        ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
-    EXPECT_EQ(tlas.Version(), reconciled) << "an idle request changed the version";
-
-    MoveEntity(world, e, {6.0f, 0.0f, 0.0f});
-    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
-    const uint64 refit = tlas.Version();
-    EXPECT_GT(refit, reconciled) << "a refit did not change the version";
-
-    MakeRealEntity(world, {20.0f, 0.0f, 0.0f});
-    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
-    EXPECT_GT(tlas.Version(), refit) << "a reconcile did not change the version";
 }
 
 // The S1 counter: movers do no TLAS work until a request, however many
@@ -1962,9 +1949,9 @@ TEST_F(SceneTlasRequestFixture, UndoStyleRestoreIsRefit)
 }
 
 // On a world with a job system the work runs as a job: the request returns
-// Updating, a second request starts no more work while it is in flight, and
-// the tree is Ready once the job is done.
-TEST_F(SceneTlasRequestFixture, RequestOnAPoolRunsAsAJobAndStartsNoMoreWhileInFlight)
+// Updating, a second request joins the work in flight instead of starting
+// more, and the tree is Ready once the job is done.
+TEST_F(SceneTlasRequestFixture, RequestOnAPoolRunsAsAJobAndJoins)
 {
     JobSystem::WorkStealingThreadPool pool(1);
     ECS::World world;
@@ -1983,7 +1970,7 @@ TEST_F(SceneTlasRequestFixture, RequestOnAPoolRunsAsAJobAndStartsNoMoreWhileInFl
     }
     WaitUntilNoWorkInFlight(tlas);
     EXPECT_EQ(tlas.GetRefitLeafCountForTesting(), refitsBefore + tlas.GetLeafCountForTesting())
-        << "the second request started more work (one entity: its replica leaves, once)";
+        << "the joined request started more work (one entity: its replica leaves, once)";
     EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
     EXPECT_EQ(SphereHitCount(tlas, {15.0f, 0.0f, 0.0f}, 1.0f, e), 1);
 }
@@ -2011,128 +1998,6 @@ TEST_F(SceneTlasRequestFixture, TheJobReadsOnlyItsSnapshot)
 
     tlas.WaitCurrent(world);
     EXPECT_EQ(SphereHitCount(tlas, {25.0f, 0.0f, 0.0f}, 1.0f, e), 1);
-}
-
-#if GE_DEBUG_INSTRUMENTATION
-namespace
-{
-std::atomic<uint32> s_RunForkVisits{0};
-
-void CountRunForkVisit(JobSystem::WorkStealingThreadPool::TaggedVisitPoint)
-{
-    s_RunForkVisits.fetch_add(1, std::memory_order_relaxed);
-}
-} // namespace
-
-// A request's work is a Submit task, never a Run fork. Every Run unit runs
-// through a queue visit, and the pool's visit hook counts each visit.
-TEST_F(SceneTlasRequestFixture, ARequestPublishesItsWorkAsAPolledTaskNotAsARunFork)
-{
-    s_RunForkVisits.store(0, std::memory_order_relaxed);
-    JobSystem::WorkStealingThreadPool::SetTaggedVisitHookForTests(&CountRunForkVisit);
-    {
-        JobSystem::WorkStealingThreadPool pool(2);
-        ECS::World world;
-        world.SetJobSystem(&pool);
-        auto e = MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
-        SceneTlas tlas;
-        EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Updating); // the reconcile
-        WaitUntilNoWorkInFlight(tlas);
-        EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
-
-        MoveEntity(world, e, {15.0f, 0.0f, 0.0f});
-        EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Updating); // the refit
-        WaitUntilNoWorkInFlight(tlas);
-        EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
-        EXPECT_EQ(SphereHitCount(tlas, {15.0f, 0.0f, 0.0f}, 1.0f, e), 1);
-    } // the pool joins its workers: every visit it ran has been counted
-    JobSystem::WorkStealingThreadPool::SetTaggedVisitHookForTests(nullptr);
-    EXPECT_EQ(s_RunForkVisits.load(std::memory_order_relaxed), 0u) << "the request's work ran as a Run fork";
-}
-#endif
-
-// WaitCurrent runs work queued behind the busy only worker on the calling
-// thread. The refit counts as done, so no reconcile follows it.
-TEST_F(SceneTlasRequestFixture, WaitCurrentRunsWorkQueuedBehindABusyWorkerOnTheCallingThread)
-{
-    JobSystem::WorkStealingThreadPool pool(1);
-    ECS::World world;
-    world.SetJobSystem(&pool);
-    auto e = MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
-    SceneTlas& tlas = GetSceneTlas(world);
-    tlas.WaitCurrent(world);
-
-    MoveEntity(world, e, {15.0f, 0.0f, 0.0f});
-    WorkerBlocker blocker(pool);
-    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Updating);
-    tlas.WaitCurrent(world);
-    EXPECT_FALSE(tlas.IsWorkInFlightForTesting());
-    EXPECT_EQ(tlas.GetReconcileCountForTesting(), 1u) << "the joined refit was redone as a reconcile";
-    EXPECT_EQ(SphereHitCount(tlas, {15.0f, 0.0f, 0.0f}, 1.0f, e), 1);
-}
-
-// Destroying the TLAS (a world released, the engine shutting down) while its
-// work is still queued behind a busy worker does not wait for a worker.
-TEST_F(SceneTlasRequestFixture, DestroyingWithWorkQueuedBehindABusyWorkerDoesNotWaitForAWorker)
-{
-    JobSystem::WorkStealingThreadPool pool(1);
-    ECS::World world;
-    world.SetJobSystem(&pool);
-    MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
-    WorkerBlocker blocker(pool);
-    {
-        SceneTlas tlas;
-        ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Updating);
-        ASSERT_TRUE(tlas.IsWorkInFlightForTesting());
-    }
-}
-
-// A pool that has shut down takes no more tasks: the request runs its work on
-// the calling thread and the tree is ready on return, for the reconcile and
-// for the refit.
-TEST_F(SceneTlasRequestFixture, ARequestOnAShutDownPoolRunsItsWorkInline)
-{
-    JobSystem::WorkStealingThreadPool pool(1);
-    ECS::World world;
-    world.SetJobSystem(&pool);
-    auto e = MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
-    SceneTlas tlas;
-    pool.Shutdown();
-
-    EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
-    EXPECT_EQ(SphereHitCount(tlas, {5.0f, 0.0f, 0.0f}, 1.0f, e), 1);
-    MoveEntity(world, e, {15.0f, 0.0f, 0.0f});
-    EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
-    EXPECT_EQ(SphereHitCount(tlas, {15.0f, 0.0f, 0.0f}, 1.0f, e), 1);
-}
-
-// The shutdown drain cancels a queued refit; the next request reconciles and
-// the tree answers for the move. Shutdown joins the held worker, so it runs on
-// its own thread while the main thread releases the blocker.
-TEST_F(SceneTlasRequestFixture, ARefitCancelledByShutdownIsReconciledAtTheNextRequest)
-{
-    JobSystem::WorkStealingThreadPool pool(1);
-    ECS::World world;
-    world.SetJobSystem(&pool);
-    auto e = MakeRealEntity(world, {5.0f, 0.0f, 0.0f});
-    SceneTlas tlas;
-    tlas.WaitCurrent(world);
-    ASSERT_EQ(tlas.GetReconcileCountForTesting(), 1u);
-
-    MoveEntity(world, e, {15.0f, 0.0f, 0.0f});
-    WorkerBlocker blocker(pool);
-    ASSERT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Updating);
-    std::thread shutter([&pool] { pool.Shutdown(); });
-    while (!pool.IsShuttingDown())
-        std::this_thread::yield();
-    blocker.Release();
-    shutter.join();
-
-    EXPECT_FALSE(tlas.IsWorkInFlightForTesting());
-    EXPECT_EQ(tlas.RequestCurrent(world), SceneTlas::Readiness::Ready);
-    EXPECT_EQ(tlas.GetReconcileCountForTesting(), 2u) << "the cancelled refit was not followed by a reconcile";
-    EXPECT_EQ(SphereHitCount(tlas, {15.0f, 0.0f, 0.0f}, 1.0f, e), 1) << "the tree misses the move";
-    EXPECT_EQ(SphereHitCount(tlas, {5.0f, 0.0f, 0.0f}, 1.0f, e), 0);
 }
 
 // I5: answers after on-demand requests equal a reference reconciled from
@@ -2242,6 +2107,19 @@ TEST_F(SceneTlasRequestFixture, DISABLED_RequestKickProbe)
 }
 
 #if !defined(NDEBUG)
+namespace
+{
+// A death-test child dies on a CRT assert; on Windows that must print to
+// stderr instead of opening a dialog nobody can dismiss.
+void SuppressCrtDialogsInDeathTestChild()
+{
+#if defined(_WIN32)
+    _set_error_mode(_OUT_TO_STDERR);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG);
+#endif
+}
+} // namespace
+
 // A WorldTransform written without a write grant (a raw pointer the change
 // filter never saw) leaves a leaf stale; the debug validator on requests that
 // find nothing changed reports it and reconciles.
@@ -2267,7 +2145,7 @@ TEST_F(SceneTlasRequestFixture, TraversalWhileWorkIsInFlightAsserts)
     GTEST_FLAG_SET(death_test_style, "threadsafe");
     EXPECT_DEATH(
         {
-            GameEngine::TestUtils::SuppressCrtDialogsInDeathTestChild();
+            SuppressCrtDialogsInDeathTestChild();
             JobSystem::WorkStealingThreadPool pool(1);
             ECS::World world;
             world.SetJobSystem(&pool);

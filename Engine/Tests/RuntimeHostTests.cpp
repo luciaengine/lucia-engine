@@ -14,17 +14,15 @@
 // opens, the engine's schedule and a native script run every fixed frame in real time, and the
 // script's quit ends the run. It needs neither, so it never skips.
 
+#include <gtest/gtest.h>
+
 #include "AssetCore/GUID.h"
 #include "Assets/AssetManager.h"
 #include "Core/Application.h"
-#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "ECS/Systems.h"
 #include "ECS/World.h"
 #include "ECSModules/Rendering/RenderingLoop.h"
-#include "Engine/Build/PackagedGameLayout.h"
-#include "Engine/GameUI/GameUIHost.h"
-#include "Engine/GameUI/GameplayUI.h"
 #include "Engine/Hosting/RuntimeFrameReadback.h"
 #include "Engine/Hosting/RuntimeHost.h"
 #include "Engine/Rendering/FrameOrchestrator.h"
@@ -34,21 +32,14 @@
 #include "Platform/Window.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Text/FontAtlas.h"
-#include "ScopedPlatformCacheRoot.h"
 #include "Scripting/ScriptsConfig.h"
-#include "UI/ResolvedStyle.h"
-#include "UI/UIManager.h"
 
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <memory>
-#include <optional>
 #include <system_error>
 #include <thread>
-
-#include <gtest/gtest.h>
 
 using namespace GameEngine;
 namespace fs = std::filesystem;
@@ -101,10 +92,6 @@ protected:
     {
         m_PreviousCwd = fs::current_path();
         m_Root = fs::temp_directory_path() / ("runtime-host-" + GUID::Generate().ToString());
-        // The host's device persists its pipeline cache (RuntimeHost opts in for the Player), so
-        // the platform cache root lives under m_Root for the test: the user's cache is neither
-        // read nor written, and the test's file goes with m_Root.
-        m_CacheRoot.emplace(m_Root / "cache-root");
         // A pipeline with no passes presents the host's own colour target; the empty scene gets
         // the host's default camera, so the frame has a view.
         WriteFile(m_Root / "Assets/RenderPipelines/HostTest.rendergraph",
@@ -127,13 +114,7 @@ protected:
         ASSERT_TRUE(m_Application->Initialize());
         Rendering::Utils::SetShaderFileLoader(nullptr);
         Rendering::Utils::SetShaderPathResolver(&ResolveBuildShader);
-        auto& assetManager = EngineCore::GetInstance().GetAssetManager();
-        assetManager.WaitForStartupScan(kAssetSourceAliasProject);
-        // Mount the staged runtime assets as 'editor', as the Player does.
-        const auto editorSource = BuildPlayerEditorSourceDesc(EngineCore::GetInstance().GetResolvedAssetRoot(),
-                                                              ApplicationPaths::GetInstallAssetsRoot());
-        ASSERT_TRUE(editorSource.has_value());
-        ASSERT_TRUE(assetManager.RegisterSource(*editorSource));
+        EngineCore::GetInstance().GetAssetManager().WaitForStartupScan(kAssetSourceAliasProject);
 
         RuntimeHostDesc desc;
         desc.Title = "RuntimeHostTest";
@@ -149,21 +130,6 @@ protected:
             GTEST_SKIP() << "no window or Vulkan device could be created";
     }
 
-    // Render one frame and return the face the game UI uses for an unstyled element.
-    std::optional<Rendering::Text::FaceDebugInfo> RenderAndGetDefaultHudFace()
-    {
-        if (m_Host->LoadRenderPipeline() != Engine::Renderer::PipelineResolveFailure::None ||
-            !m_Host->OpenScene("Scenes/Empty.scene"))
-            return std::nullopt;
-        m_Host->Render(1.0f / 60.0f);
-        m_Host->GetRenderDeviceContext()->GetDevice()->WaitForIdle();
-        auto* gameUi = GameUI::GetHost();
-        if (!gameUi)
-            return std::nullopt;
-        const auto* font = gameUi->GetUIManager()->ResolveFontForStyle(ResolvedStyle{});
-        return font ? font->GetFaceDebugInfo() : std::nullopt;
-    }
-
     void TearDown() override
     {
         m_Probe.Ticket.reset();
@@ -173,7 +139,6 @@ protected:
         if (m_Application)
             m_Application->Shutdown();
         m_Application.reset();
-        m_CacheRoot.reset();
         std::error_code ec;
         fs::current_path(m_PreviousCwd, ec);
         fs::remove_all(m_Root, ec);
@@ -181,37 +146,12 @@ protected:
 
     fs::path m_PreviousCwd;
     fs::path m_Root;
-    std::optional<TestUtils::ScopedPlatformCacheRoot> m_CacheRoot;
     std::unique_ptr<HostTestApplication> m_Application;
     std::unique_ptr<RuntimeHost> m_Host;
     CompositeProbe m_Probe;
     int m_DeviceFailures = 0;
 };
 } // namespace
-
-TEST_F(RuntimeHostFrame, DefaultHudFontComesFromStagedAssetsWithASeparateProject)
-{
-    ASSERT_FALSE(fs::exists(m_Root / "Assets/Fonts/Roboto-Regular.ttf"));
-    ASSERT_TRUE(fs::exists(ApplicationPaths::GetInstallAssetsRoot() / "Fonts/Roboto-Regular.ttf"))
-        << "the runtime font must be staged beside the test executable";
-    const auto face = RenderAndGetDefaultHudFace();
-    ASSERT_TRUE(face.has_value()) << "a project without its own font must use the runtime's bundled default";
-    EXPECT_EQ(face->family, "Roboto");
-    EXPECT_EQ(face->style, "Regular");
-}
-
-TEST_F(RuntimeHostFrame, DefaultHudFontComesFromTheProjectWhenTheProjectHasOne)
-{
-    // The project's Fonts/Roboto-Regular.ttf holds a different face, so the test can tell the copies apart.
-    std::error_code ec;
-    fs::create_directories(m_Root / "Assets/Fonts", ec);
-    ASSERT_TRUE(fs::copy_file(ApplicationPaths::GetInstallAssetsRoot() / "Fonts/RobotoMono-Regular.ttf",
-                              m_Root / "Assets/Fonts/Roboto-Regular.ttf", ec))
-        << ec.message();
-    const auto face = RenderAndGetDefaultHudFace();
-    ASSERT_TRUE(face.has_value());
-    EXPECT_EQ(face->family, "Roboto Mono");
-}
 
 TEST_F(RuntimeHostFrame, OneFrameCallsTheCompositeHookOnceAndItsReadbackResolves)
 {

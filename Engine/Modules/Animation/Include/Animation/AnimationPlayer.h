@@ -2,7 +2,7 @@
 
 #include "Animation/AnimationLibrary.h"
 #include "AssetCore/GUID.h"
-#include "Types/Types.h"
+#include "AssetCore/Types.h"
 
 #include <string>
 

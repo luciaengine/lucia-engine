@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Logger/LogSink.h"
+#include "Logger/Types.h"
 #include <mutex>
 #include <vector>
 
@@ -14,33 +15,8 @@ public:
     struct StoredMessage
     {
         LogLevel Level = LogLevel::Info;
-        std::string Message;
+        String Message;
         TimePoint Timestamp;
-        // 1 for the first message the sink stored, one more for each after it. Clear()
-        // keeps counting, so a sequence number names one message for the sink's life.
-        std::uint64_t Sequence = 0;
-    };
-
-    // What GetMessages selects: the entries newer than AfterSequence at MinLevel or
-    // above. Text matching runs in the caller, outside the sink's lock, so a costly
-    // pattern never holds up the threads that log.
-    struct MessageQuery
-    {
-        LogLevel MinLevel = LogLevel::Trace;
-        // Only entries with a sequence number above this; 0 = every stored entry.
-        std::uint64_t AfterSequence = 0;
-    };
-
-    struct MessageQueryResult
-    {
-        // The selected entries, oldest first.
-        std::vector<StoredMessage> Messages;
-        // Stored entries newer than AfterSequence that MinLevel left out.
-        size_t BelowLevel = 0;
-        // Entries newer than AfterSequence that the buffer overwrote before this call.
-        std::uint64_t Overwritten = 0;
-        // The newest sequence number the sink has stored; 0 when nothing was logged.
-        std::uint64_t LastSequence = 0;
     };
 
     explicit RingBufferSink(size_t capacity = 500);
@@ -49,10 +25,19 @@ public:
     void Write(const LogMessage& message) override;
     void Flush() override {}
     bool ShouldLog(LogLevel /*level*/) const override { return true; }
-    std::string GetName() const override { return "RingBuffer"; }
+    String GetName() const override { return "RingBuffer"; }
 
-    // A copy of the stored messages `query` selects, with the overwrite count.
-    MessageQueryResult GetMessages(const MessageQuery& query) const;
+    // Get a snapshot of stored messages, oldest first within the returned window.
+    // When maxCount truncates, the *most recent* maxCount matches are returned
+    // (the tail of the log), so a small count shows what just happened.
+    // Optional filters: minLevel, maxCount (0 = unlimited), substring match.
+    // offset skips the newest matching messages before collecting (paging from
+    // the tail backwards; 0 = start at the newest).
+    std::vector<StoredMessage> GetMessages(
+        LogLevel minLevel = LogLevel::Trace,
+        size_t maxCount = 0,
+        const String& substring = "",
+        size_t offset = 0) const;
 
     size_t GetCount() const;
 
@@ -64,7 +49,6 @@ private:
     size_t m_Capacity;
     size_t m_Head = 0;
     size_t m_Count = 0;
-    std::uint64_t m_LastSequence = 0;
 };
 
 } // namespace Logger

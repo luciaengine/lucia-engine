@@ -72,7 +72,7 @@ std::vector<std::string> CodexSessionProvider::TurnArguments(const AgentTurnRequ
     if (!WorkingDirectory().empty())
     {
         arguments.push_back("-C");
-        arguments.push_back(WorkingDirectory().string());
+        arguments.push_back(PathUtf8(WorkingDirectory()));
     }
     arguments.insert(arguments.end(), {"-s", "read-only"});
     if (request.Tools)
@@ -93,6 +93,10 @@ std::vector<std::string> CodexSessionProvider::TurnArguments(const AgentTurnRequ
         arguments.push_back("resume");
         arguments.push_back(request.SessionId);
     }
+    // The images go last, so they belong to `exec` or, when resuming, to `resume` (each has its
+    // own --image for the prompt it sends); in the `=` form the prompt's `-` is not read as one.
+    for (const PromptFile& image : request.Images)
+        arguments.push_back("--image=" + PathUtf8(image.Path));
     arguments.push_back("-");
     return arguments;
 }
@@ -160,11 +164,14 @@ void CodexSessionProvider::ReadItem(const nlohmann::json& item, TurnState& turn)
     const std::string type = JsonFields::String(item, "type");
     if (type == "agent_message")
     {
-        // Each message arrives whole, as a block of its own.
-        turn.TextBlocks.BeginBlock();
-        const std::string_view appended = turn.TextBlocks.Append(turn.Result.Text, JsonFields::String(item, "text"));
-        if (!appended.empty())
-            turn.Events.OnTextDelta(appended);
+        std::string text = JsonFields::String(item, "text");
+        if (text.empty())
+            return;
+        // Each message arrives whole; a later one starts a new paragraph.
+        if (!turn.Result.Text.empty())
+            text.insert(0, "\n\n");
+        turn.Result.Text += text;
+        turn.Events.OnTextDelta(text);
     }
     else if (type != "error" && type != "reasoning" && !type.empty())
     {

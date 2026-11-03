@@ -77,7 +77,7 @@ ECS::EntityHandle FindChildByName(ECS::World& world,
     {
         if (found.IsValid())
             return;
-        if (p.Entity != parent)
+        if (p.parent != parent)
             return;
         if (PathSegmentEquals(segment, name.View()))
             found = entity;

@@ -9,9 +9,10 @@
 
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Materials/MaterialAlphaMode.h"
 #include "Types/Types.h"
+#include "Engine/Rendering/RenderSortKey.h"
 
 #include <cstdint>
 
@@ -32,8 +33,6 @@ using GameEngine::MaterialAlphaMode;
 
 // WorldSubmissionRecord::flags bits, mirroring GPUInstance::flags.
 inline constexpr uint32 kSubmissionFlagCastShadows = 1u << 0;
-// Rendering::kInstanceFlagShadowsOnly: no color pass draws the submission.
-inline constexpr uint32 kSubmissionFlagShadowsOnly = 1u << 7;
 
 // High-level per-entity submission record produced by extraction systems.
 // Lightweight and job-friendly. Mesh and material are resolved before
@@ -44,8 +43,10 @@ struct WorldSubmissionRecord
     Rendering::MeshGPUHandle meshHandle{};   // MeshGPURegistry handle
     const Material* material = nullptr;      // Runtime material (non-owning)
     uint32 instanceIndex{0};                 // Index into GPUScene instance buffer
-    Rendering::RenderLayerMask renderLayerMask = Rendering::RenderLayerMask::None();
+    uint32 renderLayerMask{0};
     uint32 flags{0};                         // e.g., opaque/transparent, castsShadows
+    RenderSortingData Sorting{};
+    ECS::EntityHandle SortingOwner{};
 };
 
 } // namespace Engine::Renderer

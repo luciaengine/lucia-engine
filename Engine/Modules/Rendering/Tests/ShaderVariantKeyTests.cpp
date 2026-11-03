@@ -2,9 +2,8 @@
 
 #include <gtest/gtest.h>
 
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
-#include "Rendering/Materials/Shader/ShaderComposer.h"
-#include "Rendering/Materials/UserKeyword.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderComposer.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
@@ -358,41 +357,6 @@ TEST(ShaderVariantKeyTest, Transmission_GeneratesDefine)
     // Setting the keyword bit emits the define that gates the in-shader transmission term.
     key.materialKeywords = MaterialKeyword::Transmission;
     EXPECT_TRUE(has(GenerateDefines(key, "StandardPBR"), "GE_TRANSMISSION_ENABLED"));
-}
-
-TEST(ShaderVariantKeyTest, DiffuseTransmission_GeneratesDefineAndReservesIt)
-{
-    ShaderVariantKey key{};
-    key.vertexFlags = VertexAttributeFlags::StandardMesh;
-    key.lightingModel = LightingModel::kStandardPBR;
-
-    auto has = [](const std::vector<std::string>& defs, const std::string& d)
-    { return std::find(defs.begin(), defs.end(), d) != defs.end(); };
-
-    // Off by default: the far-face lobe and its SurfaceOutput fields compile only into a material
-    // that asks for them.
-    EXPECT_FALSE(has(GenerateDefines(key, "StandardPBR"), "GE_DIFFUSE_TRANSMISSION_ENABLED"));
-    key.materialKeywords = MaterialKeyword::DiffuseTransmission;
-    EXPECT_TRUE(has(GenerateDefines(key, "StandardPBR"), "GE_DIFFUSE_TRANSMISSION_ENABLED"));
-    // A user keyword cannot take the engine's name.
-    EXPECT_EQ(ReservedEngineDefines().count("GE_DIFFUSE_TRANSMISSION_ENABLED"), 1u);
-}
-
-TEST(ShaderVariantKeyTest, SurfaceInputsAtPixelCenter_GeneratesDefineAndReservesIt)
-{
-    ShaderVariantKey key{};
-    key.vertexFlags = VertexAttributeFlags::StandardMesh;
-    key.lightingModel = LightingModel::kStandardPBR;
-
-    auto has = [](const std::vector<std::string>& defs, const std::string& d)
-    { return std::find(defs.begin(), defs.end(), d) != defs.end(); };
-
-    // Off by default: every material reads its surface inputs at the centroid on desktop.
-    EXPECT_FALSE(has(GenerateDefines(key, "StandardPBR"), "GE_SURFACE_INPUTS_AT_PIXEL_CENTER"));
-    key.materialKeywords = MaterialKeyword::SurfaceInputsAtPixelCenter;
-    EXPECT_TRUE(has(GenerateDefines(key, "StandardPBR"), "GE_SURFACE_INPUTS_AT_PIXEL_CENTER"));
-    // A user keyword cannot take the engine's name.
-    EXPECT_EQ(ReservedEngineDefines().count("GE_SURFACE_INPUTS_AT_PIXEL_CENTER"), 1u);
 }
 
 TEST(ShaderComposerTest, Compose_ForwardPlus_InjectsDefine)

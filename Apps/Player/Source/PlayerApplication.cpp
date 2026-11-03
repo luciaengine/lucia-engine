@@ -1,3 +1,6 @@
+#if defined(GE_PLATFORM_MOBILE)
+#include "PlayerDemoControls.h"
+#endif
 #include "PlayerApplication.h"
 
 #include "Assets/AssetManager.h"
@@ -8,10 +11,7 @@
 #include "Assets/Packages/PackageResolver.h"
 #include "Assets/Packages/PackagesIndex.h"
 #include "Audio/AudioSystem.h"
-#include "Components/Name.h"
-#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
-#include "ECS/ECSTemplates.h"
 #include "ECSModules/Rendering/RenderingLoop.h"
 #include "Engine/Build/PackagedGameLayout.h"
 #include "Engine/GameUI/GameplayUI.h"
@@ -24,7 +24,8 @@
 #include "Engine/Rendering/RenderDeviceContext.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
-#include "Image/Encode.h"
+
+#include <stb_image_write.h>
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
 #include "Logger/Logger.h"
@@ -37,10 +38,8 @@
 #include "Rendering/Core/DeviceFormatting.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/Passes/TemporalDither.h"
-#include "Rendering/ShaderCache/ShaderProgramIndex.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "Scripting/ManagedSystemBridge.h"
-#include "SplineRecipes/SplineRecipesScriptApi.h"
 #include "TerrainECS/Scene/TerrainSceneSchemas.h"
 #include "TerrainGrass/Scene/TerrainGrassSceneSchemas.h"
 #if GE_PLAYER_MOVIE_RECORDER
@@ -49,18 +48,19 @@
 
 #include <cstdlib>
 #include <algorithm>
-#include <array>
 #include <memory>
-#include <span>
 #include <utility>
 
 namespace GameEngine {
 
+bool PlayerApplication::HasInputFocus() const
+{
+    Platform::Window* window = m_Host ? m_Host->GetWindow() : nullptr;
+    return window && window->IsFocused();
+}
+
 namespace
 {
-// The most failed spline recipes the startup line names, each with its reason.
-constexpr size_t kStartupFailuresLogged = 16;
-
 #if GE_PLAYER_MOVIE_RECORDER
 constexpr size_t kMaxPendingMovieReadbacks = 4;
 constexpr uint32_t kMovieStartupWarmupFrames = 4;
@@ -248,7 +248,7 @@ bool PlayerApplication::Initialize()
     {
         auto& am = EngineCore::GetInstance().GetAssetManager();
         const auto projectAssetsRoot = EngineCore::GetInstance().GetResolvedAssetRoot();
-        const auto stagedAssetsRoot = ApplicationPaths::GetInstallAssetsRoot();
+        const auto stagedAssetsRoot = PathUtils::GetInstallAssetsRoot();
         if (const auto editorSource = BuildPlayerEditorSourceDesc(projectAssetsRoot, stagedAssetsRoot))
         {
             am.RegisterSource(*editorSource);
@@ -310,8 +310,7 @@ bool PlayerApplication::Initialize()
                 // here too — dev runs have no editor build-cache record for it.
                 if (module.Lang == PackageModuleRecord::ModuleLang::Cpp)
                 {
-                    if (module.UsesManagedNativeCache &&
-                        !RetainPackageNativeCache(module.CacheDir, EngineCore::GetInstance().GetStartupChannel()))
+                    if (module.UsesManagedNativeCache && !RetainPackageNativeCache(module.CacheDir))
                     {
                         Logger::Log::Error("Player: cannot lease native cache '{}' for package '{}'; module skipped",
                                            module.CacheDir.string(), module.PackageName);
@@ -392,9 +391,6 @@ bool PlayerApplication::Initialize()
         }
         SetLODImportSettings(lod);
     }
-
-    // The project's render layer names, before any game system starts and asks for a layer by name.
-    Rendering::SetRenderLayerNames(m_GameConfig.renderLayerNames);
 
     // Configure the Player's copy of the Rendering::Utils shader hooks (see
     // PlayerResolveEngineShaderPath above). Must run after the 'editor' asset
@@ -478,8 +474,6 @@ bool PlayerApplication::Initialize()
         Logger::Log::Warning("Player: No startup scene specified in game config");
     else if (!m_Host->OpenScene(m_GameConfig.startupScene))
         return false;
-    else
-        m_StartupScene.Begin(m_GameConfig.waitForSplineRecipes);
 
     m_StartupResolve = m_Host->GetSceneResolveBatch();
     m_StartupResolvePending = m_StartupResolve != Engine::Renderer::SceneResolveBatch::None;
@@ -529,6 +523,7 @@ RuntimeHostDesc PlayerApplication::MakeRuntimeHostDesc() const
     desc.HdrMetadata = m_GameConfig.hdrStaticMetadata;
     desc.LodSelection = m_GameConfig.lodSelection;
     desc.RenderQuality = m_GameConfig.renderQuality;
+    desc.SortingLayers = m_GameConfig.sortingLayers;
     desc.RenderPipeline = m_GameConfig.renderPipeline;
     desc.UIScale = m_GameConfig.uiScale;
     return desc;
@@ -566,24 +561,6 @@ void PlayerApplication::PollRuntimeDisplayControls()
 
     if (input->WasKeyPressed(Input::kKeyCode_F10))
         (void)ToggleRuntimeHdrOutput();
-}
-
-// The game's pointer lock request, applied in the frame it was made. The window
-// is the whole play surface, so the game holds the lock for as long as it asks;
-// the platform lets the cursor go while the window is unfocused, and the game
-// is told it is locked only while it actually is.
-void PlayerApplication::ApplyPointerLock()
-{
-    Platform::Window* window = m_Host->GetWindow();
-    Input::InputSystem* input = GetInputSystem();
-    if (!window || !input)
-        return;
-    if (input->GetPointerLockState() == Input::PointerLockState::Unlocked)
-        window->UnlockCursor();
-    else
-        window->LockCursor(Platform::Window::LockedCursorMotion::Raw);
-    Input::IRawInputSink& sink = *input;
-    sink.OnPointerLock(window->IsCursorLocked() && window->IsFocused());
 }
 
 bool PlayerApplication::ToggleRuntimeHdrOutput()
@@ -636,15 +613,7 @@ bool PlayerApplication::ApplyRuntimeHdrOutput(Rendering::HdrOutputMode mode)
     return true;
 }
 
-void PlayerApplication::FinishStartupResolve(ECS::World& world, float64 deltaTime)
-{
-    FinishStartupBatch(world);
-    // A run with no render device has no batch, so its batch term reads as complete.
-    if (m_StartupScene.Update(!m_StartupResolvePending, SplineRecipes::IsSceneSettled(world), deltaTime))
-        LogStartupSceneReady(world);
-}
-
-void PlayerApplication::FinishStartupBatch(ECS::World& world)
+void PlayerApplication::FinishStartupResolve(ECS::World& world)
 {
     if (!m_StartupResolvePending)
         return;
@@ -667,55 +636,29 @@ void PlayerApplication::FinishStartupBatch(ECS::World& world)
                       progress.Total, seconds, m_StartupResolveFrames, counts.ResolvedEntities,
                       counts.MissedEntities, counts.RegisteredModels, counts.RegisteredMaterials,
                       counts.MissedMaterials);
-    LogProgramIndexCounts();
     // The skeleton binder bound the batch's skinned entities on the frame each
     // completed, before this tick, so the autoplay starts find their skeletons.
     Engine::Renderer::BootstrapSceneAnimators(world);
 }
 
-void PlayerApplication::LogStartupSceneReady(ECS::World& world)
-{
-    std::array<SplineRecipes::RecipeStatus, kStartupFailuresLogged> failures{};
-    const int32_t failed = SplineRecipes::Failures(world, failures);
-    Logger::Log::Info("Player: startup scene ready in {:.2f} s over {} frame(s); {} spline recipe(s) failed",
-                      m_StartupScene.Seconds(), m_StartupScene.Frames(), failed);
-    for (const SplineRecipes::RecipeStatus& failure :
-         std::span(failures).first(std::min<size_t>(failures.size(), static_cast<size_t>(failed))))
-    {
-        const auto* name = world.GetComponent<Components::Name>(failure.Recipe);
-        Logger::Log::Warning("Player: spline recipe '{}' failed: {}", name ? name->View() : std::string_view(),
-                             SplineRecipes::ReasonOf(world, failure.Recipe));
-    }
-}
-
-void PlayerApplication::LogProgramIndexCounts()
-{
-    auto* renderCtx = m_Host->GetRenderDeviceContext();
-    auto* renderServices = renderCtx ? renderCtx->GetRenderServices() : nullptr;
-    const Rendering::ShaderProgramIndex* index =
-        renderServices ? renderServices->Materials().GetProgramIndex() : nullptr;
-    if (!index)
-        return;
-    const Rendering::ShaderProgramIndex::Counts counts = index->GetCounts();
-    Logger::Log::Info("Player: shader program index: {} variant(s) served without composing, {} composed and hashed "
-                      "(not in the index)",
-                      counts.Hits, counts.Misses);
-}
-
 void PlayerApplication::Update(float64 deltaTime)
 {
     m_LastRenderDeltaTime = static_cast<float>(deltaTime);
+#if defined(GE_PLATFORM_MOBILE)
+    if (!m_DemoControls && [] { const char* value = std::getenv("GE_PLAYER_DEMO_CONTROLS"); return value && value[0] == '1'; }())
+        m_DemoControls = std::make_unique<PlayerDemoControls>();
+    if (m_DemoControls && GetInputSystem() && m_Host->GetWindow())
+        m_DemoControls->Update(*GetInputSystem(), *m_Host->GetWindow(), m_LastRenderDeltaTime);
+#endif
 
     if (auto* world = EngineCore::GetInstance().GetPrimaryWorld())
-        FinishStartupResolve(*world, deltaTime);
+        FinishStartupResolve(*world);
 
     // Tick user C++ systems each frame (the Player runs them for the whole session).
     if (auto* world = EngineCore::GetInstance().GetPrimaryWorld())
     {
         GameEngine::NativeScripting::TickUserSystems(*world, static_cast<float>(deltaTime));
     }
-
-    ApplyPointerLock();
 
     // Check for window close request (GLFW polling model).
     if (Platform::Window* window = m_Host->GetWindow(); window && window->ShouldClose())
@@ -771,6 +714,9 @@ void PlayerApplication::Render()
 
 void PlayerApplication::OnFrameComposited(RuntimeFrameReadback& readback)
 {
+#if defined(GE_PLATFORM_MOBILE)
+    if (m_DemoControls) m_DemoControls->Render(readback, m_LastRenderDeltaTime);
+#endif
 #if GE_PLAYER_MOVIE_RECORDER
     DeclareMovieFrame(readback);
 #endif
@@ -780,9 +726,9 @@ void PlayerApplication::OnFrameComposited(RuntimeFrameReadback& readback)
 void PlayerApplication::DeclareScreenshot(RuntimeFrameReadback& readback)
 {
     // --screenshot: declare a one-shot readback of the composited frame after a
-    // short warmup, counted from the frame the startup scene is ready.
+    // short warmup, counted from the frame the startup scene finished resolving.
     // Declared pre-Execute; the host stamps the frame's readbacks after submit.
-    if (m_ScreenshotPath.empty() || m_ScreenshotWritten || m_ScreenshotTicket || m_StartupScene.IsPending())
+    if (m_ScreenshotPath.empty() || m_ScreenshotWritten || m_ScreenshotTicket || m_StartupResolvePending)
         return;
     if (m_ScreenshotWarmupFrames > 0)
     {
@@ -822,7 +768,9 @@ void PlayerApplication::PollScreenshot()
             m_ScreenshotSpace ? Rendering::ReadbackToRgba8Srgb(shot, *m_ScreenshotSpace)
                               : std::vector<uint8_t>{};
         if (!rgba.empty() &&
-            Image::WritePngFile(m_ScreenshotPath, rgba, shot.width, shot.height))
+            stbi_write_png(m_ScreenshotPath.c_str(), static_cast<int>(shot.width),
+                           static_cast<int>(shot.height), 4, rgba.data(),
+                           static_cast<int>(shot.width * 4u)) != 0)
         {
             Logger::Log::Info("Player: wrote screenshot '{}' ({}x{})", m_ScreenshotPath, shot.width, shot.height);
         }
@@ -1132,7 +1080,7 @@ bool PlayerApplication::EnsureMovieRecorder(uint32_t width, uint32_t height)
     *m_MovieOptions = options;
     const bool bitrateCodec = options.codec == Video::VideoCodec::H264 || options.codec == Video::VideoCodec::HEVC;
     const std::string bitrateText = bitrateCodec
-                                        ? (options.bitrateKbps > 0 ? std::to_string(options.bitrateKbps) + " Kbps" : "constant-quality")
+                                        ? (options.bitrateKbps > 0 ? std::to_string(options.bitrateKbps) + " Kbps" : "encoder-default")
                                         : "profile-driven";
     Logger::Log::Info(
         "Player: Writing movie '{}' ({}x{} @ {} fps, codec={}, bitrate={}, audio={}, hardware={})",

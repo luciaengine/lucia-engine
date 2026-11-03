@@ -98,7 +98,7 @@
     flex-shrink: 0;
     padding: 4px;
     margin-right: 4px;
-    background-image: url("editor:Icons/dropdownsmall.svg");
+    background-image: url("editor:Icons/dropdownsmall.png");
     background-size: contain;
     background-repeat: no-repeat;
     background-position: center;
@@ -108,11 +108,11 @@
 }
 
 .build-panel-header-cell .header-sort-icon.ascending {
-    background-image: url("editor:Icons/dropdownsmallup.svg");
+    background-image: url("editor:Icons/dropdownsmallup.png");
 }
 
 .build-panel-header-cell .header-sort-icon.descending {
-    background-image: url("editor:Icons/dropdownsmall.svg");
+    background-image: url("editor:Icons/dropdownsmall.png");
 }
 
 /* Column widths: fixed (same for header and row cells) */
@@ -374,7 +374,7 @@ button.build-panel-output-browse-button .button-text {
     cursor: pointer;
     background: transparent;
     background-color: transparent;
-    background-image: url("editor:Icons/checkmark-circle_un.svg");
+    background-image: url("editor:Icons/checkmark-circle_un.png");
     background-size: contain;
     background-repeat: no-repeat;
     background-position: center;
@@ -390,7 +390,7 @@ button.build-panel-output-browse-button .button-text {
 
 .build-panel .build-panel-completed-checkbox.todo-checkbox-checked,
 .build-panel button.build-panel-completed-checkbox.todo-checkbox-checked {
-    background-image: url("editor:Icons/checkmark-circle.svg");
+    background-image: url("editor:Icons/checkmark-circle.png");
     opacity: 1.0;
 }
 

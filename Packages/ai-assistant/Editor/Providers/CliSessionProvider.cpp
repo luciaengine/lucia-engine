@@ -162,7 +162,7 @@ void CliSessionProvider::RunTurn(const AgentTurnRequest& request, AgentTurnEvent
     launch.Arguments = TurnArguments(attached);
     launch.WorkingDirectory = m_WorkingDirectory;
     launch.Environment = StrippedEnvironment();
-    launch.StdinPayload = request.UserText;
+    launch.StdinPayload = TurnInput(request);
 
     CancellableShellProcess process;
     const ShellProcessResult run = process.Run(

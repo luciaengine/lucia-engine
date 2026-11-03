@@ -14,8 +14,8 @@
 //
 // It does NOT stamp the write-grant column that Changed<WorldTransform>
 // consumers filter on, because every caller here already holds a grant: they
-// reached `wt` through a Write<WorldTransform> query visit or
-// GetComponentForWrite, both of which stamp. A writer that mutates through a
+// reached `wt` through Writable<WorldTransform>::Mutable() or
+// GetComponentForWrite, both of which grant. A writer that mutates through a
 // pointer cached OUTSIDE such a call owns its own stamping — see
 // World::StampComponentWriteBatch and the transform hierarchy's node cache,
 // its only user.

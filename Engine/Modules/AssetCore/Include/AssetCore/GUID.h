@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Types/Types.h"
+#include "AssetCore/Types.h"
 #include <array>
 
 namespace GameEngine {

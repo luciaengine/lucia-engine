@@ -54,9 +54,7 @@ uint32_t SlotAllocator::Allocate(uint16_t count, uint16_t& outCap)
 
     // Walk up size classes; pop from the first non-empty bucket. Walk-up
     // recycles stranded entries from larger classes when smaller-class
-    // demand starves; without it, larger holes accumulate forever (the
-    // no-walk-up variant was tested in Stage 0 and made fragmentation
-    // strictly worse — 0.24 vs 0.20).
+    // demand starves; without it, larger holes accumulate forever.
     for (size_t i = startClass; i < kNumSizeClasses; ++i)
     {
         if (!m_FreeLists[i].empty())

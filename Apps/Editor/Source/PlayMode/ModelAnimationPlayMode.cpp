@@ -121,8 +121,8 @@ void StartAnimatorPlayback(ECS::World& world, AssetManager& am, ECS::EntityHandl
 void ApplyAnimatorOnEnterPlayMode(ECS::World& world, AssetManager& am)
 {
     world.Query<ECS::Write<Components::Animator>>().Each(
-        [&](ECS::EntityHandle rootEntity, Components::Animator& animator)
-        { StartAnimatorPlayback(world, am, rootEntity, animator); });
+        [&](ECS::EntityHandle rootEntity, ECS::Writable<Components::Animator> animator)
+        { StartAnimatorPlayback(world, am, rootEntity, animator.Mutable()); });
 }
 
 } // namespace GameEngine::Editor

@@ -1,5 +1,4 @@
 #include "Panels/RenderGraphPanel.h"
-#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <chrono>
@@ -16,7 +15,7 @@
 #include "Assets/AssetManager.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
-#include "DebugServer/Capture/RenderDocCapture.h"
+#include "DebugServer/RenderDocCapture.h"
 #include "Engine/Rendering/FrameOrchestrator.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -1113,7 +1112,9 @@ void RenderGraphPanel::RebuildPassList()
 void RenderGraphPanel::ApplySearchFilter()
 {
     // Case-insensitive substring filter on pass names. Empty query shows all.
-    const std::string needle = ToLowerAscii(m_SearchText);
+    std::string needle = m_SearchText;
+    std::transform(needle.begin(), needle.end(), needle.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
     for (auto& r : m_Rows)
     {
@@ -1122,7 +1123,9 @@ void RenderGraphPanel::ApplySearchFilter()
         bool visible = true;
         if (!needle.empty())
         {
-            const std::string hay = ToLowerAscii(r.Name);
+            std::string hay = r.Name;
+            std::transform(hay.begin(), hay.end(), hay.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             visible = hay.find(needle) != std::string::npos;
         }
         if (visible)
