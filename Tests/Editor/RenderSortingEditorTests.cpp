@@ -15,6 +15,7 @@
 #include "Editor/Settings/SettingsStore.h"
 #include "TestTempDir.h"
 #include "UI/Controls/Dropdown.h"
+#include "UI/Controls/CollapsibleInfoCard.h"
 #include "UI/Controls/Label.h"
 #include "UI/UIElement.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -245,15 +246,15 @@ TEST_F(RenderSortingEditorTests, DiagnosticReportsEffectiveParentOrderAndRefresh
     context.SimulationRefreshCallbacks = &refresh;
     AddRenderSortingDiagnostic(context);
     ASSERT_EQ(content.GetChildren().size(), 1u);
-    const auto* text = dynamic_cast<Label*>(content.GetChildren().front().get());
-    ASSERT_NE(text, nullptr);
-    EXPECT_NE(text->GetText().find("Foreground / 7 / Group:"), std::string::npos);
+    const auto* card = dynamic_cast<EditorUI::CollapsibleInfoCard*>(content.GetChildren().front().get());
+    ASSERT_NE(card, nullptr);
+    EXPECT_NE(card->GetFullText().find("Foreground. Order in layer: 7. Sorting group:"), std::string::npos);
     group.Layer = -30;
     group.OrderInLayer = -2;
     World.AddComponentImmediate(parent, group);
     ASSERT_EQ(refresh.size(), 1u);
     refresh.front()();
-    EXPECT_NE(text->GetText().find("Background / -2 / Group:"), std::string::npos);
+    EXPECT_NE(card->GetFullText().find("Background. Order in layer: -2. Sorting group:"), std::string::npos);
 }
 
 }

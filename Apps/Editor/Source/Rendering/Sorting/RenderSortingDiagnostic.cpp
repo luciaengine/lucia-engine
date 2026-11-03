@@ -1,12 +1,13 @@
 #include "Rendering/Sorting/RenderSortingEditor.h"
 
 #include "Components/Name.h"
+#include "Components/Rendering/RenderSorting.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
 #include "Engine/Rendering/RenderSorting.h"
 #include "Engine/Rendering/SortingLayers.h"
 #include "InspectorRegistry.h"
-#include "UI/Controls/Label.h"
+#include "UI/Controls/CollapsibleInfoCard.h"
 
 #include <memory>
 
@@ -18,7 +19,7 @@ struct DiagnosticState
 {
     std::function<ECS::World*()> GetWorld;
     ECS::EntityHandle Entity;
-    Label* Text = nullptr;
+    EditorUI::CollapsibleInfoCard* Card = nullptr;
     const ECS::World* LastWorld = nullptr;
     uint64 WorldVersion = 0;
     uint64 LayerRevision = 0;
@@ -47,17 +48,21 @@ void RefreshDiagnostic(DiagnosticState& state)
             layerName = layer.Name;
             break;
         }
-    std::string text = "Effective sorting: " + layerName + " / " + std::to_string(sorting.Order);
+    std::string text = "Effective sorting layer: " + layerName + ". Order in layer: " + std::to_string(sorting.Order) + ".";
     if (sorting.Grouped)
     {
         const auto* name = world->GetComponent<Components::Name>(sorting.Group);
         const std::string group = name && !name->View().empty() ? std::string(name->View()) :
             "Entity " + std::to_string(sorting.Group.id);
-        text += " / Group: " + group + " / Member order: " + std::to_string(sorting.MemberOrder);
+        text += " Sorting group: " + group + ". Member order: " + std::to_string(sorting.MemberOrder) + ".";
     }
     else
-        text += " / No group";
-    state.Text->SetText(text);
+        text += " No sorting group.";
+    if (!world->HasComponent<Components::RenderSorting>(state.Entity))
+        text += " Add Render Sorting from Add Component > Rendering to set this entity's sorting layer, order, or group.";
+    else
+        text += " Edit Sorting Layer, Order in Layer, and Group Children in the Render Sorting component.";
+    state.Card->SetText(text);
 }
 }
 
@@ -65,13 +70,12 @@ void AddRenderSortingDiagnostic(const InspectorContext& context)
 {
     if (!context.Parent || !context.World)
         return;
-    auto label = std::make_unique<Label>();
-    label->AddClass("inspector-field-caption");
+    auto card = std::make_unique<EditorUI::CollapsibleInfoCard>("");
     auto state = std::make_shared<DiagnosticState>();
-    state->Text = label.get();
+    state->Card = card.get();
     state->Entity = context.Entity;
     state->GetWorld = context.GetWorld ? context.GetWorld : [world = context.World]() { return world; };
-    context.Parent->AddChild(std::move(label));
+    context.Parent->AddChild(std::move(card));
     RefreshDiagnostic(*state);
     if (context.SimulationRefreshCallbacks)
         context.SimulationRefreshCallbacks->push_back([state]() { RefreshDiagnostic(*state); });

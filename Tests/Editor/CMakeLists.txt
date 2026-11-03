@@ -2021,6 +2021,7 @@ ge_stage_runtime_dependencies(AtlasRegionThumbnailTests)
 add_test(NAME AtlasRegionThumbnailTests COMMAND $<TARGET_FILE:AtlasRegionThumbnailTests>)
 add_executable(RenderSortingEditorTests
     RenderSortingEditorTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/CollapsibleInfoCard.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingDiagnostic.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/SortingLayerSettingsWriter.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Rendering/Sorting/RenderSortingEdit.cpp
