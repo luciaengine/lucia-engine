@@ -5,7 +5,7 @@ paths:
 
 # Documentation under `docs/`
 
-`docs/` holds what a user of the engine reads to use a feature, write an authored format, or understand a concept. Development documentation (architecture proposals, designs, decisions, investigations, measurements, plans, post-mortems, review records) lives in the workbench repository (`GameEngine-Workbench/designs/`, `measurements/`, `notes/`) and is cited from code by name only; the code comment carries the invariant or trap itself. A design a user must read to use the feature is a usage guide that has not been written yet: write the guide here and keep the design in the workbench.
+`docs/` holds what a user of the engine reads to use a feature, write an authored format, or understand a concept. Maintained development documentation (architecture proposals, designs, decisions, investigations, plans, test maps, and workflow guidance) belongs under `docs/development/` in this repository. Generated evidence and per-change review records go in pull request attachments or an external evidence folder. Restricted console documentation stays in the private console repository. Code comments carry the invariant or trap themselves and may link a maintained document for context.
 
 openengine.dev will publish the pages under `/docs/`, rendered by the site's Starlight renderer, once the site switches to them; github.com renders the same files in the public repository. Every page is in the form below, in its area folder; `docs/README.md` is the github.com index of the areas.
 
@@ -78,5 +78,5 @@ A page is Markdown with directives, in an `.mdx` file. No per-page styling, no i
 - A new file requires a genuinely new topic. If a lane must draft in a separate dated file (parallel worktrees, an exploratory rewrite), that file is folded into the canonical and deleted before the merge finisher signs off.
 - Records of a moment stay dated and immutable: investigations, post-mortems, measurement and attribution reports, review verdicts, go/no-go decisions, pre-registrations. A reversed verdict is a new record plus a correction banner in the old one.
 - Supersession is explicit and two-sided: the successor names the file it replaces; the replaced file gets a banner pointing forward or is deleted in the same change. A moved or converted page updates every link to it in the same change. "Extends" is not a relationship.
-- Arc close is consolidation: fold the arc's dated iterations into canonicals and delete them; commit or delete every untracked document the arc produced (a tracked document citing an untracked one is a defect); flip status lines (ACTIVE → CLOSED); log review verdicts in `GameEngine-Workbench/review-tier-log/`.
+- Arc close is consolidation: fold the arc's dated iterations into canonicals and delete them; commit or delete every untracked document the arc produced (a tracked document citing an untracked one is a defect); flip status lines (ACTIVE → CLOSED); record review verdicts in the pull request.
 - Migrate on contact: when touching a pre-policy dated canonical, rename it undated as part of the change. No bulk renames.
