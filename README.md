@@ -50,6 +50,29 @@ cmake --build --preset vs2026-x64-local --config DebugFast --target Editor -j 12
 build\vs2026-x64-local\bin\DebugFast\Apps\Editor\Editor.exe
 ```
 
+### Linux (x64)
+
+Install the [.NET 10 SDK for your distribution](https://learn.microsoft.com/en-us/dotnet/core/install/linux). Use a C++20 compiler, CMake 3.25 or newer, and Ninja. On Ubuntu 24.04 or newer, install the native build and windowing dependencies:
+
+```bash
+sudo apt update
+sudo apt install build-essential cmake ninja-build pkg-config git curl zip unzip tar \
+  autoconf autoconf-archive automake libtool \
+  libxinerama-dev libxcursor-dev xorg-dev libglu1-mesa-dev libwayland-dev
+```
+
+Install a Vulkan-capable driver for your GPU. For Intel or AMD GPUs on Ubuntu, use `sudo apt install mesa-vulkan-drivers vulkan-tools`. NVIDIA GPUs need a compatible NVIDIA driver. The default windowing backend uses X11, so a Wayland desktop needs XWayland.
+
+```bash
+git clone https://github.com/luciaengine/lucia-engine.git
+cd lucia-engine
+cmake --preset linux-x64-local -DCMAKE_BUILD_TYPE=DebugFast
+cmake --build --preset linux-x64-local --target Editor -j 8
+./build/linux-x64-local/bin/DebugFast/Apps/Editor/Editor
+```
+
+Run the `Editor` launcher shown above. It starts the native executable with the supported runtime defaults. Other distributions can use the equivalent packages listed in [Linux setup](BUILD.md#linux).
+
 The first configure bootstraps vcpkg and builds the third-party dependencies once (expect tens of minutes); every build after that is incremental. macOS and Linux build the same Editor through their own presets (`macos-arm64-ninja`, `linux-x64-local`); platform prerequisites, the Ninja fast build, Steam Deck, tests and troubleshooting are in [BUILD.md](BUILD.md). With the editor running, [Your first project](docs/first-project.html) creates a project, saves a scene and exports a game.
 
 ## Repository layout
