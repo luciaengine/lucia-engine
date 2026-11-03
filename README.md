@@ -4,7 +4,7 @@
 
 # Lucia Engine
 
-Lucia Engine is a customized version of [Open Engine](https://github.com/Game-Crafters-Guild/OpenEngine). This checkout retains Open Engine’s published Git history and records the Lucia source snapshot as a new commit. It does not import the earlier private development history.
+Lucia Engine is a customized version of [Open Engine](https://github.com/Game-Crafters-Guild/OpenEngine). This checkout retains Open Engine’s published Git history and records the Lucia source snapshot as a new commit.
 
 A game engine written in C++20 with hot-reloadable C# scripting: a Vulkan-first GPU-driven renderer, an archetype ECS, and an editor whose UI is built from XML and CSS.
 
