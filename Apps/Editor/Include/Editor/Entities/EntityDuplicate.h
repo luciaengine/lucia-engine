@@ -3,11 +3,11 @@
 #include "Components/Hierarchy.h"
 #include "Components/Name.h"
 #include "Components/RuntimeOnlyEntity.h"
+#include "Components/SceneEntityTag.h"
 #include "ECS/Entity.h"
 #include "ECS/Query.h"
 #include "ECS/World.h"
 #include "Editor/Entities/CopiedEntityRuntimeRefs.h"
-#include "Scene/PrefabAuthoring.h"
 
 #include <cctype>
 #include <cstdint>
@@ -100,14 +100,14 @@ inline EntityDuplicateResult DuplicateEntitySubtreeRoots(ECS::World& world,
         for (;;)
         {
             const auto* p = world.GetComponent<Components::Parent>(walk);
-            if (!p || !p->Entity.IsValid() || !world.IsValid(p->Entity))
+            if (!p || !p->parent.IsValid() || !world.IsValid(p->parent))
                 break;
-            if (selectedSet.count(p->Entity.index))
+            if (selectedSet.count(p->parent.index))
             {
                 ancestorSelected = true;
                 break;
             }
-            walk = p->Entity;
+            walk = p->parent;
         }
         if (!ancestorSelected)
             topRoots.push_back(root);
@@ -123,9 +123,9 @@ inline EntityDuplicateResult DuplicateEntitySubtreeRoots(ECS::World& world,
     world.Query<ECS::Read<Components::Parent>>().IncludeDisabled().Each(
         [&](ECS::EntityHandle e, const Components::Parent& p)
         {
-            if (e.IsValid() && world.IsValid(e) && p.Entity.IsValid() && world.IsValid(p.Entity) &&
+            if (e.IsValid() && world.IsValid(e) && p.parent.IsValid() && world.IsValid(p.parent) &&
                 !world.HasComponent<Components::RuntimeOnlyEntity>(e))
-                childMap[p.Entity.index].push_back(e);
+                childMap[p.parent.index].push_back(e);
         });
 
     std::unordered_set<std::string> usedNames;
@@ -165,6 +165,13 @@ inline EntityDuplicateResult DuplicateEntitySubtreeRoots(ECS::World& world,
             if (!clonedH.IsValid())
                 continue;
 
+            // Clone() copies every component, including the SceneEntityTag that holds the scene
+            // "id". A duplicate must not inherit the original's id — that produces two
+            // [entity id="..."] blocks on save and a scene that fails to reload. Drop it so the
+            // clone is treated like a fresh entity and gets a unique id assigned on save.
+            if (world.HasComponent<Components::SceneEntityTag>(clonedH))
+                world.RemoveComponentImmediate<Components::SceneEntityTag>(clonedH);
+
             if (idx == 1)
                 clonedRoot = clonedH;
 
@@ -174,7 +181,7 @@ inline EntityDuplicateResult DuplicateEntitySubtreeRoots(ECS::World& world,
             if (newParent.IsValid())
             {
                 Components::Parent parentComp{};
-                parentComp.Entity = newParent;
+                parentComp.parent = newParent;
                 world.AddComponentImmediate(clonedH, parentComp);
             }
 
@@ -195,9 +202,6 @@ inline EntityDuplicateResult DuplicateEntitySubtreeRoots(ECS::World& world,
         }
     }
     runtimeRefs.RepairPayloadReferences(world);
-    // Clone() copies the scene identities too. A prefab instance in a copy gets new ones and stays an
-    // instance with its overrides; every other copy has none until a save gives it a unique one.
-    Scene::GiveCopySceneIdentities(world, result.NewRoots);
 
     return result;
 }

@@ -198,29 +198,7 @@ const float CBT_OFF_FRUSTUM_KEEP_WIDEST_NDC = 1024.0;    // step 1's band
 const uint CBT_OFF_FRUSTUM_KEEP_STEPS_PER_OCTAVE = 2u;   // the band halves every two steps
 const uint CBT_OFF_FRUSTUM_KEEP_SATURATED_STRIDE = 2u;    // steps per update while occupancy is at
                                                          // or above CBT_PRESSURE_FULL_OCC
-// The live count the planar classify reads its occupancy from while the camera holds still
-// (pc.settle). Kernel_Reset copies the live count here on every update whose inputs moved; at rest it
-// follows only a move larger than the deadband (1/CBT_REST_LATCH_DEADBAND_DIVISOR of the pool), so the
-// near-bias contention and the near-field occupancy gate hold still under the few splits and merges
-// the rest itself makes, and still follow the rebuild after a camera jump. Without it a facet on the
-// threshold the tree's own size sets splits and merges on alternate updates forever. The deadband
-// bounds how far two arrivals' latched counts can differ while the near-bias is engaged.
-// CBTLayout.h mirrors both.
-const uint CBT_WQ_REST_LIVE_COUNT = 16u;
-const uint CBT_REST_LATCH_DEADBAND_DIVISOR = 1024u;
-// The page samples of this update that found no resident page (CBTLayout.h kWQUnresolvedPageSamples).
-const uint CBT_WQ_UNRESOLVED_PAGE_SAMPLES = 17u;
-// The rest's keep floor: one past the highest keep step proven not to fit under the keep ceiling, or a phase below 0:
-// CBT_KEEP_FLOOR_ARRIVING after an update that moved, CBT_KEEP_FLOOR_PROBING while the first step down has no
-// measured tree. CBTLayout.h mirrors all three.
-const uint CBT_WQ_OFF_FRUSTUM_KEEP_FLOOR = 18u;
-const int CBT_KEEP_FLOOR_ARRIVING = -1;
-const int CBT_KEEP_FLOOR_PROBING = -2;
-// The leaves the planar criterion wants to merge, counted only at rest. A leaf that does not want to merge at rest never
-// merges in that rest, so live minus this count is a lower bound on the quiet tree (Kernel_Reset's early up proof).
-// CBTLayout.h mirrors it.
-const uint CBT_WQ_MERGE_CANDIDATE_COUNTER = 19u;
-const uint CBT_WQ_COUNTER_SLOTS = 20u;
+const uint CBT_WQ_COUNTER_SLOTS = 16u;
 
 // Work-queue payload lanes — 3 ALIASED physical lanes over the 6 logical queues (slot-diet r2;
 // mirror of CBTLayout.h WQ*Offset). The six queues' live spans over the per-frame kernel sequence
@@ -285,8 +263,8 @@ const uint CBT_FOCUS_ROOT_ALL = 0xFFFFFFFFu;
 // CBTLayout.h CBTVertexData — S2a): each corner = (position xyz, uv.x); meta =
 // (uv0.y, uv1.y, uv2.y, terrain normalmap bindless index as float); then the
 // Earth-scale (sector, local) tail. deepTag.x selects the corner meaning PER SLOT:
-//   0 (planar; the sphere on the narrow arm): corner*.xyz = fp32 WORLD position, tail is zero.
-//   1 (the sphere on the wide arm): corner*.xyz = fp32 SECTOR-LOCAL offset; sector<k>
+//   0 (legacy / dark-ship): corner*.xyz = fp32 WORLD position, tail is zero.
+//   1 (GE_CBT_DEEP_DECODE): corner*.xyz = fp32 SECTOR-LOCAL offset; sector<k>
 //     packs corner k's ivec3 world sector (1024 m grid) as 3 x 16-bit lanes.
 //     Consumers reconstruct rel = vec3(sector - originSector) * CBT_SECTOR_SIZE +
 //     local — the GE_ClipFromSectorLocal math (camera_relative.glsl) verbatim.
@@ -343,26 +321,6 @@ layout(std430, set = CBT_DESCRIPTOR_SET, binding = 12) CBT_SSBO_QUAL buffer CBTV
 {
     CBTVertexData Vertex[];
 } gVertex;
-
-#if !defined(GE_COMPAT_PROFILE)
-// The draw's level rule (mirror CBTLayout.h CBTDrawLevelParams), offset-bound to this frame's ring
-// slot, and the prefiltered height chain the compute update builds (binding 24 there). The compat
-// profile (WebGPU class) declares neither: its vertex stage has no storage-buffer budget to spare,
-// and its kernels build no chain, so it draws the cached corners.
-#define CBT_DRAW_HEIGHT_CHAIN 1
-#include "cbt_draw_level.glsl"
-
-layout(std430, set = CBT_DESCRIPTOR_SET, binding = 13) CBT_SSBO_QUAL buffer CBTHeightChainDrawBuffer
-{
-    uint Words[];
-} gCbtChain;
-
-#include "cbt_height_chain.glsl"
-float CBT_ChainLoad(uint word)
-{
-    return uintBitsToFloat(gCbtChain.Words[word]);
-}
-#endif
 
 #else // !CBT_GRAPHICS_INCLUDE — full compute layout
 // The heap is 8 bytes per slot in BOTH arms: the u32 arm declares uvec2 so the stride
@@ -506,8 +464,8 @@ layout(std430, set = CBT_DESCRIPTOR_SET, binding = 13) CBT_SSBO_QUAL buffer CBTV
 // Camera + terrain params consumed by Classify (screen-space error) and VertexEval
 // (world-space displacement). NOT declared in the graphics include: the vertex
 // modifier reads evaluated positions and needs neither (plan §8 C4). std140 mirror
-// of CBTFrameParams (CBTLayout.h) — mat4 + 13 vec4 + the 16 x 3 vec4 analytic set + the
-// height-chain vec4 = 1056 B; ring-buffered so the CPU can write frame N while the GPU reads frame N-1.
+// of CBTFrameParams (CBTLayout.h) — mat4 + 13 vec4 + the 16 x 3 vec4 analytic set = 1040 B;
+// ring-buffered so the CPU can write frame N while the GPU reads frame N-1.
 struct CBTFrameParams
 {
     mat4 viewProjRel;   // REBASED world -> clip (reverse-Z LH): consumes render-origin-relative corners (slice 1b); == the full-world viewProj when the origin is inactive
@@ -561,14 +519,11 @@ struct CBTFrameParams
     vec4 waterPlane;
     // Analytic sphere modifiers (sculpt shape-accuracy S2 — mirror CBTLayout.h AnalyticParams /
     // SphereAnalytic, math in cbt_analytic.glsl). x = flatten count, y = transient brush dab count
-    // (S3 — dabs occupy slots [x, x+y)); integers as float; z = the first word of this frame's page-table
-    // ring slot (CBT_PAGE_RING_BASE_LANE, wide arm); w reserved. Both 0 (the flag-off
+    // (S3 — dabs occupy slots [x, x+y)); integers as float; z = the page-table ring's words per slot
+    // (CBT_PAGE_RING_WORDS_LANE, wide arm); w reserved. Both 0 (the flag-off
     // dark-ship) skips every analytic branch — no float op is added.
     vec4 analyticParams;
     CBTSphereAnalyticFlatten sphereAnalytic[CBT_MAX_SPHERE_ANALYTIC];
-    // The draw's prefiltered height chain, for Classify's frustum cull (mirror CBTLayout.h HeightChain).
-    // x = the level scale of the draw's rule lambda = log2(distance x scale), 0 = off; y = the top level.
-    vec4 heightChain;
 };
 
 // One ring slot: the frame params PLUS the S3 per-cell placement-cull masks (mirror CBTLayout.h
@@ -582,9 +537,6 @@ struct CBTFrameSlot
 {
     CBTFrameParams frame;
     uvec4 analyticCellMask[48];
-    // Each cube face's dirty rect in face-local UV (minU, minV, maxU, maxV); empty when z <= x
-    // (mirror CBTLayout.h SphereDirty).
-    vec4 sphereDirty[6];
 };
 
 layout(std140, set = CBT_DESCRIPTOR_SET, binding = 14) uniform CBTFrameParamsBuffer
@@ -637,47 +589,17 @@ layout(std430, set = CBT_DESCRIPTOR_SET, binding = 20) CBT_SSBO_QUAL buffer CBTS
 
 #if !defined(CBT_DECODE_INT32)
 // Height-range pyramid (binding 21, compute only, wide arm only — mirror CBTLayout.h
-// kCBTHeightRangeEntries, kCBTHeightChainRangeEntries). Kernel_HeightRangeBuild writes it from the
-// bound height texture and the height chain whenever either may have changed; Classify reads it for
-// the planar split's node boxes and drawn ranges. Each entry is a square block of height-lattice cells
-// at one level: the lowest and highest normalized height over the block as two raw floats, after a
-// header (CBT_HEIGHT_RANGE_HEADER words). The chain levels' pyramids follow the level-0 entries.
+// kCBTHeightRangeEntries). Kernel_HeightRangeBuild writes it from the bound height texture
+// whenever the heights may have changed; Classify reads it for the content-aware split. Each
+// entry is a square block of height-lattice cells at one level: the lowest and highest normalized
+// height over the block as two raw floats, after a header (CBT_HEIGHT_RANGE_HEADER words).
 #define CBT_HEIGHT_RANGE_ENTRIES (1u << 20)
 #define CBT_HEIGHT_RANGE_MAX_FIRST_LEVEL 4u
-// [0] lattice cells, [1] first | top << 8, [2 + k] level first entries, [18] the chain ranges' level-0
-// samples (0: none), [19] chain levels with a range, [20 + j] chain level j's first entry
-#define CBT_HEIGHT_RANGE_HEADER 64u
-// The first stored level's differences per block (steepest step, largest second difference along X and
-// along Z, largest mixed difference), four words per block, after the chain ranges (CBTLayout.h
-// kCBTHeightDifferencesFirstWord): header + 2 x (2^20 + 2^19) words.
-#define CBT_HEIGHT_DIFFERENCES_FIRST_WORD 3145792u
-// Each level-0 block's plane (x slope, z slope, residual low, residual width), four words per entry,
-// after the differences (CBTLayout.h kCBTHeightPlaneFirstWord): CBT_HEIGHT_DIFFERENCES_FIRST_WORD +
-// 4 x 2^20 words.
-#define CBT_HEIGHT_PLANE_FIRST_WORD 7340096u
+#define CBT_HEIGHT_RANGE_HEADER 32u // [0] lattice cells, [1] first | top << 8, [2 + k] level first entries
 layout(std430, set = CBT_DESCRIPTOR_SET, binding = 21) CBT_SSBO_QUAL buffer CBTHeightRangeBuffer
 {
     uint Range[];
 } gHeightRange;
-
-// The prefiltered height chain (binding 24, wide arm only — mirror CBTLayout.h kCBTHeightChainBinding).
-// Kernel_HeightChainBuild writes it beside the pyramid; the terrain draw reads it (gCbtChain on the
-// graphics set 2). Layout in cbt_height_chain.glsl.
-layout(std430, set = CBT_DESCRIPTOR_SET, binding = 24) CBT_SSBO_QUAL buffer CBTHeightChainBuffer
-{
-    uint Words[];
-} gHeightChain;
-
-// The far-field normal chain's mips as storage images (binding 25, wide arm only — mirror CBTLayout.h
-// kCBTNormalChainBinding / kCBTNormalChainMaxMips); Kernel_NormalChainBuild writes mip pc.passIndex.
-#define CBT_NORMAL_CHAIN_MAX_MIPS 14
-layout(set = CBT_DESCRIPTOR_SET, binding = 25, rg16f) uniform writeonly image2D gNormalChain[CBT_NORMAL_CHAIN_MAX_MIPS];
-
-#include "cbt_height_chain.glsl"
-float CBT_ChainLoad(uint word)
-{
-    return uintBitsToFloat(gHeightChain.Words[word]);
-}
 #endif
 
 // Paging index math (constants + CBTSculptGeom + CBT_SculptTableEntry / CBT_SculptPoolIndex). Pure
@@ -743,13 +665,16 @@ float CBT_AtlasCoarseSample(vec2 uv, float coarseDim, uint frameSlot)
 #if !defined(CBT_DECODE_INT32)
 // The paged height resolve (cbt_page.glsl), wide arm only (mirror CBTLayout.h kCBTPageTableBinding):
 // the narrow arm's VertexEval already binds the WebGPU per-stage storage-buffer limit.
-// Binding 22: TerrainPageFeature's page-table ring, one slot per frame in flight; this frame's first
-// word rides its params (analyticParams lane CBT_PAGE_RING_BASE_LANE), never a word of another slot.
-// Layout (mirror CBTLayout.h): [0, 4) CBTPageField's shape, [4] the cache's slot count, [5, 8) the
-// floor level, the tier count and the floor directory's offset (all 0 for a dense table),
-// [8, 8 + 4 * CBT_PAGE_MAX_LEVELS) one CBTPageLevel per level, then one arrival fade per cache slot
-// (float bits), then the table's words (TerrainECS PageTable). The word offsets are in cbt_page.glsl.
-#define CBT_PAGE_RING_BASE_LANE 2
+// Binding 22: the page table, a host-visible ring of equal slots, one per frame slot, written whole
+// when the terrain's table changes (the binding-17 ring discipline); the words per slot ride this
+// frame's params (analyticParams lane CBT_PAGE_RING_WORDS_LANE), never a word of another slot.
+// Layout (mirror CBTLayout.h): [0, 4) CBTPageField, [4] the cache's slot count, [5, 8) zero,
+// [8, 8 + 4 * CBT_PAGE_MAX_LEVELS) one CBTPageLevel per
+// level, then one arrival fade per cache slot (float bits), then the entries.
+#define CBT_PAGE_HEADER_WORDS 8u
+#define CBT_PAGE_MAX_LEVELS 32u
+#define CBT_PAGE_FADE_OFFSET (CBT_PAGE_HEADER_WORDS + 4u * CBT_PAGE_MAX_LEVELS)
+#define CBT_PAGE_RING_WORDS_LANE 2
 layout(std430, set = CBT_DESCRIPTOR_SET, binding = 22) CBT_SSBO_QUAL buffer CBTPageTableBuffer
 {
     uint Words[];
@@ -764,7 +689,7 @@ layout(set = CBT_DESCRIPTOR_SET, binding = 23) uniform sampler2D gPageCache CBT_
 
 // ---------------------------------------------------------------------------
 // Push constants (compute only; the graphics adapter owns the sole PC block —
-// plan §9). 92 bytes, mirror of CBTPushConstants.
+// plan §9). 64 bytes, mirror of CBTPushConstants.
 // ---------------------------------------------------------------------------
 #ifndef CBT_GRAPHICS_INCLUDE
 layout(push_constant) uniform CBTPushConstants
@@ -786,8 +711,10 @@ layout(push_constant) uniform CBTPushConstants
     float dirtyMinV;
     float dirtyMaxU;
     float dirtyMaxV;
-    // The planar dirty rect above; the sphere's face rects are CBTFrameSlot.sphereDirty.
-    // sphereSculptEnabled gates the additive sculpt sample in VertexEval.
+    // Planet-editing v1 (plan §planet-editing): on the sphere the dirty rect above is a
+    // FACE-LOCAL UV rect and dirtyFace selects the cube face; sphereSculptEnabled gates
+    // the additive sculpt sample in VertexEval. Both ignored in planar mode.
+    uint dirtyFace;
     uint sphereSculptEnabled;
     // Quiescence gate for VertexEval (plan §planet-shading perf). 0 = evaluate the whole live
     // pool (the pre-slice behavior; used for the force-eval frame after init / a param change).
@@ -809,16 +736,10 @@ layout(push_constant) uniform CBTPushConstants
     // one-root retained ring keeps the base/refined seam out of the visible boundary (design §3
     // candidate 3). 0 = no reseed this dispatch.
     uint regionFreeMask;
+    // Earth-scale (sector, local) storage A/B (arc S2a — mirror CBTPushConstants::DeepDecode).
+    // Only VertexEval reads it (selects what to WRITE); consumers branch on the per-slot deepTag.
+    uint deepDecode;
     uint poolPressure; // 1 = planar pool-pressure scale on; 0 = the A/B arm (tests), scale held at 1x
-    // The height build kernels' region at level passIndex (mirror CBTPushConstants::BuildRegionMin): first
-    // element (x | z << 16), extent (width | height << 16); samples for Kernel_HeightChainBuild, texels for
-    // Kernel_NormalChainBuild, blocks for Kernel_HeightRangeBuild. Only they read them.
-    uint buildRegionMin;
-    uint buildRegionExtent;
-    // The rest rule (mirror CBTPushConstants::Settle). 1 = every input matches the previous update's:
-    // Kernel_Classify's planar split and merge use one threshold (CBT_PlanarClassify). Classify and
-    // Kernel_Reset's live-count latch read it.
-    uint settle;
 } pc;
 #endif
 
@@ -981,12 +902,16 @@ const float CBT_SECTOR_SIZE = 1024.0;
 // (~16,777 km — Earth's 6,371 km has vast margin); the integer sector carries the large scale.
 vec3 CBT_RenderOriginWorld(CBTFrameParams fp) { return fp.renderOriginSector.xyz * CBT_SECTOR_SIZE; }
 
-// One bisector's three corners in the frames every compute consumer needs: planet-center WORLD
-// (horizon cull, crease radius math; fp32 at planet magnitude) and render-origin-RELATIVE
-// (frustum cull, screen metric). deepTag.x selects the store of the slot:
-//   0 (world corners): world = the stored corner, rel = world - originW.
-//   1 (sector, local): rel = vec3(sector - originSector) * CBT_SECTOR_SIZE + local (an exact
-//     integer delta, fp32-precise at any radius); world = sector * CBT_SECTOR_SIZE + local.
+// S2a corner fetch: one bisector's three corners in BOTH frames every compute consumer
+// needs — planet-center WORLD (horizon cull, crease radius math; fp32 at planet
+// magnitude, the same quality the legacy world store had) and render-origin-RELATIVE
+// (frustum cull + screen metric). Per-slot deepTag selects the storage:
+//   legacy (deepTag.x == 0): world = the stored corner, rel = world - originW —
+//     today's math bit-for-bit (byte-identical dark-ship).
+//   deep (sector, local): rel = vec3(sector - originSector) * CBT_SECTOR_SIZE + local —
+//     the GE_ClipFromSectorLocal reconstruction, an EXACT integer delta + small float,
+//     fp32-precise at any planet radius (the S2a precision win); world = the fp32
+//     recomposition sector * CBT_SECTOR_SIZE + local (planet-magnitude consumers only).
 struct CBTCornersWS
 {
     vec3 W0; vec3 W1; vec3 W2; // planet-center world
@@ -1025,22 +950,6 @@ CBTCornersWS CBT_FetchCorners(uint slot, CBTFrameParams fp)
     return c;
 }
 
-// One render-origin-relative corner of `slot` (index 0, 1 or 2), equal to the matching R of
-// CBT_FetchCorners: it reads one 16-byte corner, the deep tag and, for a deep slot, that corner's sector.
-vec3 CBT_FetchCorner(uint slot, uint index, CBTFrameParams fp)
-{
-    vec3 local = index == 0u ? gVertex.Vertex[slot].corner0.xyz
-               : (index == 1u ? gVertex.Vertex[slot].corner1.xyz : gVertex.Vertex[slot].corner2.xyz);
-    if (gVertex.Vertex[slot].deepTag.x != 0u)
-    {
-        uvec2 packedSector = index == 0u ? gVertex.Vertex[slot].sector0
-                           : (index == 1u ? gVertex.Vertex[slot].sector1 : gVertex.Vertex[slot].sector2);
-        ivec3 originSector = ivec3(fp.renderOriginSector.xyz); // float holds the exact integer
-        return vec3(CBT_UnpackCornerSector(packedSector) - originSector) * CBT_SECTOR_SIZE + local;
-    }
-    return local - CBT_RenderOriginWorld(fp);
-}
-
 // Terrain UV (== the LEB unit-square coord) -> world XZ, matching the CDLOD vertex
 // path exactly: worldXZ = origin + uv * size (origin = terrain corner, not centre).
 vec2 CBT_TerrainToWorldXZ(vec2 uv, CBTFrameParams fp)
@@ -1059,18 +968,13 @@ vec2 CBT_TerrainToWorldXZ(vec2 uv, CBTFrameParams fp)
 uint CBT_PageRingBase()
 {
     uint slot = pc.frameIndex % CBT_FRAME_RING;
-    return uint(gParams.Params[slot].frame.analyticParams[CBT_PAGE_RING_BASE_LANE]);
+    return slot * uint(gParams.Params[slot].frame.analyticParams[CBT_PAGE_RING_WORDS_LANE]);
 }
 
-uint CBT_PageTableWord(uint index)
+uint CBT_PageTableEntry(uint index)
 {
     uint base = CBT_PageRingBase();
     return gPageTable.Words[base + CBT_PAGE_FADE_OFFSET + gPageTable.Words[base + 4u] + index];
-}
-
-void CBT_PageUnresolved()
-{
-    atomicAdd(gQueue.WorkQueue[CBT_WQ_UNRESOLVED_PAGE_SAMPLES], 1);
 }
 
 float CBT_PageSlotFade(uint slot)
@@ -1104,10 +1008,6 @@ CBTPageField CBT_PageFieldOfFrame()
     field.Level0SamplesZ = gPageTable.Words[base + 1u];
     field.LevelCount = gPageTable.Words[base + 2u];
     field.SlotsPerRow = gPageTable.Words[base + 3u];
-    field.FloorLevel = gPageTable.Words[base + 5u];
-    field.TierCount = gPageTable.Words[base + 6u];
-    field.DirectoryOffset = gPageTable.Words[base + 7u];
-    field.Pad = 0u;
     return field;
 }
 #endif
@@ -1162,8 +1062,7 @@ float CBT_SampleHeight(vec2 uv, CBTFrameParams fp)
         vec2 dim = vec2(textureSize(CBT_RING(gHeight, frameSlot), 0));
         texel = textureLod(CBT_RING(gHeight, frameSlot), CBT_LatticeTextureUV(cuv, dim), 0.0).r;
     }
-    precise float height = texel * fp.terrainSize.z + fp.terrainSize.w; // see CBT_TerrainToWorldXZ
-    return height;
+    return texel * fp.terrainSize.z + fp.terrainSize.w;
 }
 
 // Sphere sculpt geometry for THIS frame — on the spherical VertexEval path atlasParams0 is free

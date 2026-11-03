@@ -23,7 +23,7 @@ class PipeTransport : public IHotReloadTransport
     bool SendRequest(const std::string& requestJson, std::string& outResponse) override;
     void Close() override;
 
-#if defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS)
+#if defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS) || defined(GE_PLATFORM_MOBILE)
     // Diagnostics/testing helper: populated during Connect().
     const std::string& DebugGetSocketPath() const { return m_SocketPath; }
 #endif
@@ -32,7 +32,7 @@ class PipeTransport : public IHotReloadTransport
 #if defined(PLATFORM_WINDOWS)
     void* m_Handle;          // HANDLE (void* to avoid windows.h in header)
     std::wstring m_PipeName; // L"\\.\\pipe\\GE_CompileServer_<WorkspaceId>"
-#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS)
+#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS) || defined(GE_PLATFORM_MOBILE)
     int m_SocketFd;               // Unix domain socket fd
     std::string m_PipeNameUtf8;   // Logical pipe name (e.g., GE_CompileServer_<WorkspaceId>)
     std::string m_SocketPath;     // Full path to the Unix domain socket (for diagnostics)

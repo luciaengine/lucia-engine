@@ -23,12 +23,13 @@
 //     CopySettingsGroup fold over the tables; the Neutralize/Extract hooks
 //     fold each effect component into the extracted volume settings.
 
-#include "ECS/Component/ComponentFieldRegistry.h" // ECS::ComponentTypeId
+#include "ECS/ComponentFieldRegistry.h" // ECS::ComponentTypeId
 
 #include <cstdint>
 #include <functional>
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace GameEngine::ECS
 {
@@ -38,6 +39,8 @@ struct EntityHandle;
 
 namespace GameEngine::Engine::Renderer
 {
+class RenderServices;
+namespace Pipeline { struct ViewTargetsRG; }
 struct PostProcessExtractContext;
 struct PostProcessExtractedVolume;
 struct PostProcessSettings;
@@ -103,6 +106,7 @@ enum class SettingsBlendGroup : std::uint8_t
     AtmosphericCloud,
     VolumetricClouds,
     FogGlow,
+    Rain,
 };
 
 // One member of the resolved Engine::Renderer::PostProcessSettings that this
@@ -135,6 +139,20 @@ struct EffectSettingsGate
     PredicateFn IsActive = nullptr;
 };
 
+namespace RenderGraph { class RGFrame; }
+
+// Optional effect-owned auxiliary view preparation. Hooks must retain cleanup
+// when an effect turns off; frame hooks do no work without live auxiliary views.
+// Frame hooks leave the output vector empty when inactive. An active first hook
+// copies the parent targets before appending; later hooks extend that result.
+struct EffectViewPreparation
+{
+    void (*AfterWorldExtraction)(Engine::Renderer::RenderServices&, uint64_t) = nullptr;
+    void (*PrepareFrameTargets)(Engine::Renderer::RenderServices&, RenderGraph::RGFrame&,
+                               std::span<const Engine::Renderer::Pipeline::ViewTargetsRG>,
+                               std::vector<Engine::Renderer::Pipeline::ViewTargetsRG>&) = nullptr;
+};
+
 // One post-process effect's registration.
 struct PostProcessEffectDescriptor
 {
@@ -149,6 +167,7 @@ struct PostProcessEffectDescriptor
     std::string_view DisplayName;
     std::string_view Description{};
     std::string_view IconPath{};
+    std::string_view IconClass{}; // CSS-owned icon for inspector and effect picker
     std::string_view RequiredPackage{};
 
     // Scene-IO metadata. Effects that keep a hand-written schema register with
@@ -156,6 +175,9 @@ struct PostProcessEffectDescriptor
     // so a descriptor is scene-IO-inert for them — it exists for the chrome and
     // settings-write consumers above.
     std::span<const EffectFieldIO> FieldIO{};
+    // Retired keys older scenes may still carry: parsed and dropped without a
+    // warning (e.g. ColorGrade brightness/gamma/hue).
+    std::span<const std::string_view> DroppedLegacyKeys{};
 
     std::span<const EffectSettingsField> SettingsFields{};
 
@@ -179,6 +201,7 @@ struct PostProcessEffectDescriptor
     using NeutralizeFn = void (*)(Engine::Renderer::PostProcessSettings& settings);
     ExtractFn Extract = nullptr;
     NeutralizeFn NeutralizeSettings = nullptr;
+    EffectViewPreparation ViewPreparation{};
 };
 
 class PostProcessEffectRegistry
@@ -217,6 +240,8 @@ class PostProcessEffectRegistry
     // The span stays valid for the process lifetime (Register retires, never
     // frees, the cached table).
     static std::span<const EffectSettingsField> AllSettingsFields();
+    // Cached nonempty hooks, with the same registration/retirement lifetime.
+    static std::span<const EffectViewPreparation> AllViewPreparations();
 };
 
 } // namespace GameEngine::Rendering

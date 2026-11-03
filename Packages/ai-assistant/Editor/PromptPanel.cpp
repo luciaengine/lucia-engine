@@ -2,7 +2,6 @@
 #include "AgentConversationController.h"
 #include "AgentConversationRow.h"
 #include "AgentConversationRowModel.h"
-#include "AgentModelPopover.h"
 #include "AgentReplyActions.h"
 #include "AgentSessionPicker.h"
 #include "AgentSessionSearchProvider.h"
@@ -10,17 +9,13 @@
 #include "AgentStatusMessages.h"
 #include "AiAssistantSettings.h"
 #include "AssistantMode.h"
-#include "DictationText.h"
-#include "PromptMicButton.h"
-#include "AiAssistantPanelService.h"
-#include "MarkupChips.h"
-#include "MarkupContext.h"
-#include "MarkupTokenPicker.h"
 #include "PromptTextArea.h"
-#include "ModeControlFit.h"
+#include "PromptFileDropZone.h"
+#include "PromptFileTray.h"
+#include "PromptInputLayout.h"
+#include "Core/Engine.h"
 #include "Providers/IAgentProvider.h"
 
-#include "Editor/Registries/EditorMarkupRequests.h"
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
 #include "Logger/Logger.h"
@@ -33,29 +28,25 @@
 #include "UI/StyleProperties.h"
 #include "UI/UIElement.h"
 #include "UI/Controls/ItemSizeSlider.h"
-#include "UI/Interaction/ContextMenuManipulator.h"
-#include "UI/Interaction/ItemResizeGesture.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
 #include "UI/UIStyle.h"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <ctime>
 #include <iomanip>
-#include <limits>
 #include <memory>
-#include <span>
 #include <sstream>
-#include <utility>
 #include <vector>
 
 namespace GameEngine
 {
 namespace
 {
+auto s_PromptFileDropZoneRegistration = UIRegistration::RegisterWithFactory<PromptFileDropZone>(
+    "PromptFileDropZone", []() { return std::make_unique<PromptFileDropZone>(); });
 // Everything in the input pane that is not a line of text: the pane's own
 // padding (4 top + 8 bottom), the field border (1 each side) and the text
 // area's vertical padding (10 each side). Keep in sync with PromptPanel.css.
@@ -76,8 +67,6 @@ constexpr float kInputRowBorderPx = 2.0f;
 // The controls' own line when they sit under the field. Keep in sync with
 // .prompt-panel-input-controls-stacked in PromptPanel.css.
 constexpr float kStackedControlsRowPx = 36.0f;
-// The size slider's step, and the text size one notch of the Resize Items gesture moves by.
-constexpr float kTextSizeStepPx = 1.0f;
 // The history list narrower than this stacks each call row: the action, then the summary
 // with the undo state and Details beside it when they fit (AgentCallRow::SetStacked). The
 // list is the panel less its scrollbar.
@@ -150,31 +139,9 @@ void ConfigurePromptScrollView(ScrollView& scroll, bool input)
     }
 }
 
-// The width `element`'s stylesheet lets it shrink to; 0 when it sets none in pixels.
-float MinWidthPx(const UIElement& element)
-{
-    const StyleLength minimum = element.GetResolvedStyle().Layout.MinWidth;
-    return minimum.IsPx() ? minimum.Value : 0.0f;
-}
-
 auto s_PromptTextAreaRegistration =
     UIRegistration::RegisterWithFactory<PromptTextArea>(
         "PromptTextArea", []() { return std::make_unique<PromptTextArea>(); });
-auto s_PromptMicButtonRegistration =
-    UIRegistration::RegisterWithFactory<PromptMicButton>(
-        "PromptMicButton", []() { return std::make_unique<PromptMicButton>(); });
-
-// The ids of the registered reply actions a reply to `prompt` offers, in registration order.
-std::vector<std::string> ReplyActionsFor(const ConversationMessage& prompt)
-{
-    std::vector<std::string> ids;
-    for (const AgentReplyAction& action : AgentReplyActions::All())
-    {
-        if (!action.ShownFor || action.ShownFor(prompt))
-            ids.push_back(action.Id);
-    }
-    return ids;
-}
 } // namespace
 
 PromptPanel::PromptPanel()
@@ -187,43 +154,46 @@ PromptPanel::PromptPanel()
 
 PromptPanel::~PromptPanel()
 {
-    if (m_SpeechInput)
-        m_SpeechInput->Cancel();
     if (UIManager* manager = m_RefreshManager.Get(); manager && m_RefreshToken != 0)
         manager->UnregisterPeriodicRefresh(m_RefreshToken);
 }
 
 void PromptPanel::OnLayoutBound()
 {
-    auto findElement = [this](StringId id) { return FindById(id); };
-    auto findButton = [this](StringId id) { return dynamic_cast<Button*>(FindById(id)); };
-    auto findDropdown = [this](StringId id) { return dynamic_cast<Dropdown*>(FindById(id)); };
+    auto findElement = [this](const char* id) { return FindById(id); };
+    auto findButton = [this](const char* id) { return dynamic_cast<Button*>(FindById(id)); };
+    auto findDropdown = [this](const char* id) { return dynamic_cast<Dropdown*>(FindById(id)); };
 
-    UIElement* providerSettings = findElement("PromptProviderSettings"_sid);
-    m_ProviderDropdown = findDropdown("PromptProviderDropdown"_sid);
-    m_ModeDropdown = findDropdown("PromptModeDropdown"_sid);
+    UIElement* providerSettings = findElement("PromptProviderSettings");
+    m_ProviderDropdown = findDropdown("PromptProviderDropdown");
+    m_ModeDropdown = findDropdown("PromptModeDropdown");
 
-    m_HistoryScroll = dynamic_cast<ScrollView*>(findElement("PromptHistoryScroll"_sid));
-    m_HistoryList = findElement("PromptHistoryList"_sid);
-    m_HistoryEmpty = dynamic_cast<Label*>(findElement("PromptHistoryEmpty"_sid));
-    m_InputPane = findElement("PromptInputPane"_sid);
-    m_InputRow = findElement("PromptInputRow"_sid);
-    m_InputControls = findElement("PromptInputControls"_sid);
-    m_PromptInputScroll = dynamic_cast<ScrollView*>(findElement("PromptInputScroll"_sid));
-    m_PromptText = dynamic_cast<PromptTextArea*>(findElement("PromptInputText"_sid));
-    m_ClearPromptButton = findButton("PromptInputClear"_sid);
-    m_PromptPlaceholder = dynamic_cast<Label*>(findElement("PromptInputPlaceholder"_sid));
-    m_SendButton = findButton("PromptSendButton"_sid);
-    m_StatusLabel = dynamic_cast<Label*>(findElement("PromptStatusLabel"_sid));
-    m_SessionButton = findButton("PromptSessionButton"_sid);
-    m_ModelButton = findButton("PromptModelButton"_sid);
-    m_ContinuedRow = dynamic_cast<Label*>(findElement("PromptContinuedSession"_sid));
+    m_HistoryScroll = dynamic_cast<ScrollView*>(findElement("PromptHistoryScroll"));
+    m_HistoryList = findElement("PromptHistoryList");
+    m_HistoryEmpty = dynamic_cast<Label*>(findElement("PromptHistoryEmpty"));
+    m_InputPane = findElement("PromptInputPane");
+    m_InputRow = findElement("PromptInputRow");
+    m_InputControls = findElement("PromptInputControls");
+    m_PromptInputScroll = dynamic_cast<ScrollView*>(findElement("PromptInputScroll"));
+    m_PromptText = dynamic_cast<PromptTextArea*>(findElement("PromptInputText"));
+    BuildTextSizeSlider(findElement("PromptTextSizeHost"));
+    m_ClearPromptButton = findButton("PromptInputClear");
+    m_PromptPlaceholder = dynamic_cast<Label*>(findElement("PromptInputPlaceholder"));
+    m_SendButton = findButton("PromptSendButton");
+    m_StatusLabel = dynamic_cast<Label*>(findElement("PromptStatusLabel"));
+    m_SessionButton = findButton("PromptSessionButton");
+    m_ContinuedRow = dynamic_cast<Label*>(findElement("PromptContinuedSession"));
+    auto* fileStrip = dynamic_cast<PromptFileDropZone*>(findElement("PromptFileStrip"));
+    UIElement* fileItems = findElement("PromptFileItems");
+    auto* inputDrop = dynamic_cast<PromptFileDropZone*>(m_InputRow);
+    Button* attachButton = findButton("PromptAttachButton");
+    m_AttachButton = attachButton;
 
     const bool hasRequiredControls = providerSettings && m_ProviderDropdown && m_HistoryScroll &&
         m_HistoryList && m_HistoryEmpty && m_InputPane && m_InputRow && m_InputControls && m_PromptInputScroll &&
         m_PromptText &&
         m_ClearPromptButton && m_SendButton && m_StatusLabel && m_SessionButton && m_ContinuedRow &&
-        m_ModeDropdown && m_ModelButton;
+        m_ModeDropdown && fileStrip && fileItems && inputDrop && attachButton;
     if (!hasRequiredControls)
     {
         Logger::Log::Error("AI Assistant panel layout is missing one or more required controls");
@@ -244,18 +214,11 @@ void PromptPanel::OnLayoutBound()
     ConfigurePromptScrollView(*m_PromptInputScroll, true);
 
     std::vector<Dropdown::Option> providers;
-    for (const AiAssistantSettings::Choice& choice : AiAssistantSettings::ProviderChoices())
+    for (const AiAssistantSettings::ProviderChoice& choice : AiAssistantSettings::ProviderChoices())
         providers.push_back({std::string(choice.Id), std::string(choice.Label), ""});
     m_ProviderDropdown->SetOptions(providers, 0);
     m_ProviderGeneration = AiAssistantSettings::ProviderGeneration();
     m_ProviderDropdown->SetSelectedValue(AiAssistantSettings::Provider());
-    auto modelPopover = std::make_unique<AgentModelPopover>(*m_ModelButton);
-    m_ModelPopover = modelPopover.get();
-    AddChild(std::move(modelPopover));
-    if (UIManager* ui = GetOwnerManager())
-        m_ModelPopover->Build(*ui);
-    // A model label narrowed in a narrow panel stays on one line and is cut.
-    AddSemanticClassToDescendants(*m_ModelButton, "button-text", "prompt-panel-input-task-label");
     m_SessionPicker = std::make_unique<AgentSessionPicker>(
         *m_SessionButton, *m_Controller, [this](const AgentSessionChoice& choice) { OnSessionChosen(choice); },
         [this](const std::string& text) { SetStatus(text); });
@@ -283,13 +246,13 @@ void PromptPanel::OnLayoutBound()
         header->AddClass("prompt-panel-input-task-header");
     AddSemanticClassToDescendants(*m_ProviderDropdown, "dropdown-chevron", "prompt-panel-input-task-chevron");
     AddSemanticClassToDescendants(*m_ProviderDropdown, "dropdown-header-label", "prompt-panel-input-task-label");
-    m_ProviderDropdown->SetTooltip("The connection that answers; changing it starts a new conversation. The "
-                                   "button beside it chooses the model; executables are in Settings > AI "
-                                   "Assistant. Claude (API) reads ANTHROPIC_API_KEY from the editor's "
-                                   "environment: set it before starting the editor");
+    m_ProviderDropdown->SetTooltip("The connection that answers; changing it starts a new conversation. "
+                                   "Models and executables are in Settings > AI Assistant. Claude (API) "
+                                   "reads ANTHROPIC_API_KEY from the editor's environment: set it before "
+                                   "starting the editor");
     m_ProviderDropdown->SetTooltipPlacement(UIElement::TooltipPlacement::Right);
 
-    if (Button* settings = findButton("PromptSettingsToggle"_sid))
+    if (Button* settings = findButton("PromptSettingsToggle"))
     {
         settings->SetTooltip("Prompt settings");
         settings->SetOnClick([providerSettings](UIEvent&)
@@ -300,7 +263,7 @@ void PromptPanel::OnLayoutBound()
                 providerSettings->AddClass("hidden");
         });
     }
-    if (Button* clearSession = findButton("PromptClearSession"_sid))
+    if (Button* clearSession = findButton("PromptClearSession"))
     {
         clearSession->SetTooltip("Start a new conversation");
         clearSession->SetOnClick([this](UIEvent&) { ClearSession(); });
@@ -316,18 +279,8 @@ void PromptPanel::OnLayoutBound()
     });
     m_HistoryList->SetFocusable(true);
     m_HistoryList->RegisterEventHandler(kEventKeyDown, [this](UIEvent& event) { OnHistoryKeyDown(event); });
-    // The Resize Items gesture over the conversation sizes its text, as over the slider. The list
-    // sees the wheel before the scroll view does, so a matching wheel never scrolls.
-    m_HistoryList->RegisterEventHandler(kEventScroll, [this](UIEvent& event)
-    {
-        if (event.ScrollY == 0.0f || !UI::MatchesItemResizeGesture(event.Mods))
-            return;
-        StepTextSize(event.ScrollY);
-        event.Stop();
-    });
-    BuildTextSizeSlider(findElement("PromptTextSizeHost"_sid));
 
-    UIElement* splitter = findElement("PromptPanelInputSplitter"_sid);
+    UIElement* splitter = findElement("PromptPanelInputSplitter");
     if (splitter)
     {
         splitter->RegisterEventHandler(kEventMouseDown, [this, splitter](UIEvent& event)
@@ -387,14 +340,7 @@ void PromptPanel::OnLayoutBound()
         AutoSizePromptInputPane();
         updatePromptInputScroll();
         UpdatePromptPlaceholderVisibility(value);
-        // Typing takes the field back from dictation.
-        if (!m_SettingPromptText)
-            AbandonDictation();
-        if (m_MarkupPicker)
-            m_MarkupPicker->OnPromptChanged(value);
     });
-    m_MarkupPicker =
-        std::make_unique<MarkupTokenPicker>(*m_PromptText, [this](const std::string& text) { SetStatus(text); });
     m_PromptText->SetKeyFilter([this](UIEvent& event)
     {
         if (event.Key == Input::kKeyCode_Escape)
@@ -422,11 +368,8 @@ void PromptPanel::OnLayoutBound()
     {
         if (!m_PromptText || m_PromptText->GetValue().empty())
             return;
-        m_SettingPromptText = true;
         m_PromptText->SetValue("");
         m_PromptText->SetSelection(0, 0);
-        m_SettingPromptText = false;
-        RestartDictationText();
         m_PromptRecallCursor = -1;
         m_PromptRecallDraft.clear();
         AutoSizePromptInputPane();
@@ -435,10 +378,16 @@ void PromptPanel::OnLayoutBound()
         if (UIManager* ui = GetOwnerManager())
             ui->FocusElement(m_PromptText);
     });
+    m_FileTray = std::make_unique<PromptFileTray>(*fileStrip, *fileItems, EngineCore::GetInstance().GetJobSystem(),
+        [this](const std::string& text) { SetStatus(text); });
+    const auto addFiles = [this](std::span<const std::filesystem::path> paths) { m_FileTray->Add(paths); };
+    fileStrip->SetOnFilesDropped(addFiles);
+    inputDrop->SetOnFilesDropped(addFiles);
+    inputDrop->SetFeedbackElement(attachButton);
+    attachButton->SetTooltip("Add image or text files to the prompt");
+    attachButton->SetOnClick([this](UIEvent&) { PostAction([this]() { m_FileTray->Pick(); }); });
     m_SendButton->SetTooltip("Send prompt (Enter); a prompt sent while a reply runs waits its turn");
     m_SendButton->SetOnClick([this](UIEvent&) { SubmitPrompt(); });
-    BindMicButton(dynamic_cast<PromptMicButton*>(findElement("PromptMicButton"_sid)));
-    BindSpeechLevels(findElement("PromptSpeechLevelsLeft"_sid), findElement("PromptSpeechLevelsRight"_sid));
 
     ApplyPromptInputPaneHeight(PromptInputPaneHeightForLines(1));
     updatePromptInputScroll();
@@ -535,7 +484,7 @@ void PromptPanel::ApplyPromptInputPaneHeight(float heightPx)
     if (!m_InputPane)
         return;
 
-    m_InputPane->Style()
+    m_InputPane->Overrides()
         .Set(Style::Height, StyleLength::Px(m_InputPaneHeightPx))
         .Set(Style::MinHeight, StyleLength::Px(m_InputPaneHeightPx))
         .Set(Style::MaxHeight, StyleLength::Px(m_InputPaneHeightPx))
@@ -554,13 +503,10 @@ void PromptPanel::UpdateConversation()
         FollowProvider(AiAssistantSettings::Provider());
     }
 
-    TakePrefill();
     m_Controller->Update();
     SyncModeControl();
     if (m_SessionPicker)
         m_SessionPicker->Update();
-    if (m_ModelPopover)
-        m_ModelPopover->Update();
     RefreshContinuedRow();
     if (m_Controller->GetConversation().Revision() != m_RowsRevision ||
         m_Controller->ActionsRevision() != m_ActionsRevision)
@@ -576,8 +522,6 @@ void PromptPanel::FollowProvider(const std::string& providerId)
     // Only a local session keeps sessions to pick from.
     if (m_SessionPicker)
         m_SessionPicker->SetAvailable(AgentSessionState::Get().SessionProvider(providerId) != nullptr);
-    if (m_ModelPopover)
-        m_ModelPopover->SetProvider(providerId);
 }
 
 void PromptPanel::SyncModeControl()
@@ -604,117 +548,36 @@ void PromptPanel::SyncModeControl()
     if (stateKey == m_ModeControlState)
         return;
     m_ModeControlState = stateKey;
+    m_SyncingModeControl = true;
     // A state the user cannot change is a value to read: the disabled dropdown drops the
     // chevron and the hover plate, and opens nothing (Dropdown.css).
     m_ModeDropdown->SetEnabled(state != kConversationOnlyState && state != kCheckingState);
 
-    m_ModeOptions.clear();
-    int selected = 0;
     if (state == kConversationOnlyState)
     {
-        m_ModeOptions.push_back({kConversationOnlyState, "Conversation only", "Chat"});
+        m_ModeDropdown->SetOptions({{kConversationOnlyState, "Conversation only", ""}}, 0);
         m_ModeDropdown->SetTooltip("This connection answers without the editor's tools. " + refusal);
+        m_SyncingModeControl = false;
+        return;
     }
-    else if (state == kCheckingState)
+    if (state == kCheckingState)
     {
-        m_ModeOptions.push_back({kCheckingState, "Checking tools…", "Checking…"});
+        m_ModeDropdown->SetOptions({{kCheckingState, "Checking tools…", ""}}, 0);
         m_ModeDropdown->SetTooltip("Checking whether this connection can use the editor's tools.");
+        m_SyncingModeControl = false;
+        return;
     }
-    else
+    std::vector<Dropdown::Option> modes;
+    int selected = 0;
+    for (const AssistantModeChoice& choice : AssistantModeChoices())
     {
-        for (const AssistantModeChoice& choice : AssistantModeChoices())
-        {
-            if (choice.Mode == m_Controller->Mode())
-                selected = static_cast<int>(m_ModeOptions.size());
-            m_ModeOptions.push_back(
-                {std::string(choice.Id), std::string(choice.Label), std::string(choice.CompactLabel)});
-        }
-        m_ModeDropdown->SetTooltip(ModeTooltip(m_Controller->Mode()));
+        if (choice.Mode == m_Controller->Mode())
+            selected = static_cast<int>(modes.size());
+        modes.push_back({std::string(choice.Id), std::string(choice.Label), ""});
     }
-    ShowModeLabels(selected);
-}
-
-void PromptPanel::ShowModeLabels(int selected)
-{
-    std::vector<Dropdown::Option> options;
-    options.reserve(m_ModeOptions.size());
-    for (const ModeOption& option : m_ModeOptions)
-        options.push_back({option.Value, m_ModeCompact ? option.CompactLabel : option.Label, ""});
-    m_SyncingModeControl = true;
-    m_ModeDropdown->SetOptions(options, selected);
+    m_ModeDropdown->SetOptions(modes, selected);
+    m_ModeDropdown->SetTooltip(ModeTooltip(m_Controller->Mode()));
     m_SyncingModeControl = false;
-}
-
-void PromptPanel::FitModeControl()
-{
-    if (!m_ModeDropdown || !m_ModelButton || m_ModeDropdown->HasClass("hidden") || m_ModeOptions.empty())
-        return;
-    const StyleLength width = m_ModeDropdown->GetResolvedStyle().Layout.Width;
-    if (!width.IsPx())
-        return;
-    // The widest label and compact label the control offers now, measured, never past its
-    // stylesheet width.
-    float widest = 0.0f;
-    float widestCompact = 0.0f;
-    for (const ModeOption& option : m_ModeOptions)
-    {
-        widest = std::max(widest, m_ModeDropdown->WidthForLabel(option.Label));
-        widestCompact = std::max(widestCompact, m_ModeDropdown->WidthForLabel(option.CompactLabel));
-    }
-    // The connection's first word with the ellipsis its cut label ends in; a one-word name whole.
-    const std::string& name = m_ProviderDropdown->GetSelectedLabel();
-    const size_t space = name.find(' ');
-    const float readableConnection = m_ProviderDropdown->WidthForLabel(
-        space == std::string::npos ? name : name.substr(0, space) + "\xE2\x80\xA6");
-    // 0 until the controls have been laid out as text.
-    if (widest <= 0.0f || readableConnection <= 0.0f)
-        return;
-
-    // What the line holds besides the three controls that shrink: Session…, Send and the
-    // margins between them, measured from where the visible controls start and end.
-    float left = std::numeric_limits<float>::max();
-    float right = 0.0f;
-    for (const auto& child : m_InputControls->GetChildren())
-    {
-        if (child->HasClass("hidden") || child->GetLayoutWidth() <= 0.0f)
-            continue;
-        left = std::min(left, child->GetLayoutX());
-        right = std::max(right, child->GetLayoutX() + child->GetLayoutWidth() +
-                                    child->GetResolvedStyle().Layout.Margin.Right);
-    }
-    const ResolvedStyle& line = m_InputControls->GetResolvedStyle();
-    ModeControlFit fit;
-    fit.WholeLabelPx = std::min(std::ceil(widest), width.Value);
-    fit.CompactLabelPx = std::min(std::ceil(widestCompact), width.Value);
-    fit.OthersPx = right - left - m_ModeDropdown->GetLayoutWidth() - m_ModelButton->GetLayoutWidth() -
-                   m_ProviderDropdown->GetLayoutWidth();
-    fit.AvailablePx = m_InputControls->GetLayoutWidth() - line.Layout.Padding.Left - line.Layout.Padding.Right;
-    fit.ModelMinimumPx = MinWidthPx(*m_ModelButton);
-    fit.ConnectionReadablePx = std::ceil(readableConnection);
-    fit.Stacked = m_InputStacked;
-
-    const ModeControlLayout layout = ModeControlLayoutFor(fit);
-    if (layout.Compact != m_ModeCompact)
-    {
-        m_ModeCompact = layout.Compact;
-        ShowModeLabels(m_ModeDropdown->GetSelectedIndex());
-    }
-    const std::optional<float>& minimum = layout.MinimumPx;
-    const auto current = m_ModeDropdown->Style().Get(Style::MinWidth);
-    if (minimum)
-    {
-        if (current && current->IsPx() && std::fabs(current->Value - *minimum) <= 0.5f)
-            return;
-        m_ModeDropdown->Style().Set(Style::MinWidth, StyleLength::Px(*minimum));
-    }
-    else
-    {
-        // Back to the stylesheet's minimum.
-        if (!current)
-            return;
-        m_ModeDropdown->Style().Reset(Style::MinWidth);
-    }
-    m_ModeDropdown->MarkDirty(UIElement::StyleDirty | UIElement::LayoutDirty);
 }
 
 void PromptPanel::RefreshContinuedRow()
@@ -764,13 +627,6 @@ void PromptPanel::SubmitPrompt()
 {
     if (!m_PromptText)
         return;
-    // Sending ends dictation: the prompt goes as it stands.
-    if (m_SpeechInput && m_SpeechInput->IsRunning())
-    {
-        m_SendWhenDictationEnds = false;
-        m_SpeechInput->Cancel();
-        ShowDictationState(false, "Dictation stopped");
-    }
 
     const std::string prompt = TrimWhitespace(m_PromptText->GetValue());
     if (prompt.empty())
@@ -782,23 +638,23 @@ void PromptPanel::SubmitPrompt()
     // A prompt over the cap is refused whole and stays in the field to be shortened.
     const std::string providerId = AiAssistantSettings::Provider();
     FollowProvider(providerId);
-    // The mark-ups the prompt names are read now, as they are when it is sent.
-    MarkupTurnContext markups = MarkupContext::ForPrompt(prompt, Editor::EditorMarkupRequests::Get());
-    if (!m_Controller->Send(prompt, SentMarkups{std::move(markups.Text), std::move(markups.Mentions)},
-                            AiAssistantSettings::Model(providerId),
-                            AiAssistantSettings::Effort(providerId)))
+    if (m_FileTray->IsLoading())
+    {
+        SetStatus("Wait for the files to finish loading, then send again");
+        return;
+    }
+    if (!m_Controller->Send(prompt, m_FileTray->Files(), AiAssistantSettings::Model(providerId)))
     {
         SetStatus(PromptTooLongStatus(prompt.size()));
         return;
     }
-    if (!markups.Notice.empty())
-        SetStatus(markups.Notice);
 
     if (m_PromptRecall.empty() || m_PromptRecall.back() != prompt)
         m_PromptRecall.push_back(prompt);
     m_PromptRecallCursor = -1;
     m_PromptRecallDraft.clear();
     m_PromptText->SetValue("");
+    m_FileTray->Clear();
     UpdateConversation();
 }
 
@@ -844,13 +700,8 @@ bool PromptPanel::FocusWaitingAnswer()
 AgentConversationRowModel PromptPanel::RowModelAt(size_t messageIndex) const
 {
     const Conversation& conversation = m_Controller->GetConversation();
-    const std::span<const ConversationMessage> messages = conversation.Messages();
-    AgentConversationRowModel row = AgentConversationRowModel::From(
-        messages[messageIndex], m_Controller->Actions(), conversation.TurnOf(messageIndex), m_Controller->UndoHistory());
-    // A reply offers the actions shown for the prompt it answers.
-    if (messageIndex > 0 && row.ShowsReplyActions)
-        row.ReplyActions = ReplyActionsFor(messages[messageIndex - 1]);
-    return row;
+    return AgentConversationRowModel::From(conversation.Messages()[messageIndex], m_Controller->Actions(),
+                                           conversation.TurnOf(messageIndex), m_Controller->UndoHistory());
 }
 
 void PromptPanel::ClearSession()
@@ -875,36 +726,14 @@ void PromptPanel::OnSessionChosen(const AgentSessionChoice& choice)
     UpdateConversation();
 }
 
-bool PromptPanel::RunReplyAction(const AgentReplyAction& action, size_t messageIndex)
+void PromptPanel::RunReplyAction(const AgentReplyAction& action, size_t messageIndex)
 {
     const auto messages = m_Controller->GetConversation().Messages();
     if (messageIndex >= messages.size())
-        return false;
-    if (messageIndex == 0)
-        return false;
-    const AgentReplyOutcome outcome = action.Run(messages[messageIndex], messages[messageIndex - 1]);
-    if (!outcome.Status.empty())
-        SetStatus(outcome.Status);
-    return outcome.Acted;
-}
-
-void PromptPanel::TakePrefill()
-{
-    // Left waiting until the layout is bound: a panel the action opens is laid out before then.
-    if (!m_PromptText)
         return;
-    const std::string text = AiAssistantPanelService::TakePrefill();
-    if (text.empty())
-        return;
-    std::string value = m_PromptText->GetValue();
-    if (!value.empty() && !std::isspace(static_cast<unsigned char>(value.back())))
-        value += ' ';
-    value += text;
-    m_PromptText->SetValue(value);
-    const int caret = static_cast<int>(value.size());
-    m_PromptText->SetSelection(caret, caret);
-    if (UIManager* ui = GetOwnerManager())
-        ui->FocusElement(m_PromptText);
+    const std::string feedback = action.Run(messages[messageIndex]);
+    if (!feedback.empty())
+        SetStatus(feedback);
 }
 
 void PromptPanel::RemoveRows()
@@ -941,18 +770,12 @@ void PromptPanel::SyncRows()
         const size_t index = m_Rows.size();
         auto row = std::make_unique<AgentConversationRow>(
             index, [this] { StopTurns(); }, [this, index] { RetryTurn(index); },
-            [this, index](const AgentReplyAction& action) { return RunReplyAction(action, index); },
+            [this, index](const AgentReplyAction& action) { RunReplyAction(action, index); },
             [this](uint64_t requestId, AssistantAnswer answer) { AnswerCall(requestId, answer); },
-            [this, index] { m_Controller->UndoTurn(m_Controller->GetConversation().TurnOf(index)); },
-            [this](const std::string& token) { SetStatus(FrameMarkupChip(token)); });
+            [this, index] { m_Controller->UndoTurn(m_Controller->GetConversation().TurnOf(index)); });
         if (!row->Build(*ui))
             break;
         row->SetCallsStacked(m_HistoryNarrow);
-        row->RegisterEventHandler(kEventMouseDown, [this, index](UIEvent& event)
-        {
-            if (event.Button == 0)
-                SelectRow(index);
-        });
         m_Rows.push_back(row.get());
         m_HistoryList->AddChild(std::move(row));
     }
@@ -1040,7 +863,6 @@ void PromptPanel::OnPostLayout()
 {
     AssetBoundDockPanel::OnPostLayout();
     UpdateConversation();
-    FitModeControl();
     // Before the height reconcile below, which counts the controls' own line when stacked.
     UpdateInputStacking();
     UpdateHistoryNarrow();
@@ -1062,10 +884,10 @@ void PromptPanel::OnPostLayout()
         if (viewport > 0.0f)
         {
             const float padding = std::max(10.0f, (viewport - textHeight) * 0.5f);
-            const auto oldPadding = m_PromptText->Style().Get(Style::PaddingTop);
+            const auto oldPadding = m_PromptText->Overrides().Get(Style::PaddingTop);
             if (!oldPadding || !oldPadding->IsPx() || std::fabs(oldPadding->Value - padding) > 0.25f)
             {
-                m_PromptText->Style()
+                m_PromptText->Overrides()
                     .Set(Style::PaddingTop, StyleLength::Px(padding))
                     .Set(Style::PaddingBottom, StyleLength::Px(padding));
                 m_PromptText->MarkDirty(StyleDirty | LayoutDirty | VisualDirty);
@@ -1099,215 +921,6 @@ void PromptPanel::OnPostLayout()
     }
 }
 
-// The microphone beside Send, where the platform offers speech input (Platform::SpeechInput);
-// elsewhere it stays hidden. A click starts dictation into the prompt and a second click stops it,
-// or, with Hold the microphone to speak, a press starts and the release stops. Its right-click
-// menu holds the two dictation settings.
-void PromptPanel::BindMicButton(PromptMicButton* button)
-{
-    m_MicButton = button;
-    if (!m_MicButton || !Platform::SpeechInput::IsAvailable())
-        return;
-    m_SpeechInput = std::make_unique<Platform::SpeechInput>();
-    m_MicButton->RemoveClass("hidden");
-    m_MicButton->SetTooltip("Dictate the prompt. Right-click for hold to speak and send when it stops.");
-    m_MicButton->SetOnClick([this](UIEvent&)
-    {
-        if (m_SpeechInput->IsRunning())
-            StopDictationFromMic();
-        else
-            StartDictation();
-    });
-    m_MicButton->SetHold([] { return AiAssistantSettings::HoldToSpeak(); }, [this] { StartDictation(); },
-                         [this] { StopDictationFromMic(); });
-    m_MicButton->AddManipulator(ContextMenuManipulator::Create({
-        {.Path = "Hold to speak",
-         .OnActivate = [] { AiAssistantSettings::SetHoldToSpeak(!AiAssistantSettings::HoldToSpeak()); },
-         .State = [] { return ContextMenuManipulator::ItemState{.Checked = AiAssistantSettings::HoldToSpeak()}; }},
-        {.Path = "Send when the microphone stops",
-         .OnActivate = [] { AiAssistantSettings::SetSendWhenMicStops(!AiAssistantSettings::SendWhenMicStops()); },
-         .State = [] { return ContextMenuManipulator::ItemState{.Checked = AiAssistantSettings::SendWhenMicStops()}; }},
-    }));
-}
-
-// The microphone stopped by the user: with Send when the microphone stops, the prompt goes once
-// the last words arrive (ShowDictationState).
-void PromptPanel::StopDictationFromMic()
-{
-    if (!m_SpeechInput || !m_SpeechInput->IsRunning())
-        return;
-    m_SendWhenDictationEnds = AiAssistantSettings::SendWhenMicStops();
-    m_SpeechInput->Finish();
-}
-
-void PromptPanel::StartDictation()
-{
-    if (!m_SpeechInput || !m_PromptText || m_SpeechInput->IsRunning())
-        return;
-    m_SendWhenDictationEnds = false;
-    // The dictated words follow whatever the prompt already holds.
-    m_DictationBase = m_PromptText->GetValue();
-    if (!m_DictationBase.empty() && m_DictationBase.back() != ' ' && m_DictationBase.back() != '\n')
-        m_DictationBase += ' ';
-    m_DictationSkippedWords = 0;
-    m_LastDictation.clear();
-    Platform::SpeechInput::Callbacks callbacks;
-    callbacks.Transcript = [this](const std::string& transcript) { ApplyDictation(transcript); };
-    callbacks.State = [this](bool listening, const std::string& message) { ShowDictationState(listening, message); };
-    callbacks.Levels = [this](const Platform::SpeechInput::LevelArray& levels) { ShowSpeechLevels(levels); };
-    m_SpeechInput->Start(std::move(callbacks));
-}
-
-// The transcript is the whole session so far; words of text cleared since are skipped.
-void PromptPanel::ApplyDictation(const std::string& transcript)
-{
-    if (!m_PromptText)
-        return;
-    m_LastDictation = transcript;
-    const std::string text = m_DictationBase + DictationTextAfterWords(transcript, m_DictationSkippedWords);
-    m_SettingPromptText = true;
-    m_PromptText->SetValue(text);
-    const int caret = static_cast<int>(text.size());
-    m_PromptText->SetSelection(caret, caret);
-    m_SettingPromptText = false;
-}
-
-// The prompt was cleared while dictation listens: keep listening, and let only the words
-// spoken from now on reach the empty field.
-void PromptPanel::RestartDictationText()
-{
-    if (!m_SpeechInput || !m_SpeechInput->IsRunning())
-        return;
-    m_DictationBase.clear();
-    m_DictationSkippedWords = CountDictationWords(m_LastDictation);
-}
-
-// The user typed while dictation listens: the field is theirs again, so the session ends at
-// once with no late transcript, and the microphone shows it stopped.
-void PromptPanel::AbandonDictation()
-{
-    if (!m_SpeechInput || !m_SpeechInput->IsRunning())
-        return;
-    m_SendWhenDictationEnds = false;
-    m_SpeechInput->Cancel();
-    ShowDictationState(false, "Dictation stopped: you typed in the prompt");
-}
-
-void PromptPanel::ShowDictationState(bool listening, const std::string& message)
-{
-    if (m_MicButton)
-    {
-        if (listening)
-            m_MicButton->AddClass("listening");
-        else
-            m_MicButton->RemoveClass("listening");
-    }
-    for (UIElement* group : m_SpeechLevelGroups)
-    {
-        if (!group)
-            continue;
-        if (listening)
-            group->RemoveClass("idle");
-        else
-            group->AddClass("idle");
-    }
-    if (!listening)
-        ShowSpeechLevels({});
-    SetStatus(message);
-    if (listening || !m_SendWhenDictationEnds)
-        return;
-    m_SendWhenDictationEnds = false;
-    SubmitPrompt();
-}
-
-// The level meter's two halves sit beside the microphone and exist only where it does: idle
-// (space kept, nothing drawn) until a dictation session reports that it listens.
-void PromptPanel::BindSpeechLevels(UIElement* left, UIElement* right)
-{
-    m_SpeechLevelGroups = {left, right};
-    if (!m_SpeechInput)
-        return;
-    size_t bar = 0;
-    for (UIElement* group : m_SpeechLevelGroups)
-    {
-        if (!group)
-            continue;
-        group->RemoveClass("hidden");
-        group->AddClass("idle");
-        for (const auto& child : group->GetChildren())
-            if (bar < m_SpeechLevelBars.size())
-                m_SpeechLevelBars[bar++] = child.get();
-    }
-}
-
-// Bar height from a level in [0, 1]: kSpeechBarMinPx at silence, up to a peak that grows
-// toward the microphone, so the bars beside it rise highest.
-void PromptPanel::ShowSpeechLevels(const Platform::SpeechInput::LevelArray& levels)
-{
-    constexpr float kSpeechBarMinPx = 2.0f;
-    constexpr float kSpeechBarPeakPx = 14.0f;
-    constexpr float kSpeechBarPeakStepPx = 2.0f;
-    const size_t half = m_SpeechLevelBars.size() / 2;
-    for (size_t i = 0; i < m_SpeechLevelBars.size(); ++i)
-    {
-        UIElement* bar = m_SpeechLevelBars[i];
-        if (!bar)
-            continue;
-        const size_t towardMic = i < half ? i : m_SpeechLevelBars.size() - 1 - i;
-        const float peak = kSpeechBarPeakPx + kSpeechBarPeakStepPx * static_cast<float>(towardMic);
-        const float height = kSpeechBarMinPx + (peak - kSpeechBarMinPx) * levels[i];
-        PinHeightPx(*bar, height);
-    }
-}
-
-// The size slider at the end of the status line: the conversation's text size in px.
-void PromptPanel::BuildTextSizeSlider(UIElement* host)
-{
-    if (!host)
-        return;
-    auto slider = std::make_unique<EditorUI::ItemSizeSlider>(
-        EditorUI::ItemSizeSlider::Subject{"Text size", "the conversation", "changes its text size"});
-    m_TextSizeSlider = slider.get();
-    m_TextSizeSlider->SetMin(AiAssistantSettings::kDefaultTextSizePx);
-    m_TextSizeSlider->SetMax(AiAssistantSettings::kMaxTextSizePx);
-    m_TextSizeSlider->SetStep(kTextSizeStepPx);
-    m_TextSizeSlider->SetValueWithoutNotify(AiAssistantSettings::TextSize());
-    m_TextSizeSlider->SetOnValueChanging([this](const float& px) { ApplyTextSize(px); });
-    m_TextSizeSlider->SetOnValueChanged([this](const float& px)
-    {
-        ApplyTextSize(px);
-        AiAssistantSettings::SetTextSize(px);
-    });
-    m_TextSizeSlider->SetOnResizeGesture([this](float scrollY) { StepTextSize(scrollY); });
-    host->AddChild(std::move(slider));
-    ApplyTextSize(AiAssistantSettings::TextSize());
-}
-
-// One slider step per wheel notch; wheel up (a negative scrollY) makes the text bigger.
-void PromptPanel::StepTextSize(float scrollY)
-{
-    if (!m_TextSizeSlider)
-        return;
-    const float step = scrollY < 0.0f ? kTextSizeStepPx : -kTextSizeStepPx;
-    const float px = std::clamp(m_TextSizeSlider->GetValue() + step, AiAssistantSettings::kDefaultTextSizePx,
-                                AiAssistantSettings::kMaxTextSizePx);
-    m_TextSizeSlider->SetValueWithoutNotify(px);
-    ApplyTextSize(px);
-    AiAssistantSettings::SetTextSize(px);
-}
-
-// The conversation's text scale over its default size, the custom property every conversation
-// font size in PromptPanel.css multiplies by.
-void PromptPanel::ApplyTextSize(float px)
-{
-    const float scale = px / AiAssistantSettings::kDefaultTextSizePx;
-    if (scale == m_TextScale)
-        return;
-    m_TextScale = scale;
-    Style().SetCustomNumber("--prompt_text_scale"_sid, scale);
-    MarkDirtySubtree(StyleDirty | LayoutDirty | VisualDirty);
-}
-
 void PromptPanel::RefreshHistoryTextVisuals()
 {
     for (AgentConversationRow* row : m_Rows)
@@ -1338,19 +951,8 @@ void PromptPanel::SelectRowByOffset(int offset)
     const int target = m_SelectedRow >= m_Rows.size()
         ? (offset < 0 ? last : 0)
         : std::clamp(static_cast<int>(m_SelectedRow) + offset, 0, last);
-    SelectRow(static_cast<size_t>(target));
+    m_SelectedRow = static_cast<size_t>(target);
     ScrollRowIntoView(m_SelectedRow);
-}
-
-// The selected row (a click, or Up and Down in the history) is the one row drawn with the
-// accent outline.
-void PromptPanel::SelectRow(size_t rowIndex)
-{
-    if (m_SelectedRow < m_Rows.size())
-        m_Rows[m_SelectedRow]->RemoveClass("selected");
-    m_SelectedRow = rowIndex;
-    if (m_SelectedRow < m_Rows.size())
-        m_Rows[m_SelectedRow]->AddClass("selected");
 }
 
 void PromptPanel::ScrollRowIntoView(size_t rowIndex)
@@ -1390,6 +992,53 @@ void PromptPanel::SetStatus(const std::string& text)
 {
     if (m_StatusLabel)
         m_StatusLabel->SetText(text);
+}
+
+void PromptPanel::BuildTextSizeSlider(UIElement* host)
+{
+    if (!host)
+        return;
+    auto slider = std::make_unique<EditorUI::ItemSizeSlider>(
+        EditorUI::ItemSizeSlider::Subject{"Text size", "the conversation", "changes its text size"});
+    m_TextSizeSlider = slider.get();
+    m_TextSizeSlider->SetMin(AiAssistantSettings::kDefaultTextSizePx);
+    m_TextSizeSlider->SetMax(AiAssistantSettings::kMaxTextSizePx);
+    m_TextSizeSlider->SetStep(1.0f);
+    m_TextSizeSlider->SetValueWithoutNotify(AiAssistantSettings::TextSize());
+    m_TextSizeSlider->SetOnValueChanging([this](const float& px) { ApplyTextSize(px); });
+    m_TextSizeSlider->SetOnValueChanged([this](const float& px)
+    {
+        ApplyTextSize(px);
+        AiAssistantSettings::SetTextSize(px);
+    });
+    m_TextSizeSlider->SetOnResizeGesture([this](float scrollY) { StepTextSize(scrollY); });
+    host->AddChild(std::move(slider));
+    ApplyTextSize(AiAssistantSettings::TextSize());
+}
+
+// One slider step per wheel notch; wheel up (a negative scrollY) makes the text bigger.
+void PromptPanel::StepTextSize(float scrollY)
+{
+    if (!m_TextSizeSlider)
+        return;
+    const float step = scrollY < 0.0f ? 1.0f : -1.0f;
+    const float px = std::clamp(m_TextSizeSlider->GetValue() + step, AiAssistantSettings::kDefaultTextSizePx,
+                                AiAssistantSettings::kMaxTextSizePx);
+    m_TextSizeSlider->SetValueWithoutNotify(px);
+    ApplyTextSize(px);
+    AiAssistantSettings::SetTextSize(px);
+}
+
+// The conversation's text scale over its default size, the custom property every conversation
+// font size in PromptPanel.css multiplies by.
+void PromptPanel::ApplyTextSize(float px)
+{
+    const float scale = px / AiAssistantSettings::kDefaultTextSizePx;
+    if (scale == m_TextScale)
+        return;
+    m_TextScale = scale;
+    Overrides().SetCustomNumber("--prompt_text_scale"_sid, scale);
+    MarkDirtySubtree(StyleDirty | LayoutDirty | VisualDirty);
 }
 
 } // namespace GameEngine

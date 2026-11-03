@@ -15,11 +15,9 @@ namespace GameEngine::Rendering
 // - robust auto-matching heuristics (case-insensitive, snake/camel/prefix patterns)
 namespace MaterialPropertyBinding
 {
-// A material property key as the inspector's words: the key read by IdentifierToWords ("baseColor"
-// reads "Base Color", "detailUVScale" reads "Detail UV Scale"). Three acronyms the rule reads as words
-// are named here: the key "ao" reads "AO", a key ending in "Ior" reads "... IOR" ("specularIor" reads
-// "Specular IOR"), and a key starting with "sRGB" reads "sRGB ..." ("sRGBTint" reads "sRGB Tint").
-std::string PropertyKeyLabel(std::string_view key);
+// Return a user-friendly suggested property key for a reflected uniform name.
+// Example: "uBaseColor" -> "baseColor", "m_roughness" -> "roughness".
+std::string SuggestPropertyKeyForUniform(std::string_view uniformName);
 
 // Resolve which MaterialDocument property key should be used to source a value
 // for the given reflected uniform/member name.
@@ -33,6 +31,9 @@ std::string ResolvePropertyKeyForUniform(const MaterialDocument& doc, std::strin
 
 // Return true if the two names are equivalent under our heuristics.
 bool NamesEquivalent(std::string_view a, std::string_view b);
+
+// Convenience helpers for common value retrieval patterns.
+bool TryGetFloat4(const MaterialDocument& doc, std::string_view uniformName, float out4[4]);
 } // namespace MaterialPropertyBinding
 } // namespace GameEngine::Rendering
 

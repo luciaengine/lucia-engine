@@ -1,8 +1,8 @@
 #include "Editor/Entities/SkyboxEntityFactory.h"
 
 #include "Assets/AssetManager.h"
-#include "Assets/Polyhaven/PolyhavenDownloadManager.h"
-#include "Assets/Polyhaven/PolyhavenService.h"
+#include "Assets/PolyhavenDownloadManager.h"
+#include "Assets/PolyhavenService.h"
 #include "Components/Name.h"
 #include "Components/Rendering/Skybox.h"
 #include "Components/Transform.h"
@@ -12,8 +12,9 @@
 #include "EditorChangeNotifications.h"
 #include "EditorContext.h"
 #include "Logger/Logger.h"
-#include "Types/PathUtils.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <string>
 
@@ -96,7 +97,9 @@ ECS::EntityHandle CreatePendingHDRISkybox(ECS::World& world,
 
 bool IsHdriPath(const std::filesystem::path& path)
 {
-    const std::string ext = LowerCaseExtension(path);
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return ext == ".hdr";
 }
 

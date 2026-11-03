@@ -4,7 +4,7 @@
 #include "Mathematics/Vector4.h"
 #include "Particles/CompiledParticleStack.h"
 #include "Particles/ParticleChannels.h"
-#include "Particles/ParticleProcessor/ParticleProcessorRegistry.h"
+#include "Particles/ParticleProcessorRegistry.h"
 #include "Particles/ParticleTrailStore.h"
 #include "Particles/Processors/ParticleEventProcessor.h"
 #include "Types/StringId.h"
@@ -15,11 +15,6 @@
 #include <span>
 #include <utility>
 #include <vector>
-
-namespace GameEngine::Mathematics
-{
-struct Matrix4x4;
-}
 
 namespace GameEngine::Particles
 {
@@ -289,6 +284,6 @@ class ParticleRuntime
 };
 
 /// View-space depth of a world position; this engine's views are left-handed, +Z forward.
-float ViewDepth(const Mathematics::Matrix4x4& view, const Mathematics::Vector3& position);
+float ViewDepth(const float view[16], const Mathematics::Vector3& position);
 
 } // namespace GameEngine::Particles

@@ -11,25 +11,69 @@
 // reaches for HasClass(const char*), restores the whole cost while every behavioural arm
 // stays green — so the claim needs an arm that fails on allocation count alone.
 //
-// Its own target on purpose: the measurement is a process-wide allocation window, and
-// EditorTests is a shared binary of 800+ tests. This file follows the same isolation rule the
-// other single-purpose targets in this directory are split out for.
+// Its own target on purpose: replacing global operator new is process-wide, and EditorTests
+// is a shared binary of 800+ tests. This file follows the same isolation rule the other
+// single-purpose targets in this directory are split out for.
 
 #include <gtest/gtest.h>
 
 #include "UI/Controls/Button.h"
 #include "UI/ToolbarDragDrop.h"
 #include "UI/UIElement.h"
-#include "Memory/AllocationCountScope.h"
 
+#include <atomic>
 #include <cstddef>
+#include <cstdlib>
 #include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
 using GameEngine::Button;
 using GameEngine::UIElement;
 using GameEngine::Editor::ToolbarDragDrop;
+
+namespace
+{
+// Armed only around the window under measurement, so gtest's own bookkeeping and the
+// fixture's tree construction never enter the count.
+std::atomic<bool> g_Armed{false};
+std::atomic<size_t> g_Allocations{0};
+
+struct AllocationProbe
+{
+    AllocationProbe() { g_Allocations.store(0, std::memory_order_relaxed); g_Armed.store(true, std::memory_order_relaxed); }
+    ~AllocationProbe() { g_Armed.store(false, std::memory_order_relaxed); }
+    static size_t Count() { return g_Allocations.load(std::memory_order_relaxed); }
+};
+} // namespace
+
+// Replaced as matched pairs. The aligned and nothrow forms are left to the default library
+// implementations, which keeps every new/delete pairing internally consistent.
+void* operator new(size_t size)
+{
+    if (g_Armed.load(std::memory_order_relaxed))
+        g_Allocations.fetch_add(1, std::memory_order_relaxed);
+    void* p = std::malloc(size != 0 ? size : 1);
+    if (!p)
+        throw std::bad_alloc();
+    return p;
+}
+
+void* operator new[](size_t size)
+{
+    if (g_Armed.load(std::memory_order_relaxed))
+        g_Allocations.fetch_add(1, std::memory_order_relaxed);
+    void* p = std::malloc(size != 0 ? size : 1);
+    if (!p)
+        throw std::bad_alloc();
+    return p;
+}
+
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, size_t) noexcept { std::free(p); }
+void operator delete[](void* p, size_t) noexcept { std::free(p); }
 
 namespace
 {
@@ -87,10 +131,10 @@ TEST(ToolbarDragDropAllocationTests, SettledSetupPassesAllocateNothing)
     constexpr int kMeasuredPasses = 10;
     size_t allocations = 0;
     {
-        const GameEngine::Memory::AllocationCountScope probe(GameEngine::Memory::CountWindow::Process);
+        AllocationProbe probe;
         for (int pass = 0; pass < kMeasuredPasses; ++pass)
             dragDrop.Setup(tree.Root.get(), Containers(), tree.Root.get());
-        allocations = probe.Count();
+        allocations = AllocationProbe::Count();
     }
 
     EXPECT_EQ(allocations, 0u)
@@ -110,9 +154,9 @@ TEST(ToolbarDragDropAllocationTests, TheProbeSeesTheAllocationsOfAnUnsettledPass
 
     size_t allocations = 0;
     {
-        const GameEngine::Memory::AllocationCountScope probe(GameEngine::Memory::CountWindow::Process);
+        AllocationProbe probe;
         dragDrop.Setup(tree.Root.get(), Containers(), tree.Root.get());
-        allocations = probe.Count();
+        allocations = AllocationProbe::Count();
     }
 
     EXPECT_GT(allocations, 0u)

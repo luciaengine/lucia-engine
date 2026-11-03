@@ -9,17 +9,15 @@
 
 #include "Components/Rendering/LocalBounds.h"
 #include "Components/Rendering/MeshRenderer.h"
-#include "Engine/Rendering/PrimitiveGenerator.h"
 #include "Components/Terrain/Terrain.h"
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
-#include "Mathematics/Geometry.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector3.h"
 #include "Placement/CenterlineSampling.h"
-#include "SplineRecipes/SplineSurfaceConform.h"
-#include "SceneView/SplineTool/SplineDrapePolylines.h"
+#include "Placement/SplineSurfaceConform.h"
+#include "SceneView/SplineDrapePolylines.h"
 #include "Scripting/ScriptsConfig.h"
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
 #include "Scene/SceneTlas.h"
@@ -38,8 +36,8 @@ using GameEngine::ECS::World;
 using GameEngine::Mathematics::Matrix4x4;
 using GameEngine::Mathematics::Vector3;
 
-using GameEngine::SplineRecipes::ConformRayDown;
-using GameEngine::SplineLayout::WorldCenterlineLength;
+using GameEngine::Editor::ConformRayDown;
+using GameEngine::Editor::WorldCenterlineLength;
 using GameEngine::Editor::SceneTools::BuildSplineDrapedPolylines;
 using GameEngine::Editor::SceneTools::kDrapeMaxSamples;
 using GameEngine::Editor::SceneTools::kDrapeSampleStepMetres;
@@ -216,8 +214,7 @@ TEST_F(SplineDrapeTests, CenterlineDrapesToTerrainWithLift)
     ASSERT_GT(data.TotalArcLength, 0.0f);
 
     SplineDrapedPolylines out;
-    BuildSplineDrapedPolylines(*world, data, Matrix4x4{}, {}, /*wantEdges=*/false, SplineConformTarget::Scene, out,
-                               /*tally=*/nullptr);
+    BuildSplineDrapedPolylines(*world, data, Matrix4x4{}, {}, /*wantEdges=*/false, SplineConformTarget::Scene, out);
 
     ASSERT_GE(out.Center.size(), 2u);
     EXPECT_TRUE(out.Left.empty());
@@ -231,7 +228,7 @@ TEST_F(SplineDrapeTests, CenterlineDrapesToTerrainWithLift)
     for (const Vector3& pt : out.Center)
     {
         Vector3 hit;
-        ASSERT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, Vector3(pt.x, authoredY, pt.z), {}, hit));
+        ASSERT_TRUE(ConformRayDown(*world, Vector3(pt.x, authoredY, pt.z), {}, hit));
         EXPECT_NEAR(pt.y, hit.y + kDrapeSurfaceLiftMetres, 1.0e-4f);
         EXPECT_LT(pt.y, 1.0f); // and it really left the authored altitude
     }
@@ -249,8 +246,7 @@ TEST_F(SplineDrapeTests, ConformMissKeepsAuthoredAltitude)
     const auto data = MakeStraightSpline(1000.0f, 1010.0f, authoredY);
 
     SplineDrapedPolylines out;
-    BuildSplineDrapedPolylines(*world, data, Matrix4x4{}, {}, /*wantEdges=*/false, SplineConformTarget::Scene, out,
-                               /*tally=*/nullptr);
+    BuildSplineDrapedPolylines(*world, data, Matrix4x4{}, {}, /*wantEdges=*/false, SplineConformTarget::Scene, out);
 
     ASSERT_GE(out.Center.size(), 2u);
     for (const Vector3& pt : out.Center)
@@ -270,8 +266,7 @@ TEST_F(SplineDrapeTests, PartialGapHoldsNearestMeasuredAltitude)
     const auto data = MakeStraightSpline(0.0f, 30.0f, authoredY);
 
     SplineDrapedPolylines out;
-    BuildSplineDrapedPolylines(*world, data, Matrix4x4{}, {}, /*wantEdges=*/false, SplineConformTarget::Scene, out,
-                               /*tally=*/nullptr);
+    BuildSplineDrapedPolylines(*world, data, Matrix4x4{}, {}, /*wantEdges=*/false, SplineConformTarget::Scene, out);
     ASSERT_GE(out.Center.size(), 2u);
 
     size_t hitCount = 0;
@@ -281,7 +276,7 @@ TEST_F(SplineDrapeTests, PartialGapHoldsNearestMeasuredAltitude)
     for (const Vector3& pt : out.Center)
     {
         Vector3 hit;
-        if (GameEngine::SplineRecipes::ConformRayDown(*world, Vector3(pt.x, authoredY, pt.z), {}, hit))
+        if (ConformRayDown(*world, Vector3(pt.x, authoredY, pt.z), {}, hit))
         {
             ++hitCount;
             haveMeasured = true;
@@ -315,8 +310,7 @@ TEST_F(SplineDrapeTests, ScaledEntityScalesWidthAndDensity)
     const Matrix4x4 worldM(glm::scale(glm::mat4(1.0f), glm::vec3(2.0f)));
 
     SplineDrapedPolylines out;
-    BuildSplineDrapedPolylines(*world, data, worldM, {}, /*wantEdges=*/true, SplineConformTarget::Scene, out,
-                               /*tally=*/nullptr);
+    BuildSplineDrapedPolylines(*world, data, worldM, {}, /*wantEdges=*/true, SplineConformTarget::Scene, out);
 
     // Sampling density follows WORLD length: ~20 m at the 1 m step is ~21
     // samples, where sampling the local arc against the world step gives 11.
@@ -347,8 +341,7 @@ TEST_F(SplineDrapeTests, EdgesBuildOnlyWhenRequested)
     const auto data = MakeStraightSpline(-5.0f, 5.0f, 5.0f);
 
     SplineDrapedPolylines out;
-    BuildSplineDrapedPolylines(*world, data, Matrix4x4{}, {}, /*wantEdges=*/true, SplineConformTarget::Scene, out,
-                               /*tally=*/nullptr);
+    BuildSplineDrapedPolylines(*world, data, Matrix4x4{}, {}, /*wantEdges=*/true, SplineConformTarget::Scene, out);
 
     ASSERT_GE(out.Center.size(), 2u);
     ASSERT_EQ(out.Left.size(), out.Center.size());
@@ -382,8 +375,7 @@ TEST_F(SplineDrapeTests, EdgeAllMissKeepsAuthoredAltitudeWhileCenterDrapes)
     GameEngine::Spline::RebuildSplineCache(data);
 
     SplineDrapedPolylines out;
-    BuildSplineDrapedPolylines(*world, data, Matrix4x4{}, {}, /*wantEdges=*/true, SplineConformTarget::Scene, out,
-                               /*tally=*/nullptr);
+    BuildSplineDrapedPolylines(*world, data, Matrix4x4{}, {}, /*wantEdges=*/true, SplineConformTarget::Scene, out);
 
     ASSERT_GE(out.Center.size(), 2u);
     ASSERT_EQ(out.Left.size(), out.Center.size());
@@ -411,8 +403,7 @@ TEST_F(SplineDrapeTests, WorldMatrixAppliesBeforeDrape)
     const Matrix4x4 worldM = Matrix4x4::Translation(Vector3(2.0f, 0.0f, 0.0f));
 
     SplineDrapedPolylines out;
-    BuildSplineDrapedPolylines(*world, data, worldM, {}, /*wantEdges=*/false, SplineConformTarget::Scene, out,
-                               /*tally=*/nullptr);
+    BuildSplineDrapedPolylines(*world, data, worldM, {}, /*wantEdges=*/false, SplineConformTarget::Scene, out);
 
     ASSERT_GE(out.Center.size(), 2u);
     EXPECT_NEAR(out.Center.front().x, -3.0f, 1.0e-3f);
@@ -433,10 +424,10 @@ TEST_F(SplineDrapeTests, ConformFindsGroundLoweredBelowTheTerrainOrigin)
     ASSERT_NE(world, nullptr);
     CreateTerrainAtNormalizedHeight(*world, -2.0f); // HeightScale 1 -> ground at y = -2
 
-    GameEngine::SplineRecipes::ConformMissTally tally;
+    GameEngine::Editor::ConformMissTally tally;
     Vector3 hit;
     const Vector3 sample(0.0f, 5.0f, 0.0f); // authored well above the lowered ground
-    ASSERT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, sample, {}, hit, nullptr, &tally))
+    ASSERT_TRUE(ConformRayDown(*world, sample, {}, hit, nullptr, &tally))
         << "conform ray found no ground under a lowering volume";
     EXPECT_NEAR(hit.y, -2.0f, 0.05f);
 
@@ -454,7 +445,7 @@ TEST_F(SplineDrapeTests, ConformFindsGroundLoweredBelowTheTerrainOrigin)
 // moved, and the digest moved with it. Either half alone proves nothing.
 TEST_F(SplineDrapeTests, ConformSurfaceRevisionMovesWhenABakeMovesTheGround)
 {
-    using GameEngine::SplineRecipes::ConformSurfaceRevision;
+    using GameEngine::Editor::ConformSurfaceRevision;
 
     World* world = GetWorld();
     ASSERT_NE(world, nullptr);
@@ -464,19 +455,19 @@ TEST_F(SplineDrapeTests, ConformSurfaceRevisionMovesWhenABakeMovesTheGround)
 
     const Vector3 sample(0.0f, 5.0f, 0.0f);
     Vector3 before;
-    ASSERT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, sample, {}, before));
-    const uint64_t revisionBefore = GameEngine::SplineRecipes::ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
+    ASSERT_TRUE(ConformRayDown(*world, sample, {}, before));
+    const uint64_t revisionBefore = ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
 
     // What a lowering TerrainHeightOffsetEffect leaves behind on its first bake.
     RebakeTerrainToNormalizedHeight(handle, -2.0f);
 
     Vector3 after;
-    ASSERT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, sample, {}, after));
+    ASSERT_TRUE(ConformRayDown(*world, sample, {}, after));
     EXPECT_NEAR(before.y, 0.0f, 0.05f);
     EXPECT_NEAR(after.y, -2.0f, 0.05f);
     ASSERT_GT(std::abs(before.y - after.y), 1.0f) << "the ground did not move; the case is void";
 
-    EXPECT_NE(GameEngine::SplineRecipes::ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr), revisionBefore)
+    EXPECT_NE(ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr), revisionBefore)
         << "ground moved by 2 m and the surface revision did not: a conformed piece would "
            "keep its pre-bake altitude with nothing to schedule a re-place";
 }
@@ -486,18 +477,18 @@ TEST_F(SplineDrapeTests, ConformSurfaceRevisionMovesWhenABakeMovesTheGround)
 // scene once per settle window, forever.
 TEST_F(SplineDrapeTests, ConformSurfaceRevisionIsQuiescentWhenNothingMoves)
 {
-    using GameEngine::SplineRecipes::ConformSurfaceRevision;
+    using GameEngine::Editor::ConformSurfaceRevision;
 
     World* world = GetWorld();
     ASSERT_NE(world, nullptr);
     CreateTerrainAtNormalizedHeight(*world, 0.25f);
 
-    const uint64_t first = GameEngine::SplineRecipes::ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
+    const uint64_t first = ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
     // Casting rays is what a rebuild does; reading the ground must not move the digest.
     Vector3 hit;
-    ASSERT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, Vector3(0.0f, 5.0f, 0.0f), {}, hit));
-    EXPECT_EQ(GameEngine::SplineRecipes::ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr), first);
-    EXPECT_EQ(GameEngine::SplineRecipes::ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr), first);
+    ASSERT_TRUE(ConformRayDown(*world, Vector3(0.0f, 5.0f, 0.0f), {}, hit));
+    EXPECT_EQ(ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr), first);
+    EXPECT_EQ(ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr), first);
 }
 
 // The heightfield version cannot carry this alone. A terrain with NO modifiers never
@@ -509,7 +500,7 @@ TEST_F(SplineDrapeTests, ConformSurfaceRevisionIsQuiescentWhenNothingMoves)
 // answer really moved, and the digest moved with it.
 TEST_F(SplineDrapeTests, ConformSurfaceRevisionMovesWhenAModifierFreeTerrainIsMoved)
 {
-    using GameEngine::SplineRecipes::ConformSurfaceRevision;
+    using GameEngine::Editor::ConformSurfaceRevision;
 
     World* world = GetWorld();
     ASSERT_NE(world, nullptr);
@@ -525,8 +516,8 @@ TEST_F(SplineDrapeTests, ConformSurfaceRevisionMovesWhenAModifierFreeTerrainIsMo
 
     const Vector3 sample(0.0f, 20.0f, 0.0f);
     Vector3 before;
-    ASSERT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, sample, {}, before));
-    const uint64_t revisionBefore = GameEngine::SplineRecipes::ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
+    ASSERT_TRUE(ConformRayDown(*world, sample, {}, before));
+    const uint64_t revisionBefore = ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
 
     // Move the terrain entity 5 m up: not one heightfield sample changes, no bake
     // runs, and the ground under the sample is 5 m above what the pieces measured.
@@ -535,11 +526,11 @@ TEST_F(SplineDrapeTests, ConformSurfaceRevisionMovesWhenAModifierFreeTerrainIsMo
     xf->matrix[13] += 5.0f;
 
     Vector3 after;
-    ASSERT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, sample, {}, after));
+    ASSERT_TRUE(ConformRayDown(*world, sample, {}, after));
     ASSERT_NEAR(after.y - before.y, 5.0f, 0.05f)
         << "the ground did not move with the entity; the case is void";
 
-    EXPECT_NE(GameEngine::SplineRecipes::ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr), revisionBefore)
+    EXPECT_NE(ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr), revisionBefore)
         << "a modifier-free terrain moved 5 m and the surface revision did not: its "
            "heightfield version never moves, so nothing would re-place the pieces";
 }
@@ -549,18 +540,18 @@ TEST_F(SplineDrapeTests, ConformSurfaceRevisionMovesWhenAModifierFreeTerrainIsMo
 // piece above it. Both must move the digest even though no existing version advanced.
 TEST_F(SplineDrapeTests, ConformSurfaceRevisionTracksTerrainIdentity)
 {
-    using GameEngine::SplineRecipes::ConformSurfaceRevision;
+    using GameEngine::Editor::ConformSurfaceRevision;
 
     World* world = GetWorld();
     ASSERT_NE(world, nullptr);
 
-    const uint64_t empty = GameEngine::SplineRecipes::ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
+    const uint64_t empty = ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
     CreateTerrainAtNormalizedHeight(*world, 0.0f);
-    const uint64_t oneTerrain = GameEngine::SplineRecipes::ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
+    const uint64_t oneTerrain = ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
     EXPECT_NE(oneTerrain, empty) << "a terrain appearing is ground appearing";
 
     CreateTerrainAtNormalizedHeight(*world, 0.5f);
-    EXPECT_NE(GameEngine::SplineRecipes::ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr), oneTerrain)
+    EXPECT_NE(ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr), oneTerrain)
         << "a second terrain must move the digest";
 }
 
@@ -569,11 +560,11 @@ TEST_F(SplineDrapeTests, ConformSurfaceRevisionTracksTerrainIdentity)
 // (later misses must not overwrite it — the first is the one a reader navigates to).
 TEST(ConformMissTallyTest, CountsProbesAndKeepsTheFirstMissAsWitness)
 {
-    GameEngine::SplineRecipes::ConformMissTally tally;
-    tally.Record(true, false, Vector3(1.0f, 0.0f, 0.0f));
-    tally.Record(false, false, Vector3(2.0f, 3.0f, 4.0f));
-    tally.Record(false, false, Vector3(9.0f, 9.0f, 9.0f));
-    tally.Record(true, false, Vector3(5.0f, 0.0f, 0.0f));
+    GameEngine::Editor::ConformMissTally tally;
+    tally.Record(true, Vector3(1.0f, 0.0f, 0.0f));
+    tally.Record(false, Vector3(2.0f, 3.0f, 4.0f));
+    tally.Record(false, Vector3(9.0f, 9.0f, 9.0f));
+    tally.Record(true, Vector3(5.0f, 0.0f, 0.0f));
 
     EXPECT_EQ(tally.Probes, 4u);
     EXPECT_EQ(tally.Misses, 2u);
@@ -587,34 +578,34 @@ TEST(ConformMissTallyTest, CountsProbesAndKeepsTheFirstMissAsWitness)
 // dedupe state: it advances exactly when a report is emitted.
 TEST(ConformMissTallyTest, ReportFiresOnChangedCountAndStaysQuietOtherwise)
 {
-    using GameEngine::SplineRecipes::ReportConformMisses;
+    using GameEngine::Editor::ReportConformMisses;
 
-    GameEngine::SplineRecipes::ConformMissTally clean;
-    clean.Record(true, false, Vector3(0.0f, 0.0f, 0.0f));
+    GameEngine::Editor::ConformMissTally clean;
+    clean.Record(true, Vector3(0.0f, 0.0f, 0.0f));
     uint32_t lastReported = 0u;
 
     // Nothing missed: nothing to say, and the state stays put.
-    GameEngine::SplineRecipes::ReportConformMisses(clean, /*entityId*/ 7u, lastReported);
+    ReportConformMisses(clean, /*entityId*/ 7u, lastReported);
     EXPECT_EQ(lastReported, 0u);
 
-    GameEngine::SplineRecipes::ConformMissTally missed;
-    missed.Record(false, false, Vector3(1.0f, 2.0f, 3.0f));
-    GameEngine::SplineRecipes::ReportConformMisses(missed, 7u, lastReported);
+    GameEngine::Editor::ConformMissTally missed;
+    missed.Record(false, Vector3(1.0f, 2.0f, 3.0f));
+    ReportConformMisses(missed, 7u, lastReported);
     EXPECT_EQ(lastReported, 1u) << "a first miss must report";
 
     // Same count again (the steady state of a rebuilding scene): already reported.
-    GameEngine::SplineRecipes::ReportConformMisses(missed, 7u, lastReported);
+    ReportConformMisses(missed, 7u, lastReported);
     EXPECT_EQ(lastReported, 1u);
 
     // The count moving is new information and reports again.
-    missed.Record(false, false, Vector3(4.0f, 5.0f, 6.0f));
-    GameEngine::SplineRecipes::ReportConformMisses(missed, 7u, lastReported);
+    missed.Record(false, Vector3(4.0f, 5.0f, 6.0f));
+    ReportConformMisses(missed, 7u, lastReported);
     EXPECT_EQ(lastReported, 2u);
 
     // Recovering to zero clears the state so a later regression reports afresh.
-    GameEngine::SplineRecipes::ConformMissTally recovered;
-    recovered.Record(true, false, Vector3(0.0f, 0.0f, 0.0f));
-    GameEngine::SplineRecipes::ReportConformMisses(recovered, 7u, lastReported);
+    GameEngine::Editor::ConformMissTally recovered;
+    recovered.Record(true, Vector3(0.0f, 0.0f, 0.0f));
+    ReportConformMisses(recovered, 7u, lastReported);
     EXPECT_EQ(lastReported, 0u);
 }
 
@@ -653,24 +644,21 @@ void RegisterPickable(World& world, GameEngine::ECS::EntityHandle entity,
 }
 
 // A prop standing on the flat terrain, where a placed object would otherwise land
-// on top of another object such as a cart instead of on the terrain. It is the
-// built-in unit cube scaled to the cart's box: a renderer with a CPU mesh, the
-// only kind of renderer a conform ray lands on.
+// on top of another object such as a cart instead of on the terrain. It
+// carries no CPU mesh, so the picker answers for it through its bounds — which
+// is also the path that returns BEFORE PickOptions' mesh/primitive filters are
+// consulted, so it is the one a half-done terrain-only mode would leak through.
 GameEngine::ECS::EntityHandle CreateCartOnTheGround(World& world, float halfHeight)
 {
     Entity cart = world.Create();
     GameEngine::Components::MeshRenderer renderer{};
-    renderer.modelAssetGuid.Set(GameEngine::Engine::Renderer::PrimitiveGenerator::CubeGuid());
     cart.Set(renderer);
     GameEngine::Components::LocalBounds bounds{};
     bounds.Box.center = {0.0f, 0.0f, 0.0f};
-    bounds.Box.halfExtents = {0.5f, 0.5f, 0.5f};
+    bounds.Box.halfExtents = {1.0f, halfHeight, 1.0f};
     cart.Set(bounds);
 
     WorldTransform xf{};
-    xf.matrix[0] = 2.0f;
-    xf.matrix[5] = 2.0f * halfHeight;
-    xf.matrix[10] = 2.0f;
     xf.matrix[12] = 0.0f;
     xf.matrix[13] = halfHeight; // sitting ON the ground, top at 2*halfHeight
     xf.matrix[14] = 0.0f;
@@ -702,7 +690,7 @@ TEST_F(SplineDrapeTests, ConformTargetDecidesWhetherAPropCountsAsGround)
     const Vector3 sample(0.0f, 5.0f, 0.0f); // authored above both
 
     Vector3 sceneHit;
-    ASSERT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, sample, {}, sceneHit, nullptr, nullptr,
+    ASSERT_TRUE(ConformRayDown(*world, sample, {}, sceneHit, nullptr, nullptr,
                                SplineConformTarget::Scene))
         << "the whole-scene conform found nothing at all";
     EXPECT_NEAR(sceneHit.y, kHalfHeight * 2.0f, 0.05f)
@@ -710,7 +698,7 @@ TEST_F(SplineDrapeTests, ConformTargetDecidesWhetherAPropCountsAsGround)
            "no longer does, the TerrainOnly assertion below stops proving anything";
 
     Vector3 terrainHit;
-    ASSERT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, sample, {}, terrainHit, nullptr, nullptr,
+    ASSERT_TRUE(ConformRayDown(*world, sample, {}, terrainHit, nullptr, nullptr,
                                SplineConformTarget::TerrainOnly))
         << "terrain-only conform found no ground";
     EXPECT_NEAR(terrainHit.y, 0.0f, 0.05f)
@@ -733,7 +721,7 @@ TEST_F(SplineDrapeTests, DrapeConformsToTheTargetItIsGiven)
 
     const auto heightOverTheCart = [&](SplineConformTarget target) {
         SplineDrapedPolylines out;
-        BuildSplineDrapedPolylines(*world, data, Matrix4x4{}, {}, /*wantEdges=*/false, target, out, /*tally=*/nullptr);
+        BuildSplineDrapedPolylines(*world, data, Matrix4x4{}, {}, /*wantEdges=*/false, target, out);
         const auto middle = std::min_element(out.Center.begin(), out.Center.end(),
                                              [](const Vector3& a, const Vector3& b) {
                                                  return std::abs(a.x) < std::abs(b.x);
@@ -760,9 +748,9 @@ TEST_F(SplineDrapeTests, ConformTargetDefaultsToWholeScene)
     const Vector3 sample(0.0f, 5.0f, 0.0f);
 
     Vector3 defaulted;
-    ASSERT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, sample, {}, defaulted));
+    ASSERT_TRUE(ConformRayDown(*world, sample, {}, defaulted));
     Vector3 explicitScene;
-    ASSERT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, sample, {}, explicitScene, nullptr, nullptr,
+    ASSERT_TRUE(ConformRayDown(*world, sample, {}, explicitScene, nullptr, nullptr,
                                SplineConformTarget::Scene));
     EXPECT_FLOAT_EQ(defaulted.y, explicitScene.y);
     EXPECT_NEAR(defaulted.y, kHalfHeight * 2.0f, 0.05f);
@@ -780,15 +768,15 @@ TEST_F(SplineDrapeTests, TerrainOnlyConformMissesWhenOnlyPropsAreUnderTheSample)
     constexpr float kHalfHeight = 1.0f;
     CreateCartOnTheGround(*world, kHalfHeight); // no terrain in this world
 
-    GameEngine::SplineRecipes::ConformMissTally tally;
+    GameEngine::Editor::ConformMissTally tally;
     Vector3 hit;
     const Vector3 sample(0.0f, 5.0f, 0.0f);
 
-    EXPECT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, sample, {}, hit, nullptr, nullptr,
+    EXPECT_TRUE(ConformRayDown(*world, sample, {}, hit, nullptr, nullptr,
                                SplineConformTarget::Scene))
         << "positive control: the cart is pickable in Scene mode";
 
-    EXPECT_FALSE(GameEngine::SplineRecipes::ConformRayDown(*world, sample, {}, hit, nullptr, &tally,
+    EXPECT_FALSE(ConformRayDown(*world, sample, {}, hit, nullptr, &tally,
                                 SplineConformTarget::TerrainOnly))
         << "terrain-only conform accepted a prop as ground";
     EXPECT_EQ(tally.Probes, 1u);
@@ -805,19 +793,13 @@ TEST_F(SplineDrapeTests, TerrainOnlyConformMissesWhenOnlyPropsAreUnderTheSample)
 // the real ground was still arriving from the scene loader's resolve pump.
 // ---------------------------------------------------------------------------
 
-// The bounds of a short run at the world origin, inside every terrain these tests make.
-static GameEngine::Mathematics::AABB RunAtOrigin()
-{
-    return {Vector3(-1.0f, 0.0f, -1.0f), Vector3(1.0f, 0.0f, 1.0f)};
-}
-
 // The state a scene sits in for as long as its terrain asset takes to resolve:
 // the Terrain entity exists and is enabled, its data handle names nothing yet.
 // This is the window the gate exists for, so it is the one that must be legible.
 TEST_F(SplineDrapeTests, ConformSurfaceStateIsProvisioningWhileTerrainDataIsUnresolved)
 {
-    using GameEngine::SplineRecipes::ConformSurfaceReadiness;
-    using GameEngine::SplineRecipes::ConformSurfaceState;
+    using GameEngine::Editor::ConformSurfaceReadiness;
+    using GameEngine::Editor::ConformSurfaceState;
 
     World* world = GetWorld();
     ASSERT_NE(world, nullptr);
@@ -837,7 +819,7 @@ TEST_F(SplineDrapeTests, ConformSurfaceStateIsProvisioningWhileTerrainDataIsUnre
     terrainEntity.Set(WorldTransform{});
     world->ProcessCommands();
 
-    EXPECT_EQ(ConformSurfaceState(*world, RunAtOrigin()), GameEngine::SplineRecipes::ConformSurfaceReadiness::Provisioning)
+    EXPECT_EQ(ConformSurfaceState(*world), ConformSurfaceReadiness::Provisioning)
         << "a declared terrain with no resolvable data must read as not-here-yet";
 }
 
@@ -845,31 +827,31 @@ TEST_F(SplineDrapeTests, ConformSurfaceStateIsProvisioningWhileTerrainDataIsUnre
 // no terrain has nothing coming, and its conforming recipes must place at once.
 TEST_F(SplineDrapeTests, ConformSurfaceStateIsNoSurfaceWhenTheWorldHasNoTerrain)
 {
-    using GameEngine::SplineRecipes::ConformSurfaceReadiness;
-    using GameEngine::SplineRecipes::ConformSurfaceState;
+    using GameEngine::Editor::ConformSurfaceReadiness;
+    using GameEngine::Editor::ConformSurfaceState;
 
     World* world = GetWorld();
     ASSERT_NE(world, nullptr);
 
-    EXPECT_EQ(ConformSurfaceState(*world, RunAtOrigin()), GameEngine::SplineRecipes::ConformSurfaceReadiness::NoSurface);
+    EXPECT_EQ(ConformSurfaceState(*world), ConformSurfaceReadiness::NoSurface);
 }
 
 // The release edge, over a terrain that really is marchable.
 TEST_F(SplineDrapeTests, ConformSurfaceStateIsReadyOnceTerrainDataResolves)
 {
-    using GameEngine::SplineRecipes::ConformSurfaceReadiness;
-    using GameEngine::SplineRecipes::ConformSurfaceState;
+    using GameEngine::Editor::ConformSurfaceReadiness;
+    using GameEngine::Editor::ConformSurfaceState;
 
     World* world = GetWorld();
     ASSERT_NE(world, nullptr);
     CreateFlatTerrain(*world);
 
-    ASSERT_EQ(ConformSurfaceState(*world, RunAtOrigin()), GameEngine::SplineRecipes::ConformSurfaceReadiness::Ready);
+    ASSERT_EQ(ConformSurfaceState(*world), ConformSurfaceReadiness::Ready);
 
     // Positive control: "Ready" has to mean a ray can actually land on it, not
     // merely that a handle resolved.
     Vector3 hit;
-    EXPECT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, Vector3(0.0f, 5.0f, 0.0f), {}, hit))
+    EXPECT_TRUE(ConformRayDown(*world, Vector3(0.0f, 5.0f, 0.0f), {}, hit))
         << "the state says Ready, so the ground must be there to hit";
 }
 
@@ -884,9 +866,9 @@ TEST_F(SplineDrapeTests, ConformSurfaceStateIsReadyOnceTerrainDataResolves)
 // there. Readiness answers that from one frame, which is the whole addition.
 TEST_F(SplineDrapeTests, ReadinessAnswersFromOneFrameWhereTheDigestNeedsTwo)
 {
-    using GameEngine::SplineRecipes::ConformSurfaceReadiness;
-    using GameEngine::SplineRecipes::ConformSurfaceRevision;
-    using GameEngine::SplineRecipes::ConformSurfaceState;
+    using GameEngine::Editor::ConformSurfaceReadiness;
+    using GameEngine::Editor::ConformSurfaceRevision;
+    using GameEngine::Editor::ConformSurfaceState;
 
     World* world = GetWorld();
     ASSERT_NE(world, nullptr);
@@ -901,21 +883,21 @@ TEST_F(SplineDrapeTests, ReadinessAnswersFromOneFrameWhereTheDigestNeedsTwo)
     terrainEntity.Set(WorldTransform{});
     world->ProcessCommands();
 
-    const uint64_t digestUnprovisioned = GameEngine::SplineRecipes::ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
-    ASSERT_EQ(ConformSurfaceState(*world, RunAtOrigin()), GameEngine::SplineRecipes::ConformSurfaceReadiness::Provisioning);
+    const uint64_t digestUnprovisioned = ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
+    ASSERT_EQ(ConformSurfaceState(*world), ConformSurfaceReadiness::Provisioning);
 
     // A ray confirms what readiness said: there is nothing under the sample.
     Vector3 hit;
-    EXPECT_FALSE(GameEngine::SplineRecipes::ConformRayDown(*world, Vector3(0.0f, 5.0f, 0.0f), {}, hit))
+    EXPECT_FALSE(ConformRayDown(*world, Vector3(0.0f, 5.0f, 0.0f), {}, hit))
         << "the state says Provisioning, so no ground should be hittable yet";
 
     // Now provision one, exactly as extraction would, and re-ask both.
     world->Clear();
     CreateFlatTerrain(*world);
 
-    const uint64_t digestProvisioned = GameEngine::SplineRecipes::ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
-    EXPECT_EQ(ConformSurfaceState(*world, RunAtOrigin()), GameEngine::SplineRecipes::ConformSurfaceReadiness::Ready);
-    EXPECT_TRUE(GameEngine::SplineRecipes::ConformRayDown(*world, Vector3(0.0f, 5.0f, 0.0f), {}, hit))
+    const uint64_t digestProvisioned = ConformSurfaceRevision(*world, /*conforms by raycast*/ nullptr);
+    EXPECT_EQ(ConformSurfaceState(*world), ConformSurfaceReadiness::Ready);
+    EXPECT_TRUE(ConformRayDown(*world, Vector3(0.0f, 5.0f, 0.0f), {}, hit))
         << "the state says Ready, so the ground must be there to hit";
 
     // Both digests are just numbers. Neither one, read alone, says which side of

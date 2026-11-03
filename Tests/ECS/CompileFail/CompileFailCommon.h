@@ -18,6 +18,7 @@ using GameEngine::ECS::World;
 using GameEngine::ECS::EntityHandle;
 using GameEngine::ECS::Read;
 using GameEngine::ECS::Write;
+using GameEngine::ECS::Writable;
 using GameEngine::ECS::Optional;
 using GameEngine::ECS::test::Position;
 using GameEngine::ECS::test::Velocity;

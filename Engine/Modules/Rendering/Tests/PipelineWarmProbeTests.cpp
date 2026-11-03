@@ -7,7 +7,7 @@
 
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineCache.h"
+#include "Rendering/Core/PipelineCache.h"
 #include "Rendering/Materials/MaterialBuilder.h"
 #include "TestUtils.h"
 
@@ -82,7 +82,8 @@ ComputePipelineId InternMinimalCompute(IDevice& dev)
 }
 
 // Stands in for the engine's worker dispatcher: keeps every build job until the
-// test runs it, so "not built on the calling thread" is observable.
+// test runs it, so "not built on the calling thread" is observable. Declared
+// after the device, so jobs never run are destroyed while the device lives.
 struct HeldBuilds
 {
     std::vector<std::function<void()>> Jobs;
@@ -295,27 +296,6 @@ TEST(PipelineBuildRequest, DeviceShutdownCancelsQueuedBuilds)
     // A job the pool runs after the device's objects are gone must not reach the backend.
     held.RunAll();
     EXPECT_EQ(dev->GetPipelineCacheStats().Inserts, insertsBefore);
-}
-
-TEST(PipelineBuildRequest, QueuedBuildOutlivingTheDeviceTouchesNothingOfIt)
-{
-    DeviceDesc desc{};
-    auto dev = CreateHeadlessDevice(desc);
-    ASSERT_TRUE(dev) << "headless device unavailable";
-    HeldBuilds held;
-    held.Install(*dev);
-    const ComputePipelineId id = InternMinimalCompute(*dev);
-    ASSERT_TRUE(id.IsValid()) << "minimal_test.comp.spv missing";
-
-    ASSERT_EQ(dev->RequestComputePipeline(id), PipelineBuildState::Pending);
-    ASSERT_EQ(held.Jobs.size(), 1u);
-    dev->Shutdown();
-    dev.reset();
-    // A pool whose drain ends before its jobs' captures are destroyed lets the
-    // device go first: running the job, then destroying it, must reach nothing
-    // the device owned (the ASan preset reports a heap use-after-free otherwise).
-    held.RunAll();
-    EXPECT_TRUE(held.Jobs.empty());
 }
 
 TEST(PipelineBuildRequest, WithoutADispatcherTheBuildRunsInline)

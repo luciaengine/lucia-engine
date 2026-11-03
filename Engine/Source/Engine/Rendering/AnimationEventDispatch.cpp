@@ -27,7 +27,7 @@ const Components::Animator* FindOwningAnimator(const ECS::World& world, ECS::Ent
         const auto* parent = world.GetComponent<Components::Parent>(current);
         if (!parent)
             return nullptr;
-        current = parent->Entity;
+        current = parent->parent;
     }
     return nullptr;
 }

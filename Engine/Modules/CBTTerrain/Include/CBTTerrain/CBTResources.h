@@ -24,7 +24,6 @@ namespace GameEngine::CBTTerrain
 {
 
 class CBTKernelSet;
-struct SphereEditRegions;
 
 class CBTResources
 {
@@ -90,15 +89,14 @@ class CBTResources
     // declaring against one frame selects the same element and agrees with the push constant.
     uint32_t AdvanceFrameCounter(uint32_t deviceFrameIndex)
     {
-        // The push constant is 32-bit; the CPU and the GPU reduce the same low 32 bits.
-        return static_cast<uint32_t>(m_FrameCounter.Tick(deviceFrameIndex));
+        return m_FrameCounter.Tick(deviceFrameIndex);
     }
 
     // C4 per-frame params UBO (binding 14) — camera + terrain params consumed by
     // Classify (screen-space error) and VertexEval (displacement). Host-visible,
     // ring-buffered over kCBTFrameParamsRing frames. Write one slot per frame.
     Rendering::BufferHandle GetFrameParamsBuffer() const { return m_FrameParams; }
-    void UploadFrameParams(uint32_t frameCounter, const CBTFrameParams& params, const SphereEditRegions& sphereDirty);
+    void UploadFrameParams(uint32_t frameCounter, const CBTFrameParams& params);
 
     // C4 terrain height source (binding 15, a CBTTextureRingFor ring). Rebinds ONE
     // ring element — this frame's, per CBTFrameRingSlot — to the terrain's heightmap (or
@@ -114,26 +112,6 @@ class CBTResources
     Rendering::TextureHandle GetBoundHeightSource(uint32_t frameCounter) const;
     // The height-range pyramid (binding 21); invalid on the narrow-heap arm.
     Rendering::BufferHandle GetHeightRangeBuffer() const { return m_HeightRange; }
-    // The draw's prefiltered height chain (binding 24 on the compute set, gCbtChain on the graphics
-    // set 2). Valid on both arms so the draw always binds a buffer; it holds only a zeroed header
-    // until ProvisionHeightChainWords grows it, and the narrow arm never does, so a header that names
-    // no lattice makes the draw keep the cached corners.
-    Rendering::BufferHandle GetHeightChainBuffer() const { return m_HeightChain; }
-    uint32_t GetHeightChainWords() const { return m_HeightChainWords; }
-    // Grows the chain to hold `words` (CBTHeightChainWords of the bound lattice; the wide arm only),
-    // never shrinking. The new buffer starts with a zeroed header, so whatever the old one held is
-    // rebuilt before the draw reads it. False when the allocation fails or the arm builds no chain:
-    // the previous buffer stays bound and the terrain draws its cached corners.
-    bool ProvisionHeightChainWords(uint32_t words);
-    // The far-field normal chain (binding 25 on the compute set as one storage view per mip,
-    // cbt_NormalChain on the graphics set 2). A 1x1 placeholder until ProvisionNormalChain creates it for
-    // a lattice; the texture rests in ShaderResource between frames. Wide arm only, like the height chain.
-    Rendering::TextureHandle GetNormalChainTexture() const { return m_NormalChain; }
-    uint32_t GetNormalChainMips() const { return m_NormalChainMips; }
-    // Creates the chain for a lattice of `samplesX` x `samplesZ` (CBTNormalChainTexels / Mips), replacing
-    // one made for another lattice; true when it matches. False when the arm builds no chain or the
-    // allocation fails: the previous texture stays bound and the surface keeps the level-0 normal map.
-    bool ProvisionNormalChain(uint32_t samplesX, uint32_t samplesZ);
     Rendering::SamplerHandle GetHeightSampler() const { return m_HeightSampler; }
 
     // In-place re-provision safety. The per-slot SetHeightSource/SetAtlasSource/SetCoarseSource
@@ -182,10 +160,14 @@ class CBTResources
     // Binding 23: rebind this frame's ring element to the height page cache texture (or the flat
     // default when invalid). Same per-slot in-flight safety as SetAtlasSource.
     void SetPageCacheSource(uint32_t frameCounter, Rendering::TextureHandle cacheTexture);
-    // Binding 22: binds TerrainPageFeature's page-table ring, whose slot for this frame starts at word
-    // `firstWord`; an invalid ring binds the zeroed default. A new ring handle rewrites the sets.
-    void SetPageTable(Rendering::BufferHandle ring, uint32_t firstWord);
-    Rendering::BufferHandle GetPageTableBuffer() const { return m_PageTable; }
+    // Binding 22: grows the page-table ring so a slot holds `words` (the bound terrain's table), in
+    // steps of kCBTPageTableMinRingWords; the ring never shrinks. False when the allocation fails:
+    // the previous ring stays bound and the terrain must not page this frame.
+    bool ProvisionPageTableWords(uint32_t words);
+    // Binding 22: write the terrain's page-table words (the CBTLayout.h binding-22 layout) into
+    // this frame's ring slot, clamped to the slot. Empty words write an empty field.
+    void UploadPageTable(uint32_t frameCounter, std::span<const uint32_t> words);
+    uint32_t PageTableSlotWords() const { return m_PageTableSlotWords; }
     Rendering::TextureHandle GetDefaultAtlasHeightTexture() const { return m_DefaultAtlasHeight; }
     Rendering::TextureHandle GetDefaultAtlasCoarseTexture() const { return m_DefaultAtlasCoarse; }
     Rendering::BufferHandle GetAtlasRowsBuffer() const { return m_AtlasRows; }
@@ -227,19 +209,11 @@ class CBTResources
     Rendering::BufferHandle GetSurfaceParamsBuffer() const { return m_SurfaceParams; }
     void UploadSurfaceParams(uint32_t frameCounter, const CBTSurfaceParams& params);
 
-    // The draw's level rule (CBTDrawLevelParams), a host-visible uniform ring the vertex modifier reads
-    // as gCbtDrawLevel; written once per frame, offset-bound per slot (kCBTDrawLevelParamsSlotStride).
-    Rendering::BufferHandle GetDrawLevelParamsBuffer() const { return m_DrawLevelParams; }
-    void UploadDrawLevelParams(uint32_t frameCounter, const CBTDrawLevelParams& params);
-
     // Total device-local footprint of the persistent buffers, in bytes.
     uint64_t GetPersistentByteSize() const { return m_PersistentBytes; }
 
   private:
     Rendering::BufferHandle CreateStorageBuffer(uint64_t size, uint32_t extraUsage, const char* name);
-    Rendering::BufferHandle CreateHeightChain(uint32_t words);
-    bool CreateNormalChain(uint32_t width, uint32_t height, uint32_t mips);
-    void DestroyNormalChain();
     void WriteDescriptorSet();
     // One pair of sculpt rings and its shape, built before it replaces the bound pair.
     struct SculptRings
@@ -278,20 +252,12 @@ class CBTResources
     Rendering::SamplerHandle m_HeightSampler{};    // linear-clamp, matches CDLOD's GE_TS_CLAMP
     Rendering::BufferHandle m_AtlasRows{};         // host-visible SSBO ring (binding 17)
     Rendering::BufferHandle m_HeightRange{};       // device-local height-range pyramid (binding 21)
-    Rendering::BufferHandle m_HeightChain{};       // device-local prefiltered height chain (binding 24)
-    uint32_t m_HeightChainWords = 0u;              // words m_HeightChain holds
-    Rendering::BufferHandle m_DrawLevelParams{};   // host-visible ring, graphics set 2 (gCbtDrawLevel)
-    Rendering::TextureHandle m_NormalChain{};      // far-field normal chain, rg16f with mips (binding 25)
-    std::array<Rendering::TextureViewHandle, kCBTNormalChainMaxMips> m_NormalChainViews{}; // one per mip
-    uint32_t m_NormalChainMips = 0u;
-    uint32_t m_NormalChainLattice = 0u;            // samples x | z << 16 the chain was made for
     Rendering::TextureHandle m_DefaultAtlasHeight{}; // 1x1 flat fallback atlas height
     std::array<Rendering::TextureHandle, kCBTTextureRingMax> m_BoundAtlasHeight{}; // per-ring-slot atlas texture (binding 18)
     Rendering::TextureHandle m_DefaultAtlasCoarse{}; // 1x1 flat fallback coarse field
     std::array<Rendering::TextureHandle, kCBTTextureRingMax> m_BoundAtlasCoarse{}; // per-ring-slot coarse field (binding 19)
-    Rendering::BufferHandle m_DefaultPageTable{};    // a zeroed table header (binding 22), wide arm only
-    Rendering::BufferHandle m_PageTable{};           // what binding 22 holds: the page ring or the default
-    uint32_t m_PageTableBaseWord = 0;                // this frame's first word in m_PageTable
+    Rendering::BufferHandle m_PageTable{};           // host-visible page-table ring (binding 22), wide arm only
+    uint32_t m_PageTableSlotWords = 0;               // words per ring slot of m_PageTable
     Rendering::TextureHandle m_DefaultPageCache{};   // 1x1 flat page cache (binding 23), wide arm only
     std::array<Rendering::TextureHandle, kCBTTextureRingMax> m_BoundPageCache{}; // per-ring-slot page cache (binding 23)
     uint32_t m_TextureRing = kCBTTextureRingMax; // elements the loaded kernels declare per texture
@@ -300,7 +266,8 @@ class CBTResources
     Rendering::DescriptorSetHandle m_DescriptorSet{};
     std::vector<Rendering::DescriptorSetHandle> m_KernelSets;
     std::vector<std::vector<uint32_t>> m_KernelSetBindings;
-    Rendering::BufferHandle CreateDefaultPageTable();
+    static size_t PageTableRingBytes(uint32_t slotWords);
+    Rendering::BufferHandle CreatePageTableRing(uint32_t slotWords);
     void WriteOneSet(Rendering::DescriptorSetHandle set, const std::vector<uint32_t>& only);
     // Rewrites one ring element of a terrain-source binding in every set that
     // binds it (the per-kernel sets, or the single shared set).

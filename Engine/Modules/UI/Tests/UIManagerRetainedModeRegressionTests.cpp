@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h"
 #include "Rendering/Core/Device.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/Button.h"
@@ -24,6 +24,7 @@
 #include "UI/UIStyle.h"
 #include "IsolatedUIFixture.h"
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -106,7 +107,8 @@ TEST(UIRegressions, TooltipWrapsAtMaximumWidthAndShortTextReturnsToNaturalWidth)
     // engine-side Style::MaxWidth override TooltipOverlay installs on
     // #ui-tooltip, and a percent width on the label would let long text
     // escape the bubble (measure at pre-clamp width) instead of wrapping.
-    const auto css = std::filesystem::temp_directory_path() / "ui_regression_tooltip_wrap.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_tooltip_wrap"));
+    const auto css = tempDir.Path() / "ui_regression_tooltip_wrap.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -133,9 +135,9 @@ TEST(UIRegressions, TooltipWrapsAtMaximumWidthAndShortTextReturnsToNaturalWidth)
     // Frame 2: dimensions are final; the tooltip becomes visible.
     overlay.Update(rootPtr, sourcePtr, 50.0f, 20.0f, 3.0f);
 
-    UIElement* wrapper = rootPtr->FindById("ui-tooltip-wrapper"_sid);
-    UIElement* tooltip = rootPtr->FindById("ui-tooltip"_sid);
-    UIElement* label = rootPtr->FindById("ui-tooltip-text"_sid);
+    UIElement* wrapper = rootPtr->FindById("ui-tooltip-wrapper");
+    UIElement* tooltip = rootPtr->FindById("ui-tooltip");
+    UIElement* label = rootPtr->FindById("ui-tooltip-text");
     ASSERT_NE(wrapper, nullptr);
     ASSERT_NE(tooltip, nullptr);
     ASSERT_NE(label, nullptr);
@@ -189,7 +191,8 @@ TEST(UIRegressions, HoverTooltipDrawsAboveDropdownOverlay)
         UIManager ui(dev);
         ui.SetRoot(std::move(root));
 
-        const auto css = std::filesystem::temp_directory_path() / "ui_regression_tooltip_overlay_order.css";
+        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_tooltip_overlay_order"));
+        const auto css = tempDir.Path() / "ui_regression_tooltip_overlay_order.css";
         {
             std::ofstream f(css);
             f << R"(
@@ -215,7 +218,7 @@ TEST(UIRegressions, HoverTooltipDrawsAboveDropdownOverlay)
         ui.Update(0.0f, /*interactive=*/false);
         DriveUiRender(ui, rg);
 
-        UIElement* bubble = rootPtr->FindById("ui-tooltip"_sid);
+        UIElement* bubble = rootPtr->FindById("ui-tooltip");
         ASSERT_NE(bubble, nullptr);
 
         const int dropdownPos = ui.FindDrawOrderPosForTesting(*dropdownPtr);
@@ -250,8 +253,8 @@ TEST(UIRegressions, GridViewInitialColumnsUsesUpdatedViewportOnFirstUpdate)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_grid_initial_cols.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_grid_initial_cols"));
+    const auto css = tempDir.Path() / "ui_regression_grid_initial_cols.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -277,8 +280,8 @@ TEST(UIRegressions, GridViewInitialColumnsUsesUpdatedViewportOnFirstUpdate)
     const std::string cell1Id = std::string("gridcell-") + std::to_string(gvAddr) + "-1";
     const std::string cell9Id = std::string("gridcell-") + std::to_string(gvAddr) + "-9";
 
-    UIElement* cell1 = rootEl->FindById(HashStringId(cell1Id));
-    UIElement* cell9 = rootEl->FindById(HashStringId(cell9Id));
+    UIElement* cell1 = rootEl->FindById(cell1Id);
+    UIElement* cell9 = rootEl->FindById(cell9Id);
     ASSERT_NE(cell1, nullptr);
     ASSERT_NE(cell9, nullptr);
 
@@ -321,8 +324,8 @@ TEST(UIRegressions, CaptureSurvivesTreeChangedRebuild)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_capture_rebuild.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_capture_rebuild"));
+    const auto css = tempDir.Path() / "ui_regression_capture_rebuild.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -389,8 +392,8 @@ TEST(UIRegressions, SetValueSkipsLayoutForFixedTextInput)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() /
-                     "ui_regression_fixed_text_set_value.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_fixed_text_set_value"));
+    const auto css = tempDir.Path() / "ui_regression_fixed_text_set_value.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -454,7 +457,7 @@ TEST(UIRegressions, CompositeSetValueKeepsTheBaseDirtyContract)
 // slot range. With both axes pinned to px, the first SetText takes the
 // content-only pipeline (MarkContentDirty), whose drain can only rewrite
 // slots an element already owns — the producer must escalate a rangeless
-// element to a full regen (RangelessContent), or the text never paints for as
+// element to a full regen (cause 0x800), or the text never paints for as
 // long as nothing else dirties the tree.
 //
 // The root's background-color is load-bearing: it keeps the DrawOrder
@@ -500,7 +503,7 @@ TEST(UIRegressions, FirstTextOnAnEmptyFixedSizeLabelPaints)
             causeOr |= profile.GenAllPrimitivesRegenCause;
     }
 
-    EXPECT_TRUE(causeOr & static_cast<uint32_t>(UIManager::PrimitiveRegenCause::RangelessContent))
+    EXPECT_TRUE(causeOr & 0x800u)
         << "the paint must come from the rangeless-content escalation, not a fallback regen";
     EXPECT_FALSE(fx.Primitives("status", UI::PrimitiveMode::Slug).empty())
         << "first text on an initially-empty label was never emitted";
@@ -527,8 +530,8 @@ TEST(UIRegressions, MeasureNodesClearStaleYogaChildrenBeforeSettingMeasureFunc)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_measure_children.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_measure_children"));
+    const auto css = tempDir.Path() / "ui_regression_measure_children.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -588,8 +591,8 @@ TEST(UIRegressions, TreeChangedRebuildThenRelayoutDoesNotBreakInheritedFontSize)
     ui.SetRoot(std::move(root));
 
     // Basic layout with inherited typography.
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_treechanged_rel_layout_fontsize.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_treechanged_rel_layout_fontsize"));
+    const auto css = tempDir.Path() / "ui_regression_treechanged_rel_layout_fontsize.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -605,7 +608,7 @@ TEST(UIRegressions, TreeChangedRebuildThenRelayoutDoesNotBreakInheritedFontSize)
     ui.Update(0.0f, /*interactive=*/false);
     UIElement* rootEl = ui.GetRootElement();
     ASSERT_NE(rootEl, nullptr);
-    UIElement* lblEl0 = rootEl->FindById("lbl"_sid);
+    UIElement* lblEl0 = rootEl->FindById("lbl");
     ASSERT_NE(lblEl0, nullptr);
     EXPECT_NEAR(lblEl0->GetResolvedStyle().Visual.FontSize, 14.0f, 0.01f);
 
@@ -639,7 +642,7 @@ TEST(UIRegressions, TreeChangedRebuildThenRelayoutDoesNotBreakInheritedFontSize)
 
     EXPECT_TRUE(didReorder);
 
-    UIElement* lblEl1 = rootEl->FindById("lbl"_sid);
+    UIElement* lblEl1 = rootEl->FindById("lbl");
     ASSERT_NE(lblEl1, nullptr);
     EXPECT_NEAR(lblEl1->GetResolvedStyle().Visual.FontSize, 14.0f, 0.01f);
 }
@@ -676,8 +679,8 @@ TEST(UIRegressions, MultilineLabelHeightPreventsOverlapInScrollView)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_multiline_label_no_overlap.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_multiline_label_no_overlap"));
+    const auto css = tempDir.Path() / "ui_regression_multiline_label_no_overlap.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -692,8 +695,8 @@ TEST(UIRegressions, MultilineLabelHeightPreventsOverlapInScrollView)
 
     UIElement* rootEl = ui.GetRootElement();
     ASSERT_NE(rootEl, nullptr);
-    UIElement* l1El = rootEl->FindById("l1"_sid);
-    UIElement* l2El = rootEl->FindById("l2"_sid);
+    UIElement* l1El = rootEl->FindById("l1");
+    UIElement* l2El = rootEl->FindById("l2");
     ASSERT_NE(l1El, nullptr);
     ASSERT_NE(l2El, nullptr);
 
@@ -728,8 +731,8 @@ TEST(UIRegressions, ScrollViewShowsHorizontalScrollbarForLongLabelLine)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_scrollview_hscroll_long_label.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_scrollview_hscroll_long_label"));
+    const auto css = tempDir.Path() / "ui_regression_scrollview_hscroll_long_label.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -787,8 +790,8 @@ TEST(UIRegressions, ScrollViewShowsHorizontalScrollbarAfterTreeChangedRebuildSam
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_scrollview_hscroll_treechanged.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_scrollview_hscroll_treechanged"));
+    const auto css = tempDir.Path() / "ui_regression_scrollview_hscroll_treechanged.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -854,12 +857,12 @@ TEST(UIRegressions, ScrollViewHorizontalScrollbarDoesNotOverlapViewport)
     // The theme is read from the copy the build stages next to the test exe, at
     // the same relative path the editor reads it from under its own exe; its
     // @imports resolve relative to that staged file.
-    const auto theme = ApplicationPaths::GetExecutableDirectory() / "Assets" / "UI" / "theme.css";
+    const auto theme = PathUtils::GetExecutableDirectory() / "Assets" / "UI" / "theme.css";
     ASSERT_TRUE(std::filesystem::exists(theme)) << "Editor theme not staged at " << theme.string();
     ASSERT_TRUE(ui.AttachStyleFromFile(theme.string()));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_scrollview_no_overlap.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_scrollview_no_overlap"));
+    const auto css = tempDir.Path() / "ui_regression_scrollview_no_overlap.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -960,8 +963,8 @@ TEST(UIRegressions, VerticalScrollbarVisibilityReflowsPercentageWidthDescendants
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() /
-                     "ui_regression_scrollbar_visibility_percent_reflow.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_scrollbar_visibility_percent_reflow"));
+    const auto css = tempDir.Path() / "ui_regression_scrollbar_visibility_percent_reflow.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1036,8 +1039,8 @@ TEST(UIRegressions, ScrollbarDragDoesNotResetScrollX)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_scrollbar_drag_persists_scroll.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_scrollbar_drag_persists_scroll"));
+    const auto css = tempDir.Path() / "ui_regression_scrollbar_drag_persists_scroll.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1109,8 +1112,8 @@ TEST(UIRegressions, ScrollbarDragDoesNotResetScrollY)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_scrollbar_drag_persists_scroll_y.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_scrollbar_drag_persists_scroll_y"));
+    const auto css = tempDir.Path() / "ui_regression_scrollbar_drag_persists_scroll_y.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1181,8 +1184,8 @@ TEST(UIRegressions, WordBreakBreakAllWrapsLabelHeight)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_word_break_wraps_label.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_word_break_wraps_label"));
+    const auto css = tempDir.Path() / "ui_regression_word_break_wraps_label.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1198,8 +1201,8 @@ TEST(UIRegressions, WordBreakBreakAllWrapsLabelHeight)
 
     UIElement* rootEl = ui.GetRootElement();
     ASSERT_NE(rootEl, nullptr);
-    UIElement* nowrapEl = rootEl->FindById("nowrap"_sid);
-    UIElement* wrapEl = rootEl->FindById("wrap"_sid);
+    UIElement* nowrapEl = rootEl->FindById("nowrap");
+    UIElement* wrapEl = rootEl->FindById("wrap");
     ASSERT_NE(nowrapEl, nullptr);
     ASSERT_NE(wrapEl, nullptr);
     EXPECT_EQ(wrapEl->GetResolvedStyle().Visual.WordBreak, WordBreak::BreakAll);
@@ -1237,8 +1240,8 @@ TEST(UIRegressions, DeferredRelayoutReflowsSiblingAfterDisplayNoneCollapse)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_deferred_relayout_collapse.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_deferred_relayout_collapse"));
+    const auto css = tempDir.Path() / "ui_regression_deferred_relayout_collapse.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1254,7 +1257,7 @@ TEST(UIRegressions, DeferredRelayoutReflowsSiblingAfterDisplayNoneCollapse)
 
     UIElement* rootEl = ui.GetRootElement();
     ASSERT_NE(rootEl, nullptr);
-    UIElement* bEl = rootEl->FindById("b"_sid);
+    UIElement* bEl = rootEl->FindById("b");
     ASSERT_NE(bEl, nullptr);
     const float bYBefore = bEl->GetLayoutY();
     EXPECT_GT(bYBefore, 30.0f) << "precondition: b should sit below a (~40px)";
@@ -1295,8 +1298,8 @@ TEST(UIRegressions, DeferredRelayoutReflowsSiblingAfterSelfResize)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_deferred_relayout_resize.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_deferred_relayout_resize"));
+    const auto css = tempDir.Path() / "ui_regression_deferred_relayout_resize.css";
     {
         std::ofstream f(css);
         f << R"(
@@ -1311,13 +1314,13 @@ TEST(UIRegressions, DeferredRelayoutReflowsSiblingAfterSelfResize)
 
     UIElement* rootEl = ui.GetRootElement();
     ASSERT_NE(rootEl, nullptr);
-    UIElement* bEl = rootEl->FindById("b"_sid);
+    UIElement* bEl = rootEl->FindById("b");
     ASSERT_NE(bEl, nullptr);
     const float bYBefore = bEl->GetLayoutY();
 
     // Grow 'a' AFTER the initial solve via a direct Style::Height override (the CurvePresetPicker
     // path); mark only 'a' LayoutDirty -- no parent poke, no RequestRelayout.
-    aPtr->Style().Set(Style::Height, StyleLength::Px(120.0f));
+    aPtr->Overrides().Set(Style::Height, StyleLength::Px(120.0f));
     aPtr->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
 
     ui.Update(0.0f, /*interactive=*/false);
@@ -1329,9 +1332,12 @@ TEST(UIRegressions, DeferredRelayoutReflowsSiblingAfterSelfResize)
 
 
 
-// A search bar in a high-z modal: the clear button sits on top of the full-width TextField.
-// A click on the clear button runs its OnClick and clears the field; the field's text
-// routing does not take the click.
+// Repro for the project-picker search bar: the absolutely-positioned clear
+// button (z-index 20) sits on top of the TextField (inline z-index 10, width
+// 100%). Clicking the X must reach the Button and run its OnClick, clearing
+// the field — not get swallowed by the field's text-editing pointer routing.
+// Mirrors BuildPanelSearchBar wiring + ProjectFolderPickerModal's inline
+// overrides and root mouse-down focus handler.
 TEST(UIRegressions, SearchBarClearButtonClickClearsFieldOverText)
 {
     auto* dev = SharedHeadlessDevice();
@@ -1382,19 +1388,21 @@ TEST(UIRegressions, SearchBarClearButtonClickClearsFieldOverText)
     clearPtr->RegisterEventHandler(kEventMouseDown, [&](UIEvent&) { ++clearMouseDown; });
 
     // Picker's inline overrides.
-    fieldPtr->Style()
+    fieldPtr->Overrides()
         .Set(Style::Width, StyleLength::Percent(100.0f))
         .Set(Style::Height, StyleLength::Percent(100.0f))
         .Set(Style::MinWidth, StyleLength::Px(0.0f))
         .Set(Style::FlexGrow, 1.0f)
         .Set(Style::FlexShrink, 1.0f)
         .Set(Style::Position, PositionType::Relative)
-        // An interactive element in a high-z modal sets its z-index above the modal's.
-        // The panel-search CSS values (10/20) lose the flat hit test to the modal's containers.
+        // The fix mirrored in ProjectFolderPickerModal: interactive elements
+        // inside a high-z modal context must set z-index above that context,
+        // not the small local values from the panel-search CSS (10/20) —
+        // those lose the flat hit test to every plain container in the modal.
         .Set(Style::ZIndex, 10002)
         .Set(Style::PointerEvents, true);
     clearPtr->SetFocusProxy(fieldPtr);
-    clearPtr->Style().Set(Style::ZIndex, 10003);
+    clearPtr->Overrides().Set(Style::ZIndex, 10003);
 
     // Picker's root mouse-down focus handler.
     searchBarPtr->RegisterEventHandler(kEventMouseDown, [&, fieldPtr](UIEvent& e) {
@@ -1405,14 +1413,16 @@ TEST(UIRegressions, SearchBarClearButtonClickClearsFieldOverText)
         }
     });
 
-    // The modal wrapper: root z-index 10000, window z-index 10001. The hit test
-    // compares z flat across stacking contexts.
+    // Modal wrapper mirroring ProjectFolderPickerModal: root z-index 10000,
+    // window z-index 10001. Hit-testing compares z flat across stacking
+    // contexts, so a small explicit z-index on a descendant loses to the
+    // modal context.
     auto modal = std::make_unique<UIElement>();
     modal->SetId("modal");
-    modal->Style().Set(Style::ZIndex, 10000);
+    modal->Overrides().Set(Style::ZIndex, 10000);
     auto window = std::make_unique<UIElement>();
     window->SetId("modal-window");
-    window->Style().Set(Style::ZIndex, 10001);
+    window->Overrides().Set(Style::ZIndex, 10001);
     window->AddChild(std::move(searchBar));
     modal->AddChild(std::move(window));
     root->AddChild(std::move(modal));
@@ -1420,8 +1430,8 @@ TEST(UIRegressions, SearchBarClearButtonClickClearsFieldOverText)
     UIManager ui(dev);
     ui.SetRoot(std::move(root));
 
-    const auto tmpDir = std::filesystem::temp_directory_path();
-    const auto css = tmpDir / "ui_regression_search_clear.css";
+    const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_regression_search_clear"));
+    const auto css = tempDir.Path() / "ui_regression_search_clear.css";
     {
         std::ofstream f(css);
         f << R"(

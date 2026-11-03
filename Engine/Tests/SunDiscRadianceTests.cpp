@@ -40,11 +40,9 @@
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 
 #include "Platform/Shell.h"
-#include "Components/Rendering/LightPhotometry.h"
-#include "Rendering/Sky/AtmosphereTransmittance.h"
 
 #include "TestDeviceHelper.h"
 
@@ -72,11 +70,9 @@ struct ProbePC
 
 // The sun's apparent angular radius from Earth, radians — the value SkyRenderNode uploads.
 constexpr float kSunAngularRadius = 0.004651f;
-// Above-atmosphere irradiance of a 100 klx sun on the engine's unitless scale, as the sky uploads it:
-// 100000 / 203 (LightPhotometry.h) times the sky's ground-to-top-of-atmosphere lift.
-const float kShippedSunIrradiance =
-    100000.0f / Components::kReferenceWhiteNits *
-    Rendering::SkySourceIlluminanceScale(Rendering::ScatteringAtmosphere());
+// Above-atmosphere irradiance of a 100 klx sun on the engine's unitless scale: 100000 / 203
+// (LightPhotometry.h), times the sky's ground-to-TOA anchor of 1.33.
+constexpr float kShippedSunIrradiance = 655.2f;
 // The profile is exactly zero past the outside of the limb, at (1 + GE_SUN_DISC_LIMB_FRACTION)
 // R = 1.25 R, so a 2 R sweep captures all of it and leaves margin to see that it stays zero.
 // Sweeping further buys nothing and costs limb resolution: at 2 R the samples below resolve

@@ -1,8 +1,7 @@
 #include "Assets/DownloadPillOverlay.h"
-#include "Assets/Polyhaven/PolyhavenDownloadManager.h"
-#include "Assets/Polyhaven/PolyhavenService.h"
+#include "Assets/PolyhavenDownloadManager.h"
+#include "Assets/PolyhavenService.h"
 #include "ECS/Entity.h"
-#include "Mathematics/Interpolation.h"
 #include "UI/Controls/Label.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/StyleProperties.h"
@@ -22,7 +21,7 @@ namespace
 {
 int PercentOf(float fraction)
 {
-    return static_cast<int>(Math::Clamp01(fraction) * 100.0f + 0.5f);
+    return static_cast<int>(std::clamp(fraction, 0.0f, 1.0f) * 100.0f + 0.5f);
 }
 } // namespace
 
@@ -42,7 +41,7 @@ void DownloadPillOverlay::Build(const std::string& id, Widgets& out)
     auto pill = std::make_unique<UIElement>();
     pill->SetId(id);
     pill->AddClass("download-pill");
-    pill->Style()
+    pill->Overrides()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PointerEvents, false)
         .Set(Style::Opacity, 0.0f);
@@ -91,12 +90,12 @@ void DownloadPillOverlay::ApplyState(Widgets& w, const std::string& name, float 
     if (w.Fill)
     {
         // Indeterminate until the file count is known: a short teaser fill.
-        const float f = hasFraction ? Math::Clamp01(fraction) : 0.12f;
-        w.Fill->Style().Set(Style::Width, StyleLength::Percent(f * 100.0f));
+        const float f = hasFraction ? std::clamp(fraction, 0.0f, 1.0f) : 0.12f;
+        w.Fill->Overrides().Set(Style::Width, StyleLength::Percent(f * 100.0f));
     }
 
     // hostX/Y are the pill's absolute left/top within the host.
-    w.Pill->Style()
+    w.Pill->Overrides()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(hostX))
         .Set(Style::PositionTop, StyleLength::Px(hostY))
@@ -126,7 +125,7 @@ void DownloadPillOverlay::ApplyImage(Widgets& w, const std::string& slug)
 void DownloadPillOverlay::Hide(Widgets& w)
 {
     if (w.Pill)
-        w.Pill->Style().Set(Style::Opacity, 0.0f);
+        w.Pill->Overrides().Set(Style::Opacity, 0.0f);
     // Force the preview image to re-apply when the pill next shows a slug.
     w.ImageSlug.clear();
     w.LastPercent = -1000;

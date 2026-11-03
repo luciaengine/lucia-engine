@@ -26,7 +26,7 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Engine/Rendering/WorldDrawTypes.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/GPUInstanceWorldKey.h"
@@ -248,16 +248,19 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
 
     const CameraId cameraId = rs.Views().AllocateCamera("MaskVertexAlpha.Camera");
     CameraData camera{};
-    camera.view = Mathematics::Matrix4x4::Identity();
-    camera.proj = Mathematics::Matrix4x4::Identity();
-    camera.viewProj = Mathematics::Matrix4x4::Identity();
+    for (int i = 0; i < 16; i += 5)
+    {
+        camera.view[i] = 1.0f;
+        camera.proj[i] = 1.0f;
+        camera.viewProj[i] = 1.0f;
+    }
     rs.Views().SetCameraData(cameraId, camera);
     const ViewId viewId = rs.Views().AllocateView("MaskVertexAlpha.View", cameraId);
-    rs.Views().SetViewRenderLayerMask(viewId, GameEngine::Rendering::RenderLayerMask::Default());
+    rs.Views().SetViewRenderLayerMask(viewId, 1u);
     rs.Views().SetViewWorldId(viewId, kWorldId);
     ViewClearConfig clear{};
     clear.clearColor = true;
-    clear.clearColorValue.a = 1.0f;
+    clear.clearColorValue[3] = 1.0f;
     clear.clearDepth = true;
     clear.clearDepthValue = 0.0f;
     rs.Views().SetViewTargets(viewId, 0, 0, 0, clear);
@@ -265,8 +268,8 @@ void DrawTheCardOverTheFloor(IDevice* device, const MaterialDocument& cardDocume
     const uint32_t cardInstance = AddInstance(rs, *cardEntry, *card, cardMesh);
     const uint32_t floorInstance = AddInstance(rs, *floorEntry, *floor, floorMesh);
     std::array<WorldSubmissionRecord, 2> submissions{};
-    submissions[0] = {viewId, cardHandle, card, cardInstance, RenderLayerMask::Default(), 0u};
-    submissions[1] = {viewId, floorHandle, floor, floorInstance, RenderLayerMask::Default(), 0u};
+    submissions[0] = {viewId, cardHandle, card, cardInstance, 0xFFFFFFFFu, 0u};
+    submissions[1] = {viewId, floorHandle, floor, floorInstance, 0xFFFFFFFFu, 0u};
 
     FramePools pools(device);
     RenderGraph::RGFrame frame(device, &pools.Persistent, &pools.Transient, &pools.Ring);

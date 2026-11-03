@@ -1,0 +1,132 @@
+/* Which image each tilemapper button's icon is.
+ *
+ * Sole authority for the tile palette / tile set / tile rules button icons.
+ * Nothing in C++ names an image file: a panel adds a `tm-glyph-*` class next to
+ * one of the two shapes below, and the URL is resolved here through the cascade.
+ *
+ * Two shapes:
+ *   .tm-icon        icon-only button — the glyph is the whole control, the
+ *                   tooltip carries the name. For compact tool/verb rows.
+ *   .tm-icon-label  glyph inset at the left of a labelled button, for actions
+ *                   whose target is not guessable from the glyph alone.
+ *
+ * The panel roots are named explicitly so these win over the 2-class button
+ * chrome in controls/Button.css. The rules panel root carries both
+ * `tile-rules-panel` and `tile-palette-panel`, so the palette selectors already
+ * reach it and it needs no separate list.
+ *
+ * Artwork is authored white at 32x32 (Icons/Tile*.svg) and coloured here with
+ * background-image-tint, the same opaque-tint scale the top toolbar and scene
+ * view use — element opacity would change apparent weight with the blend space.
+ */
+
+.tile-palette-panel .tm-icon,
+.tile-palette-panel button.tm-icon,
+.tile-palette-panel .button.tm-icon,
+.tileset-editor-panel .tm-icon,
+.tileset-editor-panel button.tm-icon,
+.tileset-editor-panel .button.tm-icon {
+	width: 24px;
+	height: 24px;
+	min-width: 24px;
+	min-height: 24px;
+	padding: 0px;
+	background-size: 20px 20px;
+	background-repeat: no-repeat;
+	background-position: center;
+	background-image-tint: var(--ui_icon_tint_standard);
+	opacity: 1.0;
+}
+
+.tile-palette-panel .tm-icon:hover,
+.tile-palette-panel button.tm-icon:hover,
+.tile-palette-panel .button.tm-icon:hover,
+.tileset-editor-panel .tm-icon:hover,
+.tileset-editor-panel button.tm-icon:hover,
+.tileset-editor-panel .button.tm-icon:hover {
+	background-image-tint: var(--ui_icon_tint_hover);
+}
+
+/* Leaves room for the glyph at the left without moving the text off centre far
+   enough to break the wrapping rows these buttons sit in. */
+.tile-palette-panel .tm-icon-label,
+.tile-palette-panel button.tm-icon-label,
+.tile-palette-panel .button.tm-icon-label,
+.tileset-editor-panel .tm-icon-label,
+.tileset-editor-panel button.tm-icon-label,
+.tileset-editor-panel .button.tm-icon-label {
+	/* Icon spans 6..26 (position 6 + size 20), so the label starts at 32 to keep
+	   the 6px gap it had at the old 14px size. A 24px inset overlapped it. */
+	padding-left: 32px;
+	background-size: 20px 20px;
+	background-repeat: no-repeat;
+	/* Optically centred on the label rather than on the box: the line box
+	   reserves descender space, so its ink sits ~1px below the padding-box
+	   centre and a geometric 50% would read high next to the text. */
+	background-position: 6px 58%;
+	background-image-tint: var(--ui_icon_tint_standard);
+	opacity: 1.0;
+}
+
+.tile-palette-panel .tm-icon-label:hover,
+.tile-palette-panel button.tm-icon-label:hover,
+.tile-palette-panel .button.tm-icon-label:hover,
+.tileset-editor-panel .tm-icon-label:hover,
+.tileset-editor-panel button.tm-icon-label:hover,
+.tileset-editor-panel .button.tm-icon-label:hover {
+	background-image-tint: var(--ui_icon_tint_hover);
+}
+
+/* Palette tools */
+.tm-glyph-brush { background-image: url("editor:Icons/TileToolBrush.svg"); }
+.tm-glyph-eraser { background-image: url("editor:Icons/TileToolEraser.svg"); }
+.tm-glyph-picker { background-image: url("editor:Icons/TileToolPicker.svg"); }
+.tm-glyph-fill { background-image: url("editor:Icons/TileToolFill.svg"); }
+.tm-glyph-rect { background-image: url("editor:Icons/TileToolRect.svg"); }
+.tm-glyph-marquee { background-image: url("editor:Icons/TileToolMarquee.svg"); }
+.tm-glyph-terrain { background-image: url("editor:Icons/TileToolTerrain.svg"); }
+.tm-glyph-intgrid { background-image: url("editor:Icons/TileToolIntGrid.svg"); }
+
+/* Stamp transforms */
+.tm-glyph-flip-h { background-image: url("editor:Icons/TileFlipHorizontal.svg"); }
+.tm-glyph-flip-v { background-image: url("editor:Icons/TileFlipVertical.svg"); }
+.tm-glyph-rotate { background-image: url("editor:Icons/TileRotate.svg"); }
+
+/* Layer and asset actions */
+.tm-glyph-add-layer { background-image: url("editor:Icons/TileAddLayer.svg"); }
+.tm-glyph-add-intgrid-layer { background-image: url("editor:Icons/TileAddIntGridLayer.svg"); }
+.tm-glyph-new-map { background-image: url("editor:Icons/TileNewMap.svg"); }
+.tm-glyph-rename { background-image: url("editor:Icons/TileRename.svg"); }
+.tm-glyph-apply { background-image: url("editor:Icons/TileSetApply.svg"); }
+
+/* Rule authoring */
+.tm-glyph-wand { background-image: url("editor:Icons/TileWand.svg"); }
+.tm-glyph-from-palette { background-image: url("editor:Icons/TileFromPalette.svg"); }
+.tm-glyph-colour { background-image: url("editor:Icons/TileColorCycle.svg"); }
+.tm-glyph-move-up { background-image: url("editor:Icons/TileMoveUp.svg"); }
+.tm-glyph-move-down { background-image: url("editor:Icons/TileMoveDown.svg"); }
+
+/* Generic verbs reuse the editor's existing glyphs rather than growing a second
+   visual vocabulary for add / remove / save / dismiss. */
+.tm-glyph-add { background-image: url("editor:Icons/plus.png"); }
+.tm-glyph-remove { background-image: url("editor:Icons/trash.png"); }
+.tm-glyph-save { background-image: url("editor:Icons/save.svg"); }
+.tm-glyph-close { background-image: url("editor:Icons/xclose.png"); }
+
+/* trash.png is the one borrowed glyph that is not square (32x28); a square
+   background-size would stretch it 14% taller than it was drawn, so both shapes
+   carry its 32:28 ratio at the 20px nominal width. Scoped to the panel roots so
+   it outranks the shape rules above rather than tying with them. */
+.tile-palette-panel .button.tm-icon.tm-glyph-remove,
+.tile-palette-panel button.tm-icon.tm-glyph-remove,
+.tileset-editor-panel .button.tm-icon.tm-glyph-remove,
+.tileset-editor-panel button.tm-icon.tm-glyph-remove {
+	background-size: 20px 17.5px;
+}
+
+.tile-palette-panel .button.tm-icon-label.tm-glyph-remove,
+.tile-palette-panel button.tm-icon-label.tm-glyph-remove,
+.tileset-editor-panel .button.tm-icon-label.tm-glyph-remove,
+.tileset-editor-panel button.tm-icon-label.tm-glyph-remove {
+	background-size: 20px 17.5px;
+}

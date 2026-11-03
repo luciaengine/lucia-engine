@@ -7,9 +7,9 @@
 // owns the world read. Quiescent when no live Terrain entity exists (feature goes
 // inactive -> the node early-outs, no CBT passes recorded).
 
-#include "CBTTerrain/CBTSphereFaceMap.h" // SphereEditRegions (a member)
 #include "ECS/ECS.h"     // EntityHandle (active-planet identity for the sculpt reset)
 #include "ECS/Systems.h"
+#include "Types/ScopedSubscription.h"
 #include "Types/Types.h"
 
 #include <array>
@@ -34,6 +34,7 @@ class TerrainRenderFeature;
 namespace GameEngine::CBTTerrain
 {
 struct CBTClassifyDesc;
+struct SphereEditRegions;
 } // namespace GameEngine::CBTTerrain
 
 namespace GameEngine::CBTTerrainECS
@@ -64,9 +65,19 @@ class CBTUpdateSystem : public ECS::ISystem
     void ConsumeDirtyRegion(ECS::World& world, uint64 updateRecordCount,
                             CBTTerrain::CBTClassifyDesc& classify);
 
-    // The sphere's analogue of ConsumeDirtyRegion: each changed face's face-local rect joins its face's pending
-    // union (`regions` is the clear-on-read drain of TerrainService::ConsumeSphereSculptDirtyRegions), and every
-    // pending face goes to Classify in the same update until an update records its rect unchanged. Public for tests.
+    // Spherical analogue of ConsumeDirtyRegion (plan §planet-editing): drives Classify's
+    // (DirtyFace + face-local UV rect) reclassification from an edit's touched regions. The GPU
+    // Classify push carries ONE (face,rect); a dab or modifier near a cube edge touches two faces
+    // (three at a corner), and EVERY touched face's bisectors must re-evaluate or the neighbour
+    // face keeps its pre-edit heights (a cross-face seam that heals only when the exact edge is
+    // brushed again). So each touched face is accumulated into a per-face dirty set (union) and
+    // DRAINED one face per recorded CBT.Update, round-robin — the neighbour face reclassifies on
+    // the very next update, no re-brush needed. `regions` is the clear-on-read drain from
+    // TerrainService::ConsumeSphereSculptDirtyRegions (the UNION of every edit since the last
+    // frame, so a fast stroke's several dabs are all ingested, not just the last); every non-empty
+    // call is new content and is ingested. The same update-record confirmation as the planar path
+    // re-arms a face whose update did not record. `sphereVersion` only drives SphereSculptEnabled
+    // (turns on for good once any edit lands, gating the VertexEval sample). Public for unit tests.
     void ConsumeSphereSculpt(uint64 sphereVersion, uint64 updateRecordCount,
                              const CBTTerrain::SphereEditRegions& regions,
                              CBTTerrain::CBTClassifyDesc& classify);
@@ -104,12 +115,24 @@ class CBTUpdateSystem : public ECS::ISystem
     // unrendered. Public + static so it is directly unit-testable (no RenderServices).
     static bool ComputeTerrainActive(ECS::World& world);
 
+    // The world's terrain term in the reflection-probe content digest: 0 without an
+    // active terrain, otherwise a hash of what identifies the rendered terrain —
+    // domain, source asset and base source, sphere sculpt asset, material library,
+    // shadow casting and render layers. Continuous shape values (size, height scale,
+    // planet radius, relief) and sculpt strokes are left out so an inspector drag or
+    // a brush stroke does not recapture a "Once" probe every frame. Public + static
+    // so it is directly unit-testable (no RenderServices).
+    static uint64 ComputeTerrainContentDigest(bool active, const Components::Terrain& terrain);
+
   private:
     // Emits the one-shot Terrain.Provision signal (domain + radius/size + derived
     // MaxDepth) once a config settles, silent otherwise (debounces inspector drags).
     void LogProvisionSignal(const Components::Terrain& tuning, uint32 resolvedMaxDepth);
 
     Engine::Renderer::RenderServices* m_RenderServices = nullptr;
+    // Keeps this world's entry in the feature's content-digest table while the
+    // system (and so its world) lives.
+    ScopedSubscription m_WorldContentTracking;
 
     // Provision-signal debounce keys (hash of domain + radius/size + depth). A real
     // key is always >= 2^33, so these small distinct sentinels never collide: Settled
@@ -139,17 +162,26 @@ class CBTUpdateSystem : public ECS::ISystem
     };
     std::unordered_map<uint32, RegionCursor> m_RegionCursors;
 
-    // The sphere's per-face analogue of the planar RegionCursor: each face's pending rect union, and
-    // the face rects of the last push with the update-record count seen then. A face whose pushed
-    // rect recorded unchanged stops pending.
+    // Sphere sculpt cursor (plan §planet-editing) — the per-face analogue of the planar
+    // RegionCursor. An edit near a cube edge dirties two faces (three at a corner); the GPU
+    // Classify push reclassifies one face at a time, so the touched faces are accumulated here
+    // (per-face rect union) and drained one per recorded CBT.Update, round-robin. The neighbour
+    // face reclassifies on the next update — no re-brush — closing the cross-face seam. Each face
+    // is re-armed until an update records its rect (the no-scene-view guard), and a face whose
+    // pushed rect grew before it was recorded is re-pushed at the grown extent, not dropped.
+    static constexpr uint32 kSphereFaceCount = 6u; // the six cube faces (== CBTTerrain::kCubeFaceCount)
+
     struct SphereFaceDirty
     {
         bool Pending = false; // needs reclassification (union since the face was last recorded)
         float MinU = 0.0f, MinV = 0.0f, MaxU = 0.0f, MaxV = 0.0f;
     };
-    std::array<SphereFaceDirty, CBTTerrain::kCubeFaceCount> m_SphereFaces{};
-    CBTTerrain::SphereEditRegions m_SpherePushed{};
-    uint64 m_SpherePushedRecordCount = 0;
+    std::array<SphereFaceDirty, kSphereFaceCount> m_SphereFaces{};
+    int32 m_SphereInFlightFace = -1;     // face pushed but not yet confirmed recorded (-1 = none)
+    uint64 m_SphereInFlightRecordCount = 0;
+    float m_SphereInFlightMinU = 0.0f, m_SphereInFlightMinV = 0.0f; // snapshot of the pushed rect,
+    float m_SphereInFlightMaxU = 0.0f, m_SphereInFlightMaxV = 0.0f; // to detect growth before record
+    uint32 m_SphereDrainCursor = 0;      // round-robin start so no face starves under a fast drag
 
     // Force a full-pool VertexEval refresh while a planet's editable sculpt is actively changing.
     // The region-scoped MODIFIED re-eval (the dirty rect above) only re-evaluates the bisectors the

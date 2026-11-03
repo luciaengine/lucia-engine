@@ -6,9 +6,11 @@
 
 #include "Thumbnails/TextureThumbnailHandler.h"
 
-#include "Image/Encode.h"
-#include "Image/ImageHeader.h"
 #include "JobSystem/WorkStealingThreadPool.h"
+#include "TestTempDir.h"
+
+#include <stb_image.h>
+#include <stb_image_write.h>
 
 #include <gtest/gtest.h>
 
@@ -39,18 +41,16 @@ struct HandlerHarness
     TextureThumbnailHandler Handler{Pool};
 };
 
-// One temp tree per test process AND per test, so parallel ctest jobs and
-// repeated runs never share a cache root.
+// One temp tree per test, all under one per-process directory removed at process
+// exit, so parallel ctest jobs and repeated runs never share a cache root.
 std::filesystem::path MakeTempRoot(const char* label)
 {
+    static const GameEngine::TestUtils::ScopedTempDir processRoot(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge-texthumb"));
     static std::atomic<uint32_t> counter{0};
-    const auto pid = static_cast<uint64_t>(
-        std::hash<std::thread::id>{}(std::this_thread::get_id()));
-    std::filesystem::path root = std::filesystem::temp_directory_path() /
-        ("ge-texthumb-" + std::string(label) + "-" + std::to_string(pid) + "-" +
-         std::to_string(counter.fetch_add(1)));
+    std::filesystem::path root =
+        processRoot.Path() / (std::string(label) + "-" + std::to_string(counter.fetch_add(1)));
     std::error_code ec;
-    std::filesystem::remove_all(root, ec);
     std::filesystem::create_directories(root, ec);
     return root;
 }
@@ -73,8 +73,7 @@ bool WriteTestPng(const std::filesystem::path& path, int width, int height)
     }
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
-    return GameEngine::Image::WritePngFile(path, pixels, static_cast<uint32_t>(width),
-                                           static_cast<uint32_t>(height));
+    return stbi_write_png(path.string().c_str(), width, height, 4, pixels.data(), width * 4) != 0;
 }
 
 void WriteBytes(const std::filesystem::path& path, const std::string& content)
@@ -141,8 +140,10 @@ struct ImageSize
 
 ImageSize ReadPngSize(const std::filesystem::path& path)
 {
-    const GameEngine::Image::ImageHeader header = GameEngine::Image::ReadImageHeader(path);
-    return ImageSize{static_cast<int>(header.Width), static_cast<int>(header.Height), header.Valid};
+    ImageSize size;
+    int channels = 0;
+    size.Valid = stbi_info(path.string().c_str(), &size.Width, &size.Height, &channels) != 0;
+    return size;
 }
 
 // Rewrites a PNG's IHDR dimensions in place. A real image of these dimensions
@@ -563,45 +564,6 @@ TEST(TextureThumbnailHandler, RequestsLargerThanTheCacheAreDeclined)
     EXPECT_EQ(small, cached.generic_string());
 }
 
-// An image shown inline (a capture in the AI Assistant) gets its own copy at
-// kInlineImageLongEdge, beside the tile image, which stays at kThumbLongEdge;
-// a source no larger than the inline copy is answered with itself. The preview
-// panes' requests are untouched (RequestsLargerThanTheCacheAreDeclined).
-TEST(TextureThumbnailHandler, AnInlineImageIsCachedAtItsOwnSizeBesideTheTile)
-{
-    const auto root = MakeTempRoot("inline");
-    const auto source = root / "Assets" / "capture.png";
-    const auto small = root / "Assets" / "small.png";
-    const auto cacheRoot = root / ".Editor" / "Thumbnails";
-    ASSERT_TRUE(WriteTestPng(source, 2048, 1024));
-    ASSERT_TRUE(WriteTestPng(small, 800, 600));
-
-    HandlerHarness harness;
-    TextureThumbnailHandler& handler = harness.Handler;
-    handler.SetCacheRoot(cacheRoot);
-
-    ReadyRecorder inlineImage;
-    EXPECT_TRUE(handler.GetOrRequestInlineImage(source, inlineImage.Callback()).empty());
-    ASSERT_TRUE(inlineImage.WaitForCount(1));
-    const ImageSize inlineSize = ReadPngSize(inlineImage.Results[0]);
-    ASSERT_TRUE(inlineSize.Valid) << inlineImage.Results[0];
-    EXPECT_EQ(inlineSize.Width, TextureThumbnailHandler::kInlineImageLongEdge);
-    EXPECT_EQ(inlineSize.Height, TextureThumbnailHandler::kInlineImageLongEdge / 2);
-
-    ReadyRecorder tile;
-    handler.GetOrRequest(source, 128, tile.Callback(), false);
-    ASSERT_TRUE(tile.WaitForCount(1));
-    const auto tilePath = cacheRoot / TextureThumbnailHandler::MakeCacheFileName(source);
-    EXPECT_EQ(tile.Results[0], tilePath.generic_string());
-    EXPECT_EQ(ReadPngSize(tilePath).Width, TextureThumbnailHandler::kThumbLongEdge) << "the tile image is unchanged";
-    EXPECT_NE(tile.Results[0], inlineImage.Results[0]);
-
-    ReadyRecorder smallImage;
-    handler.GetOrRequestInlineImage(small, smallImage.Callback());
-    ASSERT_TRUE(smallImage.WaitForCount(1));
-    EXPECT_EQ(smallImage.Results[0], small.generic_string()) << "a source no larger than the copy is shown as it is";
-}
-
 // A cache entry older than its source is stale. The editor's other thumbnail
 // caches key on the path alone and never notice; textures are edited in place
 // constantly, so this one checks the timestamp it already has to hand.
@@ -652,10 +614,10 @@ TEST(TextureThumbnailHandler, OversizedSourceIsRefusedWithoutDecoding)
     ASSERT_TRUE(WriteTestPng(source, 8, 8));
     ASSERT_TRUE(ForgePngDimensions(source, 8192, 8192)); // 67 Mpx, past the budget
 
-    const ImageSize forged = ReadPngSize(source);
-    ASSERT_TRUE(forged.Valid);
-    ASSERT_EQ(static_cast<uint64_t>(forged.Width) * forged.Height, 8192ull * 8192ull);
-    ASSERT_GT(static_cast<uint64_t>(forged.Width) * forged.Height, TextureThumbnailHandler::kMaxSourcePixels);
+    int w = 0, h = 0, c = 0;
+    ASSERT_TRUE(stbi_info(source.string().c_str(), &w, &h, &c));
+    ASSERT_EQ(static_cast<uint64_t>(w) * h, 8192ull * 8192ull);
+    ASSERT_GT(static_cast<uint64_t>(w) * h, TextureThumbnailHandler::kMaxSourcePixels);
 
     HandlerHarness harness;
     TextureThumbnailHandler& handler = harness.Handler;

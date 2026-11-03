@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Components/AssetRef.h"
-#include "Rendering/RenderLayerMask.h"
 #include "Types/Types.h"
 
 #include <limits>
@@ -46,7 +45,7 @@ enum class TerrainDebugView : uint32
                      // fallback) — visualizes the fragment splat/normal resolve path (quality-sweep slice 1)
 };
 
-// "No sea level" for Terrain::SeaLevel. The lowest finite float, as SplineExtrude::FloorHeight
+// "No sea level" for Terrain::SeaLevel. The lowest finite float, as SplineExtrude::SeaLevelFloor
 // chose it: every finite height is above it, so the renderer's "corner below the water" test is
 // simply never true and the unset state needs no flag and no equality test.
 inline constexpr float32 kNoTerrainSeaLevel = std::numeric_limits<float32>::lowest();
@@ -62,7 +61,6 @@ inline constexpr float32 kDefaultTerrainTargetPixelError = 11.0f;
 // data (heightfield, quadtree, GPU textures, the CBT bisector pool) is owned by
 // TerrainService / the CBT render feature; this component stores only
 // lightweight configuration and runtime handles into those services.
-// @ge-no-add  created by the terrain tools, which build its data with it
 struct Terrain
 {
     // ---- Base source ----
@@ -130,9 +128,6 @@ struct Terrain
     uint32 TerrainDataGeneration = 0;
     uint32 TiledTerrainHandle = 0;     // TiledTerrainData (tile management, 0 = not tiled)
     uint32 TiledTerrainGeneration = 0;
-    // [DoNotSerialize] The first extraction frame that visited this terrain, 0 until then. The earliest
-    // terrain draws (TerrainECS::DrawOrderKey), so a terrain added later never takes the draw.
-    uint32 DrawOrderFrame = 0;
     // [DoNotSerialize] The scene asset this terrain was loaded from, set by its scene schema
     // at load. With the entity's SceneEntityTag it names the terrain's one baked-terrain
     // cache artifact (TerrainBakeCache.h). Null for a terrain no saved scene loaded, which
@@ -178,7 +173,7 @@ struct Terrain
     uint32 LayerHexTiling = 0u;
 
     // ---- Rendering ----
-    Rendering::RenderLayerMask RenderLayers;
+    uint32 RenderLayerMask = 1u;
     bool CastShadows = true;
     bool ReceiveShadows = true;
 };

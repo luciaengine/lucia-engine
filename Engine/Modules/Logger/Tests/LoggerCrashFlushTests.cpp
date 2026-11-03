@@ -38,7 +38,7 @@ class BlockingSink : public LogSink
 
     void Flush() override {}
     bool ShouldLog(LogLevel) const override { return true; }
-    std::string GetName() const override { return "BlockingSink"; }
+    String GetName() const override { return "BlockingSink"; }
 
     bool IsInsideWrite() const { return m_InsideWrite.load(std::memory_order_acquire); }
 

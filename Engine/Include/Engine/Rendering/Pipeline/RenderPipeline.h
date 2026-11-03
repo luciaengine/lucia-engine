@@ -2,10 +2,8 @@
 
 #include "Assets/RenderPipelineAsset.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Rendering/Camera/CameraTypes.h"
-#include "Types/FlatMap.h"
+#include "Rendering/CameraTypes.h"
 
-#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -214,13 +212,15 @@ class RenderPipelineInstance
         std::function<void(Rendering::RenderGraph::RGFrame&, RenderPipelineInstance&)>;
     void DeferDeclare(DeferredDeclareFn fn) { m_DeferredDeclares.push_back(std::move(fn)); }
 
+    // UI hosts register before the first fullscreen post-process node so the
+    // camera's effect chain sees the game UI in the same image as the scene.
+    using BeforePostProcessFn = std::function<void(ViewDeclare&)>;
+    void SetBeforePostProcessCallback(const void* owner, BeforePostProcessFn fn)
+    {
+        if (owner && fn)
+            m_BeforePostProcessCallbacks[owner] = std::move(fn);
+    }
     Engine::Renderer::RenderServices& GetRenderServices() const { return m_Rs; }
-
-    // The view's ExposureHistory buffer for a texture holding scene colour stored at the frame's
-    // pre-exposure P (PipelineFrameResources::PreExposedTextures), by render graph resource id in the
-    // frame Declare last ran. Invalid for any other texture, and when the view resolved no
-    // ExposureHistory.
-    Rendering::RenderGraph::RGBuffer FindPreExposureSource(uint32_t textureResourceId) const;
 
     // Collect interned graphics-pipeline ids from all nodes that have a base
     // pipeline. Used for PSO pre-warming.
@@ -228,11 +228,6 @@ class RenderPipelineInstance
 
   private:
     friend struct ViewDeclare;
-
-    // Imports and publishes Names::View::BloomSampleDelta, a pool texture of the single-sample resolve's
-    // size and format. Nothing is created when `resolve` is invalid or multisampled.
-    void DeclareBloomSampleDelta(Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId,
-                                 Rendering::RenderGraph::RGTexture resolve);
 
     // RenderGraph path: rg-free node (re)instantiation on blueprint dirty (the
     // EnsureBuilt branch is old-graph-coupled via node->Disable(rg); a
@@ -263,14 +258,6 @@ class RenderPipelineInstance
     PipelineBufferBindingRG MaterializeBuffer(Rendering::RenderGraph::RGFrame& frame,
                                               Rendering::ViewId viewId, const std::string& name,
                                               uint32_t renderW, uint32_t renderH);
-    // A "perFrameCopies" buffer: this frame's copy, which starts as the previous frame's contents.
-    PipelineBufferBindingRG MaterializeBufferCopies(Rendering::RenderGraph::RGFrame& frame,
-                                                    const std::string& name, const std::string& poolName,
-                                                    Rendering::BufferDesc desc);
-    static void DeclareBufferCarry(Rendering::RenderGraph::RGFrame& frame,
-                                   Rendering::RenderGraph::RGBuffer previous,
-                                   Rendering::RenderGraph::RGBuffer current, size_t sizeBytes,
-                                   const char* passName);
     struct ResourceDescription;
     const ResourceDescription* FindResourceDescription(const std::string& name) const;
 
@@ -287,7 +274,6 @@ class RenderPipelineInstance
     std::unordered_map<std::string, std::unique_ptr<ResourceDescription>> m_ResourceDescriptions;
     bool m_BlueprintDirty = false;
     bool m_WarnedDrsArmedProfiler = false;
-    bool m_WarnedRenderScaleUnderMsaa = false;
     // Applied render/output extent ratio from the last Declare, and whether any
     // view is TAA-eligible at all (i.e. the render-scale lever is connected).
     float m_DrsLastAppliedScale = 1.0f;
@@ -302,26 +288,10 @@ class RenderPipelineInstance
     // RenderGraph path: the per-frame blackboard (reset at the top of every Declare).
     PipelineFrameResources m_FrameResources;
 
-    // The copy a view's buffer used in the last frame that declared it, and the names built once
-    // when the buffer is first declared: each copy's pool name and the two passes' names.
-    // A "perFrameCopies" buffer has IDevice::GetFrameRingDepth() copies, CopyCount.
-    struct BufferCopiesState
-    {
-        std::array<std::string, Rendering::IDevice::kMaxFrameRingDepth> CopyNames;
-        uint32_t CopyCount = 0;
-        std::string CarryPassName;
-        std::string ZeroInitPassName;
-        uint64_t Frame = 0;
-        uint32_t Current = 0;
-        uint32_t Previous = 0;
-        bool HasFrame = false;
-        bool HasPrevious = false;
-    };
-    FlatMap<std::string, BufferCopiesState> m_BufferCopies; // keyed by the buffer's pool name
-
     // Late declares queued during the current Declare's node loop (cleared
     // with the blackboard at the top of every Declare).
     std::vector<DeferredDeclareFn> m_DeferredDeclares;
+    std::unordered_map<const void*, BeforePostProcessFn> m_BeforePostProcessCallbacks;
 
     // Framework-level pass name cache for BuildForView().
     // Keyed by (nodeIndex << 48 | suffixHash << 32 | viewId) to remain stable

@@ -21,10 +21,11 @@ void CharacterControllerWritebackSystem::Update(ECS::World& world, float32 /*del
                 ECS::Write<GameEngine::Components::WorldTransform>,
                 ECS::Write<GameEngine::Components::CharacterController>>()
         .Each([&](ECS::EntityHandle e,
-                  GameEngine::Components::Transform& t,
-                  GameEngine::Components::WorldTransform& wt,
-                  GameEngine::Components::CharacterController& cc)
+                  ECS::Writable<GameEngine::Components::Transform> tWrite,
+                  ECS::Writable<GameEngine::Components::WorldTransform> wtWrite,
+                  ECS::Writable<GameEngine::Components::CharacterController> ccWrite)
               {
+                  auto& cc = ccWrite.Mutable();
                   if (!cc.initialized || !pw->IsCharacterValid(cc.character))
                       return;
 
@@ -34,7 +35,7 @@ void CharacterControllerWritebackSystem::Update(ECS::World& world, float32 /*del
                   cc.groundNormalY = n.y;
                   cc.groundNormalZ = n.z;
 
-                  if (WritePhysicsPose(world, e, pw->GetCharacterTransform(cc.character), nullptr, 1.0f, t, wt,
+                  if (WritePhysicsPose(world, e, pw->GetCharacterTransform(cc.character), nullptr, 1.0f, tWrite, wtWrite,
                                        cc.WritebackRecord))
                       ++composed;
               });

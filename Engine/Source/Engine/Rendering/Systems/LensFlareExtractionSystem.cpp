@@ -56,14 +56,14 @@ const Components::WorldTransform& ResolveSourceWorldTransform(
     Components::WorldTransform& attachedWorld)
 {
     const auto* parent = world.GetComponent<Components::Parent>(entity);
-    if (!parent || !parent->Entity.IsValid() || !world.IsValid(parent->Entity) ||
-        !world.GetComponent<Components::Light>(parent->Entity))
+    if (!parent || !parent->parent.IsValid() || !world.IsValid(parent->parent) ||
+        !world.GetComponent<Components::Light>(parent->parent))
     {
         return cachedWorld;
     }
 
     const auto* parentWorld =
-        world.GetComponent<Components::WorldTransform>(parent->Entity);
+        world.GetComponent<Components::WorldTransform>(parent->parent);
     const auto* local = world.GetComponent<Components::Transform>(entity);
     if (!parentWorld || !local)
         return cachedWorld;
@@ -89,9 +89,9 @@ const Components::WorldTransform* FindDirectionalLightWorldTransform(
         return lightWorld;
 
     const auto* parent = world.GetComponent<Components::Parent>(entity);
-    if (!parent || !parent->Entity.IsValid() || !world.IsValid(parent->Entity))
+    if (!parent || !parent->parent.IsValid() || !world.IsValid(parent->parent))
         return nullptr;
-    return findOnEntity(parent->Entity);
+    return findOnEntity(parent->parent);
 }
 
 void ApplyDirectionalLightDirection(ResolvedFlare& flare,

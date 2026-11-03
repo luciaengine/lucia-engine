@@ -7,7 +7,7 @@
 #include "AssetCore/SharedFileRead.h"
 
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/SpecializationConstants.h"
 #include "Logger/Logger.h"
 
@@ -194,25 +194,6 @@ DescriptorSetLayoutDesc CBTKernelSet::MakeDescriptorSetLayout(bool narrowHeap)
         cache.shaderStages = kShaderStageCompute;
         cache.imageFilterableFloat = true;
         dsl.bindings.push_back(cache);
-    }
-    // Binding 24: the draw's prefiltered height chain. Wide arm only, like the pyramid it is built
-    // beside; the narrow arm draws the cached corners.
-    if (!narrowHeap)
-    {
-        DescriptorBinding b{};
-        b.binding = kCBTHeightChainBinding;
-        b.type = DescriptorType::StorageBuffer;
-        b.count = 1;
-        b.shaderStages = kShaderStageCompute;
-        dsl.bindings.push_back(b);
-        // Binding 25: the far-field normal chain, one storage view per mip.
-        DescriptorBinding normals{};
-        normals.binding = kCBTNormalChainBinding;
-        normals.type = DescriptorType::StorageImage;
-        normals.count = kCBTNormalChainMaxMips;
-        normals.shaderStages = kShaderStageCompute;
-        normals.storageTexelFormat = static_cast<uint32_t>(TextureFormat::R16G16_FLOAT);
-        dsl.bindings.push_back(normals);
     }
     return dsl;
 }

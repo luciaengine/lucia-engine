@@ -1,9 +1,9 @@
 #pragma once
 
-#include "EditorApplication/EditorApplication.h"
-#include "Types/FunctionRef.h"
+#include "EditorApplication.h"
 
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -38,8 +38,8 @@ public:
     SceneViewRenderCoordinator() = delete;
 
     static SceneViewPanel* SyncMountedPanelControllers(EditorWindowContext* ctx);
-    static void ForEachController(EditorWindowContext* windowContext,
-                                  FunctionRef<void(SceneViewController*)> visit);
+    static void ForEachController(EditorWindowContext* ctx,
+                                  const std::function<void(SceneViewController*)>& fn);
     static void SyncSelectionAcrossControllers(EditorWindowContext* ctx, SceneViewController* source);
     static void SyncViewportStateAcrossControllers(EditorWindowContext* ctx, SceneViewController* source);
 

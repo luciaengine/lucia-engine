@@ -18,7 +18,8 @@ struct Fixture
 {
     std::vector<uint8> PlaceParams{1, 2, 3, 4, 5, 6, 7, 8};
     std::vector<uint8> TerrainParams{9, 10, 11, 12};
-    std::vector<uint8> TerrainMaterials{15, 16, 17};
+    std::vector<uint8> AtlasRows{13, 14};
+    std::vector<uint32> AtlasBindless{101, 102, 103, 104, 105, 106, 107, 108};
     std::vector<uint32> SeededIndirectWords{201, 0, 0, 202, 201, 7, 524288};
 
     GrassPlacementElisionInputs Make() const
@@ -36,12 +37,11 @@ struct Fixture
         inputs.Plan.Lod1StartDistance = 66.5f;
         inputs.Plan.RangeReduced = true;
         inputs.TerrainParams = TerrainParams;
-        inputs.TerrainMaterials = TerrainMaterials;
         inputs.TerrainContentEpoch = 7;
-        inputs.SurfacePageIdentity = 0xABCDEF0102030405ull;
-        inputs.PageDeviceEpoch = 2;
-        inputs.PageWindowSerial = 31;
-        inputs.SurfacePlanes = 3u;
+        inputs.AtlasIdentity = 0xABCDEF0102030405ull;
+        inputs.AtlasTableVersion = 53;
+        inputs.AtlasRows = AtlasRows;
+        inputs.AtlasBindlessIndices = AtlasBindless;
         inputs.SeededIndirectWords = SeededIndirectWords;
         return inputs;
     }
@@ -69,7 +69,7 @@ TEST(GrassPlacementElision, IdenticalInputsProduceIdenticalBytes)
 
 // The other half: every term the kernels read must be able to force a recompute. A term left out
 // of the blob is a term whose change is invisible to the gate, which is how an elided frame shows
-// grass for the wrong camera, the wrong terrain, or the wrong surface pages.
+// grass for the wrong camera, the wrong terrain, or the wrong atlas.
 TEST(GrassPlacementElision, EveryTermChangesTheBlob)
 {
     const Fixture fixture;
@@ -87,8 +87,17 @@ TEST(GrassPlacementElision, EveryTermChangesTheBlob)
     }
     {
         Fixture perturbed = fixture;
-        perturbed.TerrainMaterials[2] ^= 0x01u; // a material's tint: the root colour every blade carries
-        EXPECT_FALSE(Build(perturbed.Make()) == base) << "the terrain material table is not in the blob";
+        perturbed.AtlasRows[0] ^= 0x01u;
+        EXPECT_FALSE(Build(perturbed.Make()) == base) << "atlas rows are not in the blob";
+    }
+    {
+        Fixture perturbed = fixture;
+        for (size_t index = 0; index < fixture.AtlasBindless.size(); ++index)
+        {
+            perturbed = fixture;
+            perturbed.AtlasBindless[index] += 1u;
+            EXPECT_FALSE(Build(perturbed.Make()) == base) << "atlas map " << index << " missing from elision inputs";
+        }
     }
     {
         // The last word is the pool size; the ones before it are the two LOD sub-mesh records.
@@ -110,14 +119,10 @@ TEST(GrassPlacementElision, EveryTermChangesTheBlob)
     };
     EXPECT_FALSE(mutated([](auto& i) { i.TerrainContentEpoch += 1; }) == base)
         << "the terrain content epoch is not in the blob";
-    EXPECT_FALSE(mutated([](auto& i) { i.SurfacePageIdentity ^= 1ull; }) == base)
-        << "the paged terrain's identity is not in the blob";
-    EXPECT_FALSE(mutated([](auto& i) { i.PageDeviceEpoch += 1; }) == base)
-        << "the page feature's device epoch is not in the blob";
-    EXPECT_FALSE(mutated([](auto& i) { i.PageWindowSerial += 1; }) == base)
-        << "a page change under the cell window (the window serial) is not in the blob";
-    EXPECT_FALSE(mutated([](auto& i) { i.SurfacePlanes ^= 4u; }) == base)
-        << "the surface planes are not in the blob";
+    EXPECT_FALSE(mutated([](auto& i) { i.AtlasIdentity ^= 1ull; }) == base)
+        << "the atlas identity is not in the blob";
+    EXPECT_FALSE(mutated([](auto& i) { i.AtlasTableVersion += 1; }) == base)
+        << "the atlas table version is not in the blob";
     EXPECT_FALSE(mutated([](auto& i) { i.Plan.Params.NearDensity += 1.0f; }) == base)
         << "the authored density is not in the blob";
     EXPECT_FALSE(mutated([](auto& i) { i.Plan.Params.FarRadius += 1.0f; }) == base)
@@ -152,13 +157,14 @@ TEST(GrassPlacementElision, AShorterSpanDoesNotCompareEqualToItsPrefix)
     EXPECT_FALSE(Build(longer.Make()) == Build(shorter.Make()));
 }
 
-// Empty spans are legal (no terrain materials, no seeded constants yet) and must not make the builder
+// Empty spans are legal (no atlas terrain, no seeded constants yet) and must not make the builder
 // produce a blob that collides with a populated one.
 TEST(GrassPlacementElision, EmptySpansAreDistinctFromPopulatedOnes)
 {
     const Fixture fixture;
     GrassPlacementElisionInputs empty = fixture.Make();
-    empty.TerrainMaterials = {};
+    empty.AtlasRows = {};
+    empty.AtlasBindlessIndices = {};
     EXPECT_FALSE(Build(empty) == Build(fixture.Make()));
 
     Rendering::ElisionInputBlob first;

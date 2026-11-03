@@ -1,4 +1,4 @@
-// Terrain SURFACE RULES on the GPU: the twin of TerrainECS/TerrainSurface/TerrainSurfaceRuleEval.h
+// Terrain SURFACE RULES on the GPU: the twin of TerrainECS/TerrainSurfaceRuleEval.h
 // (the row evaluator) and of TerrainECS/TerrainSplatComposite.h (the splat write),
 // so the GPU splat bake produces the same bytes the CPU bake would.
 //
@@ -316,17 +316,11 @@ vec4 GE_CompositeSplatTexel(vec4 pixel, uint layerIdx, float weight, bool replac
 
     if (replace)
     {
-        // An all-zero texel is the implicit base: the first material at 255.
-        vec4 base = pixel;
-        if (weight > 0.0f && pixel[0] == 0.0f && pixel[1] == 0.0f && pixel[2] == 0.0f
-            && pixel[3] == 0.0f)
-            base[0] = 255.0f;
-
         vec4 replaced = vec4(0.0f);
         for (int i = 0; i < 4; ++i)
         {
             float target = (i == layer) ? 255.0f : 0.0f;
-            replaced[i] = float(uint(clamp(base[i] * (1.0f - weight) + target * weight,
+            replaced[i] = float(uint(clamp(pixel[i] * (1.0f - weight) + target * weight,
                                            0.0f, 255.0f)));
         }
         return replaced;

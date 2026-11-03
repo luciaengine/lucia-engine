@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Animation/Skeleton/SkeletonData.h"
+#include "Animation/SkeletonData.h"
 #include "AssetCore/GUID.h"
 #include "ECS/ECS.h"
 #include "Types/Types.h"

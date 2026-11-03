@@ -105,9 +105,6 @@ GameConfig LoadGameConfig(const std::filesystem::path& path)
     if (doc.contains("renderPipeline") && doc["renderPipeline"].is_string())
         cfg.renderPipeline = doc["renderPipeline"].get<std::string>();
 
-    if (doc.contains("waitForSplineRecipes") && doc["waitForSplineRecipes"].is_boolean())
-        cfg.waitForSplineRecipes = doc["waitForSplineRecipes"].get<bool>();
-
     if (doc.contains("scriptAssemblyPath") && doc["scriptAssemblyPath"].is_string())
         cfg.scriptAssemblyPath = doc["scriptAssemblyPath"].get<std::string>();
 
@@ -194,8 +191,9 @@ GameConfig LoadGameConfig(const std::filesystem::path& path)
     {
         cfg.lodSelection = Rendering::LodProjectSettings::ReadFrom(doc["rendering"]);
         cfg.renderQuality = Rendering::AntiAliasingProjectSettings::ReadFrom(doc["rendering"]);
-        cfg.renderLayerNames = Rendering::RenderLayerNames::ReadFrom(doc["rendering"]);
     }
+
+    cfg.sortingLayers = Rendering::SortingLayers::FromJson(doc);
 
     // Clamp window dimensions to reasonable bounds.
     constexpr uint32_t kMinWindowSize = 320;
@@ -215,7 +213,6 @@ bool SaveGameConfig(const std::filesystem::path& path, const GameConfig& cfg)
     UIScaleProjectSettings::WriteTo(cfg.uiScale, doc[UIScaleProjectSettings::kUIScaleKey]);
     doc["startupScene"] = cfg.startupScene;
     doc["renderPipeline"] = cfg.renderPipeline;
-    doc["waitForSplineRecipes"] = cfg.waitForSplineRecipes;
     doc["scriptAssemblyPath"] = cfg.scriptAssemblyPath;
 
     if (!cfg.appIconPath.empty())
@@ -257,8 +254,8 @@ bool SaveGameConfig(const std::filesystem::path& path, const GameConfig& cfg)
     json rendering = json::object();
     cfg.lodSelection.WriteTo(rendering);
     cfg.renderQuality.WriteTo(rendering);
-    cfg.renderLayerNames.WriteTo(rendering);
     doc["rendering"] = rendering;
+    cfg.sortingLayers.WriteToJson(doc);
 
     std::ofstream file(path);
     if (!file.is_open())

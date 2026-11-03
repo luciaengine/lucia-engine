@@ -46,8 +46,7 @@ SteppedWall BuildStepped(const std::vector<V3>& points, SplineCornerStyle style)
 
     SplineStripParams params;
     params.UOriginMetres = 0.0f;
-    params.CapStart = false;
-    params.CapEnd = false;
+    params.GenerateCaps = false;
     params.HeightVDatumMetres = 0.0f;
     wall.Mesh = BuildSplineStrip(Wall(2.0f * kHalfWidth, kWallHeight), wall.Stations, params);
     return wall;
@@ -100,13 +99,13 @@ uint32 MiswoundRiserTriangles(const SplineStripMesh& mesh)
 
 // Each run keeps a level top at the wall's height above its highest station, so
 // the top never stands lower than that anywhere and the base stays on the slope.
-// The miter's Crease ring carries the step, which one riser closes: a quad from
+// The mitre's Crease ring carries the step, which one riser closes: a quad from
 // the lower top to the higher, facing back toward the lower run, wound to its
 // normal, with V the height above the wall's datum as on the side faces, so the
 // courses meet across the step.
-TEST(SplineStep, AMiteredWallUpASlopeStepsItsLevelTopAtTheCorner)
+TEST(SplineStep, AMitredWallUpASlopeStepsItsLevelTopAtTheCorner)
 {
-    const SteppedWall wall = BuildStepped(kClimbing, SplineCornerStyle::Miter);
+    const SteppedWall wall = BuildStepped(kClimbing, SplineCornerStyle::Mitre);
     ASSERT_TRUE(wall.Mesh.IsValid());
     uint32 creases = 0;
     for (uint32 r = 0; r < wall.Mesh.RingCount; ++r)
@@ -143,7 +142,7 @@ TEST(SplineStep, AMiteredWallUpASlopeStepsItsLevelTopAtTheCorner)
 TEST(SplineStep, AWallDownASlopeStepsDownFacingTheLowerRun)
 {
     const std::vector<V3> descending(kClimbing.rbegin(), kClimbing.rend());
-    const SteppedWall wall = BuildStepped(descending, SplineCornerStyle::Miter);
+    const SteppedWall wall = BuildStepped(descending, SplineCornerStyle::Mitre);
     ASSERT_TRUE(wall.Mesh.IsValid());
     EXPECT_NEAR(TopOf(wall.Mesh, 0u), 5.0f, 1.0e-4f);
     EXPECT_NEAR(TopOf(wall.Mesh, wall.Mesh.RingCount - 1u), 4.0f, 1.0e-4f);
@@ -195,15 +194,14 @@ TEST(SplineStep, AWeldedLoopStepsAtItsSeam)
         pointDistances.push_back(walk.Stations[site.StationIndex].Distance);
     walk.Corners.insert(walk.Corners.begin(), SplineCornerSite{0u, 0u});
     CloseStationLoop(walk.Stations, kUp);
-    (void)ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Miter, kUp, true);
+    (void)ApplyCorners(walk.Stations, walk.Corners, SplineCornerStyle::Mitre, kUp, true);
     StepTopsAtPoints(walk.Stations, pointDistances, kUp, true);
 
     const SplineStripStation& seam = walk.Stations.back();
     EXPECT_EQ(seam.Join, SplineStationJoin::Crease);
     SplineStripParams params;
     params.UOriginMetres = 0.0f;
-    params.CapStart = false;
-    params.CapEnd = false;
+    params.GenerateCaps = false;
     const SplineStripMesh mesh = BuildSplineStrip(Wall(2.0f * kHalfWidth, kWallHeight), walk.Stations, params);
     ASSERT_TRUE(mesh.IsValid());
     const uint32 lastRing = (mesh.RingCount - 1u) * mesh.RingVertexCount;
@@ -229,7 +227,7 @@ TEST(SplineStep, ASteppedWallOnASteepClimbStandsPlumb)
 {
     const SteppedWall wall = BuildStepped({V3{0.0f, 0.0f, 0.0f}, V3{0.0f, 3.0f, 5.0f},
                                            V3{5.0f, 5.0f, 5.0f}},
-                                          SplineCornerStyle::Miter);
+                                          SplineCornerStyle::Mitre);
     ASSERT_TRUE(wall.Mesh.IsValid());
     float32 worstShift = 0.0f;
     for (uint32 r = 0; r < wall.Mesh.RingCount; ++r)

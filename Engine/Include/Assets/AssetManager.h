@@ -9,7 +9,6 @@
 #include "AssetCore/GUID.h"
 #include "Assets/AssetRegistry.h"
 #include "Assets/ExpectedAssetWrite.h" // brings ExpectedWriteLedger with it
-#include "Events/Event.h"
 #include "FileWatcher/FileWatcher.h"
 #include "Assets/FileWatchingService.h"
 #include "Assets/ParserRegistry.h"
@@ -18,7 +17,6 @@
 #include <future>
 #include <functional>
 #include <optional>
-#include <span>
 #include <string_view>
 #include <vector>
 
@@ -27,7 +25,6 @@
 #include <condition_variable>
 #include <shared_mutex>
 
-#include <unordered_map>
 #include <unordered_set>
 namespace GameEngine {
 
@@ -37,7 +34,6 @@ namespace GameEngine {
 class AssetManager;
 class AssetBatchCoordinator;
 class AssetIOService;
-class TextureCookActivity;
 class TextureCookWorkers;
 
 /**
@@ -549,10 +545,8 @@ public:
     /**
      * @brief Move an asset's file binding: the registry keeps its GUID under the new
      * path and a resident instance follows, so a later reload reads the new file.
-     * For a folder, every registered asset under it moves the same way.
-     * The caller has already moved the file or folder. Owner thread only. False when
-     * the old path was not a registered asset (for a folder: when no asset under it
-     * was), or the rename crossed a source root.
+     * The caller has already moved the file. Owner thread only. False when the old
+     * path was not a registered asset (or the rename crossed a source root).
      */
     bool RenameAssetPath(const std::filesystem::path& oldPath, const std::filesystem::path& newPath);
 
@@ -578,11 +572,9 @@ public:
      * load is in flight the request is kept and the reload starts once that load
      * lands (Update), because the load may already have read the settings the
      * request is about. No-op when the asset is neither resident nor loading.
-     * Returns true when a reload was queued or kept for the load. `priority` is the
-     * read's place in the decode reader's queue: High for a person's edit, Low for
-     * work nobody is waiting to see (a texture's usage re-key).
+     * Returns true when a reload was queued or kept for the load.
      */
-    bool RequestAsyncReload(const GUID& guid, AssetLoadPriority priority = AssetLoadPriority::High);
+    bool RequestAsyncReload(const GUID& guid);
 
     /**
      * @brief True while an async reload of @p guid is reading and decoding — from
@@ -623,13 +615,6 @@ public:
      * ExpectWrite: report each file the write produced through the returned handle.
      */
     [[nodiscard]] ExpectedAssetWrite ExpectWritesUnder(const std::filesystem::path& root);
-
-    /**
-     * @brief Unload an asset on a job-system worker, withdrawing its in-flight load first
-     * @param guid Asset GUID to unload
-     * @return TaskHandle of the unload task; invalid when the manager is not initialized or has no job system
-     */
-    JobSystem::TaskHandle UnloadAssetWithDependencies(const GUID& guid);
 
     /**
      * @brief Load a single asset with a Result<>-based completion callback.
@@ -760,34 +745,6 @@ public:
      */
     bool IsHotReloadEnabled() const { return m_HotReloadEnabled; }
 
-    /// Fires on the main thread from Update with the GUIDs of the changed files, each GUID once.
-    /// It also gives the GUIDs that no loaded asset holds, so a subsystem that builds state from
-    /// files the AssetManager does not load (the prefab library) can rebuild that state.
-    Event<std::span<const GUID>> FilesChanged;
-
-    /**
-     * @brief Memory usage statistics of the resident assets
-     */
-    struct MemoryStats {
-        uint64 TotalMemoryUsed;
-        uint64 LoadedAssetCount;
-        HashMap<AssetType, uint64> MemoryByType;
-        std::chrono::steady_clock::time_point LastUpdated;
-    };
-
-    /**
-     * @brief Get the cached memory statistics. RegisterLoadedAsset and
-     * UnregisterLoadedAsset update the cache incrementally; the per-type map is
-     * copied under m_StatsCacheMutex.
-     */
-    MemoryStats GetMemoryStats() const;
-
-    /**
-     * @brief Force recalculation of memory statistics (O(n), use sparingly)
-     * Only needed for debugging or when cache coherency is suspected
-     */
-    MemoryStats RecalculateMemoryStats() const;
-
     /**
      * @brief Get the asset event dispatcher for advanced usage
      */
@@ -797,9 +754,6 @@ public:
      * @brief Get the job system for task submission
      */
     JobSystem::WorkStealingThreadPool& GetJobSystem() { return *m_JobSystem; }
-    /// False for a manager initialized without a job system; GetJobSystem is
-    /// not callable then and loads run synchronously.
-    bool HasJobSystem() const { return m_JobSystem != nullptr; }
 
     /**
      * @brief The workers texture cooks spread their encode across (CookTexture's
@@ -807,11 +761,6 @@ public:
      * system runs inline.
      */
     TextureCookWorkers* GetTextureCookWorkers() { return m_TextureCookWorkers.get(); }
-
-    /**
-     * @brief The textures whose import cook runs now, in this manager's loads.
-     */
-    TextureCookActivity& GetTextureCookActivity() { return *m_TextureCookActivity; }
 
     /**
      * @brief Number of loads currently tracked as in flight (dedupe map size).
@@ -947,8 +896,7 @@ private:
      * not bump mtime and must still restart. Main thread only.
      */
     void StartAsyncReload(const GUID& guid, const SharedPtr<Asset>& asset, bool watchReason,
-                          bool restartSameMtime = false,
-                          AssetLoadPriority priority = AssetLoadPriority::High);
+                          bool restartSameMtime = false);
 
     /**
      * @brief Adopt staged async-reload payloads into their live assets (main
@@ -971,7 +919,6 @@ private:
      * @brief Fallback synchronous load for managers without a job system.
      */
     std::future<SharedPtr<Asset>> LoadAssetSynchronous(const AssetMetadata& metadata);
-    std::future<Vector<SharedPtr<Asset>>> LoadAssetsSequential(const Vector<GUID>& guids, AssetLoadPriority priority);
 
     // A per-request completion callback awaiting an in-flight load, paired with
     // the originating handle's cancel flag. These are fired as a CONTINUATION
@@ -1057,16 +1004,6 @@ private:
      */
     AssetLoadHandle CreateLoadHandle(const GUID& assetGuid, AssetLoadResultCallback callback,
                                    std::shared_future<SharedPtr<Asset>> future);
-
-    /**
-     * @brief Update cached memory statistics (called when cache is stale)
-     */
-    void UpdateMemoryStatsCache() const;
-
-    /**
-     * @brief Incrementally update memory stats when assets are added/removed
-     */
-    void UpdateMemoryStatsIncremental(const SharedPtr<Asset>& asset, bool added) const;
 
     /**
      * @brief Get loaded asset by GUID (thread-safe, optimized for callbacks)
@@ -1270,8 +1207,8 @@ private:
     mutable std::mutex m_InFlightMutex;
     // RequestAsyncReload calls that arrived while the asset's first load was in flight
     // (StartReloadsRequestedDuringLoad). Guarded by m_InFlightMutex, like the table it is
-    // checked against. The highest priority any of them asked for.
-    std::unordered_map<GUID, AssetLoadPriority> m_ReloadsRequestedDuringLoad;
+    // checked against.
+    std::unordered_set<GUID> m_ReloadsRequestedDuringLoad;
     // Writes announced by this process, so a watcher's report of one is recognisable as
     // that write arriving rather than as a second change. See ExpectWrite.
     ExpectedWriteLedger m_ExpectedWrites;
@@ -1348,15 +1285,6 @@ private:
     mutable std::mutex m_SuppressedLoadMutex;
     HashMap<GUID, SuppressedLoadInfo> m_SuppressedLoads;
 
-
-    // Cached memory statistics: the totals are atomics, the per-type map is
-    // read and written under m_StatsCacheMutex.
-    mutable std::atomic<uint64> m_CachedTotalMemory{0};
-    mutable std::atomic<uint64> m_CachedAssetCount{0};
-    mutable std::atomic<bool> m_StatsNeedUpdate{true};
-    mutable HashMap<AssetType, std::atomic<uint64>> m_CachedMemoryByType;
-    mutable std::mutex m_StatsCacheMutex;
-
     // Async task tracking
     Vector<std::future<void>> m_PendingTasks;
     std::mutex m_PendingTasksMutex;
@@ -1369,9 +1297,6 @@ private:
     // The pool workers texture cooks spread their bands across: helpers take
     // their slots from m_IOService's decode gate, as texture decodes do.
     std::unique_ptr<TextureCookWorkers> m_TextureCookWorkers;
-
-    // Entered by a cook on a miss in this manager's loads (TextureAsset::TryLoadViaCook).
-    std::unique_ptr<TextureCookActivity> m_TextureCookActivity;
 
     // Unified asset loading coordinator
     std::unique_ptr<AssetBatchCoordinator> m_BatchCoordinator;

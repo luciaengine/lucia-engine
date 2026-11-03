@@ -1,5 +1,4 @@
 #include "UI/Controls/Scrollbar.h"
-#include "Mathematics/Interpolation.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/Internal/LayoutAccess.h"
 #include "UI/StyleProperties.h"
@@ -19,7 +18,7 @@ class ScrollbarThumbElement final : public UIElement
     {
         AddClass("scrollbar-thumb");
         constexpr float kDefaultThumbRadius = 4.0f;
-        Style()
+        Overrides()
             .Set(Style::Position, PositionType::Absolute)
             .Set(Style::FlexGrow, 0.0f)
             .Set(Style::FlexShrink, 0.0f)
@@ -39,7 +38,7 @@ Scrollbar::Scrollbar(Orientation o)
     else
         AddClass("vertical");
 
-    Style()
+    Overrides()
         .Set(Style::Position, PositionType::Relative)
         .Set(Style::PositionLeft, StyleLength::Auto())
         .Set(Style::PositionTop, StyleLength::Auto())
@@ -50,13 +49,13 @@ Scrollbar::Scrollbar(Orientation o)
 
     if (o == Orientation::Vertical)
     {
-        Style()
+        Overrides()
             .Set(Style::Width, StyleLength::Px(m_ThicknessPx))
             .Set(Style::MinWidth, StyleLength::Px(m_ThicknessPx));
     }
     else
     {
-        Style()
+        Overrides()
             .Set(Style::Height, StyleLength::Px(m_ThicknessPx))
             .Set(Style::MinHeight, StyleLength::Px(m_ThicknessPx));
     }
@@ -106,7 +105,7 @@ bool Scrollbar::UpdateThumbLayout() const
         thumbLen = std::max(20.0f, trackLen * (viewport / content));
         float usable = std::max(0.0f, trackLen - thumbLen);
         float maxScroll = std::max(0.0f, content - viewport);
-        float t = (maxScroll > 0.0f) ? Math::Clamp01(scroll / maxScroll) : 0.0f;
+        float t = (maxScroll > 0.0f) ? std::clamp(scroll / maxScroll, 0.0f, 1.0f) : 0.0f;
         pos = t * usable;
     }
     else if (!IsHidden())
@@ -265,7 +264,7 @@ void Scrollbar::OnPointerDown(float mouseX, float mouseY,
         const float maxScroll = std::max(0.0f, content - viewport);
         float thumbLen = std::max(20.0f, trackLen * (viewport / content));
         float usable = std::max(0.0f, trackLen - thumbLen);
-        float t0 = (maxScroll > 0.0f) ? Math::Clamp01(scroll / maxScroll) : 0.0f;
+        float t0 = (maxScroll > 0.0f) ? std::clamp(scroll / maxScroll, 0.0f, 1.0f) : 0.0f;
         float thumbPos = t0 * usable;
 
         // If click is outside the thumb, jump scroll so thumb center is at click.

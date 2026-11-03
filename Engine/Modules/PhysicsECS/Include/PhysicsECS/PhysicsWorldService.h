@@ -13,8 +13,6 @@ class PhysicsWorldService
 {
 public:
     static void Initialize(const Physics::PhysicsWorldSettings& settings = {});
-    // Ends every entity event subscription (PhysicsEntityEventCallbacks::ClearAll), then destroys
-    // the world.
     static void Shutdown();
 
     static Physics::PhysicsWorld& Get();
@@ -51,12 +49,6 @@ public:
     static uint32 GetLastCharactersComposed();
     static void SetLastCharactersComposed(uint32 count);
 
-    // Kinematic bodies the most recent frame that ran a step gave a velocity toward their Transform;
-    // a scene whose kinematic bodies rest reads 0. Read by editor diagnostics (Monitors
-    // "Physics/KinematicBodiesMoving"); reset to 0 across world lifetimes.
-    static uint32 GetLastKinematicBodiesMoving();
-    static void SetLastKinematicBodiesMoving(uint32 count);
-
 private:
     static std::unique_ptr<Physics::PhysicsWorld> s_World;
     static Physics::PhysicsWorldSettings s_Settings;
@@ -65,7 +57,6 @@ private:
     static float32 s_LastStepMs;
     static uint32 s_LastBodiesComposed;
     static uint32 s_LastCharactersComposed;
-    static uint32 s_LastKinematicBodiesMoving;
 };
 
 } // namespace GameEngine::PhysicsECS

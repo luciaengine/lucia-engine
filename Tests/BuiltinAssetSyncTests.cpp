@@ -1,4 +1,5 @@
 #include "Startup/BuiltinAssetSync.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -42,9 +43,7 @@ class BuiltinAssetSyncTest : public ::testing::Test
   protected:
     void SetUp() override
     {
-        const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
-        m_Root = fs::temp_directory_path() / "GameEngineTests" / "BuiltinAssetSync" / info->name();
-        fs::remove_all(m_Root);
+        m_Root = GameEngine::TestUtils::MakeUniqueTempDirectory("BuiltinAssetSync");
         m_Src = m_Root / "install";
         m_Dst = m_Root / "user";
         m_Manifest = m_Root / "EditorAssets.builtin-manifest";

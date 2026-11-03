@@ -4,7 +4,6 @@
 #include "UI/Controls/DockPanel.h"
 #include "UI/Controls/Label.h"
 #include "UI/Layout/DockingHitTest.h"
-#include "Input/KeyCodes.h"
 #include "Platform/SystemMetrics.h"
 #include "Logger/Logger.h"
 
@@ -53,26 +52,10 @@ bool DockTab::IsPointInLeaf(float x, float y) const {
     return (x >= lx && y >= ly && x < lx + lw && y < ly + lh);
 }
 
-DockspaceElement* DockTab::FindDockspace() const
-{
-    for (UIElement* p = GetParent(); p; p = p->GetParent())
-    {
-        if (auto* dockspace = dynamic_cast<DockspaceElement*>(p))
-            return dockspace;
-    }
-    return nullptr;
-}
-
-void DockTab::RequestClose()
-{
-    if (DockspaceElement* dockspace = FindDockspace())
-        dockspace->RequestTabClose(GetPanelIdFromSelf());
-}
-
 void DockTab::OnEvent(UIEvent& e) {
-    // The tab bar owns the middle button: a click closes the tab and a drag pans
-    // an overflowing strip. It never arms the tab reorder or undock gesture.
-    if (e.Id == kEventMouseDown && e.Button == Input::kMouseButton_Middle)
+    // Middle-button dragging pans an overflowing tab strip; it must not arm
+    // the normal tab reorder/undock gesture.
+    if (e.Id == kEventMouseDown && e.Button == 2)
     {
         if (auto* bar = dynamic_cast<DockTabBar*>(GetParent()))
             bar->OnEvent(e);
@@ -80,7 +63,7 @@ void DockTab::OnEvent(UIEvent& e) {
     }
 
     // Handle right-click for tab actions.
-    if (e.Id == kEventMouseDown && e.Button == Input::kMouseButton_Right)
+    if (e.Id == kEventMouseDown && e.Button == 1) // RMB
     {
         if (IsPointInside(e.X, e.Y))
         {
@@ -92,7 +75,7 @@ void DockTab::OnEvent(UIEvent& e) {
             return;
         }
     }
-    else if (e.Id == kEventMouseUp && e.Button == Input::kMouseButton_Right)
+    else if (e.Id == kEventMouseUp && e.Button == 1) // RMB release
     {
         if (m_RmbCandidateMenu)
         {
@@ -102,16 +85,26 @@ void DockTab::OnEvent(UIEvent& e) {
             const float dx = e.X - m_RmbDownX;
             const float dy = e.Y - m_RmbDownY;
             const float dist2 = dx * dx + dy * dy;
-            if (dist2 <= (DockTabBar::kClickSlopPx * DockTabBar::kClickSlopPx) && IsPointInside(e.X, e.Y))
+            constexpr float kThresholdPx = 4.0f;
+            
+            if (dist2 <= (kThresholdPx * kThresholdPx) && IsPointInside(e.X, e.Y))
             {
                 // Right-click on tab: let the host decide whether this opens a menu or closes immediately.
                 std::string panelId = GetPanelIdFromSelf();
-                DockspaceElement* dockspace = FindDockspace();
-                if (dockspace && !dockspace->FireTabContextMenu(panelId, e.X, e.Y))
-                    dockspace->RequestTabRemoval(panelId);
+                bool foundDockspace = false;
+                for (UIElement* p = this; p; p = p->GetParent())
+                {
+                    if (auto* ds = dynamic_cast<DockspaceElement*>(p))
+                    {
+                        foundDockspace = true;
+                        if (!ds->FireTabContextMenu(panelId, e.X, e.Y))
+                            ds->RequestTabRemoval(panelId);
+                        break;
+                    }
+                }
                 // A tab outside any dockspace neither opens a menu nor closes:
                 // the click is swallowed with nothing to show for it.
-                if (!dockspace)
+                if (!foundDockspace)
                 {
                     Logger::Log::Warning("[DockTab] tab '{}' has no DockspaceElement ancestor; its "
                                          "right-click does nothing.", panelId);
@@ -124,10 +117,10 @@ void DockTab::OnEvent(UIEvent& e) {
     
     constexpr float kDragThreshold = 8.0f; // Distance to start drag (ghost + dock mode)
     
-    if (e.Id == kEventMouseDown && e.Button == Input::kMouseButton_Left) {
+    if (e.Id == kEventMouseDown && e.Button == 0) {
         // Clicks on interactive tab chrome (e.g. Inspector lock) must not capture: mouse-up is routed to
         // the capture element, so children would never receive MouseUp for toggling.
-        if (e.Button == Input::kMouseButton_Left)
+        if (e.Button == 0)
         {
             for (const auto& ch : GetChildren())
             {
@@ -143,28 +136,34 @@ void DockTab::OnEvent(UIEvent& e) {
         // prepare its on-demand view. Activation itself still happens on
         // mouse-up, preserving drag/reorder behavior.
         std::string panelId = GetPanelIdFromSelf();
-        DockspaceElement* dockspace = FindDockspace();
-        auto* model = dockspace ? dockspace->GetModel() : nullptr;
-        if (model && !model->IsPanelActiveTab(panelId))
+        for (UIElement* p = this; p; p = p->GetParent())
         {
-            if (auto* panel = dynamic_cast<DockPanel*>(model->GetPanel(panelId)))
+            auto* dockspace = dynamic_cast<DockspaceElement*>(p);
+            if (!dockspace || !dockspace->GetModel())
+                continue;
+            auto* model = dockspace->GetModel();
+            if (!model->IsPanelActiveTab(panelId))
             {
-                float contentWidth = 0.0f;
-                float contentHeight = 0.0f;
-                if (UIElement* leaf = GetOwningLeaf())
+                if (auto* panel = dynamic_cast<DockPanel*>(model->GetPanel(panelId)))
                 {
-                    for (const auto& child : leaf->GetChildren())
+                    float contentWidth = 0.0f;
+                    float contentHeight = 0.0f;
+                    if (UIElement* leaf = GetOwningLeaf())
                     {
-                        if (child && child->HasClass("dock-content"))
+                        for (const auto& child : leaf->GetChildren())
                         {
-                            contentWidth = child->GetLayoutWidth();
-                            contentHeight = child->GetLayoutHeight();
-                            break;
+                            if (child && child->HasClass("dock-content"))
+                            {
+                                contentWidth = child->GetLayoutWidth();
+                                contentHeight = child->GetLayoutHeight();
+                                break;
+                            }
                         }
                     }
+                    panel->OnDockTabActivationArmed(contentWidth, contentHeight);
                 }
-                panel->OnDockTabActivationArmed(contentWidth, contentHeight);
             }
+            break;
         }
         m_Armed = true;
         m_DragStartX = e.X; m_DragStartY = e.Y;
@@ -193,7 +192,10 @@ void DockTab::OnEvent(UIEvent& e) {
         DockTabBar* bar = dynamic_cast<DockTabBar*>(barEl);
 
         // Find dockspace for preview updates
-        DockspaceElement* dockspace = FindDockspace();
+        DockspaceElement* dockspace = nullptr;
+        for (UIElement* p = this; p; p = p->GetParent()) {
+            if (auto* ds = dynamic_cast<DockspaceElement*>(p)) { dockspace = ds; break; }
+        }
         if (!dockspace) return;
 
         if (!HasClass("dragging"))
@@ -286,9 +288,12 @@ void DockTab::OnEvent(UIEvent& e) {
         std::string panelId = GetPanelIdFromSelf();
 
         // Find owning tabbar and dockspace/model
-        DockspaceElement* dockspace = FindDockspace();
+        DockspaceElement* dockspace = nullptr;
         UIElement* barEl = GetParent();
         DockTabBar* bar = dynamic_cast<DockTabBar*>(barEl);
+        for (UIElement* p = this; p; p = p->GetParent()) {
+            if (auto* ds = dynamic_cast<DockspaceElement*>(p)) { dockspace = ds; break; }
+        }
         
         // Clear any visuals
         if (bar) { bar->ClearInsertionIndicator(); bar->ClearReorderVisual(); bar->EndLiveDrag(); }

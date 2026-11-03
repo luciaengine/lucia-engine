@@ -1,9 +1,6 @@
 #pragma once
 
-#include "Mathematics/Vector3.h"
-
 #include <algorithm>
-#include <iterator>
 
 namespace GameEngine::Engine::Renderer
 {
@@ -12,24 +9,23 @@ namespace GameEngine::Engine::Renderer
 struct DDGIAtlasUploadState
 {
     bool Valid = false;
-    Mathematics::Vector3 GridMin;
-    Mathematics::Vector3 GridSize;
+    float GridMin[3] = {};
+    float GridSize[3] = {};
     float FilterStrength = 0.0f;
     float FilterSmoothness = 0.0f;
 
-    bool NeedsFullUpload(const Mathematics::Vector3& gridMin, const Mathematics::Vector3& gridSize,
+    bool NeedsFullUpload(const float* gridMin, const float* gridSize,
                          float strength, float smoothness) const
     {
-        return !Valid || !std::equal(std::begin(GridMin.v), std::end(GridMin.v), gridMin.v) ||
-               !std::equal(std::begin(GridSize.v), std::end(GridSize.v), gridSize.v) ||
+        return !Valid || !std::equal(GridMin, GridMin + 3, gridMin) ||
+               !std::equal(GridSize, GridSize + 3, gridSize) ||
                FilterStrength != strength || FilterSmoothness != smoothness;
     }
 
-    void Commit(const Mathematics::Vector3& gridMin, const Mathematics::Vector3& gridSize, float strength,
-                float smoothness)
+    void Commit(const float* gridMin, const float* gridSize, float strength, float smoothness)
     {
-        GridMin = gridMin;
-        GridSize = gridSize;
+        std::copy_n(gridMin, 3, GridMin);
+        std::copy_n(gridSize, 3, GridSize);
         FilterStrength = strength;
         FilterSmoothness = smoothness;
         Valid = true;

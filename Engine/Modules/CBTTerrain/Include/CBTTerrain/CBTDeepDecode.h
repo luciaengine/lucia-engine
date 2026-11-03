@@ -1,14 +1,23 @@
 #pragma once
 
-// CBTDeepDecode.h — the Earth-scale (sector, local) corner decode. On the wide arm every
-// spherical VertexEval stores its corners this way; the narrow arm and the planar domain
-// keep the fp32 world store.
+// CBTDeepDecode.h — Earth-scale decode-precision prototype (arc slice S1, gated by
+// GE_CBT_DEEP_DECODE, default OFF).
 //
-// An fp32 world store quantizes a corner on a 0.5 m grid at Earth radius (fp32 octave
-// [2^22, 2^23)), before the camera-relative origin subtraction. This store holds each corner as
-// an integer SECTOR on the 1024 m world grid and an fp32 LOCAL offset (|local| <= 512·√3 m, ULP
-// ~6e-5 m), as instanced meshes do (camera_relative.glsl GE_ClipFromSectorLocal;
-// Components::WorldSectorCoord). The draw computes rel = float(sector - originSector) * 1024 + local.
+// The problem this solves: gVertex stores fp32 WORLD corners. At Earth radius
+// (6.371e6 m, fp32 octave [2^22, 2^23)) a world component quantizes on a 0.5 m grid at
+// STORE time — before the #524 camera-relative origin subtraction can help — so facets
+// below a few metres are unrepresentable no matter how exact the int64 barycentric walk
+// is. kMaxDecodeSubdiv (40) guards ~2x short of that degeneracy and floors the Earth
+// facet at ~9.5 m; the 0.5 m walking bar is unreachable under fp32-world storage.
+//
+// The cure prototyped here: decode each corner to (integer SECTOR on the 1024 m world
+// grid, fp32 LOCAL offset) — the SAME representation instanced meshes already use for
+// Earth-scale (camera_relative.glsl GE_ClipFromSectorLocal; Components::WorldSectorCoord).
+// Local magnitude is <= 512·√3 m, so its fp32 ULP is ~6e-5 m; the sector delta to the
+// render origin is EXACT integer arithmetic. Consumption becomes
+//   rel = float(sector - originSector) * 1024 + local
+// which is the mesh path's math verbatim — the CBT draw stops being the one Earth-scale
+// consumer that cannot compose with the render origin at full precision.
 //
 // The decode arithmetic is df64 ("double-float": an unevaluated sum of two fp32 values,
 // Dekker/Knuth error-free transforms, ~2^-47 relative) — NOT fp64. Rationale (design §5):
@@ -44,19 +53,17 @@
 
 #include "CBTTerrain/CBTLayout.h"      // kMaxDecodeSubdiv
 #include "CBTTerrain/CBTSphereRoots.h" // CBTSphereRoot (exact integer root corners)
+#include "Platform/Environment.h"
 
 // The error-free transforms below are correct ONLY without FP contraction (see header
 // note). MSVC: float_control(push) saves the includer's fp_contract state so this
-// header cannot leak a contraction change into the including TU. GCC uses its scoped
-// optimization options; Clang honors the STDC pragma (leaking OFF there is conservative).
-// The Df64ArithmeticHoldsExtendedPrecision probe fails loudly if contraction ever breaks
+// header cannot leak a contraction change into the including TU; GCC/Clang honor the
+// STDC pragma (leaking OFF there is conservative — stricter, never wrong). The
+// Df64ArithmeticHoldsExtendedPrecision probe fails loudly if contraction ever breaks
 // the transforms regardless of pragma behavior.
 #if defined(_MSC_VER)
 #pragma float_control(push)
 #pragma fp_contract(off)
-#elif defined(__GNUC__) && !defined(__clang__)
-#pragma GCC push_options
-#pragma GCC optimize ("fp-contract=off")
 #else
 #pragma STDC FP_CONTRACT OFF
 #endif
@@ -74,6 +81,17 @@ inline constexpr uint32_t kDeepDecodeSubdiv = 50u;
 // Components::kWorldSectorCoord's 1024 — the render-origin machinery's intrinsic
 // constant. Deliberately a power of two: dividing/multiplying by it is exact in fp32.
 inline constexpr float kSectorSizeMeters = 1024.0f;
+
+// The env-gated cap the arc's probes exercise: kMaxDecodeSubdiv (the shipped 40) unless
+// the GE_CBT_DEEP_DECODE environment switch is on. Read per call, uncached, so tests can toggle the
+// flag in-process. The LIVE pipeline does not read this: CBTUpdateSystem reads the same
+// env var once (static-cached) and feeds ONE bool into both CBTClassifyDesc::DeepDecode
+// and ResolveTerrainMaxDepth (TerrainProvisioning SubdivCapFor — the S2b flag->cap
+// coupling), so storage mode and depth cap cannot desync mid-session.
+inline uint32_t SubdivCap()
+{
+    return Platform::EnvironmentSwitchEnabled("GE_CBT_DEEP_DECODE", false) ? kDeepDecodeSubdiv : kMaxDecodeSubdiv;
+}
 
 // ---------------------------------------------------------------------------
 // Exact integer LEB walk (CPU twin of Kernel_VertexEval's int64 walk)
@@ -322,6 +340,4 @@ inline void DecodeExact(const CubeNum& num, double radiusMeters, double reliefMe
 
 #if defined(_MSC_VER)
 #pragma float_control(pop)
-#elif defined(__GNUC__) && !defined(__clang__)
-#pragma GCC pop_options
 #endif

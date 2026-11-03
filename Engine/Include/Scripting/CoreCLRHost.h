@@ -164,9 +164,6 @@ class CoreCLRHost
     // Query current runtime domain identifier from CoreBridge
     uint64 GetCurrentRuntimeDomainId();
 
-    /// C# components and systems the loaded scripts assembly defines; 0 when none is loaded.
-    uint32 GetCurrentScriptTypeCount();
-
     int32 TryCallWithDelegateSignatures(const String& assemblyName,
                                         const String& typeName,
                                         const String& methodName);
@@ -176,11 +173,6 @@ class CoreCLRHost
                          const char* methodNameUtf8,
                          uint32 methodNameLen,
                          int32* outResult);
-
-    /**
-     * @brief Get runtime information
-     */
-    String GetRuntimeVersion() const;
 
     /**
      * @brief Preload and atomically swap a script assembly using CoreBridge UCOs (avoids GE_* ABI re-entrancy)

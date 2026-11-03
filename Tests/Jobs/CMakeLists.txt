@@ -1,10 +1,10 @@
 # Job system tests.
 #
-# JobSystemTests is the PURE module suite (links JobSystem, Logger and Memory
-# only — never Engine, no scripting, no shim) and builds on every platform. The
-# scripting/hot-reload suites below the platform gate use Windows-only native
-# fixtures. The portable managed ABI suite is declared in ManagedInterop/.
-# Linux/macOS scripting smoke coverage also comes from EngineCoreClrSmokeTests
+# JobSystemTests is the PURE module suite (links JobSystem + Logger only —
+# never Engine, no scripting, no shim) and builds on every platform. The
+# scripting/hot-reload suites below the platform gate rely on the legacy
+# GameEngine.NativeShim and a Windows-only layout for managed test projects;
+# Linux/macOS scripting smoke coverage is provided by EngineCoreClrSmokeTests
 # and EngineCompileServerSmokeTests.
 find_package(GTest REQUIRED)
 
@@ -28,14 +28,10 @@ set(JOB_SYSTEM_TEST_SOURCES
     JobChannelTests.cpp
     JobCounterTests.cpp
     JobPriorityTests.cpp
-    JobSystemStatisticsTests.cpp
-    LatencyBudgetTests.cpp
     QueueFairnessTests.cpp
-    FrameJoinedCarrierTests.cpp
-    ParallelForTests.cpp
     TaskSlabPoolTests.cpp
-    TaskQueueAllocationTests.cpp
     TopologyCensusBench.cpp
+    AllocCounterOverride.cpp
     PerformanceRegressionTests.cpp
     ../Performance/WorkStealingTest.cpp
 )
@@ -57,15 +53,13 @@ endif()
 # No GTest::Main: JobSystemTestsMain.cpp provides main() so Debug CRT asserts
 # report to stderr instead of a modal dialog (which wedges unattended runs
 # silently — see the PR #342 participating-wait triage).
-# The alloc tripwires count through the allocation counter's hook, which every
-# test executable carries (cmake/AllocationHook.cmake); the module under test is
-# the exe-local copy, so the counted code is this executable's in every
-# configuration. Logger and Memory are listed directly because OBJECT-library
-# objects propagate only one level (same pattern as Tests/ECS).
+# The alloc tripwires (AllocCounterOverride.cpp) replace operator new only for
+# code linked into this exe, so the module under test must be the exe-local
+# copy. Logger is listed directly because OBJECT-library objects propagate
+# only one level (same pattern as Tests/ECS).
 target_link_libraries(JobSystemTests
     JobSystem
     Logger
-    Memory
     GTest::GTest
 )
 
@@ -87,10 +81,57 @@ if(NOT ENABLE_SCRIPTING OR NOT WIN32)
   return()
 endif()
 
+# Build and deploy a tiny native shim DLL to satisfy CoreBridge's ABI probe in tests
+if(WIN32)
+  # GameEngineNativeShimUi.cpp is a TEST DOUBLE for the game-UI element ABI, so the managed
+  # binding's own bookkeeping (wrapper identity, one native subscription per event, listener
+  # isolation, ALC revocation) can be driven from a dotnet-test host that has no engine. The
+  # engine-side contract stays pinned in UITests and ScriptingAbiIntegrationTests.
+  add_library(GameEngine.NativeShim SHARED
+      ../NativeShim/GameEngineNativeShim.cpp
+      ../NativeShim/GameEngineNativeShimUi.cpp)
+  # OUTPUT_NAME collides with the real GameEngine.Native target, so the shim
+  # must build into its own directory or it clobbers the real DLL/.lib in the
+  # shared output dirs (consumers copy it via $<TARGET_FILE:...>, which follows).
+  set_target_properties(GameEngine.NativeShim PROPERTIES OUTPUT_NAME "GameEngine.Native")
+  # Per-config variants required: the top-level CMAKE_*_OUTPUT_DIRECTORY_<CONFIG>
+  # globals initialize per-config target properties, which override the generic ones.
+  foreach(cfg ${CMAKE_CONFIGURATION_TYPES})
+    string(TOUPPER "${cfg}" cfgUpper)
+    set_target_properties(GameEngine.NativeShim PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY_${cfgUpper} "${CMAKE_CURRENT_BINARY_DIR}/NativeShim/${cfg}"
+      LIBRARY_OUTPUT_DIRECTORY_${cfgUpper} "${CMAKE_CURRENT_BINARY_DIR}/NativeShim/${cfg}"
+      ARCHIVE_OUTPUT_DIRECTORY_${cfgUpper} "${CMAKE_CURRENT_BINARY_DIR}/NativeShim/${cfg}"
+      PDB_OUTPUT_DIRECTORY_${cfgUpper} "${CMAKE_CURRENT_BINARY_DIR}/NativeShim/${cfg}")
+  endforeach()
+  # Include Engine public headers so the shim can include ScriptingABI.h
+  target_include_directories(GameEngine.NativeShim PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Include)
+
+endif()
+
 # Create test executable for job system (defined later) and only then wire copy
 
 # Ensure we can invoke dotnet to build managed components
 find_program(DOTNET_EXECUTABLE dotnet REQUIRED)
+
+# ONE managed configuration for every dotnet build, staging copy and test command in this file.
+#
+# It has to be one mapping, and DebugFast has to land on Debug. Two separate bugs came from
+# getting that wrong:
+#   * The test commands said a literal `-c Debug` while the build and staging steps mapped every
+#     non-Debug config to Release, so a DebugFast tree ran `dotnet test -c Debug` against a fresh
+#     bin/Debug output nothing had been staged into: the binding fell back to the real
+#     GameEngine.Native.dll, which has no vcpkg runtime dependencies beside it, and 44 of 75
+#     tests failed with DllNotFoundException. A false red indistinguishable from a broken change.
+#   * Mapping DebugFast to Release is wrong even when it IS consistent: the suite drives
+#     accessors that only exist in a Debug managed build (HotReloadManager's
+#     GetPreloadedAssemblyForTests and GetCurrentAssembly are `#if DEBUG`), so three
+#     InitializeOnLoad arms fail on a missing method. DebugFast is a debug config — same /Od and
+#     PDBs as Debug, differing only in CRT and vcpkg variant — so it belongs on Debug here.
+set(GE_MANAGED_TEST_CFG "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:DebugFast>>,Debug,Release>")
+
+
+
 
 # HotReloadPipelineTests hosts every test that exercises Engine-side code
 # (HotReloadPipeline, compile server, scripting ABI) and links Engine ONLY,
@@ -109,7 +150,6 @@ set(HOTRELOAD_PIPELINE_TEST_SOURCES
     CompileServerTestHost.cpp
     ScriptManagerCompileServerIntegrationTest.cpp
     ScriptsProjectGenerationTests.cpp
-    ScriptsProjectFileTests.cpp
     ScriptingAbiHandshakeTests.cpp
     PackageScriptCompileTests.cpp
 )
@@ -167,6 +207,11 @@ else()
 add_dependencies(HotReloadPipelineTests CompileServerHost)
 endif()
 
+# Optional managed interop test project (NUnit)
+add_custom_target(BuildManagedInteropTests ALL
+    COMMAND ${DOTNET_EXECUTABLE} build ${CMAKE_SOURCE_DIR}/Managed/InteropTests/InteropTests.csproj -c ${GE_MANAGED_TEST_CFG}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Building managed interop tests")
 add_dependencies(HotReloadPipelineTests BuildManagedInteropTests)
 # Managed CoreBridge tests (NUnit)
 add_custom_target(BuildManagedCoreBridgeTests ALL
@@ -200,7 +245,7 @@ add_custom_command(TARGET BuildManagedCoreBridgeTests POST_BUILD
         ${CMAKE_SOURCE_DIR}/Managed/CoreBridgeTests/bin/${GE_MANAGED_TEST_CFG}/net10.0/GameEngine.CoreBridge.dll
     COMMENT "Copying GameEngine.Native and CoreBridge to Managed CoreBridgeTests output")
 
-# Same config-mapping rule as ManagedInteropTests in Tests/ManagedInterop: the -c must match the genex the build
+# Same config-mapping rule as ManagedInteropTests below: the -c must match the genex the build
 # and staging steps use, or the run tests an output nothing was staged into.
 add_test(NAME ManagedCoreBridgeTests
     COMMAND ${DOTNET_EXECUTABLE} test ${CMAKE_SOURCE_DIR}/Managed/CoreBridgeTests/CoreBridgeTests.csproj
@@ -210,35 +255,45 @@ set_tests_properties(ManagedCoreBridgeTests PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     ENVIRONMENT "DOTNET_ROLL_FORWARD=LatestPatch;DOTNET_ROOT=${DOTNET_DIR};GE_NATIVE_DIR=${CMAKE_BINARY_DIR}/bin/$<CONFIG>;PATH=${CMAKE_BINARY_DIR}/bin/$<CONFIG>;${DOTNET_DIR};$ENV{PATH}")
 
-# The managed interop target and its test double are declared before Jobs/.
+# Ensure native shim is available next to managed interop tests
+add_dependencies(BuildManagedInteropTests GameEngine.NativeShim)
+add_custom_command(TARGET BuildManagedInteropTests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        ${CMAKE_SOURCE_DIR}/Managed/InteropTests/bin/${GE_MANAGED_TEST_CFG}/net10.0
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:GameEngine.NativeShim>
+        ${CMAKE_SOURCE_DIR}/Managed/InteropTests/bin/${GE_MANAGED_TEST_CFG}/net10.0/$<TARGET_FILE_NAME:GameEngine.Native>
+    COMMENT "Copying GameEngine.Native to Managed InteropTests output")
+
+add_custom_command(TARGET BuildManagedInteropTests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E remove -f
+        ${CMAKE_SOURCE_DIR}/Managed/InteropTests/bin/${GE_MANAGED_TEST_CFG}/net10.0/hostfxr.dll
+    COMMAND ${CMAKE_COMMAND} -E remove -f
+        ${CMAKE_SOURCE_DIR}/Managed/InteropTests/bin/${GE_MANAGED_TEST_CFG}/net10.0/nethost.dll
+    COMMENT "Preparing Managed InteropTests output")
+
+
+# Derive the dotnet installation directory for PATH augmentation
 get_filename_component(DOTNET_DIR "${DOTNET_EXECUTABLE}" DIRECTORY)
 
-# The generated C# bindings against the real GameEngine.Native, in-process (Managed/BindingTests):
-# the build copies the engine's own GameEngine.Native and Engine beside the test assembly, where the
-# bindings load them first, and the vcpkg runtime the test executables stage is on PATH.
-if(TARGET GameEngine.Native)
-  # The physics scene the tests step (bodies, entities, the world's shutdown), on the same Engine.
-  add_library(BindingTestScene SHARED ${CMAKE_SOURCE_DIR}/Tests/ScriptBindings/BindingTestScene.cpp)
-  target_link_libraries(BindingTestScene PRIVATE Engine)
-  set_target_properties(BindingTestScene PROPERTIES FOLDER "Tests")
-  add_custom_target(BuildManagedBindingTests ALL
-      COMMAND ${DOTNET_EXECUTABLE} build ${CMAKE_SOURCE_DIR}/Managed/BindingTests/BindingTests.csproj -c ${GE_MANAGED_TEST_CFG}
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:GameEngine.Native> $<TARGET_FILE:Engine>
-              $<TARGET_FILE:BindingTestScene>
-              ${CMAKE_SOURCE_DIR}/Managed/BindingTests/bin/${GE_MANAGED_TEST_CFG}/net10.0
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-      COMMENT "Building the managed binding tests")
-  add_dependencies(BuildManagedBindingTests GameEngine.Native BindingTestScene AbiNativeSmokeTest)
-  # The same CS2012 serialization as the other managed test builds: they share csprojs.
-  add_dependencies(BuildManagedBindingTests BuildManagedCoreBridgeTests)
-  add_test(NAME ManagedBindingTests
-      COMMAND ${DOTNET_EXECUTABLE} test ${CMAKE_SOURCE_DIR}/Managed/BindingTests/BindingTests.csproj
-              -c ${GE_MANAGED_TEST_CFG} --no-build)
-  set_tests_properties(ManagedBindingTests PROPERTIES
-      TIMEOUT 120
-      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-      ENVIRONMENT "DOTNET_ROLL_FORWARD=LatestPatch;DOTNET_ROOT=${DOTNET_DIR};PATH=${CMAKE_BINARY_DIR}/bin/$<CONFIG>/Tests;${DOTNET_DIR};$ENV{PATH}")
-endif()
+
+# Add managed interop tests to CTest (no-build because we build above)
+# Add managed interop tests to CTest (no-build because we build above)
+# The -c MUST be the same generator expression the build and staging steps above use. It was a
+# literal `Debug` while they mapped every non-Debug config (DebugFast, MinSizeRel,
+# RelWithDebInfo) to Release: `dotnet test -c Debug` then built a FRESH bin/Debug output with no
+# shim staged into it, the binding fell back to GE_NATIVE_DIR — the real GameEngine.Native.dll,
+# which has no vcpkg runtime dependencies staged beside it — and the suite reported 44 of 75
+# tests failing with DllNotFoundException. A false red that looks exactly like a broken change.
+add_test(NAME ManagedInteropTests
+    COMMAND ${DOTNET_EXECUTABLE} test ${CMAKE_SOURCE_DIR}/Managed/InteropTests/InteropTests.csproj
+            -c ${GE_MANAGED_TEST_CFG})
+# Run from repo root and set env so native shim is discoverable and correct dotnet is used
+set_tests_properties(ManagedInteropTests PROPERTIES
+    TIMEOUT 120
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    ENVIRONMENT "DOTNET_ROLL_FORWARD=LatestPatch;DOTNET_ROOT=${DOTNET_DIR};GE_NATIVE_DIR=${CMAKE_BINARY_DIR}/bin/$<CONFIG>;PATH=${CMAKE_BINARY_DIR}/bin/$<CONFIG>;${DOTNET_DIR};$ENV{PATH}")
+
 
 # Build and run a tiny managed smoke to validate DllImport resolution
 add_custom_target(ManagedInteropSmoke ALL
@@ -296,12 +351,21 @@ if(WIN32)
             $<TARGET_FILE_DIR:HotReloadPipelineTests>
         COMMENT "Staging managed CoreBridge/HotReload/ABI set to HotReloadPipelineTests output")
 
+    # CompileServerHost probes <EngineBinDir>/SourceGenerators for source generators.
     # CompileServerEndToEnd.GeneratorErrorFailsCompile and
     # GeneratorWarningKeepsCompileSuccessful point EngineBinDir at this exe's directory,
-    # so without the generator they would exercise a generator-less server and pass for
-    # the wrong reason. Built in the native configuration, not the managed test one
-    # the set above uses.
-    ge_stage_entity_system_generator(HotReloadPipelineTests)
+    # so the generator has to be staged there or those tests would silently exercise a
+    # generator-less server and pass for the wrong reason. The generator comes from
+    # EntitySystemGeneratorAssembly, which builds it in the native configuration
+    # ($<CONFIG>), not in the managed test configuration the set above uses.
+    add_dependencies(HotReloadPipelineTests EntitySystemGeneratorAssembly)
+    add_custom_command(TARGET HotReloadPipelineTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            $<TARGET_FILE_DIR:HotReloadPipelineTests>/SourceGenerators
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/Managed/SourceGenerators/EntitySystemGenerator/bin/$<CONFIG>/netstandard2.0/EntitySystemGenerator.dll
+            $<TARGET_FILE_DIR:HotReloadPipelineTests>/SourceGenerators/EntitySystemGenerator.dll
+        COMMENT "Staging EntitySystemGenerator to HotReloadPipelineTests output")
 endif()
 
 
@@ -383,6 +447,7 @@ target_link_libraries(FileChangeTrackerTests
     GTest::GTest
     GTest::Main
 )
+target_include_directories(FileChangeTrackerTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
 set_target_properties(FileChangeTrackerTests PROPERTIES
     CXX_STANDARD 20
@@ -410,6 +475,7 @@ target_link_libraries(DependencyGraphAnalyzerTests
     GTest::GTest
     GTest::Main
 )
+target_include_directories(DependencyGraphAnalyzerTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
 set_target_properties(DependencyGraphAnalyzerTests PROPERTIES
     CXX_STANDARD 20
@@ -437,6 +503,7 @@ target_link_libraries(IncrementalCompilationTests
     GTest::GTest
     GTest::Main
 )
+target_include_directories(IncrementalCompilationTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
 set_target_properties(IncrementalCompilationTests PROPERTIES
     CXX_STANDARD 20
@@ -472,6 +539,7 @@ target_link_libraries(HybridCompilationIntegrationTests
     GTest::GTest
     GTest::Main
 )
+target_include_directories(HybridCompilationIntegrationTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
 set_target_properties(HybridCompilationIntegrationTests PROPERTIES
     CXX_STANDARD 20
@@ -499,6 +567,7 @@ target_link_libraries(HybridCompilationBenchmarkTests
     GTest::GTest
     GTest::Main
 )
+target_include_directories(HybridCompilationBenchmarkTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 
 set_target_properties(HybridCompilationBenchmarkTests PROPERTIES
     CXX_STANDARD 20

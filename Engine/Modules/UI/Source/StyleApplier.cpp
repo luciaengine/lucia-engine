@@ -429,12 +429,6 @@ static const PropertyApplier kAppliers[] = {
     /* SelectionColor */ [](ResolvedStyle& rs, const StyleValue& v) {
         if (auto* p = std::get_if<uint32_t>(&v)) rs.Visual.SelectionColor = *p;
     },
-    /* Transform */ [](ResolvedStyle& rs, const StyleValue& v) {
-        if (auto* p = std::get_if<TransformValue>(&v)) rs.Visual.Transform = *p;
-    },
-    /* TransformOrigin */ [](ResolvedStyle& rs, const StyleValue& v) {
-        if (auto* p = std::get_if<TransformOriginValue>(&v)) rs.Visual.TransformOrigin = *p;
-    },
     /* DeferredDecl */ nullptr,
 };
 
@@ -442,19 +436,19 @@ static const PropertyApplier kAppliers[] = {
 static_assert(std::size(kAppliers) == static_cast<size_t>(StylePropertyId::_Count),
               "kAppliers needs exactly one entry per StylePropertyId, in enum order");
 
-void ApplyOverridesToResolvedStyle(ResolvedStyle& rs, const StyleDeclaration& overrides)
+void ApplyOverridesToResolvedStyle(ResolvedStyle& rs, const StyleOverrides& overrides)
 {
     if (overrides.PropCount() == 0)
         return;
 
-    overrides.ForEachProp([&](StylePropertyId id, const StyleDeclarationEntry& entry)
+    overrides.ForEachProp([&](StylePropertyId id, const StyleOverrideEntry& entry)
     {
-        if (entry.Keyword != StyleKeyword::None)
+        if (entry.keyword != StyleKeyword::None)
             return;
 
         auto idx = static_cast<size_t>(id);
         if (idx < std::size(kAppliers) && kAppliers[idx])
-            kAppliers[idx](rs, entry.Value);
+            kAppliers[idx](rs, entry.value);
     });
 
     rs.Visual.Opacity = rs.Visual.LocalOpacity;

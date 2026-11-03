@@ -9,7 +9,7 @@
 #include "Rendering/Common/Math.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
@@ -337,10 +337,12 @@ void TemporalFxaaNode::DeclareForView(ViewDeclare& d)
         FxaaResolveParamsCPU params{};
         // UNJITTERED matrices: reprojection must be phase-stable so a static
         // camera maps a pixel to itself exactly (else the image crawls).
-        const GameEngine::Rendering::Matrix4x4 invVp = GameEngine::Mathematics::Inverse(state->CurrCamera.viewProj);
+        GameEngine::Rendering::Matrix4x4 vp;
+        std::memcpy(vp.Data(), state->CurrCamera.viewProj, sizeof(float) * 16);
+        const GameEngine::Rendering::Matrix4x4 invVp = GameEngine::Mathematics::Inverse(vp);
         std::memcpy(params.InvViewProj, invVp.Data(), sizeof(float) * 16);
         std::memcpy(params.PrevViewProj,
-                    (state->PrevValid ? state->PrevCamera.viewProj : state->CurrCamera.viewProj).Data(),
+                    state->PrevValid ? state->PrevCamera.viewProj : state->CurrCamera.viewProj,
                     sizeof(float) * 16);
         params.Extent[0] = static_cast<float>(w);
         params.Extent[1] = static_cast<float>(h);

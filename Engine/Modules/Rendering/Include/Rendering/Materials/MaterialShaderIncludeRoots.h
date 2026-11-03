@@ -20,10 +20,9 @@ struct MaterialBuildContext;
 
 // Roots in the order the includer probes them: extra IncludeDirs, then
 // ProjectRoots, PackageShaderDirs, the engine adapter tree, and finally
-// `shaderLocalDir`: ShaderComposer::ShaderLocalDirectory of the material, empty
-// unless its own references live in its directory (empty contributes no root).
+// `materialDir` (empty = no backing asset, contributes no root).
 std::vector<std::filesystem::path> BuildMaterialIncludeRoots(
-    const MaterialBuildContext& context, const std::filesystem::path& shaderLocalDir);
+    const MaterialBuildContext& context, const std::filesystem::path& materialDir);
 
 // Spell `resolved` relative to the DEEPEST root that contains it and still wins
 // the includer's probe for that spelling, so the literal names a file rather

@@ -7,7 +7,7 @@
 #include "Platform/Window.h"
 #include "UI/Controls/DockOverlay.h"
 #include "UI/Controls/DockspaceElement.h"
-#include "UI/Interaction/DragDrop/DragDropManager.h"
+#include "UI/Interaction/DragDropManager.h"
 #include "UI/Layout/DockingHitTest.h"
 #include "UI/UIManager.h"
 
@@ -207,7 +207,7 @@ void WindowDockingController::Tick()
         if (targetUnderCursor && targetUnderCursor->ui)
         {
             UIElement* root = targetUnderCursor->ui->GetRootElement();
-            UIElement* dockEl = root ? root->FindById("dock"_sid) : nullptr;
+            UIElement* dockEl = root ? root->FindById("dock") : nullptr;
             if (dockEl)
             {
                 // Compute dockspace rect in screen space. GetPosition returns window
@@ -383,7 +383,7 @@ void WindowDockingController::Tick()
             {
                 if (auto* root = targetUnderCursor->ui->GetRootElement())
                 {
-                    if (auto* dockEl = root->FindById("dock"_sid))
+                    if (auto* dockEl = root->FindById("dock"))
                     {
                         int wx = 0, wy = 0;
                         targetUnderCursor->window->GetPosition(wx, wy);
@@ -754,7 +754,7 @@ void WindowDockingController::ClearAllDockOverlays()
             continue;
         if (UIElement* root = w->ui->GetRootElement())
         {
-            if (UIElement* dock = root->FindById("dock"_sid))
+            if (UIElement* dock = root->FindById("dock"))
             {
                 if (auto* ds = dynamic_cast<DockspaceElement*>(dock))
                 {
@@ -791,7 +791,7 @@ void WindowDockingController::ShowDropOverlays()
 
     if (UIElement* root = target->ui->GetRootElement())
     {
-        if (UIElement* dock = root->FindById("dock"_sid))
+        if (UIElement* dock = root->FindById("dock"))
         {
             // Use UI layout coordinates directly for DockOverlay
             const float dww = dock->GetLayoutWidth();
@@ -844,7 +844,7 @@ bool WindowDockingController::ComputeDropCandidateFromCursor(EditorWindowContext
         return false;
     if (UIElement* root = targetUnderCursor->ui->GetRootElement())
     {
-        if (UIElement* dock = root->FindById("dock"_sid))
+        if (UIElement* dock = root->FindById("dock"))
         {
             int wx = 0, wy = 0;
             targetUnderCursor->window->GetPosition(wx, wy);

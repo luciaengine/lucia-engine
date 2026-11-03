@@ -23,14 +23,13 @@
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include "TestDeviceHelper.h"
 
 #include <algorithm>
 #include <cstring>
-#include <memory_resource>
 #include <random>
 #include <vector>
 
@@ -385,8 +384,7 @@ class GPUDrainComputeTest : public ::testing::Test
             records[i].RunGroup = (runCount > 1u) ? group(rng) : 0u;
             records[i].ViewDepth = z; // camera at origin, forward +Z
         }
-        R::SortedTransparentRunPartition partition;
-        R::BuildSortedTransparentRunPartition(records, runCount, *std::pmr::new_delete_resource(), partition);
+        const auto partition = R::BuildSortedTransparentRunPartition(records, runCount);
         for (uint32_t i = 0; i < liveCount; ++i)
         {
             recordsGPU[i] = {records[i].InstanceIndex, records[i].IndexCount,

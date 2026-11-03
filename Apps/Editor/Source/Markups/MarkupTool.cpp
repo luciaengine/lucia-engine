@@ -11,17 +11,16 @@
 #include "Markups/MarkupEditorBridge.h"
 #include "Markups/MarkupRequests.h"
 #include "Mathematics/Ray.h"
-#include "Picking/ScenePick.h"
+#include "Picking/MeshPickingService.h"
 #include "SceneView/SceneViewDropPlacement.h"
 #include "SceneView/SceneViewEvents.h"
 #include "SceneView/SceneViewNoticeOverlay.h"
 #include "SceneView/SceneViewProjection.h"
-#include "SceneView/SplineTool/SplineStrokeCapture.h"
-#include "SceneView/SceneViewController.h"
+#include "SceneView/SplineStrokeCapture.h"
+#include "SceneViewController.h"
 #include "Spline/SplineUtility.h"
 #include "Types/Color.h"
 #include "UI/ContextMenuLabels.h"
-#include "UI/EditorIcons.h"
 
 #include <nlohmann/json.hpp>
 
@@ -49,8 +48,6 @@ constexpr float kLassoMinTolerance = 0.5f;
 constexpr float kLassoMaxTolerance = 5.0f;
 // A click this many pixels from the first knot closes the clicked outline.
 constexpr float kCloseClickPixels = 12.0f;
-// A drawn region is titled "Region <n>", the first n no mark-up's title has.
-constexpr const char* kNewRegionName = "Region";
 constexpr const char* kCrossingNotice = "The outline crosses itself; draw it again without crossing";
 const Color kPreviewColor(kMarkupAccentRgb[0], kMarkupAccentRgb[1], kMarkupAccentRgb[2], 1.0f);
 // The preview rides this far above the ground it was drawn on, so the terrain between its samples
@@ -84,17 +81,15 @@ std::vector<ContextMenuManipulator::Item> BuildMarkupToolMenuItems(const OpenCol
     const struct
     {
         const char* Label;
-        const char* Icon;
         MarkupToolShape Shape;
     } kShapes[] = {
-        {"Box: click to place", EditorIcons::kMarkupBox, MarkupToolShape::Box},
-        {"Sphere: click to place", EditorIcons::kMarkupSphere, MarkupToolShape::Sphere},
-        {"Region: drag a lasso or click its points", EditorIcons::kMarkupRegion, MarkupToolShape::Region},
+        {"Box: click to place", MarkupToolShape::Box},
+        {"Sphere: click to place", MarkupToolShape::Sphere},
+        {"Region: drag a lasso or click its points", MarkupToolShape::Region},
     };
     std::vector<ContextMenuManipulator::Item> items;
     for (const auto& shape : kShapes)
         items.push_back({.Path = shape.Label,
-                         .IconPath = shape.Icon,
                          .Flags = ContextMenuLabels::CheckedFlag(GetMarkupToolShape() == shape.Shape),
                          .OnActivate = [value = shape.Shape] { SetMarkupToolShape(value); }});
     return items;
@@ -130,7 +125,7 @@ nlohmann::json PlaceRegion(MarkupEditorBridge& bridge, ECS::World& world, UndoRe
     nlohmann::json outline = nlohmann::json::array();
     for (const Vector2& knot : knots)
         outline.push_back({knot.x, knot.y});
-    const nlohmann::json params{{"title", FreeMarkupTitle(world, kNewRegionName)},
+    const nlohmann::json params{{"title", "Region"},
                                 {"kind", "region"},
                                 {"outline", std::move(outline)},
                                 {"status", "Requested"},
@@ -175,10 +170,11 @@ std::vector<Vector2> SimplifyLassoStroke(std::span<const Vector3> stroke)
 
 std::optional<Vector3> ResolveMarkupRegionGround(const Mathematics::Ray3D& ray, ECS::World& world)
 {
-    Scene::PickOptions options;
+    Picking::PickOptions options;
     options.IncludeMeshes = false;
     options.IncludePrimitives = false;
-    const Scene::PickResult terrain = Picking::PickScene(ray, world, options);
+    options.IncludeBoundsFallback = false;
+    const Picking::PickResult terrain = Picking::RaycastScene(ray, world, options);
     if (terrain.Hit)
         return terrain.Best.WorldPosition;
     float t = 0.0f;

@@ -134,16 +134,19 @@ class CBTNearFieldMerge : public ::testing::Test
     uint64_t CountNearFieldBelow(CBTInstance& inst, const CBTFrameParams& p, float mergeBelowM)
     {
         const std::vector<uint64_t> heap = ReadHeap(inst);
-        const std::vector<float> verts = VertexFloatsWithWorldCorners(inst.DebugReadWords(
-            CBTBinding::CurrentVertex, kDefaultBisectorPoolSize * kVertexWordsPerSlot));
+        const std::vector<uint32_t> verts = inst.DebugReadWords(
+            CBTBinding::CurrentVertex, kDefaultBisectorPoolSize * kVertexWordsPerSlot);
+        auto asFloat = [](uint32_t bits) { float f; std::memcpy(&f, &bits, sizeof(f)); return f; };
         uint64_t n = 0;
         for (uint32_t s = 0; s < kDefaultBisectorPoolSize; ++s)
         {
             if (heap[s] == 0u)
                 continue;
             const uint32_t base = s * kVertexWordsPerSlot;
-            const std::array<float, 3> c0{verts[base + 0u], verts[base + 1u], verts[base + 2u]};
-            const std::array<float, 3> c2{verts[base + 8u], verts[base + 9u], verts[base + 10u]};
+            const std::array<float, 3> c0{asFloat(verts[base + 0u]), asFloat(verts[base + 1u]),
+                                          asFloat(verts[base + 2u])};
+            const std::array<float, 3> c2{asFloat(verts[base + 8u]), asFloat(verts[base + 9u]),
+                                          asFloat(verts[base + 10u])};
             if (ProjectPix(p.ViewProjRel, c0).InFront && ProjectPix(p.ViewProjRel, c2).InFront)
                 continue;
             if (WorldLen(c0, c2) < mergeBelowM)

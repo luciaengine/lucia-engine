@@ -136,7 +136,8 @@ void SetShadowReceiverCamera(const Rendering::CameraData& camera, bool orthograp
 {
     // The view basis is the inverse view's rotation (left-handed, +Z forward,
     // as DeriveCameraData reads it).
-    Mathematics::Matrix4x4 view = camera.view;
+    Mathematics::Matrix4x4 view;
+    std::memcpy(view.Data(), camera.view, sizeof(camera.view));
     const Mathematics::Matrix4x4 worldFromCamera = Mathematics::Inverse(view);
     auto axis = [&worldFromCamera](float x, float y, float z)
     {
@@ -147,10 +148,10 @@ void SetShadowReceiverCamera(const Rendering::CameraData& camera, bool orthograp
     context.CameraRight = axis(1.0f, 0.0f, 0.0f);
     context.CameraUp = axis(0.0f, 1.0f, 0.0f);
     context.CameraForward = axis(0.0f, 0.0f, 1.0f);
-    // proj[0][0] and proj[1][1] are the reciprocal half-extents of the window: per
+    // proj[0] and proj[5] are the reciprocal half-extents of the window: per
     // unit depth under a perspective projection, absolute under an orthographic one.
-    context.WindowHalfX = 1.0f / std::max(std::abs(camera.proj[0][0]), 1e-6f);
-    context.WindowHalfY = 1.0f / std::max(std::abs(camera.proj[1][1]), 1e-6f);
+    context.WindowHalfX = 1.0f / std::max(std::abs(camera.proj[0]), 1e-6f);
+    context.WindowHalfY = 1.0f / std::max(std::abs(camera.proj[5]), 1e-6f);
     context.Orthographic = orthographic;
 }
 

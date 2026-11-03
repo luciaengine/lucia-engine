@@ -10,14 +10,9 @@
 #include "Engine/Rendering/PostProcessSettings.h"
 #include "Engine/Rendering/ResolvedShadowSettings.h"
 #include "Engine/Rendering/VolumetricFogTypes.h"
-#include "Rendering/RenderLayerMask.h"
-#include "Rendering/Sky/SkySunState.h"
 #include "Types/Types.h"
 
 namespace GameEngine {
-namespace ECS {
-class World;
-}
 namespace Engine {
 namespace Renderer {
 
@@ -31,7 +26,7 @@ struct PostProcessExtractedVolume
 {
     int32 Priority = 0;
     float32 BaseWeight = 0.0f;
-    Rendering::RenderLayerMask VolumeLayers = Rendering::RenderLayerMask::None();
+    uint32 LayerMask = 0;
     bool IsGlobal = false;
     int32 Shape = 0;
     float32 BlendDistance = 0.0f;
@@ -65,13 +60,7 @@ struct PostProcessExtractContext
     // World time-of-day (SkyEnvironment), consumed by height fog presets.
     float32 TimeOfDayHours = 12.0f;
     float32 DayKeyTimesHours[4]{0.0f, 6.0f, 12.0f, 18.0f};
-    // The sun state the sky published this frame; the defaults when no sky is active.
-    Rendering::SkySunState SunState{};
 };
-
-// The context the extraction hands `world`'s effect hooks this frame: the world's time of day and
-// the sky's sun state. `services` may be null (headless).
-PostProcessExtractContext MakePostProcessExtractContext(ECS::World& world, RenderServices* services);
 
 } // namespace Renderer
 } // namespace Engine

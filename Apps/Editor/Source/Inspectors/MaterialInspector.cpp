@@ -4,7 +4,6 @@
 #include "Inspectors/DeclaredPropertyRowModel.h"
 #include "Inspectors/InspectorColorSwatchRow.h"
 #include "Inspectors/InspectorDragHelpers.h"
-#include "Mathematics/Interpolation.h"
 #include "Platform/SystemMetrics.h"
 #include "UI/InspectorSection.h"
 #include "Input/InputSystem.h"
@@ -19,8 +18,6 @@
 #include "Core/Engine.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialCompiler.h"
-#include "Engine/Rendering/MaterialDeformationMargins.h"
-#include "Engine/Rendering/MaterialVertexAnimation.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Platform/Shell.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -30,12 +27,10 @@
 #include "Rendering/Materials/MaterialAlphaMode.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/MaterialKeywordDerivation.h"
-#include "Rendering/Materials/MaterialPropertyBinding.h"
 #include "Rendering/Materials/MaterialValidation.h"
-#include "Rendering/Materials/Shader/ShaderCapabilityDetector.h"
-#include "Rendering/Materials/Shader/ShaderPropertyTable.h"
-#include "Rendering/Materials/Shader/ShaderMetaValidation.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderCapabilityDetector.h"
+#include "Rendering/Materials/ShaderPropertyTable.h"
+#include "Rendering/Materials/ShaderMetaValidation.h"
 #include "Rendering/ShaderGraph/SgPropertyBinding.h"
 
 #include "Editor/EditorPaths.h"
@@ -44,7 +39,7 @@
 #include "Editor/Materials/MaterialRows.h"
 #include "Editor/Materials/MaterialRuntimeTextures.h"
 #include "Editor/Materials/MaterialUndoSnapshot.h"
-#include "Panels/ShaderErrors/ShaderErrorRows.h"
+#include "Panels/ShaderErrorRows.h"
 
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Dropdown.h"
@@ -64,7 +59,6 @@
 #include "UI/StyleProperties.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "Types/NearestName.h"
-#include "Types/PathUtils.h"
 #include "Types/StringUtils.h"
 
 #include <nlohmann/json.hpp>
@@ -73,7 +67,6 @@
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
-#include <format>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -102,7 +95,7 @@ static uint32_t BaseColorToIconTint(const MaterialDocument& doc)
         return 0u;
     // Blend 50% towards white so dark materials still produce a visible tint.
     auto toU8 = [](float v) -> uint32_t {
-        return static_cast<uint32_t>(Math::Clamp01(v * 0.5f + 0.5f) * 255.0f + 0.5f);
+        return static_cast<uint32_t>(std::clamp(v * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f + 0.5f);
     };
     return 0xFF000000u | (toU8(c[0]) << 16) | (toU8(c[1]) << 8) | toU8(c[2]);
 }
@@ -210,48 +203,10 @@ static void UpdateMaterialIconTint(UIElement* root, MaterialAsset* mat)
     }
 }
 
-// The two read-only rows under Vertex Modifier: what the material's modifier
-// changes, and the culling envelope it declares with the margin the GPU culling
-// widens its instances by now. Neither is editable: both follow from the shader.
-// A margin of zero for a deforming material carries its reason as the tooltip,
-// the message that states the fix. A modifier that writes the whole vertex
-// output belongs to a draw path that culls its own geometry, so a missing
-// envelope is not a problem there and its row is not shown.
-static void AddDeformationRows(UIElement* content, const Engine::Renderer::Material& runtime)
-{
-    namespace R = Rendering;
-    if (!Engine::Renderer::MaterialDeformsVertices(runtime))
-        return;
-    const bool fullOutput =
-        R::HasKeyword(runtime.GetVariantKey().materialKeywords, R::MaterialKeyword::HasVertexOutputMod);
-    UIElement* formRow = InspectorUI::AddRow(content);
-    InspectorUI::AddLabel(formRow, "Deformation");
-    if (fullOutput)
-        InspectorUI::AddLabel(formRow, "Writes the vertex output",
-                              "The vertex modifier writes the whole vertex output. The draw path it belongs "
-                              "to culls its own geometry, so the deformation envelope is optional.");
-    else
-        InspectorUI::AddLabel(formRow, "Moves vertex positions",
-                              "The vertex modifier moves each vertex position. Culling widens the bounds of "
-                              "its instances by the deformation envelope the modifier declares.");
-
-    const R::DeformationEnvelopeDeclaration& envelope = runtime.GetDeformationEnvelope();
-    if (!envelope.Declared && fullOutput)
-        return;
-    const Engine::Renderer::DeformationMargin margin = Engine::Renderer::ResolveDeformationMargin(runtime);
-    std::string text;
-    if (!envelope.Declared)
-        text = "Not declared: culling bounds are not widened for this deformation";
-    else if (!margin.Problem.empty())
-        text = "Not usable: culling margin 0 m";
-    else if (envelope.ScaledBy.empty())
-        text = std::format("{:g} m", envelope.Meters);
-    else
-        text = std::format("{:g} m × {} = {:g} m", envelope.Meters, envelope.ScaledBy, margin.Meters);
-    UIElement* envelopeRow = InspectorUI::AddRow(content);
-    InspectorUI::AddLabel(envelopeRow, "Deformation Envelope");
-    InspectorUI::AddLabel(envelopeRow, text, margin.Problem.empty() ? nullptr : margin.Problem.c_str());
-}
+// Canonical lighting model names
+static constexpr const char* kLightingModelStandardPBR = "StandardPBR";
+static constexpr const char* kLightingModelUnlit = "Unlit";
+static constexpr const char* kLightingModelShadowOnly = "ShadowOnly";
 
 // ============================================================================
 // Lighting model
@@ -284,7 +239,7 @@ static void SaveDocToDisk(MaterialAsset* asset, const MaterialDocument& doc)
         const std::filesystem::path path = asset->GetPath();
         // Imported (MaterialX) materials round-trip their supported properties back into the .mtlx
         // in its own format — never overwrite a .mtlx source with engine JSON.
-        if (doc.shaderLocked && LowerCaseExtension(path) == ".mtlx")
+        if (doc.shaderLocked && ToLowerAscii(path.extension().string()) == ".mtlx")
         {
             wrote = WriteMaterialX(path.string(), doc);
         }
@@ -596,29 +551,15 @@ static void AddColorSwatchRow(UIElement* parent, const std::string& labelText,
                                const char* tooltip = nullptr)
 {
     using namespace InspectorDrag;
-    UIElement* row = InspectorUI::AddRow(parent);
-    Label* lbl = InspectorUI::AddLabel(row, labelText, tooltip);
-    if (lbl) lbl->AddClass("inspector-label-no-drag");
-    UIElement* fieldContainer = InspectorUI::AddFieldContainer(row);
-    fieldContainer->Style()
-        .Set(Style::FlexDir, FlexDirection::Row)
-        .Set(Style::AlignItems, AlignItems::Center)
-        .Set(Style::Gap, StyleLength::Px(6.0f));
-
     const uint32_t argb = FloatColorToArgb(hdr ? HdrNormalized(currentColor) : currentColor);
     const size_t numComponents = currentColor.size();
 
-    auto swatch = std::make_unique<UIElement>();
-    UIElement* swatchRaw = swatch.get();
-    InspectorUI::StyleColorSwatch(swatchRaw, argb);
-    fieldContainer->AddChild(std::move(swatch));
-
-    auto rgbaLabel = std::make_unique<Label>();
-    rgbaLabel->AddClass("inspector-text");
-    rgbaLabel->SetText(FormatColorRgba(currentColor));
-    rgbaLabel->Style().Set(Style::Cursor, CursorStyle::Pointer);
-    Label* rgbaLabelRaw = rgbaLabel.get();
-    fieldContainer->AddChild(std::move(rgbaLabel));
+    const InspectorUI::ColorSwatchRow swatchRow = InspectorUI::AddColorSwatchRow(
+        parent, labelText, tooltip,
+        argb,
+        FormatColorRgba(currentColor));
+    UIElement* swatchRaw = swatchRow.Swatch;
+    Label* rgbaLabelRaw = swatchRow.Value;
 
     // The color picker is an app-owned singleton whose live-preview callbacks outlive
     // this row: a material rebuild frees the swatch/label while the picker stays open.
@@ -629,7 +570,7 @@ static void AddColorSwatchRow(UIElement* parent, const std::string& labelText,
         Label* rgbaLabel = rgbaLabelRef.Get();
         if (!swatch || !rgbaLabel)
             return;
-        InspectorUI::StyleColorSwatch(swatch, FloatColorToArgb(hdr ? HdrNormalized(color) : color));
+        InspectorUI::SetColorSwatchColor(swatch, FloatColorToArgb(hdr ? HdrNormalized(color) : color));
         rgbaLabel->SetText(FormatColorRgba(color));
     };
 
@@ -756,29 +697,14 @@ static void AddShaderGraphAliasedColorRow(UIElement* parent, const std::string& 
     const MaterialDocument& doc = mat->GetDocument();
     const std::vector<float> currentColor = ReadShaderGraphColorFromKeys(doc, materialKeys);
 
-    UIElement* row = InspectorUI::AddRow(parent);
-    Label* lbl = InspectorUI::AddLabel(row, labelText);
-    if (lbl)
-        lbl->AddClass("inspector-label-no-drag");
-    UIElement* fieldContainer = InspectorUI::AddFieldContainer(row);
-    fieldContainer->Style()
-        .Set(Style::FlexDir, FlexDirection::Row)
-        .Set(Style::AlignItems, AlignItems::Center)
-        .Set(Style::Gap, StyleLength::Px(6.0f));
-
     const uint32_t argb = FloatColorToArgb(currentColor);
 
-    auto swatch = std::make_unique<UIElement>();
-    UIElement* swatchRaw = swatch.get();
-    InspectorUI::StyleColorSwatch(swatchRaw, argb);
-    fieldContainer->AddChild(std::move(swatch));
-
-    auto rgbaLabel = std::make_unique<Label>();
-    rgbaLabel->AddClass("inspector-text");
-    rgbaLabel->SetText(FormatColorRgba(currentColor));
-    rgbaLabel->Style().Set(Style::Cursor, CursorStyle::Pointer);
-    Label* rgbaLabelRaw = rgbaLabel.get();
-    fieldContainer->AddChild(std::move(rgbaLabel));
+    const InspectorUI::ColorSwatchRow swatchRow = InspectorUI::AddColorSwatchRow(
+        parent, labelText, nullptr,
+        argb,
+        FormatColorRgba(currentColor));
+    UIElement* swatchRaw = swatchRow.Swatch;
+    Label* rgbaLabelRaw = swatchRow.Value;
 
     const UIElement::WeakRef<> swatchRef = UIElement::MakeWeakRef(swatchRaw);
     const UIElement::WeakRef<Label> rgbaLabelRef = UIElement::MakeWeakRef(rgbaLabelRaw);
@@ -787,7 +713,7 @@ static void AddShaderGraphAliasedColorRow(UIElement* parent, const std::string& 
         Label* rgbaLabel = rgbaLabelRef.Get();
         if (!swatch || !rgbaLabel)
             return;
-        InspectorUI::StyleColorSwatch(swatch, FloatColorToArgb(color));
+        InspectorUI::SetColorSwatchColor(swatch, FloatColorToArgb(color));
         rgbaLabel->SetText(FormatColorRgba(color));
     };
 
@@ -993,7 +919,7 @@ static void AddDeclaredVectorRow(UIElement* parent, const Rendering::ShaderPrope
     UIElement* row = InspectorUI::AddRow(parent);
     InspectorUI::AddLabel(row, p.DisplayName, p.Tooltip.empty() ? nullptr : p.Tooltip.c_str());
     UIElement* fieldContainer = InspectorUI::AddFieldContainer(row);
-    fieldContainer->Style()
+    fieldContainer->Overrides()
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::Gap, StyleLength::Px(4.0f));
 
@@ -1149,35 +1075,6 @@ static void AddDeclaredPropertyRows(UIElement* content, const Rendering::ShaderP
     Editor::AddUndeclaredKeysNotice(content, unknown, declaredNames, &table);
 }
 
-// One cell of a header label drag: the field, its component index and its value at the press.
-struct HeaderDragCell
-{
-    FloatField* Field = nullptr;
-    int ComponentIndex = 0;
-    float StartValue = 0.0f;
-};
-
-// Escape or another button during a header label drag: a drag that moved the two cells puts back
-// their start values and commits them.
-void CancelHeaderDrag(UIEvent& e, Label* label, bool didMove, HeaderDragCell cellA, HeaderDragCell cellB,
-                      const std::function<void(int, float)>& commitComponent)
-{
-    auto& state = InspectorDrag::GetDragState();
-    if (state.draggingLabel != label)
-        return;
-    InspectorDrag::SetLabelDragHighlight(label, false);
-    state.draggingLabel = nullptr;
-    if (didMove)
-    {
-        for (const HeaderDragCell& cell : {cellA, cellB})
-        {
-            cell.Field->SetValue(cell.StartValue);
-            commitComponent(cell.ComponentIndex, cell.StartValue);
-        }
-    }
-    e.Stop();
-}
-
 } // namespace
 
 // ============================================================================
@@ -1314,9 +1211,9 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
         const int lightingIdx = LightingModelDropdownIndex(doc.lightingModel);
 
         Dropdown* lightingDD = InspectorUI::AddDropdownRow(content, "Lighting Model",
-            {{std::string(Rendering::LightingModel::kStandardPBRName), "StandardPBR"},
-             {std::string(Rendering::LightingModel::kUnlitName), "Unlit"},
-             {std::string(Rendering::LightingModel::kShadowOnlyName), "Shadow Only"}}, lightingIdx);
+            {{kLightingModelStandardPBR, kLightingModelStandardPBR},
+             {kLightingModelUnlit, kLightingModelUnlit},
+             {kLightingModelShadowOnly, "Shadow Only"}}, lightingIdx);
 
         lightingDD->SetOnValueChanged([root, mat, openPicker, undo, inlineEmbed, openAsset](const std::string& value) {
             MaterialDocument d = mat->GetDocument();
@@ -1508,7 +1405,7 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
                 // rows; brightness is the separate "Emission Luminance (nits)" row, so the colour
                 // picker never touches the nits value.
                 const auto& arr = std::get<std::vector<float>>(val);
-                AddColorSwatchRow(content, Rendering::MaterialPropertyBinding::PropertyKeyLabel(key), arr, root, mat, key, openPicker, inlineEmbed, openAsset);
+                AddColorSwatchRow(content, Editor::MaterialRows::PropertyLabel(key), arr, root, mat, key, openPicker, inlineEmbed, openAsset);
             }
             else if (key == "enableClearCoat" && std::holds_alternative<bool>(val))
             {
@@ -1615,7 +1512,7 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
                 float cur = kDefaultEmissiveExposureWeight;
                 if (!TryGetScalarFromMaterialValue(val, cur))
                     continue;
-                AddMaterialSliderRow(content, Rendering::MaterialPropertyBinding::PropertyKeyLabel(key), cur, 0.0f, 1.0f, root, mat, key,
+                AddMaterialSliderRow(content, Editor::MaterialRows::PropertyLabel(key), cur, 0.0f, 1.0f, root, mat, key,
                                      openPicker, undo, inlineEmbed, openAsset,
                                      Editor::MaterialRows::kEmissiveExposureWeightTooltip);
             }
@@ -1624,7 +1521,7 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
                 float cur = 0.0f;
                 if (!TryGetScalarFromMaterialValue(val, cur))
                     continue;
-                AddMaterialSliderRow(content, Rendering::MaterialPropertyBinding::PropertyKeyLabel(key), cur, 0.0f, 1.0f, root, mat, key, openPicker, undo, inlineEmbed, openAsset);
+                AddMaterialSliderRow(content, Editor::MaterialRows::PropertyLabel(key), cur, 0.0f, 1.0f, root, mat, key, openPicker, undo, inlineEmbed, openAsset);
             }
             else if (key == "emissionLuminance" && std::holds_alternative<float>(val))
             {
@@ -1644,7 +1541,7 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
             else if (std::holds_alternative<float>(val))
             {
                 float cur = std::get<float>(val);
-                InspectorDrag::AddFloatRowWithDrag(content, Rendering::MaterialPropertyBinding::PropertyKeyLabel(key), cur,
+                InspectorDrag::AddFloatRowWithDrag(content, Editor::MaterialRows::PropertyLabel(key), cur,
                     [mat, key](float v) { UpdateRuntimeProperty(mat, key, MaterialValue{v}); },
                     [root, mat, key, openPicker, inlineEmbed, openAsset](float v) {
                         MaterialDocument d = mat->GetDocument();
@@ -1725,7 +1622,7 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
             const std::string& propKey = kv.first;
             const MaterialValue& val = kv.second;
 
-            const std::string propLabel = Rendering::MaterialPropertyBinding::PropertyKeyLabel(propKey);
+            const std::string propLabel = Editor::MaterialRows::PropertyLabel(propKey);
             if (std::holds_alternative<float>(val))
             {
                 float cur = std::get<float>(val);
@@ -1857,13 +1754,13 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
             float hexBlend = 0.5f;
             if (auto it = doc.properties.find("hexBlend"); it != doc.properties.end())
                 (void)TryGetScalarFromMaterialValue(it->second, hexBlend);
-            AddMaterialSliderRow(content, "Hex Blend", Math::Clamp01(hexBlend), 0.0f, 1.0f,
+            AddMaterialSliderRow(content, "Hex Blend", std::clamp(hexBlend, 0.0f, 1.0f), 0.0f, 1.0f,
                                  root, mat, "hexBlend", openPicker, undo, inlineEmbed, openAsset);
 
             float hexRotation = 1.0f;
             if (auto it = doc.properties.find("hexRotation"); it != doc.properties.end())
                 (void)TryGetScalarFromMaterialValue(it->second, hexRotation);
-            AddMaterialSliderRow(content, "Hex Rotation", Math::Clamp01(hexRotation), 0.0f, 1.0f,
+            AddMaterialSliderRow(content, "Hex Rotation", std::clamp(hexRotation, 0.0f, 1.0f), 0.0f, 1.0f,
                                  root, mat, "hexRotation", openPicker, undo, inlineEmbed, openAsset);
         }
 
@@ -2078,7 +1975,7 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
             {
                 if (!label || !fA || !fB)
                     return;
-                label->Style().Set(Style::Cursor, CursorStyle::ColResize);
+                label->Overrides().Set(Style::Cursor, CursorStyle::ColResize);
 
                 auto startA = std::make_shared<float>(0.0f);
                 auto startB = std::make_shared<float>(0.0f);
@@ -2126,10 +2023,6 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
                     if (state.draggingLabel != label)
                         return;
                     float deltaX = e.X - state.dragStartX;
-                    if (!InspectorDrag::BeginLabelDragPastThreshold(label, *didMove, deltaX)) {
-                        e.Stop();
-                        return;
-                    }
                     float newA = *startA + deltaX * InspectorDrag::kInspectorDragFloatSensitivity;
                     float newB = *startB + deltaX * InspectorDrag::kInspectorDragFloatSensitivity;
                     if (snapToWhole && !(e.Mods & Input::kModAlt)) {
@@ -2138,6 +2031,7 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
                     }
                     fA->SetValue(newA);
                     fB->SetValue(newB);
+                    *didMove = true;
                     beginEditIfNeeded(editLabel);
                     previewComponentTwo(idxA, newA, idxB, newB);
                     e.Stop();
@@ -2155,11 +2049,6 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
                         commitComponent(idxB, fB->GetValue());
                     }
                     e.Stop();
-                });
-
-                label->RegisterEventHandler(kEventMouseCancel,
-                    [label, fA, fB, startA, startB, didMove, idxA, idxB, commitComponent](UIEvent& e) {
-                    CancelHeaderDrag(e, label, *didMove, {fA, idxA, *startA}, {fB, idxB, *startB}, commitComponent);
                 });
             };
 
@@ -2485,9 +2374,6 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
 
                 SaveReloadRebuild(root, mat, d, openPicker, {}, nullptr, inlineEmbed, openAsset);
             });
-        if (auto* rs = EngineCore::GetInstance().GetRenderServices())
-            if (const Engine::Renderer::Material* runtime = rs->Materials().Registry().Find(mat->GetGUID()))
-                AddDeformationRows(content, *runtime);
 
         root->AddChild(std::move(section));
     }
@@ -2607,17 +2493,17 @@ void BuildMaterialInspectorUI(UIElement* root, MaterialAsset* mat, OpenColorPick
                     return;
                 if (auto* rs = EngineCore::GetInstance().GetRenderServices())
                 {
-                    // First, so the compile below reads the disk again: the held
-                    // shader sources are emptied on every press, also for a material
-                    // on the default surface (an empty surfaceShader), since the
-                    // missed edit can be in any include. The surface, or the default
-                    // surface for a material that authors none, also goes through the
-                    // runtime lane, which recompiles the registered pipelines of every
-                    // material composed with it, so the viewport updates and not only
-                    // the diagnostics.
-                    rs->Materials().NotifyShaderSourceEdited(mat->GetDocument().surfaceShader);
                     rs->Materials().Compiler().Clear(mat->GetGUID());
                     rs->Materials().Compiler().RequestCompile(mat->GetGUID());
+                    // Also push the edit through the runtime lane: recompile the
+                    // registered pipelines of every material sharing this
+                    // surface, so the viewport updates — not just the
+                    // diagnostics. (Before this the button refreshed the
+                    // inspector's compile result while draws kept the stale
+                    // SPIR-V.)
+                    const std::string& surface = mat->GetDocument().surfaceShader;
+                    if (!surface.empty())
+                        rs->Materials().NotifyShaderSourceEdited(surface);
                 }
                 RequestRebuild(root, mat, openPicker, pingAsset, nullptr, inlineEmbed, openAsset);
             });

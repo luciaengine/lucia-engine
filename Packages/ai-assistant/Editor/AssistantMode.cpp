@@ -5,12 +5,11 @@ namespace GameEngine
 namespace
 {
 constexpr AssistantModeChoice kModes[] = {
-    {AssistantMode::ReadOnly, "readOnly", "Read only", "Read", "Looks and answers; changes nothing, not even the view."},
-    {AssistantMode::Auto, "auto", "Auto", "Auto",
-     "Edits you can undo run; anything that cannot be undone asks you first."},
-    {AssistantMode::AskBeforeEveryEdit, "ask", "Ask before every edit", "Ask",
+    {AssistantMode::ReadOnly, "readOnly", "Read only", "Looks and answers; changes nothing, not even the view."},
+    {AssistantMode::Auto, "auto", "Auto", "Edits you can undo run; anything that cannot be undone asks you first."},
+    {AssistantMode::AskBeforeEveryEdit, "ask", "Ask before every edit",
      "Looks and moves the view; asks you before every edit."},
-    {AssistantMode::EditFreely, "editFreely", "Edit freely", "Edit",
+    {AssistantMode::EditFreely, "editFreely", "Edit freely",
      "Runs everything allowed without asking; undo still holds each scene edit."},
 };
 } // namespace

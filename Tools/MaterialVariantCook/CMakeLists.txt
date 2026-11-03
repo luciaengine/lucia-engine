@@ -3,7 +3,6 @@
 # Desktop-only by construction: it exists to produce what a compiler-less
 # runtime consumes.
 add_executable(MaterialVariantCook
-    CookWorkers.cpp
     MaterialVariantCook.cpp
     WebWgslCook.cpp
     ${CMAKE_SOURCE_DIR}/Packages/eztree/Native/EZTreeECS/EZTreeRuntimeMaterials.cpp
@@ -36,14 +35,13 @@ if(BUILD_TESTING)
     ge_set_output_tests(MaterialVariantCookIntegrationTests)
     ge_stage_runtime_dependencies(MaterialVariantCookIntegrationTests)
     ge_stage_shader_graph_nodes(MaterialVariantCookIntegrationTests)
-    # CollectTargets always adds cbt-terrain and the grass materials; web cooks also add tree
-    # materials. A desktop cook also compiles the grass placement's compute programs (.comp).
+    # CollectTargets always adds cbt-terrain; web cooks also add grass and tree materials.
     foreach(shader_root IN ITEMS
         "Engine/Modules/CBTTerrain/Shaders"
         "Engine/Modules/TerrainGrass/Shaders"
         "Packages/eztree/Assets/Shaders")
         file(GLOB_RECURSE material_cook_package_shaders CONFIGURE_DEPENDS
-            "${CMAKE_SOURCE_DIR}/${shader_root}/*.glsl" "${CMAKE_SOURCE_DIR}/${shader_root}/*.comp")
+            "${CMAKE_SOURCE_DIR}/${shader_root}/*.glsl")
         foreach(shader IN LISTS material_cook_package_shaders)
             file(RELATIVE_PATH relative_shader "${CMAKE_SOURCE_DIR}/${shader_root}" "${shader}")
             ge_stage_test_asset(MaterialVariantCookIntegrationTests "${shader}"

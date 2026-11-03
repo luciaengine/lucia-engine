@@ -74,10 +74,9 @@ inline bool IsSuperKey(KeyCode key)
 // claims a combination its action would then ignore.
 inline bool MatchesMods(int mods, const ActionBinding& b)
 {
-    const int required = static_cast<int>(b.requiredMods);
-    if ((mods & required) != required)
+    if ((mods & b.requiredMods) != b.requiredMods)
         return false;
-    if ((mods & static_cast<int>(b.forbiddenMods)) != 0)
+    if ((mods & b.forbiddenMods) != 0)
         return false;
     return true;
 }
@@ -119,15 +118,6 @@ public:
     // Accumulates only between two positions inside the window: a pointer
     // arriving from outside has not travelled from anywhere this sink saw.
     Mathematics::Vector2 m_MouseDelta;
-    // Frame snapshot of m_MouseDelta, taken by Update() before it clears the
-    // accumulator, so GetMouseDelta() reads the same value all frame.
-    Mathematics::Vector2 m_FrameMouseDelta;
-    // The next position starts a new count: the pointer lock changed, and the
-    // platform moves the cursor when it does (to the window's centre on lock,
-    // back to where the lock began on unlock).
-    bool m_MouseDeltaRestarts = false;
-    bool m_PointerLockRequested = false;
-    bool m_PointerLocked = false;
     Mathematics::Vector2 m_Scroll;
 
     struct GamepadState
@@ -295,7 +285,6 @@ void InputSystem::Update(float /*deltaTime*/) {
     m_Impl->m_DirtyMouseButtons.clear();
 
     // Clear per-frame mouse deltas and scroll accumulators after actions have been computed.
-    m_Impl->m_FrameMouseDelta = m_Impl->m_MouseDelta;
     m_Impl->m_MouseDelta = {};
     m_Impl->m_Scroll     = {};
 
@@ -369,9 +358,6 @@ void InputSystem::ClearRegistrations()
     std::memset(m_Impl->m_KeyPollClaim, 0, sizeof(m_Impl->m_KeyPollClaim));
     std::memset(m_Impl->m_MousePollClaim, 0, sizeof(m_Impl->m_MousePollClaim));
     std::memset(m_Impl->m_GamepadPollClaim, 0, sizeof(m_Impl->m_GamepadPollClaim));
-
-    // So does a pointer lock request: the next session asks for its own.
-    m_Impl->m_PointerLockRequested = false;
 }
 
 void InputSystem::SetClaimsSuspended(bool suspended)
@@ -413,32 +399,6 @@ bool InputSystem::IsPointerInWindow() const {
 
 bool InputSystem::IsWindowFocused() const {
     return m_Impl->m_WindowFocused;
-}
-
-Mathematics::Vector2 InputSystem::GetMouseDelta() const {
-    return m_Impl->m_FrameMouseDelta;
-}
-
-void InputSystem::LockPointer() {
-    m_Impl->m_PointerLockRequested = true;
-}
-
-void InputSystem::UnlockPointer() {
-    m_Impl->m_PointerLockRequested = false;
-}
-
-PointerLockState InputSystem::GetPointerLockState() const {
-    if (!m_Impl->m_PointerLockRequested)
-        return PointerLockState::Unlocked;
-    return m_Impl->m_PointerLocked ? PointerLockState::Locked : PointerLockState::Pending;
-}
-
-void InputSystem::OnPointerLock(bool locked) {
-    if (locked == m_Impl->m_PointerLocked)
-        return;
-    m_Impl->m_PointerLocked = locked;
-    m_Impl->m_MouseDelta = {};
-    m_Impl->m_MouseDeltaRestarts = true;
 }
 
 std::optional<Mathematics::Vector2> InputSystem::GetMouseButtonPressPosition(MouseCode button) const {
@@ -819,11 +779,10 @@ bool InputSystem::OnMouseButton(int button, bool down, int mods) {
 }
 
 void InputSystem::OnMouseMove(Mathematics::Vector2 position) {
-    if (m_Impl->m_PointerInWindow && !m_Impl->m_MouseDeltaRestarts)
+    if (m_Impl->m_PointerInWindow)
         m_Impl->m_MouseDelta = m_Impl->m_MouseDelta + (position - m_Impl->m_MousePosition);
     m_Impl->m_MousePosition = position;
     m_Impl->m_PointerInWindow = true;
-    m_Impl->m_MouseDeltaRestarts = false;
 }
 
 void InputSystem::OnMouseLeave() {

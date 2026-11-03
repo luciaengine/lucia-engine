@@ -6,17 +6,14 @@
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Engine/Rendering/Pipeline/ViewExposureHistory.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SkyRenderFeature.h"
 #include "Logger/Logger.h"
 #include "Mathematics/Matrix4x4.h"
-#include "Mathematics/Interpolation.h"
 #include "Mathematics/MatrixOps.h"
-#include "Mathematics/Vector3.h"
-#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
-#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "Rendering/Core/PipelineDescTranslator.h"
+#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Materials/ShaderLayoutShape.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
 #include "Components/Rendering/Light.h"
@@ -92,6 +89,16 @@ uint32_t PcgHash(uint32_t v)
     return (word >> 22u) ^ word;
 }
 
+float Fract(float v)
+{
+    return v - std::floor(v);
+}
+
+float Clamp01(float v)
+{
+    return std::clamp(v, 0.0f, 1.0f);
+}
+
 void CopyMatrix(float* dst, const float* src)
 {
     std::memcpy(dst, src, sizeof(float) * 16);
@@ -113,7 +120,8 @@ void TransformPoint(const float* m, const float in[4], float out[4])
 
 bool FogRayFromUv(const CameraData& camera, float u, float v, float ray[3])
 {
-    Mathematics::Matrix4x4 vp = camera.viewProj;
+    Mathematics::Matrix4x4 vp{};
+    std::memcpy(vp.Data(), camera.viewProj, sizeof(float) * 16);
     Mathematics::Matrix4x4 inv = Mathematics::Inverse(vp);
 
     const float clip[4] = {u * 2.0f - 1.0f, (1.0f - v) * 2.0f - 1.0f, 0.0f, 1.0f};
@@ -123,9 +131,9 @@ bool FogRayFromUv(const CameraData& camera, float u, float v, float ray[3])
         return false;
 
     const float invW = 1.0f / world[3];
-    ray[0] = world[0] * invW - camera.cameraPos.x;
-    ray[1] = world[1] * invW - camera.cameraPos.y;
-    ray[2] = world[2] * invW - camera.cameraPos.z;
+    ray[0] = world[0] * invW - camera.cameraPos[0];
+    ray[1] = world[1] * invW - camera.cameraPos[1];
+    ray[2] = world[2] * invW - camera.cameraPos[2];
     const float len = std::sqrt(ray[0] * ray[0] + ray[1] * ray[1] + ray[2] * ray[2]);
     if (len <= 1.0e-6f)
         return false;
@@ -162,7 +170,7 @@ float EstimateVisibleFogLayerDistance(const VolumetricFogSettings& settings, con
         {
             if (std::abs(ray[1]) <= 1.0e-5f)
                 continue;
-            const float t = (layerHeight - camera.cameraPos.y) / ray[1];
+            const float t = (layerHeight - camera.cameraPos[1]) / ray[1];
             if (t > 0.0f)
                 maxDistance = std::max(maxDistance, t + heightFalloff * 6.0f);
         }
@@ -178,7 +186,7 @@ bool IsFogActive(const VolumetricFogSettings& settings)
 bool IsTemporalCompatible(const VolumetricFogSettings& a, const VolumetricFogSettings& b)
 {
     constexpr float eps = 0.0001f;
-    auto near3 = [](const float lhs[3], const float rhs[3]) {
+    auto near3 = [eps](const float lhs[3], const float rhs[3]) {
         return std::abs(lhs[0] - rhs[0]) <= eps &&
                std::abs(lhs[1] - rhs[1]) <= eps &&
                std::abs(lhs[2] - rhs[2]) <= eps;
@@ -228,11 +236,93 @@ float ComputeEffectiveMaxDistance(const VolumetricFogSettings& settings, const C
         return authoredMax;
 
     const float heightFalloff = std::max(settings.heightFalloff, 0.01f);
-    const float heightGap = std::abs(camera.cameraPos.y - settings.baseHeight);
+    const float heightGap = std::abs(camera.cameraPos[1] - settings.baseHeight);
     const float layerReach = heightGap + heightFalloff * 10.0f;
     const float visibleLayerReach = EstimateVisibleFogLayerDistance(settings, camera);
     const float adaptiveCap = std::max(authoredMax * 64.0f, 65536.0f);
     return std::min(std::max({authoredMax, layerReach, visibleLayerReach}), adaptiveCap);
+}
+
+void Normalize3(float v[3])
+{
+    const float len = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    const float invLen = 1.0f / std::max(len, 0.0001f);
+    v[0] *= invLen;
+    v[1] *= invLen;
+    v[2] *= invLen;
+}
+
+float Smoothstep(float edge0, float edge1, float x)
+{
+    if (edge1 <= edge0)
+        return x >= edge1 ? 1.0f : 0.0f;
+    const float t = Clamp01((x - edge0) / (edge1 - edge0));
+    return t * t * (3.0f - 2.0f * t);
+}
+
+struct ResolvedFogSun
+{
+    float direction[3] = {0.35f, -0.65f, 0.68f};
+    float color[3] = {1.0f, 0.86f, 0.62f};
+    float intensity = 1.0f;
+};
+
+ResolvedFogSun ResolveFogSunLighting(
+    RenderServices& services,
+    ViewId viewId,
+    const VolumetricFogSettings& settings)
+{
+    ResolvedFogSun sun{};
+    bool foundDirectional = false;
+    if (settings.trackDirectionalLight)
+    {
+        const ViewDesc* view = services.Views().FindViewDesc(viewId);
+        const auto lights = view ? services.GetWorldLights(view->worldId) : std::span<const ExtractedLight>{};
+        // Fog tracks THE primary directional (the light the world shades
+        // with — SelectPrimaryDirectional), never a secondary one. If the
+        // primary is non-emitting the sky-anchor fallback below applies;
+        // scanning on to a weaker directional would aim the fog sun at a
+        // light the surface shading is not using. "Non-emitting" is what it
+        // delivers, not its intensity alone: a sky-driven sun at night with
+        // the moon hidden is black at its authored intensity.
+        const ExtractedLight* light = SelectLitPrimaryDirectional(lights);
+        if (light)
+        {
+            sun.direction[0] = -light->directionWS[0];
+            sun.direction[1] = -light->directionWS[1];
+            sun.direction[2] = -light->directionWS[2];
+            sun.color[0] = std::max(light->color[0], 0.0f);
+            sun.color[1] = std::max(light->color[1], 0.0f);
+            sun.color[2] = std::max(light->color[2], 0.0f);
+            sun.intensity = std::max(light->intensity, 0.0f);
+            foundDirectional = true;
+        }
+    }
+
+    if (auto* skyFeature = services.GetFeature<SkyRenderFeature>(); skyFeature && skyFeature->HasActiveSettings())
+    {
+        const auto& sky = skyFeature->GetSettings();
+        if (settings.trackDirectionalLight && !foundDirectional)
+        {
+            sun.direction[0] = sky.primarySunDir[0];
+            sun.direction[1] = sky.primarySunDir[1];
+            sun.direction[2] = sky.primarySunDir[2];
+            // Ground level: with no directional light to read the sky is the only source, and fog
+            // sits under the atmosphere, so it takes the extinguished colour rather than the
+            // above-atmosphere one.
+            sun.color[0] = std::max(sky.primarySunGroundColor[0], 0.0f);
+            sun.color[1] = std::max(sky.primarySunGroundColor[1], 0.0f);
+            sun.color[2] = std::max(sky.primarySunGroundColor[2], 0.0f);
+            sun.intensity = std::max(sky.primarySunIntensity * 0.1f, 0.0f);
+        }
+        // A tracked light needs nothing from the sky: its colour already IS the ground-level sun
+        // colour whenever the sky drives it, so scaling it by the source's chromaticity would apply
+        // the same hue twice — the moon's at night, an authored sun tint squared.
+    }
+
+    Normalize3(sun.direction);
+    sun.intensity *= std::max(settings.sunIntensityScale, 0.0f);
+    return sun;
 }
 
 bool HasActiveLocalFogLights(RenderServices& services, ViewId viewId)
@@ -253,32 +343,26 @@ bool HasActiveLocalFogLights(RenderServices& services, ViewId viewId)
     return false;
 }
 
-// One channel of the multiplier the sky puts on the fog ambient: the horizon colour, mixed by day
-// with the sun's hue at 35 %, scaled down at night.
-float SkyAmbientChannel(float dayHorizon, float nightHorizonTint, float nightSkyHorizon, float normalizedSun, float day,
-                        float night)
+void ResolveFogAmbient(RenderServices& services, const VolumetricFogSettings& settings, float outAmbient[3])
 {
-    const float nightHorizon = std::max(nightHorizonTint, nightSkyHorizon * 0.35f);
-    const float horizon = dayHorizon * (1.0f - night) + nightHorizon * night;
-    const float dayAmbient = horizon * 0.65f + normalizedSun * 0.35f;
-    const float nightAmbient = horizon;
-    float skyAmbient = nightAmbient * night + dayAmbient * (1.0f - night);
-    skyAmbient *= 0.45f + day * 0.55f;
-    return std::max(skyAmbient, 0.02f);
-}
-
-ColorLinear ResolveFogAmbient(RenderServices& services, const VolumetricFogSettings& settings)
-{
-    ColorLinear ambient(
-        settings.ambientScatteringTint[0], settings.ambientScatteringTint[1], settings.ambientScatteringTint[2]);
+    outAmbient[0] = settings.ambientScatteringTint[0];
+    outAmbient[1] = settings.ambientScatteringTint[1];
+    outAmbient[2] = settings.ambientScatteringTint[2];
 
     auto* skyFeature = services.GetFeature<SkyRenderFeature>();
     if (!skyFeature || !skyFeature->HasActiveSettings())
-        return ambient;
+        return;
 
     const auto& sky = skyFeature->GetSettings();
-    const float day = Math::Clamp01(sky.primarySunDir[1] * 0.5f + 0.5f);
-    const float night = Math::Clamp01(sky.nightSkyBlend);
+    const float day = Clamp01(sky.primarySunDir[1] * 0.5f + 0.5f);
+    const float night = Clamp01(sky.nightSkyBlend);
+    float horizon[3]{};
+    for (int i = 0; i < 3; ++i)
+    {
+        const float dayHorizon = sky.groundHorizonColor[i];
+        const float nightHorizon = std::max(sky.groundHorizonNightColor[i], sky.nightSkyHorizonColor[i] * 0.35f);
+        horizon[i] = dayHorizon * (1.0f - night) + nightHorizon * night;
+    }
 
     // The AMBIENT wash is the one place the source's hue legitimately enters the fog: it is mixed
     // with the horizon colour rather than multiplied onto a light that already carries it, so this
@@ -287,38 +371,43 @@ ColorLinear ResolveFogAmbient(RenderServices& services, const VolumetricFogSetti
     // This is the one consumer of the sun colour that is NOT proportional to it: the source is
     // normalized by its own luminance and mixed in at 35 %, so an authored sun tint reaches the fog
     // ambient as HUE only, never as magnitude. That is the intent — this is a wash, not a light.
-    const ColorLinear& sunColor = sky.primarySunColor;
-    const float sunLum = std::max(ColorUtils::LinearRec709Luminance(sunColor), 0.001f);
-    ambient.r *= SkyAmbientChannel(sky.groundHorizonColor.r, sky.groundHorizonNightColor.r, sky.nightSkyHorizonColor.r,
-                                   sunColor.r / sunLum, day, night);
-    ambient.g *= SkyAmbientChannel(sky.groundHorizonColor.g, sky.groundHorizonNightColor.g, sky.nightSkyHorizonColor.g,
-                                   sunColor.g / sunLum, day, night);
-    ambient.b *= SkyAmbientChannel(sky.groundHorizonColor.b, sky.groundHorizonNightColor.b, sky.nightSkyHorizonColor.b,
-                                   sunColor.b / sunLum, day, night);
-    return ambient;
+    const float sunLum = std::max(ColorUtils::LinearRec709Luminance(sky.primarySunColor), 0.001f);
+    float skyAmbient[3]{};
+    for (int i = 0; i < 3; ++i)
+    {
+        const float normalizedSun = sky.primarySunColor[i] / sunLum;
+        const float dayAmbient = horizon[i] * 0.65f + normalizedSun * 0.35f;
+        const float nightAmbient = horizon[i];
+        skyAmbient[i] = nightAmbient * night + dayAmbient * (1.0f - night);
+        skyAmbient[i] *= 0.45f + day * 0.55f;
+        outAmbient[i] *= std::max(skyAmbient[i], 0.02f);
+    }
 }
 
-bool SunLightingChangedEnough(const ResolvedFogSun& history, const ResolvedFogSun& sun)
+bool SunLightingChangedEnough(
+    const float historySunDirection[3],
+    const float historySunColor[3],
+    float historySunIntensity,
+    const ResolvedFogSun& sun)
 {
-    const float dirDot = Mathematics::Vector3::Dot(history.Direction, sun.Direction);
+    const float dirDot =
+        historySunDirection[0] * sun.direction[0] +
+        historySunDirection[1] * sun.direction[1] +
+        historySunDirection[2] * sun.direction[2];
     if (dirDot < 0.9848077f) // 10 degrees.
         return true;
 
-    const ColorLinear& historyColor = history.Color;
-    const ColorLinear& sunColor = sun.Color;
-    const float oldLum = ColorUtils::LinearRec709Luminance(historyColor) * history.Intensity;
-    const float newLum = ColorUtils::LinearRec709Luminance(sunColor) * sun.Intensity;
+    const float oldLum = ColorUtils::LinearRec709Luminance(historySunColor) * historySunIntensity;
+    const float newLum = ColorUtils::LinearRec709Luminance(sun.color) * sun.intensity;
     if (std::abs(oldLum - newLum) > std::max(0.05f, oldLum * 0.25f))
         return true;
 
-    const float oldColorScale = std::max(ColorUtils::LinearRec709Luminance(historyColor), 0.001f);
-    const float newColorScale = std::max(ColorUtils::LinearRec709Luminance(sunColor), 0.001f);
-    const float oldChannels[3] = {historyColor.r, historyColor.g, historyColor.b};
-    const float newChannels[3] = {sunColor.r, sunColor.g, sunColor.b};
+    const float oldColorScale = std::max(ColorUtils::LinearRec709Luminance(historySunColor), 0.001f);
+    const float newColorScale = std::max(ColorUtils::LinearRec709Luminance(sun.color), 0.001f);
     for (int i = 0; i < 3; ++i)
     {
-        const float oldC = oldChannels[i] / oldColorScale;
-        const float newC = newChannels[i] / newColorScale;
+        const float oldC = historySunColor[i] / oldColorScale;
+        const float newC = sun.color[i] / newColorScale;
         if (std::abs(oldC - newC) > 0.25f)
             return true;
     }
@@ -476,8 +565,6 @@ bool VolumetricFogRenderer::Initialize(IDevice* device)
         // Irradiance cube for the analytic far-fog in-scatter color (gated by
         // iblEnabled; bound only when the IBL feature is live).
         {3, DescriptorType::CombinedImageSampler, 1, kFragmentStage},
-        // The view's ExposureHistory: the in-scatter is stored at the pre-exposure P.
-        {4, DescriptorType::StorageBuffer, 1, kFragmentStage},
     };
     m_Initialized = CreateJitterAtlasTexture() && CreateDensityNoiseAtlasTexture() && CreatePipelines();
     return m_Initialized;
@@ -550,35 +637,35 @@ bool VolumetricFogRenderer::CreateJitterAtlasTexture()
     if (!m_JitterAtlasTexture.IsValid())
         return false;
 
-    const uint32_t atlasSize = kJitterAtlasSize;
-    std::vector<float> base(atlasSize * atlasSize * atlasSize, 0.0f);
-    auto indexOf = [](uint32_t x, uint32_t y, uint32_t z) {
-        return static_cast<size_t>(x + y * atlasSize + z * atlasSize * atlasSize);
+    const uint32_t n = kJitterAtlasSize;
+    std::vector<float> base(n * n * n, 0.0f);
+    auto indexOf = [n](uint32_t x, uint32_t y, uint32_t z) {
+        return static_cast<size_t>(x + y * n + z * n * n);
     };
 
-    for (uint32_t z = 0; z < atlasSize; ++z)
+    for (uint32_t z = 0; z < n; ++z)
     {
-        for (uint32_t y = 0; y < atlasSize; ++y)
+        for (uint32_t y = 0; y < n; ++y)
         {
-            for (uint32_t x = 0; x < atlasSize; ++x)
+            for (uint32_t x = 0; x < n; ++x)
             {
                 const uint32_t h =
                     PcgHash(x * 1973u ^ y * 9277u ^ z * 26699u ^ 0x9E3779B9u);
                 const float whiteRank = static_cast<float>(h & 0x00FFFFFFu) * (1.0f / 16777216.0f);
                 const float stratified =
-                    Math::Fract((static_cast<float>(x * 13u + y * 17u + z * 19u) + 0.5f) / static_cast<float>(atlasSize) +
+                    Fract((static_cast<float>(x * 13u + y * 17u + z * 19u) + 0.5f) / static_cast<float>(n) +
                           static_cast<float>(z) * 0.61803398875f);
-                base[indexOf(x, y, z)] = Math::Fract(whiteRank * 0.62f + stratified * 0.38f);
+                base[indexOf(x, y, z)] = Fract(whiteRank * 0.62f + stratified * 0.38f);
             }
         }
     }
 
-    std::vector<uint8_t> voxels(atlasSize * atlasSize * atlasSize, 0u);
-    for (uint32_t z = 0; z < atlasSize; ++z)
+    std::vector<uint8_t> voxels(n * n * n, 0u);
+    for (uint32_t z = 0; z < n; ++z)
     {
-        for (uint32_t y = 0; y < atlasSize; ++y)
+        for (uint32_t y = 0; y < n; ++y)
         {
-            for (uint32_t x = 0; x < atlasSize; ++x)
+            for (uint32_t x = 0; x < n; ++x)
             {
                 float neighborhood = 0.0f;
                 for (int dz = -1; dz <= 1; ++dz)
@@ -587,15 +674,15 @@ bool VolumetricFogRenderer::CreateJitterAtlasTexture()
                     {
                         for (int dx = -1; dx <= 1; ++dx)
                         {
-                            const uint32_t sx = static_cast<uint32_t>((static_cast<int>(x) + dx + static_cast<int>(atlasSize)) % static_cast<int>(atlasSize));
-                            const uint32_t sy = static_cast<uint32_t>((static_cast<int>(y) + dy + static_cast<int>(atlasSize)) % static_cast<int>(atlasSize));
-                            const uint32_t sz = static_cast<uint32_t>((static_cast<int>(z) + dz + static_cast<int>(atlasSize)) % static_cast<int>(atlasSize));
+                            const uint32_t sx = static_cast<uint32_t>((static_cast<int>(x) + dx + static_cast<int>(n)) % static_cast<int>(n));
+                            const uint32_t sy = static_cast<uint32_t>((static_cast<int>(y) + dy + static_cast<int>(n)) % static_cast<int>(n));
+                            const uint32_t sz = static_cast<uint32_t>((static_cast<int>(z) + dz + static_cast<int>(n)) % static_cast<int>(n));
                             neighborhood += base[indexOf(sx, sy, sz)];
                         }
                     }
                 }
                 neighborhood *= 1.0f / 27.0f;
-                const float contrastAdapted = Math::Clamp01((base[indexOf(x, y, z)] - neighborhood) * 0.72f + 0.5f);
+                const float contrastAdapted = Clamp01((base[indexOf(x, y, z)] - neighborhood) * 0.72f + 0.5f);
                 voxels[indexOf(x, y, z)] = static_cast<uint8_t>(std::round(contrastAdapted * 255.0f));
             }
         }
@@ -605,11 +692,11 @@ bool VolumetricFogRenderer::CreateJitterAtlasTexture()
         m_Device,
         m_JitterAtlasTexture,
         voxels.data(),
-        atlasSize,
-        atlasSize,
-        atlasSize,
-        atlasSize,
-        atlasSize * atlasSize,
+        n,
+        n,
+        n,
+        n,
+        n * n,
         "VolumetricFog.JitterAtlasUpload");
     return true;
 }
@@ -636,7 +723,7 @@ bool VolumetricFogRenderer::CreateDensityNoiseAtlasTexture()
         return false;
 
     const uint32_t n = kDensityNoiseAtlasSize;
-    auto indexOf = [](uint32_t x, uint32_t y, uint32_t z, uint32_t c) {
+    auto indexOf = [n](uint32_t x, uint32_t y, uint32_t z, uint32_t c) {
         return static_cast<size_t>((x + y * n + z * n * n) * 4u + c);
     };
 
@@ -665,7 +752,7 @@ bool VolumetricFogRenderer::CreateDensityNoiseAtlasTexture()
                         amp *= 0.5f;
                         scale *= 2u;
                     }
-                    const float v = Math::Clamp01(sum / std::max(norm, 0.0001f));
+                    const float v = Clamp01(sum / std::max(norm, 0.0001f));
                     voxels[indexOf(x, y, z, c)] = static_cast<uint8_t>(std::round(v * 255.0f));
                 }
             }
@@ -973,30 +1060,41 @@ void VolumetricFogRenderer::FillParams(
     FogGpuParams& out) const
 {
     const auto& s = GetSettings(viewId);
-    Mathematics::Matrix4x4 vp = camera.viewProj;
+    Mathematics::Matrix4x4 vp{};
+    std::memcpy(vp.Data(), camera.viewProj, sizeof(float) * 16);
     Mathematics::Matrix4x4 inv = Mathematics::Inverse(vp);
 
     CopyMatrix(out.invViewProj, inv.Data());
-    CopyMatrix(out.view, camera.view.Data());
-    out.cameraPos[0] = camera.cameraPos.x;
-    out.cameraPos[1] = camera.cameraPos.y;
-    out.cameraPos[2] = camera.cameraPos.z;
+    CopyMatrix(out.view, camera.view);
+    out.cameraPos[0] = camera.cameraPos[0];
+    out.cameraPos[1] = camera.cameraPos[1];
+    out.cameraPos[2] = camera.cameraPos[2];
     out.cameraPos[3] = 1.0f;
 
     auto stateIt = m_PerView.find(viewId);
-    const ResolvedFogSun sun = stateIt != m_PerView.end() ? stateIt->second.currentSun : ResolvedFogSun{};
-    out.sunDirection[0] = sun.Direction.x;
-    out.sunDirection[1] = sun.Direction.y;
-    out.sunDirection[2] = sun.Direction.z;
+    const float* sunDir = stateIt != m_PerView.end() ? stateIt->second.currentSunDirection : nullptr;
+    const float* sunColor = stateIt != m_PerView.end() ? stateIt->second.currentSunColor : nullptr;
+    const float sunIntensity = stateIt != m_PerView.end() ? stateIt->second.currentSunIntensity : 1.0f;
+    const float fallbackSunDir[3] = {0.35f, -0.65f, 0.68f};
+    const float fallbackSunColor[3] = {1.0f, 0.86f, 0.62f};
+    if (!sunDir)
+        sunDir = fallbackSunDir;
+    if (!sunColor)
+        sunColor = fallbackSunColor;
+
+    out.sunDirection[0] = sunDir[0];
+    out.sunDirection[1] = sunDir[1];
+    out.sunDirection[2] = sunDir[2];
     out.sunDirection[3] = 0.0f;
-    out.sunColor[0] = sun.Color.r * s.sunScatteringTint[0] * sun.Intensity;
-    out.sunColor[1] = sun.Color.g * s.sunScatteringTint[1] * sun.Intensity;
-    out.sunColor[2] = sun.Color.b * s.sunScatteringTint[2] * sun.Intensity;
-    out.sunColor[3] = sun.Intensity;
-    const ColorLinear ambient = ResolveFogAmbient(services, s);
-    out.ambientColor[0] = ambient.r;
-    out.ambientColor[1] = ambient.g;
-    out.ambientColor[2] = ambient.b;
+    out.sunColor[0] = sunColor[0] * s.sunScatteringTint[0] * sunIntensity;
+    out.sunColor[1] = sunColor[1] * s.sunScatteringTint[1] * sunIntensity;
+    out.sunColor[2] = sunColor[2] * s.sunScatteringTint[2] * sunIntensity;
+    out.sunColor[3] = sunIntensity;
+    float ambient[3]{};
+    ResolveFogAmbient(services, s, ambient);
+    out.ambientColor[0] = ambient[0];
+    out.ambientColor[1] = ambient[1];
+    out.ambientColor[2] = ambient[2];
     // When the engine-shared IBL cube is live, the lighting pass samples it for
     // indirect in-scatter and uses .w as the intensity scale; otherwise the
     // shader keeps the flat ambient fallback (see uDensityParams.w below).
@@ -1038,11 +1136,11 @@ void VolumetricFogRenderer::FillParams(
     out.localVolumeAxisZHalfExtent[3] = std::max(s.localVolumeHalfExtents[2], 0.001f);
     out.localVolumeParams[0] = std::max(s.localVolumeBlendDistance, 0.0f);
     out.localVolumeParams[1] = (!s.isGlobal && s.localVolumeValid) ? 1.0f : 0.0f;
-    out.localVolumeParams[2] = Math::Clamp01(s.skyFade);
+    out.localVolumeParams[2] = std::clamp(s.skyFade, 0.0f, 1.0f);
     out.localVolumeParams[3] = 0.0f;
     out.noiseParams[0] = s.noiseEnabled ? 1.0f : 0.0f;
     out.noiseParams[1] = std::max(s.noiseScale, 0.01f);
-    out.noiseParams[2] = Math::Clamp01(s.noiseStrength);
+    out.noiseParams[2] = std::clamp(s.noiseStrength, 0.0f, 1.0f);
     out.noiseParams[3] = std::max(s.noiseContrast, 0.01f);
     out.noiseVelocityTime[0] = s.noiseVelocity[0];
     out.noiseVelocityTime[1] = s.noiseVelocity[1];
@@ -1052,14 +1150,14 @@ void VolumetricFogRenderer::FillParams(
     out.noiseChannelWeights[1] = std::max(s.noiseChannelWeights[1], 0.0f);
     out.noiseChannelWeights[2] = std::max(s.noiseChannelWeights[2], 0.0f);
     out.noiseChannelWeights[3] = std::max(s.noiseChannelWeights[3], 0.0f);
-    out.densityParams[0] = Math::Clamp01(s.densityThreshold);
+    out.densityParams[0] = std::clamp(s.densityThreshold, 0.0f, 1.0f);
     out.densityParams[1] = std::max(s.densityThresholdSoftness, 0.0001f);
     out.densityParams[2] = IsOrthographicProjectionLH_ZO(camera.proj) ? 1.0f : 0.0f;
     out.densityParams[3] = iblEnabled ? 1.0f : 0.0f;
     out.volumeParams[0] = std::max(effectiveMaxDistance, 0.01f);
     out.volumeParams[1] = std::max(s.depthDistribution, 0.05f);
     out.volumeParams[2] = s.temporalEnabled ? std::clamp(s.temporalBlend, 0.0f, 0.99f) : 0.0f;
-    out.volumeParams[3] = Math::Clamp01(s.jitterStrength);
+    out.volumeParams[3] = std::clamp(s.jitterStrength, 0.0f, 1.0f);
     out.gridParams[0] = static_cast<float>(grid.width);
     out.gridParams[1] = static_cast<float>(grid.height);
     out.gridParams[2] = static_cast<float>(grid.slices);
@@ -1088,9 +1186,9 @@ void VolumetricFogRenderer::FillParams(
     else
     {
         MakeIdentity(out.prevViewProj);
-        out.prevCameraPos[0] = camera.cameraPos.x;
-        out.prevCameraPos[1] = camera.cameraPos.y;
-        out.prevCameraPos[2] = camera.cameraPos.z;
+        out.prevCameraPos[0] = camera.cameraPos[0];
+        out.prevCameraPos[1] = camera.cameraPos[1];
+        out.prevCameraPos[2] = camera.cameraPos[2];
         out.prevCameraPos[3] = 1.0f;
     }
 }
@@ -1106,10 +1204,6 @@ void VolumetricFogRenderer::DeclareForView(Pipeline::ViewDeclare& d,
     const CameraData* camera = services.Views().FindCameraData(d.View.cameraId);
     if (!camera || !sceneColor.IsValid() || !depth.IsValid())
         return;
-    // The composite stores its in-scatter at the frame's pre-exposure P.
-    const Pipeline::PipelineBufferBindingRG exposure = Pipeline::ResolveViewExposureHistory(d);
-    if (!exposure.IsValid())
-        return;
 
     // THE extent for grid sizing — the same numbers the old path derived from
     // the color target desc.
@@ -1118,14 +1212,17 @@ void VolumetricFogRenderer::DeclareForView(Pipeline::ViewDeclare& d,
 
     // ── FillParams sequencing, AT DECLARATION (old AddPassesForView head) ──
     auto& state = m_PerView[viewId];
-    const ResolvedFogSun sun = ResolveFogSunLighting(services, viewId, state.settings.trackDirectionalLight,
-                                                     state.settings.sunIntensityScale, ResolvedFogSun{});
+    const ResolvedFogSun sun = ResolveFogSunLighting(services, viewId, state.settings);
     state.hasLocalFogLights = HasActiveLocalFogLights(services, viewId);
-    if (state.historyValid && SunLightingChangedEnough(state.historySun, sun))
+    if (state.historyValid &&
+        SunLightingChangedEnough(state.historySunDirection, state.historySunColor,
+                                 state.historySunIntensity, sun))
     {
         state.historyValid = false;
     }
-    state.currentSun = sun;
+    std::memcpy(state.currentSunDirection, sun.direction, sizeof(state.currentSunDirection));
+    std::memcpy(state.currentSunColor, sun.color, sizeof(state.currentSunColor));
+    state.currentSunIntensity = sun.intensity;
 
     state.effectiveMaxDistance = ComputeEffectiveMaxDistance(state.settings, *camera);
     if (state.historyValid &&
@@ -1182,10 +1279,10 @@ void VolumetricFogRenderer::DeclareForView(Pipeline::ViewDeclare& d,
         dst.params0[1] = src.enabled ? std::max(src.weight, 0.0f) : 0.0f;
         dst.params0[2] = std::max(src.density, 0.0f);
         dst.params0[3] = static_cast<float>(src.densityMode);
-        dst.params1[0] = Math::Clamp01(src.densityThreshold);
+        dst.params1[0] = std::clamp(src.densityThreshold, 0.0f, 1.0f);
         dst.params1[1] = std::max(src.densityThresholdSoftness, 0.0001f);
         dst.params1[2] = static_cast<float>(src.gradientMode);
-        dst.params1[3] = Math::Clamp01(src.gradientStrength);
+        dst.params1[3] = std::clamp(src.gradientStrength, 0.0f, 1.0f);
     }
 
     const BufferHandle uboBuf = paramsUp.Buffer;
@@ -1640,7 +1737,6 @@ void VolumetricFogRenderer::DeclareForView(Pipeline::ViewDeclare& d,
         {
             p.Read(finalFogTex, RenderGraph::RGTextureRead::Sampled);
             p.Read(depth, RenderGraph::RGTextureRead::Sampled);
-            p.Read(exposure.Graph, RenderGraph::RGBufferRead::Storage);
             if (iblIrradianceTex.IsValid())
                 p.Read(iblIrradianceTex, RenderGraph::RGTextureRead::Sampled);
             RenderGraph::RGAttachmentOps ops{};
@@ -1649,7 +1745,7 @@ void VolumetricFogRenderer::DeclareForView(Pipeline::ViewDeclare& d,
             p.AttachColor(0, sceneColor, ops);
         },
         [this, finalFogTex, depth, iblIrradianceTex, iblCubeSampler, uboBuf, uboOffset, renderW,
-         renderH, exposure](RenderGraph::RGContext& ctx)
+         renderH](RenderGraph::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice();
             auto* cl = ctx.Cmd;
@@ -1671,7 +1767,6 @@ void VolumetricFogRenderer::DeclareForView(Pipeline::ViewDeclare& d,
             w.CombinedImageSampler(0, fogPhysical, m_LinearClampSampler);
             w.CombinedImageSampler(1, depthPhysical, m_LinearClampSampler);
             w.UniformBuffer(2, uboBuf, uboOffset, sizeof(FogGpuParams));
-            w.StorageBuffer(4, exposure.Buffer, exposure.Offset, exposure.Size);
             if (iblIrradianceTex.IsValid() && iblCubeSampler.IsValid())
             {
                 const auto iblTex = ctx.GetTexture(iblIrradianceTex);
@@ -1685,25 +1780,23 @@ void VolumetricFogRenderer::DeclareForView(Pipeline::ViewDeclare& d,
             cl->Draw(3, 1);
         });
 
-    // For the passes that draw after the composite and fog their blended surfaces by their own
-    // distance (volumetric_fog_forward.glsl): the parameters and the volume the composite read.
-    d.PublishBuffer(Pipeline::Names::Res::VolumetricFogParams, {uboBuf, uboOffset, sizeof(FogGpuParams), {}});
-    d.PublishTexture(Pipeline::Names::Res::VolumetricFog, finalFogTex);
-
     // ── History/state commit, AT DECLARATION (declared == will run). Exec
     // lambdas stayed read-only above; the previous-VP / frame counter / history
     // validity move here. ──
-    CopyMatrix(state.previousViewProj, camera->viewProj.Data());
-    state.previousCameraPos[0] = camera->cameraPos.x;
-    state.previousCameraPos[1] = camera->cameraPos.y;
-    state.previousCameraPos[2] = camera->cameraPos.z;
+    CopyMatrix(state.previousViewProj, camera->viewProj);
+    state.previousCameraPos[0] = camera->cameraPos[0];
+    state.previousCameraPos[1] = camera->cameraPos[1];
+    state.previousCameraPos[2] = camera->cameraPos[2];
     state.previousCameraPos[3] = 1.0f;
     ++state.frameCounter;
     state.historyValid = temporalEnabled;
     if (temporalEnabled)
     {
         state.historyMaxDistance = state.effectiveMaxDistance;
-        state.historySun = state.currentSun;
+        std::memcpy(state.historySunDirection, state.currentSunDirection,
+                    sizeof(state.historySunDirection));
+        std::memcpy(state.historySunColor, state.currentSunColor, sizeof(state.historySunColor));
+        state.historySunIntensity = state.currentSunIntensity;
         ++state.historyFrame;
     }
 }

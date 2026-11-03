@@ -1,15 +1,16 @@
+#if defined(GE_PLATFORM_MOBILE)
+#include <SDL3/SDL_main.h>
+#endif
+
 #include "PlayerApplication.h"
 #include "PlayerHdrOptions.h"
 #include "PlayerLog.h"
-#include "PlayerRunOptions.h"
 #include "Core/EngineLoggerBridge.h"
 #include "Core/Application.h"
-#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "Core/StandardPaths.h"
 #include "Engine/Build/GameConfig.h"
 #include "Engine/Build/PackagedGameLayout.h"
-#include "Logger/FileSink.h"
 #include "Logger/Logger.h"
 #include "Platform/DiscreteGpuPreference.h"
 #include "Platform/Thread.h"
@@ -18,7 +19,7 @@
 #include "Scripting/ScriptingABI.h"
 #include "Scripting/ECSABI.h"
 #include "ECS/ECS.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #if GE_PLAYER_MOVIE_RECORDER
 #include "Rendering/Passes/TemporalDither.h"
 #include "Video/VideoWriter.h"
@@ -34,6 +35,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #ifdef _WIN32
 #  include <windows.h>
 #endif
@@ -69,6 +71,7 @@ LONG WINAPI UnhandledSEHFilter(EXCEPTION_POINTERS* info)
 }
 #endif
 
+#if !defined(GE_PLATFORM_MOBILE)
 static std::sig_atomic_t gSignalCount = 0;
 
 void SignalHandler(int sig)
@@ -81,12 +84,13 @@ void SignalHandler(int sig)
     std::signal(sig, SIG_DFL);
     std::raise(sig);
 }
+#endif
 
 // The directory the build stages game.config and Assets/ in: the executable's directory, or
 // Contents/Resources inside a macOS app bundle.
 std::filesystem::path StagedContentRoot()
 {
-    return GameEngine::ApplicationPaths::InstallContentRootFor(GameEngine::ApplicationPaths::GetExecutableDirectory());
+    return GameEngine::PathUtils::InstallContentRootFor(GameEngine::PathUtils::GetExecutableDirectory());
 }
 
 // Parse --config <path> from command line. Returns path to game.config.
@@ -166,6 +170,97 @@ void ApplyWindowModeOverrides(int argc, char** argv, GameEngine::GameConfig& cfg
         Logger::Log::Warning("Player: Unknown GE_WINDOW_MODE '{}', using game.config value", envMode);
 }
 
+bool HasFlag(int argc, char** argv, const char* flag)
+{
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) == flag)
+            return true;
+    }
+    return false;
+}
+
+bool TryParseDouble(const char* text, double& out)
+{
+    if (!text)
+        return false;
+    char* end = nullptr;
+    const double value = std::strtod(text, &end);
+    if (end == text || (end && *end != '\0'))
+        return false;
+    out = value;
+    return true;
+}
+
+bool TryParseUint64(const char* text, uint64_t& out)
+{
+    if (!text || text[0] == '-')
+        return false;
+    char* end = nullptr;
+    const auto value = std::strtoull(text, &end, 10);
+    if (end == text || (end && *end != '\0'))
+        return false;
+    out = static_cast<uint64_t>(value);
+    return true;
+}
+
+// --quit-after <frames>: the number of frames the run lasts; 0 when not given.
+uint64_t ParseQuitAfterFrames(int argc, char** argv)
+{
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) != "--quit-after")
+            continue;
+
+        uint64_t frameLimit = 0;
+        if (i + 1 < argc && TryParseUint64(argv[i + 1], frameLimit))
+            return frameLimit;
+
+        Logger::Log::Error("Player: --quit-after requires a non-negative frame count");
+        return 0;
+    }
+    return 0;
+}
+
+// The headless fixed step: --fixed-fps <rate>, kDefaultHeadlessFps when not given.
+// Nullopt, with the error logged, when the value is not a positive number.
+std::optional<double> ParseHeadlessFixedFps(int argc, char** argv)
+{
+    constexpr double kDefaultHeadlessFps = 60.0;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::string(argv[i]) != "--fixed-fps")
+            continue;
+        double fps = 0.0;
+        if (i + 1 < argc && TryParseDouble(argv[i + 1], fps) && fps > 0.0)
+            return fps;
+        Logger::Log::Error("Player: --fixed-fps requires a positive numeric rate, for example --fixed-fps 60");
+        return std::nullopt;
+    }
+    return kDefaultHeadlessFps;
+}
+
+// A headless run has no render device, no window and no audio device. A flag that
+// needs one is refused with the fix rather than ignored. False when refused.
+bool AcceptHeadlessArguments(int argc, char** argv, const GameEngine::PlayerHdrOptions& hdrOptions)
+{
+    const char* refused = nullptr;
+    if (HasFlag(argc, argv, "--write-movie"))
+        refused = "--write-movie";
+    else if (HasFlag(argc, argv, "--screenshot"))
+        refused = "--screenshot";
+    else if (hdrOptions.Enabled && std::string_view(hdrOptions.ModeSource) != "game.config")
+        refused = hdrOptions.ModeSource;
+    else if (hdrOptions.AllowRuntimeToggle)
+        refused = "the runtime HDR toggle";
+    if (!refused)
+        return true;
+    Logger::Log::Error("Player: --headless runs without a render device, so {} cannot work. Remove {} "
+                       "or run without --headless.",
+                       refused, refused);
+    return false;
+}
+
 #if GE_PLAYER_MOVIE_RECORDER
 std::optional<GameEngine::Video::VideoWriterOptions> ParseMovieOptions(int argc, char** argv)
 {
@@ -195,7 +290,7 @@ std::optional<GameEngine::Video::VideoWriterOptions> ParseMovieOptions(int argc,
         else if (arg == "--movie-fps" || arg == "--fixed-fps")
         {
             double fps = 0.0;
-            if (i + 1 < argc && GameEngine::TryParsePlayerDouble(argv[++i], fps) && fps > 0.0)
+            if (i + 1 < argc && TryParseDouble(argv[++i], fps) && fps > 0.0)
                 options.fps = fps;
             else
                 Logger::Log::Error("Player: {} requires a positive numeric FPS", arg);
@@ -220,7 +315,7 @@ std::optional<GameEngine::Video::VideoWriterOptions> ParseMovieOptions(int argc,
         else if (arg == "--movie-bitrate")
         {
             uint64_t bitrateKbps = 0;
-            if (i + 1 < argc && GameEngine::TryParsePlayerUint64(argv[++i], bitrateKbps) && bitrateKbps > 0)
+            if (i + 1 < argc && TryParseUint64(argv[++i], bitrateKbps) && bitrateKbps > 0)
                 options.bitrateKbps = static_cast<uint32_t>(std::min<uint64_t>(bitrateKbps, 1000000ull));
             else
                 Logger::Log::Error("Player: --movie-bitrate requires a positive bitrate in Kbps");
@@ -228,7 +323,7 @@ std::optional<GameEngine::Video::VideoWriterOptions> ParseMovieOptions(int argc,
         else if (arg == "--movie-width")
         {
             uint64_t width = 0;
-            if (i + 1 < argc && GameEngine::TryParsePlayerUint64(argv[++i], width) && width > 0)
+            if (i + 1 < argc && TryParseUint64(argv[++i], width) && width > 0)
                 options.width = static_cast<uint32_t>(std::min<uint64_t>(width, 16384ull));
             else
                 Logger::Log::Error("Player: --movie-width requires a positive pixel width");
@@ -236,7 +331,7 @@ std::optional<GameEngine::Video::VideoWriterOptions> ParseMovieOptions(int argc,
         else if (arg == "--movie-height")
         {
             uint64_t height = 0;
-            if (i + 1 < argc && GameEngine::TryParsePlayerUint64(argv[++i], height) && height > 0)
+            if (i + 1 < argc && TryParseUint64(argv[++i], height) && height > 0)
                 options.height = static_cast<uint32_t>(std::min<uint64_t>(height, 16384ull));
             else
                 Logger::Log::Error("Player: --movie-height requires a positive pixel height");
@@ -281,7 +376,7 @@ std::optional<GameEngine::Video::VideoWriterOptions> ParseMovieOptions(int argc,
         else if (arg == "--movie-fade-duration")
         {
             double seconds = 0.0;
-            if (i + 1 < argc && GameEngine::TryParsePlayerDouble(argv[++i], seconds) && seconds > 0.0)
+            if (i + 1 < argc && TryParseDouble(argv[++i], seconds) && seconds > 0.0)
                 options.fadeDurationSeconds = std::clamp(seconds, 0.01, 60.0);
             else
                 Logger::Log::Error("Player: --movie-fade-duration requires a positive duration in seconds");
@@ -328,13 +423,11 @@ static int PlayerMainImpl(int argc, char** argv)
 #ifdef _WIN32
     SetUnhandledExceptionFilter(UnhandledSEHFilter);
 #endif
+#if !defined(GE_PLATFORM_MOBILE)
     std::signal(SIGABRT, SignalHandler);
 #ifdef SIGSEGV
     std::signal(SIGSEGV, SignalHandler);
 #endif
-#ifdef SIGTRAP
-    // A failed libc++ check in DebugFast traps (SIGTRAP on arm64).
-    std::signal(SIGTRAP, SignalHandler);
 #endif
 
     // Initialize logger. The Player is a WIN32-subsystem app in every config, so
@@ -346,12 +439,6 @@ static int PlayerMainImpl(int argc, char** argv)
     {
         Logger::Log::Config logCfg;
         logCfg.GlobalMinLevel = Logger::LogLevel::Info;
-#if LOGGER_ENABLE_FILE_LOGGING
-        // Read before Initialize: until then the global level is Off and does not
-        // clamp the file level. GE_LOG_FILE_LEVEL=debug lowers the global level, so
-        // the debug lines (the GE_FRAME_TRACE frame times) can reach the file.
-        logCfg.GlobalMinLevel = std::min(logCfg.GlobalMinLevel, Logger::ResolveFileLogLevel().level);
-#endif
         Logger::Log::Initialize(logCfg);
     }
 #if LOGGER_ENABLE_FILE_LOGGING
@@ -365,7 +452,7 @@ static int PlayerMainImpl(int argc, char** argv)
     const std::filesystem::path launchCwd = std::filesystem::current_path(launchCwdEc);
 
     // Ensure working directory matches executable for asset resolution.
-    GameEngine::ApplicationPaths::EnsureWorkingDirectoryMatchesExecutable();
+    GameEngine::PathUtils::EnsureWorkingDirectoryMatchesExecutable();
 
     // Load game config. A user-passed --config that does not exist is a hard
     // error — silently falling back to defaults ("My Game", no scene) renders
@@ -381,6 +468,7 @@ static int PlayerMainImpl(int argc, char** argv)
     if (configFromArgs && !std::filesystem::exists(configPath))
     {
         Logger::Log::Error("Player: --config '{}' not found", configPath.string());
+        Logger::Log::Flush();
         return 1;
     }
     ApplyWindowModeOverrides(argc, argv, gameConfig);
@@ -397,10 +485,18 @@ static int PlayerMainImpl(int argc, char** argv)
 
     // --headless: no window, render device, audio device or input device; the
     // project's scene, scripts and systems run on a fixed step paced to real time.
-    const std::optional<GameEngine::PlayerRunOptions> runOptions =
-        GameEngine::ParsePlayerRunOptions(argc, argv, std::getenv("GE_AUDIO_OUTPUT"));
-    if (!runOptions)
-        return 1;
+    const bool headless = HasFlag(argc, argv, "--headless");
+    std::optional<double> headlessFps;
+    if (headless)
+    {
+        headlessFps = ParseHeadlessFixedFps(argc, argv);
+        if (!headlessFps || !AcceptHeadlessArguments(argc, argv, hdrOptions))
+        {
+            Logger::Log::Flush();
+            return 1;
+        }
+    }
+    const uint64_t quitAfterFrames = ParseQuitAfterFrames(argc, argv);
 
     // The standalone Player is a runtime, not a dev tool: it should never spawn
     // the resident CompileServerHost (a hot-reload/incremental-compile helper that
@@ -420,12 +516,11 @@ static int PlayerMainImpl(int argc, char** argv)
     appConfig.WindowWidth = gameConfig.windowWidth;
     appConfig.WindowHeight = gameConfig.windowHeight;
     appConfig.Fullscreen = (gameConfig.windowMode != GameEngine::WindowMode::Windowed);
-    appConfig.Headless = runOptions->Headless;
-    appConfig.AudioOutput = runOptions->AudioOutput;
+    appConfig.Headless = headless;
     // Resolve the asset root to an absolute path. A relative value from the
     // command line resolves against the LAUNCH cwd (where the user ran the
     // command); without one, the root is the Assets/ the build staged.
-    std::filesystem::path assetRoot = GameEngine::ApplicationPaths::GetInstallAssetsRoot();
+    std::filesystem::path assetRoot = GameEngine::PathUtils::GetInstallAssetsRoot();
     if (std::optional<std::filesystem::path> cliAssetRoot = ParseAssetRoot(argc, argv))
     {
         assetRoot = *cliAssetRoot;
@@ -493,7 +588,7 @@ static int PlayerMainImpl(int argc, char** argv)
     // Detect NativeAOT scripts library next to the executable. When present,
     // CoreCLR initialization is skipped entirely and ManagedSystemBridge loads
     // the AOT library via LoadLibrary/dlopen instead.
-    auto exeDir = GameEngine::ApplicationPaths::GetExecutableDirectory();
+    auto exeDir = GameEngine::PathUtils::GetExecutableDirectory();
     bool useNativeAOT = std::filesystem::exists(exeDir / GameEngine::kNativeAotScriptsLibraryName);
 
     // Packaged-game detection is a POSITIVE signal from the shipped layout:
@@ -516,8 +611,6 @@ static int PlayerMainImpl(int argc, char** argv)
             "— packaged script mode, runtime compilation disabled",
             packagedLayout.ContentRoot.string());
     }
-    // A Player built without C# scripting loads no assembly, so a missing one is not an error.
-#if GE_ENABLE_SCRIPTING
     if (!useNativeAOT && !packagedLayout.PrebuiltScriptAssembly.empty() &&
         !packagedLayout.PrebuiltScriptAssemblyExists)
     {
@@ -526,7 +619,6 @@ static int PlayerMainImpl(int argc, char** argv)
             "scripts will not load (repackage the game or fix game.config)",
             gameConfig.scriptAssemblyPath, packagedLayout.PrebuiltScriptAssembly.string());
     }
-#endif
 
     GameEngine::ScriptsConfig scriptsConfig =
         GameEngine::BuildPlayerScriptsConfig(packagedLayout, useNativeAOT);
@@ -580,14 +672,13 @@ static int PlayerMainImpl(int argc, char** argv)
 #if GE_PLAYER_MOVIE_RECORDER
         movieOptions,
 #endif
-        runOptions->QuitAfterFrames, allowRuntimeHdrToggle, screenshotPath);
-    if (runOptions->Headless)
+        quitAfterFrames, allowRuntimeHdrToggle, screenshotPath);
+    if (headless)
     {
-        app.SetFixedFrameRate(runOptions->HeadlessFps);
-        Logger::Log::Info("Player: headless, fixed step {} fps{}", runOptions->HeadlessFps,
-                          runOptions->QuitAfterFrames > 0
-                              ? ", quits after " + std::to_string(runOptions->QuitAfterFrames) + " frames"
-                              : std::string());
+        app.SetFixedFrameRate(*headlessFps);
+        Logger::Log::Info("Player: headless, fixed step {} fps{}", *headlessFps,
+                          quitAfterFrames > 0 ? ", quits after " + std::to_string(quitAfterFrames) + " frames"
+                                              : std::string());
     }
     try
     {
@@ -612,24 +703,14 @@ static int PlayerMainImpl(int argc, char** argv)
     }
 }
 
-// The logger writes from its own thread, and process exit does not wait for it. Every way the
-// Player ends returns through here, after the application is destroyed, so the flush keeps the
-// last lines of a run.
-static int RunPlayer(int argc, char** argv)
-{
-    const int exitCode = PlayerMainImpl(argc, argv);
-    Logger::Log::Flush();
-    return exitCode;
-}
-
 #ifdef _WIN32
 int WINAPI WinMain(_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPSTR, _In_ int)
 {
-    return RunPlayer(__argc, __argv);
+    return PlayerMainImpl(__argc, __argv);
 }
 #endif
 
 int main(int argc, char** argv)
 {
-    return RunPlayer(argc, argv);
+    return PlayerMainImpl(argc, argv);
 }

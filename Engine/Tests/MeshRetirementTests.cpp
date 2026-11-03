@@ -1,6 +1,6 @@
 #include "Assets/ModelAsset.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
-#include "Memory/Testing/ScopedAllocationFault.h"
+#include "MeshRetirementAllocationFault.h"
 #include "Rendering/Core/GPUScene.h"
 #include "TestDeviceHelper.h"
 #include <array>
@@ -11,6 +11,10 @@
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
 
+static_assert(!std::is_copy_constructible_v<BucketPoolAllocator>);
+static_assert(!std::is_copy_assignable_v<BucketPoolAllocator>);
+static_assert(std::is_nothrow_move_constructible_v<BucketPoolAllocator>);
+static_assert(std::is_nothrow_move_assignable_v<BucketPoolAllocator>);
 static_assert(std::is_nothrow_move_constructible_v<MeshGPUStreamPool>);
 
 TEST(MeshRetirementHandleTest, DestroyProvisionsFifoStorageWhenCreatingHandles)
@@ -20,17 +24,16 @@ TEST(MeshRetirementHandleTest, DestroyProvisionsFifoStorageWhenCreatingHandles)
     for (auto& handle : handles)
         handle = manager.Create();
     bool failed = false;
+    MeshRetirementAllocationFault::Arm(0, 1);
+    try
     {
-        Memory::Testing::ScopedAllocationFault fault{0, 1, Memory::Testing::FaultRepeat::Once};
-        try
-        {
-            manager.Destroy(handles[0]);
-        }
-        catch (const std::bad_alloc&)
-        {
-            failed = true;
-        }
+        manager.Destroy(handles[0]);
     }
+    catch (const std::bad_alloc&)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
     EXPECT_FALSE(failed);
     EXPECT_FALSE(manager.IsAlive(handles[0]));
     EXPECT_EQ(manager.Size(), 63u);
@@ -53,6 +56,7 @@ class MeshRetirementTest : public testing::Test
     }
     void TearDown() override
     {
+        MeshRetirementAllocationFault::Disarm();
         Registry.Shutdown();
         if (Scene)
             Scene->Shutdown();
@@ -90,43 +94,42 @@ TEST_F(MeshRetirementTest, LaterStreamAllocationFailureCannotDoubleQueueEarlierR
     const auto before = Registry.GetPoolStats();
     ASSERT_EQ(before.size(), 2u);
     bool failed = false;
-    // Every allocation is denied while the mesh's ranges are queued: an owner
-    // that grew a retirement queue here would queue Core and then fail IB16.
-    // The pools provisioned their queues when they allocated the mesh.
+    // Both fresh per-stream DeferredFree vectors allocate one 24-byte record.
+    // Baseline queues Core then fails IB16; a correct owner either prepared
+    // both or had reserved its retirement capacity when allocating the mesh.
+    MeshRetirementAllocationFault::Arm(3 * sizeof(uint64_t), 2);
+    try
     {
-        Memory::Testing::ScopedAllocationFault fault{0, 1, Memory::Testing::FaultRepeat::Every};
-        try
-        {
-            Registry.UnregisterSubmesh(key);
-        }
-        catch (const std::bad_alloc&)
-        {
-            failed = true;
-        }
+        Registry.UnregisterSubmesh(key);
     }
+    catch (const std::bad_alloc&)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
     if (failed)
     {
         EXPECT_NE(Registry.Find(handle), nullptr);
         for (const auto& pool : Registry.GetPoolStats())
-            EXPECT_EQ(pool.Allocator.PendingRanges, 0u) << pool.Stream;
+            EXPECT_EQ(pool.Allocator.deferredCount, 0u) << pool.Stream;
         EXPECT_TRUE(Registry.UnregisterSubmesh(key));
     }
     EXPECT_EQ(Registry.Find(handle), nullptr);
     for (const auto& pool : Registry.GetPoolStats())
-        EXPECT_EQ(pool.Allocator.PendingRanges, 1u) << pool.Stream;
+        EXPECT_EQ(pool.Allocator.deferredCount, 1u) << pool.Stream;
     EXPECT_FALSE(Registry.UnregisterSubmesh(key));
     // Do not reclaim a deliberately corrupted baseline queue; the preceding
     // assertions already diagnose that double transfer without a double free.
     for (const auto& pool : Registry.GetPoolStats())
-        if (pool.Allocator.PendingRanges != 1u)
+        if (pool.Allocator.deferredCount != 1u)
             return;
     Registry.BeginFrame(16);
     for (const auto& pool : Registry.GetPoolStats())
     {
-        EXPECT_EQ(pool.Allocator.UsedUnits, 0u);
-        EXPECT_EQ(pool.Allocator.PendingRanges, 0u);
-        EXPECT_EQ(pool.Allocator.FreeRanges, 1u);
-        EXPECT_EQ(pool.Allocator.LargestFreeUnits, pool.Allocator.CapacityUnits);
+        EXPECT_EQ(pool.Allocator.used, 0u);
+        EXPECT_EQ(pool.Allocator.deferredCount, 0u);
+        EXPECT_EQ(pool.Allocator.freeRangeCount, 1u);
+        EXPECT_EQ(pool.Allocator.largestFreeRange, pool.Allocator.capacity);
     }
     const auto replacement = Registry.RegisterSubmesh(key, Triangle());
     ASSERT_TRUE(replacement.IsValid());
@@ -134,7 +137,7 @@ TEST_F(MeshRetirementTest, LaterStreamAllocationFailureCannotDoubleQueueEarlierR
     EXPECT_EQ(Registry.GetPoolStats().size(), before.size());
     const auto reused = Registry.GetPoolStats();
     for (size_t i = 0; i < before.size(); ++i)
-        EXPECT_EQ(reused[i].Allocator.UsedUnits, before[i].Allocator.UsedUnits);
+        EXPECT_EQ(reused[i].Allocator.used, before[i].Allocator.used);
 }
 
 TEST_F(MeshRetirementTest, ThrowingSubscriberCannotSkipLaterRowInvalidation)
@@ -168,17 +171,16 @@ TEST_F(MeshRetirementTest, RemovingMeshRowNeedsNoAllocationAfterAcquisition)
     mesh.indexCount = 3;
     const auto row = Scene->AddMesh(mesh);
     bool failed = false;
+    MeshRetirementAllocationFault::Arm(0, 1);
+    try
     {
-        Memory::Testing::ScopedAllocationFault fault{0, 1, Memory::Testing::FaultRepeat::Once};
-        try
-        {
-            Scene->RemoveMesh(row);
-        }
-        catch (const std::bad_alloc&)
-        {
-            failed = true;
-        }
+        Scene->RemoveMesh(row);
     }
+    catch (const std::bad_alloc&)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
     EXPECT_FALSE(failed);
     EXPECT_EQ(Scene->GetMeshCount(), 0u);
     EXPECT_EQ(Scene->GetMeshes()[row].indexCount, 0u);
@@ -198,17 +200,16 @@ TEST_F(MeshRetirementTest, CompleteUnregisterAndInvalidationNeedNoRetirementAllo
                                                  { ++called; });
     bool failed = false;
     bool removed = false;
+    MeshRetirementAllocationFault::Arm(0, 1);
+    try
     {
-        Memory::Testing::ScopedAllocationFault fault{0, 1, Memory::Testing::FaultRepeat::Once};
-        try
-        {
-            removed = Registry.UnregisterSubmesh(key);
-        }
-        catch (const std::bad_alloc&)
-        {
-            failed = true;
-        }
+        removed = Registry.UnregisterSubmesh(key);
     }
+    catch (const std::bad_alloc&)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
     EXPECT_FALSE(failed);
     EXPECT_TRUE(removed);
     EXPECT_EQ(called, 1u);
@@ -228,17 +229,16 @@ TEST_F(MeshRetirementTest, InstanceRemovalCannotFailAfterTombstoningBeforeFreeSl
     bool failed = false;
     // Baseline allocates its sorted one-row copy, then the free-slot vector.
     // The second failure occurs after writing the tombstone and batch removal.
+    MeshRetirementAllocationFault::Arm(0, 2);
+    try
     {
-        Memory::Testing::ScopedAllocationFault fault{0, 2, Memory::Testing::FaultRepeat::Once};
-        try
-        {
-            Scene->RemoveInstance(removed);
-        }
-        catch (const std::bad_alloc&)
-        {
-            failed = true;
-        }
+        Scene->RemoveInstance(removed);
     }
+    catch (const std::bad_alloc&)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
     EXPECT_FALSE(failed);
     EXPECT_EQ(Scene->GetLiveInstanceCount(), 1u);
     EXPECT_EQ(Scene->GetInstances()[survivor].meshIndex, 0u);
@@ -260,17 +260,16 @@ TEST_F(MeshRetirementTest, BulkInstanceRemovalDoesNotLeavePartialFreeSlotOwnersh
     const auto survivor = Scene->AddInstance(instance);
     const uint32_t rows[]{first, second};
     bool failed = false;
+    MeshRetirementAllocationFault::Arm(0, 3);
+    try
     {
-        Memory::Testing::ScopedAllocationFault fault{0, 3, Memory::Testing::FaultRepeat::Once};
-        try
-        {
-            Scene->RemoveInstances(rows);
-        }
-        catch (const std::bad_alloc&)
-        {
-            failed = true;
-        }
+        Scene->RemoveInstances(rows);
     }
+    catch (const std::bad_alloc&)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
     EXPECT_FALSE(failed);
     EXPECT_EQ(Scene->GetLiveInstanceCount(), 1u);
     EXPECT_EQ(Scene->GetInstances()[survivor].meshIndex, 0u);
@@ -281,6 +280,87 @@ TEST_F(MeshRetirementTest, BulkInstanceRemovalDoesNotLeavePartialFreeSlotOwnersh
     EXPECT_NE(reusedA, reusedB);
     EXPECT_TRUE(reusedA == first || reusedA == second);
     EXPECT_TRUE(reusedB == first || reusedB == second);
+}
+
+TEST(MeshRetirementAllocatorTest, OutstandingDeferredAndFragmentedRangesRetireWithoutAllocation)
+{
+    BucketPoolAllocator allocator;
+    allocator.Initialize(4096, 16);
+    std::array<BucketPoolAllocator::Allocation, 48> ranges;
+    for (unsigned i = 0; i < 24; ++i)
+        ranges[i] = allocator.Allocate(16);
+    for (unsigned i = 0; i < 24; i += 2)
+        allocator.FreeDeferred(ranges[i], 2);
+    // Outstanding old deferred owners must count when later acquisition grows
+    // retirement capacity. Retire out of order to force free-list insertions.
+    for (unsigned i = 24; i < ranges.size(); ++i)
+        ranges[i] = allocator.Allocate(16);
+    bool failed = false;
+    MeshRetirementAllocationFault::Arm(0, 1);
+    try
+    {
+        allocator.ReclaimUpToFrame(2);
+        for (unsigned i = 1; i < 24; i += 2)
+            allocator.Free(ranges[i]);
+        for (unsigned i = 24; i < ranges.size(); ++i)
+            allocator.FreeDeferred(ranges[i], 3);
+        allocator.ReclaimUpToFrame(3);
+    }
+    catch (const std::bad_alloc&)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
+    ASSERT_FALSE(failed);
+    const auto stats = allocator.GetStats();
+    EXPECT_EQ(stats.used, 0u);
+    EXPECT_EQ(stats.deferredCount, 0u);
+    EXPECT_EQ(stats.freeRangeCount, 1u);
+    EXPECT_EQ(stats.largestFreeRange, 4096u);
+    const auto full = allocator.Allocate(4096);
+    EXPECT_EQ(full.offset, 0u);
+    EXPECT_EQ(full.size, 4096u);
+    allocator.Free(full);
+}
+
+TEST(MeshRetirementAllocatorTest, FailedCapacityGrowthDoesNotChangeExistingAllocationOwnership)
+{
+    BucketPoolAllocator allocator;
+    allocator.Initialize(4096, 16);
+    std::array<BucketPoolAllocator::Allocation, 64> ranges;
+    unsigned acquired = 1;
+    ranges[0] = allocator.Allocate(16);
+    bool failed = false;
+    for (; acquired < ranges.size(); ++acquired)
+    {
+        const auto before = allocator.GetStats();
+        MeshRetirementAllocationFault::Arm(0, 1);
+        try
+        {
+            ranges[acquired] = allocator.Allocate(16);
+            failed = !ranges[acquired].IsValid();
+        }
+        catch (const std::bad_alloc&)
+        {
+            ADD_FAILURE() << "Metadata refusal must use Allocate's invalid-result contract";
+            failed = true;
+        }
+        MeshRetirementAllocationFault::Disarm();
+        if (failed)
+        {
+            EXPECT_EQ(allocator.GetStats().used, before.used);
+            EXPECT_EQ(allocator.GetStats().freeRangeCount, before.freeRangeCount);
+            EXPECT_EQ(allocator.GetStats().largestFreeRange, before.largestFreeRange);
+            break;
+        }
+    }
+    ASSERT_TRUE(failed);
+    // Retry succeeds; existing live ranges remain independently returnable.
+    ranges[acquired++] = allocator.Allocate(16);
+    for (unsigned i = 0; i < acquired; ++i)
+        allocator.Free(ranges[i]);
+    EXPECT_EQ(allocator.GetStats().largestFreeRange, 4096u);
+    EXPECT_TRUE(allocator.IsEmpty());
 }
 
 TEST(MeshRetirementHandleTest, FifoWrapMoveAndResetPreserveGenerationIdentity)
@@ -323,17 +403,16 @@ TEST(MeshRetirementHandleTest, FailedGrowthKeepsOldHandlesAliveAndReusable)
     handles[count++] = manager.Create();
     for (; count < handles.size(); ++count)
     {
+        MeshRetirementAllocationFault::Arm(0, 1);
+        try
         {
-            Memory::Testing::ScopedAllocationFault fault{0, 1, Memory::Testing::FaultRepeat::Once};
-            try
-            {
-                handles[count] = manager.Create();
-            }
-            catch (const std::bad_alloc&)
-            {
-                failed = true;
-            }
+            handles[count] = manager.Create();
         }
+        catch (const std::bad_alloc&)
+        {
+            failed = true;
+        }
+        MeshRetirementAllocationFault::Disarm();
         if (failed)
             break;
     }
@@ -386,18 +465,17 @@ TEST_F(MeshRetirementTest, SubscriberResetDetachesCapturesAndNewListenersWaitFor
     EXPECT_EQ(oldCalls, 2u);
     EXPECT_EQ(newCalls, 1u);
     bool failed = false;
+    MeshRetirementAllocationFault::Arm(0, 1);
+    try
     {
-        Memory::Testing::ScopedAllocationFault fault{0, 1, Memory::Testing::FaultRepeat::Once};
-        try
-        {
-            added.Reset();
-            original.Reset();
-        }
-        catch (const std::bad_alloc&)
-        {
-            failed = true;
-        }
+        added.Reset();
+        original.Reset();
     }
+    catch (const std::bad_alloc&)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
     EXPECT_FALSE(failed);
 }
 
@@ -430,17 +508,16 @@ TEST_F(MeshRetirementTest, FailedSubscriptionGrowthPreservesExistingListener)
     auto existing = Registry.SubscribeReload([&](const GUID&)
                                              { ++calls; });
     bool failed = false;
+    MeshRetirementAllocationFault::Arm(0, 1);
+    try
     {
-        Memory::Testing::ScopedAllocationFault fault{0, 1, Memory::Testing::FaultRepeat::Once};
-        try
-        {
-            auto unavailable = Registry.SubscribeReload([](const GUID&) {});
-        }
-        catch (const std::bad_alloc&)
-        {
-            failed = true;
-        }
+        auto unavailable = Registry.SubscribeReload([](const GUID&) {});
     }
+    catch (const std::bad_alloc&)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
     EXPECT_TRUE(failed);
     EXPECT_TRUE(Registry.UnregisterSubmesh(key));
     EXPECT_EQ(calls, 1u);
@@ -464,17 +541,16 @@ TEST_F(MeshRetirementTest, DirtyWordsAndBulkFreeSlotsAreProvisionedAcrossFrameSl
     }
     const uint32_t removed[]{rows[0], rows[65], rows[128], rows[65]};
     bool failed = false;
+    MeshRetirementAllocationFault::Arm(0, 1);
+    try
     {
-        Memory::Testing::ScopedAllocationFault fault{0, 1, Memory::Testing::FaultRepeat::Once};
-        try
-        {
-            Scene->RemoveInstances(removed);
-        }
-        catch (const std::bad_alloc&)
-        {
-            failed = true;
-        }
+        Scene->RemoveInstances(removed);
     }
+    catch (const std::bad_alloc&)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
     EXPECT_FALSE(failed);
     EXPECT_EQ(Scene->GetLiveInstanceCount(), 127u);
     EXPECT_EQ(Scene->GetInstances()[rows[129]].meshIndex, 0u);
@@ -493,17 +569,16 @@ TEST_F(MeshRetirementTest, SubscriberAndDiagnosticAllocationFailureCannotVetoRet
     auto later = Registry.SubscribeReload([&](const GUID&)
                                           { ++calls; });
     bool failed = false, removed = false;
+    MeshRetirementAllocationFault::Arm(0, 1);
+    try
     {
-        Memory::Testing::ScopedAllocationFault fault{0, 1, Memory::Testing::FaultRepeat::Once};
-        try
-        {
-            removed = Registry.UnregisterSubmesh(key);
-        }
-        catch (...)
-        {
-            failed = true;
-        }
+        removed = Registry.UnregisterSubmesh(key);
     }
+    catch (...)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
     EXPECT_FALSE(failed);
     EXPECT_TRUE(removed);
     EXPECT_EQ(calls, 1u);
@@ -524,18 +599,50 @@ TEST(MeshRetirementSubscriptionTest, MovedTokenMayOutliveRegistryWithoutRetainin
     registry.reset();
     EXPECT_TRUE(weak.expired());
     bool failed = false;
+    MeshRetirementAllocationFault::Arm(0, 1);
+    try
     {
-        Memory::Testing::ScopedAllocationFault fault{0, 1, Memory::Testing::FaultRepeat::Once};
-        try
-        {
-            moved.Reset();
-        }
-        catch (...)
-        {
-            failed = true;
-        }
+        moved.Reset();
     }
+    catch (...)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
     EXPECT_FALSE(failed);
+}
+
+TEST(MeshRetirementAllocatorTest, MovingLivePoolPreservesPreparedRetirementCapacity)
+{
+    BucketPoolAllocator source;
+    source.Initialize(4096, 16);
+    const auto first = source.Allocate(16), second = source.Allocate(16);
+    source.FreeDeferred(first, 2);
+    BucketPoolAllocator moved(std::move(source));
+    BucketPoolAllocator assigned;
+    assigned = std::move(moved);
+    bool failed = false;
+    MeshRetirementAllocationFault::Arm(0, 1);
+    try
+    {
+        assigned.FreeDeferred(second, 2);
+        assigned.ReclaimUpToFrame(2);
+    }
+    catch (...)
+    {
+        failed = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
+    EXPECT_FALSE(failed);
+    EXPECT_TRUE(assigned.IsEmpty());
+    const auto whole = assigned.Allocate(4096);
+    EXPECT_EQ(whole.offset, 0u);
+    EXPECT_EQ(whole.size, 4096u);
+    assigned.Free(whole);
+    // Moved-from metadata is unspecified; reset by assignment before re-init.
+    source = BucketPoolAllocator{};
+    source.Initialize(128, 16);
+    EXPECT_EQ(source.Allocate(128).size, 128u);
 }
 
 TEST_F(MeshRetirementTest, LaterStreamMetadataFailureReleasesAttemptedVertexGroup)
@@ -550,29 +657,27 @@ TEST_F(MeshRetirementTest, LaterStreamMetadataFailureReleasesAttemptedVertexGrou
         ASSERT_TRUE(Registry.RegisterSubmesh(keys[i], mesh).IsValid());
     uint64_t beforeBytes = 0;
     for (const auto& pool : Registry.GetPoolStats())
-        beforeBytes += pool.Allocator.UsedUnits;
+        beforeBytes += pool.Allocator.used;
     ASSERT_GT(beforeBytes, 0u);
     MeshGPUHandle last;
     bool escaped = false;
-    // The ninth owner grows each pool's deferred queue 8 -> 16 entries of 16
-    // bytes (256 bytes; kPoolInitialRanges is 8). Core succeeds; Tangent's
-    // reserve fails after Core acquired its range.
+    // The ninth owner grows deferred metadata 8 -> 16 records (384 bytes).
+    // Core succeeds; Tangent's reserve fails after Core acquired its range.
+    MeshRetirementAllocationFault::Arm(16 * 3 * sizeof(uint64_t), 2);
+    try
     {
-        Memory::Testing::ScopedAllocationFault fault{16 * 16, 2, Memory::Testing::FaultRepeat::Once};
-        try
-        {
-            last = Registry.RegisterSubmesh(keys[8], mesh);
-        }
-        catch (const std::bad_alloc&)
-        {
-            escaped = true;
-        }
-        ASSERT_TRUE(fault.Fired());
+        last = Registry.RegisterSubmesh(keys[8], mesh);
     }
+    catch (const std::bad_alloc&)
+    {
+        escaped = true;
+    }
+    MeshRetirementAllocationFault::Disarm();
+    ASSERT_TRUE(MeshRetirementAllocationFault::Triggered());
     EXPECT_FALSE(escaped);
     uint64_t afterBytes = 0;
     for (const auto& pool : Registry.GetPoolStats())
-        afterBytes += pool.Allocator.UsedUnits;
+        afterBytes += pool.Allocator.used;
     const auto* entry = Registry.Find(last);
     const bool acquired = entry && entry->coreSubAlloc.IsValid();
     EXPECT_EQ(afterBytes, beforeBytes + (acquired ? beforeBytes / 8u : 0u));
@@ -583,8 +688,8 @@ TEST_F(MeshRetirementTest, LaterStreamMetadataFailureReleasesAttemptedVertexGrou
     Registry.BeginFrame(16);
     for (const auto& pool : Registry.GetPoolStats())
     {
-        EXPECT_EQ(pool.Allocator.UsedUnits, 0u) << pool.Stream;
-        EXPECT_EQ(pool.Allocator.PendingRanges, 0u) << pool.Stream;
-        EXPECT_EQ(pool.Allocator.LargestFreeUnits, pool.Allocator.CapacityUnits) << pool.Stream;
+        EXPECT_EQ(pool.Allocator.used, 0u) << pool.Stream;
+        EXPECT_EQ(pool.Allocator.deferredCount, 0u) << pool.Stream;
+        EXPECT_EQ(pool.Allocator.largestFreeRange, pool.Allocator.capacity) << pool.Stream;
     }
 }

@@ -1,58 +1,51 @@
 cmake_minimum_required(VERSION 3.20)
 
 # ECS Library - High-Performance Entity Component System
-project(ECS LANGUAGES CXX)
+project(ECS VERSION 1.0.0 LANGUAGES CXX)
 
 # Core ECS source files
 set(ECS_SOURCES
     Source/World.cpp
-    Source/Archetype/ArchetypeMatchCache.cpp
-    Source/Archetype/ArchetypeMatchList.cpp
     Source/Entity.cpp
-    Source/Component/ComponentRegistry.cpp
-    Source/Component/ComponentHandler.cpp
+    Source/ComponentRegistry.cpp
+    Source/ComponentHandler.cpp
     Source/ModuleRegistration.cpp
-    Source/Component/ComponentFieldRegistry.cpp
-    Source/Component/ComponentFactory.cpp
-    Source/Component/ComponentLayoutReloadMigrator.cpp
+    Source/ComponentFieldRegistry.cpp
+    Source/ComponentFactory.cpp
+    Source/ComponentLayoutReloadMigrator.cpp
     Source/BlobComponent.cpp
     Source/CachedQuery.cpp
     Source/UnresolvedComponentStore.cpp
     Source/OrderedHandleSet.cpp
-    Source/SystemWaveTrace.cpp
 )
 
 # Core ECS header files
 set(ECS_HEADERS
-    Include/ECS/Archetype/ArchetypeMatchCache.h
-    Include/ECS/Archetype/ArchetypeMatchList.h
-    Include/ECS/Archetype/ArchetypeTable.h
+    Include/ECS/ArchetypeTable.h
     Include/ECS/ECS.h
     Include/ECS/Types.h
     Include/ECS/World.h
     Include/ECS/Entity.h
-    Include/ECS/ClonePlan.h
-    Include/ECS/EntityRemap.h
     Include/ECS/Query.h
-    Include/ECS/Component/ComponentFlags.h
+    Include/ECS/ComponentFlags.h
     Include/ECS/Components.h
-    Include/ECS/Component/ComponentRegistry.h
+    Include/ECS/ComponentRegistry.h
     Include/ECS/IComponentHandler.h
-    Include/ECS/Component/ComponentHandler.h
-    Include/ECS/Component/ComponentHook.h
-    Include/ECS/Component/ComponentFieldRegistry.h
-    Include/ECS/Component/ComponentFactory.h
-    Include/ECS/Component/ComponentLayoutReloadMigrator.h
-    Include/ECS/Component/ComponentBase.h
+    Include/ECS/ComponentHandler.h
+    Include/ECS/ComponentHook.h
+    Include/ECS/ComponentFieldRegistry.h
+    Include/ECS/ComponentFactory.h
+    Include/ECS/ComponentLayoutReloadMigrator.h
+    Include/ECS/ComponentBase.h
     Include/ECS/BlobComponent.h
     Include/ECS/CachedQuery.h
     Include/ECS/ChangeFilter.h
-    Include/ECS/Component/ComponentConcepts.h
+    Include/ECS/ComponentConcepts.h
     Include/ECS/QueryAccessProbe.h
+    Include/ECS/Writable.h
     Include/ECS/AutoRegistration.h
     Include/ECS/ECSTemplates.h
     Include/ECS/Systems.h
-    Include/ECS/SystemWaveTrace.h
     Include/ECS/WorldTemplateImplementations.inl
     Include/ECS/OrderedHandleSet.h
 )
@@ -67,12 +60,13 @@ target_compile_features(ECS PUBLIC cxx_std_20)
 # ECS depends on Types/Types.h via the Types module; avoid direct Engine includes.
 target_include_directories(ECS PUBLIC Include)
 target_include_directories(ECS PRIVATE Source)
+# Platform's header-only environment switch. ECS/ChangeFilter.h reads
+# GE_ECS_CHANGE_FILTER inline, so the path is public; include path only.
+target_include_directories(ECS PUBLIC ${CMAKE_SOURCE_DIR}/Engine/Modules/Platform/Include)
 
 # Dependencies
 # ECS module dependencies (target-based; avoid hardcoded include paths)
-# Memory: the wave runner's ScratchScope (Include/ECS/Systems.h). An executable that links ECS
-# without Engine links Memory too: OBJECT objects do not reach it transitively.
-target_link_libraries(ECS PUBLIC Logger JobSystem Memory Types)
+target_link_libraries(ECS PUBLIC Logger JobSystem Types)
 
 # Platform-specific definitions
 if(WIN32)

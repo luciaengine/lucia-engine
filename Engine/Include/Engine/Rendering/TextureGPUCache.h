@@ -5,7 +5,6 @@
 #include "AssetCore/GUID.h"
 #include "Rendering/Core/Handle.h"
 
-#include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
 
@@ -29,18 +28,7 @@ namespace Engine::Renderer
 class TextureGPUCache
 {
   public:
-    // A cached texture and the textures it owns. The entry is the companion's only owner:
-    // it is published, removed and taken with its parent, under the same lock.
-    struct Entry
-    {
-        Rendering::TextureHandle Texture;
-        // The half-resolution normal-variance texture cooked with a normal map, or invalid.
-        Rendering::TextureHandle NormalVarianceCompanion;
-
-        bool operator==(const Entry&) const = default;
-    };
-
-    bool TryGet(const GUID& guid, Entry& out) const
+    bool TryGet(const GUID& guid, Rendering::TextureHandle& out) const
     {
         std::shared_lock lock(m_Mutex);
         const auto it = m_Map.find(guid);
@@ -64,9 +52,9 @@ class TextureGPUCache
     // is deliberate — holding the exclusive lock across a multi-millisecond
     // upload would stall every cache hit in the extraction wave behind it. A
     // caller whose candidate was not adopted therefore owns a duplicate GPU
-    // texture (and its companion) and must retire it; overwriting instead would orphan the handle
+    // texture and must retire it; overwriting instead would orphan the handle
     // other callers are already using.
-    Entry PublishOrAdopt(const GUID& guid, const Entry& candidate)
+    Rendering::TextureHandle PublishOrAdopt(const GUID& guid, Rendering::TextureHandle candidate)
     {
         std::unique_lock lock(m_Mutex);
         return m_Map.emplace(guid, candidate).first->second;
@@ -75,13 +63,13 @@ class TextureGPUCache
     // Unconditional overwrite, for the render-thread paths that already own the
     // entry (the upload drain, and the hot-swap restore whose failed re-upload
     // may have left a negative entry behind).
-    void Set(const GUID& guid, const Entry& entry)
+    void Set(const GUID& guid, Rendering::TextureHandle handle)
     {
         std::unique_lock lock(m_Mutex);
-        m_Map[guid] = entry;
+        m_Map[guid] = handle;
     }
 
-    bool Remove(const GUID& guid, Entry& out)
+    bool Remove(const GUID& guid, Rendering::TextureHandle& out)
     {
         std::unique_lock lock(m_Mutex);
         const auto it = m_Map.find(guid);
@@ -94,10 +82,10 @@ class TextureGPUCache
 
     // Move the entries out and leave the cache empty, so shutdown can destroy
     // the textures without holding the lock across IDevice calls.
-    std::unordered_map<GUID, Entry> Take()
+    std::unordered_map<GUID, Rendering::TextureHandle> Take()
     {
         std::unique_lock lock(m_Mutex);
-        std::unordered_map<GUID, Entry> taken;
+        std::unordered_map<GUID, Rendering::TextureHandle> taken;
         taken.swap(m_Map);
         return taken;
     }
@@ -112,7 +100,7 @@ class TextureGPUCache
 
   private:
     mutable std::shared_mutex m_Mutex;
-    std::unordered_map<GUID, Entry> m_Map;
+    std::unordered_map<GUID, Rendering::TextureHandle> m_Map;
 };
 
 } // namespace Engine::Renderer

@@ -1,7 +1,7 @@
 # Authors
 
 - **Shanee Nishry** - Founder and original creator.
-- **Lars Steenhoff** (larssteenhoff) - Significant contributions across the Editor, macOS, UI/UX, Design and many more.
+- **Lars Steenhoff** - Significant contributions across the Editor, macOS, UI/UX, Design and many more.
 
 ## Contributors
 

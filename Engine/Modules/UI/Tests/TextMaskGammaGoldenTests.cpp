@@ -66,6 +66,22 @@ float ApplyTextContrast(float srca, float adjustedContrast)
     return srca + (1.0f - srca) * adjustedContrast * srca;
 }
 
+constexpr float kTextContrastByLuminance[4] = {-0.14f, 0.20f, 0.53f, 0.85f};
+constexpr float kTextContrastLevelEdges[3] = {63.5f / 255.0f, 127.5f / 255.0f, 191.5f / 255.0f};
+constexpr float kTextContrastEdgeHalfWidth = 0.5f / 255.0f;
+
+float TextChromeContrast(float srcEncoded)
+{
+    float k = kTextContrastByLuminance[0];
+    for (int edge = 0; edge < 3; ++edge)
+    {
+        const float t = Smoothstep(kTextContrastLevelEdges[edge] - kTextContrastEdgeHalfWidth,
+                                   kTextContrastLevelEdges[edge] + kTextContrastEdgeHalfWidth, srcEncoded);
+        k = Mix(k, kTextContrastByLuminance[edge + 1], t);
+    }
+    return k;
+}
+
 float TextTargetBlendLinear(float a, float src, float dst, float srcLin, float dstLin,
                             float blendGamma)
 {
@@ -86,7 +102,8 @@ float CorrectTextCoverage(float coverage, float glyphLuminanceLinear, float cont
     const float dst = 1.0f - src;
     const float dstLin = SrgbDecodeScalar(dst);
 
-    const float a = ApplyTextContrast(coverage, contrast * dstLin);
+    const float k = blendGamma <= kTextBlendGammaLinearTarget ? dstLin : TextChromeContrast(src);
+    const float a = ApplyTextContrast(coverage, contrast * k);
 
     if (blendSpaceEncoded == 0)
     {
@@ -136,6 +153,13 @@ double Boost(double coverage, double adjustedContrast)
     return coverage + (1.0 - coverage) * adjustedContrast * coverage;
 }
 
+// The contrast the paint's encoded luminance selects: the shader's level
+// table, read through the float mirror so the boundaries are the shader's.
+double ChromeContrast(double srcEnc)
+{
+    return shader::TextChromeContrast(static_cast<float>(srcEnc));
+}
+
 // Where a blend of coverage `a` between encoded endpoints src/dst lands in
 // linear light, blending linearly in the space of exponent g over encoded
 // values (g = 0 sentinel: linear light itself).
@@ -168,22 +192,19 @@ constexpr double kSimTolLinear = 5.0e-4;
 
 } // namespace
 
-// The shipped default path must be the boost and nothing else, exactly — this
-// is the byte-identity half of the dark landing at the model level (the other
-// half is the resolver pin: no constructible target space selects the encoded
-// arm).
-TEST(TextMaskGammaGolden, LinearArmDefaultTargetIsExactlyTheBoost)
+// The linear arm at the linear target is the identity retarget: the
+// correction is the contrast term and nothing else, exactly.
+TEST(TextMaskGammaGolden, LinearArmUsesBackdropKeyedContrastAtLinearTarget)
 {
     for (int sl = 0; sl <= 20; ++sl)
     {
         const float srcLin = static_cast<float>(sl) / 20.0f;
-        const float dstLin = shader::SrgbDecodeScalar(1.0f - shader::SrgbEncodeScalar(srcLin));
         for (const float c : kCoverages)
         {
-            const float expected = shader::ApplyTextContrast(c, 1.0f * dstLin);
+            const double expected = model::Boost(c, model::Decode(1.0 - model::Encode(srcLin)));
             const float got = shader::CorrectTextCoverage(c, srcLin, 1.0f, 0.0f,
                                                           /*blendSpaceEncoded=*/0);
-            EXPECT_EQ(expected, got) << "srcLin=" << srcLin << " coverage=" << c;
+            EXPECT_NEAR(expected, got, 2e-7) << "srcLin=" << srcLin << " coverage=" << c;
         }
     }
 }
@@ -209,7 +230,7 @@ TEST(TextMaskGammaGolden, LinearArmLandsOnTheTargetBlend)
                 continue;
             for (const float c : kCoverages)
             {
-                const double a = model::Boost(c, 1.0 * dstLin);
+                const double a = model::Boost(c, model::ChromeContrast(srcEnc));
                 const float corrected = shader::CorrectTextCoverage(
                     c, static_cast<float>(srcLin), 1.0f, g, /*blendSpaceEncoded=*/0);
                 const double displayed =
@@ -236,12 +257,11 @@ TEST(TextMaskGammaGolden, EncodedArmLandsOnTheTargetBlend)
             const double srcLin = sl / 100.0;
             const double srcEnc = model::Encode(srcLin);
             const double dstEnc = 1.0 - srcEnc;
-            const double dstLin = model::Decode(dstEnc);
             if (std::abs(srcEnc - dstEnc) < shader::kTextSpanFadeEndEncoded * 1.01)
                 continue;
             for (const float c : kCoverages)
             {
-                const double a = model::Boost(c, 1.0 * dstLin);
+                const double a = model::Boost(c, g <= 0 ? model::Decode(dstEnc) : model::ChromeContrast(srcEnc));
                 const float corrected = shader::CorrectTextCoverage(
                     c, static_cast<float>(srcLin), 1.0f, g, /*blendSpaceEncoded=*/1);
                 const double displayed =
@@ -269,12 +289,11 @@ TEST(TextMaskGammaGolden, EncodedArmAtEncodedTargetIsTheIdentity)
     {
         const double srcLin = sl / 100.0;
         const double srcEnc = model::Encode(srcLin);
-        const double dstLin = model::Decode(1.0 - srcEnc);
         if (std::abs(srcEnc - (1.0 - srcEnc)) < shader::kTextSpanFadeEndEncoded * 1.01)
             continue;
         for (const float c : kCoverages)
         {
-            const double a = model::Boost(c, 1.0 * dstLin);
+            const double a = model::Boost(c, model::ChromeContrast(srcEnc));
             const float corrected = shader::CorrectTextCoverage(
                 c, static_cast<float>(srcLin), 1.0f, 1.0f, /*blendSpaceEncoded=*/1);
             tail = std::max(tail, std::abs(corrected - a));
@@ -293,14 +312,15 @@ TEST(TextMaskGammaGolden, EncodedArmAtEncodedTargetIsTheIdentity)
 TEST(TextMaskGammaGolden, BothArmsFadeToTheBoostAtMidGrey)
 {
     const float srcLin = shader::SrgbDecodeScalar(0.5f);
-    const float dstLin = shader::SrgbDecodeScalar(1.0f - shader::SrgbEncodeScalar(srcLin));
+    const float contrast = shader::TextChromeContrast(shader::SrgbEncodeScalar(srcLin));
     for (const float c : kCoverages)
     {
-        const float boosted = shader::ApplyTextContrast(c, 1.0f * dstLin);
+        const float boosted = shader::ApplyTextContrast(c, contrast);
+        const double linearBoost = model::Boost(c, model::Decode(1.0 - model::Encode(srcLin)));
         EXPECT_NEAR(boosted,
                     shader::CorrectTextCoverage(c, srcLin, 1.0f, 1.0f, /*blendSpaceEncoded=*/0),
                     1e-6f);
-        EXPECT_NEAR(boosted,
+        EXPECT_NEAR(linearBoost,
                     shader::CorrectTextCoverage(c, srcLin, 1.0f, 0.0f, /*blendSpaceEncoded=*/1),
                     1e-6f);
     }
@@ -315,13 +335,11 @@ TEST(TextMaskGammaGolden, BothArmsFadeToTheBoostAtMidGrey)
 // 8-bit levels — and pins its shape so a silent change to the guess cannot
 // hide.
 //
-// Provenance of the ceilings: computed from this model at P4 time (double
-// reference). They are characterization pins of the inherited approximation,
-// NOT acceptance bounds for the flip — the flip's acceptance (section-5 m3 of
-// the design of record) is measured against the rendered reference, where
-// both stacks share this guess and its error cancels. On the theme pairing
-// the guess residual (+2.8% ink, 4.98 peak levels) is SMALLER than Chrome's
-// own background-blind error (+5.1% mask, byte-identical thm/wob output).
+// Provenance of the ceilings: computed from this model (double reference)
+// with the linear target's backdrop-keyed contrast. The reference values were
+// independently solved by double-precision bisection of the encoded blend weight,
+// not by calling the shader mirror. They pin the linear-target approximation, not acceptance bounds: the shipped
+// encoded target needs no guess on the editor's encoded attachment.
 // ---------------------------------------------------------------------------
 TEST(TextMaskGammaGolden, EncodedArmDstAwareSweepTailIsCharacterized)
 {
@@ -349,7 +367,7 @@ TEST(TextMaskGammaGolden, EncodedArmDstAwareSweepTailIsCharacterized)
                     model::DisplayedLinear_EncodedBlend(corrected, srcEnc, trueDstEnc);
                 // Perfect-knowledge ideal: boost and target blend keyed on the
                 // TRUE backdrop.
-                const double aTrue = model::Boost(c, 1.0 * trueDstLin);
+                const double aTrue = model::Boost(c, trueDstLin);
                 const double idealLin = model::Mix(trueDstLin, srcLin, aTrue);
                 const double errLevels =
                     std::abs(model::Encode(displayedLin) - model::Encode(idealLin)) * 255.0;
@@ -395,18 +413,17 @@ TEST(TextMaskGammaGolden, EncodedArmDstAwareSweepTailIsCharacterized)
     EXPECT_LE(wob, 0.02);
     EXPECT_LE(bow, 0.02);
     // Theme pairings carry the guess residual; ceilings sit just above the
-    // computed values (4.98 / 4.62).
-    EXPECT_LE(thm, 5.5);
-    EXPECT_LE(thmInv, 5.1);
-    // Whole-grid tail (worst cell: mid-grey glyph on black, where the guess is
-    // maximally wrong; computed 29.96).
-    EXPECT_LE(gridTail, 31.0);
+    // independently computed values (4.9796 / 4.6189).
+    EXPECT_NEAR(thm, 4.9795744, 0.02);
+    EXPECT_NEAR(thmInv, 4.6188982, 0.02);
+    // Whole-grid tail from the same independent blend-definition solution.
+    EXPECT_NEAR(gridTail, 29.9620878, 0.02);
 }
 
 // The normalized polarity metric from the record: ink attained over ink
 // wanted, dark-background pairing against its light-background mirror. The
-// guess makes the theme ratio 1.05 (Chrome's background-blind class — its own
-// mask runs +5.1% hot on thm); a dst-aware correction would put it at 1.0.
+// guess makes the theme ratio 1.050 at the linear target; a dst-aware
+// correction would put it at 1.0.
 // Pinned so the asymmetry's size is visible and cannot drift silently; wob/bow
 // must be exactly symmetric (the guess is exact for both).
 TEST(TextMaskGammaGolden, EncodedArmNormalizedPolarityRatioIsCharacterized)
@@ -423,7 +440,7 @@ TEST(TextMaskGammaGolden, EncodedArmNormalizedPolarityRatioIsCharacterized)
                 c, static_cast<float>(srcLin), 1.0f, 0.0f, /*blendSpaceEncoded=*/1);
             const double displayedLin =
                 model::DisplayedLinear_EncodedBlend(corrected, srcEnc, trueDstEnc);
-            const double aTrue = model::Boost(c, 1.0 * trueDstLin);
+            const double aTrue = model::Boost(c, trueDstLin);
             const double idealLin = model::Mix(trueDstLin, srcLin, aTrue);
             got += std::abs(displayedLin - trueDstLin);
             want += std::abs(idealLin - trueDstLin);
@@ -440,23 +457,24 @@ TEST(TextMaskGammaGolden, EncodedArmNormalizedPolarityRatioIsCharacterized)
                 wob, bow, wob / bow, thm, thmInv, thm / thmInv);
 
     EXPECT_NEAR(wob / bow, 1.0, 0.001);
-    // Computed 1.0500; the ceiling pins the guess residual's class. Closing
-    // this to 1.0 needs a dst-aware correction (a per-primitive backdrop
-    // channel), which is a named follow-up, not a constants-level change.
-    EXPECT_NEAR(thm / thmInv, 1.05, 0.02);
+    // Independently computed 1.0499501 with backdrop-keyed contrast; the band
+    // pins the guess residual's class. Closing this to 1.0 needs a dst-aware
+    // correction (a per-primitive backdrop channel), which is a named
+    // follow-up, not a constants-level change.
+    EXPECT_NEAR(thm / thmInv, 1.0499501, 0.002);
 }
 
 // The measured stakes, demonstrated in this pixel model (direction and class;
 // the record's numbers are ppem-integrated over real glyphs): a naive flip —
 // mask unchanged into an encoded blend — collapses light-on-dark ink, and a
 // boosted-but-unretargeted flip runs dark-on-light heavy. The record measured
-// +34.9% thin (theme block) and 1.16-1.34x heavy respectively; this model
-// puts the same failures at 0.60x and 1.23x. The retargeted arm holds both at
-// 1.00 — which is the reason P4 exists.
+// +34.9% thin (theme block) and 1.16-1.34x heavy respectively; this model,
+// with the linear target's backdrop-keyed contrast, puts them at about 0.60x
+// and 1.23x. The retargeted arm holds both at 1.00.
 TEST(TextMaskGammaGolden, TheMeasuredFailureModesAndTheirCorrection)
 {
-    // White on black, naive: corrected coverage == raw mask (no boost for
-    // white text, no retarget).
+    // White on black, naive: corrected coverage == raw mask (no contrast, no
+    // retarget), against the area-exact blend of the contrast-weighted mask.
     {
         double naive = 0.0, corrected = 0.0, ideal = 0.0;
         for (const float c : kCoverages)
@@ -465,7 +483,7 @@ TEST(TextMaskGammaGolden, TheMeasuredFailureModesAndTheirCorrection)
             const float a = shader::CorrectTextCoverage(c, 1.0f, 1.0f, 0.0f,
                                                         /*blendSpaceEncoded=*/1);
             corrected += model::DisplayedLinear_EncodedBlend(a, 1.0, 0.0);
-            ideal += model::Mix(0.0, 1.0, c);
+            ideal += model::Mix(0.0, 1.0, model::Boost(c, 0.0));
         }
         std::printf("[golden] wob ink vs area-exact: naive %.3f, retargeted %.3f\n",
                     naive / ideal, corrected / ideal);
@@ -486,8 +504,63 @@ TEST(TextMaskGammaGolden, TheMeasuredFailureModesAndTheirCorrection)
         }
         std::printf("[golden] bow ink vs target: unretargeted %.3fx, retargeted %.3fx\n",
                     heavy / ideal, corrected / ideal);
-        EXPECT_GT(heavy / ideal, 1.10); // the record's 1.16-1.34x class
-        EXPECT_LT(heavy / ideal, 1.35);
+        // The Skia backdrop-keyed model remains in the measured heavy class.
+        EXPECT_GT(heavy / ideal, 1.10);
+        EXPECT_LT(heavy / ideal, 1.45);
         EXPECT_NEAR(corrected / ideal, 1.0, 0.01);
+    }
+}
+
+// The shipped configuration, the editor's: an encoded attachment at the
+// encoded target (the editor's TextBlendGamma 1.0) at contrast 1.0. It
+// must hand the encoded source-over exactly Chrome's macOS weight
+// c + k c (1 - c), with k from the paint's encoded luminance level. The level
+// edges and the four k values are the measurement (Chrome 155, macOS 15.7,
+// greys in steps of one): 63 and 64, 127 and 128, 191 and 192 sit in
+// different levels, and the editor's #bebebe (190) labels sit in the third.
+TEST(TextMaskGammaGolden, ShippedConfigurationIsChromeMacOsWeight)
+{
+    struct Level
+    {
+        int Grey;
+        float Contrast;
+    };
+    constexpr Level kLevels[] = {{0, -0.14f},  {63, -0.14f}, {64, 0.20f},  {127, 0.20f}, {128, 0.53f},
+                                 {190, 0.53f}, {191, 0.53f}, {192, 0.85f}, {230, 0.85f}, {255, 0.85f}};
+    for (const Level& level : kLevels)
+    {
+        const float srcLin = shader::SrgbDecodeScalar(static_cast<float>(level.Grey) / 255.0f);
+        for (const float c : kCoverages)
+        {
+            const float chrome = c + level.Contrast * c * (1.0f - c);
+            const float got = shader::CorrectTextCoverage(c, srcLin, 1.0f, 1.0f, /*blendSpaceEncoded=*/1);
+            EXPECT_NEAR(got, chrome, 2e-4f) << "grey=" << level.Grey << " coverage=" << c;
+        }
+    }
+}
+
+// The contrast is continuous in luminance, so a colour animated through a
+// level edge changes weight smoothly rather than in one step, while every
+// 8-bit grey keeps its Chrome level exactly (the ramp is one 8-bit level wide,
+// centred between the two levels either side of each edge).
+TEST(TextMaskGammaGolden, ContrastIsContinuousAcrossLevelEdges)
+{
+    double largestStep = 0.0;
+    float previous = shader::TextChromeContrast(0.0f);
+    constexpr int kSamples = 1 << 16;
+    for (int i = 1; i <= kSamples; ++i)
+    {
+        const float k = shader::TextChromeContrast(static_cast<float>(i) / kSamples);
+        largestStep = std::max(largestStep, static_cast<double>(std::abs(k - previous)));
+        previous = k;
+    }
+    // A step function jumps by up to 0.32 between neighbouring samples; the
+    // ramp spreads the jump over 1/255 of luminance, 257 samples here.
+    EXPECT_LT(largestStep, 0.005) << "the contrast steps between levels";
+
+    for (int grey = 0; grey <= 255; ++grey)
+    {
+        const float expected = shader::kTextContrastByLuminance[grey / 64];
+        EXPECT_NEAR(shader::TextChromeContrast(static_cast<float>(grey) / 255.0f), expected, 1e-5f) << "grey " << grey;
     }
 }

@@ -57,13 +57,6 @@ endif()
 # call below resolves `CMAKE_TOOLCHAIN_FILE`).
 set(VCPKG_APPLOCAL_DEPS OFF CACHE BOOL "vcpkg redundant — we stage runtime DLLs ourselves via ge_stage_runtime_dependencies" FORCE)
 
-# The oldest macOS the binaries run on. Set it before project(). CMake caches an
-# empty value, so set the default while the value is empty; an explicit
-# -DCMAKE_OSX_DEPLOYMENT_TARGET wins. Keep equal to cmake/triplets/*-osx.cmake.
-if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS version the binaries run on" FORCE)
-endif()
-
 # Include automated dependency management
 include(cmake/Dependencies.cmake)
 
@@ -166,26 +159,7 @@ if(NOT _ge_is_multi_config AND NOT CMAKE_BUILD_TYPE)
         "Build configuration: DebugFast, Debug, RelWithDebInfo, Release or MinSizeRel" FORCE)
 endif()
 
-# The engine version comes from the root VERSION file (cmake/EngineVersion.cmake):
-# GE_ENGINE_VERSION is the full string, prerelease suffix included, and
-# GE_ENGINE_VERSION_NUMERIC its <year>.<month>.<patch> part, which project() and
-# the macOS bundle keys take.
-include(cmake/EngineVersion.cmake)
-ge_read_engine_version("${CMAKE_CURRENT_SOURCE_DIR}/VERSION" GE_ENGINE_VERSION GE_ENGINE_VERSION_NUMERIC)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
-
-project(GameEngine VERSION ${GE_ENGINE_VERSION_NUMERIC} LANGUAGES C CXX)
-message(STATUS "Engine version: ${GE_ENGINE_VERSION}")
-
-# The version as C++ constants, for the few sources that show or encode it. A
-# generated header rather than a compile definition: a version bump recompiles
-# only the files that include it, not every target that links Engine.
-string(REPLACE "." ";" _ge_version_parts "${GE_ENGINE_VERSION_NUMERIC}")
-list(GET _ge_version_parts 0 GE_ENGINE_VERSION_YEAR)
-list(GET _ge_version_parts 1 GE_ENGINE_VERSION_MONTH)
-list(GET _ge_version_parts 2 GE_ENGINE_VERSION_PATCH)
-configure_file("${CMAKE_CURRENT_SOURCE_DIR}/Engine/Include/Core/EngineVersion.h.in"
-               "${CMAKE_BINARY_DIR}/generated/Core/EngineVersion.h" @ONLY)
+project(GameEngine VERSION 1.0.0 LANGUAGES C CXX)
 
 # Our patched overlay ports (cmake/ports, and cmake/macos-ports on macOS, which
 # Dependencies.cmake passes to vcpkg) must be configure dependencies, or
@@ -238,6 +212,16 @@ endif()
 # flip, dlopen would fail at startup on macOS/Linux.
 # Windows has no equivalent — DLLs in the same directory as the exe are
 # found via the standard DLL search order.
+# Native mobile hosts use SDL's Android/UIKit lifecycle and surface ownership.
+set(GE_MOBILE OFF)
+if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(GE_MOBILE ON)
+    add_compile_definitions(GE_PLATFORM_MOBILE=1)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        add_compile_definitions(GE_PLATFORM_IOS=1)
+    endif()
+endif()
+
 if(APPLE)
     set(CMAKE_BUILD_RPATH "@executable_path;@loader_path")
     set(CMAKE_INSTALL_RPATH "@executable_path;@loader_path")
@@ -295,23 +279,6 @@ add_compile_definitions($<$<OR:$<CONFIG:Debug>,$<CONFIG:DebugFast>,$<CONFIG:RelW
 # GE_DEBUG_INSTRUMENTATION_VALUE instead of restating it.
 set(GE_DEBUG_INSTRUMENTATION_VALUE "$<IF:$<OR:$<CONFIG:Debug>,$<CONFIG:DebugFast>>,1,0>")
 add_compile_definitions(GE_DEBUG_INSTRUMENTATION=${GE_DEBUG_INSTRUMENTATION_VALUE})
-
-# Standard-library precondition checks where GE_DEBUG_INSTRUMENTATION is 1; Release has none. The switches are
-# per translation unit and keep the ABI. libc++ runs every check in Debug and aborts through LibcxxVerboseAbort.cpp;
-# DebugFast runs the fast checks and traps (SIGTRAP on arm64). MSVC and libstdc++ abort in both configurations.
-set(_ge_std_hardening "$<BOOL:${GE_DEBUG_INSTRUMENTATION_VALUE}>")
-if(MSVC)
-    add_compile_definitions(
-        $<${_ge_std_hardening}:_MSVC_STL_HARDENING=1>
-        $<${_ge_std_hardening}:_MSVC_STL_USE_ABORT_AS_DOOM_FUNCTION>
-    )
-else()
-    add_compile_definitions(
-        $<$<CONFIG:Debug>:_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG>
-        $<$<CONFIG:DebugFast>:_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST>
-        $<${_ge_std_hardening}:_GLIBCXX_ASSERTIONS>
-    )
-endif()
 
 # UISystem removed during redesign; keep permanently disabled
 
@@ -523,8 +490,12 @@ if(CMAKE_CONFIGURATION_TYPES)
 endif()
 # Seed DebugFast flags from Debug, then strip /RTC1 (runtime checks are the big single
 # overhead that /W4 + ASAN already cover). /MDd → /MD is handled by CMAKE_MSVC_RUNTIME_LIBRARY.
-include(cmake/DebugFastFlags.cmake)
-ge_seed_debugfast_flags()
+set(CMAKE_C_FLAGS_DEBUGFAST                "${CMAKE_C_FLAGS_DEBUG}"                CACHE STRING "")
+set(CMAKE_CXX_FLAGS_DEBUGFAST              "${CMAKE_CXX_FLAGS_DEBUG}"              CACHE STRING "")
+set(CMAKE_EXE_LINKER_FLAGS_DEBUGFAST       "${CMAKE_EXE_LINKER_FLAGS_DEBUG}"       CACHE STRING "")
+set(CMAKE_SHARED_LINKER_FLAGS_DEBUGFAST    "${CMAKE_SHARED_LINKER_FLAGS_DEBUG}"    CACHE STRING "")
+set(CMAKE_STATIC_LINKER_FLAGS_DEBUGFAST    "${CMAKE_STATIC_LINKER_FLAGS_DEBUG}"    CACHE STRING "")
+set(CMAKE_MODULE_LINKER_FLAGS_DEBUGFAST    "${CMAKE_MODULE_LINKER_FLAGS_DEBUG}"    CACHE STRING "")
 
 # Route IMPORTED targets (vcpkg deps) in DebugFast to their Release variants.
 # Without this, CMake's fallback for unknown configs can pick the first entry of
@@ -573,16 +544,7 @@ option(BUILD_TESTING "Enable building tests" OFF)
 include(CTest)
 if(BUILD_TESTING)
   enable_testing()
-  # The environment every test ctest runs inherits (cmake/CTestEnvironment.cmake).
-  set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES "${CMAKE_SOURCE_DIR}/cmake/CTestEnvironment.cmake")
 endif()
-
-# The allocation counter's hook: every test executable, and the engine's images under
-# GE_DEBUG_INSTRUMENTATION. Also refuses ENABLE_MIMALLOC where the hook is compiled.
-include(cmake/AllocationHook.cmake)
-
-# Refuses a target that links Engine and also a module Engine already contains.
-include(cmake/EngineModuleDuplicationCheck.cmake)
 
 # Verify dependencies are working
 verify_dependencies()
@@ -625,13 +587,8 @@ if(NOT CMAKE_HOST_WIN32)
     find_package(PkgConfig REQUIRED)
 endif()
 
-# .NET hosting libraries (nethost) with architecture detection, and the helper that
-# stages the hosting runtime beside an executable: scripting-only, so a build with
-# ENABLE_SCRIPTING=OFF never looks for a .NET install.
-if(ENABLE_SCRIPTING)
 # Find .NET hosting libraries (nethost) with architecture detection
 include(cmake/DotnetHostVersions.cmake)
-include(cmake/DotnetLinuxHostRids.cmake)
 if(WIN32)
     # Detect target architecture — prefer the generator platform (VS generators)
     # over CMAKE_SYSTEM_PROCESSOR which reports the host, not the target.
@@ -761,40 +718,33 @@ elseif(APPLE)
 	endif()
 
 elseif(UNIX AND NOT APPLE)
-    # Linux: locate libnethost.so from the installed .NET SDK/runtime.
-    # The install root is DOTNET_ROOT when set, else the directory of the dotnet
-    # executable on PATH with symlinks resolved (distro packages link
-    # /usr/bin/dotnet into their own root, /usr/lib64/dotnet on Fedora), else
-    # the location Microsoft's installer uses.
+    # Linux: locate libnethost.so from the installed .NET SDK/runtime
+    # Prefer DOTNET_ROOT when set, otherwise fall back to the standard install root
     set(DOTNET_ROOT_HINT "$ENV{DOTNET_ROOT}")
     if(DOTNET_ROOT_HINT STREQUAL "")
-        find_program(_ge_dotnet_on_path dotnet NO_CACHE)
-        if(_ge_dotnet_on_path)
-            file(REAL_PATH "${_ge_dotnet_on_path}" _ge_dotnet_on_path)
-            get_filename_component(DOTNET_ROOT_HINT "${_ge_dotnet_on_path}" DIRECTORY)
-        else()
-            set(DOTNET_ROOT_HINT "/usr/share/dotnet")
-        endif()
+        set(DOTNET_ROOT_HINT "/usr/share/dotnet")
     endif()
 
+    # Derive RID based on architecture (x64 / arm64)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         # On many Linux distros CMAKE_SYSTEM_PROCESSOR is "aarch64" or
         # "arm64" for ARM64; handle both as well as uppercase ARM64.
         if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|arm64|aarch64")
-            set(DOTNET_LINUX_ARCH "arm64")
+            set(DOTNET_LINUX_RID "linux-arm64")
         else()
-            set(DOTNET_LINUX_ARCH "x64")
+            set(DOTNET_LINUX_RID "linux-x64")
         endif()
     else()
-        set(DOTNET_LINUX_ARCH "x86")
+        set(DOTNET_LINUX_RID "linux-x86")
     endif()
 
-    ge_dotnet_linux_host_rids("${DOTNET_ROOT_HINT}" "${DOTNET_LINUX_ARCH}" DOTNET_LINUX_RIDS)
-    foreach(DOTNET_LINUX_RID IN LISTS DOTNET_LINUX_RIDS)
-        file(GLOB DOTNET_HOST_VERSIONS "${DOTNET_ROOT_HINT}/packs/Microsoft.NETCore.App.Host.${DOTNET_LINUX_RID}/*")
+    set(DOTNET_HOST_PACK_ROOT "${DOTNET_ROOT_HINT}/packs/Microsoft.NETCore.App.Host.${DOTNET_LINUX_RID}")
+    file(GLOB DOTNET_HOST_VERSIONS "${DOTNET_HOST_PACK_ROOT}/*")
+
+    if(DOTNET_HOST_VERSIONS)
         ge_dotnet_versions_newest_first(DOTNET_HOST_VERSIONS)
 
-        foreach(VERSION_PATH IN LISTS DOTNET_HOST_VERSIONS)
+        foreach(VERSION_PATH ${DOTNET_HOST_VERSIONS})
             set(DOTNET_NATIVE_PATH "${VERSION_PATH}/runtimes/${DOTNET_LINUX_RID}/native")
             message(STATUS "Checking: ${DOTNET_NATIVE_PATH}")
 
@@ -806,15 +756,11 @@ elseif(UNIX AND NOT APPLE)
                 break()
             endif()
         endforeach()
-
-        if(NETHOST_LIBRARY)
-            break()
-        endif()
-    endforeach()
+    endif()
 
     if(NOT NETHOST_LIBRARY)
         message(WARNING "libnethost.so not found under ${DOTNET_ROOT_HINT}; CoreCLR hosting will be disabled on Linux.")
-        message(STATUS "Searched host packs for: ${DOTNET_LINUX_RIDS}")
+        message(STATUS "Searched under: ${DOTNET_HOST_PACK_ROOT}")
     else()
         message(STATUS "Using .NET hosting library on Linux: ${NETHOST_LIBRARY}")
     endif()
@@ -856,7 +802,6 @@ function(ge_add_dotnet_hosting_runtime target_name)
     endif()
   endif()
 endfunction()
-endif() # ENABLE_SCRIPTING
 
 #
 # Helper: copy MSVC AddressSanitizer runtime DLLs next to an executable target.
@@ -920,9 +865,13 @@ endfunction()
 if(WIN32)
 	add_definitions(-DPLATFORM_WINDOWS)
 	set(PLATFORM_LIBS "")
+elseif(ANDROID)
+    add_definitions(-DPLATFORM_ANDROID)
 elseif(UNIX AND NOT APPLE)
 	add_definitions(-DPLATFORM_LINUX)
 	set(PLATFORM_LIBS pthread dl)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # GE_PLATFORM_IOS is defined before module configuration.
 elseif(APPLE)
 	add_definitions(-DPLATFORM_MACOS)
 	set(PLATFORM_LIBS pthread dl)
@@ -936,12 +885,8 @@ if(GE_STEAMDECK_BUILD)
     add_compile_definitions(GE_STEAMDECK_BUILD=1 PLATFORM_STEAMDECK=1)
 endif()
 
-# GCC and Clang-family builds are strict by default.
-set(_ge_werror_non_msvc_default OFF)
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-	set(_ge_werror_non_msvc_default ON)
-endif()
-option(ENABLE_WERROR_NON_MSVC "Treat warnings as errors on non-MSVC compilers (Debug/DebugFast/RelWithDebInfo)" ${_ge_werror_non_msvc_default})
+# When enabled, treat warnings as errors on non-MSVC compilers in dev configs.
+option(ENABLE_WERROR_NON_MSVC "Treat warnings as errors on non-MSVC compilers (Debug/RelWithDebInfo)" OFF)
 
 # Compiler-specific options
 if(MSVC)
@@ -950,7 +895,7 @@ if(MSVC)
 	#  - /Zc:preprocessor           : conforming preprocessor
 	#  - /Zc:__cplusplus            : make __cplusplus report the actual standard level
 	#  - /W4                        : high warning level
-	#  - /WX (Debug/DebugFast/RelWithDebInfo) : treat *compiler* warnings as errors in dev configs
+	#  - /WX (Debug/RelWithDebInfo) : treat *compiler* warnings as errors in dev configs
 	#  - /MP                        : multi-processor compilation
 	#  - /analyze (Debug only)      : static analysis where iteration speed doesn't
 	#                                 matter; RelWithDebInfo is the perf-verification
@@ -976,7 +921,7 @@ if(MSVC)
 	)
 	add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 else()
-	# GCC/Clang: strong warnings everywhere; dev configs default to errors.
+	# GCC/Clang: strong warnings everywhere; -Werror only when explicitly requested.
 	add_compile_options(
 		-Wall
 		-Wextra
@@ -988,24 +933,14 @@ else()
 		-Wno-unused-variable
 		-Wno-missing-field-initializers
 		-Wno-unused-parameter
-		$<$<COMPILE_LANG_AND_ID:CXX,GNU>:-Wno-changes-meaning>
+		$<$<CXX_COMPILER_ID:GNU>:-Wno-changes-meaning>
 	)
 	if(ENABLE_WERROR_NON_MSVC)
 		add_compile_options(
 			$<$<CONFIG:Debug>:-Werror>
-			$<$<CONFIG:DebugFast>:-Werror>
 			$<$<CONFIG:RelWithDebInfo>:-Werror>
 		)
 	endif()
-endif()
-
-# Release binaries hold __FILE__ relative to the source root, so no build-machine path ships.
-# Test executables keep full paths (ge_set_output_tests). Other configurations keep full paths.
-if(MSVC)
-	file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/" _ge_native_source_root)
-	add_compile_options("$<$<CONFIG:Release>:/d1trimfile:${_ge_native_source_root}>")
-else()
-	add_compile_options("$<$<CONFIG:Release>:-fmacro-prefix-map=${CMAKE_SOURCE_DIR}/=>")
 endif()
 
 # AddressSanitizer toggle (Debug config by default)
@@ -1037,20 +972,6 @@ if(ENABLE_ASAN)
 
 	# Expose a compile-time define so code/tests can relax perf thresholds under ASan.
 	add_compile_definitions($<$<CONFIG:Debug>:GE_ENABLE_ASAN=1>)
-endif()
-
-# ThreadSanitizer toggle (Debug config, clang and gcc only)
-option(ENABLE_TSAN "Enable ThreadSanitizer (applies to Debug config)" OFF)
-if(ENABLE_TSAN)
-	if(ENABLE_ASAN)
-		message(FATAL_ERROR "ENABLE_TSAN and ENABLE_ASAN cannot both be ON: the two sanitizers do not link together. Configure a separate tree for each (macos-arm64-local-asan, macos-arm64-local-tsan), or turn one off in this tree with -DENABLE_ASAN=OFF or -DENABLE_TSAN=OFF (or reconfigure with cmake --fresh).")
-	endif()
-	if(MSVC)
-		message(FATAL_ERROR "ENABLE_TSAN needs clang or gcc: MSVC has no ThreadSanitizer. Use a macOS or Linux tree.")
-	endif()
-	message(STATUS "ThreadSanitizer: ENABLED")
-	add_compile_options("$<$<CONFIG:Debug>:-fsanitize=thread;-fno-omit-frame-pointer>")
-	add_link_options("$<$<CONFIG:Debug>:-fsanitize=thread>")
 endif()
 
 # Clang-Tidy integration (runs during CMake builds if available)
@@ -1094,10 +1015,6 @@ endif()
 
 # Include directories (removed global include paths; targets declare their own)
 
-# The shader compiler, before any engine directory that compiles shaders.
-include(cmake/GlslcCompiler.cmake)
-ge_find_glslc()
-
 # Add subdirectories in dependency order
 
 # Emscripten builds compile the engine library graph (Phase 4 of the web
@@ -1108,7 +1025,6 @@ ge_find_glslc()
 if(EMSCRIPTEN)
     add_subdirectory(Engine/Modules/Logger)
     add_subdirectory(Engine/Modules/Events)
-    add_subdirectory(Engine/Modules/SceneLoadTracker)
     add_subdirectory(Engine/Modules/GenerationalVector)
     add_subdirectory(Engine/Modules/Types)
     add_subdirectory(Engine/Modules/AssetCore)
@@ -1116,14 +1032,15 @@ if(EMSCRIPTEN)
     add_subdirectory(Engine/Modules/Mathematics)
     add_subdirectory(Engine/Modules/Serialization)
     add_subdirectory(Engine/Modules/Noise)
-    add_subdirectory(Engine/Modules/Image)
     add_subdirectory(Engine/Modules/Memory)
+    add_subdirectory(Engine/Modules/Sprite2D)
     add_subdirectory(Engine/Modules/Animation)
     add_subdirectory(Engine/ECSModules/Components)
     add_subdirectory(Engine/Modules/ECS)
     add_subdirectory(Engine/Modules/Platform)
     add_subdirectory(Engine/Modules/FileSystem)
     add_subdirectory(Engine/Modules/FileWatcher)
+    add_subdirectory(Engine/Modules/TileMapECS)
     add_subdirectory(Engine/Modules/Scheduler)
     add_subdirectory(Engine/Modules/NumericExpression)
     add_subdirectory(Engine/Modules/AssetDatabase)
@@ -1133,6 +1050,7 @@ if(EMSCRIPTEN)
     add_subdirectory(Engine/Modules/Physics)
     add_subdirectory(Engine/Modules/PhysicsECS)
     add_subdirectory(Engine/Modules/Pathfinding)
+    add_subdirectory(Engine/Modules/Localization)
     add_subdirectory(Engine/Modules/Text)
     add_subdirectory(Engine/Modules/Rendering)
     add_subdirectory(Engine/Modules/Graph)
@@ -1162,17 +1080,17 @@ if(EMSCRIPTEN)
     add_subdirectory(Engine/Modules/SplineGeometry)
     add_subdirectory(Engine/Modules/SplineLayout)
     add_subdirectory(Engine/Modules/SplineECS)
-    add_subdirectory(Engine/Modules/SplineRecipes)
+    add_subdirectory(Engine/Modules/TileMap)
     add_subdirectory(Engine/Modules/MarkupECS)
     add_subdirectory(Engine/Modules/PathfindingECS)
-    add_subdirectory(Engine/Modules/MeshPicking)
     # This list must cover every entry of Engine/CMakeLists.txt's
     # GE_ENGINE_MODULES: Engine splices each one's objects in, so a module
     # added there but not added here fails at generate time with only
     # "no such target exists" to go on.
     add_subdirectory(Engine)
-    # Phase 7 (web Editor): the module the Editor splices as objects
+    # Phase 7 (web Editor): the two modules the Editor splices as objects
     # rather than reaching through Engine's link interface.
+    add_subdirectory(Engine/Modules/MeshPicking)
     add_subdirectory(Engine/Modules/VCSIntegration)
     # Apps consume the engine-package helpers (ge_add_engine_package_module,
     # ge_stage_packages); the desktop path includes this after its
@@ -1193,8 +1111,6 @@ add_subdirectory(Engine/Modules/GenerationalVector)  # Generational handle syste
 add_subdirectory(Engine/Modules/Types)
 # Event: header-only multicast event with self-detaching handles (Events/Event.h)
 add_subdirectory(Engine/Modules/Events)
-# SceneLoadTracker: the work a scene's first frame needs, reported by the owners of that work
-add_subdirectory(Engine/Modules/SceneLoadTracker)
 # Native plugin lifecycle API used by Engine and Editor extension modules.
 add_subdirectory(Engine/Modules/PluginAPI)
 # AssetCore depends on Logger + Types
@@ -1205,10 +1121,9 @@ add_subdirectory(Engine/Modules/JobSystem)     # Task execution and dependency m
 # Mathematics: shared math primitives (e.g., Ray3D) for Engine + Editor + runtime
 add_subdirectory(Engine/Modules/Mathematics)
 add_subdirectory(Engine/Modules/Serialization)
+add_subdirectory(Engine/Modules/Sprite2D)      # Sprite frame assets and 2D playback
 # Noise depends on Types: shared CPU noise primitives for terrain and any other sampler
 add_subdirectory(Engine/Modules/Noise)
-# Image depends on Logger: the one CPU image decode, resample and encode (owns stb)
-add_subdirectory(Engine/Modules/Image)
 add_subdirectory(Engine/Modules/Animation)     # Animation pose, graph nodes, retargeting primitives
 
 # ECSModules/Components: shared ECS/authoring component headers
@@ -1247,8 +1162,8 @@ add_subdirectory(Engine/Modules/PhysicsECS)
 add_subdirectory(Engine/Modules/Pathfinding)
 add_subdirectory(Engine/Modules/PathfindingECS)
 
-# CPU mesh picking primitives (BVH, ray-triangle). The scene raycast over them
-# (asset lookup, terrain raymarch, scene walk) is Engine/Source/Scene/SceneRaycast.cpp.
+# CPU mesh picking primitives (BVH, ray-triangle). Editor-side glue (asset
+# lookup, terrain raymarch, scene walk) lives in Apps/Editor/Source/Picking.
 add_subdirectory(Engine/Modules/MeshPicking)
 
 # Scene-level CPU spatial index (TLAS over per-entity AABBs). Shared by
@@ -1273,7 +1188,7 @@ add_subdirectory(Engine/Modules/Spline)
 add_subdirectory(Engine/Modules/SplineGeometry)
 add_subdirectory(Engine/Modules/SplineLayout)
 add_subdirectory(Engine/Modules/SplineECS)
-add_subdirectory(Engine/Modules/SplineRecipes)
+add_subdirectory(Engine/Modules/TileMap)
 add_subdirectory(Engine/Modules/MarkupECS)
 
 # Rendering post-process modules
@@ -1289,6 +1204,7 @@ include(cmake/Packages.cmake)
 
 add_subdirectory(Engine)
 # Always build Rendering; gate only UI and Editor
+add_subdirectory(Engine/Modules/Localization)
 add_subdirectory(Engine/Modules/Text) # Text stack (FreeType/HarfBuzz/SDF)
 
 add_subdirectory(Engine/Modules/Rendering) # Modern GPU-driven rendering library
@@ -1297,6 +1213,7 @@ add_subdirectory(Engine/Modules/Rendering) # Modern GPU-driven rendering library
 # establishes. Standalone in C1 (module + kernels + tests); Engine/ECS wiring is C2.
 add_subdirectory(Engine/Modules/CBTTerrain)
 add_subdirectory(Engine/Modules/CBTTerrainECS) # CBT terrain Engine integration (feature/node/ECS, C3)
+add_subdirectory(Engine/Modules/TileMapECS)
 add_subdirectory(Engine/Modules/Scheduler) # Reusable time-based scheduler module
 add_subdirectory(Engine/Modules/NumericExpression) # TinyExpr-backed math expression evaluation
 add_subdirectory(Engine/Modules/UI) # UI system module
@@ -1339,13 +1256,6 @@ if(BUILD_TESTING)
 endif()
 if(BUILD_TOOLS)
   add_subdirectory(Tools)
-elseif(TARGET Editor)
-  # The Editor's desktop export runs MaterialVariantCook (BuildPipeline::CookMaterialVariants), so the
-  # Editor builds it whatever BUILD_TOOLS says, staged into bin/<config>/Tools beside ShaderReflect.
-  add_subdirectory(Tools/MaterialVariantCook)
-endif()
-if(TARGET Editor)
-  add_dependencies(Editor MaterialVariantCook)
 endif()
 if(ENABLE_SCRIPTING)
   # Convenience target to build only scripting-related artifacts
@@ -1441,7 +1351,7 @@ if(BUILD_TESTING)
     endif()
 endif()
 
-# The AI Assistant runs the MCP server staged beside the editor executable. Called
+# The AI Assistant runs the MCP server from the editor's staged content root. Called
 # here, in the directory that defines McpServer, once the Editor target exists.
 if(TARGET Editor)
     ge_stage_mcp_server_beside(Editor)
@@ -1465,23 +1375,6 @@ if(BUILD_TESTING)
     endif()
 endif()
 
-# The agent-facing instruments answer with summaries: take_screenshot's record line
-# with no inline image unless asked, get_log forwarding its cursor and pattern, the
-# gtest and build-log summaries, and the guidance in the tool descriptions and the CLI
-# overview. Fake editor, no editor binary; the first run may build mcp/dist, hence the
-# McpEditorEndpointReport budget.
-if(BUILD_TESTING)
-    find_program(GE_NODE_EXECUTABLE NAMES node node.exe)
-    if(GE_NODE_EXECUTABLE)
-        add_test(NAME McpInstrumentSummaries
-            COMMAND ${GE_NODE_EXECUTABLE}
-                    ${CMAKE_SOURCE_DIR}/Tests/Mcp/instrument-summaries-check.mjs)
-        set_tests_properties(McpInstrumentSummaries PROPERTIES TIMEOUT 600 LABELS "Editor")
-    else()
-        message(STATUS "node not found - McpInstrumentSummaries test not registered")
-    endif()
-endif()
-
 # rgp_capture vendor gate: the Radeon GPU Profiler flow is UNVERIFIED on AMD —
 # written on an NVIDIA machine — so the behaviour that must not rot is the gate
 # refusing on non-AMD hardware while naming what it actually found, and the
@@ -1498,6 +1391,38 @@ if(BUILD_TESTING)
         set_tests_properties(McpRgpCaptureGate PROPERTIES TIMEOUT 600 LABELS "Editor")
     else()
         message(STATUS "node not found - McpRgpCaptureGate test not registered")
+    endif()
+endif()
+
+# Timing-lock gate: build_engine, run_tests, launch_editor and editor_full_cycle
+# refuse to start while the AB-LOCK file holds a timing measurement, and run when
+# it is absent, not a timing lock, expired or held by the caller (AB_LOCK_HOLDER).
+# Drives the CLI against an empty repository root and a lock file of its own, so
+# nothing is built or launched. Same 600s budget rationale as
+# McpEditorEndpointReport: the first run may build mcp/dist.
+if(BUILD_TESTING)
+    find_program(GE_NODE_EXECUTABLE NAMES node node.exe)
+    if(GE_NODE_EXECUTABLE)
+        add_test(NAME McpTimingLockGate
+            COMMAND ${GE_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/Tests/Mcp/timing-lock-check.mjs)
+        set_tests_properties(McpTimingLockGate PROPERTIES TIMEOUT 600 LABELS "Editor")
+    else()
+        message(STATUS "node not found - McpTimingLockGate test not registered")
+    endif()
+endif()
+
+# Optional workflow-command gate. The harness uses an empty repository root,
+# so no editor can be launched and no engine build can run.
+if(BUILD_TESTING)
+    find_program(GE_NODE_EXECUTABLE NAMES node node.exe)
+    if(GE_NODE_EXECUTABLE)
+        add_test(NAME McpToolGate
+            COMMAND ${GE_NODE_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/Tests/Mcp/tool-gate-check.mjs)
+        set_tests_properties(McpToolGate PROPERTIES TIMEOUT 600 LABELS "Editor")
+    else()
+        message(STATUS "node not found - McpToolGate test not registered")
     endif()
 endif()
 

@@ -1,3 +1,0 @@
-[scene name="Main" version=1]
-[resource id="bp" path="Blueprints/empty.prefab"]
-[prefab id="inst" source="bp"]

@@ -20,7 +20,7 @@
 #include "UndoRedo/DeleteEntitiesCommand.h"
 #include "UndoRedo/UndoRedoService.h"
 #include "VersionControl/EditorVersionControlService.h"
-#include "VersionControl/SceneDiff/SceneDiffLiveOverlay.h"
+#include "VersionControl/SceneDiffLiveOverlay.h"
 
 #include <algorithm>
 #include <cstring>
@@ -141,8 +141,8 @@ ECS::EntityHandle EffectiveParent(ECS::World& world, ECS::EntityHandle entity)
     if (!entity.IsValid() || !world.IsValid(entity))
         return {};
     if (auto* parent = world.GetComponent<Components::Parent>(entity);
-        parent && parent->Entity.IsValid() && world.IsValid(parent->Entity))
-        return parent->Entity;
+        parent && parent->parent.IsValid() && world.IsValid(parent->parent))
+        return parent->parent;
     return {};
 }
 
@@ -185,16 +185,6 @@ std::vector<std::pair<std::string_view, std::string_view>> PropertyViews(
     const ComponentBaseline& component)
 {
     return {component.Properties.begin(), component.Properties.end()};
-}
-
-// A baseline line naming a field the component does not have is left out of the revert, as a scene
-// load leaves it out, and the rest of the entity reverts. Logs each one and empties the list.
-void LogSkippedBaselineFields(const std::string& component, std::vector<std::string>& unknownFields)
-{
-    for (const std::string& field : unknownFields)
-        Logger::Log::Warning("Hierarchy scene diff: the revert skips a line of the committed version: {}",
-                             Scene::UnknownFieldMessage(component, field));
-    unknownFields.clear();
 }
 } // namespace
 
@@ -394,7 +384,7 @@ void HierarchyVcsController::DecorateRow(ECS::EntityHandle entity, UIElement& ro
         row.RemoveClass("has-vcs-diff");
         if (diffDot)
         {
-            diffDot->Style().Set(Style::Display, DisplayMode::None);
+            diffDot->Overrides().Set(Style::Display, DisplayMode::None);
             diffDot->SetTooltip("");
         }
         return;
@@ -441,7 +431,7 @@ void HierarchyVcsController::DecorateRow(ECS::EntityHandle entity, UIElement& ro
     if (!hasDiff && !hasDescendantDiff)
     {
         row.RemoveClass("has-vcs-diff");
-        diffDot->Style().Set(Style::Display, DisplayMode::None);
+        diffDot->Overrides().Set(Style::Display, DisplayMode::None);
         diffDot->SetTooltip("");
         return;
     }
@@ -458,7 +448,7 @@ void HierarchyVcsController::DecorateRow(ECS::EntityHandle entity, UIElement& ro
         diffDot->AddClass(cssClass);
     if (!hasDiff)
         diffDot->AddClass("hierarchy-vcs-diff-descendant");
-    diffDot->Style()
+    diffDot->Overrides()
         .Set(Style::BackgroundTint,
              hasDiff ? SceneDiffStateColorArgb(state) : kDescendantOnlyDotColor)
         .Set(Style::Display, DisplayMode::Flex);
@@ -682,10 +672,8 @@ void HierarchyVcsController::RevertEntityToBaseline(
                     property.OriginalValue);
         }
 
-        std::vector<std::string> unknownFields;
-        Scene::SceneReadContext loadContext{};
+        Scene::SceneLoadContext loadContext{};
         loadContext.TargetWorld = &world;
-        loadContext.UnknownFields = &unknownFields;
         for (const ComponentBaseline& component : components)
         {
             const Scene::ISceneComponentSchema* schema =
@@ -717,7 +705,6 @@ void HierarchyVcsController::RevertEntityToBaseline(
                 applied = false;
                 break;
             }
-            LogSkippedBaselineFields(component.Name, unknownFields);
         }
     }
 
@@ -741,7 +728,7 @@ void HierarchyVcsController::RevertEntityToBaseline(
         else if (auto* parent =
                      world.GetComponentForWrite<Components::Parent>(entity))
         {
-            parent->Entity = baselineParent;
+            parent->parent = baselineParent;
         }
         else
         {
@@ -845,10 +832,8 @@ void HierarchyVcsController::RestoreGhostEntity(TreeId id)
                 property.OriginalValue);
         }
 
-        std::vector<std::string> unknownFields;
-        Scene::SceneReadContext loadContext{};
+        Scene::SceneLoadContext loadContext{};
         loadContext.TargetWorld = &world;
-        loadContext.UnknownFields = &unknownFields;
         for (const ComponentBaseline& component : components)
         {
             const Scene::ISceneComponentSchema* schema =
@@ -869,7 +854,6 @@ void HierarchyVcsController::RestoreGhostEntity(TreeId id)
                 applied = false;
                 break;
             }
-            LogSkippedBaselineFields(component.Name, unknownFields);
         }
     }
 
@@ -1039,7 +1023,7 @@ void HierarchyVcsController::DecorateGhostRow(TreeId id, UIElement& row)
     dot->RemoveClass("hierarchy-vcs-diff-modified");
     dot->RemoveClass("hierarchy-vcs-diff-descendant");
     dot->AddClass("hierarchy-vcs-diff-removed");
-    dot->Style()
+    dot->Overrides()
         .Set(Style::BackgroundTint, SceneDiffStateColorArgb(SceneDiffState::Removed))
         .Set(Style::Display, DisplayMode::Flex);
 

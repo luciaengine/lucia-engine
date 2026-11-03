@@ -3,8 +3,6 @@
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/MaterialPropertyBinding.h"
 
-#include "../Materials/UniformNameUtils.h"
-
 #include <cctype>
 
 namespace GameEngine::ShaderGraph
@@ -131,15 +129,33 @@ bool IsPreservedBuiltInMaterialKey(const std::string& key)
            key == "emissionLuminance" || key == "ao" || key == "opacity";
 }
 
+std::string PrettyPropertyKeyLabel(const std::string& key)
+{
+    if (key == "ao")
+        return "AO";
+    std::string out;
+    for (size_t i = 0; i < key.size(); ++i)
+    {
+        const unsigned char c = static_cast<unsigned char>(key[i]);
+        if (i == 0)
+            out.push_back(static_cast<char>(std::toupper(c)));
+        else if (std::isupper(c))
+        {
+            out.push_back(' ');
+            out.push_back(static_cast<char>(c));
+        }
+        else
+            out.push_back(static_cast<char>(c));
+    }
+    return out;
+}
+
 } // namespace
 
 std::string PrettyGraphPropertyLabel(std::string_view graphPropertyName)
 {
     using namespace GameEngine::Rendering::MaterialPropertyBinding;
-    // The "s" of a leading "sRGB" is part of the name, not a sampler prefix: "sRGBTint" reads "sRGB Tint".
-    if (graphPropertyName.starts_with("sRGB"))
-        return PropertyKeyLabel(graphPropertyName);
-    return PropertyKeyLabel(StripUniformPrefix(graphPropertyName));
+    return PrettyPropertyKeyLabel(SuggestPropertyKeyForUniform(graphPropertyName));
 }
 
 bool UsesDedicatedShaderGraphInspectorRow(const SgPublicPropertyBinding& binding,

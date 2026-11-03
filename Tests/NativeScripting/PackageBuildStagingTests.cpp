@@ -17,7 +17,7 @@
 #include "NativeScripting/NativeScriptManager.h"
 #include "NativeScripting/PrebuiltModuleBinaries.h"
 #include "NativeScripting/ToolchainFingerprint.h"
-#include "StampedBinary.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -104,9 +104,8 @@ struct StagingFixture
 
     explicit StagingFixture(const char* name)
     {
-        Root = fs::temp_directory_path() / name;
+        Root = TestUtils::MakeUniqueTempDirectory(name);
         std::error_code ec;
-        fs::remove_all(Root, ec);
         ContentRoot = Root / "staged-game";
         fs::create_directories(ContentRoot, ec);
     }
@@ -392,8 +391,7 @@ TEST(PackageBuildStaging, ModuleAbiDigestIncludesPackageDefines)
 
     ns::NativeBuildConfig baseCfg;
     baseCfg.Config = "Debug";
-    GameEngine::NativeScripting::Testing::WriteStampedBinary(fx.Root / "Engine.bin", 0);
-    baseCfg.EngineBinary = fx.Root / "Engine.bin";
+    baseCfg.EngineImportLib = fx.Root / "Engine.lib"; // absent file hashes deterministically
     const std::string manifestOnlyDigest = ns::ComputeEngineAbiDigest(baseCfg);
 
     PackageCodeModule module = MakeModule(package, PackageModuleRecord::ModuleLang::Cpp, "OceanPack");

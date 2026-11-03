@@ -255,23 +255,6 @@ void InterceptableContextMenu::SetItemIcon(uint32_t commandId, const std::string
     }
 }
 
-void InterceptableContextMenu::SetItemShortcut(uint32_t commandId, const std::string& keyText)
-{
-    m_Inner->SetItemShortcut(commandId, keyText);
-    if (commandId == 0)
-        return;
-    for (ShadowItem& item : m_Items)
-    {
-        if (item.CommandId == commandId)
-            item.Shortcut = keyText;
-    }
-}
-
-void InterceptableContextMenu::SetItemTooltip(uint32_t commandId, const std::string& text)
-{
-    m_Inner->SetItemTooltip(commandId, text);
-}
-
 // Zero is AddSubMenu's failure return, and every leaf and separator carries SubMenuId
 // 0 — stamping it would put the icon on all of them.
 void InterceptableContextMenu::SetSubMenuIcon(uint32_t submenuId, const std::string& imagePath)
@@ -357,7 +340,6 @@ void InterceptableContextMenu::Show(Platform::Window* window, int x, int y)
             }
             item.Icon = shadow.IconPath;
             item.Color = shadow.ColorHex;
-            item.Shortcut = shadow.Shortcut;
             capture.Items.push_back(std::move(item));
         }
         capture.Invoke = m_CommandHandler;

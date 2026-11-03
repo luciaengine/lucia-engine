@@ -107,9 +107,7 @@ TEST(TextureAlphaCoverage, MetadataIsStrictTransactionalAndDisabledCutoffIsInert
         ASSERT_TRUE(ParseTextureAlphaCoverageMeta("1", TextureAlphaCutoffMetaValue(cutoff), settings, error));
         EXPECT_EQ(settings.AlphaCoverageCutoff, cutoff);
         if (cutoff == 0.0f)
-        {
             EXPECT_FALSE(std::signbit(settings.AlphaCoverageCutoff));
-        }
     }
     ASSERT_TRUE(ParseTextureAlphaCoverageMeta("0", "nan", settings, error));
     EXPECT_FALSE(settings.PreserveAlphaCoverage);
@@ -179,19 +177,13 @@ TEST(TextureAlphaCoverage, EveryMipReachesNearestAttainableCoverageWithoutChangi
                     EXPECT_EQ(after.Height, before.Height);
                     for (size_t i = 0; i < after.Bytes.size(); ++i)
                         if (i % 4 != 3)
-                        {
                             EXPECT_EQ(after.Bytes[i], before.Bytes[i]);
-                        }
                     for (size_t i = 3; i < after.Bytes.size(); i += 4)
                         if (before.Bytes[i] == 0)
-                        {
                             EXPECT_EQ(after.Bytes[i], 0);
-                        }
                     if (level)
-                    {
                         EXPECT_EQ(CoverageError(PassingTexels(after, cutoff), after.Bytes.size() / 4, reference, referencePixels),
                                   MinimumAttainableError(before, cutoff, reference, referencePixels));
-                    }
                 }
             }
 }
@@ -268,19 +260,19 @@ TEST(TextureAlphaCoverage, DisabledBytesAndKeysAreIdenticalAndActiveCutoffRekeys
               ComputeTextureCookConfigHash(disabled, TextureCookOutput::Uncompressed));
     std::vector<uint8> legacy, inert, active, changed;
     std::string error;
-    ASSERT_TRUE(CookTexture(source.data(), source.size(), "fixture.tga", ".tga", normal, TextureCookOutput::Uncompressed, legacy, error)) << error;
-    ASSERT_TRUE(CookTexture(source.data(), source.size(), "fixture.tga", ".tga", disabled, TextureCookOutput::Uncompressed, inert, error)) << error;
+    ASSERT_TRUE(CookTexture(source.data(), source.size(), ".tga", normal, TextureCookOutput::Uncompressed, legacy, error)) << error;
+    ASSERT_TRUE(CookTexture(source.data(), source.size(), ".tga", disabled, TextureCookOutput::Uncompressed, inert, error)) << error;
     EXPECT_EQ(inert, legacy);
     auto enabled = normal;
     enabled.Settings.PreserveAlphaCoverage = true;
-    ASSERT_TRUE(CookTexture(source.data(), source.size(), "fixture.tga", ".tga", enabled, TextureCookOutput::Uncompressed, active, error)) << error;
+    ASSERT_TRUE(CookTexture(source.data(), source.size(), ".tga", enabled, TextureCookOutput::Uncompressed, active, error)) << error;
     EXPECT_NE(active, legacy);
     const auto enabledHash = ComputeTextureCookConfigHash(enabled, TextureCookOutput::Uncompressed);
     EXPECT_NE(enabledHash, ComputeTextureCookConfigHash(normal, TextureCookOutput::Uncompressed));
     enabled.Settings.AlphaCoverageCutoff = std::nextafter(0.5f, 1.0f);
     EXPECT_NE(enabledHash, ComputeTextureCookConfigHash(enabled, TextureCookOutput::Uncompressed));
     enabled.Settings.AlphaCoverageCutoff = 0.9f;
-    ASSERT_TRUE(CookTexture(source.data(), source.size(), "fixture.tga", ".tga", enabled, TextureCookOutput::Uncompressed, changed, error)) << error;
+    ASSERT_TRUE(CookTexture(source.data(), source.size(), ".tga", enabled, TextureCookOutput::Uncompressed, changed, error)) << error;
     EXPECT_NE(changed, active);
     auto edited = source;
     edited.back() = 77;
@@ -309,7 +301,7 @@ TEST(TextureAlphaCoverage, CookedKtxMatchesSharedBuilderAfterSwizzleAtEveryLevel
     ASSERT_TRUE(BuildTextureCookMipChain(expected, ComputeTextureCookMipCount(31, 17, inputs.Settings), false, true, inputs.Settings));
     std::vector<uint8> ktx;
     std::string error;
-    ASSERT_TRUE(CookTexture(source.data(), source.size(), "fixture.tga", ".tga", inputs, TextureCookOutput::Uncompressed, ktx, error)) << error;
+    ASSERT_TRUE(CookTexture(source.data(), source.size(), ".tga", inputs, TextureCookOutput::Uncompressed, ktx, error)) << error;
     TextureAsset cooked(GUID::Generate(), "coverage.ktx2");
     ASSERT_TRUE(cooked.LoadFromData(Vector<uint8>(ktx.begin(), ktx.end())));
     const auto& actual = cooked.GetMipChain();

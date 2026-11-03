@@ -1,24 +1,17 @@
 #include "ECS/World.h"
-#include "ECS/Archetype/ArchetypeMatchCache.h"
-#include "ECS/Component/ComponentFactory.h"
-#include "ECS/Component/ComponentRegistry.h"
-#include "ECS/Component/ComponentMigration.h"
+#include "ECS/ComponentRegistry.h"
+#include "ECS/ComponentMigration.h"
 #include "ECS/Components.h"
 #include "ECS/Entity.h"
-#include "ECS/ClonePlan.h"
-#include "ECS/EntityRemap.h"
 #include "ECS/Query.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
 #include "ECS/UnresolvedComponentStore.h"
 #include "Logger/Logger.h"
 #include "Types/GeometricReserve.h"
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <cassert>
 #include <cstring>
 #include <mutex>
-#include <sstream>
 #include <stdexcept>
 #include <typeindex>
 #include <unordered_map>
@@ -72,8 +65,11 @@ struct RemovalScope
 };
 } // namespace
 
-// ComponentTypeId is a consteval Hash64 of the normalized type name (ECS/Component/ComponentTypeName.h).
-// A runtime-keyed blob component gets its ID from Hash64(name) in ComponentRegistry.
+// Phase 1b: ComponentTypeId is a consteval Hash64 of the normalized type name
+// (see ECS/ComponentTypeName.h). The runtime allocator that used to live here —
+// ComponentTypeIdState with its type_index map, name map, atomic next-id, mutex,
+// and cross-module redirect pointer — is deleted. Runtime-keyed blob components
+// derive their ID via Hash64(name) in ComponentRegistry directly.
 
 thread_local World::ThreadLocalBuffers World::tlBuffers;
 
@@ -117,27 +113,16 @@ EntityLocation Archetype::AddEntityUnsafe(EntityHandle entity)
         return {};
     }
     EntityLocation loc = m_Table->AddEntity(entity);
-    // Every row enters a chunk through this Append or the run in AddEntitiesUnsafe.
-    // This stamp makes new and moved rows visible to gated consumers. Stamps start
-    // at zero ("never changed"), so correctness depends on this stamp, not on zero-init.
+    // Change signaling: every row enters a chunk through this Append, so the
+    // structural stamp here is what makes new/moved rows visible to gated
+    // consumers — the whole creation/clone family (CreateHandle, CreateBatch*,
+    // CloneEntity, CreateFromSignature/Bundle, MoveEntity destination, the
+    // add-or-set structural branch) funnels through it (design C7: stamps
+    // start at zero = "never changed"; correctness depends on this stamp,
+    // never on zero-init).
     if (world)
         m_Table->StampAllColumnVersions(loc.ChunkIndex, world->NextGlobalSystemVersion());
     return loc;
-}
-
-RowRun Archetype::AddEntitiesUnsafe(std::span<const EntityHandle> entities)
-{
-    // No lock — caller must hold worldMutex.
-    if (!m_Table) [[unlikely]]
-    {
-        Logger::Log::Error("[ECS] Archetype::AddEntitiesUnsafe called without table");
-        return {};
-    }
-    const RowRun run = m_Table->AddEntities(entities);
-    // One stamp for the run: its rows are one structural write (see AddEntityUnsafe).
-    if (world)
-        m_Table->StampAllColumnVersions(run.ChunkIndex, world->NextGlobalSystemVersion());
-    return run;
 }
 
 EntityHandle Archetype::RemoveEntityUnsafe(EntityLocation loc)
@@ -163,7 +148,7 @@ EntityHandle Archetype::RemoveEntityUnsafe(EntityLocation loc)
     return moved;
 }
 
-void Archetype::InitializeTable(const std::unordered_map<ComponentTypeId, std::size_t>& /*componentSizes*/)
+void Archetype::InitializeTable()
 {
     // Build the colocated ArchetypeTable from the registered component sizes. Uses the shared
     // BuildSortedComponentMetas so the column sizing/alignment rule has a single definition (the
@@ -218,10 +203,7 @@ World::World(JobSystem::WorkStealingThreadPool* js)
 }
 
 World::World(const WorldConfig& cfg, JobSystem::WorkStealingThreadPool* js)
-    : m_WorldId(g_nextWorldId.fetch_add(1u, std::memory_order_relaxed))
-    , m_ArchetypeMatches(std::make_unique<ArchetypeMatchCache>())
-    , jobSystem(js)
-    , config(cfg)
+    : m_WorldId(g_nextWorldId.fetch_add(1u, std::memory_order_relaxed)), jobSystem(js), config(cfg)
 {
     entityMetadata.reserve(config.ExpectedEntityCount);
 
@@ -272,17 +254,6 @@ World::~World()
     structuralChangeVersion.fetch_add(1, std::memory_order_relaxed);
     ++m_WorldGeneration;
     bulkOperationMode = false;
-}
-
-std::optional<uint64> World::FindLiveEntityHandleEpoch(uint64 worldId)
-{
-    std::lock_guard<std::mutex> lock(LiveWorldsMutex());
-    for (const World* world : LiveWorlds())
-    {
-        if (world->m_WorldId == worldId)
-            return world->m_EntityHandleEpoch;
-    }
-    return std::nullopt;
 }
 
 UnresolvedComponentStore& World::GetUnresolvedComponents()
@@ -430,7 +401,7 @@ void World::InvokeRemoveHooksForEntity(Archetype* archetype, EntityLocation loc,
         {
             try
             {
-                hookIt->second.Invoke(*this, entity, ptr, hookIt->second.UserData);
+                hookIt->second.Invoke(entity, ptr, hookIt->second.UserData);
             }
             catch (const std::exception& e)
             {
@@ -481,7 +452,7 @@ void World::InvokeAllRemoveHooks()
                 {
                     try
                     {
-                        hookIt->second.Invoke(*this, handles[i], bytePtr + i * hookIt->second.ComponentSize,
+                        hookIt->second.Invoke(handles[i], bytePtr + i * hookIt->second.ComponentSize,
                                               hookIt->second.UserData);
                     }
                     catch (const std::exception& e)
@@ -555,7 +526,6 @@ EntityHandle World::CreateEntity()
         {
             index = freeIndices.back();
             freeIndices.pop_back();
-            entityMetadata[index].onFreeList = false;
         }
         else
         {
@@ -564,7 +534,7 @@ EntityHandle World::CreateEntity()
         }
 
         auto& metadata = entityMetadata[index];
-        metadata.version = NextIssuedVersion(index);
+        metadata.version++;
         metadata.alive = true;
         metadata.archetype = nullptr;
         metadata.SetLocation(0, 0);
@@ -576,14 +546,6 @@ EntityHandle World::CreateEntity()
     return EntityHandle(index, version);
 }
 
-EntityVersion World::NextIssuedVersion(EntityIndex index) const
-{
-    EntityVersion issued = entityMetadata[index].version;
-    if (index < m_IssuedVersionFloor.size())
-        issued = std::max(issued, m_IssuedVersionFloor[index]);
-    return static_cast<EntityVersion>(issued + 1u);
-}
-
 EntityHandle World::CreateEntityUnsafe()
 {
     // This method assumes worldMutex is already held by the caller
@@ -593,7 +555,6 @@ EntityHandle World::CreateEntityUnsafe()
     {
         index = freeIndices.back();
         freeIndices.pop_back();
-        entityMetadata[index].onFreeList = false;
     }
     else
     {
@@ -602,7 +563,7 @@ EntityHandle World::CreateEntityUnsafe()
     }
 
     auto& metadata = entityMetadata[index];
-    metadata.version = NextIssuedVersion(index);
+    metadata.version++;
     metadata.alive = true;
     metadata.archetype = nullptr;
     metadata.SetLocation(0, 0);
@@ -688,7 +649,6 @@ void World::DestroyPreparedEntityInternal(EntityHandle entity, bool preserveHand
     else
     {
         freeIndices.push_back(entity.index);
-        metadata.onFreeList = true;
 
         // The scene loader's preserved overrides describe components this entity no longer has, and
         // the handle is going back into circulation. Only on this path: the preserve-handle destroy
@@ -783,21 +743,6 @@ bool World::ReviveEntityImmediatePreserveHandle(EntityHandle entity)
     {
         return true; // idempotent
     }
-    // Within one run of handles the slot's version names this entity alone, so a slot that a
-    // restore or a destroy put back on the free list is this entity's again. The editor's
-    // delete never frees the slot, so its undo skips the search. The erase keeps the order of
-    // the other free indices, which a snapshot records and a restore brings back.
-    if (metadata.onFreeList)
-    {
-        const auto freed = std::find(freeIndices.begin(), freeIndices.end(), entity.index);
-        assert(freed != freeIndices.end() && "a slot marked as on the free list is not on it");
-        if (freed != freeIndices.end())
-            freeIndices.erase(freed);
-        else
-            Logger::Log::Error("[ECS] Revive of entity {}: its slot is marked as on the free list but is not on it",
-                               entity.id);
-        metadata.onFreeList = false;
-    }
 
     metadata.alive = true;
     metadata.archetype = nullptr;
@@ -827,12 +772,11 @@ Archetype* World::GetOrCreateArchetype(const ComponentSignature& signature)
     }
 
     auto archetype = std::make_unique<Archetype>(signature, this);
-    archetype->InitializeTable(componentSizes);
+    archetype->InitializeTable();
 
-    Archetype* created = archetype.get();
+    auto* ptr = archetype.get();
     archetypes[signature] = std::move(archetype);
-    m_ArchetypeMatches->AddArchetype(created);
-    return created;
+    return ptr;
 }
 
 Archetype* World::GetOrCreateArchetypeForAdd(Archetype* source, ComponentTypeId typeId)
@@ -840,10 +784,8 @@ Archetype* World::GetOrCreateArchetypeForAdd(Archetype* source, ComponentTypeId 
     if (Archetype* cached = source->GetAddEdge(typeId))
         return cached;
 
-    ComponentSignature direct = source->GetSignature();
-    direct.Add(typeId);
-    ComponentSignature newSig = direct;
-    AddRequiredClosure(newSig);
+    ComponentSignature newSig = source->GetSignature();
+    newSig.Add(typeId);
     Archetype* target = GetOrCreateArchetype(newSig);
 
     // No-op (source already had typeId, e.g. Add when present): don't cache a
@@ -854,133 +796,10 @@ Archetype* World::GetOrCreateArchetypeForAdd(Archetype* source, ComponentTypeId 
     if (target != source)
     {
         source->SetAddEdge(typeId, target);
-        // Removing typeId from target leads back to source only when the add
-        // brought no requirement with it.
-        if (newSig == direct)
-            target->SetRemoveEdge(typeId, source);
+        target->SetRemoveEdge(typeId, source);
     }
 
     return target;
-}
-
-void World::AddRequiredClosure(ComponentSignature& signature)
-{
-    const auto requiresAny = [](ComponentTypeId id)
-    {
-        const ComponentRegistry::ComponentInfo* info = ComponentRegistry::GetComponentInfo(id);
-        return info && !info->Required.empty();
-    };
-    const auto& members = signature.GetComponents();
-    if (std::none_of(members.begin(), members.end(), requiresAny))
-        return;
-
-    std::vector<ComponentTypeId> pending = members;
-    while (!pending.empty())
-    {
-        const ComponentTypeId id = pending.back();
-        pending.pop_back();
-        const ComponentRegistry::ComponentInfo* info = ComponentRegistry::GetComponentInfo(id);
-        if (!info)
-            continue;
-        for (const ComponentTypeId required : info->Required)
-        {
-            if (signature.Contains(required))
-                continue;
-            const ComponentRegistry::ComponentInfo* requiredInfo = ComponentRegistry::GetComponentInfo(required);
-            assert(requiredInfo && !requiredInfo->RequirementDefault.empty() &&
-                   "A required component registers with its requirer (ComponentRegistry::RegisterRequirement)");
-            if (!requiredInfo)
-                continue;
-            signature.Add(required);
-            componentSizes.try_emplace(required, requiredInfo->Size);
-            pending.push_back(required);
-        }
-    }
-}
-
-void World::ResolveRequiredColumns(Archetype& archetype, const ComponentSignature& supplied,
-                                   std::vector<RequiredColumn>& out) const
-{
-    out.clear();
-    if (!archetype.HasTable() || archetype.GetSignature() == supplied)
-        return;
-    const ColumnLayout& layout = archetype.GetTable().GetLayout();
-    for (const ColumnDesc& column : layout.Columns)
-    {
-        if (supplied.Contains(column.TypeId))
-            continue;
-        const ComponentRegistry::ComponentInfo* info = ComponentRegistry::GetComponentInfo(column.TypeId);
-        assert(info && info->RequirementDefault.size() == column.Size &&
-               "An archetype column the caller did not supply must be a requirement with a recorded default");
-        if (!info || info->RequirementDefault.size() != column.Size)
-            continue;
-        out.push_back(RequiredColumn{column.Offset, info->RequirementDefault});
-    }
-}
-
-void World::WriteRequiredColumns(Archetype& archetype, EntityLocation loc,
-                                 std::span<const RequiredColumn> columns)
-{
-    if (columns.empty())
-        return;
-    std::byte* memory = archetype.GetTable().GetChunks()[loc.ChunkIndex].GetMemory();
-    for (const RequiredColumn& column : columns)
-    {
-        std::memcpy(memory + column.Offset + static_cast<std::size_t>(loc.IndexInChunk) * column.Default.size(),
-                    column.Default.data(), column.Default.size());
-    }
-}
-
-void World::WriteRequiredDefaultsAfterAdd(EntityHandle entity, const ComponentSignature& from,
-                                          Archetype& target, ComponentTypeId added)
-{
-    const EntityMetadata& metadata = entityMetadata[entity.index];
-    for (const ComponentTypeId id : target.GetSignature().GetComponents())
-    {
-        if (id == added || from.Contains(id))
-            continue;
-        const ComponentRegistry::ComponentInfo* info = ComponentRegistry::GetComponentInfo(id);
-        if (!info || info->RequirementDefault.empty())
-            continue;
-        target.SetComponentRawAt(metadata.chunkIndex, metadata.indexInChunk, id,
-                                 info->RequirementDefault.data(), info->RequirementDefault.size());
-    }
-}
-
-void World::SignalRequiredAdds(EntityHandle entity, const ComponentSignature& from,
-                               const ComponentSignature& to, ComponentTypeId added)
-{
-    for (const ComponentTypeId id : to.GetComponents())
-    {
-        if (id == added || from.Contains(id))
-            continue;
-        if (m_AddHookSignature.Contains(id) || m_SetHookSignature.Contains(id))
-        {
-            // Looked up per hook: a hook may create entities and move this
-            // entity's metadata.
-            const EntityMetadata& metadata = entityMetadata[entity.index];
-            if (void* ptr = metadata.archetype->GetComponentRawAt(metadata.chunkIndex, metadata.indexInChunk, id))
-            {
-                if (m_AddHookSignature.Contains(id))
-                    InvokeAddHook(id, entity, ptr);
-                if (m_SetHookSignature.Contains(id))
-                    InvokeSetHook(id, entity, ptr);
-            }
-        }
-        EmitComponentDirty(id, entity);
-        RecordComponentAdded(id, entity);
-    }
-}
-
-ComponentTypeId World::FindRequirerOf(const ComponentSignature& signature, ComponentTypeId typeId)
-{
-    for (const ComponentTypeId held : signature.GetComponents())
-    {
-        const ComponentRegistry::ComponentInfo* info = ComponentRegistry::GetComponentInfo(held);
-        if (info && std::find(info->Required.begin(), info->Required.end(), typeId) != info->Required.end())
-            return held;
-    }
-    return 0;
 }
 
 Archetype* World::GetOrCreateArchetypeForRemove(Archetype* source, ComponentTypeId typeId)
@@ -1000,13 +819,7 @@ Archetype* World::GetOrCreateArchetypeForRemove(Archetype* source, ComponentType
     if (target != source)
     {
         source->SetRemoveEdge(typeId, target);
-        // Adding typeId back leads to source only when source already holds
-        // everything typeId requires.
-        ComponentSignature readded = newSig;
-        readded.Add(typeId);
-        AddRequiredClosure(readded);
-        if (readded == source->GetSignature())
-            target->SetAddEdge(typeId, source);
+        target->SetAddEdge(typeId, source);
     }
 
     return target;
@@ -1170,7 +983,7 @@ bool World::SetComponentEnabledImmediate(EntityHandle entity, ComponentTypeId co
     if (disabledTag == 0 || !IsValid(entity))
         return false;
     // Idempotent, like Entity::SetEnabled<T>: a redundant call must not bump the
-    // structural version and invalidate every cache keyed on it.
+    // structural version and invalidate every query cache in the world.
     const bool disabled = HasComponent(entity, disabledTag);
     if (enabled != disabled)
         return false;
@@ -1239,7 +1052,7 @@ void World::InvokeActivityRemoveHooks(EntityHandle entity, Archetype* archetype,
         return;
     void* ptr = archetype->GetComponentRawAt(metadata.chunkIndex, metadata.indexInChunk, typeId);
     if (ptr)
-        hookIt->second.Invoke(*this, entity, ptr, hookIt->second.UserData);
+        hookIt->second.Invoke(entity, ptr, hookIt->second.UserData);
 }
 
 const std::vector<Archetype::CopyStep>& Archetype::GetOrBakeMovePlan(Archetype* target)
@@ -1382,6 +1195,10 @@ void World::ProcessCommands()
                 break;
             }
 
+            case Command::ADD_REQUIRED_COMPONENT:
+                if (HasComponent(cmd.entity, cmd.componentType))
+                    break;
+                [[fallthrough]];
             case Command::ADD_COMPONENT:
             {
                 auto* handler = ComponentRegistry::GetHandler(cmd.componentType);
@@ -1428,12 +1245,6 @@ void World::ProcessCommands()
 
             case Command::SET_ENTITY_ENABLED:
                 SetEntityEnabledImmediate(cmd.entity, cmd.entityEnabled);
-                break;
-
-            case Command::SET_COMPONENT_FROM_SCRIPT:
-                SetComponentBytesFromScriptImmediate(cmd.entity, cmd.componentType, cmd.componentData.Data(),
-                                                     cmd.componentData.Size(),
-                                                     ComponentFieldRegistry::GetScriptWriteRule(cmd.componentType).Ranges);
                 break;
             }
         }
@@ -1587,7 +1398,7 @@ bool World::AddOrSetComponentBytesInternal(EntityHandle entity,
 {
     // Caller must hold worldMutex exclusively. Single body behind typed
     // AddComponentImpl<T>, type-erased SetComponentBytesImmediate, and (via
-    // the component handlers) deferred ADD_COMPONENT/SET_COMPONENT
+    // the component handlers) deferred ADD_COMPONENT/ADD_REQUIRED_COMPONENT/SET_COMPONENT
     // playback.
     if (!IsValid(entity))
         return false;
@@ -1637,7 +1448,6 @@ bool World::AddOrSetComponentBytesInternal(EntityHandle entity,
     {
         ComponentSignature newSignature;
         newSignature.Add(typeId);
-        AddRequiredClosure(newSignature);
         target = GetOrCreateArchetype(newSignature);
     }
 
@@ -1655,20 +1465,12 @@ bool World::AddOrSetComponentBytesInternal(EntityHandle entity,
         }
     }
 
-    static const ComponentSignature kNoComponents;
-    const ComponentSignature& from = current ? current->GetSignature() : kNoComponents;
-    WriteRequiredDefaultsAfterAdd(entity, from, *target, typeId);
     target->SetComponentRawAt(metadata.chunkIndex, metadata.indexInChunk, typeId, data, sizeBytes);
-
-    // Requirements signal before the type that required them, every column
-    // already holding its value.
-    SignalRequiredAdds(entity, from, target->GetSignature(), typeId);
 
     // Invoke OnAdd and OnSet hooks
     if (m_AddHookSignature.Contains(typeId) || m_SetHookSignature.Contains(typeId))
     {
-        const EntityMetadata& location = entityMetadata[entity.index];
-        void* ptr = location.archetype->GetComponentRawAt(location.chunkIndex, location.indexInChunk, typeId);
+        void* ptr = target->GetComponentRawAt(metadata.chunkIndex, metadata.indexInChunk, typeId);
         if (ptr)
         {
             if (m_AddHookSignature.Contains(typeId))
@@ -1716,66 +1518,6 @@ bool World::SetComponentBytesImmediate(EntityHandle entity,
     return AddOrSetComponentBytesInternal(entity, typeId, data, sizeBytes);
 }
 
-bool World::SetComponentBytesFromScriptImmediate(EntityHandle entity,
-                                                 ComponentTypeId typeId,
-                                                 const void* data,
-                                                 std::size_t sizeBytes,
-                                                 std::span<const ScriptWritableRange> writable)
-{
-    if (!data && sizeBytes != 0)
-        return false;
-
-    auto* handler = ComponentRegistry::GetHandler(typeId);
-    if (!handler || handler->GetComponentSize() != sizeBytes)
-        return false;
-
-    CheckRemovalReentry();
-    std::unique_lock lock(worldMutex);
-    if (!IsValid(entity))
-        return false;
-
-    // Every byte writable (one run over the whole component, as Transform's): the script's bytes are the value.
-    if (writable.size() == 1 && writable.front().Begin == 0 && writable.front().End == sizeBytes)
-        return AddOrSetComponentBytesInternal(entity, typeId, data, sizeBytes);
-
-    // The merge target: the current value, or the defaults on an add. A component up to
-    // kStackMergeBytes merges on the stack; a larger one allocates.
-    constexpr std::size_t kStackMergeBytes = 512;
-    std::array<std::uint8_t, kStackMergeBytes> stackTarget;
-    std::vector<std::uint8_t> heapTarget;
-    std::uint8_t* merged = stackTarget.data();
-    if (sizeBytes > kStackMergeBytes)
-    {
-        heapTarget.resize(sizeBytes);
-        merged = heapTarget.data();
-    }
-    const EntityMetadata& metadata = entityMetadata[entity.index];
-    const Archetype* archetype = metadata.archetype;
-    const void* current = archetype && archetype->GetSignature().Contains(typeId)
-                              ? archetype->GetComponentRawAt(metadata.chunkIndex, metadata.indexInChunk, typeId)
-                              : nullptr;
-    if (current)
-    {
-        std::memcpy(merged, current, sizeBytes);
-    }
-    else
-    {
-        std::vector<std::uint8_t> defaults;
-        if (!ComponentFactory::GetDefaultBytes(typeId, defaults) || defaults.size() != sizeBytes)
-            return false; // an add with no registered defaults has no engine bytes to keep: refused, not filled from the script
-        std::memcpy(merged, defaults.data(), sizeBytes);
-    }
-
-    const auto* script = static_cast<const std::uint8_t*>(data);
-    for (const ScriptWritableRange& range : writable)
-    {
-        if (range.End > sizeBytes)
-            break;
-        std::memcpy(merged + range.Begin, script + range.Begin, range.End - range.Begin);
-    }
-    return AddOrSetComponentBytesInternal(entity, typeId, merged, sizeBytes);
-}
-
 World::RemoveComponentResult World::RemoveComponentInternal(EntityHandle entity, ComponentTypeId typeId)
 {
     // Caller must hold worldMutex exclusively. Single body behind typed
@@ -1791,19 +1533,6 @@ World::RemoveComponentResult World::RemoveComponentInternal(EntityHandle entity,
     if (!current->GetSignature().Contains(typeId))
         return RemoveComponentResult::ComponentAbsent;
 
-    // A requirement holds for as long as its requirer does: nothing puts a
-    // removed requirement back, and every consumer of the requirer relies on it.
-    if (const ComponentTypeId requirer = FindRequirerOf(current->GetSignature(), typeId); requirer != 0)
-    {
-        const ComponentRegistry::ComponentInfo* removedInfo = ComponentRegistry::GetComponentInfo(typeId);
-        const ComponentRegistry::ComponentInfo* requirerInfo = ComponentRegistry::GetComponentInfo(requirer);
-        Logger::Log::Error("[ECS] Cannot remove {} from entity {}: its {} requires it. Remove {} first.",
-                           removedInfo ? removedInfo->Name : std::to_string(typeId), entity.id,
-                           requirerInfo ? requirerInfo->Name : std::to_string(requirer),
-                           requirerInfo ? requirerInfo->Name : std::to_string(requirer));
-        return RemoveComponentResult::RequiredByAnother;
-    }
-
     // Invoke OnRemove hook for the specific component being removed —
     // before the data is destroyed (live T&).
     auto hookIt = m_OnRemoveHooks.find(typeId);
@@ -1812,7 +1541,7 @@ World::RemoveComponentResult World::RemoveComponentInternal(EntityHandle entity,
         void* ptr = current->GetComponentRawAt(metadata.chunkIndex, metadata.indexInChunk, typeId);
         if (ptr)
         {
-            hookIt->second.Invoke(*this, entity, ptr, hookIt->second.UserData);
+            hookIt->second.Invoke(entity, ptr, hookIt->second.UserData);
         }
     }
 
@@ -1980,9 +1709,8 @@ bool World::MigrateComponentLayout(const ComponentLayoutChange& change)
         }
     }
 
-    // Invalidate caches: baked move-plans hold stale column offsets; CachedQuery keys on the
-    // structural version and re-resolves its column offsets on a bump. Query resolves them on
-    // every iteration, and the archetype set it matches is unchanged.
+    // Invalidate caches: baked move-plans hold stale column offsets; query caches key on the
+    // structural version (they re-collect archetypes + re-resolve column offsets on a bump).
     for (auto& [sig, archPtr] : archetypes)
         if (archPtr)
             archPtr->m_MovePlans.clear();
@@ -2069,6 +1797,29 @@ std::vector<Archetype*> World::GetAllArchetypes() const
     return result;
 }
 
+namespace
+{
+// The enable-state half of the archetype match. The common shape — exclude by
+// default, nothing opted back in — is one Intersects against a signature the
+// query instantiation owns; the per-type opt-in walks the (tiny) exclude set
+// so an opted-in tag stops rejecting while entity activity still does.
+bool CarriesExcludedEnableStateTag(const ComponentSignature& signature,
+                                   const ArchetypeFilter& filter)
+{
+    if (filter.DisabledExclude == nullptr)
+        return false;
+    if (filter.DisabledInclude == nullptr)
+        return signature.Intersects(*filter.DisabledExclude);
+
+    for (ComponentTypeId id : filter.DisabledExclude->GetComponents())
+    {
+        if (signature.Contains(id) && !filter.DisabledInclude->Contains(id))
+            return true;
+    }
+    return false;
+}
+} // namespace
+
 void World::CollectMatchingArchetypes(const ArchetypeFilter& filter,
                                       std::vector<Archetype*>& out) const
 {
@@ -2078,23 +1829,21 @@ void World::CollectMatchingArchetypes(const ArchetypeFilter& filter,
 
     for (const auto& pair : archetypes)
     {
-        if (filter.Matches(pair.second->GetSignature()))
-            out.push_back(pair.second.get());
+        const ComponentSignature& signature = pair.second->GetSignature();
+        // Unpublished scene rows are not disabled gameplay: even maintenance
+        // queries including disabled objects must not consume partial schemas.
+        if (signature.Contains(GetComponentTypeId<PendingActivation>()))
+            continue;
+        if (filter.Required != nullptr && !signature.ContainsAll(*filter.Required))
+            continue;
+        if (filter.Include != nullptr && !signature.ContainsAll(*filter.Include))
+            continue;
+        if (filter.Exclude != nullptr && signature.Intersects(*filter.Exclude))
+            continue;
+        if (CarriesExcludedEnableStateTag(signature, filter))
+            continue;
+        out.push_back(pair.second.get());
     }
-}
-
-World::MatchedArchetypes World::MatchArchetypes(const ArchetypeFilter& filter)
-{
-    {
-        std::shared_lock lock(worldMutex);
-        if (const ArchetypeMatchList* list = m_ArchetypeMatches->Find(filter))
-            return {list, list->GetArchetypes(), structuralChangeVersion.load(std::memory_order_relaxed)};
-    }
-    std::unique_lock lock(worldMutex);
-    const ArchetypeMatchList* list = m_ArchetypeMatches->Find(filter);
-    if (list == nullptr)
-        list = &m_ArchetypeMatches->Add(filter);
-    return {list, list->GetArchetypes(), structuralChangeVersion.load(std::memory_order_relaxed)};
 }
 
 uint64 World::GetColumnStampCount() const
@@ -2152,14 +1901,11 @@ void World::Clear()
     InvokeAllRemoveHooks();
 
     archetypes.clear();
-    m_ArchetypeMatches->Clear();
     entityMetadata.clear();
     freeIndices.clear();
     entityCount.store(0);
     structuralChangeVersion.fetch_add(1);
     ++m_WorldGeneration; // Invalidate thread_local archetype caches in CreateHandle
-    m_EntityHandleEpoch = ++m_LastEntityHandleEpoch;
-    m_IssuedVersionFloor.clear();
     bulkOperationMode = false;
     m_Singletons.clear();
 
@@ -2216,7 +1962,6 @@ std::vector<EntityHandle> World::CreateBatchHandle(size_t count)
         {
             index = freeIndices.back();
             freeIndices.pop_back();
-            entityMetadata[index].onFreeList = false;
         }
         else
         {
@@ -2225,7 +1970,7 @@ std::vector<EntityHandle> World::CreateBatchHandle(size_t count)
         }
 
         auto& metadata = entityMetadata[index];
-        metadata.version = NextIssuedVersion(index);
+        metadata.version++;
         metadata.alive = true;
         metadata.archetype = nullptr;
         metadata.SetLocation(0, 0);
@@ -2309,7 +2054,6 @@ EntityHandle World::CreateDirect()
     {
         index = freeIndices.back();
         freeIndices.pop_back();
-        entityMetadata[index].onFreeList = false;
     }
     else
     {
@@ -2318,7 +2062,7 @@ EntityHandle World::CreateDirect()
     }
 
     auto& metadata = entityMetadata[index];
-    metadata.version = NextIssuedVersion(index);
+    metadata.version++;
     metadata.alive = true;
     metadata.archetype = nullptr;
     metadata.SetLocation(0, 0);
@@ -2604,55 +2348,10 @@ EntityHandle World::DeserializeEntity(std::span<const uint8_t> data, EntityHandl
     return entity;
 }
 
-std::string World::GetEntityAsJsonUnsafe(EntityHandle entity) const
-{
-    if (!IsValid(entity))
-    {
-        return "{}";
-    }
-
-    auto& metadata = entityMetadata[entity.index];
-    if (!metadata.archetype)
-    {
-        return "{\"entity\":{\"index\":" + std::to_string(entity.index) +
-               ",\"version\":" + std::to_string(entity.version) + ",\"components\":[]}}";
-    }
-
-    std::ostringstream json;
-    json << "{\"entity\":{";
-    json << "\"index\":" << entity.index << ",";
-    json << "\"version\":" << entity.version << ",";
-    json << "\"components\":[";
-
-    auto& signature = metadata.archetype->GetSignature();
-    bool first = true;
-    for (auto typeId : signature.GetComponents())
-    {
-        if (!first)
-            json << ",";
-
-        auto* handler = ComponentRegistry::GetHandler(typeId);
-        if (handler)
-        {
-            json << handler->GetComponentAsJson(metadata.archetype, metadata.chunkIndex, metadata.indexInChunk);
-        }
-        first = false;
-    }
-
-    json << "]}}";
-    return json.str();
-}
-
-std::string World::GetEntityAsJson(EntityHandle entity)
-{
-    std::shared_lock lock(worldMutex);
-    return GetEntityAsJsonUnsafe(entity);
-}
-
 namespace
 {
 constexpr uint32_t kWorldSnapshotMagic = 0x57435345; // ECSW
-constexpr uint32_t kWorldSnapshotVersion = 2;
+constexpr uint32_t kWorldSnapshotVersion = 1;
 }
 
 std::vector<uint8_t> World::SerializeWorld()
@@ -2665,15 +2364,14 @@ std::vector<uint8_t> World::SerializeWorld()
         const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
         result.insert(result.end(), bytes, bytes + sizeof(value));
     };
-    // ECSW v2: magic, format version, slot count, free count, entity handle epoch, then
-    // each slot's generation + entity-data length + data (length 0 = dead), then free
-    // indices in allocation order. Dead slots absent from the free list are undo-reserved.
+    // ECSW v1: magic, format version, slot count, free count, then each slot's
+    // generation + entity-data length + data (length 0 = dead), then free indices
+    // in allocation order. Dead slots absent from the free list are undo-reserved.
     // Explicit fields only: archetype pointers/locations are rebuilt, not serialized.
     append(kWorldSnapshotMagic);
     append(kWorldSnapshotVersion);
     append(static_cast<uint32_t>(entityMetadata.size()));
     append(static_cast<uint32_t>(freeIndices.size()));
-    append(m_EntityHandleEpoch);
 
     for (EntityIndex i = 0; i < entityMetadata.size(); ++i)
     {
@@ -2721,9 +2419,8 @@ void World::DeserializeWorld(const std::vector<uint8_t>& data)
         return true;
     };
     uint32_t formatVersion, slotCount, freeCount;
-    uint64 handleEpoch;
     if (!read(formatVersion) || formatVersion != kWorldSnapshotVersion || !read(slotCount) || !read(freeCount)
-        || !read(handleEpoch) || slotCount > kEntityIndexMask + 1u || freeCount > slotCount
+        || slotCount > kEntityIndexMask + 1u || freeCount > slotCount
         || uint64_t{slotCount} * (sizeof(EntityVersion) + sizeof(uint32_t))
            + uint64_t{freeCount} * sizeof(EntityIndex) > data.size() - offset)
         return;
@@ -2795,56 +2492,20 @@ void World::DeserializeWorld(const std::vector<uint8_t>& data)
     // A snapshot restore brings back the same document with the same entity handles, so the scene
     // data this binary could not represent stays with it: Clear would otherwise hand the next save a
     // world that silently lost its preserved components, fields and reference paths.
-    // A snapshot of the run the world is in keeps the run: every version each slot issued
-    // since the snapshot stays issued, so none is handed out again.
-    const bool sameRun = handleEpoch == m_EntityHandleEpoch;
-    std::vector<EntityVersion> issued;
-    if (sameRun)
-    {
-        std::shared_lock lock(worldMutex);
-        issued.resize(entityMetadata.size());
-        for (std::size_t i = 0; i < issued.size(); ++i)
-            issued[i] = static_cast<EntityVersion>(NextIssuedVersion(static_cast<EntityIndex>(i)) - 1u);
-    }
-
     std::unique_ptr<UnresolvedComponentStore> unresolved = std::move(m_UnresolvedComponents);
     Clear();
     m_UnresolvedComponents = std::move(unresolved);
     {
         CheckRemovalReentry();
         std::unique_lock lock(worldMutex);
-        const std::size_t slotTotal = std::max<std::size_t>(slotCount, issued.size());
-        entityMetadata.resize(slotTotal);
-        std::vector<EntityVersion> floors;
-        // Slots past the snapshot's go back on the free list below its own free indices, lowest
-        // index popped first, so the next creates take the indices they would have taken.
-        freeIndices.clear();
-        for (std::size_t i = slotTotal; i > slotCount; --i)
-            freeIndices.push_back(static_cast<EntityIndex>(i - 1));
-        freeIndices.insert(freeIndices.end(), restoredFreeIndices.begin(), restoredFreeIndices.end());
-        for (std::size_t i = 0; i < slotTotal; ++i)
+        entityMetadata.resize(slotCount);
+        freeIndices = std::move(restoredFreeIndices);
+        for (uint32_t i = 0; i < slotCount; ++i)
         {
-            const EntityVersion issuedVersion = i < issued.size() ? issued[i] : EntityVersion{0};
-            auto& metadata = entityMetadata[i];
-            metadata.onFreeList = i >= slotCount || isFree[i];
-            if (metadata.onFreeList)
-            {
-                metadata.version = std::max(i < slotCount ? slots[i].Version : EntityVersion{0}, issuedVersion);
-                metadata.alive = false;
-                continue;
-            }
-            metadata.version = slots[i].Version;
-            metadata.alive = !slots[i].Data.empty();
-            if (issuedVersion > metadata.version)
-            {
-                floors.resize(slotTotal, EntityVersion{0});
-                floors[i] = issuedVersion;
-            }
+            entityMetadata[i].version = slots[i].Version;
+            entityMetadata[i].alive = !slots[i].Data.empty();
         }
         entityCount.store(aliveCount, std::memory_order_relaxed);
-        m_IssuedVersionFloor = std::move(floors);
-        if (sameRun)
-            m_EntityHandleEpoch = handleEpoch;
     }
     for (uint32_t i = 0; i < slotCount; ++i)
     {
@@ -2865,34 +2526,6 @@ void World::DeserializeWorld(const std::vector<uint8_t>& data)
         std::erase_if(m_UnresolvedComponents->FieldMap(),
                       [&](const auto& entry) { return isStale(entry.first); });
     }
-}
-
-std::string World::GetWorldAsJson()
-{
-    std::shared_lock lock(worldMutex);
-
-    std::ostringstream json;
-    json << "{\"world\":{";
-    json << "\"entityCount\":" << entityCount.load(std::memory_order_relaxed) << ",";
-    json << "\"archetypeCount\":" << archetypes.size() << ",";
-    json << "\"entities\":[";
-
-    bool first = true;
-    for (EntityIndex i = 0; i < entityMetadata.size(); ++i)
-    {
-        const auto& metadata = entityMetadata[i];
-        if (metadata.alive)
-        {
-            if (!first)
-                json << ",";
-            EntityHandle entity(i, metadata.version);
-            json << GetEntityAsJsonUnsafe(entity);
-            first = false;
-        }
-    }
-
-    json << "]}}";
-    return json.str();
 }
 
 // ============================================================================
@@ -2918,18 +2551,13 @@ EntityHandle World::CreateFromBundleHandle(const ComponentBundle& bundle)
         componentSizes.try_emplace(typeId, bundle.GetComponentSize(typeId));
     }
 
-    ComponentSignature withRequired = signature;
-    AddRequiredClosure(withRequired);
-    Archetype* archetype = GetOrCreateArchetype(withRequired);
+    Archetype* archetype = GetOrCreateArchetype(signature);
 
     EntityHandle entity = CreateEntityUnsafe();
     auto& metadata = entityMetadata[entity.index];
     metadata.archetype = archetype;
     EntityLocation loc = archetype->AddEntityUnsafe(entity);
     metadata.SetLocation(loc);
-    std::vector<RequiredColumn> required;
-    ResolveRequiredColumns(*archetype, signature, required);
-    WriteRequiredColumns(*archetype, loc, required);
 
     // Set all components from bundle via type-erased raw write.
     for (ComponentTypeId typeId : signature.GetComponents())
@@ -2946,7 +2574,7 @@ EntityHandle World::CreateFromBundleHandle(const ComponentBundle& bundle)
     }
 
     // Lifecycle events (§6.1): bundle creation bypasses the unified add body.
-    RecordAddedForSignature(archetype->GetSignature(), entity);
+    RecordAddedForSignature(signature, entity);
 
     structuralChangeVersion.fetch_add(1, std::memory_order_relaxed);
     return entity;
@@ -2962,9 +2590,7 @@ EntityHandle World::CreateFromSignatureHandle(const ComponentSignature& signatur
 {
     CheckRemovalReentry();
     std::unique_lock lock(worldMutex);
-    ComponentSignature withRequired = signature;
-    AddRequiredClosure(withRequired);
-    Archetype* archetype = GetOrCreateArchetype(withRequired);
+    Archetype* archetype = GetOrCreateArchetype(signature);
 
     EntityHandle entity = CreateEntityUnsafe();
     auto& metadata = entityMetadata[entity.index];
@@ -2972,301 +2598,12 @@ EntityHandle World::CreateFromSignatureHandle(const ComponentSignature& signatur
     EntityLocation loc = archetype->AddEntityUnsafe(entity);
     metadata.SetLocation(loc);
 
-    std::vector<RequiredColumn> required;
-    ResolveRequiredColumns(*archetype, signature, required);
-    WriteRequiredColumns(*archetype, loc, required);
-
     // Lifecycle events (§6.1 C3): signature-create makes query-visible
     // entities without writing data — Added still fires per subscribed type.
-    RecordAddedForSignature(archetype->GetSignature(), entity);
+    RecordAddedForSignature(signature, entity);
 
     structuralChangeVersion.fetch_add(1, std::memory_order_relaxed);
     return entity;
-}
-
-namespace
-{
-// One run of EntityHandle values inside a component: a reflected EntityHandle
-// field (a C array of handles is Count handles) or the parent relation.
-struct EntityFieldSlot
-{
-    ComponentTypeId TypeId = 0;
-    uint32 Offset = 0;
-    uint32 Count = 0;
-};
-
-void CollectEntityFields(const ComponentSignature& signature, ComponentTypeId parentType, uint32 parentOffset,
-                         std::vector<EntityFieldSlot>& out)
-{
-    for (const ComponentTypeId typeId : signature.GetComponents())
-    {
-        for (const FieldInfo& field : ComponentFieldRegistry::Get(typeId))
-        {
-            if (field.Type == FieldTypeId::EntityHandle && field.Size >= sizeof(EntityHandle))
-                out.push_back({typeId, field.Offset, static_cast<uint32>(field.Size / sizeof(EntityHandle))});
-        }
-    }
-    if (parentType == 0 || !signature.Contains(parentType))
-        return;
-    const bool reflected = std::any_of(out.begin(), out.end(), [parentType, parentOffset](const EntityFieldSlot& slot)
-                                       { return slot.TypeId == parentType && slot.Offset == parentOffset; });
-    if (!reflected)
-        out.push_back({parentType, parentOffset, 1});
-}
-
-} // namespace
-
-bool World::PlanClone(std::span<const EntityHandle> entities, ClonePlan& plan) const
-{
-    plan = ClonePlan{};
-    for (const EntityHandle entity : entities)
-    {
-        if (!IsValid(entity))
-        {
-            Logger::Log::Error("[ECS] PlanClone refused entity {}: it is not alive in this world. Plan only live "
-                               "entities of the source world",
-                               entity.id);
-            return false;
-        }
-    }
-    const std::size_t count = entities.size();
-    plan.m_SourceWorldId = m_WorldId;
-    plan.m_Sources.assign(entities.begin(), entities.end());
-    plan.m_GroupOfPosition.resize(count);
-    plan.m_GroupedIndexOfPosition.resize(count);
-
-    // One group per source archetype, in first-seen order.
-    for (std::size_t position = 0; position < count; ++position)
-    {
-        const Archetype* archetype = entityMetadata[entities[position].index].archetype;
-        auto groupIt = std::find_if(plan.m_Groups.begin(), plan.m_Groups.end(),
-                                    [archetype](const ClonePlan::Group& group) { return group.Source == archetype; });
-        if (groupIt == plan.m_Groups.end())
-        {
-            plan.m_Groups.push_back({archetype, 0, 0});
-            groupIt = plan.m_Groups.end() - 1;
-        }
-        ++groupIt->Count;
-        plan.m_GroupOfPosition[position] = static_cast<uint32>(groupIt - plan.m_Groups.begin());
-    }
-    uint32 firstTarget = 0;
-    for (ClonePlan::Group& group : plan.m_Groups)
-    {
-        group.FirstTarget = firstTarget;
-        firstTarget += group.Count;
-    }
-    std::vector<uint32> placedInGroup(plan.m_Groups.size(), 0);
-    plan.m_GroupedSources.resize(count);
-    for (std::size_t position = 0; position < count; ++position)
-    {
-        const uint32 group = plan.m_GroupOfPosition[position];
-        const uint32 groupedIndex = plan.m_Groups[group].FirstTarget + placedInGroup[group]++;
-        plan.m_GroupedIndexOfPosition[position] = groupedIndex;
-        plan.m_GroupedSources[groupedIndex] = entities[position];
-    }
-
-    // The k-th occurrence of an entity is copy k; the positions of each entity in list order.
-    FastHashMap<uint32, std::vector<uint32>> positionsOfEntity;
-    std::vector<uint32> copyOfPosition(count);
-    for (std::size_t position = 0; position < count; ++position)
-    {
-        std::vector<uint32>& positions = positionsOfEntity[entities[position].id];
-        copyOfPosition[position] = static_cast<uint32>(positions.size());
-        positions.push_back(static_cast<uint32>(position));
-    }
-
-    // Entity fields name source entities; each names the same copy's entry of that entity.
-    std::vector<std::vector<EntityFieldSlot>> slotsOfGroup(plan.m_Groups.size());
-    for (std::size_t group = 0; group < plan.m_Groups.size(); ++group)
-    {
-        if (const Archetype* archetype = plan.m_Groups[group].Source; archetype && archetype->HasTable())
-            CollectEntityFields(archetype->GetSignature(), m_ParentRelationType, m_ParentRelationOffset,
-                                slotsOfGroup[group]);
-    }
-    for (std::size_t position = 0; position < count; ++position)
-    {
-        const uint32 group = plan.m_GroupOfPosition[position];
-        const EntityMetadata& metadata = entityMetadata[entities[position].index];
-        for (const EntityFieldSlot& slot : slotsOfGroup[group])
-        {
-            const auto* bytes = static_cast<const std::byte*>(plan.m_Groups[group].Source->GetComponentRawAt(
-                metadata.chunkIndex, metadata.indexInChunk, slot.TypeId));
-            if (!bytes)
-                continue;
-            for (uint32 i = 0; i < slot.Count; ++i)
-            {
-                const uint32 offset = slot.Offset + i * static_cast<uint32>(sizeof(EntityHandle));
-                EntityHandle value;
-                std::memcpy(&value, bytes + offset, sizeof(value));
-                uint32 target = ClonePlan::kNoPosition;
-                if (const auto it = positionsOfEntity.find(value.id);
-                    it != positionsOfEntity.end() && copyOfPosition[position] < it->second.size())
-                    target = it->second[copyOfPosition[position]];
-                plan.m_FieldTargets.push_back({slot.TypeId, static_cast<uint32>(position), offset, target});
-            }
-        }
-    }
-    return true;
-}
-
-void World::CopyGroupRows(const World& source, const ClonePlan& plan, uint32 group, Archetype& target,
-                          const EntityRemap& remap)
-{
-    const ClonePlan::Group& planned = plan.m_Groups[group];
-    const std::span<const EntityHandle> targets(remap.m_GroupedTargets.data() + planned.FirstTarget, planned.Count);
-    const std::span<const EntityHandle> sources(plan.m_GroupedSources.data() + planned.FirstTarget, planned.Count);
-    if (!target.HasTable())
-    {
-        // A signature of tags only has no rows to place.
-        for (const EntityHandle entity : targets)
-            entityMetadata[entity.index].archetype = &target;
-        return;
-    }
-    // A source world that sized none of the columns has no rows to copy from; the rows stay as placed.
-    const std::span<const ArchetypeChunk> sourceChunks =
-        planned.Source->HasTable() ? planned.Source->GetTable().GetChunks() : std::span<const ArchetypeChunk>{};
-    uint32 placed = 0;
-    while (placed < planned.Count)
-    {
-        const RowRun run = target.AddEntitiesUnsafe(targets.subspan(placed));
-        ArchetypeChunk& targetChunk = target.GetTable().GetChunks()[run.ChunkIndex];
-        for (uint32 row = 0; row < run.Count; ++row)
-        {
-            EntityMetadata& metadata = entityMetadata[targets[placed + row].index];
-            metadata.archetype = &target;
-            metadata.SetLocation(EntityLocation{run.ChunkIndex, run.FirstIndex + row});
-        }
-        uint32 copied = sourceChunks.empty() ? run.Count : 0;
-        while (copied < run.Count)
-        {
-            const EntityLocation from = source.entityMetadata[sources[placed + copied].index].GetLocation();
-            uint32 length = 1;
-            while (copied + length < run.Count)
-            {
-                const EntityLocation next = source.entityMetadata[sources[placed + copied + length].index].GetLocation();
-                if (next.ChunkIndex != from.ChunkIndex || next.IndexInChunk != from.IndexInChunk + length)
-                    break;
-                ++length;
-            }
-            ArchetypeChunk::CopyRows(sourceChunks[from.ChunkIndex], from.IndexInChunk, targetChunk,
-                                     run.FirstIndex + copied, length);
-            copied += length;
-        }
-        placed += run.Count;
-    }
-}
-
-bool World::CreateBatchFromWorld(const World& source, const ClonePlan& plan, EntityRemap& remap)
-{
-    assert(&source != this && "CreateBatchFromWorld copies between two worlds; use CloneEntity inside one world");
-    remap.m_Targets.clear();
-    if (&source == this)
-    {
-        Logger::Log::Error("[ECS] CreateBatchFromWorld refused: the source is this world. Use CloneEntity to copy "
-                           "inside one world");
-        return false;
-    }
-    const std::size_t count = plan.m_Sources.size();
-    if (count == 0)
-        return true;
-    if (source.m_WorldId != plan.m_SourceWorldId)
-    {
-        Logger::Log::Error("[ECS] CreateBatchFromWorld refused: the plan was built from another world. Build it with "
-                           "PlanClone on the source world");
-        return false;
-    }
-    for (std::size_t position = 0; position < count; ++position)
-    {
-        const EntityHandle entity = plan.m_Sources[position];
-        if (!source.IsValid(entity) ||
-            source.entityMetadata[entity.index].archetype != plan.m_Groups[plan.m_GroupOfPosition[position]].Source)
-        {
-            Logger::Log::Error("[ECS] CreateBatchFromWorld refused entity {}: it died or changed archetype after its "
-                               "plan was built. Build a new plan with PlanClone; nothing was created",
-                               entity.id);
-            return false;
-        }
-    }
-
-    CheckRemovalReentry();
-    std::unique_lock lock(worldMutex);
-
-    // The target archetype keeps the source signature: every column is copied, so the
-    // source row already holds what its requirements need.
-    remap.m_Targets.resize(count);
-    remap.m_GroupedTargets.resize(count);
-    remap.m_TargetArchetypes.assign(plan.m_Groups.size(), nullptr);
-    for (std::size_t group = 0; group < plan.m_Groups.size(); ++group)
-    {
-        const ClonePlan::Group& planned = plan.m_Groups[group];
-        if (!planned.Source)
-            continue;
-        const ComponentSignature& signature = planned.Source->GetSignature();
-        Archetype* target = nullptr;
-        if (const auto it = archetypes.find(signature); it != archetypes.end())
-        {
-            target = it->second.get();
-        }
-        else
-        {
-            for (const ComponentTypeId typeId : signature.GetComponents())
-            {
-                const auto sizeIt = source.componentSizes.find(typeId);
-                if (sizeIt != source.componentSizes.end())
-                    componentSizes.try_emplace(typeId, sizeIt->second);
-            }
-            target = GetOrCreateArchetype(signature);
-        }
-        target->Reserve(target->GetEntityCount() + planned.Count);
-        remap.m_TargetArchetypes[group] = target;
-    }
-
-    // Handles in plan order, so the k-th entity of a template is created k-th (handle determinism).
-    for (std::size_t position = 0; position < count; ++position)
-    {
-        const EntityHandle entity = CreateEntityUnsafe();
-        remap.m_Targets[position] = entity;
-        remap.m_GroupedTargets[plan.m_GroupedIndexOfPosition[position]] = entity;
-    }
-    for (std::size_t group = 0; group < plan.m_Groups.size(); ++group)
-    {
-        if (Archetype* target = remap.m_TargetArchetypes[group])
-            CopyGroupRows(source, plan, static_cast<uint32>(group), *target, remap);
-    }
-
-    for (const ClonePlan::FieldTarget& field : plan.m_FieldTargets)
-    {
-        Archetype* target = remap.m_TargetArchetypes[plan.m_GroupOfPosition[field.Position]];
-        const EntityMetadata& metadata = entityMetadata[remap.m_Targets[field.Position].index];
-        auto* bytes =
-            static_cast<std::byte*>(target->GetComponentRawAt(metadata.chunkIndex, metadata.indexInChunk, field.TypeId));
-        if (!bytes)
-            continue;
-        const EntityHandle value =
-            field.TargetPosition == ClonePlan::kNoPosition ? EntityHandle{} : remap.m_Targets[field.TargetPosition];
-        std::memcpy(bytes + field.Offset, &value, sizeof(value));
-    }
-
-    // The source's preserved unknown components and fields belong to the rows.
-    if (const UnresolvedComponentStore* sourceStore = source.TryGetUnresolvedComponents();
-        sourceStore && (!sourceStore->Empty() || !sourceStore->FieldsEmpty()))
-    {
-        UnresolvedComponentStore& store = GetUnresolvedComponents();
-        for (std::size_t position = 0; position < count; ++position)
-            store.CopyEntity(*sourceStore, plan.m_Sources[position], remap.m_Targets[position]);
-        store.CopyReferences(*sourceStore);
-    }
-
-    for (std::size_t group = 0; group < plan.m_Groups.size(); ++group)
-    {
-        if (const Archetype* target = remap.m_TargetArchetypes[group])
-            RecordAddedForSignatureBatch(target->GetSignature(),
-                                         remap.m_GroupedTargets.data() + plan.m_Groups[group].FirstTarget,
-                                         plan.m_Groups[group].Count);
-    }
-
-    structuralChangeVersion.fetch_add(1, std::memory_order_relaxed);
-    return true;
 }
 
 std::vector<EntityHandle> World::CreateBatchFromBundle(size_t count, const ComponentBundle& bundle)
@@ -3281,13 +2618,9 @@ std::vector<EntityHandle> World::CreateBatchFromBundle(size_t count, const Compo
         componentSizes.try_emplace(typeId, bundle.GetComponentSize(typeId));
     }
 
-    ComponentSignature withRequired = signature;
-    AddRequiredClosure(withRequired);
-    Archetype* archetype = GetOrCreateArchetype(withRequired);
+    Archetype* archetype = GetOrCreateArchetype(signature);
 
     archetype->Reserve(archetype->GetEntityCount() + count);
-    std::vector<RequiredColumn> required;
-    ResolveRequiredColumns(*archetype, signature, required);
 
     std::vector<EntityHandle> entities;
     entities.reserve(count);
@@ -3299,7 +2632,6 @@ std::vector<EntityHandle> World::CreateBatchFromBundle(size_t count, const Compo
         metadata.archetype = archetype;
         EntityLocation loc = archetype->AddEntityUnsafe(entity);
         metadata.SetLocation(loc);
-        WriteRequiredColumns(*archetype, loc, required);
         entities.push_back(entity);
     }
 
@@ -3322,7 +2654,7 @@ std::vector<EntityHandle> World::CreateBatchFromBundle(size_t count, const Compo
 
     // Lifecycle events (§6.1 C3): batch-bundle is a separate body from
     // CreateFromBundleHandle — recorded per batch, per subscribed type.
-    RecordAddedForSignatureBatch(archetype->GetSignature(), entities.data(), entities.size());
+    RecordAddedForSignatureBatch(signature, entities.data(), entities.size());
 
     structuralChangeVersion.fetch_add(1, std::memory_order_relaxed);
     return entities;
@@ -3448,57 +2780,6 @@ size_t World::CompactAllChunks()
         structuralChangeVersion.fetch_add(1, std::memory_order_relaxed);
 
     return totalFreed;
-}
-
-size_t World::PruneEmptyArchetypes()
-{
-    CheckRemovalReentry();
-    std::unique_lock lock(worldMutex);
-
-    // Two-pass prune: first collect the set of archetypes to remove, then erase
-    // all graph edges in surviving archetypes that point to them, THEN destroy.
-    // This prevents dangling Archetype* pointers in m_AddEdges / m_RemoveEdges.
-    FlatSet<Archetype*> toPrune;
-    for (auto& [sig, arch] : archetypes)
-    {
-        if (arch->GetEntityCount() == 0)
-            toPrune.Insert(arch.get());
-    }
-
-    if (toPrune.Empty())
-        return 0;
-
-    // Scrub edges in surviving archetypes.
-    for (auto& [sig, arch] : archetypes)
-    {
-        if (toPrune.Contains(arch.get()))
-            continue;
-        arch->EraseEdgesTo(toPrune);
-    }
-    m_ArchetypeMatches->RemoveArchetypes(toPrune);
-
-    // Now safe to destroy the archetypes themselves.
-    size_t prunedCount = 0;
-    for (auto it = archetypes.begin(); it != archetypes.end();)
-    {
-        if (toPrune.Contains(it->second.get()))
-        {
-            it = archetypes.erase(it);
-            ++prunedCount;
-        }
-        else
-        {
-            ++it;
-        }
-    }
-
-    // Invalidate CachedQuery's archetype copies and the CreateHandle caches (so
-    // thread_local cached Archetype* is discarded).
-    structuralChangeVersion.fetch_add(1, std::memory_order_relaxed);
-    ++m_WorldGeneration;
-
-    Logger::Log::Info("[ECS] Pruned {} empty archetypes", prunedCount);
-    return prunedCount;
 }
 
 } // namespace ECS

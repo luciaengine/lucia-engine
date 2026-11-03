@@ -24,6 +24,7 @@
 #include "PhysicsECS/Components/CharacterController.h"
 #include "PhysicsECS/Components/PhysicsBody.h"
 #include "PhysicsECS/PhysicsWorldService.h"
+#include "PhysicsECS/Systems/PhysicsWorldHooks.h"
 
 namespace GameEngine::Editor
 {
@@ -104,11 +105,11 @@ class DeleteEntitiesCommand final : public IEditorCommand
             {
                 if (!e.IsValid() || !world.IsValid(e))
                     return;
-                if (!p.Entity.IsValid() || !world.IsValid(p.Entity))
+                if (!p.parent.IsValid() || !world.IsValid(p.parent))
                     return;
                 if (world.HasComponent<Components::RuntimeOnlyEntity>(e))
                     return;
-                children[p.Entity.index].push_back(e);
+                children[p.parent.index].push_back(e);
             });
 
         std::vector<ECS::EntityHandle> stack;
@@ -264,7 +265,7 @@ class DeleteEntitiesCommand final : public IEditorCommand
         m_World->Query<ECS::Read<Components::Parent>>().IncludeDisabled().Each(
             [&](ECS::EntityHandle e, const Components::Parent& p)
             {
-                if (!e.IsValid() || !p.Entity.IsValid() || doomed.count(p.Entity.index) == 0)
+                if (!e.IsValid() || !p.parent.IsValid() || doomed.count(p.parent.index) == 0)
                     return;
                 if (m_World->HasComponent<Components::RuntimeOnlyEntity>(e))
                     generated.push_back(e);
@@ -359,13 +360,11 @@ class DeleteEntitiesCommand final : public IEditorCommand
     // then scrubs the snapshot so Undo revives an entity that owns nothing and
     // PhysicsInitSystem provisions it fresh — the state a scene load produces.
     //
-    // Both halves are gated on the physics world agreeing the handle is live, so
-    // this is a no-op outside Play (no world), for an entity whose body was
-    // already freed by its owning system, and for one that never had a body.
+    // ReleasePhysicsBody frees nothing outside Play (no world), and the backend's
+    // generation check makes it a no-op for a body already freed by its owning
+    // system or for one that never had a body.
     void ReleaseSnapshotPhysicsBodies()
     {
-        auto* physicsWorld = PhysicsECS::PhysicsWorldService::TryGet();
-
         for (auto& snap : m_Snapshots)
         {
             if (!snap.entity.IsValid() || !m_World->IsValid(snap.entity))
@@ -373,18 +372,8 @@ class DeleteEntitiesCommand final : public IEditorCommand
 
             if (auto* live = m_World->GetComponentForWrite<Components::PhysicsBody>(snap.entity))
             {
-                if (physicsWorld && live->initialized)
-                {
-                    if (physicsWorld->IsBodyValid(live->body))
-                        physicsWorld->DestroyBody(live->body);
-                    if (physicsWorld->IsShapeValid(live->shape))
-                        physicsWorld->DestroyShape(live->shape);
-                    for (std::uint16_t i = 0; i < live->childShapeCount; ++i)
-                    {
-                        if (physicsWorld->IsShapeValid(live->childShapes[i]))
-                            physicsWorld->DestroyShape(live->childShapes[i]);
-                    }
-                }
+                if (live->initialized)
+                    PhysicsECS::ReleasePhysicsBody(*live);
 
                 // The entity outlives this call by the rest of the destroy loop,
                 // so it must not be left naming freed handles.

@@ -1,7 +1,7 @@
-#include "Graph/GraphNode/GraphNodeRegistry.h"
+#include "Graph/GraphNodeRegistry.h"
 #include "Graph/GraphTypeRegistry.h"
 #include "Graph/GraphValue.h"
-#include "Graph/GraphNode/GraphNodeIconStems.h"
+#include "Graph/GraphNodeIconStems.h"
 
 namespace GameEngine {
 
@@ -64,7 +64,7 @@ void GraphNodeRegistry::RegisterAnimationTypes()
 
     Register(Graph::kKindIdAnimation,
              {"ClipPlayer", "Clip Player", "Pose", {PoseOut()},
-              {{.Id = "clipGuid", .Default = Graph::GraphValue::FromGuid(""), .AssetReference = AssetType::Animation},
+              {{"clipGuid", Graph::GraphValue::FromGuid("")},
                {"speed", Graph::GraphValue(1.0f)},
                {"looping", Graph::GraphValue(true)}}});
     Register(Graph::kKindIdAnimation,

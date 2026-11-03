@@ -7,9 +7,11 @@
 
 #pragma once
 
+#include "Engine/Rendering/SortedTransparentComposition.h"
+#include "Engine/Rendering/WindVolumeResolver.h"
+
 #include "AssetCore/Asset.h"          // SharedPtr<Asset> in PendingGpuUpload
 #include "AssetCore/AssetRegistry.h" // AssetReference
-#include "Types/FlatMap.h"
 #include "Types/ScopedSubscription.h"
 #include "AssetCore/AssetReloadInvalidator.h"
 #include "Assets/AssetManager.h"     // AssetLoadHandle in m_TextureLoadHandles
@@ -18,7 +20,7 @@
 #include "Engine/Rendering/DrawCommandProducer.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Engine/Rendering/SceneColorGrab.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Engine/Rendering/AntiAliasing.h"
 #include "Engine/Rendering/CameraAspectRatio.h"
 #include "Engine/Rendering/DeformationMotionParams.h"
@@ -28,12 +30,11 @@
 #include "Engine/Rendering/ViewRegistry.h"
 #include "Engine/Rendering/ViewTemporalHistory.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/DeviceFrameCounter.h"
 #include "Rendering/Core/RendererProfile.h"
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Materials/MaterialBuildService.h"
-#include "Rendering/Materials/Shader/ShaderMeta.h"
+#include "Rendering/Materials/ShaderMeta.h"
 #include "Engine/Rendering/PostProcessSettings.h"
 #include "Engine/Rendering/ResolvedShadowSettings.h"
 #include "Engine/Rendering/PipelineVariantCache.h"
@@ -54,6 +55,7 @@
 #include "Engine/Rendering/PointShadowAtlasPlanner.h"
 #include "Engine/Rendering/VolumetricFogTypes.h"
 #include "Engine/Rendering/AnimationComputePass.h"
+#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "Engine/Rendering/GPUAnimationDataStore.h"
 #include "Engine/Rendering/PerFrameWritePool.h"
 #include "Engine/Rendering/ShaderCompilationCache.h"
@@ -146,6 +148,7 @@ namespace Engine::Renderer
 {
 class IRenderFeature;
 class ShadowMapRenderFeature;
+struct ShadowDataGPU;
 class RetargetRenderFeature;
 class MaterialCompiler;
 class SceneAccelerationStructureService;
@@ -266,8 +269,9 @@ struct alignas(16) ForwardLightUBO
     float uSecondaryCount[4];  // x=valid secondary directional count (as float)
     float uSecondaryDirs[kMaxSecondaryDirectionals][4];   // xyz=light->surface direction
     float uSecondaryColors[kMaxSecondaryDirectionals][4]; // rgb=color*intensity (premultiplied)
+    WeatherWindGPU WeatherWind{};
 };
-static_assert(sizeof(ForwardLightUBO) == 240, "LightUBO layout drifted from the GLSL block");
+static_assert(sizeof(ForwardLightUBO) == 3840, "LightUBO layout drifted from the GLSL block");
 static_assert(offsetof(ForwardLightUBO, uLightDirWorld) == 64);
 static_assert(offsetof(ForwardLightUBO, uLightColorWorld) == 80);
 static_assert(offsetof(ForwardLightUBO, uAmbient) == 96);
@@ -275,15 +279,7 @@ static_assert(offsetof(ForwardLightUBO, uTimeParams) == 112);
 static_assert(offsetof(ForwardLightUBO, uSecondaryCount) == 128);
 static_assert(offsetof(ForwardLightUBO, uSecondaryDirs) == 144);
 static_assert(offsetof(ForwardLightUBO, uSecondaryColors) == 192);
-
-// The directionals the forward pass shades, from a finalized (strongest-first) world light list:
-// the primary (SelectPrimaryDirectional) in out[0], then up to kMaxSecondaryDirectionals
-// secondaries, the next-strongest directionals that emit (castsLight set and DeliveredLuminance
-// above zero). Directionals past the cap are not shaded. Returns how many entries of `out` it
-// filled: 0 when the list has no directional. Every reader of "which directionals light the
-// world" asks here.
-uint32 SelectShadedDirectionals(std::span<const ExtractedLight> sortedLights,
-                                std::array<const ExtractedLight*, kMaxDirectionalLights>& out);
+static_assert(offsetof(ForwardLightUBO, WeatherWind) == 240);
 
 // Fills the directional lanes of the composed LightUBO from a finalized
 // (strongest-first) world light list: primary = SelectPrimaryDirectional
@@ -402,8 +398,6 @@ class RenderServices
     // by AddWorldPassForView. Forward contributors read these to drive
     // MaterialBinder::BeginPass with the same keyword set the world pass uses.
     std::optional<Rendering::MaterialKeyword> GetWorldPassKeywords(Rendering::ViewId viewId) const;
-    // The base winding the world pass draws entities with (mirrored instances flip it per segment).
-    Rendering::FrontFace GetFrontFace() const { return m_FrontFace; }
 
     // GPU culling pipeline (frustum/HZB). Owned by RenderServices and created
     // during Initialize(); ScheduleViewCullingDispatches drives it per frame
@@ -465,27 +459,27 @@ class RenderServices
     // when it can attribute them (fast-path moved-instance patches, always-refresh
     // subset re-prepares). EnsurePointShadowAssignment forwards the set to the
     // per-view atlas planner, which dirties only the point lights whose influence
-    // sphere a changed caster intersects. Scope Unbounded (full-lane frame,
-    // bone-palette pose change, sphere-list overflow) affects every light, and so
-    // does VertexDeformation (material vertex motion, no spheres). Directional
-    // cascades also use the bounds to retain unaffected layers, and defer a
-    // VertexDeformation advance through the motion budget; the RT mask
-    // continues to consume the scalar version.
+    // sphere a changed caster intersects. `unattributed` = true (full-lane frame,
+    // animated-vertex caster content, bone-palette pose change, sphere-list overflow)
+    // affects every light —
+    // exactly the pre-L1b world-scoped behavior. The bump TIMING is unchanged
+    // either way. Directional cascades also use the bounds to retain unaffected
+    // layers; the RT mask continues to consume the scalar version.
     void NotifyShadowCasterContentChanged(
         uint64 worldId, std::span<const ShadowCasterChangeSphere> changedCasterSpheres,
-        ShadowCasterChangeScope scope);
+        bool unattributed);
     uint64_t ShadowCasterContentVersion(uint64 worldId) const
     {
-        const ShadowCasterChanges* changes = m_ShadowCasterChanges.Find(worldId);
-        return changes ? changes->Version : 0u;
+        const auto it = m_ShadowCasterChanges.find(worldId);
+        return it != m_ShadowCasterChanges.end() ? it->second.Version : 0u;
     }
 
     ShadowCasterChangeSet GetShadowCasterChanges(uint64 worldId) const
     {
-        const ShadowCasterChanges* changes = m_ShadowCasterChanges.Find(worldId);
-        if (!changes)
+        const auto it = m_ShadowCasterChanges.find(worldId);
+        if (it == m_ShadowCasterChanges.end())
             return {};
-        return {changes->Version, changes->Spheres, changes->Scope};
+        return {it->second.Version, it->second.Spheres, it->second.Unattributed};
     }
 
     // Idle-recompute-elision content signal (lever #2): the ANY-renderable
@@ -522,14 +516,14 @@ class RenderServices
     // spot PointShadowAtlasPlanner, both keyed on that version) see every input
     // byte-identical for a character animating in place and retain the layer
     // rendered at an older pose — the mesh animates while its shadow holds
-    // still. Unbounded: the extraction lane carries no per-caster signal for
-    // pose-only change, so proximity keying cannot name which casters moved.
+    // still. Unattributed, matching the vertex-mod caster precedent in
+    // RenderExtractionSystem: the extraction lane carries no per-caster signal
+    // for pose-only change, so proximity keying cannot name which casters moved.
     void NotifySkinPaletteContentChanged(uint64 worldId)
     {
         m_SkinPaletteContentChanged = true;
         NotifyShadowCasterContentChanged(
-            worldId, std::span<const ShadowCasterChangeSphere>{},
-            ShadowCasterChangeScope::Unbounded);
+            worldId, std::span<const ShadowCasterChangeSphere>{}, /*unattributed=*/true);
     }
     // Per-world light-list version: FinalizeWorldLights bumps it whenever the
     // finalized (sorted) list's bytes differ from the previous frame's. Exact
@@ -800,9 +794,6 @@ class RenderServices
         Rendering::RenderGraph::RGTexture Color{};   // primary (MSAA or 1-sample)
         Rendering::RenderGraph::RGTexture Depth{};   // EFFECTIVE depth (caller applied any override)
         Rendering::RenderGraph::RGTexture Resolve{}; // effective resolve; invalid = none
-        // Receives the plain sample mean minus the weighted mean at the MSAA resolve, for bloom.
-        // Invalid = the resolve writes only Resolve.
-        Rendering::RenderGraph::RGTexture BloomSampleDelta{};
         Rendering::RenderGraph::RGRange ColorRange = Rendering::RenderGraph::RGRange::All();
         Rendering::RenderGraph::RGRange DepthRange = Rendering::RenderGraph::RGRange::All();
         // 1-sample R32F bound as ge_sceneDepth; invalid = falls back to Depth.
@@ -817,17 +808,6 @@ class RenderServices
         // on SceneColorGrab-keyword passes; the pass declares the Read(Sampled) that
         // forms the copy->draw RAW edge. Invalid = env-cube refraction fallback.
         Rendering::RenderGraph::RGTexture SceneGrab{};
-        // The sky's backdrop (Names::Res::SkyBackdrop, the sky-view LUT or the HDRI), bound as
-        // ge_skyBackdrop for the height fog's colour taken from the sky (HeightFog-keyword
-        // variants). Invalid = black, which the fog reads only under a sky colour source.
-        Rendering::RenderGraph::RGTexture SkyBackdrop{};
-        // The view's froxel volume (Names::Res::VolumetricFog), bound as ge_volumetricFog on
-        // VolumetricFog-keyword passes, which their node sets only when the volume was published.
-        Rendering::RenderGraph::RGTexture VolumetricFog{};
-        // The view's resolved volumetric clouds, bound as ge_volumetricClouds on
-        // VolumetricClouds-keyword passes, which their node sets only when the clouds composited this
-        // frame.
-        Rendering::RenderGraph::RGTexture VolumetricClouds{};
         // DDGI scaled glossy-reflection resolve outputs
         // (DDGIProbeFeature::DeclareGlossyResolveForView), bound as
         // ge_ddgiResolveRough/ge_ddgiResolveGlossy on DDGI-keyword passes.
@@ -1020,7 +1000,7 @@ class RenderServices
     Rendering::RenderGraph::RGPass AddWorldNonOccludingDepthPrepassForView(
         Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId,
         Rendering::RenderGraph::RGTexture depth);
-    // The deforming-motion producer's pass: the deforming subset
+    // The deforming-motion producer's separate-pass arm: the deforming subset
     // of the view's batch keys re-rasterized into the shared motion target
     // under READ-ONLY camera depth, so a closer surface simply wins the test
     // and the deformer's fragment never reaches the attachment. Declared by
@@ -1099,6 +1079,13 @@ class RenderServices
     Rendering::RenderGraph::RGTexture ImportTransmittanceShadowArrayRG(
         Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId, ShadowDeclareSeam);
 
+    void PublishDirectionalShadowDataRG(Rendering::RenderGraph::RGFrame& frame,
+        Rendering::ViewId viewId, Rendering::RenderGraph::RGFrame::TypedUpload<ShadowDataGPU> data);
+    // Reuse only same-frame, same-world directional resources. No new atlas or
+    // shadow render is created. Receiver matrices are rebased for the mirror.
+    bool ShareDirectionalShadowsRG(Rendering::RenderGraph::RGFrame& frame,
+        Rendering::ViewId sourceView, Rendering::ViewId receiverView);
+
     // Publish a punctual (area/spot/point) family's per-view map + data upload
     // into ViewFrameRG so the world binding table's BuildPassResourcesRG reads
     // them (bound by name "AreaShadowData" / "SpotShadowData" / "PointShadowData",
@@ -1165,6 +1152,32 @@ class RenderServices
 
     // Camera + view registries live in ViewRegistry (A1.2). RenderServices owns
     // it by value; reach it via Views().
+    struct DepthPixelationViews
+    {
+        static constexpr int kMaxBands = 10;
+        static constexpr int kSkyIndex = kMaxBands;
+        int BandCount = 3;
+        bool SimpleScreenSpace = false;
+        uint32_t GuardPixels = 1;
+        std::array<Rendering::ViewId, kMaxBands + 1> Views{};
+        std::array<Rendering::CameraId, kMaxBands + 1> Cameras{};
+        std::array<std::array<uint32_t, 2>, kMaxBands + 1> RasterExtents{};
+        std::array<std::array<float, 4>, kMaxBands + 1> UVTransforms{};
+    };
+    static std::array<uint32_t, 2> DepthPixelationRasterExtent(
+        const PostProcessSettings& pp, int band, uint32_t width, uint32_t height);
+    static Rendering::CameraData StabilizeDepthPixelationCamera(
+        const Rendering::CameraData& camera, uint32_t width, uint32_t height,
+        float focusDistance, bool enabled, std::array<float, 4>& uvTransform, uint32_t guardPixels = 1);
+    void SyncDepthPixelationViews(uint64 worldId, bool allowAllocation = true);
+    const DepthPixelationViews* FindDepthPixelationViews(Rendering::ViewId parent) const;
+    bool IsDepthPixelationView(Rendering::ViewId view) const;
+    bool GetDepthPixelationBandRange(Rendering::ViewId view, float& start, float& end, int& distanceMode) const;
+    void PrepareDepthPixelationFrame(Rendering::RenderGraph::RGFrame& frame,
+                                      std::span<const Pipeline::ViewTargetsRG> parents,
+                                      std::vector<Pipeline::ViewTargetsRG>& targets);
+    void AppendDepthPixelationTargets(Rendering::RenderGraph::RGFrame& frame,
+                                     std::vector<Pipeline::ViewTargetsRG>& targets);
     ViewRegistry& Views() { return m_ViewRegistry; }
     const ViewRegistry& Views() const { return m_ViewRegistry; }
 
@@ -1201,6 +1214,11 @@ class RenderServices
     {
         Rendering::RenderGraph::RGTexture Out{};
         Rendering::TextureHandle Physical{};
+        bool PixelPerfectCrossing = false;
+        bool NeedsPixelPerfectFallback(bool pixelPerfectActive) const
+        {
+            return pixelPerfectActive && !PixelPerfectCrossing;
+        }
         bool IsValid() const { return Out.IsValid() && Physical.IsValid(); }
     };
     PipelineOutputRG GetPipelineOutputRG(Rendering::RenderGraph::RGFrame& frame,
@@ -1306,6 +1324,15 @@ class RenderServices
     // override when set, else the engine default.
     float ResolveViewRenderScale(Rendering::ViewId viewId) const;
 
+    // Which producer arm writes the deforming surfaces into the shared motion
+    // target this run. Resolved at initialization from the three switches; the
+    // setter is what resolution calls, and what lets a test fixture render one
+    // arm without mutating the process environment. None means the deformer
+    // lane records nothing at all, which is the default and the state in which
+    // this frame is the frame it was before the producer existed.
+    DeformationMotionArm GetDeformationMotionArm() const { return m_DeformationMotionArm; }
+    void SetDeformationMotionArm(DeformationMotionArm arm) { m_DeformationMotionArm = arm; }
+
     // Dynamic resolution scaling. Off pins the scale to 1.0 (Native) — even
     // when the mode is already Off, so a startup-applied persisted scale
     // cannot survive into Native. Fixed leaves the scale exactly where the
@@ -1399,9 +1426,9 @@ class RenderServices
     void AddFrameMovers(std::span<const FrameMoverRecord> movers);
     // Declare-time only (after extraction completed for the frame).
     std::span<const FrameMoverRecord> GetFrameMovers() const { return m_FrameMovers; }
-    // Content that changes a view's pixels or depth this frame with no instance move and no
-    // content epoch: moving particles, depth-writing producer draws, a changing ocean surface or
-    // a CBT update in the view. TAA and the reflections then do not treat the view as still.
+    // Content that changes a view's pixels this frame without moving an
+    // instance or advancing any content epoch (moving particles). Extraction
+    // reports it per view; TAA then does not certify that view stationary.
     // Cleared by BeginWorldDrawFrame like the movers list.
     void NotifyUnversionedMotion(Rendering::ViewId viewId);
     // Declare-time only. True for a view reported this frame or the previous
@@ -1424,6 +1451,7 @@ class RenderServices
     void EmitProducerForwardCommandsForView(
         Rendering::ViewId viewId,
         ForwardEmitPurpose purpose = ForwardEmitPurpose::World);
+    void EmitFrameForwardCommandsForView(Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId);
     // While true, the next world pass(es) declared bind a zero-intensity
     // EnvData so the forward IBL contributes no environment radiance. The
     // reflection-probe capture sets this around its own face passes (with
@@ -1438,11 +1466,7 @@ class RenderServices
     void EmitProducerDepthCommandsForView(Rendering::ViewId viewId);
     // Build batch keys for a single view only (no global material/pipeline switching).
     void BuildWorldBatchKeysForView(Rendering::ViewId viewId);
-    /// Adds this frame's world records. `setRevision` names an unchanged record set
-    /// (KeyedWorldSubmissions::Revision); WorldDrawBuilder::kNoRecordSet names none, and the frame derives
-    /// every view's batch keys again.
-    void SubmitWorldSubmissions(std::span<const WorldSubmissionRecord> records,
-                                uint64_t setRevision = WorldDrawBuilder::kNoRecordSet);
+    void SubmitWorldSubmissions(std::span<const WorldSubmissionRecord> records);
 
     // Per-sub-phase wall-clock timing published once per frame by
     // RenderExtractionSystem::Update. Diagnostic only (benign racy read from
@@ -1474,10 +1498,7 @@ class RenderServices
         // Last-frame counters (context for the timing splits).
         // On GE_EXTRACTION_FEED fast frames RecordCount/RebuildCount/
         // SkippedCount describe the LAST FULL PASS, not a per-frame walk —
-        // read FastFrame/FeedPatchedCount for what the tick actually did. On
-        // a structural delta frame RecordCount still describes the last full
-        // pass; RebuildCount/SkippedCount and DeltaPreparedCount describe the
-        // delta pass.
+        // read FastFrame/FeedPatchedCount for what the tick actually did.
         uint32_t RecordCount = 0;     // renderable records gathered
         uint32_t SubmissionCount = 0; // per-view submissions produced
         uint32_t RebuildCount = 0;    // records that MISSED the dirty-skip (rebuilt + uploaded)
@@ -1493,8 +1514,6 @@ class RenderServices
         uint32_t WindowTicks = 0;          // ticks currently in the stats window
         uint32_t EscalationReasonBits = 0; // why the full lane ran (0 on fast ticks)
         uint32_t FeedPatchedCount = 0;     // dirty entities patched this fast tick
-        uint32_t DeltaFrame = 0;           // 1 = a structural change took the delta lane
-        uint32_t DeltaPreparedCount = 0;   // renderables the delta lane re-prepared
         uint32_t SubsetRefreshedCount = 0; // always-refresh entities re-prepared this fast tick
         // Pending-transient breakdown at the last full pass (E8). Per-shape so
         // a permanently pinned full lane is attributable in one poll — a
@@ -1503,7 +1522,6 @@ class RenderServices
         uint32_t PendingMaterialLoad = 0;  // material GUID set but not registered yet
         uint32_t PendingPipeline = 0;      // material pipeline still compiling
         uint32_t PendingSentinelIndex = 0; // mesh/material GPU index still the ~0u sentinel
-        uint32_t PendingUnresolvedTransform = 0; // WorldTransform not resolved yet (Version 0)
         // Scene-composition counts (the S0 residual-attribution assertion:
         // "residual ~= CLEANUP" holds only for particle/volume/ocean-free
         // compositions — bench post-processing asserts these are zero before
@@ -1572,6 +1590,8 @@ class RenderServices
     // start of each frame by BeginWorldDrawFrame(). Called by RenderExtractionSystem
     // for ECS worlds and directly by isolated renderers (e.g. thumbnails).
     void SubmitLight(uint64 worldId, const ExtractedLight& light);
+    void SetWorldWeatherWind(uint64 worldId, const WeatherWindGPU& wind) { m_WorldWeatherWind[worldId] = wind; }
+    void PackViewWeather(Rendering::ViewId viewId, uint64 worldId, ForwardLightUBO& ubo) const;
 
     // Sort a world's submitted lights strongest-first (view-independent
     // contribution), deterministic tie-break by SortId. Single source of truth:
@@ -1759,14 +1779,8 @@ class RenderServices
     using ForwardEmitFn = std::function<void(ForwardEmitContext&)>;
     using DepthEmitFn = std::function<void(DepthEmitContext&, DepthPassType)>;
 
-    // `writesDepth` is the producer's depth contract for idle recompute
-    // elision: true (the conservative default) declares its draws can change
-    // the rasterized DEPTH of a view (opaque/alpha-tested content — terrain,
-    // grass, water surfaces), which pins every depth-derived elision family
-    // to recompute each frame while the producer is registered. Blend-only
-    // producers that never write depth (smoke/spray billboards) pass false —
-    // their color animation is invisible to depth-derived passes.
-    [[nodiscard]] ScopedSubscription RegisterForwardEmit(ForwardEmitFn fn, bool writesDepth = true);
+    // `options` states the producer's depth contract and when it runs (ForwardProducerOptions).
+    [[nodiscard]] ScopedSubscription RegisterForwardEmit(ForwardEmitFn fn, ForwardProducerOptions options = {});
     [[nodiscard]] ScopedSubscription RegisterDepthEmit(DepthEmitFn fn);
 
     // Forward DrawCommand stream API. Producers (contributors today; ECS
@@ -1785,6 +1799,10 @@ class RenderServices
     // writable for the frame.
     void EmitForwardCommand(::GameEngine::Rendering::ViewId viewId, const DrawCommand& cmd,
                             ForwardDrawDepth depth, const DrawCommand* prepassHead = nullptr);
+    /// Submit a depth-tested, non-depth-writing draw to the shared transparent order.
+    /// The producer supplies per-view sorting and a stable entity/subdraw tie breaker.
+    void EmitSortedTransparentCommand(::GameEngine::Rendering::ViewId viewId,
+                                      const SortedTransparentCommand& command);
     void EmitLateForwardCommand(::GameEngine::Rendering::ViewId viewId, const DrawCommand& cmd);
     // Declared-read side channel for EmitForwardCommand: a producer whose
     // emitted draw samples a render-graph-written texture descriptor-direct
@@ -2059,8 +2077,6 @@ class RenderServices
     // declare→execute. Reached by RS internals via m_ViewRegistry directly and
     // by external callers through Views().
     ViewRegistry m_ViewRegistry;
-    // Steps once per device frame. It selects the slot of each view's light UBO ring.
-    Rendering::DeviceFrameCounter m_LightRingFrameCounter;
     ViewTemporalHistory m_ViewTemporalHistory;
 
     // Zero-filled placeholder for unwired set0 buffer descriptors (see
@@ -2131,6 +2147,8 @@ class RenderServices
     // override; 1.0 = native (GE_TAA_RENDER_SCALE, the project's
     // rendering.taaRenderScale, and dynamic resolution drive it below 1.0).
     float m_DefaultRenderScale = 1.0f;
+    // Off until a switch or a test fixture selects an arm.
+    DeformationMotionArm m_DeformationMotionArm = DeformationMotionArm::None;
 
     // Dynamic resolution. The controller is inert unless m_DrsMode is Dynamic;
     // m_DrsFixedScale remembers the user's static slider value so leaving
@@ -2146,6 +2164,7 @@ class RenderServices
     bool m_WarnedDrsIneffective = false;
 
     // Per-world extracted light lists (cleared at start of each frame).
+    std::unordered_map<uint64, WeatherWindGPU> m_WorldWeatherWind;
     std::unordered_map<uint64, std::vector<ExtractedLight>> m_WorldLights;
     // Worlds that already warned about carrying more directional lights than
     // kMaxDirectionalLights (the overflow lights contribute nothing; see
@@ -2157,6 +2176,7 @@ class RenderServices
     // republished by each world's extraction pass before probes read them).
     std::unordered_map<uint64, uint64> m_WorldRenderContentDigests;
     // Per-world resolved post-process settings (cleared at start of each frame).
+    std::unordered_map<Rendering::ViewId, DepthPixelationViews> m_DepthPixelationViews;
     std::unordered_map<uint64, PostProcessSettings> m_WorldPostProcess;
     std::unordered_map<uint64, std::vector<VolumetricFogLocalVolume>> m_WorldVolumetricFogVolumes;
     static const PostProcessSettings kDefaultPostProcess;
@@ -2195,6 +2215,7 @@ class RenderServices
         // pointer alone is never enough (RGFrames are re-begun across frames).
         Rendering::RenderGraph::RGFrameStamp For;
         Rendering::RenderGraph::RGTexture ShadowMapArray{}; // pool import, ONCE per (view, frame)
+        Rendering::RenderGraph::RGFrame::TypedUpload<ShadowDataGPU> DirectionalShadowData{};
         Rendering::RenderGraph::RGTexture TransmittanceShadowArray{}; // pool import: per-cascade glass tint (translucent shadows), parallel to ShadowMapArray; only when the view has transmissive casters
         Rendering::RenderGraph::RGTexture MsmMoments{};     // external import (feature-owned physical)
         // PCSS min/max pyramid over the cascade depth (ShadowMinMaxPyramid):
@@ -2209,6 +2230,8 @@ class RenderServices
         // ONCE per (view, frame); dedup-by-handle lands these on the SAME ids the
         // IBLGen bake's writes produced, forming the bake->world StorageWrite->Sampled
         // edge (and ordering the bake before this view's world pass).
+        Rendering::RenderGraph::RGTexture IblLocalIrradiance[2]{};
+        Rendering::RenderGraph::RGTexture IblLocalPrefilter[2]{};
         Rendering::RenderGraph::RGTexture IblIrradiance{};
         Rendering::RenderGraph::RGTexture IblPrefilter{};
         Rendering::RenderGraph::RGTexture IblBrdfLut{};
@@ -2220,7 +2243,7 @@ class RenderServices
         // The SAME upload alloc the world pass's resolved table reads —
         // written at the area arm's declaration, bound by name "AreaShadowData".
         Rendering::RenderGraph::RGFrame::TypedUpload<AreaShadowDataGPU> AreaShadowData{};
-        // The motion variant's per-view block, written at the producer's
+        // The motion variant's per-view block, written at the producer arm's
         // declaration and bound by the block's INSTANCE name "MotionParams" —
         // reflection names a block by its instance, as it does for Cam and
         // Light. Absent on a view whose producer did not run this frame; the
@@ -2325,8 +2348,6 @@ class RenderServices
     // PerViewResources::WorldPassKeywords). Lets prewarm match the loaded pipeline (IBL in
     // the editor, non-IBL in WASDDemo) instead of guessing.
     Rendering::MaterialKeyword ResolveWorldPassKeywordsForPrewarm() const;
-    // HeightFog when any view's world pass recorded it, None otherwise (ResolveWorldPassKeywordsForPrewarm).
-    Rendering::MaterialKeyword RecordedHeightFogKeyword() const;
 
     Rendering::SamplerHandle m_AreaShadowSampler;
     Rendering::SamplerHandle m_AreaShadowRawSampler;
@@ -2378,10 +2399,10 @@ class RenderServices
     struct ShadowCasterChanges
     {
         uint64_t Version = 0;
-        ShadowCasterChangeScope Scope = ShadowCasterChangeScope::Unbounded;
+        bool Unattributed = true;
         std::vector<ShadowCasterChangeSphere> Spheres;
     };
-    FlatMap<uint64, ShadowCasterChanges> m_ShadowCasterChanges;
+    std::unordered_map<uint64, ShadowCasterChanges> m_ShadowCasterChanges;
 
     // Worlds whose submissions this frame include a material that moves its own
     // vertices, and whether any of those submissions casts shadows. Rebuilt
@@ -2484,6 +2505,9 @@ class RenderServices
     struct SortedTransparentView
     {
         std::vector<SortedTransparentRecord> Records;
+        std::vector<uint32> CompositionMeshOrder;
+        std::vector<TransparentCompositionSlot> CompositionSlots;
+        DrawBindings::BufferEntry CompositionIndices;
         // One entry per run GROUP in discovery order; the partition maps
         // groups to draw slots. Representative binds the run's PSO +
         // descriptor state; Mesh resolves the shared bucket pools every
@@ -2565,7 +2589,7 @@ class RenderServices
     {
         uint64_t Handle = 0;
         ForwardEmitFn Fn;
-        bool WritesDepth = true; // depth contract (see RegisterForwardEmit)
+        ForwardProducerOptions Options;
     };
     struct DepthProducerEntry
     {

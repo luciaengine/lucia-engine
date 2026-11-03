@@ -11,13 +11,13 @@
 
 #include "Animation/AnimationPose.h"
 #include "Animation/EvaluationContext.h"
-#include "Animation/Humanoid/HumanoidRig.h"
+#include "Animation/HumanoidRig.h"
 #include "Animation/Nodes/RetargetNode.h"
 #include "Animation/PoseStack.h"
 #include "Animation/PoseToSkinMatrices.h"
 #include "Animation/RetargetMap.h"
-#include "Animation/Skeleton/SkeletonData.h"
-#include "Animation/Skeleton/SkeletonProfile.h"
+#include "Animation/SkeletonData.h"
+#include "Animation/SkeletonProfile.h"
 
 #include "ECSModules/Rendering/SkeletonStore.h"
 #include "ECSModules/Rendering/ClipStore.h"
@@ -36,6 +36,7 @@
 #include "AssetCore/GUID.h"
 #include "Core/Engine.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 
 #include <algorithm>
 #include <bit>
@@ -102,10 +103,7 @@ ResolvedSource ResolveSourceSkeleton(AssetManager* assets, const AnimationClip& 
 // mesh stays at bind pose. Off by default; cached after first read.
 bool IsRetargetDiagEnabled()
 {
-    static const bool s_Enabled = []() {
-        const char* env = std::getenv("GE_RETARGET_DIAG");
-        return env && env[0] != '\0' && env[0] != '0';
-    }();
+    static const bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_RETARGET_DIAG", false);
     return s_Enabled;
 }
 
@@ -485,7 +483,10 @@ void HumanoidRetargetSystem::Update(ECS::World& world, float32 deltaTime)
     if (m_GPUStore) gpuCharParams.reserve(64);
 
     auto q = world.Query<ECS::Write<HumanoidRetargeterComponent>, ECS::Read<SkeletonRef>>();
-    q.Each([&](ECS::EntityHandle entity, HumanoidRetargeterComponent& rc, const SkeletonRef& sref) {
+    q.Each([&](ECS::EntityHandle entity, ECS::Writable<HumanoidRetargeterComponent> retargeterRow,
+               const SkeletonRef& sref) {
+        HumanoidRetargeterComponent& rc = retargeterRow.Mutable();
+
         // Sync clip selection from AnimatorRef. AnimationSystem skips entities
         // that already have HumanoidRetargeterComponent (~line 263), so clip
         // changes go through here. AnimatorRef is the source of truth: copy

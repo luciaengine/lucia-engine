@@ -9,7 +9,7 @@
 
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector3.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "SceneViewEvents.h"
 #include "Types/Color.h"
 
@@ -55,26 +55,17 @@ struct GizmoHitResult
 // world geometry: the overlay pass draws it twice against scene depth, dimmed
 // where occluded and at full strength where visible.
 //
-// AlwaysOnTop is the opt-in — drawn once, full strength, no depth test, before
-// the depth-tested draws. It covers the marquee that acts on the selection,
-// plus geometry whose world position is an artefact of how it is constructed
-// rather than a place it means to be: a marquee rectangle parked on a plane in
-// front of the camera, or a fill that hugs the very surface it describes.
-//
-// Handle is AlwaysOnTop drawn after every other gizmo: the translate / rotate /
-// scale handles the user grabs sit on top of every overlay, a transparent
-// world overlay (a navigation surface, a spline band) included.
+// AlwaysOnTop is the opt-in — drawn once, full strength, no depth test. It
+// covers the manipulation handles (translate / rotate / scale, and the marquee
+// that acts on the selection), plus geometry whose world position is an
+// artefact of how it is constructed rather than a place it means to be: a
+// marquee rectangle parked on a plane in front of the camera, or a fill that
+// hugs the very surface it describes.
 enum class GizmoDepthMode : std::uint8_t
 {
     SceneDepth,
-    AlwaysOnTop,
-    Handle
+    AlwaysOnTop
 };
-
-// The order the Scene View overlay pass draws the depth modes in; it blends in submission order.
-// AlwaysOnTop backdrops first, SceneDepth (occluded, then visible) over them, the handles last.
-inline constexpr std::array<GizmoDepthMode, 3> kGizmoDepthModeDrawOrder = {
-    GizmoDepthMode::AlwaysOnTop, GizmoDepthMode::SceneDepth, GizmoDepthMode::Handle};
 
 // A SceneDepth draw's strength where scene geometry occludes it: the fraction of its alpha the
 // overlay pass's occluded draw keeps. World overlays that draw themselves against scene depth
@@ -547,9 +538,6 @@ void AppendThickWireCircleTriangles(const GizmoRenderContext& context,
 			const std::vector<GizmoLineGroup>* GetGizmoLineGroups(Rendering::ViewId viewId);
 			void ResetGizmoTriangleGroups(Rendering::ViewId viewId);
 			const std::vector<GizmoTriangleGroup>* GetGizmoTriangleGroups(Rendering::ViewId viewId);
-			// Frees the line and triangle groups of a closed view and the vertex streams they keep.
-			// The groups are per thread: call it on the thread that records the view's gizmos.
-			void ReleaseGizmoGroups(Rendering::ViewId viewId);
 
 			// Utility used by interactive gizmos for picking/dragging. Projects a
 			// world-space ray onto an infinite line defined by an origin and

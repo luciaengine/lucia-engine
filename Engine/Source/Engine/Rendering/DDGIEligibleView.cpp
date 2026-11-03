@@ -15,7 +15,7 @@ constexpr float kFollowMotionEpsilonSq = 1.0e-7f;
 
 bool IsDDGIEligibleView(const Rendering::ViewDesc& view, uint64 worldId)
 {
-    if (view.cameraId == 0 || view.ActiveRenderLayerMask() == Rendering::RenderLayerMask::None())
+    if (view.cameraId == 0 || view.ActiveRenderLayerMask() == 0u)
         return false;
     if (view.purpose != Rendering::ViewPurpose::Game && view.purpose != Rendering::ViewPurpose::EditorScene)
         return false;
@@ -41,7 +41,7 @@ bool DDGIFollowCameraTracker::Update(const ViewRegistry& views, uint64 worldId,
         if (cam == nullptr)
             continue;
 
-        const Mathematics::Vector3 pos(cam->cameraPos.x, cam->cameraPos.y, cam->cameraPos.z);
+        const Mathematics::Vector3 pos(cam->cameraPos[0], cam->cameraPos[1], cam->cameraPos[2]);
         const bool isGame = view.purpose == Rendering::ViewPurpose::Game;
         if (!found || (isGame && !foundIsGame))
         {

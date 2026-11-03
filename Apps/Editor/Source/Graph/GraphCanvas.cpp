@@ -1,20 +1,21 @@
 #include "Graph/GraphCanvas.h"
+#include "UI/ThemeAccent.h"
 
 #include "Graph/GraphConnectionRouting.h"
 #include "Graph/GraphRouteSolver.h"
+#include "Platform/Environment.h"
 
 #include "Graph/NodeColorSettings.h"
-#include "Graph/GraphNode/GraphNodeOverlap.h"
-#include "Mathematics/Interpolation.h"
+#include "Graph/GraphNodeOverlap.h"
 #include "Platform/SystemMetrics.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "Graph/GraphCanvasEditKeys.h"
 #include "Editor/Shortcuts/EditorShortcuts.h"
 #include "Graph/GraphModel.h"
-#include "Graph/GraphNode/GraphNodePool.h"
-#include "Graph/GraphNode/GraphNodeRegistry.h"
+#include "Graph/GraphNodePool.h"
+#include "Graph/GraphNodeRegistry.h"
 #include "Graph/GraphOverlay.h"
-#include "Graph/GraphPort/GraphPort.h"
+#include "Graph/GraphPort.h"
 #include "Graph/GraphPortedNode.h"
 #include "Mathematics/Rect.h"
 #include "Mathematics/Vector2.h"
@@ -31,8 +32,8 @@
 #include "Logger/Logger.h"
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
-#include "Types/StringUtils.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -86,7 +87,7 @@ void LoadNodeDropShadowStyleIfNeeded()
     loadFloat(GraphCanvas::kNodeDropShadowBlurPreference, g_NodeDropShadowBlur);
     loadFloat(GraphCanvas::kNodeDropShadowOpacityPreference, g_NodeDropShadowOpacity);
     g_NodeDropShadowBlur = std::max(0.0f, g_NodeDropShadowBlur);
-    g_NodeDropShadowOpacity = Math::Clamp01(g_NodeDropShadowOpacity);
+    g_NodeDropShadowOpacity = std::clamp(g_NodeDropShadowOpacity, 0.0f, 1.0f);
     g_NodeDropShadowStyleLoaded = true;
 }
 
@@ -122,7 +123,7 @@ std::string NormalizeSelectedNodeWireEmphasis(std::string value)
    the emphasis only lifts it toward white or fades it into a halo. */
 uint32_t WireColorWithAlpha(uint32_t rgba, float alpha)
 {
-    const uint32_t a = static_cast<uint32_t>(Math::Clamp01(alpha) * 255.f + 0.5f);
+    const uint32_t a = static_cast<uint32_t>(std::clamp(alpha, 0.f, 1.f) * 255.f + 0.5f);
     return (rgba & 0x00FFFFFFu) | (a << 24);
 }
 
@@ -221,7 +222,7 @@ void GraphCanvas::SetNodeDropShadowStyle(float offsetX, float offsetY, float blu
     g_NodeDropShadowOffsetX = offsetX;
     g_NodeDropShadowOffsetY = offsetY;
     g_NodeDropShadowBlur = std::max(0.0f, blur);
-    g_NodeDropShadowOpacity = Math::Clamp01(opacity);
+    g_NodeDropShadowOpacity = std::clamp(opacity, 0.0f, 1.0f);
     g_NodeDropShadowStyleLoaded = true;
     MarkLiveCanvasesDirty();
 }
@@ -304,10 +305,10 @@ void GraphCanvas::ApplyNodeDropShadows()
                       static_cast<double>(g_NodeDropShadowOffsetX),
                       static_cast<double>(g_NodeDropShadowOffsetY),
                       static_cast<double>(g_NodeDropShadowBlur),
-                      static_cast<double>(Math::Clamp01(g_NodeDropShadowOpacity)));
+                      static_cast<double>(std::clamp(g_NodeDropShadowOpacity, 0.0f, 1.0f)));
     else
         std::snprintf(shadow, sizeof(shadow), "none");
-    Style().SetCustom(HashStringId("--graph-node-shadow"), std::string(shadow));
+    Overrides().SetCustom(HashStringId("--graph-node-shadow"), std::string(shadow));
 }
 
 float GraphCanvas::SnapGraphCoordinate(float value)
@@ -422,7 +423,8 @@ void HideTooltip(GraphCanvas* canvas)
 
 std::string NormalizedPortType(std::string type)
 {
-    type = ToLowerAscii(type);
+    std::transform(type.begin(), type.end(), type.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (type == "float2")
         return "vec2";
     if (type == "float3")
@@ -498,11 +500,7 @@ bool ClickedTwice(GraphCanvas::PressTracker& tracker, const std::string& nodeId,
 
 bool WireAuditEnabled()
 {
-    static const bool enabled = []
-    {
-        const char* value = std::getenv("GE_GRAPH_WIRE_AUDIT");
-        return value && value[0] == '1';
-    }();
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_GRAPH_WIRE_AUDIT", false);
     return enabled;
 }
 
@@ -757,7 +755,6 @@ GraphCanvas::GraphCanvas(Graph::Model* model)
     RegisterEventHandlers();
     EnsureNodeChrome();
     RebuildNodeWidgets();
-    MaybeArmSpikeDummyNodes();
 }
 
 GraphCanvas::~GraphCanvas()
@@ -802,7 +799,7 @@ void GraphCanvas::EnsureNodeChrome()
 {
     auto layer = std::make_unique<UIElement>();
     layer->AddClass("graph-node-layer");
-    layer->Style()
+    layer->Overrides()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(m_PanX))
         .Set(Style::PositionTop, StyleLength::Px(m_PanY))
@@ -824,16 +821,6 @@ void GraphCanvas::EnsureNodeChrome()
     // A fresh layer wears no class yet, so the cached index cannot stand.
     m_NodeTitleAlignIndex = -1;
     ApplyNodeTitleAlignment();
-}
-
-void GraphCanvas::MaybeArmSpikeDummyNodes()
-{
-    const char* env = std::getenv("GE_GRAPH_SPIKE_NODES");
-    if (!env || env[0] == '\0')
-        return;
-    const int count = std::atoi(env);
-    if (count > 0)
-        SpikeSpawnDummyNodes(count);
 }
 
 void GraphCanvas::ApplyNodeTitleAlignment()
@@ -876,17 +863,17 @@ void GraphCanvas::ApplyNodeLayerZoomClass()
         char buf[24];
         std::snprintf(buf, sizeof(buf), "%.4f", m_Zoom);
         static const StringId kLengthScaleVar = HashStringId("--length-scale");
-        m_NodeLayer->Style().SetCustom(kLengthScaleVar, buf);
+        m_NodeLayer->Overrides().SetCustom(kLengthScaleVar, buf);
 
         const float radiusPx = publishedRadius * m_Zoom;
         static const StringId kNodeRadiusVar = HashStringId("--graph-node-radius");
         static const StringId kValueRadiusVar = HashStringId("--graph-value-radius");
         static const StringId kRingRadiusVar = HashStringId("--graph-ring-radius");
         std::snprintf(buf, sizeof(buf), "%.2fpx", radiusPx);
-        m_NodeLayer->Style().SetCustom(kNodeRadiusVar, buf);
-        m_NodeLayer->Style().SetCustom(kValueRadiusVar, buf);
+        m_NodeLayer->Overrides().SetCustom(kNodeRadiusVar, buf);
+        m_NodeLayer->Overrides().SetCustom(kValueRadiusVar, buf);
         std::snprintf(buf, sizeof(buf), "%.2fpx", radiusPx + std::max(1.0f, m_Zoom));
-        m_NodeLayer->Style().SetCustom(kRingRadiusVar, buf);
+        m_NodeLayer->Overrides().SetCustom(kRingRadiusVar, buf);
         static const StringId kRingWidthVar = HashStringId("--graph-ring-width");
         /* Never thinner than the 2px base: a ~1px border on the fractional
            edges a zoomed-out layout produces drops below pixel coverage on
@@ -894,7 +881,7 @@ void GraphCanvas::ApplyNodeLayerZoomClass()
            chrome keeps screen weight at zoom-out (it scales up with zoom-in
            as before). */
         std::snprintf(buf, sizeof(buf), "%.2fpx", std::max(2.0f, 2.0f * m_Zoom));
-        m_NodeLayer->Style().SetCustom(kRingWidthVar, buf);
+        m_NodeLayer->Overrides().SetCustom(kRingWidthVar, buf);
         m_NodeLayer->MarkDirty(StyleDirty);
     }
 }
@@ -907,7 +894,7 @@ void GraphCanvas::SyncNodeLayerTransform()
     // Layout impact: Yoga must restyle left/top this frame. SetPositionOnlyPx is
     // visual-only, so committed node rects stay put while the overlay (which
     // draws from m_PanX) moves — edges slide, nodes jump on the next solve.
-    m_NodeLayer->Style()
+    m_NodeLayer->Overrides()
         .Set(Style::PositionLeft, StyleLength::Px(m_PanX))
         .Set(Style::PositionTop, StyleLength::Px(m_PanY));
 
@@ -915,74 +902,9 @@ void GraphCanvas::SyncNodeLayerTransform()
     if (m_LaidOutZoom != m_Zoom)
     {
         m_LaidOutZoom = m_Zoom;
-        LayoutSpikeDummyNodes();
         RebuildNodeWidgets();
     }
     m_NodeLayer->MarkDirty(VisualDirty);
-}
-
-void GraphCanvas::LayoutSpikeDummyNodes()
-{
-    if (!m_NodePool || m_SpikeDummyCount <= 0)
-        return;
-
-    constexpr int kCols = 6;
-    constexpr float kGapX = 40.0f;
-    constexpr float kGapY = 40.0f;
-    bool anyChanged = false;
-    for (int i = 0; i < m_SpikeDummyCount; ++i)
-    {
-        GraphPortedNode* node = m_NodePool->FindByModelId("spike-" + std::to_string(i));
-        if (!node)
-            continue;
-        const int col = i % kCols;
-        const int row = i / kCols;
-        const float gx = static_cast<float>(col) * (kNodeWidth + kGapX);
-        const float gy = static_cast<float>(row) * (kNodeHeight + kGapY);
-        const Mathematics::Rect rect{
-            gx * m_Zoom,
-            gy * m_Zoom,
-            kNodeWidth * m_Zoom,
-            kNodeHeight * m_Zoom
-        };
-        if (node->SetGraphRect(rect))
-            anyChanged = true;
-    }
-    if (anyChanged)
-        MarkDirty(VisualDirty);
-}
-
-void GraphCanvas::SpikeSpawnDummyNodes(int count)
-{
-    if (count <= 0 || !m_NodePool)
-        return;
-
-    m_SpikeDummyCount = count;
-    for (int i = 0; i < count; ++i)
-    {
-        const std::string spikeId = "spike-" + std::to_string(i);
-        GraphPortedNode* node = m_NodePool->FindByModelId(spikeId);
-        if (!node)
-            node = m_NodePool->Acquire();
-        if (!node)
-            continue;
-        node->Reset();
-        node->SetModelNodeId(spikeId);
-        node->EnsurePortCount(2, 2);
-        for (size_t p = 0; p < 2; ++p)
-        {
-            if (GraphPort* port = node->InputPortAt(p))
-                UI::Layout::SetElementHidden(*port, false);
-            if (GraphPort* port = node->OutputPortAt(p))
-                UI::Layout::SetElementHidden(*port, false);
-        }
-        node->SetTitleText("Dummy " + std::to_string(i));
-        node->SetValueText("spike");
-        node->ApplyVisualState({i == 0, i == 1, i == 2, i == 3, false});
-    }
-    m_LaidOutZoom = m_Zoom;
-    LayoutSpikeDummyNodes();
-    Logger::Log::Info("[GraphCanvas] SpikeSpawnDummyNodes count={}", count);
 }
 
 void GraphCanvas::SetModel(Graph::Model* model)
@@ -1075,9 +997,16 @@ bool GraphCanvas::NodeMatchesSearch(const Graph::Node& node) const
     if (m_NodeSearchFilter.empty() || !m_Model)
         return false;
     const NodeTypeMeta* meta = GraphNodeRegistry::Get().FindNodeMeta(m_Model->KindId, node.TypeId);
-    const std::string displayName = ToLowerAscii(meta ? meta->DisplayName : node.TypeId);
-    const std::string query = ToLowerAscii(m_NodeSearchFilter);
-    const std::string typeId = ToLowerAscii(node.TypeId);
+    std::string displayName = meta ? meta->DisplayName : node.TypeId;
+    std::string query = m_NodeSearchFilter;
+    std::string typeId = node.TypeId;
+    auto toLower = [](std::string& s) {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    };
+    toLower(query);
+    toLower(displayName);
+    toLower(typeId);
     if (m_NodeSearchField == "name")
         return displayName.find(query) != std::string::npos;
     if (m_NodeSearchField == "type")
@@ -1137,7 +1066,6 @@ void GraphCanvas::FillNodeEditHost(GraphNodeEditHost& host)
     host.ExpandedView = m_ExpandedNodes;
     host.Assets = m_AssetRegistry;
     host.Thumbnails = m_ThumbnailProvider;
-    host.PingAsset = m_PingAsset;
     host.OnChanged = [this]() { NotifyGraphChanged(); };
     host.IsInputConnected = [this](const std::string& nodeId, const std::string& portId)
     {
@@ -1221,8 +1149,6 @@ void GraphCanvas::RebuildNodeWidgets()
         const std::string& id = slot->GetModelNodeId();
         if (id.empty() || liveIds.count(id) != 0)
             continue;
-        if (id.rfind("spike-", 0) == 0)
-            continue;
         m_NodePool->Recycle(slot);
     }
 
@@ -1244,7 +1170,7 @@ void GraphCanvas::ApplyNodeVisualStates()
         if (!slot)
             continue;
         const std::string& id = slot->GetModelNodeId();
-        if (id.empty() || id.rfind("spike-", 0) == 0)
+        if (id.empty())
             continue;
         bool searchMatch = false;
         if (m_Model)
@@ -1344,7 +1270,7 @@ void GraphCanvas::RebindVisibleNodes()
         if (BindLiveNode(node))
             anyChanged = true;
         /* The colours reach the node through custom properties, which only take
-           effect when the cascade re-runs — the same reason ApplyAccentColorToUI
+           effect when the cascade re-runs — the same reason AccentColorSettings
            follows its stylesheet swap with MarkStyleDirtyAll. This is that,
            scoped to the node instead of the whole UI. */
         slot->MarkDirty(UIElement::StyleDirty | UIElement::VisualDirty);
@@ -4426,7 +4352,7 @@ void GraphCanvas::RefreshCompatiblePortHighlights()
 }
 
 void GraphCanvas::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
-                                             const ResolvedStyle& /*style*/,
+                                             const ResolvedStyle& style,
                                              float x, float y, float W, float H)
 {
     RefreshCompatiblePortHighlights();
@@ -4584,7 +4510,8 @@ void GraphCanvas::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
     // --------------- Connections ---------------
     constexpr float kLineThickness   = 2.2f;
     const float trackOffsetPx = kWireSeparationGraph * m_Zoom; /* this preview is in screen px */
-    const uint32_t hoveredColor = PackFromARGB(0xFF3A8FFFu);
+    const uint32_t accentArgb = UI::ResolveAccentArgb(style);
+    const uint32_t hoveredColor = PackFromARGB(accentArgb);
     const uint32_t selectedColor = PackFromARGB(0xFFE8C547u);
 
     auto emitBezier = [&](float sx0, float sy0, float sx1, float sy1,
@@ -4663,7 +4590,7 @@ void GraphCanvas::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
             return true;
         }
 
-        float remaining = Math::Clamp01(t) * total;
+        float remaining = std::clamp(t, 0.0f, 1.0f) * total;
         for (size_t i = 0; i + 1 < xs.size(); ++i)
         {
             const float dx = xs[i + 1] - xs[i];
@@ -4692,7 +4619,7 @@ void GraphCanvas::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
         float cx1 = 0.0f;
         float cy1 = 0.0f;
         ComputeConnectionBezierControls(sx0, sy0, sx1, sy1, m_Zoom, cx0, cy0, cx1, cy1);
-        t = Math::Clamp01(t);
+        t = std::clamp(t, 0.0f, 1.0f);
         const float u = 1.0f - t;
         const float u2 = u * u;
         const float u3 = u2 * u;
@@ -4887,9 +4814,10 @@ void GraphCanvas::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
         // Only draw if box has some area
         if (right - left > 2.0f && bottom - top > 2.0f)
         {
-            // Semi-transparent blue fill
-            const uint32_t fillColor = PackFromARGB(0x403A8FFFu); // 25% alpha blue
-            const uint32_t borderColor = PackFromARGB(0xFF3A8FFFu); // solid blue
+            // Accent fill at 25% alpha, solid accent border.
+            constexpr uint32_t kSelectionBoxFillAlpha = 0x40000000u;
+            const uint32_t fillColor = PackFromARGB(kSelectionBoxFillAlpha | (accentArgb & 0x00FFFFFFu));
+            const uint32_t borderColor = PackFromARGB(accentArgb);
             
             // Fill rectangle
             ctx.Emit(MakeRect(left * cs, top * cs, 

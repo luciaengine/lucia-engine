@@ -1,5 +1,5 @@
 {
-  "name": "@game-crafters-guild/openengine-web",
+  "name": "@openengine/web",
   "version": "0.0.0",
   "private": true,
   "description": "The engine on a web page: a WebGPU renderer and an ECS behind a small TypeScript API.",

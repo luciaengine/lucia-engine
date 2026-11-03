@@ -4,7 +4,7 @@
 #include "Ocean/OceanTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 #include "Rendering/Core/RenderGraph/RGReadbackRing.h"
 
 #include <atomic>
@@ -42,7 +42,7 @@ struct OceanGPUQueryParamsGPU
     float32 _Pad1 = 0.0f;
 
     OceanCascadeLayoutGPU CombinedCascade;
-    Mathematics::Vector4 Points[kMaxOceanGPUQueryPointsPerDispatch];
+    float32 Points[kMaxOceanGPUQueryPointsPerDispatch][4] = {};
 };
 static_assert(sizeof(OceanGPUQueryParamsGPU) ==
                   48 + sizeof(OceanCascadeLayoutGPU) +
@@ -106,9 +106,9 @@ private:
     };
     struct ResultGPU
     {
-        Mathematics::Vector4 Position;
-        Mathematics::Vector4 Normal;
-        Mathematics::Vector4 Displacement;
+        float32 Position[4] = {};
+        float32 Normal[4] = {};
+        float32 Displacement[4] = {};
     };
 
     ::GameEngine::Rendering::IDevice* m_Device = nullptr;

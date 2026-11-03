@@ -3,23 +3,19 @@
 // SelectionTool::OnPointerEvent calls SceneViewController::OnEntityPicked, which lives in
 // SceneViewController.cpp with UI-panel deps. EditorTests exercise the tool math, not the
 // controller, so no-op stubs at link time are sufficient. The picking entry points are NOT
-// stubbed: the engine's SceneRaycast answers them.
+// stubbed — ScenePickTerrainInclusionTests compiles the real MeshPickingService in and
+// exercises them.
 
 #include "SceneView/SceneViewGizmos.h"
 #include "SceneView/SceneViewNoticeOverlay.h"
-#include "SceneViewNoticeRecorder.h"
-#include "SceneView/SceneViewController.h"
+#include "SceneViewController.h"
 #include "UI/Controls/ScenePostFxMenu.h"
 #include "Mathematics/Vector3.h"
-
-#include <string>
-#include <utility>
 
 namespace GameEngine
 {
     void SceneViewController::OnEntityPicked(ECS::EntityHandle, bool, bool, bool) {}
     void SceneViewController::FrameOrigin() {}
-    void SceneViewController::StartCameraTween(const SceneViewCameraPose&, float) {}
     void SceneViewController::SetHoverEntity(ECS::EntityHandle, bool, HoverEntitySource) {}
 }
 
@@ -66,14 +62,9 @@ namespace GameEngine
 
 namespace GameEngine::Editor
 {
-    // The real notice is a view overlay (SceneViewNoticeOverlay.cpp); the tests read the last text.
-    std::string& TestStubs::LastSceneViewNotice()
-    {
-        static std::string s_Text;
-        return s_Text;
-    }
-
-    void ShowSceneViewNotice(std::string text) { TestStubs::LastSceneViewNotice() = std::move(text); }
+    // The Mark-up tool's play-mode notice (real impl in SceneViewNoticeOverlay.cpp, a view
+    // overlay); the mark-up tests read the refusal instead.
+    void ShowSceneViewNotice(std::string) {}
 }
 
 namespace GameEngine::Editor

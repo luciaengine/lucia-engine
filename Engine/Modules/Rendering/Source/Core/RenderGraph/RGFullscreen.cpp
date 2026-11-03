@@ -1,11 +1,9 @@
 #include "Rendering/Core/RenderGraph/RGFullscreen.h"
 
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
-#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
+#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Materials/ShaderLayoutShape.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
-
-#include "Logger/Logger.h"
 
 #include <array>
 #include <cassert>
@@ -29,53 +27,29 @@ PipelineDesc MakeFullscreenPipelineDesc(const char* debugName)
 RGPass AddFullscreenPass(RGFrame& frame, const RGFullscreenDesc& desc)
 {
     assert(desc.Name && desc.Target.IsValid() && "AddFullscreenPass: name + target required");
-    // Over a cap the pass is refused whole: dropping the inputs past the cap would bind a shader
-    // whose descriptors are partly unwritten.
-    if (desc.Textures.size() > kMaxFullscreenTextureInputs || desc.Buffers.size() > kMaxFullscreenBufferInputs)
-    {
-        Logger::Log::Error("AddFullscreenPass '{}': {} texture and {} buffer inputs exceed the caps of {} and "
-                           "{} (RGFullscreen.h); the pass is not declared",
-                           desc.Name, desc.Textures.size(), desc.Buffers.size(), kMaxFullscreenTextureInputs,
-                           kMaxFullscreenBufferInputs);
-        return {};
-    }
+    assert(desc.Textures.size() <= kMaxFullscreenTextureInputs &&
+           "AddFullscreenPass: raise kMaxFullscreenTextureInputs");
+    assert(desc.Buffers.size() <= kMaxFullscreenBufferInputs &&
+           "AddFullscreenPass: raise kMaxFullscreenBufferInputs");
 
     // The spans die with the caller's frame; the exec lambda carries copies.
     std::array<RGFullscreenTextureInput, kMaxFullscreenTextureInputs> textures{};
-    const uint32_t textureCount = static_cast<uint32_t>(desc.Textures.size());
+    const uint32_t textureCount =
+        static_cast<uint32_t>(std::min(desc.Textures.size(), textures.size()));
     for (uint32_t i = 0; i < textureCount; ++i)
         textures[i] = desc.Textures[i];
     std::array<RGFullscreenBufferInput, kMaxFullscreenBufferInputs> buffers{};
-    const uint32_t bufferCount = static_cast<uint32_t>(desc.Buffers.size());
+    const uint32_t bufferCount = static_cast<uint32_t>(std::min(desc.Buffers.size(), buffers.size()));
     for (uint32_t i = 0; i < bufferCount; ++i)
         buffers[i] = desc.Buffers[i];
 
-    const RGResourceDesc& target = frame.Graph().ResourceDesc(desc.Target.Id);
-    if (desc.SecondTarget.IsValid())
-    {
-        const RGResourceDesc& second = frame.Graph().ResourceDesc(desc.SecondTarget.Id);
-        if (second.Width != target.Width || second.Height != target.Height || second.SampleCount != target.SampleCount)
-        {
-            Logger::Log::Error("AddFullscreenPass '{}': the second target is {}x{} x{} and the target is {}x{} x{}; "
-                               "give both the same size and sample count. The pass is not declared",
-                               desc.Name, second.Width, second.Height, second.SampleCount, target.Width,
-                               target.Height, target.SampleCount);
-            return {};
-        }
-    }
     uint32_t width = desc.Width;
     uint32_t height = desc.Height;
     if (width == 0 || height == 0)
     {
-        width = target.Width;
-        height = target.Height;
-    }
-    // A viewport smaller than the target leaves pixels unwritten.
-    RGAttachmentOps ops = desc.Ops;
-    if (ops.WritesEveryPixel && (width != target.Width || height != target.Height))
-    {
-        assert(false && "AddFullscreenPass: WritesEveryPixel needs a viewport that covers the target");
-        ops.WritesEveryPixel = false;
+        const RGResourceDesc& td = frame.Graph().ResourceDesc(desc.Target.Id);
+        width = td.Width;
+        height = td.Height;
     }
 
     return frame.AddPass(
@@ -93,9 +67,7 @@ RGPass AddFullscreenPass(RGFrame& frame, const RGFullscreenDesc& desc)
                     p.Read(buffers[i].Declare,
                            buffers[i].IsStorage ? RGBufferRead::Storage : RGBufferRead::Uniform);
             }
-            p.AttachColor(0, desc.Target, ops);
-            if (desc.SecondTarget.IsValid())
-                p.AttachColor(1, desc.SecondTarget, ops);
+            p.AttachColor(0, desc.Target, desc.Ops);
         },
         [textures, textureCount, buffers, bufferCount, pipeline = desc.Pipeline,
          layout = desc.Layout, width, height](RGContext& ctx)

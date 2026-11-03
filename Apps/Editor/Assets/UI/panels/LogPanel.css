@@ -1,0 +1,413 @@
+/* ======================================
+   Log Panel Styles
+   ====================================== */
+
+.log-panel-container {
+	display: flex;
+	flex-direction: column;
+	flex-grow: 1;
+	min-width: 0;
+	min-height: 0;
+}
+
+/* LogPanel: primary row (filters ± inline actions) + optional secondary row (narrow width). */
+.log-toolbar-stack {
+	display: flex;
+	flex-direction: column;
+	flex-shrink: 0;
+	width: 100%;
+	min-width: 0;
+}
+
+.log-toolbar {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: nowrap;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 8px;
+	width: 100%;
+	min-width: 0;
+	padding: 4px 8px;
+	background-color: #222222;
+	flex-shrink: 0;
+	min-height: 32px;
+}
+
+.log-toolbar-secondary-hidden {
+	display: none;
+}
+
+/* Fixed gap between severity filters and the centered Pause / Copy / Clear block */
+.log-toolbar-copy-filters-gap {
+	flex-shrink: 0;
+	width: 12px;
+	min-width: 12px;
+	height: 1px;
+}
+
+/* DEBUG / INFO / WARNING / ERROR on the left — always one row (no wrapping) */
+.log-toolbar-filters {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	justify-content: flex-start;
+	flex-wrap: nowrap;
+	gap: 8px;
+	flex: 0 0 auto;
+	flex-shrink: 0;
+	box-sizing: border-box;
+}
+
+/* Fills space between filters and search; centers Pause / Copy / Clear on the wide single-row layout.
+   Below the compact width threshold, LogPanel moves this slot (and search) to the secondary toolbar row instead. */
+.log-toolbar-center-slot {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	justify-content: center;
+	flex: 1 0 auto;
+	flex-shrink: 0;
+	/* Approx. Pause + Copy + Clear + gaps at small button size */
+	min-width: 220px;
+	box-sizing: border-box;
+}
+
+/* Pause / Copy / Clear */
+.log-toolbar-main-actions {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 8px;
+	flex-shrink: 0;
+}
+
+/* Severity filter chips (text-only; active = same fill + border as .secondary:hover) */
+.log-filter-toggle.small {
+	/* Explicit 110px basis: `fit-content` isn't recognized by YogaLayout and falls through
+	   to width:auto, which with max-width:none lets the chips (and their filter row) grow
+	   past the toolbar and push Pause/Copy/Clear + search off-screen. */
+	flex: 0 0 110px;
+	width: 110px;
+	min-width: 110px;
+	max-width: 110px;
+	padding-left: 10px;
+	padding-right: 10px;
+	box-sizing: border-box;
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+/* Icon out of flow so the level label can stay truly centered in the chip */
+.log-filter-toggle-check {
+	background-image: url("editor:Icons/checked.svg");
+	position: absolute;
+	left: 10px;
+	top: 50%;
+	margin-top: -5px;
+	width: 10px;
+	height: 10px;
+	flex-shrink: 0;
+}
+
+.log-filter-toggle-label {
+	flex: 0 0 auto;
+	width: auto;
+	min-width: 0;
+	text-align: center;
+}
+
+/* Tint checked.svg to match each level’s label text (same hex as .log-debug / border) */
+.log-filter-check-debug {
+	background-image-tint: rgba(156, 220, 254, 1);
+}
+
+.log-filter-check-info {
+	background-image-tint: rgba(212, 212, 212, 1);
+}
+
+.log-filter-check-warning {
+	background-image-tint: rgba(220, 220, 170, 1);
+}
+
+.log-filter-check-error {
+	background-image-tint: rgba(244, 135, 113, 1);
+}
+
+/* Level filter off (unchecked): dim colored border and label together */
+.log-filter-toggle:not(.checked) {
+	opacity: 0.42;
+}
+
+.log-filter-toggle:not(.checked):hover {
+	opacity: 0.56;
+}
+
+.log-filter-toggle.checked {
+	opacity: 1;
+}
+.log-filter-toggle.checked:hover {
+	opacity: 1;
+}
+.log-filter-toggle.checked:active {
+	opacity: 1;
+}
+.log-filter-toggle.checked.pressed {
+	opacity: 1;
+}
+
+/* Border matches log text color per chip (override .secondary hover/active border) */
+.log-filter-toggle.log-filter-level-debug {
+	border-color: var(--ui_color_log_debug);
+}
+
+.log-filter-toggle.log-filter-level-debug:hover {
+	border-color: var(--ui_color_log_debug);
+}
+
+.log-filter-toggle.log-filter-level-debug:active {
+	border-color: var(--ui_color_log_debug);
+}
+
+.log-filter-toggle.log-filter-level-debug.pressed {
+	border-color: var(--ui_color_log_debug);
+}
+
+.log-filter-toggle.log-filter-level-info {
+	border-color: var(--ui_color_log_info);
+}
+.log-filter-toggle.log-filter-level-info:hover {
+	border-color: var(--ui_color_log_info);
+}
+.log-filter-toggle.log-filter-level-info:active {
+	border-color: var(--ui_color_log_info);
+}
+.log-filter-toggle.log-filter-level-info.pressed {
+	border-color: var(--ui_color_log_info);
+}
+
+.log-filter-toggle.log-filter-level-warning {
+	border-color: var(--ui_color_log_warning);
+}
+.log-filter-toggle.log-filter-level-warning:hover {
+	border-color: var(--ui_color_log_warning);
+}
+.log-filter-toggle.log-filter-level-warning:active {
+	border-color: var(--ui_color_log_warning);
+}
+.log-filter-toggle.log-filter-level-warning.pressed {
+	border-color: var(--ui_color_log_warning);
+}
+
+.log-filter-toggle.log-filter-level-error {
+	border-color: var(--ui_color_log_error);
+}
+.log-filter-toggle.log-filter-level-error:hover {
+	border-color: var(--ui_color_log_error);
+}
+.log-filter-toggle.log-filter-level-error:active {
+	border-color: var(--ui_color_log_error);
+}
+.log-filter-toggle.log-filter-level-error.pressed {
+	border-color: var(--ui_color_log_error);
+}
+
+/* Enabled (checked): 10% fill; border at 70% opacity (same hue as label) */
+.log-filter-toggle.log-filter-level-debug.checked {
+	background-color: var(--ui_color_log_debug_fill);
+	border-color: var(--ui_color_log_debug_edge);
+}
+
+.log-filter-toggle.log-filter-level-debug.checked:hover {
+	background-color: var(--ui_color_log_debug_fill);
+	border-color: var(--ui_color_log_debug_edge);
+}
+
+.log-filter-toggle.log-filter-level-debug.checked:active {
+	background-color: var(--ui_color_log_debug_fill);
+	border-color: var(--ui_color_log_debug_edge);
+}
+
+.log-filter-toggle.log-filter-level-debug.checked.pressed {
+	background-color: var(--ui_color_log_debug_fill);
+	border-color: var(--ui_color_log_debug_edge);
+}
+
+.log-filter-toggle.log-filter-level-info.checked {
+	background-color: var(--ui_color_log_info_fill);
+	border-color: var(--ui_color_log_info_edge);
+}
+.log-filter-toggle.log-filter-level-info.checked:hover {
+	background-color: var(--ui_color_log_info_fill);
+	border-color: var(--ui_color_log_info_edge);
+}
+.log-filter-toggle.log-filter-level-info.checked:active {
+	background-color: var(--ui_color_log_info_fill);
+	border-color: var(--ui_color_log_info_edge);
+}
+.log-filter-toggle.log-filter-level-info.checked.pressed {
+	background-color: var(--ui_color_log_info_fill);
+	border-color: var(--ui_color_log_info_edge);
+}
+
+.log-filter-toggle.log-filter-level-warning.checked {
+	background-color: var(--ui_color_log_warning_fill);
+	border-color: var(--ui_color_log_warning_edge);
+}
+.log-filter-toggle.log-filter-level-warning.checked:hover {
+	background-color: var(--ui_color_log_warning_fill);
+	border-color: var(--ui_color_log_warning_edge);
+}
+.log-filter-toggle.log-filter-level-warning.checked:active {
+	background-color: var(--ui_color_log_warning_fill);
+	border-color: var(--ui_color_log_warning_edge);
+}
+.log-filter-toggle.log-filter-level-warning.checked.pressed {
+	background-color: var(--ui_color_log_warning_fill);
+	border-color: var(--ui_color_log_warning_edge);
+}
+
+.log-filter-toggle.log-filter-level-error.checked {
+	background-color: var(--ui_color_log_error_fill);
+	border-color: var(--ui_color_log_error_edge);
+}
+.log-filter-toggle.log-filter-level-error.checked:hover {
+	background-color: var(--ui_color_log_error_fill);
+	border-color: var(--ui_color_log_error_edge);
+}
+.log-filter-toggle.log-filter-level-error.checked:active {
+	background-color: var(--ui_color_log_error_fill);
+	border-color: var(--ui_color_log_error_edge);
+}
+.log-filter-toggle.log-filter-level-error.checked.pressed {
+	background-color: var(--ui_color_log_error_fill);
+	border-color: var(--ui_color_log_error_edge);
+}
+
+/* Match log line colors; scoped above .button-text { color: inherit } from Button.css */
+.log-filter-label-debug {
+	color: var(--ui_color_log_debug);
+}
+
+.log-filter-label-info {
+	color: var(--ui_color_log_info);
+}
+
+.log-filter-label-warning {
+	color: var(--ui_color_log_warning);
+}
+
+.log-filter-label-error {
+	color: var(--ui_color_log_error);
+}
+
+.log-search-field {
+	flex-grow: 1;
+	min-height: 32px;
+	padding: 6px 8px;
+	background-color: #2a2a2a;
+	border: 1px solid #444444;
+	border-radius: 4px;
+	color: var(--ui_color_text);
+	font-size: var(--ui_font_size_base);
+}
+
+.log-search-field:focus {
+	border-color: var(--ui_color_accent_blue);
+	outline: none;
+}
+
+
+.log-toolbar-search {
+	/* Shared panel search uses absolute in side panes; log toolbar keeps it in flex flow */
+	position: relative;
+	left: unset;
+	right: unset;
+	bottom: unset;
+	top: unset;
+	flex-grow: 0;
+	flex-shrink: 1;
+	align-self: center;
+	height: 22px;
+	/* Reserve 52px for trailing controls, 32px for input padding, and caret/border space. */
+	min-width: 88px;
+	max-width: 320px;
+	width: 320px;
+	margin-left: auto;
+}
+
+.log-toolbar-search-input {
+	width: 100%;
+	height: 100%;
+	min-width: 0;
+}
+
+.log-action-button {
+	align-items: center;
+	justify-content: center;
+	width: 80px;
+	gap: 6px;
+	padding: 2px 8px;
+	height: 24px;
+	flex-shrink: 0;
+	box-sizing: border-box;
+}
+
+.log-action-icon {
+	order: -1;
+	width: 14px;
+	height: 14px;
+	flex-shrink: 0;
+	background-size: contain;
+	background-repeat: no-repeat;
+	background-position: center;
+	background-tint: var(--ui_color_text);
+	pointer-events: none;
+}
+
+.log-action-clear-icon {
+	background-image: url("editor:Icons/trash.svg");
+}
+
+.log-action-pause-icon {
+	background-image: url("editor:Icons/Log/pause.svg");
+}
+
+.log-action-resume-icon {
+	background-image: url("editor:Icons/Log/resume.svg");
+}
+
+.log-action-copy-icon {
+	background-image: url("editor:Icons/copy.svg");
+}
+
+.log-clear-button {
+	order: 0;
+	margin-right: 0px;
+}
+
+.log-pause-button {
+	order: -2;
+	margin-right: 8px;
+}
+
+.log-copy-button {
+	order: -1;
+	margin-right: 8px;
+}
+
+.log-toolbar-search-icon {
+	z-index: 21;
+}
+
+/* Keep search on its own line when both action and input minima cannot fit. */
+.log-toolbar-secondary {
+	flex-wrap: wrap;
+}
+
+.log-toolbar-search-compact {
+	flex-basis: 88px;
+	flex-grow: 1;
+}

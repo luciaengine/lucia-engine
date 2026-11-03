@@ -17,12 +17,10 @@ enum class CountWindow : std::uint8_t
 
 /// Counts global `operator new` calls (every form) from construction until `Count()`.
 ///
-/// It sees the allocations of every image that carries the allocation hook: every test
-/// executable in every configuration, and `Engine`, `Editor`, `Player`,
-/// `GameEngine.Native`, `EditorSDK` and native user modules where
-/// `GE_DEBUG_INSTRUMENTATION` is 1 (Debug, DebugFast). A Release production image
-/// carries no hook, so its own allocations are not counted. Allocations that bypass
-/// `operator new` (`std::malloc`, `std::aligned_alloc`) are never counted.
+/// Only images built with Memory/AllocationHook.inl report allocations. The system-allocator
+/// test build instruments Engine in Debug/DebugFast and the allocation-counter and world-draw
+/// test executables. Other images and direct malloc/aligned_alloc calls are not counted.
+/// Release Engine builds and mimalloc builds do not carry this hook.
 ///
 /// Counts are a measurement for tests and labs, never timing. Overlapping scopes each
 /// read their own delta.

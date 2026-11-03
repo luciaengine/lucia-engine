@@ -4,9 +4,9 @@
 #include "Inspectors/InspectorUIHelpers.h"
 
 #include "Animation/HumanBone.h"
-#include "Animation/Humanoid/HumanoidNameMatcher.h"
-#include "Animation/Humanoid/HumanoidRig.h"
-#include "Animation/Humanoid/HumanoidRigEdit.h"
+#include "Animation/HumanoidNameMatcher.h"
+#include "Animation/HumanoidRig.h"
+#include "Animation/HumanoidRigEdit.h"
 #include "AssetCore/Asset.h"
 
 #include "UI/Controls/Button.h"
@@ -166,7 +166,7 @@ void BuildBoneSlotRow(UIElement* host,
     // optional-unmapped state.
     auto pill = std::make_unique<UIElement>();
     pill->AddClass("humanoid-rig-slot-pill");
-    pill->Style().Set(Style::BackgroundColor, StatusColorForSlot(mapping, canonical));
+    pill->Overrides().Set(Style::BackgroundColor, StatusColorForSlot(mapping, canonical));
     row->AddChild(std::move(pill));
 
     auto label = std::make_unique<Label>();
@@ -229,7 +229,7 @@ void BuildBoneSlotRow(UIElement* host,
         rotLabel->SetText(IsRotationIdentity(mapping->RetargetPoseRotation)
                               ? std::string("identity")
                               : std::string("delta"));
-        rotLabel->Style().Set(Style::Color,
+        rotLabel->Overrides().Set(Style::Color,
                                   IsRotationIdentity(mapping->RetargetPoseRotation)
                                       ? kIdentityRotationLabel
                                       : kPerturbedRotationLabel);
@@ -397,7 +397,7 @@ void BuildAttachmentsSection(UIElement* root, Animation::HumanoidRig* rig)
 
             auto pill = std::make_unique<UIElement>();
             pill->AddClass("humanoid-rig-attachment-pill");
-            pill->Style().Set(Style::BackgroundColor, kAttachmentRowAccent);
+            pill->Overrides().Set(Style::BackgroundColor, kAttachmentRowAccent);
             row->AddChild(std::move(pill));
 
             // Editable name field.

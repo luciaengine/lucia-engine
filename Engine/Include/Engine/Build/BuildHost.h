@@ -1,6 +1,5 @@
 #pragma once
 
-#include <string>
 #include <string_view>
 
 namespace GameEngine {
@@ -21,18 +20,6 @@ BuildHost CurrentBuildHost();
 /// A build from a Linux runtime template (BuildSettings::prebuiltPlayerDirectory)
 /// is checked separately and does not go through this table.
 bool BuildHostCompilesTarget(BuildHost host, std::string_view platformName);
-
-/// The file names of an executable that is built for a target platform.
-struct ExecutableFiles
-{
-    /// `<base name>.exe` on Windows; `<base name>` on Linux, Steam and Mac.
-    std::string Executable;
-    /// `<base name>.pdb` on Windows; empty where the executable holds its own symbols.
-    std::string Symbols;
-};
-
-/// The file names of the executable `baseName` built for the target `platformName`.
-ExecutableFiles TargetExecutableFiles(std::string_view platformName, std::string_view baseName);
 
 /// The error shown when `host` is asked for a target it cannot build: what the
 /// editor on this host builds, and how to build the other targets.

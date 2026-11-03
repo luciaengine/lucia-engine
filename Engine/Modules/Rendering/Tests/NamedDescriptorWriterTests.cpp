@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
-#include "Rendering/Materials/Shader/ShaderMeta.h"
+#include "Rendering/Materials/ShaderMeta.h"
 
 using namespace GameEngine::Rendering;
 

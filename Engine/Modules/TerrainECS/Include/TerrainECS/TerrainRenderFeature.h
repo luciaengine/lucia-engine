@@ -1,12 +1,13 @@
 #pragma once
 
 #include "Engine/Rendering/IRenderFeature.h"
+#include "Terrain/CDLODQuadtree.h"
 #include "Terrain/TerrainTypes.h"
 #include "TerrainECS/GrassWindVolumeRing.h"
 #include "TerrainECS/TerrainService.h"
 #include "TerrainECS/TerrainGpuBake.h"
 #include "TerrainECS/TerrainMaterialLibraryCache.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/DeviceFrameCounter.h"
@@ -18,7 +19,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -36,20 +36,22 @@ class RenderServices;
 namespace GameEngine::TerrainECS
 {
 
-// Extract camera world position from an LH view matrix.
+// Extract camera world position from a column-major LH view matrix.
 // Camera position = -transpose(R) * t, where R = upper-left 3x3, t = column 3.
 inline Mathematics::Vector3 ExtractCameraPosition(const Rendering::CameraData& cam)
 {
-    const Mathematics::Matrix4x4& v = cam.view;
+    const float* v = cam.view;
     return Mathematics::Vector3(
-        -(v[0][0]*v[3][0] + v[0][1]*v[3][1] + v[0][2]*v[3][2]),
-        -(v[1][0]*v[3][0] + v[1][1]*v[3][1] + v[1][2]*v[3][2]),
-        -(v[2][0]*v[3][0] + v[2][1]*v[3][1] + v[2][2]*v[3][2]));
+        -(v[0]*v[12] + v[1]*v[13] + v[2]*v[14]),
+        -(v[4]*v[12] + v[5]*v[13] + v[6]*v[14]),
+        -(v[8]*v[12] + v[9]*v[13] + v[10]*v[14]));
 }
 
 // Cached terrain instance data extracted by TerrainExtractionSystem and consumed by
 // the CBT renderer (via GetActiveTerrains): world bounds, height scale, and the
-// heightmap/splatmap/normalmap bindless indices CBT + grass sample.
+// heightmap/splatmap/normalmap bindless indices CBT + grass sample. The quadtree
+// snapshot remains for the service-side CDLOD LOD-range machinery (TerrainService
+// builds it; nav/debug read it).
 struct TerrainInstanceInfo
 {
     float32 WorldOriginX;
@@ -71,8 +73,6 @@ struct TerrainInstanceInfo
     bool IsTiled = false;
     // Terrain.CastShadows: whether the terrain shadows the directional light (its clearance map).
     bool CastShadows = true;
-    // Terrain.RenderLayers: a view draws the terrain when its layers share one with these.
-    Rendering::RenderLayerMask RenderLayers;
 
     // Phase E resident-window atlas (design §3). When AtlasBacked, the CBT height sample
     // resolves terrain UV -> tile -> slot through AtlasRows + AtlasHeightTexture instead of
@@ -106,11 +106,6 @@ struct TerrainInstanceInfo
     // short of a screenshot.
     uint32 GrassControlBindlessIndex = 0;
     bool GrassControlsSuppressedPlacement = false;
-    // The colour map's bindless indices: the unified map (TerrainGPUParams::ColorMapBindless), or
-    // the atlas map and its coarse map on an atlas-backed terrain. 0 = no map bound.
-    uint32 ColorMapBindlessIndex = 0;
-    uint32 AtlasColorBindlessIndex = 0;
-    uint32 AtlasColorCoarseBindlessIndex = 0;
     uint32 AtlasDim = 0;
     uint32 AtlasSlotStride = 0;
     uint32 AtlasSlotsPerRow = 0;
@@ -124,6 +119,7 @@ struct TerrainInstanceInfo
     std::vector<uint8_t> AtlasRowBytes;
     uint32 AtlasRowCount = 0;
 
+    Terrain::CDLODQuadtree Quadtree;
     uint32 PatchGridSize = 32;
     bool MorphRangesComputed = false;
     float32 VisRanges[Terrain::kMaxLODLevels] = {};
@@ -131,19 +127,57 @@ struct TerrainInstanceInfo
     float32 MorphEnd[Terrain::kMaxLODLevels] = {};
 };
 
-// The per-terrain maps the bake composes on the CPU and the extraction uploads beside the splat:
-// the grass control field (RG8: height, density) and the colour map (RGBA8, sRGB-encoded
-// premultiplied colour and a linear weight; TerrainColorMap.h).
-enum class TerrainField : uint8 { GrassControl, Color, Count };
-
-// Where a field lives on the GPU: one map on the terrain's unified lattice, or, for an
-// atlas-backed terrain, the resident atlas (the splat's slot geometry) and the coarse map the
-// surface reads out of the resident window.
-enum class TerrainFieldMap : uint8 { Unified, Atlas, Coarse };
+// The single atlas-backed terrain's resolve inputs the grass placement compute needs:
+// the atlas geometry, the bindless height/normal/splat indices (resident + coarse), and a
+// copy of the indirection rows for THIS frame. Only the atlas fields + rows are copied (never
+// the heavy CDLODQuadtree on TerrainInstanceInfo), so a grass dispatch can pull it cheaply.
+// The engine is single-atlas-terrain (CBT is single-terrain), so the FIRST atlas-backed
+// terrain is THE one; a second would be an impossible config (guarded, not silently wrong).
+enum class TerrainGrassMap : uint8 { Unified, Atlas, Coarse };
 
 // The height textures the CBT renderer samples: the unified heightmap, or the resident atlas and
 // its out-of-window coarse field for an atlas-backed terrain.
 enum class TerrainCbtHeightTexture : uint8 { Heightmap, AtlasHeight, AtlasCoarse };
+
+struct AtlasGrassSource
+{
+    bool Valid = false;
+    // Version-independent identity of the atlas terrain (packed TerrainHandle): survives a
+    // destroy+recreate as a DIFFERENT value even when the new controller's table version
+    // numerically collides with the old one, so the grass row ring can force a fresh upload
+    // instead of trusting a stale slot version (the ABA the plain version gate misses).
+    uint64 Identity = 0;
+    uint32 AtlasDim = 0;
+    uint32 AtlasSlotStride = 0;
+    uint32 AtlasSlotsPerRow = 0;
+    uint32 AtlasTileRes = 0;
+    uint32 AtlasTilesPerAxisX = 0;
+    uint32 AtlasTilesPerAxisZ = 0;
+    uint32 AtlasCoarseDim = 0;
+    uint32 HeightBindless = 0;
+    uint32 HeightCoarseBindless = 0;
+    uint32 NormalBindless = 0;
+    uint32 NormalCoarseBindless = 0;
+    uint32 SplatBindless = 0;
+    uint32 SplatCoarseBindless = 0;
+    uint32 GrassBindless = 0;
+    uint32 GrassCoarseBindless = 0;
+    bool GrassRegionsActive = false;
+    // The same eight maps as handles. A profile with no binding arrays (WebGPU) binds them by name
+    // instead of indexing them, and one binding per map is exactly right here because grass
+    // resolves a SINGLE atlas terrain — the multi-atlas case is warned about and unsupported.
+    Rendering::TextureHandle HeightTexture;
+    Rendering::TextureHandle HeightCoarseTexture;
+    Rendering::TextureHandle NormalTexture;
+    Rendering::TextureHandle NormalCoarseTexture;
+    Rendering::TextureHandle SplatTexture;
+    Rendering::TextureHandle SplatCoarseTexture;
+    Rendering::TextureHandle GrassTexture;
+    Rendering::TextureHandle GrassCoarseTexture;
+    uint64 TableVersion = 0; // indirection upload gate: unchanged version -> parked, no re-upload
+    uint32 RowCount = 0;
+    std::vector<uint8_t> RowBytes; // AtlasRowCount * 16 B TileAtlasSlot rows
+};
 
 // Owns the GPU-side terrain textures + params SSBO the CBT renderer and grass consume.
 // Created via RenderServices::EnsureFeature<TerrainRenderFeature>(). Renderer-agnostic:
@@ -172,7 +206,7 @@ public:
     // maps and grass fields from the CPU state the terrain service holds.
     uint64 GetDeviceResourceEpoch() const { return m_DeviceResourceEpoch.load(std::memory_order_acquire); }
 
-    // Advanced by every ReleaseTerrainResources call and by a device rebuild — the "a terrain texture set was retired"
+    // Monotonic count of ReleaseTerrainResources calls — the "a terrain texture set was retired"
     // signal an in-place re-provision (SamplesPerMeter/size edit) raises. The CBT renderer samples
     // the unified heightmap through its OWN descriptor ring (a path bindless-slot invalidation does
     // not cover), so it polls this each frame and, on a bump, deterministically drops the retired
@@ -183,13 +217,9 @@ public:
     {
         return m_TerrainTextureRetireGeneration.load(std::memory_order_acquire);
     }
-    // The GetTerrainTextureRetireGeneration value the ReleaseTerrainResources call that last retired
-    // the terrain at `handleIndex` advanced it to, or 0 if that index was never retired. Tells a
-    // consumer that draws one terrain a retire of that terrain from a retire of any other.
-    uint64 GetTerrainRetireGeneration(uint32 handleIndex) const;
 
     // Monotonic count of every change to the terrain TEXTURE content grass placement samples —
-    // height, splat, normal and colour, unified or atlas — plus every texture retirement. Bumped where the
+    // height, splat and normal, unified or atlas — plus every texture retirement. Bumped where the
     // write is QUEUED rather than where it is flushed, so a reader that consults it while declaring
     // this frame's render graph already sees a change the same frame's flush will apply.
     //
@@ -202,12 +232,10 @@ public:
         return m_GrassContentEpoch.load(std::memory_order_acquire);
     }
 
-    // The terrain params array and the material table published with it, as last uploaded, for a
-    // caller that must compare content rather than trust a version. Both are copied under one lock,
-    // so they always come from the same upload. Fills the caller's buffers rather than returning,
-    // so a per-frame caller can hoist them instead of allocating; empty when nothing has been
-    // uploaded yet.
-    void CopyLastTerrainParamsAndMaterialBytes(std::vector<uint8>& params, std::vector<uint8>& materials) const;
+    // The terrain params array as last published, for a caller that must compare content rather
+    // than trust a version. Fills `out` rather than returning, so a per-frame caller can hoist the
+    // buffer instead of allocating; empty when nothing has been uploaded yet.
+    void CopyLastTerrainParamsBytes(std::vector<uint8>& out) const;
 
     // ---- Per-terrain GPU heightmap textures ----
 
@@ -228,7 +256,7 @@ public:
     Rendering::TextureHandle GetHeightmapTexture(TerrainHandle handle) const;
     // The first active NON-atlas terrain's unified source maps, for consumers that bind them as
     // named textures (the compat grass placement; bindless targets read per-terrain indices
-    // instead). Single-terrain shape. Returns false when
+    // instead). Single-terrain shape, same contract as TryGetAtlasGrassSource. Returns false when
     // no non-atlas terrain is active; individual handles may still be invalid.
     bool TryGetUnifiedGrassMaps(Rendering::TextureHandle& height, Rendering::TextureHandle& normal,
                                 Rendering::TextureHandle& splat, Rendering::TextureHandle* controls = nullptr) const;
@@ -400,24 +428,27 @@ public:
     uint32 GetAtlasHeightBindlessIndex(TerrainHandle handle) const;
     uint32 GetAtlasCoarseBindlessIndex(TerrainHandle handle) const;
 
-    // The optional field textures (TerrainField): created on first use, patched through
-    // TerrainUpload; publication follows the existing initialization gate. A grass control
-    // texel is 2 bytes, a colour texel 4 (its rgb is sRGB-encoded; the image decodes it).
-    bool EnsureFieldTexture(TerrainField field, TerrainHandle handle, TerrainFieldMap map, uint32 width,
-                            uint32 height);
-    bool UploadField(TerrainField field, TerrainHandle handle, TerrainFieldMap map, const uint8* data,
-                     uint32 width, uint32 height, uint32 dstX = 0, uint32 dstY = 0);
-    Rendering::TextureHandle GetFieldTexture(TerrainField field, TerrainHandle handle, TerrainFieldMap map) const;
-    uint32 GetFieldBindlessIndex(TerrainField field, TerrainHandle handle, TerrainFieldMap map) const;
-    void RegisterFieldsBindless(TerrainHandle handle, Engine::Renderer::RenderServices& rs);
-    bool FieldCanBeSampled(TerrainField field, TerrainHandle handle, TerrainFieldMap map) const;
+    // Copy the first atlas-backed terrain's grass resolve inputs (geometry + bindless indices +
+    // this frame's indirection rows) into `out`, returning true when one exists. Copies only the
+    // atlas fields + rows (never the Quadtree), so it is cheap enough for the per-frame grass path.
+    bool TryGetAtlasGrassSource(AtlasGrassSource& out) const;
+
+    // Optional RG8 regional grass controls. Clear to neutral (1,1), then patch
+    // through TerrainUpload; publication follows the existing initialization gate.
+    bool EnsureGrassFieldTexture(TerrainHandle handle, TerrainGrassMap map, uint32 width, uint32 height);
+    bool UploadGrassField(TerrainHandle handle, TerrainGrassMap map, const uint8* data,
+                          uint32 width, uint32 height, uint32 dstX = 0, uint32 dstY = 0);
+    Rendering::TextureHandle GetGrassFieldTexture(TerrainHandle handle, TerrainGrassMap map) const;
+    uint32 GetGrassFieldBindlessIndex(TerrainHandle handle, TerrainGrassMap map) const;
+    void RegisterGrassFieldsBindless(TerrainHandle handle, Engine::Renderer::RenderServices& rs);
+    bool GrassFieldCanBeSampled(TerrainHandle handle, TerrainGrassMap map) const;
     // A height texture the CBT renderer samples, once its zero-clear or first whole-texture copy
     // has been recorded; invalid until then. The CBT renderer binds these raw handles through its
     // own descriptor ring, which carries no render-graph edge from the upload pass, so a texture
     // published in the frame its initializer is queued is sampled ahead of it, in its undefined
     // layout. Every height texture published to the CBT renderer goes through this getter.
     Rendering::TextureHandle GetInitializedCbtHeightTexture(TerrainHandle handle, TerrainCbtHeightTexture source) const;
-    void ReleaseFieldResources(TerrainField field, TerrainHandle handle);
+    void ReleaseGrassFieldResources(TerrainHandle handle);
 
     // ---- Unified-texture height dirty-region accumulator (CBT streaming re-eval) ----
     //
@@ -568,10 +599,7 @@ public:
     // ---- Active terrain instances (extracted from ECS) ----
 
     void SetActiveTerrains(std::vector<TerrainInstanceInfo> terrains);
-    // The active terrains in DrawOrderKey order: the first is the drawn one.
     std::vector<TerrainInstanceInfo> GetActiveTerrains() const;  // returns by value under lock
-    // The drawn terrain, the only one the CBT and its grass draw; empty when no terrain is active.
-    std::optional<TerrainInstanceInfo> GetDrawnTerrain() const;
     // The height textures of the first active terrain (the one the CBT renderer draws), copied
     // under the lock without the rest of its info. Present is false when no terrain is active.
     struct ActiveHeightSource
@@ -582,9 +610,6 @@ public:
         Rendering::TextureHandle AtlasHeightTexture;
     };
     ActiveHeightSource GetActiveHeightSource() const;
-    // Whether a view whose effective layers are `viewLayers` draws the first active terrain, the one the
-    // CBT renderer draws: false when no terrain is active or their layers share none.
-    bool ViewDrawsActiveTerrain(Rendering::RenderLayerMask viewLayers) const;
 
     // ---- Frame lifecycle ----
 
@@ -635,13 +660,8 @@ private:
     Rendering::SamplerHandle m_LayerSampler{};
     std::vector<TextureEntry> m_Splatmaps;
     std::vector<TextureEntry> m_Normalmaps;
-    // One texture set per field, indexed [TerrainField][TerrainFieldMap].
-    std::array<std::array<std::vector<TextureEntry>, 3>, static_cast<size_t>(TerrainField::Count)> m_Fields;
-    void ReleaseFieldResourcesLocked(TerrainField field, TerrainHandle handle);
-    // Retires one texture set entry: defers the image destroy (with its tracked bytes) and the
-    // storage view behind the frames-in-flight quarantine, then resets the entry, so a recycled
-    // handle index starts with nothing of the retired set. Safe on an empty entry.
-    void RetireTextureEntry(TextureEntry& entry);
+    std::array<std::vector<TextureEntry>, 3> m_GrassFields;
+    void ReleaseGrassFieldResourcesLocked(TerrainHandle handle);
     // Phase E: one square R32F atlas per terrain (bound directly by CBT compute, not bindless).
     std::vector<TextureEntry> m_AtlasHeights;
     // The per-terrain coarse height field (out-of-window fallback), one small square R32F each.
@@ -706,10 +726,6 @@ private:
     // Bumped by ReleaseTerrainResources (see GetTerrainTextureRetireGeneration): the re-provision
     // signal the CBT renderer polls to purge the retired heightmap from its own descriptor ring.
     std::atomic<uint64> m_TerrainTextureRetireGeneration{0};
-    // Per handle index, the retire generation of its last ReleaseTerrainResources (see
-    // GetTerrainRetireGeneration). Guarded by m_Mutex; written after the global bump, so a reader
-    // that loaded the global value first sees a per-index value no older than it.
-    std::vector<uint64> m_RetireGenerationByIndex;
     // Bumped wherever a terrain texture write is QUEUED, and by ReleaseTerrainResources (see
     // GetGrassPlacementContentEpoch). Two queues reach those textures: staged copies drain through
     // m_PendingUploads, which only QueueBandUpload and QueueRegionUpload fill, and atlas bakes
@@ -719,11 +735,11 @@ private:
     std::atomic<uint64> m_GrassContentEpoch{0};
     // See GetDeviceResourceEpoch.
     std::atomic<uint64> m_DeviceResourceEpoch{0};
-    // The params array and its material table as last published, kept so a reader can compare
-    // CONTENT instead of trusting the ring slot, which rotates every frame whether or not anything
-    // changed. Guarded by m_Mutex.
+    // The params array as last published, kept so a reader can compare CONTENT instead of trusting
+    // the ring slot, which rotates every frame whether or not anything changed. Guarded by m_Mutex.
     std::vector<uint8> m_LastTerrainParamsBytes;
-    std::vector<uint8> m_LastTerrainMaterialBytes;
+    // Warn-once when more than one atlas-backed terrain is active (grass binds only the first).
+    mutable std::atomic<bool> m_MultiAtlasGrassWarned{false};
     mutable std::mutex m_Mutex;
 
     // Monotonic frame counter for deferred destruction (device GetFrameIndex cycles).

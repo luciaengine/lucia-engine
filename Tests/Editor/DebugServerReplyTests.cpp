@@ -200,7 +200,7 @@ TEST(DebugServerReplyTests, NoDebugServerSourceSpellsARefusalAsAnErrorMember)
 
     size_t scannedFiles = 0;
     std::ostringstream offenders;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(dir))
+    for (const auto& entry : std::filesystem::directory_iterator(dir))
     {
         const std::filesystem::path& path = entry.path();
         if (!entry.is_regular_file() || (path.extension() != ".cpp" && path.extension() != ".h") ||

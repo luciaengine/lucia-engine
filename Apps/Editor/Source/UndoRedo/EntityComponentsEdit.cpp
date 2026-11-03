@@ -21,6 +21,7 @@ namespace
 {
 
 using ComponentBytes = std::vector<std::uint8_t>;
+using EntityComponents = std::vector<std::pair<ECS::ComponentTypeId, ComponentBytes>>;
 
 // One component the edit touched: its bytes before and after, absent on the side where the
 // entity did not carry it.
@@ -31,8 +32,26 @@ struct ComponentChange
     std::optional<ComponentBytes> After;
 };
 
+// Every component the entity carries, by type id, in type id order.
+EntityComponents CaptureEntityComponents(const ECS::World& world, ECS::EntityHandle entity)
+{
+    EntityComponents components;
+    const ECS::Archetype* archetype = world.GetEntityArchetype(entity);
+    if (!archetype)
+        return components;
+    for (const ECS::ComponentTypeId typeId : archetype->GetSignature().GetComponents())
+    {
+        ComponentBytes bytes;
+        if (world.CaptureComponentBytes(entity, typeId, bytes))
+            components.emplace_back(typeId, std::move(bytes));
+    }
+    std::sort(components.begin(), components.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    return components;
+}
+
 // The components whose presence or bytes differ between two captures of one entity.
-std::vector<ComponentChange> DiffEntityComponents(const EntityComponentBytes& before, const EntityComponentBytes& after)
+std::vector<ComponentChange> DiffEntityComponents(const EntityComponents& before, const EntityComponents& after)
 {
     std::vector<ComponentChange> changes;
     auto b = before.begin();
@@ -60,27 +79,6 @@ std::vector<ComponentChange> DiffEntityComponents(const EntityComponentBytes& be
     return changes;
 }
 
-// Writes the `side` bytes of each change to `entity`, removing a component absent on that side, and
-// announces each change as an UndoRedo change.
-void ApplyComponentChanges(ECS::World& world, ECS::EntityHandle entity, const std::vector<ComponentChange>& changes,
-                           std::optional<ComponentBytes> ComponentChange::*side, EditorChangeNotifications* notifications)
-{
-    if (!world.IsValid(entity))
-        return;
-    for (const ComponentChange& change : changes)
-    {
-        const std::optional<ComponentBytes>& bytes = change.*side;
-        if (bytes)
-            (void)world.ApplyComponentBytesImmediate(entity, change.TypeId, *bytes);
-        else
-            (void)world.RemoveComponentByTypeIdImmediate(entity, change.TypeId);
-    }
-    if (!notifications)
-        return;
-    for (const ComponentChange& change : changes)
-        notifications->NotifyComponentChanged({&world, entity, change.TypeId, EditorChangeNotifications::ChangeKind::UndoRedo});
-}
-
 class EntityComponentsEditCommand final : public IEditorCommand
 {
 public:
@@ -102,7 +100,23 @@ public:
 private:
     void Apply(std::optional<ComponentBytes> ComponentChange::*side)
     {
-        ApplyComponentChanges(m_World, m_Entity, m_Changes, side, m_Notifications);
+        if (!m_World.IsValid(m_Entity))
+            return;
+        for (const ComponentChange& change : m_Changes)
+        {
+            const std::optional<ComponentBytes>& bytes = change.*side;
+            if (bytes)
+                (void)m_World.ApplyComponentBytesImmediate(m_Entity, change.TypeId, *bytes);
+            else
+                (void)m_World.RemoveComponentByTypeIdImmediate(m_Entity, change.TypeId);
+        }
+        if (!m_Notifications)
+            return;
+        for (const ComponentChange& change : m_Changes)
+        {
+            m_Notifications->NotifyComponentChanged(
+                {&m_World, m_Entity, change.TypeId, EditorChangeNotifications::ChangeKind::UndoRedo});
+        }
     }
 
     std::string m_Label;
@@ -114,37 +128,13 @@ private:
 
 } // namespace
 
-EntityComponentBytes CaptureEntityComponents(const ECS::World& world, ECS::EntityHandle entity)
-{
-    EntityComponentBytes components;
-    const ECS::Archetype* archetype = world.GetEntityArchetype(entity);
-    if (!archetype)
-        return components;
-    for (const ECS::ComponentTypeId typeId : archetype->GetSignature().GetComponents())
-    {
-        ComponentBytes bytes;
-        if (world.CaptureComponentBytes(entity, typeId, bytes))
-            components.emplace_back(typeId, std::move(bytes));
-    }
-    std::sort(components.begin(), components.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
-    return components;
-}
-
-void RestoreEntityComponents(ECS::World& world, ECS::EntityHandle entity, const EntityComponentBytes& captured,
-                             EditorChangeNotifications* notifications)
-{
-    const std::vector<ComponentChange> changes = DiffEntityComponents(CaptureEntityComponents(world, entity), captured);
-    ApplyComponentChanges(world, entity, changes, &ComponentChange::After, notifications);
-}
-
 bool CommitEntityComponentsEdit(ECS::World& world, ECS::EntityHandle entity, UndoRedoService* undo,
                                 EditorChangeNotifications* notifications, const std::string& label,
                                 const std::function<bool()>& edit)
 {
     if (!undo)
         return edit();
-    const EntityComponentBytes before = CaptureEntityComponents(world, entity);
+    const EntityComponents before = CaptureEntityComponents(world, entity);
     const bool applied = edit();
     // Diffed whatever the edit answered: a write refused part-way has already landed what it
     // wrote before refusing, and the step is what lets the user take that back.

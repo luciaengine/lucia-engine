@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 
 namespace GameEngine::MarkupECS
 {
@@ -72,7 +71,7 @@ std::optional<MarkupFootprint> RegionFootprint(const ECS::World& world, ECS::Ent
     placed.reserve(data->ClosedPolygonXZ.size());
     for (const Vector2& point : data->ClosedPolygonXZ)
         placed.push_back(PlaceXZ(matrix, point.x, 0.0f, point.y));
-    footprint.Ring = DecimateRegionRing(placed, kMaxRegionKnots);
+    footprint.Ring = DecimateRegionRing(placed);
     return footprint;
 }
 
@@ -139,32 +138,6 @@ std::optional<MarkupFootprint> ReadMarkupFootprint(const ECS::World& world, ECS:
         return std::nullopt;
     FitBounds(*footprint);
     return footprint;
-}
-
-MarkupFootprintKey ReadMarkupFootprintKey(const ECS::World& world, ECS::EntityHandle entity)
-{
-    MarkupFootprintKey key;
-    const auto* transform = world.GetComponent<Components::WorldTransform>(entity);
-    if (!IsMarkupWithShape(world, entity) || !transform)
-        return key;
-    std::memcpy(key.Matrix, transform->matrix, sizeof(key.Matrix));
-    if (world.GetComponent<Components::MarkupRegion>(entity))
-    {
-        key.Shape = MarkupFootprintKey::Kind::Region;
-        const auto* spline = world.GetComponent<Components::SplineComponent>(entity);
-        const SplineECS::SplineService* service = SplineECS::SplineService::TryGet();
-        const Spline::SplineData* data =
-            service ? service->GetSplineData(SplineECS::SplineHandle(spline->SplineDataIndex, spline->SplineDataGeneration))
-                    : nullptr;
-        key.SplineIndex = spline->SplineDataIndex;
-        key.SplineGeneration = spline->SplineDataGeneration;
-        key.SplineVersion = data ? data->Version : 0;
-        return key;
-    }
-    key.Shape = world.GetComponent<Components::MarkupVolume>(entity)->Shape == Components::MarkupVolumeShape::Sphere
-                    ? MarkupFootprintKey::Kind::Sphere
-                    : MarkupFootprintKey::Kind::Box;
-    return key;
 }
 
 std::optional<MarkupRegionArea> MarkupRegionArea::Read(const ECS::World& world, ECS::EntityHandle region)

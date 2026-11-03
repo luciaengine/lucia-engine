@@ -3,9 +3,9 @@
 // The first block is CPU probes (no Vulkan device): they measure the DECODE + STORAGE
 // representation itself, using the exact int64 LEB walk (CBTDeepDecode.h WalkBary, the
 // bit-twin of Kernel_VertexEval) against a double-precision reference. The CBTDeepDecodeGpu
-// block below holds the LIVE pipeline to the library: GPU<->CPU bit-exactness, the sphere's
-// (sector, local) store at every radius, and parity/no-swim at R = 50 km. What the CPU
-// probes pin:
+// block below (S2a) then holds the LIVE pipeline to the library: GPU<->CPU bit-exactness,
+// the dark-ship tail-zero oracle, flag-ON parity/no-swim at R = 50 km, and the quiescent
+// cost A/B. What the CPU probes pin:
 //
 //   1. THE MEASURED WALL (fails-before for the whole arc): at R = 6.371e6 m the int64
 //      walk stays exact well past the cap — what breaks is fp32 WORLD-corner storage
@@ -21,18 +21,22 @@
 //   3. DETERMINISM (the crack-freedom contract the S2 GPU port must keep): shared
 //      corners decode bit-identically across siblings, across depth levels (2N vs N),
 //      and across cube-face seams.
+//
+// Dark-ship: nothing here touches the live pipeline; GE_CBT_DEEP_DECODE gates only the
+// prototype library's cap accessor (EnvFlagGatesDeepCap pins both states).
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
-#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "CBTTerrain/CBTDeepDecode.h"
@@ -43,7 +47,6 @@
 #include "CBTTestHarness.h"
 #include "Mathematics/MatrixOps.h"
 #include "Mathematics/Vector3.h"
-#include "Mathematics/VectorPrinting.h"
 #include "Rendering/Core/CommandList.h"
 
 using namespace GameEngine::CBTTerrain;
@@ -411,8 +414,9 @@ TEST(CBTDeepDecode, Df64ArithmeticHoldsExtendedPrecision)
 
 // ===========================================================================
 // S2a GPU gates — the (sector, local) storage LIVE in the pipeline.
-// Real-device probes: GPU<->CPU bit-exactness of the df64 decode, the sphere's store at
-// every radius, and parity/determinism at R = 50 km. (The CPU probes above stay device-free.)
+// Real-device probes: GPU<->CPU bit-exactness of the df64 decode, the dark-ship
+// tail-zero oracle, flag-ON parity/determinism at R = 50 km, and the quiescent
+// CBT.Update cost A/B. (The CPU probes above stay device-free.)
 // ===========================================================================
 
 namespace
@@ -420,8 +424,7 @@ namespace
 using namespace GameEngine::CBTTerrain::Test;
 using namespace GameEngine::Rendering;
 
-constexpr uint32_t kVW = sizeof(CBTVertexData) / 4u; // 24 words a slot
-constexpr uint32_t kDeepTagWord = offsetof(CBTVertexData, DeepTag) / 4u;
+constexpr uint32_t kVW = sizeof(CBTVertexData) / 4u; // 24 words/slot (S2a 96B layout)
 
 CBTFrameParams SphereOnlyParams(float radius)
 {
@@ -585,10 +588,11 @@ class CBTDeepDecodeGpu : public ::testing::Test
 };
 
 // GATE 1 — GPU<->CPU bit-exactness. Seed deep keys at nd 38..50 (including a split-edge
-// sibling pair), run ONE production update at Earth radius, read gVertex back and require
-// the stored (sector, local) to equal CBTDeepDecode.h bit-for-bit — the lockstep contract,
-// held on real hardware, at depths past what pool-bounded refinement can materialise. Also
-// pins the guard: past CBT_DEEP_NUM_SUBDIV VertexEval refuses the decode (the record stays).
+// sibling pair), run ONE production update with DeepDecode on at Earth radius, read gVertex
+// back and require the stored (sector, local) to equal CBTDeepDecode.h bit-for-bit — the
+// lockstep contract, held on real hardware, at depths past what pool-bounded refinement can
+// materialise. Also pins the OFF-mode guard: at nd 44 with the flag off, VertexEval must
+// refuse the decode (the output record stays untouched).
 TEST_F(CBTDeepDecodeGpu, GpuDecodeMatchesCpuLibraryBitExact)
 {
     const auto roots = BuildSphereRoots();
@@ -618,6 +622,7 @@ TEST_F(CBTDeepDecodeGpu, GpuDecodeMatchesCpuLibraryBitExact)
         CBTClassifyDesc classify{}; // depth-target at base depth: roots inert; seeds unvisited
         classify.Mode = kClassifyDepthTarget;
         classify.TargetDepth = kSphereBaseDepth;
+        classify.DeepDecode = 1u;
         RunFrame(instance, classify, p, frame++);
 
         const uint32_t maxSlot = kSeedBase + static_cast<uint32_t>(keys.size());
@@ -640,10 +645,8 @@ TEST_F(CBTDeepDecodeGpu, GpuDecodeMatchesCpuLibraryBitExact)
         for (uint32_t wordIdx = 0; wordIdx < 4u; ++wordIdx) // corner1 vec4 words 4..7... compare xyz+sector
         {
             if (wordIdx < 3u)
-            {
                 EXPECT_EQ(verts[s0 * kVW + 4u + wordIdx], verts[s1 * kVW + 4u + wordIdx])
                     << "sibling shared-midpoint local[" << wordIdx << "] differs (nd=" << nd << ")";
-            }
         }
         EXPECT_EQ(verts[s0 * kVW + 18u], verts[s1 * kVW + 18u]) << "sibling midpoint sector word 0";
         EXPECT_EQ(verts[s0 * kVW + 19u], verts[s1 * kVW + 19u]) << "sibling midpoint sector word 1";
@@ -651,10 +654,9 @@ TEST_F(CBTDeepDecodeGpu, GpuDecodeMatchesCpuLibraryBitExact)
     std::printf("[deep-gpu] GPU==CPU bit-exact over %u corners at nd 38..50 (Earth radius)\n",
                 totalCorners);
 
-    // The guard: a key one past the deep cap must NOT decode.
+    // OFF-mode guard: nd 44 with the flag off must NOT decode (legacy cap 40 intact).
     ASSERT_TRUE(instance.InitializeRoots(kDomainSpherical));
-    const std::vector<uint64_t> offKeys = {
-        MakeSphereHeapID(kSampleRoots[0], kSamplePaths[0], DD::kDeepDecodeSubdiv + 1u)};
+    const std::vector<uint64_t> offKeys = {MakeSphereHeapID(kSampleRoots[0], kSamplePaths[0], 44u)};
     SeedDeepKeys(instance, offKeys, kSeedBase);
     // Sparse root initialization deliberately retains dead payload records. The guard's contract
     // is to skip this invalid decode, so compare its actual incoming bytes rather than assuming
@@ -665,71 +667,69 @@ TEST_F(CBTDeepDecodeGpu, GpuDecodeMatchesCpuLibraryBitExact)
     CBTClassifyDesc offClassify{};
     offClassify.Mode = kClassifyDepthTarget;
     offClassify.TargetDepth = kSphereBaseDepth;
+    offClassify.DeepDecode = 0u;
     RunFrame(instance, offClassify, p, frame++);
     const auto offVerts =
         instance.DebugReadWords(CBTBinding::CurrentVertex, (kSeedBase + 1u) * kVW);
     for (uint32_t w = 0; w < kVW; ++w)
         EXPECT_EQ(offVerts[kSeedBase * kVW + w], beforeRejectedDecode[w])
-            << "VertexEval decoded past kDeepDecodeSubdiv (word " << w << ")";
+            << "flag-off VertexEval decoded past kMaxDecodeSubdiv (word " << w << ")";
 }
 
-// GATE 2 — the sphere's store on the wide arm is (sector, local) at every radius: after a
-// uniform refinement every live slot carries deepTag 1, and the reconstructed corner
-// (sector * 1024 + local) lies on the sphere (relief 0).
-TEST_F(CBTDeepDecodeGpu, SphereStoresSectorLocalAtEveryRadius)
+// GATE 2 (dark-ship, storage-level) — with the flag OFF, a refined spherical pool's gVertex
+// must be byte-indistinguishable from the pre-S2a layout: every live slot's sector tail
+// zero, deepTag zero, corners the legacy fp32 world store. (The suite-at-baseline is the
+// behavioral half of the gate; this is the byte-level half. Also prints the VRAM delta —
+// the honest cost of the 96B layout, paid in both modes.)
+TEST_F(CBTDeepDecodeGpu, DarkShipOffLeavesSectorTailZero)
 {
-    constexpr uint32_t kSlots = 4096u;
-    constexpr double kOnSphereToleranceM = 0.01;
-    for (const float radius : {2000.0f, 50000.0f, 600000.0f})
-    {
-        CBTInstance instance;
-        ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
-        ASSERT_TRUE(instance.InitializeRoots(kDomainSpherical));
-        CBTClassifyDesc classify{};
-        classify.Mode = kClassifyDepthTarget;
-        classify.TargetDepth = kSphereBaseDepth + 4u; // uniform depth-9 refinement: 384 live
-        const CBTFrameParams p = SphereOnlyParams(radius);
-        for (uint32_t f = 0; f < 8u; ++f)
-            RunFrame(instance, classify, p, f);
+    CBTInstance instance;
+    ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
+    ASSERT_TRUE(instance.InitializeRoots(kDomainSpherical));
 
-        const auto heap = instance.DebugReadWords(CBTBinding::HeapID, kSlots * 2u);
-        const auto verts = instance.DebugReadWords(CBTBinding::CurrentVertex, kSlots * kVW);
-        uint32_t live = 0, worldStore = 0, offSphere = 0;
-        for (uint32_t slot = 0; slot < kSlots; ++slot)
-        {
-            if (heap[slot * 2u] == 0u && heap[slot * 2u + 1u] == 0u)
-                continue;
-            ++live;
-            if (verts[slot * kVW + kDeepTagWord] != 1u)
-            {
-                ++worldStore;
-                continue;
-            }
-            for (uint32_t corner = 0; corner < 3u; ++corner)
-            {
-                double world[3];
-                ReadCornerWorld(verts, slot, corner, world);
-                const double r = std::sqrt(world[0] * world[0] + world[1] * world[1] +
-                                           world[2] * world[2]);
-                if (std::fabs(r - radius) > kOnSphereToleranceM)
-                    ++offSphere;
-            }
-        }
-        ASSERT_GT(live, 64u) << "refinement did not converge (R=" << radius << ")";
-        EXPECT_EQ(worldStore, 0u) << "a live sphere slot holds the fp32 world store (R=" << radius
-                                  << ")";
-        EXPECT_EQ(offSphere, 0u) << "a reconstructed corner is off the sphere (R=" << radius << ")";
+    const uint64_t vertexBytes = instance.GetResources().GetBufferByteSize(CBTBinding::CurrentVertex);
+    std::printf("[deep-vram] gVertex %llu MiB at the %u pool (was %u MiB at 64B -> +%u MiB)\n",
+                static_cast<unsigned long long>(vertexBytes >> 20), kDefaultBisectorPoolSize,
+                (kDefaultBisectorPoolSize * 64u) >> 20,
+                static_cast<uint32_t>((vertexBytes - kDefaultBisectorPoolSize * 64ull) >> 20));
+    EXPECT_EQ(vertexBytes, static_cast<uint64_t>(kDefaultBisectorPoolSize) * sizeof(CBTVertexData));
+
+    CBTClassifyDesc classify{};
+    classify.Mode = kClassifyDepthTarget;
+    classify.TargetDepth = kSphereBaseDepth + 4u; // uniform depth-9 refinement: 384 live
+    classify.DeepDecode = 0u;
+    const CBTFrameParams p = SphereOnlyParams(2000.0f);
+    for (uint32_t f = 0; f < 8u; ++f)
+        RunFrame(instance, classify, p, f);
+
+    constexpr uint32_t kSlots = 4096u;
+    const auto heap = instance.DebugReadWords(CBTBinding::HeapID, kSlots * 2u);
+    const auto verts = instance.DebugReadWords(CBTBinding::CurrentVertex, kSlots * kVW);
+    uint32_t live = 0, tainted = 0;
+    for (uint32_t slot = 0; slot < kSlots; ++slot)
+    {
+        if (heap[slot * 2u] == 0u && heap[slot * 2u + 1u] == 0u)
+            continue;
+        ++live;
+        for (uint32_t w = 16u; w < kVW; ++w) // the S2a tail: sector0..2 + deepTag
+            if (verts[slot * kVW + w] != 0u)
+                ++tainted;
     }
+    ASSERT_GT(live, 64u) << "refinement did not converge";
+    EXPECT_EQ(tainted, 0u) << "flag-off VertexEval wrote a non-zero sector tail (dark-ship broken)";
 }
 
-// GATE 3 — the sphere at R = 50 km: a full descent to a low pose must (a) keep the Validate
-// invariants at zero, (b) refine, (c) hold FULL-POOL
+// GATE 3 — flag ON at today's scale (R = 50 km): a full descent to a low pose with the deep
+// store live must (a) keep the Validate invariants at zero, (b) track the OFF run's
+// tessellation within the df64-vs-fp32-rounding tolerance (quantified below — at 5e4 m the
+// legacy store's ULP is ~3.9e-3 m, so the metric inputs differ by millimetres and the
+// converged topology should differ by at most run-to-run jitter), (c) hold FULL-POOL
 // GPU<->CPU bit-parity — every live bisector's stored (sector, local) recomputable from its
 // HeapID through CBTDeepDecode.h, which subsumes shared-corner crack-freedom on device —
 // and (d) show no storage-level swim: a 1 mm camera micro-step with a forced full re-eval
 // must reproduce every unchanged-topology slot byte-for-byte (#524 methodology at the
 // storage level; the decode is camera-independent by construction and this pins it).
-TEST_F(CBTDeepDecodeGpu, SphereR50kParityConformityAndNoSwim)
+TEST_F(CBTDeepDecodeGpu, FlagOnR50kParityConformityAndNoSwim)
 {
     using namespace GameEngine::Mathematics;
     const float radius = 50000.0f;
@@ -766,56 +766,104 @@ TEST_F(CBTDeepDecodeGpu, SphereR50kParityConformityAndNoSwim)
         fp.CameraPos[3] = 1.0f;
     };
 
-    CBTInstance instance;
-    ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
-    ASSERT_TRUE(instance.InitializeRoots(kDomainSpherical));
+    auto converge = [&](CBTInstance& instance, uint32_t deep) {
+        CBTClassifyDesc classify{};
+        classify.Mode = kClassifyScreenSpace;
+        classify.TargetDepth = cap;
+        classify.DeepDecode = deep;
+        const float startAlt = 2000.0f;
+        uint32_t f = 0;
+        for (; f < 130u; ++f)
+        {
+            poseAt(p, std::max(static_cast<double>(holdAlt),
+                               startAlt * std::pow(0.96, static_cast<double>(f))), 0.0);
+            RunFrame(instance, classify, p, f);
+        }
+        poseAt(p, holdAlt, 0.0);
+        for (uint32_t s = 0; s < 30u; ++s)
+            RunFrame(instance, classify, p, f + s);
+        return classify;
+    };
 
-    // Converge: descend from 2 km to the hold altitude, then hold.
-    CBTClassifyDesc classify{};
-    classify.Mode = kClassifyScreenSpace;
-    classify.TargetDepth = cap;
-    const float startAlt = 2000.0f;
-    uint32_t f = 0;
-    for (; f < 130u; ++f)
-    {
-        poseAt(p, std::max(static_cast<double>(holdAlt),
-                           startAlt * std::pow(0.96, static_cast<double>(f))), 0.0);
-        RunFrame(instance, classify, p, f);
-    }
-    poseAt(p, holdAlt, 0.0);
-    for (uint32_t s = 0; s < 30u; ++s)
-        RunFrame(instance, classify, p, f + s);
-
-    // Split-edge statistics from the readback, in world meters.
-    RunResult on{};
-    {
-        const auto heap = instance.DebugReadWords(CBTBinding::HeapID, kDefaultBisectorPoolSize * 2u);
-        const auto verts = instance.DebugReadWords(CBTBinding::CurrentVertex, kDefaultBisectorPoolSize * kVW);
+    // Edge stats from the readback, mode-aware (deep slots reconstruct world = sector*1024+local).
+    auto scan = [&](CBTInstance& instance, RunResult& out) {
+        const auto heap =
+            instance.DebugReadWords(CBTBinding::HeapID, kDefaultBisectorPoolSize * 2u);
+        const auto verts = instance.DebugReadWords(CBTBinding::CurrentVertex,
+                                                         kDefaultBisectorPoolSize * kVW);
         std::vector<double> edges;
         edges.reserve(1 << 18);
+        auto cornerWorld = [&](uint32_t base, uint32_t k, double outW[3]) {
+            float l[3];
+            std::memcpy(l, &verts[base + k * 4u], sizeof(l));
+            if (verts[base + 22u] != 0u)
+            {
+                const uint32_t w0 = verts[base + 16u + k * 2u];
+                const uint32_t w1 = verts[base + 17u + k * 2u];
+                outW[0] = 1024.0 * UnpackSectorLo(w0) + l[0];
+                outW[1] = 1024.0 * UnpackSectorHi(w0) + l[1];
+                outW[2] = 1024.0 * UnpackSectorLo(w1) + l[2];
+            }
+            else
+            {
+                outW[0] = l[0];
+                outW[1] = l[1];
+                outW[2] = l[2];
+            }
+        };
         for (uint32_t slot = 0; slot < kDefaultBisectorPoolSize; ++slot)
         {
             if (heap[slot * 2u] == 0u && heap[slot * 2u + 1u] == 0u)
                 continue;
-            ++on.Live;
+            ++out.Live;
             double c0[3], c2[3];
-            ReadCornerWorld(verts, slot, 0u, c0);
-            ReadCornerWorld(verts, slot, 2u, c2);
+            const uint32_t base = slot * kVW;
+            cornerWorld(base, 0u, c0);
+            cornerWorld(base, 2u, c2);
             const double len = Dist3(c0, c2);
             if (len > 0.0)
                 edges.push_back(len);
         }
         std::sort(edges.begin(), edges.end());
-        on.MedEdge = edges.empty() ? 0.0 : edges[edges.size() / 2u];
-        on.MinEdge = edges.empty() ? 0.0 : edges.front();
-        on.Validation = instance.ReadValidationErrorCount();
+        out.MedEdge = edges.empty() ? 0.0 : edges[edges.size() / 2u];
+        out.MinEdge = edges.empty() ? 0.0 : edges.front();
+        out.Validation = instance.ReadValidationErrorCount();
+    };
+
+    // OFF run (the baseline this ON run is compared against).
+    RunResult off{};
+    {
+        CBTInstance instance;
+        ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
+        ASSERT_TRUE(instance.InitializeRoots(kDomainSpherical));
+        converge(instance, 0u);
+        scan(instance, off);
     }
 
-    std::printf("[deep-r50k] live=%u med=%.4fm min=%.4fm val=%u\n", on.Live, on.MedEdge, on.MinEdge,
-                on.Validation);
+    // ON run + parity + no-swim on the SAME instance.
+    RunResult on{};
+    CBTInstance instance;
+    ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
+    ASSERT_TRUE(instance.InitializeRoots(kDomainSpherical));
+    const CBTClassifyDesc classify = converge(instance, 1u);
+    scan(instance, on);
+
+    std::printf("[deep-r50k] OFF live=%u med=%.4fm min=%.4fm val=%u | ON live=%u med=%.4fm "
+                "min=%.4fm val=%u | dLive=%+d dMed=%+.4fm (fp32 store ULP at 5e4 m ~ 3.9e-3 m)\n",
+                off.Live, off.MedEdge, off.MinEdge, off.Validation, on.Live, on.MedEdge, on.MinEdge,
+                on.Validation, static_cast<int>(on.Live) - static_cast<int>(off.Live),
+                on.MedEdge - off.MedEdge);
 
     ASSERT_GT(on.Live, 1000u) << "descent did not refine";
     EXPECT_EQ(on.Validation, 0u) << "deep store broke a Validate invariant at R=50k";
+    EXPECT_EQ(off.Validation, 0u);
+    // Tolerance (quantified): mm-scale metric-input deltas can flip individual hysteresis
+    // decisions, bounded by the same two-run jitter band the neutrality oracles use.
+    EXPECT_NEAR(static_cast<double>(on.Live), static_cast<double>(off.Live),
+                std::max(2000.0, off.Live * 0.02))
+        << "flag-ON tessellation diverged from OFF beyond the rounding/jitter band";
+    EXPECT_NEAR(on.MedEdge, off.MedEdge, std::max(0.05, off.MedEdge * 0.05))
+        << "flag-ON median facet diverged from OFF beyond the rounding/jitter band";
 
     // (c) FULL-POOL GPU<->CPU bit-parity: every live deep slot's (sector, local) must equal
     // the CPU library recomputed from its HeapID (relief amp 0 -> shared inputs).
@@ -831,7 +879,7 @@ TEST_F(CBTDeepDecodeGpu, SphereR50kParityConformityAndNoSwim)
                                (static_cast<uint64_t>(heap[slot * 2u + 1u]) << 32);
             if (h == 0u)
                 continue;
-            if (verts[slot * kVW + kDeepTagWord] != 1u)
+            if (verts[slot * kVW + 22u] != 1u)
             {
                 // A just-created transient VertexEval has not evaluated yet reads all-zero —
                 // tolerate only the all-zero form (matches the legacy "unevaluated" contract).
@@ -885,4 +933,135 @@ TEST_F(CBTDeepDecodeGpu, SphereR50kParityConformityAndNoSwim)
         EXPECT_EQ(swum, 0u) << "a camera micro-step changed stored (sector, local) geometry — swim";
         EXPECT_GT(stable, on.Live * 9u / 10u) << "micro-step re-topologized too much for the oracle";
     }
+}
+
+// GATE 4 — quiescent CBT.Update cost, ON vs OFF (min-of-N, the least-contended sample on a
+// noisy shared box). The df64 decode runs only inside VertexEval, which the production
+// quiescence gate reduces to ~0 evaluations on a converged frame — so ON's quiescent floor
+// must stay in OFF's band. The changing-frame (descent) cost is printed for the PR record.
+TEST_F(CBTDeepDecodeGpu, QuiescentUpdateCostOnVsOff)
+{
+    using namespace GameEngine::Mathematics;
+    const float radius = 50000.0f;
+    const float holdAlt = 150.0f;
+    const uint32_t cap = kSphereBaseDepth + kMaxDecodeSubdiv;
+    const Matrix4x4 proj = MakePerspectiveLH_ZO_ReverseZ(1.2f, 16.0f / 9.0f, 0.05f,
+                                                         3.0f * radius + 4000.0f);
+
+    CBTFrameParams p = SphereOnlyParams(radius);
+    p.Screen[0] = 1600.0f;
+    p.Screen[1] = 900.0f;
+    p.Screen[2] = 8.0f;
+    p.Screen[3] = 4.0f;
+    p.TerrainOrigin[2] = static_cast<float>(cap);
+
+    auto poseAt = [&](double alt) {
+        const Vector3 eye(0.0f, 0.0f, -static_cast<float>(radius + alt));
+        const Matrix4x4 vp =
+            proj * MakeLookAtLH(eye, Vector3(0.0f, 0.0f, 0.0f), Vector3(0.0f, 1.0f, 0.0f));
+        std::memcpy(p.ViewProjRel, &vp.GetGLM()[0][0], sizeof(p.ViewProjRel));
+        p.CameraPos[0] = eye.x;
+        p.CameraPos[1] = eye.y;
+        p.CameraPos[2] = eye.z;
+        p.CameraPos[3] = 1.0f;
+    };
+
+    auto measure = [&](uint32_t deep, double& quiescentMin, double& changingMin) {
+        CBTInstance instance;
+        EXPECT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
+        EXPECT_TRUE(instance.InitializeRoots(kDomainSpherical));
+        instance.SetValidateEachUpdate(false); // the ship configuration (idle-floor honest)
+
+        CBTClassifyDesc classify{};
+        classify.Mode = kClassifyScreenSpace;
+        classify.TargetDepth = cap;
+        classify.DeepDecode = deep;
+
+        changingMin = 1e30;
+        uint32_t f = 0;
+        for (; f < 130u; ++f)
+        {
+            poseAt(std::max(static_cast<double>(holdAlt),
+                            2000.0 * std::pow(0.96, static_cast<double>(f))));
+            auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
+            cl->Begin();
+            instance.RecordUpdate(*cl, classify, p, f);
+            cl->End();
+            std::vector<CommandList*> lists{cl.get()};
+            const auto t0 = std::chrono::high_resolution_clock::now();
+            m_Device->ExecuteCommandLists(lists);
+            m_Device->WaitForIdle();
+            const auto t1 = std::chrono::high_resolution_clock::now();
+            if (f >= 100u)
+                changingMin = std::min(changingMin,
+                                       std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        poseAt(holdAlt);
+        for (uint32_t s = 0; s < 30u; ++s)
+        {
+            auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
+            cl->Begin();
+            instance.RecordUpdate(*cl, classify, p, f + s);
+            cl->End();
+            std::vector<CommandList*> lists{cl.get()};
+            m_Device->ExecuteCommandLists(lists);
+            m_Device->WaitForIdle();
+        }
+        CBTClassifyDesc timed = classify;
+        timed.GateVertexEval = 1u; // the production quiescence gate
+        quiescentMin = 1e30;
+        for (uint32_t s = 0; s < 40u; ++s)
+        {
+            auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
+            cl->Begin();
+            instance.RecordUpdate(*cl, timed, p, f + 40u + s);
+            cl->End();
+            std::vector<CommandList*> lists{cl.get()};
+            const auto t0 = std::chrono::high_resolution_clock::now();
+            m_Device->ExecuteCommandLists(lists);
+            m_Device->WaitForIdle();
+            const auto t1 = std::chrono::high_resolution_clock::now();
+            quiescentMin = std::min(quiescentMin,
+                                    std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+    };
+
+    double offQ = 0, offC = 0, onQ = 0, onC = 0;
+    measure(0u, offQ, offC);
+    measure(1u, onQ, onC);
+    std::printf("[deep-cost] R=50000 alt=%.0fm quiescentMs(min) OFF=%.3f ON=%.3f (%+.1f%%) | "
+                "changingMs(min) OFF=%.3f ON=%.3f (%+.1f%%)\n",
+                holdAlt, offQ, onQ, 100.0 * (onQ - offQ) / offQ, offC, onC,
+                100.0 * (onC - offC) / offC);
+    // Loose gate (shared noisy box — the view-priority gate-4 discipline): a real regression
+    // doubles the floor; box noise does not.
+    EXPECT_LT(onQ, offQ * 2.0 + 1.0)
+        << "deep decode roughly doubled the quiescent CBT.Update floor (OFF=" << offQ
+        << "ms ON=" << onQ << "ms)";
+}
+
+// ---------------------------------------------------------------------------
+// Probe 5 — the env flag (dark-ship contract)
+// ---------------------------------------------------------------------------
+TEST(CBTDeepDecode, EnvFlagGatesDeepCap)
+{
+    using GameEngine::CBTTerrain::Test::SetEnvVar;
+    using GameEngine::CBTTerrain::Test::UnsetEnvVar;
+
+    // Preserve any ambient value so this test is order-independent.
+    const char*       prev    = std::getenv("GE_CBT_DEEP_DECODE");
+    const bool        hadPrev = prev != nullptr;
+    const std::string saved   = hadPrev ? prev : "";
+
+    UnsetEnvVar("GE_CBT_DEEP_DECODE");
+    EXPECT_EQ(DD::SubdivCap(), kMaxDecodeSubdiv) << "flag unset -> the shipped cap (dark-ship)";
+    SetEnvVar("GE_CBT_DEEP_DECODE", "0");
+    EXPECT_EQ(DD::SubdivCap(), kMaxDecodeSubdiv) << "flag 0 -> the shipped cap";
+    SetEnvVar("GE_CBT_DEEP_DECODE", "1");
+    EXPECT_EQ(DD::SubdivCap(), DD::kDeepDecodeSubdiv) << "flag 1 -> the deep prototype cap";
+
+    if (hadPrev)
+        SetEnvVar("GE_CBT_DEEP_DECODE", saved.c_str());
+    else
+        UnsetEnvVar("GE_CBT_DEEP_DECODE");
 }

@@ -22,10 +22,19 @@ target_link_libraries(Terrain
         Types
         Mathematics
         Logger
+    PRIVATE
+        Noise
 )
 
-# Image: the 16-bit PNG heightmap decode.
-target_link_libraries(Terrain PRIVATE Image)
+# stb_image for heightmap loading (PNG16)
+find_path(STB_INCLUDE_DIRS "stb_image.h")
+if(STB_INCLUDE_DIRS)
+    target_include_directories(Terrain PRIVATE ${STB_INCLUDE_DIRS})
+    # stb_image_impl.cpp is compiled by Engine — Terrain only needs the header
+    target_compile_definitions(Terrain PRIVATE GE_HAVE_STB)
+else()
+    message(WARNING "stb_image.h not found -- heightmap PNG loading will fail to compile")
+endif()
 
 # The root CMakeLists finds GTest AFTER this module is added, so resolve it
 # here — otherwise the guard below never passes and TerrainTests silently
@@ -38,10 +47,14 @@ if(BUILD_TESTING AND (GTest_FOUND OR TARGET GTest::gtest))
     add_executable(TerrainTests
         Tests/HeightfieldTests.cpp
         Tests/CDLODSelectionTests.cpp
+        ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp
     )
-    # Image and Logger are OBJECT libraries: their objects reach the executable only
-    # when it links them directly.
-    target_link_libraries(TerrainTests PRIVATE Terrain Image Logger GTest::gtest GTest::gtest_main)
+    target_link_libraries(TerrainTests PRIVATE Terrain GTest::gtest GTest::gtest_main)
+    target_include_directories(TerrainTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+    if(STB_INCLUDE_DIRS)
+        target_include_directories(TerrainTests PRIVATE ${STB_INCLUDE_DIRS})
+        target_compile_definitions(TerrainTests PRIVATE GE_HAVE_STB)
+    endif()
     set_target_properties(TerrainTests PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON

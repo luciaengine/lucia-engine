@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "Jobs/DependencyGraphAnalyzer.h"
 #include "Logger/Logger.h"
+#include "TestTempDir.h"
 #include <filesystem>
 #include <fstream>
 
@@ -12,7 +13,7 @@ protected:
         Logger::Log::SetLogLevel(Logger::LogLevel::Debug);
         
         // Create test directory
-        testDir = std::filesystem::temp_directory_path() / "dependency_graph_test";
+        testDir = TestUtils::MakeUniqueTempDirectory("dependency_graph_test");
         std::filesystem::create_directories(testDir);
         
         // Initialize analyzer

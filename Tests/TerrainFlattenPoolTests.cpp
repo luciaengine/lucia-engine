@@ -12,7 +12,7 @@
 //
 //  1. GEOMETRY — the station polyline, on its own. A SplinePath volume's geometry
 //     is the arc-length resample, not the curve behind it, and the offline
-//     instrument that audits an island scene's ground reproduces THIS object. Its
+//     instrument that audits Hobbiton's ground reproduces THIS object. Its
 //     resampling rule, its segment-nearest query and its bounds are pinned
 //     directly, because a divergence here reads downstream as a small plausible
 //     offset rather than as a failure.
@@ -56,7 +56,6 @@
 #include <chrono>
 #include <cstring>
 #include <functional>
-#include <limits>
 #include <string>
 #include <vector>
 
@@ -917,7 +916,7 @@ TEST(TerrainFlattenPoolContracts, RegionBakeOfAMovedRouteMatchesAFullBake)
 // the spline SDF are both unoptimised, and not by the same factor.
 TEST(TerrainFlattenPoolTiming, DISABLED_PooledVsPlainFlattenFullBake)
 {
-    constexpr int kRoutes = 12;   // a large island scene's approach count
+    constexpr int kRoutes = 12;   // Hobbiton's approach count
     constexpr int kRepeats = 20;
 
     // Three arms. Every pooled flatten pays an accumulator — there is no in-place
@@ -941,7 +940,7 @@ TEST(TerrainFlattenPoolTiming, DISABLED_PooledVsPlainFlattenFullBake)
             for (int r = 0; r < kRoutes; ++r)
             {
                 // Routes fanned across the terrain, each resampled at 0.5 m like
-                // an authored scene's, so the station count per route is realistic.
+                // Hobbiton's, so the station count per route is realistic.
                 const float32 z = -60.0f + static_cast<float32>(r) * 10.0f;
                 const ECS::EntityHandle e = CreateSplineEntity(
                     world, splineSvc,
@@ -999,8 +998,8 @@ TEST(TerrainPoolParity, EmitsTheFixtureTheOfflineTwinIsHeldTo)
     // reading source and transcribing, which is how a 1.1 cm offset survived four
     // of them. This writes what the engine ACTUALLY composed on the synthetic
     // scene: the station polylines its bake evaluated, and the base and baked
-    // height at a line of probes across the crossing. The content
-    // project's Tools/pool_parity.py recomputes the baked column from the stations and the
+    // height at a line of probes across the crossing. Hobbiton's
+    // Tools/pool_parity.py recomputes the baked column from the stations and the
     // base column and must reproduce every row; its committed copy of this file
     // is Tools/fixtures/pool_parity.json.
     //
@@ -2197,7 +2196,7 @@ TEST(TerrainClaimMask, ASelfClaimBelowAnUnpooledEffectHoldsItBack)
 // -------------------------------------------------------- curvature residual --
 
 // How far the analytic Catmull-Rom parts from the station polyline through it, at
-// a large island scene's lane geometry.
+// Hobbiton's lane geometry.
 //
 // WHAT THIS NUMBER NOW MEANS. It used to be the residual that reached a route's
 // blend: a corridor evaluated the polyline while the ground claim beside it
@@ -2269,7 +2268,7 @@ TEST(TerrainRouteCurvature, DISABLED_CurveVsPolylineAtLaneGeometry)
                 if (dPoly > kClaimRadius + kClaimFalloff + 1.0f)
                     continue; // outside the shape ramp on both evaluators
                 const float32 dCurve =
-                    Spline::SignedDistanceToSplineBandXZ(*spline, x, z, std::numeric_limits<float32>::infinity()) + kClaimRadius;
+                    Spline::SignedDistanceToSplineBandXZ(*spline, x, z) + kClaimRadius;
                 const float32 weightPoly =
                     ShapeFalloffWeight(kClaimRadius - dPoly, kClaimFalloff, 0.0f);
                 const float32 weightCurve =

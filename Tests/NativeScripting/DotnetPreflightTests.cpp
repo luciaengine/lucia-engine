@@ -7,6 +7,7 @@
 
 #include "Engine/Build/BuildPipeline.h"
 #include "NativeScripting/SdkManifest.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -54,9 +55,8 @@ class ScopedEnvOverride
 
 fs::path MakeTempDir(const char* tag)
 {
-    const fs::path dir = fs::temp_directory_path() / tag;
+    const fs::path dir = GameEngine::TestUtils::MakeUniqueTempDirectory(tag);
     std::error_code ec;
-    fs::remove_all(dir, ec);
     fs::create_directories(dir, ec);
     return dir;
 }
@@ -83,10 +83,9 @@ TEST(DotnetPreflight, SdkManifestRecordedPathWinsEvenWithEmptyPath)
               "config=Debug\n"
               "includedir=include\n"
               "importlib=lib/Debug/Engine.lib\n"
-              "enginebinary=../Engine.dll\n"
               "dotnet=" + fakeDotnet.generic_string() + "\n");
     // LoadSdkManifest requires the include dir's parent fields only (strings);
-    // the resolver does not stat includedir/importlib/enginebinary.
+    // the resolver does not stat includedir/importlib.
 
     ScopedEnvOverride emptyPath("PATH", "");
     std::string error;

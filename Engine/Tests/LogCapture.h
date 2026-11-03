@@ -28,29 +28,22 @@
 namespace GameEngine::TestLog
 {
 
-// Keeps either the text of each line or the whole record (level, thread, channel), for a
-// test that asserts which thread logged a line.
 class CapturingLogSink final : public Logger::LogSink
 {
   public:
-    explicit CapturingLogSink(std::vector<std::string>* lines) : m_Lines(lines) {}
-    explicit CapturingLogSink(std::vector<Logger::LogMessage>* records) : m_Records(records) {}
+    explicit CapturingLogSink(std::vector<std::string>* out) : m_Out(out) {}
 
     void Write(const Logger::LogMessage& message) override
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
-        if (m_Lines)
-            m_Lines->push_back(std::string(message.Message));
-        else
-            m_Records->push_back(message);
+        m_Out->push_back(std::string(message.Message));
     }
     void Flush() override {}
     bool ShouldLog(Logger::LogLevel) const override { return true; }
-    std::string GetName() const override { return "TestCapturingLogSink"; }
+    Logger::String GetName() const override { return "TestCapturingLogSink"; }
 
   private:
-    std::vector<std::string>* m_Lines = nullptr;
-    std::vector<Logger::LogMessage>* m_Records = nullptr;
+    std::vector<std::string>* m_Out;
     std::mutex m_Mutex;
 };
 
@@ -62,13 +55,10 @@ class ScopedLogCapture
   public:
     explicit ScopedLogCapture(std::vector<std::string>* out, Logger::LogLevel minLevel = Logger::LogLevel::Info)
     {
-        Install(std::make_unique<CapturingLogSink>(out), minLevel);
-    }
-
-    // Keeps whole records: a test reads LogMessage::ThreadId to tell which thread logged a line.
-    explicit ScopedLogCapture(std::vector<Logger::LogMessage>* out, Logger::LogLevel minLevel = Logger::LogLevel::Info)
-    {
-        Install(std::make_unique<CapturingLogSink>(out), minLevel);
+        m_LevelOnEntry = Logger::Log::GetLogLevel();
+        Logger::Log::Initialize({minLevel, false});
+        Logger::Log::ClearSinks();
+        Logger::Log::AddSink(std::make_unique<CapturingLogSink>(out));
     }
 
     ~ScopedLogCapture()
@@ -84,14 +74,6 @@ class ScopedLogCapture
     ScopedLogCapture& operator=(const ScopedLogCapture&) = delete;
 
   private:
-    void Install(std::unique_ptr<CapturingLogSink> sink, Logger::LogLevel minLevel)
-    {
-        m_LevelOnEntry = Logger::Log::GetLogLevel();
-        Logger::Log::Initialize({minLevel, false});
-        Logger::Log::ClearSinks();
-        Logger::Log::AddSink(std::move(sink));
-    }
-
     // The console sink Initialize() installs keeps its own copy of the minimum level and
     // is only installed when no sink is left, so coming back at Off would pin a sink that
     // drops everything and that no later Initialize can replace — worse than the state

@@ -9,6 +9,7 @@
 #include "Core/DebugMetrics.h"
 #include "Engine/Rendering/ParallaxReliefDepth.h"
 #include "Engine/Rendering/DrawStreamLookupKey.h"
+#include "Engine/Rendering/ForwardDrainOrder.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialBinder.h"
 #include "Engine/Rendering/MaterialCompiler.h"
@@ -18,12 +19,12 @@
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
 #include "Assets/AssetManager.h"
 #include "Assets/BinaryAsset.h"
 #include "Assets/MaterialAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/TextureAsset.h"
+#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/RTShadowMaskService.h"
@@ -35,16 +36,15 @@
 #include "Engine/Rendering/SkyRenderFeature.h"
 #include "Engine/Rendering/RetargetRenderFeature.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
-#include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Engine/Rendering/Pipeline/ViewExposureHistory.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
-#include "Rendering/Camera/CameraDerivation.h"
+#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/CameraDerivation.h"
 #include "Rendering/Core/CullingStrategy.h"
 #include "Rendering/Core/FrustumCullingStrategy.h"
 #include "Rendering/Core/GPUCulling.h"
@@ -52,18 +52,15 @@
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
-#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "Rendering/Materials/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
-#include "Rendering/Passes/MsaaColorResolvePass.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
-#include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
-#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
+#include "Rendering/Utils/CubeLutFileParser.h"
+#include "Rendering/Utils/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
-#include "Types/FlatSet.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
@@ -74,20 +71,18 @@
 
 #include <algorithm>
 #include <array>
-#include <optional>
 #include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
 #include <cassert>
 #include <cstring>
-#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
-#include "ForwardDrainOrder.h"
 #include "RenderServicesDetail.h"
 
 namespace GameEngine
@@ -145,47 +140,6 @@ void DeclareDdgiGatherReads(RenderGraph::RGPassBuilder& p, const DDGIProbeFeatur
             p.Read(probeState, RenderGraph::RGBufferRead::Storage);
 }
 
-// Feature-owned MRT slices (the screen-space reflection G-buffer), attached verbatim: formats, clears
-// and locations belong to the contributing provider.
-void AttachExtraColors(RenderGraph::RGPassBuilder& p, const RenderServices::WorldPassTargetsRG& targets)
-{
-    for (uint32_t i = 0; i < targets.ExtraColorCount; ++i)
-    {
-        const auto& extra = targets.ExtraColor[i];
-        if (!extra.Texture.IsValid())
-            continue;
-        if (extra.Resolve.IsValid())
-            p.AttachColorResolve(extra.Location, extra.Texture, extra.Resolve, extra.Ops);
-        else
-            p.AttachColor(extra.Location, extra.Texture, extra.Ops);
-    }
-}
-
-// The reads the forward fog's textures need (forward_fog.glsl): the sky backdrop, bound on every pass
-// (BuildPassResourcesRG), and the froxel volume on VolumetricFog-keyword passes.
-void DeclareForwardFogReads(RenderGraph::RGPassBuilder& p, const RenderServices::WorldPassTargetsRG& targets,
-                            Rendering::MaterialKeyword passKeywords)
-{
-    if (targets.SkyBackdrop.IsValid())
-        p.Read(targets.SkyBackdrop, RenderGraph::RGTextureRead::Sampled);
-    if (targets.VolumetricFog.IsValid() && HasKeyword(passKeywords, Rendering::MaterialKeyword::VolumetricFog))
-        p.Read(targets.VolumetricFog, RenderGraph::RGTextureRead::Sampled);
-    if (targets.VolumetricClouds.IsValid() && HasKeyword(passKeywords, Rendering::MaterialKeyword::VolumetricClouds))
-        p.Read(targets.VolumetricClouds, RenderGraph::RGTextureRead::Sampled);
-}
-
-// The froxel volume a VolumetricFog-keyword pass samples (ge_volumetricFog): a transient of the frame
-// (the integrated grid, or the temporal history the composite reads), so its physical texture exists
-// only at record time.
-void BindVolumetricFogVolume(RenderGraph::RGContext& ctx, RenderGraph::RGTexture volume, SamplerHandle sampler,
-                             ResolvedPassResources& res)
-{
-    if (!volume.IsValid())
-        return;
-    if (const TextureHandle texture = ctx.GetTexture(volume); texture.IsValid())
-        res.Textures.push_back({HashStringId("ge_volumetricFog"), texture, sampler});
-}
-
 // --- Distant-prop coverage census (GE_PROP_CENSUS=1; diagnostic, default off) ---
 // Answers "how many frustum-visible instances would a scatter coverage floor
 // cull?" — the sizing evidence that decides whether that cull machinery is
@@ -198,11 +152,7 @@ void BindVolumetricFogVolume(RenderGraph::RGContext& ctx, RenderGraph::RGTexture
 // candidate set on occlusion-culled views.
 bool PropCensusEnabled()
 {
-    static const bool kEnabled = []
-    {
-        const char* v = std::getenv("GE_PROP_CENSUS");
-        return v != nullptr && v[0] != '\0' && v[0] != '0';
-    }();
+    static const bool kEnabled = Platform::EnvironmentSwitchEnabled("GE_PROP_CENSUS", false);
     return kEnabled;
 }
 
@@ -210,11 +160,12 @@ void LogPropCoverageCensus(const Rendering::GPUScene& gpuScene,
                            const Rendering::CameraData& cam, uint32_t viewId,
                            uint32_t viewportW, uint32_t viewportH, uint32_t worldKey)
 {
-    const float projScaleY = (cam.cameraPos.w == 1.0f) ? 0.0f : std::abs(cam.proj[1][1]);
+    const float projScaleY = (cam.cameraPos[3] == 1.0f) ? 0.0f : std::abs(cam.proj[5]);
     if (projScaleY <= 0.0f || viewportH == 0u)
         return;
 
-    Rendering::Matrix4x4 viewProj = cam.viewProj;
+    Rendering::Matrix4x4 viewProj;
+    std::memcpy(viewProj.Data(), cam.viewProj, sizeof(cam.viewProj));
     Rendering::Vector4 planes[6];
     Rendering::ExtractFrustumPlanes(viewProj, planes);
 
@@ -232,9 +183,9 @@ void LogPropCoverageCensus(const Rendering::GPUScene& gpuScene,
         if (!Rendering::TestSphereFrustum(inst.boundingCenter, inst.boundingRadius, planes))
             continue;
         ++visible;
-        const float dx   = cam.cameraPos.x - inst.boundingCenter.x;
-        const float dy   = cam.cameraPos.y - inst.boundingCenter.y;
-        const float dz   = cam.cameraPos.z - inst.boundingCenter.z;
+        const float dx   = cam.cameraPos[0] - inst.boundingCenter.x;
+        const float dy   = cam.cameraPos[1] - inst.boundingCenter.y;
+        const float dz   = cam.cameraPos[2] - inst.boundingCenter.z;
         const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
         const float covNdc = Rendering::CoverageNdc(inst.boundingRadius, projScaleY, dist);
         // The recommended floor's candidate set (base threshold + the band top).
@@ -261,67 +212,6 @@ void LogPropCoverageCensus(const Rendering::GPUScene& gpuScene,
         viewId, viewportW, viewportH, visible, Rendering::kMinPropCoveragePx, subFloor,
         100.0 * subFloor / visible, subAdmit, 100.0 * subAdmit / visible, sub1, sub2, sub4,
         sub8);
-}
-
-// The pipeline format key the world pass draws with, from the attachments it declares: the colour
-// target it renders into (the resolve target when MSAA is off and the pass renders straight into
-// it), the providers' extra colour slices and the depth target. Empty when an attachment is a
-// formatless import, whose format only the record context can query.
-std::optional<Rendering::PipelineFormatKey> WorldColorFormatKey(const Rendering::RenderGraph::RGFrame& frame,
-                                                                const RenderServices::WorldPassTargetsRG& targets,
-                                                                bool rendersIntoResolve)
-{
-    namespace RenderGraph = Rendering::RenderGraph;
-    std::array<RenderGraph::RGAttachmentKeyInput, RenderServices::WorldPassTargetsRG::kMaxExtraColorAttachments + 2>
-        inputs{};
-    uint32_t count = 0;
-    const auto add = [&](RenderGraph::RGTexture texture, uint32_t slot, bool isDepth) {
-        const RenderGraph::RGResourceDesc& desc = frame.Graph().ResourceDesc(texture.Id);
-        inputs[count++] = {slot, isDepth, static_cast<Rendering::TextureFormat>(desc.Format), desc.SampleCount};
-        return desc.Format != 0u;
-    };
-    bool resolved = true;
-    if (targets.Color.IsValid())
-        resolved &= add(rendersIntoResolve ? targets.Resolve : targets.Color, 0u, false);
-    for (uint32_t i = 0; i < targets.ExtraColorCount; ++i)
-        if (targets.ExtraColor[i].Texture.IsValid())
-            resolved &= add(targets.ExtraColor[i].Texture, targets.ExtraColor[i].Location, false);
-    if (targets.Depth.IsValid())
-        resolved &= add(targets.Depth, 0u, true);
-    if (!resolved || count == 0)
-        return std::nullopt;
-    return RenderGraph::DeriveFormatKey(inputs.data(), count, Rendering::TextureFormat{});
-}
-
-// One indirect draw per (color class, pool group): the first key of a group draws it.
-// A key that a draw guard skips still claims its group for this frame.
-bool ClaimConsolidatedDraw(FlatSet<uint64_t>& drawnGroups, const DrawStreamLookupKey& lookup)
-{
-    if (lookup.meshKey == Rendering::MeshPoolGroupPlan::kAbsentGroup)
-        return false; // dead mesh row: its instances reject themselves on the GPU
-    const uint64_t drawKey = (static_cast<uint64_t>(lookup.classKey) << 24) | lookup.meshKey;
-    return drawnGroups.Insert(drawKey);
-}
-
-// The view's ViewParams and ExposureHistory that the pipeline publishes this frame, as the MSAA color
-// resolve's inputs (Pipeline::MsaaResolveViewBuffersFor).
-Passes::MsaaResolveViewBuffers PipelineMsaaResolveViewBuffers(const Pipeline::RenderPipelineInstance* instance,
-                                                              const RenderGraph::RGFrame& frame, ViewId viewId,
-                                                              BufferHandle placeholder)
-{
-    Pipeline::PipelineBufferBindingRG viewParams{};
-    Pipeline::PipelineBufferBindingRG exposureHistory{};
-    if (const Pipeline::PipelineFrameResources* resources = instance ? instance->FrameResourcesFor(&frame) : nullptr)
-        resources->ForEachBufferBinding(
-            viewId,
-            [&viewParams, &exposureHistory](const std::string& name, const Pipeline::PipelineBufferBindingRG& binding)
-            {
-                if (name == Pipeline::Names::Res::ViewParams)
-                    viewParams = binding;
-                else if (name == Pipeline::Names::Res::ExposureHistory)
-                    exposureHistory = binding;
-            });
-    return Pipeline::MsaaResolveViewBuffersFor(viewParams, exposureHistory, placeholder);
 }
 
 } // namespace
@@ -379,7 +269,8 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
 
     if (const auto* pv = m_ViewRegistry.FindPerView(viewId))
     {
-        const auto lightBuffer = pv->CurrentLightBuffer();
+        const uint32_t frameSlot = m_Device->GetFrameIndex();
+        const auto lightBuffer = pv->LightBuffers[frameSlot];
         if (lightBuffer.IsValid())
         {
             add(HashStringId("LightUBO"), lightBuffer);
@@ -405,7 +296,7 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
             vfr->SpotShadowData.Offset, sizeof(SpotShadowDataGPU));
     }
     // MotionParams: the motion variant's per-view block, written at the
-    // producer's declaration. Bound by the block's reflected INSTANCE
+    // producer arm's declaration. Bound by the block's reflected INSTANCE
     // name; the zero fallback above covers every view whose producer did not
     // run, so the binding exists on every draw either way.
     if (vfr && vfr->DeformationMotion.Valid())
@@ -415,9 +306,10 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
     }
     // MotionHistory: the scatter's per-instance rendered level and phase
     // history for this frame, the channel the motion variant reads validity
-    // from. Present on every view whose camera slices ask for the history —
-    // and the motion variant is the only program that declares the binding,
-    // so nothing else is affected by its absence.
+    // from. Present only while a view asks for the history, which is only
+    // while a producer arm is enabled — and the motion variant is the only
+    // program that declares the binding, so nothing else is affected by its
+    // absence.
     if (m_DrawStreamBuilder)
     {
         const auto history =
@@ -447,6 +339,10 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                 { add(HashStringId(name), b.Buffer, b.Offset, b.Size); });
         }
     }
+
+    if (vfr && vfr->DirectionalShadowData.Valid())
+        add(HashStringId("ShadowData"), vfr->DirectionalShadowData.Buffer,
+            vfr->DirectionalShadowData.Offset, sizeof(ShadowDataGPU));
 
     if (const auto materialParams = m_MaterialSystem.PackedMaterialParams();
         materialParams.Buffer.IsValid())
@@ -522,47 +418,6 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
                 gtao = viewGtao;
         }
         addTexture(HashStringId("ge_gtao"), gtao,
-                   m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp));
-    }
-
-    // ge_skyBackdrop: what the sky pass draws its backdrop from, for the height fog's colour taken
-    // from the sky (forward_fog.glsl). Bound whatever the keywords: the terrain and the grass draw in
-    // this pass with the keywords their nodes chose, and every set this pass hands out must carry it.
-    // Black without a sky; the fog reads it only when its colour source names the sky.
-    if (targets)
-    {
-        TextureHandle backdrop = m_Textures->GetDefaultBlackTexture();
-        if (targets->SkyBackdrop.IsValid())
-        {
-            const TextureHandle viewBackdrop = frame.PhysicalTexture(targets->SkyBackdrop);
-            if (viewBackdrop.IsValid())
-                backdrop = viewBackdrop;
-        }
-        addTexture(HashStringId("ge_skyBackdrop"), backdrop,
-                   m_Textures->GetSampler(Rendering::SamplerPreset::LinearRepeat));
-    }
-
-    // ge_volumetricFogIrradiance: the IBL irradiance cube the volumetric fog lights its continuation
-    // past the volume with (volumetric_fog_forward.glsl), as its composite does. The volume itself
-    // is a transient of the frame, bound at record time (BindVolumetricFogVolume).
-    if (HasKeyword(passKeywords, MaterialKeyword::VolumetricFog))
-    {
-        TextureHandle irradiance = m_Textures->GetDefaultBlackCubeTexture();
-        SamplerHandle cubeSampler = m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp);
-        if (auto* ibl = GetFeature<ImageBasedLightingFeature>(); ibl && ibl->IsInitialized())
-        {
-            irradiance = ibl->GetIrradianceCube();
-            cubeSampler = ibl->GetCubeSampler();
-        }
-        addTexture(HashStringId("ge_volumetricFogIrradiance"), irradiance, cubeSampler);
-    }
-
-    // ge_volumetricClouds: the view's resolved clouds (a pool texture of the graph), for the blended
-    // surfaces drawn after the clouds composite that stand beyond them (forward_fog.glsl).
-    if (HasKeyword(passKeywords, MaterialKeyword::VolumetricClouds) && targets && targets->VolumetricClouds.IsValid())
-    {
-        const TextureHandle clouds = frame.PhysicalTexture(targets->VolumetricClouds);
-        addTexture(HashStringId("ge_volumetricClouds"), clouds.IsValid() ? clouds : m_Textures->GetDefaultWhiteTexture(),
                    m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp));
     }
 
@@ -686,10 +541,6 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
         if (shadowTex.IsValid() && shadowSampler.IsValid())
         {
             addTexture(kShadowMapName, shadowTex, shadowSampler);
-            // The compat profile's raw-depth read of the same array (PCSS's blocker
-            // search, DPCF), a samplerless texture: the sampler is carriage only.
-            if (Rendering::IsCompatShaderProfile())
-                addTexture(HashStringId("ge_shadowMapRaw"), shadowTex, shadowSampler);
         }
         else
         {
@@ -708,7 +559,9 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
 
         if (feature && feature->IsInitialized())
         {
-            auto momentsTex = feature->GetMsmMomentsTextureForBinding(viewId);
+            auto momentsTex = vfr && vfr->MsmMoments.IsValid()
+                ? frame.PhysicalTexture(vfr->MsmMoments)
+                : feature->GetMsmMomentsTextureForBinding(viewId);
             auto momentsSampler = feature->GetMsmSampler();
             if (momentsTex.IsValid() && momentsSampler.IsValid())
                 addTexture(kShadowMomentsName, momentsTex, momentsSampler);
@@ -782,13 +635,53 @@ ResolvedPassResources RenderServices::BuildPassResourcesRG(
             // be a SEPARATE buffer, not a re-upload — the last upload would win
             // for all passes. The cubes still bind to satisfy the descriptor
             // layout; iblIntensity 0 zeroes their contribution.
+            const auto* iblView = m_ViewRegistry.FindViewDesc(viewId);
+            const uint64_t probeWorld = iblView && !ibl->IsLocalProbeCaptureView(viewId) ? iblView->worldId : 0;
             const BufferHandle envData = m_WorldPassExcludeEnvironment
                                              ? m_FallbackBuffers[HashStringId("Env")]
-                                             : ibl->UploadEnvData(m_Device);
+                                             : ibl->UploadEnvData(m_Device, probeWorld);
 
             addTexture(HashStringId("ge_irradianceCube"), ibl->GetIrradianceCube(), ibl->GetCubeSampler());
             addTexture(HashStringId("ge_prefilterCube"), ibl->GetPrefilterCube(), ibl->GetCubeSampler());
             addTexture(HashStringId("ge_brdfLUT"), ibl->GetBrdfLut(), ibl->GetLutSampler());
+            for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
+            {
+                addTexture(HashStringId(ImageBasedLightingFeature::kLocalIrradianceNames[i]),
+                           ibl->GetLocalIrradiance(probeWorld, i), ibl->GetCubeSampler());
+                addTexture(HashStringId(ImageBasedLightingFeature::kLocalPrefilterNames[i]),
+                           ibl->GetLocalPrefilter(probeWorld, i), ibl->GetCubeSampler());
+            }
+            // Bindings and graph dependencies share this path for entity draws
+            // and custom contributors, including views containing only contributors.
+            auto& vfr = ViewFrameRGFor(frame, viewId);
+            if (!vfr.IblIrradiance.IsValid())
+            {
+                vfr.IblIrradiance = frame.ImportExternalTexture(
+                    "IBL_Irradiance", ibl->GetIrradianceCube(), Rendering::ResourceState::ShaderResource,
+                    Rendering::TextureFormat::R16G16B16A16_FLOAT, 1,
+                    ImageBasedLightingFeature::kNumCaptureFaces);
+                vfr.IblPrefilter = frame.ImportExternalTexture(
+                    "IBL_Prefilter", ibl->GetPrefilterCube(), Rendering::ResourceState::ShaderResource,
+                    Rendering::TextureFormat::R16G16B16A16_FLOAT, ibl->GetPrefilterMipCount(),
+                    ImageBasedLightingFeature::kNumCaptureFaces);
+                vfr.IblBrdfLut = frame.ImportExternalTexture(
+                    "IBL_BrdfLut", ibl->GetBrdfLut(), Rendering::ResourceState::ShaderResource,
+                    Rendering::TextureFormat{}, 1, 1);
+                for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
+                {
+                    const auto* capture = ibl->GetLocalProbeCapture(probeWorld, i);
+                    if (!capture || !capture->IsInitialized())
+                        continue;
+                    vfr.IblLocalIrradiance[i] = frame.ImportExternalTexture(
+                        ImageBasedLightingFeature::kLocalIrradianceNames[i], capture->GetIrradianceCube(),
+                        Rendering::ResourceState::ShaderResource, Rendering::TextureFormat::R16G16B16A16_FLOAT,
+                        1, ImageBasedLightingFeature::kNumCaptureFaces);
+                    vfr.IblLocalPrefilter[i] = frame.ImportExternalTexture(
+                        ImageBasedLightingFeature::kLocalPrefilterNames[i], capture->GetPrefilterCube(),
+                        Rendering::ResourceState::ShaderResource, Rendering::TextureFormat::R16G16B16A16_FLOAT,
+                        capture->GetPrefilterMipCount(), ImageBasedLightingFeature::kNumCaptureFaces);
+                }
+            }
             // Compat-profile spellings: ibl.glsl's compat arm declares the trio
             // as separate images over one standalone sampler (WebGPU's
             // per-stage sampler budget). Registered unconditionally — the
@@ -1021,6 +914,12 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     // IBL) is identical to phase A so recovered geometry shades the same.
     const bool isRecover = (phase == Rendering::GPUDrawStreamBuilder::SlicePhase::B);
 
+    float bandStart = 0.0f, bandEnd = 0.0f;
+    int distanceMode = 0;
+    if (GetDepthPixelationBandRange(viewId, bandStart, bandEnd, distanceMode))
+        passKeywords |= Rendering::MaterialKeyword::DepthPixelationBand;
+
+
     WorldPassRG result{};
 
     const ViewDesc* view = nullptr;
@@ -1036,7 +935,7 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
         return result;
 
     // The old activation predicate, evaluated at declaration: not declared =
-    // not compiled. (The render-layer/external-request term is the
+    // not compiled. (The renderLayerMask/external-request term is the
     // slice-4 spine's job — calling this function IS the request.)
     const bool hasTargets = targets.Color.IsValid() || targets.Depth.IsValid();
     // The recover pass never activates just to clear (it always loads) — it only
@@ -1104,31 +1003,6 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
         }
     }
 
-    // IBL bake outputs: import the engine-shared cubes the keyword-IBL world draw
-    // samples. Dedup-by-handle lands these on the SAME ids the IBLGen bake's writes
-    // produced, so the setup-lambda Read below forms the bake->world
-    // StorageWrite->Sampled edge and orders the bake before this view's world pass.
-    // Imported here even on PCSS/keyword-less-IBL? No — only when IBL is requested,
-    // mirroring the binding gate in BuildPassResourcesRG.
-    if (Rendering::HasKeyword(passKeywords, Rendering::MaterialKeyword::IBL))
-    {
-        if (auto* ibl = GetFeature<ImageBasedLightingFeature>();
-            ibl && ibl->IsInitialized() && !vfr.IblIrradiance.IsValid())
-        {
-            vfr.IblIrradiance = frame.ImportExternalTexture(
-                "IBL_Irradiance", ibl->GetIrradianceCube(), Rendering::ResourceState::ShaderResource,
-                Rendering::TextureFormat::R16G16B16A16_FLOAT, 1,
-                ImageBasedLightingFeature::kNumCaptureFaces);
-            vfr.IblPrefilter = frame.ImportExternalTexture(
-                "IBL_Prefilter", ibl->GetPrefilterCube(), Rendering::ResourceState::ShaderResource,
-                Rendering::TextureFormat::R16G16B16A16_FLOAT, ibl->GetPrefilterMipCount(),
-                ImageBasedLightingFeature::kNumCaptureFaces);
-            vfr.IblBrdfLut = frame.ImportExternalTexture(
-                "IBL_BrdfLut", ibl->GetBrdfLut(), Rendering::ResourceState::ShaderResource,
-                Rendering::TextureFormat{}, 1, 1);
-        }
-    }
-
     // Phase A arms the misorder tripwire (producers after this point derive
     // WAR). The recover pass LEGITIMATELY follows the phase-A raster, so it must
     // not arm it (and the phase-A pass already published the blackboard).
@@ -1164,6 +1038,18 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     const ViewRegistry::PerViewResources* forwardView = m_ViewRegistry.FindPerView(viewId);
     bool depthReadOnly =
         hasDepthPrepass && !(forwardView && forwardView->ForwardDrawsWritingDepth != 0u);
+    // A Blend material that authors zWrite writes its own depth in this pass whenever blended
+    // entities draw here (compatibility profile, drain fallback, order-independent blends). A
+    // read-only attachment drops those writes, so later depth readers (a DepthResolve after
+    // SortedTransparent) would see the backdrop behind the sprite instead.
+    if (depthReadOnly &&
+        std::any_of(entityBatchKeys.begin(), entityBatchKeys.end(),
+                    [](const WorldDrawBuilder::BatchKey& key)
+                    {
+                        return key.material && key.material->GetAlphaMode() == MaterialAlphaMode::Blend &&
+                               key.material->GetDepthWriteOverride().value_or(false);
+                    }))
+        depthReadOnly = false;
     // The transmissive pass never writes depth: glass composites over the lit opaque scene
     // and only depth-tests (ReadOnly) against the opaque depth — single-layer, order-independent.
     if (scope == WorldPassDrawScope::TransmissiveOnly)
@@ -1199,9 +1085,9 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
         {
             if (colorDesc.SampleCount > 1u)
             {
-                // A resolve target of another format is the wrong target for
-                // this color: render to the MSAA color only rather than
-                // resolve into it.
+                // Resolve requires matching formats (VUID 06865); a mismatch
+                // means the resolve target is wrong for this color — render
+                // to the MSAA color only rather than emit an invalid resolve.
                 if (colorDesc.Format == resolveDesc.Format)
                     canResolveColor = true;
                 else
@@ -1247,15 +1133,6 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     if (targets.Color.IsValid())
         m_ViewRegistry.PerView(viewId).WorldColorSampleCount =
             frame.Graph().ResourceDesc(targets.Color.Id).SampleCount;
-    // And the formats it draws with, for the forward producers that request a pipeline's build
-    // at next frame's emit (PerViewResources::WorldColorFormatKey).
-    if (!isRecover && scope == WorldPassDrawScope::All)
-    {
-        if (const std::optional<Rendering::PipelineFormatKey> fk =
-                WorldColorFormatKey(frame, targets, collapseToResolve))
-            m_ViewRegistry.PerView(viewId).WorldColorFormatKey = *fk;
-        m_ViewRegistry.PerView(viewId).WorldReliefDepthSource = reliefDepthSource;
-    }
 
     // Camera UBO: upload-ring alloc written NOW. Clear-only frames still get
     // valid camera data — the old arm wrote before its draw guard for the
@@ -1307,8 +1184,6 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     // None, which leaves the recorded value unchanged.
     if (passKeywords != Rendering::MaterialKeyword::None)
         m_ViewRegistry.PerView(viewId).WorldPassKeywords = passKeywords;
-    if (!isRecover && scope == WorldPassDrawScope::All)
-        m_ViewRegistry.PerView(viewId).DeclaredWorldPassKeywords = passKeywords;
 
     // Coverage census (GE_PROP_CENSUS; throttled). Declaration-time: extraction
     // is complete and this pass's scatter snapshot was captured from the same
@@ -1336,9 +1211,6 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
     // resolved to its physical texture at record time, below.
     const RenderGraph::RGTexture prepassDepth = readsReliefDepth ? targets.Depth : RenderGraph::RGTexture{};
     const SamplerHandle prepassDepthSampler = m_Textures->GetSampler(Rendering::SamplerPreset::PointClamp);
-    const RenderGraph::RGTexture volumetricFog =
-        HasKeyword(passKeywords, MaterialKeyword::VolumetricFog) ? targets.VolumetricFog : RenderGraph::RGTexture{};
-    const SamplerHandle volumetricFogSampler = m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp);
 
     // Snapshot the view's forward-contributor commands AT DECLARATION: the
     // stream is per view and REPLACED by every emit, so a second pass declared
@@ -1425,6 +1297,11 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                 p.Read(vfr.IblPrefilter, RenderGraph::RGTextureRead::Sampled);
             if (vfr.IblBrdfLut.IsValid())
                 p.Read(vfr.IblBrdfLut, RenderGraph::RGTextureRead::Sampled);
+            for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
+            {
+                if (vfr.IblLocalIrradiance[i].IsValid()) p.Read(vfr.IblLocalIrradiance[i], RenderGraph::RGTextureRead::Sampled);
+                if (vfr.IblLocalPrefilter[i].IsValid()) p.Read(vfr.IblLocalPrefilter[i], RenderGraph::RGTextureRead::Sampled);
+            }
             // ge_gtao samples the AO node's storage-written output: this read is
             // the compute->fragment RAW edge AND the General->ShaderReadOnly
             // transition that matches the descriptor's SHADER_READ_ONLY claim
@@ -1433,9 +1310,6 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             // ge_gtao binding in BuildPassResourcesRG.
             if (targets.GTAO.IsValid() && HasKeyword(passKeywords, MaterialKeyword::GTAO))
                 p.Read(targets.GTAO, RenderGraph::RGTextureRead::Sampled);
-            // ge_skyBackdrop and ge_volumetricFog: the sky-view LUT and the froxel volume are written
-            // by compute earlier in the frame; the by-name bindings alone form no edge.
-            DeclareForwardFogReads(p, targets, passKeywords);
             // ge_ddgiResolveRough/Glossy sample the DDGI glossy-resolve
             // compute outputs: same compute->fragment RAW edge + layout
             // transition the ge_gtao read above provides, gated exactly like
@@ -1525,11 +1399,10 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                     scope != WorldPassDrawScope::TransmissiveOnly)
                 {
                     col.Load = RenderGraph::RGLoadOp::Clear;
-                    const ColorLinear& clearColor = view->targets.clearColorValue;
-                    col.Clear.Color[0] = clearColor.r;
-                    col.Clear.Color[1] = clearColor.g;
-                    col.Clear.Color[2] = clearColor.b;
-                    col.Clear.Color[3] = clearColor.a;
+                    col.Clear.Color[0] = view->targets.clearColorValue[0];
+                    col.Clear.Color[1] = view->targets.clearColorValue[1];
+                    col.Clear.Color[2] = view->targets.clearColorValue[2];
+                    col.Clear.Color[3] = view->targets.clearColorValue[3];
                 }
                 else
                 {
@@ -1537,15 +1410,25 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                 }
                 col.Store = RenderGraph::RGStoreOp::Store;
 
-                // The multisampled color resolves in the next declared pass.
                 if (canResolveColor)
-                    p.AttachColor(0, targets.Color, col);
+                    p.AttachColorResolve(0, targets.Color, targets.Resolve, col);
                 else if (collapseToResolve)
                     p.AttachColor(0, targets.Resolve, col, targets.ColorRange);
                 else
                     p.AttachColor(0, targets.Color, col, targets.ColorRange);
             }
-            AttachExtraColors(p, targets);
+            // Feature-owned MRT slices, attached verbatim: formats, clears and
+            // locations belong to the contributing provider.
+            for (uint32_t i = 0; i < targets.ExtraColorCount; ++i)
+            {
+                const auto& extra = targets.ExtraColor[i];
+                if (!extra.Texture.IsValid())
+                    continue;
+                if (extra.Resolve.IsValid())
+                    p.AttachColorResolve(extra.Location, extra.Texture, extra.Resolve, extra.Ops);
+                else
+                    p.AttachColor(extra.Location, extra.Texture, extra.Ops);
+            }
             if (targets.Depth.IsValid())
             {
                 RenderGraph::RGAttachmentOps dops{};
@@ -1567,7 +1450,7 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
         },
         [this, viewId, passKeywords, reliefDepthSource, scope, viewportW, viewportH, letterbox, flipViewportY, phase,
          sliceCascadeIndex, fwdCommands = std::move(forwardSnapshot),
-         prepassDepth, prepassDepthSampler, volumetricFog, volumetricFogSampler,
+         prepassDepth, prepassDepthSampler,
          res = std::move(resources)](RenderGraph::RGContext& ctx) mutable
         {
             auto* cl = ctx.Cmd;
@@ -1641,7 +1524,6 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                 if (const TextureHandle depth = ctx.GetTexture(prepassDepth); depth.IsValid())
                     res.Textures.push_back({HashStringId("ge_prepassDepth"), depth, prepassDepthSampler});
             }
-            BindVolumetricFogVolume(ctx, volumetricFog, volumetricFogSampler, res);
             [[maybe_unused]] const uint64_t uploadedCompatListBytes = UploadedCompatInstanceListBytes(res);
             auto pass = binder.BeginPass(*cl, viewId, ctx, passKeywords, std::move(res),
                                          WorldPassInstanceIndex(sliceCascadeIndex, phase));
@@ -1686,7 +1568,8 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             // FindBatchDrawRange at exec; an unpopulated range (first frame
             // for a newly-spawned batch) is skipped this frame.
             auto recordEntityBatch = [&](const WorldDrawBuilder::BatchKey& key,
-                                         const DrawStreamLookupKey& lookup)
+                                         const DrawStreamLookupKey& lookup,
+                                         const CpuDrawStreamBuilder::InstanceList* orderedRun = nullptr)
             {
                 const Material* material = key.material;
                 if (!material)
@@ -1774,9 +1657,15 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                 const Rendering::VertexAttributeFlags effectiveFlags =
                     BoundStreamVertexFlags(*entry, entryBindings, material->IgnoresVertexColor());
 
+                // Entity batches always need GE_INSTANCED (indirect vertex
+                // fetch) even when callers pass keywords=None (thumbnails).
+                // A parallax material writes its relief's depth when no prepass
+                // wrote it, and reads the prepass's when one did
+                // (WorldPassReliefDepthKeywords).
                 const Rendering::MaterialKeyword entityKeywords =
-                    WorldEntityColorKeywords(passKeywords, material->GetVariantKey().materialKeywords,
-                                             material->GetAlphaMode(), reliefDepthSource);
+                    passKeywords | Rendering::MaterialKeyword::Instanced
+                    | WorldPassReliefDepthKeywords(material->GetVariantKey().materialKeywords,
+                                                   material->GetAlphaMode(), reliefDepthSource);
 
                 // Compatibility profile: no GPU scatter and no device addresses.
                 // The CPU draw stream's frustum-culled instance list replaces
@@ -1787,7 +1676,7 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                 if (m_Profile.IsCompat())
                 {
                     const CpuDrawStreamBuilder::InstanceList instances =
-                        m_CpuDrawStream.GetInstances(viewId, key.materialIndex, key.meshIndex,
+                        orderedRun ? *orderedRun : m_CpuDrawStream.GetInstances(viewId, key.materialIndex, key.meshIndex,
                                                      CpuDrawStreamBuilder::InstanceSet::Camera);
                     if (instances.Count == 0u)
                         return;
@@ -2114,26 +2003,115 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                 }
             };
 
-            // The recorders do the lookup, the consolidation and the draw guards.
-            const std::span<const uint32_t> meshGroups = runEntityDraws
-                ? MeshPoolGroupSpanForDraws() : std::span<const uint32_t>{};
-            FlatSet<uint64_t> drawnGroups;
-            if (!meshGroups.empty())
-                drawnGroups.Reserve(entityKeys.size());
-            const auto recordEntity = [&](const WorldDrawBuilder::BatchKey& key)
+            const auto recordEntities = [&](bool blendPhase)
             {
-                // Color-table slices key on the color class whatever their cascade index.
-                const DrawStreamLookupKey lookup = ResolveDrawStreamLookupKey(
-                    key, sliceCascadeIndex,
-                    Rendering::MaterialDepthClass::MaterialDependent, meshGroups);
-                if (meshGroups.empty() || ClaimConsolidatedDraw(drawnGroups, lookup))
-                    recordEntityBatch(key, lookup);
+                if (!runEntityDraws) return;
+                const std::span<const uint32_t> meshGroups = MeshPoolGroupSpanForDraws();
+                // Color-table slices key on the color class whatever their
+                // cascade index: MaterialDependent keeps the depth-class remap
+                // (a Shadow-table concern) out of the resolution.
+                const auto lookupOf = [&](const WorldDrawBuilder::BatchKey& key)
+                {
+                    return ResolveDrawStreamLookupKey(
+                        key, sliceCascadeIndex,
+                        Rendering::MaterialDepthClass::MaterialDependent, meshGroups);
+                };
+                if (blendPhase && m_Profile.IsCompat() && gpuScene)
+                {
+                    // Transparent sprites cannot retain material-batch order:
+                    // a closer translucent sprite may otherwise write depth
+                    // before the surfaces that should show through it.
+                    // Sort the already culled instances across ALL batches.
+                    struct OrderedInstance
+                    {
+                        const WorldDrawBuilder::BatchKey* Key;
+                        uint32_t IndexOffset;
+                        float Depth;
+                    };
+                    std::vector<OrderedInstance> ordered;
+                    const auto camera = Rendering::DeriveCameraData(m_ViewRegistry.ResolveCameraData(viewId));
+                    const auto& instances = gpuScene->GetInstances();
+                    for (const auto& key : entityKeys)
+                    {
+                        if (!IsBlendedMaterial(key.material)) continue;
+                        const auto list = m_CpuDrawStream.GetInstances(viewId, key.materialIndex,
+                                 key.meshIndex, CpuDrawStreamBuilder::InstanceSet::Camera);
+                        const auto indices = m_CpuDrawStream.GetIndexList(viewId);
+                        {
+                            for (uint32_t i = 0; i < list.Count; ++i)
+                            {
+                                const uint32_t instance = indices[list.First + i];
+                                if (instance >= instances.size()) continue;
+                                const auto& center = instances[instance].boundingCenter;
+                                const float depth = (center.x-camera.Position.x)*camera.Forward.x +
+                                    (center.y-camera.Position.y)*camera.Forward.y +
+                                    (center.z-camera.Position.z)*camera.Forward.z;
+                                ordered.push_back({&key, list.First + i, depth});
+                            }
+                        }
+                    }
+                    std::stable_sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
+                        if (a.Depth != b.Depth) return a.Depth > b.Depth;
+                        return a.IndexOffset < b.IndexOffset;
+                    });
+                    for (size_t i = 0; i < ordered.size();)
+                    {
+                        const auto& first = ordered[i];
+                        CpuDrawStreamBuilder::InstanceList run{first.IndexOffset, 1};
+                        size_t next = i+1;
+                        // Coalesce only neighbours whose sorted order remains
+                        // identical to consecutive entries in the uploaded index list.
+                        while (next < ordered.size() && ordered[next].Key == first.Key &&
+                               ordered[next].IndexOffset == run.First+run.Count)
+                        { ++run.Count; ++next; }
+                        recordEntityBatch(*first.Key, lookupOf(*first.Key), &run);
+                        i = next;
+                    }
+                    return;
+                }
+                if (meshGroups.empty())
+                {
+                    for (const auto& key : entityKeys)
+                        if (IsBlendedMaterial(key.material) == blendPhase)
+                            recordEntityBatch(key, lookupOf(key));
+                }
+                else
+                {
+                    // Draw consolidation: ONE indirect draw per (colorClassId,
+                    // pool group). The first key of a group is its
+                    // representative (keys sort by class then mesh); the
+                    // per-material filters above are class-uniform (blend
+                    // state, transmission, ignoreVertexColor all ride the
+                    // class signature), so evaluating them on the
+                    // representative is exact. Consume-on-attempt: a
+                    // representative skipped by a guard drops its group for
+                    // one frame — the same self-healing semantics as an
+                    // unpopulated range.
+                    std::unordered_set<uint64_t> drawnGroups;
+                    drawnGroups.reserve(entityKeys.size());
+                    for (const auto& key : entityKeys)
+                    {
+                        if (IsBlendedMaterial(key.material) != blendPhase)
+                            continue;
+                        const DrawStreamLookupKey lookup = lookupOf(key);
+                        if (lookup.meshKey == Rendering::MeshPoolGroupPlan::kAbsentGroup)
+                            continue; // dead mesh row — instances self-reject GPU-side
+                        const uint64_t drawKey =
+                            (static_cast<uint64_t>(lookup.classKey) << 24) | lookup.meshKey;
+                        if (!drawnGroups.insert(drawKey).second)
+                            continue;
+                        recordEntityBatch(key, lookup);
+                    }
+                }
             };
-            DrainWorldForwardOpaqueFirst(
-                runEntityDraws ? entityKeys : std::span<const WorldDrawBuilder::BatchKey>{},
-                scope != WorldPassDrawScope::TransmissiveOnly
-                    ? std::span<const DrawCommand>(fwdCommands) : std::span<const DrawCommand>{},
-                recordEntity, recordContributor);
+            const auto recordContributors = [&](bool blendPhase)
+            {
+                if (scope == WorldPassDrawScope::TransmissiveOnly) return;
+                for (const auto& command : fwdCommands)
+                    if (IsBlendedContributor(command) == blendPhase)
+                        recordContributor(command);
+            };
+            DrainForwardOpaqueFirst(recordEntities, recordContributors);
 
             if (DrawAttributionEnabled())
                 LogDrawAttribution("color", viewId, entityKeys.size(), attribDrawsIssued,
@@ -2144,13 +2122,6 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             binder.EndPass(pass);
         });
 
-    if (canResolveColor && result.Pass.IsValid())
-    {
-        const Rendering::Passes::MsaaResolveViewBuffers resolveView = PipelineMsaaResolveViewBuffers(
-            m_FrameOrchestrator.PipelineInstanceForFrame(frame), frame, viewId, m_DefaultPlaceholderBuffer);
-        Rendering::Passes::AddMsaaColorResolvePassRG(frame, targets.Color, targets.Resolve, targets.BloomSampleDelta,
-                                                     resolveView, (passName + ".ColorResolve").c_str());
-    }
     return result;
 }
 
@@ -2229,10 +2200,6 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
     const DDGIProbeFeature::GatherReadsRG ddgiReads =
         ImportDdgiGatherReads(frame, GetFeature<DDGIProbeFeature>(), passKeywords);
 
-    const RenderGraph::RGTexture volumetricFog =
-        HasKeyword(passKeywords, MaterialKeyword::VolumetricFog) ? targets.VolumetricFog : RenderGraph::RGTexture{};
-    const SamplerHandle volumetricFogSampler = m_Textures->GetSampler(Rendering::SamplerPreset::LinearClamp);
-
     std::vector<DrawCommand> passCommands(commands.begin(), commands.end());
     std::string debugName = passName && passName[0] != '\0' ? passName : "ForwardCommands";
     debugName += "[";
@@ -2241,7 +2208,7 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
     debugName += std::to_string(static_cast<uint32_t>(viewId));
     debugName += "]";
 
-    const RenderGraph::RGPass drawPass = frame.AddPass(
+    return frame.AddPass(
         debugName.c_str(), Rendering::PassPhase::kWorldRender,
         [&](RenderGraph::RGPassBuilder& p)
         {
@@ -2277,15 +2244,17 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                 p.Read(vfr.IblPrefilter, RenderGraph::RGTextureRead::Sampled);
             if (vfr.IblBrdfLut.IsValid())
                 p.Read(vfr.IblBrdfLut, RenderGraph::RGTextureRead::Sampled);
+            for (uint32_t i = 0; i < ImageBasedLightingFeature::kMaxLocalProbes; ++i)
+            {
+                if (vfr.IblLocalIrradiance[i].IsValid()) p.Read(vfr.IblLocalIrradiance[i], RenderGraph::RGTextureRead::Sampled);
+                if (vfr.IblLocalPrefilter[i].IsValid()) p.Read(vfr.IblLocalPrefilter[i], RenderGraph::RGTextureRead::Sampled);
+            }
             // ge_gtao: same compute->fragment edge + General->ShaderReadOnly
             // transition as the entity world pass (the by-name binding alone
             // forms no edge; VUID-vkCmdDraw-None-09600 otherwise). Gated
             // exactly like the ge_gtao binding in BuildPassResourcesRG.
             if (targets.GTAO.IsValid() && HasKeyword(passKeywords, MaterialKeyword::GTAO))
                 p.Read(targets.GTAO, RenderGraph::RGTextureRead::Sampled);
-            // ge_skyBackdrop and ge_volumetricFog: the sky-view LUT and the froxel volume are written
-            // by compute earlier in the frame; the by-name bindings alone form no edge.
-            DeclareForwardFogReads(p, targets, passKeywords);
             // ge_ddgiResolveRough/Glossy sample the DDGI glossy-resolve
             // compute outputs: same compute->fragment RAW edge + layout
             // transition the ge_gtao read above provides, gated exactly like
@@ -2355,15 +2324,13 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                 RenderGraph::RGAttachmentOps col{};
                 col.Load = RenderGraph::RGLoadOp::Load;
                 col.Store = RenderGraph::RGStoreOp::Store;
-                // The multisampled color resolves in the next declared pass.
                 if (canResolveColor)
-                    p.AttachColor(0, targets.Color, col);
+                    p.AttachColorResolve(0, targets.Color, targets.Resolve, col);
                 else if (collapseToResolve)
                     p.AttachColor(0, targets.Resolve, col, targets.ColorRange);
                 else
                     p.AttachColor(0, targets.Color, col, targets.ColorRange);
             }
-            AttachExtraColors(p, targets);
             if (targets.Depth.IsValid())
             {
                 RenderGraph::RGAttachmentOps dops{};
@@ -2376,14 +2343,12 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                 p.AttachDepth(targets.Depth, dops, depthAccess, targets.DepthRange);
             }
         },
-        [this, viewId, passKeywords, viewportW, viewportH, letterbox, flipViewportY, volumetricFog,
-         volumetricFogSampler, passCommands = std::move(passCommands),
-         res = std::move(resources)](RenderGraph::RGContext& ctx) mutable
+        [this, viewId, passKeywords, viewportW, viewportH, letterbox, flipViewportY,
+         passCommands = std::move(passCommands), res = std::move(resources)](RenderGraph::RGContext& ctx) mutable
         {
             auto* cl = ctx.Cmd;
             if (!cl)
                 return;
-            BindVolumetricFogVolume(ctx, volumetricFog, volumetricFogSampler, res);
 
             if (viewportW != 0 && viewportH != 0)
             {
@@ -2440,7 +2405,7 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
             for (const DrawCommand& cmd : passCommands)
             {
                 const auto* material = cmd.Material;
-                if (!material)
+                if (!material && (!cmd.InternedPipeline.IsValid() || !cmd.PipelineMeta))
                     continue;
 
                 const Rendering::MeshGPUEntry* meshEntry = nullptr;
@@ -2454,7 +2419,7 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                     if (!meshRegistry.TryGetDrawableBindings(*meshEntry, meshBindings))
                         continue;
                     effectiveFlags = BoundStreamVertexFlags(
-                        *meshEntry, meshBindings, material->IgnoresVertexColor());
+                        *meshEntry, meshBindings, material && material->IgnoresVertexColor());
                 }
 
                 Rendering::PipelineHandle resolvedPipe{};
@@ -2462,7 +2427,7 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                     resolvedPipe = ctx.GetOrCreatePipelineVariant(cmd.InternedPipeline);
                 const Rendering::ShaderMeta* variantMeta = cmd.PipelineMeta;
                 std::span<const Rendering::DescriptorSetLayoutId> pipelineSetLayouts;
-                if (!resolvedPipe.IsValid())
+                if (!resolvedPipe.IsValid() && material)
                 {
                     const Rendering::MaterialKeyword contributorKeywords =
                         ContributorColorKeywords(passKeywords, cmd.PassKeywords,
@@ -2502,9 +2467,13 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
                     setIbSticky(cmd.Geometry.AltGeom.IB, cmd.Geometry.AltGeom.IndexType);
                 }
 
-                const auto bound = binder.BindMaterialForDraw(
-                    pass, *material, effectiveFlags, cmd.Bindings, resolvedPipe,
-                    variantMeta, /*pipelineSetCount=*/0, pipelineSetLayouts);
+                const auto bound = material
+                    ? binder.BindMaterialForDraw(pass, *material, effectiveFlags, cmd.Bindings,
+                                                resolvedPipe, variantMeta, cmd.PipelineSetCount,
+                                                pipelineSetLayouts)
+                    : binder.BindPipelineForDraw(pass, resolvedPipe, *cmd.PipelineMeta,
+                                                cmd.Bindings, cmd.PipelineSetCount,
+                                                pipelineSetLayouts);
                 if (!bound.IsValid())
                     continue;
 
@@ -2544,15 +2513,6 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
 
             binder.EndPass(pass);
         });
-
-    if (canResolveColor && drawPass.IsValid())
-    {
-        const Rendering::Passes::MsaaResolveViewBuffers resolveView = PipelineMsaaResolveViewBuffers(
-            m_FrameOrchestrator.PipelineInstanceForFrame(frame), frame, viewId, m_DefaultPlaceholderBuffer);
-        Rendering::Passes::AddMsaaColorResolvePassRG(frame, targets.Color, targets.Resolve, targets.BloomSampleDelta,
-                                                     resolveView, (debugName + ".ColorResolve").c_str());
-    }
-    return drawPass;
 }
 
 } // namespace Engine::Renderer

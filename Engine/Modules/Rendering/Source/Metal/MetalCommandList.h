@@ -3,15 +3,15 @@
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/QueryPool.h"
-#include "Types/Types.h"
 
-#include "MetalIndirectCount/MetalIndirectCountEncoder.h"
+#include "MetalIndirectCountEncoder.h"
 #include "MetalQueryPool.h"
 
 #include <Metal/Metal.hpp>
 
 #include <array>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 namespace GameEngine
@@ -21,6 +21,8 @@ namespace Rendering
 
 class MetalDevice;
 struct MetalTexture;
+struct MetalDescriptorSet;
+struct MetalPipeline;
 
 // Metal command list. Metal records through per-domain encoders (render /
 // blit / compute) that must be ended before switching domains, so this class
@@ -137,6 +139,8 @@ class MetalCommandList : public CommandList
                                           const float rgba[4]);
     void ApplyRenderState();
     void ApplyPushConstants();
+    void BindDirectDescriptorSet(uint32_t setIndex, MetalDescriptorSet& descriptors, const MetalPipeline& pipeline);
+    std::array<uint32_t, 31> m_DirectBufferSizes{};
 
     // Claims start/end boundary samples for a new encoder and binds pending
     // span-begin queries to the start. False when profiling is inactive or the
@@ -219,9 +223,7 @@ class MetalCommandList : public CommandList
         size_t Offset = 0;
     };
     std::array<BoundArgumentTable, kMaxDescriptorSets> m_EncoderBoundSets{};
-    // The usage that the open encoder declares for each resource. A new encoder clears the map, and the
-    // map keeps its storage. A bind allocates only when an encoder holds more residents than any before.
-    FastHashMap<MTL::Resource*, MTL::ResourceUsage> m_EncoderResidents;
+    std::unordered_map<MTL::Resource*, MTL::ResourceUsage> m_EncoderResidents;
     std::vector<MTL::Resource*> m_ScratchReadResidents;
     std::vector<MTL::Resource*> m_ScratchWriteResidents;
 

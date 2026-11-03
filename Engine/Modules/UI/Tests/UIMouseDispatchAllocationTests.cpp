@@ -7,13 +7,22 @@
 // against the path that replaced it. "We deleted a vector" is not evidence
 // that nothing took its place.
 //
-// WHAT MEASURES IT. UIManager::OnMouseButton lives in Engine.dll, so the
-// count has to include Engine's own allocations. The allocation counter does
-// wherever Engine carries the allocation hook (GE_DEBUG_INSTRUMENTATION, and on
-// macOS and Linux every configuration, where the replacements coalesce), so this
-// suite is not registered where it would read a false zero: Windows Release
-// (UI/CMakeLists.txt). The window is ThisThread, so the job system's background
-// work cannot be counted as a click's cost.
+// WHY THIS IS ITS OWN TARGET, AND WHY IT DOES NOT USE operator new.
+// UIDispatchAllocationTests measures by replacing global operator new, which
+// only intercepts allocations made by code compiled INTO THAT EXECUTABLE.
+// UIManager::OnMouseButton lives in Engine.dll, so that probe cannot see this
+// path at all — measured directly: over one UIManager construction plus a
+// SetFocusById, the operator-new probe counted 3 allocations while the CRT
+// hook below counted 411 for the very same work. A soak written against the
+// operator-new probe would therefore report a confident zero for a path that
+// allocates on every click — and this path does allocate on every click, so
+// that false zero is exactly what this file exists to avoid.
+//
+// So the instrument here is _CrtSetAllocHook, which sits inside the CRT itself
+// and sees every module that links it — Engine.dll included. It is debug-CRT
+// only, so the arms below skip loudly rather than passing vacuously when the
+// hook is inert. Allocations are attributed to the calling thread, so the job
+// system's background work cannot be counted as a click's cost.
 //
 // AnAllocatingHandlerMovesTheCountByExactlyItsOwnAllocations is this file's
 // positive control. Every number here is worthless without it: it proves the
@@ -27,19 +36,79 @@
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 
-#include "Memory/AllocationCountScope.h"
-
+#include <atomic>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
 
+#if defined(_WIN32) && defined(_DEBUG)
+  #include <crtdbg.h>
+  #define GE_HAVE_CRT_ALLOC_HOOK 1
+#else
+  #define GE_HAVE_CRT_ALLOC_HOOK 0
+#endif
+
+#if defined(_WIN32)
+  #include <windows.h>
+#endif
+
 using namespace GameEngine;
 
 namespace
 {
+#if GE_HAVE_CRT_ALLOC_HOOK
+
+std::atomic<size_t> g_Allocations{0};
+std::atomic<bool> g_Armed{false};
+std::atomic<unsigned long> g_ArmedThread{0};
+
+unsigned long CurrentThread()
+{
+  #if defined(_WIN32)
+    return ::GetCurrentThreadId();
+  #else
+    return 0;
+  #endif
+}
+
+int AllocHook(int allocType, void* /*userData*/, size_t /*size*/, int /*blockType*/, long /*request*/,
+              const unsigned char* /*filename*/, int /*lineNumber*/)
+{
+    // _HOOK_REALLOC is counted too: a vector that outgrows its capacity reaches
+    // the heap through realloc on some paths, and not counting it would let
+    // exactly the regression this file guards against slip through.
+    const bool isAllocation = (allocType == _HOOK_ALLOC || allocType == _HOOK_REALLOC);
+    if (isAllocation && g_Armed.load(std::memory_order_relaxed) &&
+        CurrentThread() == g_ArmedThread.load(std::memory_order_relaxed))
+    {
+        g_Allocations.fetch_add(1, std::memory_order_relaxed);
+    }
+    return 1; // let the allocation proceed
+}
+
+// Armed only around the window under measurement, and only for the arming
+// thread, so the job system's background allocations are never charged to a
+// click.
+struct AllocationProbe
+{
+    AllocationProbe()
+    {
+        g_Allocations.store(0, std::memory_order_relaxed);
+        g_ArmedThread.store(CurrentThread(), std::memory_order_relaxed);
+        _CrtSetAllocHook(AllocHook);
+        g_Armed.store(true, std::memory_order_relaxed);
+    }
+    ~AllocationProbe()
+    {
+        g_Armed.store(false, std::memory_order_relaxed);
+        _CrtSetAllocHook(nullptr);
+    }
+    static size_t Count() { return g_Allocations.load(std::memory_order_relaxed); }
+};
 
 // Button under a 200x40 root, cursor parked over it and hover resolved, so a
 // click dispatches through a control that actually acts — the expensive case.
@@ -70,7 +139,8 @@ struct ClickFixture
         Ui = std::make_unique<UIManager>(Dev.get());
         Ui->SetRoot(std::move(root));
 
-        const auto css = std::filesystem::temp_directory_path() / "ui_mouse_dispatch_alloc.css";
+        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_mouse_dispatch_alloc"));
+        const auto css = tempDir.Path() / "ui_mouse_dispatch_alloc.css";
         {
             std::ofstream f(css);
             f << R"(
@@ -108,12 +178,22 @@ struct ClickFixture
 
 size_t AllocationsOverClicks(ClickFixture& f, int clicks)
 {
-    const Memory::AllocationCountScope probe(Memory::CountWindow::ThisThread);
+    AllocationProbe probe;
     for (int i = 0; i < clicks; ++i)
         f.Click();
-    return probe.Count();
+    return AllocationProbe::Count();
 }
+
+#endif // GE_HAVE_CRT_ALLOC_HOOK
 } // namespace
+
+#if !GE_HAVE_CRT_ALLOC_HOOK
+TEST(UIMouseDispatchAllocationTests, RequiresTheDebugCrtAllocationHook)
+{
+    GTEST_SKIP() << "_CrtSetAllocHook is inert without the debug CRT; this suite measures nothing "
+                    "in this configuration and would pass vacuously. Run it in the Debug config.";
+}
+#else
 
 // THE POSITIVE CONTROL FOR EVERY NUMBER IN THIS FILE.
 //
@@ -125,8 +205,9 @@ size_t AllocationsOverClicks(ClickFixture& f, int clicks)
 // means the hook cannot see this path — never merely that the path got dearer.
 //
 // Without this, "the count did not move" and "the hook was never armed on this
-// path" are the same reading, and the second is not hypothetical: a probe in an
-// image without the allocation hook cannot see Engine.dll's allocations.
+// path" are the same reading, and the second is not hypothetical: the sibling
+// operator-new probe genuinely cannot see Engine.dll, which is why this file
+// does not use it.
 TEST(UIMouseDispatchAllocationTests, AnAllocatingHandlerMovesTheCountByExactlyItsOwnAllocations)
 {
     ClickFixture quiet;
@@ -142,17 +223,15 @@ TEST(UIMouseDispatchAllocationTests, AnAllocatingHandlerMovesTheCountByExactlyIt
     if (!loud.Init())
         GTEST_SKIP() << "Device init failed";
     // Exactly one allocation per press, released immediately so nothing
-    // accumulates that could be measured instead of the dispatch. A direct call
-    // to the replaceable function, because an optimizer may drop a
-    // new-expression whose result does not escape, but never a call.
+    // accumulates that could be measured instead of the dispatch. The value is
+    // read back into `sink`, which the assertion observes, so it is not dead.
     size_t sink = 0;
     int loudHandlerCalls = 0;
     loud.Btn->RegisterEventHandler(kEventMouseDown,
                                    [&](UIEvent&)
                                    {
-                                       void* const memory = ::operator new(sizeof(int));
-                                       sink += static_cast<size_t>(++loudHandlerCalls);
-                                       ::operator delete(memory);
+                                       const auto p = std::make_unique<int>(++loudHandlerCalls);
+                                       sink += static_cast<size_t>(*p);
                                    });
     loud.Warmup(16);
     const int callsBeforeWindow = loudHandlerCalls;
@@ -175,9 +254,8 @@ TEST(UIMouseDispatchAllocationTests, AnAllocatingHandlerMovesTheCountByExactlyIt
 
 // THE CONTRACT, stated as what is actually true rather than as a slogan.
 //
-// A click is not promised to be allocation-free: its operator-new count depends
-// on the platform's standard library and on what the dispatch path does today
-// (the measured value is recorded below). What the
+// A click is NOT allocation-free, and never was: measured on this fixture it
+// costs 5 allocations per transition, 10 per press+release pair. What the
 // #1089 queue test actually pinned was narrower than "zero" — it asserted the
 // pending vector's CAPACITY held steady across a 500-click soak, i.e. that
 // steady-state clicking does not GROW its storage. That is the guarantee this
@@ -190,7 +268,7 @@ TEST(UIMouseDispatchAllocationTests, AnAllocatingHandlerMovesTheCountByExactlyIt
 // string that reallocates as ids lengthen all break this while a bare
 // "count > 0" check would not.
 //
-// The absolute number is recorded rather than asserted, because pinning it
+// The absolute number is recorded rather than asserted, because pinning 10
 // would fail on any unrelated and legitimate change to the dispatch path
 // without indicating a real regression. The ceiling below exists only to catch
 // an order-of-magnitude blow-up.
@@ -259,10 +337,10 @@ TEST(UIMouseDispatchAllocationTests, ClickingWithFramesDoesNotGrowItsAllocationC
     };
     auto measure = [&](int n)
     {
-        const Memory::AllocationCountScope probe(Memory::CountWindow::ThisThread);
+        AllocationProbe probe;
         for (int i = 0; i < n; ++i)
             clickAndFrame();
-        return probe.Count();
+        return AllocationProbe::Count();
     };
 
     for (int i = 0; i < 16; ++i)
@@ -294,3 +372,5 @@ TEST(UIMouseDispatchAllocationTests, ClickingWithFramesDoesNotGrowItsAllocationC
         << " iterations); the per-event cost may be accumulating in the frame the transition "
            "schedules rather than in the callback";
 }
+
+#endif // GE_HAVE_CRT_ALLOC_HOOK

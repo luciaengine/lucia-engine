@@ -3,8 +3,8 @@
 // cap, a volume the camera is inside, the fill off and one circle under the glow),
 // MarkupRenderFeature's glow (the compat profile, the hand gate, the shapes, the composite and the
 // contact line read back, the highlight's rim and body, the shader's rim and contact terms),
-// MarkupLabelOverlay's distance rule, held pills and a member's pill yielding to its region's,
-// and the frame the Mark-ups panel's double-click takes.
+// MarkupLabelOverlay's distance rule and held pills, and the frame the Mark-ups panel's
+// double-click takes.
 
 #include "Markups/MarkupEditorBridge.h"
 #include "Markups/MarkupGizmo.h"
@@ -21,23 +21,22 @@
 #include "MarkupECS/MarkupService.h"
 #include "Mathematics/HalfFloat.h"
 #include "Mathematics/Matrix4x4.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/RenderGraph/RGResourcePool.h"
 #include "Rendering/Core/RenderGraph/RGTransientPool.h"
 #include "Rendering/Core/RenderGraph/RGUploadRing.h"
-#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
+#include "Rendering/Materials/ShaderProfileDefines.h"
 #include "SceneView/SceneViewEvents.h"
 #include "SceneView/SceneViewFraming.h"
 #include "SceneView/SceneViewGizmos.h"
-#include "SceneView/SceneViewController.h"
+#include "SceneViewController.h"
 #include "StagedTestPaths.h"
 #include "TestDeviceHelper.h"
 #include "TestEnvVar.h"
 #include "TestTempDir.h"
-#include "Types/Color.h"
 
 #include <gtest/gtest.h>
 
@@ -194,14 +193,14 @@ Rendering::CameraData CameraLookingAlongZ(const Vector3& position, float forward
     const Mathematics::Matrix4x4 projection =
         Mathematics::Matrix4x4::PerspectiveReverseZ(60.0f * 3.14159265f / 180.0f, width / height, 0.1f, 10000.0f);
     Rendering::CameraData camera{};
-    camera.view = view;
-    camera.proj = projection;
-    camera.viewProj = projection * view;
-    camera.viewRel = camera.view;
-    camera.viewProjRel = camera.viewProj;
-    camera.cameraPos.x = position.x;
-    camera.cameraPos.y = position.y;
-    camera.cameraPos.z = position.z;
+    std::memcpy(camera.view, view.Data(), sizeof(camera.view));
+    std::memcpy(camera.proj, projection.Data(), sizeof(camera.proj));
+    std::memcpy(camera.viewProj, (projection * view).Data(), sizeof(camera.viewProj));
+    std::memcpy(camera.viewRel, camera.view, sizeof(camera.viewRel));
+    std::memcpy(camera.viewProjRel, camera.viewProj, sizeof(camera.viewProjRel));
+    camera.cameraPos[0] = position.x;
+    camera.cameraPos[1] = position.y;
+    camera.cameraPos[2] = position.z;
     return camera;
 }
 
@@ -442,62 +441,6 @@ TEST_F(MarkupSceneViewTest, APillKeepsClearOfThePanesAxisWidget)
                     viewWidth - 100.0f);
 }
 
-// A region member's pill that overlaps its region's stands under it, placed again, and is hidden
-// when the view has no room below; one clear of its region's pill stays where it is.
-TEST_F(MarkupSceneViewTest, AMembersPillYieldsToItsRegionsPill)
-{
-    const ECS::EntityHandle region = CreateMarkup(Vector3(0.0f, -4.0f, 100.0f), Vector3(20.0f, 8.0f, 20.0f));
-    const ECS::EntityHandle member = CreateMarkup(Vector3(0.0f, -4.0f, 110.0f), Vector3(4.0f, 8.0f, 4.0f));
-    std::vector<MarkupLabelOverlay::Placement> labels(2);
-    labels[0].Entity = member;
-    labels[0].X = 410.0f;
-    labels[0].Region = region;
-    labels[1].Entity = region;
-    labels[1].X = 400.0f;
-    const float viewWidth = 1280.0f;
-    const float viewHeight = 720.0f;
-    using Box = MarkupLabelOverlay::PillBox;
-
-    std::vector<Box> boxes{{410.0f, 100.0f, 50.0f, false}, {400.0f, 100.0f, 40.0f, false}};
-    MarkupLabelOverlay::YieldToRegions(labels, boxes, viewWidth, viewHeight, {});
-    EXPECT_FALSE(boxes[0].Hidden);
-    EXPECT_FLOAT_EQ(boxes[0].Top, 100.0f + MarkupLabelOverlay::kPillHeight + MarkupLabelOverlay::kPillStackGap);
-    EXPECT_FLOAT_EQ(boxes[0].CenterX, 410.0f);
-    EXPECT_FLOAT_EQ(boxes[1].Top, 100.0f);
-
-    boxes = {{410.0f, viewHeight - 30.0f, 50.0f, false}, {400.0f, viewHeight - 30.0f, 40.0f, false}};
-    MarkupLabelOverlay::YieldToRegions(labels, boxes, viewWidth, viewHeight, {});
-    EXPECT_TRUE(boxes[0].Hidden);
-    EXPECT_FALSE(boxes[1].Hidden);
-
-    boxes = {{600.0f, 100.0f, 50.0f, false}, {400.0f, 100.0f, 40.0f, false}};
-    MarkupLabelOverlay::YieldToRegions(labels, boxes, viewWidth, viewHeight, {});
-    EXPECT_FALSE(boxes[0].Hidden);
-    EXPECT_FLOAT_EQ(boxes[0].Top, 100.0f);
-
-    // Two members over the region's pill, and a third already standing on the first row under it:
-    // each yielding member takes the next row clear of its siblings.
-    const ECS::EntityHandle second = CreateMarkup(Vector3(0.0f, -4.0f, 120.0f), Vector3(4.0f, 8.0f, 4.0f));
-    const ECS::EntityHandle third = CreateMarkup(Vector3(0.0f, -4.0f, 130.0f), Vector3(4.0f, 8.0f, 4.0f));
-    labels.resize(4);
-    labels[2].Entity = second;
-    labels[2].X = 395.0f;
-    labels[2].Region = region;
-    labels[3].Entity = third;
-    labels[3].X = 420.0f;
-    labels[3].Region = region;
-    const float row = MarkupLabelOverlay::kPillHeight + MarkupLabelOverlay::kPillStackGap;
-    boxes = {{410.0f, 100.0f, 50.0f, false},
-             {400.0f, 100.0f, 40.0f, false},
-             {395.0f, 100.0f, 30.0f, false},
-             {420.0f, 100.0f + row, 40.0f, false}};
-    MarkupLabelOverlay::YieldToRegions(labels, boxes, viewWidth, viewHeight, {});
-    EXPECT_FLOAT_EQ(boxes[0].Top, 100.0f + 2.0f * row);
-    EXPECT_FLOAT_EQ(boxes[2].Top, 100.0f + 3.0f * row);
-    EXPECT_FLOAT_EQ(boxes[3].Top, 100.0f + row);
-    EXPECT_FALSE(boxes[0].Hidden || boxes[2].Hidden || boxes[3].Hidden);
-}
-
 // An agent update the viewer has not seen puts the badge's dot on the label, as on the
 // panel's row; the viewer's look takes it off.
 TEST_F(MarkupSceneViewTest, AnUnseenUpdateMarksTheLabelUntilSeen)
@@ -700,10 +643,8 @@ TEST_F(MarkupSceneViewTest, TheHighlightFollowsTheHighlightStateAlikeForBoxAndSp
     highlight.Selected = {&selected, 1};
     highlight.Hovered = hovered;
     std::vector<Editor::MarkupDrawItem> items;
-    std::vector<uint32> excludedScratch;
     const std::size_t bodies =
-        Editor::CollectMarkupDrawItems(m_World, *m_Bridge, highlight, Vector3(0.0f, 50.0f, -200.0f), nullptr, 0, items,
-                                       excludedScratch);
+        Editor::CollectMarkupDrawItems(m_World, *m_Bridge, highlight, Vector3(0.0f, 50.0f, -200.0f), nullptr, 0, items);
     std::vector<MarkupRenderFeature::Draw> draws;
     MarkupRenderFeature glow;
     glow.BuildDraws(items, bodies, draws);
@@ -725,8 +666,7 @@ TEST_F(MarkupSceneViewTest, TheHighlightFollowsTheHighlightStateAlikeForBoxAndSp
     // A hovered sphere takes the same body as a hovered box.
     m_World.AddComponentImmediate(hovered, Components::MarkupVolume{Components::MarkupVolumeShape::Sphere, {}});
     const std::size_t sphereBodies =
-        Editor::CollectMarkupDrawItems(m_World, *m_Bridge, highlight, Vector3(0.0f, 50.0f, -200.0f), nullptr, 0, items,
-                                       excludedScratch);
+        Editor::CollectMarkupDrawItems(m_World, *m_Bridge, highlight, Vector3(0.0f, 50.0f, -200.0f), nullptr, 0, items);
     std::vector<MarkupRenderFeature::Draw> sphereDraws;
     glow.BuildDraws(items, sphereBodies, sphereDraws);
     ASSERT_EQ(sphereDraws.size(), 3u);
@@ -744,10 +684,8 @@ TEST_F(MarkupSceneViewTest, EachShapeDrawsAsItself)
     CreateMarkup(Vector3(0.0f, 0.0f, 200.0f), Vector3(24.0f, 24.0f, 24.0f), MarkupVolumeShape::Sphere);
     CreateMarkup(Vector3(0.0f, 0.0f, 300.0f), Vector3(-20.0f, 8.0f, 20.0f));
     std::vector<Editor::MarkupDrawItem> items;
-    std::vector<uint32> excludedScratch;
     const std::size_t bodies =
-        Editor::CollectMarkupDrawItems(m_World, *m_Bridge, {}, Vector3(0.0f, 50.0f, -200.0f), nullptr, 0, items,
-                                       excludedScratch);
+        Editor::CollectMarkupDrawItems(m_World, *m_Bridge, {}, Vector3(0.0f, 50.0f, -200.0f), nullptr, 0, items);
     std::vector<MarkupRenderFeature::Draw> draws;
     MarkupRenderFeature glow;
     glow.BuildDraws(items, bodies, draws);
@@ -786,7 +724,7 @@ Rendering::CameraData ReadbackCamera()
 float ReadbackDeviceDepth(float z)
 {
     const Rendering::CameraData camera = ReadbackCamera();
-    return (camera.proj[2][2] * z + camera.proj[3][2]) / z;
+    return (camera.proj[10] * z + camera.proj[14]) / z;
 }
 
 // The texel x of the readback pane's center row in `texels` (RGBA16F), channel `channel`.
@@ -892,8 +830,7 @@ TEST_F(MarkupSceneViewTest, TheGlowCompositesPremultipliedOverTheScene)
     for (const auto& [entity, x, shape] : {std::tuple(box, kReadbackBoxTexel, "box"),
                                            std::tuple(sphere, kReadbackSphereTexel, "sphere")})
     {
-        const ColorSRGB color = Editor::MarkupDisplayRgb(*m_World.GetComponent<Markup>(entity));
-        const std::array<float32, 3> rgb = {color.r, color.g, color.b};
+        const std::array<float32, 3> rgb = Editor::MarkupDisplayRgb(*m_World.GetComponent<Markup>(entity));
         for (std::size_t channel = 0; channel < 3; ++channel)
         {
             const float expected = rgb[channel] * MarkupRenderFeature::kBodyAlpha +
@@ -925,8 +862,7 @@ TEST_F(MarkupSceneViewTest, TheGlowDrawsAContactLineWhereABodyMeetsTheScene)
                               kGap, GlslShim::MarkupGlow::MarkupGlowContactBandWidth(0.0f, 19.0f));
     ASSERT_GT(contact, 0.5f) << "the instrument: 1 cm must sit well inside the band";
     const float coverage = alpha * (1.0f - contact) + contact;
-    const ColorSRGB color = Editor::MarkupDisplayRgb(*m_World.GetComponent<Markup>(box));
-    const std::array<float32, 3> rgb = {color.r, color.g, color.b};
+    const std::array<float32, 3> rgb = Editor::MarkupDisplayRgb(*m_World.GetComponent<Markup>(box));
     for (std::size_t channel = 0; channel < 3; ++channel)
     {
         const float expected = rgb[channel] * coverage + kReadbackScene[channel] * (1.0f - coverage);

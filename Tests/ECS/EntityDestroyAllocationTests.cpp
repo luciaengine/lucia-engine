@@ -4,39 +4,57 @@
 #include "ECS/Entity.h"
 #include "ECS/World.h"
 #include "Types/GeometricReserve.h"
-#include "Memory/Testing/ScopedAllocationFault.h"
 
 #include <array>
-#include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <new>
-#include <optional>
 #include <type_traits>
 
-// Allocation faults are armed on this thread solely around the operation under test.
+// This source belongs only to the dedicated destruction executable. Injection
+// is thread-local and armed solely around the operation under test.
+namespace
+{
+thread_local bool failAllocations = false;
+thread_local std::size_t failAllocationSize = 0;
+thread_local unsigned deniedAllocations = 0;
+} // namespace
+
+void* operator new(std::size_t size)
+{
+    if (failAllocations || (failAllocationSize != 0 && size == failAllocationSize))
+    {
+        ++deniedAllocations;
+        throw std::bad_alloc();
+    }
+    if (void* memory = std::malloc(size ? size : 1))
+        return memory;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t size)
+{
+    return ::operator new(size);
+}
+void operator delete(void* memory) noexcept
+{
+    std::free(memory);
+}
+void operator delete[](void* memory) noexcept
+{
+    std::free(memory);
+}
+void operator delete(void* memory, std::size_t) noexcept
+{
+    std::free(memory);
+}
+void operator delete[](void* memory, std::size_t) noexcept
+{
+    std::free(memory);
+}
+
 namespace
 {
 using namespace GameEngine::ECS;
-using GameEngine::Memory::Testing::FaultRepeat;
-using GameEngine::Memory::Testing::ScopedAllocationFault;
-
-std::optional<ScopedAllocationFault> armedFault;
-
-void FailEveryAllocation()
-{
-    armedFault.emplace(0, 1, FaultRepeat::Every);
-}
-
-void FailAllocationsOfSize(std::size_t bytes)
-{
-    armedFault.emplace(bytes, 1, FaultRepeat::Every);
-}
-
-void AllowAllocations()
-{
-    armedFault.reset();
-}
-
 struct AllocationResource
 {
     int Value = 73;
@@ -53,10 +71,7 @@ void Cleanup(AllocationResource& value)
 {
     ++cleanupCalls;
     value.Value = 0;
-    if (failAfterCleanup)
-        FailEveryAllocation();
-    else
-        AllowAllocations();
+    failAllocations = failAfterCleanup;
     if (throwAfterCleanup)
         throw 7;
 }
@@ -65,10 +80,7 @@ void CleanupOther(OtherAllocationResource& value)
 {
     ++cleanupCalls;
     value.Value = 0;
-    if (failAfterCleanup)
-        FailEveryAllocation();
-    else
-        AllowAllocations();
+    failAllocations = failAfterCleanup;
     if (throwAfterCleanup)
         throw 7;
 }
@@ -78,13 +90,14 @@ class EntityDestroyAllocation : public testing::Test
   protected:
     void SetUp() override
     {
-        failAfterCleanup = throwAfterCleanup = false;
+        failAllocations = failAfterCleanup = throwAfterCleanup = false;
+        failAllocationSize = deniedAllocations = 0;
         cleanupCalls = 0;
     }
     void TearDown() override
     {
-        AllowAllocations();
-        failAfterCleanup = throwAfterCleanup = false;
+        failAllocations = failAfterCleanup = throwAfterCleanup = false;
+        failAllocationSize = 0;
     }
 };
 
@@ -94,7 +107,7 @@ TEST_F(EntityDestroyAllocation, FreeSlotPreparationFailureLeavesOwnershipIntact)
     world.RegisterOnRemove<AllocationResource>(Cleanup);
     const auto entity = world.CreateHandle(AllocationResource{});
     bool rejected = false;
-    FailEveryAllocation();
+    failAllocations = true;
     try
     {
         world.DestroyEntityImmediate(entity);
@@ -103,7 +116,7 @@ TEST_F(EntityDestroyAllocation, FreeSlotPreparationFailureLeavesOwnershipIntact)
     {
         rejected = true;
     }
-    AllowAllocations();
+    failAllocations = false;
     EXPECT_TRUE(rejected);
     EXPECT_EQ(cleanupCalls, 0);
     ASSERT_TRUE(world.IsValid(entity));
@@ -134,8 +147,7 @@ TEST_F(EntityDestroyAllocation, RequestedSetFinishesWithoutPreparationAfterFirst
     {
         threw = true;
     }
-    AllowAllocations();
-    failAfterCleanup = false;
+    failAllocations = failAfterCleanup = false;
     EXPECT_FALSE(threw);
     EXPECT_EQ(static_cast<std::size_t>(cleanupCalls), requested.size());
     for (const auto entity : requested)
@@ -154,7 +166,7 @@ TEST_F(EntityDestroyAllocation, BatchSnapshotFailureLeavesAllOwnershipIntact)
         world.CreateHandle(AllocationResource{}), world.CreateHandle(AllocationResource{})};
     const auto version = world.GetStructuralChangeVersion();
     bool rejected = false;
-    FailEveryAllocation();
+    failAllocations = true;
     try
     {
         world.DestroyEntitiesImmediate(requested);
@@ -163,7 +175,7 @@ TEST_F(EntityDestroyAllocation, BatchSnapshotFailureLeavesAllOwnershipIntact)
     {
         rejected = true;
     }
-    AllowAllocations();
+    failAllocations = false;
     EXPECT_TRUE(rejected);
     EXPECT_EQ(cleanupCalls, 0);
     EXPECT_EQ(world.GetStructuralChangeVersion(), version);
@@ -202,7 +214,7 @@ TEST_F(EntityDestroyAllocation, LaterLifecycleTypePreparationFailureLeavesEntire
         requested.push_back(world.CreateHandle(Late{}));
     const auto version = world.GetStructuralChangeVersion();
     bool rejected = false;
-    FailAllocationsOfSize(kLateSlots * sizeof(EntityHandle));
+    failAllocationSize = kLateSlots * sizeof(EntityHandle);
     try
     {
         world.DestroyEntitiesImmediate(requested);
@@ -211,8 +223,7 @@ TEST_F(EntityDestroyAllocation, LaterLifecycleTypePreparationFailureLeavesEntire
     {
         rejected = true;
     }
-    const std::uint32_t deniedAllocations = armedFault->DeniedCount();
-    AllowAllocations();
+    failAllocationSize = 0;
     EXPECT_TRUE(rejected);
     EXPECT_EQ(deniedAllocations, 1u);
     EXPECT_EQ(cleanupCalls, 0);
@@ -222,13 +233,9 @@ TEST_F(EntityDestroyAllocation, LaterLifecycleTypePreparationFailureLeavesEntire
     {
         ASSERT_TRUE(world.IsValid(entity));
         if (const auto* value = world.GetComponent<Early>(entity))
-        {
             EXPECT_EQ(value->Value, 73);
-        }
         if (const auto* value = world.GetComponent<Late>(entity))
-        {
             EXPECT_EQ(value->Value, 73);
-        }
     }
     world.SwapLifecycleEvents();
     EXPECT_TRUE(world.GetRemoved<Early>().empty());
@@ -248,7 +255,7 @@ TEST_F(EntityDestroyAllocation, EmptyInvalidAndStaleBatchesNeedNoAllocation)
     const auto live = world.CreateEntity();
     const std::array invalid{EntityHandle::Invalid(), stale, stale};
     bool threw = false;
-    FailEveryAllocation();
+    failAllocations = true;
     try
     {
         world.DestroyEntitiesImmediate({});
@@ -258,7 +265,7 @@ TEST_F(EntityDestroyAllocation, EmptyInvalidAndStaleBatchesNeedNoAllocation)
     {
         threw = true;
     }
-    AllowAllocations();
+    failAllocations = false;
     EXPECT_FALSE(threw);
     EXPECT_TRUE(world.IsValid(live));
     EXPECT_EQ(world.GetEntityCount(), 1u);
@@ -284,7 +291,7 @@ TEST_F(EntityDestroyAllocation, LifecyclePreparationFailureLeavesPreservedEntity
     world.EnableLifecycleEvents<AllocationResource>();
     const auto entity = world.CreateHandle(AllocationResource{});
     bool rejected = false;
-    FailEveryAllocation();
+    failAllocations = true;
     try
     {
         world.DestroyEntityImmediatePreserveHandle(entity);
@@ -293,7 +300,7 @@ TEST_F(EntityDestroyAllocation, LifecyclePreparationFailureLeavesPreservedEntity
     {
         rejected = true;
     }
-    AllowAllocations();
+    failAllocations = false;
     EXPECT_TRUE(rejected);
     EXPECT_EQ(cleanupCalls, 0);
     ASSERT_TRUE(world.IsValid(entity));
@@ -324,8 +331,7 @@ TEST_F(EntityDestroyAllocation, FinalizationDoesNotAllocateAfterOwnershipWasRele
         {
             threw = true;
         }
-        AllowAllocations();
-        failAfterCleanup = false;
+        failAllocations = failAfterCleanup = false;
         EXPECT_FALSE(threw);
         EXPECT_FALSE(world.IsValid(entity));
         EXPECT_EQ(world.GetEntityCount(), 0u);
@@ -350,8 +356,7 @@ TEST_F(EntityDestroyAllocation, FailureReportingCannotVetoFinalizationDuringAllo
     {
         threw = true;
     }
-    AllowAllocations();
-    failAfterCleanup = throwAfterCleanup = false;
+    failAllocations = failAfterCleanup = throwAfterCleanup = false;
     EXPECT_FALSE(threw);
     EXPECT_FALSE(world.IsValid(entity));
     EXPECT_EQ(cleanupCalls, 1);
@@ -362,7 +367,7 @@ TEST_F(EntityDestroyAllocation, WarmUnsubscribedCreateDestroyNeedsNoAllocation)
     World world;
     world.DestroyEntityImmediate(world.CreateHandle(AllocationResource{}));
     unsigned completed = 0;
-    FailEveryAllocation();
+    failAllocations = true;
     try
     {
         for (; completed != 1024; ++completed)
@@ -371,7 +376,7 @@ TEST_F(EntityDestroyAllocation, WarmUnsubscribedCreateDestroyNeedsNoAllocation)
     catch (...)
     {
     }
-    AllowAllocations();
+    failAllocations = false;
     EXPECT_EQ(completed, 1024u);
     EXPECT_EQ(world.GetEntityCount(), 0u);
 }

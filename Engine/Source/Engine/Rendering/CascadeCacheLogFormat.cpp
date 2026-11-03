@@ -13,7 +13,7 @@ std::string FormatCascadeCacheCauseHistogram(const CascadeShadowCache::Stats& wi
     const auto count = [&window](CascadeCacheDirtyCause c)
     { return window.CauseCounts[static_cast<size_t>(c)]; };
     return std::format("first {} contrib {} contribchg {} underdraw {} phys {} casters {}@v{} "
-                       "camera {} fit {} config {} settle {} deformed {}",
+                       "camera {} fit {} config {} settle {}",
                        count(CascadeCacheDirtyCause::FirstRender),
                        count(CascadeCacheDirtyCause::ContributorPresent),
                        count(CascadeCacheDirtyCause::ContributorChanged),
@@ -23,8 +23,7 @@ std::string FormatCascadeCacheCauseHistogram(const CascadeShadowCache::Stats& wi
                        count(CascadeCacheDirtyCause::CameraChanged),
                        count(CascadeCacheDirtyCause::CascadeFitChanged),
                        count(CascadeCacheDirtyCause::ConfigChanged),
-                       count(CascadeCacheDirtyCause::CullNotSettled),
-                       count(CascadeCacheDirtyCause::CasterDeformed));
+                       count(CascadeCacheDirtyCause::CullNotSettled));
 }
 
 } // namespace Engine::Renderer

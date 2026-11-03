@@ -20,7 +20,7 @@ struct LocalBounds {
     // Derived from the mesh: switching the renderer off is what hides it.
     static constexpr bool NotToggleable = true;
 
-    Mathematics::BoundingBox Box; // @ge-readonly derived from the mesh
+    Mathematics::BoundingBox Box;
     bool DynamicObject {true};
     bool CastShadows {true};
 };

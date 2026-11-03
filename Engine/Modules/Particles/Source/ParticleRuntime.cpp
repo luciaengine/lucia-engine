@@ -1,6 +1,5 @@
 #include "Particles/ParticleRuntime.h"
 
-#include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Quaternion.h"
 
 #include <glm/glm.hpp>
@@ -1151,9 +1150,9 @@ void ParticleRuntime::EnterPhases(std::span<const PendingTransition> transitions
         ApplyRules(m_Group[item], ParticleEventTrigger::Enter);
 }
 
-float ViewDepth(const Mathematics::Matrix4x4& view, const Vector3& position)
+float ViewDepth(const float view[16], const Vector3& position)
 {
-    return view[0][2] * position.x + view[1][2] * position.y + view[2][2] * position.z + view[3][2];
+    return view[2] * position.x + view[6] * position.y + view[10] * position.z + view[14];
 }
 
 } // namespace GameEngine::Particles

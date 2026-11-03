@@ -2,7 +2,7 @@
 
 #include "InspectorRegistry.h"
 #include "Inspectors/DefaultComponentInspector.h"
-#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 
@@ -30,8 +30,8 @@ namespace
 // so the 14 bands span ~6 cm ripples (i=0) to ~512 m swell (i=13).
 constexpr float kSpectrumBaseWavelengthMeters = 0.0625f;
 
-// Per-octave power slider domain. Matches the SpectrumPower field's @ge-range in
-// Components/Rendering/Ocean.h (the default inspector would draw 0..2 sliders for the raw
+// Per-octave power slider domain. Matches the SpectrumPower field range in
+// OceanFieldRanges.cpp (the default inspector would draw 0..2 sliders for the raw
 // array; this custom view reproduces that range as a labelled per-band row).
 constexpr float kSpectrumPowerMin = 0.0f;
 constexpr float kSpectrumPowerMax = 2.0f;
@@ -77,7 +77,7 @@ void ApplySpectrumValueFieldStyle(FloatField* field)
 {
     if (!field)
         return;
-    field->Style()
+    field->Overrides()
         .Set(Style::Width, StyleLength::Px(kSpectrumValueFieldWidthPx))
         .Set(Style::FlexShrink, 0.0f);
     // Display at most 3 decimals, trimming trailing zeros (1.000 -> "1",
@@ -107,9 +107,9 @@ void SetOctaveRowDimmed(Slider* slider, FloatField* valueField, bool disabled)
 {
     const float opacity = disabled ? kDisabledOctaveOpacity : kEnabledOctaveOpacity;
     if (slider)
-        slider->Style().Set(Style::Opacity, opacity);
+        slider->Overrides().Set(Style::Opacity, opacity);
     if (valueField)
-        valueField->Style().Set(Style::Opacity, opacity);
+        valueField->Overrides().Set(Style::Opacity, opacity);
 }
 
 void BuildOctaveRow(const InspectorContext& ctx, OceanWaveSpectrum& spec, std::size_t octave)
@@ -131,7 +131,7 @@ void BuildOctaveRow(const InspectorContext& ctx, OceanWaveSpectrum& spec, std::s
     // gets the rest of the row.
     UIElement* toggleCell = InspectorUI::AddFieldContainer(row);
     toggleCell->AddClass("inspector-field-toggle");
-    toggleCell->Style()
+    toggleCell->Overrides()
         .Set(Style::FlexGrow, 0.0f)
         .Set(Style::FlexShrink, 0.0f)
         .Set(Style::FlexBasis, StyleLength::Px(36.0f));
@@ -145,7 +145,7 @@ void BuildOctaveRow(const InspectorContext& ctx, OceanWaveSpectrum& spec, std::s
     {
         // Draggable (no inspector-label-no-drag) so SetupLabelDragSlider can scrub
         // the power and double-click can reset it.
-        label->Style()
+        label->Overrides()
             .Set(Style::Width, StyleLength::Px(56.0f))
             .Set(Style::FlexGrow, 0.0f)
             .Set(Style::FlexShrink, 0.0f);
@@ -153,7 +153,7 @@ void BuildOctaveRow(const InspectorContext& ctx, OceanWaveSpectrum& spec, std::s
 
     // Power slider fills the remaining row width (flex-grow on the field cell).
     UIElement* fieldContainer = InspectorUI::AddFieldContainer(row);
-    fieldContainer->Style().Set(Style::FlexGrow, 1.0f);
+    fieldContainer->Overrides().Set(Style::FlexGrow, 1.0f);
 
     auto sliderOwned = std::make_unique<Slider>();
     Slider* slider = sliderOwned.get();

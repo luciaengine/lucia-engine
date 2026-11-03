@@ -5,9 +5,7 @@
 #include "DebugServer/EditorDebugServer.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SkyRenderFeature.h"
-#include "Mathematics/Vector3.h"
 #include "Rendering/Sky/SkySettings.h"
-#include "Types/Color.h"
 
 #include <nlohmann/json.hpp>
 
@@ -19,14 +17,9 @@ using json = nlohmann::json;
 namespace
 {
 
-json Vector3(const Mathematics::Vector3& v)
+json Vector3(const float (&v)[3])
 {
-    return json::array({v.x, v.y, v.z});
-}
-
-json Rgb(const ColorLinear& c)
-{
-    return json::array({c.r, c.g, c.b});
+    return json::array({v[0], v[1], v[2]});
 }
 
 // Every float is reported as a double converted from the float, which is exact, so equal JSON means
@@ -38,8 +31,8 @@ json DescribeSkySettings(const Rendering::SkySettings& s)
         {"exposureEV", s.exposureEV},
         {"scatteringSunDir", Vector3(s.scatteringSunDir)},
         {"primarySunDir", Vector3(s.primarySunDir)},
-        {"primarySunColor", Rgb(s.primarySunColor)},
-        {"primarySunGroundColor", Rgb(s.primarySunGroundColor)},
+        {"primarySunColor", Vector3(s.primarySunColor)},
+        {"primarySunGroundColor", Vector3(s.primarySunGroundColor)},
         {"primarySunIntensity", s.primarySunIntensity},
         {"showSunDisk", s.showSunDisk},
         {"sunSize", s.sunSize},
@@ -49,33 +42,28 @@ json DescribeSkySettings(const Rendering::SkySettings& s)
         {"showMoonDisk", s.showMoonDisk},
         {"moonExposureEV", s.moonExposureEV},
         {"moonArcPosition", s.moonArcPosition},
+        {"moonPhase01", s.moonPhase01},
         {"fallingStarsEnabled", s.fallingStarsEnabled},
         {"nightSkyBlend", s.nightSkyBlend},
         {"skyTimeSeconds", s.skyTimeSeconds},
-        {"starLimitingMagnitude", s.starLimitingMagnitude},
-        {"starHighlightCompression", s.starHighlightCompression},
-        {"starTwinkleAmount", s.starTwinkleAmount},
-        {"starGlow", s.starGlow},
-        {"starTwinkleRate", s.starTwinkleRate},
-        {"starCoreScale", s.starCoreScale},
-        {"starSpikes", s.starSpikes},
-        {"starSpikeLength", s.starSpikeLength},
-        {"starShape", s.starShape},
-        {"starObserver", s.starObserver == 0 ? "Eye" : "Camera"},
+        {"starDensity", s.starDensity},
+        {"starBrightness", s.starBrightness},
+        {"twinkleSpeed", s.twinkleSpeed},
+        {"twinkleIntensity", s.twinkleIntensity},
         {"iblIntensity", s.iblIntensity},
         {"iblLowerHemisphereDarkness", s.iblLowerHemisphereDarkness},
         {"skyMode", s.skyMode},
-        {"groundAlbedo", Rgb(s.groundAlbedo)},
-        {"groundNightColor", Rgb(s.groundNightColor)},
+        {"groundAlbedo", Vector3(s.groundAlbedo)},
+        {"groundNightColor", Vector3(s.groundNightColor)},
         {"groundBrightness", s.groundBrightness},
         {"belowHorizonMode", s.belowHorizonMode},
         {"belowHorizonBlendSharpness", s.belowHorizonBlendSharpness},
         {"belowHorizonDarkness", s.belowHorizonDarkness},
-        {"belowHorizonDarkColor", Rgb(s.belowHorizonDarkColor)},
+        {"belowHorizonDarkColor", Vector3(s.belowHorizonDarkColor)},
         {"groundHazeStrength", s.groundHazeStrength},
-        {"groundHorizonColor", Rgb(s.groundHorizonColor)},
-        {"groundHorizonNightColor", Rgb(s.groundHorizonNightColor)},
-        {"nightSkyHorizonColor", Rgb(s.nightSkyHorizonColor)},
+        {"groundHorizonColor", Vector3(s.groundHorizonColor)},
+        {"groundHorizonNightColor", Vector3(s.groundHorizonNightColor)},
+        {"nightSkyHorizonColor", Vector3(s.nightSkyHorizonColor)},
         {"groundHorizonCosWidth", s.groundHorizonCosWidth},
         {"groundHorizonNightCosWidth", s.groundHorizonNightCosWidth}};
 }

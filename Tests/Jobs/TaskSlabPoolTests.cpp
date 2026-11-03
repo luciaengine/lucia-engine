@@ -10,12 +10,9 @@
 // trivially destructible, so ReleaseTaskSlab is safe from any thread at any
 // point of process teardown.
 
-#include "HeldSlabFreelist.h"
-
 #include "JobSystem/TaskSlabPool.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/Logger.h"
-#include "Memory/AllocationCountScope.h"
 
 #include <gtest/gtest.h>
 
@@ -24,6 +21,12 @@
 #include <cstdio>
 #include <thread>
 #include <vector>
+
+namespace JobSystemTestHooks
+{
+// Defined in AllocCounterOverride.cpp (global operator-new replacement).
+unsigned long long GetGlobalNewCount();
+} // namespace JobSystemTestHooks
 
 namespace
 {
@@ -42,20 +45,6 @@ bool WaitForCount(const std::atomic<size_t>& counter, size_t expected, int timeo
         std::this_thread::yield();
     }
     return true;
-}
-
-// Acquires kTaskSlabPoolCapacity slabs, then releases them all on this thread.
-void AcquireThenReleaseACapOfSlabs()
-{
-    std::vector<void*> slabs(JobSystem::kTaskSlabPoolCapacity);
-    for (void*& slab : slabs)
-    {
-        slab = JobSystem::Detail::AcquireTaskSlab();
-    }
-    for (void* slab : slabs)
-    {
-        JobSystem::Detail::ReleaseTaskSlab(slab);
-    }
 }
 
 } // namespace
@@ -137,9 +126,8 @@ TEST(TaskSlabPoolTest, PoolReuseChurn)
     // High-water ≤ in-flight window + workers-in-flight + slack (the window
     // check is racy by one task per submitter). Global monotonic counter, so
     // compare against the pre-test mark too.
-    constexpr size_t kHighWaterSlack = 64;
-    const GameEngine::int64 highWaterBound =
-        static_cast<GameEngine::int64>(kInFlightWindow + kSubmitters + pool.GetWorkerCount() + kHighWaterSlack);
+    const long long highWaterBound =
+        static_cast<long long>(kInFlightWindow + kSubmitters + pool.GetWorkerCount() + 64);
     EXPECT_LE(after.LiveHighWater,
               std::max(before.LiveHighWater, before.Live + highWaterBound));
 
@@ -232,23 +220,6 @@ TEST(TaskSlabPoolTest, OversizedBatchFallbackStillRuns)
     pool.Shutdown();
 }
 
-// One thread releasing a full cap's worth of slabs keeps nearly all of them:
-// the freelist's per-thread sub-queue indexes the whole cap, so retention
-// does not depend on how many threads release. What it cannot reach are the
-// blocks other threads' sub-queues hold partly used (one block, 32 slabs,
-// each), so the bound leaves a quarter of the cap for them; a sub-queue
-// limited to the default index would send three quarters to the heap.
-TEST(TaskSlabPoolTest, OneReleasingThreadFillsTheFreelistToItsCap)
-{
-    const GameEngine::Tests::HeldSlabFreelist held;
-    const auto before = JobSystem::Detail::GetTaskSlabStatsForTests();
-    std::thread releaser(AcquireThenReleaseACapOfSlabs);
-    releaser.join();
-    const auto after = JobSystem::Detail::GetTaskSlabStatsForTests();
-    EXPECT_LE(after.HeapFrees - before.HeapFrees, JobSystem::kTaskSlabPoolCapacity / 4)
-        << "slabs released by one thread went back to the heap";
-}
-
 // Submit-path microbench (slice 6 gate: ~1 pooled alloc + ≤1 mutex on the
 // fast path; feeds the #242 re-baseline table). Reports caller-side publish
 // cost, end-to-end throughput, and end-to-end heap-allocations per task
@@ -271,7 +242,7 @@ TEST(JobSystemBench, BENCHMARK_SubmitPathCost)
 
     executed.store(0, std::memory_order_relaxed);
     const auto slabBefore = JobSystem::Detail::GetTaskSlabStatsForTests();
-    const GameEngine::Memory::AllocationCountScope allocations(GameEngine::Memory::CountWindow::Process);
+    const auto newBefore = JobSystemTestHooks::GetGlobalNewCount();
 
     const auto submitStart = SteadyClock::now();
     for (size_t i = 0; i < kTasks; ++i)
@@ -279,12 +250,12 @@ TEST(JobSystemBench, BENCHMARK_SubmitPathCost)
         pool.Submit([&executed] { executed.fetch_add(1, std::memory_order_relaxed); });
     }
     const auto submitEnd = SteadyClock::now();
-    const auto newAfterSubmit = allocations.Count();
+    const auto newAfterSubmit = JobSystemTestHooks::GetGlobalNewCount();
 
     ASSERT_TRUE(WaitForCount(executed, kTasks, 60));
     const auto doneEnd = SteadyClock::now();
 
-    const auto newAfterDrain = allocations.Count();
+    const auto newAfterDrain = JobSystemTestHooks::GetGlobalNewCount();
     const auto slabAfter = JobSystem::Detail::GetTaskSlabStatsForTests();
     Logger::Log::SetLogLevel(Logger::LogLevel::Debug);
 
@@ -297,9 +268,9 @@ TEST(JobSystemBench, BENCHMARK_SubmitPathCost)
     // Submit-window count approximates caller-side allocs (workers overlap
     // the window and add their execute-side allocs to it — upper bound).
     const double allocsPerTaskSubmit =
-        static_cast<double>(newAfterSubmit) / static_cast<double>(kTasks);
+        static_cast<double>(newAfterSubmit - newBefore) / static_cast<double>(kTasks);
     const double allocsPerTaskTotal =
-        static_cast<double>(newAfterDrain) / static_cast<double>(kTasks);
+        static_cast<double>(newAfterDrain - newBefore) / static_cast<double>(kTasks);
     const double pooledPerTask =
         static_cast<double>((slabAfter.PoolReuses + slabAfter.HeapAllocs) -
                             (slabBefore.PoolReuses + slabBefore.HeapAllocs)) /
@@ -340,7 +311,7 @@ TEST(JobSystemBench, BENCHMARK_EnqueueWorkAllocFloor)
     ASSERT_TRUE(WaitForCount(executed, kWarmup, 60));
 
     executed.store(0, std::memory_order_relaxed);
-    const GameEngine::Memory::AllocationCountScope allocations(GameEngine::Memory::CountWindow::Process);
+    const auto newBefore = JobSystemTestHooks::GetGlobalNewCount();
     const auto submitStart = SteadyClock::now();
     for (size_t i = 0; i < kTasks; ++i)
     {
@@ -348,12 +319,12 @@ TEST(JobSystemBench, BENCHMARK_EnqueueWorkAllocFloor)
     }
     ASSERT_TRUE(WaitForCount(executed, kTasks, 60));
     const auto doneEnd = SteadyClock::now();
-    const auto newAfter = allocations.Count();
+    const auto newAfter = JobSystemTestHooks::GetGlobalNewCount();
 
     Logger::Log::SetLogLevel(Logger::LogLevel::Debug);
 
     const double allocsPerTask =
-        static_cast<double>(newAfter) / static_cast<double>(kTasks);
+        static_cast<double>(newAfter - newBefore) / static_cast<double>(kTasks);
     const double tasksPerSec =
         static_cast<double>(kTasks) /
         (std::chrono::duration<double>(doneEnd - submitStart).count());

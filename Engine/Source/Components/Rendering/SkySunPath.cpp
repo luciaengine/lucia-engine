@@ -81,12 +81,13 @@ float PhysicalSunIlluminanceLux(const SkyEnvironment& sky, float sunElevationDeg
 {
     const float dayKeyTimesHours[4] = {sky.DayKeyTimesHours.Midnight, sky.DayKeyTimesHours.Dawn,
                                        sky.DayKeyTimesHours.Midday, sky.DayKeyTimesHours.Sunset};
-    const ColorLinear sunTint =
-        Rendering::SampleSkyColorKeyframeCurve(hours, dayKeyTimesHours, sky.SunTintKeys.Midnight, sky.SunTintKeys.Dawn,
-                                               sky.SunTintKeys.Midday, sky.SunTintKeys.Sunset);
+    float sunTint[3];
+    Rendering::SampleSkyVec3KeyframeCurve(hours, dayKeyTimesHours, sky.SunTintKeys.Midnight, sky.SunTintKeys.Dawn,
+                                          sky.SunTintKeys.Midday, sky.SunTintKeys.Sunset, sunTint);
 
-    const ColorLinear ground = Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), sunTint,
-                                                                      std::sin(sunElevationDegrees * kDegreesToRadians));
+    float ground[3];
+    Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), sunTint,
+                                           std::sin(sunElevationDegrees * kDegreesToRadians), ground);
     return sunLux * ColorUtils::LinearRec709Luminance(ground);
 }
 

@@ -1,0 +1,28 @@
+{
+  "jsonVersion": "1.5.3",
+  "externalLevels": true,
+  "defs": {
+    "tilesets": [
+      {
+        "uid": 1,
+        "identifier": "Terrain",
+        "relPath": "tiles.png",
+        "pxWid": 64,
+        "pxHei": 32,
+        "tileGridSize": 16,
+        "spacing": 0,
+        "padding": 0
+      }
+    ],
+    "layers": [
+      { "uid": 10, "identifier": "Tiles", "type": "Tiles", "gridSize": 16 }
+    ]
+  },
+  "levels": [
+    {
+      "identifier": "Level_0",
+      "externalRelPath": "levels/level0.ldtkl",
+      "layerInstances": null
+    }
+  ]
+}

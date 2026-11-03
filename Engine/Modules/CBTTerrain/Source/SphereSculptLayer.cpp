@@ -2,7 +2,7 @@
 
 #include "CBTTerrain/SphereAnalyticModifiers.h" // the tangent-plane dab falloff (S3 preview form)
 #include "Logger/Logger.h"
-#include "Mathematics/Interpolation.h"
+#include "Platform/Environment.h"
 
 #include <algorithm>
 #include <cmath>
@@ -54,10 +54,7 @@ bool ResolveTangentDabFalloff()
     // GE_TERRAIN_TANGENT_DAB flips BASE-resolution dab writes to the tangent-plane falloff (the
     // S3 preview's closed form) — default OFF so an unflagged store's bytes stay pre-S4
     // byte-identical. Escalated writes always use the tangent form regardless (see the header).
-    static const bool kResolved = [] {
-        const char* v = std::getenv("GE_TERRAIN_TANGENT_DAB");
-        return v != nullptr && v[0] != '\0' && v[0] != '0';
-    }();
+    static const bool kResolved = Platform::EnvironmentSwitchEnabled("GE_TERRAIN_TANGENT_DAB", false);
     return kResolved;
 }
 
@@ -791,7 +788,7 @@ SphereEditRegions SphereSculptLayer::ApplyDab(float cx, float cy, float cz, floa
         if (cosd < cosR)
             return 0.0f; // outside the cap
         const float ang = std::acos(std::clamp(cosd, -1.0f, 1.0f));
-        const float t = Math::Clamp01(1.0f - ang / angularRadius);
+        const float t = std::clamp(1.0f - ang / angularRadius, 0.0f, 1.0f);
         return sign * strength * (t * t * (3.0f - 2.0f * t)); // smoothstep
     };
     // Fine (per-page) writes are needed as soon as escalated pages can be involved — either this
@@ -832,7 +829,7 @@ SphereEditRegions SphereSculptLayer::ApplyDab(float cx, float cy, float cz, floa
                     if (cosd < cosR)
                         continue; // texel outside the cap
                     const float ang = std::acos(std::clamp(cosd, -1.0f, 1.0f));
-                    const float t = Math::Clamp01(1.0f - ang / angularRadius);
+                    const float t = std::clamp(1.0f - ang / angularRadius, 0.0f, 1.0f);
                     const float falloff = t * t * (3.0f - 2.0f * t); // smoothstep
                     const float delta = sign * strength * falloff;
                     WriteDab(r.Face, static_cast<uint32_t>(tx), static_cast<uint32_t>(tz), delta);

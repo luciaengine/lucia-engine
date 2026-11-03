@@ -19,7 +19,6 @@ set(ASSET_TEST_SOURCES
     AssetIOServiceTests.cpp
     AssetDecodeGateTests.cpp
     AssetDecodeCancellationTests.cpp
-    AssetDecodeInputReadTests.cpp
     AsyncAssetReloadTests.cpp
     InlineReloadDeferralTests.cpp
     ParserRegistryExtensionDispatchTests.cpp
@@ -28,22 +27,16 @@ set(ASSET_TEST_SOURCES
     AssetErrorHandlingTests.cpp
     Complete4StagePipelineIntegrationTest.cpp
     AudioAssetPolicyTests.cpp
-    CubeLutAssetTests.cpp
     MetaFileRegistryTests.cpp
     AssetMetaMaintenanceTests.cpp
     FilePatternTests.cpp
     AssetRegistryConcurrencyTests.cpp
-    RegistryScanFanoutTests.cpp
-    AssetDbParallelLoadTests.cpp
-    AssetDbStoreLoadTests.cpp
     AssetRootSeparationTests.cpp
     FoldedPathIndexTests.cpp
     AssetDbLegacyPathNormalizationTests.cpp
     AssetDbIgnoresMetaSidecarsTests.cpp
     AssetDbTypeInferencePersistenceTests.cpp
     TerrainMaterialLibraryAssetTests.cpp
-    NavSurfaceAssetTests.cpp
-    DayCycleProfileAssetTests.cpp
     AssetDbHardeningTests.cpp
     AssetDbDerivedReconcileTests.cpp
     AssetDbDerivedRedirectTests.cpp
@@ -74,7 +67,6 @@ set(ASSET_TEST_SOURCES
     BuildRenderPipelineCollectionTests.cpp
     BuildSceneCollectionTests.cpp
     BuildDefaultUIFontCollectionTests.cpp
-    WebExportContentTests.cpp
     FbxLoaderOptionsTests.cpp
 )
 
@@ -111,8 +103,6 @@ target_include_directories(AssetSystemTests PRIVATE
     # StagedTestPaths.h — exe-anchored fixture resolution, same as the Graph
     # module's test target uses.
     ${CMAKE_SOURCE_DIR}/Engine/Tests
-    # WebExportContent.h: the web export's content staging, private to the engine's build code.
-    ${CMAKE_SOURCE_DIR}/Engine/Source/Engine/Build
 )
 
 # Output layout: bin/<Config>/Tests

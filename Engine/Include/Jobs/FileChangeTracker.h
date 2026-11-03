@@ -63,17 +63,6 @@ public:
 
 public:
     /**
-     * @brief Constructor
-     * @param cacheFilePath Path to store the file metadata cache
-     */
-    explicit FileChangeTracker(const std::string& cacheFilePath = "");
-
-    /**
-     * @brief Destructor - saves cache to disk
-     */
-    ~FileChangeTracker();
-
-    /**
      * @brief Detect changes in the specified directory
      * @param sourceDirectory Directory to scan for C# source files
      * @param recursive Whether to scan subdirectories recursively
@@ -91,18 +80,6 @@ public:
      * @brief Clear all cached file metadata
      */
     void ClearCache();
-
-    /**
-     * @brief Save cache to disk
-     * @return True if save was successful
-     */
-    bool SaveCache();
-
-    /**
-     * @brief Load cache from disk
-     * @return True if load was successful
-     */
-    bool LoadCache();
 
     /**
      * @brief Get cached metadata for a specific file
@@ -127,7 +104,6 @@ public:
 
 private:
     std::unordered_map<std::string, FileMetadata> m_FileCache;
-    std::string m_CacheFilePath;
     mutable std::mutex m_CacheMutex;
 
     /**

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <iterator>
 #include <string_view>
+#include <unordered_map>
 
 namespace GameEngine
 {
@@ -218,99 +219,25 @@ AgentCallRowModel RowOf(const AssistantAction& action, AgentCallMedia media, con
     return row;
 }
 
-// The same arguments, compared as JSON (key order and spacing aside); as text when either
-// side is not JSON.
-bool SameArguments(std::string_view reported, std::string_view recorded)
-{
-    const nlohmann::json left = nlohmann::json::parse(reported, nullptr, false);
-    const nlohmann::json right = nlohmann::json::parse(recorded, nullptr, false);
-    if (left.is_discarded() || right.is_discarded())
-        return reported == recorded;
-    return left == right;
-}
-
-// How a reported call is matched to a record of its tool (MatchRecords), strictest first.
-enum class MatchBy : uint8_t
-{
-    // The same arguments and the same outcome: a call that failed takes a failed record.
-    ArgumentsAndOutcome,
-    Arguments,
-    Order,
-};
-
-// The record ended as the reported call did: failed both, or neither failed.
-bool SameOutcome(const ToolCall& call, const AssistantAction& record)
-{
-    return (call.End == ToolCallEnd::Failed) == (record.State == AssistantActionState::Failed);
-}
-
-// A record no reported call matched.
-constexpr size_t kNoCall = static_cast<size_t>(-1);
-
-// Gives each call of `calls` not yet matched and not refused by the CLI the first record of
-// its tool in `records` not yet taken that `by` allows; `callOfRecord` holds each taken
-// record's call.
-void MatchRecords(std::span<const ToolCall> calls, std::span<const AssistantAction* const> records,
-                  std::vector<bool>& matched, std::vector<size_t>& callOfRecord, MatchBy by)
-{
-    for (size_t call = 0; call < calls.size(); ++call)
-    {
-        if (matched[call] || calls[call].End == ToolCallEnd::Refused)
-            continue;
-        const std::string_view name = BareName(calls[call].Name);
-        for (size_t record = 0; record < records.size(); ++record)
-        {
-            if (callOfRecord[record] != kNoCall || records[record]->Tool != name)
-                continue;
-            if (by != MatchBy::Order && !SameArguments(calls[call].InputJson, records[record]->Arguments))
-                continue;
-            if (by == MatchBy::ArgumentsAndOutcome && !SameOutcome(calls[call], *records[record]))
-                continue;
-            callOfRecord[record] = call;
-            matched[call] = true;
-            break;
-        }
-    }
-}
-
-// Which of the turn's calls the editor has a record of. A call the CLI refused never
-// reached the editor. Any other call takes the turn's first record of its tool not yet
-// taken with the same arguments and outcome, then with the same arguments, then the first
-// one not yet taken: a call that failed before the editor (an argument the server rejected,
-// a dropped connection) leaves the record to its retry, even one with the same arguments.
-struct CallMatch
-{
-    /// Turn `turn`'s records, in the order the editor made them.
-    std::vector<const AssistantAction*> Records;
-    /// Per record, the index in `streamCalls` of the call it shows; kNoCall for a record no
-    /// reported call matched.
-    std::vector<size_t> CallOfRecord;
-    /// Per call of `streamCalls`, whether a record shows it.
-    std::vector<bool> Matched;
-};
-
-CallMatch MatchCalls(std::span<const ToolCall> streamCalls, std::span<const AssistantAction> actions, uint64_t turn)
-{
-    CallMatch match;
-    for (const AssistantAction& action : actions)
-        if (action.Turn == turn)
-            match.Records.push_back(&action);
-    match.CallOfRecord.assign(match.Records.size(), kNoCall);
-    match.Matched.assign(streamCalls.size(), false);
-    for (MatchBy by : {MatchBy::ArgumentsAndOutcome, MatchBy::Arguments, MatchBy::Order})
-        MatchRecords(streamCalls, match.Records, match.Matched, match.CallOfRecord, by);
-    return match;
-}
-
-// The calls of `streamCalls` the editor has no record of in turn `turn` (MatchCalls).
+// The calls of `streamCalls` the editor has no record of in turn `turn`, matched by tool
+// and order against the ledger's calls of the turn.
 std::vector<const ToolCall*> UnreceivedCalls(std::span<const ToolCall> streamCalls,
                                              std::span<const AssistantAction> actions, uint64_t turn)
 {
-    const CallMatch match = MatchCalls(streamCalls, actions, turn);
+    std::unordered_map<std::string_view, size_t> recorded;
+    for (const AssistantAction& action : actions)
+        if (action.Turn == turn)
+            ++recorded[action.Tool];
     std::vector<const ToolCall*> unreceived;
-    for (size_t call = 0; call < streamCalls.size(); ++call)
-        if (!match.Matched[call])
-            unreceived.push_back(&streamCalls[call]);
+    for (const ToolCall& call : streamCalls)
+    {
+        if (const auto it = recorded.find(BareName(call.Name)); it != recorded.end() && it->second > 0)
+        {
+            --it->second;
+            continue;
+        }
+        unreceived.push_back(&call);
+    }
     return unreceived;
 }
 
@@ -395,31 +322,15 @@ std::vector<AgentCallRowModel> AgentCallRowModel::For(std::span<const ToolCall> 
                                                       const AssistantUndoSnapshot& history)
 {
     std::vector<AgentCallRowModel> rows;
-    // Rows follow call order: a call the editor never received sits before the record of a
-    // later call (a failed call above its retry). Records no reported call matched keep their
-    // place among the others.
-    const CallMatch match = MatchCalls(streamCalls, actions, turn);
-    size_t nextCall = 0;
-    // The call whose row takes folds; null after a row with media or a call the editor never
-    // received, which take none.
+    // The call whose row takes folds; null after a row with media, which takes none.
     const AssistantAction* folding = nullptr;
     AgentCallPieces foldedSubjects;
     AgentCallPieces lastSubject;
     size_t folded = 0;
-    for (size_t record = 0; record < match.Records.size(); ++record)
+    for (const AssistantAction& action : actions)
     {
-        const AssistantAction& action = *match.Records[record];
-        if (const size_t call = match.CallOfRecord[record]; call != kNoCall)
-        {
-            for (; nextCall < call; ++nextCall)
-            {
-                if (match.Matched[nextCall])
-                    continue;
-                rows.push_back(RowOfUnreceived(streamCalls[nextCall]));
-                folding = nullptr;
-            }
-            nextCall = std::max(nextCall, call + 1);
-        }
+        if (action.Turn != turn)
+            continue;
         AgentCallMedia media = AgentCallMediaOf(action);
         const bool showsMedia = !media.Empty();
         if (folding && !showsMedia && Folds(*folding, action, history))
@@ -433,9 +344,8 @@ std::vector<AgentCallRowModel> AgentCallRowModel::For(std::span<const ToolCall> 
         lastSubject = foldedSubjects;
         folded = 1;
     }
-    for (; nextCall < streamCalls.size(); ++nextCall)
-        if (!match.Matched[nextCall])
-            rows.push_back(RowOfUnreceived(streamCalls[nextCall]));
+    for (const ToolCall* call : UnreceivedCalls(streamCalls, actions, turn))
+        rows.push_back(RowOfUnreceived(*call));
     return rows;
 }
 

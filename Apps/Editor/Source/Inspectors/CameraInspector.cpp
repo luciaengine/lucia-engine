@@ -1,28 +1,27 @@
 #include "Inspectors/CameraInspector.h"
 
 #include "InspectorRegistry.h"
+#include "Editor/Entities/EditorComponentTraits.h"
 
 #include "Components/Rendering/Camera.h"
 #include "Editor/Entities/EditorECSHelpers.h"
 #include "EditorChangeNotifications.h"
 #include "Engine/Rendering/CameraAspectRatio.h"
+#include "Engine/Rendering/TileMapCameraPixelGrid.h"
 #include "Components/Rendering/PostProcessVolume.h"
-#include "Mathematics/Interpolation.h"
 #include "Panels/CameraCustomAspectModal.h"
 
-#include "Inspectors/ExposureCompensationCurveRow.h"
-#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
-#include "Inspectors/RenderLayers/RenderLayersRow.h"
 
 #include "UI/UIManager.h"
-#include "UI/ExposureMeterText.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace GameEngine
@@ -60,11 +59,6 @@ static constexpr EnumEntry<Components::ExposureMode> kExposureModes[] = {
     {Components::ExposureMode::Manual,   "Manual (EV100)",    "dropdown-icon--exposure-manual"},
     {Components::ExposureMode::Physical, "Physical (camera)", "dropdown-icon--exposure-physical"},
     {Components::ExposureMode::Auto,     "Auto (metered)",    "dropdown-icon--exposure-auto"},
-};
-
-static constexpr EnumEntry<Components::ExposureMeter> kExposureMeters[] = {
-    {Components::ExposureMeter::Picture, Editor::kExposureMeterPictureLabel},
-    {Components::ExposureMeter::Lights,  Editor::kExposureMeterLightsLabel},
 };
 
 CameraCustomAspectModal* g_CustomAspectModal = nullptr;
@@ -154,6 +148,18 @@ void CommitCameraAspectPreset(ECS::World* w,
 
 void RegisterCameraInspector()
 {
+    constexpr int kCameraSortKey = 120;
+
+    {
+        Editor::EditorComponentTraits traits;
+        traits.DisplayName = "Camera";
+        traits.SortKey = kCameraSortKey;
+        traits.Tooltip = "Defines a view frustum used to render the scene";
+        traits.InspectorIconClass = "inspector-section-icon-camera";
+        Editor::EditorComponentTraitsRegistry::Get().Register(
+            ECS::GetComponentTypeId<Components::Camera>(), std::move(traits));
+    }
+
     InspectorFn fn = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())
@@ -350,10 +356,35 @@ void RegisterCameraInspector()
 
             if (cam->PixelPerfect)
             {
-                AddComponentIntRowWithDrag<Components::Camera>(ctx.Parent, "Pixels Per Unit", static_cast<int>(cam->PixelPerfectPixelsPerUnit), w, e, n, undo,
-                    "Change Camera Pixels Per Unit",
-                    [](Components::Camera& u, int v) { u.PixelPerfectPixelsPerUnit = static_cast<uint32>(std::max(1, v)); },
-                    static_cast<int>(cam->PixelPerfectPixelsPerUnit), "Reference pixel size: source texels per world unit", extras);
+                AddToggleRow(ctx.Parent, "Auto Pixels Per Unit", cam->PixelPerfectAutoPixelsPerUnit,
+                    [commitBool, notifyInspectorRebuild](bool v) {
+                        commitBool("Change Camera Auto Pixels Per Unit", v,
+                            [](Components::Camera& u, bool value) { u.PixelPerfectAutoPixelsPerUnit = value; });
+                        notifyInspectorRebuild();
+                    },
+                    "Derive Pixels Per Unit from the scene's tilemaps (tile pixel width / cell width) instead of typing it. Falls back to the authored value when no tilemap resolves");
+
+                // In manual mode the editable row below already shows the effective
+                // density; in auto mode this read-only row is the only place the
+                // user can see what the camera resolved, and whether it resolved at all.
+                if (cam->PixelPerfectAutoPixelsPerUnit)
+                {
+                    const uint32 effectivePpu =
+                        static_cast<uint32>(Engine::Renderer::ResolvePixelPerfectPixelsPerUnit(*w, *cam));
+                    const bool resolved = Engine::Renderer::ResolveScenePixelsPerUnit(*w) > 0.0f;
+                    UIElement* row = InspectorUI::AddRow(ctx.Parent);
+                    InspectorUI::AddLabel(row, "Pixels Per Unit",
+                        "Resolved from a visible tilemap layer's tileset. Turn off Auto to type a value");
+                    InspectorUI::AddTextBlock(row,
+                        std::to_string(effectivePpu) + (resolved ? " (from tileset)" : " (authored fallback)"));
+                }
+                else
+                {
+                    AddComponentIntRowWithDrag<Components::Camera>(ctx.Parent, "Pixels Per Unit", static_cast<int>(cam->PixelPerfectPixelsPerUnit), w, e, n, undo,
+                        "Change Camera Pixels Per Unit",
+                        [](Components::Camera& u, int v) { u.PixelPerfectPixelsPerUnit = static_cast<uint32>(std::max(1, v)); },
+                        static_cast<int>(cam->PixelPerfectPixelsPerUnit), "Reference pixel size: source texels per world unit", extras);
+                }
                 AddComponentIntRowWithDrag<Components::Camera>(ctx.Parent, "Reference Width", static_cast<int>(cam->PixelPerfectReferenceWidth), w, e, n, undo,
                     "Change Camera Reference Width",
                     [](Components::Camera& u, int v) { u.PixelPerfectReferenceWidth = static_cast<uint32>(std::max(1, v)); },
@@ -465,12 +496,11 @@ void RegisterCameraInspector()
             });
         }
 
-        // Editable: VisibleLayers, PostProcessProfileId
-        AddComponentRenderLayersRow<Components::Camera>(
-            ctx.Parent, "Visible Layers", &Components::Camera::VisibleLayers, w, e, n, undo,
-            "Change Camera Visible Layers",
-            "The render layers this camera draws. A layer it does not draw casts no shadow in this camera's view.",
-            Editor::kVisibleLayersNothingTooltip, extras);
+        // Editable: CullingMask, PostProcessProfileId
+        AddComponentIntRowWithDrag<Components::Camera>(ctx.Parent, "CullingMask", static_cast<int>(cam->CullingMask), w, e, n, undo,
+            "Change Camera Culling Mask",
+            [](Components::Camera& u, int v) { u.CullingMask = static_cast<uint32>(std::max(0, v)); },
+            static_cast<int>(cam->CullingMask), "Layer visibility mask for this camera", extras);
         AddComponentIntRowWithDrag<Components::Camera>(ctx.Parent, "PostProcessProfileId", static_cast<int>(cam->PostProcessProfileId), w, e, n, undo,
             "Change Camera PostProcess Profile",
             [](Components::Camera& u, int v) { u.PostProcessProfileId = static_cast<uint32>(std::max(0, v)); },
@@ -648,19 +678,25 @@ void RegisterCameraInspector()
             "Per-camera render scale override. 0 = inherit the engine default (including Dynamic "
             "resolution). An explicit 0.25-2.0 pins this camera to a fixed scale; above 1.0 "
             "supersamples (SSAA). Not with MSAA — a multisampled view cannot be scaled.", extras);
-        AddComponentRenderLayersRow<Components::Camera>(
-            ctx.Parent, "Volume Layers", &Components::Camera::VolumeLayers, w, e, n, undo,
-            "Change Camera Volume Layers",
-            "The volume layers this camera takes: a post-process volume affects it when their Volume Layers share a layer.",
-            "Takes no post-process volume.", extras);
+        AddComponentIntRowWithDrag<Components::Camera>(ctx.Parent, "PostProcessMask", static_cast<int>(cam->PostProcessMask), w, e, n, undo,
+            "Change Camera PostProcess Mask",
+            [](Components::Camera& u, int v) { u.PostProcessMask = static_cast<uint32>(v); },
+            static_cast<int>(cam->PostProcessMask),
+            "Volume layer bitmask: only volumes with (PostProcessVolume.postProcessMask & this) != 0 affect this camera. -1 = accept all.", extras);
+        AddToggleRow(ctx.Parent, "Include UI in Post-Processing", cam->IncludeUIInPostProcessing,
+            [w, e, n, undo, extras](bool value) {
+                CommitComponentsWithUndo<Components::Camera>(w, e, extras, n, undo, "Change Camera UI Post-Processing",
+                    [value](Components::Camera& u) { u.IncludeUIInPostProcessing = value; });
+            },
+            "When enabled, fullscreen camera effects (such as CRT) also affect game UI. Disable to composite UI after those effects.");
 
         // --- Exposure (the camera's sensor; the active camera's exposure drives its view) ---
         InspectorUI::AddTextBlock(ctx.Parent, "Exposure", "inspector-section-subheader");
 
         auto* exModeField = InspectorUI::AddEnumRow(ctx.Parent, "Exposure Mode", kExposureModes, cam->ExposureControl,
             "Fixed = a linear multiplier. Manual = an absolute photographic EV100 anchored to 203-nit "
-            "reference white (sun ~15, overcast ~12, interior ~7-9, full moon ~-4). Physical = EV100 from "
-            "camera Aperture/Shutter/ISO. Auto = the Meter below + eye adaptation.");
+            "reference white (sun ~15, overcast ~12, interior ~7-9, night ~2-5). Physical = EV100 from "
+            "camera Aperture/Shutter/ISO. Auto = histogram metering + eye adaptation.");
         exModeField->SetOnValueChanged([w, e, n, undo, extras](Components::ExposureMode v) {
             CommitComponentWithUndo<Components::Camera>(w, e, n, undo, "Change Exposure Mode",
                 [v](Components::Camera& u) { u.ExposureControl = v; });
@@ -672,17 +708,6 @@ void RegisterCameraInspector()
                     n->NotifyComponentChange<Components::Camera>(w, ex, Editor::EditorChangeNotifications::ChangeKind::InspectorRebuild);
             }
         });
-
-        // The meter sits directly under the mode it belongs to, as in the Scene View's popover.
-        if (cam->ExposureControl == Components::ExposureMode::Auto)
-        {
-            auto* meterField = InspectorUI::AddEnumRow(ctx.Parent, "Meter", kExposureMeters, cam->AutoExposureMeter,
-                                                       Editor::kExposureMeterTooltip);
-            meterField->SetOnValueChanged([w, e, n, undo](Components::ExposureMeter v) {
-                CommitComponentWithUndo<Components::Camera>(w, e, n, undo, "Change Exposure Meter",
-                    [v](Components::Camera& u) { u.AutoExposureMeter = v; });
-            });
-        }
 
         AddComponentFloatRowWithDrag<Components::Camera>(ctx.Parent, "Exposure Compensation", cam->ExposureCompensation, w, e, n,
             undo, "Change Exposure Compensation",
@@ -702,7 +727,7 @@ void RegisterCameraInspector()
                 undo, "Change Manual EV",
                 [](Components::Camera& u, float v) { u.ManualExposureEV = v; },
                 Components::kDefaultManualExposureEv,
-                "Manual mode: absolute photographic EV100: sun ~15, overcast ~12, interior ~7-9, full moon ~-4.", extras);
+                "Manual mode: absolute photographic EV100. Sunny ~15, overcast ~12, interior ~7-9, night ~2-5.", extras);
         }
         else if (cam->ExposureControl == Components::ExposureMode::Physical)
         {
@@ -720,13 +745,11 @@ void RegisterCameraInspector()
             AddComponentFloatRowWithDrag<Components::Camera>(ctx.Parent, "Auto Min EV", cam->AutoExposureMinEv, w, e, n,
                 undo, "Change Auto Min EV",
                 [](Components::Camera& u, float v) { u.AutoExposureMinEv = v; },
-                Components::kDefaultAutoExposureMinEv,
-                "Auto mode, either meter: the darkest scene EV100 the meter fully exposes (lower EV = more "
-                "brightening in dark scenes). The Compensation Curve keeps a night dark.", extras);
+                4.0f, "Auto mode: brightest the metering may expose to (lower EV = more brightening in dark scenes).", extras);
             AddComponentFloatRowWithDrag<Components::Camera>(ctx.Parent, "Auto Max EV", cam->AutoExposureMaxEv, w, e, n,
                 undo, "Change Auto Max EV",
                 [](Components::Camera& u, float v) { u.AutoExposureMaxEv = v; },
-                18.0f, "Auto mode, either meter: darkest the metering may expose to (higher EV = more darkening in bright scenes).", extras);
+                18.0f, "Auto mode: darkest the metering may expose to (higher EV = more darkening in bright scenes).", extras);
             AddComponentFloatRowWithDrag<Components::Camera>(ctx.Parent, "Auto Speed Up", cam->AutoExposureSpeedUp, w, e, n,
                 undo, "Change Auto Speed Up",
                 [](Components::Camera& u, float v) { u.AutoExposureSpeedUp = std::max(0.0f, v); },
@@ -735,7 +758,6 @@ void RegisterCameraInspector()
                 undo, "Change Auto Speed Down",
                 [](Components::Camera& u, float v) { u.AutoExposureSpeedDown = std::max(0.0f, v); },
                 3.0f, "Auto mode: rate the exposure FALLS (the scene brightened, image darkens). Higher = faster.", extras);
-            AddExposureCompensationCurveRow(ctx);
         }
 
         // Lens controls remain visible in every exposure mode. Aperture is a
@@ -758,7 +780,7 @@ void RegisterCameraInspector()
             extras, Components::Camera::kFocusDistanceMin);
         AddComponentFloatRowWithDrag<Components::Camera>(ctx.Parent, "Focus Debug Blend", cam->FocusDebugAlpha, w, e, n,
             undo, "Change Focus Debug Blend",
-            [](Components::Camera& u, float v) { u.FocusDebugAlpha = Math::Clamp01(v); },
+            [](Components::Camera& u, float v) { u.FocusDebugAlpha = std::clamp(v, 0.0f, 1.0f); },
             0.5f, "How much the camera's focus-range diagnostic tint is mixed over the image.", extras, 0.0f, 1.0f);
         AddToggleRow(ctx.Parent, "Focus Range Debug", cam->FocusDebugMode != 0,
             [w, e, n, undo](bool v) {
@@ -781,7 +803,7 @@ void RegisterCameraInspector()
                                  static_cast<int>(Components::Camera::kApertureBladeCountMax));
         AddComponentFloatRowWithDrag<Components::Camera>(ctx.Parent, "Aperture Roundness", cam->ApertureRoundness, w, e, n,
             undo, "Change Aperture Roundness",
-            [](Components::Camera& u, float v) { u.ApertureRoundness = Math::Clamp01(v); },
+            [](Components::Camera& u, float v) { u.ApertureRoundness = std::clamp(v, 0.0f, 1.0f); },
             1.0f, "Shape of physical DoF bokeh: 0 = straight polygonal blades, 1 = circular aperture.", extras, 0.0f, 1.0f);
         AddComponentFloatRowWithDrag<Components::Camera>(ctx.Parent, "Aperture Rotation", cam->ApertureRotation, w, e, n,
             undo, "Change Aperture Rotation",

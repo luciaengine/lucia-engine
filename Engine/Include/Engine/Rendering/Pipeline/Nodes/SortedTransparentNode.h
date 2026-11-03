@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 
 #include <string>
 

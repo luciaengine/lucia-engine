@@ -22,10 +22,11 @@
 #include "ECSModules/Rendering/Systems/SkyEnvironmentSystem.h"
 #include "ECSModules/Rendering/Systems/AmbientLightSystem.h"
 #include "ECSModules/Rendering/Systems/DDGIVolumeSystem.h"
+#include "Engine/Rendering/DDGIFieldRanges.h"
 #include "ECSModules/Rendering/Systems/ReflectionProbeSystem.h"
+#include "ECSModules/Rendering/Systems/PlanarReflectionSystem.h"
 
 #include "ECS/DisabledInHierarchySystem.h"
-#include "ECS/SceneViewHiddenInHierarchySystem.h"
 #include "Scripting/NativePostSimulationSystem.h"
 
 namespace GameEngine { namespace Engine::Renderer {
@@ -67,9 +68,6 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     // reason the TLAS and native post-simulation systems do, this being where
     // the engine assembles the default world's schedule.
     schedule.Add<DisabledInHierarchySystem>("DisabledInHierarchy", SystemPhase::Early, 0, {});
-    // The Scene View eye's inherited state, derived the same way before extraction reads it.
-    schedule.Add<SceneViewHiddenInHierarchySystem>("SceneViewHiddenInHierarchy", SystemPhase::Early, 0,
-                                                   {"DisabledInHierarchy"});
 
     schedule.Add<TimelinePlaybackSystem>(kTimelinePlayback, SystemPhase::Animation, 0, {}, EngineCore::GetInstance().GetAudioSystem());
     schedule.Add<CharacterGraphParamSystem>(kCharGraphParams, SystemPhase::Animation, 1, {kTimelinePlayback});
@@ -160,10 +158,14 @@ void AddRenderingSystemsToSchedule(ECS::SystemScheduleBuilder& schedule, RenderS
     // push. Chaining costs nothing: this is a pure CPU push into the IBL
     // feature that UploadEnvData reads later during record.
     schedule.Add<AmbientLightSystem>(kAmbientLight, SystemPhase::Camera, 4, {kReflectionProbe}, renderServices);
+    schedule.Add<PlanarReflectionSystem>("PlanarReflection", SystemPhase::Camera, 5, {kAmbientLight}, renderServices);
     // DDGI volume extraction: needs WorldTransform (post-hierarchy, so
     // {kCamera} suffices — the same dependency SkyEnvironmentSystem uses)
     // but touches no IBL feature state, so it carries no ordering edge to
     // the Sky/ReflectionProbe/AmbientLight chain above.
+    static const bool s_DDGIRangesRegisteredScheduled =
+        [] { RegisterDDGIFieldRanges(); return true; }();
+    (void)s_DDGIRangesRegisteredScheduled;
     schedule.Add<DDGIVolumeSystem>(kDDGIVolume, SystemPhase::Camera, 4, {kCamera}, renderServices);
 
     // RenderGraph build is responsible for invoking RenderServices::BuildFrameGraph,

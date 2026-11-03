@@ -4,7 +4,6 @@
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
 #include "Logger/Logger.h"
-#include "Types/StringUtils.h"
 
 #include <nlohmann/json.hpp>
 
@@ -32,9 +31,23 @@ constexpr std::array<std::string_view, 22> kWindowsReservedNames = {
     "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 };
 
+std::string ToUpperAscii(std::string s)
+{
+    for (char& c : s)
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return s;
+}
+
+std::string ToLowerAscii(std::string s)
+{
+    for (char& c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
 bool IsShaderPath(const std::filesystem::path& path)
 {
-    return GetAssetTypeFromExtension(path.extension().string()) == AssetType::Shader;
+    return GetAssetTypeFromExtension(ToLowerAscii(path.extension().string())) == AssetType::Shader;
 }
 
 bool FilenameMatches(const std::string& reference, const std::string& filename)
@@ -53,32 +66,19 @@ bool ReadFile(const std::filesystem::path& path, std::string& out)
     return true;
 }
 
-// What a rename keeps after the edited name: a file's extension; nothing for a folder, whose
-// whole name is edited.
-std::string KeptSuffix(const std::filesystem::path& path)
-{
-    std::error_code ec;
-    return std::filesystem::is_directory(path, ec) ? std::string{} : path.extension().string();
-}
-
 } // namespace
 
-std::string AssetRenameEditableName(const std::filesystem::path& path)
+AssetRenameValidation ValidateAssetRenameStem(const std::string& newStem,
+                                              const std::filesystem::path& currentPath)
 {
-    std::error_code ec;
-    return std::filesystem::is_directory(path, ec) ? path.filename().string() : path.stem().string();
-}
-
-AssetRenameValidation ValidateAssetRename(const std::string& newName, const std::filesystem::path& currentPath)
-{
-    if (newName.empty())
+    if (newStem.empty())
         return {false, "Name can't be empty"};
 
-    const bool allSpace = std::all_of(newName.begin(), newName.end(), [](unsigned char c) { return std::isspace(c); });
+    const bool allSpace = std::all_of(newStem.begin(), newStem.end(), [](unsigned char c) { return std::isspace(c); });
     if (allSpace)
         return {false, "Name can't be only spaces"};
 
-    for (unsigned char c : newName)
+    for (unsigned char c : newStem)
     {
         if (std::iscntrl(c))
             return {false, "Name can't contain control characters"};
@@ -86,28 +86,28 @@ AssetRenameValidation ValidateAssetRename(const std::string& newName, const std:
             return {false, "Name can't contain any of / \\ : * ? \" < > |"};
     }
 
-    if (newName.front() == '.')
+    if (newStem.front() == '.')
         return {false, "Name can't start with a dot"};
-    if (std::isspace(static_cast<unsigned char>(newName.front())))
+    if (std::isspace(static_cast<unsigned char>(newStem.front())))
         return {false, "Name can't start with a space"};
-    if (newName.back() == '.' || std::isspace(static_cast<unsigned char>(newName.back())))
+    if (newStem.back() == '.' || std::isspace(static_cast<unsigned char>(newStem.back())))
         return {false, "Name can't end with a space or a dot"};
 
-    const std::string upper = ToUpperAscii(newName);
+    const std::string upper = ToUpperAscii(newStem);
     for (std::string_view reserved : kWindowsReservedNames)
     {
         if (upper == reserved)
-            return {false, "'" + newName + "' is a reserved name on Windows"};
+            return {false, "'" + newStem + "' is a reserved name on Windows"};
     }
 
-    const std::string extension = KeptSuffix(currentPath);
-    if (newName.size() + extension.size() > kMaxFileNameBytes)
+    const std::string extension = currentPath.extension().string();
+    if (newStem.size() + extension.size() > kMaxFileNameBytes)
         return {false, "Name is too long"};
 
-    const std::filesystem::path target = currentPath.parent_path() / (newName + extension);
+    const std::filesystem::path target = currentPath.parent_path() / (newStem + extension);
     std::error_code ec;
     if (std::filesystem::exists(target, ec) && !std::filesystem::equivalent(target, currentPath, ec))
-        return {false, "'" + target.filename().string() + "' already exists here. Choose another name."};
+        return {false, "'" + target.filename().string() + "' already exists here"};
 
     if (IsShaderPath(currentPath))
     {
@@ -115,10 +115,10 @@ AssetRenameValidation ValidateAssetRename(const std::string& newName, const std:
         if (!companion.empty())
         {
             const std::filesystem::path companionTarget =
-                companion.parent_path() / (newName + companion.extension().string());
+                companion.parent_path() / (newStem + companion.extension().string());
             if (std::filesystem::exists(companionTarget, ec) &&
                 !std::filesystem::equivalent(companionTarget, companion, ec))
-                return {false, "'" + companionTarget.filename().string() + "' already exists here. Choose another name."};
+                return {false, "'" + companionTarget.filename().string() + "' already exists here"};
         }
     }
 
@@ -226,17 +226,17 @@ bool RewriteMaterialName(const std::filesystem::path& materialPath,
     });
 }
 
-AssetRenamePlan PlanAssetRename(const std::filesystem::path& currentPath, const std::string& newName)
+AssetRenamePlan PlanAssetRename(const std::filesystem::path& currentPath, const std::string& newStem)
 {
     AssetRenamePlan plan;
     plan.From = currentPath;
-    plan.To = currentPath.parent_path() / (newName + KeptSuffix(currentPath));
+    plan.To = currentPath.parent_path() / (newStem + currentPath.extension().string());
 
     const std::filesystem::path companion = FindPairedSurfaceShaderMaterial(currentPath);
     if (!companion.empty())
     {
         plan.CompanionFrom = companion;
-        plan.CompanionTo = companion.parent_path() / (newName + companion.extension().string());
+        plan.CompanionTo = companion.parent_path() / (newStem + companion.extension().string());
     }
     return plan;
 }

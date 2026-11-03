@@ -3,7 +3,7 @@
 #include "InspectorRegistry.h"
 #include "Inspectors/InspectorUIHelpers.h"
 
-#include "Animation/Humanoid/HumanoidRig.h"
+#include "Animation/HumanoidRig.h"
 #include "Animation/OpStackNode.h"
 #include "Animation/RetargetMap.h"
 #include "AssetCore/Asset.h"
@@ -219,7 +219,7 @@ void BuildOpStackEditorSection(UIElement* root, Animation::RetargetMap* map)
         warn->SetText("WARNING: ops are out of canonical order "
                       "(AttachmentPassthrough -> LookAt -> BodyIntersect -> FootLock). "
                       "The runtime will reorder for evaluation but artifacts may surface.");
-        warn->Style().Set(Style::Color, kCanonicalOrderWarnLabel);
+        warn->Overrides().Set(Style::Color, kCanonicalOrderWarnLabel);
         host->AddChild(std::move(warn));
     }
 
@@ -392,7 +392,7 @@ void BuildRetargetMapInspector(UIElement* root, Animation::RetargetMap* map)
         auto banner = std::make_unique<Label>();
         banner->AddClass("inspector-text");
         banner->SetText("BROKEN: source or target rig reference is null.");
-        banner->Style().Set(Style::Color, kBrokenBannerColor);
+        banner->Overrides().Set(Style::Color, kBrokenBannerColor);
         root->AddChild(std::move(banner));
     }
 

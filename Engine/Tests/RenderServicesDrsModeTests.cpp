@@ -173,14 +173,14 @@ TEST(RenderServicesDrsMode, ModeChangeResetsTickDedup)
 TEST(RenderServicesDrsMode, UnreachableWarningLatchesUntilConfigOrModeChange)
 {
     Logger::Log::Initialize({});
-    auto sink = std::make_unique<Logger::CallbackSink>();
+    auto sink = Logger::MakeUnique<Logger::CallbackSink>();
     auto* sinkPtr = sink.get();
     auto warningCount = std::make_shared<std::atomic<int>>(0);
-    const std::uint64_t callbackId = sinkPtr->RegisterCallback(
+    const Logger::uint64 callbackId = sinkPtr->RegisterCallback(
         [warningCount](const Logger::LogMessage& msg)
         {
             if (msg.Message.find("dynamic resolution is at its minimum scale") !=
-                std::string::npos)
+                Logger::String::npos)
                 warningCount->fetch_add(1);
         });
     Logger::Log::AddSink(std::move(sink));

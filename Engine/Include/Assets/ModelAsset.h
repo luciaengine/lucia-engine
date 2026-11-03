@@ -10,7 +10,6 @@
 #include <cmath>
 #include <filesystem>
 #include <memory>
-#include <mutex>
 #include <string_view>
 #include <utility>
 
@@ -19,7 +18,6 @@ namespace GameEngine {
 class AssetManager;
 struct ModelAssetFbxTestAccess;
 namespace Animation { struct SkeletonData; class AnimationClip; }
-struct AssetDecodeInput;
 
 /**
  * @brief Model format types
@@ -233,7 +231,12 @@ struct Mesh {
     }
 };
 
-Mesh CreateMorphedMesh(const Mesh& sourceMesh, const float* weights, size_t weightCount);
+// Writes sourceMesh's vertices with the first weightCount morph targets applied into outVertices,
+// which ends at the source vertex count; reusing one outVertices across calls keeps its storage.
+// Normals are renormalized when a target moves them, and tangents are regenerated over the whole
+// mesh when the source carries them. The mesh's other streams do not change under a morph.
+void ApplyMorphTargets(const Mesh& sourceMesh, const float* weights, size_t weightCount,
+                       Vector<Vertex>& outVertices);
 void GenerateMeshTangents(Mesh& mesh, bool forceRegenerate = false);
 
 /**
@@ -255,9 +258,6 @@ struct EmbeddedImage {
     // materials then reference that asset by GUID (its import settings — mips,
     // compression, filtering — apply) and Data stays empty.
     GUID AssetGuid;
-    // FNV-1a 64 of Data: the key that shares one texture between models that embed the same
-    // bytes. The model load sets it on its worker, so binding a material never hashes.
-    uint64 ContentHash = 0;
 
     // True once the image can become a texture: it holds its bytes, or it names
     // the asset that holds them. A reader that waits for textures waits on this,
@@ -456,11 +456,6 @@ public:
     /** DetermineFormat on `path`'s extension (case-insensitive). */
     static ModelFormat FormatFromPath(const std::filesystem::path& path);
 
-    /** The files a decode of `bytes`, the model at `path`, reads besides them: a glTF's external buffers, each up to
-     * its largest declared byteLength, and the external images it copies (the AssetDatabase's own are referenced
-     * instead). Empty otherwise. Runs on an asset reader thread; the AssetIOService reads the files next to the model. */
-    static Vector<AssetDecodeInput> ResolveDecodeInputs(const Vector<uint8>& bytes, const std::filesystem::path& path);
-
     /** FBX / glTF / GLB / Blend consume bake + engine-axis mirrors. */
     static bool UsesAxisImportOptions(ModelFormat format);
 
@@ -576,11 +571,9 @@ public:
      * @brief The raw extras JSON text the import kept for the source file's scenes, nodes, meshes,
      * materials and animations, by object kind and name (glTF and GLB; empty for other formats).
      *
-     * The engine reads none of it; ModelApi.GetExtras hands it to scripts, from any thread. The
-     * snapshot is immutable and never null (an unloaded model's is empty): a reload that replaces the
-     * extras meanwhile never frees what a reader holds.
+     * The engine reads none of it; ModelApi.GetExtras hands it to scripts.
      */
-    std::shared_ptr<const ModelExtras> GetExtras() const;
+    const ModelExtras& GetExtras() const { return m_Extras; }
 
     /**
      * @brief Get total vertex count across all meshes
@@ -765,11 +758,7 @@ private:
     Vector<ImportedCameraData> m_Cameras;
     Vector<ImportedLightData> m_Lights;
     Vector<ImportedSceneNodeData> m_SceneNodes;
-    // Replaced whole, never edited in place: by the load, the reload adoption and the unload,
-    // each under m_ExtrasMutex, which a reader holds only to copy the pointer.
-    std::shared_ptr<const ModelExtras> m_Extras = std::make_shared<const ModelExtras>();
-    mutable std::mutex m_ExtrasMutex;
-    void SetExtras(std::shared_ptr<const ModelExtras> extras);
+    ModelExtras m_Extras;
     uint32 m_TotalVertexCount;
     uint32 m_TotalIndexCount;
     uint32 m_SkeletonId = 0;

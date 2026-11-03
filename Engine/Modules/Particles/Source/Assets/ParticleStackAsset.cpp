@@ -1,8 +1,8 @@
 #include "Particles/Assets/ParticleStackAsset.h"
 
 #include "AssetCore/SharedFileRead.h"
-#include "Particles/ParticleStack/ParticleStackAuthoring.h"
-#include "Particles/ParticleStack/ParticleStackBinary.h"
+#include "Particles/ParticleStackAuthoring.h"
+#include "Particles/ParticleStackBinary.h"
 
 #include <fstream>
 #include <utility>

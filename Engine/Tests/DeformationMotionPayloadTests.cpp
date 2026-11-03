@@ -35,9 +35,10 @@
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
-#include "Rendering/Materials/Shader/ShaderReflection.h"
-#include "SharedHeadlessDevice.h"
+#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderReflection.h"
+
+#include "TestTempDir.h"
 
 #include <array>
 #include <cmath>
@@ -188,7 +189,8 @@ bool CompileProbeStages(std::vector<uint8_t>& outVertex, std::vector<uint8_t>& o
     const fs::path shaderRoot =
         fs::path(GE_RENDERER_REPO_ROOT) / "Engine" / "Modules" / "Rendering" / "Shaders";
     req.baseDirectory = shaderRoot / "Adapters";
-    req.cacheRoot = fs::temp_directory_path() / "ge_motion_payload_probe_cache";
+    const TestUtils::ScopedTempDir cacheDirectory{TestUtils::MakeUniqueTempDirectory("ge_motion_payload_probe_cache")};
+    req.cacheRoot = cacheDirectory.Path();
     req.includeDirs = {shaderRoot / "Includes"};
 
     ShaderStageCompileSpec vs{};
@@ -242,8 +244,11 @@ ProbeResult RenderProbe(const DeformationMotionParamsGPU& params, const float pr
         return out;
     }
 
-    IDevice* dev = SharedHeadlessDevice();
-    if (!dev)
+    DeviceDesc dd{};
+    dd.preferredAPI = GraphicsAPI::Vulkan;
+    dd.enableDynamicRendering = true;
+    auto dev = DeviceFactory::CreateDevice(dd);
+    if (!dev || !dev->Initialize(dd))
     {
         out.SkipReason = "no graphics device";
         return out;

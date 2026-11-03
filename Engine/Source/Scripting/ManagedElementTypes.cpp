@@ -1,6 +1,7 @@
 #include "Scripting/ManagedElementTypes.h"
 
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Scripting/ManagedTypeOwners.h"
 #include "Types/StringUtils.h"
 #include "UI/Registration/ElementRegistration.h"
@@ -9,9 +10,7 @@
 #include <cassert>
 #include <iterator>
 #include <string_view>
-#include <utility>
 #include <vector>
-#include <cstdlib>
 #include <optional>
 #include <memory>
 
@@ -79,11 +78,6 @@ void ManagedElementProxy::OnAuthoredAttributesApplied(
         ApplyAttributeToInstance(kv.first, kv.second);
 }
 
-bool ManagedElementProxy::BindsAuthoredAttribute(std::string_view /*nameLower*/) const
-{
-    return true;
-}
-
 void ManagedElementProxy::ApplyAttributeToInstance(const std::string& name,
                                                    const std::string& value) const
 {
@@ -123,17 +117,12 @@ bool ManagedElementTypes::BadgeEnabled()
 {
     if (g_BadgeOverride.has_value())
         return *g_BadgeOverride;
-    static const bool kEnabled = []
-    {
-        const char* v = std::getenv("GE_UI_ORPHAN_BADGE");
-        if (v && (v[0] == '0' || v[0] == '1'))
-            return v[0] == '1';
 #if defined(GE_DEV_DIAG)
-        return true;
+    constexpr bool kDefault = true;
 #else
-        return false;
+    constexpr bool kDefault = false;
 #endif
-    }();
+    static const bool kEnabled = Platform::EnvironmentSwitchEnabled("GE_UI_ORPHAN_BADGE", kDefault);
     return kEnabled;
 }
 
@@ -206,38 +195,7 @@ namespace
 // are already where they were trying to get to. Thread_local rather than a plain member: the
 // unload seam can be running on another thread at the same time and must still marshal.
 thread_local bool t_InMainThreadTask = false;
-
-// Set while this thread runs a registration window's callback: the one place a claim or a verdict
-// is admitted. Thread-local, so a claim from another thread during an open window is refused.
-thread_local bool t_InRegistrationWindow = false;
 } // namespace
-
-bool ManagedElementTypes::InRegistrationWindow()
-{
-    return t_InRegistrationWindow;
-}
-
-ManagedElementTypes::ScopedWindowForTests::ScopedWindowForTests()
-    : m_WasInWindow(std::exchange(t_InRegistrationWindow, true)),
-      m_WasInMainThreadTask(std::exchange(t_InMainThreadTask, true))
-{
-}
-
-ManagedElementTypes::ScopedWindowForTests::~ScopedWindowForTests()
-{
-    t_InRegistrationWindow = m_WasInWindow;
-    t_InMainThreadTask = m_WasInMainThreadTask;
-}
-
-void ManagedElementTypes::RefuseOutsideWindow(const char* what)
-{
-    ++m_RefusedOutsideWindow;
-    Logger::Log::Error("UI: {} was called outside a registration window and was refused. Make the call from "
-                       "inside one (GE_UI_RequestTypeRegistrationWindow), which runs on the thread that owns "
-                       "the UI tree. Nothing was decided, so this owner's elements stay inert until a later "
-                       "verdict decides them.",
-                       what);
-}
 
 void ManagedElementTypes::RunOnMainThread(std::function<void()> task)
 {
@@ -302,11 +260,9 @@ void ManagedElementTypes::RunRegistrationWindow()
     // Saved and restored rather than assigned. No path nests a window today, but one that did
     // would otherwise hand the inner window the outer's claims and then discard them.
     const bool wasInWindow = m_InWindow;
-    const bool threadWasInWindow = t_InRegistrationWindow;
     std::vector<std::uint64_t> outerClaims;
     outerClaims.swap(m_ClaimedInWindow);
     m_InWindow = true;
-    t_InRegistrationWindow = true;
 
     try
     {
@@ -315,13 +271,11 @@ void ManagedElementTypes::RunRegistrationWindow()
     catch (...)
     {
         m_InWindow = wasInWindow;
-        t_InRegistrationWindow = threadWasInWindow;
         m_ClaimedInWindow = std::move(outerClaims);
         throw;
     }
 
     m_InWindow = wasInWindow;
-    t_InRegistrationWindow = threadWasInWindow;
     std::vector<std::uint64_t> claimed;
     claimed.swap(m_ClaimedInWindow);
     m_ClaimedInWindow = std::move(outerClaims);
@@ -332,9 +286,9 @@ void ManagedElementTypes::RunRegistrationWindow()
     // recovers a type whose restoration unloaded nothing.
     //
     // Reconcile directly rather than through NotifyReloadCompleted: this IS the main-thread slot,
-    // so marshalling would push the work a frame out. A host with no marshaller, or a request the
-    // engine answers inline (no frame loop), runs the window on the requesting thread with the
-    // window flag set, which is that host's main-thread slot.
+    // so the thread guard has nothing to add and marshalling would push the work a frame out. A
+    // host with no marshaller runs the window inline on the calling thread, where registration
+    // itself is refused off-main and `claimed` is empty — so there is nothing to decide.
     for (std::uint64_t owner : claimed)
         Reconcile(owner);
 }
@@ -358,9 +312,13 @@ std::vector<StringId> ManagedElementTypes::RegisterTypes(std::span<const std::st
 
     // The whole batch or none of it. A partial claim would hand back some ids and leave the
     // caller's tag -> type table disagreeing with the registry.
-    if (!InRegistrationWindow())
+    if (!OnMainThread())
     {
-        RefuseOutsideWindow("registering a UI element type");
+        RefuseOffMainThread("registering a UI element type",
+                            "Claim it from a registration window "
+                            "(GE_UI_RequestTypeRegistrationWindow), which runs on the thread "
+                            "that owns the UI tree. Nothing was claimed, so this batch's "
+                            "elements stay inert until a later verdict decides them.");
         return tagIds;
     }
 
@@ -538,17 +496,21 @@ void ManagedElementTypes::NotifyReloadCompleted(std::uint64_t owner)
     if (owner == 0)
         return;
 
-    if (!InRegistrationWindow())
+    if (!OnMainThread())
     {
-        RefuseOutsideWindow("closing a UI element type reload verdict");
+        RefuseOffMainThread("closing a UI element type reload verdict",
+                            "Issue it from a registration window "
+                            "(GE_UI_RequestTypeRegistrationWindow), which runs on the thread "
+                            "that owns the UI tree. Nothing was decided, so this owner's "
+                            "elements stay inert until a later verdict decides them.");
         return;
     }
 
     // ONE task for the owner, covering both halves of the verdict. Everything Reconcile does is
     // tree-visible — re-attaching an instance replays authored attributes, and either outcome
-    // edits a badge class, which recomputes style. The window is the main-thread slot, so this
-    // runs inline and closes inside it. Capturing `this` is safe because the singleton is never
-    // destroyed.
+    // edits a badge class, which recomputes style. Inside a registration window this runs inline
+    // and closes the window; from a native host mid-frame it is queued. Capturing `this` is safe
+    // because the singleton is never destroyed.
     RunOnMainThread([this, owner] { Reconcile(owner); });
 }
 
@@ -749,7 +711,6 @@ void ManagedElementTypes::ResetForTests()
     m_Marshaller = {};
     m_MainThreadPredicate = {};
     m_RefusedOffMainThread = 0;
-    m_RefusedOutsideWindow = 0;
     m_RefusedReinstalls = 0;
     m_InWindow = false;
     m_ClaimedInWindow.clear();

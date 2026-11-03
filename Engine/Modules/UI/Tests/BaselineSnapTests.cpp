@@ -45,6 +45,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -248,5 +249,86 @@ TEST(BaselineSnap, SnapIsIdentityWhenAlreadyAlignedAndNeverExceedsHalfAPixel)
             << "originY " << originY << " moved too far";
         const float baseline = snapped + baselineY;
         EXPECT_NEAR(baseline, std::round(baseline), 1e-4f);
+    }
+}
+
+// Glyph pens land on quarter device pixels along x, as Chrome places glyphs on
+// macOS (four subpixel phases per pixel), and the move is rigid: the quad keeps
+// its offset from the pen, so the outline is untouched. Two glyphs whose pens
+// sit at 3.10 and 3.15, either side of the 3.125 tie, go to 3.0 and 3.25; colour glyphs
+// and glyphs without an em span keep their position.
+TEST(GlyphPenSnap, PenXRoundsToTheNearestQuarterDevicePixel)
+{
+    std::array<GameEngine::Rendering::Text::FontAtlas::GlyphPlacement, 3> glyphs{};
+    for (auto& glyph : glyphs)
+    {
+        // 10 px per em: the quad starts 1 px right of the pen.
+        glyph.u0 = 0.1f;
+        glyph.u1 = 0.6f;
+        glyph.width = 5.0f;
+        glyph.height = 8.0f;
+        glyph.hBandCount = glyph.vBandCount = 1;
+        glyph.color = 0xffffffffu;
+    }
+    glyphs[0].x = 1.0f - 0.02f; // pen at 3.100
+    glyphs[1].x = 1.0f + 0.03f; // pen at 3.150
+    glyphs[2].x = 1.0f + 0.03f;
+    glyphs[2].u1 = glyphs[2].u0; // no em span: position kept
+
+    std::vector<GameEngine::UI::UIPrimitive> primitives;
+    GameEngine::UI::GlyphRunTarget target;
+    target.Primitives = &primitives;
+    GameEngine::UI::EmitGlyphRun(glyphs, 3.12f, 0.0f, 16.0f, target);
+    ASSERT_EQ(primitives.size(), 3u);
+    EXPECT_NEAR(primitives[0].X, 1.0f + 3.0f, 1e-4f);
+    EXPECT_NEAR(primitives[1].X, 1.0f + 3.25f, 1e-4f);
+    EXPECT_NEAR(primitives[2].X, 3.12f + 1.03f, 1e-4f);
+}
+
+namespace
+{
+constexpr char kPenXml[] = R"(<uielement id="root">
+  <label id="lbl" text="Hamburgefonstiv"/>
+  <textarea id="area" value="Hamburgefonstiv"/>
+</uielement>)";
+
+// A fractional left margin, so the layout pens are off the quarter grid at
+// every content scale before the emitter rounds them.
+constexpr char kPenCss[] = R"(
+#root { display: flex; flex-direction: column; width: 600px; height: 400px; padding: 3.3px; }
+#lbl { width: 300px; height: 40px; font-family: Roboto; font-size: 16px; margin-left: 7.3px; }
+#area { width: 300px; height: 40px; font-family: Roboto; font-size: 16px; margin-left: 7.3px; padding: 0px; }
+)";
+} // namespace
+
+// The quarter-pixel pen rounding happens in device pixels on every path that
+// emits glyph runs, labels (UIManager_PrimitiveGen) and text areas
+// (TextArea.cpp, EmitGlyphRun): the emitted quads are in render pixels, so at
+// content scale 2 a pen lands on a quarter of a device pixel, an eighth of a
+// logical one. The pen is recovered from the quad as X - EmXMin * emScale.
+TEST(GlyphPenSnap, PensLandOnQuarterDevicePixelsInLabelsAndTextAreas)
+{
+    for (float scale : {1.0f, 1.25f, 2.0f})
+    {
+        IsolatedUIFixture fx;
+        const bool built = fx.Build(scale, kPenXml, kPenCss);
+        if (!fx.DeviceAvailable())
+            GTEST_SKIP() << "No Vulkan device available";
+        ASSERT_TRUE(built) << fx.Diagnostic();
+        for (const char* id : {"lbl", "area"})
+        {
+            const auto glyphs = fx.Primitives(id, GameEngine::UI::PrimitiveMode::Slug);
+            ASSERT_GE(glyphs.size(), 10u) << id << " at scale " << scale;
+            for (size_t i = 0; i < glyphs.size(); ++i)
+            {
+                const GameEngine::UI::UIPrimitive& p = glyphs[i];
+                const float emWidth = p.UvRect[2] - p.UvRect[0];
+                if (emWidth <= 1e-4f)
+                    continue;
+                const float pen = p.X - p.UvRect[0] * (p.W / emWidth);
+                EXPECT_NEAR(pen * 4.0f, std::round(pen * 4.0f), 0.01f)
+                    << id << " glyph " << i << " at scale " << scale << ": pen " << pen;
+            }
+        }
     }
 }

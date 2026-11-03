@@ -1,20 +1,20 @@
 #include "Inspectors/SkyboxInspector.h"
 
 #include "InspectorRegistry.h"
+#include "Editor/Entities/EditorComponentTraits.h"
 
 #include "Components/Rendering/Skybox.h"
 #include "Core/Engine.h"
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
-#include "Assets/Polyhaven/PolyhavenDownloadManager.h"
-#include "Assets/Polyhaven/PolyhavenService.h"
+#include "Assets/PolyhavenDownloadManager.h"
+#include "Assets/PolyhavenService.h"
 #include "EditorChangeNotifications.h"
 #include "Editor/Assets/AssetRelativePath.h"
 #include "EditorContext.h"
-#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
-#include "Mathematics/Interpolation.h"
 #include "UI/Controls/Dropdown.h"
 #include "UndoRedo/UndoRedoService.h"
 
@@ -22,6 +22,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace GameEngine
@@ -247,6 +248,16 @@ void ChangeSkyboxResolution(ECS::World* world,
 
 void RegisterSkyboxInspector()
 {
+    {
+        Editor::EditorComponentTraits traits;
+        traits.DisplayName = "Skybox";
+        traits.Category = "Rendering";
+        traits.Tooltip = "HDRI skybox rendered as the scene background";
+        traits.InspectorIconClass = "inspector-section-icon-sky";
+        Editor::EditorComponentTraitsRegistry::Get().Register(
+            ECS::GetComponentTypeId<Components::Skybox>(), std::move(traits));
+    }
+
     InspectorFn fn = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())
@@ -323,7 +334,7 @@ void RegisterSkyboxInspector()
 
         InspectorDrag::AddComponentFloatRowWithDrag<Components::Skybox>(ctx.Parent, "IBL ground darkening", skybox->IblLowerHemisphereDarkness, w, e, n,
             undo, "Change Skybox IBL Ground Darkening",
-            [](Components::Skybox& u, float v) { u.IblLowerHemisphereDarkness = Math::Clamp01(v); },
+            [](Components::Skybox& u, float v) { u.IblLowerHemisphereDarkness = std::clamp(v, 0.0f, 1.0f); },
             skybox->IblLowerHemisphereDarkness,
             "Darkens the lower hemisphere of baked IBL only, leaving the visible skybox unchanged", extras, 0.0f, 1.0f);
 

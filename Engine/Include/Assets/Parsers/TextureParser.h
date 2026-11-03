@@ -11,10 +11,5 @@ public:
     AssetType GetAssetType() const override { return AssetType::Texture; }
     AssetParseResult Parse(const AssetMetadata& metadata, AssetManager& assetManager) override;
     std::filesystem::path ResolveReadPath(const AssetMetadata& metadata, const AssetManager& assetManager) const override;
-    /// The cooked artifacts the decode adopts, with the cook plan that names them
-    /// (TextureAsset::ResolveCookDecodeInputs); for a packaged payload, its normal-variance
-    /// companion (TextureAsset::ResolvePackagedDecodeInputs).
-    AssetDecodeInputs ResolveDecodeInputs(const AssetMetadata& metadata, const Vector<uint8>& bytes,
-                                          AssetManager& assetManager) const override;
 };
 } // namespace GameEngine

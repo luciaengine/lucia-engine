@@ -1,4 +1,4 @@
-#include "DebugServer/Terrain/TerrainStatsReport.h"
+#include "DebugServer/TerrainSplitThresholdReport.h"
 
 #include <gtest/gtest.h>
 

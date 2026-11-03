@@ -9,7 +9,6 @@
 
 #include "../TestTempDir.h"
 
-#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -23,12 +22,12 @@ namespace fs = std::filesystem;
 
 // Opening a settings page must be byte-neutral to the project file.
 //
-// The shared row builders in SettingsPanel.cpp seed each row from stored data
-// and then hand that same value straight to the row's change callback, so
-// building a page runs every field's Set against that field's own Get. Seeding
-// a widget is not an edit: it must not rewrite the file, must not materialize
-// engine defaults into it, and must not bump its mtime -- a settings write
-// wakes the file watcher and dirties version control.
+// The shared toggle row in SettingsPanel.cpp seeds itself from stored data and
+// then hands that same value straight to the row's change callback, so
+// building a page runs every registered toggle's Set against its own Get.
+// Seeding a widget is not an edit: it must not rewrite the file, must not
+// materialize engine defaults into it, and must not bump its mtime -- a
+// settings write wakes the file watcher and dirties version control.
 //
 // Reproduced against the editor before this suite existed: opening
 // Project Settings -> Scene View on a project holding rendering.drsTargetFps
@@ -122,12 +121,9 @@ class SettingsPageOpenIsNotAnEditTest : public ::testing::Test
         out << json;
     }
 
-    // What CreateSettingsSliderRow / CreateSettingsToggleRow do when a page is
-    // built: read the stored value, clamp it to the control's range, hand it
-    // back to the change callback. The clamp is part of the reproduction --
-    // it is how a widget narrower than its backing store turns a seed into a
-    // value the file never held. Dropdown rows install their callback after
-    // seeding the control and so never fire here.
+    // What CreateSettingsToggleRow does when a registered page is built: read
+    // the stored value and hand it back to the change callback. Slider, number
+    // and dropdown rows fire nothing at build time, so only toggles seed here.
     static void SeedEveryFieldOf(const Editor::SettingsCategoryDescriptor& category)
     {
         using Editor::SettingsFieldDescriptor;
@@ -137,11 +133,6 @@ class SettingsPageOpenIsNotAnEditTest : public ::testing::Test
             {
                 if (toggle->Get && toggle->Set)
                     toggle->Set(toggle->Get());
-            }
-            else if (const auto* slider = std::get_if<SettingsFieldDescriptor::SliderField>(&field.Control))
-            {
-                if (slider->Get && slider->Set)
-                    slider->Set(std::clamp(slider->Get(), slider->MinValue, slider->MaxValue));
             }
         }
     }
@@ -232,6 +223,40 @@ TEST_F(SettingsPageOpenIsNotAnEditTest, SeedingRegisteredProjectFieldsMaterializ
     const FileSnapshot after = Snapshot(SettingsFile());
     EXPECT_EQ(before.Bytes, after.Bytes)
         << "building a page wrote engine defaults into a project that never set them";
+    EXPECT_EQ(before.Mtime, after.Mtime);
+}
+
+// A slider drag delivers one Preview per tick. Preview is live feedback: only
+// the release's Set may write the project file, so a drag costs one write, not
+// one per mouse move.
+TEST_F(SettingsPageOpenIsNotAnEditTest, PreviewingRegisteredSlidersLeavesTheFileUntouched)
+{
+    Editor::RegisterLodSettingsCategory();
+    WriteSettings(kSeedWithLodBlock);
+
+    const FileSnapshot before = Snapshot(SettingsFile());
+    ASSERT_TRUE(before.Exists);
+
+    size_t previewCount = 0;
+    for (const auto& category : Editor::EditorSettingsRegistry::Get().Snapshot())
+    {
+        if (category.Group != Editor::SettingsCategoryGroup::ProjectSettings)
+            continue;
+        for (const Editor::SettingsFieldDescriptor& field : category.Fields)
+        {
+            const auto* slider = std::get_if<Editor::SettingsFieldDescriptor::SliderField>(&field.Control);
+            if (!slider || !slider->Preview)
+                continue;
+            // Both ends of the range: at least one differs from the stored value.
+            slider->Preview(slider->MinValue);
+            slider->Preview(slider->MaxValue);
+            ++previewCount;
+        }
+    }
+    ASSERT_GT(previewCount, 0u) << "no registered project slider has a Preview; the test proves nothing";
+
+    const FileSnapshot after = Snapshot(SettingsFile());
+    EXPECT_EQ(before.Bytes, after.Bytes) << "a slider preview wrote " << SettingsFile().string();
     EXPECT_EQ(before.Mtime, after.Mtime);
 }
 

@@ -1,7 +1,7 @@
 #include "Components/Spline/SplinePlacement.h"
 #include "Components/Spline/SplinePoolSelection.h"
 #include "Components/Spline/SplineStationJitter.h"
-#include "ECS/Component/ComponentFieldRegistry.h"
+#include "ECS/ComponentFieldRegistry.h"
 #include "ECS/Components.h"
 
 #include <gtest/gtest.h>

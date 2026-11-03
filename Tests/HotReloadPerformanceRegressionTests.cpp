@@ -122,16 +122,6 @@ TEST_F(HotReloadPerformanceRegressionTest, ZeroMainThreadBlockingRegression) {
     JobSystem::JobChannel compiles(*threadPool, JobSystem::JobChannelDesc{.Name = "Script compiles", .MaxRunning = 1});
     HotReloadPipeline pipeline(*threadPool, compiles);
 
-    // The first run of a process pays one-time start-up costs. Its submission
-    // has the main-thread bound, and the other bounds apply to the next run.
-    const auto warmUpStart = std::chrono::high_resolution_clock::now();
-    auto warmUp = pipeline.ExecuteAsync(m_AssemblyPath);
-    const auto warmUpBlocking = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::high_resolution_clock::now() - warmUpStart);
-    EXPECT_LT(warmUpBlocking.count(), MAX_MAIN_THREAD_BLOCKING_MS) << "the first submission blocked the main thread";
-    ASSERT_EQ(warmUp.wait_for(std::chrono::seconds(30)), std::future_status::ready) << "the warm-up run did not end";
-    (void)warmUp.get();
-
     // Measure main thread blocking time
     auto mainThreadStart = std::chrono::high_resolution_clock::now();
     auto future = pipeline.ExecuteAsync(m_AssemblyPath);

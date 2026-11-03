@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
 #include "Video/AsyncVideoRecorder.h"
-#include "Video/VideoWriter.h"
+
+#include "TestTempDir.h"
 
 #include <chrono>
+#include <filesystem>
 #include <thread>
 
 using namespace GameEngine::Video;
@@ -11,10 +13,20 @@ using namespace GameEngine::Video;
 namespace
 {
 
+// The recordings of this test process, removed at exit: the writer opens this path once a
+// test submits a video frame, and a concurrent ctest process running the same tests writes
+// its own.
+const std::filesystem::path& RecordingDirectory()
+{
+    static const GameEngine::TestUtils::ScopedTempDir directory{
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge_test_recording")};
+    return directory.Path();
+}
+
 VideoWriterOptions MakeOptions()
 {
     VideoWriterOptions opts;
-    opts.path = "/tmp/ge_test_recording.mp4";
+    opts.path = (RecordingDirectory() / "ge_test_recording.mp4").string();
     opts.fps = 30.0;
     opts.recordAudio = true;
     opts.audioChannels = 2;
@@ -456,11 +468,4 @@ TEST(AsyncVideoRecorderTest, WriterFailureStillFinalizesWithErrorText)
     EXPECT_EQ(finishMessage.find("unused success message"), std::string::npos)
         << "a failed recording reported the caller's success message";
     EXPECT_TRUE(recorder.GetStats().Failed);
-}
-
-TEST(VideoCodecNames, TheCaseOfAnExtensionOrACodecNameDoesNotChangeTheCodec)
-{
-    EXPECT_EQ(GuessCodecForMoviePath("C:/Captures/Take.MOV"), VideoCodec::ProRes422);
-    EXPECT_EQ(GuessCodecForMoviePath("C:/Captures/Take.H265"), VideoCodec::HEVC);
-    EXPECT_EQ(ParseVideoCodecName("ProRes4444"), VideoCodec::ProRes4444);
 }

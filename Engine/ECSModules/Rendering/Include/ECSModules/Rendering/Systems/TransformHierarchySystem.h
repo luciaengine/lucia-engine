@@ -15,7 +15,7 @@ namespace GameEngine { namespace Components { struct Transform; struct WorldTran
 namespace GameEngine { namespace Engine::Renderer {
 
 // Computes world-space transforms (WorldTransform) from local Transform + Parent
-// hierarchy. See docs/scripting/transform-hierarchy.mdx for the component contract.
+// hierarchy. See docs/TransformHierarchySystem.md for the component contract.
 //
 // Every pass opts back into disabled rows. A disabled entity keeps a world
 // transform — the editor draws its gizmo and the inspector shows its position,
@@ -31,9 +31,7 @@ namespace GameEngine { namespace Engine::Renderer {
 // them — also live in a cached parent->child CSR, rebuilt only after a Parent
 // edit or a structural change. Each frame the dirty members are the
 // Parent-holders whose local matrix changed (narrowed to exact entities by
-// cached local matrices) and the hierarchy roots whose WorldTransform Version
-// moved since their children last composed against it (the flat pass's own
-// write, or a direct writer's BumpWorldTransform).
+// cached local matrices) and the hierarchy roots the flat pass just moved.
 // Only the topmost of them are walked (a dirty node under a dirty ancestor is
 // covered by the ancestor's walk), and those disjoint subtrees propagate in
 // parallel when there are enough of them. A root without a Parent component
@@ -54,9 +52,6 @@ public:
     // tests and GE_HIER_PROFILE validation.
     size_t GetTopologyBuildCount() const { return m_TopologyBuildCount; }
     size_t GetLastPropagatedNodeCount() const { return m_LastPropagatedNodeCount; }
-    // Entities the last flat pass visited (the chunks its Changed<Transform>
-    // gate let through).
-    size_t GetLastFlatResolvedCount() const { return m_LastFlatCount; }
 
 private:
     struct Node {
@@ -72,37 +67,26 @@ private:
         // A root without a Parent component: the flat pass writes its
         // WorldTransform, so propagation only reads it (world is null).
         bool flatOwned = false;
-        // For a flat-owned root: the WorldTransform Version its children last
-        // composed against. The flat pass records the root as dirty when the
-        // component's Version differs.
-        uint32 composedWorldVersion = 0u;
     };
 
     // Which entities the flat pass resolves: every entity (no hierarchy
     // exists), or only those without a Parent component.
     enum class FlatScope { AllEntities, Unparented };
 
+    // Phase 0 (both paths): every entity with Transform gets a WorldTransform.
+    void EnsureWorldTransforms(ECS::World& world);
     // Rebuild the cached entity index + CSR graph. Called only after a
     // structural change or Parent edit; Update then resolves every node.
     void RebuildTopology(ECS::World& world);
     // Detect exact Transform edits of Parent-holders inside Changed<Transform>
     // chunks, add the hierarchy roots the flat pass moved, and propagate the
     // topmost of them.
-    void ResolveChangedSubtrees(ECS::World& world);
+    void ResolveChangedSubtrees(ECS::World& world, double ensureMs);
     // Flat pass: WorldTransform = Transform for the scope's changed chunks,
     // fanned out over the job system (serial when the world has no pool).
-    // Records the cached hierarchy roots whose WorldTransform Version moved.
+    // Records the cached hierarchy roots whose world matrix it changed.
     void ResolveFlatParallel(ECS::World& world, FlatScope scope);
     bool HasParentColumnChange(ECS::World& world, uint64 entryVersion);
-    // After a structural change that edited no Parent column: true when the
-    // cached topology still describes the world, so no rebuild is owed. Every
-    // node is alive, with its Transform and WorldTransform at the addresses it
-    // captured: an archetype move (a component added or removed, a Parent
-    // removed included) or a swap-remove in the node's chunk moves them. It
-    // rests on chunk storage staying put otherwise: a chunk that holds a live
-    // entity is never freed or reallocated (growth adds chunks). A new
-    // Parent-holder is not a node; the Parent column gate reports it. O(nodes).
-    bool IsTopologyCacheCurrent(ECS::World& world) const;
     size_t FindNodeIndex(ECS::EntityHandle entity) const;
     void AddNode(ECS::EntityHandle entity, const Components::Transform& local,
                  Components::WorldTransform& worldTransform, ECS::EntityHandle parent);
@@ -119,8 +103,8 @@ private:
     // pointers captured at topology rebuild, outside any query visit, so
     // nothing stamps those columns for it and Changed<WorldTransform>
     // consumers would never see a propagated move. The rebuild pass is the
-    // exception: its node gather binds Write<WorldTransform> and its
-    // stamp-at-visit has already covered every chunk.
+    // exception: its node gather takes Mutable() on every WorldTransform it
+    // caches, which has already granted every chunk.
     enum class StampCollection { Collect, AlreadyGranted };
 
     // Propagates each root's subtree (the roots' subtrees must be disjoint),
@@ -150,6 +134,13 @@ private:
     // instance ever serves two worlds.
     uint64 m_GateWorldId = 0;
 
+    // Ensure-pass gate: entities needing WorldTransform can only appear via
+    // a structural change (Transform add = archetype move), so the full
+    // ensure query is skipped while structuralChangeVersion is unchanged —
+    // this was the remaining 0.28 ms floor in the Step-0 A/B.
+    std::size_t m_EnsureStructuralVersion = 0;
+    bool m_EnsureGateValid = false;
+
     // Flat-path gate: Changed<Transform> chunk skip. Sound only while every
     // matched entity is a root (design C10/M1), so the gate resets whenever
     // the previous Update did not run the gated flat path — in particular on
@@ -170,6 +161,7 @@ private:
 
     // Scratch buffers retained between frames to avoid per-frame heap allocations.
     // .clear() preserves capacity; after the first frame these never allocate.
+    std::vector<ECS::EntityHandle> m_NeedWorldTransform;
     std::vector<Node> m_Nodes;
     // Direct entity-index -> node lookup. Entity indices are bounded to 20
     // bits, so even a million-entity scene needs only ~4 MiB at uint32/node.
@@ -186,8 +178,8 @@ private:
     // batched write-grant stamp. Filled and drained inside a single Update.
     std::vector<ECS::EntityHandle> m_StampScratch;
     std::vector<uint8_t> m_TopologyState;
-    // Hierarchy roots whose WorldTransform Version moved this frame (node indices), appended
-    // under the mutex once per chunk that recorded any.
+    // Hierarchy roots the flat pass moved this frame (node indices), appended
+    // under the mutex once per chunk that moved any.
     std::vector<size_t> m_ChangedFlatRoots;
     std::mutex m_ChangedFlatRootsMutex;
     // Topmost-dirty filter: the pass that last marked each node dirty, and

@@ -8,9 +8,9 @@
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
-#include "Rendering/Materials/Shader/ShaderMetaValidation.h"
+#include "Rendering/Materials/ShaderMetaValidation.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
 
@@ -29,25 +29,6 @@ namespace GameEngine::Engine::Renderer::Pipeline::Nodes
 using namespace ::GameEngine::Rendering;
 namespace
 {
-// How the dispatch touches a bound graph buffer (blueprint "bufferUsages"). ReadWrite is a
-// read-modify-write: the pass declares the read too, so the previous writer's contents are made
-// visible to it, not merely ordered before it (write->write alone carries no read visibility).
-enum class BufferAccess : uint8_t
-{
-    Read,
-    Write,
-    ReadWrite
-};
-
-BufferAccess ParseBufferAccess(const std::string& usage)
-{
-    if (usage == "StorageReadWrite")
-        return BufferAccess::ReadWrite;
-    if (usage == "StorageWrite" || usage == "storageWrite" || usage == "UAV" || usage == "uav")
-        return BufferAccess::Write;
-    return BufferAccess::Read;
-}
-
 static std::string BindingLeafName(const std::string& ref)
 {
     if (ref.empty())
@@ -118,6 +99,11 @@ ComputeShaderNode::~ComputeShaderNode()
         m_Device->DestroySampler(m_LinearClampSampler);
         m_LinearClampSampler = {};
     }
+    if (m_Device && m_PointClampSampler.IsValid())
+    {
+        m_Device->DestroySampler(m_PointClampSampler);
+        m_PointClampSampler = {};
+    }
     m_PipelineId = {};
     m_Set0Layout = {};
     m_ShaderMeta.reset();
@@ -130,8 +116,6 @@ bool ComputeShaderNode::Initialize(std::string nodeId, std::string nodeJson, std
     m_Json = std::move(nodeJson);
 
     m_ShaderPkg.clear();
-    m_ShaderPkgFallbacks.clear();
-    m_ActiveShaderPkg.clear();
     m_TargetTextureRef.clear();
     m_TargetBufferRef.clear();
     m_DispatchX = 1;
@@ -162,7 +146,6 @@ bool ComputeShaderNode::Initialize(std::string nodeId, std::string nodeJson, std
     m_PipelineDebugName.clear();
     m_LoggedShaderPkgIssues = false;
     m_LoggedShaderPkgLoadFailure = false;
-    m_LoggedWorkgroupFallback = false;
     m_LoggedDispatchExprFailure = false;
     m_LoggedBindingsMissingFromMeta = false;
     m_LoggedMissingTextureBindings = false;
@@ -171,6 +154,11 @@ bool ComputeShaderNode::Initialize(std::string nodeId, std::string nodeJson, std
     {
         m_Device->DestroySampler(m_LinearClampSampler);
         m_LinearClampSampler = {};
+    }
+    if (m_Device && m_PointClampSampler.IsValid())
+    {
+        m_Device->DestroySampler(m_PointClampSampler);
+        m_PointClampSampler = {};
     }
     m_Device = nullptr;
 
@@ -191,19 +179,6 @@ bool ComputeShaderNode::Initialize(std::string nodeId, std::string nodeJson, std
             if (outError)
                 *outError = "ComputeShader node requires 'shaderPkg' (.shaderpkg path/name).";
             return false;
-        }
-        if (j.contains("shaderPkgFallbacks") && j["shaderPkgFallbacks"].is_array())
-        {
-            for (const auto& fallback : j["shaderPkgFallbacks"])
-            {
-                if (!fallback.is_string() || fallback.get<std::string>().empty())
-                {
-                    if (outError)
-                        *outError = "ComputeShader node's 'shaderPkgFallbacks' must list .shaderpkg paths.";
-                    return false;
-                }
-                m_ShaderPkgFallbacks.push_back(fallback.get<std::string>());
-            }
         }
 
         if (j.contains("targetTexture") && j["targetTexture"].is_string())
@@ -390,18 +365,6 @@ bool ComputeShaderNode::Initialize(std::string nodeId, std::string nodeJson, std
     return true;
 }
 
-// True when the device can run the compute workgroup `meta` declares: a package without a
-// declared size, or a device that reports no limit, counts as fitting.
-static bool WorkgroupFitsDevice(const GameEngine::Rendering::ShaderMeta& meta,
-                                const GameEngine::Rendering::RenderingDeviceCapabilities& caps)
-{
-    const auto stage = meta.Stages.find("cs");
-    if (stage == meta.Stages.end() || !stage->second.ComputeLocalSize || caps.maxComputeWorkGroupSize == 0)
-        return true;
-    const auto& size = *stage->second.ComputeLocalSize;
-    return uint64_t{size.X} * size.Y * size.Z <= caps.maxComputeWorkGroupSize;
-}
-
 void ComputeShaderNode::EnsureCachedPipeline(GameEngine::Rendering::IDevice* device)
 {
     if (!device)
@@ -414,32 +377,33 @@ void ComputeShaderNode::EnsureCachedPipeline(GameEngine::Rendering::IDevice* dev
             m_Device->DestroySampler(m_LinearClampSampler);
             m_LinearClampSampler = {};
         }
+        if (m_PointClampSampler.IsValid())
+        {
+            m_Device->DestroySampler(m_PointClampSampler);
+            m_PointClampSampler = {};
+        }
         m_CsBytes.clear();
         m_PipelineId = {};
         m_Set0Layout = {};
         m_ShaderMeta.reset();
         m_RunOnceDispatched = false;
         m_RunOnceDeclaredFrame = UINT64_MAX;
-        m_LoggedWorkgroupFallback = false;
     }
     m_Device = device;
 
+    if (!m_PointClampSampler.IsValid())
+        m_PointClampSampler = device->CreateSampler(Rendering::SamplerDesc::PointClamp("Pipeline.PointClamp"));
     if (!m_LinearClampSampler.IsValid())
     {
         auto sd = GameEngine::Rendering::SamplerDesc::MaterialLinearClamp("Pipeline.Compute.LinearClamp");
         m_LinearClampSampler = m_Device->CreateSampler(sd);
     }
 
-    // The node's package, or the first of its fallbacks whose workgroup the device can run.
-    const bool selecting = m_CsBytes.empty() || !m_ShaderMeta;
-    for (size_t candidate = 0; (m_CsBytes.empty() || !m_ShaderMeta) && candidate <= m_ShaderPkgFallbacks.size();
-         ++candidate)
+    if (m_CsBytes.empty() || !m_ShaderMeta)
     {
-        const std::string& candidatePkg = candidate == 0 ? m_ShaderPkg : m_ShaderPkgFallbacks[candidate - 1];
-        const bool lastCandidate = candidate == m_ShaderPkgFallbacks.size();
         GameEngine::Rendering::ShaderPackage pkg{};
         std::string loadErr;
-        bool loaded = candidate == 0 && m_RenderServices
+        bool loaded = m_RenderServices
             ? m_RenderServices->Spine().TryConsumePreLoadedShaderPackage(m_ShaderPkg, pkg)
             : false;
         // Any failure to produce the package — no resolver installed yet, the resolver
@@ -453,7 +417,7 @@ void ComputeShaderNode::EnsureCachedPipeline(GameEngine::Rendering::IDevice* dev
             try
             {
                 loadCallFailed = !GameEngine::Rendering::LoadShaderPkg(
-                    candidatePkg, device->PreferredShaderSource(), pkg, &loadErr);
+                    m_ShaderPkg, device->PreferredShaderSource(), pkg, &loadErr);
             }
             catch (const std::exception& e)
             {
@@ -466,11 +430,10 @@ void ComputeShaderNode::EnsureCachedPipeline(GameEngine::Rendering::IDevice* dev
             if (!m_LoggedShaderPkgLoadFailure)
             {
                 m_LoggedShaderPkgLoadFailure = true;
-                Logger::Log::Warning("RenderPipeline ComputeShader '{}': failed to load shaderpkg '{}': {}", m_Id, candidatePkg, loadErr);
+                Logger::Log::Warning("RenderPipeline ComputeShader '{}': failed to load shaderpkg '{}': {}", m_Id, m_ShaderPkg, loadErr);
             }
             m_CsBytes.clear();
             m_ShaderMeta.reset();
-            break;
         }
         else
         {
@@ -480,32 +443,18 @@ void ComputeShaderNode::EnsureCachedPipeline(GameEngine::Rendering::IDevice* dev
                 if (!m_LoggedShaderPkgLoadFailure)
                 {
                     m_LoggedShaderPkgLoadFailure = true;
-                    Logger::Log::Warning("RenderPipeline ComputeShader '{}': shaderpkg '{}' missing 'cs' stage bytes", m_Id, candidatePkg);
+                    Logger::Log::Warning("RenderPipeline ComputeShader '{}': shaderpkg '{}' missing 'cs' stage bytes", m_Id, m_ShaderPkg);
                 }
                 m_CsBytes.clear();
                 m_ShaderMeta.reset();
-                break;
             }
-            if (!lastCandidate && !WorkgroupFitsDevice(pkg.meta, device->GetCapabilities()))
+            else
             {
-                // Reported on the node's first selection only: a package that fails to load
-                // makes the selection run again every frame.
-                if (!m_LoggedWorkgroupFallback)
-                {
-                    Logger::Log::Info("RenderPipeline ComputeShader '{}': '{}' needs more invocations per "
-                                      "workgroup than this device's {}; trying '{}'",
-                                      m_Id, candidatePkg, device->GetCapabilities().maxComputeWorkGroupSize,
-                                      m_ShaderPkgFallbacks[candidate]);
-                }
-                continue;
+                m_CsBytes = std::move(it->second);
+                m_ShaderMeta = std::make_unique<GameEngine::Rendering::ShaderMeta>(std::move(pkg.meta));
             }
-            m_CsBytes = std::move(it->second);
-            m_ShaderMeta = std::make_unique<GameEngine::Rendering::ShaderMeta>(std::move(pkg.meta));
-            m_ActiveShaderPkg = candidatePkg;
         }
     }
-    if (selecting)
-        m_LoggedWorkgroupFallback = true;
 
     if (!m_PipelineId.IsValid() && !m_CsBytes.empty())
     {
@@ -548,7 +497,7 @@ void ComputeShaderNode::EnsureCachedPipeline(GameEngine::Rendering::IDevice* dev
                     GameEngine::Rendering::MaterialBuilder::MergeMode::Auto,
                     {true, 128}, patchLayout, &err))
             {
-                Logger::Log::Warning("RenderPipeline ComputeShader '{}': failed to apply shader meta from shaderpkg '{}': {}", m_Id, m_ActiveShaderPkg, err);
+                Logger::Log::Warning("RenderPipeline ComputeShader '{}': failed to apply shader meta from shaderpkg '{}': {}", m_Id, m_ShaderPkg, err);
             }
         }
 
@@ -668,7 +617,7 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
     std::vector<BufBind> bufBinds;
     bufBinds.reserve(m_BufferBindings.size() + m_UniformWritesU32x4.size() +
                      m_PostProcessUniformBuffers.size());
-    std::vector<std::pair<RenderGraph::RGBuffer, BufferAccess>> bufEdges;
+    std::vector<std::pair<RenderGraph::RGBuffer, bool>> bufEdges; // (buffer, isWrite)
     for (const auto& bindingName : m_PostProcessUniformBuffers)
     {
         const auto* bindingMeta = m_ShaderMeta ? FindSet0Binding(*m_ShaderMeta, bindingName) : nullptr;
@@ -743,10 +692,13 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
         }
         if (b.Graph.IsValid())
         {
-            BufferAccess access = BufferAccess::Read;
+            bool isWrite = false;
             if (auto itU = m_BufferUsageStrings.find(kv.first); itU != m_BufferUsageStrings.end())
-                access = ParseBufferAccess(itU->second);
-            bufEdges.push_back({b.Graph, access});
+            {
+                const std::string u = itU->second;
+                isWrite = (u == "StorageWrite" || u == "storageWrite" || u == "UAV" || u == "uav");
+            }
+            bufEdges.push_back({b.Graph, isWrite});
         }
         bufBinds.push_back({kv.first, b.Buffer, b.Offset, b.Size});
     }
@@ -863,10 +815,10 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
             // their CONTENT above and their offsets are excluded by design.
             elisionBlob.Append(static_cast<uint64_t>(bb.Size));
         }
-        for (const auto& [g, access] : bufEdges)
+        for (const auto& [g, isWrite] : bufEdges)
         {
             (void)g;
-            elisionBlob.Append(static_cast<uint8_t>(access));
+            elisionBlob.Append(isWrite);
         }
         // Persistent (graph-tracked) buffer identities: Graph-valid bindings
         // resolve to pool physicals whose handle bits must break equality on
@@ -929,12 +881,12 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                 else
                     p.Read(t, RenderGraph::RGTextureRead::Sampled);
             }
-            for (const auto& [b, access] : bufEdges)
+            for (const auto& [b, isWrite] : bufEdges)
             {
-                if (access != BufferAccess::Write)
-                    p.Read(b, RenderGraph::RGBufferRead::Storage);
-                if (access != BufferAccess::Read)
+                if (isWrite)
                     p.Write(b, RenderGraph::RGBufferWrite::Storage);
+                else
+                    p.Read(b, RenderGraph::RGBufferRead::Storage);
             }
             if (targetTexRG.IsValid())
             {
@@ -1021,7 +973,7 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                 {
                     if (!bb.Buf.IsValid())
                         continue;
-                    if (Rendering::TryGetSet0BindingByName(*m_ShaderMeta, bb.Name, binding, dtype))
+                    if (Detail::TryGetSet0BindingByName(*m_ShaderMeta, bb.Name, binding, dtype))
                     {
                         overrideTypeFromLayout(binding, dtype);
                         if (dtype == Rendering::DescriptorType::StorageBuffer ||
@@ -1046,7 +998,7 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                 {
                     if (!tb.Tex.IsValid())
                         continue;
-                    if (Rendering::TryGetSet0BindingByName(*m_ShaderMeta, tb.Name, binding, dtype))
+                    if (Detail::TryGetSet0BindingByName(*m_ShaderMeta, tb.Name, binding, dtype))
                     {
                         overrideTypeFromLayout(binding, dtype);
                         Rendering::DescriptorSetUpdate u{};
@@ -1055,13 +1007,15 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                         u.textures = {tb.Tex};
                         if (dtype == Rendering::DescriptorType::CombinedImageSampler &&
                             m_LinearClampSampler.IsValid())
-                            u.samplers = {m_LinearClampSampler};
+                            u.samplers = {Detail::RequiresPointSampling(
+                                device->GetTextureFormat(tb.Tex), device->GetCapabilities())
+                                ? m_PointClampSampler : m_LinearClampSampler};
                         updates.push_back(std::move(u));
                     }
                 }
                 for (const auto& kv : m_Samplers)
                 {
-                    if (Rendering::TryGetSet0BindingByName(*m_ShaderMeta, kv.first, binding, dtype))
+                    if (Detail::TryGetSet0BindingByName(*m_ShaderMeta, kv.first, binding, dtype))
                     {
                         overrideTypeFromLayout(binding, dtype);
                         if (dtype == Rendering::DescriptorType::Sampler &&
@@ -1078,8 +1032,8 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                 if (targetBuf.IsValid())
                 {
                     const std::string leaf = BindingLeafName(m_TargetBufferRef);
-                    if (Rendering::TryGetSet0BindingByName(*m_ShaderMeta, leaf, binding, dtype) ||
-                        Rendering::TryGetSet0BindingByName(*m_ShaderMeta, "TargetBuffer", binding,
+                    if (Detail::TryGetSet0BindingByName(*m_ShaderMeta, leaf, binding, dtype) ||
+                        Detail::TryGetSet0BindingByName(*m_ShaderMeta, "TargetBuffer", binding,
                                                         dtype))
                     {
                         overrideTypeFromLayout(binding, dtype);
@@ -1096,8 +1050,8 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                 if (targetTex.IsValid())
                 {
                     const std::string leaf = BindingLeafName(m_TargetTextureRef);
-                    if (Rendering::TryGetSet0BindingByName(*m_ShaderMeta, leaf, binding, dtype) ||
-                        Rendering::TryGetSet0BindingByName(*m_ShaderMeta, "TargetTexture", binding,
+                    if (Detail::TryGetSet0BindingByName(*m_ShaderMeta, leaf, binding, dtype) ||
+                        Detail::TryGetSet0BindingByName(*m_ShaderMeta, "TargetTexture", binding,
                                                         dtype))
                     {
                         overrideTypeFromLayout(binding, dtype);

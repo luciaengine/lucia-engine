@@ -16,9 +16,10 @@
 #include "UI/Controls/Slider.h"
 #include "UI/Controls/TextField.h"
 #include "UI/Controls/Toggle.h"
-#include "UI/Interaction/FocusQueries.h"
+#include "UI/Interaction/FocusIsInside.h"
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
+#include "TestTempDir.h"
 #include "UIRgTestHarness.h"
 
 #include <filesystem>
@@ -89,7 +90,6 @@ struct RecordingSink final : Input::IRawInputSink
     void OnMouseMove(Mathematics::Vector2) override {}
     void OnMouseLeave() override {}
     void OnWindowFocus(bool focused) override { events.push_back(focused ? "f1" : "f0"); }
-    void OnPointerLock(bool) override {}
     bool OnMouseButton(int button, bool down, int /*mods*/) override
     {
         events.push_back("b" + std::to_string(button) + ":" + (down ? "1" : "0"));
@@ -134,6 +134,14 @@ void ClaimByPolling(Input::InputSystem& sink, Input::KeyCode key)
     (void)sink.IsKeyDown(key);
 }
 
+// The stylesheets of this test process, removed at exit: a concurrent ctest process running the
+// same tests writes its own.
+const std::filesystem::path& StyleDirectory()
+{
+    static const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("router_styles")};
+    return directory.Path();
+}
+
 // A root with one Button laid out at a known rect, used by the pointer rows.
 // Returns the button, with the cursor already parked over it and hover resolved,
 // so a routed press lands on a control that acts.
@@ -147,7 +155,7 @@ Button* AttachHoveredButton(RouterFixture& f, const char* cssName)
     root->AddChild(std::move(btnOwned));
     f.ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / cssName;
+    const auto css = StyleDirectory() / cssName;
     {
         std::ofstream out(css);
         out << R"(
@@ -214,22 +222,6 @@ TEST(WindowInputRoutingTests, ClickAdoptsTheModifierMaskItCarries)
     WindowInputRouter::RouteMouseButton(f.config, /*button=*/0, /*pressed=*/true, Input::kModShift);
 
     EXPECT_EQ(f.ui->GetModifierKeys(), Input::kModShift);
-}
-
-TEST(WindowInputRoutingTests, ClickReleasesAModifierWhoseKeyUpWasLost)
-{
-    RouterFixture f;
-    if (!f.Init())
-    {
-        GTEST_SKIP() << "Device init failed";
-    }
-
-    // A native menu loop took the Ctrl key-up. The click's mask says Ctrl is up,
-    // so the click is a plain click.
-    WindowInputRouter::RouteKey(f.config, Input::kKeyCode_LeftControl, Input::kKeyActionPress, Input::kModControl);
-    WindowInputRouter::RouteMouseButton(f.config, /*button=*/0, /*pressed=*/true, /*mods=*/0);
-
-    EXPECT_EQ(f.ui->GetModifierKeys(), 0);
 }
 
 TEST(WindowInputRoutingTests, WheelReconcilesModifierMaskBeforeDispatch)
@@ -508,15 +500,15 @@ constexpr Input::ActionId kFrameAllLikeAction = Input::HashInput("Test.EditorGlo
 void RegisterEditorChords(Input::InputSystem& input)
 {
     Input::ActionBinding save{Input::DeviceType::Keyboard, Input::kKeyCode_S, 1.0f};
-    save.requiredMods = Input::ModifierFlags::Control;
+    save.requiredMods = Input::kModControl;
     input.BindKey(kEditorLikeContext, kSaveSceneLikeAction, save);
 
     Input::ActionBinding copy{Input::DeviceType::Keyboard, Input::kKeyCode_C, 1.0f};
-    copy.requiredMods = Input::ModifierFlags::Control;
+    copy.requiredMods = Input::kModControl;
     input.BindKey(kEditorLikeContext, kCopyLikeAction, copy);
 
     Input::ActionBinding frameAll{Input::DeviceType::Keyboard, Input::kKeyCode_F, 1.0f};
-    frameAll.requiredMods = Input::ModifierFlags::Alt;
+    frameAll.requiredMods = Input::kModAlt;
     input.BindKey(kEditorLikeContext, kFrameAllLikeAction, frameAll);
 
     input.PushContext(kEditorLikeContext);
@@ -590,7 +582,7 @@ TEST(WindowInputRoutingTests, AHoveredPanelWithoutFocusLeavesTheChordToTheEditor
     root->AddChild(std::move(fieldOwned));
     f.ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "router_hovered_panel.css";
+    const auto css = StyleDirectory() / "router_hovered_panel.css";
     {
         std::ofstream out(css);
         out << R"(
@@ -858,7 +850,7 @@ TEST(WindowInputRoutingTests, AHoveredUnfocusedTextFieldDoesNotStarveTheRuntimeS
     root->AddChild(std::move(fieldOwned));
     f.ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "router_hovered_field.css";
+    const auto css = StyleDirectory() / "router_hovered_field.css";
     {
         std::ofstream out(css);
         out << R"(
@@ -1148,7 +1140,7 @@ constexpr Input::ActionId kHostShortcut = Input::HashInput("Test.Host.Shortcut")
 void ReserveForHost(Input::InputSystem& host, Input::KeyCode key, int mods)
 {
     Input::ActionBinding binding{Input::DeviceType::Keyboard, key, 1.0f};
-    binding.requiredMods = static_cast<Input::ModifierFlags>(mods);
+    binding.requiredMods = mods;
     host.RegisterAction(kHostContext, {kHostShortcut, {binding}, false, /*hostReserved=*/true});
 }
 
@@ -1189,7 +1181,7 @@ TEST(WindowInputRoutingTests, UnreservedChordsReachTheGameplaySink)
             else
             {
                 Input::ActionBinding binding{Input::DeviceType::Keyboard, Input::kKeyCode_A, 1.0f};
-                binding.requiredMods = static_cast<Input::ModifierFlags>(mods);
+                binding.requiredMods = mods;
                 runtime.BindKey(kGameplayContext, kGameplayAction, binding);
             }
             WindowInputRouterConfig config;
@@ -1845,7 +1837,7 @@ TEST(WindowInputRoutingTests, ScrollAScrollViewConsumedStopsAtTheUi)
     root->AddChild(std::move(scrollOwned));
     f.ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "router_scroll_consumed.css";
+    const auto css = StyleDirectory() / "router_scroll_consumed.css";
     {
         std::ofstream out(css);
         out << R"(
@@ -1958,7 +1950,7 @@ TEST(WindowInputRoutingTests, ChordedMousePressIsClaimedFromTheEventMods)
     f.UseGameplaySink(gameplay);
 
     Input::ActionBinding ctrlClick{Input::DeviceType::Mouse, /*code=*/0, 1.0f};
-    ctrlClick.requiredMods = Input::ModifierFlags::Control;
+    ctrlClick.requiredMods = Input::kModControl;
     gameplay.BindKey(kGameplayContext, kGameplayAction, ctrlClick);
     gameplay.PushContext(kGameplayContext);
 
@@ -2027,7 +2019,7 @@ TEST(WindowInputRoutingTests, ChordedScrollIsClaimedFromTheEventMods)
     zoom.id = kGameplayAction;
     zoom.isAxis = true;
     Input::ActionBinding ctrlWheel{Input::DeviceType::Mouse, Input::kMouseScrollAxisY, 1.0f};
-    ctrlWheel.requiredMods = Input::ModifierFlags::Control;
+    ctrlWheel.requiredMods = Input::kModControl;
     zoom.bindings.push_back(ctrlWheel);
     gameplay.RegisterAction(kGameplayContext, zoom);
     gameplay.PushContext(kGameplayContext);
@@ -2139,7 +2131,7 @@ bool MakeHoveredHudButton(HudButtonSurface& hud, Rendering::IDevice* device, con
     root->AddChild(std::move(btnOwned));
     ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / cssName;
+    const auto css = StyleDirectory() / cssName;
     {
         std::ofstream out(css);
         out << R"(
@@ -2417,7 +2409,7 @@ bool MakeHudButton(HudButtonSurface& hud, Rendering::IDevice* device, const char
     root->AddChild(std::move(btnOwned));
     ui->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / cssName;
+    const auto css = StyleDirectory() / cssName;
     {
         std::ofstream out(css);
         out << R"(
@@ -2499,34 +2491,6 @@ TEST(WindowInputRoutingTests, AClickTheHudTakesIsNotAlsoTheGames)
     f.input.Update(0.016f);
     EXPECT_FALSE(f.input.IsMouseButtonDown(Input::kMouseButton_Left))
         << "the release is never consumed, and must leave no button held anywhere";
-}
-
-// A right press on the HUD, then the pointer leaves the window and the release
-// is not reported to it. The leave cancels the press whatever its button, so
-// the next left click on the HUD button is a click.
-TEST(WindowInputRoutingTests, ALeaveDuringARightPressDoesNotEatTheNextClick)
-{
-    RouterFixture f;
-    if (!f.Init())
-    {
-        GTEST_SKIP() << "Device init failed";
-    }
-
-    HudButtonSurface hud;
-    ASSERT_TRUE(MakeHudButton(hud, f.device.get(), "router_player_hud_right_leave.css"));
-    UsePlayerSurface(f, *hud.host, /*toSurfacePixels=*/1.0f);
-
-    WindowInputRouter::RouteMouseMove(f.config, /*window=*/nullptr, 150.0f, 120.0f);
-    SettleHud(*hud.host);
-    ASSERT_EQ(hud.Ui()->GetHoveredElement(), hud.button) << "the router's move never reached the HUD";
-    WindowInputRouter::RouteMouseButton(f.config, Input::kMouseButton_Right, /*pressed=*/true, 0);
-    WindowInputRouter::RouteCursorEnter(f.config, /*entered=*/false);
-
-    WindowInputRouter::RouteMouseMove(f.config, /*window=*/nullptr, 150.0f, 120.0f);
-    SettleHud(*hud.host);
-    WindowInputRouter::RouteMouseButton(f.config, Input::kMouseButton_Left, /*pressed=*/true, 0);
-    WindowInputRouter::RouteMouseButton(f.config, Input::kMouseButton_Left, /*pressed=*/false, 0);
-    EXPECT_EQ(hud.clicks, 1) << "the right press left the HUD's pressed latch set";
 }
 
 // A click's modifier mask is live platform state and the only report of a
@@ -2614,7 +2578,7 @@ TEST(WindowInputRoutingTests, AWheelTheHudTakesIsNotAlsoTheGames)
     root->AddChild(std::move(scrollOwned));
     hudUi->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "router_player_hud_wheel.css";
+    const auto css = StyleDirectory() / "router_player_hud_wheel.css";
     {
         std::ofstream out(css);
         // Content taller than the list, so the wheel genuinely moves it.
@@ -2681,7 +2645,7 @@ TEST(WindowInputRoutingTests, AWheelOverBareGameBackgroundIsNotTheHudsToTake)
     root->AddChild(std::move(scrollOwned));
     hudUi->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "router_player_hud_wheel_world.css";
+    const auto css = StyleDirectory() / "router_player_hud_wheel_world.css";
     {
         std::ofstream out(css);
         out << R"(
@@ -2752,7 +2716,7 @@ TEST(WindowInputRoutingTests, AWheelOverAHudListThatCannotMoveIsStillTheGames)
     root->AddChild(std::move(scrollOwned));
     hudUi->SetRoot(std::move(root));
 
-    const auto css = std::filesystem::temp_directory_path() / "router_player_hud_wheel_fits.css";
+    const auto css = StyleDirectory() / "router_player_hud_wheel_fits.css";
     {
         std::ofstream out(css);
         // Content shorter than the list: there is nowhere for the wheel to take it.
@@ -3003,130 +2967,4 @@ TEST(WindowInputRoutingTests, GamepadEdgesSkipTheSurfaceUiAndChromeUi)
     WindowInputRouter::RouteGamepadButton(f.config, kPad, kPadButtonA, /*down=*/true);
     EXPECT_TRUE(runtime.IsGamepadButtonDown(kPad, Input::GamepadButton::A));
     EXPECT_TRUE(field->GetValue().empty()) << "a gamepad button is not typing";
-}
-
-// The editor's shape: a locked pointer belongs to the game. Its moves, presses
-// and wheel reach the gameplay sink and nothing else, so the editor neither
-// hovers nor clicks under a cursor it cannot see.
-TEST(WindowInputRoutingTests, ALockedPointerReachesOnlyTheGameplaySink)
-{
-    RouterFixture f;
-    if (!f.Init())
-    {
-        GTEST_SKIP() << "Device init failed";
-    }
-
-    RecordingSink game;
-    Input::InputSystem runtime{Input::SinkRole::Gameplay};
-    WindowInputRouterConfig::PlaySurface surface;
-    surface.gameplaySink = &game;
-    surface.pointerLocked = true;
-    f.UsePlaySurface(surface);
-    // The host's own wheel hook is a stage like any other: a locked wheel skips it.
-    int hostWheelTicks = 0;
-    f.config.onScrollPre = [&hostWheelTicks](float, float)
-    {
-        ++hostWheelTicks;
-        return false;
-    };
-
-    WindowInputRouter::RouteMouseMove(f.config, /*window=*/nullptr, 40.0f, 30.0f);
-    WindowInputRouter::RouteMouseButton(f.config, 0, /*pressed=*/true, 0);
-    WindowInputRouter::RouteScroll(f.config, 0.0f, 2.0f, 0);
-    f.input.Update(0.016f);
-
-    EXPECT_FALSE(f.input.IsPointerInWindow());
-    EXPECT_FALSE(f.input.IsMouseButtonDown(0));
-    EXPECT_EQ(hostWheelTicks, 0);
-    EXPECT_EQ(game.events, (std::vector<std::string>{"b0:1", "s0:2"}));
-
-    // And the moves themselves, through a real sink: the delta counts.
-    surface.gameplaySink = &runtime;
-    f.UsePlaySurface(surface);
-    WindowInputRouter::RouteMouseMove(f.config, nullptr, 40.0f, 30.0f);
-    WindowInputRouter::RouteMouseMove(f.config, nullptr, 2040.0f, 25.0f);
-    runtime.Update(0.016f);
-    EXPECT_EQ(runtime.GetMouseDelta(), Mathematics::Vector2(2000.0f, -5.0f));
-    EXPECT_FALSE(f.input.IsPointerInWindow());
-}
-
-// A button held down before the lock comes up everywhere it went down: a
-// release is never withheld, locked or not.
-TEST(WindowInputRoutingTests, AReleaseUnderTheLockReachesEveryStage)
-{
-    RouterFixture f;
-    if (!f.Init())
-    {
-        GTEST_SKIP() << "Device init failed";
-    }
-
-    RecordingSink game;
-    WindowInputRouterConfig::PlaySurface surface;
-    surface.gameplaySink = &game;
-    f.UsePlaySurface(surface);
-
-    // Unlocked, an unclaimed press travels on to the editor's input.
-    WindowInputRouter::RouteMouseButton(f.config, 1, /*pressed=*/true, 0);
-    f.input.Update(0.016f);
-    ASSERT_TRUE(f.input.IsMouseButtonDown(1));
-
-    surface.pointerLocked = true;
-    f.UsePlaySurface(surface);
-    WindowInputRouter::RouteMouseButton(f.config, 1, /*pressed=*/false, 0);
-    f.input.Update(0.016f);
-    EXPECT_FALSE(f.input.IsMouseButtonDown(1));
-    EXPECT_EQ(game.events, (std::vector<std::string>{"b1:1", "b1:0"}));
-}
-
-// The Player's shape: the surface is the whole window and has no separate
-// gameplay sink, so the window's own InputSystem is the game's and a locked
-// pointer is delivered there.
-TEST(WindowInputRoutingTests, WithoutAGameplaySinkALockedPointerReachesTheWindowsInput)
-{
-    RouterFixture f;
-    if (!f.Init())
-    {
-        GTEST_SKIP() << "Device init failed";
-    }
-
-    WindowInputRouterConfig::PlaySurface surface;
-    surface.pointerLocked = true;
-    f.UsePlaySurface(surface);
-
-    WindowInputRouter::RouteMouseMove(f.config, nullptr, 640.0f, 360.0f);
-    WindowInputRouter::RouteMouseMove(f.config, nullptr, -300.0f, 380.0f);
-    WindowInputRouter::RouteMouseButton(f.config, 0, /*pressed=*/true, 0);
-    f.input.Update(0.016f);
-
-    EXPECT_EQ(f.input.GetMouseDelta(), Mathematics::Vector2(-940.0f, 20.0f));
-    EXPECT_TRUE(f.input.IsMouseButtonDown(0));
-}
-
-// The editor maps the Game View's pointer by its UI scale. A locked move skips
-// that mapping, so the game's mouse delta is in window client units and a
-// sensitivity tuned in the editor holds in the Player.
-TEST(WindowInputRoutingTests, ALockedMoveReachesGameplayInWindowClientUnits)
-{
-    RouterFixture f;
-    if (!f.Init())
-    {
-        GTEST_SKIP() << "Device init failed";
-    }
-
-    Input::InputSystem runtime{Input::SinkRole::Gameplay};
-    WindowInputRouterConfig::PlaySurface surface;
-    surface.gameplaySink = &runtime;
-    surface.pointerLocked = true;
-    surface.mapGameplayPointer = [](float clientX, float clientY, float& playX, float& playY)
-    {
-        playX = clientX * 0.5f - 100.0f;
-        playY = clientY * 0.5f - 50.0f;
-    };
-    f.UsePlaySurface(surface);
-
-    WindowInputRouter::RouteMouseMove(f.config, nullptr, 400.0f, 300.0f);
-    WindowInputRouter::RouteMouseMove(f.config, nullptr, 520.0f, 290.0f);
-    runtime.Update(0.016f);
-
-    EXPECT_EQ(runtime.GetMouseDelta(), Mathematics::Vector2(120.0f, -10.0f));
 }

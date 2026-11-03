@@ -408,7 +408,8 @@ void StartAnimatorFromSource(ECS::World& world, AssetManager& assetManager, Anim
 
 void BootstrapSceneAnimators(ECS::World& world, AssetManager& assetManager)
 {
-    world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, Animator& animator) {
+    world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, ECS::Writable<Animator> animatorWrite) {
+        Animator& animator = animatorWrite.Mutable();
         if (!animator.active || !animator.autoPlayOnEnterPlayMode ||
             animator.pendingCommand != AnimatorPlaybackCommand::None)
             return;
@@ -430,7 +431,8 @@ void ProcessClipAnimatorCommands(ECS::World& world)
 
 void ProcessClipAnimatorCommands(ECS::World& world, AssetManager& assetManager)
 {
-    world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, Animator& animator) {
+    world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, ECS::Writable<Animator> animatorWrite) {
+        Animator& animator = animatorWrite.Mutable();
         if (!animator.active || animator.pendingCommand == AnimatorPlaybackCommand::None)
             return;
 

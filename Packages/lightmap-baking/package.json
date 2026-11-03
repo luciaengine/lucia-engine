@@ -1,0 +1,16 @@
+{
+  "name": "lightmap-baking",
+  "version": "0.1.0",
+  "displayName": "Lightmap Baking (Experimental)",
+  "enabledByDefault": false,
+  "assets": "Assets/",
+  "modules": [
+    {
+      "name": "lightmap-baking-editor",
+      "kind": "Editor",
+      "lang": "Cpp",
+      "root": "Editor/",
+      "prebuilt": "Binaries/Editor/"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Scene/SceneIO.h" // Scene::SceneDegradation
+#include "Scene/SceneIO.h" // Scene::SceneLoadDegradation
 
 #include <cstddef>
 #include <filesystem>
@@ -48,7 +48,7 @@ struct SceneLoadDegraded
     std::filesystem::path DocumentPath;
 
     // Every assignment the load could not apply, straight from the loader.
-    Scene::SceneDegradation Census;
+    Scene::SceneLoadDegradation Census;
 
     std::size_t SkippedCount() const { return Census.skips.size(); }
 

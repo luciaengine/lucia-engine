@@ -23,10 +23,10 @@
 // at SizeConstantsSlot, after the resource slots.
 
 #include "Rendering/Core/Device.h"
-#include "Types/InlineVector.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <vector>
 
 namespace GameEngine::Rendering
 {
@@ -49,7 +49,7 @@ struct MetalArgumentSlot
 
 struct MetalArgumentBufferLayout
 {
-    InlineVector<MetalArgumentSlot, 4> Slots; // sorted by Binding
+    std::vector<MetalArgumentSlot> Slots; // sorted by Binding
     uint32_t TotalSlotCount = 0;          // resource slots (excludes size constants)
     uint32_t SizeConstantsSlot = 0;       // id of the buffer-size-constants entry
 
@@ -69,14 +69,14 @@ struct MetalArgumentBufferLayout
 inline MetalArgumentBufferLayout ComputeMetalArgumentBufferLayout(const DescriptorSetLayoutDesc& desc)
 {
     MetalArgumentBufferLayout layout;
-    layout.Slots.Reserve(desc.bindings.size());
+    layout.Slots.reserve(desc.bindings.size());
     for (const DescriptorBinding& binding : desc.bindings)
     {
         MetalArgumentSlot slot{};
         slot.Binding = binding.binding;
         slot.Type = binding.type;
         slot.Count = std::max(1u, binding.count);
-        layout.Slots.PushBack(slot);
+        layout.Slots.push_back(slot);
     }
     std::sort(layout.Slots.begin(), layout.Slots.end(),
               [](const MetalArgumentSlot& a, const MetalArgumentSlot& b) { return a.Binding < b.Binding; });

@@ -5,7 +5,7 @@
 
 #include "Engine/Rendering/Material.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
-#include "Rendering/Materials/Shader/ShaderComposer.h"
+#include "Rendering/Materials/ShaderComposer.h"
 #include "AssetCore/GUID.h"
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
@@ -639,10 +639,10 @@ class UnknownKeyWarningCapture
     explicit UnknownKeyWarningCapture(const GUID& materialGuid)
     {
         Logger::Log::Initialize({});
-        auto sink = std::make_unique<Logger::CallbackSink>();
+        auto sink = Logger::MakeUnique<Logger::CallbackSink>();
         sink->RegisterCallback([state = m_State, materialTag = "(" + materialGuid.ToString() + ")"](const Logger::LogMessage& msg) {
-            if (msg.Message.find("unknown texture key") != std::string::npos &&
-                msg.Message.find(materialTag) != std::string::npos)
+            if (msg.Message.find("unknown texture key") != Logger::String::npos &&
+                msg.Message.find(materialTag) != Logger::String::npos)
             {
                 std::lock_guard lock(state->Mutex);
                 state->Messages.push_back(msg.Message);
@@ -658,18 +658,18 @@ class UnknownKeyWarningCapture
         return static_cast<int>(m_State->Messages.size());
     }
 
-    std::string First() const
+    Logger::String First() const
     {
         Logger::Log::Flush();
         std::lock_guard lock(m_State->Mutex);
-        return m_State->Messages.empty() ? std::string{} : m_State->Messages.front();
+        return m_State->Messages.empty() ? Logger::String{} : m_State->Messages.front();
     }
 
   private:
     struct State
     {
         std::mutex Mutex;
-        std::vector<std::string> Messages;
+        std::vector<Logger::String> Messages;
     };
     std::shared_ptr<State> m_State = std::make_shared<State>();
 };
@@ -687,11 +687,11 @@ TEST(MaterialTest, ValidateDocumentTextureKey_WarnsOnceNamingKeyAndCandidates)
 
     EXPECT_FALSE(mat.ValidateDocumentTextureKey("baseColorMap"));
     ASSERT_EQ(warnings.Count(), 1);
-    const std::string msg = warnings.First();
-    EXPECT_NE(msg.find("TestPBR"), std::string::npos) << "names the material";
-    EXPECT_NE(msg.find("baseColorMap"), std::string::npos) << "names the offending key";
-    EXPECT_NE(msg.find("flowMask"), std::string::npos) << "lists the surface-declared slots";
-    EXPECT_NE(msg.find("albedoMap"), std::string::npos) << "lists the well-known names";
+    const Logger::String msg = warnings.First();
+    EXPECT_NE(msg.find("TestPBR"), Logger::String::npos) << "names the material";
+    EXPECT_NE(msg.find("baseColorMap"), Logger::String::npos) << "names the offending key";
+    EXPECT_NE(msg.find("flowMask"), Logger::String::npos) << "lists the surface-declared slots";
+    EXPECT_NE(msg.find("albedoMap"), Logger::String::npos) << "lists the well-known names";
 
     // Documents re-apply per frame; the report must not.
     EXPECT_FALSE(mat.ValidateDocumentTextureKey("baseColorMap"));
@@ -712,7 +712,7 @@ TEST(MaterialTest, UndeclaredNameOnADeclaringSurfaceResolvesUnboundAndWarns)
     EXPECT_FALSE(mat.HasTextureSlot("roughnessMap"_sid));
     EXPECT_FALSE(mat.ValidateDocumentTextureKey("roughnessMap"));
     EXPECT_EQ(warnings.Count(), 1) << "the stale key reports, naming itself";
-    EXPECT_NE(warnings.First().find("roughnessMap"), std::string::npos);
+    EXPECT_NE(warnings.First().find("roughnessMap"), Logger::String::npos);
 
     mat.SetBindlessTextureIndex("heightMap"_sid, 41u);
     mat.SetBindlessTextureIndex("roughnessMap"_sid, 99u);

@@ -26,7 +26,6 @@
 #include "UI/Controls/EnumField.h"
 #include "UI/Controls/Toggle.h"
 #include "UI/Controls/TextField.h"
-#include "UI/Controls/Vector3Field.h"
 #include "Inspectors/InspectorUIHelpers.h"
 
 namespace GameEngine
@@ -64,16 +63,9 @@ inline DragState& GetDragState()
 inline constexpr float kInspectorDragFloatSensitivity = 0.03f;
 inline constexpr float kInspectorDragIntSensitivity = 0.035f;
 inline constexpr float kInspectorDragSliderPixelsPerFullRange = 480.0f;
-// A label drag begins only past this horizontal distance from the press. Below it the press is a
-// click: the value does not move, nothing commits and the cursor stays.
-inline constexpr float kInspectorDragThresholdPx = Vector3Field::kLabelDragThresholdPx;
 // 60px with the field's side padding fits seven glyphs ("12.558"); at 50px a
 // typical value overflowed and edit mode's caret scroll made the text jump.
 inline constexpr float kInspectorSliderValueFieldWidthPx = 60.0f;
-// A percent field holds its widest value, "100 %": the digits, the suffix and the box's padding.
-// InspectorPercentRowLayoutTests measures them in its fixture's font, which is wider than the
-// editor's value font.
-inline constexpr float kInspectorPercentValueFieldWidthPx = 76.0f;
 inline constexpr float kInspectorSliderValueRightInsetPx = 0.0f;
 // A slider that shares its row with a value field may shrink further than a
 // lone slider: inside a group foldout's indent the pair otherwise overflows
@@ -97,7 +89,7 @@ inline void ApplyInspectorSliderStyle(Slider* slider, float minWidthPx = kInspec
 
     slider->AddClass("property-slider");
     ApplyInspectorSliderTrackInset(slider);
-    slider->Style()
+    slider->Overrides()
         .Set(Style::FlexGrow, 1.0f)
         .Set(Style::MinWidth, StyleLength::Px(minWidthPx));
 }
@@ -150,7 +142,7 @@ inline void SetLabelDragHighlight(Label* label, bool on)
         return;
 
     const unsigned flags = UIElement::StyleDirty | UIElement::VisualDirty;
-    std::function<void(UIElement*)> markSubtree = [&markSubtree](UIElement* el) {
+    std::function<void(UIElement*)> markSubtree = [&markSubtree, flags](UIElement* el) {
         if (!el)
             return;
         el->MarkDirty(flags);
@@ -463,39 +455,6 @@ inline void DragPaintToggle::OnEvent(UIEvent& e)
 // Drag-to-adjust setup functions
 // ============================================================================
 
-// Returns whether the label drag has begun. It begins once the pointer passes kInspectorDragThresholdPx,
-// and then the pointer locks until the release (UIManager::LockCapturedPointer).
-inline bool BeginLabelDragPastThreshold(UIElement* element, bool& dragBegun, float deltaX)
-{
-    if (dragBegun)
-        return true;
-    if (std::fabs(deltaX) <= kInspectorDragThresholdPx)
-        return false;
-    dragBegun = true;
-    if (UIManager* owner = element ? element->GetOwnerManager() : nullptr)
-        owner->LockCapturedPointer();
-    return true;
-}
-
-// Ends this label's drag on kEventMouseCancel (Escape or another button). A drag that moved the value
-// gets its start value back through restoreStartValue, and onChanged commits it once.
-inline void CancelLabelDrag(UIEvent& e, const Label* label, bool dragDidMove,
-                            const std::function<void(const DragState& start)>& restoreStartValue,
-                            const std::function<void()>& onChanged)
-{
-    if (GetDragState().draggingLabel != label)
-        return;
-    const DragState start = GetDragState();
-    ClearLabelDragState();
-    if (dragDidMove)
-    {
-        restoreStartValue(start);
-        if (onChanged)
-            onChanged();
-    }
-    e.Stop();
-}
-
 // Set up drag-to-adjust on a label for a FloatField. Double-click on label resets to defaultValue.
 inline void SetupLabelDragFloat(Label* label, FloatField* field,
                                 std::function<void()> onChanging = nullptr,
@@ -562,13 +521,10 @@ inline void SetupLabelDragFloat(Label* label, FloatField* field,
         }
         if (state.draggingLabel && state.draggingFloatField == field) {
             float deltaX = e.X - state.dragStartX;
-            if (!BeginLabelDragPastThreshold(label, *dragDidMove, deltaX)) {
-                e.Stop();
-                return;
-            }
             float newValue = state.dragStartFloatValue + deltaX * kInspectorDragFloatSensitivity;
             newValue = std::clamp(newValue, minValue, maxValue);
             field->SetValue(newValue);
+            *dragDidMove = true;
             state.dragDidMove = true;
             if (onChanging) onChanging();
             e.Stop();
@@ -588,11 +544,6 @@ inline void SetupLabelDragFloat(Label* label, FloatField* field,
             }
             e.Stop();
         }
-    });
-
-    label->RegisterEventHandler(kEventMouseCancel, [label, field, onChanged, dragDidMove](UIEvent& e) {
-        CancelLabelDrag(e, label, *dragDidMove,
-                        [field](const DragState& start) { field->SetValue(start.dragStartFloatValue); }, onChanged);
     });
 }
 
@@ -660,13 +611,10 @@ inline void SetupLabelDragInt(Label* label, IntField* field,
         }
         if (state.draggingLabel && state.draggingIntField == field) {
             float deltaX = e.X - state.dragStartX;
-            if (!BeginLabelDragPastThreshold(label, *dragDidMove, deltaX)) {
-                e.Stop();
-                return;
-            }
             int newValue = state.dragStartIntValue +
                            static_cast<int>(std::round(deltaX * kInspectorDragIntSensitivity));
             field->SetValue(newValue);
+            *dragDidMove = true;
             state.dragDidMove = true;
             if (onChanging) onChanging();
             e.Stop();
@@ -686,11 +634,6 @@ inline void SetupLabelDragInt(Label* label, IntField* field,
             }
             e.Stop();
         }
-    });
-
-    label->RegisterEventHandler(kEventMouseCancel, [label, field, onChanged, dragDidMove](UIEvent& e) {
-        CancelLabelDrag(e, label, *dragDidMove,
-                        [field](const DragState& start) { field->SetValue(start.dragStartIntValue); }, onChanged);
     });
 }
 
@@ -828,16 +771,13 @@ inline void SetupLabelDragSlider(Label* label, Slider* slider,
         }
         if (state.draggingLabel && state.draggingSlider == slider) {
             float deltaX = e.X - state.dragStartX;
-            if (!BeginLabelDragPastThreshold(label, *dragDidMove, deltaX)) {
-                e.Stop();
-                return;
-            }
             float range = slider->GetMax() - slider->GetMin();
             float sensitivity =
                 (range > 0.0f) ? (range / kInspectorDragSliderPixelsPerFullRange) : 0.01f;
             float newValue = state.dragStartFloatValue + deltaX * sensitivity;
             newValue = std::max(slider->GetMin(), std::min(slider->GetMax(), newValue));
             slider->SetValueWithoutNotify(newValue);
+            *dragDidMove = true;
             state.dragDidMove = true;
             slider->NotifyValueChanging();
             if (onChanging) onChanging();
@@ -857,16 +797,6 @@ inline void SetupLabelDragSlider(Label* label, Slider* slider,
                 if (onChanged) onChanged();
             }
         }
-    });
-
-    label->RegisterEventHandler(kEventMouseCancel, [label, slider, onChanged, dragDidMove](UIEvent& e) {
-        CancelLabelDrag(e, label, *dragDidMove,
-                        [slider](const DragState& start)
-                        {
-                            slider->SetValueWithoutNotify(start.dragStartFloatValue);
-                            slider->NotifyValueChanged();
-                        },
-                        onChanged);
     });
 }
 
@@ -998,7 +928,7 @@ inline void ApplySliderWithValueContainerStyle(
         return;
 
     fieldContainer->AddClass("inspector-slider-with-value");
-    fieldContainer->Style()
+    fieldContainer->Overrides()
         .Set(Style::FlexDir, FlexDirection::Row)
         .Set(Style::AlignItems, AlignItems::Center)
         .Set(Style::Gap, StyleLength::Px(4.0f))
@@ -1014,7 +944,7 @@ inline void ApplySliderFloatValueFieldStyle(
 
     valueField->AddClass("inspector-float-field");
     valueField->AddClass("inspector-slider-value-field");
-    valueField->Style()
+    valueField->Overrides()
         .Set(Style::Width, StyleLength::Px(widthPx))
         .Set(Style::MinWidth, StyleLength::Px(widthPx))
         .Set(Style::MaxWidth, StyleLength::Px(widthPx))
@@ -1030,7 +960,7 @@ inline void ApplySliderIntValueFieldStyle(
 
     valueField->AddClass("inspector-int-field");
     valueField->AddClass("inspector-slider-value-field");
-    valueField->Style()
+    valueField->Overrides()
         .Set(Style::Width, StyleLength::Px(widthPx))
         .Set(Style::MinWidth, StyleLength::Px(widthPx))
         .Set(Style::MaxWidth, StyleLength::Px(widthPx))

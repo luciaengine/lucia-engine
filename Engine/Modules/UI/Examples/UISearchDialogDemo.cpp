@@ -226,7 +226,7 @@ int main()
     // Instruction label (shown behind the dialog)
     auto instructionLabel = std::make_unique<Label>();
     instructionLabel->SetText("Press Ctrl+P to open the search dialog");
-    instructionLabel->Style()
+    instructionLabel->Overrides()
         .Set(Style::Color, 0xFF888888u)
         .Set(Style::FontSize, StyleLength::Px(16.0f))
         .Set(Style::MarginTop, StyleLength::Px(20.0f))
@@ -234,7 +234,7 @@ int main()
     auto* instructionPtr = instructionLabel.get();
 
     auto statusLabel = std::make_unique<Label>();
-    statusLabel->Style()
+    statusLabel->Overrides()
         .Set(Style::Color, 0xFF666666u)
         .Set(Style::FontSize, StyleLength::Px(13.0f))
         .Set(Style::MarginTop, StyleLength::Px(8.0f))
@@ -262,7 +262,7 @@ int main()
 
     // Assemble tree: root has instructions + dialog overlay
     auto root = std::make_unique<UIElement>();
-    root->Style()
+    root->Overrides()
         .Set(Style::Width, StyleLength::Percent(100.0f))
         .Set(Style::Height, StyleLength::Percent(100.0f));
     root->AddChild(std::move(instructionLabel));

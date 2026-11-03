@@ -9,7 +9,7 @@
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector3.h"
 #include "Mathematics/Vector4.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/PerViewReadbackRings.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h" // RGFrame, RGFrameStamp
@@ -216,7 +216,7 @@ struct CascadeFrameData
     bool CasterFootprintApplies[kMaxShadowCascades]{};
     // GPU LOD selection inputs for this cascade's bucketer slice (xyz + the
     // 2D-ortho flag in w), plus |proj[1][1]| — MakeViewLODParams' inputs.
-    Mathematics::Vector4 LodCameraPos[kMaxShadowCascades]{};
+    float LodCameraPos[kMaxShadowCascades][4]{};
     float LodProjScaleY[kMaxShadowCascades]{};
 };
 
@@ -242,8 +242,8 @@ enum class ShadowDebugMode : int
 // Shadow filter quality. Numerical values match the integer dispatched on
 // in shadow_sampling.glsl::GE_SampleCascade via ge_shadowDebug.w. PCSS and
 // MSM4 silently fall back to PCF when their prerequisites (bindless / a
-// ready moments texture) aren't met. Default is PCSS to match the engine's
-// effective default before the explicit-enum migration.
+// ready moments texture) aren't met. Default is PCSS, and DPCF under the compat
+// shader profile the browser runs (ShadowMapRenderFeature's constructor).
 enum class ShadowFilterQuality : int
 {
     Grid5x5 = 0,
@@ -349,15 +349,20 @@ struct alignas(16) ShadowDataGPU
     //                       w = metres per normalized height
     //   terrainShadowSource: x = map bindless index; y = height texture bindless index;
     //                        z = 1 when present; w = map side (texels)
-    //   terrainShadowField: x = the lit field's bindless index (0: none); y = its levels; zw = 0
     float terrainShadowGrid0[4];
     float terrainShadowGrid1[4];
     float terrainShadowGrid2[4];
     float terrainShadowGrid3[4];
     uint32_t terrainShadowSource[4];
-    uint32_t terrainShadowField[4];
+    // Optional source-camera depth plane in receiver-relative world space.
+    // Zero xyz selects the ordinary receiver camera depth.
+    float ShadowReferenceDepth[4];
 };
 static_assert(sizeof(ShadowDataGPU) == 560, "ShadowDataGPU must be 560 bytes");
+
+/// Rebase shared directional cascades, terrain coordinates and source-view depth.
+void RebaseDirectionalShadowData(ShadowDataGPU& data, const Rendering::CameraData& source,
+                                const Rendering::CameraData& receiver);
 
 class ShadowMapRenderFeature : public IRenderFeature
 {
@@ -453,13 +458,6 @@ class ShadowMapRenderFeature : public IRenderFeature
     // `lightDirection`) that every cascade fit, and the SDSM receiver reduce,
     // express light space in.
     static Mathematics::Matrix4x4 CascadeLightRotation(const Mathematics::Vector3& lightDirection);
-
-    // View depth (world units) before cascade `cascadeIndex`'s far split over
-    // which a receiver also samples the next cascade and fades into it, as
-    // GE_CascadeBlendBand (shadow_cascade_blend.glsl) selects it: a fixed
-    // fraction of the cascade's depth range, cascade 0's measured from the
-    // camera. 0 for the last cascade, which blends into nothing.
-    static float CascadeBlendBand(const CascadeFrameData& frame, uint32_t cascadeIndex);
 
     // Populate the complete GPU-side ShadowData UBO for a view. Writes matrices,
     // splits, per-cascade PCSS metrics (worldPerTexel, depthSpan), and all
@@ -695,9 +693,8 @@ class ShadowMapRenderFeature : public IRenderFeature
 
     // True where SDSM runs: the device wants fits that follow the depth buffer
     // (Radeon and stable-shadow devices opt out: noisy readbacks can oscillate
-    // the splits). Every backend can read the result back: where a storage
-    // buffer cannot be mapped (WebGPU) the readback ring splits the slot and
-    // copies it into a mappable one (RGReadbackRing::Init).
+    // the splits) and can map a buffer one dispatch writes as storage (WebGPU
+    // cannot express the readback slot).
     static bool SupportsSdsm(const Rendering::IDevice* device);
 
     // Cache per-view frame data so cascade depth passes can read light VP matrices.
@@ -705,12 +702,12 @@ class ShadowMapRenderFeature : public IRenderFeature
     const CascadeFrameData* GetCachedFrameData(Rendering::ViewId viewId) const;
 
     // Camera-motion round-robin cap (GE_SHADOW_MOTION_CAP, default 2; 0 = off):
-    // at most this many unforced motion-class cascade renders PER (VIEW,
-    // FRAME), nearest-first — each shadow-casting view plans independently.
-    // The rest keep their retained layer for up to MotionMaxAge consecutive
-    // frames (GE_SHADOW_MOTION_MAX_AGE, default 2) and receivers sample it
-    // through the content fit; a layer past that bound renders on top of the
-    // cap. Correctness-class causes always render immediately and
+    // at most this many motion-class cascade renders PER (VIEW, FRAME) — each
+    // shadow-casting view plans independently, so a frame's total motion
+    // renders is cap × active cascade views. The rest keep their retained
+    // layer for up to MotionMaxAge consecutive frames
+    // (GE_SHADOW_MOTION_MAX_AGE, default 2) and receivers sample it through
+    // the content fit. Correctness-class causes always render immediately and
     // never count against the cap. Requires the static shadow cache lane
     // (GE_SHADOW_STATIC_CACHE != 0) — its records define the retained content.
     uint32_t GetMotionCap() const { return m_MotionCap; }
@@ -1179,11 +1176,8 @@ class ShadowMapRenderFeature : public IRenderFeature
     std::unordered_map<Rendering::ViewId, uint64_t> m_PointShadowDeclareState;
     ShadowDebugMode m_DebugMode = ShadowDebugMode::Off;
     bool m_ShowThumbnails = false;
-    // Default PCSS to match the engine's effective default before the
-    // PCSS-checkbox-to-enum migration. (The old code's m_PcssEnabled=true
-    // override silently promoted m_PcfQuality=0 to PCSS at runtime when
-    // bindless was on; the dropdown just makes that explicit.) MSM4 stays
-    // opt-in until projects validate it.
+    // PCSS, or DPCF under the compat shader profile (the constructor). MSM4
+    // stays opt-in until projects validate it.
     ShadowFilterQuality m_FilterQuality = ShadowFilterQuality::PCSS;
     float m_PoissonSoftness = 1.5f; // Softness multiplier — scales Poisson PCF radius AND PCSS penumbra.
                                     // For a directional light this is tan(angular-extent/2):
@@ -1534,7 +1528,7 @@ class ShadowMapRenderFeature : public IRenderFeature
         Mathematics::Vector3 LightDir;    // normalized, exact-compare
         Mathematics::Vector3 CameraPos;   // LOD drift reference
         Mathematics::Matrix4x4 CullCameraViewProj;
-        Mathematics::Vector4 LodCameraPos;
+        float LodCameraPos[4]{};
         float LodProjScaleY = 0.0f;
         // View depth of the capture-time slice's far end (the LOD drift bound
         // scales with it).

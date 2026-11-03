@@ -173,6 +173,11 @@ constexpr float kFontSizePx = 16.0f;
 // pixel is far below any real difference here and far above float noise.
 constexpr float kQuadEpsilon = 0.1f;
 
+// A run's extent across two scales also carries the glyph pen rounding: each
+// end pen sits on the nearest quarter device pixel (GlyphRunEmitter), so the
+// first and last quads each move up to 1/8 px against the linear ideal.
+constexpr float kScaledRunEpsilon = kQuadEpsilon + 2.0f * 0.125f;
+
 // Two quad tops belong to the same row when they are closer than this. The
 // smallest line advance in play is 24 physical px and same-letter quads in one
 // row are bit-identical, so any value well inside that gap separates rows.
@@ -342,17 +347,17 @@ TEST(TextAreaContentScale, GlyphRunIsUndersizedByTheContentScale)
         // The instrument: the built-in path does scale, and Slug's analytic
         // outlines are linear in ppem (pinned against the face's design units
         // in TextGeometryChromeParityTests).
-        EXPECT_NEAR(label.Extent(), labelExtentAtScaleOne * scale, kQuadEpsilon)
+        EXPECT_NEAR(label.Extent(), labelExtentAtScaleOne * scale, kScaledRunEpsilon)
             << "scale=" << scale << ": the built-in path is not the reference this test assumes";
 
         // #733: the TextArea's glyphs are frozen at the scale-1.0 size. When
         // #733 is fixed this becomes `label.Extent()`.
-        EXPECT_NEAR(area.Extent(), areaExtentAtScaleOne, kQuadEpsilon)
+        EXPECT_NEAR(area.Extent(), areaExtentAtScaleOne, kScaledRunEpsilon)
             << "scale=" << scale << ": #733 may be fixed — the TextArea run moved off its "
             << "scale-1.0 extent of " << areaExtentAtScaleOne << ". Flip this test.";
 
         const float kExpectedRatio = 1.0f / scale;
-        EXPECT_NEAR(area.Extent() / label.Extent(), kExpectedRatio, 0.001f)
+        EXPECT_NEAR(area.Extent() / label.Extent(), kExpectedRatio, kScaledRunEpsilon / label.Extent())
             << "scale=" << scale << ": TextArea glyph run is " << area.Extent()
             << " physical px where the built-in path draws " << label.Extent()
             << ". #733 fixed means this ratio is 1.0.";

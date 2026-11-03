@@ -1,7 +1,7 @@
 /* AssetField Control Styles
  *
- * Inspector reference field (assets and entities): the glyph or thumbnail, the
- * name, the clear button and the picker button that opens the SearchDialog.
+ * Clickable inspector field for asset selection via SearchDialog.
+ * Shows type icon, asset name, and clear button.
  */
 
 /* ---- Field root (clickable row) ---- */
@@ -21,9 +21,6 @@
 	min-width: 0;
 	overflow: hidden;
 	box-sizing: border-box;
-	/* The name's font size. The type glyph is one em, so the glyph and the
-	   text keep one ratio on every surface. */
-	--asset-field-em: 13px;
 }
 
 .asset-field:hover {
@@ -53,34 +50,12 @@
 	color: var(--ui_color_text_bright);
 }
 
-/* A disabled field (its row inactive) draws as a disabled dropdown does (controls/Dropdown.css): no
- * plate, its value on the row's value column, and no picker button that never opens. Its text takes
- * the disabled label's color (theme/inspector.css). */
-.asset-field:disabled,
-.asset-field:disabled:hover,
-.asset-field.dropdown-asset-field:disabled,
-.asset-field.dropdown-asset-field:disabled:hover {
-	border-color: transparent;
-	background-color: transparent;
-	padding-left: 0px;
-	cursor: default;
-}
-
-.asset-field:disabled .asset-field-name,
-.asset-field:disabled .asset-field-name.empty {
-	color: var(--ui_color_text_disabled);
-}
-
-.asset-field:disabled .asset-field-pick {
-	display: none;
-}
-
-/* ---- Type icon ---- */
+/* ---- Type icon (reuses icon-* classes from SearchDialog.css) ---- */
 .asset-field-icon {
-	width: var(--asset-field-em);
-	height: var(--asset-field-em);
-	min-width: var(--asset-field-em);
-	min-height: var(--asset-field-em);
+	width: 16px;
+	height: 16px;
+	min-width: 16px;
+	min-height: 16px;
 	border-radius: 3px;
 	flex-shrink: 0;
 	background-size: contain;
@@ -90,11 +65,6 @@
 
 .asset-field-icon.hidden {
 	display: none;
-}
-
-/* SearchDialog.css is scoped to the dialog, so the field draws the glyphs it shows. */
-.asset-field-icon.icon-prefab {
-	background-image: url("editor:Icons/PrefabAsset.svg");
 }
 
 /* ---- Model preview (inspector; same engine texture / path as asset search thumbs) ---- */
@@ -118,7 +88,7 @@
 /* ---- Asset name ---- */
 .asset-field-name {
 	flex: 1;
-	font-size: var(--asset-field-em);
+	font-size: 13px;
 	color: var(--ui_color_text_bright);
 	min-width: 0;
 	overflow: hidden;
@@ -144,21 +114,6 @@
 	font-style: italic;
 }
 
-/* A click on the field reveals the referenced object: the name reads as a link. */
-.asset-field .asset-field-name.link {
-	color: var(--ui_color_accent_blue_hover);
-}
-
-.asset-field:hover .asset-field-name.link {
-	text-decoration: underline;
-}
-
-/* A value that names nothing: the GUID is in the tooltip, never in the text. */
-.asset-field .asset-field-name.missing {
-	color: var(--ui_color_warning_text);
-	font-style: italic;
-}
-
 /* ---- Clear control (image: Label × sat low in the line box vs hover fill) ---- */
 .asset-field-clear {
 	width: 18px;
@@ -170,7 +125,7 @@
 	border-radius: 3px;
 	box-sizing: border-box;
 	background-color: transparent;
-	background-image: url("editor:Icons/xclose.svg");
+	background-image: url("editor:Icons/xclose.png");
 	background-size: 10px 10px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -184,34 +139,6 @@
 
 .asset-field-clear.hidden {
 	display: none;
-}
-
-/* ---- Picker button: the chevron the inspector's dropdowns use ---- */
-.asset-field-pick {
-	width: 18px;
-	height: 18px;
-	min-width: 18px;
-	min-height: 18px;
-	flex-shrink: 0;
-	cursor: pointer;
-	border-radius: 3px;
-	box-sizing: border-box;
-	background-color: transparent;
-	background-image: url("editor:Icons/dropdownsmall.svg");
-	background-size: 8px 8px;
-	background-repeat: no-repeat;
-	background-position: center;
-	background-image-tint: rgba(255, 255, 255, 0.55);
-}
-
-.asset-field-pick:hover {
-	background-color: rgba(255, 255, 255, 0.28);
-	background-image-tint: rgba(255, 255, 255, 1.0);
-}
-
-.asset-field.open .asset-field-pick {
-	background-image: url("editor:Icons/dropdownsmallup.svg");
-	background-image-tint: rgba(255, 255, 255, 0.85);
 }
 
 /* ---- Drag-drop feedback ---- */

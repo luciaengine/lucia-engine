@@ -1,8 +1,8 @@
 #include "SceneView/BuiltInSceneViewTools.h"
 
 #include "SceneView/SceneViewToolStripRegistry.h"
-#include "SceneView/SplineTool/SplineToolStripEntry.h"
-#include "Terrain/TerrainBrushToolStripEntry.h"
+#include "SceneView/SplineToolStripEntry.h"
+#include "SceneView/TerrainBrushToolStripEntry.h"
 
 namespace GameEngine::Editor
 {

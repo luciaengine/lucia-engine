@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 3,
+  "materialName": "DarkMetal",
+  "lightingModel": "StandardPBR",
+  "alphaMode": "Opaque",
+  "surfaceShader": "Surfaces/rain_wet_object.glsl",
+  "properties": {
+    "rainIntensity": 0.8,
+    "rainSpeed": 1,
+    "runoffStrength": 0.85,
+    "surfaceColor": [
+      0.035,
+      0.04,
+      0.043
+    ],
+    "surfaceRoughness": 0.32,
+    "surfaceMetallic": 0.7,
+    "runoffDensity": 0.35,
+    "enableClearCoat": true,
+    "enableCoatNormal": true,
+    "waterDropSizeOffset": 0.0,
+    "waterRippleStrength": 0.12,
+    "waterRippleSize": 0.1
+  }
+}

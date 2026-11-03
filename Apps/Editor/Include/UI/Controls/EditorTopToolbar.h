@@ -39,7 +39,7 @@ class EditorTopToolbar final : public UIElement
     {
         std::string panelId;
         std::string title;
-        std::string iconPath; ///< Resolved image file, or empty for no icon.
+        std::string iconClass;
     };
 
     /// Callbacks invoked when toolbar buttons are clicked. Each is optional.
@@ -49,7 +49,9 @@ class EditorTopToolbar final : public UIElement
         std::function<void(const std::string& panelId)> onPanelMenuEntryClicked;
         std::function<void()> onUniversalSearchClicked;
         std::function<void()> onSettingsClicked;
+        std::function<void()> onInfoClicked;
         std::function<void()> onNodeGraphClicked;
+        std::function<void()> onTilePaletteClicked;
         std::function<void()> onBookmarksClicked;
         std::function<void()> onWebClicked;
         std::function<void()> onScriptEditorClicked;
@@ -109,9 +111,6 @@ class EditorTopToolbar final : public UIElement
     /// Highlight or de-highlight the fullscreen toggle button.
     void SetFullscreenActive(bool active);
 
-    /// Name the muted state in the Play button's tooltip while audio is not enabled.
-    void SetAudioEnabled(bool enabled);
-
     /// Highlight or de-highlight the movie recording toolbar button.
     void SetRecordActive(bool active);
 
@@ -119,6 +118,7 @@ class EditorTopToolbar final : public UIElement
     void SetSaveDirty(bool dirty);
 
     /// Cached button pointers (may be null if not yet wired or not found).
+    void SetAudioEnabled(bool enabled);
     Button* GetPlayButton() const { return m_PlayButton; }
     Button* GetPauseButton() const { return m_PauseButton; }
     Button* GetStopButton() const { return m_StopButton; }

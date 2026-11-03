@@ -123,17 +123,24 @@ public:
     // Clear cached Polyhaven download status so grid cells re-check (e.g. after background download completes).
     void InvalidatePolyhavenDownloadCache();
 
-    // UIReplay-only: deterministic commands (navigate to sandbox dirs, etc).
-    // Returns true if the commandId was handled.
-    bool HandleUiReplayCommand(std::uint32_t commandId, std::string* outError);
+    // Registers the Assets browser's UI-replay commands (UiReplayCommandIds::AssetsNav*
+    // sandbox navigation, AssetsView* view mode) with EditorMenuRegistry. The
+    // registry keeps `this` for the process lifetime: call once, on the editor's
+    // Assets panel.
+    void RegisterCommands();
 
     // Optional editor undo service (not owned).
     void SetUndoRedoService(Editor::UndoRedoService* undo) { m_Undo = undo; }
 
 private:
+    friend class EditorApplication;
     // Drop the VCS and missing-asset subscriptions bound to the current context
     // and disarm any callback already in flight.
     void DetachContextSubscriptions();
+
+    // Runs one UI-replay command. Returns true if the commandId was handled;
+    // a handled command that failed fills outError.
+    bool HandleUiReplayCommand(std::uint32_t commandId, std::string* outError);
 
     // UI elements (owned by UI tree via DockPanel::AddChild)
     TreeView* m_TreeView = nullptr;

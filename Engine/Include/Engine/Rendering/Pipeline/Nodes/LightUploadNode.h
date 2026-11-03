@@ -30,5 +30,7 @@ class LightUploadNode final : public IRenderPipelineNode
     std::string m_Id;
     std::string m_Json;
     std::string m_BufferRef = "LightBuffer";
+    // Optional graph binding for directional/ambient lighting in procedural passes.
+    std::string m_ForwardBufferRef;
 };
 } // namespace GameEngine::Engine::Renderer::Pipeline::Nodes

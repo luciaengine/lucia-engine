@@ -278,7 +278,7 @@ void AddScheduleWithTypoedDependency(SystemScheduleBuilder& b, std::vector<std::
 // at all. Route it to stderr, which is what gtest matches against.
 void RouteLogsToStderrAndSuppressDialogs()
 {
-    TestUtils::SuppressCrtDialogsInDeathTestChild();
+    test::SuppressCrtDialogsInDeathTestChild();
 
     Logger::Log::Initialize({Logger::LogLevel::Debug, false});
     auto sink = std::make_unique<Logger::CallbackSink>();

@@ -1,0 +1,75 @@
+/* Tile Rules panel — IntGrid value table and the rule groups that dress a
+ * Tiles layer from them.
+ *
+ * Attached to the panel subtree via RequestSubtreeStyleAssetPath. The panel
+ * also carries .tile-palette-panel, so it inherits the palette's row, label and
+ * chip styling and only adds what is its own: the pattern grid, which must be
+ * flush (stride = cell size, no gaps) so a pattern reads as one block.
+ */
+
+.tr-root {
+    overflow-y: auto;
+}
+
+.tr-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px;
+    border: 1px solid var(--ui_color_border);
+    border-radius: 4px;
+    flex: 0 0 auto;
+}
+
+.tr-rule {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 0 6px 0;
+    flex: 0 0 auto;
+}
+
+.tr-rule-output {
+    font-size: 12px;
+    color: var(--ui_color_text_muted);
+    flex: 0 0 auto;
+}
+
+/* Flush pattern grid: no gap and no margin, so the cells tile edge to edge. */
+.tr-pattern {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    flex: 0 0 auto;
+    align-items: flex-start;
+}
+
+.tr-pattern-row {
+    display: flex;
+    flex-direction: row;
+    gap: 0;
+    flex: 0 0 auto;
+}
+
+.tr-pattern-cell {
+    width: 34px;
+    height: 26px;
+    min-width: 34px;
+    margin: 0;
+    padding: 0;
+    font-size: 12px;
+    border-radius: 0;
+}
+
+.tr-name-field {
+    flex: 1 1 auto;
+    min-width: 90px;
+    font-size: 12px;
+}
+
+.tr-number-field {
+    flex: 0 0 auto;
+    width: 64px;
+    min-width: 64px;
+    font-size: 12px;
+}

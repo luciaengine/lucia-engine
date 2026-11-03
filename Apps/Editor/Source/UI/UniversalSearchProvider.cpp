@@ -6,12 +6,11 @@
 #include "Assets/AssetRegistry.h"
 #include "Components/Name.h"
 #include "ECS/ECS.h"
-#include "ECS/Component/ComponentConcepts.h"
+#include "ECS/ComponentConcepts.h"
 #include "ECS/Entity.h"
 #include "ECS/Query.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/Logger.h"
-#include "Types/PathUtils.h"
 #include "Types/StringUtils.h"
 
 #include <algorithm>
@@ -144,7 +143,8 @@ bool IsCodeFile(const std::filesystem::path& path)
     static constexpr std::string_view extensions[] = {
         ".h", ".hh", ".hpp", ".hxx", ".c", ".cc", ".cpp", ".cxx", ".m", ".mm", ".cs",
         ".glsl", ".vert", ".frag", ".comp", ".py", ".js", ".ts", ".lua", ".cmake"};
-    const std::string ext = LowerCaseExtension(path);
+    std::string ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return std::find(std::begin(extensions), std::end(extensions), ext) != std::end(extensions) ||
            path.filename() == "CMakeLists.txt";
 }
@@ -504,7 +504,11 @@ UniversalSearchProvider::ParsedQuery UniversalSearchProvider::ParseQuery(std::st
         {"class:", UniversalSearchKind::Class}, {"function:", UniversalSearchKind::Function},
         {"symbol:", UniversalSearchKind::Symbol}, {"comment:", UniversalSearchKind::Comment},
     };
-    const std::string lower = ToLowerAscii(trimmed);
+    std::string lower = trimmed;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c)
+    {
+        return static_cast<char>(std::tolower(c));
+    });
     for (const auto& prefix : prefixes)
     {
         if (lower.starts_with(prefix.Text))

@@ -1,7 +1,5 @@
 #include "Assets/AlphaUVFootprint.h"
 
-#include "Mathematics/Interpolation.h"
-
 #include <algorithm>
 #include <cmath>
 
@@ -29,7 +27,7 @@ float SegmentDistanceSquared(float px, float py,
     const float lenSq = abx * abx + aby * aby;
     float t = 0.0f;
     if (lenSq > 0.0f)
-        t = Math::Clamp01((apx * abx + apy * aby) / lenSq);
+        t = std::clamp((apx * abx + apy * aby) / lenSq, 0.0f, 1.0f);
     const float dx = apx - t * abx;
     const float dy = apy - t * aby;
     return dx * dx + dy * dy;

@@ -1,11 +1,11 @@
 #pragma once
 
 #include <algorithm>
-#include <string>
+#include <string_view>
 #include <vector>
 
 #include "Core/CpuProfiler.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "SceneViewEvents.h"
 #include "SceneViewGizmos.h"
 
@@ -30,15 +30,13 @@ public:
     // The Delete key while the tool is active, before the view deletes the selected
     // entity: true when the tool took the key (it holds a selection of its own).
     virtual bool DeleteSelection() { return false; }
-    // The text the Scene View's hover pill shows for what the tool points at, in place of the
-    // hovered entity's name; empty for none. Shown during the tool's own drags too.
-    virtual const std::string& GetHoverText() const
-    {
-        static const std::string kNone;
-        return kNone;
-    }
 
     virtual void GatherGizmos(GizmoCollector& collector) = 0;
+    /**
+     * One line the Scene View shows while this tool is active: what the next
+     * click needs, or what it will do. Empty when nothing is worth saying.
+     */
+    virtual std::string_view StatusText() const { return {}; }
 };
 
 class GizmoCollector

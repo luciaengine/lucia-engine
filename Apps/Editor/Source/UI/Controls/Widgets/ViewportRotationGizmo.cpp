@@ -1,9 +1,9 @@
 #include "UI/Controls/Widgets/ViewportRotationGizmo.h"
 
 #include "Editor/Settings/SceneViewSettings.h"
-#include "SceneView/SceneViewPanel.h"
+#include "Panels/SceneViewPanel.h"
 #include "Rendering/Text/FontAtlas.h"
-#include "SceneView/SceneViewController.h"
+#include "SceneViewController.h"
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/ResolvedStyle.h"
 #include "UI/UIEvents.h"

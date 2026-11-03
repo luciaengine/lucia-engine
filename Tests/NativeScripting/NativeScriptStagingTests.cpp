@@ -8,6 +8,7 @@
 
 #include "Engine/Build/NativeScriptStaging.h"
 #include "NativeScripting/BuildCacheRecord.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -51,9 +52,8 @@ struct StagingFixture
 
     explicit StagingFixture(const char* name)
     {
-        Root = fs::temp_directory_path() / name;
+        Root = GameEngine::TestUtils::MakeUniqueTempDirectory(name);
         std::error_code ec;
-        fs::remove_all(Root, ec);
         BuildDir = Root / ".Cache" / "NativeScripts" / "build";
         ContentRoot = Root / "staged-game";
         fs::create_directories(ContentRoot, ec);

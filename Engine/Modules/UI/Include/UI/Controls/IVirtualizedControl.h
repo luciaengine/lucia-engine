@@ -7,7 +7,7 @@ namespace GameEngine
 class UIManager;
 
 // A virtualized data view (ListView / GridView / TreeView) that participates in
-// the UIManager per-frame provider change pump (C-8).
+// the UIManager per-frame provider change pump.
 //
 // MarkChanged only bumps a provider-internal counter; nothing pulls the
 // changeset until a scroll/viewport event drives UpdateVirtualization. That

@@ -9,14 +9,16 @@
 // invalidation edges (assets root, cache root, handler registration, and a
 // still-absent disk cache) still let a later call discover the real result.
 
-#include "Thumbnails/ModelThumbnail/ModelThumbnailHandler.h"
+#include "Thumbnails/ModelThumbnailHandler.h"
 #include "Thumbnails/TextureThumbnailHandler.h"
 #include "Thumbnails/ThumbnailService.h"
 
-#include "Image/Encode.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 
 #include "Assets/AssetManager.h"
+#include "TestTempDir.h"
+
+#include <stb_image_write.h>
 
 #include <gtest/gtest.h>
 
@@ -40,16 +42,14 @@ using GameEngine::ThumbnailService;
 namespace
 {
 
+// Every root lives under one per-process directory, removed at process exit.
 std::filesystem::path MakeTempRoot(const char* label)
 {
+    static const GameEngine::TestUtils::ScopedTempDir processRoot(GameEngine::TestUtils::MakeUniqueTempDirectory("ge-thumbcache"));
     static std::atomic<uint32_t> counter{0};
-    const auto tid = static_cast<uint64_t>(
-        std::hash<std::thread::id>{}(std::this_thread::get_id()));
-    std::filesystem::path root = std::filesystem::temp_directory_path() /
-        ("ge-thumbcache-" + std::string(label) + "-" + std::to_string(tid) + "-" +
-         std::to_string(counter.fetch_add(1)));
+    std::filesystem::path root =
+        processRoot.Path() / (std::string(label) + "-" + std::to_string(counter.fetch_add(1)));
     std::error_code ec;
-    std::filesystem::remove_all(root, ec);
     std::filesystem::create_directories(root, ec);
     return root;
 }
@@ -59,8 +59,7 @@ bool WriteTestPng(const std::filesystem::path& path, int width, int height)
     std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4, 200);
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
-    return GameEngine::Image::WritePngFile(path, pixels, static_cast<uint32_t>(width),
-                                           static_cast<uint32_t>(height));
+    return stbi_write_png(path.string().c_str(), width, height, 4, pixels.data(), width * 4) != 0;
 }
 
 void WriteTextFile(const std::filesystem::path& path, const std::string& contents)
@@ -94,6 +93,20 @@ struct Recorder
         std::unique_lock<std::mutex> lock(Mutex);
         return Cv.wait_for(lock, timeout, [&] { return Results.size() >= count; });
     }
+
+    // The service hands results to the UI thread in BeginFrame; the editor's
+    // frame loop pumps it, so the test does the same while it waits.
+    bool PumpUntilCount(ThumbnailService& service, size_t count)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!WaitForCount(count, std::chrono::milliseconds(5)))
+        {
+            if (std::chrono::steady_clock::now() > deadline)
+                return false;
+            service.BeginFrame();
+        }
+        return true;
+    }
 };
 
 struct TextureFixture
@@ -121,7 +134,7 @@ struct TextureFixture
     {
         Recorder recorder;
         Service.GetOrRequest(source, 128, recorder.Callback());
-        EXPECT_TRUE(recorder.WaitForCount(1));
+        EXPECT_TRUE(recorder.PumpUntilCount(Service, 1));
         return CacheRoot / TextureThumbnailHandler::MakeCacheFileName(source);
     }
 };
@@ -374,7 +387,7 @@ TEST(ThumbnailResultCache, ProvisionalTextureResultIsNotPinnedByRepeatedColdRequ
     for (int i = 0; i < 32; ++i)
         fixture.Service.GetOrRequest(source, 128, nullptr);
 
-    ASSERT_TRUE(recorder.WaitForCount(1));
+    ASSERT_TRUE(recorder.PumpUntilCount(fixture.Service, 1));
     const auto expected = fixture.CacheRoot / TextureThumbnailHandler::MakeCacheFileName(source);
     ASSERT_NE(provisional, expected.generic_string())
         << "test is not exercising the cold window";
@@ -449,7 +462,7 @@ TEST(ThumbnailResultCache, HandlerRegistrationInvalidatesMemoizedResults)
 
     Recorder recorder;
     service.GetOrRequest(source, 128, recorder.Callback());
-    ASSERT_TRUE(recorder.WaitForCount(1))
+    ASSERT_TRUE(recorder.PumpUntilCount(service, 1))
         << "the newly registered handler never received the request";
     EXPECT_EQ(recorder.Results[0],
               (cacheRoot / TextureThumbnailHandler::MakeCacheFileName(source)).generic_string());
@@ -528,4 +541,51 @@ TEST(ThumbnailResultCachePerf, DISABLED_WarmGetOrRequestCostPerCall)
     std::printf("[ MEASURE  ] warm GetOrRequest: %.0f ns/call over %d calls\n",
                 nsPerCall, kIterations);
     SUCCEED();
+}
+
+TEST(ThumbnailResultCache, ReadyCallbacksWaitForUiFrameAndCanRequestAnotherThumbnail)
+{
+    BrowserFixture fixture;
+    int calls = 0;
+    const auto uiThread = std::this_thread::get_id();
+    fixture.Service.GetOrRequest("warm.png", 128, [&](const std::string&) {
+        EXPECT_EQ(std::this_thread::get_id(), uiThread);
+        ++calls;
+        fixture.Service.GetOrRequest("warm.png", 128, [&](const std::string&) { ++calls; });
+    });
+    EXPECT_EQ(calls, 0);
+    fixture.Service.BeginFrame();
+    EXPECT_EQ(calls, 1);
+    fixture.Service.BeginFrame();
+    EXPECT_EQ(calls, 2);
+}
+
+TEST(ThumbnailResultCache, WorkerRequestDeliversReadyCallbackOnTheUiFrame)
+{
+    BrowserFixture fixture;
+    const auto uiThread = std::this_thread::get_id();
+    int calls = 0;
+    std::thread worker([&] {
+        fixture.Service.GetOrRequest("warm.png", 128, [&](const std::string&) {
+            EXPECT_EQ(std::this_thread::get_id(), uiThread);
+            ++calls;
+        });
+    });
+    worker.join();
+    EXPECT_EQ(calls, 0);
+    fixture.Service.BeginFrame();
+    EXPECT_EQ(calls, 1);
+}
+
+TEST(ThumbnailResultCache, ProjectSwitchDiscardsAlreadyQueuedReadyCallbacks)
+{
+    BrowserFixture fixture;
+    int calls = 0;
+    fixture.Service.GetOrRequest("warm.png", 128, [&](const std::string&) { ++calls; });
+    fixture.Service.SetAssetsRoot("different-project/Assets");
+    fixture.Service.BeginFrame();
+    EXPECT_EQ(calls, 0);
+    fixture.Service.GetOrRequest("warm.png", 128, [&](const std::string&) { ++calls; });
+    fixture.Service.BeginFrame();
+    EXPECT_EQ(calls, 1);
 }

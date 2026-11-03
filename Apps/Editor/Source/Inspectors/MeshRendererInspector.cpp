@@ -1,6 +1,8 @@
 #include "Inspectors/MeshRendererInspector.h"
 
 #include "InspectorRegistry.h"
+#include "Rendering/Sorting/RenderSortingEditor.h"
+#include "Editor/Entities/EditorComponentTraits.h"
 
 #include "AssetCore/GUID.h"
 #include "Assets/AssetManager.h"
@@ -16,10 +18,9 @@
 #include "Engine/Rendering/ModelMaterialBridge.h"
 #include "Engine/Rendering/ModelRenderSetup.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Mathematics/Interpolation.h"
 #include "Rendering/Materials/MaterialDocument.h"
 
-#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "Inspectors/MaterialInspector.h"
@@ -32,13 +33,12 @@
 #include "UI/Controls/Foldout.h"
 #include "UI/Controls/Label.h"
 #include "UndoRedo/UndoRedoService.h"
-#include "Inspectors/RenderLayers/RenderLayersRow.h"
-#include "Inspectors/ShadowCastingRow.h"
 
 #include "Editor/Entities/EditorInspectorPseudoComponents.h"
 
 #include <algorithm>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace GameEngine
@@ -175,9 +175,8 @@ ResolveActiveMaterialAsset(const Components::MeshRenderer& mr, AssetManager& am)
 }
 
 // Load a model asset by GUID, register its GPU meshes and converted materials,
-// then update the MeshRenderer component and ensure its rendering prerequisites
-// are present (Transform, which brings WorldTransform, and LocalBounds; the
-// MeshRenderer brings MeshGPUData).
+// then update the MeshRenderer component and ensure all rendering prerequisites
+// (Transform, WorldTransform, LocalBounds, MeshGPUData) are present.
 static void AssignModelToMeshRenderer(ECS::World* world,
                                       ECS::EntityHandle entity,
                                       const GUID& guid,
@@ -214,6 +213,13 @@ static void AssignModelToMeshRenderer(ECS::World* world,
     {
         Components::Transform xf{};
         world->AddComponentImmediate(entity, xf);
+    }
+
+    // Ensure WorldTransform exists (required by RenderExtractionSystem query).
+    if (!world->GetComponent<Components::WorldTransform>(entity))
+    {
+        Components::WorldTransform wt{};
+        world->AddComponentImmediate(entity, wt);
     }
 
     // This entity draws submesh 0, so its culling envelope is that submesh's, as
@@ -260,7 +266,7 @@ static uint32_t BaseColorToIconTint(const MaterialDocument& doc)
         return 0u;
     // Blend 50% towards white so dark materials still produce a visible tint.
     auto toU8 = [](float v) -> uint32_t {
-        return static_cast<uint32_t>(Math::Clamp01(v * 0.5f + 0.5f) * 255.0f + 0.5f);
+        return static_cast<uint32_t>(std::clamp(v * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f + 0.5f);
     };
     return 0xFF000000u | (toU8(c[0]) << 16) | (toU8(c[1]) << 8) | toU8(c[2]);
 }
@@ -410,7 +416,7 @@ static void BuildMeshRendererMaterialInspectorUI(const InspectorContext& ctx)
         }
 
         UIElement* matFieldContainer = InspectorUI::AddFieldContainer(matRow);
-        matFieldContainer->Style().Set(Style::FlexGrow, 1.0f);
+        matFieldContainer->Overrides().Set(Style::FlexGrow, 1.0f);
 
         auto matField = std::make_unique<AssetField>();
         matField->AddClass("dropdown-asset-field");
@@ -518,6 +524,30 @@ static void BuildMeshRendererMaterialInspectorUI(const InspectorContext& ctx)
 
 void RegisterMeshRendererInspector()
 {
+    constexpr int kMeshRendererSortKey = 30;
+    constexpr int kMaterialSectionSortKey = 31;
+
+    {
+        Editor::EditorComponentTraits traits;
+        traits.DisplayName = "Mesh Renderer";
+        traits.Category = "Rendering";
+        traits.SortKey = kMeshRendererSortKey;
+        traits.Tooltip = "Renders a static mesh with a material";
+        traits.InspectorIconClass = "inspector-section-icon-mesh-renderer";
+        Editor::EditorComponentTraitsRegistry::Get().Register(
+            ECS::GetComponentTypeId<Components::MeshRenderer>(), std::move(traits));
+    }
+    {
+        Editor::EditorComponentTraits traits;
+        traits.DisplayName = "Material";
+        traits.SortKey = kMaterialSectionSortKey;
+        traits.Tooltip = "Material slots and shader properties for this mesh renderer";
+        traits.InspectorIconClass = "inspector-section-icon-material";
+        traits.Removable = false;
+        Editor::EditorComponentTraitsRegistry::Get().Register(
+            ECS::GetComponentTypeId<Editor::MeshRendererMaterialInspectorSection>(), std::move(traits));
+    }
+
     InspectorFn fn = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())
@@ -529,6 +559,8 @@ void RegisterMeshRendererInspector()
             AddLine(ctx.Parent, "(MeshRenderer missing)");
             return;
         }
+
+        Editor::AddRenderSortingDiagnostic(ctx);
 
         using namespace InspectorDrag;
 
@@ -562,7 +594,7 @@ void RegisterMeshRendererInspector()
             }
 
             UIElement* modelFieldContainer = InspectorUI::AddFieldContainer(modelRow);
-            modelFieldContainer->Style().Set(Style::FlexGrow, 1.0f);
+            modelFieldContainer->Overrides().Set(Style::FlexGrow, 1.0f);
 
             auto modelField = std::make_unique<AssetField>();
             modelField->AddClass("dropdown-asset-field");
@@ -629,14 +661,30 @@ void RegisterMeshRendererInspector()
             [](Components::MeshRenderer& u, int v) { u.meshId = static_cast<uint32>(std::max(0, v)); },
             "Submesh index within the model asset", extras);
 
-        InspectorDrag::AddComponentRenderLayersRow<Components::MeshRenderer>(
-            ctx.Parent, "Render Layers", &Components::MeshRenderer::RenderLayers, w, e, n, undo,
-            "Change Render Layers", "The render layers this mesh is on. A view draws it when they share a layer.",
-            Editor::kRenderLayersNothingTooltip, extras);
+        InspectorDrag::AddComponentIntRowWithDrag<Components::MeshRenderer>(ctx.Parent, "RenderLayerMask", static_cast<int>(mr->renderLayerMask), w, e, n,
+            [](Components::MeshRenderer& u, int v) { u.renderLayerMask = static_cast<uint32>(std::max(0, v)); },
+            "Bitmask controlling which render layers include this mesh", extras);
 
-        InspectorDrag::AddShadowCastingRow(ctx.Parent, w, e, n, undo, extras);
+        InspectorDrag::AddToggleRow(ctx.Parent, "CastShadows", mr->castShadows,
+            [getWorld, e, n, extras](bool v) {
+                auto* w = getWorld ? getWorld() : nullptr;
+                if (!w) return;
+                auto* comp = w->GetComponent<Components::MeshRenderer>(e);
+                if (!comp) return;
+                Components::MeshRenderer updated = *comp;
+                updated.castShadows = v;
+                Editor::CommitComponentUpdate(w, e, n, updated);
+                for (auto& ex : extras)
+                {
+                    auto* c = w->GetComponent<Components::MeshRenderer>(ex);
+                    if (!c) continue;
+                    Components::MeshRenderer u = *c;
+                    u.castShadows = v;
+                    Editor::CommitComponentUpdate(w, ex, n, u);
+                }
+            }, "Include this mesh in shadow depth passes");
 
-        InspectorDrag::AddToggleRow(ctx.Parent, "Receive Shadows", mr->receiveShadows,
+        InspectorDrag::AddToggleRow(ctx.Parent, "ReceiveShadows", mr->receiveShadows,
             [getWorld, e, n, extras](bool v) {
                 auto* w = getWorld ? getWorld() : nullptr;
                 if (!w) return;
@@ -655,7 +703,7 @@ void RegisterMeshRendererInspector()
                 }
             }, "Sample shadow maps when shading this mesh");
 
-        InspectorDrag::AddToggleRow(ctx.Parent, "Motion Vectors", mr->motionVectors,
+        InspectorDrag::AddToggleRow(ctx.Parent, "MotionVectors", mr->motionVectors,
             [getWorld, e, n, extras](bool v) {
                 auto* w = getWorld ? getWorld() : nullptr;
                 if (!w) return;

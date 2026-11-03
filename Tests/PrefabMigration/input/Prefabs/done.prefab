@@ -1,4 +1,0 @@
-[prefab name="Done" version=1]
-
-[entity id="root"]
-Name.value = "Done"

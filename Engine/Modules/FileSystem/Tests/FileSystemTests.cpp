@@ -440,3 +440,12 @@ TEST(FileSystem, KeepsTheTemporaryFileOfAnotherRunningWriter)
     EXPECT_TRUE(std::filesystem::exists(file)) << "a running writer's temporary file was removed";
     std::filesystem::remove_all(dir);
 }
+
+TEST(FileSystem, CaseSensitivityMatchesNativeFileLookup)
+{
+    const auto root = MakeTempDir();
+    std::ofstream(root / "MixedCase.txt") << "case probe";
+    EXPECT_EQ(GameEngine::FileSystem::IsCaseSensitive(),
+              !std::filesystem::exists(root / "mixedcase.txt"));
+    std::filesystem::remove_all(root);
+}

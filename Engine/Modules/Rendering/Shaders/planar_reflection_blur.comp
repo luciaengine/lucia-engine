@@ -1,0 +1,26 @@
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D uSource;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D uOutput;
+layout(set = 0, binding = 2, std140) uniform BlurParams
+{
+    vec4 axisAndCount;
+    vec4 taps[7]; // x: paired sample offset, y: normalized weight
+};
+void main()
+{
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(uOutput);
+    if (any(greaterThanEqual(p, size))) return;
+    vec2 uv = (vec2(p) + 0.5) / vec2(size);
+    // Positive, normalized weights preserve HDR energy and premultiplied
+    // coverage. Clamp sampling extends borders instead of introducing black.
+    vec4 value = textureLod(uSource, uv, 0) * taps[0].y;
+    for (int i = 1; i < int(axisAndCount.z); ++i)
+    {
+        vec2 delta = axisAndCount.xy * taps[i].x;
+        value += (textureLod(uSource, uv + delta, 0) +
+                  textureLod(uSource, uv - delta, 0)) * taps[i].y;
+    }
+    imageStore(uOutput, p, value);
+}

@@ -1,4 +1,4 @@
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h"
 #include "Engine/Build/BuildPipeline.h"
 #include "Engine/Build/MacBundleAssembler.h"
 #include "Scripting/PathResolver.h"
@@ -55,7 +55,7 @@ struct MacManagedExportFixture
         for (const char* name :
              {"GameEngine.CoreBridge.dll", "GameEngine.HotReload.dll", "GameEngine.HotReload.runtimeconfig.json",
               "GameEngine.Scripting.Runtime.dll", "GameEngine.Scripting.ABI.dll", "GameEngine.ECS.ABI.dll",
-              "GameEngine.Scripting.Bindings.dll", "GameEngine.Editor.Scripting.ABI.dll", "GameEngine.Editor.Managed.dll"})
+              "GameEngine.Input.ABI.dll", "GameEngine.Editor.Scripting.ABI.dll", "GameEngine.Editor.Managed.dll"})
             WriteFixture(EditorManaged / name, "editor-copy");
         WriteFixture(EditorManaged / "GameEngine.Scripting.Runtime.deps.json", R"({"targets":{".NETCoreApp,Version=v9.0":{
             "GameEngine.Scripting.Runtime/1.0.0":{"runtime":{"GameEngine.Scripting.Runtime.dll":{}}},
@@ -182,7 +182,7 @@ TEST(MacBundleAssembler, ContentRootContentPassesCodesign)
     // Any Mach-O executable stands in for the Player; Codesign re-signs it ad hoc.
     fs::copy_file("/usr/bin/true", macOSDir / "Player");
 
-    const fs::path contentRoot = GameEngine::ApplicationPaths::InstallContentRootFor(macOSDir);
+    const fs::path contentRoot = GameEngine::PathUtils::InstallContentRootFor(macOSDir);
     for (const char* path : {"game.config", "Assets/.assetmanifest", "Assets/.lod/model.gelod",
                              "Assets/Models/model.glb", "Packages/packages.index"})
         WriteFixture(contentRoot / path);
@@ -213,7 +213,7 @@ TEST(MacBundleAssembler, CoreClrExportStagesEveryManagedAssemblyThePlayerLoads)
     EXPECT_EQ(playerManaged, fixture.Bundle / "Contents/Resources/Managed");
     for (const char* name : {"GameEngine.Scripts.dll", "GameEngine.CoreBridge.dll", "GameEngine.HotReload.dll",
                              "GameEngine.HotReload.runtimeconfig.json", "GameEngine.Scripting.Runtime.dll",
-                             "GameEngine.Scripting.ABI.dll", "GameEngine.ECS.ABI.dll", "GameEngine.Scripting.Bindings.dll"})
+                             "GameEngine.Scripting.ABI.dll", "GameEngine.ECS.ABI.dll", "GameEngine.Input.ABI.dll"})
         EXPECT_TRUE(fs::exists(playerManaged / name)) << name << " is not where the packaged Player loads it";
     for (const char* name : {"GameEngine.Editor.Scripting.ABI.dll", "GameEngine.Editor.Managed.dll"})
         EXPECT_FALSE(fs::exists(playerManaged / name)) << "editor-only assembly shipped: " << name;

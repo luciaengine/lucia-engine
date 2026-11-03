@@ -8,7 +8,7 @@
 #include "Ocean/OceanFrameStamp.h"
 #include "Ocean/OceanShadowSim.h"
 #include "Ocean/OceanTypes.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
@@ -136,9 +136,7 @@ TEST(OceanFrameStamp, ConsecutiveGraphFramesContinueAcrossDeviceSlotWraps)
     for (uint64 frame = 0; frame < kFramesAcrossTwoSlotWraps; ++frame)
     {
         if (frame > 0u)
-        {
             EXPECT_TRUE(stamp.PrecedesFrame(frame)) << "frame " << frame;
-        }
         EXPECT_FALSE(stamp.IsFrame(frame));
         stamp.Frame = frame;
         EXPECT_TRUE(stamp.IsFrame(frame));
@@ -160,16 +158,19 @@ TEST(OceanShadowSimTest, DeclaresEveryFrameAcrossDeviceSlotWraps)
         ASSERT_TRUE(rs.Initialize(device.get()));
         const CameraId cameraId = rs.Views().AllocateCamera("OceanShadowCamera");
         CameraData camera{};
-        camera.proj[0][0] = 1.0f;
-        camera.proj[1][1] = 1.0f;
-        camera.proj[2][2] = 0.001f;
-        camera.proj[2][3] = 1.0f;
-        camera.proj[3][2] = 0.1f;
-        camera.view = Mathematics::Matrix4x4::Identity();
-        camera.viewProj = Mathematics::Matrix4x4::Identity();
+        camera.proj[0] = 1.0f;
+        camera.proj[5] = 1.0f;
+        camera.proj[10] = 0.001f;
+        camera.proj[11] = 1.0f;
+        camera.proj[14] = 0.1f;
+        for (int i = 0; i < 16; i += 5)
+        {
+            camera.view[i] = 1.0f;
+            camera.viewProj[i] = 1.0f;
+        }
         rs.Views().SetCameraData(cameraId, camera);
         const ViewId viewId = rs.Views().AllocateView("OceanShadowView", cameraId);
-        rs.Views().SetViewRenderLayerMask(viewId, GameEngine::Rendering::RenderLayerMask::Default());
+        rs.Views().SetViewRenderLayerMask(viewId, 1u);
         ViewClearConfig clear{};
         clear.clearColor = true;
         clear.clearDepth = true;
@@ -260,15 +261,11 @@ TEST(OceanShadowSimTest, DeclaresEveryFrameAcrossDeviceSlotWraps)
             device->FinalizeFrame();
             device->WaitForIdle();
             if (index + 1u == kShadowRemovedFrame)
-            {
                 EXPECT_LT(ReadCentreVisibility(*device, sim.GetTexture(viewId)), 0.05f)
                     << "the authored shadow must reach the field before the history check means anything";
-            }
             if (index == kShadowRemovedFrame)
-            {
                 EXPECT_LT(ReadCentreVisibility(*device, sim.GetTexture(viewId)), kLitWithoutHistory)
                     << "history must carry the shadow across the device-slot wrap at graph frame " << index;
-            }
         }
         EXPECT_EQ(slotsSeen.size(), device->GetFramesInFlight())
             << "the test must drive the device slot through a wrap to mean anything";

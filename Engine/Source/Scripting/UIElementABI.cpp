@@ -35,10 +35,9 @@
 #include "UI/Controls/BaseField.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Label.h"
-#include "UI/Controls/MarkdownText.h"
 #include "UI/Controls/ScrollView.h"
 #include "UI/Registration/ElementRegistration.h"
-#include "UI/StyleDeclaration.h"
+#include "UI/StyleOverrides.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIElement.h"
 #include "UI/UIEvents.h"
@@ -54,7 +53,7 @@
 #include "Logger/Logger.h"
 
 // GE_UIEventData/GE_UIEventCallback + the GE_UIElement_* prototypes are declared in
-// ScriptingABI.h (the canonical ABI surface, alongside GE_ECS_*). The reverse
+// ScriptingABI.h (the canonical ABI surface, alongside GE_Input_*/GE_ECS_*). The reverse
 // callback hands the opaque GCHandle the script passed in back verbatim so the callee can
 // recover its context.
 
@@ -87,12 +86,6 @@ constexpr SubscribableEvent kSubscribableEvents[] = {
     {"UI.ButtonClick", GameEngine::kEventButtonClick}, // Ui.Button.Clicked
     {"UI.MouseEnter", GameEngine::kEventMouseEnter},   // Ui.Element.PointerEntered
     {"UI.MouseMove", GameEngine::kEventMouseMove},     // Ui.Element.MouseMoved
-    // The press lifecycle, for every button (UIEvent::Button is Input::MouseButton). The
-    // manager routes these onto whatever element the pointer is over, like the other pointer
-    // events, so every element can subscribe and no ElementDispatchesEvent row belongs here.
-    {"UI.MouseDown", GameEngine::kEventMouseDown},     // Ui.Element.PointerPressed
-    {"UI.MouseUp", GameEngine::kEventMouseUp},         // Ui.Element.PointerReleased
-    {"UI.MouseCancel", GameEngine::kEventMouseCancel}, // Ui.Element.PointerCancelled
     {"UI.FocusIn", GameEngine::kEventFocusIn},         // Ui.Element.FocusGained
     {"UI.ValueChanging", GameEngine::kEventValueChanging},
     {"UI.ValueChanged", GameEngine::kEventValueChanged},
@@ -184,9 +177,9 @@ extern "C"
 {
 
 // Drive a bar/fill element's width as a percentage (0..100). GE_Result_NotFound if the handle no
-// longer resolves. Writes the element's code style, Style(), whose dirty callback schedules the
-// relayout. A .uxml reconcile keeps Style() and re-applies the authored attributes (the `style`
-// attribute into InlineStyle()), so this write survives it while a write to `text` does not.
+// longer resolves. Routes through the element's style override bag, whose dirty callback schedules
+// the relayout. Note that override-bag writes survive a .uxml reconcile (a different bag from the
+// inline-style attribute), while authored `text` does not.
 GE_API GE_Result GE_CDECL GE_UIElement_SetWidthPercent(uint64_t instanceId, float pct)
 {
     try
@@ -194,62 +187,7 @@ GE_API GE_Result GE_CDECL GE_UIElement_SetWidthPercent(uint64_t instanceId, floa
         GameEngine::UIElement* el = ResolveElement(instanceId);
         if (!el)
             return GE_Result_NotFound;
-        el->Style().Set(GameEngine::Style::Width, GameEngine::StyleLength::Percent(pct));
-        return GE_Result_Ok;
-    }
-    catch (...)
-    {
-        return GE_Result_Fail;
-    }
-}
-
-// Writes left/top into the element's code style, Style(), as SetWidthPercent does; a .uxml reconcile keeps it.
-// Style() wins over the element's style attribute, so this call wins over an authored inline `left:`.
-GE_API GE_Result GE_CDECL GE_UIElement_SetOffset(uint64_t instanceId, float x, float y)
-{
-    try
-    {
-        GameEngine::UIElement* el = ResolveElement(instanceId);
-        if (!el)
-            return GE_Result_NotFound;
-
-        el->Style().Set(GameEngine::Style::PositionLeft, GameEngine::StyleLength::Px(x));
-        el->Style().Set(GameEngine::Style::PositionTop, GameEngine::StyleLength::Px(y));
-        return GE_Result_Ok;
-    }
-    catch (...)
-    {
-        return GE_Result_Fail;
-    }
-}
-
-// Take the pointer for an element, so the rest of the gesture is routed to it wherever the pointer goes.
-GE_API GE_Result GE_CDECL GE_UIElement_CapturePointer(uint64_t instanceId)
-{
-    try
-    {
-        GameEngine::UIElement* el = ResolveElement(instanceId);
-        if (!el)
-            return GE_Result_NotFound;
-
-        GameEngine::GameUI::GetUIManager()->CaptureMouse(el);
-        return GE_Result_Ok;
-    }
-    catch (...)
-    {
-        return GE_Result_Fail;
-    }
-}
-
-// Let it go, only when this element holds the pointer: a release from any other element is NotFound and
-// leaves the capture alone.
-GE_API GE_Result GE_CDECL GE_UIElement_ReleasePointer(uint64_t instanceId)
-{
-    try
-    {
-        GameEngine::UIManager* ui = GameEngine::GameUI::GetUIManager();
-        if (!ui || !ui->ReleaseMouseCaptureHeldBy(instanceId))
-            return GE_Result_NotFound;
+        el->Overrides().Set(GameEngine::Style::Width, GameEngine::StyleLength::Percent(pct));
         return GE_Result_Ok;
     }
     catch (...)
@@ -276,27 +214,6 @@ GE_API GE_Result GE_CDECL GE_UIElement_SetLabelText(uint64_t instanceId, const c
         if (!label)
             return GE_Result_InvalidArg;
         label->SetText(text ? text : "");
-        return GE_Result_Ok;
-    }
-    catch (...)
-    {
-        return GE_Result_Fail;
-    }
-}
-
-// Set a MarkdownText element's text, with the same results as GE_UIElement_SetLabelText.
-// A null text is "" and clears the control.
-GE_API GE_Result GE_CDECL GE_UIElement_SetMarkdownText(uint64_t instanceId, const char* text)
-{
-    try
-    {
-        GameEngine::UIElement* el = ResolveElement(instanceId);
-        if (!el)
-            return GE_Result_NotFound;
-        auto* markdown = dynamic_cast<GameEngine::MarkdownText*>(el);
-        if (!markdown)
-            return GE_Result_InvalidArg;
-        markdown->SetMarkdown(text ? text : "");
         return GE_Result_Ok;
     }
     catch (...)
@@ -355,8 +272,7 @@ GE_API GE_Result GE_CDECL GE_UIElement_IsAlive(uint64_t instanceId, int32_t* out
 
 // The element's registered tag id — the identity a binding maps to its own wrapper type
 // (Button -> Ui.Button, and so on). It is the tag's StringId, cached at registration and
-// already what CSS type-selector matching uses, NOT the one-byte UIElementKind tag, which
-// has three values and exists only to skip a dynamic_cast on two hot paths.
+// already what CSS type-selector matching uses.
 //
 // *outTagId is 0 for a live element that carries no creation stamp AND whose exact C++ type
 // was never registered with a tag (an editor-local subclass, an element built by hand). That
@@ -500,50 +416,6 @@ GE_API GE_Result GE_CDECL GE_UIElement_UnregisterEvent(uint64_t instanceId, cons
         if (eventId == 0)
             return GE_Result_InvalidArg;
         GameEngine::GameUI::Detail::UnregisterSessionEvent(instanceId, eventId, token);
-        return GE_Result_Ok;
-    }
-    catch (...)
-    {
-        return GE_Result_Fail;
-    }
-}
-
-// Writes z-index into the element's code style, Style(), as FloatingPanel::Raise does; the next
-// style pass re-sorts the parent's children.
-GE_API GE_Result GE_CDECL GE_UIElement_SetZIndex(uint64_t instanceId, int32_t zIndex)
-{
-    try
-    {
-        GameEngine::UIElement* el = ResolveElement(instanceId);
-        if (!el)
-            return GE_Result_NotFound;
-
-        el->Style().Set(GameEngine::Style::ZIndex, static_cast<int>(zIndex));
-        return GE_Result_Ok;
-    }
-    catch (...)
-    {
-        return GE_Result_Fail;
-    }
-}
-
-// Where the element was drawn, in window space.
-GE_API GE_Result GE_CDECL GE_UIElement_GetRect(uint64_t instanceId, float* x, float* y, float* width, float* height)
-{
-    if (!x || !y || !width || !height)
-        return GE_Result_InvalidArg;
-
-    try
-    {
-        GameEngine::UIElement* el = ResolveElement(instanceId);
-        if (!el)
-            return GE_Result_NotFound;
-
-        const auto rect = el->GetWindowRect();
-        *x = rect.X;
-        *y = rect.Y;
-        *width = rect.Width;
-        *height = rect.Height;
         return GE_Result_Ok;
     }
     catch (...)

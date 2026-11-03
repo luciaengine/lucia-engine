@@ -27,9 +27,9 @@
 
 #include "Components/ComponentRegistrationCommon.h"  // metadata helpers + strategy-free macros
 #include "ECS/ECS.h"                    // GetComponentTypeId<T>, Component concept, ComponentTypeId
-#include "ECS/Component/ComponentTypeName.h"      // ComponentTypeName<T>
-#include "ECS/Component/ComponentFactory.h"       // ComponentFactory::RegisterDefaultBytes
-#include "ECS/Component/ComponentRegistry.h"      // RegisterBlobComponent / GetComponentInfo
+#include "ECS/ComponentTypeName.h"      // ComponentTypeName<T>
+#include "ECS/ComponentFactory.h"       // ComponentFactory::RegisterDefaultBytes
+#include "ECS/ComponentRegistry.h"      // RegisterBlobComponent / GetComponentInfo
 
 #include <string>
 #include <type_traits>
@@ -105,21 +105,6 @@ inline bool RegisterReflectedComponent(bool addable)
 
 #define GE_REGISTER_COMPONENT_END_NO_ADD(TypeName)                                 \
     GE_REFLECT_END(TypeName);                                                      \
-    namespace {                                                                    \
-    [[maybe_unused]] const bool GE_PP_CONCAT(ge_auto_register_, __LINE__) =        \
-        ::GameEngine::Components::RegisterReflectedComponent<TypeName>(false);     \
-    }
-
-// A component with no fields (a tag, "// @ge-tag"), as in ComponentRegistration.h.
-#define GE_REGISTER_TAG_COMPONENT(TypeName)                                        \
-    GE_REFLECT_TAG(TypeName);                                                      \
-    namespace {                                                                    \
-    [[maybe_unused]] const bool GE_PP_CONCAT(ge_auto_register_, __LINE__) =        \
-        ::GameEngine::Components::RegisterReflectedComponent<TypeName>(true);      \
-    }
-
-#define GE_REGISTER_TAG_COMPONENT_NO_ADD(TypeName)                                 \
-    GE_REFLECT_TAG(TypeName);                                                      \
     namespace {                                                                    \
     [[maybe_unused]] const bool GE_PP_CONCAT(ge_auto_register_, __LINE__) =        \
         ::GameEngine::Components::RegisterReflectedComponent<TypeName>(false);     \

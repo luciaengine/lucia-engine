@@ -17,9 +17,6 @@ namespace UI
 namespace AccentStyleHelper
 {
 
-// Default accent color (blue)
-constexpr uint32_t kDefaultAccentColor = 0xFF3A8FFF;
-
 // Editor preference key that stores the accent color (ARGB as int64).
 constexpr const char* kPrefKeyAccentColor = "ui.accentColor";
 

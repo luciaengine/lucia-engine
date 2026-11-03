@@ -10,7 +10,6 @@
 #include "WebPackReader.h"
 
 #include "Assets/AssetManager.h"
-#include "Audio/AudioTypes.h"
 #include "Core/Engine.h"
 #include "Core/EngineLoggerBridge.h"
 #include "Logger/Logger.h"
@@ -168,7 +167,6 @@ ApplicationConfig MakeApplicationConfig()
     config.Name = "Web page";
     // The canvas is the window; its CSS size, not this, sizes the drawing buffer.
     config.Fullscreen = false;
-    config.AudioOutput = Audio::AudioOutput::Device;
     config.AssetDirectory = std::string(kContentRoot) + "Assets";
     // The module's file system is memory: runtime caches stay inside it.
     config.WorkspaceDirectory = std::string(kContentRoot) + ".workspace";
@@ -290,8 +288,7 @@ EMSCRIPTEN_KEEPALIVE int32_t ge_update_assets()
     return kOk;
 }
 
-/// Sizes the drawing buffer to the canvas's CSS size times `devicePixelRatio`: the page passes
-/// the browser's ratio, or a lower one to cap the drawing buffer's pixels.
+/// Sizes the drawing buffer to the canvas's CSS size times the device pixel ratio.
 EMSCRIPTEN_KEEPALIVE int32_t ge_resize(int32_t width, int32_t height, double devicePixelRatio)
 {
     const AbiCallScope scope("ge_resize");
@@ -305,7 +302,7 @@ EMSCRIPTEN_KEEPALIVE int32_t ge_resize(int32_t width, int32_t height, double dev
                      devicePixelRatio);
         return kFailed;
     }
-    g_Application->Resize(width, height, devicePixelRatio);
+    g_Application->Resize(width, height);
     return kOk;
 }
 

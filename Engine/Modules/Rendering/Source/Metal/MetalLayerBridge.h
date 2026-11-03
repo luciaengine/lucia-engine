@@ -1,6 +1,6 @@
 #pragma once
 
-// Pure-C++ bridge between a GLFW window's NSView and a CAMetalLayer.
+// Pure-C++ bridge between a platform window and a CAMetalLayer.
 // Uses the Objective-C runtime C API directly (the same mechanism metal-cpp
 // is built on) so the Rendering module stays free of Objective-C++ TUs.
 
@@ -12,11 +12,8 @@ class MetalLayer;
 namespace GameEngine::Rendering::MetalLayerBridge
 {
 
-// Installs `layer` as the layer of the GLFW window's content view and applies
-// the view's backing scale factor as the layer contentsScale.
-// `glfwWindow` is a GLFWwindow*. Returns false if the native window could not
-// be resolved.
-bool AttachLayerToGLFWWindow(void* glfwWindow, CA::MetalLayer* layer);
+// Returns a retained layer attached to the platform window (SDL on iOS, GLFW on macOS).
+CA::MetalLayer* CreateWindowLayer(void* window);
 
 // Backing scale factor of the window's screen (1.0 on failure).
 double GetWindowBackingScale(void* glfwWindow);
@@ -42,9 +39,8 @@ void SetLayerExtendedDynamicRange(CA::MetalLayer* layer, bool enabled);
 // capability. Both default to 1.0 on failure.
 void GetWindowEdrHeadroom(void* glfwWindow, float& outCurrent, float& outPotential);
 
-// Layer bounds in pixels (bounds.size * contentsScale) — the Metal analogue of
-// Vulkan's surface currentExtent. Returns false until the layer is attached to
-// a view (bounds still zero).
-bool GetLayerPixelSize(CA::MetalLayer* layer, unsigned int& outWidth, unsigned int& outHeight);
+// Drawable pixel size from SDL on iOS, or layer bounds times backing scale on
+// macOS. SDL owns the pixel rounding for scaled iPhone displays.
+bool GetWindowPixelSize(void* window, CA::MetalLayer* layer, unsigned int& outWidth, unsigned int& outHeight);
 
 } // namespace GameEngine::Rendering::MetalLayerBridge

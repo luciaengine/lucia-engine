@@ -1,5 +1,5 @@
 // GPU-resource-lifetime policy oracles for the CBT bring-up path
-// (design gpu-resource-lifetime-policy, slice a).
+// (Tools/ai/rendering/gpu-resource-lifetime-policy.html, slice a).
 //
 // Two independent things are pinned here:
 //
@@ -29,10 +29,9 @@
 #include "CBTTerrain/CBTLayout.h"
 #include "CBTTerrain/CBTSphereRoots.h"
 #include "Rendering/Core/CommandList.h"
-#include "CBTReliefHeightSource.h"
 #include "CBTTestHarness.h"
 #include "../../Rendering/Source/Vulkan/VulkanCommandList.h"
-#include "../../Rendering/Source/Vulkan/VulkanDevice/VulkanDevice.h"
+#include "../../Rendering/Source/Vulkan/VulkanDevice.h"
 
 using namespace GameEngine::CBTTerrain;
 using namespace GameEngine::CBTTerrain::Test;
@@ -288,7 +287,14 @@ TEST_F(CBTBringUpTest, RefreshTerrainSourcesPerformsNoDeviceDrain)
     ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
     ASSERT_TRUE(instance.InitializeRoots());
 
-    const TextureHandle retired = MakeR32Texture(*m_Device, 4, 4, {}, "DrainOracleHeightmap");
+    TextureDesc td{};
+    td.width = 4;
+    td.height = 4;
+    td.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
+    td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource) |
+               static_cast<uint32_t>(TextureUsage::TransferDst);
+    td.debugName = "DrainOracleHeightmap";
+    const TextureHandle retired = m_Device->CreateTexture(td);
     ASSERT_TRUE(retired.IsValid());
     for (uint32_t slot = 0; slot < kCBTFrameParamsRing; ++slot)
         instance.SetHeightSource(slot, retired);
@@ -315,7 +321,7 @@ TEST_F(CBTBringUpTest, RefreshTerrainSourcesPerformsNoDeviceDrain)
     m_Device->DestroyTexture(retired);
 }
 
-TEST_F(CBTBringUpTest, PageTableRebindWaitsForPendingGraphicsWithoutDeviceDrain)
+TEST_F(CBTBringUpTest, PageTableGrowthWaitsForPendingGraphicsWithoutDeviceDrain)
 {
     CBTInstance instance;
     ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
@@ -327,20 +333,11 @@ TEST_F(CBTBringUpTest, PageTableRebindWaitsForPendingGraphicsWithoutDeviceDrain)
 
     const uint64_t before = m_Device->GetIdleDrainCount();
     ASSERT_EQ(pending.Status(), IDevice::GpuSyncStatus::Pending);
-    BufferDesc desc{};
-    desc.size = kCBTPageHeaderWords * sizeof(uint32_t);
-    desc.usage = static_cast<uint32_t>(BufferUsage::Storage);
-    desc.memoryUsage = BufferMemoryUsage::Upload;
-    desc.debugName = "CBTBringUpTest.PageRing";
-    const BufferHandle ring = m_Device->CreateBuffer(desc);
-    ASSERT_TRUE(ring.IsValid());
-    instance.SetPageTable(ring, 0u);
+    ASSERT_TRUE(instance.GetResources().ProvisionPageTableWords(kCBTPageTableMinRingWords + 1u));
     EXPECT_EQ(pending.Status(), IDevice::GpuSyncStatus::Complete)
-        << "a new page-table ring was bound while its prior graphics user was pending";
+        << "page-table growth returned while its prior graphics user was pending";
     EXPECT_EQ(m_Device->GetIdleDrainCount(), before)
-        << "a page-table rebind drained the device; wait the graphics timeline instead";
-    instance.SetPageTable({}, 0u);
-    m_Device->DestroyBuffer(ring);
+        << "page-table growth drained the device; wait the graphics timeline instead";
 }
 
 // Far-field bulk free. No production caller today (FarFieldReseedDetector is unwired), but it is a

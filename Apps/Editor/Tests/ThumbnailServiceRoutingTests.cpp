@@ -4,23 +4,21 @@
 // suite existed, textures fell through to the raw-source fallback), and the
 // request path does not emit a log line per call.
 
-#include "Prefabs/PrefabThumbnailHandler.h"
-#include "Inspectors/CubeLut/CubeLutStripBands.h"
-#include "Inspectors/CubeLut/CubeLutStripRequest.h"
-#include "Inspectors/CubeLut/CubeLutThumbnailHandler.h"
 #include "Thumbnails/FolderBakeReport.h"
 #include "Thumbnails/TextureThumbnailHandler.h"
 #include "Thumbnails/ThumbnailService.h"
-#include "Thumbnails/ModelThumbnail/ModelThumbnailHandler.h"
-#include "Thumbnails/ModelThumbnail/ModelThumbnailCachePolicy.h"
+#include "Thumbnails/ModelThumbnailHandler.h"
+#include "Thumbnails/ModelThumbnailCachePolicy.h"
 
-#include "Image/Encode.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 
 #include "Assets/AssetManager.h"
 #include "FileSystem/FileSystem.h"
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
+#include "TestTempDir.h"
+
+#include <stb_image_write.h>
 
 #include <gtest/gtest.h>
 
@@ -33,7 +31,6 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <thread>
 #include <vector>
 
 using GameEngine::AssetManager;
@@ -54,16 +51,14 @@ TEST(ThumbnailServiceRouting, SpawnSettlePolicy)
 namespace
 {
 
+// Every root lives under one per-process directory, removed at process exit.
 std::filesystem::path MakeTempRoot(const char* label)
 {
+    static const GameEngine::TestUtils::ScopedTempDir processRoot(GameEngine::TestUtils::MakeUniqueTempDirectory("ge-thumbroute"));
     static std::atomic<uint32_t> counter{0};
-    const auto tid = static_cast<uint64_t>(
-        std::hash<std::thread::id>{}(std::this_thread::get_id()));
-    std::filesystem::path root = std::filesystem::temp_directory_path() /
-        ("ge-thumbroute-" + std::string(label) + "-" + std::to_string(tid) + "-" +
-         std::to_string(counter.fetch_add(1)));
+    std::filesystem::path root =
+        processRoot.Path() / (std::string(label) + "-" + std::to_string(counter.fetch_add(1)));
     std::error_code ec;
-    std::filesystem::remove_all(root, ec);
     std::filesystem::create_directories(root, ec);
     return root;
 }
@@ -73,8 +68,7 @@ bool WriteTestPng(const std::filesystem::path& path, int width, int height)
     std::vector<uint8_t> pixels(static_cast<size_t>(width) * height * 4, 200);
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
-    return GameEngine::Image::WritePngFile(path, pixels, static_cast<uint32_t>(width),
-                                           static_cast<uint32_t>(height));
+    return stbi_write_png(path.string().c_str(), width, height, 4, pixels.data(), width * 4) != 0;
 }
 
 // Counts log records whose text contains a needle, at any level the logger is
@@ -144,6 +138,20 @@ struct Recorder
     {
         std::unique_lock<std::mutex> lock(Mutex);
         return Cv.wait_for(lock, timeout, [&] { return Results.size() >= count; });
+    }
+
+    // The service hands results to the UI thread in BeginFrame; the editor's
+    // frame loop pumps it, so the test does the same while it waits.
+    bool PumpUntilCount(ThumbnailService& service, size_t count)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!WaitForCount(count, std::chrono::milliseconds(5)))
+        {
+            if (std::chrono::steady_clock::now() > deadline)
+                return false;
+            service.BeginFrame();
+        }
+        return true;
     }
 };
 
@@ -283,7 +291,7 @@ TEST(ThumbnailServiceRouting, TextureAssetsReachTheTextureHandler)
     // full-resolution source merely to fill a browser cell.
     EXPECT_TRUE(immediate.empty());
 
-    ASSERT_TRUE(recorder.WaitForCount(1));
+    ASSERT_TRUE(recorder.PumpUntilCount(fixture.Service, 1));
     const auto expected =
         fixture.CacheRoot / TextureThumbnailHandler::MakeCacheFileName(source);
     EXPECT_EQ(recorder.Results[0], expected.generic_string());
@@ -292,19 +300,6 @@ TEST(ThumbnailServiceRouting, TextureAssetsReachTheTextureHandler)
     // Warm: the request path now resolves to the thumbnail, not the source.
     const std::string warm = fixture.Service.GetOrRequest(source, 128, nullptr);
     EXPECT_EQ(warm, expected.generic_string());
-}
-
-// A .prefab file has no tile until the prefab handler is registered; then the service serves its glyph.
-TEST(ThumbnailServiceRouting, PrefabFilesReachThePrefabHandler)
-{
-    ServiceFixture fixture("prefab");
-    const auto source = fixture.Root / "Assets" / "Crate.prefab";
-    EXPECT_TRUE(fixture.Service.GetOrRequest(source, 128, nullptr).empty());
-
-    fixture.Service.RegisterHandler(GameEngine::AssetType::Prefab,
-                                    std::make_unique<GameEngine::Editor::PrefabThumbnailHandler>());
-    EXPECT_EQ(fixture.Service.GetOrRequest(source, 128, nullptr),
-              GameEngine::Editor::PrefabThumbnailHandler::kGlyphPath);
 }
 
 // SetCacheRoot must reach a handler registered before it, and one registered
@@ -332,7 +327,7 @@ TEST(ThumbnailServiceRouting, CacheRootReachesHandlersRegisteredEitherSide)
 
     Recorder recorder;
     service.GetOrRequest(source, 128, recorder.Callback());
-    ASSERT_TRUE(recorder.WaitForCount(1));
+    ASSERT_TRUE(recorder.PumpUntilCount(service, 1));
     EXPECT_EQ(recorder.Results[0],
               (cacheRoot / TextureThumbnailHandler::MakeCacheFileName(source)).generic_string());
 }
@@ -448,143 +443,4 @@ TEST(ThumbnailServiceRouting, FolderBakeReportsFilesMissingFromDiskInsteadOfQueu
     ASSERT_EQ(last.MissingFromDisk.size(), 1u);
     EXPECT_EQ(last.MissingFromDisk[0].filename(), std::filesystem::path("deleted.fbx"));
     fixture.Service.SetFolderBakeListener({});
-}
-
-// A Cube LUT preview is named by everything it shows: the same request is the same texture, a
-// change of look, intensity, stage, source, size, content or owner is a different one, and the name
-// reads back as the request. The look-alone band does not depend on the LUT's intensity or stage,
-// so editing them leaves its name alone.
-TEST(ThumbnailServiceRouting, CubeLutStripBandsAreKeyedOnWhatTheyShow)
-{
-    using namespace GameEngine;
-    CubeLutStripRequest request{};
-    request.Lut = GUID("33333333-3333-3333-3333-333333333333");
-    request.Owner = 5;
-    request.Intensity = 0.8f;
-    request.Look = 2;
-    request.Stage = 1;
-    request.Source = Rendering::Passes::CubeLutPreviewSource::Probes;
-    request.Width = 256;
-    request.Height = 12;
-    const std::string key = MakeCubeLutStripKey(request);
-    ASSERT_FALSE(key.empty());
-    EXPECT_EQ(MakeCubeLutStripKey(request), key);
-
-    const auto parsed = ParseCubeLutStripKey("engine:" + key);
-    ASSERT_TRUE(parsed.has_value()) << key;
-    EXPECT_EQ(parsed->Lut, request.Lut);
-    EXPECT_EQ(parsed->Owner, request.Owner);
-    EXPECT_FLOAT_EQ(parsed->Intensity, request.Intensity);
-    EXPECT_EQ(parsed->Look, request.Look);
-    EXPECT_EQ(parsed->Stage, request.Stage);
-    EXPECT_EQ(parsed->Source, request.Source);
-    EXPECT_EQ(parsed->Width, request.Width);
-    EXPECT_EQ(parsed->Height, request.Height);
-    EXPECT_EQ(parsed->Content, request.Content);
-    EXPECT_EQ(MakeCubeLutStripKey(*parsed), key);
-
-    auto differs = [&](auto mutate) {
-        CubeLutStripRequest other = request;
-        mutate(other);
-        return MakeCubeLutStripKey(other) != key;
-    };
-    EXPECT_TRUE(differs([](CubeLutStripRequest& r) { r.Look = 1; }));
-    EXPECT_TRUE(differs([](CubeLutStripRequest& r) { r.Intensity = 0.5f; }));
-    EXPECT_TRUE(differs([](CubeLutStripRequest& r) { r.Stage = 0; }));
-    EXPECT_TRUE(differs([](CubeLutStripRequest& r) { r.Source = Rendering::Passes::CubeLutPreviewSource::Ramp; }));
-    EXPECT_TRUE(differs([](CubeLutStripRequest& r) { r.Width = 64; }));
-    EXPECT_TRUE(differs([](CubeLutStripRequest& r) { r.Owner = 6; }));
-    EXPECT_TRUE(differs([](CubeLutStripRequest& r) { r.Content = CubeLutStripContent::Sheet; }));
-    EXPECT_TRUE(differs([](CubeLutStripRequest& r) { r.Lut = GUID("44444444-4444-4444-4444-444444444444"); }));
-
-    CubeLutStripRequest lookAlone = request;
-    lookAlone.Content = CubeLutStripContent::LookAlone;
-    CubeLutStripRequest lookAloneEdited = lookAlone;
-    lookAloneEdited.Intensity = 0.25f;
-    lookAloneEdited.Stage = 0;
-    EXPECT_EQ(MakeCubeLutStripKey(lookAloneEdited), MakeCubeLutStripKey(lookAlone));
-
-    CubeLutStripRequest none = request;
-    none.Lut = GUID{};
-    EXPECT_TRUE(MakeCubeLutStripKey(none).empty()) << "no LUT, no strip";
-    EXPECT_FALSE(ParseCubeLutStripKey("engine:cubelut-strip-unknown").has_value());
-    EXPECT_FALSE(ParseCubeLutStripKey("engine:model-thumb-1").has_value());
-
-    // Nothing renders without a device.
-    ThumbnailService service(nullptr);
-    service.RegisterHandler(AssetType::CubeLut, std::make_unique<CubeLutThumbnailHandler>(nullptr, nullptr));
-    constexpr uint64_t kWindow = 7;
-    service.EnsureEngineThumbnailRequested(kWindow, "engine:" + key);
-    EXPECT_FALSE(service.IsEngineThumbnailReadyForWindow(kWindow, "engine:" + key));
-}
-
-// Tuning a LUT never grows a window's textures: each inspector field holds one live texture per
-// band (content, source and size), and a new value retires the one it replaced. Asset thumbnails,
-// keyed by asset and size, are never retired.
-TEST(ThumbnailServiceRouting, CubeLutStripEditsRetireTheTexturesTheyReplace)
-{
-    using namespace GameEngine;
-    CubeLutStripBands bands;
-    CubeLutStripRequest request{};
-    request.Lut = GUID("33333333-3333-3333-3333-333333333333");
-    request.Owner = 9;
-
-    request.Content = CubeLutStripContent::LookAlone;
-    ASSERT_TRUE(bands.Open(MakeCubeLutStripKey(request)));
-    constexpr int kCommits = 40;
-    request.Content = CubeLutStripContent::WithLut;
-    for (int i = 0; i < kCommits; ++i)
-    {
-        request.Intensity = static_cast<float>(i) / static_cast<float>(kCommits);
-        ASSERT_TRUE(bands.Open(MakeCubeLutStripKey(request)));
-        ASSERT_TRUE(bands.Open(MakeCubeLutStripKey(request))) << "reopening a live texture";
-    }
-    EXPECT_EQ(bands.Live().size(), 2u) << "one look-alone and one with-LUT texture for the field";
-    EXPECT_EQ(bands.TakeRetired().size(), static_cast<size_t>(kCommits - 1));
-    EXPECT_TRUE(bands.TakeRetired().empty());
-
-    // Another inspector showing the same LUT at the same size is another owner: it retires nothing.
-    CubeLutStripRequest otherOwner = request;
-    otherOwner.Owner = 10;
-    ASSERT_TRUE(bands.Open(MakeCubeLutStripKey(otherOwner)));
-    EXPECT_EQ(bands.Live().size(), 3u);
-    EXPECT_TRUE(bands.TakeRetired().empty()) << "two inspectors do not retire each other's textures";
-    EXPECT_EQ(bands.TakeAll().size(), 3u);
-    request.Content = CubeLutStripContent::LookAlone;
-    ASSERT_TRUE(bands.Open(MakeCubeLutStripKey(request)));
-    request.Content = CubeLutStripContent::WithLut;
-    ASSERT_TRUE(bands.Open(MakeCubeLutStripKey(request)));
-
-    // The field's probe band and its enlarged view's ramp band are other slots: neither retires
-    // the ramp band beside it.
-    CubeLutStripRequest probes = request;
-    probes.Source = Rendering::Passes::CubeLutPreviewSource::Probes;
-    ASSERT_TRUE(bands.Open(MakeCubeLutStripKey(probes)));
-    CubeLutStripRequest enlarged = request;
-    enlarged.Width = 1024;
-    enlarged.Height = 28;
-    ASSERT_TRUE(bands.Open(MakeCubeLutStripKey(enlarged)));
-    EXPECT_EQ(bands.Live().size(), 4u);
-    EXPECT_TRUE(bands.TakeRetired().empty());
-    EXPECT_EQ(bands.TakeAll().size(), 4u);
-    request.Content = CubeLutStripContent::LookAlone;
-    ASSERT_TRUE(bands.Open(MakeCubeLutStripKey(request)));
-    request.Content = CubeLutStripContent::WithLut;
-    ASSERT_TRUE(bands.Open(MakeCubeLutStripKey(request)));
-
-    // Two asset thumbnails at two sizes stay live beside the field's two.
-    CubeLutStripRequest thumbnail{};
-    thumbnail.Lut = request.Lut;
-    thumbnail.Content = CubeLutStripContent::Sheet;
-    thumbnail.Width = thumbnail.Height = 128;
-    ASSERT_TRUE(bands.Open("engine:" + MakeCubeLutStripKey(thumbnail)));
-    thumbnail.Width = 448;
-    thumbnail.Height = 112;
-    ASSERT_TRUE(bands.Open(MakeCubeLutStripKey(thumbnail)));
-    EXPECT_EQ(bands.Live().size(), 4u);
-    EXPECT_TRUE(bands.TakeRetired().empty());
-
-    EXPECT_FALSE(bands.Open("engine:cubelut-strip-unknown"));
-    EXPECT_EQ(bands.TakeAll().size(), 4u);
-    EXPECT_TRUE(bands.Live().empty());
 }

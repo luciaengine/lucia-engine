@@ -22,6 +22,7 @@
 #include "Assets/MaterialAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/TextureAsset.h"
+#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
@@ -35,8 +36,8 @@
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
-#include "Rendering/Camera/CameraDerivation.h"
+#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/CameraDerivation.h"
 #include "Rendering/Core/CullingStrategy.h"
 #include "Rendering/Core/FrustumCullingStrategy.h"
 #include "Rendering/Core/GPUCulling.h"
@@ -44,14 +45,14 @@
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "Rendering/Materials/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
-#include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
-#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
+#include "Rendering/Utils/CubeLutFileParser.h"
+#include "Rendering/Utils/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
@@ -152,8 +153,12 @@ RenderServices::PipelineOutputRG RenderServices::GetPipelineOutputRG(
         return result;
     // Frame-identity guard: a blackboard declared against another frame (or
     // a stale incarnation of this one) holds dead frame-local ids.
-    if (!instance->FrameResourcesFor(&frame))
+    const auto* resources = instance->FrameResourcesFor(&frame);
+    if (!resources)
         return result;
+    const auto viewInfo = resources->Views.find(viewId);
+    if (viewInfo != resources->Views.end())
+        result.PixelPerfectCrossing = viewInfo->second.PixelPerfectCrossing;
     result.Out = instance->GetOutputRG(viewId, "FinalColor");
     if (result.Out.IsValid())
         result.Physical = frame.PhysicalTexture(result.Out);
@@ -260,10 +265,7 @@ void RenderServices::BeginWorldDrawFrame()
     m_WorldBeginFrameIndex = frameIdx;
     m_WorldDrawListsBuiltFrameIndex = 0xFFFFFFFFFFFFFFFFull;
     m_WorldSubmissionCountThisFrame.store(0, std::memory_order_relaxed);
-    // The sort bracket of this app frame. BuildWorldBatchKeys writes it when it runs,
-    // so a frame that builds no keys reports zero cost, not the last frame's value.
-    m_RenderTimelineStats.SortMs = 0.0;
-    m_RenderTimelineStats.SortViewCount = 0;
+    m_WorldWeatherWind.clear();
     // Rebuilt from this frame's submissions; a world that stops submitting
     // deforming content must stop forcing its caches to recompute.
     m_AnimatedVertexModifierWorlds.clear();

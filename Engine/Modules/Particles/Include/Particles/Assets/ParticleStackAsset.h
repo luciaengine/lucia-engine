@@ -2,7 +2,7 @@
 
 #include "AssetCore/Asset.h"
 #include "Particles/CompiledParticleStack.h"
-#include "Particles/ParticleStack/ParticleStackDocument.h"
+#include "Particles/ParticleStackDocument.h"
 
 #include <filesystem>
 #include <memory>

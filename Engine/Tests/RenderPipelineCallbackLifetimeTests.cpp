@@ -8,7 +8,7 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "ScopedPipelineFrame.h"
 #include "TestDeviceHelper.h"
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h"
 
 #include <memory>
 #include <vector>
@@ -68,7 +68,7 @@ void CheckCallbackRetirement(bool dynamicModule, bool shutdown = false)
     if (dynamicModule)
     {
         // The probe is staged beside this executable, like every runtime dependency.
-        module = NativeScripting::UserModuleHandle(ApplicationPaths::GetExecutableDirectory() / CALLBACK_PROBE_MODULE_NAME);
+        module = NativeScripting::UserModuleHandle(PathUtils::GetExecutableDirectory() / CALLBACK_PROBE_MODULE_NAME);
         ASSERT_TRUE(module.IsValid()) << module.LastError();
         registerCallback = module.GetFunction<RegisterCallback>("RegisterCallbackProbe");
         ASSERT_NE(registerCallback, nullptr);
@@ -85,7 +85,7 @@ void CheckCallbackRetirement(bool dynamicModule, bool shutdown = false)
             services.EnsureFeature<ObservedFeature>(featureAlive);
         const auto camera = services.Views().AllocateCamera("CallbackCamera");
         const auto view = services.Views().AllocateView("CallbackView", camera);
-        services.Views().SetViewRenderLayerMask(view, GameEngine::Rendering::RenderLayerMask::Default());
+        services.Views().SetViewRenderLayerMask(view, 1);
         services.Views().SetViewTargets(view, 0, 0, 0, ViewClearConfig{});
         const auto registerGeneration = [&](uint64_t generation)
         {
@@ -213,7 +213,7 @@ void CheckStreamRetirement(bool abandonedSameFrame)
         int destroyed = 0, executed = 0;
         const auto camera = services.Views().AllocateCamera("StreamCamera");
         const auto view = services.Views().AllocateView("StreamView", camera);
-        services.Views().SetViewRenderLayerMask(view, GameEngine::Rendering::RenderLayerMask::Default());
+        services.Views().SetViewRenderLayerMask(view, 1);
         services.Views().SetViewTargets(view, 0, 0, 0, ViewClearConfig{});
         ECS::SetActiveRegistrationModule("StreamModule", 1);
         const bool registered = services.Spine().RegisterPipelineNodeType("CallbackProbe", [&]
@@ -355,4 +355,75 @@ TEST(RenderPipelineCallbackLifetime, RemovingAnUnregisteredFrameDoesNotDiscardIt
         services.Shutdown();
     }
     device->Shutdown();
+}
+
+namespace
+{
+class ViewGrowthProbeNode final : public IRenderPipelineNode
+{
+public:
+    explicit ViewGrowthProbeNode(int& observed) : m_Observed(observed) {}
+    const char* GetTypeName() const override { return "ViewGrowthProbe"; }
+    bool Initialize(std::string, std::string, std::string*) override { return true; }
+    void DeclareForView(ViewDeclare& d) override
+    {
+        const auto id = d.View.id;
+        d.Services.Views().SetViewRenderLayerMask(id, 2);
+        // The declaration keeps the frame's input, even if a utility capture
+        // changes or grows the live registry while a node is declaring.
+        EXPECT_EQ(d.View.renderLayerMask, 1u);
+        for (int i = 0; i < 128; ++i)
+        {
+            const auto camera = d.Services.Views().AllocateCamera("UtilityCamera");
+            d.Services.Views().AllocateView("UtilityCapture", camera,
+                ViewPurpose::UtilityCapture, ViewParticipation::OnDemand);
+        }
+        EXPECT_EQ(d.View.id, id);
+        EXPECT_EQ(d.View.renderLayerMask, 1u);
+        ++m_Observed;
+    }
+private:
+    int& m_Observed;
+};
+}
+
+TEST(RenderPipelineViewLifetime, UtilityViewAllocationKeepsDeclarationSnapshotAlive)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device) GTEST_SKIP() << "No Vulkan device available";
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    const auto camera = services.Views().AllocateCamera("MainCamera");
+    const auto view = services.Views().AllocateView("MainView", camera);
+    services.Views().SetViewRenderLayerMask(view, 1);
+    int observed = 0;
+    ASSERT_TRUE(services.Spine().RegisterPipelineNodeType("ViewGrowthProbe", [&]
+        { return std::make_unique<ViewGrowthProbeNode>(observed); }, true));
+    RenderPipelineBlueprint blueprint;
+    blueprint.pipelineName = "ViewGrowth";
+    blueprint.contentHash = 0xACCE551;
+    RenderPipelineBlueprint::Pass pass;
+    pass.id = "Grow"; pass.type = "ViewGrowthProbe";
+    pass.enabled = true; pass.perView = true;
+    pass.passJson = R"({"type":"ViewGrowthProbe"})";
+    blueprint.passes.push_back(pass);
+    services.Spine().SetActiveRenderPipelineBlueprint(blueprint);
+    RenderGraph::RGResourcePool persistent(device.get());
+    RenderGraph::RGTransientPool transient(device.get());
+    RenderGraph::RGUploadRing ring(device.get(), 2, 262144);
+    RenderGraph::RGFrame frame(device.get(), &persistent, &transient, &ring);
+    Testing::ScopedPipelineFrame registration(services.Spine(), frame);
+    frame.BeginFrame(0);
+    TextureDesc desc{};
+    desc.width = desc.height = 16;
+    desc.format = static_cast<uint32_t>(TextureFormat::RGBA8_UNORM);
+    desc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget);
+    const auto color = frame.CreateTexture("ViewGrowth.Color", desc);
+    services.BeginWorldDrawFrame();
+    services.BuildWorldBatchKeys();
+    const ViewTargetsRG targets{view, color, {}, {}};
+    RenderServices::FrameGraphBuildParamsRG params{};
+    params.ViewTargets = std::span<const ViewTargetsRG>(&targets, 1);
+    services.Spine().BuildFrameGraph(frame, params);
+    EXPECT_EQ(observed, 1);
 }

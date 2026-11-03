@@ -5,6 +5,7 @@
 #include "UI/UniversalSearchProvider.h"
 
 #include "JobSystem/WorkStealingThreadPool.h"
+#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -79,13 +80,9 @@ bool Contains(const std::vector<std::string>& labels, const std::string& label)
 
 std::filesystem::path MakeTempRoot(const char* label)
 {
-    static std::atomic<uint32_t> counter{0};
-    const auto threadHash = static_cast<uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
-    std::filesystem::path root = std::filesystem::temp_directory_path() /
-        ("ge-universal-search-" + std::string(label) + "-" + std::to_string(threadHash) + "-" +
-         std::to_string(counter.fetch_add(1)));
+    std::filesystem::path root =
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ge-universal-search-" + std::string(label));
     std::error_code ec;
-    std::filesystem::remove_all(root, ec);
     std::filesystem::create_directories(root, ec);
     return root;
 }

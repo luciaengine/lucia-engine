@@ -20,10 +20,6 @@ class Vector3Field : public Field<Rendering::Vector3>
 public:
     using ValueType = Rendering::Vector3;
 
-    /// A label drag begins past this horizontal distance from the press. Below it the press is a
-    /// click: the value does not move and nothing commits.
-    static constexpr float kLabelDragThresholdPx = 3.0f;
-
     Vector3Field();
 
     // Override to keep child TextFields in sync with the stored value.
@@ -51,7 +47,6 @@ public:
 private:
     void OnComponentChanged(bool isFinal);
     void SetupLabelDrag(Label* label, FloatField* field);
-    void CancelLabelDrag(UIEvent& e, Label* label, FloatField* field);
 
     Label* m_LabelX = nullptr;
     Label* m_LabelY = nullptr;
@@ -287,21 +282,13 @@ inline void Vector3Field::SetupLabelDrag(Label* label, FloatField* field)
         }
     });
 
-    // Mouse move: adjust the value once the drag has begun past kLabelDragThresholdPx
+    // Mouse move: adjust value; only count as "drag" if moved past threshold (avoids jitter blocking double-click reset)
+    constexpr float kDragThresholdPx = 3.0f;
     label->RegisterEventHandler(kEventMouseMove, [this, field](UIEvent& e) {
         if (m_DraggingLabel && m_DraggingField == field) {
             float deltaX = e.X - m_DragStartX;
-            if (!m_LabelDragDidMove)
-            {
-                if (std::fabs(deltaX) <= kLabelDragThresholdPx)
-                {
-                    e.Stop();
-                    return;
-                }
+            if (std::fabs(deltaX) > kDragThresholdPx)
                 m_LabelDragDidMove = true;
-                if (UIManager* owner = GetOwnerManager())
-                    owner->LockCapturedPointer();
-            }
             float sensitivity = 0.1f;
             float newValue = m_DragStartValue + deltaX * sensitivity;
             // The label scrub writes the component directly, so it has to apply
@@ -318,30 +305,10 @@ inline void Vector3Field::SetupLabelDrag(Label* label, FloatField* field)
             label->RemoveClass("dragging");
             m_DraggingLabel = nullptr;
             m_DraggingField = nullptr;
-            if (m_LabelDragDidMove)
-                OnComponentChanged(true);
+            OnComponentChanged(true);
             e.Stop();
         }
     });
-
-    label->RegisterEventHandler(kEventMouseCancel, [this, label, field](UIEvent& e) { CancelLabelDrag(e, label, field); });
-}
-
-// Escape or another button during a locked label drag: the component goes back to where the drag
-// started, and that value commits.
-inline void Vector3Field::CancelLabelDrag(UIEvent& e, Label* label, FloatField* field)
-{
-    if (m_DraggingLabel != label || m_DraggingField != field)
-        return;
-    label->RemoveClass("dragging");
-    m_DraggingLabel = nullptr;
-    m_DraggingField = nullptr;
-    if (m_LabelDragDidMove)
-    {
-        field->SetValue(m_DragStartValue);
-        OnComponentChanged(true);
-    }
-    e.Stop();
 }
 
 } // namespace GameEngine

@@ -2,8 +2,8 @@
 
 #include "EngineLogCapture.h"
 
-#include "Ocean/OceanPreset/OceanPresetAsset.h"
-#include "Ocean/OceanPreset/OceanPresetOverrideValidator.h"
+#include "Ocean/OceanPresetAsset.h"
+#include "Ocean/OceanPresetOverrideValidator.h"
 #include "Components/Rendering/Ocean.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
@@ -150,9 +150,9 @@ TEST(OceanPresetOverrideValidatorTests, UnknownOverrideIsReportedOnceWhenItsBind
     // A granted write re-reads the binding: the new identity is reported, the one
     // already reported is not.
     world.Query<ECS::Write<Components::OceanPresetBinding>>().Each(
-        [](Components::OceanPresetBinding& written)
+        [unstamped](ECS::Writable<Components::OceanPresetBinding> written)
         {
-            written.Overrides[8].FieldIdentifier = unstamped;
+            written.Mutable().Overrides[8].FieldIdentifier = unstamped;
         });
     validator.Validate(world);
     Logger::Log::Flush();

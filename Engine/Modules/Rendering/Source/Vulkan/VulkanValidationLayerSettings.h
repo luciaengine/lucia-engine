@@ -5,6 +5,9 @@
 
 #pragma once
 
+#include "Platform/Environment.h"
+#include "Types/StringUtils.h"
+
 #include <vulkan/vulkan.h>
 
 #include <array>
@@ -14,27 +17,6 @@
 
 namespace GameEngine {
 namespace Rendering {
-
-    /// Parse the GE_VK_SYNC_VALIDATION toggle. Split out from the env read so the
-    /// policy is unit-testable. OFF unless explicitly requested: synchronization
-    /// validation shadows every resource access and revalidates every submit, so a
-    /// run costs multiples of its normal frame time — it is a diagnostic mode for
-    /// hunting a specific hazard, never a default. Same leading-character idiom as
-    /// ParseGpuCheckpointsEnabled.
-    inline bool ParseSyncValidationEnabled(const char* envValue) noexcept
-    {
-        return envValue != nullptr && envValue[0] != '\0' && envValue[0] != '0' &&
-               envValue[0] != 'f' && envValue[0] != 'F';
-    }
-
-    /// Parse the GE_VK_GPU_AV toggle. Same leading-character idiom as
-    /// ParseSyncValidationEnabled, and OFF for the same reason: GPU-AV inserts a
-    /// validation dispatch ahead of every indirect draw/dispatch it checks.
-    inline bool ParseGpuAssistedValidationEnabled(const char* envValue) noexcept
-    {
-        return envValue != nullptr && envValue[0] != '\0' && envValue[0] != '0' &&
-               envValue[0] != 'f' && envValue[0] != 'F';
-    }
 
     /// How the shader-instrumentation request is decided
     /// (GE_VK_GPU_AV_SHADER_INSTRUMENTATION).
@@ -49,14 +31,16 @@ namespace Rendering {
         ForceOff,
     };
 
-    /// Parse GE_VK_GPU_AV_SHADER_INSTRUMENTATION. Unset means Auto, so the plain
-    /// GE_VK_GPU_AV opt-in keeps deciding on its own; 'a' spells Auto back out
-    /// explicitly. Otherwise the leading-character idiom the other toggles use.
+    /// Parse GE_VK_GPU_AV_SHADER_INSTRUMENTATION. Unset, empty or "auto" (any
+    /// case) means Auto, so the plain GE_VK_GPU_AV opt-in keeps deciding on its
+    /// own. The off values every environment switch shares
+    /// (Platform::IsEnvironmentSwitchOffValue) force it off; any other value
+    /// forces it on.
     inline GpuAvShaderInstrumentationMode ParseGpuAvShaderInstrumentationMode(const char* envValue) noexcept
     {
-        if (envValue == nullptr || envValue[0] == '\0' || envValue[0] == 'a' || envValue[0] == 'A')
+        if (envValue == nullptr || envValue[0] == '\0' || EqualsIgnoreCase(envValue, "auto"))
             return GpuAvShaderInstrumentationMode::Auto;
-        if (envValue[0] == '0' || envValue[0] == 'f' || envValue[0] == 'F')
+        if (Platform::IsEnvironmentSwitchOffValue(envValue))
             return GpuAvShaderInstrumentationMode::ForceOff;
         return GpuAvShaderInstrumentationMode::ForceOn;
     }

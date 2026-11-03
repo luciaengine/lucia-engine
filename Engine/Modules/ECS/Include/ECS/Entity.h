@@ -2,12 +2,12 @@
 
 #include "ECS/ECS.h"
 #include "ECS/ChangeFilter.h"
-#include "ECS/Component/ComponentConcepts.h"
-#include "ECS/Component/ComponentFlags.h"
-#include "ECS/Component/ComponentHook.h"
+#include "ECS/ComponentConcepts.h"
+#include "ECS/ComponentFlags.h"
+#include "ECS/ComponentHook.h"
 #include "ECS/Components.h"
 #include "Types/ScopedSubscription.h"
-#include "ECS/Component/ComponentDirtyFeed.h"
+#include "ECS/ComponentDirtyFeed.h"
 #include "ECS/LifecycleEvents.h"
 #include "ECS/AutoRegistration.h"
 #include "ECS/QueryPolicy.h"
@@ -15,7 +15,6 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
-#include <optional>
 #include <shared_mutex>
 #include <span>
 #include <tuple>
@@ -26,14 +25,9 @@ namespace ECS {
 
 // Forward declarations
 class World;
-class ArchetypeMatchCache;      // ECS/Archetype/ArchetypeMatchCache.h
-class ArchetypeMatchList;       // ECS/Archetype/ArchetypeMatchList.h
 class UnresolvedComponentStore; // ECS/UnresolvedComponentStore.h
-class ClonePlan;                // ECS/ClonePlan.h
-class EntityRemap;              // ECS/EntityRemap.h
-struct ScriptWritableRange;     // ECS/Component/ComponentFieldRegistry.h
-struct ComponentLayoutChange;   // ECS/Component/ComponentMigration.h
-struct FieldByteMove;           // ECS/Component/ComponentMigration.h
+struct ComponentLayoutChange;   // ECS/ComponentMigration.h
+struct FieldByteMove;           // ECS/ComponentMigration.h
 struct ComponentHookSubscriptionState;
 
 template<QualifiedComponent... Ts> class Query;
@@ -102,12 +96,7 @@ struct WorldConfig {
     size_t ExpectedEntityCount = 65'536;           // Pre-allocate for this many entities (grows on demand)
     size_t CommandBufferSize = 32768;              // Command buffer size per thread
     bool EnableDebugLogging = false;               // Enable detailed ECS debug logging
-    bool EnableBulkOperations = true;              // Enable direct bulk operations mode
     float ArchetypeGrowthFactor = 1.5f;            // Growth factor for archetype storage
-
-    // Archetype management
-    bool EnableArchetypePruning = false;           // Enable automatic pruning of empty archetypes
-    size_t ArchetypePruningThreshold = 100;        // Prune after this many command processing cycles
 };
 
 // SPSC (single-producer, single-consumer) lock-free command ring buffer.
@@ -251,10 +240,6 @@ private:
 
     // Archetype storage (sorted-vector signatures, hash-keyed for O(1) lookup)
     std::unordered_map<ComponentSignature, std::unique_ptr<Archetype>, ComponentSignatureHash> archetypes;
-    // The archetypes each query filter matches, kept current at every insert into and erase
-    // from `archetypes` (all under worldMutex held exclusively). Read through MatchArchetypes.
-    // Created with the World and never null.
-    std::unique_ptr<ArchetypeMatchCache> m_ArchetypeMatches;
     std::unordered_map<ComponentTypeId, std::size_t> componentSizes;
 
     // Thread-local command buffers: per-thread map keyed by monotonic WorldId.
@@ -294,12 +279,11 @@ private:
     // OnAdd: invoked after a component is first added to an entity (not on update/set of existing).
     // OnSet: invoked after a component's value is written (both initial add and subsequent updates).
     //
-    // Invoke receives the world that runs the hook and the source entity handle.
-    // Callbacks registered via the `void(*)(T&)` API ignore both; the
-    // entity-aware `void(*)(EntityHandle, T&)` API uses the entity; the
-    // world-aware remove hook uses both.
+    // Invoke receives the source entity handle. Callbacks registered via the
+    // legacy `void(*)(T&)` API ignore the entity; the entity-aware
+    // `void(*)(EntityHandle, T&)` API uses it. Both coexist.
     struct ComponentHook {
-        void(*Invoke)(const World&, EntityHandle, void* componentPtr, void* userData);
+        void(*Invoke)(EntityHandle, void* componentPtr, void* userData);
         void* UserData = nullptr;             // per-registration context (e.g. typed callback pointer)
         std::size_t ComponentSize;            // sizeof(T), for batch iteration stride
         uint64 RegistrationId = 0;
@@ -315,8 +299,7 @@ private:
     DenseSignature m_AddHookSignature;
     DenseSignature m_SetHookSignature;
 
-    // Bumped by every structural change. Caches keyed on it (CachedQuery,
-    // RelationIndex, extraction and editor caches) rebuild when it moves.
+    // Query cache invalidation tracking
     std::atomic<std::size_t> structuralChangeVersion{0};
 
     // Change-signaling write-grant counter (ECS/ChangeFilter.h) — the DOTS
@@ -331,7 +314,7 @@ private:
     // Relaxed ordering: consumers order through wave joins, not this counter.
     std::atomic<uint64> m_GlobalSystemVersion{1};
 
-    // Per-entity dirty feed (ECS/Component/ComponentDirtyFeed.h, change-signaling §5
+    // Per-entity dirty feed (ECS/ComponentDirtyFeed.h, change-signaling §5
     // as amended): one subscribed component type per World, set once at
     // world bootstrap before systems run and immutable afterwards (the
     // m_SetHookSignature shape; P3's lifecycle events reuse the pattern).
@@ -361,15 +344,6 @@ private:
     std::size_t m_WorldGeneration = 0;
 
 private:
-    // GetEntityHandleEpoch, and the last epoch Clear handed out: every Clear takes a new one,
-    // so a run of handles once left is never named again by a later Clear.
-    uint64 m_EntityHandleEpoch = 0;
-    uint64 m_LastEntityHandleEpoch = 0;
-    // Per slot, the highest version issued in this run when it is above the slot's own: a
-    // restore brought back an older entity in a slot that had issued newer handles since.
-    // Empty unless a restore needed it; Clear empties it.
-    std::vector<EntityVersion> m_IssuedVersionFloor;
-
     // Bulk operations mode
     bool bulkOperationMode = false;
     // When true, ABI structural operations (create/destroy/add/remove component) queue
@@ -394,10 +368,6 @@ public:
     ~World();
 
     uint64 GetWorldId() const { return m_WorldId; }
-    /// The entity handle epoch (GetEntityHandleEpoch) of the world with id `worldId` (GetWorldId),
-    /// or nullopt when no such world exists in this process. Main thread: the epoch is read
-    /// without the world's lock.
-    static std::optional<uint64> FindLiveEntityHandleEpoch(uint64 worldId);
 
     // Side-table of scene components whose type was not registered at load time (e.g. a user
     // native module still compiling). Preserved verbatim so a save round-trips them, and the
@@ -467,14 +437,6 @@ public:
     // component. Useful for maintaining side indices (e.g. RelationIndex).
     template<Component T>
     ComponentHookToken RegisterOnRemove(void(*callback)(EntityHandle, T&)) {
-        return RegisterComponentHook<T>(ComponentHookKind::Remove, callback);
-    }
-
-    // World-aware variant. Also receives the world the component leaves, for a
-    // resource that belongs to one world while copies of the component's bytes
-    // may sit in another (a copy's teardown must not release the original's).
-    template<Component T>
-    ComponentHookToken RegisterOnRemove(void(*callback)(const World&, EntityHandle, T&)) {
         return RegisterComponentHook<T>(ComponentHookKind::Remove, callback);
     }
 
@@ -564,21 +526,21 @@ public:
     void InvokeRemoveHook(ComponentTypeId typeId, EntityHandle entity, void* ptr) const {
         auto it = m_OnRemoveHooks.find(typeId);
         if (it != m_OnRemoveHooks.end()) {
-            it->second.Invoke(*this, entity, ptr, it->second.UserData);
+            it->second.Invoke(entity, ptr, it->second.UserData);
         }
     }
 
     void InvokeAddHook(ComponentTypeId typeId, EntityHandle entity, void* ptr) const {
         auto it = m_OnAddHooks.find(typeId);
         if (it != m_OnAddHooks.end()) {
-            it->second.Invoke(*this, entity, ptr, it->second.UserData);
+            it->second.Invoke(entity, ptr, it->second.UserData);
         }
     }
 
     void InvokeSetHook(ComponentTypeId typeId, EntityHandle entity, void* ptr) const {
         auto it = m_OnSetHooks.find(typeId);
         if (it != m_OnSetHooks.end()) {
-            it->second.Invoke(*this, entity, ptr, it->second.UserData);
+            it->second.Invoke(entity, ptr, it->second.UserData);
         }
     }
 
@@ -674,8 +636,7 @@ public:
     // Editor/tooling: destroy without releasing the entity index back to the free list.
     // This allows undo/redo flows to revive the same EntityHandle (index+version) later.
     void DestroyEntityImmediatePreserveHandle(EntityHandle entity);
-    // Editor/tooling: revive a previously preserved entity handle (same index+version), taking
-    // its slot off the free list when a restore or a destroy put it there.
+    // Editor/tooling: revive a previously preserved entity handle (same index+version).
     // Returns true on success (or if already alive); false if the handle is incompatible.
     bool ReviveEntityImmediatePreserveHandle(EntityHandle entity);
 
@@ -692,38 +653,6 @@ public:
 
     // Batch create entities from bundle
     std::vector<EntityHandle> CreateBatchFromBundle(size_t count, const ComponentBundle& bundle);
-
-    /**
-     * Plans copies of `entities` of this world for CreateBatchFromWorld: the
-     * entities grouped by archetype and every entity field of their rows
-     * (Parent, and each reflected EntityHandle field) with the entity of the
-     * list it names. A field that names an entity outside the list is copied
-     * as the invalid handle. A source entity listed k times yields k copies;
-     * copy k's fields point at copy k's entities (see ClonePlan).
-     *
-     * Returns false and leaves `plan` empty when an entity is not alive.
-     * The world must not be written during the call.
-     */
-    [[nodiscard]] bool PlanClone(std::span<const EntityHandle> entities, ClonePlan& plan) const;
-
-    /**
-     * Creates one entity in this world for each entry of `plan`, a copy of
-     * its row in `source`, the world the plan was built from: every
-     * component's bytes, then every entity field re-pointed as the plan says.
-     * Rows are copied a chunk run at a time: one memcpy per column for each
-     * run of rows consecutive in a source chunk and in a target chunk. The
-     * source's preserved unknown components and fields are copied with the
-     * rows.
-     *
-     * One lock of this world, one reserve and one Added batch per archetype, so
-     * lifecycle consumers see ordinary adds. Add hooks are not run, as for
-     * CreateBatchFromBundle. Entities are created in plan order.
-     *
-     * `source` must be another world and must not be written during the call.
-     * Returns false and creates nothing when `source` is not the plan's world,
-     * or a planned entity is no longer alive or has changed archetype.
-     */
-    [[nodiscard]] bool CreateBatchFromWorld(const World& source, const ClonePlan& plan, EntityRemap& remap);
 
     // Component operations (thread-safe, deferred by default) -
     // implementations in WorldTemplateImplementations.inl
@@ -767,6 +696,14 @@ public:
     template<Component... Ts>
     void GetComponentsBatch(std::span<const EntityHandle> entities,
                             std::span<std::tuple<const Ts*...>> out) const;
+
+    // Batched write grant, the batch form of GetComponentForWrite: for each
+    // handle, writes the entity's mutable T into `out` (nullptr where the
+    // entity is dead or lacks T) and stamps T's column of the owning chunk,
+    // under one worldMutex shared-lock hold and one version for the batch.
+    // Pointer lifetime matches GetComponentsBatch.
+    template<Component T>
+    void GetComponentsBatchForWrite(std::span<const EntityHandle> entities, std::span<T*> out);
 
     // Check if entity has component
     template<Component T>
@@ -885,11 +822,13 @@ public:
 	    }
 	    std::size_t GetArchetypeCount() const;
 	    std::vector<Archetype*> GetAllArchetypes() const;
-	    // Fills `out` with every archetype the filter matches (ArchetypeFilter::
-	    // Matches). `out` is cleared and reserved once, so a buffer reused across
-	    // calls stops allocating. CachedQuery iterates this copy rather than the
-	    // archetype map: an archetype created while it iterates cannot invalidate
-	    // it. Query reads the World's match cache instead (MatchArchetypes).
+	    // Fills `out` with every archetype the filter matches: contains all of
+	    // Required and Include, shares no component with Exclude, and carries
+	    // none of DisabledExclude except the tags DisabledInclude names back in.
+	    // A null member is no filter at all. `out` is cleared and reserved once,
+	    // so a buffer reused across calls stops allocating. Queries iterate this
+	    // copy rather than the archetype map: an archetype created while a query
+	    // iterates cannot invalidate it.
 	    void CollectMatchingArchetypes(const ArchetypeFilter& filter,
 	                                   std::vector<Archetype*>& out) const;
 	    void SetJobSystem(JobSystem::WorkStealingThreadPool* js) { jobSystem = js; }
@@ -902,10 +841,9 @@ public:
 	    void CopyComponent(EntityHandle src, EntityHandle dst, ComponentTypeId typeId);
 	    EntityHandle CloneEntity(EntityHandle source);
 	    // In-memory snapshots preserve entity handles, including undo-reserved dead
-	    // slots, and record the run they belong to (GetEntityHandleEpoch); a restore keeps
-	    // the world's run only for a snapshot of that run. Restore still resets
-	    // the World's lifecycle generation via Clear(), and leaves the World untouched
-	    // for any stream that is not a snapshot of the current format.
+	    // slots. Restore still resets the World's lifecycle generation via Clear(),
+	    // and leaves the World untouched for any stream that is not a snapshot of
+	    // the current format.
 	    std::vector<uint8_t> SerializeWorld();
 	    void DeserializeWorld(const std::vector<uint8_t>& data);
             void Clear();
@@ -951,25 +889,13 @@ public:
                                             ComponentTypeId typeId,
                                             const void* data,
                                             std::size_t sizeBytes);
-            // A script's write of an engine component: the script's bytes over `writable` (the
-            // type's ScriptWriteRule::Ranges, which the caller has looked up with the rule), and for
-            // every other byte the current value, or the registered defaults when the write adds
-            // the component; then the same body as SetComponentBytesImmediate. A component whose
-            // one run covers every byte takes the script's bytes as they are. False on an add that
-            // keeps some bytes of a component with no registered defaults, a size mismatch, an
-            // unknown type or an invalid entity.
-            bool SetComponentBytesFromScriptImmediate(EntityHandle entity,
-                                                      ComponentTypeId typeId,
-                                                      const void* data,
-                                                      std::size_t sizeBytes,
-                                                      std::span<const ScriptWritableRange> writable);
             bool RemoveComponentByTypeIdImmediate(EntityHandle entity, ComponentTypeId typeId);
 
             // Migrate a component whose byte layout changed across a hot-reload: resize the
             // recorded size + every archetype column that holds it, re-packing each existing
             // instance (preserve same-named fields by name+type+size, default new fields).
-            // Safe to call between frames; takes worldMutex exclusively, drops the baked
-            // move-plans and bumps the structural-change version so CachedQuery re-resolves.
+            // Safe to call between frames; takes worldMutex exclusively and bumps the
+            // structural-change version so query caches and baked move-plans rebuild.
             // Returns true when this world held storage for the component and re-packed it.
             bool MigrateComponentLayout(const ComponentLayoutChange& change);
 
@@ -985,16 +911,9 @@ public:
 
     // ARCHETYPE MANAGEMENT
 
-    // Prune empty archetypes (optional optimization)
-    size_t PruneEmptyArchetypes();
-
     // Compact empty chunks across all archetypes. Frees memory and updates entity metadata.
     // Returns total chunks freed. Safe to call periodically (e.g. after ProcessCommands).
     size_t CompactAllChunks();
-
-    // Configure archetype pruning
-    void SetArchetypePruningEnabled(bool enabled) { config.EnableArchetypePruning = enabled; }
-    void SetArchetypePruningThreshold(size_t threshold) { config.ArchetypePruningThreshold = threshold; }
 
     // Access component size registry (public for ArchetypeTable initialization).
     const std::unordered_map<ComponentTypeId, std::size_t>& GetComponentSizes() const { return componentSizes; }
@@ -1049,7 +968,7 @@ public:
     uint64 GetEntityColumnVersion(EntityHandle entity, ComponentTypeId typeId) const;
 
     // Record write grants for a batch of entities' `typeId` column — the same
-    // stamp GetComponentForWrite and a Write<T> query visit issue, for writers
+    // stamp GetComponentForWrite and a Writable<T> write issue, for writers
     // that mutate through pointers cached OUTSIDE the granting call (today:
     // the transform hierarchy's node cache, whose WorldTransform pointers are
     // captured once at topology rebuild). Without it the write is invisible to
@@ -1067,7 +986,7 @@ public:
                                   ComponentTypeId typeId);
 
     // ------------------------------------------------------------------
-    // Per-entity component dirty feed (ECS/Component/ComponentDirtyFeed.h, §5 P2).
+    // Per-entity component dirty feed (ECS/ComponentDirtyFeed.h, §5 P2).
     // ------------------------------------------------------------------
 
     // Subscribe the feed to ONE component type (WorldTransform in P2). Call
@@ -1271,16 +1190,6 @@ public:
     // consumer needs regardless).
     uint64 GetLifecycleResetGeneration() const { return m_LifecycleEvents.ResetGeneration(); }
 
-    // Which run of entity handles the world's handles belong to. Within one run no handle is
-    // issued twice. Clear starts a new run (entity versions restart, so a handle kept from an
-    // earlier run may name an unrelated entity). DeserializeWorld brings back a snapshot's
-    // handles: a snapshot of the run the world is in keeps the run, and every slot stays past
-    // the versions it issued, so an entity created after the snapshot never has its handle
-    // issued again; a snapshot from an earlier run starts a new one. Data kept outside the
-    // world by entity handle stays valid while this is unchanged, including through the
-    // in-place restore of a snapshot, which still moves GetLifecycleResetGeneration.
-    uint64 GetEntityHandleEpoch() const { return m_EntityHandleEpoch; }
-
     // Swap generation — the consumer-cadence guard (F1 pattern). Increments
     // once per SwapLifecycleEvents(). A consumer caches the generation it
     // last consumed; on observing a gap > 1 (it was disabled or throttled
@@ -1323,25 +1232,6 @@ public:
     Archetype* GetOrCreateArchetype(const ComponentSignature& signature);
 
 private:
-    // A query's snapshot of the archetypes its filter matches, read under one hold of
-    // worldMutex: the World's list for the filter, the archetypes the list held, and the
-    // structural version they are current for.
-    struct MatchedArchetypes
-    {
-        const ArchetypeMatchList* List = nullptr;
-        std::span<Archetype* const> Archetypes;
-        std::size_t StructuralVersion = 0;
-    };
-
-    // The archetypes `filter` matches, from a list this World keeps current as archetypes are
-    // created and destroyed: Query's iteration modes read it. A list gains an archetype as the
-    // archetype is created, before the creating call places its first entity; the lock makes
-    // sure no archetype in the snapshot is still being built. The first call with a filter
-    // registers it (worldMutex exclusive, allocates); every later call is a lookup under
-    // worldMutex shared that allocates nothing. Every signature of `filter` has its hash
-    // computed already (ArchetypeMatchCache::Find).
-    MatchedArchetypes MatchArchetypes(const ArchetypeFilter& filter);
-
     // Shared lookup behind GetComponent (const, Stamp=false) and
     // GetComponentForWrite (Stamp=true). Stamp=true records the write grant
     // for the requested column under the same shared lock; the const path
@@ -1382,7 +1272,7 @@ private:
 
     // Unified add-or-set body behind typed AddComponentImpl<T>, type-erased
     // SetComponentBytesImmediate, and (via the component handlers) deferred
-    // ADD_COMPONENT/SET_COMPONENT playback. The fast
+    // ADD_COMPONENT/ADD_REQUIRED_COMPONENT/SET_COMPONENT playback. The fast
     // path is a data-only SET; the structural branch is an ADD — that
     // classification happens only here.
     // Components are trivially copyable (Component concept), so the raw byte
@@ -1394,9 +1284,7 @@ private:
     // Shared removal behind C++ operations and runtime blob removal. The tri-state
     // result lets C++ operations invalidate queries even when the component is
     // absent, while blob removal reports absence without a structural change.
-    // RequiredByAnother: the entity holds a component that requires this one
-    // (RequiredComponents.h); remove that one first. Logged with both names.
-    enum class RemoveComponentResult { Removed, ComponentAbsent, InvalidEntity, RequiredByAnother };
+    enum class RemoveComponentResult { Removed, ComponentAbsent, InvalidEntity };
     RemoveComponentResult RemoveComponentInternal(EntityHandle entity, ComponentTypeId typeId);
 
     // ----------------------------------------------------------------
@@ -1443,58 +1331,13 @@ private:
 
     // Create entity without acquiring mutex (for internal use when mutex is already held)
     EntityHandle CreateEntityUnsafe();
-    // CreateBatchFromWorld's row copy, with worldMutex held: puts the entities of plan group
-    // `group` in `target` as runs of consecutive rows, and copies with one memcpy per column
-    // each part of a run whose source rows are consecutive in one source chunk.
-    void CopyGroupRows(const World& source, const ClonePlan& plan, uint32 group, Archetype& target,
-                       const EntityRemap& remap);
-    // The version the next entity in `index` takes: one past the highest the slot issued in
-    // this run of handles. Caller holds worldMutex.
-    EntityVersion NextIssuedVersion(EntityIndex index) const;
 
     // Get thread-local command buffer
     CommandBuffer& GetCommandBuffer();
 
     // Archetype graph edge resolution: given a source archetype and a component to add/remove,
     // return the target archetype, creating it if needed. Caches the edge for O(1) future lookups.
-    // The add edge's target holds typeId and everything it requires
-    // (RequiredComponents.h), so a structural add is one move.
     Archetype* GetOrCreateArchetypeForAdd(Archetype* source, ComponentTypeId typeId);
-
-    // Adds to `signature` every component its members require, transitively,
-    // and registers the sizes of the types it adds. Caller holds worldMutex
-    // exclusively.
-    void AddRequiredClosure(ComponentSignature& signature);
-
-    // A column a requirement added to an archetype beyond the components a
-    // creation call supplies, with the value it starts with.
-    struct RequiredColumn
-    {
-        uint32_t Offset = 0;
-        std::vector<std::uint8_t> Default;
-    };
-
-    // The columns of `archetype` outside `supplied`, each with its required
-    // type's default value. Resolved once per creation call or batch.
-    void ResolveRequiredColumns(Archetype& archetype, const ComponentSignature& supplied,
-                                std::vector<RequiredColumn>& out) const;
-
-    // Writes each column's default value for the entity at `loc`.
-    static void WriteRequiredColumns(Archetype& archetype, EntityLocation loc,
-                                     std::span<const RequiredColumn> columns);
-
-    // The structural add's requirement steps: write each column that `target`
-    // holds and `from` lacks, other than `added` (the type the caller
-    // supplies), with its default; then, once every column holds its value,
-    // signal each as an add (hooks, dirty feed, lifecycle event) like the
-    // supplied type.
-    void WriteRequiredDefaultsAfterAdd(EntityHandle entity, const ComponentSignature& from,
-                                       Archetype& target, ComponentTypeId added);
-    void SignalRequiredAdds(EntityHandle entity, const ComponentSignature& from,
-                            const ComponentSignature& to, ComponentTypeId added);
-
-    // A component of `signature` that requires `typeId` directly, or 0.
-    static ComponentTypeId FindRequirerOf(const ComponentSignature& signature, ComponentTypeId typeId);
     Archetype* GetOrCreateArchetypeForRemove(Archetype* source, ComponentTypeId typeId);
     // The same resolution for the entity-activity pair, which moves as one:
     // `disable` adds both tags, otherwise both are removed. Caches on the
@@ -1512,17 +1355,13 @@ private:
     // holds worldMutex.
     bool IsParentInactive(const Archetype* archetype, const EntityMetadata& metadata) const;
 
-    // Per-entity serialization/JSON plumbing for the public
-    // SerializeWorld/DeserializeWorld pair (and the debug JSON dump).
+    // Per-entity serialization plumbing for the public SerializeWorld/DeserializeWorld pair.
     std::vector<uint8_t> SerializeEntity(EntityHandle entity);
     EntityHandle DeserializeEntity(std::span<const uint8_t> data, EntityHandle entity);
-    std::string GetEntityAsJson(EntityHandle entity);
-    std::string GetWorldAsJson();
 
-    // Lock-free internal variants of serialization/JSON methods.
+    // Lock-free internal variant of SerializeEntity.
     // Caller must already hold worldMutex (shared or unique).
     std::vector<uint8_t> SerializeEntityUnsafe(EntityHandle entity) const;
-    std::string GetEntityAsJsonUnsafe(EntityHandle entity) const;
 
     ComponentHookToken InstallComponentHook(ComponentHookKind kind, ComponentTypeId typeId, ComponentHook hook);
     ScopedSubscription CreateComponentHookSubscription(ComponentHookToken token);
@@ -1541,7 +1380,7 @@ private:
         static_assert(sizeof(void*) >= sizeof(callback), "void* must be able to hold a function pointer");
         ComponentHook hook{};
         hook.UserData = reinterpret_cast<void*>(callback);
-        hook.Invoke = [](const World&, EntityHandle, void* ptr, void* data) {
+        hook.Invoke = [](EntityHandle, void* ptr, void* data) {
             reinterpret_cast<void(*)(T&)>(data)(*static_cast<T*>(ptr));
         };
         hook.ComponentSize = sizeof(T);
@@ -1556,24 +1395,8 @@ private:
         static_assert(sizeof(void*) >= sizeof(callback), "void* must be able to hold a function pointer");
         ComponentHook hook{};
         hook.UserData = reinterpret_cast<void*>(callback);
-        hook.Invoke = [](const World&, EntityHandle entity, void* ptr, void* data) {
+        hook.Invoke = [](EntityHandle entity, void* ptr, void* data) {
             reinterpret_cast<void(*)(EntityHandle, T&)>(data)(entity, *static_cast<T*>(ptr));
-        };
-        hook.ComponentSize = sizeof(T);
-        return InstallComponentHook(kind, GetComponentTypeId<T>(), hook);
-    }
-
-    template<Component T>
-    ComponentHookToken RegisterComponentHook(ComponentHookKind kind,
-                                             void(*callback)(const World&, EntityHandle, T&)) {
-        if (!callback)
-            return {};
-        AutoComponentRegistrar<T>::EnsureRegistered();
-        static_assert(sizeof(void*) >= sizeof(callback), "void* must be able to hold a function pointer");
-        ComponentHook hook{};
-        hook.UserData = reinterpret_cast<void*>(callback);
-        hook.Invoke = [](const World& world, EntityHandle entity, void* ptr, void* data) {
-            reinterpret_cast<void(*)(const World&, EntityHandle, T&)>(data)(world, entity, *static_cast<T*>(ptr));
         };
         hook.ComponentSize = sizeof(T);
         return InstallComponentHook(kind, GetComponentTypeId<T>(), hook);
@@ -1642,7 +1465,7 @@ Entity& Entity::SetEnabled(bool enabled) {
     static_assert(!HasAnyFlag(ComponentFlagsOf<T>(), ComponentFlags::NotToggleable),
                   "This component declares NotToggleable: it has no on/off state");
     // Idempotent: a redundant call must not bump the structural version and
-    // invalidate every cache keyed on it.
+    // invalidate every query cache in the world.
     const bool disabled = Has<ComponentDisabled<T>>();
     if (enabled && disabled)
         m_World->RemoveComponentImmediate<ComponentDisabled<T>>(m_Handle);

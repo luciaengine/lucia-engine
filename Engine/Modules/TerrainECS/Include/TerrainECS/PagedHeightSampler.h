@@ -1,11 +1,8 @@
 #pragma once
 
-#include "PageStreaming/PageAddress.h"
-#include "PageStreaming/PageStore/PageStoreFormat.h"
-#include "Mathematics/Rect.h"
+#include "PageStreaming/PageStoreFormat.h"
 #include "Types/Types.h"
 
-#include <span>
 #include <vector>
 
 namespace GameEngine::PageStreaming
@@ -25,8 +22,6 @@ class PageCache;
 namespace GameEngine::TerrainECS
 {
 
-class PageTable;
-
 /// The physical cache texture of one field: square-packed slots of kPageStrideSamples texels a side
 /// (each page's owned samples and its apron).
 struct PageCacheGeometry
@@ -42,31 +37,19 @@ struct PageCacheGeometry
 /// The geometry of a cache of `slotCount` slots.
 PageCacheGeometry MakePageCacheGeometry(uint32 slotCount);
 
-/// Where a terrain UV falls at one pyramid level: the page that owns it and its continuous position in
-/// that page's stride texels (the apron included), the texel the resolve reads.
-struct PageTexel
+/// The page table of one field: one entry per page of every level (PackPageEntry(slot, level) when
+/// resident, kNoPage when not) and the arrival fade of each slot. The GPU holds the entries as a
+/// mip-mapped R32UI texture, level N of the table the pages of pyramid level N.
+struct PageTable
 {
-    uint32 PageX = 0;
-    uint32 PageZ = 0;
-    float32 StrideX = 0.0f;
-    float32 StrideZ = 0.0f;
-};
+    std::vector<PageStreaming::PageStoreLevel> Levels; ///< the field's pyramid (BuildPageStoreLevels)
+    std::vector<uint32> Entries;                       ///< every level's pages, level-major, row-major
+    std::vector<float32> SlotFade;                     ///< per slot: 0 just assigned, 1 settled
 
-/// Where terrain UV (u, v), clamped to [0, 1]^2, falls at level `level` of the pyramid `levels`
-/// (BuildPageStoreLevels): level-0 sample i sits at i / (samples - 1), level-L sample j at
-/// level-0 sample j * 2^L.
-PageTexel LocatePageTexel(std::span<const PageStreaming::PageStoreLevel> levels, uint32 level, float32 u, float32 v);
-
-/// The terrain UV along an axis of `samples` level-0 samples that page `page` of level `level` reads:
-/// its owned samples and one sample of its level on each side, for the bilinear tap across its edge.
-void PageAxisUV(uint32 page, uint32 level, uint32 samples, float32& outMin, float32& outMax);
-
-/// A terrain-UV rect over which a terrain's page tables or page texels changed: a page assigned,
-/// released or fading, a waiting page that took its entry, or an upload into a page's slot.
-struct PageChangeRect
-{
-    uint32 Terrain = 0;                           ///< the terrain's render handle index
-    Mathematics::Rect UV{0.0f, 0.0f, 1.0f, 1.0f}; ///< X along U, Y along V; the whole terrain by default
+    /// An empty table (every entry kNoPage) for a field of samplesX x samplesZ and slotCount slots.
+    void Reset(uint32 samplesX, uint32 samplesZ, uint32 slotCount);
+    uint32 Entry(uint32 level, uint32 pageX, uint32 pageZ) const;
+    void SetEntry(uint32 level, uint32 pageX, uint32 pageZ, uint32 entry);
 };
 
 /// Brings `table`, stream `stream`'s page table, up to date with this frame of its field's `cache`:
@@ -74,13 +57,6 @@ struct PageChangeRect
 /// its pages whose fade changed. Edge-triggered: a quiescent frame writes nothing. Returns the
 /// number of entries and fades written.
 uint32 UpdatePageTable(const PageStreaming::PageCache& cache, uint32 stream, PageTable& table);
-
-/// Appends to `out` the footprint (PageAxisUV on both axes) of every page of stream `stream`, terrain
-/// `terrain` (pyramid `levels`), that this frame of `cache` assigned, released, faded, rewrote or
-/// uploaded, and of each page of `lateEntries` (the waiting pages that took their entry).
-void AppendPageChangeRects(uint32 terrain, uint32 stream, std::span<const PageStreaming::PageStoreLevel> levels,
-                           const PageStreaming::PageCache& cache,
-                           std::span<const PageStreaming::PageAddress> lateEntries, std::vector<PageChangeRect>& out);
 
 /// The resolve over a page table and the cache texture's texels (CacheDim x CacheDim floats).
 struct PagedHeightSampler
@@ -98,7 +74,7 @@ struct PagedHeightSampler
     float32 SampleLevel(float32 u, float32 v, uint32 level, uint32& outLevel) const;
 
 private:
-    float32 SampleResidentPage(const PageTexel& texel, uint32 slot) const;
+    float32 SampleResidentPage(float32 u, float32 v, uint32 level, uint32 slot) const;
 };
 
 } // namespace GameEngine::TerrainECS

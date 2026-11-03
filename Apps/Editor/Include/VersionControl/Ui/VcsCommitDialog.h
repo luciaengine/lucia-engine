@@ -31,11 +31,6 @@ public:
     bool IsVisible() const { return m_IsVisible; }
 
 private:
-    /// Passes the message to onCommit when it is not empty, then hides the dialog.
-    void Commit();
-    /// Calls onCancel, then hides the dialog.
-    void Cancel();
-
     bool m_IsVisible = false;
     // Non-owning: the UI root owns the dialog element once added. Holding a
     // unique_ptr here went null at AddChild(std::move(...)) time, so Hide

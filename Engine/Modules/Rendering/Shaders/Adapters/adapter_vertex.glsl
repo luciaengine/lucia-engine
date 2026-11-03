@@ -115,17 +115,11 @@ layout(location = 9) in vec4 aWeights1;
 // current endpoint is gl_FragCoord, which is the pixel center, and its previous
 // endpoint rides components of these same locations. Centroid there would build
 // the delta from two different sample positions on a partially covered pixel.
-//
-// A surface whose inputs are continuous across its triangles (the terrain) asks for the pixel
-// center too: extrapolation past a triangle edge stays on the same field, and a centroid value
-// on a partly covered pixel reads a sharp field (a splat border, a shadow edge) off the center.
 #ifdef ALPHA_TEST
 #define GE_SURFACE_CENTROID
 #elif defined(GE_COMPAT_PROFILE)
 #define GE_SURFACE_CENTROID
 #elif defined(GE_MOTION_VECTORS)
-#define GE_SURFACE_CENTROID
-#elif defined(GE_SURFACE_INPUTS_AT_PIXEL_CENTER)
 #define GE_SURFACE_CENTROID
 #else
 #define GE_SURFACE_CENTROID centroid
@@ -160,18 +154,12 @@ flat layout(location = 7) out vec4 vCustom0;
 #endif
 
 // Per-instance flags (bit0=castShadows, bit1=receiveShadows). location 8..13 are
-// the conditional vUV2..vUV7, so this sits above them at 14.
-#ifdef GE_LOD_CROSSFADE
-flat layout(location = 14, component = 0) out uint vInstanceFlags;
-// Packed LOD-crossfade code (lod_crossfade.glsl). It shares location 14 rather
-// than taking a slot of its own: 0..15 are all occupied and 15 is the last
-// guaranteed varying slot, so a 16th would raise the hardware floor for a
-// prototype feature. Same `flat uint` interpolation as the flags it sits
-// beside, which is what makes two variables on one location legal.
-flat layout(location = 14, component = 1) out uint vLodFadeCode;
-#else
+// the conditional vUV2..vUV7, so this sits above them at 14. Under
+// GE_LOD_CROSSFADE its high byte carries the packed fade code (lod_crossfade.glsl)
+// in place of the flags' high bits, which no fragment reads: 15 is the last
+// guaranteed varying slot, and WGSL has no component qualifier to put a second
+// variable on this one.
 flat layout(location = 14) out uint vInstanceFlags;
-#endif
 
 // Render-origin-relative world position (Earth-scale precision): PRECISE small-
 // magnitude position the fragment shadow receiver projects through the rebased
@@ -260,6 +248,7 @@ layout(set = 0, binding = 6) uniform LightUBO {
     vec4 uSecondaryCount;
     vec4 uSecondaryDirs[3];
     vec4 uSecondaryColors[3];
+#include "../Includes/weather_wind_fields.glsl"
 } Light;
 #endif
 
@@ -362,7 +351,6 @@ struct MaterialData
     vec4 TextureST[8];
     vec4 TextureST2[8];
     uint SamplerIndices;
-    uint NormalVarianceIndex; // bindless index of the normal map's BC4 variance companion (black when none)
 };
 
 layout(std430, set = 0, binding = 13) readonly buffer MaterialParamsSSBO
@@ -646,9 +634,10 @@ void main()
 #endif // HAS_VERTEX_OUTPUT_MODIFIER
 
     // Per-instance flags to the fragment stage (receiveShadows gate). Both paths.
-    vInstanceFlags = inst.flags;
 #ifdef GE_LOD_CROSSFADE
-    vLodFadeCode = inst.lodFadeCode;
+    vInstanceFlags = (inst.flags & kLodFadeIndexMask) | inst.lodFadeCode;
+#else
+    vInstanceFlags = inst.flags;
 #endif
 
     // Shared outputs (both paths).

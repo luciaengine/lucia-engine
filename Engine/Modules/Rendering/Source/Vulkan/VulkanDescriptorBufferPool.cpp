@@ -1,10 +1,9 @@
 #include "VulkanDescriptorBufferPool.h"
 
-#include "VulkanDevice/VulkanDevice.h"
+#include "VulkanDevice.h"
 #include "Logger/Logger.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 
 namespace GameEngine::Rendering
@@ -18,8 +17,6 @@ inline VkDeviceSize AlignUp(VkDeviceSize value, VkDeviceSize align)
         return value;
     return (value + align - 1) & ~(align - 1);
 }
-
-std::atomic<uint64_t> s_NextPoolInstanceId{1};
 } // namespace
 
 VulkanDescriptorBufferPool::~VulkanDescriptorBufferPool()
@@ -47,7 +44,6 @@ bool VulkanDescriptorBufferPool::Initialize(VulkanDevice& device, const Config& 
 
     m_Device = &device;
     m_Config = cfg;
-    m_InstanceId = s_NextPoolInstanceId.fetch_add(1, std::memory_order_relaxed);
     if (m_Config.FramesInFlight == 0)
         m_Config.FramesInFlight = device.GetFramesInFlight();
     m_OffsetAlignment = std::max<VkDeviceSize>(device.GetDescriptorBufferOffsetAlignment(), 1);
@@ -108,7 +104,6 @@ void VulkanDescriptorBufferPool::Destroy()
     }
     m_Frames.clear();
     DestroySpillBlocksLocked(m_Persistent);
-    m_PersistentFree.clear();
     DestroyBackingBufferLocked();
     m_Device = nullptr;
     m_Initialized = false;
@@ -201,29 +196,7 @@ DescriptorBufferAllocation VulkanDescriptorBufferPool::AllocatePersistent(VkDevi
         return {};
     const VkDeviceSize effectiveAlign = std::max<VkDeviceSize>(alignment, m_OffsetAlignment);
     std::lock_guard<std::mutex> lk(m_Mutex);
-    const auto released = m_PersistentFree.find(size);
-    if (released != m_PersistentFree.end())
-    {
-        std::vector<DescriptorBufferAllocation>& ranges = released->second;
-        const auto fits = std::find_if(ranges.rbegin(), ranges.rend(),
-                                       [effectiveAlign](const DescriptorBufferAllocation& r)
-                                       { return r.Offset % effectiveAlign == 0; });
-        if (fits != ranges.rend())
-        {
-            const DescriptorBufferAllocation out = *fits;
-            ranges.erase(std::next(fits).base());
-            return out;
-        }
-    }
     return AllocateFromFrameLocked(m_Persistent, size, effectiveAlign);
-}
-
-void VulkanDescriptorBufferPool::ReleasePersistent(const DescriptorBufferAllocation& alloc)
-{
-    if (!m_Initialized || !alloc.IsValid())
-        return;
-    std::lock_guard<std::mutex> lk(m_Mutex);
-    m_PersistentFree[alloc.Size].push_back(alloc);
 }
 
 bool VulkanDescriptorBufferPool::CreateBackingBufferLocked(VkDeviceSize totalSize)
@@ -253,7 +226,7 @@ bool VulkanDescriptorBufferPool::CreateBackingBufferLocked(VkDeviceSize totalSiz
     VkBufferDeviceAddressInfo addrInfo{};
     addrInfo.sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
     addrInfo.buffer = buf;
-    const VkDeviceAddress addr = vkGetBufferDeviceAddress(m_Device->GetVkDevice(), &addrInfo);
+    const VkDeviceAddress addr = m_Device->GetPromotedCommands().GetBufferDeviceAddress(m_Device->GetVkDevice(), &addrInfo);
 
     m_BackingBuffer     = buf;
     m_BackingAllocation = alloc;
@@ -278,15 +251,14 @@ void VulkanDescriptorBufferPool::DestroyBackingBufferLocked()
 
 bool VulkanDescriptorBufferPool::PushSpillBlockLocked(FrameState& frame, VkDeviceSize requestSize)
 {
-    // The two regions exhaust for different reasons: a per-frame region holds one
-    // frame's sets and is rewound every frame, while the persistent region holds the
-    // live persistent sets (destroyed ones are reused), so it fills only when more
-    // long-lived sets are alive at once than it was sized for.
+    // The two regions exhaust for different reasons and have different remedies: a
+    // per-frame region is rewound every frame, so a larger one ends the spilling,
+    // while the persistent region is never rewound and a larger one only postpones it.
     const bool  persistent = (&frame == &m_Persistent);
     const char* regionName = persistent ? "persistent" : "per-frame";
     const char* remedy     = persistent
-                               ? "the live persistent sets outgrew the region (destroyed sets' "
-                                 "bytes are reused); raise Config::BlockSize"
+                               ? "the persistent region is never rewound, so allocate fewer "
+                                 "app-lifetime sets; a larger Config::BlockSize only postpones this"
                                : "raise Config::BlockSize";
 
     const VkDeviceSize size = std::max<VkDeviceSize>(m_Config.BlockSize, requestSize);
@@ -317,7 +289,7 @@ bool VulkanDescriptorBufferPool::PushSpillBlockLocked(FrameState& frame, VkDevic
     VkBufferDeviceAddressInfo addrInfo{};
     addrInfo.sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
     addrInfo.buffer = buf;
-    const VkDeviceAddress addr = vkGetBufferDeviceAddress(m_Device->GetVkDevice(), &addrInfo);
+    const VkDeviceAddress addr = m_Device->GetPromotedCommands().GetBufferDeviceAddress(m_Device->GetVkDevice(), &addrInfo);
 
     SpillBlock b;
     b.Buffer     = buf;

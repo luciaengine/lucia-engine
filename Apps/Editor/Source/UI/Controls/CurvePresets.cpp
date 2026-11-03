@@ -1,8 +1,6 @@
 #include "UI/Controls/CurvePresets.h"
 
 #include "Editor/EditorPaths.h"
-#include "Mathematics/Interpolation.h"
-#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <fstream>
@@ -95,14 +93,14 @@ Math::DynamicCurve MakeCurveFromEase(Math::TweenEasing ease, int sampleCount)
 
 float EvaluatePreset01(const CurvePreset& preset, float normalizedTime)
 {
-    const float t = Math::Clamp01(normalizedTime);
+    const float t = std::clamp(normalizedTime, 0.0f, 1.0f);
     if (preset.Kind == CurvePresetKind::KeyCurve && preset.HasBuiltinEasing)
         return Math::EvalTweenEasing(preset.BuiltinEasing, t);
     if (preset.Kind == CurvePresetKind::CubicBezier)
     {
         return Math::EvalCubicBezierAnchored01(
-            Math::Clamp01(preset.Bezier.AnchorStartY),
-            Math::Clamp01(preset.Bezier.AnchorEndY),
+            std::clamp(preset.Bezier.AnchorStartY, 0.0f, 1.0f),
+            std::clamp(preset.Bezier.AnchorEndY, 0.0f, 1.0f),
             preset.Bezier.Control1X,
             preset.Bezier.Control1Y,
             preset.Bezier.Control2X,
@@ -142,7 +140,7 @@ const std::vector<CurvePreset>& Builtin()
             if (entry.Value == Math::TweenEasing::Custom)
                 continue;
             CurvePreset preset;
-            preset.Name = IdentifierToWords(entry.Name);
+            preset.Name = Math::FormatTweenEasingDisplayName(entry.Name);
             preset.Kind = CurvePresetKind::KeyCurve;
             preset.Curve = MakeCurveFromEase(entry.Value);
             preset.HasBuiltinEasing = true;

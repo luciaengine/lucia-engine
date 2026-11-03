@@ -11,7 +11,6 @@
 #include <array>
 #include <cmath>
 #include <cstring>
-#include <iterator>
 
 namespace GameEngine::Components::SkySunDrive
 {
@@ -126,10 +125,11 @@ int WorstSample(const Math::Curve& curve, const std::array<float, kSeedSamplesPe
     return worst;
 }
 
-float LuminanceOfGround(const ColorLinear& source, float upDot)
+float LuminanceOfGround(const float source[3], float upDot)
 {
-    return ColorUtils::LinearRec709Luminance(
-        Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), source, upDot));
+    float ground[3];
+    Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), source, upDot, ground);
+    return ColorUtils::LinearRec709Luminance(ground);
 }
 
 // The default sky's physical curve for a 100 000 lx sun (PhysicalSeedCurve at the component's
@@ -137,33 +137,33 @@ float LuminanceOfGround(const ColorLinear& source, float upDot)
 // 1 Smooth).
 constexpr float kDefaultSunIlluminanceKeys[][3] = {
     {0.0f, 0.001f, 0.0f},
-    {5.82592058f, 0.001f, 0.0f},
-    {5.86666679f, 0.0185f, 0.0f},
-    {5.91296959f, 2.52f, 0.0f},
-    {5.9333334f, 22.9f, 0.0f},
-    {5.94999981f, 67.3f, 0.0f},
-    {6.0f, 67.3f, 0.0f},
-    {6.0333333f, 291.0f, 0.0f},
-    {6.08703041f, 1190.0f, 0.0f},
-    {6.17407942f, 4170.0f, 0.0f},
-    {6.43552685f, 19000.0f, 1.0f},
-    {6.87345219f, 42900.0f, 1.0f},
-    {7.76785231f, 69800.0f, 1.0f},
-    {9.23215294f, 86800.0f, 1.0f},
-    {12.0f, 94300.0f, 1.0f},
-    {14.7678471f, 86800.0f, 1.0f},
-    {16.2321472f, 69800.0f, 1.0f},
-    {17.1265488f, 42900.0f, 1.0f},
-    {17.5644741f, 19000.0f, 0.0f},
-    {17.8259201f, 4170.0f, 0.0f},
-    {17.9129696f, 1190.0f, 0.0f},
-    {17.9666672f, 291.0f, 0.0f},
-    {18.0f, 67.3f, 0.0f},
-    {18.0499992f, 67.3f, 0.0f},
-    {18.0666676f, 22.9f, 0.0f},
-    {18.0870304f, 2.52f, 0.0f},
-    {18.1333332f, 0.0185f, 0.0f},
-    {18.1740799f, 0.001f, 0.0f},
+    {5.44999981f, 0.0146f, 0.0f},
+    {5.5999999f, 0.697f, 0.0f},
+    {5.73333311f, 22.1f, 0.0f},
+    {5.86666679f, 778.0f, 0.0f},
+    {5.9333334f, 4860.0f, 0.0f},
+    {6.0f, 4860.0f, 0.0f},
+    {6.0666666f, 11300.0f, 0.0f},
+    {6.13333321f, 18900.0f, 0.0f},
+    {6.33333349f, 40300.0f, 1.0f},
+    {6.66666651f, 62600.0f, 1.0f},
+    {7.33333349f, 81800.0f, 1.0f},
+    {8.33333302f, 92400.0f, 1.0f},
+    {9.66666698f, 97700.0f, 1.0f},
+    {12.0f, 100000.0f, 1.0f},
+    {14.333333f, 97700.0f, 1.0f},
+    {15.666667f, 92400.0f, 1.0f},
+    {16.666666f, 81800.0f, 1.0f},
+    {17.333334f, 62600.0f, 1.0f},
+    {17.666666f, 40300.0f, 0.0f},
+    {17.8666668f, 18900.0f, 0.0f},
+    {17.9333324f, 11300.0f, 0.0f},
+    {18.0f, 4860.0f, 0.0f},
+    {18.0666676f, 4860.0f, 0.0f},
+    {18.1333332f, 778.0f, 0.0f},
+    {18.2666664f, 22.1f, 0.0f},
+    {18.3999996f, 0.697f, 0.0f},
+    {18.5499992f, 0.0146f, 0.0f},
 };
 
 float ModelLux(const SkyEnvironment& sky, const Rendering::SolarFrame& frame, float sunLux, float hours)
@@ -225,27 +225,14 @@ Math::Curve PhysicalSeedCurve(const SkyEnvironment& sky, float sunLux)
 
     curve.TryInsert(SeedKey(0.0f, ModelLux(sky, frame, sunLux, 0.0f)));
     curve.TryInsert(SeedKey(12.0f, ModelLux(sky, frame, sunLux, 12.0f)));
-    // A seed elevation whose light is already at the floor carries no shape, and under a hazy sky
-    // several of the twilight ones are: keep only the last dark one before the light, which anchors
-    // where the rise begins, so the curve's key budget goes to the rise itself.
-    constexpr size_t kSeedElevationCount = std::size(kSeedElevationsDegrees);
-    for (size_t e = 0; e < kSeedElevationCount; ++e)
+    for (const float elevation : kSeedElevationsDegrees)
     {
         float morning = 0.0f;
         float evening = 0.0f;
-        if (!HoursAtElevation(angles, kSeedElevationsDegrees[e], morning, evening))
+        if (!HoursAtElevation(angles, elevation, morning, evening))
             continue;
-        const float morningLux = ModelLux(sky, frame, sunLux, morning);
-        const float eveningLux = ModelLux(sky, frame, sunLux, evening);
-        float nextMorning = 0.0f;
-        float nextEvening = 0.0f;
-        const bool nextIsLit = e + 1 < kSeedElevationCount &&
-                               HoursAtElevation(angles, kSeedElevationsDegrees[e + 1], nextMorning, nextEvening) &&
-                               ModelLux(sky, frame, sunLux, nextMorning) > kSeedMinimumModelLux;
-        if (morningLux <= kSeedMinimumModelLux && eveningLux <= kSeedMinimumModelLux && !nextIsLit)
-            continue;
-        curve.TryInsert(SeedKey(morning, morningLux));
-        curve.TryInsert(SeedKey(evening, eveningLux));
+        curve.TryInsert(SeedKey(morning, ModelLux(sky, frame, sunLux, morning)));
+        curve.TryInsert(SeedKey(evening, ModelLux(sky, frame, sunLux, evening)));
     }
     AssignSeedInterpolation(curve, frame);
 
@@ -320,7 +307,8 @@ float NoonReferenceLux(const SkyEnvironment& sky)
     const Rendering::SkySystemConfig config{};
     const float noonUpDot = std::max(static_cast<float>(std::sin(noonElevation * kDegreesToRadians)),
                                      Rendering::SunOnlyUpDot(config));
-    return CurveIlluminanceLux(sky.SunIlluminanceCurve, 12.0f) / LuminanceOfGround(ColorLinear(1.0f, 1.0f, 1.0f), noonUpDot);
+    const float white[3] = {1.0f, 1.0f, 1.0f};
+    return CurveIlluminanceLux(sky.SunIlluminanceCurve, 12.0f) / LuminanceOfGround(white, noonUpDot);
 }
 
 float MoonlightLux(const SkyEnvironment& sky, float moonUpDot)
@@ -328,18 +316,17 @@ float MoonlightLux(const SkyEnvironment& sky, float moonUpDot)
     if (!sky.ShowMoon)
         return 0.0f;
     const Rendering::SkySystemConfig config{};
-    const ColorLinear moonGround =
-        Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), config.moonColor, moonUpDot);
-    return MoonlightLuxFromGround(sky, Rendering::MoonPhaseIlluminanceFraction(sky.MoonArcPosition), moonGround);
+    float moonGround[3];
+    Rendering::EvaluateGroundLevelSunColor(Rendering::ScatteringAtmosphere(), config.moonColor, moonUpDot, moonGround);
+    return MoonlightLuxFromGround(sky, moonGround);
 }
 
-float MoonlightLuxFromGround(const SkyEnvironment& sky, float moonPhaseFraction, const ColorLinear& moonGround)
+float MoonlightLuxFromGround(const SkyEnvironment& sky, const float moonGround[3])
 {
     if (!sky.ShowMoon)
         return 0.0f;
     const Rendering::SkySystemConfig config{};
-    return SanitisedMoonlightLux(sky.MoonlightIlluminance) * moonPhaseFraction *
-           ColorUtils::LinearRec709Luminance(moonGround) /
+    return SanitisedMoonlightLux(sky.MoonlightIlluminance) * ColorUtils::LinearRec709Luminance(moonGround) /
            ColorUtils::LinearRec709Luminance(config.moonColor);
 }
 

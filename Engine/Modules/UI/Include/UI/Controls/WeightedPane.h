@@ -11,7 +11,7 @@ class WeightedPane : public UIElement {
 public:
     explicit WeightedPane(float weight = 1.0f);
 
-    void SetFlexWeight(float weight);
+    void SetFlexWeight(float w);
     float GetFlexWeight() const { return m_Weight; }
 
 private:

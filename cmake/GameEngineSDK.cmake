@@ -127,15 +127,6 @@ function(_ge_sdk_generate_config output_path)
         set(_platform_libs "")
     endif()
 
-    # libEngine.so's own dependencies (FFmpeg, GLFW, ...) are staged beside the Editor, the SDK's
-    # parent folder, and are not on the system. GNU ld resolves a shared library's DT_NEEDED
-    # entries when it links an executable against it, so the Player's link searches there.
-    set(_engine_dependency_link_lines "")
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        set(_engine_dependency_link_lines
-            "target_link_options(GameEngine::Engine INTERFACE \"LINKER:-rpath-link,\${_GE_SDK_DIR}/..\")\n")
-    endif()
-
     # Build the definitions lines
     set(_def_lines "")
     foreach(_def IN LISTS _public_defs)
@@ -314,9 +305,11 @@ else()
     message(FATAL_ERROR \"GameEngine SDK: '\${_GE_SELECTED_CONFIG}' (from '\${_GE_LIB_DIR}') is not one of the engine's configurations (Debug, DebugFast, Release, RelWithDebInfo, MinSizeRel), so the value of GE_DEBUG_INSTRUMENTATION its libs were built with is unknown — and engine classes lay out differently under the two values. Stage libs built in one of those configurations.\")
 endif()
 
-# Engine is the only engine-built library a shipped game links: every engine module lives in it.
-# The SDK lib folder also holds editor-only files (the EditorSDK import library, runtime DLLs for
-# cross-flavor packaging), so a glob of that folder would link them into every game.
+# Explicit ship-lib list. Engine is the ONLY engine-built library a shipped game
+# links: it is a shared library and every engine module lives inside it. The SDK
+# lib dir also stages editor-only artifacts (EditorSDK import lib for native
+# Editor-kind package modules, engine runtime DLLs for cross-flavor packaging) —
+# globbing the directory used to link those into every shipped game.
 if(WIN32)
     set(_GE_SHIP_LIB_NAMES \"Engine.lib\")
 elseif(APPLE)
@@ -355,7 +348,7 @@ if(MSVC)
 else()
     target_link_libraries(GameEngine::Engine INTERFACE \${_GE_ENGINE_LIBS})
 endif()
-${_engine_dependency_link_lines}
+
 # The optional vcpkg tree's libraries (see GAMEENGINE_VCPKG_INSTALLED above): every
 # library in it, rather than re-finding individual packages (which requires exact
 # name matching and can create broken targets without the vcpkg toolchain).
@@ -415,37 +408,6 @@ message(STATUS \"GameEngine SDK found at \${_GE_SDK_DIR} (engine libs: \${_GE_SE
 ")
 endfunction()
 
-# Stage one SDK header mirror after the host links, before its final signature.
-function(_ge_sdk_stage_header_mirror host_target destination)
-    set(_stage_script "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/StageSdkHeaders.cmake")
-    set(_prune_script "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/PruneStagedMirrorOrphans.cmake")
-    set(_stamp_dir "${CMAKE_CURRENT_BINARY_DIR}/stage-stamps/sdk-headers/${host_target}")
-    string(SHA1 _mirror_key "${destination}")
-    set(_source_list "${_stamp_dir}/${_mirror_key}.sources")
-    string(JOIN "\n" _source_content ${ARGN})
-    file(CONFIGURE OUTPUT "${_source_list}" CONTENT "${_source_content}\n" @ONLY)
-
-    set(_inputs "")
-    foreach(_source IN LISTS ARGN)
-        file(GLOB_RECURSE _source_inputs CONFIGURE_DEPENDS LIST_DIRECTORIES false "${_source}/*")
-        list(APPEND _inputs ${_source_inputs})
-    endforeach()
-    # A deleted file cannot invalidate a link through its old timestamp. The
-    # configured list changes on adds/deletes; LINK_DEPENDS makes Ninja/Make
-    # rerun POST_BUILD even for headers no translation unit currently includes.
-    set(_input_list "${_stamp_dir}/${_mirror_key}.list")
-    file(CONFIGURE OUTPUT "${_input_list}" CONTENT "${_inputs}" @ONLY)
-    set_property(TARGET ${host_target} APPEND PROPERTY LINK_DEPENDS
-        ${_inputs} "${_input_list}" "${_source_list}" "${_stage_script}" "${_prune_script}")
-
-    # Xcode may run a previously planned post-build command after regenerating
-    # its project. Read the current source list in the script, not the command.
-    add_custom_command(TARGET ${host_target} POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" "-DSOURCE_LIST=${_source_list}" "-DDST=${destination}"
-            "-DMANIFEST_DIR=${_stamp_dir}/$<CONFIG>/mirror-manifests" -P "${_stage_script}"
-        VERBATIM)
-endfunction()
-
 # Main staging function — adds post-build commands to copy headers, libs, and templates.
 function(ge_stage_engine_sdk host_target sdk_output_dir)
     if(NOT TARGET ${host_target})
@@ -458,6 +420,12 @@ function(ge_stage_engine_sdk host_target sdk_output_dir)
 
     # Collect include directories at configure time
     _ge_sdk_collect_source_include_dirs(_sdk_include_dirs)
+    list(APPEND _sdk_include_dirs "${CMAKE_SOURCE_DIR}/Engine/Modules/NativeScripting/GameSDK/Include")
+    list(REMOVE_DUPLICATES _sdk_include_dirs)
+    set(_sdk_editor_include_dirs "")
+    if(TARGET EditorSDK)
+        list(APPEND _sdk_editor_include_dirs "${CMAKE_SOURCE_DIR}/Apps/Editor/Include")
+    endif()
 
     set(_ge_sdk_vcpkg_installed_dir "")
     if(DEFINED VCPKG_INSTALLED_DIR)
@@ -497,34 +465,10 @@ function(ge_stage_engine_sdk host_target sdk_output_dir)
     # Editor-kind package modules link, plus the staged editor headers. The
     # import lib itself is picked up by the lib/$<CONFIG> glob-stage below;
     # include-editor is staged further down.
-    # enginebinary / editorbinary name the shared libraries whose link stamps are
-    # the engine-ABI digest's identity inputs. On Windows the running config's DLLs
-    # sit beside the host executable, the SDK's parent; elsewhere the linker file
-    # in lib/<config> is the shared library itself.
-    if(WIN32)
-        set(_ge_sdk_engine_binary "../$<TARGET_FILE_NAME:Engine>")
-        set(_ge_sdk_editor_binary "../$<TARGET_FILE_NAME:EditorSDK>")
-    else()
-        set(_ge_sdk_engine_binary "lib/$<CONFIG>/$<TARGET_FILE_NAME:Engine>")
-        set(_ge_sdk_editor_binary "lib/$<CONFIG>/$<TARGET_FILE_NAME:EditorSDK>")
-    endif()
-    # The build machine's dotnet, for the C# steps of game packaging; a scripting-disabled
-    # build has none and packages without C#.
-    set(_ge_sdk_dotnet_line "")
-    if(ENABLE_SCRIPTING)
-        set(_ge_sdk_dotnet_line "dotnet=${DOTNET_EXECUTABLE}\n")
-    endif()
-    # The oldest macOS the engine runs on. User modules build for the same version, so
-    # they load wherever the engine loads. Without a value, CMake's default applies.
-    set(_ge_sdk_macos_line "")
-    if(APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
-        set(_ge_sdk_macos_line "macosdeploymenttarget=${CMAKE_OSX_DEPLOYMENT_TARGET}\n")
-    endif()
     set(_ge_sdk_editor_lines "")
     if(TARGET EditorSDK)
         set(_ge_sdk_editor_lines
 "editorimportlib=lib/$<CONFIG>/$<TARGET_LINKER_FILE_NAME:EditorSDK>
-editorbinary=${_ge_sdk_editor_binary}
 editorincludes=include-editor
 ")
     endif()
@@ -536,14 +480,14 @@ editorincludes=include-editor
 config=$<CONFIG>
 includedir=include
 importlib=lib/$<CONFIG>/$<TARGET_LINKER_FILE_NAME:Engine>
-enginebinary=${_ge_sdk_engine_binary}
 sdkentry=nativescripting/UserModuleEntry.cpp
-scanner=nativescripting/$<TARGET_FILE_NAME:ComponentScanner>
+scannerdll=nativescripting/ComponentScanner/ComponentScanner.dll
 defs=$<TARGET_PROPERTY:Engine,INTERFACE_COMPILE_DEFINITIONS>
 globaldefs=GLM_FORCE_DEPTH_ZERO_TO_ONE;NOMINMAX;WIN32_LEAN_AND_MEAN;GE_DEBUG_INSTRUMENTATION=${GE_DEBUG_INSTRUMENTATION_VALUE}
 engineincludes=vcpkg-include;vcpkg-include/harfbuzz;generated-include
 cmake=${CMAKE_COMMAND}
-${_ge_sdk_dotnet_line}${_ge_sdk_macos_line}${_ge_sdk_editor_lines}")
+dotnet=${DOTNET_EXECUTABLE}
+${_ge_sdk_editor_lines}")
 
     # Create the SDK directories
     add_custom_command(TARGET ${host_target} POST_BUILD
@@ -555,15 +499,34 @@ ${_ge_sdk_dotnet_line}${_ge_sdk_macos_line}${_ge_sdk_editor_lines}")
         VERBATIM
     )
 
-    # Public module headers and the GameSDK umbrella share include/. Editor-only
-    # headers have a separate mirror, invisible to Runtime-kind module builds.
-    list(APPEND _sdk_include_dirs
-        "${CMAKE_SOURCE_DIR}/Engine/Modules/NativeScripting/GameSDK/Include")
-    _ge_sdk_stage_header_mirror(${host_target} "${sdk_output_dir}/include" ${_sdk_include_dirs})
-    if(TARGET EditorSDK)
-        _ge_sdk_stage_header_mirror(${host_target} "${sdk_output_dir}/include-editor"
-            "${CMAKE_SOURCE_DIR}/Apps/Editor/Include")
-    endif()
+    # Header inventory and contents are packaging inputs even when no compiled
+    # translation unit includes a changed header. The existing post-link export,
+    # ABI marker and signature sequence must run for additions and removals too.
+    set(_sdk_header_inputs "")
+    foreach(_dir IN LISTS _sdk_include_dirs _sdk_editor_include_dirs)
+        file(GLOB_RECURSE _inputs FOLLOW_SYMLINKS CONFIGURE_DEPENDS LIST_DIRECTORIES false "${_dir}/*")
+        list(APPEND _sdk_header_inputs ${_inputs})
+    endforeach()
+    list(REMOVE_DUPLICATES _sdk_header_inputs)
+    list(SORT _sdk_header_inputs)
+    set(_sdk_header_inventory "${CMAKE_BINARY_DIR}/cmake/SDKHeaderInputs_${host_target}.txt")
+    file(GENERATE OUTPUT "${_sdk_header_inventory}" CONTENT "${_sdk_header_inputs}\n")
+    set(_sdk_header_script "${CMAKE_BINARY_DIR}/cmake/StageSDKHeaders_${host_target}_$<CONFIG>.cmake")
+    file(GENERATE OUTPUT "${_sdk_header_script}" CONTENT
+"include([==[${CMAKE_SOURCE_DIR}/cmake/StageSdkHeaders.cmake]==])
+set(_engine_roots [==[${_sdk_include_dirs}]==])
+set(_editor_roots [==[${_sdk_editor_include_dirs}]==])
+ge_stage_sdk_header_tree([==[${sdk_output_dir}/include]==] SOURCES \${_engine_roots})
+ge_stage_sdk_header_tree([==[${sdk_output_dir}/include-editor]==] SOURCES \${_editor_roots})
+")
+    set_property(TARGET ${host_target} APPEND PROPERTY LINK_DEPENDS
+        ${_sdk_header_inputs} "${_sdk_header_inventory}" "${_sdk_header_script}"
+        "${CMAKE_SOURCE_DIR}/cmake/StageSdkHeaders.cmake"
+        "${CMAKE_SOURCE_DIR}/cmake/PruneStagedMirrorOrphans.cmake")
+    add_custom_command(TARGET ${host_target} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -P "${_sdk_header_script}"
+        COMMENT "Synchronizing Engine and editor SDK headers"
+        VERBATIM)
 
     # Copy engine link/runtime libraries into config-specific subdirectories —
     # for EVERY config present in the build tree, not just the one being built.
@@ -581,7 +544,6 @@ ${_ge_sdk_dotnet_line}${_ge_sdk_macos_line}${_ge_sdk_editor_lines}")
     # editor-only libs can't leak into game link lines through old SDKs.
     set(_lib_copy_script "${CMAKE_BINARY_DIR}/cmake/StageSDKLibs_${host_target}.cmake")
     file(WRITE "${_lib_copy_script}" "\
-cmake_minimum_required(VERSION 3.25)
 set(_ship_lib_globs \"Engine.lib\" \"libEngine.dylib\" \"libEngine.so\" \"EditorSDK.lib\" \"libEditorSDK.dylib\" \"libEditorSDK.so\")
 set(_ship_runtime_globs \"Engine.dll\" \"GameEngine.Native.dll\" \"libGameEngine.Native.dylib\" \"libGameEngine.Native.so\")
 
@@ -692,10 +654,6 @@ endforeach()
         )
     elseif(WIN32)
         list(APPEND _stage_sdk_lib_args -DOMIT_CURRENT_RUNTIME_COPY=ON)
-    else()
-        # Single-config Linux generators put the shared libraries directly in
-        # lib/, rather than lib/<config>. Stage from the target's actual directory.
-        list(APPEND _stage_sdk_lib_args -DEXTRA_LIB_DIR=$<TARGET_LINKER_FILE_DIR:Engine>)
     endif()
     add_custom_command(TARGET ${host_target} POST_BUILD
         COMMAND ${CMAKE_COMMAND}
@@ -775,7 +733,9 @@ endforeach()
         VERBATIM
     )
 
-    # User-module ABI entry source, compiled into every native user module.
+    # NativeScripting toolchain: the GameSDK umbrella header (so user code can
+    # #include <GameSDK/GameSDK.h>) + the user-module ABI entry source (compiled into
+    # every user DLL by the generated build). No genex here → VERBATIM is safe.
     add_custom_command(TARGET ${host_target} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${sdk_output_dir}/nativescripting"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -785,22 +745,22 @@ endforeach()
         VERBATIM
     )
 
-    # ComponentScanner, the native user-script scanner the editor runs from the staged
-    # SDK. Built by the Engine build (its generated reflection TU depends on it).
+    # ComponentScanner (.NET) publish dir — copied whole (dll + .deps.json +
+    # .runtimeconfig.json) so the editor can run `dotnet ComponentScanner.dll` from the
+    # staged SDK. Built by the Engine build (Editor depends on Engine). $<CONFIG> in the
+    # source path → NO VERBATIM (MSBuild double-quotes genexes under VERBATIM).
     add_custom_command(TARGET ${host_target} POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "$<TARGET_FILE:ComponentScanner>"
-            "${sdk_output_dir}/nativescripting/"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/Managed/ComponentScanner/bin/$<CONFIG>/net10.0
+            ${sdk_output_dir}/nativescripting/ComponentScanner
         COMMENT "Staging ComponentScanner to SDK ($<CONFIG>)"
-        VERBATIM
     )
 
     # Managed scripting runtime + source generator (ship-safety C4): the NativeAOT
     # csproj the BuildPipeline generates for packaged games references these STAGED
     # copies — never the engine repo's Managed/ tree, which a relocated or shipped
-    # editor does not have. Copy-if-exists: a managed output not built yet is reported
-    # at package time instead. A scripting-disabled build stages none.
-    if(ENABLE_SCRIPTING)
+    # editor does not have. Copy-if-exists: a scripting-disabled engine build has no
+    # managed outputs, and the pipeline reports the absence at package time instead.
     set(_ge_sdk_managed_stage_script "${CMAKE_BINARY_DIR}/cmake/StageSDKManagedFile.cmake")
     file(WRITE "${_ge_sdk_managed_stage_script}" "\
 if(EXISTS \"\${SRC}\")
@@ -819,14 +779,10 @@ endif()
             -DSRC=${CMAKE_SOURCE_DIR}/Managed/ECS.ABI/bin/$<CONFIG>/GameEngine.ECS.ABI.dll
             -DDST=${sdk_output_dir}/managed -P ${_ge_sdk_managed_stage_script}
         COMMAND ${CMAKE_COMMAND}
-            -DSRC=${CMAKE_SOURCE_DIR}/Managed/Scripting.Bindings/bin/$<CONFIG>/GameEngine.Scripting.Bindings.dll
-            -DDST=${sdk_output_dir}/managed -P ${_ge_sdk_managed_stage_script}
-        COMMAND ${CMAKE_COMMAND}
             -DSRC=${CMAKE_SOURCE_DIR}/Managed/SourceGenerators/EntitySystemGenerator/bin/$<CONFIG>/netstandard2.0/EntitySystemGenerator.dll
             -DDST=${sdk_output_dir}/managed/analyzers -P ${_ge_sdk_managed_stage_script}
         COMMENT "Staging managed scripting assemblies to SDK ($<CONFIG>)"
     )
-    endif()
 
     # Self-containment: the engine's public headers pull in vcpkg headers (glm, nlohmann,
     # concurrentqueue, …) and a few generated headers. Stage them INTO the SDK so a machine
@@ -848,35 +804,40 @@ endif()
     endif()
 
     if(_ge_vcpkg_include)
-        # One-time copy (the vcpkg include tree is large and rarely changes); delete
-        # <sdk>/vcpkg-include to force a refresh.
-        set(_ge_vcpkg_stage_script "${CMAKE_BINARY_DIR}/cmake/StageSDKVcpkgInclude.cmake")
-        file(WRITE "${_ge_vcpkg_stage_script}" "\
-if(IS_DIRECTORY \"\${SRC}\")
-    if(NOT IS_DIRECTORY \"\${DST}\")
-        execute_process(COMMAND \"\${CMAKE_COMMAND}\" -E copy_directory \"\${SRC}\" \"\${DST}\")
-    endif()
-    # Drop GL/SPIR-V header dirs whose version-like subdirs (e.g. GLES/1.0) make a
-    # `codesign --deep` of the enclosing .app fail (\"bundle format unrecognized\").
-    # They are not part of the engine's public C++ API.
-    foreach(_trap GLES GLSC spirv)
-        file(REMOVE_RECURSE \"\${DST}/\${_trap}\")
-    endforeach()
-endif()
+        set(_ge_vcpkg_stage_script "${CMAKE_BINARY_DIR}/cmake/StageSDKVcpkgInclude_${host_target}_$<CONFIG>.cmake")
+        file(GENERATE OUTPUT "${_ge_vcpkg_stage_script}" CONTENT
+"include([==[${CMAKE_SOURCE_DIR}/cmake/StageSdkHeaders.cmake]==])
+ge_stage_sdk_header_tree([==[${sdk_output_dir}/vcpkg-include]==]
+    SOURCES [==[${_ge_vcpkg_include}]==] EXCLUDE_TOP_LEVEL_DIRS GLES GLSC spirv)
 ")
+        file(GLOB_RECURSE _ge_vcpkg_header_inputs FOLLOW_SYMLINKS CONFIGURE_DEPENDS LIST_DIRECTORIES false "${_ge_vcpkg_include}/*")
+        list(SORT _ge_vcpkg_header_inputs)
+        set(_ge_vcpkg_inventory "${CMAKE_BINARY_DIR}/cmake/SDKVcpkgHeaderInputs_${host_target}.txt")
+        file(GENERATE OUTPUT "${_ge_vcpkg_inventory}" CONTENT "${_ge_vcpkg_header_inputs}\n")
+        set_property(TARGET ${host_target} APPEND PROPERTY LINK_DEPENDS
+            ${_ge_vcpkg_header_inputs} "${_ge_vcpkg_inventory}" "${_ge_vcpkg_stage_script}")
         add_custom_command(TARGET ${host_target} POST_BUILD
-            COMMAND ${CMAKE_COMMAND}
-                -DSRC=${_ge_vcpkg_include}
-                -DDST=${sdk_output_dir}/vcpkg-include
-                -P ${_ge_vcpkg_stage_script}
-            COMMENT "Staging vcpkg headers to SDK (one-time)"
-            VERBATIM
-        )
+            COMMAND "${CMAKE_COMMAND}" -P "${_ge_vcpkg_stage_script}"
+            COMMENT "Synchronizing vcpkg SDK headers"
+            VERBATIM)
     endif()
 
-    # Generated headers referenced by the public interface.
     if(IS_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
-        _ge_sdk_stage_header_mirror(${host_target} "${sdk_output_dir}/generated-include"
-            "${CMAKE_BINARY_DIR}/generated")
+        file(GLOB_RECURSE _ge_generated_header_inputs FOLLOW_SYMLINKS CONFIGURE_DEPENDS LIST_DIRECTORIES false
+            "${CMAKE_BINARY_DIR}/generated/*")
+        list(SORT _ge_generated_header_inputs)
+        set(_ge_generated_inventory "${CMAKE_BINARY_DIR}/cmake/SDKGeneratedHeaderInputs_${host_target}.txt")
+        file(GENERATE OUTPUT "${_ge_generated_inventory}" CONTENT "${_ge_generated_header_inputs}\n")
+        set(_ge_generated_stage_script "${CMAKE_BINARY_DIR}/cmake/StageSDKGeneratedInclude_${host_target}_$<CONFIG>.cmake")
+        file(GENERATE OUTPUT "${_ge_generated_stage_script}" CONTENT
+"include([==[${CMAKE_SOURCE_DIR}/cmake/StageSdkHeaders.cmake]==])
+ge_stage_sdk_header_tree([==[${sdk_output_dir}/generated-include]==] SOURCES [==[${CMAKE_BINARY_DIR}/generated]==])
+")
+        set_property(TARGET ${host_target} APPEND PROPERTY LINK_DEPENDS
+            ${_ge_generated_header_inputs} "${_ge_generated_inventory}" "${_ge_generated_stage_script}")
+        add_custom_command(TARGET ${host_target} POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -P "${_ge_generated_stage_script}"
+            COMMENT "Synchronizing generated SDK headers"
+            VERBATIM)
     endif()
 endfunction()

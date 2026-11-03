@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Rendering/Materials/MaterialAlphaMode.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 #include <algorithm>
 #include <span>
 #include <string>
@@ -128,44 +128,5 @@ inline void ExpandParallaxDepthVariants(std::vector<VariantRequest>& rows, bool 
                             row.PassKeywords | MaterialKeyword::DepthOnlyFragment | MaterialKeyword::ParallaxDepthOffset,
                             row.VertexFlags});
     }
-}
-
-// The per-view keywords an AO, GI volume or contact-shadow pass adds to the world pass and the
-// transmissive pass draws without. The transmissive pass draws with its node's keywords, plus the
-// reflection keyword when reflections run (ReflectionsProvider::ContributeTransmissivePassTargets).
-// The contact-shadow pass skips it (ScreenSpaceShadowWorldPass).
-inline constexpr Rendering::MaterialKeyword kPerViewKeywordsWithoutSceneColorGrab =
-    Rendering::MaterialKeyword::GTAO | Rendering::MaterialKeyword::DDGI |
-    Rendering::MaterialKeyword::ScreenSpaceShadows;
-
-// The transmissive pass's rows of a transmissive material: every forward colour row the pass can
-// draw again with the scene-colour grab bound (SceneColorGrab). Rows carrying a per-view keyword the
-// pass draws without (kPerViewKeywordsWithoutSceneColorGrab) get no grab row. The rows without the
-// grab stay: the pass drops the keyword when the grab declines (a multisampled source).
-inline void ExpandSceneColorGrabVariants(std::vector<VariantRequest>& rows, bool transmission)
-{
-    using Rendering::MaterialKeyword;
-    if (!transmission)
-        return;
-    const size_t count = rows.size();
-    for (size_t i = 0; i < count; ++i)
-    {
-        const auto row = rows[i];
-        if (!Rendering::HasKeyword(row.PassKeywords, MaterialKeyword::ForwardPlus) ||
-            (row.PassKeywords & kPerViewKeywordsWithoutSceneColorGrab) != MaterialKeyword::None)
-            continue;
-        rows.push_back({row.Name + "-scene-grab", row.PassKeywords | MaterialKeyword::SceneColorGrab, row.VertexFlags});
-    }
-}
-
-// The keywords a material's document decides on its own (DeriveBaseVariantKey: its lobes and
-// AlphaTest), which registration keeps in every key the material is drawn with, added to every row.
-// Applied after the optional-pass, relief and scene-grab expansions: those test the rows' pass keywords,
-// and a lobe keyword would hide a row from them. The vertex-colour twins are added last, after
-// this and the prewarm rows; that expansion tests keyword bits, which a lobe keyword does not hide.
-inline void AddMaterialKeywords(std::vector<VariantRequest>& rows, Rendering::MaterialKeyword materialKeywords)
-{
-    for (VariantRequest& row : rows)
-        row.PassKeywords = row.PassKeywords | materialKeywords;
 }
 } // namespace GameEngine::Tools::MaterialCook

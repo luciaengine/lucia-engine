@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Types/Types.h"
 
 #include <cstdint>
@@ -81,8 +81,8 @@ class CpuDrawStreamBuilder
 
     // Rebuild every view's lists from the frame's merged submissions. `pool`
     // may be null (tests, single-threaded configs) — the per-instance work
-    // then runs inline on the calling thread. Legal on any thread, a pool
-    // worker included: the culling fan-out is a ParallelFor.
+    // then runs inline on the calling thread. Must be called from a
+    // non-worker thread: the culling fan-out is a blocking ParallelFor.
     void Build(const WorldDrawBuilder& drawBuilder,
                const Rendering::MeshGPURegistry& meshRegistry,
                const Rendering::GPUScene& scene,
@@ -137,25 +137,23 @@ class CpuDrawStreamBuilder
         uint32_t Instance;
     };
 
+    struct KeyedList
+    {
+        uint64_t Key;
+        InstanceList List;
+    };
+
+    // Sorted batch keys permit binary search and keep vector capacity across frames.
     struct ViewLists
     {
         std::vector<uint32_t> Indices;
-        std::unordered_map<uint64_t, InstanceList> Index[2];
+        std::vector<KeyedList> Index[2];
     };
-
-    // What one cull range reads; defined in the .cpp.
-    struct CullInputs;
 
     void BuildView(Rendering::ViewId viewId, const WorldDrawBuilder& drawBuilder,
                    const Rendering::MeshGPURegistry& meshRegistry,
                    const Rendering::GPUScene& scene, const ViewRegistry& views,
                    JobSystem::WorkStealingThreadPool* pool);
-
-    // Resolves and frustum-tests submissions [begin, end) into `candidates`.
-    // `inputs` is taken by value: the range reads its own copy, on the stack of
-    // the thread that runs it, never the caller's.
-    static void ResolveAndCullRange(CullInputs inputs, Candidate* candidates, size_t begin,
-                                    size_t end);
 
     // Sort `entries` by (Key, Instance), append each key's distinct instances
     // to `view.Indices` and index the key's span under `set`. Returns the

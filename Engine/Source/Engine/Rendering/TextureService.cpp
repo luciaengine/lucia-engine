@@ -2,7 +2,6 @@
 // TextureService.h for the service contract.
 
 #include "Engine/Rendering/TextureService.h"
-#include "SceneLoadTracker/SceneLoadTracker.h"
 #include "CpuTextureSources.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/PostProcessSettings.h"
@@ -14,14 +13,12 @@
 #include "Engine/Rendering/MaterialBinder.h"
 #include "Engine/Rendering/MaterialCompiler.h"
 #include "Engine/Rendering/ShaderGraphMaterial.h"
-#include "Mathematics/Interpolation.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialParamsLayout.h"
 #include "Rendering/Materials/MaterialBuilder.h"
 #include "Assets/AssetManager.h"
 #include "Assets/BinaryAsset.h"
-#include "Assets/CubeLutColorSettings.h"
 #include "Assets/MaterialAsset.h"
 #include "Assets/ModelAsset.h"
 #include "Assets/TextureAlphaDecodeProbe.h"
@@ -29,7 +26,7 @@
 #include "Assets/TextureAsset.h"
 
 #include "Assets/TextureCook.h"
-#include "Image/Decode.h"
+#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "Engine/Rendering/TextureMipUpload.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
@@ -62,8 +59,8 @@
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
-#include "Rendering/Camera/CameraDerivation.h"
+#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/CameraDerivation.h"
 #include "Rendering/Core/CullingStrategy.h"
 #include "Rendering/Core/FrustumCullingStrategy.h"
 #include "Rendering/Core/GPUCulling.h"
@@ -71,16 +68,16 @@
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/Shader/ShaderReflection.h"
+#include "Rendering/Materials/ShaderReflection.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Rendering/Utils/BufferHelpers.h"
 #include "Rendering/Utils/TextureUploadHelpers.h"
-#include "Rendering/Utils/CubeLut/CubeLutColorDomain.h"
-#include "Rendering/Utils/CubeLut/CubeLutFileParser.h"
-#include "Rendering/Utils/CubeLut/CubeLutGpuUpload.h"
+#include "Rendering/Utils/CubeLutFileParser.h"
+#include "Rendering/Utils/CubeLutGpuUpload.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
+#include "Types/Fnv1a.h"
 #include "Types/StringId.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
@@ -100,8 +97,6 @@
 #include <cassert>
 #include <cstring>
 #include <cstdlib>
-#include <optional>
-#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -208,7 +203,7 @@ bool TextureService::Initialize(IDevice* device, MaterialRegistry& materials,
 // sampler cache, and the default fallback textures + identity LUTs — which both
 // modes need. Split out of Initialize so ReprovisionAfterDeviceRebuild can
 // re-run exactly this on the rebuilt device without disturbing the retained
-// CPU-side ref graph. Assumes m_Device and m_Materials are set.
+// CPU-side ref graph / decode cache. Assumes m_Device and m_Materials are set.
 bool TextureService::CreateDeviceScopedResources()
 {
     Rendering::IDevice* const dev = m_Device;
@@ -365,8 +360,10 @@ void TextureService::CreateDefaultTexturesAndLuts(Rendering::IDevice* dev)
             createDefaultTexture("DefaultWhite1x1Array", 1, 1, Rendering::TextureCreateFlags::ForceArrayView);
         m_DefaultBlackCubeTexture = CreateBlackCube1x1(dev);
 
-        // Batch-upload the default textures on the graphics queue: queue order makes them
-        // visible to every later frame submit, which cannot wait on a transfer-queue token.
+        // Batch-upload the default textures in a single command list submission.
+        // Note: SubmitTextureUploads (async transfer queue) causes VUID errors because
+        // the implementation transitions textures with shader-stage barriers that are
+        // invalid on the transfer queue. Use the synchronous graphics-queue path instead.
         uint32_t whitePixel = 0xFFFFFFFFu;
         uint32_t blackPixel = 0xFF000000u;
         uint32_t normalPixel = 0xFFFF8080u;
@@ -378,9 +375,10 @@ void TextureService::CreateDefaultTexturesAndLuts(Rendering::IDevice* dev)
                 const float nx = (static_cast<float>(x) + 0.5f) / 64.0f * 2.0f - 1.0f;
                 const float ny = (static_cast<float>(y) + 0.5f) / 64.0f * 2.0f - 1.0f;
                 const float r = std::sqrt(nx * nx + ny * ny);
-                const float core = Math::Clamp01(1.0f - r * 2.9f);
-                const float halo = Math::Clamp01(1.0f - r);
-                const float alpha = Math::Clamp01(core * core + halo * halo * halo * 0.45f);
+                const float core = std::clamp(1.0f - r * 2.9f, 0.0f, 1.0f);
+                const float halo = std::clamp(1.0f - r, 0.0f, 1.0f);
+                const float alpha = std::clamp(core * core + halo * halo * halo * 0.45f,
+                                               0.0f, 1.0f);
                 const uint32_t a = static_cast<uint32_t>(alpha * 255.0f + 0.5f);
                 lensFlarePixels[y * 64u + x] =
                     (a << 24u) | (255u << 16u) | (255u << 8u) | 255u;
@@ -395,11 +393,74 @@ void TextureService::CreateDefaultTexturesAndLuts(Rendering::IDevice* dev)
         };
         Rendering::UploadTexturesBatched(dev, defaultUploads, std::size(defaultUploads), "DefaultTexStaging");
 
-        // Identity tables for always-valid LUT bindings.
+        // 2x2x2 identity 3D LUT + 2x3 1D strip (linear RGB knots) for always-valid
+        // bindings. Float16: the knots are exactly 0 and 1, and the LUT samplers
+        // filter — WebGPU only filters float32 behind the float32-filterable
+        // feature, while float16 filters everywhere.
         {
-            const Rendering::CubeLutGpuTextures identity = Rendering::CreateIdentityCubeLutTextures(dev);
-            m_IdentityLut3D = identity.Lut3D;
-            m_IdentityLut1DStrip = identity.Lut1DStrip;
+            constexpr uint16_t kHalfZero = 0x0000u;
+            constexpr uint16_t kHalfOne = 0x3C00u;
+            constexpr uint32_t n3 = 2u;
+            std::vector<uint16_t> rgba3(static_cast<size_t>(n3) * n3 * n3 * 4u);
+            for (uint32_t b = 0; b < n3; ++b)
+            {
+                for (uint32_t g = 0; g < n3; ++g)
+                {
+                    for (uint32_t r = 0; r < n3; ++r)
+                    {
+                        const size_t idx = ((static_cast<size_t>(b) * n3 + g) * n3 + r) * 4u;
+                        rgba3[idx + 0u] = r != 0u ? kHalfOne : kHalfZero;
+                        rgba3[idx + 1u] = g != 0u ? kHalfOne : kHalfZero;
+                        rgba3[idx + 2u] = b != 0u ? kHalfOne : kHalfZero;
+                        rgba3[idx + 3u] = kHalfOne;
+                    }
+                }
+            }
+
+            Rendering::TextureDesc td3{};
+            td3.width = n3;
+            td3.height = n3;
+            td3.depth = n3;
+            td3.mipLevels = 1;
+            td3.arrayLayers = 1;
+            td3.format = static_cast<uint32_t>(Rendering::TextureFormat::R16G16B16A16_FLOAT);
+            td3.usage = static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource)
+                      | static_cast<uint32_t>(Rendering::TextureUsage::TransferDst);
+            td3.persistent = true;
+            td3.debugName = "IdentityLut3D";
+            m_IdentityLut3D = dev->CreateTexture(td3);
+            if (m_IdentityLut3D.IsValid())
+            {
+                const size_t rowPitch3 = static_cast<size_t>(n3) * 4u * sizeof(uint16_t);
+                Rendering::UploadTexture3D(dev, m_IdentityLut3D, rgba3.data(), n3, n3, n3, rowPitch3, 0, "IdentityLut3DStaging");
+            }
+
+            constexpr uint32_t n1 = 2u;
+            std::vector<uint16_t> rgba1(static_cast<size_t>(n1) * 3u * 4u, kHalfZero);
+            for (uint32_t row = 0; row < 3u; ++row)
+            {
+                rgba1[(static_cast<size_t>(row) * n1 + 0u) * 4u + 3u] = kHalfOne;
+                rgba1[(static_cast<size_t>(row) * n1 + 1u) * 4u + 0u] = kHalfOne;
+                rgba1[(static_cast<size_t>(row) * n1 + 1u) * 4u + 3u] = kHalfOne;
+            }
+
+            Rendering::TextureDesc td1{};
+            td1.width = n1;
+            td1.height = 3u;
+            td1.depth = 1;
+            td1.mipLevels = 1;
+            td1.arrayLayers = 1;
+            td1.format = static_cast<uint32_t>(Rendering::TextureFormat::R16G16B16A16_FLOAT);
+            td1.usage = static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource)
+                      | static_cast<uint32_t>(Rendering::TextureUsage::TransferDst);
+            td1.persistent = true;
+            td1.debugName = "IdentityLut1DStrip";
+            m_IdentityLut1DStrip = dev->CreateTexture(td1);
+            if (m_IdentityLut1DStrip.IsValid())
+            {
+                const size_t rowPitch1 = static_cast<size_t>(n1) * 4u * sizeof(uint16_t);
+                Rendering::UploadTexture2D(dev, m_IdentityLut1DStrip, rgba1.data(), n1, 3u, rowPitch1, "IdentityLut1DStaging");
+            }
         }
     }
 }
@@ -451,7 +512,8 @@ void TextureService::ReprovisionAfterDeviceRebuild()
     // in-flight load state. The rebuild teardown already freed every VkImage /
     // view / sampler / descriptor set this service created, so the cached handles
     // are dead — forget them WITHOUT Destroy* below (a Destroy would double-free a
-    // recycled slot). The ref graph is PRESERVED: it drives the re-upload replay.
+    // recycled slot). The ref graph + CPU decode cache are PRESERVED: they drive
+    // the re-upload replay.
     struct RefEntry
     {
         GUID Mat;
@@ -648,13 +710,10 @@ void TextureService::Shutdown()
         m_IdentityLut3D = {};
         m_IdentityLut1DStrip = {};
 
-        for (const auto& [guid, entry] : m_TextureGPUCache.Take())
+        for (auto& [guid, texHandle] : m_TextureGPUCache.Take())
         {
-            for (const Rendering::TextureHandle texture : {entry.Texture, entry.NormalVarianceCompanion})
-            {
-                if (texture.IsValid())
-                    m_Device->DestroyTexture(texture);
-            }
+            if (texHandle.IsValid())
+                m_Device->DestroyTexture(texHandle);
         }
 
         if (m_BindlessTextureSet.IsValid())
@@ -696,6 +755,7 @@ void TextureService::Shutdown()
         std::lock_guard lock(m_PendingTexturesMutex);
         m_EmbeddedSlotsByMaterial.clear();
     }
+    m_EmbeddedDecodeCache.clear();
     m_BindlessTextureIndexCache.clear();
     m_BindlessEnabled.store(false, std::memory_order_relaxed);
     m_Bindless.reset();
@@ -835,7 +895,7 @@ void TextureService::DeclareTextureClassification(const GUID& texGuid,
         RequestReupload(texGuid);
     // A usage change moves the cooked artifact's format (BC5/BC7), which only a re-cook produces.
     if (newUsageTag)
-        RequestRecook(texGuid, AssetLoadPriority::Low);
+        RequestRecook(texGuid);
 }
 
 // The texture asset's own filter choice (kTextureFilterMetaKey), applied to the
@@ -899,19 +959,19 @@ void TextureService::BindMaterialTextureSlot(Material* mat, const GUID& matGuid,
         EnsureTextureCookUsageTagged(texGuid, TextureCookUsageForMaterialSlot(slotName), matGuid, slotName);
     if ((newColorTag || newUsageTag) && m_TextureGPUCache.Contains(texGuid))
     {
+        Logger::Log::Info("[TextureReloadTrace] material-ref classification guid={} color={} usage={}",
+                              texGuid.ToString(), newColorTag, newUsageTag);
         Evict(texGuid);
     }
-    // The re-key cooks behind the open scene's loads: the slot already shows the texture's
-    // current cook, and this one only narrows its format.
     if (newUsageTag)
     {
-        RequestRecook(texGuid, AssetLoadPriority::Low);
+        RequestRecook(texGuid);
     }
 
     // Fast path: already in GPU cache — bind immediately.
-    if (TextureGPUCache::Entry cached; m_TextureGPUCache.TryGet(texGuid, cached))
+    if (Rendering::TextureHandle cached; m_TextureGPUCache.TryGet(texGuid, cached))
     {
-        BindCachedMaterialTexture(mat, slotName, cached);
+        BindMaterialTexture(mat, slotName, cached);
         std::lock_guard lock(m_PendingTexturesMutex);
         TrackMaterialTextureRefLocked(matGuid, slotName, texGuid);
         return;
@@ -932,7 +992,7 @@ void TextureService::BindMaterialTextureSlot(Material* mat, const GUID& matGuid,
     }
     else
     {
-        BindCachedMaterialTexture(mat, slotName, GetOrUploadEntry(texGuid));
+        BindMaterialTexture(mat, slotName, GetOrUpload(texGuid));
     }
     std::lock_guard lock(m_PendingTexturesMutex);
     TrackMaterialTextureRefLocked(matGuid, slotName, texGuid);
@@ -956,7 +1016,7 @@ void TextureService::OnMaterialUnregistered(const GUID& matGuid)
 
 void TextureService::ReloadEmbeddedForModel(const GUID& modelGuid, std::span<const EmbeddedImage> images)
 {
-    // Embedded images are cached under derived GUIDs (EmbeddedTextureGuid);
+    // Embedded images are cached under derived GUIDs (see UploadEmbeddedImage);
     // the parent model GUID itself is never a texture cache key. Take the
     // previous payload's list out first: the rebinds below re-track this model
     // from `images` alone, so content both payloads share gains a reference
@@ -971,11 +1031,11 @@ void TextureService::ReloadEmbeddedForModel(const GUID& modelGuid, std::span<con
     std::vector<Rendering::TextureHandle> previousTextures;
     for (const GUID& childGuid : previous)
     {
-        if (TextureGPUCache::Entry entry{}; m_TextureGPUCache.TryGet(childGuid, entry))
-            previousTextures.push_back(entry.Texture);
+        if (Rendering::TextureHandle tex{}; m_TextureGPUCache.TryGet(childGuid, tex))
+            previousTextures.push_back(tex);
     }
 
-    // Rebind before release, outside the lock (a bind takes it). A slot binding
+    // Rebind before release, outside the lock (the binds upload). A slot binding
     // one of the previous payload's textures takes the reloaded image; so does a
     // slot still awaiting one (its image was missing or empty) unless an asset
     // texture bind has claimed it since. A slot that a later bind moved off this
@@ -1010,8 +1070,8 @@ void TextureService::ReloadEmbeddedForModel(const GUID& modelGuid, std::span<con
             if (!BindEmbeddedImage(mat, slot.SlotName, modelGuid, slot.ImageIndex, images))
             {
                 Logger::Log::Warning(
-                    "ReloadEmbeddedForModel: reloaded model {} has no image {} (or it has no bytes or no "
-                    "content hash); material {} slot {:#x} awaits",
+                    "ReloadEmbeddedForModel: reloaded model {} has no image {} (or it has no bytes); "
+                    "material {} slot {:#x} awaits",
                     modelGuid.ToString(), slot.ImageIndex, matGuid.ToString(), slot.SlotName);
             }
         }
@@ -1030,6 +1090,7 @@ void TextureService::ReloadEmbeddedForModel(const GUID& modelGuid, std::span<con
             m_EmbeddedContentRefs.erase(refIt);
         }
         Evict(childGuid);
+        m_EmbeddedDecodeCache.erase(childGuid);
     }
 }
 
@@ -1085,27 +1146,29 @@ Rendering::DescriptorSetLayoutDesc TextureService::GetBindlessTextureSetLayout(u
 
 namespace
 {
-// Decrements an upload job's counter when the job's scope ends.
-struct CounterRelease
+void FillIdentityCubeLutBinding(const Rendering::TextureHandle id3d,
+                                const Rendering::TextureHandle id1d,
+                                CubeLutGpuBindingState& out)
 {
-    JobSystem::JobCounter& Counter;
-    ~CounterRelease() { Counter.Decrement(); }
-};
-
-// The GPU cache key of an embedded image: its content (asset packs embed one atlas into hundreds
-// of models, which then share one texture) and its linearity (the format differs).
-GUID EmbeddedTextureGuid(const EmbeddedImage& image, bool linear)
-{
-    const GUID contentBase = GUID::Derive(
-        GUID{}, "embedded/" + std::to_string(image.ContentHash) + "/" + std::to_string(image.Data.size()));
-    return GUID::Derive(contentBase, linear ? "linear" : "srgb");
+    constexpr int32 kHas3DLut = 1;
+    constexpr int32 kHas1DLut = 2;
+    out.Lut3D = id3d;
+    out.Lut1DStrip = id1d;
+    out.Size3D = id3d.IsValid() ? 2 : 0;
+    out.Size1D = id1d.IsValid() ? 2 : 0;
+    out.Flags = (id3d.IsValid() ? kHas3DLut : 0) | (id1d.IsValid() ? kHas1DLut : 0);
+    out.In1DMin = 0.0f;
+    out.In1DMax = 1.0f;
+    out.In3DMin = 0.0f;
+    out.In3DMax = 1.0f;
 }
+
 
 } // namespace
 
 bool TextureService::TryGetCubeLutGpuBinding(const PostProcessSettings& pp, CubeLutGpuBindingState& out) const
 {
-    out = Rendering::IdentityCubeLutBinding({m_IdentityLut3D, m_IdentityLut1DStrip});
+    FillIdentityCubeLutBinding(m_IdentityLut3D, m_IdentityLut1DStrip, out);
     if (!m_Device)
         return false;
 
@@ -1119,13 +1182,16 @@ bool TextureService::TryGetCubeLutGpuBinding(const PostProcessSettings& pp, Cube
     if (assetGuid.IsNull())
         return true;
 
-    // The LUT is sampled with a filtering sampler, so float32 tables need the device to filter
-    // float32 (WebGPU: the float32-filterable feature); where it cannot, the tables are float16
-    // rather than a bind group the device rejects.
-    const auto gpuTextureFormat = m_Device->GetCapabilities().supportsFilterableFloat32
-        ? Rendering::TextureFormat::R32G32B32A32_FLOAT
-        : Rendering::TextureFormat::R16G16B16A16_FLOAT;
-    const CubeLutGpuCacheKey cacheKey{assetGuid, gpuTextureFormat};
+    // The LUT is sampled with a filtering sampler, so a float32 LUT needs the
+    // device to filter float32 (WebGPU: the float32-filterable feature). Where
+    // it cannot, clamp the authored format to float16 rather than producing a
+    // bind group the device rejects.
+    const bool filterableF32 = m_Device->GetCapabilities().supportsFilterableFloat32;
+    const int32 lutTextureFormat = (pp.LutTextureFormat == 1 || !filterableF32) ? 1 : 0;
+    const auto gpuTextureFormat = lutTextureFormat == 1
+        ? Rendering::TextureFormat::R16G16B16A16_FLOAT
+        : Rendering::TextureFormat::R32G32B32A32_FLOAT;
+    const CubeLutGpuCacheKey cacheKey{assetGuid, lutTextureFormat};
 
     if (const auto it = m_CubeLutGpuCache.find(cacheKey); it != m_CubeLutGpuCache.end())
     {
@@ -1133,7 +1199,8 @@ bool TextureService::TryGetCubeLutGpuBinding(const PostProcessSettings& pp, Cube
         return true;
     }
 
-    CubeLutGpuBindingState uploaded = Rendering::IdentityCubeLutBinding({m_IdentityLut3D, m_IdentityLut1DStrip});
+    CubeLutGpuBindingState uploaded{};
+    FillIdentityCubeLutBinding(m_IdentityLut3D, m_IdentityLut1DStrip, uploaded);
 
     AssetMetadata meta{};
     if (!GameEngine::EngineCore::GetInstance().GetAssetManager().GetRegistry().TryGetAssetMetadata(assetGuid, meta)
@@ -1184,12 +1251,6 @@ bool TextureService::TryGetCubeLutGpuBinding(const PostProcessSettings& pp, Cube
     uploaded.In1DMax = parsed.In1DMax;
     uploaded.In3DMin = parsed.In3DMin;
     uploaded.In3DMax = parsed.In3DMax;
-    // The encoding the asset says the LUT's input is authored in. A change of it reloads the asset,
-    // which evicts this entry (RenderServices::DrainPendingAssetInvalidations).
-    uploaded.InputEncoding = static_cast<int32>(
-        ResolveCubeLutColorSettings(GameEngine::EngineCore::GetInstance().GetAssetManager().GetRegistry(), meta.Path,
-                                    Rendering::ProposeCubeLutColor(parsed))
-            .InputEncoding);
 
     m_CubeLutGpuCache[cacheKey] = uploaded;
     m_CubeLutWarnedFailureGuids.erase(assetGuid);
@@ -1201,7 +1262,6 @@ bool TextureService::TryWriteCubeLutPushMember(const std::string& name,
                                                const CubeLutGpuBindingState& lut,
                                                Rendering::NamedPushConstantWriter& pcw)
 {
-    if (name == "lutInputEncoding") return pcw.Add(name, lut.InputEncoding);
     if (name == "lutSize3d") return pcw.Add(name, lut.Size3D);
     if (name == "lutSize1d") return pcw.Add(name, lut.Size1D);
     if (name == "lutFlags") return pcw.Add(name, lut.Flags);
@@ -1266,14 +1326,9 @@ void TextureService::BindAwaitedTexture(Material* mat, StringId slotName)
 {
     if (!mat)
         return;
-    // Not ApplyMaterialSlotBinding: its SetTexture would end the wait this
-    // starts, and a clear followed by a wait moves the material content epoch
-    // on every replay of a still-pending load.
+    ApplyMaterialSlotBinding(mat, slotName, Rendering::TextureHandle{},
+                             DefaultBindlessIndex(AwaitedSlotDefault(TextureSlotFromName(slotName))));
     mat->MarkTextureAwaited(slotName);
-    mat->SetBindlessTextureIndex(slotName,
-                                 DefaultBindlessIndex(AwaitedSlotDefault(TextureSlotFromName(slotName))));
-    if (m_IndexingMode == MaterialIndexingMode::Classic)
-        m_MaterialBindings.Invalidate(mat->GetGuid());
 }
 
 Rendering::TextureHandle TextureService::ResolveDefaultTexture(std::string_view bindingName) const
@@ -1417,18 +1472,6 @@ static void ApplyTextureSwizzleRGBA8(uint8_t* data, size_t pixelCount, const cha
     }
 }
 
-// A source the import cook reads (PNG, JPG, TGA, HDR, ...). With an engine running it loads
-// only through the AssetManager, which adopts its cooked artifact or cooks it on a worker
-// under the decode gate; nothing decodes it on the thread that asks for it. DDS, KTX2 and
-// SVG keep their own loaders.
-static bool LoadsThroughTextureCook(const std::filesystem::path& path)
-{
-    std::string extension = path.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return IsTextureCookSourceExtension(extension) && GameEngine::EngineCore::GetInstance().IsInitialized();
-}
-
 // Container-driven upload: textures whose asset carries a mip chain (authored
 // KTX2 or the import cook's cached artifact). Uploads the full chain —
 // block-compressed (BCn) or pre-mipped RGBA8/RGBA32F — and picks the GPU
@@ -1437,7 +1480,7 @@ static bool LoadsThroughTextureCook(const std::filesystem::path& path)
 // caller to the legacy single-mip RGBA8 path. Block-compressed payloads are
 // ALWAYS handled: their bytes are not per-pixel addressable, so the legacy
 // expansion/swizzle path must never see them.
-// True when the asset's own mip chain can be uploaded as it is (StageContainerMipChain): a
+// True when the asset's own mip chain can be uploaded as it is (TryUploadFromMipChain): a
 // block-compressed payload, or a tightly packed RGBA8/RGBA32F one with no unbaked swizzle.
 // Reads the asset only, so the CPU half of an upload can decide it on any thread.
 static bool UsesContainerUpload(const TextureAsset& texAsset, const std::filesystem::path& path)
@@ -1456,126 +1499,98 @@ static bool UsesContainerUpload(const TextureAsset& texAsset, const std::filesys
     return texAsset.IsSwizzleBaked() || isFloat || !ResolveTextureSwizzle(path, swz);
 }
 
-// The GPU format a container payload uploads as. Nullopt when the device cannot take it: a BC
-// payload on a device without BC support. The decode-time transcode target and the cook output
-// make that unreachable; the guard keeps the slot's default instead of an undefined format.
-static std::optional<Rendering::TextureFormat> ResolveContainerGpuFormat(const Rendering::IDevice& device,
-                                                                        const TextureAsset& texAsset,
-                                                                        const std::filesystem::path& path,
-                                                                        TextureColorSpace colorSpace)
+static bool TryUploadFromMipChain(Rendering::IDevice* device,
+                                  const TextureAsset& texAsset,
+                                  const std::filesystem::path& path,
+                                  TextureColorSpace colorSpace,
+                                  Rendering::TextureHandle& out)
 {
-    const bool srgb = colorSpace == TextureColorSpace::SRGB;
-    if (!texAsset.IsBlockCompressed())
-    {
-        if (texAsset.GetFormat() == GameEngine::TextureFormat::RGBA32F)
-            return Rendering::TextureFormat::R32G32B32A32_FLOAT;
-        return srgb ? Rendering::TextureFormat::RGBA8_SRGB : Rendering::TextureFormat::RGBA8_UNORM;
-    }
-    if (!device.GetCapabilities().supportsTextureCompressionBC)
-        return std::nullopt;
-    char swz[4];
-    if (!texAsset.IsSwizzleBaked() && ResolveTextureSwizzle(path, swz))
-    {
-        Logger::Log::Warning("TextureService: swizzle meta on block-compressed texture '{}' cannot be applied; ignoring",
-                             path.string());
-    }
-    switch (texAsset.GetFormat())
-    {
-    case GameEngine::TextureFormat::BC1:
-        return srgb ? Rendering::TextureFormat::BC1_SRGB : Rendering::TextureFormat::BC1_UNORM;
-    case GameEngine::TextureFormat::BC4:
-        return Rendering::TextureFormat::BC4_UNORM;
-    case GameEngine::TextureFormat::BC5:
-        return Rendering::TextureFormat::BC5_UNORM;
-    case GameEngine::TextureFormat::BC6H:
-        return Rendering::TextureFormat::BC6H_UF16;
-    case GameEngine::TextureFormat::BC7:
-    default:
-        return srgb ? Rendering::TextureFormat::BC7_SRGB : Rendering::TextureFormat::BC7_UNORM;
-    }
-}
+    out = {};
+    if (!UsesContainerUpload(texAsset, path))
+        return false;
+    const auto& chain = texAsset.GetMipChain();
+    const bool isBlock = texAsset.IsBlockCompressed();
+    const bool isFloat = texAsset.GetFormat() == GameEngine::TextureFormat::RGBA32F;
 
-// A new 2D texture and a staging buffer that holds every level of `levels`, ready to submit.
-// Nullopt, with nothing left on the device and `refusal` set, when the device refuses the format,
-// the buffer or the texture.
-static std::optional<Rendering::StagedTextureUpload> StageMipChain(Rendering::IDevice& device,
-                                                                  Rendering::TextureFormat format,
-                                                                  std::span<const Rendering::TextureMipUploadEntry> levels,
-                                                                  const char* debugName,
-                                                                  const char*& refusal)
-{
-    std::optional<Rendering::StagedTextureUpload> upload =
-        Rendering::StageTextureMips(device, format, levels, "MaterialTexStaging");
-    if (!upload)
+    const bool srgb = colorSpace == TextureColorSpace::SRGB;
+    Rendering::TextureFormat gpuFormat;
+    if (isBlock)
     {
-        refusal = "no staging buffer for its format and size";
-        return std::nullopt;
+        if (!device->GetCapabilities().supportsTextureCompressionBC)
+        {
+            // Decode-time transcode-target / cook-output selection makes this
+            // unreachable; guard so a mismatch degrades to the slot's default
+            // binding instead of a VK_FORMAT_UNDEFINED texture.
+            Logger::Log::Error(
+                "TextureService: BC payload for '{}' but the device lacks BC support; skipping upload",
+                path.string());
+            return true;
+        }
+        char swz[4];
+        if (!texAsset.IsSwizzleBaked() && ResolveTextureSwizzle(path, swz))
+        {
+            Logger::Log::Warning(
+                "TextureService: swizzle meta on block-compressed texture '{}' cannot be applied; ignoring",
+                path.string());
+        }
+        switch (texAsset.GetFormat())
+        {
+        case GameEngine::TextureFormat::BC1:
+            gpuFormat = srgb ? Rendering::TextureFormat::BC1_SRGB
+                             : Rendering::TextureFormat::BC1_UNORM;
+            break;
+        case GameEngine::TextureFormat::BC4:
+            gpuFormat = Rendering::TextureFormat::BC4_UNORM;
+            break;
+        case GameEngine::TextureFormat::BC5:
+            gpuFormat = Rendering::TextureFormat::BC5_UNORM;
+            break;
+        case GameEngine::TextureFormat::BC6H:
+            gpuFormat = Rendering::TextureFormat::BC6H_UF16;
+            break;
+        case GameEngine::TextureFormat::BC7:
+        default:
+            gpuFormat = srgb ? Rendering::TextureFormat::BC7_SRGB
+                             : Rendering::TextureFormat::BC7_UNORM;
+            break;
+        }
+    }
+    else if (isFloat)
+    {
+        gpuFormat = Rendering::TextureFormat::R32G32B32A32_FLOAT;
+    }
+    else
+    {
+        gpuFormat = srgb ? Rendering::TextureFormat::RGBA8_SRGB
+                         : Rendering::TextureFormat::RGBA8_UNORM;
     }
 
     Rendering::TextureDesc td{};
-    td.width = levels.front().Width;
-    td.height = levels.front().Height;
-    td.mipLevels = static_cast<uint32_t>(levels.size());
+    td.width = texAsset.GetWidth();
+    td.height = texAsset.GetHeight();
+    td.mipLevels = static_cast<uint32_t>(chain.size());
     td.arrayLayers = 1;
-    td.format = static_cast<uint32_t>(format);
+    td.format = static_cast<uint32_t>(gpuFormat);
     td.usage = static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource)
              | static_cast<uint32_t>(Rendering::TextureUsage::TransferDst);
     td.persistent = true;
-    td.debugName = debugName;
-    upload->Texture = device.CreateTexture(td);
-    if (!upload->Texture.IsValid())
-    {
-        device.DestroyBuffer(upload->Staging);
-        refusal = "the device refused the texture";
-        return std::nullopt;
-    }
-    return upload;
-}
-
-// A container payload's own mip chain, staged as it is stored (see UsesContainerUpload). Nullopt,
-// with `refusal` set, when the device refuses it.
-static std::optional<Rendering::StagedTextureUpload> StageContainerMipChain(Rendering::IDevice& device,
-                                                                           const TextureAsset& texAsset,
-                                                                           const std::filesystem::path& path,
-                                                                           TextureColorSpace colorSpace,
-                                                                           const char* debugName,
-                                                                           const char*& refusal)
-{
-    if (!UsesContainerUpload(texAsset, path))
-    {
-        refusal = "its payload does not upload as stored";
-        return std::nullopt;
-    }
-    const std::optional<Rendering::TextureFormat> gpuFormat =
-        ResolveContainerGpuFormat(device, texAsset, path, colorSpace);
-    if (!gpuFormat)
-    {
-        refusal = "a BC payload, and the device lacks BC support";
-        return std::nullopt;
-    }
-    const auto& chain = texAsset.GetMipChain();
-    const uint8_t* pixels = texAsset.GetPixelData();
-    std::vector<Rendering::TextureMipUploadEntry> levels(chain.size());
-    for (size_t i = 0; i < chain.size(); ++i)
-        levels[i] = {pixels + chain[i].Offset, static_cast<size_t>(chain[i].Size), chain[i].Width, chain[i].Height};
-    return StageMipChain(device, *gpuFormat, levels, debugName, refusal);
-}
-
-// Submits the staged uploads with one command list. False when the device gives no command list:
-// the textures are destroyed, and the caller reports each one as refused.
-static bool SubmitOrDiscardStagedUploads(Rendering::IDevice& device,
-                                         std::span<const Rendering::StagedTextureUpload> uploads)
-{
-    if (Rendering::SubmitStagedTextureUploads(device, uploads))
+    td.debugName = "MaterialTexture";
+    auto tex = device->CreateTexture(td);
+    if (!tex.IsValid())
         return true;
-    for (const Rendering::StagedTextureUpload& upload : uploads)
-        device.DestroyTexture(upload.Texture);
-    return false;
-}
 
-// Why the device refused a texture, when no staging step names a cause.
-constexpr const char* kDeviceRefusal = "the device refused it";
-constexpr const char* kNoCommandListRefusal = "the device gave no command list";
+    const uint8_t* pixels = texAsset.GetPixelData();
+    std::vector<Rendering::TextureMipUploadEntry> mips(chain.size());
+    for (size_t i = 0; i < chain.size(); ++i)
+    {
+        mips[i] = {pixels + chain[i].Offset, static_cast<size_t>(chain[i].Size),
+                   chain[i].Width, chain[i].Height};
+    }
+    Rendering::UploadTextureMips(device, tex, mips.data(), static_cast<uint32_t>(mips.size()),
+                                 gpuFormat, "MaterialTexStaging");
+    out = tex;
+    return true;
+}
 
 GUID TextureService::ResolveTextureRefGuid(const std::string& guidStr,
                                            const std::string& pathStr) const
@@ -1686,11 +1701,11 @@ struct TextureService::PreparedTextureUpload
     {
         Ready,   // upload it
         Refused, // terminal: publish a negative cache entry so callers stop retrying
-        Failed,  // nothing to upload (no pixels)
+        Failed,  // nothing to upload (no pixels); publish nothing
     };
     Outcome Result = Outcome::Failed;
     std::filesystem::path Path;
-    SharedPtr<TextureAsset> Container;          // uploads its own mip chain (StageContainerMipChain)
+    SharedPtr<TextureAsset> Container;          // uploads its own mip chain (TryUploadFromMipChain)
     std::vector<TextureCookMipLevel> MipChain;  // raw levels, RGBA8 or RGBA32F
     Rendering::TextureFormat Format = Rendering::TextureFormat::RGBA8_UNORM;
     // The asset's color space with the per-asset override applied. Carried here rather than
@@ -1705,17 +1720,30 @@ struct TextureService::PreparedTextureUpload
     bool LogTiming = false;
 };
 
-Rendering::TextureHandle TextureService::GetOrUpload(const GUID& textureGuid)
+Rendering::TextureHandle TextureService::GetOrRequestTexture(const GUID& textureGuid)
 {
-    return GetOrUploadEntry(textureGuid).Texture;
+    if (textureGuid.IsNull() || !m_Device)
+        return {};
+    Rendering::TextureHandle cached;
+    if (m_TextureGPUCache.TryGet(textureGuid, cached))
+        return cached; // Includes terminal negative entries; no retry storm.
+    {
+        std::lock_guard lock(m_PendingTexturesMutex);
+        // Only optional preloads are back-pressured. Eviction-triggered rebinds
+        // must never be dropped: unlike this API they have no polling caller.
+        if (m_TextureLoadsKicked.size() >= 32)
+            return {};
+    }
+    ScheduleMaterialTextureLoad(textureGuid, GUID::Null(), StringId{});
+    return {};
 }
 
-TextureGPUCache::Entry TextureService::GetOrUploadEntry(const GUID& textureGuid)
+Rendering::TextureHandle TextureService::GetOrUpload(const GUID& textureGuid)
 {
     if (textureGuid.IsNull() || !m_Device)
         return {};
 
-    if (TextureGPUCache::Entry cached; m_TextureGPUCache.TryGet(textureGuid, cached))
+    if (Rendering::TextureHandle cached; m_TextureGPUCache.TryGet(textureGuid, cached))
         return cached;
 
     // Resolve GUID to an asset path and load.
@@ -1735,16 +1763,7 @@ TextureGPUCache::Entry TextureService::GetOrUploadEntry(const GUID& textureGuid)
             Logger::Log::Warning("GetOrUpload: no metadata for GUID {}", textureGuid.ToString());
         }
         // Negative entry: stop this GUID re-resolving every frame.
-        return m_TextureGPUCache.PublishOrAdopt(textureGuid, TextureGPUCache::Entry{});
-    }
-
-    // A cook source is loaded by the AssetManager (adopt or cook, on a worker) and uploaded by
-    // FlushPendingUploads; until then the caller gets no texture and samples its default, as a
-    // material slot does, and asks again next frame.
-    if (LoadsThroughTextureCook(meta.Path))
-    {
-        ScheduleMaterialTextureLoad(textureGuid, GUID::Null(), StringId{});
-        return {};
+        return m_TextureGPUCache.PublishOrAdopt(textureGuid, Rendering::TextureHandle{});
     }
 
     // Synchronous: the CPU half runs on this thread. The asynchronous paths run the same
@@ -1786,10 +1805,11 @@ std::shared_ptr<const TextureService::PreparedTextureUpload> TextureService::Pre
             prepared->Result = Outcome::Refused;
             return prepared;
         }
-        // Only a texture the import cook does not read (DDS, KTX2, SVG), or any texture when no
-        // engine runs, loads an instance of its own here: a cook source goes through the
-        // AssetManager (LoadsThroughTextureCook).
         texAsset = MakeShared<TextureAsset>(textureGuid, meta.Path);
+        // Adopt an existing cooked artifact (BCn + mips) from any thread. A miss decodes here:
+        // cooking (seconds to minutes of encode) is worker-only through the AssetManager
+        // (async loads, RequestRecook), never this path.
+        texAsset->SetAdoptCookedArtifacts(true);
         if (!texAsset->Load())
         {
             Logger::Log::Warning("GetOrUpload: failed to load '{}'", meta.Path.string());
@@ -1897,98 +1917,66 @@ std::shared_ptr<const TextureService::PreparedTextureUpload> TextureService::Pre
     return prepared;
 }
 
-TextureGPUCache::Entry TextureService::SubmitPreparedUpload(const GUID& textureGuid,
-                                                            const PreparedTextureUpload& prepared)
+Rendering::TextureHandle TextureService::SubmitPreparedUpload(const GUID& textureGuid,
+                                                              const PreparedTextureUpload& prepared)
 {
     using Clock = std::chrono::high_resolution_clock;
     using Outcome = PreparedTextureUpload::Outcome;
     if (prepared.Result == Outcome::Refused)
-        return m_TextureGPUCache.PublishOrAdopt(textureGuid, TextureGPUCache::Entry{});
+        return m_TextureGPUCache.PublishOrAdopt(textureGuid, Rendering::TextureHandle{});
     if (prepared.Result != Outcome::Ready || !m_Device)
         return {};
-
-    const auto tUpload = Clock::now();
-    std::vector<Rendering::StagedTextureUpload> batch;
-    const char* refusal = kDeviceRefusal;
-    const TextureGPUCache::Entry uploaded = StagePreparedUpload(prepared, batch, refusal);
-    if (!uploaded.Texture.IsValid())
-        return PublishFailedUpload(textureGuid, prepared.Path, refusal);
-    if (!SubmitOrDiscardStagedUploads(*m_Device, batch))
-        return PublishFailedUpload(textureGuid, prepared.Path, kNoCommandListRefusal);
-    LogUploadTiming(prepared, "upload", std::chrono::duration<double, std::milli>(Clock::now() - tUpload).count());
-    return PublishUploadedEntry(textureGuid, uploaded);
-}
-
-TextureGPUCache::Entry TextureService::StagePreparedUpload(const PreparedTextureUpload& prepared,
-                                                           std::vector<Rendering::StagedTextureUpload>& batch,
-                                                           const char*& refusal)
-{
-    std::optional<Rendering::StagedTextureUpload> texture;
-    std::optional<Rendering::StagedTextureUpload> companion;
-    if (prepared.Container)
-    {
-        texture = StageContainerMipChain(*m_Device, *prepared.Container, prepared.Path, prepared.ColorSpace,
-                                         "MaterialTexture", refusal);
-        // A refused companion is not a refused texture: the texture uploads without it.
-        const TextureAsset* variance = prepared.Container->GetNormalVarianceCompanion();
-        const char* companionRefusal = nullptr;
-        if (texture && variance)
-            companion = StageContainerMipChain(*m_Device, *variance, prepared.Path, TextureColorSpace::Linear,
-                                               "NormalVarianceCompanion", companionRefusal);
-    }
-    else
-    {
-        std::vector<Rendering::TextureMipUploadEntry> levels(prepared.MipChain.size());
-        for (size_t i = 0; i < prepared.MipChain.size(); ++i)
-            levels[i] = {prepared.MipChain[i].Bytes.data(), prepared.MipChain[i].Bytes.size(),
-                         prepared.MipChain[i].Width, prepared.MipChain[i].Height};
-        texture = StageMipChain(*m_Device, prepared.Format, levels, "MaterialTexture", refusal);
-    }
-    if (!texture)
-        return {};
-    batch.push_back(*texture);
-    if (companion)
-        batch.push_back(*companion);
-    return {texture->Texture, companion ? companion->Texture : Rendering::TextureHandle{}};
-}
-
-void TextureService::LogUploadTiming(const PreparedTextureUpload& prepared, const char* step, double stepMs) const
-{
-    if (!prepared.LogTiming)
-        return;
     const char* preparedWhere = prepared.PreparedOn == m_RenderThreadId ? "render thread" : "worker";
+
+    Rendering::TextureHandle tex;
+    const auto tUpload = Clock::now();
     if (prepared.Container)
-        Logger::Log::Info("[ModelLoad]     Texture '{}' {}x{} ({} mips{}): load {:.1f}ms on the {}, {} {:.1f}ms",
+    {
+        TryUploadFromMipChain(m_Device, *prepared.Container, prepared.Path, prepared.ColorSpace, tex);
+        if (!tex.IsValid())
+            return {};
+        if (prepared.LogTiming)
+            Logger::Log::Info("[ModelLoad]     Texture '{}' {}x{} ({} mips{}): load {:.1f}ms on the {}, upload {:.1f}ms",
                           prepared.Path.filename().string(), prepared.Width, prepared.Height,
                           prepared.Container->GetMipmapLevels(), prepared.Container->IsBlockCompressed() ? ", BC" : "",
-                          prepared.LoadMs, preparedWhere, step, stepMs);
-    else
-        Logger::Log::Info(
-            "[ModelLoad]     Texture '{}' {}x{} ({} mips, raw): load {:.1f}ms and mip {:.1f}ms on the {}, {} {:.1f}ms",
-            prepared.Path.filename().string(), prepared.Width, prepared.Height, prepared.MipChain.size(),
-            prepared.LoadMs, prepared.MipMs, preparedWhere, step, stepMs);
-}
-
-TextureGPUCache::Entry TextureService::PublishFailedUpload(const GUID& textureGuid, const std::filesystem::path& path,
-                                                           const char* reason)
-{
-    Logger::Log::Error("TextureService: texture {} '{}' not uploaded: {}", textureGuid.ToString(), path.string(),
-                       reason);
-    return m_TextureGPUCache.PublishOrAdopt(textureGuid, TextureGPUCache::Entry{});
-}
-
-TextureGPUCache::Entry TextureService::PublishUploadedEntry(const GUID& textureGuid,
-                                                            const TextureGPUCache::Entry& uploaded)
-{
-    // Another extraction worker may have published this GUID while this thread was preparing and
-    // uploading outside the lock; adopt its entry and retire the duplicate rather than orphaning
-    // a texture callers already hold.
-    const TextureGPUCache::Entry published = m_TextureGPUCache.PublishOrAdopt(textureGuid, uploaded);
-    if (published != uploaded)
-    {
-        ParkDuplicateTexture(uploaded.Texture);
-        ParkDuplicateTexture(uploaded.NormalVarianceCompanion);
+                          prepared.LoadMs, preparedWhere,
+                          std::chrono::duration<double, std::milli>(Clock::now() - tUpload).count());
     }
+    else
+    {
+        Rendering::TextureDesc td{};
+        td.width = prepared.Width;
+        td.height = prepared.Height;
+        td.mipLevels = static_cast<uint32_t>(prepared.MipChain.size());
+        td.arrayLayers = 1;
+        td.format = static_cast<uint32_t>(prepared.Format);
+        td.usage = static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource)
+                 | static_cast<uint32_t>(Rendering::TextureUsage::TransferDst);
+        td.persistent = true;
+        td.debugName = "MaterialTexture";
+        tex = m_Device->CreateTexture(td);
+        if (!tex.IsValid())
+            return {};
+        std::vector<Rendering::TextureMipUploadEntry> mipEntries(prepared.MipChain.size());
+        for (size_t i = 0; i < prepared.MipChain.size(); ++i)
+            mipEntries[i] = {prepared.MipChain[i].Bytes.data(), prepared.MipChain[i].Bytes.size(),
+                             prepared.MipChain[i].Width, prepared.MipChain[i].Height};
+        Rendering::UploadTextureMips(m_Device, tex, mipEntries.data(), static_cast<uint32_t>(mipEntries.size()),
+                                     prepared.Format, "MaterialTexStaging");
+        if (prepared.LogTiming)
+            Logger::Log::Info(
+            "[ModelLoad]     Texture '{}' {}x{} ({} mips, raw): load {:.1f}ms and mip {:.1f}ms on the {}, upload {:.1f}ms",
+            prepared.Path.filename().string(), prepared.Width, prepared.Height, prepared.MipChain.size(),
+            prepared.LoadMs, prepared.MipMs, preparedWhere,
+            std::chrono::duration<double, std::milli>(Clock::now() - tUpload).count());
+    }
+
+    // Another extraction worker may have published this GUID while this thread was preparing and
+    // uploading outside the lock; adopt its handle and retire the duplicate rather than orphaning
+    // a texture callers already hold.
+    const Rendering::TextureHandle published = m_TextureGPUCache.PublishOrAdopt(textureGuid, tex);
+    if (published != tex)
+        ParkDuplicateTexture(tex);
     return published;
 }
 
@@ -1998,18 +1986,6 @@ void TextureService::ParkDuplicateTexture(Rendering::TextureHandle texture)
         return;
     std::lock_guard lock(m_BindlessMutex);
     m_PendingGpuDiscards.push_back({Rendering::kInvalidBindlessTexture, {}, {}, texture});
-}
-
-void TextureService::RetireCacheEntry(const TextureGPUCache::Entry& entry)
-{
-    for (const Rendering::TextureHandle texture : {entry.Texture, entry.NormalVarianceCompanion})
-    {
-        if (!texture.IsValid())
-            continue;
-        InvalidateBindless(texture);
-        if (m_Device)
-            m_Device->DestroyTexture(texture);
-    }
 }
 
 void TextureService::ScheduleMaterialTextureLoad(const GUID& texGuid, const GUID& matGuid, StringId slotName)
@@ -2034,6 +2010,9 @@ void TextureService::ScheduleMaterialTextureLoad(const GUID& texGuid, const GUID
         if (!reTriggerOnly)
             m_PendingTextureBinds.push_back({matGuid, slotName, texGuid});
         capturedEpoch = m_TextureEpochByGuid[texGuid];
+
+        if (m_TextureGPUCache.Contains(texGuid))
+            return; // The next drain resolves any newly queued material bind.
 
         // Dedupe: many materials referencing the same texture share one load.
         if (m_TextureLoadsKicked.insert(texGuid).second)
@@ -2061,16 +2040,13 @@ void TextureService::ScheduleMaterialTextureLoad(const GUID& texGuid, const GUID
             // render thread. The asset is the AssetManager's shared instance, whose payload a reload
             // swaps in place on the main thread, so it is read only there.
             std::lock_guard lock(m_PendingTexturesMutex);
-            m_TextureLoadsKicked.erase(texGuid);
-            // A texture that cannot load is cached as no texture, as a failed synchronous upload
-            // is, so GetOrUpload stops re-requesting it every frame; an edit of the file evicts
-            // the entry. A withdrawn load (Evict, shutdown) is not a verdict on the texture, and
-            // neither is one an Evict has superseded since it was scheduled.
-            if (!ok && !(r.IsErr() && r.Error() == AssetError::Cancelled) &&
-                m_TextureEpochByGuid[texGuid] == capturedEpoch)
-                m_TextureGPUCache.PublishOrAdopt(texGuid, TextureGPUCache::Entry{});
+            // An old callback must not clear the replacement request's state.
+            if (m_TextureEpochByGuid[texGuid] != capturedEpoch)
+                return;
             if (!ok)
             {
+                m_TextureLoadsKicked.erase(texGuid);
+                m_TextureGPUCache.PublishOrAdopt(texGuid, Rendering::TextureHandle{});
                 // Drop the corresponding load handle and pending bind entries
                 // so we don't keep stillPending growing forever. Without this
                 // a missing/broken texture file leaves IsMaterialTextureBindingComplete
@@ -2091,15 +2067,12 @@ void TextureService::ScheduleMaterialTextureLoad(const GUID& texGuid, const GUID
     // The handle is retained so teardown and eviction can withdraw the request
     // (Cancel) before our callback runs into state they are clearing.
     //
-    // Race: the worker callback can fire and erase texGuid from
-    // m_TextureLoadsKicked between LoadAsset returning and us reaching this
-    // store. The kicked-flag presence indicates an outstanding load for this
-    // GUID (ours, or a later overlapping schedule). If our specific callback
-    // already fired, storing this handle would orphan it until the next
-    // eviction — gate the insert on the flag still being present.
+    // Retain through GPU publication, including synchronous cached callbacks.
+    // A failed/stale callback must not resurrect or overwrite a new load handle.
     {
         std::lock_guard lock(m_PendingTexturesMutex);
-        if (m_TextureLoadsKicked.find(texGuid) != m_TextureLoadsKicked.end())
+        if (m_TextureEpochByGuid[texGuid] == capturedEpoch &&
+            m_TextureLoadsKicked.find(texGuid) != m_TextureLoadsKicked.end())
             m_TextureLoadHandles[texGuid] = std::move(handle);
     }
 }
@@ -2111,14 +2084,6 @@ void TextureService::ScheduleTextureUploadJob(const GUID& texGuid, const GUID& m
     auto& engine = GameEngine::EngineCore::GetInstance();
     if (!engine.IsInitialized())
         return;
-    // A cook source takes the AssetManager load, which cooks on a miss, so an assigned texture
-    // converges on its cooked artifact like a registered one.
-    if (AssetMetadata meta{}; engine.GetAssetManager().GetRegistry().TryGetAssetMetadata(texGuid, meta) &&
-                              LoadsThroughTextureCook(meta.Path))
-    {
-        ScheduleMaterialTextureLoad(texGuid, matGuid, slotName);
-        return;
-    }
 
     // A texture the AssetManager holds is queued for the drain, which prepares it on the render
     // thread as an AssetManager load's is: that instance is shared, and a reload swaps its payload
@@ -2161,7 +2126,11 @@ void TextureService::RunTextureUploadJob(const GUID& texGuid, uint32_t epoch,
                                          const std::shared_ptr<std::atomic<bool>>& cancel)
 {
     // Releases the counter on every exit, an exception included, after the last use of `this`.
-    const CounterRelease release{m_UploadJobCounter};
+    struct CounterRelease
+    {
+        JobSystem::JobCounter& Counter;
+        ~CounterRelease() { Counter.Decrement(); }
+    } release{m_UploadJobCounter};
 
     std::shared_ptr<const PreparedTextureUpload> prepared;
     if (!cancel->load(std::memory_order_relaxed))
@@ -2181,13 +2150,6 @@ void TextureService::RunTextureUploadJob(const GUID& texGuid, uint32_t epoch,
         }
     }
 
-    CompleteUploadJob(texGuid, epoch, cancel, std::move(prepared));
-}
-
-void TextureService::CompleteUploadJob(const GUID& texGuid, uint32_t epoch,
-                                       const std::shared_ptr<std::atomic<bool>>& cancel,
-                                       std::shared_ptr<const PreparedTextureUpload> prepared)
-{
     std::lock_guard lock(m_PendingTexturesMutex);
     if (auto it = m_UploadJobCancels.find(texGuid); it != m_UploadJobCancels.end() && it->second == cancel)
     {
@@ -2302,18 +2264,10 @@ void TextureService::FlushPendingUploads()
             uploadEpochs.emplace_back(u.TextureGuid, m_TextureEpochByGuid[u.TextureGuid]);
     }
 
-    // The flush's uploads, staged for one command list, and what each publishes after the submit.
-    struct StagedFlushUpload
-    {
-        GUID TextureGuid;
-        TextureGPUCache::Entry Uploaded;
-        std::shared_ptr<const PreparedTextureUpload> Prepared;
-        double StageMs = 0.0;
-    };
-    using Clock = std::chrono::high_resolution_clock;
-    std::vector<Rendering::StagedTextureUpload> batch;
-    std::vector<StagedFlushUpload> staged;
-
+    std::vector<PendingGpuUpload> deferred;
+    deferred.reserve(uploads.size());
+    const auto uploadStart = std::chrono::steady_clock::now();
+    unsigned uploadedThisFrame = 0;
     for (size_t i = 0; i < uploads.size(); ++i)
     {
         auto& upload = uploads[i];
@@ -2331,26 +2285,25 @@ void TextureService::FlushPendingUploads()
         }
 
         // Idempotency: a hot-reload re-upload path may have already populated
-        // the cache for this GUID since we drained the queue, or this flush
-        // already stages it.
-        if (m_TextureGPUCache.Contains(upload.TextureGuid) ||
-            std::any_of(staged.begin(), staged.end(),
-                        [&](const StagedFlushUpload& source) { return source.TextureGuid == upload.TextureGuid; }))
+        // the cache for this GUID since we drained the queue.
+        if (m_TextureGPUCache.Contains(upload.TextureGuid))
             continue;
 
+        // Bound owner-thread upload batches. An individual driver upload can
+        // still exceed this budget; do not claim this is a hard frame deadline.
+        if (uploadedThisFrame && std::chrono::steady_clock::now() - uploadStart >= m_UploadBudget)
+        {
+            deferred.push_back(std::move(upload));
+            continue;
+        }
         // The CPU half ran on the loading worker (or an upload job); a queued load without it
-        // runs it here. Either way this thread only stages the upload.
+        // runs it here. Either way this thread only submits the upload.
         std::shared_ptr<const PreparedTextureUpload> prepared = upload.Prepared;
         if (!prepared)
         {
             SharedPtr<TextureAsset> texAsset = std::dynamic_pointer_cast<TextureAsset>(upload.TextureAsset);
             if (!texAsset)
-            {
-                PublishFailedUpload(upload.TextureGuid,
-                                    upload.TextureAsset ? upload.TextureAsset->GetPath() : std::filesystem::path{},
-                                    "its asset is not a texture");
                 continue;
-            }
             prepared = PrepareUpload(upload.TextureGuid, std::move(texAsset), nullptr, upload.LogTiming);
         }
         else if (AssetMetadata texMeta{};
@@ -2362,48 +2315,15 @@ void TextureService::FlushPendingUploads()
             // still wins over the prepared bytes.
             if (TextureCookSettings settings; !ResolveTextureCookSettings(texMeta.Path, settings))
             {
-                m_TextureGPUCache.PublishOrAdopt(upload.TextureGuid, TextureGPUCache::Entry{});
+                m_TextureGPUCache.PublishOrAdopt(upload.TextureGuid, Rendering::TextureHandle{});
                 continue;
             }
         }
-        if (prepared && prepared->Result == PreparedTextureUpload::Outcome::Refused)
+        if (prepared)
         {
-            m_TextureGPUCache.PublishOrAdopt(upload.TextureGuid, TextureGPUCache::Entry{});
-            continue;
+            (void)SubmitPreparedUpload(upload.TextureGuid, *prepared);
+            ++uploadedThisFrame;
         }
-        // Null only when cancelled, and this flush gives no cancel flag.
-        if (!prepared || prepared->Result != PreparedTextureUpload::Outcome::Ready)
-        {
-            PublishFailedUpload(upload.TextureGuid, prepared ? prepared->Path : std::filesystem::path{},
-                                "it has no pixels");
-            continue;
-        }
-        const auto tStage = Clock::now();
-        const char* refusal = kDeviceRefusal;
-        const TextureGPUCache::Entry uploaded = StagePreparedUpload(*prepared, batch, refusal);
-        if (!uploaded.Texture.IsValid())
-        {
-            PublishFailedUpload(upload.TextureGuid, prepared->Path, refusal);
-            continue;
-        }
-        staged.push_back({upload.TextureGuid, uploaded, std::move(prepared),
-                          std::chrono::duration<double, std::milli>(Clock::now() - tStage).count()});
-    }
-
-    // One command list copies every texture of this flush, submitted once. Each texture is
-    // published after the submit, before the bind pass below picks it up.
-    if (SubmitOrDiscardStagedUploads(*m_Device, batch))
-    {
-        for (const StagedFlushUpload& upload : staged)
-        {
-            LogUploadTiming(*upload.Prepared, "stage", upload.StageMs);
-            PublishUploadedEntry(upload.TextureGuid, upload.Uploaded);
-        }
-    }
-    else
-    {
-        for (const StagedFlushUpload& upload : staged)
-            PublishFailedUpload(upload.TextureGuid, upload.Prepared->Path, kNoCommandListRefusal);
     }
 
     // Drop the load handles whose uploads landed in the cache, and pull out
@@ -2420,15 +2340,26 @@ void TextureService::FlushPendingUploads()
     {
         Material* Mat;
         StringId SlotName;
-        TextureGPUCache::Entry Entry;
+        Rendering::TextureHandle Tex;
         GUID TexGuid;
-        bool Embedded;
     };
     std::vector<ResolvedBind> resolved;
     {
         std::lock_guard lock(m_PendingTexturesMutex);
-        for (const auto& [guid, _epoch] : uploadEpochs)
+        std::unordered_set<GUID> stillQueued;
+        for (auto& pending : deferred)
+            if (pending.Epoch == m_TextureEpochByGuid[pending.TextureGuid])
+            {
+                stillQueued.insert(pending.TextureGuid);
+                m_PendingGpuUploads.push_back(std::move(pending));
+            }
+        // A drained load leaves the in-flight set whether it published or failed, so a failed
+        // preparation never holds one of GetOrRequestTexture's admission slots.
+        for (const auto& [guid, epoch] : uploadEpochs)
         {
+            if (m_TextureEpochByGuid[guid] != epoch || stillQueued.contains(guid))
+                continue;
+            m_TextureLoadsKicked.erase(guid);
             if (m_TextureGPUCache.Contains(guid))
                 m_TextureLoadHandles.erase(guid);
         }
@@ -2438,7 +2369,7 @@ void TextureService::FlushPendingUploads()
         resolved.reserve(m_PendingTextureBinds.size());
         for (auto& bind : m_PendingTextureBinds)
         {
-            TextureGPUCache::Entry bound{};
+            Rendering::TextureHandle bound{};
             if (!m_TextureGPUCache.TryGet(bind.TextureGuid, bound))
             {
                 stillPending.push_back(bind);
@@ -2447,12 +2378,11 @@ void TextureService::FlushPendingUploads()
             Material* mat = (*m_Materials).Find(bind.MaterialGuid);
             if (mat)
             {
-                resolved.push_back({mat, bind.SlotName, bound, bind.TextureGuid, bind.Embedded});
+                resolved.push_back({mat, bind.SlotName, bound, bind.TextureGuid});
                 // Re-track in case eviction cleared this slot's ref while
                 // we were waiting on the load. Idempotent on the steady-state
                 // path (RegisterMaterialFromDocument already tracked).
-                if (!bind.Embedded)
-                    TrackMaterialTextureRefLocked(bind.MaterialGuid, bind.SlotName, bind.TextureGuid);
+                TrackMaterialTextureRefLocked(bind.MaterialGuid, bind.SlotName, bind.TextureGuid);
             }
         }
         m_PendingTextureBinds = std::move(stillPending);
@@ -2460,19 +2390,15 @@ void TextureService::FlushPendingUploads()
 
     for (const auto& r : resolved)
     {
-        if (!r.Embedded)
-            ApplyTextureFilterMeta(r.Mat, r.SlotName, r.TexGuid);
-        BindCachedMaterialTexture(r.Mat, r.SlotName, r.Entry);
+        ApplyTextureFilterMeta(r.Mat, r.SlotName, r.TexGuid);
+        BindMaterialTexture(r.Mat, r.SlotName, r.Tex);
     }
 }
 
 void TextureService::Evict(const GUID& textureGuid)
 {
-    // An evicted texture loads anew: a load that failed before (an import setting since fixed)
-    // is tried again rather than refused from the AssetManager's failure record.
-    if (auto* assets = GameEngine::EngineCore::GetInstance().TryGetAssetManager())
-        assets->ClearLoadSuppressed(textureGuid);
-
+    if (m_TextureGPUCache.Contains(textureGuid))
+        Logger::Log::Info("[TextureReloadTrace] evict resident guid={}", textureGuid.ToString());
     // Bump the per-GUID load epoch FIRST. An AssetManager load whose result
     // hasn't been processed by FlushPendingUploads yet will be
     // discarded at flush time when the captured epoch no longer matches.
@@ -2496,9 +2422,6 @@ void TextureService::Evict(const GUID& textureGuid)
                 [&](const PendingGpuUpload& u) { return u.TextureGuid == textureGuid; }),
             m_PendingGpuUploads.end());
         m_TextureLoadsKicked.erase(textureGuid);
-        // Nothing reloads an embedded image by its derived GUID: a bind waiting on it would wait forever.
-        std::erase_if(m_PendingTextureBinds, [&](const PendingTextureBind& b)
-                      { return b.Embedded && b.TextureGuid == textureGuid; });
         if (auto itJob = m_UploadJobCancels.find(textureGuid); itJob != m_UploadJobCancels.end())
         {
             itJob->second->store(true, std::memory_order_relaxed); // its result is pre-reload too
@@ -2541,10 +2464,18 @@ void TextureService::Evict(const GUID& textureGuid)
         BindAwaitedTexture(mat, slotName);
     }
 
-    // RetireCacheEntry drops the bindless slots before the GPU resources go; otherwise the
-    // slots dangle and the next bind through GetBindlessIndex returns stale descriptor data.
-    if (TextureGPUCache::Entry entry{}; m_TextureGPUCache.Remove(textureGuid, entry))
-        RetireCacheEntry(entry);
+    if (Rendering::TextureHandle tex{}; m_TextureGPUCache.Remove(textureGuid, tex))
+    {
+        if (tex.IsValid())
+        {
+            // Drop bindless slots that point at the freed texture before the
+            // GPU resource is destroyed; otherwise the slots dangle and the next
+            // bind through GetBindlessIndex would return stale descriptor data.
+            InvalidateBindless(tex);
+            if (m_Device)
+                m_Device->DestroyTexture(tex);
+        }
+    }
 
     // Re-trigger the async load so AssetManager re-reads the (now-updated)
     // texture file. The bind queue already holds entries from the loop above;
@@ -2567,7 +2498,7 @@ void TextureService::RequestReupload(const GUID& textureGuid)
     }
 }
 
-void TextureService::RequestRecook(const GUID& textureGuid, AssetLoadPriority priority)
+void TextureService::RequestRecook(const GUID& textureGuid)
 {
     if (textureGuid.IsNull())
         return;
@@ -2577,29 +2508,7 @@ void TextureService::RequestRecook(const GUID& textureGuid, AssetLoadPriority pr
     // forward-compatible when the switch is lifted).
     if (IsTextureCookDisabled())
         return;
-    GameEngine::EngineCore::GetInstance().GetAssetManager().RequestAsyncReload(textureGuid, priority);
-}
-
-TextureGPUCache::Entry TextureService::UploadForHotSwap(const GUID& textureGuid)
-{
-    AssetMetadata meta{};
-    auto& assets = GameEngine::EngineCore::GetInstance().GetAssetManager();
-    if (!assets.GetRegistry().TryGetAssetMetadata(textureGuid, meta) || !LoadsThroughTextureCook(meta.Path))
-        return GetOrUploadEntry(textureGuid);
-    // A cook source is never decoded here: it re-uploads the AssetManager's resident instance
-    // (its cooked container: no decode, no mip build) under the current color space. One that
-    // is not resident (its load failed, or never ran) loads anew under the new settings and
-    // lands through the drain.
-    auto resident = std::dynamic_pointer_cast<TextureAsset>(assets.GetAsset(textureGuid));
-    if (!resident || !resident->IsLoaded())
-    {
-        assets.ClearLoadSuppressed(textureGuid);
-        ScheduleMaterialTextureLoad(textureGuid, GUID::Null(), StringId{});
-        return {};
-    }
-    const std::shared_ptr<const PreparedTextureUpload> prepared =
-        PrepareUpload(textureGuid, std::move(resident), nullptr, /*logTiming=*/false);
-    return prepared ? SubmitPreparedUpload(textureGuid, *prepared) : TextureGPUCache::Entry{};
+    GameEngine::EngineCore::GetInstance().GetAssetManager().RequestAsyncReload(textureGuid);
 }
 
 void TextureService::HotSwapTexture(const GUID& textureGuid)
@@ -2609,25 +2518,25 @@ void TextureService::HotSwapTexture(const GUID& textureGuid)
 
     // Capture the currently-bound GPU texture WITHOUT destroying it, and drop the
     // cache entry so the re-upload below produces a fresh texture for this GUID.
-    TextureGPUCache::Entry oldEntry{};
-    m_TextureGPUCache.Remove(textureGuid, oldEntry);
+    Rendering::TextureHandle oldHandle{};
+    m_TextureGPUCache.Remove(textureGuid, oldHandle);
 
     // Re-upload with the current metadata (color space + swizzle) into a new GPU
-    // texture, re-cached under the same GUID.
-    const TextureGPUCache::Entry newEntry = UploadForHotSwap(textureGuid);
-    if (!newEntry.Texture.IsValid())
+    // texture; GetOrUpload re-caches it under the same GUID.
+    const Rendering::TextureHandle newHandle = GetOrUpload(textureGuid);
+    if (!newHandle.IsValid())
     {
         // Upload failed (missing/broken file) — keep the old binding intact.
         // Set, not PublishOrAdopt: the failed GetOrUpload cached a negative entry
         // that has to be overwritten.
-        if (oldEntry.Texture.IsValid())
-            m_TextureGPUCache.Set(textureGuid, oldEntry);
+        if (oldHandle.IsValid())
+            m_TextureGPUCache.Set(textureGuid, oldHandle);
         return;
     }
-    if (newEntry == oldEntry)
+    if (newHandle == oldHandle)
         return; // nothing changed
 
-    const uint32_t newIdx = GetBindlessIndex(newEntry.Texture);
+    const uint32_t newIdx = GetBindlessIndex(newHandle);
 
     // Snapshot the materials bound to this texture (the reverse map is guarded by
     // the pending mutex), then atomically repoint each slot to the new handle/index.
@@ -2644,14 +2553,18 @@ void TextureService::HotSwapTexture(const GUID& textureGuid)
         if (Material* mat = (*m_Materials).Find(matGuid))
         {
             ApplyTextureFilterMeta(mat, slotName, textureGuid);
-            ApplyMaterialSlotBinding(mat, slotName, newEntry, newIdx);
+            ApplyMaterialSlotBinding(mat, slotName, newHandle, newIdx);
         }
     }
 
-    // No material references the old textures now: free their bindless slots and
-    // destroy them (the device defers the VkImage teardown past frames-in-flight,
+    // No material references the old texture now: free its bindless slot and
+    // destroy it (the device defers the VkImage teardown past frames-in-flight,
     // same as Evict).
-    RetireCacheEntry(oldEntry);
+    if (oldHandle.IsValid())
+    {
+        InvalidateBindless(oldHandle);
+        m_Device->DestroyTexture(oldHandle);
+    }
 }
 
 void TextureService::EvictCubeLut(const GUID& lutGuid)
@@ -2679,92 +2592,101 @@ void TextureService::EvictCubeLut(const GUID& lutGuid)
 
 
 
-void TextureService::ScheduleEmbeddedUploadJob(const GUID& derivedGuid, const GUID& matGuid, StringId slotName,
-                                               const Vector<uint8>& bytes, bool linear)
+Rendering::TextureHandle TextureService::UploadEmbeddedImage(
+    const GUID& modelGuid, uint32_t imageIndex, const EmbeddedImage& image, bool linear)
 {
-    auto& engine = GameEngine::EngineCore::GetInstance();
-    if (!engine.IsInitialized())
-        return;
-    uint32_t epoch = 0;
-    std::shared_ptr<std::atomic<bool>> cancel;
+    if (!m_Device || image.Data.empty())
+        return {};
+
+    // Key caches by CONTENT, not by (model, image index): asset packs routinely
+    // embed the same texture atlas into every FBX (a Synty pack embeds one 4K
+    // atlas ~800 times), and per-model keys turn that into hundreds of identical
+    // GPU textures + decoded-pixel cache entries — enough to exhaust VRAM and
+    // device-lose on a large scene load. Hashing the compressed bytes costs a
+    // few ms; a duplicate decode+upload costs ~400ms and ~85MB of VRAM.
+    const uint64_t contentHash = Hashing::Fnv1a64(image.Data.data(), image.Data.size());
+    const GUID contentBase = GUID::Derive(
+        GUID{}, "embedded/" + std::to_string(contentHash) + "/" + std::to_string(image.Data.size()));
+
+    // GPU texture key carries linearity (the format differs between albedo
+    // and normal), so an image used as both still allocates two textures.
+    // Kept distinct from the decode key (bare contentBase) so the GPU texture
+    // and the CPU decode entry refcount independently — a model referencing
+    // this content only as linear must not keep an orphaned sRGB texture alive.
+    const GUID derivedGuid = GUID::Derive(contentBase, linear ? "linear" : "srgb");
+    if (Rendering::TextureHandle shared{}; m_TextureGPUCache.TryGet(derivedGuid, shared))
     {
-        std::lock_guard lock(m_PendingTexturesMutex);
-        if (m_UploadJobsStopped)
-            return;
-        // This bind supersedes any earlier one for the slot that still waits on its load.
-        std::erase_if(m_PendingTextureBinds, [&](const PendingTextureBind& b)
-                      { return b.MaterialGuid == matGuid && b.SlotName == slotName; });
-        m_PendingTextureBinds.push_back({matGuid, slotName, derivedGuid, /*Embedded=*/true});
-        epoch = m_TextureEpochByGuid[derivedGuid];
-        // One job per content key: every model that embeds the same bytes waits on it.
-        if (!m_TextureLoadsKicked.insert(derivedGuid).second)
-            return;
-        cancel = std::make_shared<std::atomic<bool>>(false);
-        m_UploadJobCancels[derivedGuid] = cancel;
-        m_UploadJobCounter.Add(1);
-        m_UploadJobsEverSubmitted = true;
+        // Shared hit from another model (or an earlier slot of this one):
+        // record this parent's reference so hot-reload eviction refcounts
+        // correctly instead of destroying a texture other models still use.
+        TrackEmbeddedDerived(modelGuid, derivedGuid);
+        TrackEmbeddedDerived(modelGuid, contentBase);
+        return shared;
     }
-    // The job owns a copy of the bytes: the model can unload or reload while it runs. `this` is
-    // safe in it: DrainUploadJobs (Shutdown, destructor) waits for the counter.
-    engine.GetJobSystem().EnqueueWork([this, derivedGuid, epoch, cancel, bytes, linear]()
-                                      { RunEmbeddedUploadJob(derivedGuid, epoch, cancel, bytes, linear); });
-}
 
-void TextureService::RunEmbeddedUploadJob(const GUID& derivedGuid, uint32_t epoch,
-                                          const std::shared_ptr<std::atomic<bool>>& cancel,
-                                          const Vector<uint8>& bytes, bool linear)
-{
-    // Releases the counter on every exit, an exception included, after the last use of `this`.
-    const CounterRelease release{m_UploadJobCounter};
+    using Clock = std::chrono::high_resolution_clock;
 
-    auto prepared = std::make_shared<PreparedTextureUpload>();
-    if (!cancel->load(std::memory_order_relaxed))
+    // The decode is linearity-agnostic — the same RGBA8 pixels feed either
+    // GPU format. Cache by linearity-free key so a second material reusing
+    // the same source image (with different linearity) only pays for the
+    // GPU upload, not the stbi PNG/JPEG decode.
+    const GUID decodeKey = contentBase;
+    DecodedImage decoded;
+    double decodeMs = 0.0;
+    auto decodeIt = m_EmbeddedDecodeCache.find(decodeKey);
+    if (decodeIt != m_EmbeddedDecodeCache.end())
     {
-        try
+        decoded = decodeIt->second;
+    }
+    else
+    {
+        const auto tDecode = Clock::now();
+        decoded = DecodeImageToRGBA(image.Data.data(), image.Data.size());
+        decodeMs = std::chrono::duration<double, std::milli>(Clock::now() - tDecode).count();
+        if (!decoded.valid)
         {
-            PrepareEmbeddedUpload(bytes, linear, derivedGuid, *prepared);
+            Logger::Log::Warning("UploadEmbeddedImage: failed to decode image {} from model {}",
+                                 imageIndex, modelGuid.ToString());
+            return {};
         }
-        catch (const std::exception& error)
-        {
-            Logger::Log::Error("TextureService: preparing embedded image {} failed: {}", derivedGuid.ToString(),
-                               error.what());
-            prepared->MipChain.clear();
-            prepared->Result = PreparedTextureUpload::Outcome::Failed;
-        }
+        m_EmbeddedDecodeCache[decodeKey] = decoded;
     }
-    CompleteUploadJob(derivedGuid, epoch, cancel, std::move(prepared));
-}
 
-void TextureService::PrepareEmbeddedUpload(const Vector<uint8>& bytes, bool linear, const GUID& derivedGuid,
-                                           PreparedTextureUpload& prepared)
-{
-    using Outcome = PreparedTextureUpload::Outcome;
-    prepared.PreparedOn = std::this_thread::get_id();
-    Image::Image8 decoded =
-        Image::Decode8(bytes, "embedded image " + derivedGuid.ToString(), Image::DecodeChannels::Rgba);
-    if (!decoded.Valid)
-    {
-        Logger::Log::Warning("Embedded image {} failed to decode; its material slots keep their default",
-                             derivedGuid.ToString());
-        prepared.Result = Outcome::Failed;
-        return;
-    }
-    prepared.Width = decoded.Width;
-    prepared.Height = decoded.Height;
-    TextureCookMipLevel level0;
-    level0.Width = decoded.Width;
-    level0.Height = decoded.Height;
-    level0.Bytes = std::move(decoded.Pixels);
-    prepared.MipChain.push_back(std::move(level0));
-    // An embedded image has no import settings: the cook defaults (full chain, no normal
-    // renormalization, since `linear` also covers packed metallic-roughness data).
-    const TextureCookSettings cookDefaults{};
-    if (!BuildTextureCookMipChain(prepared.MipChain,
-                                  ComputeTextureCookMipCount(prepared.Width, prepared.Height, cookDefaults),
-                                  /*isFloat*/ false, /*srgb*/ !linear, cookDefaults, nullptr))
-        prepared.MipChain.resize(1);
-    prepared.Format = linear ? Rendering::TextureFormat::RGBA8_UNORM : Rendering::TextureFormat::RGBA8_SRGB;
-    prepared.Result = Outcome::Ready;
+    auto gpuFormat = linear ? Rendering::TextureFormat::RGBA8_UNORM
+                            : Rendering::TextureFormat::RGBA8_SRGB;
+
+    // An embedded image has no AssetDatabase entry, so it takes the cook
+    // defaults (full chain, no normal renormalization: `linear` also covers
+    // packed metallic-roughness data, which renormalizing would corrupt).
+    const auto tUpload = Clock::now();
+    uint32_t levels = 0;
+    auto tex = UploadRgba8WithMips(m_Device, decoded.pixels.data(), decoded.width, decoded.height,
+                                   gpuFormat, TextureCookSettings{}, !linear, "EmbeddedTexture",
+                                   "EmbeddedTexStaging", levels);
+    if (!tex.IsValid())
+        return {};
+    const double uploadMs = std::chrono::duration<double, std::milli>(Clock::now() - tUpload).count();
+    Logger::Log::Info(
+        "[ModelLoad]     EmbeddedImage[{}] {}x{} ({} mips): decode {:.1f}ms, mip+upload {:.1f}ms",
+        imageIndex, decoded.width, decoded.height, levels, decodeMs, uploadMs);
+
+    // This path is render-thread-only, so nothing else publishes this derived
+    // GUID; adopt-on-collision still beats overwriting, which would orphan a
+    // texture a caller already holds.
+    const Rendering::TextureHandle publishedEmbedded =
+        m_TextureGPUCache.PublishOrAdopt(derivedGuid, tex);
+    if (publishedEmbedded != tex)
+        ParkDuplicateTexture(tex);
+
+    // Track parent->derived so a Model AssetReloaded can evict every
+    // embedded-image cache entry derived from this model. The list also
+    // carries the linearity-free `decodeKey` (added the first time we
+    // decoded this image) so the eviction loop can drop the decode-cache
+    // entry alongside the GPU textures.
+    TrackEmbeddedDerived(modelGuid, derivedGuid);
+    TrackEmbeddedDerived(modelGuid, decodeKey);
+
+    return publishedEmbedded;
 }
 
 void TextureService::TrackEmbeddedDerived(const GUID& modelGuid, const GUID& derivedGuid)
@@ -2838,8 +2760,8 @@ void TextureService::ResolveEmbeddedTextures(
         if (!BindEmbeddedImage(mat, slotId, modelGuid, imgIdx, embeddedImages))
         {
             Logger::Log::Warning(
-                "ResolveEmbeddedTextures: embedded image {} is out of range (have {} images), has no "
-                "bytes or has no content hash; slot '{}' awaits",
+                "ResolveEmbeddedTextures: embedded image {} is out of range (have {} images) or has no "
+                "bytes; slot '{}' awaits",
                 imgIdx, embeddedImages.size(), texName);
         }
     }
@@ -2877,38 +2799,8 @@ bool TextureService::BindEmbeddedImage(Material* mat, StringId slotName, const G
         BindAwaitedTexture(mat, slotName);
         return false;
     }
-    const EmbeddedImage& image = images[imageIndex];
-    // The content hash keys the shared texture: with a hash of 0, all images of one size share it.
-    if (image.ContentHash == 0)
-    {
-        Logger::Log::Error("Embedded image {} of model {} has no content hash; load the model through "
-                           "ModelAsset::LoadFromData, which sets it",
-                           imageIndex, modelGuid.ToString());
-        BindAwaitedTexture(mat, slotName);
-        return false;
-    }
     const bool linear = IsLinearTextureSlot(slotName);
-    const GUID derivedGuid = EmbeddedTextureGuid(image, linear);
-    // Tracked now, so a reload of this model while the job runs releases the content too.
-    TrackEmbeddedDerived(modelGuid, derivedGuid);
-    const GUID matGuid = mat->GetGuid();
-    if (TextureGPUCache::Entry shared{}; m_TextureGPUCache.TryGet(derivedGuid, shared))
-    {
-        // A slot's pending bind is queued only with BindAwaitedTexture on the render thread, and the
-        // bind that ends the wait drops it: a slot that is not awaited has no pending bind, so the hit
-        // takes no lock. A slot with no ordinal has no awaited flag and always locks.
-        if (mat->IsTextureAwaited(slotName) || !mat->HasTextureSlot(slotName))
-        {
-            std::lock_guard lock(m_PendingTexturesMutex);
-            std::erase_if(m_PendingTextureBinds, [&](const PendingTextureBind& b)
-                          { return b.MaterialGuid == matGuid && b.SlotName == slotName; });
-        }
-        BindCachedMaterialTexture(mat, slotName, shared);
-        return true;
-    }
-    // The decode and the mips run on a job; the slot shows its default until the drain binds it.
-    BindAwaitedTexture(mat, slotName);
-    ScheduleEmbeddedUploadJob(derivedGuid, matGuid, slotName, image.Data, linear);
+    BindMaterialTexture(mat, slotName, UploadEmbeddedImage(modelGuid, imageIndex, images[imageIndex], linear));
     return true;
 }
 
@@ -3143,21 +3035,13 @@ void TextureService::InvalidateBindless(Rendering::TextureHandle tex)
 }
 
 void TextureService::ApplyMaterialSlotBinding(Material* mat, StringId slotName,
-                                              const TextureGPUCache::Entry& entry,
+                                              Rendering::TextureHandle tex,
                                               uint32_t bindlessIndex)
 {
     if (!mat)
         return;
-    mat->SetTexture(slotName, entry.Texture);
+    mat->SetTexture(slotName, tex);
     mat->SetBindlessTextureIndex(slotName, bindlessIndex);
-    // The variance companion rides on the normal slot's bind; no companion reads black (sigma 0).
-    // Classic mode has no index lane.
-    if (m_IndexingMode == MaterialIndexingMode::Bindless && mat->IsNormalSlot(slotName))
-    {
-        const Rendering::TextureHandle companion = entry.NormalVarianceCompanion;
-        const uint32_t varianceIndex = companion.IsValid() ? GetBindlessIndex(companion) : 0u;
-        mat->SetNormalVarianceIndex(varianceIndex != 0u ? varianceIndex : m_DefaultBlackBindlessIndex);
-    }
     // Classic mode reads the slot's TextureHandle when it builds the material's
     // bind group, so the cached set is now stale. Bindless mode needs nothing:
     // the index it just took is live in the global set.
@@ -3210,20 +3094,20 @@ void TextureService::RestoreMaterialTextureBinding(Material* mat, const GUID& ma
     // lands, never waiting for it here.
     if (authoredTexGuid.IsNull())
     {
-        ApplyMaterialSlotBinding(mat, slotName, TextureGPUCache::Entry{},
+        ApplyMaterialSlotBinding(mat, slotName, Rendering::TextureHandle{},
                                  ResolveDefaultBindlessIndex(slotName));
         return;
     }
-    if (TextureGPUCache::Entry authored; m_TextureGPUCache.TryGet(authoredTexGuid, authored))
+    if (Rendering::TextureHandle authored; m_TextureGPUCache.TryGet(authoredTexGuid, authored))
     {
-        BindCachedMaterialTexture(mat, slotName, authored);
+        BindMaterialTexture(mat, slotName, authored);
         return;
     }
     if (!GameEngine::EngineCore::GetInstance().IsInitialized())
     {
         // No asset manager to load on (a bare render-services host): upload in place. A failed
         // upload leaves the slot at its awaited default.
-        BindCachedMaterialTexture(mat, slotName, GetOrUploadEntry(authoredTexGuid));
+        BindMaterialTexture(mat, slotName, GetOrUpload(authoredTexGuid));
         return;
     }
     BindAwaitedTexture(mat, slotName);
@@ -3232,14 +3116,8 @@ void TextureService::RestoreMaterialTextureBinding(Material* mat, const GUID& ma
 
 void TextureService::BindMaterialTexture(Material* mat, StringId slotName, Rendering::TextureHandle tex)
 {
-    BindCachedMaterialTexture(mat, slotName, TextureGPUCache::Entry{tex, {}});
-}
-
-void TextureService::BindCachedMaterialTexture(Material* mat, StringId slotName, const TextureGPUCache::Entry& entry)
-{
     if (!mat)
         return;
-    const Rendering::TextureHandle tex = entry.Texture;
     // Every caller hands the texture a document assigned: an invalid handle is
     // one that failed to upload.
     if (!tex.IsValid())
@@ -3253,7 +3131,7 @@ void TextureService::BindCachedMaterialTexture(Material* mat, StringId slotName,
     // returns the 0 sentinel there and the index lane goes unread.
     if (m_IndexingMode == MaterialIndexingMode::Classic)
     {
-        ApplyMaterialSlotBinding(mat, slotName, entry, 0u);
+        ApplyMaterialSlotBinding(mat, slotName, tex, 0u);
         return;
     }
 
@@ -3269,11 +3147,11 @@ void TextureService::BindCachedMaterialTexture(Material* mat, StringId slotName,
             "BindMaterialTexture: bindless registration failed for material "
             "{} slotId={:#x} (texture handle {}); falling back to default index.",
             mat->GetGuid().ToString(), slotName, tex.id);
-        ApplyMaterialSlotBinding(mat, slotName, TextureGPUCache::Entry{tex, {}},
+        ApplyMaterialSlotBinding(mat, slotName, tex,
                                  DefaultBindlessIndex(AwaitedSlotDefault(TextureSlotFromName(slotName))));
         return;
     }
-    ApplyMaterialSlotBinding(mat, slotName, entry, bindlessIdx);
+    ApplyMaterialSlotBinding(mat, slotName, tex, bindlessIdx);
 }
 
 void TextureService::TrackMaterialTextureRefLocked(const GUID& matGuid, StringId slotName, const GUID& texGuid)
@@ -3455,11 +3333,11 @@ void TextureService::UpdateMaterialTextures(const GUID& materialGuid, const Mate
             UntrackMaterialTextureRefLocked(materialGuid, nameId);
             continue;
         }
-        // The same bind as registration (tag, bind a resident upload at once); a texture not on
-        // the GPU loads on a worker (ScheduleTextureUploadJob: the AssetManager load for a cook
-        // source, which cooks on a miss, an upload job for the rest) and FlushPendingUploads
-        // submits it. The editor's texture assign comes through here, so it never decodes on
-        // the calling thread.
+        // The same bind as registration (tag, bind a resident upload at once), except that a
+        // texture not on the GPU loads through an upload job: adopt its cooked artifact, else
+        // decode and build mips, on a worker; FlushPendingUploads submits it. The editor's
+        // texture assign comes through here, so it never decodes on the calling thread, and a
+        // texture never loaded shows within its decode, not after an encode.
         BindMaterialTextureSlot(mat, materialGuid, nameId, texGuid, TextureLoadRoute::UploadJob);
     }
 }
@@ -3484,45 +3362,6 @@ size_t TextureService::PendingMaterialTextureBindCount() const
 {
     std::lock_guard lock(m_PendingTexturesMutex);
     return m_PendingTextureBinds.size();
-}
-
-struct TextureService::LoadReport
-{
-    static SceneLoadTracker::GateReport Evaluate(const TextureService& textures);
-
-    SceneLoadTracker::Category Category;
-    SceneLoadTracker::Gate Gate;
-};
-
-void TextureService::ReportLoadingWork(SceneLoadTracker& tracker)
-{
-    auto report = std::make_shared<LoadReport>();
-    report->Category = tracker.RegisterCategory({.Id = "render.texture-upload", .Label = "Loading textures"});
-    report->Gate = report->Category.RegisterGate([this] { return LoadReport::Evaluate(*this); });
-    m_LoadReport = std::move(report);
-}
-
-SceneLoadTracker::GateReport TextureService::LoadReport::Evaluate(const TextureService& textures)
-{
-    const std::size_t pending = textures.PendingMaterialTextureBindCount();
-    if (pending == 0)
-        return {};
-    return {.State = SceneLoadTracker::GateState::Waiting,
-            .Reason = "material texture binds pending",
-            .Pending = pending};
-}
-
-size_t TextureService::PendingMaterialTextureCount() const
-{
-    std::vector<GUID> textures;
-    {
-        std::lock_guard lock(m_PendingTexturesMutex);
-        textures.reserve(m_PendingTextureBinds.size());
-        for (const PendingTextureBind& bind : m_PendingTextureBinds)
-            textures.push_back(bind.TextureGuid);
-    }
-    std::sort(textures.begin(), textures.end());
-    return static_cast<size_t>(std::unique(textures.begin(), textures.end()) - textures.begin());
 }
 
 } // namespace Engine::Renderer

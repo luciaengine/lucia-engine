@@ -1,10 +1,7 @@
 #pragma once
 
-#include "UI/UIManagerRef.h"
-
 #include <cstdint>
 #include <string>
-#include <vector>
 
 namespace GameEngine
 {
@@ -21,8 +18,8 @@ public:
     CssInspector() = default;
 
     bool IsEnabled() const { return m_Enabled; }
-    void SetEnabled(bool on);
-    void ToggleEnabled() { SetEnabled(!m_Enabled); }
+    void SetEnabled(bool on) { m_Enabled = on; }
+    void ToggleEnabled() { m_Enabled = !m_Enabled; }
 
     // Update overlay for this window: show/hide and position based on hovered element.
     // Call once per frame before UIManager::Render() for the window.
@@ -41,8 +38,6 @@ public:
 
 private:
     bool m_Enabled = false;
-    // One inspector serves several windows; disable hides each surviving window once.
-    std::vector<UIManagerRef> m_ActiveManagers;
     int m_DisplayLayerIndex = 0;   // which layer is shown (0 = hovered element)
     uint64_t m_LastHoveredInstanceId = 0;  // reset display layer when hovered element changes
 };

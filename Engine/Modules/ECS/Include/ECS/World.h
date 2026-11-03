@@ -1,13 +1,12 @@
 #pragma once
 
-#include "ECS/Archetype/ArchetypeTable.h"
-#include "ECS/Component/ComponentConcepts.h"
+#include "ECS/ArchetypeTable.h"
+#include "ECS/ComponentConcepts.h"
 #include "ECS/Components.h"
 #include "ECS/ECS.h"
 #include "ECS/QueryPolicy.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/Logger.h"
-#include "Types/FlatSet.h"
 
 #include <optional>
 
@@ -73,18 +72,13 @@ class Archetype
     // archetype-transition cost when MoveEntity dropped it).
     EntityLocation AddEntityUnsafe(EntityHandle entity);
 
-    // Add entities as one run of consecutive rows (ArchetypeTable::AddEntities)
-    // and stamp the run's chunk once. The run may hold fewer rows than asked;
-    // add the rest with another call. Same locking contract as AddEntityUnsafe.
-    RowRun AddEntitiesUnsafe(std::span<const EntityHandle> entities);
-
     // Remove entity at the given location. Returns the entity that was swapped
     // into the vacated slot (for metadata fixup), or Invalid if none was moved.
     // Same locking contract as AddEntityUnsafe: caller must hold worldMutex.
     EntityHandle RemoveEntityUnsafe(EntityLocation loc);
 
-    // Initialize the colocated ArchetypeTable from registered component sizes.
-    void InitializeTable(const std::unordered_map<ComponentTypeId, std::size_t>& componentSizes);
+    // Initialize the colocated ArchetypeTable from the owning World's registered component sizes.
+    void InitializeTable();
 
     const ComponentSignature& GetSignature() const { return signature; }
     std::size_t GetEntityCount() const { return m_Table ? m_Table->GetEntityCount() : 0; }
@@ -201,24 +195,6 @@ class Archetype
     // Look up or build the outbound move-plan for a target archetype. Caller
     // must hold worldMutex exclusively — mutates m_MovePlans on first use.
     const std::vector<CopyStep>& GetOrBakeMovePlan(Archetype* target);
-
-    // Remove any graph edge that points to an archetype in the given set.
-    // Called after PruneEmptyArchetypes to avoid dangling edge pointers.
-    void EraseEdgesTo(const FlatSet<Archetype*>& pruned)
-    {
-        for (auto it = m_AddEdges.begin(); it != m_AddEdges.end();)
-            it = pruned.Contains(it->second) ? m_AddEdges.erase(it) : std::next(it);
-        for (auto it = m_RemoveEdges.begin(); it != m_RemoveEdges.end();)
-            it = pruned.Contains(it->second) ? m_RemoveEdges.erase(it) : std::next(it);
-        if (m_DisableEdge && pruned.Contains(m_DisableEdge))
-            m_DisableEdge = nullptr;
-        if (m_EnableEdge && pruned.Contains(m_EnableEdge))
-            m_EnableEdge = nullptr;
-        // Move plans are keyed on target archetype pointers — drop any plan
-        // whose target was pruned to avoid dangling keys.
-        for (auto it = m_MovePlans.begin(); it != m_MovePlans.end();)
-            it = pruned.Contains(it->first) ? m_MovePlans.erase(it) : std::next(it);
-    }
 
   private:
     // ------------------------------------------------------------------

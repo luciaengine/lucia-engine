@@ -35,24 +35,22 @@
 #include "Engine/Rendering/RenderServices.h"
 
 #include "Engine/Rendering/Material.h"
+#include "Engine/Rendering/AuthoredTransparentRuns.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/SortedTransparentCull.h"
 #include "Engine/Rendering/WorldDrawTypes.h"
-#include "Rendering/Camera/CameraDerivation.h"
+#include "Rendering/CameraDerivation.h"
 #include "Rendering/Common/Frustum.h"
-#include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/PassPhase.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include "Logger/Logger.h"
-#include "Memory/ScratchScope.h"
 
 #include <algorithm>
 #include <cstring>
 #include <limits>
-#include <memory_resource>
 #include <string>
 #include <vector>
 #include "RenderServicesDetail.h"
@@ -103,13 +101,16 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
     const bool stagedLastBuild = holder.StagedLastBuild;
 
     holder.Frame = frame;
-    holder.Active = false;
+    const auto& contributors = m_ViewRegistry.PerView(viewId).SortedTransparentCommands;
+    holder.Active = !contributors.empty();
     holder.StagedLastBuild = false;
     holder.LoggedBuildTransition = false;
     holder.Records.clear();
     holder.Runs.clear();
-    holder.Partition.Clear();
+    holder.Partition = {};
     holder.Commands.clear();
+    holder.CompositionMeshOrder.clear();
+    holder.CompositionSlots.clear();
     holder.Stats = {};
 
     // Empty-set early-out: a view with no submissions pays nothing.
@@ -120,19 +121,18 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
     Rendering::GPUScene* scene = GetGPUScene();
     if (!scene)
         return;
-    // The drain draws through the GE_INSTANCED buffer-reference path; without
-    // device addresses the whole GPU-driven pipeline is inert and Blend stays
-    // on the (unsorted) batched path, matching the rest of the frame.
-    if (!m_Device || !m_Device->GetCapabilities().supportsBufferDeviceAddress)
+    // Full-profile meshes use the buffer-reference path. Compatibility meshes
+    // instead use the existing CPU instance list and direct indexed draws.
+    if (!m_Device || (!m_Profile.IsCompat() && !m_Device->GetCapabilities().supportsBufferDeviceAddress))
+        return;
+    // Preserve the existing compatibility path unless authored ordering or
+    // another artwork family requires the shared drain.
+    if (m_Profile.IsCompat() && contributors.empty() &&
+        std::none_of(submissions.begin(), submissions.end(),
+                     [](const WorldSubmissionRecord& sub) { return sub.Sorting.Authored; }))
         return;
     const std::vector<Rendering::GPUInstance>& instances = scene->GetInstances();
     const auto& meshRegistry = GetMeshGPURegistry();
-    const Rendering::ViewDesc* view = m_ViewRegistry.FindViewDesc(viewId);
-    const bool dropEditorHidden = view != nullptr && view->DropsEditorHidden();
-
-    // The per-call working sets below live in this scope; the holder keeps only what the drain
-    // reads.
-    Memory::ScratchScope scratch;
 
     // Collect ORDER-DEPENDENT Blend instances. Transmission glass is coerced
     // to Opaque alpha mode (MaterialRegistry), so filtering on Blend naturally
@@ -147,17 +147,15 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
         const Material* Mat;
         Rendering::MeshGPUHandle Mesh;
         const Rendering::MeshGPUEntry* Entry;
+        RenderSortingData Sorting;
+        ECS::EntityHandle Entity;
     };
-    std::pmr::vector<PendingRecord> pending{&scratch.Resource()};
-    std::pmr::vector<TransparentSphere> candidates{&scratch.Resource()};
-    pending.reserve(submissions.size());
-    candidates.reserve(submissions.size());
+    std::vector<PendingRecord> pending;
+    std::vector<TransparentSphere> candidates;
     for (const WorldSubmissionRecord& sub : submissions)
     {
         if (!sub.material || !IsOrderDependentBlendMaterial(*sub.material))
             continue;
-        if (!Rendering::InstanceInColorPass(sub.flags, dropEditorHidden))
-            continue; // a color pass: no shadows-only mesh, and in the Scene View nothing its eye hides
         if (sub.instanceIndex >= instances.size())
             continue; // not resident in GPUScene yet (first frame)
         // Mesh entry must be resident to stage draw args; a not-yet-uploaded
@@ -170,7 +168,7 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
         candidates.push_back({static_cast<uint32_t>(pending.size()),
                               {inst.boundingCenter.x, inst.boundingCenter.y, inst.boundingCenter.z},
                               inst.boundingRadius});
-        pending.push_back({sub.instanceIndex, sub.material, sub.meshHandle, entry});
+        pending.push_back({sub.instanceIndex, sub.material, sub.meshHandle, entry, sub.Sorting, sub.SortingOwner});
     }
     if (candidates.empty())
         return;
@@ -189,11 +187,11 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
     Rendering::Vector3 origin{0.0f, 0.0f, 0.0f};
     {
         const auto originSector =
-            ComputeRenderOriginSector(cam.cameraPos.x, cam.cameraPos.y, cam.cameraPos.z);
+            ComputeRenderOriginSector(cam.cameraPos[0], cam.cameraPos[1], cam.cameraPos[2]);
         SectorToWorld(originSector, origin.x, origin.y, origin.z);
     }
 
-    std::pmr::vector<TransparentCentroid> visible{&scratch.Resource()};
+    std::vector<TransparentCentroid> visible;
     visible.reserve(candidates.size());
     const uint32_t culledCount =
         CullTransparentsToFrustum(candidates, frustumPlanes, origin, visible);
@@ -203,19 +201,29 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
     // Stage records + discover runs. A run groups records whose PSO identity
     // (SortedTransparentRunMaterialKey) AND geometry-pool identity
     // (SortedTransparentRunGeometryKey) match — one representative then binds
-    // for the whole run, per-record variance riding the bindless
-    // materialIndex/instance fetch. Group count is small (ER: a handful), so
+    // for the whole run. Bindless instances fetch their own material; compatibility
+    // also requires the same bound material texture set. Group count is small, so
     // linear key scans beat any map.
     struct RunKeyEntry
     {
         SortedTransparentRunMaterialKey MatKey;
         SortedTransparentRunGeometryKey GeoKey;
     };
-    std::pmr::vector<RunKeyEntry> runKeys{&scratch.Resource()};
+    std::vector<RunKeyEntry> runKeys;
     // Per-unique-material key cache (materials repeat heavily across records).
-    std::pmr::vector<std::pair<const Material*, SortedTransparentRunMaterialKey>> matKeyCache{
-        &scratch.Resource()};
+    std::vector<std::pair<const Material*, SortedTransparentRunMaterialKey>> matKeyCache;
 
+    const bool authored = std::any_of(visible.begin(), visible.end(),
+                                      [&](const TransparentCentroid& record)
+                                      { return pending[record.Key].Sorting.Authored; });
+    std::pmr::monotonic_buffer_resource scratch;
+    std::pmr::vector<RenderSortKey> sortingKeys{&scratch};
+    const bool composition = !contributors.empty() || m_Profile.IsCompat();
+    std::pmr::vector<ECS::EntityHandle> sortingEntities{&scratch};
+    if (authored || composition)
+        sortingKeys.reserve(visible.size());
+    if (composition)
+        sortingEntities.reserve(visible.size());
     holder.Records.reserve(visible.size());
     const Rendering::Vector3 camPos = camDerived.Position;
     const Rendering::Vector3 camFwd = camDerived.Forward;
@@ -234,7 +242,7 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
         }
         if (!matKey)
         {
-            matKeyCache.emplace_back(p.Mat, MakeSortedTransparentRunMaterialKey(*p.Mat));
+            matKeyCache.emplace_back(p.Mat, MakeSortedTransparentRunMaterialKey(*p.Mat, m_Profile.IsCompat()));
             matKey = &matKeyCache.back().second;
         }
 
@@ -267,10 +275,25 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
                                 (vis.Center[2] - camPos.z) * camFwd.z;
         holder.Records.push_back({p.InstanceIndex, p.Entry->indexCount, p.Entry->firstIndex,
                                   static_cast<int32_t>(p.Entry->vertexOffset), group, viewDepth});
+        if (composition)
+            sortingEntities.push_back(p.Entity);
+        if (authored || composition)
+        {
+            const float cameraPosition[]{camPos.x, camPos.y, camPos.z};
+            const float cameraForward[]{camFwd.x, camFwd.y, camFwd.z};
+            sortingKeys.push_back(MakeRenderSortKey(p.Sorting, viewDepth, cameraPosition, cameraForward));
+        }
     }
 
-    BuildSortedTransparentRunPartition(holder.Records, static_cast<uint32_t>(holder.Runs.size()),
-                                       scratch.Resource(), holder.Partition);
+    if (composition)
+        BuildTransparentComposition(holder.Records, sortingKeys, sortingEntities, contributors,
+                                    scratch, holder.Partition,
+                                    holder.CompositionMeshOrder, holder.CompositionSlots, m_Profile.IsCompat());
+    else if (authored)
+        BuildAuthoredTransparentRunPartition(holder.Records, sortingKeys, scratch, holder.Partition);
+    else
+        holder.Partition = BuildSortedTransparentRunPartition(
+            holder.Records, static_cast<uint32_t>(holder.Runs.size()));
     holder.CameraPos[0] = camPos.x;
     holder.CameraPos[1] = camPos.y;
     holder.CameraPos[2] = camPos.z;
@@ -281,7 +304,7 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
     holder.Stats.Collected = static_cast<uint32_t>(candidates.size());
     holder.Stats.Culled = culledCount;
     holder.Stats.Records = static_cast<uint32_t>(holder.Records.size());
-    holder.Stats.Runs = static_cast<uint32_t>(holder.Runs.size());
+    holder.Stats.Runs = static_cast<uint32_t>(holder.Partition.RunCount.size());
     holder.Stats.CpuSorted = holder.Records.size() > kSortedTransparentSortCapacity;
     holder.Active = true;
     holder.StagedLastBuild = true;
@@ -421,12 +444,42 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
 {
     namespace RenderGraph = Rendering::RenderGraph;
 
+    float bandStart = 0.0f, bandEnd = 0.0f;
+    int distanceMode = 0;
+    if (GetDepthPixelationBandRange(viewId, bandStart, bandEnd, distanceMode))
+        passKeywords |= Rendering::MaterialKeyword::DepthPixelationBand;
+
     const uint64_t deviceFrame = m_Device ? m_Device->GetFrameIndex() : 0;
     const auto it = m_SortedTransparentByView.find(viewId);
     if (it == m_SortedTransparentByView.end() || it->second.Frame != deviceFrame ||
         !it->second.Active)
         return;
     SortedTransparentView& holder = it->second;
+
+    const auto& contributors = m_ViewRegistry.PerView(viewId).SortedTransparentCommands;
+    const bool composition = !contributors.empty() || m_Profile.IsCompat();
+    const auto& viewResources = m_ViewRegistry.PerView(viewId);
+    const std::span<const RenderGraph::RGTexture> contributorTextures =
+        viewResources.ForwardSampledFor.IsFor(frame)
+            ? std::span<const RenderGraph::RGTexture>(viewResources.ForwardSampledRG)
+            : std::span<const RenderGraph::RGTexture>{};
+    std::pmr::monotonic_buffer_resource compositionScratch;
+    std::pmr::vector<ForwardBufferReadRG> contributorBuffers{&compositionScratch};
+    for (const auto& read : viewResources.ForwardSampledBufferRG)
+        if (read.For.IsFor(frame))
+            contributorBuffers.push_back({read.Buffer, read.Access});
+    if (holder.Records.empty() && composition)
+    {
+        std::pmr::monotonic_buffer_resource scratch;
+        BuildTransparentComposition({}, {}, {}, contributors, scratch, holder.Partition,
+                                    holder.CompositionMeshOrder, holder.CompositionSlots, m_Profile.IsCompat());
+        holder.Commands.clear();
+        for (const auto& slot : holder.CompositionSlots)
+            holder.Commands.push_back(contributors[slot.Index].Command);
+        AddForwardCommandPassForView(frame, viewId, targets, passKeywords, holder.Commands, contributorTextures,
+                                     "SortedTransparent", contributorBuffers);
+        return;
+    }
 
     // Any declare-time bail below MUST hand the view's Blend draws back to the
     // batched path: Active is read by the opaque peel at EXEC time (after this
@@ -460,10 +513,57 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
         return;
     }
 
+    if (m_Profile.IsCompat())
+    {
+        const size_t bytes = holder.CompositionMeshOrder.size() * sizeof(uint32_t);
+        const auto indices = frame.AllocUpload(bytes);
+        if (!indices.Valid())
+        {
+            bailToBatched("ordered instance-list upload failed");
+            return;
+        }
+        auto* list = static_cast<uint32_t*>(indices.Ptr);
+        for (size_t index = 0; index < holder.CompositionMeshOrder.size(); ++index)
+            list[index] = holder.Records[holder.CompositionMeshOrder[index]].InstanceIndex;
+        holder.CompositionIndices = {HashStringId(CpuDrawStreamBuilder::kIndexListBindingName),
+                                     indices.Buffer, indices.Offset, bytes};
+        holder.PcBytes.resize(holder.Partition.RunCount.size() * sizeof(uint32_t));
+        holder.Commands.clear();
+        holder.Commands.reserve(holder.CompositionSlots.size());
+        for (const auto& slot : holder.CompositionSlots)
+        {
+            if (slot.Contributor)
+            {
+                holder.Commands.push_back(contributors[slot.Index].Command);
+                continue;
+            }
+            const uint32_t first = holder.Partition.RunStart[slot.Index];
+            const auto& record = holder.Records[holder.CompositionMeshOrder[first]];
+            const auto& run = holder.Runs[holder.Partition.GroupOfSlot[slot.Index]];
+            auto* push = holder.PcBytes.data() + slot.Index * sizeof(uint32_t);
+            std::memcpy(push, &first, sizeof(first));
+            DrawCommand command{};
+            command.Material = run.Representative;
+            command.Geometry.Mesh = run.Mesh;
+            command.IndexCount = record.IndexCount;
+            command.FirstIndex = record.FirstIndex;
+            command.VertexOffset = record.VertexOffset;
+            command.InstanceCount = holder.Partition.RunCount[slot.Index];
+            command.Bindings.Buffers = std::span(&holder.CompositionIndices, 1);
+            command.Bindings.PushConstants = std::span<const std::byte>(push, sizeof(first));
+            holder.Commands.push_back(command);
+        }
+        holder.Stats.CpuSorted = true;
+        holder.WarnedDrainBail = false;
+        AddForwardCommandPassForView(frame, viewId, targets, passKeywords, holder.Commands,
+                                     contributorTextures, "SortedTransparent", contributorBuffers);
+        return;
+    }
+
     const uint32_t liveCount = static_cast<uint32_t>(holder.Records.size());
-    const uint32_t runCount = static_cast<uint32_t>(holder.Runs.size());
+    const uint32_t runCount = static_cast<uint32_t>(holder.Partition.RunCount.size());
     const bool gpuSort =
-        liveCount <= kSortedTransparentSortCapacity && EnsureSortedTransparentDrainPipeline();
+        !composition && liveCount <= kSortedTransparentSortCapacity && EnsureSortedTransparentDrainPipeline();
     holder.Stats.CpuSorted = !gpuSort; // the build's capacity guess, made exact
 
     Rendering::BufferHandle argsBuffer{};
@@ -474,7 +574,7 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
     // GPU-written buffers the draw pass must order after the drain dispatch.
     // Empty on the CPU path (host writes are visible at submit; no producer
     // pass exists to order against).
-    std::vector<ForwardBufferReadRG> drawReads;
+    std::pmr::vector<ForwardBufferReadRG> drawReads = std::move(contributorBuffers);
 
     if (gpuSort)
     {
@@ -628,8 +728,12 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
         // slot. Engages past the GPU sort capacity (or if the drain shader
         // failed to load), so removing the old ceiling never drops or
         // reorders a draw — only the sorter moves.
-        const std::vector<uint32_t> order =
-            BuildSortedTransparentCpuOrder(holder.Records, holder.Partition);
+        std::vector<uint32_t> fallbackOrder;
+        if (!composition)
+            fallbackOrder = BuildSortedTransparentCpuOrder(holder.Records, holder.Partition);
+        const std::span<const uint32_t> order = composition
+            ? std::span<const uint32_t>(holder.CompositionMeshOrder)
+            : std::span<const uint32_t>(fallbackOrder);
 
         const uint64_t argsBytes = static_cast<uint64_t>(liveCount) * kIndirectCommandStride;
         const uint64_t countsBytes = static_cast<uint64_t>(runCount) * sizeof(uint32_t);
@@ -715,9 +819,17 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
     std::memcpy(holder.PcBytes.data(), &pcInst, sizeof(ComposedPCInstanced));
 
     holder.Commands.clear();
-    holder.Commands.reserve(runCount);
-    for (uint32_t slot = 0; slot < runCount; ++slot)
+    holder.Commands.reserve(runCount + contributors.size());
+    const uint32_t commandCount = composition
+        ? static_cast<uint32_t>(holder.CompositionSlots.size()) : runCount;
+    for (uint32_t commandIndex = 0; commandIndex < commandCount; ++commandIndex)
     {
+        if (composition && holder.CompositionSlots[commandIndex].Contributor)
+        {
+            holder.Commands.push_back(contributors[holder.CompositionSlots[commandIndex].Index].Command);
+            continue;
+        }
+        const uint32_t slot = composition ? holder.CompositionSlots[commandIndex].Index : commandIndex;
         const SortedTransparentView::Run& run = holder.Runs[holder.Partition.GroupOfSlot[slot]];
         DrawCommand cmd{};
         cmd.Material = run.Representative;
@@ -755,7 +867,7 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
             static_cast<uint32_t>(viewId), runCount, liveCount, gpuSort ? "GPU" : "CPU");
     }
 
-    AddForwardCommandPassForView(frame, viewId, targets, passKeywords, holder.Commands, {},
+    AddForwardCommandPassForView(frame, viewId, targets, passKeywords, holder.Commands, contributorTextures,
                                  "SortedTransparent", drawReads);
 }
 

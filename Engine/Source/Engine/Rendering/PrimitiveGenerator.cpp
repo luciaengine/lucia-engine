@@ -6,38 +6,32 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
-#include "Mathematics/Vector2.h"
-#include "Mathematics/Vector3.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Types/FlatMap.h"
 
 
 #include <array>
 #include <cmath>
 #include <cstring>
-#include <memory>
-#include <mutex>
 
 namespace GameEngine
 {
 namespace Engine::Renderer
 {
 using namespace ::GameEngine::Rendering;
-using Mathematics::Vector2;
-using Mathematics::Vector3;
 
 namespace
 {
 
 constexpr float kPi = 3.14159265358979323846f;
-constexpr Vector3 kUp{0.0f, 1.0f, 0.0f};
 
-Vertex MakeVertex(const Vector3& position, const Vector3& normal, const Vector2& uv)
+Vertex MakeVertex(float px, float py, float pz,
+                  float nx, float ny, float nz,
+                  float u, float v)
 {
     Vertex out{};
-    out.Position[0] = position.x; out.Position[1] = position.y; out.Position[2] = position.z;
-    out.Normal[0] = normal.x;     out.Normal[1] = normal.y;     out.Normal[2] = normal.z;
-    out.TexCoords[0] = uv.x;      out.TexCoords[1] = uv.y;
+    out.Position[0] = px; out.Position[1] = py; out.Position[2] = pz;
+    out.Normal[0] = nx;   out.Normal[1] = ny;   out.Normal[2] = nz;
+    out.TexCoords[0] = u; out.TexCoords[1] = v;
     return out;
 }
 
@@ -73,7 +67,6 @@ GUID PrimitiveGenerator::SphereGuid()          { return GUID::Derive(GUID::Null(
 GUID PrimitiveGenerator::CapsuleGuid()         { return GUID::Derive(GUID::Null(), "engine/primitive/capsule"); }
 GUID PrimitiveGenerator::PlaneGuid()           { return GUID::Derive(GUID::Null(), "engine/primitive/plane"); }
 GUID PrimitiveGenerator::PlaneSpriteUvGuid()   { return GUID::Derive(GUID::Null(), "engine/primitive/plane_sprite_uv"); }
-GUID PrimitiveGenerator::GroundGuid()          { return GUID::Derive(GUID::Null(), "engine/primitive/ground"); }
 GUID PrimitiveGenerator::DefaultMaterialGuid() { return GUID::Derive(GUID::Null(), "engine/material/default_unlit"); }
 GUID PrimitiveGenerator::ReflectionProbeTestMaterialGuid()
 {
@@ -97,7 +90,6 @@ GUID PrimitiveGenerator::GuidFromName(std::string_view name)
     if (eq(name, "planespriteuv"))   return PlaneSpriteUvGuid();
     if (eq(name, "plane_sprite"))    return PlaneSpriteUvGuid();
     if (eq(name, "plane_sprite_uv")) return PlaneSpriteUvGuid();
-    if (eq(name, "ground"))          return GroundGuid();
     return GUID::Null();
 }
 
@@ -108,7 +100,6 @@ std::string_view PrimitiveGenerator::NameFromGuid(const GUID& guid)
     if (guid == CapsuleGuid()) return "Capsule";
     if (guid == PlaneGuid())        return "Plane";
     if (guid == PlaneSpriteUvGuid()) return "PlaneSpriteUv";
-    if (guid == GroundGuid())        return "Ground";
     return {};
 }
 
@@ -137,7 +128,7 @@ Components::MeshRenderer PrimitiveGenerator::MakePrimitiveMeshRenderer(
     // Store GUIDs for portable scene serialization.
     mr.modelAssetGuid.Set(meshGuid);
     mr.materialAssetGuid.Set(materialGuid);
-    mr.RenderLayers = Rendering::RenderLayerMask::Default();
+    mr.renderLayerMask = 1u;
     return mr;
 }
 
@@ -177,7 +168,7 @@ Components::LocalBounds PrimitiveGenerator::MakePrimitiveLocalBounds(
         // (cylinder length 1.0 + 2 hemisphere caps of radius 0.5).
         lb.Box.halfExtents = {0.5f, 1.0f, 0.5f};
     }
-    else if (meshGuid == PlaneGuid() || meshGuid == PlaneSpriteUvGuid() || meshGuid == GroundGuid())
+    else if (meshGuid == PlaneGuid() || meshGuid == PlaneSpriteUvGuid())
     {
         // Plane is flat in XZ; zero Y extent. The slab test handles the
         // degenerate axis correctly (tMin == tMax on Y when origin.y is
@@ -221,7 +212,7 @@ Mesh PrimitiveGenerator::GenerateCube(float h)
     {
         uint32_t base = static_cast<uint32_t>(mesh.Vertices.size());
         for (int i = 0; i < 4; ++i)
-            mesh.Vertices.push_back(MakeVertex({f.v[i][0], f.v[i][1], f.v[i][2]}, {f.nx, f.ny, f.nz}, {uvs[i][0], uvs[i][1]}));
+            mesh.Vertices.push_back(MakeVertex(f.v[i][0], f.v[i][1], f.v[i][2], f.nx, f.ny, f.nz, uvs[i][0], uvs[i][1]));
         mesh.Indices.push_back(base+0); mesh.Indices.push_back(base+2); mesh.Indices.push_back(base+1);
         mesh.Indices.push_back(base+0); mesh.Indices.push_back(base+3); mesh.Indices.push_back(base+2);
     }
@@ -232,64 +223,20 @@ Mesh PrimitiveGenerator::GenerateCube(float h)
 
 // --- Plane ---
 
-namespace
-{
-// Cells per side of the Plane primitive. Some GPUs lose precision when they interpolate
-// texture coordinates and positions across a triangle while one of the triangle's
-// vertices crosses the camera's eye plane far to the side. A Plane drawn as one quad and
-// scaled to a floor (20 m or 2 km) jumps near the camera by tens of pixels for a frame at
-// each crossing. With 32 cells per side, Planes of 20 m, 2 km and 20 km draw without the
-// jump, measured on an NVIDIA RTX 5080 with the camera 35 cm and 8 cm above the floor.
-constexpr uint32_t kPlaneSegments = 32;
-
-// The XZ square [-h, h] x [-h, h] facing +Y, cut into segments x segments cells:
-// (segments + 1)^2 vertices and 2 * segments^2 triangles. Each cell splits on its
-// (-X-Z, +X+Z) diagonal.
-Mesh GenerateSubdividedPlane(float h, uint32_t segments)
-{
-    Mesh mesh{};
-    mesh.Name = "SubdividedPlane";
-    mesh.MaterialIndex = 0;
-
-    const uint32_t stride = segments + 1;
-    mesh.Vertices.reserve(static_cast<size_t>(stride) * stride);
-    mesh.Indices.reserve(static_cast<size_t>(segments) * segments * 6);
-
-    // Rows step along +Z, columns along +X. u runs from 1 at -X to 0 at +X,
-    // v from 0 at -Z to 1 at +Z.
-    for (uint32_t row = 0; row <= segments; ++row)
-    {
-        const float alongZ = static_cast<float>(row) / static_cast<float>(segments);
-        for (uint32_t column = 0; column <= segments; ++column)
-        {
-            const float alongX = static_cast<float>(column) / static_cast<float>(segments);
-            mesh.Vertices.push_back(MakeVertex({-h + 2.0f * h * alongX, 0.0f, -h + 2.0f * h * alongZ}, kUp, {1.0f - alongX, alongZ}));
-        }
-    }
-
-    // Winding: (-X-Z, +X+Z, +X-Z) and (-X-Z, -X+Z, +X+Z), front-facing from +Y.
-    for (uint32_t row = 0; row < segments; ++row)
-    {
-        for (uint32_t column = 0; column < segments; ++column)
-        {
-            const uint32_t minXMinZ = row * stride + column;
-            const uint32_t maxXMinZ = minXMinZ + 1;
-            const uint32_t maxXMaxZ = minXMinZ + stride + 1;
-            const uint32_t minXMaxZ = minXMinZ + stride;
-            mesh.Indices.push_back(minXMinZ); mesh.Indices.push_back(maxXMaxZ); mesh.Indices.push_back(maxXMinZ);
-            mesh.Indices.push_back(minXMinZ); mesh.Indices.push_back(minXMaxZ); mesh.Indices.push_back(maxXMaxZ);
-        }
-    }
-
-    FinalizePrimitiveMesh(mesh);
-    return mesh;
-}
-} // namespace
-
 Mesh PrimitiveGenerator::GeneratePlane(float h)
 {
-    Mesh mesh = GenerateSubdividedPlane(h, kPlaneSegments);
+    Mesh mesh{};
     mesh.Name = "Plane";
+    mesh.MaterialIndex = 0;
+
+    mesh.Vertices.push_back(MakeVertex(-h, 0, -h, 0, 1, 0, 1, 0));
+    mesh.Vertices.push_back(MakeVertex(+h, 0, -h, 0, 1, 0, 0, 0));
+    mesh.Vertices.push_back(MakeVertex(+h, 0, +h, 0, 1, 0, 0, 1));
+    mesh.Vertices.push_back(MakeVertex(-h, 0, +h, 0, 1, 0, 1, 1));
+
+    mesh.Indices = {0, 2, 1, 0, 3, 2};
+
+    FinalizePrimitiveMesh(mesh);
     return mesh;
 }
 
@@ -299,14 +246,14 @@ Mesh PrimitiveGenerator::GeneratePlaneSpriteUv(float h)
     mesh.Name = "PlaneSpriteUv";
     mesh.MaterialIndex = 0;
 
-    // The Plane's square, normal and winding as a single quad; UVs stay sprite-oriented
+    // Same positions/indices/winding as GeneratePlane; UVs stay sprite-oriented
     // so the first decoded image row (PNG top) matches billboard "up" for the
     // Sprite plane roll (+90° X when using CreateSpriteEntityFromTexture 2D mode)
     // for 2D cameras that look along +Z.
-    mesh.Vertices.push_back(MakeVertex({-h, 0.0f, -h}, kUp, {0.0f, 1.0f}));
-    mesh.Vertices.push_back(MakeVertex({+h, 0.0f, -h}, kUp, {1.0f, 1.0f}));
-    mesh.Vertices.push_back(MakeVertex({+h, 0.0f, +h}, kUp, {1.0f, 0.0f}));
-    mesh.Vertices.push_back(MakeVertex({-h, 0.0f, +h}, kUp, {0.0f, 0.0f}));
+    mesh.Vertices.push_back(MakeVertex(-h, 0, -h, 0, 1, 0, 0, 1));
+    mesh.Vertices.push_back(MakeVertex(+h, 0, -h, 0, 1, 0, 1, 1));
+    mesh.Vertices.push_back(MakeVertex(+h, 0, +h, 0, 1, 0, 1, 0));
+    mesh.Vertices.push_back(MakeVertex(-h, 0, +h, 0, 1, 0, 0, 0));
 
     mesh.Indices = {0, 2, 1, 0, 3, 2};
 
@@ -341,7 +288,7 @@ Mesh PrimitiveGenerator::GenerateSphere(float radius, uint32_t segments, uint32_
             float u = static_cast<float>(x) / static_cast<float>(segments);
             float v = static_cast<float>(y) / static_cast<float>(rings);
 
-            mesh.Vertices.push_back(MakeVertex({nx * radius, ny * radius, nz * radius}, {nx, ny, nz}, {u, v}));
+            mesh.Vertices.push_back(MakeVertex(nx * radius, ny * radius, nz * radius, nx, ny, nz, u, v));
         }
     }
 
@@ -385,7 +332,7 @@ Mesh PrimitiveGenerator::GenerateCapsule(float radius, float halfHeight, uint32_
             float u = static_cast<float>(x) / static_cast<float>(segments);
             float v = static_cast<float>(y) / static_cast<float>(rings * 2 + 1);
 
-            mesh.Vertices.push_back(MakeVertex({nx * radius, ny * radius + halfHeight, nz * radius}, {nx, ny, nz}, {u, v}));
+            mesh.Vertices.push_back(MakeVertex(nx * radius, ny * radius + halfHeight, nz * radius, nx, ny, nz, u, v));
         }
     }
 
@@ -402,7 +349,7 @@ Mesh PrimitiveGenerator::GenerateCapsule(float radius, float halfHeight, uint32_
             float nz = std::sin(theta);
             float u = static_cast<float>(x) / static_cast<float>(segments);
 
-            mesh.Vertices.push_back(MakeVertex({nx * radius, yOffset, nz * radius}, {nx, 0.0f, nz}, {u, vBase}));
+            mesh.Vertices.push_back(MakeVertex(nx * radius, yOffset, nz * radius, nx, 0, nz, u, vBase));
         }
     }
 
@@ -423,7 +370,7 @@ Mesh PrimitiveGenerator::GenerateCapsule(float radius, float halfHeight, uint32_
             float u = static_cast<float>(x) / static_cast<float>(segments);
             float v = 0.5f + 0.5f * static_cast<float>(y) / static_cast<float>(rings);
 
-            mesh.Vertices.push_back(MakeVertex({nx * radius, ny * radius - halfHeight, nz * radius}, {nx, ny, nz}, {u, v}));
+            mesh.Vertices.push_back(MakeVertex(nx * radius, ny * radius - halfHeight, nz * radius, nx, ny, nz, u, v));
         }
     }
 
@@ -504,48 +451,14 @@ struct PrimitiveDef
     Mesh (*Generate)();
 };
 
-// Cells per side of the Ground primitive. The default ground is scaled to 6000 m, so a
-// cell is 50 m. A texture coordinate or a position interpolated across a kilometer-sized
-// triangle drifts by whole pixels near the camera on some GPUs, and the drift changes with
-// the pose: the ground's grid lines and shadow edges jump.
-constexpr uint32_t kGroundSegments = 120;
-
-Mesh GenerateGround()
-{
-    Mesh mesh = GenerateSubdividedPlane(0.5f, kGroundSegments);
-    mesh.Name = "Ground";
-    return mesh;
-}
-
 const PrimitiveDef kPrimitiveDefs[] = {
     {&PrimitiveGenerator::CubeGuid,          [] { return PrimitiveGenerator::GenerateCube(); }},
     {&PrimitiveGenerator::SphereGuid,        [] { return PrimitiveGenerator::GenerateSphere(); }},
     {&PrimitiveGenerator::CapsuleGuid,       [] { return PrimitiveGenerator::GenerateCapsule(); }},
     {&PrimitiveGenerator::PlaneGuid,         [] { return PrimitiveGenerator::GeneratePlane(); }},
     {&PrimitiveGenerator::PlaneSpriteUvGuid, [] { return PrimitiveGenerator::GeneratePlaneSpriteUv(); }},
-    {&PrimitiveGenerator::GroundGuid,        &GenerateGround},
 };
 } // namespace
-
-const Mesh* PrimitiveGenerator::CachedMeshByGuid(const GUID& guid)
-{
-    if (!IsPrimitive(guid))
-        return nullptr;
-
-    // Each mesh lives behind its own allocation, so an insertion that moves the map's entries
-    // leaves the pointers handed out before it valid.
-    static std::mutex s_Mutex;
-    static FlatMap<GUID, std::unique_ptr<Mesh>> s_Cache;
-
-    std::lock_guard lock(s_Mutex);
-    if (const std::unique_ptr<Mesh>* cached = s_Cache.Find(guid))
-        return cached->get();
-
-    Mesh mesh = GenerateByGuid(guid);
-    if (mesh.Vertices.empty())
-        return nullptr;
-    return s_Cache.InsertOrAssign(guid, std::make_unique<Mesh>(std::move(mesh))).get();
-}
 
 Mesh PrimitiveGenerator::GenerateByGuid(const GUID& guid)
 {
@@ -582,7 +495,7 @@ void PrimitiveGenerator::RegisterAll(RenderServices& rs)
         // DDGI software lane builds a BVH containing no primitives at all —
         // a scene built from cubes and planes then produces zero GI, silently,
         // because that lane omits meshes it cannot resolve rather than failing.
-        // A few KB for the small meshes, about 1 MB for the Ground.
+        // Five small meshes, a few KB total.
         meshReg.RegisterSubmesh(key, mesh, /*retainCpuMesh=*/true);
     }
 

@@ -32,8 +32,7 @@ void FrustumCullingStrategy::ScheduleCulling(const ViewCullingContext& ctx)
     input.farPlane = ctx.FarPlane;
     input.firstInstance = ctx.FirstInstance;
     input.instanceCount = ctx.InstanceCount;
-    input.renderLayerMask = ctx.Layers;
-    input.dropEditorHidden = ctx.DropEditorHidden;
+    input.renderLayerMask = ctx.RenderLayerMask;
     input.frameIndex = ctx.FrameIndex;
     input.deltaTime = ctx.DeltaTime;
 

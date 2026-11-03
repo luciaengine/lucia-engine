@@ -10,6 +10,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
+#include "Types/Fnv1a.h"
 #include "Types/NearestName.h"
 #include "Types/StringUtils.h"
 
@@ -33,30 +34,9 @@ using namespace ::GameEngine::Rendering;
 
 namespace
 {
-static uint64_t Fnv1a64(const void* data, size_t size)
+static uint32_t PipelineViewMask(const Rendering::ViewDesc& view)
 {
-    constexpr uint64_t kOffset = 1469598103934665603ull;
-    constexpr uint64_t kPrime = 1099511628211ull;
-    uint64_t h = kOffset;
-    const uint8_t* p = static_cast<const uint8_t*>(data);
-    for (size_t i = 0; i < size; ++i)
-    {
-        h ^= (uint64_t)p[i];
-        h *= kPrime;
-    }
-    return h;
-}
-
-static uint64_t HashString(const std::string& s)
-{
-    return Fnv1a64(s.data(), s.size());
-}
-
-// Whether the active pipeline declares a view this frame: its switch is on and it takes part (an
-// OnDemand view only while armed). A view on no layer still declares: it draws its clear and its sky.
-static bool PipelineDeclaresView(const Rendering::ViewDesc& view)
-{
-    return view.activeRenderPipeline && view.Participates();
+    return view.activeRenderPipeline ? view.renderLayerMask : 0u;
 }
 
 static bool JsonTryGetString(const nlohmann::json& j, const char* key, std::string& out)
@@ -285,7 +265,7 @@ void DeclareDepthPrepassFeedersFirst(RenderPipelineBlueprint& bp, const RenderPi
 
 bool RequiresShaderPkg(const std::string& type)
 {
-    return type == "FullscreenShader" || type == "TemporalFullscreenShader" ||
+    return type == "FullscreenShader" || type == "TemporalFullscreenShader" || type == "DepthPixelation" ||
            type == "ComputeShader";
 }
 
@@ -516,7 +496,7 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
     // blueprint predates the SSR targets), so it is valid without a declaration.
     std::unordered_set<std::string> validSet = {Names::View::Color, Names::View::Depth,
                                                 Names::View::Resolve, Names::View::DepthResolved,
-                                                Names::View::NormalRoughness, Names::View::BloomSampleDelta};
+                                                Names::View::NormalRoughness};
     for (const auto& r : bp.resources)
         validSet.insert(r.name);
     for (size_t i = 0; i < bp.passes.size(); ++i)
@@ -754,9 +734,7 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
         {
             addIssue(PipelineIssueSeverity::Error,
                      "shaderPkg '" + pkg + "' could not be loaded: " +
-                         (err.empty() ? std::string("not found") : err) +
-                         ". Point the pass's \"shaderPkg\" at a package that exists, or delete the pass and "
-                         "point the passes that read its output at the input it read.",
+                         (err.empty() ? std::string("not found") : err),
                      pass.id);
             continue;
         }
@@ -820,15 +798,6 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
                     addIssue(PipelineIssueSeverity::Warning, std::move(issue), bp.passes[i].id);
     }
 
-    // ── Deprecated node type keys (Warning) ──
-    // The Q4 rename made "ShadowMap" the canonical key for the shadow node; the
-    // old "CascadedShadowMap" key still parses (registered as an alias) but nudges
-    // authors to migrate so the legacy string can eventually be retired.
-    for (const auto& pass : bp.passes)
-        if (pass.type == "CascadedShadowMap")
-            addIssue(PipelineIssueSeverity::Warning,
-                     "legacy node type key 'CascadedShadowMap' — rename to 'ShadowMap'", pass.id);
-
     // ── Duplicate published output names (Warning) ──
     // Re-publishing a blackboard name is a first-class pattern here (the frame
     // resources are last-writer-wins), so this catches only the genuine mistake:
@@ -887,7 +856,7 @@ RenderPipelineBlueprint RenderPipelineCompiler::Compile(const GameEngine::Render
     bp.pipelineName = asset.GetDocument().pipelineName;
     bp.sourcePath = asset.GetPath().string();
     const char* sourceKey = sourceKind == Rendering::ShaderSourceKind::Wgsl ? "wgsl" : "spirv";
-    bp.contentHash = HashString(asset.GetDocument().jsonText + sourceKey);
+    bp.contentHash = Hashing::Fnv1a64(asset.GetDocument().jsonText + sourceKey);
 
     // Carry forward any asset-loader errors as pipeline issues.
     for (const auto& e : asset.GetErrors())
@@ -1135,7 +1104,17 @@ RenderPipelineBlueprint RenderPipelineCompiler::Compile(const GameEngine::Render
             PipelineIssue iss{};
             iss.severity = PipelineIssueSeverity::Error;
             iss.nodeId = id;
-            if (unknownPassTypes == UnknownPassTypes::PendingScripts)
+            // Deleted types get an actionable migration hint: just removing
+            // the pass block would compile but silently resurrect the hazard
+            // its replacement fixes (an early consumer's buffer ref failing to
+            // resolve drops that stage).
+            if (type == "ExposureHistoryDeclare")
+                iss.message =
+                    "RenderPipelineCompiler: pass type 'ExposureHistoryDeclare' was deleted — "
+                    "remove this pass AND declare an \"ExposureHistory\" entry in \"resources\" "
+                    "(kind Buffer, scope PerView, size.bytes 16, usage [Storage], zeroOnCreate "
+                    "true); consumers materialize it on first resolve.";
+            else if (unknownPassTypes == UnknownPassTypes::PendingScripts)
             {
                 iss.severity = PipelineIssueSeverity::Info;
                 iss.code = PipelineIssueCode::PendingScriptPass;
@@ -1220,7 +1199,7 @@ RenderPipelineBlueprint RenderPipelineCompiler::Compile(const GameEngine::Render
             pendingIds += issue.nodeId + '\n';
     }
     if (!pendingIds.empty())
-        bp.contentHash ^= HashString("pending script passes\n" + pendingIds);
+        bp.contentHash ^= Hashing::Fnv1a64("pending script passes\n" + pendingIds);
 
     return bp;
 }
@@ -1235,9 +1214,6 @@ struct RenderPipelineInstance::ResourceDescription
     };
     Kind Type = Kind::Invalid;
     bool PerView = false;
-    // "preExposed": the texture holds scene colour stored at the frame's pre-exposure P
-    // (pre_exposure_snapshot.comp); a reader of absolute values divides by P.
-    bool PreExposed = false;
     bool AbsoluteExtent = false;
     bool OutputExtent = false;
     float ScaleX = 1.0f;
@@ -1275,8 +1251,6 @@ struct RenderPipelineInstance::ResourceDescription
         if (!kind.empty() && kind != "texture")
             return;
         Type = Kind::Texture;
-        if (jr.contains("preExposed") && jr["preExposed"].is_boolean())
-            PreExposed = jr["preExposed"].get<bool>();
 
         Rendering::TextureFormat fmt = Rendering::TextureFormat::RGBA8_UNORM;
         std::string fmtStr;
@@ -1484,15 +1458,6 @@ Rendering::RenderGraph::RGTexture RenderPipelineInstance::TableTexture(Rendering
     return {};
 }
 
-Rendering::RenderGraph::RGBuffer RenderPipelineInstance::FindPreExposureSource(
-    uint32_t textureResourceId) const
-{
-    const auto it = m_FrameResources.PreExposedTextures.find(textureResourceId);
-    if (it == m_FrameResources.PreExposedTextures.end())
-        return {};
-    return TableBuffer(it->second, Names::Res::ExposureHistory).Graph;
-}
-
 PipelineBufferBindingRG RenderPipelineInstance::TableBuffer(Rendering::ViewId viewId,
                                                             const std::string& name) const
 {
@@ -1589,6 +1554,12 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
                                      std::span<const Rendering::ViewDesc> views,
                                      float deltaTimeSeconds)
 {
+    // Nodes may allocate utility views (for example planar mirror captures).
+    // The registry grows a vector; keep the declaration's view data alive across
+    // those allocations, including the context used by subsequent nodes.
+    const std::vector<Rendering::ViewDesc> viewSnapshot(views.begin(), views.end());
+    views = viewSnapshot;
+
     if (m_BlueprintDirty)
         EnsureNodeInstances();
 
@@ -1623,6 +1594,36 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
             break;
         }
 
+    // Same rule for the pixel-perfect crossing: without the node there is
+    // nowhere to zoom inside the graph, so its output stays at caller extent.
+    // The Game View retains its terminal nearest-upscale fallback in this case.
+    bool hasPixelPerfectCrossing = false;
+    for (const auto& [id, node] : m_Nodes)
+        if (node && std::strcmp(node->GetTypeName(), "PixelPerfectUpscale") == 0)
+        {
+            hasPixelPerfectCrossing = true;
+            break;
+        }
+    // Pixelated parent views only compose their band renders. No parent
+    // scene raster, depth prepass, or pre-composite post effects are needed.
+    uint32_t pixelationNode = static_cast<uint32_t>(m_Blueprint.passes.size());
+    for (uint32_t i = 0; i < m_Blueprint.passes.size(); ++i)
+        if (m_Blueprint.passes[i].enabled && m_Blueprint.passes[i].type == "DepthPixelation")
+        {
+            pixelationNode = i;
+            break;
+        }
+    std::unordered_set<Rendering::ViewId> compositeOnlyViews;
+    if (pixelationNode < m_Blueprint.passes.size())
+        for (const auto& vt : targets)
+        {
+            const auto* v = findView(vt.View);
+            if (!v || !m_Rs.FindDepthPixelationViews(v->id)) continue;
+            const auto& pp = m_Rs.GetEffectivePostProcessSettings(v->id, v->worldId);
+            if (pp.DepthPixelationIntensity > 0 || pp.DepthPixelationDebugRanges != 0)
+                compositeOnlyViews.insert(v->id);
+        }
+
     // Per-view pre-pass: seed the View.* blackboard slots from the caller's
     // VALUES and apply the MSAA-off color collapse (when the color target is
     // single-sample the scene must render straight into the pipeline's
@@ -1632,7 +1633,7 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
     for (const auto& vt : targets)
     {
         const Rendering::ViewDesc* v = findView(vt.View);
-        if (!v || !PipelineDeclaresView(*v))
+        if (!v || PipelineViewMask(*v) == 0)
             continue;
 
         uint32_t samples = 1;
@@ -1652,6 +1653,63 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
             height = dd.Height;
         }
 
+        // Pixel-perfect crossing. The caller sized its targets to the camera's
+        // padded reference RT, so the raster extent is already the low one and
+        // the DISPLAY extent — the panel the integer zoom writes — comes from
+        // the view's pixel-perfect state. That divergence is what puts the LDR
+        // display effects (CRT, VHS, grain) on the output-basis side of the
+        // boundary at full resolution instead of one sample per art texel.
+        // Every value below collapses to the unsplit path when the extents
+        // agree (the Player, which never sizes down) — the byte-neutrality gate.
+        const Engine::Renderer::PixelPerfectViewState pixelPerfect =
+            m_Rs.Views().GetViewPixelPerfect(v->id);
+        const bool pixelPerfectWanted =
+            hasPixelPerfectCrossing && pixelPerfect.Active && pixelPerfect.DisplayWidth > 0 &&
+            pixelPerfect.DisplayHeight > 0 && width > 0 && height > 0 &&
+            (pixelPerfect.DisplayWidth != width || pixelPerfect.DisplayHeight != height);
+        // The display-extent colour the crossing writes and FinalColor ends up
+        // on. The caller cannot supply it — its targets ARE the padded
+        // reference RT — so the pipeline owns it, in the caller's colour format
+        // at one sample (the crossing's source is the post-resolve HDR chain,
+        // so an MSAA view crosses just the same). Pool-persistent because the
+        // host samples the physical. An import failure declines the crossing
+        // wholesale rather than half-applying the extent.
+        Rendering::RenderGraph::RGTexture pixelPerfectOutColor{};
+        if (pixelPerfectWanted)
+        {
+            Rendering::TextureDesc od{};
+            od.width = pixelPerfect.DisplayWidth;
+            od.height = pixelPerfect.DisplayHeight;
+            od.depth = 1;
+            od.mipLevels = 1;
+            od.arrayLayers = 1;
+            od.sampleCount = 1;
+            od.format = vt.Color.IsValid()
+                            ? frame.Graph().ResourceDesc(vt.Color.Id).Format
+                            : static_cast<uint32_t>(Rendering::TextureFormat::R16G16B16A16_FLOAT);
+            od.usage = static_cast<uint32_t>(Rendering::TextureUsage::RenderTarget) |
+                       static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource);
+            const std::string name = "Pipeline." + m_Blueprint.pipelineName + ".View" +
+                                     std::to_string(static_cast<uint32_t>(v->id)) +
+                                     ".PixelPerfectOutput";
+            od.debugName = name.c_str();
+            pixelPerfectOutColor = frame.ImportPersistentTexture(name.c_str(), od);
+        }
+        const bool pixelPerfectCrossing = pixelPerfectOutColor.IsValid();
+        const uint32_t outputWidth = pixelPerfectCrossing ? pixelPerfect.DisplayWidth : width;
+        const uint32_t outputHeight = pixelPerfectCrossing ? pixelPerfect.DisplayHeight : height;
+        if (compositeOnlyViews.contains(v->id))
+        {
+            m_FrameResources.Textures[{v->id, Names::View::Color}] = vt.Color;
+            m_FrameResources.Textures[{v->id, Names::View::Depth}] = vt.Depth;
+            m_FrameResources.Textures[{v->id, Names::View::Resolve}] = vt.Resolve.IsValid() ? vt.Resolve : vt.Color;
+            m_FrameResources.Textures[{v->id, Names::View::DepthResolved}] = vt.Depth;
+            auto& info = m_FrameResources.Views[v->id];
+            info.RenderWidth = info.OutputWidth = width;
+            info.RenderHeight = info.OutputHeight = height;
+            continue;
+        }
+
         // Internal-resolution split. Applies to any single-sample, unletterboxed
         // view at a sub-1.0 render scale whose blueprint routes world color
         // through a materialized resolve target (the internal SceneColor). The
@@ -1661,8 +1719,6 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
         // resolve passthrough would leave internal-res content unupscaled. At
         // scale 1.0 every value below is exactly the unsplit path — that
         // identity is the byte-neutrality gate.
-        const uint32_t outputWidth = width;
-        const uint32_t outputHeight = height;
         Rendering::RenderGraph::RGTexture splitInternalDepth{};
         {
             const float scale = m_Rs.ResolveViewRenderScale(v->id);
@@ -1679,22 +1735,8 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
             const bool splitEligible =
                 samples <= 1 && width > 0 && height > 0 && vt.Depth.IsValid() &&
                 !m_Blueprint.worldColorResolveTargetRef.empty() && crossingAvailable &&
-                !m_Rs.Views().GetViewLetterbox(v->id).active;
+                !m_Rs.Views().GetViewLetterbox(v->id).active && !pixelPerfectCrossing;
             m_DrsAnyViewEligible = m_DrsAnyViewEligible || splitEligible;
-            // The split needs a single-sample raster, so a multisampled view draws at full
-            // resolution whatever its render scale. Say so once, with the fix, rather than
-            // leave the scale silently doing nothing.
-            if (samples > 1 && crossingAvailable && !m_WarnedRenderScaleUnderMsaa &&
-                std::abs(scale - 1.0f) > kRenderScaleNativeEpsilon)
-            {
-                m_WarnedRenderScaleUnderMsaa = true;
-                Logger::Log::Warning(
-                    "RenderPipeline: view {} asks for render scale {:.2f}, but it renders with {}x MSAA and "
-                    "a render scale applies only to a single-sample view, so it draws at full resolution. "
-                    "Turn MSAA off for the camera: use TAA (on the web, Camera antiAliasing 3) or "
-                    "msaaSamples 1.",
-                    static_cast<uint32_t>(v->id), scale, samples);
-            }
             // Both directions split: sub-1.0 renders reduced and upscales,
             // above-1.0 renders supersampled (SSAA) and the crossing filters
             // back down.
@@ -1779,13 +1821,8 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
         const Rendering::RenderGraph::RGTexture rasterDepth =
             splitActive ? splitInternalDepth : vt.Depth;
         m_FrameResources.Textures[{v->id, Names::View::Color}] = color;
-        // The view's colour target is scene colour: the sky and the world write it at P.
-        if (color.IsValid())
-            m_FrameResources.PreExposedTextures[color.Id] = v->id;
         m_FrameResources.Textures[{v->id, Names::View::Depth}] = rasterDepth;
         m_FrameResources.Textures[{v->id, Names::View::Resolve}] = resolve;
-        if (samples > 1 && m_Rs.GetEffectivePostProcessSettings(v->id, v->worldId).IsBloomActive())
-            DeclareBloomSampleDelta(frame, v->id, resolve);
         m_FrameResources.Textures[{v->id, Names::View::DepthResolved}] = rasterDepth;
         if (splitActive)
         {
@@ -1797,19 +1834,30 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
             m_FrameResources.Textures[{v->id, Names::View::OutputColor}] = vt.Color;
             m_FrameResources.Textures[{v->id, Names::View::OutputDepth}] = vt.Depth;
         }
+        if (pixelPerfectCrossing)
+        {
+            // No OutputDepth: the crossing has no display-extent depth consumer,
+            // and its ABSENCE is what keeps RenderScaleUpscaleNode (which
+            // requires both) off a pixel-perfect view.
+            m_FrameResources.Textures[{v->id, Names::View::OutputColor}] = pixelPerfectOutColor;
+        }
         auto& info = m_FrameResources.Views[v->id];
         info.ResolveFromPipeline = resolveTarget.IsValid();
         info.RenderWidth = width;
         info.RenderHeight = height;
         info.OutputWidth = outputWidth;
         info.OutputHeight = outputHeight;
+        info.PixelPerfectCrossing = pixelPerfectCrossing;
 
         // The scale the renderer ACTUALLY used, after the even-pixel snap and
         // the TAA-active gate. Dynamic resolution fits its response model
         // against this, never against the requested value: the requested scale
         // is not always the applied one, and a model fitted to a number the
         // renderer never used integrates error against a fiction.
-        if (outputWidth > 0)
+        // A pixel-perfect view's Render/Output ratio is the camera's integer
+        // zoom, not a render scale — feeding it here would fit the dynamic
+        // resolution model against a lever it never moved.
+        if (outputWidth > 0 && !pixelPerfectCrossing)
             m_DrsLastAppliedScale =
                 static_cast<float>(width) / static_cast<float>(outputWidth);
     }
@@ -1858,7 +1906,9 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
         for (const auto& vt : targets)
         {
             const Rendering::ViewDesc* v = findView(vt.View);
-            if (!v || !PipelineDeclaresView(*v))
+            if (!v || PipelineViewMask(*v) == 0)
+                continue;
+            if (compositeOnlyViews.contains(v->id) && nodeIdx < pixelationNode)
                 continue;
             ViewDeclare d(frame, *v, m_Rs, nb.id.c_str());
             d.m_Instance = this;
@@ -1868,7 +1918,6 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
             d.ViewColor = TableTexture(v->id, Names::View::Color);
             d.ViewDepth = TableTexture(v->id, Names::View::Depth);
             d.ViewResolve = TableTexture(v->id, Names::View::Resolve);
-            d.ViewBloomSampleDelta = TableTexture(v->id, Names::View::BloomSampleDelta);
             d.ViewDepthResolved = TableTexture(v->id, Names::View::DepthResolved);
             d.ViewOccluderDepthResolved = TableTexture(v->id, Names::View::OccluderDepthResolved);
             if (!d.ViewOccluderDepthResolved.IsValid())
@@ -1882,6 +1931,16 @@ void RenderPipelineInstance::Declare(Rendering::RenderGraph::RGFrame& frame,
                 d.RenderHeight = vi->second.RenderHeight;
                 d.OutputWidth = vi->second.OutputWidth;
                 d.OutputHeight = vi->second.OutputHeight;
+                d.PixelPerfectCrossing = vi->second.PixelPerfectCrossing;
+            }
+            if (it->second->IsViewColorPostEffect())
+            {
+                for (const auto& [owner, callback] : m_BeforePostProcessCallbacks)
+                {
+                    (void)owner;
+                    if (callback)
+                        callback(d);
+                }
             }
             it->second->DeclareForView(d);
         }
@@ -1901,35 +1960,6 @@ RenderPipelineInstance::FindResourceDescription(const std::string& name) const
 {
     const auto found = m_ResourceDescriptions.find(name);
     return found == m_ResourceDescriptions.end() ? nullptr : found->second.get();
-}
-
-void RenderPipelineInstance::DeclareBloomSampleDelta(Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId,
-                                                     Rendering::RenderGraph::RGTexture resolve)
-{
-    if (!resolve.IsValid())
-        return;
-    const Rendering::RenderGraph::RGResourceDesc& resolveDesc = frame.Graph().ResourceDesc(resolve.Id);
-    if (resolveDesc.SampleCount != 1)
-        return;
-    Rendering::TextureDesc td{};
-    td.width = resolveDesc.Width;
-    td.height = resolveDesc.Height;
-    td.depth = 1;
-    td.mipLevels = 1;
-    td.arrayLayers = 1;
-    td.sampleCount = 1;
-    // The scene color's format: the delta is signed and has the HDR range of the samples.
-    td.format = resolveDesc.Format;
-    td.usage = static_cast<uint32_t>(Rendering::TextureUsage::RenderTarget) |
-               static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource);
-    const std::string name = "Pipeline.View" + std::to_string(static_cast<uint32_t>(viewId)) + ".BloomSampleDelta";
-    td.debugName = name.c_str();
-    // Pool-persistent: a FullscreenShader input binds its physical at declaration, before a transient exists.
-    const Rendering::RenderGraph::RGTexture delta = frame.ImportPersistentTexture(name.c_str(), td);
-    if (!delta.IsValid())
-        return;
-    m_FrameResources.Textures[{viewId, Names::View::BloomSampleDelta}] = delta;
-    m_FrameResources.PreExposedTextures[delta.Id] = viewId;
 }
 
 Rendering::RenderGraph::RGTexture RenderPipelineInstance::MaterializeTexture(
@@ -1970,11 +2000,7 @@ Rendering::RenderGraph::RGTexture RenderPipelineInstance::MaterializeTexture(
 
     const Rendering::RenderGraph::RGTexture t = frame.ImportPersistentTexture(poolName.c_str(), td);
     if (t.IsValid())
-    {
         m_FrameResources.Textures[{scopeView, name}] = t;
-        if (resource->PreExposed && perView)
-            m_FrameResources.PreExposedTextures[t.Id] = viewId;
-    }
     return t;
 }
 
@@ -2114,18 +2140,8 @@ PipelineBufferBindingRG RenderPipelineInstance::MaterializeBuffer(Rendering::Ren
         perView ? ("Pipeline." + m_Blueprint.pipelineName + ".View" +
                    std::to_string(static_cast<uint32_t>(viewId)) + "." + name)
                 : ("Pipeline." + m_Blueprint.pipelineName + "." + name);
-
-    // perFrameCopies: a small history buffer one queue writes and another reads, kept as one copy
-    // per frame in flight, so a frame's write never waits for an earlier frame's reads.
-    if (jr.contains("perFrameCopies") && jr["perFrameCopies"].is_boolean() && jr["perFrameCopies"].get<bool>())
-    {
-        const PipelineBufferBindingRG binding = MaterializeBufferCopies(frame, name, poolName, bd);
-        if (binding.IsValid())
-            m_FrameResources.Buffers[{scopeView, name}] = binding;
-        return binding;
-    }
-
     bd.debugName = poolName.c_str();
+
     bool needsZeroInit = false;
     const Rendering::RenderGraph::RGBuffer b =
         frame.ImportPersistentBuffer(poolName.c_str(), bd, &needsZeroInit);
@@ -2140,94 +2156,6 @@ PipelineBufferBindingRG RenderPipelineInstance::MaterializeBuffer(Rendering::Ren
     binding.Graph = b;
     m_FrameResources.Buffers[{scopeView, name}] = binding;
     return binding;
-}
-
-PipelineBufferBindingRG RenderPipelineInstance::MaterializeBufferCopies(Rendering::RenderGraph::RGFrame& frame,
-                                                                        const std::string& name,
-                                                                        const std::string& poolName,
-                                                                        Rendering::BufferDesc desc)
-{
-    // The copy this frame writes was last used CopyCount frames of this view ago. The device
-    // has finished that frame before this one records (IDevice::BeginFrame waits for it), so the
-    // render graph's cross-frame ordering finds that work complete and adds no wait.
-    BufferCopiesState& state = m_BufferCopies.GetOrInsert(poolName);
-    if (state.CarryPassName.empty())
-    {
-        state.CopyCount = frame.Device()->GetFrameRingDepth();
-        for (uint32_t copy = 0; copy < state.CopyCount; ++copy)
-            state.CopyNames[copy] = poolName + ".Copy" + std::to_string(copy);
-        state.CarryPassName = "Carry." + name;
-        state.ZeroInitPassName = "ZeroInit." + name;
-    }
-    if (!state.HasFrame || state.Frame != frame.FrameIndex())
-    {
-        // Rotate once per frame; a frame declared again keeps its copies.
-        state.Previous = state.Current;
-        state.HasPrevious = state.HasFrame;
-        state.Current = state.HasFrame ? (state.Current + 1u) % state.CopyCount : 0u;
-        state.Frame = frame.FrameIndex();
-        state.HasFrame = true;
-    }
-
-    desc.usage |= static_cast<uint32_t>(Rendering::BufferUsage::TransferSrc) |
-                  static_cast<uint32_t>(Rendering::BufferUsage::TransferDst);
-    const std::string& currentName = state.CopyNames[state.Current];
-    desc.debugName = currentName.c_str();
-    bool currentFresh = false;
-    const Rendering::RenderGraph::RGBuffer current =
-        frame.ImportPersistentBuffer(currentName.c_str(), desc, &currentFresh);
-    if (!current.IsValid())
-        return {};
-
-    // The frame starts from the previous frame's contents. A copy that holds none (the first frame,
-    // a device rebuild, an evicted copy) starts at zero, as a zeroOnCreate buffer does.
-    Rendering::RenderGraph::RGBuffer previous{};
-    if (state.HasPrevious)
-    {
-        const std::string& previousName = state.CopyNames[state.Previous];
-        desc.debugName = previousName.c_str();
-        bool previousFresh = false;
-        previous = frame.ImportPersistentBuffer(previousName.c_str(), desc, &previousFresh);
-        if (previousFresh)
-            previous = {};
-    }
-    // A fresh copy is zero-filled even when the carry overwrites it: only a fill clears the pool's
-    // fresh mark, and the carry skips a previous copy that is still marked fresh.
-    if (currentFresh || !previous.IsValid())
-        frame.AddBufferZeroInit(current, state.ZeroInitPassName.c_str());
-    if (previous.IsValid())
-        DeclareBufferCarry(frame, previous, current, desc.size, state.CarryPassName.c_str());
-
-    PipelineBufferBindingRG binding{};
-    binding.Buffer = frame.PhysicalBuffer(current);
-    binding.Offset = 0;
-    binding.Size = desc.size;
-    binding.Graph = current;
-    return binding;
-}
-
-void RenderPipelineInstance::DeclareBufferCarry(Rendering::RenderGraph::RGFrame& frame,
-                                                Rendering::RenderGraph::RGBuffer previous,
-                                                Rendering::RenderGraph::RGBuffer current, size_t sizeBytes,
-                                                const char* passName)
-{
-    // On the compute queue, where the shipped first writer of such a history (the pre-exposure
-    // snapshot) runs. A carry on the graphics queue would run after the previous frame's graphics
-    // work and make that writer wait for it.
-    frame.AddComputePass(
-        passName, Rendering::PassPhase::kEarlySetup,
-        [&](Rendering::RenderGraph::RGPassBuilder& p)
-        {
-            p.Read(previous, Rendering::RenderGraph::RGBufferRead::CopySrc);
-            p.Write(current, Rendering::RenderGraph::RGBufferWrite::CopyDst);
-        },
-        [previous, current, sizeBytes](Rendering::RenderGraph::RGContext& ctx)
-        {
-            const Rendering::BufferHandle src = ctx.GetBuffer(previous);
-            const Rendering::BufferHandle dst = ctx.GetBuffer(current);
-            if (ctx.Cmd != nullptr && src.IsValid() && dst.IsValid())
-                ctx.Cmd->CopyBuffer(src, dst, sizeBytes);
-        });
 }
 
 Rendering::RenderGraph::RGTexture RenderPipelineInstance::GetOutputRG(Rendering::ViewId viewId,
@@ -2248,6 +2176,13 @@ RenderPipelineInstance::FrameResourcesFor(const Rendering::RenderGraph::RGFrame*
             m_FrameResources.FrameIndex == frame->FrameIndex())
                ? &m_FrameResources
                : nullptr;
+}
+
+Rendering::RenderGraph::RGTexture ViewDeclare::FindPublishedViewTexture(Rendering::ViewId view, const std::string& ref) const
+{
+    if (!m_Instance || !m_Instance->FrameResourcesFor(&Frame))
+        return {};
+    return m_Instance->TableTexture(view, ref);
 }
 
 Rendering::RenderGraph::RGTexture ViewDeclare::ResolveTexture(const std::string& ref) const
@@ -2281,20 +2216,6 @@ void ViewDeclare::PublishTexture(const std::string& name, Rendering::RenderGraph
 {
     if (m_Instance)
         m_Instance->m_FrameResources.Textures[{View.id, name}] = t;
-}
-
-void ViewDeclare::MarkPreExposed(Rendering::RenderGraph::RGTexture t)
-{
-    if (m_Instance && t.IsValid())
-        m_Instance->m_FrameResources.PreExposedTextures[t.Id] = View.id;
-}
-
-bool ViewDeclare::IsPreExposed(Rendering::RenderGraph::RGTexture t) const
-{
-    if (!m_Instance || !t.IsValid())
-        return false;
-    const auto it = m_Instance->m_FrameResources.PreExposedTextures.find(t.Id);
-    return it != m_Instance->m_FrameResources.PreExposedTextures.end() && it->second == View.id;
 }
 
 void ViewDeclare::PublishBuffer(const std::string& name, const PipelineBufferBindingRG& b)
@@ -2332,7 +2253,7 @@ const std::string& RenderPipelineInstance::ResolveSuffixedPassName(
     // Hash the suffix to a 16-bit key. Known suffixes are compile-time literals
     // (e.g. "Upload", "Cascade0"), so collision risk is negligible.
     const size_t len = std::strlen(suffix);
-    const uint16_t suffixHash = static_cast<uint16_t>(Fnv1a64(suffix, len) & 0xFFFF);
+    const uint16_t suffixHash = static_cast<uint16_t>(Hashing::Fnv1a64(suffix, len) & 0xFFFF);
     const uint64_t key = MakePassNameKey(nodeIdx, viewId, suffixHash);
 
     auto [it, inserted] = m_PassNameCache.try_emplace(key);

@@ -1,13 +1,14 @@
 #include "Scene/SceneEngineEmbedMaterializer.h"
+#include "Scene/SceneValue.h"
 
 #include "Assets/AssetManager.h"
 #include "Assets/MaterialAsset.h"
 #include "Logger/Logger.h"
+#include "Types/StringUtils.h"
 #include "Types/Types.h"
 
 #include <nlohmann/json.hpp>
 
-#include <cctype>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -16,19 +17,9 @@ namespace GameEngine::Scene
 {
 namespace
 {
-static std::string EmbedTrim(std::string s)
-{
-    auto isws = [](unsigned char c) { return std::isspace(c) != 0; };
-    while (!s.empty() && isws((unsigned char)s.front()))
-        s.erase(s.begin());
-    while (!s.empty() && isws((unsigned char)s.back()))
-        s.pop_back();
-    return s;
-}
-
 static std::string StripSceneQuoted(std::string s)
 {
-    s = EmbedTrim(std::move(s));
+    s = std::string(TrimSceneWhitespace(std::move(s)));
     // @"path"
     if (s.size() >= 3 && s[0] == '@' && s[1] == '"' && s.back() == '"')
         return s.substr(2, s.size() - 3);
@@ -41,10 +32,10 @@ static std::string StripSceneQuoted(std::string s)
 static bool TryParseFloatArrayParenSyntax(const std::string& s, std::vector<float>& out)
 {
     out.clear();
-    std::string t = EmbedTrim(s);
+    std::string t = std::string(TrimSceneWhitespace(s));
     if (t.size() < 2 || t.front() != '(' || t.back() != ')')
         return false;
-    t = EmbedTrim(t.substr(1, t.size() - 2));
+    t = std::string(TrimSceneWhitespace(t.substr(1, t.size() - 2)));
     if (t.empty())
         return false;
     std::vector<float> vals;
@@ -53,7 +44,7 @@ static bool TryParseFloatArrayParenSyntax(const std::string& s, std::vector<floa
     {
         if (ch == ',')
         {
-            cur = EmbedTrim(cur);
+            cur = std::string(TrimSceneWhitespace(cur));
             if (!cur.empty())
             {
                 try
@@ -70,7 +61,7 @@ static bool TryParseFloatArrayParenSyntax(const std::string& s, std::vector<floa
         }
         cur.push_back(ch);
     }
-    cur = EmbedTrim(cur);
+    cur = std::string(TrimSceneWhitespace(cur));
     if (!cur.empty())
     {
         try
@@ -90,9 +81,7 @@ static bool TryParseFloatArrayParenSyntax(const std::string& s, std::vector<floa
 
 static bool TryParseBool(const std::string& s, bool& out)
 {
-    std::string t = EmbedTrim(s);
-    for (auto& c : t)
-        c = (char)std::tolower((unsigned char)c);
+    const std::string t = ToLowerAscii(TrimSceneWhitespace(s));
     if (t == "true")
     {
         out = true;
@@ -146,9 +135,7 @@ bool SceneEngineEmbedMaterializer::Materialize(const std::filesystem::path& owni
     {
         const std::string key = kv.first;
         const std::string raw = kv.second;
-        std::string kLower = key;
-        for (auto& c : kLower)
-            c = (char)std::tolower((unsigned char)c);
+        const std::string kLower = ToLowerAscii(key);
 
         // Top-level known fields.
         if (kLower == "shaderdesc" || kLower == "shader_desc")
@@ -191,7 +178,7 @@ bool SceneEngineEmbedMaterializer::Materialize(const std::filesystem::path& owni
         // Try numeric (prefer float).
         try
         {
-            float f = std::stof(EmbedTrim(raw));
+            float f = std::stof(std::string(TrimSceneWhitespace(raw)));
             propsJson[key] = f;
             continue;
         }

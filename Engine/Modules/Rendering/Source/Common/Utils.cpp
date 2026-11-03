@@ -2,10 +2,15 @@
 #include "Rendering/Core/Device.h"
 
 #include "Logger/Logger.h"
+#include "Types/Fnv1a.h"
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstdarg>
 #include <fstream>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 
@@ -44,6 +49,43 @@ void SetShaderPathResolver(ShaderPathResolverFunc resolver)
 bool HasShaderPathResolver()
 {
     return g_shaderPathResolver != nullptr;
+}
+
+std::string FormatString(const char* format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    int n = vsnprintf(nullptr, 0, format, args);
+    va_end(args);
+    if (n <= 0)
+        return {};
+    std::vector<char> buf(static_cast<size_t>(n) + 1);
+    va_start(args, format);
+    vsnprintf(buf.data(), buf.size(), format, args);
+    va_end(args);
+    return std::string(buf.data(), static_cast<size_t>(n));
+}
+
+std::vector<std::string> SplitString(const std::string& str, char delimiter)
+{
+    std::vector<std::string> tokens;
+    std::stringstream ss(str);
+    std::string token;
+
+    while (std::getline(ss, token, delimiter))
+    {
+        tokens.push_back(token);
+    }
+
+    return tokens;
+}
+
+std::string ToUpper(const std::string& str)
+{
+    std::string result = str;
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c)
+                   { return static_cast<char>(::toupper(c)); });
+    return result;
 }
 
 bool FileExists(const std::string& path) noexcept
@@ -189,19 +231,13 @@ size_t HashString(const std::string& str) noexcept
 
 size_t HashBytes(const void* data, size_t size) noexcept
 {
-    const uint8_t* b = static_cast<const uint8_t*>(data);
     if constexpr (sizeof(size_t) == 8)
     {
-        size_t h = 14695981039346656037ull;
-        for (size_t i = 0; i < size; ++i)
-        {
-            h ^= b[i];
-            h *= 1099511628211ull;
-        }
-        return h;
+        return static_cast<size_t>(Hashing::Fnv1a64(data, size));
     }
     else
     {
+        const uint8_t* b = static_cast<const uint8_t*>(data);
         size_t h = 2166136261u;
         for (size_t i = 0; i < size; ++i)
         {

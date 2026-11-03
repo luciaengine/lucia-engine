@@ -1,11 +1,9 @@
 #include "WebWgslCook.h"
 
-#include "CookWorkers.h"
 #include "Engine/Build/CancellableShellProcess.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
-#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -122,28 +120,6 @@ bool CookWebWgslIntoPackage(const WebWgslCookRequest& request, std::string& outE
     wgslBytes["fs"] = std::move(fragmentWgsl);
     return Rendering::SaveShaderPkg(request.PackagePath, pkg.meta, pkg.stageBytes,
                                     pkg.cacheInfoJson, &outError, wgslBytes);
-}
-
-namespace
-{
-// One request of a batch: its error, empty when it cooked. A cooked request's scratch is removed.
-std::string CookBatchRequest(const WebWgslCookRequest& request)
-{
-    std::string error;
-    if (!CookWebWgslIntoPackage(request, error))
-        return error.empty() ? std::string("WGSL cook failed") : error;
-    std::error_code ec;
-    fs::remove_all(request.ScratchDir, ec);
-    return {};
-}
-} // namespace
-
-std::vector<std::string> CookWebWgslBatch(const std::vector<WebWgslCookRequest>& requests, size_t jobs)
-{
-    std::vector<std::string> errors(requests.size());
-    RunOnCookWorkers(requests.size(), jobs,
-                     [&](size_t index) { errors[index] = CookBatchRequest(requests[index]); });
-    return errors;
 }
 
 } // namespace GameEngine::Tools

@@ -85,7 +85,6 @@ LiveMemberIndex BuildLiveIndex(GameEngine::ECS::World& world, const ModelResolve
             state.Resolved.Transform[k] = m.WorldMatrix[k];
         state.Resolved.ChosenLod = m.ChosenLod;
         state.Resolved.CastsShadow = m.CastsShadow ? 1u : 0u;
-        state.Resolved.RenderLayers = m.RenderLayers;
         live.emplace(m.StableId, state);
     }
     return live;
@@ -146,13 +145,6 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
             cacheFile.string());
         return 0u;
     }
-    if (status == HlodCacheStatus::FormatMismatch) {
-        Logger::Log::Warning(
-            "Hlod: '{}' was baked in an older .gehlod format and is not read; members render "
-            "directly. Re-run Bake HLOD to restore proxies.",
-            cacheFile.string());
-        return 0u;
-    }
     if (status != HlodCacheStatus::Hit || baked.Clusters.empty())
         return 0u;
 
@@ -173,7 +165,9 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
         cluster.Members = rc.Members;
         cluster.Stale = rc.Stale;
 
-        // Capture the C3 staleness baseline.
+        // Capture the C3 staleness baseline + a member render-layer mask to give
+        // the proxy the same layer the members drew on.
+        uint32 memberLayerMask = 1u;
         cluster.MemberTransformVersion.reserve(rc.Members.size());
         cluster.MemberMeshHandleId.reserve(rc.Members.size());
         cluster.MemberMaterialGuid.reserve(rc.Members.size());
@@ -183,6 +177,8 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
             cluster.MemberTransformVersion.push_back(wt ? wt->Version : 0u);
             cluster.MemberMeshHandleId.push_back(mr ? mr->meshGpuHandleId : 0u);
             cluster.MemberMaterialGuid.push_back(mr ? mr->materialAssetGuid.ToGuid() : GUID::Null());
+            if (mr)
+                memberLayerMask = mr->renderLayerMask;
         }
 
         // A stale cluster stays members-only (no proxy spawned); the members drive
@@ -213,8 +209,8 @@ uint32 HlodRuntime::ReconcileScene(GameEngine::ECS::World& world,
                 Components::MeshRenderer mr{};
                 mr.meshGpuHandleId = static_cast<uint64>(handle);
                 mr.materialAssetGuid.Set(sub.MaterialGuid);
-                mr.RenderLayers = bc.RenderLayers; // the bake keeps one layer set per cluster
-                mr.shadowCasting = Components::ShadowCasting::On;
+                mr.renderLayerMask = memberLayerMask;
+                mr.castShadows = true;
                 mr.receiveShadows = true;
                 mr.motionVectors = false; // immobile proxy: no motion vectors
                 proxy.Set(mr);

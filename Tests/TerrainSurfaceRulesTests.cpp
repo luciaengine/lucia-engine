@@ -26,7 +26,7 @@
 #include "TerrainECS/TerrainModifierComponents.h"
 #include "TerrainECS/TerrainModifierSystem.h"
 #include "TerrainECS/TerrainService.h"
-#include "TerrainECS/TerrainSurface/TerrainSurfaceRuleEval.h"
+#include "TerrainECS/TerrainSurfaceRuleEval.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 
 #include "Logger/CallbackSink.h"
@@ -244,7 +244,7 @@ class ScopedLogCapture
     ScopedLogCapture()
     {
         Logger::Log::Initialize({Logger::LogLevel::Info, false});
-        auto sink = std::make_unique<Logger::CallbackSink>();
+        auto sink = Logger::MakeUnique<Logger::CallbackSink>();
         m_Sink = sink.get();
         Logger::Log::AddSink(std::move(sink));
         m_CallbackId = m_Sink->RegisterCallback([this](const Logger::LogMessage& message) {

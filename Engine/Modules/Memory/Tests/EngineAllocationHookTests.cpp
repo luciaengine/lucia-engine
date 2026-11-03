@@ -33,6 +33,9 @@ const char* volatile g_StringSink = nullptr;
 // Windows, reads 0 against an Engine.dll without the hook.
 TEST(EngineAllocationHookTests, AnAllocationInsideEngineIsCountedByTheTestProcess)
 {
+#if !GE_DEBUG_INSTRUMENTATION
+    GTEST_SKIP() << "Release Engine is not allocation-instrumented";
+#endif
     constexpr int kCalls = 16;
     const std::size_t sourceLength = GameEngine::Rendering::MakeSurfaceShaderTemplateSource().size();
     ASSERT_GT(sourceLength, sizeof(std::string)) << "the source must not fit the small-string buffer";

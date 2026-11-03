@@ -20,14 +20,14 @@ UIElement* GetMainRoot(UIManager* mainUi)
 DockspaceElement* GetDockspace(UIManager* mainUi)
 {
     UIElement* root = GetMainRoot(mainUi);
-    return root ? dynamic_cast<DockspaceElement*>(root->FindById("dock"_sid)) : nullptr;
+    return root ? dynamic_cast<DockspaceElement*>(root->FindById("dock")) : nullptr;
 }
 
 LayoutPresetToolbar* GetToolbar(UIManager* mainUi)
 {
     UIElement* root = GetMainRoot(mainUi);
     return root
-               ? dynamic_cast<LayoutPresetToolbar*>(root->FindById("LayoutButtonContainer"_sid))
+               ? dynamic_cast<LayoutPresetToolbar*>(root->FindById("LayoutButtonContainer"))
                : nullptr;
 }
 } // namespace
@@ -38,7 +38,7 @@ bool LayoutPresetController::Apply(DockingManager& docking,
                                    bool rebuildDockspace)
 {
     DockLayoutController layoutController(docking);
-    if (!layoutController.ApplyForRegisteredPanels(preset, {}))
+    if (!layoutController.ApplyForRegisteredPanels(preset))
         return false;
 
     if (rebuildDockspace)
@@ -53,10 +53,11 @@ bool LayoutPresetController::IsCurrentLayoutDirty(DockingManager& docking,
                                                   UIManager* mainUi,
                                                   const DockNode* preset)
 {
-    SyncSplitRatios(mainUi);
+    if (auto* dockspace = GetDockspace(mainUi))
+        dockspace->SyncSplitRatiosFromUI();
 
     DockLayoutController layoutController(docking);
-    auto sanitized = layoutController.CloneForRegisteredPanels(preset, {});
+    auto sanitized = layoutController.CloneForRegisteredPanels(preset);
     return DockNodeToJson(docking.GetRoot()) != DockNodeToJson(sanitized.get());
 }
 
@@ -64,12 +65,6 @@ void LayoutPresetController::SetActiveToolbarIndex(UIManager* mainUi, int active
 {
     if (auto* toolbar = GetToolbar(mainUi))
         toolbar->SetActiveIndex(activeIndex);
-}
-
-void LayoutPresetController::SyncSplitRatios(UIManager* mainUi)
-{
-    if (auto* dockspace = GetDockspace(mainUi))
-        dockspace->SyncSplitRatiosFromUI();
 }
 
 } // namespace GameEngine::Editor

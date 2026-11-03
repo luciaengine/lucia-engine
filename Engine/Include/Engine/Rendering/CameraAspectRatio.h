@@ -1,8 +1,9 @@
 #pragma once
 
 #include "Components/Rendering/Camera.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Types/Types.h"
+#include "Mathematics/Rect.h"
 
 #include <string>
 
@@ -56,6 +57,15 @@ struct PixelPerfectViewState
     // Sub-pixel camera remainder in source texels, range [-0.5, 0.5] per axis.
     float FracX = 0.0f;
     float FracY = 0.0f;
+    // Texel size in world units (1 / pixels-per-unit): the grid the snapped
+    // camera sits on, and the grid a sprite has to sit on to stay crisp.
+    float WorldUnitsPerTexel = 0.0f;
+    // The viewport this state was computed against — the extent the upscale
+    // writes, letterbox bars included. This is the pipeline's OUTPUT extent for
+    // the view: the render half rasters at PaddedWidth/Height and everything
+    // past the crossing (bloom, tonemap, the LDR display effects) runs here.
+    uint32 DisplayWidth = 0;
+    uint32 DisplayHeight = 0;
 };
 
 float GetCameraAspectPresetRatio(CameraAspectPreset preset);
@@ -80,6 +90,10 @@ PixelPerfectViewState ComputePixelPerfectViewState(const Components::Camera& cam
 ViewLetterbox ComputeLetterboxRect(uint32_t viewportWidth,
                                  uint32_t viewportHeight,
                                  float targetAspect);
+
+// Camera rectangle in render-target UV; inactive or degenerate inputs use the whole target.
+Mathematics::Rect ComputeViewportRect(const ViewLetterbox& letterbox,
+                                      uint32_t targetWidth, uint32_t targetHeight);
 
 class RenderServices;
 

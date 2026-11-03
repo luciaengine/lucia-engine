@@ -17,6 +17,7 @@ namespace
 // The uncolored icon tint, rgba(200,200,200) in views.css: colored icons change hue and saturation,
 // not perceived brightness.
 constexpr float kColoredIconBrightness = 200.0f / 255.0f;
+constexpr uint32_t kNeutralIconTint = 0xFFC8C8C8u;
 
 uint32_t UnitToByte(float value)
 {
@@ -49,18 +50,17 @@ void ApplyHierarchyLightIconTint(ECS::World& world, ECS::EntityHandle entity, UI
 {
     if (!ColoredIconsOn(icon))
     {
-        icon.Style().Reset(Style::BackgroundTint);
-        icon.Style().Reset(Style::BackgroundImageSaturation);
+        icon.Overrides().Reset(Style::BackgroundTint);
+        icon.Overrides().Reset(Style::BackgroundImageSaturation);
         icon.MarkDirty(UIElement::VisualDirty);
         return;
     }
 
-    icon.Style().Set(Style::BackgroundImageSaturation, 1.0f);
+    icon.Overrides().Set(Style::BackgroundImageSaturation, 1.0f);
     const auto* light = world.GetComponent<Components::Light>(entity);
     if (!light)
     {
-        // The stylesheet tints every other glyph: neutral, or the color its row class sets.
-        icon.Style().Reset(Style::BackgroundTint);
+        icon.Overrides().Set(Style::BackgroundTint, kNeutralIconTint);
         icon.MarkDirty(UIElement::VisualDirty);
         return;
     }
@@ -68,7 +68,7 @@ void ApplyHierarchyLightIconTint(ECS::World& world, ECS::EntityHandle entity, UI
     const uint32_t r = UnitToByte(light->Color[0] * kColoredIconBrightness);
     const uint32_t g = UnitToByte(light->Color[1] * kColoredIconBrightness);
     const uint32_t b = UnitToByte(light->Color[2] * kColoredIconBrightness);
-    icon.Style().Set(Style::BackgroundTint, (0xFFu << 24) | (r << 16) | (g << 8) | b);
+    icon.Overrides().Set(Style::BackgroundTint, (0xFFu << 24) | (r << 16) | (g << 8) | b);
     icon.MarkDirty(UIElement::VisualDirty);
 }
 

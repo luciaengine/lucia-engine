@@ -1,16 +1,15 @@
 #include "AssetCore/AssetTypes.h"
+#include "Types/StringUtils.h"
 #include <algorithm>
 #include <unordered_map>
-#include <cctype>
 
 namespace GameEngine {
 
 namespace
 {
-static String NormalizeExtensionLower(String ext)
+static String NormalizeExtensionLower(std::string_view extension)
 {
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return static_cast<char>(::tolower(c)); });
+    String ext = ToLowerAscii(extension);
 
     if (!ext.empty() && ext[0] != '.')
     {
@@ -23,6 +22,8 @@ static String NormalizeExtensionLower(String ext)
 static const std::unordered_map<String, AssetType>& GetExtensionMap()
 {
     static const std::unordered_map<String, AssetType> extensionMap = {
+        {".localization", AssetType::Localization},
+
         // Texture formats
         {".png", AssetType::Texture},
         {".svg", AssetType::Texture},
@@ -30,7 +31,6 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         {".jpeg", AssetType::Texture},
         {".bmp", AssetType::Texture},
         {".tga", AssetType::Texture},
-        {".dds", AssetType::Texture},
         {".hdr", AssetType::Texture},
         {".exr", AssetType::Texture},
         {".ktx", AssetType::Texture},
@@ -68,8 +68,7 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
 
         // Scene formats
         {".scene", AssetType::Scene},
-        {".unity", AssetType::Scene},
-        {".prefab", AssetType::Prefab},
+        {".blueprint", AssetType::Scene},
 
         // Material formats
         {".mat", AssetType::Material},
@@ -84,7 +83,6 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         {".geom", AssetType::Shader},
         {".comp", AssetType::Shader},
         {".shader", AssetType::Shader},
-        {".slang", AssetType::Shader}, // Slang module: an edit is announced like a GLSL include
 
         // Render pipeline / render graph formats
         {".rendergraph", AssetType::RenderPipeline},
@@ -104,6 +102,9 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         {".animcontroller", AssetType::AnimationController},
         {".animationcontroller", AssetType::AnimationController},
         {".spriteframes", AssetType::SpriteFrames},
+        {".tileset", AssetType::TileSet},
+        {".tilemap", AssetType::TileMap},
+        {".physmat", AssetType::PhysicsMaterial},
         {".timeline", AssetType::Timeline},
         {".animgraph", AssetType::AnimationGraph},
         {".clipset",  AssetType::ClipSet},
@@ -135,7 +136,7 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
 
         // Navigation formats
         {".navgrid", AssetType::NavigationGrid},
-        {".navsurface", AssetType::NavigationSurfaceData},
+        {".navmesh", AssetType::NavigationMesh},
 
         // Terrain heightmap raw formats (16-bit PNG heightmaps stay Texture)
         {".r16", AssetType::TerrainHeightmap},
@@ -167,9 +168,6 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         {".profile.json", AssetType::SkeletonProfile},
         {".humanoidrig.json", AssetType::HumanoidRig},
         {".retargetmap.json", AssetType::RetargetMap},
-
-        // Day Cycle profiles: tracks over the sun's elevation
-        {".daycycle.json", AssetType::DayCycleProfile},
 
         // Animation clip sidecars (Phase B3 .blend Action extraction)
         {".anim.json", AssetType::Animation},
@@ -236,9 +234,7 @@ String GetCompoundExtensionFromPath(const String& path) {
     if (filename.empty()) return {};
 
     // Lowercase for case-insensitive map lookup.
-    String lowerName = filename;
-    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
-                   [](unsigned char c) { return static_cast<char>(::tolower(c)); });
+    const String lowerName = ToLowerAscii(filename);
 
     const auto& extensionMap = GetExtensionMap();
 
@@ -260,15 +256,6 @@ String GetCompoundExtensionFromPath(const String& path) {
     size_t lastDot = lowerName.find_last_of('.');
     if (lastDot == String::npos) return {};
     return lowerName.substr(lastDot);
-}
-
-String GetAssetNameFromPath(const String& path) {
-    const size_t lastSlash = path.find_last_of("/\\");
-    const String filename = (lastSlash == String::npos) ? path : path.substr(lastSlash + 1);
-    const String extension = GetCompoundExtensionFromPath(filename);
-    if (extension.size() >= filename.size())
-        return filename;
-    return filename.substr(0, filename.size() - extension.size());
 }
 
 String AssetStateToString(AssetState state) {
@@ -296,7 +283,6 @@ bool IsTextBasedAssetType(AssetType type) {
         case AssetType::Script:
         case AssetType::CubeLut:
         case AssetType::Scene:
-        case AssetType::Prefab:
         case AssetType::Material:
         case AssetType::Shader:
         case AssetType::RenderPipeline:
@@ -307,9 +293,13 @@ bool IsTextBasedAssetType(AssetType type) {
         case AssetType::AnimationLibrary:
         case AssetType::AnimationController:
         case AssetType::SpriteFrames:
+        case AssetType::TileSet:
+        case AssetType::TileMap:
+        case AssetType::PhysicsMaterial:
         case AssetType::Timeline:
         case AssetType::AnimationGraph:
         case AssetType::ClipSet:
+        case AssetType::NavigationMesh:
         case AssetType::OceanWaveSpectrum:
         case AssetType::OceanSettings:
         case AssetType::OceanPreset:
@@ -321,7 +311,6 @@ bool IsTextBasedAssetType(AssetType type) {
         case AssetType::LensFlareDefinition:
         case AssetType::TerrainMaterialLibrary:
         case AssetType::ParticleStack:
-        case AssetType::DayCycleProfile:
             return true;
         default:
             return false;

@@ -3,10 +3,10 @@
 #include "Components/Rendering/Camera.h"
 #include "ECS/Entity.h"
 #include "Mathematics/Matrix4x4.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 
 #include <optional>
-#include "Rendering/Camera/CameraDerivation.h"
+#include "Rendering/CameraDerivation.h"
 
 // Explicit imports from the Rendering module (CodingStyle: no namespace-scope using-directives in headers).
 namespace GameEngine::Engine::Renderer
@@ -53,12 +53,5 @@ struct Camera
 ///
 /// Future: support priority/tag-based camera selection (e.g., MainCamera component).
 std::optional<Camera> FindActiveCamera(ECS::World& world);
-
-class ViewRegistry;
-
-/// Declares a game view for this frame once its world's active camera is resolved: the view draws the
-/// camera's Visible Layers and is armed for the frame. With no camera nothing is armed, so an on-demand
-/// view sleeps: its effective layers are None, and no extraction, culling or pass reads it.
-void DeclareGameCameraView(ViewRegistry& views, Rendering::ViewId view, const Camera* activeCamera);
 
 } // namespace GameEngine::Engine::Renderer

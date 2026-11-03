@@ -24,6 +24,18 @@ std::string_view Canonical(const std::string& value, std::span<const std::string
     return {};
 }
 
+std::string AcceptedList(std::span<const std::string_view> accepted)
+{
+    std::string list;
+    for (std::size_t i = 0; i < accepted.size(); ++i)
+    {
+        if (i != 0)
+            list += ", ";
+        list += accepted[i];
+    }
+    return list;
+}
+
 // Reads one canonical-name parameter. Omitted, null and empty all mean "no filter";
 // anything else the names don't cover fails with a message stating what would work.
 // A wrong TYPE has to fail too: skipping it would widen the answer back to the whole
@@ -38,7 +50,7 @@ bool ReadNameParam(const nlohmann::json& params, const char* key,
     if (!it->is_string())
     {
         error = std::string("Parameter '") + key + "' must be a string naming one of: " +
-                Join(accepted, ", ") + " - or be omitted to list every resource.";
+                AcceptedList(accepted) + " - or be omitted to list every resource.";
         return false;
     }
 
@@ -50,7 +62,7 @@ bool ReadNameParam(const nlohmann::json& params, const char* key,
     if (out.empty())
     {
         error = std::string("Unknown '") + key + "' value '" + value + "'. Use one of: " +
-                Join(accepted, ", ") + " - or omit the parameter to list every resource.";
+                AcceptedList(accepted) + " - or omit the parameter to list every resource.";
         return false;
     }
     return true;

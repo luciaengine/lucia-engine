@@ -26,16 +26,16 @@ BlockingThreads::~BlockingThreads()
     assert(m_Threads.empty() && "JobSystem: blocking threads destroyed before Join");
 }
 
-UniquePtr<TaskBase> BlockingThreads::Push(ChannelJob job, Spawn spawnPolicy)
+UniquePtr<TaskBase> BlockingThreads::Push(UniquePtr<TaskBase> task, Spawn spawnPolicy)
 {
     bool spawn = false;
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
         if (m_Pool.IsShuttingDown())
         {
-            return std::move(job.Envelope);
+            return task;
         }
-        m_Queue.push_back(std::move(job));
+        m_Queue.push_back(std::move(task));
         // At least one thread whatever the demand: a channel destroyed while
         // its last job runs unregisters its cap, and that job's release can
         // still promote work it had queued.
@@ -88,26 +88,14 @@ void BlockingThreads::Join()
     }
 }
 
-void BlockingThreads::TakeQueued(Vector<ChannelJob>& out)
+void BlockingThreads::TakeQueued(Vector<UniquePtr<TaskBase>>& out)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
-    for (ChannelJob& job : m_Queue)
+    for (UniquePtr<TaskBase>& task : m_Queue)
     {
-        out.push_back(std::move(job));
+        out.push_back(std::move(task));
     }
     m_Queue.clear();
-}
-
-uint32 BlockingThreads::ThreadCount()
-{
-    std::lock_guard<std::mutex> lock(m_Mutex);
-    return static_cast<uint32>(m_Threads.size());
-}
-
-uint64 BlockingThreads::JobsRun()
-{
-    std::lock_guard<std::mutex> lock(m_Mutex);
-    return m_JobsRun;
 }
 
 void BlockingThreads::SpawnReservedThread()
@@ -151,7 +139,7 @@ void BlockingThreads::SpawnReservedThread()
 
 void BlockingThreads::ThreadLoop(size_t index)
 {
-    m_Pool.BindBlockingThread(index);
+    WorkStealingThreadPool::s_CurrentPool = &m_Pool;
 
     char threadName[32];
     std::snprintf(threadName, sizeof(threadName), "Job Blocking #%zu", index);
@@ -169,11 +157,10 @@ void BlockingThreads::ThreadLoop(size_t index)
         {
             return;
         }
-        ChannelJob job = std::move(m_Queue.front());
+        UniquePtr<TaskBase> task = std::move(m_Queue.front());
         m_Queue.pop_front();
-        ++m_JobsRun;
         lock.unlock();
-        m_Pool.ExecuteTaskOptimized(std::move(job.Envelope), WorkStealingThreadPool::ChannelContext(job.Channel));
+        m_Pool.ExecuteTaskOptimized(std::move(task));
         m_Pool.FlushPendingCleanupOnThisThread();
         lock.lock();
     }

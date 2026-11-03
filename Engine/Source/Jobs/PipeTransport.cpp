@@ -10,7 +10,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS)
+#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS) || defined(GE_PLATFORM_MOBILE)
 #include <chrono>
 #include <cstring>
 #include <errno.h>
@@ -41,7 +41,7 @@ static int GetEnvInt(const char* k, int defv)
     }
 }
 
-#if defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS)
+#if defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS) || defined(GE_PLATFORM_MOBILE)
 // Compute the base directory for Unix domain sockets, honoring GE_PIPE_PATH and
 // using XDG_RUNTIME_DIR (Linux) or TMPDIR (macOS) with sensible fallbacks.
 static std::string GetPipeBaseDirectory()
@@ -71,7 +71,7 @@ static std::string GetPipeBaseDirectory()
     base += std::to_string(static_cast<unsigned long long>(uid));
     base += "/compile_server";
     return base;
-#elif defined(PLATFORM_MACOS)
+#elif defined(PLATFORM_MACOS) || defined(GE_PLATFORM_MOBILE)
     // NOTE: macOS enforces a strict ~104 byte limit on Unix domain socket paths.
     // TMPDIR is often a very long per-user path (e.g. /var/folders/...) which,
     // when combined with our pipe name, can exceed this limit and cause the
@@ -89,7 +89,7 @@ PipeTransport::PipeTransport()
 #if defined(PLATFORM_WINDOWS)
     m_Handle = INVALID_HANDLE_VALUE;
     m_PipeName = L"\\\\.\\pipe\\GE_CompileServer_default";
-#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS)
+#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS) || defined(GE_PLATFORM_MOBILE)
     m_SocketFd = -1;
     m_PipeNameUtf8 = "GE_CompileServer_default";
     m_SocketPath.clear();
@@ -107,7 +107,7 @@ PipeTransport::PipeTransport(const std::string& pipeNameUtf8)
         m_PipeName = pipeName;
     else
         m_PipeName = L"\\\\.\\pipe\\" + pipeName;
-#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS)
+#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS) || defined(GE_PLATFORM_MOBILE)
     m_SocketFd = -1;
     m_PipeNameUtf8 = pipeNameUtf8;
     m_SocketPath.clear();
@@ -183,7 +183,7 @@ static bool ConnectWindowsImpl(void*& outHandle, const std::wstring& pipeName, i
         Logger::Log::Debug("[PipeTransport] Connect timeout (first error={})", (int)firstErr);
     return false;
 }
-#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS)
+#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS) || defined(GE_PLATFORM_MOBILE)
 static bool ConnectUnixImpl(int& outSocketFd,
                             std::string& inOutSocketPath,
                             const std::string& pipeNameUtf8,
@@ -268,7 +268,7 @@ bool PipeTransport::Connect()
     // Preserve legacy behavior: bounded retry loop with small waits.
     Close();
     return ConnectWindowsImpl(m_Handle, m_PipeName, kAttempts, kWaitMs, /*sleepMs=*/100, /*logOnTimeout=*/true);
-#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS)
+#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS) || defined(GE_PLATFORM_MOBILE)
     const int kAttempts = GetEnvInt("GE_PIPE_CONNECT_ATTEMPTS", 50);
     const int kWaitMs = GetEnvInt("GE_PIPE_WAIT_MS", 200);
     return ConnectUnixImpl(m_SocketFd, m_SocketPath, m_PipeNameUtf8, kAttempts, kWaitMs, /*logOnTimeout=*/true);
@@ -282,7 +282,7 @@ bool PipeTransport::TryConnectOnce(int waitMs)
 #if defined(PLATFORM_WINDOWS)
     Close();
     return ConnectWindowsImpl(m_Handle, m_PipeName, /*attempts=*/1, /*waitMs=*/waitMs, /*sleepMs=*/0, /*logOnTimeout=*/false);
-#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS)
+#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS) || defined(GE_PLATFORM_MOBILE)
     return ConnectUnixImpl(m_SocketFd, m_SocketPath, m_PipeNameUtf8, /*attempts=*/1, /*waitMs=*/std::max(0, waitMs), /*logOnTimeout=*/false);
 #else
     (void)waitMs;
@@ -367,7 +367,7 @@ bool PipeTransport::SendRequest(const std::string& requestJson, std::string& out
         Logger::Log::Warning("[PipeTransport] Empty response from server");
     }
     return !outResponse.empty();
-#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS)
+#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS) || defined(GE_PLATFORM_MOBILE)
     if (m_SocketFd < 0)
     {
         Logger::Log::Warning("[PipeTransport] SendRequest called with invalid socket");
@@ -433,7 +433,7 @@ void PipeTransport::Close()
         CloseHandle((HANDLE)m_Handle);
         m_Handle = INVALID_HANDLE_VALUE;
     }
-#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS)
+#elif defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS) || defined(GE_PLATFORM_MOBILE)
     if (m_SocketFd >= 0)
     {
         ::close(m_SocketFd);

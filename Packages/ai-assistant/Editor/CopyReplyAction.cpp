@@ -7,9 +7,9 @@
 
 namespace GameEngine
 {
-AgentReplyOutcome CopyReply(const ConversationMessage& reply, const ConversationMessage&)
+std::string CopyReply(const ConversationMessage& reply)
 {
     Platform::SetClipboardText(reply.Text.c_str());
-    return {CopyReplyFeedback(reply)};
+    return CopyReplyFeedback(reply);
 }
 } // namespace GameEngine

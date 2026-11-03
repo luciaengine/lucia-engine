@@ -13,6 +13,7 @@
 #include "UI/UIEvents.h"
 #include "UI/UIManager.h"
 #include "UIRgTestHarness.h"
+#include "TestTempDir.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -38,8 +39,7 @@ protected:
         m_Ui = std::make_unique<UIManager>(m_Dev);
         m_Ui->SetRoot(std::move(root));
 
-        m_CssDir = std::filesystem::temp_directory_path();
-        m_CssPath = m_CssDir / "transition_engine_test.css";
+        m_CssPath = m_CssDir.Path() / "transition_engine_test.css";
         {
             std::ofstream f(m_CssPath);
             f << css;
@@ -64,16 +64,14 @@ protected:
         m_Ui->OnMouseMove(-1000.0f, -1000.0f);
     }
 
-    UIElement* FindById(StringId id)
+    UIElement* FindById(const std::string& id)
     {
         return m_Ui->GetRootElement()->FindById(id);
     }
 
-    // First member: destroyed last, after this fixture's UIManager released its buffers.
-    SharedDeviceReleaseRetirement m_ReleaseRetirement;
+    const TestUtils::ScopedTempDir m_CssDir{TestUtils::MakeUniqueTempDirectory("transition_engine_test")};
     IDevice* m_Dev = nullptr;
     std::unique_ptr<UIManager> m_Ui;
-    std::filesystem::path m_CssDir;
     std::filesystem::path m_CssPath;
 };
 
@@ -95,7 +93,7 @@ TEST_F(TransitionEngineTest, OpacityTransitionReachesTarget)
     )";
     SetupUI(xml, css);
 
-    UIElement* box = FindById("box"_sid);
+    UIElement* box = FindById("box");
     ASSERT_NE(box, nullptr);
 
     EXPECT_NEAR(box->GetResolvedStyle().Visual.LocalOpacity, 1.0f, 0.01f);
@@ -132,7 +130,7 @@ TEST_F(TransitionEngineTest, IntermediateValuesAreInterpolated)
     )";
     SetupUI(xml, css);
 
-    UIElement* box = FindById("box"_sid);
+    UIElement* box = FindById("box");
     ASSERT_NE(box, nullptr);
 
     // Trigger hover.
@@ -171,7 +169,7 @@ TEST_F(TransitionEngineTest, PositionTopTransitionUpdatesCommittedGeometry)
     )";
     SetupUI(xml, css);
 
-    UIElement* card = FindById("card"_sid);
+    UIElement* card = FindById("card");
     ASSERT_NE(card, nullptr);
     EXPECT_NEAR(card->GetLayoutY(), 0.0f, 0.5f);
 
@@ -211,7 +209,7 @@ TEST_F(TransitionEngineTest, TransitionCompletesAndStopsUpdating)
     )";
     SetupUI(xml, css);
 
-    UIElement* box = FindById("box"_sid);
+    UIElement* box = FindById("box");
     ASSERT_NE(box, nullptr);
 
     HoverAt(10.0f, 10.0f);
@@ -251,7 +249,7 @@ TEST_F(TransitionEngineTest, RetargetOnUnhoverMidTransition)
     )";
     SetupUI(xml, css);
 
-    UIElement* box = FindById("box"_sid);
+    UIElement* box = FindById("box");
     ASSERT_NE(box, nullptr);
 
     HoverAt(10.0f, 10.0f);
@@ -297,7 +295,7 @@ TEST_F(TransitionEngineTest, ColorTransitionReachesTarget)
     )";
     SetupUI(xml, css);
 
-    UIElement* box = FindById("box"_sid);
+    UIElement* box = FindById("box");
     ASSERT_NE(box, nullptr);
 
     HoverAt(10.0f, 10.0f);
@@ -336,7 +334,7 @@ TEST_F(TransitionEngineTest, TransitionAllHandlesMultipleProperties)
     )";
     SetupUI(xml, css);
 
-    UIElement* box = FindById("box"_sid);
+    UIElement* box = FindById("box");
     ASSERT_NE(box, nullptr);
 
     HoverAt(10.0f, 10.0f);
@@ -371,7 +369,7 @@ TEST_F(TransitionEngineTest, DelayHoldsStartValueDuringDelay)
     )";
     SetupUI(xml, css);
 
-    UIElement* box = FindById("box"_sid);
+    UIElement* box = FindById("box");
     ASSERT_NE(box, nullptr);
 
     HoverAt(10.0f, 10.0f);
@@ -412,7 +410,7 @@ TEST_F(TransitionEngineTest, DiscreteDisplayTransitionDelaysNone)
     )";
     SetupUI(xml, css);
 
-    UIElement* box = FindById("box"_sid);
+    UIElement* box = FindById("box");
     ASSERT_NE(box, nullptr);
 
     EXPECT_EQ(box->GetResolvedStyle().Layout.DisplayMode, DisplayMode::Flex);
@@ -422,7 +420,7 @@ TEST_F(TransitionEngineTest, DiscreteDisplayTransitionDelaysNone)
     Tick(0.016f);
 
     // Set display:none via override — the delayed transition should hold flex.
-    box->Style().Set(Style::Display, DisplayMode::None);
+    box->Overrides().Set(Style::Display, DisplayMode::None);
     box->MarkDirty(UIElement::StyleDirty | UIElement::LayoutDirty);
     Tick(0.016f);
 
@@ -485,7 +483,7 @@ TEST_F(TransitionEngineTest, LineHeightTransitionAnimatesResolvedValue)
     )";
     SetupUI(xml, css);
 
-    UIElement* text = FindById("text"_sid);
+    UIElement* text = FindById("text");
     ASSERT_NE(text, nullptr);
     EXPECT_NEAR(text->GetResolvedStyle().Visual.LineHeight, 20.0f, 0.5f);
 
@@ -519,7 +517,7 @@ TEST_F(TransitionEngineTest, TransitionEndEventFires)
     )";
     SetupUI(xml, css);
 
-    UIElement* box = FindById("box"_sid);
+    UIElement* box = FindById("box");
     ASSERT_NE(box, nullptr);
 
     int transitionEndCount = 0;
@@ -543,8 +541,11 @@ TEST_F(TransitionEngineTest, TransitionEndEventFires)
 }
 
 // ---------------------------------------------------------------------------
-// A project picker library card: a high-z modal wrapper, a ScrollView and a Button card
-// with the hover rules of ProjectPicker.css (top lift and background). The hover animates.
+// Repro: project-picker main-page card. Mirrors the exact structure of the
+// recent/new/open cards in ProjectFolderPickerModal: a high-z modal wrapper,
+// a ScrollView, and a Button card whose hover styling (top lift + background)
+// comes from CSS rules copied from ProjectPicker.css. The template cards (no
+// ScrollView) animate; these must too.
 // ---------------------------------------------------------------------------
 
 TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesInsideModalScrollView)
@@ -607,8 +608,8 @@ TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesInsideModalScrollView)
     )";
     SetupUI(xml, css);
 
-    UIElement* card = FindById("card"_sid);
-    UIElement* preview = FindById("preview"_sid);
+    UIElement* card = FindById("card");
+    UIElement* preview = FindById("preview");
     ASSERT_NE(card, nullptr);
     ASSERT_NE(preview, nullptr);
     ASSERT_GT(card->GetLayoutWidth(), 0.0f);
@@ -639,8 +640,10 @@ TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesInsideModalScrollView)
         << "preview should follow the descendant hover rule";
 }
 
-// The same card with inline frame overrides. An inline override takes precedence over CSS;
-// the :hover restyle and its transition still run.
+// Same repro but with the editor's exact inline overrides applied to the card
+// (ApplyProjectCardFrame in ProjectFolderPickerModal.cpp). Inline overrides
+// take precedence over CSS, so this variant catches any interaction where an
+// override suppresses the :hover restyle or its transition.
 TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesWithInlineFrameOverrides)
 {
     const std::string xml = R"(<uielement id='root'>
@@ -700,9 +703,9 @@ TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesWithInlineFrameOverrides)
     ASSERT_TRUE(XMLParser::ParseLayoutFromString(xml, root));
 
     // Mirror ApplyProjectCardFrame + addCardOutline inline overrides.
-    UIElement* cardEl = root->FindById("card"_sid);
+    UIElement* cardEl = root->FindById("card");
     ASSERT_NE(cardEl, nullptr);
-    cardEl->Style()
+    cardEl->Overrides()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::Width, StyleLength::Px(280.0f))
@@ -718,9 +721,9 @@ TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesWithInlineFrameOverrides)
         .Set(Style::BorderWidth, Box4{0.0f, 0.0f, 0.0f, 0.0f})
         .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{8.0f, 8.0f, 8.0f, 8.0f})
         .Set(Style::Cursor, CursorStyle::Pointer);
-    UIElement* outlineEl = root->FindById("outline"_sid);
+    UIElement* outlineEl = root->FindById("outline");
     ASSERT_NE(outlineEl, nullptr);
-    outlineEl->Style()
+    outlineEl->Overrides()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(0.0f))
         .Set(Style::PositionTop, StyleLength::Px(0.0f))
@@ -733,8 +736,7 @@ TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesWithInlineFrameOverrides)
 
     m_Ui = std::make_unique<UIManager>(m_Dev);
     m_Ui->SetRoot(std::move(root));
-    m_CssDir = std::filesystem::temp_directory_path();
-    m_CssPath = m_CssDir / "transition_engine_card_inline_test.css";
+    m_CssPath = m_CssDir.Path() / "transition_engine_card_inline_test.css";
     {
         std::ofstream f(m_CssPath);
         f << css;
@@ -742,7 +744,7 @@ TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesWithInlineFrameOverrides)
     ASSERT_TRUE(m_Ui->AttachStyleFromFile(m_CssPath.string()));
     Tick(0.0f, false);
 
-    UIElement* card = FindById("card"_sid);
+    UIElement* card = FindById("card");
     ASSERT_NE(card, nullptr);
     ASSERT_GT(card->GetLayoutWidth(), 0.0f);
     EXPECT_EQ(card->GetResolvedStyle().Visual.BackgroundColor, 0xFF1F2126u);
@@ -762,7 +764,7 @@ TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesWithInlineFrameOverrides)
         Tick(0.016f);
     EXPECT_EQ(card->GetResolvedStyle().Visual.BackgroundColor, 0xFF18233Du);
 
-    UIElement* outline = FindById("outline"_sid);
+    UIElement* outline = FindById("outline");
     ASSERT_NE(outline, nullptr);
     EXPECT_EQ(outline->GetResolvedStyle().Visual.BorderColor.Top, 0xFF6F98FFu)
         << "outline should follow the descendant hover rule";
@@ -806,12 +808,12 @@ TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesWhenCardAddedAfterAttach)
     SetupUI(xml, css);
 
     // Now add the card dynamically, like RefreshRecentProjectsList does.
-    UIElement* grid = FindById("grid"_sid);
+    UIElement* grid = FindById("grid");
     ASSERT_NE(grid, nullptr);
     auto card = std::make_unique<Button>();
     card->SetId("card");
     card->AddClass("project-card");
-    card->Style()
+    card->Overrides()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::Width, StyleLength::Px(280.0f))
@@ -820,7 +822,7 @@ TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesWhenCardAddedAfterAttach)
     auto preview = std::make_unique<UIElement>();
     preview->SetId("preview");
     preview->AddClass("project-card-empty-preview");
-    preview->Style()
+    preview->Overrides()
         .Set(Style::Width, StyleLength::Percent(100.0f))
         .Set(Style::Height, StyleLength::Px(132.0f));
     card->AddChild(std::move(preview));
@@ -828,7 +830,7 @@ TEST_F(TransitionEngineTest, ProjectCardHoverAnimatesWhenCardAddedAfterAttach)
 
     Tick(0.0f);
 
-    UIElement* cardEl = FindById("card"_sid);
+    UIElement* cardEl = FindById("card");
     ASSERT_NE(cardEl, nullptr);
     ASSERT_GT(cardEl->GetLayoutWidth(), 0.0f);
     EXPECT_EQ(cardEl->GetResolvedStyle().Visual.BackgroundColor, 0xFF1F2126u);

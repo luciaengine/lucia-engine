@@ -1,15 +1,16 @@
 #include "Terrain/Heightfield.h"
-
-#include "Image/Decode.h"
-#include "Image/ImageHeader.h"
+#include "Noise/ValueNoise2D.h"
 
 #include <algorithm>
-#include <cassert>
 #include <climits>
+#include <cassert>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <string>
-#include <vector>
+
+// stb_image for PNG loading (implementation compiled in Engine/Source/ThirdParty/stb_image_impl.cpp)
+#include <stb_image.h>
 
 namespace GameEngine::Terrain
 {
@@ -189,51 +190,59 @@ void HeightfieldData::GetMinMax(int32 x0, int32 z0, int32 sizeX, int32 sizeZ,
 namespace
 {
 
-// Reads a whole file in one sized read. False when it cannot be opened or read.
-bool ReadWholeFile(const std::filesystem::path& path, std::vector<uint8_t>& outBytes)
+uint32 BigEndian32(const unsigned char* bytes)
 {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file)
-        return false;
-    const std::streamoff size = file.tellg();
-    if (size < 0)
-        return false;
-    outBytes.resize(static_cast<size_t>(size));
-    file.seekg(0);
-    return static_cast<bool>(file.read(reinterpret_cast<char*>(outBytes.data()), static_cast<std::streamsize>(size)));
+    return (uint32(bytes[0]) << 24u) | (uint32(bytes[1]) << 16u) | (uint32(bytes[2]) << 8u) | uint32(bytes[3]);
+}
+
+// stb_image's limits for a PNG of `width` x `height` pixels decoded at `channels` 16-bit channels:
+// it refuses more than 2^30 samples times channels at the header, and holds the whole image twice
+// in int-sized allocations (the filtered rows, a filter byte each, and the decoded samples).
+bool FitsPngDecoder(uint32 width, uint32 height, uint32 channels)
+{
+    const uint64 values = static_cast<uint64>(width) * height * channels;
+    const uint64 filtered = static_cast<uint64>(height) * (static_cast<uint64>(width) * channels * 2u + 1u);
+    return values <= (1ull << 30u) && values * 2u <= INT_MAX && filtered <= INT_MAX;
 }
 
 } // namespace
 
 std::string ResolvePngHeightmapSize(const std::filesystem::path& file, PngHeightmapSize& out)
 {
-    const Image::ImageHeader header = Image::ReadImageHeader(file);
-    if (!header.Valid)
+    static constexpr unsigned char kSignature[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    // Channels per color type as the decoder counts them for its limit: gray, -, RGB, palette
+    // (checked at 4), gray + alpha, -, RGBA.
+    static constexpr uint32 kChannels[7] = {1, 0, 3, 4, 2, 0, 4};
+    unsigned char bytes[26] = {};
+    std::ifstream in(file, std::ios::binary);
+    in.read(reinterpret_cast<char*>(bytes), sizeof(bytes));
+    const unsigned char colorType = bytes[25];
+    if (!in || std::memcmp(bytes, kSignature, sizeof(kSignature)) != 0 || std::memcmp(bytes + 12, "IHDR", 4) != 0 ||
+        colorType >= 7 || kChannels[colorType] == 0)
         return "the PNG " + file.filename().string() + " could not be read";
-    // LoadFromPNG16 decodes to one 16-bit sample per pixel, held in one int-sized block, whatever
-    // the file stores: an 8-bit PNG the decoder reads can still be too large for that result.
-    const uint64 heightBytes = static_cast<uint64>(header.Width) * header.Height * sizeof(uint16);
-    if (!header.WithinDecoderLimits || heightBytes > INT_MAX)
-        return "the PNG " + file.filename().string() + " is " + std::to_string(header.Width) + " x " +
-               std::to_string(header.Height) +
-               " samples, more than a PNG heightmap can hold (a PNG decodes whole to 16 bits: up to 32768 x "
-               "32766 samples for a 16-bit PNG, 32768 x 32767 for an 8-bit one); export the heightmap as .r32, "
-               "which has no size limit";
-    out = PngHeightmapSize{header.Width, header.Height};
+    const PngHeightmapSize size{BigEndian32(bytes + 16), BigEndian32(bytes + 20)};
+    if (!FitsPngDecoder(size.Width, size.Height, kChannels[colorType]))
+        return "the PNG " + file.filename().string() + " is " + std::to_string(size.Width) + " x " +
+               std::to_string(size.Height) +
+               " samples, more than a PNG heightmap can hold (a PNG decodes whole: up to about 1.07 billion "
+               "grayscale samples, 32768 x 32767); export the heightmap as .r32, which has no size limit";
+    out = size;
     return {};
 }
 
 bool HeightfieldData::LoadFromPNG16(const std::filesystem::path& path)
 {
-    std::vector<uint8_t> fileBytes;
-    if (!ReadWholeFile(path, fileBytes))
-        return false;
-    const Image::Image16 decoded = Image::Decode16(fileBytes, path.string(), Image::DecodeChannels::Gray);
-    if (!decoded.Valid)
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+
+    // Load as 16-bit
+    auto* data = stbi_load_16(path.string().c_str(), &width, &height, &channels, 1);
+    if (!data)
         return false;
 
-    m_Width = decoded.Width;
-    m_Height = decoded.Height;
+    m_Width = static_cast<uint32>(width);
+    m_Height = static_cast<uint32>(height);
     m_Samples.resize(static_cast<std::size_t>(m_Width) * m_Height);
 
     // Normalize 16-bit [0, 65535] to [0, 1]
@@ -241,8 +250,10 @@ bool HeightfieldData::LoadFromPNG16(const std::filesystem::path& path)
     const auto totalSamples = static_cast<std::size_t>(m_Width) * m_Height;
     for (std::size_t i = 0; i < totalSamples; ++i)
     {
-        m_Samples[i] = static_cast<float32>(decoded.Pixels[i]) * kInv65535;
+        m_Samples[i] = static_cast<float32>(data[i]) * kInv65535;
     }
+
+    stbi_image_free(data);
     return true;
 }
 
@@ -298,58 +309,6 @@ void HeightfieldData::Fill(float32 value)
     std::fill(m_Samples.begin(), m_Samples.end(), value);
 }
 
-} // namespace GameEngine::Terrain
-
-// The grid noise fill is content (a procedural base, a generated heightmap). It must give the
-// same bits on every machine, so contraction is off (the rule of CBTDeepDecode.h).
-#if defined(_MSC_VER)
-#pragma float_control(push)
-#pragma fp_contract(off)
-#elif defined(__GNUC__) && !defined(__clang__)
-#pragma GCC push_options
-#pragma GCC optimize ("fp-contract=off")
-#else
-#pragma STDC FP_CONTRACT OFF
-#endif
-
-namespace GameEngine::Terrain
-{
-
-// Simple hash-based value noise with smoothstep interpolation (no external dependency)
-namespace
-{
-static float32 NoiseHash(int32 x, int32 z, uint32 seed)
-{
-    uint32 h = static_cast<uint32>(x) * 374761393u +
-               static_cast<uint32>(z) * 668265263u +
-               seed * 1274126177u;
-    h = (h ^ (h >> 13)) * 1274126177u;
-    h = h ^ (h >> 16);
-    return static_cast<float32>(h & 0x7FFFFFFF) / static_cast<float32>(0x7FFFFFFF);
-}
-
-static float32 SmoothNoise(float32 x, float32 z, uint32 seed)
-{
-    const int32 ix = static_cast<int32>(std::floor(x));
-    const int32 iz = static_cast<int32>(std::floor(z));
-    const float32 fx = x - static_cast<float32>(ix);
-    const float32 fz = z - static_cast<float32>(iz);
-
-    // Smoothstep interpolation
-    const float32 sx = fx * fx * (3.0f - 2.0f * fx);
-    const float32 sz = fz * fz * (3.0f - 2.0f * fz);
-
-    const float32 n00 = NoiseHash(ix, iz, seed);
-    const float32 n10 = NoiseHash(ix + 1, iz, seed);
-    const float32 n01 = NoiseHash(ix, iz + 1, seed);
-    const float32 n11 = NoiseHash(ix + 1, iz + 1, seed);
-
-    const float32 nx0 = n00 + sx * (n10 - n00);
-    const float32 nx1 = n01 + sx * (n11 - n01);
-    return nx0 + sz * (nx1 - nx0);
-}
-} // namespace
-
 void HeightfieldData::FillWithNoise(float32 frequency, float32 amplitude,
                                      uint32 octaves, uint32 seed)
 {
@@ -386,7 +345,7 @@ void HeightfieldData::FillRegionWithNoise(float32 frequency, float32 amplitude,
             {
                 const float32 nx = static_cast<float32>(x) / static_cast<float32>(m_Width) * freq;
                 const float32 nz = static_cast<float32>(z) / static_cast<float32>(m_Height) * freq;
-                value += SmoothNoise(nx, nz, seed + o) * amp;
+                value += Noise::ValueNoise2D(nx, nz, seed + o) * amp;
                 totalAmp += amp;
                 freq *= 2.0f;
                 amp *= 0.5f;
@@ -397,21 +356,6 @@ void HeightfieldData::FillRegionWithNoise(float32 frequency, float32 amplitude,
         }
     }
 }
-
-} // namespace GameEngine::Terrain
-
-// The world-space fill stays outside: TileSampleWorld (GeneratedHeightPageProvider.cpp) repeats
-// its sample position expression, and the two must round it the same way.
-#if defined(_MSC_VER)
-#pragma float_control(pop)
-#elif defined(__GNUC__) && !defined(__clang__)
-#pragma GCC pop_options
-#else
-#pragma STDC FP_CONTRACT DEFAULT
-#endif
-
-namespace GameEngine::Terrain
-{
 
 void HeightfieldData::FillWithNoiseWorldSpace(float32 frequency, float32 amplitude,
                                                 float32 worldOriginX, float32 worldOriginZ,
@@ -475,7 +419,7 @@ float32 SampleWorldSpaceNoise(float32 worldX, float32 worldZ, float32 frequency,
         {
             const float32 nx = worldX * freq;
             const float32 nz = worldZ * freq;
-            value += SmoothNoise(nx, nz, seed + o) * amp;
+            value += Noise::ValueNoise2D(nx, nz, seed + o) * amp;
         }
         totalAmp += amp;
         freq *= 2.0f;

@@ -12,6 +12,17 @@ const kMaxTextLengthHelp =
 
 export const tools: ToolDef[] = [
   proxyTool({
+    name: "dock_panel",
+    category: "ui",
+    description:
+      "Move a docked panel into the same tab group as anchorPanelId, or show it without moving when no anchor is given. Closed panels use the editor's existing opening policy. Floating panels that remain outside the main dock report failure. Returns current dock leaf, activeTab, width and height after layout settles, plus movedFrom for a move. Opening a closed or floating panel may activate its window; do not use this operation for background-only validation.",
+    schema: {
+      panelId: z.string().min(1).describe("Registered panel ID, for example Assets"),
+      anchorPanelId: z.string().min(1).optional().describe("Panel already in the main dock whose tab group receives the moved panel"),
+    },
+  }),
+
+  proxyTool({
     name: "get_ui_tree",
     category: "ui",
     description:
@@ -63,7 +74,6 @@ export const tools: ToolDef[] = [
       x: z.coerce.number().optional().describe("X in the editor window's UI coordinates (the logical pixels get_ui_tree reports), not desktop pixels"),
       y: z.coerce.number().optional().describe("Y in the editor window's UI coordinates (the logical pixels get_ui_tree reports), not desktop pixels"),
       button: z.enum(["left", "right", "middle"]).optional().describe("Mouse button (default left). right opens real context menus — on macOS the popup is deferred past the IPC reply, so this does not stall; on Windows the native popup's nested message loop blocks the debug server until the menu closes, so prefer open_context_menu there"),
-      clickCount: z.coerce.number().int().min(1).max(3).optional().describe("Clicks in one gesture (default 1): 2 is a double-click, 3 a triple-click. The presses land inside the platform's double-click interval at any frame rate, which two separate click_element calls cannot promise"),
     },
   }),
 
@@ -90,27 +100,6 @@ export const tools: ToolDef[] = [
       elementId: z.string().optional().describe("Element ID whose center should be hovered. Must have a layout box with extent on at least one axis"),
       x: z.coerce.number().optional().describe("X in the editor window's UI coordinates (the logical pixels get_ui_tree reports), not desktop pixels"),
       y: z.coerce.number().optional().describe("Y in the editor window's UI coordinates (the logical pixels get_ui_tree reports), not desktop pixels"),
-    },
-  }),
-
-  proxyTool({
-    name: "simulate_mouse_drag",
-    category: "ui",
-    description:
-      "Press, move and release the editor's pointer across frames, as a mouse drag does: controls that arm on the press, drag on later moves and commit on the release see the same events. The pointer moves from the start along the path points and then to endX/endY, one move per presented frame, and releases on the last point. steps moves are spread over the segments by length, and every segment ends exactly on its point, so a path traces a freehand stroke: with the spline tool, a path that comes back to its start closes the loop. Only the editor's pointer moves: the desktop cursor stays where it is. dragDropSession says whether the gesture started a drag-and-drop session; perform_drop makes a drop without one.",
-    schema: {
-      elementId: z.string().optional().describe("Start at this element's center. Must have a layout box"),
-      startX: z.coerce.number().optional().describe("Start X in the editor window's UI coordinates (the logical pixels get_ui_tree reports)"),
-      startY: z.coerce.number().optional().describe("Start Y in the editor window's UI coordinates"),
-      path: z.array(z.object({ x: z.coerce.number(), y: z.coerce.number() })).optional().describe("Points the pointer passes through after the start, in UI coordinates, in order (at most 240). Give path, endX/endY or both; the release is on the last point"),
-      endX: z.coerce.number().optional().describe("End X in UI coordinates, after the path"),
-      endY: z.coerce.number().optional().describe("End Y in UI coordinates, after the path"),
-      steps: z.coerce.number().int().optional().describe("Pointer moves over the whole drag, one per frame (default 20, at most 240; never fewer than the path's segments)"),
-      button: z.enum(["left", "right", "middle"]).optional().describe("Mouse button (default left)"),
-      holdFrames: z.coerce.number().int().optional().describe("Frames the button stays down at the start before the first move (default 1, at most 4)"),
-      holdBeforeReleaseFrames: z.coerce.number().int().optional().describe("Frames the button stays down on the last point before the release (default 0, at most 1200)"),
-      captureAtFrame: z.coerce.number().int().optional().describe("Take a window capture at this hold frame (0 to holdBeforeReleaseFrames - 1); the reply carries its file and the pointer state of that frame"),
-      windowIndex: z.coerce.number().optional().describe("Editor window (default 0, the main window)"),
     },
   }),
 

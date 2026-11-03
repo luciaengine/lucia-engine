@@ -271,9 +271,7 @@ TEST(MaterialBindingCacheTest, InvalidateDropsTheCachedEntry)
     // A sampler change rebuilds without an explicit invalidation.
     const auto clamped = fx.Textures.GetSampler(SamplerPreset::LinearClamp);
     if (clamped.IsValid() && clamped != sampler)
-    {
         EXPECT_NE(cache.GetOrBuild(mat, clamped), rebuilt);
-    }
 
     cache.Shutdown();
 }

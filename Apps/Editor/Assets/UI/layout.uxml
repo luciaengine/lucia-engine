@@ -1,5 +1,4 @@
 <UIElement id="root" class="dock-root">
-  <EditorTitleBar id="EditorTitleBar" />
   <!-- Instantiated by the UI factory (EditorTopToolbar.cpp); the control loads
        its own controls/EditorTopToolbar.uxml and .css. The authored id must
        match the ctor-assigned id: hot-reload layout reconciliation matches by
@@ -54,6 +53,8 @@
         <DockablePanel id="NodeGraph" type="ShaderGraphPanel" title="Shader Graph" />
         <DockablePanel id="AnimationGraph" type="AnimationGraphPanel" title="Animation Graph" />
         <DockablePanel id="GameLogicGraph" type="GameLogicGraphPanel" title="Game Logic Graph" />
+        <DockablePanel id="TilePalette" type="TilePalettePanel" title="Tile Palette" />
+        <DockablePanel id="TileSetEditor" type="TileSetEditorPanel" title="Tile Set Editor" />
         <DockablePanel id="Build" type="BuildPanel" title="Build" />
         <DockablePanel id="Animation" type="AnimationWindowPanel" title="Animation"
                       layout="panels/AnimationWindowPanel.uxml" style="panels/AnimationWindowPanel.css" />
@@ -82,6 +83,7 @@
               <DockLeafNode active="SceneView">
                 <DockTabNode panel="SceneView" />
                 <DockTabNode panel="GameView" />
+                <DockTabNode panel="Settings" />
               </DockLeafNode>
             </DockSplit>
 
@@ -109,12 +111,13 @@
     </DockConfig>
   </dockspace>
   <UIElement class="editor-bottom-toolbar">
-    <EditorBuildStatus id="EditorBuildStatus" class="bottom-toolbar-side" />
+    <UIElement class="bottom-toolbar-side">
+      <Label id="BuildConfigStatus" class="bottom-toolbar-build-config" />
+    </UIElement>
     <LayoutPresetToolbar id="LayoutButtonContainer" class="bottom-toolbar-center" />
     <UIElement class="bottom-toolbar-side bottom-toolbar-side-right">
-      <UIElement id="StatusBarItems" class="bottom-toolbar-status-items" />
       <Label id="VkValidationStatus" class="bottom-toolbar-status vk-validation-badge" />
-      <Label id="ScriptStatus" class="bottom-toolbar-status" />
+      <Label id="NativeScriptStatus" class="bottom-toolbar-status" />
     </UIElement>
   </UIElement>
 </UIElement>

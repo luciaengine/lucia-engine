@@ -2,8 +2,8 @@
 
 #include "AssetDatabase/AssetStore_TextJsonl.h"
 #include "Assets/TextureCook.h"
-#include "Core/ApplicationPaths.h"
-#include "ECS/Component/ComponentFactory.h"
+#include "Core/Application.h" // PathUtils::GetExecutableDirectory
+#include "ECS/ComponentFactory.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/SystemScheduling.h"
 #include "ECS/Systems.h"
@@ -548,7 +548,7 @@ constexpr EZTree::LeafType kLeafTypes[] = {
 // fixtures, never the source tree.
 std::filesystem::path StagedEZTreeManifestFile()
 {
-    return ApplicationPaths::GetExecutableDirectory() / "TestData" / "Packages" / "eztree" /
+    return PathUtils::GetExecutableDirectory() / "TestData" / "Packages" / "eztree" /
            "Assets" / ".assetmanifest";
 }
 
@@ -602,7 +602,7 @@ TEST(EZTreeNativeTests, DefaultTexturesDeclareTheImportSettingsTheirMaterialSlot
     ASSERT_TRUE(std::filesystem::exists(manifestFile))
         << manifestFile.string() << " missing — the eztree package manifest is not staged";
 
-    AssetDatabase::AssetStore_TextJsonl manifest(nullptr);
+    AssetDatabase::AssetStore_TextJsonl manifest;
     ASSERT_TRUE(manifest.LoadFromFile(manifestFile, nullptr));
 
     size_t declared = 0;

@@ -8,8 +8,6 @@
 #include <thread>
 #include <vector>
 
-#include "LatencyBudget.h"
-
 // Performance regression suite — re-baselined for the post-overhaul pool
 // (issue #242, slice 6).
 //
@@ -39,13 +37,13 @@
 namespace {
 
 // >= 3x headroom over the measured-worst values in the header table.
-constexpr double kSubmitStorm10kBudgetMs = 60.0;      // measured ~10-16ms
-constexpr double kFireAndForget10kBudgetMs = 30.0;    // measured ~3-6ms
-constexpr double kBatch10kBudgetMs = 30.0;            // measured ~3-5ms
+constexpr long long kSubmitStorm10kBudgetMs = 60;      // measured ~10-16ms
+constexpr long long kFireAndForget10kBudgetMs = 30;    // measured ~3-6ms
+constexpr long long kBatch10kBudgetMs = 30;            // measured ~3-5ms
 constexpr double kAvgSubmitLatencyBudgetUs = 300.0;    // measured avg ~10-60us
 constexpr double kP95SubmitLatencyBudgetUs = 1200.0;   // measured p95 ~100-300us
-constexpr double kLatencyRunBudgetMs = 30.0;          // measured ~2-4ms
-constexpr double kPerWidthStorm10kBudgetMs = 100.0;   // measured ~10-30ms/width
+constexpr long long kLatencyRunBudgetMs = 30;          // measured ~2-4ms
+constexpr long long kPerWidthStorm10kBudgetMs = 100;   // measured ~10-30ms/width
 
 } // namespace
 
@@ -53,18 +51,11 @@ class PerformanceRegressionTest : public ::testing::Test {
 protected:
     void SetUp() override {
         Logger::Log::SetLogLevel(Logger::LogLevel::Error);
-        m_Budget = GameEngine::Tests::ReadLatencyBudget();
     }
 
     void TearDown() override {
         Logger::Log::SetLogLevel(Logger::LogLevel::Debug);
     }
-
-    // True when the machine load skips the budgets. A test checks it after its correctness checks.
-    bool IsTooLoadedForBudgets() const { return m_Budget.Verdict == GameEngine::Tests::LatencyBudgetVerdict::Skip; }
-
-    // Read in SetUp, before the test starts its pool.
-    GameEngine::Tests::LatencyBudget m_Budget;
 };
 
 /**
@@ -99,11 +90,8 @@ TEST_F(PerformanceRegressionTest, PureTaskExecutionPerformance) {
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
 
     EXPECT_EQ(counter.load(), numTasks);
-    if (IsTooLoadedForBudgets()) {
-        GTEST_SKIP() << m_Budget.Describe();
-    }
-    EXPECT_LT(static_cast<double>(duration.count()), m_Budget.Scale(kSubmitStorm10kBudgetMs))
-        << "cold Submit storm exceeded budget (basis: file header table); " << m_Budget.Describe();
+    EXPECT_LT(duration.count(), kSubmitStorm10kBudgetMs)
+        << "cold Submit storm exceeded budget (basis: file header table)";
 
     Logger::Log::Info("Pure task execution: {} tasks completed in {}ms", numTasks,
                       duration.count());
@@ -163,12 +151,9 @@ TEST_F(PerformanceRegressionTest, TaskLatencyDistribution) {
                       "p95={:.2f}us p99={:.2f}us",
                       numTasks, totalDuration.count(), avgLatency, p50, p95, p99);
 
-    if (IsTooLoadedForBudgets()) {
-        GTEST_SKIP() << m_Budget.Describe();
-    }
-    EXPECT_LT(avgLatency, m_Budget.Scale(kAvgSubmitLatencyBudgetUs)) << m_Budget.Describe();
-    EXPECT_LT(p95, m_Budget.Scale(kP95SubmitLatencyBudgetUs)) << m_Budget.Describe();
-    EXPECT_LT(static_cast<double>(totalDuration.count()), m_Budget.Scale(kLatencyRunBudgetMs)) << m_Budget.Describe();
+    EXPECT_LT(avgLatency, kAvgSubmitLatencyBudgetUs);
+    EXPECT_LT(p95, kP95SubmitLatencyBudgetUs);
+    EXPECT_LT(totalDuration.count(), kLatencyRunBudgetMs);
 }
 
 /**
@@ -219,11 +204,8 @@ TEST_F(PerformanceRegressionTest, WarmSubmitStormThroughput) {
     Logger::Log::Info("Warm Submit storm: {} tasks completed in {}ms", kNumTasks,
                       duration.count());
 
-    if (IsTooLoadedForBudgets()) {
-        GTEST_SKIP() << m_Budget.Describe();
-    }
-    EXPECT_LT(static_cast<double>(duration.count()), m_Budget.Scale(kSubmitStorm10kBudgetMs))
-        << "warm Submit storm exceeded budget (basis: file header table); " << m_Budget.Describe();
+    EXPECT_LT(duration.count(), kSubmitStorm10kBudgetMs)
+        << "warm Submit storm exceeded budget (basis: file header table)";
 }
 
 /**
@@ -264,11 +246,8 @@ TEST_F(PerformanceRegressionTest, BatchPublicationThroughput) {
                       duration.count());
 
     EXPECT_EQ(counter.load(), kNumTasks);
-    if (IsTooLoadedForBudgets()) {
-        GTEST_SKIP() << m_Budget.Describe();
-    }
-    EXPECT_LT(static_cast<double>(duration.count()), m_Budget.Scale(kBatch10kBudgetMs))
-        << "EnqueueWorkBatch storm exceeded budget (basis: file header table); " << m_Budget.Describe();
+    EXPECT_LT(duration.count(), kBatch10kBudgetMs)
+        << "EnqueueWorkBatch storm exceeded budget (basis: file header table)";
 }
 
 /**
@@ -320,13 +299,8 @@ TEST_F(PerformanceRegressionTest, FireAndForgetVsTaskHandleComparison) {
                       fireAndForgetDuration.count());
 
     EXPECT_EQ(counter.load(), kNumTasks);
-    if (IsTooLoadedForBudgets()) {
-        GTEST_SKIP() << m_Budget.Describe();
-    }
-    EXPECT_LT(static_cast<double>(taskHandleDuration.count()), m_Budget.Scale(kSubmitStorm10kBudgetMs))
-        << m_Budget.Describe();
-    EXPECT_LT(static_cast<double>(fireAndForgetDuration.count()), m_Budget.Scale(kFireAndForget10kBudgetMs))
-        << m_Budget.Describe();
+    EXPECT_LT(taskHandleDuration.count(), kSubmitStorm10kBudgetMs);
+    EXPECT_LT(fireAndForgetDuration.count(), kFireAndForget10kBudgetMs);
 }
 
 /**
@@ -366,11 +340,8 @@ TEST_P(ThreadCountOptimizationTest, TaskExecutionWithVariableThreadCount) {
     Logger::Log::Info("Storm with {} threads: {} tasks completed in {}ms", threadCount, kNumTasks,
                       duration.count());
 
-    if (IsTooLoadedForBudgets()) {
-        GTEST_SKIP() << m_Budget.Describe();
-    }
-    EXPECT_LT(static_cast<double>(duration.count()), m_Budget.Scale(kPerWidthStorm10kBudgetMs))
-        << "width " << threadCount << " exceeded budget (basis: file header table); " << m_Budget.Describe();
+    EXPECT_LT(duration.count(), kPerWidthStorm10kBudgetMs)
+        << "width " << threadCount << " exceeded budget (basis: file header table)";
 }
 
 INSTANTIATE_TEST_SUITE_P(

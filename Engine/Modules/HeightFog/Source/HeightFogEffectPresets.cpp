@@ -1,7 +1,5 @@
 #include "Components/Rendering/PostProcessEffects/HeightFogEffectPresets.h"
 
-#include "Mathematics/Interpolation.h"
-
 #include <algorithm>
 #include <cmath>
 
@@ -62,7 +60,7 @@ float SampleDayScalar(float timeOfDayHours, const float dayKeyTimesHours[4],
     const float wrapStart = keyTimes[3];
     const float wrapEnd = keyTimes[0] + kDayHours;
     const float wrappedT = (t < keyTimes[0]) ? (t + kDayHours) : t;
-    const float u = Math::Clamp01((wrappedT - wrapStart) / std::max(kEpsilon, wrapEnd - wrapStart));
+    const float u = std::clamp((wrappedT - wrapStart) / std::max(kEpsilon, wrapEnd - wrapStart), 0.0f, 1.0f);
     return LerpFloat(values[3], values[0], u);
 }
 
@@ -85,10 +83,7 @@ void ApplyHeightFogPreset(HeightFogEffect& effect, HeightFogPreset preset)
         return;
     }
 
-    // A preset is a shape and a fixed-colour look; where the colour comes from stays the user's choice.
-    const HeightFogColorMode colorMode = effect.ColorMode;
     effect = HeightFogEffect{};
-    effect.ColorMode = colorMode;
     effect.Preset = preset;
     effect.Enabled = true;
     effect.TrackDirectionalLight = true;
@@ -343,7 +338,7 @@ float ComputeHeightFogNightBlend(float timeOfDayHours)
 
 void LerpHeightFogEffect(const HeightFogEffect& a, const HeightFogEffect& b, float t, HeightFogEffect& out)
 {
-    const float u = Math::Clamp01(t);
+    const float u = std::clamp(t, 0.0f, 1.0f);
     out = a;
     out.Intensity = LerpFloat(a.Intensity, b.Intensity, u);
     out.Density = LerpFloat(a.Density, b.Density, u);
@@ -412,10 +407,7 @@ void ApplyHeightFogTimeOfDay(HeightFogEffect& effect, float timeOfDayHours, cons
     ApplyHeightFogPreset(dawn, HeightFogPreset::MorningHaze);
     ApplyHeightFogPreset(sunset, HeightFogPreset::HorizonPollution);
 
-    // The keyframes are fixed-colour looks; a fog that takes its colour from the sky keeps doing so.
-    const HeightFogColorMode colorMode = effect.ColorMode;
     effect = day;
-    effect.ColorMode = colorMode;
     effect.Intensity = SampleDayScalar(timeOfDayHours, dayKeyTimesHours, night.Intensity, dawn.Intensity, day.Intensity, sunset.Intensity);
     effect.Density = SampleDayScalar(timeOfDayHours, dayKeyTimesHours, night.Density, dawn.Density, day.Density, sunset.Density);
     effect.MaxOpacity = SampleDayScalar(timeOfDayHours, dayKeyTimesHours, night.MaxOpacity, dawn.MaxOpacity, day.MaxOpacity, sunset.MaxOpacity);

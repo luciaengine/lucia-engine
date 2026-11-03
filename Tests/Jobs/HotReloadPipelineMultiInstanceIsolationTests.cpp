@@ -7,6 +7,7 @@
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Jobs/CompileServerVersion.h"
 #include "ScopedHotReloadTestHooks.h"
+#include "TestTempDir.h"
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -59,11 +60,11 @@ TEST(HotReloadPipeline_MultiInstanceIsolation, ConcurrentPipelinesUseDistinctPip
 #else
     using nlohmann::json;
     // Arrange two isolated workspaces
-    std::filesystem::path wsA = std::filesystem::temp_directory_path() / "GE_WS_Isolation_A";
-    std::filesystem::path wsB = std::filesystem::temp_directory_path() / "GE_WS_Isolation_B";
+    const TestUtils::ScopedTempDir workspaceA(TestUtils::MakeUniqueTempDirectory("GE_WS_Isolation_A"));
+    const TestUtils::ScopedTempDir workspaceB(TestUtils::MakeUniqueTempDirectory("GE_WS_Isolation_B"));
+    std::filesystem::path wsA = workspaceA.Path();
+    std::filesystem::path wsB = workspaceB.Path();
     std::error_code ec;
-    std::filesystem::create_directories(wsA, ec);
-    std::filesystem::create_directories(wsB, ec);
     auto aCs = wsA / "A.cs"; { std::ofstream f(aCs); f << "public static class A{public static int V()=>1;}"; }
     auto bCs = wsB / "B.cs"; { std::ofstream f(bCs); f << "public static class B{public static int V()=>2;}"; }
 
@@ -158,16 +159,16 @@ TEST(HotReloadPipeline_MultiInstanceIsolation, AffectsInferenceIsolatedAcrossWor
     _putenv_s("GE_AFFECTS_INFERENCE", "1");
 
     // Workspace A
-    std::filesystem::path wsA = std::filesystem::temp_directory_path() / "GE_WS_Infer_A";
-    std::filesystem::create_directories(wsA, ec);
+    const TestUtils::ScopedTempDir workspaceA(TestUtils::MakeUniqueTempDirectory("GE_WS_Infer_A"));
+    std::filesystem::path wsA = workspaceA.Path();
     auto aCs = wsA / "Foo.cs"; { std::ofstream f(aCs); f << "public static class Foo{public static int V()=>1;}"; }
     auto aGen = wsA / "Foo.g.cs"; { std::ofstream f(aGen); f << "// gen"; }
     auto aProj = wsA / "Foo.csproj"; { std::ofstream f(aProj); f << "<Project Sdk=\"Microsoft.NET.Sdk\"/>"; }
     auto asmA = wsA / "bin" / "GameEngine.Scripts.dll"; std::filesystem::create_directories(asmA.parent_path(), ec); { std::ofstream f(asmA); f << ""; }
 
     // Workspace B
-    std::filesystem::path wsB = std::filesystem::temp_directory_path() / "GE_WS_Infer_B";
-    std::filesystem::create_directories(wsB, ec);
+    const TestUtils::ScopedTempDir workspaceB(TestUtils::MakeUniqueTempDirectory("GE_WS_Infer_B"));
+    std::filesystem::path wsB = workspaceB.Path();
     auto bCs = wsB / "Bar.cs"; { std::ofstream f(bCs); f << "public static class Bar{public static int V()=>2;}"; }
     auto bGen = wsB / "Bar.generated.cs"; { std::ofstream f(bGen); f << "// gen2"; }
     auto bProj = wsB / "Bar.csproj"; { std::ofstream f(bProj); f << "<Project Sdk=\"Microsoft.NET.Sdk\"/>"; }
@@ -245,15 +246,15 @@ TEST(HotReloadPipeline_MultiInstanceIsolation, MixedStrategiesIsolatedAcrossWork
     _putenv_s("GE_AFFECTS_INFERENCE", "1");
 
     // Workspace C (Full via .csproj)
-    std::filesystem::path wsC = std::filesystem::temp_directory_path() / "GE_WS_Mixed_C";
-    std::filesystem::create_directories(wsC, ec);
+    const TestUtils::ScopedTempDir workspaceC(TestUtils::MakeUniqueTempDirectory("GE_WS_Mixed_C"));
+    std::filesystem::path wsC = workspaceC.Path();
     auto cCs = wsC / "C.cs"; { std::ofstream f(cCs); f << "public static class C{public static int V()=>3;}"; }
     auto cProj = wsC / "C.csproj"; { std::ofstream f(cProj); f << "<Project Sdk=\"Microsoft.NET.Sdk\"/>"; }
     auto asmC = wsC / "bin" / "GameEngine.Scripts.dll"; std::filesystem::create_directories(asmC.parent_path(), ec); { std::ofstream f(asmC); f << ""; }
 
     // Workspace D (Incremental via .cs)
-    std::filesystem::path wsD = std::filesystem::temp_directory_path() / "GE_WS_Mixed_D";
-    std::filesystem::create_directories(wsD, ec);
+    const TestUtils::ScopedTempDir workspaceD(TestUtils::MakeUniqueTempDirectory("GE_WS_Mixed_D"));
+    std::filesystem::path wsD = workspaceD.Path();
     auto dCs = wsD / "D.cs"; { std::ofstream f(dCs); f << "public static class D{public static int V()=>4;}"; }
     auto dProj = wsD / "D.csproj"; { std::ofstream f(dProj); f << "<Project Sdk=\"Microsoft.NET.Sdk\"/>"; }
     auto asmD = wsD / "bin" / "GameEngine.Scripts.dll"; std::filesystem::create_directories(asmD.parent_path(), ec); { std::ofstream f(asmD); f << ""; }

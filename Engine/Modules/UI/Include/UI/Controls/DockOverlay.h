@@ -3,6 +3,7 @@
 #include <vector>
 #include <cstdint>
 #include "UI/UIElement.h"
+#include "UI/ThemeAccent.h"
 #include "UI/UIPrimitive.h"
 #include "UI/ResolvedStyle.h"
 #include "Rendering/Geometry/ShapeBuilder.h"
@@ -37,9 +38,9 @@ public:
     // Convenience: compute and set zones from a DockDropTarget and DockingManager
     void SetTargetZones(const DockDropTarget& target, const DockingManager& dm, float containerW, float containerH);
 
-    // Set accent color used for dock drop overlays (ARGB: 0xAARRGGBB).
+    // Accent for the drop zones (ARGB: 0xAARRGGBB); the owning dockspace
+    // passes its resolved --ui_color_accent.
     void SetAccentColor(uint32_t argb) { m_AccentColor = argb; }
-    uint32_t GetAccentColor() const { return m_AccentColor; }
 
     void OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
                               const ResolvedStyle& style,
@@ -48,7 +49,7 @@ public:
 private:
     static bool s_DebugZonesEnabled;
     std::vector<ZoneRect> m_Zones;
-    uint32_t m_AccentColor = 0xFF3A8FFF; // default blue
+    uint32_t m_AccentColor = UI::kDefaultAccentArgb;
 };
 
 } // namespace GameEngine

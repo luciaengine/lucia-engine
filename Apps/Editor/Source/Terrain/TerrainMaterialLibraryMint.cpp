@@ -13,8 +13,9 @@
 #include "TerrainECS/TerrainMaterialAuthoring.h"
 #include "UndoRedo/IEditorCommand.h"
 #include "UndoRedo/UndoRedoService.h"
-#include "Types/StringUtils.h"
 
+#include <algorithm>
+#include <cctype>
 #include <memory>
 #include <string>
 #include <utility>
@@ -98,7 +99,8 @@ std::string PathKeyForContainment(const std::filesystem::path& p)
         p.is_absolute() ? p.lexically_normal() : std::filesystem::absolute(p, ec).lexically_normal();
     std::string s = abs.generic_string();
 #if !defined(__linux__)
-    s = ToLowerAscii(s);
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 #endif
     while (s.size() > 1 && s.back() == '/')
         s.pop_back();

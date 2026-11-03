@@ -61,7 +61,7 @@
     cursor: move;
     user-select: none;
     opacity: 0.35;
-    background-image: url("editor:Icons/reorder-two.svg");
+    background-image: url("editor:Icons/reorder-two.png");
     background-size: contain;
     background-repeat: no-repeat;
     background-position: center;
@@ -89,22 +89,22 @@
 }
 
 .bookmark-icon-scene {
-    background-image: url("editor:Icons/scene.svg");
+    background-image: url("editor:Icons/scene.png");
     /* Use contain (same as .bookmark-icon) so scene icon scales like other bookmark icons */
     background-size: contain;
     background-position: center;
 }
 
 .bookmark-icon-entity {
-    background-image: url("editor:Icons/Cube.svg");
+    background-image: url("editor:Icons/cube.svg");
 }
 
 .bookmark-icon-folder {
-    background-image: url("editor:Icons/Folder@32px.svg");
+    background-image: url("editor:Icons/Folder@32px.png");
 }
 
 .bookmark-icon-script {
-    background-image: url("editor:Icons/codeicon.svg");
+    background-image: url("editor:Icons/codeicon.png");
 }
 
 /* Default/unknown type: only .bookmark-icon sets layout; type-specific classes

@@ -3,37 +3,27 @@ cmake_minimum_required(VERSION 3.20)
 project(PageStreaming LANGUAGES CXX)
 
 # Page streaming: the .gepage store of a terrain field (a pyramid of fixed-size pages), its
-# codecs, cooker, reader and asynchronous page loader, the generated provider of noise and flat bases,
+# cooker, reader and asynchronous page loader, the generated provider of noise and flat bases,
 # and the shipped terrain container. Device-free: the GPU half (physical caches, page tables, the
 # resolve) lives with the terrain renderer in TerrainECS and CBTTerrain.
 add_library(PageStreaming OBJECT
     Source/PageAddress.cpp
-    Source/PageStore/PageStoreFormat.cpp
-    Source/PageStore/PageStoreSerialization.cpp
-    Source/Height/HeightPageCodec.cpp
-    Source/PageCodec.cpp
-    Source/BytePageCodec.cpp
-    Source/Bc5PageCodec.cpp
-    Source/PageStore/PageStoreAccess.cpp
-    Source/PageStore/PageStoreWriter.cpp
-    Source/PageStore/PageStoreReader.cpp
+    Source/PageStoreFormat.cpp
+    Source/PageStoreSerialization.cpp
+    Source/HeightPageCodec.cpp
+    Source/PageStoreWriter.cpp
+    Source/PageStoreReader.cpp
     Source/PageLoader.cpp
     Source/PageCache.cpp
     Source/PageResidency.cpp
     Source/GeneratedHeightPageProvider.cpp
-    Source/Height/HeightPageLayer.cpp
-    Source/Height/HeightStoreKey.cpp
-    Source/Height/HeightStoreCache.cpp
-    Source/Height/HeightSourceRows.cpp
+    Source/HeightPageOverlay.cpp
+    Source/HeightStoreKey.cpp
+    Source/HeightStoreCache.cpp
+    Source/HeightSourceRows.cpp
     Source/SourceRangeReader.cpp
-    Source/PageFieldFilter.cpp
-    Source/PagePyramidBuilder.cpp
-    Source/PageStore/PageStorePatcher.cpp
-    Source/Height/HeightStepPlanner.cpp
-    Source/Height/HeightCookBands.cpp
-    Source/Height/HeightPageCooker.cpp
-    Source/PlanetPageCooker.cpp
-    Source/PageFaceSeams.cpp
+    Source/HeightPyramidBuilder.cpp
+    Source/HeightPageCooker.cpp
     Source/TerrainPageContainer.cpp
     Source/NonInheritedFile.cpp
 )
@@ -52,18 +42,16 @@ target_link_libraries(PageStreaming
     PUBLIC
         Types
         AssetCore
-        # Mathematics::Vector3 in the public headers (PageStoreFormat.h, HeightPageCooker.h).
-        Mathematics
     PRIVATE
         # The loader's reader threads (Assets/AssetIOService.h); objects link once into Engine.
         AssetRuntime
         JobSystem
-        # The page fetcher's pool of fetch states (Memory/ObjectPool.h).
-        Memory
         FileSystem
         FileWatcher
         Terrain
         Logger
-        # The 16-bit PNG heightmap decode.
-        Image
 )
+
+# stb_image for 16-bit PNG heightmaps; stb_image_impl.cpp is compiled by Engine.
+find_path(STB_INCLUDE_DIRS "stb_image.h")
+target_include_directories(PageStreaming PRIVATE ${STB_INCLUDE_DIRS})

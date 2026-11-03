@@ -10,10 +10,10 @@
 
 #pragma once
 
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 #include "Types/StringId.h"
 
 #include <array>

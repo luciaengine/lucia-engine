@@ -3,7 +3,7 @@
 #include <gtest/gtest.h>
 #include <vector>
 
-#include "Source/Vulkan/VulkanDevice/VulkanDevice.h"
+#include "Source/Vulkan/VulkanDevice.h"
 
 #include <Rendering/Common/Utils.h>
 #include "TestUtils.h"
@@ -11,7 +11,7 @@
 #include <Rendering/Core/Device.h>
 #include <Rendering/Materials/MaterialBuilder.h>
 #include <Rendering/Materials/MaterialHelper.h>
-#include <Rendering/Materials/Shader/ShaderReflection.h>
+#include <Rendering/Materials/ShaderReflection.h>
 
 using namespace GameEngine::Rendering;
 
@@ -319,7 +319,7 @@ TEST(PBRForward, EndToEnd_ComputeLUT_Draw_Tonemap_Readback)
     TextureHandle ldr = dev->CreateTexture(ldrD);
     ASSERT_TRUE(ldr.IsValid());
 
-    // Reflection-driven tonemap: HDR -> LDR
+    // Reflection-driven ACES tonemap: HDR -> LDR
     std::vector<uint8_t> vsFS = Utils::LoadShaderFile("fullscreen_noinput.vert.spv");
     std::vector<uint8_t> fsTM = Utils::LoadShaderFile("tonemap.frag.spv");
     ASSERT_FALSE(vsFS.empty());
@@ -334,7 +334,7 @@ TEST(PBRForward, EndToEnd_ComputeLUT_Draw_Tonemap_Readback)
     tm.type = PipelineType::Graphics;
     tm.vertexShader = vsFS;
     tm.pixelShader = fsTM;
-    tm.debugName = "Tonemap";
+    tm.debugName = "TonemapACES";
     MaterialBuilder::FormatsHint tmF{};
     tmF.ColorFormats = {(uint32_t)TextureFormat::RGBA8_UNORM};
     std::string tmErr;
@@ -395,9 +395,7 @@ TEST(PBRForward, EndToEnd_ComputeLUT_Draw_Tonemap_Readback)
     { for (size_t i=0;i<tmSets.size();++i) if (tmSets[i]==setIndex) return (int)i; return -1; };
     int ordCombined = hasCombined ? OrdinalOf(tmCombinedSet) : -1;
     if (hasCombined)
-    {
         ASSERT_GE(ordCombined, 0);
-    }
     int ordImage = hasImage ? OrdinalOf(tmImageSet) : -1;
     int ordSampler = hasSampler ? OrdinalOf(tmSamplerSet) : -1;
     int ordUbo = tmUboFound ? OrdinalOf(tmUboSet) : -1;
@@ -643,7 +641,7 @@ TEST(PBRForward, EndToEnd_Tonemap_FromClearedHDR)
     TextureHandle ldr = dev->CreateTexture(ldrD);
     ASSERT_TRUE(ldr.IsValid());
 
-    // Tonemap pipeline (fullscreen no-input VS + tonemap FS), reflection-driven
+    // Tonemap pipeline (fullscreen no-input VS + ACES FS), reflection-driven
     std::vector<uint8_t> vsFS = Utils::LoadShaderFile("fullscreen_noinput.vert.spv");
     std::vector<uint8_t> fsTM = Utils::LoadShaderFile("tonemap.frag.spv");
     ASSERT_FALSE(vsFS.empty());
@@ -718,9 +716,7 @@ TEST(PBRForward, EndToEnd_Tonemap_FromClearedHDR)
     { for (size_t i=0;i<ordSets.size();++i) if (ordSets[i]==setIndex) return (int)i; return -1; };
     int ordCombined = hasCombined ? OrdinalOf(combinedSet) : -1;
     if (hasCombined)
-    {
         ASSERT_GE(ordCombined, 0);
-    }
     int ordImage = hasImage ? OrdinalOf(imageSet) : -1;
     int ordSampler = hasSampler ? OrdinalOf(samplerSet) : -1;
     int ordUbo = hasUbo ? OrdinalOf(uboSet) : -1;

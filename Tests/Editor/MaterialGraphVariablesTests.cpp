@@ -5,7 +5,7 @@
 #include <gtest/gtest.h>
 
 #include "Graph/GraphModel.h"
-#include "ShaderGraph/MaterialGraph/MaterialGraphVariables.h"
+#include "ShaderGraph/MaterialGraphVariables.h"
 
 using namespace GameEngine;
 

@@ -2,11 +2,10 @@
 
 #include "AssetCore/Asset.h"
 #include "AssetCore/GUID.h"
-#include "Types/Types.h"
+#include "AssetCore/Types.h"
 
 #include <filesystem>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace GameEngine
@@ -124,8 +123,6 @@ public:
 
 private:
     bool ParseJson(const std::string& text);
-    // Logs that the file is not loaded and why, clears the controller and fails the asset; returns false.
-    bool Refuse(std::string_view reason);
     std::string SerializeJson() const;
 
     std::vector<AnimationParameter> m_Parameters;

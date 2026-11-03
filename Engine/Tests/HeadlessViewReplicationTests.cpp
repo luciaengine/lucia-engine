@@ -232,7 +232,10 @@ HeadlessViewDesc ReplicationDesc(TextureFormat format, Passes::FinalizeQuantizer
     HeadlessViewDesc d{};
     d.Width = kViewExtent;
     d.Height = kViewExtent;
-    d.ClearLinear = ColorLinear(0.0f, 0.0f, 0.0f, 1.0f);
+    d.ClearLinear[0] = 0.0f;
+    d.ClearLinear[1] = 0.0f;
+    d.ClearLinear[2] = 0.0f;
+    d.ClearLinear[3] = 1.0f;
     d.ContentLinearRgba = MakeReplicationContent(kViewExtent, kViewExtent);
     d.Driver = FinalizeDriver::PassDirect;
     d.DestinationFormat = format;

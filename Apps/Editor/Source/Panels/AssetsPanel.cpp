@@ -1,12 +1,11 @@
 #include "Panels/AssetsPanel.h"
 #include "Editor/EditorTreeTitleIconVars.h"
-#include "Mathematics/Interpolation.h"
+#include "Editor/Registries/EditorMenuRegistry.h"
 #include "Panels/InspectorPanel.h"
 #include "Panels/AddTagModal.h"
 
 #include "Core/Engine.h"
 #include "Input/KeyCodes.h"
-#include "Types/PathUtils.h"
 
 #include <algorithm>
 #include <cctype>
@@ -14,6 +13,7 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <utility>
 #include <nlohmann/json.hpp>
 #include "Editor/Shortcuts/EditorShortcuts.h"
 #include "Panels/SettingsPanel.h"
@@ -36,7 +36,7 @@
 #include "Assets/AssetsBrowserController.h"
 #include "Assets/AssetsDataProviders.h"
 #include "Thumbnails/FolderBakeStatus.h"
-#include "Thumbnails/ModelThumbnail/ModelThumbnailHandler.h"
+#include "Thumbnails/ModelThumbnailHandler.h"
 #include "UI/SmartFolder/SmartFolderManager.h"
 #include "UI/SmartFolder/SmartFolderController.h"
 #include "Editor/Vcs/EditorVcsProviderRegistry.h"
@@ -69,7 +69,9 @@ bool IsImageExtension(const std::filesystem::path& path)
 {
     if (!path.has_extension())
         return false;
-    const std::string ext = LowerCaseExtension(path);
+    std::string ext = path.extension().string();
+    for (auto& ch : ext)
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga" ||
         ext == ".gif" || ext == ".hdr" || ext == ".ktx" || ext == ".ktx2" || ext == ".dds";
 }
@@ -96,9 +98,6 @@ bool LabelFirstCharMatches(const char* label, char matchLowerOrDigit)
 
 /// Same key within this window cycles to the next matching item; after pause, same key starts from the first match again.
 constexpr std::chrono::milliseconds kAssetsTypeAheadRepeatWindow(750);
-
-// Narrows the tree column vs the default 1:3 flex split (space before the splitter).
-constexpr float kAssetsPanelLeftPaneMarginRightPx = 10.0f;
 
 const std::vector<Dropdown::Option>& AssetsSearchFilterOptions()
 {
@@ -151,7 +150,7 @@ float GridToolbarSliderTFromIconPx(float px)
 
 float IconPxFromGridToolbarSliderT(float t)
 {
-    t = Math::Clamp01(t);
+    t = std::clamp(t, 0.0f, 1.0f);
     const float ratio = kGridToolbarIconMaxPx / kGridToolbarIconMinPx;
     return kGridToolbarIconMinPx * std::pow(ratio, t);
 }
@@ -161,7 +160,7 @@ void SetAssetsVirtualizedViewActive(UIElement* view, bool active)
     if (!view)
         return;
 
-    view->Style()
+    view->Overrides()
         .Set(Style::Display, active ? DisplayMode::Flex : DisplayMode::None)
         .Set(Style::FlexGrow, active ? 1.0f : 0.0f)
         .Set(Style::MinWidth, StyleLength::Px(0.0f))
@@ -178,6 +177,7 @@ void SetAssetsVirtualizedViewActive(UIElement* view, bool active)
 AssetsPanel::AssetsPanel()
     : DockPanel("Assets")
 {
+    RequestSubtreeStyleAssetPath("UI/panels/AssetsPanel.css", "editor");
     // Load default view preference (list view = false, grid view = true)
     {
         auto prefs = Editor::OpenEditorPreferences();
@@ -202,12 +202,12 @@ AssetsPanel::AssetsPanel()
     m_LeftPane = leftPane.get();
     leftPane->AddClass("pane");
     leftPane->AddClass("assets-left-pane");
-    leftPane->Style().Set(Style::MarginRight, StyleLength::Px(kAssetsPanelLeftPaneMarginRightPx));
     {
         auto tree = std::make_unique<TreeView>();
         m_TreeView = tree.get();
         m_TreeView->SetId("assets-tree");
         m_TreeView->AddClass("tree");
+        m_TreeView->AddClass("assets-folder-tree");
         m_TreeView->SetOnItemResizeGesture([this](float scrollY) {
             if (!m_OnTreeIconSizeWheelCommit)
                 return;
@@ -216,20 +216,12 @@ AssetsPanel::AssetsPanel()
             if (std::fabs(resized - m_LastTreeIconSizePx) > 0.1f)
                 m_OnTreeIconSizeWheelCommit(resized);
         });
-        // The folder tree renames its selected folder with the same key as the item views.
-        m_TreeView->RegisterEventHandler(kEventKeyDown, [this](UIEvent& e)
-        {
-            if (!Editor::MatchesCatalogShortcut("Assets", "Rename", e.Key, e.Mods))
-                return;
-            if (m_Controller)
-                m_Controller->BeginRenameOfTreeSelection();
-            e.Stop();
-        });
         leftPane->AddChild(std::move(tree));
 
-        // Search bar placement is controlled via Settings.
+        // Search bar placement and visibility are controlled via Settings.
         auto built = BuildPanelSearchBar(
             "assets-search-field",
+            []() { return SettingsPanel::GetSearchBarsVisible(); },
             [this](const std::string& value)
             {
                 if (m_ToolbarSearchField)
@@ -252,7 +244,6 @@ AssetsPanel::AssetsPanel()
         m_SearchBar = built.RootPtr;
         m_SearchField = built.FieldPtr;
         m_SearchFilter = built.FilterPtr;
-        leftPane->AddClass("panel-search-host");
         leftPane->AddChild(std::move(built.Root));
 
         SettingsPanel::RegisterSearchBar(m_SearchBar, built.IconPtr);
@@ -273,7 +264,7 @@ AssetsPanel::AssetsPanel()
         auto viewsContainer = std::make_unique<UIElement>();
         viewsContainer->AddClass("assets-views-container");
         viewsContainer->SetId("assets-views-container");
-        viewsContainer->Style()
+        viewsContainer->Overrides()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Column)
             .Set(Style::Position, PositionType::Relative)
@@ -287,7 +278,7 @@ AssetsPanel::AssetsPanel()
         m_GridView->SetId("assets-grid");
         m_GridView->AddClass("grid");
         m_GridView->SetIconSizeStep(kGridIconSizeStepPx);
-        m_GridView->Style()
+        m_GridView->Overrides()
             .Set(Style::MinWidth, StyleLength::Px(0.0f))
             .Set(Style::MinHeight, StyleLength::Px(0.0f))
             .Set(Style::Display, DisplayMode::Flex);
@@ -332,7 +323,7 @@ AssetsPanel::AssetsPanel()
         // existing keyboard / type-ahead / selection code keeps working against the same ListView.
         auto table = std::make_unique<TableView>();
         m_Table = table.get();
-        m_Table->Style()
+        m_Table->Overrides()
             .Set(Style::MinWidth, StyleLength::Px(0.0f))
             .Set(Style::MinHeight, StyleLength::Px(0.0f))
             .Set(Style::Display, DisplayMode::Flex);
@@ -399,7 +390,7 @@ AssetsPanel::AssetsPanel()
         auto buttonsContainer = std::make_unique<UIElement>();
         m_MainViewToggleContainer = buttonsContainer.get();
         buttonsContainer->AddClass("assets-view-toggle-container");
-        buttonsContainer->Style()
+        buttonsContainer->Overrides()
             .Set(Style::Position, PositionType::Absolute)
             .Set(Style::PositionBottom, StyleLength::Px(20.0f))
             .Set(Style::PositionRight, StyleLength::Px(24.0f))
@@ -460,7 +451,7 @@ AssetsPanel::AssetsPanel()
         auto bottomToolbar = std::make_unique<UIElement>();
         m_ExtraViewToolbar = bottomToolbar.get();
         m_ExtraViewToolbar->AddClass("assets-view-toggle-toolbar");
-        m_ExtraViewToolbar->Style()
+        m_ExtraViewToolbar->Overrides()
             .Set(Style::Display, m_ExtraBottomViewToolbarEnabled ? DisplayMode::Flex : DisplayMode::None);
 
         auto bottomToolbarRight = std::make_unique<UIElement>();
@@ -549,6 +540,7 @@ AssetsPanel::AssetsPanel()
         {
             auto built = BuildPanelSearchBar(
                 "assets-toolbar-search-field",
+                []() { return SettingsPanel::GetSearchBarsVisible(); },
                 [this](const std::string& value)
                 {
                     if (m_SearchField)
@@ -605,7 +597,7 @@ AssetsPanel::AssetsPanel()
             // Defer registry writes so the modal can close and the UI stays responsive.
             std::vector<std::filesystem::path> pathsCopy = paths;
             std::string tagNameCopy = tagName;
-            this->PostAction([pathsCopy, tagNameCopy]() {
+            this->PostAction([this, pathsCopy, tagNameCopy]() {
                 auto& reg = EngineCore::GetInstance().GetAssetManager().GetRegistry();
                 const std::string key = "tags";
                 for (const auto& p : pathsCopy)
@@ -1003,7 +995,7 @@ void AssetsPanel::SetTreeIconSize(float px)
             if (!el) return;
             if (el->HasClass("tree-folder-icon"))
             {
-                el->Style()
+                el->Overrides()
                     .Set(Style::Width, StyleLength::Px(m_LastTreeIconSizePx))
                     .Set(Style::Height, StyleLength::Px(m_LastTreeIconSizePx))
                     .Set(Style::MinWidth, StyleLength::Px(m_LastTreeIconSizePx))
@@ -1595,11 +1587,11 @@ void AssetsPanel::SetExtraBottomViewToolbarEnabled(bool enabled)
     m_ExtraBottomViewToolbarEnabled = enabled;
     if (m_MainViewToggleContainer)
     {
-        m_MainViewToggleContainer->Style()
+        m_MainViewToggleContainer->Overrides()
             .Set(Style::Display, enabled ? DisplayMode::None : DisplayMode::Flex);
     }
     if (m_ExtraViewToolbar)
-        m_ExtraViewToolbar->Style().Set(Style::Display, enabled ? DisplayMode::Flex : DisplayMode::None);
+        m_ExtraViewToolbar->Overrides().Set(Style::Display, enabled ? DisplayMode::Flex : DisplayMode::None);
     UpdateViewToggleButtonsPresentation();
     UpdateSearchBarPlacement();
     ApplyAssetsViewsBottomInsetForToolbar();
@@ -1617,7 +1609,7 @@ void AssetsPanel::ApplyBottomToolbarZoomSliderVisibility()
     if (!m_ToolbarGridZoomSlider)
         return;
     const bool show = m_ExtraBottomViewToolbarEnabled && m_BottomToolbarZoomSliderVisible;
-    m_ToolbarGridZoomSlider->Style().Set(Style::Display, show ? DisplayMode::Flex : DisplayMode::None);
+    m_ToolbarGridZoomSlider->Overrides().Set(Style::Display, show ? DisplayMode::Flex : DisplayMode::None);
 }
 
 void AssetsPanel::HandleAssetsToolbarZoomSliderScroll(float scrollY)
@@ -1698,30 +1690,30 @@ void AssetsPanel::ApplyAssetsViewsBottomInsetForToolbar()
         return;
     if (m_ExtraBottomViewToolbarEnabled)
     {
-        m_AssetsViewsContainer->Style()
+        m_AssetsViewsContainer->Overrides()
             .Set(Style::PaddingBottom, StyleLength::Px(kAssetsBottomToolbarHeightPx));
     }
     else
     {
-        m_AssetsViewsContainer->Style().Set(Style::PaddingBottom, StyleLength::Px(0.0f));
+        m_AssetsViewsContainer->Overrides().Set(Style::PaddingBottom, StyleLength::Px(0.0f));
     }
 }
 
 void AssetsPanel::UpdateViewToggleButtonsPresentation()
 {
     if (m_GridViewButton)
-        m_GridViewButton->Style().Set(Style::Display, m_SingleViewToggleIconEnabled ? DisplayMode::None : DisplayMode::Flex);
+        m_GridViewButton->Overrides().Set(Style::Display, m_SingleViewToggleIconEnabled ? DisplayMode::None : DisplayMode::Flex);
     if (m_ListViewButton)
-        m_ListViewButton->Style().Set(Style::Display, m_SingleViewToggleIconEnabled ? DisplayMode::None : DisplayMode::Flex);
+        m_ListViewButton->Overrides().Set(Style::Display, m_SingleViewToggleIconEnabled ? DisplayMode::None : DisplayMode::Flex);
     if (m_SingleViewToggleButton)
-        m_SingleViewToggleButton->Style().Set(Style::Display, m_SingleViewToggleIconEnabled ? DisplayMode::Flex : DisplayMode::None);
+        m_SingleViewToggleButton->Overrides().Set(Style::Display, m_SingleViewToggleIconEnabled ? DisplayMode::Flex : DisplayMode::None);
 
     if (m_ExtraGridViewButton)
-        m_ExtraGridViewButton->Style().Set(Style::Display, m_SingleViewToggleIconEnabled ? DisplayMode::None : DisplayMode::Flex);
+        m_ExtraGridViewButton->Overrides().Set(Style::Display, m_SingleViewToggleIconEnabled ? DisplayMode::None : DisplayMode::Flex);
     if (m_ExtraListViewButton)
-        m_ExtraListViewButton->Style().Set(Style::Display, m_SingleViewToggleIconEnabled ? DisplayMode::None : DisplayMode::Flex);
+        m_ExtraListViewButton->Overrides().Set(Style::Display, m_SingleViewToggleIconEnabled ? DisplayMode::None : DisplayMode::Flex);
     if (m_ExtraSingleViewToggleButton)
-        m_ExtraSingleViewToggleButton->Style().Set(Style::Display, m_SingleViewToggleIconEnabled ? DisplayMode::Flex : DisplayMode::None);
+        m_ExtraSingleViewToggleButton->Overrides().Set(Style::Display, m_SingleViewToggleIconEnabled ? DisplayMode::Flex : DisplayMode::None);
 }
 
 void AssetsPanel::UpdateSingleViewToggleButtons()
@@ -1777,6 +1769,28 @@ void AssetsPanel::SetToolbarGridZoomSliderValue(float gridIconPx)
     m_ToolbarGridZoomSliderUpdating = true;
     m_ToolbarGridZoomSlider->SetValue(GridToolbarSliderTFromIconPx(gridIconPx));
     m_ToolbarGridZoomSliderUpdating = false;
+}
+
+void AssetsPanel::RegisterCommands()
+{
+    constexpr std::uint32_t kCommands[] = {
+        UiReplayCommandIds::AssetsNavSandboxRoot, UiReplayCommandIds::AssetsNavSandboxSrc,
+        UiReplayCommandIds::AssetsNavSandboxDst,  UiReplayCommandIds::AssetsViewGrid,
+        UiReplayCommandIds::AssetsViewList,
+    };
+    for (const std::uint32_t commandId : kCommands)
+    {
+        Editor::EditorMenuRegistry::Get().RegisterCommand({commandId, [this, commandId](std::string* outError) {
+            std::string error;
+            if (!HandleUiReplayCommand(commandId, &error))
+                error = "the Assets browser is not ready";
+            if (error.empty())
+                return true;
+            if (outError)
+                *outError = std::move(error);
+            return false;
+        }});
+    }
 }
 
 bool AssetsPanel::HandleUiReplayCommand(std::uint32_t commandId, std::string* outError)

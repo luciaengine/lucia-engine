@@ -7,7 +7,7 @@
 #include "Logger/Logger.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/NamedPushConstantWriter.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Materials/MaterialHelper.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
@@ -39,9 +39,9 @@ struct Binding
     Access Usage;
     uint32_t Mip = ~0u;
 };
-// The temporal pass binds the most: current, raw sweep, guide, depth, history,
-// history surface and the two outputs.
-constexpr size_t kMaxBindings = 8;
+// The temporal pass binds the most: current, guide, depth, history, history
+// surface and the two outputs.
+constexpr size_t kMaxBindings = 7;
 struct PassBindings
 {
     std::array<Binding, kMaxBindings> Items{};
@@ -60,23 +60,24 @@ constexpr char kPoolPrefix[] = "Pipeline.GTAO.View";
 
 bool CameraContinuous(const CameraData& previous, const CameraData& current, float radius)
 {
-    const Mathematics::Vector3 delta(current.cameraPos.x - previous.cameraPos.x,
-                                     current.cameraPos.y - previous.cameraPos.y,
-                                     current.cameraPos.z - previous.cameraPos.z);
-    const float distanceSquared = delta.LengthSquared();
+    float distanceSquared = 0.0f;
+    for (size_t i = 0; i < 3; ++i)
+    {
+        const float delta = current.cameraPos[i] - previous.cameraPos[i];
+        distanceSquared += delta * delta;
+    }
     const float maxTranslation = std::max(2.0f * radius, 1.0f);
     if (distanceSquared > maxTranslation * maxTranslation)
         return false;
     // Projection changes invalidate depth interpretation. Stored cameras are
     // unjittered, so the usual TAA sample sequence does not trigger this gate.
-    for (int column = 0; column < 4; ++column)
-        for (int row = 0; row < 4; ++row)
-            if (std::abs(previous.proj[column][row] - current.proj[column][row]) > 1e-5f)
-                return false;
+    for (size_t i = 0; i < 16; ++i)
+        if (std::abs(previous.proj[i] - current.proj[i]) > 1e-5f)
+            return false;
     float rotationTrace = 0.0f;
-    for (int column = 0; column < 3; ++column)
-        for (int row = 0; row < 3; ++row)
-            rotationTrace += previous.view[column][row] * current.view[column][row];
+    for (size_t column = 0; column < 3; ++column)
+        for (size_t row = 0; row < 3; ++row)
+            rotationTrace += previous.view[column * 4 + row] * current.view[column * 4 + row];
     return (rotationTrace - 1.0f) * 0.5f > 0.9f;
 }
 } // namespace
@@ -268,7 +269,7 @@ void AONode::DeclareForView(ViewDeclare& d)
                     {
                         uint32_t slot = 0;
                         DescriptorType type{};
-                        if (!Rendering::TryGetSet0BindingByName(*shader.Meta, b.Name, slot, type)) return;
+                        if (!Detail::TryGetSet0BindingByName(*shader.Meta, b.Name, slot, type)) return;
                         if (b.Mip != ~0u)
                         {
                             const auto mipView = ctx.GetOrCreatePooledMipView(b.Texture, b.Mip);
@@ -295,7 +296,6 @@ void AONode::DeclareForView(ViewDeclare& d)
                         else if (member.Name == "steps") pcw.Add(member.Name, kGtaoSweepSteps);
                         else if (member.Name == "noiseFrame") pcw.Add(member.Name, m_Temporal ? static_cast<uint32_t>(frame & 7u) : 0u);
                         else if (member.Name == "historyValid") pcw.Add(member.Name, historyValid ? 1u : 0u);
-                        else if (member.Name == "frameIndex") pcw.Add(member.Name, static_cast<uint32_t>(frame));
                         else if (!settings.TryWriteField(member.Name, pcw)) return;
                     }
                     pcw.Flush(cl);
@@ -318,7 +318,7 @@ void AONode::DeclareForView(ViewDeclare& d)
     addPass(Blur, "GTAOBlur", {{"uAOIn", rawAO, Access::Sampled}, {"uDepth", depth, Access::Sampled}, {"uGuide", guide, Access::Sampled}, {"uAOOut", denoised, Access::StorageWrite}}, aoW, aoH);
     if (m_Temporal)
     {
-        addPass(Temporal, "GTAOTemporal", {{"uCurrent", denoised, Access::Sampled}, {"uSweep", rawAO, Access::Sampled}, {"uGuide", guide, Access::Sampled}, {"uDepth", depth, Access::Sampled}, {"uHistory", historyRead, Access::Sampled}, {"uHistorySurface", surfaceRead, Access::Sampled}, {"uAOOut", historyWrite, Access::StorageWrite}, {"uSurfaceOut", surfaceWrite, Access::StorageWrite}}, aoW, aoH,
+        addPass(Temporal, "GTAOTemporal", {{"uCurrent", denoised, Access::Sampled}, {"uGuide", guide, Access::Sampled}, {"uDepth", depth, Access::Sampled}, {"uHistory", historyRead, Access::Sampled}, {"uHistorySurface", surfaceRead, Access::Sampled}, {"uAOOut", historyWrite, Access::StorageWrite}, {"uSurfaceOut", surfaceWrite, Access::StorageWrite}}, aoW, aoH,
                 /*commitsHistory=*/true);
         d.Frame.MarkPersistentTextureInitialized(historyWrite);
         d.Frame.MarkPersistentTextureInitialized(surfaceWrite);

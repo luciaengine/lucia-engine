@@ -7,6 +7,7 @@
 #include "Components/Rendering/MeshRenderer.h" // HashMeshName / FoldMeshLodSuffix
 #include "Logger/Logger.h"
 #include "Scene/SceneValue.h"
+#include "Types/Fnv1a.h"
 
 #include <algorithm>
 #include <cmath>
@@ -349,15 +350,8 @@ uint32 AppendSlotLevelByName(Vector<Mesh>& target, const Vector<Mesh>& slotMeshe
 
 uint64 FoldLodSlotSource(uint64 running, const GUID& slotGuid, uint64 slotContentHash)
 {
-    constexpr uint64 kFnvPrime = 1099511628211ull;
-    const auto mix = [&](uint64 v) {
-        const auto* b = reinterpret_cast<const uint8*>(&v);
-        for (int i = 0; i < 8; ++i) { running ^= b[i]; running *= kFnvPrime; }
-    };
-    const std::string guidText = slotGuid.ToString();
-    for (char c : guidText) { running ^= static_cast<uint8>(c); running *= kFnvPrime; }
-    mix(slotContentHash);
-    return running;
+    running = Hashing::Fnv1a64(slotGuid.ToString(), running);
+    return Hashing::Fnv1a64Value(running, slotContentHash);
 }
 
 namespace {

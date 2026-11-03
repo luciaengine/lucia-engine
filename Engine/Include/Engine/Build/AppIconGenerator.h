@@ -26,7 +26,7 @@ std::filesystem::path ResolveDefaultEditorApplicationIconPath(
 /// Resolves `settings.applicationIconPath` to an on-disk image file, or the default editor icon.
 std::filesystem::path ResolveApplicationIconSourcePath(const BuildSettings& settings);
 
-/// Creates icons for the active build platform (Windows .ico/.rc, macOS .icns, Linux PNG tree).
+/// Creates icons for the active build platform (Windows .ico/.rc, macOS .icns, Linux PNG tree, Android density PNGs, and iOS device PNGs).
 AppIconGenerationResult GenerateApplicationIcons(const BuildSettings& settings,
                                                  const std::filesystem::path& playerProjectDir);
 

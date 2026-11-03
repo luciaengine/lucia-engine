@@ -1,7 +1,7 @@
 #include "ModelAssetLoadGltf.h"
 #include "Assets/ModelAsset.h"
+#include "AssetCore/SharedFileRead.h"
 #include "Assets/AnimationClip.h"
-#include "Assets/AssetDecodeInputFiles.h"
 #include "Assets/AssetManager.h"
 #include "Assets/AuthoredLodImport.h"
 #include "Assets/FbxLoaderOptions.h"
@@ -30,10 +30,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <new>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -95,7 +95,7 @@ static void AssignEmbeddedTextureRefs(ImportedMaterialData& mat, const Vector<Em
 static constexpr size_t kMergeMinPrimitives = 32;
 static constexpr size_t kMergeMinReductionFactor = 2;
 
-void MergeStaticPrimitivesByMaterial(Vector<Mesh>& meshes, std::string_view modelName, size_t maxMergedVertices)
+static void MergeStaticPrimitivesByMaterial(Vector<Mesh>& meshes)
 {
     if (meshes.size() < kMergeMinPrimitives)
         return;
@@ -191,18 +191,6 @@ void MergeStaticPrimitivesByMaterial(Vector<Mesh>& meshes, std::string_view mode
             outHasColor0 = outHasColor0 || staticMeshes[gi].HasColor0();
             outHasTexCoords1 = outHasTexCoords1 || staticMeshes[gi].HasTexCoords1();
             outExtraUvCount = std::max(outExtraUvCount, staticMeshes[gi].ExtraTexCoords.size());
-        }
-
-        // The merged indices are each source index plus the vertices merged before it: past
-        // maxMergedVertices they would not fit, so the group's primitives stay separate.
-        if (outVertCount > maxMergedVertices)
-        {
-            Logger::Log::Warning("glTF '{}': the {} static primitives of material {} are not merged: they hold {} "
-                                 "vertices, past the {} one merged mesh can index; they import as separate meshes.",
-                                 modelName, group.size(), matIdx, outVertCount, maxMergedVertices);
-            for (size_t gi : group)
-                merged.push_back(std::move(staticMeshes[gi]));
-            continue;
         }
         out.Vertices.reserve(outVertCount);
         out.Indices.reserve(outIndexCount);
@@ -371,10 +359,10 @@ void MergeStaticPrimitivesByMaterial(Vector<Mesh>& meshes, std::string_view mode
 
     Logger::Log::Info(
         "[ModelLoad] Merged {} static primitives into {} per-material draws ({} verts, {} indices)",
-        staticMeshes.size(),
-        merged.size(),
-        totalSrcVerts,
-        totalSrcIndices);
+        static_cast<uint32>(staticMeshes.size()),
+        static_cast<uint32>(merged.size()),
+        static_cast<uint32>(totalSrcVerts),
+        static_cast<uint32>(totalSrcIndices));
 
     // Reassemble: skinned first (so any skeleton-bound rendering stays adjacent
     // for cache locality), then merged static groups.
@@ -421,9 +409,9 @@ struct GltfBufferReadContext
     ExternalBufferSizes Sizes;
 };
 
-// Gives cgltf each external buffer at its declared byteLength, from the largest declared prefix of its file, the only
-// part read. Inside an asset decode the document views the reader's bytes in place: every document the decode opens
-// closes before it returns. Elsewhere the prefix is read through the shared-open path (AssetCore/SharedFileRead.h).
+// Every external buffer keeps its declared byteLength. Buffers naming one file share the
+// largest declared prefix, read directly into document-owned storage through the shared-open
+// path, so a watched file remains replaceable while it is read (AssetCore/SharedFileRead.h).
 cgltf_result CgltfReadFileShared(const cgltf_memory_options* /*memoryOptions*/,
                                  const cgltf_file_options* fileOptions,
                                  const char* path, cgltf_size* size, void** data)
@@ -434,59 +422,35 @@ cgltf_result CgltfReadFileShared(const cgltf_memory_options* /*memoryOptions*/,
     try {
         auto& context = *static_cast<GltfBufferReadContext*>(fileOptions->user_data);
         const auto key = ExternalBufferKey(path);
-        const Vector<uint8>* file = nullptr;
-        if (const auto owned = context.Backing.find(key); owned != context.Backing.end()) {
-            file = &owned->second;
-        } else {
+        auto loaded = context.Backing.find(key);
+        if (loaded == context.Backing.end()) {
             const auto declared = context.Sizes.find(key);
             if (declared == context.Sizes.end())
                 return cgltf_result_file_not_found;
-            Vector<uint8> storage;
-            file = ReadAssetDecodeInputFile({key, declared->second}, storage);
-            if (!file)
+            SharedFileReader file{std::filesystem::path(path)};
+            if (!file.IsOpen())
                 return cgltf_result_file_not_found;
-            if (file->size() < declared->second)
+            const int64 fileSize = file.Size();
+            if (fileSize < 0)
+                return cgltf_result_io_error;
+            if (static_cast<uint64>(fileSize) < declared->second)
                 return cgltf_result_data_too_short;
-            if (file == &storage)
-                file = &context.Backing.emplace(key, std::move(storage)).first->second;
+
+            Vector<uint8> bytes(declared->second);
+            const int64 read = file.Read(bytes.data(), bytes.size());
+            if (read < 0)
+                return cgltf_result_io_error;
+            if (static_cast<uint64>(read) != bytes.size())
+                return cgltf_result_data_too_short;
+            loaded = context.Backing.emplace(key, std::move(bytes)).first;
         }
-        if (file->size() < *size)
+        if (loaded->second.size() < *size)
             return cgltf_result_data_too_short;
-        // The cgltf boundary: a buffer's data is a void*, but neither cgltf nor the loader writes
-        // through it.
-        *data = const_cast<uint8*>(file->data());
+        *data = loaded->second.data();
         return cgltf_result_success;
     } catch (const std::bad_alloc&) {
         return cgltf_result_out_of_memory;
     }
-}
-
-// A glTF image the AssetDatabase tracks is referenced as that asset, not copied into the model: its
-// import settings (mips, compression, color space, filtering) then apply, and one GPU texture
-// serves every model that shares it. ModelAsset::LoadGLTF and ModelAsset::ResolveDecodeInputs share
-// the rule, so the decode finds every image it copies already read.
-GUID FindTrackedGltfImage(const std::filesystem::path& imagePath)
-{
-    AssetManager* assetManager = EngineCore::GetInstance().TryGetAssetManager();
-    return assetManager ? assetManager->ResolveAssetGuid(imagePath) : GUID::Null();
-}
-
-// The bytes of the external image file at `imagePath` for the next image LoadGLTF adds to
-// `images`. The first image that names a file takes its bytes (TakeAssetDecodeInputFile), so a
-// decode holds one copy of them; a later image that names the same file copies that image's.
-// `firstImageOfFile` maps each file taken, by its generic path, to the image that took it.
-bool TakeExternalGltfImage(const std::filesystem::path& imagePath, const Vector<EmbeddedImage>& images,
-                           FastHashMap<String, size_t>& firstImageOfFile, Vector<uint8>& bytes)
-{
-    String file = imagePath.generic_string();
-    if (const auto first = firstImageOfFile.find(file); first != firstImageOfFile.end()) {
-        bytes = images[first->second].Data;
-        return true;
-    }
-    if (!TakeAssetDecodeInputFile({imagePath, std::nullopt}, bytes))
-        return false;
-    firstImageOfFile.emplace(std::move(file), images.size());
-    return true;
 }
 
 void CgltfReleaseSharedFile(const cgltf_memory_options*, const cgltf_file_options*, void*)
@@ -676,35 +640,6 @@ std::string SkinShortOfInverseBindMatrices(const cgltf_data& document)
     return {};
 }
 
-// The first node more than kMaxGltfNodeDepth levels below its scene root, described for a refusal;
-// empty when every node is within the bound. A parent cycle never reaches a root, so it is refused
-// here too. Each node's walk up stops at the first ancestor whose level is known, so the pass is
-// linear in the node count.
-std::string NodeDeeperThanItsLimit(const cgltf_data& document)
-{
-    std::vector<size_t> levels(document.nodes_count, 0); // 1 for a root; 0 while unknown
-    std::vector<cgltf_size> unknownChain;
-    for (cgltf_size i = 0; i < document.nodes_count; ++i) {
-        unknownChain.clear();
-        const cgltf_node* node = &document.nodes[i];
-        while (node && levels[static_cast<size_t>(node - document.nodes)] == 0 &&
-               unknownChain.size() <= kMaxGltfNodeDepth) {
-            unknownChain.push_back(static_cast<cgltf_size>(node - document.nodes));
-            node = node->parent;
-        }
-        size_t level = node ? levels[static_cast<size_t>(node - document.nodes)] : 0;
-        if (level + unknownChain.size() > kMaxGltfNodeDepth) {
-            const cgltf_node& deep = document.nodes[i];
-            return "node " + std::to_string(i) + " ('" + (deep.name ? deep.name : "<unnamed>") +
-                   "') is more than " + std::to_string(kMaxGltfNodeDepth) +
-                   " levels below its scene root, or its parents form a cycle";
-        }
-        for (auto chained = unknownChain.rbegin(); chained != unknownChain.rend(); ++chained)
-            levels[static_cast<size_t>(*chained)] = ++level;
-    }
-    return {};
-}
-
 // Every refusal of a glTF file is logged here, once, with the file and the reason.
 void RefuseGltfFile(const std::filesystem::path& path, std::string_view reason)
 {
@@ -761,7 +696,7 @@ std::string PrimitiveAccessorRefusal(size_t primitiveIndex, size_t meshIndex, co
 }
 
 // The glTF type LoadGLTF reads base attribute `attribute` as: VEC3 for POSITION and NORMAL, VEC2 for
-// TEXCOORD_0, VEC4 for TANGENT, JOINTS_0 and WEIGHTS_0, and for COLOR_0 its accessor's own type when that is
+// TEXCOORD_0 and TEXCOORD_1, VEC4 for TANGENT, JOINTS_0 and WEIGHTS_0, and for COLOR_0 its accessor's own type when that is
 // VEC3 or VEC4 (the one base attribute with two legal types; VEC4 otherwise, which refuses it);
 // cgltf_type_invalid for an attribute it does not read.
 cgltf_type BaseAttributeType(const cgltf_attribute& attribute)
@@ -771,7 +706,7 @@ cgltf_type BaseAttributeType(const cgltf_attribute& attribute)
     case cgltf_attribute_type_normal:
         return cgltf_type_vec3;
     case cgltf_attribute_type_texcoord:
-        return attribute.index == 0 ? cgltf_type_vec2 : cgltf_type_invalid;
+        return attribute.index <= 1 ? cgltf_type_vec2 : cgltf_type_invalid;
     case cgltf_attribute_type_tangent:
     case cgltf_attribute_type_joints:
     case cgltf_attribute_type_weights:
@@ -1100,42 +1035,26 @@ void* AllocateIntoImageBytes(void* imageBytes, cgltf_size size)
 
 void ReleaseNothing(void* /*imageBytes*/, void* /*data*/) {}
 
-// A base64 data URI ("data:<type>[;<parameter>];base64,<payload>"): its media type, without
-// parameters, and its payload without the trailing padding, which decodes to three quarters of its
-// length.
-struct Base64DataUri
-{
-    std::string_view MediaType;
-    std::string_view Payload;
-};
-
-std::optional<Base64DataUri> ParseBase64DataUri(std::string_view uri)
+// Decodes an image's base64 data URI ("data:<type>[;<parameter>];base64,<payload>") into `image`,
+// taking the MIME type from the URI, lower-cased and without parameters, when the image declares
+// none. cgltf decodes the data URIs of buffers itself and leaves those of images to the importer.
+// The decoded bytes are three quarters of the payload the file already holds, so a data URI cannot
+// size an allocation past the file. False, with `image` left empty, when the URI is not base64 or
+// its payload does not decode.
+bool DecodeDataUriImage(std::string_view uri, EmbeddedImage& image)
 {
     constexpr std::string_view kScheme = "data:";
     constexpr std::string_view kBase64Suffix = ";base64";
     const size_t comma = uri.find(',');
     if (uri.substr(0, kScheme.size()) != kScheme || comma == std::string_view::npos)
-        return std::nullopt;
+        return false;
     const std::string_view header = uri.substr(kScheme.size(), comma - kScheme.size());
     if (header.size() < kBase64Suffix.size() || header.substr(header.size() - kBase64Suffix.size()) != kBase64Suffix)
-        return std::nullopt;
+        return false;
     std::string_view payload = uri.substr(comma + 1);
     while (!payload.empty() && payload.back() == '=')
         payload.remove_suffix(1);
-    return Base64DataUri{header.substr(0, header.find(';')), payload};
-}
-
-// Decodes an image's base64 data URI into `image`, taking the MIME type from the URI, lower-cased,
-// when the image declares none. cgltf decodes the data URIs of buffers itself and leaves those of
-// images to the importer. The decoded bytes are three quarters of the payload the file already
-// holds, so a data URI cannot size an allocation past the file. False, with `image` left empty,
-// when the URI is not base64 or its payload does not decode.
-bool DecodeDataUriImage(std::string_view uri, EmbeddedImage& image)
-{
-    const std::optional<Base64DataUri> dataUri = ParseBase64DataUri(uri);
-    if (!dataUri)
-        return false;
-    const cgltf_size decodedSize = dataUri->Payload.size() * 3 / 4;
+    const cgltf_size decodedSize = payload.size() * 3 / 4;
     if (decodedSize == 0)
         return false;
 
@@ -1144,34 +1063,13 @@ bool DecodeDataUriImage(std::string_view uri, EmbeddedImage& image)
     options.memory.free_func = &ReleaseNothing;
     options.memory.user_data = &image.Data;
     void* decoded = nullptr;
-    if (cgltf_load_buffer_base64(&options, decodedSize, dataUri->Payload.data(), &decoded) != cgltf_result_success) {
+    if (cgltf_load_buffer_base64(&options, decodedSize, payload.data(), &decoded) != cgltf_result_success) {
         image.Data.clear();
         return false;
     }
     if (image.MimeType.empty())
-        image.MimeType = ToLowerAscii(dataUri->MediaType);
+        image.MimeType = ToLowerAscii(header.substr(0, header.find(';')));
     return true;
-}
-
-// cgltf_load_buffers allocates a base64 data URI buffer's declared byteLength before it decodes
-// the payload. The first such buffer that declares more bytes than its payload decodes to,
-// described for a refusal; empty when none does. A data URI that is not base64 is left to
-// cgltf_load_buffers, which refuses it.
-std::string DataUriBufferPastItsPayload(const cgltf_data& document)
-{
-    for (cgltf_size i = 0; i < document.buffers_count; ++i) {
-        const cgltf_buffer& buffer = document.buffers[i];
-        if (buffer.data || !buffer.uri)
-            continue;
-        const std::optional<Base64DataUri> dataUri = ParseBase64DataUri(buffer.uri);
-        if (!dataUri)
-            continue;
-        const cgltf_size decodedSize = dataUri->Payload.size() * 3 / 4;
-        if (buffer.size > decodedSize)
-            return "buffer " + std::to_string(i) + " declares a byteLength of " + std::to_string(buffer.size) +
-                   " bytes, but its base64 data URI decodes to " + std::to_string(decodedSize);
-    }
-    return {};
 }
 
 } // namespace
@@ -1205,12 +1103,6 @@ GltfDocument OpenGltfDocument(const Vector<uint8>& bytes, const std::filesystem:
         return {};
     }
 
-    const std::string pastItsPayload = DataUriBufferPastItsPayload(*document);
-    if (!pastItsPayload.empty()) {
-        RefuseGltfFile(path, pastItsPayload + "; re-export it.");
-        return {};
-    }
-
     // External buffer URIs resolve relative to the full file path.
     const std::string fullPath = path.string();
     auto& backing = document.get_deleter().ExternalBuffers;
@@ -1236,12 +1128,6 @@ GltfDocument OpenGltfDocument(const Vector<uint8>& bytes, const std::filesystem:
     const std::string pastItsLimit = AccessorWithoutABufferViewPastItsLimit(*document);
     if (!pastItsLimit.empty()) {
         RefuseGltfFile(path, pastItsLimit + "; re-export it.");
-        return {};
-    }
-
-    const std::string tooDeep = NodeDeeperThanItsLimit(*document);
-    if (!tooDeep.empty()) {
-        RefuseGltfFile(path, tooDeep + "; flatten its node hierarchy and re-export it.");
         return {};
     }
 
@@ -1277,46 +1163,6 @@ std::string ChargeAnimationKeys(const cgltf_data& document, size_t animationInde
     }
     return {};
 }
-
-Vector<AssetDecodeInput> ModelAsset::ResolveDecodeInputs(const Vector<uint8>& bytes, const std::filesystem::path& path)
-{
-    const ModelFormat format = FormatFromPath(path);
-    if (format != ModelFormat::GLTF && format != ModelFormat::GLB)
-        return {};
-    // Only a document that names a URI reads a file besides its own; a .glb rarely names one.
-    const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    if (text.find("\"uri\"") == std::string_view::npos)
-        return {};
-    cgltf_options options{};
-    cgltf_data* parsed = nullptr;
-    // A document that does not parse reads nothing; OpenGltfDocument refuses it in the decode.
-    if (cgltf_parse(&options, bytes.data(), bytes.size(), &parsed) != cgltf_result_success || !parsed)
-        return {};
-    const std::unique_ptr<cgltf_data, decltype(&cgltf_free)> document(parsed, &cgltf_free);
-
-    Vector<AssetDecodeInput> inputs;
-    FastHashSet<String> named;
-    for (const auto& [file, size] : DeclaredExternalBufferSizes(*document, path.string())) {
-        named.insert(file.generic_string());
-        inputs.push_back({file, static_cast<uint64>(size)});
-    }
-    const auto modelDir = path.parent_path();
-    for (cgltf_size index = 0; index < document->images_count; ++index) {
-        const cgltf_image& image = document->images[index];
-        if (image.buffer_view || !image.uri || image.uri[0] == '\0' || std::string_view(image.uri).starts_with("data:"))
-            continue;
-        auto imagePath = modelDir / image.uri;
-        if (FindTrackedGltfImage(imagePath).IsNull() && named.insert(imagePath.generic_string()).second)
-            inputs.push_back({std::move(imagePath), std::nullopt});
-    }
-    return inputs;
-}
-
-#else
-Vector<AssetDecodeInput> ModelAsset::ResolveDecodeInputs(const Vector<uint8>&, const std::filesystem::path&)
-{
-    return {};
-}
 #endif // GE_HAVE_CGLTF
 
 bool ModelAsset::LoadGLTF(const Vector<uint8>& data, const FbxLoaderOptions& loaderOptions) {
@@ -1347,7 +1193,7 @@ bool ModelAsset::LoadGLTF(const Vector<uint8>& data, const FbxLoaderOptions& loa
         return false;
     }
     ReportIgnoredGltfExtensions(*gltf, GetPath());
-    SetExtras(std::make_shared<const ModelExtras>(RetainGltfExtras(*gltf, GetPath())));
+    m_Extras = RetainGltfExtras(*gltf, GetPath());
 
     // An index or attribute accessor without data (AccessorHasData) is skipped. UnpackAccessorFloats and
     // UnpackAccessorIntegers report a buffer that holds no data; OpenGltfDocument bounded the count of an
@@ -1447,26 +1293,27 @@ bool ModelAsset::LoadGLTF(const Vector<uint8>& data, const FbxLoaderOptions& loa
             }
         }
 
-        // Each node's unbuilt ancestors are gathered walking up, then built walking down, so a deep
-        // hierarchy costs heap, not stack.
         std::vector<uint8_t> built(nodeCount, 0u);
-        std::vector<size_t> unbuiltChain;
-        for (size_t nodeIndex = 0; nodeIndex < nodeCount; ++nodeIndex)
+        std::function<void(size_t)> buildWorld = [&](size_t index)
         {
-            for (int32 index = static_cast<int32>(nodeIndex); index >= 0 && !built[static_cast<size_t>(index)];
-                 index = parent[static_cast<size_t>(index)])
-                unbuiltChain.push_back(static_cast<size_t>(index));
-            while (!unbuiltChain.empty())
+            if (built[index])
+                return;
+            const int parentIndex = parent[index];
+            const glm::mat4 localMatrix = glm::make_mat4(&restLocalRM[index * 16u]);
+            if (parentIndex >= 0)
             {
-                const size_t index = unbuiltChain.back();
-                unbuiltChain.pop_back();
-                const int parentIndex = parent[index];
-                const glm::mat4 localMatrix = glm::make_mat4(&restLocalRM[index * 16u]);
-                restWorld[index] =
-                    parentIndex >= 0 ? restWorld[static_cast<size_t>(parentIndex)] * localMatrix : localMatrix;
-                built[index] = 1u;
+                buildWorld(static_cast<size_t>(parentIndex));
+                restWorld[index] = restWorld[static_cast<size_t>(parentIndex)] * localMatrix;
             }
-        }
+            else
+            {
+                restWorld[index] = localMatrix;
+            }
+            built[index] = 1u;
+        };
+
+        for (size_t nodeIndex = 0; nodeIndex < nodeCount; ++nodeIndex)
+            buildWorld(nodeIndex);
     }
 
     // Iterate meshes/primitives and convert into engine Mesh records.
@@ -1580,15 +1427,17 @@ bool ModelAsset::LoadGLTF(const Vector<uint8>& data, const FbxLoaderOptions& loa
                         const float* normal = attributeFloats.data() + i * 3;
                         convertVec(normal[0], normal[1], normal[2], mesh.Vertices[i].Normal);
                     }
-                } else if (a.type == cgltf_attribute_type_texcoord) {
+                } else if (a.type == cgltf_attribute_type_texcoord && a.index == 0) {
                     haveTexcoords = true;
                     for (size_t i = 0; i < count; ++i) {
                         const float* texcoord = attributeFloats.data() + i * 2;
                         mesh.Vertices[i].TexCoords[0] = texcoord[0];
                         mesh.Vertices[i].TexCoords[1] = texcoord[1];
                     }
-                } else if (a.type == cgltf_attribute_type_tangent) {
-                    haveTangents = true;
+                } else if (a.type == cgltf_attribute_type_texcoord && a.index == 1) {
+                    // Use the same unpacked accessor as UV0, including sparse overrides.
+                    mesh.TexCoords1.assign(attributeFloats.begin(), attributeFloats.end());
+                } else if (a.type == cgltf_attribute_type_tangent && a.index == 0) {
                     for (size_t i = 0; i < count; ++i) {
                         const float* tangent = attributeFloats.data() + i * 4;
                         convertVec(tangent[0], tangent[1], tangent[2], mesh.Vertices[i].Tangent);
@@ -1633,12 +1482,13 @@ bool ModelAsset::LoadGLTF(const Vector<uint8>& data, const FbxLoaderOptions& loa
             if (!havePositions || positionVertexCount == 0)
                 continue;
 
-            const std::string indexPastTheVertices = IndexPastTheVertices(mesh.Indices, mesh.Vertices.size());
-            if (!indexPastTheVertices.empty()) {
-                RefuseGltfFile(GetPath(), PrimitiveAccessorRefusal(pi, mi, m.name, "indices") + indexPastTheVertices);
-                m_Meshes.clear();
-                return false;
-            }
+            // POSITION defines the authoritative vertex count for indexed geometry.
+            // Other attributes can be missing or sparse; trim any oversize tail so
+            // index validation stays tied to real POSITION vertices.
+            if (mesh.Vertices.size() != positionVertexCount)
+                mesh.Vertices.resize(positionVertexCount);
+            if (!mesh.HasTexCoords1())
+                mesh.TexCoords1.clear();
 
             // Morph targets keep the file's order, empty ones included, so the engine's target i,
             // default weight i and name i are the file's target i, mesh.weights[i] and
@@ -1953,49 +1803,56 @@ bool ModelAsset::LoadGLTF(const Vector<uint8>& data, const FbxLoaderOptions& loa
     if (gltf->images_count > 0) {
         const auto modelDir = GetPath().parent_path();
         m_EmbeddedImages.reserve(gltf->images_count);
-        FastHashMap<String, size_t> firstImageOfFile;
-        for (size_t imageIndex = 0; imageIndex < gltf->images_count; ++imageIndex) {
-            const cgltf_image& image = gltf->images[imageIndex];
-            EmbeddedImage embeddedImage{};
-            embeddedImage.MimeType = image.mime_type ? image.mime_type : "";
-            if (image.buffer_view && image.buffer_view->buffer && image.buffer_view->buffer->data) {
+        for (size_t i = 0; i < gltf->images_count; ++i) {
+            const cgltf_image& img = gltf->images[i];
+            EmbeddedImage ei{};
+            ei.MimeType = img.mime_type ? img.mime_type : "";
+            if (img.buffer_view && img.buffer_view->buffer && img.buffer_view->buffer->data) {
                 // Embedded in GLB binary buffer
-                const auto* bufferView = image.buffer_view;
-                if (bufferView->offset + bufferView->size <= bufferView->buffer->size) {
-                    const uint8_t* base = static_cast<const uint8_t*>(bufferView->buffer->data) + bufferView->offset;
-                    embeddedImage.Data.assign(base, base + bufferView->size);
+                const auto* bv = img.buffer_view;
+                if (bv->offset + bv->size <= bv->buffer->size) {
+                    const uint8_t* base = static_cast<const uint8_t*>(bv->buffer->data) + bv->offset;
+                    ei.Data.assign(base, base + bv->size);
                 }
             }
-            else if (image.uri && image.uri[0] != '\0') {
-                const std::string_view uriView(image.uri);
+            else if (img.uri && img.uri[0] != '\0') {
+                const std::string_view uriView(img.uri);
                 if (uriView.substr(0, 5) == "data:") {
-                    if (!DecodeDataUriImage(uriView, embeddedImage))
+                    if (!DecodeDataUriImage(uriView, ei))
                         Logger::Log::Warning("glTF '{}': image {} has a data URI that is not standard base64 "
                                              "(data:<type>;base64,<payload>), so it imports without its bytes; "
                                              "re-export the file with base64-embedded or external images.",
-                                             GetPath().generic_string(), imageIndex);
+                                             GetPath().generic_string(), i);
                 }
                 else {
                     // External file URI — resolve relative to the .gltf file directory
-                    const auto imagePath = modelDir / image.uri;
-                    const GUID assetGuid = FindTrackedGltfImage(imagePath);
-                    if (!assetGuid.IsNull()) {
-                        embeddedImage.AssetGuid = assetGuid;
-                        m_EmbeddedImages.push_back(std::move(embeddedImage));
-                        continue;
+                    auto texPath = modelDir / img.uri;
+                    std::error_code ec;
+                    // A file the AssetDatabase already tracks is referenced as
+                    // that asset, not copied into the model: its import settings
+                    // (mips, compression, colour space, filtering) then apply,
+                    // and one GPU texture serves every model that shares it.
+                    if (AssetManager* assetManager = EngineCore::GetInstance().TryGetAssetManager()) {
+                        const GUID assetGuid = assetManager->ResolveAssetGuid(texPath);
+                        if (!assetGuid.IsNull()) {
+                            ei.AssetGuid = assetGuid;
+                            m_EmbeddedImages.push_back(std::move(ei));
+                            continue;
+                        }
                     }
-                    if (TakeExternalGltfImage(imagePath, m_EmbeddedImages, firstImageOfFile, embeddedImage.Data)) {
-                        if (!embeddedImage.Data.empty())
-                            Logger::Log::Debug("LoadGLTF: loaded external texture '{}' ({} bytes)", imagePath.string(), embeddedImage.Data.size());
-                        if (embeddedImage.MimeType.empty())
-                            embeddedImage.MimeType = MimeFromTextureExtension(imagePath);
+                    if (std::filesystem::exists(texPath, ec)) {
+                        if (ReadFileBytesShared(texPath, ei.Data) && !ei.Data.empty()) {
+                            Logger::Log::Info("LoadGLTF: loaded external texture '{}' ({} bytes)", texPath.string(), ei.Data.size());
+                        }
+                        if (ei.MimeType.empty())
+                            ei.MimeType = MimeFromTextureExtension(texPath);
                     }
                     else {
-                        Logger::Log::Warning("LoadGLTF: external texture not found: '{}' (modelDir='{}')", imagePath.string(), modelDir.string());
+                        Logger::Log::Warning("LoadGLTF: external texture not found: '{}' (modelDir='{}')", texPath.string(), modelDir.string());
                     }
                 }
             }
-            m_EmbeddedImages.push_back(std::move(embeddedImage));
+            m_EmbeddedImages.push_back(std::move(ei));
         }
     }
 
@@ -2114,7 +1971,7 @@ bool ModelAsset::LoadGLTF(const Vector<uint8>& data, const FbxLoaderOptions& loa
     // ModelEntityFactory. Merging those drops the SourceNodeIndex link
     // and silently breaks any animator hot-attached later.
     if (gltf->animations_count == 0 && gltf->skins_count == 0)
-        MergeStaticPrimitivesByMaterial(m_Meshes, GetPath().string(), kMaxMergedGltfVertices);
+        MergeStaticPrimitivesByMaterial(m_Meshes);
 
     return !m_Meshes.empty();
 #else

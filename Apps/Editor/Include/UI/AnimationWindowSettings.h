@@ -145,7 +145,14 @@ struct AnimationWindowSettings {
         return instance;
     }
 
+    static const AnimationWindowSettings& Defaults()
+    {
+        static const AnimationWindowSettings defaults{DefaultsTag{}};
+        return defaults;
+    }
 private:
+    struct DefaultsTag {};
+    explicit AnimationWindowSettings(DefaultsTag) {}
     AnimationWindowSettings() { Load(); }
 };
 

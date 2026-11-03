@@ -1,9 +1,9 @@
 #include "TerrainECS/HeightPageStoreLoader.h"
 
 #include "TerrainECS/RawHeightmap.h"
-#include "PageStreaming/Height/HeightPageCooker.h"
-#include "PageStreaming/Height/HeightStoreCache.h"
-#include "PageStreaming/PageStore/PageStoreReader.h"
+#include "PageStreaming/HeightPageCooker.h"
+#include "PageStreaming/HeightStoreCache.h"
+#include "PageStreaming/PageStoreReader.h"
 #include "PageStreaming/TerrainPageContainer.h"
 #include "Core/Engine.h"
 #include "Assets/AssetManager.h"
@@ -62,7 +62,7 @@ void CookStore(CookJob job, std::shared_ptr<std::atomic<bool>> cancel, std::shar
         return;
     }
     auto reader = std::make_shared<PageStreaming::PageStoreReader>();
-    if (const std::string error = reader->Open(result.Store, PageStreaming::PageFieldKind::Height); !error.empty())
+    if (const std::string error = reader->Open(result.Store); !error.empty())
     {
         Logger::Log::Warning("Terrain pages: {} keeps its height texture: {}", name, error);
         return;

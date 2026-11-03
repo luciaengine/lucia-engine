@@ -283,14 +283,11 @@ button.primary.pressed,
 }
 
 /* Secondary variant */
-/* A toggle's owner colors it through these variables, set on the button by one class of its own:
-   --ui_button_secondary_text (the label), and for the on state ("active")
-   --ui_button_toggle_on_border and --ui_button_toggle_on_background. Unset, they read as below. */
 button.secondary,
 .button.secondary {
 	background-color: transparent;
 	border-color: var(--ui_color_border_subtle);
-	color: var(--ui_button_secondary_text, var(--ui_color_text));
+	color: var(--ui_color_text);
 }
 
 button.secondary:hover,
@@ -305,8 +302,8 @@ button.secondary.pressed,
 .button.secondary:active,
 .button.secondary.active,
 .button.secondary.pressed {
-	background-color: var(--ui_button_toggle_on_background, rgba(255, 255, 255, 0.31));
-	border-color: var(--ui_button_toggle_on_border, var(--ui_color_border_subtle));
+	background-color: rgba(255, 255, 255, 0.31);
+	border-color: var(--ui_color_border_subtle);
 }
 
 /* A disabled button looks disabled under the pointer and in the primary and secondary
@@ -375,37 +372,6 @@ button.icon-button.secondary.pressed,
 	border-width: 0px;
 }
 
-/* A button that holds one badge Label (theme/inspector.css): the badge draws the box and the fill, so the
-   button has none. After .button in this file, so one class wins by source order. */
-.badge-button {
-	padding: 0px;
-	min-height: 0px;
-	border-width: 0px;
-	background-color: transparent;
-}
-
-/* The button sets the fill its badge reads (inspector.css): lighter on hover, darker while pressed,
-   as the editor's other buttons do. The button itself stays transparent in every state. The owner
-   sets .hovered on pointer enter and leave (Prefabs/PrefabBar.cpp); Button sets .pressed. */
-.badge-button:hover {
-	background-color: transparent;
-}
-
-.badge-button.hovered {
-	--inspector-badge-fill: var(--ui_color_warning_badge_hover);
-	--inspector-override-badge-fill: var(--ui_color_prefab_background_hover);
-}
-
-.badge-button:active {
-	background-color: transparent;
-}
-
-.badge-button.pressed {
-	background-color: transparent;
-	--inspector-badge-fill: var(--ui_color_warning_badge_pressed);
-	--inspector-override-badge-fill: var(--ui_color_prefab_background_pressed);
-}
-
 /* Scene-view toolbar controls that mount before the panel stylesheet has fully
  * won the cascade. Keep them out of the generic button skin from first paint. */
 .toolbar-spacer-btn,
@@ -441,7 +407,7 @@ button.camera-bookmarks-slot.cambookmark-icon,
 	height: 26px;
 	min-width: 26px;
 	min-height: 26px;
-	background-image: url("editor:Icons/cambookmark.svg");
+	background-image: url("editor:Icons/cambookmark.png");
 	background-size: 26px 26px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -584,47 +550,4 @@ button.todo-delete:active,
 .button.todo-delete:active {
 	background-color: transparent;
 	border-color: transparent;
-}
-
-/* Segmented buttons: one choice of a few in a row, the chosen one segmented-button-selected. After the base
-   rules so that, at equal specificity, these win. */
-.segmented-button {
-	flex: 1 1 0;
-	min-width: 0;
-	min-height: 26px;
-	height: 26px;
-	margin: 0;
-	padding: 3px 8px;
-	border-width: 0;
-	border-style: none;
-	border-radius: 4px;
-	background-color: transparent;
-	background-image: none;
-	color: rgba(255, 255, 255, 0.68);
-	font-size: 12px;
-	font-weight: 500;
-}
-
-.segmented-button:hover {
-	background-color: rgba(255, 255, 255, 0.08);
-	color: rgba(255, 255, 255, 0.9);
-}
-
-.segmented-button:active {
-	background-color: rgba(255, 255, 255, 0.12);
-}
-
-.segmented-button-selected {
-	background-color: rgba(255, 255, 255, 0.16);
-	color: var(--ui_color_text);
-}
-
-.segmented-button-selected:hover {
-	background-color: rgba(255, 255, 255, 0.16);
-	color: var(--ui_color_text);
-}
-
-/* Two to a row in a row that wraps. */
-.segmented-button-pair {
-	flex: 1 0 40%;
 }

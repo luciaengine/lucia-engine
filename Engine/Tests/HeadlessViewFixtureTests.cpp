@@ -144,7 +144,10 @@ HeadlessViewDesc RampDesc(TextureFormat dstFormat, Passes::FinalizeQuantizer qua
     HeadlessViewDesc d{};
     d.Width = kWidth;
     d.Height = kHeight;
-    d.ClearLinear = ColorLinear(0.0f, 0.0f, 0.0f, 1.0f);
+    d.ClearLinear[0] = 0.0f;
+    d.ClearLinear[1] = 0.0f;
+    d.ClearLinear[2] = 0.0f;
+    d.ClearLinear[3] = 1.0f;
     d.ContentLinearRgba = MakeRampContent();
     d.DestinationFormat = dstFormat;
     d.Quantizer = quantizer;

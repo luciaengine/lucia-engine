@@ -11,7 +11,9 @@
 //
 // The expected hashes were produced by sweeping the implementations this module
 // replaced, compiled standalone from their pre-move sources and run at both /Od
-// and /O2 (the two agree, so optimisation level does not move them). A change
+// and /O2 without fused multiply-add contraction (the two agree, so
+// optimisation level does not move them). The test target preserves that
+// rounding mode; production consumers retain their own compiler settings. A change
 // here that alters any sampled value by one bit fails this test, which is what
 // keeps existing terrain bakes reproducing exactly.
 

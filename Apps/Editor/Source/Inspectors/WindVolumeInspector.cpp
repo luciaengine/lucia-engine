@@ -3,13 +3,14 @@
 #include "Components/Rendering/WindVolume.h"
 #include "Editor/Entities/EditorECSHelpers.h"
 #include "InspectorRegistry.h"
-#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
+#include "Editor/Entities/EditorComponentTraits.h"
+#include "Inspectors/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
-#include "Mathematics/Interpolation.h"
 #include "SceneView/WindVolumeGizmo.h"
 
 #include <algorithm>
+#include <utility>
 
 namespace GameEngine
 {
@@ -35,6 +36,15 @@ static constexpr EnumEntry<WindVolumeBlendMode> kWindVolumeBlendModes[] = {
 
 void RegisterWindVolumeInspector()
 {
+    {
+        Editor::EditorComponentTraits traits;
+        traits.DisplayName = "Wind Volume";
+        traits.Category = "Rendering";
+        traits.InspectorIconClass = "inspector-section-icon-wind-volume";
+        Editor::EditorComponentTraitsRegistry::Get().Register(
+            ECS::GetComponentTypeId<Components::WindVolume>(), std::move(traits));
+    }
+
     using namespace InspectorDrag;
     using Wind = Components::WindVolume;
 
@@ -81,8 +91,13 @@ void RegisterWindVolumeInspector()
 
             AddComponentFloatRowWithDrag<Wind>(ctx.Parent, "Weight", wind->Weight, w, e, n, undo,
                 "Change Wind Volume Weight",
-                [](Wind& u, float v) { u.Weight = Math::Clamp01(v); },
+                [](Wind& u, float v) { u.Weight = std::clamp(v, 0.0f, 1.0f); },
                 1.0f, "Volume influence [0..1].");
+
+            AddComponentIntRowWithDrag<Wind>(ctx.Parent, "Layer Mask", static_cast<int>(wind->LayerMask), w, e, n, undo,
+                "Change Wind Volume Layer Mask",
+                [](Wind& u, int v) { u.LayerMask = static_cast<uint32>(v); },
+                static_cast<int>(0xFFFFFFFFu), "Wind consumer mask. -1 affects all consumers.");
 
             InspectorUI::AddTextBlock(ctx.Parent, "Bounds", "inspector-section-subheader");
             auto* shape = InspectorUI::AddEnumRow(ctx.Parent, "Shape", kWindVolumeShapes, wind->Shape,
@@ -112,6 +127,11 @@ void RegisterWindVolumeInspector()
                 "Change Wind Volume Speed",
                 [](Wind& u, float v) { u.Speed = std::max(0.0f, v); },
                 1.0f);
+            AddComponentFloatRowWithDrag<Wind>(ctx.Parent, "Rain Amount", wind->RainAmount, w, e, n, undo,
+                "Change Wind Volume Rain Amount",
+                [](Wind& u, float v) { u.RainAmount = std::clamp(v, 0.0f, 2.0f); },
+                1.0f, "Local rain density multiplier. 0 is dry; 1 keeps the authored amount; 2 doubles it.",
+                {}, 0.0f, 2.0f);
             AddComponentFloatRowWithDrag<Wind>(ctx.Parent, "Turbulence", wind->Turbulence, w, e, n, undo,
                 "Change Wind Volume Turbulence",
                 [](Wind& u, float v) { u.Turbulence = std::max(0.0f, v); },

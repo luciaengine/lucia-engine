@@ -1,18 +1,14 @@
 #include "Assets/Packages/PackageNativeCache.h"
 #include "Assets/Packages/PackageGitSource.h"
 #include "FileSystem/ScopedFileLock.h"
-#include "JobSystem/JobChannel.h"
-#include "JobSystem/WorkStealingThreadPool.h"
 #include "TestTempDir.h"
 #include <gtest/gtest.h>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
-#include <future>
 #include <iomanip>
 #include <sstream>
 #include <thread>
-#include <vector>
 #if !defined(_WIN32)
 #include <sys/wait.h>
 #include <unistd.h>
@@ -23,59 +19,6 @@
 
 using namespace GameEngine;
 namespace fs = std::filesystem;
-
-namespace
-{
-// Make the entry's scope orphaned: its recorded package-cache root does not exist.
-bool MakeOrphanedScope(const fs::path& entry)
-{
-    const auto deletedRoot =
-        entry.parent_path().parent_path().parent_path() / ("root-" + entry.parent_path().filename().string());
-    if (!AcquirePackageNativeCache(entry, deletedRoot))
-        return false;
-    std::error_code error;
-    fs::remove_all(deletedRoot, error);
-    return !error;
-}
-
-// Retain the first entry, make the orphan entry's scope orphaned, then retain the second entry.
-// An inline pool runs each maintenance job inside the retain that queues it.
-bool RetainEntries(const fs::path& first, const fs::path& orphan, const fs::path& second)
-{
-    JobSystem::WorkStealingThreadPool pool(0);
-    JobSystem::JobChannel maintenance(pool, {.Name = "Package cache test", .MaxRunning = 1});
-    if (!RetainPackageNativeCache(first, maintenance))
-        return false;
-    if (!orphan.empty() && !MakeOrphanedScope(orphan))
-        return false;
-    return second.empty() || RetainPackageNativeCache(second, maintenance);
-}
-
-// Retain the entry while another job holds the only slot of the maintenance channel.
-// The orphaned scope must still exist when the retain returns, and be gone once the channel drains.
-bool RetainBehindABusyJob(const fs::path& entry, const fs::path& orphaned)
-{
-    JobSystem::WorkStealingThreadPool pool(1, 1);
-    bool keptUntilTheChannelRan = false;
-    {
-        JobSystem::JobChannel maintenance(pool, {.Name = "Package cache test", .MaxRunning = 1});
-        std::promise<void> release;
-        maintenance.Enqueue([busy = release.get_future().share()] { busy.wait(); });
-        if (!RetainPackageNativeCache(entry, maintenance))
-            return false;
-        keptUntilTheChannelRan = fs::exists(orphaned.parent_path());
-        release.set_value();
-    }
-    pool.Shutdown();
-    return keptUntilTheChannelRan && !fs::exists(orphaned.parent_path());
-}
-
-enum class ChildRun
-{
-    RetainEntries,
-    RetainBehindABusyJob,
-};
-}
 
 class PackageNativeCacheTest : public testing::Test
 {
@@ -125,44 +68,6 @@ protected:
                                 fs::file_time_type::clock::now() - std::chrono::hours(100 - generation));
         }
     }
-    // Run RetainEntries (or RetainBehindABusyJob with first and orphan) in a new process with
-    // cacheRoot as the package cache. The first retain of that process queues the orphan sweep.
-    static void RetainInChild(const fs::path& cacheRoot, const fs::path& first, const fs::path& orphan = {},
-                              const fs::path& second = {}, ChildRun run = ChildRun::RetainEntries)
-    {
-#if defined(_WIN32)
-        const wchar_t* filter = run == ChildRun::RetainEntries
-                                    ? L"--gtest_filter=PackageNativeCacheChild.DISABLED_RetainsEntries"
-                                    : L"--gtest_filter=PackageNativeCacheChild.DISABLED_RetainsBehindABusyJob";
-        ASSERT_EQ(_putenv_s("GE_PACKAGE_CACHE_DIR", cacheRoot.string().c_str()), 0);
-        ASSERT_EQ(_putenv_s("GE_PACKAGE_CACHE_TEST_FIRST", first.string().c_str()), 0);
-        ASSERT_EQ(_putenv_s("GE_PACKAGE_CACHE_TEST_ORPHAN", orphan.string().c_str()), 0);
-        ASSERT_EQ(_putenv_s("GE_PACKAGE_CACHE_TEST_SECOND", second.string().c_str()), 0);
-        wchar_t executable[MAX_PATH]{};
-        ASSERT_GT(::GetModuleFileNameW(nullptr, executable, MAX_PATH), 0u);
-        const intptr_t status =
-            _wspawnl(_P_WAIT, executable, executable, L"--gtest_also_run_disabled_tests", filter, nullptr);
-        EXPECT_EQ(_putenv_s("GE_PACKAGE_CACHE_DIR", ""), 0);
-        EXPECT_EQ(_putenv_s("GE_PACKAGE_CACHE_TEST_FIRST", ""), 0);
-        EXPECT_EQ(_putenv_s("GE_PACKAGE_CACHE_TEST_ORPHAN", ""), 0);
-        EXPECT_EQ(_putenv_s("GE_PACKAGE_CACHE_TEST_SECOND", ""), 0);
-        EXPECT_EQ(status, 0);
-#else
-        ASSERT_EQ(setenv("GE_PACKAGE_CACHE_DIR", cacheRoot.c_str(), 1), 0);
-        const pid_t child = fork();
-        ASSERT_GE(child, 0);
-        if (child == 0)
-        {
-            const bool retained = run == ChildRun::RetainEntries ? RetainEntries(first, orphan, second)
-                                                                 : RetainBehindABusyJob(first, orphan);
-            _exit(retained ? 0 : 1);
-        }
-        int status = 0;
-        EXPECT_EQ(waitpid(child, &status, 0), child);
-        EXPECT_EQ(unsetenv("GE_PACKAGE_CACHE_DIR"), 0);
-        EXPECT_EQ(status, 0);
-#endif
-    }
     static bool WaitForPath(const fs::path& path)
     {
         for (unsigned attempt = 0; attempt != 300; ++attempt)
@@ -211,17 +116,13 @@ TEST_F(PackageNativeCacheTest, DeletedCacheRootScopesArePrunedAfterTheirLastLeas
 
     fs::remove_all(deletedRoot);
     ASSERT_FALSE(fs::exists(deletedRoot));
-    const auto liveNext = Entry(2, "live-000000000003");
-    ASSERT_NE(AcquirePackageNativeCache(liveNext, liveRoot), nullptr);
-    // An acquisition prunes only its own scope; the first retain of a process runs the orphan sweep.
-    EXPECT_TRUE(fs::exists(inactive));
-    RetainInChild(liveRoot, liveNext);
+    ASSERT_NE(AcquirePackageNativeCache(Entry(2, "live-000000000003"), liveRoot), nullptr);
     EXPECT_FALSE(fs::exists(inactive));
     EXPECT_TRUE(fs::exists(active / "compiled-module"));
     EXPECT_TRUE(fs::exists(live / "compiled-module"));
 
     lease.reset();
-    RetainInChild(liveRoot, Entry(3, "live-000000000003"));
+    ASSERT_NE(AcquirePackageNativeCache(Entry(3, "live-000000000003"), liveRoot), nullptr);
     EXPECT_FALSE(fs::exists(active.parent_path()));
     EXPECT_TRUE(fs::exists(live / "compiled-module"));
     EXPECT_TRUE(fs::exists(liveRoot));
@@ -235,60 +136,23 @@ TEST_F(PackageNativeCacheTest, DamagedRootRecordsDoNotAuthorizeCleanup)
     embeddedNull.append("\0suffix", 7);
     const std::string malformed[] = {"", "relative/path", std::string(128 * 1024 + 1, 'x'),
                                       embeddedNull};
-    std::vector<fs::path> entries;
+    unsigned index = 0;
     for (const auto& contents : malformed)
     {
-        const auto deletedRoot = m_Temporary.Path() / ("deleted-" + std::to_string(entries.size()));
+        const auto deletedRoot = m_Temporary.Path() / ("deleted-" + std::to_string(index));
         fs::create_directories(deletedRoot);
-        const auto entry = Entry(1, "damaged-" + Hash(static_cast<unsigned>(entries.size()) + 1));
+        const auto entry = Entry(1, "damaged-" + Hash(index + 1));
         ASSERT_NE(AcquirePackageNativeCache(entry, deletedRoot), nullptr);
         std::ofstream(entry / "compiled-module") << "keep";
         std::ofstream record(entry.parent_path() / "cache-root", std::ios::binary | std::ios::trunc);
         record.write(contents.data(), static_cast<std::streamsize>(contents.size()));
         record.close();
         fs::remove_all(deletedRoot);
-        entries.push_back(entry);
+
+        ASSERT_NE(AcquirePackageNativeCache(Entry(index + 1, "live-000000000003"), liveRoot), nullptr);
+        EXPECT_TRUE(fs::exists(entry / "compiled-module")) << "record case " << index;
+        ++index;
     }
-
-    RetainInChild(liveRoot, Entry(1, "live-000000000003"));
-    for (size_t index = 0; index != entries.size(); ++index)
-        EXPECT_TRUE(fs::exists(entries[index] / "compiled-module")) << "record case " << index;
-}
-
-TEST_F(PackageNativeCacheTest, OrphanSweepRunsOncePerProcess)
-{
-    const auto before = Entry(1, "before-000000000004");
-    const auto between = Entry(1, "between-000000000005");
-    ASSERT_TRUE(MakeOrphanedScope(before));
-    RetainInChild(m_Temporary.Path() / "live-cache", Entry(1, "live-000000000003"), between,
-                  Entry(1, "second-000000000006"));
-    EXPECT_FALSE(fs::exists(before.parent_path()));
-    EXPECT_TRUE(fs::exists(between.parent_path()));
-}
-
-TEST_F(PackageNativeCacheTest, OrphanSweepRunsOnTheMaintenanceChannel)
-{
-    const auto orphaned = Entry(1, "orphan-000000000007");
-    ASSERT_TRUE(MakeOrphanedScope(orphaned));
-    RetainInChild(m_Temporary.Path() / "live-cache", Entry(1, "live-000000000003"), orphaned, {},
-                  ChildRun::RetainBehindABusyJob);
-    EXPECT_FALSE(fs::exists(orphaned.parent_path()));
-}
-
-TEST_F(PackageNativeCacheTest, RetainAfterTheFirstJobPrunesItsScope)
-{
-    std::vector<std::unique_ptr<FileSystem::ScopedFileLock>> leases;
-    for (unsigned generation = 1; generation <= 8; ++generation)
-    {
-        leases.push_back(Acquire(Entry(generation)));
-        ASSERT_NE(leases.back(), nullptr);
-        fs::last_write_time(LockFile(Entry(generation)),
-                            fs::file_time_type::clock::now() - std::chrono::hours(100 - generation));
-    }
-    leases.clear();
-    RetainInChild(m_Temporary.Path(), Entry(1, "live-000000000003"), {}, Entry(9));
-    for (unsigned generation = 1; generation <= 9; ++generation)
-        EXPECT_EQ(fs::exists(Entry(generation)), generation >= 6) << "generation " << generation;
 }
 
 TEST_F(PackageNativeCacheTest, RepeatedEngineBuildsRetainFourGenerations)
@@ -491,24 +355,5 @@ TEST(PackageNativeCacheChild, DISABLED_HoldsLeaseUntilReleased)
     for (unsigned attempt = 0; attempt != 300 && !fs::exists(release); ++attempt)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     ASSERT_TRUE(fs::exists(release));
-}
-
-// The parent sets the environment; the DISABLED_ prefix keeps the suite's own pass from running it.
-TEST(PackageNativeCacheChild, DISABLED_RetainsEntries)
-{
-    const char* first = std::getenv("GE_PACKAGE_CACHE_TEST_FIRST");
-    const char* orphan = std::getenv("GE_PACKAGE_CACHE_TEST_ORPHAN");
-    const char* second = std::getenv("GE_PACKAGE_CACHE_TEST_SECOND");
-    ASSERT_NE(first, nullptr);
-    EXPECT_TRUE(RetainEntries(first, orphan ? orphan : "", second ? second : ""));
-}
-
-TEST(PackageNativeCacheChild, DISABLED_RetainsBehindABusyJob)
-{
-    const char* entry = std::getenv("GE_PACKAGE_CACHE_TEST_FIRST");
-    const char* orphaned = std::getenv("GE_PACKAGE_CACHE_TEST_ORPHAN");
-    ASSERT_NE(entry, nullptr);
-    ASSERT_NE(orphaned, nullptr);
-    EXPECT_TRUE(RetainBehindABusyJob(entry, orphaned));
 }
 #endif

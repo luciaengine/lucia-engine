@@ -10,11 +10,6 @@
 
 namespace GameEngine
 {
-namespace Mathematics
-{
-struct Vector2;
-}
-
 namespace UILayout
 {
 
@@ -30,10 +25,7 @@ struct YogaAdapter
     static bool IsAvailable();
     static YGNodeRef CreateNode();
     static void DestroyNode(YGNodeRef node);
-    // `viewport` is the UI root's layout size in logical px: the basis of the CSS
-    // viewport units, which resolve to px here. Returns true when the style holds a
-    // viewport unit, so the push is stale when the root's size changes.
-    static bool ApplyStyle(YGNodeRef node, const ResolvedStyle& style, const Mathematics::Vector2& viewport);
+    static void ApplyStyle(YGNodeRef node, const ResolvedStyle& style);
     static void CalculateLayout(YGNodeRef root, float width, float height);
     static void MarkDirtyAndPropagate(YGNodeRef node);
 
@@ -69,7 +61,7 @@ struct YogaAdapter
     static void InsertChildrenSortedByOrder(YGNodeRef parent, std::span<const ChildWithOrder> children);
 };
 
-// MT-4.0 cascade seam guard. UIManager marks the cascade-compute region
+// Cascade seam guard. UIManager marks the cascade-compute region
 // (ResolveCascadeForElement + FinalizeElementStyle) active while it runs;
 // the YogaAdapter mutators assert they are never invoked inside it. The seam
 // keeps the compute stage Yoga-free so it stays a pure, side-effect-free

@@ -3,12 +3,7 @@
 // registry and job host are deterministic substitutes; no copy of the slot loop
 // or persistence implementation lives here. Reintroducing its whole-sweep return
 // must fail this test. This is not a live GPU/orbit integration test.
-#include "Thumbnails/ModelThumbnail/ModelThumbnailCachePolicy.h"
-#include "Image/PixelImage.h"
-#include "Image/Decode.h"
-#include "Image/Encode.h"
-#include "Image/Resample.h"
-#include "Mathematics/Interpolation.h"
+#include "Thumbnails/ModelThumbnailCachePolicy.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <chrono>
@@ -22,14 +17,19 @@
 #include <mutex>
 #include <optional>
 #include <unordered_set>
-#include <iterator>
 #include <vector>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include <stb_image_resize2.h>
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
 
 namespace ThumbnailPersistenceHost
 {
 using GameEngine::GUID;
 namespace ThumbnailCachePolicy = GameEngine::ThumbnailCachePolicy;
-namespace Math = GameEngine::Math;
 namespace Rendering
 {
 enum class TextureFormat { RGBA8_UNORM, RGBA8_SRGB, R16G16B16A16_FLOAT };
@@ -84,8 +84,6 @@ struct Log
 };
 }
 namespace JobSystem { enum class JobPriority { Background }; }
-// The real encoder and resampler: the persistence block writes PNGs through them.
-namespace Image = GameEngine::Image;
 struct EngineCore
 {
     static EngineCore& GetInstance() { static EngineCore instance; return instance; }
@@ -136,9 +134,6 @@ GUID s_OrbitFocusGuid;
 GUID s_MaterialOrbitFocusGuid;
 GUID s_LensFlareFocusGuid;
 bool s_MaterialOrbitFocusIblEnabled = true;
-GUID s_PendingMaterialFocusGuid;
-bool s_PendingMaterialFocusIblEnabled = true;
-std::chrono::steady_clock::time_point s_PendingMaterialFocusSince;
 
 struct ModelThumbnailHandler
 {
@@ -204,7 +199,6 @@ struct ModelThumbnailHandler
     }
     static bool IsEphemeralPreviewMaterialPath(const std::filesystem::path&) { return false; }
     void MaybeStartDiskCacheReadbackRG(WindowState&, Rendering::RenderGraph::RGFrame&);
-    void PromotePendingMaterialFocus();
     void PollDiskCacheReadback();
     static bool IsFullyTransparent(const std::vector<uint8_t>& pixels, Rendering::TextureFormat format);
     // The handler's policy: retry an asset's first empty capture only.
@@ -330,12 +324,12 @@ TEST(ThumbnailPersistence, ReadyGridSlotPublishesPngWhileAnotherModelIsUnsettled
     EXPECT_EQ(frame.importedTexture, 2);
     EXPECT_FALSE(std::filesystem::exists(handler.ComputeModelCachePath(focused)));
     ASSERT_TRUE(std::filesystem::exists(handler.ComputeModelCachePath(ready)));
-    std::ifstream png(handler.ComputeModelCachePath(ready), std::ios::binary);
-    const std::vector<uint8_t> pngBytes((std::istreambuf_iterator<char>(png)), std::istreambuf_iterator<char>());
-    const Image::Image8 pixels = Image::Decode8(pngBytes, "the ready slot's cached PNG", Image::DecodeChannels::Rgba);
-    ASSERT_TRUE(pixels.Valid);
-    EXPECT_EQ(pixels.Width, 4u); EXPECT_EQ(pixels.Height, 4u);
-    EXPECT_EQ(pixels.Pixels[0], 255); EXPECT_EQ(pixels.Pixels[3], 255);
+    int width = 0, height = 0, channels = 0;
+    auto* pixels = stbi_load(handler.ComputeModelCachePath(ready).string().c_str(), &width, &height, &channels, 4);
+    ASSERT_NE(pixels, nullptr);
+    EXPECT_EQ(width, 4); EXPECT_EQ(height, 4);
+    EXPECT_EQ(pixels[0], 255); EXPECT_EQ(pixels[3], 255);
+    stbi_image_free(pixels);
 }
 
 // A material tile is cached only from a settled render: its first renders can
@@ -370,88 +364,6 @@ TEST(ThumbnailPersistence, OnlySettledUnfocusedMaterialSlotPublishesPng)
     EXPECT_FALSE(std::filesystem::exists(handler.ComputeMaterialCachePath(unsettled, true)));
     EXPECT_FALSE(std::filesystem::exists(handler.ComputeMaterialCachePath(focused, true)));
     EXPECT_TRUE(std::filesystem::exists(handler.ComputeMaterialCachePath(settled, true)));
-}
-
-// A material the Asset View focuses before its tile was ever cached keeps rendering the
-// square tile until that tile's PNG is written, then takes the focus: the focused,
-// panel-shaped render is never cached, and the tile and the preview share one slot.
-TEST(ThumbnailPersistence, AMaterialFocusedBeforeItsFirstBakeWritesItsTileFirst)
-{
-    using namespace ThumbnailPersistenceHost;
-    const auto root = std::filesystem::temp_directory_path() / ("thumb-persist-" + GUID::Generate().ToString());
-    struct Cleanup
-    {
-        std::filesystem::path root;
-        ~Cleanup()
-        {
-            std::error_code error;
-            std::filesystem::remove_all(root, error);
-            s_MaterialOrbitFocusGuid = GUID{};
-            s_PendingMaterialFocusGuid = GUID{};
-        }
-    } cleanup{root};
-    std::filesystem::create_directories(root);
-    AssetManager assets;
-    assets.registry.source = root / "gold.material";
-    std::ofstream(assets.registry.source) << "{}";
-    RenderServices services;
-    ModelThumbnailHandler handler{root / "cache", &services, &assets, {}, {}};
-    ModelThumbnailHandler::WindowState window;
-    const GUID gold = GUID::Generate();
-    s_PendingMaterialFocusGuid = gold;
-    s_PendingMaterialFocusSince = std::chrono::steady_clock::now();
-    ModelThumbnailHandler::Slot slot;
-    slot.guid = gold; slot.deviceTex = 1; slot.isMaterial = true; slot.materialRenderSettled = true;
-    window.slots = {slot};
-
-    Rendering::RenderGraph::RGFrame frame;
-    handler.MaybeStartDiskCacheReadbackRG(window, frame);
-    handler.PollDiskCacheReadback();
-    EXPECT_EQ(frame.importedTexture, 1) << "the waiting focus leaves the tile cacheable";
-    EXPECT_TRUE(std::filesystem::exists(handler.ComputeMaterialCachePath(gold, true)));
-    EXPECT_TRUE(s_MaterialOrbitFocusGuid.IsNull()) << "no focus before the tile is taken";
-
-    Rendering::RenderGraph::RGFrame next;
-    handler.MaybeStartDiskCacheReadbackRG(window, next);
-    EXPECT_EQ(s_MaterialOrbitFocusGuid, gold) << "the focus follows once the tile is written";
-    EXPECT_TRUE(s_PendingMaterialFocusGuid.IsNull());
-}
-
-// A focused material whose tile is never cached (nothing can render it) does not keep the
-// Asset View waiting: past the limit the focus is taken without the PNG; within it, it waits.
-TEST(ThumbnailPersistence, AMaterialFocusTakesFocusWithoutItsTileAfterTheLimit)
-{
-    using namespace ThumbnailPersistenceHost;
-    const auto root = std::filesystem::temp_directory_path() / ("thumb-persist-" + GUID::Generate().ToString());
-    struct Cleanup
-    {
-        std::filesystem::path root;
-        ~Cleanup()
-        {
-            std::error_code error;
-            std::filesystem::remove_all(root, error);
-            s_MaterialOrbitFocusGuid = GUID{};
-            s_PendingMaterialFocusGuid = GUID{};
-        }
-    } cleanup{root};
-    std::filesystem::create_directories(root);
-    AssetManager assets;
-    RenderServices services;
-    ModelThumbnailHandler handler{root / "cache", &services, &assets, {}, {}};
-    ModelThumbnailHandler::WindowState window;
-    const GUID gold = GUID::Generate();
-    Rendering::RenderGraph::RGFrame frame;
-
-    s_PendingMaterialFocusGuid = gold;
-    s_PendingMaterialFocusSince = std::chrono::steady_clock::now();
-    handler.MaybeStartDiskCacheReadbackRG(window, frame);
-    EXPECT_TRUE(s_MaterialOrbitFocusGuid.IsNull()) << "within the limit the focus waits for the tile";
-    EXPECT_EQ(s_PendingMaterialFocusGuid, gold);
-
-    s_PendingMaterialFocusSince = std::chrono::steady_clock::now() - std::chrono::seconds(4);
-    handler.MaybeStartDiskCacheReadbackRG(window, frame);
-    EXPECT_EQ(s_MaterialOrbitFocusGuid, gold) << "past the limit the focus is taken without the PNG";
-    EXPECT_TRUE(s_PendingMaterialFocusGuid.IsNull());
 }
 
 // A render made after the readiness wait gave up does not show the model, so it

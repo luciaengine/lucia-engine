@@ -387,17 +387,11 @@ bool VideoPlayer::Load(const std::string& path)
         if (m_Impl->duration <= 0.0f)
             m_Impl->duration = 0.0f;
 
-        AVAssetTrack* track = nil;
-        for (AVAssetTrack* candidate in asset.tracks)
-        {
-            if ([candidate.mediaType isEqualToString:AVMediaTypeVideo])
-            {
-                track = candidate;
-                break;
-            }
-        }
-        if (!track)
+        NSArray<AVAssetTrack*>* videoTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+        if (videoTracks.count == 0)
             return false;
+
+        AVAssetTrack* track = videoTracks.firstObject;
         CGSize naturalSize = track.naturalSize;
         CGAffineTransform t = track.preferredTransform;
         // Account for rotation (portrait video has swapped dimensions after transform).

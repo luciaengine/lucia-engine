@@ -1,28 +1,20 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <optional>
 
-#include "AssetCore/Asset.h"
-#include "Assets/AssetManager.h"
-#include "Assets/AssetRegistry.h"
-#include "Core/Engine.h"
-#include "Editor/DragDropPayloads.h"
 #include "Editor/EditorPaths.h"
 
 #include "Graph/GraphModel.h"
-#include "Graph/GraphNode/GraphNodeMetrics.h"
-#include "Graph/GraphPort/GraphPortLabels.h"
-#include "ShaderGraph/MaterialGraph/MaterialGraphNode.h"
-#include "Graph/GraphNode/GraphNode.h"
-#include "Graph/GraphNode/GraphNodePool.h"
+#include "Graph/GraphNodeMetrics.h"
+#include "Graph/GraphPortLabels.h"
+#include "ShaderGraph/MaterialGraphNode.h"
+#include "Graph/GraphNode.h"
+#include "Graph/GraphNodePool.h"
 #include "Graph/GraphOverlay.h"
-#include "Graph/GraphPort/GraphPort.h"
+#include "Graph/GraphPort.h"
 #include "Graph/GraphPortedNode.h"
-#include "Types/StringUtils.h"
-#include "UI/AssetField.h"
 #include "UI/Controls/FloatField.h"
 #include "UI/Controls/Label.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
@@ -30,8 +22,6 @@
 #include "UI/StyleProperties.h"
 #include "UI/UIStyle.h"
 #include "UI/UIElement.h"
-#include "UI/Interaction/DropTarget.h"
-#include "UI/Interaction/Payload.h"
 
 #include <string>
 #include <vector>
@@ -53,7 +43,7 @@ void ExpectNoSelectorAttributes(const UIElement& el)
 
 bool RowIsHidden(const UIElement& el)
 {
-    const std::optional<DisplayMode> display = el.Style().Get(Style::Display);
+    const std::optional<DisplayMode> display = el.Overrides().Get(Style::Display);
     return display.has_value() && display.value() == DisplayMode::None;
 }
 
@@ -160,7 +150,7 @@ TEST(GraphNodePoolTests, GraphNodeIdentityIsModelIdNotElementId)
     EXPECT_TRUE(node.GetId().empty());
     EXPECT_FALSE(node.HasSelectorAttributes());
 
-    const std::optional<bool> pointerEvents = node.Style().Get(Style::PointerEvents);
+    const std::optional<bool> pointerEvents = node.Overrides().Get(Style::PointerEvents);
     EXPECT_FALSE(pointerEvents.has_value());
 
     node.SetModelNodeId("n1");
@@ -233,18 +223,18 @@ TEST(GraphNodePoolTests, SurplusSlotsUseDisplayNone)
 
     pool.Sync(1);
     ASSERT_EQ(pool.SlotCount(), 3u);
-    const std::optional<DisplayMode> visibleDisplay = layer.GetChildren()[0]->Style().Get(Style::Display);
+    const std::optional<DisplayMode> visibleDisplay = layer.GetChildren()[0]->Overrides().Get(Style::Display);
     EXPECT_TRUE(!visibleDisplay.has_value() || *visibleDisplay != DisplayMode::None);
-    ASSERT_TRUE(layer.GetChildren()[1]->Style().Get(Style::Display).has_value());
-    EXPECT_EQ(*layer.GetChildren()[1]->Style().Get(Style::Display), DisplayMode::None);
-    ASSERT_TRUE(layer.GetChildren()[2]->Style().Get(Style::Display).has_value());
-    EXPECT_EQ(*layer.GetChildren()[2]->Style().Get(Style::Display), DisplayMode::None);
+    ASSERT_TRUE(layer.GetChildren()[1]->Overrides().Get(Style::Display).has_value());
+    EXPECT_EQ(*layer.GetChildren()[1]->Overrides().Get(Style::Display), DisplayMode::None);
+    ASSERT_TRUE(layer.GetChildren()[2]->Overrides().Get(Style::Display).has_value());
+    EXPECT_EQ(*layer.GetChildren()[2]->Overrides().Get(Style::Display), DisplayMode::None);
 
     GraphPortedNode* recycled = pool.SlotAt(1);
     ASSERT_NE(recycled, nullptr);
     pool.Recycle(recycled);
-    ASSERT_TRUE(recycled->Style().Get(Style::Display).has_value());
-    EXPECT_EQ(*recycled->Style().Get(Style::Display), DisplayMode::None);
+    ASSERT_TRUE(recycled->Overrides().Get(Style::Display).has_value());
+    EXPECT_EQ(*recycled->Overrides().Get(Style::Display), DisplayMode::None);
 }
 
 TEST(GraphNodePoolTests, FindByModelIdAndBindModelSetsRealPortIds)
@@ -280,152 +270,12 @@ TEST(GraphNodePoolTests, FindByModelIdAndBindModelSetsRealPortIds)
     EXPECT_EQ(slot->FindPort("missing"), nullptr);
 
     ASSERT_TRUE(slot->InputPortAt(2) != nullptr);
-    const std::optional<DisplayMode> extraDisplay = slot->InputPortAt(2)->Style().Get(Style::Display);
+    const std::optional<DisplayMode> extraDisplay = slot->InputPortAt(2)->Overrides().Get(Style::Display);
     ASSERT_TRUE(extraDisplay.has_value());
     EXPECT_EQ(*extraDisplay, DisplayMode::None);
-    const std::optional<DisplayMode> usedDisplay = slot->InputPortAt(0)->Style().Get(Style::Display);
+    const std::optional<DisplayMode> usedDisplay = slot->InputPortAt(0)->Overrides().Get(Style::Display);
     EXPECT_TRUE(!usedDisplay.has_value() || *usedDisplay != DisplayMode::None);
     EXPECT_TRUE(slot->GetId().empty());
-}
-
-namespace
-{
-// The asset field on an input port's row, or null when the row shows none.
-AssetField* PinAssetField(GraphPort& port)
-{
-    for (const auto& host : port.GetChildren())
-    {
-        if (!host || !host->HasClass("graph-inline-editors"))
-            continue;
-        for (const auto& child : host->GetChildren())
-        {
-            if (auto* field = dynamic_cast<AssetField*>(child.get()))
-                return field;
-        }
-    }
-    return nullptr;
-}
-
-const Label* FieldName(AssetField& field)
-{
-    for (const auto& child : field.GetChildren())
-    {
-        if (child && child->HasClass("asset-field-name"))
-            return dynamic_cast<const Label*>(child.get());
-    }
-    return nullptr;
-}
-
-AssetRegistry& StartedRegistry()
-{
-    EngineCore& engine = EngineCore::GetInstance();
-    if (!engine.IsInitialized())
-    {
-        ApplicationConfig config{};
-        config.AssetDirectory = ".";
-        config.WorkspaceDirectory = ".";
-        config.EnableEditor = true;
-        EXPECT_TRUE(engine.Initialize(config));
-    }
-    return engine.GetAssetManager().GetRegistry();
-}
-
-Graph::Node SpawnPrefabNode(const std::string& prefabGuid)
-{
-    Graph::Node node;
-    node.Id = "spawn";
-    node.TypeId = "SpawnPrefab";
-    node.Ports.push_back({"in", Graph::PortDirection::In, "flow", "In"});
-    node.Ports.push_back({"prefab", Graph::PortDirection::In, "string", "Prefab"});
-    node.Ports.push_back({"out", Graph::PortDirection::Out, "flow", "Out"});
-    node.Parameters["prefab"] = prefabGuid;
-    return node;
-}
-} // namespace
-
-TEST(GraphNodePoolTests, SpawnPrefabPinIsAnAssetFieldShowingThePrefab)
-{
-    UIRegistration::RegisterBuiltInControls();
-    AssetRegistry& registry = StartedRegistry();
-    AssetMetadata meta{};
-    meta.Guid = GUID::Generate();
-    meta.Type = AssetType::Prefab;
-    meta.Name = "Squad";
-    meta.Extension = ".prefab";
-    meta.Path = registry.GetAssetRoot() / "Squad.prefab";
-    ASSERT_TRUE(registry.RegisterAssetMetadata(meta));
-
-    UIElement layer;
-    GraphNodePool pool(&layer, nullptr);
-    GraphPortedNode* slot = pool.Acquire();
-    ASSERT_NE(slot, nullptr);
-    GraphNodeEditHost host;
-    host.Assets = &registry;
-    slot->EnsurePortCount(2, 1);
-    Graph::Node node = SpawnPrefabNode(meta.Guid.ToString());
-    slot->BindModel(node, Graph::kKindIdGameLogic, GraphNodeVisualState{false, false, false, false, false}, &host);
-
-    GraphPort* prefab = slot->FindPort("prefab");
-    ASSERT_NE(prefab, nullptr);
-    AssetField* field = PinAssetField(*prefab);
-    ASSERT_NE(field, nullptr) << "the prefab pin is not the asset reference field";
-    EXPECT_EQ(field->GetValue(), meta.Guid);
-    ASSERT_NE(FieldName(*field), nullptr);
-    EXPECT_EQ(FieldName(*field)->GetText(), "Squad");
-
-    node.Parameters["prefab"] = "";
-    slot->BindModel(node, Graph::kKindIdGameLogic, GraphNodeVisualState{false, false, false, false, false}, &host);
-    EXPECT_EQ(PinAssetField(*prefab), field) << "a rebind reuses the field";
-    EXPECT_EQ(FieldName(*field)->GetText(), "None");
-}
-
-TEST(GraphNodePoolTests, DroppingAPrefabOnThePinAssignsTheNodeParameter)
-{
-    UIRegistration::RegisterBuiltInControls();
-    AssetRegistry& registry = StartedRegistry();
-    const std::filesystem::path prefabFile = registry.GetAssetRoot() / "PinDropTest.prefab";
-    {
-        std::ofstream out(prefabFile);
-        out << "[prefab name=\"PinDropTest\" version=1]\n\n[entity id=\"root\"]\n";
-    }
-
-    Graph::Model model;
-    model.Nodes.push_back(SpawnPrefabNode(""));
-    int changes = 0;
-    GraphNodeEditHost host;
-    host.Model = &model;
-    host.Assets = &registry;
-    host.OnChanged = [&changes]() { ++changes; };
-
-    UIElement layer;
-    GraphNodePool pool(&layer, nullptr);
-    GraphPortedNode* slot = pool.Acquire();
-    ASSERT_NE(slot, nullptr);
-    slot->EnsurePortCount(2, 1);
-    slot->BindModel(model.Nodes.front(), Graph::kKindIdGameLogic,
-                    GraphNodeVisualState{false, false, false, false, false}, &host);
-    AssetField* field = PinAssetField(*slot->FindPort("prefab"));
-    ASSERT_NE(field, nullptr);
-
-    // The pin takes prefabs only: a graph file is refused and the parameter stays empty.
-    const std::filesystem::path graphFile = registry.GetAssetRoot() / "PinDropTest.graph";
-    std::ofstream(graphFile) << "{}";
-    UI::Interaction::DropRequest refused{};
-    refused.payload = UI::Interaction::DragPayload::Create(Editor::AssetPathsDragPayload{{graphFile}, {}, false});
-    EXPECT_FALSE(field->CanDrop(refused).Allowed);
-    std::filesystem::remove(graphFile);
-
-    UI::Interaction::DropRequest request{};
-    request.payload = UI::Interaction::DragPayload::Create(Editor::AssetPathsDragPayload{{prefabFile}, {}, false});
-    ASSERT_TRUE(field->CanDrop(request).Allowed);
-    field->PerformDrop(request);
-
-    const GUID assigned = field->GetValue();
-    EXPECT_FALSE(assigned.IsNull());
-    EXPECT_EQ(model.Nodes.front().Parameters.GetString("prefab", ""), assigned.ToString())
-        << "the drop on the node's field writes the node parameter the Inspector reads";
-    EXPECT_EQ(changes, 1) << "the host hears the change, which refreshes the Inspector";
-    std::filesystem::remove(prefabFile);
 }
 
 TEST(GraphNodePoolTests, RecycleClearsFindByModelIdAndHidesDisplayNone)
@@ -441,8 +291,8 @@ TEST(GraphNodePoolTests, RecycleClearsFindByModelIdAndHidesDisplayNone)
 
     pool.Recycle(slot);
     EXPECT_EQ(pool.FindByModelId("keep"), nullptr);
-    ASSERT_TRUE(slot->Style().Get(Style::Display).has_value());
-    EXPECT_EQ(*slot->Style().Get(Style::Display), DisplayMode::None);
+    ASSERT_TRUE(slot->Overrides().Get(Style::Display).has_value());
+    EXPECT_EQ(*slot->Overrides().Get(Style::Display), DisplayMode::None);
 }
 
 TEST(GraphNodePoolTests, DefaultFactoryAcquiresBaseNodes)
@@ -569,7 +419,7 @@ TEST(GraphNodePoolTests, ParameterNodeRowsStartAtAValueColumnItsLabelsFit)
     // The widest label decides the column: "Variable Name", not "Slot"/"Value" —
     // as it is drawn, so through the node abbreviation.
     const std::string widest =
-        GraphPortLabels::AbbreviateForNode(IdentifierToWords("VariableName"));
+        GraphPortLabels::AbbreviateForNode(GraphPortLabels::PrettifyParamKey("VariableName"));
     const float expectedStart =
         GraphNodeMetrics::InlineEditorStartGraphFor(static_cast<int>(widest.size()));
     EXPECT_GT(expectedStart, 0.f) << "a value column of zero flushes the boxes left";
@@ -579,13 +429,13 @@ TEST(GraphNodePoolTests, ParameterNodeRowsStartAtAValueColumnItsLabelsFit)
     {
         auto* label = dynamic_cast<Label*>(FindByClass(*row, "graph-detail-label"));
         ASSERT_NE(label, nullptr);
-        const std::optional<StyleLength> maxWidth = label->Style().Get(Style::MaxWidth);
+        const std::optional<StyleLength> maxWidth = label->Overrides().Get(Style::MaxWidth);
         ASSERT_TRUE(maxWidth.has_value() && maxWidth->IsPercent());
         EXPECT_GT(maxWidth->Value, 0.f) << "label clamped to nothing: " << label->GetText();
 
         UIElement* editorHost = row->GetChildren()[1].get();
         ASSERT_NE(editorHost, nullptr);
-        const std::optional<StyleLength> left = editorHost->Style().Get(Style::PositionLeft);
+        const std::optional<StyleLength> left = editorHost->Overrides().Get(Style::PositionLeft);
         ASSERT_TRUE(left.has_value() && left->IsPercent());
         // One column: every row's box starts on the same edge, clear of the labels.
         EXPECT_FLOAT_EQ(left->Value, expectedStartPct);
@@ -704,7 +554,7 @@ TEST(GraphNodePoolTests, OverlayHasOffThreadClassAndNoFocus)
     GraphOverlay overlay;
     EXPECT_TRUE(overlay.HasClass("graph-overlay"));
     EXPECT_FALSE(overlay.IsFocusable());
-    const std::optional<bool> pointerEvents = overlay.Style().Get(Style::PointerEvents);
+    const std::optional<bool> pointerEvents = overlay.Overrides().Get(Style::PointerEvents);
     ASSERT_TRUE(pointerEvents.has_value());
     EXPECT_FALSE(*pointerEvents);
 }
@@ -713,6 +563,6 @@ TEST(GraphNodePoolTests, PointerEventsStayEnabledOnNodeAndPort)
 {
     GraphNode node;
     GraphPort port;
-    EXPECT_FALSE(node.Style().Has(Style::PointerEvents.id));
-    EXPECT_FALSE(port.Style().Has(Style::PointerEvents.id));
+    EXPECT_FALSE(node.Overrides().Has(Style::PointerEvents.id));
+    EXPECT_FALSE(port.Overrides().Has(Style::PointerEvents.id));
 }

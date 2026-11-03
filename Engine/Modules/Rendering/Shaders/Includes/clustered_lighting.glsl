@@ -618,9 +618,9 @@ vec3 GE_AccumulateClusteredLighting(
         }
 #endif
 #ifdef GE_PARALLAX_MARCH
-        // The surface's own relief shadows the primary light as its cascade shadow does.
         dirAtten *= so.primaryLightOcclusion;
 #endif
+        dirAtten = GE_SurfaceDirectionalVisibility(dirAtten, linearDepth, dirL);
         // Gate on the light the sun delivers, not its intensity alone: a sky that hides the moon
         // turns the sun off through its colour.
         if (dirI * max(dirCol.r, max(dirCol.g, dirCol.b)) > 0.0)

@@ -5,7 +5,7 @@
 #include "Platform/Shell.h"
 
 #include "Assets/SvgRasterizer.h"
-#include "Image/Decode.h"
+#include "Engine/Rendering/EmbeddedImageDecoder.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -109,12 +109,12 @@ bool DecodeSourceImage(const std::filesystem::path& path, int targetPixels, Sour
         return out.Pixels.size() >= static_cast<size_t>(out.Width) * out.Height * 4u;
     }
 
-    Image::Image8 decoded = Image::Decode8(bytes, path.string(), Image::DecodeChannels::Rgba);
-    if (!decoded.Valid || decoded.Width == 0 || decoded.Height == 0)
+    DecodedImage decoded = DecodeImageToRGBA(bytes.data(), bytes.size());
+    if (!decoded.valid || decoded.width == 0 || decoded.height == 0)
         return false;
-    out.Width = decoded.Width;
-    out.Height = decoded.Height;
-    out.Pixels = std::move(decoded.Pixels);
+    out.Width = decoded.width;
+    out.Height = decoded.height;
+    out.Pixels = std::move(decoded.pixels);
     return out.Pixels.size() >= static_cast<size_t>(out.Width) * out.Height * 4u;
 }
 

@@ -70,18 +70,12 @@ std::string GenerateNativeAotCsprojXml(const NativeAotProjectDesc& desc)
     <DefineConstants>$(DefineConstants))" << XmlEscape(packageDefines) << R"(</DefineConstants>)";
     }
 
+    const fs::path scriptGlob = desc.ScriptSources / "**" / "*.cs";
     f << R"(
   </PropertyGroup>
-  <ItemGroup>)";
-    // No authored scripts, no glob: a glob that matches nothing can reach the compiler
-    // as its literal text (CS2021, CS2001).
-    if (!desc.ScriptSources.empty())
-    {
-        const fs::path scriptGlob = desc.ScriptSources / "**" / "*.cs";
-        f << R"(
+  <ItemGroup>
     <Compile Include=")" << XmlEscape(scriptGlob.generic_string())
-          << R"(" Exclude=")" << ObjBinExclude(desc.ScriptSources) << R"(" />)";
-    }
+      << R"(" Exclude=")" << ObjBinExclude(desc.ScriptSources) << R"(" />)";
 
     // Package runtime C# modules compile INTO the single AOT assembly: their
     // sources join the project's (cross-package references resolve inside the

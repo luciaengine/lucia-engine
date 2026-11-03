@@ -7,7 +7,7 @@
 // re-declaring the block.
 //
 // Fields come from the shared list (Includes/view_params_fields.glsl); this is
-// the full 480 B block. ViewParamsUBO in Rendering/Core/ViewParamsLayout.h
+// the full 496 B block. ViewParamsUBO in Rendering/Core/ViewParamsLayout.h
 // mirrors the same list on the C++ side.
 #ifndef GE_VIEW_PARAMS_DECLARED
 #define GE_VIEW_PARAMS_DECLARED 1

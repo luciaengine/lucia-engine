@@ -1,13 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 
 # Scripting Library - CoreCLR hosting, script management, and path resolution
-project(Scripting LANGUAGES CXX)
+project(Scripting VERSION 1.0.0 LANGUAGES CXX)
 
 set(SCRIPTING_SOURCES
     Source/CoreCLRHost.cpp
     Source/ScriptManager.cpp
-    Source/ScriptPackageRestore.cpp
-    Source/ScriptsProjectFile.cpp
     Source/PackageScriptCompile.cpp
     Source/PathResolver.cpp
     Source/CompileServerClient.cpp
@@ -25,9 +23,6 @@ target_compile_features(Scripting PUBLIC cxx_std_20)
 # so that Engine's HotReloadNativeStubs can satisfy references when CLR is disabled
 # or GameEngine.Native is not linked.
 target_compile_definitions(Scripting PRIVATE GE_SCRIPTING_STATIC)
-# The scripting flag the Engine target publishes: this OBJECT module does not inherit it, and
-# ScriptManager reports a build without C# scripting as ScriptAssemblyState::Disabled.
-target_compile_definitions(Scripting PRIVATE GE_ENABLE_SCRIPTING=$<BOOL:${ENABLE_SCRIPTING}>)
 
 # Expose Engine/Include so includes like "Scripting/ScriptManager.h" continue to work
 # without duplicating headers. Also include the CMake-generated header directory so
@@ -38,6 +33,9 @@ target_include_directories(Scripting
 	PRIVATE
 	    Source
 	    ${CMAKE_BINARY_DIR}/generated
+	    # Platform's header-only environment switch (the compile-server, hot-reload
+	    # and Editor IPC switches read through it); include path only.
+	    ${CMAKE_SOURCE_DIR}/Engine/Modules/Platform/Include
 	)
 
 # CompileServerClient prunes stale host pid files with Platform::IsProcessRunning:
@@ -45,7 +43,6 @@ target_include_directories(Scripting
 target_include_directories(Scripting PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Modules/Platform/Include)
 
 # Dependencies
-find_package(nlohmann_json CONFIG REQUIRED)
 # Note: Keep deps target-based; no global include paths.
 target_link_libraries(Scripting
     PUBLIC
@@ -54,10 +51,7 @@ target_link_libraries(Scripting
         JobSystem
         Types
     PRIVATE
-        # AssetManager.h includes Events/Event.h (header-only).
-        Events
         FileWatcher
-        nlohmann_json::nlohmann_json
 )
 
 # .NET hosting headers availability for CoreCLRHost (cross-platform)

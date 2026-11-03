@@ -8,6 +8,21 @@
     "entry here — the check fails on a redundant entry, so this list cannot rot."
   ],
   "rawOnly": {
+    "tileset_author_terrain": "Fills in a tile set's terrain set and per-tile peering bits and saves through the panel \u2014 the terrain-canvas authoring gesture without a viewport; raw-driven beside tilemap_paint_cells.",
+    "tilemap_paint_intgrid": "Paints semantic IntGrid values through the Scene View paint tool as one undo-boundary stroke, so live rule re-dressing is exercised; raw-driven beside tilemap_paint_cells.",
+    "tilemap_author_rules": "Defines an IntGrid layer's value table and a Tiles layer's auto-tiling rule set (explicit spec or terrain wizard) and re-dresses it; the rules-panel authoring gesture without a viewport.",
+    "tilemap_rules_state": "Reports each layer's IntGrid values, rule-set shape and optionally a window of cells with their provenance \u2014 the first check when a dressed layer looks wrong.",
+    "tilemap_import": "Runs the same source importer as the Assets context action; the raw import harness checks written map and tileset paths and warnings.",
+    "tilemap_paint_cells": "Drives the Scene View tilemap paint tool as one undo-boundary stroke; the authoring harness calls it over raw alongside select_entity and undo.",
+    "tilemap_save": "Writes the resident tilemap back to its .tilemap asset; paired with tilemap_paint_cells in the same raw flow, so promote the pair together.",
+    "tileset_create_from_texture": "Runs the Tile Set Editor panel's new-tileset action, writing the .tileset before it returns; part of the raw tilemap authoring flow, promote the set together.",
+    "tilemap_select": "Sets/clears the paint tool's marquee selection; the bounded fill and copy/move flows are driven over raw alongside tilemap_paint_cells.",
+    "tilemap_clipboard": "Copy/paste of a selected cell region, one undo entry per paste; part of the same raw tilemap authoring flow, promote the set together.",
+    "tilemap_move_selection": "Moves the selected cell region by a delta as one undo entry \u2014 the marquee drag without a viewport.",
+    "tilemap_replace_tile": "Rewrites every cell holding one tile id on the target layer or the map as one undo entry; raw-driven beside tilemap_paint_cells.",
+    "tilemap_fill_rect": "Rect-tool fill over a cell rectangle with the tiled/scattered stamp; raw-driven beside tilemap_select.",
+    "tilemap_tool_state": "Reports whether the Scene View has the tilemap paint tool armed, plus the live selection/stamp \u2014 the first check when a tilemap gesture appears inert.",
+
     "debug_crash": "Deliberate crash injection for testing the crash handler; must stay awkward to reach.",
     "assistant_bind": "The AI Assistant's MCP server binding its connection to a conversation; the server sends it itself on every connection.",
     "assistant_authorize": "The AI Assistant's MCP server asking the editor before a tool that writes files or starts processes; the server sends it itself.",
@@ -20,6 +35,7 @@
     "send_text": "Lower-level text injection; no typed tool yet.",
     "get_sky_settings": "Diagnostic readback of the sky's per-frame SkySettings for comparing two runs or builds input by input; raw-only until a sky tool group exists.",
     "show_universal_search": "Opens the universal search overlay; no typed tool yet.",
+    "simulate_mouse_drag": "Press-move-release drag for UI flows; no typed tool yet. Its dragDropSession field says whether the gesture started a drag-and-drop session; perform_drop makes a drop without one.",
     "simulate_double_click_drag": "Double-click-then-drag variant; no typed tool yet.",
     "set_scroll": "Sets a ScrollView offset; no typed tool yet.",
     "undock_panel": "Floats a docked panel; no typed tool yet.",
@@ -29,8 +45,6 @@
     "export_model_materials": "One-off model material export; no typed tool yet.",
     "enumerate_provenance": "Asset provenance dump; no typed tool yet.",
     "set_entity_enabled": "Toggles entity enablement; set_component reaches the same state today.",
-    "mark_navigation_dirty": "Navigation::MarkDirty for a live check of a surface's dirty queue; a game calls MarkDirty itself.",
-    "set_destination": "Navigation::SetDestination for a live check of an agent's request; a game calls SetDestination itself.",
     "select_smart_folder": "Assets-panel smart folder selection; no typed tool yet.",
     "get_asset_sources": "Lists mounted asset roots; get_build_settings answers the usual mount question.",
     "get_asset_list": "Registered-asset listing; no typed tool yet.",
@@ -51,11 +65,9 @@
     "cbt_force_vertex_eval": "Forces a CBT vertex evaluation pass; a terrain-debugging primitive, not a workflow.",
     "get_cbt_tree_audit": "CBT watertightness audit of the live tree (a ~160 MiB one-shot readback: CPU edge multiset over the decoded HeapIDs plus link, occupancy, corner-cache and draw-stream checks); a terrain-debugging primitive, not a workflow.",
     "terrain_sculpt_dab": "Applies one terrain sculpt dab; no typed tool yet.",
-    "planet_page_overlay": "Places a test bump in a planet's height-page overlay; a terrain-debugging primitive for capture pairs, not a workflow.",
     "set_terrain_brush": "Configures the terrain sculpt brush; pairs with terrain_sculpt_dab, promote together.",
 
     "graph_set_viewport": "B1 spike zoom-ladder harness: SetPanZoom on the live GraphCanvas. Measurement-only, not a user workflow.",
-    "graph_spike_dummy_nodes": "B1 spike: spawn pooled dummy GraphPortedNode slots. Measurement-only, not a user workflow.",
     "graph_get_nodes": "Scripting/verification helper: lists the active graph's node ids/types/positions; too niche for a typed tool.",
     "graph_delete_node": "Scripting/verification helper: deletes one node by id through the canvas's undo-scoped delete path; too niche for a typed tool."
   }

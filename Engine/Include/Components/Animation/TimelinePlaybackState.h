@@ -11,7 +11,6 @@ namespace GameEngine::Components
 // state consumed by TimelinePlaybackSystem.
 // @ge-no-add  data helper, not user-addable in the editor
 // [DoNotSerialize] — per-play runtime clock created by TimelinePlaybackSystem; authoring lives on Animator.
-// @ge-readonly TimelinePlaybackSystem
 struct TimelinePlaybackState
 {
     float32 timeSeconds = 0.0f;

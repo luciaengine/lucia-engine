@@ -10,7 +10,6 @@
 #include "ECS/ECS.h"
 #include "ECS/Query.h"
 #include "Engine/Rendering/DDGIProbeFeature.h"
-#include "Mathematics/Matrix4x4.h"
 #include "Mathematics/Vector3.h"
 #include "Types/Color.h"
 
@@ -24,11 +23,11 @@ using GameEngine::Mathematics::Vector3;
 namespace
 {
 
-// Visualization-only cap: at Divisions=32 on a cubical volume the grid
+// Visualization-only cap: at ProbesLongAxis=32 on a cubical volume the grid
 // is up to 32^3 = 32768 probes, and drawing one marker per probe every frame
 // while selected would be a real editor hitch. Subsample with a stride
 // instead of drawing every probe past this cap — an authoring preview, not a
-// claim about the actual traced probe count (the inspector's Divisions
+// claim about the actual traced probe count (the inspector's ProbesLongAxis
 // field is that source of truth).
 constexpr int kMaxDrawnProbeMarkers = 4096;
 constexpr float kProbeMarkerHalfExtent = 0.06f;
@@ -111,7 +110,7 @@ void DDGIVolumeGizmo::Render(GizmoRenderContext& context)
                 // × transform scale — DDGIVolume.h's doc). v1 ignores rotation
                 // only, so this is still a plain world-axis-aligned box and no
                 // oriented-box math is needed.
-                const Vector3 pos = xf.GetPosition();
+                const Vector3 pos(xf.matrix[12], xf.matrix[13], xf.matrix[14]);
 
                 Vector3 right;
                 Vector3 up;
@@ -131,9 +130,10 @@ void DDGIVolumeGizmo::Render(GizmoRenderContext& context)
                     return;
 
                 // Same derivation the extraction system feeds the GPU, so the
-                // drawn box is exactly the sampled box.
-                Vector3 halfExtents = Engine::Renderer::DDGIProbeFeature::ComputeVolumeHalfExtents(
-                    Mathematics::Matrix4x4::FromColumnMajor(xf.matrix));
+                // drawn box is exactly the sampled box. The extents and grid
+                // sizes stay float[3], the form DDGIProbeFeature takes.
+                float halfExtents[3];
+                Engine::Renderer::DDGIProbeFeature::ComputeVolumeHalfExtents(xf.matrix, halfExtents);
 
                 // A following volume is not where its transform says it is, so
                 // draw it where DDGIVolumeSystem::ApplyCameraFit puts it. The
@@ -150,31 +150,35 @@ void DDGIVolumeGizmo::Render(GizmoRenderContext& context)
                     // the drawn box is not the sampled one.
                     const float range = std::max(volume.FollowRange, 0.1f);
                     const float heightFraction = std::clamp(volume.FollowHeightFraction, 0.05f, 4.0f);
-                    halfExtents = Vector3(range, range * heightFraction, range);
-                    const Vector3 gridSizeWS = halfExtents * 2.0f;
+                    halfExtents[0] = range;
+                    halfExtents[1] = range * heightFraction;
+                    halfExtents[2] = range;
+                    const float gridSizeWS[3] = {halfExtents[0] * 2.0f, halfExtents[1] * 2.0f,
+                                                 halfExtents[2] * 2.0f};
                     centre = Engine::Renderer::DDGIProbeFeature::SnapCentreToProbeGrid(camPos, gridSizeWS,
-                                                                                       volume.Divisions);
+                                                                                       volume.ProbesLongAxis);
                 }
                 if (emphasize)
                 {
                     const Color boxColor(1.0f, 0.72f, 0.2f, isSelected ? 0.85f : 0.55f);
-                    context.DrawWireBox(centre, halfExtents, boxColor,
+                    context.DrawWireBox(centre, Vector3(halfExtents[0], halfExtents[1], halfExtents[2]), boxColor,
                                         isSelected ? 1.6f : 1.2f);
                 }
 
                 if (!drawProbes)
                     return;
 
-                const Vector3 gridSizeWS = halfExtents * 2.0f;
+                const float gridSizeWS[3] = {halfExtents[0] * 2.0f, halfExtents[1] * 2.0f,
+                                             halfExtents[2] * 2.0f};
                 int32_t probeCount[3];
-                Engine::Renderer::DDGIProbeFeature::ComputeProbeGridLayout(gridSizeWS, volume.Divisions,
+                Engine::Renderer::DDGIProbeFeature::ComputeProbeGridLayout(gridSizeWS, volume.ProbesLongAxis,
                                                                            probeCount);
                 const int32_t probeTotal = probeCount[0] * probeCount[1] * probeCount[2];
                 const int32_t stride = std::max(1, probeTotal / kMaxDrawnProbeMarkers);
 
                 const Color markerColor(0.35f, 0.85f, 1.0f, 0.7f);
                 GizmoLineBatch batch(context, markerColor, 1.0f);
-                const Vector3 gridMin = centre - halfExtents;
+                const Vector3 gridMin = centre - Vector3(halfExtents[0], halfExtents[1], halfExtents[2]);
                 for (int32_t idx = 0; idx < probeTotal; idx += stride)
                 {
                     const int32_t x = idx % probeCount[0];
@@ -187,11 +191,16 @@ void DDGIVolumeGizmo::Render(GizmoRenderContext& context)
                                           : 0.5f,
                         probeCount[2] > 1 ? static_cast<float>(z) / static_cast<float>(probeCount[2] - 1)
                                           : 0.5f);
-                    const Vector3 probePos(gridMin.x + t.x * gridSizeWS.x, gridMin.y + t.y * gridSizeWS.y,
-                                           gridMin.z + t.z * gridSizeWS.z);
+                    const Vector3 probePos(gridMin.x + t.x * gridSizeWS[0],
+                                           gridMin.y + t.y * gridSizeWS[1],
+                                           gridMin.z + t.z * gridSizeWS[2]);
                     DrawProbeMarker(batch, probePos, kProbeMarkerHalfExtent);
                 }
             });
 }
 
 } // namespace GameEngine::Editor::SceneTools
+
+namespace GameEngine::Editor::SceneTools
+{
+}

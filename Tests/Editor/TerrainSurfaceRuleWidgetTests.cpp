@@ -27,9 +27,9 @@
 #include <string>
 
 #include "Components/Terrain/TerrainSurfaceRules.h"
-#include "Terrain/TerrainRule/TerrainRuleNotices.h"
+#include "Inspectors/TerrainRuleNotices.h"
 #include "Terrain/TerrainInteractiveModifierEdit.h"
-#include "Terrain/TerrainRule/TerrainRuleConditionVocabulary.h"
+#include "Terrain/TerrainRuleConditionVocabulary.h"
 #include "UI/Controls/InspectorNotice.h"
 #include "UI/Controls/Label.h"
 #include "UI/UIElement.h"
@@ -834,7 +834,7 @@ namespace
 std::string ReadRuleRowsSource()
 {
     const std::filesystem::path path =
-        std::filesystem::path(GE_EDITOR_SOURCE_DIR) / "Source" / "Terrain" / "TerrainRule" / "TerrainRuleRows.cpp";
+        std::filesystem::path(GE_EDITOR_SOURCE_DIR) / "Source" / "Terrain" / "TerrainRuleRows.cpp";
     std::ifstream in(path);
     EXPECT_TRUE(in.good()) << "could not read " << path.string();
     std::ostringstream ss;
@@ -960,7 +960,7 @@ TEST(TerrainRuleVocabulary, CaptionsCarryTheSameDigitsTheFieldShows)
 // survive anywhere.
 TEST(TerrainRuleVocabulary, NoCaptionCarriesATrailingZero)
 {
-    for (const auto& pair : {std::pair<Kind, float>{Kind::SlopeDegrees, 34.0f},
+    for (const auto pair : {std::pair<Kind, float>{Kind::SlopeDegrees, 34.0f},
                             std::pair<Kind, float>{Kind::SlopeDegrees, 4.0f},
                             std::pair<Kind, float>{Kind::HeightMetres, 400.0f},
                             std::pair<Kind, float>{Kind::HeightNormalized, 0.5f},

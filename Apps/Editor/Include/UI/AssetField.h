@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -22,11 +21,8 @@ struct AssetIndexRecord;
 
 /// Inspector-friendly field for selecting an asset by GUID.
 ///
-/// Displays the current asset by its glyph or thumbnail and its name; the GUID shows
-/// only in the name's tooltip, and a GUID that names no asset reads "Missing asset".
-/// Supports:
-///   - The picker button: a SearchDialog filtered by accepted types
-///   - A click on the field: reveals the asset (SetOnReveal), or opens the picker
+/// Displays the current asset (type icon + name) and supports:
+///   - Click to open a SearchDialog filtered by accepted types
 ///   - Drag-drop of AssetPathsDragPayload
 ///   - Clear button to remove the reference
 ///
@@ -41,7 +37,6 @@ class AssetField : public ReferenceFieldBase
 {
 public:
     using ValueChangedCallback = std::function<void(const GUID& newValue)>;
-    using RevealCallback = std::function<void(const std::filesystem::path& assetPath)>;
 
     AssetField();
 
@@ -55,10 +50,9 @@ public:
     void SetAssetRegistry(AssetRegistry* registry);
 
     /// Optional thumbnail provider for image previews in the search dropdown.
-    void SetThumbnailProvider(IThumbnailProvider* provider) { m_Thumbnails = provider; }
+    void SetThumbnailProvider(IThumbnailProvider* provider) { m_Thumbnails = provider; UpdateDisplay(); }
 
-    /// Set the current value. Updates the display (icon + name), also for the same GUID
-    /// when the registry now resolves it differently (renamed, deleted or restored).
+    /// Set the current value. Updates the display (icon + name).
     void SetValue(const GUID& guid);
     const GUID& GetValue() const { return m_Value; }
 
@@ -67,11 +61,6 @@ public:
 
     /// Callback invoked when the value changes (selection, drop, or clear).
     void SetOnValueChanged(ValueChangedCallback cb) { m_OnValueChanged = std::move(cb); }
-
-    /// A click on the field calls \p cb with the asset's path, so the owner can select
-    /// the asset in the Assets browser, and the name reads as a link. Without it, or
-    /// while the field holds no resolvable asset, a click opens the picker.
-    void SetOnReveal(RevealCallback cb);
 
     // -- IDropTarget: payload-specific parts (generic hit-test/preview in base) --
     bool AcceptsPayload(UI::Interaction::PayloadTypeId typeId) const override;
@@ -84,16 +73,11 @@ protected:
     void PositionDialog(SearchDialog& dialog) override;
     SearchItemId CurrentResultId() const override;
     void OnClearRequested() override { Clear(); }
-    bool CanReveal() const override;
-    void Reveal() override;
 
 private:
     void UpdateDisplay();
-    // True when the registry resolves the current value to another asset or name, or to none.
-    bool ResolutionChanged() const;
-    void SetIconClass(std::string iconClass);
-    void ApplyModelThumbnail(uint32_t requestGeneration, const std::string& thumbnailPath);
-    void ClearModelPreviewStrip();
+    void ClearPreviewStrip();
+    void ApplyThumbnail(uint32_t generation, AssetType assetType, const std::string& path);
     void ApplyValue(const GUID& guid);
     bool IsAcceptedExtension(const std::string& ext) const;
 
@@ -103,11 +87,6 @@ private:
     AssetRegistry* m_Registry = nullptr;
     IThumbnailProvider* m_Thumbnails = nullptr;
     ValueChangedCallback m_OnValueChanged;
-    RevealCallback m_OnReveal;
-    // The registry path of the current value; empty when the value resolves to no asset.
-    std::filesystem::path m_ResolvedPath;
-    // The registry name of the current value; empty when the value resolves to no asset.
-    std::string m_ResolvedName;
 
     // Asset-specific chrome (raw pointers; owned by the UIElement children vector).
     UIElement* m_Icon = nullptr;
@@ -116,7 +95,9 @@ private:
     // Current icon CSS class applied to m_Icon (empty when hidden).
     std::string m_CurrentIconClass;
 
-    uint32_t m_ModelPreviewRequestGen = 0;
+    uint32_t m_PreviewRequestGen = 0;
+
+
 };
 
 } // namespace GameEngine

@@ -62,7 +62,6 @@
 namespace GameEngine
 {
 class Asset;
-class SceneLoadTracker;
 namespace ECS { class World; }
 
 namespace Engine::Renderer
@@ -105,7 +104,9 @@ struct SceneResolveCounts
 class SceneResolveService
 {
   public:
-    SceneResolveService();
+    // SceneBuildPump opts into advisory source reads before registration;
+    // ordinary runtime resolving keeps its existing registration behavior.
+    explicit SceneResolveService(bool prefetchMaterialSources = false);
     ~SceneResolveService();
     SceneResolveService(const SceneResolveService&) = delete;
     SceneResolveService& operator=(const SceneResolveService&) = delete;
@@ -147,10 +148,6 @@ class SceneResolveService
     bool IsBatchComplete(SceneResolveBatch batch) const;
     SceneResolveBatchProgress BatchProgress(SceneResolveBatch batch) const;
     SceneResolveCounts Counts() const;
-
-    /// Report the held entities and the pending materials as the scene.resolve gate.
-    /// Every instance reports, the editor's scene-open build included.
-    void ReportLoadingWork(SceneLoadTracker& tracker);
 
     /// Bumped each time the service lets go of a held entity that carries a
     /// SkeletonRef or SkinnedMeshRenderer without writing its MeshRenderer (its
@@ -196,15 +193,18 @@ class SceneResolveService
     KeptBinding Keep(RenderServices& renderServices, const GUID& modelGuid, const SharedPtr<Asset>& asset);
     void BindEntity(ECS::World& world, RenderServices& renderServices, ECS::EntityHandle entity,
                     const ModelRenderResources& resources, SceneResolveBatch batch);
+    void RequestEntityMaterial(ECS::World& world, RenderServices& renderServices, ECS::EntityHandle entity,
+                               const GUID& materialGuid, SceneResolveBatch batch);
     void RequestMaterial(RenderServices& renderServices, const GUID& materialGuid, SceneResolveBatch batch);
     void PollModelLoads();
     void PollMaterialLoads();
+    enum class MaterialProgress { None, Prefetched, Registered };
     std::size_t Run(ECS::World& world, RenderServices& renderServices,
-                    std::chrono::steady_clock::time_point deadline);
+                    std::chrono::steady_clock::time_point deadline, bool waitForSources = true);
     bool ResolveNextEntity(ECS::World& world, RenderServices& renderServices);
     void ResolveHeldEntity(ECS::World& world, RenderServices& renderServices, const GUID& modelGuid,
                            ModelWork& work, ECS::EntityHandle entity, SceneResolveBatch batch);
-    bool RegisterNextMaterial(RenderServices& renderServices);
+    MaterialProgress RegisterNextMaterial(RenderServices& renderServices, bool waitForSources);
     void ReleaseEntity(const ECS::World& world, ECS::EntityHandle entity, SceneResolveBatch batch,
                        bool wroteMeshRenderer);
     void ReportMiss(const char* kind, const GUID& assetGuid);
@@ -225,10 +225,6 @@ class SceneResolveService
     std::deque<GUID> m_ReadyMaterials;
 
     std::unordered_map<uint32, BatchState> m_Batches;
-
-    // The scene.resolve gate; null until ReportLoadingWork.
-    struct LoadReport;
-    std::shared_ptr<LoadReport> m_LoadReport;
     uint32 m_NextBatch = 1;
 
     // The world the held handles belong to; another world, or this one after a
@@ -258,6 +254,7 @@ class SceneResolveService
     uint64 m_Steps = 0;
     // Re-entrancy guard: registration mutates the world and must not re-enter.
     bool m_InStep = false;
+    bool m_PrefetchMaterialSources = false;
 };
 
 } // namespace Engine::Renderer

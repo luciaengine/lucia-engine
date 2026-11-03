@@ -1,7 +1,6 @@
 #include "Rendering/Core/HotReloadIntegration.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineCache.h"
-#include "../Materials/Shader/ShaderSourceCache.h"
+#include "Rendering/Core/PipelineCache.h"
 
 namespace GameEngine { namespace Rendering {
 
@@ -9,10 +8,6 @@ void NotifyShadersHotReloaded(IDevice& device) {
     // Simple policy: drop every concrete pipeline. Material recompiles will
     // re-intern fresh ids and the (id, formatKey) cache refills on first draw.
     device.GetMutablePipelineCache().Clear();
-}
-
-void NotifyShaderSourcesChanged() {
-    ShaderSourceCache::Get().InvalidateAll();
 }
 
 void InvalidatePipelineVariantsByTags(IDevice& device, const std::vector<uint64_t>& tags) {

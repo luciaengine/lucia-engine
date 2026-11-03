@@ -1,14 +1,12 @@
 // The Scene View toolbar's post-processing switches, applied to the view's blended
 // settings: switching post processing off, or Bloom off in its menu, must leave no
 // bloom gate active, the depth veil included (it keeps the highlight chain alive on
-// its own); switching tonemapping off shows no look on an HDR display and the
-// Neutral look on SDR.
+// its own).
 
 #include <gtest/gtest.h>
 
 #include "SceneView/SceneViewPostProcessSwitches.h"
 
-#include "Components/Rendering/Look.h"
 #include "Engine/Rendering/PostProcessSettings.h"
 
 #include <cstdint>
@@ -16,12 +14,11 @@
 using GameEngine::Editor::ApplySceneViewPostProcessSwitches;
 using GameEngine::Editor::SceneViewPostProcessSwitches;
 using GameEngine::Engine::Renderer::PostProcessSettings;
-using GameEngine::Engine::Renderer::PostProcessViewOutput;
 
 namespace
 {
-// The bloom assertions do not depend on the display.
-constexpr bool kSdrOutput = false;
+// Any tonemap value the switches can assign; the bloom assertions do not read it.
+constexpr int32_t kOffTonemapMode = 0;
 
 PostProcessSettings BloomWithDepthVeilAndLensDirt()
 {
@@ -46,7 +43,7 @@ TEST(SceneViewPostProcessSwitches, PostProcessingOrBloomOffTurnsTheWholeBloomOff
     ASSERT_TRUE(authored.IsBloomLensDirtActive());
 
     PostProcessSettings allOn = authored;
-    ApplySceneViewPostProcessSwitches({}, kSdrOutput, allOn);
+    ApplySceneViewPostProcessSwitches({}, kOffTonemapMode, allOn);
     EXPECT_TRUE(allOn.IsBloomHighlightsActive()) << "every switch on leaves bloom running";
     EXPECT_TRUE(allOn.IsBloomScatteringActive());
 
@@ -61,41 +58,10 @@ TEST(SceneViewPostProcessSwitches, PostProcessingOrBloomOffTurnsTheWholeBloomOff
     for (const auto& c : cases)
     {
         PostProcessSettings settings = authored;
-        ApplySceneViewPostProcessSwitches(c.Switches, kSdrOutput, settings);
+        ApplySceneViewPostProcessSwitches(c.Switches, kOffTonemapMode, settings);
         EXPECT_FALSE(settings.IsBloomActive()) << c.Label;
         EXPECT_FALSE(settings.IsBloomHighlightsActive()) << c.Label << ": the depth veil keeps highlights on";
         EXPECT_FALSE(settings.IsBloomScatteringActive()) << c.Label;
         EXPECT_FALSE(settings.IsBloomLensDirtActive()) << c.Label;
-    }
-}
-
-TEST(SceneViewPostProcessSwitches, TonemappingOffShowsNoLookOnHdrAndNeutralOnSdr)
-{
-    PostProcessSettings authored{};
-    authored.Look = static_cast<int32_t>(GameEngine::Components::Look::Filmic);
-
-    PostProcessSettings allOn = authored;
-    ApplySceneViewPostProcessSwitches({}, /*hdrOutputActive=*/true, allOn);
-    EXPECT_EQ(allOn.ViewOutput, PostProcessViewOutput::Look) << "every switch on shows the look";
-    EXPECT_EQ(allOn.Look, authored.Look);
-
-    const struct
-    {
-        const char* Label;
-        SceneViewPostProcessSwitches Switches;
-    } cases[] = {
-        {"post processing off", {.PostProcessing = false}},
-        {"tonemapping off", {.Tonemap = false}},
-    };
-    for (const auto& c : cases)
-    {
-        PostProcessSettings hdr = authored;
-        ApplySceneViewPostProcessSwitches(c.Switches, /*hdrOutputActive=*/true, hdr);
-        EXPECT_EQ(hdr.ViewOutput, PostProcessViewOutput::NoLook) << c.Label << " on HDR";
-
-        PostProcessSettings sdr = authored;
-        ApplySceneViewPostProcessSwitches(c.Switches, /*hdrOutputActive=*/false, sdr);
-        EXPECT_EQ(sdr.ViewOutput, PostProcessViewOutput::Look) << c.Label << " on SDR";
-        EXPECT_EQ(sdr.Look, static_cast<int32_t>(GameEngine::Components::Look::Neutral)) << c.Label << " on SDR";
     }
 }

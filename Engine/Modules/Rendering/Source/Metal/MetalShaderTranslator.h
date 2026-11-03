@@ -43,6 +43,6 @@ enum class MetalShaderStage
 MetalShaderTranslation TranslateSpirvToMsl(const std::vector<uint8_t>& spirv,
                                            MetalShaderStage stage,
                                            const std::vector<const DescriptorSetLayoutDesc*>& setLayouts,
-                                           const SpecializationConstants* specialization);
+                                           const SpecializationConstants* specialization, bool tier2ArgumentBuffers = true);
 
 } // namespace GameEngine::Rendering

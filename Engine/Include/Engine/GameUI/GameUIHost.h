@@ -3,11 +3,12 @@
 #include "AssetCore/GUID.h"
 #include "Assets/AssetManager.h" // AssetLoadHandle
 #include "Mathematics/Vector2.h"
-#include "Types/StringId.h"
 #include "UI/UITargetSpace.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
+#include <string_view>
 #include <unordered_map>
 
 // JobSystem is a TOP-LEVEL namespace (::JobSystem), NOT GameEngine::JobSystem —
@@ -42,7 +43,7 @@ class UIElement;
 class GameUIHost
 {
   public:
-    /// The default game UI font, resolved through the asset mounts with the project first.
+    /// The default game UI font, relative to the asset root ConfigureFonts reads it from.
     /// A packaged game ships it as an asset manifest entry (AssetCollector::CollectDefaultUIFont).
     static constexpr const char* kDefaultFontPath = "Fonts/Roboto-Regular.ttf";
 
@@ -52,12 +53,25 @@ class GameUIHost
     GameUIHost(const GameUIHost&) = delete;
     GameUIHost& operator=(const GameUIHost&) = delete;
 
-    // Build a host for one call site (Player, editor Game View, editor Scene View):
-    // install the default UI font and record whether the host composites onto a
-    // target it does not own. The mounts supply the font, the project's copy first.
+    // Build a host for one integration site: construct, install the default UI
+    // font from `fontsDir`, and record whether it composites onto a target it
+    // doesn't own. One factory so the bootstrap can't drift across the three
+    // call sites (Player, editor Game View, editor Scene View). `fontsDir` is
+    // the root containing Fonts/Roboto-Regular.ttf — the project asset root for a
+    // shipping game, the staged editor Assets for an editor preview.
     static std::unique_ptr<GameUIHost> CreateForHost(
         Rendering::IDevice* device, AssetManager* assetManager,
-        JobSystem::WorkStealingThreadPool* jobSystem, bool neverClearTarget);
+        JobSystem::WorkStealingThreadPool* jobSystem,
+        const std::filesystem::path& fontsDir, bool neverClearTarget);
+
+    struct PointerState
+    {
+        float X = 0.0f;
+        float Y = 0.0f;
+        bool PrimaryDown = false;
+        // Snapshot for this pointer event, using Input::kMod* bits.
+        int Modifiers = 0;
+    };
 
     // Per-frame phase 1: reconcile subtrees from the world's UIDocument set.
     // Returns whether any documents exist this frame, BEFORE any pass is
@@ -67,20 +81,23 @@ class GameUIHost
     // current subtree set.
     bool SyncDocuments(ECS::World* world);
 
-    // No pointer is over the surface any more: cancel the gesture from the host's
-    // own button state and leave hover. A held primary press then waits for its
-    // release, so call this when that release still reaches the host (the
-    // window keeps reporting it); otherwise call CancelPointer(Released).
-    void OnPointerLeave();
+    // Input-phase delivery for a source that samples the pointer rather than
+    // receiving its edges, in composite-target pixels: the host differences the
+    // sample against the last one and calls the event entries below. Forward
+    // every sample; nullptr says no pointer is over the surface and cancels the
+    // gesture from the host's own button state. Rebinding while pressed requires
+    // a release before another press can arm replacement controls.
+    void UpdatePointer(const PointerState* pointer);
 
-    // Pointer delivery, in composite-target pixels, with synchronous dispatch
-    // and no render or layout tick needed.
+    // Pointer delivery for a source that has the events themselves — a router
+    // whose window is the surface. Same composite-target pixels, same
+    // synchronous dispatch, and no render or layout tick needed.
     //
     // A move is never consumed: hover is not a claim. A button transition and a
     // wheel tick answer whether a HUD control acted, and that answer is what
     // keeps a click the HUD took from reaching the game as well. Every button
-    // arrives, not just the primary. A cancel ends a press of any button; only the
-    // primary carries the wait-for-release state below.
+    // arrives, not just the primary; only the primary carries the gesture state
+    // a cancel has to unwind.
     void OnMouseMove(Mathematics::Vector2 position);
     bool OnMouseButton(int button, bool pressed, int mods);
     bool OnScroll(Mathematics::Vector2 delta);
@@ -100,7 +117,7 @@ class GameUIHost
     void CancelPointer(PrimaryButtonState primary);
 
     // Keystroke delivery for a live play surface, in the same synchronous shape
-    // as OnMouseButton: the host dispatches into its UIManager and answers
+    // as UpdatePointer: the host dispatches into its UIManager and answers
     // whether a HUD control acted on the event. That answer is what stops the
     // keystroke before gameplay, so a focused chat box takes the typing that
     // would otherwise walk the character.
@@ -148,8 +165,8 @@ class GameUIHost
     // hosts composite onto carries its pipeline's output space, and an SDR
     // Player frame declares EncodedSrgb against the pre-encoded composite.
     //
-    // The pointer arrives in the input phase, through the event entries above;
-    // rendering neither resamples it nor synthesizes button edges.
+    // The pointer arrives in the input phase, through UpdatePointer or the event
+    // entries above; rendering neither resamples it nor synthesizes button edges.
     void UpdateAndRender(Rendering::RenderGraph::RGFrame& frame,
                          Rendering::RenderGraph::RGTexture target, UI::UITargetSpace targetSpace,
                          uint32_t extentW, uint32_t extentH);
@@ -171,8 +188,9 @@ class GameUIHost
     // every document can pin later lookups to that one subtree instead of
     // re-walking all of them. Left untouched when nothing matches.
     //
-    // An empty id is never registered; FindElementById(0) returns nullptr.
-    UIElement* FindElementById(StringId id, uint64_t* outOwnerEntityId = nullptr);
+    // An EMPTY id matches the first element that has no id, which is most of a
+    // tree — callers taking an id from outside must reject empty before calling.
+    UIElement* FindElementById(std::string_view id, uint64_t* outOwnerEntityId = nullptr);
 
     // Bumps when a document layout binds, a subtree is removed, or a .uxml hot
     // reload reconciles a bound subtree. The reconcile bump comes from the
@@ -199,17 +217,17 @@ class GameUIHost
     // is not a miss a caller can poll its way out of, and the two share one return code.
     bool HasAnyDocuments() const { return !m_Subtrees.empty(); }
 
-    // Test-only seam onto the private layout/sync and button-dispatch steps, so an
+    // Test-only seam onto the private layout/sync steps and SetPointer, so an
     // interactivity test can drive a headless host with no world and no RG render.
-    // Input-phase integrations use the event entries.
+    // Input-phase integrations use UpdatePointer.
     friend struct GameUIHostTestAccess;
 
   private:
     // Construction-time setup, driven only by CreateForHost.
 
     // Install the default UI font + async resolver (mirrors the editor's font
-    // bootstrap).
-    void ConfigureFonts();
+    // bootstrap). assetsDir is the root containing Fonts/Roboto-Regular.ttf.
+    void ConfigureFonts(const std::filesystem::path& assetsDir);
 
     // When true, RenderRG always composites with Load even for Fullscreen
     // documents — for a host compositing onto a target it doesn't own (the editor
@@ -229,6 +247,10 @@ class GameUIHost
     // SyncFromWorld, once the frame's subtree set is final.
     void ApplyFullscreenOverlaySuppression();
 
+    // Feed a pointer sample, in composite-target (UI-space) pixels: the move
+    // plus the primary button's edge, if the sample carries one. Calling this
+    // opts the host into interactive Update (hover/press/click).
+    void SetPointer(float x, float y, bool primaryDown);
     // A button edge against the modifier state this host already holds.
     bool DispatchMouseButton(int button, bool pressed);
 
@@ -241,7 +263,7 @@ class GameUIHost
     // The pointer stream ended for this surface (Game View viewport exit). Unlike a
     // window leave in the editor chrome — where the OS keeps delivering moves and the
     // real release to a captured element — no further pointer sample will ever reach
-    // this UIManager, so an in-flight press of any button has to be terminated here.
+    // this UIManager, so an in-flight press has to be terminated here.
     void PointerLeftSurface();
 
     // Per-frame UI tick. extentW/H size the layout to the composite target.
@@ -310,7 +332,7 @@ class GameUIHost
     uint64_t m_FrameCounter = 0;
     uint64_t m_BindGeneration = 0;
     float m_PointerX=0.0f, m_PointerY=0.0f;
-    bool m_Interactive = false;   // true while a pointer is over the host (set by a move or a button, cleared on leave); drives Update's interactive flag
+    bool m_Interactive = false;   // true while a pointer is over the host (set by SetPointer, cleared on leave); drives Update's interactive flag
     bool m_PrimaryDown = false;   // last primary-button state, to emit edge events
     bool m_PointerWasOver = false; // last frame had a pointer; clears hover on the over→off edge
     bool m_WaitForPrimaryRelease = false;

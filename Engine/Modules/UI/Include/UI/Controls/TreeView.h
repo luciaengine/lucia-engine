@@ -69,6 +69,7 @@ float TreeFoldoutGlyphSizePxForTreeIconSize(float treeIconSizePx);
 
 class TreeView : public UIElement
               , public UI::Interaction::IDropTarget
+              , public UI::Interaction::IDragAutoScrollTarget
               , public IVirtualizedControl
 {
   public:
@@ -111,12 +112,6 @@ class TreeView : public UIElement
     // Callbacks (UI-agnostic contracts)
     void SetOnSelectionChanged(std::function<void(TreeId)> cb) { m_OnSelectionChanged = std::move(cb); }
     void SetOnItemActivated(std::function<void(TreeId)> cb) { m_OnItemActivated = std::move(cb); }
-    /// Fired by a slow second click (past the double-click interval, no
-    /// modifiers, no drag) on the row that was already the sole selection —
-    /// the file-manager gesture for "edit this name". Double-click still
-    /// activates; the host decides what a rename request means. The click sends
-    /// the selection (SetOnSelectionChanged) before it requests the rename.
-    void SetOnItemRenameRequested(std::function<void(TreeId)> cb) { m_OnItemRenameRequested = std::move(cb); }
     void SetOnContextMenu(std::function<void(TreeId, float x, float y)> cb) { m_OnContextMenu = std::move(cb); }
     // Optional: row customization and icon click callbacks (per-item wiring)
     void SetOnRowBound(std::function<void(TreeId, UIElement*)> cb) { m_OnRowBound = std::move(cb); }
@@ -128,9 +123,6 @@ class TreeView : public UIElement
     /// row's elements asks here instead of keeping row pointers, which the view frees when it trims
     /// its pool.
     UIElement* FindBoundRow(TreeId id) const;
-    /// The title label of the row bound to `id` now, or null when the view holds no row for it: the
-    /// label an inline rename stands in for.
-    Label* FindBoundRowTitle(TreeId id) const;
     /// The id `row` is bound to now, or 0 when the view does not hold `row` bound.
     TreeId BoundIdOf(const UIElement* row) const;
     void SetOnIconClicked(std::function<void(TreeId, UIElement*)> cb) { m_OnIconClicked = std::move(cb); }
@@ -271,6 +263,9 @@ class TreeView : public UIElement
     void PerformDrop(const UI::Interaction::DropRequest& request) override;
     void SetDropPreview(const UI::Interaction::DropPreviewState& state) override;
 
+    // IDragAutoScrollTarget
+    void AutoScrollDuringDrag(float mouseX, float mouseY) override;
+
     // IVirtualizedControl (C-8 per-frame provider change pump).
     uint64_t ProviderChangeVersion() const override { return m_Provider ? m_Provider->GetChangeVersion() : 0; }
     void EnqueuePumpWork(UIManager& ui) override;
@@ -314,7 +309,7 @@ class TreeView : public UIElement
     uint64_t m_LastProviderChangeVersion = 0;
     // Last provider StructureVersion the consume path acted on. Movement means a
     // structural mutation (add/remove/reorder/expandability) that must rebuild
-    // the flat row set — see ChangeTrackingProviderBase's contract note (C-7).
+    // the flat row set — see ChangeTrackingProviderBase's contract note.
     uint64_t m_LastProviderStructureVersion = 0;
     TreeChangeSet m_PendingChangeSet;
     bool m_PendingChangeSetValid = false;
@@ -332,7 +327,7 @@ class TreeView : public UIElement
     //
     // Every m_On* member is here. The other callable members
     // (m_VisibilityFilter, m_DropAccepts, m_DragPayloadBuilder) are NOT — they
-    // fall outside the m_On* naming the phase-2 census was drawn on, and remain
+    // fall outside the m_On* naming this slot set covers, and remain
     // unstamped.
     static constexpr std::uint32_t kOnItemResizeGestureSlot = 1u << 0;
     static constexpr std::uint32_t kOnExpansionChangedSlot = 1u << 1;
@@ -349,7 +344,6 @@ class TreeView : public UIElement
     static constexpr std::uint32_t kOnLockStateSetSlot = 1u << 12;
     static constexpr std::uint32_t kOnCanDropSlot = 1u << 13;
     static constexpr std::uint32_t kOnPerformDropSlot = 1u << 14;
-    static constexpr std::uint32_t kOnItemRenameRequestedSlot = 1u << 15;
 
     // Every slot, listed once. The four revocation virtuals all walk this, so a
     // slot cannot be covered by some of them and missed by others.
@@ -441,7 +435,6 @@ class TreeView : public UIElement
 
     UI::ModuleOwnedCallback<void(TreeId)> m_OnSelectionChanged{this, kOnSelectionChangedSlot};
     UI::ModuleOwnedCallback<void(TreeId)> m_OnItemActivated{this, kOnItemActivatedSlot};
-    UI::ModuleOwnedCallback<void(TreeId)> m_OnItemRenameRequested{this, kOnItemRenameRequestedSlot};
     UI::ModuleOwnedCallback<void(TreeId, float, float)> m_OnContextMenu{this, kOnContextMenuSlot};
     UI::ModuleOwnedCallback<void(TreeId, UIElement*)> m_OnRowBound{this, kOnRowBoundSlot};
     UI::ModuleOwnedCallback<void(TreeId, UIElement*)> m_OnIconClicked{this, kOnIconClickedSlot};
@@ -498,9 +491,6 @@ class TreeView : public UIElement
     // Simple double-click detection state (mouse up based)
     std::chrono::steady_clock::time_point m_LastClickTime{};
     TreeId m_LastClickedId = 0;
-    // Set by a plain left press on the row that was already the sole selection; the release turns
-    // it into a rename request when it is a slow repeat of the last click, and a drag clears it.
-    bool m_PendingRenameRequest = false;
 
     // Options/state
     bool m_ShowRoot = false;

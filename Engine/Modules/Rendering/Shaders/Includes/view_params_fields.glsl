@@ -1,5 +1,5 @@
 // Shared per-view ViewParams std140 field list — the single source for the
-// canonical block (view_params.glsl, set 0 binding 7, 480 B), its truncated
+// canonical block (view_params.glsl, set 0 binding 7, 496 B), its truncated
 // prefixes declared inline by the packaged Forward+ / post-FX shaders, and the
 // C++ mirror (Rendering/Core/ViewParamsLayout.h). Field order and std140
 // offsets are a GPU ABI; every declaration derives from this list via #include,
@@ -11,11 +11,11 @@
 //   C++:   #define GE_VP_MAT4(n) float n[16]; #define GE_VP_VEC4(n) float n[4];
 //
 // Prefix rule: a shorter consumer declares an exact leading prefix by #defining
-// a level guard BEFORE the include. The full 480 B block is the default.
+// a level guard BEFORE the include. The full 496 B block is the default.
 //   GE_VIEWPARAMS_CORE_ONLY -> 160 B (invProj, view, nearFar, cameraPosWS)
 //   GE_VIEWPARAMS_OMIT_PROJ -> 240 B (adds screenSize, viewProj; omits proj)
-//   (neither)               -> 480 B (adds proj, mipBiasParams, prevViewProj, invView,
-//                                 taaJitter, exposureParams) — canonical block + C++ mirror
+//   (neither)               -> 496 B (adds proj, mipBiasParams, prevViewProj, invView,
+//                                 taaJitter, exposureParams, pixelationBand) — canonical block + C++ mirror
 //
 // GROW BY APPENDING ONLY: existing order/offsets are shared with every consumer.
 GE_VP_MAT4(ge_invProj)     //   0  view->clip inverse (unproject to view space)
@@ -41,8 +41,10 @@ GE_VP_VEC4(ge_taaJitter)     // 448 xy=current, zw=previous frame sub-pixel NDC 
                              //     zw to land on the previous frame's actual raster grid.
 GE_VP_VEC4(ge_exposureParams) // 464 the exposure the tonemap applies to this view: x = the
                              //     Fixed/Manual/Physical linear scale, y = 1 while auto exposure
-                             //     meters the view (the metered scale is then in ExposureHistory),
-                             //     z = the tonemap's look (tonemap.frag's look values, 3 = no look).
-                             //     w reserved. GE_ViewExposureScale (view_exposure.glsl) resolves xy.
+                             //     meters the view (the metered scale is then in ExposureHistory).
+                             //     zw reserved. GE_ViewExposureScale (view_exposure.glsl) resolves it.
+GE_VP_VEC4(ge_pixelationBand) // 480 x=start distance, y=end distance, z=enabled,
+                              //     w=distance metric (0=forward depth, 1=radial).
+                              //     Zero on ordinary views and shadow cameras.
 #endif
 #endif

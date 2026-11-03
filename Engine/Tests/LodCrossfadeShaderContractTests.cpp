@@ -34,7 +34,7 @@ namespace
 {
 
 constexpr const char* kKeepSignature = "bool GE_LodCrossfadeKeep(";
-constexpr const char* kKeepCall      = "GE_LodCrossfadeKeep(vLodFadeCode, gl_FragCoord.xy)";
+constexpr const char* kKeepCall      = "GE_LodCrossfadeKeep(vInstanceFlags, gl_FragCoord.xy)";
 constexpr const char* kSharedInclude = "Engine/Modules/Rendering/Shaders/Includes/lod_crossfade.glsl";
 constexpr const char* kForwardAdapter =
     "Engine/Modules/Rendering/Shaders/Adapters/adapter_forward.glsl";
@@ -174,7 +174,7 @@ TEST(LodCrossfadeShaderContract, TheDitherReadsNothingButItsParameters)
 
     const std::string body = ExtractFunctionBody(shared, kKeepSignature);
     ASSERT_FALSE(body.empty());
-    EXPECT_EQ(body.find("vLodFadeCode"), std::string::npos)
+    EXPECT_EQ(body.find("vInstanceFlags"), std::string::npos)
         << "the dither must take the fade code as a parameter, never read the varying";
     EXPECT_EQ(body.find("gl_FragCoord"), std::string::npos)
         << "the dither must take the screen position as a parameter, never read gl_FragCoord";
@@ -201,7 +201,7 @@ TEST(LodCrossfadeShaderContract, DepthAndColourCallTheDitherWithIdenticalArgumen
     EXPECT_EQ(CountOccurrences(adapter, "GE_LodCrossfadeKeep("), 4u)
         << "expected the dither at exactly the four adapter call sites";
     EXPECT_EQ(CountOccurrences(adapter, kKeepCall), 4u)
-        << "every call site must pass (vLodFadeCode, gl_FragCoord.xy) — a different screen "
+        << "every call site must pass (vInstanceFlags, gl_FragCoord.xy) — a different screen "
            "basis or fade source in one pass breaks phase parity with the other";
 
     // At least one site sits under the depth-only guard and at least one does

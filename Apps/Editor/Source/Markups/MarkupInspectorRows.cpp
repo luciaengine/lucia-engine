@@ -8,13 +8,14 @@
 #include "Inspectors/InspectorUIHelpers.h"
 #include "MarkupECS/MarkupService.h"
 #include "Markups/MarkupEditorBridge.h"
-#include "SceneView/SceneViewController.h"
+#include "SceneViewController.h"
 #include "Spline/SplineData.h"
 #include "SplineECS/SplineService.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Label.h"
 #include "UI/UIEvents.h"
 
+#include <cstdio>
 #include <cstring>
 #include <memory>
 
@@ -68,6 +69,13 @@ ShapeSignature ReadShapeSignature(const ECS::World& world, ECS::EntityHandle ent
 
 } // namespace
 
+std::string FormatMeters(float32 meters)
+{
+    char text[32];
+    std::snprintf(text, sizeof(text), "%.1f m", meters);
+    return text;
+}
+
 void AddValueRow(UIElement* parent, const char* labelText, const std::string& value, const char* tooltip)
 {
     UIElement* row = InspectorUI::AddRow(parent);
@@ -90,7 +98,7 @@ void AddEditKnotsRow(const InspectorContext& ctx, MarkupEditorBridge& bridge, co
     button->RegisterEventHandler(kEventButtonClick, [ctx, &bridge](UIEvent&) {
         if (bridge.IsInPlayMode())
             return;
-        bridge.SelectMarkup(*ctx.World, ctx.Entity);
+        bridge.SelectMarkup(*ctx.World, ctx.Entity, false);
         if (SceneViewController* view = bridge.GetSceneView())
             view->SetActiveRegisteredTool("spline");
     });

@@ -22,6 +22,7 @@
 
 #include <array>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <initializer_list>
 #include <string>
@@ -546,6 +547,116 @@ TEST(RGGpuDriven, VisibilityUnionReadsPostPhaseBSliceForHzbView)
     EXPECT_LT(unionPos, aggregate) << "the aggregate consumes the union's AnyViewVisible output (RAW)";
     EXPECT_LT(skinning, aggregate)
         << "skinning reads RuntimeVisible before the aggregate rewrites it (deliberate 1-frame WAR lag)";
+
+    dev->DestroyTexture(hzbTex);
+}
+
+namespace
+{
+// A scene that streams in one instance per frame, starting above every
+// per-instance buffer's 4 KiB floor and ending past the next power of two. A
+// buffer that grows by doubling is recreated at most once over the run; one
+// sized to the exact need is recreated on every frame.
+constexpr uint32_t kStreamStartInstances = 1100u;
+constexpr uint32_t kStreamFrames = 1000u;
+constexpr uint32_t kMaxDoublingGrowths = 1u;
+
+// The device buffer this frame imported under `name`, or an invalid handle.
+BufferHandle ImportedBufferNamed(const RGFrame& frame, const char* name)
+{
+    const RGGraph& graph = frame.Graph();
+    for (RGResourceId r = 0; r < graph.ResourceCount(); ++r)
+    {
+        const char* resourceName = graph.ResourceName(r);
+        if (resourceName && std::strcmp(resourceName, name) == 0)
+            return frame.PhysicalBuffer(RGBuffer{r});
+    }
+    return {};
+}
+
+// How often a buffer seen once per frame was replaced by a different one.
+struct BufferReplacementCount
+{
+    BufferHandle Last{};
+    uint32_t Replacements = 0;
+
+    void Observe(BufferHandle current)
+    {
+        if (Last.IsValid() && current != Last)
+            ++Replacements;
+        Last = current;
+    }
+};
+} // namespace
+
+// A scene that streams in one group at a time raises its instance count on
+// many consecutive frames. Every replaced per-view buffer comes back refilled
+// with sentinels, which drops the view's occlusion history (a full phase-A
+// redraw) and breaks idle elision, so these buffers must keep headroom rather
+// than being rebuilt at each new maximum.
+TEST(RGGpuDriven, CullingBuffersKeepHeadroomWhileTheSceneStreamsIn)
+{
+    RG_REQUIRE_DEVICE(dev);
+    if (const char* missing =
+            FirstUnloadablePkg({"Shaders/frustum_culling.shaderpkg", "Shaders/hzb_culling.shaderpkg",
+                                "Shaders/visibility_union.shaderpkg"}))
+        GTEST_SKIP() << missing << " unavailable";
+    GPUScene::SetCullingShaderLoader(&TestShaderLoader);
+    GPUCullingPipeline::SetHzbCullingShaderLoader(&TestShaderLoader);
+    GPUCullingPipeline::SetVisibilityUnionShaderLoader(&TestShaderLoader);
+
+    auto scene = GPUSceneFactory::CreateSmallScene(dev.get());
+    for (uint32_t i = 0; i < kStreamStartInstances; ++i)
+        scene->AddInstance(GPUInstance{});
+    auto pipeline = GPUCullingFactory::CreateBalanced(dev.get());
+    FramePools pools(dev.get());
+    RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+
+    TextureDesc htd{};
+    htd.width = htd.height = htd.depth = 1u;
+    htd.mipLevels = htd.arrayLayers = htd.sampleCount = 1u;
+    htd.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
+    htd.usage = static_cast<uint32_t>(TextureUsage::ShaderResource);
+    htd.debugName = "Test.HZB";
+    const TextureHandle hzbTex = dev->CreateTexture(htd);
+    ASSERT_TRUE(hzbTex.IsValid());
+
+    constexpr uint32_t kViewId = 9u;
+    BufferReplacementCount visibility;
+    BufferReplacementCount prevVisible;
+    BufferReplacementCount anyViewVisible;
+    for (uint32_t n = 0; n < kStreamFrames; ++n)
+    {
+        scene->AddInstance(GPUInstance{});
+        frame.BeginFrame(n);
+        const RGTexture hzb = frame.ImportExternalTexture("Test.HZB", hzbTex, ResourceState::Common,
+                                                          TextureFormat::R32_FLOAT, 1u, 1u);
+        pipeline->BeginFrame(&frame, scene.get());
+        ViewCullingInput v = MakeView(kViewId, scene->GetInstanceCount());
+        v.reserveOcclusionSlice = true;
+        pipeline->SubmitView(v);
+        pipeline->EndFrame();
+        pipeline->ScheduleOcclusionCullPass(frame, scene.get(), kViewId, hzb, /*hzbMipCount=*/1u);
+        pipeline->ScheduleVisibilityUnion(frame, scene.get());
+        ASSERT_TRUE(pipeline->GetAnyViewVisibleRG().IsValid()) << "frame " << n;
+
+        visibility.Observe(frame.PhysicalBuffer(pipeline->GetVisibilityRG()));
+        anyViewVisible.Observe(frame.PhysicalBuffer(pipeline->GetAnyViewVisibleRG()));
+        const BufferHandle prev = ImportedBufferNamed(frame, "GPUCulling.PrevVisible.V9");
+        ASSERT_TRUE(prev.IsValid()) << "frame " << n << ": the HZB view imported no prevVisible";
+        prevVisible.Observe(prev);
+
+        frame.MarkOutput(pipeline->GetAnyViewVisibleRG());
+        frame.Execute();
+        dev->WaitForIdle();
+    }
+
+    EXPECT_LE(visibility.Replacements, kMaxDoublingGrowths)
+        << "the visibility buffer was rebuilt at each new instance-count maximum";
+    EXPECT_LE(prevVisible.Replacements, kMaxDoublingGrowths)
+        << "the HZB view's prevVisible history was rebuilt and refilled at each new maximum";
+    EXPECT_LE(anyViewVisible.Replacements, kMaxDoublingGrowths)
+        << "the any-view-visible flags were rebuilt at each new maximum";
 
     dev->DestroyTexture(hzbTex);
 }
@@ -1538,7 +1649,7 @@ TEST(RGGpuDriven, RecycledSlotDwellHistoryResetsToTheStatelessPick)
         slice.cascadeIndex           = GPUDrawStreamBuilder::kCascadeIndexNone;
         slice.disableVisibilityCheck = true;
         slice.lod.projScaleY         = 1.0f;
-        slice.lod.cameraPos.x       = dist;
+        slice.lod.cameraPos[0]       = dist;
         slice.lod.lodHysteresisBand  = kBand;
         builder->RegisterSlice(slice);
 
@@ -1701,7 +1812,7 @@ TEST(RGGpuDriven, FirstTouchCrossfadeStateArrivesAsNoHistoryAndAdoptsItsPick)
         slice.cascadeIndex           = GPUDrawStreamBuilder::kCascadeIndexNone;
         slice.disableVisibilityCheck = true;
         slice.lod.projScaleY         = 1.0f;
-        slice.lod.cameraPos.x       = dist;
+        slice.lod.cameraPos[0]       = dist;
         slice.lod.crossfadeDuration  = 0.25f; // engages the tail for this slice
         builder->RegisterSlice(slice);
 
@@ -2110,7 +2221,7 @@ TEST(RGGpuDriven, RenderedHistoryStaysUnallocatedUntilAViewAsksForIt)
         slice.cascadeIndex           = GPUDrawStreamBuilder::kCascadeIndexNone;
         slice.disableVisibilityCheck = true;
         slice.lod.projScaleY         = 1.0f;
-        slice.lod.cameraPos.x       = 5.0f;
+        slice.lod.cameraPos[0]       = 5.0f;
         slice.lod.renderedLevelHistoryRequested = requestHistory;
         builder->RegisterSlice(slice);
 
@@ -2191,7 +2302,7 @@ TEST(RGGpuDriven, DeclaredButUnsubmittedFrameNeverBecomesTheNextFramesPrevious)
         slice.cascadeIndex           = GPUDrawStreamBuilder::kCascadeIndexNone;
         slice.disableVisibilityCheck = true;
         slice.lod.projScaleY         = 1.0f;
-        slice.lod.cameraPos.x       = 5.0f;
+        slice.lod.cameraPos[0]       = 5.0f;
         slice.lod.renderedLevelHistoryRequested = true;
         builder->RegisterSlice(slice);
 
@@ -2282,7 +2393,7 @@ TEST(RGGpuDriven, RenderedHistorySurvivesASiblingSliceThatDoesNotAsk)
         sibling.cascadeIndex           = GPUDrawStreamBuilder::kCascadeIndexNone;
         sibling.disableVisibilityCheck = true;
         sibling.lod.projScaleY         = 1.0f;
-        sibling.lod.cameraPos.x       = 5.0f;
+        sibling.lod.cameraPos[0]       = 5.0f;
         sibling.lod.renderedLevelHistoryRequested = siblingAsks;
         builder->RegisterSlice(sibling);
         GPUDrawStreamBuilder::SliceRegistration asking = sibling;
@@ -2310,6 +2421,79 @@ TEST(RGGpuDriven, RenderedHistorySurvivesASiblingSliceThatDoesNotAsk)
     EXPECT_EQ(builder->IntrospectScatter().RenderedHistoryRotations, 1u)
         << "the pair the asking slice bound is the one created last frame, rotated once — "
            "a recreated pair would have nothing to rotate";
+
+    builder->Shutdown();
+    dev->DestroyBuffer(visPhys);
+}
+
+// The rendered level and phase history of a view must survive a scene that
+// streams in one instance per frame. A recreated pair starts with no previous
+// sample and does not rotate on its first frame, so every frame after the
+// first rotates exactly when the pair was kept: the rotations missing from
+// frames - 1 are the recreations.
+TEST(RGGpuDriven, RenderedHistoryKeepsHeadroomWhileTheSceneStreamsIn)
+{
+    RG_REQUIRE_DEVICE(dev);
+    GPUScene::SetCullingShaderLoader(&TestShaderLoader);
+    GPUDrawStreamBuilder::SetShaderLoader(&TestShaderLoader);
+
+    auto scene = std::make_unique<GPUScene>(dev.get());
+    ASSERT_TRUE(scene->Initialize(4096u, 32u));
+    auto builder = std::make_unique<GPUDrawStreamBuilder>(dev.get());
+    ASSERT_TRUE(builder->Initialize());
+    if (!builder->GetOrCreateScatterPipeline().IsValid())
+        GTEST_SKIP() << "draw_command_scatter shaderpkg unavailable";
+
+    const uint32_t mesh = scene->AddMesh(MakeRenderedHistoryMesh());
+    for (uint32_t i = 0; i < kStreamStartInstances; ++i)
+        scene->AddInstance(MakeRenderedHistoryInstance(1u, mesh));
+
+    // Bound for the scatter's visibility read (instanceCount uints) at the
+    // largest count the run reaches.
+    BufferDesc vd;
+    vd.size  = static_cast<size_t>(kStreamStartInstances + kStreamFrames) * sizeof(uint32_t);
+    vd.usage = static_cast<uint32_t>(BufferUsage::Storage);
+    const BufferHandle visPhys = dev->CreateBuffer(vd);
+    ASSERT_TRUE(visPhys.IsValid());
+
+    FramePools pools(dev.get());
+    RGFrame frame(dev.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+
+    for (uint32_t n = 0; n < kStreamFrames; ++n)
+    {
+        scene->AddInstance(MakeRenderedHistoryInstance(1u, mesh));
+        builder->BeginArenaFrame();
+        scene->FlushGPUBuffers();
+        frame.BeginFrame(n);
+        RGBuffer vis = frame.ImportExternalBuffer("Vis", visPhys);
+        const GPUScene::GPUSceneFrameRG sceneRG = scene->ImportFrameResources(frame);
+
+        GPUDrawStreamBuilder::SliceRegistration slice{};
+        slice.viewId                 = 1u;
+        slice.cascadeIndex           = GPUDrawStreamBuilder::kCascadeIndexNone;
+        slice.disableVisibilityCheck = true;
+        slice.lod.projScaleY         = 1.0f;
+        slice.lod.cameraPos[0]       = 5.0f;
+        slice.lod.renderedLevelHistoryRequested = true;
+        builder->RegisterSlice(slice);
+
+        RGBuffer ordering = builder->ScheduleUnifiedScatter(
+            frame, "History", /*rgPassPhase=*/0, vis, sceneRG.Instances, sceneRG.ScatterHot,
+            sceneRG.Meshes, scene->GetBatchRegistry(), /*materialDepthClass=*/{},
+            /*materialColorClass=*/{}, /*meshPoolOrdered=*/{}, /*orderedToGroup=*/{},
+            scene->GetInstanceCount(), static_cast<uint32_t>(scene->GetMeshes().size()));
+        ASSERT_TRUE(ordering.IsValid()) << "frame " << n;
+        frame.MarkOutput(ordering);
+        frame.Execute();
+        dev->WaitForIdle();
+    }
+
+    const uint64_t rotations = builder->IntrospectScatter().RenderedHistoryRotations;
+    ASSERT_LE(rotations, static_cast<uint64_t>(kStreamFrames - 1u));
+    const uint64_t recreations = (kStreamFrames - 1u) - rotations;
+    EXPECT_LE(recreations, static_cast<uint64_t>(kMaxDoublingGrowths))
+        << "the history pair was rebuilt at each new instance-count maximum, so the view "
+           "kept losing its previous rendered level and phase";
 
     builder->Shutdown();
     dev->DestroyBuffer(visPhys);

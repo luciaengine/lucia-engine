@@ -24,6 +24,7 @@
 // ItsSubtree pins that second branch so the two cannot be confused.
 
 #include "IsolatedUIFixture.h"
+#include "TestTempDir.h"
 
 #include "UI/Controls/ScrollView.h"
 #include "UI/Registration/ElementRegistration.h"
@@ -429,7 +430,8 @@ struct ZeroSizeScrollFixture
         // reads the per-frame regen cause back out of the profile ring.
         Ui->SetUpdateProfilingEnabled(true);
 
-        const auto css = std::filesystem::temp_directory_path() / "ui_zero_size_scroll.css";
+        const TestUtils::ScopedTempDir tempDir(TestUtils::MakeUniqueTempDirectory("ui_zero_size_scroll"));
+        const auto css = tempDir.Path() / "ui_zero_size_scroll.css";
         {
             std::ofstream f(css);
             f << "#root { display: flex; flex-direction: column; width: 220px; height: 240px; }\n"

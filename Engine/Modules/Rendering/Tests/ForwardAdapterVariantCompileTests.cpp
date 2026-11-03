@@ -15,13 +15,14 @@
 
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderCompileService.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "StagedTestPaths.h"
 #include "TestUtils.h"
+#include "TestTempDir.h"
 
 #include <nlohmann/json.hpp>
 
@@ -47,7 +48,7 @@ namespace fs = std::filesystem;
 // every set below carries it.
 constexpr MaterialKeyword kWorldDrawBase = MaterialKeyword::Instanced;
 
-// Engine/Assets/RenderPipelines/ForwardPlus_DebugOverlay.rendergraph, "World" pass:
+// Assets/RenderPipelines/ForwardPlus_DebugOverlay.rendergraph, "World" pass:
 // keywords ["ForwardPlus"] — no Shadows, no IBL. Mirrored by hand because
 // ParseWorldPassKeywords lives in the Engine layer, above this module;
 // DebugOverlayGraphStillDeclaresTheMirroredKeywords pins the mirror.
@@ -56,23 +57,21 @@ constexpr MaterialKeyword kDebugOverlayWorldPass =
 
 fs::path MakeTempCacheRoot()
 {
-    static std::atomic<uint32_t> counter{0};
-    return fs::temp_directory_path() /
-           ("ge_fwd_variant_" +
-            std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" +
-            std::to_string(counter.fetch_add(1)));
+    return TestUtils::MakeUniqueTempDirectory("ge_fwd_variant");
 }
 
 // A stock material on the engine's built-in surface shader: an empty
 // surfaceShader makes the composer substitute Surfaces/standard_surface.glsl,
 // which is what an ordinary scene material compiles as.
 MaterialBuildResult BuildStockMaterial(const std::string& lightingModel, MaterialKeyword keywords,
-                                       const std::string& surfaceShader = {}, bool heightMapped = false)
+                                       const std::string& surfaceShader = {}, bool heightMapped = false,
+                                       MaterialAlphaMode alphaMode = MaterialAlphaMode::Opaque)
 {
     MaterialDocument doc{};
     doc.materialName = "ForwardAdapterVariantProbe";
     doc.lightingModel = lightingModel;
     doc.surfaceShader = surfaceShader;
+    doc.alphaMode = alphaMode;
     if (heightMapped)
         doc.textures["heightMap"] = "__embedded__:0";
 
@@ -380,9 +379,7 @@ TEST(ForwardAdapterVariantCompile, TheReliefDepthDeclaresDepthLessOnlyUnderItsKe
         // discard whose condition is made always false keeps it, so only a deleted discard reads red.
         EXPECT_EQ(depth.Discards, fromPrepass);
         if (fromPrepass)
-        {
             EXPECT_FALSE(FragmentSpvNames(result, "GE_ParallaxMarch(")) << "the colour pass reads the hit, never marches";
-        }
     }
     for (const MaterialKeyword keywords : {kColour, kPrepass})
     {
@@ -438,12 +435,11 @@ bool FragmentReadsTheViewsExposure(const MaterialBuildResult& result)
 }
 } // namespace
 
-// Every shading variant writes scene colour, which is stored at the frame's pre-exposure
-// (GE_PreExposure), so it reads the view's exposure state whether or not its surface opts into the
-// emissive exposure weight; the depth-only variant shades nothing and reads none. The motion-vector
-// shape is pinned with the motion variant's tests (DeformationMotionVariantTests.cpp), which compose
-// it on a surface with a vertex modifier.
-TEST(ForwardAdapterVariantCompile, EveryShadingVariantReadsTheViewsExposure)
+// The standard surfaces opt into the emissive exposure weight, so their shading variant reads the
+// view's exposure; their depth-only variant shades nothing and reads none, and a surface that does not
+// opt in reads none in any variant. The motion-vector shape is pinned with the motion variant's tests
+// (DeformationMotionVariantTests.cpp), which compose it on a surface with a vertex modifier.
+TEST(ForwardAdapterVariantCompile, OnlyTheStandardSurfacesShadingVariantReadsTheViewsExposure)
 {
     constexpr MaterialKeyword kColour = kWorldDrawBase | MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows;
     constexpr MaterialKeyword kDepth = kWorldDrawBase | MaterialKeyword::DepthOnlyFragment;
@@ -460,150 +456,7 @@ TEST(ForwardAdapterVariantCompile, EveryShadingVariantReadsTheViewsExposure)
     }
     const auto plain = BuildStockMaterial("StandardPBR", kColour);
     ExpectBuildSucceeded(plain);
-    EXPECT_TRUE(FragmentReadsTheViewsExposure(plain))
-        << "a surface without the emissive opt-in still stores its colour at the pre-exposure";
-    const auto plainDepth = BuildStockMaterial("StandardPBR", kDepth);
-    ExpectBuildSucceeded(plainDepth);
-    EXPECT_FALSE(FragmentReadsTheViewsExposure(plainDepth));
-}
-
-namespace
-{
-// A material document built as registration builds it (BuildMaterialToShaderPackage derives the alpha
-// mode's and the blend's keywords from the document).
-MaterialBuildResult BuildDocument(MaterialDocument doc, MaterialKeyword keywords)
-{
-    doc.materialName = "ForwardAdapterFogProbe";
-    MaterialBuildContext ctx{};
-    ctx.AdapterShaderDir = GameEngine::Rendering::Tests::GetAdapterShaderDir();
-    ctx.CacheRoot = MakeTempCacheRoot();
-    auto result = BuildMaterialToShaderPackage(doc, TestPaths::StagedEngineAssetsDir() / "Materials" /
-                                                        "ForwardAdapterFogProbe.material",
-                                               "ForwardAdapterFogProbe", ctx, ShaderSourceKind::SpirV, keywords);
-    std::error_code ec;
-    fs::remove_all(ctx.CacheRoot, ec);
-    return result;
-}
-
-// The set-0 bindings a compiled fragment stage declares, by name.
-bool FragmentDeclares(const MaterialBuildResult& result, const std::string& name, uint32_t binding)
-{
-    constexpr uint32_t kFragmentStageBit = 1u << 1;
-    if (result.package == nullptr)
-        return false;
-    for (const DescriptorSetMeta& set : result.package->meta.Sets)
-        for (const DescriptorBindingMeta& b : set.Bindings)
-            if (set.Set == 0u && b.Name == name && b.Binding == binding && (b.StagesMask & kFragmentStageBit) != 0u)
-                return true;
-    return false;
-}
-
-// One colour variant the fog reaches: its document and the pass keywords it is drawn with.
-struct FoggedVariant
-{
-    const char* Name;
-    MaterialDocument Document;
-    MaterialKeyword PassKeywords;
-};
-
-std::vector<FoggedVariant> FoggedVariants()
-{
-    constexpr MaterialKeyword kWorld = kWorldDrawBase | MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows |
-                                       MaterialKeyword::IBL;
-    std::vector<FoggedVariant> variants;
-    MaterialDocument opaque{};
-    opaque.lightingModel = "StandardPBR";
-    variants.push_back({"opaque", opaque, kWorld});
-    variants.push_back({"opaque with reflections", opaque, kWorld | MaterialKeyword::SSSRNormalRoughness});
-    MaterialDocument masked = opaque;
-    masked.alphaMode = MaterialAlphaMode::Mask;
-    variants.push_back({"alpha tested", masked, kWorld});
-    MaterialDocument unlit{};
-    unlit.lightingModel = "Unlit";
-    variants.push_back({"unlit", unlit, kWorld});
-    MaterialDocument blended = opaque;
-    blended.alphaMode = MaterialAlphaMode::Blend;
-    variants.push_back({"straight alpha", blended, kWorld});
-    MaterialDocument additive = blended;
-    additive.blend = MaterialBlendState{MaterialBlendFactor::One, MaterialBlendFactor::One};
-    variants.push_back({"additive", additive, kWorld});
-    MaterialDocument multiply = blended;
-    multiply.blend = MaterialBlendState{MaterialBlendFactor::DstColor, MaterialBlendFactor::Zero};
-    variants.push_back({"multiply", multiply, kWorld});
-    variants.push_back({"glass over the scene grab", opaque,
-                        kWorld | MaterialKeyword::Transmission | MaterialKeyword::SceneColorGrab});
-    return variants;
-}
-} // namespace
-
-// The zero-cost proof of the fog's pass keywords: a colour variant declares the height fog's parameters
-// (set 0, binding 52) and the sky backdrop its colour can come from (binding 53) exactly when it is
-// compiled with HeightFog, and the volumetric fog's block, volume and irradiance cube (54 to 56) exactly
-// when it is compiled with VolumetricFog, which reaches blended and transmissive materials only, and
-// the resolved clouds (57) exactly when it is compiled with VolumetricClouds.
-TEST(ForwardAdapterVariantCompile, FoggedVariantDeclaresTheFogsAndTheSkyBackdrop)
-{
-    for (const FoggedVariant& variant : FoggedVariants())
-    {
-        SCOPED_TRACE(variant.Name);
-        const auto plain = BuildDocument(variant.Document, variant.PassKeywords);
-        SKIP_WITHOUT_SHADERC(plain);
-        ExpectBuildSucceeded(plain);
-        EXPECT_FALSE(FragmentDeclares(plain, "HeightFogParams", 52));
-        EXPECT_FALSE(FragmentDeclares(plain, "ge_skyBackdrop", 53));
-        EXPECT_FALSE(FragmentDeclares(plain, "VolumetricFogParams", 54));
-
-        const auto fogged = BuildDocument(variant.Document, variant.PassKeywords | MaterialKeyword::HeightFog);
-        ExpectBuildSucceeded(fogged);
-        EXPECT_TRUE(FragmentDeclares(fogged, "HeightFogParams", 52));
-        EXPECT_TRUE(FragmentDeclares(fogged, "ge_skyBackdrop", 53));
-        EXPECT_FALSE(FragmentDeclares(fogged, "VolumetricFogParams", 54));
-
-        const bool takesVolumetric = variant.Document.alphaMode == MaterialAlphaMode::Blend;
-        const auto both = BuildDocument(variant.Document, variant.PassKeywords | MaterialKeyword::HeightFog |
-                                                              (takesVolumetric ? MaterialKeyword::VolumetricFog |
-                                                                                     MaterialKeyword::VolumetricClouds
-                                                                               : MaterialKeyword::None));
-        ExpectBuildSucceeded(both);
-        EXPECT_EQ(FragmentDeclares(both, "VolumetricFogParams", 54), takesVolumetric);
-        EXPECT_EQ(FragmentDeclares(both, "ge_volumetricFog", 55), takesVolumetric);
-        EXPECT_EQ(FragmentDeclares(both, "ge_volumetricFogIrradiance", 56), takesVolumetric);
-        EXPECT_EQ(FragmentDeclares(both, "ge_volumetricClouds", 57), takesVolumetric);
-    }
-}
-
-// The fog's keywords change no other program: a blend's keyword, which only the fog reads, leaves its
-// program as the straight-alpha one without the fog, and the shapes that shade nothing (the depth-only
-// coverage variant) compose the same program with the fog's pass keywords as without.
-TEST(ForwardAdapterVariantCompile, TheFogKeywordsLeaveAnUnfoggedProgramUnchanged)
-{
-    constexpr MaterialKeyword kWorld = kWorldDrawBase | MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows |
-                                       MaterialKeyword::IBL;
-    MaterialDocument blended{};
-    blended.lightingModel = "StandardPBR";
-    blended.alphaMode = MaterialAlphaMode::Blend;
-    MaterialDocument additive = blended;
-    additive.blend = MaterialBlendState{MaterialBlendFactor::One, MaterialBlendFactor::One};
-    const auto straight = BuildDocument(blended, kWorld);
-    SKIP_WITHOUT_SHADERC(straight);
-    const auto added = BuildDocument(additive, kWorld);
-    ExpectBuildSucceeded(straight);
-    ExpectBuildSucceeded(added);
-    ASSERT_TRUE(straight.package && added.package);
-    EXPECT_EQ(straight.package->stageBytes.at("fs"), added.package->stageBytes.at("fs"));
-    EXPECT_EQ(straight.package->stageBytes.at("vs"), added.package->stageBytes.at("vs"));
-
-    MaterialDocument masked{};
-    masked.lightingModel = "StandardPBR";
-    masked.alphaMode = MaterialAlphaMode::Mask;
-    constexpr MaterialKeyword kCoverage = kWorldDrawBase | MaterialKeyword::DepthOnlyFragment;
-    const auto coverage = BuildDocument(masked, kCoverage);
-    const auto coverageFogged =
-        BuildDocument(masked, kCoverage | MaterialKeyword::HeightFog | MaterialKeyword::VolumetricFog);
-    ExpectBuildSucceeded(coverage);
-    ExpectBuildSucceeded(coverageFogged);
-    ASSERT_TRUE(coverage.package && coverageFogged.package);
-    EXPECT_EQ(coverage.package->stageBytes.at("fs"), coverageFogged.package->stageBytes.at("fs"));
+    EXPECT_FALSE(FragmentReadsTheViewsExposure(plain)) << "a surface without the opt-in reads no exposure";
 }
 
 namespace
@@ -770,10 +623,8 @@ void main()
                 }
             }
         if (mode == 2)
-        {
             EXPECT_GT(partial, size_t(kProbeWidth) * kProbeHeight / 4)
                 << "the coverage material lost its fractional sample masks";
-        }
     }
     EXPECT_EQ(device->GetValidationStats().ErrorCount, 0u);
     device->Shutdown();
@@ -882,49 +733,134 @@ void main()
     fs::remove_all(cache, ec);
 }
 
-// A surface's light visibility (SurfaceOutput.lightVisibility) scales everything the lit model sends
-// back and leaves the emission: the whole direct sum, after the last light is added, and the ambient
-// light and the reflection weight through ambientMultiplier. The lit block calls the whole BRDF and
-// the light lists, so it cannot run alone on the GPU as the emission and alpha blocks do; this reads
-// the staged adapter's structure instead.
-TEST(ForwardAdapterLightVisibility, ScalesTheDirectAndAmbientLightAndLeavesTheEmission)
+TEST(ForwardAdapterVariantCompile, MaskedPuddleSurfaceCompilesWithAndWithoutReflectionOutputs)
 {
-    const fs::path path = GameEngine::Rendering::Tests::GetAdapterShaderDir() / "Adapters/adapter_forward.glsl";
-    std::ifstream input(path, std::ios::binary);
-    ASSERT_TRUE(input.good()) << path.string();
-    const std::string adapter{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
-
-    const size_t litBegin = adapter.find("#ifdef LIGHTING_MODEL_STANDARD_PBR\n\n  #ifdef FORWARD_PLUS");
-    ASSERT_NE(litBegin, std::string::npos);
-    const size_t litEnd = adapter.find("#elif defined(LIGHTING_MODEL_SHADOW_ONLY)", litBegin);
-    ASSERT_NE(litEnd, std::string::npos);
-    const std::string lit = adapter.substr(litBegin, litEnd - litBegin);
-    const size_t afterLights = lit.rfind("  #endif");
-    ASSERT_NE(afterLights, std::string::npos);
-    const std::string tail = lit.substr(afterLights);
-    EXPECT_NE(tail.find("finalColor *= so.lightVisibility;"), std::string::npos)
-        << "the direct light is no longer scaled by the surface's light visibility after every light";
-    EXPECT_NE(tail.find("ambientMultiplier = so.lightVisibility;"), std::string::npos)
-        << "the ambient light no longer takes the surface's light visibility";
-    EXPECT_EQ(tail.find("finalColor +="), std::string::npos) << "a light is added after the visibility scale";
-
-    const size_t ambientBegin = adapter.find("    // Ambient / environment.", litEnd);
-    ASSERT_NE(ambientBegin, std::string::npos);
-    const size_t ambientEnd = adapter.find("    // Emissive contribution", ambientBegin);
-    ASSERT_NE(ambientEnd, std::string::npos);
-    int ambientAdds = 0;
-    for (size_t at = adapter.find("finalColor +=", ambientBegin); at < ambientEnd;
-         at = adapter.find("finalColor +=", at + 1))
+    for (const auto keywords : {
+        kWorldDrawBase | MaterialKeyword::IBL,
+        kWorldDrawBase | MaterialKeyword::ForwardPlus | MaterialKeyword::IBL |
+            MaterialKeyword::SSSRNormalRoughness,
+        kWorldDrawBase | MaterialKeyword::ForwardPlus | MaterialKeyword::IBL |
+            MaterialKeyword::Shadows | MaterialKeyword::SSSRNormalRoughness | MaterialKeyword::GTAO})
     {
-        const std::string statement = adapter.substr(at, adapter.find(';', at) - at);
-        EXPECT_NE(statement.find("ambientMultiplier"), std::string::npos) << statement;
-        ++ambientAdds;
+        const auto result = BuildStockMaterial("StandardPBR", keywords, "Surfaces/puddle_ground.glsl");
+        SKIP_WITHOUT_SHADERC(result);
+        ExpectBuildSucceeded(result);
+        EXPECT_TRUE(FragmentSpvNames(result, "planarReflectionMask"));
     }
-    EXPECT_GE(ambientAdds, 3) << "the ambient paths (particle, environment, flat ambient) moved";
+}
 
-    int uses = 0;
-    for (size_t at = adapter.find("lightVisibility"); at != std::string::npos; at = adapter.find("lightVisibility", at + 1))
-        ++uses;
-    EXPECT_EQ(uses, 2) << "the light visibility reaches more than the direct sum and the ambient multiplier "
-                          "(the emission keeps its full value)";
+TEST(ForwardAdapterVariantCompile, RainSurfacesCompileForWorldAndPlanarCapture)
+{
+    for (const auto extra : {MaterialKeyword::None, MaterialKeyword::SSSRNormalRoughness})
+    {
+        const auto keywords = kWorldDrawBase | MaterialKeyword::ForwardPlus | MaterialKeyword::IBL | extra;
+        const auto wet = BuildStockMaterial("StandardPBR", keywords | MaterialKeyword::ClearCoat |
+            MaterialKeyword::CoatNormal, "Surfaces/rain_wet_object.glsl");
+        SKIP_WITHOUT_SHADERC(wet);
+        ExpectBuildSucceeded(wet);
+        const auto wetWithoutCoat = BuildStockMaterial("StandardPBR", keywords, "Surfaces/rain_wet_object.glsl");
+        ExpectBuildSucceeded(wetWithoutCoat);
+        const auto rain = BuildStockMaterial("StandardPBR", keywords | MaterialKeyword::Transmission |
+            MaterialKeyword::SceneColorGrab, "Surfaces/rain_falling.glsl", false, MaterialAlphaMode::Mask);
+        SKIP_WITHOUT_SHADERC(rain);
+        ExpectBuildSucceeded(rain);
+        const auto glass = BuildStockMaterial("StandardPBR", keywords | MaterialKeyword::Transmission |
+            MaterialKeyword::SceneColorGrab, "Surfaces/rain_window.glsl");
+        SKIP_WITHOUT_SHADERC(glass);
+        ExpectBuildSucceeded(glass);
+    }
+}
+
+TEST(ForwardAdapterVariantCompile, OnlyPixelationBandsDiscardOpaqueGeometryOutsideTheirInterval)
+{
+    const auto ordinary = BuildStockMaterial("StandardPBR", kWorldDrawBase);
+    SKIP_WITHOUT_SHADERC(ordinary);
+    ExpectBuildSucceeded(ordinary);
+    const auto band = BuildStockMaterial("StandardPBR", kWorldDrawBase | MaterialKeyword::DepthPixelationBand);
+    ExpectBuildSucceeded(band);
+    EXPECT_FALSE(FragmentDepth(ordinary).Discards);
+    EXPECT_TRUE(FragmentDepth(band).Discards);
+}
+
+TEST(ForwardAdapterVariantCompile, LocalProbesCoexistWithDdgiAndMeteredExposure)
+{
+    const auto result = BuildStockMaterial("StandardPBR", kWorldDrawBase | MaterialKeyword::IBL |
+        MaterialKeyword::DDGI, "Surfaces/standard_pbr.glsl");
+    SKIP_WITHOUT_SHADERC(result);
+    ExpectBuildSucceeded(result);
+}
+
+TEST(ForwardAdapterLodCrossfadeReadback, FlagBitsDoNotFadeARecordAndAPhasePairKeepsComplementaryPixels)
+{
+    const fs::path shaders = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    std::ifstream input(shaders / "Includes/lod_crossfade.glsl", std::ios::binary);
+    ASSERT_TRUE(input.good()) << (shaders / "Includes/lod_crossfade.glsl").string();
+    const std::string crossfade{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+
+    DeviceDesc desc{};
+    desc.preferredAPI = GraphicsAPI::Vulkan;
+    desc.enableSwapchain = false;
+    desc.enableDynamicRendering = true;
+    desc.enableDebugLayer = true;
+    auto device = DeviceFactory::CreateDevice(desc);
+    if (!device || !device->Initialize(desc))
+        GTEST_SKIP() << "No Vulkan device available";
+    if (!device->GetValidationStats().Enabled)
+    {
+        device->Shutdown();
+        GTEST_SKIP() << "Vulkan validation layer unavailable";
+    }
+    constexpr uint32_t kInstanceFlags = 0x3u;   // castShadows | receiveShadows
+    constexpr uint32_t kWeight = 64u;           // of 127: the Bayer levels 0..8 of 16 lie below it
+    constexpr uint32_t kPhaseBit = 0x80000000u;
+    const uint32_t kCodes[3] = {kInstanceFlags, (kWeight << 24) | kInstanceFlags,
+                                kPhaseBit | (kWeight << 24) | kInstanceFlags};
+    const fs::path cache = MakeTempCacheRoot();
+    std::vector<uint8_t> kept[3];
+    for (int record = 0; record < 3; ++record)
+    {
+        SCOPED_TRACE(record);
+        ShaderProgramCompileRequest request{};
+        request.debugName = "ForwardAdapterLodCrossfadeProbe";
+        request.cacheRoot = cache;
+        request.baseDirectory = shaders / "Adapters";
+        ShaderStageCompileSpec vertex{};
+        vertex.stage = "vs";
+        vertex.sourcePath = "crossfade-probe.vert";
+        vertex.inlineSource = R"(#version 450
+void main()
+{
+    const vec2 positions[3] = vec2[3](vec2(-1, -1), vec2(3, -1), vec2(-1, 3));
+    gl_Position = vec4(positions[gl_VertexIndex], 0.5, 1);
+}
+)";
+        ShaderStageCompileSpec fragment{};
+        fragment.stage = "fs";
+        fragment.sourcePath = "crossfade-probe.frag";
+        fragment.inlineSource = "#version 450\n#define GE_LOD_CROSSFADE\n" + crossfade +
+                                "\nlayout(location=0) out vec4 color;\nvoid main() {\n"
+                                "if (!GE_LodCrossfadeKeep(" + std::to_string(kCodes[record]) +
+                                "u, gl_FragCoord.xy)) discard;\ncolor = vec4(1.0);\n}\n";
+        request.stages = {vertex, fragment};
+        ShaderProgramCompileResult program{};
+        std::string error;
+        const bool compiled = ShaderCompileService::CompileProgramToCache(
+            request, ShaderSourceKind::SpirV, program, &error);
+        ASSERT_TRUE(compiled) << error;
+        kept[record] = DrawAdapterProbe(*device, program, false);
+        ASSERT_EQ(kept[record].size(), size_t(kProbeWidth) * kProbeHeight * 4);
+    }
+    size_t incoming = 0;
+    for (size_t at = 0; at < kept[0].size(); at += 4)
+    {
+        EXPECT_EQ(kept[0][at], 255) << "a record that is not fading lost pixel " << at / 4;
+        EXPECT_NE(kept[1][at] == 255, kept[2][at] == 255)
+            << "pixel " << at / 4 << " must be kept by exactly one record of the pair";
+        incoming += kept[1][at] == 255;
+    }
+    EXPECT_EQ(incoming, size_t(kProbeWidth) * kProbeHeight * 9 / 16) << "the incoming level keeps 9 of 16 levels";
+    EXPECT_EQ(device->GetValidationStats().ErrorCount, 0u);
+    device->Shutdown();
+    std::error_code ec;
+    fs::remove_all(cache, ec);
 }

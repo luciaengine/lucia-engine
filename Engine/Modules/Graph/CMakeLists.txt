@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 # Graph Library - Graph model, asset, and serialization
-project(Graph LANGUAGES CXX)
+project(Graph VERSION 1.0.0 LANGUAGES CXX)
 
 # Source files
 set(GRAPH_SOURCES
@@ -92,12 +92,13 @@ if(BUILD_TESTING)
         FileSystemObjects
         AssetCore
         Logger
-        Memory
         GTest::gtest
         GTest::gtest_main
     )
-    # Image: the decode SkyRenderer calls, not spliced transitively from GameEngineRendering.
-    target_sources(MaterialGraphCompilerTests PRIVATE $<TARGET_OBJECTS:Image>)
+    target_include_directories(MaterialGraphCompilerTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+    target_sources(MaterialGraphCompilerTests PRIVATE
+        ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+    target_compile_definitions(MaterialGraphCompilerTests PRIVATE GE_HAVE_STB)
     # StagedTestPaths.h — staged-fixture resolution shared by all fixture suites.
     target_include_directories(MaterialGraphCompilerTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Tests)
     if(COMMAND ge_set_output_tests)
@@ -121,11 +122,12 @@ if(BUILD_TESTING)
         FileSystemObjects
         AssetCore
         Logger
-        Memory
         GTest::gtest
         GTest::gtest_main
     )
-    target_sources(GraphSerializationTests PRIVATE $<TARGET_OBJECTS:Image>)
+    target_sources(GraphSerializationTests PRIVATE
+        ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+    target_compile_definitions(GraphSerializationTests PRIVATE GE_HAVE_STB)
     if(COMMAND ge_set_output_tests)
         ge_set_output_tests(GraphSerializationTests)
     endif()

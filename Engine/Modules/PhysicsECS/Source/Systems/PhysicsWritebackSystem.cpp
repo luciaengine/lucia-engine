@@ -4,7 +4,6 @@
 
 #include "PhysicsECS/PhysicsWorldService.h"
 
-#include "PhysicsECS/Components/KinematicBody.h"
 #include "PhysicsECS/Components/PhysicsBody.h"
 
 #include "Components/Transform.h"
@@ -24,16 +23,13 @@ void PhysicsWritebackSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         ECS::Write<GameEngine::Components::Transform>,
         ECS::Write<GameEngine::Components::WorldTransform>,
         ECS::Write<GameEngine::Components::PhysicsBody>>();
-    // A kinematic body follows its Transform (PhysicsStepSystem moves it there over the frame's steps), so
-    // the Transform is the source and is not written back. Leaving its chunks out of the visit also leaves
-    // their WorldTransform unstamped, so the step's change gate sees only the bodies that moved.
-    q.Without<GameEngine::Components::KinematicBody>();
 
     uint32 composed = 0;
     q.Each([&](ECS::EntityHandle e,
-               GameEngine::Components::Transform& t,
-               GameEngine::Components::WorldTransform& wt,
-               GameEngine::Components::PhysicsBody& body) {
+               ECS::Writable<GameEngine::Components::Transform> tWrite,
+               ECS::Writable<GameEngine::Components::WorldTransform> wtWrite,
+               ECS::Writable<GameEngine::Components::PhysicsBody> bodyWrite) {
+        const auto& body = bodyWrite.Get();
         if (!body.initialized || !pw->IsBodyValid(body.body))
             return;
 
@@ -41,8 +37,8 @@ void PhysicsWritebackSystem::Update(ECS::World& world, float32 /*deltaTime*/)
         const Physics::Transform* interpolateFrom =
             (body.hasPrevPhysicsTransform && alpha < 1.0f) ? &body.prevPhysicsTransform : nullptr;
 
-        if (WritePhysicsPose(world, e, pw->GetBodyTransform(body.body), interpolateFrom, alpha, t, wt,
-                             body.WritebackRecord))
+        if (WritePhysicsPose(world, e, pw->GetBodyTransform(body.body), interpolateFrom, alpha, tWrite, wtWrite,
+                             bodyWrite.Mutable().WritebackRecord))
             ++composed;
     });
     PhysicsWorldService::SetLastBodiesComposed(composed);

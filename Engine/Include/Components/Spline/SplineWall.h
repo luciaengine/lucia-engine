@@ -28,7 +28,7 @@ enum class SplineWallGrade : int32
 enum class SplineWallCorner : int32
 {
     // The faces of both legs meet on one sharp edge.
-    Miter = 0,
+    Mitre = 0,
     // The outside sweeps an arc of half the thickness about the point.
     Round = 1,
 };
@@ -53,23 +53,23 @@ inline constexpr float32 kSplineWallMaxExtentMetres = 100.0f;
 // and a fresh spline's 5 m radius would make it 10 m thick.
 struct SplineWall
 {
-    // @ge-tooltip Meters across the wall. The spline's width does not change it.
+    // @ge-tooltip Metres across the wall. The spline's width does not change it.
     // @ge-range 0.05 100
     float32 Thickness = 0.6f;
-    // @ge-tooltip Meters from the ground to the top of the wall. On a slope with Grade set to Stepped, each stretch between two points stands at least this tall everywhere.
+    // @ge-tooltip Metres from the ground to the top of the wall. On a slope with Grade set to Stepped, each stretch between two points stands at least this tall everywhere.
     // @ge-range 0.05 100
     float32 Height = 3.0f;
     // @ge-tooltip How the wall meets a slope. Racked keeps the top parallel to the ground, as a hedge or a palisade does. Stepped keeps the top of each stretch between two points level, at Height above its highest ground, and steps up or down where two stretches meet, as coursed masonry does.
     SplineWallGrade Grade = SplineWallGrade::Racked;
     // Set from the spline's type when the component is added — straight
-    // segments give Miter, curves give Round — and authored after that. The
+    // segments give Mitre, curves give Round — and authored after that. The
     // component factory derives it (Source/Components/SplineWallDefaults.cpp);
     // Reset restores the value the inspector first showed.
-    // @ge-tooltip What the wall builds where its spline turns at a point: Miter meets the two faces on one sharp edge, Round sweeps the outside in an arc. A turn sharper than 120 degrees is always built round. Adding the wall picks Miter for a spline of straight segments and Round for a curved one.
-    SplineWallCorner Corner = SplineWallCorner::Miter;
+    // @ge-tooltip What the wall builds where its spline turns at a point: Mitre meets the two faces on one sharp edge, Round sweeps the outside in an arc. A turn sharper than 120 degrees is always built round. Adding the wall picks Mitre for a spline of straight segments and Round for a curved one.
+    SplineWallCorner Corner = SplineWallCorner::Mitre;
     // Null keeps the built-in flat grey material so the wall renders on the
     // first try.
-    // @ge-tooltip The wall's surface. Empty keeps a flat gray. Texture coordinates are in meters, along each face and up from the wall's lowest point, so the stone size is the material's own tiling.
+    // @ge-tooltip The wall's surface. Empty keeps a flat grey. Texture coordinates are in metres, along each face and up from the wall's lowest point, so the stone size is the material's own tiling.
     MaterialRef Material;
     // @ge-tooltip How the wall follows the ground under its spline. None keeps the spline's own heights; Height and Height And Slope both set the wall on the surface below the spline, since the wall takes its lean from the spline, not from the surface. The base always sinks into a cross slope so it never floats.
     SplinePlacementConform ConformMode = SplinePlacementConform::Height;
@@ -84,7 +84,7 @@ struct SplineWall
     // hand-written comparison that missed a field would silently stop rebuilds
     // for edits to that field. A NaN float would make a recipe unequal to itself
     // and re-arm the rebuild forever, so the controller compares sanitized
-    // recipes only (SanitizeWallRecipe, SplineRecipes/SplineWall/SplineWallSanitize.h).
+    // recipes only (SanitizeWallRecipe, Placement/SplineWallSanitize.h).
     bool operator==(const SplineWall&) const = default;
 };
 

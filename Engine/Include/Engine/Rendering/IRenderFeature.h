@@ -66,6 +66,15 @@ class IRenderFeature
     // light culling, SDSM, HZB). Read once per frame on the render thread.
     virtual bool WritesDynamicDepth() const { return false; }
 
+    // Digest of the content this feature renders into world `worldId` that a
+    // reflection probe capture photographs: what exists (an ocean surface, a
+    // terrain and its source assets), not per-frame animation or continuous
+    // shape edits. RenderServices adds every feature's value to the world's
+    // render content digest, so a change recaptures a "Once" probe. 0 means the
+    // feature renders nothing into that world. Called from the world's
+    // extraction system, which may run on a job worker.
+    virtual uint64_t ContentDigest(uint64_t /*worldId*/) const { return 0; }
+
     // RenderGraph declaration hook. A feature that owns render targets declares
     // the passes that write them here — driven per (feature, view) by the
     // pipeline node that orchestrates the feature. Default no-op: features that

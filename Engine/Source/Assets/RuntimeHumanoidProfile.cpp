@@ -1,5 +1,5 @@
 #include "Assets/RuntimeHumanoidProfile.h"
-#include "Animation/Skeleton/SkeletonProfile.h"
+#include "Animation/SkeletonProfile.h"
 #include "Assets/AssetManager.h"
 
 namespace GameEngine

@@ -7,21 +7,19 @@
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Rendering/MorphTargetWeights.h"
 #include "Components/Spline/SplineComponent.h"
-#include "Components/Spline/SplineNetworkOverrides.h"
-#include "Components/Spline/SplinePaving.h"
 #include "Components/Terrain/Terrain.h"
 #include "Components/Transform.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"
 #include "ECSModules/Rendering/SkeletonStore.h"
-#include "Components/Navigation/NavigationSurface.h"
-#include "PathfindingECS/NavigationSurfaceRuntime.h"
+#include "PathfindingECS/Components/NavigationGrid.h"
+#include "PathfindingECS/NavigationGridRuntime.h"
 #include "PhysicsECS/Components/CharacterController.h"
 #include "PhysicsECS/Components/HeightFieldColliderShape.h"
 #include "PhysicsECS/Components/PhysicsBody.h"
 #include "SplineECS/SplineService.h"
-#include "TerrainECS/Components/TerrainPageCollider.h"
 #include "TerrainECS/Components/TerrainPlanetFaceCollider.h"
+#include "TerrainECS/Components/TerrainTileCollider.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -110,7 +108,7 @@ class CopiedEntityRuntimeRefs
         RepairCharacterController(world, copy);
         RepairAnimatorRuntime(world, copy);
         RepairTerrainColliders(world, copy);
-        RepairNavigationSurface(world, copy);
+        RepairNavigationGrid(world, copy);
     }
 
     // Repair what a copy names of another entity of the payload, once every entity of it is
@@ -120,11 +118,7 @@ class CopiedEntityRuntimeRefs
     void RepairPayloadReferences(ECS::World& world)
     {
         for (const auto& [sourceId, copy] : m_CloneBySource)
-        {
             RepairMarkupRegionMembers(world, copy);
-            RepairSplineNetworkOverrides(world, copy);
-            RepairPavingMembers(world, copy);
-        }
     }
 
   private:
@@ -139,48 +133,6 @@ class CopiedEntityRuntimeRefs
         Components::MarkupRegion updated = *region;
         bool remapped = false;
         for (uint32 i = 0; i < std::min(updated.MemberCount, Components::kMaxRegionMembers); ++i)
-        {
-            const ECS::EntityHandle member = updated.Members[i].Entity;
-            updated.Members[i].Entity = CloneOf(member, member);
-            remapped = remapped || updated.Members[i].Entity != member;
-        }
-        if (remapped)
-            world.AddComponentImmediate(copy, updated);
-    }
-
-    // A junction record names the other member of its junction. A partner duplicated in the same
-    // payload names its copy, so a pair duplicated together describes the copied junction; a
-    // partner outside the payload stays the original, so the copy's record describes its meeting
-    // with that partner, held by the network once the copy is moved away from it.
-    void RepairSplineNetworkOverrides(ECS::World& world, ECS::EntityHandle copy) const
-    {
-        const auto* overrides = world.GetComponent<Components::SplineNetworkOverrides>(copy);
-        if (!overrides)
-            return;
-        Components::SplineNetworkOverrides updated = *overrides;
-        bool remapped = false;
-        for (Components::SplineNetworkOverride& record : updated.Records)
-        {
-            if (record.Rule == Components::SplineNodeRule::None)
-                continue;
-            const ECS::EntityHandle partner = record.Other;
-            record.Other = CloneOf(partner, partner);
-            remapped = remapped || record.Other != partner;
-        }
-        if (remapped)
-            world.AddComponentImmediate(copy, updated);
-    }
-
-    // A paving's member list is byte-copied: a member duplicated in the same payload (a bed
-    // copied with its square) names its copy; a member duplicated without it stays shared.
-    void RepairPavingMembers(ECS::World& world, ECS::EntityHandle copy) const
-    {
-        const auto* paved = world.GetComponent<Components::SplinePaving>(copy);
-        if (!paved)
-            return;
-        Components::SplinePaving updated = *paved;
-        bool remapped = false;
-        for (uint32 i = 0; i < std::min(updated.MemberCount, Components::kMaxPavingMembers); ++i)
         {
             const ECS::EntityHandle member = updated.Members[i].Entity;
             updated.Members[i].Entity = CloneOf(member, member);
@@ -209,17 +161,17 @@ class CopiedEntityRuntimeRefs
     // Cleared, the copy has no previous entry to retire and bakes its own. The
     // authoring weights and the sourceMesh* fields stay: they name the shared
     // model submesh every instance registers, which no instance unregisters.
-    // The map a NavigationSurface names belongs to the entity that created it.
-    // The copy forgets the binding and NavigationSurfaceSystem bakes its own map;
+    // The map a NavigationGrid names belongs to the entity that created it. The
+    // copy forgets the binding and NavigationBuildSystem creates its own map;
     // sharing it would let the copy's teardown release the original's map.
-    static void RepairNavigationSurface(ECS::World& world, ECS::EntityHandle copy)
+    static void RepairNavigationGrid(ECS::World& world, ECS::EntityHandle copy)
     {
-        const auto* surface = world.GetComponent<Components::NavigationSurface>(copy);
-        if (!surface || surface->OwnerWorldId == 0)
+        const auto* grid = world.GetComponent<Components::NavigationGrid>(copy);
+        if (!grid || !grid->Initialized)
             return;
 
-        Components::NavigationSurface updated = *surface;
-        PathfindingECS::ForgetNavigationSurfaceMap(updated);
+        Components::NavigationGrid updated = *grid;
+        PathfindingECS::ForgetNavigationGridMap(updated);
         world.AddComponentImmediate(copy, updated);
     }
 
@@ -399,7 +351,6 @@ class CopiedEntityRuntimeRefs
         updated.TerrainDataGeneration = 0;
         updated.TiledTerrainHandle = 0;
         updated.TiledTerrainGeneration = 0;
-        updated.DrawOrderFrame = 0;
         world.AddComponentImmediate(copy, updated);
     }
 
@@ -486,21 +437,21 @@ class CopiedEntityRuntimeRefs
         world.AddComponentImmediate(copy, updated);
     }
 
-    // The collider tags name a heightfield physics handle the terrain service
-    // allocated for the source page/face, so the copy is stripped of its claim:
-    // zero has the service's handle bit clear, and every release path returns on
-    // that bit before touching a slot (TerrainService::ReleasePagePhysicsHandle).
+    // Both collider tags name a heightfield physics handle the terrain service
+    // allocated for the source tile/face, so the copy is stripped of its claim:
+    // zero has the service's handle bit clear, and both release paths return on
+    // that bit before touching a slot (TerrainService::ReleaseTilePhysicsHandle).
     //
     // Nothing re-links the zeroed tag — a handle is only ever assigned when
-    // TerrainPhysicsSystem creates a collider entity. The copy is redundant.
-    // A page copy names no slot, so the system's next sweep tears it down. A
-    // face copy keeps the source's face keys, so the sweep destroys it together
-    // with the source's face collider.
+    // TerrainPhysicsSystem creates a collider entity. The copy is simply
+    // redundant, and its remaining tile/face keys are byte-identical to the
+    // source's, so the system's sweep classifies both the same way and destroys
+    // them together the moment that tile stops being resident.
     static void RepairTerrainColliders(ECS::World& world, ECS::EntityHandle copy)
     {
-        if (const auto* page = world.GetComponent<Components::TerrainPageCollider>(copy))
+        if (const auto* tile = world.GetComponent<Components::TerrainTileCollider>(copy))
         {
-            Components::TerrainPageCollider updated = *page;
+            Components::TerrainTileCollider updated = *tile;
             updated.PhysicsHandleIndex = 0;
             updated.PhysicsHandleGeneration = 0;
             world.AddComponentImmediate(copy, updated);

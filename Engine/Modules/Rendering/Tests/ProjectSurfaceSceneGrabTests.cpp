@@ -23,12 +23,12 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "TestUtils.h"
+#include "TestTempDir.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -50,11 +50,7 @@ struct TempTree
 
     explicit TempTree(const char* prefix)
     {
-        static std::atomic<uint32_t> counter{0};
-        Root = fs::temp_directory_path() /
-               (std::string(prefix) + "_" +
-                std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" +
-                std::to_string(counter.fetch_add(1)));
+        Root = TestUtils::MakeUniqueTempDirectory(prefix);
         fs::create_directories(Root);
     }
     ~TempTree()

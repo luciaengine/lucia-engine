@@ -48,7 +48,7 @@ namespace Rendering {
         // Releases command-buffer-scoped helpers through the device's deferred
         // destruction path, then nulls out m_CommandBuffer so the destructor won't
         // double-recycle it.
-        void OnSubmitted();
+        void OnSubmitted(SemaphoreHandle timeline = {}, uint64_t timelineValue = 0);
 
         // Access the underlying VkCommandBuffer (for submit/tracking).
         VkCommandBuffer GetVkCommandBuffer() const { return m_CommandBuffer; }
@@ -196,8 +196,6 @@ namespace Rendering {
 
         void BarrierBatch(const std::vector<ResourceBarrier>& barriers) override;
 
-        void RecordStateAfterBarriers(const std::vector<ResourceBarrier>& barriers) override;
-
         // Debug events
         void BeginEvent(const char* name) override;
         void EndEvent() override;
@@ -243,12 +241,14 @@ namespace Rendering {
         VkShaderStageFlags ResolvePushConstantStageFlags(const VulkanPipeline* pipeline,
                                                          VkShaderStageFlags metadataStages) const;
 
-        // The part of `stages` this list's queue family can execute. The graphics
-        // (universal) queue keeps every stage. A stage another queue owns names work on
-        // that queue, which a semaphore wait in the submission orders, not a barrier here.
-        VkPipelineStageFlags QueueExpressibleStages(VkPipelineStageFlags stages) const;
-        // Applies QueueExpressibleStages to one side of a barrier (see the definition).
-        void ApplyQueueFloor(const ResourceBarrier& barrier, VkPipelineStageFlags& stage, VkAccessFlags& access) const;
+        // Raster state is consumed by draws. Keeping it pending avoids dirtying
+        // graphics state before compute-only work on Adreno Vulkan 1.1 drivers.
+        void ApplyRasterState();
+        VkPipeline m_BoundGraphicsPipeline = VK_NULL_HANDLE;
+        VkViewport m_Viewport{};
+        VkRect2D m_Scissor{};
+        bool m_ViewportPending = false;
+        bool m_ScissorPending = false;
 
         VulkanDevice* m_Device;
         VkCommandBuffer m_CommandBuffer = VK_NULL_HANDLE;

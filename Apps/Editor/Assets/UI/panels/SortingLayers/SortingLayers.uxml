@@ -1,0 +1,6 @@
+<UIElement class="sorting-layers-settings">
+  <Label text="Lower priorities draw first. Names and priorities are unique. IDs stay stable when a layer is renamed or reordered." class="settings-description" />
+  <Label id="SortingLayerError" class="sorting-layer-error hidden" />
+  <UIElement id="SortingLayerList" class="sorting-layer-list" />
+  <Button id="SortingLayerAdd" text="Add Sorting Layer" class="small secondary" />
+</UIElement>

@@ -328,48 +328,6 @@ namespace GameEngine.HotReload
             }
         }
 
-        /// <summary>
-        /// The number of C# components and systems the loaded scripts assembly defines: types
-        /// implementing IComponent or IEntitySystem, or deriving from GameSystem. Matched by name,
-        /// since this assembly does not reference Scripting.ABI. 0 when no assembly is loaded.
-        /// </summary>
-        public static int CountScriptTypes()
-        {
-            Assembly? asm;
-            lock (m_Lock) { asm = m_CurrentAssembly; }
-            if (asm == null)
-                return 0;
-            Type?[] types;
-            try { types = asm.GetTypes(); }
-            catch (ReflectionTypeLoadException ex) { types = ex.Types; }
-            int count = 0;
-            foreach (var type in types)
-            {
-                if (type != null && IsScriptType(type))
-                    ++count;
-            }
-            return count;
-        }
-
-        private static bool IsScriptType(Type type)
-        {
-            // Interfaces, abstract and static classes and open generic definitions are not
-            // types a game places or runs.
-            if (type.IsAbstract || type.IsInterface || type.IsGenericTypeDefinition)
-                return false;
-            foreach (var implemented in type.GetInterfaces())
-            {
-                if (implemented.FullName is "GameEngine.Scripting.IComponent" or "GameEngine.Scripting.IEntitySystem")
-                    return true;
-            }
-            for (var baseType = type.BaseType; baseType != null; baseType = baseType.BaseType)
-            {
-                if (baseType.FullName == "GameEngine.Scripting.GameSystem")
-                    return true;
-            }
-            return false;
-        }
-
 #if DEBUG
         public static Assembly? GetCurrentAssembly() => m_CurrentAssembly;
         public static Assembly? GetPreloadedAssemblyForTests() => m_Preloaded?.Assembly;
@@ -871,7 +829,7 @@ namespace GameEngine.HotReload
             {
                 context.Unload();
                 System.Threading.Interlocked.Increment(ref m_TotalUnloads);
-                ScheduleUnloadVerification(context, domainId, assemblyName, context.LeakAdvice);
+                ScheduleUnloadVerification(context, domainId, assemblyName);
             }
             catch (Exception ex)
             {
@@ -1149,11 +1107,9 @@ namespace GameEngine.HotReload
         /// <summary>
         /// Schedule background verification that an already-unloading collectible context actually
         /// gets collected. The background closure roots only a WeakReference, never the context.
-        /// A context that survives the attempt budget is recorded as a leaked ALC (B1); the leak
-        /// line ends with <paramref name="leakAdvice"/> when the caller knows what pins it.
+        /// A context that survives the attempt budget is recorded as a leaked ALC (B1).
         /// </summary>
-        internal static void ScheduleUnloadVerification(AssemblyLoadContext unloadedContext, ulong domainId, string? assemblyName,
-                                                        string? leakAdvice = null)
+        private static void ScheduleUnloadVerification(CollectibleAssemblyContext unloadedContext, ulong domainId, string? assemblyName)
         {
             var weakRef = new WeakReference(unloadedContext);
             unloadedContext = null!;
@@ -1191,11 +1147,11 @@ namespace GameEngine.HotReload
                     try { await System.Threading.Tasks.Task.Delay(kUnloadVerifyDelayMs).ConfigureAwait(false); } catch { return; }
                 }
 
-                OnAlcLeakDetected(domainId, assemblyName, leakAdvice);
+                OnAlcLeakDetected(domainId, assemblyName);
             });
         }
 
-        private static void OnAlcLeakDetected(ulong domainId, string? assemblyName, string? leakAdvice)
+        private static void OnAlcLeakDetected(ulong domainId, string? assemblyName)
         {
             int leakedCount = System.Threading.Interlocked.Increment(ref m_LeakedAlcCount);
             System.Threading.Interlocked.Exchange(ref m_LastLeakedDomainId, unchecked((long)domainId));
@@ -1206,8 +1162,7 @@ namespace GameEngine.HotReload
                     $"[HotReload] ***** ALC LEAK: domain {domainId} (assembly '{assemblyName ?? "<unknown>"}', swap generation {System.Threading.Volatile.Read(ref m_TotalSwaps)}) " +
                     $"is still alive after {kUnloadVerifyMaxAttempts} GC passes (~{approxMs}ms). " +
                     "Something is pinning the old AssemblyLoadContext (static field, event subscription, timer, or running thread in user code); " +
-                    $"its assemblies and statics remain resident. leakedAlcCount={leakedCount}. *****" +
-                    (leakAdvice != null ? " " + leakAdvice : string.Empty));
+                    $"its assemblies and statics remain resident. leakedAlcCount={leakedCount}. *****");
             }
             catch { }
         }
@@ -1748,17 +1703,15 @@ namespace GameEngine.HotReload
 
         /// <summary>
         /// Loads every DLL in <paramref name="dir"/> (top level only, name-sorted for
-        /// determinism) that <paramref name="include"/> accepts into the given collectible
-        /// context via LoadFromStream (never locks the file), with its PDB when present.
-        /// One bad assembly is logged once, naming it as a <paramref name="kind"/> assembly,
-        /// and skipped; the rest still load. Assemblies loaded here resolve each other by
+        /// determinism) into the given collectible context via LoadFromStream (never
+        /// locks the file), with its PDB when present. One bad assembly is logged and
+        /// skipped; the rest still load. Assemblies loaded here resolve each other by
         /// simple name from the context's own cache, so cross-package references work
         /// without any resolver hook (compile order already guaranteed dependency DLLs
         /// exist).
         /// </summary>
-        internal static void LoadFolderAssemblies(AssemblyLoadContext context, string dir, string kind,
-                                                  List<(Assembly Asm, string Path)> results,
-                                                  Func<string, bool>? include = null)
+        private static void LoadPackageAssemblies(CollectibleAssemblyContext context, string dir,
+                                                  List<(Assembly Asm, string Path)> results)
         {
             try
             {
@@ -1767,8 +1720,6 @@ namespace GameEngine.HotReload
                 foreach (var dll in Directory.EnumerateFiles(dir, "*.dll", SearchOption.TopDirectoryOnly)
                                              .OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
                 {
-                    if (include != null && !include(dll))
-                        continue;
                     try
                     {
                         byte[] bytes = File.ReadAllBytes(dll);
@@ -1785,23 +1736,22 @@ namespace GameEngine.HotReload
                             asm = context.LoadFromStream(asmStream);
                         }
                         results.Add((asm, dll));
-                        Info($"[HotReload] Loaded {kind} assembly '{Path.GetFileName(dll)}'");
+                        Info($"[HotReload] Loaded package assembly '{Path.GetFileName(dll)}'");
                     }
                     catch (Exception ex)
                     {
-                        Console.Error.WriteLine($"[HotReload] Failed to load {kind} assembly '{dll}': {ex.Message}");
+                        Console.Error.WriteLine($"[HotReload] Failed to load package assembly '{dll}': {ex.Message}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[HotReload] The {kind} assembly scan of '{dir}' failed: {ex.Message}");
+                Console.Error.WriteLine($"[HotReload] Package assembly scan of '{dir}' failed: {ex.Message}");
             }
         }
 
         public static int PreloadAssemblyContext(string assemblyPath)
         {
-            CollectibleAssemblyContext? newContext = null;
             try
             {
                 if (!File.Exists(assemblyPath))
@@ -1823,12 +1773,8 @@ namespace GameEngine.HotReload
                     return -1;
                 }
 
-                // Step 3: Create new collectible context (can be done on background thread). Its
-                // references to the project's NuGet packages resolve from the dependency context of
-                // the Dependencies/ folder beside the assembly (a stream-loaded assembly has no
-                // directory for the runtime to probe).
-                newContext = new CollectibleAssemblyContext(
-                    ScriptDependencyContext.Acquire(Path.GetDirectoryName(assemblyPath)));
+                // Step 3: Create new collectible context (can be done on background thread)
+                var newContext = new CollectibleAssemblyContext();
 
                 // Step 4: Load assembly from stream (can be done on background thread)
                 Assembly newAssembly;
@@ -1912,9 +1858,9 @@ namespace GameEngine.HotReload
                     if (!string.IsNullOrEmpty(scriptsDir))
                     {
                         string packagesDir = Path.Combine(scriptsDir, "Packages");
-                        LoadFolderAssemblies(newContext, packagesDir, "package", packageAssemblies);
+                        LoadPackageAssemblies(newContext, packagesDir, packageAssemblies);
                         if (editorAsm != null)
-                            LoadFolderAssemblies(newContext, Path.Combine(packagesDir, "Editor"), "package", packageAssemblies);
+                            LoadPackageAssemblies(newContext, Path.Combine(packagesDir, "Editor"), packageAssemblies);
                     }
                 }
                 catch { }
@@ -1991,12 +1937,6 @@ namespace GameEngine.HotReload
             catch (Exception ex)
             {
                 Console.WriteLine($"[HotReload] PreloadAssemblyContext failed: {ex.Message}");
-                // A context that was never published unloads here, which also gives back its use
-                // of the dependency context.
-                if (newContext != null && !ReferenceEquals(m_Preloaded?.Context, newContext))
-                {
-                    try { newContext.Unload(); } catch { }
-                }
                 return -1;
             }
         }
@@ -2198,9 +2138,8 @@ namespace GameEngine.HotReload
                     return -1;
                 }
 
-                // Create new collectible context and load from provided bytes; package references
-                // resolve from the current dependency context (bytes carry no directory).
-                var newContext = new CollectibleAssemblyContext(ScriptDependencyContext.AcquireCurrent());
+                // Create new collectible context and load from provided bytes
+                var newContext = new CollectibleAssemblyContext();
                 Assembly newAssembly;
                 if (pdbBytes != null && pdbBytes.Length > 0)
                 {
@@ -2755,9 +2694,8 @@ namespace GameEngine.HotReload
                     // Multi-domain: do not unload previous assembly here. Each call creates a new collectible context/domain.
                     // Previous domains remain active until explicitly unloaded by the engine.
 
-                    // Create new collectible context; package references resolve from the current
-                    // dependency context (bytes carry no directory).
-                    newContext = new CollectibleAssemblyContext(ScriptDependencyContext.AcquireCurrent());
+                    // Create new collectible context
+                    newContext = new CollectibleAssemblyContext();
 
                     // Load assembly from bytes
                     using (var stream = new MemoryStream(assemblyBytes))
@@ -2956,8 +2894,10 @@ namespace GameEngine.HotReload
         private static readonly string[] s_SharedAssemblyNames =
         {
             "GameEngine.Scripting.ABI",
-            "GameEngine.Scripting.Bindings",
             "GameEngine.ECS.ABI",
+            "GameEngine.Input.ABI",
+            "GameEngine.Physics.ABI",
+            "GameEngine.TileMap.ABI",
             "GameEngine.Platform.ABI",
             "GameEngine.Editor.Scripting.ABI",
             "GameEngine.Scripting.Runtime",
@@ -3083,21 +3023,10 @@ namespace GameEngine.HotReload
     /// </summary>
     public class CollectibleAssemblyContext : AssemblyLoadContext
     {
-        private readonly ScriptDependencyContext? m_Dependencies;
-
-        /// <param name="dependencies">The project's NuGet package assemblies, or null for none. This
-        /// context holds one use of it (<see cref="ScriptDependencyContext.Acquire"/>) and releases it
-        /// when it unloads.</param>
-        internal CollectibleAssemblyContext(ScriptDependencyContext? dependencies = null) : base(isCollectible: true)
+        public CollectibleAssemblyContext() : base(isCollectible: true)
         {
-            m_Dependencies = dependencies;
-            if (dependencies != null)
-                Unloading += _ => dependencies.Release();
             try { if (string.Equals(Environment.GetEnvironmentVariable("GE_HOTRELOAD_VERBOSE"), "1", StringComparison.Ordinal)) Console.WriteLine("[HotReload] Created collectible AssemblyLoadContext for user scripts"); } catch { }
         }
-
-        /// <summary>What to check when this context does not unload: a package static that holds script objects.</summary>
-        internal string? LeakAdvice => m_Dependencies?.LeakAdvice;
 
         protected override Assembly? Load(AssemblyName assemblyName)
         {
@@ -3105,16 +3034,16 @@ namespace GameEngine.HotReload
             // HotReload) are pre-loaded into AssemblyLoadContext.Default by
             // HotReloadManager.EnsureSharedAssembliesInDefault() at startup.
             //
-            // A package assembly comes from the dependency context, which loaded it once
-            // for every scripts context of the same staged set. Anything else returns null:
-            // the runtime falls back to Default, giving a single shared type identity
-            // (GameSystem, IComponent, etc.) across all collectible contexts. This is
-            // essential for IsSubclassOf, casting, and [ModuleInitializer] static state to
-            // work correctly between engine code and user scripts.
+            // Returning null causes the runtime to fall back to Default, giving a single
+            // shared type identity (GameSystem, IComponent, etc.) across all collectible
+            // contexts.  This is essential for IsSubclassOf, casting, and [ModuleInitializer]
+            // static state to work correctly between engine code and user scripts.
             //
             // We intentionally do NOT probe the filesystem here.  Loading arbitrary DLLs
             // into this collectible ALC was the root cause of type duplication bugs.
-            return m_Dependencies?.Find(assemblyName);
+            // User script dependencies are resolved transitively when the scripts DLL is
+            // loaded via LoadFromStream; framework assemblies resolve from Default via TPA.
+            return null;
         }
     }
 }

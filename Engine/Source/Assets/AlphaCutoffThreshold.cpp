@@ -1,7 +1,6 @@
 #include "Assets/AlphaCutoffThreshold.h"
 
-#include "Mathematics/Interpolation.h"
-
+#include <algorithm>
 #include <cmath>
 
 namespace GameEngine {
@@ -15,7 +14,7 @@ std::optional<uint32> AlphaCutoffOpaqueThreshold(float cutoff, uint32 marginStep
 
     // The shader discards when sampledAlpha < cutoff, with sampledAlpha =
     // byte/255, so the smallest non-discarding byte is ceil(cutoff * 255).
-    const float clamped = Math::Clamp01(cutoff);
+    const float clamped = std::clamp(cutoff, 0.0f, 1.0f);
     const uint32 exact = static_cast<uint32>(std::ceil(clamped * 255.0f));
     const uint32 threshold = exact + marginSteps;
     if (threshold > 255u)

@@ -31,14 +31,12 @@ The package, flat so the facade finds the engine module beside itself (its defau
 the layout of the demo site, with the engine pack split into parts under 100 MB that the
 binding joins (opengine-core.gepak.parts.json lists them); `--site-models <dir>` adds the
 .glb files the site hosts itself under <dir>/models, and `--site-without-particles` drops the
-particle programs from the site's pack. `--check` verifies the file list; `--check --sizes` also prints the raw,
+particle programs from the site's pack. `--check` verifies the file list and prints the raw,
 gzip and brotli size of each file and of what a page downloads at each build.
 
-The version is the engine's, from the repository root's VERSION file: `<year>.<month>.<patch>`,
-with an optional prerelease suffix `-alpha.<n>` or `-beta.<n>`. A packaged commit carrying a
-release tag (`v` plus the version, `v2026.10.0-alpha.4`) is that version, and a tag that differs
-from VERSION is refused; a commit without one is `<VERSION>-dev.<commit>`. `--version` names the
-version outright and must equal VERSION. A prerelease's package.json
+The version is the packaged commit's release tag without its `v`: `v<year>.<month>.<patch>`, with
+an optional prerelease suffix `-alpha.<n>` or `-beta.<n>` (`v2026.10.0-alpha.1` is version
+`2026.10.0-alpha.1`). A commit without one is `0.0.0-dev.<commit>`. A prerelease's package.json
 names its npm dist-tag (`alpha`, `beta`) in publishConfig, so a plain `npm publish` never moves
 `latest` to it.
 """
@@ -64,7 +62,7 @@ kRepoRoot = Path(__file__).resolve().parents[2]
 kLibraryDir = kRepoRoot / "Apps" / "WebLibrary"
 kFacadeDir = kLibraryDir / "ts"
 
-kPackageName = "@game-crafters-guild/openengine-web"
+kPackageName = "@openengine/web"
 kBuilds = ("st", "mt")
 kFacadeName = "opengine.mjs"
 kBindingName = "opengine-core-binding.js"
@@ -93,7 +91,9 @@ kNoticeExcludedPorts = ("benchmark", "gtest", "egl-registry", "opengl-registry",
 kRepoNotices = (
     ("Roboto (the UI fallback font in the pack)", "Apps/Editor/Assets/Fonts/LICENSE.txt"),
     ("ufbx (the FBX importer)", "Engine/Source/ThirdParty/ufbx/LICENSE"),
+    ("GT7 tone mapper (Includes/tonemap_gt7.glsl in the pack)", "Engine/Modules/Rendering/Shaders/Includes/tonemap_gt7.glsl"),
     ("OpenColorIO (the ACES 2 tone mapper tables)", "ThirdParty/OpenColorIO/LICENSE.txt"),
+    ("BakingLab ACES", "ThirdParty/BakingLabAces/LICENSE.txt"),
     ("Bend Screen Space Shadows", "ThirdParty/BendScreenSpaceShadows/LICENSE.txt"),
     ("AMD FidelityFX Denoiser", "ThirdParty/FidelityFX-Denoiser/LICENSE.txt"),
     ("Khronos PBR Neutral", "ThirdParty/KhronosPbrNeutral/LICENSE.txt"),
@@ -118,8 +118,8 @@ kReleaseTag = re.compile(r"^v(\d{4}\.\d{1,2}\.\d+)(?:-(alpha|beta)\.\d+)?$")
 
 # The examples import the library by this specifier; in the source tree the import map points
 # it at the facade's tsc output, in the package at the bundled facade two folders up.
-kSourceImportTarget = '"@game-crafters-guild/openengine-web": "../../ts/dist/src/index.js"'
-kPackageImportTarget = '"@game-crafters-guild/openengine-web": "../../opengine.mjs"'
+kSourceImportTarget = '"@openengine/web": "../../ts/dist/src/index.js"'
+kPackageImportTarget = '"@openengine/web": "../../opengine.mjs"'
 # The gallery links the examples beside it in the source tree; on the site they sit in package/.
 kGalleryExamplesLink = 'href="../examples/'
 kSiteExamplesLink = 'href="package/examples/'
@@ -146,25 +146,12 @@ def PackageFiles() -> list[str]:
     return sorted(files)
 
 
-def SourceVersion(versionFile: Path) -> str:
-    """The engine version the VERSION file holds."""
-    version = versionFile.read_text(encoding="utf-8").strip()
-    if not kReleaseTag.match(f"v{version}"):
-        raise PackageError(f"{versionFile} holds '{version}', which is not <year>.<month>.<patch>, "
-                           "optionally followed by -alpha.<n> or -beta.<n>")
-    return version
-
-
-def PackageVersion(releaseTag: str | None, commit: str, sourceVersion: str) -> str:
+def PackageVersion(releaseTag: str | None, commit: str) -> str:
     if releaseTag is None:
-        return f"{sourceVersion}-dev.{commit}"
+        return f"0.0.0-dev.{commit}"
     if not kReleaseTag.match(releaseTag):
         raise PackageError(f"release tag '{releaseTag}' is not v<year>.<month>.<patch>, optionally "
                            "followed by -alpha.<n> or -beta.<n>")
-    if releaseTag[1:] != sourceVersion:
-        raise PackageError(f"release tag '{releaseTag}' does not match VERSION, which holds "
-                           f"'{sourceVersion}': tag the commit v{sourceVersion}, or change VERSION "
-                           "in the commit the tag names")
     return releaseTag[1:]
 
 
@@ -183,7 +170,7 @@ def CommitVersion(repo: Path) -> str:
     releases = sorted(tag for tag in tags if kReleaseTag.match(tag))
     if len(releases) > 1:
         raise PackageError(f"HEAD carries more than one release tag: {', '.join(releases)}")
-    return PackageVersion(releases[0] if releases else None, commit, SourceVersion(repo / "VERSION"))
+    return PackageVersion(releases[0] if releases else None, commit)
 
 
 def ModuleProblems(directory: Path, build: str, allowStub: bool) -> list[str]:
@@ -310,11 +297,9 @@ def Build(args: argparse.Namespace, out: Path) -> str:
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
-    sourceVersion = SourceVersion(kRepoRoot / "VERSION")
-    if args.version and args.version != sourceVersion:
-        raise PackageError(f"--version {args.version} does not match VERSION, which holds "
-                           f"'{sourceVersion}': pass --version {sourceVersion}, or change VERSION")
     version = args.version or CommitVersion(kRepoRoot)
+    if args.version and not kReleaseTag.match(f"v{version}"):
+        raise PackageError(f"--version {version} is not <year>.<month>.<patch>[-alpha.<n>|-beta.<n>]")
 
     CopyModules({"st": args.st_dir, "mt": args.mt_dir}, out, args.allow_stub)
     if args.engine_pack:
@@ -431,9 +416,8 @@ def CompressedSizes(paths: list[Path]) -> dict[Path, tuple[int, int, int]]:
             for path, size in zip(paths, brotli)}
 
 
-def Check(out: Path, allowStub: bool, reportSizes: bool) -> list[str]:
-    """Problems with the package at `out`. With `reportSizes`, a complete package also prints its
-    compressed sizes (gzip 9 and brotli 11 over the whole package: minutes; a report, not a check)."""
+def Check(out: Path, allowStub: bool) -> list[str]:
+    """Problems with the package at `out`; prints its sizes when it is complete."""
     packFiles = PackFiles(out)
     expected = [name for name in PackageFiles() if name != kEnginePackName] + packFiles
     problems = [f"{name} is missing" for name in expected if not (out / name).is_file()]
@@ -453,10 +437,6 @@ def Check(out: Path, allowStub: bool, reportSizes: bool) -> list[str]:
     if problems:
         return problems
 
-    manifest = json.loads((out / "package.json").read_text(encoding="utf-8"))
-    if not reportSizes:
-        print(f"package {kPackageName}@{manifest['version']}: {len(expected)} files and examples/ complete")
-        return []
     shared = [kFacadeName, kBindingName, *packFiles]
     names = sorted({*shared, *(name for build in kBuilds for name in ModuleFiles(build))})
     sizes = CompressedSizes([out / name for name in names])
@@ -468,6 +448,7 @@ def Check(out: Path, allowStub: bool, reportSizes: bool) -> list[str]:
         files = [out / name for name in (*shared, *ModuleFiles(build))]
         totals = [sum(sizes[path][column] for path in files) for column in range(3)]
         print(f"{'page download at ' + build:32} {totals[0]:12,} {totals[1]:12,} {totals[2]:12,}")
+    manifest = json.loads((out / "package.json").read_text(encoding="utf-8"))
     print(f"package {kPackageName}@{manifest['version']}: {len(expected)} files and examples/ complete")
     return []
 
@@ -484,10 +465,7 @@ def main() -> int:
                         help="with --site: drop the particle programs from the site's engine pack "
                              "(its pages draw no particles; the package keeps the full pack)")
     parser.add_argument("--check", action="store_true",
-                        help="verify the package; builds nothing")
-    parser.add_argument("--sizes", action="store_true",
-                        help="with --check: also print the raw, gzip and brotli size of each file "
-                             "and of a page download (minutes over the whole package)")
+                        help="verify the package and print its sizes; builds nothing")
     parser.add_argument("--st-dir", type=Path, help="the single-threaded tree's bin directory")
     parser.add_argument("--mt-dir", type=Path, help="the threaded tree's bin directory")
     parser.add_argument("--component-dts", type=Path,
@@ -500,7 +478,7 @@ def main() -> int:
                         help="the build tree engine_pack.py cooks from, without --engine-pack")
     parser.add_argument("--seed-project", type=Path, default=kSeedProject,
                         help="the project engine_pack.py cooks variants for, without --engine-pack")
-    parser.add_argument("--version", help="the package version, instead of the commit's; must equal VERSION")
+    parser.add_argument("--version", help="the package version, instead of the commit's")
     parser.add_argument("--allow-stub", action="store_true",
                         help="accept zero-length module files (a package for tests)")
     args = parser.parse_args()
@@ -524,7 +502,7 @@ def main() -> int:
                           f"{dropped} particle programs")
                 SplitPack(out)
             print(f"build_web_package: {kPackageName}@{version} -> {out}")
-        problems = Check(out, args.allow_stub, reportSizes=args.sizes or not args.check)
+        problems = Check(out, args.allow_stub)
     except (PackageError, EnginePackError, ExportError, subprocess.CalledProcessError) as error:
         print(f"build_web_package: {error}", file=sys.stderr)
         return 1

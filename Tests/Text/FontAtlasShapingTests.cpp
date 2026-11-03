@@ -1,5 +1,9 @@
+#include "Logger/Logger.h"
+#include "Logger/RingBufferSink.h"
 #include "Platform/Shell.h"
+#include "TestTempDir.h"
 #include "Rendering/Text/FontAtlas.h"
+#include "Rendering/Text/TextLayout.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -10,10 +14,14 @@
 
 using GameEngine::Rendering::Text::FontAtlas;
 
+static std::filesystem::path TestFontPath(const std::filesystem::path& file)
+{
+    return GameEngine::Platform::GetExecutablePath().parent_path() / "TestData/Text" / file;
+}
+
 static std::string FindFallbackFont()
 {
-    return (GameEngine::Platform::GetExecutablePath().parent_path() /
-            "TestData/Text/Roboto-Regular.ttf").string();
+    return TestFontPath("Roboto-Regular.ttf").string();
 }
 
 static bool LoadFontBytes(const std::string& path, std::vector<uint8_t>& out)
@@ -61,8 +69,7 @@ TEST(FontAtlasShapingTests, LigatureMayReduceGlyphCountForFFI)
 TEST(FontAtlasShapingTests, ArabicRTLProducesGlyphs)
 {
     FontAtlas fa;
-    auto font = (GameEngine::Platform::GetExecutablePath().parent_path() /
-                 "TestData/Text/NotoSansArabic-Regular.ttf").string();
+    auto font = TestFontPath("NotoSansArabic-Regular.ttf").string();
     std::vector<uint8_t> bytes;
     ASSERT_TRUE(LoadFontBytes(font, bytes));
     ASSERT_TRUE(fa.LoadFontBytes(bytes.data(), bytes.size(), 48));
@@ -193,8 +200,7 @@ TEST(FontAtlasShapingTests, GlyphPlacementSitsAtCaretPlusBearing)
     using GameEngine::Rendering::Text::FreeTypeFace;
     using GameEngine::Rendering::Text::FreeTypeLib;
 
-    const std::string fontsDir = (GameEngine::Platform::GetExecutablePath().parent_path() /
-                                  "TestData/Text").string() + "/";
+    const std::string fontsDir = TestFontPath("").string();
     const char* kFontCandidates[] = {"Roboto-Regular.ttf", "Roboto-Italic.ttf"};
 
     const unsigned kAtlasPixelSize = 48;
@@ -308,4 +314,341 @@ TEST(FontAtlasShapingTests, GlyphPlacementSitsAtCaretPlusBearing)
     EXPECT_TRUE(sawNegativeRsb) << "no negative right-side-bearing glyph measured";
     EXPECT_TRUE(sawPositiveRsb) << "no positive right-side-bearing glyph measured";
 #endif
+}
+
+TEST(FontAtlasShapingTests, PackagedFallbackRendersMissingScripts)
+{
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("Roboto-Regular.ttf").string(), bytes));
+    const std::pair<const char*, const char*> samples[] = {
+        {"NotoSansArabic-Regular.ttf", "مرحبا"},
+        {"NotoSansHebrew-Regular.ttf", "שלום"},
+        {"NotoSansDevanagari-Regular.ttf", "नमस्ते"},
+        {"NotoSansThai-Regular.ttf", "สวัสดี"},
+        {"NotoSansJP-Regular.otf", "冒険へようこそ"},
+    };
+    for (const auto& [file, text] : samples)
+    {
+        SCOPED_TRACE(file);
+        FontAtlas atlas;
+        ASSERT_TRUE(atlas.SetFallbackFonts({TestFontPath(file)}));
+        ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+        FontAtlas::ShapeResult shape;
+        atlas.ShapeText(text, 32.5f, shape);
+        EXPECT_GT(shape.glyphs.size(), 0u);
+        EXPECT_GT(shape.metrics.width, 0.0f);
+        EXPECT_NEAR(atlas.MeasureUtf8(text, 32.5f).width, shape.metrics.width, 0.01f);
+        EXPECT_GT(atlas.GetSlugPageCount(), 0);
+        for (const auto& glyph : shape.glyphs)
+        {
+            EXPECT_TRUE(std::isfinite(glyph.x));
+            EXPECT_TRUE(std::isfinite(glyph.y));
+            EXPECT_GT(glyph.width, 0.0f);
+            EXPECT_LT(glyph.pageIndex, atlas.GetSlugPageCount());
+        }
+    }
+}
+
+TEST(FontAtlasShapingTests, RightToLeftCaretsFollowLogicalInsertionOrder)
+{
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("NotoSansHebrew-Regular.ttf").string(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    const std::string text = "שלום";
+    auto measured = atlas.MeasureText(text, 32.0f);
+    ASSERT_EQ(measured.caretXByByte.size(), text.size() + 1);
+    EXPECT_NEAR(measured.caretXByByte.front(), measured.metrics.width, 0.01f);
+    EXPECT_NEAR(measured.caretXByByte.back(), 0.0f, 0.01f);
+    EXPECT_GT(measured.caretXByByte[2], measured.caretXByByte[4]);
+}
+
+TEST(FontAtlasShapingTests, MixedDirectionNumbersKeepMeasurementAndCaretsInBounds)
+{
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("Roboto-Regular.ttf").string(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.SetFallbackFonts({TestFontPath("NotoSansHebrew-Regular.ttf")}));
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    const std::string text = "Play שלום 123 now";
+    FontAtlas::ShapeResult shape;
+    atlas.ShapeText(text, 32.0f, shape, 0xffffffff, 1.25f);
+    const auto measure = atlas.MeasureText(text, 32.0f, 1.25f);
+    EXPECT_NEAR(shape.metrics.width, measure.metrics.width, 0.01f);
+    for (float caret : measure.caretXByByte)
+    {
+        EXPECT_GE(caret, -0.01f);
+        EXPECT_LE(caret, measure.metrics.width + 0.01f);
+    }
+    EXPECT_GT(measure.caretXByByte[5], measure.caretXByByte[7]);
+}
+
+TEST(FontAtlasShapingTests, MixedDirectionSelectionUsesSeparateVisualRanges)
+{
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("Roboto-Regular.ttf").string(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.SetFallbackFonts({TestFontPath("NotoSansHebrew-Regular.ttf")}));
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    const std::string text = "abc שלום xyz";
+    const auto measured = atlas.MeasureText(text, 32);
+    const auto ranges = measured.SelectionRanges(0, 6);
+    ASSERT_EQ(ranges.size(), 2u);
+    EXPECT_LT(ranges[0].second, ranges[1].first);
+    const auto all = measured.SelectionRanges(0, text.size());
+    ASSERT_EQ(all.size(), 1u);
+    EXPECT_NEAR(all.front().first, 0.0f, 0.01f);
+    EXPECT_NEAR(all.front().second, measured.metrics.width, 0.01f);
+}
+
+TEST(FontAtlasShapingTests, LanguageSwitchInvalidatesLayoutAndRejectsInvalidTag)
+{
+    FontAtlas atlas;
+    const auto before = atlas.GetLayoutRevision();
+    ASSERT_TRUE(atlas.SetTextLanguage("ja"));
+    EXPECT_GT(atlas.GetLayoutRevision(), before);
+    const auto japanese = atlas.GetLayoutRevision();
+    EXPECT_TRUE(atlas.SetTextLanguage("ja"));
+    EXPECT_EQ(atlas.GetLayoutRevision(), japanese);
+    EXPECT_FALSE(atlas.SetTextLanguage("not a language"));
+    EXPECT_EQ(atlas.GetLayoutRevision(), japanese);
+    EXPECT_TRUE(atlas.SetTextLanguage("zh-Hant"));
+    EXPECT_GT(atlas.GetLayoutRevision(), japanese);
+}
+
+TEST(FontAtlasShapingTests, UnicodeWrappingFindsJapaneseAndThaiBoundaries)
+{
+    using namespace GameEngine::Rendering::Text;
+    const std::pair<const char*, const char*> samples[] = {
+        {"NotoSansJP-Regular.otf", "冒険の世界へようこそ"},
+        {"NotoSansThai-Regular.ttf", "ภาษาไทยภาษาไทยภาษาไทย"}
+    };
+    for (const auto& [file, text] : samples)
+    {
+        SCOPED_TRACE(file);
+        std::vector<uint8_t> bytes;
+        ASSERT_TRUE(LoadFontBytes(TestFontPath(file).string(), bytes));
+        FontAtlas atlas;
+        ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+        StyledRun run{&atlas, text, 32.0f};
+        const float width = atlas.MeasureUtf8(text, 32.0f).width * 0.55f;
+        const auto lines = TextLayout::ShapeMultiline(std::span<const StyledRun>(&run, 1),
+            width, 0.0f, TextLayout::WordBreak::Normal);
+        EXPECT_GT(lines.LineCount, 1u);
+        EXPECT_LE(lines.Metrics.width, width + 0.1f);
+        ASSERT_FALSE(lines.LineBreaks.empty());
+        EXPECT_EQ(lines.LineBreaks.front().ByteStart, 0u);
+        EXPECT_EQ(lines.LineBreaks.back().ByteEnd, run.Text.size());
+    }
+}
+
+TEST(FontAtlasShapingTests, NonbreakingSpaceAndStyledWordDoNotCreateWrapOpportunities)
+{
+    using namespace GameEngine::Rendering::Text;
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(FindFallbackFont(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    StyledRun noBreak{&atlas, "hello\xc2\xa0world", 32.0f};
+    EXPECT_EQ(TextLayout::ShapeMultiline(std::span<const StyledRun>(&noBreak, 1),
+        40.0f, 0.0f, TextLayout::WordBreak::Normal).LineCount, 1u);
+    const StyledRun spans[] = {{&atlas, "hello", 32.0f}, {&atlas, "world", 32.0f}};
+    EXPECT_EQ(TextLayout::ShapeMultiline(spans, 40.0f, 0.0f,
+        TextLayout::WordBreak::Normal).LineCount, 1u);
+}
+
+TEST(FontAtlasShapingTests, ExplicitLinesRetainLetterSpacing)
+{
+    using namespace GameEngine::Rendering::Text;
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(FindFallbackFont(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    StyledRun run{&atlas, "AB\nCD", 32.0f};
+    run.LetterSpacingPx = 4.0f;
+    const auto lines = TextLayout::ShapeMultiline(std::span<const StyledRun>(&run, 1), 0.0f, 0.0f);
+    ASSERT_EQ(lines.LineBreaks.size(), 2u);
+    EXPECT_NEAR(lines.LineBreaks[0].Width, atlas.MeasureUtf8("AB", 32.0f, 4.0f).width, 0.01f);
+    EXPECT_NEAR(lines.LineBreaks[1].Width, atlas.MeasureUtf8("CD", 32.0f, 4.0f).width, 0.01f);
+}
+
+TEST(FontAtlasShapingTests, HebrewArrowMovementFollowsVisualDirection)
+{
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("NotoSansHebrew-Regular.ttf").string(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    const auto measured = atlas.MeasureText("שלום", 32.0f);
+    EXPECT_EQ(measured.NextVisualCaret(0, false), 2u);
+    EXPECT_EQ(measured.NextVisualCaret(2, true), 0u);
+    EXPECT_EQ(measured.NextVisualCaret(0, true), 0u);
+    EXPECT_EQ(measured.CaretAtX(0), 8u);
+    EXPECT_EQ(measured.CaretAtX(measured.metrics.width), 0u);
+}
+
+TEST(FontAtlasShapingTests, VisualMovementNeverSplitsCombiningCluster)
+{
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("Roboto-Regular.ttf").string(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    const auto measured = atlas.MeasureText("a\xcc\x81" "b", 32.0f);
+    EXPECT_EQ(measured.NextVisualCaret(0, true), 3u);
+    EXPECT_EQ(measured.NextVisualCaret(3, false), 0u);
+    for (float x=0; x<measured.metrics.width; x+=0.5f)
+    {
+        const auto caret=measured.CaretAtX(x);
+        EXPECT_TRUE(caret==0 || caret==3 || caret==4);
+    }
+}
+
+TEST(FontAtlasShapingTests, MixedSizeRunsShareOneBaseline)
+{
+    using namespace GameEngine::Rendering::Text;
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("NotoSans-Regular.ttf").string(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    const StyledRun runs[] = {{&atlas, "H", 16.0f}, {&atlas, "H", 40.0f}};
+    FontAtlas::ShapeResult small, large;
+    atlas.ShapeText("H", 16.0f, small);
+    atlas.ShapeText("H", 40.0f, large);
+    ASSERT_EQ(small.glyphs.size(), 1u);
+    ASSERT_EQ(large.glyphs.size(), 1u);
+    const auto line = TextLayout::ShapeMultiline(runs, 0.0f, 0.0f);
+    ASSERT_EQ(line.Glyphs.size(), 2u);
+    const float smallBaseline = line.Glyphs[0].y - small.glyphs[0].y + atlas.GetFontLineMetrics(16.0f).ascender;
+    const float largeBaseline = line.Glyphs[1].y - large.glyphs[0].y + atlas.GetFontLineMetrics(40.0f).ascender;
+    EXPECT_NEAR(smallBaseline, largeBaseline, 0.01f);
+}
+
+TEST(FontAtlasShapingTests, StyledHebrewSpansUseVisualOrder)
+{
+    using namespace GameEngine::Rendering::Text;
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("NotoSansHebrew-Regular.ttf").string(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    StyledRun runs[] = {{&atlas, "אב", 32.0f}, {&atlas, "גד", 32.0f}};
+    runs[0].Color[0]=1; runs[0].Color[1]=0; runs[0].Color[2]=0; runs[0].Color[3]=1;
+    runs[1].Color[0]=0; runs[1].Color[1]=0; runs[1].Color[2]=1; runs[1].Color[3]=1;
+    const auto line=TextLayout::ShapeMultiline(runs, 0.0f, 0.0f);
+    ASSERT_EQ(line.Glyphs.size(), 4u);
+    EXPECT_EQ(line.Glyphs.front().color, 0xffff0000u);
+    EXPECT_EQ(line.Glyphs.back().color, 0xff0000ffu);
+}
+
+TEST(FontAtlasShapingTests, StyledArabicRangeRetainsJoiningContext)
+{
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("NotoSansArabic-Regular.ttf").string(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    FontAtlas::ShapeResult whole, first;
+    atlas.ShapeText("بب", 32.0f, whole);
+    atlas.ShapeTextRange("بب", 0, 2, 32.0f, first, 0xffffffffu, 0.0f);
+    ASSERT_EQ(whole.glyphs.size(), 2u);
+    ASSERT_EQ(first.glyphs.size(), 1u);
+    EXPECT_EQ(first.glyphs[0].glyphLocX, whole.glyphs[1].glyphLocX);
+    EXPECT_EQ(first.glyphs[0].glyphLocY, whole.glyphs[1].glyphLocY);
+    EXPECT_EQ(first.glyphs[0].pageIndex, whole.glyphs[1].pageIndex);
+}
+
+TEST(FontAtlasShapingTests, StyledCombiningContinuationDoesNotEmitDuplicateText)
+{
+    using namespace GameEngine::Rendering::Text;
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("NotoSans-Regular.ttf").string(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    const StyledRun runs[] = {{&atlas, "a", 32.0f}, {&atlas, "\xcc\x81", 32.0f}};
+    const auto line = TextLayout::ShapeMultiline(runs, 0.0f, 0.0f);
+    FontAtlas::ShapeResult whole, continuation;
+    atlas.ShapeText("a\xcc\x81", 32.0f, whole);
+    atlas.ShapeTextRange("a\xcc\x81", 1, 3, 32.0f, continuation, 0xffffffffu, 0.0f);
+    EXPECT_TRUE(continuation.glyphs.empty());
+    EXPECT_EQ(line.Glyphs.size(), whole.glyphs.size());
+    EXPECT_NEAR(line.Metrics.width, whole.metrics.width, 0.01f);
+}
+
+TEST(FontAtlasShapingTests, FallbackConfigurationSeparatesAtlasIdentity)
+{
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("Roboto-Regular.ttf").string(), bytes));
+    FontAtlas primary, arabic, hebrew, sameArabic;
+    ASSERT_TRUE(arabic.SetFallbackFonts({TestFontPath("NotoSansArabic-Regular.ttf")}));
+    ASSERT_TRUE(sameArabic.SetFallbackFonts({TestFontPath("NotoSansArabic-Regular.ttf")}));
+    ASSERT_TRUE(hebrew.SetFallbackFonts({TestFontPath("NotoSansHebrew-Regular.ttf")}));
+    for (auto* atlas : {&primary, &arabic, &hebrew, &sameArabic})
+        ASSERT_TRUE(atlas->LoadFontBytes(bytes.data(), bytes.size(), 48));
+    EXPECT_NE(primary.GetAtlasId(), arabic.GetAtlasId());
+    EXPECT_NE(arabic.GetAtlasId(), hebrew.GetAtlasId());
+    EXPECT_EQ(arabic.GetAtlasId(), sameArabic.GetAtlasId());
+    const auto identity = arabic.GetAtlasId();
+    ASSERT_TRUE(arabic.SetTextLanguage("ar"));
+    EXPECT_EQ(arabic.GetAtlasId(), identity); // Language does not replace glyph storage.
+}
+
+TEST(FontAtlasShapingTests, FallbackFontUnderNonAsciiDirectoryShapes)
+{
+    GameEngine::TestUtils::ScopedTempDir temp(GameEngine::TestUtils::MakeUniqueTempDirectory("font_fallback_unicode"));
+    const auto directory = temp.Path() / std::filesystem::path(u8"Fonts \u00e9\u5192\u05e9");
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    ASSERT_FALSE(error) << error.message();
+    const auto fallback = directory / "NotoSansHebrew-Regular.ttf";
+    std::filesystem::copy_file(TestFontPath("NotoSansHebrew-Regular.ttf"), fallback, error);
+    ASSERT_FALSE(error) << error.message();
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("Roboto-Regular.ttf").string(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.SetFallbackFonts({fallback}));
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    FontAtlas::ShapeResult shape;
+    atlas.ShapeText("\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d", 32.0f, shape);
+    EXPECT_GT(shape.glyphs.size(), 0u);
+    EXPECT_GT(shape.metrics.width, 0.0f);
+}
+
+TEST(FontAtlasShapingTests, MissingGlyphWarningIsEmittedOncePerFamilyAndScript)
+{
+    Logger::Log::Initialize({});
+    struct ShutdownLog
+    {
+        ~ShutdownLog() { Logger::Log::Shutdown(); }
+    } shutdown;
+    Logger::Log::ClearSinks();
+    auto sink = std::make_unique<Logger::RingBufferSink>(16);
+    auto* ring = sink.get();
+    Logger::Log::AddSink(std::move(sink));
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("Roboto-Regular.ttf").string(), bytes));
+    FontAtlas atlas;
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    FontAtlas::ShapeResult shape;
+    atlas.ShapeText("\xe5\x86\x92", 32.0f, shape);
+    EXPECT_TRUE(shape.glyphs.empty());
+    atlas.ShapeText("\xe9\x99\xba", 32.0f, shape);
+    EXPECT_TRUE(shape.glyphs.empty());
+    Logger::Log::Flush();
+    const auto messages = ring->GetMessages(Logger::LogLevel::Warning, 0, "[Text] Font");
+    ASSERT_EQ(messages.size(), 1u);
+    EXPECT_NE(messages[0].Message.find("fallback"), std::string::npos);
+}
+
+TEST(FontAtlasShapingTests, CoverageProbeRequiresALoadedFaceAndUsesFallbacks)
+{
+    FontAtlas atlas;
+    EXPECT_TRUE(atlas.RendersAllGlyphs(""));
+    EXPECT_FALSE(atlas.RendersAllGlyphs("Play"));
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(LoadFontBytes(TestFontPath("Roboto-Regular.ttf").string(), bytes));
+    ASSERT_TRUE(atlas.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    EXPECT_TRUE(atlas.RendersAllGlyphs("Play 3 coins\n"));
+    EXPECT_FALSE(atlas.RendersAllGlyphs("\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d"));
+    // Fallbacks are fixed before loading a primary face, like other atlas configuration.
+    FontAtlas withFallback;
+    ASSERT_TRUE(withFallback.SetFallbackFonts({TestFontPath("NotoSansHebrew-Regular.ttf")}));
+    ASSERT_TRUE(withFallback.LoadFontBytes(bytes.data(), bytes.size(), 48));
+    EXPECT_TRUE(withFallback.RendersAllGlyphs("\xd7\xa9\xd7\x9c\xd7\x95\xd7\x9d"));
 }

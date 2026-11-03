@@ -32,7 +32,6 @@ target_link_libraries(ParallelAlgorithmsTests
     PRIVATE
         JobSystem
         Logger
-        Memory
         GTest::gtest
         GTest::gtest_main
 )
@@ -60,7 +59,6 @@ target_link_libraries(InlineModeTrampolineTests
     PRIVATE
         JobSystem
         Logger
-        Memory
         GTest::gtest
         GTest::gtest_main
 )

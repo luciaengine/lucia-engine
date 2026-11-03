@@ -4,6 +4,7 @@
 #include "AssetCore/GUID.h"
 #include "AssetCore/AssetEvents.h"
 #include "AssetCore/AssetRegistry.h"
+#include "TestTempDir.h"
 #include <memory>
 #include <filesystem>
 
@@ -48,7 +49,7 @@ class AssetCoreArchitectureTest : public ::testing::Test {
 protected:
     void SetUp() override {
         // Create test directory
-        testDir = std::filesystem::temp_directory_path() / "assetcore_test";
+        testDir = TestUtils::MakeUniqueTempDirectory("assetcore_test");
         std::filesystem::create_directories(testDir);
     }
 

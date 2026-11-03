@@ -13,6 +13,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <memory>
@@ -229,22 +230,6 @@ TEST_F(MeshGPURegistryTest, RegisterMultipleSubmeshes_AllFindable)
     }
 }
 
-// A triangle's three 16-bit indices are 6 bytes. The registry pads them to an even
-// count and the pool rounds every range up to 4 bytes, so the next mesh's indices
-// start on a 4-byte offset; either rule alone keeps it there.
-TEST_F(MeshGPURegistryTest, IndexRangesAfterAnOddIndexCountStayFourByteAligned)
-{
-    GUID guid = GUID::Generate();
-    Mesh mesh = MakeTriangleMesh();
-
-    m_registry.RegisterSubmesh({guid, 0}, mesh);
-    const MeshGPUEntry* second = m_registry.Find(m_registry.RegisterSubmesh({guid, 1}, mesh));
-
-    ASSERT_NE(second, nullptr);
-    EXPECT_EQ(second->indexSubAlloc.Offset % 4, 0u);
-    EXPECT_EQ(uint64_t{second->firstIndex} * 2, second->indexSubAlloc.Offset);
-}
-
 TEST_F(MeshGPURegistryTest, Uint32IndexOverflowCreatesSiblingPool)
 {
     constexpr uint32_t kVertexCount = 70000u; // Forces uint32 index buffers.
@@ -297,35 +282,6 @@ TEST_F(MeshGPURegistryTest, ZeroedNormalsUV_StillHasCoreFlags)
     EXPECT_TRUE(HasFlag(entry->vertexFlags, VertexAttributeFlags::HasPosition));
     EXPECT_TRUE(HasFlag(entry->vertexFlags, VertexAttributeFlags::HasNormal));
     EXPECT_TRUE(HasFlag(entry->vertexFlags, VertexAttributeFlags::HasUV0));
-}
-
-// Draws address geometry in elements (vertexOffset, firstIndex), so every
-// stream suballocation must start on a whole element of its stride. Several
-// registrations per pool put later ranges at nonzero offsets.
-TEST_F(MeshGPURegistryTest, StreamOffsetsAreWholeElementsOfTheirStride)
-{
-    constexpr uint32_t kUint32VertexCount = 70000u; // Forces uint32 index buffers.
-
-    std::vector<Mesh> meshes;
-    meshes.push_back(MakeTriangleMesh());
-    meshes.push_back(MakeTriangleMesh(/*withNormals=*/false, /*withUV=*/false));
-    meshes.push_back(MakeTriangleMesh());
-    meshes.push_back(MakeTriangleMesh(/*withNormals=*/true, /*withUV=*/true, /*skinned=*/true));
-    meshes.push_back(MakeTriangleMesh(/*withNormals=*/true, /*withUV=*/true, /*skinned=*/true));
-    meshes.push_back(MakeUint32IndexMesh(kUint32VertexCount, 3u));
-    meshes.push_back(MakeUint32IndexMesh(kUint32VertexCount, 5u));
-
-    const GUID guid = GUID::Generate();
-    for (uint32_t i = 0; i < meshes.size(); ++i)
-    {
-        const MeshGPUEntry* entry = m_registry.Find(m_registry.RegisterSubmesh({guid, i}, meshes[i]));
-        ASSERT_NE(entry, nullptr) << "submesh " << i;
-
-        const uint64_t coreStride = CoreVertexStride(entry->vertexFlags);
-        const uint64_t indexStride = entry->indexType == static_cast<uint32_t>(IndexType::Uint16) ? 2u : 4u;
-        EXPECT_EQ(entry->vertexOffset * coreStride, entry->coreSubAlloc.Offset) << "submesh " << i;
-        EXPECT_EQ(entry->firstIndex * indexStride, entry->indexSubAlloc.Offset) << "submesh " << i;
-    }
 }
 
 // Skinned mesh sets the Skinned flags and creates joints/weights VBs.
@@ -413,7 +369,7 @@ TEST_F(MeshGPURegistryTest, UnregisterSubmesh_RemovesRuntimeKey)
     EXPECT_EQ(m_registry.Find(handle), nullptr);
 }
 
-TEST_F(MeshGPURegistryTest, CreateMorphedMesh_AppliesDeltasAndBounds)
+TEST_F(MeshGPURegistryTest, ApplyMorphTargets_AppliesDeltas)
 {
     Mesh mesh = MakeTriangleMesh();
     MorphTarget target{};
@@ -430,16 +386,58 @@ TEST_F(MeshGPURegistryTest, CreateMorphedMesh_AppliesDeltasAndBounds)
     mesh.MorphTargets.push_back(std::move(target));
 
     const float weights[] = {0.5f};
-    Mesh morphed = CreateMorphedMesh(mesh, weights, 1);
+    Vector<Vertex> morphed;
+    ApplyMorphTargets(mesh, weights, 1, morphed);
 
-    EXPECT_TRUE(morphed.MorphTargets.empty());
-    EXPECT_NEAR(morphed.Vertices[0].Position[1], 2.0f, 1e-5f);
-    EXPECT_NEAR(morphed.Vertices[0].Normal[1], 0.4472136f, 1e-5f);
-    EXPECT_NEAR(morphed.Vertices[0].Normal[2], 0.8944272f, 1e-5f);
-    EXPECT_NEAR(morphed.Vertices[2].Position[2], mesh.Vertices[2].Position[2] + 0.5f, 1e-5f);
+    ASSERT_EQ(morphed.size(), mesh.Vertices.size());
+    EXPECT_NEAR(morphed[0].Position[1], 2.0f, 1e-5f);
+    EXPECT_NEAR(morphed[0].Normal[1], 0.4472136f, 1e-5f);
+    EXPECT_NEAR(morphed[0].Normal[2], 0.8944272f, 1e-5f);
+    EXPECT_NEAR(morphed[2].Position[2], mesh.Vertices[2].Position[2] + 0.5f, 1e-5f);
     for (int axis = 0; axis < 3; ++axis)
-        EXPECT_EQ(morphed.Vertices[1].Position[axis], mesh.Vertices[1].Position[axis]);
-    EXPECT_NEAR(morphed.MaxBounds[1], 2.0f, 1e-5f);
+        EXPECT_EQ(morphed[1].Position[axis], mesh.Vertices[1].Position[axis]);
+}
+
+// A rewrite keeps the handle and the index range, and never writes a vertex
+// range a frame in flight may still read: within one frame the spare ranges
+// run out, and the oldest comes back once the frames-in-flight window passes.
+TEST_F(MeshGPURegistryTest, RewriteSubmeshVertices_RotatesOnlyThroughRetiredRanges)
+{
+    Mesh mesh = MakeTriangleMesh();
+    const MeshGPUKey key{GUID::Generate(), 0};
+    const MeshGPUHandle handle = m_registry.RegisterSubmesh(key, mesh);
+    const MeshGPUEntry* entry = m_registry.Find(handle);
+    ASSERT_NE(entry, nullptr);
+    const uint32_t firstIndex = entry->firstIndex;
+
+    Vector<Vertex> moved = mesh.Vertices;
+    moved[0].Position[1] = 3.0f;
+
+    std::vector<uint32_t> drawnThisFrame{entry->vertexOffset};
+    size_t accepted = 0;
+    while (accepted < 16 && m_registry.RewriteSubmeshVertices(handle, mesh, moved))
+    {
+        ++accepted;
+        entry = m_registry.Find(handle);
+        ASSERT_NE(entry, nullptr);
+        EXPECT_EQ(std::count(drawnThisFrame.begin(), drawnThisFrame.end(), entry->vertexOffset), 0)
+            << "a vertex range drawn from this frame was rewritten";
+        drawnThisFrame.push_back(entry->vertexOffset);
+    }
+    EXPECT_GT(accepted, 0u);
+    EXPECT_LT(accepted, 16u) << "rewrites within one frame never ran out of ranges";
+    EXPECT_EQ(entry->firstIndex, firstIndex);
+    // Vertex 0 moved to y = 3, so the box spans y in [-1, 3].
+    EXPECT_NEAR(entry->bounds.halfExtents.y, 2.0f, 1e-5f);
+
+    m_registry.BeginFrame(IDevice::kMaxSupportedFramesInFlight);
+    EXPECT_TRUE(m_registry.RewriteSubmeshVertices(handle, mesh, moved))
+        << "a range retired a full frames-in-flight window ago must be writable";
+    EXPECT_EQ(m_registry.FindHandle(key), handle);
+
+    moved.push_back(moved[0]);
+    EXPECT_FALSE(m_registry.RewriteSubmeshVertices(handle, mesh, moved))
+        << "a rewrite must not change the vertex count";
 }
 
 // Multiple entities referencing the same model share the same GPU entry.
@@ -756,7 +754,7 @@ TEST_F(MeshGPURegistryTest, ScopedLookupsAreConsistentBesideConcurrentRegistrati
 }
 
 // GetPoolStats is the only witness to pool fragmentation, which converts into
-// GPU memory growth and extra pool groups: a failed allocation does not fail the
+// GPU memory growth and extra pool groups: a failed best-fit does not fail the
 // upload, it appends a sibling pool at double the capacity. The editor reads it
 // over IPC (renderServices.meshPools), so the shape it reports is a contract.
 TEST_F(MeshGPURegistryTest, PoolStatsReportOneEntryPerLivePoolWithItsOccupancy)
@@ -788,11 +786,11 @@ TEST_F(MeshGPURegistryTest, PoolStatsReportOneEntryPerLivePoolWithItsOccupancy)
     ASSERT_NE(core, nullptr) << "every registered mesh occupies a core pool";
     EXPECT_EQ(core->BucketKey, entry->bucketKey);
     EXPECT_EQ(core->PoolIndex, 0u);
-    EXPECT_GT(core->Allocator.CapacityUnits, 0u);
-    EXPECT_GT(core->Allocator.UsedUnits, 0u);
-    EXPECT_LE(core->Allocator.UsedUnits, core->Allocator.CapacityUnits);
-    EXPECT_GE(core->Allocator.PeakUnits, core->Allocator.UsedUnits);
-    EXPECT_LE(core->Allocator.LargestFreeUnits, core->Allocator.CapacityUnits);
+    EXPECT_GT(core->Allocator.capacity, 0u);
+    EXPECT_GT(core->Allocator.used, 0u);
+    EXPECT_LE(core->Allocator.used, core->Allocator.capacity);
+    EXPECT_GE(core->Allocator.peak, core->Allocator.used);
+    EXPECT_LE(core->Allocator.largestFreeRange, core->Allocator.capacity);
 
     ASSERT_NE(findStream("IB16"), nullptr) << "a 3-index triangle uses the 16-bit index pool";
 
@@ -801,7 +799,7 @@ TEST_F(MeshGPURegistryTest, PoolStatsReportOneEntryPerLivePoolWithItsOccupancy)
     for (const MeshGPUPoolStats& s : stats)
     {
         EXPECT_EQ(s.BucketKey, entry->bucketKey);
-        EXPECT_GT(s.Allocator.CapacityUnits, 0u) << "stream " << s.Stream;
+        EXPECT_GT(s.Allocator.capacity, 0u) << "stream " << s.Stream;
     }
 }
 
@@ -814,13 +812,13 @@ TEST_F(MeshGPURegistryTest, PoolStatsReportOneEntryPerLivePoolWithItsOccupancy)
 TEST_F(MeshGPURegistryTest, PoolResidencyIsLoggedAgainAfterADeviceRebuild)
 {
     Logger::Log::Initialize({});
-    auto sink = std::make_unique<Logger::CallbackSink>();
+    auto sink = Logger::MakeUnique<Logger::CallbackSink>();
     auto* sinkPtr = sink.get();
     auto residencyLines = std::make_shared<std::atomic<int>>(0);
-    const std::uint64_t callbackId = sinkPtr->RegisterCallback(
+    const Logger::uint64 callbackId = sinkPtr->RegisterCallback(
         [residencyLines](const Logger::LogMessage& msg)
         {
-            if (msg.Message.find("MeshGPURegistry pool") != std::string::npos)
+            if (msg.Message.find("MeshGPURegistry pool") != Logger::String::npos)
                 residencyLines->fetch_add(1);
         });
     Logger::Log::AddSink(std::move(sink));

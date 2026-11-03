@@ -407,33 +407,14 @@ void AssetIOService::ExecuteRead(ReadRequest& request, bool holdsDecodeSlot)
         return;
     }
 
-    // The files the parser names for the decode are read here too, so the decode job does
-    // not block its worker on them; it takes them from the published inputs.
-    AssetDecodeInputFiles inputs;
-    if (request.ResolveDecodeInputs)
-    {
-        String inputError;
-        bool inputsRead = false;
-        {
-            AssetDbProfiler::StageScope profileScope(AssetDbProfiler::Bucket::StageFileIO);
-            inputsRead = ReadDecodeInputs(request, data, inputs, inputError);
-        }
-        if (!inputsRead)
-        {
-            InvokeOnFailure(request, inputError);
-            return;
-        }
-    }
-
     // Read-then-submit: sequencing by construction, no dependency-graph edges.
     // Background priority keeps scan floods off the Normal (frame work) lane
     // in the QUEUE; the gate slot taken at the claim is what bounds RUNNING
     // occupancy — priority cannot preempt a cook that already holds a worker.
     JobSystem::TaskHandle handle = m_JobSystem->Submit(
-        [process = std::move(request.ProcessData), bytes = std::move(data), inputs = std::move(inputs),
+        [process = std::move(request.ProcessData), bytes = std::move(data),
          slot = std::move(slot)]() mutable -> SharedPtr<Asset>
         {
-            const ScopedAssetDecodeInputFiles published(&inputs);
             return process(std::move(bytes));
         },
         JobSystem::JobPriority::Background);
@@ -447,58 +428,6 @@ void AssetIOService::ExecuteRead(ReadRequest& request, bool holdsDecodeSlot)
     }
 
     InvokeOnSubmitted(request, handle);
-}
-
-bool AssetIOService::ReadDecodeInputs(const ReadRequest& request, const Vector<uint8>& bytes,
-                                      AssetDecodeInputFiles& outFiles, String& outError)
-{
-    AssetDecodeInputs named;
-    try
-    {
-        named = request.ResolveDecodeInputs(bytes);
-    }
-    catch (const std::exception& e)
-    {
-        outError = "Resolving the decode inputs of " + request.Metadata.Path.string() + " failed: " + e.what();
-        return false;
-    }
-    catch (...)
-    {
-        outError = "Resolving the decode inputs of " + request.Metadata.Path.string() + " failed";
-        return false;
-    }
-
-    outFiles.Files.reserve(named.Files.size());
-    for (const AssetDecodeInput& input : named.Files)
-    {
-        if (IsCancelled(request))
-        {
-            outError = "Asset load cancelled";
-            return false;
-        }
-        // A path named twice is read once.
-        const auto [file, added] = outFiles.Files.try_emplace(input.Path.generic_string());
-        if (!added)
-            continue;
-        try
-        {
-            if (Vector<uint8> fileBytes; ReadAssetDecodeInputFromDisk(input, fileBytes))
-                file->second = std::move(fileBytes);
-        }
-        catch (const std::exception& e)
-        {
-            outError = "Cannot read " + input.Path.string() + ", a file the decode of " +
-                       request.Metadata.Path.string() + " reads: " + e.what();
-            return false;
-        }
-    }
-    if (IsCancelled(request))
-    {
-        outError = "Asset load cancelled";
-        return false;
-    }
-    outFiles.Plan = std::move(named.Plan);
-    return true;
 }
 
 bool AssetIOService::ReadFileRange(const ReadRequest& request, Vector<uint8>& outData, String& outError)

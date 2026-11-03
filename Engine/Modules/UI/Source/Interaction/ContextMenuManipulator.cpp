@@ -100,13 +100,13 @@ UIElement::EventHandlerToken ContextMenuManipulator::SubscribeStamped(
 void ContextMenuManipulator::OnActivated(UIElement& target, float x, float y)
 {
     // Menus anchor to the element, not the pointer, so they align like dropdowns
-    // regardless of where inside the control the release fell: below the box as
-    // it is drawn, which a CSS transform moves away from the layout rect.
+    // regardless of where inside the control the release fell.
     (void)x;
     (void)y;
-    const Mathematics::Rect drawn = target.GetWindowRect();
     const Mathematics::Vector2 anchor =
-        m_Anchor ? m_Anchor(target) : Mathematics::Vector2(drawn.X, drawn.Bottom());
+        m_Anchor ? m_Anchor(target)
+                 : Mathematics::Vector2(target.GetLayoutX(),
+                                        target.GetLayoutY() + target.GetLayoutHeight());
 
     Platform::Window* window = nullptr;
     if (UIManager* manager = target.GetOwnerManager())
@@ -226,6 +226,7 @@ void ContextMenuManipulator::BuildAndShow(Platform::Window* window, Mathematics:
 
         uint32_t flags = item.Flags;
         std::string color = item.ColorHex;
+        std::string icon = item.IconPath;
         if (item.State)
         {
             // The rule every backend (and the automation interceptor) applies: a baked
@@ -236,13 +237,15 @@ void ContextMenuManipulator::BuildAndShow(Platform::Window* window, Mathematics:
                     (state.Checked ? MenuItemFlag_Checked : MenuItemFlag_None);
             if (!state.ColorHex.empty())
                 color = state.ColorHex;
+            if (!state.IconPath.empty())
+                icon = state.IconPath;
         }
 
         actions.push_back(item.OnActivate);
         const uint32_t commandId = static_cast<uint32_t>(actions.size());
         m_Menu->AddItem(parentId, std::string(title), commandId, flags);
-        if (!item.IconPath.empty())
-            m_Menu->SetItemIcon(commandId, item.IconPath);
+        if (!icon.empty())
+            m_Menu->SetItemIcon(commandId, icon);
         if (!color.empty())
             m_Menu->SetItemColor(commandId, color);
     }

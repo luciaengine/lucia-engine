@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "Rendering/Core/Handle.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 
 namespace GameEngine::Rendering
 {
@@ -57,9 +57,7 @@ enum class CBTKernel : uint32_t
     NeighborCopy = 20,    // scatter CURRENT -> NEXT neighbors over the live set, before Bisect
     ValidateCompactStream = 21, // debug: IndicesAll is exactly the live set, at the update head
     HeightRangeBuild = 22, // content-aware split: one level of the height-range pyramid
-    HeightChainBuild = 23, // the draw's prefiltered height chain: one level over a region
-    NormalChainBuild = 24, // the far-field normal chain: one mip over a region
-    Count = 25
+    Count = 23
 };
 inline constexpr uint32_t kCBTKernelCount = static_cast<uint32_t>(CBTKernel::Count);
 

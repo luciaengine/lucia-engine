@@ -4,7 +4,6 @@
 #include "Engine/Build/GameConfig.h"
 #include "Engine/Rendering/SceneResolveService.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
-#include "PlayerStartupReadiness.h"
 #include "UI/UITextureSpace.h"
 #if GE_PLAYER_MOVIE_RECORDER
 #include "Video/AsyncVideoRecorder.h"
@@ -24,6 +23,7 @@ namespace ECS { class World; }
 namespace Rendering::RenderGraph { struct RGResourceDesc; }
 class RuntimeFrameReadback;
 class RuntimeHost;
+class PlayerDemoControls;
 struct RuntimeHostDesc;
 
 class PlayerApplication : public Application
@@ -43,6 +43,7 @@ public:
     void Shutdown() override;
 
 protected:
+    bool HasInputFocus() const;
     void Update(float64 deltaTime) override;
     void Render() override;
     void OnShutdown() override;
@@ -56,17 +57,9 @@ private:
     // The host's settings from game.config; the window size from the application
     // config, which the movie recorder may have clamped.
     RuntimeHostDesc MakeRuntimeHostDesc() const;
-    // Each frame until the startup scene is ready: polls its batch, then its spline recipes.
-    void FinishStartupResolve(ECS::World& world, float64 deltaTime);
     // Once the startup scene's resolve batch completes: logs it and starts the
     // scene's autoplay animators. Each frame until then.
-    void FinishStartupBatch(ECS::World& world);
-    // The startup line: the time to ready, the failed spline recipes with their reasons, and
-    // the recipe wait that ended at its budget.
-    void LogStartupSceneReady(ECS::World& world);
-    // How many material variants the shipped shader cache's program index served and how many it
-    // did not hold (composed and hashed instead), when the cache carries one.
-    void LogProgramIndexCounts();
+    void FinishStartupResolve(ECS::World& world);
     // The host's composite hook: the movie frame and the screenshot read the
     // composited frame back through it.
     void OnFrameComposited(RuntimeFrameReadback& readback);
@@ -75,7 +68,6 @@ private:
     void PollScreenshot();
     void RegisterManagedSystemBridge();
     void PollRuntimeDisplayControls();
-    void ApplyPointerLock();
     bool ToggleRuntimeHdrOutput();
     bool ApplyRuntimeHdrOutput(Rendering::HdrOutputMode mode);
 #if GE_PLAYER_MOVIE_RECORDER
@@ -142,9 +134,6 @@ private:
     // until every entity and standalone material of the scene has bound or missed.
     Engine::Renderer::SceneResolveBatch m_StartupResolve = Engine::Renderer::SceneResolveBatch::None;
     bool m_StartupResolvePending = false;
-    // Pending from the startup scene's open until the scene is ready: its batch is complete and
-    // its spline recipes are settled. The startup line and --screenshot wait for it.
-    PlayerStartupReadiness m_StartupScene;
     std::chrono::steady_clock::time_point m_StartupResolveStart{};
     uint32_t m_StartupResolveFrames = 0;
     bool m_ScreenshotWritten = false;
@@ -173,6 +162,9 @@ private:
 #endif
     // The window, the render device, the pipeline, the scene and the frame.
     std::unique_ptr<RuntimeHost> m_Host;
+#if defined(GE_PLATFORM_MOBILE)
+    std::unique_ptr<PlayerDemoControls> m_DemoControls;
+#endif
     float m_LastRenderDeltaTime = 1.0f / 60.0f;
 };
 

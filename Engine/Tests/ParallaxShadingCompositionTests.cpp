@@ -18,12 +18,12 @@
 #include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Types/StringId.h"
 
@@ -115,7 +115,7 @@ MemberLoads CountMemberLoads(const std::vector<uint8_t>& bytes, std::string_view
         const uint32_t count = words[at] >> 16;
         if (count == 0 || at + count > words.size())
             return result;
-        const uint32_t* operands = words.data() + at + 1;
+        const uint32_t* operands = &words[at + 1];
         switch (opcode)
         {
         case kOpName:
@@ -176,7 +176,7 @@ size_t CountGlslStd450Instructions(const std::vector<uint8_t>& bytes, uint32_t i
         const uint32_t count = words[at] >> 16;
         if (count == 0 || at + count > words.size())
             return result;
-        const uint32_t* operands = words.data() + at + 1;
+        const uint32_t* operands = &words[at + 1];
         if (opcode == kOpExtInstImport && LiteralString(operands + 1, count - 2) == "GLSL.std.450")
             glslStd450 = operands[0];
         else if (opcode == kOpExtInst && count >= 5 && glslStd450 && operands[2] == *glslStd450 &&
@@ -262,7 +262,9 @@ class ParallaxShadingComposition : public ::testing::Test
         base.vertexFlags = VertexAttributeFlags::StandardMesh;
         base.lightingModel = HashStringId("StandardPBR");
         size_t shading = 0;
-        for (const ShaderVariantKey& key : MaterialPrewarmVariantKeys(base, colorKeywords, false, MaterialAlphaMode::Opaque))
+        for (const ShaderVariantKey& key : MaterialPrewarmVariantKeys(base, colorKeywords, false,
+                                                                     MaterialAlphaMode::Opaque,
+                                                                     CrossfadeTailWarmup::Warm))
         {
             const MemberLoads loads = CountMemberLoads(Fragment(doc, key.materialKeywords, key.vertexFlags),
                                                        "SurfaceOutput", "primaryLightOcclusion");

@@ -24,9 +24,6 @@ public:
 
     // Shapes
     virtual ShapeHandle CreateShape(const ShapeDefinition& definition, const Vector3& bakedScale) = 0;
-    // The heightfield build a job runs off the frame thread (a 1025^2 build is tens of
-    // milliseconds); CreateShape(PreparedHeightFieldShapeDef) registers its result. Never null.
-    virtual HeightFieldShapeBuilder GetHeightFieldShapeBuilder() const = 0;
     virtual void DestroyShape(ShapeHandle shape) = 0;
     virtual bool IsShapeValid(ShapeHandle shape) const = 0;
 
@@ -56,6 +53,10 @@ public:
 
     virtual Transform GetBodyTransform(BodyHandle body) const = 0;
     virtual void SetBodyTransform(BodyHandle body, const Transform& transform, ActivationMode activation) = 0;
+
+    // Move a kinematic body by setting the velocity that reaches `target` in
+    // `deltaTime`; see PhysicsWorld::MoveKinematic for the contract and for why
+    // SetBodyTransform is the wrong tool. Wakes the body.
     virtual void MoveKinematic(BodyHandle body, const Transform& target, float32 deltaTime) = 0;
 
     virtual Vector3 GetLinearVelocity(BodyHandle body) const = 0;
@@ -100,6 +101,8 @@ public:
     using ContactCallback = GameEngine::Function<void(const ContactEvent&)>;
     using TriggerCallback = GameEngine::Function<void(const TriggerEvent&)>;
 
+    virtual void SetContactModifyCallback(ContactModifyCallback callback, void* context) = 0;
+    virtual void SetBodyContactFlags(BodyHandle body, uint32 contactFlags) = 0;
     virtual void SetContactCallback(ContactCallback callback) = 0;
     virtual void SetTriggerCallback(TriggerCallback callback) = 0;
     virtual void ProcessEvents() = 0;

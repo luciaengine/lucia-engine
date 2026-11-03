@@ -1,4 +1,4 @@
-#include "ECS/Archetype/ArchetypeTable.h"
+#include "ECS/ArchetypeTable.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"
@@ -33,6 +33,11 @@ void ExpectAllocation(const ArchetypeTable& table)
     for (const auto& chunk : table.GetChunks())
     {
         EXPECT_EQ(reinterpret_cast<std::uintptr_t>(chunk.GetMemory()) % layout.AllocationAlignment, 0u);
+#ifdef _MSC_VER
+        // Check the actual CRT allocation, independently of the layout metadata.
+        EXPECT_EQ(_aligned_msize(const_cast<std::byte*>(chunk.GetMemory()), layout.AllocationAlignment, 0),
+                  layout.AllocationBytes);
+#endif
         for (const auto& column : layout.Columns)
         {
             EXPECT_LE(std::size_t{column.Offset} + std::size_t{column.Size} * layout.Capacity,

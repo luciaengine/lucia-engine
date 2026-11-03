@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 3,
+  "materialName": "WarmLightInterior",
+  "lightingModel": "StandardPBR",
+  "alphaMode": "Opaque",
+  "surfaceShader": "Surfaces/standard_pbr.glsl",
+  "properties": {
+    "baseColor": [
+      0.85,
+      0.5,
+      0.14,
+      1
+    ],
+    "metallic": 0,
+    "roughness": 0.25,
+    "emissive": [
+      1,
+      0.47,
+      0.12
+    ],
+    "emissionLuminance": 20000
+  }
+}

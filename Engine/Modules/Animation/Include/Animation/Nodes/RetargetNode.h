@@ -2,7 +2,7 @@
 
 #include "Animation/AnimGraphNode.h"
 #include "Animation/HumanBone.h"
-#include "Animation/Humanoid/HumanoidRig.h"
+#include "Animation/HumanoidRig.h"
 #include "Animation/RetargetMap.h"
 
 #include "Mathematics/Quaternion.h"

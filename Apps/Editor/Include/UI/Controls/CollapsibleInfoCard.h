@@ -2,10 +2,12 @@
 
 #include "UI/UIElement.h"
 
+#include <functional>
 #include <string>
 
 namespace GameEngine
 {
+class Button;
 class Label;
 
 namespace EditorUI
@@ -13,12 +15,13 @@ namespace EditorUI
 
 // The editor's explanatory card. Cards read expanded; one whose text needs
 // more than one row gains a chevron and can be folded into itself, which
-// clamps the card to one line, cut with an ellipsis, ending in "show more" rather than
+// clamps the card to one clipped line ending in "show more" rather than
 // putting a header row above it. Clicking the card toggles.
 //
-// OnPostLayout decides from the laid-out text whether a card folds. A one-row
-// card shows no chevron glyph but keeps the chevron's box, so all copy starts at
-// one x. The full text stays on a collapsed card, so a search still matches it.
+// Whether a card folds at all is decided from the laid-out text in
+// OnPostLayout — a card that already fits on one row keeps no chevron and
+// stays a plain card. The full text stays on the control while collapsed, so
+// callers that search card copy can still match it.
 //
 // The chrome — chevron, copy and the "show more" action — is built in the
 // constructor, so a card carries its copy as a Label in the element tree from
@@ -26,6 +29,11 @@ namespace EditorUI
 // without waiting on a layout pass. The folding style comes from
 // UI/controls/CollapsibleInfoCard/CollapsibleInfoCard.css, requested for this
 // card's own subtree.
+//
+// A card may carry one action, a small button after its copy. The action is
+// state the reader needs whether or not they read explanations, so while the
+// "Show Info Cards" setting is off a card with an action keeps the action and
+// hides only its copy.
 class CollapsibleInfoCard : public UIElement
 {
 public:
@@ -33,8 +41,11 @@ public:
 
     const std::string& GetFullText() const { return m_FullText; }
     // Replaces the copy; the card re-decides whether it needs to fold on the
-    // next layout, so a card whose text shrinks to one row loses its chevron glyph.
+    // next layout, so a card whose text shrinks to one row loses its chevron.
     void SetText(const std::string& text);
+
+    // Shows the action button with `label`; a click calls `onInvoke`.
+    void SetAction(const std::string& label, const std::string& tooltip, std::function<void()> onInvoke);
 
     bool IsFoldable() const { return m_Foldable; }
     bool IsExpanded() const { return m_Expanded; }
@@ -58,6 +69,9 @@ private:
     Label* m_Label = nullptr;
     // "show more", right-aligned on a collapsed card's line.
     Label* m_Toggle = nullptr;
+    // Hidden until SetAction.
+    Button* m_Action = nullptr;
+    std::function<void()> m_OnInvoke;
 };
 
 } // namespace EditorUI

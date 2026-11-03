@@ -38,10 +38,7 @@ std::unique_ptr<UIElement> MakeElement(const char* id)
     return el;
 }
 
-// Declared before the UIManager in every test: the handlers WatchFocus registers
-// hold it by reference, and the manager's teardown dispatches FocusOut to the
-// still-focused element before it destroys that element, so a handler's captures
-// must outlive the manager.
+// Observers outlive the manager: teardown can still dispatch FocusOut.
 struct FocusLog
 {
     std::vector<std::string> Order;
@@ -174,7 +171,7 @@ TEST(FocusReleaseOnRemoval, RemovingADifferentElementWithTheSameIdKeepsFocus)
     root->AddChild(std::move(twinOwned));
     ui.SetRoot(std::move(t.Root));
     ui.SetFocusById("field");
-    ASSERT_NE(root->FindById("field"_sid), twin) << "the precondition is that the id resolves to the first field";
+    ASSERT_NE(root->FindById("field"), twin) << "the precondition is that the id resolves to the first field";
 
     root->RemoveChild(twin);
 

@@ -1,3 +1,4 @@
+#include "Assets/AssetGridDragState.h"
 #include "Panels/WebPanel.h"
 
 #include "Assets/AssetManager.h"
@@ -13,11 +14,9 @@
 #include "UI/UIManager.h"
 #include "UI/UIEvents.h"
 #include "Core/WindowInputRouter.h"
-#include "Editor/EditorPaths.h"
 #include "Platform/WebView.h"
 #include "Input/KeyCodes.h"
 #include "Logger/Logger.h"
-#include "Types/PathUtils.h"
 #include <algorithm>
 #include <cmath>
 #include <regex>
@@ -41,7 +40,9 @@ bool IsNativeDragAssetSupported(const std::filesystem::path& path)
     if (!std::filesystem::exists(path, ec) || std::filesystem::is_directory(path, ec))
         return false;
 
-    const std::string ext = GameEngine::LowerCaseExtension(path);
+    std::string ext = path.extension().string();
+    for (auto& c : ext)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
     return ext == ".png" || ext == ".jpg" || ext == ".jpeg" ||
            ext == ".webp" || ext == ".gif" || ext == ".bmp";
@@ -53,13 +54,7 @@ namespace GameEngine
 
 // Same as AssetsBrowserController / BookmarksPanel / SettingsPanel: asset grid drag state
 // (defined in BookmarksPanel.cpp).
-struct DragState
-{
-    bool active = false;
-    std::filesystem::path assetPath;
-    std::string scenePath;
-    std::string entityId;
-};
+
 extern DragState g_DragState;
 
 WebPanel::WebPanel()
@@ -284,11 +279,11 @@ void WebPanel::LoadBindAttachLayoutAndStyle()
 
 void WebPanel::RefreshElementPointers()
 {
-    m_Container = FindById("WebContainer"_sid);
-    m_URLField = dynamic_cast<TextField*>(FindById("WebURLField"_sid));
-    m_TabBar = FindById("WebTabBar"_sid);
-    m_WebViewContainer = FindById("WebViewContainer"_sid);
-    m_ErrorLabel = dynamic_cast<Label*>(FindById("WebErrorLabel"_sid));
+    m_Container = FindById("WebContainer");
+    m_URLField = dynamic_cast<TextField*>(FindById("WebURLField"));
+    m_TabBar = FindById("WebTabBar");
+    m_WebViewContainer = FindById("WebViewContainer");
+    m_ErrorLabel = dynamic_cast<Label*>(FindById("WebErrorLabel"));
 
     if (m_WebViewContainer && !m_WebViewContainer->HasClass("web-asset-drop-initialized"))
     {
@@ -301,21 +296,21 @@ void WebPanel::RefreshElementPointers()
             if (e.Button != 0)
                 return;
 
-            if (!g_DragState.active || g_DragState.assetPath.empty())
+            if (!g_DragState.Active || g_DragState.AssetPath.empty())
                 return;
 
-            std::filesystem::path droppedPath = g_DragState.assetPath;
+            std::filesystem::path droppedPath = g_DragState.AssetPath;
 
             // Clear drag state so other panels don't try to consume it again.
-            g_DragState.active = false;
-            g_DragState.assetPath.clear();
-            g_DragState.scenePath.clear();
-            g_DragState.entityId.clear();
+            g_DragState.Active = false;
+            g_DragState.AssetPath.clear();
 
             if (!std::filesystem::exists(droppedPath))
                 return;
 
-            const std::string ext = LowerCaseExtension(droppedPath);
+            std::string ext = droppedPath.extension().string();
+            for (auto& c : ext)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
             // Only handle common image formats for now.
             if (ext != ".png" && ext != ".jpg" && ext != ".jpeg" &&
@@ -371,7 +366,7 @@ void WebPanel::RefreshElementPointers()
         });
     }
 
-    if (auto* newTabButton = dynamic_cast<Button*>(FindById("WebNewTabButton"_sid)))
+    if (auto* newTabButton = dynamic_cast<Button*>(FindById("WebNewTabButton")))
     {
         newTabButton->SetTooltip("New tab");
         newTabButton->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { OpenBlankTab(); });
@@ -525,7 +520,7 @@ void WebPanel::LoadURL(const std::string& url)
     else
     {
         if (m_ErrorLabel)
-            m_ErrorLabel->SetText(m_WebViewUnavailableMessage.empty() ? "Failed to load URL." : m_WebViewUnavailableMessage);
+            m_ErrorLabel->SetText("Failed to load URL.");
         Logger::Log::Error("WebPanel: Failed to load URL: {}", normalized);
     }
     RebuildTabBar();
@@ -596,8 +591,7 @@ void WebPanel::LoadYouTubeVideo(const std::string& embedURL)
     else
     {
         if (m_ErrorLabel)
-            m_ErrorLabel->SetText(m_WebViewUnavailableMessage.empty() ? "Failed to load YouTube page. Please check the URL."
-                                                                      : m_WebViewUnavailableMessage);
+            m_ErrorLabel->SetText("Failed to load YouTube page. Please check the URL.");
         Logger::Log::Error("WebPanel: Failed to load HTML wrapper");
     }
     RebuildTabBar();
@@ -759,17 +753,10 @@ void WebPanel::UpdateWebViewSize()
     // GetLayout* returns CSS-logical pixels (Yoga's space, shrunk by Additional UI Scale).
     // The native web view expects window client-space pixels, so undo the multiplier.
     const float scale = WindowInputRouter::UiLogicalToClientScale(m_ParentWindow, m_WebViewContainer->GetOwnerManager());
-    // Each edge rounds to the nearest client pixel and the size is the distance between the rounded
-    // edges, so the view ends where the container's edge rounds to. Rounding the size on its own
-    // can end the view a pixel short of that edge or a pixel past it.
     if (width > 0 && height > 0)
     {
-        const int left = static_cast<int>(std::lround(x * scale));
-        const int top = static_cast<int>(std::lround(y * scale));
-        const int right = static_cast<int>(std::lround((x + width) * scale));
-        const int bottom = static_cast<int>(std::lround((y + height) * scale));
-        view->Resize(right - left, bottom - top);
-        view->SetPosition(left, top);
+        view->Resize(static_cast<int>(std::lround(width * scale)), static_cast<int>(std::lround(height * scale)));
+        view->SetPosition(static_cast<int>(std::lround(x * scale)), static_cast<int>(std::lround(y * scale)));
     }
 }
 
@@ -799,14 +786,13 @@ bool WebPanel::CreateTabWebView(WebTab& tab)
     if (!m_ParentWindow)
         return false;
 
-    tab.view = Platform::CreateWebView(m_ParentWindow, Editor::GetEditorGlobalPaths().userCacheRoot / "WebView2");
+    tab.view = Platform::CreateWebView(m_ParentWindow);
     if (!tab.view || !tab.view->GetNativeView())
     {
         tab.view.reset();
         return false;
     }
 
-    tab.view->SetOnUnavailable([this](const std::string& message) { OnWebViewUnavailable(message); });
     tab.view->SetBackgroundColor(39, 39, 39);
     // Load minimal dark page so clicking in content area never shows white (blank default)
     const char* darkPlaceholder = R"(<!DOCTYPE html><html><head><meta charset="UTF-8"></head>)"
@@ -822,14 +808,6 @@ bool WebPanel::CreateTabWebView(WebTab& tab)
             ui->ClearFocus();
     });
     return true;
-}
-
-void WebPanel::OnWebViewUnavailable(const std::string& message)
-{
-    m_WebViewUnavailableMessage = message;
-    if (m_ErrorLabel)
-        m_ErrorLabel->SetText(message);
-    Logger::Log::Warning("WebPanel: {}", message);
 }
 
 void WebPanel::OpenBlankTab()
@@ -941,8 +919,7 @@ void WebPanel::SetWindow(Platform::Window* window)
         return;
     m_ParentWindow = window;
     // The bind that runs when the panel is first shown may already have looked
-    // for a window and found none — ShowOrActivateWebPanel shows the panel and
-    // only afterwards hands it one. Nothing else calls SetupWebView a second
+    // for a window and found none. Nothing else calls SetupWebView a second
     // time, so without this the panel stays empty for the rest of the session.
     if (m_ParentWindow)
         SetupWebView();

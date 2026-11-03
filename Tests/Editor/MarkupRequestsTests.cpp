@@ -15,14 +15,12 @@
 #include "Editor/Entities/EntityDuplicate.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
-#include "Editor/Registries/EditorMarkupRequests.h"
 #include "EditorChangeNotifications.h"
 #include "MarkupECS/MarkupRegionArea.h"
 #include "MarkupECS/MarkupService.h"
 #include "Markups/MarkupEditorBridge.h"
-#include "Markups/MarkupEditorSurfaces.h"
 #include "SceneView/SceneViewFraming.h"
-#include "SceneView/SceneViewController.h"
+#include "SceneViewController.h"
 #include "Scripting/ScriptsConfig.h"
 #include "SplineECS/SplineService.h"
 #include "Terrain/TerrainTypes.h"
@@ -504,7 +502,7 @@ TEST_F(MarkupRequestsTest, ARegionWithAClearingAndALakeIsOneUndoStepAndContainsA
     EXPECT_EQ(created["markup"]["kind"], "region");
     ASSERT_NE(World.GetComponent<Components::MarkupRegion>(forest), nullptr);
     EXPECT_EQ(World.GetComponent<Components::MarkupRegion>(forest)->MemberCount, 2u);
-    EXPECT_EQ(World.GetComponent<Components::Parent>(clearing)->Entity, forest);
+    EXPECT_EQ(World.GetComponent<Components::Parent>(clearing)->parent, forest);
     EXPECT_EQ(World.GetComponent<Components::MarkupVolume>(forest), nullptr);
 
     const json points = json::array({json::array({150.0f, 30.0f}), json::array({100.0f, 100.0f}),
@@ -524,52 +522,6 @@ TEST_F(MarkupRequestsTest, ARegionWithAClearingAndALakeIsOneUndoStepAndContainsA
     EXPECT_EQ(Editor::GetMarkup(Context, {{"entityId", forest.id}})["markup"]["shape"]["knots"], knotsBefore);
     EXPECT_EQ(InsideAnswers(Editor::ContainsInMarkup(Context, {{"entityId", forest.id}, {"points", points}})),
               (std::vector<bool>{true, false, false, false}));
-}
-
-// markup_get's area and perimeter are the area markup_contains tests: the forest's 200 m square
-// less the clearing (40 m square) and the lake (a 32-gon of radius 15), every ring's length.
-TEST_F(MarkupRequestsTest, GetGivesTheAreaAndPerimeterWithTheMembersApplied)
-{
-    const uint32 lake = Create("Lake", {{"shape", "sphere"}, {"center", {20.0f, 0.0f, 20.0f}},
-                                        {"halfExtents", {15.0f, 15.0f, 15.0f}}});
-    const uint32 forest = Editor::CreateMarkup(Context, ForestParams(lake))["entityId"];
-    const json shape = Editor::GetMarkup(Context, {{"entityId", forest}})["markup"]["shape"];
-    EXPECT_NEAR(shape["area"].get<float>(), 37697.7f, 1.0f) << "the area left out a member";
-    EXPECT_NEAR(shape["perimeter"].get<float>(), 1054.1f, 0.5f) << "the perimeter left out a hole";
-}
-
-// A second region's exclusion is titled with the next index no mark-up uses, as its tag is.
-TEST_F(MarkupRequestsTest, AnExclusionTakesTheNextFreeTitle)
-{
-    const json params{{"title", "Forest"},
-                      {"kind", "region"},
-                      {"outline", Square(0.0f, 0.0f, 200.0f)},
-                      {"exclusions", json::array({Square(80.0f, 80.0f, 40.0f)})}};
-    const json first = Editor::CreateMarkup(Context, params);
-    const json second = Editor::CreateMarkup(Context, params);
-    const auto titleOf = [&](const json& created) {
-        return Editor::GetMarkup(Context, {{"entityId", created["exclusionIds"][0]}})["markup"]["title"];
-    };
-    EXPECT_EQ(titleOf(first), "Forest exclusion 1");
-    EXPECT_EQ(titleOf(second), "Forest exclusion 2");
-}
-
-// A long region title is cut before its exclusions' index, so each exclusion keeps its own
-// index whole within a stored title's 63 characters.
-TEST_F(MarkupRequestsTest, ALongRegionTitlesExclusionsKeepTheirIndex)
-{
-    const std::string title(70, 'F');
-    const json created = Editor::CreateMarkup(
-        Context, {{"title", title},
-                  {"kind", "region"},
-                  {"outline", Square(0.0f, 0.0f, 200.0f)},
-                  {"exclusions", json::array({Square(20.0f, 20.0f, 40.0f), Square(120.0f, 120.0f, 40.0f)})}});
-    ASSERT_EQ(created["exclusionIds"].size(), 2u) << created.dump();
-    const auto titleOf = [&](const json& id) {
-        return Editor::GetMarkup(Context, {{"entityId", id}})["markup"]["title"].get<std::string>();
-    };
-    EXPECT_EQ(titleOf(created["exclusionIds"][0]), std::string(51, 'F') + " exclusion 1");
-    EXPECT_EQ(titleOf(created["exclusionIds"][1]), std::string(51, 'F') + " exclusion 2");
 }
 
 // Each refusal names the fix, and nothing is created.
@@ -671,7 +623,7 @@ TEST_F(MarkupRequestsTest, APathRoundTripsItsPointsAndRefusesWhatItIsNot)
     EXPECT_TRUE(IsRefusal(Editor::UpdateMarkup(Context, {{"entityId", road}, {"center", {0, 0, 0}}})));
     EXPECT_TRUE(IsRefusal(Editor::UpdateMarkup(Context, {{"entityId", road}, {"outline", Square(0.0f, 0.0f, 10.0f)}})));
     EXPECT_TRUE(IsRefusal(Editor::UpdateMarkup(Context, {{"entityId", road}, {"kind", "region"}})));
-    EXPECT_NE(Editor::UpdateMarkup(Context, {{"entityId", road}, {"points", {{0, 0, 0}, {10, 0, 10}}}}).dump().find("Edit Path"),
+    EXPECT_NE(Editor::UpdateMarkup(Context, {{"entityId", road}, {"points", {{0, 0, 0}, {10, 0, 10}}}}).dump().find("Edit path"),
               std::string::npos)
         << "points on a path answered ok and changed nothing";
     EXPECT_FALSE(IsRefusal(Editor::UpdateMarkup(Context, {{"entityId", road}, {"status", "Requested"}})));
@@ -807,7 +759,7 @@ TEST_F(MarkupRequestsTest, ExclusionsAddedByAnUpdateAreOneUndoStep)
     const auto* region = World.GetComponent<Components::MarkupRegion>(ECS::EntityHandle(forest));
     ASSERT_EQ(region->MemberCount, 1u);
     const ECS::EntityHandle clearing = region->Members[0].Entity;
-    EXPECT_EQ(World.GetComponent<Components::Parent>(clearing)->Entity, ECS::EntityHandle(forest));
+    EXPECT_EQ(World.GetComponent<Components::Parent>(clearing)->parent, ECS::EntityHandle(forest));
     const json middle = json::array({json::array({100.0f, 100.0f})});
     EXPECT_FALSE(Editor::ContainsInMarkup(Context, {{"entityId", forest}, {"points", middle}})["inside"][0].get<bool>());
 
@@ -891,38 +843,6 @@ TEST_F(MarkupRequestsTest, ABoxConvertsToARegionAsOneUndoStepKeepingItsNotes)
     EXPECT_NE(World.GetComponent<Components::MarkupRegion>(entity), nullptr);
 }
 
-// A box converted to a path keeps its thread, notes, status and color, as one undo step: the
-// agent's stand-in box for a way becomes the way without losing its conversation.
-TEST_F(MarkupRequestsTest, ABoxConvertsToAPathAsOneUndoStepKeepingItsThread)
-{
-    const uint32 road = Create("Road", {{"description", "To the gate"}, {"color", {0.2f, 0.4f, 0.8f, 1.0f}}});
-    (void)Editor::CommentOnMarkup(Context, {{"entityId", road}, {"text", "Follow the river"}});
-    (void)Editor::UpdateMarkup(Context, {{"entityId", road}, {"status", "Requested"}});
-    const ECS::EntityHandle entity(road);
-    const std::size_t entries = MarkupService::Get().FindNotes(World, entity)->Entries.size();
-    const Components::Markup before = MarkupOf(road);
-
-    const json points = json::array({json::array({0.0f, 0.0f, 0.0f}), json::array({40.0f, 0.0f, 10.0f}),
-                                     json::array({80.0f, 0.0f, 0.0f})});
-    const json converted = Editor::UpdateMarkup(Context, {{"entityId", road}, {"kind", "path"}, {"points", points}});
-    ASSERT_FALSE(IsRefusal(converted)) << converted.dump();
-    EXPECT_EQ(World.GetComponent<Components::MarkupVolume>(entity), nullptr);
-    EXPECT_EQ(World.GetComponent<Components::MarkupRegion>(entity), nullptr);
-    EXPECT_EQ(converted["markup"]["kind"], "path");
-    EXPECT_EQ(Editor::GetMarkup(Context, {{"entityId", road}})["markup"]["shape"]["points"].size(), 3u);
-    EXPECT_EQ(MarkupOf(road).Status, Components::kMarkupStatusRequested);
-    EXPECT_TRUE(std::equal(std::begin(before.Color), std::end(before.Color), std::begin(MarkupOf(road).Color)))
-        << "the conversion dropped the color";
-    EXPECT_GE(MarkupService::Get().FindNotes(World, entity)->Entries.size(), entries) << "the thread was lost";
-    EXPECT_EQ(MarkupService::Get().FindNotes(World, entity)->Description, "To the gate");
-
-    Undo.Undo();
-    EXPECT_NE(World.GetComponent<Components::MarkupVolume>(entity), nullptr) << "one undo did not bring the box back";
-    EXPECT_EQ(World.GetComponent<Components::SplineComponent>(entity), nullptr);
-    Undo.Redo();
-    EXPECT_EQ(Editor::GetMarkup(Context, {{"entityId", road}})["markup"]["kind"], "path");
-}
-
 // A region frames over the sphere around its ring and its height.
 TEST_F(MarkupRequestsTest, FrameFitsARegionsRingAndHeight)
 {
@@ -978,7 +898,7 @@ TEST_F(MarkupRequestsTest, ADuplicateRemapsTheMembersCopiedWithItAndSharesTheRes
     const ECS::EntityHandle copiedClearing = copied->Members[1].Entity;
     EXPECT_NE(copiedClearing, clearing);
     ASSERT_TRUE(World.IsValid(copiedClearing));
-    EXPECT_EQ(World.GetComponent<Components::Parent>(copiedClearing)->Entity, copy);
+    EXPECT_EQ(World.GetComponent<Components::Parent>(copiedClearing)->parent, copy);
     EXPECT_NE(World.GetComponent<Components::SplineComponent>(copy)->SplineDataIndex,
               World.GetComponent<Components::SplineComponent>(forest)->SplineDataIndex);
 
@@ -1010,98 +930,4 @@ TEST_F(MarkupRequestsTest, AnOutlineCommitStampsTheRegionAndAKnotSelectionDoesNo
     Notifications.NotifyComponentChange<Components::SplineComponent>(
         &World, entity, Editor::EditorChangeNotifications::ChangeKind::Commit);
     EXPECT_GT(MarkupOf(forest).Revision, created);
-}
-
-// The context the markup_* methods and the package requests act on is the installed bridge's:
-// the primary world, the bridge's undo history and notifications, its play state and the
-// default field of view while no Scene View has drawn.
-TEST_F(MarkupRequestsTest, TheCurrentContextIsTheInstalledBridges)
-{
-    (void)EngineCore::GetInstance().EnsurePrimaryWorld();
-    EXPECT_EQ(Editor::CurrentMarkupRequestContext().Bridge, nullptr);
-    m_Bridge->SetUndoService(&Undo);
-    m_Bridge->SetPlayModeProvider([]() { return true; });
-    MarkupEditorBridge::Install(m_Bridge.get());
-    const Editor::MarkupRequestContext context = Editor::CurrentMarkupRequestContext();
-    MarkupEditorBridge::Install(nullptr);
-
-    EXPECT_EQ(context.World, EngineCore::GetInstance().GetPrimaryWorld());
-    EXPECT_NE(context.World, nullptr);
-    EXPECT_EQ(context.Bridge, m_Bridge.get());
-    EXPECT_EQ(context.Undo, &Undo);
-    EXPECT_EQ(context.Notifications, &Notifications);
-    EXPECT_TRUE(context.PlayMode);
-    EXPECT_EQ(context.FrameTanHalfFov, Editor::kMarkupDefaultTanHalfFov);
-}
-
-// A package module's requests answer as the methods do on the current context: the same
-// mark-up as markup_get, a comment in the author it names, a refusal's reason as text. Frame
-// refuses as the others do (no such mark-up, play mode) and, apart, when no Scene View is open.
-TEST_F(MarkupRequestsTest, ThePackageRequestsAnswerAsTheMethodsDo)
-{
-    ECS::World* primary = EngineCore::GetInstance().EnsurePrimaryWorld();
-    ASSERT_NE(primary, nullptr);
-    m_Bridge->SetUndoService(&Undo);
-    MarkupEditorBridge::Install(m_Bridge.get());
-    Editor::InstallMarkupRequests();
-    const Editor::MarkupRequestContext context = Editor::CurrentMarkupRequestContext();
-    const json created = Editor::CreateMarkup(
-        context, {{"title", "Harbor"}, {"center", {10.0f, 0.0f, 20.0f}}, {"halfExtents", {5.0f, 2.0f, 5.0f}}});
-    ASSERT_FALSE(IsRefusal(created)) << created.dump();
-    const uint32 id = created["entityId"];
-    const Editor::EditorMarkupRequests& requests = Editor::EditorMarkupRequests::Get();
-
-    const ECS::EntityHandle harbor(id);
-    const Editor::MarkupRequestAnswer query = requests.Query(harbor);
-    EXPECT_FALSE(query.IsRefusal()) << query.Refusal;
-    EXPECT_EQ(query.Result, Editor::GetMarkup(context, {{"entityId", id}}));
-    EXPECT_EQ(requests.List(json::object()).Result, Editor::ListMarkups(context, json::object()));
-    // A row carries the color the mark-up draws in, for the @ list's swatch.
-    const std::string color = Editor::ListMarkups(context, json::object())["markups"][0].value("color", "");
-    EXPECT_EQ(color.size(), 7u);
-    EXPECT_EQ(color[0], '#');
-    const Editor::MarkupRequestAnswer comment = requests.Comment(harbor, "Move the pier", MarkupAuthor::User);
-    ASSERT_FALSE(comment.IsRefusal()) << comment.Refusal;
-    EXPECT_EQ(comment.Result["entry"]["author"], "User");
-    EXPECT_EQ(MarkupService::Get().FindNotes(*primary, ECS::EntityHandle(id))->Entries.back().Text, "Move the pier");
-    const std::string unknown = "No mark-up has that entityId; call markup_list for the current ones";
-    EXPECT_EQ(requests.Query(ECS::EntityHandle(id + 1000)).Refusal, unknown);
-    EXPECT_EQ(requests.Frame(ECS::EntityHandle(id + 1000)).Refusal, unknown);
-    // No Scene View in this host.
-    EXPECT_EQ(requests.Frame(harbor).Refusal, "Open a Scene View to frame the mark-up");
-    m_Bridge->SetPlayModeProvider([]() { return true; });
-    const std::string playing = "Exit play mode first: mark-ups are read and edited in the edit world";
-    EXPECT_EQ(requests.Query(harbor).Refusal, playing);
-    EXPECT_EQ(requests.Frame(harbor).Refusal, playing);
-
-    primary->DestroyEntityImmediate(ECS::EntityHandle(id));
-    Editor::EditorMarkupRequests::Get().Install({});
-    MarkupEditorBridge::Install(nullptr);
-}
-
-// One framing path: a region frames the sphere around its outline and its height, not its origin;
-// the pose keeps the view's heading and looks down at least 30 degrees, from far enough that the
-// sphere fits the field of view.
-TEST_F(MarkupRequestsTest, ARegionFramesItsOutlineSeenFromAbove)
-{
-    const uint32 forest = Editor::CreateMarkup(
-        Context, {{"title", "Forest"}, {"kind", "region"}, {"outline", Square(0.0f, 0.0f, 200.0f)}})["entityId"];
-    const std::optional<Editor::MarkupWorldVolume> volume = Editor::ReadMarkupFrameVolume(Context, ECS::EntityHandle(forest));
-    ASSERT_TRUE(volume.has_value());
-    // The outline's farthest corner from the volume's center lies inside its sphere.
-    const float cornerReach = std::hypot(std::max(volume->Center.x, 200.0f - volume->Center.x),
-                                         std::max(volume->Center.z, 200.0f - volume->Center.z));
-    EXPECT_GE(volume->BoundingRadius, cornerReach);
-
-    SceneViewCameraPose level{};
-    level.YawDeg = 90.0f;
-    level.PitchDeg = 0.0f;
-    const SceneViewCameraPose framed = Editor::MarkupFramePose(*volume, level, Editor::kMarkupDefaultTanHalfFov);
-    EXPECT_NEAR(framed.YawDeg, 90.0f, 1e-3f);
-    EXPECT_NEAR(framed.PitchDeg, -Editor::kMarkupFrameMinDownPitchDeg, 1e-3f);
-    EXPECT_NEAR(framed.Distance, Editor::MarkupFrameDistance(*volume, Editor::kMarkupDefaultTanHalfFov), 1e-3f);
-    SceneViewCameraPose steep = level;
-    steep.PitchDeg = -60.0f;
-    EXPECT_NEAR(Editor::MarkupFramePose(*volume, steep, Editor::kMarkupDefaultTanHalfFov).PitchDeg, -60.0f, 1e-3f)
-        << "a view already looking down more keeps its pitch";
 }

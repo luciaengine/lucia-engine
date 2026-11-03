@@ -58,7 +58,7 @@ constexpr float kReliefFrequency = 5.0f;
 constexpr float kReliefOctaves = 8.0f;
 using CornerKey = std::array<int64_t, 3>;
 using Point = std::array<double, 3>;
-struct ScaleCase { float Radius; const char* Name; };
+struct ScaleCase { float Radius; bool Deep; const char* Name; };
 struct KeyHash
 {
     size_t operator()(const CornerKey& k) const
@@ -116,7 +116,7 @@ double Volume(const Point& a, const Point& b, const Point& c)
 }
 double Length(const Point& p) { return std::sqrt(p[0]*p[0] + p[1]*p[1] + p[2]*p[2]); }
 
-Audit Inspect(const Snapshot& s, float radius, float amplitude)
+Audit Inspect(const Snapshot& s, float radius, float amplitude, bool deep)
 {
     Audit a;
     const auto roots = BuildSphereRoots();
@@ -134,7 +134,7 @@ Audit Inspect(const Snapshot& s, float radius, float amplitude)
         ++a.Live;
         liveSlots.push_back(slot);
         const uint32_t depth = std::bit_width(h) - 1u;
-        const uint32_t cap = DeepDecode::kDeepDecodeSubdiv;
+        const uint32_t cap = deep ? DeepDecode::kDeepDecodeSubdiv : kMaxDecodeSubdiv;
         if (depth < kSphereBaseDepth || depth > kSphereBaseDepth + cap)
         { ++a.BadKeys; continue; }
         const uint32_t sub = depth - kSphereBaseDepth;
@@ -146,7 +146,7 @@ Audit Inspect(const Snapshot& s, float radius, float amplitude)
         const auto& v = s.Vertices[slot];
         const float* xyz[] = {v.Corner0, v.Corner1, v.Corner2};
         const uint32_t* sec[] = {v.Sector0, v.Sector1, v.Sector2};
-        if (v.DeepTag[0] != 1u || v.DeepTag[1] != 0u) ++a.Representation;
+        if (v.DeepTag[0] != uint32_t(deep) || v.DeepTag[1] != 0u) ++a.Representation;
         std::array<Point, 3> world, cube;
         for (uint32_t corner = 0; corner < 3; ++corner)
         {
@@ -155,10 +155,12 @@ Audit Inspect(const Snapshot& s, float radius, float amplitude)
                 sec[corner][0], sec[corner][1]};
             auto [it, inserted] = stored.emplace(keys[corner], payload);
             if (!inserted) { ++a.Shared; if (it->second != payload) ++a.SharedFailures; }
-            if (sec[corner][1] >> 16u) ++a.Representation;
-            CornerWorld(v, corner, world[corner].data());
+            if ((!deep && (sec[corner][0] || sec[corner][1])) || (sec[corner][1] >> 16u)) ++a.Representation;
+            const int32_t sector[] = {UnpackSectorLo(sec[corner][0]), UnpackSectorHi(sec[corner][0]),
+                                     UnpackSectorLo(sec[corner][1])};
             for (uint32_t axis = 0; axis < 3; ++axis)
             {
+                world[corner][axis] = double(xyz[corner][axis]) + (deep ? kSectorSizeM*sector[axis] : 0.0);
                 cube[corner][axis] = double(keys[corner][axis]);
                 if (!std::isfinite(world[corner][axis])) ++a.NonFinite;
             }
@@ -218,7 +220,7 @@ Audit Inspect(const Snapshot& s, float radius, float amplitude)
 // directions face the camera, and whose actual corners are well inside every
 // clip plane, cannot be hidden by either conservative cull. Boundary triangles
 // are excluded so floating-point disagreements at the limb/planes are harmless.
-std::vector<uint32_t> RequiredVisible(const Snapshot& s, const CBTFrameParams& p)
+std::vector<uint32_t> RequiredVisible(const Snapshot& s, const CBTFrameParams& p, bool deep)
 {
     std::vector<uint32_t> required;
     const auto roots = BuildSphereRoots();
@@ -227,6 +229,8 @@ std::vector<uint32_t> RequiredVisible(const Snapshot& s, const CBTFrameParams& p
         if (!s.Heap[slot]) continue;
         const auto keys = Corners(s.Heap[slot], roots);
         const auto& v = s.Vertices[slot];
+        const float* xyz[] = {v.Corner0,v.Corner1,v.Corner2};
+        const uint32_t* sec[] = {v.Sector0,v.Sector1,v.Sector2};
         bool inside = true;
         for (uint32_t corner = 0; corner < 3; ++corner)
         {
@@ -235,9 +239,11 @@ std::vector<uint32_t> RequiredVisible(const Snapshot& s, const CBTFrameParams& p
             double facing = 0;
             for (uint32_t axis = 0; axis < 3; ++axis) facing += key[axis]/norm*p.CameraPos[axis];
             if (facing <= double(p.PlanetParams[0])+kFacingMarginM) { inside = false; break; }
+            const int32_t sector[] = {UnpackSectorLo(sec[corner][0]),UnpackSectorHi(sec[corner][0]),UnpackSectorLo(sec[corner][1])};
             std::array<double,4> relative{0,0,0,1}, clip{};
-            CornerWorld(v, corner, relative.data());
-            for (uint32_t axis = 0; axis < 3; ++axis) relative[axis] -= kSectorSizeM*p.RenderOriginSector[axis];
+            for (uint32_t axis = 0; axis < 3; ++axis)
+                relative[axis] = double(xyz[corner][axis]) + (deep ? kSectorSizeM*sector[axis] : 0.0)
+                    - kSectorSizeM*p.RenderOriginSector[axis];
             for (uint32_t row = 0; row < 4; ++row)
                 for (uint32_t col = 0; col < 4; ++col) clip[row] += p.ViewProjRel[col*4+row]*relative[col];
             if (!(clip[3] > kMinClipW) || std::abs(clip[0]) >= kInteriorNdcBound*clip[3] ||
@@ -258,18 +264,21 @@ uint32_t MissingVisible(const Snapshot& s, const std::vector<uint32_t>& required
     return missing;
 }
 
-void TraceTransitions(const Snapshot& before, const Snapshot& after, const CBTFrameParams& p)
+void TraceTransitions(const Snapshot& before, const Snapshot& after, const CBTFrameParams& p, bool deep)
 {
     std::unordered_map<uint64_t, uint32_t> oldSlots, newSlots;
     for (const auto slot : before.Compact) oldSlots.emplace(before.Heap[slot],slot);
     for (const auto slot : after.Compact) newSlots.emplace(after.Heap[slot],slot);
     const auto metric = [&](const CBTVertexData& v) {
+        const float* xyz[] = {v.Corner0,v.Corner1,v.Corner2};
+        const uint32_t* sec[] = {v.Sector0,v.Sector1,v.Sector2};
         std::array<std::array<double,2>,3> pixels{};
         for (uint32_t corner=0; corner<3; ++corner)
         {
+            const int32_t sector[] = {UnpackSectorLo(sec[corner][0]),UnpackSectorHi(sec[corner][0]),UnpackSectorLo(sec[corner][1])};
             std::array<double,4> relative{0,0,0,1},clip{};
-            CornerWorld(v, corner, relative.data());
-            for (uint32_t axis=0; axis<3; ++axis) relative[axis] -= kSectorSizeM*p.RenderOriginSector[axis];
+            for (uint32_t axis=0; axis<3; ++axis)
+                relative[axis] = xyz[corner][axis]+(deep?kSectorSizeM*sector[axis]:0)-kSectorSizeM*p.RenderOriginSector[axis];
             for (uint32_t row=0; row<4; ++row)
                 for (uint32_t col=0; col<4; ++col) clip[row] += p.ViewProjRel[col*4+row]*relative[col];
             for (uint32_t axis=0; axis<2; ++axis) pixels[corner][axis] = .5*p.Screen[axis]*clip[axis]/clip[3];
@@ -307,10 +316,7 @@ class CBTSphereScaleAudit : public ::testing::TestWithParam<ScaleCase>
         ASSERT_TRUE(m_Device->Initialize(desc));
         if (!m_Device->GetCapabilities().supportsShaderInt64)
             GTEST_SKIP() << "Vulkan shaderInt64 is required";
-        if (desc.enableDebugLayer)
-        {
-            ASSERT_TRUE(m_Device->GetValidationStats().Enabled);
-        }
+        if (desc.enableDebugLayer) ASSERT_TRUE(m_Device->GetValidationStats().Enabled);
         ASSERT_TRUE(m_Kernels.Initialize(*m_Device, ShaderOutputDir()));
     }
     void TearDown() override
@@ -358,12 +364,7 @@ class CBTSphereScaleAudit : public ::testing::TestWithParam<ScaleCase>
         EXPECT_EQ(vertices.size(), highest*kVertexWords);
         if (vertices.size() != highest*kVertexWords) return {};
         s.Vertices.resize(highest);
-        for (uint32_t slot = 0; slot < highest; ++slot)
-        {
-            std::array<uint32_t, kVertexWords> recordWords;
-            std::copy_n(vertices.data() + slot * kVertexWords, recordWords.size(), recordWords.data());
-            s.Vertices[slot] = std::bit_cast<CBTVertexData>(recordWords);
-        }
+        std::memcpy(s.Vertices.data(), vertices.data(), vertices.size()*4u);
         s.DrawCount = inst.ReadDrawIndexCount(kDrawStreamAll);
         EXPECT_LE(s.DrawCount, pool*3u);
         s.Compact = inst.DebugReadWords(CBTBinding::IndicesAll, std::min(pool, s.DrawCount/3u));
@@ -381,7 +382,7 @@ class CBTSphereScaleAudit : public ::testing::TestWithParam<ScaleCase>
     {
         SCOPED_TRACE(phase);
         EXPECT_FALSE(s.Heap.empty());
-        const auto a = Inspect(s, radius, amplitude);
+        const auto a = Inspect(s, radius, amplitude, GetParam().Deep);
         EXPECT_GT(a.Live, 0u); EXPECT_GT(a.Shared, 0u);
         EXPECT_EQ(a.BadKeys, 0u); EXPECT_EQ(a.Coverage, 0u); EXPECT_EQ(a.Edges, 0u);
         EXPECT_EQ(a.Compact, 0u); EXPECT_EQ(a.Occupancy, 0u); EXPECT_EQ(a.SharedFailures, 0u);
@@ -390,11 +391,11 @@ class CBTSphereScaleAudit : public ::testing::TestWithParam<ScaleCase>
         EXPECT_EQ(a.Visible, 0u);
         if (camera && !a.BadKeys)
         {
-            const auto required = RequiredVisible(s, *camera);
+            const auto required = RequiredVisible(s, *camera, GetParam().Deep);
             EXPECT_EQ(MissingVisible(s, required), 0u) << "clearly visible triangle omitted from actual draw stream";
         }
-        std::printf("[sphere-scale] %s R=%.0f live=%u minEdge=%.6g shellError=%.6g shared=%u mismatches=%u\n",
-            phase, radius, a.Live, a.MinEdge, a.MaxShellError, a.Shared, a.SharedFailures);
+        std::printf("[sphere-scale] %s R=%.0f deep=%u live=%u minEdge=%.6g shellError=%.6g shared=%u mismatches=%u\n",
+            phase, radius, unsigned(GetParam().Deep), a.Live, a.MinEdge, a.MaxShellError, a.Shared, a.SharedFailures);
         return a;
     }
     CBTFrameParams Params(float radius, float amplitude = 0) const
@@ -434,7 +435,7 @@ TEST_P(CBTSphereScaleAudit, StoredGeometryCoversSphereThroughRefinementAndScaleE
     auto p = Params(GetParam().Radius);
     CBTClassifyDesc c{};
     c.Mode = kClassifyDepthTarget; c.FocusRoot = kFocusRootAll;
-    c.TargetDepth = kSphereBaseDepth+kUniformRefineSubdiv;
+    c.TargetDepth = kSphereBaseDepth+kUniformRefineSubdiv; c.DeepDecode = GetParam().Deep;
     Frames(inst, c, p, kUniformRefineFrames);
     ASSERT_FALSE(HasFatalFailure());
     auto clean = Read(inst);
@@ -452,11 +453,11 @@ TEST_P(CBTSphereScaleAudit, StoredGeometryCoversSphereThroughRefinementAndScaleE
     const auto corner = Corners(damaged.Heap[first], BuildSphereRoots())[0];
     const auto tangentialAxis = std::ranges::min_element(corner, {}, [](int64_t v) { return std::abs(v); });
     damaged.Vertices[first].Corner0[tangentialAxis - corner.begin()] += p.PlanetParams[0]*kCornerDamageFraction;
-    EXPECT_GT(Inspect(damaged, p.PlanetParams[0], 0).SharedFailures, 0u);
-    EXPECT_GT(Inspect(damaged, p.PlanetParams[0], 0).Direction, 0u);
+    EXPECT_GT(Inspect(damaged, p.PlanetParams[0], 0, GetParam().Deep).SharedFailures, 0u);
+    EXPECT_GT(Inspect(damaged, p.PlanetParams[0], 0, GetParam().Deep).Direction, 0u);
     damaged = clean;
     damaged.Compact[0] = damaged.Compact[1];
-    EXPECT_GT(Inspect(damaged, p.PlanetParams[0], 0).Compact, 0u);
+    EXPECT_GT(Inspect(damaged, p.PlanetParams[0], 0, GetParam().Deep).Compact, 0u);
 
     // The caller explicitly requests the full refresh that production issues for
     // radius/relief edits. This checks GPU geometry, not ECS invalidation routing.
@@ -475,8 +476,8 @@ TEST_P(CBTSphereScaleAudit, StoredGeometryCoversSphereThroughRefinementAndScaleE
     EXPECT_EQ(coarse.Live, kSphereRootCount);
     EXPECT_EQ(inst.GetResources().GetPersistentByteSize(), bytes);
     EXPECT_EQ(inst.GetResources().GetBuffer(CBTBinding::CurrentVertex), vertexBuffer);
-    std::printf("[sphere-scale-memory] R=%.0f pool=%u persistentBytes=%llu\n", GetParam().Radius,
-        inst.GetResources().GetPoolSize(), static_cast<unsigned long long>(bytes));
+    std::printf("[sphere-scale-memory] R=%.0f deep=%u pool=%u persistentBytes=%llu\n", GetParam().Radius,
+        unsigned(GetParam().Deep), inst.GetResources().GetPoolSize(), static_cast<unsigned long long>(bytes));
 }
 
 TEST_P(CBTSphereScaleAudit, ScreenSpaceTeleportRebaseAndDistanceLodKeepActualCoverage)
@@ -518,7 +519,7 @@ TEST_P(CBTSphereScaleAudit, ScreenSpaceTeleportRebaseAndDistanceLodKeepActualCov
     const float radius = GetParam().Radius;
     const uint32_t sub = uint32_t(std::clamp<long>(
         std::lround(kSubdivisionsPerEdgeHalving*std::log2(kModelRootEdgeArc*radius/kFinestFacetEdgeM)),
-        0, long(DeepDecode::kDeepDecodeSubdiv)));
+        0, long(GetParam().Deep ? DeepDecode::kDeepDecodeSubdiv : kMaxDecodeSubdiv)));
     CBTInstance inst;
     ASSERT_TRUE(inst.Initialize(*m_Device, m_Kernels));
     ASSERT_TRUE(inst.InitializeRoots(kDomainSpherical));
@@ -526,7 +527,7 @@ TEST_P(CBTSphereScaleAudit, ScreenSpaceTeleportRebaseAndDistanceLodKeepActualCov
     const auto bytes = inst.GetResources().GetPersistentByteSize();
     CBTClassifyDesc c{};
     c.Mode = kClassifyScreenSpace; c.TargetDepth = kSphereBaseDepth+sub;
-    c.GateVertexEval = 1;
+    c.GateVertexEval = 1; c.DeepDecode = GetParam().Deep;
     auto pose = [&](uint32_t axis, float altitude, int32_t sectorShift = 0)
     {
         auto p = Params(radius);
@@ -606,7 +607,7 @@ TEST_P(CBTSphereScaleAudit, ScreenSpaceTeleportRebaseAndDistanceLodKeepActualCov
     Frames(inst, c, p, kConvergeFrames);
     auto far = Read(inst);
     const auto farAudit = Check(far, radius, 0, "orbit-converged", &p);
-    const auto required = RequiredVisible(far, p);
+    const auto required = RequiredVisible(far, p, GetParam().Deep);
     ASSERT_GT(required.size(), kMinOracleFacets) << "visible-cull oracle needs a nonempty interior region";
     auto omitted = far;
     const auto visibleIt = std::find(omitted.Visible.begin(), omitted.Visible.end(), required.front());
@@ -624,14 +625,14 @@ TEST_P(CBTSphereScaleAudit, ScreenSpaceTeleportRebaseAndDistanceLodKeepActualCov
         Frame(inst, c, p);
         const auto stats = inst.ReadTessellationStats();
         if (trace)
-            std::printf("[sphere-scale-quiet] R=%.0f f=%u live=%u split=%d served=%d merge=%d merged=%d\n",
-                radius, f, stats.LiveCount, stats.SplitDemand, stats.SplitServed,
+            std::printf("[sphere-scale-quiet] R=%.0f deep=%u f=%u live=%u split=%d served=%d merge=%d merged=%d\n",
+                radius, unsigned(GetParam().Deep), f, stats.LiveCount, stats.SplitDemand, stats.SplitServed,
                 stats.MergeDemand, stats.MergeServed);
         if (trace && f<2)
         {
             auto current=Read(inst);
-            TraceTransitions(lastTrace,current,p);
-            TraceTransitions(current,lastTrace,p);
+            TraceTransitions(lastTrace,current,p,GetParam().Deep);
+            TraceTransitions(current,lastTrace,p,GetParam().Deep);
             lastTrace=std::move(current);
         }
         EXPECT_EQ(stats.SplitServed, 0) << "stationary orbit split at frame " << f;
@@ -642,10 +643,7 @@ TEST_P(CBTSphereScaleAudit, ScreenSpaceTeleportRebaseAndDistanceLodKeepActualCov
     ASSERT_EQ(far.Heap, quiet.Heap) << "stationary converged LOD still changes topology";
     ASSERT_EQ(far.Vertices.size(), quiet.Vertices.size());
     for (uint32_t slot = 0; slot < far.Vertices.size(); ++slot)
-        if (far.Heap[slot])
-        {
-            EXPECT_EQ(std::memcmp(&far.Vertices[slot], &quiet.Vertices[slot], sizeof(CBTVertexData)), 0);
-        }
+        if (far.Heap[slot]) EXPECT_EQ(std::memcmp(&far.Vertices[slot], &quiet.Vertices[slot], sizeof(CBTVertexData)), 0);
 
     // The parent hold applies only while rescue is active. Turning rescue off
     // must release the extra limb detail; restoring it must refine that detail
@@ -679,12 +677,14 @@ TEST_P(CBTSphereScaleAudit, ScreenSpaceTeleportRebaseAndDistanceLodKeepActualCov
     EXPECT_GT(relief.MaxShellError, double(p.PlanetParams[1])*kMinReliefShellFraction)
         << "screen-space relief premise requires actual displaced vertices";
     EXPECT_EQ(inst.GetResources().GetPersistentByteSize(), bytes);
-    std::printf("[sphere-scale-lod] R=%.0f capSubdiv=%u modeledFloor=%.6g nearLive=%u farLive=%u\n",
-        radius, sub, kModelRootEdgeArc*radius*std::exp2(-double(sub)/kSubdivisionsPerEdgeHalving),
+    std::printf("[sphere-scale-lod] R=%.0f deep=%u capSubdiv=%u modeledFloor=%.6g nearLive=%u farLive=%u\n",
+        radius, unsigned(GetParam().Deep), sub, kModelRootEdgeArc*radius*std::exp2(-double(sub)/kSubdivisionsPerEdgeHalving),
         near.Live, farAudit.Live);
 }
 
 INSTANTIATE_TEST_SUITE_P(RadiusMatrix, CBTSphereScaleAudit,
-    ::testing::Values(ScaleCase{512,"R512"}, ScaleCase{2048,"R2048"}, ScaleCase{8192,"R8192"},
-        ScaleCase{1000000,"R1000km"}, ScaleCase{6371000,"Earth"}),
+    ::testing::Values(ScaleCase{512,false,"R512"}, ScaleCase{2048,false,"R2048"},
+        ScaleCase{8192,false,"R8192"}, ScaleCase{1000000,false,"R1000km"},
+        ScaleCase{6371000,false,"Earth"}, ScaleCase{1000000,true,"R1000kmDeep"},
+        ScaleCase{6371000,true,"EarthDeep"}),
     [](const ::testing::TestParamInfo<ScaleCase>& info) { return info.param.Name; });

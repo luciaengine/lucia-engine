@@ -3,19 +3,19 @@
 ## Scene converter
 
 `Tools/UnityConverter.dll` is built from
-[OpenEngine-Unity-Scene-Converter, commit 87b2ba990607f50804cfe9e3c0b0e0f040e39044](https://github.com/Game-Crafters-Guild/OpenEngine-Unity-Scene-Converter/tree/87b2ba990607f50804cfe9e3c0b0e0f040e39044).
+[OpenEngine-Unity-Scene-Converter, commit 520790ec52331832f69f983d57c31ec18be96ab0](https://github.com/Game-Crafters-Guild/OpenEngine-Unity-Scene-Converter/tree/520790ec52331832f69f983d57c31ec18be96ab0).
 The source revision, SDK, build command and binary SHA-256 are recorded in
 [`Tools/UnityConverter.dll.source`](Tools/UnityConverter.dll.source).
 
 The MIT license below is copied verbatim from that revision's
-[`LICENSE`](https://github.com/Game-Crafters-Guild/OpenEngine-Unity-Scene-Converter/blob/87b2ba990607f50804cfe9e3c0b0e0f040e39044/LICENSE).
+[`LICENSE`](https://github.com/Game-Crafters-Guild/OpenEngine-Unity-Scene-Converter/blob/520790ec52331832f69f983d57c31ec18be96ab0/LICENSE).
 An identical copy is adjacent to the binary at
 [`Tools/UnityConverter.LICENSE.txt`](Tools/UnityConverter.LICENSE.txt).
 Retain the license and copyright notice when redistributing the converter.
 
 MIT License
 
-Copyright (c) 2026 Gamecrafters Guild Limited
+Copyright (c) 2026 Shanee
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

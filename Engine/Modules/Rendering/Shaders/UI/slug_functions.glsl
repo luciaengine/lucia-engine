@@ -3,10 +3,10 @@
 // Evaluates quadratic Bezier curves per-pixel via horizontal/vertical
 // ray casting with band-based spatial acceleration.
 //
-// Deviation from the reference: the per-crossing coverage ramp is the
-// exact-area ramp convolved with the kTextFilterWidthPx box (see
-// slugFilteredRamp), matching the reconstruction filter measured out of
-// Chrome's text rasteriser.
+// Deviation from the reference: every crossing moves outward by the glyph's
+// dilation and the glyph moves up by the same amount (kTextDilationPerPpem in
+// ui_sdf_common.glsl), matching the outline growth measured out of Chrome's
+// text rasteriser on macOS.
 //
 // Requires ui_sdf_common.glsl to be included first.
 // Curve texture: sampler2D (RGBA16F) — control points.
@@ -35,32 +35,34 @@ const int kLogBandTextureWidth = 12;
 // truncate correct data, only bound corrupt data.
 const int kMaxCurvesPerBand = 1 << kLogBandTextureWidth;
 
-// Antiderivative of the exact-area ramp clamp(t + 0.5, 0, 1).
-float slugRampIntegral(float t)
+// Exact-area coverage contribution of a crossing at signed distance r device
+// px from the sample centre along the ray.
+float slugRamp(float r)
 {
-    float s = clamp(t, -0.5, 0.5) + 0.5;
-    return 0.5 * s * s + max(t - 0.5, 0.0);
+    return clamp(r + 0.5, 0.0, 1.0);
 }
 
-// Coverage contribution of a curve crossing at signed distance r device px
-// from the sample centre: the exact-area ramp convolved with the
-// kTextFilterWidthPx box (ui_sdf_common.glsl), evaluated in closed form as
-// the ramp's mean over the filter window. A box convolution of exact-area
-// coverage is itself exact over the wider window, so the result stays
-// analytic and mass-preserving; it saturates to 0/1 outside
-// +-kTextFilterOuterRadiusPx exactly as the unfiltered ramp does at +-0.5.
-float slugFilteredRamp(float r)
+// Outward growth of the outline, device px, for a glyph drawn at ppem device
+// pixels per em along one axis (kTextDilationPerPpem, ui_sdf_common.glsl).
+float slugDilationPx(float ppem)
 {
-    const float halfWidth = 0.5 * kTextFilterWidthPx;
-    return (slugRampIntegral(r + halfWidth) - slugRampIntegral(r - halfWidth))
-           * (1.0 / kTextFilterWidthPx);
+    return min(ppem * kTextDilationPerPpem, kTextMaxDilationPx);
+}
+
+// The outline growth text effects measure from, device px: the fill's x
+// dilation, applied as an isotropic offset of the outline. With the sample
+// moved as slugRender moves it (slugOutlineDistance), the effects stay
+// concentric with the fill edge.
+float slugEffectDilationPx(vec2 emsPerPixel)
+{
+    return slugDilationPx(1.0 / max(emsPerPixel.x, 1e-6));
 }
 
 // Ray-reliability weight for a crossing: 1 at the sample centre, fading to 0
-// at the edge of the crossing's widened influence window.
-float slugCrossingWeight(float r)
+// where the crossing's ramp, `reach` px wide on each side, stops changing.
+float slugCrossingWeight(float r, float reach)
 {
-    return clamp(1.0 - abs(r) * (1.0 / kTextFilterOuterRadiusPx), 0.0, 1.0);
+    return clamp(1.0 - abs(r) / reach, 0.0, 1.0);
 }
 
 uint slugCalcRootCode(float y1, float y2, float y3)
@@ -164,6 +166,14 @@ float slugRender(texture2D curveData, utexture2D bandData,
 #endif
     vec2 pixelsPerEm = 1.0 / emsPerPixel;
 
+    // Grow the outline by `dilation` px per side and move it up by
+    // dilation.y: sampling dilation.y px lower in the y-up em space is the
+    // glyph drawn that much higher. The bands are indexed at the moved
+    // sample, which is the coordinate the curves are tested against.
+    vec2 dilation = vec2(slugDilationPx(pixelsPerEm.x), slugDilationPx(pixelsPerEm.y));
+    renderCoord.y -= dilation.y * emsPerPixel.y;
+    vec2 reach = 0.5 + dilation;
+
     ivec2 bandMax = glyphData.zw;
     bandMax.y &= 0x00FF;
 
@@ -194,26 +204,29 @@ float slugRender(texture2D curveData, utexture2D bandData,
         vec4 p12 = texelFetch(sampler2D(curveData, curveSampler), curveLoc, 0) - vec4(renderCoord, renderCoord);
         vec2 p3 = texelFetch(sampler2D(curveData, curveSampler), ivec2(curveLoc.x + 1, curveLoc.y), 0).xy - renderCoord;
 
-        // Early exit: if the largest x coordinate falls beyond the filter's
+        // Early exit: if the largest x coordinate falls beyond a crossing's
         // reach left of the current pixel, no more curves can influence the
         // result (sorted by descending max x).
-        if (max(max(p12.x, p12.z), p3.x) * pixelsPerEm.x < -kTextFilterOuterRadiusPx) break;
+        if (max(max(p12.x, p12.z), p3.x) * pixelsPerEm.x < -reach.x) break;
 
         uint code = slugCalcRootCode(p12.y, p12.w, p3.y);
         if (code != 0u)
         {
             vec2 r = slugSolveHorizPoly(p12, p3) * pixelsPerEm.x;
 
+            // The first root is where the ray leaves the fill and the second
+            // where it enters, so outward is +x for the first and -x for the
+            // second; counters wind the other way and close up by the same rule.
             if ((code & 1u) != 0u)
             {
-                xcov += slugFilteredRamp(r.x);
-                xwgt = max(xwgt, slugCrossingWeight(r.x));
+                xcov += slugRamp(r.x + dilation.x);
+                xwgt = max(xwgt, slugCrossingWeight(r.x, reach.x));
             }
 
             if (code > 1u)
             {
-                xcov -= slugFilteredRamp(r.y);
-                xwgt = max(xwgt, slugCrossingWeight(r.y));
+                xcov -= slugRamp(r.y - dilation.x);
+                xwgt = max(xwgt, slugCrossingWeight(r.y, reach.x));
             }
         }
     }
@@ -234,26 +247,28 @@ float slugRender(texture2D curveData, utexture2D bandData,
         vec4 p12 = texelFetch(sampler2D(curveData, curveSampler), curveLoc, 0) - vec4(renderCoord, renderCoord);
         vec2 p3 = texelFetch(sampler2D(curveData, curveSampler), ivec2(curveLoc.x + 1, curveLoc.y), 0).xy - renderCoord;
 
-        // Early exit: if the largest y coordinate falls beyond the filter's
+        // Early exit: if the largest y coordinate falls beyond a crossing's
         // reach below the current pixel, no more curves can influence the
         // result (sorted by descending max y).
-        if (max(max(p12.y, p12.w), p3.y) * pixelsPerEm.y < -kTextFilterOuterRadiusPx) break;
+        if (max(max(p12.y, p12.w), p3.y) * pixelsPerEm.y < -reach.y) break;
 
         uint code = slugCalcRootCode(p12.x, p12.z, p3.x);
         if (code != 0u)
         {
             vec2 r = slugSolveVertPoly(p12, p3) * pixelsPerEm.y;
 
+            // Mirror of the horizontal ray: the first root enters the fill
+            // and the second leaves it.
             if ((code & 1u) != 0u)
             {
-                ycov -= slugFilteredRamp(r.x);
-                ywgt = max(ywgt, slugCrossingWeight(r.x));
+                ycov -= slugRamp(r.x - dilation.y);
+                ywgt = max(ywgt, slugCrossingWeight(r.x, reach.y));
             }
 
             if (code > 1u)
             {
-                ycov += slugFilteredRamp(r.y);
-                ywgt = max(ywgt, slugCrossingWeight(r.y));
+                ycov += slugRamp(r.y + dilation.y);
+                ywgt = max(ywgt, slugCrossingWeight(r.y, reach.y));
             }
         }
     }
@@ -317,8 +332,9 @@ float slugCurveDistance(vec2 p1, vec2 p2, vec2 p3)
     return min(length(p1 + (c + b * t.x) * t.x), length(p1 + (c + b * t.y) * t.y));
 }
 
-// Unsigned distance, in device pixels, from renderCoord to the glyph outline,
-// or reachPx when no outline point lies closer. The glyph's horizontal bands
+// Unsigned distance, in device pixels, from renderCoord to the glyph outline
+// (moved up as slugRender moves it, not grown: callers subtract
+// slugEffectDilationPx), or reachPx when no outline point lies closer. The glyph's horizontal bands
 // hold every curve whose y range meets them, so the bands spanning
 // renderCoord.y +- reach hold every curve within reach; a curve listed in two
 // of them is measured twice, which the minimum absorbs. Inside/outside is not
@@ -329,6 +345,8 @@ float slugOutlineDistance(texture2D curveData, utexture2D bandData,
                           vec2 emsPerPixel, float reachPx)
 {
     vec2 pixelsPerEm = 1.0 / max(emsPerPixel, vec2(1e-6));
+    // The outline sits where slugRender draws it: moved up by the dilation.
+    renderCoord.y -= slugDilationPx(pixelsPerEm.y) * emsPerPixel.y;
     int hBandMax = glyphData.w & 0x00FF;
     float reachEm = reachPx * emsPerPixel.y;
     // Clamped twice. As floats, because a float-to-int conversion out of int range

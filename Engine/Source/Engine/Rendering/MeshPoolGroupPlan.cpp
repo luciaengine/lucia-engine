@@ -1,8 +1,9 @@
 #include "Engine/Rendering/MeshPoolGroupPlan.h"
 
+#include "Platform/Environment.h"
+
 #include <algorithm>
 #include <cassert>
-#include <cstdlib>
 #include <utility>
 
 namespace GameEngine
@@ -12,11 +13,7 @@ namespace Rendering
 
 bool MeshPoolGroupPlan::ConsolidationEnabled()
 {
-    static const bool s_Enabled = []
-    {
-        const char* env = std::getenv("GE_DRAW_CONSOLIDATION");
-        return env == nullptr || env[0] != '0';
-    }();
+    static const bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_DRAW_CONSOLIDATION", true);
     return s_Enabled;
 }
 

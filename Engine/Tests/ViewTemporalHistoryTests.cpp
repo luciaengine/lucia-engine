@@ -41,8 +41,8 @@ ViewTemporalSample MakeSample(float tag)
 {
     ViewTemporalSample sample{};
     for (int i = 0; i < 16; ++i)
-        sample.Camera.viewProj[i / 4][i % 4] = tag * 100.0f + static_cast<float>(i);
-    sample.Camera.cameraPos.x = tag;
+        sample.Camera.viewProj[i] = tag * 100.0f + static_cast<float>(i);
+    sample.Camera.cameraPos[0] = tag;
     sample.DeformationTimeSeconds = tag;
     sample.DeformationScrollSeconds = tag * kScrollPerSecond;
     return sample;
@@ -96,7 +96,7 @@ TEST(ViewTemporalHistory, ResumedViewGetsTheSampleItLastRenderedWith)
     // Neither the current clock nor a one-frame-delta guess from it.
     EXPECT_NE(previous->DeformationTimeSeconds, resumed.DeformationTimeSeconds);
     EXPECT_NE(previous->DeformationTimeSeconds, resumed.DeformationTimeSeconds - 0.5f);
-    EXPECT_EQ(std::memcmp(previous->Camera.viewProj.Data(), frameTwo.Camera.viewProj.Data(),
+    EXPECT_EQ(std::memcmp(previous->Camera.viewProj, frameTwo.Camera.viewProj,
                           sizeof(frameTwo.Camera.viewProj)),
               0);
 }
@@ -431,10 +431,8 @@ TEST(ViewTemporalHistory, RebasedEndpointDifferencingSurvivesLongUptimeWhereAbso
                 << offset << " s";
 
             if (uptime >= 65520.0)
-            {
                 EXPECT_LT(std::abs(rebasedDelta - kFrame), std::abs(absoluteDelta - kFrame))
                     << "the rebased lane must be strictly better than the absolute one here";
-            }
         }
     }
 }

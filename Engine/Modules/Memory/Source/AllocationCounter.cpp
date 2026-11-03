@@ -2,16 +2,10 @@
 // AllocationSiteTag, Testing::ScopedAllocationFault and Testing::ScopedAllocationHold, fed
 // by every image's allocation hook through Detail::OnAllocation.
 //
-// One copy per process. The Memory module compiles it into Engine; a test executable
-// that links neither Engine nor the Memory module compiles its own copy. A target that
-// links either sees GE_ALLOCATION_COUNTER_LINKED (set on the test target, from the
-// link-interface property Memory and Engine carry: cmake/AllocationHook.cmake) and
-// compiles this file empty, so its hook and its scopes reach the linked copy instead of
-// a second counter that the linked images would never feed.
-//
-// No exported data and no exported thread_local: the state below has internal linkage,
-// and the functions are plain (no GE_API), exported on Windows through Engine.dll's
-// generated exports.def and on POSIX through default visibility.
+// The Memory object module contributes one copy to Engine. Explicitly instrumented
+// test executables link that Engine and compile only the hook, never another counter.
+// No exported data or thread_local: internal state is reached through plain functions,
+// exported by Engine's generated Windows definition file and POSIX default visibility.
 
 #if !defined(GE_ALLOCATION_COUNTER_LINKED)
 

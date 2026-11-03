@@ -10,7 +10,6 @@
 #include "Scripting/ScriptManager.h"
 #include "Scripting/ScriptingABI.h"
 #include "StagedTestPaths.h"
-#include "Types/PathUtils.h"
 
 #include <gtest/gtest.h>
 
@@ -75,7 +74,7 @@ TEST(UnityImportHostedConverter, PackageAssemblyListsScenesThroughEditorHostRun)
     std::string stdoutAll;
     const std::atomic<bool> cancelRequested{false};
     const ConverterRunResult result = RunConverterHosted(
-        converterDll, {"--list-scenes", PathToUtf8(package)},
+        converterDll, {"--list-scenes", PathArgUtf8(package)},
         [&stdoutAll](const std::string& line) { stdoutAll += line; }, cancelRequested);
 
     EXPECT_TRUE(result.Spawned) << result.StderrTail;

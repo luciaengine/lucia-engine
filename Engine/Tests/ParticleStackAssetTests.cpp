@@ -7,8 +7,8 @@
 #include "Engine/Build/StagedAssetCook.h"
 #include "Engine/Build/TexturePackageCook.h"
 #include "Particles/Assets/ParticleStackAsset.h"
-#include "Particles/ParticleStack/ParticleStackAuthoring.h"
-#include "Particles/ParticleStack/ParticleStackBinary.h"
+#include "Particles/ParticleStackAuthoring.h"
+#include "Particles/ParticleStackBinary.h"
 
 #include <gtest/gtest.h>
 
@@ -181,8 +181,7 @@ TEST(StagedAssetCook, TheBuildsContentCookShipsAStackCooked)
     TexturePackageCookStats textureStats;
     std::string error;
     ASSERT_TRUE(CookStagedContent(content.Root, content.Manifest, registry, parsers,
-                                  /*textureWorkers=*/nullptr, /*manifestParsePool=*/nullptr,
-                                  NeverCancelled, textureStats, error))
+                                  /*textureWorkers=*/nullptr, NeverCancelled, textureStats, error))
         << error;
     EXPECT_TRUE(IsParticleStackBinary(ReadBytes(stack)));
     EXPECT_EQ(textureStats.Textures, 0u);

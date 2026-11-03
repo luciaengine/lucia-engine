@@ -65,9 +65,11 @@ const uint kLodFadeToLevelShift = 4u;
 // mutual z-kill the tail split exists to remove, because the two passes would
 // then partition the silhouette differently.
 // Pinned by LodCrossfadeShaderContractTests.
+// `fadeCode` is a word whose high byte is the packed code; its low 24 bits are
+// ignored, so a caller passes the fragment's packed instance flags as they are.
 bool GE_LodCrossfadeKeep(uint fadeCode, vec2 fragCoord)
 {
-    if (fadeCode == 0u)
+    if ((fadeCode & ~kLodFadeIndexMask) == 0u)
         return true;
     const uint kBayer4x4[16] = uint[16](0u, 8u, 2u, 10u,
                                         12u, 4u, 14u, 6u,

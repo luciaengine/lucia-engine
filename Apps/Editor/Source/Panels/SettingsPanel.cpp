@@ -1,32 +1,37 @@
 #include "Panels/SettingsPanel.h"
-#include "Mathematics/Interpolation.h"
 #include "Platform/SystemMetrics.h"
 #include "AssetCore/SharedFileRead.h"
 #include "Panels/BuildPanel.h"
 #include "Panels/HierarchyPanel.h"
-#include "EditorApplication/EditorApplication.h"
+#include "EditorApplication.h"
 #include "EditorContext.h"
 #include "Editor/Assets/AssetRelativePath.h"
 #include "Editor/Settings/BuildFolderDefaults.h"
 #include "Editor/Shortcuts/EditorShortcuts.h"
 #include "Editor/Settings/EditorSettingsRegistry.h"
 #include "Editor/Settings/SvgRasterSettings.h"
+#include "Editor/Settings/SvgRasterSizeField.h"
 #include "Editor/Settings/BuildRenderPipelineSettings.h"
 #include "Editor/Settings/DirectionalShadowSettingsPage.h"
 #include "Editor/Settings/EditorHiDpiPlatformSettings.h"
 #include "Editor/EditorTreeTitleIconVars.h"
 #include "Components/Rendering/PostProcessVolume.h"
-#include "UI/AnimationWindowSettings.h"
 #include "UI/EditorIcons.h"
-#include "UI/PanelSearchBar.h"
-#include "UI/UIAccentStyleHelper.h"
-#include "UI/SyntaxHighlightSettings.h"
-#include "UI/Controls/DockspaceElement.h"
-#include "Types/StringUtils.h"
+#include "UI/ThemeAccent.h"
+#include "Editor/Settings/AccentColorSettings.h"
+#include "Editor/Settings/CompactComponentHeadersSettings.h"
+#include "Editor/Settings/GraySlidersSettings.h"
+#include "Editor/Settings/InspectorRowLayoutSettings.h"
+#include "Editor/Settings/PopupShadowSettings.h"
+#include "Editor/Settings/ScriptEditorSettings.h"
+#include "Editor/Settings/TabIconsSettings.h"
+#include "Editor/Settings/TextRenderingSettings.h"
+#include "Editor/Settings/ValueBoxHeightSettings.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstring>
 #include <cmath>
@@ -46,8 +51,6 @@
 #include "Logger/Logger.h"
 #include "Editor/Settings/CurveEditorSettings.h"
 #include "Editor/Settings/SettingsStore.h"
-#include "Editor/Settings/SettingsSectionBreak.h"
-#include "Editor/Settings/SettingsTextFieldRow.h"
 #include "Editor/Vcs/EditorVcsProviderRegistry.h"
 #include "VCSIntegration/IVCSIntegration.h"
 #include "Types/StringId.h"
@@ -56,18 +59,16 @@
 #include "Input/InputSystem.h"
 #include "EditorInputActions.h"
 #include "Assets/AssetManager.h"
-#include "Assets/MeshLODGenerator.h"
 #include "UI/EditorTags.h"
 #include "UI/EditorUIFontSettings.h"
 #include "Engine/UI/FontResolver.h"
-#include "Rendering/Text/FontAtlas.h"
 #include "EditorContextMenu/UIContextMenu.h"
 #include "Platform/ContextMenu.h"
 #include "UndoRedo/UndoRedoService.h"
 #include "UndoRedo/TagCommands.h"
 #include "Assets/AssetRegistry.h"
 #include "AssetCore/AssetTypes.h"
-#include "Thumbnails/ModelThumbnail/ModelThumbnailHandler.h"
+#include "Thumbnails/ModelThumbnailHandler.h"
 #include "Platform/Display.h"
 #include "Platform/Window.h"
 #include "Rendering/Core/Device.h"
@@ -79,8 +80,8 @@
 #include "UI/Controls/Dropdown.h"
 
 namespace {
-GameEngine::Dropdown* g_ActivePipelineDropdown = nullptr;
-bool g_SuppressActivePipelineDropdownCallback = false;
+GameEngine::Dropdown* s_ActivePipelineDropdown = nullptr;
+bool s_SuppressActivePipelineDropdownCallback = false;
 constexpr const char* kPrefKeyTabRightClickContextMenu = "ui.tabRightClickContextMenu";
 
 constexpr const char* kPrefKeyInspectorBigNumberSpacing = "ui.inspectorBigNumberSpacing";
@@ -103,17 +104,13 @@ constexpr bool kInspectorBigNumberSpacingDefault = true;
 #include "UI/Assets/UILayoutAsset.h"
 #include "UI/Assets/UIStyleAsset.h"
 #include "Core/Application.h"
-#include "Editor/Settings/ScriptEditorSettings.h"
 #include "Editor/Settings/UniversalSearchSettings.h"
-#include "Editor/Assets/ShaderGlslOpen.h"
-#include "Editor/Settings/FbxImportSettings.h"
 #include "Editor/Settings/SettingsStore.h"
 #include "Editor/Settings/DynamicResolutionProjectSettings.h"
-#include "Editor/Settings/Render/RenderProjectSettings.h"
+#include "Editor/Settings/RenderProjectSettings.h"
 #include "Editor/Settings/SceneViewSettings.h"
 #include "Editor/Settings/ToggleAppearanceSettings.h"
 #include "Editor/Settings/TooltipSettings.h"
-#include "Assets/SvgRasterizer.h"
 #include "Editor/DragDropPayloads.h"
 #include "Engine/Build/AppIconGenerator.h"
 #include "Engine/Build/BuildPlatforms.h"
@@ -124,13 +121,12 @@ constexpr bool kInspectorBigNumberSpacingDefault = true;
 #include "UI/Interaction/DropTarget.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/Controls/IntField.h"
-#include "Physics/PhysicsTypes.h"
-#include "Editor/Settings/PhysicsProjectSettings.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "UI/Controls/CollapsibleInfoCard.h"
 #include "UI/InfoCard.h"
 #include "Platform/Shell.h"
 
+#include <charconv>
 #include <fstream>
 
 namespace GameEngine
@@ -157,27 +153,63 @@ void MarkCurveIndicatorControlsDirty(UIElement* root)
         MarkCurveIndicatorControlsDirty(child.get());
 }
 
-} // namespace
+constexpr uint32_t kOpaqueAlpha = 0xFF000000u;
+constexpr uint32_t kRgbMask = 0x00FFFFFFu;
+constexpr int kHexRgbDigits = 6;
+constexpr int kHexBase = 16;
 
-void SettingsPanel::UpdateSwatchStyle(UIElement* swatch, uint32_t colorRgb)
+// Swatch geometry lives in SettingsPanel.css (.settings-color-swatch); the
+// colour is the only per-swatch state. Swatches show the colour opaque.
+void SetSwatchColor(UIElement* swatch, uint32_t argb)
 {
     if (!swatch)
         return;
-
-    constexpr float kSwatchSize = 16.0f;
-    constexpr float kSwatchBorderRadius = 2.0f;
-    constexpr uint32_t kSwatchBorderColor = 0xFF555555u;
-
-    const uint32_t swatchArgb = 0xFF000000u | (colorRgb & 0x00FFFFFFu);
-    swatch->Style()
-        .Set(Style::Width, StyleLength::Px(kSwatchSize))
-        .Set(Style::Height, StyleLength::Px(kSwatchSize))
-        .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{kSwatchBorderRadius, kSwatchBorderRadius, kSwatchBorderRadius, kSwatchBorderRadius})
-        .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
-        .Set(Style::BorderColor, BorderColorsTRBL{kSwatchBorderColor, kSwatchBorderColor, kSwatchBorderColor, kSwatchBorderColor})
-        .Set(Style::BackgroundColor, swatchArgb)
-        .Set(Style::Cursor, CursorStyle::Pointer);
+    swatch->Overrides().Set(Style::BackgroundColor, kOpaqueAlpha | (argb & kRgbMask));
 }
+
+std::string FormatHexRgb(uint32_t argb)
+{
+    char buffer[16];
+    std::snprintf(buffer, sizeof(buffer), "#%06X", static_cast<unsigned int>(argb & kRgbMask));
+    return buffer;
+}
+
+// Accepts "RRGGBB" or "#RRGGBB"; returns false for anything else.
+bool TryParseHexRgb(std::string_view text, uint32_t& outRgb)
+{
+    if (!text.empty() && text.front() == '#')
+        text.remove_prefix(1);
+    if (text.size() != static_cast<size_t>(kHexRgbDigits))
+        return false;
+    uint32_t value = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value, kHexBase);
+    if (error != std::errc() || end != text.data() + text.size())
+        return false;
+    outRgb = value;
+    return true;
+}
+
+void SaveColorPreference(const char* key, uint32_t argb)
+{
+    auto prefs = Editor::OpenEditorPreferences();
+    std::string err;
+    prefs.Load(&err);
+    prefs.SetInt64(key, static_cast<int64_t>(argb));
+    prefs.Save(&err);
+}
+
+uint32_t LoadColorPreference(const char* key, uint32_t fallbackArgb)
+{
+    auto prefs = Editor::OpenEditorPreferences();
+    std::string err;
+    prefs.Load(&err);
+    int64_t stored = static_cast<int64_t>(fallbackArgb);
+    prefs.TryGetInt64(key, stored);
+    return static_cast<uint32_t>(stored);
+}
+
+} // namespace
+
 namespace
 {
 static constexpr const char* kRenderingSettingsKey = "rendering";
@@ -253,12 +285,12 @@ void AddDoubleClickReset(Label* label, std::function<void()> onReset)
         });
 }
 
-EditorContext* g_SettingsUndoContext = nullptr;
-std::weak_ptr<bool> g_SettingsPanelLifetime;
+EditorContext* s_SettingsUndoContext = nullptr;
+std::weak_ptr<bool> s_SettingsPanelLifetime;
 
 bool IsSettingsPanelAlive()
 {
-    auto alive = g_SettingsPanelLifetime.lock();
+    auto alive = s_SettingsPanelLifetime.lock();
     return alive && *alive;
 }
 
@@ -317,6 +349,10 @@ void CommitSettingsIntUndo(EditorContext* context,
         [apply, after]() { apply(after); }));
 }
 
+// Wires a FloatField and its label as one number row. Typing and label drags
+// preview through previewValue (optional; it must not persist); entry, drag
+// release and double-click reset commit through commitValue as one undo step.
+// A commit that leaves the value unchanged does nothing.
 void WireSettingsFloatLabelDrag(EditorContext* context,
                                 Label* label,
                                 FloatField* field,
@@ -325,9 +361,10 @@ void WireSettingsFloatLabelDrag(EditorContext* context,
                                 float minValue,
                                 float maxValue,
                                 std::function<float(float)> normalize,
-                                std::function<void(float)> applyValue)
+                                std::function<void(float)> previewValue,
+                                std::function<void(float)> commitValue)
 {
-    if (!label || !field || !applyValue)
+    if (!label || !field || !commitValue)
         return;
 
     if (!normalize)
@@ -341,17 +378,20 @@ void WireSettingsFloatLabelDrag(EditorContext* context,
     auto undoName = std::make_shared<std::string>(actionName ? actionName : "Change Setting");
     field->SetValue(*lastCommitted);
 
-    auto preview = [field, normalize, applyValue]() {
+    auto preview = [field, normalize, previewValue]() {
         const float value = normalize(field->GetValue());
         field->SetValue(value);
-        applyValue(value);
+        if (previewValue)
+            previewValue(value);
     };
 
-    auto commit = [context, field, undoName, normalize, applyValue, lastCommitted]() {
+    auto commit = [context, field, undoName, normalize, commitValue, lastCommitted]() {
         const float before = *lastCommitted;
         const float after = normalize(field->GetValue());
         field->SetValue(after);
-        applyValue(after);
+        if (after == before)
+            return;
+        commitValue(after);
         *lastCommitted = after;
 
         CommitSettingsFloatUndo(
@@ -359,9 +399,9 @@ void WireSettingsFloatLabelDrag(EditorContext* context,
             undoName->c_str(),
             before,
             after,
-            [applyValue, normalize, lastCommitted](float value) {
+            [commitValue, normalize, lastCommitted](float value) {
                 const float normalized = normalize(value);
-                applyValue(normalized);
+                commitValue(normalized);
                 *lastCommitted = normalized;
             });
     };
@@ -379,6 +419,7 @@ void WireSettingsFloatLabelDrag(EditorContext* context,
         maxValue);
 }
 
+// WireSettingsFloatLabelDrag for an IntField.
 void WireSettingsIntLabelDrag(EditorContext* context,
                               Label* label,
                               IntField* field,
@@ -386,34 +427,32 @@ void WireSettingsIntLabelDrag(EditorContext* context,
                               int defaultValue,
                               int minValue,
                               int maxValue,
-                              std::function<int(int)> normalize,
-                              std::function<void(int)> applyValue)
+                              std::function<void(int)> previewValue,
+                              std::function<void(int)> commitValue)
 {
-    if (!label || !field || !applyValue)
+    if (!label || !field || !commitValue)
         return;
 
-    if (!normalize)
-    {
-        normalize = [minValue, maxValue](int v) {
-            return std::clamp(v, minValue, maxValue);
-        };
-    }
+    auto normalize = [minValue, maxValue](int v) { return std::clamp(v, minValue, maxValue); };
 
     auto lastCommitted = std::make_shared<int>(normalize(field->GetValue()));
     auto undoName = std::make_shared<std::string>(actionName ? actionName : "Change Setting");
     field->SetValue(*lastCommitted);
 
-    auto preview = [field, normalize, applyValue]() {
+    auto preview = [field, normalize, previewValue]() {
         const int value = normalize(field->GetValue());
         field->SetValue(value);
-        applyValue(value);
+        if (previewValue)
+            previewValue(value);
     };
 
-    auto commit = [context, field, undoName, normalize, applyValue, lastCommitted]() {
+    auto commit = [context, field, undoName, normalize, commitValue, lastCommitted]() {
         const int before = *lastCommitted;
         const int after = normalize(field->GetValue());
         field->SetValue(after);
-        applyValue(after);
+        if (after == before)
+            return;
+        commitValue(after);
         *lastCommitted = after;
 
         CommitSettingsIntUndo(
@@ -421,9 +460,9 @@ void WireSettingsIntLabelDrag(EditorContext* context,
             undoName->c_str(),
             before,
             after,
-            [applyValue, normalize, lastCommitted](int value) {
+            [commitValue, normalize, lastCommitted](int value) {
                 const int normalized = normalize(value);
-                applyValue(normalized);
+                commitValue(normalized);
                 *lastCommitted = normalized;
             });
     };
@@ -437,71 +476,6 @@ void WireSettingsIntLabelDrag(EditorContext* context,
         preview,
         commit,
         normalize(defaultValue));
-}
-
-/// Build the project-wide SVG texture import raster default.
-static std::unique_ptr<UIElement> BuildSvgRasterSizeRow()
-{
-    constexpr int kDefaultExp = 8;
-    constexpr int kMinExp = 4;
-    constexpr int kMaxExp = 14;
-
-    auto row = std::make_unique<UIElement>();
-    row->AddClass("settings-row");
-
-    auto label = std::make_unique<Label>();
-    label->SetText("Default Raster Size");
-    label->SetTooltip(
-        "Default raster bounds for project SVG textures without a per-asset override. Aspect ratio is preserved.");
-    label->AddClass("settings-row-label");
-    Label* labelPtr = label.get();
-
-    const std::filesystem::path workspaceRoot = EngineCore::GetInstance().GetWorkspaceRoot();
-    std::string loadError;
-    const uint32 initialPixels = Editor::SvgRasterSettings::Load(workspaceRoot, &loadError);
-    if (!loadError.empty())
-        Logger::Log::Warning("SvgRasterSettings: failed to load setting: {}", loadError);
-    int exp = kMinExp;
-    while (exp < kMaxExp && (1u << exp) < initialPixels)
-        ++exp;
-
-    std::vector<Dropdown::Option> options;
-    options.reserve(static_cast<size_t>(kMaxExp - kMinExp + 1));
-    for (int optionExp = kMinExp; optionExp <= kMaxExp; ++optionExp)
-    {
-        const int pixels = 1 << optionExp;
-        const std::string value = std::to_string(pixels);
-        options.push_back({value, value + "x" + value});
-    }
-
-    auto dropdown = std::make_unique<Dropdown>();
-    dropdown->AddClass("settings-row-field");
-    dropdown->SetAutoWidthPopup(true);
-    dropdown->SetOptions(options, exp - kMinExp);
-    Dropdown* dropdownPtr = dropdown.get();
-
-    auto applySelection = [](const std::string& value) {
-        uint32 pixels = 0;
-        if (!ParseSvgRasterSizeMeta(value, pixels))
-            return;
-        std::string err;
-        if (!Editor::SvgRasterSettings::SaveAndApply(
-                EngineCore::GetInstance().GetWorkspaceRoot(), pixels, true, &err))
-            Logger::Log::Warning("SvgRasterSettings: failed to save setting: {}", err);
-    };
-
-    dropdown->SetOnValueChanged(applySelection);
-    AddDoubleClickReset(labelPtr, [dropdownPtr, applySelection]() {
-        const std::string defaultValue = std::to_string(1 << kDefaultExp);
-        if (dropdownPtr->GetSelectedValue() == defaultValue)
-            applySelection(defaultValue);
-        else
-            dropdownPtr->SetSelectedValue(defaultValue);
-    });
-
-    row->AddChild(std::move(label));
-    row->AddChild(std::move(dropdown));
-    return row;
 }
 
 // Helper struct for creating settings toggle rows with automatic reset-on-double-click
@@ -606,76 +580,6 @@ void CreateSettingsToggleRow(
         *outToggle = togglePtr;
     if (contentBody)
         contentBody->AddContent(std::move(section));
-}
-
-void CreateSettingsToggleRow(
-    const SettingsToggleConfig& config,
-    UIElement* parent,
-    Toggle** outToggle = nullptr)
-{
-    auto section = std::make_unique<UIElement>();
-    section->AddClass("settings-row");
-    if (!config.extraRowClass.empty())
-        section->AddClass(config.extraRowClass);
-
-    auto label = std::make_unique<Label>();
-    label->SetText(config.labelText);
-    if (!config.tooltip.empty())
-        label->SetTooltip(config.tooltip);
-    label->AddClass("settings-row-label");
-    Label* labelPtr = label.get();
-
-    auto toggle = std::make_unique<Toggle>();
-    Toggle* togglePtr = toggle.get();
-    toggle->AddClass("settings-toggle");
-
-    bool currentValue = config.defaultValue;
-    if (!config.prefKey.empty())
-    {
-        auto prefs = Editor::OpenEditorPreferences();
-        std::string err;
-        prefs.Load(&err);
-        prefs.TryGetBool(config.prefKey, currentValue);
-    }
-    toggle->SetChecked(currentValue);
-    if (config.onValueChanged)
-        config.onValueChanged(currentValue);
-
-    std::string prefKey = config.prefKey;
-    auto onChanged = config.onValueChanged;
-    toggle->SetOnValueChanged([onChanged, prefKey](const bool& value) {
-        if (onChanged)
-            onChanged(value);
-        if (!prefKey.empty())
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetBool(prefKey, value);
-            prefs.Save(&err);
-        }
-    });
-
-    bool defaultVal = config.defaultValue;
-    AddDoubleClickReset(labelPtr, [togglePtr, onChanged, prefKey, defaultVal]() {
-        togglePtr->SetChecked(defaultVal);
-        if (onChanged)
-            onChanged(defaultVal);
-        if (!prefKey.empty())
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetBool(prefKey, defaultVal);
-            prefs.Save(&err);
-        }
-    });
-
-    section->AddChild(std::move(label));
-    section->AddChild(std::move(toggle));
-    if (outToggle)
-        *outToggle = togglePtr;
-    parent->AddChild(std::move(section));
 }
 
 // Helper struct for creating settings slider rows with automatic reset-on-double-click
@@ -813,7 +717,7 @@ SettingsSliderRow CreateSettingsSliderRow(
         const float after = applyCommittedValue(value);
         *lastCommitted = after;
         CommitSettingsFloatUndo(
-            g_SettingsUndoContext,
+            s_SettingsUndoContext,
             undoName.c_str(),
             before,
             after,
@@ -835,7 +739,7 @@ SettingsSliderRow CreateSettingsSliderRow(
         const float after = applyCommittedValue(value);
         *lastCommitted = after;
         CommitSettingsFloatUndo(
-            g_SettingsUndoContext,
+            s_SettingsUndoContext,
             undoName.c_str(),
             before,
             after,
@@ -857,146 +761,6 @@ SettingsSliderRow CreateSettingsSliderRow(
     return result;
 }
 
-// Overload for UIElement parent (uses AddChild instead of AddContent)
-SettingsSliderRow CreateSettingsSliderRow(
-    const SettingsSliderConfig& config,
-    UIElement* parent)
-{
-    SettingsSliderRow result;
-    
-    auto section = std::make_unique<UIElement>();
-    section->AddClass("settings-row");
-    result.section = section.get();
-
-    auto label = std::make_unique<Label>();
-    label->SetText(config.labelText);
-    if (!config.tooltip.empty())
-        label->SetTooltip(config.tooltip);
-    label->AddClass("settings-row-label");
-    Label* labelPtr = label.get();
-
-    auto slider = std::make_unique<Slider>();
-    result.slider = slider.get();
-    slider->AddClass("settings-row-slider");
-    slider->SetTrackPaddingPx(0.0f);
-    slider->SetShowValueBubble(true);
-    slider->SetMin(config.minValue);
-    slider->SetMax(config.maxValue);
-    slider->SetStep(config.step);
-
-    auto valueField = std::make_unique<FloatField>();
-    result.valueField = valueField.get();
-    valueField->AddClass("settings-row-value");
-    InspectorDrag::ApplySliderFloatValueFieldStyle(valueField.get());
-
-    // Load from preferences or use default
-    float currentValue = config.initialValue.value_or(config.defaultValue);
-    if (!config.prefKey.empty())
-    {
-        auto prefs = Editor::OpenEditorPreferences();
-        std::string err;
-        prefs.Load(&err);
-        double stored = currentValue;
-        if (prefs.TryGetDouble(config.prefKey, stored))
-            currentValue = static_cast<float>(stored);
-    }
-    currentValue = std::clamp(currentValue, config.minValue, config.maxValue);
-    
-    slider->SetValue(currentValue);
-    valueField->SetValue(currentValue);
-    
-    // Seed live state from the stored value; see the ScrollView overload above.
-    if (config.onSeed)
-        config.onSeed(currentValue);
-    else if (config.onValueChanged)
-        config.onValueChanged(currentValue);
-
-    Slider* sliderPtr = slider.get();
-    FloatField* valueFieldPtr = valueField.get();
-    auto onChanging = config.onValueChanging;
-    auto onChanged = config.onValueChanged;
-    std::string prefKey = config.prefKey;
-    const float minVal = config.minValue;
-    const float maxVal = config.maxValue;
-    const float defaultVal = config.defaultValue;
-    const std::string undoName = "Change " + config.labelText;
-    auto lastCommitted = std::make_shared<float>(currentValue);
-
-    auto persistValue = [prefKey](float value) {
-        if (!prefKey.empty())
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetDouble(prefKey, value);
-            prefs.Save(&err);
-        }
-    };
-
-    auto applyCommittedValue = [sliderPtr, valueFieldPtr, onChanged, persistValue, minVal, maxVal](float value) {
-        const float clamped = std::clamp(value, minVal, maxVal);
-        if (IsSettingsPanelAlive())
-        {
-            sliderPtr->SetValue(clamped);
-            valueFieldPtr->SetValue(clamped);
-        }
-        if (onChanged)
-            onChanged(clamped);
-        persistValue(clamped);
-        return clamped;
-    };
-
-    slider->SetOnValueChanging([valueFieldPtr, onChanging](const float& value) {
-        valueFieldPtr->SetValue(value);
-        if (onChanging)
-            onChanging(value);
-    });
-    
-    slider->SetOnValueChanged([applyCommittedValue, lastCommitted, undoName](const float& value) {
-        const float before = *lastCommitted;
-        const float after = applyCommittedValue(value);
-        *lastCommitted = after;
-        CommitSettingsFloatUndo(
-            g_SettingsUndoContext,
-            undoName.c_str(),
-            before,
-            after,
-            [applyCommittedValue, lastCommitted](float undoValue) {
-                *lastCommitted = applyCommittedValue(undoValue);
-            });
-    });
-
-    valueField->SetOnValueChanging([sliderPtr, minVal, maxVal](const float& value) {
-        float clamped = std::clamp(value, minVal, maxVal);
-        sliderPtr->SetValue(clamped);
-    });
-
-    valueField->SetOnValueChanged([applyCommittedValue, lastCommitted, undoName](const float& value) {
-        const float before = *lastCommitted;
-        const float after = applyCommittedValue(value);
-        *lastCommitted = after;
-        CommitSettingsFloatUndo(
-            g_SettingsUndoContext,
-            undoName.c_str(),
-            before,
-            after,
-            [applyCommittedValue, lastCommitted](float undoValue) {
-                *lastCommitted = applyCommittedValue(undoValue);
-            });
-    });
-
-    InspectorDrag::SetupLabelDragSlider(labelPtr, sliderPtr, nullptr, nullptr, defaultVal);
-
-    section->AddChild(std::move(label));
-    section->AddChild(std::move(slider));
-    section->AddChild(std::move(valueField));
-    
-    if (parent)
-        parent->AddChild(std::move(section));
-    
-    return result;
-}
-
 }
 
 // ============================================================================
@@ -1012,21 +776,15 @@ SettingsTreeDataProvider::SettingsTreeDataProvider()
     m_Nodes[static_cast<TreeId>(SettingsCategory::ProjectSettings)] = {
         "Project Settings",
         {
-            static_cast<TreeId>(SettingsCategory::AudioSettings),
             static_cast<TreeId>(SettingsCategory::Camera),
-            static_cast<TreeId>(SettingsCategory::Animation),
-            static_cast<TreeId>(SettingsCategory::Input),
-            static_cast<TreeId>(SettingsCategory::Physics),
-            static_cast<TreeId>(SettingsCategory::AssetImport),
             static_cast<TreeId>(SettingsCategory::Rendering),
             static_cast<TreeId>(SettingsCategory::HDROutput),
-            static_cast<TreeId>(SettingsCategory::Scene),
             static_cast<TreeId>(SettingsCategory::Tags),
             static_cast<TreeId>(SettingsCategory::VersionControl),
         },
         true  // has children, expandable
     };
-    
+
     // Version Control children are dynamic: one tab per registered VCS
     // provider (EditorVcsProviderRegistry), refreshed on every tree query so
     // package-provided tabs appear after project open.
@@ -1036,34 +794,23 @@ SettingsTreeDataProvider::SettingsTreeDataProvider()
         true  // has children, expandable
     };
     RefreshVcsProviderNodes();
-    
+
     // User Settings with children
     m_Nodes[static_cast<TreeId>(SettingsCategory::UserSettings)] = {
         "User Settings",
         {
             static_cast<TreeId>(SettingsCategory::UI),
-            static_cast<TreeId>(SettingsCategory::Script),
             static_cast<TreeId>(SettingsCategory::Shortcuts),
-            static_cast<TreeId>(SettingsCategory::Gizmo),
-            static_cast<TreeId>(SettingsCategory::GridAndSnapping),
-            static_cast<TreeId>(SettingsCategory::Performance),
         },
         true  // has children, expandable
     };
     
     // Project Settings children (leaf nodes)
-    m_Nodes[static_cast<TreeId>(SettingsCategory::AudioSettings)] = {"Audio Settings", {}, false};
-    m_Nodes[static_cast<TreeId>(SettingsCategory::Physics)] = {"Physics", {}, false};
     m_Nodes[static_cast<TreeId>(SettingsCategory::Camera)] = {"Scene View", {}, false};
-    m_Nodes[static_cast<TreeId>(SettingsCategory::Animation)] = {"Animation", {}, false};
-    m_Nodes[static_cast<TreeId>(SettingsCategory::Input)] = {"Input", {}, false};
-    m_Nodes[static_cast<TreeId>(SettingsCategory::AssetImport)] = {"Asset Import", {}, false};
     m_Nodes[static_cast<TreeId>(SettingsCategory::Rendering)] = {"Rendering", {}, false};
     m_Nodes[static_cast<TreeId>(SettingsCategory::HDROutput)] = {"HDR Output", {}, false};
-    m_Nodes[static_cast<TreeId>(SettingsCategory::Scene)] = {"Scene", {}, false};
     m_Nodes[static_cast<TreeId>(SettingsCategory::Tags)] = {"Tags", {}, false};
         // User Settings children
-    m_Nodes[static_cast<TreeId>(SettingsCategory::Script)] = {"Script", {}, false};
     m_Nodes[static_cast<TreeId>(SettingsCategory::UI)] = {
         "UI",
         {
@@ -1083,9 +830,6 @@ SettingsTreeDataProvider::SettingsTreeDataProvider()
     m_Nodes[static_cast<TreeId>(SettingsCategory::UIInspector)] = {"Inspector", {}, false};
     m_Nodes[static_cast<TreeId>(SettingsCategory::UIHiDpi)] = {"HiDPI", {}, false};
     m_Nodes[static_cast<TreeId>(SettingsCategory::Shortcuts)] = {"Keyboard Shortcuts", {}, false};
-    m_Nodes[static_cast<TreeId>(SettingsCategory::Gizmo)] = {"Gizmo", {}, false};
-    m_Nodes[static_cast<TreeId>(SettingsCategory::GridAndSnapping)] = {"Grid & Snapping", {}, false};
-    m_Nodes[static_cast<TreeId>(SettingsCategory::Performance)] = {"Performance", {}, false};
 
     // Root items shown at top level of tree
     m_Roots = {
@@ -1204,12 +948,10 @@ void SettingsTreeDataProvider::RefreshRegistryNodes() const
         const TreeId id = static_cast<TreeId>(kRegistrySettingsCategoryBase + i);
         // Labels can change on module replace-forward; refresh unconditionally.
         m_Nodes[id] = {categories[i].Title, {}, false};
-        // VersionControl-, UIAppearance- and SceneView-group categories render
-        // inline on their host pages rather than as tree children; they
-        // contribute no node.
+        // VersionControl- and UIAppearance-group categories render inline on
+        // their host pages rather than as tree children; they contribute no node.
         if (categories[i].Group == Editor::SettingsCategoryGroup::VersionControl ||
-            categories[i].Group == Editor::SettingsCategoryGroup::UIAppearance ||
-            categories[i].Group == Editor::SettingsCategoryGroup::SceneView)
+            categories[i].Group == Editor::SettingsCategoryGroup::UIAppearance)
             continue;
 
         TreeId parent = 0;
@@ -1341,7 +1083,8 @@ std::unordered_set<TreeId> SettingsTreeDataProvider::GetAncestorIdsToExpandForSe
     std::unordered_set<TreeId> toExpand;
     if (query.empty())
         return toExpand;
-    const std::string lowerQuery = ToLowerAscii(query);
+    std::string lowerQuery = query;
+    for (char& c : lowerQuery) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
     // Build parent map (child id -> parent id)
     std::unordered_map<TreeId, TreeId> parentOf;
@@ -1357,7 +1100,8 @@ std::unordered_set<TreeId> SettingsTreeDataProvider::GetAncestorIdsToExpandForSe
     std::vector<TreeId> matches;
     for (const auto& pair : m_Nodes)
     {
-        const std::string lowerLabel = ToLowerAscii(pair.second.Label);
+        std::string lowerLabel = pair.second.Label;
+        for (char& c : lowerLabel) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (lowerLabel.find(lowerQuery) != std::string::npos)
             matches.push_back(pair.first);
     }
@@ -1420,7 +1164,9 @@ void SettingsTreeDataProvider::AppendCategoriesMatchingTreeLabels(const std::str
         auto it = m_Nodes.find(id);
         if (it == m_Nodes.end())
             return;
-        const std::string lowerLabel = ToLowerAscii(it->second.Label);
+        std::string lowerLabel = it->second.Label;
+        for (char& c : lowerLabel)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (lowerLabel.find(lowerQuery) != std::string::npos)
         {
             const auto cat = static_cast<SettingsCategory>(id);
@@ -1441,9 +1187,8 @@ void SettingsTreeDataProvider::AppendCategoriesMatchingTreeLabels(const std::str
 
 SettingsPanel::SettingsPanel()
     : DockPanel("Settings")
-    , m_UIAccentColor(UI::AccentStyleHelper::kDefaultAccentColor)
 {
-    g_SettingsPanelLifetime = m_LifetimeToken;
+    s_SettingsPanelLifetime = m_LifetimeToken;
     AddClass("settings-panel");
 
     // Create data providers
@@ -1491,8 +1236,9 @@ SettingsPanel::~SettingsPanel()
         m_SceneViewCameraSettingsListenerId);
     if (m_LifetimeToken)
         *m_LifetimeToken = false;
-    if (g_SettingsUndoContext == m_EditorContext)
-        g_SettingsUndoContext = nullptr;
+    if (s_SettingsUndoContext == m_EditorContext)
+        s_SettingsUndoContext = nullptr;
+    s_ActivePipelineDropdown = nullptr;
 
     // Ensure we don't leave stale pointers in the global registry when this panel is destroyed.
     if (m_SearchBar)
@@ -1530,15 +1276,9 @@ void SettingsPanel::CreateTreeView(UIElement* parent)
     auto getIconClass = [](TreeId id, const std::vector<std::string>& registryRowClasses) -> std::string {
         if (id == static_cast<TreeId>(SettingsCategory::ProjectSettings)) return "project-settings-row";
         if (id == static_cast<TreeId>(SettingsCategory::UserSettings)) return "user-settings-row";
-        if (id == static_cast<TreeId>(SettingsCategory::AudioSettings)) return "audio-settings-row";
         if (id == static_cast<TreeId>(SettingsCategory::Camera)) return "camera-row";
-        if (id == static_cast<TreeId>(SettingsCategory::Animation)) return "animation-row";
-        if (id == static_cast<TreeId>(SettingsCategory::Input)) return "input-row";
-        if (id == static_cast<TreeId>(SettingsCategory::Physics)) return "physics-row";
-        if (id == static_cast<TreeId>(SettingsCategory::AssetImport)) return "asset-import-row";
         if (id == static_cast<TreeId>(SettingsCategory::Rendering)) return "rendering-row";
         if (id == static_cast<TreeId>(SettingsCategory::HDROutput)) return "hdr-row";
-        if (id == static_cast<TreeId>(SettingsCategory::Scene)) return "scene-row";
         if (id == static_cast<TreeId>(SettingsCategory::Tags)) return "tags-row";
         if (id == static_cast<TreeId>(SettingsCategory::VersionControl)) return "version-control-row";
         if (IsVcsProviderCategory(static_cast<SettingsCategory>(id)))
@@ -1553,7 +1293,6 @@ void SettingsPanel::CreateTreeView(UIElement* parent)
             }
             return "version-control-row";
         }
-        if (id == static_cast<TreeId>(SettingsCategory::Script)) return "script-row";
         if (id == static_cast<TreeId>(SettingsCategory::UI)) return "ui-row";
         if (id == static_cast<TreeId>(SettingsCategory::UIAppearance)) return "ui-appearance-row";
         if (id == static_cast<TreeId>(SettingsCategory::UIFontSizes)) return "ui-font-rendering-row";
@@ -1562,9 +1301,6 @@ void SettingsPanel::CreateTreeView(UIElement* parent)
         if (id == static_cast<TreeId>(SettingsCategory::UIInspector)) return "ui-inspector-row";
         if (id == static_cast<TreeId>(SettingsCategory::UIHiDpi)) return "ui-hidpi-row";
         if (id == static_cast<TreeId>(SettingsCategory::Shortcuts)) return "shortcuts-row";
-        if (id == static_cast<TreeId>(SettingsCategory::Gizmo)) return "gizmo-row";
-        if (id == static_cast<TreeId>(SettingsCategory::GridAndSnapping)) return "grid-snapping-row";
-        if (id == static_cast<TreeId>(SettingsCategory::Performance)) return "performance-row";
         if (IsRegistrySettingsCategory(static_cast<SettingsCategory>(id)))
         {
             // Registry categories are created after the static Settings UXML
@@ -1623,8 +1359,10 @@ void SettingsPanel::CreateTreeView(UIElement* parent)
                 const char* label = m_TreeDataProvider->GetLabel(id);
                 if (label && label[0] != '\0')
                 {
-                    const std::string lowerLabel = ToLowerAscii(label);
-                    const std::string lowerQuery = ToLowerAscii(m_CurrentSearchQuery);
+                    std::string lowerLabel = label;
+                    std::string lowerQuery = m_CurrentSearchQuery;
+                    for (char& c : lowerLabel) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    for (char& c : lowerQuery) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                     if (lowerLabel.find(lowerQuery) != std::string::npos)
                         row->AddClass("search-match");
                     else
@@ -1707,21 +1445,112 @@ void SettingsPanel::CreateContentPane(UIElement* parent)
 
 void SettingsPanel::CreateSearchBar(UIElement* parent)
 {
-    auto built = BuildPanelSearchBar("settings-search-field", {},
-                                     [this](const std::string& value)
-                                     {
-                                         if (value.empty())
-                                             ClearSearchResults();
-                                         else
-                                             PerformSearch(value);
-                                     });
-    m_SearchBar = built.RootPtr;
-    parent->AddClass("settings-search-host");
-    parent->AddChild(std::move(built.Root));
+    auto searchBar = std::make_unique<UIElement>();
+    searchBar->AddClass("settings-search-bar");
+    
+    m_SearchBar = searchBar.get();
+    
+    // Capture search bar pointer for callbacks
+    UIElement* searchBarPtr = m_SearchBar;
+    
+    // Create text field first so it's on top
+    auto searchField = std::make_unique<TextField>();
+    m_SearchField = searchField.get();
+    searchField->AddClass("settings-search-field");
+    searchField->SetValue("");
+    
+    // Add text field to search bar first
+    searchBar->AddChild(std::move(searchField));
+    
+    // Create icon element after field so it appears behind
+    auto searchIcon = std::make_unique<UIElement>();
+    searchIcon->AddClass("settings-search-icon");
+    UIElement* searchIconPtr = searchIcon.get();
+    searchBar->AddChild(std::move(searchIcon));
+
+    auto clearButton = std::make_unique<Button>();
+    clearButton->AddClass("icon-button");
+    clearButton->AddClass("settings-search-clear");
+    clearButton->AddClass("xclose-icon");
+    clearButton->AddClass("hidden");
+    clearButton->SetFocusable(false);
+    clearButton->SetTooltip("Clear search");
+    Button* clearButtonPtr = clearButton.get();
+    searchBar->AddChild(std::move(clearButton));
+    
+    // Show background when typing, hide when cleared, and perform search
+    m_SearchField->SetOnValueChanging([this, searchBarPtr, searchIconPtr, clearButtonPtr](const std::string& value) {
+        if (!value.empty()) {
+            searchBarPtr->AddClass("has-query");
+            clearButtonPtr->RemoveClass("hidden");
+            // Has text - show background and make icon fully opaque
+            if (searchBarPtr->HasClass("hidden")) {
+                searchBarPtr->RemoveClass("hidden");
+            }
+            if (!searchBarPtr->HasClass("active")) {
+                searchBarPtr->AddClass("active");
+            }
+            if (!searchIconPtr->HasClass("icon-active")) {
+                searchIconPtr->AddClass("icon-active");
+            }
+            // Perform search
+            PerformSearch(value);
+        } else {
+            searchBarPtr->RemoveClass("has-query");
+            clearButtonPtr->AddClass("hidden");
+            // Empty - hide background again if search bars are globally hidden
+            if (!SettingsPanel::GetSearchBarsVisible() && !searchBarPtr->HasClass("hidden")) {
+                searchBarPtr->AddClass("hidden");
+            }
+            searchBarPtr->RemoveClass("active");
+            searchIconPtr->RemoveClass("icon-active");
+            // Clear search results and show normal category
+            ClearSearchResults();
+        }
+    });
+
+    clearButtonPtr->RegisterEventHandler(kEventButtonClick, [this, searchBarPtr, searchIconPtr, clearButtonPtr](UIEvent&) {
+        if (!m_SearchField || m_SearchField->GetValue().empty())
+            return;
+        m_SearchField->SetValue("");
+        if (!SettingsPanel::GetSearchBarsVisible())
+            searchBarPtr->AddClass("hidden");
+        searchBarPtr->RemoveClass("has-query");
+        searchBarPtr->RemoveClass("active");
+        searchIconPtr->RemoveClass("icon-active");
+        clearButtonPtr->AddClass("hidden");
+        ClearSearchResults();
+    });
+    
+    // Show background when field gains focus (clicking in it)
+    m_SearchField->RegisterEventHandler(kEventFocusIn, [searchBarPtr, searchIconPtr](UIEvent&) {
+        if (searchBarPtr->HasClass("hidden")) {
+            searchBarPtr->RemoveClass("hidden");
+        }
+        if (!searchBarPtr->HasClass("active")) {
+            searchBarPtr->AddClass("active");
+        }
+        if (!searchIconPtr->HasClass("icon-active")) {
+            searchIconPtr->AddClass("icon-active");
+        }
+    });
+    
+    // Hide background when clicking away (losing focus) if empty
+    m_SearchField->RegisterEventHandler(kEventFocusOut, [searchBarPtr, searchIconPtr, searchField = m_SearchField](UIEvent&) {
+        if (searchField && searchField->GetValue().empty()) {
+            if (!SettingsPanel::GetSearchBarsVisible() && !searchBarPtr->HasClass("hidden")) {
+                searchBarPtr->AddClass("hidden");
+            }
+            searchBarPtr->RemoveClass("active");
+            searchIconPtr->RemoveClass("icon-active");
+        }
+    });
+
+    parent->AddChild(std::move(searchBar));
 
     // Register after mounting so the shared placement preference can also style
     // the container that reserves space above or below the content pane.
-    RegisterSearchBar(m_SearchBar, built.IconPtr);
+    RegisterSearchBar(m_SearchBar, searchIconPtr);
 }
 
 void SettingsPanel::BuildUI()
@@ -1774,8 +1603,9 @@ void SettingsPanel::RebuildLayout(LayoutMode newMode)
     m_TreeSplitterDragging = false;
     m_ContentHeader = nullptr;
     m_ContentBody = nullptr;
+    m_SearchField = nullptr;
     m_SearchBar = nullptr;
-    m_RegistryButtonRows.clear();
+    m_ConditionalRegistryRows.clear();
     m_HierarchyTreeChildIndentSlider = nullptr;
     m_HierarchyTreeChildIndentLabel = nullptr;
     m_HierarchyTreeRowHeightSlider = nullptr;
@@ -1792,6 +1622,7 @@ void SettingsPanel::RebuildLayout(LayoutMode newMode)
     m_AssetsTreeIconSizeField = nullptr;
     m_GridIconSizeSlider = nullptr;
     m_GridIconSizeField = nullptr;
+    m_SearchBarsToggle = nullptr;
     m_CheckmarkTogglesToggle = nullptr;
     m_GraySlidersToggle = nullptr;
     m_TabIconsToggle = nullptr;
@@ -1800,17 +1631,6 @@ void SettingsPanel::RebuildLayout(LayoutMode newMode)
     m_FontSizeTreeSlider = nullptr;
     m_FontSizeSmallSlider = nullptr;
     m_FontSizeHeaderSlider = nullptr;
-    m_UIAccentColorSwatch = nullptr;
-    m_UIAssetIconTintSwatch = nullptr;
-    m_UISmartFolderIconTintSwatch = nullptr;
-    m_SelectionBoxColorSwatch = nullptr;
-    m_SelectionOutlineColorSwatch = nullptr;
-    m_SceneViewBackgroundColorSwatch = nullptr;
-    m_RulerIndicatorColorSwatch = nullptr;
-    m_MeasureColorSwatch = nullptr;
-    m_GridColor3DSwatch = nullptr;
-    m_GridColor2DSwatch = nullptr;
-    m_UIScrollbarColorSwatch = nullptr;
 
     m_CurrentLayoutMode = newMode;
     
@@ -1916,7 +1736,7 @@ void SettingsPanel::RebuildLayout(LayoutMode newMode)
 void SettingsPanel::SetContext(EditorContext* context)
 {
     m_EditorContext = context;
-    g_SettingsUndoContext = context;
+    s_SettingsUndoContext = context;
 }
 
 void SettingsPanel::OpenColorPicker(uint32_t initialArgb,
@@ -1942,170 +1762,13 @@ void SettingsPanel::OpenColorPicker(uint32_t initialArgb,
     m_OpenColorPickerWindow(initialArgb, kSettingsColorIntensity, std::move(callbacks));
 }
 
-void SettingsPanel::ApplyAccentColorToUI()
-{
-    UIManager* ui = GetOwnerManager();
-    if (!ui)
-        return;
-
-    // Replace this panel's previous runtime accent stylesheet instead of
-    // appending unbounded global styles. Keeping the block single-entry avoids
-    // cross-window/style accumulation artifacts during live preview updates.
-    std::vector<const Stylesheet*> oldBlock;
-    if (m_UIAccentStylesheet)
-        oldBlock.push_back(m_UIAccentStylesheet.get());
-
-    if (auto newSheet = UI::AccentStyleHelper::BuildAccentColorStylesheet(m_UIAccentColor))
-    {
-        StylesheetHandle newHandle = newSheet;
-        ui->ReplaceGlobalStylesheetBlock(oldBlock, std::vector<StylesheetHandle>{newHandle});
-        m_UIAccentStylesheet = std::move(newHandle);
-    }
-    else
-    {
-        ui->ReplaceGlobalStylesheetBlock(oldBlock, {});
-        m_UIAccentStylesheet.reset();
-    }
-    
-    // Forward accent color to dock overlays
-    if (auto* root = ui->GetRootElement())
-    {
-        if (auto* ds = dynamic_cast<DockspaceElement*>(root->FindById("dock"_sid)))
-            ds->SetAccentColor(m_UIAccentColor);
-    }
-
-    // Force full style recalculation for all elements to pick up new CSS variables
-    ui->MarkStyleDirtyAll();
-}
-
 namespace
 {
-    const char* kPrefKeyCompactComponentHeaders = "ui.inspectorCompactComponentHeaders";
-    StylesheetHandle s_CompactComponentHeadersStylesheet;
     const char* kPrefKeyInspectorFilledSections = "ui.inspectorFilledSections";
     const char* kPrefKeyInspectorShowInfoCards = "ui.inspectorShowInfoCards";
 
     const char* kPrefKeyHierarchyIconsColored = "ui.hierarchyIconsColored";
     const char* kPrefKeyHierarchyModelThumbsAlwaysColored = "ui.hierarchyModelThumbsAlwaysColored";
-    const char* kPrefKeyGraySliders = "ui.graySliders";
-    const char* kPrefKeyCheckmarkToggles = "ui.checkmarkToggles";
-    const char* kPrefKeyTextSubpixelAA = "text.subpixelAA";
-    const char* kPrefKeyTextContrast = "text.contrast";
-    const char* kPrefKeyTextSmoothingGamma = "text.smoothingGamma";
-    constexpr float kTextContrastDefault = 1.0f;
-    constexpr float kTextContrastMin = 0.0f;
-    constexpr float kTextContrastMax = 1.0f;
-    constexpr float kTextSmoothingGammaDefault = 0.7f;
-    constexpr float kTextSmoothingGammaMin = 0.5f;
-    constexpr float kTextSmoothingGammaMax = 2.0f;
-
-    const char* kPrefKeyTabIcons = "ui.tabIcons";
-
-    const char* kPrefKeyDropdownShadow = "ui.shadows.dropdown";
-    const char* kPrefKeyPickerShadow = "ui.shadows.picker";
-    const char* kPrefKeyCompletionShadow = "ui.shadows.completion";
-    const char* kPrefKeyTooltipShadow = "ui.shadows.tooltip";
-    const char* kPrefKeyShadowOffsetX = "ui.shadows.offsetX";
-    const char* kPrefKeyShadowOffsetY = "ui.shadows.offsetY";
-    const char* kPrefKeyShadowBlur = "ui.shadows.blur";
-    const char* kPrefKeyShadowOpacity = "ui.shadows.opacity";
-
-    const char* kPrefKeyValueBoxHeight = "ui.valueBoxHeight";
-    constexpr float kDefaultValueBoxHeight = 26.0f;
-
-    // Default popup shadow (matches the editor's modal dialogs). Opacity is
-    // tuned for encoded-space (sRGB) UI blending, where black lands heavier
-    // than the same alpha in linear light; keep the widgets.css
-    // var(--popup-shadow) fallbacks in sync.
-    constexpr float kDefaultShadowOffsetX = 0.0f;
-    constexpr float kDefaultShadowOffsetY = -1.0f;
-    constexpr float kDefaultShadowBlur = 24.0f;
-    constexpr float kDefaultShadowOpacity = 0.25f;
-
-    // Last-applied popup shadow parameters. Cached so live slider drags can update
-    // a single field and re-apply without a prefs round-trip (the slider helper fires
-    // its callback before persisting). Process-global: all windows share one look.
-    struct PopupShadowState
-    {
-        float offsetX = kDefaultShadowOffsetX;
-        float offsetY = kDefaultShadowOffsetY;
-        float blur = kDefaultShadowBlur;
-        float opacity = kDefaultShadowOpacity;
-        bool dropdown = true;
-        bool picker = true;
-        bool completion = true;
-        bool tooltip = true;
-    };
-    PopupShadowState g_PopupShadow;
-
-    // Push the cached shadow state into a UIManager: a `--popup-shadow` custom
-    // property on the root (consumed by `box-shadow: var(--popup-shadow)` in
-    // widgets.css) plus the per-popup opt-out root classes.
-    void ApplyPopupShadowToManager(UIManager* ui)
-    {
-        if (!ui)
-            return;
-        UIElement* root = ui->GetRootElement();
-        if (!root)
-            return;
-
-        const float opacity = Math::Clamp01(g_PopupShadow.opacity);
-        char shadow[96];
-        std::snprintf(shadow, sizeof(shadow), "%.1fpx %.1fpx %.1fpx rgba(0, 0, 0, %.3f)",
-                      g_PopupShadow.offsetX, g_PopupShadow.offsetY,
-                      std::max(0.0f, g_PopupShadow.blur), opacity);
-        root->Style().SetCustom(HashStringId("--popup-shadow"), shadow);
-
-        auto optOut = [root](bool enabled, const char* cls) {
-            if (enabled)
-                root->RemoveClass(cls);
-            else
-                root->AddClass(cls);
-        };
-        optOut(g_PopupShadow.dropdown, "no-dropdown-shadow");
-        optOut(g_PopupShadow.picker, "no-picker-shadow");
-        optOut(g_PopupShadow.completion, "no-completion-shadow");
-        optOut(g_PopupShadow.tooltip, "no-tooltip-shadow");
-
-        ui->MarkStyleDirtyAll();
-    }
-
-}
-
-void SettingsPanel::ApplySavedCompactComponentHeadersStyle(UIManager* ui)
-{
-    if (!ui)
-        return;
-
-    bool compact = true;
-    auto prefs = Editor::OpenEditorPreferences();
-    std::string err;
-    prefs.Load(&err);
-    prefs.TryGetBool(kPrefKeyCompactComponentHeaders, compact);
-
-    std::vector<const Stylesheet*> oldBlock;
-    if (s_CompactComponentHeadersStylesheet)
-        oldBlock.push_back(s_CompactComponentHeadersStylesheet.get());
-
-    // Both heading levels, from one setting. A component header and the section headers inside it
-    // are read as one ladder, so a section bar left at the default height while the component bar
-    // above it compacts reads as a different kind of thing rather than a nested one.
-    const char* css = compact
-        ? ".inspector-section-header-row { height: 24px; min-height: 24px; max-height: 24px; }"
-          ".rp-foldout.inspector-component-section > .foldout-header"
-          " { height: 24px; min-height: 24px; max-height: 24px; }"
-        : ".inspector-section-header-row { height: 28px; min-height: 28px; max-height: 28px; }"
-          ".rp-foldout.inspector-component-section > .foldout-header"
-          " { height: 28px; min-height: 28px; max-height: 28px; }";
-
-    auto newSheet = std::make_shared<Stylesheet>();
-    if (UIParsing::CSSParser::ParseStylesFromString(css, *newSheet))
-    {
-        StylesheetHandle newHandle = newSheet;
-        ui->ReplaceGlobalStylesheetBlock(oldBlock, std::vector<StylesheetHandle>{newHandle});
-        s_CompactComponentHeadersStylesheet = std::move(newHandle);
-        ui->MarkStyleDirtyAll();
-    }
 }
 
 void SettingsPanel::ApplySavedHierarchyIconsColoredStyle(UIManager* ui)
@@ -2152,22 +1815,6 @@ void SettingsPanel::ApplySavedHierarchyModelThumbsAlwaysColoredStyle(UIManager* 
     ui->MarkStyleDirtySubtree(root);
 }
 
-void SettingsPanel::ApplySavedTextSubpixelAA(UIManager* ui)
-{
-    if (!ui)
-        return;
-
-    // The Font Rendering settings content (which also applies this preference)
-    // builds lazily on first view — a saved opt-in must engage at startup and
-    // for new windows without the settings page ever being opened.
-    bool enabled = false;
-    auto prefs = Editor::OpenEditorPreferences();
-    std::string err;
-    prefs.Load(&err);
-    prefs.TryGetBool(kPrefKeyTextSubpixelAA, enabled);
-    ui->SetTextSubpixelAA(enabled);
-}
-
 void SettingsPanel::ApplySavedInspectorBigNumberSpacing()
 {
     bool enabled = kInspectorBigNumberSpacingDefault;
@@ -2176,185 +1823,6 @@ void SettingsPanel::ApplySavedInspectorBigNumberSpacing()
     prefs.Load(&err);
     prefs.TryGetBool(kPrefKeyInspectorBigNumberSpacing, enabled);
     FloatField::SetBigNumberSpacingEnabled(enabled);
-}
-
-void SettingsPanel::ApplySavedTextContrast(UIManager* ui)
-{
-    if (!ui)
-        return;
-
-    // Same lazy-build constraint as the subpixel opt-in: the Font Rendering
-    // page also applies this, but only once it has been opened (#714).
-    float value = kTextContrastDefault;
-    auto prefs = Editor::OpenEditorPreferences();
-    std::string err;
-    prefs.Load(&err);
-    double stored = value;
-    if (prefs.TryGetDouble(kPrefKeyTextContrast, stored))
-        value = std::clamp(static_cast<float>(stored), kTextContrastMin, kTextContrastMax);
-    ui->SetTextContrast(value);
-}
-
-void SettingsPanel::ApplySavedTextSmoothingGamma(UIManager* ui)
-{
-    if (!ui)
-        return;
-
-    float value = kTextSmoothingGammaDefault;
-    auto prefs = Editor::OpenEditorPreferences();
-    std::string err;
-    prefs.Load(&err);
-    double stored = value;
-    if (prefs.TryGetDouble(kPrefKeyTextSmoothingGamma, stored))
-        value = std::clamp(static_cast<float>(stored), kTextSmoothingGammaMin,
-                           kTextSmoothingGammaMax);
-    ui->SetTextSmoothingGamma(value);
-}
-
-void SettingsPanel::ApplySavedGraySlidersStyle(UIManager* ui)
-{
-    if (!ui)
-        return;
-
-    bool gray = false;
-    auto prefs = Editor::OpenEditorPreferences();
-    std::string err;
-    prefs.Load(&err);
-    prefs.TryGetBool(kPrefKeyGraySliders, gray);
-
-    UIElement* root = ui->GetRootElement();
-    if (!root)
-        return;
-
-    if (gray)
-        root->AddClass("gray-sliders");
-    else
-        root->RemoveClass("gray-sliders");
-
-    ui->MarkStyleDirtyAll();
-}
-
-void SettingsPanel::ApplyGraySlidersStyleToUI()
-{
-    ApplySavedGraySlidersStyle(GetOwnerManager());
-}
-
-void SettingsPanel::ApplySavedToggleStyle(UIManager* ui)
-{
-    if (!ui)
-        return;
-
-    bool useCheckmarks = false;
-    auto prefs = Editor::OpenEditorPreferences();
-    std::string err;
-    prefs.Load(&err);
-    prefs.TryGetBool(kPrefKeyCheckmarkToggles, useCheckmarks);
-
-    ApplyToggleStyle(ui, useCheckmarks);
-    Editor::ToggleAppearanceSettings::Get().ApplyTo(ui);
-}
-
-void SettingsPanel::ApplyToggleStyle(UIManager* ui, bool useCheckmarks)
-{
-    if (!ui)
-        return;
-
-    Toggle::SetCheckmarkPresentationEnabled(useCheckmarks);
-
-    std::unordered_set<UIElement*> visited;
-    std::function<void(UIElement*)> updateToggles = [&](UIElement* element) {
-        if (!element || !visited.insert(element).second)
-            return;
-
-        if (auto* toggle = dynamic_cast<Toggle*>(element))
-        {
-            if (useCheckmarks)
-                toggle->AddClass("toggle-checkmark");
-            else
-                toggle->RemoveClass("toggle-checkmark");
-        }
-
-        for (const auto& child : element->GetChildren())
-            updateToggles(child.get());
-        updateToggles(element->GetMountTarget());
-    };
-    updateToggles(ui->GetRootElement());
-
-    ui->MarkStyleDirtyAll();
-    ui->RequestRelayout();
-}
-
-void SettingsPanel::ApplySavedTabIconsStyle(UIManager* ui)
-{
-    if (!ui)
-        return;
-
-    bool enabled = true;
-    auto prefs = Editor::OpenEditorPreferences();
-    std::string err;
-    prefs.Load(&err);
-    prefs.TryGetBool(kPrefKeyTabIcons, enabled);
-
-    auto* root = ui->GetRootElement();
-    if (!root)
-        return;
-
-    if (enabled)
-        root->RemoveClass("no-tab-icons");
-    else
-        root->AddClass("no-tab-icons");
-    ui->MarkStyleDirtySubtree(root);
-}
-
-void SettingsPanel::ApplySavedPopupShadowStyle(UIManager* ui)
-{
-    if (!ui)
-        return;
-
-    auto prefs = Editor::OpenEditorPreferences();
-    std::string err;
-    prefs.Load(&err);
-
-    prefs.TryGetBool(kPrefKeyDropdownShadow, g_PopupShadow.dropdown);
-    prefs.TryGetBool(kPrefKeyPickerShadow, g_PopupShadow.picker);
-    prefs.TryGetBool(kPrefKeyCompletionShadow, g_PopupShadow.completion);
-    prefs.TryGetBool(kPrefKeyTooltipShadow, g_PopupShadow.tooltip);
-
-    auto loadFloat = [&prefs](const char* key, float& out) {
-        double stored = out;
-        if (prefs.TryGetDouble(key, stored))
-            out = static_cast<float>(stored);
-    };
-    loadFloat(kPrefKeyShadowOffsetX, g_PopupShadow.offsetX);
-    loadFloat(kPrefKeyShadowOffsetY, g_PopupShadow.offsetY);
-    loadFloat(kPrefKeyShadowBlur, g_PopupShadow.blur);
-    loadFloat(kPrefKeyShadowOpacity, g_PopupShadow.opacity);
-
-    ApplyPopupShadowToManager(ui);
-}
-
-void SettingsPanel::ApplySavedValueBoxHeightStyle(UIManager* ui)
-{
-    if (!ui)
-        return;
-    UIElement* root = ui->GetRootElement();
-    if (!root)
-        return;
-
-    float heightPx = kDefaultValueBoxHeight;
-    {
-        auto prefs = Editor::OpenEditorPreferences();
-        std::string err;
-        prefs.Load(&err);
-        double stored = heightPx;
-        if (prefs.TryGetDouble(kPrefKeyValueBoxHeight, stored))
-            heightPx = static_cast<float>(stored);
-    }
-
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%.0fpx", heightPx);
-    root->Style().SetCustom(HashStringId("--value_box_height"), buf);
-    ui->MarkStyleDirtyAll();
 }
 
 void SettingsPanel::ApplySavedNodeGraphHeaderAlignmentStyle(UIManager* ui)
@@ -2366,214 +1834,11 @@ void SettingsPanel::ApplySavedNodeGraphHeaderAlignmentStyle(UIManager* ui)
     if (!root)
         return;
 
-    auto* canvas = root->FindById("NodeGraphCanvas"_sid);
+    auto* canvas = root->FindById("NodeGraphCanvas");
     if (!canvas)
         return;
 
     canvas->MarkDirty(UIElement::VisualDirty);
-}
-
-namespace
-{
-
-// Size the script face's line metrics are probed at. A `normal` line box is
-// rounded to whole pixels per size, so the ratio derived below is an
-// approximation of the box at the stylesheet's size rather than an identity;
-// probing large keeps the rounding a small fraction of the result.
-constexpr unsigned kScriptFontMetricProbePx = 64u;
-
-// The line-height slider steps by 0.05, so no legitimate setting lands this
-// close to 1.0 without meaning it.
-constexpr float kScriptLineHeightNormalEpsilon = 0.001f;
-
-// Font families resolve on the job system, so the startup apply can run before
-// the selected script face exists. Re-resolve for a bounded number of drains
-// rather than baking the fallback atlas's metrics for the rest of the session.
-constexpr int kScriptFontResolveDrains = 120;
-
-// What an apply needs, resolved once from disk by the public entry point so the
-// re-resolve chain below never touches the preferences file again. Seq retires
-// superseded chains: a later apply bumps it, and the older chain's next drain
-// sees the mismatch and stops.
-struct ScriptLineHeightApply
-{
-    float LineHeight = 1.0f;
-    std::shared_ptr<const std::vector<std::string>> Families;
-    int DrainsLeft = 0;
-    uint32_t Seq = 0;
-};
-// Entries live only for the duration of a retry chain — a finished or
-// exhausted chain erases its own, so a closed window's UIManager* cannot
-// accumulate here.
-std::unordered_map<UIManager*, ScriptLineHeightApply> s_ScriptLineHeightApplyByUi;
-// Monotonic across entries rather than per-entry: entries are erased, so a
-// per-entry counter would restart at 1 and a retired chain's queued callback
-// could match a fresh chain's Seq.
-uint32_t s_ScriptLineHeightApplySeq = 0;
-
-struct ScriptFontNormalLine
-{
-    // Normal line height divided by font size for the resolved script face.
-    float Ratio = 0.0f;
-    // False while the selected family is still streaming in and
-    // ResolveFontForStyle is answering with the default UI atlas.
-    bool FromScriptFace = false;
-};
-
-ScriptFontNormalLine ResolveScriptFontNormalLine(
-    UIManager* ui, std::shared_ptr<const std::vector<std::string>> families)
-{
-    ScriptFontNormalLine out;
-
-    // ResolveFontForStyle keys on the family stack and the weight/style/variant
-    // defaults the script rule inherits; the size only matters to the metric
-    // query below.
-    ResolvedStyle style;
-    style.Visual.FontFamily = std::move(families);
-
-    Rendering::Text::FontAtlas* atlas = ui->ResolveFontForStyle(style);
-    if (!atlas)
-        return out;
-
-    const auto metrics = atlas->GetFontLineMetrics(kScriptFontMetricProbePx);
-    out.Ratio = metrics.height / static_cast<float>(kScriptFontMetricProbePx);
-    // A script face that genuinely shares the UI face's bytes aliases to the
-    // same atlas and simply re-derives the same ratio, so treating it as
-    // unresolved only costs a few idempotent re-applies.
-    out.FromScriptFace = (atlas != ui->GetDefaultFontAtlas());
-    return out;
-}
-
-// Returns true when the emitted value is provisional because the script face
-// has not resolved yet.
-bool ApplyScriptLineHeightStyle(UIManager* ui, const ScriptLineHeightApply& apply)
-{
-    UIElement* root = ui->GetRootElement();
-    if (!root)
-        return false;
-
-    const float lineHeight = apply.LineHeight;
-
-    // The saved value means "multiples of a normal line". CSS resolves a
-    // unitless line-height against the font SIZE, so a fixed multiplier only
-    // means one line for a face whose metric ratio happens to match it;
-    // `normal` is the resolved face's own line height, which is exactly what
-    // 1.0 has to reproduce for every selectable script font.
-    std::string lineHeightCss = "normal";
-    bool provisional = false;
-    if (std::abs(lineHeight - 1.0f) > kScriptLineHeightNormalEpsilon)
-    {
-        const ScriptFontNormalLine normalLine = ResolveScriptFontNormalLine(ui, apply.Families);
-        if (normalLine.Ratio > 0.0f)
-        {
-            char buf[32];
-            std::snprintf(buf, sizeof(buf), "%.4f", lineHeight * normalLine.Ratio);
-            lineHeightCss = buf;
-        }
-        provisional = !normalLine.FromScriptFace;
-    }
-
-    // Keep script-variable input rows in Inspector visually in sync with the
-    // Script Editor line-height slider. These track the multiplier itself, not
-    // the script face — they are UI chrome, not script text.
-    constexpr float kScriptInspectorBaseRowHeightPx = 27.0f;
-    const float scriptInspectorRowHeightPx =
-        std::clamp(kScriptInspectorBaseRowHeightPx * lineHeight, 16.0f, 128.0f);
-    char rowBuf[32];
-    std::snprintf(rowBuf, sizeof(rowBuf), "%.1fpx", scriptInspectorRowHeightPx);
-    const std::string rowHeightCss = rowBuf;
-
-    auto setCustom = [root](StringId name, const std::string& value)
-    {
-        const std::string* existing = root->Style().FindCustom(name);
-        if (existing && *existing == value)
-            return false;
-        root->Style().SetCustom(name, value);
-        return true;
-    };
-
-    bool changed = setCustom(HashStringId("--script_line_height"), lineHeightCss);
-    changed |= setCustom(HashStringId("--script_inspector_row_height"), rowHeightCss);
-    changed |= setCustom(HashStringId("--inspector-row-height"), rowHeightCss);
-    if (changed)
-        ui->MarkStyleDirtySubtree(root);
-
-    return provisional;
-}
-
-// Both terminal paths below erase the map entry. The one case that does not is
-// a window closing mid-chain: the UIManager's dispatcher dies with it, so the
-// queued callback never runs and its entry outlives it. That leaks one struct
-// per window closed inside the retry window (at most kScriptFontResolveDrains
-// drains, ~2s), and cannot be fixed here — it needs a UIManager teardown
-// notification, which the editor does not have. s_FontPrefsSheetByUi has the
-// same residual for the same reason. Address reuse is safe: every field is
-// overwritten on the next apply, and Seq is module-monotonic so a retired
-// callback can never match a fresh chain.
-void PumpScriptLineHeightRetry(UIManager* ui, uint32_t seq)
-{
-    ui->PostToUI(
-        [ui, seq]()
-        {
-            auto it = s_ScriptLineHeightApplyByUi.find(ui);
-            if (it == s_ScriptLineHeightApplyByUi.end() || it->second.Seq != seq ||
-                it->second.DrainsLeft <= 0)
-                return;
-
-            --it->second.DrainsLeft;
-            if (!ApplyScriptLineHeightStyle(ui, it->second))
-            {
-                s_ScriptLineHeightApplyByUi.erase(it);
-                return;
-            }
-            if (it->second.DrainsLeft <= 0)
-            {
-                // Out of drains with the script face still unresolved: the
-                // default UI atlas's ratio is what stays applied for the
-                // session, so say so rather than leaving a silently wrong
-                // line height.
-                Logger::Log::Warning(
-                    "SettingsPanel: script font did not resolve within {} drains; script line "
-                    "height stays on the default UI face's metrics",
-                    kScriptFontResolveDrains);
-                s_ScriptLineHeightApplyByUi.erase(it);
-                return;
-            }
-            PumpScriptLineHeightRetry(ui, seq);
-        });
-}
-
-} // namespace
-
-void SettingsPanel::ApplySavedScriptLineHeightStyle(UIManager* ui)
-{
-    if (!ui)
-        return;
-
-    float lineHeight = 1.0f;
-    std::string scriptFontPreset;
-    {
-        auto prefs = Editor::OpenEditorPreferences();
-        std::string err;
-        prefs.Load(&err);
-        double stored = lineHeight;
-        if (prefs.TryGetDouble("script.lineHeight", stored))
-            lineHeight = static_cast<float>(std::clamp(stored, 0.5, 4.0));
-        (void)prefs.TryGetString(Editor::kPrefScriptFontPreset, scriptFontPreset);
-    }
-
-    auto& apply = s_ScriptLineHeightApplyByUi[ui];
-    apply.LineHeight = lineHeight;
-    apply.Families = std::make_shared<const std::vector<std::string>>(
-        Editor::GetScriptFontFamilyStack(scriptFontPreset));
-    apply.Seq = ++s_ScriptLineHeightApplySeq;
-    if (!ApplyScriptLineHeightStyle(ui, apply))
-    {
-        s_ScriptLineHeightApplyByUi.erase(ui);
-        return;
-    }
-    apply.DrainsLeft = kScriptFontResolveDrains;
-    PumpScriptLineHeightRetry(ui, apply.Seq);
 }
 
 void SettingsPanel::ApplyScrollbarColorToUI()
@@ -2654,166 +1919,17 @@ void SettingsPanel::ApplySceneToolActiveColor(const std::string& mode)
     ui->MarkStyleDirtyAll();
 }
 
-namespace
+void SettingsPanel::SetInspectorRowLayout(float indent, float gap, float labelWidthPercent)
 {
-StylesheetHandle& InspectorRowStylesheetFor(UIManager* ui)
-{
-    static std::unordered_map<UIManager*, StylesheetHandle> sheets;
-    return sheets[ui];
-}
-
-StylesheetHandle& SettingsRowStylesheetFor(UIManager* ui)
-{
-    static std::unordered_map<UIManager*, StylesheetHandle> sheets;
-    return sheets[ui];
-}
-
-void ReplaceGeneratedStylesheet(UIManager* ui, StylesheetHandle& current, const char* css)
-{
-    if (!ui)
-        return;
-
-    std::vector<const Stylesheet*> oldBlock;
-    if (current)
-        oldBlock.push_back(current.get());
-
-    auto newSheet = std::make_shared<Stylesheet>();
-    if (UIParsing::CSSParser::ParseStylesFromString(css, *newSheet))
-    {
-        StylesheetHandle newHandle = newSheet;
-        ui->ReplaceGlobalStylesheetBlock(oldBlock, std::vector<StylesheetHandle>{newHandle});
-        current = std::move(newHandle);
-    }
-    else
-    {
-        ui->ReplaceGlobalStylesheetBlock(oldBlock, {});
-        current.reset();
-    }
-
-    ui->MarkStyleDirtyAll();
-}
-
-void ApplyInspectorRowStyle(UIManager* ui, float indent, float gap, float labelWidthPercent)
-{
-    if (!ui)
-        return;
-
-    char css[4096];
-    std::snprintf(css, sizeof(css),
-        ".inspector-panel { --inspector-row-gap: %.0fpx; }"
-        ".inspector-section:not(.inspector-section-transform) .inspector-section-body .inspector-row {"
-        " padding-left: %.0fpx; }"
-        ".inspector-section:not(.inspector-section-transform) .inspector-section-body .inspector-row .inspector-label-cell {"
-        " flex: 0 0 %.0f%%; width: %.0f%%; min-width: 0; max-width: %.0f%%; }"
-        ".inspector-section:not(.inspector-section-transform) .inspector-section-body .inspector-row > .inspector-label {"
-        " flex: 0 0 %.0f%%; width: %.0f%%; min-width: 0; max-width: %.0f%%; }"
-        ".inspector-asset-content > .inspector-row {"
-        " padding-left: %.0fpx; }"
-        ".inspector-asset-content > .inspector-row .inspector-label-cell {"
-        " flex: 0 0 %.0f%%; width: %.0f%%; min-width: 0; max-width: %.0f%%; }"
-        ".inspector-asset-content > .inspector-row > .inspector-label {"
-        " flex: 0 0 %.0f%%; width: %.0f%%; min-width: 0; max-width: %.0f%%; }"
-        ".material-inspector .inspector-row {"
-        " padding-left: %.0fpx; }"
-        ".material-properties-foldout .material-inspector .inspector-row .inspector-label-cell {"
-        " flex: 0 0 %.0f%%; width: %.0f%%; min-width: 0; max-width: %.0f%%; }"
-        ".material-properties-foldout .material-inspector .inspector-row > .inspector-label {"
-        " flex: 0 0 %.0f%%; width: %.0f%%; min-width: 0; max-width: %.0f%%; }"
-        ".rp-foldout .settings-row-label {"
-        " flex: 0 0 %.0f%%; width: %.0f%%; min-width: 0; }"
-        ".rp-foldout .inspector-row .inspector-label-cell {"
-        " flex: 0 0 %.0f%%; width: %.0f%%; min-width: 0; max-width: %.0f%%; }"
-        ".rp-foldout .inspector-row > .inspector-label {"
-        " flex: 0 0 %.0f%%; width: %.0f%%; min-width: 0; max-width: %.0f%%; }",
-        gap, indent,
-        labelWidthPercent, labelWidthPercent, labelWidthPercent,
-        labelWidthPercent, labelWidthPercent, labelWidthPercent,
-        indent,
-        labelWidthPercent, labelWidthPercent, labelWidthPercent,
-        labelWidthPercent, labelWidthPercent, labelWidthPercent,
-        indent,
-        labelWidthPercent, labelWidthPercent, labelWidthPercent,
-        labelWidthPercent, labelWidthPercent, labelWidthPercent,
-        labelWidthPercent, labelWidthPercent,
-        labelWidthPercent, labelWidthPercent, labelWidthPercent,
-        labelWidthPercent, labelWidthPercent, labelWidthPercent);
-    ReplaceGeneratedStylesheet(ui, InspectorRowStylesheetFor(ui), css);
-}
-
-void ApplySettingsRowGap(UIManager* ui, float gapPx)
-{
-    if (!ui)
-        return;
-
-    const float rowPaddingY = gapPx * 0.25f;
-    const float rowMarginBottom = gapPx * 0.5f;
-    const float headerPaddingY = gapPx * 0.25f;
-
-    char css[2048];
-    std::snprintf(css, sizeof(css),
-        ".settings-panel .settings-content-body .scroll-content { gap: %.2fpx !important; }"
-        ".settings-panel .settings-content { gap: %.2fpx !important; }"
-        ".settings-panel .settings-row { margin-bottom: %.2fpx !important; padding-top: %.2fpx !important; padding-bottom: %.2fpx !important; }"
-        ".settings-panel .settings-section-header { margin-top: %.2fpx !important; margin-bottom: %.2fpx !important; padding-top: %.2fpx !important; padding-bottom: %.2fpx !important; }"
-        ".settings-panel .settings-subsection-header { margin-top: %.2fpx !important; margin-bottom: %.2fpx !important; padding-top: %.2fpx !important; padding-bottom: %.2fpx !important; }"
-        ".settings-panel .settings-build-scene-row { margin-top: %.2fpx !important; }"
-        ".settings-panel .settings-build-drop-zone { margin-bottom: %.2fpx !important; }",
-        rowMarginBottom,
-        rowMarginBottom,
-        rowMarginBottom,
-        rowPaddingY,
-        rowPaddingY,
-        rowMarginBottom,
-        rowMarginBottom,
-        headerPaddingY,
-        headerPaddingY,
-        rowMarginBottom,
-        rowMarginBottom,
-        headerPaddingY,
-        headerPaddingY,
-        rowMarginBottom,
-        rowMarginBottom);
-    ReplaceGeneratedStylesheet(ui, SettingsRowStylesheetFor(ui), css);
-}
-
-} // namespace
-
-void SettingsPanel::ApplySavedRowGapStyles(UIManager* ui)
-{
-    if (!ui)
-        return;
-
-    auto prefs = Editor::OpenEditorPreferences();
-    std::string err;
-    prefs.Load(&err);
-
-    double indent = 0.0;
-    double gap = 4.0;
-    double labelWidth = 37.0;
-    prefs.TryGetDouble("ui.inspectorRowIndent", indent);
-    prefs.TryGetDouble("ui.inspectorRowGap", gap);
-    prefs.TryGetDouble("ui.inspectorLabelWidth", labelWidth);
-    ApplyInspectorRowStyle(ui, static_cast<float>(indent), static_cast<float>(gap),
-                           static_cast<float>(labelWidth));
-    ApplySettingsRowGap(ui, static_cast<float>(gap));
-}
-
-void SettingsPanel::ApplyInspectorRowStyleToUI(float indent, float gap, float labelWidthPercent)
-{
-    UIManager* ui = GetOwnerManager();
-    if (!ui)
-        return;
-
-    auto applyFn = [this, indent, gap, labelWidthPercent]()
-    {
-        ApplyInspectorRowStyle(GetOwnerManager(), indent, gap, labelWidthPercent);
-        ApplySettingsRowGap(GetOwnerManager(), gap);
-    };
+    // Swapping stylesheets inside event dispatch crashed the editor, and the
+    // sliders call this from their value callbacks.
+    auto apply = [indent, gap, labelWidthPercent]()
+    { Editor::InspectorRowLayoutSettings::Get().SetLayout(indent, gap, labelWidthPercent); };
 
     if (UIElement::IsInEventDispatch())
-        PostAction(std::move(applyFn));
+        PostAction(std::move(apply));
     else
-        applyFn();
+        apply();
 }
 
 void SettingsPanel::SetUIManager(UIManager* uiManager)
@@ -2848,90 +1964,6 @@ void SettingsPanel::SetGridIconSizeValue(float px)
     if (m_GridIconSizeField)
         m_GridIconSizeField->SetValueWithoutNotify(px);
     m_GridIconSizeUpdating = false;
-}
-
-void SettingsPanel::SetSmartFoldersAtTopValue(bool atTop)
-{
-    if (m_SmartFoldersAtTopToggle)
-        m_SmartFoldersAtTopToggle->SetChecked(atTop);
-}
-
-void SettingsPanel::SetSmartFoldersExpandedOnStartupValue(bool expanded)
-{
-    if (m_SmartFoldersExpandedOnStartupToggle)
-        m_SmartFoldersExpandedOnStartupToggle->SetChecked(expanded);
-}
-
-void SettingsPanel::SetAssetsFoldersFirstValue(bool foldersFirst)
-{
-    if (m_AssetsFoldersFirstToggle)
-        m_AssetsFoldersFirstToggle->SetChecked(foldersFirst);
-}
-
-void SettingsPanel::SetAssetsExpandFoldersOnLoadValue(bool expand)
-{
-    if (m_AssetsExpandFoldersOnLoadToggle)
-        m_AssetsExpandFoldersOnLoadToggle->SetChecked(expand);
-}
-
-void SettingsPanel::SetAssetsExtraBottomViewToolbarValue(bool enabled)
-{
-    if (m_AssetsExtraBottomViewToolbarToggle)
-        m_AssetsExtraBottomViewToolbarToggle->SetChecked(enabled);
-}
-
-void SettingsPanel::SetAssetsSingleViewToggleIconValue(bool enabled)
-{
-    if (m_AssetsSingleViewToggleIconToggle)
-        m_AssetsSingleViewToggleIconToggle->SetChecked(enabled);
-}
-
-void SettingsPanel::SetAssetsBottomToolbarZoomSliderVisibleValue(bool visible)
-{
-    if (m_AssetsBottomToolbarZoomSliderVisibleToggle)
-        m_AssetsBottomToolbarZoomSliderVisibleToggle->SetChecked(visible);
-}
-
-void SettingsPanel::SetInspectorCollapseArrowVisibleValue(bool visible)
-{
-    if (m_InspectorCollapseArrowVisibleToggle)
-        m_InspectorCollapseArrowVisibleToggle->SetChecked(visible);
-}
-
-void SettingsPanel::SetInspectorComponentIconsVisibleValue(bool visible)
-{
-    if (m_InspectorComponentIconsVisibleToggle)
-        m_InspectorComponentIconsVisibleToggle->SetChecked(visible);
-}
-
-void SettingsPanel::SetInspectorFilledSectionsValue(bool enabled)
-{
-    if (m_InspectorFilledSectionsToggle)
-        m_InspectorFilledSectionsToggle->SetChecked(enabled);
-}
-
-void SettingsPanel::SetInspectorInfoCardsVisibleValue(bool visible)
-{
-    if (m_InspectorInfoCardsToggle)
-        m_InspectorInfoCardsToggle->SetChecked(visible);
-}
-
-void SettingsPanel::SetInspectorBigNumberSpacingValue(bool enabled)
-{
-    if (m_InspectorBigNumberSpacingToggle)
-        m_InspectorBigNumberSpacingToggle->SetChecked(enabled);
-}
-
-void SettingsPanel::SetInspectorSoloSectionsValue(bool enabled)
-{
-    if (m_InspectorSoloSectionsToggle)
-        m_InspectorSoloSectionsToggle->SetChecked(enabled);
-}
-
-void SettingsPanel::SetInspectorSoloKeepTransformValue(bool enabled)
-{
-    if (m_InspectorSoloKeepTransformToggle)
-        m_InspectorSoloKeepTransformToggle->SetChecked(enabled);
 }
 
 void SettingsPanel::SetOnInspectorToggleAlignChanged(std::function<void(const std::string&)> cb)
@@ -2969,17 +2001,6 @@ void SettingsPanel::OnPostLayout()
     if (!m_UIBuilt)
     {
         BuildUI();
-        // Load accent color from preferences before applying
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            int64_t stored = static_cast<int64_t>(m_UIAccentColor);
-            if (prefs.TryGetInt64(UI::AccentStyleHelper::kPrefKeyAccentColor, stored))
-                m_UIAccentColor = static_cast<uint32_t>(stored);
-        }
-        // Apply saved accent color to UI on first build
-        ApplyAccentColorToUI();
 
         // Load scrollbar thumb color from preferences before applying
         {
@@ -2993,20 +2014,6 @@ void SettingsPanel::OnPostLayout()
         // Apply saved scrollbar thumb color to UI on first build
         ApplyScrollbarColorToUI();
 
-        // Apply saved inspector row indent/gap/label-width on first build
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            double indent = 0.0;
-            double gap = 4.0;
-            double labelWidth = 37.0;
-            prefs.TryGetDouble("ui.inspectorRowIndent", indent);
-            prefs.TryGetDouble("ui.inspectorRowGap", gap);
-            prefs.TryGetDouble("ui.inspectorLabelWidth", labelWidth);
-            ApplyInspectorRowStyleToUI(static_cast<float>(indent), static_cast<float>(gap), static_cast<float>(labelWidth));
-        }
-
         // Apply saved scene tool overlay active color on first build
         {
             std::string sceneToolColor = "accent";
@@ -3016,11 +2023,8 @@ void SettingsPanel::OnPostLayout()
             prefs.TryGetString("ui.sceneToolActiveColor", sceneToolColor);
             ApplySceneToolActiveColor(sceneToolColor);
         }
-
-        // Apply saved gray sliders style on first build
-        ApplyGraySlidersStyleToUI();
     }
-    
+
     // Take keyboard focus on first layout so the user can drive the category
     // tree with arrows without having to hover or click first. The key dispatch
     // "light path" prefers focused element over hovered element.
@@ -3054,14 +2058,14 @@ void SettingsPanel::OnPostLayout()
         // Check for aspect ratio changes and rebuild layout if needed
         float width = GetLayoutWidth();
         float height = GetLayoutHeight();
-        
+
         if (width > 0 && height > 0)
         {
             float aspectRatio = width / height;
-            
+
             // Determine the appropriate layout mode for current aspect ratio
             LayoutMode desiredMode = (aspectRatio > 1.0f) ? LayoutMode::Horizontal : LayoutMode::Vertical;
-            
+
             // Only rebuild if mode changed (with a threshold to avoid flickering)
             if (desiredMode != m_CurrentLayoutMode && std::abs(aspectRatio - m_LastAspectRatio) > 0.15f)
             {
@@ -3087,15 +2091,9 @@ void SettingsPanel::OnPostLayout()
     // rebuilt page has real geometry to center against.
     ScrollPendingSearchRowIntoView();
 
-    // Button rows whose owner made them conditional: the condition can change
-    // while the page stays open (the Build panel becoming the active tab), so
-    // it is polled rather than read once at build time.
-    for (const auto& [row, isVisible] : m_RegistryButtonRows)
-    {
-        if (!row || !isVisible)
-            continue;
-        row->Style().Set(Style::Display, isVisible() ? DisplayMode::Flex : DisplayMode::None);
-    }
+    // A row's condition can change while the page stays open (the Build panel
+    // becoming the active tab), so it is polled rather than read once at build.
+    RefreshConditionalRegistryRows();
 
 
     // Defer binding to a safe point (dispatcher drain) to avoid mutating the UI
@@ -3127,7 +2125,6 @@ void SettingsPanel::BindFromAssetsDeferred()
 
     if (!styleGuid.IsNull())
     {
-        // Waits on purpose: the editor's own panel .css, small and never cooked.
         auto f = am.LoadAssetAsync(styleGuid);
         auto a = f.get();
         if (a && a->GetType() == AssetType::UIStyle)
@@ -3210,9 +2207,9 @@ void SettingsPanel::OnCategorySelected(TreeId id)
 {
     if (id == 0)
         return;  // Invalid selection
-        
+
     auto category = static_cast<SettingsCategory>(id);
-    
+
     // Parent categories: expand on first click when collapsed so the children become visible.
     // Collapsing is left to the chevron and TreeView's own double-click handler — clicking
     // an already-selected parent row must not silently fold it back up.
@@ -3226,18 +2223,11 @@ void SettingsPanel::OnCategorySelected(TreeId id)
                 UpdateTreePaneHeight();
         }
     }
-    
+
     // Track which child was selected for each parent
-    // Project Settings children: AudioSettings, Camera, Animation, Input, VersionControl
-    if (category == SettingsCategory::AudioSettings ||
-        category == SettingsCategory::Camera ||
-        category == SettingsCategory::Animation ||
-        category == SettingsCategory::Input ||
-        category == SettingsCategory::Physics ||
-        category == SettingsCategory::AssetImport ||
+    if (category == SettingsCategory::Camera ||
         category == SettingsCategory::Rendering ||
         category == SettingsCategory::HDROutput ||
-        category == SettingsCategory::Scene ||
         category == SettingsCategory::Tags ||
         category == SettingsCategory::VersionControl)
     {
@@ -3273,18 +2263,15 @@ void SettingsPanel::OnCategorySelected(TreeId id)
         m_LastUsedChild[SettingsCategory::UI] = category;
         m_LastUsedChild[SettingsCategory::UserSettings] = SettingsCategory::UI;
     }
-    // User Settings children: Script, UI, Shortcuts, Gizmo, Tooltips
-    else if (category == SettingsCategory::Script ||
-             category == SettingsCategory::UI ||
-             category == SettingsCategory::Shortcuts ||
-             category == SettingsCategory::Gizmo ||
-             category == SettingsCategory::Performance)
+    // User Settings children: UI, Shortcuts
+    else if (category == SettingsCategory::UI ||
+             category == SettingsCategory::Shortcuts)
     {
         m_LastUsedChild[SettingsCategory::UserSettings] = category;
     }
-    
+
     m_CurrentCategory = category;
-    
+
     // Defer content update to avoid infinite loop during event dispatch
     // (RemoveChild defers when called during dispatch, causing the clear loop to never terminate)
     this->PostAction([this, category]() {
@@ -3302,44 +2289,19 @@ bool SettingsPanel::IsParentCategory(SettingsCategory category) const
            category == SettingsCategory::UI;
 }
 
-SettingsCategory SettingsPanel::GetDefaultChild(SettingsCategory parent) const
-{
-    if (IsRegistrySettingsCategory(parent))
-        return RegistryFirstChild(parent).value_or(parent);
-
-    switch (parent)
-    {
-        case SettingsCategory::ProjectSettings:
-            return SettingsCategory::AudioSettings;  // First child
-        case SettingsCategory::UserSettings:
-            return SettingsCategory::Script;  // First child
-        case SettingsCategory::VersionControl:
-        {
-            // First registered provider tab; the parent page when none exist.
-            if (!Editor::EditorVcsProviderRegistry::Get().Snapshot().empty())
-                return static_cast<SettingsCategory>(kVcsProviderCategoryBase);
-            return SettingsCategory::VersionControl;
-        }
-        case SettingsCategory::UI:
-            return SettingsCategory::UIAppearance;  // First child
-        default:
-            return parent;
-    }
-}
-
 void SettingsPanel::ClearContentPane()
 {
     if (!m_ContentBody)
         return;
 
     /* Clear search highlight state before destroying content so we never touch destroyed elements in ClearSearchHighlights. */
-    m_RegistryButtonRows.clear();
+    m_ConditionalRegistryRows.clear();
     // Any reveal still waiting to scroll belongs to the page being torn down.
     m_PendingSearchScroll.reset();
     m_SearchHighlightedElements.clear();
     m_SearchFilteredElements.clear();
     m_SearchSegmentReplacements.clear();
-    
+
     UIElement* viewport = m_ContentBody->GetViewport();
     if (viewport)
     {
@@ -3356,7 +2318,7 @@ void SettingsPanel::ClearContentPane()
             viewport->RemoveChild(child);
     }
     m_PageColorPickers.CloseAll();
-    
+
     // Clear element pointers
     m_HierarchyTreeChildIndentSlider = nullptr;
     m_HierarchyTreeChildIndentLabel = nullptr;
@@ -3374,6 +2336,7 @@ void SettingsPanel::ClearContentPane()
     m_AssetsTreeIconSizeField = nullptr;
     m_GridIconSizeSlider = nullptr;
     m_GridIconSizeField = nullptr;
+    m_SearchBarsToggle = nullptr;
     m_CheckmarkTogglesToggle = nullptr;
     m_GraySlidersToggle = nullptr;
     m_TabIconsToggle = nullptr;
@@ -3382,44 +2345,8 @@ void SettingsPanel::ClearContentPane()
     m_FontSizeTreeSlider = nullptr;
     m_FontSizeSmallSlider = nullptr;
     m_FontSizeHeaderSlider = nullptr;
-    
-    // Clear syntax highlighting field pointers
-    m_SyntaxKeywordColorField = nullptr;
-    m_SyntaxStringColorField = nullptr;
-    m_SyntaxCommentColorField = nullptr;
-    m_SyntaxNumberColorField = nullptr;
-    m_SyntaxTypeColorField = nullptr;
-    m_SyntaxDefaultColorField = nullptr;
-    
-    // Clear script settings pointers
-    m_ScriptOpenInInspectorToggle = nullptr;
-    m_ShaderGraphGlslOpenToggle = nullptr;
-    
-    m_UIAccentColorSwatch = nullptr;
-    m_UIAssetIconTintSwatch = nullptr;
-    m_UISmartFolderIconTintSwatch = nullptr;
-    m_UIScrollbarColorSwatch = nullptr;
-    m_SelectionBoxColorSwatch = nullptr;
-    m_SelectionOutlineColorSwatch = nullptr;
-    m_SceneViewBackgroundColorSwatch = nullptr;
-    m_RulerIndicatorColorSwatch = nullptr;
-    m_MeasureColorSwatch = nullptr;
-    m_GridColor3DSwatch = nullptr;
-    m_GridColor2DSwatch = nullptr;
-    g_ActivePipelineDropdown = nullptr;
 
-    // Clear gizmo settings pointers
-    m_GizmoThicknessSection = nullptr;
-    m_GizmoConstantSizeSection = nullptr;
-    m_TranslateGizmoThicknessSlider = nullptr;
-    m_RotateGizmoThicknessSlider = nullptr;
-    m_ScaleGizmoThicknessSlider = nullptr;
-    m_TranslateGizmoScaleSlider = nullptr;
-    m_RotateGizmoScaleSlider = nullptr;
-    m_ScaleGizmoScaleSlider = nullptr;
-    m_TranslateConstantThicknessSlider = nullptr;
-    m_RotateConstantThicknessSlider = nullptr;
-    m_ScaleConstantThicknessSlider = nullptr;
+    s_ActivePipelineDropdown = nullptr;
 }
 
 void SettingsPanel::RequestShowCategory(SettingsCategory category)
@@ -3427,12 +2354,8 @@ void SettingsPanel::RequestShowCategory(SettingsCategory category)
     // Expand parent(s) so the category row is visible in the tree
     if (m_TreeView)
     {
-        if (category == SettingsCategory::AudioSettings || category == SettingsCategory::Camera ||
-            category == SettingsCategory::Animation || category == SettingsCategory::Input ||
-            category == SettingsCategory::Physics ||
-            category == SettingsCategory::AssetImport ||
+        if (category == SettingsCategory::Camera ||
             category == SettingsCategory::Rendering || category == SettingsCategory::HDROutput ||
-            category == SettingsCategory::Scene ||
             category == SettingsCategory::Tags ||
             category == SettingsCategory::VersionControl)
         {
@@ -3459,9 +2382,7 @@ void SettingsPanel::RequestShowCategory(SettingsCategory category)
             m_TreeView->SetExpanded(static_cast<TreeId>(SettingsCategory::UserSettings), true);
             m_TreeView->SetExpanded(static_cast<TreeId>(SettingsCategory::UI), true);
         }
-        else if (category == SettingsCategory::Script || category == SettingsCategory::UI ||
-            category == SettingsCategory::Shortcuts || category == SettingsCategory::Gizmo ||
-            category == SettingsCategory::GridAndSnapping)
+        else if (category == SettingsCategory::UI || category == SettingsCategory::Shortcuts)
         {
             m_TreeView->SetExpanded(static_cast<TreeId>(SettingsCategory::UserSettings), true);
         }
@@ -3491,8 +2412,6 @@ void SettingsPanel::RequestShowRegistryCategory(std::string_view categoryId)
                 target = SettingsCategory::VersionControl;
             else if (categories[i].Group == Editor::SettingsCategoryGroup::UIAppearance)
                 target = SettingsCategory::UIAppearance;
-            else if (categories[i].Group == Editor::SettingsCategoryGroup::SceneView)
-                target = SettingsCategory::Camera;
             RequestShowCategory(target);
             return;
         }
@@ -3502,7 +2421,7 @@ void SettingsPanel::RequestShowRegistryCategory(std::string_view categoryId)
 void SettingsPanel::ShowCategoryContent(SettingsCategory category)
 {
     ClearContentPane();
-    
+
     if (!m_ContentHeader || !m_ContentBody)
         return;
 
@@ -3567,29 +2486,9 @@ void SettingsPanel::ShowCategoryContent(SettingsCategory category)
             CreateUserSettingsContent();
             break;
         // Project Settings children
-        case SettingsCategory::AudioSettings:
-            headerText = "Project Settings - Audio";
-            CreateAudioSettingsContent();
-            break;
         case SettingsCategory::Camera:
             headerText = "Project Settings - Camera";
             CreateCameraSettingsContent();
-            break;
-        case SettingsCategory::Animation:
-            headerText = "Project Settings - Animation";
-            CreateAnimationSettingsContent();
-            break;
-        case SettingsCategory::Input:
-            headerText = "Project Settings - Input";
-            CreateInputSettingsContent();
-            break;
-        case SettingsCategory::Physics:
-            headerText = "Project Settings - Physics";
-            CreatePhysicsSettingsContent();
-            break;
-        case SettingsCategory::AssetImport:
-            headerText = "Project Settings - Asset Import";
-            CreateAssetImportSettingsContent();
             break;
         case SettingsCategory::Rendering:
             headerText = "Project Settings - Rendering";
@@ -3598,10 +2497,6 @@ void SettingsPanel::ShowCategoryContent(SettingsCategory category)
         case SettingsCategory::HDROutput:
             headerText = "Project Settings - HDR Output";
             CreateHDROutputSettingsContent();
-            break;
-        case SettingsCategory::Scene:
-            headerText = "Project Settings - Scene";
-            CreateSceneSettingsContent();
             break;
         case SettingsCategory::VersionControl:
             headerText = "Project Settings - Version Control";
@@ -3612,10 +2507,6 @@ void SettingsPanel::ShowCategoryContent(SettingsCategory category)
             CreateTagsSettingsContent();
             break;
         // User Settings children
-        case SettingsCategory::Script:
-            headerText = "User Settings - Script";
-            CreateScriptSettingsContent();
-            break;
         case SettingsCategory::UI:
             headerText = "User Settings - UI";
             CreateUISettingsContent();
@@ -3648,27 +2539,15 @@ void SettingsPanel::ShowCategoryContent(SettingsCategory category)
             headerText = "User Settings - Keyboard Shortcuts";
             CreateShortcutsSettingsContent();
             break;
-        case SettingsCategory::Gizmo:
-            headerText = "User Settings - Gizmo";
-            CreateGizmoSettingsContent();
-            break;
-        case SettingsCategory::GridAndSnapping:
-            headerText = "User Settings - Grid & Snapping";
-            CreateGridAndSnappingContent();
-            break;
-        case SettingsCategory::Performance:
-            headerText = "User Settings - Performance";
-            CreatePerformanceSettingsContent();
-            break;
         default:
             break;
     }
-    
+
     if (auto* label = dynamic_cast<Label*>(m_ContentHeader))
     {
         label->SetText(headerText);
     }
-    
+
     // Request relayout
     if (m_ContentBody)
     {
@@ -3697,260 +2576,50 @@ void SettingsPanel::CreateUIColorsContent()
     if (!m_ContentBody)
         return;
 
-    // Load accent color from preferences
     {
-        auto prefs = Editor::OpenEditorPreferences();
-        std::string err;
-        prefs.Load(&err);
-        int64_t stored = static_cast<int64_t>(m_UIAccentColor);
-        if (prefs.TryGetInt64(UI::AccentStyleHelper::kPrefKeyAccentColor, stored))
-            m_UIAccentColor = static_cast<uint32_t>(stored);
-    }
-    
-    // Accent Color: 16x16 clickable swatch that opens the color picker
-    {
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-        auto label = std::make_unique<Label>();
-        label->SetText("Accent Color");
-        label->AddClass("settings-row-label");
-        Label* accentLabelPtr = label.get();
-        section->AddChild(std::move(label));
-        auto openColorPicker = [this](UIEvent& e) {
-            if (e.Button != 0)
-                return;
-            const uint32_t original = m_UIAccentColor;
-            OpenColorPicker(
-                original,
-                [this](uint32_t argb)
-                {
-                    m_UIAccentColor = argb;
-                    auto prefs = Editor::OpenEditorPreferences();
-                    std::string err;
-                    prefs.Load(&err);
-                    prefs.SetInt64(UI::AccentStyleHelper::kPrefKeyAccentColor, static_cast<int64_t>(m_UIAccentColor));
-                    prefs.Save(&err);
-                    UpdateAccentSwatchStyle();
-                    ApplyAccentColorToUI();
-                },
-                [this, original]()
-                {
-                    m_UIAccentColor = original;
-                    UpdateAccentSwatchStyle();
-                    ApplyAccentColorToUI();
-                },
-                [this](uint32_t argb)
-                {
-                    m_UIAccentColor = argb;
-                    UpdateAccentSwatchStyle();
-                    ApplyAccentColorToUI();
-                });
-            e.Stop();
+        ColorSwatchRowConfig config;
+        config.LabelText = "Accent Color";
+        config.InitialArgb = Editor::AccentColorSettings::Get().GetAccentColor();
+        config.DefaultArgb = UI::kDefaultAccentArgb;
+        config.Apply = [](uint32_t argb, bool persist)
+        {
+            Editor::AccentColorSettings::Get().SetAccentColor(argb, persist);
         };
-        auto swatch = std::make_unique<UIElement>();
-        swatch->SetId("settings-accent-color-swatch");
-        m_UIAccentColorSwatch = swatch.get();
-        UpdateAccentSwatchStyle();
-        swatch->RegisterEventHandler(kEventMouseDown, openColorPicker);
-        section->AddChild(std::move(swatch));
-        AddDoubleClickReset(accentLabelPtr, [this]() {
-            m_UIAccentColor = UI::AccentStyleHelper::kDefaultAccentColor;
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetInt64(UI::AccentStyleHelper::kPrefKeyAccentColor, static_cast<int64_t>(m_UIAccentColor));
-            prefs.Save(&err);
-            UpdateAccentSwatchStyle();
-            ApplyAccentColorToUI();
-        });
-        m_ContentBody->AddContent(std::move(section));
+        CreateColorSwatchRow(config);
     }
 
     // Curve Time Dot: the dot rendered on reusable inspector curve time indicators.
     {
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Curve Time Dot");
-        label->AddClass("settings-row-label");
-        Label* curveDotLabelPtr = label.get();
-        section->AddChild(std::move(label));
-
-        auto swatch = std::make_unique<UIElement>();
-        swatch->SetId("settings-curve-current-time-dot-swatch");
-        UIElement* curveDotSwatch = swatch.get();
-        UpdateSwatchStyle(curveDotSwatch, Editor::CurveEditorSettings::Get().PlaybackIndicatorDotColor);
-
-        auto applyCurveDotColor = [this, curveDotSwatch](uint32_t argb, bool save)
+        ColorSwatchRowConfig config;
+        config.LabelText = "Curve Time Dot";
+        config.InitialArgb = Editor::CurveEditorSettings::Get().PlaybackIndicatorDotColor;
+        config.DefaultArgb = Editor::CurveEditorSettings::kDefaultPlaybackIndicatorDotColor;
+        config.Apply = [this](uint32_t argb, bool persist)
         {
             auto& settings = Editor::CurveEditorSettings::Get();
-            settings.PlaybackIndicatorDotColor = 0xFF000000u | (argb & 0x00FFFFFFu);
-            if (save)
+            settings.PlaybackIndicatorDotColor = kOpaqueAlpha | (argb & kRgbMask);
+            if (persist)
                 settings.Save();
-            UpdateSwatchStyle(curveDotSwatch, settings.PlaybackIndicatorDotColor);
             if (m_UIManager)
                 MarkCurveIndicatorControlsDirty(m_UIManager->GetRootElement());
         };
-
-        swatch->RegisterEventHandler(kEventMouseDown, [this, applyCurveDotColor](UIEvent& e)
-        {
-            if (e.Button != 0)
-                return;
-
-            const uint32_t original = Editor::CurveEditorSettings::Get().PlaybackIndicatorDotColor;
-            OpenColorPicker(
-                original,
-                [applyCurveDotColor](uint32_t argb) { applyCurveDotColor(argb, true); },
-                [applyCurveDotColor, original]() { applyCurveDotColor(original, false); },
-                [applyCurveDotColor](uint32_t argb) { applyCurveDotColor(argb, false); });
-            e.Stop();
-        });
-        section->AddChild(std::move(swatch));
-
-        AddDoubleClickReset(curveDotLabelPtr, [applyCurveDotColor]()
-        {
-            applyCurveDotColor(Editor::CurveEditorSettings::kDefaultPlaybackIndicatorDotColor, true);
-        });
-
-        m_ContentBody->AddContent(std::move(section));
+        CreateColorSwatchRow(config);
     }
 
-    // Asset Icon Tint: 16x16 clickable swatch that opens the color picker
+    // Asset Icon Tint: folders/scenes/scripts in grid, list and tree views (views.css).
     {
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Asset Icon Tint");
-        label->AddClass("settings-row-label");
-        Label* iconTintLabelPtr = label.get();
-        section->AddChild(std::move(label));
-
-        // Load initial value from preferences (default: #AAAAAA)
+        constexpr uint32_t kDefaultAssetIconTint = 0xFFAAAAAA;
+        ColorSwatchRowConfig config;
+        config.LabelText = "Asset Icon Tint";
+        config.InitialArgb = LoadColorPreference("ui.assetIconTint", kDefaultAssetIconTint);
+        config.DefaultArgb = kDefaultAssetIconTint;
+        config.Apply = [this](uint32_t argb, bool persist)
         {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            int64_t stored = static_cast<int64_t>(m_UIAssetIconTint);
-            if (prefs.TryGetInt64("ui.assetIconTint", stored))
-                m_UIAssetIconTint = static_cast<uint32_t>(stored);
-        }
-
-        auto openAssetIconTintPicker = [this](UIEvent& e)
-        {
-            if (e.Button != 0)
-                return;
-            const uint32_t original = m_UIAssetIconTint;
-            OpenColorPicker(
-                original,
-                [this](uint32_t argb)
-                {
-                    m_UIAssetIconTint = argb;
-                    auto prefs = Editor::OpenEditorPreferences();
-                    std::string err;
-                    prefs.Load(&err);
-                    prefs.SetInt64("ui.assetIconTint", static_cast<int64_t>(m_UIAssetIconTint));
-                    prefs.Save(&err);
-                    UpdateAssetIconTintSwatchStyle();
-
-                    if (m_UIManager)
-                    {
-                        if (auto* root = m_UIManager->GetRootElement())
-                        {
-                            // Update CSS variable used by views.css for icon tints.
-                            char hex[16];
-                            std::snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                                          (m_UIAssetIconTint >> 16) & 0xFF,
-                                          (m_UIAssetIconTint >> 8) & 0xFF,
-                                          m_UIAssetIconTint & 0xFF);
-                            root->Style().SetCustom(
-                                HashStringId("--ui_asset_icon_tint"),
-                                std::string(hex));
-                            m_UIManager->MarkStyleDirtySubtree(root);
-                        }
-                    }
-                },
-                [this, original]()
-                {
-                    m_UIAssetIconTint = original;
-                    UpdateAssetIconTintSwatchStyle();
-
-                    if (m_UIManager)
-                    {
-                        if (auto* root = m_UIManager->GetRootElement())
-                        {
-                            char hex[16];
-                            std::snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                                          (m_UIAssetIconTint >> 16) & 0xFF,
-                                          (m_UIAssetIconTint >> 8) & 0xFF,
-                                          m_UIAssetIconTint & 0xFF);
-                            root->Style().SetCustom(
-                                HashStringId("--ui_asset_icon_tint"),
-                                std::string(hex));
-                            m_UIManager->MarkStyleDirtySubtree(root);
-                        }
-                    }
-                },
-                [this](uint32_t argb)
-                {
-                    m_UIAssetIconTint = argb;
-                    UpdateAssetIconTintSwatchStyle();
-
-                    if (m_UIManager)
-                    {
-                        if (auto* root = m_UIManager->GetRootElement())
-                        {
-                            char hex[16];
-                            std::snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                                          (m_UIAssetIconTint >> 16) & 0xFF,
-                                          (m_UIAssetIconTint >> 8) & 0xFF,
-                                          m_UIAssetIconTint & 0xFF);
-                            root->Style().SetCustom(
-                                HashStringId("--ui_asset_icon_tint"),
-                                std::string(hex));
-                            m_UIManager->MarkStyleDirtySubtree(root);
-                        }
-                    }
-                });
-            e.Stop();
+            if (persist)
+                SaveColorPreference("ui.assetIconTint", argb);
+            SetRootColorVariable("--ui_asset_icon_tint", argb);
         };
-
-        auto swatch = std::make_unique<UIElement>();
-        swatch->SetId("settings-asset-icon-tint-swatch");
-        m_UIAssetIconTintSwatch = swatch.get();
-        UpdateAssetIconTintSwatchStyle();
-        swatch->RegisterEventHandler(kEventMouseDown, openAssetIconTintPicker);
-        section->AddChild(std::move(swatch));
-
-        const uint32_t kDefaultAssetIconTint = 0xFFAAAAAA;
-        AddDoubleClickReset(iconTintLabelPtr, [this]()
-        {
-            m_UIAssetIconTint = kDefaultAssetIconTint;
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetInt64("ui.assetIconTint", static_cast<int64_t>(m_UIAssetIconTint));
-            prefs.Save(&err);
-            UpdateAssetIconTintSwatchStyle();
-
-            if (m_UIManager)
-            {
-                if (auto* root = m_UIManager->GetRootElement())
-                {
-                    char hex[16];
-                    std::snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                                  (m_UIAssetIconTint >> 16) & 0xFF,
-                                  (m_UIAssetIconTint >> 8) & 0xFF,
-                                  m_UIAssetIconTint & 0xFF);
-                    root->Style().SetCustom(
-                        HashStringId("--ui_asset_icon_tint"),
-                        std::string(hex));
-                    m_UIManager->MarkStyleDirtySubtree(root);
-                }
-            }
-        });
-        m_ContentBody->AddContent(std::move(section));
+        CreateColorSwatchRow(config);
     }
 
     // Colored Hierarchy Icons: toggle between grayscale-tinted and natural-color hierarchy icons
@@ -3981,239 +2650,124 @@ void SettingsPanel::CreateUIColorsContent()
         CreateSettingsToggleRow(cfg, m_ContentBody);
     }
 
-    // Smart Folder Icon Tint: 16x16 clickable swatch that opens the color picker
+    // Smart Folder Icon Tint: the blue folder icons in the hierarchy (smartfolders.css).
     {
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Smart Folder Icon Tint");
-        label->AddClass("settings-row-label");
-        Label* smartLabelPtr = label.get();
-        section->AddChild(std::move(label));
-
-        // Load initial value from preferences (default: smartfolders base blue)
+        constexpr uint32_t kDefaultSmartFolderIconTint = 0xFF6BA4F8;
+        ColorSwatchRowConfig config;
+        config.LabelText = "Smart Folder Icon Tint";
+        config.InitialArgb = LoadColorPreference("ui.smartFolderIconTint", kDefaultSmartFolderIconTint);
+        config.DefaultArgb = kDefaultSmartFolderIconTint;
+        config.Apply = [this](uint32_t argb, bool persist)
         {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            int64_t stored = static_cast<int64_t>(m_UISmartFolderIconTint);
-            if (prefs.TryGetInt64("ui.smartFolderIconTint", stored))
-                m_UISmartFolderIconTint = static_cast<uint32_t>(stored);
-        }
-
-        auto openSmartFolderTintPicker = [this](UIEvent& e)
-        {
-            if (e.Button != 0)
-                return;
-            const uint32_t original = m_UISmartFolderIconTint;
-            OpenColorPicker(
-                original,
-                [this](uint32_t argb)
-                {
-                    m_UISmartFolderIconTint = argb;
-                    auto prefs = Editor::OpenEditorPreferences();
-                    std::string err;
-                    prefs.Load(&err);
-                    prefs.SetInt64("ui.smartFolderIconTint", static_cast<int64_t>(m_UISmartFolderIconTint));
-                    prefs.Save(&err);
-                    UpdateSmartFolderIconTintSwatchStyle();
-
-                    if (m_UIManager)
-                    {
-                        if (auto* root = m_UIManager->GetRootElement())
-                        {
-                            char hex[16];
-                            std::snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                                          (m_UISmartFolderIconTint >> 16) & 0xFF,
-                                          (m_UISmartFolderIconTint >> 8) & 0xFF,
-                                          m_UISmartFolderIconTint & 0xFF);
-                            root->Style().SetCustom(
-                                HashStringId("--ui_smartfolder_icon_tint"),
-                                std::string(hex));
-                            m_UIManager->MarkStyleDirtySubtree(root);
-                        }
-                    }
-                },
-                [this, original]()
-                {
-                    m_UISmartFolderIconTint = original;
-                    UpdateSmartFolderIconTintSwatchStyle();
-
-                    if (m_UIManager)
-                    {
-                        if (auto* root = m_UIManager->GetRootElement())
-                        {
-                            char hex[16];
-                            std::snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                                          (m_UISmartFolderIconTint >> 16) & 0xFF,
-                                          (m_UISmartFolderIconTint >> 8) & 0xFF,
-                                          m_UISmartFolderIconTint & 0xFF);
-                            root->Style().SetCustom(
-                                HashStringId("--ui_smartfolder_icon_tint"),
-                                std::string(hex));
-                            m_UIManager->MarkStyleDirtySubtree(root);
-                        }
-                    }
-                },
-                [this](uint32_t argb)
-                {
-                    m_UISmartFolderIconTint = argb;
-                    UpdateSmartFolderIconTintSwatchStyle();
-
-                    if (m_UIManager)
-                    {
-                        if (auto* root = m_UIManager->GetRootElement())
-                        {
-                            char hex[16];
-                            std::snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                                          (m_UISmartFolderIconTint >> 16) & 0xFF,
-                                          (m_UISmartFolderIconTint >> 8) & 0xFF,
-                                          m_UISmartFolderIconTint & 0xFF);
-                            root->Style().SetCustom(
-                                HashStringId("--ui_smartfolder_icon_tint"),
-                                std::string(hex));
-                            m_UIManager->MarkStyleDirtySubtree(root);
-                        }
-                    }
-                });
-            e.Stop();
+            if (persist)
+                SaveColorPreference("ui.smartFolderIconTint", argb);
+            SetRootColorVariable("--ui_smartfolder_icon_tint", argb);
         };
-
-        auto swatch = std::make_unique<UIElement>();
-        swatch->SetId("settings-smart-folder-icon-tint-swatch");
-        m_UISmartFolderIconTintSwatch = swatch.get();
-        UpdateSmartFolderIconTintSwatchStyle();
-        swatch->RegisterEventHandler(kEventMouseDown, openSmartFolderTintPicker);
-        section->AddChild(std::move(swatch));
-
-        const uint32_t kDefaultSmartFolderIconTint = 0xFF6BA4F8;
-        AddDoubleClickReset(smartLabelPtr, [this]()
-        {
-            m_UISmartFolderIconTint = kDefaultSmartFolderIconTint;
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetInt64("ui.smartFolderIconTint", static_cast<int64_t>(m_UISmartFolderIconTint));
-            prefs.Save(&err);
-            UpdateSmartFolderIconTintSwatchStyle();
-
-            if (m_UIManager)
-            {
-                if (auto* root = m_UIManager->GetRootElement())
-                {
-                    char hex[16];
-                    std::snprintf(hex, sizeof(hex), "#%02X%02X%02X",
-                                  (m_UISmartFolderIconTint >> 16) & 0xFF,
-                                  (m_UISmartFolderIconTint >> 8) & 0xFF,
-                                  m_UISmartFolderIconTint & 0xFF);
-                    root->Style().SetCustom(
-                        HashStringId("--ui_smartfolder_icon_tint"),
-                        std::string(hex));
-                    m_UIManager->MarkStyleDirtySubtree(root);
-                }
-            }
-        });
-        m_ContentBody->AddContent(std::move(section));
+        CreateColorSwatchRow(config);
     }
 
-    // Scrollbar Thumb Color: 16x16 clickable swatch that opens the color picker
     {
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Scrollbar Thumb Color");
-        label->AddClass("settings-row-label");
-        Label* scrollbarLabelPtr = label.get();
-        section->AddChild(std::move(label));
-
-        auto openScrollbarColorPicker = [this](UIEvent& e) {
-            if (e.Button != 0)
-                return;
-            const uint32_t original = m_UIScrollbarColor;
-            OpenColorPicker(
-                original,
-                // Apply
-                [this](uint32_t argb)
-                {
-                    m_UIScrollbarColor = argb;
-                    auto prefs = Editor::OpenEditorPreferences();
-                    std::string err;
-                    prefs.Load(&err);
-                    prefs.SetInt64("ui.scrollbarThumbColor", static_cast<int64_t>(m_UIScrollbarColor));
-                    prefs.Save(&err);
-
-                    ApplyScrollbarColorToUI();
-
-                    if (m_UIScrollbarColorSwatch)
-                    {
-                        m_UIScrollbarColorSwatch->Style()
-                            .Set(Style::Width, StyleLength::Px(16.0f))
-                            .Set(Style::Height, StyleLength::Px(16.0f))
-                            .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{2, 2, 2, 2})
-                            .Set(Style::BorderWidth, Box4{1, 1, 1, 1})
-                            .Set(Style::BorderColor, BorderColorsTRBL{0xFF3E3E3Eu, 0xFF3E3E3Eu, 0xFF3E3E3Eu, 0xFF3E3E3Eu})
-                            .Set(Style::BackgroundColor, m_UIScrollbarColor);
-                    }
-                },
-                // Cancel: revert to original color and undo any live previews
-                [this, original]()
-                {
-                    m_UIScrollbarColor = original;
-                    ApplyScrollbarColorToUI();
-
-                    if (m_UIScrollbarColorSwatch)
-                    {
-                        m_UIScrollbarColorSwatch->Style()
-                            .Set(Style::BackgroundColor, m_UIScrollbarColor);
-                    }
-                },
-                // Live preview
-                [this](uint32_t argb)
-                {
-                    m_UIScrollbarColor = argb;
-                    ApplyScrollbarColorToUI();
-
-                    if (m_UIScrollbarColorSwatch)
-                    {
-                        m_UIScrollbarColorSwatch->Style()
-                            .Set(Style::BackgroundColor, m_UIScrollbarColor);
-                    }
-                });
-            e.Stop();
-        };
-
-        auto swatch = std::make_unique<UIElement>();
-        swatch->SetId("settings-scrollbar-color-swatch");
-        m_UIScrollbarColorSwatch = swatch.get();
-        swatch->Style()
-            .Set(Style::Width, StyleLength::Px(16.0f))
-            .Set(Style::Height, StyleLength::Px(16.0f))
-            .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{2, 2, 2, 2})
-            .Set(Style::BorderWidth, Box4{1, 1, 1, 1})
-            .Set(Style::BorderColor, BorderColorsTRBL{0xFF3E3E3Eu, 0xFF3E3E3Eu, 0xFF3E3E3Eu, 0xFF3E3E3Eu})
-            .Set(Style::BackgroundColor, m_UIScrollbarColor);
-        swatch->RegisterEventHandler(kEventMouseDown, openScrollbarColorPicker);
-        section->AddChild(std::move(swatch));
-        const uint32_t kDefaultScrollbarColor = 0xFF383838;
-        AddDoubleClickReset(scrollbarLabelPtr, [this]() {
-            m_UIScrollbarColor = kDefaultScrollbarColor;
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetInt64("ui.scrollbarThumbColor", static_cast<int64_t>(m_UIScrollbarColor));
-            prefs.Save(&err);
+        constexpr uint32_t kDefaultScrollbarColor = 0xFF383838;
+        ColorSwatchRowConfig config;
+        config.LabelText = "Scrollbar Thumb Color";
+        config.InitialArgb = m_UIScrollbarColor;
+        config.DefaultArgb = kDefaultScrollbarColor;
+        config.Apply = [this](uint32_t argb, bool persist)
+        {
+            m_UIScrollbarColor = argb;
+            if (persist)
+                SaveColorPreference("ui.scrollbarThumbColor", argb);
             ApplyScrollbarColorToUI();
-            if (m_UIScrollbarColorSwatch)
-            {
-                m_UIScrollbarColorSwatch->Style()
-                    .Set(Style::BackgroundColor, m_UIScrollbarColor);
-            }
-        });
-        m_ContentBody->AddContent(std::move(section));
+        };
+        CreateColorSwatchRow(config);
+    }
+}
+
+void SettingsPanel::SetRootColorVariable(std::string_view name, uint32_t argb)
+{
+    if (!m_UIManager)
+        return;
+    UIElement* root = m_UIManager->GetRootElement();
+    if (!root)
+        return;
+    root->Overrides().SetCustom(HashStringId(name), FormatHexRgb(argb));
+    m_UIManager->MarkStyleDirtySubtree(root);
+}
+
+void SettingsPanel::CreateColorSwatchRow(const ColorSwatchRowConfig& config)
+{
+    if (!m_ContentBody)
+        return;
+
+    auto section = std::make_unique<UIElement>();
+    section->AddClass("settings-row");
+
+    auto label = std::make_unique<Label>();
+    label->SetText(config.LabelText);
+    if (!config.Tooltip.empty())
+        label->SetTooltip(config.Tooltip);
+    label->AddClass("settings-row-label");
+    Label* labelPtr = label.get();
+    section->AddChild(std::move(label));
+
+    auto swatch = std::make_unique<UIElement>();
+    swatch->AddClass("settings-color-swatch");
+    UIElement* swatchPtr = swatch.get();
+    SetSwatchColor(swatchPtr, config.InitialArgb);
+
+    TextField* hexFieldPtr = nullptr;
+    std::unique_ptr<TextField> hexField;
+    if (config.ShowHexField)
+    {
+        hexField = std::make_unique<TextField>();
+        hexField->AddClass("settings-row-field");
+        hexField->AddClass("settings-color-field");
+        hexField->SetValueWithoutNotify(FormatHexRgb(config.InitialArgb));
+        hexFieldPtr = hexField.get();
     }
 
+    auto currentArgb = std::make_shared<uint32_t>(config.InitialArgb);
+    auto applyColor = [swatchPtr, hexFieldPtr, currentArgb, apply = config.Apply](uint32_t argb, bool persist)
+    {
+        *currentArgb = argb;
+        SetSwatchColor(swatchPtr, argb);
+        if (hexFieldPtr)
+            hexFieldPtr->SetValueWithoutNotify(FormatHexRgb(argb));
+        if (apply)
+            apply(argb, persist);
+    };
+
+    swatch->RegisterEventHandler(kEventMouseDown, [this, applyColor, currentArgb](UIEvent& e)
+    {
+        if (e.Button != 0)
+            return;
+        const uint32_t original = *currentArgb;
+        OpenColorPicker(
+            original,
+            [applyColor](uint32_t argb) { applyColor(argb, true); },
+            [applyColor, original]() { applyColor(original, false); },
+            [applyColor](uint32_t argb) { applyColor(argb, false); });
+        e.Stop();
+    });
+    section->AddChild(std::move(swatch));
+
+    if (hexField)
+    {
+        hexField->SetOnValueChanged([applyColor](const std::string& value)
+        {
+            uint32_t rgb = 0;
+            if (TryParseHexRgb(value, rgb))
+                applyColor(kOpaqueAlpha | rgb, true);
+        });
+        section->AddChild(std::move(hexField));
+    }
+
+    AddDoubleClickReset(labelPtr, [applyColor, defaultArgb = config.DefaultArgb]()
+    {
+        applyColor(defaultArgb, true);
+    });
+
+    m_ContentBody->AddContent(std::move(section));
 }
 
 void SettingsPanel::CreateUIAppearanceContent()
@@ -4223,36 +2777,28 @@ void SettingsPanel::CreateUIAppearanceContent()
 
     CreateUIColorsContent();
 
+    CreateRegistryFieldRow(Editor::MakeSvgRasterSizeField(Editor::SvgRasterSettingsScope::EditorUi), "Appearance");
+
     // Editor-wide boolean control presentation.
     {
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
         section->AddClass("settings-toggle-row");
 
-        constexpr bool kDefaultUseCheckmarks = false;
-        bool useCheckmarks = kDefaultUseCheckmarks;
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.TryGetBool(kPrefKeyCheckmarkToggles, useCheckmarks);
-        }
-
+        using ToggleLook = Editor::ToggleAppearanceSettings;
         auto toggle = std::make_unique<Toggle>();
         m_CheckmarkTogglesToggle = toggle.get();
         toggle->AddClass("settings-toggle");
-        toggle->SetChecked(useCheckmarks);
+        toggle->SetChecked(ToggleLook::Get().GetCheckmarksEnabled());
         toggle->SetTooltip("Display boolean toggles as square checkmark boxes instead of sliding switches.");
-        toggle->SetOnValueChanged([this](const bool& enabled) {
+        toggle->SetOnValueChanged([](const bool& enabled) {
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
             prefs.Load(&err);
-            prefs.SetBool(kPrefKeyCheckmarkToggles, enabled);
+            prefs.SetBool(ToggleLook::kPrefKeyCheckmarks, enabled);
             prefs.Save(&err);
 
-            ApplyToggleStyle(m_UIManager ? m_UIManager : GetOwnerManager(), enabled);
-            if (m_OnToggleStyleChanged)
-                m_OnToggleStyleChanged(enabled);
+            ToggleLook::Get().SetCheckmarksEnabled(enabled);
         });
         section->AddChild(std::move(toggle));
 
@@ -4264,19 +2810,16 @@ void SettingsPanel::CreateUIAppearanceContent()
         section->InsertChild(0, std::move(label));
 
         AddDoubleClickReset(labelPtr, [this]() {
-            constexpr bool kDefaultUseCheckmarks = false;
             if (m_CheckmarkTogglesToggle)
-                m_CheckmarkTogglesToggle->SetChecked(kDefaultUseCheckmarks);
+                m_CheckmarkTogglesToggle->SetChecked(ToggleLook::kDefaultCheckmarksEnabled);
 
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
             prefs.Load(&err);
-            prefs.SetBool(kPrefKeyCheckmarkToggles, kDefaultUseCheckmarks);
+            prefs.SetBool(ToggleLook::kPrefKeyCheckmarks, ToggleLook::kDefaultCheckmarksEnabled);
             prefs.Save(&err);
 
-            ApplyToggleStyle(m_UIManager ? m_UIManager : GetOwnerManager(), kDefaultUseCheckmarks);
-            if (m_OnToggleStyleChanged)
-                m_OnToggleStyleChanged(kDefaultUseCheckmarks);
+            ToggleLook::Get().SetCheckmarksEnabled(ToggleLook::kDefaultCheckmarksEnabled);
         });
 
         m_ContentBody->AddContent(std::move(section));
@@ -4286,29 +2829,43 @@ void SettingsPanel::CreateUIAppearanceContent()
     {
         SettingsSliderConfig cfg;
         cfg.labelText = "Value Box Height";
-        cfg.defaultValue = kDefaultValueBoxHeight;
+        cfg.defaultValue = Editor::ValueBoxHeightSettings::kDefaultHeightPx;
         cfg.minValue = 18.0f;
         cfg.maxValue = 40.0f;
         cfg.step = 1.0f;
-        cfg.prefKey = kPrefKeyValueBoxHeight;
-        auto applyHeight = [this](float v) {
-            UIManager* ui = GetOwnerManager();
-            if (!ui)
-                return;
-            UIElement* root = ui->GetRootElement();
-            if (!root)
-                return;
-            char buf[16];
-            std::snprintf(buf, sizeof(buf), "%.0fpx", v);
-            root->Style().SetCustom(HashStringId("--value_box_height"), buf);
-            ui->MarkStyleDirtyAll();
-        };
+        cfg.prefKey = Editor::ValueBoxHeightSettings::kPrefKey;
+        auto applyHeight = [](float v) { Editor::ValueBoxHeightSettings::Get().SetHeightPx(v); };
         cfg.onValueChanged = applyHeight;
         cfg.onValueChanging = applyHeight;
         CreateSettingsSliderRow(cfg, m_ContentBody);
     }
 
     // (Slug text weight threshold moved to the Font Rendering tab.)
+
+    // Search Bars toggle
+    {
+        auto section = std::make_unique<UIElement>();
+        section->AddClass("settings-row");
+        section->AddClass("settings-toggle-row");
+
+        auto toggle = std::make_unique<Toggle>();
+        m_SearchBarsToggle = toggle.get();
+        toggle->AddClass("settings-toggle");
+        toggle->SetChecked(EditorSearchBars::GetVisible());
+
+        toggle->SetOnValueChanged([](const bool& visible) {
+            EditorSearchBars::SetVisible(visible);
+        });
+
+        section->AddChild(std::move(toggle));
+
+        auto label = std::make_unique<Label>();
+        label->SetText("Filled Search Bar");
+        label->AddClass("settings-row-label");
+        section->InsertChild(0, std::move(label));
+
+        m_ContentBody->AddContent(std::move(section));
+    }
 
     // Search bar placement toggle
     {
@@ -4360,25 +2917,12 @@ void SettingsPanel::CreateUIAppearanceContent()
         section->AddClass("settings-row");
         section->AddClass("settings-toggle-row");
 
-        bool tabIconsEnabled = true;
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.TryGetBool(kPrefKeyTabIcons, tabIconsEnabled);
-        }
-
         auto toggle = std::make_unique<Toggle>();
         m_TabIconsToggle = toggle.get();
         toggle->AddClass("settings-toggle");
-        toggle->SetChecked(tabIconsEnabled);
-        toggle->SetOnValueChanged([this](const bool& enabled) {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetBool(kPrefKeyTabIcons, enabled);
-            prefs.Save(&err);
-            ApplySavedTabIconsStyle(GetOwnerManager());
+        toggle->SetChecked(Editor::TabIconsSettings::Get().GetEnabled());
+        toggle->SetOnValueChanged([](const bool& enabled) {
+            Editor::TabIconsSettings::Get().SetEnabled(enabled);
         });
         section->AddChild(std::move(toggle));
 
@@ -4484,34 +3028,31 @@ void SettingsPanel::CreateUIAppearanceContent()
         auto header = std::make_unique<Label>();
         header->SetText("Popup Shadows");
         header->AddClass("settings-section-header");
-        header->Style()
+        header->Overrides()
             .Set(Style::MarginTop, StyleLength::Px(10.0f))
             .Set(Style::MarginBottom, StyleLength::Px(4.0f));
         m_ContentBody->AddContent(std::move(header));
 
-        auto addShadowToggle = [this](const char* prefKey, const char* labelText) {
+        using Shadows = Editor::PopupShadowSettings;
+        using PopupShadow = Shadows::Shadow;
+        auto addShadowToggle = [this](const char* prefKey, const char* labelText,
+                                      bool PopupShadow::* flag) {
             auto section = std::make_unique<UIElement>();
             section->AddClass("settings-row");
             section->AddClass("settings-toggle-row");
 
-            bool enabled = true;
-            {
-                auto prefs = Editor::OpenEditorPreferences();
-                std::string err;
-                prefs.Load(&err);
-                prefs.TryGetBool(prefKey, enabled);
-            }
-
             auto toggle = std::make_unique<Toggle>();
             toggle->AddClass("settings-toggle");
-            toggle->SetChecked(enabled);
-            toggle->SetOnValueChanged([this, prefKey](const bool& on) {
+            toggle->SetChecked(Shadows::Get().GetShadow().*flag);
+            toggle->SetOnValueChanged([prefKey, flag](const bool& on) {
                 auto prefs = Editor::OpenEditorPreferences();
                 std::string err;
                 prefs.Load(&err);
                 prefs.SetBool(prefKey, on);
                 prefs.Save(&err);
-                ApplySavedPopupShadowStyle(GetOwnerManager());
+                PopupShadow shadow = Shadows::Get().GetShadow();
+                shadow.*flag = on;
+                Shadows::Get().SetShadow(shadow);
             });
             section->AddChild(std::move(toggle));
 
@@ -4523,16 +3064,16 @@ void SettingsPanel::CreateUIAppearanceContent()
             m_ContentBody->AddContent(std::move(section));
         };
 
-        addShadowToggle(kPrefKeyDropdownShadow, "Dropdown Shadows");
-        addShadowToggle(kPrefKeyPickerShadow, "Picker Shadows");
-        addShadowToggle(kPrefKeyCompletionShadow, "Code Completion Shadows");
-        addShadowToggle(kPrefKeyTooltipShadow, "Tooltip Shadows");
+        addShadowToggle(Shadows::kPrefKeyDropdown, "Dropdown Shadows", &PopupShadow::Dropdown);
+        addShadowToggle(Shadows::kPrefKeyPicker, "Picker Shadows", &PopupShadow::Picker);
+        addShadowToggle(Shadows::kPrefKeyCompletion, "Code Completion Shadows", &PopupShadow::Completion);
+        addShadowToggle(Shadows::kPrefKeyTooltip, "Tooltip Shadows", &PopupShadow::Tooltip);
 
         // Shadow geometry sliders. Each updates the cached state field and re-applies
         // (live during drag; the slider helper persists to prefs on commit).
         auto addShadowSlider = [this](const char* prefKey, const char* labelText,
                                       float defaultValue, float minValue, float maxValue,
-                                      float step, float PopupShadowState::* field) {
+                                      float step, float PopupShadow::* field) {
             SettingsSliderConfig cfg;
             cfg.labelText = labelText;
             cfg.defaultValue = defaultValue;
@@ -4540,25 +3081,24 @@ void SettingsPanel::CreateUIAppearanceContent()
             cfg.maxValue = maxValue;
             cfg.step = step;
             cfg.prefKey = prefKey;
-            cfg.onValueChanged = [this, field](float v) {
-                g_PopupShadow.*field = v;
-                ApplyPopupShadowToManager(GetOwnerManager());
+            auto applyField = [field](float v) {
+                PopupShadow shadow = Shadows::Get().GetShadow();
+                shadow.*field = v;
+                Shadows::Get().SetShadow(shadow);
             };
-            cfg.onValueChanging = [this, field](float v) {
-                g_PopupShadow.*field = v;
-                ApplyPopupShadowToManager(GetOwnerManager());
-            };
+            cfg.onValueChanged = applyField;
+            cfg.onValueChanging = applyField;
             CreateSettingsSliderRow(cfg, m_ContentBody);
         };
 
-        addShadowSlider(kPrefKeyShadowOffsetX, "Shadow Offset X",
-                        kDefaultShadowOffsetX, -32.0f, 32.0f, 1.0f, &PopupShadowState::offsetX);
-        addShadowSlider(kPrefKeyShadowOffsetY, "Shadow Offset Y",
-                        kDefaultShadowOffsetY, -32.0f, 32.0f, 1.0f, &PopupShadowState::offsetY);
-        addShadowSlider(kPrefKeyShadowBlur, "Shadow Blur",
-                        kDefaultShadowBlur, 0.0f, 64.0f, 1.0f, &PopupShadowState::blur);
-        addShadowSlider(kPrefKeyShadowOpacity, "Shadow Opacity",
-                        kDefaultShadowOpacity, 0.0f, 1.0f, 0.05f, &PopupShadowState::opacity);
+        addShadowSlider(Shadows::kPrefKeyOffsetX, "Shadow Offset X",
+                        Shadows::kDefaultOffsetX, -32.0f, 32.0f, 1.0f, &PopupShadow::OffsetX);
+        addShadowSlider(Shadows::kPrefKeyOffsetY, "Shadow Offset Y",
+                        Shadows::kDefaultOffsetY, -32.0f, 32.0f, 1.0f, &PopupShadow::OffsetY);
+        addShadowSlider(Shadows::kPrefKeyBlur, "Shadow Blur",
+                        Shadows::kDefaultBlur, 0.0f, 64.0f, 1.0f, &PopupShadow::Blur);
+        addShadowSlider(Shadows::kPrefKeyOpacity, "Shadow Opacity",
+                        Shadows::kDefaultOpacity, 0.0f, 1.0f, 0.05f, &PopupShadow::Opacity);
     }
 
     // Pages registered against the UIAppearance group render here, after the
@@ -4699,14 +3239,14 @@ void SettingsPanel::CreateUIFontSizesContent()
 {
     if (!m_ContentBody)
         return;
-    
+
     // Helper to update a single CSS variable in the root element's style
     auto updateCssVar = [](UIElement* root, const std::string& varName, int valuePx) {
         if (!root)
             return;
-        root->Style().SetCustom(HashStringId(varName), FormatPxValue(static_cast<float>(valuePx)));
+        root->Overrides().SetCustom(HashStringId(varName), FormatPxValue(static_cast<float>(valuePx)));
     };
-    
+
     // Helper to update spacing CSS variables proportionally based on base font size
     // Default base font is 14px, spacing scales linearly with font size
     auto updateSpacingVars = [updateCssVar](UIElement* root, float baseFontSize) {
@@ -4718,19 +3258,19 @@ void SettingsPanel::CreateUIFontSizesContent()
         updateCssVar(root, "--ui_spacing_lg", (int)std::round(12.0f * scale));
         updateCssVar(root, "--ui_spacing_xl", (int)std::round(16.0f * scale));
     };
-    
+
     // Helper lambda to create a font size slider setting
     auto createFontSizeSetting = [this, updateCssVar, updateSpacingVars](const char* labelText, const char* prefKey, const char* cssVar,
                                         Slider*& sliderPtr, float defaultValue, bool isBaseFontSize = false) {
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
-        
+
         auto label = std::make_unique<Label>();
         label->SetText(labelText);
         label->AddClass("settings-row-label");
         Label* fontSizeLabelPtr = label.get();
         section->AddChild(std::move(label));
-        
+
         auto slider = std::make_unique<Slider>();
         sliderPtr = slider.get();
         slider->AddClass("settings-row-slider");
@@ -4739,7 +3279,7 @@ void SettingsPanel::CreateUIFontSizesContent()
         slider->SetMin(12.0f);
         slider->SetMax(32.0f);
         slider->SetStep(1.0f);
-        
+
         // Load from preferences
         float fontSize = defaultValue;
         {
@@ -4751,7 +3291,7 @@ void SettingsPanel::CreateUIFontSizesContent()
                 fontSize = std::clamp(static_cast<float>(stored), 12.0f, 32.0f);
         }
         slider->SetValue(fontSize);
-        
+
         // Apply initial value to CSS variable (and spacing if base font)
         if (m_UIManager)
         {
@@ -4763,17 +3303,17 @@ void SettingsPanel::CreateUIFontSizesContent()
                 m_UIManager->MarkStyleDirtySubtree(root);
             }
         }
-        
+
         std::string cssVarStr = cssVar;
         std::string prefKeyStr = prefKey;
-        
+
         auto applyFontSize = [this, cssVarStr, isBaseFontSize, updateCssVar, updateSpacingVars](float value) {
             if (!m_UIManager)
                 return;
             auto* root = m_UIManager->GetRootElement();
             if (!root)
                 return;
-            
+
             updateCssVar(root, cssVarStr, (int)value);
             if (isBaseFontSize)
             {
@@ -4821,7 +3361,7 @@ void SettingsPanel::CreateUIFontSizesContent()
         section->AddChild(std::move(valueField));
         return section;
     };
-    
+
     // UI Text Scale - adjusts spacing proportionally (12px = compact, 16px = spacious)
     // Note: CSS variable font sizes don't update live in this UI system,
     // so this slider only affects spacing variables which do update properly.
@@ -4869,7 +3409,7 @@ void SettingsPanel::CreateUIFontSizesContent()
                                           Editor::ApplySavedEditorFontPreferences(m_UIManager);
                                           // The line height is a multiple of the script face's
                                           // own line, so a new face needs a new multiplier.
-                                          ApplySavedScriptLineHeightStyle(m_UIManager);
+                                          Editor::ScriptEditorSettings::Get().ReapplyLineHeight();
                                       }
                                   });
             row->AddChild(std::move(dd));
@@ -4900,7 +3440,7 @@ void SettingsPanel::CreateUIFontSizesContent()
             else if (m_UIManager)
             {
                 Editor::ApplySavedEditorFontPreferences(m_UIManager);
-                ApplySavedScriptLineHeightStyle(m_UIManager);
+                Editor::ScriptEditorSettings::Get().ReapplyLineHeight();
             }
         }
 
@@ -4918,13 +3458,11 @@ void SettingsPanel::CreateUIFontSizesContent()
         addFontPresetRow("Script Editor Font", Editor::kPrefScriptFontPreset, std::move(scriptFontOptions), scriptSanitized);
     }
 
-    // Text contrast: the colour-keyed coverage boost (Skia SK_GAMMA_CONTRAST).
+    // Text contrast: scale on the colour-keyed contrast term (UIManager::SetTextContrast).
     static constexpr const char* kTextContrastTooltip =
-        "Adds weight to partially covered glyph pixels, keyed on the text colour: "
-        "full strength for dark text on light backgrounds, tapering to nothing for "
-        "near-white text. Compensates for source-over blending averaging ink and "
-        "paper physically rather than the way 8-bit text stacks do. 0 disables it; "
-        "default 1.0 (what Chrome ships on Windows).";
+        "Weight on partially covered glyph pixels, keyed on the text colour: strong "
+        "for light text, slightly thinning for near-black text. Default 1.0 is the "
+        "text weight Chrome draws; 0 draws plain coverage.";
     {
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
@@ -4947,16 +3485,8 @@ void SettingsPanel::CreateUIFontSizesContent()
         slider->SetStep(0.05f);
         slider->SetTooltip(kTextContrastTooltip);
 
-        float contrastValue = kTextContrastDefault;
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            double stored = contrastValue;
-            if (prefs.TryGetDouble(kPrefKeyTextContrast, stored))
-                contrastValue =
-                    std::clamp(static_cast<float>(stored), kTextContrastMin, kTextContrastMax);
-        }
+        using TextRendering = Editor::TextRenderingSettings;
+        const float contrastValue = TextRendering::Get().GetContrast();
         slider->SetValue(contrastValue);
 
         auto valueField = std::make_unique<FloatField>();
@@ -4965,18 +3495,7 @@ void SettingsPanel::CreateUIFontSizesContent()
         valueField->SetValue(contrastValue);
         FloatField* valueFieldPtr = valueField.get();
 
-        auto applyContrast = [this](float value) {
-            if (m_UIManager)
-                m_UIManager->SetTextContrast(value);
-            // Fan out to every editor window's UIManager (main + floating).
-            if (m_OnTextContrastChanged)
-                m_OnTextContrastChanged(value);
-        };
-
-        // Apply the loaded preference to ALL windows, not just the main one.
-        // This ensures floating windows that are already open see the saved
-        // setting on startup instead of waiting for the user to touch the slider.
-        applyContrast(contrastValue);
+        auto applyContrast = [](float value) { TextRendering::Get().SetContrast(value); };
 
         slider->SetOnValueChanging([valueFieldPtr, applyContrast](const float& value) {
             valueFieldPtr->SetValue(value);
@@ -4988,21 +3507,21 @@ void SettingsPanel::CreateUIFontSizesContent()
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
             prefs.Load(&err);
-            prefs.SetDouble(kPrefKeyTextContrast, static_cast<double>(value));
+            prefs.SetDouble(TextRendering::kPrefKeyContrast, static_cast<double>(value));
             prefs.Save(&err);
         });
         valueField->SetOnValueChanged([sliderPtr, applyContrast](const float& value) {
-            float clamped = Math::Clamp01(value);
+            float clamped = std::clamp(value, 0.0f, 1.0f);
             sliderPtr->SetValue(clamped);
             applyContrast(clamped);
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
             prefs.Load(&err);
-            prefs.SetDouble(kPrefKeyTextContrast, static_cast<double>(clamped));
+            prefs.SetDouble(TextRendering::kPrefKeyContrast, static_cast<double>(clamped));
             prefs.Save(&err);
         });
         InspectorDrag::SetupLabelDragSlider(
-            labelPtr, sliderPtr, nullptr, nullptr, kTextContrastDefault);
+            labelPtr, sliderPtr, nullptr, nullptr, TextRendering::kDefaultContrast);
 
         section->AddChild(std::move(slider));
         section->AddChild(std::move(valueField));
@@ -5025,37 +3544,17 @@ void SettingsPanel::CreateUIFontSizesContent()
         section->AddClass("settings-toggle-row");
         section->SetTooltip(kSubpixelTooltip);
 
-        constexpr bool kDefaultSubpixel = false;
-        bool subpixelValue = kDefaultSubpixel;
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.TryGetBool(kPrefKeyTextSubpixelAA, subpixelValue);
-        }
-
-        auto applySubpixel = [this](bool enabled) {
-            if (m_UIManager)
-                m_UIManager->SetTextSubpixelAA(enabled);
-            // Fan out to every editor window's UIManager (main + floating).
-            if (m_OnTextSubpixelAAChanged)
-                m_OnTextSubpixelAAChanged(enabled);
-        };
-
-        // Apply the loaded preference to ALL windows on startup, like the
-        // contrast row above.
-        applySubpixel(subpixelValue);
-
+        using TextRendering = Editor::TextRenderingSettings;
         auto toggle = std::make_unique<Toggle>();
         toggle->AddClass("settings-toggle");
         toggle->SetTooltip(kSubpixelTooltip);
-        toggle->SetChecked(subpixelValue);
-        toggle->SetOnValueChanged([applySubpixel](const bool& enabled) {
-            applySubpixel(enabled);
+        toggle->SetChecked(TextRendering::Get().GetSubpixelAA());
+        toggle->SetOnValueChanged([](const bool& enabled) {
+            TextRendering::Get().SetSubpixelAA(enabled);
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
             prefs.Load(&err);
-            prefs.SetBool(kPrefKeyTextSubpixelAA, enabled);
+            prefs.SetBool(TextRendering::kPrefKeySubpixelAA, enabled);
             prefs.Save(&err);
         });
         section->AddChild(std::move(toggle));
@@ -5072,20 +3571,25 @@ void SettingsPanel::CreateUIFontSizesContent()
     // Text smoothing (gamma). A symmetric power remap of coverage around 0.5,
     // applied after the colour-keyed contrast correction above. Endpoints and
     // midpoint are fixed, so it trades edge softness without moving ink.
-    static constexpr const char* kSmoothingTooltip =
-        "Brightness-neutral edge softness. Above 1.0 softens edges (wider "
-        "transition zone). Below 1.0 sharpens. Endpoints and midpoint are "
-        "preserved — overall text weight stays constant, only edge smoothness "
-        "changes. Text weight itself is the Text Contrast row above. Default 1.0.";
     {
+        char smoothingDefault[16];
+        std::snprintf(smoothingDefault, sizeof(smoothingDefault), "%.2g",
+                      Editor::TextRenderingSettings::kDefaultSmoothingGamma);
+        const std::string smoothingTooltip =
+            std::string("Brightness-neutral edge softness. Above 1.0 softens edges (wider "
+                        "transition zone). Below 1.0 sharpens. Endpoints and midpoint are "
+                        "preserved — overall text weight stays constant, only edge smoothness "
+                        "changes. Text weight itself is the Text Contrast row above. Default ") +
+            smoothingDefault + ".";
+
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
-        section->SetTooltip(kSmoothingTooltip);
+        section->SetTooltip(smoothingTooltip);
 
         auto label = std::make_unique<Label>();
         label->SetText("Text Smoothing (gamma)");
         label->AddClass("settings-row-label");
-        label->SetTooltip(kSmoothingTooltip);
+        label->SetTooltip(smoothingTooltip);
         Label* labelPtr = label.get();
         section->AddChild(std::move(label));
 
@@ -5097,18 +3601,10 @@ void SettingsPanel::CreateUIFontSizesContent()
         slider->SetMin(0.5f);
         slider->SetMax(2.0f);
         slider->SetStep(0.05f);
-        slider->SetTooltip(kSmoothingTooltip);
+        slider->SetTooltip(smoothingTooltip);
 
-        float gammaValue = kTextSmoothingGammaDefault;
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            double stored = gammaValue;
-            if (prefs.TryGetDouble(kPrefKeyTextSmoothingGamma, stored))
-                gammaValue = std::clamp(static_cast<float>(stored), kTextSmoothingGammaMin,
-                                        kTextSmoothingGammaMax);
-        }
+        using TextRendering = Editor::TextRenderingSettings;
+        const float gammaValue = TextRendering::Get().GetSmoothingGamma();
         slider->SetValue(gammaValue);
 
         auto valueField = std::make_unique<FloatField>();
@@ -5117,15 +3613,7 @@ void SettingsPanel::CreateUIFontSizesContent()
         valueField->SetValue(gammaValue);
         FloatField* valueFieldPtr = valueField.get();
 
-        auto applyGamma = [this](float value) {
-            if (m_UIManager)
-                m_UIManager->SetTextSmoothingGamma(value);
-            if (m_OnTextSmoothingGammaChanged)
-                m_OnTextSmoothingGammaChanged(value);
-        };
-
-        // Apply the loaded preference to ALL windows on startup.
-        applyGamma(gammaValue);
+        auto applyGamma = [](float value) { TextRendering::Get().SetSmoothingGamma(value); };
 
         slider->SetOnValueChanging([valueFieldPtr, applyGamma](const float& value) {
             valueFieldPtr->SetValue(value);
@@ -5137,7 +3625,7 @@ void SettingsPanel::CreateUIFontSizesContent()
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
             prefs.Load(&err);
-            prefs.SetDouble(kPrefKeyTextSmoothingGamma, static_cast<double>(value));
+            prefs.SetDouble(TextRendering::kPrefKeySmoothingGamma, static_cast<double>(value));
             prefs.Save(&err);
         });
         valueField->SetOnValueChanged([sliderPtr, applyGamma](const float& value) {
@@ -5147,11 +3635,11 @@ void SettingsPanel::CreateUIFontSizesContent()
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
             prefs.Load(&err);
-            prefs.SetDouble(kPrefKeyTextSmoothingGamma, static_cast<double>(clamped));
+            prefs.SetDouble(TextRendering::kPrefKeySmoothingGamma, static_cast<double>(clamped));
             prefs.Save(&err);
         });
         InspectorDrag::SetupLabelDragSlider(
-            labelPtr, sliderPtr, nullptr, nullptr, kTextSmoothingGammaDefault);
+            labelPtr, sliderPtr, nullptr, nullptr, TextRendering::kDefaultSmoothingGamma);
 
         section->AddChild(std::move(slider));
         section->AddChild(std::move(valueField));
@@ -5178,10 +3666,10 @@ void SettingsPanel::CreateUIAssetsContent()
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
         section->AddClass("settings-toggle-row");
-        
+
         auto toggle = std::make_unique<Toggle>();
         toggle->AddClass("settings-toggle");
-        
+
         // Load from preferences (default is list view = false)
         bool useGridView = false;
         {
@@ -5191,7 +3679,7 @@ void SettingsPanel::CreateUIAssetsContent()
             prefs.TryGetBool("ui.assetsDefaultGridView", useGridView);
         }
         toggle->SetChecked(useGridView);
-        
+
         toggle->SetOnValueChanged([](const bool& enabled) {
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
@@ -5201,7 +3689,7 @@ void SettingsPanel::CreateUIAssetsContent()
         });
         Toggle* gridViewTogglePtr = toggle.get();
         section->AddChild(std::move(toggle));
-        
+
         auto label = std::make_unique<Label>();
         label->SetText("Default to Grid View");
         label->AddClass("settings-row-label");
@@ -5372,7 +3860,7 @@ void SettingsPanel::CreateUIAssetsContent()
             return clamped;
         };
         slider->SetOnValueChanging([applySize](const float& value) { applySize(value); });
-        slider->SetOnValueChanged([this, applySize](const float& value) { 
+        slider->SetOnValueChanged([this, applySize](const float& value) {
             const float clamped = applySize(value);
             // Save only on drag end
             if (m_OnGridIconSizeFinalized)
@@ -6071,10 +4559,10 @@ void SettingsPanel::CreateUIAssetsContent()
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
         section->AddClass("settings-toggle-row");
-        
+
         auto toggle = std::make_unique<Toggle>();
         toggle->AddClass("settings-toggle");
-        
+
         // Load from preferences
         bool truncationEnabled = true;
         {
@@ -6084,7 +4572,7 @@ void SettingsPanel::CreateUIAssetsContent()
             prefs.TryGetBool("ui.textTruncation", truncationEnabled);
         }
         toggle->SetChecked(truncationEnabled);
-        
+
         toggle->SetOnValueChanged([this](const bool& enabled) {
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
@@ -6094,14 +4582,14 @@ void SettingsPanel::CreateUIAssetsContent()
             {
                 Logger::Log::Error("Failed to save text truncation setting: {}", err);
             }
-            
+
             if (m_OnTruncationEnabledChanged)
                 m_OnTruncationEnabledChanged(enabled);
         });
 
         Toggle* truncationTogglePtr = toggle.get();
         section->AddChild(std::move(toggle));
-        
+
         auto label = std::make_unique<Label>();
         label->SetText("Text Truncation");
         label->AddClass("settings-row-label");
@@ -6120,18 +4608,18 @@ void SettingsPanel::CreateUIAssetsContent()
         });
         m_ContentBody->AddContent(std::move(section));
     }
-    
+
     // Truncation Threshold setting
     {
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
-        
+
         auto label = std::make_unique<Label>();
         label->SetText("Truncation Threshold");
         label->AddClass("settings-row-label");
         Label* truncationThresholdLabelPtr = label.get();
         section->AddChild(std::move(label));
-        
+
         auto slider = std::make_unique<Slider>();
         Slider* truncationThresholdSliderPtr = slider.get();
         slider->AddClass("settings-row-slider");
@@ -6140,7 +4628,7 @@ void SettingsPanel::CreateUIAssetsContent()
         slider->SetMin(64.0f);
         slider->SetMax(256.0f);
         slider->SetStep(8.0f);
-        
+
         // Load from preferences
         float threshold = 128.0f;
         {
@@ -6337,25 +4825,12 @@ void SettingsPanel::CreateUIInspectorContent()
         section->AddClass("settings-row");
         section->AddClass("settings-toggle-row");
 
-        bool compact = true;
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.TryGetBool(kPrefKeyCompactComponentHeaders, compact);
-        }
-
         auto toggle = std::make_unique<Toggle>();
         m_CompactComponentHeadersToggle = toggle.get();
         toggle->AddClass("settings-toggle");
-        toggle->SetChecked(compact);
-        toggle->SetOnValueChanged([this](const bool& enabled) {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetBool(kPrefKeyCompactComponentHeaders, enabled);
-            prefs.Save(&err);
-            ApplySavedCompactComponentHeadersStyle(GetOwnerManager());
+        toggle->SetChecked(Editor::CompactComponentHeadersSettings::Get().GetEnabled());
+        toggle->SetOnValueChanged([](const bool& enabled) {
+            Editor::CompactComponentHeadersSettings::Get().SetEnabled(enabled);
         });
         section->AddChild(std::move(toggle));
 
@@ -6366,15 +4841,10 @@ void SettingsPanel::CreateUIInspectorContent()
         Label* compactLabelPtr = label.get();
         section->InsertChild(0, std::move(label));
         AddDoubleClickReset(compactLabelPtr, [this]() {
-            const bool kDefault = true;
+            constexpr bool kDefault = Editor::CompactComponentHeadersSettings::kDefaultEnabled;
             if (m_CompactComponentHeadersToggle)
                 m_CompactComponentHeadersToggle->SetChecked(kDefault);
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetBool(kPrefKeyCompactComponentHeaders, kDefault);
-            prefs.Save(&err);
-            ApplySavedCompactComponentHeadersStyle(GetOwnerManager());
+            Editor::CompactComponentHeadersSettings::Get().SetEnabled(kDefault);
         });
         m_ContentBody->AddContent(std::move(section));
     }
@@ -6487,7 +4957,7 @@ void SettingsPanel::CreateUIInspectorContent()
         m_InspectorCollapseArrowVisibleToggle = toggle.get();
         toggle->AddClass("settings-toggle");
 
-        bool visible = false;  // default: arrows hidden
+        bool visible = true; // default: chevrons shown
         {
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
@@ -6515,7 +4985,7 @@ void SettingsPanel::CreateUIInspectorContent()
         Label* collapseArrowLabelPtr = label.get();
         section->InsertChild(0, std::move(label));
         AddDoubleClickReset(collapseArrowLabelPtr, [this]() {
-            const bool kDefault = false;
+            const bool kDefault = true;
             if (m_InspectorCollapseArrowVisibleToggle)
                 m_InspectorCollapseArrowVisibleToggle->SetChecked(kDefault);
             auto prefs = Editor::OpenEditorPreferences();
@@ -6599,8 +5069,6 @@ void SettingsPanel::CreateUIInspectorContent()
             prefs.SetBool(kPrefKeyInspectorBigNumberSpacing, enabledValue);
             prefs.Save(&err);
             FloatField::SetBigNumberSpacingEnabled(enabledValue);
-            if (m_OnInspectorBigNumberSpacingChanged)
-                m_OnInspectorBigNumberSpacingChanged(enabledValue);
         });
 
         section->AddChild(std::move(toggle));
@@ -6619,8 +5087,6 @@ void SettingsPanel::CreateUIInspectorContent()
             prefs.SetBool(kPrefKeyInspectorBigNumberSpacing, kInspectorBigNumberSpacingDefault);
             prefs.Save(&err);
             FloatField::SetBigNumberSpacingEnabled(kInspectorBigNumberSpacingDefault);
-            if (m_OnInspectorBigNumberSpacingChanged)
-                m_OnInspectorBigNumberSpacingChanged(kInspectorBigNumberSpacingDefault);
         });
         m_ContentBody->AddContent(std::move(section));
     }
@@ -6765,21 +5231,6 @@ void SettingsPanel::CreateUIInspectorContent()
         }
         slider->SetValue(indent);
 
-        float gap = 4.0f;
-        float labelWidth = 37.0f;
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            double storedGap = gap;
-            if (prefs.TryGetDouble("ui.inspectorRowGap", storedGap))
-                gap = static_cast<float>(storedGap);
-            double storedLW = labelWidth;
-            if (prefs.TryGetDouble("ui.inspectorLabelWidth", storedLW))
-                labelWidth = static_cast<float>(storedLW);
-        }
-        ApplyInspectorRowStyleToUI(indent, gap, labelWidth);
-
         auto valueField = std::make_unique<FloatField>();
         valueField->AddClass("settings-row-value");
         InspectorDrag::ApplySliderFloatValueFieldStyle(valueField.get());
@@ -6796,7 +5247,7 @@ void SettingsPanel::CreateUIInspectorContent()
             float currentGap = 4.0f;
             if (m_InspectorRowGapSlider)
                 currentGap = m_InspectorRowGapSlider->GetValue();
-            ApplyInspectorRowStyleToUI(clamped, currentGap, getLabelWidth());
+            SetInspectorRowLayout(clamped, currentGap, getLabelWidth());
             return clamped;
         };
         auto saveIndent = [](float value) {
@@ -6888,7 +5339,7 @@ void SettingsPanel::CreateUIInspectorContent()
             float currentIndent = 0.0f;
             if (m_InspectorRowIndentSlider)
                 currentIndent = m_InspectorRowIndentSlider->GetValue();
-            ApplyInspectorRowStyleToUI(currentIndent, clamped, getLabelWidth2());
+            SetInspectorRowLayout(currentIndent, clamped, getLabelWidth2());
             return clamped;
         };
         auto saveGap = [](float value) {
@@ -6979,7 +5430,7 @@ void SettingsPanel::CreateUIInspectorContent()
             float currentGap = 4.0f;
             if (m_InspectorRowGapSlider)
                 currentGap = m_InspectorRowGapSlider->GetValue();
-            ApplyInspectorRowStyleToUI(currentIndent, currentGap, clamped);
+            SetInspectorRowLayout(currentIndent, currentGap, clamped);
             return clamped;
         };
         auto saveLabelWidth = [](float value) {
@@ -7080,7 +5531,7 @@ void SettingsPanel::CreateUIInspectorContent()
         }
         syncFromValue(current);
 
-        auto onPicked = [this, syncFromValue](const std::string& value) {
+        auto onPicked = [this, leftCb, middleCb, rightCb, syncFromValue](const std::string& value) {
             syncFromValue(value);
             auto prefs = Editor::OpenEditorPreferences();
             std::string err;
@@ -7092,7 +5543,7 @@ void SettingsPanel::CreateUIInspectorContent()
         };
 
         // Derive selected value from checkbox state and notify once (robust to event order / double-firing)
-        auto applyFromSelection = [onPicked, middleCb, rightCb]() {
+        auto applyFromSelection = [onPicked, leftCb, middleCb, rightCb]() {
             const std::string value = middleCb->IsChecked() ? "middle" : (rightCb->IsChecked() ? "right" : "left");
             onPicked(value);
         };
@@ -7127,24 +5578,11 @@ void SettingsPanel::CreateUIInspectorContent()
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
 
-        bool graySliders = false;
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.TryGetBool(kPrefKeyGraySliders, graySliders);
-        }
-
         auto toggle = std::make_unique<Toggle>();
         toggle->AddClass("settings-toggle");
-        toggle->SetChecked(graySliders);
-        toggle->SetOnValueChanged([this](const bool& checked) {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetBool(kPrefKeyGraySliders, checked);
-            prefs.Save(&err);
-            ApplyGraySlidersStyleToUI();
+        toggle->SetChecked(Editor::GraySlidersSettings::Get().GetEnabled());
+        toggle->SetOnValueChanged([](const bool& checked) {
+            Editor::GraySlidersSettings::Get().SetEnabled(checked);
         });
         m_GraySlidersToggle = toggle.get();
         section->AddChild(std::move(toggle));
@@ -7155,208 +5593,12 @@ void SettingsPanel::CreateUIInspectorContent()
         Label* graySlidersLabelPtr = label.get();
         section->InsertChild(0, std::move(label));
         AddDoubleClickReset(graySlidersLabelPtr, [this]() {
-            constexpr bool kDefault = false;
+            constexpr bool kDefault = Editor::GraySlidersSettings::kDefaultEnabled;
             if (m_GraySlidersToggle)
                 m_GraySlidersToggle->SetChecked(kDefault);
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetBool(kPrefKeyGraySliders, kDefault);
-            prefs.Save(&err);
-            ApplyGraySlidersStyleToUI();
+            Editor::GraySlidersSettings::Get().SetEnabled(kDefault);
         });
         m_ContentBody->AddContent(std::move(section));
-    }
-}
-
-void SettingsPanel::CreatePhysicsSettingsContent()
-{
-    if (!m_ContentBody)
-        return;
-
-    const Physics::PhysicsWorldSettings s =
-        Editor::PhysicsProjectSettings::Load(EngineCore::GetInstance().GetWorkspaceRoot());
-
-    // Persists the four keys this page owns, merging them into the stored block.
-    // The new values reach the physics world the next time it is created --
-    // PhysicsWorldBootstrapSystem reads PhysicsWorldSettingsComponent only at
-    // PhysicsWorld construction, so there is no live-apply path to call here.
-    auto save = [](const Physics::PhysicsWorldSettings& settings) {
-        (void)Editor::PhysicsProjectSettings::SaveSimulationSettings(
-            EngineCore::GetInstance().GetWorkspaceRoot(), settings);
-    };
-
-    // Helper: single-row float field
-    auto addFloatRow = [&](const char* labelText, float initialValue,
-                           float defaultValue,
-                           float minValue,
-                           float maxValue,
-                           std::function<void(float)> onCommit) {
-        auto row = std::make_unique<UIElement>();
-        row->AddClass("settings-row");
-        auto label = std::make_unique<Label>();
-        label->SetText(labelText);
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-        row->AddChild(std::move(label));
-        auto field = std::make_unique<FloatField>();
-        field->AddClass("settings-row-value");
-        FloatField* fieldPtr = field.get();
-        field->SetValue(initialValue);
-        WireSettingsFloatLabelDrag(
-            m_EditorContext,
-            labelPtr,
-            fieldPtr,
-            (std::string("Change Physics ") + labelText).c_str(),
-            defaultValue,
-            minValue,
-            maxValue,
-            [minValue, maxValue](float value) { return std::clamp(value, minValue, maxValue); },
-            std::move(onCommit));
-        row->AddChild(std::move(field));
-        m_ContentBody->AddContent(std::move(row));
-    };
-
-    // Helper: single-row int field
-    auto addIntRow = [&](const char* labelText, int initialValue,
-                         int defaultValue,
-                         int minValue,
-                         int maxValue,
-                         std::function<void(int)> onCommit) {
-        auto row = std::make_unique<UIElement>();
-        row->AddClass("settings-row");
-        auto label = std::make_unique<Label>();
-        label->SetText(labelText);
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-        row->AddChild(std::move(label));
-        auto field = std::make_unique<IntField>();
-        field->AddClass("settings-row-value");
-        IntField* fieldPtr = field.get();
-        field->SetValue(initialValue);
-        WireSettingsIntLabelDrag(
-            m_EditorContext,
-            labelPtr,
-            fieldPtr,
-            (std::string("Change Physics ") + labelText).c_str(),
-            defaultValue,
-            minValue,
-            maxValue,
-            [minValue, maxValue](int value) { return std::clamp(value, minValue, maxValue); },
-            std::move(onCommit));
-        row->AddChild(std::move(field));
-        m_ContentBody->AddContent(std::move(row));
-    };
-
-    // Gravity section
-    {
-        auto header = std::make_unique<Label>();
-        header->SetText("Gravity");
-        header->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(header));
-    }
-
-    auto currentSettings = std::make_shared<Physics::PhysicsWorldSettings>(s);
-    const Physics::PhysicsWorldSettings defaults{};
-
-    addFloatRow("X", s.gravity.x, defaults.gravity.x, -1000.0f, 1000.0f, [currentSettings, save](float v) {
-        currentSettings->gravity.x = v;
-        save(*currentSettings);
-    });
-    addFloatRow("Y", s.gravity.y, defaults.gravity.y, -1000.0f, 1000.0f, [currentSettings, save](float v) {
-        currentSettings->gravity.y = v;
-        save(*currentSettings);
-    });
-    addFloatRow("Z", s.gravity.z, defaults.gravity.z, -1000.0f, 1000.0f, [currentSettings, save](float v) {
-        currentSettings->gravity.z = v;
-        save(*currentSettings);
-    });
-
-    // Simulation section
-    {
-        auto header = std::make_unique<Label>();
-        header->SetText("Simulation");
-        header->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(header));
-    }
-
-    addFloatRow("Fixed Time Step", s.fixedTimeStep, defaults.fixedTimeStep, 0.0001f, 1.0f, [currentSettings, save](float v) {
-        currentSettings->fixedTimeStep = std::max(0.0001f, v);
-        save(*currentSettings);
-    });
-    addIntRow("Max Sub Steps", s.maxSubSteps, defaults.maxSubSteps, 1, 128, [currentSettings, save](int v) {
-        currentSettings->maxSubSteps = std::max(1, v);
-        save(*currentSettings);
-    });
-    addIntRow("Collision Steps", s.collisionSteps, defaults.collisionSteps, 1, 128, [currentSettings, save](int v) {
-        currentSettings->collisionSteps = std::max(1, v);
-        save(*currentSettings);
-    });
-}
-
-void SettingsPanel::CreateAudioSettingsContent()
-{
-    if (!m_ContentBody)
-        return;
-
-    SettingsToggleConfig config;
-    config.labelText = "Auto-play On Select";
-    config.tooltip = "Auto-play audio when file is selected";
-    config.defaultValue = true;
-    config.prefKey = "audio.autoPlayOnSelection";
-    config.onValueChanged = nullptr;
-    CreateSettingsToggleRow(config, m_ContentBody);
-}
-
-void SettingsPanel::CreateSceneSettingsContent()
-{
-    if (!m_ContentBody)
-        return;
-
-    {
-        auto sectionHeader = std::make_unique<Label>();
-        sectionHeader->SetText("Auto-save");
-        sectionHeader->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(sectionHeader));
-    }
-
-    {
-        SettingsToggleConfig config;
-        config.labelText = "Auto-save Backup Copy";
-        config.tooltip = "Enable auto-save (backup copy)";
-        config.defaultValue = true;
-        config.prefKey = "editor.autoSaveEnabled";
-        config.onValueChanged = nullptr;
-        CreateSettingsToggleRow(config, m_ContentBody);
-    }
-
-    {
-        float intervalSec = 120.0f;
-        {
-            Editor::SettingsStore prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            (void)prefs.Load(&err);
-            double stored = 120.0;
-            if (prefs.TryGetDouble("editor.autoSaveIntervalSeconds", stored))
-                intervalSec = static_cast<float>(std::clamp(stored, 30.0, 300.0));
-        }
-        SettingsSliderConfig config;
-        config.labelText = "Interval (seconds)";
-        config.defaultValue = intervalSec;
-        config.minValue = 30.0f;
-        config.maxValue = 300.0f;
-        config.step = 1.0f;
-        config.prefKey = "editor.autoSaveIntervalSeconds";
-        config.onValueChanged = nullptr;
-        CreateSettingsSliderRow(config, m_ContentBody);
-    }
-
-    {
-        auto description = std::make_unique<Label>();
-        m_ContentBody->AddContent(MakeSettingsInfoCard(
-            "While editing, saves a backup copy next to your scene: <name>.backup.scene "
-            "(minimum 30s, maximum 5 minutes). Requires the scene to be saved to disk at least "
-            "once. Disabled during Play Mode."));
     }
 }
 
@@ -8032,6 +6274,90 @@ void SettingsPanel::CreateCameraSettingsContent()
         createCameraSliderRow(config, "SettingsSceneCameraAcceleration");
     }
 
+    // Scene View pinned exposure (used while its Auto Exposure toggle is off)
+    {
+        SettingsSliderConfig config;
+        config.labelText = "Fixed Exposure (EV100)";
+        config.defaultValue = Components::kDefaultManualExposureEv;
+        config.initialValue = settings.GetPostFxFixedExposureEv();
+        config.minValue = SceneViewSettings::kMinExposureEv;
+        config.maxValue = SceneViewSettings::kMaxExposureEv;
+        config.step = 0.1f;
+        config.prefKey.clear(); // Use SceneViewSettings for persistence
+        config.onValueChanging = [](float value) {
+            SceneViewSettings::Get().SetPostFxFixedExposureEv(value, false);
+        };
+        config.onValueChanged = [](float value) {
+            SceneViewSettings::Get().SetPostFxFixedExposureEv(value);
+        };
+
+        createCameraSliderRow(config, "SettingsSceneCameraFixedEv");
+    }
+
+    {
+        m_ContentBody->AddContent(MakeSettingsInfoCard(
+            "EV100 the Scene View is pinned to while its Auto Exposure toggle (viewport "
+            "post-fx menu or camera popup) is off."));
+    }
+
+    // Scene View auto-metering tune (applies while Auto Exposure is on)
+    {
+        SettingsSliderConfig config;
+        config.labelText = "Auto Exposure Min EV100";
+        config.defaultValue = SceneViewSettings::kDefaultAutoExposureMinEv;
+        config.initialValue = settings.GetPostFxAutoExposureMinEv();
+        config.minValue = SceneViewSettings::kMinExposureEv;
+        config.maxValue = SceneViewSettings::kMaxExposureEv;
+        config.step = 0.1f;
+        config.prefKey.clear(); // Use SceneViewSettings for persistence
+        config.onValueChanging = [](float value) {
+            SceneViewSettings::Get().SetPostFxAutoExposureMinEv(value, false);
+        };
+        config.onValueChanged = [](float value) {
+            SceneViewSettings::Get().SetPostFxAutoExposureMinEv(value);
+        };
+
+        createCameraSliderRow(config, "SettingsSceneCameraAutoMinEv");
+    }
+
+    {
+        SettingsSliderConfig config;
+        config.labelText = "Auto Exposure Max EV100";
+        config.defaultValue = SceneViewSettings::kDefaultAutoExposureMaxEv;
+        config.initialValue = settings.GetPostFxAutoExposureMaxEv();
+        config.minValue = SceneViewSettings::kMinExposureEv;
+        config.maxValue = SceneViewSettings::kMaxExposureEv;
+        config.step = 0.1f;
+        config.prefKey.clear(); // Use SceneViewSettings for persistence
+        config.onValueChanging = [](float value) {
+            SceneViewSettings::Get().SetPostFxAutoExposureMaxEv(value, false);
+        };
+        config.onValueChanged = [](float value) {
+            SceneViewSettings::Get().SetPostFxAutoExposureMaxEv(value);
+        };
+
+        createCameraSliderRow(config, "SettingsSceneCameraAutoMaxEv");
+    }
+
+    {
+        SettingsSliderConfig config;
+        config.labelText = "Exposure Compensation";
+        config.defaultValue = 0.0f;
+        config.initialValue = settings.GetPostFxExposureCompensation();
+        config.minValue = -SceneViewSettings::kMaxExposureCompensation;
+        config.maxValue = SceneViewSettings::kMaxExposureCompensation;
+        config.step = 0.1f;
+        config.prefKey.clear(); // Use SceneViewSettings for persistence
+        config.onValueChanging = [](float value) {
+            SceneViewSettings::Get().SetPostFxExposureCompensation(value, false);
+        };
+        config.onValueChanged = [](float value) {
+            SceneViewSettings::Get().SetPostFxExposureCompensation(value);
+        };
+
+        createCameraSliderRow(config, "SettingsSceneCameraExposureComp");
+    }
+
     // Max orbit distance
     {
         SettingsSliderConfig config;
@@ -8053,50 +6379,12 @@ void SettingsPanel::CreateCameraSettingsContent()
 
     // Background color (used when no SkyEnvironment renders the background).
     {
-        m_SceneViewBackgroundColor = settings.GetBackgroundColor();
-
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Background Color");
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-        section->AddChild(std::move(label));
-
-        auto applyColor = [this](uint32_t argb) {
-            m_SceneViewBackgroundColor = argb;
-            SceneViewSettings::Get().SetBackgroundColor(argb);
-            UpdateSceneViewBackgroundColorSwatchStyle();
-        };
-
-        auto openColorPicker = [this, applyColor](UIEvent& e) {
-            if (e.Button != 0)
-                return;
-            const uint32_t original = m_SceneViewBackgroundColor;
-            OpenColorPicker(
-                original,
-                applyColor,
-                [applyColor, original]() { applyColor(original); },
-                applyColor);
-            e.Stop();
-        };
-
-        auto swatch = std::make_unique<UIElement>();
-        swatch->SetId("settings-scene-view-background-color-swatch");
-        m_SceneViewBackgroundColorSwatch = swatch.get();
-        UpdateSceneViewBackgroundColorSwatchStyle();
-        swatch->RegisterEventHandler(kEventMouseDown, openColorPicker);
-        section->AddChild(std::move(swatch));
-
-        constexpr uint32_t kDefaultBackgroundColor = 0xFF1A1A1Au;
-        AddDoubleClickReset(labelPtr, [this]() {
-            m_SceneViewBackgroundColor = kDefaultBackgroundColor;
-            SceneViewSettings::Get().SetBackgroundColor(kDefaultBackgroundColor);
-            UpdateSceneViewBackgroundColorSwatchStyle();
-        });
-
-        m_ContentBody->AddContent(std::move(section));
+        ColorSwatchRowConfig config;
+        config.LabelText = "Background Color";
+        config.InitialArgb = settings.GetBackgroundColor();
+        config.DefaultArgb = 0xFF1A1A1Au;
+        config.Apply = [](uint32_t argb, bool) { SceneViewSettings::Get().SetBackgroundColor(argb); };
+        CreateColorSwatchRow(config);
     }
 
     // Scroll wheel dolly (enable/disable)
@@ -8253,100 +6541,24 @@ void SettingsPanel::CreateCameraSettingsContent()
         CreateSettingsSliderRow(config, m_ContentBody);
     }
 
-    // Ruler indicator (cursor line) color — swatch opens hosted color picker.
+    // Ruler indicator (cursor line) color.
     {
-        m_RulerIndicatorColor = settings.GetRulerIndicatorColor();
-
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Ruler Indicator Color");
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-        section->AddChild(std::move(label));
-
-        auto applyColor = [this](uint32_t argb) {
-            m_RulerIndicatorColor = argb;
-            SceneViewSettings::Get().SetRulerIndicatorColor(argb);
-            UpdateRulerIndicatorColorSwatchStyle();
-        };
-
-        auto openColorPicker = [this, applyColor](UIEvent& e) {
-            if (e.Button != 0)
-                return;
-            const uint32_t original = m_RulerIndicatorColor;
-            OpenColorPicker(
-                original,
-                applyColor,
-                [applyColor, original]() { applyColor(original); },
-                applyColor);
-            e.Stop();
-        };
-
-        auto swatch = std::make_unique<UIElement>();
-        swatch->SetId("settings-scene-view-ruler-indicator-color-swatch");
-        m_RulerIndicatorColorSwatch = swatch.get();
-        UpdateRulerIndicatorColorSwatchStyle();
-        swatch->RegisterEventHandler(kEventMouseDown, openColorPicker);
-        section->AddChild(std::move(swatch));
-
-        constexpr uint32_t kDefaultIndicatorColor = 0xF2F2664Du;
-        AddDoubleClickReset(labelPtr, [this]() {
-            m_RulerIndicatorColor = kDefaultIndicatorColor;
-            SceneViewSettings::Get().SetRulerIndicatorColor(kDefaultIndicatorColor);
-            UpdateRulerIndicatorColorSwatchStyle();
-        });
-
-        m_ContentBody->AddContent(std::move(section));
+        ColorSwatchRowConfig config;
+        config.LabelText = "Ruler Indicator Color";
+        config.InitialArgb = settings.GetRulerIndicatorColor();
+        config.DefaultArgb = 0xF2F2664Du;
+        config.Apply = [](uint32_t argb, bool) { SceneViewSettings::Get().SetRulerIndicatorColor(argb); };
+        CreateColorSwatchRow(config);
     }
 
     // Measure color — used by quick drag measure and as the default for new measure entities.
     {
-        m_MeasureColor = settings.GetMeasureColor();
-
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Measure Color");
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-        section->AddChild(std::move(label));
-
-        auto applyColor = [this](uint32_t argb) {
-            m_MeasureColor = argb;
-            SceneViewSettings::Get().SetMeasureColor(argb);
-            UpdateMeasureColorSwatchStyle();
-        };
-
-        auto openColorPicker = [this, applyColor](UIEvent& e) {
-            if (e.Button != 0)
-                return;
-            const uint32_t original = m_MeasureColor;
-            OpenColorPicker(
-                original,
-                applyColor,
-                [applyColor, original]() { applyColor(original); },
-                applyColor);
-            e.Stop();
-        };
-
-        auto swatch = std::make_unique<UIElement>();
-        swatch->SetId("settings-scene-view-measure-color-swatch");
-        m_MeasureColorSwatch = swatch.get();
-        UpdateMeasureColorSwatchStyle();
-        swatch->RegisterEventHandler(kEventMouseDown, openColorPicker);
-        section->AddChild(std::move(swatch));
-
-        constexpr uint32_t kDefaultMeasureColor = 0xFFFFC738u;
-        AddDoubleClickReset(labelPtr, [this]() {
-            m_MeasureColor = kDefaultMeasureColor;
-            SceneViewSettings::Get().SetMeasureColor(kDefaultMeasureColor);
-            UpdateMeasureColorSwatchStyle();
-        });
-
-        m_ContentBody->AddContent(std::move(section));
+        ColorSwatchRowConfig config;
+        config.LabelText = "Measure Color";
+        config.InitialArgb = settings.GetMeasureColor();
+        config.DefaultArgb = 0xFFFFC738u;
+        config.Apply = [](uint32_t argb, bool) { SceneViewSettings::Get().SetMeasureColor(argb); };
+        CreateColorSwatchRow(config);
     }
 
     // Hover highlight mode
@@ -8493,56 +6705,12 @@ void SettingsPanel::CreateCameraSettingsContent()
 
     // Bounding Box Color swatch
     {
-        m_SelectionBoxColor = settings.GetSelectionBoxColor();
-
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Box Color");
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-        section->AddChild(std::move(label));
-
-        auto openColorPicker = [this](UIEvent& e) {
-            if (e.Button != 0)
-                return;
-            const uint32_t original = m_SelectionBoxColor;
-            OpenColorPicker(
-                original,
-                [this](uint32_t argb) {
-                    m_SelectionBoxColor = argb;
-                    SceneViewSettings::Get().SetSelectionBoxColor(argb);
-                    UpdateSelectionBoxColorSwatchStyle();
-                },
-                [this, original]() {
-                    m_SelectionBoxColor = original;
-                    SceneViewSettings::Get().SetSelectionBoxColor(original);
-                    UpdateSelectionBoxColorSwatchStyle();
-                },
-                [this](uint32_t argb) {
-                    m_SelectionBoxColor = argb;
-                    SceneViewSettings::Get().SetSelectionBoxColor(argb);
-                    UpdateSelectionBoxColorSwatchStyle();
-                });
-            e.Stop();
-        };
-
-        auto swatch = std::make_unique<UIElement>();
-        swatch->SetId("settings-selection-box-color-swatch");
-        m_SelectionBoxColorSwatch = swatch.get();
-        UpdateSelectionBoxColorSwatchStyle();
-        swatch->RegisterEventHandler(kEventMouseDown, openColorPicker);
-        section->AddChild(std::move(swatch));
-
-        constexpr uint32_t kDefaultBoxColor = 0x80FFFFFFu;
-        AddDoubleClickReset(labelPtr, [this]() {
-            m_SelectionBoxColor = kDefaultBoxColor;
-            SceneViewSettings::Get().SetSelectionBoxColor(kDefaultBoxColor);
-            UpdateSelectionBoxColorSwatchStyle();
-        });
-
-        m_ContentBody->AddContent(std::move(section));
+        ColorSwatchRowConfig config;
+        config.LabelText = "Box Color";
+        config.InitialArgb = settings.GetSelectionBoxColor();
+        config.DefaultArgb = 0x80FFFFFFu;
+        config.Apply = [](uint32_t argb, bool) { SceneViewSettings::Get().SetSelectionBoxColor(argb); };
+        CreateColorSwatchRow(config);
     }
 
     // Bounding Box Thickness
@@ -8562,56 +6730,12 @@ void SettingsPanel::CreateCameraSettingsContent()
 
     // Outline Color swatch
     {
-        m_SelectionOutlineColor = settings.GetSelectionOutlineColor();
-
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Outline Color");
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-        section->AddChild(std::move(label));
-
-        auto openColorPicker = [this](UIEvent& e) {
-            if (e.Button != 0)
-                return;
-            const uint32_t original = m_SelectionOutlineColor;
-            OpenColorPicker(
-                original,
-                [this](uint32_t argb) {
-                    m_SelectionOutlineColor = argb;
-                    SceneViewSettings::Get().SetSelectionOutlineColor(argb);
-                    UpdateSelectionOutlineColorSwatchStyle();
-                },
-                [this, original]() {
-                    m_SelectionOutlineColor = original;
-                    SceneViewSettings::Get().SetSelectionOutlineColor(original);
-                    UpdateSelectionOutlineColorSwatchStyle();
-                },
-                [this](uint32_t argb) {
-                    m_SelectionOutlineColor = argb;
-                    SceneViewSettings::Get().SetSelectionOutlineColor(argb);
-                    UpdateSelectionOutlineColorSwatchStyle();
-                });
-            e.Stop();
-        };
-
-        auto swatch = std::make_unique<UIElement>();
-        swatch->SetId("settings-selection-outline-color-swatch");
-        m_SelectionOutlineColorSwatch = swatch.get();
-        UpdateSelectionOutlineColorSwatchStyle();
-        swatch->RegisterEventHandler(kEventMouseDown, openColorPicker);
-        section->AddChild(std::move(swatch));
-
-        constexpr uint32_t kDefaultOutlineColor = 0xFFFFB300u;
-        AddDoubleClickReset(labelPtr, [this]() {
-            m_SelectionOutlineColor = kDefaultOutlineColor;
-            SceneViewSettings::Get().SetSelectionOutlineColor(kDefaultOutlineColor);
-            UpdateSelectionOutlineColorSwatchStyle();
-        });
-
-        m_ContentBody->AddContent(std::move(section));
+        ColorSwatchRowConfig config;
+        config.LabelText = "Outline Color";
+        config.InitialArgb = settings.GetSelectionOutlineColor();
+        config.DefaultArgb = 0xFFFFB300u;
+        config.Apply = [](uint32_t argb, bool) { SceneViewSettings::Get().SetSelectionOutlineColor(argb); };
+        CreateColorSwatchRow(config);
     }
 
     // Outline Thickness
@@ -8628,12 +6752,6 @@ void SettingsPanel::CreateCameraSettingsContent()
         };
         CreateSettingsSliderRow(config, m_ContentBody);
     }
-
-    // Pages registered against the SceneView group render here, after the
-    // hand-built rows.
-    for (const auto& category : Editor::EditorSettingsRegistry::Get().Snapshot())
-        if (category.Group == Editor::SettingsCategoryGroup::SceneView)
-            CreateRegistrySettingsContent(category);
 
     // Description
     {
@@ -8653,9 +6771,9 @@ void SettingsPanel::SyncCameraSettingsControls()
     const Editor::SceneViewSettings& settings = Editor::SceneViewSettings::Get();
     auto sync = [this](const char* idPrefix, float value)
     {
-        if (auto* slider = dynamic_cast<Slider*>(FindById(HashStringId(std::string(idPrefix) + "Slider"))))
+        if (auto* slider = dynamic_cast<Slider*>(FindById(std::string(idPrefix) + "Slider")))
             slider->SetValueWithoutNotify(value);
-        if (auto* field = dynamic_cast<FloatField*>(FindById(HashStringId(std::string(idPrefix) + "Field"))))
+        if (auto* field = dynamic_cast<FloatField*>(FindById(std::string(idPrefix) + "Field")))
             field->SetValueWithoutNotify(value);
     };
 
@@ -8665,6 +6783,10 @@ void SettingsPanel::SyncCameraSettingsControls()
     sync("SettingsSceneCameraMoveSpeed", settings.GetMoveSpeed());
     sync("SettingsSceneCameraFastMultiplier", settings.GetFastMoveMultiplier());
     sync("SettingsSceneCameraAcceleration", settings.GetMoveAccelerationTime());
+    sync("SettingsSceneCameraFixedEv", settings.GetPostFxFixedExposureEv());
+    sync("SettingsSceneCameraAutoMinEv", settings.GetPostFxAutoExposureMinEv());
+    sync("SettingsSceneCameraAutoMaxEv", settings.GetPostFxAutoExposureMaxEv());
+    sync("SettingsSceneCameraExposureComp", settings.GetPostFxExposureCompensation());
 }
 
 
@@ -8694,6 +6816,7 @@ void CreateSettingsDropdownRow(const SettingsDropdownConfig& config, ScrollView*
     if (!config.tooltip.empty())
         label->SetTooltip(config.tooltip);
     label->AddClass("settings-row-label");
+    Label* labelPtr = label.get();
     row->AddChild(std::move(label));
 
     auto dropdown = std::make_unique<Dropdown>();
@@ -8702,6 +6825,7 @@ void CreateSettingsDropdownRow(const SettingsDropdownConfig& config, ScrollView*
         dropdown->SetOptions(config.optionPairs, 0);
     else
         dropdown->SetOptionsFromLabels(config.options, 0);
+    Dropdown* dropdownPtr = dropdown.get();
 
     std::string currentValue = config.defaultValue;
     if (config.get)
@@ -8711,6 +6835,8 @@ void CreateSettingsDropdownRow(const SettingsDropdownConfig& config, ScrollView*
     else if (!config.prefKey.empty())
     {
         auto prefs = Editor::OpenEditorPreferences();
+        std::string err;
+        prefs.Load(&err);
         prefs.TryGetString(config.prefKey, currentValue);
     }
     dropdown->SetSelectedValue(currentValue);
@@ -8729,21 +6855,266 @@ void CreateSettingsDropdownRow(const SettingsDropdownConfig& config, ScrollView*
             }
         });
 
+    // Selecting a different entry fires the change callback above, which
+    // applies and persists the default.
+    AddDoubleClickReset(labelPtr, [dropdownPtr, defaultValue = config.defaultValue]()
+    { dropdownPtr->SetSelectedValue(defaultValue); });
+
     row->AddChild(std::move(dropdown));
     contentBody->AddContent(std::move(row));
 }
 
-// Adds a text or path row built by Editor::CreateSettingsTextFieldRow, with the label's
-// double-click reset, and its refusal line under it.
-void AddSettingsTextFieldRow(const Editor::SettingsTextFieldRowConfig& config, ScrollView* contentBody)
+struct SettingsTextFieldConfig
 {
-    Editor::SettingsTextFieldRow row = Editor::CreateSettingsTextFieldRow(config);
-    AddDoubleClickReset(row.RowLabel, row.Reset);
-    contentBody->AddContent(std::move(row.Row));
-    if (row.Refusal)
-        contentBody->AddContent(std::move(row.Refusal));
+    std::string labelText;
+    std::string tooltip;
+    std::string defaultValue;
+    std::string prefKey;
+    std::function<std::string()> get;
+    std::function<void(const std::string&)> onValueChanged;
+    // When set, a Browse button opens the native picker of this kind and writes
+    // the chosen path into the field.
+    std::optional<Editor::SettingsFieldDescriptor::PathField::Kind> browseKind;
+};
+
+void CreateSettingsTextFieldRow(const SettingsTextFieldConfig& config, ScrollView* contentBody)
+{
+    auto row = std::make_unique<UIElement>();
+    row->AddClass("settings-row");
+
+    auto label = std::make_unique<Label>();
+    label->SetText(config.labelText);
+    if (!config.tooltip.empty())
+        label->SetTooltip(config.tooltip);
+    label->AddClass("settings-row-label");
+    Label* labelPtr = label.get();
+    row->AddChild(std::move(label));
+
+    std::string currentValue = config.defaultValue;
+    if (config.get)
+    {
+        currentValue = config.get();
+    }
+    else if (!config.prefKey.empty())
+    {
+        auto prefs = Editor::OpenEditorPreferences();
+        std::string err;
+        prefs.Load(&err);
+        prefs.TryGetString(config.prefKey, currentValue);
+    }
+
+    auto field = std::make_unique<TextField>();
+    field->SetValue(currentValue);
+    if (!config.tooltip.empty())
+        field->SetTooltip(config.tooltip);
+    field->AddClass("settings-row-field");
+    TextField* fieldPtr = field.get();
+
+    // One commit path for typing, focus-out, Browse and double-click-to-reset,
+    // so a value can never reach the callback without reaching the store.
+    //
+    // Focus-out fires whether or not the user typed anything, so an unchanged
+    // value must not write: tabbing through a page is not an edit, and writing
+    // there would persist the row's own default and stop that key tracking the
+    // default from then on. Same obligation the toggle and slider rows carry.
+    auto committed = std::make_shared<std::string>(currentValue);
+    auto commit = [onChanged = config.onValueChanged, prefKey = config.prefKey,
+                   committed](const std::string& value)
+    {
+        if (*committed == value)
+            return;
+        *committed = value;
+        if (onChanged)
+            onChanged(value);
+        if (!prefKey.empty())
+        {
+            auto prefs = Editor::OpenEditorPreferences();
+            std::string err;
+            prefs.Load(&err);
+            prefs.SetString(prefKey, value);
+            prefs.Save(&err);
+        }
+    };
+
+    fieldPtr->SetOnValueChanged(commit);
+    fieldPtr->RegisterEventHandler(kEventFocusOut,
+                                   [fieldPtr, commit](UIEvent&) { commit(fieldPtr->GetValue()); });
+    row->AddChild(std::move(field));
+
+    if (config.browseKind.has_value())
+    {
+        using PathKind = Editor::SettingsFieldDescriptor::PathField::Kind;
+        const PathKind kind = *config.browseKind;
+
+        auto browse = std::make_unique<Button>();
+        browse->SetText("Browse...");
+        browse->AddClass("small");
+        browse->AddClass("secondary");
+        browse->SetTooltip(kind == PathKind::Directory ? "Choose a folder." : "Choose a file.");
+        browse->RegisterEventHandler(kEventButtonClick, [fieldPtr, commit, kind](UIEvent&)
+        {
+            // Seed the picker from the current value when it names a real
+            // location, else from the open project.
+            std::filesystem::path initial = EngineCore::GetInstance().GetWorkspaceRoot();
+            const std::filesystem::path current(fieldPtr->GetValue());
+            std::error_code ec;
+            if (!current.empty() && std::filesystem::exists(current, ec))
+                initial = current;
+
+            const std::filesystem::path picked = kind == PathKind::Directory
+                                                     ? Platform::SelectFolder(initial)
+                                                     : Platform::SelectFile(initial);
+            if (picked.empty())
+                return; // cancelled
+            const std::string value = picked.string();
+            fieldPtr->SetValue(value);
+            commit(value);
+        });
+        row->AddChild(std::move(browse));
+    }
+
+    AddDoubleClickReset(labelPtr, [fieldPtr, commit, defaultValue = config.defaultValue]()
+    {
+        fieldPtr->SetValue(defaultValue);
+        commit(defaultValue);
+    });
+
+    contentBody->AddContent(std::move(row));
 }
 
+std::unique_ptr<Label> MakeRegistryRowLabel(const Editor::SettingsFieldDescriptor& field)
+{
+    auto label = std::make_unique<Label>();
+    label->SetText(field.Label);
+    if (!field.Tooltip.empty())
+        label->SetTooltip(field.Tooltip);
+    label->AddClass("settings-row-label");
+    return label;
+}
+
+// A registered NumberField: label that drags the value, and the value field.
+void CreateSettingsNumberRow(const Editor::SettingsFieldDescriptor& field,
+                             const Editor::SettingsFieldDescriptor::NumberField& number,
+                             const std::string& undoName,
+                             ScrollView* contentBody)
+{
+    auto row = std::make_unique<UIElement>();
+    row->AddClass("settings-row");
+    auto label = MakeRegistryRowLabel(field);
+    Label* labelPtr = label.get();
+    row->AddChild(std::move(label));
+
+    float initialValue = number.DefaultValue;
+    if (number.Get)
+    {
+        initialValue = number.Get();
+    }
+    else if (!field.PrefKey.empty())
+    {
+        auto prefs = Editor::OpenEditorPreferences();
+        std::string err;
+        prefs.Load(&err);
+        double stored = initialValue;
+        if (prefs.TryGetDouble(field.PrefKey, stored))
+            initialValue = static_cast<float>(stored);
+    }
+
+    auto valueField = std::make_unique<FloatField>();
+    valueField->AddClass("settings-row-value");
+    valueField->SetValue(initialValue);
+    FloatField* valueFieldPtr = valueField.get();
+    row->AddChild(std::move(valueField));
+
+    auto commit = [set = number.Set, prefKey = field.PrefKey](float value)
+    {
+        if (set)
+            set(value);
+        if (prefKey.empty())
+            return;
+        auto prefs = Editor::OpenEditorPreferences();
+        std::string err;
+        prefs.Load(&err);
+        prefs.SetDouble(prefKey, value);
+        prefs.Save(&err);
+    };
+    WireSettingsFloatLabelDrag(s_SettingsUndoContext, labelPtr, valueFieldPtr, undoName.c_str(),
+                               number.DefaultValue, number.MinValue, number.MaxValue, nullptr,
+                               number.Preview, commit);
+
+    contentBody->AddContent(std::move(row));
+}
+
+// CreateSettingsNumberRow for an IntegerField.
+void CreateSettingsIntegerRow(const Editor::SettingsFieldDescriptor& field,
+                              const Editor::SettingsFieldDescriptor::IntegerField& integer,
+                              const std::string& undoName,
+                              ScrollView* contentBody)
+{
+    auto row = std::make_unique<UIElement>();
+    row->AddClass("settings-row");
+    auto label = MakeRegistryRowLabel(field);
+    Label* labelPtr = label.get();
+    row->AddChild(std::move(label));
+
+    int initialValue = integer.DefaultValue;
+    if (integer.Get)
+    {
+        initialValue = integer.Get();
+    }
+    else if (!field.PrefKey.empty())
+    {
+        auto prefs = Editor::OpenEditorPreferences();
+        std::string err;
+        prefs.Load(&err);
+        int64_t stored = initialValue;
+        if (prefs.TryGetInt64(field.PrefKey, stored))
+            initialValue = static_cast<int>(stored);
+    }
+
+    auto valueField = std::make_unique<IntField>();
+    valueField->AddClass("settings-row-value");
+    valueField->SetValue(initialValue);
+    IntField* valueFieldPtr = valueField.get();
+    row->AddChild(std::move(valueField));
+
+    auto commit = [set = integer.Set, prefKey = field.PrefKey](int value)
+    {
+        if (set)
+            set(value);
+        if (prefKey.empty())
+            return;
+        auto prefs = Editor::OpenEditorPreferences();
+        std::string err;
+        prefs.Load(&err);
+        prefs.SetInt64(prefKey, value);
+        prefs.Save(&err);
+    };
+    WireSettingsIntLabelDrag(s_SettingsUndoContext, labelPtr, valueFieldPtr, undoName.c_str(),
+                             integer.DefaultValue, integer.MinValue, integer.MaxValue,
+                             integer.Preview, commit);
+
+    contentBody->AddContent(std::move(row));
+}
+
+// Subsection break above a field, for pages whose rows fall into named groups.
+void AppendSettingsSectionBreak(const Editor::SettingsFieldDescriptor& field,
+                                ScrollView* contentBody)
+{
+    if (!field.SectionHeader.empty())
+    {
+        auto header = std::make_unique<Label>();
+        header->SetText(field.SectionHeader);
+        header->AddClass("settings-subsection-header");
+        contentBody->AddContent(std::move(header));
+    }
+    if (!field.SectionDescription.empty())
+    {
+        auto description = std::make_unique<Label>();
+        description->SetText(field.SectionDescription);
+        description->AddClass("settings-description");
+        contentBody->AddContent(std::move(description));
+    }
+}
 } // namespace
 
 void SettingsPanel::CreateRegistrySettingsContent(const Editor::SettingsCategoryDescriptor& descriptor)
@@ -8773,246 +7144,15 @@ void SettingsPanel::CreateRegistrySettingsContent(const Editor::SettingsCategory
 
     for (const SettingsFieldDescriptor& field : page.Fields)
     {
-        if (!field.SectionHeader.empty() || !field.SectionDescription.empty())
-            m_ContentBody->AddContent(std::make_unique<Editor::SettingsSectionBreak>(field));
+        UIElement* viewport = m_ContentBody->GetViewport();
+        const size_t firstElement = viewport ? viewport->GetChildren().size() : 0;
 
-        if (const auto* toggle = std::get_if<SettingsFieldDescriptor::ToggleField>(&field.Control))
-        {
-            SettingsToggleConfig config;
-            config.labelText = field.Label;
-            config.tooltip = field.Tooltip;
-            config.defaultValue = toggle->DefaultValue;
-            config.prefKey = field.PrefKey;
-            if (toggle->Get)
-                config.initialValueOverride = toggle->Get();
-            config.onValueChanged = toggle->Set;
-            CreateSettingsToggleRow(config, m_ContentBody);
-        }
-        else if (const auto* slider = std::get_if<SettingsFieldDescriptor::SliderField>(&field.Control))
-        {
-            SettingsSliderConfig config;
-            config.labelText = field.Label;
-            config.tooltip = field.Tooltip;
-            config.defaultValue = slider->DefaultValue;
-            if (slider->Get)
-                config.initialValue = slider->Get();
-            config.minValue = slider->MinValue;
-            config.maxValue = slider->MaxValue;
-            config.step = slider->Step;
-            config.prefKey = field.PrefKey;
-            config.onValueChanged = slider->Set;
-            config.onValueChanging = slider->Set;
-            CreateSettingsSliderRow(config, m_ContentBody);
-        }
-        else if (const auto* dropdown = std::get_if<SettingsFieldDescriptor::DropdownField>(&field.Control))
-        {
-            SettingsDropdownConfig config;
-            config.labelText = field.Label;
-            config.tooltip = field.Tooltip;
-            config.options = dropdown->Options;
-            if (dropdown->OptionsProvider)
-            {
-                for (const auto& option : dropdown->OptionsProvider())
-                {
-                    config.optionPairs.push_back(Dropdown::Option{
-                        option.Value, option.Label.empty() ? option.Value : option.Label});
-                }
-            }
-            config.defaultValue = dropdown->DefaultValue;
-            config.prefKey = field.PrefKey;
-            config.get = dropdown->Get;
-            config.onValueChanged = dropdown->Set;
-            CreateSettingsDropdownRow(config, m_ContentBody);
-        }
-        else if (const auto* text = std::get_if<SettingsFieldDescriptor::StringField>(&field.Control))
-        {
-            Editor::SettingsTextFieldRowConfig config;
-            config.LabelText = field.Label;
-            config.Tooltip = field.Tooltip;
-            config.DefaultValue = text->DefaultValue;
-            config.PrefKey = field.PrefKey;
-            config.Get = text->Get;
-            config.Set = text->Set;
-            config.Validate = text->Validate;
-            config.Placeholder = text->Placeholder;
-            AddSettingsTextFieldRow(config, m_ContentBody);
-        }
-        else if (const auto* path = std::get_if<SettingsFieldDescriptor::PathField>(&field.Control))
-        {
-            Editor::SettingsTextFieldRowConfig config;
-            config.LabelText = field.Label;
-            config.Tooltip = field.Tooltip;
-            config.DefaultValue = path->DefaultValue;
-            config.PrefKey = field.PrefKey;
-            config.Get = path->Get;
-            config.Set = path->Set;
-            config.BrowseKind = path->PathKind;
-            AddSettingsTextFieldRow(config, m_ContentBody);
-        }
-        else if (const auto* button = std::get_if<SettingsFieldDescriptor::ButtonField>(&field.Control))
-        {
-            auto row = std::make_unique<UIElement>();
-            row->AddClass("settings-row");
-            if (button->IsVisible)
-            {
-                // Seed from the condition so a hidden row never flashes before
-                // the first post-layout poll.
-                row->Style().Set(Style::Display,
-                                     button->IsVisible() ? DisplayMode::Flex : DisplayMode::None);
-                m_RegistryButtonRows.push_back({row.get(), button->IsVisible});
-            }
-
-            if (!field.Label.empty())
-            {
-                auto label = std::make_unique<Label>();
-                label->SetText(field.Label);
-                if (!field.Tooltip.empty())
-                    label->SetTooltip(field.Tooltip);
-                label->AddClass("settings-row-label");
-                row->AddChild(std::move(label));
-            }
-
-            auto action = std::make_unique<Button>();
-            action->SetText(button->ButtonText);
-            action->AddClass("small");
-            action->AddClass("secondary");
-            if (!field.Tooltip.empty())
-                action->SetTooltip(field.Tooltip);
-            action->RegisterEventHandler(kEventButtonClick, [onClick = button->OnClick](UIEvent&)
-            {
-                if (onClick)
-                    onClick();
-            });
-            row->AddChild(std::move(action));
-
-            m_ContentBody->AddContent(std::move(row));
-        }
-        else if (const auto* custom = std::get_if<SettingsFieldDescriptor::CustomField>(&field.Control))
-        {
-            if (auto element = custom->CreateRow())
-                m_ContentBody->AddContent(std::move(element));
-        }
-        else if (const auto* toggleColor =
-                     std::get_if<SettingsFieldDescriptor::ToggleColorField>(&field.Control))
-        {
-            auto section = std::make_unique<UIElement>();
-            section->AddClass("settings-row");
-            section->AddClass("settings-toggle-row");
-
-            auto label = std::make_unique<Label>();
-            label->SetText(field.Label);
-            if (!field.Tooltip.empty())
-                label->SetTooltip(field.Tooltip);
-            label->AddClass("settings-row-label");
-            Label* labelPtr = label.get();
-
-            const bool enabled =
-                toggleColor->GetEnabled ? toggleColor->GetEnabled() : toggleColor->DefaultEnabled;
-            auto enabledToggle = std::make_unique<Toggle>();
-            Toggle* togglePtr = enabledToggle.get();
-            enabledToggle->AddClass("settings-toggle");
-            enabledToggle->SetChecked(enabled);
-            if (toggleColor->SetEnabled)
-                toggleColor->SetEnabled(enabled);
-            enabledToggle->SetOnValueChanged([setEnabled = toggleColor->SetEnabled](const bool& on)
-            {
-                if (setEnabled)
-                    setEnabled(on);
-            });
-
-            auto currentArgb = std::make_shared<uint32_t>(
-                toggleColor->GetColor ? toggleColor->GetColor() : toggleColor->DefaultArgb);
-            auto swatch = std::make_unique<UIElement>();
-            swatch->AddClass("settings-color-swatch");
-            UIElement* swatchPtr = swatch.get();
-            UpdateSwatchStyle(swatchPtr, *currentArgb);
-
-            auto applyColor =
-                [this, swatchPtr, currentArgb, setColor = toggleColor->SetColor](uint32_t argb,
-                                                                                 bool persist)
-            {
-                *currentArgb = 0xFF000000u | (argb & 0x00FFFFFFu);
-                if (setColor)
-                    setColor(*currentArgb, persist);
-                UpdateSwatchStyle(swatchPtr, *currentArgb);
-            };
-
-            swatch->RegisterEventHandler(kEventMouseDown, [this, applyColor, currentArgb](UIEvent& e)
-            {
-                if (e.Button != 0)
-                    return;
-                const uint32_t original = *currentArgb;
-                OpenColorPicker(
-                    original,
-                    [applyColor](uint32_t argb) { applyColor(argb, true); },
-                    [applyColor, original]() { applyColor(original, false); },
-                    [applyColor](uint32_t argb) { applyColor(argb, false); });
-                e.Stop();
-            });
-
-            AddDoubleClickReset(labelPtr,
-                                [togglePtr, applyColor, defaultEnabled = toggleColor->DefaultEnabled,
-                                 defaultArgb = toggleColor->DefaultArgb,
-                                 setEnabled = toggleColor->SetEnabled]()
-            {
-                togglePtr->SetChecked(defaultEnabled);
-                if (setEnabled)
-                    setEnabled(defaultEnabled);
-                applyColor(defaultArgb, true);
-            });
-
-            section->AddChild(std::move(label));
-            section->AddChild(std::move(enabledToggle));
-            section->AddChild(std::move(swatch));
-            m_ContentBody->AddContent(std::move(section));
-        }
-        else if (const auto* color = std::get_if<SettingsFieldDescriptor::ColorField>(&field.Control))
-        {
-            // Color rows are singleton-backed (Get/Set); registration validation
-            // guarantees Get is present.
-            auto section = std::make_unique<UIElement>();
-            section->AddClass("settings-row");
-
-            auto label = std::make_unique<Label>();
-            label->SetText(field.Label);
-            if (!field.Tooltip.empty())
-                label->SetTooltip(field.Tooltip);
-            label->AddClass("settings-row-label");
-            Label* labelPtr = label.get();
-            section->AddChild(std::move(label));
-
-            auto currentArgb = std::make_shared<uint32_t>(color->Get ? color->Get() : color->DefaultArgb);
-            auto swatch = std::make_unique<UIElement>();
-            UIElement* swatchPtr = swatch.get();
-            UpdateSwatchStyle(swatchPtr, *currentArgb);
-
-            auto applyColor = [this, swatchPtr, currentArgb, set = color->Set](uint32_t argb)
-            {
-                *currentArgb = argb;
-                if (set)
-                    set(argb);
-                UpdateSwatchStyle(swatchPtr, argb);
-            };
-            swatch->RegisterEventHandler(kEventMouseDown,
-                                         [this, applyColor, currentArgb](UIEvent& e)
-            {
-                if (e.Button != 0)
-                    return;
-                const uint32_t original = *currentArgb;
-                OpenColorPicker(original, applyColor,
-                                [applyColor, original]() { applyColor(original); },
-                                applyColor);
-                e.Stop();
-            });
-            section->AddChild(std::move(swatch));
-
-            AddDoubleClickReset(labelPtr, [applyColor, defaultArgb = color->DefaultArgb]()
-            {
-                applyColor(defaultArgb);
-            });
-
-            m_ContentBody->AddContent(std::move(section));
-        }
+        AppendSettingsSectionBreak(field, m_ContentBody);
+        CreateRegistryFieldRow(field, page.Title);
+        if (!field.InfoCard.empty())
+            m_ContentBody->AddContent(MakeSettingsInfoCard(field.InfoCard));
+        if (field.IsVisible)
+            TrackConditionalRegistryRows(firstElement, field.IsVisible);
     }
 
     if (!descriptor.Description.empty())
@@ -9024,926 +7164,263 @@ void SettingsPanel::CreateRegistrySettingsContent(const Editor::SettingsCategory
     }
 }
 
-void SettingsPanel::CreateGizmoSettingsContent()
+void SettingsPanel::CreateRegistryFieldRow(const Editor::SettingsFieldDescriptor& field,
+                                           const std::string& pageTitle)
 {
-    if (!m_ContentBody)
-        return;
+    using Editor::SettingsFieldDescriptor;
 
-    // Read initial constant screen size state from preferences
-    bool constantSizeEnabled = true;
-    {
-        auto prefs = Editor::OpenEditorPreferences();
-        std::string err;
-        prefs.Load(&err);
-        prefs.TryGetBool("gizmo.constantScreenSize", constantSizeEnabled);
-    }
-
-    // Constant Screen Size toggle at the top
+    if (const auto* toggle = std::get_if<SettingsFieldDescriptor::ToggleField>(&field.Control))
     {
         SettingsToggleConfig config;
-        config.labelText = "Constant Screen Size";
-        config.defaultValue = true;
-        config.prefKey = "gizmo.constantScreenSize";
-        config.onValueChanged = [this](bool enabled) {
-            if (m_OnGizmoConstantSizeChanged)
-                m_OnGizmoConstantSizeChanged(enabled);
-            // Show/hide appropriate sections using display style
-            if (m_GizmoThicknessSection)
+        config.labelText = field.Label;
+        config.tooltip = field.Tooltip;
+        config.defaultValue = toggle->DefaultValue;
+        config.prefKey = field.PrefKey;
+        if (toggle->Get)
+            config.initialValueOverride = toggle->Get();
+        config.onValueChanged = [this, set = toggle->Set](bool value)
+        {
+            if (set)
+                set(value);
+            RefreshConditionalRegistryRows();
+        };
+        CreateSettingsToggleRow(config, m_ContentBody);
+    }
+    else if (const auto* slider = std::get_if<SettingsFieldDescriptor::SliderField>(&field.Control))
+    {
+        SettingsSliderConfig config;
+        config.labelText = field.Label;
+        config.tooltip = field.Tooltip;
+        config.defaultValue = slider->DefaultValue;
+        if (slider->Get)
+            config.initialValue = slider->Get();
+        config.minValue = slider->MinValue;
+        config.maxValue = slider->MaxValue;
+        config.step = slider->Step;
+        config.prefKey = field.PrefKey;
+        config.onValueChanged = slider->Set;
+        config.onValueChanging = slider->Preview;
+        // Opening a page is not an edit: the stored value is already live, so
+        // the row seeds nothing rather than falling back to Set.
+        config.onSeed = [](float) {};
+        CreateSettingsSliderRow(config, m_ContentBody);
+    }
+    else if (const auto* number = std::get_if<SettingsFieldDescriptor::NumberField>(&field.Control))
+    {
+        CreateSettingsNumberRow(field, *number, "Change " + pageTitle + " " + field.Label,
+                                m_ContentBody);
+    }
+    else if (const auto* integer = std::get_if<SettingsFieldDescriptor::IntegerField>(&field.Control))
+    {
+        CreateSettingsIntegerRow(field, *integer, "Change " + pageTitle + " " + field.Label,
+                                 m_ContentBody);
+    }
+    else if (const auto* dropdown = std::get_if<SettingsFieldDescriptor::DropdownField>(&field.Control))
+    {
+        SettingsDropdownConfig config;
+        config.labelText = field.Label;
+        config.tooltip = field.Tooltip;
+        config.options = dropdown->Options;
+        if (dropdown->OptionsProvider)
+        {
+            for (const auto& option : dropdown->OptionsProvider())
             {
-                if (enabled)
-                    m_GizmoThicknessSection->Style().Set(Style::Display, DisplayMode::None);
-                else
-                    m_GizmoThicknessSection->Style().Reset(Style::Display);
+                config.optionPairs.push_back(Dropdown::Option{
+                    option.Value, option.Label.empty() ? option.Value : option.Label});
             }
-            if (m_GizmoConstantSizeSection)
-            {
-                if (enabled)
-                    m_GizmoConstantSizeSection->Style().Reset(Style::Display);
-                else
-                    m_GizmoConstantSizeSection->Style().Set(Style::Display, DisplayMode::None);
-            }
+        }
+        config.defaultValue = dropdown->DefaultValue;
+        config.prefKey = field.PrefKey;
+        config.get = dropdown->Get;
+        config.onValueChanged = [this, set = dropdown->Set](const std::string& value)
+        {
+            if (set)
+                set(value);
+            RefreshConditionalRegistryRows();
         };
-        CreateSettingsToggleRow(config, m_ContentBody);
+        CreateSettingsDropdownRow(config, m_ContentBody);
     }
-
-    // Enhanced rotate gizmo: front-face culled rings, a screen-space ("view")
-    // rotation ring, and a smooth edge-on drag. Toggle off for the legacy gizmo.
+    else if (const auto* text = std::get_if<SettingsFieldDescriptor::StringField>(&field.Control))
     {
-        SettingsToggleConfig config;
-        config.labelText = "Enhanced Rotate Gizmo";
-        config.defaultValue = false;
-        config.prefKey = "gizmo.rotateEnhanced";
-        config.onValueChanged = [this](bool enabled) {
-            if (m_OnRotateGizmoEnhancedChanged)
-                m_OnRotateGizmoEnhancedChanged(enabled);
-        };
-        CreateSettingsToggleRow(config, m_ContentBody);
+        SettingsTextFieldConfig config;
+        config.labelText = field.Label;
+        config.tooltip = field.Tooltip;
+        config.defaultValue = text->DefaultValue;
+        config.prefKey = field.PrefKey;
+        config.get = text->Get;
+        config.onValueChanged = text->Set;
+        CreateSettingsTextFieldRow(config, m_ContentBody);
     }
-
-    // Light range/cone/direction details are separate from the always-visible icons.
+    else if (const auto* path = std::get_if<SettingsFieldDescriptor::PathField>(&field.Control))
     {
-        SettingsToggleConfig config;
-        config.labelText = "Directional Light Details";
-        config.tooltip = "Directional Gizmo Details Only On Selection";
-        config.defaultValue = Editor::SceneViewSettings::Get().GetDirectionalLightGizmoDetailsOnlyOnSelection();
-        config.prefKey.clear();
-        config.onValueChanged = [](bool enabled) {
-            Editor::SceneViewSettings::Get().SetDirectionalLightGizmoDetailsOnlyOnSelection(enabled);
-        };
-        CreateSettingsToggleRow(config, m_ContentBody);
+        SettingsTextFieldConfig config;
+        config.labelText = field.Label;
+        config.tooltip = field.Tooltip;
+        config.defaultValue = path->DefaultValue;
+        config.prefKey = field.PrefKey;
+        config.get = path->Get;
+        config.onValueChanged = path->Set;
+        config.browseKind = path->PathKind;
+        CreateSettingsTextFieldRow(config, m_ContentBody);
     }
+    else if (const auto* button = std::get_if<SettingsFieldDescriptor::ButtonField>(&field.Control))
     {
-        SettingsToggleConfig config;
-        config.labelText = "Point Light Details";
-        config.tooltip = "Point Gizmo Details Only On Selection";
-        config.defaultValue = Editor::SceneViewSettings::Get().GetPointLightGizmoDetailsOnlyOnSelection();
-        config.prefKey.clear();
-        config.onValueChanged = [](bool enabled) {
-            Editor::SceneViewSettings::Get().SetPointLightGizmoDetailsOnlyOnSelection(enabled);
-        };
-        CreateSettingsToggleRow(config, m_ContentBody);
+        auto row = std::make_unique<UIElement>();
+        row->AddClass("settings-row");
+        if (!field.Label.empty())
+        {
+            auto label = std::make_unique<Label>();
+            label->SetText(field.Label);
+            if (!field.Tooltip.empty())
+                label->SetTooltip(field.Tooltip);
+            label->AddClass("settings-row-label");
+            row->AddChild(std::move(label));
+        }
+
+        auto action = std::make_unique<Button>();
+        action->SetText(button->ButtonText);
+        action->AddClass("small");
+        action->AddClass("secondary");
+        if (!field.Tooltip.empty())
+            action->SetTooltip(field.Tooltip);
+        action->RegisterEventHandler(kEventButtonClick, [onClick = button->OnClick](UIEvent&)
+        {
+            if (onClick)
+                onClick();
+        });
+        row->AddChild(std::move(action));
+
+        m_ContentBody->AddContent(std::move(row));
     }
+    else if (const auto* custom = std::get_if<SettingsFieldDescriptor::CustomField>(&field.Control))
     {
-        SettingsToggleConfig config;
-        config.labelText = "Spot Light Details";
-        config.tooltip = "Spot Gizmo Details Only On Selection";
-        config.defaultValue = Editor::SceneViewSettings::Get().GetSpotLightGizmoDetailsOnlyOnSelection();
-        config.prefKey.clear();
-        config.onValueChanged = [](bool enabled) {
-            Editor::SceneViewSettings::Get().SetSpotLightGizmoDetailsOnlyOnSelection(enabled);
-        };
-        CreateSettingsToggleRow(config, m_ContentBody);
+        if (auto element = custom->CreateRow())
+            m_ContentBody->AddContent(std::move(element));
     }
-
-    // === Normal Thickness Section (shown when constant size is OFF) ===
+    else if (const auto* toggleColor =
+                 std::get_if<SettingsFieldDescriptor::ToggleColorField>(&field.Control))
     {
-        auto sectionContainer = std::make_unique<UIElement>();
-        if (constantSizeEnabled)
-        {
-            sectionContainer->Style().Set(Style::Display, DisplayMode::None);
-        }
-        m_GizmoThicknessSection = sectionContainer.get();
-
-        // Section header
-        {
-            auto header = std::make_unique<Label>();
-            header->AddClass("settings-section-header");
-            header->SetText("Gizmo Thickness");
-            sectionContainer->AddChild(std::move(header));
-        }
-
-        // Translate Gizmo Thickness
-        {
-            SettingsSliderConfig config;
-            config.labelText = "Translate";
-            config.defaultValue = 1.5f;
-            config.minValue = 0.5f;
-            config.maxValue = 3.0f;
-            config.step = 0.1f;
-            config.prefKey = "gizmo.translateThickness";
-            config.onValueChanged = [this](float value) {
-                if (m_OnTranslateGizmoThicknessChanged)
-                    m_OnTranslateGizmoThicknessChanged(value);
-            };
-            
-            auto row = CreateSettingsSliderRow(config, sectionContainer.get());
-            m_TranslateGizmoThicknessSlider = row.slider;
-        }
-
-        // Rotate Gizmo Thickness
-        {
-            SettingsSliderConfig config;
-            config.labelText = "Rotate";
-            config.defaultValue = 5.5f;
-            config.minValue = 0.5f;
-            config.maxValue = 10.0f;
-            config.step = 0.1f;
-            config.prefKey = "gizmo.rotateThickness";
-            config.onValueChanged = [this](float value) {
-                if (m_OnRotateGizmoThicknessChanged)
-                    m_OnRotateGizmoThicknessChanged(value);
-            };
-            
-            auto row = CreateSettingsSliderRow(config, sectionContainer.get());
-            m_RotateGizmoThicknessSlider = row.slider;
-        }
-
-        // Scale Gizmo Thickness
-        {
-            SettingsSliderConfig config;
-            config.labelText = "Scale";
-            config.defaultValue = 1.5f;
-            config.minValue = 0.5f;
-            config.maxValue = 5.0f;
-            config.step = 0.1f;
-            config.prefKey = "gizmo.scaleThickness";
-            config.onValueChanged = [this](float value) {
-                if (m_OnScaleGizmoThicknessChanged)
-                    m_OnScaleGizmoThicknessChanged(value);
-            };
-            
-            auto row = CreateSettingsSliderRow(config, sectionContainer.get());
-            m_ScaleGizmoThicknessSlider = row.slider;
-        }
-
-        m_ContentBody->AddContent(std::move(sectionContainer));
-    }
-
-    // === Constant Screen Size Section (shown when constant size is ON) ===
-    {
-        auto sectionContainer = std::make_unique<UIElement>();
-        if (!constantSizeEnabled)
-        {
-            sectionContainer->Style().Set(Style::Display, DisplayMode::None);
-        }
-        m_GizmoConstantSizeSection = sectionContainer.get();
-
-        // Sub-header for gizmo scale
-        {
-            auto header = std::make_unique<Label>();
-            header->AddClass("settings-section-header");
-            header->SetText("Gizmo Scale");
-            sectionContainer->AddChild(std::move(header));
-        }
-
-        // Translate Gizmo Scale
-        {
-            SettingsSliderConfig config;
-            config.labelText = "Translate";
-            config.defaultValue = 1.0f;
-            config.minValue = 0.25f;
-            config.maxValue = 3.0f;
-            config.step = 0.05f;
-            config.prefKey = "gizmo.translateScale";
-            config.onValueChanged = [this](float value) {
-                if (m_OnTranslateGizmoScaleChanged)
-                    m_OnTranslateGizmoScaleChanged(value);
-            };
-            
-            auto row = CreateSettingsSliderRow(config, sectionContainer.get());
-            m_TranslateGizmoScaleSlider = row.slider;
-        }
-
-        // Rotate Gizmo Scale
-        {
-            SettingsSliderConfig config;
-            config.labelText = "Rotate";
-            config.defaultValue = 1.5f;
-            config.minValue = 0.25f;
-            config.maxValue = 3.0f;
-            config.step = 0.05f;
-            config.prefKey = "gizmo.rotateScale";
-            config.onValueChanged = [this](float value) {
-                if (m_OnRotateGizmoScaleChanged)
-                    m_OnRotateGizmoScaleChanged(value);
-            };
-            
-            auto row = CreateSettingsSliderRow(config, sectionContainer.get());
-            m_RotateGizmoScaleSlider = row.slider;
-        }
-
-        // Scale Gizmo Scale
-        {
-            SettingsSliderConfig config;
-            config.labelText = "Scale";
-            config.defaultValue = 1.0f;
-            config.minValue = 0.25f;
-            config.maxValue = 3.0f;
-            config.step = 0.05f;
-            config.prefKey = "gizmo.scaleGizmoScale";
-            config.onValueChanged = [this](float value) {
-                if (m_OnScaleGizmoScaleChanged)
-                    m_OnScaleGizmoScaleChanged(value);
-            };
-            
-            auto row = CreateSettingsSliderRow(config, sectionContainer.get());
-            m_ScaleGizmoScaleSlider = row.slider;
-        }
-
-        // Sub-header for constant size thickness
-        {
-            auto header = std::make_unique<Label>();
-            header->AddClass("settings-section-header");
-            header->SetText("Gizmo Thickness");
-            sectionContainer->AddChild(std::move(header));
-        }
-
-        // Translate Constant Thickness
-        {
-            SettingsSliderConfig config;
-            config.labelText = "Translate";
-            config.defaultValue = 0.8f;
-            config.minValue = 0.5f;
-            config.maxValue = 5.0f;
-            config.step = 0.1f;
-            config.prefKey = "gizmo.translateConstantThickness";
-            config.onValueChanged = [this](float value) {
-                if (m_OnTranslateConstantThicknessChanged)
-                    m_OnTranslateConstantThicknessChanged(value);
-            };
-            
-            auto row = CreateSettingsSliderRow(config, sectionContainer.get());
-            m_TranslateConstantThicknessSlider = row.slider;
-        }
-
-        // Rotate Constant Thickness
-        {
-            SettingsSliderConfig config;
-            config.labelText = "Rotate";
-            config.defaultValue = 4.2f;
-            config.minValue = 0.5f;
-            config.maxValue = 8.0f;
-            config.step = 0.1f;
-            config.prefKey = "gizmo.rotateConstantThickness";
-            config.onValueChanged = [this](float value) {
-                if (m_OnRotateConstantThicknessChanged)
-                    m_OnRotateConstantThicknessChanged(value);
-            };
-            
-            auto row = CreateSettingsSliderRow(config, sectionContainer.get());
-            m_RotateConstantThicknessSlider = row.slider;
-        }
-
-        // Scale Constant Thickness
-        {
-            SettingsSliderConfig config;
-            config.labelText = "Scale";
-            config.defaultValue = 1.5f;
-            config.minValue = 0.5f;
-            config.maxValue = 5.0f;
-            config.step = 0.1f;
-            config.prefKey = "gizmo.scaleConstantThickness";
-            config.onValueChanged = [this](float value) {
-                if (m_OnScaleConstantThicknessChanged)
-                    m_OnScaleConstantThicknessChanged(value);
-            };
-            
-            auto row = CreateSettingsSliderRow(config, sectionContainer.get());
-            m_ScaleConstantThicknessSlider = row.slider;
-        }
-
-        m_ContentBody->AddContent(std::move(sectionContainer));
-    }
-}
-
-void SettingsPanel::CreateGridAndSnappingContent()
-{
-    if (!m_ContentBody)
-        return;
-
-    using GameEngine::Editor::SceneViewSettings;
-    auto& svSettings = SceneViewSettings::Get();
-
-    // Show grid on startup (moved from Scene View Settings).
-    {
-        SettingsToggleConfig config;
-        config.labelText = "Show Grid on Startup";
-        config.defaultValue = svSettings.GetGridVisibleOnStartup();
-        config.prefKey.clear();
-        config.onValueChanged = [](bool value) {
-            SceneViewSettings::Get().SetGridVisibleOnStartup(value);
-        };
-        CreateSettingsToggleRow(config, m_ContentBody);
-    }
-
-    auto buildColorRow = [this](const char* labelText,
-                                uint32_t initialArgb,
-                                uint32_t defaultArgb,
-                                UIElement** outSwatchPtr,
-                                uint32_t* outColorMember,
-                                std::function<void(uint32_t)> setSetting,
-                                std::function<void()> updateStyle)
-    {
-        *outColorMember = initialArgb;
-
         auto section = std::make_unique<UIElement>();
         section->AddClass("settings-row");
+        section->AddClass("settings-toggle-row");
 
         auto label = std::make_unique<Label>();
-        label->SetText(labelText);
+        label->SetText(field.Label);
+        if (!field.Tooltip.empty())
+            label->SetTooltip(field.Tooltip);
         label->AddClass("settings-row-label");
         Label* labelPtr = label.get();
-        section->AddChild(std::move(label));
 
-        auto applyColor = [outColorMember, setSetting, updateStyle](uint32_t argb) {
-            *outColorMember = argb;
-            setSetting(argb);
-            updateStyle();
-        };
-
-        auto openColorPicker = [this, applyColor, outColorMember](UIEvent& e) {
-            if (e.Button != 0)
-                return;
-            const uint32_t original = *outColorMember;
-            OpenColorPicker(
-                original,
-                applyColor,
-                [applyColor, original]() { applyColor(original); },
-                applyColor);
-            e.Stop();
-        };
-
-        auto swatch = std::make_unique<UIElement>();
-        swatch->AddClass("settings-color-swatch");
-        *outSwatchPtr = swatch.get();
-        updateStyle();
-        swatch->RegisterEventHandler(kEventMouseDown, openColorPicker);
-        section->AddChild(std::move(swatch));
-
-        AddDoubleClickReset(labelPtr, [outColorMember, setSetting, updateStyle, defaultArgb]() {
-            *outColorMember = defaultArgb;
-            setSetting(defaultArgb);
-            updateStyle();
+        const bool enabled =
+            toggleColor->GetEnabled ? toggleColor->GetEnabled() : toggleColor->DefaultEnabled;
+        auto enabledToggle = std::make_unique<Toggle>();
+        Toggle* togglePtr = enabledToggle.get();
+        enabledToggle->AddClass("settings-toggle");
+        enabledToggle->SetChecked(enabled);
+        if (toggleColor->SetEnabled)
+            toggleColor->SetEnabled(enabled);
+        enabledToggle->SetOnValueChanged([setEnabled = toggleColor->SetEnabled](const bool& on)
+        {
+            if (setEnabled)
+                setEnabled(on);
         });
 
-        m_ContentBody->AddContent(std::move(section));
-    };
-
-    // Grid Color (3D) — non-axis lines on the Y=0 plane.
-    buildColorRow(
-        "Grid Color (3D)",
-        svSettings.GetGridColor3D(),
-        0xFF000000u,
-        &m_GridColor3DSwatch,
-        &m_GridColor3D,
-        [](uint32_t argb) { SceneViewSettings::Get().SetGridColor3D(argb); },
-        [this]() { UpdateGridColor3DSwatchStyle(); });
-
-    // Grid Color (2D) — non-axis lines on the Z=0 plane.
-    // Default is semi-transparent white (#7AFFFFFF) so the grid sits gently
-    // over the 2D backdrop without overpowering content.
-    buildColorRow(
-        "Grid Color (2D)",
-        svSettings.GetGridColor2D(),
-        0x7AFFFFFFu,
-        &m_GridColor2DSwatch,
-        &m_GridColor2D,
-        [](uint32_t argb) { SceneViewSettings::Get().SetGridColor2D(argb); },
-        [this]() { UpdateGridColor2DSwatchStyle(); });
-
-    // Grid Opacity (3D)
-    {
-        SettingsSliderConfig config;
-        config.labelText = "Opacity (3D)";
-        config.defaultValue = svSettings.GetGridOpacity3D();
-        config.minValue = 0.0f;
-        config.maxValue = 1.0f;
-        config.step = 0.05f;
-        config.prefKey.clear();
-        config.onValueChanged = [](float value) {
-            SceneViewSettings::Get().SetGridOpacity3D(value);
-        };
-        config.onValueChanging = [](float value) {
-            SceneViewSettings::Get().SetGridOpacity3D(value);
-        };
-        CreateSettingsSliderRow(config, m_ContentBody);
-    }
-
-    // Grid Opacity (2D)
-    {
-        SettingsSliderConfig config;
-        config.labelText = "Opacity (2D)";
-        config.defaultValue = svSettings.GetGridOpacity2D();
-        config.minValue = 0.0f;
-        config.maxValue = 1.0f;
-        config.step = 0.05f;
-        config.prefKey.clear();
-        config.onValueChanged = [](float value) {
-            SceneViewSettings::Get().SetGridOpacity2D(value);
-        };
-        config.onValueChanging = [](float value) {
-            SceneViewSettings::Get().SetGridOpacity2D(value);
-        };
-        CreateSettingsSliderRow(config, m_ContentBody);
-    }
-
-    // Grid Snap Size (used in 3D mode; 2D adapts automatically)
-    {
-        SettingsSliderConfig config;
-        config.labelText = "Snap Size";
-        config.defaultValue = 0.5f;
-        config.minValue = 0.1f;
-        config.maxValue = 10.0f;
-        config.step = 0.1f;
-        config.prefKey = "grid.snapSize";
-        config.onValueChanged = [this](float value) {
-            if (m_OnGridSnapSizeChanged)
-                m_OnGridSnapSizeChanged(value);
-        };
-
-        CreateSettingsSliderRow(config, m_ContentBody);
-    }
-}
-
-void SettingsPanel::CreateAnimationSettingsContent()
-{
-    if (!m_ContentBody)
-        return;
-
-    auto& animSettings = AnimationWindowSettings::Get();
-
-    // Helper: set hex text field from ARGB
-    auto setHexField = [](TextField* f, uint32_t argb) {
-        if (!f) return;
-        char buf[16] = {};
-        std::snprintf(buf, sizeof(buf), "#%06X", static_cast<unsigned int>(argb & 0xFFFFFFu));
-        f->SetValue(buf);
-    };
-
-    // Helper: create a color setting row — label + swatch + hex field
-    auto createColorRow = [this, setHexField](
-        const char* labelText, uint32_t* settingPtr, uint32_t defaultArgb,
-        std::function<void()> onSave) -> std::unique_ptr<UIElement>
-    {
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText(labelText);
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-        section->AddChild(std::move(label));
-
+        auto currentArgb = std::make_shared<uint32_t>(
+            toggleColor->GetColor ? toggleColor->GetColor() : toggleColor->DefaultArgb);
         auto swatch = std::make_unique<UIElement>();
         swatch->AddClass("settings-color-swatch");
         UIElement* swatchPtr = swatch.get();
-        swatch->Style()
-            .Set(Style::Width, StyleLength::Px(16.0f))
-            .Set(Style::Height, StyleLength::Px(16.0f))
-            .Set(Style::FlexShrink, 0.0f)
-            .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{2.0f, 2.0f, 2.0f, 2.0f})
-            .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
-            .Set(Style::BorderColor, BorderColorsTRBL{0xFF3E3E3Eu, 0xFF3E3E3Eu, 0xFF3E3E3Eu, 0xFF3E3E3Eu})
-            .Set(Style::BackgroundColor, *settingPtr)
-            .Set(Style::Cursor, CursorStyle::Pointer);
+        SetSwatchColor(swatchPtr, *currentArgb);
 
-        auto field = std::make_unique<TextField>();
-        TextField* fieldPtr = field.get();
-        setHexField(fieldPtr, *settingPtr);
+        auto applyColor =
+            [swatchPtr, currentArgb, setColor = toggleColor->SetColor](uint32_t argb, bool persist)
+        {
+            *currentArgb = kOpaqueAlpha | (argb & kRgbMask);
+            if (setColor)
+                setColor(*currentArgb, persist);
+            SetSwatchColor(swatchPtr, *currentArgb);
+        };
 
-        swatch->RegisterEventHandler(kEventMouseDown, [this, settingPtr, swatchPtr, fieldPtr, setHexField, onSave](UIEvent& e) {
-            if (e.Button != 0) return;
-            const uint32_t original = *settingPtr;
+        swatch->RegisterEventHandler(kEventMouseDown, [this, applyColor, currentArgb](UIEvent& e)
+        {
+            if (e.Button != 0)
+                return;
+            const uint32_t original = *currentArgb;
             OpenColorPicker(
                 original,
-                [settingPtr, swatchPtr, fieldPtr, setHexField, onSave](uint32_t argb) {
-                    *settingPtr = argb;
-                    onSave();
-                    if (swatchPtr) swatchPtr->Style().Set(Style::BackgroundColor, argb);
-                    setHexField(fieldPtr, argb);
-                },
-                [settingPtr, swatchPtr, original, fieldPtr, setHexField]() {
-                    *settingPtr = original;
-                    AnimationWindowSettings::Get().NotifyChanged();
-                    if (swatchPtr) swatchPtr->Style().Set(Style::BackgroundColor, original);
-                    setHexField(fieldPtr, original);
-                },
-                [settingPtr, swatchPtr, fieldPtr, setHexField](uint32_t argb) {
-                    *settingPtr = argb;
-                    AnimationWindowSettings::Get().NotifyChanged();
-                    if (swatchPtr) swatchPtr->Style().Set(Style::BackgroundColor, argb);
-                    setHexField(fieldPtr, argb);
-                });
+                [applyColor](uint32_t argb) { applyColor(argb, true); },
+                [applyColor, original]() { applyColor(original, false); },
+                [applyColor](uint32_t argb) { applyColor(argb, false); });
             e.Stop();
         });
+
+        AddDoubleClickReset(labelPtr,
+                            [togglePtr, applyColor, defaultEnabled = toggleColor->DefaultEnabled,
+                             defaultArgb = toggleColor->DefaultArgb,
+                             setEnabled = toggleColor->SetEnabled]()
+        {
+            togglePtr->SetChecked(defaultEnabled);
+            if (setEnabled)
+                setEnabled(defaultEnabled);
+            applyColor(defaultArgb, true);
+        });
+
+        section->AddChild(std::move(label));
+        section->AddChild(std::move(enabledToggle));
         section->AddChild(std::move(swatch));
-
-        field->AddClass("settings-row-field");
-        field->AddClass("settings-color-field");
-        field->SetOnValueChanged([settingPtr, swatchPtr, onSave](const std::string& value) {
-            std::string hex = value;
-            if (!hex.empty() && hex[0] == '#') hex = hex.substr(1);
-            if (hex.length() == 6) {
-                try {
-                    uint32_t rgb = static_cast<uint32_t>(std::stoul(hex, nullptr, 16));
-                    *settingPtr = 0xFF000000u | rgb;
-                    onSave();
-                    if (swatchPtr) swatchPtr->Style().Set(Style::BackgroundColor, *settingPtr);
-                } catch (...) {}
-            }
-        });
-        section->AddChild(std::move(field));
-
-        AddDoubleClickReset(labelPtr, [settingPtr, swatchPtr, fieldPtr, defaultArgb, setHexField, onSave]() {
-            *settingPtr = defaultArgb;
-            onSave();
-            if (swatchPtr) swatchPtr->Style().Set(Style::BackgroundColor, defaultArgb);
-            setHexField(fieldPtr, defaultArgb);
-        });
-        return section;
-    };
-
-    // ── Curve Appearance ────────────────────────────────────────────────────
-    {
-        auto hdr = std::make_unique<Label>();
-        hdr->SetText("Curve Appearance");
-        hdr->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(hdr));
+        m_ContentBody->AddContent(std::move(section));
     }
-
-    auto saveAnimSettings = []() { AnimationWindowSettings::Get().Save(); AnimationWindowSettings::Get().NotifyChanged(); };
-    m_ContentBody->AddContent(createColorRow("Keyframe Color",          &animSettings.KeyframeColor,         0xFF33CC80u, saveAnimSettings));
-    m_ContentBody->AddContent(createColorRow("Keyframe Selected Color", &animSettings.KeyframeSelectedColor, 0xFFFF9933u, saveAnimSettings));
-    m_ContentBody->AddContent(createColorRow("X Axis Color",  &animSettings.ColorX, 0xFFF25959u, saveAnimSettings));
-    m_ContentBody->AddContent(createColorRow("Y Axis Color",  &animSettings.ColorY, 0xFF59D966u, saveAnimSettings));
-    m_ContentBody->AddContent(createColorRow("Z Axis Color",  &animSettings.ColorZ, 0xFF598FF2u, saveAnimSettings));
-    m_ContentBody->AddContent(createColorRow("W Axis Color",  &animSettings.ColorW, 0xFFF2CC59u, saveAnimSettings));
-    m_ContentBody->AddContent(createColorRow("Grid H-Line Color", &animSettings.GridHLineColor, 0xFF808080u, saveAnimSettings));
-    m_ContentBody->AddContent(createColorRow("Grid V-Line Color", &animSettings.GridVLineColor, 0xFFA4A4A4u, saveAnimSettings));
-    m_ContentBody->AddContent(createColorRow("Baseline Color",   &animSettings.BaselineColor,  0xFF787878u, saveAnimSettings));
-
+    else if (const auto* color = std::get_if<SettingsFieldDescriptor::ColorField>(&field.Control))
     {
-        SettingsSliderConfig cfg;
-        cfg.labelText = "Grid Line Thickness";
-        cfg.minValue = 0.5f;
-        cfg.maxValue = 4.0f;
-        cfg.step = 0.5f;
-        cfg.defaultValue = 1.0f;
-        cfg.prefKey = "anim.gridLineThickness";
-        cfg.onValueChanged = [](float v) {
-            AnimationWindowSettings::Get().GridLineThickness = v;
-            AnimationWindowSettings::Get().Save();
-            AnimationWindowSettings::Get().NotifyChanged();
+        // Color rows are singleton-backed (Get/Set); registration validation
+        // guarantees Get is present.
+        ColorSwatchRowConfig config;
+        config.LabelText = field.Label;
+        config.Tooltip = field.Tooltip;
+        config.InitialArgb = color->Get ? color->Get() : color->DefaultArgb;
+        config.DefaultArgb = color->DefaultArgb;
+        config.ShowHexField = color->ShowHexField;
+        config.Apply = [set = color->Set, preview = color->Preview](uint32_t argb, bool persist)
+        {
+            const auto& apply = (persist || !preview) ? set : preview;
+            if (apply)
+                apply(argb);
         };
-        CreateSettingsSliderRow(cfg, m_ContentBody);
-    }
-
-    {
-        SettingsSliderConfig cfg;
-        cfg.labelText = "Baseline Thickness";
-        cfg.minValue = 1.0f;
-        cfg.maxValue = 6.0f;
-        cfg.step = 0.5f;
-        cfg.defaultValue = 2.0f;
-        cfg.prefKey = "anim.baselineThickness";
-        cfg.onValueChanged = [](float v) {
-            AnimationWindowSettings::Get().BaselineThickness = v;
-            AnimationWindowSettings::Get().Save();
-            AnimationWindowSettings::Get().NotifyChanged();
-        };
-        CreateSettingsSliderRow(cfg, m_ContentBody);
-    }
-
-    {
-        SettingsSliderConfig cfg;
-        cfg.labelText = "Curve Line Width";
-        cfg.minValue = 1.0f;
-        cfg.maxValue = 5.0f;
-        cfg.step = 0.5f;
-        cfg.defaultValue = 2.0f;
-        cfg.prefKey = "anim.curveLineWidth";
-        cfg.onValueChanged = [](float v) {
-            AnimationWindowSettings::Get().CurveLineWidth = v;
-            AnimationWindowSettings::Get().Save();
-            AnimationWindowSettings::Get().NotifyChanged();
-        };
-        CreateSettingsSliderRow(cfg, m_ContentBody);
-    }
-
-    // ── Timeline ────────────────────────────────────────────────────────────
-    {
-        auto hdr = std::make_unique<Label>();
-        hdr->SetText("Timeline");
-        hdr->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(hdr));
-    }
-
-    {
-        SettingsSliderConfig cfg;
-        cfg.labelText = "Default FPS";
-        cfg.minValue = 1.0f;
-        cfg.maxValue = 240.0f;
-        cfg.step = 1.0f;
-        cfg.defaultValue = 60.0f;
-        cfg.prefKey = "anim.defaultFps";
-        cfg.onValueChanged = [](float v) {
-            AnimationWindowSettings::Get().DefaultFps = v;
-            AnimationWindowSettings::Get().Save();
-            AnimationWindowSettings::Get().NotifyChanged();
-        };
-        CreateSettingsSliderRow(cfg, m_ContentBody);
-    }
-
-    // ── Defaults ────────────────────────────────────────────────────────────
-    {
-        auto hdr = std::make_unique<Label>();
-        hdr->SetText("Defaults");
-        hdr->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(hdr));
-    }
-
-    {
-        SettingsToggleConfig cfg;
-        cfg.labelText = "Show Grid";
-        cfg.defaultValue = true;
-        cfg.prefKey = "anim.showGrid";
-        cfg.onValueChanged = [](bool v) {
-            AnimationWindowSettings::Get().ShowGrid = v;
-            AnimationWindowSettings::Get().Save();
-            AnimationWindowSettings::Get().NotifyChanged();
-        };
-        CreateSettingsToggleRow(cfg, m_ContentBody);
-    }
-
-    {
-        SettingsToggleConfig cfg;
-        cfg.labelText = "Show Bone Icons";
-        cfg.defaultValue = true;
-        cfg.prefKey = "anim.showBoneIcons";
-        cfg.onValueChanged = [](bool v) {
-            AnimationWindowSettings::Get().ShowBoneIcons = v;
-            AnimationWindowSettings::Get().Save();
-            AnimationWindowSettings::Get().NotifyChanged();
-        };
-        CreateSettingsToggleRow(cfg, m_ContentBody);
-    }
-
-    {
-        SettingsToggleConfig cfg;
-        cfg.labelText = "Snap Time";
-        cfg.defaultValue = false;
-        cfg.prefKey = "anim.snapTime";
-        cfg.onValueChanged = [](bool v) {
-            AnimationWindowSettings::Get().SnapTime = v;
-            AnimationWindowSettings::Get().Save();
-            AnimationWindowSettings::Get().NotifyChanged();
-        };
-        CreateSettingsToggleRow(cfg, m_ContentBody);
-    }
-
-    {
-        SettingsToggleConfig cfg;
-        cfg.labelText = "Snap Value";
-        cfg.defaultValue = false;
-        cfg.prefKey = "anim.snapValue";
-        cfg.onValueChanged = [](bool v) {
-            AnimationWindowSettings::Get().SnapValue = v;
-            AnimationWindowSettings::Get().Save();
-            AnimationWindowSettings::Get().NotifyChanged();
-        };
-        CreateSettingsToggleRow(cfg, m_ContentBody);
-    }
-
-    {
-        SettingsToggleConfig cfg;
-        cfg.labelText = "Properties Pane on Right";
-        cfg.defaultValue = false;
-        cfg.prefKey = "anim.propertiesPaneOnRight";
-        cfg.onValueChanged = [](bool v) {
-            AnimationWindowSettings::Get().PropertiesPaneOnRight = v;
-            AnimationWindowSettings::Get().Save();
-            AnimationWindowSettings::Get().NotifyChanged();
-        };
-        CreateSettingsToggleRow(cfg, m_ContentBody);
-    }
-
-    {
-        SettingsToggleConfig cfg;
-        cfg.labelText = "Ruler at Top";
-        cfg.defaultValue = true;
-        cfg.prefKey = "anim.rulerAtTop";
-        cfg.onValueChanged = [](bool v) {
-            AnimationWindowSettings::Get().RulerAtTop = v;
-            AnimationWindowSettings::Get().Save();
-            AnimationWindowSettings::Get().NotifyChanged();
-        };
-        CreateSettingsToggleRow(cfg, m_ContentBody);
+        CreateColorSwatchRow(config);
     }
 }
 
-void SettingsPanel::CreateInputSettingsContent()
+void SettingsPanel::TrackConditionalRegistryRows(size_t firstElement, std::function<bool()> isVisible)
 {
-    if (!m_ContentBody)
+    UIElement* viewport = m_ContentBody ? m_ContentBody->GetViewport() : nullptr;
+    if (!viewport)
         return;
 
-    using GameEngine::Editor::SceneViewSettings;
-
-    SceneViewSettings& settings = SceneViewSettings::Get();
-
-    {
-        auto sectionHeader = std::make_unique<Label>();
-        sectionHeader->SetText("Scene View Mouse");
-        sectionHeader->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(sectionHeader));
-    }
-
-    {
-        SettingsSliderConfig config;
-        config.labelText = "Look Sensitivity";
-        config.defaultValue = settings.GetLookSensitivity();
-        config.minValue = 0.01f;
-        config.maxValue = 2.0f;
-        config.step = 0.01f;
-        config.prefKey.clear();
-        config.onValueChanged = [](float value) {
-            SceneViewSettings::Get().SetLookSensitivity(value);
-        };
-        CreateSettingsSliderRow(config, m_ContentBody);
-    }
-
-    {
-        SettingsToggleConfig config;
-        config.labelText = "Invert Y Axis";
-        config.defaultValue = settings.GetInvertY();
-        config.prefKey.clear();
-        config.onValueChanged = [](bool value) {
-            SceneViewSettings::Get().SetInvertY(value);
-        };
-        CreateSettingsToggleRow(config, m_ContentBody);
-    }
+    ConditionalRegistryRows rows;
+    rows.IsVisible = std::move(isVisible);
+    const auto& children = viewport->GetChildren();
+    for (size_t i = firstElement; i < children.size(); ++i)
+        rows.Elements.push_back(children[i].get());
+    m_ConditionalRegistryRows.push_back(std::move(rows));
+    // Seed from the condition so a hidden row never flashes before the first
+    // post-layout poll.
+    RefreshConditionalRegistryRows();
 }
 
-void SettingsPanel::CreateAssetImportSettingsContent()
+void SettingsPanel::RefreshConditionalRegistryRows()
 {
-    if (!m_ContentBody)
-        return;
-
-    const auto workspaceRoot = EngineCore::GetInstance().GetWorkspaceRoot();
-    Editor::FbxImportSettings settings = Editor::FbxImportSettings::Load(workspaceRoot);
-
+    // A shown row drops the override rather than forcing Flex, so the search
+    // filter's CSS class can still hide it.
+    for (const ConditionalRegistryRows& rows : m_ConditionalRegistryRows)
     {
-        auto sectionHeader = std::make_unique<Label>();
-        sectionHeader->SetText("SVG Texture Import");
-        sectionHeader->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(sectionHeader));
-    }
-    m_ContentBody->AddContent(BuildSvgRasterSizeRow());
-
-    {
-        auto sectionHeader = std::make_unique<Label>();
-        sectionHeader->SetText("FBX Import");
-        sectionHeader->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(sectionHeader));
-    }
-
-    auto addToggleRow = [this, workspaceRoot](const std::string& labelText,
-                                               bool value,
-                                               bool defaultValue,
-                                               std::function<void(Editor::FbxImportSettings&, bool)> assign,
-                                               const char* tooltip)
-    {
-        auto row = std::make_unique<UIElement>();
-        row->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText(labelText);
-        label->SetTooltip(tooltip);
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-
-        auto toggle = std::make_unique<Toggle>();
-        toggle->AddClass("settings-toggle");
-        Toggle* togglePtr = toggle.get();
-        toggle->SetChecked(value);
-        toggle->SetTooltip(tooltip);
-
-        auto saveValue = [workspaceRoot, assign](bool newValue)
+        const bool visible = rows.IsVisible();
+        for (UIElement* element : rows.Elements)
         {
-            Editor::FbxImportSettings next = Editor::FbxImportSettings::Load(workspaceRoot);
-            assign(next, newValue);
-            next.Save(workspaceRoot);
-        };
-
-        toggle->SetOnValueChanged([saveValue](const bool& checked)
-        {
-            saveValue(checked);
-        });
-
-        AddDoubleClickReset(labelPtr, [togglePtr, saveValue, defaultValue]()
-        {
-            togglePtr->SetChecked(defaultValue);
-            saveValue(defaultValue);
-        });
-
-        row->AddChild(std::move(label));
-        row->AddChild(std::move(toggle));
-        m_ContentBody->AddContent(std::move(row));
-    };
-
-    addToggleRow("Scene Extras", settings.ImportSceneExtras, true,
-                 [](Editor::FbxImportSettings& s, bool value) { s.ImportSceneExtras = value; },
-                 "Import auxiliary FBX scene data such as cameras, lights, and helper nodes.");
-    addToggleRow("Cameras", settings.ImportCameras, true,
-                 [](Editor::FbxImportSettings& s, bool value) { s.ImportCameras = value; },
-                 "Create camera entities from imported FBX cameras.");
-    addToggleRow("Lights", settings.ImportLights, true,
-                 [](Editor::FbxImportSettings& s, bool value) { s.ImportLights = value; },
-                 "Create light entities from imported FBX lights.");
-    addToggleRow("Helper Nodes", settings.ImportHelperNodes, true,
-                 [](Editor::FbxImportSettings& s, bool value) { s.ImportHelperNodes = value; },
-                 "Preserve helper/null nodes from the authored FBX hierarchy.");
-    addToggleRow("Generate Missing Tangents", settings.GenerateMissingTangents, true,
-                 [](Editor::FbxImportSettings& s, bool value) { s.GenerateMissingTangents = value; },
-                 "Generate tangent vectors for meshes that need normal mapping but do not provide tangents.");
-    addToggleRow("Clean Skin Weights", settings.CleanSkinWeights, true,
-                 [](Editor::FbxImportSettings& s, bool value) { s.CleanSkinWeights = value; },
-                 "Remove invalid, zero, and negative skin weights during FBX import.");
-    addToggleRow("Adjust Pivots", settings.AdjustPivots, true,
-                 [](Editor::FbxImportSettings& s, bool value) { s.AdjustPivots = value; },
-                 "Apply authored FBX pivot handling during import.");
-    addToggleRow("Preserve Geo Transforms", settings.PreserveGeometryTransforms, true,
-                 [](Editor::FbxImportSettings& s, bool value) { s.PreserveGeometryTransforms = value; },
-                 "Keep authored geometry transforms instead of baking them into mesh vertices.");
-    addToggleRow("Import Embedded Textures", settings.ImportEmbeddedTextures, true,
-                 [](Editor::FbxImportSettings& s, bool value) { s.ImportEmbeddedTextures = value; },
-                 "Read texture image data embedded directly in FBX files.");
-
-    {
-        auto sectionHeader = std::make_unique<Label>();
-        sectionHeader->SetText("Automatic LODs");
-        sectionHeader->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(sectionHeader));
-    }
-
-    // Project-scoped (like the FBX import toggles above) so the whole team gets
-    // uniform import behavior. The callback persists to project settings and
-    // pushes the live policy down to the engine import path (which has no editor
-    // dependency). When off, LODs are still available from the model inspector
-    // and the API.
-    {
-        bool autoLODs = true; // default-on for static meshes when the project has no explicit key
-        {
-            Editor::SettingsStore store = Editor::OpenProjectSettings(workspaceRoot);
-            std::string err;
-            (void)store.Load(&err);
-            store.TryGetBool("import.autoGenerateLODs", autoLODs);
+            if (visible)
+                element->Overrides().Reset(Style::Display);
+            else
+                element->Overrides().Set(Style::Display, DisplayMode::None);
         }
-
-        auto row = std::make_unique<UIElement>();
-        row->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Auto-Generate LODs");
-        label->SetTooltip("Auto-Generate LODs On Import: generate simplified mesh LODs automatically when a model is imported into this project. "
-                          "When off, LODs can still be generated from the model inspector or via the API.");
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-
-        auto toggle = std::make_unique<Toggle>();
-        toggle->AddClass("settings-toggle");
-        toggle->SetChecked(autoLODs);
-        Toggle* togglePtr = toggle.get();
-
-        auto apply = [workspaceRoot](bool value) {
-            Editor::SettingsStore store = Editor::OpenProjectSettings(workspaceRoot);
-            std::string err;
-            (void)store.Load(&err);
-            store.SetBool("import.autoGenerateLODs", value);
-            (void)store.Save(&err);
-            GameEngine::LODImportSettings lod = GameEngine::GetLODImportSettings();
-            lod.AutoGenerateOnImport = value;
-            GameEngine::SetLODImportSettings(lod);
-        };
-
-        toggle->SetOnValueChanged([apply](const bool& checked) { apply(checked); });
-        AddDoubleClickReset(labelPtr, [togglePtr, apply]() {
-            togglePtr->SetChecked(false);
-            apply(false);
-        });
-
-        row->AddChild(std::move(label));
-        row->AddChild(std::move(toggle));
-        m_ContentBody->AddContent(std::move(row));
     }
 }
 
@@ -10095,10 +7572,10 @@ void SettingsPanel::CreateRenderingSettingsContent()
         dd->SetOptions(options, 0);
         dd->SetSelectedValue(pipelinePathStr);
         pipelineDropdown = dd.get();
-        g_ActivePipelineDropdown = pipelineDropdown;
+        s_ActivePipelineDropdown = pipelineDropdown;
 
         dd->SetOnValueChanged([](const std::string& value) {
-            if (g_SuppressActivePipelineDropdownCallback)
+            if (s_SuppressActivePipelineDropdownCallback)
                 return;
             const auto& workspaceRoot = EngineCore::GetInstance().GetWorkspaceRoot();
             if (workspaceRoot.empty())
@@ -10419,9 +7896,9 @@ void SettingsPanel::CreateHDROutputSettingsContent()
             if (!row)
                 continue;
             if (visible)
-                row->Style().Set(Style::Display, DisplayMode::Flex);
+                row->Overrides().Set(Style::Display, DisplayMode::Flex);
             else
-                row->Style().Set(Style::Display, DisplayMode::None);
+                row->Overrides().Set(Style::Display, DisplayMode::None);
             row->MarkDirty(UIElement::StyleDirty | UIElement::LayoutDirty | UIElement::VisualDirty);
         }
         if (contentBody)
@@ -10430,7 +7907,7 @@ void SettingsPanel::CreateHDROutputSettingsContent()
     auto addHdrDependentRow = [this, hdrDependentRows, hdrEnabled](std::unique_ptr<UIElement> row) {
         UIElement* rowPtr = row.get();
         hdrDependentRows->push_back(rowPtr);
-        rowPtr->Style().Set(Style::Display, hdrEnabled ? DisplayMode::Flex : DisplayMode::None);
+        rowPtr->Overrides().Set(Style::Display, hdrEnabled ? DisplayMode::Flex : DisplayMode::None);
         m_ContentBody->AddContent(std::move(row));
     };
 
@@ -10445,7 +7922,7 @@ void SettingsPanel::CreateHDROutputSettingsContent()
         auto toggle = std::make_unique<Toggle>();
         toggle->SetChecked(hdrEnabled);
         Editor::SceneViewSettings::Get().SetHdrOutputEnabled(hdrEnabled);
-        toggle->SetOnValueChanged([saveHdrSetting, requestHdrOutputRefresh, setHdrControlsVisible, rebuildHdrContent](const bool& enabled) {
+        toggle->SetOnValueChanged([this, saveHdrSetting, requestHdrOutputRefresh, setHdrControlsVisible, rebuildHdrContent](const bool& enabled) {
             saveHdrSetting([enabled](nlohmann::json& hdr)
             {
                 hdr["enabled"] = enabled;
@@ -10671,14 +8148,15 @@ void SettingsPanel::CreateHDROutputSettingsContent()
             field->AddClass("settings-hdr-number-field");
             FloatField* fieldPtr = field.get();
             field->SetValue(savedValue);
+            auto applyOverride = [saveHdrSetting, requestHdrOutputRefresh, writeOverride, minV, maxV](float value) {
+                const float clamped = std::clamp(value, minV, maxV);
+                saveHdrSetting([clamped, writeOverride](nlohmann::json& hdr) { writeOverride(hdr, clamped); });
+                requestHdrOutputRefresh();
+            };
             WireSettingsFloatLabelDrag(
                 m_EditorContext, labelPtr, fieldPtr, undoLabel, defaultV, minV, maxV,
                 [minV, maxV](float value) { return std::clamp(value, minV, maxV); },
-                [saveHdrSetting, requestHdrOutputRefresh, writeOverride, minV, maxV](float value) {
-                    const float clamped = std::clamp(value, minV, maxV);
-                    saveHdrSetting([clamped, writeOverride](nlohmann::json& hdr) { writeOverride(hdr, clamped); });
-                    requestHdrOutputRefresh();
-                });
+                applyOverride, applyOverride);
             row->AddChild(std::move(field));
         }
         else
@@ -10798,6 +8276,15 @@ void SettingsPanel::CreateHDROutputSettingsContent()
             displayUiWhite = appliedUiWhite > 0.0f ? appliedUiWhite : hdrMetadata.paperWhiteNits;
         }
         field->SetValue(displayUiWhite);
+        auto applyUiWhite = [saveHdrSetting, applyHdrUiMapping, readHdrFloatSetting](float value) {
+            const float uiWhite = std::clamp(value, 40.0f, 350.0f);
+            saveHdrSetting([uiWhite](nlohmann::json& hdr) { hdr["uiPaperWhiteNits"] = uiWhite; });
+            // Absent = auto (-1): don't turn the other field's auto into an
+            // explicit value as a side effect of editing this one.
+            const float darkOffset = readHdrFloatSetting("uiBlackLiftNits", -1.0f, -1.0f,
+                                                         GameEngine::UIManager::kHdrUiBlackLiftMaxNits);
+            applyHdrUiMapping(uiWhite, darkOffset);
+        };
         WireSettingsFloatLabelDrag(
             m_EditorContext,
             labelPtr,
@@ -10807,15 +8294,8 @@ void SettingsPanel::CreateHDROutputSettingsContent()
             40.0f,
             350.0f,
             [](float value) { return std::clamp(value, 40.0f, 350.0f); },
-            [saveHdrSetting, applyHdrUiMapping, readHdrFloatSetting](float value) {
-                const float uiWhite = std::clamp(value, 40.0f, 350.0f);
-                saveHdrSetting([uiWhite](nlohmann::json& hdr) { hdr["uiPaperWhiteNits"] = uiWhite; });
-                // Absent = auto (-1): don't turn the other field's auto into an
-                // explicit value as a side effect of editing this one.
-                const float darkOffset = readHdrFloatSetting("uiBlackLiftNits", -1.0f, -1.0f,
-                                                             GameEngine::UIManager::kHdrUiBlackLiftMaxNits);
-                applyHdrUiMapping(uiWhite, darkOffset);
-            });
+            applyUiWhite,
+            applyUiWhite);
         row->AddChild(std::move(field));
 
         auto units = std::make_unique<Label>();
@@ -10848,6 +8328,15 @@ void SettingsPanel::CreateHDROutputSettingsContent()
                                            GameEngine::UIManager::kHdrUiBlackLiftMinNits,
                                            GameEngine::UIManager::kHdrUiBlackLiftMaxNits);
         field->SetValue(displayDarkOffset);
+        auto applyDarkOffset = [saveHdrSetting, applyHdrUiMapping, readHdrFloatSetting](float value) {
+            const float darkOffset = std::clamp(value,
+                                                GameEngine::UIManager::kHdrUiBlackLiftMinNits,
+                                                GameEngine::UIManager::kHdrUiBlackLiftMaxNits);
+            saveHdrSetting([darkOffset](nlohmann::json& hdr) { hdr["uiBlackLiftNits"] = darkOffset; });
+            // Absent = auto (0): keep UI white tracking the OS SDR white.
+            const float uiWhite = readHdrFloatSetting("uiPaperWhiteNits", 0.0f, 0.0f, 350.0f);
+            applyHdrUiMapping(uiWhite, darkOffset);
+        };
         WireSettingsFloatLabelDrag(
             m_EditorContext,
             labelPtr,
@@ -10859,15 +8348,8 @@ void SettingsPanel::CreateHDROutputSettingsContent()
             [](float value) { return std::clamp(value,
                                                  GameEngine::UIManager::kHdrUiBlackLiftMinNits,
                                                  GameEngine::UIManager::kHdrUiBlackLiftMaxNits); },
-            [saveHdrSetting, applyHdrUiMapping, readHdrFloatSetting](float value) {
-                const float darkOffset = std::clamp(value,
-                                                    GameEngine::UIManager::kHdrUiBlackLiftMinNits,
-                                                    GameEngine::UIManager::kHdrUiBlackLiftMaxNits);
-                saveHdrSetting([darkOffset](nlohmann::json& hdr) { hdr["uiBlackLiftNits"] = darkOffset; });
-                // Absent = auto (0): keep UI white tracking the OS SDR white.
-                const float uiWhite = readHdrFloatSetting("uiPaperWhiteNits", 0.0f, 0.0f, 350.0f);
-                applyHdrUiMapping(uiWhite, darkOffset);
-            });
+            applyDarkOffset,
+            applyDarkOffset);
         row->AddChild(std::move(field));
 
         auto units = std::make_unique<Label>();
@@ -10983,161 +8465,15 @@ void SettingsPanel::CreateHDROutputSettingsContent()
     }
 }
 
-void SettingsPanel::CreatePerformanceSettingsContent()
-{
-    if (!m_ContentBody)
-        return;
-
-    {
-        auto header = std::make_unique<Label>();
-        header->SetText("Performance");
-        header->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(header));
-    }
-
-    {
-        auto row = std::make_unique<UIElement>();
-        row->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Graphics API");
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-        row->AddChild(std::move(label));
-
-        std::vector<Dropdown::Option> options;
-        options.push_back({"auto", "Auto"});
-        if (Rendering::DeviceFactory::IsAPISupported(Rendering::GraphicsAPI::Vulkan))
-            options.push_back({"vulkan", "Vulkan"});
-        if (Rendering::DeviceFactory::IsAPISupported(Rendering::GraphicsAPI::Metal))
-            options.push_back({"metal", "Metal"});
-        if (Rendering::DeviceFactory::IsAPISupported(Rendering::GraphicsAPI::DirectX12))
-            options.push_back({"dx12", "DirectX 12"});
-
-        auto dropdown = std::make_unique<Dropdown>();
-        dropdown->AddClass("settings-dropdown");
-        dropdown->SetOptions(options, 0);
-
-        std::string selectedApi = "auto";
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.TryGetString("renderer.graphicsApi", selectedApi);
-        }
-        dropdown->SetSelectedValue(selectedApi);
-
-        auto saveApiPreference = [](const std::string& value)
-        {
-            auto prefs = Editor::OpenEditorPreferences();
-            std::string err;
-            prefs.Load(&err);
-            prefs.SetString("renderer.graphicsApi", value);
-            prefs.Save(&err);
-        };
-
-        Dropdown* dropdownPtr = dropdown.get();
-        dropdown->SetOnValueChanged(saveApiPreference);
-
-        AddDoubleClickReset(labelPtr, [dropdownPtr, saveApiPreference]()
-        {
-            dropdownPtr->SetSelectedValue("auto");
-            saveApiPreference("auto");
-        });
-
-        row->AddChild(std::move(dropdown));
-        m_ContentBody->AddContent(std::move(row));
-    }
-
-    {
-        const char* activeApi = "unknown";
-        if (auto* renderServices = EngineCore::GetInstance().GetRenderServices())
-        {
-            if (auto* device = renderServices->GetDevice())
-            {
-                switch (device->GetAPI())
-                {
-                    case Rendering::GraphicsAPI::Vulkan: activeApi = "Vulkan"; break;
-                    case Rendering::GraphicsAPI::Metal: activeApi = "Metal"; break;
-                    case Rendering::GraphicsAPI::WebGPU: activeApi = "WebGPU"; break;
-                    case Rendering::GraphicsAPI::DirectX12: activeApi = "DirectX 12"; break;
-                    case Rendering::GraphicsAPI::Auto: activeApi = "Auto"; break;
-                }
-            }
-        }
-        m_ContentBody->AddContent(MakeSettingsInfoCard(
-            std::string("Currently running: ") + activeApi +
-            ". Graphics backend used for rendering; takes effect after restarting the editor. "
-            "The GE_GFX_API environment variable overrides this setting."));
-    }
-
-    {
-        SettingsToggleConfig config;
-        config.labelText = "VSync";
-        config.defaultValue = true;
-        config.prefKey = "performance.vsync";
-        // Show the vsync the device is actually running (startup config + the
-        // GE_VSYNC env override + any runtime toggle), not just the saved
-        // preference, so the toggle matches how the editor started.
-        if (auto* renderServices = EngineCore::GetInstance().GetRenderServices())
-        {
-            if (auto* device = renderServices->GetDevice())
-                config.initialValueOverride = device->IsVsyncEnabled();
-        }
-        config.onValueChanged = [this](bool value) {
-            if (m_OnVsyncChanged)
-                m_OnVsyncChanged(value);
-        };
-        CreateSettingsToggleRow(config, m_ContentBody);
-    }
-
-    {
-        m_ContentBody->AddContent(MakeSettingsInfoCard(
-            "Synchronize rendering to the display refresh rate. Limits the editor to your "
-            "monitor's refresh rate but eliminates screen tearing."));
-    }
-
-    // Scene View Render Scale
-    {
-        using GameEngine::Editor::SceneViewSettings;
-
-        SettingsSliderConfig config;
-        config.labelText = "Scene View Render Scale";
-        config.defaultValue = SceneViewSettings::Get().GetRenderScale();
-        config.minValue = 0.25f;
-        config.maxValue = 2.0f; // above 1.0 = supersampling (SSAA)
-        config.step = 0.05f;
-        config.prefKey.clear(); // Persisted via SceneViewSettings (sceneView.renderScale).
-        // Live while dragging (the view controllers republish the override
-        // every frame); release commits the pref.
-        config.onValueChanging = [](float value) {
-            SceneViewSettings::Get().SetRenderScale(value, false);
-        };
-        config.onValueChanged = [](float value) {
-            SceneViewSettings::Get().SetRenderScale(value);
-        };
-        CreateSettingsSliderRow(config, m_ContentBody);
-    }
-
-    {
-        m_ContentBody->AddContent(MakeSettingsInfoCard(
-            "Editor-side override of the project Render Scale for the Scene and Game views. "
-            "1.0 = no override, and the views follow the project setting. Lower values trade "
-            "image sharpness for GPU performance (most noticeable on macOS at 2x Retina); above "
-            "1.0 supersamples (SSAA). Clustered lighting and depth-min/max compute follow the "
-            "scaled extent so lighting stays correct."));
-    }
-}
-
 void SettingsPanel::NotifyActivePipelineChanged(const std::string& assetRelativePath)
 {
-    if (!g_ActivePipelineDropdown)
+    if (!s_ActivePipelineDropdown)
         return;
-    if (g_ActivePipelineDropdown->GetSelectedValue() == assetRelativePath)
+    if (s_ActivePipelineDropdown->GetSelectedValue() == assetRelativePath)
         return;
-    g_SuppressActivePipelineDropdownCallback = true;
-    g_ActivePipelineDropdown->SetSelectedValue(assetRelativePath);
-    g_SuppressActivePipelineDropdownCallback = false;
+    s_SuppressActivePipelineDropdownCallback = true;
+    s_ActivePipelineDropdown->SetSelectedValue(assetRelativePath);
+    s_SuppressActivePipelineDropdownCallback = false;
 }
 
 namespace
@@ -11181,50 +8517,18 @@ void ShowShortcutConflictModal(UIElement* host,
     auto overlay = std::make_unique<UIElement>();
     UIElement* overlayRaw = overlay.get();
     overlay->SetOverlayLayer(OverlayLayer::BlockingDialog);
-    overlay->Style()
-        .Set(Style::Position, PositionType::Absolute)
-        .Set(Style::PositionLeft, StyleLength::Px(0.0f))
-        .Set(Style::PositionTop, StyleLength::Px(0.0f))
-        .Set(Style::Width, StyleLength::Percent(100.0f))
-        .Set(Style::Height, StyleLength::Percent(100.0f))
-        .Set(Style::ZIndex, 10000)
-        .Set(Style::BackgroundColor, (uint32_t)0x99000000)
-        .Set(Style::Display, DisplayMode::Flex)
-        .Set(Style::AlignItems, AlignItems::Center)
-        .Set(Style::JustifyContent, JustifyContent::Center)
-        .Set(Style::PointerEvents, true);
+    overlay->AddClass("shortcut-conflict-overlay");
 
     auto window = std::make_unique<UIElement>();
     window->AddClass("shortcut-conflict-window");
-    window->Style()
-        .Set(Style::Display, DisplayMode::Flex)
-        .Set(Style::FlexDir, FlexDirection::Column)
-        .Set(Style::BackgroundColor, (uint32_t)0xFF252526)
-        .Set(Style::BorderWidth, Box4{1, 1, 1, 1})
-        .Set(Style::BorderColor, BorderColorsTRBL{0xFF3A3A3A, 0xFF3A3A3A, 0xFF3A3A3A, 0xFF3A3A3A})
-        .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{10, 10, 10, 10})
-        .Set(Style::Width, StyleLength::Px(500.0f))
-        .Set(Style::MaxWidth, StyleLength::Percent(85.0f))
-        .Set(Style::OverflowProp, Overflow::Hidden);
 
     // Header
     {
         auto header = std::make_unique<UIElement>();
         header->AddClass("shortcut-conflict-header");
-        header->Style()
-            .Set(Style::PaddingTop, StyleLength::Px(16.0f))
-            .Set(Style::PaddingRight, StyleLength::Px(20.0f))
-            .Set(Style::PaddingBottom, StyleLength::Px(14.0f))
-            .Set(Style::PaddingLeft, StyleLength::Px(20.0f))
-            .Set(Style::BackgroundColor, (uint32_t)0xFF1E1E1E)
-            .Set(Style::BorderBottomWidth, 1.0f)
-            .Set(Style::BorderBottomColor, (uint32_t)0xFF2E2E2E);
         auto titleLabel = std::make_unique<Label>();
         titleLabel->SetText(title);
-        titleLabel->Style()
-            .Set(Style::Color, (uint32_t)0xFFEDEDED)
-            .Set(Style::FontSize, StyleLength::Px(16.0f))
-            .Set(Style::FontWeight, 600);
+        titleLabel->AddClass("shortcut-conflict-title");
         header->AddChild(std::move(titleLabel));
         window->AddChild(std::move(header));
     }
@@ -11233,16 +8537,9 @@ void ShowShortcutConflictModal(UIElement* host,
     {
         auto content = std::make_unique<UIElement>();
         content->AddClass("shortcut-conflict-body");
-        content->Style()
-            .Set(Style::PaddingTop, StyleLength::Px(20.0f))
-            .Set(Style::PaddingRight, StyleLength::Px(20.0f))
-            .Set(Style::PaddingBottom, StyleLength::Px(20.0f))
-            .Set(Style::PaddingLeft, StyleLength::Px(20.0f));
         auto msg = std::make_unique<Label>();
         msg->SetText(message);
-        msg->Style()
-            .Set(Style::Color, (uint32_t)0xFFCFCFCF)
-            .Set(Style::FontSize, StyleLength::Px(13.0f));
+        msg->AddClass("shortcut-conflict-message");
         content->AddChild(std::move(msg));
         window->AddChild(std::move(content));
     }
@@ -11271,18 +8568,6 @@ void ShowShortcutConflictModal(UIElement* host,
     {
         auto footer = std::make_unique<UIElement>();
         footer->AddClass("shortcut-conflict-footer");
-        footer->Style()
-            .Set(Style::Display, DisplayMode::Flex)
-            .Set(Style::FlexDir, FlexDirection::Row)
-            .Set(Style::JustifyContent, JustifyContent::FlexEnd)
-            .Set(Style::Gap, StyleLength::Px(8.0f))
-            .Set(Style::PaddingTop, StyleLength::Px(14.0f))
-            .Set(Style::PaddingRight, StyleLength::Px(20.0f))
-            .Set(Style::PaddingBottom, StyleLength::Px(14.0f))
-            .Set(Style::PaddingLeft, StyleLength::Px(20.0f))
-            .Set(Style::BackgroundColor, (uint32_t)0xFF1E1E1E)
-            .Set(Style::BorderTopWidth, 1.0f)
-            .Set(Style::BorderTopColor, (uint32_t)0xFF2E2E2E);
 
         auto cancel = std::make_unique<Button>();
         cancel->SetText("Cancel");
@@ -11439,7 +8724,7 @@ void SettingsPanel::CreateTagsSettingsContent()
     const bool hasProject = !EngineCore::GetInstance().GetWorkspaceRoot().empty();
 
     auto container = std::make_unique<UIElement>();
-    container->Style().Set(Style::MarginLeft, StyleLength::Px(16.0f));
+    container->Overrides().Set(Style::MarginLeft, StyleLength::Px(16.0f));
 
     // Section header with right-click context menu (Reset to defaults)
     {
@@ -11448,7 +8733,7 @@ void SettingsPanel::CreateTagsSettingsContent()
         sectionHeader->AddClass("settings-section-header");
         sectionHeader->SetFocusable(true);
         constexpr uint32_t kCmdResetTagsToDefaults = 1;
-        sectionHeader->RegisterEventHandler(kEventMouseDown, [this](UIEvent& e) {
+        sectionHeader->RegisterEventHandler(kEventMouseDown, [this, kCmdResetTagsToDefaults](UIEvent& e) {
             if (e.Button != 1 || !m_EditorContext || !m_EditorContext->MainWindow)
                 return;
             e.Stop();
@@ -11468,7 +8753,11 @@ void SettingsPanel::CreateTagsSettingsContent()
                     panel->PostAction([panel, defaults]() {
                         std::unordered_set<std::string> defaultNamesLower;
                         for (const auto& d : defaults) {
-                            defaultNamesLower.insert(ToLowerAscii(d.Name));
+                            std::string lower;
+                            lower.reserve(d.Name.size());
+                            for (unsigned char c : d.Name)
+                                lower.push_back(static_cast<char>(std::tolower(c)));
+                            defaultNamesLower.insert(std::move(lower));
                         }
                         std::vector<std::filesystem::path> paths =
                             EngineCore::GetInstance().GetAssetManager().GetRegistry().GetRegisteredAssetPaths();
@@ -11477,7 +8766,7 @@ void SettingsPanel::CreateTagsSettingsContent()
                         auto processBatchRef = std::make_shared<std::function<void()>>();
                         *processBatchRef = [processBatchRef, panel, paths = std::move(paths),
                                            defaultNamesLower = std::move(defaultNamesLower),
-                                           nextIndex]() {
+                                           nextIndex, batchSize]() {
                             AssetRegistry& registry = EngineCore::GetInstance().GetAssetManager().GetRegistry();
                             const size_t start = *nextIndex;
                             const size_t end = (std::min)(start + batchSize, paths.size());
@@ -11497,7 +8786,11 @@ void SettingsPanel::CreateTagsSettingsContent()
                                         part = part.substr(s, (e2 == std::string::npos ? part.size() : e2 + 1) - s);
                                     }
                                     if (!part.empty()) {
-                                        if (defaultNamesLower.count(ToLowerAscii(part)))
+                                        std::string lower;
+                                        lower.reserve(part.size());
+                                        for (unsigned char c : part)
+                                            lower.push_back(static_cast<char>(std::tolower(c)));
+                                        if (defaultNamesLower.count(lower))
                                             kept.push_back(part);
                                     }
                                     j = k + (k < meta.size() ? 1u : 0u);
@@ -11542,21 +8835,19 @@ void SettingsPanel::CreateTagsSettingsContent()
         auto row = std::make_unique<UIElement>();
         row->AddClass("settings-row");
         row->AddClass("settings-tag-row");
-        row->Style()
+        row->Overrides()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Row)
             .Set(Style::AlignItems, AlignItems::Center)
             .Set(Style::Gap, StyleLength::Px(8.0f));
 
         auto swatch = std::make_unique<UIElement>();
+        swatch->AddClass("settings-tag-color-swatch");
         std::string bgColor = tags[tagIndex].Color.empty() ? "#444" : tags[tagIndex].Color;
-        const uint32_t swatchArgb = TagHexToArgb(bgColor);
-        swatch->Style()
-            .Set(Style::Width, StyleLength::Px(20.0f)).Set(Style::Height, StyleLength::Px(20.0f)).Set(Style::MinWidth, StyleLength::Px(20.0f)).Set(Style::MinHeight, StyleLength::Px(20.0f))
-            .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{4.0f, 4.0f, 4.0f, 4.0f}).Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f}).Set(Style::BorderColor, BorderColorsTRBL{0xFF555555u, 0xFF555555u, 0xFF555555u, 0xFF555555u})
-            .Set(Style::BackgroundColor, (uint32_t)swatchArgb).Set(Style::FlexShrink, 0.0f).Set(Style::Cursor, CursorStyle::Pointer);
+        SetSwatchColor(swatch.get(), TagHexToArgb(bgColor));
+        UIElement* swatchPtr = swatch.get();
 
-        swatch->RegisterEventHandler(kEventMouseDown, [this, tagIndex, hasProject](UIEvent& e) {
+        swatch->RegisterEventHandler(kEventMouseDown, [this, tagIndex, swatchPtr, hasProject](UIEvent& e) {
             if (e.Button != 0 || !hasProject) return;
             std::vector<EditorTagDefinition> current = EditorTags::Load();
             if (tagIndex >= current.size()) return;
@@ -11589,7 +8880,7 @@ void SettingsPanel::CreateTagsSettingsContent()
         nameField->SetOnValueChanged([this, tagIndex, hasProject](const std::string& newName) {
             if (!hasProject || newName.empty()) return;
             std::string nameCopy = newName;
-            this->PostAction([tagIndex, nameCopy]() {
+            this->PostAction([this, tagIndex, nameCopy]() {
                 std::vector<EditorTagDefinition> t = EditorTags::Load();
                 if (tagIndex < t.size()) {
                     t[tagIndex].Name = nameCopy;
@@ -11605,7 +8896,7 @@ void SettingsPanel::CreateTagsSettingsContent()
         delBtn->AddClass("secondary");
         delBtn->AddClass("icon-button");
         delBtn->AddClass("trash-icon");
-        delBtn->Style().Set(Style::FlexShrink, 0.0f);
+        delBtn->Overrides().Set(Style::FlexShrink, 0.0f);
         delBtn->RegisterEventHandler(kEventButtonClick, [this, tagIndex, hasProject](UIEvent&) {
             if (!hasProject) return;
             this->PostAction([this, tagIndex]() {
@@ -11717,7 +9008,7 @@ void SettingsPanel::CreateTagsSettingsContent()
     {
         auto row = std::make_unique<UIElement>();
         row->AddClass("settings-row");
-        row->Style()
+        row->Overrides()
             .Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Row)
             .Set(Style::AlignItems, AlignItems::Center).Set(Style::Gap, StyleLength::Px(8.0f)).Set(Style::MarginTop, StyleLength::Px(12.0f));
 
@@ -11757,7 +9048,7 @@ void SettingsPanel::CreateTagsSettingsContent()
     if (!hasProject)
     {
         auto noProject = MakeSettingsInfoCard("Open a project to add or edit tags.");
-        noProject->Style().Set(Style::Color, (uint32_t)0xFF888888u).Set(Style::MarginTop, StyleLength::Px(8.0f));
+        noProject->Overrides().Set(Style::Color, (uint32_t)0xFF888888u).Set(Style::MarginTop, StyleLength::Px(8.0f));
         container->AddChild(std::move(noProject));
     }
 
@@ -11815,260 +9106,6 @@ void SettingsPanel::CreateVcsProviderContent(const std::string& providerTypeId)
         provider.BuildSettingsContent(*m_ContentBody);
 }
 
-void SettingsPanel::CreateScriptSettingsContent()
-{
-    if (!m_ContentBody)
-        return;
-    
-    // ========================================================================
-    // Script Editor Section
-    // ========================================================================
-    {
-        auto sectionHeader = std::make_unique<Label>();
-        sectionHeader->SetText("Script Editor");
-        sectionHeader->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(sectionHeader));
-    }
-    
-    // Double-click behavior toggle: Script Inspector vs IDE
-    {
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-        section->AddClass("settings-toggle-row");
-        
-        auto toggle = std::make_unique<Toggle>();
-        m_ScriptOpenInInspectorToggle = toggle.get();
-        toggle->AddClass("settings-toggle");
-        toggle->SetChecked(Editor::ScriptEditorSettings::Get().GetOpenInScriptInspector());
-        
-        // Hook up callback to update settings
-        toggle->SetOnValueChanged([](const bool& openInInspector) {
-            Editor::ScriptEditorSettings::Get().SetOpenInScriptInspector(openInInspector);
-        });
-        
-        section->AddChild(std::move(toggle));
-        
-        auto label = std::make_unique<Label>();
-        label->SetText("Open in Script Inspector");
-        label->SetTooltip("Double-click opens in Script Inspector");
-        label->AddClass("settings-row-label");
-        section->InsertChild(0, std::move(label));
-        
-        m_ContentBody->AddContent(std::move(section));
-    }
-    
-    // Description label
-    {
-        m_ContentBody->AddContent(MakeSettingsInfoCard(
-            "When disabled, double-clicking a script or log error opens in your default IDE."));
-    }
-
-    {
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-        section->AddClass("settings-toggle-row");
-
-        auto toggle = std::make_unique<Toggle>();
-        m_ShaderGraphGlslOpenToggle = toggle.get();
-        toggle->AddClass("settings-toggle");
-        toggle->SetChecked(Editor::GetOpenShaderGraphGlslInMaterialGraph());
-
-        toggle->SetOnValueChanged([](const bool& openInGraph) {
-            Editor::SetOpenShaderGraphGlslInMaterialGraph(openInGraph);
-        });
-
-        section->AddChild(std::move(toggle));
-
-        auto label = std::make_unique<Label>();
-        label->SetText(".glsl Opens Material Graph");
-        label->SetTooltip("Open shader graph .glsl in Material Graph");
-        label->AddClass("settings-row-label");
-        section->InsertChild(0, std::move(label));
-
-        m_ContentBody->AddContent(std::move(section));
-    }
-
-    {
-        m_ContentBody->AddContent(MakeSettingsInfoCard(
-            "When disabled, material graph .glsl files (with @sg-graph tags) open in the Script "
-            "Editor instead. Other .glsl files always use the Script Editor."));
-    }
-
-    // Line height slider
-    {
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText("Line Height");
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-        section->AddChild(std::move(label));
-
-        auto slider = std::make_unique<Slider>();
-        m_ScriptLineHeightSlider = slider.get();
-        slider->AddClass("settings-row-slider");
-        slider->SetTrackPaddingPx(0.0f);
-        slider->SetShowValueBubble(true);
-        slider->SetMin(0.5f);
-        slider->SetMax(4.0f);
-        slider->SetStep(0.05f);
-
-        float lineHeight = Editor::ScriptEditorSettings::Get().GetLineHeight();
-        slider->SetValue(lineHeight);
-
-        section->AddChild(std::move(slider));
-
-        auto valueField = std::make_unique<FloatField>();
-        valueField->AddClass("settings-row-value");
-        InspectorDrag::ApplySliderFloatValueFieldStyle(valueField.get());
-        valueField->SetValue(lineHeight);
-        FloatField* valueFieldPtr = valueField.get();
-
-        auto applyLineHeight = [this](float value) {
-            Editor::ScriptEditorSettings::Get().SetLineHeight(value);
-            ApplySavedScriptLineHeightStyle(GetOwnerManager());
-        };
-
-        m_ScriptLineHeightSlider->SetOnValueChanging([valueFieldPtr, applyLineHeight](const float& value) {
-            valueFieldPtr->SetValue(value);
-            applyLineHeight(value);
-        });
-
-        m_ScriptLineHeightSlider->SetOnValueChanged([valueFieldPtr, applyLineHeight](const float& value) {
-            valueFieldPtr->SetValue(value);
-            applyLineHeight(value);
-        });
-
-        valueField->SetOnValueChanged([this, applyLineHeight](const float& value) {
-            float clamped = std::clamp(value, 0.5f, 4.0f);
-            if (m_ScriptLineHeightSlider)
-                m_ScriptLineHeightSlider->SetValue(clamped);
-            applyLineHeight(clamped);
-        });
-
-        section->AddChild(std::move(valueField));
-        m_ContentBody->AddContent(std::move(section));
-
-        InspectorDrag::SetupLabelDragSlider(
-            labelPtr, m_ScriptLineHeightSlider, nullptr, nullptr, 1.0f);
-    }
-
-    // ========================================================================
-    // Syntax Highlighting Colors Section
-    // ========================================================================
-    {
-        auto sectionHeader = std::make_unique<Label>();
-        sectionHeader->SetText("Syntax Highlighting");
-        sectionHeader->AddClass("settings-section-header");
-        m_ContentBody->AddContent(std::move(sectionHeader));
-    }
-    
-    // Helper: update hex text field from ARGB
-    auto setHexField = [](TextField* f, uint32_t argb) {
-        if (!f) return;
-        char buf[16] = {0};
-        std::snprintf(buf, sizeof(buf), "#%06X", (unsigned int)(argb & 0xFFFFFFu));
-        f->SetValue(buf);
-    };
-
-    // Helper to create a color setting row: label + clickable swatch (opens color picker) + hex field
-    auto createColorRow = [this, setHexField](const char* labelText, TextField*& fieldPtr, uint32_t* settingPtr,
-                                               uint32_t defaultArgb) {
-        auto section = std::make_unique<UIElement>();
-        section->AddClass("settings-row");
-
-        auto label = std::make_unique<Label>();
-        label->SetText(labelText);
-        label->AddClass("settings-row-label");
-        Label* labelPtr = label.get();
-        section->AddChild(std::move(label));
-
-        auto swatch = std::make_unique<UIElement>();
-        swatch->AddClass("settings-color-swatch");
-        UIElement* swatchPtr = swatch.get();
-        swatch->Style()
-            .Set(Style::Width, StyleLength::Px(16.0f))
-            .Set(Style::Height, StyleLength::Px(16.0f))
-            .Set(Style::FlexShrink, 0.0f)
-            .Set(Style::BorderRadius, CornerRadiiTLTRBRBL{2.0f, 2.0f, 2.0f, 2.0f})
-            .Set(Style::BorderWidth, Box4{1.0f, 1.0f, 1.0f, 1.0f})
-            .Set(Style::BorderColor, BorderColorsTRBL{0xFF3E3E3Eu, 0xFF3E3E3Eu, 0xFF3E3E3Eu, 0xFF3E3E3Eu})
-            .Set(Style::BackgroundColor, *settingPtr)
-            .Set(Style::Cursor, CursorStyle::Pointer);
-        auto field = std::make_unique<TextField>();
-        fieldPtr = field.get();
-        TextField* fieldRaw = fieldPtr;
-        swatch->RegisterEventHandler(kEventMouseDown, [this, settingPtr, swatchPtr, fieldRaw, setHexField](UIEvent& e) {
-            if (e.Button != 0) return;
-            const uint32_t original = *settingPtr;
-            OpenColorPicker(
-                original,
-                [settingPtr, swatchPtr, fieldRaw, setHexField](uint32_t argb) {
-                    *settingPtr = argb;
-                    SyntaxHighlightSettings::Get().Save();
-                    if (swatchPtr)
-                        swatchPtr->Style().Set(Style::BackgroundColor, argb);
-                    setHexField(fieldRaw, argb);
-                },
-                [settingPtr, swatchPtr, original, fieldRaw, setHexField]() {
-                    *settingPtr = original;
-                    if (swatchPtr)
-                        swatchPtr->Style().Set(Style::BackgroundColor, original);
-                    setHexField(fieldRaw, original);
-                },
-                [swatchPtr, fieldRaw, setHexField](uint32_t argb) {
-                    if (swatchPtr)
-                        swatchPtr->Style().Set(Style::BackgroundColor, argb);
-                    setHexField(fieldRaw, argb);
-                });
-            e.Stop();
-        });
-        section->AddChild(std::move(swatch));
-        field->AddClass("settings-row-field");
-        field->AddClass("settings-color-field");
-        setHexField(fieldPtr, *settingPtr);
-        field->SetOnValueChanged([settingPtr, swatchPtr](const std::string& value) {
-            std::string hex = value;
-            if (!hex.empty() && hex[0] == '#') hex = hex.substr(1);
-            if (hex.length() == 6) {
-                try {
-                    uint32_t rgb = static_cast<uint32_t>(std::stoul(hex, nullptr, 16));
-                    *settingPtr = 0xFF000000u | rgb;
-                    SyntaxHighlightSettings::Get().Save();
-                    if (swatchPtr)
-                        swatchPtr->Style().Set(Style::BackgroundColor, *settingPtr);
-                } catch (...) {}
-            }
-        });
-        section->AddChild(std::move(field));
-
-        AddDoubleClickReset(labelPtr, [settingPtr, swatchPtr, defaultArgb, fieldRaw, setHexField]() {
-            *settingPtr = defaultArgb;
-            SyntaxHighlightSettings::Get().Save();
-            if (swatchPtr)
-                swatchPtr->Style().Set(Style::BackgroundColor, defaultArgb);
-            setHexField(fieldRaw, defaultArgb);
-        });
-        return section;
-    };
-
-    auto& syntaxSettings = SyntaxHighlightSettings::Get();
-    constexpr uint32_t kDefaultText = 0xFF999999u;
-    constexpr uint32_t kDefaultKeyword = 0xFFBFBFBFu;
-    constexpr uint32_t kDefaultString = 0xFF7ED321u;
-    constexpr uint32_t kDefaultComment = 0xFFE5A54Bu;
-    constexpr uint32_t kDefaultNumber = 0xFFB87FE8u;
-    constexpr uint32_t kDefaultType = 0xFF5DADE2u;
-
-    m_ContentBody->AddContent(createColorRow("Default Text", m_SyntaxDefaultColorField, &syntaxSettings.DefaultColor, kDefaultText));
-    m_ContentBody->AddContent(createColorRow("Keywords", m_SyntaxKeywordColorField, &syntaxSettings.KeywordColor, kDefaultKeyword));
-    m_ContentBody->AddContent(createColorRow("Strings", m_SyntaxStringColorField, &syntaxSettings.StringColor, kDefaultString));
-    m_ContentBody->AddContent(createColorRow("Comments", m_SyntaxCommentColorField, &syntaxSettings.CommentColor, kDefaultComment));
-    m_ContentBody->AddContent(createColorRow("Numbers", m_SyntaxNumberColorField, &syntaxSettings.NumberColor, kDefaultNumber));
-    m_ContentBody->AddContent(createColorRow("Types", m_SyntaxTypeColorField, &syntaxSettings.TypeColor, kDefaultType));
-}
-
 void SettingsPanel::CreateShortcutsSettingsContent()
 {
     if (!m_ContentBody)
@@ -12096,9 +9133,8 @@ void SettingsPanel::CreateShortcutsSettingsContent()
 
     // Shortcut rows use the same vertical rhythm as Inspector properties,
     // independently of the broader Settings page spacing preference.
-    double shortcutRowGap = 4.0;
-    prefs.TryGetDouble("ui.inspectorRowGap", shortcutRowGap);
-    shortcutRowGap = std::clamp(shortcutRowGap, 0.0, 16.0);
+    const float shortcutRowGap =
+        std::clamp(Editor::InspectorRowLayoutSettings::Get().GetGapPx(), 0.0f, 16.0f);
 
     const auto& catalog = GetShortcutCatalog();
 
@@ -12106,7 +9142,8 @@ void SettingsPanel::CreateShortcutsSettingsContent()
     // Shortcuts page is active, filter rows in place. Matches against
     // group label, display name, and the formatted binding (so the user can
     // search by binding text like "ctrl+s").
-    const std::string filter = ToLowerAscii(m_CurrentSearchQuery);
+    std::string filter = m_CurrentSearchQuery;
+    for (char& c : filter) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
     auto entryMatchesFilter = [&](const ShortcutCatalogEntry& e) -> bool
     {
@@ -12114,7 +9151,7 @@ void SettingsPanel::CreateShortcutsSettingsContent()
             return true;
         auto contains = [&](std::string s)
         {
-            s = ToLowerAscii(s);
+            for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             return s.find(filter) != std::string::npos;
         };
         if (contains(e.displayName))
@@ -12170,7 +9207,7 @@ void SettingsPanel::CreateShortcutsSettingsContent()
 
         auto groupRows = std::make_unique<UIElement>();
         groupRows->AddClass("shortcut-group-rows");
-        groupRows->Style().Set(Style::Gap, StyleLength::Px(static_cast<float>(shortcutRowGap)));
+        groupRows->Overrides().Set(Style::Gap, StyleLength::Px(shortcutRowGap));
 
         for (const ShortcutCatalogEntry* entry : byGroup[group])
         {
@@ -12184,7 +9221,7 @@ void SettingsPanel::CreateShortcutsSettingsContent()
 
             auto trailing = std::make_unique<UIElement>();
             trailing->AddClass("shortcut-controls");
-            trailing->Style()
+            trailing->Overrides()
                 .Set(Style::Display, DisplayMode::Flex)
                 .Set(Style::FlexDir, FlexDirection::Row)
                 .Set(Style::AlignItems, AlignItems::Center);
@@ -12200,12 +9237,12 @@ void SettingsPanel::CreateShortcutsSettingsContent()
                 bindingLabel->AddClass("shortcut-capture-button");
                 bindingLabel->AddClass("readonly");
                 bindingLabel->SetText(FormatShortcutBinding(entry->defaultKey, entry->defaultMods));
-                bindingLabel->Style()
+                bindingLabel->Overrides()
                     .Set(Style::MinWidth, StyleLength::Px(96.0f));
                 trailing->AddChild(std::move(bindingLabel));
 
                 auto spacer = std::make_unique<UIElement>();
-                spacer->Style()
+                spacer->Overrides()
                     .Set(Style::MarginLeft, StyleLength::Px(6.0f))
                     .Set(Style::Width, StyleLength::Px(24.0f));
                 trailing->AddChild(std::move(spacer));
@@ -12258,10 +9295,10 @@ void SettingsPanel::CreateShortcutsSettingsContent()
                     button->AddClass("shortcut-capture-button");
                     button->AddClass("small");
                     button->SetText(FormatShortcutBinding(slotChord.key, slotChord.mods));
-                    button->Style()
+                    button->Overrides()
                         .Set(Style::MinWidth, StyleLength::Px(96.0f));
                     if (slotIdx > 0)
-                        button->Style().Set(Style::MarginLeft, StyleLength::Px(6.0f));
+                        button->Overrides().Set(Style::MarginLeft, StyleLength::Px(6.0f));
                     if (!isDefault)
                         button->AddClass("modified");
 
@@ -12442,7 +9479,7 @@ void SettingsPanel::CreateShortcutsSettingsContent()
                         removeButton->AddClass("icon-button");
                         removeButton->AddClass("shortcut-remove-button");
                         removeButton->SetText("×");
-                        removeButton->Style()
+                        removeButton->Overrides()
                             .Set(Style::MarginLeft, StyleLength::Px(2.0f));
                         removeButton->RegisterEventHandler(kEventButtonClick, [bindings, capturedIdx, persistAndApply](UIEvent&)
                         {
@@ -12461,7 +9498,7 @@ void SettingsPanel::CreateShortcutsSettingsContent()
                 resetButton->AddClass("icon-button");
                 resetButton->AddClass("shortcut-reset-button");
                 resetButton->SetText("");
-                resetButton->Style()
+                resetButton->Overrides()
                     .Set(Style::MarginLeft, StyleLength::Px(6.0f));
 
                 resetButton->RegisterEventHandler(kEventButtonClick, [entryPtr, persistAndApply](UIEvent&)
@@ -12503,7 +9540,7 @@ void SettingsPanel::CreateUserSettingsContent()
     {
         auto row = std::make_unique<UIElement>();
         row->AddClass("settings-row");
-        row->Style()
+        row->Overrides()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Row)
             .Set(Style::AlignItems, AlignItems::Center)
@@ -12541,7 +9578,7 @@ void SettingsPanel::CreateProjectSettingsContent()
 {
     if (!m_ContentBody)
         return;
-    
+
     auto placeholder = std::make_unique<Label>();
     placeholder->AddClass("settings-placeholder");
     placeholder->AddClass("settings-overview-text");
@@ -12585,7 +9622,7 @@ void SettingsPanel::UpdateTreePaneHeight()
     // full-height CSS and visually cut the category tree in half.
     if (m_CurrentLayoutMode == LayoutMode::Horizontal)
     {
-        m_TreePane->Style()
+        m_TreePane->Overrides()
             .Reset(Style::Height)
             .Reset(Style::MinHeight)
             .Reset(Style::MaxHeight);
@@ -12613,7 +9650,7 @@ void SettingsPanel::UpdateTreePaneHeight()
         height = std::clamp(autoHeight, kMinTreeHeight, maxHeight);
     }
 
-    m_TreePane->Style()
+    m_TreePane->Overrides()
         .Set(Style::Height, StyleLength::Px(height))
         .Set(Style::MinHeight, StyleLength::Px(height))
         .Set(Style::MaxHeight, StyleLength::Px(height));
@@ -12630,6 +9667,7 @@ void SettingsPanel::RegisterSearchableItems()
     m_SearchableItems.push_back({"Smart Folder Icon Tint", "smart folder icon tint color", SettingsCategory::UIAppearance, nullptr});
     m_SearchableItems.push_back({"Curve Time Dot", "curve playback current time indicator dot color", SettingsCategory::UIAppearance, nullptr});
     m_SearchableItems.push_back({"Scrollbar Thumb Color", "scrollbar thumb color", SettingsCategory::UIAppearance, nullptr});
+    m_SearchableItems.push_back({"UI SVG Raster Size", "ui svg raster resolution size icons", SettingsCategory::UIAppearance, nullptr});
     m_SearchableItems.push_back({"Use Checkmarks for Toggles", "checkbox checkmark toggle switch boolean style", SettingsCategory::UIAppearance, nullptr});
     m_SearchableItems.push_back({"Use system display scaling", "hidpi dpi retina display scaling", SettingsCategory::UIHiDpi, nullptr});
     m_SearchableItems.push_back({"Additional UI scale", "hidpi dpi 100% 125% 150% 200% zoom", SettingsCategory::UIHiDpi, nullptr});
@@ -12664,6 +9702,8 @@ void SettingsPanel::RegisterSearchableItems()
     m_SearchableItems.push_back(
         {"Expand Smart Folders On Startup", "smart folders startup collapse expand assets", SettingsCategory::UIAssets, nullptr});
     m_SearchableItems.push_back(
+        {"Filled Search Bar", "search bars filled background visibility show hide", SettingsCategory::UIAppearance, nullptr});
+    m_SearchableItems.push_back(
         {"Place Search Bars at Top", "search bar placement position top bottom panels", SettingsCategory::UIAppearance, nullptr});
     m_SearchableItems.push_back(
         {"Accent Search Focus Outline", "search bar focus border accent color", SettingsCategory::UIAppearance, nullptr});
@@ -12680,11 +9720,6 @@ void SettingsPanel::RegisterSearchableItems()
     m_SearchableItems.push_back({"Inspector Solo Sections", "inspector solo sections expand", SettingsCategory::UIInspector, nullptr});
     m_SearchableItems.push_back({"Inspector Toggle Alignment", "inspector toggle alignment left middle right", SettingsCategory::UIInspector, nullptr});
     
-    // Script Settings
-    m_SearchableItems.push_back({"External Script Editor", "script editor path external code", SettingsCategory::Script, nullptr});
-    m_SearchableItems.push_back({"Open in Inspector", "script inspector open", SettingsCategory::Script, nullptr});
-    m_SearchableItems.push_back({"Syntax Highlighting", "syntax color keyword string comment", SettingsCategory::Script, nullptr});
-    
     // Version Control Settings
     m_SearchableItems.push_back({"Version Control", "version control vcs", SettingsCategory::VersionControl, nullptr});
 
@@ -12695,17 +9730,16 @@ void SettingsPanel::RegisterSearchableItems()
             std::min(providers.size(), static_cast<size_t>(kVcsProviderCategoryMaxCount));
         for (size_t i = 0; i < count; ++i)
         {
-            const std::string keywords = ToLowerAscii(providers[i].TypeId + " " + providers[i].DisplayName +
-                                                      " settings version control vcs executable status");
+            std::string keywords = providers[i].TypeId + " " + providers[i].DisplayName +
+                                   " settings version control vcs executable status";
+            for (char& c : keywords)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             m_SearchableItems.push_back(
                 {providers[i].DisplayName, keywords,
                  static_cast<SettingsCategory>(kVcsProviderCategoryBase + i), nullptr});
         }
     }
 
-    // Audio Settings
-    m_SearchableItems.push_back({"Audio Settings", "audio sound volume", SettingsCategory::AudioSettings, nullptr});
-    
     // Scene View Settings
     m_SearchableItems.push_back({"Scene View Settings", "scene view camera fov", SettingsCategory::Camera, nullptr});
     m_SearchableItems.push_back({"Anti-Aliasing", "scene view anti aliasing taa msaa fxaa temporal two-frame smaa ssaa supersample multisample off 4x 2x", SettingsCategory::Camera, nullptr});
@@ -12717,31 +9751,6 @@ void SettingsPanel::RegisterSearchableItems()
     m_SearchableItems.push_back({"Measure Color", "measure ruler color scene view", SettingsCategory::Camera, nullptr});
     m_SearchableItems.push_back({"Allow Child Selection", "child selection scene pick parent hierarchy", SettingsCategory::Camera, nullptr});
     
-    // Animation Settings
-    m_SearchableItems.push_back({"Animation Settings", "animation keyframe timeline", SettingsCategory::Animation, nullptr});
-    
-    // Input Settings
-    m_SearchableItems.push_back({"Input Settings", "input keyboard mouse controller", SettingsCategory::Input, nullptr});
-
-    // Asset Import Settings
-    m_SearchableItems.push_back({"SVG Texture Raster Size", "svg texture import raster resolution default", SettingsCategory::AssetImport, nullptr});
-    m_SearchableItems.push_back({"FBX Scene Extras", "fbx import extras cameras lights lamps helper nodes empties", SettingsCategory::AssetImport, nullptr});
-    m_SearchableItems.push_back({"FBX Cameras", "fbx import camera scene extras", SettingsCategory::AssetImport, nullptr});
-    m_SearchableItems.push_back({"FBX Lights", "fbx import lights lamps scene extras", SettingsCategory::AssetImport, nullptr});
-    m_SearchableItems.push_back({"FBX Helper Nodes", "fbx import helpers empties null nodes scene extras", SettingsCategory::AssetImport, nullptr});
-    m_SearchableItems.push_back({"FBX Tangents", "fbx import generate missing tangents normal maps", SettingsCategory::AssetImport, nullptr});
-    m_SearchableItems.push_back({"FBX Skin Weights", "fbx import clean skin weights bones influences", SettingsCategory::AssetImport, nullptr});
-    m_SearchableItems.push_back({"FBX Pivots", "fbx import pivots geometry transforms embedded textures", SettingsCategory::AssetImport, nullptr});
-
-    // Scene (auto-save backup)
-    m_SearchableItems.push_back({"Scene auto-save", "auto save backup scene interval seconds", SettingsCategory::Scene, nullptr});
-
-    // Physics Settings
-    m_SearchableItems.push_back({"Gravity", "physics gravity simulation world", SettingsCategory::Physics, nullptr});
-    m_SearchableItems.push_back({"Fixed Time Step", "physics time step simulation stepping", SettingsCategory::Physics, nullptr});
-    m_SearchableItems.push_back({"Max Sub Steps", "physics substeps simulation", SettingsCategory::Physics, nullptr});
-    m_SearchableItems.push_back({"Collision Steps", "physics collision iterations", SettingsCategory::Physics, nullptr});
-
     // Rendering Settings
     m_SearchableItems.push_back({"Active Render Pipeline", "render pipeline rendergraph passes forward clustered", SettingsCategory::Rendering, nullptr});
     for (const Editor::SettingsFieldDescriptor& field :
@@ -12753,9 +9762,6 @@ void SettingsPanel::RegisterSearchableItems()
     }
     m_SearchableItems.push_back({"HDR Output", "hdr output hdr10 pq st2084 hlg scrgb monitor display metadata brightness paper white nits", SettingsCategory::HDROutput, nullptr});
     m_SearchableItems.push_back({"Detected HDR Support", "hdr monitor display tv lg oled c7 steam deck gamescope capability support", SettingsCategory::HDROutput, nullptr});
-
-    // Performance Settings
-    m_SearchableItems.push_back({"VSync", "vsync vertical sync frame rate display refresh", SettingsCategory::Performance, nullptr});
 
     // One search entry per field of every category registered through
     // Editor::EditorSettingsRegistry (dynamic categories).
@@ -12770,17 +9776,19 @@ void SettingsPanel::RegisterSearchableItems()
                 category = SettingsCategory::VersionControl;
             else if (categories[i].Group == Editor::SettingsCategoryGroup::UIAppearance)
                 category = SettingsCategory::UIAppearance;
-            else if (categories[i].Group == Editor::SettingsCategoryGroup::SceneView)
-                category = SettingsCategory::Camera;
             if (!categories[i].SearchKeywords.empty())
             {
-                const std::string keywords = ToLowerAscii(categories[i].Title + " " + categories[i].SearchKeywords);
+                std::string keywords = categories[i].Title + " " + categories[i].SearchKeywords;
+                for (char& c : keywords)
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                 m_SearchableItems.push_back(
                     {categories[i].Title, keywords, category, nullptr});
             }
             for (const Editor::SettingsFieldDescriptor& field : categories[i].Fields)
             {
-                const std::string keywords = ToLowerAscii(categories[i].Title + " " + field.SearchKeywords);
+                std::string keywords = categories[i].Title + " " + field.SearchKeywords;
+                for (char& c : keywords)
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                 m_SearchableItems.push_back({field.Label, keywords, category, nullptr});
             }
         }
@@ -12834,7 +9842,8 @@ void SettingsPanel::ApplySearchFilterToContent(const std::string& searchText)
     UIElement* viewport = m_ContentBody->GetViewport();
     if (!viewport)
         return;
-    const std::string searchLower = ToLowerAscii(searchText);
+    std::string searchLower = searchText;
+    for (char& c : searchLower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
     struct PendingReplacement { Label* label; UIElement* parent; std::string before; std::string match; std::string after; };
     std::vector<PendingReplacement> pending;
@@ -12848,7 +9857,8 @@ void SettingsPanel::ApplySearchFilterToContent(const std::string& searchText)
         if (auto* label = dynamic_cast<Label*>(el))
         {
             std::string text = label->GetText();
-            const std::string textLower = ToLowerAscii(text);
+            std::string textLower = text;
+            for (char& c : textLower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             size_t pos = textLower.find(searchLower);
             if (pos != std::string::npos)
             {
@@ -12868,7 +9878,8 @@ void SettingsPanel::ApplySearchFilterToContent(const std::string& searchText)
         {
             // Collapsed cards show only their preview line, so match against the
             // full text and expand the card the hit is in.
-            const std::string cardLower = ToLowerAscii(infoCard->GetFullText());
+            std::string cardLower = infoCard->GetFullText();
+            for (char& c : cardLower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             if (cardLower.find(searchLower) != std::string::npos)
             {
                 infoCard->SetExpanded(true);
@@ -12881,7 +9892,8 @@ void SettingsPanel::ApplySearchFilterToContent(const std::string& searchText)
         if (auto* foldout = dynamic_cast<Foldout*>(el))
         {
             std::string title = foldout->GetTitle();
-            const std::string titleLower = ToLowerAscii(title);
+            std::string titleLower = title;
+            for (char& c : titleLower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             if (titleLower.find(searchLower) != std::string::npos)
             {
                 foldout->AddClass("search-match");
@@ -12938,7 +9950,7 @@ void SettingsPanel::ApplySearchFilterToContent(const std::string& searchText)
         if (!parent || parent->GetChildren().empty())
             continue;
         auto container = std::make_unique<UIElement>();
-        container->Style().Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Row);
+        container->Overrides().Set(Style::Display, DisplayMode::Flex).Set(Style::FlexDir, FlexDirection::Row);
         container->AddClass("settings-search-word-highlight");
         if (!pr.before.empty())
         {
@@ -13070,13 +10082,16 @@ void SettingsPanel::ApplySearchStateNow()
     }
 
     // Build list of categories that have at least one match, in order of first occurrence in m_SearchableItems.
-    const std::string lowerQuery = ToLowerAscii(m_CurrentSearchQuery);
+    std::string lowerQuery = m_CurrentSearchQuery;
+    for (char& c : lowerQuery) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     m_SearchMatchCategories.clear();
     std::unordered_set<SettingsCategory> seen;
     for (const auto& item : m_SearchableItems)
     {
-        const std::string lowerLabel = ToLowerAscii(item.Label);
-        const std::string lowerKeywords = ToLowerAscii(item.Keywords);
+        std::string lowerLabel = item.Label;
+        std::string lowerKeywords = item.Keywords;
+        for (char& c : lowerLabel) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        for (char& c : lowerKeywords) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (lowerLabel.find(lowerQuery) != std::string::npos || lowerKeywords.find(lowerQuery) != std::string::npos)
         {
             if (seen.insert(item.Category).second)
@@ -13129,14 +10144,17 @@ void SettingsPanel::ShowSearchResults(const std::string& query)
         m_ContentHeader->SetText("Search Results");
     
     // Convert query to lowercase for case-insensitive matching
-    const std::string lowerQuery = ToLowerAscii(query);
+    std::string lowerQuery = query;
+    for (char& c : lowerQuery) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     
     // Find matching items
     std::vector<const SearchableSettingItem*> matches;
     for (const auto& item : m_SearchableItems)
     {
-        const std::string lowerLabel = ToLowerAscii(item.Label);
-        const std::string lowerKeywords = ToLowerAscii(item.Keywords);
+        std::string lowerLabel = item.Label;
+        std::string lowerKeywords = item.Keywords;
+        for (char& c : lowerLabel) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        for (char& c : lowerKeywords) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
         if (lowerLabel.find(lowerQuery) != std::string::npos ||
             lowerKeywords.find(lowerQuery) != std::string::npos)
@@ -13150,7 +10168,7 @@ void SettingsPanel::ShowSearchResults(const std::string& query)
         // No results message
         auto noResults = MakeSettingsInfoCard("No settings found matching \"" + query + "\"");
         {
-            noResults->Style()
+            noResults->Overrides()
                 .Set(Style::PaddingTop, StyleLength::Px(20.0f))
                 .Set(Style::PaddingRight, StyleLength::Px(20.0f))
                 .Set(Style::PaddingBottom, StyleLength::Px(20.0f))
@@ -13205,22 +10223,12 @@ void SettingsPanel::ShowSearchResults(const std::string& query)
         case SettingsCategory::UIAssets: return "UI - Assets";
         case SettingsCategory::UIHiDpi: return "UI - HiDPI";
         case SettingsCategory::UIInspector: return "UI - Inspector";
-        case SettingsCategory::Script: return "Script Settings";
         case SettingsCategory::VersionControl:
             return "Version Control Settings";
-        case SettingsCategory::AudioSettings: return "Audio Settings";
         case SettingsCategory::Camera: return "Scene View Settings";
-        case SettingsCategory::Animation: return "Animation Settings";
-        case SettingsCategory::Input: return "Input Settings";
-        case SettingsCategory::Physics: return "Physics Settings";
-        case SettingsCategory::AssetImport: return "Asset Import Settings";
-        case SettingsCategory::Scene: return "Scene Settings";
         case SettingsCategory::Rendering: return "Rendering Settings";
         case SettingsCategory::HDROutput: return "HDR Output Settings";
         case SettingsCategory::Tags: return "Tags Settings";
-        case SettingsCategory::Gizmo: return "Gizmo Settings";
-        case SettingsCategory::GridAndSnapping: return "Grid & Snapping";
-        case SettingsCategory::Performance: return "Performance Settings";
         case SettingsCategory::Shortcuts: return "Keyboard Shortcuts";
         default:
             return "Other";
@@ -13245,8 +10253,10 @@ void SettingsPanel::ShowSearchResults(const std::string& query)
         auto label = std::make_unique<Label>();
         label->SetText(labelText);
         label->AddClass("settings-search-result-label");
-        const std::string lowerLabel = ToLowerAscii(labelText);
-        const std::string lowerQuery = ToLowerAscii(query);
+        std::string lowerLabel = labelText;
+        std::string lowerQuery = query;
+        for (char& c : lowerLabel) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        for (char& c : lowerQuery) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (lowerLabel.find(lowerQuery) != std::string::npos)
             label->AddClass("search-match");
         row->AddChild(std::move(label));
@@ -13290,8 +10300,15 @@ UIElement* FindSettingsSearchContextTarget(UIElement* root,
                                            const std::string& label,
                                            const std::string& query)
 {
-    const std::string wantedLabel = ToLowerAscii(label);
-    const std::string wantedQuery = ToLowerAscii(query);
+    auto lower = [](std::string value)
+    {
+        for (char& c : value)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return value;
+    };
+
+    const std::string wantedLabel = lower(label);
+    const std::string wantedQuery = lower(query);
     UIElement* labelContains = nullptr;
     UIElement* queryContains = nullptr;
     UIElement* exact = nullptr;
@@ -13301,7 +10318,7 @@ UIElement* FindSettingsSearchContextTarget(UIElement* root,
             return;
         if (auto* candidate = dynamic_cast<Label*>(element))
         {
-            const std::string text = ToLowerAscii(candidate->GetText());
+            const std::string text = lower(candidate->GetText());
             if (!wantedLabel.empty() && text == wantedLabel)
             {
                 exact = candidate;
@@ -13325,8 +10342,8 @@ void SettingsPanel::OpenSearchResultInContext(SettingsCategory category,
                                               const std::string& query)
 {
     m_PendingSearchContextReveal = PendingSearchContextReveal{category, label, query};
-    if (m_SearchBar)
-        m_SearchBar->SetValue("");
+    if (m_SearchField)
+        m_SearchField->SetValue("");
     ClearSearchResults();
 }
 
@@ -13544,7 +10561,7 @@ void SettingsPanel::ShowImportUserSettingsModal(const std::filesystem::path& imp
     auto overlay = std::make_unique<UIElement>();
     UIElement* overlayRaw = overlay.get();
     overlay->SetOverlayLayer(OverlayLayer::BlockingDialog);
-    overlay->Style()
+    overlay->Overrides()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(0.0f))
         .Set(Style::PositionTop, StyleLength::Px(0.0f))
@@ -13558,7 +10575,7 @@ void SettingsPanel::ShowImportUserSettingsModal(const std::filesystem::path& imp
         .Set(Style::PointerEvents, true);
 
     auto window = std::make_unique<UIElement>();
-    window->Style()
+    window->Overrides()
         .Set(Style::Display, DisplayMode::Flex)
         .Set(Style::FlexDir, FlexDirection::Column)
         .Set(Style::BackgroundColor, (uint32_t)0xFF252526)
@@ -13572,7 +10589,7 @@ void SettingsPanel::ShowImportUserSettingsModal(const std::filesystem::path& imp
     // Header
     {
         auto header = std::make_unique<UIElement>();
-        header->Style()
+        header->Overrides()
             .Set(Style::PaddingTop, StyleLength::Px(16.0f))
             .Set(Style::PaddingRight, StyleLength::Px(20.0f))
             .Set(Style::PaddingBottom, StyleLength::Px(14.0f))
@@ -13582,7 +10599,7 @@ void SettingsPanel::ShowImportUserSettingsModal(const std::filesystem::path& imp
             .Set(Style::BorderBottomColor, (uint32_t)0xFF2E2E2E);
         auto titleLabel = std::make_unique<Label>();
         titleLabel->SetText("Import Settings");
-        titleLabel->Style()
+        titleLabel->Overrides()
             .Set(Style::Color, (uint32_t)0xFFEDEDED)
             .Set(Style::FontSize, StyleLength::Px(16.0f))
             .Set(Style::FontWeight, 600);
@@ -13592,7 +10609,7 @@ void SettingsPanel::ShowImportUserSettingsModal(const std::filesystem::path& imp
 
     // Scrollable checkbox list
     auto listScroll = std::make_unique<ScrollView>();
-    listScroll->Style()
+    listScroll->Overrides()
         .Set(Style::MaxHeight, StyleLength::Px(280.0f))
         .Set(Style::PaddingTop, StyleLength::Px(8.0f))
         .Set(Style::PaddingBottom, StyleLength::Px(8.0f))
@@ -13608,7 +10625,7 @@ void SettingsPanel::ShowImportUserSettingsModal(const std::filesystem::path& imp
         const auto& group = kExportGroups[pg.index];
 
         auto row = std::make_unique<UIElement>();
-        row->Style()
+        row->Overrides()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Row)
             .Set(Style::AlignItems, AlignItems::Center)
@@ -13641,7 +10658,7 @@ void SettingsPanel::ShowImportUserSettingsModal(const std::filesystem::path& imp
 
     {
         auto footer = std::make_unique<UIElement>();
-        footer->Style()
+        footer->Overrides()
             .Set(Style::Display, DisplayMode::Flex)
             .Set(Style::FlexDir, FlexDirection::Row)
             .Set(Style::JustifyContent, JustifyContent::FlexEnd)

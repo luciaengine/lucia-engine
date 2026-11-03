@@ -29,9 +29,6 @@ namespace GameEngine::Editor
 inline constexpr std::size_t kMinPathPoints = 2;
 inline constexpr std::size_t kMaxPathPoints = 256;
 
-// The undo step's name for a volume turned into a path (ConvertMarkupShapeCommand).
-inline constexpr const char* kConvertToPathLabel = "Convert Mark-up to Path";
-
 // Whether `entity` is a path mark-up: Markup and a SplineComponent, no MarkupRegion.
 bool IsMarkupPath(const ECS::World& world, ECS::EntityHandle entity);
 
@@ -41,7 +38,7 @@ bool IsMarkupPath(const ECS::World& world, ECS::EntityHandle entity);
 // only off the terrain.
 std::optional<std::string> ReadPathPoints(const nlohmann::json& value, std::vector<Mathematics::Vector3>& out);
 
-// Stands each of `points` on the terrain under it (MarkupTerrainHeightAt), so the knots Edit Path
+// Stands each of `points` on the terrain under it (MarkupTerrainHeightAt), so the knots Edit path
 // offers are on the line the Scene View draws; a point off the terrain keeps its y.
 void StandPathOnGround(ECS::World& world, std::span<Mathematics::Vector3> points);
 

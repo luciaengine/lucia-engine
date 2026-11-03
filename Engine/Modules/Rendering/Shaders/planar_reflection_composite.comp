@@ -1,0 +1,101 @@
+#version 450
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D uScene;
+layout(set = 0, binding = 1) uniform sampler2D uCapture;
+layout(set = 0, binding = 2) uniform sampler2D uDepth;
+layout(set = 0, binding = 3) uniform sampler2D uNormalRoughness;
+layout(set = 0, binding = 4) uniform sampler2D uSpecularWeight;
+layout(set = 0, binding = 5) uniform sampler2D uSpecularRadiance;
+layout(set = 0, binding = 6) uniform sampler2D uPreviousMask;
+layout(set = 0, binding = 11) uniform sampler2D uSharpCapture;
+#include "Includes/view_params.glsl"
+#include "Includes/octahedral_normal.glsl"
+#include "Includes/planar_reconstruction.glsl"
+#include "Includes/screen_position.glsl"
+layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D uOutput;
+layout(set = 0, binding = 9, r16f) uniform writeonly image2D uMask;
+layout(set = 0, binding = 10, std140) uniform PlanarParams
+{
+    mat4 reflectionViewProj;
+    mat4 worldToLocal;
+    vec4 plane;
+    vec4 settings; // intensity, maximum roughness, plane tolerance (m), edge fade (local)
+    vec4 flags; // x: previous mask present, y: fast blur radius in capture pixels
+    vec4 viewport; // camera rectangle in render-target UV
+};
+
+vec4 SamplePlanarCapture(sampler2D source, vec2 uv, bool reconstruct)
+{
+    if (!reconstruct) return textureLod(source, clamp(uv, vec2(0), vec2(1)), 0);
+    ivec2 size = textureSize(source, 0);
+    vec2 position = clamp(uv, vec2(0), vec2(1)) * vec2(size) - 0.5;
+    ivec2 base = ivec2(floor(position));
+    vec4 samples[16];
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x)
+            samples[y * 4 + x] = texelFetch(source,
+                clamp(base + ivec2(x - 1, y - 1), ivec2(0), size - 1), 0);
+    return GE_PlanarReconstruct(samples, fract(position));
+}
+
+void main()
+{
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(uOutput);
+    if (any(greaterThanEqual(p, size))) return;
+    vec4 scene = texelFetch(uScene, p, 0);
+    float mask = flags.x > 0.5 ? texelFetch(uPreviousMask, p, 0).r : 0.0;
+    imageStore(uOutput, p, scene);
+    imageStore(uMask, p, vec4(mask));
+    float depth = texelFetch(uDepth, p, 0).r;
+    vec4 nr = texelFetch(uNormalRoughness, p, 0);
+    float materialMask = clamp(nr.a, 0.0, 1.0);
+    if (materialMask <= 0.0 || depth <= 0.0 || nr.b > settings.y || mask >= 0.999) return;
+    GE_ScreenRect cameraRect = GE_ScreenRect(viewport.xy * vec2(size), viewport.zw * vec2(size));
+    vec2 uv = GE_PixelPositionToViewportUV(vec2(p) + 0.5, cameraRect);
+    if (!GE_ViewportUVInside(uv)) return;
+    vec4 viewPosition = ge_invProj * vec4(GE_ViewportUVToYUpNdc(uv), depth, 1.0);
+    if (abs(viewPosition.w) < 1e-6) return;
+    vec3 worldPosition = (ge_invView * vec4(viewPosition.xyz / viewPosition.w, 1)).xyz;
+    vec3 normal = normalize(mat3(ge_invView) * GE_OctDecode(nr.rg));
+    if (abs(dot(plane, vec4(worldPosition, 1))) > settings.z || dot(normal, plane.xyz) < 0.9) return;
+    vec3 local = (worldToLocal * vec4(worldPosition, 1)).xyz;
+    float edge = min(0.5 - abs(local.x), 0.5 - abs(local.z));
+    if (edge < 0.0) return;
+    float coverage = settings.w > 0.0 ? smoothstep(0.0, settings.w, edge) : 1.0;
+    // Bend the REFLECTED RAY, not just the position along the flat plane.
+    // A tangential position offset barely moves V at grazing angles and makes
+    // splash normals look painted on. The ray delta also carries the vertical
+    // bend, so an impact visibly warps the reflected image around its ring.
+    vec3 toCamera = normalize((ge_invView * vec4(0, 0, 0, 1)).xyz - worldPosition);
+    vec3 rayDelta = reflect(-toCamera, normal) - reflect(-toCamera, plane.xyz);
+    float distortionDistance = min(length(viewPosition.xyz / viewPosition.w) * 0.20, 3.0);
+    vec4 clip = reflectionViewProj * vec4(worldPosition + rayDelta * distortionDistance, 1);
+    if (clip.w <= 1e-6) return;
+    // Mirror capture flips the viewport Y to restore triangle winding. Its
+    // texture therefore uses the opposite V to a regular camera projection.
+    vec2 captureUv = clip.xy / clip.w * 0.5 + 0.5;
+    if (any(lessThan(captureUv, vec2(0))) || any(greaterThan(captureUv, vec2(1)))) return;
+    vec3 fallback = texelFetch(uSpecularRadiance, p, 0).rgb;
+    // Two-level roughness approximation: a zero-roughness mirror remains sharp,
+    // regardless of the component's acceptance ceiling. Interpolate variance
+    // between the unblurred capture and the Gaussian at that ceiling.
+    float ratio = clamp(nr.b / max(settings.y, 1e-5), 0.0, 1.0);
+    float blurWeight = flags.y > 0.0 ? pow(ratio, 4.0) : 0.0;
+    bool reconstruct = any(lessThan(textureSize(uSharpCapture, 0), size));
+    vec4 filtered = SamplePlanarCapture(uSharpCapture, captureUv, reconstruct);
+    if (blurWeight > 0.0)
+        filtered = mix(filtered, textureLod(uCapture, captureUv, 0), blurWeight);
+    // Filter premultiplied HDR and coverage together before environment fill,
+    // so empty capture pixels do not produce black fringes around silhouettes.
+    vec3 incident = filtered.rgb + fallback * (1.0 - clamp(filtered.a, 0.0, 1.0));
+    if (any(equal(floatBitsToUint(incident) & uvec3(0x7f800000u), uvec3(0x7f800000u)))) return;
+    vec3 weight = texelFetch(uSpecularWeight, p, 0).rgb;
+    if (!any(greaterThan(weight, vec3(1e-5)))) return;
+    float blend = clamp(settings.x * coverage * materialMask, 0.0, 1.0) * (1.0 - mask);
+    scene.rgb = max(scene.rgb + (incident - fallback) * weight * blend, vec3(0));
+    imageStore(uOutput, p, scene);
+    // Planar owns the surface even when its capture sees only the environment;
+    // SSR must not overlay a partial camera-visible object onto a complete mirror.
+    imageStore(uMask, p, vec4(mask + blend));
+}

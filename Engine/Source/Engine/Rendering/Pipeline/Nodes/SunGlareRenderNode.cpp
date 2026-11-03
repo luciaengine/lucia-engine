@@ -1,15 +1,11 @@
 #include "Engine/Rendering/Pipeline/Nodes/SunGlareRenderNode.h"
 
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
-#include "Engine/Rendering/Pipeline/ViewExposureHistory.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SkyRenderFeature.h"
 #include "Engine/Rendering/SunGlareRenderFeature.h"
 #include "Engine/Rendering/SunScreenProjection.h"
-#include "Mathematics/Interpolation.h"
-#include "Mathematics/Vector3.h"
-#include "Mathematics/Vector4.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Sky/SkyRenderer.h"
@@ -18,7 +14,6 @@
 #include <algorithm>
 #include <cmath>
 #include <nlohmann/json.hpp>
-#include <optional>
 #include <string>
 
 namespace GameEngine::Engine::Renderer { using namespace ::GameEngine::Rendering; }
@@ -32,13 +27,11 @@ using namespace ::GameEngine::Rendering;
 namespace
 {
 
-// Radius of the disc the visibility terms sample, in units of the sun's angular radius: the
-// screen probe's ring and the cascade term's taps, so both fade over the same sweep of the sun.
-// The ring must not reach much past the disc: at three radii the taps on the occluded side leave
-// the sum while the disc is still fully hidden, which showed up as a bright blob sitting on a
-// hillside with no sun in it. Just over one radius keeps the probe asking about the sun rather
-// than its surroundings, and the fade still spans the disc's own width because the taps are
-// area-distributed inside it.
+// Occlusion probe radius, in units of the sun's angular radius. The ring must not reach much
+// past the disc: at three radii the taps on the occluded side leave the sum while the disc is
+// still fully hidden, which showed up as a bright blob sitting on a hillside with no sun in it.
+// Just over one radius keeps the probe asking about the sun rather than its surroundings, and
+// the fade still spans the disc's own width because the taps are area-distributed inside it.
 constexpr float kProbeRadiusInSunRadii = 1.4f;
 
 
@@ -49,80 +42,6 @@ constexpr float kProbeRadiusInSunRadii = 1.4f;
 // curve: a hard elevation cutoff would pop the glare off while the disc was still visibly
 // fading. Past this the disc is gone and the pass is not declared.
 constexpr float kNightFadeCutoff = 0.98f;
-
-// Size of the cascade term's buffer: one float, padded to the smallest storage-buffer range
-// every backend takes.
-constexpr uint32_t kCastersBufferBytes = 16u;
-
-// The cascade term's pass: one workgroup (sun_glare_casters.comp) evaluates the fraction of the
-// sun's disc whose beam reaches the eye past every shadow caster, into a buffer of one float
-// the glare's vertex stage reads. A pass of its own because the term is some 700 independent
-// lookups: each of the workgroup's 64 lanes runs one tap of one cascade, so the pass costs the
-// latency of one tap rather than of all of them.
-RenderGraph::RGBuffer DeclareCastersPass(ViewDeclare& d, const SunGlareRenderFeature& feature,
-                                         RenderGraph::RGTexture shadowArray,
-                                         const PipelineBufferBindingRG& shadowData,
-                                         const SunGlareCastersPushConstants& pc)
-{
-    BufferDesc desc{};
-    desc.size = kCastersBufferBytes;
-    desc.stride = sizeof(float);
-    desc.usage = static_cast<uint32_t>(BufferUsage::Storage);
-    desc.memoryUsage = BufferMemoryUsage::DeviceLocal;
-    desc.debugName = "SunGlare.Casters";
-    const RenderGraph::RGBuffer casters = d.Frame.CreateBuffer(d.PassName("Casters").c_str(), desc);
-    if (!casters.IsValid())
-        return casters;
-
-    const ComputePipelineId pipe = feature.GetCastersPipelineId();
-    // The feature outlives the frame, so the pass reads its layout in place.
-    const DescriptorSetLayoutDesc* layout = &feature.GetCastersLayout();
-    const SamplerHandle shadowSampler = feature.GetShadowSampler();
-    const uint32_t shadowArrayBinding = feature.GetCastersShadowArrayBinding();
-    const uint32_t shadowDataBinding = feature.GetCastersShadowDataBinding();
-    const uint32_t outputBinding = feature.GetCastersOutputBinding();
-    d.Frame.AddPass(
-        d.PassName("Casters").c_str(), Rendering::PassPhase::kPostProcess,
-        [&](RenderGraph::RGPassBuilder& p)
-        {
-            p.Read(shadowArray, RenderGraph::RGTextureRead::SampledCompute);
-            if (shadowData.Graph.IsValid())
-                p.Read(shadowData.Graph, RenderGraph::RGBufferRead::Uniform);
-            p.Write(casters, RenderGraph::RGBufferWrite::Storage);
-        },
-        [pipe, layout, shadowSampler, shadowArray, shadowData, casters, shadowArrayBinding,
-         shadowDataBinding, outputBinding, pc](RenderGraph::RGContext& ctx)
-        {
-            auto* dev = ctx.GetDevice();
-            auto* cl = ctx.Cmd;
-            if (!dev || !cl)
-                return;
-            // These returns leave the buffer unwritten, and the glare reads that frame's float
-            // clamped to [0, 1]. They are not reached while the graph and the device work: the
-            // pipeline id was valid at declare and GetOrCreatePipelineVariant builds it now (a
-            // failure logs), and RGFrame asserts when a declared resource has no physical one.
-            const PipelineHandle pso = ctx.GetOrCreatePipelineVariant(pipe);
-            const TextureHandle shadowPhys = ctx.GetTexture(shadowArray);
-            const BufferHandle castersPhys = ctx.GetBuffer(casters);
-            if (!pso.IsValid() || !shadowPhys.IsValid() || !castersPhys.IsValid())
-                return;
-            DescriptorSetDesc dsDesc{};
-            dsDesc.layout = *layout;
-            dsDesc.debugName = "SunGlare.Casters.DS";
-            dsDesc.transient = true;
-            auto ds = dev->CreateDescriptorSet(dsDesc);
-            dev->UpdateCombinedImageSamplerBinding(ds, shadowArrayBinding, shadowPhys, shadowSampler);
-            dev->UpdateBufferBinding(ds, shadowDataBinding, shadowData.Buffer,
-                                     static_cast<size_t>(shadowData.Offset),
-                                     static_cast<size_t>(shadowData.Size));
-            dev->UpdateStorageBufferBinding(ds, outputBinding, castersPhys, 0, kCastersBufferBytes);
-            cl->SetPipeline(pso);
-            cl->BindDescriptorSet(0, ds, pso);
-            cl->SetPushConstants(pc);
-            cl->Dispatch(1u, 1u, 1u);
-        });
-    return casters;
-}
 
 } // namespace
 
@@ -164,12 +83,12 @@ void SunGlareRenderNode::DeclareForView(ViewDeclare& d)
     if (!sky.showSunDisk || !(sky.primarySunIntensity > 0.0f))
         return;
 
-    const float nightAmount = Math::Clamp01(sky.nightSkyBlend);
+    const float nightAmount = std::clamp(sky.nightSkyBlend, 0.0f, 1.0f);
     if (nightAmount >= kNightFadeCutoff)
         return;
 
-    const Mathematics::Vector3 sunDir(sky.scatteringSunDir[0], sky.scatteringSunDir[1],
-                                      sky.scatteringSunDir[2]);
+    const float sunDir[3] = {sky.scatteringSunDir[0], sky.scatteringSunDir[1],
+                             sky.scatteringSunDir[2]};
 
     auto& renderer = skyFeat->GetRenderer();
     if (!renderer.IsTransmittanceComputed())
@@ -184,7 +103,7 @@ void SunGlareRenderNode::DeclareForView(ViewDeclare& d)
     // over the whole viewport rather than a halo. The sky already treats these views
     // separately, drawing a 2D backdrop instead of the atmosphere. A projection matrix's
     // (3,3) element is 0 when it divides by w and 1 when it does not.
-    if (std::fabs(camera->proj[3][3]) > 0.5f)
+    if (std::fabs(camera->proj[15]) > 0.5f)
         return;
 
     RenderGraph::RGTexture target{};
@@ -232,14 +151,36 @@ void SunGlareRenderNode::DeclareForView(ViewDeclare& d)
     // Shadow cascades: the array the shadow pass rendered plus the block carrying its
     // per-cascade matrices. Both absent (no directional shadows this frame) simply disables
     // the cascade term — the pass still runs on the screen probe alone.
-    const RenderGraph::RGTexture shadowArray = rs.GetShadowMapArrayRG(d.Frame, d.View.id);
+    RenderGraph::RGTexture shadowArray = rs.GetShadowMapArrayRG(d.Frame, d.View.id);
     const PipelineBufferBindingRG shadowData = d.ResolveBuffer(Names::Res::ShadowData);
     const bool cascadesReady = shadowArray.IsValid() && shadowData.IsValid();
 
+    // Background-only pixelation views have no cascades. Even with that term
+    // disabled, sampler2DArrayShadow requires a depth-array descriptor; the
+    // 2D atmosphere LUT is not a compatible fallback.
+    if (!shadowArray.IsValid())
+    {
+        TextureDesc desc{};
+        desc.width = desc.height = 1;
+        desc.format = static_cast<uint32_t>(TextureFormat::D32_FLOAT);
+        desc.flags = TextureCreateFlags::ForceArrayView;
+        desc.usage = static_cast<uint32_t>(TextureUsage::DepthStencil | TextureUsage::ShaderResource);
+        shadowArray = d.Frame.ImportPersistentTexture(d.PassName("EmptyShadowArray").c_str(), desc);
+        d.Frame.AddPass(d.PassName("ClearEmptyShadowArray").c_str(), PassPhase::kEarlySetup,
+            [shadowArray](RenderGraph::RGPassBuilder& p)
+            {
+                RenderGraph::RGAttachmentOps ops{};
+                ops.Load = RenderGraph::RGLoadOp::Clear;
+                ops.Store = RenderGraph::RGStoreOp::Store;
+                ops.Clear.Depth = 0.0f;
+                p.AttachDepth(shadowArray, ops);
+            }, [](RenderGraph::RGContext&) {});
+    }
+
     SunGlarePushConstants pc{};
-    pc.SunDirRadius[0] = sunDir.x;
-    pc.SunDirRadius[1] = sunDir.y;
-    pc.SunDirRadius[2] = sunDir.z;
+    pc.SunDirRadius[0] = sunDir[0];
+    pc.SunDirRadius[1] = sunDir[1];
+    pc.SunDirRadius[2] = sunDir[2];
     // The width of the SOURCE, which sets the glare kernel's core: scattered light carries no
     // structure finer than the thing that made it, so the halo is flat across the sun instead of
     // adding a second spike on top of the drawn disc.
@@ -250,9 +191,9 @@ void SunGlareRenderNode::DeclareForView(ViewDeclare& d)
     // which is the intent — but it also means the halo stops spreading visibly outside a disc a
     // few times oversized.
     pc.SunDirRadius[3] = kSunAngularRadiusRad;
-    pc.SunColorIrradiance[0] = sky.primarySunColor.r;
-    pc.SunColorIrradiance[1] = sky.primarySunColor.g;
-    pc.SunColorIrradiance[2] = sky.primarySunColor.b;
+    pc.SunColorIrradiance[0] = sky.primarySunColor[0];
+    pc.SunColorIrradiance[1] = sky.primarySunColor[1];
+    pc.SunColorIrradiance[2] = sky.primarySunColor[2];
     pc.SunColorIrradiance[3] = sky.primarySunIntensity;
 
     // Everything the sky scales the drawn sun by, so the halo tracks the disc exactly: the
@@ -260,39 +201,42 @@ void SunGlareRenderNode::DeclareForView(ViewDeclare& d)
     // disc out as the sun sets.
     pc.Params[0] = std::exp2(sky.exposureEV) * (1.0f - nightAmount);
 
-    // The ray to the sun as the transmittance LUT lookup takes it: its zenith cosine and the
-    // observer's normalised altitude, with the shell's radii in Horizon. All are one value per
-    // frame, so the shader takes them as scalars and does the single tap in its vertex stage.
+    // Transmittance LUT coordinates for the ray to the sun. The LUT is keyed on the ray's
+    // zenith cosine and the observer's normalised altitude; both are one value per frame, so
+    // the shader takes them as scalars and does the single tap in its vertex stage.
     Rendering::AtmosphereParametersGPU atmo{};
     Rendering::SkyRenderer::FillDefaultAtmosphere(atmo);
     const float planetCenterY = -atmo.planetRadius;
-    const Mathematics::Vector3 fromCenter(camera->cameraPos.x, camera->cameraPos.y - planetCenterY,
-                                          camera->cameraPos.z);
-    const float r = std::max(std::sqrt(fromCenter.LengthSquared()), 1e-5f);
-    const Mathematics::Vector3 up = fromCenter / r;
-    pc.Params[1] = std::clamp(Mathematics::Vector3::Dot(sunDir, up), -1.0f, 1.0f);
-    pc.Params[2] = Math::Clamp01((r - atmo.planetRadius) / std::max(atmo.atmosphereRadius - atmo.planetRadius, 1e-3f));
+    const float dx = camera->cameraPos[0];
+    const float dy = camera->cameraPos[1] - planetCenterY;
+    const float dz = camera->cameraPos[2];
+    const float r = std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 1e-5f);
+    const float upX = dx / r, upY = dy / r, upZ = dz / r;
+    pc.Params[1] =
+        std::clamp(sunDir[0] * upX + sunDir[1] * upY + sunDir[2] * upZ, -1.0f, 1.0f);
+    pc.Params[2] = std::clamp(
+        (r - atmo.planetRadius) / std::max(atmo.atmosphereRadius - atmo.planetRadius, 1e-3f), 0.0f,
+        1.0f);
 
     // Where the sun lands on screen, for the occlusion probe. Off-screen the probe has
     // nothing to ask about, so it is skipped and the halo continues from beyond the frame
     // edge — which is what a bright source just outside the field really does. The kernel's
     // own falloff is the only thing that fades it; there is no separate edge dial.
-    const std::optional<Mathematics::Vector3> ndc = ProjectSunDirectionToNdc(*camera, sunDir);
-    const Mathematics::Vector3 sunNdc = ndc.value_or(Mathematics::Vector3());
+    float ndcX = 0.0f, ndcY = 0.0f, ndcDepth = 0.0f;
+    const bool projected = ProjectSunDirectionToNdc(*camera, sunDir, ndcX, ndcY, ndcDepth);
     const bool onScreen =
-        ndc && std::fabs(sunNdc.x) <= 1.0f && std::fabs(sunNdc.y) <= 1.0f && depth.IsValid();
-    pc.Probe[0] = sunNdc.x * 0.5f + 0.5f;
-    pc.Probe[1] = 0.5f - sunNdc.y * 0.5f;
+        projected && std::fabs(ndcX) <= 1.0f && std::fabs(ndcY) <= 1.0f && depth.IsValid();
+    pc.Probe[0] = ndcX * 0.5f + 0.5f;
+    pc.Probe[1] = 0.5f - ndcY * 0.5f;
     // Ring radius PER AXIS. The projection's [0][0] and [1][1] terms are the reciprocals of
     // the frustum's horizontal and vertical half-extents, so scaling the same angular radius
     // by each gives a ring that is a circle in PIXELS. One scalar on both axes stretches it
     // by the viewport aspect — on a 3.4:1 view the horizontal taps land three times further
     // from the sun than the vertical ones, and anything narrower can never occlude it.
-    const float projXX = std::fabs(camera->proj[0][0]);
-    const float projYY = std::fabs(camera->proj[1][1]);
-    const float visibilityDiscRadius = kProbeRadiusInSunRadii * kSunAngularRadiusRad;
-    pc.Probe[2] = visibilityDiscRadius * projXX * 0.5f;
-    pc.Probe[3] = visibilityDiscRadius * projYY * 0.5f;
+    const float projXX = std::fabs(camera->proj[0]);
+    const float projYY = std::fabs(camera->proj[5]);
+    pc.Probe[2] = kProbeRadiusInSunRadii * kSunAngularRadiusRad * projXX * 0.5f;
+    pc.Probe[3] = kProbeRadiusInSunRadii * kSunAngularRadiusRad * projYY * 0.5f;
 
     // The depth attachment's sample count decides the variant, and it also IS the probe's
     // enable flag: the shader reads params.w as the count and treats 0 as "no probe this
@@ -325,32 +269,25 @@ void SunGlareRenderNode::DeclareForView(ViewDeclare& d)
             // vector, so its Y IS the sine of the sun's elevation and the horizontal component
             // is the cosine.
             const float sunHoriz =
-                std::sqrt(std::max(sunDir.x * sunDir.x + sunDir.z * sunDir.z, 1e-12f));
-            const float sunTangent = sunDir.y / sunHoriz;
+                std::sqrt(std::max(sunDir[0] * sunDir[0] + sunDir[2] * sunDir[2], 1e-12f));
+            const float sunTangent = sunDir[1] / sunHoriz;
             const float radiusTangent = kSunAngularRadiusRad; // tan(r) == r at this size
-            const float t = Math::Clamp01((sunTangent - (horizonTangent - radiusTangent)) / (2.0f * radiusTangent));
+            const float t = std::clamp(
+                (sunTangent - (horizonTangent - radiusTangent)) / (2.0f * radiusTangent), 0.0f,
+                1.0f);
             horizonVisibility = t * t * (3.0f - 2.0f * t); // smoothstep over the disc's diameter
         }
     }
     pc.Horizon[0] = horizonVisibility;
-    pc.Horizon[1] = atmo.planetRadius;
-    pc.Horizon[2] = atmo.atmosphereRadius;
 
-    // The cascade term needs the eye, the sun and the disc; the shadow data block carries the
-    // matrices and the cascade COUNT (ge_shadowParams.z), which is not passed again because a
-    // second copy could disagree with it. No cascades this frame leaves the screen probe and
-    // the skyline as the only gates.
-    RenderGraph::RGBuffer casters{};
-    if (cascadesReady && feature.GetCastersPipelineId().IsValid())
-    {
-        SunGlareCastersPushConstants castersPc{};
-        castersPc.Eye = Mathematics::Vector4(camera->cameraPos.x, camera->cameraPos.y,
-                                             camera->cameraPos.z, 0.0f);
-        castersPc.SunDirRadius = Mathematics::Vector4(sunDir.x, sunDir.y, sunDir.z,
-                                                      visibilityDiscRadius);
-        casters = DeclareCastersPass(d, feature, shadowArray, shadowData, castersPc);
-    }
-    pc.Horizon[3] = casters.IsValid() ? 1.0f : 0.0f;
+    // The cascade term needs the eye and the cascade count; the shadow data block carries the
+    // matrices. Zero cascades disables it, leaving the screen probe as the only gate.
+    pc.CameraShadow[0] = camera->cameraPos[0];
+    pc.CameraShadow[1] = camera->cameraPos[1];
+    pc.CameraShadow[2] = camera->cameraPos[2];
+    // 1 = the cascade bindings are real this frame. The COUNT is not passed: the shadow
+    // block already carries it (ge_shadowParams.z), and a second copy could disagree with it.
+    pc.CameraShadow[3] = cascadesReady ? 1.0f : 0.0f;
 
     // Draw into the view's letterboxed region, the way the sky pass does. A fullscreen draw
     // over the whole target would tint the bars the sky deliberately left cleared, and the
@@ -371,17 +308,18 @@ void SunGlareRenderNode::DeclareForView(ViewDeclare& d)
     const GraphicsPipelineId pipe = feature.GetPipelineId(depthSamples);
     if (!pipe.IsValid())
         return;
-    const DescriptorSetLayoutDesc* layout = &feature.GetLayout(depthSamples);
+    const DescriptorSetLayoutDesc layout = feature.GetLayout(depthSamples);
     const SamplerHandle sampler = feature.GetSampler();
+    const SamplerHandle depthSampler = feature.GetDepthSampler();
     const uint32_t transBinding = feature.GetTransmittanceBinding();
     const uint32_t depthBinding = feature.GetDepthBinding();
     const uint32_t viewParamsBinding = feature.GetViewParamsBinding();
-    const uint32_t castersBinding = feature.GetCastersBinding();
-    const uint32_t exposureBinding = feature.GetExposureBinding();
-    // The glare lands in scene colour at the frame's pre-exposure P.
-    const PipelineBufferBindingRG exposure = ResolveViewExposureHistory(d);
-    if (!exposure.IsValid())
-        return;
+    const uint32_t shadowArrayBinding = feature.GetShadowArrayBinding();
+    const uint32_t shadowDataBinding = feature.GetShadowDataBinding();
+    const SamplerHandle shadowSampler = feature.GetShadowSampler();
+    // A view without casters still needs a depth array in the shadow slot: WebGPU
+    // bakes the depth sample type into the layout, so the LUT cannot stand in.
+    const TextureHandle shadowFallback = rs.GetCascadeShadowFallbackTexture();
 
     d.Frame.AddPass(
         d.PassName().c_str(), Rendering::PassPhase::kPostProcess,
@@ -400,13 +338,14 @@ void SunGlareRenderNode::DeclareForView(ViewDeclare& d)
             // buffer-reading node does.
             if (viewParams.Graph.IsValid())
                 p.Read(viewParams.Graph, RenderGraph::RGBufferRead::Uniform);
-            if (casters.IsValid())
-                p.Read(casters, RenderGraph::RGBufferRead::Storage);
-            p.Read(exposure.Graph, RenderGraph::RGBufferRead::Storage);
+            if (shadowArray.IsValid())
+                p.Read(shadowArray, RenderGraph::RGTextureRead::Sampled);
+            if (shadowData.Graph.IsValid())
+                p.Read(shadowData.Graph, RenderGraph::RGBufferRead::Uniform);
         },
-        [pipe, layout, sampler, pc, trans, depth, viewParams, casters, vpX, vpY, vpW, vpH,
-         transBinding, depthBinding, viewParamsBinding, castersBinding, exposureBinding,
-         exposure](RenderGraph::RGContext& ctx)
+        [pipe, layout, sampler, depthSampler, shadowSampler, shadowFallback, pc, trans, depth, viewParams,
+         shadowArray, shadowData, vpX, vpY, vpW, vpH, transBinding, depthBinding,
+         viewParamsBinding, shadowArrayBinding, shadowDataBinding](RenderGraph::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice();
             auto* cl = ctx.Cmd;
@@ -426,29 +365,30 @@ void SunGlareRenderNode::DeclareForView(ViewDeclare& d)
             const TextureHandle depthPhys = depth.IsValid() ? ctx.GetTexture(depth) : TextureHandle{};
 
             DescriptorSetDesc dsDesc{};
-            dsDesc.layout = *layout;
+            dsDesc.layout = layout;
             dsDesc.debugName = "SunGlare.DS";
             dsDesc.transient = true;
             auto ds = dev->CreateDescriptorSet(dsDesc);
             dev->UpdateCombinedImageSamplerBinding(ds, transBinding, transPhys, sampler);
             dev->UpdateCombinedImageSamplerBinding(
-                ds, depthBinding, depthPhys.IsValid() ? depthPhys : transPhys, sampler);
+                ds, depthBinding, depthPhys.IsValid() ? depthPhys : transPhys, depthSampler);
             dev->UpdateBufferBinding(ds, viewParamsBinding, viewParams.Buffer,
                                      static_cast<size_t>(viewParams.Offset),
                                      static_cast<size_t>(viewParams.Size));
-            // The cascade term is disabled through the push constants when its buffer is
-            // absent, but the set still has to be complete: the exposure buffer, a storage
-            // buffer of more than one float, stands in.
-            const BufferHandle castersPhys =
-                casters.IsValid() ? ctx.GetBuffer(casters) : BufferHandle{};
-            if (castersPhys.IsValid())
-                dev->UpdateStorageBufferBinding(ds, castersBinding, castersPhys, 0,
-                                                kCastersBufferBytes);
-            else
-                dev->UpdateStorageBufferBinding(ds, castersBinding, exposure.Buffer,
-                                                exposure.Offset, exposure.Size);
-            dev->UpdateStorageBufferBinding(ds, exposureBinding, exposure.Buffer, exposure.Offset,
-                                            exposure.Size);
+            // The cascade term is disabled through the push constants when these are absent,
+            // but the descriptors still have to be filled or the set is incomplete: the
+            // engine's cascade fallback (a depth array) and the view params stand in.
+            const TextureHandle shadowPhys =
+                shadowArray.IsValid() ? ctx.GetTexture(shadowArray) : TextureHandle{};
+            const TextureHandle shadowBound = shadowPhys.IsValid() ? shadowPhys : shadowFallback;
+            if (!shadowBound.IsValid())
+                return;
+            dev->UpdateCombinedImageSamplerBinding(ds, shadowArrayBinding, shadowBound, shadowSampler);
+            dev->UpdateBufferBinding(
+                ds, shadowDataBinding,
+                shadowData.IsValid() ? shadowData.Buffer : viewParams.Buffer,
+                static_cast<size_t>(shadowData.IsValid() ? shadowData.Offset : viewParams.Offset),
+                static_cast<size_t>(shadowData.IsValid() ? shadowData.Size : viewParams.Size));
 
             cl->SetPipeline(pso);
             cl->SetViewport(static_cast<float>(vpX), static_cast<float>(vpY),

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 3,
+  "materialName": "EdgeDrips",
+  "lightingModel": "StandardPBR",
+  "alphaMode": "Mask",
+  "doubleSided": true,
+  "surfaceShader": "Surfaces/rain_falling.glsl",
+  "properties": {
+    "rainIntensity": 1,
+    "rainSpeed": 0.65,
+    "fallHeight": 1.05,
+    "groundHeight": 0,
+    "dropWidth": 0.017,
+    "dripMode": true,
+    "alphaCutoff": 0.2,
+    "enableTransmission": true,
+    "enableTransmissionThick": false,
+    "transmissionWeight": 1,
+    "refractionStrength": 0.025,
+    "splashStrength": 1.0,
+    "waterDropSizeOffset": 0.0
+  }
+}

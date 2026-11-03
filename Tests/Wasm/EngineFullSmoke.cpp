@@ -21,7 +21,6 @@
 #include "Physics/PhysicsWorld.h"
 #include "Platform/Capabilities.h"
 #include "Rendering/Text/FTUtils.h"
-#include "Mathematics/Vector2.h"
 #include "Scheduler/Scheduler.h"
 #include "UI/Layout/YogaLayout.h"
 #include "UI/ResolvedStyle.h"
@@ -128,7 +127,7 @@ int main()
         }
         std::printf("PASS: AssetManager initialized on MEMFS root\n");
 
-        // --- Audio (the default Silent output; init may fail soft) ---------
+        // --- Audio (init may fail soft: node has no audio device) ----------
         {
             Audio::AudioSystem audio(assets);
             Audio::AudioSystemConfig config;
@@ -140,7 +139,7 @@ int main()
             }
             else
             {
-                std::printf("PASS: Audio init declined softly\n");
+                std::printf("PASS: Audio init declined softly (no device in this environment)\n");
             }
         }
 
@@ -202,10 +201,8 @@ int main()
         ResolvedStyle childStyle;
         YGNodeRef root = YogaAdapter::CreateNode();
         YGNodeRef child = YogaAdapter::CreateNode();
-        // Default styles hold no viewport unit, so the basis is unused.
-        const GameEngine::Mathematics::Vector2 noViewportUnits{};
-        YogaAdapter::ApplyStyle(root, rootStyle, noViewportUnits);
-        YogaAdapter::ApplyStyle(child, childStyle, noViewportUnits);
+        YogaAdapter::ApplyStyle(root, rootStyle);
+        YogaAdapter::ApplyStyle(child, childStyle);
         YogaAdapter::ChildWithOrder children[] = {{child, 0, 0}};
         YogaAdapter::InsertChildrenSortedByOrder(root, children);
         YogaAdapter::CalculateLayout(root, 800.0f, 600.0f);

@@ -4,8 +4,6 @@
 #include "Ocean/ocean_material_profiles.glsl"
 
 #include "Includes/screen_position.glsl"
-#include "Includes/reverse_z.glsl"
-#include "Includes/shadow_cascade_blend.glsl"
 #include "Ocean/ocean_cascade_common.glsl"
 
 // Underwater fullscreen composite. Runs at the post/composite phase when the
@@ -28,16 +26,6 @@ layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform sampler2D uScene;
 layout(set = 0, binding = 1) uniform sampler2D uDepth;
-// The view's exposure state (ExposureHistory). uScene is stored at the frame's pre-exposure P while
-// the water body, in-scatter, god rays and meniscus are absolute: the scene is read back to absolute
-// units (SceneAbsolute) and the result is stored at P again.
-#define GE_EXPOSURE_HISTORY_BINDING 19
-#include "Includes/exposure_history.glsl"
-
-vec3 SceneAbsolute(vec2 uv)
-{
-    return textureLod(uScene, uv, 0.0).rgb / GE_PreExposure();
-}
 
 layout(std140, set = 0, binding = 2) uniform OceanUnderwaterParams
 {
@@ -475,7 +463,7 @@ float SampleGodRayShadow(vec3 posWS, float linearDepth)
         float splitDist = ge_shadowSplits[cascadeIdx];
         float cascadeStart = (cascadeIdx == 0) ? 0.0 : ge_shadowSplits[cascadeIdx - 1];
         float cascadeRange = max(splitDist - cascadeStart, 1.0e-3);
-        float blendBand = GE_CascadeBlendBand(cascadeRange);
+        float blendBand = max(cascadeRange * 0.1, 3.0);
         float distToSplit = splitDist - linearDepth;
         if (distToSplit < blendBand)
         {
@@ -965,7 +953,7 @@ void main()
     // uScene (the scene copy) and uDepth (the resolved depth) have one mip, so the
     // explicit-LOD fetches below read exactly what texture() would, and stay legal
     // inside the per-quad branches.
-    vec3 sceneAtPixel = SceneAbsolute(uv);
+    vec3 sceneAtPixel = textureLod(uScene, uv, 0.0).rgb;
 
     // A dry camera sees water only through a portal volume, and its lens is off
     // (FillUnderwaterParams), so this ray is the one the full path shades. A pixel
@@ -977,7 +965,7 @@ void main()
         vec3 dryViewDir = normalize(WorldFromDepth(uv, 1.0e-4) - uCameraPos.xyz);
         float dryDepth = textureLod(uDepth, uv, 0.0).r;
         float drySceneDist = uFogDensity.w;
-        if (!IsBackgroundDepth(dryDepth))
+        if (dryDepth > 1e-6)
             drySceneDist = length(WorldFromDepth(uv, dryDepth) - uCameraPos.xyz);
         dryPortalHit = UnderwaterPortalHit(dryViewDir, drySceneDist);
     }
@@ -1069,13 +1057,13 @@ void main()
         vec2 seamOffset = (edgeNormal * (0.45 + 0.35 * ripple) + edgeTangent * ripple * 0.55)
                         * refractStrength * 3.0 / vec2(textureSize(uScene, 0));
         vec2 sceneUV = clamp(mix(uvUW, uvUW + seamOffset, seamProximity), vec2(0.0), vec2(1.0));
-        originalColor = mix(originalColor, SceneAbsolute(sceneUV), seamProximity * 0.65);
+        originalColor = mix(originalColor, textureLod(uScene, sceneUV, 0.0).rgb, seamProximity * 0.65);
 
         viewDir = normalize(WorldFromDepth(sceneUV, 1.0e-4) - uCameraPos.xyz);
-        scene = SceneAbsolute(sceneUV);
+        scene = textureLod(uScene, sceneUV, 0.0).rgb;
         rawDepth = textureLod(uDepth, sceneUV, 0.0).r;
         worldPos = uCameraPos.xyz + viewDir * uFogDensity.w;
-        if (!IsBackgroundDepth(rawDepth))
+        if (rawDepth > 1e-6)
         {
             worldPos = WorldFromDepth(sceneUV, rawDepth);
             // Extinction is measured through water, not through the air before a
@@ -1152,7 +1140,7 @@ void main()
         float footprintLod = 0.5 * log2(max(max(dot(footprintX, footprintX), dot(footprintY, footprintY)), 1.0));
         float focalLod = abs(depthBelow - uCaustics.w) / max(uCausticsFocus.x, 0.001);
         float causticLod = max(footprintLod, focalLod);
-        if (uShape.x > 0.5 && !IsBackgroundDepth(rawDepth) && belowMask > 0.01 && sunDir.y > 0.0)
+        if (uShape.x > 0.5 && rawDepth > 1e-6 && belowMask > 0.01 && sunDir.y > 0.0)
         {
             float a = textureLod(uOceanCaustics, causticUV + vec2(0.044 * t + 17.16, -0.169 * t), causticLod).b;
             float b = textureLod(uOceanCaustics, 1.37 * causticUV + vec2(0.248 * t, 0.117 * t), causticLod + 0.45).b;
@@ -1230,6 +1218,5 @@ void main()
         }
     }
 
-    outColor = vec4((pixelSeesWater > 0.5 ? result : sceneAtPixel) *
-                    GE_PreExposure(), 1.0);
+    outColor = vec4(pixelSeesWater > 0.5 ? result : sceneAtPixel, 1.0);
 }

@@ -8,6 +8,9 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -228,6 +231,38 @@ TEST(TextEffects, AuthoredEffectsInheritAndInitialClearsOneProperty)
     EXPECT_EQ(reset.OutlineColor, 0xff405060u);
 }
 
+TEST(TextEffects, LaterLinesCannotPaintEffectsOverEarlierFills)
+{
+    std::vector<UI::UIPrimitive> primitives;
+    UI::TextEffects effects;
+    effects.ShadowColor = 0xff000000u;
+    effects.ShadowOffsetX = 2;
+    effects.OutlineColor = 0xff00ff00u;
+    effects.OutlineWidth = 1;
+    const auto resolved = UI::ResolveTextEffects(effects, 1);
+    for (const float y : {0.0f, 20.0f})
+    {
+        auto shadow = UI::MakeSlugGlyph(0, y, 10, 10, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0xffffffffu);
+        UI::SetTextEffects(shadow, resolved);
+        shadow.BorderColor = 0;
+        auto outline = shadow;
+        outline.ShadowColor = 0;
+        outline.BorderColor = resolved.OutlineColor;
+        auto fill = outline;
+        fill.BorderColor = 0;
+        fill.RadiiY[0] = 0;
+        primitives.insert(primitives.end(), {shadow, outline, fill});
+    }
+    UI::OrderTextEffects(primitives);
+    ASSERT_EQ(primitives.size(), 6u);
+    EXPECT_NE(primitives[0].ShadowColor, 0u);
+    EXPECT_NE(primitives[1].ShadowColor, 0u);
+    EXPECT_NE(primitives[2].BorderColor, 0u);
+    EXPECT_NE(primitives[3].BorderColor, 0u);
+    EXPECT_EQ(primitives[4].BorderColor | primitives[4].ShadowColor, 0u);
+    EXPECT_EQ(primitives[5].BorderColor | primitives[5].ShadowColor, 0u);
+}
+
 // The reach is the glyph-quad growth of uiTextEffectReachPx: an outline its
 // width plus the one-pixel ramp, a glow the outline width plus twice its
 // radius, a shadow its larger offset plus the outline width, 1.5 x its blur
@@ -435,6 +470,30 @@ TEST(TextEffects, OffThreadDrainKeepsEachClipShape)
         ExpectClipIsBoxGrownBy(fixture, grownId(i), kGlowReachPx);
         ExpectClipIsBoxGrownBy(fixture, cutId(i), 0.0f);
     }
+    if (const char* directory = std::getenv("GE_PRIMITIVE_DRAIN_CAPTURE_DIR"))
+    {
+        std::filesystem::create_directories(directory);
+        std::ofstream clips(std::filesystem::path(directory) / "clips.csv");
+        for (int i = 0; i < kLabelsPerKind; ++i)
+            for (const auto& id : {grownId(i), cutId(i)})
+            {
+                const auto* clip = fixture.Manager().PeekClipRectForTesting(fixture.Element(id)->m_ClipSlotIdx);
+                ASSERT_NE(clip, nullptr);
+                clips << id;
+                for (float v : clip->Rect) clips << ',' << v;
+                for (float v : clip->Radii) clips << ',' << v;
+                for (float v : clip->RadiiY) clips << ',' << v;
+                clips << '\n';
+            }
+        const auto pixels = UITesting::RenderUiToBytes(fixture.Manager(), UI::UITargetSpace::EncodedSrgb());
+        ASSERT_EQ(pixels.size(), size_t{800 * 600 * 4});
+        std::ofstream image(std::filesystem::path(directory) / "parallel-text-drain.ppm", std::ios::binary);
+        image << "P6\n800 600\n255\n";
+        for (size_t pixel = 0; pixel < pixels.size(); pixel += 4)
+            image.write(reinterpret_cast<const char*>(pixels.data() + pixel), 3);
+        ASSERT_TRUE(image);
+        ASSERT_TRUE(clips);
+    }
 }
 
 // An element whose overflow clip also clips its children keeps the padding
@@ -505,10 +564,13 @@ void ExpectGlowLeavesFullyCoveredFillUnchanged(const std::string& text, const st
     uint8_t fullCoverage = 0;
     for (size_t i = 0; i < size; i += 4)
         fullCoverage = std::max(fullCoverage, plain.Pixels[i + kGreen]);
+    // Full coverage is the brightest fill level exactly: under a translucent
+    // fill one level short of it is ~99% coverage, where the glow rightly
+    // shows through the uncovered percent.
     size_t covered = 0, changed = 0;
     for (size_t i = 0; i < size; i += 4)
     {
-        if (plain.Pixels[i + kGreen] + 1 < fullCoverage)
+        if (plain.Pixels[i + kGreen] < fullCoverage)
             continue;
         ++covered;
         for (int channel = kRed; channel <= kBlue; ++channel)

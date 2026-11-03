@@ -606,9 +606,9 @@ void SubmitPart(Engine::Renderer::RenderServices& renderServices,
         instance.normalMatrixCol2,
         &mirrored);
     instance.normalMatrixCol0 = Rendering::Vector3(normalColumn0.x, normalColumn0.y, normalColumn0.z);
-    // EZTree draws on the default layer (layer 0), shared by CPU submission and GPU culling.
-    constexpr Rendering::RenderLayerMask kRenderLayers = Rendering::RenderLayerMask::Default();
-    instance.renderLayerMask = kRenderLayers.Bits;
+    // EZTree has a fixed layer-1 contract, shared by CPU submission and GPU culling.
+    constexpr uint32 kRenderLayerMask = 1u;
+    instance.renderLayerMask = kRenderLayerMask;
     instance.meshIndex = meshIndex;
     instance.materialIndex = materialIndex;
     const uint64 worldId = world.GetWorldId();
@@ -651,7 +651,7 @@ void SubmitPart(Engine::Renderer::RenderServices& renderServices,
     {
         if (view.worldId != 0 && view.worldId != world.GetWorldId())
             continue;
-        if (!kRenderLayers.Intersects(view.ActiveRenderLayerMask()))
+        if ((kRenderLayerMask & view.renderLayerMask) == 0u)
             continue;
 
         Engine::Renderer::WorldSubmissionRecord sub{};
@@ -659,7 +659,7 @@ void SubmitPart(Engine::Renderer::RenderServices& renderServices,
         sub.meshHandle = meshHandle;
         sub.material = material;
         sub.instanceIndex = instanceIndex;
-        sub.renderLayerMask = kRenderLayers;
+        sub.renderLayerMask = kRenderLayerMask;
         sub.flags = instance.flags;
         submissions.push_back(sub);
     }
@@ -729,9 +729,10 @@ void EZTreeExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
                 ECS::Optional<ECS::DisabledInHierarchy>,
                 ECS::Optional<ECS::ComponentDisabled<Components::EZTree>>>()
         .IncludeDisabled()
-        .Each([&](ECS::EntityHandle entity, Components::EZTree& tree, const ECS::Disabled* disabled,
+        .Each([&](ECS::EntityHandle entity, ECS::Writable<Components::EZTree> treeWrite, const ECS::Disabled* disabled,
                   const ECS::DisabledInHierarchy* inactive, const ECS::ComponentDisabled<Components::EZTree>* treeOff)
         {
+            auto& tree = treeWrite.Mutable();
             if (world.GetComponent<Components::MeshRenderer>(entity))
                 world.RemoveComponentImmediate<Components::MeshRenderer>(entity);
             if (world.GetComponent<Components::MeshGPUData>(entity))

@@ -58,16 +58,14 @@ namespace GameEngine.Scripting
                 // the mistake, and with nothing naming it.
                 if (!typeof(Ui.Element).IsAssignableFrom(t))
                 {
-                    ConsoleDiagnostics.Report("Ui.ElementTypes",
-                        $"[UiElement(\"{tag}\")] {t.FullName} does not derive from Ui.Element; " +
-                        "the tag was not registered.");
+                    UiElementTypeLog.Report($"[UiElement(\"{tag}\")] {t.FullName} does not derive from Ui.Element; " +
+                           "the tag was not registered.");
                     continue;
                 }
                 if (t.GetConstructor(Type.EmptyTypes) == null)
                 {
-                    ConsoleDiagnostics.Report("Ui.ElementTypes",
-                        $"[UiElement(\"{tag}\")] {t.FullName} has no public parameterless " +
-                        "constructor; the tag was not registered.");
+                    UiElementTypeLog.Report($"[UiElement(\"{tag}\")] {t.FullName} has no public parameterless " +
+                           "constructor; the tag was not registered.");
                     continue;
                 }
                 results.Add((tag!, t));
@@ -132,8 +130,7 @@ namespace GameEngine.Scripting
 
                     if (m is PropertyInfo p && !p.CanWrite)
                     {
-                        ConsoleDiagnostics.Report("Ui.ElementTypes",
-                            $"[UiAttribute] {type.FullName}.{m.Name} has no setter and was ignored.");
+                        UiElementTypeLog.Report($"[UiAttribute] {type.FullName}.{m.Name} has no setter and was ignored.");
                         break;
                     }
                     map[name] = m;

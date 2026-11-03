@@ -1,5 +1,5 @@
 /* --prompt_text_scale: the conversation's text size over its 14 px default. Each conversation
-   font size is its 1.0 size times this; the input and the status line keep their sizes.
+   font size is its 1.0 size times this; the input follows it and the status line keeps its size.
    PromptPanel::ApplyTextSize sets it on the panel from the size slider's value; without it
    every use falls back to 1. */
 .prompt-panel-root {
@@ -14,6 +14,17 @@
 	background-color: var(--ui_color_bg_tabbar);
 }
 
+/* The bar under the panel's tab and, when open, the settings row under it: one block in the
+   active tab's color, rounded at its bottom only, wherever that bottom is. */
+.prompt-panel-header {
+	display: flex;
+	flex-direction: column;
+	flex-shrink: 0;
+	background-color: var(--ui_color_bg_panel);
+	border-bottom-left-radius: 6px;
+	border-bottom-right-radius: 6px;
+}
+
 .prompt-panel-toolbar {
 	display: flex;
 	flex-direction: row;
@@ -22,8 +33,6 @@
 	padding: 5px 8px;
 	min-height: 34px;
 	flex-shrink: 0;
-	background-color: var(--ui_color_bg_grid);
-	border-bottom: 1px solid var(--ui_color_border);
 	box-sizing: border-box;
 	flex-wrap: wrap;
 }
@@ -60,8 +69,7 @@
 	flex-shrink: 0;
 	min-width: 0;
 	min-height: 0;
-	/* The edge gap of a narrow panel; a wide one centres the 800 px column (.agent-row). */
-	padding: 0 8px 8px 8px;
+	padding: 0 0 8px 0;
 	background-color: var(--ui_color_bg_tabbar);
 }
 
@@ -69,14 +77,7 @@
 /* The first row of a conversation that continues an earlier session: a break in the
    history, in the status tier of a reply's footer, set in italic over a hairline so
    it does not read as the empty-conversation hint. */
-/* The continued-session hint and the empty state sit in the conversation's reading column,
-   as .agent-row does, so the first message appears where the hint was. */
 .prompt-panel-continued {
-	width: 100%;
-	max-width: 800px;
-	margin-left: auto;
-	margin-right: auto;
-	box-sizing: border-box;
 	padding: 10px 12px 6px 12px;
 	margin-bottom: 4px;
 	font-size: calc(12px * var(--prompt_text_scale, 1));
@@ -88,11 +89,6 @@
 }
 
 .prompt-panel-history-empty {
-	width: 100%;
-	max-width: 800px;
-	margin-left: auto;
-	margin-right: auto;
-	box-sizing: border-box;
 	padding: 10px 12px;
 	font-size: calc(14px * var(--prompt_text_scale, 1));
 	color: var(--ui_color_text_dim);
@@ -102,8 +98,7 @@
 
 /* One message: AgentConversationRow.uxml. The card is capped to a reading column
    (its text wraps at about 100 characters of the body font) so a wide dock keeps
-   lines readable and the reply actions beside the text they act on, and the column
-   sits in the middle of the panel. */
+   lines readable and the reply actions beside the text they act on. */
 .agent-row {
 	display: flex;
 	flex-direction: column;
@@ -112,25 +107,22 @@
 	flex-shrink: 0;
 	min-width: 0;
 	min-height: 0;
-	width: 100%;
 	max-width: 800px;
 	overflow: hidden;
-	margin: 8px auto 0 auto;
+	margin: 8px 8px 0 8px;
 	padding: 4px 0 8px 0;
 	background-color: var(--ui_color_bg_panel);
 	border: 1px solid var(--ui_color_border_panel);
 	border-radius: 6px;
 }
 
-/* The user's own messages: a darker card, framed like every other card. */
+/* The user's own messages: a darker card framed in the accent, thicker on the
+   leading edge. The frame is one colour all round: a box draws a single border
+   colour, so a left edge alone cannot carry the accent. */
 .agent-row-user {
 	background-color: var(--ui_color_bg_tabbar);
-}
-
-/* The selected row (a click, or Up and Down in the history): the one card framed in the
-   accent. */
-.agent-row.selected {
-	border-color: var(--ui_color_accent_blue);
+	border-color: var(--ui_color_accent_blue_inactive);
+	border-left-width: 3px;
 }
 
 .agent-row-header-line {
@@ -138,8 +130,8 @@
 	flex-direction: row;
 	align-items: center;
 	flex-shrink: 0;
-	height: calc(28px * var(--prompt_text_scale, 1));
-	min-height: calc(28px * var(--prompt_text_scale, 1));
+	height: 28px;
+	min-height: 28px;
 	padding: 0 8px 0 12px;
 	gap: 8px;
 }
@@ -188,21 +180,6 @@
 	color: var(--ui_color_text);
 }
 
-/* A reply, drawn from its Markdown (MarkdownText): the text style every block of it inherits,
-   the same as a prompt's text (.agent-row-text). The control's own sheet adds only what
-   Markdown adds. */
-.agent-row-reply {
-	flex-grow: 0;
-	flex-shrink: 0;
-	min-width: 0;
-	padding: 4px 12px;
-	font-family: var(--ui_font_family);
-	font-size: calc(14px * var(--prompt_text_scale, 1));
-	line-height: var(--script_line_height, 1.0);
-	text-align: left;
-	color: var(--ui_color_text);
-}
-
 /* A reply waiting for the user's answer on one of its calls: the card is framed in the
    waiting tier, so it is found in a long history. */
 .agent-row-asks {
@@ -225,20 +202,20 @@
 	flex-direction: column;
 	flex-shrink: 0;
 	min-width: 0;
-	padding: 6px 0 5px 0;
+	padding: 3px 0;
 	border-bottom: 1px solid var(--ui_color_border_subtle);
 }
 
 /* The line wraps in a narrow panel: the undo state and Details move under the summary
-   before the summary would get less than its minimum width. Its pieces sit at the top, so
-   on a tall summary the action, the undo state and Details stay level with its first line. */
+   before the summary would get less than its minimum width. */
 .agent-call-line {
 	display: flex;
 	flex-direction: row;
 	flex-wrap: wrap;
-	align-items: flex-start;
+	align-items: center;
 	flex-shrink: 0;
 	min-width: 0;
+	min-height: 22px;
 	gap: 8px;
 }
 
@@ -251,31 +228,30 @@
 	min-width: 14px;
 	min-height: 14px;
 	flex-shrink: 0;
-	margin-top: 2px;
 	background-size: 14px 14px;
 	background-repeat: no-repeat;
 	background-position: center;
 }
 
 .agent-call-glyph-done {
-	background-image: url("editor:Icons/checked.svg");
+	background-image: url("editor:Icons/checked.png");
 	background-image-tint: var(--ui_color_accent_green);
 }
 
 /* A ring with a stroke of about 1.75 px at the glyph's 14 px, tinted bright: thick enough
    to clear the 3:1 floor for a glyph. */
 .agent-call-glyph-view {
-	background-image: url("ai-assistant:Editor/Icons/view-ring.svg");
+	background-image: url("ai-assistant:Editor/Icons/view-ring.png");
 	background-image-tint: var(--ui_color_text_bright);
 }
 
 .agent-call-glyph-refused {
-	background-image: url("editor:Icons/xclose.svg");
+	background-image: url("editor:Icons/xclose.png");
 	background-image-tint: var(--ui_color_badge_background);
 }
 
 .agent-call-glyph-waiting {
-	background-image: url("editor:Icons/help.svg");
+	background-image: url("editor:Icons/help.png");
 	background-image-tint: var(--ui_color_warning_text);
 }
 
@@ -296,7 +272,7 @@
 	display: flex;
 	flex-direction: row;
 	flex-wrap: wrap;
-	align-items: flex-start;
+	align-items: center;
 	flex-grow: 1;
 	flex-shrink: 1;
 	flex-basis: 0;
@@ -314,12 +290,11 @@
 }
 
 /* Pieces that stay together on one line (AgentCallPieceView): a key and its vector, a
-   separator and what follows it, a chip and its comma. At the top, so a separator before
-   wrapped words sits on their first line. */
+   separator and what follows it, a chip and its comma. */
 .agent-call-unit {
 	display: flex;
 	flex-direction: row;
-	align-items: flex-start;
+	align-items: center;
 	flex-shrink: 1;
 	gap: 4px;
 }
@@ -385,7 +360,7 @@
 .agent-call-trail {
 	display: flex;
 	flex-direction: row;
-	align-items: flex-start;
+	align-items: center;
 	flex-shrink: 1;
 	min-width: 0;
 	max-width: 50%;
@@ -408,8 +383,7 @@
 	color: var(--ui_color_error_text);
 }
 
-/* Details reads as a quiet text link at the line's end. It is one line in the summary's
-   face, and AgentCallRow::FitReason cuts a reason to two of its lines. */
+/* Details reads as a quiet text link at the line's end. */
 .agent-call-details-toggle {
 	flex-shrink: 0;
 	padding: 0 4px;
@@ -525,7 +499,7 @@
    capture being downscaled reads as loading, not as a tiny asset or an empty box. After the
    well and image rules, so its background wins at the same specificity. */
 .thumbnail-pending {
-	background-image: url("editor:Icons/timer.svg");
+	background-image: url("editor:Icons/timer.png");
 	background-image-tint: var(--ui_color_text_dim);
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
@@ -535,7 +509,7 @@
 /* No picture came (EditorAssetActions::kThumbnailUnavailableClass): a dimmed object glyph, so
    the well reads as "no preview" rather than as an empty or broken thumbnail. */
 .thumbnail-unavailable {
-	background-image: url("editor:Icons/Cube.svg");
+	background-image: url("editor:Icons/Cube.png");
 	background-image-tint: var(--ui_color_text_disabled);
 	background-size: 16px 16px;
 	background-repeat: no-repeat;
@@ -652,23 +626,20 @@
 }
 
 .agent-row-status-part {
-	flex-shrink: 1;
+	width: 100%;
 	min-width: 0;
+	min-height: 0;
+	flex-shrink: 1;
+	padding: 0;
+	border-width: 0;
+	background-color: transparent;
+	box-shadow: none;
+	outline: none;
+	font-family: var(--ui_font_family);
 	font-size: calc(12px * var(--prompt_text_scale, 1));
 	color: var(--ui_color_text_secondary);
 	white-space: normal;
-}
-
-/* A narrow panel (AgentConversationRow::SetCallsStacked): the footer stacks, the status on
-   a line of its own across the card and the actions under it, right-aligned. */
-.agent-row-footer-stacked {
-	flex-direction: column;
-	align-items: stretch;
-}
-
-.agent-row-actions-stacked {
-	align-self: flex-end;
-	margin-left: 0;
+	overflow-wrap: break-word;
 }
 
 .agent-row-status-failed {
@@ -702,6 +673,17 @@
 	margin: 4px 12px 4px 12px;
 }
 
+/* A file sent with the message: its name, inset like the mark-up chips beside it. */
+.agent-row-file-chip {
+	font-size: 12px;
+	color: var(--ui_color_text_secondary);
+	padding: 2px 8px 2px 8px;
+	border-width: 1px;
+	border-color: var(--ui_color_border);
+	border-radius: 4px;
+	white-space: nowrap;
+}
+
 .agent-row-retried {
 	font-size: calc(12px * var(--prompt_text_scale, 1));
 	color: var(--ui_color_text_secondary);
@@ -710,8 +692,7 @@
 
 /* A stacked call row (a narrow panel, AgentCallRow::SetStacked): the glyph and the action
    on the first line, the summary under them at its own width, and the undo state and
-   Details as the summary's last piece: beside its last line when they fit, on the next
-   line when they do not. */
+   Details beside the summary when they fit, on the next line when they do not. */
 .agent-call-line-stacked {
 	gap: 2px 8px;
 }
@@ -727,10 +708,8 @@
 	padding-left: 22px;
 }
 
-/* Inside the summary, whose 4 px gap and this padding keep the line's 8 px from the words. */
 .agent-call-trail-stacked {
 	max-width: 100%;
-	padding-left: 4px;
 }
 
 /* The input pane reads as a layer over the conversation: its top edge casts a soft shadow
@@ -752,8 +731,7 @@
 	border-width: 0;
 }
 
-/* Keyboard focus only: a click to drag the splitter draws no ring. */
-.prompt-panel-input-splitter:focus-visible {
+.prompt-panel-input-splitter:focus {
 	outline: 2px solid var(--ui_color_accent_blue);
 	outline-offset: -2px;
 }
@@ -768,8 +746,6 @@
 	background-color: var(--ui_color_bg_grid);
 }
 
-/* The input spans the panel's width, so the field and its controls share one line
-   wherever the panel leaves the field its 288 px minimum (PromptPanel::UpdateInputStacking). */
 .prompt-panel-input-column {
 	display: flex;
 	flex-direction: column;
@@ -779,6 +755,101 @@
 	min-height: 0;
 	overflow: hidden;
 	background-color: transparent;
+}
+
+/* The files picked for the next prompt, at the foot of the history above the splitter: one
+   item each, an image's with its thumbnail. Hidden while there is none. */
+.prompt-panel-files {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	flex-shrink: 0;
+	min-width: 0;
+	min-height: 48px;
+	margin: 4px 8px 4px 8px;
+	padding: 8px;
+	border-radius: 6px;
+	background-color: var(--ui_color_bg_tabbar);
+}
+
+.prompt-panel-file-items {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	flex-grow: 1;
+	min-width: 0;
+}
+
+.prompt-panel-file-item {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	padding: 4px 6px 4px 4px;
+	border-radius: 6px;
+	background-color: var(--ui_color_bg_panel);
+}
+
+/* A text file's item has no thumbnail: its name sits as far from the left edge as the x's icon
+   from the right (the item's 6px padding plus the 4px around the x's 16px icon). */
+.prompt-panel-file-item-text {
+	padding-left: 10px;
+}
+
+/* A file still being read: its name, dimmed, until the read lands. */
+.prompt-panel-file-item-loading {
+	opacity: 0.6;
+}
+
+.prompt-panel-file-preview {
+	width: 40px;
+	height: 40px;
+	min-width: 40px;
+	flex-shrink: 0;
+	background-size: contain;
+	background-repeat: no-repeat;
+	background-position: center;
+	border-radius: 4px;
+}
+
+.prompt-panel-file-label {
+	flex-shrink: 1;
+	min-width: 0;
+	max-width: 180px;
+	font-size: 12px;
+	color: var(--ui_color_text_primary);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.prompt-panel-file-remove {
+	margin-left: 2px;
+}
+
+/* A drag of files over the input row or the file strip. */
+.prompt-panel-drop-active {
+	background-color: var(--ui_color_bg_selected);
+}
+
+/* The + that picks files for the prompt, left of the field in a wide panel or immediately
+   before the mode control below a narrow field. It also shows the file-drop feedback. */
+.prompt-panel-attach-button {
+	align-self: center;
+	flex-shrink: 0;
+	margin: 0 0 0 6px;
+}
+
+.prompt-panel-drop-allowed-icon {
+	background-image-tint: var(--ui_color_accent_green);
+}
+
+.prompt-panel-drop-invalid-icon {
+	background-image: url("ai-assistant:Editor/Icons/prohibited.svg");
+	background-image-tint: var(--ui_color_axis_x);
 }
 
 .prompt-panel-input-row {
@@ -869,7 +940,7 @@
 	flex-shrink: 0;
 	padding: 0;
 	margin: 0 8px 0 0;
-	background-image: url("ai-assistant:Editor/Icons/arrow-up-circle.svg");
+	background-image: url("ai-assistant:Editor/Icons/arrow-up-circle.png");
 	background-size: 24px 24px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -879,73 +950,6 @@
 	opacity: 0.5;
 	cursor: pointer;
 	transition: opacity 0.15s ease;
-}
-
-/* The microphone beside Send (shown where the platform offers speech input): the send
-   button's size and rest opacity, and its own icon while it listens. */
-.prompt-panel-mic-button {
-	width: 24px;
-	min-width: 24px;
-	max-width: 24px;
-	height: 28px;
-	min-height: 28px;
-	max-height: 28px;
-	flex-shrink: 0;
-	padding: 0;
-	/* The level meter on each side spaces it; the meter shows only with the button. */
-	margin: 0;
-	background-image: url("ai-assistant:Editor/Icons/mic.svg");
-	background-size: 18px 18px;
-	background-repeat: no-repeat;
-	background-position: center;
-	background-color: transparent;
-	border-width: 0;
-	border-color: transparent;
-	opacity: 0.5;
-	cursor: pointer;
-	transition: opacity 0.15s ease;
-}
-
-.prompt-panel-mic-button:hover {
-	background-color: transparent;
-	border-color: transparent;
-	opacity: 1;
-}
-
-/* mic-listening.svg adds 10 units of glow around mic.svg's 24-unit glyph (a 44-unit view
-   box), so it draws at 18px * 44 / 24 = 33px to keep the microphone the size it has at rest. */
-.prompt-panel-mic-button.listening {
-	background-image: url("ai-assistant:Editor/Icons/mic-listening.svg");
-	background-size: 33px 33px;
-	opacity: 1;
-}
-
-/* The level meter beside the microphone: five bars a side, shown while it listens. Its
-   space stays reserved while idle so the controls do not shift when dictation starts. */
-.prompt-panel-speech-levels {
-	display: flex;
-	flex-direction: row;
-	align-items: center;
-	align-self: center;
-	gap: 1px;
-	width: 14px;
-	height: 24px;
-	flex-shrink: 0;
-	margin: 0 6px 0 6px;
-	pointer-events: none;
-}
-
-.prompt-panel-speech-levels.idle {
-	opacity: 0;
-}
-
-.prompt-panel-speech-bar {
-	width: 2px;
-	min-width: 2px;
-	height: 2px;
-	flex-shrink: 0;
-	border-radius: 1px;
-	background-color: var(--ui_color_accent_blue_hover);
 }
 
 .prompt-panel-send-button:hover {
@@ -969,7 +973,7 @@
 	align-items: center;
 	min-width: 0;
 	font-family: var(--ui_font_script);
-	font-size: 14px;
+	font-size: calc(16px * var(--prompt_text_scale, 1));
 	line-height: var(--script_line_height, 1.0);
 	/* Instructions: the dimmest text tier that reads as text (6.8:1 on the plate),
 	   still below the typed text. */
@@ -988,7 +992,7 @@
 .prompt-panel-input {
 	text-align: left;
 	font-family: var(--ui_font_script);
-	font-size: 16px;
+	font-size: calc(16px * var(--prompt_text_scale, 1));
 	line-height: var(--script_line_height, 1.0);
 	padding: 10px 12px;
 	min-height: 100%;
@@ -1018,45 +1022,16 @@
 	outline: none;
 }
 
-/* The status line and the text size slider at its end: one strip. The status text takes the
-   width the slider leaves and may shrink; the slider keeps its size. */
-.prompt-panel-status-row {
-	display: flex;
-	flex-direction: row;
-	align-items: center;
-	flex-shrink: 0;
-	border-top: 1px solid var(--ui_color_border);
-	background-color: var(--ui_color_bg_hover_alt);
-}
-
-/* The letter glyph in front of the text size slider, as the Assets footer shows a glyph in
-   front of its size slider. */
-.prompt-panel-text-size-glyph {
-	flex-shrink: 0;
-	width: 14px;
-	height: 14px;
-	margin-right: 4px;
-	background-image: url("editor:Icons/SettingsFontRendering.svg");
-	background-size: contain;
-	background-repeat: no-repeat;
-	background-position: center;
-	background-image-tint: var(--ui_icon_tint_standard);
-}
-
-.prompt-panel-text-size-host {
-	flex-shrink: 0;
-	padding-right: 8px;
-}
-
 .prompt-panel-status {
-	flex-grow: 1;
-	flex-shrink: 1;
-	min-width: 0;
+	flex-shrink: 0;
+	width: 100%;
 	box-sizing: border-box;
 	min-height: 24px;
 	padding: 0 8px 4px 8px;
+	border-top: 1px solid var(--ui_color_border);
 	color: var(--ui_color_text_primary);
-	font-size: 12px;
+	font-size: calc(12px * var(--prompt_text_scale, 1));
+	background-color: var(--ui_color_bg_hover_alt);
 }
 
 .prompt-panel-icon-button {
@@ -1112,7 +1087,6 @@
 	gap: 6px;
 	padding: 8px;
 	flex-shrink: 0;
-	background-color: var(--ui_color_bg_panel);
 }
 
 .prompt-panel-input-task {
@@ -1138,86 +1112,17 @@
 	margin-right: 4px;
 }
 
-/* The model control: the Session control's shape. Its width is set from the longest
-   text it can show (AgentModelPopover::SizeButton), so it follows the panel's width,
-   never its text. In a narrow row it gives way after the mode control (.prompt-panel-mode)
-   and faster than the connection, down to 56 px; its text drops "(latest)" before it is
-   cut, and its tooltip holds the whole text. */
-#PromptModelButton {
-	align-self: center;
-	flex-shrink: 4;
-	min-width: 56px;
-	height: 28px;
-	min-height: 28px;
-	max-height: 28px;
-	padding: 0 11px;
-	margin-right: 4px;
-}
-
-/* The model popover (AgentModelPopover.uxml): a zero-size anchor at the panel's origin
-   that gives the popover a coordinate space (a full-size box would count every press
-   in the panel as inside it), and the panel placed in it above the model button. */
-.agent-model-popover {
-	position: absolute;
-	left: 0;
-	top: 0;
-	width: 0;
-	height: 0;
-	pointer-events: none;
-}
-
-/* AgentModelPopover.cpp's kPanelWidthEstimatePx until the first layout. */
-.agent-model-popover-panel {
-	position: absolute;
-	width: 300px;
-	pointer-events: auto;
-}
-
-/* The model popover's rows: the theme's popover rows with a label column
-   narrow enough for "Model" and "Effort", the dropdown and the slider taking the rest,
-   and the effort's label in a column as wide as "Extra high". */
-.agent-model-row-label {
-	width: 48px;
-}
-
-.agent-model-dropdown {
-	flex-grow: 1;
-	min-width: 0;
-}
-
-.agent-model-effort-value {
-	width: 64px;
-	font-size: var(--ui_font_size_small);
-}
-
-/* The effort slider's two ends named under its track. */
-.agent-model-effort-ends {
-	flex-direction: row;
-	justify-content: space-between;
-}
-
-.agent-model-header {
-	margin-top: 0;
-}
-
-.agent-model-caption {
-	font-size: var(--ui_font_size_small);
-	color: var(--ui_color_text_dim);
-}
-
 /* The mode control: wide enough for its longest label, "Ask before every edit", on one
    line at rest and in its list (the list takes the control's width), as wide as the
-   connection dropdown. On the controls' own line in a narrow panel it gives way first,
-   down to the longest label it offers now (PromptPanel::FitModeControl), then to its
-   compact labels ("Read", "Chat"); then the model button gives way faster than the
-   connection, down to 56 and 48 px, while Session… and Send keep their width; a row too
-   narrow for those minimums lets the mode go down to 48 px. Send, the primary action, stays in the pane down to a 300 px pane (Session… 82,
-   the model button 56, Send 24 and its 8 px margin, four 4 px gaps, 2 x 48, the pane's
-   16 px padding and the row's 2 px border). */
+   connection dropdown. On the controls' own line in a narrow panel the two dropdowns
+   absorb the shortfall, in proportion to their widths, down to 48 px each, while Session… and Send
+   keep their width: Send, the primary action, stays in the pane down to a 240 px pane
+   (Session… 82, Send 24 and its 8 px margin, three 4 px gaps, 2 x 48, the pane's 16 px
+   padding and the row's 2 px border). */
 .prompt-panel-mode {
 	width: 176px;
 	min-width: 48px;
-	flex-shrink: 8;
+	flex-shrink: 1;
 }
 
 .prompt-panel-input-task-chevron {
@@ -1245,7 +1150,7 @@
 	padding: 0;
 	margin-left: auto;
 	margin-right: 2px;
-	background-image: url("editor:Icons/options.svg");
+	background-image: url("editor:Icons/options.png");
 	background-size: 16px 16px;
 	background-image-tint: var(--ui_color_text_soft);
 	background-color: transparent;
@@ -1280,3 +1185,91 @@
 	opacity: 0;
 	pointer-events: none;
 }
+
+.prompt-panel-status-row {
+	flex-direction: row;
+	align-items: center;
+	background-color: var(--ui_color_bg_hover_alt);
+}
+.prompt-panel-text-size-host { width: 100px; flex-shrink: 0; }
+.prompt-panel-text-size-host {
+	flex-shrink: 0;
+	padding-right: 8px;
+}
+
+.prompt-panel-status {
+	flex-grow: 1;
+	flex-shrink: 1;
+	min-width: 0;
+	box-sizing: border-box;
+	min-height: 24px;
+	padding: 0 8px 4px 8px;
+	color: var(--ui_color_text_primary);
+	font-size: calc(12px * var(--prompt_text_scale, 1));
+}
+
+.prompt-panel-icon-button {
+	width: 24px;
+	height: 24px;
+	min-width: 24px;
+	min-height: 24px;
+	max-width: 24px;
+	max-height: 24px;
+	box-sizing: border-box;
+	padding: 0;
+	background-size: 20px 20px;
+	background-repeat: no-repeat;
+	background-position: center;
+	background-color: transparent;
+	border-width: 0;
+	border-color: transparent;
+	background-image-tint: var(--ui_color_text_bright);
+	opacity: 0.6;
+	flex-shrink: 0;
+}
+
+.prompt-panel-icon-button:hover {
+	background-color: transparent;
+	border-color: transparent;
+	opacity: 1.0;
+}
+
+.prompt-panel-icon-button:active {
+	background-color: transparent;
+	border-color: transparent;
+	opacity: 1.0;
+}
+
+.prompt-panel-icon-button:focus {
+	background-color: transparent;
+	border-color: transparent;
+	opacity: 1.0;
+}
+
+.prompt-panel-horizontal-scrollbar {
+	display: none;
+}
+
+.prompt-panel-scrollbar {
+	background-color: transparent;
+}
+
+.prompt-panel-provider-settings {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 8px;
+	flex-shrink: 0;
+}
+
+.prompt-panel-input-task {
+	align-self: center;
+	height: 28px;
+	min-height: 28px;
+	max-height: 28px;
+	margin-right: 4px;
+}
+
+.agent-row-reply { font-size: calc(14px * var(--prompt_text_scale, 1)); }
+.prompt-panel-input { font-size: calc(16px * var(--prompt_text_scale, 1)); }

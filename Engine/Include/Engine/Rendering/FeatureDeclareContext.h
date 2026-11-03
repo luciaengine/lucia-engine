@@ -15,7 +15,7 @@
 // ctx and no friend grant on RenderServices — only the enumerated seam below.
 
 #include "Engine/Rendering/ShadowFrameInfo.h"  // Area/Spot/PointShadowFrameInfo snapshots
-#include "Rendering/Camera/CameraTypes.h"              // ViewId
+#include "Rendering/CameraTypes.h"              // ViewId
 #include "Rendering/Core/RenderGraph/RGFrame.h" // RGBuffer
 
 #include <cstdint>

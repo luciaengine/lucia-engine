@@ -1,0 +1,536 @@
+/* The Localization panel (LocalizationPanel.uxml; key rows from the package's Editor/LocalizationPanel.cpp).
+   Fields draw as the shared value box (theme/widgets.css .value-box); this sheet lays them out. */
+
+.localization-root {
+	display: flex;
+	flex-direction: column;
+	flex-grow: 1;
+	min-height: 0;
+}
+
+/* The catalog and language bar: the header strip the Mark-ups panel uses. It paints after the
+   panes below it (z-index among its siblings), so the add-language row it opens lies over them. */
+.localization-toolbar {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	flex-shrink: 0;
+	align-items: center;
+	gap: 4px;
+	padding: 6px;
+	z-index: 1;
+}
+
+/* The inline field "+ Add language…" in the language list opens over the panel just under the
+   bar, as the language list itself does, so opening it moves nothing below. */
+.localization-add-language {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	padding: 6px;
+	position: absolute;
+	top: 100%;
+	left: 0px;
+	width: 100%;
+	z-index: 1000;
+	background-color: var(--ui_color_bg_panel_toolbar);
+	box-shadow: var(--popup-shadow, 0 -1px 24px rgba(0, 0, 0, 0.25));
+}
+
+.localization-spacer {
+	flex-grow: 1;
+}
+
+/* A caption with its control, or a pair of buttons: the toolbar wraps between groups, never
+   inside one. */
+.localization-group-inline {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: nowrap;
+	flex-shrink: 0;
+	align-items: center;
+	gap: 4px;
+}
+
+/* Takes the toolbar's free space, so the language group beside it keeps its place when the
+   name grows ("(unsaved changes)"). Never cut: the toolbar wraps instead. */
+.localization-catalog-name {
+	flex-grow: 1;
+	flex-shrink: 0;
+	color: var(--ui_color_text_bright);
+	font-size: var(--ui_font_size_list);
+	margin-left: 6px;
+	white-space: nowrap;
+}
+
+.localization-caption {
+	color: var(--ui_color_text_secondary);
+	font-size: var(--ui_font_size_small);
+	margin-right: 2px;
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+.localization-locales {
+	flex-shrink: 0;
+	min-width: 160px;
+}
+
+.localization-new-locale {
+	width: 180px;
+	min-width: 120px;
+	flex-shrink: 1;
+}
+
+/* The key list and the entry, either side of the shared splitter. */
+.localization-body {
+	display: flex;
+	flex-direction: row;
+	flex-grow: 1;
+	min-height: 0;
+}
+
+/* Narrower than the two panes' minimum widths and the splitter (LocalizationPanel reads them from
+   this sheet), the list sits above the entry. */
+.localization-body-stacked {
+	flex-direction: column;
+}
+
+/* The key column: filter, coverage filter, the key list. The two panes' minimum widths, with the
+   splitter, are the width below which they stack. */
+.localization-keys {
+	gap: 6px;
+	padding: 6px;
+	min-width: 240px;
+	min-height: 110px;
+}
+
+.localization-entry-pane {
+	min-width: 300px;
+	min-height: 70px;
+}
+
+/* Stacked (LocalizationPanel sets the -stacked classes on the panes), the entry is as tall as its
+   fields up to what the list's minimum leaves, and the list takes the rest (the panel gives the
+   list the slack weight). The entry keeps its header and at least 104 px of fields: four field
+   lines. After the panes' own rules, which these override. */
+.localization-entry-pane-stacked {
+	flex-basis: auto;
+	flex-shrink: 1;
+	min-height: 140px;
+}
+
+/* Stacked, the list keeps its filter, the missing-only switch (72 px with the gaps) and five
+   26 px key rows. */
+.localization-keys-stacked {
+	flex-basis: 0px;
+	min-height: 202px;
+}
+
+.localization-keys-header {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 4px;
+	flex-shrink: 0;
+}
+
+/* The slot the shared panel search bar is built into. */
+.localization-search-host {
+	display: flex;
+	flex-direction: row;
+	flex-grow: 1;
+	min-width: 0;
+}
+
+.localization-icon-open {
+	background-image: url("editor:Icons/folder_open.svg");
+}
+
+.localization-icon-save {
+	background-image: url("editor:Icons/save.svg");
+}
+
+.localization-icon-import {
+	background-image: url("localization:Editor/Icons/po-import.svg");
+}
+
+.localization-icon-export {
+	background-image: url("localization:Editor/Icons/po-export.svg");
+}
+
+.localization-icon-add {
+	background-image: url("editor:Icons/plus.png");
+}
+
+.localization-icon-cancel {
+	background-image: url("editor:Icons/xclose.png");
+}
+
+.localization-icon-discard {
+	background-image: url("editor:Icons/undo.svg");
+}
+
+.localization-icon-apply {
+	background-image: url("editor:Icons/checked.png");
+}
+
+/* Checkbox captions at the list size, as the Mark-ups panel's row text. */
+.localization-checkbox {
+	flex-shrink: 0;
+	font-size: var(--ui_font_size_list);
+}
+
+.localization-key-list {
+	flex-grow: 1;
+	min-height: 0;
+}
+
+.localization-key-row {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 0;
+	height: 26px;
+	padding-left: 6px;
+	padding-right: 6px;
+	border-radius: 4px;
+}
+
+.localization-key-row:hover {
+	background-color: var(--ui_color_bg_item_hover);
+}
+
+/* The row of the entry the editor shows: the accent selection, after :hover so it keeps its
+   plate under the pointer. */
+.localization-key-row:current {
+	background-color: var(--ui_color_accent_translucent);
+}
+
+/* A key shows as its prefix and its last segment: the prefix gives way first, so keys that
+   share a long prefix stay apart by their last segment. */
+.localization-key-prefix {
+	flex-shrink: 1000;
+	min-width: 0;
+	font-size: var(--ui_font_size_list);
+	color: var(--ui_color_text_secondary);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+.localization-key-last {
+	flex-shrink: 1;
+	min-width: 0;
+	font-size: var(--ui_font_size_list);
+	color: var(--ui_color_text);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+/* The edited entry kept in the list while a filter would hide it: both parts of the key step
+   down to the dim text colour, which keeps it above 4.5:1 on the list background. This rule follows the prefix and last-segment rules. */
+.localization-key-text-pinned {
+	color: var(--ui_color_text_dim);
+}
+
+.localization-key-gap {
+	flex-grow: 1;
+}
+
+/* Marks the row whose entry has changes not yet applied (the editor's unsaved dot). */
+.localization-dirty-dot {
+	flex-shrink: 0;
+	width: 8px;
+	height: 8px;
+	margin-left: 6px;
+	border-radius: 4px;
+	background-color: var(--ui_color_text_bright);
+}
+
+/* Set on rows with no translation in the target language; the language list names the count.
+   A hollow ring, so it differs from the filled unapplied dot by shape as well as color. */
+.localization-missing-dot {
+	flex-shrink: 0;
+	width: 8px;
+	height: 8px;
+	margin-left: 6px;
+	border-radius: 4px;
+	border-width: 2px;
+	border-color: var(--ui_color_warning_text);
+	background-color: transparent;
+}
+
+/* Stands in for the list when it has no rows, centred in the list's space. */
+.localization-empty {
+	display: flex;
+	flex-grow: 1;
+	justify-content: center;
+	align-items: center;
+	text-align: center;
+	color: var(--ui_color_text_dim);
+	font-size: var(--ui_font_size_small);
+	white-space: normal;
+	padding: 12px;
+}
+
+/* The vertical bar's gutter stays reserved, so a message line that makes the entry scroll does
+   not move the right column. */
+.localization-entry-scroll {
+	flex-grow: 1;
+	min-height: 0;
+	min-width: 0;
+	--ui_scrollbar_force_vertical: 1;
+}
+
+.localization-entry {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 6px 10px 10px 10px;
+	width: 100%;
+	flex-shrink: 0;
+}
+
+/* The entry's name with the actions that commit or revert its fields, kept at the top of the
+   editor so they stay in reach however far the fields scroll. Its right edge is the fields'
+   right edge: the content's 10 px inset plus the entry scroll view's bar gutter. Opaque, so
+   scrolled fields never show above the scroll view's edge. */
+.localization-entry-header {
+	/* Longhands: the padding shorthand splits its edges at spaces, which a calc() holds. */
+	padding-top: 6px;
+	padding-right: calc(10px + var(--ui_scrollbar_thickness) + var(--ui_scrollbar_margin));
+	padding-bottom: 4px;
+	padding-left: 10px;
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	min-height: 28px;
+	flex-shrink: 0;
+	background-color: var(--ui_color_bg_panel);
+}
+
+/* Discard and Apply: one pair, side by side at the right, never split. When the title's
+   minimum and the pair do not fit on one line, the pair moves to its own line together. */
+.localization-entry-actions {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: nowrap;
+	align-items: center;
+	gap: 4px;
+	flex-shrink: 0;
+	margin-left: auto;
+}
+
+/* Shrinks (its title cuts) before the buttons beside it; when even its minimum does not fit,
+   the header wraps the pair to a second line rather than clip it. */
+.localization-title-group {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 6px;
+	min-width: 120px;
+	flex-grow: 1;
+	flex-shrink: 1;
+	flex-basis: 0;
+}
+
+/* Before the entry's name while its fields hold changes Apply has not committed. */
+.localization-draft-badge {
+	flex-shrink: 0;
+	padding-left: 6px;
+	padding-right: 6px;
+	border-radius: 8px;
+	font-size: var(--ui_font_size_small);
+	color: var(--ui_color_text_bright);
+	/* The deeper accent: white text on the base accent is 4.45:1, under the 4.5:1 text minimum. */
+	background-color: var(--ui_color_accent_pressed);
+}
+
+/* The entry's key as the list rows show it: the prefix gives way first, then the last segment. */
+.localization-entry-title {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-width: 0;
+	flex-shrink: 1;
+	overflow: hidden;
+}
+
+.localization-entry-title-prefix {
+	flex-shrink: 1000;
+	min-width: 0;
+	color: var(--ui_color_text_secondary);
+	font-size: var(--ui_font_size_list);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+.localization-entry-title-last {
+	flex-shrink: 1;
+	min-width: 0;
+	color: var(--ui_color_text_bright);
+	font-size: var(--ui_font_size_list);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+/* Key, source and translation on the left; the preview and the notes on the right. The
+   columns stack when the panel is too narrow for both. */
+.localization-entry-columns {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	gap: 14px;
+	flex-shrink: 0;
+}
+
+.localization-column {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	flex-grow: 1;
+	flex-basis: 280px;
+	min-width: 0;
+}
+
+/* A key once its entry exists: read-only text on the value box's line, not a disabled field. */
+.localization-key-fixed {
+	display: flex;
+	align-items: center;
+	min-height: var(--value_box_height, 26px);
+	padding: 0 8px;
+	color: var(--ui_color_text_dim);
+	font-size: var(--ui_font_size_list);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	overflow: hidden;
+	flex-shrink: 0;
+}
+
+/* A field's message keeps a gap to the caption of the next field. */
+.localization-field-message {
+	margin-bottom: 6px;
+}
+
+.localization-field-label {
+	color: var(--ui_color_text_secondary);
+	font-size: var(--ui_font_size_small);
+	flex-shrink: 0;
+}
+
+.localization-group {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	flex-shrink: 0;
+}
+
+/* The box a multi-line field sits in: at least two lines tall, and as tall as the field's own
+   lines (TextArea grows itself inside a scroll view), so the text never draws past its edge. */
+.localization-text-box {
+	display: flex;
+	flex-direction: column;
+	min-height: 52px;
+	flex-shrink: 0;
+}
+
+/* Grows with its lines (TextArea sizes itself inside a scroll view), from two lines up. */
+.localization-text {
+	min-height: 52px;
+	flex-shrink: 0;
+}
+
+/* The caption line over a field. The English source's and the preview's share it, so the
+   source box and the preview plate start level however tall the source grows. */
+.localization-field-header {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	min-height: 24px;
+	flex-shrink: 0;
+}
+
+/* The arguments field spans its column under its own caption line; it keeps its one-line
+   height when the source column beside it is taller. */
+.localization-arguments {
+	flex-shrink: 0;
+	min-width: 0;
+}
+
+.localization-preview {
+	white-space: normal;
+	font-size: var(--ui_font_size_header);
+	color: var(--ui_color_text_bright);
+	min-height: 52px;
+	padding: 8px 12px;
+	border-radius: 6px;
+	background-color: var(--ui_color_bg_value_box);
+	flex-shrink: 0;
+}
+
+/* What the preview shows instead of the target language, or that the font cannot draw it. */
+.localization-preview-note {
+	color: var(--ui_color_text_secondary);
+	font-size: var(--ui_font_size_small);
+	white-space: normal;
+	flex-shrink: 0;
+}
+
+/* The entry's context and translator notes, read-only under the source while translating. */
+.localization-source-notes {
+	color: var(--ui_color_text_secondary);
+	font-size: var(--ui_font_size_small);
+	white-space: normal;
+	flex-shrink: 0;
+	margin-bottom: 6px;
+}
+
+/* The translation's length beside the source's, for text that must fit a fixed space. */
+.localization-character-count {
+	color: var(--ui_color_text_secondary);
+	font-size: var(--ui_font_size_small);
+	flex-shrink: 0;
+	margin-bottom: 6px;
+}
+
+/* The preview while its message or arguments do not compile. */
+.localization-preview-error {
+	color: var(--ui_color_error_text);
+	font-size: var(--ui_font_size_small);
+}
+
+/* The slot the Inspector's section (InspectorSection) for context and notes is built into. */
+.localization-notes {
+	display: flex;
+	flex-direction: column;
+	margin-top: 4px;
+	flex-shrink: 0;
+}
+
+.localization-notes-content {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.localization-status {
+	flex-shrink: 0;
+	white-space: normal;
+	font-size: var(--ui_font_size_small);
+	color: var(--ui_color_text_secondary);
+	padding: 4px 8px;
+}
+
+/* The status line while it reports an action the panel refused: the error text on the panel,
+   which reads above 4.5:1 where the error background did not. */
+.localization-status-error {
+	color: var(--ui_color_error_text);
+}

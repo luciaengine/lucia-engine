@@ -20,8 +20,8 @@
 namespace GameEngine::Scene
 {
 
-struct SceneWriteContext;
-struct SceneReadContext;
+struct SceneSaveContext;
+struct SceneLoadContext;
 
 // Converts ONE reflected field's bytes <-> scene "value" text (the right-hand side of
 // "Component.field = value", with no prefix and no trailing newline). The field bytes are the
@@ -34,13 +34,13 @@ class IFieldSerializer
     // Format the field at `fieldBytes` as scene-value text.
     virtual std::string Write(const std::byte* fieldBytes,
                               const ECS::FieldInfo& info,
-                              const SceneWriteContext& ctx) const = 0;
+                              const SceneSaveContext& ctx) const = 0;
 
     // Parse `text` into the field at `fieldBytes`. Return false + set *err on malformed input.
     virtual bool Read(std::string_view text,
                       std::byte* fieldBytes,
                       const ECS::FieldInfo& info,
-                      const SceneReadContext& ctx,
+                      const SceneLoadContext& ctx,
                       std::string* err) const = 0;
 };
 

@@ -279,6 +279,7 @@ TEST(CharacterController, EcsWritebackAndPhysicsBodyRefusal)
     GameEngine::PhysicsECS::CharacterControllerWritebackSystem writeback;
 
     constexpr float32 dt = 1.0f / 60.0f;
+    const auto gateBeforeFall = world.GetGlobalSystemVersion();
     for (int i = 0; i < 120; ++i)
     {
         init.Update(world, dt);
@@ -291,9 +292,34 @@ TEST(CharacterController, EcsWritebackAndPhysicsBodyRefusal)
     EXPECT_TRUE(cc->initialized);
     EXPECT_TRUE(pw.IsCharacterValid(cc->character));
     EXPECT_TRUE(cc->grounded);
+    // Positive control: the fall was written back with write grants (the
+    // writeback is the only writer of these columns in this loop).
+    EXPECT_GT(world.GetEntityColumnVersion(e, GameEngine::ECS::GetComponentTypeId<Transform>()),
+              gateBeforeFall);
+    EXPECT_GT(world.GetEntityColumnVersion(e, GameEngine::ECS::GetComponentTypeId<WorldTransform>()),
+              gateBeforeFall);
     const auto* t = world.GetComponent<Transform>(e);
     ASSERT_NE(t, nullptr);
     EXPECT_LT(t->GetPosition().y, 0.2f);
+
+    // Idle writeback (no step): pose and grounded state are unchanged, so the
+    // writeback writes, and grants, none of its three columns and Changed<>
+    // consumers stay quiet.
+    writeback.Update(world, dt);
+    const auto transformType = GameEngine::ECS::GetComponentTypeId<Transform>();
+    const auto worldTransformType = GameEngine::ECS::GetComponentTypeId<WorldTransform>();
+    const auto controllerType = GameEngine::ECS::GetComponentTypeId<CharacterController>();
+    const auto transformStamp = world.GetEntityColumnVersion(e, transformType);
+    const auto worldTransformStamp = world.GetEntityColumnVersion(e, worldTransformType);
+    const auto controllerStamp = world.GetEntityColumnVersion(e, controllerType);
+    for (int i = 0; i < 3; ++i)
+        writeback.Update(world, dt);
+    EXPECT_EQ(world.GetEntityColumnVersion(e, transformType), transformStamp)
+        << "an idle writeback write-granted Transform";
+    EXPECT_EQ(world.GetEntityColumnVersion(e, worldTransformType), worldTransformStamp)
+        << "an idle writeback write-granted WorldTransform";
+    EXPECT_EQ(world.GetEntityColumnVersion(e, controllerType), controllerStamp)
+        << "an idle writeback write-granted CharacterController";
 
     auto blocked = world.CreateEntity();
     world.AddComponentImmediate<Transform>(blocked, pose);

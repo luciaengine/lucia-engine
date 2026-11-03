@@ -9,7 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "Rendering/Core/Device.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderCompileService.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include "Types/StringUtils.h"
@@ -17,17 +17,17 @@
 namespace GameEngine {
 
 namespace {
-static ShaderCacheRoots g_shaderCacheRoots;
+static std::filesystem::path g_shaderCacheRoot;
 } // namespace
 
-void ShaderProgramAsset::SetShaderCacheRoots(ShaderCacheRoots roots) noexcept
+void ShaderProgramAsset::SetShaderCacheRoot(std::filesystem::path root) noexcept
 {
-    g_shaderCacheRoots = std::move(roots);
+    g_shaderCacheRoot = std::move(root);
 }
 
-const ShaderCacheRoots& ShaderProgramAsset::GetShaderCacheRoots()
+const std::filesystem::path& ShaderProgramAsset::GetShaderCacheRoot()
 {
-    return g_shaderCacheRoots;
+    return g_shaderCacheRoot;
 }
 
 void ShaderProgramAsset::ShaderPackageDeleter::operator()(Rendering::ShaderPackage* p) const noexcept
@@ -114,15 +114,15 @@ bool ShaderProgramAsset::LoadFromData(const Vector<uint8>& data)
         // This keeps Assets clean by writing derived artifacts to <workspace>/.Cache/Shaders/...
         try
         {
-            if (g_shaderCacheRoots.Writable.empty())
+            if (g_shaderCacheRoot.empty())
                 throw std::runtime_error("ShaderProgramAsset: shader cache root not configured. "
-                                         "Call ShaderProgramAsset::SetShaderCacheRoots() before loading.");
+                                         "Call ShaderProgramAsset::SetShaderCacheRoot() before loading.");
+            const std::filesystem::path& cacheRoot = g_shaderCacheRoot;
 
             Rendering::ShaderProgramCompileRequest creq{};
             creq.debugName = GetName();
             creq.baseDirectory = GetPath().parent_path();
-            creq.readOnlyCacheRoots = g_shaderCacheRoots.ReadOnly;
-            creq.cacheRoot = g_shaderCacheRoots.Writable;
+            creq.cacheRoot = cacheRoot;
             creq.includeDirs = {};
             creq.stages.reserve(m_Doc.stages.size());
             for (const auto& kv : m_Doc.stages)

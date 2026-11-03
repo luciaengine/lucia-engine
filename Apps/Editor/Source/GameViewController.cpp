@@ -12,9 +12,9 @@
 #include "Engine/Rendering/CameraExposureHelpers.h"
 #include "Engine/Rendering/ExposureReadbackFeature.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/ViewFinalize.h"
 #include "Logger/Logger.h"
-#include "UI/UIManager.h"
 
 #include "Components/Rendering/Camera.h"
 #include "Components/Transform.h"
@@ -22,12 +22,12 @@
 #include "Rendering/Common/Math.h"
 #include "Rendering/Core/HzbCullingStrategy.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Core/ReverseZ.h"
 #include "Rendering/Passes/PixelPerfectUpscalePass.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 
 #include <algorithm>
 #include <exception>
+#include <filesystem>
 #include <memory>
 #include <optional>
 
@@ -44,20 +44,16 @@ constexpr float kGameViewNoCameraClearRgb = 0.09f;
 using GameEngine::Rendering::TextureFormat;
 
 GameViewController::GameViewController(Engine::Renderer::RenderServices* renderServices,
-                                       Editor::EditorChangeNotifications* notifications)
+                                       std::filesystem::path editorAssetsDirectory)
     : m_RenderServices(renderServices),
-      m_ChangeNotifications(notifications),
+      m_EditorAssetsDirectory(std::move(editorAssetsDirectory)),
       m_MovieCapture(renderServices)
 {
     EnsureGameUI();
-    if (m_ChangeNotifications)
-        m_ProjectSwitchedSub = m_ChangeNotifications->SubscribeProjectSwitched([this]() { RebuildGameUI(); });
 }
 
 GameViewController::~GameViewController()
 {
-    if (m_ChangeNotifications)
-        m_ChangeNotifications->Unsubscribe(m_ProjectSwitchedSub);
     try
     {
         m_MovieCapture.StopForShutdown();
@@ -134,55 +130,31 @@ void GameViewController::EnsureGameUI()
 
     m_GameUI = GameUIHost::CreateForHost(
         m_RenderServices->GetDevice(), &EngineCore::GetInstance().GetAssetManager(),
-        &EngineCore::GetInstance().GetJobSystem(), /*neverClearTarget=*/false);
+        &EngineCore::GetInstance().GetJobSystem(), m_EditorAssetsDirectory,
+        /*neverClearTarget=*/false);
     m_GameUiScale.Apply(*m_GameUI->GetUIManager());
     GameUI::SetHost(m_GameUI.get());
 }
 
-void GameViewController::RebuildGameUI()
-{
-    m_GameUI.reset();
-    EnsureGameUI();
-}
-
-void GameViewController::HandleGameUiPointerMove(bool over, float x, float y, int mods)
+void GameViewController::HandleGameUiPointer(bool over, float x, float y, bool down, int mods)
 {
     if (!m_GameUI)
         return;
     // Input may precede this window's next composite. Script callbacks must
     // resolve gameplay UI against the receiving host, not the last rendered one.
     GameUI::SetHost(m_GameUI.get());
-    if (!over)
-    {
-        // The pointer left the view. Its release lands outside the view and never
-        // reaches this host, so nothing waits for it.
-        m_GameUI->CancelPointer(GameUIHost::PrimaryButtonState::Released);
-        return;
-    }
     ECS::World* world = EngineCore::GetInstance().GetPrimaryWorld();
-    if (!world || !m_GameUiWidth || !m_GameUiHeight || world->GetWorldId() != m_GameUiWorldId ||
+    if (!over || !world || !m_GameUiWidth || !m_GameUiHeight ||
+        world->GetWorldId() != m_GameUiWorldId ||
         world->GetLifecycleResetGeneration() != m_GameUiWorldGeneration)
     {
-        // Over the view, but the UI it would reach is gone or not laid out yet: cancel
-        // from the host's own button state; a held press waits for its release here.
-        m_GameUI->OnPointerLeave();
+        m_GameUI->CancelPointer(down ? GameUIHost::PrimaryButtonState::Held
+                                     : GameUIHost::PrimaryButtonState::Released);
         return;
     }
-    // The host's UIManager receives no key events in the editor: each move replaces
-    // its modifier snapshot, so a later plain click cannot inherit a released key.
-    m_GameUI->GetUIManager()->ReconcileModifierKeys(mods);
-    // A move never presses: buttons arrive through HandleGameUiPointerButton.
-    m_GameUI->OnMouseMove({x * static_cast<float>(m_GameUiWidth), y * static_cast<float>(m_GameUiHeight)});
-}
-
-void GameViewController::HandleGameUiPointerButton(int button, bool pressed, int mods)
-{
-    if (!m_GameUI)
-        return;
-    // Input may precede this window's next composite. Script callbacks must
-    // resolve gameplay UI against the receiving host, not the last rendered one.
-    GameUI::SetHost(m_GameUI.get());
-    m_GameUI->OnMouseButton(button, pressed, mods);
+    GameUIHost::PointerState pointer{x * static_cast<float>(m_GameUiWidth),
+                                     y * static_cast<float>(m_GameUiHeight), down, mods};
+    m_GameUI->UpdatePointer(&pointer);
 }
 
 std::optional<Engine::Renderer::Camera> GameViewController::PrepareView(
@@ -203,7 +175,12 @@ std::optional<Engine::Renderer::Camera> GameViewController::PrepareView(
     else
         rs->Views().SetViewCamera(m_ViewId, m_CameraId);
 
-    rs->Views().SetCameraVolumeLayers(m_CameraId, Rendering::RenderLayerMask::All());
+    // OnDemand views participate in the next extraction frame when armed on
+    // tab press, then are armed again by the normal declaration on mouse-up.
+    // A hidden view still lapses within two frames when no activation is armed.
+    rs->Views().RequestViewFrame(m_ViewId);
+    rs->Views().SetCameraPostProcessMask(m_CameraId, 0xFFFFFFFFu);
+    rs->Views().SetViewRenderLayerMask(m_ViewId, 1u);
     rs->Views().SetViewActiveRenderPipeline(m_ViewId, true);
     rs->Views().SetViewCullingStrategy(m_ViewId, Rendering::MakeDefaultOcclusionStrategyOrNull());
     // Render scale is per-view pipeline state: the render targets stay 1:1 with
@@ -228,14 +205,12 @@ std::optional<Engine::Renderer::Camera> GameViewController::PrepareView(
         activeCam = Engine::Renderer::FindActiveCamera(*world);
     m_HadCameraThisFrame = activeCam.has_value();
     UpdateExposureReadback(activeCam && activeCam->params.ExposureControl == Components::ExposureMode::Auto);
-    // The view is OnDemand: armed here, on tab press and on the normal declaration after it, it
-    // draws its camera's Visible Layers for the frame. With no camera it is not armed and sleeps,
-    // and a hidden view lapses within two frames of its last arm.
-    Engine::Renderer::DeclareGameCameraView(rs->Views(), m_ViewId, activeCam ? &*activeCam : nullptr);
+    m_IncludeGameUiInPostProcessing = activeCam && activeCam->params.IncludeUIInPostProcessing;
     if (!activeCam)
     {
         m_DeclaredCamera.reset();
         rs->Views().SetViewActiveRenderPipeline(m_ViewId, false);
+        rs->Views().SetViewRenderLayerMask(m_ViewId, 0u);
         return std::nullopt;
     }
 
@@ -243,7 +218,7 @@ std::optional<Engine::Renderer::Camera> GameViewController::PrepareView(
     m_PixelPerfectStateRG = rs->Views().GetViewPixelPerfect(m_ViewId);
     m_PanelWRG = w;
     m_PanelHRG = h;
-    rs->Views().SetCameraVolumeLayers(m_CameraId, activeCam->params.VolumeLayers);
+    rs->Views().SetCameraPostProcessMask(m_CameraId, activeCam->params.PostProcessMask);
     rs->Views().SetCameraExposure(m_CameraId, Engine::Renderer::ToCameraExposure(activeCam->params));
 
     Rendering::ViewClearConfig clear{};
@@ -251,9 +226,12 @@ std::optional<Engine::Renderer::Camera> GameViewController::PrepareView(
     const Engine::Renderer::CameraAspectResolution aspectResolution =
         Engine::Renderer::ResolveCameraAspect(activeCam->params, w, h);
     const float bg = aspectResolution.letterbox.active ? 0.0f : 0.02f;
-    clear.clearColorValue = ColorLinear(bg, bg, bg, 1.0f);
+    clear.clearColorValue[0] = bg;
+    clear.clearColorValue[1] = bg;
+    clear.clearColorValue[2] = bg;
+    clear.clearColorValue[3] = 1.0f;
     clear.clearDepth = true;
-    clear.clearDepthValue = Rendering::ReverseZ::kClearFar;
+    clear.clearDepthValue = 0.0f;
     rs->Views().SetViewClearConfig(m_ViewId, clear);
     return activeCam;
 }
@@ -358,12 +336,13 @@ bool GameViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& frame
     // Publishes CameraData + aspect/letterbox state onto the view registry.
     Engine::Renderer::ApplyActiveCameraAspect(*rs, m_ViewId, m_CameraId, *activeCam, w, h);
     // ApplyActiveCameraAspect publishes the full pixel-perfect state
-    // (including the snapped sub-pixel remainder); re-read it so the 8e-5
-    // upscale declare gets FracX/FracY, not the frac=0 estimate.
+    // (including the snapped sub-pixel remainder and the panel extent the
+    // pipeline crosses to); re-read it so the target sizing below uses the
+    // published padded extent.
     m_PixelPerfectStateRG = rs->Views().GetViewPixelPerfect(m_ViewId);
     m_PanelWRG = w;
     m_PanelHRG = h;
-    rs->Views().SetCameraVolumeLayers(m_CameraId, activeCam->params.VolumeLayers);
+    rs->Views().SetCameraPostProcessMask(m_CameraId, activeCam->params.PostProcessMask);
     rs->Views().SetCameraExposure(m_CameraId, Engine::Renderer::ToCameraExposure(activeCam->params));
     // The camera's explicit render scale outranks the editor-side override set
     // earlier this frame (0 = inherit; see Components::Camera::RenderScale).
@@ -374,15 +353,21 @@ bool GameViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& frame
     Rendering::ViewClearConfig clear{};
     clear.clearColor = true;
     const float bg = aspectResolution.letterbox.active ? 0.0f : 0.02f;
-    clear.clearColorValue = ColorLinear(bg, bg, bg, 1.0f);
+    clear.clearColorValue[0] = bg;
+    clear.clearColorValue[1] = bg;
+    clear.clearColorValue[2] = bg;
+    clear.clearColorValue[3] = 1.0f;
     clear.clearDepth = true;
-    clear.clearDepthValue = Rendering::ReverseZ::kClearFar;
+    clear.clearDepthValue = 0.0f;
     rs->Views().SetViewClearConfig(m_ViewId, clear);
     rs->WriteViewLightBuffer(m_ViewId);
 
     // Pool imports — window-namespaced (global pool keyspace). A smooth
-    // pixel-perfect camera renders at the padded reference size; the 8e-5
-    // upscale pass writes the full-panel output the UI samples.
+    // pixel-perfect camera rasters at the padded reference size; the pipeline's
+    // PixelPerfectUpscale node crosses from there to the panel extent, so the
+    // display effects after the crossing run at full resolution and the image
+    // the UI samples is the pipeline's own panel-sized output. Custom pipelines
+    // without the crossing retain the terminal upscale below.
     const uint32_t renderW =
         m_PixelPerfectStateRG.Active ? std::max(1u, m_PixelPerfectStateRG.PaddedWidth) : w;
     const uint32_t renderH =
@@ -425,8 +410,7 @@ bool GameViewController::DeclareTargetsRG(Rendering::RenderGraph::RGFrame& frame
 
     const auto& letterbox = rs->Views().GetViewLetterbox(m_ViewId);
     m_DeclaredCamera = DeclaredCamera{rs->Views().ResolveCameraData(m_ViewId),
-                                     activeCam->params.ExposureControl, activeCam->params.AutoExposureMeter,
-                                     frame.FrameIndex(),
+                                     activeCam->params.ExposureControl, frame.FrameIndex(),
                                      letterbox.active ? letterbox.width : renderW,
                                      letterbox.active ? letterbox.height : renderH};
     outTargets.View = m_ViewId;
@@ -459,7 +443,7 @@ bool GameViewController::DeclareGameUICompositeRG(Rendering::RenderGraph::RGFram
     const uint64_t worldId = world ? world->GetWorldId() : 0;
     const uint64_t generation = world ? world->GetLifecycleResetGeneration() : 0;
     if (worldId != m_GameUiWorldId || generation != m_GameUiWorldGeneration)
-        m_GameUI->OnPointerLeave();
+        m_GameUI->UpdatePointer(nullptr);
     m_GameUI->SyncDocuments(world);
     m_GameUiWorldId = worldId;
     m_GameUiWorldGeneration = generation;
@@ -531,6 +515,36 @@ void GameViewController::DeclarePostPipelinePassesRG(Rendering::RenderGraph::RGF
         return;
     }
 
+    // Install a view-local hook on the live pipeline instance. It runs before
+    // the first fullscreen effect on the next frame, so UIDocuments are in the
+    // camera image before CRT, color grading and other fullscreen filters.
+    if (auto* pipeline = m_RenderServices->Spine().PipelineInstanceForFrame(frame);
+        pipeline && pipeline != m_GameUiPostProcessPipeline)
+    {
+        const std::weak_ptr<uint8_t> lifetime = m_GameUiPostProcessLifetime;
+        auto* const pipelineIdentity = pipeline;
+        pipeline->SetBeforePostProcessCallback(this, [this, lifetime, pipelineIdentity](
+                                                               Engine::Renderer::Pipeline::ViewDeclare& d) {
+            if (lifetime.expired() || m_GameUiPostProcessPipeline != pipelineIdentity ||
+                d.View.id != m_ViewId || !d.ViewColor.IsValid() ||
+                !m_IncludeGameUiInPostProcessing ||
+                m_GameUiCompositedFrameIndex == d.Frame.FrameIndex())
+                return;
+            // UI pipelines are single-sample. A resolved/final target gets the
+            // composite later if this effect still receives multisampled color.
+            if (d.Frame.Graph().ResourceDesc(d.ViewColor.Id).SampleCount > 1)
+                return;
+            auto* device = m_RenderServices ? m_RenderServices->GetDevice() : nullptr;
+            if (!device)
+                return;
+            const auto targetSpace = UI::UITargetSpace::ForPipelineOutput(
+                m_RenderServices->GetPipelineOutputSpaceRG(), device->GetActiveHdrOutputMode());
+            if (DeclareGameUICompositeRG(d.Frame, d.ViewColor, targetSpace))
+                m_GameUiCompositedFrameIndex = d.Frame.FrameIndex();
+        });
+        m_GameUiPostProcessPipeline = pipeline;
+    }
+
     // The view finalizes itself BEFORE the HUD composites, so the HUD blends on
     // sRGB code values and the finalize's filters see world pixels and nothing
     // else — the Player's order (#767 slice iii). The dither therefore lands
@@ -582,7 +596,8 @@ void GameViewController::DeclarePostPipelinePassesRG(Rendering::RenderGraph::RGF
     // The HUD composites onto the finished view: its declared space is that image's
     // PRODUCER stamp (#784), not the editor display's — EncodedSrgb once the finalize
     // has run, the pipeline's own space when it declined.
-    if (!DeclareGameUICompositeRG(frame, view.Image,
+    if (m_GameUiCompositedFrameIndex != frame.FrameIndex() &&
+        !DeclareGameUICompositeRG(frame, view.Image,
                                   UI::UITargetSpace::ForPipelineOutput(
                                       view.Space, frame.Device()->GetActiveHdrOutputMode())))
         return;
@@ -606,7 +621,10 @@ void GameViewController::DeclarePostPipelinePassesRG(Rendering::RenderGraph::RGF
     // resamples, which low-pass the noise and then re-round the recovered
     // detail undithered — one of those after the finalize stays forbidden, on
     // this arm and every other.
-    if (m_PixelPerfectStateRG.Active)
+    // Custom pipelines retain the terminal nearest expansion, including the
+    // padded-border crop when source and panel extents happen to match. The
+    // frame's producer flag prevents repeating a crossing already in the graph.
+    if (out.NeedsPixelPerfectFallback(m_PixelPerfectStateRG.Active))
     {
         const std::string ppName =
             "Editor.W" + std::to_string(windowId) + ".GameView.PixelPerfectOutput";
@@ -671,7 +689,8 @@ void GameViewController::DeclarePostPipelinePassesRG(Rendering::RenderGraph::RGF
         // the encoded one the view's finalize already did. `debandLsb` and
         // `presentedFormat` are the frame's single resolutions, shared with the
         // finalize above so a recording keeps matching the screen.
-        m_MovieCapture.DeclareCaptureRG(frame, movieSrc, m_PanelWRG, m_PanelHRG, viewInputSpace,
+        const auto& movieDesc = frame.Graph().ResourceDesc(movieSrc.Id);
+        m_MovieCapture.DeclareCaptureRG(frame, movieSrc, movieDesc.Width, movieDesc.Height, viewInputSpace,
                                         debandLsb, presentedFormat);
     }
 }

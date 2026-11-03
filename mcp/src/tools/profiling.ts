@@ -15,23 +15,6 @@ import {
 import { defineTool, type ToolDef, ToolError } from "../registry.js";
 import { proxyTool } from "./proxy.js";
 
-/**
- * A world point as `[x, y, z]`. A factory, not a shared const: one zod instance reused across two
- * properties emits a `$ref` for the second instead of inlining it (vec3Tuple()).
- * Unlike vec3Tuple() it also takes the JSON text the CLI passes.
- */
-function worldPoint() {
-  return z.preprocess(
-    (val) => {
-      if (typeof val === "string") {
-        try { return JSON.parse(val); } catch { return val; }
-      }
-      return val;
-    },
-    z.array(z.coerce.number()).length(3),
-  );
-}
-
 /** Image name the panel CLI is asked to capture. */
 const kEditorProcessName = process.platform === "win32" ? "Editor.exe" : "Editor";
 
@@ -73,7 +56,7 @@ export const tools: ToolDef[] = [
   proxyTool({
     name: "get_render_stats",
     category: "profiling",
-    description: "Get rendering performance statistics. renderServices.ibl.bakeCount counts the image-based-lighting bakes (sky and reflection probes) since the renderer started, with framesSinceBake (absent before the first bake): a capture is settled once bakeCount stops rising. renderServices.renderThreadCpu.ecsSystems[].maxMs is each ECS system's slowest update since tracking began; pass resetSystemMaxima:true to clear it after this read, so the next read reports the worst single frame in between (read, act, read).",
+    description: "Get rendering performance statistics. renderServices.renderThreadCpu.ecsSystems[].maxMs is each ECS system's slowest update since tracking began; pass resetSystemMaxima:true to clear it after this read, so the next read reports the worst single frame in between (read, act, read).",
     schema: {
       resetSystemMaxima: z.coerce.boolean().optional().describe("Clear every ECS system's maxMs after this read (default false)"),
     },
@@ -174,7 +157,7 @@ export const tools: ToolDef[] = [
   proxyTool({
     name: "get_terrain_stats",
     category: "profiling",
-    description: "Get CBT terrain tessellation-health stats (occupancy, split/merge demand vs served, overflow) with a plain-language diagnosis of whether the triangulation is converged, saturated, or deadlocked. Also names the kernel arm the device took: heapArm is 'wide' (64-bit heap IDs) or 'narrow' (u32 heap IDs — the arm a device without 64-bit shader integer support falls back to), and subdivCeiling is the subdivision cap that arm's representation can carry. maxDepth is derived under that ceiling, so a narrow arm is the attribution for a terrain that refines less than its size would suggest. targetPixelError is the authored target (pixels at targetReferenceHeightPx rows); splitThresholdPx is the threshold the kernels applied on the last frame at renderHeightPx rows (null before the first frame), and the diagnosis ends with the same sentence. pageStreams lists each page stream (a paged terrain's height, a planet when planet is true, or a terrain's surface maps when surface is true) with its wanted pages per level and how many of them are resident; pageVisits is the number of pages the streaming update examined last frame (0 when the camera is still and every page it needs is loaded). heightBake lists the last height bake of each tiled terrain: path is 'gpu' or 'cpu'; firstRefusal is the reason the bake stays on the CPU, or null: a reason on the terrain itself (its height texture or base), or a reason on one modifier such as 'spline shape' with the volume entity; modifierRefusal is the first modifier the GPU bake cannot compute, reported also when the terrain itself refuses first; otherModifierRefusals counts the other effects that also keep the bake on the CPU; pageOverlayComposedSamples counts the samples the page overlay composed itself instead of reading them from the baked tiles. On a planar terrain under pool pressure, offFrustumKeepStep is how much off-screen detail the pool gives up (0 keeps all of it, 24 keeps none) and pressureStep is how far the pool coarsens the visible detail too (it falls to 0 at rest while the keep step is below 24).\nsettlePhase tells how far a stop has come: 'moving' (the last update moved), 'probing' (the stop tries one keep step lower, which keeps more), 'searching' (a keep step is left to try) or 'settled' (the keep step is final; the tree can still finish its merges); it is null where the keep step does not run: on a planet, or on a planar terrain with the depth-target metric or with demand tuning off.\nkeepFloor is the lowest keep step this stop can still take; it is null while moving or probing, and wherever settlePhase is null.\nmergeCandidates is how many triangles wanted to merge in the last update at rest: the count that shows, before the merges finish, that a keep step does not fit.",
+    description: "Get CBT terrain tessellation-health stats (occupancy, split/merge demand vs served, overflow) with a plain-language diagnosis of whether the triangulation is converged, saturated, or deadlocked. Also names the kernel arm the device took: heapArm is 'wide' (64-bit heap IDs) or 'narrow' (u32 heap IDs — the arm a device without 64-bit shader integer support falls back to), and subdivCeiling is the subdivision cap that arm's representation can carry. maxDepth is derived under that ceiling, so a narrow arm is the attribution for a terrain that refines less than its size would suggest. targetPixelError is the authored target (pixels at targetReferenceHeightPx rows); splitThresholdPx is the threshold the kernels applied on the last frame at renderHeightPx rows (null before the first frame), and the diagnosis ends with the same sentence.",
     schema: {},
   }),
 
@@ -194,71 +177,6 @@ export const tools: ToolDef[] = [
     schema: {
       enable: z.coerce.boolean().optional().describe("Arm the profiler (default true), or pass false to disarm it. Either way the response describes the last frame recorded before the call, so a disarming read still returns data. A disarm holds only while the editor's CPU Profiler panel is CLOSED — that panel re-arms the profiler every frame it is visible, and nothing arbitrates between the two; check wasEnabledOnEntry on the next read to see whether the disarm survived."),
       maxRows: z.coerce.number().int().optional().describe("Max rows returned in each of tree/flat (default 64)"),
-    },
-  }),
-
-  proxyTool({
-    name: "get_job_system",
-    category: "profiling",
-    description: "Read the engine job system right now: computeWorkers and blockingThreads; lanes.normal and lanes.background as {queued, running} (jobs waiting in the lane, compute workers running a job of that class); channels[] as {name, queued, running, cap, jobs, queueWaitMs} for every JobChannel (jobs waiting past the cap, jobs holding a slot, cumulative jobs that took a slot, cumulative time jobs waited for one); threads[] with one row per pool thread named as the OS names it ('Job Worker #3', 'Job Blocking #0'), running = 'Normal' | 'Background' | the channel's name | null when idle, and runningForMs for Background and channel jobs only (Normal jobs carry no start time); tasksExecuted (compute-lane dequeues plus channel jobs run) and census (the cumulative queue-topology counters). Gauges are relaxed reads of a running pool, so fields can describe slightly different moments; counters only grow, so read twice and subtract for a rate. Use it to see which thread holds a long job, whether a lane or a channel is backed up, and how many blocking threads exist.",
-    schema: {},
-  }),
-
-  proxyTool({
-    name: "get_memory_stats",
-    category: "profiling",
-    description: "Read the Memory module's stats registry right now: frame (the editor's frame count), entries[] newest first as {name, kind, residency, bytes} where kind is TrackedBytes (bytes its owner reported), Arena, Scratch, FrameMemory, ObjectPool or RangeAllocator (bytes in use plus reservedBytes, highWaterBytes, blocks; an ObjectPool counts slot bytes as of its last block acquisition; a RangeAllocator counts its live ranges' bytes, reservedBytes is the end of its highest range ever handed out and blocks its outstanding ranges); a Scratch entry is one thread's ScratchScope arena and adds threadId (OS id), threadName, outOfOrder (allocations through a scope that was not the innermost, served from the heap) and shrinks (retained blocks released by the hysteresis); a FrameMemory entry is one of a thread's two FrameMemory arenas (one per frame parity) and adds threadId, threadName and shrinks, written at each rewind of that arena (every other frame the thread allocates in). scratch sums the Scratch entries {threads, bytes, reservedBytes, outOfOrder, shrinks}; a thread writes its scratch counts when it acquires a block and at every 64th outermost close, so bytes lags: compare reservedBytes and highWaterBytes across reads. processResidentBytes is the process's resident size now, where the platform reports it.",
-    schema: {},
-  }),
-
-  proxyTool({
-    name: "get_ecs_wave_trace",
-    category: "profiling",
-    description: "Read how the ECS system waves ran, frame by frame, from a ring of the newest 256 SystemManager updates recorded while the trace is armed (pass enabled: true first; arming clears the ring). Unlike get_job_system, which polls between frames, it sees every fork after the fact. summary: ecsMs (the ECS part of the frame), framePeriodMs, joinWaitMs (time the main thread waited in wave joins), inlineMs (bodies the main thread ran in single-system and exclusive waves), helpMs (forked bodies the main thread ran while joining, its own wave's jobs), gapsMs (ECS time outside any wave), forkedWaves, forks, joins, and publishes: waveForks (pool tasks the waves' publish loops published, at most one per fork), inSystems (jobs system bodies published on their own thread), duringUpdate (every thread's publishes during the ECS update), perFrame (every thread's publishes from one frame's start to the next) and outsideSystems (perFrame minus the two attributed counts). waves[] per plan wave: systems, forks, makespanMs, gapBeforeMs, joinWaitMs, criticalPathMs (slowest forked body), dispatchMs (fork publish to body start). systems[] per system, slowest first: ms, updates, forked, onWorker, onCaller, publishesPerUpdate. Distributions are {median, p95, max} in milliseconds. frames[] describes the newest N frames system by system. On macOS the same waves, joins and bodies are os_signpost intervals (subsystem com.gameengine.ecs, category SystemWaves) for an Instruments recording while armed.",
-    schema: {
-      enabled: z.boolean().optional().describe("Arm (true, clears the ring) or disarm (false) the trace. Omit to leave it as it is."),
-      window: z.coerce.number().int().optional().describe("Summarise the newest N recorded frames (default and maximum 256)"),
-      frames: z.coerce.number().int().optional().describe("Also describe the newest N frames one by one (default 0)"),
-    },
-  }),
-
-  proxyTool({
-    name: "get_frame_phases",
-    category: "profiling",
-    description: "Attribute slow frames after the fact. The editor always records one sample per main-loop frame for the newest 1024 frames: frameMs (Application's frame interval, the value get_render_stats' 250 ms window holds; when the reply's fixedFrameRate is true, Application's delta is the fixed step, so frameMs is measured from Update to Update instead) and the phase timings the frame loop already measures: poll (the gamepad read), input, appUpdate (.preUi, .debugPanels, .uiWindows, .tail), engineUpdate, render (.preloop, .beginFrame, .worldViews, .thumbnails, .uiRecord, .terminalPasses, .rgCompile, .rgExecute, .variantCompile, .prewarm, .present; for the window that rendered the Scene View), sleep, unaccounted (frameMs minus the top-level phases: the OS event pump, which runs between frames outside every phase, the CPU profiler's frame close and log dump while it is armed, and the loop's bookkeeping), renderServices.sort / .bucketerSchedule / .extraction, renderGraph.compile / .schedule / .generateBarriers / .buildSubmissionPlan / .queueSubmit / .barrierEmit, gpuSync.fenceWait / .acquire / .presentTransitionSubmit / .queuePresent and gpuSync.gpuFramePeriod (GPU timeline spacing, read a frame or more late). renderServices, renderGraph and gpuSync times are measured inside engineUpdate and render, so they repeat time rather than add to it. summary: frameMs and every phase as {median, p95, p99, max} over the window, spanMs; with minFrameMs, framesAtOrAbove and spikeIntervalFrames / spikeIntervalMs (the spacing between slow frames: a steady interval means a periodic trigger). frames[]: each listed frame's frameIndex, frameMs, agoMs, sceneViewRendered, jobsPublished (by every thread during the frame), graphSubmissions, graphRenderPasses, its non-zero phases, and excess: the five phases furthest above their window median, which names where a slow frame's time went. While get_ecs_wave_trace is armed and still holds the frame (its newest 256), a listed frame also carries ecs: {ecsMs, slowestSystems[] {name, ms, onWorker}}. Times are milliseconds.",
-    schema: {
-      window: z.coerce.number().int().optional().describe("Summarise the newest N frames (default and maximum 1024)"),
-      minFrameMs: z.coerce.number().optional().describe("List every frame in the window whose frame time is at or above this, e.g. 10"),
-      frames: z.coerce.number().int().optional().describe("Also list the newest N frames whatever their time (default 0)"),
-    },
-  }),
-
-  proxyTool({
-    name: "get_navigation_stats",
-    category: "profiling",
-    description: "Read NavigationPathfindingSystem's path solve budget. Every navigation request (an agent with HasDestination and PathDirty or ReplanRequested, whatever set them: orders, the replan timer, the Failed retry, the movement system's corridor checks) joins one queue; each frame solves the oldest maxPathSolvesPerFrame and leaves the rest waiting: a PathDirty request as Pending, a replan timer refresh still walking its current path. frames: Updates run. frame (the newest Update): newRequests (requests that joined the queue), solved, backlog (requests left queued), oldestWaitFrames and oldestWaitSeconds (the oldest request still queued, 0 when none is), longestSolvedWaitFrames and longestSolvedWaitSeconds (the longest wait among the requests solved; a request solved in the frame it joined waited 0), and the newest frame's grid A* solves: gridSolves, expansions (cells the searches closed, summed), mostExpansions, slowestSolveMicroseconds and solvesByEnd (reached; refused: the start or goal is off the grid or blocked, no search; otherRegion: the goal is outside the start's region, no search; unreachable: the search closed every cell it could reach and did not reach the goal). totals: newRequests, solved, expansions and gridSolvesByEnd since the system was created; read twice and subtract for a rate. worstSolves: the grid solves that closed the most cells, most first, each kept 8 s of system time after its frame: frame, end, expansions, microseconds (the solve's wall time, path smoothing included), start and goal as [x, z] grid cells, agentCellRadius (the footprint radius the search tested, in cells; 0 tests the cell only). solverScratch (the navigation world's grid A* solvers, one per grid path solve it has run at once; 11 bytes per cell, grown to the largest grid the solver solved on and freed entirely, whenever a grid map is removed or replaced, if it holds more than the largest grid map left needs; the next solve regrows it): solvers, solversHoldingScratch, heldBytes (what they hold as of each one's last solve or release), solverHighWaterBytes (the most any one of them has held). surfaces: every NavigationSurface of the scene with entityId, bakeStatus (the line its inspector shows), version (its BakeVersion: the tiles put into its map so far) and tiles: declared (the mesh's tile count), resident (tiles in the map), dirty (waiting to rebake after a terrain edit, a carving obstacle or MarkDirty), baking (rebaking now), stale (loaded from the baked data with changed ground) and built (tiles built since the surface appeared). Refused when no ECS system manager runs or the navigation systems are not scheduled.",
-    schema: {},
-  }),
-
-  proxyTool({
-    name: "find_path",
-    category: "scene",
-    description:
-      "Solve one path across a baked NavigationSurface with the surface's own agent (radius, height), on the editor's main thread between frames. Returns status (Complete: reaches `to`; Partial: ends at the reachable point nearest `to`; Failed: `from` or `to` has no surface polygon near it, or nothing connects them), surfaceEntityId, bakeStatus (the line the surface's inspector shows), pointCount, lengthMeters and the corner points as [x, y, z]. Refused with the reason when the scene has no surface, has several and entityId is missing, or the surface is not baked.",
-    schema: {
-      from: worldPoint().describe("Start as a world point [x, y, z]"),
-      to: worldPoint().describe("End as a world point [x, y, z]"),
-      entityId: z.coerce.number().optional().describe("The NavigationSurface entity; optional when the scene has one"),
-    },
-  }),
-
-  proxyTool({
-    name: "get_navigation_sources",
-    category: "scene",
-    description:
-      "List what a bake of a NavigationSurface reads besides the terrain, gathered on the editor's main thread between frames: every collider and mesh inside the surface's bounds, one entry per entity and kind. Returns surfaceEntityId, count and sources, each with entityId, name (when the entity has one; a mesh a spline recipe makes lists under its recipe's name first, as in \"Harbor Road / Section 0\"), kind (Collider: a box, sphere, capsule or plane collider on a Static body; Mesh: a mesh renderer's model submesh, primitive, or a mesh a spline recipe makes (a road, a wall, a paved area)) and, for a mesh, policy (the NavigationSource policy that admitted it: Auto, or Include for a mesh Auto would leave out); colliders carry no policy. A mesh under NavigationSource Exclude, on itself or inherited from an ancestor, is not listed. Refused with the reason when the scene has no surface, or has several and entityId is missing.",
-    schema: {
-      entityId: z.coerce.number().optional().describe("The NavigationSurface entity; optional when the scene has one"),
     },
   }),
 

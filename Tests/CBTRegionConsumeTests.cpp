@@ -18,24 +18,21 @@
 #include "CBTTerrainECS/Systems/CBTUpdateSystem.h"
 #include "CBTTerrainECS/Systems/RegisterCBTSystems.h"
 #include "Components/Terrain/Terrain.h"
-#include "PageStreaming/Height/HeightPageLayer.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/SystemScheduling.h"
 #include "ECS/World.h"
 #include "Rendering/Core/Device.h"
 #include "Scene/SceneSchemaRegistry.h"
 #include "SplineECS/Systems/RegisterSplineSystems.h"
-#include "TerrainECS/PageLevelRule.h"
-#include "TerrainECS/TerrainPages.h"
 #include "TerrainECS/TerrainRenderFeature.h"
 #include "TerrainECS/TerrainService.h"
 #include "TerrainECS/Systems/RegisterTerrainSystems.h"
 #include "TerrainECS/Systems/TerrainWorldHooks.h"
-#include "TerrainPagedField.h"
 
 #include <algorithm>
 #include <cstdlib>
 #include <memory>
+#include <set>
 #include <string_view>
 #include <vector>
 
@@ -124,15 +121,6 @@ ECS::EntityHandle AddTiledTerrainEntity(ECS::World& world, uint32 tiledIndex,
 bool RectIsEmpty(const CBTTerrain::CBTClassifyDesc& c)
 {
     return c.DirtyMaxU <= c.DirtyMinU || c.DirtyMaxV <= c.DirtyMinV;
-}
-
-// The face rect the classify carries for `face`, or null.
-const CBTTerrain::SphereFaceUVRect* FaceRect(const CBTTerrain::CBTClassifyDesc& c, uint32 face)
-{
-    for (uint32 i = 0; i < c.SphereDirty.Count; ++i)
-        if (c.SphereDirty.Rects[i].Face == face)
-            return &c.SphereDirty.Rects[i];
-    return nullptr;
 }
 
 // One touched (face, face-local UV rect) region — the single-face-edit case.
@@ -231,11 +219,11 @@ TEST(CBTRegionConsume, ConfirmedEditBecomesQuiescentThenReArmsOnNewEdit)
 // of ConsumeDirtyRegion. `regions` is the clear-on-read drain from TerrainService, so the
 // tests pass a NON-EMPTY drain on an edit frame and an EMPTY drain on subsequent frames
 // (the service already cleared it). SphereSculptEnabled turns on for good once any dab
-// lands; every touched face goes to the GPU in the same update and is re-armed from the
-// pending set (not a fresh ingest) until the render side confirms it recorded.
+// lands; each touched face is drained to the GPU one per recorded update and re-armed from
+// the pending set (not a fresh ingest) until the render side confirms it recorded.
 // ---------------------------------------------------------------------------
 
-// No edits -> the sculpt sample stays disabled and no rect is dirty (quiescence: the
+// No edits -> the sculpt sample stays disabled and the rect is empty (quiescence: the
 // C7 default planet is byte-identical + pays nothing).
 TEST(CBTRegionConsume, SphereSculptQuiescentUntilEdit)
 {
@@ -243,23 +231,21 @@ TEST(CBTRegionConsume, SphereSculptQuiescentUntilEdit)
     CBTTerrain::CBTClassifyDesc c{};
     system.ConsumeSphereSculpt(/*version=*/0u, /*recordCount=*/0u, CBTTerrain::SphereEditRegions{}, c);
     EXPECT_EQ(c.SphereSculptEnabled, 0u);
-    EXPECT_FALSE(c.HasDirtyRegion());
+    EXPECT_TRUE(RectIsEmpty(c));
 }
 
 // The first dab (version 1) turns the sculpt sample on for good and pushes the edited
-// face's (face-local) rect into the classify; the planar rect stays empty.
+// face's (face-local) rect into the classify.
 TEST(CBTRegionConsume, SphereSculptEditPushesFaceRect)
 {
     CBTUpdateSystem system(nullptr);
     CBTTerrain::CBTClassifyDesc c{};
     system.ConsumeSphereSculpt(1u, 0u, OneFace(2u, 0.25f, 0.30f, 0.55f, 0.60f), c);
     EXPECT_EQ(c.SphereSculptEnabled, 1u);
-    EXPECT_TRUE(RectIsEmpty(c));
-    ASSERT_EQ(c.SphereDirty.Count, 1u);
-    const CBTTerrain::SphereFaceUVRect* rect = FaceRect(c, 2u);
-    ASSERT_NE(rect, nullptr);
-    EXPECT_NEAR(rect->MinU, 0.25f, 1e-4f);
-    EXPECT_NEAR(rect->MaxV, 0.60f, 1e-4f);
+    EXPECT_EQ(c.DirtyFace, 2u);
+    EXPECT_FALSE(RectIsEmpty(c));
+    EXPECT_NEAR(c.DirtyMinU, 0.25f, 1e-4f);
+    EXPECT_NEAR(c.DirtyMaxV, 0.60f, 1e-4f);
 }
 
 // An unconfirmed edit (record count never advances) is RE-ARMED from the pending set, not
@@ -270,36 +256,40 @@ TEST(CBTRegionConsume, SphereSculptUnconfirmedReArmed)
     CBTUpdateSystem system(nullptr);
     CBTTerrain::CBTClassifyDesc a{};
     system.ConsumeSphereSculpt(1u, 0u, OneFace(0u, 0.1f, 0.1f, 0.4f, 0.4f), a);
-    ASSERT_TRUE(a.HasDirtyRegion());
+    ASSERT_FALSE(RectIsEmpty(a));
     CBTTerrain::CBTClassifyDesc b{};
     system.ConsumeSphereSculpt(1u, 0u, CBTTerrain::SphereEditRegions{}, b);
-    EXPECT_NE(FaceRect(b, 0u), nullptr) << "an unconfirmed sphere edit was dropped instead of re-armed";
+    EXPECT_FALSE(RectIsEmpty(b)) << "an unconfirmed sphere edit was dropped instead of re-armed";
 }
 
-// Once confirmed (record count advanced), a held version goes quiescent (no rect) but
+// Once confirmed (record count advanced), a held version goes quiescent (empty rect) but
 // the sculpt sample STAYS enabled (relief persists); a new dab (version 2) re-arms.
 TEST(CBTRegionConsume, SphereSculptConfirmedQuiescentThenReArms)
 {
     CBTUpdateSystem system(nullptr);
     CBTTerrain::CBTClassifyDesc push{};
     system.ConsumeSphereSculpt(1u, 0u, OneFace(3u, 0.2f, 0.2f, 0.5f, 0.5f), push);
-    ASSERT_TRUE(push.HasDirtyRegion());
+    ASSERT_FALSE(RectIsEmpty(push));
 
     // Record count advanced -> the pushed rect was recorded -> commit; drain is now EMPTY.
     CBTTerrain::CBTClassifyDesc quiescent{};
     system.ConsumeSphereSculpt(1u, 1u, CBTTerrain::SphereEditRegions{}, quiescent);
-    EXPECT_FALSE(quiescent.HasDirtyRegion()) << "confirmed sphere edit still re-armed";
+    EXPECT_TRUE(RectIsEmpty(quiescent)) << "confirmed sphere edit still re-armed";
     EXPECT_EQ(quiescent.SphereSculptEnabled, 1u) << "relief must persist after the edit frame";
 
     // A new dab (version bumped) reclassifies again.
     CBTTerrain::CBTClassifyDesc reedit{};
     system.ConsumeSphereSculpt(2u, 1u, OneFace(4u, 0.6f, 0.6f, 0.8f, 0.8f), reedit);
-    EXPECT_NE(FaceRect(reedit, 4u), nullptr) << "a new sphere dab after a committed one was not reclassified";
+    EXPECT_FALSE(RectIsEmpty(reedit)) << "a new sphere dab after a committed one was not reclassified";
+    EXPECT_EQ(reedit.DirtyFace, 4u);
 }
 
-// A dab across a cube edge, or a page on a face side, changes two faces. Both reclassify in the
-// update the change lands in (one face an update leaves the neighbor face a frame stale), then quiescent.
-TEST(CBTRegionConsume, SphereSculptCrossFaceReclassifiesBothFacesInOneUpdate)
+// CROSS-FACE SEAM ORACLE (Finding 1): a dab straddling a cube edge touches TWO faces. The GPU
+// Classify push carries one (face,rect), so pre-fix only the primary face reclassified and the
+// neighbour face kept its pre-edit heights until a later dab centred on it — a seam that healed
+// only when the exact edge was brushed again. The per-face drain must reclassify BOTH faces (count +
+// content) over successive recorded updates, then go quiescent.
+TEST(CBTRegionConsume, SphereSculptCrossFaceDrainsBothFaces)
 {
     CBTUpdateSystem system(nullptr);
     CBTTerrain::SphereEditRegions regions{};
@@ -307,26 +297,44 @@ TEST(CBTRegionConsume, SphereSculptCrossFaceReclassifiesBothFacesInOneUpdate)
     regions.Rects[0] = CBTTerrain::SphereFaceUVRect{0u, 0.80f, 0.40f, 1.00f, 0.60f}; // +X edge band
     regions.Rects[1] = CBTTerrain::SphereFaceUVRect{2u, 0.00f, 0.40f, 0.20f, 0.60f}; // +Y edge band
 
+    auto faceRect = [&](uint32 face) -> const CBTTerrain::SphereFaceUVRect& {
+        return regions.Rects[0].Face == face ? regions.Rects[0] : regions.Rects[1];
+    };
+    auto expectMatches = [](const CBTTerrain::CBTClassifyDesc& c, const CBTTerrain::SphereFaceUVRect& r) {
+        EXPECT_NEAR(c.DirtyMinU, r.MinU, 1e-4f);
+        EXPECT_NEAR(c.DirtyMinV, r.MinV, 1e-4f);
+        EXPECT_NEAR(c.DirtyMaxU, r.MaxU, 1e-4f);
+        EXPECT_NEAR(c.DirtyMaxV, r.MaxV, 1e-4f);
+    };
+
+    // Update 1 (record 0): one face pushed with its exact written extent.
     CBTTerrain::CBTClassifyDesc c1{};
     system.ConsumeSphereSculpt(1u, 0u, regions, c1);
-    ASSERT_EQ(c1.SphereDirty.Count, 2u) << "the neighbor face waits for a later update";
-    for (uint32 i = 0; i < 2u; ++i)
-    {
-        const CBTTerrain::SphereFaceUVRect* rect = FaceRect(c1, regions.Rects[i].Face);
-        ASSERT_NE(rect, nullptr) << "face " << regions.Rects[i].Face;
-        EXPECT_NEAR(rect->MinU, regions.Rects[i].MinU, 1e-4f);
-        EXPECT_NEAR(rect->MinV, regions.Rects[i].MinV, 1e-4f);
-        EXPECT_NEAR(rect->MaxU, regions.Rects[i].MaxU, 1e-4f);
-        EXPECT_NEAR(rect->MaxV, regions.Rects[i].MaxV, 1e-4f);
-    }
+    ASSERT_FALSE(RectIsEmpty(c1));
+    const uint32 firstFace = c1.DirtyFace;
+    ASSERT_TRUE(firstFace == 0u || firstFace == 2u);
+    expectMatches(c1, faceRect(firstFace));
 
+    // Update 2 (record advanced -> first confirmed; drain now EMPTY): the OTHER face reclassifies
+    // from the pending set (the fix).
     CBTTerrain::CBTClassifyDesc c2{};
     system.ConsumeSphereSculpt(1u, 1u, CBTTerrain::SphereEditRegions{}, c2);
-    EXPECT_FALSE(c2.HasDirtyRegion()) << "both faces recorded but Classify still dirty — not quiescent";
+    ASSERT_FALSE(RectIsEmpty(c2));
+    const uint32 secondFace = c2.DirtyFace;
+    EXPECT_NE(secondFace, firstFace) << "the neighbour face never reclassified — the cross-face seam";
+    EXPECT_TRUE(secondFace == 0u || secondFace == 2u);
+    expectMatches(c2, faceRect(secondFace));
+
+    // Update 3 (record advanced -> both confirmed): quiescent (no residual work).
+    CBTTerrain::CBTClassifyDesc c3{};
+    system.ConsumeSphereSculpt(1u, 2u, CBTTerrain::SphereEditRegions{}, c3);
+    EXPECT_TRUE(RectIsEmpty(c3)) << "both faces drained but Classify still dirty — not quiescent";
 }
 
-// A corner edit touches THREE faces; all three reclassify in one update, then quiescent.
-TEST(CBTRegionConsume, SphereSculptCornerReclassifiesThreeFacesInOneUpdate)
+// A corner edit touches THREE faces; all three must reclassify (over three recorded updates),
+// then quiescent. The modifier bake path shares this drain, so a multi-face modifier re-evaluates
+// every touched face instead of just the first.
+TEST(CBTRegionConsume, SphereSculptCornerDrainsThreeFaces)
 {
     CBTUpdateSystem system(nullptr);
     CBTTerrain::SphereEditRegions regions{};
@@ -335,21 +343,23 @@ TEST(CBTRegionConsume, SphereSculptCornerReclassifiesThreeFacesInOneUpdate)
     regions.Rects[1] = CBTTerrain::SphereFaceUVRect{2u, 0.00f, 0.90f, 0.10f, 1.00f};
     regions.Rects[2] = CBTTerrain::SphereFaceUVRect{4u, 0.90f, 0.00f, 1.00f, 0.10f};
 
-    CBTTerrain::CBTClassifyDesc c{};
-    system.ConsumeSphereSculpt(1u, 0u, regions, c);
-    EXPECT_EQ(c.SphereDirty.Count, 3u);
-    EXPECT_TRUE(FaceRect(c, 0u) && FaceRect(c, 2u) && FaceRect(c, 4u));
-
-    // A rect that grows before its update records is pushed again at its new extent.
-    CBTTerrain::CBTClassifyDesc grown{};
-    system.ConsumeSphereSculpt(1u, 0u, OneFace(2u, 0.00f, 0.80f, 0.10f, 1.00f), grown);
-    ASSERT_NE(FaceRect(grown, 2u), nullptr);
-    EXPECT_NEAR(FaceRect(grown, 2u)->MinV, 0.80f, 1e-4f);
-    EXPECT_EQ(grown.SphereDirty.Count, 3u);
+    std::set<uint32> drained;
+    for (uint32 rc = 0; rc < 3u; ++rc)
+    {
+        // Only the first frame drains the (three-face) union; the rest drain EMPTY and reclassify
+        // the remaining faces from the pending set.
+        const CBTTerrain::SphereEditRegions in = rc == 0u ? regions : CBTTerrain::SphereEditRegions{};
+        CBTTerrain::CBTClassifyDesc c{};
+        system.ConsumeSphereSculpt(1u, rc, in, c);
+        ASSERT_FALSE(RectIsEmpty(c)) << "corner face " << rc << " did not reclassify";
+        drained.insert(c.DirtyFace);
+    }
+    EXPECT_EQ(drained.size(), 3u) << "a corner edit did not reclassify all three faces";
+    EXPECT_TRUE(drained.count(0u) && drained.count(2u) && drained.count(4u));
 
     CBTTerrain::CBTClassifyDesc quiescent{};
-    system.ConsumeSphereSculpt(1u, 1u, CBTTerrain::SphereEditRegions{}, quiescent);
-    EXPECT_FALSE(quiescent.HasDirtyRegion()) << "all corner faces recorded but Classify still dirty";
+    system.ConsumeSphereSculpt(1u, 3u, CBTTerrain::SphereEditRegions{}, quiescent);
+    EXPECT_TRUE(RectIsEmpty(quiescent)) << "all corner faces drained but Classify still dirty";
 }
 
 // Sub-texel gate + radius scaling (Finding 2): the footprint-in-texels helper now takes the runtime
@@ -487,6 +497,37 @@ TEST(CBTRegionConsume, SingleTerrainActivatesCBTDrawGate)
     ECS::World world;
     AddTerrainEntity(world, handle);
     EXPECT_TRUE(CBTUpdateSystem::ComputeTerrainActive(world));
+}
+
+// The terrain term in the reflection-probe content digest: nothing without an
+// active terrain, a new value when the rendered terrain's identity changes, and
+// the same value while only continuous shape values move (an inspector drag
+// must not recapture a "Once" probe every frame).
+TEST(CBTRegionConsume, TerrainContentDigestTracksIdentityNotShape)
+{
+    Components::Terrain terrain{};
+    EXPECT_EQ(CBTUpdateSystem::ComputeTerrainContentDigest(false, terrain), 0u);
+
+    const uint64 base = CBTUpdateSystem::ComputeTerrainContentDigest(true, terrain);
+    EXPECT_NE(base, 0u);
+
+    Components::Terrain resized = terrain;
+    resized.SizeX *= 2.0f;
+    resized.HeightScale *= 2.0f;
+    resized.PlanetRadius *= 2.0f;
+    EXPECT_EQ(CBTUpdateSystem::ComputeTerrainContentDigest(true, resized), base);
+
+    Components::Terrain relit = terrain;
+    relit.MaterialLibraryGuid.Set(GUID::Derive(GUID::Null(), "terrain-content-digest-test"));
+    EXPECT_NE(CBTUpdateSystem::ComputeTerrainContentDigest(true, relit), base);
+
+    Components::Terrain planet = terrain;
+    planet.Domain = Components::TerrainDomain::Spherical;
+    EXPECT_NE(CBTUpdateSystem::ComputeTerrainContentDigest(true, planet), base);
+
+    Components::Terrain shadowless = terrain;
+    shadowless.CastShadows = false;
+    EXPECT_NE(CBTUpdateSystem::ComputeTerrainContentDigest(true, shadowless), base);
 }
 
 TEST(CBTRegionConsume, NoHandleOrDisabledTerrainLeavesCBTInactive)
@@ -754,74 +795,6 @@ TEST(CBTRegionConsume, UnifiedTiledDirtyRoutingResolvesGlobalHandleAndLandsRect)
         feature.ReleaseTerrainResources(globalHandle);
     }
     device->Shutdown();
-}
-
-// A paged terrain's edit reaches the classify as the rect its pages publish: an edit of level-0
-// samples 100 to 110 on a flat 257-sample tile reaches samples 96 to 116 at its coarsest level
-// (TerrainHeightPagesTests), not the whole terrain its coarsest page covers. The pages' rects go
-// into the accumulator as the height-page driver publishes them (UpdateHeightPages). Deviceless:
-// the accumulator and the drain need no texture.
-TEST(CBTRegionConsume, APagedTerrainEditReachesTheClassifyAsTheRectItsPagesPublish)
-{
-    ScopedTerrainService svc;
-    TerrainRenderFeature feature;
-    TiledTerrainConfig cfg{};
-    cfg.WorldSizeX = 4096.0f;
-    cfg.WorldSizeZ = 4096.0f;
-    cfg.HeightScale = 200.0f;
-    cfg.SamplesPerMeter = 1.0f;
-    cfg.PatchGridSize = 32;
-    const TiledTerrainHandle tiled = TerrainService::Get().CreateTiledTerrain(cfg);
-    TiledTerrainData* tiledData = TerrainService::Get().GetTiledTerrainData(tiled);
-    ASSERT_NE(tiledData, nullptr);
-    const TerrainHandle globalHandle{tiled.Index + 3u, 1u};
-    tiledData->GlobalGpuHandleIndex = globalHandle.Index;
-    tiledData->GlobalGpuHandleGeneration = globalHandle.Generation;
-
-    PagedTerrainRequest request = TerrainECS::Test::FlatTileRequest(257);
-    request.Terrain = globalHandle.Index;
-    request.TerrainGeneration = globalHandle.Generation;
-
-    TerrainPages pages(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.DenseTableWords},
-                       kDesktopSurfacePages);
-    const Mathematics::Vector3 camera{128.0f, 10.0f, 128.0f};
-    const PageLevelView view = MakePageLevelView(kPageLevelReferenceRows, 1.0f, 11.0f);
-    pages.Update(1, 1.0f / 60.0f, false, 2);
-    uint64 frame = 2;
-    for (; frame < 62; ++frame)
-    {
-        pages.Request(request, {&camera, 1}, view);
-        pages.Update(frame, 1.0f / 60.0f, false, 2);
-    }
-    pages.DirtyRects().clear();
-
-    const PageStreaming::PageSampleRect edit{100, 100, 110, 110};
-    auto layer = std::make_shared<PageStreaming::HeightPageLayer>(1u, PageStreaming::BuildPageStoreLevels(257, 257));
-    layer->WriteLevel0(0, edit, std::vector<float32>(edit.Width() * edit.Height(), 5.0f));
-    request.Overlay = layer;
-    request.OverlayVersion = 1;
-    request.OverlayChangedSince = 0;
-    request.OverlayChanged = edit;
-    for (; frame < 72; ++frame)
-    {
-        pages.Request(request, {&camera, 1}, view);
-        pages.Update(frame, 1.0f / 60.0f, false, 2);
-        for (const HeightPageDirtyRect& rect : pages.DirtyRects())
-            feature.AccumulateAtlasHeightDirtyUV(TerrainHandle{rect.Terrain, rect.TerrainGeneration}, rect.MinU,
-                                                 rect.MinV, rect.MaxU, rect.MaxV);
-        pages.DirtyRects().clear();
-    }
-
-    Components::Terrain tuning{};
-    tuning.TiledTerrainHandle = tiled.Index;
-    tuning.TiledTerrainGeneration = tiled.Generation;
-    CBTUpdateSystem system(nullptr);
-    CBTTerrain::CBTClassifyDesc classify{};
-    system.ConsumeUnifiedTiledDirtyRegion(&feature, /*updateRecordCount=*/0u, tuning, classify);
-    EXPECT_FLOAT_EQ(classify.DirtyMinU, 96.0f / 256.0f);
-    EXPECT_FLOAT_EQ(classify.DirtyMinV, 96.0f / 256.0f);
-    EXPECT_FLOAT_EQ(classify.DirtyMaxU, 116.0f / 256.0f);
-    EXPECT_FLOAT_EQ(classify.DirtyMaxV, 116.0f / 256.0f);
 }
 
 // Defensive routing: a null feature or a tiled handle with no live TiledTerrainData drains

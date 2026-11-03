@@ -1,6 +1,6 @@
 # Modern GPU-Driven Rendering Library
 cmake_minimum_required(VERSION 3.20)
-project(GameEngineRendering LANGUAGES CXX)
+project(GameEngineRendering VERSION 1.0.0 LANGUAGES CXX)
 
 # C++20 requirement for modern features
 set(CMAKE_CXX_STANDARD 20)
@@ -34,6 +34,8 @@ option(RENDERING_ENABLE_GPU_CULLING "Build GPU culling examples" OFF)
 # classify as Linux.
 if(EMSCRIPTEN)
     set(RENDERING_PLATFORM_WEB TRUE)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(RENDERING_PLATFORM_IOS TRUE)
 elseif(WIN32)
     set(RENDERING_PLATFORM_WINDOWS TRUE)
 elseif(UNIX AND NOT APPLE)
@@ -117,7 +119,9 @@ endif()
 # vcpkg-provided headers/loader rather than a hard-coded local SDK path.
 # Validation layers come from the system Vulkan SDK install (registered with
 # the Vulkan loader via OS config), not from vcpkg.
-find_package(Vulkan QUIET)
+if(RENDERING_BUILD_VULKAN)
+    find_package(Vulkan QUIET)
+endif()
 
 # On macOS, if CMake did not find Vulkan but the official Vulkan SDK
 # (MoltenVK) is installed and VULKAN_SDK is set, fall back to using that
@@ -166,7 +170,7 @@ else()
 endif()
 
 # Metal (macOS only)
-if(RENDERING_PLATFORM_MACOS AND RENDERING_BUILD_METAL)
+if((RENDERING_PLATFORM_MACOS OR RENDERING_PLATFORM_IOS) AND RENDERING_BUILD_METAL)
     set(RENDERING_HAS_METAL TRUE)
     message(STATUS "Metal backend enabled (macOS)")
 else()
@@ -203,7 +207,7 @@ include(FetchContent)
 
 # GLFW via vcpkg (required on desktop). On wasm the GLFW API is emscripten's
 # JS implementation: headers ship in the sysroot, -s USE_GLFW=3 links it.
-if(NOT EMSCRIPTEN)
+if(NOT EMSCRIPTEN AND NOT GE_MOBILE)
     find_package(glfw3 CONFIG REQUIRED)
     message(STATUS "GLFW found via find_package (glfw3 CONFIG)")
 
@@ -223,8 +227,29 @@ endif()
 # SHADER COMPILATION AND MANAGEMENT
 # ============================================================================
 
-# GLSLC_EXECUTABLE, the Vulkan shader compiler, is found at the top level
-# (cmake/GlslcCompiler.cmake) so every engine directory sees the same one.
+# Find glslc (Vulkan shader compiler)
+# Prefer vcpkg-provided shaderc tools when available, but still work with a
+# system Vulkan SDK install.
+set(_GLSLC_HINT_DIRS ${Vulkan_INCLUDE_DIRS}/../bin)
+if(VCPKG_DIR AND VCPKG_ARCH)
+    list(APPEND _GLSLC_HINT_DIRS
+        "${VCPKG_DIR}/installed/${VCPKG_ARCH}/tools"
+        "${VCPKG_DIR}/installed/${VCPKG_ARCH}/tools/shaderc")
+endif()
+if(EMSCRIPTEN)
+    # SPIR-V authoring (glslc + ShaderReflect packaging) is a desktop/editor
+    # concern; the wasm runtime consumes prebuilt shader packages, and the
+    # WebGPU WGSL pipeline arrives with the browser-renderer slice.
+    set(GLSLC_EXECUTABLE "")
+else()
+    find_program(GLSLC_EXECUTABLE glslc HINTS ${_GLSLC_HINT_DIRS})
+endif()
+
+if(GLSLC_EXECUTABLE)
+    message(STATUS "✅ Found glslc: ${GLSLC_EXECUTABLE}")
+elseif(NOT EMSCRIPTEN)
+    message(WARNING "⚠️ glslc not found - shader compilation will be skipped; install Vulkan SDK or ensure vcpkg shaderc is available")
+endif()
 
 # Function to copy shaders to build directory
 function(copy_shaders_to_build)
@@ -274,6 +299,14 @@ if(GLSLC_EXECUTABLE)
     set(GE_VOLUMETRIC_FOG_SHADER_DIR "${CMAKE_SOURCE_DIR}/Engine/Modules/VolumetricFog/Shaders")
     if(EXISTS "${GE_VOLUMETRIC_FOG_SHADER_DIR}")
         list(APPEND GE_SHADER_SOURCE_DIRS "${GE_VOLUMETRIC_FOG_SHADER_DIR}")
+    endif()
+    set(GE_HEIGHT_FOG_SHADER_DIR "${CMAKE_SOURCE_DIR}/Engine/Modules/HeightFog/Shaders")
+    if(EXISTS "${GE_HEIGHT_FOG_SHADER_DIR}")
+        list(APPEND GE_SHADER_SOURCE_DIRS "${GE_HEIGHT_FOG_SHADER_DIR}")
+    endif()
+    set(GE_TILEMAP_SHADER_DIR "${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Shaders")
+    if(EXISTS "${GE_TILEMAP_SHADER_DIR}")
+        list(APPEND GE_SHADER_SOURCE_DIRS "${GE_TILEMAP_SHADER_DIR}")
     endif()
     # Ocean lives in a SUBdirectory of the shader root, and the auto-glob below
     # is not recursive, so none of it was ever compiled: the module fell back to
@@ -354,6 +387,9 @@ if(GLSLC_EXECUTABLE)
     list(APPEND VERTEX_SHADERS lens_flare.vert)
     list(APPEND FRAGMENT_SHADERS lens_flare.frag)
 
+    # 2D sprites (instanced world-space quads, unlit + alpha blended)
+    list(APPEND VERTEX_SHADERS sprite2d.vert)
+    list(APPEND FRAGMENT_SHADERS sprite2d.frag)
     # Sun glare (analytic additive veiling halo)
     list(APPEND VERTEX_SHADERS sun_glare.vert)
     list(APPEND VERTEX_SHADERS sun_glare_ms.vert)
@@ -380,7 +416,6 @@ if(GLSLC_EXECUTABLE)
         spec_constants.comp
         brdf_lut.comp
         ubo_copy.comp
-        texture_upload_readback.comp
         msm_cascade.comp
         runtime_array_stride.comp
     )
@@ -454,7 +489,7 @@ if(GLSLC_EXECUTABLE)
         ge_compile_shader(
             OUTPUT ${SHADER_OUTPUT} SOURCE ${SHADER_SOURCE}
             DEFINES ${_defineList}
-            DEPENDS ${UI_SDF_INCLUDES} ${SHADER_SOURCE_DIR}/Includes/error_function.glsl
+            DEPENDS ${UI_SDF_INCLUDES}
             COMMENT "Compiling UI shader: ${_stem}.${_stage}")
         set(GE_ALL_SHADER_SPV_OUTPUTS ${GE_ALL_SHADER_SPV_OUTPUTS} PARENT_SCOPE)
     endfunction()
@@ -591,17 +626,6 @@ if(GLSLC_EXECUTABLE)
         DEFINES -DGE_COMPAT_PROFILE
         DEPENDS ${GE_SHADER_COMMON_INCLUDES}
         COMMENT "Compiling compute shader: depth_reduce.comp (compat profile arm)")
-    # The per-tile depth min/max at 16 and 8 threads per axis (GE_DEPTH_MINMAX_THREADS; the
-    # generic rule above builds 32). The DepthMinMax pass falls back to them on a device whose
-    # compute workgroup limit is below 1024 invocations: a phone's WebGPU grants 256.
-    foreach(_ge_depth_minmax_threads 16 8)
-        ge_compile_shader(
-            OUTPUT ${SHADER_OUTPUT_DIR}/cluster_depth_minmax_t${_ge_depth_minmax_threads}.comp.spv
-            SOURCE ${SHADER_SOURCE_DIR}/cluster_depth_minmax.comp
-            DEFINES -DGE_DEPTH_MINMAX_THREADS=${_ge_depth_minmax_threads}
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
-            COMMENT "Compiling compute shader: cluster_depth_minmax.comp (${_ge_depth_minmax_threads}x${_ge_depth_minmax_threads} threads)")
-    endforeach()
 
     # draw_command_scatter.comp: dedicated vulkan1.3/spv1.6 command (subgroup
     # arithmetic for the P0 shadow-arc per-slice triangle reduction). Output path
@@ -731,16 +755,14 @@ set_property(GLOBAL PROPERTY GE_SHADER_SPV_OUTPUTS "${GE_ALL_SHADER_SPV_OUTPUTS}
 set(RENDERING_CORE_SOURCES
 	    # Core interfaces
 	    Source/Core/Device.cpp
-	    Source/Core/DescriptorSetCache.cpp
 	    Source/Core/RendererProfile.cpp
 	    Source/Core/CommandList.cpp
 	    # The compat-profile flag the resolved RendererProfile sets. Core rather
 	    # than part of the Materials block below: ShaderVariantKey reads it in
 	    # every configuration, including builds without nlohmann.
-	    Source/Materials/Shader/ShaderProfileDefines.cpp
+	    Source/Materials/ShaderProfileDefines.cpp
 	    # Immediate-mode render graph (the RenderGraph rewrite; dirs rename to
 	    # RenderGraph in this slice-9 commit)
-	    Source/Core/RenderGraph/RGCrossFrameAccesses.cpp
 	    Source/Core/RenderGraph/RGGraph.cpp
 	    Source/Core/RenderGraph/RGFrame.cpp
 	    Source/Core/RenderGraph/RGFrameStamp.cpp
@@ -753,10 +775,10 @@ set(RENDERING_CORE_SOURCES
 	    Source/Core/RenderGraph/RGUploadRing.cpp
 	    Source/Core/RenderGraph/RGFullscreen.cpp
 	    Source/Core/RenderGraph/RGWindowFrame.cpp
-	    Source/Core/Pipeline/PipelineTypes.cpp
-	    Source/Core/Pipeline/PipelineCache.cpp
-	    Source/Core/Pipeline/PipelineBuildTable.cpp
-	    Source/Core/Pipeline/PipelineDescTranslator.cpp
+	    Source/Core/PipelineTypes.cpp
+	    Source/Core/PipelineCache.cpp
+	    Source/Core/PipelineBuildTable.cpp
+	    Source/Core/PipelineDescTranslator.cpp
 	    Source/Core/ResourceManager.cpp
 	    Source/Core/BindlessResourceManager.cpp
 	    Source/Core/SpecializationConstants.cpp
@@ -769,14 +791,14 @@ set(RENDERING_CORE_SOURCES
 		    Source/Core/RecomputeElision.cpp
 		    Source/Core/FrustumCullingStrategy.cpp
 		    Source/Core/HzbCullingStrategy.cpp
-		    Source/Camera/CameraDerivation.cpp
+		    Source/CameraDerivation.cpp
 
 	    # Common utilities
 	    Source/Common/Utils.cpp
+		    Source/Common/Math.cpp
 		    Source/Common/Frustum.cpp
-		    Source/Common/CubeLut/CubeLutColorDomain.cpp
-		    Source/Common/CubeLut/CubeLutFileParser.cpp
-		    Source/Common/CubeLut/CubeLutGpuUpload.cpp
+		    Source/Common/CubeLutFileParser.cpp
+		    Source/Common/CubeLutGpuUpload.cpp
 
 	    ${CMAKE_CURRENT_SOURCE_DIR}/Include/Rendering/Core/DescriptorWriter.h
 
@@ -787,41 +809,34 @@ set(RENDERING_CORE_SOURCES
     Source/Core/DebugCommands.cpp
 
 	    Source/Passes/SRGBEncodePass.cpp
-    Source/Passes/MsaaColorResolvePass.cpp
     Source/Passes/TemporalAAOptions.cpp
     Source/Passes/TemporalDither.cpp
     Source/Passes/TonemapPass.cpp
-    Source/Passes/HdrColorFxPass.cpp
-    Source/Passes/CubeLutPreviewSources.cpp
     Source/Passes/PixelPerfectUpscalePass.cpp
 
     # Sky
     Source/Sky/AtmosphereTransmittance.cpp
     Source/Sky/SkyRenderer.cpp
-    Source/Sky/SkySunState.cpp
-    Source/Sky/SkyViewLutAltitude.cpp
     Source/Sky/SolarPath.cpp
-    Source/Sky/StarCatalog.cpp
 )
 
 # Platform-specific sources
 set(RENDERING_VULKAN_SOURCES
     Source/Vulkan/TextureUsagePolicy.cpp
     Source/Vulkan/ValidationStats.cpp
-    Source/Vulkan/VulkanDevice/VulkanDevice.cpp
+    Source/Vulkan/VulkanDevice.cpp
     Source/Vulkan/VulkanAccelerationStructures.cpp
     Source/Vulkan/DeviceHealthState.cpp
-    Source/Vulkan/VulkanGpu/VulkanGpuCheckpoints.cpp
-    Source/Vulkan/VulkanDevice/VulkanDeviceFault.cpp
+    Source/Vulkan/VulkanGpuCheckpoints.cpp
+    Source/Vulkan/VulkanDeviceFault.cpp
     Source/Vulkan/VulkanToolingInfo.cpp
     Source/Vulkan/VulkanCommandList.cpp
     Source/Vulkan/VulkanResources.cpp
     Source/Vulkan/VulkanMemory.cpp
     Source/Vulkan/VulkanSwapchain.cpp
-    Source/Vulkan/VulkanPipelineCache/VulkanPipelineCache.cpp
-    Source/Vulkan/VulkanPipelineCompileGate.cpp
+    Source/Vulkan/VulkanPipelineCache.cpp
     Source/Vulkan/VulkanQueryPool.cpp
-    Source/Vulkan/VulkanQueue/VulkanQueueFamilySelection.cpp
+    Source/Vulkan/VulkanQueueFamilySelection.cpp
     Source/Vulkan/VulkanSharedInstance.cpp
 )
 
@@ -845,22 +860,13 @@ set(RENDERING_WEBGPU_SOURCES
     Source/WebGPU/WebGpuUnsupported.cpp
 )
 
-# Only the surface bridge consumes Platform's header-only native-window access.
-# Standalone renderer consumers need no Platform runtime objects for this.
-set_property(SOURCE Source/WebGPU/WebGpuSurfaceBridge.cpp APPEND PROPERTY
-    INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/Engine/Modules/Platform/Include)
-
-# The window frame reads GE_ASYNC_COMPUTE through Platform's header-only
-# environment switch, the one rule every GE_ switch follows.
-set_property(SOURCE Source/Core/RenderGraph/RGWindowFrame.cpp APPEND PROPERTY
-    INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/Engine/Modules/Platform/Include)
-
 set(RENDERING_METAL_SOURCES
     # Single TU that defines the metal-cpp *_PRIVATE_IMPLEMENTATION symbols.
     Source/Metal/MetalCppImpl.cpp
     Source/Metal/MetalDevice.cpp
     Source/Metal/MetalHdrOutput.cpp
     Source/Metal/MetalCommandList.cpp
+    Source/Metal/MetalDirectDescriptorBinding.cpp
     Source/Metal/MetalResources.cpp
     Source/Metal/MetalTransientDescriptorArena.cpp
     Source/Metal/MetalSwapchain.cpp
@@ -869,9 +875,9 @@ set(RENDERING_METAL_SOURCES
     Source/Metal/MetalQueryPool.cpp
     Source/Metal/MetalSubmitQueue.cpp
     Source/Metal/MetalAccelerationStructures.cpp
-    Source/Metal/MetalIndirectCount/MetalIndirectCountResources.cpp
+    Source/Metal/MetalIndirectCountResources.cpp
     Source/Metal/MetalIndirectCommandArena.cpp
-    Source/Metal/MetalIndirectCount/MetalIndirectCountEncoder.cpp
+    Source/Metal/MetalIndirectCountEncoder.cpp
 )
 
 # Create main library
@@ -882,27 +888,29 @@ add_library(GameEngineRendering OBJECT
     # Core engine dependencies
 	target_link_libraries(GameEngineRendering PUBLIC Logger)
 	# Types: header-only basic types module exposing "Types/Types.h" used by
-	#        public rendering headers such as Rendering/Camera/CameraTypes.h.
+	#        public rendering headers such as Rendering/CameraTypes.h.
 	target_link_libraries(GameEngineRendering PUBLIC Types)
 	# Mathematics: canonical GLM-backed math module exposing "Mathematics/..." headers
 	target_link_libraries(GameEngineRendering PUBLIC Mathematics)
-	# Memory: the render graph's frame arena (RGGraph.h holds a Memory::Arena).
-	target_link_libraries(GameEngineRendering PUBLIC Memory)
 	# FileSystem: publishing a shader package or a dumped source goes through
 	# the one implementation that knows which hosts can safely rename a file.
 	# PRIVATE — Engine.dll splices FileSystem in itself; test executables that
 	# link this object library directly name FileSystemObjects instead.
 	target_link_libraries(GameEngineRendering PRIVATE FileSystem)
-	# AssetCore: shader sources are read through SharedFileRead, so an editor's
-	# safe-save can replace a header while a compile reads it. PRIVATE: Engine.dll
-	# splices AssetCore in itself; test executables get it through
-	# rendering_test_link_image.
-	target_link_libraries(GameEngineRendering PRIVATE AssetCore)
 
-	# Image: SkyRenderer decodes the full-moon texture for the procedural sky.
-	# PRIVATE: Engine.dll splices Image in itself; test executables splice its
-	# objects through rendering_test_link_image.
-	target_link_libraries(GameEngineRendering PRIVATE Image)
+	# SkyRenderer loads the single full-moon texture directly for the procedural sky.
+	# The stb implementation is supplied by the Engine target in app builds.
+	find_package(stb CONFIG QUIET)
+	if(TARGET stb::stb)
+		target_link_libraries(GameEngineRendering PRIVATE stb::stb)
+		target_compile_definitions(GameEngineRendering PRIVATE GE_HAVE_STB)
+	else()
+		find_path(STB_INCLUDE_DIRS "stb_image.h")
+		if(STB_INCLUDE_DIRS)
+			target_include_directories(GameEngineRendering PRIVATE ${STB_INCLUDE_DIRS})
+			target_compile_definitions(GameEngineRendering PRIVATE GE_HAVE_STB)
+		endif()
+	endif()
 
 # Prevent PDB contention when /MP is enabled by allowing shared PDB access
 if(MSVC)
@@ -924,9 +932,6 @@ if(RENDERING_HAS_VULKAN)
     target_sources(GameEngineRendering PRIVATE Source/Vulkan/VulkanDescriptorBufferPool.cpp)
 
     target_include_directories(GameEngineRendering PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Source/Vulkan)
-    # Core/EngineVersion.h (the root CMakeLists writes it from VERSION) for the Vulkan
-    # instance's engineVersion.
-    target_include_directories(GameEngineRendering PRIVATE "${CMAKE_BINARY_DIR}/generated")
 endif()
 
 # Materials, shader-graph and shader-package plumbing are API-agnostic (the
@@ -953,25 +958,23 @@ find_package(nlohmann_json CONFIG QUIET)
             Source/Materials/LegacyMaterialLanes.cpp
             Source/Materials/MaterialDocument.cpp
             Source/Materials/MaterialBuilder.cpp
-            Source/Materials/MaterialBuildContext.cpp
             Source/Materials/MaterialBuildService.cpp
             Source/Materials/MaterialKeywordDerivation.cpp
             Source/Materials/MaterialPropertyBinding.cpp
             Source/Materials/MaterialShaderIncludeRoots.cpp
             Source/Materials/MaterialValidation.cpp
-            Source/Materials/Shader/ShaderCompileService.cpp
-            Source/Materials/Shader/ShaderIncludeClosure.cpp
-            Source/Materials/Shader/ShaderSourceCache.cpp
+            Source/Materials/ShaderCompileService.cpp
+            Source/Materials/ShaderIncludeClosure.cpp
+            Source/Materials/ShaderSourceCache.cpp
             Source/Materials/SlangCompileLane.cpp
-            Source/Materials/Shader/ShaderLayoutShape.cpp
-            Source/Materials/Shader/ShaderReflection.cpp
-            Source/Materials/Shader/ShaderMetaJson.cpp
-            Source/Materials/Shader/ShaderMetaValidation.cpp
-            Source/Materials/Shader/ShaderComposer.cpp
-            Source/Materials/Shader/ShaderDeformationEnvelope.cpp
-            Source/Materials/Shader/ShaderPropertyTable.cpp
-            Source/Materials/Shader/ShaderPropertyTableCache.cpp
-            Source/Materials/Shader/ShaderCapabilityDetector.cpp
+            Source/Materials/ShaderLayoutShape.cpp
+            Source/Materials/ShaderReflection.cpp
+            Source/Materials/ShaderMetaJson.cpp
+            Source/Materials/ShaderMetaValidation.cpp
+            Source/Materials/ShaderComposer.cpp
+            Source/Materials/ShaderPropertyTable.cpp
+            Source/Materials/ShaderPropertyTableCache.cpp
+            Source/Materials/ShaderCapabilityDetector.cpp
             Source/Materials/SurfaceShaderTemplate.cpp
             Source/ShaderGraph/SgTypes.cpp
             Source/ShaderGraph/SgTagParser.cpp
@@ -987,7 +990,6 @@ find_package(nlohmann_json CONFIG QUIET)
             Source/ShaderCache/ShaderMetaBinary.cpp
             Source/ShaderCache/ShaderPackageContainer.cpp
             Source/ShaderCache/ShaderPackageIO.cpp
-            Source/ShaderCache/ShaderProgramIndex.cpp
         )
         target_include_directories(GameEngineRendering PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Include)
         target_link_libraries(GameEngineRendering PUBLIC nlohmann_json::nlohmann_json)
@@ -1013,7 +1015,7 @@ find_package(nlohmann_json CONFIG QUIET)
         endif()
 	        # vcpkg-installed spirv_reflect.h defaults to including "./include/spirv/unified1/spirv.h",
 	        # which does not resolve in standard package layouts. Prefer the system SPIR-V headers.
-	        target_compile_definitions(GameEngineRendering PRIVATE SPIRV_REFLECT_USE_SYSTEM_SPIRV_H=1)
+	        target_compile_definitions(GameEngineRendering PUBLIC SPIRV_REFLECT_USE_SYSTEM_SPIRV_H=1)
         target_compile_definitions(GameEngineRendering PUBLIC RENDERING_ENABLE_SPIRV_REFLECTION=1)
         message(STATUS "SPIR-V reflection enabled and linked")
     else()
@@ -1074,9 +1076,18 @@ if(EMSCRIPTEN)
     # runtime's JS GLFW, pulled in at executable link.
     target_link_options(GameEngineRendering INTERFACE "SHELL:-s USE_GLFW=3")
 else()
-    # We already require glfw3 via find_package above
-    target_link_libraries(GameEngineRendering PUBLIC glfw)
+    if(GE_MOBILE)
+        find_package(SDL3 CONFIG REQUIRED)
+        target_link_libraries(GameEngineRendering PUBLIC SDL3::SDL3)
+        if(RENDERING_PLATFORM_IOS)
+            target_link_libraries(GameEngineRendering PUBLIC "-framework Metal" "-framework QuartzCore" "-framework Foundation" "-framework IOSurface")
+        endif()
+    else()
+        target_link_libraries(GameEngineRendering PUBLIC glfw)
+    endif()
 endif()
+# Propagate HAS_GLFW define to dependents that may use conditional compilation
+target_compile_definitions(GameEngineRendering PUBLIC HAS_GLFW=1)
 
 # Mirror the Engine-level profiling switch so RenderGraph can strip per-pass
 # timestamp queries in shipping builds. Options are defined in Engine's top
@@ -1096,11 +1107,11 @@ if(RENDERING_HAS_VULKAN)
     # Link VMA (Vulkan Memory Allocator) interface target from vcpkg
     if(VMA_FOUND)
         target_link_libraries(GameEngineRendering PUBLIC GPUOpen::VulkanMemoryAllocator)
-        target_compile_definitions(GameEngineRendering PRIVATE RENDERING_HAS_VMA=1)
+        target_compile_definitions(GameEngineRendering PUBLIC RENDERING_HAS_VMA=1)
         # Only add materials sources if nlohmann_json is available (guard against missing dep)
         if(nlohmann_json_FOUND)
-            target_sources(GameEngineRendering PRIVATE Source/Materials/Shader/ShaderReflection.cpp)
-            target_sources(GameEngineRendering PRIVATE Source/Materials/Shader/ShaderMetaJson.cpp)
+            target_sources(GameEngineRendering PRIVATE Source/Materials/ShaderReflection.cpp)
+            target_sources(GameEngineRendering PRIVATE Source/Materials/ShaderMetaJson.cpp)
             target_include_directories(GameEngineRendering PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/Include)
         endif()
         message(STATUS "VMA linked to GameEngineRendering (GPUOpen::VulkanMemoryAllocator)")
@@ -1122,12 +1133,12 @@ add_dependencies(GameEngineRendering CompileShaders)
 if(RENDERING_HAS_DIRECTX12)
     target_sources(GameEngineRendering PRIVATE ${RENDERING_DIRECTX12_SOURCES})
     target_link_libraries(GameEngineRendering PUBLIC d3d12 dxgi dxguid)
-    target_compile_definitions(GameEngineRendering PRIVATE RENDERING_HAS_DIRECTX12=1)
+    target_compile_definitions(GameEngineRendering PUBLIC RENDERING_HAS_DIRECTX12=1)
 endif()
 
 if(RENDERING_HAS_WEBGPU)
     target_sources(GameEngineRendering PRIVATE ${RENDERING_WEBGPU_SOURCES})
-    target_compile_definitions(GameEngineRendering PRIVATE RENDERING_HAS_WEBGPU=1)
+    target_compile_definitions(GameEngineRendering PUBLIC RENDERING_HAS_WEBGPU=1)
     if(EMSCRIPTEN)
         # emdawnwebgpu supplies webgpu.h at compile and the Dawn JS bindings
         # at link; the port flag must reach every TU that includes webgpu.h
@@ -1153,7 +1164,7 @@ endif()
 
 if(RENDERING_HAS_METAL)
     target_sources(GameEngineRendering PRIVATE ${RENDERING_METAL_SOURCES})
-    target_compile_definitions(GameEngineRendering PRIVATE RENDERING_HAS_METAL=1)
+    target_compile_definitions(GameEngineRendering PUBLIC RENDERING_HAS_METAL=1)
 
     # Vendored metal-cpp headers (no vcpkg port exists). SYSTEM silences the
     # vendor headers under -Wall -Wextra.
@@ -1184,6 +1195,13 @@ target_include_directories(GameEngineRendering
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Source
 )
+
+# Platform's header-only pieces: the environment switch every GE_ switch reads
+# through (Rendering/Core/GPUInstanceDepthClass.h reads one inline, so the path
+# is public) and the WebGPU surface bridge's native-window access. Include path
+# only: standalone renderer consumers need no Platform runtime objects.
+target_include_directories(GameEngineRendering PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Engine/Modules/Platform/Include>)
 
 # Compiler-specific settings
 if(MSVC)
@@ -1321,31 +1339,16 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_graphics(markup_glow_mesh markup_glow_mesh.vert markup_glow.frag)
     _ge_add_shaderpkg_graphics(markup_glow_mesh_ms markup_glow_mesh.vert markup_glow_ms.frag)
     _ge_add_shaderpkg_graphics(sky_render fullscreen_noinput.vert sky_render.frag)
-    # The sky and its stars with the height fog's sky fill (GE_SKY_HEIGHT_FOG), drawn for a view whose
-    # height fog is active (desktop only: the web graph declares no height fog).
-    ge_compile_shader(
-        OUTPUT ${SHADER_OUTPUT_DIR}/sky_render_fog.frag.spv
-        SOURCE ${SHADER_SOURCE_DIR}/sky_render.frag
-        DEFINES -DGE_SKY_HEIGHT_FOG
-        DEPENDS ${GE_SHADER_COMMON_INCLUDES}
-        COMMENT "Compiling fragment shader: sky_render_fog.frag")
-    _ge_add_shaderpkg_graphics(sky_render_fog fullscreen_noinput.vert sky_render_fog.frag)
-    ge_compile_shader(
-        OUTPUT ${SHADER_OUTPUT_DIR}/sky_stars_billboard_fog.vert.spv
-        SOURCE ${SHADER_SOURCE_DIR}/sky_stars_billboard.vert
-        DEFINES -DGE_SKY_HEIGHT_FOG
-        DEPENDS ${GE_SHADER_COMMON_INCLUDES}
-        COMMENT "Compiling vertex shader: sky_stars_billboard_fog.vert")
     _ge_add_shaderpkg_graphics(lens_flare lens_flare.vert lens_flare.frag)
+    _ge_add_shaderpkg_graphics(tilemap tilemap.vert tilemap.frag)
+    _ge_add_shaderpkg_graphics(sprite2d sprite2d.vert sprite2d.frag)
     _ge_add_shaderpkg_graphics(sun_glare sun_glare.vert sun_glare.frag)
     # MSAA variant: same fragment stage, a sampler2DMS depth probe in the vertex stage.
     _ge_add_shaderpkg_graphics(sun_glare_ms sun_glare_ms.vert sun_glare.frag)
-    _ge_add_shaderpkg_compute(sun_glare_casters sun_glare_casters.comp)
     _ge_add_shaderpkg_compute(sky_transmittance_lut sky_transmittance_lut.comp)
     _ge_add_shaderpkg_compute(sky_multiscatter_lut sky_multiscatter_lut.comp)
     _ge_add_shaderpkg_compute(sky_view_lut sky_view_lut.comp)
     _ge_add_shaderpkg_graphics(sky_stars_billboard sky_stars_billboard.vert sky_stars_billboard.frag)
-    _ge_add_shaderpkg_graphics(sky_stars_billboard_fog sky_stars_billboard_fog.vert sky_stars_billboard.frag)
     _ge_add_shaderpkg_compute(volumetric_fog_cull volumetric_fog_cull.comp)
     # Ocean. The module asks ShaderCompileService for these by name; without a
     # cooked package the request falls through to a runtime GLSL compile, which
@@ -1410,8 +1413,6 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(rt_shadow_denoise rt_shadow_denoise.comp)
     # Terrain shadows: the sun-space clearance map bake (TerrainShadowBake).
     _ge_add_shaderpkg_compute(terrain_shadow_bake terrain_shadow_bake.comp)
-    # ... and its lit field's mip chain, the shadow averaged over a far pixel (TerrainShadowFieldLit).
-    _ge_add_shaderpkg_compute(terrain_shadow_field_lit terrain_shadow_field_lit.comp)
     _ge_add_shaderpkg_compute(screen_space_shadow screen_space_shadow.comp)
     _ge_add_shaderpkg_compute(screen_space_shadow_prepare screen_space_shadow_prepare.comp)
     _ge_add_shaderpkg_compute(screen_space_shadow_resolve screen_space_shadow_resolve.comp)
@@ -1439,22 +1440,20 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     # RenderPipeline node built-ins (Forward+ scaffolding)
     _ge_add_shaderpkg_compute(clustered_light_cull clustered_light_cull.comp)
     _ge_add_shaderpkg_compute(cluster_depth_minmax cluster_depth_minmax.comp)
-    _ge_add_shaderpkg_compute(cluster_depth_minmax_t16 cluster_depth_minmax_t16.comp)
-    _ge_add_shaderpkg_compute(cluster_depth_minmax_t8 cluster_depth_minmax_t8.comp)
     _ge_add_shaderpkg_compute(shadow_minmax_reduce shadow_minmax_reduce.comp)
     _ge_add_shaderpkg_graphics(cluster_debug_overlay fullscreen_noinput.vert cluster_debug_overlay.frag)
     _ge_add_shaderpkg_graphics(forwardplus_lighting fullscreen_noinput.vert forwardplus_lighting.frag)
     _ge_add_shaderpkg_graphics(shadow_debug_overlay fullscreen_noinput.vert shadow_debug_overlay.frag)
     _ge_add_shaderpkg_graphics(tonemap fullscreen_noinput.vert tonemap.frag)
     _ge_add_shaderpkg_graphics(copy fullscreen_noinput.vert copy.frag)
-    _ge_add_shaderpkg_graphics(msaa_color_resolve fullscreen_noinput.vert msaa_color_resolve.frag)
-    _ge_add_shaderpkg_graphics(msaa_color_resolve_bloom_delta fullscreen_noinput.vert msaa_color_resolve_bloom_delta.frag)
-    _ge_add_shaderpkg_graphics(clear_color_backdrop fullscreen_noinput.vert clear_color_backdrop.frag)
     _ge_add_shaderpkg_graphics(color_filter fullscreen_noinput.vert color_filter.frag)
     _ge_add_shaderpkg_graphics(hdr_color_fx fullscreen_noinput.vert hdr_color_fx.frag)
     _ge_add_shaderpkg_graphics(cas fullscreen_noinput.vert cas.frag)
     _ge_add_shaderpkg_graphics(fast_blur_dof fullscreen_noinput.vert fast_blur_dof.frag)
     _ge_add_shaderpkg_graphics(heat_distortion fullscreen_noinput.vert heat_distortion.frag)
+    _ge_add_shaderpkg_graphics(camera_rain fullscreen_noinput.vert camera_rain.frag)
+    _ge_add_shaderpkg_graphics(rain_streaks rain_streaks.vert rain_streaks.frag)
+    _ge_add_shaderpkg_graphics(depth_pixelation fullscreen_noinput.vert depth_pixelation.frag)
     _ge_add_shaderpkg_compute(sssr_classify sssr_classify.comp)
     _ge_add_shaderpkg_compute(sssr_prepare_args sssr_prepare_args.comp)
     _ge_add_shaderpkg_compute(sssr_intersect sssr_intersect.comp)
@@ -1462,6 +1461,9 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(sssr_prefilter sssr_prefilter.comp)
     _ge_add_shaderpkg_compute(sssr_temporal sssr_temporal.comp)
     _ge_add_shaderpkg_compute(sssr_composite sssr_composite.comp)
+    _ge_add_shaderpkg_compute(planar_reflection_blur planar_reflection_blur.comp)
+    _ge_add_shaderpkg_compute(planar_reflection_composite planar_reflection_composite.comp)
+    _ge_add_shaderpkg_graphics(height_fog fullscreen_noinput.vert height_fog.frag)
     _ge_add_shaderpkg_graphics(fog_glow_prefilter fullscreen_noinput.vert fog_glow_prefilter.frag)
     _ge_add_shaderpkg_graphics(fog_glow_fast fullscreen_noinput.vert fog_glow_fast.frag)
     _ge_add_shaderpkg_graphics(fog_glow_downsample fullscreen_noinput.vert fog_glow_downsample.frag)
@@ -1506,10 +1508,10 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(hzb_build hzb_build.comp)
     _ge_add_shaderpkg_compute(hzb_spd hzb_spd.comp)
     _ge_add_shaderpkg_compute(hzb_spd_finalize hzb_spd_finalize.comp)
-    # The reflection traversal pyramid (MAX, nearest): the same SPD pair built
-    # with HZB_REDUCE_NEAREST from the final depth the reflections trace.
-    _ge_add_shaderpkg_compute(hzb_spd_nearest hzb_spd_nearest.comp)
-    _ge_add_shaderpkg_compute(hzb_spd_nearest_finalize hzb_spd_nearest_finalize.comp)
+    # Fused MIN+MAX variant: one depth read builds both the occlusion pyramid
+    # and the SSR traversal pyramid (used when a view needs both).
+    _ge_add_shaderpkg_compute(hzb_spd_minmax hzb_spd_minmax.comp)
+    _ge_add_shaderpkg_compute(hzb_spd_minmax_finalize hzb_spd_minmax_finalize.comp)
     _ge_add_shaderpkg_compute(hzb_culling hzb_culling.comp)
     # Sorted transparent GPU path (transparency-scale S1/S2): the reusable GPU
     # sort primitive plus the fused runtime drain (gather + key + sort +
@@ -1538,7 +1540,6 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(gtao_upsample gtao_upsample.comp)
     _ge_add_shaderpkg_compute(auto_exposure_histogram auto_exposure_histogram.comp)
     _ge_add_shaderpkg_compute(auto_exposure_resolve auto_exposure_resolve.comp)
-    _ge_add_shaderpkg_compute(pre_exposure_snapshot pre_exposure_snapshot.comp)
     # Temporal AA (TAA P0): movers motion-vector raster + accumulate/resolve.
     # TAAU adds the upscale resolve variant (internal->display) + the display
     # depth reconstitution for overlay depth testing.
@@ -1627,29 +1628,35 @@ macro(rendering_test_shader_paths TARGET)
     target_include_directories(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Tests)
 endmacro()
 
-# Helper: splice Logger's and Memory's object files into a GameEngineRendering consumer.
+# Helper: splice Logger's object files into a GameEngineRendering consumer.
 #
 # Tests link the GameEngineRendering OBJECT library directly (not via the Engine
-# target). Logger and Memory are themselves OBJECT libraries that GameEngineRendering
-# links PUBLIC, and OBJECT->OBJECT object files are not spliced transitively to a
-# downstream consumer, so Logger::Log::* and the Memory::Arena paths come up
-# unresolved. Splice their .obj files in directly, the same way the Engine target
-# does (Engine/CMakeLists.txt). Memory's interface definition also compiles the
-# consumer's own allocation-counter copy (cmake/AllocationHook.cmake) empty, so the
-# spliced counter is the executable's one.
+# target). Logger is itself an OBJECT library that GameEngineRendering links
+# PUBLIC, and OBJECT->OBJECT object files are not spliced transitively to a
+# downstream consumer on the VS generator, so Logger::Log::* comes up unresolved.
+# Splice Logger's .obj files in directly, the same way the Engine target does
+# (Engine/CMakeLists.txt).
 function(rendering_test_link_logger target)
-	target_sources(${target} PRIVATE $<TARGET_OBJECTS:Logger> $<TARGET_OBJECTS:Memory>)
+	target_sources(${target} PRIVATE $<TARGET_OBJECTS:Logger>)
 endfunction()
 
-# Helper: supply the OBJECT-library object files that GameEngineRendering's
-# consumers need but do not receive transitively: Logger and Memory (see
-# rendering_test_link_logger), Image, whose decode SkyRenderer.cpp calls, and
-# AssetCore, whose SharedFileRead reads shader sources. Engine splices Image and
-# AssetCore in itself for app builds.
-function(rendering_test_link_image target)
+# Helper: supply the OBJECT-library object files plus the stb_image impl that
+# GameEngineRendering's consumers need but do not receive transitively.
+#
+# In addition to Logger (see rendering_test_link_logger), SkyRenderer.cpp pulls
+# in stb_image; the implementation TU lives in the Engine target for app builds,
+# so provide the private-copy impl here. Targets that already compile their own
+# stb_image_impl.cpp must call rendering_test_link_logger instead to avoid an
+# LNK2005 duplicate-symbol on stbi_*.
+function(rendering_test_link_stb target)
 	rendering_test_link_logger(${target})
-	target_sources(${target} PRIVATE $<TARGET_OBJECTS:Image>)
-	target_link_libraries(${target} PRIVATE AssetCore)
+	target_sources(${target} PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+	target_compile_definitions(${target} PRIVATE GE_HAVE_STB)
+	if(TARGET stb::stb)
+		target_link_libraries(${target} PRIVATE stb::stb)
+	elseif(STB_INCLUDE_DIRS)
+		target_include_directories(${target} PRIVATE ${STB_INCLUDE_DIRS})
+	endif()
 endfunction()
 
 # GPU Culling automated test suite (built when BUILD_TESTING is enabled)
@@ -1658,7 +1665,7 @@ if(BUILD_TESTING)
 	# Parity test: legacy 4x SubmitView vs unified SubmitCascadeGroup.
 	add_executable(RenderingCascadeCullingUnifiedParityTests Tests/CascadeCullingUnifiedParityTests.cpp)
 	target_link_libraries(RenderingCascadeCullingUnifiedParityTests PRIVATE GameEngineRendering FileSystemObjects)
-	rendering_test_link_image(RenderingCascadeCullingUnifiedParityTests)
+	rendering_test_link_stb(RenderingCascadeCullingUnifiedParityTests)
 	rendering_test_shader_paths(RenderingCascadeCullingUnifiedParityTests)
 	# CompileShaderPkgs, not CompileShaders: the parity run loads
 	# frustum_culling.shaderpkg, and the .spv target does not produce one.
@@ -1667,12 +1674,12 @@ if(BUILD_TESTING)
 	# Minimal Compute Test for debugging compute shader issues
 	add_executable(RenderingMinimalComputeTest Tests/MinimalComputeTest.cpp)
 	target_link_libraries(RenderingMinimalComputeTest PRIVATE GameEngineRendering FileSystemObjects)
-	rendering_test_link_image(RenderingMinimalComputeTest)
+	rendering_test_link_stb(RenderingMinimalComputeTest)
 	rendering_test_shader_paths(RenderingMinimalComputeTest)
 	# Minimal Compute Test variant: host-visible direct read
 	add_executable(RenderingMinimalComputeHostVisibleTest Tests/MinimalComputeHostVisibleTest.cpp)
 	target_link_libraries(RenderingMinimalComputeHostVisibleTest PRIVATE GameEngineRendering FileSystemObjects)
-	rendering_test_link_image(RenderingMinimalComputeHostVisibleTest)
+	rendering_test_link_stb(RenderingMinimalComputeHostVisibleTest)
 	rendering_test_shader_paths(RenderingMinimalComputeHostVisibleTest)
 endif()
 # Try to find GoogleTest (test configures only); if not available, fetch it.
@@ -1726,9 +1733,10 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest
         GTest::gtest_main
     )
-    # rendering_test_link_image splices Logger's objects in; do not also link Logger
+    target_include_directories(ShaderGraphCompilerTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+    # rendering_test_link_stb splices Logger's objects in; do not also link Logger
     # directly or its .obj files get pulled in twice (LNK2005).
-    rendering_test_link_image(ShaderGraphCompilerTests)
+    rendering_test_link_stb(ShaderGraphCompilerTests)
     rendering_test_shader_paths(ShaderGraphCompilerTests)
     # Its shader-graph node staging follows the output-layout sweep at the end of
     # this file: the staging is keyed by the directory the executable lands in.
@@ -1751,15 +1759,6 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     rendering_test_shader_paths(RenderingReverseZMathTests)
     add_test(NAME RenderingReverseZMathTests COMMAND RenderingReverseZMathTests)
 
-    # The reverse-Z convention at the pixel: default depth compare and clear, D32, the
-    # engine's projection, on the platform's device (Metal on macOS, Vulkan elsewhere).
-    add_executable(RenderingReverseZProbeTests Tests/ReverseZProbeTests.cpp)
-    target_link_libraries(RenderingReverseZProbeTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
-    set_target_properties(RenderingReverseZProbeTests PROPERTIES
-        CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON FOLDER "Rendering/Tests")
-    add_test(NAME RenderingReverseZProbeTests COMMAND $<TARGET_FILE:RenderingReverseZProbeTests>)
-    set_tests_properties(RenderingReverseZProbeTests PROPERTIES TIMEOUT 60 LABELS "Headless")
-
     # The sun's path from latitude and day of year (Rendering/Sky/SolarPath.h), and the sky's
     # sun and moon placement built on it: pure CPU maths, no device and no shaders.
     add_executable(RenderingSolarPathTests Tests/SolarPathTests.cpp)
@@ -1771,20 +1770,6 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest_main
     )
     add_test(NAME RenderingSolarPathTests COMMAND RenderingSolarPathTests)
-
-    # The night sky's procedural star field (Source/Sky/StarCatalog.h): its counts, colours and
-    # determinism. Pure CPU, no device.
-    add_executable(RenderingStarCatalogTests Tests/StarCatalogTests.cpp)
-    set_target_properties(RenderingStarCatalogTests PROPERTIES FOLDER "Rendering/Tests")
-    # StarCatalogTests includes the module's private Source/Sky/StarCatalog.h.
-    target_include_directories(RenderingStarCatalogTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(RenderingStarCatalogTests PRIVATE
-        GameEngineRendering
-        FileSystemObjects
-        GTest::gtest
-        GTest::gtest_main
-    )
-    add_test(NAME RenderingStarCatalogTests COMMAND RenderingStarCatalogTests)
 
     add_executable(RenderingTextureFormatTablesTests Tests/TextureFormatTablesTests.cpp)
     set_target_properties(RenderingTextureFormatTablesTests PROPERTIES FOLDER "Rendering/Tests")
@@ -1821,15 +1806,6 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     add_library(RenderGraphTestSupport INTERFACE)
     target_include_directories(RenderGraphTestSupport INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/TestSupport)
 
-    # The headless device a test executable's tests share (TestSupport/SharedHeadlessDevice.h).
-    # The source is compiled into every consumer: it registers the gtest environment that
-    # shuts the device down after the last test and the listener that retires its releases
-    # after every test. Consumers link Engine for the device.
-    add_library(SharedHeadlessDeviceTestSupport INTERFACE)
-    target_include_directories(SharedHeadlessDeviceTestSupport INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/TestSupport)
-    target_sources(SharedHeadlessDeviceTestSupport INTERFACE
-        ${CMAKE_CURRENT_SOURCE_DIR}/TestSupport/SharedHeadlessDevice.cpp)
-
     # The new immediate-mode core is compiled directly into the test exe (not yet
     # into GameEngineRendering — that is Stage 2b). Device-touching RenderGraph code binds
     # to the engine's REAL IDevice/TextureDesc/handles, so the tests link
@@ -1837,6 +1813,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     # production disconnect). Pure-algorithm tests (cull/schedule/barriers) need no
     # device. Add RenderGraph sources/tests here as the module grows.
     add_executable(RenderGraphTests
+        Tests/RenderGraph/RGArenaTests.cpp
         Tests/RenderGraph/RGGraphTests.cpp
         Tests/RenderGraph/RGScheduleTests.cpp
         Tests/RenderGraph/RGPoolTests.cpp
@@ -1901,23 +1878,6 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     endif()
     target_include_directories(VulkanQueueFamilySelectionTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME VulkanQueueFamilySelectionTests COMMAND VulkanQueueFamilySelectionTests)
-
-    # Parallel pipeline creation: the per-stage-set compile gate (no device), and many
-    # creations from many threads on one headless device under the validation layer.
-    add_executable(VulkanPipelineCompileGateTests Tests/VulkanPipelineCompileGateTests.cpp)
-    set_target_properties(VulkanPipelineCompileGateTests PROPERTIES FOLDER "Rendering/Tests")
-    target_link_libraries(VulkanPipelineCompileGateTests PRIVATE
-        GameEngineRendering
-        FileSystemObjects
-        GTest::gtest
-        GTest::gtest_main
-    )
-    if(MSVC)
-        target_compile_options(VulkanPipelineCompileGateTests PRIVATE /wd6326)
-    endif()
-    target_include_directories(VulkanPipelineCompileGateTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    rendering_test_shader_paths(VulkanPipelineCompileGateTests)
-    add_test(NAME VulkanPipelineCompileGateTests COMMAND VulkanPipelineCompileGateTests)
 
     # Per-queue submit chokepoint: timeline-value allocation under concurrent submits. Pure
     # structural assertions on the values allocated, so no device is required — and none would
@@ -2109,6 +2069,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest
         GTest::gtest_main
     )
+    target_include_directories(DeviceRecoveryTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     rendering_test_shader_paths(DeviceRecoveryTests)
     target_include_directories(DeviceRecoveryTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     # The device-loss routing lint proves "no unrouted VK_ERROR_DEVICE_LOST site
@@ -2118,6 +2079,17 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GE_VULKAN_BACKEND_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Source/Vulkan")
     add_dependencies(DeviceRecoveryTests CompileShaders)
     add_test(NAME DeviceRecoveryTests COMMAND DeviceRecoveryTests)
+
+    # Real acquired-image/semaphore regression, using a hidden window surface.
+    add_executable(RenderingSwapchainAcquireTests Tests/SwapchainAcquireTests.cpp)
+    set_target_properties(RenderingSwapchainAcquireTests PROPERTIES FOLDER "Rendering/Tests")
+    target_link_libraries(RenderingSwapchainAcquireTests PRIVATE
+        GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
+    target_include_directories(RenderingSwapchainAcquireTests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/Tests)
+    rendering_test_shader_paths(RenderingSwapchainAcquireTests)
+    add_dependencies(RenderingSwapchainAcquireTests CompileShaders)
+    add_test(NAME RenderingSwapchainAcquireTests COMMAND RenderingSwapchainAcquireTests)
 
     # Per-device-generation VkSemaphore parity across an in-place device rebuild.
     # Needs a real window target (the rebuild's swapchain-recreation step is a
@@ -2161,13 +2133,8 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     # with the right format supplied, so the run proves the parameter beats the
     # ambient read (and the control arm pins the ambient coupling it severs).
     # Loud SKIP when the agent cannot diverge the two formats. Needs staged
-    # shaderpkgs for the encode pass. The same hidden-window harness drives the
-    # SUBOPTIMAL-acquire frames (GE_VK_FORCE_ACQUIRE_SUBOPTIMAL): rendered and
-    # presented, the swapchain recreated after the present.
-    add_executable(RenderingWindowTargetPresentedFormatTests
-        Tests/WindowTargetPresentedFormatTests.cpp
-        Tests/SwapchainSuboptimalAcquireTests.cpp
-    )
+    # shaderpkgs for the encode pass.
+    add_executable(RenderingWindowTargetPresentedFormatTests Tests/WindowTargetPresentedFormatTests.cpp)
     set_target_properties(RenderingWindowTargetPresentedFormatTests PROPERTIES FOLDER "Rendering/Tests")
     target_link_libraries(RenderingWindowTargetPresentedFormatTests PRIVATE
         GameEngineRendering
@@ -2176,7 +2143,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest_main
     )
     target_compile_definitions(RenderingWindowTargetPresentedFormatTests PRIVATE HAVE_GLFW=1)
-    rendering_test_link_image(RenderingWindowTargetPresentedFormatTests)
+    rendering_test_link_stb(RenderingWindowTargetPresentedFormatTests)
     rendering_test_shader_paths(RenderingWindowTargetPresentedFormatTests)
     target_include_directories(RenderingWindowTargetPresentedFormatTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(RenderingWindowTargetPresentedFormatTests CompileShaderPkgs)
@@ -2199,41 +2166,36 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest_main
     )
     target_compile_definitions(TonemapDitherOwnerTests PRIVATE HAVE_GLFW=1)
-    rendering_test_link_image(TonemapDitherOwnerTests)
+    rendering_test_link_stb(TonemapDitherOwnerTests)
     rendering_test_shader_paths(TonemapDitherOwnerTests)
     target_include_directories(TonemapDitherOwnerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(TonemapDitherOwnerTests CompileShaderPkgs)
     add_test(NAME TonemapDitherOwnerTests COMMAND TonemapDitherOwnerTests)
 
-    # The Cube LUT's stages and its preview's probes on the shipped shaders through the offscreen
-    # passes (AddHdrColorFxPassRG, AddTonemapPassRG). Needs staged shaderpkgs (hdr_color_fx + tonemap).
-    add_executable(CubeLutStageTests Tests/CubeLutStageTests.cpp)
-    set_target_properties(CubeLutStageTests PROPERTIES FOLDER "Rendering/Tests")
-    target_link_libraries(CubeLutStageTests PRIVATE
-        GameEngineRendering
-        FileSystemObjects
-        GTest::gtest
-        GTest::gtest_main
-    )
-    rendering_test_link_image(CubeLutStageTests)
-    rendering_test_shader_paths(CubeLutStageTests)
-    target_include_directories(CubeLutStageTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    add_dependencies(CubeLutStageTests CompileShaderPkgs)
-    add_test(NAME CubeLutStageTests COMMAND CubeLutStageTests)
-
     # Descriptor buffer tests: VK_EXT_descriptor_buffer allocator + layout bucket.
     # Runtime-gated — skip when the device or env flag are not available.
     add_executable(DescriptorBufferTests Tests/DescriptorBufferTests.cpp)
     set_target_properties(DescriptorBufferTests PROPERTIES FOLDER "Rendering/Tests")
+    # Same rationale as ShaderReflect above: the rendering unity build pulls
+    # SkyRenderer.cpp's LoadSkyTexture2D into GameEngineRendering.lib, which
+    # references stbi_* symbols defined only in Engine.lib's stb_image_impl.cpp.
+    # Tests that link GameEngineRendering but not Engine must compile a private
+    # copy to resolve the symbols.
+    target_sources(DescriptorBufferTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+    target_compile_definitions(DescriptorBufferTests PRIVATE GE_HAVE_STB)
+    if(TARGET stb::stb)
+        target_link_libraries(DescriptorBufferTests PRIVATE stb::stb)
+    elseif(STB_INCLUDE_DIRS)
+        target_include_directories(DescriptorBufferTests PRIVATE ${STB_INCLUDE_DIRS})
+    endif()
     target_link_libraries(DescriptorBufferTests PRIVATE
         GameEngineRendering
         FileSystemObjects
         GTest::gtest
         GTest::gtest_main
     )
-    # Tests that link GameEngineRendering but not Engine splice the OBJECT
-    # libraries' objects themselves.
-    rendering_test_link_image(DescriptorBufferTests)
+    # Already compiles stb_image_impl.cpp above; only the Logger object splice is needed.
+    rendering_test_link_logger(DescriptorBufferTests)
     rendering_test_shader_paths(DescriptorBufferTests)
     target_include_directories(DescriptorBufferTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME DescriptorBufferTests COMMAND DescriptorBufferTests)
@@ -2252,7 +2214,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest
         GTest::gtest_main
     )
-    rendering_test_link_image(SrgbEncodeRampRoundTripTests)
+    rendering_test_link_stb(SrgbEncodeRampRoundTripTests)
     rendering_test_shader_paths(SrgbEncodeRampRoundTripTests)
     target_include_directories(SrgbEncodeRampRoundTripTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     # CompileShaderPkgs, not CompileShaders: these suites load a .shaderpkg, and
@@ -2277,9 +2239,9 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest
         GTest::gtest_main
     )
-    # Image + Logger objects: same non-transitive OBJECT-library rationale
+    # stb impl + Logger objects: same non-transitive OBJECT-library rationale
     # as DescriptorBufferTests above.
-    rendering_test_link_image(SrgbEncodeDitherTests)
+    rendering_test_link_stb(SrgbEncodeDitherTests)
     rendering_test_shader_paths(SrgbEncodeDitherTests)
     target_include_directories(SrgbEncodeDitherTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(SrgbEncodeDitherTests CompileShaderPkgs)
@@ -2299,7 +2261,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest
         GTest::gtest_main
     )
-    rendering_test_link_image(SrgbEncodeTemporalDitherTests)
+    rendering_test_link_stb(SrgbEncodeTemporalDitherTests)
     rendering_test_shader_paths(SrgbEncodeTemporalDitherTests)
     target_include_directories(SrgbEncodeTemporalDitherTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(SrgbEncodeTemporalDitherTests CompileShaderPkgs)
@@ -2320,7 +2282,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest
         GTest::gtest_main
     )
-    rendering_test_link_image(SrgbEncodeDebandTests)
+    rendering_test_link_stb(SrgbEncodeDebandTests)
     rendering_test_shader_paths(SrgbEncodeDebandTests)
     target_include_directories(SrgbEncodeDebandTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(SrgbEncodeDebandTests CompileShaderPkgs)
@@ -2340,7 +2302,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest
         GTest::gtest_main
     )
-    rendering_test_link_image(SrgbEncodeQuantizerTests)
+    rendering_test_link_stb(SrgbEncodeQuantizerTests)
     rendering_test_shader_paths(SrgbEncodeQuantizerTests)
     target_include_directories(SrgbEncodeQuantizerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_dependencies(SrgbEncodeQuantizerTests CompileShaderPkgs)
@@ -2659,7 +2621,8 @@ if(GTest_FOUND)
             Tests/VertexDeformationClockTests.cpp
             Tests/DeformationMotionVariantTests.cpp)
         target_link_libraries(ShaderVariantKeyTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
-        # Module-private headers (Source/Materials/Shader/ShaderSourceCache.h) by module path.
+        target_include_directories(ShaderVariantKeyTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+        # Module-private headers (Source/Materials/ShaderSourceCache.h) by module path.
         target_include_directories(ShaderVariantKeyTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
             ${GLSL_HOST_SHIM_DIR} ${CMAKE_CURRENT_BINARY_DIR}/generated)
         rendering_test_shader_paths(ShaderVariantKeyTests)
@@ -2758,9 +2721,24 @@ if(GTest_FOUND)
         add_test(NAME PipelineWarmProbeTests COMMAND $<TARGET_FILE:PipelineWarmProbeTests>)
 
         # Pipeline cache intern + concrete + LRU + L1 tests.
-        add_executable(PipelineDescHashTests Tests/PipelineDescHashTests.cpp)
+        add_executable(PipelineDescHashTests
+            Tests/PipelineDescHashTests.cpp
+            Tests/SpecializationConstantsTest.cpp)
+        # Same rationale as DescriptorBufferTests below: the rendering unity build
+        # pulls SkyRenderer.cpp's LoadSkyTexture2D into GameEngineRendering.lib,
+        # which references stbi_* symbols defined only in Engine.lib's
+        # stb_image_impl.cpp. Tests that link GameEngineRendering without Engine
+        # must compile a private copy to resolve the symbols.
+        target_sources(PipelineDescHashTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+        target_compile_definitions(PipelineDescHashTests PRIVATE GE_HAVE_STB)
+        if(TARGET stb::stb)
+            target_link_libraries(PipelineDescHashTests PRIVATE stb::stb)
+        elseif(STB_INCLUDE_DIRS)
+            target_include_directories(PipelineDescHashTests PRIVATE ${STB_INCLUDE_DIRS})
+        endif()
         target_link_libraries(PipelineDescHashTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
-        rendering_test_link_image(PipelineDescHashTests)
+        # Already compiles stb_image_impl.cpp above; only the Logger object splice is needed.
+        rendering_test_link_logger(PipelineDescHashTests)
         rendering_test_shader_paths(PipelineDescHashTests)
         add_test(NAME PipelineDescHashTests COMMAND $<TARGET_FILE:PipelineDescHashTests>)
 
@@ -3173,14 +3151,6 @@ if(GTest_FOUND)
         FOLDER "Rendering/Tests")
     add_test(NAME ImageCopyMipReadbackTests COMMAND $<TARGET_FILE:ImageCopyMipReadbackTests>)
 
-    add_executable(TextureUploadSynchronizationTests Tests/TextureUploadSynchronizationTests.cpp)
-    target_link_libraries(TextureUploadSynchronizationTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
-    rendering_test_shader_paths(TextureUploadSynchronizationTests)
-    target_include_directories(TextureUploadSynchronizationTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
-    set_target_properties(TextureUploadSynchronizationTests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON FOLDER "Rendering/Tests")
-    add_test(NAME TextureUploadSynchronizationTests COMMAND $<TARGET_FILE:TextureUploadSynchronizationTests>)
-    set_tests_properties(TextureUploadSynchronizationTests PROPERTIES TIMEOUT 60 LABELS "Headless;Vulkan")
-
     # Named push constant writer tests
     add_executable(NamedPushConstantWriterTests Tests/NamedPushConstantWriterTests.cpp)
     target_link_libraries(NamedPushConstantWriterTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
@@ -3459,21 +3429,6 @@ if(GTest_FOUND)
     add_test(NAME DescriptorSetAllocatorStatsTests COMMAND $<TARGET_FILE:DescriptorSetAllocatorStatsTests>)
 endif()
 
-# Descriptor set cache tests: the cache alone, then GetOrCreateDescriptorSet on each backend in the build
-if(GTest_FOUND)
-    add_executable(DescriptorSetCacheTests Tests/DescriptorSetCacheTests.cpp)
-    target_link_libraries(DescriptorSetCacheTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
-    if(RENDERING_HAS_METAL)
-        target_compile_definitions(DescriptorSetCacheTests PRIVATE RENDERING_HAS_METAL=1)
-    endif()
-    set_target_properties(DescriptorSetCacheTests PROPERTIES
-        CXX_STANDARD 20
-        CXX_STANDARD_REQUIRED ON
-        FOLDER "Rendering/Tests"
-    )
-    add_test(NAME DescriptorSetCacheTests COMMAND $<TARGET_FILE:DescriptorSetCacheTests>)
-endif()
-
 # Descriptor writer array tests
 if(GTest_FOUND)
     add_executable(DescriptorWriterArrayTests Tests/DescriptorWriterArrayTests.cpp)
@@ -3543,8 +3498,19 @@ endif()
 if(GTest_FOUND OR TARGET GTest::gtest)
 
   add_executable(TextureViewTests Tests/TextureViewTests.cpp)
+  # GameEngineRendering's unity build pulls SkyRenderer.cpp's LoadSkyTexture2D,
+  # which references stbi_* symbols defined only in Engine.lib's stb_image_impl.cpp.
+  # Tests that link GameEngineRendering but not Engine must compile a private copy.
+  target_sources(TextureViewTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+  target_compile_definitions(TextureViewTests PRIVATE GE_HAVE_STB)
+  if(TARGET stb::stb)
+    target_link_libraries(TextureViewTests PRIVATE stb::stb)
+  elseif(STB_INCLUDE_DIRS)
+    target_include_directories(TextureViewTests PRIVATE ${STB_INCLUDE_DIRS})
+  endif()
   target_link_libraries(TextureViewTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
-  rendering_test_link_image(TextureViewTests)
+  # Already compiles stb_image_impl.cpp above; only the Logger object splice is needed.
+  rendering_test_link_logger(TextureViewTests)
   rendering_test_shader_paths(TextureViewTests)
   set_target_properties(TextureViewTests PROPERTIES
     CXX_STANDARD 20
@@ -3558,7 +3524,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
   add_executable(PBRForwardEndToEndTests Tests/PBRForwardEndToEndTests.cpp)
   target_link_libraries(PBRForwardEndToEndTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
   target_include_directories(PBRForwardEndToEndTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  rendering_test_link_image(PBRForwardEndToEndTests)
+  rendering_test_link_stb(PBRForwardEndToEndTests)
   rendering_test_shader_paths(PBRForwardEndToEndTests)
 
   add_executable(DescriptorBindStatsLayoutStableSwitchTests Tests/DescriptorBindStatsLayoutStableSwitchTests.cpp)
@@ -3590,12 +3556,9 @@ add_test(NAME BarrierMemoryBatchTests COMMAND $<TARGET_FILE:BarrierMemoryBatchTe
     FOLDER "Rendering/Tests")
   add_test(NAME BarrierBatchBufferDedupeTests COMMAND $<TARGET_FILE:BarrierBatchBufferDedupeTests>)
 
-  # ResourceState -> Vulkan stage/access/layout barrier mapping and the present-mode
-  # log field (no device needed)
+  # ResourceState -> Vulkan stage/access/layout barrier mapping (no device needed)
   if(RENDERING_HAS_VULKAN)
-    add_executable(VulkanResourceStateMappingTests
-      Tests/VulkanResourceStateMappingTests.cpp
-      Tests/VulkanPresentModeLogFieldTests.cpp)
+    add_executable(VulkanResourceStateMappingTests Tests/VulkanResourceStateMappingTests.cpp)
     target_link_libraries(VulkanResourceStateMappingTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
     rendering_test_shader_paths(VulkanResourceStateMappingTests)
     target_include_directories(VulkanResourceStateMappingTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source)
@@ -3610,7 +3573,7 @@ add_test(NAME BarrierMemoryBatchTests COMMAND $<TARGET_FILE:BarrierMemoryBatchTe
   add_executable(TonemapAcesParamsTests Tests/TonemapAcesParamsTests.cpp)
   target_link_libraries(TonemapAcesParamsTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
   target_include_directories(TonemapAcesParamsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  rendering_test_link_image(TonemapAcesParamsTests)
+  rendering_test_link_stb(TonemapAcesParamsTests)
   rendering_test_shader_paths(TonemapAcesParamsTests)
   set_target_properties(TonemapAcesParamsTests PROPERTIES
     FOLDER "Rendering/Tests")
@@ -3620,7 +3583,7 @@ add_test(NAME BarrierMemoryBatchTests COMMAND $<TARGET_FILE:BarrierMemoryBatchTe
   add_executable(TonemapHdrHeadroomTests Tests/TonemapHdrHeadroomTests.cpp)
   target_link_libraries(TonemapHdrHeadroomTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
   target_include_directories(TonemapHdrHeadroomTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  rendering_test_link_image(TonemapHdrHeadroomTests)
+  rendering_test_link_stb(TonemapHdrHeadroomTests)
   rendering_test_shader_paths(TonemapHdrHeadroomTests)
   # The suite reads tonemap.frag.spv, so the shader compile must have run.
   add_dependencies(TonemapHdrHeadroomTests CompileShaders)
@@ -3633,9 +3596,6 @@ add_test(NAME BarrierMemoryBatchTests COMMAND $<TARGET_FILE:BarrierMemoryBatchTe
   add_executable(CubeLutFileParserTests Tests/CubeLutFileParserTests.cpp)
   target_link_libraries(CubeLutFileParserTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
   target_include_directories(CubeLutFileParserTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  # The proposal rule's fixtures: one small .cube per row of its table, read where they are committed.
-  target_compile_definitions(CubeLutFileParserTests PRIVATE
-    GE_CUBE_LUT_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/Tests/Fixtures/CubeLut")
   set_target_properties(CubeLutFileParserTests PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
@@ -3662,12 +3622,14 @@ endif()
 # -----------------------------------------------------------------------------
 
 # Every executable that links the GameEngineRendering OBJECT library directly hits
-# the same latent rot: OBJECT->OBJECT object files (Logger, Memory, Image,
-# AssetCore) are not spliced transitively on the VS generator, so they come up as
-# unresolved externals at link time. Rather than hand-maintain a rendering_test_link_image
-# call next to each of the ~150 test targets above, sweep this directory's executables once: any
-# that link GameEngineRendering and have not already been spliced (no Logger objects
-# in their SOURCES yet) get the full helper here.
+# the same latent rot: OBJECT->OBJECT object files (Logger) and the stb_image impl
+# pulled in by SkyRenderer are not spliced transitively on the VS generator, so
+# they come up as unresolved externals at link time. Rather than hand-maintain a
+# rendering_test_link_stb call next to each of the ~150 test targets above, sweep
+# this directory's executables once: any that link GameEngineRendering and have
+# not already been spliced (no Logger objects in their SOURCES yet — i.e. the
+# targets that compile their own stb_image_impl.cpp call rendering_test_link_logger
+# explicitly above) get the full helper here.
 get_property(_GE_RENDERING_DIR_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(_tgt IN LISTS _GE_RENDERING_DIR_TARGETS)
 	get_target_property(_tgt_type ${_tgt} TYPE)
@@ -3678,13 +3640,13 @@ foreach(_tgt IN LISTS _GE_RENDERING_DIR_TARGETS)
 	if(NOT _tgt_libs OR NOT "GameEngineRendering" IN_LIST _tgt_libs)
 		continue()
 	endif()
-	# Skip targets already spliced (those that call the helper explicitly above):
+	# Skip targets already spliced (the 12 that call the helpers explicitly above):
 	# their SOURCES carry the $<TARGET_OBJECTS:Logger> generator expression.
 	get_target_property(_tgt_srcs ${_tgt} SOURCES)
 	if(_tgt_srcs MATCHES "TARGET_OBJECTS:Logger")
 		continue()
 	endif()
-	rendering_test_link_image(${_tgt})
+	rendering_test_link_stb(${_tgt})
 endforeach()
 unset(_GE_RENDERING_DIR_TARGETS)
 

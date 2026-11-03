@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <functional>
 #include <string>
-#include <string_view>
 #include "UI/ModuleOwnedCallback.h"
 #include "UI/UIElement.h"
 
@@ -19,10 +18,6 @@ public:
     // Text content API
     void SetText(const std::string& t);
     const std::string& GetText() const { return m_Text; }
-    // The width, in logical px, the button needs to show `text` whole: the text measured in
-    // its label's face plus the button's padding and border. 0 before the label has been
-    // laid out as text.
-    float WidthForText(std::string_view text) const;
 
     // Event handling
     void OnEvent(UIEvent& e) override;

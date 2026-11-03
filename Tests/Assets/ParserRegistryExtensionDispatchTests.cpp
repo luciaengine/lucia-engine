@@ -76,3 +76,15 @@ TEST(ParserRegistry, DoesNotProbeParsersForOtherExtensions_ParseAsset)
     EXPECT_FALSE(r.Success);
     EXPECT_EQ(canParseCalls.load(), 0);
 }
+
+TEST(ParserRegistry, DiscoversLocalizationCatalogAssets)
+{
+    ParserRegistry registry;
+    ASSERT_TRUE(registry.Initialize());
+    auto parser = registry.FindParser("interface.localization");
+    ASSERT_NE(parser, nullptr);
+    EXPECT_EQ(parser->GetAssetType(), AssetType::Localization);
+    EXPECT_EQ(GetAssetTypeFromExtension(".LOCALIZATION"), AssetType::Localization);
+    EXPECT_EQ(AssetTypeFromString(AssetTypeToString(AssetType::Localization)), AssetType::Localization);
+    registry.Shutdown();
+}

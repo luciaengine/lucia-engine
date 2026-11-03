@@ -7,9 +7,6 @@
 #include "Logger/Logger.h"
 #include "Platform/SystemFonts.h"
 #include "Rendering/Common/Utils.h"
-#include "Types/FlatSet.h"
-#include "Types/StringUtils.h"
-#include "UI/FontWeightMatch.h"
 
 #include <algorithm>
 #include <cctype>
@@ -23,6 +20,26 @@ namespace
 static bool IsSpace(unsigned char c)
 {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
+}
+
+static std::string Trim(std::string_view s)
+{
+    size_t b = 0;
+    size_t e = s.size();
+    while (b < e && IsSpace((unsigned char)s[b]))
+        ++b;
+    while (e > b && IsSpace((unsigned char)s[e - 1]))
+        --e;
+    if (e <= b)
+        return {};
+    return std::string(s.substr(b, e - b));
+}
+
+static std::string ToLowerAscii(std::string s)
+{
+    for (auto& ch : s)
+        ch = (char)std::tolower((unsigned char)ch);
+    return s;
 }
 
 static int ClampCssWeight(int w)
@@ -55,9 +72,9 @@ static std::string InsertSpacesBeforeCaps(const std::string& s)
     return out;
 }
 
-// The family is the stem up to its first '-' or '_' (Roboto-Regular gives Roboto).
-static std::string DeriveFamilyFromStem(std::string stem)
+static std::string DeriveFamilyFromFilename(const std::filesystem::path& p)
 {
+    std::string stem = p.stem().string();
     if (stem.empty())
         return {};
 
@@ -73,7 +90,7 @@ static std::string DeriveFamilyFromStem(std::string stem)
     if (dash != std::string::npos && dash > 0)
         stem = stem.substr(0, dash);
 
-    return TrimWhitespace(std::move(stem));
+    return Trim(stem);
 }
 
 static std::filesystem::path ToAbsolutePath(const std::filesystem::path& p, const std::filesystem::path& assetRoot)
@@ -146,9 +163,9 @@ std::string FontFamilyIndex::NormalizeKey(const std::string& family)
     return out;
 }
 
-void FontFamilyIndex::DeriveCandidateTraitsFromStem(const std::string& stem, int& outWeight, FontStyle& outStyle)
+void FontFamilyIndex::DeriveCandidateTraitsFromFilename(const std::filesystem::path& p, int& outWeight, FontStyle& outStyle)
 {
-    const std::string stemLower = ToLowerAscii(stem);
+    const std::string stemLower = ToLowerAscii(p.stem().string());
     outWeight = 400;
     outStyle = FontStyle::Normal;
 
@@ -191,12 +208,12 @@ void FontFamilyIndex::Rebuild()
 
     for (const GUID& guid : fonts)
     {
-        AssetMetadata metadata{};
-        if (!m_Registry.TryGetAssetMetadata(guid, metadata))
+        AssetMetadata md{};
+        if (!m_Registry.TryGetAssetMetadata(guid, md))
             continue;
 
-        const std::filesystem::path absolutePath = ToAbsolutePath(metadata.Path, assetRoot);
-        if (absolutePath.empty())
+        const std::filesystem::path absPath = ToAbsolutePath(md.Path, assetRoot);
+        if (absPath.empty())
             continue;
 
         // The registry can carry registrations whose backing file is gone
@@ -204,53 +221,54 @@ void FontFamilyIndex::Rebuild()
         // one poisons its family: the weight matcher happily picks it and the
         // byte read then fails every retry. Fonts are few and Rebuild is
         // rare, so an existence probe here is cheap insurance.
-        std::error_code existenceError;
-        if (!std::filesystem::exists(absolutePath, existenceError))
+        std::error_code existsEc;
+        if (!std::filesystem::exists(absPath, existsEc))
             continue;
 
-        // Family names and traits come from the asset name: the file's stem as it is spelled
-        // on disk. The registry path is a lookup key, lower case on a case-insensitive host.
-        const std::string& stem = metadata.Name;
+        // Family names and traits come from the filename.
         std::vector<std::string> families;
-        int candidateWeight = 400;
-        FontStyle candidateStyle = FontStyle::Normal;
+        int candWeight = 400;
+        FontStyle candStyle = FontStyle::Normal;
         {
-            std::string family = DeriveFamilyFromStem(stem);
-            if (!family.empty())
+            std::string fam = DeriveFamilyFromFilename(absPath);
+            if (!fam.empty())
             {
-                families.push_back(family);
-                const std::string spaced = InsertSpacesBeforeCaps(family);
-                if (spaced != family)
+                families.push_back(fam);
+                const std::string spaced = InsertSpacesBeforeCaps(fam);
+                if (spaced != fam)
                     families.push_back(spaced);
             }
         }
 
         // Always include the raw stem as a last-resort alias (e.g. "Roboto-Regular").
-        if (!stem.empty())
-            families.push_back(stem);
+        {
+            const std::string stem = absPath.stem().string();
+            if (!stem.empty())
+                families.push_back(stem);
+        }
 
         // Deduplicate family strings (case-insensitive via normalized key).
-        FlatSet<std::string> seenKeys;
-        seenKeys.Reserve(families.size());
+        std::unordered_set<std::string> seenKeys;
+        seenKeys.reserve(families.size());
 
-        DeriveCandidateTraitsFromStem(stem, candidateWeight, candidateStyle);
+        DeriveCandidateTraitsFromFilename(absPath, candWeight, candStyle);
 
-        for (const std::string& family : families)
+        for (const std::string& fam : families)
         {
-            const std::string key = NormalizeKey(family);
+            const std::string key = NormalizeKey(fam);
             if (key.empty())
                 continue;
-            if (!seenKeys.Insert(key))
+            if (!seenKeys.insert(key).second)
                 continue;
 
-            Candidate candidate{};
-            candidate.Guid = guid;
-            candidate.Path = absolutePath;
-            candidate.Weight = candidateWeight;
-            candidate.Style = candidateStyle;
-            candidate.DebugName = absolutePath.string();
+            Candidate c{};
+            c.guid = guid;
+            c.path = absPath;
+            c.weight = candWeight;
+            c.style = candStyle;
+            c.debugName = absPath.string();
 
-            m_CandidatesByKey[key].push_back(std::move(candidate));
+            m_CandidatesByKey[key].push_back(std::move(c));
         }
     }
 
@@ -289,14 +307,37 @@ bool FontFamilyIndex::TryResolveFontAssetPath(const std::string& family,
     for (const Candidate& c : it->second)
     {
         int score = 0;
-        if (c.Style != style)
+        if (c.style != style)
         {
             // Prefer normal as the general fallback, otherwise penalize heavily.
-            score += (c.Style == FontStyle::Normal) ? 2000 : 5000;
+            score += (c.style == FontStyle::Normal) ? 2000 : 5000;
         }
 
-        // CSS Fonts Level 4, §5.2: every weight cost stays below the style penalties above.
-        score += ::GameEngine::UI::FontWeightMatchCost(reqW, c.Weight);
+        // CSS Fonts Level 4, §5.2: weight matching direction depends on the
+        // requested weight. Candidates in the "wrong" direction get a large
+        // base penalty so the "right" direction always wins, then distance
+        // breaks ties within the same direction.
+        const int diff = c.weight - reqW; // positive = heavier
+        if (reqW > 500)
+        {
+            // Prefer heavier first, then lighter.
+            score += (diff >= 0) ? diff : (1000 + (-diff));
+        }
+        else if (reqW >= 400)
+        {
+            // Prefer [requested..500] first, then lighter, then heavier.
+            if (diff >= 0 && c.weight <= 500)
+                score += diff;
+            else if (diff < 0)
+                score += 500 + (-diff);
+            else
+                score += 1000 + diff;
+        }
+        else
+        {
+            // Prefer lighter first, then heavier.
+            score += (diff <= 0) ? (-diff) : (1000 + diff);
+        }
 
         if (score < bestScore)
         {
@@ -308,11 +349,11 @@ bool FontFamilyIndex::TryResolveFontAssetPath(const std::string& family,
     if (!best)
         return false;
 
-    outAbsPath = best->Path;
+    outAbsPath = best->path;
     if (outDebugName)
-        *outDebugName = best->DebugName;
+        *outDebugName = best->debugName;
     if (outAssetGuid)
-        *outAssetGuid = best->Guid;
+        *outAssetGuid = best->guid;
     return !outAbsPath.empty();
 }
 

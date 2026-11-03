@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "FixedScalePlatform.h"
+#include "Input/KeyCodes.h"
+#include "Input/InputSystem.h"
+#include "UI/Parsers/XMLParser.h"
 #include "UIRgTestHarness.h"
 
 #include "UI/Controls/Button.h"
@@ -318,5 +321,92 @@ TEST(MarkdownTextTests, StreamedDeltasEqualTheOneShotParse)
         MarkdownText once;
         once.SetMarkdown(text);
         EXPECT_EQ(DumpOf(streamed), DumpOf(once)) << "stream: " << text;
+    }
+}
+
+// The registered control selects the rendered document across formatted blocks.
+TEST(MarkdownTextTests, FormattedRepliesSelectAndCopyAcrossBlocksWithoutTheirMarkup)
+{
+    auto* device = SharedHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "Device init failed";
+    UITesting::FixedScalePlatform platform(2.0f);
+    UIManager ui(device);
+    ui.SetPlatform(&platform);
+    std::unique_ptr<UIElement> root;
+    ASSERT_TRUE(UIParsing::XMLParser::ParseLayoutFromString("<MarkdownText id=\"reply\"/>", root));
+    auto* text = dynamic_cast<MarkdownText*>(root.get());
+    ASSERT_NE(text, nullptr);
+    ui.SetRoot(std::move(root));
+    text->SetMarkdown("**Hello** café.\n\nSecond `code` paragraph.");
+    UIEvent event;
+    event.Id = kEventKeyDown;
+    event.Mods = Input::kModControl;
+    event.Key = Input::kKeyCode_A;
+    event.Platform = &platform;
+    text->DispatchEvent(event);
+    EXPECT_TRUE(event.Handled);
+    event.Handled = false;
+    event.Key = Input::kKeyCode_C;
+    text->DispatchEvent(event);
+    EXPECT_TRUE(event.Handled);
+    EXPECT_EQ(platform.GetClipboardText(), "Hello café.\n\nSecond code paragraph.");
+    text->SetMarkdown("**Hello** café.\n\nSecond `code` paragraph. More.");
+    event.Handled = false;
+    text->DispatchEvent(event);
+    EXPECT_EQ(platform.GetClipboardText(), "Hello café.\n\nSecond code paragraph.")
+        << "a streaming append preserves a selection in the unchanged prefix";
+}
+
+TEST(MarkdownTextTests, DragSelectionCopiesFormattedWordsAndPaintsAtEveryContentScale)
+{
+    auto* device = SharedHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "Device init failed";
+    for (float scale : {1.0f, 1.25f, 2.0f})
+    {
+        UITesting::FixedScalePlatform platform(scale);
+        UIManager ui(device);
+        ui.SetPlatform(&platform);
+        ui.SetLayoutSizeOverride(static_cast<uint32_t>(800 * scale), static_cast<uint32_t>(600 * scale));
+        auto owned = std::make_unique<MarkdownText>();
+        auto* text = owned.get();
+        ui.SetRoot(std::move(owned));
+        text->SetMarkdown("alpha **café** gamma");
+        ui.Update(0.016f, false);
+        auto* first = LabelWithText(*text, "alpha ");
+        auto* last = LabelWithText(*text, "gamma");
+        ASSERT_NE(first, nullptr);
+        ASSERT_NE(last, nullptr);
+        UIEvent event;
+        event.Id = kEventMouseDown;
+        event.X = first->GetLayoutX() + 0.01f;
+        event.Y = first->GetLayoutY() + first->GetLayoutHeight() * 0.5f;
+        event.Target = first;
+        text->DispatchEvent(event);
+        EXPECT_EQ(event.CaptureRequested, text);
+        event.Id = kEventMouseMove;
+        event.Handled = false;
+        event.X = last->GetLayoutX() + last->GetLayoutWidth() - 0.01f;
+        event.Y = last->GetLayoutY() + last->GetLayoutHeight() * 0.5f;
+        text->DispatchEvent(event);
+        event.Id = kEventMouseUp;
+        text->DispatchEvent(event);
+        event.Id = kEventKeyDown;
+        event.Key = Input::kKeyCode_C;
+        event.Mods = Input::kModControl;
+        event.Platform = &platform;
+        text->DispatchEvent(event);
+        EXPECT_EQ(platform.GetClipboardText(), "alpha café gamma") << scale;
+        std::vector<const Label*> labels;
+        CollectLabels(*text, labels);
+        std::vector<UI::UIPrimitive> primitives;
+        UI::PrimitiveEmitContext context{primitives, 0, 1.0f};
+        context.ContentScale = scale;
+        for (const auto* label : labels)
+            const_cast<Label*>(label)->OnGeneratePrimitives(context, label->GetResolvedStyle(),
+                label->GetLayoutX() * scale, label->GetLayoutY() * scale,
+                label->GetLayoutWidth() * scale, label->GetLayoutHeight() * scale);
+        EXPECT_GE(primitives.size(), 3u) << "selection must remain visible across differently styled words";
     }
 }

@@ -8,13 +8,13 @@ add_library(Particles OBJECT
     Source/Particles.cpp
     Source/ParticleChannels.cpp
     Source/ParticleValue.cpp
-    Source/ParticleProcessor/ParticleProcessorRegistry.cpp
-    Source/ParticleProcessor/ParticleProcessorContext.cpp
+    Source/ParticleProcessorRegistry.cpp
+    Source/ParticleProcessorContext.cpp
     Source/ParticleParameterAccess.cpp
-    Source/ParticleStack/ParticleStackDocument.cpp
-    Source/ParticleStack/ParticleStackValidation.cpp
-    Source/ParticleStack/ParticleStackCompiler.cpp
-    Source/ParticleStack/ParticleStackBinary.cpp
+    Source/ParticleStackDocument.cpp
+    Source/ParticleStackValidation.cpp
+    Source/ParticleStackCompiler.cpp
+    Source/ParticleStackBinary.cpp
     Source/ParticleTrailStore.cpp
     Source/ParticleRuntime.cpp
     Source/Processors/ParticleBuiltInProcessors.cpp
@@ -39,8 +39,6 @@ target_compile_features(Particles PUBLIC cxx_std_20)
 target_include_directories(Particles
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/Include
-        # Rendering/RenderLayerMask.h (header-only, Types only): ParticleRenderer's layers.
-        ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Include
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Source
         ${CMAKE_SOURCE_DIR}/Engine/Include
@@ -58,8 +56,8 @@ target_link_libraries(Particles
 
 # JSON conversion is used by scene ingestion and editor authoring, not simulation.
 add_library(ParticlesAuthoring OBJECT
-    Source/ParticleStack/ParticleStackAuthoring.cpp
-    Include/Particles/ParticleStack/ParticleStackAuthoring.h
+    Source/ParticleStackAuthoring.cpp
+    Include/Particles/ParticleStackAuthoring.h
 )
 target_compile_features(ParticlesAuthoring PUBLIC cxx_std_20)
 target_link_libraries(ParticlesAuthoring PUBLIC Particles Serialization)

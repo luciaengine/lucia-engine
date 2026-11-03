@@ -1,8 +1,5 @@
-// GPU-executed parity tests for the two-dispatch SPD builds vs the hzb_build.comp
-// chain, for both reductions: the occlusion pyramid (hzb_spd.comp +
-// hzb_spd_finalize.comp, MIN = farthest, chain mode 1) and the reflection
-// traversal pyramid (hzb_spd_nearest.comp + hzb_spd_nearest_finalize.comp,
-// MAX = nearest, chain mode 2).
+// GPU-executed parity tests for the two-dispatch SPD build (hzb_spd.comp +
+// hzb_spd_finalize.comp) vs the hzb_build.comp chain.
 //
 // The SPD build's content contract is BIT-IDENTICAL pyramids: run both paths
 // over the same seeded depth image and compare every texel of every mip as
@@ -20,7 +17,7 @@
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include "StorageImageLayoutHelper.h"
@@ -29,7 +26,6 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
-#include <string>
 #include <vector>
 
 using namespace GameEngine;
@@ -55,22 +51,8 @@ struct HzbBuildPC
     uint32_t dstH;
     uint32_t srcW;
     uint32_t srcH;
-    uint32_t mode; // 0 = copy depth into mip 0, 1 = 2x2 MIN reduce, 2 = 2x2 MAX reduce
+    uint32_t mode; // 0 = copy depth into mip 0, 1 = 2x2 MIN reduce
 };
-
-// One reduction: the SPD pair that builds it and the chain mode it must match.
-struct HzbReduction
-{
-    const char* Name;
-    const char* TilePackage;
-    const char* FinalizePackage;
-    uint32_t ChainMode;
-};
-
-constexpr HzbReduction kFarthest{"Farthest", "Shaders/hzb_spd.shaderpkg", "Shaders/hzb_spd_finalize.shaderpkg", 1u};
-constexpr HzbReduction kNearest{"Nearest", "Shaders/hzb_spd_nearest.shaderpkg",
-                                "Shaders/hzb_spd_nearest_finalize.shaderpkg", 2u};
-
 
 // Mirrors HZBBuildNode.cpp's HzbSpdPC (shared by hzb_spd.comp and
 // hzb_spd_finalize.comp).
@@ -107,7 +89,7 @@ std::vector<float> MakeDepthPattern(uint32_t w, uint32_t h)
     return depth;
 }
 
-class HzbSpdParityTest : public ::testing::TestWithParam<HzbReduction>
+class HzbSpdParityTest : public ::testing::Test
 {
   protected:
     void SetUp() override
@@ -150,8 +132,8 @@ class HzbSpdParityTest : public ::testing::TestWithParam<HzbReduction>
         {
             ShaderPackage pkg{};
             std::string err;
-            if (!LoadShaderPkg(GetParam().TilePackage, ShaderSourceKind::SpirV, pkg, &err))
-                FAIL() << GetParam().TilePackage << " not available: " << err;
+            if (!LoadShaderPkg("Shaders/hzb_spd.shaderpkg", ShaderSourceKind::SpirV, pkg, &err))
+                FAIL() << "hzb_spd.shaderpkg not available: " << err;
             auto itCs = pkg.stageBytes.find("cs");
             ASSERT_NE(itCs, pkg.stageBytes.end());
 
@@ -182,8 +164,8 @@ class HzbSpdParityTest : public ::testing::TestWithParam<HzbReduction>
         {
             ShaderPackage pkg{};
             std::string err;
-            if (!LoadShaderPkg(GetParam().FinalizePackage, ShaderSourceKind::SpirV, pkg, &err))
-                FAIL() << GetParam().FinalizePackage << " not available: " << err;
+            if (!LoadShaderPkg("Shaders/hzb_spd_finalize.shaderpkg", ShaderSourceKind::SpirV, pkg, &err))
+                FAIL() << "hzb_spd_finalize.shaderpkg not available: " << err;
             auto itCs = pkg.stageBytes.find("cs");
             ASSERT_NE(itCs, pkg.stageBytes.end());
 
@@ -314,7 +296,7 @@ class HzbSpdParityTest : public ::testing::TestWithParam<HzbReduction>
             static_cast<uint64_t>(ResourceAccessMask::ShaderWrite),
             static_cast<uint64_t>(ResourceAccessMask::ShaderRead));
 
-        // ── Path A: the per-mip chain (mode 0 copy + the reduction's mode) ──
+        // ── Path A: the per-mip chain (mode 0 copy + mode 1 reduces) ────────
         {
             DescriptorSetDesc dsDesc{};
             dsDesc.layout = m_ChainLayout;
@@ -346,7 +328,7 @@ class HzbSpdParityTest : public ::testing::TestWithParam<HzbReduction>
             m_Device->UpdateStorageImageBinding(ds, 1, MipView(chainTex, m));
             cl->SetPipeline(m_ChainPipeline);
             cl->BindDescriptorSet(0, ds, m_ChainPipeline);
-            HzbBuildPC pc{dstW, dstH, srcW, srcH, GetParam().ChainMode};
+            HzbBuildPC pc{dstW, dstH, srcW, srcH, 1u};
             cl->SetPushConstants(pc);
             cl->Dispatch((dstW + 7u) / 8u, (dstH + 7u) / 8u, 1u);
             cl->Barrier(computeToCompute);
@@ -487,43 +469,40 @@ class HzbSpdParityTest : public ::testing::TestWithParam<HzbReduction>
     std::vector<BufferHandle> m_Buffers;
 };
 
-TEST_P(HzbSpdParityTest, Pow2SingleTile) { RunParityCase(4u, 4u); }
+TEST_F(HzbSpdParityTest, Pow2SingleTile) { RunParityCase(4u, 4u); }
 
-TEST_P(HzbSpdParityTest, NpotTiny) { RunParityCase(5u, 3u); }
+TEST_F(HzbSpdParityTest, NpotTiny) { RunParityCase(5u, 3u); }
 
 // levels == 2: the finalize pass is skipped entirely (mip 1 is already exact
 // from the tile pass — nothing to repair, no mips 7+).
-TEST_P(HzbSpdParityTest, TwoLevelChainSkipsFinalize) { RunParityCase(3u, 2u); }
+TEST_F(HzbSpdParityTest, TwoLevelChainSkipsFinalize) { RunParityCase(3u, 2u); }
 
-TEST_P(HzbSpdParityTest, ExactTile) { RunParityCase(64u, 64u); }
+TEST_F(HzbSpdParityTest, ExactTile) { RunParityCase(64u, 64u); }
 
-TEST_P(HzbSpdParityTest, NpotOddBothAxes) { RunParityCase(67u, 35u); }
+TEST_F(HzbSpdParityTest, NpotOddBothAxes) { RunParityCase(67u, 35u); }
 
 // mip1 = 65x33: mip2's last column must fold mip1 col 64, which belongs to the
 // NEXT 64x64 tile — the exact cross-workgroup case the finalize pass's edge
 // fixup exists for.
-TEST_P(HzbSpdParityTest, CrossTileFoldFixup) { RunParityCase(130u, 66u); }
+TEST_F(HzbSpdParityTest, CrossTileFoldFixup) { RunParityCase(130u, 66u); }
 
-TEST_P(HzbSpdParityTest, NpotDeepOddChain) { RunParityCase(259u, 131u); }
+TEST_F(HzbSpdParityTest, NpotDeepOddChain) { RunParityCase(259u, 131u); }
 
 // Odd at every level: 1023 -> 511 -> 255 -> ... folds on both axes throughout.
-TEST_P(HzbSpdParityTest, AllOddChain) { RunParityCase(1023u, 1023u); }
+TEST_F(HzbSpdParityTest, AllOddChain) { RunParityCase(1023u, 1023u); }
 
-TEST_P(HzbSpdParityTest, ProductionShapeSmall) { RunParityCase(640u, 360u); }
+TEST_F(HzbSpdParityTest, ProductionShapeSmall) { RunParityCase(640u, 360u); }
 
-TEST_P(HzbSpdParityTest, ProductionShape1080p) { RunParityCase(1920u, 1080u); }
+TEST_F(HzbSpdParityTest, ProductionShape1080p) { RunParityCase(1920u, 1080u); }
 
 // 12-level chain (4K): exercises the finalize tail through GE_SPD_TAIL_LEVEL
 // 11 and the deeper StoreMip cases.
-TEST_P(HzbSpdParityTest, ProductionShape4K) { RunParityCase(3840u, 2160u); }
+TEST_F(HzbSpdParityTest, ProductionShape4K) { RunParityCase(3840u, 2160u); }
 
 // The supported-extent boundary: 13 levels, both axes exactly at the mip-7
 // 32x32 tile cap (4223 >> 7 == 32), tail level 12, and the edge-overlay
 // arrays at peak occupancy (mip2 = 1055 wide -> eCol/eRow index 1054, one
 // below the 1056 capacity).
-TEST_P(HzbSpdParityTest, MaxSupportedExtentBoundary) { RunParityCase(4223u, 4223u); }
-
-INSTANTIATE_TEST_SUITE_P(Reductions, HzbSpdParityTest, ::testing::Values(kFarthest, kNearest),
-                         [](const ::testing::TestParamInfo<HzbReduction>& info) { return std::string(info.param.Name); });
+TEST_F(HzbSpdParityTest, MaxSupportedExtentBoundary) { RunParityCase(4223u, 4223u); }
 
 } // namespace

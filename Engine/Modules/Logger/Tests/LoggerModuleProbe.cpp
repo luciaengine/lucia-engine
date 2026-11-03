@@ -1,5 +1,6 @@
 #include "LoggerModuleProbe.h"
 #include "Logger/Logger.h"
+#include <cstring>
 
 namespace
 {
@@ -40,11 +41,34 @@ extern "C" __declspec(dllexport) void ConfigureProbe(LoggerModuleProbeStats* sta
     s_LogOnDetach = logOnDetach;
 }
 
+extern "C" __declspec(dllexport) void EmitOwnedProbe(unsigned value, bool formatted)
+{
+    // Module storage the probe overwrites after every emission. A snapshot that
+    // borrowed these buffers would report the overwritten bytes from the second
+    // call onwards, and would name a retired image after the module unloads.
+    static char file[] = "fixture.cpp";
+    static char function[] = "EmitOwnedProbe";
+    static const Logger::OwnedSourceLocation source(file, function);
+    if (formatted)
+        Logger::Log::LogWithSource(Logger::LogLevel::Info, source, 91, "probe value {}",
+                                   Argument(value));
+    else
+        Logger::Log::LogWithSource(Logger::LogLevel::Info, source, 91,
+                                   std::string_view("probe plain text"));
+    std::memset(file, 'x', sizeof(file) - 1);
+    std::memset(function, 'x', sizeof(function) - 1);
+}
+
 extern "C" __declspec(dllexport) void EmitProbe(unsigned value, bool formatted)
 {
-    // The file, the function and the channel name are this image's literals; the queued record must own copies.
+    char file[] = "fixture.cpp";
+    char function[] = "EmitProbe";
     if (formatted)
-        GE_LOG(ProbeLog, Info, "probe value {}", Argument(value));
+        Logger::Log::LogWithSource(Logger::LogLevel::Info, file, 91, function, "probe value {}",
+                                   Argument(value));
     else
-        GE_LOG(ProbeLog, Info, "probe plain text");
+        Logger::Log::LogWithSource(Logger::LogLevel::Info, file, 91, function,
+                                   std::string_view("probe plain text"));
+    std::memset(file, 'x', sizeof(file) - 1);
+    std::memset(function, 'x', sizeof(function) - 1);
 }

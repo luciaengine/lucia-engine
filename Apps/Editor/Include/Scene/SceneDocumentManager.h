@@ -88,9 +88,10 @@ class SceneDocumentManager
     // Cleared by whatever gives the world a different document (a successful replace/recovery open,
     // NewSceneUntitled, SaveAs to a new path) and by an accepted SaveAnyway, after which the file on
     // disk and the world agree again.
-    // The record as the load left it, less the skips the user discarded (DiscardLoadSkip). The title
-    // decoration and the autosave gate read it. A report of what a save does now reads the outstanding
-    // view below: an override can retire after the load, and this record does not see it.
+    // The record EXACTLY AS THE LOAD LEFT IT. Correct for anything asking what that load did, which
+    // is why the title decoration and the autosave gate read it. Anything reporting what a SAVE
+    // will now do wants the outstanding view below instead: an override can retire after the load,
+    // and this record cannot see it happen.
     const std::optional<SceneLoadDegraded>& GetLastLoadDegraded() const { return m_LastLoadDegraded; }
 
     // The same record filtered to the skips still outstanding against the world — see
@@ -102,12 +103,6 @@ class SceneDocumentManager
     // Cheap count of the above, for the guard's yes/no. Zero means every unreadable assignment has
     // been adjudicated and there is nothing left for the guard to protect.
     std::size_t OutstandingDegradedSkipCount() const;
-
-    // Takes the skip at `index` out of the last load's record: the user discards an override line that a save
-    // drops, so the save guard stops counting it. Empty when there is no such skip. Marks the document dirty.
-    std::optional<Scene::SceneDegradation::Skip> DiscardLoadSkip(std::size_t index);
-    // Puts back at `index` a skip that DiscardLoadSkip took out: the undo of the discard. Marks the document dirty.
-    void RestoreLoadSkip(std::size_t index, Scene::SceneDegradation::Skip skip);
 
     // Whether a save aimed at `targetPath` would be refused because this document did not fully
     // load and that path is the file it was read from. Callers use it to tell that refusal apart
@@ -128,10 +123,9 @@ class SceneDocumentManager
                             const std::filesystem::path& scenePath);
     // Add entities from a scene into the current world.
     bool LoadSceneAdditive(const std::filesystem::path& scenePath);
-    // Clears the world and starts a new untitled scene seeded by SeedDefaultSceneEntities.
-    // The plane and spheres need renderServices: pass the engine's services.
-    // Null seeds only the non-mesh entities, for headless tests.
-    void NewSceneUntitled(Engine::Renderer::RenderServices* renderServices);
+    // Clears the world and starts a new untitled scene with default entities
+    // (directional light, ambient light, sky environment, plane, sphere).
+    void NewSceneUntitled(Engine::Renderer::RenderServices* renderServices = nullptr);
 
     // Play mode simulates the authored world IN PLACE (PlayModeManager keeps a
     // same-world snapshot and restores it on exit), so while it runs the world
@@ -183,9 +177,13 @@ class SceneDocumentManager
     // Consumes embedded [editor_camera] state from the last OpenSceneReplace (once).
     std::optional<Scene::SceneEditorCameraFromFile> ConsumeEditorCameraFromLastDocumentLoad();
 
-    // The call that releases the generated entities the outgoing world holds (the editor services).
-    // Runs inside ReleaseSceneScopedState, before World::Clear restarts entity versions, so no
-    // stale handle aliases an entity of the incoming scene (SceneSwapOrderingTests).
+    // Releases the editor-side spline generators (placement / fence / extrude),
+    // which cache EntityHandles into the open scene's world and destroy them on
+    // a later sweep. Runs inside ReleaseSceneScopedState, against the still-live
+    // outgoing world. EditorApplication owns those generators, so it supplies
+    // the call; without it their handles survive the swap and World::Clear's
+    // version restart makes them alias — and destroy — entities of the incoming
+    // scene (SceneSwapOrderingTests).
     void SetSceneScopedGeneratorRelease(std::function<void()> release);
 
     // Internal ECS snapshot support (Undo/Redo, play mode clone/restore).
@@ -283,7 +281,7 @@ class SceneDocumentManager
     // Announce and record `census` against `documentPath` when it holds anything, or clear a
     // standing record when it does not. Called after every successful document load.
     void RecordLoadDegradation(const std::filesystem::path& documentPath,
-                               Scene::SceneDegradation census);
+                               Scene::SceneLoadDegradation census);
 
     // The degraded-overwrite refusal text for `targetPath`, naming what a save would cost.
     // Only valid while a degraded record stands (WouldRefuseDegradedOverwrite gates the call).

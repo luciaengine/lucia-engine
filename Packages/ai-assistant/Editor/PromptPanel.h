@@ -3,11 +3,9 @@
 #include "AgentConversationController.h"
 #include "AssistantActionLedger.h"
 
-#include "Platform/SpeechInput.h"
 #include "UI/AssetBoundDockPanel.h"
 #include "UI/UIManagerRef.h"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -16,22 +14,17 @@
 
 namespace GameEngine
 {
+namespace EditorUI { class ItemSizeSlider; }
 
 class AgentConversationController;
 class AgentConversationRow;
-class AgentModelPopover;
 class AgentSessionPicker;
-class MarkupTokenPicker;
+class PromptFileTray;
 class Button;
 class Dropdown;
 class Label;
 class ScrollView;
-class PromptMicButton;
 class PromptTextArea;
-namespace EditorUI
-{
-class ItemSizeSlider;
-}
 struct AgentConversationRowModel;
 struct AgentReplyAction;
 struct AgentSessionChoice;
@@ -61,15 +54,8 @@ private:
     void OnSessionChosen(const AgentSessionChoice& choice);
     void FollowProvider(const std::string& providerId);
     void SyncModeControl();
-    void FitModeControl();
-    /// Gives m_ModeDropdown m_ModeOptions with their whole or compact labels (m_ModeCompact),
-    /// `selected` chosen, without reporting a change.
-    void ShowModeLabels(int selected);
     void RefreshContinuedRow();
-    // Runs `action` on the reply at `messageIndex`; whether it acted (AgentReplyOutcome::Acted).
-    bool RunReplyAction(const AgentReplyAction& action, size_t messageIndex);
-    /// Adds the text AiAssistantPanelService holds to the end of the prompt and focuses it.
-    void TakePrefill();
+    void RunReplyAction(const AgentReplyAction& action, size_t messageIndex);
     void AnswerCall(uint64_t requestId, AssistantAnswer answer);
     bool FocusWaitingAnswer();
     AgentConversationRowModel RowModelAt(size_t messageIndex) const;
@@ -78,21 +64,13 @@ private:
     void RemoveRows();
     void UpdateStatus();
     void RefreshHistoryTextVisuals();
-    void OnHistoryKeyDown(UIEvent& e);
-    void SelectRowByOffset(int offset);
-    void SelectRow(size_t rowIndex);
     void BuildTextSizeSlider(UIElement* host);
-    void BindMicButton(PromptMicButton* button);
-    void StartDictation();
-    void StopDictationFromMic();
-    void ApplyDictation(const std::string& transcript);
-    void RestartDictationText();
-    void AbandonDictation();
-    void ShowDictationState(bool listening, const std::string& message);
-    void BindSpeechLevels(UIElement* left, UIElement* right);
-    void ShowSpeechLevels(const Platform::SpeechInput::LevelArray& levels);
     void StepTextSize(float scrollY);
     void ApplyTextSize(float px);
+    EditorUI::ItemSizeSlider* m_TextSizeSlider = nullptr;
+    float m_TextScale = 0.0f;
+    void OnHistoryKeyDown(UIEvent& e);
+    void SelectRowByOffset(int offset);
     void ScrollRowIntoView(size_t rowIndex);
     bool NavigatePromptRecall(int direction);
     void UpdatePromptPlaceholderVisibility(const std::string& value);
@@ -115,27 +93,13 @@ private:
     // What m_ModeDropdown shows: a mode id, or the reason the connection cannot act;
     // the control is rebuilt only when it changes.
     std::string m_ModeControlState;
-    // One choice m_ModeDropdown offers now.
-    struct ModeOption
-    {
-        std::string Value;
-        std::string Label;
-        std::string CompactLabel;
-    };
-    // The choices m_ModeDropdown offers now; FitModeControl() keeps the widest label whole, or
-    // the widest compact label on a line too narrow for it.
-    std::vector<ModeOption> m_ModeOptions;
-    // m_ModeDropdown shows the compact labels.
-    bool m_ModeCompact = false;
-    // Set while ShowModeLabels() rebuilds the control, whose selection then reports a
+    // Set while SyncModeControl() rebuilds the control, whose selection then reports a
     // change the user did not make.
     bool m_SyncingModeControl = false;
     Button* m_SessionButton = nullptr;
-    Button* m_ModelButton = nullptr;
-    // The model control's popover, a child of the panel; it owns the button's behavior.
-    AgentModelPopover* m_ModelPopover = nullptr;
     std::unique_ptr<AgentSessionPicker> m_SessionPicker;
-    std::unique_ptr<MarkupTokenPicker> m_MarkupPicker;
+    // The files picked or dropped for the next prompt, shown in the strip above the splitter.
+    std::unique_ptr<PromptFileTray> m_FileTray;
     // The first row of a conversation that continues a chosen session; hidden otherwise.
     Label* m_ContinuedRow = nullptr;
     // The session m_ContinuedRow describes and the text it shows; both empty while
@@ -150,8 +114,10 @@ private:
     UIElement* m_HistoryList = nullptr;
     Label* m_HistoryEmpty = nullptr;
     UIElement* m_InputPane = nullptr;
+    // A PromptFileDropZone: files dropped on it join m_FileTray.
     UIElement* m_InputRow = nullptr;
     UIElement* m_InputControls = nullptr;
+    Button* m_AttachButton = nullptr;
     // The pane is too narrow for a kMinPromptFieldPx field beside the visible controls,
     // so the controls sit on a line of their own under the field.
     bool m_InputStacked = false;
@@ -159,25 +125,6 @@ private:
     bool m_HistoryNarrow = false;
     Label* m_PromptPlaceholder = nullptr;
     Label* m_StatusLabel = nullptr;
-    EditorUI::ItemSizeSlider* m_TextSizeSlider = nullptr;
-    // The --prompt_text_scale the panel last set (PromptPanel.css); 0 before the first.
-    float m_TextScale = 0.0f;
-    PromptMicButton* m_MicButton = nullptr;
-    // The level meter's two halves and its bars, left half first, in the order the
-    // speech input reports its time slices.
-    std::array<UIElement*, 2> m_SpeechLevelGroups{};
-    std::array<UIElement*, Platform::SpeechInput::kLevelCount> m_SpeechLevelBars{};
-    // Set when the user stops the microphone with Send when the microphone stops on.
-    bool m_SendWhenDictationEnds = false;
-    // Present only where the platform offers speech input.
-    std::unique_ptr<Platform::SpeechInput> m_SpeechInput;
-    // The prompt text that dictated words follow, and how many leading words of the session's
-    // cumulative transcript belong to text the user has since cleared.
-    std::string m_DictationBase;
-    size_t m_DictationSkippedWords = 0;
-    std::string m_LastDictation;
-    // True while the panel itself writes the prompt, so the change is not read as typing.
-    bool m_SettingPromptText = false;
     Button* m_SendButton = nullptr;
     Button* m_ClearPromptButton = nullptr;
 

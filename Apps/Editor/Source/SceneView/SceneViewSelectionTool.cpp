@@ -1,7 +1,7 @@
 // Selection gizmo and selection tool implementations for Scene View.
 
 #include "SceneView/SelectionTool.h"
-#include "SceneView/SceneViewController.h"
+#include "SceneViewController.h"
 
 #include <cmath>
 #include <vector>

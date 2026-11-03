@@ -1,0 +1,2 @@
+# Native package discovery must not build the standalone test executables.
+Tests/

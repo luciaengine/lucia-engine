@@ -1,6 +1,7 @@
 #include "Assets/RenderPipelineAsset.h"
 
 #include "AssetCore/SharedFileRead.h"
+#include "Types/Fnv1a.h"
 
 #include <cstring>
 
@@ -15,19 +16,6 @@ static std::string ReadAllText(const std::filesystem::path& p)
     if (!ReadFileTextShared(p, text))
         return {};
     return text;
-}
-
-static uint64_t Fnv1a64(const std::string& s)
-{
-    constexpr uint64_t kOffset = 1469598103934665603ull;
-    constexpr uint64_t kPrime = 1099511628211ull;
-    uint64_t h = kOffset;
-    for (unsigned char c : s)
-    {
-        h ^= static_cast<uint64_t>(c);
-        h *= kPrime;
-    }
-    return h;
 }
 } // namespace
 
@@ -89,7 +77,7 @@ bool RenderPipelineAsset::ParseFromText(const std::string& text, const std::file
     m_Doc.jsonText = text;
     m_Doc.passes.clear();
     m_Doc.resources.clear();
-    m_SourceHash = Fnv1a64(text);
+    m_SourceHash = Hashing::Fnv1a64(text);
 
     try
     {

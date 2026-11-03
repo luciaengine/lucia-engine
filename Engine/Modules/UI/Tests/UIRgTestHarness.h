@@ -7,10 +7,14 @@
 // the draw pass, so the harness never calls Execute(): the target is a declared,
 // never-realized attachment and its dimensions are immaterial to the assertions. Pools
 // are owned once and reused; each call declares a fresh frame (immediate-mode rebuild).
+#include <atomic>
 #include <cstdint>
+#include <string>
+#include <cstdlib>
 #include <memory>
 
 #include "SharedHeadlessDevice.h"
+#include "TestTempDir.h"
 
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
@@ -19,6 +23,35 @@
 #include "Rendering/Core/RenderGraph/RGUploadRing.h"
 #include "UI/Controls/TextField.h"
 #include "UI/UIManager.h"
+
+// A headless GPU device of the caller's own: no swapchain, and GE_HEADLESS_TEST=1 so
+// device init skips presentation paths. Returns null when no Vulkan device
+// is available — callers GTEST_SKIP on that. For a test that asserts on the
+// device itself; every other test takes SharedHeadlessDevice().
+inline std::unique_ptr<GameEngine::Rendering::IDevice> MakeHeadlessDevice()
+{
+#ifdef _WIN32
+    _putenv_s("GE_HEADLESS_TEST", "1");
+#else
+    setenv("GE_HEADLESS_TEST", "1", 1);
+#endif
+    GameEngine::Rendering::DeviceDesc dd{};
+    dd.preferredAPI = GameEngine::Rendering::GraphicsAPI::Vulkan;
+    dd.enableDynamicRendering = true;
+    dd.enableSwapchain = false; // headless
+    dd.enableDebugLayer = false;
+    // Device-lifetime tests must not load or overwrite the user's pipeline cache.
+    // The gtest environment shuts down the shared device before this root is removed.
+    static const GameEngine::TestUtils::ScopedTempDir cacheRoot(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("ui-headless-pipeline-caches"));
+    static std::atomic<std::uint64_t> nextCacheId{0};
+    dd.pipelineCacheDirectory = (cacheRoot.Path() /
+        std::to_string(nextCacheId.fetch_add(1, std::memory_order_relaxed))).string();
+    auto dev = GameEngine::Rendering::DeviceFactory::CreateDevice(dd);
+    if (!dev || !dev->Initialize(dd))
+        return nullptr;
+    return dev;
+}
 
 // Find the first TextInput in a subtree. Typed fields embed their editor as
 // a child element; tests reach it through this walk instead of the protected

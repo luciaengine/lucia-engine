@@ -89,7 +89,7 @@
 
 /* Preview toggle button */
 .anim-preview-toggle-icon {
-    background-image: url("editor:Icons/eye.svg");
+    background-image: url("editor:Icons/eye.png");
     background-size: contain;
     background-repeat: no-repeat;
     background-position: center;
@@ -226,43 +226,43 @@ button.toolbar-gap.dragging {
 
 /* Keyframe and Marker button icons */
 .select-all-keys-icon {
-    background-image: url("editor:Icons/checkmark-circle.svg");
+    background-image: url("editor:Icons/checkmark-circle.png");
 }
 
 .deselect-keys-icon {
-    background-image: url("editor:Icons/xclose.svg");
+    background-image: url("editor:Icons/xclose.png");
 }
 
 .add-keyframe-icon {
-    background-image: url("editor:Icons/add_key_marker.svg");
+    background-image: url("editor:Icons/add_key_marker.png");
 }
 
 .duplicate-keyframe-icon {
-    background-image: url("editor:Icons/copy.svg");
+    background-image: url("editor:Icons/copy.png");
 }
 
 .delete-keyframe-icon {
-    background-image: url("editor:Icons/trash.svg");
+    background-image: url("editor:Icons/trash.png");
 }
 
 .prev-keyframe-icon {
-    background-image: url("editor:Icons/arrow-left.svg");
+    background-image: url("editor:Icons/arrow-left.png");
 }
 
 .next-keyframe-icon {
-    background-image: url("editor:Icons/arrow-right.svg");
+    background-image: url("editor:Icons/arrow-right.png");
 }
 
 .prev-frame-icon {
-    background-image: url("editor:Icons/fold-left.svg");
+    background-image: url("editor:Icons/fold-left.png");
 }
 
 .next-frame-icon {
-    background-image: url("editor:Icons/fold-right.svg");
+    background-image: url("editor:Icons/fold-right.png");
 }
 
 .add-marker-icon {
-    background-image: url("editor:Icons/marker.svg");
+    background-image: url("editor:Icons/marker.png");
 }
 
 .center-playhead-icon {
@@ -270,16 +270,16 @@ button.toolbar-gap.dragging {
 }
 
 .go-to-start-icon {
-    background-image: url("editor:Icons/left-arrow.svg");
+    background-image: url("editor:Icons/left-arrow.png");
 }
 
 .go-to-end-icon {
-    background-image: url("editor:Icons/right-arrow.svg");
+    background-image: url("editor:Icons/right-arrow.png");
 }
 
 /* Grid icon background */
 .animationwindow-toolbar .icon-button.anim-grid-icon {
-    background-image: url("editor:Icons/grid-icon.svg");
+    background-image: url("editor:Icons/grid-icon.png");
 }
 
 
@@ -415,7 +415,7 @@ button.toolbar-gap.dragging {
     position: relative;
     flex-shrink: 0;
     width: auto;
-    height: 24px;
+    height: 22px;
     bottom: unset;
     left: unset;
     right: unset;
@@ -441,7 +441,7 @@ button.toolbar-gap.dragging {
     height: 14px;
     min-width: 14px;
     min-height: 14px;
-    background-image: url("editor:Icons/eye.svg");
+    background-image: url("editor:Icons/eye.png");
     background-size: contain;
     background-repeat: no-repeat;
     background-position: center;
@@ -547,7 +547,7 @@ button.toolbar-gap.dragging {
     padding: 0;
     flex-shrink: 0;
     margin-left: 0;
-    background-image: url("editor:Icons/eye.svg");
+    background-image: url("editor:Icons/eye.png");
     background-size: 14px 14px;
     background-repeat: no-repeat;
     background-position: center;
@@ -595,6 +595,12 @@ button.toolbar-gap.dragging {
     padding: 8px;
     border: 1px solid #3f3f3f;
     background-color: #2b2b2b;
+}
+
+/* The track and lane colour chip (.inspector-color-swatch) keeps its size in a
+   crowded sidebar row. */
+.animationwindow-sequencer-color-swatch {
+    flex-shrink: 0;
 }
 
 .animationwindow-sequencer-empty {
@@ -687,7 +693,7 @@ button.toolbar-gap.dragging {
 }
 
 .animationwindow-properties-tree .tree-row-action-lock {
-    background-image: url("editor:Icons/LockOpen.svg");
+    background-image: url("editor:Icons/LockOpen.png");
     background-color: transparent;
     border-width: 0px;
     margin-left: 4px;
@@ -699,26 +705,26 @@ button.toolbar-gap.dragging {
 }
 .animationwindow-properties-tree .tree-row-action-lock.active,
 .animationwindow-properties-tree .tree-row-action-lock.active:hover {
-    background-image: url("editor:Icons/LockClosed.svg");
+    background-image: url("editor:Icons/LockClosed.png");
     background-image-tint: rgba(255, 255, 255, 1.0);
     background-color: transparent;
     border-radius: 0px;
 }
 .animationwindow-properties-tree .tree-row-action-prev-key {
-    background-image: url("editor:Icons/arrow-left.svg");
+    background-image: url("editor:Icons/arrow-left.png");
 }
 .animationwindow-properties-tree .tree-row-action-add-key {
-    background-image: url("editor:Icons/dot.svg");
+    background-image: url("editor:Icons/dot.png");
     width: 7px;
     height: 7px;
     min-width: 7px;
     min-height: 7px;
 }
 .animationwindow-properties-tree .tree-row-action-next-key {
-    background-image: url("editor:Icons/arrow-right.svg");
+    background-image: url("editor:Icons/arrow-right.png");
 }
 .animationwindow-properties-tree .tree-row-action-pin {
-    background-image: url("editor:Icons/pin.svg");
+    background-image: url("editor:Icons/pin.png");
     margin-left: 6px;
 }
 
@@ -926,13 +932,13 @@ button.toolbar-gap.dragging {
     background-color: transparent;
 }
 
-/* Per-marker icon (editor:Icons/marker.svg) */
+/* Per-marker icon (editor:Icons/marker.png) */
 .animationwindow-marker-icon {
     width: 16px;
     height: 16px;
     min-width: 16px;
     min-height: 16px;
-    background-image: url("editor:Icons/marker.svg");
+    background-image: url("editor:Icons/marker.png");
     background-size: contain;
     background-repeat: no-repeat;
     background-position: center;
@@ -1123,7 +1129,7 @@ button.toolbar-gap.dragging {
 .anim-options-title {
     color: #4aa3ff;
     font-size: 12px;
-    font-weight: 500;
+    font-weight: bold;
     margin-right: 8px;
 }
 
@@ -1178,6 +1184,6 @@ button.toolbar-gap.dragging {
 
 /* Bone icon in animation properties tree */
 .animationwindow-properties-tree .tree-item.anim-tree-bone .tree-title {
-    background-image: url("editor:Icons/bone_icon.svg");
+    background-image: url("editor:Icons/bone_icon.png");
     background-image-tint: #808080;
 }

@@ -1,4 +1,5 @@
 #include "InspectorRegistry.h"
+#include "Editor/Entities/EditorComponentTraits.h"
 #include "Platform/SystemMetrics.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
@@ -17,9 +18,7 @@
 #include "ECS/Entity.h"
 #include "ECS/World.h"
 
-#include "Components/Hierarchy.h"
-#include "PhysicsECS/Components/PhysicsBody.h"
-#include "PhysicsECS/PhysicsWorldService.h"
+#include "Editor/Entities/EntityWorldPose.h"
 #include "Components/Transform.h"
 #include "Components/Rendering/WorldSectorCoord.h"
 #include "Mathematics/Quaternion.h"
@@ -40,6 +39,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace GameEngine
@@ -48,161 +48,15 @@ namespace GameEngine
 using namespace Components;
 using GameEngine::Mathematics::Quaternion;
 using GameEngine::Mathematics::Vector3;
+using Editor::CombineTRS;
+using Editor::ComputeLocalPositionFromWorld;
+using Editor::ComputeWorldTRSForEntity;
+using Editor::EntityTRS;
+using Editor::GetParentWorldTRS;
+using Editor::TrySetPhysicsBodyWorldPose;
 
 namespace
 {
-
-struct TRS
-{
-    Vector3 position;
-    Quaternion rotation;
-    Vector3 scale{1.0f, 1.0f, 1.0f};
-};
-
-inline TRS IdentityTRS()
-{
-    return TRS{};
-}
-
-inline TRS GetLocalTRS(ECS::Entity& e)
-{
-    TRS t = IdentityTRS();
-    if (const Transform* xf = e.Get<Transform>())
-    {
-        t.position = xf->GetPosition();
-        t.rotation = xf->GetRotation();
-        t.scale = xf->GetScale();
-    }
-    return t;
-}
-
-inline TRS CombineTRS(const TRS& parent, const TRS& local)
-{
-    TRS out{};
-    out.scale = Vector3(
-        parent.scale.x * local.scale.x,
-        parent.scale.y * local.scale.y,
-        parent.scale.z * local.scale.z);
-
-    out.rotation = parent.rotation * local.rotation;
-
-    Vector3 scaledLocal(
-        local.position.x * parent.scale.x,
-        local.position.y * parent.scale.y,
-        local.position.z * parent.scale.z);
-    Vector3 rotated = parent.rotation.Rotate(scaledLocal);
-    out.position = parent.position + rotated;
-
-    return out;
-}
-
-TRS ComputeWorldTRSForEntity(ECS::World* world, ECS::EntityHandle handle)
-{
-    if (!world)
-    {
-        return IdentityTRS();
-    }
-
-    ECS::Entity e(world, handle);
-    if (!e.IsValid())
-    {
-        return IdentityTRS();
-    }
-
-    TRS local = GetLocalTRS(e);
-
-    if (auto* parentComp = e.Get<Parent>())
-    {
-        ECS::Entity parentEntity(world, parentComp->Entity);
-        if (parentEntity.IsValid())
-        {
-            TRS parentWorld = ComputeWorldTRSForEntity(world, parentComp->Entity);
-            return CombineTRS(parentWorld, local);
-        }
-    }
-
-    // No valid parent: world == local
-    return local;
-}
-
-void GetParentWorldTRS(ECS::World* world, ECS::EntityHandle handle,
-                       Vector3& outPos, Quaternion& outRot, Vector3& outScale)
-{
-    TRS identity = IdentityTRS();
-    outPos = identity.position;
-    outRot = identity.rotation;
-    outScale = identity.scale;
-
-    if (!world)
-    {
-        return;
-    }
-
-    ECS::Entity e(world, handle);
-    if (!e.IsValid())
-    {
-        return;
-    }
-
-    auto* parentComp = e.Get<Parent>();
-    if (!parentComp)
-    {
-        return; // identity parent
-    }
-
-    TRS parentWorld = ComputeWorldTRSForEntity(world, parentComp->Entity);
-    outPos = parentWorld.position;
-    outRot = parentWorld.rotation;
-    outScale = parentWorld.scale;
-}
-
-Vector3 ComputeLocalPositionFromWorld(const Vector3& worldPos,
-                                       const Vector3& parentPos,
-                                       const Quaternion& parentRot,
-                                       const Vector3& parentScale)
-{
-    Vector3 delta = worldPos - parentPos;
-    Vector3 unrotated = parentRot.Conjugated().Rotate(delta);
-
-    return Vector3(
-        (parentScale.x != 0.0f) ? (unrotated.x / parentScale.x) : unrotated.x,
-        (parentScale.y != 0.0f) ? (unrotated.y / parentScale.y) : unrotated.y,
-        (parentScale.z != 0.0f) ? (unrotated.z / parentScale.z) : unrotated.z);
-}
-
-static bool TrySetPhysicsBodyWorldPose(ECS::World* world,
-                                       ECS::EntityHandle entity,
-                                       const Vector3& worldPos,
-                                       const Quaternion& worldRot)
-{
-    if (!world || !entity.IsValid() || !world->IsValid(entity))
-    {
-        return false;
-    }
-
-    auto* pw = PhysicsECS::PhysicsWorldService::TryGet();
-    if (!pw)
-    {
-        return false;
-    }
-
-    auto* body = world->GetComponentForWrite<PhysicsBody>(entity);
-    if (!body || !body->initialized || !pw->IsBodyValid(body->body))
-    {
-        return false;
-    }
-
-    Physics::Transform pt{};
-    pt.position = Physics::Vector3(worldPos.x, worldPos.y, worldPos.z);
-    const auto& wq = worldRot.GetGLM();
-    pt.rotation = Physics::Quaternion(wq.w, wq.x, wq.y, wq.z);
-    pw->SetBodyTransform(body->body, pt, Physics::ActivationMode::Activate);
-
-    // Prevent interpolation smear after manual edits.
-    body->prevPhysicsTransform = pt;
-    body->hasPrevPhysicsTransform = true;
-    return true;
-}
 
 using InspectorUI::ContainsFocusedElement;
 
@@ -479,7 +333,7 @@ private:
         const ECS::ComponentTypeId transformType = ECS::GetComponentTypeId<Transform>();
         const ECS::ComponentTypeId sectorType = ECS::GetComponentTypeId<Components::WorldSectorCoord>();
         m_Sub = m_Changes->SubscribeComponentChanged(
-            [this](const Editor::EditorChangeNotifications::ComponentChangedEvent& e)
+            [this, transformType, sectorType](const Editor::EditorChangeNotifications::ComponentChangedEvent& e)
             {
                 if (e.world != m_World)
                 {
@@ -542,8 +396,8 @@ private:
         Quaternion localRot = t->GetRotation();
         Vector3 localScale = t->GetScale();
 
-        TRS worldTrs = ComputeWorldTRSForEntity(m_World, m_Entity);
-        Vector3 worldPos = worldTrs.position;
+        EntityTRS worldTrs = ComputeWorldTRSForEntity(m_World, m_Entity);
+        Vector3 worldPos = worldTrs.Position;
 
         float32 xDeg = 0.0f, yDeg = 0.0f, zDeg = 0.0f;
         EulerXYZDegreesFromQuaternion(localRot, xDeg, yDeg, zDeg);
@@ -781,8 +635,8 @@ private:
             Quaternion parentRot;
             Vector3 parentScale{1.0f, 1.0f, 1.0f};
             GetParentWorldTRS(m_World, entity, parentPos, parentRot, parentScale);
-            TRS worldTrs = CombineTRS(TRS{parentPos, parentRot, parentScale}, TRS{newPos, r, s});
-            (void)TrySetPhysicsBodyWorldPose(m_World, entity, worldTrs.position, worldTrs.rotation);
+            EntityTRS worldTrs = CombineTRS(EntityTRS{parentPos, parentRot, parentScale}, EntityTRS{newPos, r, s});
+            (void)TrySetPhysicsBodyWorldPose(m_World, entity, worldTrs.Position, worldTrs.Rotation);
         }
     }
 
@@ -820,8 +674,8 @@ private:
             Quaternion parentRot;
             Vector3 parentScale{1.0f, 1.0f, 1.0f};
             GetParentWorldTRS(m_World, entity, parentPos, parentRot, parentScale);
-            TRS worldTrs = CombineTRS(TRS{parentPos, parentRot, parentScale}, TRS{p, newRot, s});
-            (void)TrySetPhysicsBodyWorldPose(m_World, entity, worldTrs.position, worldTrs.rotation);
+            EntityTRS worldTrs = CombineTRS(EntityTRS{parentPos, parentRot, parentScale}, EntityTRS{p, newRot, s});
+            (void)TrySetPhysicsBodyWorldPose(m_World, entity, worldTrs.Position, worldTrs.Rotation);
         }
     }
 
@@ -903,8 +757,8 @@ private:
             Transform updated = Transform::FromTRS(newLocalPos, r, s);
             m_World->AddComponentImmediate(entity, updated);
 
-            TRS worldTrs = ComputeWorldTRSForEntity(m_World, entity);
-            Quaternion worldRot = worldTrs.rotation;
+            EntityTRS worldTrs = ComputeWorldTRSForEntity(m_World, entity);
+            Quaternion worldRot = worldTrs.Rotation;
             (void)TrySetPhysicsBodyWorldPose(m_World, entity, newWorldPos, worldRot);
         }
     }
@@ -1041,7 +895,7 @@ private:
             return;
 
         {
-            label->Style().Set(Style::Cursor, CursorStyle::ColResize);
+            label->Overrides().Set(Style::Cursor, CursorStyle::ColResize);
         }
 
         // Double-click detected on MouseDown (second press) so we don't rely on MouseUp
@@ -1069,14 +923,12 @@ private:
             }
         });
 
-        label->RegisterEventHandler(kEventMouseMove, [this, label, field, onChanging, dragDidMove](UIEvent& e) {
+        constexpr float kDragThresholdPx = 3.0f;
+        label->RegisterEventHandler(kEventMouseMove, [this, field, onChanging, dragDidMove](UIEvent& e) {
             if (m_DraggingLabel && m_DraggingVec3Field == field) {
                 float deltaX = e.X - m_DragStartX;
-                if (!InspectorDrag::BeginLabelDragPastThreshold(label, *dragDidMove, deltaX))
-                {
-                    e.Stop();
-                    return;
-                }
+                if (std::fabs(deltaX) > kDragThresholdPx)
+                    *dragDidMove = true;
                 Rendering::Vector3 newValue(
                     m_DragStartVec3.x + deltaX * InspectorDrag::kInspectorDragFloatSensitivity,
                     m_DragStartVec3.y + deltaX * InspectorDrag::kInspectorDragFloatSensitivity,
@@ -1087,7 +939,7 @@ private:
             }
         });
 
-        label->RegisterEventHandler(kEventMouseUp, [this, field, onChanged, dragDidMove](UIEvent& e) {
+        label->RegisterEventHandler(kEventMouseUp, [this, label, field, onChanged, dragDidMove](UIEvent& e) {
             if (m_DraggingLabel && m_DraggingVec3Field == field && e.Button == 0) {
                 m_DraggingLabel = nullptr;
                 m_DraggingVec3Field = nullptr;
@@ -1099,33 +951,12 @@ private:
             }
         });
 
-        label->RegisterEventHandler(kEventMouseCancel, [this, field, onChanged, dragDidMove](UIEvent& e)
-                                    { CancelLabelDrag(e, field, *dragDidMove, onChanged); });
-
         label->RegisterEventHandler(kEventMouseUp, [this, field, onChanging, onChanged](UIEvent& e) {
             if (e.Button == 1) {
                 ShowFieldContextMenu(field, onChanging, onChanged, e.X, e.Y);
                 e.Stop();
             }
         });
-    }
-
-    // Escape or another button during a row label drag: a drag that moved the row puts back its start
-    // values, and onChanged commits them.
-    void CancelLabelDrag(UIEvent& e, Vector3Field* field, bool dragDidMove,
-                         const std::function<void(const Rendering::Vector3&)>& onChanged)
-    {
-        if (!m_DraggingLabel || m_DraggingVec3Field != field)
-            return;
-        m_DraggingLabel = nullptr;
-        m_DraggingVec3Field = nullptr;
-        if (dragDidMove)
-        {
-            field->SetValue(m_DragStartVec3);
-            if (onChanged)
-                onChanged(m_DragStartVec3);
-        }
-        e.Stop();
     }
 
     const char* TransformVectorRowLabelForMenu(Vector3Field* field) const
@@ -1307,8 +1138,8 @@ private:
             Quaternion parentRot;
             Vector3 parentScale{1.0f, 1.0f, 1.0f};
             GetParentWorldTRS(m_World, entity, parentPos, parentRot, parentScale);
-            TRS worldTrs = CombineTRS(TRS{parentPos, parentRot, parentScale}, TRS{newPos, newRot, newScale});
-            (void)TrySetPhysicsBodyWorldPose(m_World, entity, worldTrs.position, worldTrs.rotation);
+            EntityTRS worldTrs = CombineTRS(EntityTRS{parentPos, parentRot, parentScale}, EntityTRS{newPos, newRot, newScale});
+            (void)TrySetPhysicsBodyWorldPose(m_World, entity, worldTrs.Position, worldTrs.Rotation);
         }
     }
 
@@ -1404,7 +1235,7 @@ private:
             out.localRot = t->GetRotation();
             out.localScale = t->GetScale();
         }
-        out.worldPos = ComputeWorldTRSForEntity(m_World, entity).position;
+        out.worldPos = ComputeWorldTRSForEntity(m_World, entity).Position;
         return out;
     }
 
@@ -1510,8 +1341,8 @@ private:
             Vector3 s = t->GetScale();
             float xDeg = 0.0f, yDeg = 0.0f, zDeg = 0.0f;
             EulerXYZDegreesFromQuaternion(t->GetRotation(), xDeg, yDeg, zDeg);
-            TRS worldTrs = ComputeWorldTRSForEntity(m_World, m_Entity);
-            Vector3 wp = worldTrs.position;
+            EntityTRS worldTrs = ComputeWorldTRSForEntity(m_World, m_Entity);
+            Vector3 wp = worldTrs.Position;
             char buf[512];
             std::snprintf(buf, sizeof(buf),
                           "Position: %g, %g, %g\n"
@@ -1633,6 +1464,21 @@ private:
 
 void RegisterTransformInspector()
 {
+    constexpr int kTransformSortKey = 0;
+
+    {
+        Editor::EditorComponentTraits traits;
+        traits.DisplayName = "Transform";
+        traits.Category = "Transform";
+        traits.SortKey = kTransformSortKey;
+        traits.Tooltip = "Position, rotation, and scale in local space";
+        traits.InspectorIconClass = "inspector-section-icon-transform";
+        traits.Removable = false;
+        traits.ClipboardValuesNote = "local position, rotation & scale";
+        Editor::EditorComponentTraitsRegistry::Get().Register(
+            ECS::GetComponentTypeId<Components::Transform>(), std::move(traits));
+    }
+
     InspectorFn transformInspector = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())

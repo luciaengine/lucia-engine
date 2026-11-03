@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <string>
+#include <utility>
 
 #include "UI/Parsers/CSSParser.h"
 #include "UI/StyleProperties.h"
@@ -28,19 +29,6 @@ StyleLength ResolveWidth(const std::string& expr)
     el.AddClass("t");
     const ElementState state{};
     return CSSParser::ComputeStyleFor(el, sheet, state).Layout.Width;
-}
-
-// Resolves `.t { font-size: 40px; } .t { font-size: <expr>; }` and returns the font size.
-float ResolveFontSize(const std::string& expr)
-{
-    Stylesheet sheet{};
-    const std::string css = ".t { font-size: 40px; } .t { font-size: " + expr + "; }";
-    if (!CSSParser::ParseStylesFromString(css, sheet))
-        return -1.0f;
-    UIElement el;
-    el.AddClass("t");
-    const ElementState state{};
-    return CSSParser::ComputeStyleFor(el, sheet, state).Visual.FontSize;
 }
 
 void ExpectFoldsToPx(const std::string& expr, float px)
@@ -175,13 +163,20 @@ TEST(CSSMathFunctionTests, RecursionBoundRejectsDeepNestingButAllowsRealDepth)
     ExpectRejected(wrap(4096));       // parenthesis bomb
 }
 
-// font-size folds math functions like every length property, so a theme can scale its text sizes
-// (`calc(var(--ui_font_size_list) * 0.85)`, `calc(14px * var(--scale))`); a calc that cannot fold
-// leaves the cascaded size standing.
-TEST(CSSMathFunctionTests, FontSizeFoldsMathFunctions)
+TEST(CSSMathFunctionTests, FontSizeFoldsCustomPropertyScalingAndPreservesEarlierValueForInvalidMath)
 {
-    EXPECT_FLOAT_EQ(ResolveFontSize("calc(14px * 1.5)"), 21.0f);
-    EXPECT_FLOAT_EQ(ResolveFontSize("calc(12px * 0.85)"), 10.2f);
-    EXPECT_FLOAT_EQ(ResolveFontSize("max(12px, calc(10px * 1))"), 12.0f);
-    EXPECT_FLOAT_EQ(ResolveFontSize("calc(50% - 4px)"), kCascadedPx) << "a px/percent mix cannot fold";
+    for (const auto& [expression, expected] : {
+        std::pair{"calc(16px * var(--text_scale))", 24.0f},
+        std::pair{"min(30px, calc(18px * 2))", 30.0f},
+        std::pair{"calc(1px - 2px)", 40.0f},
+        std::pair{"calc(50% - 2px)", 40.0f}})
+    {
+        SCOPED_TRACE(expression);
+        Stylesheet sheet{};
+        ASSERT_TRUE(CSSParser::ParseStylesFromString(std::string(".t { --text_scale: 1.5; font-size: 40px; }") +
+            ".t { font-size: " + expression + "; }", sheet));
+        UIElement element;
+        element.AddClass("t");
+        EXPECT_FLOAT_EQ(CSSParser::ComputeStyleFor(element, sheet, ElementState{}).Visual.FontSize, expected);
+    }
 }

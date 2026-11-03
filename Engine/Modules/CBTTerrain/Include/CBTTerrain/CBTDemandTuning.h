@@ -47,9 +47,9 @@ inline constexpr float kOffFrustumKeepWidestNdc = 1024.0f;
 // 64 NDC at 20 m, 89 degrees down), so a step releases about 17% at most, and even the saturated
 // stride's octave per update cannot carry occupancy from full across the 30% hold band.
 inline constexpr uint32_t kOffFrustumKeepStepsPerOctave = 2u;
-// The last step, where the band is 0. Step 23 is 0.5 NDC, the bottom of the measured range. Under the
-// criterion a box behind the eye sits at 8 NDC or more (CBT_PlanarBehindExcess) and leaves over steps 1 to 16;
-// under the edge rule every facet behind the eye sits at 8 NDC (CBT_SplitGate) and leaves at step 16.
+// The last step, where the band is 0. Step 23 is 0.5 NDC, the bottom of the measured range. Every
+// facet behind the eye sits at one ndcExcess (CBT_OFF_FRUSTUM_BEHIND_NDC, 8 NDC), so those facets
+// leave together, at step 16.
 inline constexpr uint32_t kOffFrustumKeepSteps = 24u;
 // Steps per update while occupancy is also at or above kCBTSaturatedOccupancy (0.98, where splits are
 // rolled back and in-view refinement waits), so a view that does not fit spends fewer updates full:

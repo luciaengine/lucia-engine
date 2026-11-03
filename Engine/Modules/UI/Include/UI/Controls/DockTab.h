@@ -30,9 +30,6 @@ public:
     // Prepends an icon element before the label. Pass an empty class to skip.
     void SetIconClass(std::string_view iconClass);
 
-    // Closes this tab's panel through the dockspace's close path. Does nothing outside a dockspace.
-    void RequestClose();
-
     void OnEvent(UIEvent& e) override;
     // Compute insertion slot and drag center from pointer X, with magnet and edge forcing
     struct SlotCalcResult { size_t fromIdx; size_t toIdx; float dragCenter; float clampedDrawX; float localX; float minDrawX; float maxDrawX; };
@@ -43,8 +40,6 @@ private:
     bool IsPointInside(float x, float y) const;
     bool IsInCloseHitRect(float x, float y) const;
     UIElement* GetOwningLeaf() const;
-    // The nearest DockspaceElement ancestor, or null outside a dockspace.
-    DockspaceElement* FindDockspace() const;
     bool IsPointInLeaf(float x, float y) const;
 
     std::string GetPanelIdFromSelf() const;
@@ -55,6 +50,7 @@ private:
     float m_DragStartX = 0.0f;
     float m_DragStartY = 0.0f;
     float m_DragGrabOffsetX = 0.0f;         // fixed mouse-to-tab offset captured before live reordering
+    mutable float m_DragCurOffsetX = 0.0f;  // eased value applied at draw time
     float m_DragTargetOffsetX = 0.0f;       // set by input; eased towards
     float m_DragCurrentX = 0.0f;
     float m_DragCurrentY = 0.0f;

@@ -58,7 +58,7 @@ namespace GameEngine.Scripting
         private static readonly HashSet<ulong> s_AwaitingReload = new HashSet<ulong>();
 
         // Batches discovered but not yet registered. Discovery is reflection and runs wherever the
-        // reload handler runs; registration is admitted only inside the window, which runs on the main thread.
+        // reload handler runs; registration is main-thread-only and runs in the window.
         //
         // A BATCH MUST NOT OUTLIVE ITS CONTEXT. Staging and the window are separated by at least
         // one main-thread task, and during a hot reload the drain budget is one task per frame, so
@@ -282,7 +282,7 @@ namespace GameEngine.Scripting
                 if (GE_UI_RegisterElementType(owner, tag, out ulong tagId) != 0 || tagId == 0)
                 {
                     // Refused: the tag belongs to the engine or to another context, or this call
-                    // arrived outside a registration window and the engine turned the batch away. The engine
+                    // arrived off the main thread and the engine turned the batch away. The engine
                     // logged which and why; this type simply does not become available.
                     continue;
                 }
@@ -333,10 +333,7 @@ namespace GameEngine.Scripting
                 foreach (StagedBatch batch in batches)
                 {
                     try { RegisterStaged(batch); }
-                    catch (Exception ex)
-                    {
-                        ConsoleDiagnostics.Report("Ui.ElementTypes", $"registering a staged batch failed: {ex}");
-                    }
+                    catch (Exception ex) { UiElementTypeLog.Report($"registering a staged batch failed: {ex}"); }
                 }
 
                 if (!verdictDue)
@@ -367,7 +364,7 @@ namespace GameEngine.Scripting
             {
                 // Nothing may cross back into native, and a window that threw must not take the
                 // engine with it.
-                ConsoleDiagnostics.Report("Ui.ElementTypes", $"the UI element type registration window failed: {ex}");
+                UiElementTypeLog.Report($"the UI element type registration window failed: {ex}");
             }
         }
 

@@ -34,9 +34,6 @@ class CurveField : public UIElement
         /// A 0-24 hour field: the hours under the graph every six hours ("06:00"), and the
         /// playback indicator's time ("17:45") where its line meets them.
         HoursOfDay,
-        /// The time under each vertical grid line and the playback indicator's time, as
-        /// Config::TimeLabel writes them (an EV100 axis: "-6").
-        Formatted,
     };
 
     struct Config
@@ -70,18 +67,6 @@ class CurveField : public UIElement
         /// value is read out elsewhere turns it off.
         bool ShowPlaybackValueMarker = true;
         TimeLabels TimeAxisLabels = TimeLabels::None;
-        /// Writes a time for TimeLabels::Formatted. Unset: the time is written as a number.
-        std::function<std::string(float)> TimeLabel;
-        /// Writes a second line under each time label, for an axis read two ways (the hour of the
-        /// day under each elevation of the sun). Unset: one line.
-        std::function<std::string(float)> SecondaryTimeLabel;
-        /// The times the vertical grid lines and the time labels sit at, ascending, for an axis whose
-        /// meaningful marks are not its quarters. A label that would overlap the one before it is
-        /// left out. Empty: the axis is split into four equal spans.
-        std::vector<float> TimeTicks;
-        /// Off: the playback indicator draws no time pill over the labels, for a host that prints the
-        /// playback time beside the graph; no tick label is hidden under it.
-        bool ShowPlaybackTimeLabel = true;
         /// Interpolate the keys in log2 of their value (Math::EvaluateCurveKeysLogarithmic) and
         /// draw the value axis logarithmically, for a quantity that spans orders of magnitude
         /// (an illuminance from twilight to noon). The axis runs from the larger of ValueMin and
@@ -109,7 +94,6 @@ class CurveField : public UIElement
     CurveField();
 
     void SetConfig(const Config& config);
-    const Config& GetConfig() const { return m_Config; }
 
     /// Replace the keys (Time-sorted on the way in). Selection is preserved when in range.
     void SetKeys(const std::vector<Math::CurveKey>& keys);
@@ -241,7 +225,6 @@ class CurveField : public UIElement
     void DrawValueAxisMarks(UI::PrimitiveEmitContext& ctx, const ResolvedStyle& style, const GraphRect& r) const;
     void DrawTimeLabels(UI::PrimitiveEmitContext& ctx, const ResolvedStyle& style, const GraphRect& r, float x,
                         float w) const;
-    std::string TimeLabelText(float time) const;
 
     Config m_Config;
     std::vector<Math::CurveKey> m_Keys;
@@ -260,8 +243,6 @@ class CurveField : public UIElement
     bool m_DragMoved = false;
     float m_DragStartX = 0.0f;
     float m_DragStartY = 0.0f;
-    // The dragged key's time when the drag began: the time moves by the pointer's horizontal travel.
-    float m_DragStartTime = 0.0f;
     float m_GrabOffsetX = 0.0f;
     float m_GrabOffsetY = 0.0f;
     // Value axis frozen during a drag so the curve does not chase the moving key.

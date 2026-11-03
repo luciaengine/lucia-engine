@@ -1,7 +1,6 @@
 // AssetManager::RenameAssetPath moves an asset's file binding after the caller
 // moved the file: the registry keeps the GUID under the new path and a resident
-// instance follows, so a reload reads the new file instead of the vanished one. A moved
-// folder moves every asset under it the same way.
+// instance follows, so a reload reads the new file instead of the vanished one.
 #include <gtest/gtest.h>
 
 #include "Assets/AssetManager.h"
@@ -118,25 +117,6 @@ TEST_F(AssetRenamePathTests, ResidentAssetFollowsItsRenamedFile)
     EXPECT_EQ(m_Assets->ReloadAssetNow(guid), ReloadOutcome::Reloaded);
 }
 
-// An asset's name is its file's spelling, not the case-folded key its path is (on a
-// case-insensitive volume the path of MixedCase.bin reads mixedcase.bin), and a rename takes the
-// new file's spelling.
-TEST_F(AssetRenamePathTests, AnAssetsNameKeepsItsFilesSpellingAcrossARename)
-{
-    const std::filesystem::path oldPath = WriteBinaryAsset(m_Dir, "MixedCase.bin");
-    RegisterSource();
-    const GUID guid = m_Assets->ResolveAssetGuid(oldPath, "rename");
-    ASSERT_FALSE(guid.IsNull());
-    SharedPtr<Asset> asset = LoadSynchronously(*m_Assets, guid);
-    ASSERT_NE(asset, nullptr);
-    EXPECT_EQ(asset->GetName(), "MixedCase");
-
-    const std::filesystem::path newPath = m_Dir / "RenamedTwice.bin";
-    std::filesystem::rename(oldPath, newPath);
-    ASSERT_TRUE(m_Assets->RenameAssetPath(oldPath, newPath));
-    EXPECT_EQ(asset->GetName(), "RenamedTwice");
-}
-
 TEST_F(AssetRenamePathTests, UnregisteredPathIsRefused)
 {
     RegisterSource();
@@ -144,29 +124,4 @@ TEST_F(AssetRenamePathTests, UnregisteredPathIsRefused)
     const std::filesystem::path moved = m_Dir / "moved.bin";
     std::filesystem::rename(stray, moved);
     EXPECT_FALSE(m_Assets->RenameAssetPath(stray, moved));
-}
-
-// The Assets panel's drag-move and its folder rename both hand over the folder itself.
-TEST_F(AssetRenamePathTests, EveryAssetUnderAMovedFolderKeepsItsGuidAtItsNewPath)
-{
-    std::filesystem::create_directories(m_Dir / "Props" / "Rocks");
-    const std::filesystem::path oldTop = WriteBinaryAsset(m_Dir / "Props", "crate.bin");
-    const std::filesystem::path oldNested = WriteBinaryAsset(m_Dir / "Props" / "Rocks", "boulder.bin");
-    RegisterSource();
-    const GUID topGuid = m_Assets->ResolveAssetGuid(oldTop, "rename");
-    const GUID nestedGuid = m_Assets->ResolveAssetGuid(oldNested, "rename");
-    ASSERT_FALSE(topGuid.IsNull());
-    ASSERT_FALSE(nestedGuid.IsNull());
-    SharedPtr<Asset> nested = LoadSynchronously(*m_Assets, nestedGuid);
-    ASSERT_NE(nested, nullptr);
-
-    const std::filesystem::path newFolder = m_Dir / "Scenery";
-    std::filesystem::rename(m_Dir / "Props", newFolder);
-    ASSERT_TRUE(m_Assets->RenameAssetPath(m_Dir / "Props", newFolder)) << "the folder's assets did not move";
-
-    EXPECT_EQ(m_Assets->GetRegistry().GetAssetGUID(newFolder / "crate.bin"), topGuid);
-    EXPECT_EQ(m_Assets->GetRegistry().GetAssetGUID(newFolder / "Rocks" / "boulder.bin"), nestedGuid);
-    EXPECT_TRUE(m_Assets->GetRegistry().GetAssetGUID(oldNested).IsNull());
-    EXPECT_TRUE(std::filesystem::equivalent(nested->GetPath(), newFolder / "Rocks" / "boulder.bin"))
-        << "the resident instance still names " << nested->GetPath();
 }

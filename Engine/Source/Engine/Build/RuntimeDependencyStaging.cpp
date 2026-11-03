@@ -18,24 +18,16 @@ namespace GameEngine {
 
 namespace {
 
-constexpr RuntimeDependency kEngineRuntimeLibraries[] = {
+constexpr RuntimeDependency kEngineRuntimeSet[] = {
     {"Engine", "Engine", true},
-#if GE_ENABLE_SCRIPTING
-    // The C ABI shim C# scripts call into: a build without C# scripting has none.
     {"GameEngine.Native (C ABI shim)", "GameEngine.Native", true},
-#endif
-};
-
-// What the engine libraries import, and the platform loader set.
-constexpr RuntimeDependency kEngineLibraryDependencies[] = {
     // The loader is a driver/runtime-installed system component (System32);
     // modern LunarG SDKs ship no redistributable vulkan-1.dll, so no build
     // stages one beside the Editor — it only ever appeared there hand-copied.
     // Ship it when present; otherwise the end user's driver-installed loader
     // serves (a machine without one cannot run the game regardless).
     {"Vulkan loader", "vulkan-1", false},
-    // The second candidate of an entry is the Linux name where it differs (libglfw.so.3).
-    {"GLFW", "glfw3;glfw", true},
+    {"GLFW", "glfw3", true},
     {"FreeType", "freetyped;freetype", true},
     {"HarfBuzz", "harfbuzz", true},
     {"lexbor", "lexbor", true},
@@ -51,16 +43,6 @@ constexpr RuntimeDependency kEngineLibraryDependencies[] = {
     // source-dir order picks the flavor. The vcpkg dependency is platform-gated
     // (windows | linux | osx), so not every engine imports it — ship when present.
     {"DirectXTex", "DirectXTex", false},
-    // DirectXTex's OpenMP runtime on Linux (GCC's libgomp). A minimal distribution install does
-    // not have it, so the game ships the copy that the build stages beside the engine.
-    {"OpenMP runtime (libgomp)", "gomp", false},
-    // Ogg Vorbis decode (miniaudio's libvorbis backend): Engine.dll imports vorbisfile,
-    // which imports vorbis and ogg. Same file names in both vcpkg flavors. The static triplets
-    // (macOS, the web) link them in and have no library file; the shared ones (Windows, Linux,
-    // Steam Deck) carry it beside the engine, so ship when present.
-    {"libvorbisfile", "vorbisfile", false},
-    {"libvorbis", "vorbis", false},
-    {"libogg", "ogg", false},
     {"zstd", "zstd", true},
     {"zlib", "zd;z;zlib1", true},
     {"SQLite", "sqlite3", true},
@@ -69,15 +51,10 @@ constexpr RuntimeDependency kEngineLibraryDependencies[] = {
     {"Brotli (decoder)", "brotlidec", true},
     {"bzip2", "bz2d;bz2", true},
     {"libcurl", "libcurl-d;libcurl", true},
-    // libcurl's TLS backend where it is OpenSSL (Linux; Windows uses Schannel): ship when present.
-    {"OpenSSL (libssl)", "ssl", false},
-    {"OpenSSL (libcrypto)", "crypto", false},
-    {"FFmpeg avutil", "avutil-*;avutil", true},
-    {"FFmpeg avcodec", "avcodec-*;avcodec", true},
-    {"FFmpeg avformat", "avformat-*;avformat", true},
-    {"FFmpeg swscale", "swscale-*;swscale", true},
-    // Linux builds Clipper2 as a shared library and other triplets link it statically. Ship it when present.
-    {"Clipper2", "Clipper2", false},
+    {"FFmpeg avutil", "avutil-*", true},
+    {"FFmpeg avcodec", "avcodec-*", true},
+    {"FFmpeg avformat", "avformat-*", true},
+    {"FFmpeg swscale", "swscale-*", true},
     // Present only when the engine builds against the shaderc-shared overlay
     // port (cmake/ports/shaderc) — then Engine.dll imports it, so ship when
     // present; static-shaderc builds ship none. Same file name in both vcpkg
@@ -89,10 +66,6 @@ constexpr RuntimeDependency kEngineLibraryDependencies[] = {
     // a fallback dir, so candidate order is what picks the flavor.
     {"mimalloc", "mimalloc-debug;mimalloc", false},
     {"mimalloc redirect", "mimalloc-redirect", false},
-#if defined(__linux__) && defined(NETHOST_AVAILABLE)
-    // Windows delay-loads nethost. On Linux, libEngine.so and the Player load it at start, so every game ships it.
-    {".NET nethost", "nethost", true},
-#endif
 };
 
 constexpr RuntimeDependency kManagedHostingSet[] = {
@@ -102,12 +75,15 @@ constexpr RuntimeDependency kManagedHostingSet[] = {
 
 constexpr const char* kManagedSidecarExtensions[] = {".deps.json", ".runtimeconfig.json", ".xml"};
 
-// The script surface a game's scripts compile against (ScriptingPaths::IsScriptSurfaceAssembly)
-// except the editor's own (GameEngine.Editor.*), which never ships in a game.
+// Engine ABI surfaces a game's scripts compile against: every GameEngine.*.ABI.dll beside the
+// engine except the editor's own (GameEngine.Editor.*), which never ships in a game.
 bool IsRuntimeAbiAssembly(std::string_view fileName)
 {
+    constexpr std::string_view kEnginePrefix = "GameEngine.";
     constexpr std::string_view kEditorPrefix = "GameEngine.Editor.";
-    return ScriptingPaths::IsScriptSurfaceAssembly(fileName) && !fileName.starts_with(kEditorPrefix);
+    constexpr std::string_view kAbiSuffix = ".ABI.dll";
+    return fileName.size() > kEnginePrefix.size() + kAbiSuffix.size() && fileName.starts_with(kEnginePrefix) &&
+           fileName.ends_with(kAbiSuffix) && !fileName.starts_with(kEditorPrefix);
 }
 
 // Appends the assembly file names a deps.json declares under targets/<framework>/<library>/runtime:
@@ -154,37 +130,11 @@ std::string NormalizedDependencyStem(std::string stem)
     return stem;
 }
 
-// The file name without its shared-library suffix, or empty for a file that is not a shared
-// library. A Linux library carries its version after ".so" (libglfw.so.3 -> libglfw).
-std::string SharedLibraryStem(const std::string& fileName)
-{
-    for (const std::string_view extension : {".dll", ".so", ".dylib"})
-    {
-        if (fileName.size() > extension.size() && fileName.ends_with(extension))
-            return fileName.substr(0, fileName.size() - extension.size());
-    }
-    const std::size_t versioned = fileName.find(".so.");
-    return versioned == std::string::npos || versioned == 0 ? std::string() : fileName.substr(0, versioned);
-}
-
-std::vector<RuntimeDependency> JoinEngineRuntimeDependencySet()
-{
-    std::vector<RuntimeDependency> set(std::begin(kEngineRuntimeLibraries), std::end(kEngineRuntimeLibraries));
-    set.insert(set.end(), std::begin(kEngineLibraryDependencies), std::end(kEngineLibraryDependencies));
-    return set;
-}
-
 } // namespace
-
-std::span<const RuntimeDependency> EngineRuntimeLibrarySet()
-{
-    return kEngineRuntimeLibraries;
-}
 
 std::span<const RuntimeDependency> EngineRuntimeDependencySet()
 {
-    static const std::vector<RuntimeDependency> set = JoinEngineRuntimeDependencySet();
-    return set;
+    return kEngineRuntimeSet;
 }
 
 std::span<const RuntimeDependency> ManagedHostingDependencySet()
@@ -213,12 +163,12 @@ bool StageCuratedDependencySet(const std::vector<fs::path>& sourceDirs, const fs
         {
             if (!entry.is_regular_file())
                 continue;
-            std::string stem = SharedLibraryStem(entry.path().filename().string());
-            if (stem.empty())
+            const std::string ext = entry.path().extension().string();
+            if (ext != ".dll" && ext != ".so" && ext != ".dylib")
                 continue;
             if (!seenFileNames.insert(NormalizedDependencyStem(entry.path().filename().string())).second)
                 continue;
-            libraries.push_back({entry.path(), NormalizedDependencyStem(std::move(stem))});
+            libraries.push_back({entry.path(), NormalizedDependencyStem(entry.path().stem().string())});
         }
         ec.clear();
     }

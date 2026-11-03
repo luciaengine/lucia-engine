@@ -3,7 +3,6 @@
 
 #include "Includes/view_params.glsl"
 #include "Includes/octahedral_normal.glsl"
-#include "Includes/reverse_z.glsl"
 
 layout(push_constant) uniform SssrParams
 {
@@ -17,6 +16,7 @@ layout(push_constant) uniform SssrParams
     uint debugMode;
     int sampleQuality;   // stochastic ray density: 0=Low, 1=Medium, 2=High
     int multiBounce;     // 1 = hits sample last frame's composited color
+    uint hasPlanarMask;  // planar-owned pixels bypass SSR composition
     // The camera's viewport inside the render target, in target UV: origin in
     // .xy, extent in .zw. A letterboxed view rasterizes the world into a
     // sub-rectangle of a full-size target, so a target UV is NOT an NDC of the
@@ -51,6 +51,17 @@ vec2 GE_NdcToUv(vec2 ndc)
     return sssr.viewportRect.xy + v * sssr.viewportRect.zw;
 }
 
+// Reverse-Z raw depth (near=1, far=0) -> linear view-space meters. Same formula
+// as Includes/reverse_z.glsl, using the anonymous-block ge_nearFar accessor the
+// SSR passes declare. Edge-stopping on linear Z is uniform with distance, unlike
+// weighting raw depth (which compresses toward the far plane).
+float GE_LinearZ(float rawDepth)
+{
+    float zNear = max(ge_nearFar.x, 1e-5);
+    float zFar = max(ge_nearFar.y, zNear + 1.0);
+    return (zNear * zFar) / max(rawDepth * (zFar - zNear) + zNear, 1e-6);
+}
+
 vec3 GE_ViewPosition(vec2 uv, float rawDepth)
 {
     vec4 p = ge_invProj * vec4(GE_UvToNdc(uv), rawDepth, 1.0);
@@ -66,9 +77,7 @@ vec2 GE_ProjectView(vec3 positionVS, out float rawDepth)
 }
 
 // View.NormalRoughness layout (RGBA16F, written by the forward opaque pass):
-//   .rg = octahedral view-space normal, .b = perceptual roughness, .a = metallic.
-// The composite weights reflections with the forward pass's own specular
-// response (View.SSRSpecularWeight), so the metallic channel is not read here.
+//   .rg = octahedral view-space normal, .b = perceptual roughness, .a = planar reflection coverage.
 vec3 GE_DecodeNormalVS(vec4 normalRoughness) { return GE_OctDecode(normalRoughness.rg); }
 float GE_Roughness(vec4 normalRoughness) { return normalRoughness.b; }
 

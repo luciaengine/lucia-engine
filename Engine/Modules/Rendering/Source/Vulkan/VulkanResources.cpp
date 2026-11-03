@@ -4,7 +4,7 @@
  */
 
 #include "Rendering/Core/Device.h"
-#include "VulkanDevice/VulkanDevice.h"
+#include "VulkanDevice.h"
 #include <iostream>
 
 namespace GameEngine::Rendering

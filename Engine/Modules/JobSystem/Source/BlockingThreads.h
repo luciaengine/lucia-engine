@@ -1,6 +1,5 @@
 #pragma once
 
-#include "JobChannelState.h"
 #include "JobSystem/Types.h"
 
 #include <condition_variable>
@@ -32,8 +31,7 @@ namespace Detail
  * the census. Each one is a pool thread (s_CurrentPool is the pool) that is
  * no compute worker (s_CurrentWorkerId is SIZE_MAX): a job on it publishes to
  * the global lanes like any thread outside the pool, and TaskHandle::Wait's
- * worker assert does not fire there. Each runs its jobs as bodies of their
- * channel and writes its own occupancy slot.
+ * worker assert does not fire there.
  */
 class BlockingThreads
 {
@@ -59,7 +57,7 @@ class BlockingThreads
      * FIFO's mutex: once it is set the job is not taken and is returned to the
      * caller to dispose of; otherwise it returns null.
      */
-    UniquePtr<TaskBase> Push(ChannelJob job, Spawn spawn);
+    UniquePtr<TaskBase> Push(UniquePtr<TaskBase> task, Spawn spawn);
 
     /** @brief A channel registered (+cap) or unregistered (-cap). */
     void AddDemand(int64 delta);
@@ -78,13 +76,7 @@ class BlockingThreads
     void Join();
 
     /** @brief Move every queued job out of the FIFO (the shutdown drain). */
-    void TakeQueued(Vector<ChannelJob>& out);
-
-    /** @brief Threads created so far (they are never retired). */
-    uint32 ThreadCount();
-
-    /** @brief Cumulative channel jobs these threads took from the FIFO and ran. */
-    uint64 JobsRun();
+    void TakeQueued(Vector<UniquePtr<TaskBase>>& out);
 
   private:
     void SpawnReservedThread();
@@ -96,9 +88,8 @@ class BlockingThreads
     std::mutex m_Mutex;
     std::condition_variable m_WorkAvailable;
     std::condition_variable m_SpawnsSettled;
-    std::deque<ChannelJob> m_Queue;
+    std::deque<UniquePtr<TaskBase>> m_Queue;
     Vector<std::thread> m_Threads;
-    uint64 m_JobsRun = 0;
     size_t m_Idle = 0;
     size_t m_ReservedSpawns = 0;
     size_t m_NextThreadIndex = 0;

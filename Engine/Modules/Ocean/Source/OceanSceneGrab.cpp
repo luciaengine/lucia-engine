@@ -1,17 +1,17 @@
 #include "Ocean/OceanSceneGrab.h"
-#include "Ocean/OceanShader/OceanShaderProgram.h"
-#include "Rendering/Materials/Shader/ShaderLayoutShape.h"
-#include "OceanShader/OceanShaderDirectory.h"
+#include "Ocean/OceanShaderProgram.h"
+#include "Rendering/Materials/ShaderLayoutShape.h"
+#include "OceanShaderDirectory.h"
 
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Engine/Rendering/RenderServices.h"
 
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineDescTranslator.h"
+#include "Rendering/Core/PipelineDescTranslator.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/RenderGraph/RGFullscreen.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderCompileService.h"
 #include "Logger/Logger.h"
 
 #include <array>
@@ -204,7 +204,6 @@ bool OceanSceneGrab::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d, 
     const RenderGraph::RGTexture grab = d.Frame.ImportExternalTexture(
         grabName.c_str(), viewGrab.Texture, ResourceState::ShaderResource,
         static_cast<TextureFormat>(viewGrab.Format));
-    d.MarkPreExposed(grab); // a copy of scene colour, stored at the frame's pre-exposure
     if (outGraphTexture)
         *outGraphTexture = grab;
 

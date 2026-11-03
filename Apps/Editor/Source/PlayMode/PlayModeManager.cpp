@@ -1,9 +1,10 @@
 #include "PlayMode/PlayModeManager.h"
 #include "PlayMode/ModelAnimationPlayMode.h"
-#include "PlayMode/PlayModeEntryGate.h"
 #include "Inspectors/AnimationPreviewManager.h"
 #include "EditorChangeNotifications.h"
 
+#include "Automation/UiReplayCommandIds.h"
+#include "Editor/Registries/EditorMenuRegistry.h"
 #include "Scene/SceneEditorController.h"
 #include "UndoRedo/IEditorCommand.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -21,7 +22,6 @@
 #include "PhysicsECS/PhysicsWorldService.h"
 #include "TerrainECS/TerrainService.h"
 #include "MarkupECS/MarkupService.h"
-#include "Scene/PrefabAuthoring.h"
 #include "Scripting/CoreCLRHost.h"
 #include "Scripting/PathResolver.h"
 #include "Scripting/ScriptManager.h"
@@ -58,9 +58,9 @@ static void ResetTransientRenderState(ECS::World& world)
     // including the ones belonging to entities that are switched off.
     world.Query<ECS::Write<Components::MeshGPUData>>()
         .IncludeDisabled()
-        .Each([](Components::MeshGPUData& meshGpu)
+        .Each([](ECS::Writable<Components::MeshGPUData> meshGpu)
               {
-                  meshGpu = Components::MeshGPUData{};
+                  meshGpu.Set(Components::MeshGPUData{});
               });
 }
 
@@ -70,10 +70,7 @@ struct PlayModeManager::UndoHistoryStash
     UndoRedoService::History playHistory{};
 };
 
-PlayModeManager::PlayModeManager(PlayModeEntryGate::BuildProbe scriptBuildProbe)
-    : m_EntryGate(std::move(scriptBuildProbe))
-{
-}
+PlayModeManager::PlayModeManager() = default;
 PlayModeManager::~PlayModeManager() = default;
 
 void PlayModeManager::InvalidateManagedPlayModeBindings()
@@ -84,8 +81,6 @@ void PlayModeManager::InvalidateManagedPlayModeBindings()
 
 void PlayModeManager::EnsureManagedPlayModeBindings()
 {
-    // A build without C# scripting has no managed play-mode driver to bind.
-#if GE_ENABLE_SCRIPTING
     if (m_ManagedPlayMode.IsValid())
         return;
     if (m_ManagedPlayMode.triedResolve)
@@ -114,7 +109,6 @@ void PlayModeManager::EnsureManagedPlayModeBindings()
     m_ManagedPlayMode.enter = enterPtr;
     m_ManagedPlayMode.exit = exitPtr;
     m_ManagedPlayMode.tick = tickPtr;
-#endif
 }
 
 bool PlayModeManager::IsRuntimeEntity(std::uint32_t packedEntityId) const
@@ -151,6 +145,95 @@ void PlayModeManager::ApplyEditModeSystemGating()
     if (m_State != PlayModeState::Edit)
         return;
     SetRuntimeSimulationSystemsEnabled(false);
+}
+
+namespace
+{
+
+// State names in the fixed-id commands' error messages.
+const char* CommandStateName(PlayModeState state)
+{
+    switch (state)
+    {
+    case PlayModeState::Edit:
+        return "Edit";
+    case PlayModeState::EnteringPlay:
+        return "EnteringPlay";
+    case PlayModeState::Play:
+        return "Play";
+    case PlayModeState::Paused:
+        return "Paused";
+    case PlayModeState::ExitingPlay:
+        return "ExitingPlay";
+    case PlayModeState::ChangeReview:
+        return "ChangeReview";
+    }
+    return "Unknown";
+}
+
+bool ExpectState(PlayModeState actual, bool matches, const char* expected, std::string* outError)
+{
+    if (matches)
+        return true;
+    if (outError)
+        *outError = std::string("expected ") + expected + ", got " + CommandStateName(actual);
+    return false;
+}
+
+} // namespace
+
+void PlayModeManager::RegisterCommands()
+{
+    auto& registry = EditorMenuRegistry::Get();
+    registry.RegisterCommand(
+        {UiReplayCommandIds::PlayEnter, [this](std::string* outError) { return RunPlayEnterCommand(outError); }});
+    registry.RegisterCommand({UiReplayCommandIds::PlayTogglePause,
+                              [this](std::string* outError) { return RunPlayTogglePauseCommand(outError); }});
+    // Stop leaves Edit alone and discards a pending Change Review.
+    registry.RegisterCommand({UiReplayCommandIds::PlayStop, [this](std::string*) {
+                                  if (m_State != PlayModeState::Edit)
+                                      TogglePlayStop();
+                                  return true;
+                              }});
+    registry.RegisterCommand({UiReplayCommandIds::AssertPlayModeEdit, [this](std::string* outError) {
+                                  return ExpectState(m_State, m_State == PlayModeState::Edit, "Edit", outError);
+                              }});
+    registry.RegisterCommand({UiReplayCommandIds::AssertPlayModePlay, [this](std::string* outError) {
+                                  return ExpectState(m_State, m_State == PlayModeState::Play, "Play", outError);
+                              }});
+    registry.RegisterCommand({UiReplayCommandIds::AssertPlayModePaused, [this](std::string* outError) {
+                                  return ExpectState(m_State, m_State == PlayModeState::Paused, "Paused", outError);
+                              }});
+    registry.RegisterCommand({UiReplayCommandIds::AssertPlayModeNotRunning, [this](std::string* outError) {
+                                  const bool notRunning =
+                                      m_State == PlayModeState::Edit || m_State == PlayModeState::ChangeReview;
+                                  return ExpectState(m_State, notRunning, "not-running (Edit or ChangeReview)",
+                                                     outError);
+                              }});
+}
+
+bool PlayModeManager::RunPlayEnterCommand(std::string* outError)
+{
+    if (m_State != PlayModeState::Edit)
+    {
+        if (outError)
+            *outError = std::string("expected Edit before PlayEnter, got ") + CommandStateName(m_State);
+        return false;
+    }
+    EnterPlayMode();
+    return true;
+}
+
+bool PlayModeManager::RunPlayTogglePauseCommand(std::string* outError)
+{
+    if (!IsPlayingOrPaused())
+    {
+        if (outError)
+            *outError = "PlayTogglePause requires Play or Paused state";
+        return false;
+    }
+    TogglePause();
+    return true;
 }
 
 void PlayModeManager::TogglePlayStop()
@@ -206,11 +289,6 @@ void PlayModeManager::EnterPlayMode()
         return;
     }
 
-    // Entering now would run the game without the scripts a build is about to load, or without the
-    // current code of a module whose latest build failed.
-    if (m_EntryGate.Hold([this]() { EnterPlayMode(); }))
-        return;
-
     SetState(PlayModeState::EnteringPlay);
 
     // Isolate undo history for play mode.
@@ -230,7 +308,7 @@ void PlayModeManager::EnterPlayMode()
         terrain->SnapshotZonePayloadsForPlay();
 
     // The mark-ups' notes live in MarkupService, not on components, so the ECS snapshot
-    // does not carry them; the exit restore puts them back as they were.
+    // does not carry them either; the exit restore puts them back.
     if (auto* markups = MarkupECS::MarkupService::TryGet(); markups && m_World)
         m_EnteredMarkupNotes = std::make_unique<MarkupECS::MarkupWorldNotes>(markups->CaptureWorld(*m_World));
 
@@ -279,9 +357,6 @@ void PlayModeManager::EnterPlayMode()
     if (auto* nativeScripts = EngineCore::GetInstance().GetNativeScriptManager())
         nativeScripts->SetHotReloadDeferred(true);
 
-    // The play session is the scene as it was at Play: a prefab file change reaches the scene at Stop.
-    Scene::SetPrefabPropagationDeferred(*m_World, true);
-
     // User C++ systems begin: OnStart on every registered system. They tick only during play,
     // after the snapshot — so any entities OnStart spawns are cleaned up by the exit restore.
     GameEngine::NativeScripting::StartUserSystems(*m_World);
@@ -294,7 +369,6 @@ void PlayModeManager::EnterPlayMode()
     if (!m_ManagedPlayMode.IsValid())
         m_ManagedPlayMode.triedResolve = false;
     EnsureManagedPlayModeBindings();
-#if GE_ENABLE_SCRIPTING
     if (!m_ManagedPlayMode.IsValid())
     {
         Logger::Log::Error(
@@ -302,7 +376,6 @@ void PlayModeManager::EnterPlayMode()
             "this Play session (will re-attempt on the next play-enter; check earlier "
             "script-compile/CLR errors)");
     }
-#endif
 
     if (m_ManagedPlayMode.enter)
     {
@@ -330,14 +403,10 @@ void PlayModeManager::EnterPlayMode()
 void PlayModeManager::ExitPlayMode()
 {
     if (m_State == PlayModeState::Edit)
-    {
-        m_EntryGate.Cancel();
         return;
-    }
     if (m_State == PlayModeState::ChangeReview)
         return;
 
-    m_ExitRequested = false;
     SetState(PlayModeState::ExitingPlay);
 
     // Best-effort managed play-mode exit hook (called before tearing down runtime systems).
@@ -378,13 +447,13 @@ void PlayModeManager::ExitPlayMode()
         GameEngine::PhysicsECS::PhysicsWorldService::Shutdown();
     }
 
-    // Release per-page and per-face terrain-collider slots. The collider entities are
-    // runtime-only and vanish with the snapshot restore below, but that path never runs
-    // the TerrainPhysicsSystem teardown sweep, so their page and planet-face slots would
-    // otherwise leak across Play sessions.
+    // Release per-tile and per-face terrain-collider slots. The collider entities
+    // are runtime-only and vanish with the snapshot restore below, but that path
+    // never runs the TerrainPhysicsSystem teardown sweep, so their tile-physics /
+    // planet-face slots would otherwise leak across Play sessions.
     if (auto* terrain = TerrainECS::TerrainService::TryGet())
     {
-        terrain->ReleaseAllPagePhysicsHandles();
+        terrain->ReleaseAllTilePhysicsHandles();
         terrain->ReleaseAllPlanetFacePhysicsHandles();
     }
 
@@ -404,10 +473,6 @@ void PlayModeManager::ExitPlayMode()
     m_EnteredSnapshot.reset();
     m_EnteredMarkupNotes.reset();
     m_PrePlayEntityIds.clear();
-
-    // The restored scene takes every prefab file change made during Play.
-    if (m_World)
-        Scene::SetPrefabPropagationDeferred(*m_World, false);
 
     // Re-enable native hot-reload and flush any source edit made during play (deferred in
     // EnterPlayMode) now that we're back in edit mode — so the rebuild + re-register happens
@@ -523,22 +588,8 @@ void PlayModeManager::DiscardPendingChanges()
         SetState(PlayModeState::Edit);
 }
 
-void PlayModeManager::RequestExitPlayMode()
-{
-    // A script's OnCreate runs while play is entered, before the state becomes Play.
-    if (IsPlayingOrPaused() || m_State == PlayModeState::EnteringPlay)
-        m_ExitRequested = true;
-}
-
 void PlayModeManager::Tick(float deltaSeconds)
 {
-    m_EntryGate.Update();
-    // ExitPlayMode clears the request, so a request never outlives the play session it was made in.
-    if (m_ExitRequested && IsPlayingOrPaused())
-    {
-        ExitPlayMode();
-        return;
-    }
     if (m_State != PlayModeState::Play)
         return;
 

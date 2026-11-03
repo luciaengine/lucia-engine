@@ -1,6 +1,5 @@
 #include "UI/Controls/SkyDayKeyGradientBar.h"
 
-#include "Mathematics/Interpolation.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIPrimitive.h"
 
@@ -23,7 +22,7 @@ constexpr float kDragThresholdPx = 3.0f;
 SkyDayKeyGradientBar::SkyDayKeyGradientBar()
 {
     AddClass("sky-day-key-gradient-bar");
-    Style()
+    Overrides()
         .Set(Style::Height, StyleLength::Px(18.0f))
         .Set(Style::MinHeight, StyleLength::Px(18.0f))
         .Set(Style::Cursor, CursorStyle::Pointer);
@@ -43,7 +42,7 @@ void SkyDayKeyGradientBar::SetStopPosition(size_t stopIndex, float normalized01)
 {
     if (stopIndex >= kStopCount)
         return;
-    const float clamped = Math::Clamp01(normalized01);
+    const float clamped = std::clamp(normalized01, 0.0f, 1.0f);
     if (std::fabs(m_StopPositions[stopIndex] - clamped) <= 1e-5f)
         return;
     m_StopPositions[stopIndex] = clamped;
@@ -76,7 +75,7 @@ size_t SkyDayKeyGradientBar::GetNearestStopIndex(float globalX) const
     float bestDist = std::numeric_limits<float>::max();
     for (size_t i = 0; i < kStopCount; ++i)
     {
-        const float stopX = minX + span * Math::Clamp01(m_StopPositions[i]);
+        const float stopX = minX + span * std::clamp(m_StopPositions[i], 0.0f, 1.0f);
         const float d = std::fabs(localX - stopX);
         if (d < bestDist)
         {
@@ -95,7 +94,7 @@ float SkyDayKeyGradientBar::GetNormalizedPosition(float globalX) const
     const float maxX = std::max(minX, w - markerHalf - kMarkerEdgeInsetPx);
     const float span = std::max(1e-3f, maxX - minX);
     const float localX = std::clamp(globalX - GetLayoutX(), 0.0f, w);
-    return Math::Clamp01((localX - minX) / span);
+    return std::clamp((localX - minX) / span, 0.0f, 1.0f);
 }
 
 size_t SkyDayKeyGradientBar::GetHoveredStopIndex(float globalX, float globalY) const
@@ -113,7 +112,7 @@ size_t SkyDayKeyGradientBar::GetHoveredStopIndex(float globalX, float globalY) c
 
     std::array<float, kStopCount> stopPositions = m_StopPositions;
     for (size_t i = 0; i < kStopCount; ++i)
-        stopPositions[i] = Math::Clamp01(stopPositions[i]);
+        stopPositions[i] = std::clamp(stopPositions[i], 0.0f, 1.0f);
     for (size_t i = 1; i < kStopCount; ++i)
         stopPositions[i] = std::max(stopPositions[i], stopPositions[i - 1]);
 
@@ -181,7 +180,7 @@ void SkyDayKeyGradientBar::OnEvent(UIEvent& e)
             const float maxX = std::max(minX, w - markerHalf - kMarkerEdgeInsetPx);
             const float span = std::max(1e-3f, maxX - minX);
             const float localX = std::clamp(e.X - GetLayoutX(), 0.0f, w);
-            const float normalized = Math::Clamp01((localX - minX) / span);
+            const float normalized = std::clamp((localX - minX) / span, 0.0f, 1.0f);
             SetStopPosition(m_DownStop, normalized);
             if (m_OnStopPositionChanging)
                 m_OnStopPositionChanging(m_DownStop, normalized);
@@ -256,7 +255,7 @@ void SkyDayKeyGradientBar::OnGeneratePrimitives(UI::PrimitiveEmitContext& ctx,
 
     std::array<float, kStopCount> stopPositions = m_StopPositions;
     for (size_t i = 0; i < kStopCount; ++i)
-        stopPositions[i] = Math::Clamp01(stopPositions[i]);
+        stopPositions[i] = std::clamp(stopPositions[i], 0.0f, 1.0f);
     for (size_t i = 1; i < kStopCount; ++i)
         stopPositions[i] = std::max(stopPositions[i], stopPositions[i - 1]);
 

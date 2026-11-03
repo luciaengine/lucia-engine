@@ -9,8 +9,6 @@
 // Reference implementation this layout is ported from:
 //   github.com/AnisB/large_cbt (Benyoub & Dupuy 2024)
 
-#include "Mathematics/Vector4.h"
-
 #include <cstddef>
 #include <cstdint>
 
@@ -64,9 +62,11 @@ inline constexpr uint32_t kDefaultBaseDepth = 1u; // log2(kRootHalfedgeCount)
 // CBT terrain wholesale (CBTRenderFeature), so there is no reduced-precision planet path to
 // fall back to. Mirrored in cbt_layout.glsl as CBT_MAX_NUM_SUBDIV and locked to it by the
 // CBTLayout.GlslMaxDecodeSubdivMatchesCpp test (no compile-time channel from GLSL to C++).
-// This is the fp32 WORLD-store cap. The sphere's (sector, local) store on the wide arm has its
-// own cap, DeepDecode::kDeepDecodeSubdiv (50). Do not lift THIS constant without a store that
-// carries the depth (the store error is ~0.25 m at Earth and crosses 25% of the facet at ~46).
+// This is the FP32-WORLD-STORE cap: the spherical deep (sector, local) store lifts its cap
+// to DeepDecode::kDeepDecodeSubdiv (50) via the flag-coupled provisioning derivation
+// (TerrainProvisioning SubdivCapFor, decode-precision arc S2b) — never lift THIS constant
+// without a storage representation that carries the depth (design §1: the store error is
+// radius-bound, ~0.25 m at Earth, and crosses 25% of the facet at numSubdiv ~46).
 inline constexpr uint32_t kMaxDecodeSubdiv = 40u;
 
 // The cap on the NARROW-HEAP arm (GE_CBT_HEAP32 — targets with no 64-bit integers at all;
@@ -262,9 +262,10 @@ struct CBTBisectorData
 // pinned. The cure appends a per-corner integer SECTOR anchor on the engine's
 // 1024 m world-sector grid (the same representation instanced meshes use —
 // camera_relative.glsl GE_ClipFromSectorLocal / Components::WorldSectorCoord):
-//   DeepTag[0] == 0 (planar, and the sphere on the narrow arm): Corner*.xyz is the
-//     fp32 WORLD position; the sector tail is written zero and never read.
-//   DeepTag[0] == 1 (the sphere on the wide arm): Corner*.xyz is the fp32
+//   DeepTag[0] == 0 (legacy, the dark-ship default): Corner*.xyz is the fp32
+//     WORLD position exactly as before; the sector tail is written zero and never
+//     read. Byte-identical to the pre-S2a pipeline.
+//   DeepTag[0] == 1 (GE_CBT_DEEP_DECODE, spherical only): Corner*.xyz is the fp32
 //     SECTOR-LOCAL offset (|component| <= 512 + relief spill, ULP ~6e-5 m at any
 //     radius) and Sector<k> packs corner k's ivec3 sector as 3 x 16-bit
 //     two's-complement lanes (range +/-32767 sectors ~ +/-3.36e7 m — 5x Earth
@@ -272,8 +273,9 @@ struct CBTBisectorData
 //     reconstruct rel = float(sector - originSector) * 1024 + local (exact
 //     integer delta — the GE_ClipFromSectorLocal math verbatim).
 // Corner*.w / Meta keep their meaning in BOTH modes (uv + normalmap index), so
-// every UV consumer is mode-blind. 4 x vec4 + 4 x uvec2 = 96 bytes std430 in both
-// modes: every kernel compiles the struct, so one stride serves every domain and arm.
+// every UV consumer is mode-blind. 4 x vec4 + 4 x uvec2 = 96 bytes std430
+// (was 64 — +32 MiB at the 1M pool, paid in both modes: the struct is compiled
+// into every kernel, so a flag-conditional stride would need dual pipelines).
 struct CBTVertexData
 {
     float Corner0[4] = {0.0f, 0.0f, 0.0f, 0.0f}; // xyz = world position (m) or sector-local offset (DeepTag), w = uv.x
@@ -283,7 +285,7 @@ struct CBTVertexData
     uint32_t Sector0[2] = {0u, 0u}; // corner 0 sector: x = (sx & 0xFFFF) | (sy << 16), y = (sz & 0xFFFF)
     uint32_t Sector1[2] = {0u, 0u};
     uint32_t Sector2[2] = {0u, 0u};
-    uint32_t DeepTag[2] = {0u, 0u}; // x: 0 = world corners, 1 = (sector, local); y reserved 0
+    uint32_t DeepTag[2] = {0u, 0u}; // x: 0 = world corners (legacy), 1 = (sector, local); y reserved 0
 };
 
 // Pack one signed sector component into a 16-bit two's-complement lane / recover it.
@@ -296,13 +298,13 @@ inline uint32_t PackSectorPair(int32_t lo, int32_t hi)
 inline int32_t UnpackSectorLo(uint32_t v) { return static_cast<int32_t>(v << 16) >> 16; }
 inline int32_t UnpackSectorHi(uint32_t v) { return static_cast<int32_t>(v) >> 16; }
 
-inline constexpr uint32_t kCubeFaceCount6 = 6u; // 6 cube faces (matches CBTSphereRoots kCubeFaceCount)
-
 // Per-frame camera + terrain params consumed by Classify (screen-space error) and
 // VertexEval (world-space height displacement). std140 mirror of CBTFrameParams in
-// cbt_layout.glsl — mat4 + 13 vec4 + the 16 x 3 vec4 analytic modifier set + the
-// height-chain vec4 = 1056 bytes, then the cell-mask tail, ring-buffered on the GPU. All
-// floats (GPU-upload-ready, column-major matrix).
+// cbt_layout.glsl — mat4 + 13 vec4 + the 16 x 3 vec4 analytic modifier set = 1040
+// bytes, ring-buffered on the GPU. All floats (GPU-upload-ready, column-major
+// matrix). Plan §8 C4; Phase E atlas params + Earth-scale render origin +
+// view-priority near-bias + walking-headroom demand tuning + round-8c screen-area
+// priority ordering + water plane + S2 analytic sphere modifiers appended.
 struct CBTFrameParams
 {
     // Rebased (render-origin-relative) world -> clip (reverse-Z LH). Classify's frustum
@@ -398,8 +400,8 @@ struct CBTFrameParams
     // sculpt-sampling chokepoints, so a flatten renders as an exact circle at any planet radius
     // instead of the store-texel staircase (design §3.a). x = flatten count, y = transient brush
     // dab count (S3 — dabs occupy slots [x, x+y); integers as float, x+y <=
-    // kMaxSphereAnalyticModifiers — exact under 2^23); z = the first word of this frame's page-table
-    // ring slot (kCBTPageRingBaseLane, wide arm, exact under 2^24; written by CBTResources::UploadFrameParams,
+    // kMaxSphereAnalyticModifiers — exact under 2^23); z = the page-table ring's words per slot
+    // (kCBTPageRingWordsLane, wide arm, exact under 2^24; written by CBTResources::UploadFrameParams,
     // not by the caller); w reserved 0. Both 0 (the
     // GE_TERRAIN_ANALYTIC_MODIFIERS-off dark-ship) skips every analytic branch, byte-identical.
     float AnalyticParams[4] = {};
@@ -408,12 +410,6 @@ struct CBTFrameParams
     // transient dabs by PackSphereAnalyticDab ([N.xyz | AngularRadius], [Amplitude, CosThreshold,
     // 0, 0], zero) in the slots after the flattens. PlanetRadius rides PlanetParams.x.
     float SphereAnalytic[kMaxSphereAnalyticModifiers * kSphereAnalyticFloatsPerModifier] = {};
-    // The draw's prefiltered height chain, as Classify's frustum cull needs it (planar, wide arm).
-    // x = the level scale t / (f x s0) of the draw's level rule lambda = log2(distance x scale)
-    // (TerrainECS PageLevelRule: t the split threshold px, f the focal length px, s0 the level-0
-    // texel m); 0 = the draw keeps the cached corners and the cull tests them alone. y = the chain's
-    // top level (an integer as float). zw = 0.
-    Mathematics::Vector4 HeightChain;
     // S3 per-cell placement culling: 16-bit placement mask per face cell (2 cells per word, low
     // half = even cell), built by BuildSphereAnalyticCellMasks over the SAME slot order as
     // SphereAnalytic. On the GLSL side this tail is uvec4[48] in CBTFrameSlot BESIDE the frame
@@ -421,10 +417,6 @@ struct CBTFrameParams
     // copies the params by value per thread and folding the 768 B mask into that copy measured
     // ~7x on CBT.Update. All-zero when no placements exist (the dark-ship bytes).
     uint32_t AnalyticCellMask[kSphereAnalyticCellMaskWords] = {};
-    // The sphere's dirty rect of each cube face in face-local UV: (minU, minV, maxU, maxV), empty
-    // when maxU <= minU. Classify reclassifies the bisectors of every face with a rect. A sibling of
-    // the frame struct on the GLSL side (CBTFrameSlot), like the cell masks. Written by RecordUpdate.
-    Mathematics::Vector4 SphereDirty[kCubeFaceCount6];
 };
 
 // ---------------------------------------------------------------------------
@@ -466,25 +458,7 @@ inline constexpr uint32_t kPressureStepsPerOctave = 16u;
 // Planar off-frustum keep step (cbt_layout.glsl CBT_WQ_OFF_FRUSTUM_KEEP_STEP): how far Kernel_Reset
 // has collapsed the off-frustum keep band, 0 to kOffFrustumKeepSteps (CBTDemandTuning.h).
 inline constexpr uint32_t kWQOffFrustumKeepStep = 15u;
-// The live count the planar classify reads its occupancy from while the camera holds still
-// (cbt_layout.glsl CBT_WQ_REST_LIVE_COUNT): Kernel_Reset latches it on every update with moving inputs,
-// and at rest follows only a move larger than poolSize / kRestLatchDeadbandDivisor.
-inline constexpr uint32_t kWQRestLiveCount = 16u;
-inline constexpr uint32_t kRestLatchDeadbandDivisor = 1024u;
-// The page samples of this update whose walk to the top level found no resident page (cbt_layout.glsl
-// CBT_WQ_UNRESOLVED_PAGE_SAMPLES). A drawn planet's pinned levels are resident, so a count above 0 is a
-// pinning defect. Kernel_Reset clears it.
-inline constexpr uint32_t kWQUnresolvedPageSamples = 17u;
-// The rest's keep floor (cbt_layout.glsl CBT_WQ_OFF_FRUSTUM_KEEP_FLOOR): one past the highest keep step proven not
-// to fit under the keep ceiling, or a phase below 0: kKeepFloorArriving after an update that moved,
-// kKeepFloorProbing while the first step down has no measured tree.
-inline constexpr uint32_t kWQOffFrustumKeepFloor = 18u;
-inline constexpr int32_t kKeepFloorArriving = -1;
-inline constexpr int32_t kKeepFloorProbing = -2;
-// The leaves the planar criterion wants to merge, counted only at rest (cbt_layout.glsl
-// CBT_WQ_MERGE_CANDIDATE_COUNTER): live minus this count is Kernel_Reset's early proof that a keep step does not fit.
-inline constexpr uint32_t kWQMergeCandidateCounter = 19u;
-inline constexpr uint32_t kWQCounterSlots = 20u;
+inline constexpr uint32_t kWQCounterSlots = 16u;           // reserve 16 counter slots (padding headroom)
 
 // Payload lanes — 3 ALIASED physical lanes over the 6 logical queues (slot-diet r2).
 // The six work queues never all hold live data at once: each is written by one kernel
@@ -682,6 +656,7 @@ inline constexpr uint32_t kCBTHeightTextureBinding = 15;  // CombinedImageSample
 // the class of bug that caused the tiled-upload device-losts). Sphere VertexEval samples the
 // pool through the table (paged bilinear) only when SphereSculptEnabled; planar never touches
 // them. Kept OUT of CBTBinding for the same reason as 14/15 (no zero-fill/UAV-barrier).
+inline constexpr uint32_t kCubeFaceCount6 = 6u; // 6 cube faces (matches CBTSphereRoots kCubeFaceCount)
 
 // A physical page is kSculptPageDim^2 texels (128^2 R32F = 64 KiB). The page table maps up to
 // kSculptMaxPagesPerFaceAxis pages/axis per face (128 -> Dv up to 16384 -> R up to ~83 km at
@@ -753,18 +728,18 @@ inline constexpr uint32_t kCBTAtlasCoarseBinding = 19; // CombinedImageSampler r
 // narrow-heap kernels do not declare it). Device-local; Kernel_HeightRangeBuild writes it from
 // the bound height texture whenever the heights may have changed, Classify reads it.
 inline constexpr uint32_t kCBTHeightRangeBinding = 21; // StorageBuffer: uint[kCBTHeightRangeEntries]
-// Binding 22: the paged height resolve's page table (cbt_page.glsl): TerrainPageFeature's page-table
-// ring, one slot per frame in flight, shared with the grass placement. Words, mirror cbt_layout.glsl
+// Binding 22: the paged height resolve's page table (cbt_page.glsl), a host-visible ring of equal
+// slots, one per frame slot, written whole from the terrain's table when its version changes (the
+// binding-17 ring discipline). A slot holds at least kCBTPageTableMinRingWords words and grows to
+// the bound terrain's table (CBTResources::ProvisionPageTableWords). Words, mirror cbt_layout.glsl
 // CBT_PAGE_*:
 //   [0, 4)   CBTPageField (level-0 samples X, Z, level count, cache slots per row)
-//   [4]      the cache's slot count
-//   [5, 8)   the floor level, the tier count, the floor directory's offset (0, 0, 0: a dense table)
-//   [8, 8 + 4 * kCBTPageMaxLevels) CBTPageLevel per level (first word, pages X, Z, 0)
-//   then one arrival fade per cache slot (float bits), then the table's words (TerrainECS PageTable:
-//   the entries level-major and row-major for a dense table; the tiers, the dense levels, the floor
-//   directory and the block pools for a tiered one).
-// The slot's first word rides the frame's own params (CBTFrameParams::AnalyticParams[kCBTPageRingBaseLane],
-// written by UploadFrameParams), so a frame finds its slot without reading another frame's.
+//   [4]      the cache's slot count; [5, 8) zero
+//   [8, 8 + 4 * kCBTPageMaxLevels) CBTPageLevel per level (first entry, pages X, Z, 0)
+//   then one arrival fade per cache slot (float bits), then the entries (level-major, row-major).
+// The ring's words per slot are not in the table: they ride the frame's own params
+// (CBTFrameParams::AnalyticParams[kCBTPageRingWordsLane], written by UploadFrameParams), so a frame
+// finds its slot without reading a slot another frame's upload may be rewriting.
 // Binding 23: the page cache texture ring (R32_FLOAT, one per field shared by every terrain),
 // rebound per frame slot like binding 18. Both are wide-arm only: the narrow arm's VertexEval
 // already binds the WebGPU per-stage storage-buffer limit, so it keeps the unified and atlas
@@ -774,22 +749,9 @@ inline constexpr uint32_t kCBTPageCacheBinding = 23; // CombinedImageSampler rin
 inline constexpr uint32_t kCBTPageMaxLevels = 32u;   // mirror PageStreaming::kPageStoreMaxLevels
 inline constexpr uint32_t kCBTPageHeaderWords = 8u;
 inline constexpr uint32_t kCBTPageFadeOffsetWords = kCBTPageHeaderWords + 4u * kCBTPageMaxLevels;
-inline constexpr uint32_t kCBTPageRingBaseLane = 2u; // AnalyticParams lane carrying the slot's first word
-// The surface planes a paged planar terrain has (CBTSurfaceParams::SurfacePagedPlanes, mirror cbt_surface.glsl
-// CBT_SURF_PLANE_*). The fragment reads the pages only when both splat and normal are there.
-inline constexpr uint32_t kCBTSurfacePlaneSplat = 1u;
-inline constexpr uint32_t kCBTSurfacePlaneNormal = 2u;
-inline constexpr uint32_t kCBTSurfacePlaneGrass = 4u;
-inline constexpr uint32_t kCBTSurfacePlaneColor = 8u;
-// Binding 24: the prefiltered height chain the terrain draw reads (wide arm only; the narrow-heap
-// kernels do not declare it). Device-local; Kernel_HeightChainBuild writes it beside the height-range
-// pyramid, and the vertex modifier reads it on the graphics set 2 (gCbtChain).
-inline constexpr uint32_t kCBTHeightChainBinding = 24; // StorageBuffer: uint[CBTHeightChainWords]
-// Binding 25: the mips of the far-field normal chain, one storage view per mip (wide arm only).
-// Kernel_NormalChainBuild writes mip m with the normal of chain level m + 1; the terrain surface samples
-// the texture (cbt_NormalChain on the graphics set 2) at the level of the fragment's distance.
-inline constexpr uint32_t kCBTNormalChainBinding = 25; // StorageImage[kCBTNormalChainMaxMips], rg16f
-inline constexpr uint32_t kCBTDescriptorBindingCount = 26;
+inline constexpr uint32_t kCBTPageRingWordsLane = 2u; // AnalyticParams lane carrying the ring's words per slot
+inline constexpr uint32_t kCBTPageTableMinRingWords = 1u << 18; // 1 MiB per frame slot; slots grow in these steps
+inline constexpr uint32_t kCBTDescriptorBindingCount = 24;
 
 // The height-range pyramid (content-aware split). One entry per square block of height-lattice
 // cells at each stored level: the lowest and highest normalized height over the block, as two raw
@@ -800,48 +762,12 @@ inline constexpr uint32_t kCBTDescriptorBindingCount = 26;
 // and from level 3 at 4096.
 inline constexpr uint32_t kCBTHeightRangeEntries = 1u << 20;
 inline constexpr uint32_t kCBTHeightRangeMaxFirstLevel = 4u;
-// The ranges of the draw's prefiltered height chain (below), after the level-0 entries: one pyramid
-// per chain level j, over the same blocks as the level-0 pyramid's levels from CBTHeightChainRangeBase
-// up (a block holds the level-j samples whose lattice positions it covers, its boundary included). The
-// planar split reads them for the range of the surface the draw shows (cbt_planar_demand.glsl). Level
-// j holds a quarter of the samples of level j - 1, so the chain ranges of a lattice whose level-0
-// pyramid fills kCBTHeightRangeEntries take about a third of that.
-inline constexpr uint32_t kCBTHeightChainRangeEntries = 1u << 19;
 // Words ahead of the entries: [0] the lattice cells (x | y << 16) the pyramid was built from, [1] the
-// first and top stored levels (first | top << 8), [2 + k] the first entry of level k, [18] the
-// level-0 samples (x | z << 16) the chain ranges were built from (0: none), [19] the chain levels
-// with a range, [20 + j] the first entry of chain level j's base level. Classify reads the level
-// tables here instead of recomputing them for every facet. Entry e sits at words
+// first and top stored levels (first | top << 8), [2 + k] the first entry of level k. Classify reads
+// the level table here instead of recomputing it for every facet. Entry e sits at words
 // kCBTHeightRangeHeaderWords + 2e (low) and + 2e + 1 (high).
-inline constexpr uint32_t kCBTHeightRangeHeaderWords = 64u;
-// The first and second differences of each block of the first stored level, after the chain ranges:
-// four words per block (row-major, as that level's ranges), normalized, as raw floats. [0] the steepest
-// step between two neighboring lattice samples along X or Z among the samples the block covers; [1] the
-// largest |h(i - 1, j) - 2 h(i, j) + h(i + 1, j)| over the block's samples (i, j) with a neighbor on
-// both sides along X, the samples one past the block read as neighbors; [2] the same along Z; [3] the
-// largest |h(i + 1, j + 1) - h(i + 1, j) - h(i, j + 1) + h(i, j)| over the block's cells. The first
-// stored level never holds more blocks than kCBTHeightRangeEntries. The planar split bounds the surface
-// over a box smaller than its blocks by the step times the box's extent (cbt_planar_demand.glsl
-// CBT_PlanarStepBoundRange) and by the second differences times its extent squared
-// (CBT_PlanarCurvatureBound), so r keeps shrinking with the box below the block size. 16 MiB.
-inline constexpr uint32_t kCBTHeightDifferencesEntries = kCBTHeightRangeEntries;
-inline constexpr uint32_t kCBTHeightDifferencesWordsPerEntry = 4u;
-inline constexpr uint32_t kCBTHeightDifferencesFirstWord =
-    kCBTHeightRangeHeaderWords + 2u * (kCBTHeightRangeEntries + kCBTHeightChainRangeEntries);
-// The plane of each block of the level-0 pyramid, after the differences: four words per entry, indexed as the
-// level-0 entries, as raw floats in normalized height: the plane's slopes along X and Z per lattice cell
-// about the block's center, then the low end and the width of the surface's height minus that plane
-// over the block. The first stored level fits the plane to the block's samples by least squares; a
-// coarser block takes the mean of its children's slopes and bounds its interval from theirs, and its
-// width is never below a child's. The planar split reads the width of the smallest block that holds a
-// node's box as the surface's distance from a plane there (cbt_planar_demand.glsl). 16 MiB at 2^20
-// entries; a 4097^2 lattice fills 349,525 of them.
-inline constexpr uint32_t kCBTHeightPlaneEntries = kCBTHeightRangeEntries;
-inline constexpr uint32_t kCBTHeightPlaneWordsPerEntry = 4u;
-inline constexpr uint32_t kCBTHeightPlaneFirstWord =
-    kCBTHeightDifferencesFirstWord + kCBTHeightDifferencesWordsPerEntry * kCBTHeightDifferencesEntries;
-inline constexpr uint32_t kCBTHeightRangeBufferWords =
-    kCBTHeightPlaneFirstWord + kCBTHeightPlaneWordsPerEntry * kCBTHeightPlaneEntries;
+inline constexpr uint32_t kCBTHeightRangeHeaderWords = 32u;
+inline constexpr uint32_t kCBTHeightRangeBufferWords = kCBTHeightRangeHeaderWords + 2u * kCBTHeightRangeEntries;
 
 // Blocks per axis at pyramid level `level` over an axis of `cells` lattice cells. Mirror
 // cbt_kernels.comp CBT_HeightRangeDim (and the three below): the CPU sizes the build dispatches
@@ -887,169 +813,6 @@ static_assert(CBTHeightRangeFirstLevel(1024, 1024) == 1, "a 1025^2 heightfield s
 static_assert(CBTHeightRangeFirstLevel(2048, 2048) == 2, "a 2049^2 unified set stores from level 2");
 static_assert(CBTHeightRangeFirstLevel(4096, 4096) == 3, "a 4097^2 unified set stores from level 3");
 
-// The prefiltered height chain: the unified height texture's surface at the detail of each distance,
-// for the terrain draw (cbt_height_chain.glsl). Level 0 is the height texture itself; level L + 1 has
-// S / 2 + 1 samples along an axis where level L has S (PageStreaming::BuildPageStoreLevels' shapes),
-// and its sample j is the [1 2 1] / 4 tent of level L around sample 2j, both axes, edges clamped
-// (PagePyramidBuilder's height tent). So a unified terrain draws the surface a paged store holds.
-// Words: [0] the level-0 samples the chain was built from (x | z << 16), [1] the top level, [2, 4)
-// zero; then levels 1..top, row-major, each sample a normalized height as float bits. Mirror
-// cbt_height_chain.glsl CBT_CHAIN_* and CBT_Chain*.
-inline constexpr uint32_t kCBTHeightChainHeaderWords = 4u;
-inline constexpr uint32_t kCBTHeightChainMaxLevel = 15u;
-
-// Samples along an axis of `level0Samples` at chain level `level`.
-constexpr uint32_t CBTHeightChainSamples(uint32_t level0Samples, uint32_t level)
-{
-    uint32_t samples = level0Samples;
-    for (uint32_t l = 0; l < level; ++l)
-        samples = samples / 2u + 1u;
-    return samples;
-}
-
-// The coarsest level the chain stores: the first whose two axes are at most 2 samples (capped at
-// kCBTHeightChainMaxLevel). 0 for a lattice with nothing coarser to store.
-constexpr uint32_t CBTHeightChainTopLevel(uint32_t samplesX, uint32_t samplesZ)
-{
-    uint32_t level = 0;
-    while (level < kCBTHeightChainMaxLevel &&
-           (CBTHeightChainSamples(samplesX, level) > 2u || CBTHeightChainSamples(samplesZ, level) > 2u))
-        ++level;
-    return level;
-}
-
-// The word of level `level`'s first sample (level >= 1).
-constexpr uint32_t CBTHeightChainLevelWord(uint32_t samplesX, uint32_t samplesZ, uint32_t level)
-{
-    uint32_t word = kCBTHeightChainHeaderWords;
-    for (uint32_t l = 1; l < level; ++l)
-        word += CBTHeightChainSamples(samplesX, l) * CBTHeightChainSamples(samplesZ, l);
-    return word;
-}
-
-// The words a lattice's chain fills: the header and levels 1..top.
-constexpr uint32_t CBTHeightChainWords(uint32_t samplesX, uint32_t samplesZ)
-{
-    return CBTHeightChainLevelWord(samplesX, samplesZ, CBTHeightChainTopLevel(samplesX, samplesZ) + 1u);
-}
-static_assert(CBTHeightChainTopLevel(1025, 1025) == 10, "1025 -> 513 ... 3 -> 2: ten stored levels");
-
-// The level-0 pyramid level chain level `chainLevel`'s range pyramid starts at, for a pyramid that
-// stores levels first..top: the blocks of 2^first chain-level cells, or the top level when that is
-// coarser. Mirror cbt_kernels.comp CBT_ChainRangeBase.
-constexpr uint32_t CBTHeightChainRangeBase(uint32_t first, uint32_t top, uint32_t chainLevel)
-{
-    return first + chainLevel < top ? first + chainLevel : top;
-}
-
-// The chain levels that get a range: the chain's levels up to the pyramid's top (a coarser chain level
-// has no block level of its own), or 0 when their pyramids do not fit kCBTHeightChainRangeEntries.
-constexpr uint32_t CBTHeightChainRangeLevels(uint32_t samplesX, uint32_t samplesZ)
-{
-    if (samplesX < 2u || samplesZ < 2u)
-        return 0u;
-    const uint32_t cellsX = samplesX - 1u;
-    const uint32_t cellsY = samplesZ - 1u;
-    const uint32_t first = CBTHeightRangeFirstLevel(cellsX, cellsY);
-    if (first == 0u)
-        return 0u;
-    const uint32_t top = CBTHeightRangeTopLevel(cellsX, cellsY) > first ? CBTHeightRangeTopLevel(cellsX, cellsY) : first;
-    const uint32_t chainTop = CBTHeightChainTopLevel(samplesX, samplesZ);
-    const uint32_t levels = chainTop < top ? chainTop : top;
-    uint32_t entries = 0u;
-    for (uint32_t j = 1u; j <= levels; ++j)
-        entries += CBTHeightRangeOffset(cellsX, cellsY, first, top + 1u) -
-                   CBTHeightRangeOffset(cellsX, cellsY, first, CBTHeightChainRangeBase(first, top, j));
-    return entries <= kCBTHeightChainRangeEntries ? levels : 0u;
-}
-
-// The far-field normal chain: an R16G16_FLOAT texture (world normal x, z; y rebuilt on read, as the
-// unified normal map) whose mip m holds the normal of chain level m + 1, the drawn surface at that
-// level. Mip 0 has (samples - 1) / 2 texels along an axis (level 1's cells), each mip half the last, and
-// the chain stops at the top level, the last mip with a texel, or kCBTNormalChainMaxMips. A texel's
-// normal is taken at the texel's own center, so a hardware sample at any coordinate reads the surface
-// there. The surface samples it with an explicit level, one fetch beyond the first level's ring.
-inline constexpr uint32_t kCBTNormalChainMaxMips = 14u;
-
-// Texels along an axis of `level0Samples` at normal-chain mip `mip`.
-constexpr uint32_t CBTNormalChainTexels(uint32_t level0Samples, uint32_t mip)
-{
-    const uint32_t base = level0Samples > 2u ? (level0Samples - 1u) / 2u : 1u;
-    const uint32_t texels = base >> mip;
-    return texels > 0u ? texels : 1u;
-}
-
-// The mips of a lattice's normal chain: one per stored chain level, while both axes still have a texel
-// to halve. 0 when the chain stores nothing.
-constexpr uint32_t CBTNormalChainMips(uint32_t samplesX, uint32_t samplesZ)
-{
-    const uint32_t top = CBTHeightChainTopLevel(samplesX, samplesZ);
-    uint32_t mips = 0;
-    while (mips < top && mips < kCBTNormalChainMaxMips &&
-           ((CBTNormalChainTexels(samplesX, 0u) >> mips) > 0u || (CBTNormalChainTexels(samplesZ, 0u) >> mips) > 0u))
-        ++mips;
-    return mips;
-}
-static_assert(CBTNormalChainTexels(1025, 0) == 512 && CBTNormalChainMips(1025, 1025) == 10,
-              "a 1025^2 lattice draws normal mips 0 (level 1, 512^2) to 9 (level 10, 1^2)");
-static_assert(CBTHeightChainWords(8193, 8193) * 4ull < (128ull << 20),
-              "the largest unified lattice's chain fits a 128 MiB storage range");
-
-// Inclusive bounds at one level of a height build: samples at a chain level, texels at a normal-chain
-// mip, blocks at a height-range pyramid level.
-struct CBTHeightBuildRegion
-{
-    uint32_t MinX = 0;
-    uint32_t MinZ = 0;
-    uint32_t MaxX = 0;
-    uint32_t MaxZ = 0;
-};
-
-// The samples of level `level` whose tents read any sample of `finer`, a region of level `level - 1`
-// whose axes have `finerX` and `finerZ` samples: coarse j reads finer 2j - 1 .. 2j + 1.
-constexpr CBTHeightBuildRegion CBTHeightChainCoarserRegion(const CBTHeightBuildRegion& finer, uint32_t finerX,
-                                                           uint32_t finerZ)
-{
-    const uint32_t lastX = finerX / 2u;
-    const uint32_t lastZ = finerZ / 2u;
-    CBTHeightBuildRegion coarse;
-    coarse.MinX = finer.MinX / 2u;
-    coarse.MinZ = finer.MinZ / 2u;
-    coarse.MaxX = (finer.MaxX + 1u) / 2u < lastX ? (finer.MaxX + 1u) / 2u : lastX;
-    coarse.MaxZ = (finer.MaxZ + 1u) / 2u < lastZ ? (finer.MaxZ + 1u) / 2u : lastZ;
-    return coarse;
-}
-
-// The blocks of a height-range pyramid level, `blocksX` x `blocksZ` of them, whose build reads any of the
-// `samples`, where a block spans 2^`shift` samples along each axis: block b reads samples b << shift to
-// (b + 1) << shift, and the last block also the samples past its end. Mirror cbt_kernels.comp
-// Kernel_HeightRangeBuild.
-constexpr CBTHeightBuildRegion CBTHeightRangeBlocksReading(const CBTHeightBuildRegion& samples, uint32_t shift,
-                                                           uint32_t blocksX, uint32_t blocksZ)
-{
-    CBTHeightBuildRegion blocks;
-    blocks.MinX = samples.MinX > 0u ? (samples.MinX - 1u) >> shift : 0u;
-    blocks.MinZ = samples.MinZ > 0u ? (samples.MinZ - 1u) >> shift : 0u;
-    blocks.MaxX = (samples.MaxX >> shift) < blocksX - 1u ? samples.MaxX >> shift : blocksX - 1u;
-    blocks.MaxZ = (samples.MaxZ >> shift) < blocksZ - 1u ? samples.MaxZ >> shift : blocksZ - 1u;
-    blocks.MinX = blocks.MinX < blocks.MaxX ? blocks.MinX : blocks.MaxX;
-    blocks.MinZ = blocks.MinZ < blocks.MaxZ ? blocks.MinZ : blocks.MaxZ;
-    return blocks;
-}
-
-// The blocks of the next coarser pyramid level whose 2 x 2 fold reads any block of `finer`.
-constexpr CBTHeightBuildRegion CBTHeightRangeCoarserRegion(const CBTHeightBuildRegion& finer)
-{
-    return {finer.MinX >> 1u, finer.MinZ >> 1u, finer.MaxX >> 1u, finer.MaxZ >> 1u};
-}
-
-// The smallest region that holds both `a` and `b`.
-constexpr CBTHeightBuildRegion CBTHeightBuildRegionUnion(const CBTHeightBuildRegion& a, const CBTHeightBuildRegion& b)
-{
-    return {a.MinX < b.MinX ? a.MinX : b.MinX, a.MinZ < b.MinZ ? a.MinZ : b.MinZ, a.MaxX > b.MaxX ? a.MaxX : b.MaxX,
-            a.MaxZ > b.MaxZ ? a.MaxZ : b.MaxZ};
-}
-
 // ---------------------------------------------------------------------------
 // Planet-shading surface params (plan §planet-shading)
 // ---------------------------------------------------------------------------
@@ -1060,19 +823,6 @@ constexpr CBTHeightBuildRegion CBTHeightBuildRegionUnion(const CBTHeightBuildReg
 // layout is untouched. Host-visible ring: the render feature writes slot (frameIndex % ring)
 // each frame, and the fragment offset-binds that one slot (kCBTSurfaceParamsSlotStride) so it
 // always reads element [0]. Mirror of CBTSurfaceParamsData in cbt_surface.glsl.
-// The anchor of one cube face for the planet fragment's page point (cbt_planet_page.glsl, planets 3.7): the
-// level-0 lattice point of the eye's projection on the face, as texels and the fractions past them. The
-// texels may lie outside the face. TexelX kCBTPlanetPageNoAnchor: the face has no anchor.
-struct CBTPlanetPageAnchor
-{
-    int32_t TexelX = 0;
-    int32_t TexelZ = 0;
-    float FractionX = 0.0f;
-    float FractionZ = 0.0f;
-};
-static_assert(sizeof(CBTPlanetPageAnchor) == 16, "CBTPlanetPageAnchor mirrors one GLSL ivec4");
-inline constexpr int32_t kCBTPlanetPageNoAnchor = 0x7FFFFFFF;
-
 struct CBTSurfaceParams
 {
     float Radius = 0.0f;
@@ -1108,41 +858,21 @@ struct CBTSurfaceParams
     uint32_t AtlasNormalBindless = 0u;
     uint32_t AtlasSplatCoarseBindless = 0u;
     uint32_t AtlasNormalCoarseBindless = 0u;
-    // The atlas-resident grass control field (RG8: height, density) and its coarse field, for the
-    // canopy occlusion the ground takes where grass stands (terrain_grass_canopy.glsl). 0 when the
-    // terrain authors no grass region; the ground then reads the field as (1, 1), as placement does.
-    uint32_t AtlasGrassBindless = 0u;
-    uint32_t AtlasGrassCoarseBindless = 0u;
-    // The atlas-resident colour map and its coarse map (TerrainColorMap.h). 0 when the terrain has
-    // none; the ground then reads identity.
-    uint32_t AtlasColorBindless = 0u;
-    uint32_t AtlasColorCoarseBindless = 0u;
     // Analytic sphere modifiers (sculpt shape-accuracy S2 — mirror the tail of CBTSurfaceParamsData
     // in cbt_surface.glsl). The same placement set CBTFrameParams carries, here for the fragment's
-    // per-pixel composed sculpt (centre height + gradient taps + tap gate). DabCount keeps the
-    // vec4-struct array 16-aligned in std430 (104 + 4 + 4 = 112); transient dabs occupy slots
-    // [Count, Count+DabCount). Both 0 = every analytic branch skipped.
+    // per-pixel composed sculpt (centre height + gradient taps + tap gate). DabCount (S3, the old
+    // pad slot) keeps the vec4-struct array 16-aligned in std430 (88 + 4 + 4 = 96); transient
+    // dabs occupy slots [Count, Count+DabCount). Both 0 = every analytic branch skipped.
     uint32_t SphereAnalyticCount = 0u;
     uint32_t SphereAnalyticDabCount = 0u;
     float SphereAnalytic[kMaxSphereAnalyticModifiers * kSphereAnalyticFloatsPerModifier] = {};
-    // The planet's height pages in the fragment (cbt_planet_page.glsl): one anchor per cube face, the
-    // eye planet-local and relative to the render origin, and PlanetPaged 1 when the fragment shades
-    // from the pages (gPageTable, gPageCache). A planar terrain whose surface is paged: the first word of
-    // its surface table in the page-table slot, and its kCBTSurfacePlane* bits (0: the surface textures).
-    CBTPlanetPageAnchor PageAnchors[kCubeFaceCount6] = {};
-    Mathematics::Vector4 PageEye;
-    Mathematics::Vector4 PageEyeRelative;
-    uint32_t PlanetPaged = 0u;
-    uint32_t SurfacePageBase = 0u; // scalars, not an array: a std140 array strides 16 B a scalar
-    uint32_t SurfacePagedPlanes = 0u;
-    uint32_t PlanetPagePad2 = 0u;
 };
-static_assert(sizeof(CBTSurfaceParams) == 1024,
-              "CBTSurfaceParams must be 1024B (26 scalars + count/pad + 16 x 3 vec4 analytic set + the "
-              "planet page tail, std430 mirror)");
-static_assert(offsetof(CBTSurfaceParams, SphereAnalyticCount) == 104 &&
-                  offsetof(CBTSurfaceParams, SphereAnalytic) == 112,
-              "analytic tail is appended after the leading 104B block, array 16-aligned (std430)");
+static_assert(sizeof(CBTSurfaceParams) == 864,
+              "CBTSurfaceParams must be 864B (22 scalars + count/pad + 16 x 3 vec4 analytic set, "
+              "std430 mirror)");
+static_assert(offsetof(CBTSurfaceParams, SphereAnalyticCount) == 88 &&
+                  offsetof(CBTSurfaceParams, SphereAnalytic) == 96,
+              "analytic tail is appended after the leading 88B block, array 16-aligned (std430)");
 
 // Per-slot stride, padded well past sizeof so slot * stride satisfies every device's
 // minStorageBufferOffsetAlignment when the fragment offset-binds a single ring slot.
@@ -1150,27 +880,6 @@ inline constexpr uint32_t kCBTSurfaceParamsSlotStride = 1280u;
 static_assert(kCBTSurfaceParamsSlotStride % 256u == 0u && kCBTSurfaceParamsSlotStride >=
                   sizeof(CBTSurfaceParams),
               "surface-params slot stride must be 256-aligned and hold one struct");
-
-// The terrain draw's level rule (cbt_vertex_modifier.glsl, cbt_height_chain.glsl): what the vertex
-// modifier needs to move a far vertex to the chain level its distance asks for. A GRAPHICS-only
-// uniform ring like CBTSurfaceParams, offset-bound per frame slot as gCbtDrawLevel on set 2. Mirror
-// CBTDrawLevelParamsData in cbt_layout.glsl.
-struct CBTDrawLevelParams
-{
-    // xyz = the CBT camera (world, the one Classify culls with, so every view of the tree draws one
-    // surface), w = the level scale t / (f x s0) (CBTFrameParams::HeightChain.x); 0 = the draw keeps
-    // the cached corners.
-    Mathematics::Vector4 Eye;
-    Mathematics::Vector4 Height; // x = height scale, y = origin Y (world = normalized x scale + origin), zw = 0
-    // x = the level-0 samples (x | z << 16): the chain is read only when its header names the same
-    // lattice. y = the normal chain's mips (CBTNormalChainMips), 0 when it is not provisioned: the surface
-    // then shades from the level-0 normal map everywhere. zw = 0.
-    uint32_t Lattice[4] = {};
-};
-static_assert(sizeof(CBTDrawLevelParams) == 48, "CBTDrawLevelParams is three vec4 (std140)");
-inline constexpr uint32_t kCBTDrawLevelParamsSlotStride = 256u;
-static_assert(kCBTDrawLevelParamsSlotStride % 256u == 0u && kCBTDrawLevelParamsSlotStride >= sizeof(CBTDrawLevelParams),
-              "draw-level slot stride must be 256-aligned and hold one struct");
 
 // ---------------------------------------------------------------------------
 // Push constants (<= 128 bytes, single shared block across all kernels)
@@ -1207,8 +916,15 @@ struct CBTPushConstants
     float DirtyMinV = 0.0f;
     float DirtyMaxU = 0.0f;
     float DirtyMaxV = 0.0f;
-    // The planar dirty rect above; the sphere's face rects ride CBTFrameParams::SphereDirty.
-    // SphereSculptEnabled gates the VertexEval additive sculpt sample (0 = pure procedural relief).
+    // Planet-editing v1 (plan §planet-editing): the (face,rect) region identity. On the
+    // SPHERE, the dirty rect above is a FACE-LOCAL UV rect and DirtyFace selects which
+    // cube face it lies on — Classify flags MODIFIED only for bisectors on that face whose
+    // face-local UV AABB overlaps it (region-proportional per face; a cross-face edit is
+    // handed one face per update, the others re-refine via the normal metric). Ignored in
+    // planar mode (DirtyFace unused; the rect is a whole-terrain UV rect). SphereSculptEnabled
+    // gates the VertexEval additive sculpt sample (0 = pure procedural relief, the C7 default
+    // — zero overhead and byte-identical to pre-edit).
+    uint32_t DirtyFace = 0u;
     uint32_t SphereSculptEnabled = 0u;
     // Quiescence gate for VertexEval (plan §planet-shading perf). 0 = evaluate the whole live
     // pool (pre-slice behavior; the force pass after init / a param change). 1 = evaluate only
@@ -1232,18 +948,16 @@ struct CBTPushConstants
     // as the interior of a wholly-horizon-invisible root region (CBTInstance::RegionFreeToBase /
     // FarFieldReseedDetector). 0 in the normal update.
     uint32_t RegionFreeMask = 0u;
+    // Earth-scale (sector, local) storage A/B (decode-precision arc S2a). 1 = spherical VertexEval
+    // decodes each corner via the df64 path (cbt_deep_decode.glsl, the GLSL twin of CBTDeepDecode.h)
+    // and stores (sector anchor, fp32 local offset) with DeepTag = 1; 0 (default) = the fp32 world
+    // store, byte-identical to the pre-S2a pipeline. Only VertexEval reads it — every CONSUMER
+    // branches on the per-slot DeepTag instead, so mixed-mode pools degrade gracefully. Driven from
+    // GE_CBT_DEEP_DECODE by CBTUpdateSystem (default OFF — the dark-ship).
+    uint32_t DeepDecode = 0u;
     // Planar pool-pressure scale (Kernel_Reset / Kernel_Classify). 1 = on; 0 holds the scale at 1x —
     // the A/B arm the pinned-regime oracles use. Mirrors CBTClassifyDesc::PoolPressure.
     uint32_t PoolPressure = 1u;
-    // The region the height build kernels write at the level PassIndex names: the first element
-    // (x | z << 16) and the extent (width | height << 16), in samples for Kernel_HeightChainBuild, in
-    // texels for Kernel_NormalChainBuild and in blocks for Kernel_HeightRangeBuild. Only they read it.
-    uint32_t BuildRegionMin = 0u;
-    uint32_t BuildRegionExtent = 0u;
-    // The rest rule (Kernel_Classify). 1 = every input matches the previous update's, so the planar
-    // split and merge use one threshold; 0 = the camera or another input moved, and they keep the
-    // hysteresis band. Mirrors CBTClassifyDesc::Settle.
-    uint32_t Settle = 0u;
 };
 
 // ---------------------------------------------------------------------------
@@ -1270,21 +984,18 @@ static_assert(offsetof(CBTBisectorData, PropagationID) == 16, "hot-field-front l
 static_assert(offsetof(CBTBisectorData, Indices) == 20, "indices[3] tail");
 static_assert(sizeof(CBTVertexData) == 96,
               "CBTVertexData must be 4 x vec4 + 4 x uvec2 (96B std430 — S2a (sector, local) tail)");
-static_assert(offsetof(CBTVertexData, Meta) == 48, "corner/meta offsets must not move");
+static_assert(offsetof(CBTVertexData, Meta) == 48, "legacy corner/meta offsets must not move (dark-ship)");
 static_assert(offsetof(CBTVertexData, Sector0) == 64 && offsetof(CBTVertexData, DeepTag) == 88,
               "sector tail is appended after the legacy 64B block (uvec2-aligned)");
-static_assert(sizeof(CBTFrameParams) == 1920,
-              "CBTFrameParams must be mat4 + 13 vec4 + 16 x 3 vec4 analytic set + the height-chain vec4 + "
-              "48 uvec4 cell masks + 6 face dirty rects (1920B std140)");
+static_assert(sizeof(CBTFrameParams) == 1808,
+              "CBTFrameParams must be mat4 + 13 vec4 + 16 x 3 vec4 analytic set + 48 uvec4 cell "
+              "masks (1808B std140 — S3 appends the mask tail)");
 static_assert(offsetof(CBTFrameParams, WaterPlane) == 240 &&
                   offsetof(CBTFrameParams, AnalyticParams) == 256 &&
                   offsetof(CBTFrameParams, SphereAnalytic) == 272,
               "analytic tail is appended after the 256B scalar block (vec4-aligned, std140)");
-static_assert(offsetof(CBTFrameParams, HeightChain) == 1040,
-              "the height-chain vec4 follows the analytic set (vec4-aligned, std140)");
-static_assert(offsetof(CBTFrameParams, AnalyticCellMask) == 1056,
-              "the S3 cell-mask tail is appended after the 1056B frame block (uvec4-aligned, std140)");
-static_assert(offsetof(CBTFrameParams, SphereDirty) == 1824, "the face dirty rects follow the cell masks");
+static_assert(offsetof(CBTFrameParams, AnalyticCellMask) == 1040,
+              "the S3 cell-mask tail is appended after the 1040B frame block (uvec4-aligned, std140)");
 
 static_assert((kDefaultBisectorPoolSize & (kDefaultBisectorPoolSize - 1u)) == 0u,
               "pool size must be a power of two");
@@ -1292,11 +1003,11 @@ static_assert(kDefaultBisectorPoolSize % 32u == 0u, "pool size must be a multipl
 static_assert(kDefaultBaseDepth == CBTLog2(kRootHalfedgeCount), "baseDepth = log2(halfedges)");
 static_assert(kRootHalfedgeCount == 2u, "C2 conforming base = 2 twin triangles");
 static_assert(kDefaultBaseDepth == 1u, "log2(2) = 1");
-static_assert(sizeof(CBTPushConstants) == 92,
-              "push constants must stay 92B (10 u32 + 4 f32 dirty-rect + 1 u32 sphere sculpt enable + "
+static_assert(sizeof(CBTPushConstants) == 88,
+              "push constants must stay 88B (10 u32 + 4 f32 dirty-rect + 2 u32 sphere face/enable + "
               "1 u32 vertex-eval gate + 1 u32 edit-retess enable + 1 u32 near-field gate + 1 u32 "
-              "region-free mask + 1 u32 pool-pressure + 2 u32 height-chain region + 1 u32 settle; "
-              "GLSL mirror; <= 128B policy)");
+              "region-free mask + 1 u32 deep-decode (S2a) + 1 u32 pool-pressure; GLSL mirror; "
+              "<= 128B policy)");
 
 // u32 sum-tree derivation sanity for the default 2^20 pool (1M pool bump).
 static_assert(kDefaultBitfieldWords == 32768u, "1M / 32 = 32768 u32 bitfield words");

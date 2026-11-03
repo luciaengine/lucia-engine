@@ -56,14 +56,8 @@ class SlotAllocator
     // newCount must be > oldCap (otherwise the caller already fits).
     uint16_t TryGrowInPlace(uint32_t start, uint16_t oldCap, uint16_t newCount);
 
-    // Defrag is deliberately not implemented in Stage 0 — the gating
-    // bench (plan §3.6) measures steady-state behavior without defrag.
-    // Stage 1+ will add it; the signature will be:
-    //   void Defrag(const std::function<void(uint32_t oldStart,
-    //                                        uint32_t newStart,
-    //                                        uint16_t cap)>& onRelocate);
-    // where the callback performs the actual storage memcpy. Storage
-    // type stays opaque to the allocator.
+    // There is no defrag: a live range never moves unless its owner
+    // relocates it (Allocate + copy + Free).
 
     // Currently in-use slots (sum of caps of all live ranges).
     size_t GetUsedSlots() const { return m_UsedSlots; }

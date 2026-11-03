@@ -16,7 +16,7 @@
 
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Common/Frustum.h"     // ExtractFrustumPlanes
 #include "Rendering/Core/GPUCulling.h"    // MakeFrustumPlanesCameraRelative
 #include "Types/FormatNumber.h"           // FormatFloat (Inspector compose-display)
@@ -136,21 +136,21 @@ TEST(RenderOrigin, RebasedViewIsBitIdenticalWhenInactive)
     const Matrix4x4 viewProj = proj * view;
 
     Rendering::CameraData cam{};
-    cam.view = view;
-    cam.proj = proj;
-    cam.viewProj = viewProj;
-    cam.cameraPos.x = camPos.x;
-    cam.cameraPos.y = camPos.y;
-    cam.cameraPos.z = camPos.z;
+    std::memcpy(cam.view, view.Data(), sizeof(cam.view));
+    std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
+    std::memcpy(cam.viewProj, viewProj.Data(), sizeof(cam.viewProj));
+    cam.cameraPos[0] = camPos.x;
+    cam.cameraPos[1] = camPos.y;
+    cam.cameraPos[2] = camPos.z;
 
-    Origin::ComputeRebasedView(cam.view, cam.proj, cam.viewProj, cam.cameraPos.x, cam.cameraPos.y,
-                               cam.cameraPos.z, cam.viewRel, cam.viewProjRel, cam.renderOriginSector);
+    Origin::ComputeRebasedView(cam.view, cam.proj, cam.viewProj, cam.cameraPos[0], cam.cameraPos[1],
+                               cam.cameraPos[2], cam.viewRel, cam.viewProjRel, cam.renderOriginSector);
 
     EXPECT_EQ(cam.renderOriginSector[0], 0);
     EXPECT_EQ(cam.renderOriginSector[1], 0);
     EXPECT_EQ(cam.renderOriginSector[2], 0);
-    EXPECT_EQ(0, std::memcmp(cam.viewRel.Data(), cam.view.Data(), sizeof(cam.view)));
-    EXPECT_EQ(0, std::memcmp(cam.viewProjRel.Data(), cam.viewProj.Data(), sizeof(cam.viewProj)));
+    EXPECT_EQ(0, std::memcmp(cam.viewRel, cam.view, sizeof(cam.view)));
+    EXPECT_EQ(0, std::memcmp(cam.viewProjRel, cam.viewProj, sizeof(cam.viewProj)));
 }
 
 // ---- Reconstruction round-trip: world -> (sector,local) -> world -------------
@@ -252,17 +252,18 @@ TEST(RenderOrigin, RebasedProjectionMatchesFullWorldWhenClean)
     const Matrix4x4 viewProj = proj * view;
 
     Rendering::CameraData cam{};
-    cam.view = view;
-    cam.proj = proj;
-    cam.viewProj = viewProj;
-    cam.cameraPos.x = camPos.x;
-    cam.cameraPos.y = camPos.y;
-    cam.cameraPos.z = camPos.z;
-    Origin::ComputeRebasedView(cam.view, cam.proj, cam.viewProj, cam.cameraPos.x, cam.cameraPos.y,
-                               cam.cameraPos.z, cam.viewRel, cam.viewProjRel, cam.renderOriginSector);
+    std::memcpy(cam.view, view.Data(), sizeof(cam.view));
+    std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
+    std::memcpy(cam.viewProj, viewProj.Data(), sizeof(cam.viewProj));
+    cam.cameraPos[0] = camPos.x;
+    cam.cameraPos[1] = camPos.y;
+    cam.cameraPos[2] = camPos.z;
+    Origin::ComputeRebasedView(cam.view, cam.proj, cam.viewProj, cam.cameraPos[0], cam.cameraPos[1],
+                               cam.cameraPos[2], cam.viewRel, cam.viewProjRel, cam.renderOriginSector);
     ASSERT_NE(cam.renderOriginSector[0] | cam.renderOriginSector[1] | cam.renderOriginSector[2], 0);
 
-    Matrix4x4 vpRel = cam.viewProjRel;
+    Matrix4x4 vpRel;
+    std::memcpy(vpRel.Data(), cam.viewProjRel, sizeof(cam.viewProjRel));
 
     float ox, oy, oz;
     Origin::SectorToWorld(Components::WorldSectorCoord{cam.renderOriginSector[0], cam.renderOriginSector[1],
@@ -307,14 +308,14 @@ TEST(RenderOrigin, RebasedTranslationSmoothUnderRotationAtRange)
         const Matrix4x4 viewProj = proj * view;
 
         Rendering::CameraData cam{};
-        cam.view = view;
-        cam.proj = proj;
-        cam.viewProj = viewProj;
-        cam.cameraPos.x = camPos.x;
-        cam.cameraPos.y = camPos.y;
-        cam.cameraPos.z = camPos.z;
-        Origin::ComputeRebasedView(cam.view, cam.proj, cam.viewProj, cam.cameraPos.x,
-                                   cam.cameraPos.y, cam.cameraPos.z, cam.viewRel,
+        std::memcpy(cam.view, view.Data(), sizeof(cam.view));
+        std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
+        std::memcpy(cam.viewProj, viewProj.Data(), sizeof(cam.viewProj));
+        cam.cameraPos[0] = camPos.x;
+        cam.cameraPos[1] = camPos.y;
+        cam.cameraPos[2] = camPos.z;
+        Origin::ComputeRebasedView(cam.view, cam.proj, cam.viewProj, cam.cameraPos[0],
+                                   cam.cameraPos[1], cam.cameraPos[2], cam.viewRel,
                                    cam.viewProjRel, cam.renderOriginSector);
         ASSERT_NE(cam.renderOriginSector[0] | cam.renderOriginSector[1] | cam.renderOriginSector[2], 0);
 
@@ -331,7 +332,7 @@ TEST(RenderOrigin, RebasedTranslationSmoothUnderRotationAtRange)
             -(static_cast<double>(v[2]) * lx + static_cast<double>(v[6]) * ly + static_cast<double>(v[10]) * lz)};
 
         for (int c = 0; c < 3; ++c)
-            maxNewErr = std::max(maxNewErr, std::fabs(static_cast<double>(cam.viewRel[3][c]) - ref[c]));
+            maxNewErr = std::max(maxNewErr, std::fabs(static_cast<double>(cam.viewRel[12 + c]) - ref[c]));
 
         // Legacy fp32 column rebase for the fails-before contrast.
         float ox, oy, oz;
@@ -394,17 +395,18 @@ TEST(RenderOrigin, FarFieldDepthResolvedWhereBaselineZFights)
     const Matrix4x4 view = Inverse(MakeCameraWorld(Matrix4x4::Identity(), camPos));
 
     Rendering::CameraData cam{};
-    cam.view = view;
-    cam.proj = Matrix4x4::Identity(); // proj irrelevant for view-space depth
-    cam.viewProj = view;
-    cam.cameraPos.x = camPos.x;
-    cam.cameraPos.y = camPos.y;
-    cam.cameraPos.z = camPos.z;
-    Origin::ComputeRebasedView(cam.view, cam.proj, cam.viewProj, cam.cameraPos.x, cam.cameraPos.y,
-                               cam.cameraPos.z, cam.viewRel, cam.viewProjRel, cam.renderOriginSector);
+    std::memcpy(cam.view, view.Data(), sizeof(cam.view));
+    std::memcpy(cam.proj, Matrix4x4::Identity().Data(), sizeof(cam.proj)); // proj irrelevant for view-space depth
+    std::memcpy(cam.viewProj, view.Data(), sizeof(cam.viewProj));
+    cam.cameraPos[0] = camPos.x;
+    cam.cameraPos[1] = camPos.y;
+    cam.cameraPos[2] = camPos.z;
+    Origin::ComputeRebasedView(cam.view, cam.proj, cam.viewProj, cam.cameraPos[0], cam.cameraPos[1],
+                               cam.cameraPos[2], cam.viewRel, cam.viewProjRel, cam.renderOriginSector);
     ASSERT_NE(cam.renderOriginSector[0] | cam.renderOriginSector[1] | cam.renderOriginSector[2], 0);
 
-    Matrix4x4 viewRel = cam.viewRel;
+    Matrix4x4 viewRel;
+    std::memcpy(viewRel.Data(), cam.viewRel, sizeof(cam.viewRel));
     auto rel = [&](const Components::WorldSectorCoord& s, const Vector3& loc) {
         return Vector3((s.x - cam.renderOriginSector[0]) * Origin::kSectorSize + loc.x,
                        (s.y - cam.renderOriginSector[1]) * Origin::kSectorSize + loc.y,
@@ -883,12 +885,12 @@ TEST(RenderOrigin, CullPredicateMatchesPreciseReferenceAtRange)
     const Matrix4x4 viewProj = proj * view;
 
     Rendering::CameraData cam{};
-    cam.view = view;
-    cam.proj = proj;
-    cam.viewProj = viewProj;
-    cam.cameraPos.x = camPos.x; cam.cameraPos.y = camPos.y; cam.cameraPos.z = camPos.z;
-    Origin::ComputeRebasedView(cam.view, cam.proj, cam.viewProj, cam.cameraPos.x, cam.cameraPos.y,
-                               cam.cameraPos.z, cam.viewRel, cam.viewProjRel, cam.renderOriginSector);
+    std::memcpy(cam.view, view.Data(), sizeof(cam.view));
+    std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
+    std::memcpy(cam.viewProj, viewProj.Data(), sizeof(cam.viewProj));
+    cam.cameraPos[0] = camPos.x; cam.cameraPos[1] = camPos.y; cam.cameraPos[2] = camPos.z;
+    Origin::ComputeRebasedView(cam.view, cam.proj, cam.viewProj, cam.cameraPos[0], cam.cameraPos[1],
+                               cam.cameraPos[2], cam.viewRel, cam.viewProjRel, cam.renderOriginSector);
     ASSERT_NE(cam.renderOriginSector[0] | cam.renderOriginSector[1] | cam.renderOriginSector[2], 0);
     float ox, oy, oz;
     Origin::SectorToWorld(Components::WorldSectorCoord{cam.renderOriginSector[0], cam.renderOriginSector[1],
@@ -896,8 +898,8 @@ TEST(RenderOrigin, CullPredicateMatchesPreciseReferenceAtRange)
     const Vector3 origin(ox, oy, oz);
 
     Matrix4x4 vpWorld, vpRel;
-    vpWorld = cam.viewProj;
-    vpRel = cam.viewProjRel;
+    std::memcpy(vpWorld.Data(), cam.viewProj, 64);
+    std::memcpy(vpRel.Data(), cam.viewProjRel, 64);
     Vector4 worldPlanes[6], refPlanes[6], relPlanes[6];
     GameEngine::Rendering::ExtractFrustumPlanes(vpWorld, worldPlanes);
     GameEngine::Rendering::ExtractFrustumPlanes(vpRel, refPlanes); // precise reference planes

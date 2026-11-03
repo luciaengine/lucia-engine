@@ -1,11 +1,10 @@
 #pragma once
 
-#include "Engine/Rendering/FogSunLightingResolver.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Engine/Rendering/VolumetricFogSettings.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineIdentifiers.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include <unordered_map>
@@ -56,9 +55,13 @@ class VolumetricFogRenderer final : public IRenderFeature
         VolumetricFogGrid historyGrid{};
         float effectiveMaxDistance = 0.0f;
         float historyMaxDistance = 0.0f;
-        ResolvedFogSun currentSun{};
+        float currentSunDirection[3]{0.35f, -0.65f, 0.68f};
+        float currentSunColor[3]{1.0f, 0.86f, 0.62f};
+        float currentSunIntensity = 1.0f;
         bool hasLocalFogLights = false;
-        ResolvedFogSun historySun{};
+        float historySunDirection[3]{0.35f, -0.65f, 0.68f};
+        float historySunColor[3]{1.0f, 0.86f, 0.62f};
+        float historySunIntensity = 1.0f;
         uint64_t frameCounter = 0;
         uint64_t historyFrame = 0;
         bool historyValid = false;

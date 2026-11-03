@@ -1,7 +1,6 @@
 #include "SplineLayout/TileLayout.h"
 
 #include "Components/Spline/SplineStationJitter.h"
-#include "Mathematics/Interpolation.h"
 #include "SplineLayout/PieceBasis.h"
 
 #include <algorithm>
@@ -178,7 +177,7 @@ std::vector<TilePose> BuildTilePoses(const std::vector<CenterSample>& center,
         if (taperMetres > 0.0f)
         {
             const float32 fromNearestEnd = std::min(nominal, drapedLength - nominal);
-            keep *= Math::Clamp01(fromNearestEnd / taperMetres);
+            keep *= std::clamp(fromNearestEnd / taperMetres, 0.0f, 1.0f);
         }
         return keep;
     };
@@ -266,7 +265,7 @@ std::vector<TilePose> BuildTilePoses(const std::vector<CenterSample>& center,
         V3 up = worldUp;
         if (params.AlignToSurfaceNormal)
         {
-            const float32 blend = Math::Clamp01(params.SlopeBlend);
+            const float32 blend = std::clamp(params.SlopeBlend, 0.0f, 1.0f);
             up = NormalizedOrFallback(worldUp + (c.Normal - worldUp) * blend, worldUp);
             // Ground steep enough to lay a tile on its side is held at the
             // ceiling. Right is Cross(up, forward), so an up leaning this far

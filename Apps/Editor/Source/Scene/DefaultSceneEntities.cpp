@@ -1,13 +1,10 @@
 #include "Scene/DefaultSceneEntities.h"
 
-#include "Inspectors/ComponentPresets.h"
-
-#include "Assets/AssetRegistry.h"
 #include "Components/Name.h"
 #include "Components/Rendering/Camera.h"
 #include "Components/Rendering/Light.h"
+#include "Components/Rendering/LightPhotometry.h"
 #include "Components/Rendering/MeshRenderer.h"
-#include "Components/Rendering/PostProcessEffects/HeightFogEffect.h"
 #include "Components/Rendering/PostProcessVolume.h"
 #include "Components/Rendering/SkyEnvironment.h"
 #include "Components/Transform.h"
@@ -73,22 +70,11 @@ void SpawnDynamicSphere(ECS::World& world,
     SetName(e, name);
 }
 
-// The engine's grid ground, shared with the Basic 3D template's ground. The material file is engine
-// content (Engine/Assets/Materials), staged into the editor asset source, whose GUIDs derive from their
-// paths.
-GUID GroundGridMaterialGuid()
-{
-    return AssetRegistry::DeriveGuidForSourcePath(kAssetSourceAliasEditor, "Materials/GroundGrid.material");
-}
-
 } // namespace
 
 void SeedDefaultSceneEntities(ECS::World& world, Engine::Renderer::RenderServices* rs)
 {
     const GUID matGuid = Engine::Renderer::PrimitiveGenerator::DefaultMaterialGuid();
-    // The camera sees, and the ground reaches, as far as the default height fog takes to cover the
-    // ground, so the ground ends inside the horizon haze rather than as a line below the horizon.
-    const float viewDistance = HeightFogEffect{}.MaxDistance;
 
     // --- Directional Light (inspector Euler 50, -30, 0; shines along +Z) ---
     ECS::EntityHandle directionalLightHandle{};
@@ -99,7 +85,12 @@ void SeedDefaultSceneEntities(ECS::World& world, Engine::Renderer::RenderService
                                                 kDefaultDirectionalLightEulerZDeg);
         e.Set(Transform::FromTRS(Mathematics::Vector3{0.0f, 3.0f, 0.0f}, rot, Mathematics::Vector3{1.0f, 1.0f, 1.0f}));
 
-        e.Set(MakeDefaultDirectionalLight());
+        Light light{};
+        light.Type = LightType::Directional;
+        light.Intensity = kClearNoonSunIlluminanceLux;
+        light.IntensityUnit = LightUnit::Lux; // physical units by default
+        light.CastsShadows = true;
+        e.Set(light);
 
         SetName(e, "Directional Light");
         directionalLightHandle = e.GetHandle();
@@ -114,10 +105,7 @@ void SeedDefaultSceneEntities(ECS::World& world, Engine::Renderer::RenderService
     {
         ECS::Entity e = world.Create();
         e.Set(Transform::FromTRS(Mathematics::Vector3{}, Mathematics::Quaternion{}, Mathematics::Vector3{1.0f, 1.0f, 1.0f}));
-        // The component's default sun stands mid-morning in the south-east, over the default
-        // camera's shoulder, so a new scene shows sunlit vertical faces and shadows that fall
-        // away from the camera.
-        SkyEnvironment sky{};
+        SkyEnvironment sky{}; // defaults: noon, auto sun/moon
         sky.SunLight = directionalLightHandle;
         e.Set(sky);
         SetName(e, "Sky Environment");
@@ -130,9 +118,7 @@ void SeedDefaultSceneEntities(ECS::World& world, Engine::Renderer::RenderService
             Mathematics::Vector3{0.0f, 3.0f, -10.0f},
             Mathematics::Quaternion{},
             Mathematics::Vector3{1.0f, 1.0f, 1.0f}));
-        Camera camera{};
-        camera.FarZ = viewDistance;
-        e.Set(camera);
+        e.Set(Camera{});
         SetName(e, "Main Camera");
     }
 
@@ -146,8 +132,6 @@ void SeedDefaultSceneEntities(ECS::World& world, Engine::Renderer::RenderService
         PostProcessVolume volume{};
         volume.IsGlobal = true;
         e.Set(volume);
-        // The default height fog is the horizon haze in the sky's own horizon color.
-        e.Set(HeightFogEffect{});
         // Exposure is on the Main Camera (default Auto); camera-less views (the editor Scene View)
         // auto-meter from the world default.
 
@@ -157,13 +141,11 @@ void SeedDefaultSceneEntities(ECS::World& world, Engine::Renderer::RenderService
     // --- Ground Plane ---
     if (rs)
     {
-        const GUID groundGuid = Engine::Renderer::PrimitiveGenerator::GroundGuid();
+        const GUID planeGuid = Engine::Renderer::PrimitiveGenerator::PlaneGuid();
         ECS::Entity e = world.Create();
-        // The ground primitive is 1 m wide: this scale puts its edge viewDistance from the origin.
-        // The grid ground tiles its 1 m cell 6000 times across the plane, which is 2 x viewDistance wide.
-        e.Set(Transform::FromTRS(Mathematics::Vector3{0.0f, 0.0f, 0.0f}, Mathematics::Quaternion{}, Mathematics::Vector3{2.0f * viewDistance, 1.0f, 2.0f * viewDistance}));
-        e.Set(MakeMeshRenderer(rs, groundGuid, GroundGridMaterialGuid()));
-        e.Set(Engine::Renderer::PrimitiveGenerator::MakePrimitiveLocalBounds(rs, groundGuid));
+        e.Set(Transform::FromTRS(Mathematics::Vector3{0.0f, 0.0f, 0.0f}, Mathematics::Quaternion{}, Mathematics::Vector3{100.0f, 1.0f, 100.0f}));
+        e.Set(MakeMeshRenderer(rs, planeGuid, matGuid));
+        e.Set(Engine::Renderer::PrimitiveGenerator::MakePrimitiveLocalBounds(rs, planeGuid));
 
         PhysicsBody planeBody{};
         planeBody.motionType = Physics::MotionType::Static;
@@ -175,7 +157,7 @@ void SeedDefaultSceneEntities(ECS::World& world, Engine::Renderer::RenderService
         world.AddComponentImmediate(e.GetHandle(), planeCollider);
         world.AddComponentImmediate(e.GetHandle(), PlaneColliderShape{});
 
-        SetName(e, "Ground");
+        SetName(e, "Plane");
     }
 
     // --- Sphere ---
@@ -183,8 +165,8 @@ void SeedDefaultSceneEntities(ECS::World& world, Engine::Renderer::RenderService
     {
         const GUID sphereGuid = Engine::Renderer::PrimitiveGenerator::SphereGuid();
         const GUID reflectionMatGuid = Engine::Renderer::PrimitiveGenerator::ReflectionProbeTestMaterialGuid();
-        SpawnDynamicSphere(world, rs, sphereGuid, matGuid, Mathematics::Vector3{-1.25f, SphereColliderShape{}.radius, 0.0f}, "Sphere");
-        SpawnDynamicSphere(world, rs, sphereGuid, reflectionMatGuid, Mathematics::Vector3{1.25f, SphereColliderShape{}.radius, 0.0f}, "Mirror Sphere");
+        SpawnDynamicSphere(world, rs, sphereGuid, matGuid, Mathematics::Vector3{-1.25f, 1.0f, 0.0f}, "Sphere");
+        SpawnDynamicSphere(world, rs, sphereGuid, reflectionMatGuid, Mathematics::Vector3{1.25f, 1.0f, 0.0f}, "Mirror Sphere");
     }
 
     world.ProcessCommands();

@@ -54,3 +54,29 @@ TEST(PlayButtonState, EditModeClearsTheActiveLook)
     EXPECT_FALSE(play.HasClass(Editor::kPlayButtonActiveClass));
     EXPECT_TRUE(play.IsEnabled());
 }
+
+TEST(PlayButtonState, MenuAccessAndActiveLookFollowEveryPlayModeState)
+{
+    struct Expected
+    {
+        Editor::PlayModeState State;
+        bool Enabled;
+        bool Active;
+    };
+    const Expected cases[] = {
+        {Editor::PlayModeState::Edit, true, false},
+        {Editor::PlayModeState::EnteringPlay, false, true},
+        {Editor::PlayModeState::Play, true, true},
+        {Editor::PlayModeState::Paused, true, true},
+        {Editor::PlayModeState::ExitingPlay, false, true},
+        {Editor::PlayModeState::ChangeReview, false, false},
+    };
+    Button play;
+    for (const auto& expected : cases)
+    {
+        SCOPED_TRACE(static_cast<int>(expected.State));
+        Editor::ApplyPlayButtonState(play, expected.State);
+        EXPECT_EQ(play.IsEnabled(), expected.Enabled);
+        EXPECT_EQ(play.HasClass(Editor::kPlayButtonActiveClass), expected.Active);
+    }
+}

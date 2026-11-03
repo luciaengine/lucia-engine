@@ -2,6 +2,7 @@
 
 #include "Startup/BuiltinAssetSync.h"
 
+#include "Core/Application.h" // PathUtils
 #include "Editor/EditorPaths.h"
 
 #include <vector>
@@ -11,6 +12,11 @@ namespace GameEngine::Editor::Startup
 std::filesystem::path GetEditorInstallAssetsRoot()
 {
     return GameEngine::Editor::GetEditorGlobalPaths().installAssetsRoot;
+}
+
+std::filesystem::path GetEditorUserCacheRoot()
+{
+    return GameEngine::Editor::GetEditorGlobalPaths().userCacheRoot;
 }
 
 std::filesystem::path GetDefaultProjectRoot()

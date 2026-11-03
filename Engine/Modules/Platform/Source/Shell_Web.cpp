@@ -2,10 +2,9 @@
 // system file manager, or browse the user's filesystem in place, so most entry
 // points here report failure loudly rather than pretending to have acted.
 //
-// Two are real. OpenUrl is window.open, which is what callers mean; it can
-// still be refused by a popup blocker outside a user gesture. SelectFolder is
-// the File System Access directory picker, which imports what the user chose
-// into the origin's storage — see the note on the import below.
+// OpenUrl uses window.open and can be refused outside a user gesture. File
+// pickers stage selected files for the caller to read and release. SelectFolder
+// imports the chosen directory into origin storage — see the note below.
 
 #include "Platform/Shell.h"
 
@@ -18,6 +17,8 @@
 
 #include <cstdlib>
 #include <string_view>
+
+EM_JS_DEPS(shellWeb, "$stringToNewUTF8");
 
 // Show the File System Access directory picker and copy what the user chose
 // into the origin's persistent storage, returning the name it was stored under
@@ -77,13 +78,13 @@ EM_ASYNC_JS(char*, GeWebPickDirectoryIntoOpfs, (), {
 // Firefox/Safari. ASYNCIFY unwinds the caller while the browser runs the
 // picker, same as SelectFolder. The staging root is released through
 // ReleaseTransientFiles once the caller has copied the files out.
-EM_ASYNC_JS(char*, GeWebPickFilesIntoMemfs, (), {
+EM_ASYNC_JS(char*, GeWebPickFilesIntoMemfs, (int multiple), {
     const files = [];
     if (typeof globalThis.showOpenFilePicker === 'function')
     {
         try
         {
-            const handles = await globalThis.showOpenFilePicker({ multiple: true });
+            const handles = await globalThis.showOpenFilePicker({ multiple: !!multiple });
             for (const handle of handles)
                 files.push(await handle.getFile());
         }
@@ -97,7 +98,7 @@ EM_ASYNC_JS(char*, GeWebPickFilesIntoMemfs, (), {
         const picked = await new Promise((resolve) => {
             const input = document.createElement('input');
             input.type = 'file';
-            input.multiple = true;
+            input.multiple = !!multiple;
             let settled = false;
             const finish = (list) => {
                 if (settled)
@@ -269,7 +270,15 @@ std::filesystem::path SelectFile(const std::filesystem::path& /*initialPath*/,
                                  const char* /*filterName*/,
                                  const char* /*filterPattern*/)
 {
-    GE_PLATFORM_WEB_UNAVAILABLE("the native file picker");
+    char* root = GeWebPickFilesIntoMemfs(false);
+    if (!root) return {};
+    const std::filesystem::path directory = root;
+    std::free(root);
+    std::error_code error;
+    for (std::filesystem::directory_iterator it(directory, error);
+         !error && it != std::filesystem::directory_iterator(); ++it)
+        if (it->is_regular_file(error)) return it->path();
+    std::filesystem::remove_all(directory, error);
     return {};
 }
 
@@ -279,7 +288,7 @@ std::vector<std::filesystem::path> SelectFiles(const std::filesystem::path& /*in
 {
     // initialPath and the filter are meaningless here: the browser chooses
     // where its picker opens and what it lists.
-    char* root = GeWebPickFilesIntoMemfs();
+    char* root = GeWebPickFilesIntoMemfs(true);
     if (root == nullptr)
         return {};
     const std::filesystem::path stagingDir = root;

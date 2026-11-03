@@ -12,9 +12,8 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Materials/MaterialBuilder.h"
-#include "Rendering/Materials/Shader/ShaderCompileService.h"
-#include "Rendering/Materials/Shader/ShaderReflection.h"
-#include "SharedHeadlessDevice.h"
+#include "Rendering/Materials/ShaderCompileService.h"
+#include "Rendering/Materials/ShaderReflection.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -139,8 +138,11 @@ TEST(CompatInstanceListFetch, EachBatchDrawsItsOwnListedSceneInstances)
     std::string error;
     ASSERT_TRUE(CompileProbe(vertexSpv, fragmentSpv, error)) << error;
 
-    IDevice* dev = SharedHeadlessDevice();
-    if (!dev)
+    DeviceDesc dd{};
+    dd.preferredAPI = GraphicsAPI::Vulkan;
+    dd.enableDynamicRendering = true;
+    auto dev = DeviceFactory::CreateDevice(dd);
+    if (!dev || !dev->Initialize(dd))
         GTEST_SKIP() << "no graphics device";
 
     ReflectionOptions ro{};
@@ -247,4 +249,5 @@ TEST(CompatInstanceListFetch, EachBatchDrawsItsOwnListedSceneInstances)
     dev->DestroyBuffer(listBuffer);
     dev->DestroyBuffer(instanceBuffer);
     dev->DestroyTexture(dst);
+    dev->Shutdown();
 }

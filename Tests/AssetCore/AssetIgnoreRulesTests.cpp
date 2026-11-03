@@ -5,17 +5,12 @@
 
 #include "AssetCore/AssetIgnoreRules.h"
 
-#include "TestTempDir.h"
-
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <filesystem>
-#include <system_error>
 
 using GameEngine::AssetIgnoreRules;
-using GameEngine::TestUtils::MakeUniqueTempDirectory;
-using GameEngine::TestUtils::ScopedTempDir;
 namespace fs = std::filesystem;
 
 TEST(AssetIgnoreRules, DefaultsSkipBuildTreesByDirectoryNameAndByNamePrefix)
@@ -50,24 +45,4 @@ TEST(AssetIgnoreRules, SignatureCoversDirectoryNamePrefixes)
     const uint64_t withDefaults = rules.Signature();
     rules.ignoredDirNamePrefixesLower.clear();
     EXPECT_NE(rules.Signature(), withDefaults);
-}
-
-TEST(AssetIgnoreRules, PrefixRulesMatchAPathUnderADirectoryLinkAsTheWalkSpellsIt)
-{
-    // A path under the root keeps the spelling of the walk. A directory link
-    // under the root does not move its entries out of the root.
-    const ScopedTempDir temp(MakeUniqueTempDirectory("ge_ignore_rules_link"));
-    const fs::path root = temp.Path() / "Assets";
-    fs::create_directories(root);
-    fs::create_directories(temp.Path() / "Outside");
-    std::error_code ec;
-    fs::create_directory_symlink(temp.Path() / "Outside", root / "Generated", ec);
-    if (ec)
-        GTEST_SKIP() << "directory symlink not supported: " << ec.message();
-
-    AssetIgnoreRules rules = AssetIgnoreRules::CreateDefault();
-    rules.ignoredPrefixesLower.push_back("generated/");
-    EXPECT_TRUE(rules.ShouldIgnoreFile(root / "Generated" / "Mesh.fbx", root));
-    EXPECT_TRUE(rules.ShouldIgnoreDirectory(root / "Generated" / "Lods", root));
-    EXPECT_FALSE(rules.ShouldIgnoreFile(root / "Source" / "Mesh.fbx", root));
 }

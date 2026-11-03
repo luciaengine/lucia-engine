@@ -852,12 +852,6 @@ class AssetRegistry
     Vector<MissingAssetInfo> GetMissingAssets() const;
 
     /**
-     * @brief Relink an existing GUID to a new on-disk path (manual missing-asset resolution).
-     * This preserves the GUID identity and updates the authoritative store.
-     */
-    bool TryRelinkAssetPath(const GUID& guid, const std::filesystem::path& newPath);
-
-    /**
      * @brief Add/remove a redirect: a project-store row that forwards the `from` GUID
      *        to `to`, so references to an asset's old GUID keep resolving after it is
      *        renamed or re-identified.
@@ -933,16 +927,6 @@ class AssetRegistry
      * @brief Scan directory for assets asynchronously
      */
     std::future<size_t> ScanDirectoryAsync(const std::filesystem::path& directory, bool recursive = true);
-
-    /**
-     * @brief Load asset metadata asynchronously
-     */
-    std::future<bool> LoadAssetMetadataAsync(const std::filesystem::path& assetPath);
-
-    /**
-     * @brief Save asset metadata asynchronously
-     */
-    std::future<bool> SaveAssetMetadataAsync(const AssetMetadata& metadata);
 
     /**
      * @brief Read an arbitrary key/value from the authoritative asset database (kv map).

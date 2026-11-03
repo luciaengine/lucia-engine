@@ -3,19 +3,17 @@
 #include "AssetCore/AssetRegistry.h" // AssetReference, AssetType
 #include "AssetCore/GUID.h"
 #include "ECS/Entity.h" // ECS::EntityHandle
-#include "ECS/FieldAccess.h"
 #include "Scene/SceneIO.h" // FormatAssetReferenceForSave, TryResolveAssetReference, entity-ref helpers
-#include "Scene/RenderLayerMaskText.h"
 #include "Scene/SceneIOContext.h"
 #include "Scene/SceneValue.h"
 #include "Types/FormatNumber.h"
+#include "Types/StringUtils.h"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <span>
+#include <limits>
 #include <string>
 
 namespace GameEngine::Scene
@@ -47,55 +45,71 @@ double AsNumber(const SceneValue& v)
     return 0.0;
 }
 
-std::string_view TrimSpace(std::string_view s)
+// FieldTypeIdOf collapsed the enum to its underlying integer's type id, so the enum's signedness
+// is its field type's.
+bool EnumFieldIsSigned(const FieldInfo& info)
 {
-    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r' || s.front() == '\n'))
-        s.remove_prefix(1);
-    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r' || s.back() == '\n'))
-        s.remove_suffix(1);
-    return s;
+    return info.Type == FieldTypeId::Int8 || info.Type == FieldTypeId::Int16 ||
+           info.Type == FieldTypeId::Int32 || info.Type == FieldTypeId::Int64;
 }
 
-// An enum field reflects as its underlying integer kind. A serializer holds only the field's own
-// bytes, so the accessor addresses them as a field at offset 0.
-FieldInfo AtFieldStart(const FieldInfo& info)
-{
-    FieldInfo local = info;
-    local.Offset = 0;
-    return local;
-}
-
+// Read an enum field's underlying integer, honoring its width (FieldInfo::Size) and signedness.
 std::int64_t ReadEnumValue(const std::byte* f, const FieldInfo& info)
 {
-    std::int64_t value = 0;
-    ECS::ReadFieldInteger(AtFieldStart(info), std::span<const std::byte>(f, info.Size), 0, value);
-    return value;
+    const bool isSigned = EnumFieldIsSigned(info);
+    switch (info.Size)
+    {
+    case 1: return isSigned ? static_cast<std::int64_t>(ReadPod<std::int8_t>(f))
+                            : static_cast<std::int64_t>(ReadPod<std::uint8_t>(f));
+    case 2: return isSigned ? static_cast<std::int64_t>(ReadPod<std::int16_t>(f))
+                            : static_cast<std::int64_t>(ReadPod<std::uint16_t>(f));
+    case 4: return isSigned ? static_cast<std::int64_t>(ReadPod<std::int32_t>(f))
+                            : static_cast<std::int64_t>(ReadPod<std::uint32_t>(f));
+    case 8: return ReadPod<std::int64_t>(f);
+    default: return 0;
+    }
 }
 
-void WriteEnumValue(std::byte* f, const FieldInfo& info, std::int64_t value)
+// Whether an enumerator value survives a write into this field's bytes. WriteEnumValue truncates,
+// so an unchecked legacy integer would land as a different enumerator instead of being reported.
+bool EnumValueFitsField(const FieldInfo& info, std::int64_t v)
 {
-    ECS::WriteFieldInteger(AtFieldStart(info), std::span<std::byte>(f, info.Size), 0, value);
+    const bool isSigned = EnumFieldIsSigned(info);
+    auto fits = [&]<class Signed, class Unsigned>(Signed, Unsigned)
+    {
+        if (isSigned)
+            return v >= std::numeric_limits<Signed>::min() && v <= std::numeric_limits<Signed>::max();
+        return v >= 0 && v <= static_cast<std::int64_t>(std::numeric_limits<Unsigned>::max());
+    };
+    switch (info.Size)
+    {
+    case 1: return fits(std::int8_t{}, std::uint8_t{});
+    case 2: return fits(std::int16_t{}, std::uint16_t{});
+    case 4: return fits(std::int32_t{}, std::uint32_t{});
+    case 8: return true;
+    default: return false;
+    }
 }
 
-// Whether an enumerator value survives a write into this field's bytes: the write wraps, so an
-// unchecked legacy integer would land as a different enumerator instead of being reported. A
-// value fits when it reads back unchanged at the field's width and signedness.
-bool EnumValueFitsField(const FieldInfo& info, std::int64_t value)
+void WriteEnumValue(std::byte* f, const FieldInfo& info, std::int64_t v)
 {
-    std::array<std::byte, sizeof(std::int64_t)> scratch{};
-    const FieldInfo local = AtFieldStart(info);
-    std::int64_t stored = 0;
-    return ECS::WriteFieldInteger(local, scratch, 0, value) &&
-           ECS::ReadFieldInteger(local, std::span<const std::byte>(scratch), 0, stored) && stored == value;
+    switch (info.Size)
+    {
+    case 1: WritePod<std::uint8_t>(f, static_cast<std::uint8_t>(v)); break;
+    case 2: WritePod<std::uint16_t>(f, static_cast<std::uint16_t>(v)); break;
+    case 4: WritePod<std::uint32_t>(f, static_cast<std::uint32_t>(v)); break;
+    case 8: WritePod<std::int64_t>(f, v); break;
+    default: break;
+    }
 }
 
 struct BoolSerializer final : IFieldSerializer
 {
-    std::string Write(const std::byte* f, const FieldInfo&, const SceneWriteContext&) const override
+    std::string Write(const std::byte* f, const FieldInfo&, const SceneSaveContext&) const override
     {
         return ReadPod<bool>(f) ? "true" : "false";
     }
-    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneReadContext&, std::string* e) const override
+    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneLoadContext&, std::string* e) const override
     {
         SceneValue v;
         if (!ParseValue(t, v, e) || v.Kind != SceneValueKind::Bool)
@@ -111,11 +125,11 @@ struct BoolSerializer final : IFieldSerializer
 template <class T>
 struct IntSerializer final : IFieldSerializer
 {
-    std::string Write(const std::byte* f, const FieldInfo&, const SceneWriteContext&) const override
+    std::string Write(const std::byte* f, const FieldInfo&, const SceneSaveContext&) const override
     {
         return std::to_string(ReadPod<T>(f));
     }
-    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneReadContext&, std::string* e) const override
+    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneLoadContext&, std::string* e) const override
     {
         // Parse in the field's own domain: SceneValue::IntValue cannot represent UInt64's top bit.
         T value{};
@@ -137,11 +151,11 @@ struct IntSerializer final : IFieldSerializer
 
 struct FloatSerializer final : IFieldSerializer
 {
-    std::string Write(const std::byte* f, const FieldInfo&, const SceneWriteContext&) const override
+    std::string Write(const std::byte* f, const FieldInfo&, const SceneSaveContext&) const override
     {
         return GameEngine::FormatFloat(ReadPod<float>(f));
     }
-    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneReadContext&, std::string* e) const override
+    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneLoadContext&, std::string* e) const override
     {
         SceneValue v;
         if (!ParseValue(t, v, e) || (v.Kind != SceneValueKind::Float && v.Kind != SceneValueKind::Int))
@@ -156,11 +170,11 @@ struct FloatSerializer final : IFieldSerializer
 
 struct DoubleSerializer final : IFieldSerializer
 {
-    std::string Write(const std::byte* f, const FieldInfo&, const SceneWriteContext&) const override
+    std::string Write(const std::byte* f, const FieldInfo&, const SceneSaveContext&) const override
     {
         return GameEngine::FormatDouble(ReadPod<double>(f));
     }
-    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneReadContext&, std::string* e) const override
+    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneLoadContext&, std::string* e) const override
     {
         SceneValue v;
         if (!ParseValue(t, v, e) || (v.Kind != SceneValueKind::Float && v.Kind != SceneValueKind::Int))
@@ -175,11 +189,11 @@ struct DoubleSerializer final : IFieldSerializer
 
 struct Vec2Serializer final : IFieldSerializer
 {
-    std::string Write(const std::byte* f, const FieldInfo&, const SceneWriteContext&) const override
+    std::string Write(const std::byte* f, const FieldInfo&, const SceneSaveContext&) const override
     {
         return FormatFloat2(ReadPod<float>(f), ReadPod<float>(f + 4));
     }
-    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneReadContext&, std::string* e) const override
+    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneLoadContext&, std::string* e) const override
     {
         SceneValue v;
         if (!ParseValue(t, v, e) || v.Kind != SceneValueKind::Tuple || v.Items.size() < 2)
@@ -195,11 +209,11 @@ struct Vec2Serializer final : IFieldSerializer
 
 struct Vec3Serializer final : IFieldSerializer
 {
-    std::string Write(const std::byte* f, const FieldInfo&, const SceneWriteContext&) const override
+    std::string Write(const std::byte* f, const FieldInfo&, const SceneSaveContext&) const override
     {
         return FormatFloat3(ReadPod<float>(f), ReadPod<float>(f + 4), ReadPod<float>(f + 8));
     }
-    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneReadContext&, std::string* e) const override
+    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneLoadContext&, std::string* e) const override
     {
         Float3 out;
         if (!ParseFloat3(t, out))
@@ -217,11 +231,11 @@ struct Vec3Serializer final : IFieldSerializer
 // Vec4 / Quat / Color all serialize as four floats "(x, y, z, w)".
 struct Vec4Serializer final : IFieldSerializer
 {
-    std::string Write(const std::byte* f, const FieldInfo&, const SceneWriteContext&) const override
+    std::string Write(const std::byte* f, const FieldInfo&, const SceneSaveContext&) const override
     {
         return FormatFloat4(ReadPod<float>(f), ReadPod<float>(f + 4), ReadPod<float>(f + 8), ReadPod<float>(f + 12));
     }
-    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneReadContext&, std::string* e) const override
+    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneLoadContext&, std::string* e) const override
     {
         Float4 out;
         if (!ParseFloat4(t, out))
@@ -240,7 +254,7 @@ struct Vec4Serializer final : IFieldSerializer
 // Fixed char[] field: one quoted string, clamped/null-terminated to the field's byte span.
 struct StringSerializer final : IFieldSerializer
 {
-    std::string Write(const std::byte* f, const FieldInfo& info, const SceneWriteContext&) const override
+    std::string Write(const std::byte* f, const FieldInfo& info, const SceneSaveContext&) const override
     {
         const char* chars = reinterpret_cast<const char*>(f);
         const std::size_t maxLen = info.Size;
@@ -248,7 +262,7 @@ struct StringSerializer final : IFieldSerializer
         while (len < maxLen && chars[len] != '\0') ++len;
         return FormatQuoted(std::string_view(chars, len));
     }
-    bool Read(std::string_view t, std::byte* f, const FieldInfo& info, const SceneReadContext&, std::string* e) const override
+    bool Read(std::string_view t, std::byte* f, const FieldInfo& info, const SceneLoadContext&, std::string* e) const override
     {
         std::string s;
         if (!ParseQuotedString(t, s))
@@ -268,21 +282,20 @@ struct StringSerializer final : IFieldSerializer
 // bytes <-> the scene's [path="..." guid="..."] form. Save heals the path from the GUID via the
 // resolver; load resolves via the [resource]/[embed] tables and accepts the legacy bare-GUID and
 // integer-0 clear forms too. A null GUID writes an empty value so the (caller-skipped) line is
-// omitted, matching the hand-written asset-ref schemas, or the clear form `0` when the save writes
-// every field (SceneWriteContext::WriteEveryField). Category-agnostic — one codec serves every
+// omitted, matching the hand-written asset-ref schemas. Category-agnostic — one codec serves every
 // AssetRef<T>; the asset type is only needed for load validation, which we leave permissive here.
 struct AssetGuidSerializer final : IFieldSerializer
 {
-    std::string Write(const std::byte* f, const FieldInfo&, const SceneWriteContext& ctx) const override
+    std::string Write(const std::byte* f, const FieldInfo&, const SceneSaveContext& ctx) const override
     {
         std::uint8_t raw[GUID::kSize];
         std::memcpy(raw, f, GUID::kSize);
         const GUID guid = GUID::FromBytes(raw);
-        if (guid.IsNull() && !ctx.WriteEveryField)
+        if (guid.IsNull())
             return {}; // omit the line for an unset reference
         return FormatAssetReferenceForSave(ctx, guid, "");
     }
-    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneReadContext& ctx, std::string* e) const override
+    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneLoadContext& ctx, std::string* e) const override
     {
         SceneValue sv{};
         if (!ParseValue(t, sv, e))
@@ -304,18 +317,14 @@ struct AssetGuidSerializer final : IFieldSerializer
 // a quoted stable entity-id string. Save maps the handle to the referenced entity's scene id via
 // ctx.EntityTagById; load resolves the id back to a live handle via ctx.EntityIdMap. An invalid or
 // unresolved handle writes an empty value (the line is omitted) and reads back invalid, so a dangling
-// link simply unlinks rather than failing the load. When the save writes every field
-// (SceneWriteContext::WriteEveryField), an invalid handle writes "", which reads back invalid.
+// link simply unlinks rather than failing the load.
 struct EntityHandleSerializer final : IFieldSerializer
 {
-    std::string Write(const std::byte* f, const FieldInfo&, const SceneWriteContext& ctx) const override
+    std::string Write(const std::byte* f, const FieldInfo&, const SceneSaveContext& ctx) const override
     {
-        const ECS::EntityHandle handle = ReadPod<ECS::EntityHandle>(f);
-        if (!handle.IsValid() && ctx.WriteEveryField)
-            return FormatQuoted({});
-        return FormatEntityReferenceForSave(ctx, handle);
+        return FormatEntityReferenceForSave(ctx, ReadPod<ECS::EntityHandle>(f));
     }
-    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneReadContext& ctx, std::string* e) const override
+    bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneLoadContext& ctx, std::string* e) const override
     {
         ECS::EntityHandle h{};
         if (!TryResolveEntityReference(ctx, t, h))
@@ -328,24 +337,6 @@ struct EntityHandleSerializer final : IFieldSerializer
     }
 };
 
-// Render layer mask: the layer numbers in brackets, or all, or none (RenderLayerMaskText.h). The key in
-// a refusal is the field's own name, which is its scene key.
-struct RenderLayerMaskSerializer final : IFieldSerializer
-{
-    std::string Write(const std::byte* f, const FieldInfo&, const SceneWriteContext&) const override
-    {
-        return FormatRenderLayerMask(ReadPod<Rendering::RenderLayerMask>(f));
-    }
-    bool Read(std::string_view t, std::byte* f, const FieldInfo& info, const SceneReadContext&, std::string* e) const override
-    {
-        Rendering::RenderLayerMask mask;
-        if (!ParseRenderLayerMask(t, info.Name, mask, e))
-            return false;
-        WritePod<Rendering::RenderLayerMask>(f, mask);
-        return true;
-    }
-};
-
 // Enum field codec: serializes the enumerator NAME from the field's own EnumNames table (bound by
 // the scanner — see FieldInfo::EnumNames), not a bare integer. Stateless — the table travels on the
 // FieldInfo passed to Write/Read, so one shared instance serves every enum field, no per-field state
@@ -353,7 +344,7 @@ struct RenderLayerMaskSerializer final : IFieldSerializer
 // (forward-compat). Load: name -> value, else parse a legacy integer (pre-name scenes still load).
 struct EnumNameSerializer final : IFieldSerializer
 {
-    std::string Write(const std::byte* f, const FieldInfo& info, const SceneWriteContext&) const override
+    std::string Write(const std::byte* f, const FieldInfo& info, const SceneSaveContext&) const override
     {
         const std::int64_t v = ReadEnumValue(f, info);
         for (const ECS::EnumNameValue& e : info.EnumNames)
@@ -361,9 +352,9 @@ struct EnumNameSerializer final : IFieldSerializer
                 return std::string(e.Name);
         return std::to_string(v);
     }
-    bool Read(std::string_view t, std::byte* f, const FieldInfo& info, const SceneReadContext&, std::string* e) const override
+    bool Read(std::string_view t, std::byte* f, const FieldInfo& info, const SceneLoadContext&, std::string* e) const override
     {
-        const std::string_view name = TrimSpace(t);
+        const std::string_view name = TrimSceneWhitespace(t);
         for (const ECS::EnumNameValue& entry : info.EnumNames)
             if (entry.Name == name)
             {
@@ -407,7 +398,6 @@ const Vec4Serializer               kVec4;  // also serves Quat + Color (four flo
 const StringSerializer             kString;
 const AssetGuidSerializer          kAssetGuid;
 const EntityHandleSerializer       kEntityHandle;
-const RenderLayerMaskSerializer    kRenderLayerMask;
 const EnumNameSerializer           kEnumCodec;
 
 // Flat dispatch table indexed by FieldTypeId — replaces the old hash map + lazy seed + per-call
@@ -436,9 +426,8 @@ const IFieldSerializer* const kDefaults[] = {
     &kEntityHandle, // 19 EntityHandle
     &kString,     // 20 String
     nullptr,      // 21 Bytes
-    &kRenderLayerMask, // 22 RenderLayerMask
 };
-static_assert(sizeof(kDefaults) / sizeof(kDefaults[0]) == static_cast<std::size_t>(FieldTypeId::RenderLayerMask) + 1,
+static_assert(sizeof(kDefaults) / sizeof(kDefaults[0]) == static_cast<std::size_t>(FieldTypeId::Bytes) + 1,
               "kDefaults must have exactly one entry per FieldTypeId");
 
 } // namespace

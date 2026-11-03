@@ -44,6 +44,11 @@ vec2 EmulatedResolution()
     float div = pc.crtEmulatedResolutionDiv;
     if (!(div >= 1.0))
         div = 6.0;
+    // Whole framebuffer pixels per emulated pixel. A fractional divisor makes
+    // the Fetch/Dist buckets straddle pixel boundaries, so emulated pixels
+    // alternate width and the scanline grid crawls across pixel-art texels;
+    // rounding to an integer pins every emulated pixel to the same pixel count.
+    div = floor(div + 0.5);
     float span = max(min(full.x, full.y), 1.0);
     div = clamp(div, 1.0, span);
     return max(full / div, vec2(1.0));

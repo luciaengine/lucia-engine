@@ -56,7 +56,7 @@
 	min-width: 8px;
 	min-height: 8px;
 	flex-shrink: 0;
-	background-image: url("editor:Icons/dropdownsmall.svg");
+	background-image: url("editor:Icons/dropdownsmall.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -64,7 +64,7 @@
 }
 
 .dropdown.open .dropdown-chevron {
-	background-image: url("editor:Icons/dropdownsmallup.svg");
+	background-image: url("editor:Icons/dropdownsmallup.png");
 	opacity: 0.85;
 }
 
@@ -108,6 +108,13 @@
 	border-radius: var(--ui_radius_md);
 	padding: 10px 12px;
 	box-shadow: var(--popup-shadow, 0 -1px 24px rgba(0, 0, 0, 0.25));
+}
+
+/* Fill color for the PopoverArrow triangle; carried via border-color (not
+   background-color, which would make the base painter draw a rect behind the
+   triangle). */
+.popover-arrow {
+	border-color: var(--ui_color_bg_panel);
 }
 
 .popover-section-header {
@@ -160,7 +167,7 @@
 
 .popover-tick-label,
 .popover-tick-legend {
-	font-size: var(--ui_font_size_small);
+	font-size: 10px;
 	color: var(--ui_color_text_dim);
 }
 
@@ -210,9 +217,6 @@
 	   below add up to that same 96px of chrome, so both backends open at the
 	   same width for the same titles. */
 	min-width: 180px;
-	/* A menu opens at its anchor point, a submenu level with its parent row:
-	   the dropdown's 2px drop below its combo box does not apply. */
-	margin-top: 0px;
 }
 
 .dropdown-separator {
@@ -476,7 +480,7 @@
 	/* The row's own height, not a fixed 24: centring a taller box inside a 22px
 	   row drops the mark a pixel below the label. */
 	height: 100%;
-	background-image: url("editor:Icons/checked.svg");
+	background-image: url("editor:Icons/checked.png");
 	/* Both axes explicit: a single value can resolve height as auto against
 	   the canvas, rendering larger than the box it is drawn into. */
 	background-size: 14px 14px;
@@ -506,7 +510,7 @@
 /* Selected item: native-menu-style check in the shared leading gutter. */
 .dropdown-item.selected {
 	color: var(--ui_color_text_bright);
-	background-image: url("editor:Icons/checked.svg");
+	background-image: url("editor:Icons/checked.png");
 	background-image-tint: rgba(255, 255, 255, 0.95);
 }
 
@@ -536,18 +540,6 @@
 	overflow: visible;
 }
 
-/* A panel search (BuildPanelSearchBar) reads as a field at rest: the inspector value field's
-   fill and a subtle border, after the control's base rule so it wins over it. Hover lifts the
-   border; the focus rule after these has the same specificity, so focus wins over hover. */
-.panel-search-bar {
-	background-color: var(--ui_color_bg_field);
-	border-color: var(--ui_color_border_subtle);
-}
-
-.panel-search-bar:hover {
-	border-color: var(--ui_color_dropdown_outline_hover);
-}
-
 .search-field-with-filter:focus-within {
 	border-color: var(--ui_color_accent);
 }
@@ -566,16 +558,13 @@
 	padding-right: 52px;
 }
 
-/* A line box centered in the 24px field leaves the capitals half a pixel and the lowercase two
-   pixels below the field's center (measured on the rendered panels). One pixel more padding
-   below than above lifts the text to within half a pixel of the center; the placeholder takes
-   the same lift. */
-.search-field-with-filter-input TextInput {
+.search-field-with-filter-input TextInput,
+.panel-search-field TextInput {
 	background-color: transparent;
 	border: none;
 	color: var(--ui_color_text);
 	font-size: var(--ui_font_size_base);
-	padding: 3px 24px 5px 8px;
+	padding: 4px 24px 4px 8px;
 	height: 100%;
 	width: 100%;
 }
@@ -596,11 +585,9 @@
 	min-width: 0;
 	display: flex;
 	align-items: center;
-	/* A hint, not a value: quieter than the typed text and italic, so an empty field reads at
-	   rest and never as one holding text. */
-	color: var(--ui_color_text_placeholder);
-	/* The same one-pixel lift as the typed text (.search-field-with-filter-input TextInput). */
-	padding-bottom: 2px;
+	/* A hint, not a value: a step down from the typed text and italic, so an empty field
+	   never reads as one holding text. */
+	color: var(--ui_color_text_dim);
 	font-style: italic;
 	white-space: nowrap;
 	overflow: hidden;
@@ -617,19 +604,19 @@
 	right: 52px;
 }
 
-.search-field-with-filter-icon {
+.search-field-with-filter-icon,
+.panel-search-icon {
 	position: absolute;
 	right: 6px;
 	top: 50%;
 	margin-top: -6px;
 	width: 12px;
 	height: 12px;
-	background-image: url("editor:Icons/search.svg");
+	background-image: url("editor:Icons/search.png");
 	background-size: 12px 12px;
 	background-repeat: no-repeat;
 	background-position: center;
-	/* Quiet at rest and still 3.5:1 against the field fill; hover and focus raise it to full. */
-	opacity: 0.6;
+	opacity: 0.5;
 	pointer-events: none !important;
 	z-index: 1;
 }
@@ -740,13 +727,6 @@ button.panel-search-clear,
 	z-index: 20;
 }
 
-/* The clear glyph at rest takes the icon color: about 4:1 against the field fill, where the
-   shared close icon's dimmer tint (theme/core.css, .xclose-icon) falls under the 3:1 a state
-   glyph needs. Hover still brightens it (.xclose-icon:hover). */
-.search-field-with-filter-clear {
-	background-image-tint: var(--ui_color_icon);
-}
-
 .search-field-with-filter-clear:hover,
 button.search-field-with-filter-clear:hover,
 .button.search-field-with-filter-clear:hover,
@@ -825,7 +805,7 @@ Label.dragging {
 	height: 10px;
 	flex-shrink: 0;
 	margin-left: 8px;
-	background-image: url("editor:Icons/arrow-right.svg");
+	background-image: url("editor:Icons/arrow-right.png");
 	background-size: contain;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -959,16 +939,174 @@ checkbox:checked:hover .checkbox-box,
 	border-color: var(--ui_color_accent_blue_hover);
 }
 
-/* Indeterminate ("mixed"): the selected objects disagree. A neutral box, neither empty nor checked; a
-   click resolves every selected object to one value. */
-.checkbox.mixed .checkbox-box {
-	background-color: var(--ui_color_bg_grid);
-	border-color: var(--ui_color_mixed_indicator);
-}
-
 /* Pressed feedback slightly darkens the box */
 .checkbox.pressed .checkbox-box {
 	background-color: var(--ui_color_bg_hover);
+}
+
+.log-view {
+	display: flex;
+	flex-direction: column;
+	flex-grow: 1;
+	min-width: 0;
+	min-height: 0;
+	background-color: var(--ui_color_bg_panel);
+}
+
+.log-view .scrollbar {
+	background-color: var(--ui_color_bg_panel);
+}
+
+.log-view .list-virtual-content {
+	background-color: var(--ui_color_bg_panel);
+}
+
+.log-scroll {
+	display: flex;
+	flex-direction: column;
+	flex-grow: 1;
+	min-height: 0;
+}
+
+.log-line {
+	font-family: var(--ui_font_mono);
+	font-size: var(--ui_font_size_base);
+	color: var(--ui_color_text_primary);
+	padding: 2px 6px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.log-line:hover {
+	background-color: var(--ui_color_bg_hover_alt);
+}
+
+.log-line.selected {
+	background-color: var(--ui_color_bg_selected);
+}
+
+/* Log level color coding */
+.log-trace {
+	color: #808080;
+}
+
+.log-debug {
+	color: #9cdcfe;
+}
+
+.log-info {
+	color: var(--ui_color_text_primary);
+}
+
+.log-warning {
+	color: #dcdcaa;
+}
+
+.log-error {
+	color: #f48771;
+}
+
+.log-critical {
+	color: #ff5555;
+	font-weight: bold;
+}
+
+/* ======================================
+   Log Detail Pane (Stack Trace)
+   ====================================== */
+
+.log-split-body {
+	display: flex;
+	flex-direction: column;
+	flex-grow: 1;
+	min-width: 0;
+	min-height: 0;
+}
+
+.log-split-body--side-by-side {
+	flex-direction: row;
+}
+
+.log-detail-splitter {
+	flex-shrink: 0;
+}
+
+.log-detail-pane {
+	display: flex;
+	flex-direction: column;
+	flex-grow: 1;
+	min-height: 200px;
+	background-color: var(--ui_color_bg_dockspace);
+}
+
+.log-split-body--side-by-side .log-detail-pane {
+	min-width: 240px;
+	min-height: 0;
+	border-top: none;
+	border-left: 1px solid var(--ui_color_border_panel);
+}
+
+.log-detail-pane--hidden {
+	display: none;
+}
+
+.log-detail-header {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	padding: 4px 8px;
+	background-color: var(--ui_color_bg_tabbar);
+	flex-shrink: 0;
+}
+
+.log-detail-title {
+	font-weight: bold;
+	font-size: var(--ui_font_size_base);
+	color: var(--ui_color_text_bright);
+	margin-right: 12px;
+}
+
+.log-detail-source {
+	font-family: var(--ui_font_mono);
+	font-size: 14px;
+	color: var(--ui_color_text_dim);
+	flex-grow: 1;
+	min-width: 0;
+}
+
+.log-detail-scroll {
+	flex-grow: 1;
+	min-height: 0;
+}
+
+.log-detail-frames {
+	display: flex;
+	flex-direction: column;
+	padding: 4px 8px;
+	min-width: 0;
+}
+
+.log-detail-frame {
+	font-family: var(--ui_font_mono);
+	font-size: 14px;
+	color: var(--ui_color_text_dim);
+	padding: 2px 8px;
+	white-space: normal;
+	word-break: break-all;
+}
+
+.log-detail-frame--source {
+	color: var(--ui_color_text_bright);
+	font-weight: bold;
+}
+
+.log-detail-frame--clickable {
+	cursor: pointer;
+	color: #9cdcfe;
+}
+
+.log-detail-frame--clickable:hover {
+	background-color: var(--ui_color_bg_hover_alt);
 }
 
 /* Backtrace frame row (used by LogPanel's detail pane).
@@ -1118,7 +1256,7 @@ checkbox:checked:hover .checkbox-box,
 	margin-top: -6px;
 	width: 12px;
 	height: 12px;
-	background-image: url("editor:Icons/search.svg");
+	background-image: url("editor:Icons/search.png");
 	background-size: 12px 12px;
 	background-repeat: no-repeat;
 	background-position: center;
@@ -1302,14 +1440,14 @@ button.script-editor-save-button.icon-button.linenumbers-icon,
 .script-editor-save-button.linenumbers-icon,
 button.script-editor-save-button.icon-button.linenumbers-icon,
 .button.script-editor-save-button.icon-button.linenumbers-icon {
-	background-image: url("editor:Icons/list.svg");
+	background-image: url("editor:Icons/list.png");
 }
 
 /* Wrap toggle icon shares the save-button styling, different background image. */
 .script-editor-save-button.wrap-icon,
 button.script-editor-save-button.icon-button.wrap-icon,
 .button.script-editor-save-button.icon-button.wrap-icon {
-	background-image: url("editor:Icons/reorder-two.svg");
+	background-image: url("editor:Icons/reorder-two.png");
 }
 
 #ScriptEditorSaveButton:hover,
@@ -1901,9 +2039,6 @@ button.large,
 	align-items: center;
 	justify-content: center;
 	background-color: rgba(18, 18, 18, 0.97);
-	/* The arrow takes this fill and border (TooltipOverlay). */
-	border-width: 1px;
-	border-color: var(--ui_color_border_subtle);
 	border-radius: var(--ui_radius_md);
 	padding: 6px 10px;
 	box-shadow: none;
@@ -1926,6 +2061,35 @@ button.large,
 	   resolves against the pre-clamp available width and lets the label
 	   escape the bubble instead of wrapping. */
 	overflow: hidden;
+}
+
+.tooltip-arrow {
+	width: 10px;
+	height: 10px;
+	margin: 0;
+	padding: 0;
+	background-size: contain;
+	background-repeat: no-repeat;
+	background-position: center;
+	background-color: transparent;
+	background-image-tint: rgba(255, 80, 80, 0.95);
+	align-self: center;
+}
+
+.tooltip-arrow-up {
+	background-image: url("editor:Icons/fold-up.png");
+}
+
+.tooltip-arrow-down {
+	background-image: url("editor:Icons/fold-down.png");
+}
+
+.tooltip-arrow-left {
+	background-image: url("editor:Icons/fold-left.png");
+}
+
+.tooltip-arrow-right {
+	background-image: url("editor:Icons/fold-right.png");
 }
 
 /* Drag/drop ghost (payload display label) */
@@ -1985,19 +2149,19 @@ button.large,
 }
 
 .dnd-ghost .dnd-ghost-icon.dnd-ghost-icon-asset-file {
-	background-image: url("editor:Icons/codeicon.svg");
+	background-image: url("editor:Icons/codeicon.png");
 	/* Align drag ghost asset icon with neutral asset icon tint */
 	background-image-tint: rgba(150, 150, 150, 1.0);
 }
 
 .dnd-ghost .dnd-ghost-icon.dnd-ghost-icon-asset-folder {
-	background-image: url("editor:Icons/Folder@64px.svg");
+	background-image: url("editor:Icons/Folder@64px.png");
 	/* Match folder icon tint used in grid/list/tree */
 	background-image-tint: rgba(150, 150, 150, 1.0);
 }
 
 .dnd-ghost .dnd-ghost-icon.dnd-ghost-icon-entity {
-	background-image: url("editor:Icons/Cube.svg");
+	background-image: url("editor:Icons/cube.svg");
 	background-image-tint: rgba(255, 255, 255, 0.87);
 }
 
@@ -2082,8 +2246,8 @@ button.large,
 }
 
 /* Popup drop shadows are on by default. The shadow geometry/opacity is driven by the
-   `--popup-shadow` custom property, which SettingsPanel::ApplySavedPopupShadowStyle sets
-   on the UI root from User Settings ▸ Appearance. Each opt-out class disables one popup
+   `--popup-shadow` custom property, which PopupShadowSettings sets on every editor
+   window's UI root from User Settings ▸ Appearance. Each opt-out class disables one popup
    type. The asset/component picker (SearchDialog) gets its shadow here rather than in the
    subtree-scoped SearchDialog.css so the root property + opt-out selectors can reach it. */
 .search-dialog-panel {
@@ -2209,26 +2373,6 @@ button.large,
 
 .context-menu .dropdown-item:hover .dropdown-item-arrow-glyph {
 	color: var(--ui_color_text_bright);
-}
-
-/* The key that runs a row's command (F2, Ctrl+D), right-aligned where a
-   parent row's chevron sits: the negative right margin takes it 32px into the
-   row's 44px trailing reserve, 12px from the row's edge like the chevron.
-   Dimmer than the title at rest, bright on the lit row. */
-.context-menu .dropdown-item-shortcut {
-	flex-shrink: 0;
-	margin-left: 24px;
-	margin-right: -32px;
-	text-align: right;
-	color: var(--ui_color_menu_shortcut_text);
-}
-
-.context-menu .dropdown-item:hover .dropdown-item-shortcut {
-	color: var(--ui_color_text_bright);
-}
-
-.context-menu .dropdown-item.disabled .dropdown-item-shortcut {
-	color: var(--ui_color_menu_text_disabled);
 }
 
 /* The clear button sat 4px off the field's edge, which reads as crowding

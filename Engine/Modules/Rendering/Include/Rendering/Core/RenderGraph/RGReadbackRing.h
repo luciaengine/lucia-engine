@@ -186,15 +186,6 @@ class RGReadbackRing
     // Map the NEWEST slot whose token has signaled; older ready slots are
     // superseded and dropped. Null when nothing is ready. The caller copies
     // out and calls Unmap before touching the ring again.
-    //
-    // Where a map is asynchronous (WebGPU's mapAsync) the first call only
-    // starts it and returns null, and by the next call a newer token has
-    // usually signaled. Re-targeting that newer slot would start a second map
-    // and abandon the first: its slot stays mapped with no pending to collect
-    // it, and BeginWrite refuses that slot forever. A slot whose map is already
-    // in flight is therefore finished first, so at most one map is in flight.
-    // Native maps resolve synchronously and never report busy, so there the
-    // newest ready slot is always the one taken.
     const void* MapNewestReady(IDevice* device, Payload* outPayload)
     {
         if (!device || m_Count == 0)
@@ -203,19 +194,14 @@ class RGReadbackRing
         for (size_t i = m_Pending.size(); i-- > 0;)
         {
             const PendingSlot& p = m_Pending[i];
-            const bool newestFound = readyIdx != m_Pending.size();
-            const bool mapInFlight = device->IsBufferMapBusy(m_Buffers[p.Slot]);
-            // Past the newest ready slot only an in-flight map can still win.
-            if (newestFound && !mapInFlight)
-                continue;
             // Complete only: a stamped slot whose token carries no completion
             // information (Unknown) is not ready — mapping it would hand back a
             // buffer the GPU may still be writing.
-            if (!p.Stamped || device->QueryGpuSyncToken(p.Token) != IDevice::GpuSyncStatus::Complete)
-                continue;
-            readyIdx = i;
-            if (mapInFlight)
+            if (p.Stamped && device->QueryGpuSyncToken(p.Token) == IDevice::GpuSyncStatus::Complete)
+            {
+                readyIdx = i;
                 break;
+            }
         }
         if (readyIdx == m_Pending.size())
             return nullptr;

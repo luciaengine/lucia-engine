@@ -13,6 +13,12 @@ namespace GameEngine {
  * Colors are ARGB (0xAARRGGBB).
  */
 struct SyntaxHighlightSettings {
+    static constexpr uint32_t kDefaultKeywordColor = 0xFFBFBFBF; // light gray
+    static constexpr uint32_t kDefaultStringColor = 0xFF7ED321;  // vibrant green
+    static constexpr uint32_t kDefaultCommentColor = 0xFFE5A54B; // orange/amber
+    static constexpr uint32_t kDefaultNumberColor = 0xFFB87FE8;  // vibrant purple
+    static constexpr uint32_t kDefaultTypeColor = 0xFF5DADE2;    // vibrant blue
+    static constexpr uint32_t kDefaultTextColor = 0xFF999999;
     uint32_t KeywordColor = 0xFFBFBFBF;    // Keywords - light gray
     uint32_t StringColor = 0xFF7ED321;     // Strings - vibrant green
     uint32_t CommentColor = 0xFFE5A54B;    // Comments - orange/amber

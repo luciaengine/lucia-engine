@@ -11,7 +11,6 @@
 #include "CBTTerrain/CBTKernelSet.h"
 #include "CBTTerrain/CBTLayout.h"
 #include "CBTTerrain/CBTResources.h"
-#include "CBTTerrain/CBTSphereFaceMap.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 
@@ -48,11 +47,11 @@ struct CBTClassifyDesc
     float DirtyMaxU = 0.0f;
     float DirtyMaxV = 0.0f;
 
-    // On the sphere the rect above stays empty: each changed face carries its own face-local UV rect
-    // here, at most one per face, and Classify reclassifies the bisectors of every listed face in the
-    // same update. Planar ignores it.
-    SphereEditRegions SphereDirty{};
-    // Gates VertexEval's additive sculpt sample on the sphere (1 once any dab has landed).
+    // Planet-editing v1 (plan §planet-editing). On the SPHERE, the dirty rect above is a
+    // FACE-LOCAL UV rect and DirtyFace selects the cube face — Classify reclassifies only
+    // bisectors on that face. SphereSculptEnabled gates VertexEval's additive sculpt
+    // sample (true once any dab has landed). Both ignored in planar mode.
+    uint32_t DirtyFace = 0u;
     uint32_t SphereSculptEnabled = 0u;
 
     // Quiescence gate for VertexEval (plan §planet-shading perf). 0 (default) evaluates the
@@ -74,31 +73,20 @@ struct CBTClassifyDesc
     // drives it from GE_CBT_NEARFIELD_GATE so the fix can be A/B'd — and disabled — on the same build.
     uint32_t NearFieldGate = 1u;
 
+    // Earth-scale (sector, local) gVertex storage A/B (decode-precision arc S2a). 1 = spherical
+    // VertexEval decodes corners via the df64 path (cbt_deep_decode.glsl, GLSL twin of
+    // CBTDeepDecode.h) and stores (integer 1024 m sector anchor, fp32 local offset) — the
+    // GE_ClipFromSectorLocal representation, immune to the Earth-magnitude fp32 store
+    // quantization the S1 probes measured. 0 (default) = the fp32 world store, byte-identical to
+    // the pre-S2a pipeline (the dark-ship). CBTUpdateSystem drives it from GE_CBT_DEEP_DECODE.
+    uint32_t DeepDecode = 0u;
+
     // Planar pool-pressure scale. 1 (default) = a planar view whose visible field exceeds the pool
     // has its split/merge thresholds scaled up until the pool holds it with headroom (Kernel_Reset
     // steps the scale; Kernel_Classify applies it). 0 holds the scale at 1x. This is an A/B arm for
     // the two oracles that characterise the pinned regime (CBTUpdateSystem drives it from
     // GE_CBT_POOL_PRESSURE for the same purpose on a live build); it is not a setting.
     uint32_t PoolPressure = 1u;
-
-    // The rest rule. 1 = this update's inputs match the previous update's (the camera is still):
-    // Kernel_Classify's planar split and merge use one threshold, the merge end of the band, so the tree
-    // settles to the one tree the pose asks for, whatever path the camera took (the planar demand is
-    // monotone in depth, cbt_planar_demand.glsl). 0 (default) = splits and merges keep the hysteresis
-    // band that stops a moving camera from churning the boundary. Chosen per recorded update by the
-    // render feature (CBTRenderFeature::InputsHeld); not an input of the rest gate.
-    uint32_t Settle = 0u;
-
-    /// True when a planar rect or any sphere face rect is dirty this frame.
-    bool HasDirtyRegion() const
-    {
-        if (DirtyMaxU > DirtyMinU && DirtyMaxV > DirtyMinV)
-            return true;
-        for (uint32_t i = 0; i < SphereDirty.Count; ++i)
-            if (!SphereDirty.Rects[i].IsEmpty())
-                return true;
-        return false;
-    }
 };
 
 // Inert classify (nothing to split or merge): leaves the tree unchanged.
@@ -152,11 +140,6 @@ struct CBTTessellationStats
     // Planar off-frustum keep step (kWQOffFrustumKeepStep): how far the off-frustum keep band has
     // collapsed under pool pressure, 0 (ungated) to kOffFrustumKeepSteps (band 0).
     int32_t OffFrustumKeepStep = 0;
-    // The rest's keep floor (kWQOffFrustumKeepFloor): >= 0 a floor, or kKeepFloorArriving /
-    // kKeepFloorProbing, the rest phase.
-    int32_t OffFrustumKeepFloor = 0;
-    // The leaves the planar criterion wanted to merge last update, counted at rest only (kWQMergeCandidateCounter).
-    int32_t MergeCandidates = 0;
 };
 
 class CBTInstance
@@ -206,12 +189,6 @@ class CBTInstance
     // frames, with this frame's counter (its UBO ring element is rewritten by that frame's
     // update). No-op when `depth` does not exceed the base depth.
     void RefineUniform(uint32_t depth, uint32_t frameCounter);
-
-    // Refines a tree RefineUniform took to `uniformDepth` to its settled shape at `params`, before its
-    // first draw: one synchronous update per level to the cap, plus one. Call after SetHeightSource,
-    // between frames, with this frame's counter. Returns the passes it ran.
-    uint32_t RefineToView(const CBTClassifyDesc& classify, const CBTFrameParams& params, uint32_t uniformDepth,
-                      uint32_t frameCounter);
 
     // This frame's ring frame counter — see CBTResources::AdvanceFrameCounter, which owns it.
     // Every per-frame entry point below takes the returned value, and RecordUpdate pushes it
@@ -291,7 +268,11 @@ class CBTInstance
     {
         m_Resources.SetPageCacheSource(frameCounter, cacheTexture);
     }
-    void SetPageTable(Rendering::BufferHandle ring, uint32_t firstWord) { m_Resources.SetPageTable(ring, firstWord); }
+    bool ProvisionPageTableWords(uint32_t words) { return m_Resources.ProvisionPageTableWords(words); }
+    void UploadPageTable(uint32_t frameCounter, std::span<const uint32_t> words)
+    {
+        m_Resources.UploadPageTable(frameCounter, words);
+    }
 
     // Uploads the sphere sculpt page POOL + page TABLE into this frame's ring slot (planet editing
     // v2). Call with the SAME frameCounter passed to RecordUpdate; a host-visible write that completes
@@ -312,19 +293,6 @@ class CBTInstance
     void UploadSurfaceParams(uint32_t frameCounter, const CBTSurfaceParams& params)
     {
         m_Resources.UploadSurfaceParams(frameCounter, params);
-    }
-
-    // The draw's prefiltered height chain: grow it for a lattice (CBTHeightChainWords; false keeps the
-    // draw on its cached corners), and write this frame's level rule for the vertex modifier. Same
-    // frameCounter and ring discipline as the surface params.
-    bool ProvisionHeightChainWords(uint32_t words) { return m_Resources.ProvisionHeightChainWords(words); }
-    bool ProvisionNormalChain(uint32_t samplesX, uint32_t samplesZ)
-    {
-        return m_Resources.ProvisionNormalChain(samplesX, samplesZ);
-    }
-    void UploadDrawLevelParams(uint32_t frameCounter, const CBTDrawLevelParams& params)
-    {
-        m_Resources.UploadDrawLevelParams(frameCounter, params);
     }
 
     // Far-field drain (round-9 far-field-drain, design candidate 3): bulk-free the selected root
@@ -382,11 +350,6 @@ class CBTInstance
                                          uint32_t firstWord = 0);
 
   private:
-    // Records, submits and waits one update per pass; `forceFirstVertexEval` re-evaluates every
-    // corner in the first pass.
-    void SubmitUpdatesAndWait(CBTClassifyDesc classify, const CBTFrameParams& params, uint32_t passes,
-                              uint32_t frameCounter, bool forceFirstVertexEval);
-
     // One word of a render-loop-owned buffer, read through its region of the shared readback
     // buffer with a copy this call records itself.
     uint32_t ReadSharedReadbackWord(CBTBinding binding, uint64_t readbackOffset,
@@ -402,25 +365,14 @@ class CBTInstance
     void PrepareIndirect(Rendering::CommandList& cl, CBTPushConstants pc, uint32_t counterSlot);
     void RecordDataBarrier(Rendering::CommandList& cl);
     void RecordReduce(Rendering::CommandList& cl, const CBTPushConstants& pc);
-    // The planar split: rebuilds the height-range pyramid from this frame's height texture, with the
-    // ranges of the chain levels when the chain holds the texture's lattice, level by level: every block
-    // when another texture is bound, the chain's ranges came or went, or any height may have changed
-    // (`forced`: a forced corner refresh or a whole chain rebuild); only the blocks that read the edit
-    // rect, and the blocks above them, when `edited`. No-op for the atlas source, a spherical domain, the
-    // narrow-heap arm and a lattice too large for the buffer.
+    // Content-aware split: rebuilds the height-range pyramid from this frame's height texture,
+    // level by level, when the heights may have changed since the last build (`heightsChanged`:
+    // a forced corner refresh or an edit rect) or another texture is bound. No-op when the
+    // content-aware split is off for this frame (the threshold is 0, the atlas source, a
+    // spherical domain, the narrow-heap arm, a lattice too large for the buffer).
     void RecordHeightRangeBuild(Rendering::CommandList& cl, const CBTClassifyDesc& classify,
                                 const CBTFrameParams& params, CBTPushConstants pc,
-                                uint32_t frameCounter, bool forced, bool edited);
-    // The draw's prefiltered height chain (CBTLayout.h kCBTHeightChain*), level by level beside the
-    // pyramid: every level when another texture or lattice is bound, the buffer was regrown or the
-    // corners are force-refreshed (`forced`); only the samples whose tents read the edit rect when
-    // `edited`. No-op when the frame turns the chain off (HeightChain.x 0: the sphere, the atlas
-    // and paged arms, the narrow heap) or the buffer is not provisioned for the lattice. The far-field
-    // normal chain follows, over the texels whose normals read the rebuilt samples, when its texture
-    // is provisioned for the lattice. Returns whether it rebuilt the whole height chain.
-    bool RecordHeightChainBuild(Rendering::CommandList& cl, const CBTClassifyDesc& classify,
-                                const CBTFrameParams& params, CBTPushConstants pc, uint32_t frameCounter,
-                                bool forced, bool edited);
+                                uint32_t frameCounter, bool heightsChanged);
     void EnsureDispatchUAV(Rendering::CommandList& cl);
     void EnsureDispatchIndirect(Rendering::CommandList& cl);
 
@@ -452,12 +404,6 @@ class CBTInstance
     bool m_VerticesInitialized = false;
     // The height texture the pyramid was last built from (invalid = never built).
     Rendering::TextureHandle m_HeightRangeSource{};
-    // The chain levels whose ranges that build stored (CBTHeightChainRangeLevels; 0 = none).
-    uint32_t m_HeightRangeChainLevels = 0u;
-    // What the chain was last built whole from: the texture, its lattice (x | z << 16) and the buffer.
-    Rendering::TextureHandle m_HeightChainSource{};
-    uint32_t m_HeightChainLattice = 0u;
-    Rendering::BufferHandle m_HeightChainBuffer{};
 };
 
 } // namespace GameEngine::CBTTerrain

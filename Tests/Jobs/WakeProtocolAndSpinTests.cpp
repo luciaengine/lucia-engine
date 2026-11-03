@@ -22,7 +22,6 @@
 #include <thread>
 #include <vector>
 
-#include "LatencyBudget.h"
 #include "TestPlatform.h"
 #if !GE_TEST_HAS_WIN_TIMERS
 #include <sys/resource.h>
@@ -109,7 +108,7 @@ double MeasureForkUs(JobSystem::WorkStealingThreadPool& pool,
                      std::function<void()>* tasks, uint32_t count)
 {
     const auto t0 = SteadyClock::now();
-    JobSystem::ParallelFor(&pool, count, [&](size_t task) { tasks[task](); });
+    JobSystem::DispatchAndWait(&pool, tasks, count);
     return ElapsedUs(t0, SteadyClock::now());
 }
 
@@ -126,8 +125,7 @@ void RunLostWakeupStress(uint32_t spinWindowUs, uint32_t maxSpinners)
     // wakeup now costs ~500ms and cannot hide inside the scheduler's tail.
     // (This is the "stress test proves the protocol" condition the spec sets
     // for ever raising the production backstop.)
-    pool.SetSleepBackstopForTest(kStressBackstopUs);
-    const LatencyBudget budget = ReadLatencyBudget();
+    pool.SetSleepBackstopForTest(500000);
 
     constexpr int kIterations = 100000;
     std::mt19937 rng(0x5EED);
@@ -157,7 +155,7 @@ void RunLostWakeupStress(uint32_t spinWindowUs, uint32_t maxSpinners)
     for (int i = 0; i < kIterations; ++i)
     {
         const auto t0 = SteadyClock::now();
-        JobSystem::ParallelFor(&pool, 2, [&](size_t task) { tasks[task](); });
+        JobSystem::DispatchAndWait(&pool, tasks, 2);
         const double us = ElapsedUs(t0, SteadyClock::now());
         worstUs = std::max(worstUs, us);
         if (us > 900.0)
@@ -183,12 +181,14 @@ void RunLostWakeupStress(uint32_t spinWindowUs, uint32_t maxSpinners)
                     o.TotalUs, o.SubmitToRanUs, o.TotalUs - o.SubmitToRanUs);
     }
 
-    // With the rescue disabled, a lost wakeup holds the fork until a sleeper's
-    // backstop fires. Scheduler tails on a loaded machine pass 100 ms but stay
-    // under kLostWakeupLineUs, so only the latency line reads the machine load.
-    EXPECT_LT(worstUs, kLostWakeupLineUs)
-        << "a fork sample at the backstop with the rescue disabled is a lost wakeup";
-    ExpectWithinBudget(worstUs, kStressLatencyLineUs, budget, "LostWakeupStress worst fork");
+    // With the rescue disabled, a genuinely lost wakeup pins the fork at the
+    // full 500ms backstop — orders of magnitude above any scheduler tail.
+    // Samples in the 0.9-10ms band are OS wake-to-run latency (they appear
+    // identically in the untouched caller-barrier phase and with spin=0) and
+    // are reported above, not asserted on.
+    EXPECT_EQ(over100ms, 0)
+        << "a fork sample >100ms with the rescue disabled is a lost wakeup; worst = "
+        << worstUs << "us";
 }
 
 } // namespace
@@ -218,8 +218,7 @@ TEST(WakeProtocolTest, MultiProducerSkipNotify)
 {
     JobSystem::WorkStealingThreadPool pool(8);
     pool.SetSpinConfigForTest(20000, 1); // one spinner, armed across whole bursts
-    pool.SetSleepBackstopForTest(kStressBackstopUs); // no rescue: a stranded task waits for a backstop
-    const LatencyBudget budget = ReadLatencyBudget();
+    pool.SetSleepBackstopForTest(500000); // no rescue: a stranded task = ~500ms sample
 
     constexpr int kThreads = 4;
     constexpr int kRoundsPerThread = 2000;
@@ -273,21 +272,24 @@ TEST(WakeProtocolTest, MultiProducerSkipNotify)
 
     std::printf("[MultiProducerSkipNotify] rounds=%d worst=%.1fus over900us=%d over100ms=%d\n",
                 kThreads * kRoundsPerThread, worstUs.load(), over900.load(), over100ms.load());
-    EXPECT_LT(worstUs.load(), kLostWakeupLineUs)
+    EXPECT_EQ(over100ms.load(), 0)
         << "straggler with the rescue disabled: a producer skipped a notify no spinner covered";
-    ExpectWithinBudget(worstUs.load(), kStressLatencyLineUs, budget, "MultiProducerSkipNotify worst round");
 }
 
-// F2 pin: the sole spinner claims a task that blocks for one backstop. Its token retires before execution (Y),
-// so a second producer sees no spinner and notifies a sleeper. A token armed through execution makes the
-// producer skip that notify, and the second task waits for the blocker or a sleeper's backstop.
+// Directed F2 regression pin (audit-requested): the sole armed spinner claims
+// a task that blocks ~150ms, so it can cover exactly that one task and its
+// Z-recheck never fires again. A second producer then submits: because the
+// token was retired BEFORE execution (Y), the producer sees zero spinners and
+// must notify a sleeper — the task completes in microseconds. Under a naive
+// skip rule pinned to a token still armed through execution, the producer
+// skips a notify nothing covers and (with the 1ms rescue disabled) the task
+// strands for the blocker's remaining duration.
 TEST(WakeProtocolTest, BlockingCoverTaskDoesNotAbsorbSecondProducer)
 {
     JobSystem::WorkStealingThreadPool pool(4);
     // One spinner, effectively-infinite window, no timeout rescue.
     pool.SetSpinConfigForTest(60000000, 1);
-    pool.SetSleepBackstopForTest(kStressBackstopUs);
-    const LatencyBudget budget = ReadLatencyBudget();
+    pool.SetSleepBackstopForTest(500000);
 
     // Warm one worker through an execution so it re-arms the (now long) spin
     // window; the remaining workers stay parked.
@@ -311,7 +313,7 @@ TEST(WakeProtocolTest, BlockingCoverTaskDoesNotAbsorbSecondProducer)
     std::atomic<bool> blockerDone{false};
     pool.EnqueueWork([&blockerStarted, &blockerDone] {
         blockerStarted.store(true);
-        std::this_thread::sleep_for(std::chrono::microseconds(kStressBackstopUs));
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
         blockerDone.store(true);
     });
     deadline = SteadyClock::now() + std::chrono::seconds(2);
@@ -345,13 +347,10 @@ TEST(WakeProtocolTest, BlockingCoverTaskDoesNotAbsorbSecondProducer)
     }
     const double elapsedMs = ElapsedUs(t0, SteadyClock::now()) / 1000.0;
     ASSERT_TRUE(secondDone.load());
-    std::printf("[BlockingCoverTask] second task completed in %.3fms (blocker=%.0fms)\n", elapsedMs,
-                kStressBackstopUs / 1000.0);
-    // A stranded second task waits about one backstop, so this line holds at any machine load.
-    EXPECT_LT(elapsedMs * 1000.0, kLostWakeupLineUs)
-        << "the second producer's task waited on the blocked spinner: a lost wakeup";
-    ExpectWithinBudget(elapsedMs, 50.0, budget,
-                       "second producer's task waited on the blocked spinner instead of waking a sleeper (ms)");
+    std::printf("[BlockingCoverTask] second task completed in %.3fms (blocker=150ms)\n",
+                elapsedMs);
+    EXPECT_LT(elapsedMs, 50.0)
+        << "second producer's task waited on the blocked spinner instead of waking a sleeper";
 
     // Let the blocker finish before pool destruction.
     deadline = SteadyClock::now() + std::chrono::seconds(2);
@@ -446,18 +445,27 @@ TEST(SpinnerTokenTest, ShutdownDuringSpin)
 
 namespace {
 
-// Submits a graph task with no dependency for the cross-pool routing test
-// below. The test checks the graph publish path, not the closure.
-void SubmitCountingGraphTask(JobSystem::WorkStealingThreadPool& pool, std::atomic<int>& ran)
+// Minimal dependency-managed task for the cross-pool routing test below —
+// the point is the Submit(UniquePtr<Task>) graph path, not the closure.
+class CountingGraphTask final : public JobSystem::Task
 {
-    pool.Submit([&ran] { ran.fetch_add(1); }, std::span<const JobSystem::TaskHandle>());
-}
+  public:
+    CountingGraphTask(JobSystem::WorkStealingThreadPool* pool, std::atomic<int>* ran)
+        : Task(pool), m_Ran(ran)
+    {
+    }
+
+    void Execute() override { m_Ran->fetch_add(1); }
+
+  private:
+    std::atomic<int>* m_Ran;
+};
 
 } // namespace
 
 // Pins the s_CurrentPool guard on the local-queue fast path: a worker of pool
 // A submitting into pool B must publish into B's queues, not into its own
-// pool-A local queue. Without the guard the graph Submit(fn, dependencies) path
+// pool-A local queue. Without the guard the Submit(UniquePtr<Task>) path
 // below misroutes — B's counters are incremented for tasks A drains (or
 // leaves stranded), corrupting conservation in both pools; with it, both
 // pools drain fully and both Shutdown conservation tripwires stay silent.
@@ -482,7 +490,7 @@ TEST(CrossPoolSubmitTest, WorkerSubmitsIntoOtherPool)
         }
         for (int i = 0; i < kTasks; ++i)
         {
-            SubmitCountingGraphTask(poolB, handleTasksRan);
+            poolB.Submit(JobSystem::MakeUnique<CountingGraphTask>(&poolB, &handleTasksRan));
         }
         submitted.store(true);
     });
@@ -568,7 +576,7 @@ ForkBenchResult RunForkBench(JobSystem::WorkStealingThreadPool& pool, int iterat
 
     for (int i = 0; i < 100; ++i) // warmup, not measured
     {
-        JobSystem::ParallelFor(&pool, fanout, [&](size_t task) { tasks[task](); });
+        JobSystem::DispatchAndWait(&pool, tasks.data(), fanout);
     }
 
     for (int i = 0; i < iterations; ++i)
@@ -613,7 +621,6 @@ TEST(JobSystemBench, BENCHMARK_WarmStormFork)
     JobSystem::WorkStealingThreadPool pool(8);
 
     pool.SetSpinConfigForTest(100, 2);
-    const LatencyBudget budget = ReadLatencyBudget();
     const ForkBenchResult on = RunForkBench(pool, 3000, 8, 20, 50, /*sleepGaps=*/false);
     PrintBenchRow("warm-storm spin=on", on);
 
@@ -623,15 +630,10 @@ TEST(JobSystemBench, BENCHMARK_WarmStormFork)
 
     // 20µs is the Windows bench-box gate; macOS Release measures ~22µs on
     // the same protocol (REPORT row + catastrophic ceiling there).
-    if (budget.Verdict == LatencyBudgetVerdict::Skip)
-    {
-        GTEST_SKIP() << budget.Describe();
-    }
 #if defined(_WIN32)
-    EXPECT_LT(on.MedianUs, budget.Scale(20.0)) << budget.Describe();
+    EXPECT_LT(on.MedianUs, 20.0);
 #else
-    EXPECT_LT(on.MedianUs, budget.Scale(100.0))
-        << "warm-storm median regressed catastrophically; " << budget.Describe();
+    EXPECT_LT(on.MedianUs, 100.0) << "warm-storm median regressed catastrophically";
 #endif
 }
 
@@ -650,9 +652,6 @@ TEST(JobSystemBench, BENCHMARK_WarmStormFork16Wide)
     JobSystem::WorkStealingThreadPool pool(16);
 
     pool.SetSpinConfigForTest(100, 2);
-#if defined(_WIN32)
-    const LatencyBudget budget = ReadLatencyBudget();
-#endif
     const ForkBenchResult on = RunForkBench(pool, 3000, 16, 20, 50, /*sleepGaps=*/false);
     PrintBenchRow("warm-storm-16w spin=on", on);
 
@@ -665,18 +664,13 @@ TEST(JobSystemBench, BENCHMARK_WarmStormFork16Wide)
     // detector for these paths is LostWakeupStress). Other platforms keep the
     // REPORT rows above until per-platform calibration lands.
 #if defined(_WIN32)
-    if (budget.Verdict == LatencyBudgetVerdict::Skip)
-    {
-        GTEST_SKIP() << budget.Describe();
-    }
-    EXPECT_LE(on.WorstUs, budget.Scale(900.0))
-        << "16-wide warm fork hit the backstop band (median=" << on.MedianUs << "us); " << budget.Describe();
+    EXPECT_EQ(on.Over900, 0)
+        << "16-wide warm fork hit the backstop band (median=" << on.MedianUs << "us)";
     // Loose median ceiling (slice-5 audit F4): the tight <20us gate lives on
     // the 8-wide row; this row measures the multi-wake bulk regime (observed
     // 44-52us). ~3x observed guards against catastrophic regression without
     // gating on box noise.
-    EXPECT_LT(on.MedianUs, budget.Scale(150.0))
-        << "16-wide warm fork median regressed catastrophically; " << budget.Describe();
+    EXPECT_LT(on.MedianUs, 150.0) << "16-wide warm fork median regressed catastrophically";
 #endif
 }
 
@@ -692,9 +686,6 @@ TEST(JobSystemBench, BENCHMARK_TrueColdFork)
     JobSystem::WorkStealingThreadPool pool(8);
 
     pool.SetSpinConfigForTest(100, 2);
-#if defined(_WIN32)
-    const LatencyBudget budget = ReadLatencyBudget();
-#endif
     const ForkBenchResult on = RunForkBench(pool, 2000, 8, 5000, 5000, /*sleepGaps=*/true);
     PrintBenchRow("true-cold spin=on", on);
 
@@ -708,12 +699,8 @@ TEST(JobSystemBench, BENCHMARK_TrueColdFork)
     // wakes tail at 2-3ms with spin on OR off (i.e. scheduler latency, not
     // the wake path). REPORT-only off Windows until per-platform calibration.
 #if defined(_WIN32)
-    if (budget.Verdict == LatencyBudgetVerdict::Skip)
-    {
-        GTEST_SKIP() << budget.Describe();
-    }
-    EXPECT_LT(on.P999Us, budget.Scale(900.0)) << budget.Describe();
-    EXPECT_LE(on.WorstUs, budget.Scale(900.0)) << budget.Describe();
+    EXPECT_LT(on.P999Us, 900.0);
+    EXPECT_EQ(on.Over900, 0);
 #endif
 }
 
@@ -727,7 +714,7 @@ double MeasureIdleCpuPercent(uint32_t spinWindowUs, uint32_t maxSpinners)
     // Cycle every worker through the loop once, then let the pool settle into
     // its idle regime before sampling.
     std::function<void()> tasks[4] = {[] {}, [] {}, [] {}, [] {}};
-    JobSystem::ParallelFor(&pool, 4, [&](size_t task) { tasks[task](); });
+    JobSystem::DispatchAndWait(&pool, tasks, 4);
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
 #if GE_TEST_HAS_WIN_TIMERS

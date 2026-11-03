@@ -46,12 +46,12 @@ struct AgentTurnRequest
     std::span<const ConversationMessage> History;
     /// The user's new message.
     std::string UserText;
+    /// The images picked with the new message, sent with it as images (its text files are in
+    /// UserText). Only the new message's: earlier messages resend their text alone. Must outlive
+    /// RunTurn().
+    std::span<const PromptFile> Images;
     /// The model to answer with, as named in settings; empty selects the provider's default.
     std::string Model;
-    /// The reasoning effort to answer with, one of the levels the provider offers
-    /// (ClaudeSessionProvider::kEffortLevels); empty selects the provider's default. Only
-    /// providers with effort levels read it.
-    std::string Effort;
     /// The provider session to continue; empty starts a new one. Only providers that
     /// own their transcript read it.
     std::string SessionId;
@@ -98,9 +98,6 @@ struct TurnResult
     /// On Succeeded: why the reply ended short of a complete answer (the token
     /// limit, a refusal), in one user-facing sentence; empty for a complete reply.
     std::string Note;
-    /// The model that answered, as the provider reported it (a full model id); empty
-    /// when the provider reports none.
-    std::string Model;
     /// The provider's cost estimate for the turn, in US dollars.
     double CostUsd = 0.0;
     /// Model round trips the provider made for the turn (more than one when it calls tools).

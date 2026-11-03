@@ -1,6 +1,7 @@
 #include "Graph/GameLogicGraphCompiler.h"
 
 #include "Graph/GameLogicActionCatalog.h"
+#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <cctype>
@@ -57,25 +58,15 @@ std::string SanitizeIdentifier(std::string value)
     return value;
 }
 
-std::string TrimCopy(const std::string& value)
+bool IsTrueText(const std::string& value)
 {
-    auto begin = std::find_if_not(value.begin(), value.end(), [](unsigned char c) { return std::isspace(c) != 0; });
-    auto end = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char c) { return std::isspace(c) != 0; }).base();
-    if (begin >= end)
-        return {};
-    return std::string(begin, end);
-}
-
-bool IsTrueText(std::string value)
-{
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    value = TrimCopy(value);
-    return value == "true" || value == "1" || value == "yes" || value == "on";
+    const std::string text = ToLowerAscii(TrimWhitespaceView(value));
+    return text == "true" || text == "1" || text == "yes" || text == "on";
 }
 
 std::string NumberOrFallback(const std::string& value, const char* fallback)
 {
-    const std::string trimmed = TrimCopy(value);
+    const std::string trimmed = TrimWhitespace(value);
     if (trimmed.empty())
         return fallback;
     char* end = nullptr;
@@ -97,7 +88,7 @@ std::string FloatLiteral(const std::string& value, const char* fallback = "0")
 
 std::string IntOrFallback(const std::string& value, const char* fallback)
 {
-    const std::string trimmed = TrimCopy(value);
+    const std::string trimmed = TrimWhitespace(value);
     if (trimmed.empty())
         return fallback;
     char* end = nullptr;
@@ -327,7 +318,7 @@ private:
             return Vec3Literal(value);
         if (type == "entity")
         {
-            if (TrimCopy(value).empty() || value == "self")
+            if (TrimWhitespaceView(value).empty() || value == "self")
                 return "ctx.Self()";
             return "ctx.FindEntityByName(" + CppString(value) + ")";
         }
@@ -540,10 +531,6 @@ private:
             EmitLine("ctx.SetBusVolume(" + ValueExpr(node, "bus", "int", "bus") + ", " + ValueExpr(node, "volume", "float", "volume") + ");");
         else if (node.TypeId == "CreateEntity")
             EmitLine("(void)ctx.CreateEntity(" + ValueExpr(node, "name", "string", "name") + ");");
-        else if (node.TypeId == "SpawnPrefab")
-            EmitLine("(void)ctx.SpawnPrefab(" + ValueExpr(node, "prefab", "string", "prefab") + ", " +
-                     ValueExpr(node, "position", "float3", "position") + ", " +
-                     ValueExpr(node, "rotation", "float3", "rotation") + ");");
         else if (node.TypeId == "DestroyEntity")
             EmitLine("ctx.DestroyEntity(" + EntityExpr(node, "entity") + ");");
         else if (node.TypeId == "SetEntityEnabled")

@@ -3,6 +3,7 @@
 #include "Graph/SgGraphModelBridge.h"
 
 #include "Rendering/ShaderGraph/SgTagParser.h"
+#include "Types/StringUtils.h"
 
 #include <sstream>
 #include <string>
@@ -11,25 +12,15 @@ namespace GameEngine {
 namespace Graph {
 namespace {
 
-std::string TrimCopy(std::string_view text)
-{
-    std::size_t begin = 0;
-    while (begin < text.size() && (text[begin] == ' ' || text[begin] == '\t' || text[begin] == '\r'))
-        ++begin;
-    std::size_t end = text.size();
-    while (end > begin && (text[end - 1] == ' ' || text[end - 1] == '\t' || text[end - 1] == '\r'))
-        --end;
-    return std::string(text.substr(begin, end - begin));
-}
-
 std::string StripCommentPrefix(std::string_view line)
 {
-    const std::string trimmed = TrimCopy(line);
-    if (trimmed.rfind("//", 0) != 0)
-        return trimmed;
-    std::string_view body = std::string_view(trimmed).substr(2);
-    if (!body.empty() && body.front() == ' ')
-        body.remove_prefix(1);
+    std::string_view body = TrimWhitespaceView(line);
+    if (body.starts_with("//"))
+    {
+        body.remove_prefix(2);
+        if (!body.empty() && body.front() == ' ')
+            body.remove_prefix(1);
+    }
     return std::string(body);
 }
 

@@ -1,13 +1,11 @@
 #pragma once
 
+#include "Logger/Types.h"
 #include "Logger/LogLevel.h"
 #include <chrono>
-#include <cstdint>
 #include <cstring>
-#include <memory>
-#include <string>
+#include <array>
 #include <string_view>
-#include <vector>
 
 namespace Logger {
 
@@ -16,29 +14,53 @@ namespace Logger {
  */
 struct BacktraceFrame;
 
-/// Wall-clock time of a log message; system_clock so it converts to time_t.
-using TimePoint = std::chrono::system_clock::time_point;
+// Borrowed C-string → owned string. Never calls unbounded strlen: a dangling
+// __FILE__ / Function (unloaded module) or a non-terminated pointer becomes
+// empty instead of taking the process down. Prefer SetSourceLocation over
+// assigning a raw const char* into SourceFile / Function.
+String CopySourceCString(const char* src);
+inline constexpr size_t kMaxSourceCString = 1024;
 
-/// "hh:mm:ss.mmm" in local time: the time every sink and the editor's Log panel print. The local-time
-/// conversion is cached per thread and redone only when the second changes.
-std::string FormatTimestamp(const TimePoint& timestamp);
+// An owned snapshot for a stable logging call site. Keep this object at the
+// call site, not in a pointer-keyed global cache: modules may unload or reuse
+// addresses. Queued records copy its strings before returning to the caller.
+class OwnedSourceLocation
+{
+public:
+    OwnedSourceLocation(const char* file, const char* function)
+    {
+        const auto ownedFile = CopySourceCString(file);
+        const auto ownedFunction = CopySourceCString(function);
+        m_FileLength = ownedFile.size();
+        m_FunctionLength = ownedFunction.size();
+        std::memcpy(m_File.data(), ownedFile.data(), m_FileLength);
+        std::memcpy(m_Function.data(), ownedFunction.data(), m_FunctionLength);
+    }
+    std::string_view File() const { return {m_File.data(), m_FileLength}; }
+    std::string_view Function() const { return {m_Function.data(), m_FunctionLength}; }
+private:
+    // Bounded like CopySourceCString. Trivial destruction keeps static call
+    // sites valid during shutdown; no heap-owning static string is torn down.
+    std::array<char, kMaxSourceCString> m_File{};
+    std::array<char, kMaxSourceCString> m_Function{};
+    size_t m_FileLength = 0;
+    size_t m_FunctionLength = 0;
+};
 
 struct LogMessage {
     LogLevel Level = LogLevel::Info;
-    std::string Message;
+    String Message;
     TimePoint Timestamp;
     char ThreadId[16] = {};
-    std::string SourceFile;
-    std::int32_t SourceLine = 0;
-    std::string Function;
-    /// LogChannel::Index of the record's channel; 0 is Core.
-    std::uint16_t Channel = 0;
+    String SourceFile;
+    int32 SourceLine = 0;
+    String Function;
 
     // Optional captured C++ callstack, auto-filled for Error/Critical.
-    std::shared_ptr<const std::vector<BacktraceFrame>> Backtrace;
+    SharedPtr<const Vector<BacktraceFrame>> Backtrace;
 
     LogMessage() = default;
-    LogMessage(LogLevel lvl, std::string msg)
+    LogMessage(LogLevel lvl, String msg)
         : Level(lvl), Message(std::move(msg)), Timestamp(std::chrono::system_clock::now()) {}
 
     void SetThreadId(const char* id)
@@ -47,6 +69,7 @@ struct LogMessage {
         ThreadId[sizeof(ThreadId) - 1] = '\0';
     }
 
+    void SetSourceLocation(const char* file, int32 line, const char* function);
 };
 
 /**
@@ -81,7 +104,7 @@ public:
      * @brief Get the name of this sink (for debugging/identification)
      * @return Human-readable name of the sink
      */
-    virtual std::string GetName() const = 0;
+    virtual String GetName() const = 0;
     
     /**
      * @brief Check if this sink is currently available/working
@@ -98,10 +121,17 @@ protected:
      * @param includeSource Whether to include source location
      * @return Formatted string ready for output
      */
-    std::string FormatMessage(const LogMessage& message,
+    String FormatMessage(const LogMessage& message, 
                         bool includeTimestamp = true, 
                         bool includeLevel = true, 
                         bool includeSource = false) const;
+    
+    /**
+     * @brief Format timestamp for output
+     * @param timestamp Time point to format
+     * @return Formatted timestamp string
+     */
+    String FormatTimestamp(const TimePoint& timestamp) const;
 };
 
 /**
@@ -125,7 +155,7 @@ public:
     void Write(const LogMessage& message) override;
     void Flush() override;
     bool ShouldLog(LogLevel level) const override;
-    std::string GetName() const override { return "Console"; }
+    String GetName() const override { return "Console"; }
     bool IsAvailable() const override;
     
     /**

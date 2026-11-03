@@ -1,8 +1,8 @@
 // CBTTreeSeed: when the CBT subdivision tree restarts from its roots. CBTRenderFeature re-seeds
 // the instance whenever RestartReason names a reason, so these pin the reasons themselves: a
-// retired terrain (replaced, re-provisioned, removed, or a scene opened), a switch of the drawn
-// terrain, a lowered depth cap and a domain switch restart the tree at once; repeats within the
-// window are held until they settle; nothing else restarts it.
+// retired terrain (replaced, re-provisioned, removed, or a scene opened), a lowered depth cap and
+// a domain switch restart the tree at once; repeats within the window are held until they
+// settle; nothing else restarts it.
 
 #include <gtest/gtest.h>
 
@@ -72,42 +72,6 @@ TEST(CBTTreeSeed, DomainSwitchRestartsTheTree)
     seed.Seeded(kDomainSpherical, 30u);
     EXPECT_EQ(seed.Domain(), kDomainSpherical);
     EXPECT_EQ(FrameRestartFires(seed, kDomainSpherical, 30u, 2u, 40u, CBTTreeRestart::None), 0u);
-}
-
-// The tree draws the first active terrain. Another terrain becomes the first when one is created,
-// enabled or disabled, and nothing retires: the switch restarts the tree as a retire does.
-TEST(CBTTreeSeed, DrawnTerrainSwitchRestartsTheTree)
-{
-    CBTTreeSeed seed;
-    seed.Seeded(kDomainPlanar, 21u);
-    EXPECT_FALSE(seed.NoteDrawnTerrain(0u, 1u)) << "the first terrain drawn after a seed is not a switch";
-    EXPECT_EQ(FrameRestartFires(seed, kDomainPlanar, 21u, 1u, 40u, CBTTreeRestart::None), 0u)
-        << "the first terrain drawn after a seed is the one the tree grows on";
-
-    EXPECT_TRUE(seed.NoteDrawnTerrain(1u, 2u)) << "the switch frame kept the previous terrain's corners";
-    EXPECT_EQ(FrameRestartFires(seed, kDomainPlanar, 21u, 100u, 40u, CBTTreeRestart::TerrainRetired),
-              100u)
-        << "the tree kept the previous terrain's leaves after the drawn terrain changed";
-
-    seed.Seeded(kDomainPlanar, 21u);
-    EXPECT_FALSE(seed.NoteDrawnTerrain(1u, 2u)) << "the same terrain drawn again reported a switch";
-    EXPECT_EQ(FrameRestartFires(seed, kDomainPlanar, 21u, 101u, 40u, CBTTreeRestart::None), 0u)
-        << "the same terrain drawn again restarted the tree";
-    EXPECT_TRUE(seed.NoteDrawnTerrain(0u, 1u)) << "the switch back after a seed was not reported";
-}
-
-// A scene open retires the drawn terrain and binds a new handle in the same step: one restart.
-TEST(CBTTreeSeed, RetireThatChangesTheDrawnTerrainRestartsOnce)
-{
-    CBTTreeSeed seed;
-    seed.Seeded(kDomainPlanar, 21u);
-    EXPECT_FALSE(seed.NoteDrawnTerrain(0u, 1u));
-    seed.NoteTerrainRetired();
-    EXPECT_EQ(FrameRestartFires(seed, kDomainPlanar, 21u, 100u, 1u, CBTTreeRestart::TerrainRetired), 100u);
-    seed.Seeded(kDomainPlanar, 21u);
-    EXPECT_FALSE(seed.NoteDrawnTerrain(0u, 2u));
-    EXPECT_EQ(FrameRestartFires(seed, kDomainPlanar, 21u, 100u, 40u, CBTTreeRestart::None), 0u)
-        << "the new terrain restarted the tree a second time after the retire's restart";
 }
 
 // An inspector drag writes the component on most frames: a non-tiled resize retires a texture

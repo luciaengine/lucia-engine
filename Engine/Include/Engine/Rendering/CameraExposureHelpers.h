@@ -2,7 +2,6 @@
 
 #include "Components/Rendering/Camera.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Mathematics/Interpolation.h"
 #include "Types/Types.h"
 
 #include <algorithm>
@@ -28,17 +27,15 @@ inline ViewRegistry::CameraExposure ToCameraExposure(const Components::Camera& c
     e.AutoExposureMaxEv = c.AutoExposureMaxEv;
     e.AutoExposureSpeedUp = c.AutoExposureSpeedUp;
     e.AutoExposureSpeedDown = c.AutoExposureSpeedDown;
-    e.AutoExposureMeter = static_cast<int32>(c.AutoExposureMeter);
-    e.AutoExposureCompensationCurve = c.AutoExposureCompensationCurve;
     e.FocusDistance = c.FocusDistance;
     e.ApertureBladeCount = static_cast<int32>(std::clamp(
         c.ApertureBladeCount, Components::Camera::kApertureBladeCountMin,
         Components::Camera::kApertureBladeCountMax));
-    e.ApertureRoundness = Math::Clamp01(c.ApertureRoundness);
+    e.ApertureRoundness = std::clamp(c.ApertureRoundness, 0.0f, 1.0f);
     e.ApertureRotation = std::clamp(c.ApertureRotation, 0.0f, 360.0f);
     e.AnamorphicSqueeze = std::clamp(c.AnamorphicSqueeze, 1.0f, 4.0f);
     e.FocusDebugMode = c.FocusDebugMode != 0 ? 1 : 0;
-    e.FocusDebugAlpha = Math::Clamp01(c.FocusDebugAlpha);
+    e.FocusDebugAlpha = std::clamp(c.FocusDebugAlpha, 0.0f, 1.0f);
     // Focal length from the vertical FOV against the camera's sensor height:
     // f = (sensorHeight/2) / tan(fovY/2). Orthographic views keep the default.
     e.SensorHeightMm = std::max(c.SensorHeightMm, 1.0f);

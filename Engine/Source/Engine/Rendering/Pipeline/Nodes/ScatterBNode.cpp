@@ -39,11 +39,9 @@ void ScatterBNode::DeclareForView(ViewDeclare& d)
     t.Color = d.ViewColor;
     t.Depth = d.ViewDepth;
     t.Resolve = d.ViewResolve;
-    t.BloomSampleDelta = d.ViewBloomSampleDelta;
     t.DepthResolved = d.ViewDepthResolved;
     t.OccluderDepthResolved = d.ViewOccluderDepthResolved;
     t.GTAO = d.ResolveTexture(Names::View::GTAO);
-    t.SkyBackdrop = d.ResolveTexture(Names::Res::SkyBackdrop);
     // Same DDGI glossy-resolve outputs the phase-A pass bound (published by
     // WorldRenderNode only on frames the resolve pass was declared), so
     // recovered geometry reads the same scaled reflections. Invalid when the

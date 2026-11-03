@@ -6,7 +6,7 @@
 
 #include <gtest/gtest.h>
 
-#include "Terrain/TerrainSizingNotice.h"
+#include "Inspectors/TerrainSizingNotice.h"
 #include "TerrainECS/TerrainSizingPlan.h"
 
 #include <string>

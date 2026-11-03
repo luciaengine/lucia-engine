@@ -1,6 +1,9 @@
+#include "Engine/Rendering/Pipeline/RenderPipeline.h"
+#include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Engine/Hosting/RuntimeHost.h"
 
 #include "Assets/AssetManager.h"
+#include "Assets/AssetRegistry.h"
 #include "Components/Rendering/Camera.h"
 #include "Components/Transform.h"
 #include "Core/Application.h"
@@ -28,27 +31,73 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
 #include "Rendering/Core/HzbCullingStrategy.h"
-#include "Rendering/Core/ReverseZ.h"
 #include "Rendering/Passes/SRGBEncodePass.h"
 #include "Rendering/Passes/TemporalDither.h"
-#include "Scene/AssetManagerSceneResolver.h"
+#include "Scene/SceneAssetResolver.h"
 #include "Scene/SceneIO.h"
-#include "SplineRecipes/SplineRecipeSystem.h"
 #include "UI/UIManager.h"
 #include "UI/UITextureSpace.h"
 
+#if !defined(GE_PLATFORM_MOBILE)
+#include <GLFW/glfw3.h>
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
 #include <span>
 #include <utility>
 
-#include <GLFW/glfw3.h>
-
 namespace GameEngine {
 
 namespace
 {
+class RuntimeSceneAssetResolver final : public Scene::ISceneAssetResolver
+{
+public:
+    explicit RuntimeSceneAssetResolver(AssetManager& assetManager, std::filesystem::path assetRoot)
+        : m_AssetManager(assetManager)
+        , m_Registry(assetManager.GetRegistry())
+        , m_AssetRoot(std::move(assetRoot))
+    {
+    }
+
+    std::filesystem::path GetAssetRoot() const override { return m_AssetRoot; }
+    std::filesystem::path ResolveAssetPath(const std::filesystem::path& authoredPath) const override
+    {
+        return m_AssetManager.ResolveAssetPath(authoredPath);
+    }
+    GUID ResolveGuid(const GUID& guid) const override { return m_Registry.ResolveGuid(guid); }
+    GUID GetOrCreateAssetGuid(const std::filesystem::path& absolutePath) override
+    {
+        return m_Registry.GetOrCreateAssetGUID(absolutePath);
+    }
+
+    bool TryGetPathAndType(const GUID& guid, std::filesystem::path& outPath, AssetType& outType) const override
+    {
+        AssetMetadata metadata{};
+        if (!m_Registry.TryGetAssetMetadata(guid, metadata))
+            return false;
+        outPath = metadata.Path;
+        outType = metadata.Type;
+        return true;
+    }
+
+    bool TryGetGuidAndType(const std::filesystem::path& absolutePath, GUID& outGuid, AssetType& outType) const override
+    {
+        AssetMetadata metadata{};
+        if (!m_Registry.TryGetAssetMetadata(absolutePath, metadata))
+            return false;
+        outGuid = metadata.Guid;
+        outType = metadata.Type;
+        return true;
+    }
+
+private:
+    AssetManager& m_AssetManager;
+    AssetRegistry& m_Registry;
+    std::filesystem::path m_AssetRoot;
+};
+
 // Applies a fullscreen window mode; the windowed mode is the window as created.
 void ApplyFullscreenMode(Platform::Window& window, WindowMode mode)
 {
@@ -64,6 +113,7 @@ void ApplyFullscreenMode(Platform::Window& window, WindowMode mode)
         if (window.IsFullscreen())
             window.SetFullscreen(false);
         window.SetDecorated(false);
+#if !defined(GE_PLATFORM_MOBILE)
         GLFWmonitor* monitor = glfwGetPrimaryMonitor();
         const GLFWvidmode* videoMode = monitor ? glfwGetVideoMode(monitor) : nullptr;
         if (videoMode)
@@ -71,6 +121,7 @@ void ApplyFullscreenMode(Platform::Window& window, WindowMode mode)
             window.SetPosition(0, 0);
             window.SetWindowSize(videoMode->width, videoMode->height);
         }
+#endif
         break;
     }
 
@@ -141,7 +192,6 @@ bool RuntimeHost::InitWindow()
 WindowInputRouterConfig::PlaySurface RuntimeHost::HudPlaySurface() const
 {
     WindowInputRouterConfig::PlaySurface surface;
-    surface.pointerLocked = m_Window && m_Window->IsCursorLocked();
     if (!m_GameUI)
         return surface;
     surface.gameUi = m_GameUI.get();
@@ -181,9 +231,7 @@ void RuntimeHost::FollowFramebufferSize(int width, int height)
 bool RuntimeHost::InitRendering()
 {
     // Headless: no render device. The engine's schedule still runs every frame, with no
-    // render services, so physics, pathfinding and script systems tick. Terrain height,
-    // ocean buoyancy and the skeleton binding of scene-loaded skinned meshes come from
-    // render-side work and are absent.
+    // render services, so physics, pathfinding, animation and script systems tick.
     if (m_Application.GetConfig().Headless)
     {
         auto& engine = EngineCore::GetInstance();
@@ -200,7 +248,6 @@ bool RuntimeHost::InitRendering()
     Rendering::DeviceDesc desc{};
     desc.preferredAPI = Rendering::GraphicsAPI::Auto;
     desc.enableSwapchain = true;
-    desc.persistPipelineCache = true;
     desc.applicationName = m_Desc.Title;
     desc.vsync = m_Desc.VSync;
     desc.hdrEnabled = m_Desc.HdrEnabled;
@@ -283,6 +330,9 @@ bool RuntimeHost::InitRendering()
     // Engine-wide AA + render scale, cooked into game.config the same way.
     // Cameras with mode Default inherit these; per-camera overrides still win.
     m_Desc.RenderQuality.ApplyTo(*rs);
+    std::string sortingError;
+    if (!Rendering::SortingLayers::SetCurrent(m_Desc.SortingLayers, sortingError))
+        Logger::Log::Error("Runtime sorting layers: {}", sortingError);
     Logger::Log::Info(
         "Runtime: Applied render quality settings (aaMode={}, msaa={} sample(s), renderScale={})",
         static_cast<uint32_t>(rs->GetDefaultAntiAliasingMode()), rs->GetDefaultMSAASampleCount(),
@@ -328,21 +378,13 @@ bool RuntimeHost::OpenScene(const std::filesystem::path& scenePath)
     const auto& assetRoot = engine.GetResolvedAssetRoot();
     const auto sceneFile = assetRoot / scenePath;
 
-    // What the spline recipes generated belongs to the outgoing scene: release it
-    // against the outgoing world, before the load clears it (SplineRecipeSystem).
-    auto* loop = engine.GetRenderingLoop();
-    auto* systems = loop ? loop->GetSystemManager() : nullptr;
-    if (auto* recipes = systems ? systems->GetSystem<SplineRecipes::SplineRecipeSystem>() : nullptr)
-        recipes->ReleaseSceneScoped(*world);
+    RuntimeSceneAssetResolver assetResolver(engine.GetAssetManager(), assetRoot);
 
-    Scene::AssetManagerSceneResolver assetResolver(engine.GetAssetManager(), assetRoot,
-                                                   Scene::AssetManagerSceneResolver::UnknownFile::AssignGuid);
-
-    Scene::SceneReadOptions opts{};
-    opts.clearWorldFirst = true;
+    Scene::LoadOptions opts{};
+    opts.mode = Scene::LoadMode::Replace;
     opts.assetResolver = &assetResolver;
     opts.assetRootOverride = assetRoot;
-    if (!Scene::ReadSceneInto(*world, sceneFile, opts))
+    if (!Scene::LoadSceneFromFile(*world, sceneFile, opts))
     {
         // The loader reports through its error record and does not log the
         // reason itself; this is the one line that carries it.
@@ -357,7 +399,7 @@ bool RuntimeHost::OpenScene(const std::filesystem::path& scenePath)
     // has landed, so no frame waits for a load. Skeletons bind as entities complete.
     m_SceneResolve = Engine::Renderer::SceneResolveBatch::None;
     auto* rs = m_RenderCtx ? m_RenderCtx->GetRenderServices() : nullptr;
-    if (rs && loop)
+    if (auto* loop = engine.GetRenderingLoop(); rs && loop)
         m_SceneResolve = loop->GetSceneResolveService().EnqueueWorld(*world, *rs);
 
     Logger::Log::Info("Runtime: Loaded scene '{}'", sceneFile.string());
@@ -439,8 +481,7 @@ void RuntimeHost::Render(float deltaTime)
 
             if (m_ViewId != 0)
             {
-                // The view draws the camera's Visible Layers.
-                Engine::Renderer::DeclareGameCameraView(rs->Views(), m_ViewId, &*activeCam);
+                rs->Views().SetViewRenderLayerMask(m_ViewId, 1u);
                 rs->Views().SetViewWorldId(m_ViewId, world->GetWorldId());
                 // Two-phase HZB occlusion for the shipped player's main view,
                 // matching the editor game view + free scene view (#253):
@@ -459,7 +500,8 @@ void RuntimeHost::Render(float deltaTime)
                     .SampleCount;
 
             Engine::Renderer::ApplyActiveCameraAspect(*rs, m_ViewId, m_CameraId, *activeCam, w, h);
-            rs->Views().SetCameraVolumeLayers(m_CameraId, activeCam->params.VolumeLayers);
+            m_IncludeUIInPostProcessing = activeCam->params.IncludeUIInPostProcessing;
+            rs->Views().SetCameraPostProcessMask(m_CameraId, activeCam->params.PostProcessMask);
             rs->Views().SetCameraExposure(m_CameraId, Engine::Renderer::ToCameraExposure(activeCam->params));
             // Per-camera render scale: an explicit value pins this view to a
             // fixed scale (opting out of the engine-wide dynamic controller);
@@ -561,14 +603,20 @@ void RuntimeHost::RenderFrameRG(Engine::Renderer::RenderServices& rs,
     clear.clearColor = true;
     if (useBlackClear)
     {
-        clear.clearColorValue = ColorLinear(0.0f, 0.0f, 0.0f, 1.0f);
+        clear.clearColorValue[0] = 0.0f;
+        clear.clearColorValue[1] = 0.0f;
+        clear.clearColorValue[2] = 0.0f;
+        clear.clearColorValue[3] = 1.0f;
     }
     else
     {
-        clear.clearColorValue = ColorLinear(0.02f, 0.02f, 0.02f, 1.0f);
+        clear.clearColorValue[0] = 0.02f;
+        clear.clearColorValue[1] = 0.02f;
+        clear.clearColorValue[2] = 0.02f;
+        clear.clearColorValue[3] = 1.0f;
     }
     clear.clearDepth = true;
-    clear.clearDepthValue = Rendering::ReverseZ::kClearFar;
+    clear.clearDepthValue = 0.0f;
     rs.Views().SetViewClearConfig(m_ViewId, clear);
 
     // Forward+ directional/ambient lighting reads the per-view LightUBO —
@@ -586,8 +634,10 @@ void RuntimeHost::RenderFrameRG(Engine::Renderer::RenderServices& rs,
         m_GameUI = GameUIHost::CreateForHost(
             &device, &EngineCore::GetInstance().GetAssetManager(),
             &EngineCore::GetInstance().GetJobSystem(),
-            // The host owns its FinalColor target.
-            /*neverClearTarget=*/false);
+            // Default HUD font from the project asset root (Assets/Fonts/Roboto-Regular.ttf),
+            // staged beside a development runtime and shipped with every export. The host
+            // owns its FinalColor target.
+            EngineCore::GetInstance().GetResolvedAssetRoot(), /*neverClearTarget=*/false);
         m_GameUI->GetUIManager()->SetScaleSettings(m_Desc.UIScale);
     }
     GameUI::SetHost(m_GameUI.get());
@@ -617,6 +667,31 @@ void RuntimeHost::RenderFrameRG(Engine::Renderer::RenderServices& rs,
         params.ViewTargets = std::span<const Engine::Renderer::Pipeline::ViewTargetsRG>(&vt, 1);
     params.BuildWorldDrawListsIfReady = false; // the ECS loop builds keys during Update
     params.DeltaTime = deltaTime;
+    if (auto* pipeline = rs.Spine().PipelineInstanceForFrame(*m_RenderGraphStream.Frame))
+    {
+        const std::weak_ptr<uint8_t> lifetime = m_UiPostProcessLifetime;
+        pipeline->SetBeforePostProcessCallback(this, [this, lifetime, hasHudDocuments](
+            Engine::Renderer::Pipeline::ViewDeclare& d) {
+            if (lifetime.expired() || !hasHudDocuments || !m_IncludeUIInPostProcessing ||
+                d.View.id != m_ViewId || !d.ViewColor.IsValid() ||
+                m_UiCompositedFrame == d.Frame.FrameIndex())
+                return;
+            auto* services = EngineCore::GetInstance().GetRenderServices();
+            auto* device = services ? services->GetDevice() : nullptr;
+            if (!device)
+                return;
+            const auto& desc = d.Frame.Graph().ResourceDesc(d.ViewColor.Id);
+            // Keep the UI pending for the resolved/final target: its pipelines
+            // cannot draw into a multisampled attachment.
+            if (desc.SampleCount > 1)
+                return;
+            m_GameUI->UpdateAndRender(d.Frame, d.ViewColor,
+                UI::UITargetSpace::ForPipelineOutput(services->GetPipelineOutputSpaceRG(),
+                                                     device->GetActiveHdrOutputMode()),
+                desc.Width, desc.Height);
+            m_UiCompositedFrame = d.Frame.FrameIndex();
+        });
+    }
     rs.Spine().BuildFrameGraph(*m_RenderGraphStream.Frame, params);
 
     // Covered: the single-sample view target the menu owns (the resolve when MSAA is
@@ -727,7 +802,7 @@ void RuntimeHost::RenderFrameRG(Engine::Renderer::RenderServices& rs,
                 presentSrc = view.Image;
                 finalizeInput = Rendering::Passes::FinalizeInputSpace::EncodedSrgb;
             }
-            if (hasHudDocuments)
+            if (hasHudDocuments && m_UiCompositedFrame != m_RenderGraphStream.Frame->FrameIndex())
             {
                 // The HUD's target is whatever the chain finished with, and its
                 // blend space is that image's PRODUCER stamp — never the display's.
@@ -862,6 +937,7 @@ void RuntimeHost::Shutdown()
     // manager and rendering device. Destroy it before the render context and
     // EngineCore are torn down, rather than leaving it until the host's
     // destructor after those services are gone.
+    m_UiPostProcessLifetime.reset();
     m_GameUI.reset();
 
     EngineCore::GetInstance().DisableRenderingLoop();

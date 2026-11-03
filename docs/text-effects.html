@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Shared text effects</title>
+<style>
+:root { color-scheme: dark; background: #1a1d23; color: #d8dde6; }
+body { font: 16px system-ui; max-width: 960px; margin: 40px auto; padding: 24px; line-height: 1.6; }
+h2 { border-top: 1px solid #3a414d; padding-top: 20px; }
+pre { background: #232831; padding: 20px; overflow: auto; }
+code { color: #6db4ff; }
+table { border-collapse: collapse; width: 100%; }
+td { text-align: left; padding: 8px; border-bottom: 1px solid #3a414d; }
+th { text-align: left; padding: 8px; border-bottom: 1px solid #3a414d; color: #8a93a3; }
+</style>
+<h1>Shared text effects</h1>
+<p>Text shadows, glow and outlines decorate shaped glyphs in the shared UI renderer. They do not change text measurement, wrapping, selection or caret placement. Effects apply to labels and controls that emit text through GlyphRunEmitter, including localized text and fallback glyphs.</p>
+<h2>Authoring</h2>
+<pre>.title {
+    text-shadow: 2px 3px 1px #000000cc;
+    text-outline: 1px #102030;
+    text-glow: 2px #50bfff80;
+}</pre>
+<table>
+<tr><th>Shorthand</th><th>Value</th><th>Longhands</th></tr>
+<tr><td>text-shadow</td><td>x y [blur] color, or color x y [blur]</td><td>text-shadow-offset-x, text-shadow-offset-y, text-shadow-blur, text-shadow-color</td></tr>
+<tr><td>text-glow</td><td>radius color</td><td>text-glow-radius, text-glow-color</td></tr>
+<tr><td>text-outline</td><td>width color</td><td>text-outline-width, text-outline-color</td></tr>
+</table>
+<p>Lengths use logical pixels and scale with the display scale. Shadow offsets may be negative. Shadow blur must be nonnegative; omitting it creates a sharp shadow. An explicit color is required for the shadow shorthand. One shadow is supported; inset and comma-separated shadow lists are not supported. These are engine style properties, not a claim of complete browser CSS compatibility.</p>
+<p>Malformed shorthand values are ignored as a whole, preserving an earlier valid declaration. Colors must be valid named, hexadecimal, or supported RGB/HSL functional values; nonfinite channels and overflowing numeric colors are rejected.</p>
+<p>Use <code>none</code> to clear a shorthand. Each longhand inherits through the element tree and supports <code>initial</code>, <code>inherit</code> and <code>unset</code>. Transparent colors disable the corresponding effect. CSS transitions can interpolate the individual lengths and colors.</p>
+<h2>Drawing and clipping</h2>
+<p>Effects draw behind the glyph fills, including across multiple lines emitted by one element. Color glyphs contribute their alpha mask rather than their colors to an effect. Text effects follow the element's clipping: visible overflow allows effects outside the text box, while hidden overflow contains them. The effects do not enlarge the layout box.</p>
+<h2>Radius and rendering cost</h2>
+<p>Shadow blur and glow radius specify Gaussian sigma, with visible support extending to three times that value. Outline width, shadow blur and glow radius clamp to 64 device pixels after display scaling. Each enabled effect emits an additional glyph pass. Filtering work grows with the radius and covered pixels, especially for bitmap glyphs; use small radii for ordinary interface text and measure larger decorative effects on the target hardware.</p>
+<h2>C++ emission</h2>
+<p><code>UI::TextEffects</code> is carried in the resolved visual style and primitive emission context. Custom text controls should use <code>MakeGlyphRunTarget</code> and <code>EmitGlyphRun</code> so style scaling, colors and effect emission stay shared. Authored colors use ARGB; target values are converted to the renderer's packed colors and device pixels by <code>ResolveTextEffects</code>.</p>
+<h2>Changelog</h2>
+<p>2026-09-20: Added shared glyph shadows, glow and outlines, inherited style properties and sharp-shadow shorthand forms.</p>
+</html>

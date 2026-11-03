@@ -2,7 +2,7 @@
 // Static assertions enforce the current compiler's spelling; literals exercise
 // every supported signature format regardless of the compiler running the test.
 
-#include "ECS/Component/ComponentTypeName.h"
+#include "ECS/ComponentTypeName.h"
 
 #include "ECS/Components.h"
 
@@ -68,6 +68,10 @@ static_assert(ComponentTypeName<ge_test_ns::ProtoBarComponent>() == "ge_test_ns:
 static_assert(ComponentTypeName<ProtoColor>() == "ProtoColor",
               "enum name is not the normalized spelling");
 static_assert(ComponentTypeName<int>() == "int", "int name is not the normalized spelling");
+// GCC's pretty signature includes additional alias substitutions after ';'.
+// They must never become part of serialized names or component hashes.
+static_assert(ComponentTypeName<ge_test_ns::ProtoBarComponent>().find(';') == std::string_view::npos);
+static_assert(ComponentTypeHash<ge_test_ns::ProtoBarComponent>() == Hash64("ge_test_ns::ProtoBarComponent"));
 
 // Different types must produce different names (and therefore different hashes).
 static_assert(ComponentTypeName<int>() != ComponentTypeName<float>(),

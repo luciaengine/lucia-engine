@@ -36,7 +36,7 @@ void CollectEntitiesInSubtree(ECS::World& world, ECS::EntityHandle root,
         world.Query<ECS::Read<Components::Parent>>().IncludeDisabled().Each(
             [&](ECS::EntityHandle child, const Components::Parent& p)
             {
-                if (p.Entity == cur)
+                if (p.parent == cur)
                 {
                     queue.push_back(child);
                     out.push_back(child);

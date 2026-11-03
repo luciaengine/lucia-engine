@@ -1,7 +1,7 @@
 #include "Inspectors/LightInspector.h"
 
 #include "InspectorRegistry.h"
-#include "Mathematics/Interpolation.h"
+#include "Editor/Entities/EditorComponentTraits.h"
 #include "Platform/SystemMetrics.h"
 
 #include "Components/Rendering/Light.h"
@@ -12,7 +12,7 @@
 #include "Editor/Entities/EditorECSHelpers.h"
 
 #include "Inspectors/InspectorColorSwatchRow.h"
-#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Inspectors/InspectorUIHelpers.h"
 #include "Inspectors/LuxText.h"
@@ -30,7 +30,6 @@
 #include "UI/Controls/Slider.h"
 #include "UI/Controls/FloatField.h"
 #include "UI/Controls/CollapsibleInfoCard.h"
-#include "UI/Controls/InspectorNotice.h"
 #include "UI/InfoCard.h"
 #include "UI/UIPrimitive.h"
 #include "UI/UITextureRegistry.h"
@@ -45,6 +44,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace GameEngine
 {
@@ -156,52 +156,30 @@ constexpr float kSliderTrackPaddingPx = InspectorDrag::kInspectorSliderTrackPadd
 constexpr float kKelvinGradientLoK = 1500.0f;
 constexpr float kKelvinGradientHiK = 12000.0f;
 
-// The swatch color of a light color. A color with a channel above 1 (a sky's hue at unit brightness)
-// is scaled down by its largest channel, so the swatch keeps its hue instead of clipping it.
-static uint32_t LightColorToArgb(const float (&c)[3])
+// Linear RGB [0,1] -> sRGB-encoded ARGB bytes (0xFFRRGGBB).
+static uint32_t LinearToSrgbArgb(const float lin[3])
 {
-    const float scale = 1.0f / std::max(1.0f, std::max(c[0], std::max(c[1], c[2])));
-    return ColorUtils::PackArgbRounded(c[0] * scale, c[1] * scale, c[2] * scale, 1.0f);
+    auto u8 = [](float c) {
+        c = std::clamp(c, 0.0f, 1.0f);
+        const float s = c <= 0.0031308f ? 12.92f * c : 1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f;
+        return static_cast<uint32_t>(s * 255.0f + 0.5f);
+    };
+    return (0xFFu << 24) | (u8(lin[0]) << 16) | (u8(lin[1]) << 8) | u8(lin[2]);
 }
 
-static void ArgbToLightColor(uint32_t argb, float (&out)[3])
-{
-    const ColorLinear color = ColorUtils::UnpackArgb(argb);
-    out[0] = color.r;
-    out[1] = color.g;
-    out[2] = color.b;
-}
-
-static void RefreshLightColorRow(ECS::World* world, ECS::EntityHandle entity,
-                                const UIElement::WeakRef<UIElement>& swatchRef,
-                                const UIElement::WeakRef<Label>& rgbLabelRef)
-{
-    UIElement* swatch = swatchRef.Get();
-    Label* rgbLabel = rgbLabelRef.Get();
-    if (!swatch || !rgbLabel)
-        return;
-    const auto* light = world->GetComponent<Components::Light>(entity);
-    if (!light)
-        return;
-    InspectorUI::StyleColorSwatch(swatch, LightColorToArgb(light->Color));
-    rgbLabel->SetText(InspectorUI::FormatColorRgb(light->Color[0], light->Color[1], light->Color[2]));
-}
-
-// The sRGB ARGB color of a Kelvin temperature with its saturation boosted, for the on-screen
-// gradient only. The light's own tint is the unboosted KelvinToLinearRGB. The boost moves each
-// channel away from the Rec.709 luminance in linear space, so brightness stays the same, and the
-// sRGB encode comes after it. The gradient texture is RGBA8_SRGB, so the sampler decodes it back to
-// linear for the UI's linear blending and nothing is encoded twice. A true blackbody color is pale
-// (12000 K is only a light blue), so the boost makes warm and cool easy to tell apart.
+// Kelvin -> chroma-boosted sRGB ARGB for the on-screen gradient ONLY (the light's real tint is the
+// unboosted KelvinToLinearRGB). The boost is applied in LINEAR space (Rec.709 luminance, preserving
+// brightness) BEFORE the sRGB encode; the gradient texture is stored as RGBA8_SRGB so the GPU
+// sampler decodes it back to linear for the UI's linear compositing — no double sRGB encode. True
+// blackbody is very desaturated (12000K is only a pale blue), so the boost makes warm/cool legible.
 static uint32_t KelvinToBoostedSrgbArgb(float kelvin, float boost)
 {
-    const ColorLinear tint = Components::KelvinToLinearRGB(kelvin);
-    const float lum = ColorUtils::LinearRec709Luminance(tint);
-    const ColorLinear boosted(
-        Math::Clamp01(Math::Lerp(lum, tint.r, boost)),
-        Math::Clamp01(Math::Lerp(lum, tint.g, boost)),
-        Math::Clamp01(Math::Lerp(lum, tint.b, boost)));
-    return ColorUtils::LinearToArgb(boosted);
+    float lin[3];
+    Components::KelvinToLinearRGB(kelvin, lin);
+    const float lum = ColorUtils::LinearRec709Luminance(lin);
+    for (float& c : lin)
+        c = std::clamp(lum + (c - lum) * boost, 0.0f, 1.0f);
+    return LinearToSrgbArgb(lin);
 }
 
 // Lazily build a 256x1 RGBA8 texture of the Kelvin->color gradient and register it with the UI
@@ -306,7 +284,7 @@ class KelvinSlider : public Slider
 
         // Downward triangle indicator at the current value (the inherited ring thumb is hidden via
         // CSS). A dark outline triangle behind the blue one keeps it readable over any gradient hue.
-        const float norm = Math::Clamp01((GetValue() - lo) / (hi - lo));
+        const float norm = std::clamp((GetValue() - lo) / (hi - lo), 0.0f, 1.0f);
         const float vx = trackX + trackW * norm;
         const float halfW = 6.0f * cs;            // wider than before
         const float triTop = barY - 2.0f * cs;    // base sits just above the bar top (less proud)
@@ -356,9 +334,9 @@ static std::string SkyDriverNoticeText(const ECS::World& world, ECS::EntityHandl
     using namespace Components::SkySunIlluminance;
     const std::string who = DrivingSkyDisplayName(world, sky);
     if (fields & kDrivesIntensity)
-        return who + ((fields & kDrivesColor) ? " sets this light's direction, color and intensity from the time of day."
+        return who + ((fields & kDrivesColor) ? " sets this light's direction, colour and intensity from the time of day."
                                               : " sets this light's direction and intensity from the time of day.");
-    return who + " sets this light's direction and color from the time of day. Intensity is the sun's "
+    return who + " sets this light's direction and colour from the time of day. Intensity is the sun's "
                  "illuminance with the sun overhead.";
 }
 
@@ -411,16 +389,52 @@ static void AddSkyDriverNotice(UIElement* parent, ECS::World& world, ECS::Entity
 {
     if (!sky.IsValid())
         return;
-    auto notice = std::make_unique<EditorUI::InspectorNotice>(SkyDriverNoticeText(world, sky, fields),
-                                                              EditorUI::InspectorNotice::Kind::Information);
+    auto card = std::make_unique<EditorUI::CollapsibleInfoCard>(SkyDriverNoticeText(world, sky, fields));
     if (selectEntity)
-        notice->SetAction("Select sky", "Select the sky that drives this light, to change what it drives.",
-                          [selectEntity, sky]() { selectEntity(sky); });
-    parent->AddChild(std::move(notice));
+        card->SetAction("Select sky", "Select the sky that drives this light, to change what it drives.",
+                        [selectEntity, sky]() { selectEntity(sky); });
+    parent->AddChild(std::move(card));
+}
+
+// The inspector icon follows the light's type, so the section reads as the light it edits.
+static std::string LightIconClass(const ECS::World& world, ECS::EntityHandle entity)
+{
+    const auto* light = world.GetComponent<Components::Light>(entity);
+    if (!light)
+        return {};
+    switch (light->Type)
+    {
+    case LightType::Ambient:
+        return "inspector-section-icon-light-ambient";
+    case LightType::Directional:
+        return "inspector-section-icon-light-directional";
+    case LightType::Spot:
+        return "inspector-section-icon-light-spot";
+    case LightType::Point:
+        return "inspector-section-icon-light-point";
+    case LightType::Area:
+        return "inspector-section-icon-light-area";
+    case LightType::Volume:
+        return "inspector-section-icon-light-volume";
+    }
+    return {};
 }
 
 void RegisterLightInspector()
 {
+    constexpr int kLightSortKey = 130;
+
+    {
+        Editor::EditorComponentTraits traits;
+        traits.DisplayName = "Light";
+        traits.SortKey = kLightSortKey;
+        traits.Tooltip = "Emits light into the scene (directional, point, spot, or ambient)";
+        traits.InspectorIconClass = "inspector-section-icon-light-directional";
+        traits.InspectorIconClassForEntity = LightIconClass;
+        Editor::EditorComponentTraitsRegistry::Get().Register(
+            ECS::GetComponentTypeId<Components::Light>(), std::move(traits));
+    }
+
     InspectorFn fn = [](const InspectorContext& ctx)
     {
         if (!ctx.Parent || !ctx.World || !ctx.Entity.IsValid())
@@ -549,10 +563,10 @@ void RegisterLightInspector()
             AddIntensityReferenceGuide(ctx.Parent);
 
         // Editable: Color temperature (Kelvin) — tints the light color when enabled. Read-only while a
-        // sky drives the color: the drive divides the temperature out, so an edit would change nothing.
+        // sky drives the colour: the drive divides the temperature out, so an edit would change nothing.
         const std::string temperatureTooltip = colorDrivenBySky
             ? "Set aside while " + DrivingSkyDisplayName(*w, drivingSky) +
-                  " drives this light's color: the sky's color already includes it."
+                  " drives this light's colour: the sky's colour already includes it."
             : std::string("Tint the light color by a blackbody color temperature (Kelvin)");
         Toggle* useTemperature = AddToggleRow(ctx.Parent, "Use Color Temperature", light->UseColorTemperature,
             [w, e, n, undo, extras](bool v) {
@@ -588,7 +602,7 @@ void RegisterLightInspector()
                 "Blackbody color temperature (Kelvin). Drag the gradient thumb or type a value.\n"
                 "~1900 candle, 3200 tungsten, 6500 daylight (D65), 10000+ blue sky.");
             UIElement* ctContainer = InspectorUI::AddFieldContainer(ctRow);
-            ctContainer->Style()
+            ctContainer->Overrides()
                 .Set(Style::FlexDir, FlexDirection::Row)
                 .Set(Style::AlignItems, AlignItems::Center)
                 .Set(Style::Gap, StyleLength::Px(6.0f));
@@ -605,7 +619,7 @@ void RegisterLightInspector()
             auto ctField = std::make_unique<FloatField>();
             ctField->AddClass("inspector-float-field");
             ctField->SetValueWithoutNotify(light->ColorTemperature);
-            ctField->Style().Set(Style::Width, StyleLength::Px(kSliderValueFieldWidthPx));
+            ctField->Overrides().Set(Style::Width, StyleLength::Px(kSliderValueFieldWidthPx));
             FloatField* ctFieldRaw = ctField.get();
             KelvinSlider* ctSliderRaw = ctSlider.get();
 
@@ -718,48 +732,23 @@ void RegisterLightInspector()
 
         // Editable: Color — swatch + RGB values, click opens color picker window
         {
-            UIElement* row = InspectorUI::AddRow(ctx.Parent);
-            const std::string drivenColorMeaning = intensityDrivenBySky
-                ? " Under its sun illuminance curve the color is a hue at unit brightness, so a channel can read "
-                  "above 1: the brightness is in Intensity."
-                : " From the light the color also carries the dimming of a low sun and the night, so it darkens "
-                  "while Intensity stays the sun overhead.";
+            const bool colorDrivenBySky = drivingSky.IsValid();
             const std::string colorTooltip = colorDrivenBySky
                 ? "Set by " + DrivingSkyDisplayName(*w, drivingSky) +
                       " every frame while it drives this light: the sun's color through the atmosphere by day, "
-                      "moonlight at night." + drivenColorMeaning +
-                      " Turn off its Sky sets the light's color (under a custom illuminance curve) or its Sky "
+                      "moonlight at night." +
+                      " Turn off its Sky sets the light's colour (under a custom illuminance curve) or its Sky "
                       "drives sun light to author the color here."
                 : std::string("Light color (click to open color picker; double-click to reset to white)");
-            Label* colorLabel = InspectorUI::AddLabel(row, "Color", colorTooltip.c_str());
-            if (colorLabel) colorLabel->AddClass("inspector-label-no-drag");
-            UIElement* fieldContainer = InspectorUI::AddFieldContainer(row);
-            fieldContainer->Style()
-                .Set(Style::FlexDir, FlexDirection::Row)
-                .Set(Style::AlignItems, AlignItems::Center)
-                .Set(Style::Gap, StyleLength::Px(6.0f));
-
-            const uint32_t argb = LightColorToArgb(light->Color);
-
-            auto swatch = std::make_unique<UIElement>();
-            UIElement* swatchRaw = swatch.get();
-            InspectorUI::StyleColorSwatch(swatchRaw, argb);
-            fieldContainer->AddChild(std::move(swatch));
-
-            auto rgbLabel = std::make_unique<Label>();
-            rgbLabel->AddClass("inspector-text");
-            rgbLabel->SetText(InspectorUI::FormatColorRgb(light->Color[0], light->Color[1], light->Color[2]));
-            if (!colorDrivenBySky)
-                rgbLabel->Style().Set(Style::Cursor, CursorStyle::Pointer);
-            Label* rgbLabelRaw = rgbLabel.get();
-            fieldContainer->AddChild(std::move(rgbLabel));
-
-            // The picker's callbacks outlive an inspector rebuild: resolve the row through
-            // weak refs instead of holding the freed widgets.
-            auto updateUI = [w, e, swatchRef = UIElement::MakeWeakRef(swatchRaw),
-                             rgbLabelRef = UIElement::MakeWeakRef(rgbLabelRaw)]() {
-                RefreshLightColorRow(w, e, swatchRef, rgbLabelRef);
-            };
+            const InspectorUI::ColorSwatchRow colorRow = InspectorUI::AddColorSwatchRow(
+                ctx.Parent, "Color", colorTooltip.c_str(), ColorUtils::RgbFloatsToArgb(light->Color),
+                InspectorUI::FormatColorRgb(light->Color[0], light->Color[1], light->Color[2]));
+            Label* colorLabel = colorRow.Title;
+            UIElement* fieldContainer = colorRow.Field;
+            UIElement* swatchRaw = colorRow.Swatch;
+            Label* rgbLabelRaw = colorRow.Value;
+            if (colorDrivenBySky)
+                rgbLabelRaw->RemoveClass("inspector-color-swatch-value");
 
             // Read-only while a sky drives the light: an edit here would be overwritten on the next
             // frame, so the row says who owns it instead of accepting one.
@@ -775,7 +764,11 @@ void RegisterLightInspector()
             else
             {
 
-            auto clickHandler = [w, e, n, undo, openPicker, updateUI](UIEvent& ev) {
+            // The picker's callbacks outlive an inspector rebuild: resolve the row through
+            // weak refs instead of holding the freed widgets.
+            auto clickHandler = [w, e, n, undo, openPicker,
+                                 swatchRef = UIElement::MakeWeakRef(swatchRaw),
+                                 rgbLabelRef = UIElement::MakeWeakRef(rgbLabelRaw)](UIEvent& ev) {
                 if (ev.Button != 0)
                     return;
                 ev.Stop();
@@ -787,7 +780,7 @@ void RegisterLightInspector()
                 if (!comp)
                     return;
 
-                uint32_t currentArgb = LightColorToArgb(comp->Color);
+                uint32_t currentArgb = ColorUtils::RgbFloatsToArgb(comp->Color);
 
                 using Edit = Editor::UndoRedoService::InteractiveEdit;
                 auto edit = std::make_shared<Edit>();
@@ -798,13 +791,22 @@ void RegisterLightInspector()
                     *edit = undo->BeginInteractiveEdit("Change Light Color", std::move(target));
                 }
 
+                auto updateUI = [swatchRef, rgbLabelRef, w, e]() {
+                    auto* c = w->GetComponent<Components::Light>(e);
+                    UIElement* swatch = swatchRef.Get();
+                    Label* rgbLabel = rgbLabelRef.Get();
+                    if (!c || !swatch || !rgbLabel) return;
+                    InspectorUI::SetColorSwatchColor(swatch, ColorUtils::RgbFloatsToArgb(c->Color));
+                    rgbLabel->SetText(InspectorUI::FormatColorRgb(c->Color[0], c->Color[1], c->Color[2]));
+                };
+
                 ColorPickerCallbacks cbs;
                 cbs.onApply = [w, e, n, edit, updateUI](uint32_t newArgb, float) {
                     if (*edit)
                     {
                         edit->Preview([&] {
                             auto* c = w->GetComponentForWrite<Components::Light>(e);
-                            if (c) ArgbToLightColor(newArgb, c->Color);
+                            if (c) ColorUtils::ArgbToRgbFloats(newArgb, c->Color);
                         });
                         edit->Commit();
                     }
@@ -813,7 +815,7 @@ void RegisterLightInspector()
                         auto* c = w->GetComponent<Components::Light>(e);
                         if (!c) return;
                         Components::Light updated = *c;
-                        ArgbToLightColor(newArgb, updated.Color);
+                        ColorUtils::ArgbToRgbFloats(newArgb, updated.Color);
                         Editor::CommitComponentUpdate(w, e, n, updated);
                     }
                     updateUI();
@@ -827,7 +829,7 @@ void RegisterLightInspector()
                     {
                         edit->Preview([&] {
                             auto* c = w->GetComponentForWrite<Components::Light>(e);
-                            if (c) ArgbToLightColor(newArgb, c->Color);
+                            if (c) ColorUtils::ArgbToRgbFloats(newArgb, c->Color);
                         });
                     }
                     else
@@ -835,7 +837,7 @@ void RegisterLightInspector()
                         auto* c = w->GetComponent<Components::Light>(e);
                         if (!c) return;
                         Components::Light updated = *c;
-                        ArgbToLightColor(newArgb, updated.Color);
+                        ColorUtils::ArgbToRgbFloats(newArgb, updated.Color);
                         Editor::PreviewComponentUpdate(w, e, n, updated);
                     }
                     updateUI();
@@ -849,7 +851,7 @@ void RegisterLightInspector()
 
             // Double-click on the "Color" label resets to white
             auto lastColorClickTime = std::make_shared<std::chrono::steady_clock::time_point>();
-            colorLabel->RegisterEventHandler(kEventMouseDown, [w, e, n, undo, updateUI, lastColorClickTime, colorDrivenBySky](UIEvent& ev) {
+            colorLabel->RegisterEventHandler(kEventMouseDown, [w, e, n, undo, swatchRaw, rgbLabelRaw, lastColorClickTime, colorDrivenBySky](UIEvent& ev) {
                 if (ev.Button != 0 || colorDrivenBySky)
                     return;
                 auto now = std::chrono::steady_clock::now();
@@ -857,13 +859,9 @@ void RegisterLightInspector()
                 if (elapsed > std::chrono::milliseconds::zero() && elapsed < GameEngine::Platform::GetDoubleClickInterval())
                 {
                     ev.Stop();
+                    constexpr float kDefaultColor[3] = {1.0f, 1.0f, 1.0f};
                     CommitComponentWithUndo<Components::Light>(w, e, n, undo, "Reset Light Color",
-                        [](Components::Light& u)
-                        {
-                            constexpr float kWhiteChannel = 1.0f;
-                            u.Color[0] = kWhiteChannel; u.Color[1] = kWhiteChannel; u.Color[2] = kWhiteChannel;
-                        });
-                    updateUI();
+                        [&](Components::Light& u) { u.Color[0] = kDefaultColor[0]; u.Color[1] = kDefaultColor[1]; u.Color[2] = kDefaultColor[2]; });
                     *lastColorClickTime = std::chrono::steady_clock::time_point{};
                     return;
                 }
@@ -977,7 +975,7 @@ void RegisterLightInspector()
 
             AddComponentFloatRowWithDrag<Components::Light>(ctx.Parent, "Fog Origin Fade", light->FogOriginFade, w, e, n,
                 undo, "Change Light Fog Origin Fade",
-                [](Components::Light& u, float v) { u.FogOriginFade = Math::Clamp01(v); },
+                [](Components::Light& u, float v) { u.FogOriginFade = std::clamp(v, 0.0f, 1.0f); },
                 0.2f, "Fraction of light range used to fade fog near the light source and reduce near-origin noise", extras);
         }
 
@@ -1241,15 +1239,15 @@ void RegisterLightInspector()
                     mpFieldRaw->SetOnValueChanging([applyMp](const float& v) { applyMp(v); });
                     mpFieldRaw->SetOnValueChanged([applyMp](const float& v) { applyMp(v); });
 
+                    constexpr float kDefaultMaxPenumbra = 0.0f; // auto (tap-budget bound)
                     auto lastMpClickTime = std::make_shared<std::chrono::steady_clock::time_point>();
-                    mpLabel->RegisterEventHandler(kEventMouseDown, [applyMp, lastMpClickTime](UIEvent& ev) {
+                    mpLabel->RegisterEventHandler(kEventMouseDown, [applyMp, lastMpClickTime, kDefaultMaxPenumbra](UIEvent& ev) {
                         if (ev.Button != 0) return;
                         auto now = std::chrono::steady_clock::now();
                         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - *lastMpClickTime);
                         if (lastMpClickTime->time_since_epoch().count() != 0 && elapsed < GameEngine::Platform::GetDoubleClickInterval())
                         {
                             ev.Stop();
-                            constexpr float kDefaultMaxPenumbra = 0.0f; // auto (tap-budget bound)
                             applyMp(kDefaultMaxPenumbra);
                             *lastMpClickTime = {};
                             return;

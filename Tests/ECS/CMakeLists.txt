@@ -5,41 +5,27 @@
 # Find Google Test
 find_package(GTest REQUIRED)
 
-# Every executable here links Memory beside ECS: ECS calls into it (the wave runner's
-# ScratchScope in ECS/Systems.h), and an OBJECT library's objects reach only the targets that
-# link it directly.
-
-# Destruction contract and allocation-failure injection (this executable arms
-# allocation faults) stay out of the benchmark suites.
+# Destruction contract and allocation-failure injection (this executable replaces
+# global operator new) stay out of the benchmark suites.
 add_executable(EntityDestroyNotificationTests EntityDestroyNotificationTests.cpp EntityDestroyAllocationTests.cpp)
 set_target_properties(EntityDestroyNotificationTests PROPERTIES UNITY_BUILD OFF)
 target_compile_features(EntityDestroyNotificationTests PRIVATE cxx_std_20)
-target_link_libraries(EntityDestroyNotificationTests PRIVATE GTest::gtest_main Logger JobSystem ECS Memory)
+target_link_libraries(EntityDestroyNotificationTests PRIVATE GTest::gtest_main Logger JobSystem ECS)
 ge_set_output_tests(EntityDestroyNotificationTests)
 ge_stage_runtime_dependencies(EntityDestroyNotificationTests)
 add_test(NAME EntityDestroyNotificationTests COMMAND EntityDestroyNotificationTests)
 set_tests_properties(EntityDestroyNotificationTests PROPERTIES TIMEOUT 30)
 
-# The query allocation contract (a process-wide allocation window, so its own executable).
+# The query allocation contract (this executable also replaces global operator new).
 add_executable(QueryAllocationTests QueryAllocationTests.cpp)
 set_target_properties(QueryAllocationTests PROPERTIES UNITY_BUILD OFF)
 target_compile_features(QueryAllocationTests PRIVATE cxx_std_20)
 target_include_directories(QueryAllocationTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(QueryAllocationTests PRIVATE GTest::gtest_main Logger JobSystem ECS Memory)
+target_link_libraries(QueryAllocationTests PRIVATE GTest::gtest_main Logger JobSystem ECS)
 ge_set_output_tests(QueryAllocationTests)
 ge_stage_runtime_dependencies(QueryAllocationTests)
 add_test(NAME QueryAllocationTests COMMAND QueryAllocationTests)
 set_tests_properties(QueryAllocationTests PROPERTIES TIMEOUT 30)
-
-# The wave trace's allocation contract (a process-wide allocation window, so its own executable).
-add_executable(SystemWaveTraceAllocationTests SystemWaveTraceAllocationTests.cpp)
-set_target_properties(SystemWaveTraceAllocationTests PROPERTIES UNITY_BUILD OFF)
-target_compile_features(SystemWaveTraceAllocationTests PRIVATE cxx_std_20)
-target_link_libraries(SystemWaveTraceAllocationTests PRIVATE GTest::gtest_main Logger JobSystem ECS Memory)
-ge_set_output_tests(SystemWaveTraceAllocationTests)
-ge_stage_runtime_dependencies(SystemWaveTraceAllocationTests)
-add_test(NAME SystemWaveTraceAllocationTests COMMAND SystemWaveTraceAllocationTests)
-set_tests_properties(SystemWaveTraceAllocationTests PROPERTIES TIMEOUT 30)
 
 # ============================================================================
 # CONSOLIDATED TEST SUITE DEFINITIONS
@@ -51,14 +37,11 @@ set(ECS_CORE_TEST_SOURCES
     StandaloneECSTest.cpp
     ECSCoreTest.cpp
     OversizedChunkAllocationTest.cpp
-    ChunkAllocationCounterTest.cpp
     RegisterComponentsTest.cpp
     QueryInvalidationAndOverflowTest.cpp
-    ArchetypeMatchCacheTest.cpp
     CommandBufferRingTest.cpp
     ProcessCommandsBatchLimitTest.cpp
     DeferredRequiredComponentTest.cpp
-    RequiredComponentPlacementTest.cpp
     ViewAliasSmokeTest.cpp
     ViewWithoutTest.cpp
     QuerySignatureTest.cpp
@@ -67,7 +50,6 @@ set(ECS_CORE_TEST_SOURCES
     ChangeFilterP1Test.cpp
     DirtyFeedTest.cpp
     LifecycleEventsTest.cpp
-    CreateBatchFromWorldTest.cpp
     SwapGenerationGuardTest.cpp
     ParallelPerfTest.cpp
     ParallelBatchEachTest.cpp
@@ -77,7 +59,6 @@ set(ECS_CORE_TEST_SOURCES
     QueryBenchmarks.cpp
     ComponentTypeNameTest.cpp
     ComponentReflectionTests.cpp
-    FieldAccessTests.cpp
     ComponentMigrationTest.cpp
     ComponentLayoutReloadMigratorTests.cpp
     WorldClearStateTest.cpp
@@ -85,7 +66,6 @@ set(ECS_CORE_TEST_SOURCES
     SystemPlanTrailingWaveTest.cpp
     SystemPerformanceMaximaTest.cpp
     SystemWaveThreadPinningTest.cpp
-    SystemWaveTraceTest.cpp
     SystemSchedulePhaseInsertionTest.cpp
     OrderedHandleSetTest.cpp
     ModuleReloadScheduleTests.cpp
@@ -126,10 +106,6 @@ target_compile_features(ECSCoreTests PUBLIC cxx_std_20)
 target_include_directories(ECSCoreTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/Engine/Include
-    # Rendering/RenderLayerMask.h (header-only, Types only): the component headers and the
-    # render layer field trait include it.
-    ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Include
-    ${CMAKE_SOURCE_DIR}/Tests  # DeathTestChild.h
 )
 
 target_link_libraries(ECSCoreTests PRIVATE
@@ -138,13 +114,10 @@ target_link_libraries(ECSCoreTests PRIVATE
     Logger
     JobSystem
     ECS
-    Memory
     # ComponentReflectionTests exercises the Mathematics field-type traits
     # (Components/MathReflectionTraits.h). Mathematics is INTERFACE/header-only, so
     # this propagates its include dirs to the TEST only — ECS stays Mathematics-free.
     Mathematics
-    # FieldAccessTests round-trips a GUID element; ECS itself names GUID by declaration only.
-    AssetCore
 )
 
 ge_set_output_tests(ECSCoreTests)
@@ -168,8 +141,6 @@ endif()
 target_include_directories(ECSAdvancedTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/Engine/Include
-    # Rendering/RenderLayerMask.h (header-only, Types only), through the render layer field trait.
-    ${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Include
 )
 
 target_link_libraries(ECSAdvancedTests PRIVATE
@@ -178,7 +149,6 @@ target_link_libraries(ECSAdvancedTests PRIVATE
     Logger
     JobSystem
     ECS
-    Memory
     # Lightweight component registration uses Components/MathReflectionTraits.h.
     Mathematics
 )
@@ -204,7 +174,6 @@ target_link_libraries(ECSIntegrationTests PRIVATE
     Logger
     JobSystem
     ECS
-    Memory
 )
 
 ge_set_output_tests(ECSIntegrationTests)
@@ -239,7 +208,9 @@ set(ECS_COMPILE_FAIL_CASES
     ParallelBatchEachAutoUnqualified
     OptionalAutoDeduced
     ChangedTypeNotInQuery
-    SetEnabledOnNotToggleable
+    ChangedOnWriteColumn
+    EachWriteTakenAsReference
+    ParallelWriteTakenAsReference
 )
 
 foreach(case IN LISTS ECS_COMPILE_FAIL_CASES)
@@ -250,7 +221,7 @@ foreach(case IN LISTS ECS_COMPILE_FAIL_CASES)
         UNITY_BUILD OFF)
     target_compile_features(ECSCompileFail_${case} PUBLIC cxx_std_20)
     target_include_directories(ECSCompileFail_${case} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(ECSCompileFail_${case} PRIVATE Logger JobSystem ECS Memory)
+    target_link_libraries(ECSCompileFail_${case} PRIVATE Logger JobSystem ECS)
 
     add_test(NAME ECSCompileFail.${case}
              COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
@@ -270,7 +241,7 @@ set_target_properties(ECSCompileFail_Control PROPERTIES
     UNITY_BUILD OFF)
 target_compile_features(ECSCompileFail_Control PUBLIC cxx_std_20)
 target_include_directories(ECSCompileFail_Control PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ECSCompileFail_Control PRIVATE Logger JobSystem ECS Memory)
+target_link_libraries(ECSCompileFail_Control PRIVATE Logger JobSystem ECS)
 add_test(NAME ECSCompileFail.PositiveControl
          COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
                  --target ECSCompileFail_Control --config $<CONFIG>)

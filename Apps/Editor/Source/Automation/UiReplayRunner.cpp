@@ -3,8 +3,6 @@
 #include "Core/CpuProfiler.h"
 #include "Logger/Logger.h"
 #include "Mathematics/HalfFloat.h"
-#include "Mathematics/Interpolation.h"
-#include "Types/FormatNumber.h"
 #include "Panels/LogView.h"
 #include "UI/UIManager.h"
 #include "UI/UIElement.h"
@@ -18,15 +16,14 @@
 #include "UI/Controls/ListView.h"
 #include "UI/Controls/GridView.h"
 #include "UI/Controls/TreeView.h"
-#include "UI/Controls/Mount.h"
 #include "UI/Controls/Label.h"
-#include "UI/Interaction/DragDrop/DragDropManager.h"
+#include "UI/Interaction/DragDropManager.h"
 #include "UI/Registration/ElementRegistration.h"
+#include "Types/Fnv1a.h"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <array>
 #include <fstream>
 #include <filesystem>
 
@@ -34,26 +31,16 @@ namespace GameEngine
 {
 using nlohmann::json;
 
-static std::uint64_t HashFnv1a64(const std::uint8_t* data, size_t size)
-{
-    // 64-bit FNV-1a
-    std::uint64_t h = 1469598103934665603ull;
-    for (size_t i = 0; i < size; ++i)
-    {
-        h ^= (std::uint64_t)data[i];
-        h *= 1099511628211ull;
-    }
-    return h;
-}
-
 static std::string ToHex64(std::uint64_t v)
 {
-    std::array<std::uint8_t, sizeof(v)> bigEndian{};
-    for (std::size_t i = 0; i < bigEndian.size(); ++i)
-        bigEndian[i] = static_cast<std::uint8_t>(v >> (8 * (bigEndian.size() - 1 - i)));
-    std::string text;
-    AppendHexBytes(text, bigEndian);
-    return text;
+    static const char* kHex = "0123456789abcdef";
+    char buf[16];
+    for (int i = 15; i >= 0; --i)
+    {
+        buf[i] = kHex[(int)(v & 0xFULL)];
+        v >>= 4;
+    }
+    return std::string(buf, buf + 16);
 }
 
 static void R11G11B10ToRgb01(std::uint32_t v, float& outR, float& outG, float& outB)
@@ -164,7 +151,6 @@ bool UiReplayRunner::Initialize(const Config& cfg, std::string* outError)
     m_AssertElementTextPrev.clear();
     m_AssertElementTextChangeCount = 0;
     m_AssertSelectedCounts.clear();
-    m_AssertElementInstances.clear();
     m_AssertTextContains.clear();
     m_AssertTreeBoundRowsContain.clear();
     m_WaitStartFrames.clear();
@@ -323,7 +309,6 @@ bool UiReplayRunner::LoadScenario(const std::filesystem::path& p, std::string* o
     m_AssertElementTextPrev.clear();
     m_AssertElementTextChangeCount = 0;
     m_AssertSelectedCounts.clear();
-    m_AssertElementInstances.clear();
     m_AssertTextContains.clear();
     m_AssertTreeBoundRowsContain.clear();
     m_WaitStartFrames.clear();
@@ -474,21 +459,6 @@ bool UiReplayRunner::LoadScenario(const std::filesystem::path& p, std::string* o
             m_AssertElementVisible.elementId = a.value("elementId", std::string());
             m_AssertElementVisible.frameStart = a.value("frameStart", 0ull);
             m_AssertElementVisible.frameEnd = a.value("frameEnd", 0ull);
-        }
-        else if (kind == "elementInstanceUnchanged")
-        {
-            ElementInstanceAssertConfig config;
-            config.ElementId = a.value("elementId", std::string());
-            config.FrameStart = a.value("frameStart", 0ull);
-            config.FrameEnd = a.value("frameEnd", 0ull);
-            if (config.ElementId.empty() || config.FrameEnd < config.FrameStart)
-            {
-                scenarioOk = false;
-                if (outError && outError->empty())
-                    *outError = "assert(elementInstanceUnchanged) requires an elementId and an ordered frame range";
-                return;
-            }
-            m_AssertElementInstances.push_back(std::move(config));
         }
         else if (kind == "noHeavyPass")
         {
@@ -707,7 +677,7 @@ UIElement* UiReplayRunner::FindById(UIManager& ui, const std::string& id) const
     if (id.empty())
         return nullptr;
     if (UIElement* root = ui.GetRootElement())
-        return root->FindById(HashStringId(id));
+        return root->FindById(id);
     return nullptr;
 }
 
@@ -727,16 +697,7 @@ static T* FindFirstDescendantOfType(UIElement* root)
             continue;
         if (auto* t = dynamic_cast<T*>(el))
             return t;
-        for (const auto& ch : el->GetChildren())
-        {
-            if (ch)
-                stack.push_back(ch.get());
-        }
-        if (auto* m = dynamic_cast<Mount*>(el))
-        {
-            if (UIElement* tgt = m->GetTarget())
-                stack.push_back(tgt);
-        }
+        el->ForEachLogicalChild([&](UIElement* child) { stack.push_back(child); });
     }
     return nullptr;
 }
@@ -797,8 +758,8 @@ bool UiReplayRunner::ResolveTarget(UIManager& ui, const json& targetSpec, float&
         const float y = el->GetLayoutY();
         const float w = el->GetLayoutWidth();
         const float h = el->GetLayoutHeight();
-        outX = x + Math::Clamp01(relX) * w;
-        outY = y + Math::Clamp01(relY) * h;
+        outX = x + std::clamp(relX, 0.0f, 1.0f) * w;
+        outY = y + std::clamp(relY, 0.0f, 1.0f) * h;
         return true;
     };
 
@@ -861,16 +822,7 @@ bool UiReplayRunner::ResolveTarget(UIManager& ui, const json& targetSpec, float&
                     best = cur;
                 }
             }
-            for (const auto& ch : cur->GetChildren())
-            {
-                if (ch)
-                    stack.push_back(ch.get());
-            }
-            if (auto* m = dynamic_cast<Mount*>(cur))
-            {
-                if (UIElement* tgt = m->GetTarget())
-                    stack.push_back(tgt);
-            }
+            cur->ForEachLogicalChild([&](UIElement* child) { stack.push_back(child); });
         }
 
         if (!best || !pointOn(best))
@@ -944,17 +896,7 @@ bool UiReplayRunner::ResolveTarget(UIManager& ui, const json& targetSpec, float&
                 }
             }
 
-            const auto& kids = cur->GetChildren();
-            for (const auto& ch : kids)
-            {
-                if (ch)
-                    stack.push_back(ch.get());
-            }
-            if (auto* m = dynamic_cast<Mount*>(cur))
-            {
-                if (UIElement* tgt = m->GetTarget())
-                    stack.push_back(tgt);
-            }
+            cur->ForEachLogicalChild([&](UIElement* child) { stack.push_back(child); });
         }
 
         if (!found || !pointOn(found))
@@ -1031,16 +973,7 @@ bool UiReplayRunner::ResolveTarget(UIManager& ui, const json& targetSpec, float&
             }
             if (cur)
             {
-                for (const auto& ch : cur->GetChildren())
-                {
-                    if (ch)
-                        stack.push_back(ch.get());
-                }
-                if (auto* m = dynamic_cast<Mount*>(cur))
-                {
-                    if (UIElement* tgt = m->GetTarget())
-                        stack.push_back(tgt);
-                }
+                cur->ForEachLogicalChild([&](UIElement* child) { stack.push_back(child); });
             }
         }
 
@@ -1272,16 +1205,7 @@ void UiReplayRunner::TickBeforeUiUpdate(UIManager& ui)
                     }
                     if (cur)
                     {
-                        for (const auto& ch : cur->GetChildren())
-                        {
-                            if (ch)
-                                stack.push_back(ch.get());
-                        }
-                        if (auto* m = dynamic_cast<Mount*>(cur))
-                        {
-                            if (UIElement* tgt = m->GetTarget())
-                                stack.push_back(tgt);
-                        }
+                        cur->ForEachLogicalChild([&](UIElement* child) { stack.push_back(child); });
                     }
                 }
                 return count;
@@ -1356,16 +1280,7 @@ void UiReplayRunner::TickBeforeUiUpdate(UIManager& ui)
                         if (requiredClass.empty() || cur->HasClass(requiredClass))
                             ++count;
                     }
-                    for (const auto& ch : cur->GetChildren())
-                    {
-                        if (ch)
-                            stack.push_back(ch.get());
-                    }
-                    if (auto* m = dynamic_cast<Mount*>(cur))
-                    {
-                        if (UIElement* tgt = m->GetTarget())
-                            stack.push_back(tgt);
-                    }
+                    cur->ForEachLogicalChild([&](UIElement* child) { stack.push_back(child); });
                 }
                 return count;
             };
@@ -1848,7 +1763,6 @@ void UiReplayRunner::TickAfterUiUpdate(UIManager& ui, double deltaSeconds)
             j["probe"]["element"] = {
                 {"id", id},
                 {"exists", true},
-                {"instanceId", el->GetInstanceId()},
                 {"tag", UIRegistration::ElementFactoryRegistry::Instance().GetTagForType(typeid(*el))},
                 {"text", el->GetTextContent()},
                 {"x", el->GetLayoutX()},
@@ -2000,16 +1914,7 @@ void UiReplayRunner::TickAfterUiUpdate(UIManager& ui, double deltaSeconds)
                     {
                         ids.push_back(id);
                     }
-                    for (const auto& ch : el->GetChildren())
-                    {
-                        if (ch)
-                            stack.push_back(ch.get());
-                    }
-                    if (auto* m = dynamic_cast<Mount*>(el))
-                    {
-                        if (UIElement* tgt = m->GetTarget())
-                            stack.push_back(tgt);
-                    }
+                    el->ForEachLogicalChild([&](UIElement* child) { stack.push_back(child); });
                 }
             }
             j["probe"]["idsContaining"] = {{"needle", needle}, {"ids", ids}};
@@ -2231,25 +2136,6 @@ void UiReplayRunner::TickAfterUiUpdate(UIManager& ui, double deltaSeconds)
     }
 
 
-    for (auto& config : m_AssertElementInstances)
-    {
-        if (m_Failed)
-            break;
-        if (m_FrameIndex < config.FrameStart || m_FrameIndex > config.FrameEnd)
-            continue;
-        UIElement* element = FindById(ui, config.ElementId);
-        if (!element)
-        {
-            Fail("assert(elementInstanceUnchanged) failed: element not found (id='" + config.ElementId + "')");
-            continue;
-        }
-        const std::uint64_t instanceId = element->GetInstanceId();
-        if (config.InstanceId == 0)
-            config.InstanceId = instanceId;
-        else if (config.InstanceId != instanceId)
-            Fail("assert(elementInstanceUnchanged) failed: element replaced (id='" + config.ElementId + "')");
-    }
-
     if (!m_Failed && m_AssertLayoutConverged.enabled)
     {
         const std::uint64_t f = m_FrameIndex;
@@ -2300,16 +2186,7 @@ void UiReplayRunner::TickAfterUiUpdate(UIManager& ui, double deltaSeconds)
                         break;
                     }
 
-                    for (const auto& ch : el->GetChildren())
-                    {
-                        if (ch)
-                            stack.push_back(ch.get());
-                    }
-                    if (auto* m = dynamic_cast<Mount*>(el))
-                    {
-                        if (UIElement* tgt = m->GetTarget())
-                            stack.push_back(tgt);
-                    }
+                    el->ForEachLogicalChild([&](UIElement* child) { stack.push_back(child); });
                 }
             }
         }
@@ -2385,16 +2262,7 @@ void UiReplayRunner::TickAfterUiUpdate(UIManager& ui, double deltaSeconds)
                 }
                 if (cur)
                 {
-                    for (const auto& ch : cur->GetChildren())
-                    {
-                        if (ch)
-                            stack.push_back(ch.get());
-                    }
-                    if (auto* m = dynamic_cast<Mount*>(cur))
-                    {
-                        if (UIElement* tgt = m->GetTarget())
-                            stack.push_back(tgt);
-                    }
+                    cur->ForEachLogicalChild([&](UIElement* child) { stack.push_back(child); });
                 }
             }
             return count;
@@ -2460,16 +2328,7 @@ void UiReplayRunner::TickAfterUiUpdate(UIManager& ui, double deltaSeconds)
                 }
                 if (cur)
                 {
-                    for (const auto& ch : cur->GetChildren())
-                    {
-                        if (ch)
-                            stack.push_back(ch.get());
-                    }
-                    if (auto* m = dynamic_cast<Mount*>(cur))
-                    {
-                        if (UIElement* tgt = m->GetTarget())
-                            stack.push_back(tgt);
-                    }
+                    cur->ForEachLogicalChild([&](UIElement* child) { stack.push_back(child); });
                 }
             }
             return count;
@@ -2828,7 +2687,7 @@ void UiReplayRunner::ConsumePixelRgb(const std::uint8_t* data, std::uint32_t wid
     }
     const double meanByte = rgbScratch.empty() ? 0.0 : (double)sumBytes / (double)rgbScratch.size();
 
-    const std::uint64_t h = HashFnv1a64(rgbScratch.data(), rgbScratch.size());
+    const std::uint64_t h = Hashing::Fnv1a64(rgbScratch.data(), rgbScratch.size());
 
     bool failingPixelHash = false;
     std::string failReason;

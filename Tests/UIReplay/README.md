@@ -27,16 +27,15 @@ This is the “won’t hang your console” runner (per-scenario timeout, catche
 powershell -ExecutionPolicy Bypass -File ".\Tests\run_ui_replay_tests_safe.ps1" -Config RelWithDebInfo
 ```
 
-To run only a subset (useful for quick local checks / CI smoke), pass the scenario paths as one comma-separated string: through `-File`, a second value after `-Scenarios` binds to another parameter.
+To run only a subset (useful for quick local checks / CI smoke):
 
 ```powershell
 $repo = (Resolve-Path .).Path
-$subset = @("smoke_idle.json", "repro_assets_listview_horizontal_scrollbar_drag.json") |
-          ForEach-Object { Join-Path $repo "Tests\UIReplay\$_" }
-powershell -ExecutionPolicy Bypass -File ".\Tests\run_ui_replay_tests_safe.ps1" -Config RelWithDebInfo -Scenarios ($subset -join ",")
+powershell -ExecutionPolicy Bypass -File ".\Tests\run_ui_replay_tests_safe.ps1" -Config RelWithDebInfo -Scenarios @(
+  (Join-Path $repo "Tests\UIReplay\smoke_idle.json"),
+  (Join-Path $repo "Tests\UIReplay\repro_assets_listview_horizontal_scrollbar_drag.json")
+)
 ```
-
-The runner prints `[UIReplay] N scenarios` before it starts and gives each editor its own debug port from 9900-9919.
 
 ## Compare cached-mode vs correctness-mode
 
@@ -49,8 +48,6 @@ powershell -ExecutionPolicy Bypass -File ".\Tests\run_ui_replay_compare_modes_sa
 ```
 
 If scenarios include `pixelHash`, this script will also compare mode0 vs mode1 hashes per-frame.
-
-`-Scenarios` takes a subset as one comma-joined string, as for the default runner. The runner prints `[UIReplayCompare] N scenarios` before it starts and gives each editor its own debug port from 9960-9979. Its default output folder is `Tests/UIReplay/out_compare`, apart from the default runner's `Tests/UIReplay/out`, so `-KillExistingEditor` in one runner never stops the other's editors.
 
 ## Useful env vars for debugging
 
@@ -70,7 +67,6 @@ If scenarios include `pixelHash`, this script will also compare mode0 vs mode1 h
 
 - Create a JSON file under `Tests/UIReplay/`.
 - Prefer asserting invariants (e.g. `paintOffsetsMatch`, `visibleTextNotFullyClipped`, `layoutConverged`) over pixel hashes when possible—hashes are more environment-sensitive.
-- `elementInstanceUnchanged` records an element's instance on `frameStart` and requires that same instance through `frameEnd`, inclusive. Use it to detect unnecessary subtree replacement after a panel is open; `elementVisible` checks initial opening and structural changes.
 - Add it to:
   - `Tests/run_ui_replay_tests_safe.ps1` for the default suite, and/or
   - `Tests/run_ui_replay_compare_modes_safe.ps1` if it should pass in both cached + correctness modes.

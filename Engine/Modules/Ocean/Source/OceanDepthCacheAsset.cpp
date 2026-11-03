@@ -1,7 +1,6 @@
 #include "Ocean/OceanDepthCacheAsset.h"
 
 #include "AssetCore/SharedFileRead.h"
-#include "Mathematics/Interpolation.h"
 
 #include <algorithm>
 #include <cmath>
@@ -38,7 +37,7 @@ bool ReadValue(SharedFileReader& in, T& value)
     return in.Read(&value, sizeof(T)) == static_cast<int64>(sizeof(T));
 }
 
-bool IsValidHeightfieldSource(const OceanDepthCacheHeightfieldSource& source, Rendering::RenderLayerMask layerMask)
+bool IsValidHeightfieldSource(const OceanDepthCacheHeightfieldSource& source, uint32 layerMask)
 {
     return source.Enabled &&
            source.Samples != nullptr &&
@@ -46,14 +45,14 @@ bool IsValidHeightfieldSource(const OceanDepthCacheHeightfieldSource& source, Re
            source.Height > 0 &&
            source.SizeX > 0.0f &&
            source.SizeZ > 0.0f &&
-           source.Layers.Intersects(layerMask);
+           (source.LayerMask & layerMask) != 0u;
 }
 
 float32 SampleHeightfieldSource(const OceanDepthCacheHeightfieldSource& source, float32 worldX,
                                 float32 worldZ)
 {
-    const float32 u = Math::Clamp01((worldX - source.OriginX) / source.SizeX);
-    const float32 v = Math::Clamp01((worldZ - source.OriginZ) / source.SizeZ);
+    const float32 u = std::clamp((worldX - source.OriginX) / source.SizeX, 0.0f, 1.0f);
+    const float32 v = std::clamp((worldZ - source.OriginZ) / source.SizeZ, 0.0f, 1.0f);
     const float32 gx = u * static_cast<float32>(source.Width > 1 ? source.Width - 1 : 0);
     const float32 gz = v * static_cast<float32>(source.Height > 1 ? source.Height - 1 : 0);
     const float32 fx = std::floor(gx);
@@ -84,7 +83,7 @@ struct HeightfieldBakeContext
 {
     const OceanDepthCacheHeightfieldSource* Sources = nullptr;
     uint32 SourceCount = 0;
-    Rendering::RenderLayerMask SourceLayers = Rendering::RenderLayerMask::All();
+    uint32 SourceLayerMask = 0xFFFFFFFFu;
 };
 
 struct PreparedMeshTriangle
@@ -110,7 +109,7 @@ struct MeshBakeContext
     std::vector<PreparedMeshTriangle> Triangles;
 };
 
-bool IsValidMeshSource(const OceanDepthCacheMeshSource& source, Rendering::RenderLayerMask layerMask)
+bool IsValidMeshSource(const OceanDepthCacheMeshSource& source, uint32 layerMask)
 {
     return source.Enabled &&
            source.Positions != nullptr &&
@@ -118,7 +117,7 @@ bool IsValidMeshSource(const OceanDepthCacheMeshSource& source, Rendering::Rende
            source.VertexCount > 0 &&
            source.Indices != nullptr &&
            source.IndexCount >= 3 &&
-           source.Layers.Intersects(layerMask);
+           (source.LayerMask & layerMask) != 0u;
 }
 
 Mathematics::Vector3 ReadMeshPosition(const OceanDepthCacheMeshSource& source, uint32 index)
@@ -130,7 +129,7 @@ Mathematics::Vector3 ReadMeshPosition(const OceanDepthCacheMeshSource& source, u
     if (!source.UseLocalToWorld)
         return p;
 
-    const float32* m = source.LocalToWorld.Data();
+    const float32* m = source.LocalToWorld;
     return Mathematics::Vector3{
         m[0] * p.x + m[4] * p.y + m[8] * p.z + m[12],
         m[1] * p.x + m[5] * p.y + m[9] * p.z + m[13],
@@ -174,7 +173,7 @@ void AddPreparedTriangle(const Mathematics::Vector3& v0,
 
 bool PrepareMeshBakeContext(const OceanDepthCacheMeshSource* sources,
                             uint32 sourceCount,
-                            Rendering::RenderLayerMask sourceLayers,
+                            uint32 sourceLayerMask,
                             MeshBakeContext& outContext,
                             std::string* error)
 {
@@ -183,7 +182,7 @@ bool PrepareMeshBakeContext(const OceanDepthCacheMeshSource* sources,
         SetOceanDepthCacheError(error, "ocean depth cache mesh bake needs at least one source");
         return false;
     }
-    if (sourceLayers == Rendering::RenderLayerMask::None())
+    if (sourceLayerMask == 0u)
     {
         SetOceanDepthCacheError(error, "ocean depth cache mesh bake has an empty source layer mask");
         return false;
@@ -193,7 +192,7 @@ bool PrepareMeshBakeContext(const OceanDepthCacheMeshSource* sources,
     size_t triangleCapacity = 0;
     for (uint32 i = 0; i < sourceCount; ++i)
     {
-        if (!IsValidMeshSource(sources[i], sourceLayers))
+        if (!IsValidMeshSource(sources[i], sourceLayerMask))
             continue;
 
         hasMatchingSource = true;
@@ -211,7 +210,7 @@ bool PrepareMeshBakeContext(const OceanDepthCacheMeshSource* sources,
     for (uint32 si = 0; si < sourceCount; ++si)
     {
         const OceanDepthCacheMeshSource& source = sources[si];
-        if (!IsValidMeshSource(source, sourceLayers))
+        if (!IsValidMeshSource(source, sourceLayerMask))
             continue;
 
         const uint32 triangleCount = source.IndexCount / 3u;
@@ -250,7 +249,7 @@ bool SampleHeightfields(float32 worldX, float32 worldZ, float32& outFloorY, void
     for (uint32 i = 0; i < ctx->SourceCount; ++i)
     {
         const OceanDepthCacheHeightfieldSource& source = ctx->Sources[i];
-        if (!IsValidHeightfieldSource(source, ctx->SourceLayers))
+        if (!IsValidHeightfieldSource(source, ctx->SourceLayerMask))
             continue;
 
         if (worldX < source.OriginX || worldZ < source.OriginZ ||
@@ -549,7 +548,7 @@ bool BakeOceanDepthCache(const OceanDepthCacheBakeDesc& desc,
 bool BakeOceanDepthCacheFromHeightfields(const OceanDepthCacheBakeDesc& desc,
                                          const OceanDepthCacheHeightfieldSource* sources,
                                          uint32 sourceCount,
-                                         Rendering::RenderLayerMask sourceLayers,
+                                         uint32 sourceLayerMask,
                                          OceanDepthCacheAsset& outCache,
                                          std::string* error)
 {
@@ -558,7 +557,7 @@ bool BakeOceanDepthCacheFromHeightfields(const OceanDepthCacheBakeDesc& desc,
         SetOceanDepthCacheError(error, "ocean depth cache heightfield bake needs at least one source");
         return false;
     }
-    if (sourceLayers == Rendering::RenderLayerMask::None())
+    if (sourceLayerMask == 0u)
     {
         SetOceanDepthCacheError(error, "ocean depth cache heightfield bake has an empty source layer mask");
         return false;
@@ -567,7 +566,7 @@ bool BakeOceanDepthCacheFromHeightfields(const OceanDepthCacheBakeDesc& desc,
     bool hasUsableSource = false;
     for (uint32 i = 0; i < sourceCount; ++i)
     {
-        if (IsValidHeightfieldSource(sources[i], sourceLayers))
+        if (IsValidHeightfieldSource(sources[i], sourceLayerMask))
         {
             hasUsableSource = true;
             break;
@@ -582,19 +581,19 @@ bool BakeOceanDepthCacheFromHeightfields(const OceanDepthCacheBakeDesc& desc,
     HeightfieldBakeContext ctx{};
     ctx.Sources = sources;
     ctx.SourceCount = sourceCount;
-    ctx.SourceLayers = sourceLayers;
+    ctx.SourceLayerMask = sourceLayerMask;
     return BakeOceanDepthCache(desc, &SampleHeightfields, &ctx, outCache, error);
 }
 
 bool BakeOceanDepthCacheFromMeshes(const OceanDepthCacheBakeDesc& desc,
                                    const OceanDepthCacheMeshSource* sources,
                                    uint32 sourceCount,
-                                   Rendering::RenderLayerMask sourceLayers,
+                                   uint32 sourceLayerMask,
                                    OceanDepthCacheAsset& outCache,
                                    std::string* error)
 {
     MeshBakeContext ctx;
-    if (!PrepareMeshBakeContext(sources, sourceCount, sourceLayers, ctx, error))
+    if (!PrepareMeshBakeContext(sources, sourceCount, sourceLayerMask, ctx, error))
         return false;
 
     return BakeOceanDepthCache(desc, &SampleMeshes, &ctx, outCache, error);

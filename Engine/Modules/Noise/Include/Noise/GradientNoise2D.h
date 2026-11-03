@@ -11,8 +11,9 @@
 // coordinates and seed, with no world, asset or component types in the surface.
 //
 // Present: the gradient-noise lattice below (hash, gradient table, value and
-// analytic derivatives), the fractal sums over it in FractalNoise2D.h, and the
-// curl of 3D gradient noise in GradientCurl3D.h.
+// analytic derivatives), the fractal sums over it in FractalNoise2D.h, the
+// curl of 3D gradient noise in GradientCurl3D.h, and the heightfield base
+// fill's value noise in ValueNoise2D.h (with its GPU mirror named there).
 //
 // Deliberately NOT here, because each is pinned bit-for-bit to its own GPU
 // mirror and folding it in would change what that mirror is compared against:
@@ -20,8 +21,6 @@
 //     mirror of cbt_domain.glsl)
 //   - the albedo variation value noise (same header, mirror of
 //     terrain_material_albedo.glsl)
-//   - the heightfield base-fill value noise (Terrain/Source/Heightfield.cpp
-//     NoiseHash/SmoothNoise, mirror of terrain_height_bake.comp BaseSmoothNoise)
 // Also not here, for other reasons: the ocean caustics texture generator
 // (Modules/Ocean/Source/OceanCaustics.cpp) is a tileable Worley edge field and
 // belongs here once the module has cellular noise; the ocean extraction

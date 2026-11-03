@@ -1,7 +1,5 @@
 #pragma once
 
-#include "Mathematics/Vector3.h"
-
 #include <cstdint>
 
 namespace GameEngine {
@@ -63,12 +61,12 @@ struct SolarPathAngles
 /// Meridian span the celestial equator.
 struct SolarFrame
 {
-    Mathematics::Vector3 East;
+    float East[3];
     /// Where the celestial equator culminates: cos(pole altitude) up + sin(pole altitude) away from
     /// the pole's heading (south, on Earth).
-    Mathematics::Vector3 Meridian;
+    float Meridian[3];
     /// The celestial pole: sin(pole altitude) up + cos(pole altitude) toward its heading.
-    Mathematics::Vector3 Pole;
+    float Pole[3];
     float CosDeclination;
     float SinDeclination;
 };
@@ -118,22 +116,16 @@ SolarFrame MakeSolarFrame(const SolarPathAngles& angles);
 /// 06:00 is theta = 0 and solar noon is theta = pi / 2. The result is unit length by construction
 /// and is deliberately not renormalised: at latitude 0 on the equinox with north 0 every frame
 /// component is exactly 0 or 1, so the direction is exactly (cos theta, sin theta, +0).
-inline Mathematics::Vector3 SolarDirection(const SolarFrame& frame, float cosTheta, float sinTheta)
+inline void SolarDirection(const SolarFrame& frame, float cosTheta, float sinTheta, float out[3])
 {
-    return Mathematics::Vector3(
-        frame.CosDeclination * (cosTheta * frame.East.x + sinTheta * frame.Meridian.x) + frame.SinDeclination * frame.Pole.x,
-        frame.CosDeclination * (cosTheta * frame.East.y + sinTheta * frame.Meridian.y) + frame.SinDeclination * frame.Pole.y,
-        frame.CosDeclination * (cosTheta * frame.East.z + sinTheta * frame.Meridian.z) + frame.SinDeclination * frame.Pole.z);
+    for (int i = 0; i < 3; ++i)
+        out[i] = frame.CosDeclination * (cosTheta * frame.East[i] + sinTheta * frame.Meridian[i]) +
+                 frame.SinDeclination * frame.Pole[i];
 }
 
 /// The solar hour, in [0, 24), whose direction is nearest `direction`: the hour angle of its
 /// projection onto the celestial equator. Exact for a direction on the day's circle.
-float SolarHourFromDirection(const SolarFrame& frame, const Mathematics::Vector3& direction);
-
-/// The compass bearing of `direction` on `frame`'s site, in radians in (-pi, pi]: 0 = the site's
-/// north, pi / 2 = its east, negative toward its west. Measured in the site's own frame, so the North
-/// yaw turns the scene under it without changing it.
-float SolarBearingRadians(const SolarFrame& frame, const Mathematics::Vector3& direction);
+float SolarHourFromDirection(const SolarFrame& frame, const float direction[3]);
 
 /// Where the sun stands at one hour, as an observer on the ground reads it.
 struct SolarPosition

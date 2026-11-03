@@ -9,12 +9,6 @@ namespace GameEngine::Physics
 {
 namespace
 {
-// The heightfield builder of a world that builds no shapes: every build fails.
-std::shared_ptr<const PreparedHeightFieldShape> BuildNoHeightFieldShape(const HeightFieldShapeDef&)
-{
-    return nullptr;
-}
-
 class NullPhysicsBackend final : public IPhysicsBackend
 {
 public:
@@ -25,7 +19,6 @@ public:
     void OptimizeBroadphase() override {}
 
     ShapeHandle CreateShape(const ShapeDefinition&, const Vector3&) override { return {}; }
-    HeightFieldShapeBuilder GetHeightFieldShapeBuilder() const override { return &BuildNoHeightFieldShape; }
     void DestroyShape(ShapeHandle) override {}
     bool IsShapeValid(ShapeHandle shape) const override { return shape.IsValid(); }
 
@@ -68,17 +61,11 @@ public:
     Vector3 GetCharacterGroundNormal(CharacterHandle) const override { return Vector3(0.0f, 1.0f, 0.0f); }
 
     bool RayCast(const RayCastQuery&, RayCastResult&) const override { return false; }
-    bool RayCastAll(const RayCastQuery&, std::vector<RayCastResult>& outResults, uint32) const override
-    {
-        outResults.clear();
-        return false;
-    }
-    bool BoxOverlap(const BoxOverlapQuery&, std::vector<OverlapResult>& outResults, uint32) const override
-    {
-        outResults.clear();
-        return false;
-    }
+    bool RayCastAll(const RayCastQuery&, std::vector<RayCastResult>&, uint32) const override { return false; }
+    bool BoxOverlap(const BoxOverlapQuery&, std::vector<OverlapResult>&, uint32) const override { return false; }
 
+    void SetContactModifyCallback(ContactModifyCallback, void*) override {}
+    void SetBodyContactFlags(BodyHandle, uint32) override {}
     void SetContactCallback(IPhysicsBackend::ContactCallback) override {}
     void SetTriggerCallback(IPhysicsBackend::TriggerCallback) override {}
     void ProcessEvents() override {}
@@ -138,11 +125,6 @@ void PhysicsWorld::OptimizeBroadphase()
 ShapeHandle PhysicsWorld::CreateShape(const ShapeDefinition& definition, const Vector3& bakedScale)
 {
     return m_Backend ? m_Backend->CreateShape(definition, bakedScale) : ShapeHandle{};
-}
-
-HeightFieldShapeBuilder PhysicsWorld::GetHeightFieldShapeBuilder() const
-{
-    return m_Backend ? m_Backend->GetHeightFieldShapeBuilder() : &BuildNoHeightFieldShape;
 }
 
 void PhysicsWorld::DestroyShape(ShapeHandle shape)
@@ -207,7 +189,8 @@ void PhysicsWorld::SetBodyTransform(BodyHandle body, const Transform& transform,
 
 void PhysicsWorld::MoveKinematic(BodyHandle body, const Transform& target, float32 deltaTime)
 {
-    if (m_Backend)
+    // A non-positive interval yields no finite velocity that reaches the target.
+    if (m_Backend && deltaTime > 0.0f)
         m_Backend->MoveKinematic(body, target, deltaTime);
 }
 
@@ -236,6 +219,22 @@ void PhysicsWorld::SetAngularVelocity(BodyHandle body, const Vector3& velocity)
 Vector3 PhysicsWorld::GetCenterOfMassPosition(BodyHandle body) const
 {
     return m_Backend ? m_Backend->GetCenterOfMassPosition(body) : Vector3{};
+}
+
+Vector3 PhysicsWorld::GetPointVelocity(BodyHandle body, const Vector3& worldPoint) const
+{
+    if (!m_Backend)
+        return Vector3{};
+
+    // v(p) = v_com + omega x (p - com). Linear velocity is the velocity of the
+    // centre of mass, so the lever arm is measured from there and not from the
+    // body origin. Static bodies report zero for both terms.
+    const Vector3 linear = m_Backend->GetLinearVelocity(body);
+    const Vector3 angular = m_Backend->GetAngularVelocity(body);
+    const Vector3 com = m_Backend->GetCenterOfMassPosition(body);
+    const Vector3 lever(worldPoint.x - com.x, worldPoint.y - com.y, worldPoint.z - com.z);
+    const Vector3 tangential = Vector3::Cross(angular, lever);
+    return Vector3(linear.x + tangential.x, linear.y + tangential.y, linear.z + tangential.z);
 }
 
 void PhysicsWorld::AddForce(BodyHandle body, const Vector3& force)
@@ -323,22 +322,26 @@ bool PhysicsWorld::RayCast(const RayCastQuery& query, RayCastResult& outResult) 
 
 bool PhysicsWorld::RayCastAll(const RayCastQuery& query, std::vector<RayCastResult>& outResults, uint32 maxResults) const
 {
-    if (!m_Backend)
-    {
-        outResults.clear();
-        return false;
-    }
-    return m_Backend->RayCastAll(query, outResults, maxResults);
+    return m_Backend ? m_Backend->RayCastAll(query, outResults, maxResults) : false;
 }
 
 bool PhysicsWorld::BoxOverlap(const BoxOverlapQuery& query, std::vector<OverlapResult>& outResults, uint32 maxResults) const
 {
     if (!m_Backend)
-    {
-        outResults.clear();
         return false;
-    }
     return m_Backend->BoxOverlap(query, outResults, maxResults);
+}
+
+void PhysicsWorld::SetContactModifyCallback(ContactModifyCallback callback, void* context)
+{
+    if (m_Backend)
+        m_Backend->SetContactModifyCallback(callback, context);
+}
+
+void PhysicsWorld::SetBodyContactFlags(BodyHandle body, uint32 contactFlags)
+{
+    if (m_Backend)
+        m_Backend->SetBodyContactFlags(body, contactFlags);
 }
 
 void PhysicsWorld::SetContactCallback(ContactCallback callback)

@@ -28,6 +28,9 @@ AssetOpenTarget ResolveAssetOpenTarget(std::string_view lowercaseExtension,
     if (type == AssetType::Material)
         return AssetOpenTarget::Inspector;
 
+    if (ext == ".tileset")
+        return AssetOpenTarget::TileSetEditor;
+
     if (ExtensionOpensInGraphPanel(ext))
     {
         // A hand-written .glsl is text; only a graph-generated one (and only when

@@ -1,0 +1,32 @@
+.localization-icon-button {
+	flex-shrink: 0;
+	white-space: nowrap;
+	padding: 4px 8px 4px 28px;
+	min-height: 24px;
+	font-size: var(--ui_font_size_small);
+	/* Icons draw at 16 x 16 logical px, the editor's small icon size. */
+	background-size: 16px 16px;
+	background-repeat: no-repeat;
+	background-position: 7px 50%;
+	background-image-tint: var(--ui_icon_tint_standard);
+}
+
+.localization-icon-button:hover {
+	background-image-tint: var(--ui_icon_tint_hover);
+}
+
+/* A disabled button dims its icon with its label. */
+.localization-icon-button:disabled {
+	background-image-tint: var(--ui_color_text_disabled);
+}
+
+/* In a narrow panel the entry's and
+   the PO buttons show their icon only, centred, with the label as a tooltip. */
+.localization-icon-compact {
+	padding: 4px 14px;
+	background-position: 50% 50%;
+}
+
+.localization-button-label-hidden {
+	display: none;
+}

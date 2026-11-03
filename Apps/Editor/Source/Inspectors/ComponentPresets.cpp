@@ -6,7 +6,6 @@
 #include "Components/Audio/AudioListener.h"
 #include "Components/Rendering/Camera.h"
 #include "Components/Rendering/Light.h"
-#include "Components/Rendering/LightPhotometry.h"
 #include "Components/Rendering/Particles.h"
 #include "Components/Rendering/PostProcessVolume.h"
 #include "Components/Rendering/SkyEnvironment.h"
@@ -60,8 +59,6 @@ constexpr TerrainAreaPreset kTerrainAreaPresets[] = {
      ECS::GetComponentTypeId<Components::TerrainGroundClaimEffect>()},
     {Preset::TerrainGrassArea, "Terrain: Grass Area",
      ECS::GetComponentTypeId<Components::TerrainGrassEffect>()},
-    {Preset::TerrainColorArea, "Terrain: Color Area",
-     ECS::GetComponentTypeId<Components::TerrainColorEffect>()},
 };
 
 static_assert(std::size(kTerrainAreaPresets) == TerrainECS::kTerrainEffectTypeCount,
@@ -157,18 +154,6 @@ const char* PresetUndoDisplayName(ComponentPreset p)
 
     switch (p)
     {
-    case Preset::TerrainFlattenArea:
-    case Preset::TerrainHeightOffsetArea:
-    case Preset::TerrainNoiseArea:
-    case Preset::TerrainStampArea:
-    case Preset::TerrainPaintArea:
-    case Preset::TerrainRulesArea:
-    case Preset::TerrainGroundClaimArea:
-    case Preset::TerrainGrassArea:
-    case Preset::TerrainColorArea:
-        break; // Handled by FindTerrainAreaPreset above.
-    case Preset::Count:
-        break; // Sentinel, not a preset.
     case Preset::Camera:
         return "Camera";
     case Preset::Light:
@@ -227,18 +212,6 @@ std::vector<ECS::ComponentTypeId> ComponentTypeIdsForPreset(ComponentPreset p)
 
     switch (p)
     {
-    case Preset::TerrainFlattenArea:
-    case Preset::TerrainHeightOffsetArea:
-    case Preset::TerrainNoiseArea:
-    case Preset::TerrainStampArea:
-    case Preset::TerrainPaintArea:
-    case Preset::TerrainRulesArea:
-    case Preset::TerrainGroundClaimArea:
-    case Preset::TerrainGrassArea:
-    case Preset::TerrainColorArea:
-        break; // Handled by FindTerrainAreaPreset above.
-    case Preset::Count:
-        break; // Sentinel, not a preset.
     case Preset::Camera:
         return {ECS::GetComponentTypeId<Components::Camera>()};
     case Preset::Light:
@@ -290,14 +263,181 @@ std::vector<ECS::ComponentTypeId> ComponentTypeIdsForPreset(ComponentPreset p)
     return {};
 }
 
-Components::Light MakeDefaultDirectionalLight()
+namespace
+{
+
+// Half extent of the Static Plane preset's ground collider, in metres.
+constexpr float kStaticPlaneHalfExtent = 50.0f;
+
+// Adds `value` unless the entity already carries a T, recording the add.
+template <typename T>
+void AddIfMissing(ECS::World& world, ECS::EntityHandle entity, const T& value,
+                  std::vector<ECS::ComponentTypeId>& added)
+{
+    if (world.HasComponent<T>(entity))
+        return;
+    world.AddComponentImmediate<T>(entity, value);
+    added.push_back(ECS::GetComponentTypeId<T>());
+}
+
+// A body, its collider and `shape`: the physics presets' common set.
+template <typename TShape>
+void AddPhysicsBodyWithShape(ECS::World& world, ECS::EntityHandle entity, Physics::MotionType motionType,
+                             const TShape& shape, std::vector<ECS::ComponentTypeId>& added)
+{
+    Components::PhysicsBody body{};
+    body.motionType = motionType;
+    AddIfMissing(world, entity, body, added);
+    AddIfMissing(world, entity, Components::PhysicsCollider{}, added);
+    AddIfMissing(world, entity, shape, added);
+}
+
+Components::PlaneColliderShape GroundPlaneShape()
+{
+    Components::PlaneColliderShape plane{};
+    plane.normalX = 0.0f;
+    plane.normalY = 1.0f;
+    plane.normalZ = 0.0f;
+    plane.d = 0.0f;
+    plane.halfExtent = kStaticPlaneHalfExtent;
+    return plane;
+}
+
+// A directional light at clear-noon sun illuminance, in physical units.
+Components::Light SunLight()
 {
     Components::Light light{};
     light.Type = Components::LightType::Directional;
     light.Intensity = Components::kClearNoonSunIlluminanceLux;
     light.IntensityUnit = Components::LightUnit::Lux;
-    light.CastsShadows = true;
     return light;
+}
+
+// The spline supplies the region, so the volume takes its shape from it.
+// Adding the SplineComponent is the point: a spline flatten without one would
+// do nothing.
+void ApplySplineFlatten(ECS::World& world, ECS::EntityHandle entity, std::vector<ECS::ComponentTypeId>& added)
+{
+    AddIfMissing(world, entity, Components::SplineComponent{}, added);
+    Components::TerrainModifierVolume volume{};
+    volume.Shape = Components::TerrainVolumeShape::SplineArea;
+    AddIfMissing(world, entity, volume, added);
+
+    const ECS::ComponentTypeId flattenTypeId = ECS::GetComponentTypeId<Components::TerrainFlattenEffect>();
+    const int32 stackOrder = TerrainECS::NextEffectStackOrder(world, entity);
+    if (TerrainECS::AddTerrainEffectDefault(world, entity, flattenTypeId, stackOrder))
+        added.push_back(flattenTypeId);
+}
+
+} // namespace
+
+std::vector<ECS::ComponentTypeId> ApplyComponentPreset(ECS::World& world, ECS::EntityHandle entity,
+                                                       ComponentPreset p)
+{
+    std::vector<ECS::ComponentTypeId> added;
+
+    // Terrain area presets are answered by the table that pairs a preset with
+    // its effect, never by a case label.
+    if (const TerrainAreaPreset* area = FindTerrainAreaPreset(p))
+    {
+        const TerrainAreaPresetAdditions additions = ApplyTerrainAreaPreset(world, entity, *area);
+        if (additions.AddedSpline)
+            added.push_back(ECS::GetComponentTypeId<Components::SplineComponent>());
+        if (additions.AddedVolume)
+            added.push_back(ECS::GetComponentTypeId<Components::TerrainModifierVolume>());
+        if (additions.AddedEffectTypeId != 0)
+            added.push_back(additions.AddedEffectTypeId);
+        return added;
+    }
+
+    switch (p)
+    {
+    case Preset::Camera:
+        AddIfMissing(world, entity, Components::Camera{}, added);
+        break;
+    case Preset::Light:
+        AddIfMissing(world, entity, SunLight(), added);
+        break;
+    case Preset::SkyEnvironment:
+        AddIfMissing(world, entity, Components::SkyEnvironment{}, added);
+        break;
+    case Preset::Skybox:
+        AddIfMissing(world, entity, Components::Skybox{}, added);
+        break;
+    case Preset::PhysicsDynamicBox:
+        AddPhysicsBodyWithShape(world, entity, Physics::MotionType::Dynamic, Components::BoxColliderShape{}, added);
+        break;
+    case Preset::PhysicsDynamicSphere:
+        AddPhysicsBodyWithShape(world, entity, Physics::MotionType::Dynamic, Components::SphereColliderShape{},
+                                added);
+        break;
+    case Preset::PhysicsStaticPlane:
+        AddPhysicsBodyWithShape(world, entity, Physics::MotionType::Static, GroundPlaneShape(), added);
+        break;
+    case Preset::PhysicsStaticBox:
+        AddPhysicsBodyWithShape(world, entity, Physics::MotionType::Static, Components::BoxColliderShape{}, added);
+        break;
+    case Preset::PhysicsCharacterController:
+        AddIfMissing(world, entity, Components::CharacterController{}, added);
+        break;
+    case Preset::AudioEmitter:
+        AddIfMissing(world, entity, Components::AudioEmitter{}, added);
+        break;
+    case Preset::AudioListener:
+        AddIfMissing(world, entity, Components::AudioListener{}, added);
+        break;
+    case Preset::PostProcessVolume:
+        AddIfMissing(world, entity, Components::PostProcessVolume{}, added);
+        break;
+    case Preset::WindVolume:
+        AddIfMissing(world, entity, Components::WindVolume{}, added);
+        break;
+    case Preset::ParticleEmitter2D:
+        AddIfMissing(world, entity, Components::MakeParticleEmitter2DDefaults(), added);
+        AddIfMissing(world, entity, Components::ParticleCollisionEventsBuffer{}, added);
+        break;
+    case Preset::ParticleEmitter3D:
+        AddIfMissing(world, entity, Components::ParticleEmitter3D{}, added);
+        AddIfMissing(world, entity, Components::ParticleCollisionEventsBuffer{}, added);
+        break;
+    case Preset::ParticleCollisionEvents:
+        AddIfMissing(world, entity, Components::ParticleCollisionEventsBuffer{}, added);
+        break;
+    case Preset::TerrainSplineFlatten:
+        ApplySplineFlatten(world, entity, added);
+        break;
+    case Preset::SplineComponent:
+        AddIfMissing(world, entity, Components::SplineComponent{}, added);
+        break;
+    case Preset::ValueCurve:
+        AddIfMissing(world, entity, Components::ValueCurve{}, added);
+        break;
+    case Preset::VideoTexture:
+        AddIfMissing(world, entity, Components::VideoTextureComponent{}, added);
+        break;
+    }
+    return added;
+}
+
+std::vector<ECS::ComponentTypeId> ComponentTypeIdsOfferedOnlyByPresets()
+{
+    std::vector<ECS::ComponentTypeId> covered;
+    for (const ComponentPresetEntry& entry : ComponentPresetCatalog())
+    {
+        for (ECS::ComponentTypeId typeId : ComponentTypeIdsForPreset(entry.Preset))
+        {
+            if (std::find(covered.begin(), covered.end(), typeId) == covered.end())
+                covered.push_back(typeId);
+        }
+    }
+
+    // The modifier volume is the exception: every terrain preset adds one, but
+    // none of them IS one. An empty volume authored on its own — region first,
+    // effects from its Add Effect picker after — is a real flow, so it keeps
+    // its standalone entry.
+    const ECS::ComponentTypeId volumeTypeId = ECS::GetComponentTypeId<Components::TerrainModifierVolume>();
+    covered.erase(std::remove(covered.begin(), covered.end(), volumeTypeId), covered.end());
+    return covered;
 }
 
 const std::vector<ComponentPresetEntry>& ComponentPresetCatalog()

@@ -27,7 +27,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <memory_resource>
 #include <numeric>
 #include <span>
 #include <string_view>
@@ -90,13 +89,18 @@ struct SortedTransparentRunMaterialKey
     bool DoubleSided = false;
     bool IgnoreVertexColor = false;
 
+    // Compatibility binds one material texture set for the entire direct draw.
+    // Bindless runs leave this null because each instance fetches its material.
+    const Material* BoundMaterial = nullptr;
+
     bool operator==(const SortedTransparentRunMaterialKey&) const = default;
 };
 
-inline SortedTransparentRunMaterialKey MakeSortedTransparentRunMaterialKey(const Material& mat)
+inline SortedTransparentRunMaterialKey MakeSortedTransparentRunMaterialKey(const Material& mat, bool bindMaterialTextures = false)
 {
     const MaterialCompileSpec& spec = mat.GetCompileSpec();
     SortedTransparentRunMaterialKey key{};
+    key.BoundMaterial = bindMaterialTextures ? &mat : nullptr;
     key.SurfaceShaderPath = spec.surfaceShaderPath;
     key.VertexModifierPath = spec.vertexModifierPath;
     key.LightingModel = spec.lightingModel;
@@ -132,42 +136,34 @@ struct SortedTransparentRunGeometryKey
 // discovery-order RunGroup to its slot.
 struct SortedTransparentRunPartition
 {
+    void Clear()
+    {
+        SlotOfGroup.clear(); GroupOfSlot.clear(); RunStart.clear(); RunCount.clear();
+    }
     std::vector<uint32_t> SlotOfGroup;
     std::vector<uint32_t> GroupOfSlot;
     std::vector<uint32_t> RunStart; // exclusive prefix of RunCount, slot order
     std::vector<uint32_t> RunCount;
-
-    /// Empties every vector and keeps its capacity.
-    void Clear()
-    {
-        SlotOfGroup.clear();
-        GroupOfSlot.clear();
-        RunStart.clear();
-        RunCount.clear();
-    }
 };
 
 // Order groups coarsely back-to-front: descending farthest-member view depth,
 // discovery ordinal as the deterministic tiebreak. Depths are compared through
 // the same monotonic float→uint transform the GPU key uses so the CPU slot
 // order and the GPU key order can never disagree on any input (±0, NaN).
-// Fills `part` in place, so its vectors keep their capacity from frame to
-// frame; the per-group working sets come from `scratch`.
-inline void BuildSortedTransparentRunPartition(std::span<const SortedTransparentRecord> records,
-                                              uint32_t groupCount,
-                                              std::pmr::memory_resource& scratch,
-                                              SortedTransparentRunPartition& part)
+inline SortedTransparentRunPartition BuildSortedTransparentRunPartition(
+    std::span<const SortedTransparentRecord> records, uint32_t groupCount)
 {
+    SortedTransparentRunPartition part{};
     part.SlotOfGroup.assign(groupCount, 0u);
     part.GroupOfSlot.resize(groupCount);
     part.RunStart.assign(groupCount, 0u);
     part.RunCount.assign(groupCount, 0u);
     if (groupCount == 0u)
-        return;
+        return part;
 
-    std::pmr::vector<uint32_t> countByGroup(groupCount, 0u, &scratch);
+    std::vector<uint32_t> countByGroup(groupCount, 0u);
     // Sortable-uint domain: 0 is the minimum, so "no member yet" folds away.
-    std::pmr::vector<uint32_t> maxDepthByGroup(groupCount, 0u, &scratch);
+    std::vector<uint32_t> maxDepthByGroup(groupCount, 0u);
     for (const SortedTransparentRecord& rec : records)
     {
         ++countByGroup[rec.RunGroup];
@@ -193,6 +189,7 @@ inline void BuildSortedTransparentRunPartition(std::span<const SortedTransparent
         part.RunCount[slot] = countByGroup[group];
         start += countByGroup[group];
     }
+    return part;
 }
 
 // The total drain order as record indices: run slot ascending, view depth

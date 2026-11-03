@@ -10,16 +10,16 @@
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Materials/MaterialDocument.h"
-#include "Rendering/Materials/Shader/ShaderComposer.h"
-#include "Rendering/Materials/Shader/ShaderPropertyTable.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderComposer.h"
+#include "Rendering/Materials/ShaderPropertyTable.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
 #include "TestUtils.h"
+#include "TestTempDir.h"
 
 #include <algorithm>
-#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -46,10 +46,7 @@ struct TempMaterialDir
     fs::path Root;
     explicit TempMaterialDir(const char* prefix)
     {
-        static std::atomic<uint32_t> counter{0};
-        Root = fs::temp_directory_path() /
-               (std::string(prefix) + "_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()) +
-                "_" + std::to_string(counter.fetch_add(1)));
+        Root = TestUtils::MakeUniqueTempDirectory(prefix);
         fs::create_directories(Root);
     }
     ~TempMaterialDir()
@@ -212,7 +209,7 @@ TEST(ComposeDeclaredProperties, VertexModifierDeclarationsReachBothStages)
 TEST(ComposeDeclaredProperties, ANameTheAdapterReadsIsNotWarnedAsUnread)
 {
     Logger::Log::Initialize({});
-    auto sink = std::make_unique<Logger::CallbackSink>();
+    auto sink = Logger::MakeUnique<Logger::CallbackSink>();
     auto* sinkPtr = sink.get();
     struct Captured
     {
@@ -220,10 +217,10 @@ TEST(ComposeDeclaredProperties, ANameTheAdapterReadsIsNotWarnedAsUnread)
         std::vector<std::string> Lines;
     };
     auto captured = std::make_shared<Captured>();
-    const std::uint64_t callbackId = sinkPtr->RegisterCallback(
+    const Logger::uint64 callbackId = sinkPtr->RegisterCallback(
         [captured](const Logger::LogMessage& msg)
         {
-            if (msg.Message.find("is never read") != std::string::npos)
+            if (msg.Message.find("is never read") != Logger::String::npos)
             {
                 std::lock_guard lock(captured->Mutex);
                 captured->Lines.emplace_back(msg.Message.c_str());

@@ -14,7 +14,7 @@
 #include "Assets/ModelAsset.h"
 #include "AssetCore/GUID.h"
 #include "ECSModules/Rendering/SkeletonStore.h"
-#include "Animation/Skeleton/SkeletonData.h"
+#include "Animation/SkeletonData.h"
 
 #include <algorithm>
 #include <chrono>
@@ -40,7 +40,7 @@ fs::path StagedRoot()
 
 fs::path SamplesRoot()
 {
-    return StagedRoot() / "Tests" / "BlendSamples";
+    return StagedRoot() / "Tools" / "ai" / "retarget-redesign" / "blend-samples";
 }
 
 fs::path SidecarFor(const fs::path& modelPath)

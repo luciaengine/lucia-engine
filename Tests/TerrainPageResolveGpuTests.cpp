@@ -7,11 +7,10 @@
 // 1025 samples, 16385 x 4097).
 
 #include "TerrainPagedField.h"
-#include "TerrainECS/TerrainPageTableRing.h"
 
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
-#include "Rendering/Core/Pipeline/PipelineTypes.h"
+#include "Rendering/Core/PipelineTypes.h"
 
 #include <gtest/gtest.h>
 
@@ -44,7 +43,6 @@ struct FieldShape
     const char* Name;
     uint32 SamplesX;
     uint32 SamplesZ;
-    PageTableBudget Budget = kDenseFieldTable;
 };
 
 // The CBTPageField and CBTPageLevel of cbt_page.glsl, std430.
@@ -54,10 +52,6 @@ struct GpuPageField
     uint32 Level0SamplesZ;
     uint32 LevelCount;
     uint32 SlotsPerRow;
-    uint32 FloorLevel;
-    uint32 TierCount;
-    uint32 DirectoryOffset;
-    uint32 Pad;
 };
 
 struct GpuPageLevel
@@ -242,27 +236,18 @@ protected:
     std::vector<float32> Dispatch(const PagedField& field, const std::vector<QueryPoint>& points)
     {
         std::vector<GpuPageLevel> levels;
-        const std::span<const PageStreaming::PageStoreLevel> tableLevels = field.Table.Levels();
-        for (std::size_t level = 0; level < tableLevels.size(); ++level)
-            levels.push_back({field.Table.LevelOffsets()[level], tableLevels[level].PagesX, tableLevels[level].PagesZ, 0u});
-        const GpuPageField shape{tableLevels.front().SamplesX,
-                                 tableLevels.front().SamplesZ,
-                                 uint32(tableLevels.size()),
-                                 field.Geometry.SlotsPerRow,
-                                 field.Table.FloorLevel(),
-                                 field.Table.TierCount(),
-                                 field.Table.DirectoryOffset(),
-                                 0u};
+        for (const PageStreaming::PageStoreLevel& level : field.Table.Levels)
+            levels.push_back({level.FirstEntry, level.PagesX, level.PagesZ, 0u});
+        const GpuPageField shape{field.Table.Levels.front().SamplesX, field.Table.Levels.front().SamplesZ,
+                                 uint32(field.Table.Levels.size()), field.Geometry.SlotsPerRow};
         std::vector<uint8_t> queries(sizeof(GpuPageField) + 16u + points.size() * sizeof(QueryPoint));
         const uint32 count[4] = {uint32(points.size()), 0u, 0u, 0u};
         std::memcpy(queries.data(), &shape, sizeof(shape));
         std::memcpy(queries.data() + sizeof(shape), count, sizeof(count));
         std::memcpy(queries.data() + sizeof(shape) + 16u, points.data(), points.size() * sizeof(QueryPoint));
 
-        const std::span<const uint32> words = field.Table.Words();
-        const std::span<const float32> slotFades = field.Table.SlotFades();
-        const BufferHandle entries = MakeBuffer(words.data(), words.size_bytes(), "Probe.Entries");
-        const BufferHandle fades = MakeBuffer(slotFades.data(), slotFades.size_bytes(), "Probe.Fades");
+        const BufferHandle entries = MakeBuffer(field.Table.Entries.data(), field.Table.Entries.size() * sizeof(uint32), "Probe.Entries");
+        const BufferHandle fades = MakeBuffer(field.Table.SlotFade.data(), field.Table.SlotFade.size() * sizeof(float32), "Probe.Fades");
         const BufferHandle shapes = MakeBuffer(levels.data(), levels.size() * sizeof(GpuPageLevel), "Probe.Levels");
         const BufferHandle query = MakeBuffer(queries.data(), queries.size(), "Probe.Queries");
         const size_t resultBytes = points.size() * sizeof(float32);
@@ -274,8 +259,8 @@ protected:
         setDesc.debugName = "TerrainPageResolveProbe.Set";
         const DescriptorSetHandle set = m_Device->CreateDescriptorSet(setDesc);
         m_Device->UpdateCombinedImageSamplerBinding(set, 0, m_Texture, m_Sampler);
-        m_Device->UpdateStorageBufferBinding(set, 1, entries, 0, words.size_bytes());
-        m_Device->UpdateStorageBufferBinding(set, 2, fades, 0, slotFades.size_bytes());
+        m_Device->UpdateStorageBufferBinding(set, 1, entries, 0, field.Table.Entries.size() * sizeof(uint32));
+        m_Device->UpdateStorageBufferBinding(set, 2, fades, 0, field.Table.SlotFade.size() * sizeof(float32));
         m_Device->UpdateStorageBufferBinding(set, 3, shapes, 0, levels.size() * sizeof(GpuPageLevel));
         m_Device->UpdateStorageBufferBinding(set, 4, query, 0, queries.size());
         m_Device->UpdateStorageBufferBinding(set, 5, results, 0, resultBytes);
@@ -310,7 +295,7 @@ protected:
 TEST_P(TerrainPageResolveGpu, TheDeviceResolveIsTheMirrorWithinTheSubTexelQuantum)
 {
     const FieldShape shape = GetParam();
-    PagedField field(640, 0.4f, shape.SamplesX, shape.SamplesZ, shape.Budget);
+    PagedField field(640, 0.4f, shape.SamplesX, shape.SamplesZ);
     DriveToMixedResidency(field);
     ASSERT_NE(field.Cache.SlotOf(PagedField::Page(PageAddress{0, 0, 3, 2})), PageStreaming::kNoResidentSlot);
     ASSERT_LT(field.Cache.FadeOf(PagedField::Page(PageAddress{0, 1, 1, 1})), 1.0f) << "the fade chain is not mid-fade";
@@ -340,77 +325,5 @@ TEST_P(TerrainPageResolveGpu, TheDeviceResolveIsTheMirrorWithinTheSubTexelQuantu
 
 INSTANTIATE_TEST_SUITE_P(FieldShapes, TerrainPageResolveGpu,
                          ::testing::Values(FieldShape{"UnifiedTiled8193x2049", 8193u, 2049u},
-                                           FieldShape{"AtlasTiled16385x4097", 16385u, 4097u},
-                                           // Only the top level dense: two tiers of blocks below it (six levels, then two).
-                                           FieldShape{"TieredTwoTiers16385x4097", 16385u, 4097u, PageTableBudget{4u, 640u, 640u}}),
+                                           FieldShape{"AtlasTiled16385x4097", 16385u, 4097u}),
                          [](const ::testing::TestParamInfo<FieldShape>& info) { return std::string(info.param.Name); });
-
-namespace
-{
-std::vector<uint32> ReadRingWords(IDevice& device, const TerrainPageTableRing::Slot& slot, std::size_t count)
-{
-    std::vector<uint32> words(count);
-    const auto* mapped = static_cast<const uint8*>(device.MapBuffer(slot.Buffer));
-    if (mapped == nullptr)
-        return {};
-    std::memcpy(words.data(), mapped + slot.Offset, count * sizeof(uint32));
-    device.UnmapBuffer(slot.Buffer);
-    return words;
-}
-} // namespace
-
-// The terrain draw and the grass placement bind one page-table ring slot per frame: a second bind of the
-// same terrain in the same frame slot gets the same buffer and offset. A slot is rewritten when the
-// terrain, its generation or a table version differs, and a larger table grows the ring.
-TEST(TerrainPageTableRing, TheDrawAndTheGrassBindOneSlotAndAChangedKeyRewritesIt)
-{
-    DeviceDesc desc{};
-    desc.preferredAPI = GraphicsAPI::Vulkan;
-    std::unique_ptr<IDevice> device = DeviceFactory::CreateDevice(desc);
-    if (!device || !device->Initialize(desc))
-        GTEST_SKIP() << "no Vulkan device";
-
-    TerrainPageTableRing ring;
-    const std::vector<uint32> height(40u, 7u);
-    const std::vector<uint32> surface(24u, 9u);
-    const TerrainPageTableRing::Key key{3u, 1u, 5u, 2u};
-    BufferHandle retired;
-    const TerrainPageTableRing::Slot draw = ring.Bind(*device, key, height, surface, 1u, retired);
-    ASSERT_TRUE(draw.Buffer.IsValid());
-    EXPECT_FALSE(retired.IsValid());
-    const TerrainPageTableRing::Slot grass = ring.Bind(*device, key, height, surface, 1u, retired);
-    EXPECT_EQ(grass.Buffer, draw.Buffer) << "the grass binds the buffer the draw binds";
-    EXPECT_EQ(grass.Offset, draw.Offset) << "the grass binds the draw's slot";
-    EXPECT_EQ(grass.SurfaceBase, 40u) << "the surface table follows the height table";
-    std::vector<uint32> words = ReadRingWords(*device, grass, 64u);
-    ASSERT_EQ(words.size(), 64u);
-    EXPECT_EQ(words[0], 7u);
-    EXPECT_EQ(words[40], 9u);
-    const TerrainPageTableRing::Slot other = ring.Bind(*device, key, height, surface, 2u, retired);
-    EXPECT_NE(other.Offset, draw.Offset) << "each frame slot has its own words";
-
-    // A destroy-and-recreate that reuses the terrain index and the table versions: the generation differs.
-    const std::vector<uint32> recreated(40u, 11u);
-    TerrainPageTableRing::Key next = key;
-    next.Generation = 2u;
-    ring.Bind(*device, next, recreated, surface, 1u, retired);
-    EXPECT_EQ(ReadRingWords(*device, draw, 1u).at(0), 11u) << "a new generation rewrites the slot";
-    const std::vector<uint32> republished(40u, 13u);
-    next.HeightVersion = 6u;
-    ring.Bind(*device, next, republished, surface, 1u, retired);
-    EXPECT_EQ(ReadRingWords(*device, draw, 1u).at(0), 13u) << "a height table change rewrites the slot";
-    const std::vector<uint32> resurfaced(24u, 15u);
-    next.SurfaceVersion = 3u;
-    ring.Bind(*device, next, republished, resurfaced, 1u, retired);
-    EXPECT_EQ(ReadRingWords(*device, draw, 41u).at(40), 15u) << "a surface table change rewrites the slot";
-
-    // A table past the slot grows the ring; the previous buffer is retired for the caller to destroy.
-    const std::vector<uint32> large(draw.Bytes / sizeof(uint32) + 1u, 17u);
-    const TerrainPageTableRing::Slot grown = ring.Bind(*device, next, large, {}, 1u, retired);
-    ASSERT_TRUE(grown.Buffer.IsValid());
-    EXPECT_EQ(retired, draw.Buffer);
-    EXPECT_NE(grown.Buffer, draw.Buffer);
-    EXPECT_EQ(ReadRingWords(*device, grown, 1u).at(0), 17u);
-    device->DestroyBuffer(retired);
-    ring.Release(device.get());
-}

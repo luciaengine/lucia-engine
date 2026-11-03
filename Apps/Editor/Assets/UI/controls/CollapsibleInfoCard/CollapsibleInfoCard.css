@@ -7,7 +7,9 @@
  */
 
 /* Foldable card: chevron and copy on one row, so a collapsed card is the card
-   clamped to one line. A card that fits one row shows no chevron glyph. */
+   clamped to one line rather than a header row above it. Cards that fit on one
+   row keep no chevron (CollapsibleInfoCard decides that from the laid-out
+   text). */
 .editor-info-card-foldable {
 	display: flex;
 	flex-direction: row;
@@ -29,20 +31,14 @@
 	background-size: 12px 12px;
 	background-repeat: no-repeat;
 	background-position: center;
-	background-image: url("editor:Icons/arrow-down.svg");
+	background-image: url("editor:Icons/arrow-down.png");
 	background-image-tint: rgba(200, 200, 200, 1.0);
 	opacity: 0.7;
 }
 
 .editor-info-card-chevron.collapsed {
-	background-image: url("editor:Icons/arrow-right.svg");
+	background-image: url("editor:Icons/arrow-right.png");
 	opacity: 0.55;
-}
-
-/* A card that fits one row keeps the chevron's box with no glyph, so the copy
-   of every card starts at one x. After `.collapsed`, so it wins the tie. */
-.editor-info-card-chevron.blank {
-	background-image: none;
 }
 
 .editor-info-card-line {
@@ -60,24 +56,46 @@
 	white-space: normal;
 }
 
+/* Collapsed: one line, clipped rather than wrapped, so a card can never grow a
+   second row while folded. It keeps flex:1 so the action label that follows is
+   held against the line's right edge. */
 .editor-info-card-toggle {
 	flex: 0 0 auto;
 	/* Same box height as the clamped copy beside it: a taller box centres its
 	   text a half pixel lower and the two rows stop sharing a baseline. */
 	height: 17px;
 	/* Padding, not margin: a horizontal margin on a flex child inside a scroll
-	   body recurses the layout. 24px keeps the action clear of the cut copy. */
-	padding-left: 24px;
-	font-weight: 500;
+	   body has recursed layout here before. */
+	padding-left: 8px;
+	font-weight: 600;
 }
 
-/* Collapsed: one line, cut with an ellipsis rather than wrapped, so a card can
-   never grow a second row while folded. It keeps flex:1 so the action label that
-   follows is held against the line's right edge. */
 .editor-info-card-copy.clamped {
 	flex: 1;
 	height: 17px;
 	white-space: nowrap;
 	overflow: hidden;
-	text-overflow: ellipsis;
+}
+
+/* The card's action: content width, after the copy, on the copy's first line. */
+.editor-info-card-action {
+	flex: 0 0 auto;
+}
+
+/* "Show Info Cards" off: a card with an action stays, as its action alone, so the state the action
+   names stays visible. The three classes outrank the theme's `.info-card-off.info-card-off`. */
+.info-card-off.info-card-off.editor-info-card-has-action {
+	display: flex;
+	background-color: transparent;
+	outline-width: 0;
+	padding: 0;
+	justify-content: flex-end;
+}
+
+.info-card-off .editor-info-card-chevron {
+	display: none;
+}
+
+.info-card-off .editor-info-card-line {
+	display: none;
 }

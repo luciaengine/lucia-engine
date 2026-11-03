@@ -95,25 +95,6 @@ TEST(AiAssistantSettingsTests, EveryRowPersistsAndPreferencesNeverHoldTheKey)
     EXPECT_EQ(contents.find("sk-ant-"), std::string::npos);
 }
 
-// A Claude session turn always names its model and effort: opus at high until the user
-// chooses, and the first model or the initial effort when the stored one is no longer
-// offered.
-TEST(AiAssistantSettingsTests, AClaudeSessionAlwaysAsksForAnOfferedModelAndEffort)
-{
-    ScopedPreferencesRoot preferences;
-    EXPECT_EQ(AiAssistantSettings::Model("claude-session"), "opus");
-    EXPECT_EQ(AiAssistantSettings::Effort("claude-session"), "high");
-
-    Editor::SettingsStore prefs = Editor::OpenEditorPreferences();
-    prefs.Load();
-    prefs.SetString("aiAssistant.claudeSessionModel", "default");
-    prefs.SetString("aiAssistant.claudeSessionEffort", "default");
-    prefs.Save();
-    EXPECT_EQ(AiAssistantSettings::Model("claude-session"), "opus");
-    EXPECT_EQ(AiAssistantSettings::Effort("claude-session"), "high");
-    EXPECT_EQ(AiAssistantSettings::Effort("claude-api"), "") << "a connection without effort levels asks for none";
-}
-
 // The last session is kept per connection and per project, in the project's per-user
 // settings; an empty id removes it.
 TEST(AiAssistantSettingsTests, TheLastSessionIsStoredPerConnectionAndProject)

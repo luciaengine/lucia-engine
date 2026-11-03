@@ -7,7 +7,6 @@
 #include "Assets/Packages/PackageResolver.h"
 #include "Assets/RuntimeHumanoidProfile.h"
 #include "Core/Application.h"
-#include "Core/ApplicationPaths.h"
 #include "Core/Engine.h"
 #include "Engine/Build/BuildPipeline.h"
 #include "NativeScripting/BuildCacheRecord.h"
@@ -130,12 +129,9 @@ class MacPackageCodeExportTest : public testing::Test
                   "<key>CFBundlePackageType</key><string>APPL</string></dict></plist>\n");
         fs::create_directories(templateApp / "MacOS");
         fs::copy_file("/usr/bin/true", templateApp / "MacOS/Player");
-        WriteFile(Sdk / "nativescripting/manifest.txt",
-                  "includedir=include\nimportlib=lib/libEngine.dylib\nenginebinary=lib/libEngine.dylib\n");
+        WriteFile(Sdk / "nativescripting/manifest.txt", "includedir=include\nimportlib=lib/libEngine.dylib\n");
         WriteFile(Sdk / "include/Engine.h", "#pragma once\n");
-        // A real image: the engine-ABI digest reads its LC_UUID.
-        fs::create_directories(Sdk / "lib");
-        fs::copy_file(GE_MAC_BUNDLE_FIXTURE_DYLIB, Sdk / "lib/libEngine.dylib", fs::copy_options::overwrite_existing);
+        WriteFile(Sdk / "lib/libEngine.dylib", "engine");
 
         // Opaque mandatory dependencies of every export.
         WriteFile(Assets / "Fonts/Roboto-Regular.ttf", "TTFDATA");
@@ -223,7 +219,7 @@ TEST_F(MacPackageCodeExportTest, PackageRuntimeModuleShipsInFrameworksWhereThePl
     for (const std::string& warning : progress.warnings)
         EXPECT_EQ(warning.find("Package code modules"), std::string::npos) << warning;
 
-    const fs::path contentRoot = ApplicationPaths::InstallContentRootFor(Bundle / "Contents/MacOS");
+    const fs::path contentRoot = PathUtils::InstallContentRootFor(Bundle / "Contents/MacOS");
     const fs::path packageModule = Bundle / "Contents/Frameworks/Packages" / kPackageName / "libProbePack.dylib";
     ASSERT_TRUE(fs::exists(packageModule)) << "the package's runtime module is not in Contents/Frameworks";
     EXPECT_EQ(ModuleMapBegins(contentRoot / "Packages" / kPackageName, std::string(kRuntimeModule)), 1)

@@ -1,10 +1,6 @@
 #pragma once
 
-#include "Types/StringUtils.h"
-
 #include <filesystem>
-#include <string>
-#include <string_view>
 
 namespace GameEngine
 {
@@ -17,44 +13,16 @@ namespace GameEngine
 // path elements, not characters, so a name that merely starts with two dots is
 // inside, and the test reads the same on every platform whatever
 // path::native() is spelled in.
-inline std::filesystem::path RelativePathUnderRoot(const std::filesystem::path& path, const std::filesystem::path& root)
+inline std::filesystem::path RelativePathUnderRoot(const std::filesystem::path& path,
+                                                   const std::filesystem::path& root)
 {
     if (root.empty())
         return {};
-    const std::filesystem::path relative =
+    const std::filesystem::path rel =
         path.lexically_normal().lexically_relative(root.lexically_normal());
-    if (relative.empty() || relative == "." || *relative.begin() == "..")
+    if (rel.empty() || rel == "." || *rel.begin() == "..")
         return {};
-    return relative;
-}
-
-/// The path that `utf8`, a UTF-8 string such as a zip entry name or a name from a JSON
-/// file, spells. A path built from a std::string reads it in the active code page on
-/// Windows, so a non-ASCII name becomes other characters; this reads it as UTF-8 on every
-/// platform.
-inline std::filesystem::path PathFromUtf8(std::string_view utf8)
-{
-    return std::filesystem::path(
-        std::u8string_view(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size()));
-}
-
-/// `path` as UTF-8 in its generic form ('/' separators), for a message, a log line or a
-/// process argument. path::string() and path::generic_string() convert through the active code
-/// page on Windows: they change a non-ASCII name to other characters, and they throw when the
-/// code page has no character for one. This conversion never throws and is the same on every
-/// platform.
-inline std::string PathToUtf8(const std::filesystem::path& path)
-{
-    const std::u8string utf8 = path.generic_u8string();
-    return std::string(utf8.begin(), utf8.end());
-}
-
-/// The extension of `path` with its dot, in ASCII lower case (".png" for "Photo.PNG"), for a
-/// compare with a lower-case literal. Only the last extension counts (".gz" for "a.tar.gz"); a
-/// name with no extension, such as "Makefile" or ".gitignore", gives an empty string.
-inline std::string LowerCaseExtension(const std::filesystem::path& path)
-{
-    return ToLowerAscii(PathToUtf8(path.extension()));
+    return rel;
 }
 
 } // namespace GameEngine

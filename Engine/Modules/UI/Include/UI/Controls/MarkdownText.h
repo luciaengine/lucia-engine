@@ -4,6 +4,7 @@
 
 #include <string_view>
 #include <vector>
+#include <memory>
 
 namespace GameEngine
 {
@@ -34,7 +35,17 @@ public:
     /// that grows at its end (a streamed reply) rebuilds only its last block.
     void SetMarkdown(std::string_view markdown);
 
+    void OnEvent(UIEvent& event) override;
+
 private:
+    friend class MarkdownTextRun;
+    bool HasTextSelection() const;
+    void InvalidateSelectionGeometry();
+    void EmitSelectionFor(UIElement& element, size_t spanIndex, UI::PrimitiveEmitContext& context,
+                          const ResolvedStyle& style, float x, float y);
+    struct SelectionState;
+    std::unique_ptr<SelectionState> m_Selection;
+    void RefreshSelection();
     /// What the children show, one block per child.
     std::vector<UIParsing::MarkdownBlock> m_Blocks;
     /// The child drawing each of m_Blocks. Kept here because RemoveChild may defer, so the

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ECS/ModuleRegistration.h"
+#include "Editor/Registries/PanelUpdateContext.h"
 
 #include <functional>
 #include <memory>
@@ -51,6 +52,21 @@ struct EditorPanelTypeDescriptor
 {
     std::string TypeKey; // e.g. "HierarchyPanel"
     std::function<std::unique_ptr<UIElement>()> Factory;
+    // Per-frame work for every panel of this type; empty = none. It runs only
+    // while the panel has a layout extent, unless UpdateWhenHidden: background
+    // work (metric sampling, a poll that reveals the panel) that must continue
+    // while the tab is hidden.
+    std::function<void(UIElement& panel, const PanelUpdateContext& context)> Update;
+    bool UpdateWhenHidden = false;
+    // Where a panel of this type opens when it is not in the current layout:
+    // as a tab in the dock leaf holding DefaultAnchorPanelId. Empty = the bottom
+    // workspace stack (the leaf holding the Assets panel).
+    std::string DefaultAnchorPanelId;
+    // Above zero: open in a new split below the anchor's leaf instead of as a
+    // tab in it; the anchor keeps this fraction of the height.
+    float DefaultSplitBelowAnchorRatio = 0.0f;
+    // Runs at the next UI safe point after the panel is shown or activated.
+    std::function<void(UIElement& panel)> OnShown;
 };
 
 // A stylesheet a package contributes to the editor chrome, attached at the UI
@@ -97,14 +113,12 @@ public:
     // Builds a panel of a registered type; null when no type is registered
     // under typeKey.
     std::unique_ptr<UIElement> CreatePanelOfType(std::string_view typeKey) const;
+    bool TryGetPanelType(std::string_view typeKey, EditorPanelTypeDescriptor& outDescriptor) const;
 
     // The editor attaches consumers once its docking model + UI exist.
-    // Entries registered before that (test hosts) are replayed on attach.
-    // Later ones (the editor order: packages load at project open, long after
-    // startup) wait for DeliverPendingRegistrations: a package registers from
-    // its module's static initializers, under the OS loader lock, where the
-    // consumer must not build a panel or destroy the one it replaces (a
-    // destructor that joins a thread would deadlock on that lock).
+    // Entries registered before that (test hosts) are replayed on attach;
+    // later ones fire immediately (the editor order: packages load at
+    // project open, long after startup).
     struct Consumers
     {
         std::function<void(const EditorPanelDescriptor&)> Panel;
@@ -112,11 +126,6 @@ public:
         std::function<void(const EditorOverlayDescriptor&)> Overlay;
     };
     void SetConsumers(Consumers consumers);
-    // Hands the registrations made since the last call to the consumers, in
-    // registration order per kind (stylesheets, then panels, then overlays);
-    // a same-id re-registration is delivered once, with its latest descriptor.
-    // The editor calls it once per update, on the main thread.
-    void DeliverPendingRegistrations();
 
     // Editor-installed service that shows/activates a registered panel in the
     // dock. Modules call OpenPanel from their own affordances (context menus,
@@ -162,10 +171,6 @@ private:
     std::vector<OverlayEntry> m_Overlays;
     std::vector<PanelTypeEntry> m_PanelTypes;
     Consumers m_Consumers;
-    // Registrations made while consumers were attached, not yet delivered.
-    std::vector<std::string> m_PendingPanelIds;
-    std::vector<EditorStyleSheetContribution> m_PendingStyleSheets;
-    std::vector<std::string> m_PendingOverlayIds;
     PanelOpener m_PanelOpener;
 };
 

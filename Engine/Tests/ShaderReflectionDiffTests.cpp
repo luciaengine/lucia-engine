@@ -71,7 +71,7 @@
 #include "Rendering/Core/GPUDrawStreamBuilder.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/ViewParamsLayout.h"
-#include "Rendering/Materials/Shader/ShaderMeta.h"
+#include "Rendering/Materials/ShaderMeta.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include <cctype>

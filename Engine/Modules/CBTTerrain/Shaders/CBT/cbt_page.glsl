@@ -1,27 +1,20 @@
 // cbt_page.glsl: the paged height resolve. A terrain's height field is a pyramid of 128-sample
 // pages (130 with the apron) held in one physical cache texture; a page table maps each page of
-// every level to the cache slot holding it, dense, or tiered past the dense budget (CBT_PageTableEntry,
-// the walk of TerrainECS PageTable). The resolve samples level L = floor(lambda) and blends
+// every level to the cache slot holding it. The resolve samples level L = floor(lambda) and blends
 // toward its parent over the last quarter of the level's ring; a level whose page is not resident
 // resolves to its first resident ancestor alone (the fallback walk), and a page that has just
 // arrived fades in from its parent.
 //
-// A position is a CBTPagePoint: (face, level-0 texel, fraction) per axis. A planar terrain makes it
-// from its UV (face 0); a planet's vertex makes it from its exact cube numerator (cbt_deep_decode.glsl
-// CBT_PlanetPagePoint). Both share the walk below.
-//
 // LOCKSTEP with the CPU mirror PagedHeightSampler (Engine/Modules/TerrainECS/.../PagedHeightSampler.
-// {h,cpp}): the same walk, the same order of operations. The mirror locates a texel from the level's
-// lattice coordinate, this file from (texel, fraction); both forms are exact, so the two agree bit for
-// bit on the same texels. The block between the GE_SHARED_PAGE_RESOLVE markers is compiled as C++ by
+// {h,cpp}): the same walk, the same order of operations, so the two agree bit for bit on the same
+// texels. The block between the GE_SHARED_PAGE_RESOLVE markers is compiled as C++ by
 // TerrainAtlasTests (GlslShim.h) and swept against the mirror: write it component-wise (no
 // swizzles), float literals suffixed `f`, no out parameters.
 //
-// Pure math, no bindings. The consumer defines the five taps declared below, after including this
+// Pure math, no bindings. The consumer defines the four taps declared below, after including this
 // file (GLSL resolves a prototype at link):
-//   uint CBT_PageTableWord(uint index);        // word `index` of the table's words (PageTable::Words)
+//   uint CBT_PageTableEntry(uint index);       // the table's entry `index` (level-major, row-major)
 //   float CBT_PageSlotFade(uint slot);         // the arrival fade of a slot: 0 just assigned, 1 settled
-//   void CBT_PageUnresolved();                 // a level's walk found no resident page up to the top
 //   CBTPageLevel CBT_PageLevelShape(uint level);
 //   float CBT_PageCacheBilinear(float texelX, float texelZ);
 // The last one reads the cache bilinearly at absolute texel coordinates (an integer is a texel's
@@ -40,29 +33,13 @@ struct CBTPageLevel
     uint Pad;
 };
 
-// The field a resolve reads (mirror PageTable's level-0 shape and tiers, and PageCacheGeometry).
-// std430, 32 B.
+// The field a resolve reads (mirror PageTable's level-0 shape and PageCacheGeometry).
 struct CBTPageField
 {
     uint Level0SamplesX;
     uint Level0SamplesZ;
     uint LevelCount;  // 0: no field, the resolve answers 0
     uint SlotsPerRow; // the cache texture's slots per row (square-packed)
-    uint FloorLevel;  // the finest dense level: 0 for a dense table
-    uint TierCount;   // the tiers of blocks below the floor
-    uint DirectoryOffset; // the floor's directory: one block index per floor page
-    uint Pad;
-};
-
-// A position on a field: its face (0 on a planar field), and along each axis the level-0 texel and
-// the fraction past it in [0, 1).
-struct CBTPagePoint
-{
-    uint Face;
-    uint TexelX;
-    uint TexelZ;
-    float FractionX;
-    float FractionZ;
 };
 
 // A level's sample and the resident level that answered it.
@@ -71,46 +48,11 @@ struct CBTPageLevelSample
     float Height;
     uint Level; // LevelCount when no page down the walk is resident
 };
-// The resident pages that answer a point at a continuous level, each with its weight (a locate): at
-// most two a level walk (a fading page and the ancestor that takes the rest), and a second walk in a
-// level's blend quarter. Count 0: no page down the walk is resident.
-struct CBTPageLocation
-{
-    uint Count;
-    uint Level0;
-    uint Slot0;
-    float Weight0;
-    uint Level1;
-    uint Slot1;
-    float Weight1;
-    uint Level2;
-    uint Slot2;
-    float Weight2;
-    uint Level3;
-    uint Slot3;
-    float Weight3;
-};
-
-// A point's position past the first owned sample of its page of one level, along each axis, in that
-// level's samples. Every plane of the page reads it.
-struct CBTPageOwned
-{
-    float X;
-    float Z;
-};
 // GE_SHARED_PAGE_TYPES_END
 
-// The words of a page-table ring slot (mirror CBTLayout.h kCBTPageHeaderWords, kCBTPageMaxLevels,
-// kCBTPageFadeOffsetWords): the field's header, one CBTPageLevel per level, one arrival fade per cache
-// slot, then the table's words. Every consumer's taps read a slot through these offsets.
-#define CBT_PAGE_HEADER_WORDS 8u
-#define CBT_PAGE_MAX_LEVELS 32u
-#define CBT_PAGE_FADE_OFFSET (CBT_PAGE_HEADER_WORDS + 4u * CBT_PAGE_MAX_LEVELS)
-
 // The consumer's taps (see the header).
-uint CBT_PageTableWord(uint index);
+uint CBT_PageTableEntry(uint index);
 float CBT_PageSlotFade(uint slot);
-void CBT_PageUnresolved();
 CBTPageLevel CBT_PageLevelShape(uint level);
 float CBT_PageCacheBilinear(float texelX, float texelZ);
 
@@ -126,15 +68,8 @@ vec2 CBT_PageCacheUV(float texelX, float texelZ, vec2 cacheDim)
 const uint CBT_PAGE_NO_PAGE = 0xFFFFFFFFu;
 const uint CBT_PAGE_SLOT_MASK = 0x00FFFFFFu;
 const uint CBT_PAGE_OWNED = 128u;
-const uint CBT_PAGE_OWNED_SHIFT = 7u; // log2(CBT_PAGE_OWNED)
 const uint CBT_PAGE_APRON = 1u;
 const uint CBT_PAGE_STRIDE = 130u;
-// Mirror PageStrideTexels of a block format: its owned samples and one 4-texel block on each side.
-const uint CBT_PAGE_BLOCK_STRIDE = 136u;
-const uint CBT_PAGE_BLOCK_APRON = 4u;
-// Mirror kNoPageBlock, kPageTableTierWords in TerrainECS PageTable.cpp.
-const uint CBT_PAGE_NO_BLOCK = 0xFFFFFFFFu;
-const uint CBT_PAGE_TIER_WORDS = 4u;
 
 // Mirror PageParentBlend: 0 over the first three quarters of a level's ring, a linear ramp to 1
 // over the last quarter.
@@ -144,110 +79,49 @@ float CBT_PageParentBlend(float level)
     return clamp((inRing - 0.75f) / (1.0f - 0.75f), 0.0f, 1.0f);
 }
 
-// The point of terrain UV (u, v) on a planar field: level-0 sample i sits at i / (samples - 1), so
-// the level-0 lattice coordinate is clamp(t) x (samples - 1), split into its texel and fraction.
-// The field has at least one level.
-CBTPagePoint CBT_PagePointAtUV(float u, float v, CBTPageField field)
+// Level `level`'s lattice coordinate of terrain coordinate t in [0, 1] along an axis of
+// `level0Samples`: level-0 sample i at i / (samples - 1), level-L sample j at level-0 j * 2^L.
+float CBT_PageLattice(float t, uint level0Samples, uint level)
 {
-    float cx = clamp(u, 0.0f, 1.0f) * float(field.Level0SamplesX - 1u);
-    float cz = clamp(v, 0.0f, 1.0f) * float(field.Level0SamplesZ - 1u);
-    CBTPagePoint point;
-    point.Face = 0u;
-    point.TexelX = uint(cx);
-    point.TexelZ = uint(cz);
-    point.FractionX = cx - float(point.TexelX);
-    point.FractionZ = cz - float(point.TexelZ);
-    return point;
+    return clamp(t, 0.0f, 1.0f) * float(level0Samples - 1u) / float(1u << level);
 }
 
-// The page of `level` along an axis of `pages` pages that holds level-0 texel `texel`: level-L
-// sample j sits on level-0 sample j x 2^L, and a page owns CBT_PAGE_OWNED samples of its level.
-uint CBT_PageIndex(uint texel, uint level, uint pages)
+// The page along an axis holding lattice coordinate c.
+uint CBT_PageIndex(float c, uint pages)
 {
-    return min(texel >> (level + CBT_PAGE_OWNED_SHIFT), pages - 1u);
+    return min(uint(c) / CBT_PAGE_OWNED, pages - 1u);
 }
 
-// The position along an axis inside the stride of page `page` of `level` of level-0 texel `texel`
-// plus `fraction`: the level's lattice coordinate past the page's first owned sample, plus the apron.
-float CBT_PageStride(uint texel, float fraction, uint level, uint page)
-{
-    uint past = texel - (page << (level + CBT_PAGE_OWNED_SHIFT));
-    return (float(past) + fraction) / float(1u << level) + float(CBT_PAGE_APRON);
-}
-
-// The first word of level k below a block's root (k from 1): 4 + 16 + ... + 4^(k-1).
-uint CBT_PageBlockLevelOffset(uint k)
-{
-    return ((1u << (2u * k)) - 4u) / 3u;
-}
-
-// The entry of page (pageX, pageZ) of `level` on `face` (mirror PageTable::Entry; planar is face 0): one read
-// on a dense level. Below the floor, the floor directory names a block; each tier's block holds the entry or
-// names the next tier's block. CBT_PAGE_NO_BLOCK: no page under it is resident.
-uint CBT_PageTableEntry(uint level, uint face, uint pageX, uint pageZ, CBTPageField field)
+// The table entry of the page of `level` holding terrain UV (u, v).
+uint CBT_PageEntryAt(float u, float v, uint level, CBTPageField field)
 {
     CBTPageLevel shape = CBT_PageLevelShape(level);
-    if (level >= field.FloorLevel)
-        return CBT_PageTableWord(shape.FirstEntry + (face * shape.PagesZ + pageZ) * shape.PagesX + pageX);
-    uint shift = field.FloorLevel - level;
-    uint rootX = pageX >> shift;
-    uint rootZ = pageZ >> shift;
-    CBTPageLevel floorShape = CBT_PageLevelShape(field.FloorLevel);
-    uint floorIndex = (face * floorShape.PagesZ + rootZ) * floorShape.PagesX + rootX;
-    uint block = CBT_PageTableWord(field.DirectoryOffset + floorIndex);
-    for (uint tier = 0u; tier < field.TierCount; ++tier)
-    {
-        if (block == CBT_PAGE_NO_BLOCK)
-            return CBT_PAGE_NO_PAGE;
-        uint rootLevel = CBT_PageTableWord(tier * CBT_PAGE_TIER_WORDS);
-        uint levels = CBT_PageTableWord(tier * CBT_PAGE_TIER_WORDS + 1u);
-        uint base = CBT_PageTableWord(tier * CBT_PAGE_TIER_WORDS + 3u) +
-                    block * CBT_PageTableWord(tier * CBT_PAGE_TIER_WORDS + 2u);
-        uint deepest = rootLevel - levels;
-        if (level >= deepest)
-        {
-            uint k = rootLevel - level;
-            return CBT_PageTableWord(base + CBT_PageBlockLevelOffset(k) + (pageZ - (rootZ << k)) * (1u << k) +
-                                     (pageX - (rootX << k)));
-        }
-        uint childX = pageX >> (deepest - level);
-        uint childZ = pageZ >> (deepest - level);
-        block = CBT_PageTableWord(base + CBT_PageBlockLevelOffset(levels + 1u) +
-                                  (childZ - (rootZ << levels)) * (1u << levels) + (childX - (rootX << levels)));
-        rootX = childX;
-        rootZ = childZ;
-    }
-    return CBT_PAGE_NO_PAGE;
+    uint pageX = CBT_PageIndex(CBT_PageLattice(u, field.Level0SamplesX, level), shape.PagesX);
+    uint pageZ = CBT_PageIndex(CBT_PageLattice(v, field.Level0SamplesZ, level), shape.PagesZ);
+    return CBT_PageTableEntry(shape.FirstEntry + pageZ * shape.PagesX + pageX);
 }
 
-// The table entry of the page of `level` holding `point`.
-uint CBT_PageEntryAt(CBTPagePoint point, uint level, CBTPageField field)
-{
-    CBTPageLevel shape = CBT_PageLevelShape(level);
-    uint pageX = CBT_PageIndex(point.TexelX, level, shape.PagesX);
-    uint pageZ = CBT_PageIndex(point.TexelZ, level, shape.PagesZ);
-    return CBT_PageTableEntry(level, point.Face, pageX, pageZ, field);
-}
-
-// Level `level` at `point` from the page in `slot`: bilinear at the point's position inside the
+// Level `level` at (u, v) from the page in `slot`: bilinear at the lattice coordinate inside the
 // page's stride (its owned samples offset by the apron).
-float CBT_PageSampleSlot(CBTPagePoint point, uint level, uint slot, CBTPageField field)
+float CBT_PageSampleSlot(float u, float v, uint level, uint slot, CBTPageField field)
 {
     CBTPageLevel shape = CBT_PageLevelShape(level);
-    uint pageX = CBT_PageIndex(point.TexelX, level, shape.PagesX);
-    uint pageZ = CBT_PageIndex(point.TexelZ, level, shape.PagesZ);
-    float strideX = CBT_PageStride(point.TexelX, point.FractionX, level, pageX);
-    float strideZ = CBT_PageStride(point.TexelZ, point.FractionZ, level, pageZ);
+    float cx = CBT_PageLattice(u, field.Level0SamplesX, level);
+    float cz = CBT_PageLattice(v, field.Level0SamplesZ, level);
+    uint pageX = CBT_PageIndex(cx, shape.PagesX);
+    uint pageZ = CBT_PageIndex(cz, shape.PagesZ);
+    float strideX = cx - float(pageX * CBT_PAGE_OWNED) + float(CBT_PAGE_APRON);
+    float strideZ = cz - float(pageZ * CBT_PAGE_OWNED) + float(CBT_PAGE_APRON);
     float originX = float((slot % field.SlotsPerRow) * CBT_PAGE_STRIDE);
     float originZ = float((slot / field.SlotsPerRow) * CBT_PAGE_STRIDE);
     return CBT_PageCacheBilinear(originX + strideX, originZ + strideZ);
 }
 
-// Level `level` alone at `point`: its page when resident, faded in from its parent; else its first
+// Level `level` alone at (u, v): its page when resident, faded in from its parent; else its first
 // resident ancestor's. A fading page's parent may be fading too, so the walk carries the weight
 // still owed to the levels above: each resident page takes `fade` of what is left, a settled page
 // (or the top level) takes all of it.
-CBTPageLevelSample CBT_PageSampleLevel(CBTPagePoint point, uint level, CBTPageField field)
+CBTPageLevelSample CBT_PageSampleLevel(float u, float v, uint level, CBTPageField field)
 {
     CBTPageLevelSample result;
     result.Height = 0.0f;
@@ -255,11 +129,11 @@ CBTPageLevelSample CBT_PageSampleLevel(CBTPagePoint point, uint level, CBTPageFi
     float remaining = 1.0f;
     for (uint walk = level; walk < field.LevelCount; ++walk)
     {
-        uint entry = CBT_PageEntryAt(point, walk, field);
+        uint entry = CBT_PageEntryAt(u, v, walk, field);
         if (entry == CBT_PAGE_NO_PAGE)
             continue; // the fallback walk: the first resident ancestor answers
         uint slot = entry & CBT_PAGE_SLOT_MASK;
-        float own = CBT_PageSampleSlot(point, walk, slot, field);
+        float own = CBT_PageSampleSlot(u, v, walk, slot, field);
         float fade = CBT_PageSlotFade(slot);
         if (result.Level == field.LevelCount)
             result.Level = walk;
@@ -271,274 +145,24 @@ CBTPageLevelSample CBT_PageSampleLevel(CBTPagePoint point, uint level, CBTPageFi
         result.Height = result.Height + remaining * fade * own;
         remaining = remaining * (1.0f - fade);
     }
-    if (result.Level == field.LevelCount)
-        CBT_PageUnresolved();
     return result;
 }
 
-// The height at `point` at continuous level `lambda`: level L's sample blended toward level L + 1's
-// by CBT_PageParentBlend, or the fallback ancestor alone when L is not resident.
-float CBT_PageSamplePoint(CBTPagePoint point, float lambda, CBTPageField field)
-{
-    if (field.LevelCount == 0u)
-        return 0.0f;
-    uint top = field.LevelCount - 1u;
-    float clamped = clamp(lambda, 0.0f, float(top));
-    uint base = min(uint(clamped), top);
-    CBTPageLevelSample own = CBT_PageSampleLevel(point, base, field);
-    float w = base < top ? CBT_PageParentBlend(clamped) : 0.0f;
-    if (w <= 0.0f || own.Level > base)
-        return own.Height; // the fallback ancestor answers alone: its own parent is coarser still
-    CBTPageLevelSample parent = CBT_PageSampleLevel(point, base + 1u, field);
-    return own.Height + (parent.Height - own.Height) * w;
-}
-
-// A central difference's five points on one face: the center and its four taps.
-struct CBTPageCross
-{
-    CBTPagePoint Center;
-    CBTPagePoint PlusX;
-    CBTPagePoint MinusX;
-    CBTPagePoint PlusZ;
-    CBTPagePoint MinusZ;
-};
-
-// The heights of a CBTPageCross's five points, and the resident level that answered the center.
-struct CBTPageCrossSample
-{
-    float Center;
-    float PlusX;
-    float MinusX;
-    float PlusZ;
-    float MinusZ;
-    uint Level;
-};
-
-// Whether `tap` lies in the page of `level` that holds `center`. It then lies in the same page of every
-// coarser level too, so the center's walk of the table is the tap's walk.
-bool CBT_PageSharesWalk(CBTPagePoint center, CBTPagePoint tap, uint level)
-{
-    uint shift = level + CBT_PAGE_OWNED_SHIFT;
-    return tap.Face == center.Face && (tap.TexelX >> shift) == (center.TexelX >> shift) &&
-           (tap.TexelZ >> shift) == (center.TexelZ >> shift);
-}
-
-// CBT_PageSampleLevel at the five points of `points` in one walk, with the same operations per point. A tap
-// not marked shared is not sampled and answers 0.
-CBTPageCrossSample CBT_PageSampleLevelCross(CBTPageCross points, bool sharesPlusX, bool sharesMinusX,
-                                            bool sharesPlusZ, bool sharesMinusZ, uint level, CBTPageField field)
-{
-    CBTPageCrossSample result;
-    result.Center = 0.0f;
-    result.PlusX = 0.0f;
-    result.MinusX = 0.0f;
-    result.PlusZ = 0.0f;
-    result.MinusZ = 0.0f;
-    result.Level = field.LevelCount;
-    float remaining = 1.0f;
-    for (uint walk = level; walk < field.LevelCount; ++walk)
-    {
-        uint entry = CBT_PageEntryAt(points.Center, walk, field);
-        if (entry == CBT_PAGE_NO_PAGE)
-            continue;
-        uint slot = entry & CBT_PAGE_SLOT_MASK;
-        float fade = CBT_PageSlotFade(slot);
-        bool settles = fade >= 1.0f || walk + 1u >= field.LevelCount;
-        float weight = settles ? remaining : remaining * fade;
-        result.Center = result.Center + weight * CBT_PageSampleSlot(points.Center, walk, slot, field);
-        if (sharesPlusX)
-            result.PlusX = result.PlusX + weight * CBT_PageSampleSlot(points.PlusX, walk, slot, field);
-        if (sharesMinusX)
-            result.MinusX = result.MinusX + weight * CBT_PageSampleSlot(points.MinusX, walk, slot, field);
-        if (sharesPlusZ)
-            result.PlusZ = result.PlusZ + weight * CBT_PageSampleSlot(points.PlusZ, walk, slot, field);
-        if (sharesMinusZ)
-            result.MinusZ = result.MinusZ + weight * CBT_PageSampleSlot(points.MinusZ, walk, slot, field);
-        if (result.Level == field.LevelCount)
-            result.Level = walk;
-        if (settles)
-            return result;
-        remaining = remaining * (1.0f - fade);
-    }
-    if (result.Level == field.LevelCount)
-        CBT_PageUnresolved();
-    return result;
-}
-
-// Each point of `points` at continuous level `lambda`, equal to its own CBT_PageSamplePoint. One walk (two in
-// a level's blend quarter) serves every tap in the center's page of the sampled level; a tap past that page's
-// edge takes its own walk.
-CBTPageCrossSample CBT_PageSampleCross(CBTPageCross points, float lambda, CBTPageField field)
-{
-    CBTPageCrossSample result;
-    result.Center = 0.0f;
-    result.PlusX = 0.0f;
-    result.MinusX = 0.0f;
-    result.PlusZ = 0.0f;
-    result.MinusZ = 0.0f;
-    result.Level = field.LevelCount;
-    if (field.LevelCount == 0u)
-        return result;
-    uint top = field.LevelCount - 1u;
-    float clamped = clamp(lambda, 0.0f, float(top));
-    uint base = min(uint(clamped), top);
-    bool sharesPlusX = CBT_PageSharesWalk(points.Center, points.PlusX, base);
-    bool sharesMinusX = CBT_PageSharesWalk(points.Center, points.MinusX, base);
-    bool sharesPlusZ = CBT_PageSharesWalk(points.Center, points.PlusZ, base);
-    bool sharesMinusZ = CBT_PageSharesWalk(points.Center, points.MinusZ, base);
-    result = CBT_PageSampleLevelCross(points, sharesPlusX, sharesMinusX, sharesPlusZ, sharesMinusZ, base, field);
-    float w = base < top ? CBT_PageParentBlend(clamped) : 0.0f;
-    if (w > 0.0f && result.Level <= base)
-    {
-        CBTPageCrossSample parent =
-            CBT_PageSampleLevelCross(points, sharesPlusX, sharesMinusX, sharesPlusZ, sharesMinusZ, base + 1u, field);
-        result.Center = result.Center + (parent.Center - result.Center) * w;
-        result.PlusX = result.PlusX + (parent.PlusX - result.PlusX) * w;
-        result.MinusX = result.MinusX + (parent.MinusX - result.MinusX) * w;
-        result.PlusZ = result.PlusZ + (parent.PlusZ - result.PlusZ) * w;
-        result.MinusZ = result.MinusZ + (parent.MinusZ - result.MinusZ) * w;
-    }
-    if (!sharesPlusX)
-        result.PlusX = CBT_PageSamplePoint(points.PlusX, lambda, field);
-    if (!sharesMinusX)
-        result.MinusX = CBT_PageSamplePoint(points.MinusX, lambda, field);
-    if (!sharesPlusZ)
-        result.PlusZ = CBT_PageSamplePoint(points.PlusZ, lambda, field);
-    if (!sharesMinusZ)
-        result.MinusZ = CBT_PageSamplePoint(points.MinusZ, lambda, field);
-    return result;
-}
-
-// The height at terrain UV (u, v) of a planar field at continuous level `lambda`.
+// The height at terrain UV (u, v) at continuous level `lambda`: level L's sample blended toward
+// level L + 1's by CBT_PageParentBlend, or the fallback ancestor alone when L is not resident.
 float CBT_PageSample(float u, float v, float lambda, CBTPageField field)
 {
     if (field.LevelCount == 0u)
         return 0.0f;
-    return CBT_PageSamplePoint(CBT_PagePointAtUV(u, v, field), lambda, field);
-}
-// A locate that holds no page.
-CBTPageLocation CBT_PageLocationEmpty()
-{
-    CBTPageLocation location;
-    location.Count = 0u;
-    location.Level0 = 0u;
-    location.Slot0 = 0u;
-    location.Weight0 = 0.0f;
-    location.Level1 = 0u;
-    location.Slot1 = 0u;
-    location.Weight1 = 0.0f;
-    location.Level2 = 0u;
-    location.Slot2 = 0u;
-    location.Weight2 = 0.0f;
-    location.Level3 = 0u;
-    location.Slot3 = 0u;
-    location.Weight3 = 0.0f;
-    return location;
-}
-
-// `location` with the page in `slot` of `level` added at `weight`. A locate holds four pages at most.
-CBTPageLocation CBT_PageLocationAdd(CBTPageLocation location, uint level, uint slot, float weight)
-{
-    if (location.Count == 0u)
-    {
-        location.Level0 = level;
-        location.Slot0 = slot;
-        location.Weight0 = weight;
-    }
-    else if (location.Count == 1u)
-    {
-        location.Level1 = level;
-        location.Slot1 = slot;
-        location.Weight1 = weight;
-    }
-    else if (location.Count == 2u)
-    {
-        location.Level2 = level;
-        location.Slot2 = slot;
-        location.Weight2 = weight;
-    }
-    else
-    {
-        location.Level3 = level;
-        location.Slot3 = slot;
-        location.Weight3 = weight;
-    }
-    location.Count = min(location.Count + 1u, 4u);
-    return location;
-}
-
-// `location` with the pages that answer level `level` alone at `point`, at `scale` in total: the
-// level's page when resident, faded in from its first resident ancestor, which takes the rest (a
-// fading ancestor counts as settled); else that ancestor alone.
-CBTPageLocation CBT_PageLocateLevel(CBTPagePoint point, uint level, float scale, CBTPageLocation location,
-                                    CBTPageField field)
-{
-    float remaining = scale;
-    bool fading = false;
-    for (uint walk = level; walk < field.LevelCount; ++walk)
-    {
-        uint entry = CBT_PageEntryAt(point, walk, field);
-        if (entry == CBT_PAGE_NO_PAGE)
-            continue; // the fallback walk: the first resident ancestor answers
-        uint slot = entry & CBT_PAGE_SLOT_MASK;
-        float fade = CBT_PageSlotFade(slot);
-        if (fading || fade >= 1.0f || walk + 1u >= field.LevelCount)
-            return CBT_PageLocationAdd(location, walk, slot, remaining);
-        location = CBT_PageLocationAdd(location, walk, slot, remaining * fade);
-        remaining = remaining * (1.0f - fade);
-        fading = true;
-    }
-    if (!fading)
-        CBT_PageUnresolved();
-    return location;
-}
-
-// The pages that answer `point` at continuous level `lambda`: level L's, blended toward level L + 1's by
-// CBT_PageParentBlend, or the fallback ancestor's alone when L is not resident. One locate serves every
-// plane of the field: each plane fetches its pages at CBT_PageSlotTexelX / CBT_PageSlotTexelZ of the
-// page's CBT_PageOwnedAt.
-CBTPageLocation CBT_PageLocate(CBTPagePoint point, float lambda, CBTPageField field)
-{
-    CBTPageLocation location = CBT_PageLocationEmpty();
-    if (field.LevelCount == 0u)
-        return location;
     uint top = field.LevelCount - 1u;
     float clamped = clamp(lambda, 0.0f, float(top));
     uint base = min(uint(clamped), top);
-    location = CBT_PageLocateLevel(point, base, 1.0f, location, field);
+    CBTPageLevelSample own = CBT_PageSampleLevel(u, v, base, field);
     float w = base < top ? CBT_PageParentBlend(clamped) : 0.0f;
-    if (w <= 0.0f || location.Count == 0u || location.Level0 > base)
-        return location; // the fallback ancestor answers alone: its own parent is coarser still
-    location.Weight0 = location.Weight0 * (1.0f - w);
-    location.Weight1 = location.Weight1 * (1.0f - w);
-    return CBT_PageLocateLevel(point, base + 1u, w, location, field);
-}
-
-// The position of `point` past the first owned sample of its page of `level`: one read of the level's
-// shape serves every plane of the page.
-CBTPageOwned CBT_PageOwnedAt(CBTPagePoint point, uint level)
-{
-    CBTPageLevel shape = CBT_PageLevelShape(level);
-    uint pageX = CBT_PageIndex(point.TexelX, level, shape.PagesX);
-    uint pageZ = CBT_PageIndex(point.TexelZ, level, shape.PagesZ);
-    CBTPageOwned owned;
-    owned.X = CBT_PageStride(point.TexelX, point.FractionX, level, pageX) - float(CBT_PAGE_APRON);
-    owned.Z = CBT_PageStride(point.TexelZ, point.FractionZ, level, pageZ) - float(CBT_PAGE_APRON);
-    return owned;
-}
-
-// The absolute texel along X at `owned` in the page held in `slot`, in a plane texture whose slots are
-// `stride` texels a side with the page's first owned sample `apron` texels in: a lattice plane
-// CBT_PAGE_STRIDE and CBT_PAGE_APRON, a block plane CBT_PAGE_BLOCK_STRIDE and CBT_PAGE_BLOCK_APRON.
-float CBT_PageSlotTexelX(CBTPageOwned owned, uint slot, uint stride, uint apron, CBTPageField field)
-{
-    return float((slot % field.SlotsPerRow) * stride + apron) + owned.X;
-}
-
-// CBT_PageSlotTexelX along Z.
-float CBT_PageSlotTexelZ(CBTPageOwned owned, uint slot, uint stride, uint apron, CBTPageField field)
-{
-    return float((slot / field.SlotsPerRow) * stride + apron) + owned.Z;
+    if (w <= 0.0f || own.Level > base)
+        return own.Height; // the fallback ancestor answers alone: its own parent is coarser still
+    CBTPageLevelSample parent = CBT_PageSampleLevel(u, v, base + 1u, field);
+    return own.Height + (parent.Height - own.Height) * w;
 }
 // GE_SHARED_PAGE_RESOLVE_END
 

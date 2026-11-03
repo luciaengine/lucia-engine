@@ -7,7 +7,7 @@
 // drifting) in each host.
 
 #include "Engine/Rendering/AntiAliasing.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 
 namespace GameEngine::Engine::Renderer
 {

@@ -1,9 +1,10 @@
 #include "PathSmoother.h"
+#include "Pathfinding/GridMap.h"
 
 namespace GameEngine::Pathfinding
 {
 
-uint32 PathSmoother::Smooth(const GridMap::ReadView& grid, std::vector<PathPoint>& points, float32 agentRadius)
+uint32 PathSmoother::Smooth(const GridMap& grid, std::vector<PathPoint>& points)
 {
     if (points.size() <= 2)
         return static_cast<uint32>(points.size());
@@ -21,7 +22,13 @@ uint32 PathSmoother::Smooth(const GridMap::ReadView& grid, std::vector<PathPoint
 
         for (uint32 test = current + 1; test < static_cast<uint32>(points.size()); ++test)
         {
-            if (grid.IsSegmentClear(points[anchor].X, points[anchor].Z, points[test].X, points[test].Z, agentRadius))
+            float32 hitX = 0.0f, hitY = 0.0f, hitZ = 0.0f;
+            bool blocked = grid.Raycast(
+                points[anchor].X, points[anchor].Y, points[anchor].Z,
+                points[test].X, points[test].Y, points[test].Z,
+                hitX, hitY, hitZ);
+
+            if (!blocked)
                 farthestVisible = test;
             else
                 break;

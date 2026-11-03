@@ -4,11 +4,15 @@ project(Input LANGUAGES CXX)
 # Public headers and sources
 file(GLOB_RECURSE INPUT_PUBLIC_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/Include/Input/*.h)
 set(INPUT_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/InputScriptApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/InputSystem.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/GamepadPoller.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/GamepadPolling.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/GamepadEdgeTracker.cpp
 )
+
+if(GE_MOBILE)
+    list(REMOVE_ITEM INPUT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Source/GamepadPolling.cpp)
+    list(APPEND INPUT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Source/GamepadPolling_Mobile.cpp)
+endif()
 
 add_library(Input OBJECT ${INPUT_PUBLIC_HEADERS} ${INPUT_SOURCES})
 
@@ -39,29 +43,17 @@ if(BUILD_TESTING)
     find_package(GTest REQUIRED)
 
     add_executable(InputSystemTests
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/GamepadPollerTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/InputScriptApiTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/InputSystemTests.cpp
     )
 
     # Modules are OBJECT libs aggregated into Engine.dll; link Engine to
     # resolve module symbols via the import lib. See GenerationalVector/Tests
     # for the same fix pattern.
-    find_package(nlohmann_json CONFIG REQUIRED)
-    # glfw: GamepadPollerTests observes the poller's platform calls through the
-    # glfw3 DLL Engine loads.
-    find_package(glfw3 CONFIG REQUIRED)
     target_link_libraries(InputSystemTests PRIVATE
         Engine
-        glfw
         GTest::gtest
         GTest::gtest_main
-        nlohmann_json::nlohmann_json
     )
-    # Dev-only source anchoring: the module's committed script API description, whose record
-    # layouts InputScriptApiTests checks against the compiler's.
-    target_compile_definitions(InputSystemTests PRIVATE
-        GE_ENGINE_API_DESCRIPTION="${CMAKE_CURRENT_SOURCE_DIR}/../../Scripting/engine-api/Input.json")
 
     set_target_properties(InputSystemTests PROPERTIES
         CXX_STANDARD 20

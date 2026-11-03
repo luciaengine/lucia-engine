@@ -14,10 +14,8 @@
  * slider's track (Slider::OnGeneratePrimitives reads --slider-track-fill, the
  * filled part; --slider-track, the rest of the rail; --slider-tick, the step
  * ticks) and its thumb, the toggle's knob, the checkbox's box and the scrollbar's
- * thumb; the `hidden` class the controls set on parts they are not showing
- * (a slider's second thumb outside range mode, a dock tab bar's scroll buttons);
- * the hover tooltip's bubble, which has no fill or border without one; and
- * MarkdownText, whose words would otherwise stack one per line.
+ * thumb; and the `hidden` class the controls set on parts they are not showing
+ * (a slider's second thumb outside range mode, a dock tab bar's scroll buttons).
  * Colours are the variables below; a theme recolours a control by setting the
  * variable.
  */
@@ -32,16 +30,6 @@
     --ui_color_checkbox_box_border: #777777;
     --ui_color_checkbox_box_checked: #3B85E0;
     --ui_color_scrollbar_thumb: #808080;
-    --ui_color_tooltip: #1E1E1E;
-    --ui_color_tooltip_border: #5A5A5A;
-    --ui_color_tooltip_text: #EEEEEE;
-    --ui_color_markdown_link: #4C9AFF;
-    --ui_color_markdown_link_hover: #8CC0FF;
-    --ui_color_markdown_muted: #9A9A9A;
-    --ui_color_markdown_code_inline: rgba(128, 128, 128, 0.2);
-    --ui_color_markdown_code_block: rgba(0, 0, 0, 0.25);
-    --ui_color_markdown_line: rgba(128, 128, 128, 0.4);
-    --ui_color_markdown_table_header: rgba(128, 128, 128, 0.12);
 }
 
 .hidden {
@@ -90,25 +78,15 @@
     background-color: var(--ui_color_scrollbar_thumb);
 }
 
-/* The hover tooltip's bubble (TooltipOverlay). Its arrow takes the bubble's
- * background, border color and border width, so one .tooltip rule styles both. */
-.tooltip {
-    background-color: var(--ui_color_tooltip);
-    border-width: 1px;
-    border-color: var(--ui_color_tooltip_border);
-    border-radius: 4px;
-    padding: 4px 8px;
+:root {
+    --ui_color_markdown_link: #4C9AFF;
+    --ui_color_markdown_link_hover: #8CC0FF;
+    --ui_color_markdown_muted: #9A9A9A;
+    --ui_color_markdown_code_inline: rgba(128, 128, 128, 0.2);
+    --ui_color_markdown_code_block: rgba(0, 0, 0, 0.25);
+    --ui_color_markdown_line: rgba(128, 128, 128, 0.4);
+    --ui_color_markdown_table_header: rgba(128, 128, 128, 0.12);
 }
-
-.tooltip-text {
-    color: var(--ui_color_tooltip_text);
-}
-
-/* MarkdownText: only what Markdown adds. The element's own font, size, line
- * height and color are the text's, set by the document that holds it, and
- * every block inherits them. Inline text is one label per word in a wrapping
- * row, so a line breaks between words. */
-
 .markdown-text {
     display: flex;
     flex-direction: column;

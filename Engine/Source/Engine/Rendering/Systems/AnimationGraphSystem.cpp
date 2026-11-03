@@ -2,9 +2,9 @@
 #include "ECSModules/Rendering/Systems/AnimationGraphCompileFromModel.h"
 
 #include "Animation/AnimationEventCollectorStore.h"
-#include "Animation/AnimationGraph/AnimationGraphPlayer.h"
-#include "Animation/AnimationGraph/AnimationGraphSerializer.h"
-#include "Animation/AnimationGraph/AnimationGraphStore.h"
+#include "Animation/AnimationGraphPlayer.h"
+#include "Animation/AnimationGraphSerializer.h"
+#include "Animation/AnimationGraphStore.h"
 #include "Animation/EvaluationContext.h"
 #include "Animation/Nodes/AdditiveBlendNode.h"
 #include "Animation/Nodes/Blend2Node.h"
@@ -311,13 +311,14 @@ void AnimationGraphSystem::Update(ECS::World& world, float32 deltaTime)
     m_FramePaletteInputs.clear();
     m_FramePoseCount = 0;
 
-    world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, Animator& animator) {
-        if (!animator.active || animator.source != AnimatorPlaybackSource::Graph)
+    world.Query<ECS::Write<Animator>>().Each([&](ECS::EntityHandle rootEntity, ECS::Writable<Animator> animatorRow) {
+        if (!animatorRow->active || animatorRow->source != AnimatorPlaybackSource::Graph)
         {
-            if (animator.graphRuntimeId != 0)
-                ReleaseGraph(animator);
+            if (animatorRow->graphRuntimeId != 0)
+                ReleaseGraph(animatorRow.Mutable());
             return;
         }
+        Animator& animator = animatorRow.Mutable();
 
         ConsumeGraphCommand(animator);
 

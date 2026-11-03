@@ -10,7 +10,6 @@
 #include <cstdlib>
 #include <deque>
 #include <iterator>
-#include <utility>
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -39,19 +38,10 @@ namespace
     // the bound cannot strand a child. The bound fits the 1 MiB wasm stack.
     constexpr int kMaxInlineExecutionDepth = 64;
 
-    // The occupancy names of the two compute classes. Static literals, so a
-    // reader compares by pointer.
-    constexpr const char kNormalJobName[] = "Normal";
-    constexpr const char kBackgroundJobName[] = "Background";
-
     struct DeferredInlineTask
     {
         WorkStealingThreadPool* Pool;
         UniquePtr<TaskBase> Task;
-        // The class given at publish (or the channel), which the deferred
-        // execution runs the body as.
-        const char* Channel;
-        JobPriority Class;
     };
 
     struct InlineTrampoline
@@ -106,106 +96,15 @@ namespace
 thread_local size_t WorkStealingThreadPool::s_CurrentWorkerId = SIZE_MAX;
 thread_local WorkStealingThreadPool::Worker* WorkStealingThreadPool::s_CurrentWorker = nullptr;
 thread_local WorkStealingThreadPool* WorkStealingThreadPool::s_CurrentPool = nullptr;
-thread_local uint32* WorkStealingThreadPool::s_PublishSink = nullptr;
-thread_local WorkStealingThreadPool::ThreadJobState* WorkStealingThreadPool::s_JobState = nullptr;
-thread_local WorkStealingThreadPool::ThreadJobState WorkStealingThreadPool::s_OwnJobState;
 
-namespace
-{
-    // What the occupancy slot and GetCurrentJobForTests name a body by.
-    template <typename Context>
-    const char* JobName(const Context& context)
-    {
-        if (context.Channel != nullptr)
-        {
-            return context.Channel;
-        }
-        return context.Class == JobPriority::Background ? kBackgroundJobName : kNormalJobName;
-    }
-} // namespace
-
-namespace
-{
-    template <typename Slot>
-    JobSystemStatistics::Occupancy ReadOccupancy(const Slot& slot, JobSystemStatistics::ThreadKind kind,
-                                                 size_t index)
-    {
-        JobSystemStatistics::Occupancy entry;
-        entry.Kind = kind;
-        entry.Index = static_cast<uint32>(index);
-        entry.Running = slot.Running.load(std::memory_order_relaxed);
-        // A Normal job's slot carries no start time of its own.
-        const bool timed = entry.Running != nullptr && entry.Running != kNormalJobName;
-        entry.SinceNs = timed ? slot.SinceNs.load(std::memory_order_relaxed) : 0;
-        return entry;
-    }
-} // namespace
-
-uint64 WorkStealingThreadPool::SteadyClockNs() {
-    return static_cast<uint64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                   std::chrono::steady_clock::now().time_since_epoch())
-                                   .count());
-}
-
-WorkStealingThreadPool::JobBodyScope::JobBodyScope(JobContext context)
-    : m_State(CurrentJobState()), m_Enclosing(m_State) {
-    // Background and channel jobs are the ones that run long enough for a
-    // start time to matter; a Normal job (a 1 us ECS task) never reads the
-    // clock. A body nested in a body of the same context (a tagged job its
-    // Wait runs) keeps the enclosing start: the slot reports how long the
-    // outermost body of that context has run, as the hang watchdog reads it.
-    const bool timed = context.Channel != nullptr || context.Class == JobPriority::Background;
-    const bool sameContext = m_Enclosing.Depth > 0 && m_Enclosing.Context.Channel == context.Channel &&
-                             m_Enclosing.Context.Class == context.Class;
-    m_State.Context = context;
-    m_State.SinceNs = !timed ? 0 : sameContext ? m_Enclosing.SinceNs : SteadyClockNs();
-    ++m_State.Depth;
-    if (OccupancySlot* slot = m_State.Slot) {
-        if (timed && !sameContext) {
-            slot->SinceNs.store(m_State.SinceNs, std::memory_order_relaxed);
-        }
-        slot->Running.store(JobName(context), std::memory_order_relaxed);
-    }
-}
-
-WorkStealingThreadPool::JobBodyScope::~JobBodyScope() {
-    m_State.Context = m_Enclosing.Context;
-    m_State.SinceNs = m_Enclosing.SinceNs;
-    m_State.Depth = m_Enclosing.Depth;
-    if (OccupancySlot* slot = m_State.Slot) {
-        if (m_Enclosing.Depth == 0) {
-            slot->Running.store(nullptr, std::memory_order_relaxed);
-            return;
-        }
-        if (m_Enclosing.SinceNs != 0) {
-            slot->SinceNs.store(m_Enclosing.SinceNs, std::memory_order_relaxed);
-        }
-        slot->Running.store(JobName(m_Enclosing.Context), std::memory_order_relaxed);
-    }
-}
-
-WorkStealingThreadPool::JobContext WorkStealingThreadPool::CallerContext() {
-    const ThreadJobState& state = CurrentJobState();
-    return state.Depth > 0 ? state.Context : ComputeContext(JobPriority::Normal);
-}
-
-bool WorkStealingThreadPool::IsExecutingJob() {
-    return CurrentJobState().Depth > 0;
-}
-
-const char* WorkStealingThreadPool::GetCurrentJobForTests() {
-    const ThreadJobState& state = CurrentJobState();
-    return state.Depth > 0 ? JobName(state.Context) : nullptr;
-}
-
-WorkStealingThreadPool::ThreadJobState& WorkStealingThreadPool::CurrentJobState() {
-    ThreadJobState* state = s_JobState;
-    return state != nullptr ? *state : s_OwnJobState;
-}
-
-// CleanupTaskData() pushes here without a lock; the same thread drains at its next GetOrCreateTaskData()
-// or when its share reaches kPendingCleanupBatch, so the registry mutex stays off the completion path.
-// An idle worker keeps up to kPendingCleanupBatch - 1 finished tasks until ReleaseFinishedTasks or that drain.
+// Thread-local deferred cleanup buffer. CleanupTaskData() pushes entries
+// here without locking; the buffer is drained the next time the same thread
+// hits the owning pool's registry mutex (in GetOrCreateTaskData) or when the
+// owning pool's share overflows the flush threshold. Reduces mutex-op count
+// per task ~2× by batching erases with the unavoidable Submit-side insert.
+// The TaskData shared_ptr stays alive in the registry until drain; this is
+// fine because TaskIds are monotonic and never revisited, so no one looks up
+// a "stale" entry.
 //
 // Entries are TAGGED with their owning pool and drained ONLY by it. One
 // thread legitimately produces cleanups for several pools (sequential test
@@ -245,24 +144,6 @@ WorkStealingThreadPool::WorkStealingThreadPool(size_t numThreads, size_t blockin
     m_DependencyGraph = MakeUnique<TaskDependencyGraph>();
     m_BlockingThreads = MakeUnique<Detail::BlockingThreads>(*this, blockingThreadBudget);
 
-    // The slabs fork tasks can hold at once on this pool, provisioned before
-    // the first fork so that no fork takes a heap allocation: the helper and
-    // queue-visit envelopes (kMaxUnstartedForkTasksPerWorker unstarted in
-    // each of the two lanes and one running, per worker), a run block for
-    // each of them, and the forking caller's block. Each further caller
-    // forking at the same time adds one block. A visit a refused Run
-    // publishes takes its slab from the freelist's stock.
-    const size_t claimHelperEnvelopes = (2 * kMaxUnstartedForkTasksPerWorker + 1) * numThreads;
-    Detail::ProvisionTaskSlabs(2 * claimHelperEnvelopes + 1);
-    // Every record exists before any thread that writes one: the workers
-    // start below, blocking threads on a channel's first dispatch.
-    m_BlockingRecordCount = blockingThreadBudget;
-    m_ThreadRecords.reset(new GameEngine::FalseSharingPadded<ThreadRecord>[numThreads + blockingThreadBudget]);
-    for (size_t i = 0; i < numThreads + blockingThreadBudget; ++i) {
-        ThreadRecord& record = m_ThreadRecords[i].Value;
-        record.State.Slot = &record.Occupancy;
-    }
-
     // Initialize workers using unique_ptr to avoid copy constructor issues.
     // Workers take *this for their global-lane ConsumerTokens; both lanes
     // are fully constructed before this line.
@@ -290,13 +171,13 @@ WorkStealingThreadPool::~WorkStealingThreadPool() {
     Shutdown();
 }
 
-TaskHandle WorkStealingThreadPool::SubmitToGraph(UniquePtr<TaskBase> task,
-                                                  std::span<const TaskId> dependencies) {
+TaskHandle WorkStealingThreadPool::Submit(UniquePtr<Task> task) {
     if (shutdown_requested.load()) {
         return TaskHandle(); // Return invalid handle
     }
 
-    const TaskId taskId = task->GetTaskId();
+    // Use the task's existing ID to maintain dependency relationships
+    TaskId taskId = task->GetTaskId();
 
     // The TaskData must exist before the task is published: completion on a
     // worker bridges status into it via ProcessGraphActions.
@@ -310,8 +191,9 @@ TaskHandle WorkStealingThreadPool::SubmitToGraph(UniquePtr<TaskBase> task,
         data->GraphManaged.store(true, std::memory_order_relaxed);
     }
 
-    // Only Detail::SubmitGraphTask reaches this path; the other envelope
-    // types never enter the graph (Submit(F&&) / EnqueueWork own them).
+    // Slice 6: every Task subclass is graph-managed by construction —
+    // dependency-exempt envelope types derive from TaskBase and never reach
+    // this API (Submit(F&&) / EnqueueWork own those paths).
 
     // F9 submit-side critical section: node creation, edge registration
     // (absent dependency = already terminal, F8), readiness check, and
@@ -320,7 +202,7 @@ TaskHandle WorkStealingThreadPool::SubmitToGraph(UniquePtr<TaskBase> task,
     // as ready — either Register returns it here, or the completer's
     // MarkCompleted extracts the parked payload (closes the B8
     // submit-vs-complete TOCTOU without any rescan).
-    if (UniquePtr<TaskBase> ready = m_DependencyGraph->Register(std::move(task), dependencies)) {
+    if (UniquePtr<Task> ready = m_DependencyGraph->Register(std::move(task))) {
         EnqueueTask(std::move(ready));
     }
 
@@ -385,7 +267,7 @@ bool WorkStealingThreadPool::CancelPendingArbitrated(TaskId taskId,
 
 bool WorkStealingThreadPool::LinkSubmitDependency(const TaskHandle& dependency) {
     if (!dependency.IsValid()) {
-        return false; // an invalid handle adds no edge
+        return false; // matches Task::AddDependency(const TaskHandle&): invalid = no edge
     }
     // A foreign pool's id can never complete in THIS graph — an edge to it
     // would park the dependent forever. Contract violation; skip the edge.
@@ -405,7 +287,7 @@ bool WorkStealingThreadPool::LinkSubmitDependency(const TaskHandle& dependency) 
     }
 
     const TaskId depId = dependency.GetId();
-    // GRAPH task (branded in SubmitToGraph): add a plain edge and
+    // GRAPH task (branded at Submit(UniquePtr<Task>)): add a plain edge and
     // never touch the mirror machinery — its completion reaches the graph
     // natively (CompleteGraphTask), and a bridged completion would steal the
     // executing worker's own MarkCompleted, muting its handle events. The
@@ -418,7 +300,8 @@ bool WorkStealingThreadPool::LinkSubmitDependency(const TaskHandle& dependency) 
     // that window would create a mirror for a task whose completion path is
     // already spent, and the parked dependent would strand forever (nothing
     // ever completes a graph task's mirror). In the window, Register's
-    // absent=terminal reading runs the dependent.
+    // absent=terminal reading runs the dependent (identical to the subclass
+    // AddDependency path's pre-existing semantics for this exact window).
     if (data->GraphManaged.load(std::memory_order_relaxed)) {
         return true;
     }
@@ -597,7 +480,7 @@ void WorkStealingThreadPool::CommitRecycledTaskData(
     }
 }
 
-ConcurrentQueue<SharedPtr<TaskHandle::TaskData>>&
+moodycamel::ConcurrentQueue<SharedPtr<TaskHandle::TaskData>>&
 WorkStealingThreadPool::TaskDataFreelist() {
     // IMMORTAL for the same reason as the slab freelist (TaskSlabPool.cpp):
     // recycles can run during static destruction; a destructed freelist would
@@ -606,7 +489,7 @@ WorkStealingThreadPool::TaskDataFreelist() {
     // TaskData (~500B each) are ever pinned.
     static constexpr size_t kTaskDataFreelistCapacity = 256;
     static auto* const s_Freelist =
-        new ConcurrentQueue<SharedPtr<TaskHandle::TaskData>>(
+        new moodycamel::ConcurrentQueue<SharedPtr<TaskHandle::TaskData>>(
             kTaskDataFreelistCapacity);
     return *s_Freelist;
 }
@@ -692,103 +575,19 @@ void WorkStealingThreadPool::SetSleepBackstopForTest(uint32 backstopUs) {
     m_SleepBackstopUs.store(backstopUs, std::memory_order_relaxed);
 }
 
-JobSystemStatistics WorkStealingThreadPool::GetStatistics() const {
-    JobSystemStatistics stats;
-    stats.ComputeWorkers = static_cast<uint32>(workers.size());
-    stats.BlockingThreads = m_BlockingThreads ? m_BlockingThreads->ThreadCount() : 0;
-
-    stats.Threads.resize(workers.size() + m_BlockingRecordCount);
-    stats.Threads.resize(SnapshotOccupancy(stats.Threads));
-    for (const JobSystemStatistics::Occupancy& thread : stats.Threads) {
-        if (thread.Kind != JobSystemStatistics::ThreadKind::Worker || thread.Running == nullptr) {
-            continue;
-        }
-        ++(thread.Running == kBackgroundJobName ? stats.Background : stats.Normal).Running;
-    }
-    // m_QueuedTasks counts both lanes; the Background occupancy counter can
-    // run ahead of it during a producer's publish window, hence the floor.
-    const uint32 queued = m_QueuedTasks.load(std::memory_order_relaxed);
-    const uint32 background = m_BackgroundQueued.load(std::memory_order_relaxed);
-    stats.Normal.Queued = queued > background ? queued - background : 0;
-    stats.Background.Queued = background;
-
-    // Strong references under the registry mutex, each channel read under
-    // its own mutex outside it: a channel's mutex is a leaf.
-    Vector<SharedPtr<Detail::JobChannelState>> channels;
-    {
-        std::lock_guard<std::mutex> lock(m_ChannelsMutex);
-        channels.reserve(m_Channels.size());
-        for (const WeakPtr<Detail::JobChannelState>& channel : m_Channels) {
-            if (SharedPtr<Detail::JobChannelState> live = channel.lock()) {
-                channels.push_back(std::move(live));
-            }
-        }
-    }
-    stats.Channels.reserve(channels.size());
-    for (const SharedPtr<Detail::JobChannelState>& channel : channels) {
-        stats.Channels.push_back(channel->Statistics());
-    }
-
-    stats.GlobalPushes = m_Census.GlobalPushes.load(std::memory_order_relaxed);
-    stats.LocalPushes = m_Census.LocalPushes.load(std::memory_order_relaxed);
-    stats.BackgroundPushes = m_Census.BackgroundPushes.load(std::memory_order_relaxed);
-    stats.GlobalPops = m_Census.GlobalPops.load(std::memory_order_relaxed);
-    stats.LocalPops = m_Census.LocalPops.load(std::memory_order_relaxed);
-    stats.StealPops = m_Census.StealPops.load(std::memory_order_relaxed);
-    stats.BackgroundPops = m_Census.BackgroundPops.load(std::memory_order_relaxed);
-    stats.StealMisses = m_Census.StealMisses.load(std::memory_order_relaxed);
-    stats.EmptyLoopsWithBacklog = m_Census.EmptyLoopsWithBacklog.load(std::memory_order_relaxed);
-    stats.BackstopTimeouts = m_Census.BackstopTimeouts.load(std::memory_order_relaxed);
-    stats.TasksExecuted = stats.GlobalPops + stats.LocalPops + stats.StealPops + stats.BackgroundPops +
-                          (m_BlockingThreads ? m_BlockingThreads->JobsRun() : 0);
-    return stats;
-}
-
-size_t WorkStealingThreadPool::SnapshotOccupancy(std::span<JobSystemStatistics::Occupancy> out) const {
-    if (!m_ThreadRecords) {
-        return 0;
-    }
-    size_t written = 0;
-    for (size_t i = 0; i < workers.size() && written < out.size(); ++i) {
-        out[written++] = ReadOccupancy(m_ThreadRecords[i].Value.Occupancy, JobSystemStatistics::ThreadKind::Worker, i);
-    }
-    for (size_t i = 0; i < m_BlockingRecordCount && written < out.size(); ++i) {
-        const OccupancySlot& slot = m_ThreadRecords[workers.size() + i].Value.Occupancy;
-        if (slot.Live.load(std::memory_order_relaxed)) {
-            out[written++] = ReadOccupancy(slot, JobSystemStatistics::ThreadKind::Blocking, i);
-        }
-    }
-    return written;
-}
-
-void WorkStealingThreadPool::BindBlockingThread(size_t index) {
-    s_CurrentPool = this;
-    if (index < m_BlockingRecordCount) {
-        ThreadRecord& record = m_ThreadRecords[workers.size() + index].Value;
-        s_JobState = &record.State;
-        record.Occupancy.Live.store(true, std::memory_order_relaxed);
-    }
-}
-
-uint64 WorkStealingThreadPool::GetPublishedJobCount() const {
-    return m_Census.GlobalPushes.load(std::memory_order_relaxed) +
-           m_Census.LocalPushes.load(std::memory_order_relaxed) +
-           m_Census.BackgroundPushes.load(std::memory_order_relaxed);
-}
-
-WorkStealingThreadPool::PublishCountScope::PublishCountScope(uint32& sink)
-    : m_Enclosing(s_PublishSink) {
-    s_PublishSink = &sink;
-}
-
-WorkStealingThreadPool::PublishCountScope::~PublishCountScope() {
-    s_PublishSink = m_Enclosing;
-}
-
-void WorkStealingThreadPool::CountPublishedOnThisThread(size_t count) {
-    if (uint32* sink = s_PublishSink) {
-        *sink += static_cast<uint32>(count);
-    }
+WorkStealingThreadPool::TopologyCensus WorkStealingThreadPool::GetTopologyCensusForTests() const {
+    TopologyCensus snapshot;
+    snapshot.GlobalPushes = m_Census.GlobalPushes.load(std::memory_order_relaxed);
+    snapshot.LocalPushes = m_Census.LocalPushes.load(std::memory_order_relaxed);
+    snapshot.BackgroundPushes = m_Census.BackgroundPushes.load(std::memory_order_relaxed);
+    snapshot.GlobalPops = m_Census.GlobalPops.load(std::memory_order_relaxed);
+    snapshot.LocalPops = m_Census.LocalPops.load(std::memory_order_relaxed);
+    snapshot.StealPops = m_Census.StealPops.load(std::memory_order_relaxed);
+    snapshot.BackgroundPops = m_Census.BackgroundPops.load(std::memory_order_relaxed);
+    snapshot.StealMisses = m_Census.StealMisses.load(std::memory_order_relaxed);
+    snapshot.EmptyLoopsWithBacklog = m_Census.EmptyLoopsWithBacklog.load(std::memory_order_relaxed);
+    snapshot.BackstopTimeouts = m_Census.BackstopTimeouts.load(std::memory_order_relaxed);
+    return snapshot;
 }
 
 size_t WorkStealingThreadPool::GetCurrentWorkerId() const {
@@ -797,106 +596,6 @@ size_t WorkStealingThreadPool::GetCurrentWorkerId() const {
 
 bool WorkStealingThreadPool::IsComputeWorkerOf(const WorkStealingThreadPool* pool) {
     return pool != nullptr && s_CurrentPool == pool && s_CurrentWorkerId != SIZE_MAX;
-}
-
-size_t WorkStealingThreadPool::ReserveForkTasks(std::atomic<uint32>& unstarted, size_t wanted, size_t budget) {
-    const size_t before = unstarted.fetch_add(static_cast<uint32>(wanted), std::memory_order_relaxed);
-    const size_t granted = before >= budget ? 0 : std::min(wanted, budget - before);
-    if (granted < wanted)
-        unstarted.fetch_sub(static_cast<uint32>(wanted - granted), std::memory_order_relaxed);
-    return granted;
-}
-
-#if GE_DEBUG_INSTRUMENTATION
-namespace {
-std::atomic<void (*)(WorkStealingThreadPool::TaggedVisitPoint)> g_TaggedVisitHook{nullptr};
-} // namespace
-
-void WorkStealingThreadPool::SetTaggedVisitHookForTests(void (*hook)(TaggedVisitPoint point)) {
-    g_TaggedVisitHook.store(hook, std::memory_order_release);
-}
-#endif
-
-// A worker's visit to a tagged queue object, not to a counter: it holds the
-// object alive (a holder, JobCounter::TaggedJobs::State) but never keeps it
-// from being recycled, and when it runs it drains whatever counter's
-// envelopes occupy the object at that moment; each envelope decrements its
-// own counter. So a stale visit, published for a counter already joined,
-// may run a later counter's job at the lane it was published at.
-//
-// A visit counts in the object's PendingVisits from its publish until it has
-// proven the object empty, and a Run the budget refuses publishes a visit
-// only when none is pending: every envelope runs on a worker without a
-// waiter. The proof is a Dekker pair with that Run: the visit decrements
-// PendingVisits and then reloads JobCount; the Run increments JobCount (its
-// critical section), fences, and then loads PendingVisits. Either the Run
-// sees no visit pending and publishes one, or the visit sees the Run's job
-// and drains again.
-//
-// A budgeted visit holds one count of its lane's fork-task budget, given back
-// as its first act, so the count bounds unstarted visits only. Move-only; an
-// envelope destroyed without running gives its count back, stops counting
-// itself pending and drops its hold.
-class WorkStealingThreadPool::TaggedQueueVisit {
-  public:
-    TaggedQueueVisit(JobCounter::TaggedJobs& jobs, std::atomic<uint32>* unstarted)
-        : m_Jobs(&jobs), m_Unstarted(unstarted) {
-        jobs.PendingVisits.fetch_add(1, std::memory_order_relaxed);
-        jobs.State.fetch_add(JobCounter::TaggedJobs::kOneHolder, std::memory_order_relaxed);
-    }
-    TaggedQueueVisit(TaggedQueueVisit&& other) noexcept
-        : m_Jobs(std::exchange(other.m_Jobs, nullptr)), m_Unstarted(std::exchange(other.m_Unstarted, nullptr)) {}
-    TaggedQueueVisit(const TaggedQueueVisit&) = delete;
-    TaggedQueueVisit& operator=(const TaggedQueueVisit&) = delete;
-    TaggedQueueVisit& operator=(TaggedQueueVisit&&) = delete;
-    ~TaggedQueueVisit() {
-        GiveBackUnstartedCount();
-        if (m_Jobs) {
-            m_Jobs->PendingVisits.fetch_sub(1, std::memory_order_relaxed);
-            JobCounter::DropTaggedJobsHolder(std::exchange(m_Jobs, nullptr));
-        }
-    }
-
-    void operator()() {
-        GiveBackUnstartedCount();
-        JobCounter::TaggedJobs& jobs = *m_Jobs;
-        for (;;) {
-            while (JobCounter::RunOneTagged(jobs)) {
-            }
-            jobs.PendingVisits.fetch_sub(1, std::memory_order_seq_cst);
-#if GE_DEBUG_INSTRUMENTATION
-            if (auto hook = g_TaggedVisitHook.load(std::memory_order_acquire))
-                hook(TaggedVisitPoint::ProvedEmpty);
-#endif
-            if (jobs.JobCount.load(std::memory_order_seq_cst) == 0)
-                break;
-            jobs.PendingVisits.fetch_add(1, std::memory_order_relaxed);
-        }
-        // The hold drops after the visit's last touch of the object.
-        JobCounter::DropTaggedJobsHolder(std::exchange(m_Jobs, nullptr));
-    }
-
-  private:
-    void GiveBackUnstartedCount() {
-        if (m_Unstarted)
-            std::exchange(m_Unstarted, nullptr)->fetch_sub(1, std::memory_order_relaxed);
-    }
-
-    JobCounter::TaggedJobs* m_Jobs;
-    std::atomic<uint32>* m_Unstarted;
-};
-
-void WorkStealingThreadPool::PublishTaggedQueueVisit(JobCounter::TaggedJobs& jobs, JobPriority lane) {
-    std::atomic<uint32>& unstarted = m_UnstartedForkTasks[static_cast<size_t>(lane)];
-    if (ReserveForkTasks(unstarted, 1, kMaxUnstartedForkTasksPerWorker * GetWorkerCount()) == 1) {
-        EnqueueWork(TaggedQueueVisit(jobs, &unstarted), lane);
-        return;
-    }
-    // Refused: the Run's side of the Dekker pair with a leaving visit
-    // (TaggedQueueVisit), after the critical section's JobCount increment.
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-    if (jobs.PendingVisits.load(std::memory_order_seq_cst) == 0)
-        EnqueueWork(TaggedQueueVisit(jobs, nullptr), lane);
 }
 
 void WorkStealingThreadPool::Wait(JobCounter& counter) {
@@ -917,10 +616,24 @@ void WorkStealingThreadPool::Wait(JobCounter& counter) {
         return true;
     };
 
-    // Every waiter, on every thread, executes ONLY tasks tagged with this
-    // counter (design decision D1). The pool queues and wake protocol stay
-    // untouched. A thread that cannot block parks in reported slices below.
     const bool canBlock = GameEngine::Platform::CanBlockCurrentThread();
+    const bool participant = (s_CurrentPool == this && s_CurrentWorkerId != SIZE_MAX) || !canBlock;
+    if (!participant) {
+        // Preserve the native external-wait contract: jobs run on workers.
+        if (synchronizedZero()) {
+            return;
+        }
+        std::unique_lock<std::mutex> lock(counter.m_Mutex);
+        ++counter.m_Waiters;
+        counter.m_Cv.wait(lock, [&counter] {
+            return counter.m_Count.load(std::memory_order_acquire) == 0;
+        });
+        --counter.m_Waiters;
+        return;
+    }
+
+    // Workers and host threads that cannot park execute ONLY tasks tagged
+    // with this counter. The pool queues and wake protocol stay untouched.
     JobCounter::TaggedJobsRef jobs;
     {
         std::lock_guard<std::mutex> lock(counter.m_Mutex);
@@ -930,13 +643,8 @@ void WorkStealingThreadPool::Wait(JobCounter& counter) {
         if (synchronizedZero()) {
             return;
         }
-        if (jobs) {
-            // A tagged job run here is a body of the waiter's own current
-            // context: the class of the body that waits, Normal outside one.
-            JobBodyScope body(CallerContext());
-            if (JobCounter::RunOneTagged(*jobs)) {
-                continue;
-            }
+        if (jobs && JobCounter::RunOneTagged(*jobs)) {
+            continue;
         }
 
         // Nothing findable (RunOneTagged returned false — tagged occupancy
@@ -964,7 +672,7 @@ void WorkStealingThreadPool::Wait(JobCounter& counter) {
                 return jobs && jobs->JobCount.load(std::memory_order_acquire) > 0;
             };
             if (canBlock) {
-                // Keep the native wait free of timeout bookkeeping.
+                // Keep the native worker wait free of timeout bookkeeping.
                 counter.m_Cv.wait(lock, parkPredicate);
             } else {
                 // A stalled host-thread wait stops frames and input. Report
@@ -992,8 +700,8 @@ void WorkStealingThreadPool::Shutdown() {
 
     // Shutdown order (binding: each step depends on the previous):
     //   1. GATE: the flag above refuses Submit and JobChannel::Submit, makes
-    //      EnqueueWork self-drain, sends ParallelFor down
-    //      its caller-only path, and stops every blocking thread from
+    //      EnqueueWork self-drain, sends ParallelFor/DispatchAndWait down
+    //      their sequential fallbacks, and stops every blocking thread from
     //      taking further work (each finishes the job it holds).
     //   2. JOIN COMPUTE WORKERS: they stop taking new work (loop-top check),
     //      finish their in-flight task, and exit.
@@ -1213,8 +921,7 @@ void WorkStealingThreadPool::DrainQueuesOnThisThread() {
             auto& deferred = GetInlineTrampoline().Deferred;
             for (auto it = deferred.begin(); it != deferred.end();) {
                 if (it->Pool == this) {
-                    drained.push_back({std::move(it->Task), /*PoolCounted=*/false,
-                                       JobContext{it->Channel, it->Class}});
+                    drained.push_back({std::move(it->Task), /*PoolCounted=*/false});
                     it = deferred.erase(it);
                 } else {
                     ++it;
@@ -1229,17 +936,17 @@ void WorkStealingThreadPool::DrainQueuesOnThisThread() {
                 // Census pops count PHYSICAL dequeues from a lane, whichever
                 // path consumes them — the push/pop conservation identity
                 // must hold across a drain too (a participating Wait can
-                // leave its no-op visit for the shutdown drain to consume).
+                // leave its no-op stub for the shutdown drain to consume).
                 m_Census.GlobalPops.fetch_add(1, std::memory_order_relaxed);
                 AccountDequeuedTask();
-                drained.push_back({std::move(task), /*PoolCounted=*/true, ComputeContext(JobPriority::Normal)});
+                drained.push_back({std::move(task), /*PoolCounted=*/true});
                 found = true;
             }
             for (auto& worker : workers) {
                 while (worker->LocalQueue.try_dequeue(task)) {
                     m_Census.LocalPops.fetch_add(1, std::memory_order_relaxed);
                     AccountDequeuedTask();
-                    drained.push_back({std::move(task), /*PoolCounted=*/true, ComputeContext(JobPriority::Normal)});
+                    drained.push_back({std::move(task), /*PoolCounted=*/true});
                     found = true;
                 }
             }
@@ -1248,14 +955,12 @@ void WorkStealingThreadPool::DrainQueuesOnThisThread() {
             // Disposal is priority-blind: phase 2/3 below dispatch on
             // envelope KIND — bare background tasks EXECUTE, background
             // handle tasks are Cancelled (see the class comment's shutdown
-            // paragraph for the decision). The lane is recorded beside the
-            // envelope, because phase 3 executes one mixed list and a bare
-            // Background task still runs as Background there.
+            // paragraph for the decision).
             while (m_BackgroundQueue.try_dequeue(task)) {
                 m_BackgroundQueued.fetch_sub(1, std::memory_order_relaxed);
                 m_Census.BackgroundPops.fetch_add(1, std::memory_order_relaxed);
                 AccountDequeuedTask();
-                drained.push_back({std::move(task), /*PoolCounted=*/true, ComputeContext(JobPriority::Background)});
+                drained.push_back({std::move(task), /*PoolCounted=*/true});
                 found = true;
             }
 
@@ -1291,12 +996,12 @@ void WorkStealingThreadPool::DrainQueuesOnThisThread() {
         }
 
         // Phase 3: execute the bare tasks. They are caller-barrier releasers
-        // (ParallelFor helpers reference a blocked caller's
+        // (ParallelFor / DispatchAndWait chunks reference a blocked caller's
         // stack): dropping one hangs that caller forever (B7), and any
         // handle task they Wait() on is already terminal from phase 2.
         for (DrainedTask& entry : drained) {
             if (entry.Task) {
-                ExecuteTaskOptimized(std::move(entry.Task), entry.Context);
+                ExecuteTaskOptimized(std::move(entry.Task));
                 if (entry.PoolCounted)
                     pendingTasks.fetch_sub(1, std::memory_order_relaxed);
             }
@@ -1317,15 +1022,15 @@ void WorkStealingThreadPool::TakeChannelJobs(Vector<DrainedTask>& drained) {
             }
         }
     }
-    Vector<Detail::ChannelJob> jobs;
+    Vector<UniquePtr<TaskBase>> jobs;
     for (const SharedPtr<Detail::JobChannelState>& channel : channels) {
         channel->TakeQueued(jobs);
     }
     if (m_BlockingThreads) {
         m_BlockingThreads->TakeQueued(jobs);
     }
-    for (Detail::ChannelJob& job : jobs) {
-        drained.push_back({std::move(job.Envelope), /*PoolCounted=*/false, ChannelContext(job.Channel)});
+    for (UniquePtr<TaskBase>& job : jobs) {
+        drained.push_back({std::move(job), /*PoolCounted=*/false});
     }
 }
 
@@ -1344,31 +1049,31 @@ void WorkStealingThreadPool::CancelUnrunEnvelope(UniquePtr<TaskBase> task) {
     CleanupTaskData(taskId); // ...so the registry entry releases here
 }
 
-void WorkStealingThreadPool::DisposeEnvelopeAfterGate(UniquePtr<TaskBase> task, JobContext context) {
+void WorkStealingThreadPool::DisposeEnvelopeAfterGate(UniquePtr<TaskBase> task) {
     if (task->NeedsTaskData() || task->RequiresDependencyManagement()) {
         CancelUnrunEnvelope(std::move(task));
         return;
     }
-    ExecuteTaskOptimized(std::move(task), context);
+    ExecuteTaskOptimized(std::move(task));
 }
 
-void WorkStealingThreadPool::DispatchToBlockingThreads(UniquePtr<TaskBase> task, const char* channel) {
+void WorkStealingThreadPool::DispatchToBlockingThreads(UniquePtr<TaskBase> task) {
     if (m_InlineMode) {
-        ExecuteInlineBounded(std::move(task), ChannelContext(channel));
+        ExecuteInlineBounded(std::move(task));
         return;
     }
     if (UniquePtr<TaskBase> refused =
-            m_BlockingThreads->Push({std::move(task), channel}, Detail::BlockingThreads::Spawn::IfNeeded)) {
-        DisposeEnvelopeAfterGate(std::move(refused), ChannelContext(channel));
+            m_BlockingThreads->Push(std::move(task), Detail::BlockingThreads::Spawn::IfNeeded)) {
+        DisposeEnvelopeAfterGate(std::move(refused));
     }
 }
 
-void WorkStealingThreadPool::HandOnToBlockingThreads(UniquePtr<TaskBase> task, const char* channel) {
+void WorkStealingThreadPool::HandOnToBlockingThreads(UniquePtr<TaskBase> task) {
     // An inline pool never queues a channel job, so it never hands one on.
     assert(!m_InlineMode && "JobChannel: an inline pool queued a channel job");
     if (UniquePtr<TaskBase> refused =
-            m_BlockingThreads->Push({std::move(task), channel}, Detail::BlockingThreads::Spawn::Never)) {
-        DisposeEnvelopeAfterGate(std::move(refused), ChannelContext(channel));
+            m_BlockingThreads->Push(std::move(task), Detail::BlockingThreads::Spawn::Never)) {
+        DisposeEnvelopeAfterGate(std::move(refused));
     }
 }
 
@@ -1396,39 +1101,6 @@ void WorkStealingThreadPool::UnregisterChannel(const Detail::JobChannelState* ch
     }
 }
 
-void WorkStealingThreadPool::ReleaseFinishedTasks() {
-    // At use_count() == 1 only the registry holds the task and no reference can be minted without
-    // m_TaskDataMutex (the drain's proof). A Completed or Failed task's envelope already ran, so the
-    // erase cannot resurrect it (F12); its id left in a cleanup batch drains later as a duplicate.
-    Vector<SharedPtr<TaskHandle::TaskData>> released;
-    size_t stillHeld = 0;
-    {
-        std::lock_guard<std::mutex> lock(m_TaskDataMutex);
-        for (auto it = m_TaskDataRegistry.begin(); it != m_TaskDataRegistry.end();) {
-            const TaskStatus status = it->second->Status.load(std::memory_order_acquire);
-            if (status != TaskStatus::Completed && status != TaskStatus::Failed) {
-                ++it;
-                continue;
-            }
-            if (it->second.use_count() != 1) {
-                ++stillHeld;
-                ++it;
-                continue;
-            }
-            released.push_back(std::move(it->second));
-            it = m_TaskDataRegistry.erase(it);
-        }
-    }
-    // Pair with the dying owners' release-decrements, as the drain does.
-    std::atomic_thread_fence(std::memory_order_acquire);
-    // Outside the lock: the reset runs the results' and callbacks' destructors.
-    for (auto& data : released) {
-        RecycleTaskData(std::move(data));
-    }
-    Logger::Log::Debug("JobSystem: released {} finished task(s); {} finished task(s) still referenced",
-                       released.size(), stillHeld);
-}
-
 void WorkStealingThreadPool::FlushPendingCleanupOnThisThread() {
     const bool ownEntries = std::any_of(t_pendingCleanup.begin(), t_pendingCleanup.end(),
                                         [this](const PendingCleanupEntry& entry) { return entry.Pool == this; });
@@ -1452,7 +1124,6 @@ void WorkStealingThreadPool::DependencyAwareWorkerLoop(size_t workerId) {
     s_CurrentWorkerId = workerId;
     s_CurrentWorker = workers[workerId].get();
     s_CurrentPool = this;
-    s_JobState = &m_ThreadRecords[workerId].Value.State;
 
     char threadName[32];
     snprintf(threadName, sizeof(threadName), "Job Worker #%zu", workerId);
@@ -1481,17 +1152,11 @@ void WorkStealingThreadPool::DependencyAwareWorkerLoop(size_t workerId) {
 
         // 1. local queue (best cache locality), 2. global queue, 3. steal
         // ring, 4. background lane LAST (gated: one relaxed load when empty).
-        // The lane a task came from is its class: the first three are Normal.
-        JobPriority lane = JobPriority::Normal;
         bool foundTask = TryGetLocalTask(workerId, task) || TryGetGlobalTask(workerId, task) ||
-                         TryStealTask(workerId, task);
-        if (!foundTask && TryGetBackgroundTask(workerId, task)) {
-            foundTask = true;
-            lane = JobPriority::Background;
-        }
+                         TryStealTask(workerId, task) || TryGetBackgroundTask(workerId, task);
 
         if (!foundTask && spinAllowed) {
-            foundTask = TrySpinPoll(workerId, task, lane);
+            foundTask = TrySpinPoll(workerId, task);
         }
 
         if (foundTask) {
@@ -1500,7 +1165,7 @@ void WorkStealingThreadPool::DependencyAwareWorkerLoop(size_t workerId) {
             // happen here, and the pendingTasks decrement stays tied to
             // post-execution (F20 — ECS backpressure semantics).
             AccountDequeuedTask();
-            ExecuteTaskOptimized(std::move(task), ComputeContext(lane));
+            ExecuteTaskOptimized(std::move(task));
             pendingTasks.fetch_sub(1, std::memory_order_relaxed);
             spinAllowed = true;
             continue;
@@ -1545,17 +1210,16 @@ void WorkStealingThreadPool::DrainInlineTasksOnThisThread() {
         if (pending == trampoline.Deferred.end())
             return;
         auto task = std::move(pending->Task);
-        const JobContext context{pending->Channel, pending->Class};
         trampoline.Deferred.erase(pending);
         // A synchronous join must make progress even at the recursion bound.
         // Children published by this task stay in the same bounded queue.
         ++trampoline.Depth;
-        ExecuteTaskOptimized(std::move(task), context);
+        ExecuteTaskOptimized(std::move(task));
         --trampoline.Depth;
     }
 }
 
-void WorkStealingThreadPool::ExecuteInlineBounded(UniquePtr<TaskBase> task, JobContext context) {
+void WorkStealingThreadPool::ExecuteInlineBounded(UniquePtr<TaskBase> task) {
     // Per-thread, not per-pool: the resource being bounded is this thread's
     // stack, and nested inline pools share it. Entries carry their owning
     // pool so the drain executes each task against the pool it was published
@@ -1563,12 +1227,12 @@ void WorkStealingThreadPool::ExecuteInlineBounded(UniquePtr<TaskBase> task, JobC
     auto& trampoline = GetInlineTrampoline();
 
     if (trampoline.Depth >= kMaxInlineExecutionDepth) {
-        trampoline.Deferred.push_back({this, std::move(task), context.Channel, context.Class});
+        trampoline.Deferred.push_back({this, std::move(task)});
         return;
     }
 
     ++trampoline.Depth;
-    ExecuteTaskOptimized(std::move(task), context);
+    ExecuteTaskOptimized(std::move(task));
     if (trampoline.Depth == 1) {
         // Outermost frame: drain iteratively. A drained task's own enqueues
         // re-enter above at depth 1, recurse up to the bound, and overflow
@@ -1576,8 +1240,7 @@ void WorkStealingThreadPool::ExecuteInlineBounded(UniquePtr<TaskBase> task, JobC
         while (!trampoline.Deferred.empty()) {
             DeferredInlineTask deferred = std::move(trampoline.Deferred.front());
             trampoline.Deferred.pop_front();
-            deferred.Pool->ExecuteTaskOptimized(std::move(deferred.Task),
-                                                JobContext{deferred.Channel, deferred.Class});
+            deferred.Pool->ExecuteTaskOptimized(std::move(deferred.Task));
         }
     }
     --trampoline.Depth;
@@ -1588,9 +1251,8 @@ void WorkStealingThreadPool::EnqueueTask(UniquePtr<TaskBase> task) {
         // Inline mode: execute at publish, bypassing queues, counters, and
         // wakes entirely. Graph-published dependents re-enter here;
         // ExecuteInlineBounded caps the recursion depth and carries the
-        // cancel arbitration and completion paths unchanged. Graph tasks
-        // are Normal.
-        ExecuteInlineBounded(std::move(task), ComputeContext(JobPriority::Normal));
+        // cancel arbitration and completion paths unchanged.
+        ExecuteInlineBounded(std::move(task));
         return;
     }
     // Producer publish sequence (§7): counters BEFORE the push (F5 — a fast
@@ -1627,7 +1289,6 @@ void WorkStealingThreadPool::PushTask(UniquePtr<TaskBase> task) {
             std::abort();
         }
         m_Census.LocalPushes.fetch_add(1, std::memory_order_relaxed);
-        CountPublishedOnThisThread(1);
     } else {
         // External submissions may come from many threads (UI, asset batcher,
         // thumbnail preload, file watchers). ProducerToken is thread-affine, so
@@ -1736,7 +1397,7 @@ void WorkStealingThreadPool::AccountDequeuedTask() {
     }
 }
 
-bool WorkStealingThreadPool::TrySpinPoll(size_t workerId, UniquePtr<TaskBase>& task, JobPriority& lane) {
+bool WorkStealingThreadPool::TrySpinPoll(size_t workerId, UniquePtr<TaskBase>& task) {
     const uint32 spinWindowUs = m_SpinWindowUs.load(std::memory_order_relaxed);
     if (spinWindowUs == 0) {
         return false; // Spin path disabled: pre-change sleep behavior.
@@ -1785,13 +1446,8 @@ bool WorkStealingThreadPool::TrySpinPoll(size_t workerId, UniquePtr<TaskBase>& t
         // attempt) on the same cadence — polling it every iteration would let
         // a background task beat a steal-visible Normal task 7 laps out of 8.
         if (TryGetGlobalTask(workerId, task) ||
-            ((iteration % kSpinStealPeriod) == 0 && TryStealTask(workerId, task))) {
-            lane = JobPriority::Normal;
-            found = true;
-            break;
-        }
-        if ((iteration % kSpinStealPeriod) == 0 && TryGetBackgroundTask(workerId, task)) {
-            lane = JobPriority::Background;
+            ((iteration % kSpinStealPeriod) == 0 &&
+             (TryStealTask(workerId, task) || TryGetBackgroundTask(workerId, task)))) {
             found = true;
             break;
         }
@@ -1826,12 +1482,8 @@ bool WorkStealingThreadPool::TrySpinPoll(size_t workerId, UniquePtr<TaskBase>& t
         // can still see it, otherwise hand the wake to a sleeper — never drop.
         // m_QueuedTasks counts both classes, so the recheck's dequeue attempt
         // covers the background lane too (last, as everywhere).
-        found = TryGetGlobalTask(workerId, task) || TryStealTask(workerId, task);
-        lane = JobPriority::Normal;
-        if (!found && TryGetBackgroundTask(workerId, task)) {
-            found = true;
-            lane = JobPriority::Background;
-        }
+        found = TryGetGlobalTask(workerId, task) || TryStealTask(workerId, task) ||
+                TryGetBackgroundTask(workerId, task);
         if (!found) {
             {
                 std::lock_guard<std::mutex> lk(globalMutex);
@@ -1930,13 +1582,7 @@ bool WorkStealingThreadPool::TryStealTask(size_t thiefId, UniquePtr<TaskBase>& t
     return false;
 }
 
-void WorkStealingThreadPool::ExecuteTaskOptimized(UniquePtr<TaskBase> task, JobContext context) {
-#if GE_DEBUG_INSTRUMENTATION
-    // A queued body can outlive its publisher's frame, so it, the callbacks and the graph release here run with the
-    // frame-joined bit clear, on inline pools too. A callback fired elsewhere (a cancel, OnComplete on a finished task)
-    // keeps its thread's bit; Run closures and ParallelFor helper units set their publisher's bit again inside.
-    const GameEngine::Memory::Detail::FrameJoinedScope notFrameJoined(false);
-#endif
+void WorkStealingThreadPool::ExecuteTaskOptimized(UniquePtr<TaskBase> task) {
     TaskId taskId = task->GetTaskId();
 
     // Capability bits (slice 6: construction-time flags on TaskBase — these
@@ -1949,7 +1595,6 @@ void WorkStealingThreadPool::ExecuteTaskOptimized(UniquePtr<TaskBase> task, JobC
     // built on them) for zero-bookkeeping dispatch.
     if (!needsTaskData && !requiresDependencyManagement) {
         try {
-            JobBodyScope body(context);
             task->Execute();
         } catch (const std::exception& e) {
             Logger::Log::Error("Bare task execution failed: {}", e.what());
@@ -2024,11 +1669,7 @@ void WorkStealingThreadPool::ExecuteTaskOptimized(UniquePtr<TaskBase> task, JobC
                "erased a node whose payload was already dequeued (F12 arbitration breach)");
 
         try {
-            {
-                // The body only: the graph release below runs outside it.
-                JobBodyScope body(context);
-                task->Execute();
-            }
+            task->Execute();
 
             if (isInDependencyGraph) {
                 CompleteGraphTask(taskId, true, String{}, nullptr);
@@ -2074,11 +1715,7 @@ void WorkStealingThreadPool::ExecuteTaskOptimized(UniquePtr<TaskBase> task, JobC
         String failureMessage;
         std::exception_ptr failureException;
         try {
-            {
-                // The body only: completion callbacks run outside it.
-                JobBodyScope body(context);
-                task->Execute();
-            }
+            task->Execute();
             if (handle.IsValid()) {
                 handle.MarkCompleted();
             }
@@ -2324,10 +1961,9 @@ void WorkStealingThreadPool::CleanupTaskData(TaskId taskId) {
 
 void WorkStealingThreadPool::EnqueueTaskGlobal(UniquePtr<TaskBase> task, JobPriority priority) {
     if (m_InlineMode) {
-        // Inline mode: execute at publish (see EnqueueTask). Priority orders
-        // nothing when execution is synchronous; the body still runs as its
-        // class.
-        ExecuteInlineBounded(std::move(task), ComputeContext(priority));
+        // Inline mode: execute at publish (see EnqueueTask). Priority is
+        // meaningless when execution is synchronous.
+        ExecuteInlineBounded(std::move(task));
         return;
     }
     // Same publish sequence as EnqueueTask (§7): counters BEFORE the push (F5),
@@ -2352,7 +1988,7 @@ void WorkStealingThreadPool::EnqueueTaskGlobal(UniquePtr<TaskBase> task, JobPrio
     NotifyAfterPublish(); // (P2..P4)
 }
 
-ConcurrentQueue<UniquePtr<TaskBase>>& WorkStealingThreadPool::PriorityLane(JobPriority priority) {
+moodycamel::ConcurrentQueue<UniquePtr<TaskBase>>& WorkStealingThreadPool::PriorityLane(JobPriority priority) {
     return priority == JobPriority::Background ? m_BackgroundQueue : m_GlobalQueue;
 }
 
@@ -2376,7 +2012,6 @@ void WorkStealingThreadPool::PushGlobalQueue(UniquePtr<TaskBase> task, JobPriori
     auto& pushCounter = priority == JobPriority::Background ? m_Census.BackgroundPushes
                                                             : m_Census.GlobalPushes;
     pushCounter.fetch_add(1, std::memory_order_relaxed);
-    CountPublishedOnThisThread(1);
 }
 
 void WorkStealingThreadPool::EnqueueBulkGlobal(UniquePtr<TaskBase>* tasks, size_t count,
@@ -2401,7 +2036,6 @@ void WorkStealingThreadPool::EnqueueBulkGlobal(UniquePtr<TaskBase>* tasks, size_
     auto& pushCounter = priority == JobPriority::Background ? m_Census.BackgroundPushes
                                                             : m_Census.GlobalPushes;
     pushCounter.fetch_add(count, std::memory_order_relaxed);
-    CountPublishedOnThisThread(count);
 }
 
 } // namespace JobSystem

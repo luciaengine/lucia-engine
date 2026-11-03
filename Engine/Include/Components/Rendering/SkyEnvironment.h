@@ -1,6 +1,5 @@
 #pragma once
 
-#include "Mathematics/Interpolation.h"
 #include "Types/Types.h"
 
 #include "ECS/Entity.h" // ECS::EntityHandle
@@ -12,6 +11,7 @@
 #include "Mathematics/Curve.h" // Math::Curve, Math::CurveKey
 #include "Types/ColorUtils.h" // ColorUtils::LinearRec709Luminance
 
+#include <algorithm>
 #include <cmath>
 
 namespace GameEngine {
@@ -90,8 +90,8 @@ inline float32 EvaluateSkyScalarCubicBezier(const SkyScalarCubicBezier& bezier, 
         x += kDayHours;
     x /= kDayHours;
 
-    const float32 c1x = Math::Clamp01(bezier.Control1X);
-    const float32 c2x = Math::Clamp01(bezier.Control2X);
+    const float32 c1x = std::clamp(bezier.Control1X, 0.0f, 1.0f);
+    const float32 c2x = std::clamp(bezier.Control2X, 0.0f, 1.0f);
     auto sampleX = [c1x, c2x](float32 u) {
         const float32 inv = 1.0f - u;
         return 3.0f * inv * inv * u * c1x +
@@ -166,8 +166,9 @@ enum class SkySunIlluminanceSource : uint8
 };
 
 /// The illuminance of a full moon high in the sky on a surface facing it, in lux, as the sky ships it:
-/// a real full moon's 0.25 lx (a clear 100 000 lx sun times SkySystemConfig::moonLightIlluminanceScale
-/// times the luminance of SkySystemConfig::moonColor, which is 1). The phase scales it.
+/// the stylized moonlight the linked light has always delivered at full night from a 100 000 lx sun
+/// (the light's day value times SkySystemConfig::moonLightIlluminanceScale times the luminance of
+/// SkySystemConfig::moonColor), about 5.158 lx. A real full moon gives about 0.25 lx.
 inline constexpr float32 kDefaultMoonlightIlluminanceLux =
     kClearNoonSunIlluminanceLux * Rendering::SkySystemConfig{}.moonLightIlluminanceScale *
     ColorUtils::LinearRec709Luminance(Rendering::SkySystemConfig{}.moonColor);
@@ -186,55 +187,25 @@ inline constexpr float32 kDefaultGradientSkyIntensityNits = 4000.0f;
 inline constexpr float32 kSunSizeMin = 0.5f;
 inline constexpr float32 kSunSizeMax = 8.0f;
 
-/// The twinkle rate's top (SkyEnvironment::StarTwinkleRate): its fastest swing, about 27 Hz, is the
-/// fastest a 60 fps image shows without flicker.
-inline constexpr float32 kStarTwinkleRateMax = 12.0f;
-
-/// The range of the mean time between two falling stars (SkyEnvironment::FallingStarIntervalSeconds), in
-/// seconds. A clear night's sky shows about one every 5 minutes, a strong meteor shower about one every
-/// 40 seconds. The renderer flies four falling stars at most at once; at the shortest interval each still
-/// finishes its flight before the next starts.
-inline constexpr float32 kFallingStarIntervalMinSeconds = 0.5f;
-inline constexpr float32 kFallingStarIntervalMaxSeconds = 600.0f;
-
-/// Who sees the night stars (SkyEnvironment::StarObserver).
-enum class StarObserverKind : uint8_t
-{
-    Eye,    ///< a dark-adapted eye: the glare around bright stars, faint stars fading to white
-    Camera, ///< the same stars without the glare, each in its catalog color
-};
-
-/// The night stars' shape (SkyEnvironment::StarShape).
-enum class StarShapeKind : uint8_t
-{
-    Point,   ///< a round core: the physical shape
-    Sparkle, ///< the four-pointed sparkle (artistic)
-};
-
 struct SkyEnvironment {
     /// Selects the sky type. Physical keeps the full atmosphere model; Gradient renders the
     /// stylized 3-color gradient below and derives ambient/reflections from it.
     SkyMode Mode           = SkyMode::Physical;
     /// Gradient-sky colors (authored linear RGB, 0..1). Blended by view-direction.y:
     /// up -> Top, horizon -> Horizon, down -> Bottom. Only used when Mode == Gradient.
-    ColorLinear GradientSkyTopColor{0.20f, 0.42f, 0.78f};
-    ColorLinear GradientSkyHorizonColor{0.60f, 0.72f, 0.86f};
-    ColorLinear GradientSkyBottomColor{0.32f, 0.30f, 0.28f};
+    float32 GradientSkyTopColor[3]    = {0.20f, 0.42f, 0.78f};
+    float32 GradientSkyHorizonColor[3] = {0.60f, 0.72f, 0.86f};
+    float32 GradientSkyBottomColor[3]  = {0.32f, 0.30f, 0.28f};
     /// Gradient-sky luminance in nits (cd/m^2). Colors x this / the 203-nit reference white gives
     /// scene-linear radiance on the SAME anchor as the physical sky + auto-exposure. Only used when
     /// Mode == Gradient.
     float32 GradientSkyIntensity = kDefaultGradientSkyIntensityNits;
-    /// Local solar time in hours: 12 is solar noon wherever the sky is. The default, 10:00 at the
-    /// default Latitude, stands the sun about 42 degrees up in the south-east: it reads as day in
-    /// every kind of game, lights vertical faces and casts shadows, where a noon sun overhead
-    /// lights the scene flat.
-    float32 TimeOfDayHours = 10.0f;
+    /// Local solar time in hours: 12 is solar noon wherever the sky is.
+    float32 TimeOfDayHours = 12.0f;
     /// Degrees north (positive) or south of the equator, in [-90, 90]. With DayOfYear it sets the
-    /// sun's height at noon and the length of the day. The default is a temperate latitude, 40
-    /// degrees north: its mid-morning sun reads as day in every kind of game and is never
-    /// overhead (at noon it stands 50 degrees up, so objects keep a shadow beside them). On the
-    /// default day, the March equinox, the day lasts 12 hours.
-    float32 Latitude = 40.0f;
+    /// sun's height at noon and the length of the day. The default, the equator on the March
+    /// equinox, puts the noon sun overhead and gives a 12-hour day.
+    float32 Latitude = 0.0f;
     /// Day of a non-leap year: 1 = 1 January, 172 = 21 June, 355 = 21 December.
     int32 DayOfYear = Rendering::kMarchEquinoxDay;
     /// Which way north points in the scene: a heading about +Y in degrees, in [0, 360), clockwise
@@ -291,9 +262,9 @@ struct SkyEnvironment {
     /// is the faithful bridge for Synty ER-style authored washes (purple/magenta/cyan) — a
     /// non-destructive art tint over the physically baked irradiance, applied at IBL sampling
     /// time (not baked, so editing it needs no re-bake). Default white = identity (no change).
-    ColorLinear AmbientTintSky{1.0f, 1.0f, 1.0f};
-    ColorLinear AmbientTintEquator{1.0f, 1.0f, 1.0f};
-    ColorLinear AmbientTintGround{1.0f, 1.0f, 1.0f};
+    float32 AmbientTintSky[3]     = {1.0f, 1.0f, 1.0f};
+    float32 AmbientTintEquator[3] = {1.0f, 1.0f, 1.0f};
+    float32 AmbientTintGround[3]  = {1.0f, 1.0f, 1.0f};
     /// Shared key times (hours in [0, 24)) for the vec3 COLOR day-keys only (GroundAlbedoKeys,
     /// GroundNightColorKeys, ...). The scalar day curves below are arbitrary Math::Curves that carry
     /// their OWN per-key times, so a scalar key's hour is independent of these color-stop times.
@@ -328,30 +299,27 @@ struct SkyEnvironment {
     };
 
     /// Reflectance of the planet floor (midnight / dawn / midday / sunset). Drives the
-    /// ground bounce baked into the IBL (the lower hemisphere a surface receives), the
-    /// sunlight the ground reflects back into the sky (the multiple-scattering LUT), and the
+    /// ground bounce baked into the IBL (the lower hemisphere a surface receives) and the
     /// visible below-horizon ground in the PlanetGround and StylizedGround modes.
     ///
-    /// Every key is the same neutral Rendering::kDefaultGroundAlbedo, 0.3, typical land (sand,
-    /// about 0.4, and snow are the bright exceptions). A brighter ground also brightens and greys
-    /// the sky it lights from below. The ground's
-    /// colour does not change with the hour; its brightness follows the sun (N.L and
-    /// transmittance) and the sky's mean radiance.
+    /// Every key is the same neutral grey, chosen by measurement: the sky model stands in
+    /// for the ground the scene actually has, and in the default scene (a light floor,
+    /// noon) 0.59 is the largest neutral albedo whose baked -Y irradiance and -Y
+    /// prefilter faces stay at or below those of a whole-scene probe capture on every
+    /// channel; blue reaches the probe first, because the floor is lit by the blue sky.
+    /// The ground's colour does not change with the hour; its brightness follows the sun
+    /// (N.L and transmittance) and the sky's mean radiance.
     SkyVec3DayKeys GroundAlbedoKeys{
-        {Rendering::kDefaultGroundAlbedo, Rendering::kDefaultGroundAlbedo, Rendering::kDefaultGroundAlbedo},
-        {Rendering::kDefaultGroundAlbedo, Rendering::kDefaultGroundAlbedo, Rendering::kDefaultGroundAlbedo},
-        {Rendering::kDefaultGroundAlbedo, Rendering::kDefaultGroundAlbedo, Rendering::kDefaultGroundAlbedo},
-        {Rendering::kDefaultGroundAlbedo, Rendering::kDefaultGroundAlbedo, Rendering::kDefaultGroundAlbedo},
+        {0.59f, 0.59f, 0.59f},
+        {0.59f, 0.59f, 0.59f},
+        {0.59f, 0.59f, 0.59f},
+        {0.59f, 0.59f, 0.59f},
     };
-    /// The floor's radiance at night under the night sky's own glow alone (airglow and starlight,
-    /// NightSkyHorizonColorKeys and the zenith's 1.7e-4 cd/m2), scene-linear on the 203-nit anchor:
-    /// a 0.3 floor under a sky averaging about 1.4e-6. The moonlit floor is the moon's own term on
-    /// top of it.
     SkyVec3DayKeys GroundNightColorKeys{
-        {3.5e-7f, 4.2e-7f, 5.7e-7f},
-        {3.5e-7f, 4.2e-7f, 5.7e-7f},
-        {3.5e-7f, 4.2e-7f, 5.7e-7f},
-        {3.5e-7f, 4.2e-7f, 5.7e-7f},
+        {0.03f, 0.032f, 0.045f},
+        {0.022f, 0.022f, 0.03f},
+        {0.008f, 0.008f, 0.012f},
+        {0.02f, 0.018f, 0.028f},
     };
     /// A flat 0.9 at every hour: the bounce already dims with the sun's N.L and transmittance
     /// and with the sky's mean radiance, so a day curve here would dim it twice.
@@ -393,16 +361,16 @@ struct SkyEnvironment {
         {0.000607054f, 0.000910581f, 0.001517635f},
         {0.002f, 0.0016f, 0.0026f},
     };
-    /// The night sky's own glow at the horizon, scene-linear on the 203-nit anchor: airglow and
-    /// starlight, about three times the zenith's 1.7e-4 cd/m2 (van Rhijn's longer path through the
-    /// glowing layer), desaturated blue-grey, added to the twilight and the moonlit sky the LUT
-    /// carries. A moonless night's exposure (the Auto Min EV floor of -7, darkened by the exposure
-    /// compensation curve) shows it as the dark sky behind the stars.
+    /// Night-sky horizon glow, scene-linear on the 203-nit anchor. Values sit
+    /// around 0.05-0.4 nits (a real light-polluted night sky): bright enough to
+    /// silhouette the horizon once auto-exposure adapts, dim enough that
+    /// midnight meters BELOW the AutoExposureMinEv floor and reads as night
+    /// instead of a pastel sky.
     SkyVec3DayKeys NightSkyHorizonColorKeys{
-        {2.09e-6f, 2.55e-6f, 3.49e-6f},
-        {2.09e-6f, 2.55e-6f, 3.49e-6f},
-        {2.09e-6f, 2.55e-6f, 3.49e-6f},
-        {2.09e-6f, 2.55e-6f, 3.49e-6f},
+        {0.0012f, 0.00035f, 0.0019f},
+        {0.0009f, 0.0005f, 0.0011f},
+        {0.0002f, 0.0002f, 0.0003f},
+        {0.0018f, 0.0007f, 0.0016f},
     };
     Math::Curve GroundHorizonCosWidthKeys = MakeSkyScalarCurve(0.02f, 0.03f, 0.03f, 0.055f);
     SkyScalarCurveShapeMode GroundHorizonCosWidthShapeMode = SkyScalarCurveShapeMode::KeyCurve;
@@ -458,64 +426,40 @@ struct SkyEnvironment {
     float32 SunSize2D      = 1.0f;
     float32 SkyPan2D       = 0.0f;
 
+    /// The lit shape of the moon's disc: 0=new, 0.25=first quarter, 0.5=full, 0.75=last quarter.
+    float32 MoonPhase01 = 0.5f;
     /// Where the moon sits on the sun's daily circle (the sun's declination), as a fraction of a turn
-    /// of hour angle from the sun: 0=new moon, 0.25=first quarter, 0.5=full moon, 0.75=last quarter.
-    /// It is also the moon's phase: the disc's lit shape and its light (Krisciunas and Schaefer's
-    /// phase law, a quarter moon at 0.091 of full) both follow it.
+    /// of hour angle from the sun: 0=new moon position, 0.25=first-quarter position, 0.5=full-moon
+    /// position, 0.75=last-quarter position.
     float32 MoonArcPosition = 0.5f;
     /// When true and `AnimateTimeOfDay`, advances MoonArcPosition over MoonCycleDays.
     bool AutoMoonArc = true;
     /// Length of one New Moon-to-New Moon lunar cycle, in simulated days (24 h each).
     float32 MoonCycleDays = 29.5f;
-    /// Multiplier on the default drawn moon disc radius (1.0 = 1.5 degrees). The disc is magnified, not
-    /// brightened or dimmed: its surface keeps the real moon's brightness at any size.
+    /// Multiplier on the default apparent moon disk radius (1.0 ≈ ~1.5°).
     float32 MoonSize = 2.39f;
     float32 MoonSize2D = 0.334f;
-    /// Stylistic trim on the moon disc's brightness, in EV (stops). 0 = the real moon's surface
-    /// brightness for the phase, at any drawn size; independent of SkyExposureTrim and of the camera
-    /// auto-exposure (the disc is too small to move the meter).
-    float32 MoonExposureEV = 0.0f;
-    /// Falling stars (meteors) at night: stars of the star model that streak across the sky, each
-    /// with its own path, speed and brightness (magnitude +1 to -3, the brightest brighter than any star).
+    /// Moon-vs-sky brightness contrast trim, in EV (stops). Boosts the small moon disk relative to
+    /// the night sky so it reads against the stars; independent of SkyExposureTrim and of the camera
+    /// auto-exposure (the disk is too small to move the meter).
+    float32 MoonExposureEV = 4.0f;
     bool FallingStarsEnabled = true;
-    /// The mean time between two falling stars anywhere in the sky, in seconds
-    /// (kFallingStarIntervalMinSeconds to kFallingStarIntervalMaxSeconds).
-    float32 FallingStarIntervalSeconds = 5.0f;
+    float32 FallingStarAmount = 0.35f;
+    float32 FallingStarFrequency = 0.35f;
+    float32 FallingStarSpeed = 4.0f;
+    float32 FallingStarLength = 1.0f;
+    float32 FallingStarThickness = 0.485f;
+    float32 FallingStarDotSize = 0.1f;
+    float32 FallingStarDotSize2D = 0.979f;
 
-    /// The faintest star drawn, as a visual (V) magnitude: 6.5 is the naked-eye limit under a
-    /// dark sky, about 9,000 stars over the whole sky. A star near the horizon is fainter by the
-    /// air it crosses, and a bright sky behind a star (twilight, day) hides it by contrast.
-    /// Range 0 to 8. The default, 7.25, is a dark site's naked-eye sky.
-    float32 StarLimitingMagnitude = 7.25f;
-    /// Physical: how far a star's brightness swings near the horizon (scintillation), 0 to 1, at about
-    /// 6 degrees up. It grows with the air the light crosses, so stars overhead hold steady.
-    float32 StarTwinkleAmount = 0.3f;
-    /// Artistic: compresses the bright stars' energy against the faint ones'. 1 is physical (a
-    /// magnitude -1.5 star carries 1,585 times the light of a magnitude 6.5 star); 0.775 gives 300
-    /// times, which keeps the brightest stars from clipping at a night exposure.
-    float32 StarHighlightCompression = 0.775f;
-    /// Artistic: a soft glow around the brightest stars, as a multiple of the star's own light (0 to
-    /// 4; 0.5 adds half the star's light again). It applies in full to stars brighter than magnitude 1.5
-    /// and fades out by magnitude 3. It adds light around the core or the sparkle, which keeps the
-    /// brightness it has with no glow. 0 is physical.
-    float32 StarGlow = 0.9f;
-    /// Artistic: how fast the twinkle swings, a multiple of a slow twinkle (0 to kStarTwinkleRateMax).
-    /// At 1 its fastest swing is about 2 Hz; the top keeps the fastest swing under 30 times a second (real
-    /// scintillation is faster still).
-    float32 StarTwinkleRate = 1.0f;
-    /// Observer: Camera, the default, draws every star in its catalog color with no glare; Eye draws the
-    /// stars as a dark-adapted eye sees them (glare, faint stars fading to white).
-    StarObserverKind StarObserver = StarObserverKind::Camera;
-    /// Artistic: the star's core size, 0.5 to 3. 1 is physical (a 0.7 px sigma point); smaller is a
-    /// tighter, brighter point.
-    float32 StarCoreScale = 0.75f;
-    /// Artistic: four diffraction spikes on the stars that carry the glow, as the share of the glow's
-    /// light they take (0 to 1), so the star's total light does not change. 0 is none.
-    float32 StarSpikes = 0.2f;
-    /// Artistic: the spikes' falloff length, in glow radii (0.5 to 4): an arm fades to a third over it.
-    float32 StarSpikeLength = 0.6f;
-    /// Artistic: the star's shape. Point is physical; Sparkle is the four-pointed star.
-    StarShapeKind StarShape = StarShapeKind::Point;
+    float32 StarDensity       = 0.5f;
+    float32 StarBrightness    = 0.6f;
+    float32 StarSize          = 1.0f;
+    float32 StarDiamondShape  = 0.5f;
+    float32 StarCoreSize      = 0.15f;
+    float32 StarGlowFalloff   = 10.0f;
+    float32 TwinkleSpeed      = 0.5f;
+    float32 TwinkleIntensity  = 0.3f;
 };
 
 } // namespace Components

@@ -4,13 +4,12 @@ project(UI LANGUAGES CXX)
 # Headers and sources
 file(GLOB_RECURSE UI_PUBLIC_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/Include/UI/*.h)
 set(UI_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/DefaultStylesheet.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Update.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Input.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Assets.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_Update.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_Input.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_Assets.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIElement.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/ElementIdIndex.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/ModuleOwnedHandlers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/ITextMeasurable.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/GlyphRunEmitter.cpp
@@ -19,39 +18,32 @@ set(UI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UITargetSpace.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UITextureSpace.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/ClassBackgroundImageQuery.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/StyleDeclaration.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/StyleOverrides.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/StyleInterpolation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/StyleApplier.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/TransitionEngine.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UITransform.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/ResolvedStyle.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/BubblePaint.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_StyleResolve.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_StyleAnalysis.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_HoverAndEvents.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_AttachEvents.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_StyleResolve.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_StyleAnalysis.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_HoverAndEvents.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_AttachEvents.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UiDispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UiContext.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UiPostTarget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UiPostHandle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UiCoalescedPost.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManagerRef.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManagerRef.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/ModifierKeyState.cpp
 
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Assets/UILayoutAsset.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Assets/UIStyleAsset.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Assets/CssImports.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/BackgroundImage/BackgroundImageCache.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/BackgroundImage/BackgroundImageGeometry.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/BackgroundImage/BackgroundImageUpload.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/SvgBackgroundRaster.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Parsers/XMLParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Parsers/CSSParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Parsers/CSSValueParsers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Parsers/CSSVarResolver.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Parsers/CSSStylesheetParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Parsers/Markdown/MarkdownParser.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Parsers/Markdown/MarkdownInlineParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Layout/DropdownPopupPlacement.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Layout/YogaLayout.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/Label.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/BaseField.cpp
@@ -65,7 +57,6 @@ set(UI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Layout/Docking.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Layout/DockLayoutController.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Layout/DockingHitTest.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Layout/DropdownPopupPlacement.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/Mount.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/WeightedPane.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/Button.cpp
@@ -79,11 +70,13 @@ set(UI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/AxisHeaderBar.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/TableView.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/EnableDot.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Parsers/MarkdownParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Parsers/MarkdownInlineParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/MarkdownText.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/MarkdownTextSelection.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/Toggle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/Checkbox.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/Dropdown.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/MaskField.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/PopoverArrow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/Slider.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Controls/Foldout.cpp
@@ -100,24 +93,27 @@ set(UI_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/PointerManipulator.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/ContextMenuManipulator.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/DismissablePopup.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/FocusQueries.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/FocusIsInside.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/ItemResizeGesture.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/DragDrop/DragDropManager.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/DragDrop/DragDropOverlay.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/DragDrop/DragDropGhostRendererRegistry.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/DragDropManager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/DragDropOverlay.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/DragDropGhostRendererRegistry.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/Interaction/TooltipOverlay.cpp
 
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UICompatDrawRuns.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/UITextureRegistry.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_RenderPrep.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_RenderRG.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_PrimitiveGen.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_RenderPrep.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_RenderRG.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_PrimitiveGen.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/NineSliceLayout.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/TextSegmentation.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Layout.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_CascadeProbe.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Fonts.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager/UIManager_Debug.cpp
+    Source/TextSegmentation_Unicode.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_Layout.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_CascadeProbe.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_Fonts.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_Localization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_TextWarmup.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/UIManager_Debug.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/SlotAllocator.cpp
 )
 
@@ -147,16 +143,14 @@ target_include_directories(UI PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Include)
 # AssetManager.h includes FileWatcher/FileWatcher.h. Headers only: the
 # FileWatcher objects reach the binary through the Engine module splice.
 target_include_directories(UI PRIVATE $<TARGET_PROPERTY:FileWatcher,INTERFACE_INCLUDE_DIRECTORIES>)
-# AssetManager.h includes Events/Event.h (header-only).
-target_link_libraries(UI PRIVATE Events)
 
 # Third-party dependencies via vcpkg (optional for now; linked when present)
 find_package(pugixml CONFIG QUIET)
 if(pugixml_FOUND)
     target_link_libraries(UI PUBLIC pugixml::pugixml)
-    target_compile_definitions(UI PRIVATE GE_HAVE_PUGIXML=1)
+    target_compile_definitions(UI PUBLIC GE_HAVE_PUGIXML=1)
 else()
-    target_compile_definitions(UI PRIVATE GE_HAVE_PUGIXML=0)
+    target_compile_definitions(UI PUBLIC GE_HAVE_PUGIXML=0)
 endif()
 
 # Prefer CMake package config if provided by vcpkg; fall back to manual discovery in manifest mode
@@ -164,8 +158,10 @@ find_package(lexbor CONFIG QUIET)
 if(lexbor_FOUND)
     if(TARGET lexbor::lexbor)
         target_link_libraries(UI PUBLIC lexbor::lexbor)
+        target_compile_definitions(UI PUBLIC GE_HAVE_LEXBOR=1)
     elseif(TARGET lexbor::lexbor_static)
         target_link_libraries(UI PUBLIC lexbor::lexbor_static)
+        target_compile_definitions(UI PUBLIC GE_HAVE_LEXBOR=1)
     else()
         message(FATAL_ERROR "lexbor package found, but no supported imported target was exported.")
     endif()
@@ -196,6 +192,7 @@ else()
         target_include_directories(lexbor::lexbor INTERFACE "${LEXBOR_INCLUDE_DIR}")
         target_link_libraries(lexbor::lexbor INTERFACE)
         target_link_libraries(UI PUBLIC lexbor::lexbor)
+        target_compile_definitions(UI PUBLIC GE_HAVE_LEXBOR=1)
         message(STATUS "lexbor located via manual discovery: ${LEXBOR_LIBRARY}")
     else()
         message(FATAL_ERROR "lexbor not found. Ensure it is installed via vcpkg for ${VCPKG_TARGET_TRIPLET} and that CMAKE_TOOLCHAIN_FILE points to vcpkg.cmake.")
@@ -229,9 +226,7 @@ endif()
 # Platform is here for one interface: INativeContextMenu (Platform/ContextMenu.h), which
 # ContextMenuManipulator builds into through the host-installed factory. Platform::Window
 # stays opaque throughout the UI module.
-target_link_libraries(UI PUBLIC Logger AssetCore GameEngineRendering Text Types JobSystem Scheduler Input NumericExpression Platform)
-# BackgroundImageUpload decodes image files.
-target_link_libraries(UI PRIVATE Image)
+target_link_libraries(UI PUBLIC Logger AssetCore GameEngineRendering Text Localization Types JobSystem Scheduler Input NumericExpression Platform)
 
 
 # Manually inherit compile definitions from Text module to ensure font generation is enabled
@@ -257,10 +252,6 @@ set_target_properties(UI PROPERTIES
     FOLDER "UI"
 )
 
-if(BUILD_BENCHMARKS)
-    add_subdirectory(Benchmarks)
-endif()
-
 if(MSVC)
     target_compile_options(UI PRIVATE /bigobj)
 endif()
@@ -270,11 +261,32 @@ option(UI_BUILD_EXAMPLES "Build UI module examples" ON)
 if(UI_BUILD_EXAMPLES AND BUILD_EXAMPLES)
     find_package(glfw3 QUIET)
 
-    # Both demos link Engine alone: UI, GameEngineRendering, FileWatcher and AssetRuntime are
-    # already inside it (cmake/EngineModuleDuplicationCheck.cmake), and it exports the GE_*
-    # hot-reload entry points.
     add_executable(UIWindowDemo ${CMAKE_CURRENT_SOURCE_DIR}/Examples/UIWindowDemo.cpp)
-    target_link_libraries(UIWindowDemo PRIVATE Engine)
+    target_link_libraries(UIWindowDemo PRIVATE UI Engine GameEngineRendering FileWatcher Platform)
+    add_custom_command(TARGET UIWindowDemo POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/../Localization/Examples/Resources"
+            "$<TARGET_FILE_DIR:UIWindowDemo>/Localization")
+    add_custom_command(TARGET UIWindowDemo POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:UIWindowDemo>/licenses/icu"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../../ThirdParty/ICU/LICENSE.txt"
+            "$<TARGET_FILE_DIR:UIWindowDemo>/licenses/icu/LICENSE.txt")
+    add_custom_command(TARGET UIWindowDemo POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:UIWindowDemo>/Assets/UI"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:UIWindowDemo>/Assets/Fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/Assets/UI/UIDemoLayout.xml"
+            "${CMAKE_SOURCE_DIR}/Assets/UI/UIDemoStyles.css"
+            "$<TARGET_FILE_DIR:UIWindowDemo>/Assets/UI"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts"
+            "$<TARGET_FILE_DIR:UIWindowDemo>/Assets/Fonts")
+    add_dependencies(UIWindowDemo CompileShaders)
+    add_custom_command(TARGET UIWindowDemo POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_BINARY_DIR}/Shaders" "$<TARGET_FILE_DIR:UIWindowDemo>/Shaders")
+    ge_stage_runtime_dependencies(UIWindowDemo)
     if(glfw3_FOUND)
         target_link_libraries(UIWindowDemo PRIVATE glfw)
         target_compile_definitions(UIWindowDemo PRIVATE HAS_GLFW=1)
@@ -301,8 +313,11 @@ if(UI_BUILD_EXAMPLES AND BUILD_EXAMPLES)
     endif()
 
     # SearchDialog visual demo
-    add_executable(UISearchDialogDemo ${CMAKE_CURRENT_SOURCE_DIR}/Examples/UISearchDialogDemo.cpp)
-    target_link_libraries(UISearchDialogDemo PRIVATE Engine)
+    add_executable(UISearchDialogDemo
+        ${CMAKE_CURRENT_SOURCE_DIR}/Examples/UISearchDialogDemo.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UITestsHotReloadStubs.cpp
+    )
+    target_link_libraries(UISearchDialogDemo PRIVATE UI AssetRuntime Engine GameEngineRendering)
     if(glfw3_FOUND)
         target_link_libraries(UISearchDialogDemo PRIVATE glfw)
         target_compile_definitions(UISearchDialogDemo PRIVATE HAS_GLFW=1)
@@ -324,9 +339,8 @@ if(UI_BUILD_EXAMPLES AND BUILD_EXAMPLES)
         "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/SearchDialog.css"
         "${CMAKE_CURRENT_BINARY_DIR}/Assets/UI/controls/SearchDialog.css" COPYONLY)
 
-    # Stage nethost.dll so the delay-loaded Engine dependency resolves at runtime (a
-    # scripting build only: the helper exists when ENABLE_SCRIPTING is on).
-    if(WIN32 AND COMMAND ge_add_dotnet_hosting_runtime)
+    # Stage nethost.dll so the delay-loaded Engine dependency resolves at runtime.
+    if(WIN32)
         ge_add_dotnet_hosting_runtime(UISearchDialogDemo)
     endif()
 
@@ -351,21 +365,22 @@ if(BUILD_TESTING)
     # directory through ge_stage_test_asset. Without them the resolver falls
     # through to a system face — Segoe UI on Windows — and every test that lays
     # out text would measure whatever font the host happens to have instead of the
-    # one its expected numbers were derived from. Stage every shipped weight and
-    # style so bold and italic requests cannot silently measure the regular face.
-    # RobotoMono also provides a distinct face for font substitution tests.
+    # one its expected numbers were derived from. RobotoMono rides along because
+    # UIFontLoadingTests needs a SECOND, visibly different face to tell "the
+    # default atlas" from "an arbitrary loaded one"; unstaged, that test resolved
+    # nothing and skipped.
     #
     # Engine ONLY — UI / AssetCore / AssetRuntime / GameEngineRendering are
     # OBJECT modules already spliced into Engine.dll; linking them here as
     # well would give the exe a second copy of every module's file-scope state
     # (UIManager singletons, texture registries — issue #356, same disease as
-    # #340; cmake/EngineModuleDuplicationCheck.cmake refuses it). Module headers
-    # propagate via Engine's re-exported INTERFACE, and Engine.dll exports the
-    # GE_* hot-reload dispatcher, so no local stubs are needed. GameEngine.Native
+    # #340). Module headers propagate via Engine's re-exported INTERFACE, and
+    # Engine.dll exports the GE_* hot-reload dispatcher, so the local
+    # UITestsHotReloadStubs.cpp compile is not needed either. GameEngine.Native
     # imports the same Engine.dll, so linking it adds an import, not a second
     # copy of any engine module.
     #
-    # Include roots: UI/Source for UIManager/UIManager_Internal.h (surgical-op tests inspect
+    # Include roots: UI/Source for UIManager_Internal.h (surgical-op tests inspect
     # NodeRec scratch vectors), Engine/Source for GameUI/SessionEvent.h (the
     # session-gated event registration, deliberately not public C++ API), and
     # Rendering/Tests for ScopedEnvVar, the RAII guard the device-loss pins use.
@@ -380,10 +395,15 @@ if(BUILD_TESTING)
             # its own process, so every member carries it.
             ${CMAKE_CURRENT_SOURCE_DIR}/Tests/HeapDiagnosticsPreconditionTests.cpp
             ${ARGN}
+            ${CMAKE_CURRENT_SOURCE_DIR}/Tests/SharedHeadlessDevice.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UITestShaderSetup.cpp)
+        if(WIN32)
+            # nethost.dll/hostfxr.dll next to the exe, so delay-loaded hosting calls
+            # from Engine/Scripting can succeed in this test binary.
+            ge_add_dotnet_hosting_runtime(${target_name})
+        endif()
         target_link_libraries(${target_name} PRIVATE
-            Engine GameEngine.Native RenderGraphTestSupport SharedHeadlessDeviceTestSupport
-            GTest::gtest GTest::gtest_main)
+            Engine GameEngine.Native RenderGraphTestSupport GTest::gtest GTest::gtest_main)
         # Layout, parser and cascade tests drive the YG* C API directly (LayoutYogaTests,
         # SubtreeDirtyTests, CSSKeywordParsingTests among them). yogacore is a
         # third-party static lib linked PRIVATE into Engine.dll, and the generated
@@ -401,6 +421,7 @@ if(BUILD_TESTING)
         endif()
         target_compile_definitions(${target_name} PRIVATE UI_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
         target_include_directories(${target_name} PRIVATE
+            ${CMAKE_SOURCE_DIR}/Tests
             ${CMAKE_CURRENT_SOURCE_DIR}/Source
             ${CMAKE_SOURCE_DIR}/Engine/Source
             ${CMAKE_CURRENT_SOURCE_DIR}/../Rendering/Tests)
@@ -412,14 +433,12 @@ if(BUILD_TESTING)
             UNITY_BUILD OFF)
         ge_set_output_tests(${target_name})
         ge_stage_runtime_dependencies(${target_name})
-        foreach(face IN ITEMS
-                Roboto-Regular Roboto-Bold Roboto-Italic Roboto-BoldItalic
-                Roboto-Medium Roboto-MediumItalic
-                RobotoMono-Regular RobotoMono-Bold RobotoMono-Italic RobotoMono-BoldItalic)
-            ge_stage_test_asset(${target_name}
-                "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/${face}.ttf"
-                "Assets/Fonts/${face}.ttf")
-        endforeach()
+        ge_stage_test_asset(${target_name}
+            "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/Roboto-Regular.ttf"
+            "Assets/Fonts/Roboto-Regular.ttf")
+        ge_stage_test_asset(${target_name}
+            "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Fonts/RobotoMono-Regular.ttf"
+            "Assets/Fonts/RobotoMono-Regular.ttf")
         if(MSVC)
             target_compile_options(${target_name} PRIVATE /wd6326 /wd6011)
         endif()
@@ -441,14 +460,11 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/PercentageUnitsFontGapTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/PercentageUnitsMarginRadiusTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/PercentageUnitsLengthTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/PercentMinWidthShrinkTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShadowGlowPrimitiveTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CssTransformRenderTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CssTransformPointerTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CssTransformWindowRectTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextEffectsTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/BackgroundOriginPaddingBoxTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/NineSliceLayoutTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/LocalizationTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/LayoutYogaTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/YogaRedesignPreconditionTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/SubtreeDirtyTests.cpp
@@ -456,6 +472,7 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextOverflowEllipsisTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextInputGeometryTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextSegmentationTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UnicodeTextEditingTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextSegmentationPerfTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextGeometryChromeParityTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextPenPlacementParityTests.cpp
@@ -470,7 +487,6 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ViewportRectSnapTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextAreaContentScaleTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextAreaMetricsTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextAreaIncrementalWrapTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextAreaScrollCullingTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CssColorToPrimitiveTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextSelectionPaintOrderTests.cpp
@@ -496,32 +512,27 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextCoverageCorrectionTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextMaskGammaGoldenTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/SlugEdgeProfileTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextContrastReadbackTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIEncodedBlendParityTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/HudFlipPreviewProbe.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/BorderBackgroundCompositeTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/OverflowClipPaddingBoxTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ViewportUnitsLayoutTests.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/OverflowClipPaddingBoxTests.cpp)
 
     # Styling: the CSS and XML parsers, the cascade and its caches, restyle and
     # invalidation, transitions, and every test that reads the shipped editor
     # stylesheets or layouts.
     ge_add_ui_test(UIStyleTests
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ElementBuilderStyleTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UITransitionCostTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CSSParserTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CssImportsTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CSSMathFunctionTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CSSViewportUnitTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ClassBackgroundImageQueryTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/BorderSideShorthandTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CSSKeywordParsingTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/XMLParserTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/StyleUtilTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/StyleOverrideCustomColorTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ElementStyleTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/StyleOverrideCustomVarCascadeTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/FloatingPanelTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/MarkdownTextLayoutTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIManagerPseudoInvalidationTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/StructuralPseudoRestyleTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/RuleCacheValidatorTests.cpp
@@ -537,20 +548,18 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedMarkupTextAreaFocusTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextSelectionColorTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedMarkupUnseenDotTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedBadgeButtonStateTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedMarkupsTabTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedMarkupActivityStripeTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedSearchPlaceholderTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedHeadingWeightTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedDropdownPictureRowTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/FontWeightMatchTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ShippedFontFaceTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/StyleApplierTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIHoverTransitionTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/MathInterpolationTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CSSTransitionParserTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/StyleInterpolationTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CssTransformStyleTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TransitionEngineTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/SearchDialogFocusTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DefaultStylesheetTests.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DefaultStylesheetTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/LogToolbarLayoutTests.cpp)
     # Stage the shipped editor stylesheets next to the test exe, at the same
     # relative path the editor reads them from under its own exe. ShippedFocusRingTests
     # asserts against these bytes rather than inline CSS, which is the only way a
@@ -558,6 +567,7 @@ if(BUILD_TESTING)
     # the :focus -> :focus-visible migration a no-op for generic buttons.
     # Every shipped sheet at every depth: a control or panel that keeps its sheet
     # in its own folder (controls/CurveField/CurveField.css) is swept too.
+
     set(GE_UITESTS_SHIPPED_UI_ROOT "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI")
     file(GLOB_RECURSE GE_UITESTS_SHIPPED_CSS RELATIVE "${GE_UITESTS_SHIPPED_UI_ROOT}"
         "${GE_UITESTS_SHIPPED_UI_ROOT}/*.css")
@@ -587,6 +597,18 @@ if(BUILD_TESTING)
         COMMENT "Staging shipped layout.uxml for UIStyleTests"
         VERBATIM)
 
+    add_custom_command(TARGET UIStyleTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/LogToolbarActions.uxml"
+            "$<TARGET_FILE_DIR:UIStyleTests>/Assets/UI/controls/LogToolbarActions.uxml"
+        VERBATIM)
+
+    set_property(TARGET UIStyleTests APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/EditorTopToolbar.css"
+        "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/EditorTopToolbar.uxml"
+        "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/LogPanel.css"
+        "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/LogToolbarActions.uxml")
+
     # FloatingPanel instantiates its chrome from this layout through the asset
     # manager; FloatingPanelTests mount the staged Assets/ tree as the editor
     # source, so the file has to be there next to the control's stylesheet.
@@ -597,44 +619,30 @@ if(BUILD_TESTING)
         COMMENT "Staging FloatingPanel.uxml for UIStyleTests"
         VERBATIM)
 
-    # Dropdown instantiates each picture row from this layout through the asset
-    # manager; ShippedDropdownPictureRowTests mount the staged Assets/ tree as the
-    # editor source, so the file sits next to the control's stylesheet.
-    add_custom_command(TARGET UIStyleTests POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/DropdownPictureRow.uxml"
-            "$<TARGET_FILE_DIR:UIStyleTests>/Assets/UI/controls/DropdownPictureRow.uxml"
-        COMMENT "Staging DropdownPictureRow.uxml for UIStyleTests"
-        VERBATIM)
-
     # Controls: buttons, toggles, dropdowns, fields and text inputs, sliders,
     # list, grid, tree and table views, popups, docking and focus hand-off.
     ge_add_ui_test(UIControlTests
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DockingTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DockTabCloseTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DockPanelDefaultTabIconTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DockingHitTestTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ButtonTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ContextMenuManipulatorTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ToggleCheckboxTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DropdownTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/MaskFieldTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DisabledControlInputTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/DismissablePopupTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/PopupPlacementTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TooltipPlacementTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/PointerArrowTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIScrollVirtualizationTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/VirtualWindowCoreTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextFieldXmlTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextFieldPointerTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/FieldCaptionTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/FloatFieldDragToChangeTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/FloatFieldDisplayTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/PointerLockTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextInputSelectionTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ReleaseFocusHandoffTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextInputCursorTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/MarkdownTextLayoutTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/MarkdownTextTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TextAreaTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TreeViewTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TableViewTests.cpp
@@ -644,9 +652,7 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/SearchDialogTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CaretBlinkTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/CaretForceVisibleDeadlineTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ItemResizeGestureTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/MarkdownParserTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/MarkdownTextTests.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ItemResizeGestureTests.cpp)
 
     # The UI core the rest sits on: event dispatch and handler tables, element
     # registration and lifecycle, attach/detach, UIManager ordering and input
@@ -660,9 +666,6 @@ if(BUILD_TESTING)
     # AbiNativeSmokeTest links the exports but has no host, so every call there
     # stops at not-found before a type is ever examined.
     ge_add_ui_test(UITests
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ElementBuilderTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ElementIdAttachmentTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ElementIdLookupTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ModuleOwnedHandlerRevocationTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ElementFactoryOwnershipTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ElementTypeOwnershipHazardTests.cpp
@@ -678,18 +681,13 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIElementWeakRefTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/AttachDetachEventTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/FocusReleaseOnRemovalTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/FocusIsInTextInputTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ControlValueEventTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIManagerOrderTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIMouseButtonDispatchTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/PressOwnerRemovedTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIManagerRenderRGTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UITargetSpaceTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UITextureSpaceTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIBackgroundTextureMipTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIDeferredTextureSlotTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/SvgBackgroundRasterTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UISvgBackgroundVariantTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/GameUIHostTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/GameUIHostKeyboardTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/GameUIElementHandleTests.cpp
@@ -700,25 +698,12 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIHotReloadTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIStyleAssetReloadTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/OverlayLayerOrderTests.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/TooltipTemplateTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UITextureRegistryTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UITextureRegistryDeviceRebuildTests.cpp)
 
-    # --- Dispatch allocation contract. Its own target because it counts allocations in a
-    #     process-wide window, which must not take in the UI test executables' shared tests.
-    #     Same isolation rule as Tests/Editor/ToolbarDragDropAllocationTests.
-    #
-    # The allocation contracts measured in Engine are registered only where Engine's
-    # allocations are counted. On Windows every image has its own operator new, and
-    # Engine.dll carries the allocation hook only where GE_DEBUG_INSTRUMENTATION is 1, so a
-    # Windows Release run would read a false zero: those configurations are left out
-    # rather than run as a vacuous pass. On macOS and Linux the replacements coalesce
-    # process-wide, so every configuration measures.
-    if(WIN32)
-        set(_ge_engine_allocation_test_configurations CONFIGURATIONS Debug DebugFast)
-    else()
-        set(_ge_engine_allocation_test_configurations "")
-    endif()
+    # --- Dispatch allocation contract. Its own target because it replaces global operator new,
+    #     which is process-wide and must not be imposed on the UI test executables' shared
+    #     tests. Same isolation rule as Tests/Editor/ToolbarDragDropAllocationTests.
     add_executable(UIDispatchAllocationTests
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIDispatchAllocationTests.cpp
     )
@@ -731,20 +716,22 @@ if(BUILD_TESTING)
     )
     ge_set_output_tests(UIDispatchAllocationTests)
     ge_stage_runtime_dependencies(UIDispatchAllocationTests)
-    add_test(NAME UIDispatchAllocationTests ${_ge_engine_allocation_test_configurations}
-        COMMAND $<TARGET_FILE:UIDispatchAllocationTests>)
+    add_test(NAME UIDispatchAllocationTests COMMAND $<TARGET_FILE:UIDispatchAllocationTests>)
 
     # --- Mouse dispatch allocation contract. Its own target for the same
     #     isolation reason, and separate from UIDispatchAllocationTests because
-    #     it counts this thread only: OnMouseButton lives in Engine.dll and the
-    #     job system's workers must not be charged to a click.
+    #     it measures with the CRT allocation hook rather than by replacing
+    #     operator new: OnMouseButton lives in Engine.dll, where an
+    #     operator-new replacement in the test executable is blind (measured:
+    #     3 seen vs 411 actual for the same work).
     add_executable(UIMouseDispatchAllocationTests
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIMouseDispatchAllocationTests.cpp
     )
-    target_link_libraries(UIMouseDispatchAllocationTests PRIVATE Engine SharedHeadlessDeviceTestSupport GTest::gtest GTest::gtest_main)
+    target_link_libraries(UIMouseDispatchAllocationTests PRIVATE Engine GTest::gtest GTest::gtest_main)
     target_include_directories(UIMouseDispatchAllocationTests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests
-        ${CMAKE_CURRENT_SOURCE_DIR}/../Rendering/Tests)
+        ${CMAKE_CURRENT_SOURCE_DIR}/../Rendering/Tests
+        ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
     add_dependencies(UIMouseDispatchAllocationTests CompileShaders)
     set_target_properties(UIMouseDispatchAllocationTests PROPERTIES
         CXX_STANDARD 20
@@ -754,8 +741,7 @@ if(BUILD_TESTING)
     )
     ge_set_output_tests(UIMouseDispatchAllocationTests)
     ge_stage_runtime_dependencies(UIMouseDispatchAllocationTests)
-    add_test(NAME UIMouseDispatchAllocationTests ${_ge_engine_allocation_test_configurations}
-        COMMAND $<TARGET_FILE:UIMouseDispatchAllocationTests>)
+    add_test(NAME UIMouseDispatchAllocationTests COMMAND $<TARGET_FILE:UIMouseDispatchAllocationTests>)
 
     # --- Stage 0 of the event-driven UI rewrite: standalone slot-allocator
     #     correctness + microbench. Intentionally has no dependency on the UI
@@ -781,10 +767,7 @@ if(BUILD_TESTING)
     ge_set_output_tests(UISlotAllocatorBench)
     ge_stage_runtime_dependencies(UISlotAllocatorBench)
     add_test(NAME UISlotAllocatorBench COMMAND $<TARGET_FILE:UISlotAllocatorBench>)
-
-    # --- Timing baseline for the element paths a UIElement layout change can
-    #     move: restyle and relayout, subtree attach with id lookups, and deep
-    #     dispatch. Its own process so a timing never shares a heap with a suite.
-    ge_add_ui_test(UIRestyleRelayoutBench
-        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/UIRestyleRelayoutBench.cpp)
 endif()
+
+find_package(ICU REQUIRED COMPONENTS uc i18n)
+target_link_libraries(UI PRIVATE ICU::uc ICU::i18n)

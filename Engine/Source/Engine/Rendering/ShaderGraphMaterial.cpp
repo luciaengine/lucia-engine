@@ -10,9 +10,10 @@
 #include "Rendering/ShaderGraph/SgPseudoNodes.h"
 #include "Rendering/ShaderGraph/SgTagParser.h"
 #include "Types/Fnv1a.h"
-#include "Types/StringUtils.h"
+#include "Types/PathUtils.h"
 
 #include <algorithm>
+#include <cctype>
 #include <iomanip>
 #include <sstream>
 #include <system_error>
@@ -97,6 +98,13 @@ std::string IncludeLineForSourceFile(const std::string& sourceFile)
     return "#include \"" + sourcePath.generic_string() + "\"\n";
 }
 
+std::string LowerAscii(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
 std::string BuildMaterializedBody(const ShaderGraph::SgGraphDocument& doc,
                                   const ShaderGraph::SgNodeLibraryIndex& library,
                                   const std::string& compiledBody,
@@ -120,14 +128,35 @@ constexpr const char* kGeneratedSurfaceDirName = "Generated";
 
 // Generated surfaces are derived data outside watched project content. The
 // name reaches the composed include and so the shader-package key, so it hashes
-// the material's identity in the asset system's derived-identity spelling
-// (MaterialSourceIdentity), which stays the same when the project and its cache
-// move.
+// the material's identity in the asset system's derived-identity spelling,
+// "<alias>/<path under the root>", taken from the deepest mounted source that
+// holds the material. Sources sharing one root spelling tie; the one listed
+// first wins, and AssetSourceRoots lists sources in mount priority order, so a
+// Player development run that mounts the project and the editor at one folder
+// names it "project", as the cook does. Moving the project and its cache, or
+// mounting a package or the editor assets from another directory, keeps every
+// name; a project material and a package material with the same relative path
+// get two.
 std::filesystem::path MaterializedSurfacePath(
     const std::filesystem::path& materialPath,
     const ::GameEngine::Rendering::MaterialBuildContext& context)
 {
-    const std::filesystem::path sourceIdentity = ::GameEngine::Rendering::MaterialSourceIdentity(materialPath, context);
+    namespace fs = std::filesystem;
+    const fs::path material = fs::absolute(materialPath).lexically_normal();
+    fs::path sourceIdentity;
+    size_t matchedRootLength = 0;
+    for (const auto& source : context.AssetSourceRoots)
+    {
+        const fs::path root = fs::absolute(source.Root).lexically_normal();
+        fs::path relative = RelativePathUnderRoot(material, root);
+        if (relative.empty() && !source.RegistryRoot.empty())
+            relative = RelativePathUnderRoot(material, source.RegistryRoot);
+        const size_t rootLength = root.native().size();
+        if (relative.empty() || rootLength <= matchedRootLength)
+            continue;
+        sourceIdentity = fs::path(source.Alias) / relative;
+        matchedRootLength = rootLength;
+    }
     if (sourceIdentity.empty())
         return {};
 
@@ -217,7 +246,7 @@ bool IsGraphLivePreviewMaterialPath(const std::filesystem::path& materialAssetPa
     bool sawGenerated = false;
     for (const auto& part : materialAssetPath)
     {
-        const std::string lower = ToLowerAscii(part.string());
+        const std::string lower = LowerAscii(part.string());
         if (lower == "generated")
         {
             sawGenerated = true;
@@ -228,7 +257,7 @@ bool IsGraphLivePreviewMaterialPath(const std::filesystem::path& materialAssetPa
         sawGenerated = false;
     }
 
-    const std::string stem = ToLowerAscii(materialAssetPath.stem().string());
+    const std::string stem = LowerAscii(materialAssetPath.stem().string());
     return stem.rfind("live_preview", 0) == 0;
 }
 
@@ -313,6 +342,12 @@ bool ResolveSurfaceShaderFromGraph(MaterialDocument& doc,
         if (!graphPath.is_absolute())
             graphPath = (materialPath.parent_path() / graphPath).lexically_normal();
 
+        if (!IsShaderGraphSurfacePath(graphPath))
+        {
+            outErrors.push_back("ShaderGraphMaterial: surfaceGraph must reference a GLSL shader graph with @sg tags: '" +
+                                graphPath.generic_string() + "'.");
+            return false;
+        }
         outGraphPath = graphPath;
 
         doc.surfaceShader = std::filesystem::relative(graphPath, materialPath.parent_path()).generic_string();
@@ -452,8 +487,8 @@ bool MaterializeShaderGraphSurfaceFromModel(const Graph::Model& model,
     outErrors.clear();
     outSource.clear();
     const auto doc = GraphModelToSgDocument(model, graphName);
-    const auto nodesRoot = FindProjectNodesRoot(outputGlslPath);
-    const auto& library = ShaderGraph::GetSharedNodeLibraryIndex(nodesRoot);
+    const auto& library =
+        ShaderGraph::GetSharedNodeLibraryIndex(FindProjectNodesRoot(outputGlslPath));
     return MaterializeShaderGraphSurface(doc, graphName, library, outSource, outErrors);
 }
 
@@ -487,8 +522,8 @@ bool WriteMaterializedShaderGraphSurfaceFromFile(const std::filesystem::path& gr
     }
 
     const auto file = ShaderGraph::LoadGraphFile(graphGlslPath);
-    const auto nodesRoot = FindProjectNodesRoot(graphGlslPath);
-    const auto& library = ShaderGraph::GetSharedNodeLibraryIndex(nodesRoot);
+    const auto& library =
+        ShaderGraph::GetSharedNodeLibraryIndex(FindProjectNodesRoot(graphGlslPath));
     const std::string graphName = file.Document.GraphName.empty()
                                       ? graphGlslPath.stem().string()
                                       : file.Document.GraphName;

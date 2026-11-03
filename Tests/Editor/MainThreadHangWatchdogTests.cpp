@@ -2,21 +2,15 @@
 // the last frame and process exit. These tests lock the three parts of
 // watching it — the watchdog's shutdown clock, the capture policy that keeps
 // the diagnostic from suspending a main thread mid-teardown, and main.cpp
-// keeping the watchdog alive across Application::Shutdown — and the job
-// system's occupancy in a frame stall's report, which teardown reports leave
-// out because teardown destroys the pool.
+// keeping the watchdog alive across Application::Shutdown.
 
 #include <gtest/gtest.h>
 
 #include "Diagnostics/MainThreadHangWatchdog.h"
-#include "JobSystem/JobChannel.h"
-#include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
 
-#include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -46,10 +40,7 @@ void SetEnvVar(const char* name, const char* value)
 // receives its stall reports, failing for a reason that is not its own.
 struct ScopedWatchdog
 {
-    explicit ScopedWatchdog(const JobSystem::WorkStealingThreadPool* jobSystem = nullptr)
-    {
-        MainThreadHangWatchdog::Start(jobSystem);
-    }
+    ScopedWatchdog() { MainThreadHangWatchdog::Start(); }
     ~ScopedWatchdog() { MainThreadHangWatchdog::Stop(); }
     ScopedWatchdog(const ScopedWatchdog&) = delete;
     ScopedWatchdog& operator=(const ScopedWatchdog&) = delete;
@@ -65,7 +56,7 @@ class WatchdogLogCapture
         // Without this the logger's effective level is Off and nothing the
         // watchdog reports would reach any sink.
         Logger::Log::Initialize({Logger::LogLevel::Debug, false});
-        auto sink = std::make_unique<Logger::CallbackSink>();
+        auto sink = Logger::MakeUnique<Logger::CallbackSink>();
         m_Sink = sink.get();
         Logger::Log::AddSink(std::move(sink));
         m_CallbackId = m_Sink->RegisterCallback(
@@ -89,7 +80,7 @@ class WatchdogLogCapture
 
   private:
     Logger::CallbackSink* m_Sink = nullptr;
-    std::uint64_t m_CallbackId = 0;
+    Logger::uint64 m_CallbackId = 0;
     mutable std::mutex m_Mutex;
     std::vector<std::string> m_Lines;
 };
@@ -104,36 +95,6 @@ std::string ReadEditorMainCpp()
     buffer << file.rdbuf();
     return buffer.str();
 }
-
-// A latch the test opens; jobs park on it until then.
-class Gate
-{
-  public:
-    void Open()
-    {
-        std::lock_guard<std::mutex> lock(m_Mutex);
-        m_Open = true;
-        m_Changed.notify_all();
-    }
-    void Wait()
-    {
-        std::unique_lock<std::mutex> lock(m_Mutex);
-        m_Changed.wait(lock, [this] { return m_Open; });
-    }
-
-  private:
-    std::mutex m_Mutex;
-    std::condition_variable m_Changed;
-    bool m_Open = false;
-};
-
-// Opens the gate on every exit path, so a failed assertion never leaves a
-// parked job holding a thread the pool's destructor joins.
-struct GateOpener
-{
-    Gate& Target;
-    ~GateOpener() { Target.Open(); }
-};
 
 // The stall report, wherever it sits among banner lines.
 std::string FindStallLine(const std::vector<std::string>& lines)
@@ -289,78 +250,4 @@ TEST(MainThreadHangWatchdogTest, EditorMainShutsDownBeforeStoppingTheWatchdog)
 
     EXPECT_NE(source.find("MainThreadHangWatchdog::BeginShutdownWatch()"), std::string::npos)
         << "teardown is watched on the frame threshold, not the shutdown one";
-}
-
-// A frame stall's report names what every thread of the job system runs: a
-// Background job parked on one worker and a channel job parked on a blocking
-// thread show with how long they have run, the other worker as idle. Read
-// lock-free from the pool while the main thread is stalled.
-TEST(MainThreadHangWatchdogTest, StallReportNamesWhatEachJobSystemThreadRuns)
-{
-    SetEnvVar("GE_HANG_WATCHDOG", "1");
-    SetEnvVar("GE_HANG_WATCHDOG_MS", "300");
-    SetEnvVar("GE_HANG_WATCHDOG_SHUTDOWN_MS", "");
-    SetEnvVar("GE_HANG_WATCHDOG_SHUTDOWN_STACKS", "");
-
-    JobSystem::WorkStealingThreadPool pool(2);
-    JobSystem::JobChannel channel(pool, {.Name = "Watchdog test builds", .MaxRunning = 1});
-    Gate gate;
-    GateOpener opener{gate};
-    std::atomic<int> parked{0};
-    pool.EnqueueWork(
-        [&]
-        {
-            parked.fetch_add(1);
-            gate.Wait();
-        },
-        JobSystem::JobPriority::Background);
-    channel.Enqueue(
-        [&]
-        {
-            parked.fetch_add(1);
-            gate.Wait();
-        });
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (parked.load() < 2 && std::chrono::steady_clock::now() < deadline)
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    ASSERT_EQ(parked.load(), 2);
-
-    WatchdogLogCapture capture;
-    {
-        ScopedWatchdog watchdog(&pool);
-        MainThreadHangWatchdog::NotifyAlive();
-        std::this_thread::sleep_for(std::chrono::milliseconds(900));
-    }
-
-    const std::string stall = FindStallLine(capture.Lines());
-    ASSERT_FALSE(stall.empty()) << "the stall went unreported";
-    EXPECT_NE(stall.find("job system threads:"), std::string::npos) << stall;
-    EXPECT_NE(stall.find(": Background for "), std::string::npos) << stall;
-    EXPECT_NE(stall.find("Job Blocking #0: Watchdog test builds for "), std::string::npos) << stall;
-    EXPECT_NE(stall.find(": idle"), std::string::npos) << stall;
-    gate.Open();
-}
-
-// Teardown destroys the job system, so a teardown report must not read it:
-// BeginShutdownWatch detaches the pool and the report carries no occupancy.
-TEST(MainThreadHangWatchdogTest, TeardownReportLeavesTheJobSystemOut)
-{
-    SetEnvVar("GE_HANG_WATCHDOG", "1");
-    SetEnvVar("GE_HANG_WATCHDOG_MS", "100000");
-    SetEnvVar("GE_HANG_WATCHDOG_SHUTDOWN_MS", "400");
-    SetEnvVar("GE_HANG_WATCHDOG_SHUTDOWN_STACKS", "");
-
-    JobSystem::WorkStealingThreadPool pool(1);
-    WatchdogLogCapture capture;
-    {
-        ScopedWatchdog watchdog(&pool);
-        MainThreadHangWatchdog::NotifyAlive();
-        MainThreadHangWatchdog::BeginShutdownWatch();
-        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
-    }
-
-    const std::string stall = FindStallLine(capture.Lines());
-    ASSERT_FALSE(stall.empty()) << "teardown stall went unreported";
-    EXPECT_EQ(stall.find("job system threads:"), std::string::npos)
-        << "a teardown report read the job system: " << stall;
 }

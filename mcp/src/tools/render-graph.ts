@@ -4,6 +4,18 @@ import { proxyTool } from "./proxy.js";
 
 export const tools: ToolDef[] = [
   proxyTool({
+    name: "get_reflection_probe_state",
+    category: "rendergraph",
+    description: "Read retained reflection probes in the active world: capture readiness, pending work, age, mip count, capture origin, bake digests and CPU/GPU timings. GPU spans are -1 until render-graph profiling resolves them.",
+    schema: {},
+  }),
+  proxyTool({
+    name: "rebake_reflection_probes",
+    category: "rendergraph",
+    description: "Queue a refresh of a retained reflection probe, or all retained probes in the active world. Completed captures remain visible until replacements finish; the global capture/filter work budget still applies.",
+    schema: { entityId: z.coerce.number().int().positive().optional().describe("Entity ID to refresh; omit to refresh all retained probes") },
+  }),
+  proxyTool({
     name: "get_render_graph_overview",
     category: "rendergraph",
     description: "Get render graph compile stats, timing, pass/resource/barrier counts, transient pool stats, validation summary, and pipelineCompiles (render pipeline compiles so far; climbing every frame means a pipeline is compiled every frame)",
@@ -48,7 +60,7 @@ export const tools: ToolDef[] = [
       passName: z.string().describe("Exact pass name (use get_render_graph_passes to discover names)"),
     },
     // This handler reads `name`, while its sibling get_pass_descriptors reads
-    // `passName` (DebugHandlers.cpp:7513). The tool keeps the sibling's
+    // `passName` (CaptureDebugHandlers.cpp). The tool keeps the sibling's
     // spelling and renames on the wire.
     params: ({ passName }) => ({ name: passName }),
   }),

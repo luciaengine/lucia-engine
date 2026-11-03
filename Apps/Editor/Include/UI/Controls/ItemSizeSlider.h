@@ -4,7 +4,6 @@
 #include "UI/Controls/Slider.h"
 
 #include <functional>
-#include <string>
 
 namespace GameEngine::EditorUI
 {
@@ -13,9 +12,9 @@ namespace GameEngine::EditorUI
 // panel's rows and icons. The item resize gesture (UI/Interaction/ItemResizeGesture.h) over the
 // slider does what it does over the view the slider sizes, and a plain wheel passes through
 // unhandled. The UI manager still delivers the wheel to a disabled element, so a disabled
-// slider, or one inside a disabled container, ignores the gesture itself. The tooltip names what
-// the slider sizes (Subject) and the gesture's current binding (Keyboard Shortcuts > View
-// Navigation > Resize Items), and follows a rebind. The look comes from UI/controls/ItemSizeSlider/ItemSizeSlider.css, requested for this
+// slider, or one inside a disabled container, ignores the gesture itself. The tooltip names the
+// gesture's current binding (Keyboard Shortcuts > View Navigation > Resize Items) and follows a
+// rebind. The look comes from UI/controls/ItemSizeSlider/ItemSizeSlider.css, requested for this
 // slider's own subtree, which also gives every item size slider the same width.
 class ItemSizeSlider : public Slider
 {
@@ -29,9 +28,6 @@ public:
         std::string Effect = "resizes them";
     };
 
-    // Two constructors instead of one defaulted argument: Clang refuses a defaulted argument
-    // of a nested aggregate type at the class's own declaration, so the default subject is
-    // applied out of line.
     ItemSizeSlider();
     explicit ItemSizeSlider(Subject subject);
 

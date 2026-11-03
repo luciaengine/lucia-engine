@@ -5,8 +5,8 @@
 #include "Logger/Logger.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Label.h"
-#include "UI/Controls/MarkdownText.h"
 #include "UI/Controls/TextArea.h"
+#include "UI/Controls/MarkdownText.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIManager.h"
 #include "UI/UIStyle.h"
@@ -36,7 +36,7 @@ void SetClassIf(UIElement& element, const char* className, bool on)
 template <typename T>
 T* TakeElement(UIElement& row, const char* id, size_t index)
 {
-    T* element = dynamic_cast<T*>(row.FindById(HashStringId(id)));
+    T* element = dynamic_cast<T*>(row.FindById(id));
     if (element)
         element->SetId(std::string(id) + ":" + std::to_string(index));
     return element;
@@ -45,25 +45,24 @@ T* TakeElement(UIElement& row, const char* id, size_t index)
 
 bool PinHeightPx(UIElement& element, float heightPx)
 {
-    const auto existing = element.Style().Get(Style::Height);
+    const auto existing = element.Overrides().Get(Style::Height);
     if (existing.has_value() && existing->IsPx() && std::fabs(existing->Value - heightPx) <= 0.5f)
         return false;
 
-    element.Style().Set(Style::Height, StyleLength::Px(heightPx));
+    element.Overrides().Set(Style::Height, StyleLength::Px(heightPx));
     element.MarkDirty(UIElement::StyleDirty | UIElement::LayoutDirty);
     return true;
 }
 
 AgentConversationRow::AgentConversationRow(size_t index, std::function<void()> onStop, std::function<void()> onRetry,
                                            ReplyActionHandler onReplyAction, AgentCallRow::AnswerHandler onAnswer,
-                                           std::function<void()> onUndoTurn, MarkupChipHandler onFrameMarkup)
+                                           std::function<void()> onUndoTurn)
     : m_Index(index)
     , m_OnStop(std::move(onStop))
     , m_OnRetry(std::move(onRetry))
     , m_OnReplyAction(std::move(onReplyAction))
     , m_OnAnswer(std::move(onAnswer))
     , m_OnUndoTurn(std::move(onUndoTurn))
-    , m_OnFrameMarkup(std::move(onFrameMarkup))
 {
     SetFocusable(false);
 }
@@ -85,12 +84,13 @@ bool AgentConversationRow::Build(UIManager& ui)
     m_Retried = TakeElement<Label>(*this, "AgentRowRetried", m_Index);
     m_Text = TakeElement<TextArea>(*this, "AgentRowText", m_Index);
     m_Reply = TakeElement<MarkdownText>(*this, "AgentRowReply", m_Index);
+    m_FileChips = TakeElement<UIElement>(*this, "AgentRowFiles", m_Index);
     m_Calls = TakeElement<UIElement>(*this, "AgentRowCalls", m_Index);
     m_Status = TakeElement<UIElement>(*this, "AgentRowStatus", m_Index);
+    m_StatusText = TakeElement<TextArea>(*this, "AgentRowStatusText", m_Index);
     m_Actions = TakeElement<UIElement>(*this, "AgentRowActions", m_Index);
-    m_MarkupChips = TakeElement<UIElement>(*this, "AgentRowMarkups", m_Index);
-    if (!m_Header || !m_Time || !m_Stop || !m_Retry || !m_UndoTurn || !m_Retried || !m_Text || !m_Reply || !m_Calls ||
-        !m_Status || !m_Actions || !m_MarkupChips)
+    if (!m_Header || !m_Time || !m_Stop || !m_Retry || !m_UndoTurn || !m_Retried || !m_Text || !m_Reply || !m_FileChips || !m_Calls ||
+        !m_Status || !m_StatusText || !m_Actions)
     {
         Logger::Log::Error("AI Assistant: {} is missing a row element.", kLayoutAssetPath);
         return false;
@@ -114,18 +114,16 @@ void AgentConversationRow::Show(const AgentConversationRowModel& model, const st
         m_Time->SetText(time);
         SetClassIf(*this, "agent-row-user", model.FromUser);
     }
-    if (!shown || shown->MarkupChips != model.MarkupChips)
-        BuildMarkupChips(model.MarkupChips);
+    if (!shown || shown->FileChips != model.FileChips)
+        BuildChips(model.FileChips);
     if (!shown || shown->Header != model.Header)
         m_Header->SetText(model.Header);
-    if (!shown || shown->Text != model.Text || shown->FromUser != model.FromUser)
+    if (!shown || shown->Text != model.Text)
     {
-        if (model.FromUser)
-            m_Text->SetValue(model.Text);
-        else
-            m_Reply->SetMarkdown(model.Text);
+        m_Text->SetValue(model.Text);
+        m_Reply->SetMarkdown(model.FromUser ? std::string_view{} : model.Text);
     }
-    if (!shown || shown->ShowsText != model.ShowsText || shown->FromUser != model.FromUser)
+    if (!shown || shown->ShowsText != model.ShowsText)
     {
         SetClassIf(*m_Text, "hidden", !model.ShowsText || !model.FromUser);
         SetClassIf(*m_Reply, "hidden", !model.ShowsText || model.FromUser);
@@ -151,31 +149,16 @@ void AgentConversationRow::Show(const AgentConversationRowModel& model, const st
     if (!shown || shown->CanStop != model.CanStop)
         SetClassIf(*m_Stop, "hidden", !model.CanStop);
     if (model.ShowsReplyActions && !m_ReplyActionsBuilt)
-        BuildReplyActions(model.ReplyActions);
+        BuildReplyActions();
     m_Shown = model;
 }
 
 void AgentConversationRow::ShowStatus(const AgentConversationRowModel& model)
 {
-    constexpr std::string_view kSeparator = " · ";
-    m_Status->RemoveAllChildren();
     SetClassIf(*m_Status, "hidden", model.Status.empty());
-    const std::string_view status = model.Status;
-    for (size_t start = 0; start < status.size();)
-    {
-        const size_t end = std::min(status.find(kSeparator, start), status.size());
-        // The separator leads the part after it, as in a call row's summary, so a line never
-        // ends with one.
-        const bool last = end == status.size();
-        auto part = std::make_unique<Label>();
-        part->AddClass("agent-row-status-part");
-        SetClassIf(*part, "agent-row-status-failed", model.Failed);
-        SetClassIf(*part, "agent-row-status-stopped", model.Stopped);
-        part->SetText((start == 0 ? std::string() : std::string("· ")) +
-                      std::string(status.substr(start, end - start)));
-        m_Status->AddChild(std::move(part));
-        start = last ? end : end + kSeparator.size();
-    }
+    SetClassIf(*m_StatusText, "agent-row-status-failed", model.Failed);
+    SetClassIf(*m_StatusText, "agent-row-status-stopped", model.Stopped);
+    m_StatusText->SetValue(model.Status);
 }
 
 void AgentConversationRow::ShowCalls(const std::vector<AgentCallRowModel>& calls)
@@ -198,36 +181,26 @@ void AgentConversationRow::ShowCalls(const std::vector<AgentCallRowModel>& calls
     SetClassIf(*m_Calls, "hidden", calls.empty());
 }
 
-void AgentConversationRow::BuildMarkupChips(const std::vector<MarkupChip>& chips)
+void AgentConversationRow::BuildChips(const std::vector<std::string>& files)
 {
-    m_MarkupChips->RemoveAllChildren();
-    SetClassIf(*m_MarkupChips, "hidden", chips.empty());
-    for (const MarkupChip& chip : chips)
+    m_FileChips->RemoveAllChildren();
+    SetClassIf(*m_FileChips, "hidden", files.empty());
+    for (const std::string& name : files)
     {
-        auto button = std::make_unique<Button>();
-        button->AddClass("small");
-        button->AddClass("secondary");
-        button->AddClass("agent-row-markup-chip");
-        button->SetFocusable(false);
-        button->SetText(chip.Label);
-        button->SetTooltip("Frame " + chip.Label + " in the Scene View");
-        // To the chip's right: chips start at the panel's left edge, so a centered tooltip would
-        // leave the panel.
-        button->SetTooltipPlacement(UIElement::TooltipPlacement::Right);
-        button->SetOnClick([this, token = chip.Token](UIEvent&) { m_OnFrameMarkup(token); });
-        m_MarkupChips->AddChild(std::move(button));
+        auto label = std::make_unique<Label>();
+        label->AddClass("agent-row-file-chip");
+        label->SetText(name);
+        m_FileChips->AddChild(std::move(label));
     }
 }
 
-void AgentConversationRow::BuildReplyActions(const std::vector<std::string>& actionIds)
+void AgentConversationRow::BuildReplyActions()
 {
     m_ReplyActionsBuilt = true;
     const std::span<const AgentReplyAction> actions = AgentReplyActions::All();
     for (size_t actionIndex = 0; actionIndex < actions.size(); ++actionIndex)
     {
         const AgentReplyAction& action = actions[actionIndex];
-        if (std::find(actionIds.begin(), actionIds.end(), action.Id) == actionIds.end())
-            continue;
         auto button = std::make_unique<Button>();
         button->SetId("AgentRowAction:" + action.Id + ":" + std::to_string(m_Index));
         button->AddClass("small");
@@ -235,13 +208,7 @@ void AgentConversationRow::BuildReplyActions(const std::vector<std::string>& act
         button->SetFocusable(false);
         button->SetText(action.Label);
         button->SetTooltip(action.Tooltip);
-        button->SetOnClick([this, actionIndex, raw = button.get()](UIEvent&) {
-            const AgentReplyAction& clicked = AgentReplyActions::All()[actionIndex];
-            if (!m_OnReplyAction(clicked) || !clicked.Once)
-                return;
-            raw->SetEnabled(false);
-            raw->SetTooltip(clicked.DoneTooltip);
-        });
+        button->SetOnClick([this, actionIndex](UIEvent&) { m_OnReplyAction(AgentReplyActions::All()[actionIndex]); });
         m_Actions->AddChild(std::move(button));
     }
 }
@@ -249,10 +216,6 @@ void AgentConversationRow::BuildReplyActions(const std::vector<std::string>& act
 void AgentConversationRow::SetCallsStacked(bool stacked)
 {
     m_CallsStacked = stacked;
-    if (m_Status && m_Status->GetParent())
-        SetClassIf(*m_Status->GetParent(), "agent-row-footer-stacked", stacked);
-    if (m_Actions)
-        SetClassIf(*m_Actions, "agent-row-actions-stacked", stacked);
     for (AgentCallRow* call : m_CallRows)
         call->SetStacked(stacked);
 }
@@ -269,6 +232,8 @@ void AgentConversationRow::RefreshTextVisuals()
 {
     if (m_Text)
         m_Text->MarkDirty(VisualDirty);
+    if (m_StatusText)
+        m_StatusText->MarkDirty(VisualDirty);
 }
 
 bool AgentConversationRow::FitHeight()
@@ -288,12 +253,14 @@ bool AgentConversationRow::FitHeight()
                      textBox.Padding.Bottom + textBox.BorderWidth.Top + textBox.BorderWidth.Bottom;
         moved = PinHeightPx(*m_Text, textHeight);
     }
-    for (AgentCallRow* call : m_CallRows)
+    if (m_StatusText && !m_Status->HasClass("hidden"))
     {
-        moved = call->FitImage() || moved;
-        moved = call->FitDetailsToggle() || moved;
-        moved = call->FitReason() || moved;
+        const float advance = m_StatusText->GetResolvedLineAdvancePx();
+        if (advance > 0.0f)
+            moved = PinHeightPx(*m_StatusText, static_cast<float>(m_StatusText->GetVisualLineCount()) * advance) || moved;
     }
+    for (AgentCallRow* call : m_CallRows)
+        moved = call->FitImage() || moved;
 
     float extent = 0.0f;
     const float top = GetLayoutY();

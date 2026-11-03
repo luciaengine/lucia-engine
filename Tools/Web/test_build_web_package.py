@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_web_package as package  # noqa: E402
 import gepak  # noqa: E402
 
-kSourceVersion = package.SourceVersion(package.kRepoRoot / "VERSION")
 kHasBundler = (package.kFacadeDir / "node_modules" / "esbuild" / "bin" / "esbuild").is_file()
 
 
@@ -51,7 +50,7 @@ class StubTree:
         args = argparse.Namespace(st_dir=self.dirs["st"], mt_dir=self.dirs["mt"],
                                   component_dts=self.dts, engine_pack=self.pack,
                                   pack_build_tree=None, seed_project=None,
-                                  vcpkg_share=self.share, version=kSourceVersion, allow_stub=True)
+                                  vcpkg_share=self.share, version="2026.10.1", allow_stub=True)
         for key, value in overrides.items():
             setattr(args, key, value)
         return args
@@ -82,13 +81,13 @@ class PackageTests(unittest.TestCase):
         self.assertIn("## coi-serviceworker", notices)
 
         manifest = json.loads((self.out / "package.json").read_text(encoding="utf-8"))
-        self.assertEqual((manifest["name"], manifest["version"]), ("@game-crafters-guild/openengine-web", kSourceVersion))
+        self.assertEqual((manifest["name"], manifest["version"]), ("@openengine/web", "2026.10.1"))
         self.assertEqual(manifest["exports"]["."]["default"], "./opengine.mjs")
         self.assertIs(manifest["sideEffects"], False)
         self.assertEqual(sorted(manifest["files"]),
                          sorted([*(name for name in package.PackageFiles() if name != "package.json"),
                                  "examples/"]))
-        self.assertIn(f'var kPackageVersion = "{kSourceVersion}";',
+        self.assertIn('var kPackageVersion = "2026.10.1";',
                       (self.out / "opengine.mjs").read_text(encoding="utf-8"))
 
     @unittest.skipUnless(kHasBundler, "the facade's bundler is not installed: npm ci in Apps/WebLibrary/ts")
@@ -106,7 +105,7 @@ class PackageTests(unittest.TestCase):
         package.Build(self.tree.Args(), self.out)
         report = io.StringIO()
         with contextlib.redirect_stdout(report):
-            self.assertEqual(package.Check(self.out, allowStub=True, reportSizes=False), [])
+            self.assertEqual(package.Check(self.out, allowStub=True), [])
         rows = {line[:32].strip(): [int(value.replace(",", "")) for value in line[32:].split()]
                 for line in report.getvalue().splitlines()[1:-1]}
         pack = rows["opengine-core.gepak"]
@@ -130,7 +129,7 @@ class PackageTests(unittest.TestCase):
         self.assertTrue(all((self.out / name).stat().st_size <= 4096 for name in parts))
         self.assertEqual(package.JoinPack(self.out), whole)
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(package.Check(self.out, allowStub=True, reportSizes=False), [])
+            self.assertEqual(package.Check(self.out, allowStub=True), [])
         (self.out / parts[1]).write_bytes(b"x" + (self.out / parts[1]).read_bytes()[1:])
         with self.assertRaises(package.PackageError):
             package.JoinPack(self.out)
@@ -187,30 +186,13 @@ class PackageTests(unittest.TestCase):
             package.CopyModules(self.tree.dirs, self.out, allowStub=True)
         self.assertIn(f"{self.tree.dirs['mt'] / 'opengine-core.mt.js'} is missing", str(refusal.exception))
 
-    def test_the_version_comes_from_the_version_file_and_the_release_tag(self):
-        self.assertEqual(package.PackageVersion("v2026.10.0", "abc1234567", "2026.10.0"), "2026.10.0")
-        self.assertEqual(package.PackageVersion("v2026.10.0-alpha.1", "abc1234567", "2026.10.0-alpha.1"),
-                         "2026.10.0-alpha.1")
-        self.assertEqual(package.PackageVersion(None, "abc1234567", "2026.10.0-alpha.4"),
-                         "2026.10.0-alpha.4-dev.abc1234567")
+    def test_the_version_comes_from_the_release_tag(self):
+        self.assertEqual(package.PackageVersion("v2026.10.0", "abc1234567"), "2026.10.0")
+        self.assertEqual(package.PackageVersion("v2026.10.0-alpha.1", "abc1234567"), "2026.10.0-alpha.1")
+        self.assertEqual(package.PackageVersion(None, "abc1234567"), "0.0.0-dev.abc1234567")
         for tag in ("v12", "v2026.10.0-rc.1", "release-2026.10.0"):
             with self.assertRaises(package.PackageError):
-                package.PackageVersion(tag, "abc1234567", "2026.10.0")
-
-    def test_a_release_tag_that_differs_from_the_version_file_is_refused_naming_both(self):
-        with self.assertRaises(package.PackageError) as refusal:
-            package.PackageVersion("v2026.10.0-alpha.3", "abc1234567", "2026.10.0-alpha.4")
-        self.assertIn("v2026.10.0-alpha.3", str(refusal.exception))
-        self.assertIn("2026.10.0-alpha.4", str(refusal.exception))
-
-    def test_a_version_argument_that_differs_from_the_version_file_is_refused_naming_both(self):
-        with self.assertRaises(package.PackageError) as refusal:
-            package.Build(self.tree.Args(version="2000.1.0-alpha.1"), self.out)
-        self.assertIn("2000.1.0-alpha.1", str(refusal.exception))
-        self.assertIn(kSourceVersion, str(refusal.exception))
-
-    def test_the_repository_version_file_holds_a_release_version(self):
-        self.assertTrue(package.kReleaseTag.match(f"v{package.SourceVersion(package.kRepoRoot / 'VERSION')}"))
+                package.PackageVersion(tag, "abc1234567")
 
     def test_a_prerelease_publishes_under_its_channel_never_latest(self):
         self.assertEqual(package.PrereleaseChannel("2026.10.0-alpha.1"), "alpha")

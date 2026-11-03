@@ -8,11 +8,8 @@
 #include "Assets/Textures/TextureMimeType.h"
 #include "FbxAxisConversion.h"
 #include "FbxEmission.h"
-#include "Mathematics/Interpolation.h"
 #include "SparseMorphTarget.h"
 #include "Core/Engine.h"
-#include "Image/Decode.h"
-#include "Image/Encode.h"
 #include "Logger/Logger.h"
 
 #include "ECSModules/Rendering/SkeletonStore.h"
@@ -32,6 +29,11 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#if defined(GE_HAVE_STB)
+  #include <stb_image.h>
+  #include <stb_image_write.h>
+#endif
 
 namespace GameEngine
 {
@@ -655,17 +657,18 @@ int AppendEmbeddedTextureForUfbx(const ufbx_texture* tex,
     return idx;
 }
 
-// The name an embedded image's decode warning carries.
-std::string EmbeddedImageName(int imageIndex, std::string_view modelName)
+#if defined(GE_HAVE_STB)
+void WritePngBytes(void* context, void* data, int size)
 {
-    return "image " + std::to_string(imageIndex) + " of model '" + std::string(modelName) + "'";
+    auto* bytes = static_cast<Vector<uint8>*>(context);
+    const auto* src = static_cast<const uint8*>(data);
+    bytes->insert(bytes->end(), src, src + size);
 }
 
 int MergeAlphaTextureIntoAlbedo(Vector<EmbeddedImage>& images,
                                 int albedoIndex,
                                 int alphaIndex,
-                                AlphaMode& alphaMode,
-                                std::string_view modelName)
+                                AlphaMode& alphaMode)
 {
     if (albedoIndex < 0 || alphaIndex < 0 ||
         albedoIndex >= static_cast<int>(images.size()) ||
@@ -673,24 +676,37 @@ int MergeAlphaTextureIntoAlbedo(Vector<EmbeddedImage>& images,
         albedoIndex == alphaIndex)
         return albedoIndex;
 
-    Image::Image8 albedo = Image::Decode8(images[static_cast<size_t>(albedoIndex)].Data,
-                                          EmbeddedImageName(albedoIndex, modelName), Image::DecodeChannels::Rgba);
-    const Image::Image8 mask = Image::Decode8(images[static_cast<size_t>(alphaIndex)].Data,
-                                              EmbeddedImageName(alphaIndex, modelName), Image::DecodeChannels::Rgba);
-    if (!albedo.Valid || !mask.Valid || albedo.Width != mask.Width || albedo.Height != mask.Height)
+    int aw = 0, ah = 0, ac = 0;
+    int mw = 0, mh = 0, mc = 0;
+    stbi_uc* albedo = stbi_load_from_memory(
+        images[static_cast<size_t>(albedoIndex)].Data.data(),
+        static_cast<int>(images[static_cast<size_t>(albedoIndex)].Data.size()),
+        &aw, &ah, &ac, 4);
+    stbi_uc* mask = stbi_load_from_memory(
+        images[static_cast<size_t>(alphaIndex)].Data.data(),
+        static_cast<int>(images[static_cast<size_t>(alphaIndex)].Data.size()),
+        &mw, &mh, &mc, 4);
+    if (!albedo || !mask || aw <= 0 || ah <= 0 || aw != mw || ah != mh)
+    {
+        if (albedo) stbi_image_free(albedo);
+        if (mask) stbi_image_free(mask);
         return albedoIndex;
+    }
 
     bool onlyCutoutValues = true;
-    const size_t pixelCount = static_cast<size_t>(albedo.Width) * static_cast<size_t>(albedo.Height);
+    const size_t pixelCount = static_cast<size_t>(aw) * static_cast<size_t>(ah);
     for (size_t i = 0; i < pixelCount; ++i)
     {
-        const uint8 alpha = mask.Pixels[i * 4u];
-        albedo.Pixels[i * 4u + 3u] = alpha;
+        const uint8 alpha = mask[i * 4u];
+        albedo[i * 4u + 3u] = alpha;
         if (alpha != 0u && alpha != 255u)
             onlyCutoutValues = false;
     }
 
-    Vector<uint8> encoded = Image::EncodePng(albedo.Pixels, albedo.Width, albedo.Height);
+    Vector<uint8> encoded;
+    stbi_write_png_to_func(WritePngBytes, &encoded, aw, ah, 4, albedo, aw * 4);
+    stbi_image_free(albedo);
+    stbi_image_free(mask);
     if (encoded.empty())
         return albedoIndex;
 
@@ -702,6 +718,7 @@ int MergeAlphaTextureIntoAlbedo(Vector<EmbeddedImage>& images,
     alphaMode = onlyCutoutValues ? AlphaMode::Mask : AlphaMode::Blend;
     return mergedIndex;
 }
+#endif
 
 void AssignEmbeddedRef(String& outSlot, int embeddedIndex)
 {
@@ -709,6 +726,7 @@ void AssignEmbeddedRef(String& outSlot, int embeddedIndex)
         outSlot = std::string(kEmbeddedTexturePrefix) + std::to_string(static_cast<unsigned>(embeddedIndex));
 }
 
+#if defined(GE_HAVE_STB)
 // Footprint demotion for inferred Mask. MergeAlphaTextureIntoAlbedo classifies
 // from whole-texture content, so a shared atlas with cutout regions (e.g.
 // Synty foliage) forces Mask onto every material referencing it — including
@@ -760,8 +778,7 @@ int ParseEmbeddedTextureIndex(const String& textureRef)
 
 uint32 DemoteMaskMaterialsWithOpaqueUVFootprint(const Vector<Mesh>& meshes,
                                                 Vector<ImportedMaterialData>& materials,
-                                                const Vector<EmbeddedImage>& images,
-                                                std::string_view modelName)
+                                                const Vector<EmbeddedImage>& images)
 {
     // Shared atlases are the norm (Synty ships one per pack): decode each
     // embedded image once and memoize its alpha plane + min alpha across the
@@ -771,22 +788,36 @@ uint32 DemoteMaskMaterialsWithOpaqueUVFootprint(const Vector<Mesh>& meshes,
     // re-scanning the image per triangle.
     struct DecodedAlphaPlane
     {
-        Image::Image8 Rgba; // invalid: decode failed (material keeps Mask)
+        stbi_uc* Rgba = nullptr; // null: decode failed (material keeps Mask)
         AlphaPlaneView Plane;
         uint8 MinAlpha = 0;
     };
     std::unordered_map<int, DecodedAlphaPlane> decodedPlanes;
-    auto decodedPlaneFor = [&images, &decodedPlanes, modelName](int imageIndex) -> const DecodedAlphaPlane&
+    auto decodedPlaneFor = [&images, &decodedPlanes](int imageIndex) -> const DecodedAlphaPlane&
     {
         auto [it, inserted] = decodedPlanes.try_emplace(imageIndex);
         DecodedAlphaPlane& entry = it->second;
         if (!inserted)
             return entry;
-        entry.Rgba = Image::Decode8(images[static_cast<size_t>(imageIndex)].Data,
-                                    EmbeddedImageName(imageIndex, modelName), Image::DecodeChannels::Rgba);
-        if (!entry.Rgba.Valid)
+        const EmbeddedImage& image = images[static_cast<size_t>(imageIndex)];
+        int width = 0;
+        int height = 0;
+        int components = 0;
+        stbi_uc* rgba = stbi_load_from_memory(image.Data.data(),
+                                              static_cast<int>(image.Data.size()),
+                                              &width, &height, &components, 4);
+        if (!rgba)
             return entry;
-        entry.Plane = AlphaPlaneView{entry.Rgba.Pixels.data() + 3, entry.Rgba.Width, entry.Rgba.Height, 4u};
+        if (width <= 0 || height <= 0)
+        {
+            stbi_image_free(rgba);
+            return entry;
+        }
+        entry.Rgba = rgba;
+        entry.Plane = AlphaPlaneView{rgba + 3,
+                                     static_cast<uint32>(width),
+                                     static_cast<uint32>(height),
+                                     4u};
         entry.MinAlpha = PlaneMinAlpha(entry.Plane);
         return entry;
     };
@@ -808,7 +839,7 @@ uint32 DemoteMaskMaterialsWithOpaqueUVFootprint(const Vector<Mesh>& meshes,
         // Near-one cutoffs sit inside float-filtering error of fully-opaque
         // texels; parity with the material-registration gate, which refuses
         // to reason about them.
-        if (Math::Clamp01(material.AlphaCutoff) > kMaxDemotableAlphaCutoff)
+        if (std::clamp(material.AlphaCutoff, 0.0f, 1.0f) > kMaxDemotableAlphaCutoff)
             continue;
         const int imageIndex = ParseEmbeddedTextureIndex(material.DiffuseTexture);
         if (imageIndex < 0 || static_cast<size_t>(imageIndex) >= images.size())
@@ -846,7 +877,7 @@ uint32 DemoteMaskMaterialsWithOpaqueUVFootprint(const Vector<Mesh>& meshes,
             continue;
 
         const DecodedAlphaPlane& decoded = decodedPlaneFor(imageIndex);
-        if (!decoded.Rgba.Valid)
+        if (!decoded.Rgba)
             continue;
 
         // Shared with the material-registration probe so the two demotion
@@ -929,8 +960,12 @@ uint32 DemoteMaskMaterialsWithOpaqueUVFootprint(const Vector<Mesh>& meshes,
         }
     }
 
+    for (auto& [imageIndex, entry] : decodedPlanes)
+        if (entry.Rgba)
+            stbi_image_free(entry.Rgba);
     return demoted;
 }
+#endif // GE_HAVE_STB
 
 // First mesh-bearing node in `node`'s subtree (inclusive, pre-order). LOD-group
 // children are often intermediate transform (Null) nodes with the mesh a level
@@ -1434,7 +1469,8 @@ bool ModelAsset::LoadFBX(const Vector<uint8>& data,
         // texture and also wire that image to FBX TransparencyColor.
         if (mat->pbr.opacity.has_value)
         {
-            const float opacity = Math::Clamp01(static_cast<float>(mat->pbr.opacity.value_real));
+            const float opacity = std::clamp(
+                static_cast<float>(mat->pbr.opacity.value_real), 0.0f, 1.0f);
             out.DiffuseColor[3] = opacity;
             if (opacity < 0.999f)
                 out.AlphaMode = AlphaMode::Blend;
@@ -1462,15 +1498,16 @@ bool ModelAsset::LoadFBX(const Vector<uint8>& data,
             ? mat->pbr.base_color.texture
             : mat->fbx.diffuse_color.texture;
         int diffuseTextureIdx = resolveTextureRef(diffuseTexture);
+#if defined(GE_HAVE_STB)
         if (diffuseTextureIdx >= 0 && alphaTextureIdx >= 0)
         {
-            diffuseTextureIdx = MergeAlphaTextureIntoAlbedo(m_EmbeddedImages, diffuseTextureIdx, alphaTextureIdx,
-                                                            out.AlphaMode, GetName());
+            diffuseTextureIdx = MergeAlphaTextureIntoAlbedo(m_EmbeddedImages, diffuseTextureIdx, alphaTextureIdx, out.AlphaMode);
             // The merge classifies Mask from texture content alone (only 0/255
             // alpha values) — mark it inferred so PostLoad's footprint demotion
             // knows this Mask is not authored intent.
             out.AlphaModeInferred = out.AlphaMode == AlphaMode::Mask;
         }
+#endif
         if (diffuseTextureIdx >= 0)
         {
             AssignEmbeddedRef(out.DiffuseTexture, diffuseTextureIdx);
@@ -2390,14 +2427,16 @@ bool ModelAsset::LoadFBX(const Vector<uint8>& data,
 // is a no-op for every other loader.
 void ModelAsset::DemoteInferredMaskMaterials()
 {
+#if defined(GE_HAVE_STB)
     if (const uint32 demoted =
-            DemoteMaskMaterialsWithOpaqueUVFootprint(m_Meshes, m_Materials, m_EmbeddedImages, GetName()))
+            DemoteMaskMaterialsWithOpaqueUVFootprint(m_Meshes, m_Materials, m_EmbeddedImages))
     {
         Logger::Log::Info(
             "ModelAsset '{}': demoted {} inferred-Mask material(s) to Opaque "
             "(fully-opaque diffuse-UV footprint)",
             GetName(), demoted);
     }
+#endif
 }
 
 } // namespace GameEngine

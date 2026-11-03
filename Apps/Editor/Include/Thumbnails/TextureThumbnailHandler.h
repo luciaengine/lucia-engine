@@ -56,20 +56,6 @@ public:
     // fallback.
     static constexpr int kThumbLongEdge = 512;
 
-    // Longest edge of the image GetOrRequestInlineImage caches: an image shown
-    // in a panel at about its display size, in device pixels.
-    static constexpr int kInlineImageLongEdge = 1024;
-
-    // An image file shown inline (the AI Assistant's captures): its own cached
-    // copy at kInlineImageLongEdge, apart from the tile image GetOrRequest
-    // serves, which every other caller keeps. Returns the copy's path when it is
-    // current (and calls `onReady` with it); otherwise answers once through
-    // `onReady`, from a job or at once: the copy's path, the source itself when
-    // it is no larger than kInlineImageLongEdge, or empty when the handler
-    // cannot make one (undecodable, past the decode budget, no project).
-    std::string GetOrRequestInlineImage(const std::filesystem::path& image,
-                                        std::function<void(const std::string& path)> onReady);
-
     // Largest source this handler will decode, in pixels. Decoding is a whole-
     // image RGBA8 allocation (4 bytes/px, plus the compressed bytes until they
     // are released), and kMaxDecodesInFlight of them run at once while the
@@ -85,7 +71,7 @@ public:
     // decided by timestamp at request time, not by the name.
     static std::string MakeCacheFileName(const std::filesystem::path& assetPath);
 
-    // True when the engine's CPU image decoder (Image::Decode8, stb_image)
+    // True when the engine's CPU image decoder (DecodeImageToRGBA, stb_image)
     // can produce an RGBA8 payload for this extension AND the asset registry
     // routes that extension here. Container formats that decode to GPU blocks
     // (.ktx/.ktx2/.dds) and vector sources (.svg) are excluded: those keep
@@ -141,26 +127,13 @@ private:
         std::filesystem::path SourcePath;
         std::filesystem::path CachePath;
         FileTime SourceTime{};
-        // The cached image's long edge: kThumbLongEdge or kInlineImageLongEdge.
-        int LongEdge = kThumbLongEdge;
         std::vector<ReadyCallback> Callbacks;
     };
 
-    // The cached copy of `assetPath` at `longEdge` (GetOrRequest's tile image or the inline
-    // image): its path when current, else a decode job queued or joined (`*outPending`
-    // true, `onReady` called when it ends) or nothing to do (`*outPending` false).
-    std::string RequestCachedImage(const std::filesystem::path& assetPath, int longEdge,
-                                   ReadyCallback onReady, bool* outPending);
-    // The key of a source's job and decline verdict at `longEdge`.
-    static std::string MakeJobKey(const std::filesystem::path& assetPath, int longEdge);
-    // The source was declined at `longEdge` for being no larger than it.
-    bool IsSmallSource(const std::filesystem::path& assetPath, int longEdge) const;
-
-    // Decode `sourcePath`, downscale to `longEdge` and write `cachePath` as
+    // Decode `sourcePath`, downscale to kThumbLongEdge and write `cachePath` as
     // PNG. On Declined, `outDeclineReason` (never null) reports why.
     static Outcome GenerateThumbnail(const std::filesystem::path& sourcePath,
                                      const std::filesystem::path& cachePath,
-                                     int longEdge,
                                      DeclineReason* outDeclineReason);
 
     // Publishes one decode job into the pool's background lane. The job body is

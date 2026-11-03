@@ -3,10 +3,11 @@
 #include "Jobs/CompileServerClient.h"
 #include "Jobs/PipeTransport.h"
 #include "Jobs/WorkspaceId.h"
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h" // PathUtils
 #include "Scripting/CoreCLRHost.h"
 #include "Scripting/PackageScriptCompile.h"
 #include "Scripting/PathResolver.h"
+#include "TestTempDir.h"
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -101,8 +102,8 @@ static void BuildAndExpect(const std::string& pipeName, const std::filesystem::p
 }
 
 TEST(CompileServerEndToEnd, CompilesOneFileWithWarning) {
-    std::filesystem::path ws = std::filesystem::temp_directory_path() / "GE_EndToEnd_Workspace";
-    std::error_code ec; std::filesystem::create_directories(ws, ec);
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_EndToEnd_Workspace"));
+    std::filesystem::path ws = workspace.Path();
     std::string pipeName = CompileServerTestHost::UniquePipeName("Warn");
 
     std::string file = WriteTempCs(ws);
@@ -110,44 +111,20 @@ TEST(CompileServerEndToEnd, CompilesOneFileWithWarning) {
 }
 
 TEST(CompileServerEndToEnd, FailsOnInvalidSourceAndReturnsErrors) {
-    std::filesystem::path ws = std::filesystem::temp_directory_path() / "GE_EndToEnd_Workspace_Bad";
-    std::error_code ec; std::filesystem::create_directories(ws, ec);
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_EndToEnd_Workspace_Bad"));
+    std::filesystem::path ws = workspace.Path();
     std::string pipeName = CompileServerTestHost::UniquePipeName("Bad");
 
     std::string file = WriteBadTempCs(ws);
     BuildAndExpect(pipeName, ws, {file}, /*expectSuccess*/false, /*expectAsm*/false);
 }
 
-// A request that names an EngineBinDir must name the engine's script surface too: the server holds
-// no list of its own, so it refuses such a request by name instead of compiling without it.
-TEST(CompileServerEndToEnd, RequestWithAnEngineDirectoryAndNoScriptSurfaceIsRefused) {
-    std::filesystem::path ws = std::filesystem::temp_directory_path() / "GE_EndToEnd_Workspace_NoSurface";
-    std::error_code ec; std::filesystem::create_directories(ws, ec);
-    std::string pipeName = CompileServerTestHost::UniquePipeName("NoSurface");
-    const std::string file = std::filesystem::path(WriteTempCs(ws)).generic_string();
-#ifdef _WIN32
-    ASSERT_TRUE(CompileServerTestHost::StartTestCompileServer(pipeName));
-#endif
-    std::ostringstream json;
-    json << "{\"ProjectRoot\":\"" << ws.generic_string() << "\",";
-    json << "\"EngineBinDir\":\"" << ws.generic_string() << "\",";
-    json << "\"ChangedFiles\":[],\"AffectedFiles\":[],\"AllFiles\":[\"" << file << "\"],";
-    json << "\"PreferredStrategy\":\"Full\",\"ForceFull\":true}";
-
-    CompileServerClient client(std::unique_ptr<IHotReloadTransport>{}, pipeName);
-    CompileServerResponse resp;
-    EXPECT_FALSE(client.Compile(json.str(), resp));
-
-    ASSERT_EQ(resp.Errors.size(), 1u);
-    EXPECT_EQ(resp.Errors.front().Code, "GE0003");
-    EXPECT_NE(resp.Errors.front().MessageUtf8.find("no ScriptSurface"), std::string::npos) << resp.Errors.front().MessageUtf8;
-}
-
 TEST(CompileServerEndToEnd, AssemblyLoadSmoke) {
 #ifdef _WIN32
     // Arrange: workspace and simple source
-    std::filesystem::path ws = std::filesystem::temp_directory_path() / "GE_EndToEnd_Workspace_Load";
-    std::error_code ec; std::filesystem::create_directories(ws, ec);
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_EndToEnd_Workspace_Load"));
+    std::filesystem::path ws = workspace.Path();
+    std::error_code ec;
     std::string pipeName = CompileServerTestHost::UniquePipeName("Load");
 
     std::ofstream f(ws / "Foo.cs");
@@ -221,8 +198,9 @@ TEST(CompileServerEndToEnd, AssemblyLoadSmoke) {
 
 TEST(CompileServerEndToEnd, AssemblyReloadSmoke) {
 #ifdef _WIN32
-    std::filesystem::path ws = std::filesystem::temp_directory_path() / "GE_EndToEnd_Workspace_Reload";
-    std::error_code ec; std::filesystem::create_directories(ws, ec);
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_EndToEnd_Workspace_Reload"));
+    std::filesystem::path ws = workspace.Path();
+    std::error_code ec;
     std::string pipeName = CompileServerTestHost::UniquePipeName("Reload");
 
     auto sourcePath = ws / "Foo.cs";
@@ -313,8 +291,8 @@ TEST(CompileServerEndToEnd, AssemblyReloadSmoke) {
 TEST(CompileServerEndToEnd, NegativeCompileReportsDiagnostics) {
 #ifdef _WIN32
     // Prepare a synthetic project with an intentional compile error
-    std::filesystem::path ws = std::filesystem::temp_directory_path() / "GE_EndToEnd_Workspace_Err";
-    std::filesystem::create_directories(ws);
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_EndToEnd_Workspace_Err"));
+    std::filesystem::path ws = workspace.Path();
     auto sourcePath = ws / "Bad.cs";
     {
         std::ofstream f(sourcePath);
@@ -355,8 +333,8 @@ TEST(CompileServerEndToEnd, ReloadSoakTenCycles) {
     ASSERT_TRUE(clr.Initialize(runtimeConfig));
 
     // Prepare script that returns a counter value we update
-    std::filesystem::path ws = std::filesystem::temp_directory_path() / "GE_EndToEnd_Workspace_Soak";
-    std::filesystem::create_directories(ws);
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_EndToEnd_Workspace_Soak"));
+    std::filesystem::path ws = workspace.Path();
     auto sourcePath = ws / "Foo.cs";
 
     auto writeSource = [&](int v){
@@ -410,8 +388,8 @@ TEST(CompileServerEndToEnd, ManagedExceptionPropagatesAsNegative) {
     ASSERT_TRUE(clr.Initialize(runtimeConfig));
 
     // Script method throws
-    std::filesystem::path ws = std::filesystem::temp_directory_path() / "GE_EndToEnd_Workspace_ErrThrow";
-    std::filesystem::create_directories(ws);
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_EndToEnd_Workspace_ErrThrow"));
+    std::filesystem::path ws = workspace.Path();
     auto sourcePath = ws / "Thrower.cs";
     {
         std::ofstream f(sourcePath);
@@ -453,8 +431,8 @@ TEST(CompileServerEndToEnd, CallWithArgumentsAddsTwoInts) {
     if (!std::filesystem::exists(runtimeConfig)) { GTEST_SKIP() << "HotReload runtimeconfig not found"; }
     ASSERT_TRUE(clr.Initialize(runtimeConfig));
 
-    std::filesystem::path ws = std::filesystem::temp_directory_path() / "GE_EndToEnd_Workspace_CallArgs";
-    std::filesystem::create_directories(ws);
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_EndToEnd_Workspace_CallArgs"));
+    std::filesystem::path ws = workspace.Path();
     auto sourcePath = ws / "FooArgs.cs";
     {
         std::ofstream f(sourcePath);
@@ -524,7 +502,7 @@ std::string DumpDiagnostics(const CompileServerResponse& resp)
 CompileServerRequestDesc MakeGeneratorRequest(const std::filesystem::path& workspace,
                                               const std::string& assemblyName)
 {
-    const std::filesystem::path exeDir = ApplicationPaths::GetExecutableDirectory();
+    const std::filesystem::path exeDir = PathUtils::GetExecutableDirectory();
     CompileServerRequestDesc desc;
     desc.ProjectRoot = workspace;
     desc.AssemblyName = assemblyName;
@@ -540,7 +518,7 @@ CompileServerRequestDesc MakeGeneratorRequest(const std::filesystem::path& works
 // GE0018: a GameSystem the generator cannot construct — neither the generated
 // registration nor the runtime's reflection discovery can instantiate it.
 TEST(CompileServerEndToEnd, GeneratorErrorFailsCompile) {
-    const std::filesystem::path exeDir = ApplicationPaths::GetExecutableDirectory();
+    const std::filesystem::path exeDir = PathUtils::GetExecutableDirectory();
     ASSERT_TRUE(std::filesystem::exists(exeDir / "SourceGenerators" / "EntitySystemGenerator.dll"))
         << "generator not staged next to the test exe — the assertions below would pass vacuously";
     ASSERT_TRUE(std::filesystem::exists(exeDir / "GameEngine.Scripting.ABI.dll"));
@@ -548,11 +526,8 @@ TEST(CompileServerEndToEnd, GeneratorErrorFailsCompile) {
     const std::string pipeName = CompileServerTestHost::UniquePipeName("GenErr");
     ASSERT_TRUE(CompileServerTestHost::StartTestCompileServer(pipeName));
 
-    const std::filesystem::path ws =
-        std::filesystem::temp_directory_path() / "GE_EndToEnd_GenErr";
-    std::error_code ec;
-    std::filesystem::remove_all(ws, ec);
-    std::filesystem::create_directories(ws, ec);
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_EndToEnd_GenErr"));
+    const std::filesystem::path ws = workspace.Path();
     {
         std::ofstream f(ws / "NoCtorSystem.cs", std::ios::trunc);
         f << "using GameEngine.Scripting;\n"
@@ -583,18 +558,15 @@ TEST(CompileServerEndToEnd, GeneratorErrorFailsCompile) {
 // GE0017: a non-partial GameSystem gets no generated registration, but the
 // runtime's reflection discovery still finds and runs it.
 TEST(CompileServerEndToEnd, GeneratorWarningKeepsCompileSuccessful) {
-    const std::filesystem::path exeDir = ApplicationPaths::GetExecutableDirectory();
+    const std::filesystem::path exeDir = PathUtils::GetExecutableDirectory();
     ASSERT_TRUE(std::filesystem::exists(exeDir / "SourceGenerators" / "EntitySystemGenerator.dll"))
         << "generator not staged next to the test exe — the assertions below would pass vacuously";
 
     const std::string pipeName = CompileServerTestHost::UniquePipeName("GenWarn");
     ASSERT_TRUE(CompileServerTestHost::StartTestCompileServer(pipeName));
 
-    const std::filesystem::path ws =
-        std::filesystem::temp_directory_path() / "GE_EndToEnd_GenWarn";
-    std::error_code ec;
-    std::filesystem::remove_all(ws, ec);
-    std::filesystem::create_directories(ws, ec);
+    const TestUtils::ScopedTempDir workspace(TestUtils::MakeUniqueTempDirectory("GE_EndToEnd_GenWarn"));
+    const std::filesystem::path ws = workspace.Path();
     {
         std::ofstream f(ws / "NotPartialSystem.cs", std::ios::trunc);
         f << "using GameEngine.Scripting;\n"
@@ -629,7 +601,7 @@ TEST(CompileServerEndToEnd, GeneratorWarningKeepsCompileSuccessful) {
 // GE0018 leg below reports Success with a registration-less assembly — pre-gate
 // behavior, silently restored by request ordering.
 TEST(CompileServerEndToEnd, GeneratorErrorStillFailsAfterAGeneratorLessRequest) {
-    const std::filesystem::path exeDir = ApplicationPaths::GetExecutableDirectory();
+    const std::filesystem::path exeDir = PathUtils::GetExecutableDirectory();
     ASSERT_TRUE(std::filesystem::exists(exeDir / "SourceGenerators" / "EntitySystemGenerator.dll"))
         << "generator not staged next to the test exe — the GE0018 assertion would pass vacuously";
     ASSERT_TRUE(std::filesystem::exists(exeDir / "GameEngine.Scripting.ABI.dll"));
@@ -657,14 +629,14 @@ TEST(CompileServerEndToEnd, GeneratorErrorStillFailsAfterAGeneratorLessRequest) 
     const uint32_t hostPid = residentHostPid();
     ASSERT_NE(hostPid, 0u) << "no resident host answered on " << pipeName;
 
-    std::error_code ec;
+    const TestUtils::ScopedTempDir noBinDirWorkspace(
+        TestUtils::MakeUniqueTempDirectory("GE_EndToEnd_GenAfterBare_NoBinDir"));
+    const TestUtils::ScopedTempDir genErrWorkspace(
+        TestUtils::MakeUniqueTempDirectory("GE_EndToEnd_GenAfterBare_GenErr"));
 
     // Leg 1: no EngineBinDir. It compiles cleanly; what matters is what it caches.
     {
-        const std::filesystem::path ws =
-            std::filesystem::temp_directory_path() / "GE_EndToEnd_GenAfterBare_NoBinDir";
-        std::filesystem::remove_all(ws, ec);
-        std::filesystem::create_directories(ws, ec);
+        const std::filesystem::path ws = noBinDirWorkspace.Path();
         {
             std::ofstream f(ws / "Plain.cs", std::ios::trunc);
             f << "public static class Plain { public static int Value() { return 1; } }\n";
@@ -690,10 +662,7 @@ TEST(CompileServerEndToEnd, GeneratorErrorStillFailsAfterAGeneratorLessRequest) 
 
     // Leg 2: same host, EngineBinDir supplied, generator error present.
     {
-        const std::filesystem::path ws =
-            std::filesystem::temp_directory_path() / "GE_EndToEnd_GenAfterBare_GenErr";
-        std::filesystem::remove_all(ws, ec);
-        std::filesystem::create_directories(ws, ec);
+        const std::filesystem::path ws = genErrWorkspace.Path();
         {
             std::ofstream f(ws / "NoCtorSystem.cs", std::ios::trunc);
             f << "using GameEngine.Scripting;\n"

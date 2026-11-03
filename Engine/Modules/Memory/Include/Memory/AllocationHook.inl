@@ -4,16 +4,11 @@
 // Windows, posix_memalign elsewhere); each deallocation goes straight back to the
 // matching free. Behaviour is the default library's, plus the count.
 //
-// Include in exactly one translation unit of each image that should be counted:
-// Memory/Source/AllocationHook.cpp (every test executable in every configuration),
-// Memory/Source/ProductionAllocationHook.cpp (Engine, Editor, Player,
-// GameEngine.Native and EditorSDK where GE_DEBUG_INSTRUMENTATION is 1) and the native
-// SDK's UserModuleEntry.cpp (user modules, under the same switch).
-//
-// Why every image: on Windows a global operator new replacement is per module. A
-// replacement in a test executable does not see what Engine.dll allocates, so each
-// image carries its own and all of them count into the one counter in Engine.dll.
-// On macOS and Linux the definitions coalesce process-wide.
+// Include in exactly one translation unit per explicitly instrumented image. The
+// system-allocator test build attaches it to Engine in Debug/DebugFast and to
+// MemoryCounterTests and EngineWorldDrawTests. Each hook calls the one counter
+// inside Engine, so allocations in the shared library and executable share a window.
+// Do not combine it with mimalloc or another new/delete replacement in one image.
 
 #include "Memory/AllocationCounter.h"
 

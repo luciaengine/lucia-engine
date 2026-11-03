@@ -1,24 +1,24 @@
 #include "Core/StandardPaths.h"
 
-#include "Core/ApplicationPaths.h"
+#include "Core/Application.h" // PathUtils
 
 namespace GameEngine
 {
 static std::string SanitizeName(std::string_view appName)
 {
-    return ApplicationPaths::SanitizeForFolderName(appName);
+    return PathUtils::SanitizeForFolderName(appName);
 }
 
 std::filesystem::path StandardPaths::UserDataRoot(std::string_view appName)
 {
     const std::string safe = SanitizeName(appName);
-    return (ApplicationPaths::GetUserDataDirectory() / safe).lexically_normal();
+    return (PathUtils::GetUserDataDirectory() / safe).lexically_normal();
 }
 
 std::filesystem::path StandardPaths::UserCacheRoot(std::string_view appName)
 {
     const std::string safe = SanitizeName(appName);
-    return (ApplicationPaths::GetUserCacheDirectory() / safe).lexically_normal();
+    return (PathUtils::GetUserCacheDirectory() / safe).lexically_normal();
 }
 
 std::filesystem::path StandardPaths::UserLogsRoot(std::string_view appName)
@@ -32,7 +32,7 @@ std::filesystem::path StandardPaths::GameSavesRoot(std::string_view appName)
 
 #if defined(_WIN32)
     // Conventional Windows location for games.
-    return (ApplicationPaths::GetUserDocumentsDirectory() / "My Games" / safe).lexically_normal();
+    return (PathUtils::GetUserDocumentsDirectory() / "My Games" / safe).lexically_normal();
 #elif defined(__APPLE__)
     return (UserDataRoot(appName) / "Saves").lexically_normal();
 #else

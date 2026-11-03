@@ -153,12 +153,7 @@ void TaskHandle::OnComplete(Function<void()> callback) {
         // with the Mark* status exchange — see TaskData::HasCallbacks).
         data->HasCallbacks.store(true, std::memory_order_seq_cst);
 
-        const TaskStatus status = data->Status.load(std::memory_order_seq_cst);
-        if (status == TaskStatus::Failed || status == TaskStatus::Cancelled) {
-            // It can never fire: the parameter dies after the lock, so the task keeps no module code.
-            return;
-        }
-        if (status != TaskStatus::Completed) {
+        if (data->Status.load(std::memory_order_seq_cst) != TaskStatus::Completed) {
             data->OnCompleteCallbacks.push_back(std::move(callback));
             return;
         }
@@ -183,12 +178,7 @@ void TaskHandle::OnComplete(Function<void(const TaskHandle&)> callback) {
         // Dekker flag first — see the overload above.
         data->HasCallbacks.store(true, std::memory_order_seq_cst);
 
-        const TaskStatus status = data->Status.load(std::memory_order_seq_cst);
-        if (status == TaskStatus::Failed || status == TaskStatus::Cancelled) {
-            // It can never fire: the parameter dies after the lock, so the task keeps no module code.
-            return;
-        }
-        if (status != TaskStatus::Completed) {
+        if (data->Status.load(std::memory_order_seq_cst) != TaskStatus::Completed) {
             data->OnCompleteWithHandleCallbacks.push_back(std::move(callback));
             return;
         }
@@ -325,16 +315,13 @@ void TaskHandle::FireCancelledOn(const SharedPtr<TaskData>& data) {
         return;
     }
 
-    // Cancelled fires the failure callbacks and drops the completion callbacks, which
-    // can never fire; all are taken out under the lock and die after it, as in ExecuteCallbacks.
+    // Cancelled fires the failure callbacks (mirrors ExecuteCallbacks'
+    // Cancelled arm; completion callbacks never fire for cancelled tasks).
+    // Taken out under the lock and run after it, as in ExecuteCallbacks.
     Vector<Function<void(const String&)>> onFailure;
-    Vector<Function<void()>> droppedOnComplete;
-    Vector<Function<void(const TaskHandle&)>> droppedOnCompleteWithHandle;
     {
         std::lock_guard<std::mutex> lock(data->CallbackMutex);
         onFailure = std::exchange(data->OnFailureCallbacks, {});
-        droppedOnComplete = std::exchange(data->OnCompleteCallbacks, {});
-        droppedOnCompleteWithHandle = std::exchange(data->OnCompleteWithHandleCallbacks, {});
     }
     for (const auto& callback : onFailure) {
         try {
@@ -372,10 +359,7 @@ void TaskHandle::ExecuteCallbacks(TaskStatus newStatus) {
             onComplete = std::exchange(data->OnCompleteCallbacks, {});
             onCompleteWithHandle = std::exchange(data->OnCompleteWithHandleCallbacks, {});
         } else if (newStatus == TaskStatus::Failed || newStatus == TaskStatus::Cancelled) {
-            // The completion callbacks can never fire; they die after the lock, unrun.
             onFailure = std::exchange(data->OnFailureCallbacks, {});
-            onComplete = std::exchange(data->OnCompleteCallbacks, {});
-            onCompleteWithHandle = std::exchange(data->OnCompleteWithHandleCallbacks, {});
         }
     }
 

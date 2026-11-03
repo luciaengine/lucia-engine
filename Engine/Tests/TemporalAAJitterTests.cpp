@@ -164,23 +164,20 @@ TEST(TemporalAAJitter, ApplyNdcJitterWritesTheFreeZeros)
     // On the bare reverse-Z projection the row op reduces to writing the free
     // zeros m[2][0]/m[2][1]; every other element is bit-identical.
     const Matrix4x4 proj = TestProj();
-    Matrix4x4 jittered = proj;
+    float jittered[16];
+    std::memcpy(jittered, proj.Data(), sizeof(jittered));
     const float dx = 0.375f / 1920.0f;
     const float dy = -0.25f / 1080.0f;
     ApplyNdcJitter(jittered, dx, dy);
 
-    for (int column = 0; column < 4; ++column)
+    for (int i = 0; i < 16; ++i)
     {
-        for (int row = 0; row < 4; ++row)
-        {
-            if (column == 2 && row == 0)
-                EXPECT_NEAR(jittered[column][row], proj[column][row] + dx, 1e-9f);
-            else if (column == 2 && row == 1)
-                EXPECT_NEAR(jittered[column][row], proj[column][row] + dy, 1e-9f);
-            else
-                EXPECT_EQ(jittered[column][row], proj[column][row])
-                    << "element [" << column << "][" << row << "] must be untouched";
-        }
+        if (i == 8) // m[2][0]
+            EXPECT_NEAR(jittered[i], proj.Data()[i] + dx, 1e-9f);
+        else if (i == 9) // m[2][1]
+            EXPECT_NEAR(jittered[i], proj.Data()[i] + dy, 1e-9f);
+        else
+            EXPECT_EQ(jittered[i], proj.Data()[i]) << "element " << i << " must be untouched";
     }
 }
 
@@ -192,7 +189,7 @@ TEST(TemporalAAJitter, ExactNdcOffsetAtEveryDepth)
     Matrix4x4 jittered = proj;
     const float dx = 2.0f * 0.4f / 1920.0f;
     const float dy = 2.0f * -0.3f / 1080.0f;
-    ApplyNdcJitter(jittered, dx, dy);
+    ApplyNdcJitter(jittered.Data(), dx, dy);
 
     const GameEngine::Mathematics::Vector4 points[] = {
         {0.13f, -0.62f, 0.11f, 1.0f}, // just past near
@@ -221,10 +218,10 @@ TEST(TemporalAAJitter, RowOpDistributesOverComposition)
     const float dx = 0.0007f, dy = -0.0004f;
 
     Matrix4x4 viewProj = proj * view;
-    ApplyNdcJitter(viewProj, dx, dy);
+    ApplyNdcJitter(viewProj.Data(), dx, dy);
 
     Matrix4x4 projJ = proj;
-    ApplyNdcJitter(projJ, dx, dy);
+    ApplyNdcJitter(projJ.Data(), dx, dy);
     const Matrix4x4 expected = projJ * view;
 
     for (int i = 0; i < 16; ++i)
@@ -240,10 +237,10 @@ CameraData MakeCameraData(float tag)
     const Matrix4x4 view = TestView();
     const Matrix4x4 proj = TestProj();
     const Matrix4x4 viewProj = proj * view;
-    cam.view = view;
-    cam.proj = proj;
-    cam.viewProj = viewProj;
-    cam.cameraPos.x = tag; // distinguishes frames in the snapshot assertions
+    std::memcpy(cam.view, view.Data(), sizeof(cam.view));
+    std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
+    std::memcpy(cam.viewProj, viewProj.Data(), sizeof(cam.viewProj));
+    cam.cameraPos[0] = tag; // distinguishes frames in the snapshot assertions
     return cam;
 }
 
@@ -265,7 +262,7 @@ TEST(TemporalAAJitter, RegistryRotatesOncePerFrameAndKeepsLogicDomainClean)
 
     // The jittered resolve differs from the logic domain...
     const CameraData logic = reg.ResolveCameraData(viewId);
-    EXPECT_NE(0, std::memcmp(a.proj.Data(), logic.proj.Data(), sizeof(a.proj)));
+    EXPECT_NE(0, std::memcmp(a.proj, logic.proj, sizeof(a.proj)));
     // ...but the logic domain itself is untouched by jittered resolves — the
     // stored viewProj is what CascadeShadowCache memcmp-keys on.
     const CameraData logicAgain = reg.ResolveCameraData(viewId);
@@ -273,13 +270,13 @@ TEST(TemporalAAJitter, RegistryRotatesOncePerFrameAndKeepsLogicDomainClean)
 
     // Next frame rotates to a different jitter phase.
     const CameraData c = reg.ResolveJitteredCameraData(viewId, 11, 1920, 1080);
-    EXPECT_NE(0, std::memcmp(a.proj.Data(), c.proj.Data(), sizeof(a.proj)));
+    EXPECT_NE(0, std::memcmp(a.proj, c.proj, sizeof(a.proj)));
 
     // Depth rows never change: proj cols 2/3 rows z/w equal the logic domain.
-    EXPECT_EQ(a.proj[2][2], logic.proj[2][2]);
-    EXPECT_EQ(a.proj[2][3], logic.proj[2][3]);
-    EXPECT_EQ(a.proj[3][2], logic.proj[3][2]);
-    EXPECT_EQ(a.proj[3][3], logic.proj[3][3]);
+    EXPECT_EQ(a.proj[10], logic.proj[10]);
+    EXPECT_EQ(a.proj[11], logic.proj[11]);
+    EXPECT_EQ(a.proj[14], logic.proj[14]);
+    EXPECT_EQ(a.proj[15], logic.proj[15]);
 }
 
 TEST(TemporalAAJitter, RegistrySnapshotsPrevCameraAcrossFrames)
@@ -300,8 +297,8 @@ TEST(TemporalAAJitter, RegistrySnapshotsPrevCameraAcrossFrames)
     const auto* s2 = reg.FindViewAntiAliasing(viewId);
     ASSERT_NE(s2, nullptr);
     EXPECT_TRUE(s2->PrevValid); // consecutive frames
-    EXPECT_EQ(s2->PrevCamera.cameraPos.x, 1.0f);
-    EXPECT_EQ(s2->CurrCamera.cameraPos.x, 2.0f);
+    EXPECT_EQ(s2->PrevCamera.cameraPos[0], 1.0f);
+    EXPECT_EQ(s2->CurrCamera.cameraPos[0], 2.0f);
 
     // A skipped frame (OnDemand lapse, hidden panel) does NOT invalidate the
     // pair: Prev* keep the last rendered frame's camera — exactly what
@@ -313,7 +310,7 @@ TEST(TemporalAAJitter, RegistrySnapshotsPrevCameraAcrossFrames)
     const auto* s3 = reg.FindViewAntiAliasing(viewId);
     ASSERT_NE(s3, nullptr);
     EXPECT_TRUE(s3->PrevValid);
-    EXPECT_EQ(s3->PrevCamera.cameraPos.x, 2.0f) << "last rendered frame's camera";
+    EXPECT_EQ(s3->PrevCamera.cameraPos[0], 2.0f) << "last rendered frame's camera";
 
     // Disabling drops the state; resolve falls back to the logic domain.
     reg.SetViewAntiAliasing(viewId, false, AntiAliasingMode::TAA, 8);

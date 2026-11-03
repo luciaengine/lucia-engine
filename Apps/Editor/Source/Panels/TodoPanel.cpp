@@ -17,9 +17,9 @@
 #include "Input/InputSystem.h"
 #include "Input/KeyCodes.h"
 #include "Logger/Logger.h"
-#include "Types/StringUtils.h"
 
 #include <algorithm>
+#include <cctype>
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <cmath>
@@ -198,6 +198,7 @@ void TodoPanel::BuildUI()
     // Search bar
     auto built = BuildPanelSearchBar(
         "todo-search-field",
+        []() { return SettingsPanel::GetSearchBarsVisible(); },
         [this](const std::string& value)
         {
             m_SearchQuery = value;
@@ -216,7 +217,6 @@ void TodoPanel::BuildUI()
         });
     m_SearchBar = built.RootPtr;
     m_SearchField = built.FieldPtr;
-    container->AddClass("panel-search-host");
     container->AddChild(std::move(built.Root));
     SettingsPanel::RegisterSearchBar(m_SearchBar, built.IconPtr);
     
@@ -224,7 +224,7 @@ void TodoPanel::BuildUI()
     auto scrollView = std::make_unique<ScrollView>();
     scrollView->SetId("todo-scroll");
     scrollView->AddClass("todo-list");
-    scrollView->Style().SetCustomNumber(HashStringId("--ui_scrollview_measure_horizontal"), 0.0f);
+    scrollView->Overrides().SetCustomNumber(StringId("--ui_scrollview_measure_horizontal"), 0.0f);
     m_ScrollView = scrollView.get();
     
     // Handle click on background to clear selection
@@ -321,7 +321,7 @@ void TodoPanel::BuildUI()
     // Insertion indicator for drag-and-drop
     auto indicator = std::make_unique<UIElement>();
     indicator->SetId("todo-insertion-indicator");
-    indicator->Style().Set(Style::Display, DisplayMode::None);
+    indicator->Overrides().Set(Style::Display, DisplayMode::None);
     m_InsertionIndicator = indicator.get();
     contentContainer->AddChild(std::move(indicator));
     
@@ -375,7 +375,9 @@ void TodoPanel::RebuildTodoRows()
         if (m_SearchQuery.empty())
             return true;
         
-        const std::string searchLower = ToLowerAscii(m_SearchQuery);
+        std::string searchLower = m_SearchQuery;
+        std::transform(searchLower.begin(), searchLower.end(), searchLower.begin(),
+            [](unsigned char c) { return std::tolower(c); });
         
         const std::string status = todo.Completed ? "completed" : "pending";
         std::string searchable;
@@ -385,7 +387,8 @@ void TodoPanel::RebuildTodoRows()
             searchable = todo.Text;
         else
             searchable = todo.Text + " " + status;
-        searchable = ToLowerAscii(searchable);
+        std::transform(searchable.begin(), searchable.end(), searchable.begin(),
+            [](unsigned char c) { return std::tolower(c); });
         
         return searchable.find(searchLower) != std::string::npos;
     };
@@ -423,7 +426,7 @@ void TodoPanel::CreateTodoRow(const TodoItem& todo, UIElement* container, bool i
     if (m_SelectedId == todo.Id)
         row->AddClass("selected");
     
-    row->Style()
+    row->Overrides()
         .Set(Style::MinHeight, StyleLength::Px(m_RowHeight))
         .Set(Style::Height, StyleLength::Px(m_RowHeight));
     
@@ -442,7 +445,7 @@ void TodoPanel::CreateTodoRow(const TodoItem& todo, UIElement* container, bool i
     if (m_RowHeight <= 22.0f)
     {
         int checkboxSize = 18; // Smaller checkbox for compact rows
-        checkbox->Style()
+        checkbox->Overrides()
             .Set(Style::Width, StyleLength::Px((float)checkboxSize))
             .Set(Style::Height, StyleLength::Px((float)checkboxSize))
             .Set(Style::MinWidth, StyleLength::Px((float)checkboxSize))
@@ -693,7 +696,7 @@ void TodoPanel::SetupDragAndDrop(UIElement* row, UIElement* dragHandle, const st
         {
             if (m_InsertionIndicator)
             {
-                m_InsertionIndicator->Style().Set(Style::Display, DisplayMode::None);
+                m_InsertionIndicator->Overrides().Set(Style::Display, DisplayMode::None);
             }
             m_DragTargetIndex = -1;
             e.Stop();
@@ -729,7 +732,7 @@ void TodoPanel::SetupDragAndDrop(UIElement* row, UIElement* dragHandle, const st
         // Show insertion indicator
         if (m_InsertionIndicator)
         {
-            m_InsertionIndicator->Style()
+            m_InsertionIndicator->Overrides()
                 .Set(Style::PositionTop, StyleLength::Px(indicatorY))
                 .Set(Style::Display, DisplayMode::Block);
         }
@@ -748,7 +751,7 @@ void TodoPanel::SetupDragAndDrop(UIElement* row, UIElement* dragHandle, const st
             m_DragTargetIndex = -1;
             if (m_InsertionIndicator)
             {
-                m_InsertionIndicator->Style().Set(Style::Display, DisplayMode::None);
+                m_InsertionIndicator->Overrides().Set(Style::Display, DisplayMode::None);
             }
             return;
         }
@@ -789,7 +792,7 @@ void TodoPanel::SetupDragAndDrop(UIElement* row, UIElement* dragHandle, const st
         
         if (m_InsertionIndicator)
         {
-            m_InsertionIndicator->Style().Set(Style::Display, DisplayMode::None);
+            m_InsertionIndicator->Overrides().Set(Style::Display, DisplayMode::None);
         }
 
         m_DraggedRow = nullptr;
@@ -811,7 +814,7 @@ void TodoPanel::CancelDrag()
     m_DragTargetIndex = -1;
     if (m_InsertionIndicator)
     {
-        m_InsertionIndicator->Style().Set(Style::Display, DisplayMode::None);
+        m_InsertionIndicator->Overrides().Set(Style::Display, DisplayMode::None);
     }
 }
 

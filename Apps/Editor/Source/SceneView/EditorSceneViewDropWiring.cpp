@@ -1,7 +1,7 @@
 #include "SceneView/EditorSceneViewDropWiring.h"
 
 #include "Panels/HierarchyPanel.h"
-#include "SceneView/SceneViewPanel.h"
+#include "Panels/SceneViewPanel.h"
 #include "EditorChangeNotifications.h"
 #include "UndoRedo/SceneViewDropUndoCommand.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -60,7 +60,7 @@ void WireSceneViewAssetDropUndo(SceneViewPanel* sceneViewPanel,
 
             std::vector<ECS::EntityHandle> rootsCopy = droppedRoots;
             undoRedo->CommitAlreadyApplied(std::make_unique<SceneViewDropUndoCommand>(
-                SceneViewDropUndoCommand::NameFor(*world, droppedRoots),
+                "Scene Drop",
                 world,
                 notifications,
                 std::move(rootsCopy),

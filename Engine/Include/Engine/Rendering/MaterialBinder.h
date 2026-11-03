@@ -33,10 +33,11 @@
 
 #include "Engine/Rendering/DrawBindings.h"
 #include "Engine/Rendering/PassBindingContext.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Core/Handle.h"
+#include "Rendering/Core/HashUtils.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
-#include "Rendering/Materials/Shader/ShaderVariantKey.h"
+#include "Rendering/Materials/ShaderVariantKey.h"
 #include "Types/StringId.h"
 
 #include <array>
@@ -309,11 +310,12 @@ class MaterialBinder
     {
         size_t operator()(const PerPassCacheKey& k) const noexcept
         {
-            size_t h = std::hash<uint64_t>{}(k.ViewBits);
-            h ^= std::hash<uint64_t>{}(k.PassKwBits) + 0x9e3779b9 + (h << 6) + (h >> 2);
-            h ^= std::hash<uint64_t>{}(k.LayoutHash) + 0x9e3779b9 + (h << 6) + (h >> 2);
-            h ^= std::hash<uint32_t>{}(k.PassInstanceIndex) + 0x9e3779b9 + (h << 6) + (h >> 2);
-            return h;
+            using Rendering::HashUtils::HashCombine;
+            uint64_t h = k.ViewBits;
+            h = HashCombine(h, k.PassKwBits);
+            h = HashCombine(h, k.LayoutHash);
+            h = HashCombine(h, k.PassInstanceIndex);
+            return static_cast<size_t>(h);
         }
     };
 
@@ -335,9 +337,9 @@ class MaterialBinder
     {
         size_t operator()(const WarnKey& k) const noexcept
         {
-            size_t h = std::hash<const void*>{}(k.Mat);
-            h ^= std::hash<uint32_t>{}(k.SetIdx) + 0x9e3779b9 + (h << 6) + (h >> 2);
-            return h;
+            const uint64_t h =
+                Rendering::HashUtils::HashCombine(std::hash<const void*>{}(k.Mat), k.SetIdx);
+            return static_cast<size_t>(h);
         }
     };
 

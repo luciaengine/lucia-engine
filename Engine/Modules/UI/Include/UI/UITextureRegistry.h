@@ -2,11 +2,11 @@
 
 #include "Rendering/Core/Device.h"
 #include "UI/UICompatDrawRuns.h"
-#include "GenerationalVector/GenerationalHandle.h"
-#include "Types/FlatMap.h"
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -21,8 +21,8 @@ namespace UI
 // Maps GPU TextureHandles to array indices that UIPrimitive.textureIndex
 // references in the fragment shader's texture array. The state tables
 // (m_Binding0Entries / m_Binding1Entries) are the source of truth; each
-// UI draw calls GetFrameSet for the descriptor set that holds them
-// in that frame.
+// UI draw calls CreateTransientFrameSet to materialise them into a fresh
+// descriptor set for that frame.
 class UITextureRegistry
 {
 public:
@@ -71,30 +71,32 @@ public:
     // Register a color emoji atlas page. Returns descriptor array index (binding 0).
     uint32_t RegisterColorAtlasPage(const Rendering::Text::FontAtlas& atlas, int pageIndex);
 
-    /// Reserve a descriptor slot for a texture that is bound later, during render
-    /// pass execute. The slot reads the white dummy until UpdateSlot binds it.
-    /// The handle's Index() is the descriptor slot. An invalid handle means no slot is free.
-    GenerationalVector::Handle ReserveSlot();
+    // Reserve a descriptor slot for a texture that will be bound later (during render pass execute).
+    // Returns the slot index. Call UpdateSlot() during execute to bind the actual texture.
+    uint32_t ReserveSlot();
 
-    /// End a reservation and return its slot to the free pool. A reservation that
-    /// does not hold its slot (its slot was freed, or a device rebuild dropped it) does nothing.
-    void ReleaseSlot(GenerationalVector::Handle reservation);
+    // Release a previously reserved slot back to the free pool.
+    // Call at frame start to recycle slots reserved for deferred RG textures.
+    void ReleaseSlot(uint32_t slot);
 
-    /// Bind a texture to a reserved slot. A reservation that does not hold its slot
-    /// writes nothing. GetFrameSet writes the descriptor.
-    void UpdateSlot(GenerationalVector::Handle reservation, Rendering::TextureHandle tex,
+    // Bind a texture to a previously reserved slot. Used for RG textures resolved during execute.
+    // Updates the registry's slot state tables; the descriptor is materialised when
+    // CreateTransientFrameSet is next called (same frame or next).
+    void UpdateSlot(uint32_t slot, Rendering::TextureHandle tex,
                     Rendering::SamplerHandle sampler = {});
 
-    // Return the device's descriptor set that holds every occupied slot of the state
-    // tables. The device builds it on the first call for that content and keeps it
-    // while the content repeats. Call once per UI draw, before BindDescriptorSet(1, ...).
-    Rendering::DescriptorSetHandle GetFrameSet();
+    // Allocate a fresh transient descriptor set for the current frame, write every
+    // occupied slot from the registry's state tables into it, and return the handle.
+    // Call once per UI draw, immediately before BindDescriptorSet(1, ...). The set's
+    // backing memory is owned by the frame's transient pool / descriptor-buffer ring
+    // and rewinds automatically when the frame slot recycles.
+    Rendering::DescriptorSetHandle CreateTransientFrameSet();
 
-    // Compat-profile twin of GetFrameSet: one descriptor set per
+    // Compat-profile twin of CreateTransientFrameSet: one descriptor set per
     // UICompatDrawRun, holding only the textures that run's primitives name.
     // Slots the run left unclaimed take the dummy white so no binding is left
     // unwritten.
-    Rendering::DescriptorSetHandle GetDrawRunSet(const UICompatDrawRun& run);
+    Rendering::DescriptorSetHandle CreateDrawRunSet(const UICompatDrawRun& run);
 
     // True when the registry built the fixed-slot layout instead of the
     // bindless arrays. Resolved once at construction from the renderer's shader
@@ -118,7 +120,7 @@ private:
     // UpdateSlot runs from the render-graph execute callback which may land on
     // a JobSystem worker under parallel dispatch, while Register / Unregister /
     // RegisterSlugTextures / RegisterColorAtlasPage run from the main thread's
-    // primitive-generation pass. GetFrameSet iterates the slot
+    // primitive-generation pass. CreateTransientFrameSet iterates the slot
     // maps and must not race with writers.
     mutable std::mutex m_Mutex;
 
@@ -153,17 +155,15 @@ private:
     bool m_Compat = false;
 
     // Per-slot state maps. Source of truth for the descriptor set contents;
-    // mutators update these, and GetFrameSet returns the device set for
-    // their current content each draw. The registry holds no set.
+    // mutators update these, and CreateTransientFrameSet writes them to a fresh
+    // transient set each draw. No persistent descriptor sets are held.
     struct SlotEntry
     {
         Rendering::TextureHandle Texture{};
         Rendering::SamplerHandle Sampler{};
     };
-    FlatMap<uint32_t, SlotEntry> m_Binding0Entries; // slot → texture (CIS)
-    FlatMap<uint32_t, SlotEntry> m_Binding1Entries; // band slot → texture (usampler2D)
-    // The writes GetFrameSet and GetDrawRunSet pass to the device, kept to reuse their capacity. Guarded by m_Mutex.
-    std::vector<Rendering::DescriptorWrite> m_SetWrites;
+    std::unordered_map<uint32_t, SlotEntry> m_Binding0Entries; // slot → texture (CIS)
+    std::unordered_map<uint32_t, SlotEntry> m_Binding1Entries; // band slot → texture (usampler2D)
 
     uint32_t m_NextSlot = 1; // 0 is reserved
     // Dedup key = {FULL 64-bit generational texture id, sampler id}. Packing
@@ -172,12 +172,8 @@ private:
     // dead predecessor's slot and the UI sampled a destroyed texture (the
     // white-scene-view-after-tab-return bug); UnregisterByHandle's reverse
     // comparison silently never matched for the same reason.
-    FlatMap<std::pair<uint64_t, uint64_t>, uint32_t> m_HandleToIndex;
+    std::map<std::pair<uint64_t, uint64_t>, uint32_t> m_HandleToIndex;
     std::vector<uint32_t> m_FreeSlots;
-    // Generation per binding-0 slot, indexed by slot. Every free of a slot (release,
-    // unregister, heal, shutdown) bumps it, so a reservation handle matches only while
-    // its slot is still reserved for it. Never reset, also across a heal.
-    std::vector<GenerationalVector::Handle::GenerationType> m_SlotGenerations;
 
     // Binding ordinals of the compat layout. Must match the layout(binding=)
     // qualifiers in Shaders/UI/ui_sdf_textures.glsl.
@@ -190,9 +186,9 @@ private:
     void BuildBindlessLayoutDesc(const Rendering::RenderingDeviceCapabilities& caps);
     void BuildCompatLayoutDesc();
     // Resolves a registry index to the texture to bind, repairing dead handles
-    // the way GetFrameSet does. Caller holds m_Mutex.
+    // the way CreateTransientFrameSet does. Caller holds m_Mutex.
     Rendering::TextureHandle ResolveSlotTextureLocked(
-        FlatMap<uint32_t, SlotEntry>& entries, uint32_t index);
+        std::unordered_map<uint32_t, SlotEntry>& entries, uint32_t index);
 
     uint32_t AllocateSlot();
     uint32_t AllocateBandSlot();
@@ -223,10 +219,6 @@ private:
     uint32_t RegisterPreUploadedLocked(Rendering::TextureHandle tex,
                                        Rendering::SamplerHandle sampler);
     void UnregisterLocked(uint32_t index);
-    // True when the reservation still holds its slot. Caller holds m_Mutex.
-    bool HoldsSlotLocked(GenerationalVector::Handle reservation) const;
-    // End every outstanding reservation: bump the generation of every slot.
-    void EndAllReservationsLocked();
 
     // Cached font atlas page GPU textures.
     struct AtlasPageEntry
@@ -238,7 +230,7 @@ private:
         uint32_t Height = 0;
     };
     // Key: (atlasId << 32) | (pageIndex << 1) | isColor
-    FlatMap<uint64_t, AtlasPageEntry> m_AtlasPageCache;
+    std::unordered_map<uint64_t, AtlasPageEntry> m_AtlasPageCache;
 
     static uint64_t MakeAtlasPageKey(uint32_t atlasId, int pageIndex, bool isColor)
     {
@@ -270,7 +262,7 @@ private:
         std::vector<SlugPageEntry> Pages;           // one per FontAtlas::SlugPage
         std::vector<SlugTextureIndices> Indices;    // mirror of pages for fast access
     };
-    FlatMap<uint32_t, SlugFontCache> m_SlugCache; // keyed by atlasId
+    std::unordered_map<uint32_t, SlugFontCache> m_SlugCache; // keyed by atlasId
 };
 
 } // namespace UI

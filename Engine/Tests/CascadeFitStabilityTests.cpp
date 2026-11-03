@@ -24,7 +24,7 @@
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Common/Frustum.h"
 
 #include <gtest/gtest.h>
@@ -77,13 +77,13 @@ Rendering::CameraData MakeCamera(const Vector3& pos, const Vector3& forward)
     const Matrix4x4 proj =
         MakePerspectiveLH_ZO_ReverseZ(60.0f * kPi / 180.0f, 16.0f / 9.0f, kNearPlane, kFarPlane);
     const Matrix4x4 viewProj = proj * view;
-    cam.view = view;
-    cam.proj = proj;
-    cam.viewProj = viewProj;
-    cam.cameraPos.x = pos.x;
-    cam.cameraPos.y = pos.y;
-    cam.cameraPos.z = pos.z;
-    cam.cameraPos.w = 0.0f;
+    std::memcpy(cam.view, view.Data(), sizeof(cam.view));
+    std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
+    std::memcpy(cam.viewProj, viewProj.Data(), sizeof(cam.viewProj));
+    cam.cameraPos[0] = pos.x;
+    cam.cameraPos[1] = pos.y;
+    cam.cameraPos[2] = pos.z;
+    cam.cameraPos[3] = 0.0f;
     return cam;
 }
 
@@ -188,7 +188,8 @@ void LookPose(uint32_t f, Vector3& pos, Vector3& fwd)
 void AssertSliceCovered(const Rendering::CameraData& cam, const CascadeFrameData& fd)
 {
     constexpr float kNdcEps = 1e-3f;
-    Matrix4x4 camVP = cam.viewProj;
+    Matrix4x4 camVP;
+    std::memcpy(camVP.Data(), cam.viewProj, sizeof(cam.viewProj));
     for (uint32_t c = 0; c < fd.NumCascades; ++c)
     {
         const float sliceNear = (c == 0) ? kNearPlane : fd.SplitDistances[c - 1];
@@ -339,7 +340,8 @@ TEST(CascadeFitStability, CascadeZeroUsesTighterFitBandsWhileFarCascadesKeepLega
         feature.ComputeCascades(cam, kNearPlane, kFarPlane, lightDir, &bounds, 71);
     AssertSliceCovered(cam, fd);
 
-    Matrix4x4 camVP = cam.viewProj;
+    Matrix4x4 camVP;
+    std::memcpy(camVP.Data(), cam.viewProj, sizeof(cam.viewProj));
     const Vector3 up = std::abs(Vector3::Dot(lightDir, Vector3{0, 1, 0})) > 0.99f
         ? Vector3{0, 0, 1}
         : Vector3{0, 1, 0};
@@ -413,7 +415,7 @@ TEST(CascadeFitStability, FreezeOriginSectorStepRefits)
         // A wrong reuse would keep camA's frozen cull snapshot and a VPRel
         // rebased against sector 32 (receivers sample origin-relative — a
         // stale rebase misses every cascade lookup).
-        EXPECT_EQ(0, std::memcmp(b.CullCameraViewProj[c].Data(), camB.viewProj.Data(), 64))
+        EXPECT_EQ(0, std::memcmp(b.CullCameraViewProj[c].Data(), camB.viewProj, 64))
             << "cascade " << c << " kept the pre-step frozen cull snapshot";
         EXPECT_NE(0, std::memcmp(b.LightVPRel[c].Data(), a.LightVPRel[c].Data(), 64))
             << "cascade " << c << " kept the pre-step origin rebase";
@@ -603,12 +605,12 @@ Rendering::CameraData MakeCameraAt(const Matrix4x4& rot3x3, double ex, double ey
     const Matrix4x4 proj =
         MakePerspectiveLH_ZO_ReverseZ(60.0f * kPi / 180.0f, 16.0f / 9.0f, nearP, farP);
     const Matrix4x4 viewProj = proj * view;
-    cam.view = view;
-    cam.proj = proj;
-    cam.viewProj = viewProj;
-    cam.cameraPos.x = static_cast<float>(ex);
-    cam.cameraPos.y = static_cast<float>(ey);
-    cam.cameraPos.z = static_cast<float>(ez);
+    std::memcpy(cam.view, view.Data(), sizeof(cam.view));
+    std::memcpy(cam.proj, proj.Data(), sizeof(cam.proj));
+    std::memcpy(cam.viewProj, viewProj.Data(), sizeof(cam.viewProj));
+    cam.cameraPos[0] = static_cast<float>(ex);
+    cam.cameraPos[1] = static_cast<float>(ey);
+    cam.cameraPos[2] = static_cast<float>(ez);
     return cam;
 }
 
@@ -783,7 +785,8 @@ TEST(CascadeFitWorldMagnitude, SliceCornerErrorStaysSubMetreAtEarthRadius)
             MakeCameraAt(OverviewRotation(), pose.X, pose.Y, pose.Z, kNearPlane, kPlanetFar);
         const CascadeFrameData fd =
             feature.ComputeCascades(cam, kNearPlane, kPlanetFar, lightDir, nullptr, ++viewId);
-        Matrix4x4 cameraViewProj = cam.viewProj;
+        Matrix4x4 cameraViewProj;
+        std::memcpy(cameraViewProj.Data(), cam.viewProj, 64);
         const double originWorld[3] = {
             static_cast<double>(fd.RenderOriginSector[0]) * Renderer::kSectorSize,
             static_cast<double>(fd.RenderOriginSector[1]) * Renderer::kSectorSize,
@@ -1566,7 +1569,8 @@ TEST(CascadeShimmerAttribution, SphereFitOverheadVersusTheEmittedAabbFit)
         ASSERT_GT(fd.NumCascades, 0u);
 
         // Cascade 0's slice corners, exactly as the cull path re-derives them.
-        Matrix4x4 camVP = cam.viewProj;
+        Matrix4x4 camVP;
+        std::memcpy(camVP.Data(), cam.viewProj, 16 * sizeof(float));
         Vector3 corners[8];
         ShadowMapRenderFeature::ComputeExtendedSliceCornersWS(camVP, kNearPlane, kFarPlane,
                                                              kNearPlane, fd.SplitDistances[0],

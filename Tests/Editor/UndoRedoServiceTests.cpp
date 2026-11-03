@@ -21,7 +21,7 @@
 #include "Editor/Entities/ComponentEnabledToggle.h"
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Inspectors/AnimatorInspector.h"
-#include "Inspectors/InspectorComponent/InspectorComponentRowHelpers.h"
+#include "Inspectors/InspectorComponentRowHelpers.h"
 #include "Inspectors/TransformInspector.h"
 #include "UndoRedo/UndoRedoService.h"
 
@@ -31,7 +31,7 @@
 #include "Components/Terrain/TerrainModifierEffects.h"
 #include "Components/Transform.h"
 #include "Components/Hierarchy.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"
@@ -109,17 +109,17 @@ static std::array<float, 16> ComputeWorldMatrix(World* world, EntityHandle entit
     while (true)
     {
         auto* p = world->GetComponent<Parent>(cur);
-        if (!p || !p->Entity.IsValid() || !world->IsValid(p->Entity))
+        if (!p || !p->parent.IsValid() || !world->IsValid(p->parent))
             break;
 
-        auto* pt = world->GetComponent<Transform>(p->Entity);
+        auto* pt = world->GetComponent<Transform>(p->parent);
         if (!pt)
             break;
 
         std::array<float, 16> tmp{};
         MultiplyMat4ColumnMajor(pt->matrix, out.data(), tmp.data());
         out = tmp;
-        cur = p->Entity;
+        cur = p->parent;
     }
 
     return out;
@@ -394,7 +394,7 @@ TEST_F(UndoRedoServiceTests, ComponentEnabledToggleTooltipIsTheOwnersWhenItRegis
     const EntityHandle hosted = world->CreateEntity();
     world->AddComponentImmediate(hosted, HostedToggleTooltipProbe{});
     Editor::EditorComponentTraits hostTraits;
-    hostTraits.HostsInspectorSection = [](GameEngine::ECS::ComponentTypeId typeId)
+    hostTraits.HostsInspectorSection = [hostedId](GameEngine::ECS::ComponentTypeId typeId)
     { return typeId == hostedId; };
     hostTraits.HostedEnableToggleTooltip = "Switch this effect on or off. Off leaves the probe host alone.";
     Editor::EditorComponentTraitsRegistry::Get().Register(GetComponentTypeId<ToggleTooltipProbeHost>(),
@@ -496,11 +496,11 @@ TEST_F(UndoRedoServiceTests, TransformSnapshotUndoRedoRestoresExactLocalPosition
     UndoRedoService svc;
     UndoRedoService::SnapshotTarget target;
     target.debugLabel = "Transform";
-    target.Capture = [world, handle](UndoRedoService::SnapshotTarget::Snapshot& out)
+    target.Capture = [world, handle, typeId](UndoRedoService::SnapshotTarget::Snapshot& out)
     {
         return world->CaptureComponentBytes(handle, typeId, out);
     };
-    target.Apply = [world, handle](const UndoRedoService::SnapshotTarget::Snapshot& snap)
+    target.Apply = [world, handle, typeId](const UndoRedoService::SnapshotTarget::Snapshot& snap)
     {
         return world->ApplyComponentBytesImmediate(handle, typeId, snap);
     };
@@ -1404,11 +1404,11 @@ TEST_F(UndoRedoServiceTests, CreateEntityUndoRedo_PreservesHandle_ForSubsequentT
     const auto typeId = GameEngine::ECS::GetComponentTypeId<Transform>();
     UndoRedoService::SnapshotTarget target;
     target.debugLabel = "Transform";
-    target.Capture = [world, h](UndoRedoService::SnapshotTarget::Snapshot& out)
+    target.Capture = [world, h, typeId](UndoRedoService::SnapshotTarget::Snapshot& out)
     {
         return world->CaptureComponentBytes(h, typeId, out);
     };
-    target.Apply = [world, h](const UndoRedoService::SnapshotTarget::Snapshot& snap)
+    target.Apply = [world, h, typeId](const UndoRedoService::SnapshotTarget::Snapshot& snap)
     {
         return world->ApplyComponentBytesImmediate(h, typeId, snap);
     };

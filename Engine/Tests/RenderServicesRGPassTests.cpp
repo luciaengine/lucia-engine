@@ -1,3 +1,4 @@
+#include "Engine/Rendering/Pipeline/Nodes/WorldRenderNode.h"
 #include <gtest/gtest.h>
 
 #include "Engine/Rendering/DDGIProbeFeature.h"
@@ -14,7 +15,7 @@
 #include "Rendering/Core/GPUDrawStreamBuilder.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "AssetCore/GUID.h"
 #include "Types/StringId.h"
@@ -89,15 +90,18 @@ struct RsFixture
             return false;
         const CameraId camId = Rs.Views().AllocateCamera("RGPassTestCam");
         CameraData cd{};
-        cd.view = Mathematics::Matrix4x4::Identity();
-        cd.proj = Mathematics::Matrix4x4::Identity();
-        cd.viewProj = Mathematics::Matrix4x4::Identity();
+        for (int i = 0; i < 16; i += 5)
+        {
+            cd.view[i] = 1.0f;
+            cd.proj[i] = 1.0f;
+            cd.viewProj[i] = 1.0f;
+        }
         Rs.Views().SetCameraData(camId, cd);
         View = Rs.Views().AllocateView("RGPassTestView", camId);
-        Rs.Views().SetViewRenderLayerMask(View, GameEngine::Rendering::RenderLayerMask::Default());
+        Rs.Views().SetViewRenderLayerMask(View, 1u);
         Rendering::ViewClearConfig clear{};
         clear.clearColor = true;
-        clear.clearColorValue.a = 1.0f;
+        clear.clearColorValue[3] = 1.0f;
         clear.clearDepth = true;
         clear.clearDepthValue = 0.0f;
         // Targets stay 0 — the RenderGraph arms take frame-local values; the view
@@ -464,12 +468,9 @@ TEST(RenderServicesRGPassTests, EffectiveColorFollowsResolveCollapseAndMismatch)
         FramePools pools(f.Device.get());
         RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
 
-        // (a) MSAA color + same-format 1-sample resolve => the world pass draws
-        // the MSAA color and a resolve pass after it samples it into the resolve.
+        // (a) MSAA color + same-format 1-sample resolve => resolve attach.
         frame.BeginFrame(0);
-        TextureDesc sampledMsaa = ColorTargetDesc(4);
-        sampledMsaa.usage |= static_cast<uint32_t>(TextureUsage::ShaderResource);
-        RenderGraph::RGTexture msaa = frame.ImportPersistentTexture("RGT4.Msaa", sampledMsaa);
+        RenderGraph::RGTexture msaa = frame.ImportPersistentTexture("RGT4.Msaa", ColorTargetDesc(4));
         RenderGraph::RGTexture resolve = frame.ImportPersistentTexture("RGT4.Resolve", ColorTargetDesc());
         f.Rs.BeginWorldDrawFrame();
         f.Rs.BuildWorldBatchKeys();
@@ -488,14 +489,7 @@ TEST(RenderServicesRGPassTests, EffectiveColorFollowsResolveCollapseAndMismatch)
                 if (r.Tex == msaa.Id)
                     rec = &r;
             ASSERT_NE(rec, nullptr);
-            EXPECT_EQ(rec->Pass, world.Pass.Id);
-            EXPECT_EQ(rec->Resolve, RenderGraph::kInvalidId) << "no attachment resolve on the world pass";
-            const RenderGraph::RGPassId resolvePass =
-                PassIdByName(frame.Graph(), std::string(frame.Graph().PassName(world.Pass.Id)) + ".ColorResolve");
-            ASSERT_NE(resolvePass, RenderGraph::kInvalidId) << "the resolve pass is declared";
-            EXPECT_TRUE(frame.Graph().HasReadAccess(resolvePass, msaa.Id));
-            EXPECT_TRUE(frame.Graph().HasWriteAccess(resolvePass, resolve.Id));
-            EXPECT_GT(ScheduledIndexOf(frame.Graph(), resolvePass), ScheduledIndexOf(frame.Graph(), world.Pass.Id));
+            EXPECT_EQ(rec->Resolve, resolve.Id) << "MSAA resolve attachment recorded";
         }
 
         // (b) MSAA off + pipeline resolve => collapse: render straight into
@@ -525,9 +519,6 @@ TEST(RenderServicesRGPassTests, EffectiveColorFollowsResolveCollapseAndMismatch)
             }
             EXPECT_TRUE(attachedToPipeRes);
             EXPECT_FALSE(attachedToColor1) << "collapsed: the 1-sample color is not attached";
-            EXPECT_EQ(PassIdByName(frame.Graph(), std::string(frame.Graph().PassName(world.Pass.Id)) + ".ColorResolve"),
-                      RenderGraph::kInvalidId)
-                << "a 1-sample color declares no resolve pass";
         }
 
         // (c) MSAA on + format-mismatched resolve => no resolve, effective =
@@ -547,9 +538,6 @@ TEST(RenderServicesRGPassTests, EffectiveColorFollowsResolveCollapseAndMismatch)
         frame.MarkOutput(world.EffectiveColor);
         frame.Execute();
         f.Device->WaitForIdle();
-        EXPECT_EQ(PassIdByName(frame.Graph(), std::string(frame.Graph().PassName(world.Pass.Id)) + ".ColorResolve"),
-                  RenderGraph::kInvalidId)
-            << "a resolve target of another format declares no resolve pass";
     }
     f.Down();
 }
@@ -1422,12 +1410,12 @@ TEST(RenderServicesRGPassTests, OnDemandViewLapsesOutOfCullingWhenNotReArmed)
         const ViewId onDemand = f.Rs.Views().AllocateView("OnDemandTestView", camId,
                                                   ViewPurpose::EditorScene,
                                                   ViewParticipation::OnDemand);
-        f.Rs.Views().SetViewRenderLayerMask(onDemand, GameEngine::Rendering::RenderLayerMask::Default());
+        f.Rs.Views().SetViewRenderLayerMask(onDemand, 1u);
 
         const auto mask = [&](ViewId id) -> uint32_t
         {
             const ViewDesc* v = f.Rs.Views().FindViewDesc(id);
-            return v ? v->ActiveRenderLayerMask().Bits : 0u;
+            return v ? v->ActiveRenderLayerMask() : 0u;
         };
 
         // f.View is an Always view (fixture default); the fresh OnDemand view is
@@ -1476,7 +1464,7 @@ TEST(RenderServicesRGPassTests, WorldScatterRegistersSlicesOnlyForParticipatingV
 
         const ViewId dormant = f.Rs.Views().AllocateView(
             "DormantTestView", f.Rs.Views().FindViewDesc(f.View)->cameraId);
-        f.Rs.Views().SetViewRenderLayerMask(dormant, GameEngine::Rendering::RenderLayerMask::None());
+        f.Rs.Views().SetViewRenderLayerMask(dormant, 0u);
 
         FramePools pools(f.Device.get());
         RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
@@ -1497,130 +1485,6 @@ TEST(RenderServicesRGPassTests, WorldScatterRegistersSlicesOnlyForParticipatingV
 
         frame.Execute();
         f.Device->WaitForIdle();
-    }
-    f.Down();
-}
-
-// The deforming-motion producer reads per-instance validity from the view's
-// rendered level and phase history, so every camera view keeps it without a
-// switch: a TAA or reflections view with wind in it gets exact motion by
-// default.
-TEST(RenderServicesRGPassTests, ACameraViewKeepsTheRenderedHistoryTheMotionProducerReads)
-{
-    RsFixture f;
-    if (!f.Up())
-        GTEST_SKIP() << "No Vulkan device available";
-    {
-        auto* builder = f.Rs.GetDrawStreamBuilder();
-        ASSERT_NE(builder, nullptr);
-        if (!builder->GetOrCreateScatterPipeline().IsValid())
-            GTEST_SKIP() << "draw_command_scatter.shaderpkg unavailable";
-
-        Rendering::GPUInstance instance{};
-        f.Rs.GetGPUScene()->AddInstance(instance);
-
-        FramePools pools(f.Device.get());
-        RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
-        frame.BeginFrame(0);
-        f.Rs.BeginWorldDrawFrame();
-        f.Rs.BuildWorldBatchKeys();
-        f.Rs.ScheduleGpuSkinningAndRetarget(frame);
-        f.Rs.ScheduleViewCullingDispatches(frame, 1.0f / 60.0f);
-        f.Rs.ScheduleWorldBucketerDispatches(frame);
-
-        EXPECT_TRUE(builder->GetRenderedHistoryForRead(static_cast<uint32_t>(f.View)).IsValid())
-            << "the camera slice asks for the history the producer reads validity from";
-
-        frame.Execute();
-        f.Device->WaitForIdle();
-    }
-    f.Down();
-}
-
-// A released view frees its rendered history: view ids are never reused, so a
-// pair kept past the release would stay allocated until the device goes away.
-TEST(RenderServicesRGPassTests, AReleasedViewDropsItsRenderedHistory)
-{
-    RsFixture f;
-    if (!f.Up())
-        GTEST_SKIP() << "No Vulkan device available";
-    {
-        auto* builder = f.Rs.GetDrawStreamBuilder();
-        ASSERT_NE(builder, nullptr);
-        if (!builder->GetOrCreateScatterPipeline().IsValid())
-            GTEST_SKIP() << "draw_command_scatter.shaderpkg unavailable";
-
-        Rendering::GPUInstance instance{};
-        f.Rs.GetGPUScene()->AddInstance(instance);
-
-        const uint32_t viewId = static_cast<uint32_t>(f.View);
-        FramePools pools(f.Device.get());
-        for (uint64_t frameIndex = 0; frameIndex < 2; ++frameIndex)
-        {
-            if (frameIndex == 1)
-                ASSERT_TRUE(f.Rs.Views().ReleaseView(f.View));
-            RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
-            frame.BeginFrame(frameIndex);
-            f.Rs.BeginWorldDrawFrame();
-            f.Rs.BuildWorldBatchKeys();
-            f.Rs.ScheduleGpuSkinningAndRetarget(frame);
-            f.Rs.ScheduleViewCullingDispatches(frame, 1.0f / 60.0f);
-            f.Rs.ScheduleWorldBucketerDispatches(frame);
-
-            EXPECT_EQ(builder->GetRenderedHistoryForRead(viewId).IsValid(), frameIndex == 0)
-                << "frame " << frameIndex << ": the history lives exactly as long as the view";
-
-            frame.Execute();
-            f.Device->WaitForIdle();
-        }
-    }
-    f.Down();
-}
-
-// The per-slice answer is this frame's, not the first frame's: the slice flags
-// are reset with the range map, so a view that stops participating stops
-// reporting ranges on the next frame.
-TEST(RenderServicesRGPassTests, PublishedRangesForAPhaseAreThisFramesOnly)
-{
-    RsFixture f;
-    if (!f.Up())
-        GTEST_SKIP() << "No Vulkan device available";
-    {
-        auto* builder = f.Rs.GetDrawStreamBuilder();
-        ASSERT_NE(builder, nullptr);
-        if (!builder->GetOrCreateScatterPipeline().IsValid())
-            GTEST_SKIP() << "draw_command_scatter.shaderpkg unavailable";
-
-        Rendering::GPUInstance instance{};
-        f.Rs.GetGPUScene()->AddInstance(instance);
-
-        using Phase = GPUDrawStreamBuilder::SlicePhase;
-        const uint32_t viewId = static_cast<uint32_t>(f.View);
-        FramePools pools(f.Device.get());
-        for (uint64_t frameIndex = 0; frameIndex < 2; ++frameIndex)
-        {
-            // The second frame puts the view to sleep: it registers no slice.
-            if (frameIndex == 1)
-                f.Rs.Views().SetViewRenderLayerMask(f.View, GameEngine::Rendering::RenderLayerMask::None());
-            RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
-            frame.BeginFrame(frameIndex);
-            f.Rs.BeginWorldDrawFrame();
-            f.Rs.BuildWorldBatchKeys();
-            f.Rs.ScheduleGpuSkinningAndRetarget(frame);
-            f.Rs.ScheduleViewCullingDispatches(frame, 1.0f / 60.0f);
-            f.Rs.ScheduleWorldBucketerDispatches(frame);
-
-            EXPECT_EQ(builder->HasPublishedRangesForPhase(viewId, GPUDrawStreamBuilder::kCascadeIndexNone,
-                                                          Phase::A),
-                      frameIndex == 0)
-                << "frame " << frameIndex;
-            EXPECT_FALSE(builder->HasPublishedRangesForPhase(
-                viewId, GPUDrawStreamBuilder::kCascadeIndexNone, Phase::B))
-                << "no phase-B slice was registered on frame " << frameIndex;
-
-            frame.Execute();
-            f.Device->WaitForIdle();
-        }
     }
     f.Down();
 }
@@ -1890,138 +1754,6 @@ TEST(RenderServicesRGPassTests, MaterialParamsPackSkipGate)
             RunFrame();
         EXPECT_GT(f.Rs.Materials().GetMaterialSSBOPackCount(), afterEdit)
             << "an unregister (generation bump) must bust the pack-skip stamp";
-    }
-    f.Down();
-}
-
-// A property edit rewrites only the edited material's row in each ring slot,
-// and every row still holds its material's current bytes. Animating one
-// material per frame must not cost a copy of the whole material table.
-TEST(RenderServicesRGPassTests, MaterialParamsRepackWritesOnlyTheChangedRow)
-{
-    RsFixture f;
-    if (!f.Up())
-        GTEST_SKIP() << "No Vulkan device available";
-    if (!f.Rs.Textures().IsBindlessEnabled())
-    {
-        f.Down();
-        GTEST_SKIP() << "Bindless unavailable — PackMaterialSSBO is gated on it";
-    }
-    {
-        std::vector<Material*> materials;
-        std::vector<GUID> guids;
-        for (int i = 0; i < 4; ++i)
-        {
-            guids.push_back(GUID::Generate());
-            materials.push_back(RegisterPackGateMaterial(f.Rs, guids.back(), "DeltaPack"));
-            ASSERT_NE(materials.back(), nullptr);
-        }
-
-        uint32_t frameCounter = 0;
-        auto RunFrame = [&]()
-        {
-            f.Rs.BeginWorldDrawFrame();
-            f.Rs.GetPerFrameWritePool().BeginFrame(frameCounter++);
-            f.Rs.BuildWorldBatchKeys();
-            f.Rs.Materials().FinalizeFrameBuffers();
-        };
-        auto& pool = f.Rs.GetPerFrameWritePool();
-        pool.BeginFrame(frameCounter++);
-        const uint32_t slots = Testing::RotateBackToCurrentSlot(
-            pool, FrameWriteUsage::MaterialParams, [&] { pool.BeginFrame(frameCounter++); });
-
-        // Each packed row must equal its material's parameter bytes.
-        auto ExpectRowsMatchMaterials = [&](const char* when)
-        {
-            const auto packed = f.Rs.Materials().PackedMaterialParams();
-            const size_t stride = kMaterialEntryStride;
-            const auto* base = static_cast<const uint8_t*>(f.Device->MapBuffer(packed.Buffer));
-            ASSERT_NE(base, nullptr);
-            for (const Material* mat : materials)
-            {
-                const size_t bytes = std::min<size_t>(mat->GetCacheSize(), kMaterialParamBytes);
-                const uint8_t* row = base + packed.Offset + mat->GetGpuSceneMaterialIndex() * stride;
-                EXPECT_EQ(std::memcmp(row, mat->GetCacheData(), bytes), 0)
-                    << mat->GetName() << " row differs from its material " << when;
-                uint32_t varianceIndex = 0;
-                std::memcpy(&varianceIndex, row + kNormalVarianceIndexOffset, sizeof(varianceIndex));
-                EXPECT_EQ(varianceIndex, mat->GetNormalVarianceIndex())
-                    << mat->GetName() << " row's normal-variance lane differs from its material " << when;
-            }
-            f.Device->UnmapBuffer(packed.Buffer);
-        };
-
-        for (uint32_t i = 0; i < slots; ++i)
-            RunFrame();
-        const uint64_t afterFirstCycle = f.Rs.Materials().GetMaterialSSBORowWriteCount();
-        ASSERT_GT(afterFirstCycle, 0u) << "the first cycle packs every slot in full";
-
-        materials[1]->SetFloat(HashStringId("roughness"), 0.37f);
-        for (uint32_t i = 0; i < slots; ++i)
-        {
-            RunFrame();
-            ExpectRowsMatchMaterials("after the edit");
-        }
-        EXPECT_EQ(f.Rs.Materials().GetMaterialSSBORowWriteCount() - afterFirstCycle, slots)
-            << "one edited material must rewrite one row per ring slot";
-
-        // Idle frames write nothing.
-        const uint64_t afterEdit = f.Rs.Materials().GetMaterialSSBORowWriteCount();
-        for (uint32_t i = 0; i < slots * 2u; ++i)
-            RunFrame();
-        EXPECT_EQ(f.Rs.Materials().GetMaterialSSBORowWriteCount(), afterEdit);
-
-        // The packed bytes of the current slot's row for `mat`: parameters,
-        // texture indices, UV transforms, sampler word and the zeroed tail.
-        auto CopyRow = [&](const Material* mat)
-        {
-            const auto packed = f.Rs.Materials().PackedMaterialParams();
-            const auto* base = static_cast<const uint8_t*>(f.Device->MapBuffer(packed.Buffer));
-            std::vector<uint8_t> row(kMaterialEntryStride);
-            if (base)
-            {
-                const uint8_t* src =
-                    base + packed.Offset + mat->GetGpuSceneMaterialIndex() * kMaterialEntryStride;
-                std::memcpy(row.data(), src, row.size());
-                f.Device->UnmapBuffer(packed.Buffer);
-            }
-            return row;
-        };
-
-        // A UV-transform edit, packed as a delta. Every slot's rows are kept to
-        // compare with the full pack that follows.
-        materials[2]->SetTextureTransform(TextureSlot::kAlbedo, 2.0f, 3.0f, 0.25f, 0.5f);
-        std::vector<std::vector<std::vector<uint8_t>>> deltaRows(slots);
-        for (uint32_t i = 0; i < slots; ++i)
-        {
-            RunFrame();
-            const uint32_t slot = pool.GetCurrentSlot(FrameWriteUsage::MaterialParams);
-            ASSERT_LT(slot, slots);
-            for (int m = 0; m < 3; ++m)
-                deltaRows[slot].push_back(CopyRow(materials[m]));
-        }
-        EXPECT_EQ(f.Rs.Materials().GetMaterialSSBORowWriteCount() - afterEdit, slots)
-            << "a UV-transform edit must rewrite one row per ring slot";
-        const uint64_t afterTransformEdit = f.Rs.Materials().GetMaterialSSBORowWriteCount();
-
-        // An unregister moves the slot mapping, so each slot packs in full again,
-        // and every surviving row must be byte-identical to its delta-packed bytes.
-        f.Rs.Materials().Registry().Unregister(guids[3]);
-        materials.pop_back();
-        for (uint32_t i = 0; i < slots; ++i)
-        {
-            RunFrame();
-            ExpectRowsMatchMaterials("after an unregister");
-            const uint32_t slot = pool.GetCurrentSlot(FrameWriteUsage::MaterialParams);
-            ASSERT_LT(slot, slots);
-            for (int m = 0; m < 3; ++m)
-                EXPECT_EQ(CopyRow(materials[m]), deltaRows[slot][m])
-                    << materials[m]->GetName() << " in ring slot " << slot
-                    << ": the delta pack and the full pack wrote different bytes";
-        }
-        EXPECT_GE(f.Rs.Materials().GetMaterialSSBORowWriteCount() - afterTransformEdit,
-                  static_cast<uint64_t>(slots) * materials.size())
-            << "a mapping change must repack every row of every slot";
     }
     f.Down();
 }
@@ -2302,6 +2034,64 @@ TEST(RenderServicesRGPassTests, GlossyResolveDeclaresTheLobeTargetsItBindsWithLo
         EXPECT_EQ(glossy.Id, glossyBlurId);
 
         f.Device->DestroyBuffer(viewParams);
+    }
+    f.Down();
+}
+
+TEST(RenderServicesRGPassTests, SortedArtworkWithoutMeshSubmissionsKeepsItsDrainActive)
+{
+    RsFixture f;
+    ASSERT_TRUE(f.Up());
+    {
+        FramePools pools(f.Device.get());
+        RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        frame.BeginFrame(0);
+        const auto color = frame.ImportPersistentTexture("Artwork.Color", ColorTargetDesc());
+        const auto depth = frame.ImportPersistentTexture("Artwork.Depth", DepthTargetDesc());
+        SortedTransparentCommand sprite{};
+        sprite.Sorting.Order = 3;
+        sprite.Entity.id = 1;
+        uint32 calls = 0;
+        const auto ordinaryProducer = f.Rs.RegisterForwardEmit(
+            [&](ForwardEmitContext& context)
+            {
+                if (context.ViewId == f.View)
+                    f.Rs.EmitSortedTransparentCommand(context.ViewId, sprite);
+            }, {.WritesDepth = false});
+        const auto producer = f.Rs.RegisterForwardEmit(
+            [&](ForwardEmitContext& context)
+            {
+                if (context.ViewId != f.View)
+                    return;
+                ++calls;
+                EXPECT_EQ(context.Frame, &frame);
+                if (context.Frame)
+                    f.Rs.EmitSortedTransparentCommand(context.ViewId, sprite);
+            }, {.WritesDepth = false, .RequiresFrame = true});
+        f.Rs.BeginWorldDrawFrame();
+        f.Rs.BuildWorldBatchKeys();
+        EXPECT_EQ(calls, 0u);
+        ASSERT_TRUE(f.Rs.GetEntityBatchKeys(f.View).empty());
+        Pipeline::ViewDeclare declaration(frame, *f.Rs.Views().FindViewDesc(f.View), f.Rs, "World");
+        declaration.ViewColor = color;
+        declaration.ViewDepth = depth;
+        declaration.PipelineHasSortedTransparentPass = true;
+        Pipeline::Nodes::WorldRenderNode node;
+        ASSERT_TRUE(node.Initialize("World", "{}", nullptr));
+        node.DeclareForView(declaration);
+        EXPECT_EQ(calls, 1u);
+        EXPECT_TRUE(f.Rs.IsSortedTransparentActive(f.View));
+        EXPECT_TRUE(f.Rs.GetForwardCommands(f.View).empty());
+        ASSERT_EQ(f.Rs.Views().PerView(f.View).SortedTransparentCommands.size(), 2u);
+        node.DeclareForView(declaration);
+        EXPECT_EQ(calls, 1u);
+        EXPECT_EQ(f.Rs.Views().PerView(f.View).SortedTransparentCommands.size(), 2u);
+        f.Rs.ClearForwardCommands();
+        EXPECT_TRUE(f.Rs.Views().PerView(f.View).SortedTransparentCommands.empty());
+        frame.BeginFrame(1);
+        f.Rs.EmitFrameForwardCommandsForView(frame, f.View);
+        EXPECT_EQ(calls, 2u);
+        EXPECT_EQ(f.Rs.Views().PerView(f.View).SortedTransparentCommands.size(), 1u);
     }
     f.Down();
 }

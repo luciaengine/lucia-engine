@@ -382,16 +382,12 @@ TEST_F(VideoTextureSystemTest, EveryEntitySharesOneSubmissionPerTick)
     // Two rounds. The first is a warm-up: the staging ring is sized from the
     // first frame it ever saw, so the tick where a second source first coincides
     // can overflow it once and the recorded demand grows it for the next cycle.
-    // Each tick first drains the GPU: the uploader refuses a staging slot the GPU
-    // still reads, and this test pins batching, not GPU latency.
     for (int round = 0; round < 2; ++round)
     {
         std::this_thread::sleep_for(kFrameArrivalWait);
-        m_device->WaitForIdle();
         m_system->Update(world, kTickSeconds);
     }
     std::this_thread::sleep_for(kFrameArrivalWait);
-    m_device->WaitForIdle();
 
     const uint64 submitsBefore = m_system->GetUploadSubmitCount();
     const uint64 uploadsBefore = m_system->GetUploadedFrameCount();

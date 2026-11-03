@@ -17,20 +17,15 @@
 // while the CLAIMS stay pinned.
 
 #include <gtest/gtest.h>
-#include <functional>
 #include <string>
 #include <vector>
 
-#include "Components/Terrain/Terrain.h"
 #include "Components/Terrain/TerrainModifierEffects.h"
 #include "Components/Terrain/TerrainModifierVolume.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"
-#include "InspectorRegistry.h"
-#include "Terrain/TerrainVolumeNotices.h"
-#include "TerrainECS/TerrainGpuBake.h"
-#include "TerrainECS/TerrainService.h"
+#include "Inspectors/TerrainVolumeNotices.h"
 #include "UI/Controls/InspectorNotice.h"
 #include "UI/Controls/Label.h"
 #include "UI/UIElement.h"
@@ -82,13 +77,12 @@ std::string AllTextIn(const UIElement& parent)
     return all;
 }
 
-// The notices a user sees: a hidden notice is not counted.
 std::size_t WarningCountIn(const UIElement& parent)
 {
     std::size_t n = 0;
     auto count = [&n](const UIElement& element)
     {
-        if (dynamic_cast<const GameEngine::EditorUI::InspectorNotice*>(&element) && !element.HasClass("hidden"))
+        if (dynamic_cast<const GameEngine::EditorUI::InspectorNotice*>(&element))
             ++n;
     };
     ForEachDescendant(parent, count);
@@ -321,165 +315,4 @@ TEST(TerrainVolumeNotice, StampWithNoVolumeIsNotFlagged)
     UIElement host;
     AddStampInGlobalVolumeNotice(&host, world, e.GetHandle());
     EXPECT_TRUE(AllTextIn(host).empty());
-}
-
-namespace
-{
-using GameEngine::Editor::AddCpuHeightBakeNotice;
-using GameEngine::TerrainECS::GpuHeightBakeRefusal;
-using GameEngine::TerrainECS::TerrainHeightBakeReport;
-using Reason = GameEngine::TerrainECS::GpuHeightBakeRefusalReason;
-namespace TerrainECS = GameEngine::TerrainECS;
-
-// A tiled terrain entity and a volume. The test writes the terrain's bake report as
-// TerrainModifierSystem does: a new decision increases the revision.
-class TerrainSlowEditNotice : public ::testing::Test
-{
-protected:
-    void SetUp() override
-    {
-        m_OwnsService = !TerrainECS::TerrainService::IsInitialized();
-        if (m_OwnsService)
-            TerrainECS::TerrainService::Initialize();
-        TerrainECS::TiledTerrainConfig config{};
-        config.WorldSizeX = 1024.0f;
-        config.WorldSizeZ = 1024.0f;
-        m_Handle = TerrainECS::TerrainService::Get().CreateTiledTerrain(config);
-        Components::Terrain terrain{};
-        terrain.TiledTerrainHandle = m_Handle.Index;
-        terrain.TiledTerrainGeneration = m_Handle.Generation;
-        Entity terrainEntity = m_World.Create();
-        terrainEntity.Set(terrain);
-        m_World.ProcessCommands();
-        m_Volume = MakeVolume(m_World, Components::TerrainVolumeShape::Circle).GetHandle();
-        m_OtherVolume = MakeVolume(m_World, Components::TerrainVolumeShape::Circle).GetHandle();
-    }
-
-    void TearDown() override
-    {
-        TerrainECS::TerrainService::Get().DestroyTiledTerrain(m_Handle);
-        if (m_OwnsService)
-            TerrainECS::TerrainService::Shutdown();
-    }
-
-    TerrainHeightBakeReport& Report()
-    {
-        return TerrainECS::TerrainService::Get().GetTiledTerrainData(m_Handle)->HeightBakeReport;
-    }
-
-    void Decide(Reason reason, GameEngine::ECS::EntityHandle volume, uint32_t otherRefusals = 0)
-    {
-        TerrainHeightBakeReport& report = Report();
-        report.Path = reason == Reason::None ? TerrainECS::TerrainHeightBakePath::Gpu
-                                             : TerrainECS::TerrainHeightBakePath::Cpu;
-        report.ModifierRefusal = GpuHeightBakeRefusal{reason, volume};
-        report.OtherModifierRefusals = otherRefusals;
-        ++report.Revision;
-    }
-
-    // The inspector row of `volume`, built under `host`.
-    void BuildRow(UIElement& host, GameEngine::ECS::EntityHandle volume, Reason rowCause)
-    {
-        GameEngine::InspectorContext ctx;
-        ctx.Parent = &host;
-        ctx.World = &m_World;
-        ctx.Entity = volume;
-        ctx.SimulationRefreshCallbacks = &m_Refresh;
-        AddCpuHeightBakeNotice(ctx, rowCause);
-    }
-
-    // The text of the notice the row shows, or empty when it shows none.
-    std::string RowText(GameEngine::ECS::EntityHandle volume, Reason rowCause)
-    {
-        UIElement host;
-        BuildRow(host, volume, rowCause);
-        m_Refresh.clear();
-        return WarningCountIn(host) == 0 ? std::string{} : AllTextIn(host);
-    }
-
-    void RunRefresh()
-    {
-        for (auto& callback : m_Refresh)
-            callback();
-    }
-
-    World m_World;
-    GameEngine::ECS::EntityHandle m_Volume{};
-    GameEngine::ECS::EntityHandle m_OtherVolume{};
-    std::vector<std::function<void()>> m_Refresh;
-
-private:
-    bool m_OwnsService = false;
-    TerrainECS::TiledTerrainHandle m_Handle{};
-};
-} // namespace
-
-// The notice reads the bake's refusal, not the row's blend: a recipe road holds an Average flatten, but
-// its spline shape is the refusal, and the recipe's own pieces show nothing on any row.
-TEST_F(TerrainSlowEditNotice, ARecipeRoadShowsNoSlowEditNotice)
-{
-    Decide(Reason::SplineShape, m_Volume);
-    for (const Reason rowCause : {Reason::None, Reason::PooledBlend, Reason::Stamp, Reason::Erosion})
-        EXPECT_TRUE(RowText(m_Volume, rowCause).empty());
-    for (const Reason refusal : {Reason::HeightFromVolume, Reason::GroundClaim})
-    {
-        Decide(refusal, m_Volume);
-        EXPECT_TRUE(RowText(m_Volume, Reason::PooledBlend).empty());
-    }
-}
-
-// An Average row shows the notice only on the volume the bake names. The words say what the user sees
-// and what to change, the notice is information, and it counts the other effects that keep the CPU.
-TEST_F(TerrainSlowEditNotice, APooledCircleShowsTheSlowEditNoticeOnItsAverageRow)
-{
-    Decide(Reason::PooledBlend, m_Volume);
-    UIElement host;
-    BuildRow(host, m_Volume, Reason::PooledBlend);
-    const std::string text = AllTextIn(host);
-    EXPECT_TRUE(Contains(text, "show more slowly")) << text;
-    EXPECT_TRUE(Contains(text, "pick another blend")) << text;
-    EXPECT_FALSE(Contains(text, "gpu")) << "the notice names an engine part: " << text;
-    EXPECT_FALSE(Contains(text, "other effect")) << text;
-    ASSERT_EQ(WarningCountIn(host), 1u);
-    bool information = false;
-    auto findKind = [&information](const UIElement& element)
-    {
-        if (dynamic_cast<const GameEngine::EditorUI::InspectorNotice*>(&element))
-            information = element.HasClass("inspector-notice-information");
-    };
-    ForEachDescendant(host, findKind);
-    EXPECT_TRUE(information) << "a slower edit is information, not a warning";
-
-    EXPECT_TRUE(RowText(m_OtherVolume, Reason::PooledBlend).empty());
-    EXPECT_TRUE(RowText(m_Volume, Reason::None).empty()) << "a row that does not pool";
-    Decide(Reason::PooledBlend, m_Volume, 2);
-    EXPECT_TRUE(Contains(RowText(m_Volume, Reason::PooledBlend), "2 other effects also keep the heights on the cpu"));
-}
-
-// A reason on the terrain itself costs every volume the same, so no volume shows the notice under one.
-TEST_F(TerrainSlowEditNotice, ATerrainGateShowsNoSlowEditNotice)
-{
-    Decide(Reason::Stamp, m_Volume);
-    EXPECT_FALSE(RowText(m_Volume, Reason::Stamp).empty());
-    Report().TerrainRefusal = Reason::TextureLayout;
-    ++Report().Revision;
-    EXPECT_TRUE(RowText(m_Volume, Reason::Stamp).empty());
-}
-
-// The row follows each bake decision with no rebuild of the inspector: the user picks Average, the
-// next bake refuses, and the notice appears; the user picks Set again, and it goes.
-TEST_F(TerrainSlowEditNotice, TheNoticeFollowsANewBakeDecisionWithoutARebuild)
-{
-    Decide(Reason::None, m_Volume);
-    UIElement host;
-    BuildRow(host, m_Volume, Reason::PooledBlend);
-    EXPECT_EQ(WarningCountIn(host), 0u);
-
-    Decide(Reason::PooledBlend, m_Volume);
-    RunRefresh();
-    EXPECT_EQ(WarningCountIn(host), 1u) << "the notice waits for a rebuild";
-
-    Decide(Reason::None, m_Volume);
-    RunRefresh();
-    EXPECT_EQ(WarningCountIn(host), 0u);
 }

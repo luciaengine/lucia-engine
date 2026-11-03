@@ -30,6 +30,7 @@ namespace Platform { class Window; }
             CreateShaderGraph,
             CreateSurfaceShader,
             CreateNavGrid,
+            CreateNavMesh,
             CreateGameSystem,
             CreateEntitySystem,
             CreateComponent,
@@ -37,7 +38,6 @@ namespace Platform { class Window; }
             CreateCppGameSystem,
             CreateCppEntitySystem,
             Import,
-            Rename,
             Delete
 	    };
 	
@@ -73,12 +73,11 @@ namespace Platform { class Window; }
 	    // Show a context menu for the current directory (e.g., when right-clicking
 	    // empty space in the grid). This exposes folder-oriented actions like
 	    // "Show in Explorer/Finder", "Copy Path" and editor-specific actions such
-	    // as "New Folder" or "Refresh". `includeEdits` adds Rename and Delete, for a folder the
-	    // user right-clicked rather than the folder being shown.
+	    // as "New Folder" or "Refresh".
 	    void ShowDirectoryMenu(const std::filesystem::path& directoryPath,
 	                           float x, float y,
 	                           const std::function<void(const std::filesystem::path&, DirectoryAction)>& onDirectoryAction,
-	                           bool includeEdits = false);
+	                           bool includeDelete = false);
 
 	    void ShowSmartFolderMenu(float x, float y,
 	                             const std::function<void(SmartFolderAction)>& onAction);

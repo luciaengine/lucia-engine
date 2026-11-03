@@ -1,9 +1,7 @@
-#include <algorithm>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "Components/Hierarchy.h"
 #include "Components/Name.h"
@@ -11,7 +9,6 @@
 #include "ECS/ECSTemplates.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"
-#include "Editor/Hierarchy/HierarchyDataProvider.h"
 #include "Editor/Hierarchy/HierarchyReparentRules.h"
 #include "InspectorLayoutFixture.h"
 #include "Inspectors/GeneratedEntityNotice.h"
@@ -22,8 +19,6 @@
 #include "UI/UIEvents.h"
 
 using GameEngine::Button;
-using GameEngine::HierarchyDataProvider;
-using GameEngine::TreeId;
 using GameEngine::kEventButtonClick;
 using GameEngine::Label;
 using GameEngine::UIElement;
@@ -84,62 +79,6 @@ void Click(Button& button)
     e.Target = &button;
     e.CurrentTarget = &button;
     button.DispatchEvent(e);
-}
-
-// A paved recipe with an authored bed and a road with no authored children, as the
-// Hierarchy shows them before any generator runs.
-struct HierarchyScene
-{
-    World World;
-    EntityHandle Square;
-    EntityHandle Bed;
-    EntityHandle Road;
-
-    HierarchyScene()
-    {
-        Entity square = World.Create();
-        square.Set(MakeName("Market Square"));
-        Entity bed = World.Create();
-        bed.Set(MakeName("Bed 1"));
-        bed.Set(Parent{square.GetHandle()});
-        Entity road = World.Create();
-        road.Set(MakeName("High Street"));
-        World.ProcessCommands();
-        Square = square.GetHandle();
-        Bed = bed.GetHandle();
-        Road = road.GetHandle();
-    }
-
-    // One generated section under each listed entity, as a spline recipe spawns its chunks.
-    // Returns the road's section.
-    EntityHandle AddGeneratedSections()
-    {
-        EntityHandle roadSection{};
-        for (const EntityHandle owner : {Square, Road})
-        {
-            Entity section = World.Create();
-            section.Set(MakeName("Section 0"));
-            section.Set(Parent{owner});
-            section.Set(RuntimeOnlyEntity{});
-            roadSection = section.GetHandle();
-        }
-        World.ProcessCommands();
-        return roadSection;
-    }
-};
-
-// The rows the provider lists: the two owners at the top, the bed alone under the square,
-// nothing under the road and no expander on it.
-void ExpectOnlyAuthoredRows(const HierarchyDataProvider& rows, const HierarchyScene& scene)
-{
-    const TreeId square = HierarchyDataProvider::Encode(scene.Square);
-    const TreeId road = HierarchyDataProvider::Encode(scene.Road);
-    ASSERT_EQ(rows.GetChildCount(HierarchyDataProvider::kRootId), 2);
-    EXPECT_EQ(rows.GetChildCount(square), 1);
-    EXPECT_EQ(rows.GetChildId(square, 0), HierarchyDataProvider::Encode(scene.Bed));
-    EXPECT_TRUE(rows.IsExpandable(square));
-    EXPECT_EQ(rows.GetChildCount(road), 0) << "a generated section has a row under its road";
-    EXPECT_FALSE(rows.IsExpandable(road)) << "a road with only generated children has an expander";
 }
 
 } // namespace
@@ -249,67 +188,4 @@ TEST(GeneratedEntityGuard, AuthoredEntityGetsNoNotice)
     AddGeneratedEntityNotice(&host, world, authored.GetHandle(), {});
 
     EXPECT_TRUE(host.GetChildren().empty());
-}
-
-// The Hierarchy lists authored content only: a full rebuild makes no row for a generated
-// entity, and its owner's row and expander are those of the owner without it.
-TEST(GeneratedEntityGuard, HierarchyRebuildListsNoGeneratedEntity)
-{
-    HierarchyScene scene;
-    scene.AddGeneratedSections();
-
-    HierarchyDataProvider rows(nullptr);
-    rows.SetWorld(&scene.World);
-
-    ExpectOnlyAuthoredRows(rows, scene);
-}
-
-// A generated entity created after the rows are built makes no row on the incremental insert.
-TEST(GeneratedEntityGuard, HierarchyIncrementalInsertListsNoGeneratedEntity)
-{
-    HierarchyScene scene;
-    HierarchyDataProvider rows(nullptr);
-    rows.SetWorld(&scene.World);
-    ExpectOnlyAuthoredRows(rows, scene);
-
-    scene.AddGeneratedSections();
-    const auto diff = rows.ApplyIdentityDiff();
-
-    ASSERT_FALSE(diff.Escalate) << "the insert fell back to a full rebuild";
-    ExpectOnlyAuthoredRows(rows, scene);
-}
-
-// A Scene View pick of a generated entity shows on the row of its owner; a generated entity
-// with no listed owner has no row to show it.
-TEST(GeneratedEntityGuard, HierarchyShowsAGeneratedEntityOnItsOwnersRow)
-{
-    HierarchyScene scene;
-    const EntityHandle section = scene.AddGeneratedSections();
-    Entity proxy = scene.World.Create();
-    proxy.Set(RuntimeOnlyEntity{});
-    scene.World.ProcessCommands();
-
-    EXPECT_EQ(HierarchyDataProvider::ListedSelfOrAncestor(scene.World, section), scene.Road);
-    EXPECT_EQ(HierarchyDataProvider::ListedSelfOrAncestor(scene.World, scene.Bed), scene.Bed);
-    EXPECT_FALSE(HierarchyDataProvider::ListedSelfOrAncestor(scene.World, proxy.GetHandle()).IsValid());
-}
-
-// A multi-pick of two generated sections of one road selects the road's row once, beside the
-// authored pick; the anchor is the row of the first pick.
-TEST(GeneratedEntityGuard, HierarchyMultiPickSelectsTheOwnerOnce)
-{
-    HierarchyScene scene;
-    const EntityHandle first = scene.AddGeneratedSections();
-    const EntityHandle second = scene.AddGeneratedSections();
-    const std::vector<EntityHandle> picks{first, scene.Bed, second};
-
-    std::vector<TreeId> ids;
-    const TreeId anchor = HierarchyDataProvider::ListedRowIds(scene.World, picks, ids);
-
-    const TreeId road = HierarchyDataProvider::Encode(scene.Road);
-    const TreeId bed = HierarchyDataProvider::Encode(scene.Bed);
-    EXPECT_EQ(anchor, road);
-    ASSERT_EQ(ids.size(), 2u);
-    EXPECT_EQ(std::count(ids.begin(), ids.end(), road), 1);
-    EXPECT_EQ(std::count(ids.begin(), ids.end(), bed), 1);
 }

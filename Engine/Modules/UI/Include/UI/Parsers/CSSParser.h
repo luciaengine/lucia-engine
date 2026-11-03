@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include "UI/ResolvedStyle.h"
-#include "UI/StyleDeclaration.h"
+#include "UI/StyleOverrides.h"
 #include "UI/UIElement.h"
 #include "UI/UIStyle.h"
 
@@ -35,7 +35,7 @@ struct ElementState {
     bool Disabled = false;
     bool Enabled = true;
     bool Checked = false;
-    // Stage 5 Block C: custom pseudo-state set, keyed by hashed StringId
+    // Custom pseudo-state set, keyed by hashed StringId
     // of the lowercase state name. UIElement::AddCustomState / RemoveCustomState
     // populate the per-element source; ResolveCascadeForElement copies the
     // current set into ElementState before each cascade.
@@ -111,7 +111,7 @@ public:
     // Output-parameter overload that writes directly into the caller's storage,
     // avoiding a temporary + copy. Preferred on hot paths (e.g. buildYoga).
     //
-    // outMatchedPseudoStates (Stage 5 Block B): if non-null, receives a bitmask
+    // outMatchedPseudoStates: if non-null, receives a bitmask
     // of UIElement::MatchedPseudoFlag bits set for every dynamic pseudo-class
     // referenced by a rule that matched the element. Mark-dirty sites consult
     // this to skip elements whose style cannot change for a given state flip
@@ -126,10 +126,10 @@ public:
                                  const UIElement* hoverTarget = nullptr,
                                  uint16_t* outMatchedPseudoStates = nullptr);
 
-    // Parse inline style declarations into a StyleDeclaration bag.
-    static void ParseInlineStyleToOverrides(std::string_view inlineStyle, StyleDeclaration& out);
+    // Parse inline style declarations into a StyleOverrides bag.
+    static void ParseInlineStyleToOverrides(std::string_view inlineStyle, StyleOverrides& out);
 
-    // Cascade-matcher memoization Phase 3: build the per-element rule
+    // Build the per-element rule
     // cache. Walks each stylesheet's candidate rules (using the rule
     // index when available), runs a STRUCTURAL match (treats dynamic
     // pseudos as `true`), and stores hits in `el.m_CachedMatchedRules`.
@@ -137,15 +137,12 @@ public:
     // is empty: an empty pool proves nothing about which rules match, so the
     // cache is left invalid for the next caller that has a real pool.
     //
-    // Phase 3 callers populate the cache on demand from the cascade but
-    // don't read from it — Phase 4 wires `ComputeStyleInto` to consume
-    // the cache. This phase exists primarily so the population logic
-    // can be exercised + validated against the live matcher before flip.
+    // ComputeStyleInto calls it on a cache miss when IsRuleCacheEnabled().
     static void BuildRuleCache(const UIElement& el,
                                std::span<const Stylesheet* const> sheets,
                                std::span<const StylesheetRuleIndex* const> sheetIndices);
 
-    // Cascade-memoization Phase 4/5: returns true if the rule cache is
+    // Returns true if the rule cache is
     // enabled for this process (env var GE_UI_RULE_CACHE evaluated at
     // first call). Consumed by the narrowing predicate at hover/focus
     // transition sites — narrowing is only sound when the cache is

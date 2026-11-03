@@ -22,9 +22,9 @@ public:
             return;
         m_Hidden = hidden;
         if (hidden)
-            Style().Set(Style::Display, DisplayMode::None);
+            Overrides().Set(Style::Display, DisplayMode::None);
         else
-            Style().Reset(Style::Display);
+            Overrides().Reset(Style::Display);
         MarkDirty(StyleDirty | LayoutDirty | VisualDirty);
     }
     bool IsHidden() const { return m_Hidden; }
@@ -38,13 +38,13 @@ public:
         m_ThicknessPx = px;
         if (m_Orientation == Orientation::Vertical)
         {
-            Style()
+            Overrides()
                 .Set(Style::Width, StyleLength::Px(px))
                 .Set(Style::MinWidth, StyleLength::Px(px));
         }
         else
         {
-            Style()
+            Overrides()
                 .Set(Style::Height, StyleLength::Px(px))
                 .Set(Style::MinHeight, StyleLength::Px(px));
         }

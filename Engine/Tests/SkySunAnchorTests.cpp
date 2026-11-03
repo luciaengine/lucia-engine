@@ -35,11 +35,10 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/SkyRenderFeature.h"
 #include "EngineLogCapture.h"
-#include "Rendering/Sky/AtmosphereTransmittance.h"
-#include "Rendering/Sky/SkyRenderer.h"
 #include "Rendering/Sky/SkySettings.h"
 #include "Scene/SceneIO.h"
 #include "SkySunAnchorHarness.h"
+#include "TestTempDir.h"
 #include "Types/ColorUtils.h"
 
 using namespace GameEngine;
@@ -48,14 +47,14 @@ namespace
 {
 
 // A shipped clear-sky sun, and the value the tests below expect the sky to land on: the light's
-// illuminance on the 203 scale, lifted to the top of the atmosphere by the production lift (its
-// value is pinned on its own by TheSkysSunDeliversTheLightsIlluminanceThroughAnOverheadSky).
+// illuminance on the 203 scale, lifted to the top of the atmosphere. The lift constant lives in
+// SkyEnvironmentSystem.cpp; mirroring it here is what makes a drift in either one visible.
 constexpr float kShippedSunLux = 100000.0f;
+constexpr float kSkyIrradianceScale = 1.33f;
 
 float ExpectedAnchorForLux(float lux)
 {
-    return (lux / Components::kReferenceWhiteNits) *
-           Rendering::SkySourceIlluminanceScale(Rendering::ScatteringAtmosphere());
+    return (lux / Components::kReferenceWhiteNits) * kSkyIrradianceScale;
 }
 
 // The sky's brightness, in stops, relative to the scene's sun. 0 = the two agree.
@@ -92,41 +91,6 @@ TEST(SkySunAnchor, AnUnlinkedSkyTakesItsBrightnessFromTheScenesSun)
     const float expected = ExpectedAnchorForLux(kShippedSunLux);
     EXPECT_NEAR(anchor, expected, RelTolerance(expected))
         << "the sky is " << StopsFromSun(anchor, kShippedSunLux) << " stops off the scene's sun";
-}
-
-// The lift itself. The light's illuminance is the ground value of an overhead sun, so the sky's
-// source above the atmosphere is that value over the zenith transmittance of the atmosphere the
-// LUTs bake: then the sky's own sun delivers the light's illuminance through an overhead sky. The
-// zenith optical depth is evaluated here in closed form (each exponential density integrated to the
-// top of the shell, the ozone tent's area its half width), independently of the engine's
-// quadrature; the two agree to 0.2 %.
-TEST(SkySunAnchor, TheSkysSunDeliversTheLightsIlluminanceThroughAnOverheadSky)
-{
-    Rendering::AtmosphereParametersGPU atmo{};
-    Rendering::SkyRenderer::FillDefaultAtmosphere(atmo);
-    const double shell = static_cast<double>(atmo.atmosphereRadius) - atmo.planetRadius;
-    double zenithTransmittance[3];
-    for (int c = 0; c < 3; ++c)
-    {
-        const double tau =
-            atmo.betaRayleigh[c] * atmo.rayleighScaleHeight * (1.0 - std::exp(-shell / atmo.rayleighScaleHeight)) +
-            (atmo.betaMie[c] + atmo.mieAbsorption[c]) * atmo.mieScaleHeight *
-                (1.0 - std::exp(-shell / atmo.mieScaleHeight)) +
-            atmo.ozoneAbsorption[c] * atmo.ozoneHalfWidth;
-        zenithTransmittance[c] = std::exp(-tau);
-    }
-    const double luminance =
-        0.2126 * zenithTransmittance[0] + 0.7152 * zenithTransmittance[1] + 0.0722 * zenithTransmittance[2];
-    const float expected = static_cast<float>(kShippedSunLux / Components::kReferenceWhiteNits / luminance);
-
-    SkySunAnchorHarness harness;
-    harness.AddDirectional(kShippedSunLux, Components::LightUnit::Lux);
-    harness.AddDefaultSky();
-    const float anchor = harness.RunAndReadAnchor();
-    EXPECT_NEAR(anchor, expected, expected * 0.005f)
-        << "the sky's source is " << anchor / (kShippedSunLux / Components::kReferenceWhiteNits)
-        << " x the light; the zenith transmittance's luminance " << luminance << " asks for "
-        << 1.0 / luminance;
 }
 
 // The same statement as a property rather than a number: whatever the arithmetic, the sky may not
@@ -406,8 +370,6 @@ struct LinkedSunHarness
     {
         Sun = Rig.AddDirectional(lux, Components::LightUnit::Lux);
         Components::SkyEnvironment sky{};
-        // The goldens are recorded at the equator on the March equinox, where the noon sun stands overhead.
-        sky.Latitude = 0.0f;
         sky.SunLight = Sun;
         EXPECT_TRUE(sky.TimeOfDayDrivesSunLight) << "the shipped sky drives its linked light";
         Rig.SetSky(sky);
@@ -539,18 +501,18 @@ TEST(SkyLinkedSun, ChangingTheUnitAtNightKeepsTheNightAndTheDay)
 // system, noon must deliver the sun the author set, not the night's moonlight.
 TEST(SkyLinkedSun, ASceneSavedAtNightReloadsWithItsDaySun)
 {
-    const std::filesystem::path scenePath =
-        std::filesystem::temp_directory_path() / "SkyLinkedSun_saved_at_night.scene";
+    const TestUtils::ScopedTempDir directory{TestUtils::MakeUniqueTempDirectory("SkyLinkedSun")};
+    const std::filesystem::path scenePath = directory.Path() / "SkyLinkedSun_saved_at_night.scene";
     {
         LinkedSunHarness saved(kShippedSunLux);
         saved.SetHours(kMidnightHours);
         saved.Tick();
         saved.Tick();
-        ASSERT_TRUE(Scene::WriteSceneFile(saved.Rig.World, scenePath));
+        ASSERT_TRUE(Scene::SaveSceneToFile(saved.Rig.World, scenePath));
     }
 
     LinkedSunHarness reloaded;
-    ASSERT_TRUE(Scene::ReadSceneInto(reloaded.Rig.World, scenePath));
+    ASSERT_TRUE(Scene::LoadSceneFromFile(reloaded.Rig.World, scenePath));
     std::filesystem::remove(scenePath);
     reloaded.AdoptLoadedScene();
     ASSERT_TRUE(reloaded.Rig.World.IsValid(reloaded.Sun)) << "the sky's link to its sun must reload";
@@ -619,13 +581,13 @@ constexpr int64_t kFullNightUlpBound = 16;
 constexpr GoldenHour kDeliveredGoldens[] = {
     {12.0f, GoldenMatch::Day, {0x43F64E30u, 0x43F64E30u, 0x43F64E30u},
      {0x43F64E30u, 0x43F64E30u, 0x43F64E30u}, {0x3F800000u, 0x3F800000u, 0x3F800000u}},
-    {17.75f, GoldenMatch::Day, {0x42EBF23Du, 0x424507D3u, 0x40E086E0u},
-     {0x42EBF23Du, 0x424507D3u, 0x40E086E0u}, {0x3E753BACu, 0x3DCCC923u, 0x3C695D3Eu}},
-    {18.15f, GoldenMatch::Twilight, {0x3839C19Eu, 0x371D617Bu, 0x34DA1491u},
-     {0x34F12713u, 0x2D050AC8u, 0x1E565126u}, {}},
-    {18.5f, GoldenMatch::Twilight, {0x3A217911u, 0x39A43462u, 0x38BE412Fu},
-     {0x10DB09A5u, 0x00000000u, 0x00000000u}, {}},
-    {0.0f, GoldenMatch::FullNight, {0x3AC3FE9Fu, 0x3A9B301Du, 0x3A72CE58u},
+    {17.75f, GoldenMatch::Day, {0x438B61A3u, 0x4307B199u, 0x41B0F193u},
+     {0x438B61A3u, 0x4307B199u, 0x41B0F193u}, {0x3F10DE11u, 0x3E8D08DFu, 0x3D37E87Du}},
+    {18.15f, GoldenMatch::Twilight, {0x41013847u, 0x3E37C901u, 0x38C71840u},
+     {0x41012E70u, 0x3E36D393u, 0x374A2607u}, {}},
+    {18.5f, GoldenMatch::Twilight, {0x3C7FE244u, 0x3C3B89D6u, 0x3BA6B559u},
+     {0x390F2168u, 0x2FCBF804u, 0x1887FE43u}, {}},
+    {0.0f, GoldenMatch::FullNight, {0x3CC0C5B0u, 0x3CD11927u, 0x3CF41936u},
      {0x00000000u, 0x00000000u, 0x00000000u}, {}},
 };
 
@@ -808,17 +770,16 @@ TEST(SkyLinkedSun, EndingTheDriveHandsTheLightBackWhite)
 // The fog's sun at full night. Height fog and clouds take their sun from the primary directional
 // when it lights anything, and from the sky otherwise. With the moon hidden the driven sun is black
 // at its authored intensity, so a gate on the intensity alone hands the fog a black sun where it
-// used to fall back to the sky. Under the default full moon the fog's sun is the moonlight (0.25 lx
-// overhead, extinguished at the moon's midnight elevation); with the moon hidden the sky's own night
-// source is nothing either, so the fog has no sun.
-TEST(SkyLinkedSun, TheFogSunAtNightIsTheMoon)
+// used to fall back to the sky. Expected values are what the system produced before the night moved
+// into the colour, when the hidden moon zeroed the intensity instead.
+TEST(SkyLinkedSun, TheFogSunAtNightIsUnchanged)
 {
     struct NightFog
     {
         bool ShowMoon;
         float DeliveredLuminance; // luminance(fog colour) x fog intensity
     };
-    constexpr NightFog kNightFog[] = {{true, 0.00123157f}, {false, 0.0f}};
+    constexpr NightFog kNightFog[] = {{true, 0.0254095f}, {false, 0.0168973f}};
     constexpr float kRecordedPrecision = 1e-5f; // the values were recorded to six significant digits
 
     for (const NightFog& expected : kNightFog)
@@ -845,11 +806,12 @@ TEST(SkyLinkedSun, TheFogSunAtNightIsTheMoon)
         EXPECT_EQ(lit != nullptr, expected.ShowMoon)
             << "moon " << (expected.ShowMoon ? "shown" : "hidden") << ": the fog sun selection";
 
-        const Engine::Renderer::ResolvedFogSun fallback{
-            Mathematics::Vector3(0.0f, -1.0f, 0.0f), ColorLinear(1.0f, 1.0f, 1.0f), /*Intensity=*/1.0f};
-        const auto fog = Engine::Renderer::ResolveFogSunLighting(
-            services, view, /*trackDirectionalLight=*/true, /*sunIntensityScale=*/1.0f, fallback);
-        const float delivered = ColorUtils::LinearRec709Luminance(fog.Color) * fog.Intensity;
+        const float fallbackDir[3] = {0.0f, -1.0f, 0.0f};
+        const float fallbackColor[3] = {1.0f, 1.0f, 1.0f};
+        const auto fog = Engine::Renderer::ResolveHeightFogSunLighting(
+            services, view, /*trackDirectionalLight=*/true, /*sunIntensityScale=*/1.0f, fallbackDir,
+            fallbackColor, /*fallbackIntensity=*/1.0f);
+        const float delivered = ColorUtils::LinearRec709Luminance(fog.color) * fog.intensity;
         EXPECT_NEAR(delivered, expected.DeliveredLuminance, expected.DeliveredLuminance * kRecordedPrecision)
             << "moon " << (expected.ShowMoon ? "shown" : "hidden") << ": the fog's sun at 00:00";
     }

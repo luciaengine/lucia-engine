@@ -11,14 +11,14 @@
 #include "Assets/TextureCook.h"
 #include "Core/Engine.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Mathematics/MatrixOps.h"
-#include "Rendering/Camera/CameraDerivation.h"
+#include "Rendering/CameraDerivation.h"
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Common/MatrixUtils.h"
 
 #include <algorithm>
 #include <atomic>
-#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <optional>
@@ -164,11 +164,7 @@ uint64_t UploadedCompatInstanceListBytes(const ResolvedPassResources& resources)
 
 bool DrawAttributionEnabled()
 {
-    static const bool s_Enabled = []
-    {
-        const char* env = std::getenv("GE_DRAW_ATTRIBUTION");
-        return env != nullptr && env[0] != '0';
-    }();
+    static const bool s_Enabled = Platform::EnvironmentSwitchEnabled("GE_DRAW_ATTRIBUTION", false);
     return s_Enabled;
 }
 
@@ -451,10 +447,10 @@ float PointShadowScreenCoverageRadiusPx(const ::GameEngine::Rendering::CameraDat
     // scale to a reference screen half-height so the planner's pixel thresholds
     // are viewport-agnostic. Camera INSIDE the sphere => a very large coverage.
     constexpr float kReferenceScreenHalfHeightPx = 540.0f; // half a 1080p view
-    const Mathematics::Vector3 camPos{camData.cameraPos.x, camData.cameraPos.y,
-                                      camData.cameraPos.z};
+    const Mathematics::Vector3 camPos{camData.cameraPos[0], camData.cameraPos[1],
+                                      camData.cameraPos[2]};
     const float dist = std::max((lightPositionWS - camPos).Length(), 1e-3f);
-    const float focalY = std::fabs(camData.proj[1][1]);
+    const float focalY = std::fabs(camData.proj[5]);
     return (focalY * range / dist) * kReferenceScreenHalfHeightPx;
 }
 
@@ -463,7 +459,7 @@ std::optional<PointShadowCameraCull> MakePointShadowCullInputs(
 {
     // Degenerate camera (thumbnail before its first update): a zero projection
     // inverts to NaN corners. Skip culling — every face renders (safe fallback).
-    if (camData.proj[0][0] == 0.0f && camData.proj[1][1] == 0.0f)
+    if (camData.proj[0] == 0.0f && camData.proj[5] == 0.0f)
         return std::nullopt;
 
     const ::GameEngine::Rendering::CameraDerivedData cam =

@@ -87,13 +87,11 @@ namespace GameEngine.Scripting
         /// Copies into <paramref name="buffer"/> the animation events the entity's Animator fired in the last
         /// animation wave that no earlier call returned, in the order they fired, and returns how many. A buffer that
         /// fills leaves the rest for the next call. Each event is returned once, and the next animation wave replaces
-        /// them with its own, so poll every frame an event matters. Allocates nothing. Call from a system's update,
-        /// on whichever thread the scheduler runs it: the animation wave that writes the events runs before it. A
-        /// thread of your own (<c>Task.Run</c>, a timer) can run while the wave writes, so a call from one is
-        /// refused; post the poll to the main thread with <see cref="MainThread.Post"/>.
+        /// them with its own, so poll every frame an event matters. Allocates nothing. Call from the main thread, as
+        /// a system's update does.
         /// </summary>
         /// <exception cref="InvalidOperationException">
-        /// The entity is not alive or has no Animator, or the call came from a thread the engine does not schedule.
+        /// The entity is not alive or has no Animator, or the call came from a thread other than the main thread.
         /// </exception>
         public static int PollEvents(WorldHandle world, uint entityId, Span<AnimationEventRecord> buffer)
         {
@@ -106,7 +104,7 @@ namespace GameEngine.Scripting
             }
             if (rc == (int)NativeResult.Fail)
                 throw new InvalidOperationException(
-                    "Animator PollEvents failed: it reads an Animator's events only on the engine's threads (from a system's update; from a thread of your own, post the poll with MainThread.Post); the engine log names any other cause.");
+                    "Animator PollEvents failed: it reads an Animator's events only on the main thread (from a system's update); the engine log names any other cause.");
             ThrowIfFailed(rc, "PollEvents");
             return count;
         }

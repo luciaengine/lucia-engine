@@ -9,7 +9,7 @@
 
 #include "Editor/Settings/EditorSettingsRegistry.h"
 #include "Graph/GraphCanvas.h"
-#include "Graph/GraphNode/GraphNodeRegistry.h"
+#include "Graph/GraphNodeRegistry.h"
 
 #include <gtest/gtest.h>
 
@@ -167,28 +167,6 @@ TEST_F(GraphSettingsPageTest, PrepareFieldsRebuildsTypeColorsAfterLateRegister)
     ed::SettingsCategoryDescriptor rebuilt = m_Category;
     m_Category.PrepareFields(rebuilt);
     EXPECT_TRUE(hasNeedle(rebuilt)) << "late material type missing after PrepareFields";
-}
-
-// Each run of type colors is headed "<kind> Nodes: <category>". A category name is a header, never
-// a SectionDescription, which shows as an info card that the "Show Info Cards" switch hides.
-TEST_F(GraphSettingsPageTest, TypeColorRunsAreHeadedByKindAndCategory)
-{
-    const ed::SettingsFieldDescriptor* clipPlayer = nullptr;
-    std::string lastHeader;
-    std::string clipPlayerHeader;
-    for (const auto& field : m_Category.Fields)
-    {
-        EXPECT_TRUE(field.SectionDescription.empty()) << field.Label << ": " << field.SectionDescription;
-        if (!field.SectionHeader.empty())
-            lastHeader = field.SectionHeader;
-        if (field.SearchKeywords.find("nodegraph-typecolor:animation:ClipPlayer") != std::string::npos)
-        {
-            clipPlayer = &field;
-            clipPlayerHeader = lastHeader;
-        }
-    }
-    ASSERT_NE(clipPlayer, nullptr) << "Animation ClipPlayer color row missing";
-    EXPECT_EQ(clipPlayerHeader, "Animation Nodes: Pose");
 }
 
 } // namespace

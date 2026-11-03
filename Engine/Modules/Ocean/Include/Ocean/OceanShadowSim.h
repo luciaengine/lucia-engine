@@ -4,7 +4,7 @@
 #include "Ocean/OceanFrameStamp.h"
 #include "Ocean/OceanInputDrawSource.h"
 #include "Ocean/OceanSettingsAsset.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -19,7 +19,7 @@ namespace GameEngine::Ocean
 struct alignas(16) OceanShadowSamplingGPU
 {
     OceanCascadeLayoutGPU Layout{};
-    Mathematics::Vector4 Channels; // hard scale, soft scale, available, pad
+    float Channels[4]{}; // hard scale, soft scale, available, pad
 };
 
 class OceanShadowSim

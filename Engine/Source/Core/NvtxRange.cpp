@@ -8,10 +8,9 @@
 #endif
 
 #if GE_ENABLE_NVTX
-#include <nvtx3/nvToolsExt.h>
+#include "Platform/Environment.h"
 
-#include <cstdlib>
-#include <cstring>
+#include <nvtx3/nvToolsExt.h>
 #endif
 
 namespace GameEngine::Profiling
@@ -34,11 +33,10 @@ nvtxDomainHandle_t s_Domain = nullptr;
 void InitializeNvtx()
 {
 #if GE_ENABLE_NVTX
-    const char* env = std::getenv("GE_NVTX");
-    // Truthy unless explicitly "0": tracing is on by default when compiled in,
+    // On unless switched off: tracing is on by default when compiled in,
     // because the cost of an unattached NVTX range is a predicate on a
     // process-local function pointer.
-    s_NvtxEnabled = !(env && std::strcmp(env, "0") == 0);
+    s_NvtxEnabled = Platform::EnvironmentSwitchEnabled("GE_NVTX", true);
     if (s_NvtxEnabled && !s_Domain)
         s_Domain = nvtxDomainCreateA("GameEngine");
 #endif

@@ -256,9 +256,9 @@ TEST(ProjectMaterialPrewarm, CachedVertexColorPolicyMatchesLiveImportVariants)
         const auto reopened = ModelMaterialBridge::Convert(model, index, (*cached)[index]).document;
         EXPECT_EQ(reopened.ignoreVertexColor, live.ignoreVertexColor);
         const auto liveKeys = MaterialPrewarmVariantKeys(DeriveBaseVariantKey(live),
-            Rendering::MaterialKeyword::ForwardPlus, false, live.alphaMode, live.ignoreVertexColor);
+            Rendering::MaterialKeyword::ForwardPlus, false, live.alphaMode, CrossfadeTailWarmup::Warm, live.ignoreVertexColor);
         const auto cachedKeys = MaterialPrewarmVariantKeys(DeriveBaseVariantKey(reopened),
-            Rendering::MaterialKeyword::ForwardPlus, false, reopened.alphaMode, reopened.ignoreVertexColor);
+            Rendering::MaterialKeyword::ForwardPlus, false, reopened.alphaMode, CrossfadeTailWarmup::Warm, reopened.ignoreVertexColor);
         EXPECT_EQ(cachedKeys, liveKeys);
         const auto withColor = std::count_if(cachedKeys.begin(), cachedKeys.end(), [](const auto& key) {
             return Rendering::HasFlag(key.vertexFlags, Rendering::VertexAttributeFlags::HasColor);

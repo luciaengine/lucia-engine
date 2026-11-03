@@ -132,9 +132,9 @@ bool OceanCascadeArray::SnapToCamera(float cameraX, float cameraZ)
     {
         if (m_CoarsestAnchored && lod + 1u == m_LodCount)
         {
-            Mathematics::Vector4& layer = m_Layout.CascadeOriginScale[lod];
-            changed = changed || std::memcmp(&layer, &m_CoarsestAnchor, sizeof(m_CoarsestAnchor)) != 0;
-            layer = m_CoarsestAnchor;
+            float* layer = m_Layout.CascadeOriginScale[lod];
+            changed = changed || std::memcmp(layer, m_CoarsestAnchor, sizeof(m_CoarsestAnchor)) != 0;
+            std::memcpy(layer, m_CoarsestAnchor, sizeof(m_CoarsestAnchor));
             continue;
         }
         const float scale = static_cast<float>(1u << lod);

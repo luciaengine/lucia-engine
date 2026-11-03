@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 3,
+  "materialName": "Blocker",
+  "lightingModel": "StandardPBR",
+  "alphaMode": "Opaque",
+  "doubleSided": true,
+  "surfaceShader": "Surfaces/standard_pbr.glsl",
+  "properties": {
+    "baseColor": [
+      0.4,
+      0.4,
+      0.4,
+      1
+    ],
+    "metallic": 0.0,
+    "roughness": 0.8,
+    "emissive": [
+      0,
+      0,
+      0
+    ],
+    "emissionLuminance": 203.0
+  },
+  "textures": {}
+}

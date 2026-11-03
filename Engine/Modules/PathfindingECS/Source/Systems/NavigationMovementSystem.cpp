@@ -1,9 +1,9 @@
 #include "PathfindingECS/Systems/NavigationMovementSystem.h"
 #include "PathfindingECS/NavigationService.h"
-#include "PathfindingECS/NavigationSurfaceRuntime.h"
-#include "Components/Navigation/NavigationAgent.h"
+#include "PathfindingECS/NavigationGridRuntime.h"
+#include "PathfindingECS/Components/NavigationAgent.h"
 #include "PathfindingECS/Components/NavigationAgentState.h"
-#include "Components/Navigation/NavigationSurface.h"
+#include "PathfindingECS/Components/NavigationGrid.h"
 #include "PathfindingECS/Systems/NavigationWorldHooks.h"
 #include "Components/Transform.h"
 #include "Components/TransformDirtyFeed.h"
@@ -27,6 +27,24 @@ namespace
 
 constexpr float32 kReservationLookaheadSeconds = 1.5f;
 
+// Hierarchy rebuilds WorldTransform from local Transform on topology
+// changes. A world-only write is discarded and the agent snaps home.
+void WriteAgentTranslation(ECS::World& world, ECS::EntityHandle e,
+                           ECS::Writable<Components::Transform> xfRow,
+                           ECS::Writable<Components::WorldTransform> wtRow,
+                           float32 x, float32 y, float32 z)
+{
+    Components::Transform& xf = xfRow.Mutable();
+    Components::WorldTransform& wt = wtRow.Mutable();
+    xf.matrix[12] = x;
+    xf.matrix[13] = y;
+    xf.matrix[14] = z;
+    wt.matrix[12] = x;
+    wt.matrix[13] = y;
+    wt.matrix[14] = z;
+    Components::BumpWorldTransform(world, e, wt);
+}
+
 void AdvanceWaypoints(Components::NavigationAgentState& state, const Pathfinding::PathBuffer& pathBuffer)
 {
     Pathfinding::PathHandle pathHandle{state.PathIndex, state.PathGeneration};
@@ -36,9 +54,10 @@ void AdvanceWaypoints(Components::NavigationAgentState& state, const Pathfinding
 
     if (state.CurrentPathPointIndex >= pointCount)
     {
-        // Arrived: the path's Status (Complete, or Partial for a path that
-        // ends short of the destination) stays, so GetStatus reports Arrived.
+        // Reached end of path — mark Complete (not Invalid) so callers can
+        // distinguish successful arrival from a failed/cancelled path.
         state.HasDestination = false;
+        state.Status = static_cast<uint8>(Pathfinding::PathStatus::Complete);
         state.VelocityX = 0.0f;
         state.VelocityY = 0.0f;
         state.VelocityZ = 0.0f;
@@ -90,7 +109,7 @@ void ReserveCellsAlongPath(const Components::NavigationAgent& agent,
                            float32 posX, float32 posZ,
                            float32 currentTime)
 {
-    Pathfinding::NavMapHandle mapHandle{state.NavMapIndex, state.NavMapGeneration};
+    Pathfinding::NavMapHandle mapHandle{agent.NavMapIndex, agent.NavMapGeneration};
     auto* gridMap = navWorld.GetGridMap(mapHandle);
     if (!gridMap)
         return;
@@ -99,7 +118,7 @@ void ReserveCellsAlongPath(const Components::NavigationAgent& agent,
     // taxed for the remaining reservation TTL.
     if (agent.AgentId != 0)
         gridMap->ClearReservationsForAgent(agent.AgentId);
-    state.CellReservationOwner = 0;
+    state.HasCellReservations = false;
 
     Pathfinding::PathHandle pathHandle{state.PathIndex, state.PathGeneration};
     auto& pathBuffer = navWorld.GetPathBuffer();
@@ -134,7 +153,7 @@ void ReserveCellsAlongPath(const Components::NavigationAgent& agent,
     }
 
     if (agent.AgentId != 0)
-        state.CellReservationOwner = agent.AgentId;
+        state.HasCellReservations = true;
 }
 
 void ReserveStandingCell(const Components::NavigationAgent& agent,
@@ -144,61 +163,6 @@ void ReserveStandingCell(const Components::NavigationAgent& agent,
                          float32 currentTime)
 {
     StampNavigationAgentOccupancy(agent, state, posX, posZ, currentTime);
-}
-
-// A crowd agent stalled below this fraction of its Speed makes no more progress to its goal.
-constexpr float32 kCrowdStallSpeedFraction = 0.1f;
-// How long a crowd agent stalls at its goal before it counts as arrived.
-constexpr float32 kCrowdStallArrivalSeconds = 0.25f;
-
-// True when the agent holds a slot in the current crowd. A handle from an earlier crowd names a slot
-// that another agent may now hold.
-bool HoldsCrowdAgent(const Components::NavigationAgentState& state, const Pathfinding::CrowdManager& crowd)
-{
-    return state.CrowdAgentHandle >= 0 && state.CrowdGeneration == crowd.GetGeneration();
-}
-
-// The end of a crowd agent's path: the destination, or the reachable point nearest it on a Partial
-// path. Before the path is solved the end is the destination.
-Pathfinding::PathPoint CrowdGoal(const Components::NavigationAgentState& state, const Pathfinding::PathBuffer& pathBuffer)
-{
-    const Pathfinding::PathHandle path{state.PathIndex, state.PathGeneration};
-    const uint32 pointCount = pathBuffer.GetPointCount(path);
-    if (pointCount > 0)
-        return pathBuffer.GetPoint(path, pointCount - 1);
-    Pathfinding::PathPoint goal;
-    goal.X = state.DestinationX;
-    goal.Y = state.DestinationY;
-    goal.Z = state.DestinationZ;
-    return goal;
-}
-
-// A crowd agent has arrived once it stands within its stopping distance, across, of its goal; or,
-// when other agents stand there, once it has stood almost still for kCrowdStallArrivalSeconds with a
-// straight line to its goal and a touching neighbor holding it off, one nearer the goal or one that
-// arrived at the same goal (a group ordered to one point forms a pile there). Vertically it may be
-// off by up to its height, the reach a path looks for the surface within.
-bool ReachedCrowdGoal(const Components::NavigationAgent& agent, Components::NavigationAgentState& state,
-                      const Pathfinding::PathBuffer& pathBuffer, const Pathfinding::CrowdManager& crowd,
-                      float32 x, float32 y, float32 z, float32 deltaTime)
-{
-    const Pathfinding::PathPoint goal = CrowdGoal(state, pathBuffer);
-    const float32 dx = goal.X - x;
-    const float32 dz = goal.Z - z;
-    const float32 distanceSq = dx * dx + dz * dz;
-    if (std::abs(goal.Y - y) > agent.Height)
-    {
-        state.CrowdStallSeconds = 0.0f;
-        return false;
-    }
-    if (distanceSq <= agent.StoppingDistance * agent.StoppingDistance)
-        return true;
-
-    const float32 stallSpeed = kCrowdStallSpeedFraction * agent.Speed;
-    const float32 speedSq = state.VelocityX * state.VelocityX + state.VelocityZ * state.VelocityZ;
-    const bool stalled = speedSq <= stallSpeed * stallSpeed && crowd.IsAgentHeldOffGoal(state.CrowdAgentHandle);
-    state.CrowdStallSeconds = stalled ? state.CrowdStallSeconds + deltaTime : 0.0f;
-    return state.CrowdStallSeconds >= kCrowdStallArrivalSeconds;
 }
 
 // A peer may already overlap the agent when a spawn, teleport or another
@@ -236,30 +200,16 @@ bool NewPositionOccupiedByOther(const Pathfinding::GridMap& grid, float32 x, flo
     return NewCellOccupiedByOther(grid, cx, cz, start, agentId, currentTime);
 }
 
-// The segment clears every blocked cell outside `openCells` by `radius`. A
-// zero radius has no swept test to exempt cells from, so it takes Raycast's
-// line and forgives a first hit inside `openCells`.
-bool SegmentClearOfWalls(const Pathfinding::GridMap& grid, float32 startX, float32 startZ,
-                         float32 endX, float32 endZ, float32 radius,
-                         const Pathfinding::GridMap::CellRange* openCells)
-{
-    if (radius > 0.0f)
-        return grid.IsSegmentClear(startX, startZ, endX, endZ, radius, openCells);
-
-    float32 hitX = 0.0f, hitY = 0.0f, hitZ = 0.0f;
-    if (!grid.Raycast(startX, 0.0f, startZ, endX, 0.0f, endZ, hitX, hitY, hitZ))
-        return true;
-    uint32 hitCx = 0, hitCz = 0;
-    return openCells && grid.WorldToCell(hitX, hitZ, hitCx, hitCz) && openCells->Contains(hitCx, hitCz);
-}
-
 } // anonymous namespace
 
-// The agents are visited with read access to their Transform and WorldTransform, and an agent that
-// moved this update is written afterwards through a write grant of its own. A visit with write
-// access stamps every visited chunk's column (Query.h), which would make every agent's
-// WorldTransform look changed every frame to each Changed<WorldTransform> consumer, the physics
-// step's kinematic bodies and HLODSelectSystem among them, also at rest.
+// Runtime-spawned agents (no authored NavigationAgent in repo scenes) still
+// hit this query. Write local Transform and WorldTransform together —
+// TransformHierarchySystem rebuilds world from local on topology changes.
+//
+// Only WriteAgentTranslation grants Transform and WorldTransform, so an agent
+// that does not move leaves Changed<WorldTransform> gates quiet — among them
+// HLODSelectSystem's probe, which would otherwise re-run its per-member
+// staleness scan every frame in a scene with baked HLOD clusters.
 void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
 {
     auto* navWorld = NavigationService::TryGet();
@@ -278,11 +228,10 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
         crowd.Update(deltaTime);
     }
 
-    // Dynamic-obstacle application lives in NavigationSurfaceSystem: dynamic-blocked
-    // is an unsynchronized GridMap field that path solves read, so its writes
-    // sit behind that system's HasActivePathJobs gate. This system only reads
-    // map content (Raycast / IsCellBlocked) and writes reservations, after the
-    // pathfinding system's solves have finished.
+    // Dynamic-obstacle application lives in NavigationBuildSystem: dynamic-blocked
+    // is an unsynchronized GridMap field read by in-flight path jobs, so its
+    // writes must sit behind that system's job-free gate. This system only reads
+    // map content (Raycast / IsCellBlocked) and takes the reservation lock.
 
     // Manage crowd agent lifecycle for navmesh-based agents
     if (crowd.IsInitialized())
@@ -291,32 +240,17 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
                     ECS::Write<Components::NavigationAgentState>,
                     ECS::Read<Components::WorldTransform>>().Each(
             [&](ECS::EntityHandle /*e*/, const Components::NavigationAgent& agent,
-                Components::NavigationAgentState& state,
+                ECS::Writable<Components::NavigationAgentState> stateRow,
                 const Components::WorldTransform& wt)
             {
-                Pathfinding::NavMapHandle mapHandle{state.NavMapIndex, state.NavMapGeneration};
+                Pathfinding::NavMapHandle mapHandle{agent.NavMapIndex, agent.NavMapGeneration};
                 bool isNavMeshAgent = (navWorld->GetDetourNavMap(mapHandle) != nullptr);
                 if (!isNavMeshAgent)
                     return;
+                Components::NavigationAgentState& state = stateRow.Mutable();
 
-                // The crowd steers toward the destination once BindNavigationAgents has checked it
-                // (moved it onto the ground, or refused it). PathDirty stays set: it is the request
-                // NavigationPathfindingSystem serves, and one the solve budget deferred is still queued.
-                const bool steers = state.HasDestination && !state.DestinationUnchecked;
-                const bool arrived = state.Status == Pathfinding::PathStatus::Complete ||
-                                     state.Status == Pathfinding::PathStatus::Partial;
-
-                // A crowd started again (a new-layout bake) holds none of the old agents. A walking
-                // agent is added again and steers to its destination; an arrived one is added again
-                // at its own position and marked arrived at its destination.
-                bool rejoinsArrived = false;
-                if (state.CrowdAgentHandle >= 0 && !HoldsCrowdAgent(state, crowd))
-                {
-                    rejoinsArrived = !state.HasDestination && arrived;
-                    state.CrowdAgentHandle = -1;
-                }
-
-                if (state.CrowdAgentHandle < 0 && (steers || rejoinsArrived))
+                // Create crowd agent for navmesh agents that need one
+                if (state.CrowdAgentHandle < 0 && state.HasDestination)
                 {
                     Pathfinding::CrowdAgentParams params;
                     params.Radius = agent.Radius;
@@ -331,32 +265,25 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
                     float32 posZ = wt.matrix[14];
 
                     state.CrowdAgentHandle = crowd.AddAgent(posX, posY, posZ, params);
-                    state.CrowdGeneration = crowd.GetGeneration();
-                    state.CrowdStallSeconds = 0.0f;
                     if (state.CrowdAgentHandle >= 0)
                     {
                         crowd.SetAgentTarget(state.CrowdAgentHandle,
                                              state.DestinationX, state.DestinationY, state.DestinationZ);
-                        state.CrowdOrder = state.Order;
-                        if (rejoinsArrived)
-                            crowd.MarkAgentArrived(state.CrowdAgentHandle);
+                        state.PathDirty = false;
                     }
                     return;
                 }
 
-                // A new order: the crowd agent takes its destination. The order number, not
-                // PathDirty, tells: the path solve clears PathDirty earlier in the frame.
-                if (state.CrowdAgentHandle >= 0 && steers && state.CrowdOrder != state.Order)
+                // Update target when destination changes
+                if (state.CrowdAgentHandle >= 0 && state.HasDestination && state.PathDirty)
                 {
                     crowd.SetAgentTarget(state.CrowdAgentHandle,
                                          state.DestinationX, state.DestinationY, state.DestinationZ);
-                    state.CrowdOrder = state.Order;
-                    state.CrowdStallSeconds = 0.0f;
+                    state.PathDirty = false;
                 }
 
-                // An arrived agent stays in the crowd as a stationary member, so a group's pile keeps
-                // its place; ClearDestination, a refused order or a failed one removes it.
-                if (state.CrowdAgentHandle >= 0 && !state.HasDestination && !arrived)
+                // Remove crowd agent when destination is cleared
+                if (state.CrowdAgentHandle >= 0 && !state.HasDestination)
                 {
                     crowd.RemoveAgent(state.CrowdAgentHandle);
                     state.CrowdAgentHandle = -1;
@@ -365,70 +292,51 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
     }
 
     // Move agents along their paths
-    m_Moves.clear();
     world.Query<ECS::Read<Components::NavigationAgent>,
                 ECS::Write<Components::NavigationAgentState>,
-                ECS::Read<Components::Transform>,
-                ECS::Read<Components::WorldTransform>>().Each(
+                ECS::Write<Components::Transform>,
+                ECS::Write<Components::WorldTransform>>().Each(
         [&](ECS::EntityHandle e, const Components::NavigationAgent& agent,
-            Components::NavigationAgentState& state,
-            const Components::Transform& /*xf*/,
-            const Components::WorldTransform& wt)
+            ECS::Writable<Components::NavigationAgentState> stateRow,
+            ECS::Writable<Components::Transform> xf,
+            ECS::Writable<Components::WorldTransform> wt)
         {
+            // Most visits update the agent state; the transforms are written
+            // only through WriteAgentTranslation.
+            Components::NavigationAgentState& state = stateRow.Mutable();
             // Halt / arrival: drop the lookahead corridor but keep a body
             // stamp on the cell the agent is standing in so others cannot
             // walk through idle units.
             if (!state.HasDestination)
             {
-                // An arrived crowd agent keeps its place and yields to a push: the crowd moves it.
-                if (HoldsCrowdAgent(state, crowd) && crowd.IsAgentActive(state.CrowdAgentHandle))
-                {
-                    float32 cx, cy, cz;
-                    crowd.GetAgentPosition(state.CrowdAgentHandle, cx, cy, cz);
-                    QueueMove(e, wt, cx, cy, cz);
-                    return;
-                }
-                ReserveStandingCell(agent, state, *navWorld, wt.matrix[12], wt.matrix[14],
+                ReserveStandingCell(agent, state, *navWorld, wt->matrix[12], wt->matrix[14],
                                     m_AccumulatedTime);
                 return;
             }
 
             // Detour crowd-based movement: when the agent has a valid crowd handle,
             // read position and velocity from the crowd simulation instead of steering manually.
-            if (HoldsCrowdAgent(state, crowd))
+            if (state.CrowdAgentHandle >= 0)
             {
+                auto& crowd = navWorld->GetCrowdManager();
                 if (crowd.IsInitialized() && crowd.IsAgentActive(state.CrowdAgentHandle))
                 {
                     float32 cx, cy, cz;
                     crowd.GetAgentPosition(state.CrowdAgentHandle, cx, cy, cz);
-                    QueueMove(e, wt, cx, cy, cz);
+                    WriteAgentTranslation(world, e, xf, wt, cx, cy, cz);
 
                     crowd.GetAgentVelocity(state.CrowdAgentHandle,
                                            state.VelocityX, state.VelocityY, state.VelocityZ);
-                    if (ReachedCrowdGoal(agent, state, pathBuffer, crowd, cx, cy, cz, deltaTime))
-                    {
-                        // Arrived: the crowd agent stays in the crowd, stationary.
-                        crowd.MarkAgentArrived(state.CrowdAgentHandle);
-                        state.HasDestination = false;
-                        state.VelocityX = 0.0f;
-                        state.VelocityY = 0.0f;
-                        state.VelocityZ = 0.0f;
-                    }
                     return; // crowd handles movement
                 }
             }
 
-            const Pathfinding::PathStatus status = state.Status;
+            auto status = static_cast<Pathfinding::PathStatus>(state.Status);
             if (status != Pathfinding::PathStatus::Complete &&
                 status != Pathfinding::PathStatus::Partial)
             {
-                // No path to follow (queued for a solve, Failed): the agent
-                // stands, so it reports no velocity.
-                state.VelocityX = 0.0f;
-                state.VelocityY = 0.0f;
-                state.VelocityZ = 0.0f;
                 if (status == Pathfinding::PathStatus::Failed)
-                    ReserveStandingCell(agent, state, *navWorld, wt.matrix[12], wt.matrix[14],
+                    ReserveStandingCell(agent, state, *navWorld, wt->matrix[12], wt->matrix[14],
                                         m_AccumulatedTime);
                 return;
             }
@@ -438,23 +346,17 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
             // (obstacle placed, etc.), trigger immediate re-pathing instead of
             // waiting for the replan timer.
             //
-            // Sweeps the agent's body from its position along consecutive
-            // waypoints (GridMap::IsSegmentClear, the test the path smoother
-            // keeps shortcuts to), so a body pushed off its route that would
-            // clip a blocked cell re-paths, and the cells between endpoints of
-            // a smoothed straight segment are covered. A hex grid sweeps the
-            // line, as Raycast does: IsSegmentClear models a hex cell as a
-            // rectangle, and its rows are only sqrt(3)/4 of a cell from a cell
-            // centre, so a body wider than that re-paths a valid route every
-            // frame and never moves. For large agents, also checks the full
-            // footprint at each waypoint, the cell clearance A* solves with.
-            Pathfinding::NavMapHandle proxyMapHandle{state.NavMapIndex, state.NavMapGeneration};
+            // Raycasts between consecutive waypoints so intermediate cells are
+            // covered — important when SmoothPaths collapses a straight segment
+            // to just endpoints, leaving many walkable cells between them.
+            // For large agents, also checks the full footprint at each waypoint.
+            Pathfinding::NavMapHandle proxyMapHandle{agent.NavMapIndex, agent.NavMapGeneration};
             auto* proxyGridMap = navWorld->GetGridMap(proxyMapHandle);
             StartingFootprint startFootprint;
             if (proxyGridMap)
             {
                 startFootprint.Valid = proxyGridMap->WorldToCell(
-                    wt.matrix[12], wt.matrix[14], startFootprint.X, startFootprint.Z);
+                    wt->matrix[12], wt->matrix[14], startFootprint.X, startFootprint.Z);
                 startFootprint.Radius = proxyGridMap->FootprintRadiusInCells(agent.Radius);
             }
             if (proxyGridMap && !state.PathDirty)
@@ -469,33 +371,34 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
                 const bool destOk = proxyGridMap->WorldToCell(
                     state.DestinationX, state.DestinationZ, destCx, destCz);
 
-                // Dest sits on an obstacle stamp ring. A smoothed shortcut can
-                // clip that 8-neighbour stamp every frame, so the ring counts
-                // as open unless the dest cell itself is blocked. A blocked
-                // cell beyond the ring is a real wall.
-                Pathfinding::GridMap::CellRange destRing;
-                const bool destRingOpen = destOk && !proxyGridMap->IsCellBlocked(destCx, destCz);
-                if (destRingOpen)
-                {
-                    destRing.MinX = destCx > 0 ? destCx - 1 : 0;
-                    destRing.MinZ = destCz > 0 ? destCz - 1 : 0;
-                    destRing.MaxX = destCx + 1;
-                    destRing.MaxZ = destCz + 1;
-                }
-                const float32 sweepRadius =
-                    proxyGridMap->GetSettings().Type == Pathfinding::GridType::Square ? agent.Radius : 0.0f;
-
-                float32 rayStartX = wt.matrix[12];
-                float32 rayStartZ = wt.matrix[14];
+                float32 rayStartX = wt->matrix[12];
+                float32 rayStartZ = wt->matrix[14];
                 for (uint32 pi = state.CurrentPathPointIndex; pi < checkEnd && !state.PathDirty; ++pi)
                 {
                     Pathfinding::PathPoint pt = pathBuffer.GetPoint(proxyPath, pi);
 
-                    if (!SegmentClearOfWalls(*proxyGridMap, rayStartX, rayStartZ, pt.X, pt.Z, sweepRadius,
-                                             destRingOpen ? &destRing : nullptr))
+                    float32 hitX = 0.0f, hitY = 0.0f, hitZ = 0.0f;
+                    if (proxyGridMap->Raycast(rayStartX, 0.0f, rayStartZ,
+                                              pt.X, 0.0f, pt.Z,
+                                              hitX, hitY, hitZ))
                     {
-                        state.PathDirty = true;
-                        break;
+                        // Dest sits on an obstacle stamp ring. A smoothed
+                        // shortcut can clip that 8-neighbour stamp every
+                        // frame. Ignore only that ring unless the dest cell
+                        // itself is blocked. A farther hit is a real wall.
+                        uint32 hitCx = 0, hitCz = 0;
+                        const bool destBlocked =
+                            destOk && proxyGridMap->IsCellBlocked(destCx, destCz);
+                        const bool hitOk = proxyGridMap->WorldToCell(hitX, hitZ, hitCx, hitCz);
+                        const bool destAdjacent =
+                            destOk && hitOk &&
+                            std::abs(static_cast<int32>(hitCx) - static_cast<int32>(destCx)) <= 1 &&
+                            std::abs(static_cast<int32>(hitCz) - static_cast<int32>(destCz)) <= 1;
+                        if (destBlocked || !destAdjacent)
+                        {
+                            state.PathDirty = true;
+                            break;
+                        }
                     }
                     rayStartX = pt.X;
                     rayStartZ = pt.Z;
@@ -543,9 +446,9 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
                 }
             }
 
-            float32 posX = wt.matrix[12];
-            float32 posY = wt.matrix[13];
-            float32 posZ = wt.matrix[14];
+            float32 posX = wt->matrix[12];
+            float32 posY = wt->matrix[13];
+            float32 posZ = wt->matrix[14];
 
             float32 dirX = state.CurrentWaypointX - posX;
             float32 dirY = state.CurrentWaypointY - posY;
@@ -560,6 +463,7 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
                 AdvanceWaypoints(state, pathBuffer);
                 if (!state.HasDestination)
                 {
+                    WriteAgentTranslation(world, e, xf, wt, posX, posY, posZ);
                     ReserveStandingCell(agent, state, *navWorld, posX, posZ, m_AccumulatedTime);
                     return;
                 }
@@ -610,6 +514,7 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
                     state.VelocityX = 0.0f;
                     state.VelocityY = 0.0f;
                     state.VelocityZ = 0.0f;
+                    WriteAgentTranslation(world, e, xf, wt, posX, posY, posZ);
                     ReserveStandingCell(agent, state, *navWorld, posX, posZ, m_AccumulatedTime);
                     return;
                 }
@@ -617,6 +522,7 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
                 state.VelocityX = 0.0f;
                 state.VelocityY = 0.0f;
                 state.VelocityZ = 0.0f;
+                WriteAgentTranslation(world, e, xf, wt, posX, posY, posZ);
                 ReserveStandingCell(agent, state, *navWorld, posX, posZ, m_AccumulatedTime);
                 return;
             }
@@ -625,10 +531,10 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
             posY = nextY;
             posZ = nextZ;
 
-            QueueMove(e, wt, posX, posY, posZ);
+            WriteAgentTranslation(world, e, xf, wt, posX, posY, posZ);
 
             // Reserve cells along path for grid-based agents
-            Pathfinding::NavMapHandle mapHandle{state.NavMapIndex, state.NavMapGeneration};
+            Pathfinding::NavMapHandle mapHandle{agent.NavMapIndex, agent.NavMapGeneration};
             if (navWorld->GetGridMap(mapHandle))
             {
                 if (state.PathDirty)
@@ -642,46 +548,17 @@ void NavigationMovementSystem::Update(ECS::World& world, float32 deltaTime)
             }
         });
 
-    WriteMoves(world);
-
     // Clear expired reservations on all grid maps using the current accumulated time
-    world.Query<ECS::Read<Components::NavigationSurface>>().Each(
-        [&](ECS::EntityHandle /*e*/, const Components::NavigationSurface& source)
+    world.Query<ECS::Read<Components::NavigationGrid>>().Each(
+        [&](ECS::EntityHandle /*e*/, const Components::NavigationGrid& source)
         {
-            auto* gridMap = ResolveNavigationSurfaceGrid(world, source);
+            auto* gridMap = ResolveNavigationGridMap(world, source);
             if (gridMap)
             {
                 gridMap->ClearExpiredReservations(m_AccumulatedTime);
             }
         });
 
-}
-
-void NavigationMovementSystem::QueueMove(ECS::EntityHandle entity, const Components::WorldTransform& current,
-                                         float32 x, float32 y, float32 z)
-{
-    if (x != current.matrix[12] || y != current.matrix[13] || z != current.matrix[14])
-        m_Moves.push_back({entity, x, y, z});
-}
-
-// Local Transform and WorldTransform are written together: TransformHierarchySystem rebuilds world
-// from local on topology changes, so a world-only write would snap the agent home.
-void NavigationMovementSystem::WriteMoves(ECS::World& world) const
-{
-    for (const AgentMove& move : m_Moves)
-    {
-        auto* xf = world.GetComponentForWrite<Components::Transform>(move.Entity);
-        auto* wt = world.GetComponentForWrite<Components::WorldTransform>(move.Entity);
-        if (!xf || !wt)
-            continue;
-        xf->matrix[12] = move.X;
-        xf->matrix[13] = move.Y;
-        xf->matrix[14] = move.Z;
-        wt->matrix[12] = move.X;
-        wt->matrix[13] = move.Y;
-        wt->matrix[14] = move.Z;
-        Components::BumpWorldTransform(world, move.Entity, *wt);
-    }
 }
 
 } // namespace GameEngine::PathfindingECS

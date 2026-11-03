@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Components/Rendering/Camera.h"
-#include "Rendering/Camera/CameraTypes.h"
+#include "Rendering/CameraTypes.h"
 
 #include <nlohmann/json.hpp>
 
@@ -27,17 +27,14 @@ namespace GameEngine::Editor
 // The viewport pixels are provenance for aspect, not its source. Aspect presets
 // and letterboxing can make the matrix aspect differ from the panel ratio.
 // Orthographic projections report orthoHeight and omit both angle fields.
-nlohmann::json DescribeCameraProjection(const Mathematics::Matrix4x4& proj,
+nlohmann::json DescribeCameraProjection(const float proj[16],
                                         std::uint32_t viewportWidthPx,
                                         std::uint32_t viewportHeightPx);
 
 // Game View uses its declared camera matrix, including roll, rather than the
-// Scene View orbit pose. The world transform is a column-major 4x4 matrix. The
-// exposure reports the camera's mode and, under Auto, its meter ("picture" or
-// "lights"; null in the other modes).
+// Scene View orbit pose. The world transform is a column-major 4x4 matrix.
 nlohmann::json DescribeGameViewCamera(const Rendering::CameraData& camera,
                                       Components::ExposureMode mode,
-                                      Components::ExposureMeter meter,
                                       std::uint32_t viewportWidthPx,
                                       std::uint32_t viewportHeightPx);
 

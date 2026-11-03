@@ -1,13 +1,12 @@
 #pragma once
 
 #include "Components/Rendering/WorldSectorCoord.h"
-#include "Mathematics/Matrix4x4.h"
+#include "Platform/Environment.h"
 #include "Types/Types.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 
 namespace GameEngine::Engine::Renderer
@@ -105,11 +104,7 @@ inline void UnpackSector(uint32 p0, uint32 p1, int32& sx, int32& sy, int32& sz)
 // per-view/per-frame call cost stays nil; default (unset) => normal behavior.
 inline bool IsRenderOriginForcedInactive()
 {
-    static const bool s_Forced = []()
-    {
-        const char* env = std::getenv("GE_ES_FORCE_WORLD_SPACE");
-        return env != nullptr && std::strcmp(env, "0") != 0;
-    }();
+    static const bool s_Forced = Platform::EnvironmentSwitchEnabled("GE_ES_FORCE_WORLD_SPACE", false);
     return s_Forced;
 }
 
@@ -263,10 +258,10 @@ inline void RebaseTranslationColumnBySectorDelta(const float32 m[16], const int3
 // is a difference of fp32-representable values — exact in double — so the
 // column is rebuilt in double from the matrix's own 3x3 and rounds to fp32
 // once, on store. viewProjRel is then proj * viewRel accumulated in double.
-inline void ComputeRebasedView(const Mathematics::Matrix4x4& view, const Mathematics::Matrix4x4& proj,
-                               const Mathematics::Matrix4x4& viewProj,
+inline void ComputeRebasedView(const float32 view[16], const float32 proj[16],
+                               const float32 viewProj[16],
                                float32 camX, float32 camY, float32 camZ,
-                               Mathematics::Matrix4x4& outViewRel, Mathematics::Matrix4x4& outViewProjRel,
+                               float32 outViewRel[16], float32 outViewProjRel[16],
                                int32 outSector[4])
 {
     const Components::WorldSectorCoord origin = ComputeRenderOriginSector(camX, camY, camZ);
@@ -275,19 +270,22 @@ inline void ComputeRebasedView(const Mathematics::Matrix4x4& view, const Mathema
     outSector[2] = origin.z;
     outSector[3] = static_cast<int32>(kSectorSize);
 
-    outViewRel = view;
-    outViewProjRel = viewProj;
+    for (int32 i = 0; i < 16; ++i)
+    {
+        outViewRel[i] = view[i];
+        outViewProjRel[i] = viewProj[i];
+    }
     if (origin.x == 0 && origin.y == 0 && origin.z == 0)
         return; // dark-ship identity: bit-for-bit copies
 
     // Origin in double straight from the integer sector: exact for any 21-bit
     // sector (fp32 SectorToWorld rounds past |sector*size| = 2^24, ~16,777 km).
     float64 t[3];
-    ComputeRebasedViewTranslation(view.Data(), camX, camY, camZ, outSector, t);
-    outViewRel[3][0] = static_cast<float32>(t[0]);
-    outViewRel[3][1] = static_cast<float32>(t[1]);
-    outViewRel[3][2] = static_cast<float32>(t[2]);
-    outViewRel[3][3] = view[3][3];
+    ComputeRebasedViewTranslation(view, camX, camY, camZ, outSector, t);
+    outViewRel[12] = static_cast<float32>(t[0]);
+    outViewRel[13] = static_cast<float32>(t[1]);
+    outViewRel[14] = static_cast<float32>(t[2]);
+    outViewRel[15] = view[15];
 
     for (int32 c = 0; c < 4; ++c)
     {
@@ -295,8 +293,9 @@ inline void ComputeRebasedView(const Mathematics::Matrix4x4& view, const Mathema
         {
             float64 acc = 0.0;
             for (int32 k = 0; k < 4; ++k)
-                acc += static_cast<float64>(proj[k][r]) * static_cast<float64>(outViewRel[c][k]);
-            outViewProjRel[c][r] = static_cast<float32>(acc);
+                acc += static_cast<float64>(proj[k * 4 + r]) *
+                       static_cast<float64>(outViewRel[c * 4 + k]);
+            outViewProjRel[c * 4 + r] = static_cast<float32>(acc);
         }
     }
 }

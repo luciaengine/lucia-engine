@@ -1,6 +1,6 @@
 #include "MetalIndirectCommandArena.h"
 
-#include "MetalIndirectCount/MetalIndirectCountResources.h"
+#include "MetalIndirectCountResources.h"
 
 #include <algorithm>
 

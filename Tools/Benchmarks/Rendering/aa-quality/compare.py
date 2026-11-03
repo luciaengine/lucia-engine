@@ -21,9 +21,7 @@ def compare(before, after):
     # Preferences serialize additional UI defaults on first shutdown, and EV
     # round-trips through float32. Compare controlled rendering fields; the
     # byte-identical Off control below catches effective view/image changes.
-    assert old_conditions.get("sceneView.exposure") == new_conditions.get("sceneView.exposure") == "fixed", \
-        "sceneView.exposure"
-    for name in ("postFxFixedExposureEv",
+    for name in ("postFxAutoExposureEnabled", "postFxFixedExposureEv",
                  "postFxExposureCompensation", "postFxBloomEnabled",
                  "postFxCasEnabled", "postFxColorFilterEnabled", "postFxCrtEnabled"):
         key = "sceneView." + name

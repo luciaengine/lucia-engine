@@ -7,6 +7,7 @@
 #include "Rendering/Core/Device.h"
 #include "AssetCore/AssetEvents.h"
 #include "AssetCore/GUID.h"
+#include "TestTempDir.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -29,8 +30,8 @@ TEST(HotReloadBridgeSmoke, ShaderSpvAndMaterialRefs_NoCrash)
     const uint32_t handle = RegisterShaderHotReloadBridge(*dev, dispatcher);
 
     // Create a small temp workspace with dummy .spv and a .shaderdesc referencing it
-    const auto tmpRoot = std::filesystem::temp_directory_path() / "ge_hotreload_smoke";
-    std::filesystem::create_directories(tmpRoot);
+    const TestUtils::ScopedTempDir tmpDirectory{TestUtils::MakeUniqueTempDirectory("ge_hotreload_smoke")};
+    const auto& tmpRoot = tmpDirectory.Path();
 
     const auto spvPath = tmpRoot / "dummy.comp.spv";
     const auto descPath = tmpRoot / "dummy.shaderdesc";

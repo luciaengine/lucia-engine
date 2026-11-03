@@ -27,8 +27,7 @@ namespace GameEngine.Scripting
         public T GetValueOrDefault() => _value;
         public T GetValueOrDefault(T defaultValue) => _hasValue ? _value : defaultValue;
 
-        /// <summary>An optional that holds <paramref name="value"/>.</summary>
-        public ReadOnlyOptional(T value)
+        internal ReadOnlyOptional(T value)
         {
             _value = value;
             _hasValue = true;

@@ -4,7 +4,6 @@
 #include "Engine/Rendering/HeightFogParamsUBO.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/RenderServices.h"
-#include "Engine/Rendering/SkyRenderFeature.h"
 
 #include <nlohmann/json.hpp>
 
@@ -47,26 +46,21 @@ void HeightFogParamsUploadNode::DeclareForView(ViewDeclare& d)
     FillHeightFogParamsUBO(pp, ubo);
     ubo.noiseTime = d.Services.GetShaderAnimationTimeSeconds();
 
-    // The same "is there a sky" the SkyRender node draws by: without it there is no backdrop.
-    const SkyRenderFeature* sky = d.Services.GetFeature<SkyRenderFeature>();
-    const bool skyActive = sky && sky->IsInitialized() && sky->HasActiveSettings();
-    FillHeightFogSkyColor(pp, skyActive ? &sky->GetSettings() : nullptr, ubo);
-
     if (pp.HeightFogTrackDirectionalLight)
     {
-        const ResolvedFogSun fallback{
-            Mathematics::Vector3(pp.HeightFogSunDirX, pp.HeightFogSunDirY, pp.HeightFogSunDirZ),
-            ColorLinear(pp.HeightFogSunColorR, pp.HeightFogSunColorG, pp.HeightFogSunColorB),
-            pp.HeightFogSunIntensity};
-        const ResolvedFogSun sun = ResolveFogSunLighting(
-            d.Services, d.View.id, pp.HeightFogTrackDirectionalLight != 0, pp.HeightFogSunIntensityScale, fallback);
-        ubo.sunDirX = sun.Direction.x;
-        ubo.sunDirY = sun.Direction.y;
-        ubo.sunDirZ = sun.Direction.z;
-        ubo.sunColorR = sun.Color.r;
-        ubo.sunColorG = sun.Color.g;
-        ubo.sunColorB = sun.Color.b;
-        ubo.sunIntensity = sun.Intensity;
+        const float fallbackDir[3] = {pp.HeightFogSunDirX, pp.HeightFogSunDirY, pp.HeightFogSunDirZ};
+        const float fallbackColor[3] = {pp.HeightFogSunColorR, pp.HeightFogSunColorG,
+                                        pp.HeightFogSunColorB};
+        const ResolvedFogSun sun = ResolveHeightFogSunLighting(
+            d.Services, d.View.id, pp.HeightFogTrackDirectionalLight != 0,
+            pp.HeightFogSunIntensityScale, fallbackDir, fallbackColor, pp.HeightFogSunIntensity);
+        ubo.sunDirX = sun.direction[0];
+        ubo.sunDirY = sun.direction[1];
+        ubo.sunDirZ = sun.direction[2];
+        ubo.sunColorR = sun.color[0];
+        ubo.sunColorG = sun.color[1];
+        ubo.sunColorB = sun.color[2];
+        ubo.sunIntensity = sun.intensity;
     }
 
     *alloc.Ptr = ubo;

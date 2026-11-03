@@ -9,7 +9,7 @@
 #include "UI/Controls/SearchFieldWithFilter.h"
 #include "UI/Controls/Slider.h"
 #include "UI/Controls/TextField.h"
-#include "UI/Interaction/FocusQueries.h"
+#include "UI/Interaction/FocusIsInside.h"
 #include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/StyleProperties.h"
 #include "UI/UIElement.h"
@@ -61,7 +61,7 @@ void CaptureRootForCurrentPress(UIElement& element, UIEvent& event)
 
 void BindSearchResultIcon(UIElement& iconElement, const SearchIcon& icon, float size)
 {
-    iconElement.Style()
+    iconElement.Overrides()
         .Set(Style::Width, StyleLength::Px(size))
         .Set(Style::Height, StyleLength::Px(size))
         .Set(Style::MinWidth, StyleLength::Px(size))
@@ -77,29 +77,7 @@ void BindSearchResultIcon(UIElement& iconElement, const SearchIcon& icon, float 
     for (const std::string& cls : staleIconClasses)
         iconElement.RemoveClass(cls);
 
-    iconElement.RemoveClass("search-result-swatch");
-    iconElement.Style().Reset(Style::BackgroundColor);
-    iconElement.Style().Reset(Style::MarginLeft);
-    iconElement.Style().Reset(Style::MarginRight);
-    if (icon.HasSwatch())
-    {
-        UI::Layout::DisableBackgroundOverride(iconElement);
-        iconElement.RemoveClass("has-thumb");
-        // Half the icon's size, centered in its slot by the class's margin, so the text lines up
-        // with rows that carry an icon.
-        const float swatch = size * 0.5f;
-        iconElement.AddClass("search-result-swatch");
-        iconElement.Style()
-            .Set(Style::BackgroundColor, icon.SwatchArgb)
-            .Set(Style::Width, StyleLength::Px(swatch))
-            .Set(Style::Height, StyleLength::Px(swatch))
-            .Set(Style::MinWidth, StyleLength::Px(swatch))
-            .Set(Style::MinHeight, StyleLength::Px(swatch))
-            .Set(Style::MarginLeft, StyleLength::Px(swatch * 0.5f))
-            .Set(Style::MarginRight, StyleLength::Px(swatch * 0.5f));
-        iconElement.RemoveClass("hidden");
-    }
-    else if (icon.HasImage())
+    if (icon.HasImage())
     {
         constexpr std::string_view kEnginePrefix = "engine:";
         if (icon.ImagePath.rfind(kEnginePrefix, 0) == 0)
@@ -494,7 +472,7 @@ void SearchDialog::ApplyClampedPanelPosition()
         float left = m_AnchorX;
         if (m_HorizontalAnchor == SearchDialogHorizontalAnchor::TrailingRight)
             left = m_AnchorX - m_PanelWidth;
-        m_Panel->Style()
+        m_Panel->Overrides()
             .Set(Style::Position, PositionType::Absolute)
             .Set(Style::PositionLeft, StyleLength::Px(left))
             .Set(Style::PositionTop, StyleLength::Px(m_AnchorY))
@@ -550,7 +528,7 @@ void SearchDialog::ApplyClampedPanelPosition()
     if (y < kViewportMargin)
         y = kViewportMargin;
 
-    m_Panel->Style()
+    m_Panel->Overrides()
         .Set(Style::Position, PositionType::Absolute)
         .Set(Style::PositionLeft, StyleLength::Px(x))
         .Set(Style::PositionTop, StyleLength::Px(y))
@@ -1085,8 +1063,8 @@ void SearchDialog::AppendResults(std::vector<SearchResultItem> batch)
     m_ResultsGrid->RefreshFromProvider();
     UpdatePanelHeight();
 
-    // Auto-highlight the first result (once a query is typed, when the dialog asks for that).
-    if (wasEmpty && !m_Results.empty() && (m_HighlightsFirstBeforeQuery || !m_LastQuery.empty()))
+    // Auto-highlight first result
+    if (wasEmpty && !m_Results.empty())
     {
         m_ResultsList->SetSelectedIndex(0, /*scrollIntoView=*/true);
         m_ResultsGrid->SetSelectedIndex(0, /*scrollIntoView=*/true);
@@ -1141,14 +1119,6 @@ void SearchDialog::SelectHighlighted()
             Close();
         if (m_OnResult)
             m_OnResult(item);
-        return;
-    }
-    // Nothing highlighted in a dialog that highlights nothing before a query: Enter closes it.
-    if (!m_HighlightsFirstBeforeQuery)
-    {
-        Close();
-        if (m_OnCancel)
-            m_OnCancel();
     }
 }
 

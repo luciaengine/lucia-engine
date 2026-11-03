@@ -52,7 +52,7 @@ void SunAtHour(const SolarFrame& frame, float hours, float out[3])
     settings.timeOfDayHours = hours;
     SkySystemState state{};
     ComputeSimpleSunMoon(settings, SkySystemConfig{}, frame, state);
-    std::memcpy(out, state.sunDirWS.v, sizeof(state.sunDirWS));
+    std::memcpy(out, state.sunDirWS, sizeof(state.sunDirWS));
 }
 
 uint32_t Bits(float value)
@@ -64,8 +64,7 @@ uint32_t Bits(float value)
 
 // The sun and moon placement the sky used before it had a latitude or a date: one great circle
 // through the zenith, noon straight up, east = south x up with south = -Z. It is the golden for the
-// default site, so it is kept here now that production no longer has it, with the moon trailing the
-// sun by its cycle as production places it.
+// default site, so it is kept here verbatim now that production no longer has it.
 struct GreatCircle
 {
     float Sun[3];
@@ -88,8 +87,7 @@ GreatCircle PreviousGreatCircle(float timeOfDayHours, float moonArcPosition)
     const float s = std::sin(theta);
     float cycle = moonArcPosition;
     cycle = cycle - std::floor(cycle);
-    // The moon trails the sun by the cycle, as the real moon trails it eastward through the month.
-    const float moonTheta = theta - cycle * kTwoPi;
+    const float moonTheta = theta + cycle * kTwoPi;
     const float mc = std::cos(moonTheta);
     const float ms = std::sin(moonTheta);
 
@@ -248,8 +246,8 @@ TEST(SolarPath, TheDefaultIsTodaysGreatCircle)
             ComputeSimpleSunMoon(settings, SkySystemConfig{}, frame, state);
             const GreatCircle previous = PreviousGreatCircle(hours, moonArc);
 
-            EXPECT_TRUE(SameDirection(previous.Sun, state.sunDirWS.v)) << "sun at minute " << minute;
-            EXPECT_TRUE(SameDirection(previous.Moon, state.moonDirWS.v))
+            EXPECT_TRUE(SameDirection(previous.Sun, state.sunDirWS)) << "sun at minute " << minute;
+            EXPECT_TRUE(SameDirection(previous.Moon, state.moonDirWS))
                 << "moon at minute " << minute << ", arc " << moonArc;
             if (Bits(previous.Sun[2]) != Bits(state.sunDirWS[2]))
             {
@@ -319,7 +317,7 @@ TEST(SolarPath, TheHourRoundTripsThroughTheDirection)
     {
         float sun[3];
         SunAtHour(frame, hours, sun);
-        const float recovered = SolarHourFromDirection(frame, GameEngine::Mathematics::Vector3(sun[0], sun[1], sun[2]));
+        const float recovered = SolarHourFromDirection(frame, sun);
         EXPECT_NEAR(recovered, hours, kToleranceHours) << "hour " << hours;
     }
 }

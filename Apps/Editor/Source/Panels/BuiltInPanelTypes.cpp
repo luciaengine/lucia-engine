@@ -3,7 +3,7 @@
 #include "Editor/Registries/EditorPanelRegistry.h"
 #include "EditorPanelIds.h"
 #include "Graph/GraphModel.h"
-#include "Panels/Animation/AnimationWindowPanel.h"
+#include "Panels/AnimationWindowPanel.h"
 #include "Panels/AssetViewPanel.h"
 #include "Panels/AssetsPanel.h"
 #include "Panels/BookmarksPanel.h"
@@ -20,11 +20,13 @@
 #include "Panels/MonitorsPanel.h"
 #include "Panels/PackageManagerPanel.h"
 #include "Panels/RenderGraphPanel.h"
-#include "SceneView/SceneViewPanel.h"
-#include "Panels/Script/ScriptEditorPanel.h"
-#include "Panels/Script/ScriptErrorsPanel.h"
+#include "Panels/SceneViewPanel.h"
+#include "Panels/ScriptEditorPanel.h"
+#include "Panels/ScriptErrorsPanel.h"
 #include "Panels/SettingsPanel.h"
-#include "Panels/ShaderErrors/ShaderErrorsPanel.h"
+#include "Panels/ShaderErrorsPanel.h"
+#include "Panels/TilePalettePanel.h"
+#include "Panels/TileSetEditorPanel.h"
 #include "Panels/TodoPanel.h"
 #include "Panels/UIDemoPanel.h"
 #include "Panels/UndoHistoryPanel.h"
@@ -33,6 +35,7 @@
 #include "Panels/WebPanel.h"
 
 #include <memory>
+#include <utility>
 
 namespace GameEngine::Editor
 {
@@ -45,6 +48,7 @@ struct BuiltInPanelType
 {
     const char* TypeKey;
     PanelFactory Factory;
+    const char* DefaultAnchorPanelId = "";
 };
 
 template <typename T>
@@ -92,7 +96,7 @@ constexpr BuiltInPanelType kBuiltInPanelTypes[] = {
     {"VisualProfilerPanel", &MakePanel<VisualProfilerPanel>},
     {"VramPanel", &MakePanel<VramPanel>},
     {"ScriptEditorPanel", &MakePanel<ScriptEditorPanel>},
-    {"SettingsPanel", &MakePanel<SettingsPanel>},
+    {"SettingsPanel", &MakePanel<SettingsPanel>, EditorPanelIds::SceneView},
     {"DiffPanel", &MakePanel<DiffPanel>},
     {"WebPanel", &MakePanel<WebPanel>},
     {"BuildPanel", &MakePanel<BuildPanel>},
@@ -105,6 +109,8 @@ constexpr BuiltInPanelType kBuiltInPanelTypes[] = {
     {"ShaderGraphPanel", &MakeMaterialGraphPanel},
     {"AnimationGraphPanel", &MakeAnimationGraphPanel},
     {"GameLogicGraphPanel", &MakeGameLogicGraphPanel},
+    {"TilePalettePanel", &MakePanel<TilePalettePanel>},
+    {"TileSetEditorPanel", &MakePanel<TileSetEditorPanel>},
 };
 
 constexpr FallbackDockPanel kFallbackDockPanels[] = {
@@ -120,13 +126,14 @@ constexpr FallbackDockPanel kFallbackDockPanels[] = {
     {EditorPanelIds::Web, "WebPanel"},
     {EditorPanelIds::NodeGraph, "NodeGraphPanel"},
     {EditorPanelIds::Build, "BuildPanel"},
-    {EditorPanelIds::Mixer, "MixerPanel"},
     {EditorPanelIds::Animation, "AnimationWindowPanel"},
     {EditorPanelIds::Timeline, "AnimationTimelinePanel"},
     {EditorPanelIds::ClipEditor, "AnimationClipEditorPanel"},
     {EditorPanelIds::ShaderErrors, "ShaderErrorsPanel"},
     {EditorPanelIds::AnimationGraph, "AnimationGraphPanel"},
     {EditorPanelIds::GameLogicGraph, "GameLogicGraphPanel"},
+    {EditorPanelIds::TilePalette, "TilePalettePanel"},
+    {EditorPanelIds::TileSetEditor, "TileSetEditorPanel"},
 };
 
 } // namespace
@@ -135,7 +142,11 @@ void RegisterBuiltInPanelTypes()
 {
     auto& registry = EditorPanelRegistry::Get();
     for (const BuiltInPanelType& type : kBuiltInPanelTypes)
-        registry.RegisterPanelType({type.TypeKey, type.Factory});
+    {
+        EditorPanelTypeDescriptor descriptor{type.TypeKey, type.Factory};
+        descriptor.DefaultAnchorPanelId = type.DefaultAnchorPanelId;
+        registry.RegisterPanelType(std::move(descriptor));
+    }
 }
 
 std::span<const FallbackDockPanel> FallbackDockPanels()

@@ -11,20 +11,17 @@
 #include "Assets/TextureCookWorkers.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "StagedTestPaths.h"
-#include "Types/Fnv1a.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -353,7 +350,7 @@ TEST(TextureCookFilter, SrgbDownsampleAveragesInLinearSpace)
 
     std::vector<uint8> cooked;
     std::string error;
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga",
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga",
                             MakeInputs(TextureCookUsage::Auto, TextureColorSpace::SRGB),
                             TextureCookOutput::Uncompressed, cooked, error))
         << error;
@@ -380,7 +377,7 @@ TEST(TextureCookFilter, LinearDownsampleAveragesBytes)
 
     std::vector<uint8> cooked;
     std::string error;
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga",
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga",
                             MakeInputs(TextureCookUsage::Auto, TextureColorSpace::Linear),
                             TextureCookOutput::Uncompressed, cooked, error))
         << error;
@@ -408,7 +405,7 @@ TEST(TextureCookFilter, NormalUsageRenormalizesMips)
 
     std::vector<uint8> cooked;
     std::string error;
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga",
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga",
                             MakeInputs(TextureCookUsage::Normal, TextureColorSpace::Linear),
                             TextureCookOutput::Uncompressed, cooked, error))
         << error;
@@ -421,161 +418,6 @@ TEST(TextureCookFilter, NormalUsageRenormalizesMips)
     EXPECT_GE(mip1[2], 250) << "renormalized filtered normal must point +Z (unnormalized would be ~218)";
     EXPECT_NEAR(mip1[0], 128, 3);
     EXPECT_NEAR(mip1[1], 128, 3);
-}
-
-// ── Normal maps: the variance companion ──────────────────────────────────────
-
-// A one-texel checker of two normals tilted +-30 degrees about X: every 2x2 footprint averages
-// to length L = cos(30) = 0.866, so sigma = sqrt((1 - L) / L) = 0.393 stores 100.
-std::vector<uint8> MakeNormalChecker(uint32 size)
-{
-    std::vector<uint8> rgba(static_cast<size_t>(size) * size * 4);
-    for (uint32 y = 0; y < size; ++y)
-        for (uint32 x = 0; x < size; ++x)
-        {
-            uint8* px = rgba.data() + (static_cast<size_t>(y) * size + x) * 4;
-            px[0] = 128;
-            px[1] = ((x + y) & 1u) ? 64 : 191;
-            px[2] = 238;
-            px[3] = 255;
-        }
-    return rgba;
-}
-
-// Only an Auto-compressed normal map with mips gets a companion; a hand-set BC5 reads zero
-// variance, as does any texture of another type. The companion re-keys the artifact.
-TEST(TextureCookNormalVariance, OnlyAnAutoNormalMapWithMipsHasACompanion)
-{
-    TextureCookInputs inputs = MakeInputs(TextureCookUsage::Normal, TextureColorSpace::Linear);
-    EXPECT_TRUE(HasNormalVarianceCompanion(inputs, TextureCookOutput::BC5));
-    EXPECT_FALSE(HasNormalVarianceCompanion(inputs, TextureCookOutput::Uncompressed));
-    TextureCookInputs explicitBc5 = inputs;
-    explicitBc5.Settings.Compression = TextureCookCompression::BC5;
-    EXPECT_FALSE(HasNormalVarianceCompanion(explicitBc5, TextureCookOutput::BC5));
-    EXPECT_NE(ComputeTextureCookConfigHash(inputs, TextureCookOutput::BC5),
-              ComputeTextureCookConfigHash(explicitBc5, TextureCookOutput::BC5));
-    TextureCookInputs noMips = inputs;
-    noMips.Settings.MipsEnabled = false;
-    EXPECT_FALSE(HasNormalVarianceCompanion(noMips, TextureCookOutput::BC5));
-    EXPECT_FALSE(HasNormalVarianceCompanion(MakeInputs(TextureCookUsage::Mask, TextureColorSpace::Linear),
-                                            TextureCookOutput::BC5));
-}
-
-// The cook writes a BC4 companion at half the normal map's extent (the resolution rule: normal
-// mip 0 has zero variance, so level j holds mip j + 1). The checker shortens at mip 1 and 2.
-TEST(TextureCookNormalVariance, ANormalMapCooksAHalfResolutionBc4CompanionThatShortensAtMip1And2)
-{
-    if (!IsTextureCookEncoderAvailable())
-        GTEST_SKIP() << "no BC encoder compiled in";
-
-    constexpr uint32 kSize = 16;
-    const std::vector<uint8> tga = MakeTga(kSize, kSize, MakeNormalChecker(kSize));
-    const TextureCookInputs inputs = MakeInputs(TextureCookUsage::Normal, TextureColorSpace::Linear);
-    const TextureCookOutput output = ResolveTextureCookOutput(inputs.Settings, false, true, true);
-    ASSERT_EQ(output, TextureCookOutput::BC5);
-
-    std::vector<uint8> cooked;
-    std::vector<uint8> companionBytes;
-    std::string error;
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "checker.tga", ".tga", inputs, output, cooked, error, {},
-                            nullptr, &companionBytes))
-        << error;
-    ASSERT_FALSE(companionBytes.empty()) << "a normal map must cook a variance companion";
-    TextureAsset parent(GUID::Null(), "parent.ktx2");
-    ASSERT_TRUE(LoadCooked(cooked, parent));
-    EXPECT_EQ(parent.GetFormat(), TextureFormat::BC5) << "the direction stays BC5";
-    TextureAsset companion(GUID::Null(), "companion.ktx2");
-    ASSERT_TRUE(LoadCooked(companionBytes, companion));
-    ASSERT_EQ(companion.GetFormat(), TextureFormat::BC4);
-    EXPECT_EQ(companion.GetWidth(), kSize / 2);
-    EXPECT_EQ(companion.GetHeight(), kSize / 2);
-    const auto& chain = companion.GetMipChain();
-    ASSERT_EQ(chain.size(), parent.GetMipChain().size() - 1);
-    for (uint32 level = 0; level < 2; ++level)
-    {
-        const uint32 extent = (kSize / 2) >> level;
-        std::vector<uint8> decoded;
-        ASSERT_TRUE(DecodeBlockPayloadRGBA8(TextureFormat::BC4, extent, extent,
-                                            companion.GetPixelData() + chain[level].Offset, chain[level].Size,
-                                            decoded));
-        for (uint32 texel = 0; texel < extent * extent; ++texel)
-            ASSERT_NEAR(decoded[texel * 4], 100, 2) << "normal mip " << level + 1 << " texel " << texel;
-    }
-
-    std::vector<uint8> noCompanion;
-    TextureCookInputs explicitBc5 = inputs;
-    explicitBc5.Settings.Compression = TextureCookCompression::BC5;
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "checker.tga", ".tga", explicitBc5, output, cooked, error, {},
-                            nullptr, &noCompanion))
-        << error;
-    EXPECT_TRUE(noCompanion.empty()) << "a hand-set BC5 has no companion";
-}
-
-// ── Mip-chain golden ─────────────────────────────────────────────────────────
-
-namespace
-{
-// 37x23 with varying alpha: the odd extents reach the filters' edge taps, and the
-// alpha separates the color path's alpha weighting from the data path's.
-std::vector<uint8> MakeMipGoldenPattern()
-{
-    std::vector<uint8> rgba(37u * 23u * 4u);
-    for (uint32 y = 0; y < 23; ++y)
-        for (uint32 x = 0; x < 37; ++x)
-        {
-            uint8* px = rgba.data() + (static_cast<size_t>(y) * 37 + x) * 4;
-            px[0] = static_cast<uint8>(x * 37 + y * 91);
-            px[1] = static_cast<uint8>(x * x + 3 * y);
-            px[2] = static_cast<uint8>((x ^ y) * 11);
-            px[3] = static_cast<uint8>(x * 7 + y * 13);
-        }
-    return rgba;
-}
-
-uint64 HashMipChain(const std::vector<TextureCookMipLevel>& chain)
-{
-    uint64 hash = Hashing::kFnv1a64OffsetBasis;
-    for (const TextureCookMipLevel& level : chain)
-        hash = Hashing::Fnv1a64(level.Bytes.data(), level.Bytes.size(), hash);
-    return hash;
-}
-
-uint64 HashGoldenChain(bool isFloat, bool srgb)
-{
-    const std::vector<uint8> pattern = MakeMipGoldenPattern();
-    TextureCookMipLevel base;
-    base.Width = 37;
-    base.Height = 23;
-    if (isFloat)
-    {
-        std::vector<float> texels(pattern.size());
-        for (size_t i = 0; i < pattern.size(); ++i)
-            texels[i] = static_cast<float>(pattern[i]) / 64.0f;
-        base.Bytes.resize(texels.size() * sizeof(float));
-        std::memcpy(base.Bytes.data(), texels.data(), base.Bytes.size());
-    }
-    else
-    {
-        base.Bytes = pattern;
-    }
-    const TextureCookSettings settings;
-    std::vector<TextureCookMipLevel> chain{base};
-    EXPECT_TRUE(BuildTextureCookMipChain(chain, ComputeTextureCookMipCount(37, 23, settings), isFloat, srgb,
-                                         settings));
-    EXPECT_EQ(chain.size(), 6u);
-    return HashMipChain(chain);
-}
-} // namespace
-
-TEST(TextureCookFilter, MipChainBytesMatchGolden)
-{
-    // Recorded on Windows x64 with stb_image_resize2 2.10; ImageTests pins the
-    // same bytes. A changed hash is a changed cook output for every texture: a
-    // change that means it changes the stbir version key or the recipe hash too,
-    // never only these constants.
-    EXPECT_EQ(HashGoldenChain(false, true), 0x9763e30eb4d47a5cull) << "8-bit sRGB";
-    EXPECT_EQ(HashGoldenChain(false, false), 0xc3ea2747e3b97022ull) << "8-bit linear";
-    EXPECT_EQ(HashGoldenChain(true, false), 0x814873443db92b10ull) << "float linear";
 }
 
 // ── Swizzle baking ───────────────────────────────────────────────────────────
@@ -599,7 +441,7 @@ TEST(TextureCookSwizzle, BakedIntoPayload)
 
     std::vector<uint8> cooked;
     std::string error;
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", in,
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga", in,
                             TextureCookOutput::Uncompressed, cooked, error))
         << error;
 
@@ -624,9 +466,9 @@ TEST(TextureCookDeterminism, UncompressedCookIsByteIdentical)
 
     std::vector<uint8> cookedA, cookedB;
     std::string error;
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", in, TextureCookOutput::Uncompressed,
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga", in, TextureCookOutput::Uncompressed,
                             cookedA, error)) << error;
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", in, TextureCookOutput::Uncompressed,
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga", in, TextureCookOutput::Uncompressed,
                             cookedB, error)) << error;
     ASSERT_EQ(cookedA.size(), cookedB.size());
     EXPECT_EQ(std::memcmp(cookedA.data(), cookedB.data(), cookedA.size()), 0);
@@ -644,9 +486,9 @@ TEST(TextureCookDeterminism, Bc7CookIsByteIdentical)
 
     std::vector<uint8> cookedA, cookedB;
     std::string error;
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", in, TextureCookOutput::BC7,
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga", in, TextureCookOutput::BC7,
                             cookedA, error)) << error;
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", in, TextureCookOutput::BC7,
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga", in, TextureCookOutput::BC7,
                             cookedB, error)) << error;
     ASSERT_EQ(cookedA.size(), cookedB.size());
     EXPECT_EQ(std::memcmp(cookedA.data(), cookedB.data(), cookedA.size()), 0);
@@ -834,7 +676,7 @@ TEST(TextureCookBc, RoundtripsThroughKtx2Loader)
     {
         std::vector<uint8> cooked;
         std::string error;
-        ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga",
+        ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga",
                                 MakeInputs(TextureCookUsage::Auto, TextureColorSpace::SRGB),
                                 c.Output, cooked, error))
             << error << " (output " << static_cast<int>(c.Output) << ")";
@@ -860,7 +702,7 @@ TEST(TextureCookBc, HdrCooksToBc6hLinear)
     const std::vector<uint8> hdr = MakeHdr(8, 8, 2.5f, 1.0f, 0.25f);
     std::vector<uint8> cooked;
     std::string error;
-    ASSERT_TRUE(CookTexture(hdr.data(), hdr.size(), "fixture.hdr", ".hdr",
+    ASSERT_TRUE(CookTexture(hdr.data(), hdr.size(), ".hdr",
                             MakeInputs(TextureCookUsage::Auto, TextureColorSpace::Linear),
                             TextureCookOutput::BC6H, cooked, error))
         << error;
@@ -908,7 +750,7 @@ TEST(TextureCookQuality, Bc1BandsOnSmoothGradientsBc7DoesNot)
     auto maxError = [&](TextureCookOutput out, TextureFormat fmt) -> int {
         std::vector<uint8> cooked;
         std::string error;
-        EXPECT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", in, out, cooked, error)) << error;
+        EXPECT_TRUE(CookTexture(tga.data(), tga.size(), ".tga", in, out, cooked, error)) << error;
         TextureAsset asset(GUID::Null(), "cooktest.ktx2");
         EXPECT_TRUE(LoadCooked(cooked, asset));
         EXPECT_EQ(asset.GetFormat(), fmt);
@@ -961,7 +803,7 @@ TextureCookMipLevel LoadFixtureLevel(const char* name)
         return level;
     std::vector<uint8> cooked;
     std::string error;
-    EXPECT_TRUE(CookTexture(bytes.data(), bytes.size(), "fixture.png", ".png",
+    EXPECT_TRUE(CookTexture(bytes.data(), bytes.size(), ".png",
                             MakeInputs(TextureCookUsage::Auto, TextureColorSpace::Linear, /*mips=*/false),
                             TextureCookOutput::Uncompressed, cooked, error))
         << error;
@@ -1083,7 +925,7 @@ TEST(TextureCookBc, MipLimitClampsChain)
     const std::vector<uint8> tga = GradientTga(16);
     std::vector<uint8> cooked;
     std::string error;
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga",
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga",
                             MakeInputs(TextureCookUsage::Color, TextureColorSpace::SRGB,
                                        /*mips=*/true, /*mipLimit=*/2),
                             TextureCookOutput::BC7, cooked, error))
@@ -1103,7 +945,7 @@ TEST(TextureCookBc, Bc7PartialBlocksEncodeAsEdgeReplicatedBlocks)
     if (!IsTextureCookEncoderAvailable())
         GTEST_SKIP() << "no BC encoder compiled in";
 
-    for (const auto& [width, height] : {std::pair<uint32, uint32>{6, 5}, {2, 2}, {1, 1}})
+    for (const auto [width, height] : {std::pair<uint32, uint32>{6, 5}, {2, 2}, {1, 1}})
     {
         const std::string where = std::to_string(width) + "x" + std::to_string(height);
         TextureCookMipLevel level;
@@ -1231,7 +1073,7 @@ TEST(TextureCookBc, BandedEncodeAssemblesCorrectly)
 
     std::vector<uint8> cooked, cooked2;
     std::string error;
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", in, TextureCookOutput::BC7,
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga", in, TextureCookOutput::BC7,
                             cooked, error))
         << error;
     TextureAsset asset(GUID::Null(), "cooktest.ktx2");
@@ -1259,7 +1101,7 @@ TEST(TextureCookBc, BandedEncodeAssemblesCorrectly)
            "band read the wrong source rows, or the bands were appended out of order";
 
     // And the banded encode is stable run to run.
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", in, TextureCookOutput::BC7,
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga", in, TextureCookOutput::BC7,
                             cooked2, error))
         << error;
     ASSERT_EQ(cooked.size(), cooked2.size());
@@ -1365,7 +1207,7 @@ TEST(TextureCookCancel, FlagSetBeforeStartProducesNoOutput)
 
     std::vector<uint8> cooked;
     std::string error;
-    EXPECT_FALSE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga",
+    EXPECT_FALSE(CookTexture(tga.data(), tga.size(), ".tga",
                              MakeInputs(TextureCookUsage::Auto, TextureColorSpace::Linear),
                              TextureCookOutput::Uncompressed, cooked, error, [cancel]() { return cancel && cancel->load(); }));
     EXPECT_EQ(error, std::string(kTextureCookCancelledError));
@@ -1381,7 +1223,7 @@ TEST(TextureCookCancel, FlagSetBeforeStartSkipsBlockEncode)
 
     std::vector<uint8> cooked;
     std::string error;
-    EXPECT_FALSE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga",
+    EXPECT_FALSE(CookTexture(tga.data(), tga.size(), ".tga",
                              MakeInputs(TextureCookUsage::Color, TextureColorSpace::SRGB),
                              TextureCookOutput::BC7, cooked, error, [cancel]() { return cancel && cancel->load(); }));
     EXPECT_EQ(error, std::string(kTextureCookCancelledError));
@@ -1396,12 +1238,12 @@ TEST(TextureCookCancel, UnsetFlagCooksIdenticallyToNoFlag)
     std::vector<uint8> withFlag, withoutFlag;
     std::string error;
     const TextureCookInputs in = MakeInputs(TextureCookUsage::Auto, TextureColorSpace::Linear);
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", in, TextureCookOutput::Uncompressed,
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga", in, TextureCookOutput::Uncompressed,
                             withFlag, error, [cancel]() { return cancel && cancel->load(); }))
         << error;
     // A null token is the not-cancellable case (synchronous load, tooling); it
     // must cook byte-identically to an unset flag.
-    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", in, TextureCookOutput::Uncompressed,
+    ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga", in, TextureCookOutput::Uncompressed,
                             withoutFlag, error))
         << error;
     ASSERT_FALSE(withFlag.empty());
@@ -1434,15 +1276,13 @@ TEST(TextureCookCancel, PreemptsEncodeInProgress)
                                std::string& errorOut) {
         std::vector<uint8> cooked;
         const auto start = std::chrono::steady_clock::now();
-        okOut = CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", in, TextureCookOutput::BC7, cooked,
+        okOut = CookTexture(tga.data(), tga.size(), ".tga", in, TextureCookOutput::BC7, cooked,
                             errorOut, [cancel]() { return cancel && cancel->load(); });
         const double ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
                 .count();
         if (!okOut)
-        {
             EXPECT_TRUE(cooked.empty());
-        }
         return ms;
     };
 
@@ -1623,8 +1463,8 @@ TEST(TextureCookParallel, SpreadCookMatchesOneThreadCook)
         SCOPED_TRACE("output " + std::to_string(static_cast<int>(c.Output)));
         std::vector<uint8> oneThread, spreadCook;
         std::string error;
-        ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", c.Inputs, c.Output, oneThread, error)) << error;
-        ASSERT_TRUE(CookTexture(tga.data(), tga.size(), "fixture.tga", ".tga", c.Inputs, c.Output, spreadCook, error, {},
+        ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga", c.Inputs, c.Output, oneThread, error)) << error;
+        ASSERT_TRUE(CookTexture(tga.data(), tga.size(), ".tga", c.Inputs, c.Output, spreadCook, error, {},
                                 &spread.Workers))
             << error;
         ASSERT_FALSE(oneThread.empty());
@@ -1635,46 +1475,15 @@ TEST(TextureCookParallel, SpreadCookMatchesOneThreadCook)
     const TextureCookInputs hdrInputs = MakeInputs(TextureCookUsage::Color, TextureColorSpace::Linear);
     std::vector<uint8> oneThread, spreadCook;
     std::string error;
-    ASSERT_TRUE(CookTexture(hdr.data(), hdr.size(), "fixture.hdr", ".hdr", hdrInputs, TextureCookOutput::BC6H, oneThread, error))
+    ASSERT_TRUE(CookTexture(hdr.data(), hdr.size(), ".hdr", hdrInputs, TextureCookOutput::BC6H, oneThread, error))
         << error;
-    ASSERT_TRUE(CookTexture(hdr.data(), hdr.size(), "fixture.hdr", ".hdr", hdrInputs, TextureCookOutput::BC6H, spreadCook, error,
+    ASSERT_TRUE(CookTexture(hdr.data(), hdr.size(), ".hdr", hdrInputs, TextureCookOutput::BC6H, spreadCook, error,
                             {}, &spread.Workers))
         << error;
     EXPECT_EQ(spreadCook, oneThread);
     EXPECT_GT(spread.HelperSlotsReleased.load(), 0u)
         << "no helper took a gate slot: the encode never left the calling thread";
 }
-
-// A cancel on the cooking thread's third poll. Each helper waits in the gate's release
-// callback after its band until the cancel is sent, so bands are left at the third
-// poll however the threads are scheduled.
-struct CancelOnThirdPoll
-{
-    static constexpr int kPollsBeforeCancel = 3;
-    int Polls = 0; // only the cooking thread polls
-    std::mutex Mutex;
-    std::condition_variable Sent;
-    bool Cancelled = false;
-
-    bool Poll()
-    {
-        if (++Polls < kPollsBeforeCancel)
-            return false;
-        {
-            const std::lock_guard<std::mutex> lock(Mutex);
-            Cancelled = true;
-        }
-        Sent.notify_all();
-        return true;
-    }
-
-    // The bound makes a cancel that is never sent a failure, not a hang.
-    void HoldHelper()
-    {
-        std::unique_lock<std::mutex> lock(Mutex);
-        Sent.wait_for(lock, std::chrono::seconds(10), [this] { return Cancelled; });
-    }
-};
 
 // A cancel seen by the cooking thread mid-level ends the spread encode with the
 // cancel error and no bytes, after the bands already started have finished.
@@ -1684,18 +1493,18 @@ TEST(TextureCookParallel, CancelStopsSpreadEncode)
         GTEST_SKIP() << "no BC encoder compiled in";
 
     const TextureCookMipLevel src = MakeLevel(256, 256, /*isFloat=*/false);
-    CancelOnThirdPoll cancel;
-    JobSystem::WorkStealingThreadPool pool{SpreadPool::kPoolWorkers};
-    TextureCookWorkers workers{pool, std::make_shared<AssetDecodeGate>(SpreadPool::kPoolWorkers, 0,
-                                                                       [&cancel] { cancel.HoldHelper(); })};
+    constexpr int kPollsBeforeCancel = 3;
+    int polls = 0;
+    const auto cancelOnThirdPoll = [&polls] { return ++polls >= kPollsBeforeCancel; };
+
+    SpreadPool spread;
     std::vector<uint8> payload;
     std::string error;
     EXPECT_FALSE(CompressTextureCookLevel(src, /*isFloat=*/false, TextureCookOutput::BC7, /*bandBlocks=*/1, payload,
-                                          error, [&cancel] { return cancel.Poll(); }, &workers));
+                                          error, cancelOnThirdPoll, &spread.Workers));
     EXPECT_EQ(error, std::string(kTextureCookCancelledError));
     EXPECT_TRUE(payload.empty());
-    EXPECT_EQ(cancel.Polls, CancelOnThirdPoll::kPollsBeforeCancel)
-        << "the encode must stop polling once it has been cancelled";
+    EXPECT_EQ(polls, kPollsBeforeCancel) << "the encode must stop polling once it has been cancelled";
 }
 
 #endif // GE_HAVE_KTX

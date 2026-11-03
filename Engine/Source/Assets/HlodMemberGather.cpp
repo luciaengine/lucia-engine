@@ -10,6 +10,7 @@
 #include "Components/Transform.h"
 #include "Engine/Rendering/ModelRenderSetup.h"
 #include "Mathematics/Geometry.h"
+#include "Types/Fnv1a.h"
 
 #include "ECS/Components.h"
 #include "ECS/Entity.h"
@@ -27,22 +28,12 @@ namespace {
 // .gehlod key uses, so the gathered content/handle keys and the cache's cluster
 // hash share one arithmetic.
 uint64 Fold(uint64 hash, uint64 value) {
-    constexpr uint64 kFnvPrime = 1099511628211ull;
-    for (int byte = 0; byte < 8; ++byte) {
-        hash ^= (value >> (byte * 8)) & 0xFFull;
-        hash *= kFnvPrime;
-    }
-    return hash;
+    return Hashing::Fnv1a64Value(hash, value);
 }
 
 uint64 GuidFold(uint64 hash, const GUID& guid) {
     const auto& bytes = guid.GetData();
-    constexpr uint64 kFnvPrime = 1099511628211ull;
-    for (uint8 b : bytes) {
-        hash ^= b;
-        hash *= kFnvPrime;
-    }
-    return hash;
+    return Hashing::Fnv1a64(bytes.data(), bytes.size(), hash);
 }
 
 // Stable, save/load-surviving member identity. The SceneEntityTag is the scene's
@@ -61,7 +52,6 @@ GUID MemberStableId(const Components::SceneEntityTag* tag, GameEngine::ECS::Enti
 
 GatheredMembers GatherHlodMembers(GameEngine::ECS::World& world, const ModelResolver& resolveModel) {
     GatheredMembers out;
-    constexpr uint64 kFnvOffsetBasis = 14695981039346656037ull;
 
     // The rows the gather below never visits — an inactive entity or a switched-off renderer —
     // for the bake diagnostics. Archetype-level counts, no per-row work.
@@ -101,10 +91,6 @@ GatheredMembers GatherHlodMembers(GameEngine::ECS::World& world, const ModelReso
                 ++out.SkippedMorph;
                 return;
             }
-            if (mr.shadowCasting == GameEngine::Components::ShadowCasting::ShadowsOnly) {
-                ++out.SkippedShadowsOnly;
-                return;
-            }
 
             const GUID materialGuid = mr.materialAssetGuid.ToGuid();
             if (materialGuid.IsNull()) {
@@ -140,8 +126,8 @@ GatheredMembers GatherHlodMembers(GameEngine::ECS::World& world, const ModelReso
             // (model reimport, submesh reselection). Handle key: which mesh the
             // member selected (identity, C3).
             member.MeshContentHash =
-                Fold(Fold(kFnvOffsetBasis, model->GetSourceContentHash()), submeshIndex);
-            member.MeshHandleKey = Fold(GuidFold(kFnvOffsetBasis, modelGuid), submeshIndex);
+                Fold(Fold(Hashing::kFnv1a64OffsetBasis, model->GetSourceContentHash()), submeshIndex);
+            member.MeshHandleKey = Fold(GuidFold(Hashing::kFnv1a64OffsetBasis, modelGuid), submeshIndex);
 
             for (int i = 0; i < 16; ++i)
                 member.WorldMatrix[i] = xf.matrix[i];
@@ -174,9 +160,7 @@ GatheredMembers GatherHlodMembers(GameEngine::ECS::World& world, const ModelReso
                 chosenOwnsVerts ? mesh.ExtraLODVertices[member.ChosenLod - 1u].size()
                                 : mesh.Vertices.size());
             member.CastsShadow =
-                mr.shadowCasting == GameEngine::Components::ShadowCasting::On &&
-                (localBounds == nullptr || localBounds->CastShadows);
-            member.RenderLayers = mr.RenderLayers;
+                mr.castShadows && (localBounds == nullptr || localBounds->CastShadows);
 
             out.Members.push_back(member);
             out.Geometry.push_back(&mesh);

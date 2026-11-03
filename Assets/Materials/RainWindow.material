@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 3,
+  "materialName": "Rain Window",
+  "lightingModel": "StandardPBR",
+  "alphaMode": "Opaque",
+  "doubleSided": true,
+  "surfaceShader": "Surfaces/rain_window.glsl",
+  "properties": {
+    "glassTint": [
+      0.91,
+      0.97,
+      1
+    ],
+    "rainIntensity": 1.0,
+    "rainSpeed": 1,
+    "dropNormalStrength": 0.4,
+    "enableTransmission": true,
+    "enableTransmissionThick": false,
+    "transmissionWeight": 1,
+    "staticDropStrength": 0.6,
+    "frostEdgeWidth": 0.085,
+    "waterDropSizeOffset": 0.0,
+    "waterRippleStrength": 0.12,
+    "waterRippleSize": 0.1
+  }
+}

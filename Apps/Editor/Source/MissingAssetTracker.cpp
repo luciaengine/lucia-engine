@@ -2,9 +2,8 @@
 
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
-#include "Core/DeferredActionQueue.h"
 #include "Components/SceneEntityTag.h"
-#include "ECS/Component/ComponentRegistry.h"
+#include "ECS/ComponentRegistry.h"
 #include "ECS/UnresolvedComponentStore.h"
 #include "ECS/Entity.h"
 #include "ECS/World.h"
@@ -12,9 +11,7 @@
 #include "Logger/Logger.h"
 #include "Scene/SceneSchemaRegistry.h"
 
-#include <algorithm>
 #include <cstring>
-#include <span>
 #include <string_view>
 #include <filesystem>
 #include <system_error>
@@ -80,7 +77,7 @@ void CollectEntitySchemas(const std::vector<SchemaPresence>& presence,
 }
 } // namespace
 
-bool MissingAssetTracker::Rescan(ECS::World& world, AssetRegistry& registry)
+void MissingAssetTracker::Rescan(ECS::World& world, AssetRegistry& registry)
 {
     Scene::EnsureBuiltInSchemasRegistered();
     const std::vector<SchemaPresence> presence =
@@ -88,7 +85,6 @@ bool MissingAssetTracker::Rescan(ECS::World& world, AssetRegistry& registry)
 
     std::vector<MissingAssetEntry> entries;
     std::unordered_set<GUID> guids;
-    FlatSet<GUID> referenced;
 
     // Two path sources, weakest last. The scene's authored path (recorded on the
     // world at load, since components keep only the GUID) names what the
@@ -136,7 +132,6 @@ bool MissingAssetTracker::Rescan(ECS::World& world, AssetRegistry& registry)
                         if (guid.IsNull())
                             return;
                         const GUID canonical = registry.ResolveGuid(guid);
-                        referenced.Insert(canonical);
                         AssetMetadata metaUnused;
                         if (registry.TryGetAssetMetadata(canonical, metaUnused))
                             return; // Known to the registry — not missing.
@@ -164,50 +159,17 @@ bool MissingAssetTracker::Rescan(ECS::World& world, AssetRegistry& registry)
         }
     }
 
-    bool missingSetChanged = false;
     {
         std::scoped_lock lock(m_Mutex);
-        missingSetChanged = guids != m_MissingGuids;
         m_Entries = std::move(entries);
         m_MissingGuids = std::move(guids);
-        m_ReferencedGuids = std::move(referenced);
         ++m_Version;
     }
     Logger::Log::Info("MissingAssetTracker: rescan complete — {} missing asset reference(s).",
                       m_Entries.size());
-    return missingSetChanged;
-}
-
-void MissingAssetTracker::OnFilesChanged(std::span<const GUID> changed)
-{
-    if (!m_PreUiActions)
-        return;
-    ECS::World* world = nullptr;
-    AssetRegistry* registry = nullptr;
-    if (!ResolveActiveTargets(world, registry))
-        return;
-    bool canChange = false;
-    {
-        std::scoped_lock lock(m_Mutex);
-        canChange = std::any_of(changed.begin(), changed.end(), [this, registry](const GUID& guid) {
-            AssetMetadata metaUnused;
-            return m_ReferencedGuids.Contains(guid) || m_MissingGuids.contains(guid) ||
-                   !registry->TryGetAssetMetadata(guid, metaUnused);
-        });
-    }
-    if (canChange)
-        m_PreUiActions->EnqueueUnique("editor.missing-assets-rescan", [this]() { RescanForChangedFiles(); });
-}
-
-void MissingAssetTracker::RescanForChangedFiles()
-{
-    ECS::World* world = nullptr;
-    AssetRegistry* registry = nullptr;
-    if (!ResolveActiveTargets(world, registry))
-        return;
-    // Invoked outside m_Mutex: a listener can call the snapshot accessors, which take the lock.
-    if (Rescan(*world, *registry))
-        m_Changed.Invoke();
+    // Invoked outside m_Mutex: a listener is free to call back into the
+    // tracker's snapshot accessors, which take the same lock.
+    m_Changed.Invoke();
 }
 
 size_t MissingAssetTracker::ClearAllReferencesTo(ECS::World& world,
@@ -247,7 +209,7 @@ size_t MissingAssetTracker::ClearAllReferencesTo(ECS::World& world,
                         if (g == guid)
                             propsToClear.emplace_back(propertyName);
                     });
-                Scene::SceneReadContext stubCtx{};
+                Scene::SceneLoadContext stubCtx{};
                 for (const auto& prop : propsToClear)
                 {
                     std::string err;
@@ -267,18 +229,13 @@ size_t MissingAssetTracker::ClearAllReferencesTo(ECS::World& world,
         Logger::Log::Info("MissingAssetTracker: cleared {} reference(s) to {} from the scene.",
                           cleared, guid.ToString());
         Rescan(world, registry);
-        m_Changed.Invoke();
     }
     return cleared;
 }
 
-void MissingAssetTracker::Bind(EditorContext* ctx, DeferredActionQueue* preUiActions)
+void MissingAssetTracker::Bind(EditorContext* ctx)
 {
     m_BoundContext = ctx;
-    m_PreUiActions = preUiActions;
-    m_FilesChanged.Reset();
-    if (ctx && ctx->Assets)
-        m_FilesChanged = ctx->Assets->FilesChanged.Subscribe([this](std::span<const GUID> changed) { OnFilesChanged(changed); });
 }
 
 bool MissingAssetTracker::ResolveActiveTargets(ECS::World*& outWorld,
@@ -313,7 +270,6 @@ void MissingAssetTracker::RescanActive()
     if (!ResolveActiveTargets(world, reg))
         return;
     Rescan(*world, *reg);
-    m_Changed.Invoke();
 }
 
 size_t MissingAssetTracker::ClearAllReferencesToActive(const GUID& guid)
@@ -331,7 +287,6 @@ void MissingAssetTracker::Clear()
         std::scoped_lock lock(m_Mutex);
         m_Entries.clear();
         m_MissingGuids.clear();
-        m_ReferencedGuids.Clear();
         ++m_Version;
     }
     m_Changed.Invoke();

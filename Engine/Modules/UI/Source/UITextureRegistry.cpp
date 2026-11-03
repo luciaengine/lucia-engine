@@ -2,7 +2,7 @@
 
 #include "Logger/Logger.h"
 #include "Rendering/Core/CommandList.h"
-#include "Rendering/Materials/Shader/ShaderProfileDefines.h"
+#include "Rendering/Materials/ShaderProfileDefines.h"
 #include "Rendering/Text/FontAtlas.h"
 
 #include <algorithm>
@@ -18,16 +18,6 @@ namespace UI
 {
 namespace
 {
-using SlotGeneration = ::GenerationalVector::Handle::GenerationType;
-
-// The next generation of a slot. Skips kInvalidGeneration on wrap, so a live
-// reservation handle is never invalid.
-SlotGeneration NextSlotGeneration(SlotGeneration generation)
-{
-    ++generation;
-    return generation == ::GenerationalVector::Handle::kInvalidGeneration ? generation + 1 : generation;
-}
-
 struct UiTextureLimits
 {
     uint32_t colorTextures = UITextureRegistry::kDefaultMaxTextures;
@@ -112,7 +102,7 @@ TextureHandle CreateDummyTexture1x1(IDevice* device, TextureFormat format,
 // Bindless layout (set 1): two runtime-sized sampled-image arrays plus two
 // fixed samplers, so the layout is not constrained by
 // maxPerStageDescriptorSamplers. PARTIALLY_BOUND lets unused image slots stay
-// untouched; GetFrameSet never writes a set it has returned, so
+// untouched; CreateTransientFrameSet writes a fresh set each draw, so
 // cross-frame writes never happen.
 void UITextureRegistry::BuildBindlessLayoutDesc(const RenderingDeviceCapabilities& caps)
 {
@@ -120,8 +110,12 @@ void UITextureRegistry::BuildBindlessLayoutDesc(const RenderingDeviceCapabilitie
     m_MaxTextures = limits.colorTextures;
     m_MaxBandTextures = limits.bandTextures;
 
-    // PARTIALLY_BOUND does not zero descriptor memory: an unwritten slot holds a stale descriptor.
-    // Binding 1 drives a shader loop bound, so GetFrameSet writes every slot.
+    // PARTIALLY_BOUND permits leaving image slots unwritten, but it does not
+    // make reading them safe: the transient descriptor memory behind this set is
+    // bump-allocated and never zeroed, so an unwritten slot holds a recycled
+    // descriptor rather than a null one. A slot is only safe to leave unwritten
+    // if the shader provably never indexes it. Binding 1 is small and its data
+    // drives a shader loop bound, so CreateTransientFrameSet fills all of it.
 
     m_LayoutDesc.debugName = "UISdfTextureSet";
     m_LayoutDesc.bindings.clear();
@@ -232,7 +226,6 @@ UITextureRegistry::UITextureRegistry(IDevice* device)
         BuildCompatLayoutDesc();
     else
         BuildBindlessLayoutDesc(device->GetCapabilities());
-    m_SlotGenerations.assign(m_MaxTextures, NextSlotGeneration(::GenerationalVector::Handle::kInvalidGeneration));
 
     // Nothing else can observe the registry during construction, so the *Locked
     // helper runs here without taking m_Mutex.
@@ -272,14 +265,18 @@ void UITextureRegistry::CreateDeviceResourcesLocked()
         m_NearestSampler = m_Device->CreateSampler(nearestDesc);
     }
 
-    // Slot 0 of each array is its "no texture" fallback. An unwritten slot holds a stale descriptor,
-    // so every slot that the shader can index must resolve to a live image of the correct type.
+    // Slot 0 of each array is reserved as its "no texture" fallback. Both
+    // arrays are PARTIALLY_BOUND and materialised into transient descriptor
+    // memory that is bump-allocated and never zeroed, so a slot left unwritten
+    // exposes whatever descriptor last occupied those bytes. Every slot the
+    // shader can index must therefore resolve to a live image of the right
+    // type, and slot 0 is the one that is always available to resolve to.
     {
         const uint32_t white = 0xFFFFFFFFu;
         m_DummyTexture = CreateDummyTexture1x1(m_Device, TextureFormat::RGBA8_UNORM,
                                                &white, sizeof(white), "UISdf_DummyWhite");
         if (m_DummyTexture.IsValid())
-            m_Binding0Entries.InsertOrAssign(0, { m_DummyTexture, m_DefaultSampler });
+            m_Binding0Entries[0] = { m_DummyTexture, m_DefaultSampler };
     }
 
     // Binding 1 is an integer array (utexture2D), so its fallback must be an
@@ -296,7 +293,7 @@ void UITextureRegistry::CreateDeviceResourcesLocked()
                                                    &zeroBandRecord, sizeof(zeroBandRecord),
                                                    "UISdf_DummyBandZero");
         if (m_BandDummyTexture.IsValid())
-            m_Binding1Entries.InsertOrAssign(0, { m_BandDummyTexture, m_NearestSampler });
+            m_Binding1Entries[0] = { m_BandDummyTexture, m_NearestSampler };
     }
 }
 
@@ -313,9 +310,9 @@ void UITextureRegistry::HealIfDeviceRebuiltLocked()
     // Counts are logged with the populations they came from: a registry that was
     // empty at rebuild time drops zero of zero, which must stay distinguishable
     // from a registry that dropped nothing because the heal never ran.
-    const size_t colorSlots = m_Binding0Entries.Size();
-    const size_t bandSlots = m_Binding1Entries.Size();
-    const size_t atlasPages = m_AtlasPageCache.Size();
+    const size_t colorSlots = m_Binding0Entries.size();
+    const size_t bandSlots = m_Binding1Entries.size();
+    const size_t atlasPages = m_AtlasPageCache.size();
     size_t slugPages = 0;
     for (const auto& [atlasId, fontCache] : m_SlugCache)
         slugPages += fontCache.Pages.size();
@@ -326,13 +323,12 @@ void UITextureRegistry::HealIfDeviceRebuiltLocked()
     // atlases) re-register during the next paint, and every call site takes its
     // slot index fresh from primitive generation, so no caller is holding an
     // index across this reset.
-    m_Binding0Entries.Clear();
-    m_Binding1Entries.Clear();
-    m_HandleToIndex.Clear();
+    m_Binding0Entries.clear();
+    m_Binding1Entries.clear();
+    m_HandleToIndex.clear();
     m_FreeSlots.clear();
-    EndAllReservationsLocked();
-    m_SlugCache.Clear();
-    m_AtlasPageCache.Clear();
+    m_SlugCache.clear();
+    m_AtlasPageCache.clear();
     m_NextSlot = 1;
     // Mirrors the member's initial value, so it must be changed with it: band
     // slot 0 is reserved for the band dummy, exactly as color slot 0 is for the
@@ -389,13 +385,12 @@ void UITextureRegistry::Shutdown()
         if (entry.Texture.IsValid())
             m_Device->DestroyTexture(entry.Texture);
     }
-    m_AtlasPageCache.Clear();
+    m_AtlasPageCache.clear();
 
-    m_HandleToIndex.Clear();
+    m_HandleToIndex.clear();
     m_FreeSlots.clear();
-    EndAllReservationsLocked();
-    m_Binding0Entries.Clear();
-    m_Binding1Entries.Clear();
+    m_Binding0Entries.clear();
+    m_Binding1Entries.clear();
 
     if (m_DummyTexture.IsValid())
     {
@@ -420,7 +415,7 @@ void UITextureRegistry::Shutdown()
                 m_Device->DestroyTexture(page.BandTexture);
         }
     }
-    m_SlugCache.Clear();
+    m_SlugCache.clear();
 
     if (m_NearestSampler.IsValid())
     {
@@ -490,21 +485,22 @@ void UITextureRegistry::LogTextureLimitExceededLocked(const char* poolName)
         poolName ? poolName : "unknown",
         m_MaxTextures,
         m_MaxBandTextures,
-        m_Binding0Entries.Size(),
-        m_Binding1Entries.Size(),
+        m_Binding0Entries.size(),
+        m_Binding1Entries.size(),
         m_FreeSlots.size(),
         distinctTex.size(),
-        m_HandleToIndex.Size());
+        m_HandleToIndex.size());
 }
 
 void UITextureRegistry::FreeSlot(uint32_t index)
 {
     if (index == 0)
         return;
-    // The slot returns to the pool at once: each in-flight frame's set
-    // holds its own copy of the slot's descriptor. The generation bump ends the
-    // reservation that held the slot, if any.
-    m_SlotGenerations[index] = NextSlotGeneration(m_SlotGenerations[index]);
+    // Immediate return to the free pool: CreateTransientFrameSet allocates a
+    // fresh descriptor set every frame and writes its own snapshot of the
+    // active slot state, so any in-flight frame's transient set already holds
+    // its own descriptor copy for this slot. No cross-frame aliasing means no
+    // need to park-and-retire as pre-Session-7 did.
     m_FreeSlots.push_back(index);
 }
 
@@ -520,8 +516,8 @@ std::vector<TextureHandle> UITextureRegistry::GetTextureHandlesForSlots(
     std::vector<TextureHandle> result;
     result.reserve(slots.size());
     for (const auto slot : slots)
-        if (const SlotEntry* entry = m_Binding0Entries.Find(slot))
-            result.push_back(entry->Texture);
+        if (const auto it = m_Binding0Entries.find(slot); it != m_Binding0Entries.end())
+            result.push_back(it->second.Texture);
     return result;
 }
 
@@ -534,16 +530,17 @@ uint32_t UITextureRegistry::RegisterPreUploadedLocked(TextureHandle tex, Sampler
     // with either linear or point filtering in different UI elements.
     const uint64_t samplerId = sampler.IsValid() ? static_cast<uint64_t>(sampler.id) : 0ull;
     const auto key = std::make_pair(static_cast<uint64_t>(tex.id), samplerId);
-    if (const uint32_t* existing = m_HandleToIndex.Find(key))
-        return *existing;
+    auto it = m_HandleToIndex.find(key);
+    if (it != m_HandleToIndex.end())
+        return it->second;
 
     uint32_t slot = AllocateSlot();
     if (slot == 0)
         return 0;
 
     SamplerHandle samp = sampler.IsValid() ? sampler : m_DefaultSampler;
-    m_Binding0Entries.InsertOrAssign(slot, { tex, samp });
-    m_HandleToIndex.InsertOrAssign(key, slot);
+    m_Binding0Entries[slot] = { tex, samp };
+    m_HandleToIndex[key] = slot;
     return slot;
 }
 
@@ -583,74 +580,68 @@ void UITextureRegistry::UnregisterLocked(uint32_t index)
     if (index == 0)
         return;
 
-    // A slot is the value of at most one dedup key.
-    m_HandleToIndex.EraseIf([index](const auto&, uint32_t slot) { return slot == index; });
+    for (auto it = m_HandleToIndex.begin(); it != m_HandleToIndex.end(); ++it)
+    {
+        if (it->second == index)
+        {
+            m_HandleToIndex.erase(it);
+            break;
+        }
+    }
 
-    // Write the dummy to the slot before the slot goes back to the pool. Frames in flight read
-    // the set that they bound. That set holds the old texture, and the device keeps the set until
-    // those frames finish.
+    // Replace the slot's state with the dummy before parking it. Previous
+    // frames still in-flight keep reading the transient set they were
+    // materialised from; that set captured the slot's old texture before
+    // Unregister ran and is safely owned by the frame's pool / DB ring.
     if (m_DummyTexture.IsValid())
-        m_Binding0Entries.InsertOrAssign(index, { m_DummyTexture, m_DefaultSampler });
+        m_Binding0Entries[index] = { m_DummyTexture, m_DefaultSampler };
     else
-        m_Binding0Entries.Erase(index);
+        m_Binding0Entries.erase(index);
 
     FreeSlot(index);
 }
 
-::GenerationalVector::Handle UITextureRegistry::ReserveSlot()
+uint32_t UITextureRegistry::ReserveSlot()
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
     HealIfDeviceRebuiltLocked();
-    const uint32_t slot = AllocateSlot();
+    uint32_t slot = AllocateSlot();
+    if (slot != 0 && m_DummyTexture.IsValid())
+    {
+        // Seed the slot with the dummy so a primitive referencing it before
+        // UpdateSlot lands reads white rather than a stale binding.
+        m_Binding0Entries[slot] = { m_DummyTexture, m_DefaultSampler };
+    }
+    return slot;
+}
+
+void UITextureRegistry::ReleaseSlot(uint32_t slot)
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    HealIfDeviceRebuiltLocked();
     if (slot == 0)
-        return {};
-    // Seed the slot with the dummy so a primitive referencing it before
-    // UpdateSlot lands reads white rather than a stale binding.
-    if (m_DummyTexture.IsValid())
-        m_Binding0Entries.InsertOrAssign(slot, { m_DummyTexture, m_DefaultSampler });
-    return ::GenerationalVector::Handle(slot, m_SlotGenerations[slot]);
-}
-
-bool UITextureRegistry::HoldsSlotLocked(::GenerationalVector::Handle reservation) const
-{
-    return reservation.IsValid() && reservation.Index() < m_SlotGenerations.size()
-        && m_SlotGenerations[reservation.Index()] == reservation.Generation();
-}
-
-void UITextureRegistry::EndAllReservationsLocked()
-{
-    for (SlotGeneration& generation : m_SlotGenerations)
-        generation = NextSlotGeneration(generation);
-}
-
-void UITextureRegistry::ReleaseSlot(::GenerationalVector::Handle reservation)
-{
-    std::lock_guard<std::mutex> lock(m_Mutex);
-    HealIfDeviceRebuiltLocked();
-    if (!HoldsSlotLocked(reservation))
         return;
-    const uint32_t slot = reservation.Index();
-    // Reserved slots are not part of m_HandleToIndex dedup. Clear their binding
-    // state before recycling so GetFrameSet never re-emits a stale
-    // texture handle after the source RG texture is retired.
+    // Reserved/deferred slots are not part of m_HandleToIndex dedup. Clear
+    // their binding state before recycling so CreateTransientFrameSet never
+    // re-emits a stale texture handle after the source RG texture is retired.
     if (m_DummyTexture.IsValid())
-        m_Binding0Entries.InsertOrAssign(slot, { m_DummyTexture, m_DefaultSampler });
+        m_Binding0Entries[slot] = { m_DummyTexture, m_DefaultSampler };
     else
-        m_Binding0Entries.Erase(slot);
+        m_Binding0Entries.erase(slot);
     FreeSlot(slot);
 }
 
-void UITextureRegistry::UpdateSlot(::GenerationalVector::Handle reservation, TextureHandle tex, SamplerHandle sampler)
+void UITextureRegistry::UpdateSlot(uint32_t slot, TextureHandle tex, SamplerHandle sampler)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
     HealIfDeviceRebuiltLocked();
-    if (!m_Device || !tex.IsValid() || !HoldsSlotLocked(reservation))
+    if (!m_Device || slot == 0 || !tex.IsValid())
         return;
     SamplerHandle samp = sampler.IsValid() ? sampler : m_DefaultSampler;
-    m_Binding0Entries.InsertOrAssign(reservation.Index(), { tex, samp });
+    m_Binding0Entries[slot] = { tex, samp };
 }
 
-DescriptorSetHandle UITextureRegistry::GetFrameSet()
+DescriptorSetHandle UITextureRegistry::CreateTransientFrameSet()
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
     if (!m_Device)
@@ -661,11 +652,18 @@ DescriptorSetHandle UITextureRegistry::GetFrameSet()
     // path has no dropped write to report for this set.
     HealIfDeviceRebuiltLocked();
 
-    m_SetWrites.clear();
+    DescriptorSetDesc dsDesc{};
+    dsDesc.layout = m_LayoutDesc;
+    dsDesc.debugName = "UISdfTextureDescSet";
+    dsDesc.transient = true;
+    DescriptorSetHandle set = m_Device->CreateDescriptorSet(dsDesc);
+    if (!set.IsValid())
+        return {};
+
     if (m_DefaultSampler.IsValid())
-        m_SetWrites.push_back({.Binding = 2, .Type = DescriptorType::Sampler, .Sampler = m_DefaultSampler});
+        m_Device->UpdateSamplerBinding(set, 2, m_DefaultSampler);
     if (m_NearestSampler.IsValid())
-        m_SetWrites.push_back({.Binding = 3, .Type = DescriptorType::Sampler, .Sampler = m_NearestSampler});
+        m_Device->UpdateSamplerBinding(set, 3, m_NearestSampler);
 
     // Binding 0: sampled-image array of UI textures (icons, atlas pages,
     // Slug curve textures, RG-resolved scene views). Typically <30 active slots.
@@ -679,19 +677,24 @@ DescriptorSetHandle UITextureRegistry::GetFrameSet()
             e.Sampler = m_DefaultSampler;
         }
         if (texture.IsValid())
-            m_SetWrites.push_back(
-                {.Binding = 0, .ArrayElement = slot, .Type = DescriptorType::Texture, .Texture = texture});
+            m_Device->UpdateImageBinding(set, 0, texture, slot);
     }
 
-    // Binding 1: one Slug band texture per font page. Every slot gets a write: the shader uses this
-    // data as a loop count, so a stale descriptor in an unwritten slot can hang the GPU. An empty
-    // slot gets the integer dummy, because the RGBA8_UNORM dummy is not an integer format.
+    // Binding 1: utexture2D array of Slug band textures (one per font page).
+    // Every slot is written, not just the occupied ones. The array is
+    // PARTIALLY_BOUND over transient descriptor memory that is bump-allocated
+    // and never zeroed, so an unwritten slot hands the shader a recycled
+    // descriptor from whatever previously occupied those bytes — and the shader
+    // turns this data into a loop trip count, so a stale descriptor here is a
+    // GPU hang, not a wrong pixel. Retired textures fall back to the same
+    // zero-filled integer dummy; the RGBA8_UNORM one belongs to binding 0 and
+    // would be a format-class mismatch in an integer array.
     for (uint32_t slot = 0; slot < m_MaxBandTextures; ++slot)
     {
         TextureHandle texture = m_BandDummyTexture;
-        if (SlotEntry* entry = m_Binding1Entries.Find(slot))
+        if (auto it = m_Binding1Entries.find(slot); it != m_Binding1Entries.end())
         {
-            SlotEntry& e = *entry;
+            SlotEntry& e = it->second;
             if (e.Texture.IsValid() && !m_Device->IsTextureHandleLive(e.Texture))
             {
                 e.Texture = m_BandDummyTexture;
@@ -701,43 +704,47 @@ DescriptorSetHandle UITextureRegistry::GetFrameSet()
                 texture = e.Texture;
         }
         if (texture.IsValid())
-            m_SetWrites.push_back(
-                {.Binding = 1, .ArrayElement = slot, .Type = DescriptorType::Texture, .Texture = texture});
+            m_Device->UpdateImageBinding(set, 1, texture, slot);
     }
 
-    return m_Device->GetOrCreateDescriptorSet(m_LayoutDesc, m_SetWrites, "UISdfTextureDescSet");
+    return set;
 }
 
 TextureHandle UITextureRegistry::ResolveSlotTextureLocked(
-    FlatMap<uint32_t, SlotEntry>& entries, uint32_t index)
+    std::unordered_map<uint32_t, SlotEntry>& entries, uint32_t index)
 {
-    SlotEntry* entry = entries.Find(index);
-    if (!entry)
+    auto it = entries.find(index);
+    if (it == entries.end())
         return m_DummyTexture;
 
-    TextureHandle texture = entry->Texture;
+    TextureHandle texture = it->second.Texture;
     if (texture.IsValid() && !m_Device->IsTextureHandleLive(texture))
     {
         texture = m_DummyTexture;
-        entry->Texture = texture;
-        entry->Sampler = m_DefaultSampler;
+        it->second.Texture = texture;
+        it->second.Sampler = m_DefaultSampler;
     }
     return texture.IsValid() ? texture : m_DummyTexture;
 }
 
-DescriptorSetHandle UITextureRegistry::GetDrawRunSet(const UICompatDrawRun& run)
+DescriptorSetHandle UITextureRegistry::CreateDrawRunSet(const UICompatDrawRun& run)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
     if (!m_Device)
         return {};
 
-    m_SetWrites.clear();
+    DescriptorSetDesc dsDesc{};
+    dsDesc.layout = m_LayoutDesc;
+    dsDesc.debugName = "UISdfTextureDescSetCompat";
+    dsDesc.transient = true;
+    DescriptorSetHandle set = m_Device->CreateDescriptorSet(dsDesc);
+    if (!set.IsValid())
+        return {};
+
     if (m_DefaultSampler.IsValid())
-        m_SetWrites.push_back(
-            {.Binding = kCompatLinearSamplerBinding, .Type = DescriptorType::Sampler, .Sampler = m_DefaultSampler});
+        m_Device->UpdateSamplerBinding(set, kCompatLinearSamplerBinding, m_DefaultSampler);
     if (m_NearestSampler.IsValid())
-        m_SetWrites.push_back(
-            {.Binding = kCompatNearestSamplerBinding, .Type = DescriptorType::Sampler, .Sampler = m_NearestSampler});
+        m_Device->UpdateSamplerBinding(set, kCompatNearestSamplerBinding, m_NearestSampler);
 
     // Every slot is written, claimed or not: the compat layout has no
     // partially-bound flag to lean on, and an unwritten binding is a validation
@@ -747,7 +754,7 @@ DescriptorSetHandle UITextureRegistry::GetDrawRunSet(const UICompatDrawRun& run)
         const TextureHandle tex = i < run.TextureCount
                                       ? ResolveSlotTextureLocked(m_Binding0Entries, run.Textures[i])
                                       : m_DummyTexture;
-        m_SetWrites.push_back({.Binding = kCompatTextureBinding0 + i, .Type = DescriptorType::Texture, .Texture = tex});
+        m_Device->UpdateImageBinding(set, kCompatTextureBinding0 + i, tex, 0);
     }
     for (uint32_t i = 0; i < kUiCompatGlyphSlots; ++i)
     {
@@ -756,12 +763,11 @@ DescriptorSetHandle UITextureRegistry::GetDrawRunSet(const UICompatDrawRun& run)
             claimed ? ResolveSlotTextureLocked(m_Binding0Entries, run.GlyphCurves[i]) : m_DummyTexture;
         const TextureHandle band =
             claimed ? ResolveSlotTextureLocked(m_Binding1Entries, run.GlyphBands[i]) : m_BandDummyTexture;
-        m_SetWrites.push_back(
-            {.Binding = kCompatGlyphCurveBinding0 + i, .Type = DescriptorType::Texture, .Texture = curve});
-        m_SetWrites.push_back({.Binding = kCompatGlyphBandBinding0 + i, .Type = DescriptorType::Texture, .Texture = band});
+        m_Device->UpdateImageBinding(set, kCompatGlyphCurveBinding0 + i, curve, 0);
+        m_Device->UpdateImageBinding(set, kCompatGlyphBandBinding0 + i, band, 0);
     }
 
-    return m_Device->GetOrCreateDescriptorSet(m_LayoutDesc, m_SetWrites, "UISdfTextureDescSetCompat");
+    return set;
 }
 
 // Helper: upload raw data to a GPU texture via staging buffer.
@@ -836,13 +842,13 @@ UITextureRegistry::RegisterSlugTextures(const FontAtlas& atlas)
     // steady-state calls free of writes, which matters for the parallel
     // drain — workers re-request the slug pages per text emission while the
     // UI thread's collect phase has already registered/uploaded them.
-    if (const SlugFontCache* cached = m_SlugCache.Find(atlasId);
-        cached && cached->Pages.size() == static_cast<size_t>(pageCount))
+    if (auto it = m_SlugCache.find(atlasId); it != m_SlugCache.end() &&
+        it->second.Pages.size() == static_cast<size_t>(pageCount))
     {
         bool current = true;
         for (int pi = 0; pi < pageCount; ++pi)
         {
-            const SlugPageEntry& entry = cached->Pages[pi];
+            const SlugPageEntry& entry = it->second.Pages[pi];
             if (!entry.CurveTexture.IsValid() ||
                 entry.UploadedGen != atlas.GetSlugPageGeneration(pi))
             {
@@ -851,16 +857,17 @@ UITextureRegistry::RegisterSlugTextures(const FontAtlas& atlas)
             }
         }
         if (current)
-            return cached->Indices;
+            return it->second.Indices;
     }
 
-    // Write path: it creates GPU textures, can reallocate Indices, and for a new atlas
-    // moves the cache of every font. This invalidates the references that workers hold,
-    // so the parallel drain registers every font during collect.
+    // Write path: creates/uploads GPU textures and may reallocate Indices,
+    // invalidating references held by concurrent readers. The parallel drain
+    // pre-registers every font during collect precisely so workers stay on
+    // the fast path above.
     assert(std::this_thread::get_id() == m_OwnerThreadId &&
            "RegisterSlugTextures write path reached from a non-owner thread");
 
-    SlugFontCache& cache = m_SlugCache.GetOrInsert(atlasId);
+    SlugFontCache& cache = m_SlugCache[atlasId];
     cache.Pages.resize(static_cast<size_t>(pageCount));
     cache.Indices.resize(static_cast<size_t>(pageCount));
 
@@ -908,7 +915,7 @@ UITextureRegistry::RegisterSlugTextures(const FontAtlas& atlas)
             if (entry.BandSlot != 0)
             {
                 SamplerHandle samp = m_NearestSampler.IsValid() ? m_NearestSampler : m_DefaultSampler;
-                m_Binding1Entries.InsertOrAssign(entry.BandSlot, { entry.BandTexture, samp });
+                m_Binding1Entries[entry.BandSlot] = { entry.BandTexture, samp };
             }
 
             // uploadedGen is still 0 — the initial upload below will populate the texture.
@@ -971,11 +978,13 @@ uint32_t UITextureRegistry::RegisterColorAtlasPage(const FontAtlas& atlas, int p
     const uint64_t key = MakeAtlasPageKey(atlasId, pageIndex, /*isColor=*/true);
     const uint32_t contentGen = atlas.GetColorContentGeneration();
 
-    if (const AtlasPageEntry* cached = m_AtlasPageCache.Find(key))
+    auto it = m_AtlasPageCache.find(key);
+    if (it != m_AtlasPageCache.end())
     {
-        if (cached->Texture.IsValid() && cached->RegistryIndex != 0
-            && cached->ContentGeneration == contentGen)
-            return cached->RegistryIndex;
+        auto& entry = it->second;
+        if (entry.Texture.IsValid() && entry.RegistryIndex != 0
+            && entry.ContentGeneration == contentGen)
+            return entry.RegistryIndex;
     }
 
     if (pageIndex >= atlas.GetColorPageCount())
@@ -989,7 +998,7 @@ uint32_t UITextureRegistry::RegisterColorAtlasPage(const FontAtlas& atlas, int p
     const uint32_t w = static_cast<uint32_t>(ref.width);
     const uint32_t h = static_cast<uint32_t>(ref.height);
 
-    AtlasPageEntry& entry = m_AtlasPageCache.GetOrInsert(key);
+    AtlasPageEntry& entry = m_AtlasPageCache[key];
     bool reuseTexture = entry.Texture.IsValid() && entry.Width == w && entry.Height == h;
 
     if (!reuseTexture)

@@ -176,9 +176,6 @@ void Material::SetColor(StringId name, const float* rgba)
 
 void Material::SetTexture(StringId name, Rendering::TextureHandle tex)
 {
-    // Ending a wait is content even when the handle is unchanged: the awaited
-    // flag is what DDGI's map atlas reads to shade the slot as no emission.
-    const uint32_t awaitedBefore = m_AwaitedTextureSlots;
     if (const uint32_t ordinal = ResolveTextureSlotOrdinal(name); ordinal < kTextureSlotArraySize)
         m_AwaitedTextureSlots &= ~(1u << ordinal);
     // Same-value early-out: per-frame rebinds (video textures re-asserting
@@ -187,7 +184,7 @@ void Material::SetTexture(StringId name, Rendering::TextureHandle tex)
     auto [it, inserted] = m_Textures.try_emplace(name, tex);
     if (!inserted)
     {
-        if (it->second == tex && m_AwaitedTextureSlots == awaitedBefore)
+        if (it->second == tex)
             return;
         it->second = tex;
     }
@@ -196,28 +193,11 @@ void Material::SetTexture(StringId name, Rendering::TextureHandle tex)
 
 void Material::MarkTextureAwaited(StringId name)
 {
-    // One edit, not a clear followed by a wait, so a repeated wait on the same
-    // slot (a re-registration replaying a pending load) changes nothing and
-    // keeps the content epoch still. A new wait is content (see SetTexture).
-    //
-    // The slot keeps an entry in the binding map, empty while it waits: the
-    // hot-reload sweep finds the slots to revert there (GetTextureBindings).
-    const auto [it, inserted] = m_Textures.try_emplace(name, Rendering::TextureHandle{});
-    bool changed = inserted || it->second.IsValid();
-    it->second = Rendering::TextureHandle{};
     if (const uint32_t ordinal = ResolveTextureSlotOrdinal(name); ordinal < kTextureSlotArraySize)
     {
-        const uint32_t bit = 1u << ordinal;
-        const SlotDefaultTexture awaitedDefault = AwaitedSlotDefault(TextureSlotFromName(name));
-        if ((m_AwaitedTextureSlots & bit) == 0u || m_AwaitedTextureDefaults[ordinal] != awaitedDefault)
-        {
-            m_AwaitedTextureSlots |= bit;
-            m_AwaitedTextureDefaults[ordinal] = awaitedDefault;
-            changed = true;
-        }
+        m_AwaitedTextureSlots |= 1u << ordinal;
+        m_AwaitedTextureDefaults[ordinal] = AwaitedSlotDefault(TextureSlotFromName(name));
     }
-    if (changed)
-        MarkDirty();
 }
 
 bool Material::IsTextureAwaited(uint32_t slotOrdinal) const
@@ -270,14 +250,6 @@ uint32_t Material::ResolveTextureSlotOrdinal(StringId name) const
         return kTextureSlotArraySize;
     const TextureSlot slot = TextureSlotFromName(name);
     return (slot == TextureSlot::kCount) ? kTextureSlotArraySize : static_cast<uint32_t>(slot);
-}
-
-void Material::SetDeformationEnvelope(const Rendering::DeformationEnvelopeDeclaration& envelope)
-{
-    if (m_DeformationEnvelope == envelope)
-        return;
-    m_DeformationEnvelope = envelope;
-    MarkDirty();
 }
 
 void Material::SetDeclaredProperties(std::shared_ptr<const Rendering::ShaderPropertyTable> table)
@@ -378,10 +350,6 @@ std::vector<std::string_view> Material::GetTextureSlotNames() const
 
 void Material::SetTextureSlotMap(std::vector<std::pair<std::string, uint8_t>> slots)
 {
-    // The map decides which ordinal a name resolves to, so a different map is
-    // content (IsTextureAwaited by name reads through it). Re-registration
-    // installs the same map every time; that replay is no edit.
-    const auto previousSlotMap = std::move(m_UserTextureSlotMap);
     m_UserTextureSlotMap.clear();
     m_UserTextureSlotMap.reserve(slots.size());
     m_UserTextureSlotNames.clear();
@@ -391,8 +359,6 @@ void Material::SetTextureSlotMap(std::vector<std::pair<std::string, uint8_t>> sl
         m_UserTextureSlotMap[HashStringId(name)] = ordinal;
         m_UserTextureSlotNames.push_back(std::move(name));
     }
-    if (m_UserTextureSlotMap != previousSlotMap)
-        MarkDirty();
 
     // The map arrives AFTER registration seeded the ladder, so the user ordinals
     // are still holding whatever their ordinal means to the engine. Re-seed them
@@ -409,8 +375,6 @@ void Material::SetTextureSlotMap(std::vector<std::pair<std::string, uint8_t>> sl
         if (m_BindlessTextureIndices[ordinal] == m_DefaultWhiteIndex)
             continue;
         m_BindlessTextureIndices[ordinal] = m_DefaultWhiteIndex;
-        if (ordinal == static_cast<uint8_t>(TextureSlot::kNormal))
-            m_NormalVarianceIndex = m_DefaultBlackIndex;
         MarkDirty();
     }
 }
@@ -501,8 +465,6 @@ void Material::SetBindlessTextureIndex(StringId name, uint32_t descriptorIndex)
     if (m_BindlessTextureIndices[slot] == descriptorIndex)
         return;
     m_BindlessTextureIndices[slot] = descriptorIndex;
-    if (slot == static_cast<uint32_t>(TextureSlot::kNormal))
-        m_NormalVarianceIndex = m_DefaultBlackIndex;
     MarkDirty();
 }
 
@@ -520,8 +482,6 @@ void Material::SetBindlessTextureIndex(TextureSlot slot, uint32_t descriptorInde
     if (m_BindlessTextureIndices[static_cast<size_t>(slot)] == descriptorIndex)
         return;
     m_BindlessTextureIndices[static_cast<size_t>(slot)] = descriptorIndex;
-    if (slot == TextureSlot::kNormal)
-        m_NormalVarianceIndex = m_DefaultBlackIndex;
     MarkDirty();
 }
 
@@ -534,14 +494,6 @@ uint32_t Material::GetBindlessTextureIndex(TextureSlot slot) const
 const uint32_t (&Material::GetBindlessTextureIndices() const)[kTextureSlotArraySize]
 {
     return m_BindlessTextureIndices;
-}
-
-void Material::SetNormalVarianceIndex(uint32_t descriptorIndex)
-{
-    if (m_NormalVarianceIndex == descriptorIndex)
-        return;
-    m_NormalVarianceIndex = descriptorIndex;
-    MarkDirty();
 }
 
 void Material::SetTextureTransform(TextureSlot slot, float scaleX, float scaleY, float offsetX, float offsetY)
@@ -612,8 +564,6 @@ void Material::InitBindlessDefaults(uint32_t whiteIdx, uint32_t flatNormalIdx, u
         }
     }
     m_DefaultWhiteIndex = whiteIdx;
-    m_DefaultBlackIndex = blackIdx;
-    m_NormalVarianceIndex = blackIdx;
     m_HasBindlessDefaults = true;
 
     // The ladder above is keyed by what a slot MEANS, and a user @texture name

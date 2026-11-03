@@ -17,20 +17,22 @@ layout(set = 0, binding = 2, std430) readonly buffer LightBufferBlock { uvec4 he
 layout(set = 0, binding = 3, std140) uniform ClusterParamsBlock { uvec4 params0; } ClusterParams; // tileX, tileY, depthSlices, maxLightsPerCluster
 layout(set = 0, binding = 4, std140) uniform ViewParamsBlock
 {
-    // 160 B core prefix of the shared ViewParams list.
+    // Full per-view block includes the optional pixelation interval.
 #define GE_VP_MAT4(name) mat4 name;
 #define GE_VP_VEC4(name) vec4 name;
-#define GE_VIEWPARAMS_CORE_ONLY 1
 #include "Includes/view_params_fields.glsl"
-#undef GE_VIEWPARAMS_CORE_ONLY
 #undef GE_VP_VEC4
 #undef GE_VP_MAT4
 } ViewParams;
+
+#include "Includes/depth_pixelation_coverage.glsl"
 
 float Saturate(float x) { return clamp(x, 0.0, 1.0); }
 
 void main()
 {
+    if (!GE_DepthPixelationKeep((ViewParams.ge_view * vec4(vPosWS, 1.0)).xyz, ViewParams.ge_pixelationBand))
+        discard;
     const uint clustersX = max(ClusterBuffer.header.x, 1u);
     const uint clustersY = max(ClusterBuffer.header.y, 1u);
     const uint depthSlices = max(ClusterBuffer.header.z, 1u);

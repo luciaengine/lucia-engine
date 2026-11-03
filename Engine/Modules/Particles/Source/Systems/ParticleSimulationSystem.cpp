@@ -6,7 +6,6 @@
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "Logger/Logger.h"
-#include "ParticleProcessor/ParticleProcessorRevision.h"
 #include "Particles/Assets/ParticleStackAsset.h"
 #include "PhysicsECS/PhysicsWorldService.h"
 
@@ -61,40 +60,15 @@ void DeliverGameEvents(ParticlePlayback& playback, ParticleRuntime& simulation)
 // A missing stack asset is asked for again at most this often, in frames.
 constexpr uint64 kStackLoadRetryFrames = 60;
 
-// Records a stack load's outcome on the loader thread. `requestedRevision` is the processor
-// revision the request read.
-void RecordStackLoad(bool succeeded, uint64 requestedRevision, std::atomic<bool>& failed,
-                     std::atomic<bool>& revisedDuringLoad)
-{
-    failed.store(!succeeded);
-    if (!succeeded && ParticleProcessorRevision() != requestedRevision)
-        revisedDuringLoad.store(true, std::memory_order_release);
-}
-
-// A stack is asked for at once, past the retry interval, when processors have been registered since
-// this world last asked for it: it may name one a module registers as it loads. The asset manager
-// refuses an asset whose load failed until its file changes, and that failure may predate the
-// registration (another world's request, or this one's), so the refusal is lifted for that request.
-// A load that fails after the revision moved while it ran counts as a new revision too: a request
-// made after a registration can join a decode that looked the id up before it, and that decode
-// refuses the asset after the request recorded the new revision.
 const ParticleWorldState::StackLoad& RequestStackLoad(ParticleWorldState& state, const GUID& guid)
 {
     auto& load = state.StackLoads[guid];
-    const uint64 revision = ParticleProcessorRevision();
-    const bool revisedDuringLoad = load.RevisedDuringLoad->exchange(false, std::memory_order_acq_rel);
-    const bool processorsAdded = revision != load.ProcessorRevision || revisedDuringLoad;
-    if (state.Frame < load.RetryFrame && !processorsAdded)
+    if (state.Frame < load.RetryFrame)
         return load;
-    if (processorsAdded)
-        state.Assets->ClearLoadSuppressed(guid);
     load.RetryFrame = state.Frame + kStackLoadRetryFrames;
-    load.ProcessorRevision = revision;
     state.Assets->LoadAsset(
-        guid,
-        [failed = load.Failed, revisedDuringLoad = load.RevisedDuringLoad,
-         revision](Result<SharedPtr<Asset>, AssetError> result)
-        { RecordStackLoad(result.IsOk(), revision, *failed, *revisedDuringLoad); },
+        guid, [failed = load.Failed](Result<SharedPtr<Asset>, AssetError> result)
+        { failed->store(!result.IsOk()); },
         AssetLoadPriority::High);
     return load;
 }
@@ -297,11 +271,12 @@ void ParticleSimulationSystem::Update(ECS::World& world, float32 deltaTime)
 
     ParticleCollisionEventsBuffer* fallbackEvents = nullptr;
     world.Query<ECS::Write<ParticleCollisionEventsBuffer>>().Each(
-        [&fallbackEvents](ECS::EntityHandle, ParticleCollisionEventsBuffer& events)
+        [&fallbackEvents](ECS::EntityHandle, ECS::Writable<ParticleCollisionEventsBuffer> eventsWrite)
         {
+            auto& events = eventsWrite.Mutable();
             events.Clear();
             if (!fallbackEvents)
-                fallbackEvents = &events;
+                fallbackEvents = &eventsWrite.Mutable();
         });
 
     m_Order.clear();

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "EditorApplication/EditorApplication.h"
+#include "EditorApplication.h"
 #include <cstdint>
 
 namespace GameEngine
