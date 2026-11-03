@@ -2,6 +2,12 @@
 
 This file is the short form of the rules every change to this repository follows, for people and for agents alike. `AGENTS.md` is the agents' entry point (how to build, test and land a change, and a map of the rest); the full working guidance for agents is `CLAUDE.md` at the repository root, with area conventions under `.claude/rules/`; the coding conventions are `CodingStyle.md`; the build is `BUILD.md`. When this file and `CLAUDE.md` disagree, `CLAUDE.md` wins.
 
+## Everyone is welcome
+
+Contributions can be code, bug reports, testing, documentation, art, or ideas. First-time contributors are welcome. Use an issue or Discord to discuss a larger change before implementing it.
+
+AI-assisted contributions are welcome and follow the same review standards as any other contribution. Contributors are responsible for understanding, reviewing, and testing what they submit, and for having the right to contribute it under the project's license. Explain the change and its validation in the pull request; do not include restricted console material in prompts sent to unapproved services.
+
 ## Two repositories
 
 - **The general engine repository** holds the public engine source, tests, shipped assets, packages, build system, user documentation, and general contributor and team workflow material. Keep maintained design documents, test maps, review guidance, follow-up briefs, and reusable agent scripts here alongside the code they support.
