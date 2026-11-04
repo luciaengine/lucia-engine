@@ -3464,6 +3464,7 @@ endif()
 
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(SpriteRuntimeTests
+	        Tests/RenderYSortingTests.cpp
 	        Tests/SpriteRenderFeatureTests.cpp
 	        Tests/SpriteAnimationSystemTests.cpp
 	        Tests/SpriteAtlasSamplingTests.cpp

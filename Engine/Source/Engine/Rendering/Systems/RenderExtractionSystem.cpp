@@ -541,7 +541,10 @@ void PrepareRecord(const WorldRenderableRecord& rec,
             recDigest = HashValue(recDigest, rec.Sorting.Order);
             recDigest = HashValue(recDigest, rec.Sorting.Group.id);
             recDigest = HashValue(recDigest, rec.Sorting.MemberOrder);
-            for (const float coordinate : rec.Sorting.GroupPosition)
+            recDigest = HashValue(recDigest, rec.Sorting.SortByY);
+            recDigest = HashValue(recDigest, rec.Sorting.SortY);
+            recDigest = HashValue(recDigest, rec.Sorting.GroupSortByY);
+            for (const float coordinate : rec.Sorting.GroupPosition.v)
                 recDigest = HashValue(recDigest, coordinate);
         }
         cr.digestPartial += recDigest;
@@ -1740,7 +1743,7 @@ bool RenderExtractionSystem::EvaluateFastPathPreconditions(ECS::World& world, ui
     auto sortingTransforms = world.Query<ECS::Read<Components::RenderSorting>, ECS::Read<Components::WorldTransform>>();
     sortingTransforms.Changed<Components::WorldTransform>(m_ProbeGateSortingTransforms);
     sortingTransforms.Each([&](const Components::RenderSorting& sorting, const Components::WorldTransform&)
-                          { groupTransformChanged = groupTransformChanged || sorting.GroupChildren; });
+                          { groupTransformChanged = groupTransformChanged || sorting.GroupChildren || sorting.SortByY; });
     m_ProbeGateSortingTransforms.LastRunVersion = probeVersion;
     const uint64 sortingRevision = m_SortingSnapshotRevision;
     const bool hasSorting = world.Query<ECS::Read<Components::RenderSorting>>().Count() != 0;

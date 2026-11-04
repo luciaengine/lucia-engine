@@ -149,7 +149,8 @@ private:
         const auto* current = world.GetComponent<Sorting>(entity);
         Sorting updated = current ? *current : Sorting{};
         updated.OrderInLayer = order;
-        if (!m_HadSorting[index] && updated.Layer == 0 && order == 0 && !updated.GroupChildren)
+        if (!m_HadSorting[index] && updated.Layer == 0 && order == 0 && !updated.GroupChildren &&
+            !updated.SortByY && updated.SortOriginY == 0.0f)
             world.RemoveComponentImmediate<Sorting>(entity);
         else
             world.AddComponentImmediate(entity, updated);

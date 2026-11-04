@@ -2448,6 +2448,25 @@ TEST_F(ExtractionFastPathTest, SortingParentMovementReparentAndRemovalRefreshDes
     EXPECT_FALSE(h.extraction->GetSubmissionsForTest().front().Sorting.Authored);
 }
 
+TEST_F(ExtractionFastPathTest, GroundSortingMovementRefreshesCachedSubmissions)
+{
+    ExtractionHarness harness;
+    ASSERT_TRUE(harness.Initialize(m_Device.get(), true));
+    auto actor = harness.SpawnRenderable(0, 2, 0);
+    RenderSorting sorting;
+    sorting.SortByY = true;
+    sorting.SortOriginY = -0.5f;
+    actor.Set(sorting);
+    ASSERT_TRUE(harness.PrimeToFastPath());
+    ASSERT_EQ(harness.extraction->GetSubmissionsForTest().size(), 1u);
+    EXPECT_FLOAT_EQ(harness.extraction->GetSubmissionsForTest().front().Sorting.SortY, 1.5f);
+    actor.Set(MakeTransformAt(0, -3, 0));
+    harness.StepFrame();
+    ASSERT_EQ(harness.extraction->GetSubmissionsForTest().size(), 1u);
+    EXPECT_FLOAT_EQ(harness.extraction->GetSubmissionsForTest().front().Sorting.SortY, -3.5f);
+    EXPECT_TRUE(harness.PrimeToFastPath());
+}
+
 TEST_F(ExtractionFastPathTest, SortingLayerPriorityReorderRefreshesStationaryArtwork)
 {
     struct RestoreLayers
