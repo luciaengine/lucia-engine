@@ -3466,6 +3466,7 @@ endif()
 	    add_executable(SpriteRuntimeTests
 	        Tests/SpriteRenderFeatureTests.cpp
 	        Tests/SpriteAnimationSystemTests.cpp
+	        Tests/SpriteAtlasSamplingTests.cpp
 	        Tests/EngineTestShaderSetup.cpp)
 	    target_link_libraries(SpriteRuntimeTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 	    target_compile_definitions(SpriteRuntimeTests PRIVATE ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
