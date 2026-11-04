@@ -223,23 +223,25 @@ TEST(Exposure, PhysicalModeExposesSunnySceneSanely)
     EXPECT_FLOAT_EQ(Rendering::ResolveExposureScale(ExposureMode::Fixed, 1.0f, ev, 0.0f), 1.0f);
 }
 
-// The camera component and the render-side camera exposure must start from the one shared
-// default, so a camera switched to Manual exposes exactly like the Scene View it was framed in.
-// The editor's Scene View pin reads the same constant but is not observable from an engine test:
-// it is a private field on a prefs-backed singleton with no reset API, so a test would read
-// whatever the user's preferences hold rather than the default. Nothing here sees that half.
-TEST(Exposure, ManualEvDefaultIsSharedAcrossCameraAndViewRegistry)
+// Camera and render-view defaults use the same fixed multiplier and photographic EV100.
+TEST(Exposure, FixedDefaultIsSharedAcrossCameraAndViewRegistry)
 {
     EXPECT_FLOAT_EQ(Components::Camera{}.ManualExposureEV, Components::kDefaultManualExposureEv);
     EXPECT_FLOAT_EQ(Engine::Renderer::ViewRegistry::CameraExposure{}.ManualExposureEV,
                     Components::kDefaultManualExposureEv);
-    // Auto stays the camera's default mode: the shared EV is the fallback a manual camera lands on,
-    // not a switch to manual exposure.
-    EXPECT_EQ(Components::Camera{}.ExposureControl, ExposureMode::Auto);
+    EXPECT_EQ(Components::Camera{}.ExposureControl, ExposureMode::Fixed);
+    EXPECT_NEAR(Rendering::LinearExposureToEv(Components::Camera{}.Exposure),
+                Components::kDefaultManualExposureEv, 1.0e-4f);
+    EXPECT_EQ(Engine::Renderer::ViewRegistry::CameraExposure{}.Mode, static_cast<int32>(ExposureMode::Fixed));
+    EXPECT_FLOAT_EQ(Engine::Renderer::ViewRegistry::CameraExposure{}.Exposure, Components::Camera{}.Exposure);
+
+    Engine::Renderer::PostProcessSettings settings{};
+    Engine::Renderer::ApplyCameraExposure(settings, Engine::Renderer::ViewRegistry::CameraExposure{});
+    EXPECT_FALSE(settings.AutoExposureActive);
+    EXPECT_FLOAT_EQ(settings.Exposure, Components::Camera{}.Exposure);
 }
 
-// A game camera meters the picture by default with a floor that reaches a moonlit night and its
-// ceiling, and the meter it is set to reaches the view's exposure (the field the per-view resolve stamps).
+// Auto starts with the Picture meter and a moonlit-night floor. The selected meter reaches the view.
 TEST(Exposure, TheCameraMetersThePictureByDefaultAndPublishesItsMeter)
 {
     const Components::Camera defaults{};
@@ -367,11 +369,13 @@ TEST(ExposureCompensationCurve, TheCameraPublishesItsCurve)
     EXPECT_FLOAT_EQ(published.AutoExposureCompensationCurve.Keys[0].Value, -1.0f);
 }
 
-// A view with no camera takes the default sensor: Auto, the shared floor and the default curve.
-TEST(ExposureCompensationCurve, AViewWithNoCameraTakesTheDefaultCurve)
+// An Auto view takes the shared floor and default compensation curve.
+TEST(ExposureCompensationCurve, AnAutoViewTakesTheDefaultCurve)
 {
+    Engine::Renderer::ViewRegistry::CameraExposure exposure{};
+    exposure.Mode = static_cast<int32>(ExposureMode::Auto);
     Engine::Renderer::PostProcessSettings settings{};
-    Engine::Renderer::ApplyCameraExposure(settings, Engine::Renderer::ViewRegistry::CameraExposure{});
+    Engine::Renderer::ApplyCameraExposure(settings, exposure);
     EXPECT_TRUE(settings.AutoExposureActive);
     EXPECT_FLOAT_EQ(settings.AutoExposureMinEv, Components::kDefaultAutoExposureMinEv);
     const auto expected = Rendering::SampleExposureCompensation(Components::DefaultExposureCompensationCurve());
@@ -382,6 +386,7 @@ TEST(ExposureCompensationCurve, AViewWithNoCameraTakesTheDefaultCurve)
 TEST(ExposureCompensationCurve, TheCameraCurveReachesItsView)
 {
     Components::Camera camera{};
+    camera.ExposureControl = ExposureMode::Auto;
     camera.AutoExposureCompensationCurve = Math::Curve{};
     camera.AutoExposureCompensationCurve.TryInsert(Math::CurveKey{-6.0f, -2.0f});
     camera.AutoExposureCompensationCurve.TryInsert(Math::CurveKey{2.0f, 0.0f});

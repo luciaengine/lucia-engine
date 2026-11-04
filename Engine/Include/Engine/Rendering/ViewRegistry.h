@@ -22,6 +22,7 @@
 #include "Components/Rendering/PostProcessVolume.h" // kDefaultManualExposureEv
 #include "Components/Rendering/ExposureCompensationCurve.h"
 #include "Engine/Rendering/PostProcessSettings.h" // PostProcessSettings
+#include "Engine/Rendering/ExposureScale.h"
 #include "Engine/Rendering/VolumetricFogTypes.h"  // VolumetricFogLocalVolume
 #include "Types/Types.h"
 
@@ -64,8 +65,8 @@ public:
     // rather than the spatial volume. Mode is Components::ExposureMode as int32.
     struct CameraExposure
     {
-        int32 Mode = 3; // 3 = Auto
-        float32 Exposure = 1.0f;
+        int32 Mode = static_cast<int32>(Components::ExposureMode::Fixed);
+        float32 Exposure = Rendering::EvToLinearExposure(Components::kDefaultManualExposureEv);
         float32 ManualExposureEV = Components::kDefaultManualExposureEv;
         float32 ExposureCompensation = 0.0f;
         float32 Aperture = 16.0f;

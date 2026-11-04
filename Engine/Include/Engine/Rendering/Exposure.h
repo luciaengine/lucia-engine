@@ -1,8 +1,8 @@
 #pragma once
 
-#include "Components/Rendering/LightPhotometry.h" // kReferenceWhiteNits — single exposure/light anchor
 #include "Components/Rendering/PostProcessVolume.h" // ExposureMode
 #include "Engine/Rendering/ExposureCompensationSamples.h"
+#include "Engine/Rendering/ExposureScale.h"
 #include "Engine/Rendering/PostProcessSettings.h"     // kExposureClampNoOpMinEv / MaxEv
 #include "Mathematics/Curve.h"
 
@@ -12,29 +12,10 @@
 namespace GameEngine::Rendering
 {
 
-// Absolute photographic EV100 that maps reference white (203 nits == scene-linear 1.0, the same
-// LightPhotometry/emission anchor) to display white, i.e. exposureScale == 1.0 (today's look).
-// Because physical lights are pre-divided by the 203 anchor, the engine's EV100 IS the real-world
-// photographic scale: bright sun ~15, overcast ~12, interior ~7-9, full moon ~-4.
-inline const float kNeutralExposureEV = std::log2(Components::kReferenceWhiteNits);
-
 // Auto exposure keys the metered average to 18 % grey: exposed (pre-tonemap) scene-linear 0.18, where
 // an 18 % card lands under Manual/Physical exposure at the scene's photographic EV. Compensation (in
 // stops) is the one lever that moves it.
 inline constexpr float kAutoExposureMiddleGrey = 0.18f;
-
-// Absolute EV100 -> the linear multiplier the tonemap applies. EV100 == kNeutralExposureEV -> 1.0
-// (so a brighter scene -> higher EV -> smaller multiplier, the photographic convention).
-inline float EvToLinearExposure(float ev100)
-{
-    return std::exp2(kNeutralExposureEV - ev100);
-}
-
-// The inverse: a linear exposure multiplier -> the absolute EV100 it represents.
-inline float LinearExposureToEv(float scale)
-{
-    return kNeutralExposureEV - std::log2(scale > 1e-8f ? scale : 1e-8f);
-}
 
 // The scene-linear log2 luminance Auto exposure meters for a scene at `ev100`: an 18 % card under that
 // light, log2(kAutoExposureMiddleGrey) + ev100 - kNeutralExposureEV. Both meters' readings are in this

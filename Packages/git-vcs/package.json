@@ -2,6 +2,7 @@
   "name": "git-vcs",
   "version": "1.0.0",
   "displayName": "Git Version Control",
+  "icon": "Preview/icon.svg",
   "assets": "Assets/",
   "modules": [
     {
