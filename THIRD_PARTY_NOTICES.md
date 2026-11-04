@@ -30,4 +30,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Godot Engine
+
+Lucia Engine's visual shader and lightmap-baking work includes adaptations and references from [Godot Engine](https://github.com/godotengine/godot). Godot's 2D implementation also serves as a design reference.
+
+Godot Engine is licensed under the MIT License. Its [copyright and license notice](Packages/lightmap-baking/Licenses/Godot-MIT.txt) is included with the lightmap-baking package. See the [lightmap-baking adaptation notice](Packages/lightmap-baking/Licenses/NOTICE.txt) and [visual shader license metadata](cmake/ports/godot-visual-shader-upstream/portfile.cmake) for component-specific references.
+
 Other third-party components retain their respective licenses and notices included with their source.
