@@ -6,6 +6,7 @@
 #include "Engine/Rendering/TextureService.h"
 #include "Assets/TextureCook.h"
 #include "Logger/Logger.h"
+#include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/PipelineDescTranslator.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
@@ -217,13 +218,25 @@ void SpriteRenderFeature::BuildViewDraws(RenderServices& rs, uint32 viewId,
     if (!camera || !HasSpriteDraws(view->worldId))
         return;
     const float32 forward[3] = {camera->view[2], camera->view[6], camera->view[10]};
+    Vector4 frustumPlanes[6];
+    ExtractFrustumPlanes(Matrix4x4::FromColumnMajor(camera->viewProj), frustumPlanes);
     m_ViewDraws.clear();
     for (const auto& draw : m_SpriteDraws)
     {
+        if ((draw.RenderLayers & view->ActiveRenderLayerMask()) == 0u)
+            continue;
+        Vector3 center(draw.Center[0], draw.Center[1], draw.Center[2]);
+        if (worldUnitsPerTexel > 0.0f)
+            SnapSpriteToPixelGrid(center.v, draw.AxisX, draw.AxisY, worldUnitsPerTexel, camera->view);
+        const Vector3 halfExtent(std::abs(draw.AxisX[0]) + std::abs(draw.AxisY[0]),
+                                 std::abs(draw.AxisX[1]) + std::abs(draw.AxisY[1]),
+                                 std::abs(draw.AxisX[2]) + std::abs(draw.AxisY[2]));
+        if (!TestAabbFrustum(center - halfExtent, center + halfExtent, frustumPlanes))
+            continue;
         const float32 depth = (draw.Center[0] - camera->cameraPos[0]) * forward[0] +
                               (draw.Center[1] - camera->cameraPos[1]) * forward[1] +
                               (draw.Center[2] - camera->cameraPos[2]) * forward[2];
-        m_ViewDraws.push_back({&draw, MakeRenderSortKey(draw.Sorting, depth, camera->cameraPos, forward)});
+        m_ViewDraws.push_back({&draw, MakeRenderSortKey(draw.Sorting, depth, camera->cameraPos, forward), center});
     }
     std::sort(m_ViewDraws.begin(), m_ViewDraws.end(), [](const ViewDraw& a, const ViewDraw& b)
     {
@@ -240,8 +253,6 @@ void SpriteRenderFeature::BuildViewDraws(RenderServices& rs, uint32 viewId,
         if (!atlas.IsValid())
             continue;
 
-        const auto* view=rs.Views().FindViewDesc(viewId);
-        if(view && (draw.RenderLayers & view->ActiveRenderLayerMask()) == 0u)continue;
         if(!draw.NormalMap.IsNull())rs.Textures().DeclareTextureClassification(draw.NormalMap,TextureColorSpace::Linear,TextureCookUsage::Normal);
         const TextureHandle normal=draw.NormalMap.IsNull()?atlas:rs.Textures().GetOrUpload(draw.NormalMap);
         if(!normal.IsValid())continue;
@@ -264,7 +275,7 @@ void SpriteRenderFeature::BuildViewDraws(RenderServices& rs, uint32 viewId,
         SpriteInstance& inst = m_InstanceScratch.emplace_back();
         for (int32 i = 0; i < 3; ++i)
         {
-            inst.Center[i] = draw.Center[i];
+            inst.Center[i] = viewDraw.Center[i];
             inst.AxisX[i] = draw.AxisX[i];
             inst.AxisY[i] = draw.AxisY[i];
         }
@@ -275,8 +286,6 @@ void SpriteRenderFeature::BuildViewDraws(RenderServices& rs, uint32 viewId,
         inst.Center[3] = 0.0f;
         inst.AxisX[3] = 0.0f;
         inst.AxisY[3] = 0.0f;
-        if (worldUnitsPerTexel > 0.0f)
-            SnapSpriteToPixelGrid(inst.Center, inst.AxisX, inst.AxisY, worldUnitsPerTexel, camera->view);
         for (int32 i = 0; i < 4; ++i)
         {
             inst.UVRect[i] = draw.UVRect[i];

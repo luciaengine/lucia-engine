@@ -108,7 +108,7 @@ void SpriteAnimationSystem::Update(ECS::World& world, float32 deltaTime)
             [&](ECS::EntityHandle entity, ECS::Writable<Components::AnimatedSprite2D> spriteRow,
                 const Components::WorldTransform& worldXf)
             {
-                auto& sprite = spriteRow.Mutable();
+                const auto& sprite = spriteRow.Get();
                 if (sprite.SpriteFrames.IsNull() || sprite.AnimationName[0] == '\0')
                     return;
 
@@ -126,8 +126,10 @@ void SpriteAnimationSystem::Update(ECS::World& world, float32 deltaTime)
                 // one-shot clamps and holds its final frame.
                 if (sprite.Playing)
                 {
-                    sprite.TimeSeconds = Sprite2D::AdvanceSpriteTime(
+                    const float32 nextTime = Sprite2D::AdvanceSpriteTime(
                         *animation, sprite.TimeSeconds, deltaTime, sprite.SpeedScale);
+                    if (nextTime != sprite.TimeSeconds)
+                        spriteRow.Mutable().TimeSeconds = nextTime;
                 }
 
                 const std::size_t frameIndex =

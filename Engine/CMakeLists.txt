@@ -2035,7 +2035,6 @@ endif()
             # residency, LOD and HLOD selection, HZB culling, draw-stream building and
             # scatter, sorted transparency, skinning palettes and the render origin.
             ge_add_render_services_test(EngineWorldDrawTests
-                Tests/SpriteRenderFeatureTests.cpp
                 Tests/RenderServicesWorldDrawBuilderTests.cpp
                 Tests/RenderServicesWorldMaterialTests.cpp
                 Tests/MaskVertexAlphaDepthTests.cpp
@@ -3461,6 +3460,20 @@ endif()
         ge_stage_runtime_dependencies(ParticleRuntimeTests)
         add_test(NAME ParticleRuntimeTests COMMAND $<TARGET_FILE:ParticleRuntimeTests>)
 
+	endif()
+
+	if(GTest_FOUND OR TARGET GTest::gtest)
+	    add_executable(SpriteRuntimeTests
+	        Tests/SpriteRenderFeatureTests.cpp
+	        Tests/SpriteAnimationSystemTests.cpp
+	        Tests/EngineTestShaderSetup.cpp)
+	    target_link_libraries(SpriteRuntimeTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+	    target_compile_definitions(SpriteRuntimeTests PRIVATE ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
+	    target_compile_features(SpriteRuntimeTests PRIVATE cxx_std_20)
+	    ge_set_output_tests(SpriteRuntimeTests)
+	    ge_stage_runtime_dependencies(SpriteRuntimeTests)
+	    add_dependencies(SpriteRuntimeTests CompileShaderPkgs)
+	    add_test(NAME SpriteRuntimeTests COMMAND $<TARGET_FILE:SpriteRuntimeTests>)
 	endif()
 
 	# Engine tests: sprite quad placement (pivot anchoring, flips, transform axes).

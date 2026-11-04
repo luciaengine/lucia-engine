@@ -7,6 +7,7 @@
 #include "Engine/Rendering/RenderSortKey.h"
 
 #include "AssetCore/GUID.h"
+#include "Mathematics/Vector3.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Handle.h"
@@ -200,7 +201,12 @@ private:
     std::vector<SpriteDraw> m_SpriteDraws;
     // Reused across frames so a steady frame does no heap traffic.
     std::vector<SpriteInstance> m_InstanceScratch;
-    struct ViewDraw { const SpriteDraw* Draw; RenderSortKey Sort; };
+    struct ViewDraw
+    {
+        const SpriteDraw* Draw;
+        RenderSortKey Sort;
+        Mathematics::Vector3 Center;
+    };
     std::vector<ViewDraw> m_ViewDraws;
 };
 
