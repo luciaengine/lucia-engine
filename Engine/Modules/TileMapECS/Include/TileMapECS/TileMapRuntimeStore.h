@@ -30,13 +30,9 @@ struct TileMapDressedChange
 };
 
 /**
- * @brief Owns the decoded, mutable TileMapData for every tilemap in play, and
- * the per-(map, layer) dirty-chunk ledger the renderer drains.
- *
- * Every mutation goes through this service: SetCell is the only writer, so the
- * dirty ledger cannot drift from the data. The renderer holds no copy — it
- * re-reads the store and consumes dirty chunks, which is what keeps a one-cell
- * edit to a one-chunk re-upload.
+ * @brief Owns mutable tilemaps and independent rendering and collision dirty
+ * ledgers. Changed cells dirty only their chunks. Unchanged writes leave
+ * both ledgers untouched.
  */
 class TileMapRuntimeStore
 {
@@ -68,16 +64,16 @@ public:
     TileMap::TileCell GetCell(const GUID& mapGuid, uint32 layerId, int32 cellX, int32 cellY);
 
     /**
-     * Writes one cell by hand and marks its chunk dirty, clearing the cell's
-     * auto flag: a cell someone painted is a cell rule evaluation must not
-     * overwrite. False when map or layer is unknown.
+     * Writes a hand-painted cell through SetCellAuto with automatic=false.
+     * Rule evaluation cannot overwrite a nonempty hand-painted cell.
      */
     bool SetCell(const GUID& mapGuid, uint32 layerId, int32 cellX, int32 cellY,
                  TileMap::TileCell cell);
 
     /**
-     * Writes one cell and its provenance together. Undo/redo of a rule-dressed
-     * cell needs both halves restored, which a hand-write cannot express.
+     * Writes a cell and its provenance. False when map or layer is unknown.
+     * Unchanged writes succeed without advancing the edit version. Provenance
+     * changes advance it, but only tile or orientation changes dirty geometry.
      */
     bool SetCellAuto(const GUID& mapGuid, uint32 layerId, int32 cellX, int32 cellY,
                      TileMap::TileCell cell, bool automatic);
@@ -85,9 +81,9 @@ public:
     uint8 GetIntGridValue(const GUID& mapGuid, uint32 layerId, int32 cellX, int32 cellY);
 
     /**
-     * Writes one IntGrid value. Dressing is a separate call: a stroke paints
-     * many cells and then re-dresses once, which is both cheaper and the only
-     * way an incremental pass sees the whole edit.
+     * Writes one IntGrid value. Unchanged writes succeed without advancing the
+     * edit version. Dressing is separate so a stroke can paint many cells
+     * before re-dressing once over the whole edit.
      */
     bool SetIntGridValue(const GUID& mapGuid, uint32 layerId, int32 cellX, int32 cellY,
                          uint8 value);
@@ -136,11 +132,9 @@ public:
     bool LoadTileSetFromFile(const GUID& tileSetGuid, const std::filesystem::path& path);
 
     /**
-     * Bumps every time this tileset is re-decoded, so a consumer holding derived
-     * state (the renderer's GPU UV/animation tables, an atlas binding) can tell
-     * that its copy predates the current tiles. 0 for a tileset that has never
-     * reloaded. Re-slicing a tileset changes the UV rects behind unchanged tile
-     * ids, so nothing about the map's cells signals the change.
+     * Bumps once per drain that invalidates this tileset. Derived UV tables and
+     * atlas bindings use it to detect changes behind unchanged tile IDs.
+     * Returns 0 for a tileset that has never reloaded.
      */
     uint64 TileSetVersion(const GUID& tileSetGuid) const;
 
@@ -166,7 +160,7 @@ public:
      */
     void MarkStructuralChange(const GUID& mapGuid);
 
-    /** Bumps on every accepted mutation and on re-decode. 0 for an unknown map. */
+    /** Bumps on changed cells, provenance, structure, and re-decode. 0 for an unknown map. */
     uint64 EditVersion(const GUID& mapGuid) const;
 
     /**
@@ -198,11 +192,9 @@ public:
     void NotifyTileSetFileChanged(const GUID& tileSetGuid);
 
     /**
-     * Drains hot-reload notifications raised on the watcher thread. A
-     * notification whose file content still matches what SaveMap last wrote is
-     * the store's own write echoing back and is ignored — reloading it would
-     * discard any edit made between the write and this drain. A genuinely
-     * external edit hashes differently and reloads.
+     * Drains watcher notifications on the main thread, once per resolved GUID.
+     * Maps whose bytes match the last save keep their resident edits. Other
+     * changed maps reload lazily, and changed tilesets invalidate derived data.
      */
     void DrainPendingReloads();
 

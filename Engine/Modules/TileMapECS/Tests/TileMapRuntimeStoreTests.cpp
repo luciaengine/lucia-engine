@@ -195,6 +195,112 @@ TEST_F(TileMapRuntimeStoreTest, EditVersionAdvancesOnlyOnAcceptedMutations)
     EXPECT_EQ(Store().EditVersion(GUID("99999999-8888-7777-6666-555555555555")), 0u);
 }
 
+TEST_F(TileMapRuntimeStoreTest, UnchangedHandWritesLeaveVersionsAndBothLedgersQuiet)
+{
+    std::vector<TileMap::ChunkCoord> chunks;
+    ASSERT_TRUE(Store().ConsumeDirtyChunks(m_Guid, kGroundLayerId, chunks));
+    ASSERT_TRUE(Store().ConsumeCollisionDirtyChunks(m_Guid, kGroundLayerId, chunks));
+    const uint64 version = Store().EditVersion(m_Guid);
+
+    for (int32 repeat = 0; repeat < 4; ++repeat)
+    {
+        ASSERT_TRUE(Store().SetCell(m_Guid, kGroundLayerId, -1, -1, MakeCell(4)));
+        ASSERT_TRUE(Store().SetCell(m_Guid, kGroundLayerId, -100, -100, TileMap::kEmptyCell));
+    }
+
+    EXPECT_EQ(Store().EditVersion(m_Guid), version);
+    EXPECT_FALSE(Store().ConsumeDirtyChunks(m_Guid, kGroundLayerId, chunks));
+    EXPECT_FALSE(Store().ConsumeCollisionDirtyChunks(m_Guid, kGroundLayerId, chunks));
+    EXPECT_EQ(Store().GetMap(m_Guid)->FindLayer(kGroundLayerId)->SortedChunkCoords().size(), 3u);
+}
+
+TEST_F(TileMapRuntimeStoreTest, UnchangedAutoWritesLeaveVersionsAndBothLedgersQuiet)
+{
+    ASSERT_TRUE(Store().SetCellAuto(m_Guid, kGroundLayerId, -1, -1, MakeCell(4), true));
+    std::vector<TileMap::ChunkCoord> chunks;
+    Store().ConsumeDirtyChunks(m_Guid, kGroundLayerId, chunks);
+    Store().ConsumeCollisionDirtyChunks(m_Guid, kGroundLayerId, chunks);
+    const uint64 version = Store().EditVersion(m_Guid);
+
+    ASSERT_TRUE(Store().SetCellAuto(m_Guid, kGroundLayerId, -1, -1, MakeCell(4), true));
+
+    EXPECT_EQ(Store().EditVersion(m_Guid), version);
+    EXPECT_FALSE(Store().ConsumeDirtyChunks(m_Guid, kGroundLayerId, chunks));
+    EXPECT_FALSE(Store().ConsumeCollisionDirtyChunks(m_Guid, kGroundLayerId, chunks));
+}
+
+TEST_F(TileMapRuntimeStoreTest, ProvenanceChangesAdvanceVersionWithoutRebuildingGeometry)
+{
+    std::vector<TileMap::ChunkCoord> chunks;
+    Store().ConsumeDirtyChunks(m_Guid, kGroundLayerId, chunks);
+    Store().ConsumeCollisionDirtyChunks(m_Guid, kGroundLayerId, chunks);
+    const uint64 version = Store().EditVersion(m_Guid);
+    const auto* layer = Store().GetMap(m_Guid)->FindLayer(kGroundLayerId);
+
+    ASSERT_TRUE(Store().SetCellAuto(m_Guid, kGroundLayerId, -1, -1, MakeCell(4), true));
+    EXPECT_TRUE(layer->IsAutoCell(-1, -1));
+    EXPECT_EQ(Store().EditVersion(m_Guid), version + 1);
+
+    ASSERT_TRUE(Store().SetCell(m_Guid, kGroundLayerId, -1, -1, MakeCell(4)));
+    EXPECT_FALSE(layer->IsAutoCell(-1, -1));
+    EXPECT_EQ(Store().EditVersion(m_Guid), version + 2);
+
+    ASSERT_TRUE(Store().SetCellAuto(m_Guid, kGroundLayerId, -1, -1, MakeCell(4), true));
+    EXPECT_TRUE(layer->IsAutoCell(-1, -1));
+    EXPECT_EQ(Store().EditVersion(m_Guid), version + 3);
+    EXPECT_FALSE(Store().ConsumeDirtyChunks(m_Guid, kGroundLayerId, chunks));
+    EXPECT_FALSE(Store().ConsumeCollisionDirtyChunks(m_Guid, kGroundLayerId, chunks));
+}
+
+TEST_F(TileMapRuntimeStoreTest, OrientationChangesAndErasesStillDirtyBothLedgers)
+{
+    std::vector<TileMap::ChunkCoord> chunks;
+    Store().ConsumeDirtyChunks(m_Guid, kGroundLayerId, chunks);
+    Store().ConsumeCollisionDirtyChunks(m_Guid, kGroundLayerId, chunks);
+    const uint64 version = Store().EditVersion(m_Guid);
+
+    for (const TileMap::TileCell cell : {MakeCell(4, true), TileMap::kEmptyCell})
+    {
+        ASSERT_TRUE(Store().SetCellAuto(m_Guid, kGroundLayerId, -1, -1, cell, false));
+        EXPECT_EQ(Store().GetCell(m_Guid, kGroundLayerId, -1, -1), cell);
+        ASSERT_TRUE(Store().ConsumeDirtyChunks(m_Guid, kGroundLayerId, chunks));
+        EXPECT_EQ(chunks, (std::vector<TileMap::ChunkCoord>{{-1, -1}}));
+        ASSERT_TRUE(Store().ConsumeCollisionDirtyChunks(m_Guid, kGroundLayerId, chunks));
+        EXPECT_EQ(chunks, (std::vector<TileMap::ChunkCoord>{{-1, -1}}));
+    }
+    EXPECT_EQ(Store().EditVersion(m_Guid), version + 2);
+}
+
+TEST_F(TileMapRuntimeStoreTest, EmptyCellOrientationFlagsDoNotCreateAnEdit)
+{
+    std::vector<TileMap::ChunkCoord> chunks;
+    Store().ConsumeDirtyChunks(m_Guid, kGroundLayerId, chunks);
+    Store().ConsumeCollisionDirtyChunks(m_Guid, kGroundLayerId, chunks);
+    const uint64 version = Store().EditVersion(m_Guid);
+
+    ASSERT_TRUE(Store().SetCell(m_Guid, kGroundLayerId, -100, -100, MakeCell(0, true, true, true)));
+
+    EXPECT_EQ(Store().EditVersion(m_Guid), version);
+    EXPECT_EQ(Store().GetCell(m_Guid, kGroundLayerId, -100, -100), TileMap::kEmptyCell);
+    EXPECT_FALSE(Store().ConsumeDirtyChunks(m_Guid, kGroundLayerId, chunks));
+    EXPECT_FALSE(Store().ConsumeCollisionDirtyChunks(m_Guid, kGroundLayerId, chunks));
+}
+
+TEST_F(TileMapRuntimeStoreTest, UnchangedIntGridWritesDoNotAdvanceVersion)
+{
+    const uint32 layerId = Store().GetMap(m_Guid)->AddLayer("Semantics", TileMap::TileMapLayerType::IntGrid);
+    const uint64 version = Store().EditVersion(m_Guid);
+
+    ASSERT_TRUE(Store().SetIntGridValue(m_Guid, layerId, -1, -1, 0));
+    EXPECT_EQ(Store().EditVersion(m_Guid), version);
+    ASSERT_TRUE(Store().SetIntGridValue(m_Guid, layerId, -1, -1, 7));
+    EXPECT_EQ(Store().EditVersion(m_Guid), version + 1);
+    ASSERT_TRUE(Store().SetIntGridValue(m_Guid, layerId, -1, -1, 7));
+    EXPECT_EQ(Store().EditVersion(m_Guid), version + 1);
+    ASSERT_TRUE(Store().SetIntGridValue(m_Guid, layerId, -1, -1, 0));
+    EXPECT_EQ(Store().EditVersion(m_Guid), version + 2);
+}
+
 TEST_F(TileMapRuntimeStoreTest, StructureVersionIgnoresCellWrites)
 {
     const uint64 afterLoad = Store().StructureVersion(m_Guid);
@@ -422,6 +528,50 @@ TEST_F(TileMapRuntimeStoreTest, ATileSetReloadBumpsTheVersionDerivedStateIsKeyed
     // Only the tileset that changed moves; a shared cache must not rebuild the
     // tables of every other tileset in the scene.
     EXPECT_EQ(store.TileSetVersion(other), 0u);
+}
+
+TEST_F(TileMapRuntimeStoreTest, RepeatedTileSetNotificationsCoalesceWithinEachDrain)
+{
+    const GUID tileSet("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    const GUID other("99999999-8888-7777-6666-555555555555");
+    Store().GetMap(m_Guid)->FindLayer(kGroundLayerId)->TileSetGuid = tileSet;
+    std::vector<TileMap::ChunkCoord> chunks;
+    Store().ConsumeDirtyChunks(m_Guid, kGroundLayerId, chunks);
+    Store().ConsumeCollisionDirtyChunks(m_Guid, kGroundLayerId, chunks);
+    const uint64 version = Store().EditVersion(m_Guid);
+
+    Store().NotifyTileSetFileChanged(tileSet);
+    Store().NotifyTileSetFileChanged(other);
+    Store().NotifyTileSetFileChanged(tileSet);
+    Store().NotifyTileSetFileChanged(other);
+    Store().DrainPendingReloads();
+
+    EXPECT_EQ(Store().TileSetVersion(tileSet), 1u);
+    EXPECT_EQ(Store().TileSetVersion(other), 1u);
+    EXPECT_EQ(Store().EditVersion(m_Guid), version + 1);
+    ASSERT_TRUE(Store().ConsumeDirtyChunks(m_Guid, kGroundLayerId, chunks));
+    EXPECT_EQ(chunks.size(), 3u);
+    ASSERT_TRUE(Store().ConsumeCollisionDirtyChunks(m_Guid, kGroundLayerId, chunks));
+    EXPECT_EQ(chunks.size(), 3u);
+
+    Store().DrainPendingReloads();
+    EXPECT_EQ(Store().TileSetVersion(tileSet), 1u);
+    Store().NotifyTileSetFileChanged(tileSet);
+    Store().DrainPendingReloads();
+    EXPECT_EQ(Store().TileSetVersion(tileSet), 2u);
+    EXPECT_EQ(Store().EditVersion(m_Guid), version + 2);
+    EXPECT_EQ(Store().TileSetVersion(other), 1u);
+}
+
+TEST_F(TileMapRuntimeStoreTest, TileSetNotificationsCoalesceAfterAnIdentityMove)
+{
+    const GUID replacement("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    Store().NotifyTileSetFileChanged(m_Guid);
+    Store().NotifyTileSetFileChanged(replacement);
+    Store().NotifyGuidRemapped(m_Guid, replacement);
+    Store().DrainPendingReloads();
+
+    EXPECT_EQ(Store().TileSetVersion(replacement), 1u);
 }
 
 TEST_F(TileMapRuntimeStoreTest, IdentityMoveKeepsUnsavedCellsAndBothDirtyLedgers)

@@ -255,14 +255,22 @@ void TileMapRuntimeStore::DrainPendingReloads()
         pendingTileSets.swap(m_PendingEvents->TileSets);
     }
     // Resolve after the queue drains: aliases can have appeared since enqueue.
-    for (const GUID& notified : pendingMaps)
+    for (GUID& notified : pendingMaps)
     {
-        RemapResidentGuid(notified, CanonicalGuid(notified));
+        const GUID resolved = CanonicalGuid(notified);
+        RemapResidentGuid(notified, resolved);
+        notified = resolved;
     }
-    for (const GUID& notified : pendingTileSets)
+    for (GUID& notified : pendingTileSets)
     {
-        RemapResidentGuid(notified, CanonicalGuid(notified));
+        const GUID resolved = CanonicalGuid(notified);
+        RemapResidentGuid(notified, resolved);
+        notified = resolved;
     }
+    std::sort(pendingMaps.begin(), pendingMaps.end());
+    pendingMaps.erase(std::unique(pendingMaps.begin(), pendingMaps.end()), pendingMaps.end());
+    std::sort(pendingTileSets.begin(), pendingTileSets.end());
+    pendingTileSets.erase(std::unique(pendingTileSets.begin(), pendingTileSets.end()), pendingTileSets.end());
     for (const GUID& guid : pendingMaps)
     {
         // A notification for bytes SaveMap itself wrote is an echo, not an
@@ -271,9 +279,8 @@ void TileMapRuntimeStore::DrainPendingReloads()
             continue;
         ReloadMap(guid);
     }
-    for (const GUID& notified : pendingTileSets)
+    for (const GUID& guid : pendingTileSets)
     {
-        const GUID guid = CanonicalGuid(notified);
         m_TileSets.erase(guid);
         // A re-slice moves the UV rects behind unchanged tile ids, so consumers
         // holding derived state have to rebuild it; the cells themselves are
@@ -483,19 +490,7 @@ TileMap::TileCell TileMapRuntimeStore::GetCell(const GUID& referencedGuid, uint3
 bool TileMapRuntimeStore::SetCell(const GUID& referencedGuid, uint32 layerId, int32 cellX, int32 cellY,
                                   TileMap::TileCell cell)
 {
-    const GUID mapGuid = ResolveResidentGuid(referencedGuid);
-    RuntimeMap* map = FindOrLoad(mapGuid);
-    if (!map)
-        return false;
-    TileMap::TileMapLayerData* layer = map->Data.FindLayer(layerId);
-    if (!layer)
-        return false;
-
-    layer->SetCell(cellX, cellY, cell);
-    layer->SetAutoCell(cellX, cellY, false);
-    MarkCellDirty(*map, layerId, cellX, cellY);
-    ++map->EditVersion;
-    return true;
+    return SetCellAuto(referencedGuid, layerId, cellX, cellY, cell, false);
 }
 
 bool TileMapRuntimeStore::SetCellAuto(const GUID& referencedGuid, uint32 layerId, int32 cellX, int32 cellY,
@@ -509,9 +504,20 @@ bool TileMapRuntimeStore::SetCellAuto(const GUID& referencedGuid, uint32 layerId
     if (!layer)
         return false;
 
-    layer->SetCell(cellX, cellY, cell);
-    layer->SetAutoCell(cellX, cellY, automatic);
-    MarkCellDirty(*map, layerId, cellX, cellY);
+    if (TileMap::CellIsEmpty(cell))
+        cell = TileMap::kEmptyCell;
+    const bool cellChanged = layer->GetCell(cellX, cellY) != cell;
+    const bool provenanceChanged = layer->IsAutoCell(cellX, cellY) != automatic;
+    if (!cellChanged && !provenanceChanged)
+        return true;
+
+    if (cellChanged)
+    {
+        layer->SetCell(cellX, cellY, cell);
+        MarkCellDirty(*map, layerId, cellX, cellY);
+    }
+    if (provenanceChanged)
+        layer->SetAutoCell(cellX, cellY, automatic);
     ++map->EditVersion;
     return true;
 }
@@ -537,6 +543,9 @@ bool TileMapRuntimeStore::SetIntGridValue(const GUID& referencedGuid, uint32 lay
     TileMap::TileMapLayerData* layer = map->Data.FindLayer(layerId);
     if (!layer || layer->Type != TileMap::TileMapLayerType::IntGrid)
         return false;
+
+    if (layer->GetIntGridValue(cellX, cellY) == value)
+        return true;
 
     layer->SetIntGridValue(cellX, cellY, value);
     // An IntGrid layer draws no tiles, so nothing consumes its dirty chunks —
