@@ -1,6 +1,7 @@
 #pragma once
 
 #include "UI/Controls/DockPanel.h"
+#include "Events/Event.h"
 
 #include <cstdint>
 #include <functional>
@@ -21,7 +22,10 @@ class UIElement;
 struct PackageManagerEntry
 {
     std::string Name;
+    std::string DisplayName;
     std::string Version;
+    std::string IconPath;       // resolved local artwork; empty uses the package icon
+    std::string ScreenshotPath; // empty omits the screenshot
     std::string SourceKind; // "embedded" / "file" / "git" / "engine"
     std::string Spec;       // raw manifest spec text ("" for implicit engine packages)
     std::string GitCommit;  // full resolved sha, git packages only
@@ -109,6 +113,8 @@ class PackageManagerPanel : public DockPanel
   private:
     void BuildLayout();
     void RebuildRows(const std::vector<PackageManagerEntry>& entries);
+    void SetSearchQuery(const std::string& query);
+    void ApplyFilter();
     UIElement* BuildRow(const PackageManagerEntry& entry);
     // Rebuild the right pane from the selected entry (empty-state when nothing
     // selected or the selection left the resolution).
@@ -127,9 +133,12 @@ class PackageManagerPanel : public DockPanel
 
     SnapshotProvider m_Provider;
     PackageManagerActions m_Actions;
+    std::vector<PackageManagerEntry> m_Entries;
+    std::string m_SearchQuery;
 
     Label* m_StatusLabel = nullptr;
     Label* m_ActionStatusLabel = nullptr;
+    Label* m_RefreshStatusLabel = nullptr;
     TextField* m_AddField = nullptr;
     UIElement* m_IssuesBox = nullptr;
     UIElement* m_ListContainer = nullptr;   // ScrollView viewport for list rows
@@ -141,6 +150,7 @@ class PackageManagerPanel : public DockPanel
     std::string m_ConfirmRemovePackage;
     std::string m_ActionStatus;
     bool m_ActionStatusIsError = false;
+    EventSubscription m_PreviewSettingsSubscription;
 };
 
 } // namespace GameEngine

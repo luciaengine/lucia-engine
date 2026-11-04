@@ -8,6 +8,7 @@
 #include "Panels/PackageManagerPanel.h"
 #include "Platform/Shell.h"
 #include "Scripting/ScriptManager.h"
+#include "Types/PathUtils.h"
 
 #include <algorithm>
 #include <set>
@@ -18,6 +19,29 @@ namespace GameEngine
 {
 namespace Editor
 {
+namespace
+{
+
+std::string ResolvePackagePreviewPath(const std::filesystem::path& packageRoot,
+                                      const std::string& relativePath)
+{
+    if (relativePath.empty())
+        return {};
+    std::error_code error;
+    const auto root = std::filesystem::canonical(packageRoot, error);
+    if (error)
+        return {};
+    const auto path = std::filesystem::canonical(root / PathFromUtf8(relativePath), error);
+    if (error || RelativePathUnderRoot(path, root).empty() ||
+        !std::filesystem::is_regular_file(path, error) || error)
+        return {};
+    const std::string extension = LowerCaseExtension(path);
+    if (extension != ".png" && extension != ".jpg" && extension != ".jpeg" && extension != ".svg")
+        return {};
+    return PathToUtf8(path);
+}
+
+} // namespace
 
 void PackageManagerController::Initialize(Dependencies deps)
 {
@@ -175,12 +199,15 @@ void PackageManagerController::WirePanels()
             return true;
         };
 
-        const auto appendEntries = [&](const std::vector<ResolvedPackage>& packages) {
+        const auto appendEntries = [&](const std::vector<ResolvedPackage>& packages, bool enabled) {
             for (const ResolvedPackage& pkg : packages)
             {
                 PackageManagerEntry entry;
                 entry.Name = pkg.Manifest.Name;
+                entry.DisplayName = pkg.Manifest.DisplayName;
                 entry.Version = pkg.Manifest.Version.ToString();
+                entry.IconPath = ResolvePackagePreviewPath(pkg.RootDir, pkg.Manifest.Icon);
+                entry.ScreenshotPath = ResolvePackagePreviewPath(pkg.RootDir, pkg.Manifest.Screenshot);
                 switch (pkg.SourceKind)
                 {
                     case PackageSourceKind::Embedded: entry.SourceKind = "embedded"; break;
@@ -194,7 +221,7 @@ void PackageManagerController::WirePanels()
                 entry.GitCommit = pkg.GitCommit;
                 if (pkg.SourceKind == PackageSourceKind::Git)
                     entry.GitRef = specRef(entry.Spec);
-                entry.Enabled = manifest.Disabled.count(pkg.Manifest.Name) == 0;
+                entry.Enabled = enabled;
                 entry.Mounted = std::find(m_MountedAliases.begin(), m_MountedAliases.end(),
                                           pkg.Alias) != m_MountedAliases.end();
                 // The Mounted flag above only tracks asset mounts. A package
@@ -221,8 +248,8 @@ void PackageManagerController::WirePanels()
                 snapshot.Entries.push_back(std::move(entry));
             }
         };
-        appendEntries(m_Resolution.MountOrder);
-        appendEntries(m_Resolution.Disabled);
+        appendEntries(m_Resolution.MountOrder, true);
+        appendEntries(m_Resolution.Disabled, false);
 
         // Declared dependencies that failed to resolve (dead file: path, bad
         // spec, cold git cache offline): synthesize MISSING rows so the panel

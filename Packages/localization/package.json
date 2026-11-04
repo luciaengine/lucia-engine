@@ -2,6 +2,7 @@
   "name": "localization",
   "version": "1.0.0",
   "displayName": "Localization",
+  "icon": "Preview/icon.svg",
   "assets": "Assets/",
   "modules": [
     {

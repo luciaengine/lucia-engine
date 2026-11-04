@@ -1245,7 +1245,7 @@ private:
     bool m_PostFxCasEnabled = true;
     bool m_PostFxCrtEnabled = true;
     bool m_PostFxAutoExposureEnabled = false;
-    bool m_PostFxAutoExposureUseAdaptationDelay = true;
+    bool m_PostFxAutoExposureUseAdaptationDelay = false;
     // EV100 pin for the Scene View while Auto Exposure is off.
     float m_PostFxFixedExposureEv = Components::kDefaultManualExposureEv;
     // Auto-mode metering tune: adaptation clamps (EV100) + ± stop compensation.

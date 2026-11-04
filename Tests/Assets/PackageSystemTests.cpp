@@ -311,6 +311,44 @@ TEST(PackageManifestParse, DefaultsApply)
     EXPECT_EQ(manifest.AssetsDir, "Assets/");
     EXPECT_TRUE(manifest.EnabledByDefault);
     EXPECT_TRUE(manifest.Modules.empty());
+    EXPECT_TRUE(manifest.Icon.empty());
+    EXPECT_TRUE(manifest.Screenshot.empty());
+}
+
+TEST(PackageManifestParse, PreviewArtworkIsOptionalAndRelativeToPackageRoot)
+{
+    PackageManifest manifest;
+    std::string error;
+    ASSERT_TRUE(TryParsePackageManifest(
+        R"({"name":"art-pack","version":"1.0.0","icon":"Preview/icon.svg","screenshot":"Preview/screenshot.png"})",
+        "package.json", manifest, error)) << error;
+    EXPECT_EQ(manifest.Icon, "Preview/icon.svg");
+    EXPECT_EQ(manifest.Screenshot, "Preview/screenshot.png");
+
+    ASSERT_TRUE(TryParsePackageManifest(
+        R"({"name":"art-pack","version":"1.0.0","icon":"icon.png"})",
+        "package.json", manifest, error)) << error;
+    EXPECT_EQ(manifest.Icon, "icon.png");
+    EXPECT_TRUE(manifest.Screenshot.empty());
+}
+
+TEST(PackageManifestParse, RejectsUnsafeOrMalformedPreviewPaths)
+{
+    for (const std::string field : {"icon", "screenshot"})
+    {
+        for (const std::string value : {
+                 "null", "42", "[]", "\"\"", "\".\"", "\"../outside.png\"",
+                 "\"Preview/../../outside.png\"", "\"/tmp/outside.png\"",
+                 "\"C:/outside.png\"", "\"https://example.com/image.png\"",
+                 "\"Preview\\\\icon.png\"", "\"icon\\u0000.png\""})
+        {
+            PackageManifest manifest;
+            std::string error;
+            const std::string json = "{\"name\":\"art-pack\",\"version\":\"1.0.0\",\"" + field + "\":" + value + "}";
+            EXPECT_FALSE(TryParsePackageManifest(json, "art-pack/package.json", manifest, error)) << json;
+            EXPECT_NE(error.find("'" + field + "'"), std::string::npos) << error;
+        }
+    }
 }
 
 // A code-only package (unity-import: an Editor module, no mountable content)

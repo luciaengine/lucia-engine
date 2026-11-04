@@ -1009,6 +1009,7 @@ UIContextMenu::UIContextMenu() = default;
         // line up down the menu instead of stepping right wherever an icon
         // happens to resolve.
         auto icon = std::make_unique<UIElement>();
+        icon->AddClass("icon");
         icon->AddClass("context-menu-item-icon");
         icon->Overrides().Set(Style::PointerEvents, false);
         const std::string& iconPath = item.iconPath;

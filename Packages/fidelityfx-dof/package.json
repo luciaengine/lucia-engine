@@ -2,5 +2,6 @@
   "name": "fidelityfx-dof",
   "version": "1.1.4",
   "displayName": "FidelityFX Depth of Field",
+  "icon": "Preview/icon.svg",
   "assets": "Assets/"
 }

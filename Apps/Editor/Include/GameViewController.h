@@ -141,7 +141,7 @@ class GameViewController
     struct DeclaredCamera
     {
         Rendering::CameraData Data{};
-        Components::ExposureMode ExposureMode = Components::ExposureMode::Auto;
+        Components::ExposureMode ExposureMode = Components::ExposureMode::Fixed;
         uint64_t FrameIndex = 0;
         uint32_t Width = 0;
         uint32_t Height = 0;

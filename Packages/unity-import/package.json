@@ -2,6 +2,7 @@
   "name": "unity-import",
   "version": "1.0.0",
   "displayName": "Unity Package Importer",
+  "icon": "Preview/icon.svg",
   "assets": "",
   "modules": [
     {

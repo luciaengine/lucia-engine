@@ -230,7 +230,9 @@ TEST(Exposure, ManualEvDefaultIsSharedAcrossCameraAndViewRegistry)
     EXPECT_FLOAT_EQ(Components::Camera{}.ManualExposureEV, Components::kDefaultManualExposureEv);
     EXPECT_FLOAT_EQ(Engine::Renderer::ViewRegistry::CameraExposure{}.ManualExposureEV,
                     Components::kDefaultManualExposureEv);
-    // Auto stays the camera's default mode: the shared EV is the fallback a manual camera lands on,
-    // not a switch to manual exposure.
-    EXPECT_EQ(Components::Camera{}.ExposureControl, ExposureMode::Auto);
+    EXPECT_EQ(Components::Camera{}.ExposureControl, ExposureMode::Fixed);
+    EXPECT_NEAR(Rendering::LinearExposureToEv(Components::Camera{}.Exposure),
+                Components::kDefaultManualExposureEv, 1.0e-4f);
+    EXPECT_EQ(Engine::Renderer::ViewRegistry::CameraExposure{}.Mode, static_cast<int32>(ExposureMode::Fixed));
+    EXPECT_FLOAT_EQ(Engine::Renderer::ViewRegistry::CameraExposure{}.Exposure, Components::Camera{}.Exposure);
 }

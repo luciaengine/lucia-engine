@@ -1,15 +1,19 @@
 #include "Panels/PackageManagerPanel.h"
 
+#include "Editor/Settings/AssetPreviewSettings.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/ScrollView.h"
+#include "UI/Controls/SearchFieldWithFilter.h"
 #include "UI/Controls/Splitter.h"
 #include "UI/Controls/TextField.h"
 #include "UI/Controls/WeightedPane.h"
+#include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/UIElement.h"
 #include "UI/UIEvents.h"
 
 #include "Logger/Logger.h"
+#include "Types/StringUtils.h"
 
 #include <algorithm>
 #include <memory>
@@ -64,6 +68,22 @@ std::unique_ptr<Button> MakeActionButton(const std::string& id, const std::strin
     return button;
 }
 
+std::unique_ptr<UIElement> MakePackageIcon(const PackageManagerEntry& entry, bool detail)
+{
+    auto icon = std::make_unique<UIElement>();
+    icon->SetId(detail ? "PackageDetailIcon" : "pkg-icon-" + entry.Name);
+    icon->AddClass(detail ? "pkg-detail-icon" : "pkg-row-icon");
+    icon->SetTooltip(entry.Name);
+    if (icon)
+    {
+        if (entry.IconPath.empty())
+            icon->AddClass("box-icon");
+        else
+            UI::Layout::SetBackgroundPath(*icon, entry.IconPath);
+    }
+    return icon;
+}
+
 // "file" is the internal source kind for a local folder dependency; users read
 // it as "local".
 std::string KindLabel(const std::string& sourceKind)
@@ -81,12 +101,22 @@ PackageManagerPanel::PackageManagerPanel()
     // instead of borrowing inspector CSS context that isn't present here.
     RequestSubtreeStyleAssetPath("UI/panels/PackageManagerPanel.css", "editor");
     BuildLayout();
+    m_PreviewSettingsSubscription = Editor::PackagePreviewsChanged().Subscribe(
+        [this]() { PostSafeAction([this]() { RefreshList(); }); });
 }
 
 void PackageManagerPanel::BuildLayout()
 {
     auto root = std::make_unique<UIElement>();
     root->AddClass("pkg-root");
+
+    auto search = std::make_unique<SearchFieldWithFilter>();
+    search->AddClass("pkg-search");
+    search->SetFieldId("PackageSearchField");
+    search->SetPlaceholder("Search packages");
+    search->SetOnQueryChanging([this](const std::string& query) { SetSearchQuery(query); });
+    search->SetOnQueryChanged([this](const std::string& query) { SetSearchQuery(query); });
+    root->AddChild(std::move(search));
 
     // Toolbar: global actions — add (text path / git URL), browse, refresh-all.
     auto toolbar = std::make_unique<UIElement>();
@@ -137,10 +167,23 @@ void PackageManagerPanel::BuildLayout()
     refreshButton->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) {
         if (!m_Actions.Refresh)
             return;
-        RunAction([this](std::string& outError) { return m_Actions.Refresh(outError); },
-                  "Re-resolved.");
+        if (m_RefreshStatusLabel)
+            m_RefreshStatusLabel->AddClass("hidden");
+        RunAction([this](std::string& outError) {
+            if (!m_Actions.Refresh(outError))
+                return false;
+            SetActionStatus("", false);
+            if (m_RefreshStatusLabel)
+                m_RefreshStatusLabel->RemoveClass("hidden");
+            return true;
+        }, "");
     });
     toolbar->AddChild(std::move(refreshButton));
+    auto refreshStatus = MakeLabel("pkg-refresh-status", "Re-resolved.");
+    refreshStatus->SetId("PackageRefreshStatus");
+    refreshStatus->AddClass("hidden");
+    m_RefreshStatusLabel = refreshStatus.get();
+    toolbar->AddChild(std::move(refreshStatus));
     root->AddChild(std::move(toolbar));
 
     // Status line: package count / reopen notice.
@@ -281,6 +324,7 @@ void PackageManagerPanel::RefreshList()
             m_StatusLabel->SetText("No project open.");
             m_StatusLabel->RemoveClass("notice");
         }
+        m_Entries.clear();
         RebuildRows({});
         RebuildDetail({});
         return;
@@ -320,8 +364,33 @@ void PackageManagerPanel::RefreshList()
             m_IssuesBox->AddChild(MakeLabel("pkg-issue-warn", warning));
     }
 
-    RebuildRows(entries);
-    RebuildDetail(entries);
+    m_Entries = entries;
+    ApplyFilter();
+}
+
+void PackageManagerPanel::SetSearchQuery(const std::string& query)
+{
+    if (m_SearchQuery == query)
+        return;
+    m_SearchQuery = query;
+    PostSafeAction([this]() { ApplyFilter(); });
+}
+
+void PackageManagerPanel::ApplyFilter()
+{
+    std::vector<PackageManagerEntry> visible;
+    for (const PackageManagerEntry& entry : m_Entries)
+    {
+        if (ContainsIgnoreCase(entry.Name, m_SearchQuery) ||
+            ContainsIgnoreCase(entry.DisplayName, m_SearchQuery) ||
+            ContainsIgnoreCase(entry.SourceKind, m_SearchQuery) ||
+            ContainsIgnoreCase(entry.Version, m_SearchQuery))
+            visible.push_back(entry);
+    }
+    RebuildRows(visible);
+    RebuildDetail(visible);
+    if (visible.empty() && !m_SearchQuery.empty() && m_ListContainer)
+        m_ListContainer->AddChild(MakeLabel("pkg-detail-empty", "No packages match your search."));
 }
 
 void PackageManagerPanel::RebuildRows(const std::vector<PackageManagerEntry>& entries)
@@ -348,15 +417,14 @@ UIElement* PackageManagerPanel::BuildRow(const PackageManagerEntry& entry)
     // Line 1: name + version, then the kind pill pushed to the right.
     auto main = std::make_unique<UIElement>();
     main->AddClass("pkg-row-main");
+    if (Editor::GetPackagePreviewsEnabled())
+        main->AddChild(MakePackageIcon(entry, false));
     main->AddChild(MakeLabel("pkg-row-name", entry.Name));
     main->AddChild(MakeLabel("pkg-row-version", entry.Version));
     auto rowSpacer = std::make_unique<UIElement>();
     rowSpacer->AddClass("pkg-row-spacer");
     main->AddChild(std::move(rowSpacer));
-    main->AddChild(MakePill(entry.SourceKind, KindLabel(entry.SourceKind)));
-    row->AddChild(std::move(main));
-
-    // Line 2: status badges — only present when the row has state to flag.
+    // Status badges share the main row and keep its height stable.
     const bool showDisabled = !entry.Enabled && !entry.Missing;
     const bool showDrift =
         !entry.Missing && (entry.MountDrift || (entry.Enabled != entry.Mounted));
@@ -385,8 +453,10 @@ UIElement* PackageManagerPanel::BuildRow(const PackageManagerEntry& entry)
             badge->AddClass("drift");
             badges->AddChild(std::move(badge));
         }
-        row->AddChild(std::move(badges));
+        main->AddChild(std::move(badges));
     }
+    main->AddChild(MakePill(entry.SourceKind, KindLabel(entry.SourceKind)));
+    row->AddChild(std::move(main));
 
     const std::string name = entry.Name;
     row->RegisterEventHandler(kEventMouseDown, [this, name](UIEvent& e) {
@@ -428,6 +498,8 @@ void PackageManagerPanel::RebuildDetail(const std::vector<PackageManagerEntry>& 
 
     auto head = std::make_unique<UIElement>();
     head->AddClass("pkg-detail-head");
+    if (Editor::GetPackagePreviewsEnabled())
+        head->AddChild(MakePackageIcon(entry, true));
     head->AddChild(MakeLabel("pkg-detail-name", entry.Name));
     head->AddChild(MakeLabel("pkg-detail-version", entry.Version));
     m_DetailContainer->AddChild(std::move(head));
@@ -437,6 +509,19 @@ void PackageManagerPanel::RebuildDetail(const std::vector<PackageManagerEntry>& 
     kindRow->AddChild(MakePill(entry.SourceKind, KindLabel(entry.SourceKind)));
     kindRow->AddChild(MakeLabel("pkg-detail-state", entry.Enabled ? "enabled" : "disabled"));
     m_DetailContainer->AddChild(std::move(kindRow));
+
+    if (Editor::GetPackagePreviewsEnabled() && !entry.ScreenshotPath.empty())
+    {
+        auto screenshot = std::make_unique<UIElement>();
+        screenshot->SetId("PackageDetailScreenshot");
+        screenshot->AddClass("pkg-screenshot");
+        screenshot->SetTooltip(entry.Name + " screenshot");
+        if (screenshot)
+        {
+            UI::Layout::SetBackgroundPath(*screenshot, entry.ScreenshotPath);
+            m_DetailContainer->AddChild(std::move(screenshot));
+        }
+    }
 
     BuildDetailInfo(*m_DetailContainer, entry);
     BuildDetailActions(*m_DetailContainer, entry);
