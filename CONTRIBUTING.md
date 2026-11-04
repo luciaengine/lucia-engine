@@ -13,7 +13,7 @@ AI-assisted contributions are welcome and follow the same review standards as an
 - **The general engine repository** holds the public engine source, tests, shipped assets, packages, build system, user documentation, and general contributor and team workflow material. Keep maintained design documents, test maps, review guidance, follow-up briefs, and reusable agent scripts here alongside the code they support.
 - **The private console repository** holds console-specific code and documentation restricted by platform agreements. Access is limited to authorized maintainers. Keep restricted SDK details, console build instructions, evidence, and reports there; never copy them into this repository or a public pull request.
 
-There is no separate documentation or Workbench repository requirement. A general engine contribution must be buildable, testable, and reviewable using this repository and its documented dependencies, without private console access. `GE_WORKBENCH` and a sibling `GameEngine-Workbench` checkout are not required.
+General engine contributions are built, tested, and reviewed using this repository and its documented dependencies.
 
 ## Generated files and contribution evidence
 
@@ -21,7 +21,7 @@ Keep generated and temporary output out of Git: generated `.assetdb` files, buil
 
 Put validation results and review summaries in the pull request. Attach supporting screenshots, logs, and reports there, or keep them in an external evidence folder when they are only needed locally. Restricted console evidence stays in the private console repository.
 
-Maintained documentation, design decisions, roadmaps, test maps, and reusable contributor tools belong in the general engine repository alongside the code they support. No separate Workbench repository is required.
+Maintained documentation, design decisions, roadmaps, test maps, and reusable contributor tools belong in the general engine repository alongside the code they support.
 
 ## Documentation
 

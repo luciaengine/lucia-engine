@@ -8,7 +8,7 @@ Entry point for coding agents working in this repository, whichever tool runs th
 - `CONTRIBUTING.md` for the short form of the rules, written for people.
 - `.claude/rules/rendering.md` when touching the renderer, shaders or GPU debugging; `ecs.md` for ECS components and systems; `editor-ui.md` for editor UI, CSS, settings pages and asset mounts; `scripting.md` for the managed side; `documentation.md` for `docs/`.
 - `CodingStyle.md` for naming and layout; `BUILD.md` for building from a fresh clone on every platform.
-- `CONTRIBUTING.md` defines the two-repository boundary: general engine code, documentation, and maintained workflow material stay here; restricted console code and documentation stay in the private console repository. General contributors do not need `GameEngine-Workbench`, `GE_WORKBENCH`, or console access. Keep maintained workflow guidance under `docs/development/` and reusable scripts under `Tools/`; keep generated evidence in pull request attachments or an external evidence folder.
+- `CONTRIBUTING.md` defines the two-repository boundary: general engine code, documentation, and maintained workflow material stay here; restricted console code and documentation stay in the private console repository. General contributors build, test, and review changes using this repository and its documented dependencies. Keep maintained workflow guidance under `docs/development/` and reusable scripts under `Tools/`; keep generated evidence in pull request attachments or an external evidence folder.
 
 ## What this is
 

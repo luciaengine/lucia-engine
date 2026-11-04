@@ -2,7 +2,7 @@
 
 @AGENTS.md
 
-Guidance beyond the shared entry point imported above. `CONTRIBUTING.md` is the short form of the rules for people; this file wins where they disagree. Area conventions load on demand from `.claude/rules/` when you open matching files. General team workflow guidance, test maps, evidence checklists, and maintained designs belong in this repository under `docs/development/`, with reusable scripts under `Tools/`. Only restricted console code and documentation belong in the second, private repository. No Workbench checkout or `GE_WORKBENCH` setting is required.
+Guidance beyond the shared entry point imported above. `CONTRIBUTING.md` is the short form of the rules for people; this file wins where they disagree. Area conventions load on demand from `.claude/rules/` when you open matching files. General team workflow guidance, test maps, evidence checklists, and maintained designs belong in this repository under `docs/development/`, with reusable scripts under `Tools/`. Only restricted console code and documentation belong in the second, private repository. General contributions use this repository and its documented dependencies.
 
 ## Engineering values
 
