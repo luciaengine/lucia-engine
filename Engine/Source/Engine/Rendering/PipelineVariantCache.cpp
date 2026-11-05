@@ -241,7 +241,8 @@ PipelineVariantCache::ResolveWarmPipeline(const Material& material,
 {
     const Rendering::PipelineFormatKey fk = ctx.BuildCurrentFormatKey();
     Rendering::IDevice* device = m_Materials->GetDevice();
-    if (auto h = device->TryGetWarmGraphicsPipeline(entry.Current.PipelineId, fk); h.IsValid())
+    const auto pipelineId = ctx.ResolveGraphicsPipelineId(entry.Current.PipelineId);
+    if (auto h = device->TryGetWarmGraphicsPipeline(pipelineId, fk); h.IsValid())
     {
         m_ServedGenerations.Record(materialIndex, passClass, entry.Current.MaterialVersion);
         return {h, &entry.Current};
@@ -252,7 +253,17 @@ PipelineVariantCache::ResolveWarmPipeline(const Material& material,
     // hand it to a worker and serve the entry's previous unit meanwhile:
     // pipeline, meta and set layouts as one snapshot, so the descriptor set the
     // binder builds matches the pipeline layout it binds.
-    RequestConcreteWarm(material, entry.Current.PipelineId, fk);
+    RequestConcreteWarm(material, pipelineId, fk);
+    // The unspecialized current unit retains runtime branches while its optimized form builds.
+    if (pipelineId != entry.Current.PipelineId)
+    {
+        if (auto h = device->TryGetWarmGraphicsPipeline(entry.Current.PipelineId, fk); h.IsValid())
+        {
+            m_ServedGenerations.Record(materialIndex, passClass, entry.Current.MaterialVersion);
+            return {h, &entry.Current};
+        }
+        RequestConcreteWarm(material, entry.Current.PipelineId, fk);
+    }
     if (entry.Previous.PipelineId.IsValid())
     {
         auto h = device->TryGetWarmGraphicsPipeline(entry.Previous.PipelineId, fk);

@@ -1,6 +1,8 @@
 #ifndef GE_LOCAL_REFLECTIONS_GLSL
 #define GE_LOCAL_REFLECTIONS_GLSL
 
+#include "forward_shader_specialization.glsl"
+
 // Shared by forward IBL and the screen-space reflection replacement estimate.
 // Explicit samplers keep the two-probe tier independent of descriptor indexing.
 layout(set = 0, binding = 51) uniform samplerCube ge_localIrradiance0;
@@ -43,6 +45,8 @@ float GE_ProbeInfluence(GE_LocalProbeData probe, vec3 positionWS)
 // entering a high-priority blend shell is continuous. z is the sky remainder.
 vec3 GE_LocalProbeWeights(vec3 positionWS)
 {
+    if (!GE_FORWARD_LOCAL_PROBES)
+        return vec3(0.0, 0.0, 1.0);
     float a = GE_ProbeInfluence(Env.localProbes[0], positionWS);
     float b = GE_ProbeInfluence(Env.localProbes[1], positionWS);
     if (Env.localProbes[0].control.x > Env.localProbes[1].control.x) b *= 1.0 - a;
