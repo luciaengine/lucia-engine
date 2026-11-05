@@ -1,9 +1,9 @@
 #include "Engine/Rendering/Pipeline/Nodes/ComputeDescriptorScratch.h"
 #include "Memory/AllocationCountScope.h"
 
-#include <gtest/gtest.h>
-
 #include <cstdint>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;

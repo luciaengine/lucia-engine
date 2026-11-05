@@ -30,8 +30,9 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
-#include <nlohmann/json.hpp>
 #include <unordered_set>
+
+#include <nlohmann/json.hpp>
 
 namespace GameEngine::Engine::Renderer { using namespace ::GameEngine::Rendering; }
 

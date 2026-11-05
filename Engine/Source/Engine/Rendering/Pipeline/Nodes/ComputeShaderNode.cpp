@@ -20,8 +20,9 @@
 #include <cmath>
 #include <array>
 #include <cstring>
-#include <nlohmann/json.hpp>
 #include <unordered_map>
+
+#include <nlohmann/json.hpp>
 
 namespace GameEngine::Engine::Renderer { using namespace ::GameEngine::Rendering; }
 
