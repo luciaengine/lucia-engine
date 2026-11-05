@@ -3009,7 +3009,7 @@ bool VulkanDevice::CreateLogicalDevice()
         // Fallback: retry with a minimal feature/ext set to tolerate picky drivers/VMs.
         // Keep swapchain enabled when rendering to a window; otherwise the device
         // can be created but presentation entry points are unavailable.
-        Logger::Log::Warning("Retrying vkCreateDevice with minimal device features and required presentation extensions...");
+        Logger::Log::Warning("Retrying vkCreateDevice with minimal device features and required device extensions...");
         std::vector<const char*> fallbackExtensions;
         if (m_UseSwapchain && CheckExtensionSupport(VK_KHR_SWAPCHAIN_EXTENSION_NAME))
         {
@@ -3119,17 +3119,14 @@ bool VulkanDevice::CreateLogicalDevice()
             fallback12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
         m_DescriptorBufferEnabledAtInit = false;
         m_Capabilities.supportsDescriptorBuffer = false;
-        // The fallback list carries presentation and required portability, so the device this path
-        // creates genuinely does not enable descriptor buffer.
+        // The fallback enables presentation and required portability extensions only.
+        // Descriptor buffers remain disabled.
         m_DescriptorBufferExtensionEnabledOnDevice = false;
         m_RayQueryEnabledAtInit = false;
         m_SwapchainColorSpaceExtEnabled = false;
         m_HdrMetadataExtEnabled = false;
-        // The fallback list carries presentation and required portability, so neither the
-        // checkpoints nor the device-fault extension is enabled on this device
-        // however their probes went. Leaving either flag set would resolve an
-        // entry point for an extension this device never enabled, and report the
-        // instrument as armed right up until the loss it cannot service.
+        // The fallback does not enable checkpoint or device-fault extensions.
+        // Clear their flags before resolving device entry points.
         m_DeviceDiagnosticCheckpointsEnabledAtInit = false;
         m_DeviceFaultEnabledAtInit = false;
         // m_DebugUtilsExtEnabled is deliberately NOT cleared with them:
