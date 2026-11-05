@@ -1,5 +1,7 @@
 #include "Engine/Rendering/Pipeline/Nodes/ComputeShaderNode.h"
 
+#include "Engine/Rendering/Pipeline/Nodes/ComputeDescriptorScratch.h"
+
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/Pipeline/ExpressionEvaluator.h"
@@ -18,9 +20,9 @@
 #include <cmath>
 #include <array>
 #include <cstring>
-#include <nlohmann/json.hpp>
 #include <unordered_map>
-#include <unordered_set>
+
+#include <nlohmann/json.hpp>
 
 namespace GameEngine::Engine::Renderer { using namespace ::GameEngine::Rendering; }
 
@@ -966,8 +968,9 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                     }
                 };
 
-                std::vector<Rendering::DescriptorSetUpdate> updates;
-                updates.reserve(bufBinds.size() + texBinds.size() + m_Samplers.size() + 2);
+                // Parallel recording workers retain separate update arrays and resource lists.
+                thread_local Detail::ComputeDescriptorScratch scratch;
+                scratch.Reset();
 
                 for (const auto& bb : bufBinds)
                 {
@@ -979,18 +982,15 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                         if (dtype == Rendering::DescriptorType::StorageBuffer ||
                             dtype == Rendering::DescriptorType::UniformBuffer)
                         {
-                            Rendering::DescriptorSetUpdate u{};
-                            u.binding = binding;
-                            u.type = dtype;
-                            u.buffers = {bb.Buf};
+                            auto& update = scratch.Add(binding, dtype);
+                            update.buffers = {bb.Buf};
                             // Ring-backed bindings live at a nonzero offset
                             // inside the shared upload buffer.
                             if (bb.Offset != 0 || bb.Size != 0)
                             {
-                                u.bufferOffsets = {static_cast<size_t>(bb.Offset)};
-                                u.bufferRanges = {static_cast<size_t>(bb.Size)};
+                                update.bufferOffsets = {static_cast<size_t>(bb.Offset)};
+                                update.bufferRanges = {static_cast<size_t>(bb.Size)};
                             }
-                            updates.push_back(std::move(u));
                         }
                     }
                 }
@@ -1001,16 +1001,13 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                     if (Detail::TryGetSet0BindingByName(*m_ShaderMeta, tb.Name, binding, dtype))
                     {
                         overrideTypeFromLayout(binding, dtype);
-                        Rendering::DescriptorSetUpdate u{};
-                        u.binding = binding;
-                        u.type = dtype;
-                        u.textures = {tb.Tex};
+                        auto& update = scratch.Add(binding, dtype);
+                        update.textures = {tb.Tex};
                         if (dtype == Rendering::DescriptorType::CombinedImageSampler &&
                             m_LinearClampSampler.IsValid())
-                            u.samplers = {Detail::RequiresPointSampling(
+                            update.samplers = {Detail::RequiresPointSampling(
                                 device->GetTextureFormat(tb.Tex), device->GetCapabilities())
                                 ? m_PointClampSampler : m_LinearClampSampler};
-                        updates.push_back(std::move(u));
                     }
                 }
                 for (const auto& kv : m_Samplers)
@@ -1021,11 +1018,8 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                         if (dtype == Rendering::DescriptorType::Sampler &&
                             m_LinearClampSampler.IsValid())
                         {
-                            Rendering::DescriptorSetUpdate u{};
-                            u.binding = binding;
-                            u.type = Rendering::DescriptorType::Sampler;
-                            u.samplers = {m_LinearClampSampler};
-                            updates.push_back(std::move(u));
+                            auto& update = scratch.Add(binding, Rendering::DescriptorType::Sampler);
+                            update.samplers = {m_LinearClampSampler};
                         }
                     }
                 }
@@ -1039,11 +1033,8 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                         overrideTypeFromLayout(binding, dtype);
                         if (dtype == Rendering::DescriptorType::StorageBuffer)
                         {
-                            Rendering::DescriptorSetUpdate u{};
-                            u.binding = binding;
-                            u.type = Rendering::DescriptorType::StorageBuffer;
-                            u.buffers = {targetBuf};
-                            updates.push_back(std::move(u));
+                            auto& update = scratch.Add(binding, Rendering::DescriptorType::StorageBuffer);
+                            update.buffers = {targetBuf};
                         }
                     }
                 }
@@ -1057,15 +1048,13 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                         overrideTypeFromLayout(binding, dtype);
                         if (dtype == Rendering::DescriptorType::StorageImage)
                         {
-                            Rendering::DescriptorSetUpdate u{};
-                            u.binding = binding;
-                            u.type = Rendering::DescriptorType::StorageImage;
-                            u.textures = {targetTex};
-                            updates.push_back(std::move(u));
+                            auto& update = scratch.Add(binding, Rendering::DescriptorType::StorageImage);
+                            update.textures = {targetTex};
                         }
                     }
                 }
 
+                const auto updates = scratch.Updates();
                 if (!updates.empty())
                     device->UpdateDescriptorSetBatch(set0, updates);
 
@@ -1073,12 +1062,9 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
                 // unbound by the batch above — on a device without
                 // nullDescriptor that is a VUID + undefined read. Default-fill
                 // the remainder with safe placeholders (real binds above win).
-                std::unordered_set<uint32_t> writtenBindings;
-                writtenBindings.reserve(updates.size());
-                for (const auto& u : updates)
-                    writtenBindings.insert(u.binding);
                 Detail::DefaultFillUnwrittenSet0Bindings(
-                    device, set0, m_Set0Layout, *m_ShaderMeta, writtenBindings, defaultBuffer,
+                    device, set0, m_Set0Layout, *m_ShaderMeta,
+                    [](uint32_t index) { return scratch.ContainsBinding(index); }, defaultBuffer,
                     defaultTexture, m_LinearClampSampler, m_Id, m_LoggedDefaultedBindings);
 
                 cl->BindDescriptorSet(0, set0, pipe);
