@@ -30,6 +30,7 @@
 #include "Components/Transform.h"
 #include "Components/Hierarchy.h"
 #include "Components/Rendering/RenderSorting.h"
+#include "Components/Rendering/Sprite2D.h"
 #include "Engine/Rendering/SortingLayers.h"
 #include "Components/Animation/AnimatorRef.h"
 #include "Components/Animation/SkeletonRef.h"
@@ -2435,6 +2436,7 @@ TEST_F(ExtractionFastPathTest, SortingParentMovementReparentAndRemovalRefreshDes
     EXPECT_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.Group, parent.GetHandle());
     parent.Set(MakeTransformAt(0, 0, 7));
     h.StepFrame();
+    EXPECT_EQ(h.Stats().FastFrame, 0u);
     EXPECT_FLOAT_EQ(h.extraction->GetSubmissionsForTest().front().Sorting.GroupPosition[2], 7);
     auto other = h.world->Create();
     other.Set(MakeTransformAt(0, 0, 4));
@@ -2463,8 +2465,85 @@ TEST_F(ExtractionFastPathTest, GroundSortingMovementRefreshesCachedSubmissions)
     actor.Set(MakeTransformAt(0, -3, 0));
     harness.StepFrame();
     ASSERT_EQ(harness.extraction->GetSubmissionsForTest().size(), 1u);
+    EXPECT_EQ(harness.Stats().FastFrame, 0u);
     EXPECT_FLOAT_EQ(harness.extraction->GetSubmissionsForTest().front().Sorting.SortY, -3.5f);
     EXPECT_TRUE(harness.PrimeToFastPath());
+}
+
+TEST_F(ExtractionFastPathTest, NonMeshGroundSortingMovementKeepsStationaryMeshesOnFastPath)
+{
+    ExtractionHarness harness;
+    ASSERT_TRUE(harness.Initialize(m_Device.get(), true));
+    harness.SpawnRenderable(0, 0, 0);
+    RenderSorting sorting;
+    sorting.SortByY = true;
+    auto sprite = harness.world->Create(MakeTransformAt(0, 2, 0), sorting, Sprite2D{});
+    ASSERT_TRUE(harness.PrimeToFastPath());
+    const auto submissions = SnapshotSubmissions(harness.extraction->GetSubmissionsForTest());
+    const uint64 digest = harness.rs.GetWorldRenderContentDigest(harness.worldId);
+    const auto instances = harness.rs.GetGPUScene()->GetInstances();
+    for (int frame = 0; frame < 4; ++frame)
+    {
+        sprite.Set(MakeTransformAt(0, 3.0f + static_cast<float>(frame), 0));
+        harness.StepFrame();
+        EXPECT_EQ(harness.Stats().FastFrame, 1u);
+        EXPECT_EQ(harness.Stats().EscalationReasonBits, 0u);
+        EXPECT_EQ(harness.Stats().FeedPatchedCount, 0u);
+        EXPECT_EQ(SnapshotSubmissions(harness.extraction->GetSubmissionsForTest()), submissions);
+        EXPECT_EQ(harness.rs.GetWorldRenderContentDigest(harness.worldId), digest);
+        const auto& current = harness.rs.GetGPUScene()->GetInstances();
+        ASSERT_EQ(current.size(), instances.size());
+        EXPECT_EQ(std::memcmp(current.data(), instances.data(), instances.size() * sizeof(GPUInstance)), 0);
+    }
+}
+
+TEST_F(ExtractionFastPathTest, GroundSortingMeshEnableAndMembershipChangesRefreshTheCurrentPosition)
+{
+    ExtractionHarness harness;
+    ASSERT_TRUE(harness.Initialize(m_Device.get(), true));
+    harness.SpawnRenderable(0, 0, 0);
+    auto actor = harness.SpawnRenderable(0, 2, 0);
+    RenderSorting sorting;
+    sorting.SortByY = true;
+    actor.Set(sorting);
+    const MeshRenderer renderer = *actor.Get<MeshRenderer>();
+    ASSERT_TRUE(harness.PrimeToFastPath());
+    const auto meshType = ECS::GetComponentTypeId<MeshRenderer>();
+    harness.world->SetComponentEnabledImmediate(actor.GetHandle(), meshType, false);
+    ASSERT_TRUE(harness.PrimeToFastPath());
+    actor.Set(MakeTransformAt(0, 7, 0));
+    harness.StepFrame();
+    EXPECT_EQ(harness.Stats().FastFrame, 1u);
+    EXPECT_EQ(harness.extraction->GetSubmissionsForTest().size(), 1u);
+
+    harness.world->SetComponentEnabledImmediate(actor.GetHandle(), meshType, true);
+    harness.StepFrame();
+    EXPECT_EQ(harness.Stats().FastFrame, 0u);
+    bool found = false;
+    for (const auto& submission : harness.extraction->GetSubmissionsForTest())
+        if (submission.SortingOwner == actor.GetHandle())
+        {
+            found = true;
+            EXPECT_FLOAT_EQ(submission.Sorting.SortY, 7);
+        }
+    EXPECT_TRUE(found);
+    actor.Remove<MeshRenderer>();
+    ASSERT_TRUE(harness.PrimeToFastPath());
+    actor.Set(MakeTransformAt(0, 9, 0));
+    harness.StepFrame();
+    EXPECT_EQ(harness.Stats().FastFrame, 1u);
+    EXPECT_EQ(harness.extraction->GetSubmissionsForTest().size(), 1u);
+    actor.Set(renderer);
+    harness.StepFrame();
+    EXPECT_EQ(harness.Stats().FastFrame, 0u);
+    found = false;
+    for (const auto& submission : harness.extraction->GetSubmissionsForTest())
+        if (submission.SortingOwner == actor.GetHandle())
+        {
+            found = true;
+            EXPECT_FLOAT_EQ(submission.Sorting.SortY, 9);
+        }
+    EXPECT_TRUE(found);
 }
 
 TEST_F(ExtractionFastPathTest, SortingLayerPriorityReorderRefreshesStationaryArtwork)
