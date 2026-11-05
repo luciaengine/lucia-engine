@@ -1008,6 +1008,7 @@ target_include_directories(HierarchyEnableStateTests PRIVATE
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
 	# UIRgTestHarness.h: a headless device for the tree the row test lays out.
 	${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests
+	${CMAKE_SOURCE_DIR}/Tests
 )
 target_link_libraries(HierarchyEnableStateTests PRIVATE
 	Engine
