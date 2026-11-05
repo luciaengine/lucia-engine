@@ -1,5 +1,8 @@
 #include "Scene/SceneDocumentManager.h"
 
+#include "UndoRedo/History/HistoryMutationScope.h"
+#include "UndoRedo/UndoRedoService.h"
+
 #include "Diagnostics/MainThreadHangWatchdog.h"
 #include "Scene/DefaultSceneEntities.h"
 
@@ -113,6 +116,13 @@ void SceneDocumentManager::SetChangeNotifications(EditorChangeNotifications* not
 
 void SceneDocumentManager::MarkDirty()
 {
+    if (HistoryMutationScope::IsRestoringFor(m_History))
+    {
+        RefreshDirtyState();
+        return;
+    }
+    if (!HistoryMutationScope::IsActiveFor(m_History))
+        m_UntrackedDirty = true;
     if (!m_Dirty)
         Logger::Log::Debug("SceneDocumentManager: scene marked dirty");
     m_Dirty = true;
@@ -123,7 +133,14 @@ void SceneDocumentManager::MarkClean()
     if (m_Dirty)
         Logger::Log::Debug("SceneDocumentManager: scene marked clean");
     m_Dirty = false;
-    m_BaselineSnapshot = CaptureWorldSnapshot();
+    m_UntrackedDirty = false;
+    if (m_History)
+        m_History->MarkSaved(this);
+}
+
+void SceneDocumentManager::RefreshDirtyState()
+{
+    m_Dirty = m_UntrackedDirty || !m_History || !m_History->IsAtSavedRevision(this);
 }
 
 void SceneDocumentManager::SetHierarchyUiCaptureForSave(std::function<Scene::SceneHierarchyUi()> capture)
@@ -850,6 +867,8 @@ bool SceneDocumentManager::RefuseSaveWrite(const std::filesystem::path& targetPa
 
 bool SceneDocumentManager::Save(DegradedSavePolicy degradedPolicy)
 {
+    if (m_History && !m_History->CommitPendingEdit())
+        return false;
     if (!m_World)
         return false;
     if (!m_ScenePath.has_value())
@@ -928,6 +947,8 @@ bool SceneDocumentManager::Save(DegradedSavePolicy degradedPolicy)
 
 bool SceneDocumentManager::SaveAs(const std::filesystem::path& scenePath, DegradedSavePolicy degradedPolicy)
 {
+    if (m_History && !m_History->CommitPendingEdit())
+        return false;
     if (!m_World)
         return false;
     // Save As to a DIFFERENT path is the sanctioned escape for a degraded document: the source file
@@ -1125,24 +1146,31 @@ void SceneDocumentManager::Subscribe()
         return;
 
     m_SubComponent = m_Notifications->SubscribeComponentChanged(
-        [this](const EditorChangeNotifications::ComponentChangedEvent& e)
+        [this](const EditorChangeNotifications::ComponentChangedEvent& event)
         {
-            if (!m_World || e.world != m_World)
+            if (!m_World || event.world != m_World)
                 return;
-            if (e.kind == EditorChangeNotifications::ChangeKind::Preview ||
-                e.kind == EditorChangeNotifications::ChangeKind::InspectorRebuild)
+            if (event.kind == EditorChangeNotifications::ChangeKind::InspectorRebuild)
                 return;
-            MarkDirty();
+            if (event.kind == EditorChangeNotifications::ChangeKind::UndoRedo &&
+                HistoryMutationScope::IsRestoringFor(m_History))
+                RefreshDirtyState();
+            else
+                MarkDirty();
         });
 
     m_SubStructure = m_Notifications->SubscribeWorldStructureChanged(
-        [this](const EditorChangeNotifications::WorldStructureChangedEvent& e)
+        [this](const EditorChangeNotifications::WorldStructureChangedEvent& event)
         {
-            if (!m_World || e.world != m_World)
+            if (!m_World || event.world != m_World)
                 return;
-            if (e.kind != EditorChangeNotifications::ChangeKind::Commit)
+            if (event.kind == EditorChangeNotifications::ChangeKind::InspectorRebuild)
                 return;
-            MarkDirty();
+            if (event.kind == EditorChangeNotifications::ChangeKind::UndoRedo &&
+                HistoryMutationScope::IsRestoringFor(m_History))
+                RefreshDirtyState();
+            else
+                MarkDirty();
         });
 }
 

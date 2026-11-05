@@ -3,6 +3,7 @@
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Name.h"
 #include "EditorChangeNotifications.h"
+#include "UndoRedo/History/HistoryMutationScope.h"
 #include "UndoRedo/SplinePointEdits.h"
 #include "UndoRedo/SplineUndoHelpers.h"
 #include "Scene/WorldSnapshotCommand.h"
@@ -2124,8 +2125,9 @@ bool SplineTool::UpdateEditDrag(const ScenePointerEvent& event,
             }
         }
 
+        const bool recordsGesture = static_cast<bool>(m_SplineDragUndo);
         if (closedLoop && m_UndoRedo)
-            m_UndoRedo->BeginCompound("Close Spline Loop");
+            m_UndoRedo->BeginCompound("Close Spline Loop", true);
         if (m_SplineDragUndo)
             m_SplineDragUndo.Commit();
         m_SplineDragUndo = {};
@@ -2149,7 +2151,8 @@ bool SplineTool::UpdateEditDrag(const ScenePointerEvent& event,
         {
             Editor::EditorChangeNotifications::WorldStructureChangedEvent e{};
             e.world = world;
-            e.kind = Editor::EditorChangeNotifications::ChangeKind::Commit;
+            e.kind = Editor::EditChangeKind::Commit;
+            const Editor::HistoryMutationScope mutationScope(recordsGesture ? m_UndoRedo : nullptr);
             m_ChangeNotifications->NotifyWorldStructureChanged(e);
         }
         return true;
