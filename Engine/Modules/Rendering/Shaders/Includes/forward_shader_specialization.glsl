@@ -8,12 +8,14 @@ const bool GE_FORWARD_LOCAL_PROBES = true;
 const bool GE_FORWARD_HEX_TILING = true;
 const int GE_FORWARD_SHADOW_FILTER = -1;
 const bool GE_FORWARD_SHADOW_DEBUG = true;
+const bool GE_FORWARD_SECONDARY_LIGHTS = true;
 #else
 layout(constant_id = 300) const bool GE_FORWARD_LOCAL_LIGHTS = true;
 layout(constant_id = 301) const bool GE_FORWARD_LOCAL_PROBES = true;
 layout(constant_id = 302) const bool GE_FORWARD_HEX_TILING = true;
 layout(constant_id = 303) const int GE_FORWARD_SHADOW_FILTER = -1;
 layout(constant_id = 304) const bool GE_FORWARD_SHADOW_DEBUG = true;
+layout(constant_id = 305) const bool GE_FORWARD_SECONDARY_LIGHTS = true;
 #endif
 
 #endif

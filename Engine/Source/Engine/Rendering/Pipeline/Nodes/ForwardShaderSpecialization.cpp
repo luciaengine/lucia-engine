@@ -17,6 +17,7 @@ constexpr uint32_t kLocalProbesConstant = 301;
 constexpr uint32_t kHexTilingConstant = 302;
 constexpr uint32_t kShadowFilterConstant = 303;
 constexpr uint32_t kShadowDebugConstant = 304;
+constexpr uint32_t kSecondaryLightsConstant = 305;
 constexpr int32_t kRuntimeShadowFilter = -1;
 
 bool MayUseHexTiling(const Material& material)
@@ -58,13 +59,13 @@ std::shared_ptr<const Rendering::SpecializationConstants> ForwardShaderSpecializ
         return {};
 
     int32_t localLights = 0;
+    uint32_t directionalLights = 0;
     for (const auto& light : services.GetWorldLights(view.worldId))
     {
-        if (light.type != Components::LightType::Directional)
-        {
+        if (light.type == Components::LightType::Directional)
+            ++directionalLights;
+        else
             localLights = 1;
-            break;
-        }
     }
     int32_t localProbes = 1;
     if (const auto* ibl = services.GetFeature<ImageBasedLightingFeature>())
@@ -80,8 +81,9 @@ std::shared_ptr<const Rendering::SpecializationConstants> ForwardShaderSpecializ
             shadowFilter = static_cast<int32_t>(ShadowFilterQuality::Grid5x5);
         shadowDebug = shadows->GetDebugMode() != ShadowDebugMode::Off ? 1 : 0;
     }
-    const std::array<int32_t, 5> state{
-        localLights, localProbes, HasHexMaterials(services) ? 1 : 0, shadowFilter, shadowDebug};
+    const std::array<int32_t, 6> state{
+        localLights, localProbes, HasHexMaterials(services) ? 1 : 0, shadowFilter, shadowDebug,
+        directionalLights > 1 ? 1 : 0};
     if (!m_Constants || m_State != state)
     {
         auto constants = std::make_shared<Rendering::SpecializationConstants>();
@@ -91,6 +93,7 @@ std::shared_ptr<const Rendering::SpecializationConstants> ForwardShaderSpecializ
         constants->AddConstant(kHexTilingConstant, static_cast<uint32_t>(state[2]));
         constants->AddConstant(kShadowFilterConstant, state[3]);
         constants->AddConstant(kShadowDebugConstant, static_cast<uint32_t>(state[4]));
+        constants->AddConstant(kSecondaryLightsConstant, static_cast<uint32_t>(state[5]));
         m_Constants = std::move(constants);
         m_State = state;
     }

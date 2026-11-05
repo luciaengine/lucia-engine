@@ -648,10 +648,9 @@ vec3 GE_AccumulateClusteredLighting(
     // -- Secondary directional lights (same BRDF, additive, UNSHADOWED) ----------------------
     // v1 semantic: cascades exist for the primary only, so a secondary can brighten but never
     // darken — no shadow term, no glass tint/caustic (both are shadow-map products). Colors
-    // arrive premultiplied (color * intensity); count is 0 in single-directional scenes, so
-    // this uniform branch costs nothing there.
+    // arrive premultiplied (color * intensity). A zero count contributes no light.
     {
-        int secondaryCount = int(Light.uSecondaryCount.x);
+        int secondaryCount = GE_FORWARD_SECONDARY_LIGHTS ? int(Light.uSecondaryCount.x) : 0;
         for (int i = 0; i < secondaryCount; ++i)
         {
             vec3 secL = normalize(-Light.uSecondaryDirs[i].xyz);

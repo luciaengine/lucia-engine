@@ -28,7 +28,7 @@ class ForwardShaderSpecialization
     uint64_t m_MaterialEpoch = 0;
     size_t m_MaterialCount = 0;
     bool m_HexMaterials = true;
-    std::array<int32_t, 5> m_State{};
+    std::array<int32_t, 6> m_State{};
     std::shared_ptr<const Rendering::SpecializationConstants> m_Constants;
 };
 }
