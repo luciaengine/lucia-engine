@@ -64,6 +64,8 @@ set(EDITOR_TEST_SOURCES
 	ScenePickTerrainInclusionTests.cpp
 	MeshPickingPendingBvhTests.cpp
 	UndoRedoServiceTests.cpp
+	GraphSelectionHistoryTests.cpp
+	SceneDocumentHistoryTests.cpp
 	PlayModeChangeReviewTests.cpp
 	PlayModeMarkupNotesTests.cpp
 	RenderPipelineInspectorTests.cpp
@@ -350,6 +352,10 @@ set(EDITOR_TEST_SOURCES
 	# GLSL, everything else as C#; pure over strings, no UI.
 	ScriptSyntaxTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/ScriptSyntax.cpp
+	ScriptDocumentDiskTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/ScriptEditorPanel.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/ScriptTextArea.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/CompletionPopup.cpp
 	# B1: pooled GraphPortedNode slots, BindModel, Display:None surplus.
 	# Leaf TUs over the Graph UI elements (no GraphCanvas.cpp — canvas compile is
 	# gated by Editor; these tests cover pool/node binding without it).
@@ -567,7 +573,7 @@ set(EDITOR_TEST_SOURCES
 	# builds one; the rest of the panel types are covered by the source scan.
 	PanelDefaultTabIconTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/UIDemoPanel.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/UndoHistoryPanel.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/UndoHistory/UndoHistoryPanel.cpp
 	# Whether a dock config authored icon= at all, and whether it authored it
 	# empty, are different instructions. The two TUs below are the pair that has
 	# to keep them apart: the element that receives the attribute and the parser
@@ -695,6 +701,7 @@ set(EDITOR_TEST_SOURCES
 	# Handlers set on a menu built before a backend change must survive the
 	# inner-backend swap its next Clear() performs.
 	ContextMenuBackendSwapHandlerTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/EntityHeader/InspectorEntityNameField.cpp
 	# The wire router: a route that crosses no body, and the short one among those.
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Graph/GraphRouteSolver.cpp
 	GraphRouteSolverTests.cpp
@@ -945,11 +952,31 @@ set(EDITOR_TEST_SOURCES
 	# Suites above leave the engine running; this shuts it down before the process exits.
 	${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
 )
-# Always create EditorTests when BUILD_TESTING is enabled; no UISystem/UI gating.
-add_executable(EditorTests ${EDITOR_TEST_SOURCES})
-
 # Find Google Test
 find_package(GTest REQUIRED)
+
+# Exercise revision replay without starting the engine or UI.
+add_executable(UndoHistoryTests UndoHistoryTests.cpp)
+target_include_directories(UndoHistoryTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Include
+    ${CMAKE_SOURCE_DIR}/Engine/Include
+    ${CMAKE_SOURCE_DIR}/Engine/Modules/Mathematics/Include
+    ${CMAKE_SOURCE_DIR}/Engine/Modules/Types/Include
+    ${CMAKE_SOURCE_DIR}/Engine/Modules/Events/Include
+)
+target_compile_definitions(UndoHistoryTests PRIVATE GE_ENABLE_CPU_PROFILING=0)
+target_link_libraries(UndoHistoryTests PRIVATE GTest::gtest_main)
+ge_set_output_tests(UndoHistoryTests)
+ge_stage_runtime_dependencies(UndoHistoryTests)
+add_test(NAME UndoHistoryTests
+    COMMAND "${CMAKE_COMMAND}"
+        -DTEST_EXE=$<TARGET_FILE:UndoHistoryTests>
+        -DTEST_WORKING_DIR=$<TARGET_FILE_DIR:UndoHistoryTests>
+        -P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
+)
+
+# Always create EditorTests when BUILD_TESTING is enabled; no UISystem/UI gating.
+add_executable(EditorTests ${EDITOR_TEST_SOURCES})
 
 # Opt-in: the water fill's investigation instruments, which run against scenes in other content
 # repositories (GE_WATER_LIFT_REPRO_SCENE, GE_SCENE_WATER_GATE) and skip without them. Not
@@ -1787,6 +1814,13 @@ if(TARGET EditorTests)
 	ge_stage_test_asset(EditorTests
 	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/InspectorNotice/InspectorNotice.uxml"
 	    "Assets/UI/controls/InspectorNotice/InspectorNotice.uxml")
+
+	# Undo History reads its layouts from the editor install-assets root.
+	foreach(layout UndoHistory HistoryRevision HistoryLane)
+		ge_stage_test_asset(EditorTests
+		    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/UndoHistory/${layout}.uxml"
+		    "Assets/UI/controls/UndoHistory/${layout}.uxml")
+	endforeach()
 
 	# The shipped animation-graph sample, read from the same exe-anchored asset
 	# root the editor loads it from.
