@@ -63,6 +63,9 @@ namespace Rendering {
             m_Entries[constantId] = entry;
         }
 
+        /** @brief Copy constants, replacing entries with the same shader ID. */
+        void Merge(const SpecializationConstants& overrides);
+
         // Backend-agnostic accessors should be implemented in backend-specific layers.
 
         /**

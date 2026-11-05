@@ -81,6 +81,40 @@ uint64_t PipelineCache::CombineComputeKey(ComputePipelineId id) noexcept
 // Intern tables — graphics
 // =====================================================================
 
+GraphicsPipelineId PipelineCache::SpecializeGraphicsPipeline(
+    GraphicsPipelineId base, const SpecializationConstants& overrides)
+{
+    if (overrides.IsEmpty())
+        return base;
+    const auto key = std::make_pair(base.Value, overrides.GetHash());
+    GraphicsPipelineDesc desc;
+    uint64_t epoch = 0;
+    {
+        std::scoped_lock lock(m_Mutex);
+        if (!base.IsValid() || base.Value > m_GraphicsEntries.size() ||
+            !m_GraphicsEntries[base.Value - 1].Live)
+            return {};
+        if (const auto* cached = m_GraphicsSpecializations.Find(key))
+        {
+            if (cached->IsValid() && cached->Value <= m_GraphicsEntries.size() &&
+                m_GraphicsEntries[cached->Value - 1].Live)
+                return *cached;
+        }
+        desc = m_GraphicsEntries[base.Value - 1].Desc;
+        epoch = m_InvalidationEpoch.load(std::memory_order_acquire);
+    }
+    if (!desc.Specialization)
+        desc.Specialization.emplace();
+    desc.Specialization->Merge(overrides);
+    const auto specialized = InternGraphicsPipeline(std::move(desc));
+    {
+        std::scoped_lock lock(m_Mutex);
+        if (epoch == m_InvalidationEpoch.load(std::memory_order_acquire))
+            m_GraphicsSpecializations.InsertOrAssign(key, specialized);
+    }
+    return specialized;
+}
+
 GraphicsPipelineId PipelineCache::InternGraphicsPipeline(GraphicsPipelineDesc desc)
 {
     const uint64_t h = desc.ContentHash();
@@ -477,6 +511,7 @@ size_t PipelineCache::InvalidateByTag(uint64_t tag)
     const size_t removed = InvalidateByTag_NoLock(tag);
     if (removed > 0)
     {
+        m_GraphicsSpecializations.Clear();
         m_CacheEpoch.store(NextCacheEpoch(), std::memory_order_release);
         m_InvalidationEpoch.fetch_add(1, std::memory_order_release);
     }
@@ -491,6 +526,7 @@ size_t PipelineCache::InvalidateByTags(const std::vector<uint64_t>& tags)
         total += InvalidateByTag_NoLock(tag);
     if (total > 0)
     {
+        m_GraphicsSpecializations.Clear();
         m_CacheEpoch.store(NextCacheEpoch(), std::memory_order_release);
         m_InvalidationEpoch.fetch_add(1, std::memory_order_release);
     }
@@ -518,6 +554,7 @@ size_t PipelineCache::InvalidateByTag_NoLock(uint64_t tag)
 void PipelineCache::Clear()
 {
     std::scoped_lock lock(m_Mutex);
+    m_GraphicsSpecializations.Clear();
     m_Concrete.clear();
     m_LruList.clear();
     m_KeyToTags.clear();
@@ -562,6 +599,7 @@ void PipelineCache::Clear()
 void PipelineCache::ClearConcreteOnly()
 {
     std::scoped_lock lock(m_Mutex);
+    m_GraphicsSpecializations.Clear();
     // The concrete PipelineHandles are already dead after an in-place device
     // rebuild — forget them without touching the device (no DestroyPipeline).
     m_Concrete.clear();

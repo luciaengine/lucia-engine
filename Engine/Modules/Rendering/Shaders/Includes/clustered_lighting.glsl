@@ -28,6 +28,8 @@
 #ifndef GE_CLUSTERED_LIGHTING_GLSL
 #define GE_CLUSTERED_LIGHTING_GLSL
 
+#include "forward_shader_specialization.glsl"
+
 #include "compat_profile.glsl"
 
 #include "surface_io.glsl"   // SurfaceOutput — surface props threaded to the BRDF
@@ -661,7 +663,7 @@ vec3 GE_AccumulateClusteredLighting(
 
     // -- Point + spot + area lights from the cluster list ------------------------------------
     uint lightCount = ge_lightHeader.x;
-    if (lightCount == 0u)
+    if (!GE_FORWARD_LOCAL_LIGHTS || lightCount == 0u)
         return totalLight;
 
     uint depthSlices = max(ge_clusterParams0.z, 1u);

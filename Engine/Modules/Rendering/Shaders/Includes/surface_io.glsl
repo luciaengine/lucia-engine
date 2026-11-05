@@ -10,6 +10,8 @@
 #ifndef GE_SURFACE_IO_GLSL
 #define GE_SURFACE_IO_GLSL
 
+#include "forward_shader_specialization.glsl"
+
 // Emission authoring anchor: a surface emitting this many nits maps to scene-linear 1.0
 // (BT.2408 reference white). Fixed so a material's authored nits read the same on SDR and
 // HDR; the terminal tonemap/encode places scene-linear 1.0 at the actual display paperwhite.
@@ -376,7 +378,7 @@ void GE_ComputeHexBlendUV(vec2 uv, vec4 st, vec4 st2, float hexEnabled, float he
                           out vec2 uvA, out vec2 uvB, out float blend)
 {
     vec2 transformed = GE_TransformUV(uv, st, st2);
-    if (hexEnabled < 0.5)
+    if (!GE_FORWARD_HEX_TILING || hexEnabled < 0.5)
     {
         uvA = transformed;
         uvB = transformed;

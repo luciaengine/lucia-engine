@@ -19,6 +19,7 @@
 #pragma once
 
 #include "Rendering/Core/Handle.h"
+#include "Types/FlatMap.h"
 #include "Rendering/Core/PipelineTypes.h"
 
 #include <atomic>
@@ -52,6 +53,9 @@ public:
     // content (after `ContentHash`) returns the same id. The interned desc
     // is owned by the cache and outlives any caller stack frame.
     GraphicsPipelineId InternGraphicsPipeline(GraphicsPipelineDesc desc);
+    /// Cache a graphics descriptor with constant overrides; retain its other constants.
+    GraphicsPipelineId SpecializeGraphicsPipeline(GraphicsPipelineId base,
+                                                   const SpecializationConstants& overrides);
     ComputePipelineId  InternComputePipeline(ComputePipelineDesc desc);
     DescriptorSetLayoutId InternDescriptorSetLayout(DescriptorSetLayoutDesc desc);
 
@@ -196,6 +200,7 @@ private:
     // Hash → id; vector indexed by id.Value-1.
     std::unordered_map<uint64_t, uint32_t> m_GraphicsHashToId;
     std::vector<InternEntry<GraphicsPipelineDesc>> m_GraphicsEntries;
+    FlatMap<std::pair<uint32_t, uint64_t>, GraphicsPipelineId> m_GraphicsSpecializations;
 
     std::unordered_map<uint64_t, uint32_t> m_ComputeHashToId;
     std::vector<InternEntry<ComputePipelineDesc>> m_ComputeEntries;

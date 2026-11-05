@@ -12,6 +12,20 @@
 namespace GameEngine {
 namespace Rendering {
 
+    void SpecializationConstants::Merge(const SpecializationConstants& overrides)
+    {
+        if (this == &overrides)
+            return;
+        for (const auto& [id, source] : overrides.m_Entries)
+        {
+            Entry entry = source;
+            entry.Offset = static_cast<uint32_t>(m_Data.size());
+            m_Data.insert(m_Data.end(), overrides.m_Data.begin() + source.Offset,
+                          overrides.m_Data.begin() + source.Offset + source.Size);
+            m_Entries[id] = std::move(entry);
+        }
+    }
+
     uint64_t SpecializationConstants::GetHash() const {
         // Walk constants in sorted-by-id order so two SpecializationConstants
         // with identical content but different insertion order produce the

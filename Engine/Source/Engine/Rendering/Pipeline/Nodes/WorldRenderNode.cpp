@@ -179,6 +179,7 @@ void WorldRenderNode::DeclareForView(ViewDeclare& d)
     // write; without it the pass binds the zero fallback, the static scale.
     d.ResolveBuffer(Names::Res::ExposureHistory);
     const auto r = d.Services.AddWorldPassForView(d.Frame, d.View.id, t, effectiveKeywords, scope);
+    d.Frame.SetGraphicsPipelineSpecialization(r.Pass, m_ForwardSpecialization.Resolve(d.Services, d.View));
     // The thumbnail/readback contract: what the pass ACTUALLY wrote.
     if (r.EffectiveColor.IsValid())
         d.PublishTexture(Names::View::EffectiveColor, r.EffectiveColor);
