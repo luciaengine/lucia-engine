@@ -1140,6 +1140,7 @@ add_executable(SkySunDriveRowsTests
 	SkySunDriveRowsTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SkySunDriveRows.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SkyDayCurveRow.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/InspectorComponentSection.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SkySunCurveReference.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/LuxText.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Sky/SkySunIlluminanceSwitch.cpp
