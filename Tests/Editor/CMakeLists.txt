@@ -2389,6 +2389,13 @@ if(TARGET EditorTests)
 	        "Assets/Fonts/${_face}")
 	endforeach()
 
+	# Undo History reads its layouts from the editor install-assets root.
+	foreach(layout UndoHistory HistoryRevision HistoryLane)
+		ge_stage_test_asset(EditorTests
+		    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/UndoHistory/${layout}.uxml"
+		    "Assets/UI/controls/UndoHistory/${layout}.uxml")
+	endforeach()
+
 	# InspectorNotice builds its plate, text and action from its layout, read
 	# from the same install-assets root.
 	ge_stage_test_asset(EditorTests

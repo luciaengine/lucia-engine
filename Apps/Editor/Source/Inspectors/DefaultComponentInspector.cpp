@@ -173,7 +173,7 @@ void WireEdit(const std::shared_ptr<std::optional<Editor::UndoRedoService::Inter
             applyLive(value);
             return;
         }
-        if (!editState->has_value())
+        if (!editState->has_value() || !editState->value())
             editState->emplace(fec.Undo->BeginInteractiveEdit(fec.Label, MakeEditTarget(fec)));
         editState->value().Preview([&]() { applyLive(value); });
     };
@@ -184,8 +184,10 @@ void WireEdit(const std::shared_ptr<std::optional<Editor::UndoRedoService::Inter
             applyLive(value);
             return;
         }
-        if (!editState->has_value())
+        if (!editState->has_value() || !editState->value())
             editState->emplace(fec.Undo->BeginInteractiveEdit(fec.Label, MakeEditTarget(fec)));
+        if (!editState->value())
+            return;
         applyLive(value);
         // Move the edit out and clear the shared state before Commit: Commit fires
         // Notify (which fans out across all edited entities), and were that ever to
@@ -261,7 +263,11 @@ void CommitFieldPatch(const FieldEditContext& fec, const std::function<void(Snap
             applyOne(e);
         return;
     }
+    if (!fec.Undo->CommitPendingEdit())
+        return;
     auto edit = fec.Undo->BeginInteractiveEdit(fec.Label, MakeEditTarget(fec));
+    if (!edit)
+        return;
     applyOne(fec.Entity);
     for (ECS::EntityHandle e : fec.Extras)
         applyOne(e);
@@ -771,7 +777,7 @@ void EmitColorSwatchRow(UIElement* parent, RefreshPlan* plan, const Snapshot& by
             }
             else
             {
-                if (!editState->has_value())
+                if (!editState->has_value() || !editState->value())
                     editState->emplace(fec.Undo->BeginInteractiveEdit(fec.Label, MakeEditTarget(fec)));
                 editState->value().Preview([&]() { applyLive(nc); });
             }

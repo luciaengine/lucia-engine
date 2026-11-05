@@ -846,6 +846,8 @@ bool SceneDocumentManager::RefuseSaveWrite(const std::filesystem::path& targetPa
 
 bool SceneDocumentManager::Save(DegradedSavePolicy degradedPolicy)
 {
+    if (m_History && !m_History->CommitPendingEdit())
+        return false;
     if (!m_World)
         return false;
     if (!m_ScenePath.has_value())
@@ -930,6 +932,8 @@ bool SceneDocumentManager::Save(DegradedSavePolicy degradedPolicy)
 
 bool SceneDocumentManager::SaveAs(const std::filesystem::path& scenePath, DegradedSavePolicy degradedPolicy)
 {
+    if (m_History && !m_History->CommitPendingEdit())
+        return false;
     if (!m_World)
         return false;
     // Save As to a DIFFERENT path is the sanctioned escape for a degraded document: the source file
@@ -1142,24 +1146,31 @@ void SceneDocumentManager::Subscribe()
         return;
 
     m_SubComponent = m_Notifications->SubscribeComponentChanged(
-        [this](const EditorChangeNotifications::ComponentChangedEvent& e)
+        [this](const EditorChangeNotifications::ComponentChangedEvent& event)
         {
-            if (!m_World || e.world != m_World)
+            if (!m_World || event.world != m_World)
                 return;
-            if (e.kind == EditorChangeNotifications::ChangeKind::Preview ||
-                e.kind == EditorChangeNotifications::ChangeKind::InspectorRebuild)
+            if (event.kind == EditorChangeNotifications::ChangeKind::InspectorRebuild)
                 return;
-            MarkDirty();
+            if (event.kind == EditorChangeNotifications::ChangeKind::UndoRedo &&
+                HistoryMutationScope::IsRestoringFor(m_History))
+                RefreshDirtyState();
+            else
+                MarkDirty();
         });
 
     m_SubStructure = m_Notifications->SubscribeWorldStructureChanged(
-        [this](const EditorChangeNotifications::WorldStructureChangedEvent& e)
+        [this](const EditorChangeNotifications::WorldStructureChangedEvent& event)
         {
-            if (!m_World || e.world != m_World)
+            if (!m_World || event.world != m_World)
                 return;
-            if (e.kind != EditorChangeNotifications::ChangeKind::Commit)
+            if (event.kind == EditorChangeNotifications::ChangeKind::InspectorRebuild)
                 return;
-            MarkDirty();
+            if (event.kind == EditorChangeNotifications::ChangeKind::UndoRedo &&
+                HistoryMutationScope::IsRestoringFor(m_History))
+                RefreshDirtyState();
+            else
+                MarkDirty();
         });
 }
 
