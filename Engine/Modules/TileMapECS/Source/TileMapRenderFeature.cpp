@@ -6,6 +6,7 @@
 #include "Engine/Rendering/TextureService.h"
 #include "Engine/Rendering/ViewExposureScale.h"
 #include "Logger/Logger.h"
+#include "Mathematics/Matrix4x4.h"
 #include "Rendering/Core/PipelineDescTranslator.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "TileMap/TileSetAsset.h"
@@ -34,21 +35,6 @@ constexpr uint32 kAnimFramesBinding = 3;
 
 /** Smallest instance capacity worth allocating; keeps sparse chunks off the churn path. */
 constexpr uint32 kMinChunkCapacity = 64;
-
-/** Column-major 4x4 product, matching the engine's WorldTransform/CameraData layout. */
-void MultiplyColumnMajor(const float32* lhs, const float32* rhs, float32* out)
-{
-    for (int32 col = 0; col < 4; ++col)
-    {
-        for (int32 row = 0; row < 4; ++row)
-        {
-            out[col * 4 + row] = lhs[0 * 4 + row] * rhs[col * 4 + 0] +
-                                 lhs[1 * 4 + row] * rhs[col * 4 + 1] +
-                                 lhs[2 * 4 + row] * rhs[col * 4 + 2] +
-                                 lhs[3 * 4 + row] * rhs[col * 4 + 3];
-        }
-    }
-}
 
 /** Why a chunk was skipped, so a whole layer lost to depth can be reported. */
 enum class ChunkClip
@@ -392,6 +378,7 @@ void TileMapRenderFeature::DestroyChunk(ChunkBuffer& chunk)
         slot = ChunkSlot{};
     }
     chunk.Count = 0;
+    chunk.Cells.clear();
 }
 
 void TileMapRenderFeature::UploadChunk(ChunkBuffer& chunk,
@@ -399,6 +386,10 @@ void TileMapRenderFeature::UploadChunk(ChunkBuffer& chunk,
 {
     const uint32 needed = static_cast<uint32>(instances.size());
     chunk.Count = needed;
+    chunk.Cells.clear();
+    chunk.Cells.reserve(needed);
+    for (const auto& instance : instances)
+        chunk.Cells.push_back(instance.LocalIndex);
     if (needed == 0)
         return;
 
@@ -534,13 +525,10 @@ void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
                 : 0.0f;
         const ParallaxOffset parallax = ComputeParallaxOffset(
             cameraPosWS[0], cameraPosWS[1], draw.ParallaxX, draw.ParallaxY, texelW, texelH);
-        float32 model[16];
-        std::copy_n(draw.Model, 16, model);
-        model[12] += parallax.X;
-        model[13] += parallax.Y;
-
-        float32 mvp[16];
-        MultiplyColumnMajor(viewProj, model, mvp);
+        auto model = Mathematics::Matrix4x4::FromColumnMajor(draw.Model);
+        model[3].x += parallax.X;
+        model[3].y += parallax.Y;
+        const auto mvp = Mathematics::Matrix4x4::FromColumnMajor(viewProj) * model;
 
         float32 tint[4];
         UnpackRGBA(draw.TintRGBA, draw.Opacity, tint);
@@ -565,7 +553,7 @@ void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
             const TileMap::ChunkCoord coord = TileMap::UnpackChunkCoord(packed);
             const float32 originX = static_cast<float32>(coord.X) * chunkExtentX;
             const float32 originY = static_cast<float32>(coord.Y) * chunkExtentY;
-            const ChunkClip clip = ClassifyChunk(mvp, originX, originY, originX + chunkExtentX,
+            const ChunkClip clip = ClassifyChunk(mvp.Data(), originX, originY, originX + chunkExtentX,
                                                  originY + chunkExtentY, draw.ZOffset);
             if (clip == ChunkClip::OutsideDepthRange)
             {
@@ -584,7 +572,7 @@ void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
 
             TileMapChunkDraw chunkDraw{};
             chunkDraw.Entity = draw.Entity;
-            std::copy_n(model, 16, chunkDraw.Push.Model);
+            std::copy_n(model.Data(), 16, chunkDraw.Push.Model);
             chunkDraw.Push.ChunkOriginCellSize[0] = originX;
             chunkDraw.Push.ChunkOriginCellSize[1] = originY;
             chunkDraw.Push.ChunkOriginCellSize[2] = cellW;
@@ -600,15 +588,14 @@ void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
             chunkDraw.AnimFrames = tileSet->Frames;
             chunkDraw.Atlas = tileSet->Atlas;
             chunkDraw.InstanceCount = chunkBuffer.Count;
-            // Every chunk of a layer shares the layer plane's world Z; that is
-            // what a merged 2D order compares against a sprite's own world Z.
+            // Camera depth orders the layer when ground sorting is off.
             chunkDraw.WorldZ = draw.WorldZ;
             chunkDraw.Sort = Engine::Renderer::MakeRenderSortKey(draw.Sorting,
                 (draw.Model[8] * draw.ZOffset + draw.Model[12] - cameraPosWS[0]) * cameraForward[0] +
                 (draw.Model[9] * draw.ZOffset + draw.Model[13] - cameraPosWS[1]) * cameraForward[1] +
                 (draw.WorldZ - cameraPosWS[2]) * cameraForward[2], cameraPosWS, cameraForward);
-            chunkDraw.RenderLayers=draw.RenderLayers;
-            outDraws.push_back(chunkDraw);
+            chunkDraw.RenderLayers = draw.RenderLayers;
+            AppendChunkDraws(chunkBuffer, chunkDraw, draw.Sorting, outDraws);
         }
 
         if (!m_PreviewActive || m_Preview.Map != draw.Map || m_Preview.LayerId != draw.LayerId)
@@ -626,7 +613,7 @@ void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
         // pass writes no depth, so order alone decides what is on top.
         TileMapChunkDraw ghost{};
         ghost.Entity = draw.Entity;
-        std::copy_n(model, 16, ghost.Push.Model);
+        std::copy_n(model.Data(), 16, ghost.Push.Model);
         ghost.Push.ChunkOriginCellSize[0] = static_cast<float32>(m_Preview.OriginX) * cellW;
         ghost.Push.ChunkOriginCellSize[1] = static_cast<float32>(m_Preview.OriginY) * cellH;
         ghost.Push.ChunkOriginCellSize[2] = cellW;
@@ -646,8 +633,45 @@ void TileMapRenderFeature::BuildViewDraws(Engine::Renderer::RenderServices& rs,
             (draw.Model[8] * draw.ZOffset + draw.Model[12] - cameraPosWS[0]) * cameraForward[0] +
             (draw.Model[9] * draw.ZOffset + draw.Model[13] - cameraPosWS[1]) * cameraForward[1] +
             (draw.WorldZ - cameraPosWS[2]) * cameraForward[2], cameraPosWS, cameraForward);
-        ghost.RenderLayers=draw.RenderLayers;
-        outDraws.push_back(ghost);
+        ghost.RenderLayers = draw.RenderLayers;
+        AppendChunkDraws(m_PreviewBuffer, ghost, draw.Sorting, outDraws);
+    }
+}
+
+void TileMapRenderFeature::AppendChunkDraws(const ChunkBuffer& chunk, const TileMapChunkDraw& draw,
+    const Engine::Renderer::RenderSortingData& sorting, std::vector<TileMapChunkDraw>& outDraws) const
+{
+    if (!sorting.SortByY)
+    {
+        outDraws.push_back(draw);
+        return;
+    }
+    const auto& push = draw.Push;
+    const auto model = Mathematics::Matrix4x4::FromColumnMajor(push.Model);
+    uint32 first = 0;
+    while (first < chunk.Count)
+    {
+        const uint32 cell = chunk.Cells[first];
+        const float32 localX = push.ChunkOriginCellSize[0] +
+            (static_cast<float32>(cell % TileMap::kChunkSize) + 0.5f) * push.ChunkOriginCellSize[2];
+        const float32 localY = push.ChunkOriginCellSize[1] +
+            static_cast<float32>(cell / TileMap::kChunkSize) * push.ChunkOriginCellSize[3] + sorting.SortOriginY;
+        const float32 groundY = Engine::Renderer::FiniteRenderDepth(
+            model.TransformPoint({localX, localY, push.LayerZ[0]}).y + sorting.SectorOffsetY);
+        uint32 end = first + 1;
+        // An untilted row shares one ground height and one contiguous instance range.
+        if (push.Model[1] == 0.0f)
+            while (end < chunk.Count && chunk.Cells[end] / TileMap::kChunkSize == cell / TileMap::kChunkSize)
+                ++end;
+        auto part = draw;
+        part.FirstInstance = first;
+        part.InstanceCount = end - first;
+        if (part.Sort.Grouped)
+            part.Sort.MemberDepth = groundY;
+        else
+            part.Sort.Depth = groundY;
+        outDraws.push_back(part);
+        first = end;
     }
 }
 
@@ -693,6 +717,7 @@ void TileMapRenderFeature::EmitDraws(Engine::Renderer::ForwardEmitContext& conte
         command.Geometry.AltGeom.IndexType = IndexType::Uint16;
         command.IndexCount = 6;
         command.InstanceCount = draw.InstanceCount;
+        command.FirstInstance = draw.FirstInstance;
         command.Bindings.Buffers = buffers;
         command.Bindings.Textures = std::span<const DrawBindings::TextureEntry>(&texture, 1);
         command.Bindings.PushConstants = std::as_bytes(std::span(&draw.Push, 1));

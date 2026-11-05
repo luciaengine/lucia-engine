@@ -1,0 +1,25 @@
+---
+title: Ground sorting for 2D artwork
+description: Sort sprites and tiles by their ground points so characters can walk behind and in front of scenery.
+---
+
+Ground sorting draws higher ground points first. Lucia uses +Y up. An object at a lower ground point draws over an object at a higher ground point.
+
+## Enable ground sorting
+
+1. Add **Render Sorting** to each sprite and tile layer that must overlap.
+2. Give those entities the same **Sorting Layer** and **Order in Layer**.
+3. Enable **Sort by Y** in each entity's Render Sorting component.
+4. Set **Y Sort Origin** to the ground contact point.
+
+Sprites sort from their entity origin. **Y Sort Origin** adds an offset along the entity's local Y axis, before scale and rotation. A character with its entity origin at its feet can use zero. The visual pivot and animation frame size do not move this sorting point.
+
+Tiles sort from each cell's bottom center plus **Y Sort Origin**. A character can sort between rows inside one chunk. Rotating or tilting the map can give cells in the same row different world heights. Those cells sort separately.
+
+## Control which artwork overlaps
+
+Sorting layer priority comes first. **Order in Layer** comes next. Ground height resolves ties within that layer and order. Enable **Sort by Y** on all artwork that must compare ground points. Use separate orders for a background or foreground that must always draw behind or in front.
+
+**Group Children** keeps the group's descendants together. The outermost group uses its own sorting point. Members keep their order and ground height within that group.
+
+Ground sorting changes draw order. It does not move tiles, change collision, or change visibility masks. Tile layers with **Sort by Y** off keep whole-chunk draws. Enable it on layers that need characters to pass through their scenery because splitting draws costs additional submissions.

@@ -26,6 +26,7 @@ layout(location = 4) in vec3 vBitangent;
 layout(location = 5) in vec3 vNormal;
 // x = lit, y = normal strength, z = has a normal map, w = light count.
 layout(location = 6) flat in vec4 vSurface;
+layout(location = 7) flat in vec4 vFrameBounds;
 
 layout(location = 0) out vec4 outColor;
 
@@ -36,11 +37,20 @@ const int kFalloffPhysicalInverseSquare = 0;
 const int kFalloffLinear = 1;
 const float PI = 3.14159265359;
 
+// Sample within base-level texel centers. Mipmapped atlases need padded frames.
+vec4 SampleFrame(sampler2D source)
+{
+    const vec2 halfTexel = 0.5 / vec2(textureSize(source, 0));
+    const vec2 inset = min(halfTexel, (vFrameBounds.zw - vFrameBounds.xy) * 0.5);
+    const vec2 uv = clamp(vUV, vFrameBounds.xy + inset, vFrameBounds.zw - inset);
+    return textureGrad(source, uv, dFdx(vUV), dFdy(vUV));
+}
+
 vec3 SurfaceNormal()
 {
     vec2 tilt = vec2(0.0);
     if (vSurface.z > 0.5)
-        tilt = (texture(uNormal, vUV).xy * 2.0 - 1.0) * vSurface.y;
+        tilt = (SampleFrame(uNormal).xy * 2.0 - 1.0) * vSurface.y;
     const vec3 n = vec3(tilt, sqrt(max(0.0001, 1.0 - dot(tilt, tilt))));
     return normalize(normalize(vTangent) * n.x + normalize(vBitangent) * n.y + normalize(vNormal) * n.z);
 }
@@ -84,7 +94,7 @@ void main()
 {
     // No discard: the pass attaches no depth and writes none, so a transparent
     // texel already contributes nothing under SrcAlpha blending.
-    outColor = texture(uAtlas, vUV) * vTint;
+    outColor = SampleFrame(uAtlas) * vTint;
     if (vSurface.x > 0.5)
         outColor.rgb *= Irradiance(SurfaceNormal()) / PI;
 }

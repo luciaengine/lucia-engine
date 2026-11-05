@@ -7,9 +7,36 @@
 #include "Engine/Rendering/SortingLayers.h"
 #include "ECS/World.h"
 #include "ECS/ECSTemplates.h"
+#include "Mathematics/Matrix4x4.h"
 
 namespace GameEngine::Engine::Renderer
 {
+namespace
+{
+struct GroundSortPoint
+{
+    Mathematics::Vector3 Position;
+    float32 SectorOffsetY = 0;
+};
+
+GroundSortPoint ResolveGroundPoint(ECS::World& world, ECS::EntityHandle entity, float32 originY)
+{
+    GroundSortPoint point;
+    if (const auto* transform = world.GetComponent<Components::WorldTransform>(entity))
+    {
+        point.Position = Mathematics::Matrix4x4::FromColumnMajor(transform->matrix).TransformPoint({0, originY, 0});
+        if (const auto* sector = world.GetComponent<Components::WorldSectorCoord>(entity))
+        {
+            Mathematics::Vector3 offset;
+            SectorToWorld(*sector, offset.x, offset.y, offset.z);
+            point.Position = point.Position + offset;
+            point.SectorOffsetY = offset.y;
+        }
+    }
+    return point;
+}
+}
+
 RenderSortingData ResolveRenderSorting(ECS::World& world, ECS::EntityHandle entity,
                                        const Rendering::SortingLayers& layers, bool hasGroups)
 {
@@ -28,7 +55,16 @@ RenderSortingData ResolveRenderSorting(ECS::World& world, ECS::EntityHandle enti
                 result.Layer = layers.Priority(sorting->Layer);
                 result.Order = sorting->OrderInLayer;
                 result.MemberOrder = sorting->OrderInLayer;
-                result.Authored = sorting->Layer != 0 || sorting->OrderInLayer != 0 || sorting->GroupChildren;
+                result.SortByY = sorting->SortByY;
+                result.SortOriginY = sorting->SortOriginY;
+                if (result.SortByY)
+                {
+                    const auto point = ResolveGroundPoint(world, entity, sorting->SortOriginY);
+                    result.SortY = point.Position.y;
+                    result.SectorOffsetY = point.SectorOffsetY;
+                }
+                result.Authored = sorting->Layer != 0 || sorting->OrderInLayer != 0 ||
+                                  sorting->GroupChildren || sorting->SortByY;
             }
             if (sorting->GroupChildren)
             {
@@ -37,21 +73,9 @@ RenderSortingData ResolveRenderSorting(ECS::World& world, ECS::EntityHandle enti
                 result.Layer = layers.Priority(sorting->Layer);
                 result.Order = sorting->OrderInLayer;
                 result.Group = current;
-                for (auto& coordinate : result.GroupPosition)
-                    coordinate = 0;
-                if (const auto* transform = world.GetComponent<Components::WorldTransform>(current))
-                {
-                    for (uint32 axis = 0; axis < 3; ++axis)
-                        result.GroupPosition[axis] = transform->matrix[12 + axis];
-                    if (const auto* sector = world.GetComponent<Components::WorldSectorCoord>(current))
-                    {
-                        float32 x, y, z;
-                        SectorToWorld(*sector, x, y, z);
-                        result.GroupPosition[0] += x;
-                        result.GroupPosition[1] += y;
-                        result.GroupPosition[2] += z;
-                    }
-                }
+                result.GroupSortByY = sorting->SortByY;
+                result.GroupPosition = ResolveGroundPoint(world, current,
+                    sorting->SortByY ? sorting->SortOriginY : 0.0f).Position;
             }
         }
         if (!hasGroups)

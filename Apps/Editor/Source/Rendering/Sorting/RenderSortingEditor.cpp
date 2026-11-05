@@ -36,7 +36,18 @@ void BuildInspector(const InspectorContext& context)
         {
             InspectorDrag::CommitComponentsWithUndo<Sorting>(world, entity, additional, notifications, undo,
                 "Change Sorting Group", [enabled](Sorting& value) { value.GroupChildren = enabled; });
-        }, "Draw descendants together at this parent's layer, order, and camera depth.");
+        }, "Draw descendants together at this parent's layer, order, and sorting point.");
+    InspectorDrag::AddToggleRow(context.Parent, "Sort by Y", sorting->SortByY,
+        [world, entity, additional, notifications, undo](bool enabled)
+        {
+            InspectorDrag::CommitComponentsWithUndo<Sorting>(world, entity, additional, notifications, undo,
+                "Change Y Sorting", [enabled](Sorting& value) { value.SortByY = enabled; });
+        }, "Draw higher ground points first (+Y up). Enable on sprites and tile layers that overlap. Sorting layer and order take priority.");
+    InspectorDrag::AddComponentFloatRowWithDrag<Sorting>(context.Parent, "Y Sort Origin", sorting->SortOriginY,
+        world, entity, notifications, undo, "Change Y Sort Origin",
+        [](Sorting& value, float origin) { value.SortOriginY = origin; }, 0.0f,
+        "Ground point offset along local Y, before scale. Sprites use their entity origin; tiles use each cell's bottom center.",
+        additional);
 }
 }
 

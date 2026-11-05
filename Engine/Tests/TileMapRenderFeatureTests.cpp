@@ -10,6 +10,12 @@
 #include "Assets/AssetManager.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
+#include "Components/Rendering/RenderSorting.h"
+#include "Components/Rendering/WorldSectorCoord.h"
+#include "ECS/ECSTemplates.h"
+#include "ECS/World.h"
+#include "Engine/Rendering/RenderSorting.h"
+#include "Engine/Rendering/SortingLayers.h"
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
@@ -105,6 +111,8 @@ TEST_F(TileWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejected)
     ASSERT_NE(layer, nullptr);
     layer->TileSetGuid = setRegistration.Value();
     layer->SetCell(0, 0, TileMap::MakeCell(1));
+    layer->SetCell(1, 0, TileMap::MakeCell(1));
+    layer->SetCell(0, 2, TileMap::MakeCell(1));
     Vector<uint8> mapBytes;
     ASSERT_TRUE(map.SaveToData(mapBytes));
     std::ofstream(mapPath, std::ios::binary).write(reinterpret_cast<const char*>(mapBytes.data()), mapBytes.size());
@@ -120,9 +128,63 @@ TEST_F(TileWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejected)
     std::vector<TileMapChunkDraw> batches;
     Feature->BuildViewDraws(Services, viewProj, position, forward, 1.0f, batches, 12);
     ASSERT_EQ(batches.size(), 1u);
-    ASSERT_EQ(batches[0].InstanceCount, 1u);
+    ASSERT_EQ(batches[0].InstanceCount, 3u);
     ASSERT_TRUE(batches[0].Atlas.IsValid());
     ASSERT_TRUE(batches[0].Instances.IsValid());
     Feature->BuildViewDraws(Services, viewProj, position, forward, 1.0f, batches, 13);
     EXPECT_TRUE(batches.empty());
+
+    draw.Sorting.SortByY = true;
+    Feature->SetLayerDraws(12, {draw});
+    Feature->BuildViewDraws(Services, viewProj, position, forward, 1.0f, batches, 12);
+    ASSERT_EQ(batches.size(), 2u) << "Y-sorted cells in one chunk must allow a sprite between rows";
+    EXPECT_EQ(batches[0].InstanceCount, 2u);
+    EXPECT_EQ(batches[0].FirstInstance, 0u);
+    EXPECT_EQ(batches[1].InstanceCount, 1u);
+    EXPECT_EQ(batches[1].FirstInstance, 2u);
+    EXPECT_EQ(batches[0].Sort.Depth, 0.0f);
+    EXPECT_EQ(batches[1].Sort.Depth, 2.0f);
+    RenderSortKey character;
+    character.Depth = 1.0f;
+    EXPECT_TRUE(RenderSortBefore(batches[1].Sort, character));
+    EXPECT_TRUE(RenderSortBefore(character, batches[0].Sort));
+
+    draw.Model[5] = -2.0f;
+    viewProj[0] = viewProj[5] = 0.01f;
+    draw.Model[13] = -3.0f;
+    draw.Sorting.SortOriginY = 0.25f;
+    Feature->SetLayerDraws(12, {draw});
+    Feature->BuildViewDraws(Services, viewProj, position, forward, 1.0f, batches, 12);
+    ASSERT_EQ(batches.size(), 2u);
+    EXPECT_FLOAT_EQ(batches[0].Sort.Depth, -3.5f);
+    EXPECT_FLOAT_EQ(batches[1].Sort.Depth, -7.5f);
+
+    draw.Model[1] = 1.0f;
+    Feature->SetLayerDraws(12, {draw});
+    Feature->BuildViewDraws(Services, viewProj, position, forward, 1.0f, batches, 12);
+    ASSERT_EQ(batches.size(), 3u) << "A tilted tile row has distinct world ground points";
+    EXPECT_FLOAT_EQ(batches[0].Sort.Depth, -3.0f);
+    EXPECT_FLOAT_EQ(batches[1].Sort.Depth, -2.0f);
+    EXPECT_FLOAT_EQ(batches[2].Sort.Depth, -7.0f);
+
+    ECS::World world;
+    Components::RenderSorting sorting;
+    sorting.SortByY = true;
+    auto tileEntity = world.Create(sorting, Components::WorldTransform{}, Components::WorldSectorCoord{0, 1, 0});
+    Components::WorldTransform actorTransform;
+    actorTransform.matrix[13] = 1;
+    auto actorEntity = world.Create(sorting, actorTransform, Components::WorldSectorCoord{0, 1, 0});
+    world.ProcessCommands();
+    const auto layers = Rendering::SortingLayers::Defaults();
+    draw = TileMapLayerDraw{};
+    draw.Map = mapGuid;
+    draw.LayerId = layerId;
+    draw.Sorting = ResolveRenderSorting(world, tileEntity.GetHandle(), layers);
+    Feature->SetLayerDraws(12, {draw});
+    Feature->BuildViewDraws(Services, viewProj, position, forward, 1.0f, batches, 12);
+    ASSERT_EQ(batches.size(), 2u);
+    const auto actorKey = MakeRenderSortKey(ResolveRenderSorting(world, actorEntity.GetHandle(), layers),
+                                           0, position, forward);
+    EXPECT_TRUE(RenderSortBefore(batches[1].Sort, actorKey));
+    EXPECT_TRUE(RenderSortBefore(actorKey, batches[0].Sort));
 }

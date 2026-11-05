@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ECS/ECS.h"
+#include "Mathematics/Vector3.h"
 #include "Types/Types.h"
 
 #include <cmath>
@@ -13,10 +14,16 @@ struct RenderSortingData
     int32 Layer = 0;
     int32 Order = 0;
     ECS::EntityHandle Group{};
-    float32 GroupPosition[3]{};
+    Mathematics::Vector3 GroupPosition;
     int32 MemberOrder = 0;
     bool Authored = false;
     bool Grouped = false;
+    bool SortByY = false;
+    float32 SortOriginY = 0.0f;
+    float32 SortY = 0.0f;
+    bool GroupSortByY = false;
+    /// World Y offset of the entity's sector, shared by tile and sprite ground keys.
+    float32 SectorOffsetY = 0;
 };
 struct RenderSortKey
 {
@@ -30,23 +37,25 @@ struct RenderSortKey
     bool operator==(const RenderSortKey&) const = default;
 };
 inline float32 FiniteRenderDepth(float32 depth) { return std::isfinite(depth) ? depth : 0.0f; }
-/// The outer group supplies depth; members retain their own view depth inside the group.
+/// The outer group supplies depth. Y sorting uses world ground height, with +Y up.
 inline RenderSortKey MakeRenderSortKey(const RenderSortingData& data, float32 viewDepth,
                                        const float32* cameraPosition, const float32* cameraForward)
 {
     RenderSortKey key;
     key.Layer = data.Layer;
     key.Order = data.Order;
-    key.Depth = FiniteRenderDepth(viewDepth);
+    const float32 memberDepth = FiniteRenderDepth(data.SortByY ? data.SortY : viewDepth);
+    key.Depth = memberDepth;
     key.Group = data.Group;
     key.Grouped = data.Grouped;
     if (data.Grouped)
     {
-        key.Depth = FiniteRenderDepth((data.GroupPosition[0] - cameraPosition[0]) * cameraForward[0] +
+        key.Depth = FiniteRenderDepth(data.GroupSortByY ? data.GroupPosition.y :
+                                    (data.GroupPosition[0] - cameraPosition[0]) * cameraForward[0] +
                                      (data.GroupPosition[1] - cameraPosition[1]) * cameraForward[1] +
                                      (data.GroupPosition[2] - cameraPosition[2]) * cameraForward[2]);
         key.MemberOrder = data.MemberOrder;
-        key.MemberDepth = FiniteRenderDepth(viewDepth);
+        key.MemberDepth = memberDepth;
     }
     return key;
 }

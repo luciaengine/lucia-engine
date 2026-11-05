@@ -6,6 +6,8 @@
 #include "Core/Engine.h"
 #include "EngineTestShaderSetup.h"
 #include "Rendering/Common/Utils.h"
+#include "Mathematics/Vector3.h"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
@@ -127,6 +129,69 @@ TEST_F(SpriteWorldDraw, MatchingWorldProducesGpuBatchBeforeForeignWorldIsRejecte
     ASSERT_TRUE(batches[0].Atlas.IsValid());
     ASSERT_TRUE(batches[0].Instances.IsValid());
     Services.Views().SetViewWorldId(viewId, 13);
+    Feature->BuildViewDraws(Services, viewId, batches);
+    EXPECT_TRUE(batches.empty());
+
+    Services.Views().SetViewWorldId(viewId, 12);
+    SpriteDraw sprite;
+    sprite.Texture = registered.Value();
+    sprite.Center[2] = 0.5f;
+    sprite.AxisX[0] = sprite.AxisY[1] = 0.25f;
+    const std::vector<Mathematics::Vector3> outside = {
+        {-3, 0, 0.5f}, {3, 0, 0.5f}, {0, -3, 0.5f},
+        {0, 3, 0.5f}, {0, 0, -1}, {0, 0, 2}};
+    for (const auto& center : outside)
+    {
+        SCOPED_TRACE(::testing::Message() << center.x << "," << center.y << "," << center.z);
+        std::copy_n(center.v, 3, sprite.Center);
+        draws = {sprite};
+        Feature->SetSpriteDraws(12, draws);
+        Feature->BuildViewDraws(Services, viewId, batches);
+        EXPECT_TRUE(batches.empty());
+    }
+
+    // A mirrored, skewed quad can cross the viewport even with its center outside.
+    sprite.Center[0] = 1.5f;
+    sprite.Center[1] = 0;
+    sprite.Center[2] = 0.5f;
+    sprite.AxisX[0] = -1.0f;
+    sprite.AxisX[1] = 0.3f;
+    sprite.AxisY[0] = 0.4f;
+    draws = {sprite};
+    Feature->SetSpriteDraws(12, draws);
+    Feature->BuildViewDraws(Services, viewId, batches);
+    ASSERT_EQ(batches.size(), 1u);
+    EXPECT_EQ(batches[0].InstanceCount, 1u);
+
+    // Visibility is per view: moving the camera can reveal the same snapshot.
+    sprite.Center[0] = 4.0f;
+    sprite.AxisX[0] = sprite.AxisY[1] = 0.25f;
+    sprite.AxisX[1] = sprite.AxisY[0] = 0;
+    draws = {sprite};
+    Feature->SetSpriteDraws(12, draws);
+    Feature->BuildViewDraws(Services, viewId, batches);
+    EXPECT_TRUE(batches.empty());
+    camera.viewProj[12] = -4.0f;
+    Services.Views().SetCameraData(cameraId, camera);
+    Feature->BuildViewDraws(Services, viewId, batches);
+    ASSERT_EQ(batches.size(), 1u);
+    EXPECT_EQ(batches[0].InstanceCount, 1u);
+
+    camera.viewProj[12] = 0;
+    Services.Views().SetCameraData(cameraId, camera);
+    sprite.Center[0] = 1.26f;
+    draws = {sprite};
+    Feature->SetSpriteDraws(12, draws);
+    Feature->BuildViewDraws(Services, viewId, batches);
+    EXPECT_TRUE(batches.empty());
+    PixelPerfectViewState pixelPerfect;
+    pixelPerfect.Active = true;
+    pixelPerfect.WorldUnitsPerTexel = 0.2f;
+    Services.Views().SetViewPixelPerfect(viewId, pixelPerfect);
+    Feature->BuildViewDraws(Services, viewId, batches);
+    EXPECT_EQ(batches.size(), 1u) << "Pixel snapping moves the left edge onto the viewport";
+
+    Services.Views().SetViewRenderLayerMask(viewId, 0u);
     Feature->BuildViewDraws(Services, viewId, batches);
     EXPECT_TRUE(batches.empty());
 }

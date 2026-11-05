@@ -1,0 +1,48 @@
+---
+title: Sprite playback events
+description: React to frame changes, looping, and completion of AnimatedSprite2D playback.
+---
+
+An **Animated Sprite 2D** plays the selected animation from a `.spriteframes` asset. **Speed Scale** controls its rate. Negative values play backward. **Playing** pauses or resumes the clock. Hiding a sprite does not pause playback.
+
+A non-looping animation stops playing when it reaches either end. It holds the terminal frame and reports **Finished** once. Setting **Playing** to false yourself does not report completion. To replay a forward one-shot, set **Time Seconds** to zero and **Playing** to true. To replay it backward, start at its duration with a negative speed.
+
+## Read notifications
+
+The notifications summarize the most recent playback update. They are replaced when that sprite updates again. A disabled sprite retains its last update until it updates or a poll consumes its notifications.
+
+| Notification | Meaning |
+|---|---|
+| FrameChanged | The visible frame changed, or playback crossed a loop boundary. |
+| Looped | Playback crossed one or more loop boundaries. |
+| Finished | A one-shot reached its terminal point and stopped playing. |
+
+A large time step produces one summary. It reports the final frame, rather than one callback for every crossed frame. The loop count is positive forward and negative backward. Exact whole loops still report a loop when the final frame is unchanged. Counts saturate at the signed 64-bit limits.
+
+C++ systems can read the transient component fields after the `SpriteAnimation` system. C# systems call `SpriteAnimationApi.PollEvents` on the main thread. A poll consumes the notifications once. A later poll returns `None` until playback produces another notification. Read payload fields only when the flags are nonzero.
+
+:::::tabs
+::::tab[C++]
+
+```cpp title="Read completion after the SpriteAnimation system"
+const auto* sprite = world.GetComponent<GameEngine::Components::AnimatedSprite2D>(character);
+const auto finished = static_cast<GameEngine::uint32>(GameEngine::Sprite2D::SpritePlaybackEvent::Finished);
+if (sprite && (sprite->PendingPlaybackEvents & finished) != 0)
+    FinishAttack(character);
+```
+
+::::
+::::tab[C#]
+
+```csharp title="Poll from GameSystem.OnUpdate"
+var events = SpriteAnimationApi.PollEvents(World, characterId);
+if ((events.Flags & SpriteAnimationEvent.Finished) != 0)
+    FinishAttack(characterId);
+```
+
+::::
+:::::
+
+The final frame index is zero-based. `TimeSeconds` is the normalized clock after the update. `LoopCount` is zero for a one-shot. Seeking by assigning the clock does not replay notifications for the skipped interval.
+
+Zero speed and zero delta produce no notifications. Invalid time or speed inputs do not advance playback. During playback, a non-finite clock resets to zero. Looping clocks stay below the animation duration, so they do not accumulate time for the lifetime of the entity.

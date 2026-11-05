@@ -46,6 +46,7 @@ layout(location = 3) out vec3 vTangent;
 layout(location = 4) out vec3 vBitangent;
 layout(location = 5) out vec3 vNormal;
 layout(location = 6) flat out vec4 vSurface;
+layout(location = 7) flat out vec4 vFrameBounds;
 
 // Two triangles over the [-1,1] quad, counter-clockwise in the sprite's
 // +X right / +Y up frame.
@@ -68,6 +69,7 @@ void main()
     vBitangent = normalize(inst.AxisY.xyz) * (inst.UVRect.w >= inst.UVRect.y ? 1.0 : -1.0);
     vNormal = -normalize(cross(inst.AxisX.xyz, inst.AxisY.xyz));
     vSurface = inst.Surface;
+    vFrameBounds = vec4(min(inst.UVRect.xy, inst.UVRect.zw), max(inst.UVRect.xy, inst.UVRect.zw));
 
     // corner maps [-1,1] -> [0,1]; t.y runs bottom-to-top over the quad while
     // the rect's w is the frame's bottom edge in texture space.

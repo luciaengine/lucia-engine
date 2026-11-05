@@ -85,7 +85,7 @@ struct TileMapPushConstants
 static_assert(sizeof(TileMapPushConstants) == 112,
               "push block must match tilemap.vert and stay within the 128-byte guaranteed range");
 
-/** One instanced draw covering the occupied cells of one chunk. */
+/** One contiguous range of occupied cells from a chunk's instance stream. */
 struct TileMapChunkDraw
 {
     ECS::EntityHandle Entity{};
@@ -95,6 +95,7 @@ struct TileMapChunkDraw
     Rendering::BufferHandle AnimFrames{};
     Rendering::TextureHandle Atlas{};
     uint32 InstanceCount = 0;
+    uint32 FirstInstance = 0;
     /** World Z of the owning layer's plane; Sort holds the resolved view ordering. */
     float32 WorldZ = 0.0f;
     Engine::Renderer::RenderSortKey Sort;
@@ -180,6 +181,8 @@ private:
         ChunkSlot Slots[Rendering::IDevice::kMaxSupportedFramesInFlight];
         uint32 ReadSlot = 0;
         uint32 Count = 0;
+        /// Cell indices in the same order as the uploaded instances.
+        std::vector<uint32> Cells;
     };
 
     struct LayerBuffers
@@ -216,6 +219,9 @@ private:
     void FlushDirtyChunks(const GUID& mapGuid, uint32 layerId);
 
     void UploadChunk(ChunkBuffer& chunk, const std::vector<TileInstance>& instances);
+    void AppendChunkDraws(const ChunkBuffer& chunk, const TileMapChunkDraw& draw,
+                         const Engine::Renderer::RenderSortingData& sorting,
+                         std::vector<TileMapChunkDraw>& outDraws) const;
     void DestroyChunk(ChunkBuffer& chunk);
     void ReleaseGpuState();
 

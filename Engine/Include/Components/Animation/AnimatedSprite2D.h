@@ -66,6 +66,15 @@ struct AnimatedSprite2D
     bool FlipX = false;
     bool FlipY = false;
 
+    // [DoNotSerialize] Events from the most recent playback update, consumed by SpriteAnimationApi.
+    uint32 PendingPlaybackEvents = 0;
+    // [DoNotSerialize] Final frame of the update that produced PendingPlaybackEvents.
+    uint32 PlaybackEventFrame = 0;
+    // [DoNotSerialize] Signed loop count of the update that produced PendingPlaybackEvents.
+    int64 PlaybackEventLoops = 0;
+    // [DoNotSerialize] Clock captured when PendingPlaybackEvents was published.
+    float32 PlaybackEventTimeSeconds = 0;
+
     void SetAnimationName(std::string_view value)
     {
         CopyToFixedString(AnimationName, value);
