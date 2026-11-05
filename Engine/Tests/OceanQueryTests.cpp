@@ -224,6 +224,37 @@ TEST(OceanQueryTests, DynamicWaveQuiescenceAdvancesOnlyWithSimulationTime)
     EXPECT_TRUE(waves.IsQuiescent());
 }
 
+TEST(OceanQueryTests, DynamicWaveQuiescenceDropsOldWorkBeforeAcceptingNewImpulses)
+{
+    for (const bool fixed : {false, true})
+    {
+        SCOPED_TRACE(fixed ? "fixed" : "variable");
+        OceanDynWaves waves;
+        if (fixed)
+            waves.ConfigureSimulation(20.0f, 4u, 0.1f, 0.6f, 9.81f,
+                                      0.75f, 0.4f, 2.0f, 0u, 3u);
+        std::array<OceanWaveImpulseGPU, kMaxOceanWaveImpulses> old{};
+        for (auto& impulse : old)
+            impulse.CenterRadiusAmp[3] = 0.5f;
+        waves.SetFrameInputs(old.data(), kMaxOceanWaveImpulses, 4.0f, 0.2f, 0.1f);
+        for (uint32 second = 0u; second < 30u; ++second)
+            waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 1.0f);
+        ASSERT_TRUE(waves.IsQuiescent());
+        waves.InvalidateHistory();
+        OceanWaveImpulseGPU fresh{};
+        fresh.CenterRadiusAmp[3] = 0.75f;
+        waves.SetFrameInputs(&fresh, 1u, 4.0f, 0.2f, 0.05f);
+        EXPECT_FALSE(waves.IsQuiescent());
+        EXPECT_EQ(waves.GetPendingSubstepCount(), 1u);
+        OceanDynWavesParamsGPU params{};
+        waves.FillParams(params, {}, 0u);
+        EXPECT_FLOAT_EQ(params.DeltaTime, 0.05f);
+        EXPECT_EQ(params.ImpulseCount, 1u);
+        EXPECT_FLOAT_EQ(params.Impulses[0].CenterRadiusAmp[3], 0.75f);
+        EXPECT_EQ(params.ResetHistory, 1u);
+    }
+}
+
 TEST(OceanQueryTests, DynamicAndFoamSettingsAccumulateFixedSubsteps)
 {
     OceanDynWaves dynamic;
@@ -254,6 +285,91 @@ TEST(OceanQueryTests, DynamicAndFoamSettingsAccumulateFixedSubsteps)
     EXPECT_EQ(foam.GetPendingSubstepCount(), 2u);
 }
 
+TEST(OceanQueryTests, DynamicWavesRetainUnrecordedFixedStepsWhilePaused)
+{
+    OceanDynWaves waves;
+    waves.ConfigureSimulation(20.0f, 4u, 0.1f, 0.6f, 9.81f,
+                              0.75f, 0.4f, 2.0f, 0u, 3u);
+    OceanWaveImpulseGPU impulse{};
+    impulse.CenterRadiusAmp[3] = 0.5f;
+    waves.SetFrameInputs(&impulse, 1u, 4.0f, 0.2f, 0.15f);
+    ASSERT_EQ(waves.GetPendingSubstepCount(), 3u);
+    for (uint32 retry = 0u; retry < 3u; ++retry)
+    {
+        waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+        EXPECT_EQ(waves.GetPendingSubstepCount(), 3u);
+        OceanDynWavesParamsGPU params{};
+        waves.FillParams(params, {}, 0u);
+        EXPECT_FLOAT_EQ(params.DeltaTime, 0.05f);
+        EXPECT_EQ(params.ImpulseCount, 1u);
+    }
+    waves.FinishSubsteps();
+    waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+    EXPECT_EQ(waves.GetPendingSubstepCount(), 0u);
+}
+
+TEST(OceanQueryTests, DynamicWavesRetainTimeAndAppendUnrecordedImpulses)
+{
+    OceanDynWaves waves;
+    OceanWaveImpulseGPU first{}, second{};
+    first.CenterRadiusAmp[3] = 0.5f;
+    second.CenterRadiusAmp[3] = 0.75f;
+    waves.SetFrameInputs(&first, 1u, 4.0f, 0.2f, 0.1f);
+    waves.SetFrameInputs(&second, 1u, 4.0f, 0.2f, 0.2f);
+    waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+    ASSERT_EQ(waves.GetPendingSubstepCount(), 1u);
+    OceanDynWavesParamsGPU params{};
+    waves.FillParams(params, {}, 0u);
+    EXPECT_NEAR(params.DeltaTime, 0.3f, 1e-6f);
+    ASSERT_EQ(params.ImpulseCount, 2u);
+    EXPECT_FLOAT_EQ(params.Impulses[0].CenterRadiusAmp[3], 0.5f);
+    EXPECT_FLOAT_EQ(params.Impulses[1].CenterRadiusAmp[3], 0.75f);
+    waves.FillParams(params, {}, 1u);
+    EXPECT_EQ(params.ImpulseCount, 0u);
+    waves.FinishSubsteps();
+    waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+    EXPECT_EQ(waves.GetPendingSubstepCount(), 0u);
+}
+
+TEST(OceanQueryTests, DynamicWavesRetainOldestImpulsesWithoutDeduplicating)
+{
+    OceanDynWaves waves;
+    std::array<OceanWaveImpulseGPU, kMaxOceanWaveImpulses> impulses{};
+    for (auto& impulse : impulses)
+        impulse.CenterRadiusAmp[3] = 0.5f;
+    waves.SetFrameInputs(impulses.data(), kMaxOceanWaveImpulses - 1u, 4.0f, 0.2f, 0.0f);
+    impulses[0].CenterRadiusAmp[3] = 0.75f;
+    waves.SetFrameInputs(impulses.data(), 2u, 4.0f, 0.2f, 0.0f);
+    OceanDynWavesParamsGPU params{};
+    waves.FillParams(params, {}, 0u);
+    ASSERT_EQ(params.ImpulseCount, kMaxOceanWaveImpulses);
+    for (uint32 i = 0u; i < kMaxOceanWaveImpulses - 1u; ++i)
+        EXPECT_FLOAT_EQ(params.Impulses[i].CenterRadiusAmp[3], 0.5f);
+    EXPECT_FLOAT_EQ(params.Impulses[kMaxOceanWaveImpulses - 1u].CenterRadiusAmp[3], 0.75f);
+    EXPECT_EQ(waves.GetPendingSubstepCount(), 1u);
+}
+
+TEST(OceanQueryTests, DynamicWavesRetainSecondsAcrossSimulationCadenceChanges)
+{
+    OceanDynWaves waves;
+    OceanWaveImpulseGPU impulse{};
+    waves.SetFrameInputs(&impulse, 1u, 4.0f, 0.2f, 0.15f);
+    waves.ConfigureSimulation(20.0f, 4u, 0.1f, 0.6f, 9.81f,
+                              0.75f, 0.4f, 2.0f, 0u, 3u);
+    waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+    EXPECT_EQ(waves.GetPendingSubstepCount(), 3u);
+    waves.ConfigureSimulation(40.0f, 8u, 0.1f, 0.6f, 9.81f,
+                              0.75f, 0.4f, 2.0f, 0u, 3u);
+    waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+    EXPECT_EQ(waves.GetPendingSubstepCount(), 6u);
+    waves.ClearSimulationConfiguration();
+    waves.SetFrameInputs(nullptr, 0u, 4.0f, 0.2f, 0.0f);
+    EXPECT_EQ(waves.GetPendingSubstepCount(), 1u);
+    OceanDynWavesParamsGPU params{};
+    waves.FillParams(params, {}, 0u);
+    EXPECT_NEAR(params.DeltaTime, 0.15f, 1e-6f);
+}
+
 // Frames whose foam step never ran (no water in view) are caught up by the next
 // step as one step over the whole gap: it decays the old foam over the gap, and
 // its deposits are scaled so each equals the exponential integral over the gap.
@@ -274,7 +390,7 @@ TEST(OceanQueryTests, FoamCatchesUpSkippedFramesInOneClosedFormStep)
     frameInputs();
 
     OceanFoamParamsGPU params{};
-    foam.FillParams(params, 0u, 0u);
+    foam.FillParams(params, {}, 0u);
     const float gap = 3.0f * kFrame;
     EXPECT_FLOAT_EQ(params.DeltaTime, gap);
     const auto integralScale = [gap](float rate) { return (1.0f - std::exp(-rate * gap)) / (rate * gap); };
@@ -283,10 +399,60 @@ TEST(OceanQueryTests, FoamCatchesUpSkippedFramesInOneClosedFormStep)
     foam.FinishSubsteps();
 
     frameInputs();
-    foam.FillParams(params, 0u, 0u);
+    foam.FillParams(params, {}, 0u);
     EXPECT_FLOAT_EQ(params.DeltaTime, kFrame);
     EXPECT_FLOAT_EQ(params.Strength, 1.0f);
     EXPECT_FLOAT_EQ(params.ShorelineStrength, 2.0f);
+}
+
+TEST(OceanQueryTests, FoamRetainsUnrecordedStepsAcrossFractionalAndPausedUpdates)
+{
+    OceanFoamSim foam;
+    foam.ConfigureSimulation(10.0f, 2u);
+    foam.InvalidateHistory();
+    const auto inputs = [&foam](float dt)
+    {
+        foam.SetFrameInputs({}, {}, 0u, 0.8f, 0.55f, 1.0f, dt,
+                            1.0f, 15.0f, 10.0f, 1.0f, 10.0f, 0.0f, 0.0f);
+    };
+    inputs(0.1f);
+    inputs(0.01f);
+    for (uint32 retry = 0u; retry < 3u; ++retry)
+    {
+        inputs(0.0f);
+        EXPECT_EQ(foam.GetPendingSubstepCount(), 1u);
+        OceanFoamParamsGPU params{};
+        foam.FillParams(params, {}, 0u);
+        EXPECT_FLOAT_EQ(params.DeltaTime, 0.1f);
+        EXPECT_EQ(params.ResetHistory, 1u);
+        EXPECT_FLOAT_EQ(params.Strength, 1.0f);
+    }
+    foam.FinishSubsteps();
+    inputs(0.09f);
+    EXPECT_EQ(foam.GetPendingSubstepCount(), 1u);
+    OceanFoamParamsGPU params{};
+    foam.FillParams(params, {}, 0u);
+    EXPECT_FLOAT_EQ(params.DeltaTime, 0.1f);
+    EXPECT_EQ(params.ResetHistory, 0u);
+}
+
+TEST(OceanQueryTests, TemporalSimulationClaimsUseTheWholeWorldFrameEpoch)
+{
+    OceanRenderFeature feature;
+    constexpr uint64 first = 1u;
+    constexpr uint64 later = (uint64{1} << 32u) + first;
+    EXPECT_TRUE(feature.TryClaimDynWavesDispatch(first));
+    EXPECT_FALSE(feature.TryClaimDynWavesDispatch(first));
+    EXPECT_TRUE(feature.TryClaimDynWavesDispatch(later));
+    EXPECT_FALSE(feature.TryClaimDynWavesDispatch(later));
+    EXPECT_TRUE(feature.TryClaimFoamDispatch(first));
+    EXPECT_FALSE(feature.TryClaimFoamDispatch(first));
+    EXPECT_TRUE(feature.TryClaimFoamDispatch(later));
+    EXPECT_FALSE(feature.TryClaimFoamDispatch(later));
+    EXPECT_TRUE(feature.TryClaimGPUQueryDispatch(first));
+    EXPECT_FALSE(feature.TryClaimGPUQueryDispatch(first));
+    EXPECT_TRUE(feature.TryClaimGPUQueryDispatch(later));
+    EXPECT_FALSE(feature.TryClaimGPUQueryDispatch(later));
 }
 
 // The declare runs once per presented window: one window dispatching the waves
@@ -1974,7 +2140,53 @@ TEST(OceanQueryTests, ArbitraryGPUQueryQueuesWorldPointsAndSpatialLengths)
     EXPECT_FLOAT_EQ(params.Points[0][2], 0.5f);
     EXPECT_FLOAT_EQ(params.Points[1][0], -4000.0f);
     EXPECT_FLOAT_EQ(params.Points[1][1], 9200.0f);
+    EXPECT_TRUE(query.HasPending());
+}
+
+TEST(OceanQueryTests, ActiveGPUQuerySurvivesAnUnrecordedFrameAndRefreshesItsEnvironment)
+{
+    OceanGPUQuery query;
+    const OceanSurfaceQueryPoint point{12.0f, -8.0f};
+    const auto token = query.Enqueue(&point, 1u, 0.5f);
+    OceanParamsGPU ocean{};
+    ocean.Time = 3.0f;
+    ASSERT_EQ(query.PrepareNext(ocean, {}, false), token);
+    EXPECT_TRUE(query.HasPending());
+    ocean.Time = 9.0f;
+    ocean.SeaLevel = 17.0f;
+    ocean.WaveOriginOffsetX = 32.0f;
+    OceanCascadeLayoutGPU combined{};
+    combined.LodCount = 1u;
+    combined.CascadeOriginScale[0][0] = 64.0f;
+    ASSERT_EQ(query.PrepareNext(ocean, combined, true), token);
+    OceanGPUQueryParamsGPU params{};
+    query.FillParams(params);
+    EXPECT_EQ(params.PointCount, 1u);
+    EXPECT_FLOAT_EQ(params.Points[0][0], point.X);
+    EXPECT_FLOAT_EQ(params.Points[0][1], point.Z);
+    EXPECT_FLOAT_EQ(params.Points[0][2], 0.5f);
+    EXPECT_FLOAT_EQ(params.Points[0][3], 9.0f);
+    EXPECT_FLOAT_EQ(params.SeaLevel, 17.0f);
+    EXPECT_FLOAT_EQ(params.WaveOriginOffsetX, 32.0f);
+    EXPECT_EQ(params.CombinedAvailable, 1u);
+    EXPECT_FLOAT_EQ(params.CombinedCascade.CascadeOriginScale[0][0], 64.0f);
+    query.Clear();
     EXPECT_FALSE(query.HasPending());
+}
+
+TEST(OceanQueryTests, UnrecordedGPUQueryStaysAheadOfNewerRequests)
+{
+    OceanGPUQuery query;
+    const OceanSurfaceQueryPoint first{12.0f, -8.0f}, second{50.0f, 60.0f};
+    const auto token = query.Enqueue(&first, 1u);
+    query.Enqueue(&second, 1u);
+    ASSERT_EQ(query.PrepareNext({}, {}, false), token);
+    ASSERT_EQ(query.PrepareNext({}, {}, false), token);
+    OceanGPUQueryParamsGPU params{};
+    query.FillParams(params);
+    EXPECT_FLOAT_EQ(params.Points[0][0], first.X);
+    EXPECT_FLOAT_EQ(params.Points[0][1], first.Z);
+    EXPECT_TRUE(query.HasPending());
 }
 
 TEST(OceanQueryTests, OceanRayTracerFindsFirstSurfaceCrossing)

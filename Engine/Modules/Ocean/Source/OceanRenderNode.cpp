@@ -370,19 +370,18 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
     // SRV->TransferSrc transition hoists to the submission front, and the
     // kEarlySetup bake samples TransferSrc through an SRV descriptor.
     RenderGraph::RGTexture rasterDepthRG{};
+    OceanRasterDepthSampling rasterSampling{};
     if (rasterDepthSettings.Enabled && haveCamera)
     {
         const OceanParamsGPU rasterParams = feature.GetParams();
         const bool declared = rasterDepthCapture.DeclareForView(
             d, cameraX, cameraZ, rasterParams.SeaLevel, rasterDepthSettings);
-        if (declared && rasterDepthCapture.HasSampleableCapture(frameIndex))
+        if (declared && rasterDepthCapture.GetSampling(d.Frame, rasterSampling))
         {
             feature.GetSeabedDepth().SetRasterDepthCapture(
-                rasterDepthCapture.GetTexture(), rasterDepthCapture.GetSampler(),
-                rasterDepthCapture.GetOriginX(), rasterDepthCapture.GetOriginZ(),
-                rasterDepthCapture.GetSizeX(), rasterDepthCapture.GetSizeZ(),
-                rasterDepthCapture.GetDeepWaterDepth());
-            rasterDepthRG = rasterDepthCapture.ImportRG(d.Frame);
+                rasterSampling.Texture, rasterSampling.Sampler, rasterSampling.OriginX, rasterSampling.OriginZ,
+                rasterSampling.SizeX, rasterSampling.SizeZ, rasterSampling.Deep);
+            rasterDepthRG = rasterSampling.Graph;
         }
         else
         {
@@ -511,10 +510,19 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
         if (seabedParams.Valid())
             seabedDepth.FillParams(*seabedParams.Ptr);
         const RenderGraph::RGTexture seabedRG = seabedDepth.ImportRG(d.Frame);
+        auto* preparedDepth = d.Frame.AllocatePassData<OceanPreparedDispatch>();
         d.Frame.AddPass(
             "OceanSeabedDepth", Rendering::PassPhase::kEarlySetup,
             [&](RenderGraph::RGPassBuilder& p)
             {
+                p.UsePipeline(featurePtrDepth->GetSeabedDepth().GetPipelineId());
+                p.Prepare([featurePtrDepth, preparedDepth, buffer = seabedParams.Buffer,
+                           offset = seabedParams.Offset, rasterTexture = rasterSampling.Texture,
+                           rasterSampler = rasterSampling.Sampler](RenderGraph::RGPrepareContext& ctx)
+                {
+                    *preparedDepth = featurePtrDepth->GetSeabedDepth().PrepareDispatch(ctx.GetDevice(), buffer, offset, rasterTexture, rasterSampler);
+                    return preparedDepth->IsValid();
+                });
                 p.Write(seabedRG, RenderGraph::RGTextureWrite::Storage);
                 // Raster capture sampled in the bake dispatch (binding 3):
                 // the declared read keeps its layout ShaderReadOnly here and
@@ -523,12 +531,9 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
                 if (rasterDepthRG.IsValid())
                     p.Read(rasterDepthRG, RenderGraph::RGTextureRead::SampledCompute);
             },
-            [featurePtrDepth, buf = seabedParams.Buffer,
-             off = seabedParams.Offset](RenderGraph::RGContext& ctx)
+            [featurePtrDepth, preparedDepth](RenderGraph::RGContext& ctx)
             {
-                if (ctx.Cmd && ctx.GetDevice())
-                    featurePtrDepth->GetSeabedDepth().RecordDispatch(ctx.GetDevice(), ctx.Cmd, buf,
-                                                                     off);
+                featurePtrDepth->GetSeabedDepth().RecordDispatch(ctx.Cmd, *preparedDepth);
             });
         d.Frame.MarkOutput(seabedRG, RenderGraph::RGImageLayout::ShaderReadOnly);
         feature.GetSplineRaster().Declare(d.Frame, device, 0u, seabedRG, seabedDepth.GetLayout(),
@@ -555,15 +560,23 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
         // (imported textures are cull sinks, so no PreventCulling) and every
         // declared reader (foam, the surface span) forms a real RAW edge.
         const RenderGraph::RGTexture flowRG = flow.ImportRG(d.Frame);
+        auto* preparedFlow = d.Frame.AllocatePassData<OceanPreparedDispatch>();
         d.Frame.AddPass(
             "OceanFlowSim", Rendering::PassPhase::kEarlySetup,
             [&](RenderGraph::RGPassBuilder& p)
-            { p.Write(flowRG, RenderGraph::RGTextureWrite::Storage); },
-            [featurePtrFlow, buf = flowParams.Buffer,
-             off = flowParams.Offset](RenderGraph::RGContext& ctx)
             {
-                if (ctx.Cmd && ctx.GetDevice())
-                    featurePtrFlow->GetFlow().RecordDispatch(ctx.GetDevice(), ctx.Cmd, buf, off);
+                p.UsePipeline(featurePtrFlow->GetFlow().GetPipelineId());
+                p.Prepare([featurePtrFlow, preparedFlow, buffer = flowParams.Buffer,
+                           offset = flowParams.Offset](RenderGraph::RGPrepareContext& ctx)
+                {
+                    *preparedFlow = featurePtrFlow->GetFlow().PrepareDispatch(ctx.GetDevice(), buffer, offset);
+                    return preparedFlow->IsValid();
+                });
+                p.Write(flowRG, RenderGraph::RGTextureWrite::Storage);
+            },
+            [featurePtrFlow, preparedFlow](RenderGraph::RGContext& ctx)
+            {
+                featurePtrFlow->GetFlow().RecordDispatch(ctx.Cmd, *preparedFlow);
             });
         // Restores the resting ShaderReadOnly at end of frame even when no
         // declared reader ran (surface declined), keeping the import claim and
@@ -577,26 +590,24 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
 
     // Dynamic (interactive) wave sim: independent of the FFT (spreading ripples
     // from impulses layer on top of any spectrum). Its own once-per-frame claim.
-    // Scheduled at kEarlySetup before the world pass (the surface vertex modifier
-    // samples its height). Flips the ping-pong + snaps to the camera at schedule
-    // time so the bound texture is the one the dispatch writes. The impulse list +
+    // Scheduled at kEarlySetup before the world pass. Frame consumers bind the
+    // planned final target; recording commits each step's history. The impulse list +
     // sim scalars are stashed by OceanExtractionSystem. Degrades gracefully — no
     // impulse leaves the cascade calm, so the surface reads spectrum waves only.
     if (feature.IsDynWavesReady() && feature.IsDynWavesEnabled() &&
         !feature.GetDynWaves().IsQuiescent() &&
         feature.GetDynWaves().GetPendingSubstepCount() > 0u &&
-        feature.TryClaimDynWavesDispatch(frameIndex))
+        feature.TryClaimDynWavesDispatch(rs.Spine().WorldFrameEpoch()))
     {
         auto* featurePtrDyn = &feature;
         RenderGraph::RGTexture dynWriteRG{};
-        const uint32 substepCount = feature.GetDynWaves().GetPendingSubstepCount();
+        const auto& plan = feature.GetDynWaves().PlanSubsteps(d.Frame, cameraX, cameraZ);
+        const uint32 substepCount = static_cast<uint32>(plan.Steps.size());
         for (uint32 substep = 0u; substep < substepCount; ++substep)
         {
-            // Each fixed step flips the ping-pong target. Capturing writeIndex in
-            // the execute lambda is essential: all steps are declared before any
-            // of them execute, while the feature's final index already points at
-            // the last scheduled output.
-            const uint32 writeIndex = feature.GetDynWaves().BeginSubstep(cameraX, cameraZ);
+            const auto step = plan.Steps[substep];
+            const uint32 writeIndex = step.WriteIndex;
+            auto* prepared = d.Frame.AllocatePassData<OceanPreparedSimulationDispatch>();
             dynWriteRG = feature.GetDynWaves().ImportWriteRG(d.Frame, writeIndex);
             const RenderGraph::RGTexture dynPrevRG =
                 feature.GetDynWaves().ImportPrevRG(d.Frame, writeIndex);
@@ -606,27 +617,31 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
 
             const auto dynParams = d.Frame.AllocUpload<OceanDynWavesParamsGPU>();
             if (dynParams.Valid())
-                feature.GetDynWaves().FillParams(*dynParams.Ptr, writeIndex, substep);
+                feature.GetDynWaves().FillParams(*dynParams.Ptr, step, substep);
             d.Frame.AddPass(
                 "OceanDynWavesSim", Rendering::PassPhase::kEarlySetup,
                 [&](RenderGraph::RGPassBuilder& p)
                 {
+                    p.UsePipeline(featurePtrDyn->GetDynWaves().GetPipelineId());
                     if (dynPrevRG.IsValid())
                         p.Read(dynPrevRG, RenderGraph::RGTextureRead::SampledCompute);
                     if (dynSeabedRG.IsValid())
                         p.Read(dynSeabedRG, RenderGraph::RGTextureRead::SampledCompute);
                     p.Write(dynWriteRG, RenderGraph::RGTextureWrite::Storage);
+                    p.Prepare([featurePtrDyn, prepared, ownerPlan = &plan, substep,
+                               buffer = dynParams.Buffer, offset = dynParams.Offset](RenderGraph::RGPrepareContext& ctx)
+                    {
+                        *prepared = featurePtrDyn->GetDynWaves().PrepareDispatch(
+                            ctx.GetDevice(), buffer, offset, *ownerPlan, substep);
+                        return prepared->IsValid();
+                    });
                 },
-                [featurePtrDyn, buf = dynParams.Buffer, off = dynParams.Offset,
-                 writeIndex](RenderGraph::RGContext& ctx)
+                [featurePtrDyn, prepared](RenderGraph::RGContext& ctx)
                 {
-                    if (ctx.Cmd && ctx.GetDevice())
-                        featurePtrDyn->GetDynWaves().RecordDispatch(
-                            ctx.GetDevice(), ctx.Cmd, buf, off, writeIndex);
+                    featurePtrDyn->GetDynWaves().RecordDispatch(ctx.Cmd, *prepared);
                 });
             d.Frame.MarkOutput(dynWriteRG, RenderGraph::RGImageLayout::ShaderReadOnly);
         }
-        feature.GetDynWaves().FinishSubsteps();
 
         // Height-query readback: its OWN pass so its sampled read of the freshly
         // written cascade is a real RAW edge (it used to ride the same exec
@@ -634,33 +649,39 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
         // a CPU readback ring — off-graph, hence PreventCulling.
         if (feature.IsDynWavesReadbackReady())
         {
-            OceanCascadeLayoutGPU dynLayout = feature.GetDynWaves().GetLayout();
+            OceanCascadeLayoutGPU dynLayout = feature.GetDynWaves().GetLayout(d.Frame);
             const uint32 lodLimit = feature.GetLodCountLimit();
             if (lodLimit != 0u && dynLayout.LodCount > lodLimit)
                 dynLayout.LodCount = lodLimit;
 
             auto& dynReadback = feature.GetDynWavesReadback();
             dynReadback.BeginFrame(cameraX, cameraZ);
-            dynReadback.SetFrameInputs(feature.GetDynWavesTexture(), feature.GetDynWavesSampler(),
+            dynReadback.SetFrameInputs(feature.GetDynWavesTexture(d.Frame), feature.GetDynWavesSampler(),
                                        dynLayout);
 
             const auto rbParams = d.Frame.AllocUpload<OceanDynWavesQueryParamsGPU>();
             if (rbParams.Valid())
             {
                 dynReadback.FillParams(*rbParams.Ptr);
+                auto* rbPrepared = d.Frame.AllocatePassData<OceanPreparedReadbackDispatch>();
                 d.Frame.AddPass(
                     "OceanDynWavesQuery", Rendering::PassPhase::kEarlySetup,
                     [&](RenderGraph::RGPassBuilder& p)
                     {
+                        p.UsePipeline(featurePtrDyn->GetDynWavesReadback().GetPipelineId());
                         p.Read(dynWriteRG, RenderGraph::RGTextureRead::SampledCompute);
                         p.PreventCulling();
+                        p.Prepare([featurePtrDyn, prepared = rbPrepared, frame = &d.Frame, buffer = rbParams.Buffer,
+                                   offset = rbParams.Offset, values = rbParams.Ptr](RenderGraph::RGPrepareContext& ctx)
+                        {
+                            return !values || featurePtrDyn->GetDynWavesReadback().PrepareDispatch(
+                                ctx.GetDevice(), *frame, buffer, offset, *values, *prepared);
+                        });
                     },
-                    [featurePtrDyn, framePtr = &d.Frame, rbBuf = rbParams.Buffer,
-                     rbOff = rbParams.Offset](RenderGraph::RGContext& ctx)
+                    [featurePtrDyn, prepared = rbPrepared](RenderGraph::RGContext& ctx)
                     {
-                        if (ctx.Cmd && ctx.GetDevice())
-                            featurePtrDyn->GetDynWavesReadback().RecordDispatch(
-                                ctx.GetDevice(), ctx.Cmd, *framePtr, rbBuf, rbOff);
+                        featurePtrDyn->GetDynWavesReadback().RecordDispatch(
+                            ctx.GetDevice(), ctx.Cmd, *prepared);
                     });
             }
         }
@@ -682,21 +703,26 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
         std::array<RenderGraph::RGTexture, kOceanLocalFFTMaskPages> maskPagesRG{};
         for (uint32 page = 0u; page < kOceanLocalFFTMaskPages; ++page)
             maskPagesRG[page] = feature.GetWaveMask().ImportLocalFFTMaskRG(d.Frame, page);
+        auto* preparedWaveMask = d.Frame.AllocatePassData<OceanPreparedDispatch>();
         d.Frame.AddPass(
             "OceanWaveMaskSim", Rendering::PassPhase::kEarlySetup,
             [&](RenderGraph::RGPassBuilder& p)
             {
+                p.UsePipeline(featurePtrWaveMask->GetWaveMask().GetPipelineId());
+                p.Prepare([featurePtrWaveMask, preparedWaveMask, buffer = maskParams.Buffer,
+                           offset = maskParams.Offset](RenderGraph::RGPrepareContext& ctx)
+                {
+                    *preparedWaveMask = featurePtrWaveMask->GetWaveMask().PrepareDispatch(ctx.GetDevice(), buffer, offset);
+                    return preparedWaveMask->IsValid();
+                });
                 p.Write(maskRG, RenderGraph::RGTextureWrite::Storage);
                 for (const RenderGraph::RGTexture pageRG : maskPagesRG)
                     if (pageRG.IsValid())
                         p.Write(pageRG, RenderGraph::RGTextureWrite::Storage);
             },
-            [featurePtrWaveMask, buf = maskParams.Buffer,
-             off = maskParams.Offset](RenderGraph::RGContext& ctx)
+            [featurePtrWaveMask, preparedWaveMask](RenderGraph::RGContext& ctx)
             {
-                if (ctx.Cmd && ctx.GetDevice())
-                    featurePtrWaveMask->GetWaveMask().RecordDispatch(ctx.GetDevice(), ctx.Cmd, buf,
-                                                                     off);
+                featurePtrWaveMask->GetWaveMask().RecordDispatch(ctx.Cmd, *preparedWaveMask);
             });
         d.Frame.MarkOutput(maskRG, RenderGraph::RGImageLayout::ShaderReadOnly);
         for (const RenderGraph::RGTexture pageRG : maskPagesRG)
@@ -719,15 +745,23 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
         if (clipParams.Valid())
             clip.FillParams(*clipParams.Ptr);
         const RenderGraph::RGTexture clipRG = clip.ImportRG(d.Frame);
+        auto* preparedClip = d.Frame.AllocatePassData<OceanPreparedDispatch>();
         d.Frame.AddPass(
             "OceanClipSim", Rendering::PassPhase::kEarlySetup,
             [&](RenderGraph::RGPassBuilder& p)
-            { p.Write(clipRG, RenderGraph::RGTextureWrite::Storage); },
-            [featurePtrClip, buf = clipParams.Buffer,
-             off = clipParams.Offset](RenderGraph::RGContext& ctx)
             {
-                if (ctx.Cmd && ctx.GetDevice())
-                    featurePtrClip->GetClip().RecordDispatch(ctx.GetDevice(), ctx.Cmd, buf, off);
+                p.UsePipeline(featurePtrClip->GetClip().GetPipelineId());
+                p.Prepare([featurePtrClip, preparedClip, buffer = clipParams.Buffer,
+                           offset = clipParams.Offset](RenderGraph::RGPrepareContext& ctx)
+                {
+                    *preparedClip = featurePtrClip->GetClip().PrepareDispatch(ctx.GetDevice(), buffer, offset);
+                    return preparedClip->IsValid();
+                });
+                p.Write(clipRG, RenderGraph::RGTextureWrite::Storage);
+            },
+            [featurePtrClip, preparedClip](RenderGraph::RGContext& ctx)
+            {
+                featurePtrClip->GetClip().RecordDispatch(ctx.Cmd, *preparedClip);
             });
         d.Frame.MarkOutput(clipRG, RenderGraph::RGImageLayout::ShaderReadOnly);
         feature.GetSplineRaster().Declare(d.Frame, device, 2u, clipRG, clip.GetLayout(),
@@ -749,15 +783,23 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
         if (albedoParams.Valid())
             albedo.FillParams(*albedoParams.Ptr);
         const RenderGraph::RGTexture albedoRG = albedo.ImportRG(d.Frame);
+        auto* preparedAlbedo = d.Frame.AllocatePassData<OceanPreparedDispatch>();
         d.Frame.AddPass(
             "OceanAlbedoSim", Rendering::PassPhase::kEarlySetup,
             [&](RenderGraph::RGPassBuilder& p)
-            { p.Write(albedoRG, RenderGraph::RGTextureWrite::Storage); },
-            [featurePtrAlbedo, buf = albedoParams.Buffer,
-             off = albedoParams.Offset](RenderGraph::RGContext& ctx)
             {
-                if (ctx.Cmd && ctx.GetDevice())
-                    featurePtrAlbedo->GetAlbedo().RecordDispatch(ctx.GetDevice(), ctx.Cmd, buf, off);
+                p.UsePipeline(featurePtrAlbedo->GetAlbedo().GetPipelineId());
+                p.Prepare([featurePtrAlbedo, preparedAlbedo, buffer = albedoParams.Buffer,
+                           offset = albedoParams.Offset](RenderGraph::RGPrepareContext& ctx)
+                {
+                    *preparedAlbedo = featurePtrAlbedo->GetAlbedo().PrepareDispatch(ctx.GetDevice(), buffer, offset);
+                    return preparedAlbedo->IsValid();
+                });
+                p.Write(albedoRG, RenderGraph::RGTextureWrite::Storage);
+            },
+            [featurePtrAlbedo, preparedAlbedo](RenderGraph::RGContext& ctx)
+            {
+                featurePtrAlbedo->GetAlbedo().RecordDispatch(ctx.Cmd, *preparedAlbedo);
             });
         d.Frame.MarkOutput(albedoRG, RenderGraph::RGImageLayout::ShaderReadOnly);
         feature.GetSplineRaster().Declare(d.Frame, device, 3u, albedoRG, albedo.GetLayout(),
@@ -776,14 +818,24 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
         if (fftParams.Valid())
             feature.GetFFT().FillParams(*fftParams.Ptr);
         const RenderGraph::RGTexture fftDispRG = feature.GetFFT().ImportDisplacementRG(d.Frame);
+        auto* preparedFFT = d.Frame.AllocatePassData<OceanPreparedFFTDispatch>();
         d.Frame.AddPass(
             "OceanFFTGenerate", Rendering::PassPhase::kEarlySetup,
             [&](RenderGraph::RGPassBuilder& p)
-            { p.Write(fftDispRG, RenderGraph::RGTextureWrite::Storage); },
-            [featurePtr, buf = fftParams.Buffer, off = fftParams.Offset](RenderGraph::RGContext& ctx)
             {
-                if (ctx.Cmd && ctx.GetDevice())
-                    featurePtr->GetFFT().RecordDispatch(ctx.GetDevice(), ctx.Cmd, buf, off);
+                for (const auto pipeline : featurePtr->GetFFT().GetPipelineIds())
+                    p.UsePipeline(pipeline);
+                p.Prepare([featurePtr, preparedFFT, buffer = fftParams.Buffer,
+                           offset = fftParams.Offset](RenderGraph::RGPrepareContext& ctx)
+                {
+                    *preparedFFT = featurePtr->GetFFT().PrepareDispatch(ctx.GetDevice(), buffer, offset);
+                    return preparedFFT->IsValid();
+                });
+                p.Write(fftDispRG, RenderGraph::RGTextureWrite::Storage);
+            },
+            [featurePtr, preparedFFT](RenderGraph::RGContext& ctx)
+            {
+                featurePtr->GetFFT().RecordDispatch(ctx.Cmd, *preparedFFT);
             });
         d.Frame.MarkOutput(fftDispRG, RenderGraph::RGImageLayout::ShaderReadOnly);
 
@@ -802,17 +854,25 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
                 feature.GetLocalFFT(stream).FillParams(*localFFTParams.Ptr);
             const RenderGraph::RGTexture localDispWriteRG =
                 feature.GetLocalFFT(stream).ImportDisplacementRG(d.Frame);
+            auto* preparedLocalFFT = d.Frame.AllocatePassData<OceanPreparedFFTDispatch>();
             d.Frame.AddPass(
                 ("OceanLocalFFTGenerate" + std::to_string(stream)).c_str(),
                 Rendering::PassPhase::kEarlySetup,
                 [&](RenderGraph::RGPassBuilder& p)
-                { p.Write(localDispWriteRG, RenderGraph::RGTextureWrite::Storage); },
-                [featurePtrLocal, localStream, buf = localFFTParams.Buffer,
-                 off = localFFTParams.Offset](RenderGraph::RGContext& ctx)
                 {
-                    if (ctx.Cmd && ctx.GetDevice())
-                        featurePtrLocal->GetLocalFFT(localStream).RecordDispatch(
-                            ctx.GetDevice(), ctx.Cmd, buf, off);
+                    for (const auto pipeline : featurePtrLocal->GetLocalFFT(stream).GetPipelineIds())
+                        p.UsePipeline(pipeline);
+                    p.Prepare([featurePtrLocal, localStream, preparedLocalFFT, buffer = localFFTParams.Buffer,
+                               offset = localFFTParams.Offset](RenderGraph::RGPrepareContext& ctx)
+                    {
+                        *preparedLocalFFT = featurePtrLocal->GetLocalFFT(localStream).PrepareDispatch(ctx.GetDevice(), buffer, offset);
+                        return preparedLocalFFT->IsValid();
+                    });
+                    p.Write(localDispWriteRG, RenderGraph::RGTextureWrite::Storage);
+                },
+                [featurePtrLocal, localStream, preparedLocalFFT](RenderGraph::RGContext& ctx)
+                {
+                    featurePtrLocal->GetLocalFFT(localStream).RecordDispatch(ctx.Cmd, *preparedLocalFFT);
                 });
             d.Frame.MarkOutput(localDispWriteRG, RenderGraph::RGImageLayout::ShaderReadOnly);
 
@@ -838,22 +898,27 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
                 // the bake's sink is a CPU readback ring, invisible to the graph.
                 const RenderGraph::RGTexture localDispRG =
                     feature.GetLocalFFT(stream).ImportDisplacementRG(d.Frame);
+                auto* localHFPrepared = d.Frame.AllocatePassData<OceanPreparedReadbackDispatch>();
                 d.Frame.AddPass(
                     ("OceanLocalHeightFieldBake" + std::to_string(stream)).c_str(),
                     Rendering::PassPhase::kEarlySetup,
                     [&](RenderGraph::RGPassBuilder& p)
                     {
+                        p.UsePipeline(featurePtrLocalHF->GetLocalHeightField(stream).GetPipelineId());
                         if (localDispRG.IsValid())
                             p.Read(localDispRG, RenderGraph::RGTextureRead::SampledCompute);
                         p.PreventCulling();
+                        p.Prepare([featurePtrLocalHF, prepared = localHFPrepared, frame = &d.Frame, localStream, buffer = localHFParams.Buffer,
+                                   offset = localHFParams.Offset, values = localHFParams.Ptr](RenderGraph::RGPrepareContext& ctx)
+                        {
+                            return !values || featurePtrLocalHF->GetLocalHeightField(localStream).PrepareDispatch(
+                                ctx.GetDevice(), *frame, buffer, offset, *values, *prepared);
+                        });
                     },
-                    [featurePtrLocalHF, framePtr = &d.Frame, localStream,
-                     buf = localHFParams.Buffer,
-                     off = localHFParams.Offset](RenderGraph::RGContext& ctx)
+                    [featurePtrLocalHF, prepared = localHFPrepared, localStream](RenderGraph::RGContext& ctx)
                     {
-                        if (ctx.Cmd && ctx.GetDevice())
-                            featurePtrLocalHF->GetLocalHeightField(localStream).RecordDispatch(
-                                ctx.GetDevice(), ctx.Cmd, *framePtr, buf, off);
+                        featurePtrLocalHF->GetLocalHeightField(localStream).RecordDispatch(
+                            ctx.GetDevice(), ctx.Cmd, *prepared);
                     });
             }
         }
@@ -879,20 +944,26 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
             // Declared read of this frame's displacement (RAW edge to the FFT
             // pass); PreventCulling stays — the sink is a CPU readback ring.
             const RenderGraph::RGTexture hfDispRG = feature.GetFFT().ImportDisplacementRG(d.Frame);
+            auto* hfPrepared = d.Frame.AllocatePassData<OceanPreparedReadbackDispatch>();
             d.Frame.AddPass(
                 "OceanHeightFieldBake", Rendering::PassPhase::kEarlySetup,
                 [&](RenderGraph::RGPassBuilder& p)
                 {
+                    p.UsePipeline(featurePtrHF->GetHeightField().GetPipelineId());
                     if (hfDispRG.IsValid())
                         p.Read(hfDispRG, RenderGraph::RGTextureRead::SampledCompute);
                     p.PreventCulling();
+                    p.Prepare([featurePtrHF, prepared = hfPrepared, frame = &d.Frame, buffer = hfParams.Buffer,
+                               offset = hfParams.Offset, values = hfParams.Ptr](RenderGraph::RGPrepareContext& ctx)
+                    {
+                        return !values || featurePtrHF->GetHeightField().PrepareDispatch(
+                            ctx.GetDevice(), *frame, buffer, offset, *values, *prepared);
+                    });
                 },
-                [featurePtrHF, framePtr = &d.Frame, buf = hfParams.Buffer,
-                 off = hfParams.Offset](RenderGraph::RGContext& ctx)
+                [featurePtrHF, prepared = hfPrepared](RenderGraph::RGContext& ctx)
                 {
-                    if (ctx.Cmd && ctx.GetDevice())
-                        featurePtrHF->GetHeightField().RecordDispatch(ctx.GetDevice(), ctx.Cmd,
-                                                                      *framePtr, buf, off);
+                    featurePtrHF->GetHeightField().RecordDispatch(
+                        ctx.GetDevice(), ctx.Cmd, *prepared);
                 });
         }
 
@@ -914,20 +985,25 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
             feature.GetCombineSim().FillParams(*combineParams.Ptr);
         const RenderGraph::RGTexture fftReadRG = feature.GetFFT().ImportDisplacementRG(d.Frame);
         combineRG = feature.GetCombineSim().ImportRG(d.Frame);
+        auto* preparedCombine = d.Frame.AllocatePassData<OceanPreparedDispatch>();
         d.Frame.AddPass(
             "OceanCombineWaves", Rendering::PassPhase::kEarlySetup,
             [&](RenderGraph::RGPassBuilder& p)
             {
+                p.UsePipeline(featurePtrCombine->GetCombineSim().GetPipelineId());
+                p.Prepare([featurePtrCombine, preparedCombine, buffer = combineParams.Buffer,
+                           offset = combineParams.Offset](RenderGraph::RGPrepareContext& ctx)
+                {
+                    *preparedCombine = featurePtrCombine->GetCombineSim().PrepareDispatch(ctx.GetDevice(), buffer, offset);
+                    return preparedCombine->IsValid();
+                });
                 if (fftReadRG.IsValid())
                     p.Read(fftReadRG, RenderGraph::RGTextureRead::SampledCompute);
                 p.Write(combineRG, RenderGraph::RGTextureWrite::Storage);
             },
-            [featurePtrCombine, buf = combineParams.Buffer,
-             off = combineParams.Offset](RenderGraph::RGContext& ctx)
+            [featurePtrCombine, preparedCombine](RenderGraph::RGContext& ctx)
             {
-                if (ctx.Cmd && ctx.GetDevice())
-                    featurePtrCombine->GetCombineSim().RecordDispatch(ctx.GetDevice(), ctx.Cmd,
-                                                                      buf, off);
+                featurePtrCombine->GetCombineSim().RecordDispatch(ctx.Cmd, *preparedCombine);
             });
         d.Frame.MarkOutput(combineRG, RenderGraph::RGImageLayout::ShaderReadOnly);
         combineAvailable = true;
@@ -947,7 +1023,7 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
     {
         feature.GetGPUQuery().PollCompleted(device);
         if (feature.GetGPUQuery().HasPending() && feature.IsFFTReady() &&
-            feature.TryClaimGPUQueryDispatch(frameIndex))
+            feature.TryClaimGPUQueryDispatch(rs.Spine().WorldFrameEpoch()))
         {
             feature.GetGPUQuery().SetFrameInputs(
                 feature.GetDisplacementTexture(), feature.GetDisplacementSampler(),
@@ -958,8 +1034,9 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
             const OceanCascadeLayoutGPU combinedLayout =
                 combineAvailable ? feature.GetCombineSim().GetLayout()
                                  : OceanCascadeLayoutGPU{};
-            if (feature.GetGPUQuery().PrepareNext(feature.GetParams(), combinedLayout,
-                                                  combineAvailable))
+            const auto queryToken = feature.GetGPUQuery().PrepareNext(
+                feature.GetParams(), combinedLayout, combineAvailable);
+            if (queryToken != 0u)
             {
                 const auto queryParams = d.Frame.AllocUpload<OceanGPUQueryParamsGPU>();
                 if (queryParams.Valid())
@@ -967,22 +1044,28 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
                 const RenderGraph::RGTexture queryFFTRG =
                     feature.GetFFT().ImportDisplacementRG(d.Frame);
                 auto* featurePtrQuery = &feature;
+                auto* queryPrepared = d.Frame.AllocatePassData<OceanPreparedQueryDispatch>();
                 d.Frame.AddPass(
                     "OceanGPUQueries", Rendering::PassPhase::kEarlySetup,
                     [&](RenderGraph::RGPassBuilder& p)
                     {
+                        p.UsePipeline(featurePtrQuery->GetGPUQuery().GetPipelineId());
                         if (queryFFTRG.IsValid())
                             p.Read(queryFFTRG, RenderGraph::RGTextureRead::SampledCompute);
                         if (combineAvailable && combineRG.IsValid())
                             p.Read(combineRG, RenderGraph::RGTextureRead::SampledCompute);
                         p.PreventCulling();
+                        p.Prepare([featurePtrQuery, prepared = queryPrepared, frame = &d.Frame,
+                                   queryToken, buffer = queryParams.Buffer,
+                                   offset = queryParams.Offset, values = queryParams.Ptr](RenderGraph::RGPrepareContext& ctx)
+                        {
+                            return !values || featurePtrQuery->GetGPUQuery().PrepareDispatch(
+                                ctx.GetDevice(), *frame, buffer, offset, *values, queryToken, *prepared);
+                        });
                     },
-                    [featurePtrQuery, framePtr = &d.Frame, buf = queryParams.Buffer,
-                     off = queryParams.Offset](RenderGraph::RGContext& ctx)
+                    [featurePtrQuery, prepared = queryPrepared](RenderGraph::RGContext& ctx)
                     {
-                        if (ctx.Cmd && ctx.GetDevice())
-                            featurePtrQuery->GetGPUQuery().RecordDispatch(
-                                ctx.GetDevice(), ctx.Cmd, *framePtr, buf, off);
+                        featurePtrQuery->GetGPUQuery().RecordDispatch(ctx.Cmd, *prepared);
                     });
             }
         }
@@ -1000,12 +1083,12 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
 
     // Foam simulation: runs once per frame after any scheduled FFT pass in source
     // order. The foam controls + dt are stashed by OceanExtractionSystem via
-    // SetFrameInputs; here we flip the ping-pong, snap the write target to the
-    // active viewpoint camera, then schedule the dispatch. Keeping this on its own
+    // SetFrameInputs; the frame plan fixes each target and camera-snapped layout
+    // without changing recorded history. Keeping this on its own
     // claim prevents the sampled foam layout from trailing the camera when the FFT
     // claim path is skipped by another view/path.
     if (waterInView && feature.IsFoamReady() && feature.GetFoamSim().GetPendingSubstepCount() > 0u &&
-        feature.TryClaimFoamDispatch(frameIndex))
+        feature.TryClaimFoamDispatch(rs.Spine().WorldFrameEpoch()))
     {
         auto* featurePtrFoam = &feature;
         const RenderGraph::RGTexture foamDispRG = combineAvailable
@@ -1019,21 +1102,25 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
         const RenderGraph::RGTexture foamFlowRG =
             feature.IsFlowReady() ? feature.GetFlow().ImportRG(d.Frame)
                                   : RenderGraph::RGTexture{};
-        const uint32 substepCount = feature.GetFoamSim().GetPendingSubstepCount();
+        const auto& plan = feature.GetFoamSim().PlanSubsteps(d.Frame, cameraX, cameraZ);
+        const uint32 substepCount = static_cast<uint32>(plan.Steps.size());
         for (uint32 substep = 0u; substep < substepCount; ++substep)
         {
-            const uint32 writeIndex = feature.GetFoamSim().BeginSubstep(cameraX, cameraZ);
+            const auto step = plan.Steps[substep];
+            const uint32 writeIndex = step.WriteIndex;
+            auto* prepared = d.Frame.AllocatePassData<OceanPreparedSimulationDispatch>();
             const RenderGraph::RGTexture foamWriteRG =
                 feature.GetFoamSim().ImportWriteRG(d.Frame, writeIndex);
             const RenderGraph::RGTexture foamPrevRG =
                 feature.GetFoamSim().ImportPrevRG(d.Frame, writeIndex);
             const auto foamParams = d.Frame.AllocUpload<OceanFoamParamsGPU>();
             if (foamParams.Valid())
-                feature.GetFoamSim().FillParams(*foamParams.Ptr, writeIndex, substep);
+                feature.GetFoamSim().FillParams(*foamParams.Ptr, step, substep);
             d.Frame.AddPass(
                 "OceanFoamSim", Rendering::PassPhase::kEarlySetup,
                 [&](RenderGraph::RGPassBuilder& p)
                 {
+                    p.UsePipeline(featurePtrFoam->GetFoamSim().GetPipelineId());
                     if (foamPrevRG.IsValid())
                         p.Read(foamPrevRG, RenderGraph::RGTextureRead::SampledCompute);
                     if (foamDispRG.IsValid())
@@ -1043,17 +1130,20 @@ void OceanRenderNode::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d)
                     if (foamFlowRG.IsValid())
                         p.Read(foamFlowRG, RenderGraph::RGTextureRead::SampledCompute);
                     p.Write(foamWriteRG, RenderGraph::RGTextureWrite::Storage);
+                    p.Prepare([featurePtrFoam, prepared, ownerPlan = &plan, substep,
+                               buffer = foamParams.Buffer, offset = foamParams.Offset](RenderGraph::RGPrepareContext& ctx)
+                    {
+                        *prepared = featurePtrFoam->GetFoamSim().PrepareDispatch(
+                            ctx.GetDevice(), buffer, offset, *ownerPlan, substep);
+                        return prepared->IsValid();
+                    });
                 },
-                [featurePtrFoam, buf = foamParams.Buffer, off = foamParams.Offset,
-                 writeIndex](RenderGraph::RGContext& ctx)
+                [featurePtrFoam, prepared](RenderGraph::RGContext& ctx)
                 {
-                    if (ctx.Cmd && ctx.GetDevice())
-                        featurePtrFoam->GetFoamSim().RecordDispatch(
-                            ctx.GetDevice(), ctx.Cmd, buf, off, writeIndex);
+                    featurePtrFoam->GetFoamSim().RecordDispatch(ctx.Cmd, *prepared);
                 });
             d.Frame.MarkOutput(foamWriteRG, RenderGraph::RGImageLayout::ShaderReadOnly);
         }
-        feature.GetFoamSim().FinishSubsteps();
     }
 
 }

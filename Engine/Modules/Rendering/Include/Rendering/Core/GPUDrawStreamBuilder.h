@@ -970,6 +970,8 @@ class GPUDrawStreamBuilder
     void OnInstanceContinuityBroken(std::vector<uint32_t> changedSlots);
 
   private:
+    struct UnifiedScatterPass;
+
     IDevice*       m_Device   = nullptr;
     PipelineHandle m_ScatterPipeline;
     // Mesh-coherent group compaction (draw consolidation). Lazy like the

@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "TestDeviceHelper.h"
+#include "TestTempDir.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -618,3 +619,110 @@ TEST(RenderServicesDeviceRecovery, AccelerationStructuresAreReleasedWithTheLostD
     device->Shutdown();
     UnsetEnvVar("GE_VK_FORCE_DEVICE_LOST");
 }
+
+namespace
+{
+class PreparationReadbackTest : public ::testing::TestWithParam<GraphicsAPI>
+{
+};
+
+std::shared_ptr<RGReadbackTicket> ExecutePreparationTicketFrame(
+    IDevice& device, RenderGraph::RGFrame& frame, uint64_t frameIndex, bool ready, uint32_t colorChannel)
+{
+    if (!device.BeginFrame())
+    {
+        ADD_FAILURE() << "headless device failed to begin a frame";
+        return {};
+    }
+    frame.BeginFrame(frameIndex);
+    TextureDesc description{};
+    description.width = description.height = 4;
+    description.format = static_cast<uint32_t>(TextureFormat::RGBA8_UNORM);
+    description.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::ShaderResource);
+    const auto color = frame.CreateTexture("PreparationTicket.Color", description);
+    frame.AddPass("PreparationTicket.Clear", 0,
+                  [&](RenderGraph::RGPassBuilder& builder) {
+                      RenderGraph::RGAttachmentOps operations{};
+                      operations.Load = RenderGraph::RGLoadOp::Clear;
+                      operations.Clear.Color[colorChannel] = 1.0f;
+                      operations.Clear.Color[3] = 1.0f;
+                      builder.AttachColor(0, color, operations);
+                      builder.Prepare([ready](RenderGraph::RGPrepareContext&) { return ready; });
+                  },
+                  [](RenderGraph::RGContext&) {});
+    auto ticket = RequestTextureReadbackRG(&device, frame, color, "PreparationTicket.Readback");
+    const uint64_t submissionsBefore = frame.SubmittedFrameCount();
+    frame.Execute();
+    NotifyRenderGraphExecution(frame, submissionsBefore, nullptr);
+    device.Present();
+    return ticket;
+}
+
+void ExpectPreparationTicketColor(const std::shared_ptr<RGReadbackTicket>& ticket, uint32_t colorChannel)
+{
+    ASSERT_TRUE(ticket);
+    EXPECT_TRUE(ticket->IsStamped());
+    ViewReadbackResult result{};
+    ASSERT_TRUE(ticket->TryGet(result));
+    ASSERT_EQ(result.width, 4u);
+    ASSERT_EQ(result.height, 4u);
+    ASSERT_EQ(result.pixels.size(), 4u * 4u * 4u);
+    for (size_t offset = 0; offset < result.pixels.size(); offset += 4u)
+    {
+        for (uint32_t channel = 0; channel < 3u; ++channel)
+            EXPECT_EQ(result.pixels[offset + channel], channel == colorChannel ? 255u : 0u);
+        EXPECT_EQ(result.pixels[offset + 3], 255u);
+    }
+}
+} // namespace
+
+TEST_P(PreparationReadbackTest, FailedPreparationCancelsTheTicketAndTheNextFrameRecovers)
+{
+    TestUtils::ScopedTempDir cache(TestUtils::MakeUniqueTempDirectory("preparation-ticket"));
+    DeviceDesc description{};
+    description.preferredAPI = GetParam();
+    description.enableSwapchain = false;
+    description.enableDynamicRendering = true;
+    description.pipelineCacheDirectory = cache.Path().string();
+    auto device = DeviceFactory::CreateDevice(description);
+    if (!device || !device->Initialize(description))
+        GTEST_SKIP() << "requested headless backend unavailable";
+    ASSERT_EQ(device->GetAPI(), GetParam());
+    RenderGraph::RGResourcePool persistent(device.get());
+    RenderGraph::RGTransientPool transient(device.get());
+    RenderGraph::RGUploadRing upload(device.get(), 2, 4096);
+    RenderGraph::RGFrame frame(device.get(), &persistent, &transient, &upload);
+
+    auto first = ExecutePreparationTicketFrame(*device, frame, 0, true, 0);
+    device->WaitForIdle();
+    ExpectPreparationTicketColor(first, 0);
+    EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
+
+    auto aborted = ExecutePreparationTicketFrame(*device, frame, 1, false, 1);
+    ASSERT_TRUE(aborted);
+    EXPECT_EQ(frame.Stats().SubmissionsMade, 0u);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+    EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
+    EXPECT_TRUE(aborted->IsConsumed());
+    EXPECT_FALSE(aborted->IsStamped());
+    ViewReadbackResult unavailable{};
+    EXPECT_FALSE(aborted->TryGet(unavailable));
+
+    auto recovered = ExecutePreparationTicketFrame(*device, frame, 2, true, 2);
+    device->WaitForIdle();
+    ExpectPreparationTicketColor(recovered, 2);
+    EXPECT_EQ(frame.SubmittedFrameCount(), 2u);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
+}
+
+namespace
+{
+constexpr GraphicsAPI kPreparationReadbackBackends[]{
+    GraphicsAPI::Vulkan,
+#if defined(RENDERING_HAS_METAL)
+    GraphicsAPI::Metal,
+#endif
+};
+}
+INSTANTIATE_TEST_SUITE_P(RenderBackends, PreparationReadbackTest,
+                         ::testing::ValuesIn(kPreparationReadbackBackends));

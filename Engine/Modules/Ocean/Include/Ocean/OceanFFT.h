@@ -1,11 +1,13 @@
 #pragma once
 
 #include "Ocean/OceanTypes.h"
+#include "Ocean/OceanPreparedDispatch.h"
 
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/PipelineIdentifiers.h"
 #include "Rendering/Core/Device.h" // DescriptorSetLayoutDesc
 
+#include <array>
 #include <cstdint>
 
 namespace GameEngine::Rendering
@@ -22,6 +24,21 @@ struct RGTexture;
 
 namespace GameEngine::Ocean
 {
+
+struct OceanPreparedFFTDispatch
+{
+    OceanPreparedDispatch Init;
+    OceanPreparedDispatch Update;
+    OceanPreparedDispatch Horizontal;
+    OceanPreparedDispatch Vertical;
+    bool InitializeSpectrum = false;
+
+    bool IsValid() const
+    {
+        return (!InitializeSpectrum || Init.IsValid()) && Update.IsValid() &&
+               Horizontal.IsValid() && Vertical.IsValid();
+    }
+};
 
 // Turns a wind spectrum into a tileable displacement cascade array via FFT, a
 // faithful port of the reference's compute chain (SpectrumInit -> SpectrumUpdate ->
@@ -45,17 +62,24 @@ public:
 
     // Finalize this frame's GPU params. Called at DECLARE time; the caller writes
     // the result into a render-graph upload-ring allocation and hands the
-    // {buffer, offset} to RecordDispatch.
+    // {buffer, offset} to PrepareDispatch.
     void FillParams(OceanFFTParamsGPU& out);
 
     // Records SpectrumInit (when dirty) -> SpectrumUpdate -> FFT rows -> FFT cols,
     // with barriers, leaving the displacement array sampleable by the world pass.
     // All four dispatches bind the same params. Params come from the frame's
     // upload ring (FillParams above) — no per-class buffer ring.
-    void RecordDispatch(::GameEngine::Rendering::IDevice* device,
-                        ::GameEngine::Rendering::CommandList* cl,
-                        ::GameEngine::Rendering::BufferHandle paramsBuffer,
-                        uint64 paramsOffset);
+    /// Declare these IDs with RGPassBuilder::UsePipeline before recording.
+    std::array<::GameEngine::Rendering::ComputePipelineId, 4> GetPipelineIds() const
+    {
+        return {m_InitPipe, m_UpdatePipe, m_FFTHPipe, m_FFTVPipe};
+    }
+
+    OceanPreparedFFTDispatch PrepareDispatch(::GameEngine::Rendering::IDevice* device,
+                                              ::GameEngine::Rendering::BufferHandle paramsBuffer,
+                                              uint64 paramsOffset) const;
+    void RecordDispatch(::GameEngine::Rendering::CommandList* cl,
+                        const OceanPreparedFFTDispatch& dispatch);
 
     ::GameEngine::Rendering::TextureHandle GetDisplacementTexture() const { return m_Displacement; }
     ::GameEngine::Rendering::SamplerHandle GetSampler() const { return m_Sampler; }
@@ -72,17 +96,15 @@ private:
     bool CreateButterflyTable();
     bool CompilePipelines();
 
-    // Records one compute pass: bind UBO (binding 0) + the given storage images,
-    // then dispatch. images[i] binds at slot startSlot+i.
-    void RecordPass(::GameEngine::Rendering::IDevice* device,
-                    ::GameEngine::Rendering::CommandList* cl,
+    // Build one pass's UBO/storage-image bindings without a command list.
+    OceanPreparedDispatch PreparePass(::GameEngine::Rendering::IDevice* device,
                     ::GameEngine::Rendering::ComputePipelineId pipeline,
                     const ::GameEngine::Rendering::DescriptorSetLayoutDesc& layout,
                     ::GameEngine::Rendering::BufferHandle paramsBuffer,
                     uint64 paramsOffset,
                     const ::GameEngine::Rendering::TextureHandle* images,
                     const uint32* slots, uint32 imageCount,
-                    uint32 groupsX, uint32 groupsY, uint32 groupsZ);
+                    uint32 groupsX, uint32 groupsY, uint32 groupsZ) const;
 
     ::GameEngine::Rendering::IDevice* m_Device = nullptr;
     bool m_Ready = false;

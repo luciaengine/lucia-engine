@@ -277,6 +277,7 @@ void TemporalFxaaNode::DeclareForView(ViewDeclare& d)
         d.PassName("FXAA").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(useQualityFxaa ? m_FxaaQualityPipelineId : m_FxaaPipelineId);
             p.Read(input, RenderGraph::RGTextureRead::Sampled);
             p.Write(fxaaTex, RenderGraph::RGTextureWrite::Storage);
         },
@@ -370,6 +371,7 @@ void TemporalFxaaNode::DeclareForView(ViewDeclare& d)
         d.PassName("FXAAResolve").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_ResolvePipelineId);
             p.Read(fxaaTex, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(depthResolved, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(historyRead, RenderGraph::RGTextureRead::SampledCompute);

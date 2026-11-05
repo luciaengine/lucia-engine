@@ -6,34 +6,53 @@ namespace GameEngine { namespace Engine { namespace Renderer {
 
 using namespace GameEngine::Rendering;
 
+struct AnimationComputePass::PreparedDispatch
+{
+    PipelineHandle Pipeline;
+    DescriptorSetHandle Descriptors;
+    struct Parameters
+    {
+        uint32_t InstanceCount = 0;
+        uint32_t GateEnabled = 0;
+        uint32_t RuntimeVisibleCap = 0;
+    };
+    Parameters Constants;
+};
+
 void AnimationComputePass::Declare(RenderGraph::RGFrame& frame, RenderGraph::RGBuffer atlas,
                                    RenderGraph::RGBuffer runtimeVisible) {
     if (!m_DataStore || m_ComputeShader.empty() || !atlas.IsValid()) return;
     // No declare-time instance-count gate: thumbnail/preview worlds queue
     // instances AFTER the main world's declaration (old-arm contract), and
-    // RecordDispatch re-checks the live count at exec — an unused dispatch
+    // PrepareDispatch re-checks the live count after declaration — an unused dispatch
     // declaration is effectively free.
     const bool gate = m_GateEnabled && runtimeVisible.IsValid();
+    auto* dispatch = frame.AllocatePassData<PreparedDispatch>();
     frame.AddPass("AnimSkinningCompute",
                   static_cast<int32_t>(GameEngine::Rendering::PassPhase::kEarlySetup),
                   [&](RenderGraph::RGPassBuilder& p) {
+                      p.Prepare([this, dispatch, atlas, runtimeVisible, gate](RenderGraph::RGPrepareContext& context) {
+                          return PrepareDispatch(context, context.GetBuffer(atlas),
+                                                 gate ? context.GetBuffer(runtimeVisible) : BufferHandle{}, *dispatch);
+                      });
                       p.Write(atlas);
                       if (gate)
                           p.Read(runtimeVisible); // BEFORE the aggregate's Write — the WAR edge
                   },
-                  [this, atlas, runtimeVisible, gate](RenderGraph::RGContext& ctx) {
-                      RecordDispatch(ctx.GetDevice(), ctx.Cmd, ctx.GetBuffer(atlas),
-                                     gate ? ctx.GetBuffer(runtimeVisible) : BufferHandle{});
+                  [this, dispatch](RenderGraph::RGContext& ctx) {
+                      RecordDispatch(ctx.Cmd, *dispatch);
                   });
 }
 
-void AnimationComputePass::RecordDispatch(IDevice* dev, CommandList* cl,
-                                          BufferHandle dispatchAtlasBuf,
-                                          BufferHandle runtimeVisBuf) {
-    if (!m_DataStore || m_ComputeShader.empty() || !cl || !dev) return;
+bool AnimationComputePass::PrepareDispatch(RenderGraph::RGPrepareContext& context,
+                                           BufferHandle dispatchAtlasBuf,
+                                           BufferHandle runtimeVisBuf,
+                                           PreparedDispatch& dispatch) {
+    auto* dev = context.GetDevice();
+    if (!m_DataStore || m_ComputeShader.empty() || !dev) return false;
 
     const uint32_t instanceCount = m_DataStore->GetInstanceCount();
-    if (instanceCount == 0) return;
+    if (instanceCount == 0) return true;
 
     m_DataStore->FlushInstances();
 
@@ -50,34 +69,19 @@ void AnimationComputePass::RecordDispatch(IDevice* dev, CommandList* cl,
         set0.bindings.push_back(b);
     }
 
-    // Phase 6-iii push constants: (instanceCount, gateEnabled, runtimeVisibleCap).
-    struct AnimSkinningPC
-    {
-        uint32_t instanceCount;
-        uint32_t gateEnabled;
-        uint32_t runtimeVisibleCap;
-    };
-
     if (!m_PipelineId.IsValid())
     {
         ::GameEngine::Rendering::ComputePipelineDesc cd{};
         cd.ComputeShader = std::make_shared<const std::vector<uint8_t>>(m_ComputeShader);
         cd.DescriptorSetLayouts.push_back(dev->InternDescriptorSetLayout(set0));
-        cd.PushConstants.Size      = sizeof(AnimSkinningPC);
+        cd.PushConstants.Size      = sizeof(PreparedDispatch::Parameters);
         cd.PushConstants.StageMask = kShaderStageCompute;
         cd.DebugName = "AnimSkinning_Compute";
         m_PipelineId = dev->InternComputePipeline(cd);
     }
-    PipelineHandle pipe = dev->GetOrCreateComputePipeline(m_PipelineId);
-    if (!pipe) return;
+    PipelineHandle pipe = context.PreparePipeline(m_PipelineId);
+    if (!pipe) return false;
 
-    cl->SetPipeline(pipe);
-
-    DescriptorSetDesc dsDesc{};
-    dsDesc.layout = set0;
-    dsDesc.transient = true;
-    dsDesc.debugName = "AnimCompute_DS0";
-    DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
 
     auto skelHeaderBuf = m_DataStore->GetSkeletonHeaderBuffer();
     auto skelDataBuf   = m_DataStore->GetSkeletonDataBuffer();
@@ -89,7 +93,14 @@ void AnimationComputePass::RecordDispatch(IDevice* dev, CommandList* cl,
     if (!skelHeaderBuf.IsValid() || !skelDataBuf.IsValid() ||
         !clipHeaderBuf.IsValid() || !clipDataBuf.IsValid() ||
         !instanceBuf.IsValid()   || !atlasBuf.IsValid())
-        return;
+        return false;
+
+    DescriptorSetDesc dsDesc{};
+    dsDesc.layout = set0;
+    dsDesc.transient = true;
+    dsDesc.debugName = "AnimCompute_DS0";
+    DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
+    if (!ds.IsValid()) return false;
 
     // Bind the exact written byte range so out-of-bound shader reads are caught by
     // robust-buffer-access rather than silently returning stale data from the upload
@@ -114,14 +125,20 @@ void AnimationComputePass::RecordDispatch(IDevice* dev, CommandList* cl,
         useGate ? runtimeVisBuf : instanceBuf;
     dev->UpdateStorageBufferBinding(ds, 6, runtimeVisBindBuf, 0, 0);
 
-    cl->BindDescriptorSet(0, ds, pipe);
+    dispatch.Pipeline = pipe;
+    dispatch.Descriptors = ds;
+    dispatch.Constants.InstanceCount = instanceCount;
+    dispatch.Constants.GateEnabled = useGate ? 1u : 0u;
+    dispatch.Constants.RuntimeVisibleCap = useGate ? m_RuntimeVisibleCap : 0u;
+    return true;
+}
 
-    AnimSkinningPC pc{};
-    pc.instanceCount     = instanceCount;
-    pc.gateEnabled       = useGate ? 1u : 0u;
-    pc.runtimeVisibleCap = useGate ? m_RuntimeVisibleCap : 0u;
-    cl->SetPushConstants(pc);
-    cl->Dispatch(instanceCount, 1, 1);
+void AnimationComputePass::RecordDispatch(CommandList* cl, const PreparedDispatch& dispatch) {
+    if (!cl || dispatch.Constants.InstanceCount == 0) return;
+    cl->SetPipeline(dispatch.Pipeline);
+    cl->BindDescriptorSet(0, dispatch.Descriptors, dispatch.Pipeline);
+    cl->SetPushConstants(dispatch.Constants);
+    cl->Dispatch(dispatch.Constants.InstanceCount, 1, 1);
 }
 
 }}} // namespace GameEngine::Engine::Renderer

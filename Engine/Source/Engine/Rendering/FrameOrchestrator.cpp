@@ -7,6 +7,7 @@
 // RenderServices-owned subsystems it reaches via m_Services (accessors + the
 // friend grant for the frame-local state that stays RS-resident).
 #include "Engine/Rendering/FrameOrchestrator.h"
+#include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Core/CpuProfiler.h"
 #include "Engine/Rendering/IRenderFeature.h"
@@ -1439,6 +1440,27 @@ void FrameOrchestrator::OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& fram
     // readback rides this hook too — no feature-specific stamping remains.
     m_Services->ForEachFeature([&](IRenderFeature& feature)
                                { feature.OnFrameSubmittedRG(frame, token); });
+}
+
+void FrameOrchestrator::OnFrameAbortedRG(Rendering::RenderGraph::RGFrame& frame)
+{
+    m_Services->ForEachFeature([&](IRenderFeature& feature) { feature.OnFrameAbortedRG(frame); });
+}
+
+void NotifyRenderGraphExecution(Rendering::RenderGraph::RGFrame& frame,
+                                uint64_t previousSubmissionCount, FrameOrchestrator* orchestrator)
+{
+    if (frame.SubmittedFrameCount() == previousSubmissionCount)
+    {
+        Rendering::CancelPendingReadbacksRG(&frame);
+        if (orchestrator)
+            orchestrator->OnFrameAbortedRG(frame);
+        return;
+    }
+    const auto token = frame.SubmissionToken();
+    if (orchestrator)
+        orchestrator->OnFrameSubmittedRG(frame, token);
+    Rendering::OnFrameSubmittedReadbacksRG(frame, token);
 }
 
 Pipeline::RenderPipelineInstance* FrameOrchestrator::PipelineInstanceForFrame(

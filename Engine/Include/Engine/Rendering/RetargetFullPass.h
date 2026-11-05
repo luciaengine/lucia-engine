@@ -32,9 +32,12 @@ public:
                  GameEngine::Rendering::RenderGraph::RGBuffer atlas);
 
 private:
-    void RecordDispatch(GameEngine::Rendering::IDevice* dev,
-                        GameEngine::Rendering::CommandList* cl,
-                        GameEngine::Rendering::BufferHandle atlasBuf);
+    struct PreparedDispatch;
+    bool PrepareDispatch(GameEngine::Rendering::RenderGraph::RGPrepareContext& context,
+                         GameEngine::Rendering::BufferHandle atlasBuf,
+                         PreparedDispatch& dispatch);
+    void RecordDispatch(GameEngine::Rendering::CommandList* commandList,
+                        const PreparedDispatch& dispatch);
     std::vector<uint8_t> m_ComputeShader;
     RetargetGPUDataStore* m_DataStore = nullptr;
 

@@ -854,30 +854,31 @@ void OceanSeabedDepth::FillParams(OceanSeabedDepthParamsGPU& out)
     out = m_Params;
 }
 
-void OceanSeabedDepth::RecordDispatch(IDevice* device, CommandList* cl,
-                                      BufferHandle paramsBuffer, uint64 paramsOffset)
+OceanPreparedDispatch OceanSeabedDepth::PrepareDispatch(
+    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset,
+    TextureHandle rasterTexture, SamplerHandle rasterSampler) const
 {
-    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
-        return;
+    if (!m_Ready || !device || !paramsBuffer.IsValid())
+        return {};
 
     const TextureHandle depth = m_Depth.GetTexture();
     const uint32 layers = m_LodCount;
 
-    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
+    PipelineHandle pipe = device->TryGetWarmComputePipeline(m_Pipe);
     if (!pipe)
-        return;
+        return {};
 
     // Sync is graph-derived: the pass declares Write on the cascade, the first
     // declared reader restores ShaderReadOnly, and MarkOutput covers reader-less
     // frames. No manual barriers in here.
-
-    cl->SetPipeline(pipe);
 
     DescriptorSetDesc dsDesc{};
     dsDesc.layout = m_Layout;
     dsDesc.transient = true;
     dsDesc.debugName = "OceanSeabedDepth_DS";
     DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
+    if (!ds.IsValid())
+        return {};
 
     device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanSeabedDepthParamsGPU));
     device->UpdateStorageImageBinding(ds, 1, depth);
@@ -889,28 +890,29 @@ void OceanSeabedDepth::RecordDispatch(IDevice* device, CommandList* cl,
         std::lock_guard<std::mutex> lock(m_ParamsMutex);
         if (m_HasSavedDepthCache && m_SavedDepthTexture.IsValid())
             savedCacheTexture = m_SavedDepthTexture;
-        if (m_HasRasterDepthCapture && m_RasterDepthCaptureTexture.IsValid())
-        {
-            rasterDepthTexture = m_RasterDepthCaptureTexture;
-            if (m_RasterDepthCaptureSampler.IsValid())
-                rasterDepthSampler = m_RasterDepthCaptureSampler;
-        }
+    }
+    if (rasterTexture.IsValid())
+    {
+        rasterDepthTexture = rasterTexture;
+        if (rasterSampler.IsValid())
+            rasterDepthSampler = rasterSampler;
     }
     if (!savedCacheTexture.IsValid() || !savedCacheSampler.IsValid() ||
         !rasterDepthTexture.IsValid() || !rasterDepthSampler.IsValid())
-        return;
+        return {};
     device->UpdateCombinedImageSamplerBinding(ds, 2, savedCacheTexture, savedCacheSampler);
     device->UpdateCombinedImageSamplerBinding(ds, 3, rasterDepthTexture, rasterDepthSampler);
 
-    cl->BindDescriptorSet(0, ds, pipe);
-
     const uint32 g8 = (m_Resolution + 7u) / 8u;
-    cl->Dispatch(g8, g8, layers);
+    return {pipe, ds, g8, g8, layers, depth};
+}
 
-    {
-        std::lock_guard<std::mutex> lock(m_ParamsMutex);
-        m_DispatchDirty = false;
-    }
+void OceanSeabedDepth::RecordDispatch(CommandList* cl, const OceanPreparedDispatch& dispatch)
+{
+    if (!RecordOceanPreparedDispatch(cl, dispatch))
+        return;
+    std::lock_guard<std::mutex> lock(m_ParamsMutex);
+    m_DispatchDirty = false;
 }
 
 RenderGraph::RGTexture OceanSeabedDepth::ImportRG(RenderGraph::RGFrame& frame) const

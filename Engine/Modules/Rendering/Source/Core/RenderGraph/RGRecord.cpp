@@ -79,34 +79,6 @@ uint64_t ToEngineStageMask(uint32_t s)
     return m; // TopOfPipe-only → 0 → backend derives from state (Undefined → TOP)
 }
 
-uint64_t ToEngineAccessMask(uint32_t a)
-{
-    uint64_t m = 0;
-    if (a & RGAccessMask::IndirectRead)
-        m |= Bit(ResourceAccessMask::IndirectCommandRead);
-    // No dedicated INDEX_READ bit in the engine mask; VertexAttributeRead is the
-    // closest read scope on the same stage.
-    if (a & (RGAccessMask::IndexRead | RGAccessMask::VertexAttribRead))
-        m |= Bit(ResourceAccessMask::VertexAttributeRead);
-    if (a & (RGAccessMask::UniformRead | RGAccessMask::ShaderRead))
-        m |= Bit(ResourceAccessMask::ShaderRead);
-    if (a & RGAccessMask::ShaderWrite)
-        m |= Bit(ResourceAccessMask::ShaderWrite);
-    if (a & RGAccessMask::ColorWrite)
-        m |= Bit(ResourceAccessMask::ColorAttachmentWrite);
-    if (a & RGAccessMask::ColorRead)
-        m |= Bit(ResourceAccessMask::ColorAttachmentRead);
-    if (a & RGAccessMask::DepthRead)
-        m |= Bit(ResourceAccessMask::DepthStencilRead);
-    if (a & RGAccessMask::DepthWrite)
-        m |= Bit(ResourceAccessMask::DepthStencilWrite);
-    if (a & RGAccessMask::TransferRead)
-        m |= Bit(ResourceAccessMask::TransferRead);
-    if (a & RGAccessMask::TransferWrite)
-        m |= Bit(ResourceAccessMask::TransferWrite);
-    return m;
-}
-
 // Representative engine state for buffer barriers (fallback path only — the
 // explicit masks above carry the precise scopes).
 ResourceState BufferStateFromAccess(uint32_t a)
@@ -342,6 +314,7 @@ uint32_t RGFrame::RecordSecondariesParallel()
 
     const size_t passCount = m_Graph.PassCount();
     m_Secondary.clear();
+    m_SecondaryRecordMs.assign(passCount, 0.0);
     m_Secondary.resize(passCount); // default-constructs null unique_ptrs (no copy)
 
     // Eligible = flagged RecordInSecondary AND has attachments (a secondary
@@ -355,6 +328,7 @@ uint32_t RGFrame::RecordSecondariesParallel()
             continue;
         eligible.push_back(p);
     }
+    m_Stats.SecondaryPassesEligible = static_cast<uint32_t>(eligible.size());
     if (eligible.empty())
         return 0;
 
@@ -406,16 +380,80 @@ uint32_t RGFrame::RecordSecondariesParallel()
 
         sec->BeginSecondary(info);
         ctx.Cmd = sec.get();
+        const auto recordBegin = std::chrono::steady_clock::now();
         m_Exec[p].Invoke(m_Exec[p].Fn, ctx);
+        m_SecondaryRecordMs[p] = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - recordBegin).count();
         sec->End();
         m_Secondary[p] = std::move(sec);
     });
 
     uint32_t forked = 0;
-    for (RGPassId p : eligible)
-        if (m_Secondary[p])
+    for (RGPassId pass : eligible)
+    {
+        if (m_Secondary[pass])
             ++forked;
+        m_Stats.WorkerRecordMs += m_SecondaryRecordMs[pass];
+    }
+    m_Stats.SecondaryPassesRecorded = forked;
+    m_Stats.SecondaryPassesFallback = m_Stats.SecondaryPassesEligible - forked;
     return forked;
+}
+
+bool RGFrame::PreparePasses()
+{
+    const auto prepareBegin = std::chrono::steady_clock::now();
+    const size_t passCount = m_Graph.PassCount();
+    // Per-pass attachment ranges (attachments are recorded contiguously per pass
+    // during the AddPass setup lambda — single-threaded declaration).
+    m_ScratchAttRange.assign(passCount, {0u, 0u});
+    for (uint32_t i = 0; i < m_Attachments.size(); ++i)
+    {
+        auto& r = m_ScratchAttRange[m_Attachments[i].Pass];
+        if (r.second == 0)
+            r.first = i;
+        ++r.second;
+    }
+
+    for (RGPassId pass : m_Graph.ScheduledOrder())
+    {
+        const PrepareThunk& prepare = m_Prepare[pass];
+        if (prepare.Fn == nullptr && prepare.RequiredCount == 0)
+            continue;
+        RGContext resources;
+        resources.m_Frame = this;
+        resources.m_Pass = pass;
+        resources.m_AttFirst = m_ScratchAttRange[pass].first;
+        resources.m_AttCount = m_ScratchAttRange[pass].second;
+        RGPrepareContext context(resources);
+        bool ready = true;
+        for (uint32_t index = 0; index < prepare.RequiredCount; ++index)
+        {
+            const PipelineRequirement& required = m_RequiredPipelines[prepare.RequiredFirst + index];
+            const PipelineHandle pipeline = required.Graphics.IsValid()
+                ? context.PreparePipeline(required.Graphics) : context.PreparePipeline(required.Compute);
+            if (!pipeline.IsValid())
+            {
+                ready = false;
+                break;
+            }
+        }
+        if (ready && prepare.Fn != nullptr)
+            ready = prepare.Invoke(prepare.Fn, context);
+        ++m_Stats.PreparedPasses;
+        if (!ready)
+        {
+            ++m_Stats.PreparationFailures;
+            m_Stats.PrepareMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - prepareBegin).count();
+            Logger::Log::Error("RenderGraph: preparation failed for pass '{}' — frame not submitted",
+                               m_Graph.PassName(pass));
+            return false;
+        }
+    }
+    m_Stats.PrepareMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - prepareBegin).count();
+    return true;
 }
 
 void RGFrame::RecordAndSubmit()
@@ -432,25 +470,19 @@ void RGFrame::RecordAndSubmit()
         return std::chrono::duration<double, std::milli>(RGClock::now() - begin).count();
     };
 
-    // Per-pass attachment ranges (attachments are recorded contiguously per pass
-    // during the AddPass setup lambda — single-threaded declaration).
-    m_ScratchAttRange.assign(passCount, {0u, 0u});
-    for (uint32_t i = 0; i < m_Attachments.size(); ++i)
-    {
-        auto& r = m_ScratchAttRange[m_Attachments[i].Pass];
-        if (r.second == 0)
-            r.first = i;
-        ++r.second;
-    }
-
     // ── Phase R1 (A2.4-P0-R): fork the RecordInSecondary passes' interiors onto
     // job-system workers into per-pass secondaries. Off ⇒ m_Secondary stays empty
     // and the R2 loop below records every interior inline (serial fallback). The
     // whole R1/R2 split is byte-identical to pre-fork when the env kill switch is
     // off or no pool is injected. Barriers / BeginRenderPass / submit stay serial.
     m_Secondary.clear();
+    m_SecondaryRecordMs.clear();
     if (ParallelRecordEnabled())
+    {
+        const auto parallelBegin = RGClock::now();
         RecordSecondariesParallel();
+        m_Stats.ParallelRecordWallMs = elapsedMs(parallelBegin);
+    }
 
     // Barrier-batch lookup by scheduled index. The export batch (sentinel
     // ScheduledIndex == pass count) owns no scheduled slot: like every other
@@ -701,6 +733,7 @@ void RGFrame::RecordAndSubmit()
                 ctx.m_AttCount = attRange.second;
                 ctx.m_KeyDirty = true; // every pass, incl. attachment-less — no stale key leaks
                 m_Exec[p].Invoke(m_Exec[p].Fn, ctx);
+                ++m_Stats.InlinePassesRecorded;
             }
 
             if (inRenderPass)
@@ -709,6 +742,7 @@ void RGFrame::RecordAndSubmit()
             if (m_ProfilingEnabled)
             {
                 RGPassTiming& t = m_ProfilingCurrent.back();
+                t.WorkerRecordMs = p < m_SecondaryRecordMs.size() ? m_SecondaryRecordMs[p] : 0.0;
                 if (qp)
                     t.EndQuery = qp->WriteTimestamp(cl, TimestampPoint::SpanEnd);
                 t.CpuMs = std::chrono::duration<double, std::milli>(

@@ -56,7 +56,6 @@ void BuildTransparentComposition(
         if (!previousMesh || previousMaterial != material || differentGeometry)
         {
             const uint32 slot = static_cast<uint32>(partition.RunStart.size());
-            partition.SlotOfGroup.push_back(slot);
             partition.GroupOfSlot.push_back(material);
             partition.RunStart.push_back(static_cast<uint32>(meshOrder.size()));
             partition.RunCount.push_back(0);

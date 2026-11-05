@@ -97,6 +97,9 @@ TEST(ShaderMetaJson, RoundTripComplexSchema) {
     EXPECT_EQ(m2.PushConstants[0].Name, "Globals");
     ASSERT_EQ(m2.Sets.size(), 1u);
     ASSERT_EQ(m2.Sets[0].Bindings.size(), 1u);
+    ASSERT_TRUE(m2.Sets[0].BindingPlan);
+    ASSERT_EQ(m2.Sets[0].BindingPlan->Slots.size(), 1u);
+    EXPECT_EQ(m2.Sets[0].BindingPlan->Slots.front().NameId, GameEngine::HashStringId("PerFrame"));
     EXPECT_EQ(m2.Sets[0].Bindings[0].Name, "PerFrame");
     ASSERT_TRUE(m2.Stages.count("vs") > 0);
     ASSERT_EQ(m2.Stages["vs"].Inputs.size(), 1u);

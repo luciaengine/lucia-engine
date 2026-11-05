@@ -19,15 +19,14 @@
 // drew from:
 //
 //   - Any binding from DrawBindings  -> per-draw  (no cache, transient)
-//   - Else all from PassResources    -> per-pass  (cached by view+keywords+layout)
+//   - Else reuse the exact resolved resources within the pass scope
 //
 // Bindless short-circuit: a set whose layout exactly matches the engine's
 // global bindless texture set (the `ge_BindlessTextures` array) returns the
 // global descriptor set directly — no per-set allocation.
 //
-// Caches clear on frame boundaries (OnBeginFrame). Threading: render-thread
-// only today; the API shape is compatible with future shared-mutex protection
-// of the caches.
+// Caches clear on frame boundaries (OnBeginFrame). Threading: recording
+// workers share immutable entries under a reader/writer lock.
 
 #pragma once
 
@@ -47,6 +46,8 @@
 #include <shared_mutex>
 #include <span>
 #include <unordered_map>
+#include <memory>
+#include <vector>
 
 namespace GameEngine::Rendering
 {
@@ -54,6 +55,7 @@ class CommandList;
 class IDevice;
 struct ShaderMeta;
 struct DescriptorSetMeta;
+struct DescriptorBindingPlan;
 struct DescriptorBindingMeta;
 } // namespace GameEngine::Rendering
 
@@ -62,6 +64,15 @@ namespace GameEngine::Engine::Renderer
 
 class Material;
 class RenderServices;
+
+/// Device handles resolved for one draw in this device frame.
+struct PreparedDrawBindings
+{
+    Rendering::PipelineHandle Pipeline{};
+    std::array<Rendering::DescriptorSetHandle, kMaxDescriptorSets> Sets{};
+    std::array<Rendering::DescriptorSetLayoutId, kMaxDescriptorSets> Layouts{};
+    uint32_t LayoutCount = 0;
+};
 
 class MaterialBinder
 {
@@ -90,6 +101,22 @@ class MaterialBinder
         ::GameEngine::Rendering::MaterialKeyword passKeywords,
         ResolvedPassResources resources,
         uint32_t passInstanceIndex = 0);
+
+    /// Resolve the sets of the served material variant without recording commands.
+    PreparedDrawBindings PrepareMaterialForDraw(
+        const PassBindingContext& pass, const Material& material, Rendering::PipelineHandle pipeline,
+        const Rendering::ShaderMeta* servedMeta, const DrawBindings& draw, uint32_t pipelineSetCount = 0,
+        std::span<const Rendering::DescriptorSetLayoutId> pipelineSetLayouts = {});
+
+    /// Resolve a materialless pipeline's sets from draw and pass resources.
+    PreparedDrawBindings PreparePipelineForDraw(
+        const PassBindingContext& pass, Rendering::PipelineHandle pipeline, const Rendering::ShaderMeta& meta,
+        const DrawBindings& draw, uint32_t pipelineSetCount = 0,
+        std::span<const Rendering::DescriptorSetLayoutId> pipelineSetLayouts = {});
+
+    /// Bind a prepared packet against the sticky state of this command encoder.
+    Rendering::PipelineHandle BindPreparedForDraw(
+        PassBindingContext& pass, const PreparedDrawBindings& prepared, std::span<const std::byte> pushConstants = {});
 
     // Binds pipeline + every reflected descriptor set + push constants. The
     // binder walks `material.GetShaderMeta()->Sets` and resolves each set
@@ -201,7 +228,7 @@ class MaterialBinder
     // shape has no slot default (ResolveSlotDefault). BindMaterialForDraw uses it to SKIP the
     // draw rather than issue it with an unbound (garbage-address) descriptor.
     ::GameEngine::Rendering::DescriptorSetHandle BuildSetForBindingFromMeta(
-        PassBindingContext& pass,
+        const PassBindingContext& pass,
         const Material& material,
         const ::GameEngine::Rendering::DescriptorSetMeta& setMeta,
         const DrawBindings& draw,
@@ -227,84 +254,49 @@ class MaterialBinder
                                    ::GameEngine::Rendering::SamplerHandle materialSampler);
 
   private:
-    // Scope of a resolved descriptor set. Determines which cache (if any) the
-    // built set is stored under.
-    enum class SetScope : uint8_t
+    // One entry per plan slot, in reflection order. Flat rows let a worker
+    // resolve and compare a set without allocating per-binding write arrays.
+    struct ResolvedBinding
     {
-        PerPass,     // every binding came from PassResources
-        PerDraw      // at least one binding came from DrawBindings
+        Rendering::BufferHandle Buffer{};
+        Rendering::TextureHandle Texture{};
+        Rendering::SamplerHandle Sampler{};
+        uint64_t Offset = 0;
+        uint64_t Range = 0;
+        uint32_t ArrayIndex = 0;
+        bool operator==(const ResolvedBinding&) const = default;
     };
 
-    // Result of walking a set's reflected bindings. The binder builds this
-    // first, then dispatches to the appropriate cache lookup / build path.
-    struct ResolvedSet
+    struct Resolution
     {
-        const ::GameEngine::Rendering::DescriptorSetMeta* Meta = nullptr;
-        SetScope Scope = SetScope::PerPass;
-        bool     IsBindless = false;
+        bool PerDraw = false;
+        bool Unresolvable = false;
     };
-
-    ::GameEngine::Rendering::DescriptorSetHandle BuildSetInternal(
-        PassBindingContext& pass,
-        const Material& material,
-        const ::GameEngine::Rendering::DescriptorSetMeta& setMeta,
-        SetScope scope,
-        const DrawBindings& draw,
-        bool* outUnresolvable = nullptr);
+    Resolution ResolveBindings(const ResolvedPassResources& pass, const Material& material, uint32_t setIndex,
+                               const Rendering::DescriptorBindingPlan& plan, const DrawBindings& draw,
+                               std::vector<ResolvedBinding>& writes);
+    Rendering::DescriptorSetHandle BuildSetInternal(const Rendering::DescriptorSetMeta& setMeta,
+                                                    const Rendering::DescriptorBindingPlan& plan,
+                                                    std::span<const ResolvedBinding> writes);
 
     // Build a transient descriptor set for the materialless path. Resolves
     // bindings against DrawBindings and PassResources only — no material
     // sources. Used by BindPipelineForDraw.
     ::GameEngine::Rendering::DescriptorSetHandle BuildPipelineSet(
-        PassBindingContext& pass,
+        const PassBindingContext& pass,
         const ::GameEngine::Rendering::DescriptorSetMeta& setMeta,
-        const DrawBindings& draw);
+        const Rendering::DescriptorBindingPlan& plan, const DrawBindings& draw);
 
-    // Inspect a set's reflected meta and classify which scope it belongs in.
-    ResolvedSet ClassifySet(
-        const ::GameEngine::Rendering::DescriptorSetMeta& setMeta,
-        const DrawBindings& draw) const;
-
-    // True if `setMeta` matches the engine's global bindless texture set
-    // (single CombinedImageSampler array named `ge_BindlessTextures`).
-    static bool IsBindlessTextureSet(const ::GameEngine::Rendering::DescriptorSetMeta& setMeta);
-
-    // True if `setMeta` matches the compatibility profile's per-material
-    // texture set (binding 0 named `ge_MaterialTextures0`). TextureService owns
-    // those sets; the binder never builds one from reflected bindings.
-    static bool IsCompatMaterialTextureSet(const ::GameEngine::Rendering::DescriptorSetMeta& setMeta);
-
-    // Per-pass cache key — pass scope plus the layout hash so two passes
-    // sharing a layout collapse to one cached handle. PassInstanceIndex
-    // disambiguates instances of the same logical pass that bind distinct
-    // per-pass resources (shadow cascades 0..N-1 reuse the same view+keywords
-    // but write a different Cam UBO into the set, and depth-prepass vs.
-    // shadow-cascade-0 encode passType in the high bits so they don't
-    // collide despite both nominally using cascadeIndex=0).
-    //
-    // CACHE SNAPSHOT SEMANTICS: a hit serves the descriptor set built from
-    // the FIRST draw's pass.PassResources snapshot at this (key) tuple. If
-    // a caller mutates pass.PassResources mid-pass (e.g. a depth contributor
-    // upserts a per-(view,passType) ViewParams buffer after BeginPass), the
-    // mutation must happen BEFORE the first draw that hits this cache entry
-    // — subsequent draws hit a cached set still bound to the pre-mutation
-    // buffer. Today all callers apply per-pass overrides before any record-
-    // draw work, so this is safe; any future per-DRAW resource override
-    // needs its own cache discriminator (extend PassInstanceIndex, or split
-    // the key).
+    // A digest selects a bucket. Exact plan and write equality below decide
+    // whether the cached descriptor may be reused.
     struct PerPassCacheKey
     {
         uint64_t ViewBits;
         uint64_t PassKwBits;
-        uint64_t LayoutHash;
+        uint64_t ContentsHash;
+        uint32_t SetIndex;
         uint32_t PassInstanceIndex;
-        bool operator==(const PerPassCacheKey& o) const noexcept
-        {
-            return ViewBits == o.ViewBits
-                && PassKwBits == o.PassKwBits
-                && LayoutHash == o.LayoutHash
-                && PassInstanceIndex == o.PassInstanceIndex;
-        }
+        bool operator==(const PerPassCacheKey&) const = default;
     };
     struct PerPassCacheKeyHash
     {
@@ -313,7 +305,8 @@ class MaterialBinder
             using Rendering::HashUtils::HashCombine;
             uint64_t h = k.ViewBits;
             h = HashCombine(h, k.PassKwBits);
-            h = HashCombine(h, k.LayoutHash);
+            h = HashCombine(h, k.ContentsHash);
+            h = HashCombine(h, k.SetIndex);
             h = HashCombine(h, k.PassInstanceIndex);
             return static_cast<size_t>(h);
         }
@@ -323,7 +316,7 @@ class MaterialBinder
     // materials with similar layouts don't suppress each other's warnings.
     // The warn maps are per-worker thread_local (A2.4-D6) — see the .cpp — so a
     // genuinely-missing binding may log once per worker that hits it (harmless).
-    // WarnKey/WarnKeyHash key the thread_local map defined in BuildSetInternal.
+    // WarnKey/WarnKeyHash key the thread_local map in ResolveBindings.
     struct WarnKey
     {
         const Material* Mat;
@@ -350,13 +343,17 @@ class MaterialBinder
     RenderServices&                 m_Services;
     ::GameEngine::Rendering::IDevice& m_Device;
 
-    // A2.4-D6 record-cache thread-safety. m_PerPassCache is read per-draw by up
-    // to N record workers and cold-inserted per (view, keywords, layout,
-    // passInstance). Lookups take a shared_lock on an L1 miss; the cold insert
-    // takes a unique_lock. OnBeginFrame's clear stays serial (frame boundary).
-    std::unordered_map<PerPassCacheKey,
-                       ::GameEngine::Rendering::DescriptorSetHandle,
-                       PerPassCacheKeyHash> m_PerPassCache;
+    // Workers share immutable entries. Insertion holds the exclusive lock.
+    // OnBeginFrame clears the map before any recording workers start.
+    struct CachedSet
+    {
+        std::shared_ptr<const Rendering::DescriptorBindingPlan> Plan;
+        std::vector<ResolvedBinding> Writes;
+        Rendering::DescriptorSetHandle Handle;
+        bool Matches(const Rendering::DescriptorBindingPlan& plan,
+                     const std::vector<ResolvedBinding>& writes) const;
+    };
+    std::unordered_multimap<PerPassCacheKey, CachedSet, PerPassCacheKeyHash> m_PerPassCache;
     mutable std::shared_mutex m_PerPassCacheMutex;
 
     // Hands out the epoch values that stamp L1 slots. Strictly increasing and
@@ -376,15 +373,14 @@ class MaterialBinder
     bool m_PerPassInsertLockHeldDebug = false;
 #endif
 
-    // Per-thread L1 in front of m_PerPassCache (256 slots). Caches the small
-    // DescriptorSetHandle by value. thread_local, so slots outlive the binder
-    // that wrote them and are only trustworthy while their epoch is current;
+    // Per-thread L1 points into stable nodes of m_PerPassCache until frame reset.
+    // Slots outlive the binder and are only valid while their epoch is current;
     // zero is never issued as an epoch, so a zeroed slot never validates.
     static constexpr size_t kPerPassL1Slots = 256;
     struct PerPassL1Slot
     {
         PerPassCacheKey Key{};
-        ::GameEngine::Rendering::DescriptorSetHandle Value{};
+        const CachedSet* Value = nullptr;
         uint64_t Epoch = 0;
     };
 };

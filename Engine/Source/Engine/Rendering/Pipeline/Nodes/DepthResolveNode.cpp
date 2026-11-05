@@ -125,6 +125,15 @@ RenderGraph::RGPass DepthResolveNode::DeclareResolvePass(ViewDeclare& d, const c
         passName, Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.Prepare([this, depth](RenderGraph::RGPrepareContext& context)
+                      {
+                          IDevice* device = context.GetDevice();
+                          const TextureHandle source = context.GetTexture(depth);
+                          if (!device || !source.IsValid())
+                              return false;
+                          const bool multisampled = device->GetTextureSampleCount(source) > 1u;
+                          return context.PreparePipeline(multisampled ? m_ResolvePipelineId : m_CopyPipelineId).IsValid();
+                      });
             p.Read(depth, RenderGraph::RGTextureRead::Sampled);
             p.Write(target, RenderGraph::RGTextureWrite::Storage);
         },

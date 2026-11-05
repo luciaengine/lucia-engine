@@ -180,6 +180,7 @@ void RenderScaleUpscaleNode::DeclareForView(ViewDeclare& d)
         d.PassName("SpatialUpscale").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_UpscalePipelineId);
             RenderGraph::RGAttachmentOps ops{};
             // Full-surface overwrite: the fullscreen triangle writes every pixel.
             ops.Load = RenderGraph::RGLoadOp::DontCare;

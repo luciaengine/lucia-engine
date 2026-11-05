@@ -8,6 +8,7 @@ add_library(Ocean OBJECT
     Source/OceanSimulationDemand.cpp
     Source/OceanFieldRanges.cpp
     Source/OceanShaderProgram.cpp
+    Source/OceanPreparedDispatch.cpp
     Source/OceanFFT.cpp
     Source/OceanCascadeArray.cpp
     Source/OceanSprayGPU.cpp

@@ -8,13 +8,15 @@
 #include "Rendering/Core/Device.h"
 
 #include <memory>
+#include <string>
 
 namespace GameEngine::Rendering::RenderGraph::Test
 {
 
-inline std::unique_ptr<IDevice> MakeHeadlessDevice()
+inline std::unique_ptr<IDevice> MakeHeadlessDevice(const std::string& pipelineCacheDirectory = {})
 {
     DeviceDesc dd{};
+    dd.pipelineCacheDirectory = pipelineCacheDirectory;
     dd.preferredAPI = GraphicsAPI::Vulkan;
     dd.enableDynamicRendering = true;
     dd.enableSwapchain = false; // headless: no window/surface in the test harness

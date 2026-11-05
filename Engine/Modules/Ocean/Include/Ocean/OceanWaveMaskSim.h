@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Ocean/OceanPreparedDispatch.h"
+
 #include "Ocean/OceanCascadeArray.h"
 #include "Ocean/OceanTypes.h"
 
@@ -93,16 +95,21 @@ public:
 
     // Finalize this frame's GPU params (cascade layout snapped by BeginFrame).
     // Called at DECLARE time; the caller writes the result into a render-graph
-    // upload-ring allocation and hands the {buffer, offset} to RecordDispatch.
+    // upload-ring allocation and hands the {buffer, offset} to PrepareDispatch.
     void FillParams(OceanWaveMaskParamsGPU& out);
 
     // Records the mask-bake dispatch with barriers, leaving the cascades
     // sampleable by the world pass. Params come from the frame's upload ring
     // (FillParams above) — no per-class buffer ring.
-    void RecordDispatch(::GameEngine::Rendering::IDevice* device,
-                        ::GameEngine::Rendering::CommandList* cl,
-                        ::GameEngine::Rendering::BufferHandle paramsBuffer,
-                        uint64 paramsOffset);
+    /// Declare this ID with RGPassBuilder::UsePipeline before recording.
+    ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipe; }
+
+    // Create frame-local descriptors before recording; simulation state is unchanged.
+    OceanPreparedDispatch PrepareDispatch(::GameEngine::Rendering::IDevice* device,
+                                           ::GameEngine::Rendering::BufferHandle paramsBuffer,
+                                           uint64 paramsOffset) const;
+    void RecordDispatch(::GameEngine::Rendering::CommandList* cl,
+                        const OceanPreparedDispatch& dispatch);
 
 private:
     static constexpr uint32 kResolution = 256;

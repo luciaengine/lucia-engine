@@ -127,36 +127,53 @@ RenderGraph::RGTexture OceanCascadeArray::ImportRG(RenderGraph::RGFrame& frame) 
 
 bool OceanCascadeArray::SnapToCamera(float cameraX, float cameraZ)
 {
-    bool changed = m_Layout.LodCount != m_LodCount;
+    const auto projected = ProjectedLayout(cameraX, cameraZ);
+    const bool changed = std::memcmp(&m_Layout, &projected, sizeof(m_Layout)) != 0;
+    m_Layout = projected;
+    return changed;
+}
+
+OceanCascadeLayoutGPU OceanCascadeArray::ProjectedLayout(float cameraX, float cameraZ) const
+{
+    auto projected = m_Layout;
     for (uint32 lod = 0; lod < m_LodCount; ++lod)
     {
+        float* layer = projected.CascadeOriginScale[lod];
         if (m_CoarsestAnchored && lod + 1u == m_LodCount)
         {
-            float* layer = m_Layout.CascadeOriginScale[lod];
-            changed = changed || std::memcmp(layer, m_CoarsestAnchor, sizeof(m_CoarsestAnchor)) != 0;
             std::memcpy(layer, m_CoarsestAnchor, sizeof(m_CoarsestAnchor));
             continue;
         }
         const float scale = static_cast<float>(1u << lod);
         const float texel = (m_BaseScale * scale) / static_cast<float>(m_Resolution);
         const float extent = m_BaseScale * scale;
-        const float originX = std::floor((cameraX - extent * 0.5f) / texel) * texel;
-        const float originZ = std::floor((cameraZ - extent * 0.5f) / texel) * texel;
-        changed = changed ||
-                  m_Layout.CascadeOriginScale[lod][0] != originX ||
-                  m_Layout.CascadeOriginScale[lod][1] != originZ ||
-                  m_Layout.CascadeOriginScale[lod][2] != texel ||
-                  m_Layout.CascadeOriginScale[lod][3] != scale;
-        m_Layout.CascadeOriginScale[lod][0] = originX;
-        m_Layout.CascadeOriginScale[lod][1] = originZ;
-        m_Layout.CascadeOriginScale[lod][2] = texel;
-        m_Layout.CascadeOriginScale[lod][3] = scale;
+        layer[0] = std::floor((cameraX - extent * 0.5f) / texel) * texel;
+        layer[1] = std::floor((cameraZ - extent * 0.5f) / texel) * texel;
+        layer[2] = texel;
+        layer[3] = scale;
     }
-    const uint32 coarsestAnchored = m_CoarsestAnchored ? 1u : 0u;
-    changed = changed || m_Layout.CoarsestAnchored != coarsestAnchored;
-    m_Layout.CoarsestAnchored = coarsestAnchored;
-    m_Layout.LodCount = m_LodCount;
-    return changed;
+    projected.CoarsestAnchored = m_CoarsestAnchored ? 1u : 0u;
+    projected.LodCount = m_LodCount;
+    return projected;
+}
+
+const OceanCascadeFramePlan* PlanOceanCascadeSteps(
+    RenderGraph::RGFrame& frame, const OceanCascadeArray (&arrays)[2],
+    uint32 committedIndex, uint32 stepCount, float cameraX, float cameraZ)
+{
+    auto* plan = frame.AllocatePassData<OceanCascadeFramePlan>();
+    plan->Steps.reserve(stepCount);
+    for (uint32 index = 0; index < 2u; ++index)
+        plan->Textures[index] = arrays[index].GetTexture();
+    OceanCascadeLayoutGPU layouts[2] = {arrays[0].GetLayout(), arrays[1].GetLayout()};
+    uint32 index = committedIndex;
+    for (uint32 step = 0; step < stepCount; ++step)
+    {
+        index ^= 1u;
+        layouts[index] = arrays[index].ProjectedLayout(cameraX, cameraZ);
+        plan->Steps.push_back({index, layouts[index], layouts[index ^ 1u]});
+    }
+    return plan;
 }
 
 void OceanCascadeArray::AnchorCoarsestLevel(float minX, float minZ, float maxX, float maxZ)

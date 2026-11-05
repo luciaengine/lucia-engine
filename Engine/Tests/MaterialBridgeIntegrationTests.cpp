@@ -27,6 +27,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/PipelineCache.h"
 #include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
@@ -2577,6 +2578,79 @@ TEST_F(MaterialPipelineCompilationTest, PublishGate_VariantMissEnqueuesAsync_Dra
 // window. Once the build settles, Warm or Failed, the material no longer waits
 // and nothing is queued again; the per-frame prune then forgets the wait, so a
 // later hot-reload invalidation does not request a pipeline no draw uses.
+TEST_F(MaterialPipelineCompilationTest, ConcreteColdRecordDefersBackendBuildUntilFrameBegin)
+{
+    namespace RG = GameEngine::Rendering::RenderGraph;
+    MaterialDocument doc{};
+    doc.materialName = "DeferredConcretePBR";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = "Surfaces/standard_pbr.glsl";
+    Material* material = m_rs->Materials().RegisterMaterialFromDocument(GUID::Generate(), doc);
+    ASSERT_NE(material, nullptr);
+    auto& variants = m_rs->Materials().Variants();
+    const auto flags = VertexAttributeFlags::StandardMesh | VertexAttributeFlags::HasColor;
+    const auto keywords = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced;
+    const auto key = variants.EnqueueColorVariantCompileForTesting(
+        *material, flags, PrimitiveTopology::TriangleList, keywords, 1u, FrontFace::CounterClockwise);
+    variants.SubmitPendingVariantCompiles();
+    variants.ApplyPendingVariantPublishes();
+    const auto published = variants.SnapshotColorVariantForTesting(key);
+    ASSERT_TRUE(published.CurrentPipelineId.IsValid());
+    ASSERT_FALSE(published.PreviousPipelineId.IsValid());
+
+    // The inline arm models owning-thread backends and headless clients. The
+    // dispatched arm also proves recording never submits work to a dispatcher.
+    for (const bool dispatched : {false, true})
+    {
+        SCOPED_TRACE(dispatched ? "dispatcher" : "inline backend");
+        std::unique_ptr<HeldPipelineBuilds> held;
+        if (dispatched)
+            held = std::make_unique<HeldPipelineBuilds>(*m_device);
+        PipelineFormatKey format{};
+        format.ColorCount = 1;
+        format.ColorFormats[0] = dispatched ? TextureFormat::R16_FLOAT : TextureFormat::R8_UNORM;
+        ASSERT_FALSE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
+        RG::RGResourcePool persistent(m_device.get());
+        RG::RGTransientPool transient(m_device.get());
+        RG::RGUploadRing uploads(m_device.get(), 2, 4096);
+        RG::RGFrame frame(m_device.get(), &persistent, &transient, &uploads);
+        frame.BeginFrame(0);
+        TextureDesc desc{};
+        desc.width = desc.height = 4;
+        desc.format = static_cast<uint32_t>(format.ColorFormats[0]);
+        desc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget);
+        const auto target = frame.CreateTexture("DeferredConcrete.Target", desc);
+        uint32_t records = 0;
+        frame.AddPass("DeferredConcrete.Record", 0,
+                      [&](RG::RGPassBuilder& pass) { pass.AttachColor(0, target, {.Load = RG::RGLoadOp::Clear}); },
+                      [&](RG::RGContext& context) {
+                          ++records;
+                          for (uint32_t retry = 0; retry < 2; ++retry)
+                          {
+                              auto served = variants.GetOrCompileColorVariant(
+                                  *material, flags, PrimitiveTopology::TriangleList,
+                                  keywords, FrontFace::CounterClockwise, context);
+                              EXPECT_FALSE(served.first.IsValid());
+                          }
+                      });
+        frame.MarkOutput(target);
+        frame.Execute();
+        m_device->WaitForIdle();
+        EXPECT_EQ(records, 1u);
+        EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
+        if (held)
+            EXPECT_TRUE(held->Jobs.empty()) << "recording must only enqueue for the frame-begin drain";
+        variants.PruneSettledConcreteWarmWaits();
+        if (held)
+        {
+            ASSERT_EQ(held->Jobs.size(), 1u) << "duplicate record misses share one backend build";
+            held->RunAll();
+        }
+        EXPECT_TRUE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
+        variants.PruneSettledConcreteWarmWaits();
+    }
+}
+
 TEST_F(MaterialPipelineCompilationTest, ConcreteWarm_MaterialWaitsWhileItsBackendBuildIsPending)
 {
     MaterialDocument doc{};
@@ -3063,6 +3137,49 @@ TEST_F(MaterialPipelineCompilationTest, VariantRepublish_PreviousUnitKeepsItsOwn
         << "the retained unit still names ITS generation, not the replacement's";
     EXPECT_NE(afterApply.PreviousMaterialVersion, afterApply.MaterialVersion)
         << "the two units a recompile window can serve are distinguishable";
+
+    // Only the previous unit is warm for this format. Selecting it in a
+    // pass that aborts before recording must leave this frame's table empty.
+    namespace RG = GameEngine::Rendering::RenderGraph;
+    PipelineFormatKey format{};
+    format.ColorCount = 1;
+    format.ColorFormats[0] = TextureFormat::R16_FLOAT;
+    const auto warmPrevious = m_device->GetOrCreateGraphicsPipeline(afterApply.PreviousPipelineId, format);
+    ASSERT_TRUE(warmPrevious.IsValid());
+    ASSERT_FALSE(m_device->TryGetWarmGraphicsPipeline(afterApply.CurrentPipelineId, format).IsValid());
+    const uint32_t index = mat->GetGpuSceneMaterialIndex();
+    ASSERT_NE(index, std::numeric_limits<uint32_t>::max());
+    variants.BeginServeFrame(index + 1);
+
+    RG::RGResourcePool persistent(m_device.get());
+    RG::RGTransientPool transient(m_device.get());
+    RG::RGUploadRing uploads(m_device.get(), 2, 4096);
+    RG::RGFrame frame(m_device.get(), &persistent, &transient, &uploads);
+    frame.BeginFrame(0);
+    TextureDesc desc{};
+    desc.width = desc.height = 4;
+    desc.format = static_cast<uint32_t>(format.ColorFormats[0]);
+    desc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget);
+    const auto target = frame.CreateTexture("ServedGeneration.Color", desc);
+    bool previousSelected = false;
+    frame.AddPass("ServedGeneration.Aborted", 0,
+                  [&](RG::RGPassBuilder& pass) {
+                      pass.AttachColor(0, target, {.Load = RG::RGLoadOp::Clear});
+                      pass.Prepare([&](RG::RGPrepareContext& context) {
+                          auto [pipeline, unit] = variants.PrepareColorVariant(
+                              *mat, vf, PrimitiveTopology::TriangleList, passKw, FrontFace::CounterClockwise, context);
+                          previousSelected = pipeline == warmPrevious && unit
+                              && unit->PipelineId == afterApply.PreviousPipelineId
+                              && unit->MaterialVersion == afterApply.PreviousMaterialVersion;
+                          return false;
+                      });
+                  },
+                  [](RG::RGContext&) { ADD_FAILURE() << "An aborted frame recorded commands"; });
+    frame.MarkOutput(target);
+    frame.Execute();
+    EXPECT_TRUE(previousSelected);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+    EXPECT_FALSE(variants.ServedGeneration(index, ServedPassClass::Color).has_value());
 }
 
 // ---- Runtime Mask demotion (alpha source provably cannot discard) ----

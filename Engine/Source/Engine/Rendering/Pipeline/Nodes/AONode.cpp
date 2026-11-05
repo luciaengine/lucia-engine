@@ -229,6 +229,7 @@ void AONode::DeclareForView(ViewDeclare& d)
     {
         d.Frame.AddComputePass(d.PassName(name).c_str(), PassPhase::kDefault, [&](RenderGraph::RGPassBuilder& p)
                                {
+                p.UsePipeline(m_Shaders[stage].Pipeline);
                 for (size_t i = 0; i < bindings.Count; ++i)
                 {
                     const auto& b = bindings.Items[i];

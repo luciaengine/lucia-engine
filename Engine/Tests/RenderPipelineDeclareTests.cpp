@@ -706,7 +706,8 @@ PrepassOrderDecl DeclarePrepassResolveWorld(Rendering::IDevice* device, bool wit
 
 // The level count the min/max pyramid declares for `viewId`: enough levels for
 // the widest PCSS kernel of its rendered cascades plus the query margin.
-float ExpectedPyramidLevels(const ShadowMapRenderFeature& feature, ViewId viewId)
+float ExpectedPyramidLevels(const ShadowMapRenderFeature& feature, ViewId viewId,
+                            const RenderGraph::RGFrame& frame)
 {
     const CascadeFrameData* fd = feature.GetCachedFrameData(viewId);
     if (!fd)
@@ -714,7 +715,7 @@ float ExpectedPyramidLevels(const ShadowMapRenderFeature& feature, ViewId viewId
     const uint32_t cascades = std::min(fd->NumCascades, kMaxShadowCascades);
     return static_cast<float>(ShadowMinMaxPyramid::LevelsForQuery(
         feature.GetConfig().Resolution >> ShadowMinMaxPyramid::kBaseDownshift,
-        feature.PcssWidestKernelTexels(viewId, *fd, cascades) +
+        feature.PcssWidestKernelTexels(viewId, *fd, cascades, frame) +
             ShadowMinMaxPyramid::kQueryMarginTexels));
 }
 
@@ -3869,7 +3870,7 @@ TEST(RenderPipelineDeclareTests, ShadowVolumeFiltersRestoreBaseAndFollowViewWorl
                 EXPECT_EQ(data.shadowDebug[3], static_cast<float>(shaderQuality[i]))
                     << "GPU filter for view " << i;
                 EXPECT_EQ(data.shadowPcssPyramid[0][1],
-                          shaderQuality[i] == Q::PCSS ? ExpectedPyramidLevels(feature, viewIds[i])
+                          shaderQuality[i] == Q::PCSS ? ExpectedPyramidLevels(feature, viewIds[i], frame)
                                                       : 0.0f);
             }
         };
@@ -9824,6 +9825,7 @@ TEST(RenderPipelineDeclareTests, GrassDrawsItsDepthInThePrepassSoTheWorldDepthSt
             terrain.UploadTerrainParamsArray(&params, 1u, GameEngine::Terrain::kDefaultTerrainMaterials,
                                              GameEngine::Terrain::kTerrainLayerRoleCount, 0u);
         }
+        terrain.GrassWindVolumes().Upload(*f.Device, terrain.GetLastTerrainParamsSlot(), nullptr, 0u);
         if (!ArmGrassMaterialCompile(f))
         {
             f.Down();
@@ -10626,6 +10628,9 @@ uint32 UploadSteppedAlphaBladeTexture(TerrainFixture& f, TextureHandle& out, std
 bool ActivateStillGrass(TerrainFixture& f, TerrainECS::TerrainRenderFeature& terrain)
 {
     EXPECT_TRUE(terrain.Initialize(f.Device.get()));
+    // These fixtures publish terrain parameters directly instead of running ECS extraction.
+    // Publish its matching no-wind snapshot too; every rotating slot can use the zero record.
+    terrain.GrassWindVolumes().Upload(*f.Device, 0u, nullptr, 0u);
     TerrainGrass::RegisterTerrainGrassPipelineNodes(f.Registry);
     EXPECT_TRUE(f.Registry.Register(
         "DepthPrepass", [] { return std::make_unique<Nodes::DepthPrepassNode>(); }, true));
@@ -16941,7 +16946,7 @@ TEST(RenderPipelineDeclareTests, ShadowMinMaxPyramidDeclaresAndPublishesOnlyForE
         {
             EXPECT_GT(data.shadowPcssPyramid[cascade][0], 0.0f)
                 << "cascade " << cascade << " must carry a live bindless index";
-            EXPECT_EQ(data.shadowPcssPyramid[cascade][1], ExpectedPyramidLevels(*feature, viewId))
+            EXPECT_EQ(data.shadowPcssPyramid[cascade][1], ExpectedPyramidLevels(*feature, viewId, frame))
                 << "cascade " << cascade << " level count (the widest kernel's)";
             EXPECT_EQ(data.shadowPcssPyramid[cascade][2],
                       static_cast<float>(ShadowMinMaxPyramid::kBaseDownshift))
@@ -16974,7 +16979,7 @@ TEST(RenderPipelineDeclareTests, ShadowMinMaxPyramidDeclaresAndPublishesOnlyForE
         feature = rs.GetFeature<ShadowMapRenderFeature>();
         ASSERT_NE(feature, nullptr);
         EXPECT_EQ(static_cast<float>(countPyramidPasses()),
-                  pcssEffective ? ExpectedPyramidLevels(*feature, viewId) : 0.0f)
+                  pcssEffective ? ExpectedPyramidLevels(*feature, viewId, frame) : 0.0f)
             << "effective PCSS: one pass per level the widest kernel needs, cascades batched; "
                "no bindless: PCSS demotes to Poisson and nothing declares";
         {
@@ -17044,7 +17049,7 @@ TEST(RenderPipelineDeclareTests, ShadowMinMaxPyramidDeclaresAndPublishesOnlyForE
             ASSERT_NE(fd, nullptr);
             EXPECT_EQ(fd->NumCascades, 2u) << "min(config 4, light cascadeCount 2)";
         }
-        EXPECT_EQ(static_cast<float>(countPyramidPasses()), pcssEffective ? ExpectedPyramidLevels(*feature, viewId) : 0.0f)
+        EXPECT_EQ(static_cast<float>(countPyramidPasses()), pcssEffective ? ExpectedPyramidLevels(*feature, viewId, frame) : 0.0f)
             << "the widest kernel's levels with only the light's 2 rendered cascades in each dispatch";
         // The publish follows the same bound. Cascades 2-3 have no pyramid LAYER
         // this frame, so they keep the sentinel even though PCSS is live — and

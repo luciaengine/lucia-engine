@@ -168,8 +168,9 @@ Rendering::RenderGraph::RGTexture ScreenSpaceShadowPasses::DeclareMaskPass(
     char prepareName[80];
     std::snprintf(prepareName, sizeof(prepareName), "%s.Prepare", name);
     frame.AddComputePass(prepareName, Rendering::PassPhase::kDefault,
-        [=](RG::RGPassBuilder& pass)
+        [=, this](RG::RGPassBuilder& pass)
         {
+            pass.UsePipeline(m_PreparePipeline);
             pass.Read(depth, RG::RGTextureRead::Sampled);
             pass.Write(visibility, RG::RGBufferWrite::Storage);
         },
@@ -196,8 +197,9 @@ Rendering::RenderGraph::RGTexture ScreenSpaceShadowPasses::DeclareMaskPass(
             command->Dispatch((width + kImageGroupSize - 1) / kImageGroupSize, (height + kImageGroupSize - 1) / kImageGroupSize, 1);
         });
     frame.AddComputePass(name, Rendering::PassPhase::kDefault,
-        [=](RG::RGPassBuilder& pass)
+        [=, this](RG::RGPassBuilder& pass)
         {
+            pass.UsePipeline(m_Pipeline);
             pass.Read(depth, RG::RGTextureRead::Sampled);
             pass.Read(visibility, RG::RGBufferRead::Storage);
             pass.Write(visibility, RG::RGBufferWrite::Storage);
@@ -234,8 +236,9 @@ Rendering::RenderGraph::RGTexture ScreenSpaceShadowPasses::DeclareMaskPass(
     char resolveName[80];
     std::snprintf(resolveName, sizeof(resolveName), "%s.Resolve", name);
     frame.AddComputePass(resolveName, Rendering::PassPhase::kDefault,
-        [=](RG::RGPassBuilder& pass)
+        [=, this](RG::RGPassBuilder& pass)
         {
+            pass.UsePipeline(m_ResolvePipeline);
             pass.Read(depth, RG::RGTextureRead::Sampled);
             pass.Read(visibility, RG::RGBufferRead::Storage);
             pass.Write(mask, RG::RGTextureWrite::Storage);
@@ -284,8 +287,9 @@ Rendering::RenderGraph::RGTexture ScreenSpaceShadowPasses::DeclareMaskPass(
             upload.Ptr->Projection[2] = static_cast<float>(filter->Resolution);
             upload.Ptr->Projection[3] = 0;
             frame.AddComputePass(matchedName.c_str(), Rendering::PassPhase::kDefault,
-                [=](RG::RGPassBuilder& pass)
+                [=, this](RG::RGPassBuilder& pass)
                 {
+                    pass.UsePipeline(m_MatchPipeline);
                     pass.Read(depth, RG::RGTextureRead::Sampled);
                     pass.Read(mask, RG::RGTextureRead::Sampled);
                     pass.Read(visibility, RG::RGBufferRead::Storage);

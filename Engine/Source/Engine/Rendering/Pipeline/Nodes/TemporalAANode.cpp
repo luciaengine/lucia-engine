@@ -482,6 +482,7 @@ void TemporalAANode::DeclareForView(ViewDeclare& d)
         d.PassName("TAAResolve").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(taau ? m_UpscalePipelineId : m_ResolvePipelineId);
             p.Read(input, RenderGraph::RGTextureRead::Sampled);
             p.Read(depthResolved, RenderGraph::RGTextureRead::Sampled);
             p.Read(mvTex, RenderGraph::RGTextureRead::Sampled);

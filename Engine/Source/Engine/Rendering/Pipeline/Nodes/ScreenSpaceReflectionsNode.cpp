@@ -483,6 +483,7 @@ void ScreenSpaceReflectionsNode::DeclareForView(ViewDeclare& d)
         d.PassName("ClassifyTiles").c_str(), PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_Programs[Classify].Pipeline);
             p.Read(specularWeight, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(depth, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(momentsRead, RenderGraph::RGTextureRead::SampledCompute);
@@ -538,7 +539,8 @@ void ScreenSpaceReflectionsNode::DeclareForView(ViewDeclare& d)
     d.Frame.AddPass(
         d.PassName("PrepareArgs").c_str(), PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
-        { p.Write(indirectArgs, RenderGraph::RGBufferWrite::Storage); },
+        {
+            p.UsePipeline(m_Programs[PrepareArgs].Pipeline); p.Write(indirectArgs, RenderGraph::RGBufferWrite::Storage); },
         [=, this](RenderGraph::RGContext& ctx)
         {
             auto* device = ctx.GetDevice();
@@ -557,6 +559,7 @@ void ScreenSpaceReflectionsNode::DeclareForView(ViewDeclare& d)
         d.PassName("Intersect").c_str(), PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_Programs[Intersect].Pipeline);
             p.Read(input, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(depth, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(motionVectors, RenderGraph::RGTextureRead::SampledCompute);
@@ -612,6 +615,7 @@ void ScreenSpaceReflectionsNode::DeclareForView(ViewDeclare& d)
         d.PassName("Reproject").c_str(), PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_Programs[Reproject].Pipeline);
             p.Read(radiance, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(hitData, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(depth, RenderGraph::RGTextureRead::SampledCompute);
@@ -663,6 +667,7 @@ void ScreenSpaceReflectionsNode::DeclareForView(ViewDeclare& d)
         d.PassName("Prefilter").c_str(), PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_Programs[Prefilter].Pipeline);
             p.Read(radiance, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(depth, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(normalRoughness, RenderGraph::RGTextureRead::SampledCompute);
@@ -714,6 +719,7 @@ void ScreenSpaceReflectionsNode::DeclareForView(ViewDeclare& d)
         d.PassName("TemporalResolve").c_str(), PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_Programs[Temporal].Pipeline);
             p.Read(prefiltered, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(reprojected, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(reprojectedMoments, RenderGraph::RGTextureRead::SampledCompute);
@@ -758,6 +764,7 @@ void ScreenSpaceReflectionsNode::DeclareForView(ViewDeclare& d)
         d.PassName("Composite").c_str(), PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_Programs[Composite].Pipeline);
             p.Read(input, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(planarMaskBinding, RenderGraph::RGTextureRead::SampledCompute);
             p.Read(historyWrite, RenderGraph::RGTextureRead::SampledCompute);

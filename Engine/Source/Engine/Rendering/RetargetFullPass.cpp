@@ -6,24 +6,35 @@ namespace GameEngine { namespace Engine { namespace Renderer {
 
 using namespace GameEngine::Rendering;
 
+struct RetargetFullPass::PreparedDispatch
+{
+    PipelineHandle Pipeline;
+    DescriptorSetHandle Descriptors;
+    uint32_t CharacterCount = 0;
+};
+
 void RetargetFullPass::Declare(RenderGraph::RGFrame& frame, RenderGraph::RGBuffer atlas) {
     if (!m_DataStore || m_ComputeShader.empty() || !atlas.IsValid()) return;
     if (m_DataStore->GetActiveCharacterCount() == 0) return;
+    auto* dispatch = frame.AllocatePassData<PreparedDispatch>();
     frame.AddPass("RetargetFullCompute",
                   static_cast<int32_t>(GameEngine::Rendering::PassPhase::kEarlySetup),
-                  [&](RenderGraph::RGPassBuilder& p) { p.Write(atlas); },
-                  [this, atlas](RenderGraph::RGContext& ctx)
-                  { RecordDispatch(ctx.GetDevice(), ctx.Cmd, ctx.GetBuffer(atlas)); });
+                  [&](RenderGraph::RGPassBuilder& p) {
+                      p.Write(atlas);
+                      p.Prepare([this, dispatch, atlas](RenderGraph::RGPrepareContext& context) {
+                          return PrepareDispatch(context, context.GetBuffer(atlas), *dispatch);
+                      });
+                  },
+                  [this, dispatch](RenderGraph::RGContext& ctx)
+                  { RecordDispatch(ctx.Cmd, *dispatch); });
 }
 
-void RetargetFullPass::RecordDispatch(IDevice* dev, CommandList* cl,
-                                      BufferHandle dispatchAtlasBuf) {
-    if (!m_DataStore || m_ComputeShader.empty()) return;
-
+bool RetargetFullPass::PrepareDispatch(RenderGraph::RGPrepareContext& context,
+                                      BufferHandle dispatchAtlasBuf, PreparedDispatch& dispatch) {
+    auto* dev = context.GetDevice();
+    if (!m_DataStore || m_ComputeShader.empty() || !dev) return false;
     const uint32_t characterCount = m_DataStore->GetActiveCharacterCount();
-    if (characterCount == 0) return;
-
-    if (!cl || !dev) return;
+    if (characterCount == 0) return true;
 
     // Flush any per-frame uploads (charsBuf at minimum). Asset-load buffers
     // are only re-uploaded when their dirty bit fires.
@@ -51,16 +62,9 @@ void RetargetFullPass::RecordDispatch(IDevice* dev, CommandList* cl,
         cd.DebugName = "RetargetFull_Compute";
         m_PipelineId = dev->InternComputePipeline(cd);
     }
-    PipelineHandle pipe = dev->GetOrCreateComputePipeline(m_PipelineId);
-    if (!pipe) return;
+    PipelineHandle pipe = context.PreparePipeline(m_PipelineId);
+    if (!pipe) return false;
 
-    cl->SetPipeline(pipe);
-
-    DescriptorSetDesc dsDesc{};
-    dsDesc.layout = set0;
-    dsDesc.transient = true;
-    dsDesc.debugName = "RetargetFull_DS0";
-    DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
 
     auto clipBuf  = m_DataStore->GetClipBuffer();
     auto rigBuf   = m_DataStore->GetRigBuffer();
@@ -68,7 +72,14 @@ void RetargetFullPass::RecordDispatch(IDevice* dev, CommandList* cl,
     auto atlasBuf = dispatchAtlasBuf;
 
     if (!clipBuf.IsValid() || !rigBuf.IsValid() || !charsBuf.IsValid() || !atlasBuf.IsValid())
-        return;
+        return false;
+
+    DescriptorSetDesc dsDesc{};
+    dsDesc.layout = set0;
+    dsDesc.transient = true;
+    dsDesc.debugName = "RetargetFull_DS0";
+    DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
+    if (!ds.IsValid()) return false;
 
     // Explicit sizes — UpdateStorageBufferBinding doesn't treat range=0 as
     // VK_WHOLE_SIZE in this engine; passing 0 produces an empty bind that
@@ -79,10 +90,18 @@ void RetargetFullPass::RecordDispatch(IDevice* dev, CommandList* cl,
     dev->UpdateStorageBufferBinding(ds, 2, charsBuf, 0, characterCount * sizeof(GPURetargetCharacterParams));
     dev->UpdateStorageBufferBinding(ds, 3, atlasBuf, 0, 0);
 
-    cl->BindDescriptorSet(0, ds, pipe);
-    cl->SetPushConstants(characterCount);
-    cl->Dispatch(characterCount, 1, 1);
+    dispatch.Pipeline = pipe;
+    dispatch.Descriptors = ds;
+    dispatch.CharacterCount = characterCount;
+    return true;
+}
 
+void RetargetFullPass::RecordDispatch(CommandList* cl, const PreparedDispatch& dispatch) {
+    if (!cl || dispatch.CharacterCount == 0) return;
+    cl->SetPipeline(dispatch.Pipeline);
+    cl->BindDescriptorSet(0, dispatch.Descriptors, dispatch.Pipeline);
+    cl->SetPushConstants(dispatch.CharacterCount);
+    cl->Dispatch(dispatch.CharacterCount, 1, 1);
     m_DataStore->MarkDispatchScheduledThisFrame();
 }
 

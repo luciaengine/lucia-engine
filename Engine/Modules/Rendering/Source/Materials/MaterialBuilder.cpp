@@ -7,21 +7,6 @@
 
 namespace GameEngine { namespace Rendering {
 
-static DescriptorType MapBindingType(uint32_t t) {
-    using namespace ShaderMetaBindingType;
-    switch (t) {
-        case kUniformBuffer:        return DescriptorType::UniformBuffer;
-        case kStorageBuffer:        return DescriptorType::StorageBuffer;
-        case kSampler:              return DescriptorType::Sampler;
-        case kSampledImage:         return DescriptorType::Texture;
-        case kStorageImage:         return DescriptorType::StorageImage;
-        case kCombinedImageSampler: return DescriptorType::CombinedImageSampler;
-        case kAccelerationStructure: return DescriptorType::AccelerationStructure;
-        default: return DescriptorType::UniformBuffer;
-    }
-}
-
-
 // Map the ShaderMeta stage mask (ShaderMetaStage) to backend-native flags (Vulkan by default)
 static uint32_t MapAbstractStagesToBackend(uint32_t m) {
     uint32_t out = 0;
@@ -43,7 +28,7 @@ DescriptorSetLayoutDesc MaterialBuilder::BuildSetLayout(const DescriptorSetMeta&
     for (const auto& b : setMeta.Bindings) {
         DescriptorBinding db{};
         db.binding = b.Binding;
-        db.type = MapBindingType(b.Type);
+        db.type = MapShaderMetaBindingType(b.Type);
         db.count = b.Count;
         db.shaderStages = MapAbstractStagesToBackend(b.StagesMask);
         db.debugName = b.Name.c_str();

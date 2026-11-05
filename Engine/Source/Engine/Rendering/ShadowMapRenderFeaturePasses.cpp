@@ -135,8 +135,8 @@ CascadeRenderInputs BuildCascadeCacheInputs(RenderServices& rs, ViewId viewId,
 void ShadowMapRenderFeature::Declare(Rendering::RenderGraph::RGFrame& frame, RenderServices& rs,
                                           const FeatureDeclareContext& ctx)
 {
-    m_CascadeDeclareFrameIndex = frame.FrameIndex();
-    m_DeclaredCascadePassesThisFrame = 0;
+    m_MotionPlanByView[ctx.View] = {};
+    m_MotionPlanByView[ctx.View].For.Stamp(frame);
 
     // Directional cascades + glass tint only when the view has a shadow-casting
     // directional light (the node's full branch). Depth cascades first, then the
@@ -205,7 +205,7 @@ void ShadowMapRenderFeature::Declare(Rendering::RenderGraph::RGFrame& frame, Ren
                 pyramidCascades =
                     std::min({frameData->NumCascades, ctx.CascadeCount, kMaxShadowCascades});
                 pyramidKernelTexels =
-                    PcssWidestKernelTexels(ctx.View, *frameData, pyramidCascades);
+                    PcssWidestKernelTexels(ctx.View, *frameData, pyramidCascades, frame);
             }
         }
         // Publish whatever Declare returned, invalid handle included, so the id
@@ -236,7 +236,7 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
     const ViewId viewId = ctx.View;
 
     MotionFramePlan plan{};
-    plan.FrameStamp = frame.FrameIndex();
+    plan.For.Stamp(frame);
 
     // Deferral requires the static-cache lane: its records define the retained
     // content the deferred slots keep sampling, and its under-draw feedback is
@@ -332,12 +332,20 @@ void ShadowMapRenderFeature::PlanCascadeMotionFrame(Rendering::RenderGraph::RGFr
 }
 
 bool ShadowMapRenderFeature::IsCascadeDeferredThisFrame(Rendering::ViewId viewId,
-                                                        uint64_t frameStamp,
+                                                        const RenderGraph::RGFrame& frame,
                                                         uint32_t cascadeIndex) const
 {
     const auto it = m_MotionPlanByView.find(viewId);
-    return it != m_MotionPlanByView.end() && it->second.FrameStamp == frameStamp &&
+    return it != m_MotionPlanByView.end() && it->second.For.IsFor(frame) &&
            cascadeIndex < 32 && ((it->second.DeferMask >> cascadeIndex) & 1u) != 0;
+}
+
+uint32_t ShadowMapRenderFeature::ScheduledCascadeMask(
+    Rendering::ViewId viewId, const RenderGraph::RGFrame& frame) const
+{
+    const auto it = m_MotionPlanByView.find(viewId);
+    return it != m_MotionPlanByView.end() && it->second.For.IsFor(frame)
+        ? it->second.ScheduledDepthMask : 0u;
 }
 
 Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
@@ -346,6 +354,17 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
 {
     namespace RenderGraph = Rendering::RenderGraph;
     const ViewId viewId = ctx.View;
+
+    auto ensureFramePlan = [&]()
+    {
+        auto& motionPlan = m_MotionPlanByView[viewId];
+        if (!motionPlan.For.IsFor(frame))
+        {
+            motionPlan = {};
+            motionPlan.For.Stamp(frame);
+        }
+    };
+    ensureFramePlan();
 
     // The old activation predicate, evaluated at declaration (snapshotted).
     if (!ctx.ViewNeedsCascades)
@@ -366,6 +385,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     // adopt skips the pass for one frame — matching the old recreate
     // semantics on config-change frames.
     const RenderGraph::RGTexture shadowArr = rs.ImportShadowMapArrayRG(frame, viewId, ctx.Seam);
+    ensureFramePlan(); // A physical adopt may invalidate the previous plan.
     if (!shadowArr.IsValid())
         return {};
 
@@ -417,7 +437,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     // to keep this cascade's retained layer for one more frame. No pass, no
     // OnRendered — the cache record and content fit keep describing the
     // retained content, and BuildShadowDataGPU samples it through that fit.
-    if (IsCascadeDeferredThisFrame(viewId, frame.FrameIndex(), cascadeIndex))
+    if (IsCascadeDeferredThisFrame(viewId, frame, cascadeIndex))
         return {};
 
     // Cascade light VP as the camera, written at declaration. Both the world VP
@@ -459,12 +479,29 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
     params.ViewportHeight = res;
     params.Resources = rs.BuildShadowPassResources(ctx.Seam, frame, viewId, cam.Buffer, cam.Offset);
 
+    CascadeContentFit scheduledFit{};
+    scheduledFit.LightVP = frameData->LightVP[cascadeIndex];
+    scheduledFit.LightVPRel = frameData->LightVPRel[cascadeIndex];
+    for (uint32_t axis = 0; axis < 3; ++axis)
+        scheduledFit.Sector[axis] = frameData->RenderOriginSector[axis];
+    scheduledFit.OrthoHalfExtent = frameData->OrthoHalfExtent[cascadeIndex];
+    scheduledFit.DepthSpan = frameData->DepthSpan[cascadeIndex];
+    scheduledFit.FrameStamp = frame.FrameIndex();
+    scheduledFit.Valid = true;
+    // Reserve the view serially. Distinct cascade callbacks write distinct slots.
+    m_CascadeContentFit.try_emplace(viewId);
+    const auto expectedPhysical = frame.PhysicalTexture(shadowArr);
+
     RenderServices* rsPtr = &rs;
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
     const RenderGraph::RGPass pass = frame.AddPass(
         passName, Rendering::PassPhase::kEarlySetup,
-        [this, &ctx, shadowArr, cascadeIndex, viewId, frameData,
-         frameStamp = frame.FrameIndex()](RenderGraph::RGPassBuilder& p)
+        [&](RenderGraph::RGPassBuilder& p)
         {
+            p.Prepare([rsPtr, preparedDepth](RenderGraph::RGPrepareContext& prepare)
+            {
+                return PrepareDepthOnlyPass(prepare, *preparedDepth, rsPtr->MakeDepthDrawServices());
+            });
             // A2.4-P0-R: each directional depth cascade renders into its own array
             // layer with a self-contained exec (own viewport/scissor + per-draw
             // binds), so the 4 cascades record into workers concurrently.
@@ -499,33 +536,22 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareCascadePass(
             // layer. Culling it leaves reverse-Z uncleared (1.0 = fully
             // shadowed) which the static cache would then freeze.
             p.PreventCulling();
-            // Content-fit commit stays at DECLARE: BuildShadowDataGPU uploads this
-            // snapshot for receivers in the same frame, before any pass executes.
-            // Committing it at exec would leave receivers transforming by the
-            // PREVIOUS frame's fit while sampling texels rasterized under this
-            // one — a one-frame mismatch that shifts shadow edges whenever the
-            // fit moves. PreventCulling above is what makes this safe: the layer
-            // is guaranteed to clear+rasterize under exactly this fit.
-            CascadeContentFit& cf = m_CascadeContentFit[viewId][cascadeIndex];
-            cf.LightVP = frameData->LightVP[cascadeIndex];
-            cf.LightVPRel = frameData->LightVPRel[cascadeIndex];
-            cf.Sector[0] = frameData->RenderOriginSector[0];
-            cf.Sector[1] = frameData->RenderOriginSector[1];
-            cf.Sector[2] = frameData->RenderOriginSector[2];
-            cf.OrthoHalfExtent = frameData->OrthoHalfExtent[cascadeIndex];
-            cf.DepthSpan = frameData->DepthSpan[cascadeIndex];
-            cf.FrameStamp = frameStamp;
-            cf.Valid = true;
         },
-        [this, rsPtr, params = std::move(params), viewId, cacheSlot,
-         cacheIn](RenderGraph::RGContext& c) mutable
+        [this, preparedDepth, viewId, cacheSlot,
+         cacheIn, expectedPhysical, scheduledFit, forFrame = &frame](RenderGraph::RGContext& c) mutable
         {
-            RecordDepthOnlyPass(c, std::move(params), rsPtr->MakeDepthDrawServices());
-            // Settle stamp only: this records that the layer was actually
-            // rasterized. The fit receivers use is committed at declare.
-            m_CascadeShadowCache.OnRendered(viewId, cacheSlot, cacheIn);
+            RecordPreparedDepthOnlyPass(c, *preparedDepth);
+            // Another graph/physical may have invalidated this view since declaration.
+            const auto fit = m_CascadeContentFit.find(viewId);
+            if (fit != m_CascadeContentFit.end() &&
+                GetShadowMapTexture(viewId, *forFrame) == expectedPhysical)
+            {
+                fit->second[cacheSlot - CascadeShadowCache::kDepthSlotBase] = scheduledFit;
+                m_CascadeShadowCache.OnRendered(viewId, cacheSlot, cacheIn);
+            }
         });
-    ++m_DeclaredCascadePassesThisFrame;
+    if (pass.IsValid())
+        m_MotionPlanByView[viewId].ScheduledDepthMask |= 1u << cascadeIndex;
     return pass;
 }
 
@@ -608,7 +634,7 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
     // plan phase already canceled the deferral if EITHER family carried a
     // correctness-class cause or the families' content fits desynced
     // (transmission-visibility gap).
-    if (IsCascadeDeferredThisFrame(viewId, frame.FrameIndex(), cascadeIndex))
+    if (IsCascadeDeferredThisFrame(viewId, frame, cascadeIndex))
         return {};
 
     // Same cascade light VP as the depth pass — glass must rasterize to the exact
@@ -655,10 +681,15 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
     params.Resources = rs.BuildShadowPassResources(ctx.Seam, frame, viewId, cam.Buffer, cam.Offset);
 
     RenderServices* rsPtr = &rs;
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
     const RenderGraph::RGPass pass = frame.AddPass(
         passName, Rendering::PassPhase::kEarlySetup,
-        [&ctx, shadowArr, tintArr, cascadeIndex](RenderGraph::RGPassBuilder& p)
+        [&](RenderGraph::RGPassBuilder& p)
         {
+            p.Prepare([rsPtr, preparedDepth](RenderGraph::RGPrepareContext& prepare)
+            {
+                return PrepareDepthOnlyPass(prepare, *preparedDepth, rsPtr->MakeDepthDrawServices());
+            });
             // A2.4-P0-R: same self-contained RecordDepthOnlyPass exec as the depth
             // cascades (own viewport/scissor + per-draw binds), per-layer attach
             // isolation on both the tint color and the read-only depth.
@@ -698,11 +729,11 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareTransmittancePass(
             p.AttachDepth(shadowArr, dops, RenderGraph::RGDepthAccess::ReadOnly,
                           RenderGraph::RGRange{.BaseLayer = cascadeIndex, .LayerCount = 1});
         },
-        [this, rsPtr, params = std::move(params), viewId, cacheSlot, cacheIn, cascadeIndex,
+        [this, preparedDepth, viewId, cacheSlot, cacheIn, cascadeIndex,
          lightVP = frameData->LightVP[cascadeIndex],
          frameStamp = frame.FrameIndex()](RenderGraph::RGContext& c) mutable
         {
-            RecordDepthOnlyPass(c, std::move(params), rsPtr->MakeDepthDrawServices());
+            RecordPreparedDepthOnlyPass(c, *preparedDepth);
             m_CascadeShadowCache.OnRendered(viewId, cacheSlot, cacheIn);
             CascadeContentFit& cf = m_TintContentFit[viewId][cascadeIndex];
             cf.LightVP = lightVP;
@@ -805,10 +836,15 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareAreaPass(
         "AreaShadow[View#" + std::to_string(static_cast<uint32_t>(viewId)) + "]";
 
     RenderServices* rsPtr = &rs;
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
     return frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kEarlySetup,
-        [&ctx, areaMap](RenderGraph::RGPassBuilder& p)
+        [&](RenderGraph::RGPassBuilder& p)
         {
+            p.Prepare([rsPtr, preparedDepth](RenderGraph::RGPrepareContext& prepare)
+            {
+                return PrepareDepthOnlyPass(prepare, *preparedDepth, rsPtr->MakeDepthDrawServices());
+            });
             // A2.4-P0-R: self-contained RecordDepthOnlyPass exec over a dedicated
             // depth target — worker-recordable like the cascades.
             p.RecordInSecondary();
@@ -836,8 +872,8 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareAreaPass(
             p.AttachDepth(areaMap, dops, RenderGraph::RGDepthAccess::ReadWrite);
             // No PreventCulling: the world pass's sampled Read anchors it.
         },
-        [rsPtr, params = std::move(params)](RenderGraph::RGContext& c) mutable
-        { RecordDepthOnlyPass(c, std::move(params), rsPtr->MakeDepthDrawServices()); });
+        [preparedDepth](RenderGraph::RGContext& c) mutable
+        { RecordPreparedDepthOnlyPass(c, *preparedDepth); });
 }
 
 Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareSpotPass(
@@ -923,10 +959,15 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareSpotPass(
         "SpotShadow[View#" + std::to_string(static_cast<uint32_t>(viewId)) + "]";
 
     RenderServices* rsPtr = &rs;
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
     return frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kEarlySetup,
-        [&ctx, spotMap](RenderGraph::RGPassBuilder& p)
+        [&](RenderGraph::RGPassBuilder& p)
         {
+            p.Prepare([rsPtr, preparedDepth](RenderGraph::RGPrepareContext& prepare)
+            {
+                return PrepareDepthOnlyPass(prepare, *preparedDepth, rsPtr->MakeDepthDrawServices());
+            });
             // A2.4-P0-R: self-contained RecordDepthOnlyPass exec over a dedicated
             // depth target — worker-recordable like the cascades.
             p.RecordInSecondary();
@@ -953,8 +994,8 @@ Rendering::RenderGraph::RGPass ShadowMapRenderFeature::DeclareSpotPass(
             dops.Clear.Depth = 0.0f;
             p.AttachDepth(spotMap, dops, RenderGraph::RGDepthAccess::ReadWrite);
         },
-        [rsPtr, params = std::move(params)](RenderGraph::RGContext& c) mutable
-        { RecordDepthOnlyPass(c, std::move(params), rsPtr->MakeDepthDrawServices()); });
+        [preparedDepth](RenderGraph::RGContext& c) mutable
+        { RecordPreparedDepthOnlyPass(c, *preparedDepth); });
 }
 
 void ShadowMapRenderFeature::DeclarePointPasses(Rendering::RenderGraph::RGFrame& frame,
@@ -1144,10 +1185,15 @@ void ShadowMapRenderFeature::DeclarePointPasses(Rendering::RenderGraph::RGFrame&
                                          std::to_string(slot) + ".Face" + std::to_string(face) + "]";
 
             RenderServices* rsPtr = &rs;
+            auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
             frame.AddPass(
                 passName.c_str(), Rendering::PassPhase::kEarlySetup,
-                [&ctx, atlas, slot, face, globalSlice](RenderGraph::RGPassBuilder& p)
+                [&](RenderGraph::RGPassBuilder& p)
                 {
+                    p.Prepare([rsPtr, preparedDepth](RenderGraph::RGPrepareContext& prepare)
+                    {
+                        return PrepareDepthOnlyPass(prepare, *preparedDepth, rsPtr->MakeDepthDrawServices());
+                    });
                     // A2.4-P0-R: each point face renders into its own atlas layer
                     // with a self-contained exec (tile-local viewport + per-draw
                     // binds) — the point-shadow arc's M2 fork-join slice.
@@ -1178,8 +1224,8 @@ void ShadowMapRenderFeature::DeclarePointPasses(Rendering::RenderGraph::RGFrame&
                     p.AttachDepth(atlas, dops, RenderGraph::RGDepthAccess::ReadWrite,
                                   RenderGraph::RGRange{.BaseLayer = globalSlice, .LayerCount = 1});
                 },
-                [rsPtr, params = std::move(params)](RenderGraph::RGContext& c) mutable
-                { RecordDepthOnlyPass(c, std::move(params), rsPtr->MakeDepthDrawServices()); });
+                [preparedDepth](RenderGraph::RGContext& c) mutable
+                { RecordPreparedDepthOnlyPass(c, *preparedDepth); });
         }
     }
 }

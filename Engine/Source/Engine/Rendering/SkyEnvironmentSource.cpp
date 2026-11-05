@@ -620,7 +620,8 @@ bool SkyEnvironmentSource::ScheduleCaptureFacesOnly(const EnvironmentBakeContext
         const std::string name = std::string(prefix) + ".Face" + std::to_string(face);
         frame.AddPass(
             name.c_str(), phase,
-            [envCube, skyView, transLut, face](RenderGraph::RGPassBuilder& p) {
+            [this, envCube, skyView, transLut, face](RenderGraph::RGPassBuilder& p) {
+                p.UsePipeline(m_CapturePipelineId);
                 RenderGraph::RGAttachmentOps ops{};
                 ops.Load = RenderGraph::RGLoadOp::Clear;
                 ops.Store = RenderGraph::RGStoreOp::Store;
@@ -730,7 +731,8 @@ void SkyEnvironmentSource::ScheduleBake(const EnvironmentBakeContext& ctx)
         const std::string name = "IBLGen.SkyCapture.Face" + std::to_string(face);
         frame.AddPass(
             name.c_str(), PassPhase::kEarlySetup,
-            [envCube, skyView, transLut, face](RenderGraph::RGPassBuilder& p) {
+            [this, envCube, skyView, transLut, face](RenderGraph::RGPassBuilder& p) {
+                p.UsePipeline(m_CapturePipelineId);
                 RenderGraph::RGAttachmentOps ops{};
                 ops.Load = RenderGraph::RGLoadOp::Clear;
                 ops.Store = RenderGraph::RGStoreOp::Store;
@@ -773,7 +775,8 @@ void SkyEnvironmentSource::ScheduleBake(const EnvironmentBakeContext& ctx)
         const std::string name = "IBLGen.EnvMipDownsample.Mip" + std::to_string(mip);
         frame.AddComputePass(
             name.c_str(), PassPhase::kEarlySetup,
-            [envCube, mip](RenderGraph::RGPassBuilder& p) {
+            [this, envCube, mip](RenderGraph::RGPassBuilder& p) {
+                p.UsePipeline(m_MipDownsamplePipelineId);
                 RenderGraph::RGRange srcRange = RenderGraph::RGRange::All();
                 srcRange.BaseMip = mip - 1;
                 srcRange.MipCount = 1;
@@ -792,7 +795,8 @@ void SkyEnvironmentSource::ScheduleBake(const EnvironmentBakeContext& ctx)
     // Diffuse irradiance convolution (env cube -> irradiance cube).
     frame.AddComputePass(
         "IBLGen.DiffuseConvolve", PassPhase::kEarlySetup,
-        [envCube, irrCube](RenderGraph::RGPassBuilder& p) {
+        [this, envCube, irrCube](RenderGraph::RGPassBuilder& p) {
+            p.UsePipeline(m_DiffusePipelineId);
             p.Read(envCube, RenderGraph::RGTextureRead::Sampled);
             p.Write(irrCube, RenderGraph::RGTextureWrite::Storage);
             p.PreventCulling();
@@ -807,7 +811,8 @@ void SkyEnvironmentSource::ScheduleBake(const EnvironmentBakeContext& ctx)
     // different physical), so the per-mip writes never self-hazard.
     frame.AddComputePass(
         "IBLGen.SpecularPrefilter", PassPhase::kEarlySetup,
-        [envCube, prefCube](RenderGraph::RGPassBuilder& p) {
+        [this, envCube, prefCube](RenderGraph::RGPassBuilder& p) {
+            p.UsePipeline(m_SpecularPipelineId);
             p.Read(envCube, RenderGraph::RGTextureRead::Sampled);
             p.Write(prefCube, RenderGraph::RGTextureWrite::Storage);
             p.PreventCulling();

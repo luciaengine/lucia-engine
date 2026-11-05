@@ -20,6 +20,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -43,6 +44,11 @@ namespace Editor
 class GraphPreviewAtlas
 {
   public:
+    GraphPreviewAtlas() = default;
+    ~GraphPreviewAtlas();
+    GraphPreviewAtlas(const GraphPreviewAtlas&) = delete;
+    GraphPreviewAtlas& operator=(const GraphPreviewAtlas&) = delete;
+
     /// Silhouette fraction of a cell: full-bleed for node plates, framed for the
     /// graph's own preview panel.
     static constexpr float kNodeCellFill = 0.88f;
@@ -90,7 +96,7 @@ class GraphPreviewAtlas
 
     /// Forces a redraw on the next frame (a parameter scrub the digest cannot
     /// see, an IBL toggle, a rebuild).
-    void MarkDirty() { m_Dirty = true; }
+    void MarkDirty();
 
     /// Spins one cell's sphere. Redraws only when the angle actually moves, so
     /// a still preview leaves the pass out of the frame.
@@ -109,17 +115,25 @@ class GraphPreviewAtlas
     void SetIblEnabled(bool enabled);
 
   private:
+    struct AtlasGeneration;
+    struct Completion;
+    struct State;
+    struct FramePlan;
+
     struct CellDraw
     {
         uint32_t Cell = 0;
         GUID MaterialGuid{};
+        uint64_t Registration = 0;
+        uint32_t Version = 0;
+        uint32_t ContentRevision = 0;
         float YawRadians = 0.f;
         float FillFraction = kNodeCellFill;
     };
 
-    // True when the material set, their parameters, or their pipelines moved
-    // since the last successful render.
-    bool ContentDigestMoved();
+    // Desired content is compared against the last recorded atlas completion.
+    uint64_t ComputeContentDigest() const;
+    void DrainCompletion();
     void EnsureView();
     bool EnsureAtlasTexture(uint32_t width, uint32_t height);
     void SubmitPreviewLights();
@@ -130,6 +144,9 @@ class GraphPreviewAtlas
     bool IblAvailable() const;
 
     Engine::Renderer::RenderServices* m_Services = nullptr;
+    std::weak_ptr<std::atomic<bool>> m_ServiceLifetime;
+    std::shared_ptr<State> m_State;
+    std::shared_ptr<AtlasGeneration> m_Generation;
 
     GraphPreviewAtlasLayout m_Layout;
     std::vector<NodeRequest> m_Requests;
@@ -165,11 +182,7 @@ class GraphPreviewAtlas
     int m_RebuildDeferredFrames = 0;
     static constexpr int kMaxDeferredRebuildFrames = 90;
 
-    // Record-time skips (cold IBL variants) that must re-declare the pass;
-    // written on the render thread, drained in TickRG.
-    std::atomic<uint32_t> m_RecordSkippedDraws{0};
-    // Cells whose material had no valid base pipeline last render: the pass
-    // keeps re-declaring until every requested cell has been drawn once.
+    // Missing or older shader versions keep the atlas pending until current.
     uint32_t m_UndrawnCells = 0;
     uint64_t m_ContentDigest = 0;
 };

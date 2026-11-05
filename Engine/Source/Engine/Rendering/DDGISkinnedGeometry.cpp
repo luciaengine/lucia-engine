@@ -523,8 +523,9 @@ DDGISkinnedGeometry::TickResult DDGISkinnedGeometry::Tick(
     const Rendering::ShaderMeta* skinMeta = m_SkinMeta.get();
     frame.AddComputePass(
         "DDGI.SkinPositions", Rendering::PassPhase::kEarlySetup,
-        [outHandles](RG::RGPassBuilder& p)
+        [outHandles, &skinPipe](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(skinPipe);
             p.PreventCulling();
             for (RG::RGBuffer b : outHandles)
                 p.Write(b, RG::RGBufferWrite::Storage);

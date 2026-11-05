@@ -70,6 +70,8 @@ inline VkAccessFlags TranslateResourceAccessMask(uint64_t maskVal)
         flags |= VK_ACCESS_SHADER_READ_BIT;
     if (has(AccessMask::ShaderWrite))
         flags |= VK_ACCESS_SHADER_WRITE_BIT;
+    if (has(AccessMask::IndexRead))
+        flags |= VK_ACCESS_INDEX_READ_BIT;
     if (has(AccessMask::VertexAttributeRead))
         flags |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
     if (has(AccessMask::TransferRead))

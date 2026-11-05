@@ -931,6 +931,7 @@ set(EDITOR_TEST_SOURCES
 	# cells, and handed back on Shutdown. Needs a real device + RenderServices, so
 	# it skips where no Vulkan device is available.
 	GraphPreviewAtlasViewLifetimeTests.cpp
+	GraphPreviewAtlasPreparationTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/ShaderGraph/GraphPreviewAtlas.cpp
 	# The registration surface panel-owned render-graph participants reach the
 	# frame through. Needs a real RGFrame (headless device via UIRgTestHarness),

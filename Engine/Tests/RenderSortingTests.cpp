@@ -1,4 +1,3 @@
-#include "Engine/Rendering/AuthoredTransparentRuns.h"
 #include "Engine/Rendering/SortedTransparentComposition.h"
 #include "Engine/Build/GameConfig.h"
 #include "Engine/Rendering/RenderSorting.h"
@@ -18,7 +17,7 @@
 using namespace GameEngine;
 using namespace GameEngine::Engine::Renderer;
 
-TEST(RenderSorting, SameMaterialLayerAndOrderOverrideDepthOnBothDrainPaths)
+TEST(RenderSorting, SameMaterialLayerAndOrderOverrideDepth)
 {
     std::vector<SortedTransparentRecord> records(3);
     records[0].ViewDepth = 1;
@@ -33,40 +32,38 @@ TEST(RenderSorting, SameMaterialLayerAndOrderOverrideDepthOnBothDrainPaths)
     keys[2].Depth = 50;
     SortedTransparentRunPartition partition;
     std::pmr::monotonic_buffer_resource scratch;
-    BuildAuthoredTransparentRunPartition(records, keys, scratch, partition);
-    const auto order = BuildSortedTransparentCpuOrder(records, partition);
+    std::vector<ECS::EntityHandle> entities(records.size());
+    std::vector<uint32> order;
+    std::vector<TransparentCompositionSlot> slots;
+    BuildTransparentComposition(records, keys, entities, {}, scratch, partition, order, slots, false);
     EXPECT_EQ(order, (std::vector<uint32_t>{0, 2, 1}));
-    ASSERT_EQ(partition.RunCount.size(), 3u);
-    for (size_t i = 1; i < order.size(); ++i)
-    {
-        const auto before = order[i - 1], after = order[i];
-        EXPECT_TRUE(SortedTransparentKeyLess(
-            MakeSortedTransparentKey(records[before].ViewDepth, static_cast<uint16_t>(records[before].RunGroup), static_cast<uint16_t>(before)),
-            MakeSortedTransparentKey(records[after].ViewDepth, static_cast<uint16_t>(records[after].RunGroup), static_cast<uint16_t>(after))));
-    }
+    EXPECT_EQ(partition.RunCount, (std::vector<uint32_t>{3}));
 }
 
-TEST(RenderSorting, AlternatingMaterialsRemainInterleavedBeyondGpuCapacity)
+TEST(RenderSorting, MeshOnlyAlternatingMaterialsStayInDepthOrderAtLargeCounts)
 {
-    const uint32_t count = kSortedTransparentSortCapacity + 1;
+    constexpr uint32_t count = 4097;
     std::vector<SortedTransparentRecord> records(count);
     std::vector<RenderSortKey> keys(count);
     for (uint32_t i = 0; i < count; ++i)
     {
         records[i].RunGroup = i % 2;
         records[i].ViewDepth = static_cast<float>(i);
-        keys[i].Order = static_cast<int32>(i);
         keys[i].Depth = records[i].ViewDepth;
     }
     SortedTransparentRunPartition partition;
     std::pmr::monotonic_buffer_resource scratch;
-    BuildAuthoredTransparentRunPartition(records, keys, scratch, partition);
-    const auto order = BuildSortedTransparentCpuOrder(records, partition);
+    std::vector<ECS::EntityHandle> entities(count);
+    std::vector<uint32> order;
+    std::vector<TransparentCompositionSlot> slots;
+    BuildTransparentComposition(records, keys, entities, {}, scratch, partition, order, slots, false);
     ASSERT_EQ(partition.RunCount.size(), count);
     for (uint32_t i = 0; i < count; ++i)
     {
-        EXPECT_EQ(order[i], i);
-        EXPECT_EQ(partition.GroupOfSlot[i], i % 2);
+        EXPECT_EQ(order[i], count - 1 - i);
+        EXPECT_EQ(partition.GroupOfSlot[i], (count - 1 - i) % 2);
+        EXPECT_EQ(partition.RunStart[i], i);
+        EXPECT_EQ(partition.RunCount[i], 1u);
     }
 }
 

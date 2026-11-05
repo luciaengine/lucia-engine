@@ -29,6 +29,8 @@
 #include "AssetCore/GUID.h"
 #include "Engine/Rendering/BonePaletteLayout.h"
 #include "Engine/Rendering/RetargetGPUDataStore.h"
+#include "Engine/Rendering/RetargetFullPass.h"
+#include "TestTempDir.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
@@ -60,6 +62,8 @@ protected:
         dd.applicationName = "RetargetGPUParityTest";
         dd.preferredAPI = GraphicsAPI::Vulkan;
         dd.enableDebugLayer = true;
+        dd.enableSwapchain = false;
+        dd.pipelineCacheDirectory = m_PipelineCache.Path().string();
 
         m_Device = DeviceFactory::CreateDevice(dd);
         if (!m_Device || !m_Device->Initialize(dd))
@@ -68,6 +72,7 @@ protected:
             return;
         }
 
+        ASSERT_EQ(m_Device->GetAPI(), GraphicsAPI::Vulkan);
         m_ShaderSpirv = LoadShader("retarget_full.comp.spv");
     }
 
@@ -445,7 +450,6 @@ protected:
             chars[0].blendAlpha = blend->Alpha;
         }
         m_DataStore.AppendCharacterParams(chars);
-        m_DataStore.FlushIfDirty();
 
         // Atlas readback buffer. Storage layout is mat3x4 (3 vec4 rows per
         // bone = 48 bytes), see Engine/Include/Engine/Rendering/
@@ -464,65 +468,39 @@ protected:
         std::vector<uint8_t> zeros(atlasBytes, 0);
         m_Device->UpdateBuffer(atlasBuf, 0, atlasBytes, zeros.data());
 
-        // Pipeline.
-        DescriptorSetLayoutDesc set0{};
-        set0.debugName = "RetargetParity_Set0";
-        for (uint32_t i = 0; i < 4; ++i)
+        // Exercise the production graph pass, including uploads and descriptors
+        // prepared before any command recording.
+        namespace RG = GameEngine::Rendering::RenderGraph;
         {
-            DescriptorBinding b{};
-            b.binding = i;
-            b.type = DescriptorType::StorageBuffer;
-            b.count = 1;
-            b.shaderStages = kShaderStageCompute;
-            set0.bindings.push_back(b);
+            RG::RGResourcePool persistent(m_Device.get());
+            RG::RGTransientPool transient(m_Device.get());
+            RG::RGUploadRing uploads(m_Device.get(), 2, 4096);
+            RG::RGFrame frame(m_Device.get(), &persistent, &transient, &uploads);
+            RetargetFullPass pass;
+            pass.SetComputeShader(m_ShaderSpirv);
+            pass.SetDataStore(&m_DataStore);
+            frame.BeginFrame(0);
+            EXPECT_EQ(m_Device->GetPipelineCacheStats().ConcreteSize, 0u);
+            bool observedReadyPipeline = false;
+            frame.AddPass("RetargetParity.Observer", PassPhase::kEarlySetup - 1,
+                          [](RG::RGPassBuilder& builder) { builder.PreventCulling(); },
+                          [&](RG::RGContext&) {
+                              observedReadyPipeline = m_Device->GetPipelineCacheStats().ConcreteSize == 1u;
+                          });
+            const auto atlas = frame.ImportExternalBuffer("RetargetParity.Atlas", atlasBuf, atlasBytes);
+            pass.Declare(frame, atlas);
+            frame.MarkOutput(atlas);
+            EXPECT_FALSE(m_DataStore.IsDispatchScheduledThisFrame());
+            EXPECT_EQ(frame.Graph().PassCount(), 2u);
+            frame.Execute();
+            m_Device->WaitForIdle();
+            EXPECT_TRUE(observedReadyPipeline);
+            EXPECT_EQ(frame.Stats().PreparedPasses, 1u);
+            EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
+            EXPECT_TRUE(m_DataStore.IsDispatchScheduledThisFrame());
         }
-        PipelineDesc pd{};
-        pd.type = PipelineType::Compute;
-        pd.debugName = "RetargetParityPipeline";
-        pd.computeShader = m_ShaderSpirv;
-        pd.descriptorSetLayouts.push_back(set0);
-        pd.pushConstantSize = sizeof(uint32_t);
-        pd.pushConstantStagesMask = kShaderStageCompute;
 
-        PipelineHandle pipe = m_Device->CreatePipeline(pd);
-        EXPECT_NE(pipe, PipelineHandle{});
-
-        DescriptorSetDesc dsDesc{};
-        dsDesc.layout = set0;
-        dsDesc.debugName = "RetargetParity_DS0";
-        DescriptorSetHandle ds = m_Device->CreateDescriptorSet(dsDesc);
-
-        auto bindSSBO = [&](uint32_t binding, BufferHandle buf, size_t offset, size_t size) {
-            DescriptorSetUpdate upd{};
-            upd.binding = binding;
-            upd.type = DescriptorType::StorageBuffer;
-            upd.buffers = {buf};
-            upd.bufferOffsets = {offset};
-            upd.bufferRanges = {size};
-            m_Device->UpdateDescriptorSet(ds, upd);
-        };
-        bindSSBO(0, m_DataStore.GetClipBuffer(),  0, m_DataStore.GetClipUsedBytes());
-        bindSSBO(1, m_DataStore.GetRigBuffer(),   0, m_DataStore.GetRigUsedBytes());
-        bindSSBO(2, m_DataStore.GetCharsBuffer(), 0, m_DataStore.GetCharsUsedBytes());
-        bindSSBO(3, atlasBuf, 0, atlasBytes);
-
-        auto cl = m_Device->CreateCommandList(IDevice::QueueType::Compute);
-        cl->Begin();
-        cl->SetPipeline(pipe);
-        cl->BindDescriptorSet(0, ds, pipe);
-        uint32_t characterCount = 1;
-        cl->SetPushConstants(characterCount);
-        cl->Dispatch(1, 1, 1);
-        cl->End();
-
-        std::vector<CommandList*> lists{cl.get()};
-        m_Device->ExecuteCommandLists(lists);
-        m_Device->WaitForIdle();
-
-        // Read back the packed mat3x4 form (12 floats/bone) and unpack to
-        // the canonical mat4 layout (16 floats/bone) so the parity
-        // comparison stays expressed in mat4 terms — keeps the existing
-        // CPU reference path unchanged.
+        // Unpack three rows per bone to the canonical mat4 layout for the CPU reference.
         using namespace GameEngine::Engine::Renderer::BonePaletteLayout;
         std::vector<float> packed(skinJointCount * kFloatsPerBone);
         void* mapped = m_Device->MapBuffer(atlasBuf);
@@ -537,7 +515,6 @@ protected:
         }
 
         m_Device->DestroyBuffer(atlasBuf);
-        m_Device->DestroyPipeline(pipe);
         return result;
     }
 
@@ -591,6 +568,7 @@ protected:
         }
     }
 
+    TestUtils::ScopedTempDir m_PipelineCache{TestUtils::MakeUniqueTempDirectory("retarget-preparation")};
     std::unique_ptr<IDevice> m_Device;
     std::vector<uint8_t> m_ShaderSpirv;
     RetargetGPUDataStore m_DataStore;

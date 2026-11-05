@@ -1,5 +1,6 @@
 #include "Ocean/OceanSprayGPU.h"
 #include "Engine/Rendering/IEnvironmentSource.h"
+#include "Engine/Rendering/FrameOrchestrator.h"
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
@@ -7,6 +8,8 @@
 #include "Logger/Logger.h"
 #include "Mathematics/VectorOps.h"
 #include "Ocean/OceanRenderFeature.h"
+#include "Ocean/OceanFrameStamp.h"
+#include "Ocean/OceanPreparedDispatch.h"
 #include "Ocean/OceanShaderProgram.h"
 #include "Rendering/Materials/ShaderLayoutShape.h"
 #include "OceanShaderDirectory.h"
@@ -47,7 +50,56 @@ constexpr float kMaxLifetimeScale = 1.4f;
 // Lighting inputs the simulation found bound (ocean_spray_gpu_common.glsl).
 constexpr uint32 kSpraySunShadows = 1u;
 constexpr uint32 kSprayIbl = 2u;
+struct ShapeTexture
+{
+    uint32 Binding;
+    RenderGraph::RGTexture Texture;
+    SamplerHandle Sampler;
+};
 } // namespace
+
+struct OceanSprayGPU::History
+{
+    float Time = 0, LastEmissionTime = 0;
+    Mathematics::Vector3 Origin{};
+    std::string StateName, VisibleName, ArgsName;
+    bool Active = false;
+    BufferHandle State{};
+    uint32 Capacity = 0;
+    uint64 World = 0, ClaimedEpoch = ~uint64{0};
+    RenderGraph::RGFrameStamp PlannedFrame, RecordedFrame;
+    FramePlan* Plan = nullptr;
+    std::chrono::steady_clock::time_point LastUsed{};
+};
+
+struct OceanSprayGPU::FramePlan
+{
+    std::shared_ptr<History> Lease;
+    RenderGraph::RGFrameStamp Owner;
+    uint64 World = 0;
+    uint32 Capacity = 0, Width = 0, Height = 0;
+    float Time = 0, LastEmissionTime = 0;
+    Mathematics::Vector3 Origin{};
+    bool Fresh = false, Simulated = false, Culled = false, Drawn = false;
+    RenderGraph::RGBuffer State{}, Visible{}, Args{};
+    RenderGraph::RGTexture Depth{}, ShadowArray{};
+    Engine::Renderer::Pipeline::PipelineBufferBindingRG ShadowData{};
+    bool SunShadows = false;
+    TextureHandle ShadowFallback{}, Irradiance{};
+    SamplerHandle ShadowSampler{}, CubeSampler{};
+    BufferHandle Environment{}, StateBuffer{}, VisibleBuffer{}, ArgsBuffer{};
+    RenderGraph::RGFrame::TypedUpload<SprayParamsGPU> Params;
+    RenderGraph::RGFrame::TypedUpload<OceanParamsGPU> OceanParams;
+    RenderGraph::RGFrame::TypedUpload<OceanSampledCascadeLayoutsGPU> CascadeLayouts;
+    RenderGraph::RGFrame::TypedUpload<OceanCascadeLayoutGPU> CombineLayout;
+    SprayParamsGPU Inputs{};
+    std::array<ShapeTexture, kShapeTextureCount> ShapeTextures{};
+    OceanPreparedDispatch Simulation, Cull;
+    DescriptorSetHandle ShapeSet{}, DrawSet{};
+    PipelineHandle DrawPipeline{};
+};
+
+OceanSprayGPU::OceanSprayGPU() = default;
 OceanSprayGPU::~OceanSprayGPU()
 {
     if (m_Device && m_Sampler.IsValid())
@@ -59,8 +111,7 @@ void OceanSprayGPU::SetSettings(const Components::OceanSurface &surface, float w
     m_WindSpeed = windSpeed;
     m_WindDegrees = windDegrees;
     if (!Enabled())
-        for (auto &[id, h] : m_History)
-            h.Active = false;
+        m_History.Clear();
 }
 void OceanSprayGPU::RebaseOrigin(float x, float y, float z)
 {
@@ -175,8 +226,8 @@ bool OceanSprayGPU::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, O
     auto *device = d.Services.GetDevice();
     if (!device || !Enabled() || (d.View.ActiveRenderLayerMask() & m_Surface.SprayRenderLayerMask) == 0)
         return false;
-    // The slot selects the ocean's per-slot resources; the graph's monotonic
-    // index is this view's frame identity and the birth seed.
+    // The slot selects per-slot ocean resources. The graph index is the birth
+    // seed; simulation ownership below uses both the graph stream and world epoch.
     const uint32 slot = device->GetFrameIndex();
     const uint64 frame = d.Frame.FrameIndex();
     if (!ocean.IsFoamReady() || !Initialize(device))
@@ -192,13 +243,19 @@ bool OceanSprayGPU::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, O
         return false;
     const uint32 capacity = std::clamp(m_Surface.SprayMaxParticles, 256u, 262144u);
     const auto now = std::chrono::steady_clock::now();
-    std::erase_if(m_History, [&](const auto &entry) {
-        return entry.first != d.View.id && now - entry.second.LastUsed > kOceanViewHistoryIdleTimeout;
+    m_History.EraseIf([&](ViewId view, const auto& entry) {
+        return view != d.View.id && entry && now - entry->LastUsed > kOceanViewHistoryIdleTimeout;
     });
-    auto &h = m_History[d.View.id];
+    auto& history = m_History.GetOrInsert(d.View.id);
+    if (!history)
+        history = std::make_shared<History>();
+    auto& h = *history;
     h.LastUsed = now;
-    if (h.Declared.IsFrame(frame))
+    if (h.PlannedFrame.IsFor(d.Frame))
         return true;
+    const uint64 epoch = d.Services.Spine().WorldFrameEpoch();
+    if (h.ClaimedEpoch == epoch)
+        return false;
     const auto params = ocean.GetParamsForView(d.View.id);
     const float ramp =
         std::clamp((m_WindSpeed - m_Surface.SprayWindThreshold) / kWindRampMetersPerSecond, 0.0f, 1.0f);
@@ -209,16 +266,12 @@ bool OceanSprayGPU::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, O
                                   ? std::max(m_Surface.SprayIntersectionSpawnRate, 0.0f) * spawnArea * ramp
                                   : 0.0f;
     const float lifetime = std::max(m_Surface.SprayLifetime, 0.05f);
-    if (crestRate + contactRate > 0.0f)
-        h.LastEmissionTime = params.Time;
-    else if (!h.Active || params.Time - h.LastEmissionTime > kMaxLifetimeScale * lifetime)
+    const bool emitting = crestRate + contactRate > 0.0f;
+    if (!emitting && (!h.Active || params.Time - h.LastEmissionTime > kMaxLifetimeScale * lifetime))
     {
         h.Active = false;
         return false;
     }
-    const float elapsed = params.Time - h.Time;
-    const bool reset = !h.Active || elapsed < 0 || elapsed > 0.5f;
-    const float dt = reset ? 1.0f / 60.0f : std::clamp(elapsed, 0.0f, 1.0f / 15.0f);
     if (h.StateName.empty())
     {
         const std::string prefix = "Ocean.Spray.View" + std::to_string(d.View.id);
@@ -261,7 +314,6 @@ bool OceanSprayGPU::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, O
     const float rad = m_WindDegrees * kDegreesToRadians;
     u.WindTime[0] = std::cos(rad) * m_WindSpeed * m_Surface.SprayWindVelocityScale;
     u.WindTime[2] = std::sin(rad) * m_WindSpeed * m_Surface.SprayWindVelocityScale;
-    u.WindTime[3] = dt;
     u.Emission[0] = crestRate + contactRate;
     u.Interaction[2] = crestRate / std::max(crestRate + contactRate, 0.001f);
     u.Emission[1] = spawnRadius;
@@ -272,18 +324,16 @@ bool OceanSprayGPU::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, O
     u.Appearance[2] = std::clamp(m_Surface.SprayOpacity, 0.0f, 1.0f);
     u.Appearance[3] = params.SeaLevel;
     u.Controls[0] = static_cast<float>(capacity);
-    u.Controls[2] = reset ? 1.0f : 0.0f;
     u.Controls[3] = std::clamp(m_Surface.SprayEmissionThreshold, 0.0f, 1.0f);
     for (uint32 i = 0; i < 3; ++i)
     {
-        u.Shift[i] = m_Origin[i] - h.Origin[i];
         u.Light[i] = params.SunColor[i] / Mathematics::Pi;
     }
     u.Viewport[0] = static_cast<float>(d.RenderWidth);
     u.Viewport[1] = static_cast<float>(d.RenderHeight);
     u.Viewport[2] = std::abs(camera->proj[14]);
     u.Viewport[3] = camera->proj[10];
-    u.Layout = ocean.GetFoamSim().GetFoamLayout();
+    u.Layout = ocean.GetFoamSim().GetFoamLayout(d.Frame);
     u.Interaction[0] = m_Surface.SprayGeometryIntersections ? 1.0f : 0.0f;
     u.Interaction[1] = std::max(m_Surface.SprayIntersectionBand, 0.05f);
     // Droplets receive the light the water surface does: the sun through the
@@ -327,16 +377,10 @@ bool OceanSprayGPU::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, O
     available[OceanSampledCascade::DynWaves] = dynReady;
     available[OceanSampledCascade::WaveMask] = maskReady;
     available[OceanSampledCascade::Clip] = clipReady;
-    *cascadeLayouts.Ptr = ocean.SampledCascadeLayouts(available);
+    *cascadeLayouts.Ptr = ocean.SampledCascadeLayouts(d.Frame, available);
     *combineLayout.Ptr = ocean.GetCombineSim().GetLayout();
     const auto foam = ocean.GetFoamSim().ImportWriteRG(d.Frame);
     const auto foamSampler = ocean.GetFoamSampler(), sampler = m_Sampler;
-    struct ShapeTexture
-    {
-        uint32 Binding;
-        RenderGraph::RGTexture Texture;
-        SamplerHandle Sampler;
-    };
     std::array<ShapeTexture, kShapeTextureCount> shapeTextures{};
     uint32 shapeTextureCount = 0;
     const auto add = [&](uint32 binding, RenderGraph::RGTexture texture, SamplerHandle sourceSampler) {
@@ -366,139 +410,294 @@ bool OceanSprayGPU::DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, O
             maskReady && localMask ? ocean.GetWaveMask().ImportLocalFFTMaskRG(d.Frame, page) : foam,
             ocean.GetWaveMaskSampler());
     assert(shapeTextureCount == kShapeTextureCount && "every shape-set image binding must be filled");
-    const auto sim = m_Simulate, cull = m_Cull;
-    const auto draw = m_Draw;
-    const auto simLayout = m_SimLayout, cullLayout = m_CullLayout, drawLayout = m_DrawLayout,
-               shapeLayout = m_OceanLayout;
+    auto* plan = d.Frame.AllocatePassData<FramePlan>();
+    plan->Lease = history;
+    plan->Owner.Stamp(d.Frame);
+    plan->World = d.View.worldId;
+    plan->Capacity = capacity;
+    plan->Width = d.RenderWidth;
+    plan->Height = d.RenderHeight;
+    plan->Time = params.Time;
+    plan->LastEmissionTime = emitting ? params.Time : h.LastEmissionTime;
+    plan->Origin = m_Origin;
+    plan->Fresh = fresh;
+    plan->State = state;
+    plan->Visible = visible;
+    plan->Args = args;
+    plan->Depth = depth;
+    plan->ShadowArray = shadowArray;
+    plan->ShadowData = shadowData;
+    plan->SunShadows = sunShadows;
+    plan->ShadowFallback = d.Services.GetCascadeShadowFallbackTexture();
+    plan->ShadowSampler = d.Services.GetCascadeShadowSampler();
+    plan->Irradiance = irradiance;
+    plan->CubeSampler = cubeSampler;
+    plan->Environment = envBuffer;
+    plan->Params = upload;
+    plan->Inputs = u;
+    plan->OceanParams = oceanParams;
+    plan->CascadeLayouts = cascadeLayouts;
+    plan->CombineLayout = combineLayout;
+    plan->ShapeTextures = shapeTextures;
+    const auto view = d.View.id;
     d.Frame.AddPass(
         "OceanSpraySimulate", PassPhase::kPostProcess,
-        [&](RenderGraph::RGPassBuilder &p) {
-            p.Read(state, RenderGraph::RGBufferRead::Storage);
-            p.Write(state, RenderGraph::RGBufferWrite::Storage);
-            p.Read(depth, RenderGraph::RGTextureRead::SampledCompute);
-            for (const auto &source : shapeTextures)
+        [this, plan, view](RenderGraph::RGPassBuilder& p) {
+            p.UsePipeline(m_Simulate);
+            p.Read(plan->State, RenderGraph::RGBufferRead::Storage);
+            p.Write(plan->State, RenderGraph::RGBufferWrite::Storage);
+            p.Read(plan->Depth, RenderGraph::RGTextureRead::SampledCompute);
+            for (const auto& source : plan->ShapeTextures)
                 p.Read(source.Texture, RenderGraph::RGTextureRead::SampledCompute);
-            if (sunShadows)
+            if (plan->SunShadows)
             {
-                p.Read(shadowArray, RenderGraph::RGTextureRead::SampledCompute);
-                if (shadowData.Graph.IsValid())
-                    p.Read(shadowData.Graph, RenderGraph::RGBufferRead::Uniform);
+                p.Read(plan->ShadowArray, RenderGraph::RGTextureRead::SampledCompute);
+                if (plan->ShadowData.Graph.IsValid())
+                    p.Read(plan->ShadowData.Graph, RenderGraph::RGBufferRead::Uniform);
             }
+            p.Prepare([this, plan, view](RenderGraph::RGPrepareContext& ctx) {
+                return PrepareSimulation(view, *plan, ctx);
+            });
         },
-        [state, depth, sim, simLayout, shapeLayout, shapeTextures, oceanParams, cascadeLayouts, combineLayout,
-         sampler, capacity, buf = upload.Buffer, off = upload.Offset, sunShadows, shadowData, shadowArray,
-         shadowFallback = d.Services.GetCascadeShadowFallbackTexture(),
-         shadowSampler = d.Services.GetCascadeShadowSampler(), envBuffer, irradiance,
-         cubeSampler](RenderGraph::RGContext &ctx) {
-            auto *dev = ctx.GetDevice();
-            if (!dev || !ctx.Cmd)
-                return;
-            const auto pso = dev->GetOrCreateComputePipeline(sim);
-            if (!pso)
-                return;
-            DescriptorSetDesc desc{};
-            desc.layout = simLayout;
-            desc.transient = true;
-            desc.debugName = "Ocean.Spray.Sim.DS";
-            const auto ds = dev->CreateDescriptorSet(desc);
-            dev->UpdateBufferBinding(ds, 0, buf, off, sizeof(SprayParamsGPU));
-            dev->UpdateStorageBufferBinding(ds, 1, ctx.GetBuffer(state), 0, capacity * kParticleBytes);
-            dev->UpdateCombinedImageSamplerBinding(ds, 4, ctx.GetTexture(depth), sampler);
-            if (sunShadows)
-            {
-                dev->UpdateBufferBinding(ds, 5, shadowData.Buffer, shadowData.Offset, shadowData.Size);
-                dev->UpdateCombinedImageSamplerBinding(ds, 6, ctx.GetTexture(shadowArray), shadowSampler);
-            }
-            else
-            {
-                dev->UpdateBufferBinding(ds, 5, buf, off, sizeof(SprayParamsGPU));
-                dev->UpdateCombinedImageSamplerBinding(ds, 6, shadowFallback, shadowSampler);
-            }
-            dev->UpdateCombinedImageSamplerBinding(ds, 7, irradiance, cubeSampler);
-            dev->UpdateBufferBinding(ds, 8, envBuffer, 0, Engine::Renderer::ImageBasedLightingFeature::kEnvDataBytes);
-            desc.layout = shapeLayout;
-            desc.debugName = "Ocean.Spray.Shape.DS";
-            const auto shapeDS = dev->CreateDescriptorSet(desc);
-            dev->UpdateStorageBufferBinding(shapeDS, 1, oceanParams.Buffer, oceanParams.Offset,
-                                            sizeof(OceanParamsGPU));
-            dev->UpdateBufferBinding(shapeDS, 4, cascadeLayouts.Buffer, cascadeLayouts.Offset,
-                                     sizeof(OceanSampledCascadeLayoutsGPU));
-            dev->UpdateBufferBinding(shapeDS, 15, combineLayout.Buffer, combineLayout.Offset,
-                                     sizeof(OceanCascadeLayoutGPU));
-            for (const auto &source : shapeTextures)
-                dev->UpdateCombinedImageSamplerBinding(shapeDS, source.Binding,
-                                                       ctx.GetTexture(source.Texture), source.Sampler);
-            ctx.Cmd->SetPipeline(pso);
-            ctx.Cmd->BindDescriptorSet(0, ds, pso);
-            ctx.Cmd->BindDescriptorSet(2, shapeDS, pso);
-            ctx.Cmd->Dispatch((capacity + 63u) / 64u, 1, 1);
-        });
+        [this, plan, view](RenderGraph::RGContext& ctx) { RecordSimulation(view, *plan, ctx); });
     d.Frame.AddPass(
         "OceanSprayCull", PassPhase::kPostProcess,
-        [&](RenderGraph::RGPassBuilder &p) {
-            p.Read(state, RenderGraph::RGBufferRead::Storage);
-            p.Read(args, RenderGraph::RGBufferRead::Storage);
-            p.Write(args, RenderGraph::RGBufferWrite::Storage);
-            p.Write(visible, RenderGraph::RGBufferWrite::Storage);
+        [this, plan, view](RenderGraph::RGPassBuilder& p) {
+            p.UsePipeline(m_Cull);
+            p.Read(plan->State, RenderGraph::RGBufferRead::Storage);
+            p.Read(plan->Args, RenderGraph::RGBufferRead::Storage);
+            p.Write(plan->Args, RenderGraph::RGBufferWrite::Storage);
+            p.Write(plan->Visible, RenderGraph::RGBufferWrite::Storage);
+            p.Prepare([this, plan, view](RenderGraph::RGPrepareContext& ctx) {
+                return PrepareCull(view, *plan, ctx);
+            });
         },
-        [state, visible, args, cull, cullLayout, capacity, buf = upload.Buffer,
-         off = upload.Offset](RenderGraph::RGContext &ctx) {
-            auto *dev = ctx.GetDevice();
-            if (!dev || !ctx.Cmd)
-                return;
-            const auto pso = dev->GetOrCreateComputePipeline(cull);
-            if (!pso)
-                return;
-            DescriptorSetDesc desc{};
-            desc.layout = cullLayout;
-            desc.transient = true;
-            desc.debugName = "Ocean.Spray.Cull.DS";
-            const auto ds = dev->CreateDescriptorSet(desc);
-            dev->UpdateBufferBinding(ds, 0, buf, off, sizeof(SprayParamsGPU));
-            dev->UpdateStorageBufferBinding(ds, 1, ctx.GetBuffer(state), 0, capacity * kParticleBytes);
-            dev->UpdateStorageBufferBinding(ds, 2, ctx.GetBuffer(visible), 0, capacity * sizeof(uint32));
-            dev->UpdateStorageBufferBinding(ds, 3, ctx.GetBuffer(args), 0, 16);
-            ctx.Cmd->SetPipeline(pso);
-            ctx.Cmd->BindDescriptorSet(0, ds, pso);
-            ctx.Cmd->Dispatch((capacity + 63u) / 64u, 1, 1);
-        });
+        [this, plan, view](RenderGraph::RGContext& ctx) { RecordCull(view, *plan, ctx); });
     d.Frame.AddPass(
         "OceanSprayDraw", PassPhase::kPostProcess,
-        [&](RenderGraph::RGPassBuilder &p) {
+        [this, plan, view, target](RenderGraph::RGPassBuilder& p) {
+            p.UsePipeline(m_Draw);
             p.AttachColor(0, target);
-            p.Read(depth, RenderGraph::RGTextureRead::Sampled);
-            p.Read(state, RenderGraph::RGBufferRead::Storage);
-            p.Read(visible, RenderGraph::RGBufferRead::Storage);
-            p.Read(args, RenderGraph::RGBufferRead::Indirect);
+            p.Read(plan->Depth, RenderGraph::RGTextureRead::Sampled);
+            p.Read(plan->State, RenderGraph::RGBufferRead::Storage);
+            p.Read(plan->Visible, RenderGraph::RGBufferRead::Storage);
+            p.Read(plan->Args, RenderGraph::RGBufferRead::Indirect);
+            p.Prepare([this, plan, view](RenderGraph::RGPrepareContext& ctx) {
+                return PrepareDraw(view, *plan, ctx);
+            });
         },
-        [state, visible, args, depth, draw, drawLayout, sampler, capacity, width = d.RenderWidth,
-         height = d.RenderHeight, buf = upload.Buffer, off = upload.Offset](RenderGraph::RGContext &ctx) {
-            auto *dev = ctx.GetDevice();
-            if (!dev || !ctx.Cmd)
-                return;
-            const auto pso = ctx.GetOrCreatePipelineVariant(draw);
-            if (!pso)
-                return;
-            DescriptorSetDesc desc{};
-            desc.layout = drawLayout;
-            desc.transient = true;
-            desc.debugName = "Ocean.Spray.Draw.DS";
-            const auto ds = dev->CreateDescriptorSet(desc);
-            dev->UpdateBufferBinding(ds, 0, buf, off, sizeof(SprayParamsGPU));
-            dev->UpdateStorageBufferBinding(ds, 1, ctx.GetBuffer(state), 0, capacity * kParticleBytes);
-            dev->UpdateStorageBufferBinding(ds, 2, ctx.GetBuffer(visible), 0, capacity * sizeof(uint32));
-            dev->UpdateCombinedImageSamplerBinding(ds, 3, ctx.GetTexture(depth), sampler);
-            ctx.Cmd->SetPipeline(pso);
-            ctx.Cmd->SetViewport(0, 0, static_cast<float>(width), static_cast<float>(height));
-            ctx.Cmd->SetScissor(0, 0, width, height);
-            ctx.Cmd->BindDescriptorSet(0, ds, pso);
-            ctx.Cmd->DrawIndirect(ctx.GetBuffer(args), 1, 16);
-        });
+        [this, plan, view](RenderGraph::RGContext& ctx) { RecordDraw(view, *plan, ctx); });
     d.Frame.MarkOutput(state);
-    h.Time = params.Time;
-    h.Declared.Frame = frame;
-    h.Active = true;
-    std::copy_n(m_Origin, 3, h.Origin);
+    h.PlannedFrame = plan->Owner;
+    h.Plan = plan;
+    h.ClaimedEpoch = epoch;
     return true;
 }
+
+bool OceanSprayGPU::IsCurrentPlan(ViewId view, const FramePlan& plan) const
+{
+    const auto* history = m_History.Find(view);
+    return history && *history && *history == plan.Lease && plan.Lease->Plan == &plan &&
+        plan.Owner.Frame && plan.Owner.IsFor(*plan.Owner.Frame) &&
+        plan.Lease->PlannedFrame.Frame == plan.Owner.Frame &&
+        plan.Lease->PlannedFrame.FrameIndex == plan.Owner.FrameIndex;
+}
+
+bool OceanSprayGPU::PrepareSimulation(ViewId view, FramePlan& plan, RenderGraph::RGPrepareContext& ctx) const
+{
+    plan.Simulation = {};
+    plan.ShapeSet = {};
+    if (!IsCurrentPlan(view, plan) || plan.Simulated)
+        return false;
+    auto* device = ctx.GetDevice();
+    if (!device || !plan.Params.Valid())
+        return false;
+    const auto pipeline = ctx.PreparePipeline(m_Simulate);
+    const auto state = ctx.GetBuffer(plan.State);
+    const auto depth = ctx.GetTexture(plan.Depth);
+    if (!pipeline || !state.IsValid() || !depth.IsValid())
+        return false;
+    const auto& h = *plan.Lease;
+    const float elapsed = plan.Time - h.Time;
+    const bool reset = !h.Active || plan.Fresh || h.State != state || h.Capacity != plan.Capacity ||
+        h.World != plan.World || elapsed < 0 || elapsed > 0.5f;
+    auto params = plan.Inputs;
+    params.WindTime[3] = reset ? 1.0f / 60.0f : std::clamp(elapsed, 0.0f, 1.0f / 15.0f);
+    params.Controls[2] = reset ? 1.0f : 0.0f;
+    for (uint32 i = 0; i < 3; ++i)
+        params.Shift[i] = reset ? 0.0f : plan.Origin[i] - h.Origin[i];
+    *plan.Params.Ptr = params;
+    // Lazy environment setup can submit between allocation and Prepare. Re-arm
+    // the mapped range after this final write, including on same-plan retries.
+    device->FlushMappedRange(plan.Params.Buffer, plan.Params.Offset, sizeof(SprayParamsGPU));
+    DescriptorSetDesc desc{};
+    desc.layout = m_SimLayout;
+    desc.transient = true;
+    desc.debugName = "Ocean.Spray.Sim.DS";
+    const auto set = device->CreateDescriptorSet(desc);
+    if (!set.IsValid())
+        return false;
+    device->UpdateBufferBinding(set, 0, plan.Params.Buffer, plan.Params.Offset, sizeof(SprayParamsGPU));
+    device->UpdateStorageBufferBinding(set, 1, state, 0, plan.Capacity * kParticleBytes);
+    device->UpdateCombinedImageSamplerBinding(set, 4, depth, m_Sampler);
+    if (plan.SunShadows)
+    {
+        const auto& data = plan.ShadowData;
+        const auto buffer = data.Graph.IsValid() ? ctx.GetBuffer(data.Graph) : data.Buffer;
+        const auto array = ctx.GetTexture(plan.ShadowArray);
+        if (!buffer.IsValid() || !array.IsValid())
+            return false;
+        device->UpdateBufferBinding(set, 5, buffer, data.Offset, data.Size);
+        device->UpdateCombinedImageSamplerBinding(set, 6, array, plan.ShadowSampler);
+    }
+    else
+    {
+        device->UpdateBufferBinding(set, 5, plan.Params.Buffer, plan.Params.Offset, sizeof(SprayParamsGPU));
+        device->UpdateCombinedImageSamplerBinding(set, 6, plan.ShadowFallback, plan.ShadowSampler);
+    }
+    device->UpdateCombinedImageSamplerBinding(set, 7, plan.Irradiance, plan.CubeSampler);
+    device->UpdateBufferBinding(set, 8, plan.Environment, 0, Engine::Renderer::ImageBasedLightingFeature::kEnvDataBytes);
+    desc.layout = m_OceanLayout;
+    desc.debugName = "Ocean.Spray.Shape.DS";
+    const auto shapeSet = device->CreateDescriptorSet(desc);
+    if (!shapeSet.IsValid())
+        return false;
+    device->UpdateStorageBufferBinding(shapeSet, 1, plan.OceanParams.Buffer, plan.OceanParams.Offset,
+                                      sizeof(OceanParamsGPU));
+    device->UpdateBufferBinding(shapeSet, 4, plan.CascadeLayouts.Buffer, plan.CascadeLayouts.Offset,
+                               sizeof(OceanSampledCascadeLayoutsGPU));
+    device->UpdateBufferBinding(shapeSet, 15, plan.CombineLayout.Buffer, plan.CombineLayout.Offset,
+                               sizeof(OceanCascadeLayoutGPU));
+    for (const auto& source : plan.ShapeTextures)
+    {
+        const auto texture = ctx.GetTexture(source.Texture);
+        if (!texture.IsValid() || !source.Sampler.IsValid())
+            return false;
+        device->UpdateCombinedImageSamplerBinding(shapeSet, source.Binding, texture, source.Sampler);
+    }
+    plan.StateBuffer = state;
+    plan.ShapeSet = shapeSet;
+    plan.Simulation = {pipeline, set, (plan.Capacity + 63u) / 64u, 1, 1};
+    return true;
+}
+
+bool OceanSprayGPU::PrepareCull(ViewId view, FramePlan& plan, RenderGraph::RGPrepareContext& ctx) const
+{
+    plan.Cull = {};
+    if (!IsCurrentPlan(view, plan) || plan.Simulated)
+        return false;
+    auto* device = ctx.GetDevice();
+    if (!device)
+        return false;
+    const auto pipeline = ctx.PreparePipeline(m_Cull);
+    const auto state = ctx.GetBuffer(plan.State), visible = ctx.GetBuffer(plan.Visible), args = ctx.GetBuffer(plan.Args);
+    if (!pipeline || !state.IsValid() || !visible.IsValid() || !args.IsValid() || state != plan.StateBuffer)
+        return false;
+    DescriptorSetDesc desc{};
+    desc.layout = m_CullLayout;
+    desc.transient = true;
+    desc.debugName = "Ocean.Spray.Cull.DS";
+    const auto set = device->CreateDescriptorSet(desc);
+    if (!set.IsValid())
+        return false;
+    device->UpdateBufferBinding(set, 0, plan.Params.Buffer, plan.Params.Offset, sizeof(SprayParamsGPU));
+    device->UpdateStorageBufferBinding(set, 1, state, 0, plan.Capacity * kParticleBytes);
+    device->UpdateStorageBufferBinding(set, 2, visible, 0, plan.Capacity * sizeof(uint32));
+    device->UpdateStorageBufferBinding(set, 3, args, 0, 16);
+    plan.VisibleBuffer = visible;
+    plan.ArgsBuffer = args;
+    plan.Cull = {pipeline, set, (plan.Capacity + 63u) / 64u, 1, 1};
+    return true;
+}
+
+bool OceanSprayGPU::PrepareDraw(ViewId view, FramePlan& plan, RenderGraph::RGPrepareContext& ctx) const
+{
+    plan.DrawPipeline = {};
+    plan.DrawSet = {};
+    if (!IsCurrentPlan(view, plan) || plan.Simulated)
+        return false;
+    auto* device = ctx.GetDevice();
+    if (!device)
+        return false;
+    const auto pipeline = ctx.PreparePipeline(m_Draw);
+    const auto state = ctx.GetBuffer(plan.State), visible = ctx.GetBuffer(plan.Visible), args = ctx.GetBuffer(plan.Args);
+    const auto depth = ctx.GetTexture(plan.Depth);
+    if (!pipeline || !depth.IsValid() || state != plan.StateBuffer || visible != plan.VisibleBuffer ||
+        args != plan.ArgsBuffer || !plan.Cull.IsValid())
+        return false;
+    DescriptorSetDesc desc{};
+    desc.layout = m_DrawLayout;
+    desc.transient = true;
+    desc.debugName = "Ocean.Spray.Draw.DS";
+    const auto set = device->CreateDescriptorSet(desc);
+    if (!set.IsValid())
+        return false;
+    device->UpdateBufferBinding(set, 0, plan.Params.Buffer, plan.Params.Offset, sizeof(SprayParamsGPU));
+    device->UpdateStorageBufferBinding(set, 1, state, 0, plan.Capacity * kParticleBytes);
+    device->UpdateStorageBufferBinding(set, 2, visible, 0, plan.Capacity * sizeof(uint32));
+    device->UpdateCombinedImageSamplerBinding(set, 3, depth, m_Sampler);
+    plan.DrawPipeline = pipeline;
+    plan.DrawSet = set;
+    return true;
+}
+
+void OceanSprayGPU::RecordSimulation(ViewId view, FramePlan& plan, RenderGraph::RGContext& ctx)
+{
+    if (!IsCurrentPlan(view, plan) || plan.Simulated || !ctx.Cmd || !plan.Simulation.IsValid() ||
+        !plan.ShapeSet.IsValid())
+        return;
+    ctx.Cmd->SetPipeline(plan.Simulation.Pipeline);
+    ctx.Cmd->BindDescriptorSet(0, plan.Simulation.Set, plan.Simulation.Pipeline);
+    ctx.Cmd->BindDescriptorSet(2, plan.ShapeSet, plan.Simulation.Pipeline);
+    ctx.Cmd->Dispatch(plan.Simulation.GroupsX, 1, 1);
+    plan.Simulated = true;
+    auto& h = *plan.Lease;
+    h.Time = plan.Time;
+    h.LastEmissionTime = plan.LastEmissionTime;
+    h.Active = true;
+    h.State = plan.StateBuffer;
+    h.Capacity = plan.Capacity;
+    h.World = plan.World;
+    h.RecordedFrame = plan.Owner;
+    h.Origin = plan.Origin;
+}
+
+void OceanSprayGPU::RecordCull(ViewId view, FramePlan& plan, RenderGraph::RGContext& ctx)
+{
+    if (IsCurrentPlan(view, plan) && plan.Simulated && !plan.Culled &&
+        RecordOceanPreparedDispatch(ctx.Cmd, plan.Cull))
+        plan.Culled = true;
+}
+
+void OceanSprayGPU::RecordDraw(ViewId view, FramePlan& plan, RenderGraph::RGContext& ctx)
+{
+    if (!IsCurrentPlan(view, plan) || !plan.Culled || plan.Drawn || !ctx.Cmd ||
+        !plan.DrawPipeline.IsValid() || !plan.DrawSet.IsValid())
+        return;
+    ctx.Cmd->SetPipeline(plan.DrawPipeline);
+    ctx.Cmd->SetViewport(0, 0, static_cast<float>(plan.Width), static_cast<float>(plan.Height));
+    ctx.Cmd->SetScissor(0, 0, plan.Width, plan.Height);
+    ctx.Cmd->BindDescriptorSet(0, plan.DrawSet, plan.DrawPipeline);
+    ctx.Cmd->DrawIndirect(plan.ArgsBuffer, 1, 16);
+    plan.Drawn = true;
+}
+
+void OceanSprayGPU::ForgetFrame(const RenderGraph::RGFrame& frame)
+{
+    for (auto& [view, history] : m_History)
+    {
+        if (history->PlannedFrame.Frame == &frame)
+        {
+            history->PlannedFrame = {};
+            history->Plan = nullptr;
+        }
+        if (history->RecordedFrame.Frame == &frame)
+        {
+            history->RecordedFrame = {};
+            history->Active = false;
+            history->State = {};
+        }
+    }
+}
+
 } // namespace GameEngine::Ocean

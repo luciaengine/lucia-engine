@@ -801,7 +801,9 @@ void SceneReflectionProbeEnvironmentSource::ScheduleBake(const EnvironmentBakeCo
     const std::string name = "ReflectionProbe." + std::to_string(m_Desc.SourceKey) +
         (downsample ? ".Downsample." : diffuse ? ".Diffuse." : ".Specular.") + std::to_string(mip);
     frame.AddComputePass(name.c_str(), PassPhase::kWorldRender + 1,
-        [=](RenderGraph::RGPassBuilder& p) {
+        [=, this](RenderGraph::RGPassBuilder& p) {
+            p.UsePipeline(downsample ? m_MipDownsamplePipelineId :
+                          diffuse ? m_DiffusePipelineId : m_SpecularPipelineId);
             auto sourceRange = RenderGraph::RGRange::All();
             if (downsample) { sourceRange.BaseMip = mip - 1; sourceRange.MipCount = 1; }
             auto targetRange = RenderGraph::RGRange::All();

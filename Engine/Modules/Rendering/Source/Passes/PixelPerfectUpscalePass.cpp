@@ -161,6 +161,34 @@ void CleanupPixelPerfectUpscalePassForDevice(IDevice* device)
     g_UpscalePerDevice.erase(it);
 }
 
+static bool PreparePixelPerfectUpscaleDescriptors(RenderGraph::RGPrepareContext& context,
+                                      RenderGraph::RGTexture source,
+                                      const DescriptorSetLayoutDesc& layout,
+                                      const ShaderMeta& meta,
+                                      DescriptorSetHandle& descriptors)
+{
+    IDevice* device = context.GetDevice();
+    if (device == nullptr)
+        return false;
+    const TextureHandle texture = context.GetTexture(source);
+    if (!texture.IsValid())
+        return false;
+    const SamplerHandle sampler = GetOrCreateUpscaleSampler(device);
+    if (!sampler.IsValid())
+        return false;
+    DescriptorSetDesc descriptorDesc{};
+    descriptorDesc.layout = layout;
+    descriptorDesc.transient = true;
+    descriptorDesc.debugName = "PixelPerfectUpscale.DS0";
+    descriptors = device->CreateDescriptorSet(descriptorDesc);
+    if (!descriptors.IsValid())
+        return false;
+    NamedDescriptorWriter writer(device, descriptors, meta, 0);
+    writer.AddCombinedImageSampler("uSourceColor", texture, sampler);
+    writer.Flush();
+    return true;
+}
+
 RenderGraph::RGPass AddPixelPerfectUpscalePassRG(RenderGraph::RGFrame& frame,
                                          const PixelPerfectUpscaleParamsRG& params,
                                          FinalizeInputSpace inputSpace,
@@ -316,10 +344,15 @@ RenderGraph::RGPass AddPixelPerfectUpscalePassRG(RenderGraph::RGFrame& frame,
     }
 
     const RenderGraph::RGTexture src = params.Src;
+    auto* descriptors = frame.AllocatePassData<DescriptorSetHandle>();
     return frame.AddPass(
         passName ? passName : "PixelPerfectUpscale", PassPhase::kFinalize,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(pipelineId);
+            p.Prepare([descriptors, src, set0, meta = &shaders.meta](RenderGraph::RGPrepareContext& context) {
+                return PreparePixelPerfectUpscaleDescriptors(context, src, set0, *meta, *descriptors);
+            });
             p.Read(src, RenderGraph::RGTextureRead::Sampled);
             RenderGraph::RGAttachmentOps ops{};
             // The fullscreen shader writes every destination pixel (letterbox
@@ -329,19 +362,13 @@ RenderGraph::RGPass AddPixelPerfectUpscalePassRG(RenderGraph::RGFrame& frame,
             ops.Store = RenderGraph::RGStoreOp::Store;
             p.AttachColor(0, params.Dst, ops);
         },
-        [pipelineId, src, set0, pcw, meta = &shaders.meta, dstWidth, dstHeight](RenderGraph::RGContext& ctx)
+        [pipelineId, descriptors, pcw, dstWidth, dstHeight](RenderGraph::RGContext& ctx)
         {
             auto* cl = ctx.Cmd;
             auto* dev = ctx.GetDevice();
             if (!cl || !dev)
                 return;
-            const auto srcTex = ctx.GetTexture(src);
-            if (!srcTex.IsValid())
-                return;
-            const SamplerHandle sampler = GetOrCreateUpscaleSampler(dev);
-            if (!sampler.IsValid())
-                return;
-            const PipelineHandle pipeline = ctx.GetOrCreatePipelineVariant(pipelineId);
+            const PipelineHandle pipeline = dev->TryGetWarmGraphicsPipeline(pipelineId, ctx.BuildCurrentFormatKey());
             if (!pipeline.IsValid())
                 return;
 
@@ -354,17 +381,7 @@ RenderGraph::RGPass AddPixelPerfectUpscalePassRG(RenderGraph::RGFrame& frame,
                             static_cast<float>(dstHeight));
             cl->SetScissor(0, 0, static_cast<int>(dstWidth), static_cast<int>(dstHeight));
 
-            DescriptorSetDesc dsDesc{};
-            dsDesc.layout = set0;
-            dsDesc.transient = true;
-            dsDesc.debugName = "PixelPerfectUpscale.DS0";
-            const DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
-            if (!ds.IsValid())
-                return;
-            NamedDescriptorWriter wd(dev, ds, *meta, 0);
-            wd.AddCombinedImageSampler("uSourceColor", srcTex, sampler);
-            wd.Flush();
-            cl->BindDescriptorSet(0, ds, pipeline);
+            cl->BindDescriptorSet(0, *descriptors, pipeline);
             cl->Draw(3, 1);
         });
 }

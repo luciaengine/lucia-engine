@@ -3,7 +3,7 @@
 // s3-depth-executor-2026-07). Relocated verbatim from
 // RenderServices::ExecuteDepthOnlyPass; every former RenderServices member
 // access is requalified onto the injected DepthDrawServices bundle. Records the
-// depth/shadow draws for one already-declared pass into the passed-in RGContext.
+// prepares depth/shadow draws before recording and replays their frame-owned packets.
 #include "Engine/Rendering/DepthDrawRecorder.h"
 #include "Engine/Rendering/ParallaxReliefDepth.h"
 
@@ -33,6 +33,7 @@
 #include <span>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "RenderServicesDetail.h"
 
@@ -144,24 +145,58 @@ bool ParallaxDepthOffsetEnabled()
     return kEnabled;
 }
 
-void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
-                         DepthOnlyPassParamsRG params,
-                         const DepthDrawServices& services)
+struct PreparedDepthOnlyPass
 {
-    auto* cmd = c.Cmd;
-    if (!cmd)
-        return;
-
-    if (params.ViewportWidth != 0 && params.ViewportHeight != 0)
+    struct Draw
     {
-        cmd->SetViewport(static_cast<float>(params.ViewportX),
-                         static_cast<float>(params.ViewportY),
-                         static_cast<float>(params.ViewportWidth),
-                         static_cast<float>(params.ViewportHeight));
-        cmd->SetScissor(params.ViewportX, params.ViewportY,
-                        params.ViewportWidth, params.ViewportHeight);
+        DrawCommand Command;
+        PreparedDrawBindings Bindings;
+        Rendering::MeshGPUEntryBindings Geometry;
+        Rendering::VertexAttributeFlags VertexFlags = Rendering::VertexAttributeFlags::None;
+        size_t PushConstantOffset = 0;
+        size_t PushConstantSize = 0;
+        std::optional<uint32_t> ServedVersion;
+        uint32_t MaterialIndex = 0;
+        uint32_t DiagnosticMaterialIndex = 0;
+        bool Entity = false;
+        uint32_t MeshIndex = 0;
+        uint32_t MaxDrawCount = 0;
+        size_t RangeCount = 0;
+    };
+    explicit PreparedDepthOnlyPass(DepthOnlyPassParamsRG params) : Params(std::move(params))
+    {
+        Inputs.PassResources = std::move(Params.Resources);
     }
+    DepthOnlyPassParamsRG Params;
+    PassBindingContext Inputs;
+    std::vector<Draw> Draws;
+    std::vector<std::byte> PushConstants;
+    MaterialSystem* Materials = nullptr;
+    DepthUnderDrawTracker* UnderDraw = nullptr;
+    bool UnderDrew = false;
+    bool Walked = false;
+    size_t EntityBatchCount = 0;
+    bool Consolidated = false;
+};
 
+PreparedDepthOnlyPass* AllocatePreparedDepthOnlyPass(Rendering::RenderGraph::RGFrame& frame,
+                                                    DepthOnlyPassParamsRG params)
+{
+    return frame.AllocatePassData<PreparedDepthOnlyPass>(std::move(params));
+}
+
+bool PrepareDepthOnlyPass(Rendering::RenderGraph::RGPrepareContext& c,
+                          PreparedDepthOnlyPass& data, const DepthDrawServices& services)
+{
+    auto& params = data.Params;
+    data.Draws.clear();
+    data.PushConstants.clear();
+    data.Materials = &services.Materials;
+    data.UnderDraw = services.UnderDraw;
+    data.UnderDrew = false;
+    data.Walked = false;
+    data.EntityBatchCount = 0;
+    data.Consolidated = false;
     // The deforming-motion producer draws one subset of the same keys: the
     // materials whose vertex modifier the composed motion variant can evaluate
     // at two endpoints. Every other pass type draws the view's whole set.
@@ -177,7 +212,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
                             : services.DrawBuilder.GetBatchKeys(params.ViewId);
 
     // Depth-only passes need only the Instanced keyword (GPU-driven vertex
-    // fetch); lighting keywords are fragment-stage only. Narrowed at EXEC,
+    // fetch); lighting keywords are fragment-stage only. Narrowed during preparation,
     // after every declaration ran — the world arm refreshes the per-view map
     // during declaration, so this sees the current pipeline's keywords even
     // on pipeline-(re)load frames (old-arm parity).
@@ -220,7 +255,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
             "depth", "pass-no-draws", params.ViewId,
             entityKeys.size(), depthCommands.size(),
             services.Streams ? services.Streams->GetRangeCount() : 0u);
-        return;
+        return true;
     }
 
     // Per-slice cull stream identity (constant across every key of this pass).
@@ -255,9 +290,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
     auto markUnderDraw = [&]()
     {
         if (trackUnderDraw)
-            services.UnderDraw->Mark(static_cast<uint32_t>(params.ViewId),
-                                     static_cast<uint8_t>(params.PassType),
-                                     params.CascadeIndex);
+            data.UnderDrew = true;
     };
 
     // M2a batch-walk early-out. Recording is O(view batch keys): every shadow
@@ -305,7 +338,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
             // cache from settling on the cleared layer (a steadily-empty slice
             // simply re-renders every frame, exactly like always-render).
             markUnderDraw();
-            return;
+            return true;
         }
     }
 
@@ -321,18 +354,34 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
     // patched at declaration) — no post-BeginPass upserts in this arm.
     auto& binder = services.Materials.Binder();
     [[maybe_unused]] const uint64_t uploadedCompatListBytes =
-        UploadedCompatInstanceListBytes(params.Resources);
-    auto pass = binder.BeginPass(*cmd, params.ViewId, c, passKeywords,
-                                 std::move(params.Resources), passInstanceIndex);
+        UploadedCompatInstanceListBytes(data.Inputs.PassResources);
+    auto& pass = data.Inputs;
+    pass.View = params.ViewId;
+    pass.PassKeywords = passKeywords;
+    pass.PassInstanceIndex = passInstanceIndex;
+    data.Walked = true;
+    data.EntityBatchCount = entityKeys.size();
+    data.Consolidated = !services.MeshPoolGroups.empty();
+    const bool scatterReady = services.Streams && services.Streams->IntrospectScatter().PipelineReady;
+    auto append = [&](const DrawCommand& command, const PreparedDrawBindings& bindings,
+                      const Rendering::MeshGPUEntryBindings& geometry,
+                      Rendering::VertexAttributeFlags vertexFlags,
+                      std::optional<uint32_t> version = {}, uint32_t materialIndex = 0,
+                      uint32_t diagnosticMaterialIndex = 0, bool entity = false,
+                      uint32_t meshIndex = 0, uint32_t maxDrawCount = 0,
+                      size_t rangeCount = 0)
+    {
+        const auto bytes = command.Bindings.PushConstants;
+        const size_t offset = data.PushConstants.size();
+        data.PushConstants.insert(data.PushConstants.end(), bytes.begin(), bytes.end());
+        data.Draws.push_back({command, bindings, geometry, vertexFlags, offset, bytes.size(),
+                              version, materialIndex, diagnosticMaterialIndex, entity, meshIndex, maxDrawCount, rangeCount});
+    };
 
     ComposedPCInstanced pcInst{};
 
-    // GE_DRAW_ATTRIBUTION: indirect-count draws this pass issued (per-group
-    // under consolidation).
-    uint32_t attribDrawsIssued = 0;
-
     // Draw consolidation. Non-empty span = the scatter published grouped
-    // ranges: recordEntityBatch looks up by pool group, and the WALKS below
+    // ranges: prepareEntityBatch looks up by pool group, and the WALKS below
     // dedup draws on the RESOLVED (lookup classKey, group) pair — one indirect
     // draw per range, whichever key reaches it first. Empty = per-bucket path,
     // no dedup (keys are already unique per range there).
@@ -341,32 +390,9 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
     if (!meshGroups.empty())
         drawnStreamRanges.reserve(entityKeys.size());
 
-    Rendering::BufferHandle boundVbSlot[6]{};
-    Rendering::BufferHandle boundIb{};
-    Rendering::IndexType    boundIbType = Rendering::IndexType::Uint16;
-    bool                    boundIbInit = false;
-    auto setVbSticky = [&](Rendering::BufferHandle want, uint32_t slot)
-    {
-        if (want.IsValid() && (slot >= 6 || boundVbSlot[slot] != want))
-        {
-            cmd->SetVertexBuffer(want, slot);
-            if (slot < 6) boundVbSlot[slot] = want;
-        }
-    };
-    auto setIbSticky = [&](Rendering::BufferHandle want, Rendering::IndexType type)
-    {
-        if (want.IsValid() && (!boundIbInit || boundIb != want || boundIbType != type))
-        {
-            cmd->SetIndexBuffer(want, type);
-            boundIb     = want;
-            boundIbType = type;
-            boundIbInit = true;
-        }
-    };
-
     // `lookup` arrives resolved by the walk, so the walk-level range dedup and
     // the range lookup here key on the SAME axes by construction.
-    auto recordEntityBatch = [&](const WorldDrawBuilder::BatchKey& key,
+    auto prepareEntityBatch = [&](const WorldDrawBuilder::BatchKey& key,
                                  const DrawStreamLookupKey& lookup)
     {
         const Material* material = key.material;
@@ -375,7 +401,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
             LogMeshDrawSkipDiagnostic(
                 "depth", "material-null", params.ViewId,
                 key.materialIndex, key.meshIndex,
-                services.Streams && services.Streams->GetOrCreateScatterPipeline().IsValid(),
+                scatterReady,
                 false, 0ull, kInstGpuInstancesAddr,
                 services.Device ? services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 services.Streams ? services.Streams->GetRangeCount() : 0u);
@@ -388,7 +414,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
             LogMeshDrawSkipDiagnostic(
                 "depth", "mesh-entry-missing", params.ViewId,
                 key.materialIndex, key.meshIndex,
-                services.Streams && services.Streams->GetOrCreateScatterPipeline().IsValid(),
+                scatterReady,
                 false, 0ull, kInstGpuInstancesAddr,
                 services.Device ? services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 services.Streams ? services.Streams->GetRangeCount() : 0u);
@@ -402,7 +428,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
             LogMeshDrawSkipDiagnostic(
                 "depth", !drawable ? kMeshNotDrawableReason : "index-count-zero",
                 params.ViewId, key.materialIndex, key.meshIndex,
-                services.Streams && services.Streams->GetOrCreateScatterPipeline().IsValid(),
+                scatterReady,
                 false, 0ull, kInstGpuInstancesAddr,
                 services.Device ? services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 services.Streams ? services.Streams->GetRangeCount() : 0u);
@@ -420,7 +446,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
                 filter == DepthPassMaterialFilter::AlphaBlend ? "alpha-blend-filter"
                                                               : "transmission-depth-filter",
                 params.ViewId, key.materialIndex, key.meshIndex,
-                services.Streams && services.Streams->GetOrCreateScatterPipeline().IsValid(),
+                scatterReady,
                 false, 0ull, kInstGpuInstancesAddr,
                 services.Device ? services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 services.Streams ? services.Streams->GetRangeCount() : 0u);
@@ -466,7 +492,6 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
             vertexModified,
             DepthPassReadsVertexColor(params.PassType, material->GetAlphaMode()),
             head.Keywords);
-        const OptionalStreamBinds optionalStreams = CollectOptionalStreamBinds(drawVertexFlags, entryBindings);
         const Rendering::CullModeFlags depthCullMode = material->IsDoubleSided()
             ? Rendering::CullModeFlagBits::None
             : services.CullMode;
@@ -496,6 +521,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
             // brings the material's own sets); otherwise the vertex-only
             // pipeline's own set count.
             uint32_t setCount = 1u;
+            std::optional<uint32_t> ServedVersion;
         };
         auto resolveDepthPipeline = [&](Rendering::FrontFace winding,
                                         bool crossfading) -> ResolvedDepthPipeline
@@ -510,18 +536,23 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
                     params.DepthClampEnable, winding);
                 if (sharedId.IsValid())
                 {
-                    rd.pipeline   = c.GetOrCreatePipelineVariant(sharedId);
+                    rd.pipeline   = c.PreparePipeline(sharedId);
                     rd.meta       = services.Materials.Variants().GetSharedDepthShaderMeta(isSkinnedDepth);
                     rd.setLayouts = services.Materials.Variants().GetSharedDepthSetLayouts(isSkinnedDepth);
                     return rd;
                 }
             }
-            auto [p, e] = services.Materials.Variants().GetOrCompileDepthInstancedVariant(
+            auto [p, e] = services.Materials.Variants().PrepareDepthInstancedVariant(
                 *material, drawVertexFlags, entry->topology, choice.Keywords,
                 params.RasterizationSamples, params.DepthBiasEnable, params.DepthClampEnable,
                 winding, c);
             rd.pipeline = p;
-            if (e) { rd.meta = e->VariantMeta.get(); rd.setLayouts = e->SetLayouts; }
+            if (e)
+            {
+                rd.meta = e->VariantMeta.get();
+                rd.setLayouts = e->SetLayouts;
+                rd.ServedVersion = e->MaterialVersion;
+            }
             // Depth pipelines that compose a fragment stage reflect the
             // material's own sets; the pure-depth ones declare the sets their
             // vertex stage reads (set 0 alone for every mesh material), and the
@@ -566,15 +597,6 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
                 return;
             }
 
-            setVbSticky(entryBindings.coreVB,    0);
-            for (const OptionalStreamBind& stream : optionalStreams.View())
-                setVbSticky(stream.Buffer, stream.Slot);
-            setVbSticky(entryBindings.jointsVB,  4);
-            setVbSticky(entryBindings.weightsVB, 5);
-            setVbSticky(entryBindings.joints1VB,  6);
-            setVbSticky(entryBindings.weights1VB, 7);
-            setIbSticky(entryBindings.indexBuffer, static_cast<IndexType>(entry->indexType));
-
             // The batch's offset into the view's CompatInstanceList rides the
             // push constant instance_io.glsl's compat branch adds
             // gl_InstanceIndex to; firstInstance stays 0 because it does not
@@ -585,10 +607,9 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
                 reinterpret_cast<const std::byte*>(&compatListFirst),
                 sizeof(compatListFirst));
 
-            const auto resolvedPipe = binder.BindMaterialForDraw(
-                pass, *material, drawVertexFlags, compatBindings, rd.pipeline,
-                rd.meta, rd.setCount, rd.setLayouts);
-            if (!resolvedPipe.IsValid())
+            const auto resolvedPipe = binder.PrepareMaterialForDraw(
+                pass, *material, rd.pipeline, rd.meta, compatBindings, rd.setCount, rd.setLayouts);
+            if (!resolvedPipe.Pipeline.IsValid())
             {
                 LogMeshDrawSkipDiagnostic(
                     "depth", "material-bind-invalid", params.ViewId,
@@ -598,16 +619,19 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
                 return;
             }
 
-            cmd->DrawIndexed(entry->indexCount, instances.Count, entry->firstIndex,
-                             static_cast<int32_t>(entry->vertexOffset),
-                             /*firstInstance=*/0u);
-            attribDrawsIssued += 1u;
-            PushMeshDrawIssuedDiagnostic("depth", params.ViewId, key.materialIndex,
-                                         key.meshIndex, 1u, 0u);
+            DrawCommand command{};
+            command.Bindings = compatBindings;
+            command.IndexCount = entry->indexCount;
+            command.InstanceCount = instances.Count;
+            command.FirstIndex = entry->firstIndex;
+            command.VertexOffset = static_cast<int32_t>(entry->vertexOffset);
+            entryBindings.indexType = entry->indexType;
+            append(command, resolvedPipe, entryBindings, drawVertexFlags, rd.ServedVersion,
+                   material->GetGpuSceneMaterialIndex(), key.materialIndex, true, key.meshIndex, 1u, 0u);
             return;
         }
 
-        if (!services.Streams || !services.Streams->GetOrCreateScatterPipeline().IsValid())
+        if (!scatterReady)
         {
             LogMeshDrawSkipDiagnostic(
                 "depth", "drawstream-pipeline-invalid", params.ViewId,
@@ -655,15 +679,6 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
         Engine::Renderer::DrawBindings drawBindings{};
         drawBindings.PushConstants = pcBytes;
 
-        setVbSticky(entryBindings.coreVB,    0);
-        for (const OptionalStreamBind& stream : optionalStreams.View())
-            setVbSticky(stream.Buffer, stream.Slot);
-        setVbSticky(entryBindings.jointsVB,  4);
-        setVbSticky(entryBindings.weightsVB, 5);
-        setVbSticky(entryBindings.joints1VB,  6);
-        setVbSticky(entryBindings.weights1VB, 7);
-        setIbSticky(entryBindings.indexBuffer, static_cast<IndexType>(entry->indexType));
-
         // Draw one parity segment with the depth pipeline compiled for its
         // winding. The mesh registry's index buffer + push constants are shared;
         // only the pipeline (front face) and the indirect offsets differ.
@@ -692,10 +707,9 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
                 markUnderDraw(); // async depth-variant publish gate — heals on publish
                 return;
             }
-            const auto resolvedPipe = binder.BindMaterialForDraw(
-                pass, *material, drawVertexFlags, drawBindings, rd.pipeline,
-                rd.meta, rd.setCount, rd.setLayouts);
-            if (!resolvedPipe.IsValid())
+            const auto resolvedPipe = binder.PrepareMaterialForDraw(
+                pass, *material, rd.pipeline, rd.meta, drawBindings, rd.setCount, rd.setLayouts);
+            if (!resolvedPipe.Pipeline.IsValid())
             {
                 LogMeshDrawSkipDiagnostic(
                     "depth", "material-bind-invalid", params.ViewId,
@@ -706,18 +720,20 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
                 markUnderDraw(); // bind-time publish gate — heals on publish
                 return;
             }
-            PushMeshDrawIssuedDiagnostic(
-                "depth", params.ViewId, key.materialIndex, key.meshIndex,
-                maxDrawCount,
-                services.Streams ? services.Streams->GetRangeCount() : 0u);
-            cmd->DrawIndexedIndirectCount(
-                drawRange.recordBuffer,
-                drawRange.countBuffer,
-                maxDrawCount, // exact per-batch bound (snapshot capacity)
-                /*stride=*/5u * sizeof(uint32_t),
-                cmdOffset,
-                countOffset);
-            ++attribDrawsIssued;
+            DrawCommand command{};
+            command.Bindings = drawBindings;
+            command.UseIndirect = true;
+            command.IndirectCommandBuffer = drawRange.recordBuffer;
+            command.IndirectCountBuffer = drawRange.countBuffer;
+            command.IndirectMaxDrawCount = maxDrawCount;
+            command.IndirectStride = 5u * sizeof(uint32_t);
+            command.IndirectCommandOffset = cmdOffset;
+            command.IndirectCountOffset = countOffset;
+            entryBindings.indexType = entry->indexType;
+            append(command, resolvedPipe, entryBindings, drawVertexFlags, rd.ServedVersion,
+                   material->GetGpuSceneMaterialIndex(), key.materialIndex, true, key.meshIndex, maxDrawCount,
+                   services.Streams->GetRangeCount());
+
         };
 
         // Segments(): heads AND crossfade tails — the same set the colour pass
@@ -738,56 +754,27 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
         }
     };
 
-    auto recordContributorDraw = [&](const DrawCommand& dc)
+    auto prepareContributorDraw = [&](const DrawCommand& dc)
     {
-        Rendering::PipelineHandle resolvedPipe{};
+        Rendering::PipelineHandle pipeline{};
         if (dc.InternedPipeline.IsValid())
-            resolvedPipe = c.GetOrCreatePipelineVariant(dc.InternedPipeline);
-        if (!resolvedPipe.IsValid())
+            pipeline = c.PreparePipeline(dc.InternedPipeline);
+        if (!pipeline.IsValid())
             return;
-
-        setVbSticky(dc.Geometry.AltGeom.VB, 0);
-        setIbSticky(dc.Geometry.AltGeom.IB, dc.Geometry.AltGeom.IndexType);
-
-        Rendering::PipelineHandle bound{};
+        PreparedDrawBindings bindings;
         if (dc.Material)
-        {
-            bound = binder.BindMaterialForDraw(
-                pass, *dc.Material, dc.VertexFlags, dc.Bindings,
-                resolvedPipe, dc.PipelineMeta, dc.PipelineSetCount, /*setLayouts=*/{});
-        }
+            bindings = binder.PrepareMaterialForDraw(pass, *dc.Material, pipeline, dc.PipelineMeta,
+                                                     dc.Bindings, dc.PipelineSetCount);
         else if (dc.PipelineMeta)
-        {
-            bound = binder.BindPipelineForDraw(
-                pass, resolvedPipe, *dc.PipelineMeta, dc.Bindings,
-                dc.PipelineSetCount, /*setLayouts=*/{});
-        }
-        if (!bound.IsValid())
+            bindings = binder.PreparePipelineForDraw(pass, pipeline, *dc.PipelineMeta,
+                                                     dc.Bindings, dc.PipelineSetCount);
+        if (!bindings.Pipeline.IsValid())
             return;
-
-        if (dc.UseIndirect && dc.IndirectCommandBuffer.IsValid())
-        {
-            cmd->DrawIndexedIndirectCount(
-                dc.IndirectCommandBuffer,
-                dc.IndirectCountBuffer,
-                dc.IndirectMaxDrawCount,
-                dc.IndirectStride,
-                dc.IndirectCommandOffset,
-                dc.IndirectCountOffset);
-        }
-        else if (dc.SubDraws.empty())
-        {
-            cmd->DrawIndexed(dc.IndexCount, dc.InstanceCount,
-                              dc.FirstIndex, dc.VertexOffset, dc.FirstInstance);
-        }
-        else
-        {
-            for (const auto& sub : dc.SubDraws)
-            {
-                cmd->DrawIndexed(sub.IndexCount, sub.InstanceCount,
-                                  sub.FirstIndex, sub.VertexOffset, sub.FirstInstance);
-            }
-        }
+        Rendering::MeshGPUEntryBindings geometry{};
+        geometry.coreVB = dc.Geometry.AltGeom.VB;
+        geometry.indexBuffer = dc.Geometry.AltGeom.IB;
+        geometry.indexType = static_cast<uint32_t>(dc.Geometry.AltGeom.IndexType);
+        append(dc, bindings, geometry, Rendering::VertexAttributeFlags::None);
     };
 
     // Opaque shadow passes collapse shared-depth-eligible casters: every
@@ -833,7 +820,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
     // one (lookup classKey, group) range — the class sentinels collapse
     // materials, the group axis collapses meshes. First key to resolve a range
     // is its representative; consume-on-attempt (a representative skipped by a
-    // guard inside recordEntityBatch drops the range for one frame — the same
+    // guard inside prepareEntityBatch drops the range for one frame — the same
     // self-healing semantics as an unpopulated range, and the same hoisted
     // position the color pass ships). Hoisting the dedup ABOVE the content
     // guards is exact for the semantic filters (alpha mode / transmission ride
@@ -868,7 +855,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
             }
             if (!claimStreamRange(lookup))
                 continue;
-            recordEntityBatch(key, lookup);
+            prepareEntityBatch(key, lookup);
         }
     }
     else if (runEntityDraws)
@@ -887,7 +874,7 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
             {
                 if (!claimStreamRange(lookup))
                     continue;
-                recordEntityBatch(key, lookup);
+                prepareEntityBatch(key, lookup);
                 continue;
             }
             const uint64_t dsBit =
@@ -899,14 +886,104 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
             // (sentinel, group) across meshes.
             if (!claimStreamRange(lookup))
                 continue;
-            recordEntityBatch(key, lookup);
+            prepareEntityBatch(key, lookup);
         }
     }
     for (const auto& dc : depthCommands)
-        recordContributorDraw(dc);
+        prepareContributorDraw(dc);
     for (const auto& dc : fallbackHeads)
-        recordContributorDraw(dc);
+        prepareContributorDraw(dc);
 
+    for (auto& draw : data.Draws)
+        draw.Command.Bindings.PushConstants = draw.PushConstantSize == 0
+            ? std::span<const std::byte>{}
+            : std::span<const std::byte>(data.PushConstants.data() + draw.PushConstantOffset,
+                                          draw.PushConstantSize);
+    return true;
+}
+
+void RecordPreparedDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
+                                  const PreparedDepthOnlyPass& data)
+{
+    auto* cmd = c.Cmd;
+    if (!cmd)
+        return;
+    const auto& params = data.Params;
+    if (params.ViewportWidth != 0 && params.ViewportHeight != 0)
+    {
+        cmd->SetViewport(static_cast<float>(params.ViewportX),
+                         static_cast<float>(params.ViewportY),
+                         static_cast<float>(params.ViewportWidth),
+                         static_cast<float>(params.ViewportHeight));
+        cmd->SetScissor(params.ViewportX, params.ViewportY,
+                        params.ViewportWidth, params.ViewportHeight);
+    }
+
+    if (data.UnderDrew && data.UnderDraw)
+        data.UnderDraw->Mark(static_cast<uint32_t>(params.ViewId),
+                             static_cast<uint8_t>(params.PassType), params.CascadeIndex);
+    if (!data.Walked)
+        return;
+    auto& binder = data.Materials->Binder();
+    PassBindingContext pass{};
+    pass.Cmd = cmd;
+    uint32_t attribDrawsIssued = 0;
+    Rendering::BufferHandle boundVbSlot[14]{};
+    Rendering::BufferHandle boundIb{};
+    Rendering::IndexType    boundIbType = Rendering::IndexType::Uint16;
+    bool                    boundIbInit = false;
+    auto setVbSticky = [&](Rendering::BufferHandle want, uint32_t slot)
+    {
+        if (want.IsValid() && (slot >= 14 || boundVbSlot[slot] != want))
+        {
+            cmd->SetVertexBuffer(want, slot);
+            if (slot < 14) boundVbSlot[slot] = want;
+        }
+    };
+    auto setIbSticky = [&](Rendering::BufferHandle want, Rendering::IndexType type)
+    {
+        if (want.IsValid() && (!boundIbInit || boundIb != want || boundIbType != type))
+        {
+            cmd->SetIndexBuffer(want, type);
+            boundIb     = want;
+            boundIbType = type;
+            boundIbInit = true;
+        }
+    };
+
+    for (const auto& draw : data.Draws)
+    {
+        const auto& geometry = draw.Geometry;
+        setVbSticky(geometry.coreVB, 0);
+        const auto optionalStreams = CollectOptionalStreamBinds(draw.VertexFlags, geometry);
+        for (const auto& stream : optionalStreams.View())
+            setVbSticky(stream.Buffer, stream.Slot);
+        setVbSticky(geometry.jointsVB, 4);
+        setVbSticky(geometry.weightsVB, 5);
+        setVbSticky(geometry.joints1VB, 6);
+        setVbSticky(geometry.weights1VB, 7);
+        setIbSticky(geometry.indexBuffer, static_cast<Rendering::IndexType>(geometry.indexType));
+        binder.BindPreparedForDraw(pass, draw.Bindings, draw.Command.Bindings.PushConstants);
+        const auto& dc = draw.Command;
+        if (dc.UseIndirect && dc.IndirectCommandBuffer.IsValid())
+            cmd->DrawIndexedIndirectCount(dc.IndirectCommandBuffer, dc.IndirectCountBuffer,
+                                           dc.IndirectMaxDrawCount, dc.IndirectStride,
+                                           dc.IndirectCommandOffset, dc.IndirectCountOffset);
+        else if (dc.SubDraws.empty())
+            cmd->DrawIndexed(dc.IndexCount, dc.InstanceCount, dc.FirstIndex, dc.VertexOffset, dc.FirstInstance);
+        else
+            for (const auto& sub : dc.SubDraws)
+                cmd->DrawIndexed(sub.IndexCount, sub.InstanceCount, sub.FirstIndex, sub.VertexOffset, sub.FirstInstance);
+        if (draw.ServedVersion)
+            data.Materials->Variants().RecordServedGeneration(draw.MaterialIndex, ServedPassClass::Depth,
+                                                             *draw.ServedVersion);
+        if (draw.Entity)
+        {
+            ++attribDrawsIssued;
+            PushMeshDrawIssuedDiagnostic("depth", params.ViewId, draw.DiagnosticMaterialIndex, draw.MeshIndex,
+                                         draw.MaxDrawCount, draw.RangeCount);
+        }
+    }
     if (DrawAttributionEnabled())
     {
         const char* attribTag = "depth-prepass";
@@ -920,8 +997,8 @@ void RecordDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
         case DepthPassType::DeformationMotion:    attribTag = "deformation-motion"; break;
         default: break;
         }
-        LogDrawAttribution(attribTag, params.ViewId, entityKeys.size(), attribDrawsIssued,
-                           pass.PipelineBinds, pass.DescriptorBinds, !meshGroups.empty(),
+        LogDrawAttribution(attribTag, params.ViewId, data.EntityBatchCount, attribDrawsIssued,
+                           pass.PipelineBinds, pass.DescriptorBinds, data.Consolidated,
                            0u /* group census logged by the color pass */);
     }
 

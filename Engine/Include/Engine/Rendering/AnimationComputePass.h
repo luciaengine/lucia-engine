@@ -39,12 +39,13 @@ public:
                  GameEngine::Rendering::RenderGraph::RGBuffer runtimeVisible);
 
 private:
-    // Dispatch recording: binds the data store + atlas + optional
-    // runtime-visibility gate and dispatches one group per instance.
-    void RecordDispatch(GameEngine::Rendering::IDevice* dev,
-                        GameEngine::Rendering::CommandList* cl,
-                        GameEngine::Rendering::BufferHandle atlasBuf,
-                        GameEngine::Rendering::BufferHandle runtimeVisBuf);
+    struct PreparedDispatch;
+    bool PrepareDispatch(GameEngine::Rendering::RenderGraph::RGPrepareContext& context,
+                         GameEngine::Rendering::BufferHandle atlasBuf,
+                         GameEngine::Rendering::BufferHandle runtimeVisBuf,
+                         PreparedDispatch& dispatch);
+    void RecordDispatch(GameEngine::Rendering::CommandList* commandList,
+                        const PreparedDispatch& dispatch);
     std::vector<uint8_t> m_ComputeShader;
     GPUAnimationDataStore* m_DataStore = nullptr;
     GameEngine::Rendering::BufferHandle m_AtlasBuffer;

@@ -164,15 +164,26 @@ void PipelineVariantCache::RequestConcreteWarm(const Material& material,
 {
     if (!id.IsValid())
         return;
-    const uint64_t warmKey = Rendering::PipelineCache::CombineGraphicsKey(id, fk);
     // Outside m_ConcreteWarmMutex: with no job system the device builds inline.
     const Rendering::PipelineBuildState state = m_Materials->GetDevice()->RequestGraphicsPipeline(id, fk);
-    std::lock_guard lock(m_ConcreteWarmMutex);
-    if (state != Rendering::PipelineBuildState::Pending)
+    if (state == Rendering::PipelineBuildState::Pending)
     {
-        m_ConcreteWarmWaits.erase(warmKey);
+        QueueConcreteWarm(material, id, fk);
         return;
     }
+    const uint64_t warmKey = Rendering::PipelineCache::CombineGraphicsKey(id, fk);
+    std::lock_guard lock(m_ConcreteWarmMutex);
+    m_ConcreteWarmWaits.erase(warmKey);
+}
+
+void PipelineVariantCache::QueueConcreteWarm(const Material& material,
+                                             Rendering::GraphicsPipelineId id,
+                                             const Rendering::PipelineFormatKey& fk)
+{
+    if (!id.IsValid())
+        return;
+    const uint64_t warmKey = Rendering::PipelineCache::CombineGraphicsKey(id, fk);
+    std::lock_guard lock(m_ConcreteWarmMutex);
     ConcreteWarmWait& wait = m_ConcreteWarmWaits[warmKey];
     wait.Id = id;
     wait.FormatKey = fk;
@@ -232,68 +243,56 @@ void PipelineVariantCache::WarnColdServe(const Material& material,
         material.GetName(), pipelineId.Value, FormatPipelineKey(fk), n);
 }
 
-template <class Ctx>
 std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
 PipelineVariantCache::ResolveWarmPipeline(const Material& material,
                                           const InstancedVariantEntry& entry,
-                                          uint32_t materialIndex, ServedPassClass passClass,
-                                          const Ctx& ctx)
+                                          const Rendering::PipelineFormatKey& fk)
 {
-    const Rendering::PipelineFormatKey fk = ctx.BuildCurrentFormatKey();
     Rendering::IDevice* device = m_Materials->GetDevice();
     if (auto h = device->TryGetWarmGraphicsPipeline(entry.Current.PipelineId, fk); h.IsValid())
-    {
-        m_ServedGenerations.Record(materialIndex, passClass, entry.Current.MaterialVersion);
         return {h, &entry.Current};
-    }
 
-    // Cold for this pass. Building here would run the backend's shader
-    // compilation on the record thread — hundreds of ms, the whole frame — so
-    // hand it to a worker and serve the entry's previous unit meanwhile:
+    // Cold for this pass. Even RequestGraphicsPipeline can compile inline on
+    // Metal or without a dispatcher. Queue for the serial frame-begin drain and
+    // serve the entry's previous unit meanwhile:
     // pipeline, meta and set layouts as one snapshot, so the descriptor set the
     // binder builds matches the pipeline layout it binds.
-    RequestConcreteWarm(material, entry.Current.PipelineId, fk);
+    QueueConcreteWarm(material, entry.Current.PipelineId, fk);
     if (entry.Previous.PipelineId.IsValid())
     {
         auto h = device->TryGetWarmGraphicsPipeline(entry.Previous.PipelineId, fk);
-        if (h.IsValid())
-            m_ServedGenerations.Record(materialIndex, passClass, entry.Previous.MaterialVersion);
         return {h, &entry.Previous};
     }
     return {{}, nullptr};
 }
 
-template <class Ctx>
 std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
-PipelineVariantCache::GetOrCompileColorVariantImpl(
+PipelineVariantCache::ResolveColorVariant(
     const Material& material,
     Rendering::VertexAttributeFlags vertexFlags,
     Rendering::PrimitiveTopology topology,
     Rendering::MaterialKeyword passKeywords,
     Rendering::FrontFace frontFace,
-    const Ctx& ctx,
-    VariantCacheMap& cache)
+    const Rendering::PipelineFormatKey& formatKey)
 {
+    auto& cache = m_InstancedVariantCache;
     InstancedVariantKey key{
         &material,
         vertexFlags,
-        ctx.GetCurrentSampleCount(),
+        formatKey.RasterizationSamples,
         Rendering::NarrowColorPassKeywords(material.GetVariantKey().materialKeywords, passKeywords),
         topology,
         material.IsDoubleSided() ? Rendering::CullModeFlagBits::None : m_Materials->DebugCullMode(),
         frontFace};
 
     const uint32_t materialVersion = material.GetVersion();
-    const uint32_t materialIndex = material.GetGpuSceneMaterialIndex();
     const uint64_t epoch = m_CacheEpoch.load(std::memory_order_acquire);
 
     // Hit path: a per-thread L1 (no lock) fronts the map, then a shared_lock
     // find. A2.4-D6: up to N record workers share the map concurrently, so the
     // find is a pure `find` (operator[] would mutate on read) under a
     // shared_lock, and the L1 lets steady-state hits skip the lock entirely.
-    // The concrete PipelineHandle still resolves per-draw via ctx (keyed on the
-    // active pass format) so one variant used through two passes gets the right
-    // handle each time.
+    // Resolve the concrete handle with this pass's attachment formats.
     thread_local std::array<InstancedL1Slot, kVariantL1Slots> l1{};
     auto& slot = l1[VariantL1Index(InstancedVariantKeyHash{}(key))];
     if (slot.Epoch == epoch && slot.Entry != nullptr
@@ -302,9 +301,9 @@ PipelineVariantCache::GetOrCompileColorVariantImpl(
         && slot.Entry->Current.MaterialVersion == materialVersion)
     {
         const auto serve =
-            ResolveWarmPipeline(material, *slot.Entry, materialIndex, ServedPassClass::Color, ctx);
+            ResolveWarmPipeline(material, *slot.Entry, formatKey);
         if (!serve.first.IsValid())
-            WarnColdServe(material, slot.Entry->Current.PipelineId, ctx.BuildCurrentFormatKey());
+            WarnColdServe(material, slot.Entry->Current.PipelineId, formatKey);
         return serve;
     }
     // Stale-serve: an entry whose Current generation has moved on (a shader edit
@@ -324,10 +323,10 @@ PipelineVariantCache::GetOrCompileColorVariantImpl(
             {
                 slot = {key, &it->second, epoch};
                 const auto serve =
-                    ResolveWarmPipeline(material, it->second, materialIndex, ServedPassClass::Color, ctx);
+                    ResolveWarmPipeline(material, it->second, formatKey);
                 if (!serve.first.IsValid())
                     WarnColdServe(material, it->second.Current.PipelineId,
-                                  ctx.BuildCurrentFormatKey());
+                                  formatKey);
                 return serve;
             }
             staleEntry = &it->second;
@@ -348,14 +347,14 @@ PipelineVariantCache::GetOrCompileColorVariantImpl(
             Logger::Log::Warning(
                 "GetOrCompileColorVariant '{}': material build context unavailable ({})",
                 material.GetName(),
-                FormatPipelineKey(ctx.BuildCurrentFormatKey()));
+                FormatPipelineKey(formatKey));
         return staleEntry != nullptr
-            ? ResolveWarmPipeline(material, *staleEntry, materialIndex, ServedPassClass::Color, ctx)
+            ? ResolveWarmPipeline(material, *staleEntry, formatKey)
             : std::pair<PipelineHandle, const VariantServeUnit*>{{}, nullptr};
     }
     EnqueueVariantCompile(key, /*isDepth=*/false);
     if (staleEntry != nullptr)
-        return ResolveWarmPipeline(material, *staleEntry, materialIndex, ServedPassClass::Color, ctx);
+        return ResolveWarmPipeline(material, *staleEntry, formatKey);
     return {{}, nullptr};
 }
 
@@ -368,13 +367,27 @@ PipelineVariantCache::GetOrCompileColorVariant(
     Rendering::FrontFace frontFace,
     const Rendering::RenderGraph::RGContext& ctx)
 {
-    return GetOrCompileColorVariantImpl(material, vertexFlags, topology, passKeywords, frontFace,
-                                        ctx, m_InstancedVariantCache);
+    const auto served = ResolveColorVariant(material, vertexFlags, topology, passKeywords, frontFace,
+                                            ctx.BuildCurrentFormatKey());
+    if (served.first.IsValid())
+        RecordServedGeneration(material.GetGpuSceneMaterialIndex(), ServedPassClass::Color, served.second->MaterialVersion);
+    return served;
 }
 
-template <class Ctx>
 std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
-PipelineVariantCache::GetOrCompileDepthInstancedVariantImpl(
+PipelineVariantCache::PrepareColorVariant(
+    const Material& material,
+    Rendering::VertexAttributeFlags vertexFlags,
+    Rendering::PrimitiveTopology topology,
+    Rendering::MaterialKeyword passKeywords,
+    Rendering::FrontFace frontFace,
+    const Rendering::RenderGraph::RGPrepareContext& ctx)
+{
+    return ResolveColorVariant(material, vertexFlags, topology, passKeywords, frontFace, ctx.BuildCurrentFormatKey());
+}
+
+std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
+PipelineVariantCache::ResolveDepthVariant(
     const Material& material,
     Rendering::VertexAttributeFlags vertexFlags,
     Rendering::PrimitiveTopology topology,
@@ -383,7 +396,7 @@ PipelineVariantCache::GetOrCompileDepthInstancedVariantImpl(
     bool depthBiasEnable,
     bool depthClampEnable,
     Rendering::FrontFace frontFace,
-    const Ctx& ctx)
+    const Rendering::PipelineFormatKey& formatKey)
 {
     auto& cache = m_DepthInstancedVariantCache;
     const Rendering::CullModeFlags depthCullMode = material.IsDoubleSided()
@@ -394,7 +407,6 @@ PipelineVariantCache::GetOrCompileDepthInstancedVariantImpl(
                             frontFace,     depthBiasEnable,  depthClampEnable};
 
     const uint32_t materialVersion = material.GetVersion();
-    const uint32_t materialIndex = material.GetGpuSceneMaterialIndex();
     const uint64_t epoch = m_CacheEpoch.load(std::memory_order_acquire);
 
     // A2.4-D6: L1-first, then shared_lock find (see the color path).
@@ -405,7 +417,7 @@ PipelineVariantCache::GetOrCompileDepthInstancedVariantImpl(
         && slot.Entry->Current.PipelineId.IsValid()
         && slot.Entry->Current.MaterialVersion == materialVersion)
     {
-        return ResolveWarmPipeline(material, *slot.Entry, materialIndex, ServedPassClass::Depth, ctx);
+        return ResolveWarmPipeline(material, *slot.Entry, formatKey);
     }
     // Stale-serve, exactly as the color path: keep the previous depth pipeline
     // on screen while the edited material's replacement builds.
@@ -418,7 +430,7 @@ PipelineVariantCache::GetOrCompileDepthInstancedVariantImpl(
             if (it->second.Current.MaterialVersion == materialVersion)
             {
                 slot = {key, &it->second, epoch};
-                return ResolveWarmPipeline(material, it->second, materialIndex, ServedPassClass::Depth, ctx);
+                return ResolveWarmPipeline(material, it->second, formatKey);
             }
             staleEntry = &it->second;
         }
@@ -431,11 +443,11 @@ PipelineVariantCache::GetOrCompileDepthInstancedVariantImpl(
     // MaterialSystem::BeginFrame (A2.4-P0-R); see the color path.
     if (!m_Materials->IsMaterialBuildContextReady())
         return staleEntry != nullptr
-            ? ResolveWarmPipeline(material, *staleEntry, materialIndex, ServedPassClass::Depth, ctx)
+            ? ResolveWarmPipeline(material, *staleEntry, formatKey)
             : std::pair<PipelineHandle, const VariantServeUnit*>{{}, nullptr};
     EnqueueVariantCompile(key, /*isDepth=*/true);
     if (staleEntry != nullptr)
-        return ResolveWarmPipeline(material, *staleEntry, materialIndex, ServedPassClass::Depth, ctx);
+        return ResolveWarmPipeline(material, *staleEntry, formatKey);
     return {{}, nullptr};
 }
 
@@ -451,9 +463,27 @@ PipelineVariantCache::GetOrCompileDepthInstancedVariant(
     Rendering::FrontFace frontFace,
     const Rendering::RenderGraph::RGContext& ctx)
 {
-    return GetOrCompileDepthInstancedVariantImpl(material, vertexFlags, topology, passKeywords,
-                                                 samples, depthBiasEnable, depthClampEnable,
-                                                 frontFace, ctx);
+    const auto served = ResolveDepthVariant(material, vertexFlags, topology, passKeywords, samples, depthBiasEnable,
+                                            depthClampEnable, frontFace, ctx.BuildCurrentFormatKey());
+    if (served.first.IsValid())
+        RecordServedGeneration(material.GetGpuSceneMaterialIndex(), ServedPassClass::Depth, served.second->MaterialVersion);
+    return served;
+}
+
+std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
+PipelineVariantCache::PrepareDepthInstancedVariant(
+    const Material& material,
+    Rendering::VertexAttributeFlags vertexFlags,
+    Rendering::PrimitiveTopology topology,
+    Rendering::MaterialKeyword passKeywords,
+    uint32_t samples,
+    bool depthBiasEnable,
+    bool depthClampEnable,
+    Rendering::FrontFace frontFace,
+    const Rendering::RenderGraph::RGPrepareContext& ctx)
+{
+    return ResolveDepthVariant(material, vertexFlags, topology, passKeywords, samples, depthBiasEnable,
+                               depthClampEnable, frontFace, ctx.BuildCurrentFormatKey());
 }
 
 const PipelineVariantCache::VariantServeUnit* PipelineVariantCache::FindOrRequestPrepassVariant(

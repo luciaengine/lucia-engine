@@ -2,6 +2,8 @@
 
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/CommandList.h"
+#include "Rendering/Core/RenderGraph/RGGraph.h"
+#include "Rendering/Core/RenderGraph/RGStateMap.h"
 #include "Vulkan/VulkanMappings.h"
 
 using namespace GameEngine::Rendering;
@@ -128,4 +130,71 @@ TEST(VulkanResourceStateMapping, UndefinedIsADiscard)
               static_cast<VkAccessFlags>(0));
     EXPECT_EQ(VulkanMappings::TranslateResourceStateToLayout(ResourceState::Undefined),
               VK_IMAGE_LAYOUT_UNDEFINED);
+}
+
+namespace
+{
+void CheckGeometryReadAfterWrite(RenderGraph::RGAccess producerAccess,
+                                bool readsIndices, bool readsVertices,
+                                ResourceAccessMask expectedEngineAccess,
+                                VkAccessFlags expectedAccess)
+{
+    using namespace RenderGraph;
+    RGGraph graph;
+    graph.BeginFrame();
+    RGResourceDesc bufferDesc;
+    bufferDesc.Kind = RGResourceKind::Buffer;
+    bufferDesc.SizeBytes = 256;
+    const RGResourceId geometry = graph.CreateResource(bufferDesc);
+    const RGResourceId output = graph.CreateResource(bufferDesc);
+    graph.MarkExternal(output);
+    const RGPassId producer = graph.AddPass({"ProduceGeometry"});
+    graph.Write(producer, geometry, producerAccess);
+    const RGPassId consumer = graph.AddPass({"DrawGeometry"});
+    if (readsIndices)
+        graph.Read(consumer, geometry, RGAccess::IndexRead);
+    if (readsVertices)
+        graph.Read(consumer, geometry, RGAccess::VertexRead);
+    graph.Write(consumer, output, RGAccess::StorageWrite);
+    graph.Compile();
+    graph.Schedule();
+    graph.GenerateBarriers(RGGraph::kIdentityQueueMap);
+
+    const RGBarrier* dependency = nullptr;
+    for (const RGBarrier& barrier : graph.Barriers())
+    {
+        if (barrier.Resource == geometry && (barrier.SrcAccess & RGAccessMask::WriteBits) != 0)
+            dependency = &barrier;
+    }
+    ASSERT_NE(dependency, nullptr);
+    const uint64_t engineMask = ToEngineAccessMask(dependency->DstAccess);
+    EXPECT_EQ(engineMask, static_cast<uint64_t>(expectedEngineAccess));
+    EXPECT_EQ(VulkanMappings::TranslateResourceAccessMask(engineMask), expectedAccess);
+    EXPECT_NE(dependency->DstStage & RGStage::VertexInput, 0u);
+}
+}
+
+TEST(VulkanResourceStateMapping, TransferWrittenIndicesReachIndexFetch)
+{
+    CheckGeometryReadAfterWrite(RenderGraph::RGAccess::CopyDst, true, false,
+                               ResourceAccessMask::IndexRead, VK_ACCESS_INDEX_READ_BIT);
+}
+
+TEST(VulkanResourceStateMapping, ComputeWrittenIndicesReachIndexFetch)
+{
+    CheckGeometryReadAfterWrite(RenderGraph::RGAccess::StorageWrite, true, false,
+                               ResourceAccessMask::IndexRead, VK_ACCESS_INDEX_READ_BIT);
+}
+
+TEST(VulkanResourceStateMapping, VertexReadsRemainVertexAttributeReads)
+{
+    CheckGeometryReadAfterWrite(RenderGraph::RGAccess::StorageWrite, false, true,
+                               ResourceAccessMask::VertexAttributeRead, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
+}
+
+TEST(VulkanResourceStateMapping, SharedGeometryBufferPreservesBothReadScopes)
+{
+    CheckGeometryReadAfterWrite(RenderGraph::RGAccess::StorageWrite, true, true,
+                               ResourceAccessMask::IndexRead | ResourceAccessMask::VertexAttributeRead,
+                               VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
 }

@@ -1,11 +1,13 @@
 #pragma once
 
 #include "Ocean/OceanCascadeArray.h"
+#include "Ocean/OceanPreparedDispatch.h"
 #include "Ocean/OceanTypes.h"
 
 #include "Rendering/Core/Device.h" // DescriptorSetLayoutDesc
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/PipelineIdentifiers.h"
+#include "Rendering/Core/RenderGraph/RGFrameStamp.h"
 
 #include <cstdint>
 
@@ -51,32 +53,33 @@ public:
         m_Resolution = m_Foam[0].GetResolution();
     }
 
-    // The foam cascade the surface samples this frame (the just-written target).
+    // No-frame accessors expose recorded history; frame accessors expose its planned output.
     ::GameEngine::Rendering::TextureHandle GetFoamTexture() const;
+    ::GameEngine::Rendering::TextureHandle GetFoamTexture(const Rendering::RenderGraph::RGFrame& frame) const;
     ::GameEngine::Rendering::SamplerHandle GetFoamSampler() const { return m_Sampler; }
     const OceanCascadeLayoutGPU& GetFoamLayout() const;
+    const OceanCascadeLayoutGPU& GetFoamLayout(const Rendering::RenderGraph::RGFrame& frame) const;
 
-    // RG imports of the ping-pong pair at their resting state (call after
-    // BeginFrame flipped the index). Write = this frame's target (the texture
-    // GetFoamTexture returns), Prev = last frame's history the dispatch samples.
+    // Frame consumers import the planned final output; each step imports its own pair.
     ::GameEngine::Rendering::RenderGraph::RGTexture ImportWriteRG(
-        ::GameEngine::Rendering::RenderGraph::RGFrame& frame) const;
-    ::GameEngine::Rendering::RenderGraph::RGTexture ImportPrevRG(
         ::GameEngine::Rendering::RenderGraph::RGFrame& frame) const;
     ::GameEngine::Rendering::RenderGraph::RGTexture ImportWriteRG(
         ::GameEngine::Rendering::RenderGraph::RGFrame& frame, uint32 writeIndex) const;
     ::GameEngine::Rendering::RenderGraph::RGTexture ImportPrevRG(
         ::GameEngine::Rendering::RenderGraph::RGFrame& frame, uint32 writeIndex) const;
 
-    // Begin a new sim frame (call once per frame at schedule time, before the
-    // forward contributor binds the foam texture): advance the ping-pong index so
-    // the frame's write target is fixed, then snap only that target to the camera.
-    // The read target keeps the layout it was written with so history can be sampled
-    // by world position. RecordDispatch (which runs at graph-execution time) must
-    // not mutate the index — only this does — so the texture the surface binds is
-    // the one the dispatch writes.
-    void BeginFrame(float cameraX, float cameraZ);
-    uint32 BeginSubstep(float cameraX, float cameraZ);
+    const OceanCascadeFramePlan& PlanSubsteps(Rendering::RenderGraph::RGFrame& frame,
+                                             float cameraX, float cameraZ);
+    void ForgetFrame(const Rendering::RenderGraph::RGFrame& frame)
+    {
+        if (m_PlannedFrame.Frame == &frame)
+        {
+            m_PlannedFrame = {};
+            m_Plan = nullptr;
+            m_NextSubstep = 0;
+        }
+    }
+
     void RebaseOrigin(float32 shiftX, float32 shiftZ)
     {
         m_Foam[0].RebaseOrigin(shiftX, shiftZ);
@@ -136,28 +139,22 @@ public:
                        ::GameEngine::Rendering::SamplerHandle flowSampler, float flowScale,
                        bool available);
 
-    // Finalize this frame's GPU params (cascade layouts follow the ping-pong
-    // index BeginFrame fixed). Called at DECLARE time; the caller writes the
-    // result into a render-graph upload-ring allocation and hands the
-    // {buffer, offset} to RecordDispatch.
-    void FillParams(OceanFoamParamsGPU& out);
-    void FillParams(OceanFoamParamsGPU& out, uint32 writeIndex,
+    // Upload one immutable step's parameters before preparing its descriptor bindings.
+    void FillParams(OceanFoamParamsGPU& out, const OceanCascadeStep& step,
                     uint32 substepIndex) const;
 
-    // Records the foam advect/decay/accumulate dispatch with barriers, leaving
-    // the written foam cascade sampleable by the world pass. BeginFrame selects
-    // the ping-pong target. Params come from the frame's upload ring (FillParams
-    // above) — no per-class buffer ring.
-    void RecordDispatch(::GameEngine::Rendering::IDevice* device,
-                        ::GameEngine::Rendering::CommandList* cl,
-                        ::GameEngine::Rendering::BufferHandle paramsBuffer,
-                        uint64 paramsOffset);
-    void RecordDispatch(::GameEngine::Rendering::IDevice* device,
-                        ::GameEngine::Rendering::CommandList* cl,
-                        ::GameEngine::Rendering::BufferHandle paramsBuffer,
-                        uint64 paramsOffset, uint32 writeIndex);
+    /// Declare this ID with RGPassBuilder::UsePipeline before preparation.
+    ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipe; }
+
+    OceanPreparedSimulationDispatch PrepareDispatch(Rendering::IDevice* device,
+        Rendering::BufferHandle paramsBuffer, uint64 paramsOffset,
+        const OceanCascadeFramePlan& plan, uint32 substepIndex) const;
+    void RecordDispatch(Rendering::CommandList* commands,
+                        const OceanPreparedSimulationDispatch& dispatch);
 
 private:
+    bool IsCurrentPlan(const OceanPreparedSimulationDispatch& dispatch) const;
+
     // RGBA16F foam cascade; LOD 0 covers this many meters (each higher LOD doubles).
     static constexpr uint32 kFoamResolution = 256;
     static constexpr uint32 kFoamLodCount = 4;
@@ -172,6 +169,9 @@ private:
     // read with its previous snapped layout.
     OceanCascadeArray m_Foam[2];
     uint32 m_WriteIndex = 0;
+    Rendering::RenderGraph::RGFrameStamp m_PlannedFrame;
+    const OceanCascadeFramePlan* m_Plan = nullptr;
+    uint32 m_NextSubstep = 0;
     bool m_UseFixedStep = false;
     float32 m_SimulationFrequency = 30.0f;
     uint32 m_MaximumSubsteps = 2u;

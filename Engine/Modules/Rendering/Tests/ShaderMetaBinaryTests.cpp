@@ -284,8 +284,13 @@ TEST(ShaderMetaBinaryTest, DerivedBindingFieldsAreRecomputedNotStored)
     const DescriptorSetMeta& set = decoded.Sets[0];
     EXPECT_NE(set.BuiltLayoutHash, 0u) << "the set layout hash was not rebuilt";
     EXPECT_EQ(set.BuiltLayoutHash, ComputeDescriptorSetLayoutHash(set));
-    for (const auto& b : set.Bindings)
+    ASSERT_TRUE(set.BindingPlan);
+    ASSERT_EQ(set.BindingPlan->Slots.size(), set.Bindings.size());
+    for (size_t i = 0; i < set.Bindings.size(); ++i)
     {
+        const auto& b = set.Bindings[i];
+        EXPECT_EQ(set.BindingPlan->Slots[i].NameId, b.NameId);
+        EXPECT_EQ(set.BindingPlan->Slots[i].Type, MapShaderMetaBindingType(b.Type));
         EXPECT_NE(b.NameId, 0u) << "binding name id was not rebuilt";
         EXPECT_EQ(b.NameId, GameEngine::HashStringId(b.Name));
     }

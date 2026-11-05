@@ -334,3 +334,121 @@ TEST(RGReadbackRingTests, StorageSlotResolvesWhereStorageCannotBeMapped)
     }
     dev->Shutdown();
 }
+
+TEST(RGReadbackRingTests, PreservedResultsBackPressureAndConsumeIndividually)
+{
+    auto device = MakeDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        FramePools pools(device.get());
+        RGReadbackRing<Meta> ring;
+        ASSERT_TRUE(ring.Init(device.get(), SlotDesc(), 2, RGReadbackRetention::PreserveUnread));
+        RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        frame.BeginFrame(1);
+        uint64_t firstId = 0, secondId = 0;
+        const auto first = ring.ReserveWrite(frame, {7}, firstId);
+        const auto second = ring.ReserveWrite(frame, {9}, secondId);
+        ASSERT_TRUE(first.IsValid());
+        ASSERT_TRUE(second.IsValid());
+        EXPECT_NE(first, second);
+        EXPECT_NE(firstId, secondId);
+        EXPECT_FALSE(ring.BeginWrite(frame, {11}).IsValid());
+        EXPECT_TRUE(ring.HasPendingWrite(frame, first, firstId));
+        EXPECT_TRUE(ring.HasPendingWrite(frame, second, secondId));
+        ASSERT_TRUE(ring.MarkRecorded(first, firstId));
+        ASSERT_TRUE(ring.MarkRecorded(second, secondId));
+        RunTrivialFrame(frame);
+        ring.OnFrameSubmitted(frame, frame.SubmissionToken());
+        device->WaitForIdle();
+        Meta metadata{};
+        ASSERT_NE(ring.MapOldestReady(device.get(), &metadata), nullptr);
+        EXPECT_EQ(metadata.Value, 7);
+        ring.Unmap(device.get());
+        ASSERT_NE(ring.MapOldestReady(device.get(), &metadata), nullptr);
+        EXPECT_EQ(metadata.Value, 9);
+        ring.Unmap(device.get());
+        EXPECT_EQ(ring.MapOldestReady(device.get(), &metadata), nullptr);
+        ring.Destroy(device.get());
+    }
+    device->Shutdown();
+}
+
+TEST(RGReadbackRingTests, CancellationKeepsSubmittedResultsAndInvalidatesOldReservations)
+{
+    auto device = MakeDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        FramePools pools(device.get());
+        RGReadbackRing<Meta> ring;
+        ASSERT_TRUE(ring.Init(device.get(), SlotDesc(), 2, RGReadbackRetention::PreserveUnread));
+        RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        RGUploadRing otherUploads(device.get(), 2, 4096);
+        RGFrame other(device.get(), &pools.Persistent, &pools.Transient, &otherUploads);
+        frame.BeginFrame(7);
+        uint64_t submittedId = 0;
+        const auto submitted = ring.ReserveWrite(frame, {7}, submittedId);
+        ASSERT_TRUE(submitted.IsValid());
+        ASSERT_TRUE(ring.MarkRecorded(submitted, submittedId));
+        RunTrivialFrame(frame);
+        ring.OnFrameSubmitted(frame, frame.SubmissionToken());
+        device->WaitForIdle();
+        frame.BeginFrame(8);
+        uint64_t abortedId = 0;
+        const auto aborted = ring.ReserveWrite(frame, {8}, abortedId);
+        ASSERT_TRUE(aborted.IsValid());
+        other.BeginFrame(8);
+        ring.CancelUnsubmitted(other);
+        EXPECT_TRUE(ring.HasPendingWrite(frame, aborted, abortedId));
+        ring.CancelUnsubmitted(frame);
+        EXPECT_FALSE(ring.HasPendingWrite(frame, aborted, abortedId));
+        Meta metadata{};
+        ASSERT_NE(ring.MapOldestReady(device.get(), &metadata), nullptr);
+        EXPECT_EQ(metadata.Value, 7);
+        ring.Unmap(device.get());
+        uint64_t replacementId = 0;
+        const auto replacement = ring.ReserveWrite(frame, {9}, replacementId);
+        EXPECT_TRUE(replacement.IsValid());
+        EXPECT_TRUE(ring.HasPendingWrite(frame, replacement, replacementId));
+        EXPECT_FALSE(ring.HasPendingWrite(frame, submitted, submittedId));
+        EXPECT_FALSE(ring.HasPendingWrite(frame, replacement, abortedId));
+        ring.Destroy(device.get());
+    }
+    device->Shutdown();
+}
+
+TEST(RGReadbackRingTests, UnrecordedReservationCannotBecomeReadyWithAnUnrelatedSubmission)
+{
+    auto device = MakeDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        FramePools pools(device.get());
+        RGReadbackRing<Meta> ring;
+        ASSERT_TRUE(ring.Init(device.get(), SlotDesc(), 1, RGReadbackRetention::PreserveUnread));
+        RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        frame.BeginFrame(1);
+        uint64_t unrecorded = 0;
+        const auto output = ring.ReserveWrite(frame, {7}, unrecorded);
+        ASSERT_TRUE(output.IsValid());
+        EXPECT_TRUE(ring.HasPendingWrite(frame, output, unrecorded));
+        RunTrivialFrame(frame); // the reserved buffer has no writer
+        ring.OnFrameSubmitted(frame, frame.SubmissionToken());
+        device->WaitForIdle();
+        Meta metadata{};
+        const void* unexpected = ring.MapOldestReady(device.get(), &metadata);
+        EXPECT_EQ(unexpected, nullptr);
+        if (unexpected)
+            ring.Unmap(device.get());
+        EXPECT_FALSE(ring.HasPendingWrite(frame, output, unrecorded));
+        uint64_t replacement = 0;
+        const auto next = ring.ReserveWrite(frame, {9}, replacement);
+        EXPECT_EQ(next, output);
+        EXPECT_NE(replacement, unrecorded);
+        EXPECT_FALSE(ring.MarkRecorded(next, unrecorded));
+        EXPECT_TRUE(ring.MarkRecorded(next, replacement));
+        ring.Destroy(device.get());
+    }
+    device->Shutdown();
+}

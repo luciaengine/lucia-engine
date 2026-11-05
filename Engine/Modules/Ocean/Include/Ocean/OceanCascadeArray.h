@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace GameEngine::Rendering
 {
@@ -21,6 +22,19 @@ struct RGTexture;
 
 namespace GameEngine::Ocean
 {
+
+struct OceanCascadeStep
+{
+    uint32 WriteIndex = 0;
+    OceanCascadeLayoutGPU Cascade{};
+    OceanCascadeLayoutGPU PrevCascade{};
+};
+
+struct OceanCascadeFramePlan
+{
+    std::vector<OceanCascadeStep> Steps;
+    Rendering::TextureHandle Textures[2]{};
+};
 
 // RAII wrapper around one camera-snapped sim cascade: a persistent
 // Texture2DArray (res x res x lodCount) plus a per-layer View2D for each LOD,
@@ -87,6 +101,8 @@ public:
     // While the coarsest layer is anchored (AnchorCoarsestLevel), SnapToCamera
     // leaves that layer where the anchor put it and snaps only the finer ones.
     bool SnapToCamera(float cameraX, float cameraZ);
+    OceanCascadeLayoutGPU ProjectedLayout(float cameraX, float cameraZ) const;
+    void CommitLayout(const OceanCascadeLayoutGPU& layout) { m_Layout = layout; }
 
     // Pin the coarsest LOD layer to a fixed world square that holds the XZ
     // rectangle [minX, maxX] x [minZ, maxZ] inside the band the surface samples
@@ -131,5 +147,10 @@ private:
     bool m_CoarsestAnchored = false;
     float m_CoarsestAnchor[4] = {};
 };
+
+// The frame owns the immutable step sequence; the persistent arrays retain only recorded layouts.
+const OceanCascadeFramePlan* PlanOceanCascadeSteps(
+    Rendering::RenderGraph::RGFrame& frame, const OceanCascadeArray (&arrays)[2],
+    uint32 committedIndex, uint32 stepCount, float cameraX, float cameraZ);
 
 } // namespace GameEngine::Ocean

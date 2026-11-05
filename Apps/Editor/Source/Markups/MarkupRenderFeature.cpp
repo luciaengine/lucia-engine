@@ -426,6 +426,10 @@ bool MarkupRenderFeature::DeclareView(RenderGraph::RGFrame& frame, RenderGraph::
         "SV.MarkupGlow", kOverlayPhase,
         [&](RenderGraph::RGPassBuilder& pass)
         {
+            pass.UsePipeline(record.Visible);
+            pass.UsePipeline(record.Occluded);
+            pass.UsePipeline(record.VisibleMesh);
+            pass.UsePipeline(record.OccludedMesh);
             RenderGraph::RGAttachmentOps colorOps{};
             colorOps.Load = RenderGraph::RGLoadOp::Clear;
             colorOps.Store = RenderGraph::RGStoreOp::Store;

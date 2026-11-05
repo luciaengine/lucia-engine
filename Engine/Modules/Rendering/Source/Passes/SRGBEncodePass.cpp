@@ -377,6 +377,34 @@ void CleanupSRGBEncodePassForDevice(IDevice* device)
 	g_ReportedRescalePasses.clear();
 }
 
+static bool PrepareSRGBEncodeDescriptors(RenderGraph::RGPrepareContext& context,
+                                      RenderGraph::RGTexture source,
+                                      const DescriptorSetLayoutDesc& layout,
+                                      const ShaderMeta& meta,
+                                      DescriptorSetHandle& descriptors)
+{
+    IDevice* device = context.GetDevice();
+    if (device == nullptr)
+        return false;
+    const TextureHandle texture = context.GetTexture(source);
+    if (!texture.IsValid())
+        return false;
+    const SamplerHandle sampler = GetOrCreateSRGBEncodeSampler(device);
+    if (!sampler.IsValid())
+        return false;
+    DescriptorSetDesc descriptorDesc{};
+    descriptorDesc.layout = layout;
+    descriptorDesc.transient = true;
+    descriptorDesc.debugName = "SRGBEncode.DS0";
+    descriptors = device->CreateDescriptorSet(descriptorDesc);
+    if (!descriptors.IsValid())
+        return false;
+    NamedDescriptorWriter writer(device, descriptors, meta, 0);
+    writer.AddCombinedImageSampler("uLinearColor", texture, sampler);
+    writer.Flush();
+    return true;
+}
+
 RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture src, RenderGraph::RGTexture dst,
                                 const FinalizeParams& params, const char* passName)
 {
@@ -714,10 +742,15 @@ RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph
 		}
 	}
 
+	auto* descriptors = frame.AllocatePassData<DescriptorSetHandle>();
 	return frame.AddPass(
 		passName ? passName : "FinalSRGBEncode", PassPhase::kFinalize,
 		[&](RenderGraph::RGPassBuilder& p)
 		{
+			p.UsePipeline(pipelineId);
+			p.Prepare([descriptors, src, set0, meta = &shaders.meta](RenderGraph::RGPrepareContext& context) {
+			    return PrepareSRGBEncodeDescriptors(context, src, set0, *meta, *descriptors);
+			});
 			p.Read(src, RenderGraph::RGTextureRead::Sampled);
 			RenderGraph::RGAttachmentOps ops{};
 			// Full-screen overwrite; the imported backbuffer's contract is
@@ -726,19 +759,13 @@ RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph
 			ops.Store = RenderGraph::RGStoreOp::Store;
 			p.AttachColor(0, dst, ops);
 		},
-		[pipelineId, src, set0, pcw, meta = &shaders.meta, w, h](RenderGraph::RGContext& ctx)
+		[pipelineId, descriptors, pcw, w, h](RenderGraph::RGContext& ctx)
 		{
 			auto* cl = ctx.Cmd;
 			auto* dev = ctx.GetDevice();
 			if (!cl || !dev)
 				return;
-			const auto srcTex = ctx.GetTexture(src);
-			if (!srcTex.IsValid())
-				return;
-			const SamplerHandle sampler = GetOrCreateSRGBEncodeSampler(dev);
-			if (!sampler.IsValid())
-				return;
-			const PipelineHandle pipeline = ctx.GetOrCreatePipelineVariant(pipelineId);
+			const PipelineHandle pipeline = dev->TryGetWarmGraphicsPipeline(pipelineId, ctx.BuildCurrentFormatKey());
 			if (!pipeline.IsValid())
 				return;
 
@@ -757,17 +784,7 @@ RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph
 			cl->SetViewport(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
 			cl->SetScissor(0, 0, static_cast<int>(w), static_cast<int>(h));
 
-			DescriptorSetDesc dsDesc{};
-			dsDesc.layout = set0;
-			dsDesc.transient = true;
-			dsDesc.debugName = "SRGBEncode.DS0";
-			const DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
-			if (!ds.IsValid())
-				return;
-			NamedDescriptorWriter wd(dev, ds, *meta, 0);
-			wd.AddCombinedImageSampler("uLinearColor", srcTex, sampler);
-			wd.Flush();
-			cl->BindDescriptorSet(0, ds, pipeline);
+			cl->BindDescriptorSet(0, *descriptors, pipeline);
 			cl->Draw(3, 1);
 		});
 }

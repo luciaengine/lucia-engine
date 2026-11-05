@@ -527,7 +527,7 @@ class ShadowMapRenderFeature : public IRenderFeature
     // per-cascade texel size comes from, so the min/max pyramid built for it
     // always covers the lit proof's query.
     float PcssWidestKernelTexels(Rendering::ViewId viewId, const CascadeFrameData& frame,
-                                 uint32_t cascadeCount) const;
+                                 uint32_t cascadeCount, const RenderGraph::RGFrame& rgFrame) const;
 
     // IRenderFeature declaration hook — declares this view's shadow producer
     // passes, driven by ShadowMapNode. When ctx.DirectionalLightDirWS is
@@ -1232,14 +1232,6 @@ class ShadowMapRenderFeature : public IRenderFeature
     // not track GPU lifetime.
     CascadeShadowCache m_CascadeShadowCache;
 
-    // Count of cascade depth passes actually declared this Declare() call.
-    // BuildShadowDataGPU uses it with content-fit validity: if this frame
-    // declared none and no layer has retained content, publish numCascades=0
-    // so sampling returns fully lit instead of sampling an unwritten reverse-Z
-    // image (1.0 = fully shadowed).
-    uint64_t m_CascadeDeclareFrameIndex = ~0ull;
-    uint32_t m_DeclaredCascadePassesThisFrame = 0;
-
     // ── Camera-motion round-robin (GE_SHADOW_MOTION_CAP) ──
     // Content-fit invariant: receivers must transform by the fit of the depth
     // content ACTUALLY retained in each cascade layer, never by the current
@@ -1247,14 +1239,14 @@ class ShadowMapRenderFeature : public IRenderFeature
     // cache skips it byte-identically) the two are equal; only a motion-
     // deferred cascade diverges, and then BuildShadowDataGPU uploads this
     // snapshot (world fit rebased against the CURRENT render origin) plus the
-    // matching PCSS metrics. Updated on every declared depth cascade render;
+    // matching PCSS metrics. Updated when a depth cascade records;
     // invalidated with the cache (physical adopt-change / device rebuild).
     std::unordered_map<Rendering::ViewId, std::array<CascadeContentFit, kMaxShadowCascades>>
         m_CascadeContentFit;
     // Tint-family twin of the snapshot above (LightVP + FrameStamp + Valid
     // only; the PCSS metric fields stay zero — the tint is sampled through
     // the DEPTH content fit). Committed/refreshed exactly like the depth
-    // family's: on every declared tint render and on tint Cached skips. The
+    // family's: when a tint pass records and on tint Cached skips. The
     // plan phase requires byte-equal content-fit LightVPs across the pair
     // before a Motion pair may defer (ClassifyCascadePair) — a
     // transmission-visibility gap otherwise leaves an arbitrarily old tint
@@ -1265,12 +1257,13 @@ class ShadowMapRenderFeature : public IRenderFeature
     // Frame plan: built once per (view, frame) at the top of Declare's
     // directional branch, consumed by both cascade families so a deferred
     // depth layer and its glass-tint twin stay coherent under ONE sampling
-    // fit. Stamped with the declaring frame index — a plan from another frame
-    // (or a direct per-pass test call with no plan) never defers.
+    // fit. The graph incarnation separates streams that share a frame index.
+    // Scheduled layers use their current fit; skipped layers use retained content.
     struct MotionFramePlan
     {
-        uint64_t FrameStamp = ~0ull;
+        RenderGraph::RGFrameStamp For;
         uint32_t DeferMask = 0;
+        uint32_t ScheduledDepthMask = 0;
     };
     std::unordered_map<Rendering::ViewId, MotionFramePlan> m_MotionPlanByView;
     CascadeMotionScheduler m_MotionScheduler;
@@ -1282,7 +1275,7 @@ class ShadowMapRenderFeature : public IRenderFeature
     // at the top of Declare's directional branch, BEFORE any cascade declares.
     void PlanCascadeMotionFrame(Rendering::RenderGraph::RGFrame& frame, RenderServices& rs,
                                 const FeatureDeclareContext& ctx);
-    bool IsCascadeDeferredThisFrame(Rendering::ViewId viewId, uint64_t frameStamp,
+    bool IsCascadeDeferredThisFrame(Rendering::ViewId viewId, const RenderGraph::RGFrame& frame,
                                     uint32_t cascadeIndex) const;
 
     // Per-view declare counter setting the window cadence. Cadence only: the
@@ -1291,6 +1284,8 @@ class ShadowMapRenderFeature : public IRenderFeature
     // counter across a device rebuild shifts the window phase and nothing
     // else.
     std::unordered_map<Rendering::ViewId, uint32_t> m_CascadeCacheLogCounter;
+
+    uint32_t ScheduledCascadeMask(Rendering::ViewId viewId, const RenderGraph::RGFrame& frame) const;
 
     // Periodic (~every 300 declares per view) static-cache window log; warns
     // (edge-triggered) when the cache is enabled but produced zero skips over

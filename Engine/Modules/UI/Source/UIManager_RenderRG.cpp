@@ -167,6 +167,29 @@ bool UIManager::RenderRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture tar
     const TextCoverageConstants textCoverage =
         ResolveTextCoverageConstants(m_TextContrast, m_TextBlendGamma, targetSpace);
 
+    Rendering::GraphicsPipelineId pipelineId{};
+    if (uploadsOk && !m_DrawOrder.empty() && m_PrimitiveAllocator.GetTotalSlots() != 0 &&
+        (!blendEncoded || m_SdfEncodedVariantAvailable))
+    {
+        Rendering::GraphicsPipelineId& cachedPipelineId =
+            blendEncoded
+                ? (subpixelActive ? m_SdfPipelineIdSubpixelEncoded : m_SdfPipelineIdEncoded)
+                : (subpixelActive ? m_SdfPipelineIdSubpixel : m_SdfPipelineId);
+        if (!cachedPipelineId.IsValid())
+        {
+            Rendering::PipelineDesc& pipelineDesc =
+                blendEncoded ? (subpixelActive ? m_SdfPipelineDescSubpixelEncoded
+                                               : m_SdfPipelineDescEncoded)
+                             : (subpixelActive ? m_SdfPipelineDescSubpixel : m_SdfPipelineDesc);
+            pipelineDesc.debugName =
+                blendEncoded ? (subpixelActive ? "UI_SDF_Subpixel_Encoded" : "UI_SDF_Encoded")
+                             : (subpixelActive ? "UI_SDF_Subpixel" : "UI_SDF");
+            cachedPipelineId =
+                Rendering::PipelineDescTranslator::InternGraphics(*m_Device, pipelineDesc);
+        }
+        pipelineId = cachedPipelineId;
+    }
+
     frame.AddPass(
         "UI Overlay", static_cast<int32_t>(PassPhase::kUI),
         [&](RenderGraph::RGPassBuilder& p)
@@ -184,6 +207,8 @@ bool UIManager::RenderRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture tar
             ops.Clear.Color[2] = 0.0f;
             ops.Clear.Color[3] = 1.0f;
             p.AttachColor(0, target, ops);
+            if (pipelineId.IsValid())
+                p.UsePipeline(pipelineId);
 
             // SSBO reads (ring buffers rotate per device frame; the import
             // dedups by physical so repeat declares are id-stable).
@@ -205,7 +230,7 @@ bool UIManager::RenderRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture tar
                 p.Read(rb.Tex, RenderGraph::RGTextureRead::Sampled);
         },
         [this, resolved, primBuf, clipBuf, drawOrderBuf, uploadsOk, outputEncoding,
-         subpixelActive, blendEncoded, textCoverage](RenderGraph::RGContext& ctx)
+         blendEncoded, textCoverage, pipelineId](RenderGraph::RGContext& ctx)
         {
             // Slot updates run even on draw-skipped frames: the published
             // producers rendered this frame, and the registry slots must
@@ -241,22 +266,6 @@ bool UIManager::RenderRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture tar
             if (blendEncoded && !m_SdfEncodedVariantAvailable)
                 return;
 
-            Rendering::GraphicsPipelineId& pipelineId =
-                blendEncoded
-                    ? (subpixelActive ? m_SdfPipelineIdSubpixelEncoded : m_SdfPipelineIdEncoded)
-                    : (subpixelActive ? m_SdfPipelineIdSubpixel : m_SdfPipelineId);
-            if (!pipelineId.IsValid())
-            {
-                Rendering::PipelineDesc& pipelineDesc =
-                    blendEncoded ? (subpixelActive ? m_SdfPipelineDescSubpixelEncoded
-                                                   : m_SdfPipelineDescEncoded)
-                                 : (subpixelActive ? m_SdfPipelineDescSubpixel : m_SdfPipelineDesc);
-                pipelineDesc.debugName =
-                    blendEncoded ? (subpixelActive ? "UI_SDF_Subpixel_Encoded" : "UI_SDF_Encoded")
-                                 : (subpixelActive ? "UI_SDF_Subpixel" : "UI_SDF");
-                pipelineId =
-                    Rendering::PipelineDescTranslator::InternGraphics(*m_Device, pipelineDesc);
-            }
             const PipelineHandle pipeline = ctx.GetOrCreatePipelineVariant(pipelineId);
             if (!pipeline.IsValid())
                 return;

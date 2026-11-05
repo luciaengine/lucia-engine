@@ -12,6 +12,7 @@
 #include <string_view>
 #include <vector>
 
+#include "Rendering/Core/DescriptorType.h"
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/PipelineIdentifiers.h"
 #include <functional>
@@ -1253,26 +1254,6 @@ struct RendererProfile;
 /// presets legal on WebGPU, where anisotropy requires linear min, mag and mip
 /// filtering.
 SamplerDesc ResolveSamplerPreset(SamplerPreset preset, const RendererProfile& profile);
-
-// Descriptor type enumeration.
-//
-// Append only: MetalShaderTranslator's on-disk MSL cache hashes the raw
-// numeric value of every binding's type, so renumbering silently invalidates
-// nothing and reuses stale translations.
-enum class DescriptorType
-{
-    UniformBuffer,
-    StorageBuffer,
-    Texture,
-    Sampler,
-    CombinedImageSampler,
-    StorageImage,
-    // Ray-query scene TLAS (GLSL accelerationStructureEXT / MSL
-    // raytracing::acceleration_structure). Only meaningful on a device whose
-    // RenderingDeviceCapabilities::supportsRayQuery is set — a layout
-    // containing one cannot be created otherwise.
-    AccelerationStructure
-};
 
 // Backend-agnostic shader stage mask constants (matches Vulkan bit positions)
 static constexpr uint32_t kShaderStageVertex = 0x00000001u;

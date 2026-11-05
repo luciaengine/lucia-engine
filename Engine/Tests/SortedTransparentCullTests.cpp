@@ -2,8 +2,7 @@
 // spheres: in/out/straddle/behind, the "culled don't reach the drain"
 // invariant, the empty (zero-cost) path, and the camera-relative rebase that
 // keeps sector-tagged (planetary) transparents culling identically to the GPU
-// path. (Back-to-front ORDERING is covered by SortedTransparentRunTests +
-// GPUSortTests — the sort itself lives on the GPU as of S2.)
+// path. RenderSortingTests covers the order of the surviving records.
 
 #include <gtest/gtest.h>
 
@@ -92,9 +91,7 @@ TEST(SortedTransparentCull, EdgeStraddlingSphereIsKept)
     EXPECT_TRUE(drop.empty());
 }
 
-// The drain sorts VISIBLE transparents only: a scene whose total Blend count is
-// huge must stage only what the frustum keeps (this is also what keeps the
-// GPU-sort capacity a per-VIEW bound, not a per-scene one).
+// Only visible transparents enter the composition.
 TEST(SortedTransparentCull, CulledInstancesNeverReachTheDrain)
 {
     Rndr::Vector4 planes[6];

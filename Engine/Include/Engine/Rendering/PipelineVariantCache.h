@@ -34,6 +34,7 @@
 namespace GameEngine::Rendering::RenderGraph
 {
 class RGContext;
+class RGPrepareContext;
 }
 
 namespace GameEngine::Engine::Renderer
@@ -197,6 +198,15 @@ class PipelineVariantCache
         FrontFace frontFace,
         const RenderGraph::RGContext& ctx);
 
+    /// Select the warm unit for this pass. Its generation is recorded when the draw runs.
+    std::pair<PipelineHandle, const VariantServeUnit*> PrepareColorVariant(
+        const Material& material,
+        VertexAttributeFlags vertexFlags,
+        PrimitiveTopology topology,
+        MaterialKeyword passKeywords,
+        FrontFace frontFace,
+        const RenderGraph::RGPrepareContext& ctx);
+
     // Depth-pass mirror of GetOrCompileColorVariant: compiles with passKeywords
     // only (fragment-stage keywords are irrelevant depth-only).
     std::pair<PipelineHandle, const VariantServeUnit*> GetOrCompileDepthInstancedVariant(
@@ -209,6 +219,18 @@ class PipelineVariantCache
         bool depthClampEnable,
         FrontFace frontFace,
         const RenderGraph::RGContext& ctx);
+
+    /// Select the warm unit for this pass. Its generation is recorded when the draw runs.
+    std::pair<PipelineHandle, const VariantServeUnit*> PrepareDepthInstancedVariant(
+        const Material& material,
+        VertexAttributeFlags vertexFlags,
+        PrimitiveTopology topology,
+        MaterialKeyword passKeywords,
+        uint32_t samples,
+        bool depthBiasEnable,
+        bool depthClampEnable,
+        FrontFace frontFace,
+        const RenderGraph::RGPrepareContext& ctx);
 
     // The published camera-prepass variant a draw producer pins on a head it
     // emits while the frame is declared (DrawCommand::InternedPipeline and
@@ -414,15 +436,13 @@ class PipelineVariantCache
         return m_AsyncVariantCompilesTotal.load(std::memory_order_relaxed);
     }
 
-    // Served-generation table. Every unit ResolveWarmPipeline hands to a draw
-    // records the generation it was compiled against under (material index,
-    // pass class) for the current frame, so a later pass can ask whether the
-    // colour and depth draws of a material this frame rendered the generation
-    // it is about to serve — during a recompile window the stale-serve path
-    // makes them disagree. BeginServeFrame runs once per frame on the serial
-    // frame-begin thread (MaterialSystem::BeginFrame), sized to the material
-    // index domain; the recording itself is wait-free from the record workers.
+    // A later pass compares the shader generations actually drawn for this material.
+    // Reset the table at frame begin and stamp it only from a recorded draw.
     void BeginServeFrame(uint32_t materialIndexCount) { m_ServedGenerations.BeginFrame(materialIndexCount); }
+    void RecordServedGeneration(uint32_t materialIndex, ServedPassClass passClass, uint32_t generation)
+    {
+        m_ServedGenerations.Record(materialIndex, passClass, generation);
+    }
     std::optional<uint32_t> ServedGeneration(uint32_t materialIndex, ServedPassClass passClass) const
     {
         return m_ServedGenerations.Get(materialIndex, passClass);
@@ -432,20 +452,14 @@ class PipelineVariantCache
     using VariantCacheMap =
         std::unordered_map<InstancedVariantKey, InstancedVariantEntry, InstancedVariantKeyHash>;
 
-    // Shared bodies: both ctx types expose GetCurrentSampleCount() +
-    // GetOrCreatePipelineVariant() name-identically; the caches they mutate are
-    // shared state, so the logic is templated. Instantiated in the .cpp only.
-    template <class Ctx>
-    std::pair<PipelineHandle, const VariantServeUnit*> GetOrCompileColorVariantImpl(
+    std::pair<PipelineHandle, const VariantServeUnit*> ResolveColorVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
         PrimitiveTopology topology,
         MaterialKeyword passKeywords,
         FrontFace frontFace,
-        const Ctx& ctx,
-        VariantCacheMap& cache);
-    template <class Ctx>
-    std::pair<PipelineHandle, const VariantServeUnit*> GetOrCompileDepthInstancedVariantImpl(
+        const Rendering::PipelineFormatKey& formatKey);
+    std::pair<PipelineHandle, const VariantServeUnit*> ResolveDepthVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
         PrimitiveTopology topology,
@@ -454,7 +468,7 @@ class PipelineVariantCache
         bool depthBiasEnable,
         bool depthClampEnable,
         FrontFace frontFace,
-        const Ctx& ctx);
+        const Rendering::PipelineFormatKey& formatKey);
 
     bool EnsureSharedDepthShaderLoaded(bool isSkinned);
 
@@ -466,12 +480,8 @@ class PipelineVariantCache
     // there is no previous one either (first-ever use, which the publish gate
     // already handles by skipping the draw). The returned unit is the one the
     // handle came from, so the binder's meta always matches the bound pipeline.
-    // The served unit's generation is recorded per (material, pass class) for
-    // this frame (see ServedGeneration).
-    template <class Ctx>
     std::pair<PipelineHandle, const VariantServeUnit*> ResolveWarmPipeline(
-        const Material& material, const InstancedVariantEntry& entry, uint32_t materialIndex,
-        ServedPassClass passClass, const Ctx& ctx);
+        const Material& material, const InstancedVariantEntry& entry, const Rendering::PipelineFormatKey& fk);
 
     // Fire-and-forget backend build of one (pipeline id, pass format) pair,
     // requested from the device (IDevice::RequestGraphicsPipeline), which builds
@@ -479,6 +489,10 @@ class PipelineVariantCache
     // waiting on the build (HasPipelineBuildsInFlight).
     void RequestConcreteWarm(const Material& material, GraphicsPipelineId id,
                              const Rendering::PipelineFormatKey& fk);
+    // Record callbacks only enqueue: RequestGraphicsPipeline may build inline on
+    // an owning-thread backend or when no build dispatcher is installed.
+    void QueueConcreteWarm(const Material& material, GraphicsPipelineId id,
+                           const Rendering::PipelineFormatKey& fk);
 
     // Rate-limited (power-of-two) warning for a dual-cold serve — fires per draw
     // per frame during a backend-build window, so the raw line would flood.

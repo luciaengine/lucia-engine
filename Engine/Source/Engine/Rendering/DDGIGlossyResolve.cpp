@@ -284,6 +284,7 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
         passName, Rendering::PassPhase::kDefault,
         [&](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(pipelineId);
             p.Read(viewDepth, RG::RGTextureRead::Sampled);
             // Declared reads even when the kernel is told not to sample them
             // (prevNormalValid 0): the descriptor set stays complete and the
@@ -387,6 +388,7 @@ bool DDGIProbeFeature::DeclareGlossyResolveForView(
         blurPassName.c_str(), Rendering::PassPhase::kDefault,
         [&](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(blurPipelineId);
             if (separateLobeBindings)
             {
                 p.Read(rough, RG::RGTextureRead::Sampled);

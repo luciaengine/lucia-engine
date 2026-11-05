@@ -288,6 +288,7 @@ class FrameOrchestrator
     // remove the stream while frame/device are alive, before destroying either.
     // Includes short-lived capture/test frames as well as window-owned streams.
     void BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame, const FrameGraphBuildParamsRG& params);
+    void OnFrameAbortedRG(Rendering::RenderGraph::RGFrame& frame);
     void OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& frame,
                             const Rendering::IDevice::GpuSyncToken& token);
     // Caller-thread only, outside frame recording/Execute. Retires callbacks and
@@ -577,6 +578,11 @@ class FrameOrchestrator
     // defers to the next spine call. Reset before member teardown (§0a-A7).
     AssetReloadInvalidator m_PipelineReloadInvalidator;
 };
+
+/// Publishes readback stamps only when Execute advanced its submission count.
+/// A pre-record abort cancels pending tickets and leaves the device frame active.
+void NotifyRenderGraphExecution(Rendering::RenderGraph::RGFrame& frame,
+                                uint64_t previousSubmissionCount, FrameOrchestrator* orchestrator);
 
 } // namespace Engine::Renderer
 } // namespace GameEngine

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Ocean/OceanPreparedDispatch.h"
+
 #include "Ocean/OceanCascadeArray.h"
 #include "Ocean/OceanDepthCacheAsset.h"
 #include "Ocean/OceanTypes.h"
@@ -45,7 +47,7 @@ struct OceanSavedDepthCacheSource
 //
 // Single persistent cascade (no ping-pong: the bake is a pure function of the
 // snapped layout + seabed list, with no temporal accumulation). RecordDispatch()
-// records the compute with manual barriers, mirroring OceanFoamSim. A failed init
+// replays prepared commands; the graph owns synchronization. A failed init
 // leaves the depth terms inert (SeabedDepthAvailable stays 0).
 class OceanSeabedDepth
 {
@@ -137,16 +139,22 @@ public:
 
     // Finalize this frame's GPU params (the cascade layout BeginFrame snapped).
     // Called at DECLARE time; the caller writes the result into a render-graph
-    // upload-ring allocation and hands the {buffer, offset} to RecordDispatch.
+    // upload-ring allocation and hands the {buffer, offset} to PrepareDispatch.
     void FillParams(OceanSeabedDepthParamsGPU& out);
 
-    // Records the depth bake dispatch with barriers, leaving the cascade
+    // Records the prepared depth bake, leaving the cascade
     // sampleable by the world pass and the foam compute. Params come from the
     // frame's upload ring (FillParams above) — no per-class buffer ring.
-    void RecordDispatch(::GameEngine::Rendering::IDevice* device,
-                        ::GameEngine::Rendering::CommandList* cl,
-                        ::GameEngine::Rendering::BufferHandle paramsBuffer,
-                        uint64 paramsOffset);
+    /// Declare this ID with RGPassBuilder::UsePipeline before recording.
+    ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipe; }
+
+    // Create frame-local descriptors before recording; simulation state is unchanged.
+    OceanPreparedDispatch PrepareDispatch(::GameEngine::Rendering::IDevice* device,
+                                           ::GameEngine::Rendering::BufferHandle paramsBuffer,
+                                           uint64 paramsOffset, Rendering::TextureHandle rasterTexture,
+                                           Rendering::SamplerHandle rasterSampler) const;
+    void RecordDispatch(::GameEngine::Rendering::CommandList* cl,
+                        const OceanPreparedDispatch& dispatch);
 
 private:
     // Match the foam cascade so the two layouts coincide (see OceanFoamSim).

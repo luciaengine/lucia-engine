@@ -218,6 +218,37 @@ void CleanupTonemapPassForDevice(IDevice* device)
 	g_TonemapPerDevice.erase(it);
 }
 
+static bool PrepareTonemapDescriptors(RenderGraph::RGPrepareContext& context,
+                                      RenderGraph::RGTexture source,
+                                      const DescriptorSetLayoutDesc& layout,
+                                      const ShaderMeta& meta,
+                                      DescriptorSetHandle& descriptors)
+{
+    IDevice* device = context.GetDevice();
+    if (device == nullptr)
+        return false;
+    const TextureHandle texture = context.GetTexture(source);
+    if (!texture.IsValid())
+        return false;
+    TonemapDeviceResources* resources = GetOrCreateTonemapResources(device);
+    if (!resources || !resources->sampler.IsValid() || !resources->exposureBuffer.IsValid() ||
+        !resources->aces2TablesBuffer.IsValid())
+        return false;
+    DescriptorSetDesc descriptorDesc{};
+    descriptorDesc.layout = layout;
+    descriptorDesc.transient = true;
+    descriptorDesc.debugName = "Tonemap.DS0";
+    descriptors = device->CreateDescriptorSet(descriptorDesc);
+    if (!descriptors.IsValid())
+        return false;
+    NamedDescriptorWriter writer(device, descriptors, meta, 0);
+    writer.AddCombinedImageSampler("uHDRColor", texture, resources->sampler);
+    writer.AddStorageBuffer("uExposure", resources->exposureBuffer, 0, kTonemapExposureStateBytes);
+    writer.AddStorageBuffer("Aces2Tables", resources->aces2TablesBuffer, 0, kAces2TablesBytes);
+    writer.Flush();
+    return true;
+}
+
 RenderGraph::RGPass AddTonemapPassRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture src, RenderGraph::RGTexture dst,
                              const TonemapParams& params, const char* passName)
 {
@@ -293,10 +324,15 @@ RenderGraph::RGPass AddTonemapPassRG(RenderGraph::RGFrame& frame, RenderGraph::R
 	const uint32_t w = dd.Width > 0 ? dd.Width : 1u;
 	const uint32_t h = dd.Height > 0 ? dd.Height : 1u;
 
+	auto* descriptors = frame.AllocatePassData<DescriptorSetHandle>();
 	return frame.AddPass(
 		passName ? passName : "Tonemap", PassPhase::kFinalize,
 		[&](RenderGraph::RGPassBuilder& p)
 		{
+			p.UsePipeline(pipelineId);
+			p.Prepare([descriptors, src, set0, meta = &shaders.meta](RenderGraph::RGPrepareContext& context) {
+			    return PrepareTonemapDescriptors(context, src, set0, *meta, *descriptors);
+			});
 			p.Read(src, RenderGraph::RGTextureRead::Sampled);
 			RenderGraph::RGAttachmentOps ops{};
 			// Full-screen triangle overwrites every pixel.
@@ -304,19 +340,13 @@ RenderGraph::RGPass AddTonemapPassRG(RenderGraph::RGFrame& frame, RenderGraph::R
 			ops.Store = RenderGraph::RGStoreOp::Store;
 			p.AttachColor(0, dst, ops);
 		},
-		[pipelineId, src, set0, pcw, meta = &shaders.meta, w, h](RenderGraph::RGContext& ctx)
+		[pipelineId, descriptors, pcw, w, h](RenderGraph::RGContext& ctx)
 		{
 			auto* cl = ctx.Cmd;
 			auto* dev = ctx.GetDevice();
 			if (!cl || !dev)
 				return;
-			const auto srcTex = ctx.GetTexture(src);
-			if (!srcTex.IsValid())
-				return;
-			TonemapDeviceResources* res = GetOrCreateTonemapResources(dev);
-			if (!res || !res->sampler.IsValid() || !res->exposureBuffer.IsValid())
-				return;
-			const PipelineHandle pipeline = ctx.GetOrCreatePipelineVariant(pipelineId);
+			const PipelineHandle pipeline = dev->TryGetWarmGraphicsPipeline(pipelineId, ctx.BuildCurrentFormatKey());
 			if (!pipeline.IsValid())
 				return;
 
@@ -326,22 +356,7 @@ RenderGraph::RGPass AddTonemapPassRG(RenderGraph::RGFrame& frame, RenderGraph::R
 			cl->SetViewport(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
 			cl->SetScissor(0, 0, static_cast<int>(w), static_cast<int>(h));
 
-			DescriptorSetDesc dsDesc{};
-			dsDesc.layout = set0;
-			dsDesc.transient = true;
-			dsDesc.debugName = "Tonemap.DS0";
-			const DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
-			if (!ds.IsValid())
-				return;
-			// Bind by reflected NAME: uExposure points at the never-metered
-			// default buffer (tonemap.frag statically references it even with
-			// useAutoExposure==0).
-			NamedDescriptorWriter wd(dev, ds, *meta, 0);
-			wd.AddCombinedImageSampler("uHDRColor", srcTex, res->sampler);
-			wd.AddStorageBuffer("uExposure", res->exposureBuffer, 0, kTonemapExposureStateBytes);
-			wd.AddStorageBuffer("Aces2Tables", res->aces2TablesBuffer, 0, kAces2TablesBytes);
-			wd.Flush();
-			cl->BindDescriptorSet(0, ds, pipeline);
+			cl->BindDescriptorSet(0, *descriptors, pipeline);
 			cl->Draw(3, 1);
 		});
 }

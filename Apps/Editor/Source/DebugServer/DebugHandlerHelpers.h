@@ -2556,15 +2556,14 @@ inline bool ApplyMainSceneViewPose(EditorApplication& app, const SceneViewCamera
     static constexpr const char* kRgNoFrameMsg =
         "No live render graph (headless, or no frame rendered yet)";
 
-    // Build a name -> {cpuMs, gpuSpanMs} overlay from the last resolved timings.
-    // See get_gpu_profiler's timingSemantics for what the GPU value measures.
-    [[maybe_unused]] static auto rgTimingMap = [](RG::RGFrame* frame) {
-        std::unordered_map<std::string, std::pair<double, double>> m;
+    [[maybe_unused]] static auto RgTimingMap(RG::RGFrame* frame)
+    {
+        std::unordered_map<std::string, RG::RGFrame::RGPassTiming> timings;
         if (frame)
-            for (const auto& t : frame->LastFrameTimings())
-                m[t.Name] = {t.CpuMs, t.GpuSpanMs};
-        return m;
-    };
+            for (const auto& timing : frame->LastFrameTimings())
+                timings[timing.Name] = timing;
+        return timings;
+    }
 
 
 } // namespace GameEngine

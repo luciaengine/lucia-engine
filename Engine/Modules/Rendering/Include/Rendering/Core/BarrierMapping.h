@@ -38,6 +38,7 @@ enum class ResourceAccessMask : uint64_t {
     TransferRead          = 1ull << 7,
     TransferWrite         = 1ull << 8,
     IndirectCommandRead   = 1ull << 9,
+    IndexRead             = 1ull << 10,
 };
 
 inline ResourceAccessMask operator|(ResourceAccessMask a, ResourceAccessMask b) {

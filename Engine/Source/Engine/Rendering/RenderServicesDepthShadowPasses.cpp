@@ -824,10 +824,15 @@ Rendering::RenderGraph::RGPass RenderServices::AddDeformationMotionPassForView(
     params.Resources = BuildPassResourcesRG(frame, viewId, Rendering::MaterialKeyword::None,
                                             nullptr, cam.Buffer, cam.Offset);
 
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
     return frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.Prepare([this, preparedDepth](RenderGraph::RGPrepareContext& prepare)
+            {
+                return PrepareDepthOnlyPass(prepare, *preparedDepth, MakeDepthDrawServices());
+            });
             RenderGraph::RGAttachmentOps colorOps{};
             // One owner clears this target. The producer runs first and owns
             // the clear; the mover lane that follows loads, so neither erases
@@ -845,8 +850,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddDeformationMotionPassForView(
             if (m_FrameRG.For.IsFor(frame) && m_FrameRG.DrawStreamOrdering.IsValid())
                 p.Read(m_FrameRG.DrawStreamOrdering, RenderGraph::RGBufferRead::Indirect);
         },
-        [this, params = std::move(params)](RenderGraph::RGContext& ctx) mutable
-        { RecordDepthOnlyPass(ctx, std::move(params), MakeDepthDrawServices()); });
+        [preparedDepth](RenderGraph::RGContext& ctx) mutable
+        { RecordPreparedDepthOnlyPass(ctx, *preparedDepth); });
 }
 
 Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
@@ -942,10 +947,15 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
     params.Resources = BuildPassResourcesRG(frame, viewId, Rendering::MaterialKeyword::None,
                                             nullptr, cam.Buffer, cam.Offset);
 
+    auto* preparedDepth = AllocatePreparedDepthOnlyPass(frame, std::move(params));
     const RenderGraph::RGPass pass = frame.AddPass(
         passName.c_str(), Rendering::PassPhase::kWorldRender,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.Prepare([this, preparedDepth](RenderGraph::RGPrepareContext& prepare)
+            {
+                return PrepareDepthOnlyPass(prepare, *preparedDepth, MakeDepthDrawServices());
+            });
             // A2.4-P0-R: the depth prepass exec is self-contained (own
             // viewport/scissor + per-draw binds) — eligible for secondary record.
             p.RecordInSecondary();
@@ -998,8 +1008,8 @@ Rendering::RenderGraph::RGPass RenderServices::AddWorldDepthPrepassImpl(
             // the read that keeps this alive. A frame where the world CLEARS
             // depth instead culls the prepass — correct dead-work elimination.
         },
-        [this, params = std::move(params)](RenderGraph::RGContext& ctx) mutable
-        { RecordDepthOnlyPass(ctx, std::move(params), MakeDepthDrawServices()); });
+        [preparedDepth](RenderGraph::RGContext& ctx) mutable
+        { RecordPreparedDepthOnlyPass(ctx, *preparedDepth); });
 
     if (isNonOccluding)
         return pass;

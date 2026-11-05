@@ -4,12 +4,19 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h" // pending keys use RGFrame identity
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace GameEngine::Rendering::RenderGraph
 {
+
+enum class RGReadbackRetention : uint8_t
+{
+    SupersedeUnread,
+    PreserveUnread
+};
 
 // GPU->CPU readback ring: N host-readable buffers written on rotating slots by
 // a copy pass or a storage-writing dispatch, read back once the writing frame's
@@ -45,12 +52,14 @@ class RGReadbackRing
     // BeginWrite on every backend. The ring only owns rotation, completion,
     // and payload carriage. Creates `count` slots; false on any failure (the
     // ring is Destroyed and left uninitialized).
-    bool Init(IDevice* device, const BufferDesc& desc, uint32_t count)
+    bool Init(IDevice* device, const BufferDesc& desc, uint32_t count,
+              RGReadbackRetention retention = RGReadbackRetention::SupersedeUnread)
     {
         Destroy(device);
         if (!device || count == 0)
             return false;
         m_Device = device;
+        m_Retention = retention;
 
         const bool splitSlots =
             (desc.usage & static_cast<uint32_t>(BufferUsage::Storage)) != 0
@@ -121,13 +130,53 @@ class RGReadbackRing
     uint32_t Count() const { return m_Count; }
     uint64_t SlotBytes() const { return m_SlotBytes; }
 
-    // Begin a readback at DECLARE time: rotates to the next slot, stamps the
-    // payload, and registers a pending keyed by the declaring frame's
-    // identity. The caller records the copy/dispatch into this frame; the
-    // frame's post-submit stamp attaches the completion token. A reused
-    // slot's still-unread pending is dropped (superseded before ever read).
-    // Invalid before Init.
-    BufferHandle BeginWrite(const RGFrame& frame, const Payload& payload);
+    // Register a promised write. The caller must record it in this frame.
+    // SupersedeUnread permits slot reuse; PreserveUnread applies backpressure.
+    // ReserveWrite instead requires explicit confirmation after recording.
+    BufferHandle BeginWrite(const RGFrame& frame, const Payload& payload)
+    {
+        uint64_t reservation = 0;
+        const auto output = ReserveWrite(frame, payload, reservation);
+        if (output.IsValid())
+            MarkRecorded(output, reservation);
+        return output;
+    }
+
+    // A prepared slot is publishable only after its dispatch or copy records.
+    BufferHandle ReserveWrite(const RGFrame& frame, const Payload& payload, uint64_t& reservation);
+
+    bool MarkRecorded(BufferHandle output, uint64_t reservation)
+    {
+        for (auto& pending : m_Pending)
+        {
+            if (!pending.Stamped && pending.Reservation == reservation &&
+                (m_WriteBuffers.empty() ? m_Buffers[pending.Slot] : m_WriteBuffers[pending.Slot]) == output)
+            {
+                pending.Recorded = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool HasPendingWrite(const RGFrame& frame, BufferHandle output, uint64_t reservation) const
+    {
+        for (const auto& pending : m_Pending)
+            if (!pending.Stamped && pending.FrameKey == &frame &&
+                pending.FrameIndex == frame.FrameIndex() && pending.Reservation == reservation &&
+                (m_WriteBuffers.empty() ? m_Buffers[pending.Slot] : m_WriteBuffers[pending.Slot]) == output)
+                return true;
+        return false;
+    }
+
+    void CancelUnsubmitted(const RGFrame& frame)
+    {
+        std::erase_if(m_Pending, [&](const PendingSlot& pending)
+        {
+            return !pending.Stamped && pending.FrameKey == &frame &&
+                   pending.FrameIndex == frame.FrameIndex();
+        });
+    }
 
     // Record the slot's GPU-side resolve into the mappable buffer, after the
     // write and in the same pass, with the handle BeginWrite returned. A no-op
@@ -205,16 +254,22 @@ class RGReadbackRing
         }
         if (readyIdx == m_Pending.size())
             return nullptr;
-        const PendingSlot ready = m_Pending[readyIdx];
-        void* mapped = device->MapBuffer(m_Buffers[ready.Slot]);
-        if (!mapped)
+        return MapReadySlot(device, readyIdx, outPayload, true);
+    }
+
+    // Token-addressed results retain every ready entry until it is consumed.
+    const void* MapOldestReady(IDevice* device, Payload* outPayload)
+    {
+        if (!device || m_Count == 0)
             return nullptr;
-        if (outPayload)
-            *outPayload = ready.Data;
-        m_MappedSlot = ready.Slot;
-        // Consume this pending and everything older — superseded results.
-        m_Pending.erase(m_Pending.begin(), m_Pending.begin() + readyIdx + 1);
-        return mapped;
+        for (size_t index = 0; index < m_Pending.size(); ++index)
+        {
+            const auto& pending = m_Pending[index];
+            if (pending.Stamped &&
+                device->QueryGpuSyncToken(pending.Token) == IDevice::GpuSyncStatus::Complete)
+                return MapReadySlot(device, index, outPayload, false);
+        }
+        return nullptr;
     }
 
     void Unmap(IDevice* device)
@@ -233,8 +288,27 @@ class RGReadbackRing
         uint64_t FrameIndex = 0;
         IDevice::GpuSyncToken Token{};
         bool Stamped = false;
+        bool Recorded = false;
         Payload Data{};
+        uint64_t Reservation = 0;
     };
+
+    const void* MapReadySlot(IDevice* device, size_t index, Payload* outPayload,
+                             bool supersedeOlder)
+    {
+        const PendingSlot ready = m_Pending[index];
+        void* mapped = device->MapBuffer(m_Buffers[ready.Slot]);
+        if (!mapped)
+            return nullptr;
+        if (outPayload)
+            *outPayload = ready.Data;
+        m_MappedSlot = ready.Slot;
+        if (supersedeOlder)
+            m_Pending.erase(m_Pending.begin(), m_Pending.begin() + index + 1);
+        else
+            m_Pending.erase(m_Pending.begin() + index);
+        return mapped;
+    }
 
     std::vector<BufferHandle> m_Buffers;      // mapped by the CPU
     std::vector<BufferHandle> m_WriteBuffers; // empty unless slots are split
@@ -244,13 +318,28 @@ class RGReadbackRing
     uint32_t m_NextSlot = 0;
     IDevice* m_Device = nullptr;
     uint32_t m_MappedSlot = UINT32_MAX;
+    RGReadbackRetention m_Retention = RGReadbackRetention::SupersedeUnread;
+    uint64_t m_NextReservation = 1;
 };
 
 template <class Payload>
-BufferHandle RGReadbackRing<Payload>::BeginWrite(const RGFrame& frame, const Payload& payload)
+BufferHandle RGReadbackRing<Payload>::ReserveWrite(const RGFrame& frame, const Payload& payload,
+                                                  uint64_t& reservation)
 {
+    reservation = 0;
     if (m_Count == 0)
         return {};
+    if (m_Retention == RGReadbackRetention::PreserveUnread)
+    {
+        std::erase_if(m_Pending, [&](const PendingSlot& pending)
+        {
+            return !pending.Stamped && pending.FrameKey == &frame &&
+                   pending.FrameIndex != frame.FrameIndex();
+        });
+        for (const auto& pending : m_Pending)
+            if (pending.Slot == m_NextSlot)
+                return {};
+    }
     const uint32_t slot = m_NextSlot;
     // A slot whose read-map is live or still resolving (web's maps are
     // asynchronous) must not take a new copy: WebGPU fails the whole submit
@@ -273,6 +362,10 @@ BufferHandle RGReadbackRing<Payload>::BeginWrite(const RGFrame& frame, const Pay
     p.FrameKey = &frame;
     p.FrameIndex = frame.FrameIndex();
     p.Data = payload;
+    p.Reservation = m_NextReservation++;
+    if (m_NextReservation == 0)
+        ++m_NextReservation;
+    reservation = p.Reservation;
     m_Pending.push_back(p);
     return m_WriteBuffers.empty() ? m_Buffers[slot] : m_WriteBuffers[slot];
 }
@@ -289,13 +382,10 @@ void RGReadbackRing<Payload>::OnFrameSubmitted(const RGFrame& frame,
             ++it; // another stream's pending (or already stamped) — leave it
             continue;
         }
-        if (it->FrameIndex != frameIndex)
+        if (it->FrameIndex != frameIndex || !it->Recorded)
         {
-            // The frame was re-begun before this incarnation's stamp: the
-            // declaration died with the old graph — the write never recorded.
-            // (Dead-STREAM pendings don't rely on this mismatch to be purged —
-            // OnFrameStreamRetired removes them at window close, before the
-            // address can recycle with a colliding index.)
+            // Abandoned incarnations and unrecorded reservations cannot publish data.
+            // Stream retirement also purges unstamped entries before address reuse.
             it = m_Pending.erase(it);
             continue;
         }

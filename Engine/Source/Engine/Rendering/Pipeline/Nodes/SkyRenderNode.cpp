@@ -468,6 +468,12 @@ void SkyRenderNode::Declare(RenderPipelineInstance& instance, const PipelineDecl
         skyViewCurrent ? Rendering::ResourceState::ShaderResource
                        : Rendering::ResourceState::Common);
 
+    // Later frames import computed LUTs as shader resources. Keep that resting
+    // layout even when this frame has no sampled consumer.
+    ctx.Frame.MarkOutput(trans, RenderGraph::RGImageLayout::ShaderReadOnly);
+    ctx.Frame.MarkOutput(multiscatter, RenderGraph::RGImageLayout::ShaderReadOnly);
+    ctx.Frame.MarkOutput(skyView, RenderGraph::RGImageLayout::ShaderReadOnly);
+
     // Dirty gates AT DECLARATION (the activation predicates' immediate-mode
     // form). Settings-only digests — never extend to camera/depth inputs.
     auto* rendererPtr = &renderer;
@@ -476,7 +482,12 @@ void SkyRenderNode::Declare(RenderPipelineInstance& instance, const PipelineDecl
     {
         ctx.Frame.AddComputePass(
             m_TransmittancePassName.c_str(), Rendering::PassPhase::kEarlySetup,
-            [&](RenderGraph::RGPassBuilder& p) { p.Write(trans, RenderGraph::RGTextureWrite::Storage); },
+            [&](RenderGraph::RGPassBuilder& p) {
+                p.Prepare([rendererPtr](RenderGraph::RGPrepareContext& context)
+                          {
+                              Rendering::IDevice* device = context.GetDevice();
+                              return device && context.PreparePipeline(rendererPtr->EnsureTransmittanceId(*device)).IsValid();
+                          }); p.Write(trans, RenderGraph::RGTextureWrite::Storage); },
             [this, rendererPtr](RenderGraph::RGContext& c)
             {
                 auto* cl = c.Cmd;
@@ -518,6 +529,11 @@ void SkyRenderNode::Declare(RenderPipelineInstance& instance, const PipelineDecl
             m_MultiscatterPassName.c_str(), Rendering::PassPhase::kEarlySetup,
             [&](RenderGraph::RGPassBuilder& p)
             {
+                p.Prepare([rendererPtr](RenderGraph::RGPrepareContext& context)
+                          {
+                              Rendering::IDevice* device = context.GetDevice();
+                              return device && context.PreparePipeline(rendererPtr->EnsureMultiscatterId(*device)).IsValid();
+                          });
                 // Read the transmittance LUT (Sampled) and write the multiscatter
                 // LUT (Storage). These access edges make RG order this pass after
                 // transmittance and before sky-view (which reads multiscatter).
@@ -569,6 +585,11 @@ void SkyRenderNode::Declare(RenderPipelineInstance& instance, const PipelineDecl
             m_SkyViewLutPassName.c_str(), Rendering::PassPhase::kEarlySetup,
             [&](RenderGraph::RGPassBuilder& p)
             {
+                p.Prepare([rendererPtr](RenderGraph::RGPrepareContext& context)
+                          {
+                              Rendering::IDevice* device = context.GetDevice();
+                              return device && context.PreparePipeline(rendererPtr->EnsureSkyViewLutId(*device)).IsValid();
+                          });
                 p.Read(trans, RenderGraph::RGTextureRead::Sampled);
                 p.Read(multiscatter, RenderGraph::RGTextureRead::Sampled);
                 p.Write(skyView, RenderGraph::RGTextureWrite::Storage);
@@ -627,6 +648,21 @@ void SkyRenderNode::Declare(RenderPipelineInstance& instance, const PipelineDecl
     }
 }
 
+static bool PrepareSkyRenderPipelines(RenderGraph::RGPrepareContext& context,
+                                      Rendering::SkyRenderer& renderer,
+                                      const Rendering::SkySettings& settings)
+{
+    Rendering::IDevice* device = context.GetDevice();
+    if (!device || !context.PreparePipeline(renderer.EnsureSkyRenderId(*device)).IsValid())
+        return false;
+    if (!renderer.EnsureMoonFullTexture().IsValid())
+        return false;
+    const bool needsStars = !IsHdriBackdropSky(settings) && !IsGradientSky(settings) &&
+        settings.nightSkyBlend > 0.0f && renderer.GetStarInstanceCount(settings.starDensity) > 0 &&
+        renderer.GetStarSSBO().IsValid();
+    return !needsStars || context.PreparePipeline(renderer.EnsureStarBillboardId(*device)).IsValid();
+}
+
 void SkyRenderNode::DeclareForView(ViewDeclare& d)
 {
     auto& rs = d.Services;
@@ -680,6 +716,8 @@ void SkyRenderNode::DeclareForView(ViewDeclare& d)
         d.PassName().c_str(), Rendering::PassPhase::kSkyRender,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.Prepare([rendererPtr, skyPtr](RenderGraph::RGPrepareContext& context)
+                      { return PrepareSkyRenderPipelines(context, *rendererPtr, skyPtr->GetSettings()); });
             RenderGraph::RGAttachmentOps ops{};
             ops.Load = RenderGraph::RGLoadOp::Clear;
             ops.Store = RenderGraph::RGStoreOp::Store;

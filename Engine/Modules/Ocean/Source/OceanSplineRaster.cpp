@@ -1,8 +1,8 @@
 #include "Ocean/OceanSplineRaster.h"
 #include "Ocean/OceanShaderProgram.h"
+#include "Ocean/OceanPreparedDispatch.h"
 #include "Rendering/Materials/ShaderLayoutShape.h"
 #include "OceanShaderDirectory.h"
-#include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/PipelineTypes.h"
 #include "Logger/Logger.h"
 #include <algorithm>
@@ -14,6 +14,50 @@
 namespace GameEngine::Ocean
 {
 using namespace Rendering;
+namespace
+{
+struct alignas(16) SplineRasterParamsGPU
+{
+    OceanCascadeLayoutGPU Layout;
+    uint32 Grid[4];
+};
+
+struct SplineRasterDispatch
+{
+    ComputePipelineId Pipeline;
+    DescriptorSetLayoutDesc Layout;
+    RenderGraph::RGTexture Target;
+    RenderGraph::RGUploadRing::Alloc Triangles, Tiles, Params;
+    size_t TriangleBytes = 0, TileBytes = 0;
+    uint32 Groups = 0, Lods = 0;
+    OceanPreparedDispatch Commands;
+
+    bool Prepare(RenderGraph::RGPrepareContext& ctx)
+    {
+        Commands = {};
+        auto* device = ctx.GetDevice();
+        if (!device || !Triangles.Valid() || !Tiles.Valid() || !Params.Valid())
+            return false;
+        const auto pipeline = ctx.PreparePipeline(Pipeline);
+        const auto target = ctx.GetTexture(Target);
+        if (!pipeline || !target.IsValid())
+            return false;
+        DescriptorSetDesc desc{};
+        desc.layout = Layout;
+        desc.transient = true;
+        desc.debugName = "Ocean.SplineRaster.DS";
+        const auto set = device->CreateDescriptorSet(desc);
+        if (!set.IsValid())
+            return false;
+        device->UpdateBufferBinding(set, 0, Params.Buffer, Params.Offset, sizeof(SplineRasterParamsGPU));
+        device->UpdateStorageBufferBinding(set, 1, Triangles.Buffer, Triangles.Offset, TriangleBytes);
+        device->UpdateStorageBufferBinding(set, 2, Tiles.Buffer, Tiles.Offset, TileBytes);
+        device->UpdateStorageImageBinding(set, 3, target);
+        Commands = {pipeline, set, Groups, Groups, Lods, target};
+        return Commands.IsValid();
+    }
+};
+} // namespace
 std::vector<OceanRibbonTriangleGPU> BuildOceanRibbon(const std::vector<OceanRibbonPoint> &points,
                                                      const OceanRibbonStyle &style)
 {
@@ -538,45 +582,32 @@ bool OceanSplineRaster::Declare(RenderGraph::RGFrame &frame, IDevice *device, ui
     const auto &packed = bins.Packed;
     const auto tris = frame.AllocUpload(m_Triangles.size() * sizeof(OceanRibbonTriangleGPU));
     const auto tiles = frame.AllocUpload(packed.size() * sizeof(uint32));
-    struct alignas(16) Params
-    {
-        OceanCascadeLayoutGPU Layout;
-        uint32 Grid[4];
-    };
-    const auto u = frame.AllocUpload<Params>();
+    const auto u = frame.AllocUpload<SplineRasterParamsGPU>();
     if (!tris.Valid() || !tiles.Valid() || !u.Valid())
         return false;
     std::memcpy(tris.Ptr, m_Triangles.data(), m_Triangles.size() * sizeof(OceanRibbonTriangleGPU));
     std::memcpy(tiles.Ptr, packed.data(), packed.size() * sizeof(uint32));
     *u.Ptr = {layout, {resolution, groups, 0, 0}};
-    const auto pipe = m_Pipelines[field];
-    const auto dsLayout = m_Layout;
+    auto* dispatch = frame.AllocatePassData<SplineRasterDispatch>();
+    dispatch->Pipeline = m_Pipelines[field];
+    dispatch->Layout = m_Layout;
+    dispatch->Target = target;
+    dispatch->Triangles = tris;
+    dispatch->Tiles = tiles;
+    dispatch->Params = {u.Buffer, u.Offset, u.Ptr};
+    dispatch->TriangleBytes = m_Triangles.size() * sizeof(OceanRibbonTriangleGPU);
+    dispatch->TileBytes = packed.size() * sizeof(uint32);
+    dispatch->Groups = groups;
+    dispatch->Lods = layout.LodCount;
     frame.AddPass(("OceanSplineRaster" + std::to_string(field)).c_str(), PassPhase::kEarlySetup,
-                  [&](RenderGraph::RGPassBuilder &p) {
+                  [dispatch, target](RenderGraph::RGPassBuilder &p) {
+                      p.UsePipeline(dispatch->Pipeline);
                       p.Read(target, RenderGraph::RGTextureRead::Storage);
                       p.Write(target, RenderGraph::RGTextureWrite::Storage);
+                      p.Prepare([dispatch](RenderGraph::RGPrepareContext& ctx) { return dispatch->Prepare(ctx); });
                   },
-                  [pipe, dsLayout, target, tris, tiles, params = u.Buffer, offset = u.Offset, groups,
-                   lods = layout.LodCount, triBytes = m_Triangles.size() * sizeof(OceanRibbonTriangleGPU),
-                   tileBytes = packed.size() * sizeof(uint32)](RenderGraph::RGContext &ctx) {
-                      auto *dev = ctx.GetDevice();
-                      if (!dev || !ctx.Cmd)
-                          return;
-                      const auto pso = dev->GetOrCreateComputePipeline(pipe);
-                      if (!pso)
-                          return;
-                      DescriptorSetDesc desc{};
-                      desc.layout = dsLayout;
-                      desc.transient = true;
-                      desc.debugName = "Ocean.SplineRaster.DS";
-                      const auto ds = dev->CreateDescriptorSet(desc);
-                      dev->UpdateBufferBinding(ds, 0, params, offset, sizeof(Params));
-                      dev->UpdateStorageBufferBinding(ds, 1, tris.Buffer, tris.Offset, triBytes);
-                      dev->UpdateStorageBufferBinding(ds, 2, tiles.Buffer, tiles.Offset, tileBytes);
-                      dev->UpdateStorageImageBinding(ds, 3, ctx.GetTexture(target));
-                      ctx.Cmd->SetPipeline(pso);
-                      ctx.Cmd->BindDescriptorSet(0, ds, pso);
-                      ctx.Cmd->Dispatch(groups, groups, lods);
+                  [dispatch](RenderGraph::RGContext &ctx) {
+                      RecordOceanPreparedDispatch(ctx.Cmd, dispatch->Commands);
                   });
     frame.MarkOutput(target, RenderGraph::RGImageLayout::ShaderReadOnly);
     return true;

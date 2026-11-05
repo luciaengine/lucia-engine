@@ -10,22 +10,11 @@
 namespace GameEngine::Rendering::RenderGraph
 {
 
-// Shared fullscreen-pass spine. Every fullscreen post pass in the engine
-// records the same body — resolve the pipeline variant, create a transient
-// descriptor set, write N sampled-texture + M buffer bindings, set
-// viewport/scissor, Draw(3,1) — and re-rolled it by hand (~40 lines per pass
-// across OceanUnderwater/OceanLightShafts/OceanSceneGrab/SceneColorGrab).
-// AddFullscreenPass owns that body plus the graph declaration; pipeline
-// INTERNING stays with the caller (shaders and blend state are the pass's
-// identity), seeded from MakeFullscreenPipelineDesc's canonical state.
+// Shared fullscreen passes prepare their pipeline and descriptors before recording.
+// Callers own shader and blend-state identity and intern the pipeline.
 
-// One sampled-texture input. Resolution order at record time:
-//   1. Texture (graph) — declared Read(Sampled) at build; if its physical
-//      resolves invalid: skip the draw when Required, else bind Fallback.
-//   2. RawTexture — feature-owned physical bound descriptor-direct (its
-//      layout contract is the owner's problem, e.g. via MarkOutput).
-//   3. Fallback (+ FallbackSampler when set) — dummy so the binding is
-//      always valid; if nothing resolves, the draw is skipped.
+// Resolve graph inputs, raw textures, then fallbacks during preparation.
+// A required missing input or missing fallback cancels frame submission.
 struct RGFullscreenTextureInput
 {
     uint32_t Binding = 0;
@@ -54,9 +43,8 @@ struct RGFullscreenDesc
 {
     const char* Name = nullptr;
     int32_t Phase = 0;
-    // Pre-interned by the caller (variant-resolved via GetOrCreatePipelineVariant
-    // at record). The caller picks the MSAA-resolve fork where a source can be
-    // multisampled — it already knows at declare.
+    // Caller-interned pipeline, prepared for the realized attachment formats.
+    // The caller selects the multisample-source shader when declaring the pass.
     GraphicsPipelineId Pipeline{};
     DescriptorSetLayoutDesc Layout{};
     std::span<const RGFullscreenTextureInput> Textures{};
@@ -72,7 +60,7 @@ struct RGFullscreenDesc
 
 // Declares the reads/attachment and records the canonical fullscreen body.
 // Capacity: at most kMaxFullscreenTextureInputs/kMaxFullscreenBufferInputs
-// inputs (asserted) — the exec lambda copies the spans into fixed arrays.
+// inputs (asserted). Frame-owned pass state copies the input spans.
 inline constexpr uint32_t kMaxFullscreenTextureInputs = 20;
 inline constexpr uint32_t kMaxFullscreenBufferInputs = 4;
 RGPass AddFullscreenPass(RGFrame& frame, const RGFullscreenDesc& desc);

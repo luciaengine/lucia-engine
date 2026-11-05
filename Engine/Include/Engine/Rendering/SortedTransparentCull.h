@@ -1,11 +1,5 @@
 #pragma once
 
-// Pure CPU frustum culling for the sorted transparent path, factored out of
-// RenderServices so it can be unit-tested with mock spheres and no GPU state.
-// (The back-to-front ORDERING lives on the GPU as of transparency-scale S2 —
-// sorted_transparent_drain.comp — with BuildSortedTransparentCpuOrder in
-// SortedTransparentRuns.h as the past-capacity CPU twin.)
-
 #include "Rendering/Common/Frustum.h" // TestSphereFrustum, Vector4
 #include "Rendering/Core/GPUCulling.h" // MakeFrustumPlanesCameraRelative
 

@@ -420,7 +420,6 @@ protected:
         m_DataStore.BeginFrame(0);
         const uint32 skeletonGpuIndex = m_DataStore.EnsureSkeletonUploaded(rig.SkeletonId);
         const uint32 clipGpuIndex = m_DataStore.EnsureClipUploaded(rig.ClipIndex);
-        m_DataStore.AddInstance(MakeInstance(skeletonGpuIndex, clipGpuIndex, time));
 
         std::vector<float> packedRows(rig.JointCount * BonePaletteLayout::kFloatsPerBone);
         const size_t atlasBytes = packedRows.size() * sizeof(float);
@@ -438,6 +437,9 @@ protected:
             frame.BeginFrame(0);
             const RG::RGBuffer atlasResource = frame.ImportExternalBuffer("SkinPaletteAtlas", atlas, atlasBytes);
             pass.Declare(frame, atlasResource, RG::RGBuffer{});
+            // Preview worlds append instances after the main graph is declared.
+            // Preparation must observe these late arrivals before any recording.
+            m_DataStore.AddInstance(MakeInstance(skeletonGpuIndex, clipGpuIndex, time));
             EXPECT_EQ(frame.Graph().PassCount(), 1u) << "AnimationComputePass declared no pass";
             frame.Execute();
             m_Device->WaitForIdle();
