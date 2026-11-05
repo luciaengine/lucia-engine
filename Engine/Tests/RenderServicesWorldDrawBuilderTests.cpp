@@ -412,6 +412,76 @@ TEST(RenderServicesWorldDrawBuilderTests, ColorClassMerge_DedupsByClassLowestMat
     device->Shutdown();
 }
 
+TEST(RenderServicesWorldDrawBuilderTests, RepeatedRunsPreserveClassRepresentativesCastersAndLateSubmissions)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    const auto mesh = RegisterTestMesh(services);
+    Material high = Material::TestFactory::Create(GUID::Generate(), "High", 32u);
+    Material low = Material::TestFactory::Create(GUID::Generate(), "Low", 32u);
+    Material other = Material::TestFactory::Create(GUID::Generate(), "Other", 32u);
+    Material late = Material::TestFactory::Create(GUID::Generate(), "Late", 32u);
+    Material::TestFactory::SetGraphicsPipelineId(high, GraphicsPipelineId{1u});
+    Material::TestFactory::SetGraphicsPipelineId(low, GraphicsPipelineId{1u});
+    Material::TestFactory::SetGraphicsPipelineId(other, GraphicsPipelineId{1u});
+    Material::TestFactory::SetGraphicsPipelineId(late, GraphicsPipelineId{1u});
+    Material::TestFactory::SetGpuSceneMaterialIndex(high, 5u);
+    Material::TestFactory::SetGpuSceneMaterialIndex(low, 2u);
+    Material::TestFactory::SetGpuSceneMaterialIndex(other, 9u);
+    Material::TestFactory::SetGpuSceneMaterialIndex(late, 1u);
+    const uint32 colorClass = GPUDrawStreamBuilder::kColorClassBase;
+    std::vector<uint32> classes{0u, colorClass, colorClass, 3u, 4u, colorClass, 6u, 7u, 8u, 9u};
+    std::vector<WorldSubmissionRecord> records(8);
+    for (uint32 index = 0; index < records.size(); ++index)
+    {
+        records[index].viewId = 3u;
+        records[index].meshHandle = mesh;
+        records[index].instanceIndex = index;
+    }
+    records[0].material = &high;
+    records[1].material = &high;
+    records[2].material = &low;
+    records[3].material = &low;
+    records[3].flags = kSubmissionFlagCastShadows;
+    records[4].material = &other;
+    records[5].material = &high;
+    records[6].material = &low;
+    records[7].material = &low;
+    WorldDrawBuilder builder(nullptr);
+    builder.BeginFrame();
+    builder.Submit(records);
+    builder.BuildBatchKeys(services.GetMeshGPURegistry(), classes);
+    ASSERT_EQ(builder.GetBatchKeys(3u).size(), 2u);
+    EXPECT_TRUE(builder.HasShadowCastingSubmissions(3u));
+    ASSERT_EQ(builder.GetSubmissions(3u).size(), records.size());
+    for (uint32 index = 0; index < records.size(); ++index)
+        EXPECT_EQ(builder.GetSubmissions(3u)[index].instanceIndex, index);
+    for (const auto& key : builder.GetBatchKeys(3u))
+        if (key.colorClassId == colorClass)
+        {
+            EXPECT_EQ(key.material, &low);
+            EXPECT_EQ(key.materialIndex, 2u);
+        }
+    WorldSubmissionRecord appended = records.front();
+    appended.material = &late;
+    appended.instanceIndex = 8u;
+    builder.Submit(std::span{&appended, 1u});
+    builder.BuildBatchKeysForView(3u, services.GetMeshGPURegistry(), classes);
+    ASSERT_EQ(builder.GetBatchKeys(3u).size(), 2u);
+    EXPECT_EQ(builder.GetSubmissions(3u).size(), records.size() + 1);
+    for (const auto& key : builder.GetBatchKeys(3u))
+        if (key.colorClassId == colorClass)
+        {
+            EXPECT_EQ(key.material, &late);
+            EXPECT_EQ(key.materialIndex, 1u);
+        }
+    services.Shutdown();
+    device->Shutdown();
+}
+
 // An empty color-class map is the merge-OFF signal: colorClassId == materialIndex,
 // so every distinct material keeps its own key exactly as before P2.
 TEST(RenderServicesWorldDrawBuilderTests, ColorClassMerge_EmptyMapKeepsPerMaterialKeys)

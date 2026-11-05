@@ -9,6 +9,7 @@
 #include "Rendering/Core/ThreadingUtils.h"
 
 #include <algorithm>
+#include <cassert>
 
 namespace GameEngine
 {
@@ -217,6 +218,15 @@ void WorldDrawBuilder::DeriveBatchKeysForView(
         const uint32_t colorClassId = materialIndex < materialColorClass.size()
                                           ? materialColorClass[materialIndex]
                                           : materialIndex;
+        // Repeated material/mesh runs need one sorting candidate. The census above still sees every record.
+        if (!keys.empty() && keys.back().materialIndex == materialIndex &&
+            keys.back().meshIndex == entry->gpuMeshIndex)
+        {
+            assert((keys.back().material == rec.material && keys.back().mesh == rec.meshHandle &&
+                    keys.back().colorClassId == colorClassId) &&
+                   "BatchKey (matIdx, meshIdx) maps to multiple (Material*/mesh/class)");
+            continue;
+        }
         keys.push_back(BatchKey{
             rec.material,
             rec.meshHandle,
