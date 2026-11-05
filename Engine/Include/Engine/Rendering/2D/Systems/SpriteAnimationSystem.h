@@ -6,6 +6,7 @@
 #include "Engine/Rendering/2D/SpriteRenderFeature.h"
 #include "Engine/Rendering/SortingLayers.h"
 
+#include <cstddef>
 #include <optional>
 
 namespace GameEngine
@@ -50,7 +51,7 @@ public:
 private:
     void AdvanceAndExtractSprite(ECS::World& world, AssetManager& assets, ECS::EntityHandle entity,
                                  ECS::Writable<Components::AnimatedSprite2D> spriteRow,
-                                 const Components::WorldTransform& worldTransform, float32 deltaTime);
+                                 const Components::WorldTransform& worldTransform, float32 deltaTime, std::optional<bool>& hasSortingGroups, std::size_t sortingScanBudget);
     /** Frame pixel extent of a sprite sheet, needed to size a quad from PixelsPerUnit. */
     struct TextureSize
     {
