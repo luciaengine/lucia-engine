@@ -239,7 +239,7 @@ class RGContext
     // key — lazily, memoized per pass). Compute variants need no key.
     PipelineFormatKey BuildCurrentFormatKey() const;
     uint32_t GetCurrentSampleCount() const;
-    /// Apply this pass's constants without compiling a concrete pipeline.
+    /// Resolve this pass's graphics pipeline ID without building a concrete pipeline.
     GraphicsPipelineId ResolveGraphicsPipelineId(GraphicsPipelineId id) const;
     PipelineHandle GetOrCreatePipelineVariant(GraphicsPipelineId id) const;
     PipelineHandle GetOrCreatePipelineVariant(ComputePipelineId id) const;
@@ -387,7 +387,7 @@ class RGFrame
     // pool to carry it and stays as its owner declared it.
     void RequireTransferUsage(RGTexture t, TextureUsage usage);
 
-    /// Set immutable graphics constant overrides for one pass's pipeline variants.
+    /// Set immutable graphics constant overrides before recording the pass.
     void SetGraphicsPipelineSpecialization(RGPass pass,
         std::shared_ptr<const SpecializationConstants> values);
     // outNeedsZeroInit (optional) reports that the physical is fresh (first use

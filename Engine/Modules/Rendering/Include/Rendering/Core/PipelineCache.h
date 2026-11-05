@@ -19,8 +19,8 @@
 #pragma once
 
 #include "Rendering/Core/Handle.h"
-#include "Types/FlatMap.h"
 #include "Rendering/Core/PipelineTypes.h"
+#include "Types/FlatMap.h"
 
 #include <atomic>
 #include <cstddef>
@@ -53,7 +53,7 @@ public:
     // content (after `ContentHash`) returns the same id. The interned desc
     // is owned by the cache and outlives any caller stack frame.
     GraphicsPipelineId InternGraphicsPipeline(GraphicsPipelineDesc desc);
-    /// Cache a graphics descriptor with constant overrides; retain its other constants.
+    /// Intern a graphics descriptor with constant overrides. Safe to call from recording workers.
     GraphicsPipelineId SpecializeGraphicsPipeline(GraphicsPipelineId base,
                                                    const SpecializationConstants& overrides);
     ComputePipelineId  InternComputePipeline(ComputePipelineDesc desc);
@@ -240,6 +240,7 @@ private:
     std::atomic<uint64_t> m_InvalidationEpoch{0};
 
     // Internal: caller holds m_Mutex.
+    GraphicsPipelineId InternGraphicsPipeline_NoLock(GraphicsPipelineDesc desc, uint64_t hash);
     void EnforceCapacity_NoLock();
     size_t RemoveKey_NoLock(uint64_t key);
     void DecrementInternRefcount_NoLock(const ConcreteEntry& entry);

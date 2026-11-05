@@ -87,39 +87,37 @@ GraphicsPipelineId PipelineCache::SpecializeGraphicsPipeline(
     if (overrides.IsEmpty())
         return base;
     const auto key = std::make_pair(base.Value, overrides.GetHash());
-    GraphicsPipelineDesc desc;
-    uint64_t epoch = 0;
+    std::scoped_lock lock(m_Mutex);
+    if (!base.IsValid() || base.Value > m_GraphicsEntries.size() ||
+        !m_GraphicsEntries[base.Value - 1].Live)
+        return {};
+    if (const auto* cached = m_GraphicsSpecializations.Find(key))
     {
-        std::scoped_lock lock(m_Mutex);
-        if (!base.IsValid() || base.Value > m_GraphicsEntries.size() ||
-            !m_GraphicsEntries[base.Value - 1].Live)
-            return {};
-        if (const auto* cached = m_GraphicsSpecializations.Find(key))
-        {
-            if (cached->IsValid() && cached->Value <= m_GraphicsEntries.size() &&
-                m_GraphicsEntries[cached->Value - 1].Live)
-                return *cached;
-        }
-        desc = m_GraphicsEntries[base.Value - 1].Desc;
-        epoch = m_InvalidationEpoch.load(std::memory_order_acquire);
+        if (cached->IsValid() && cached->Value <= m_GraphicsEntries.size() &&
+            m_GraphicsEntries[cached->Value - 1].Live)
+            return *cached;
     }
+
+    auto desc = m_GraphicsEntries[base.Value - 1].Desc;
     if (!desc.Specialization)
         desc.Specialization.emplace();
     desc.Specialization->Merge(overrides);
-    const auto specialized = InternGraphicsPipeline(std::move(desc));
-    {
-        std::scoped_lock lock(m_Mutex);
-        if (epoch == m_InvalidationEpoch.load(std::memory_order_acquire))
-            m_GraphicsSpecializations.InsertOrAssign(key, specialized);
-    }
+    const uint64_t hash = desc.ContentHash();
+    const auto specialized = InternGraphicsPipeline_NoLock(std::move(desc), hash);
+    m_GraphicsSpecializations.InsertOrAssign(key, specialized);
     return specialized;
 }
 
 GraphicsPipelineId PipelineCache::InternGraphicsPipeline(GraphicsPipelineDesc desc)
 {
-    const uint64_t h = desc.ContentHash();
+    const uint64_t hash = desc.ContentHash();
     std::scoped_lock lock(m_Mutex);
-    if (auto it = m_GraphicsHashToId.find(h); it != m_GraphicsHashToId.end())
+    return InternGraphicsPipeline_NoLock(std::move(desc), hash);
+}
+
+GraphicsPipelineId PipelineCache::InternGraphicsPipeline_NoLock(GraphicsPipelineDesc desc, uint64_t hash)
+{
+    if (auto it = m_GraphicsHashToId.find(hash); it != m_GraphicsHashToId.end())
     {
         // Re-pin live entry (if a previous tombstone matched, that's a hash
         // collision — re-create rather than alias, see Live flag below).
@@ -130,7 +128,7 @@ GraphicsPipelineId PipelineCache::InternGraphicsPipeline(GraphicsPipelineDesc de
     }
     m_GraphicsEntries.push_back({std::move(desc), 0u, false, true});
     const uint32_t newId = static_cast<uint32_t>(m_GraphicsEntries.size()); // 1-based
-    m_GraphicsHashToId[h] = newId;
+    m_GraphicsHashToId[hash] = newId;
     return GraphicsPipelineId{newId};
 }
 

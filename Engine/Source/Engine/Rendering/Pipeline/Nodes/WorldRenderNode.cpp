@@ -178,11 +178,11 @@ void WorldRenderNode::DeclareForView(ViewDeclare& d)
     // The pass then binds it by name and declares the read that orders it against the metering
     // write; without it the pass binds the zero fallback, the static scale.
     d.ResolveBuffer(Names::Res::ExposureHistory);
-    const auto r = d.Services.AddWorldPassForView(d.Frame, d.View.id, t, effectiveKeywords, scope);
-    d.Frame.SetGraphicsPipelineSpecialization(r.Pass, m_ForwardSpecialization.Resolve(d.Services, d.View));
+    const auto worldPass = d.Services.AddWorldPassForView(d.Frame, d.View.id, t, effectiveKeywords, scope);
+    d.Frame.SetGraphicsPipelineSpecialization(worldPass.Pass, m_ForwardSpecialization.Resolve(d.Services, d.View));
     // The thumbnail/readback contract: what the pass ACTUALLY wrote.
-    if (r.EffectiveColor.IsValid())
-        d.PublishTexture(Names::View::EffectiveColor, r.EffectiveColor);
+    if (worldPass.EffectiveColor.IsValid())
+        d.PublishTexture(Names::View::EffectiveColor, worldPass.EffectiveColor);
 
     // The sorted transparent (Blend) drain moved to SortedTransparentNode
     // (transparency-scale S1): it must render after HZBBuild so the GPU cull can

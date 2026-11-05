@@ -19,6 +19,7 @@ class RenderServices;
 class ForwardShaderSpecialization
 {
   public:
+    /// Resolve immutable constants during pass declaration.
     std::shared_ptr<const Rendering::SpecializationConstants> Resolve(
         RenderServices& services, const Rendering::ViewDesc& view);
 
