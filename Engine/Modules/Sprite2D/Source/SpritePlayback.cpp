@@ -36,6 +36,14 @@ std::size_t FrameIndexAtNormalizedTime(const SpriteFrameAnimation& animation, fl
     return animation.Frames.size() - 1;
 }
 
+bool ReachesUpperEndpoint(float64 phase, float64 movement, float64 duration)
+{
+    const float64 larger = std::max(phase, movement);
+    const float64 smaller = std::min(phase, movement);
+    // Subtraction from the larger addend is exact when a crossing is possible.
+    return larger >= duration || (larger >= duration * 0.5 && smaller >= duration - larger);
+}
+
 int64 CountLoopCrossings(float64 movement, float32 duration, float64 remainder, int64 carry)
 {
     if (std::abs(movement) < duration)
@@ -92,19 +100,34 @@ SpritePlaybackStep AdvanceSpritePlayback(const SpriteFrameAnimation& animation, 
     if (animation.Loop && duration > 0)
     {
         const float64 remainder = std::fmod(movement, duration);
-        const float64 phase = step.TimeSeconds + remainder;
-        const int64 carry = static_cast<int64>(std::floor(phase / duration));
-        step.TimeSeconds = NormalizeTime(phase, duration, true);
+        float64 phase = step.TimeSeconds;
+        int64 carry = 0;
+        if (remainder > 0 && ReachesUpperEndpoint(phase, remainder, duration))
+        {
+            carry = 1;
+            phase = std::min(phase, remainder) - (duration - std::max(phase, remainder));
+        }
+        else if (phase < -remainder)
+        {
+            carry = -1;
+            phase = duration - (-remainder - phase);
+        }
+        else
+            phase += remainder;
+        step.TimeSeconds = std::min(static_cast<float32>(phase), std::nextafter(duration, 0.0f));
         step.LoopCount = CountLoopCrossings(movement, duration, remainder, carry);
         if (step.LoopCount != 0)
             step.Events |= static_cast<uint32>(SpritePlaybackEvent::Looped);
     }
     else
     {
+        const bool finished = !animation.Loop && (movement > 0 ?
+            ReachesUpperEndpoint(step.TimeSeconds, movement, duration) : -movement >= step.TimeSeconds);
         step.TimeSeconds = NormalizeTime(destination, duration, animation.Loop);
-        if (!animation.Loop && ((movement > 0 && destination >= duration) ||
-                               (movement < 0 && destination <= 0)))
+        if (finished)
             step.Events |= static_cast<uint32>(SpritePlaybackEvent::Finished);
+        else if (!animation.Loop && movement > 0)
+            step.TimeSeconds = std::min(step.TimeSeconds, std::nextafter(duration, 0.0f));
     }
     step.FrameIndex = FrameIndexAtNormalizedTime(animation, step.TimeSeconds);
     if (step.FrameIndex != previousFrame || step.LoopCount != 0)

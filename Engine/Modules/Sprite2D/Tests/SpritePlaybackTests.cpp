@@ -213,3 +213,36 @@ TEST(SpritePlayback, LargeFractionalLoopsPreserveResidualCarryAndExactCounts)
     EXPECT_EQ(step.LoopCount, kExpectedLoops);
     EXPECT_FLOAT_EQ(step.TimeSeconds, 0.25f);
 }
+
+TEST(SpritePlayback, RoundedForwardStepsDoNotWrapOrFinishBeforeTheEndpoint)
+{
+    auto animation = MakeAnimation(true);
+    animation.Frames.resize(2);
+    for (auto& frame : animation.Frames) frame.DurationSeconds = 0.5f;
+    const float32 phase = 1.0f - std::ldexp(1.0f, -24);
+    const float32 delta = (1.0f - std::ldexp(1.0f, -23)) * std::ldexp(1.0f, -12);
+    const float32 speed = (1.0f + std::ldexp(1.0f, -23)) * std::ldexp(1.0f, -12);
+    for (const bool loop : {true, false})
+    {
+        animation.Loop = loop;
+        const auto step = AdvanceSpritePlayback(animation, phase, delta, speed);
+        EXPECT_EQ(step.TimeSeconds, phase);
+        EXPECT_EQ(step.FrameIndex, 1u);
+        EXPECT_EQ(step.LoopCount, 0);
+        EXPECT_EQ(step.Events, 0u);
+    }
+}
+
+TEST(SpritePlayback, ForwardWrapKeepsSmallOvershoots)
+{
+    auto animation = MakeAnimation(true);
+    animation.Frames.resize(2);
+    for (auto& frame : animation.Frames) frame.DurationSeconds = 0.5f;
+    const float32 phase = 1.0f - std::ldexp(1.0f, -24);
+    const float32 stepSize = (1.0f + std::ldexp(1.0f, -23)) * std::ldexp(1.0f, -12);
+    const auto step = AdvanceSpritePlayback(animation, phase, stepSize, stepSize);
+    EXPECT_EQ(step.TimeSeconds, std::ldexp(1.0f, -46));
+    EXPECT_EQ(step.FrameIndex, 0u);
+    EXPECT_EQ(step.LoopCount, 1);
+    EXPECT_EQ(step.Events, 3u);
+}
