@@ -1740,10 +1740,14 @@ bool RenderExtractionSystem::EvaluateFastPathPreconditions(ECS::World& world, ui
     const bool sortingChanged = ProbeColumnChanged<Components::RenderSorting>(world, m_ProbeGateSorting, probeVersion);
     const bool parentsChanged = ProbeColumnChanged<Components::Parent>(world, m_ProbeGateSortingParents, probeVersion);
     bool groupTransformChanged = false;
-    auto sortingTransforms = world.Query<ECS::Read<Components::RenderSorting>, ECS::Read<Components::WorldTransform>>();
+    auto sortingTransforms = world.Query<ECS::Read<Components::RenderSorting>, ECS::Read<Components::WorldTransform>,
+                                         ECS::Optional<Components::MeshRenderer>>();
     sortingTransforms.Changed<Components::WorldTransform>(m_ProbeGateSortingTransforms);
-    sortingTransforms.Each([&](const Components::RenderSorting& sorting, const Components::WorldTransform&)
-                          { groupTransformChanged = groupTransformChanged || sorting.GroupChildren || sorting.SortByY; });
+    sortingTransforms.Each([&groupTransformChanged](const Components::RenderSorting& sorting,
+                                                   const Components::WorldTransform&,
+                                                   const Components::MeshRenderer* meshRenderer)
+                          { groupTransformChanged = groupTransformChanged || sorting.GroupChildren ||
+                                                    (sorting.SortByY && meshRenderer != nullptr); });
     m_ProbeGateSortingTransforms.LastRunVersion = probeVersion;
     const uint64 sortingRevision = m_SortingSnapshotRevision;
     const bool hasSorting = world.Query<ECS::Read<Components::RenderSorting>>().Count() != 0;
