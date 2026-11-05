@@ -40,7 +40,7 @@
 // A surface input at the pixel centre. A centroid input on a partially covered MSAA pixel is taken
 // at its covered samples' centroid, which moves from pixel to pixel along a triangle edge, so its
 // screen derivatives there are wrong; derivatives that must hold across the edge take this instead.
-// interpolateAtOffset needs the device's sampleRateShading (GE_INTERPOLATION_FUNCTIONS); without it
+// interpolateAtOffset needs enabled shader interpolation functions (GE_INTERPOLATION_FUNCTIONS); without them
 // the input is its centroid value, and the derivatives keep their error along those edges.
 #if defined(GE_SURFACE_INPUTS_AT_CENTROID) && defined(GE_INTERPOLATION_FUNCTIONS)
 #define GE_SURFACE_INPUT_AT_CENTRE(input) interpolateAtOffset(input, vec2(0.0))

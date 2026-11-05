@@ -907,12 +907,10 @@ struct RenderingDeviceCapabilities
     // subpixel RGB text AA. Callers must fall back to single-source blending
     // when false.
     bool supportsDualSourceBlending = false;
-    // True when sampleRateShading is enabled on the logical device (same
-    // support == enabled contract as shaderInt64). It is what makes the SPIR-V
-    // InterpolationFunction capability (interpolateAtOffset) legal; enabling it
-    // turns no pipeline to per-sample shading. RendererProfile maps it to
-    // UseInterpolationFunctions, which the shader defines follow.
-    bool supportsSampleRateShading = false;
+    // True when the backend enabled shader interpolation functions. Vulkan requires
+    // sampleRateShading and, on portability devices, shaderSampleRateInterpolationFunctions.
+    // RendererProfile uses this effective capability to select the parallax footprint.
+    bool supportsShaderInterpolationFunctions = false;
 
     uint32_t maxBindlessTextures = 0;
     uint32_t maxBindlessBuffers = 0;

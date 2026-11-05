@@ -2084,6 +2084,8 @@ class VulkanDevice : public IDevice
     // Mirrors m_Capabilities.supportsDescriptorBuffer, but persists across the
     // QueryDeviceCapabilities() m_Capabilities-reset so the cap is rehydratable.
     bool m_DescriptorBufferEnabledAtInit = false;
+    // Effective interpolation support of the created device, retained across capability refreshes.
+    bool m_ShaderInterpolationFunctionsEnabledAtInit = false;
     // Stash for Vulkan 1.2 hostQueryReset. Set in CreateLogicalDevice and
     // consumed by the query pool config after device creation.
     bool m_HostQueryResetEnabledAtInit = false;
