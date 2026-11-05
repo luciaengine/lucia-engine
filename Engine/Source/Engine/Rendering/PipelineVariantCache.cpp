@@ -243,15 +243,22 @@ void PipelineVariantCache::WarnColdServe(const Material& material,
 std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
 PipelineVariantCache::ResolveWarmPipeline(const Material& material,
                                           const InstancedVariantEntry& entry,
-                                          const Rendering::PipelineFormatKey& formatKey)
+                                          const Rendering::PipelineFormatKey& formatKey,
+                                          const Rendering::RenderGraph::RGPrepareContext& context)
 {
     Rendering::IDevice* device = m_Materials->GetDevice();
-    if (auto pipeline = device->TryGetWarmGraphicsPipeline(entry.Current.PipelineId, formatKey); pipeline.IsValid())
+    const auto pipelineId = context.ResolveGraphicsPipelineId(entry.Current.PipelineId);
+    if (auto pipeline = device->TryGetWarmGraphicsPipeline(pipelineId, formatKey); pipeline.IsValid())
         return {pipeline, &entry.Current};
 
-    // Queue cold pipelines for the serial frame-begin drain; the backend may build inline.
-    // Serve a warm previous pipeline with its matching metadata and layouts meanwhile.
-    QueueConcreteWarm(material, entry.Current.PipelineId, formatKey);
+    // Preparation only queues cold IDs; frame begin may build them inline or on workers.
+    QueueConcreteWarm(material, pipelineId, formatKey);
+    if (pipelineId != entry.Current.PipelineId)
+    {
+        if (auto pipeline = device->TryGetWarmGraphicsPipeline(entry.Current.PipelineId, formatKey); pipeline.IsValid())
+            return {pipeline, &entry.Current};
+        QueueConcreteWarm(material, entry.Current.PipelineId, formatKey);
+    }
     if (entry.Previous.PipelineId.IsValid())
     {
         auto pipeline = device->TryGetWarmGraphicsPipeline(entry.Previous.PipelineId, formatKey);
@@ -267,8 +274,9 @@ PipelineVariantCache::ResolveColorVariant(
     Rendering::PrimitiveTopology topology,
     Rendering::MaterialKeyword passKeywords,
     Rendering::FrontFace frontFace,
-    const Rendering::PipelineFormatKey& formatKey)
+    const Rendering::RenderGraph::RGPrepareContext& context)
 {
+    const auto formatKey = context.BuildCurrentFormatKey();
     auto& cache = m_InstancedVariantCache;
     InstancedVariantKey key{
         &material,
@@ -292,7 +300,7 @@ PipelineVariantCache::ResolveColorVariant(
         && slot.Entry->Current.MaterialVersion == materialVersion)
     {
         const auto serve =
-            ResolveWarmPipeline(material, *slot.Entry, formatKey);
+            ResolveWarmPipeline(material, *slot.Entry, formatKey, context);
         if (!serve.first.IsValid())
             WarnColdServe(material, slot.Entry->Current.PipelineId, formatKey);
         return serve;
@@ -310,7 +318,7 @@ PipelineVariantCache::ResolveColorVariant(
             {
                 slot = {key, &it->second, epoch};
                 const auto serve =
-                    ResolveWarmPipeline(material, it->second, formatKey);
+                    ResolveWarmPipeline(material, it->second, formatKey, context);
                 if (!serve.first.IsValid())
                     WarnColdServe(material, it->second.Current.PipelineId,
                                   formatKey);
@@ -330,12 +338,12 @@ PipelineVariantCache::ResolveColorVariant(
                 material.GetName(),
                 FormatPipelineKey(formatKey));
         return staleEntry != nullptr
-            ? ResolveWarmPipeline(material, *staleEntry, formatKey)
+            ? ResolveWarmPipeline(material, *staleEntry, formatKey, context)
             : std::pair<PipelineHandle, const VariantServeUnit*>{{}, nullptr};
     }
     EnqueueVariantCompile(key, /*isDepth=*/false);
     if (staleEntry != nullptr)
-        return ResolveWarmPipeline(material, *staleEntry, formatKey);
+        return ResolveWarmPipeline(material, *staleEntry, formatKey, context);
     return {{}, nullptr};
 }
 
@@ -348,7 +356,7 @@ PipelineVariantCache::PrepareColorVariant(
     Rendering::FrontFace frontFace,
     const Rendering::RenderGraph::RGPrepareContext& context)
 {
-    return ResolveColorVariant(material, vertexFlags, topology, passKeywords, frontFace, context.BuildCurrentFormatKey());
+    return ResolveColorVariant(material, vertexFlags, topology, passKeywords, frontFace, context);
 }
 
 std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
@@ -361,8 +369,9 @@ PipelineVariantCache::ResolveDepthVariant(
     bool depthBiasEnable,
     bool depthClampEnable,
     Rendering::FrontFace frontFace,
-    const Rendering::PipelineFormatKey& formatKey)
+    const Rendering::RenderGraph::RGPrepareContext& context)
 {
+    const auto formatKey = context.BuildCurrentFormatKey();
     auto& cache = m_DepthInstancedVariantCache;
     const Rendering::CullModeFlags depthCullMode = material.IsDoubleSided()
         ? Rendering::CullModeFlagBits::None
@@ -382,7 +391,7 @@ PipelineVariantCache::ResolveDepthVariant(
         && slot.Entry->Current.PipelineId.IsValid()
         && slot.Entry->Current.MaterialVersion == materialVersion)
     {
-        return ResolveWarmPipeline(material, *slot.Entry, formatKey);
+        return ResolveWarmPipeline(material, *slot.Entry, formatKey, context);
     }
     // Stale-serve, exactly as the color path: keep the previous depth pipeline
     // on screen while the edited material's replacement builds.
@@ -395,7 +404,7 @@ PipelineVariantCache::ResolveDepthVariant(
             if (it->second.Current.MaterialVersion == materialVersion)
             {
                 slot = {key, &it->second, epoch};
-                return ResolveWarmPipeline(material, it->second, formatKey);
+                return ResolveWarmPipeline(material, it->second, formatKey, context);
             }
             staleEntry = &it->second;
         }
@@ -405,11 +414,11 @@ PipelineVariantCache::ResolveDepthVariant(
     // An unavailable build context can only retain a published unit or skip the draw.
     if (!m_Materials->IsMaterialBuildContextReady())
         return staleEntry != nullptr
-            ? ResolveWarmPipeline(material, *staleEntry, formatKey)
+            ? ResolveWarmPipeline(material, *staleEntry, formatKey, context)
             : std::pair<PipelineHandle, const VariantServeUnit*>{{}, nullptr};
     EnqueueVariantCompile(key, /*isDepth=*/true);
     if (staleEntry != nullptr)
-        return ResolveWarmPipeline(material, *staleEntry, formatKey);
+        return ResolveWarmPipeline(material, *staleEntry, formatKey, context);
     return {{}, nullptr};
 }
 
@@ -426,7 +435,7 @@ PipelineVariantCache::PrepareDepthInstancedVariant(
     const Rendering::RenderGraph::RGPrepareContext& context)
 {
     return ResolveDepthVariant(material, vertexFlags, topology, passKeywords, samples, depthBiasEnable,
-                               depthClampEnable, frontFace, context.BuildCurrentFormatKey());
+                               depthClampEnable, frontFace, context);
 }
 
 const PipelineVariantCache::VariantServeUnit* PipelineVariantCache::FindOrRequestPrepassVariant(

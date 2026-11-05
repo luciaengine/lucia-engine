@@ -81,11 +81,43 @@ uint64_t PipelineCache::CombineComputeKey(ComputePipelineId id) noexcept
 // Intern tables — graphics
 // =====================================================================
 
+GraphicsPipelineId PipelineCache::SpecializeGraphicsPipeline(
+    GraphicsPipelineId base, const SpecializationConstants& overrides)
+{
+    if (overrides.IsEmpty())
+        return base;
+    const auto key = std::make_pair(base.Value, overrides.GetHash());
+    std::scoped_lock lock(m_Mutex);
+    if (!base.IsValid() || base.Value > m_GraphicsEntries.size() ||
+        !m_GraphicsEntries[base.Value - 1].Live)
+        return {};
+    if (const auto* cached = m_GraphicsSpecializations.Find(key))
+    {
+        if (cached->IsValid() && cached->Value <= m_GraphicsEntries.size() &&
+            m_GraphicsEntries[cached->Value - 1].Live)
+            return *cached;
+    }
+
+    auto desc = m_GraphicsEntries[base.Value - 1].Desc;
+    if (!desc.Specialization)
+        desc.Specialization.emplace();
+    desc.Specialization->Merge(overrides);
+    const uint64_t hash = desc.ContentHash();
+    const auto specialized = InternGraphicsPipeline_NoLock(std::move(desc), hash);
+    m_GraphicsSpecializations.InsertOrAssign(key, specialized);
+    return specialized;
+}
+
 GraphicsPipelineId PipelineCache::InternGraphicsPipeline(GraphicsPipelineDesc desc)
 {
-    const uint64_t h = desc.ContentHash();
+    const uint64_t hash = desc.ContentHash();
     std::scoped_lock lock(m_Mutex);
-    if (auto it = m_GraphicsHashToId.find(h); it != m_GraphicsHashToId.end())
+    return InternGraphicsPipeline_NoLock(std::move(desc), hash);
+}
+
+GraphicsPipelineId PipelineCache::InternGraphicsPipeline_NoLock(GraphicsPipelineDesc desc, uint64_t hash)
+{
+    if (auto it = m_GraphicsHashToId.find(hash); it != m_GraphicsHashToId.end())
     {
         // Re-pin live entry (if a previous tombstone matched, that's a hash
         // collision — re-create rather than alias, see Live flag below).
@@ -96,7 +128,7 @@ GraphicsPipelineId PipelineCache::InternGraphicsPipeline(GraphicsPipelineDesc de
     }
     m_GraphicsEntries.push_back({std::move(desc), 0u, false, true});
     const uint32_t newId = static_cast<uint32_t>(m_GraphicsEntries.size()); // 1-based
-    m_GraphicsHashToId[h] = newId;
+    m_GraphicsHashToId[hash] = newId;
     return GraphicsPipelineId{newId};
 }
 
@@ -477,6 +509,7 @@ size_t PipelineCache::InvalidateByTag(uint64_t tag)
     const size_t removed = InvalidateByTag_NoLock(tag);
     if (removed > 0)
     {
+        m_GraphicsSpecializations.Clear();
         m_CacheEpoch.store(NextCacheEpoch(), std::memory_order_release);
         m_InvalidationEpoch.fetch_add(1, std::memory_order_release);
     }
@@ -491,6 +524,7 @@ size_t PipelineCache::InvalidateByTags(const std::vector<uint64_t>& tags)
         total += InvalidateByTag_NoLock(tag);
     if (total > 0)
     {
+        m_GraphicsSpecializations.Clear();
         m_CacheEpoch.store(NextCacheEpoch(), std::memory_order_release);
         m_InvalidationEpoch.fetch_add(1, std::memory_order_release);
     }
@@ -518,6 +552,7 @@ size_t PipelineCache::InvalidateByTag_NoLock(uint64_t tag)
 void PipelineCache::Clear()
 {
     std::scoped_lock lock(m_Mutex);
+    m_GraphicsSpecializations.Clear();
     m_Concrete.clear();
     m_LruList.clear();
     m_KeyToTags.clear();
@@ -562,6 +597,7 @@ void PipelineCache::Clear()
 void PipelineCache::ClearConcreteOnly()
 {
     std::scoped_lock lock(m_Mutex);
+    m_GraphicsSpecializations.Clear();
     // The concrete PipelineHandles are already dead after an in-place device
     // rebuild — forget them without touching the device (no DestroyPipeline).
     m_Concrete.clear();

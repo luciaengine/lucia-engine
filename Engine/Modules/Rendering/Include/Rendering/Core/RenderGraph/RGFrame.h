@@ -250,6 +250,8 @@ class RGContext
     // key — lazily, memoized per pass). Compute variants need no key.
     PipelineFormatKey BuildCurrentFormatKey() const;
     uint32_t GetCurrentSampleCount() const;
+    /// Resolve this pass's graphics pipeline ID without building a concrete pipeline.
+    GraphicsPipelineId ResolveGraphicsPipelineId(GraphicsPipelineId id) const;
     PipelineHandle GetOrCreatePipelineVariant(GraphicsPipelineId id) const;
     PipelineHandle GetOrCreatePipelineVariant(ComputePipelineId id) const;
     // Resolve the variant and bind it (logs and leaves state untouched when the
@@ -276,6 +278,11 @@ class RGPrepareContext
     BufferHandle GetBuffer(RGBuffer buffer) const { return m_Context.GetBuffer(buffer); }
     IDevice* GetDevice() const { return m_Context.GetDevice(); }
     PipelineFormatKey BuildCurrentFormatKey() const { return m_Context.BuildCurrentFormatKey(); }
+    /// Resolve this pass's specialization without building a concrete backend pipeline.
+    GraphicsPipelineId ResolveGraphicsPipelineId(GraphicsPipelineId pipeline) const
+    {
+        return m_Context.ResolveGraphicsPipelineId(pipeline);
+    }
     uint32_t GetCurrentSampleCount() const { return m_Context.GetCurrentSampleCount(); }
     PipelineHandle PreparePipeline(GraphicsPipelineId pipeline) const
     {
@@ -419,6 +426,10 @@ class RGFrame
     // frame rather than a capture stating it once. An external import has no
     // pool to carry it and stays as its owner declared it.
     void RequireTransferUsage(RGTexture t, TextureUsage usage);
+
+    /// Set immutable graphics constant overrides before recording the pass.
+    void SetGraphicsPipelineSpecialization(RGPass pass,
+        std::shared_ptr<const SpecializationConstants> values);
     // outNeedsZeroInit (optional) reports that the physical is fresh (first use
     // or desc-change realloc) and no EXECUTED frame has zero-filled it yet.
     // Pool memory is never zero-initialized and can be recycled from an
@@ -938,6 +949,7 @@ class RGFrame
     RecordParallelFn m_RecordParallel;
     // Per-pass RecordInSecondary opt-in (indexed by pass id; reset each frame).
     std::vector<uint8_t> m_PassRecordSecondary;
+    std::vector<std::shared_ptr<const SpecializationConstants>> m_GraphicsSpecializations;
     // Worker-recorded secondary command lists (indexed by pass id; a null slot =
     // that pass records inline). Kept alive from Phase R1 through submit; retired
     // to the device after the last QueueSubmit, then cleared next BeginFrame.

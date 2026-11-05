@@ -28,6 +28,8 @@
 #ifndef GE_CLUSTERED_LIGHTING_GLSL
 #define GE_CLUSTERED_LIGHTING_GLSL
 
+#include "forward_shader_specialization.glsl"
+
 #include "compat_profile.glsl"
 
 #include "surface_io.glsl"   // SurfaceOutput — surface props threaded to the BRDF
@@ -646,10 +648,9 @@ vec3 GE_AccumulateClusteredLighting(
     // -- Secondary directional lights (same BRDF, additive, UNSHADOWED) ----------------------
     // v1 semantic: cascades exist for the primary only, so a secondary can brighten but never
     // darken — no shadow term, no glass tint/caustic (both are shadow-map products). Colors
-    // arrive premultiplied (color * intensity); count is 0 in single-directional scenes, so
-    // this uniform branch costs nothing there.
+    // arrive premultiplied (color * intensity). A zero count contributes no light.
     {
-        int secondaryCount = int(Light.uSecondaryCount.x);
+        int secondaryCount = GE_FORWARD_SECONDARY_LIGHTS ? int(Light.uSecondaryCount.x) : 0;
         for (int i = 0; i < secondaryCount; ++i)
         {
             vec3 secL = normalize(-Light.uSecondaryDirs[i].xyz);
@@ -661,7 +662,7 @@ vec3 GE_AccumulateClusteredLighting(
 
     // -- Point + spot + area lights from the cluster list ------------------------------------
     uint lightCount = ge_lightHeader.x;
-    if (lightCount == 0u)
+    if (!GE_FORWARD_LOCAL_LIGHTS || lightCount == 0u)
         return totalLight;
 
     uint depthSlices = max(ge_clusterParams0.z, 1u);

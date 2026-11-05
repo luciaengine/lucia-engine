@@ -433,7 +433,7 @@ class PipelineVariantCache
         PrimitiveTopology topology,
         MaterialKeyword passKeywords,
         FrontFace frontFace,
-        const Rendering::PipelineFormatKey& formatKey);
+        const RenderGraph::RGPrepareContext& context);
     std::pair<PipelineHandle, const VariantServeUnit*> ResolveDepthVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
@@ -443,14 +443,15 @@ class PipelineVariantCache
         bool depthBiasEnable,
         bool depthClampEnable,
         FrontFace frontFace,
-        const Rendering::PipelineFormatKey& formatKey);
+        const RenderGraph::RGPrepareContext& context);
 
     bool EnsureSharedDepthShaderLoaded(bool isSkinned);
 
-    // Probe current and previous pipelines without building on the preparation thread.
-    // A cold current pipeline is queued; the handle and metadata always name the same unit.
+    // Prefer specialized Current, then unspecialized Current and Previous, without backend builds.
+    // Queue cold current IDs; each returned handle retains its own unit's metadata and generation.
     std::pair<PipelineHandle, const VariantServeUnit*> ResolveWarmPipeline(
-        const Material& material, const InstancedVariantEntry& entry, const Rendering::PipelineFormatKey& formatKey);
+        const Material& material, const InstancedVariantEntry& entry,
+        const Rendering::PipelineFormatKey& formatKey, const RenderGraph::RGPrepareContext& context);
 
     // Request a backend build outside preparation and track materials waiting on it.
     // The device may build inline when no dispatcher is installed.

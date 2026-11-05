@@ -1,6 +1,7 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
 #include "Logger/Logger.h"
+#include "Rendering/Core/PipelineCache.h"
 #include "Rendering/Core/PipelineManager.h"
 
 #include <cassert>
@@ -348,6 +349,18 @@ uint32_t RGContext::GetCurrentSampleCount() const
     return BuildCurrentFormatKey().RasterizationSamples;
 }
 
+GraphicsPipelineId RGContext::ResolveGraphicsPipelineId(GraphicsPipelineId id) const
+{
+    if (!m_Frame->m_Device || !id.IsValid())
+        return {};
+    if (m_Pass < m_Frame->m_GraphicsSpecializations.size())
+    {
+        if (const auto& values = m_Frame->m_GraphicsSpecializations[m_Pass])
+            return m_Frame->m_Device->GetMutablePipelineCache().SpecializeGraphicsPipeline(id, *values);
+    }
+    return id;
+}
+
 PipelineHandle RGContext::GetOrCreatePipelineVariant(GraphicsPipelineId id) const
 {
     if (!m_Frame->m_Device || !id.IsValid())
@@ -360,6 +373,7 @@ PipelineHandle RGContext::GetOrCreatePipelineVariant(GraphicsPipelineId id) cons
                            m_Frame->m_Graph.PassName(m_Pass));
         return {};
     }
+    id = ResolveGraphicsPipelineId(id);
     const PipelineHandle h =
         m_Frame->m_Device->GetOrCreateGraphicsPipeline(id, BuildCurrentFormatKey());
     // The concrete cache can hand back a handle whose pipeline slot is gone
@@ -534,6 +548,16 @@ void RGFrame::DiscardRecordedPasses()
     ResetRecording();
 }
 
+void RGFrame::SetGraphicsPipelineSpecialization(
+    RGPass pass, std::shared_ptr<const SpecializationConstants> values)
+{
+    if (!pass.IsValid() || pass.Id >= m_Graph.PassCount())
+        return;
+    if (m_GraphicsSpecializations.size() <= pass.Id)
+        m_GraphicsSpecializations.resize(pass.Id + 1);
+    m_GraphicsSpecializations[pass.Id] = std::move(values);
+}
+
 void RGFrame::ResetRecording()
 {
     m_Graph.BeginFrame(); // resets the arena → runs last frame's exec-lambda dtors
@@ -541,6 +565,7 @@ void RGFrame::ResetRecording()
     m_Prepare.clear();
     m_RequiredPipelines.clear();
     m_PassRecordSecondary.clear();
+    m_GraphicsSpecializations.clear();
     // m_Secondary is retired to the device at the end of the prior RecordAndSubmit;
     // clearing here just releases the now-empty unique_ptr slots.
     m_Secondary.clear();
