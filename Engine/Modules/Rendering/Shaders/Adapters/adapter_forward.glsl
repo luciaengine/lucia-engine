@@ -969,7 +969,7 @@ void main()
     // Secondary directionals: same BRDF, additive, UNSHADOWED (cascades belong to
     // the primary only). Colors arrive premultiplied (color * intensity).
     {
-        int secondaryCount = int(Light.uSecondaryCount.x);
+        int secondaryCount = GE_FORWARD_SECONDARY_LIGHTS ? int(Light.uSecondaryCount.x) : 0;
         for (int i = 0; i < secondaryCount; ++i)
         {
             vec3 secL = normalize(-Light.uSecondaryDirs[i].xyz);

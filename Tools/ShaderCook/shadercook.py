@@ -371,6 +371,8 @@ def Preprocess(source: Path, stage: str, glslc: Path, defines: list[str],
     own -E output to byte-identical SPIR-V, so this costs nothing but a pass.
     """
     cmd = [glslc, "-E", f"-fshader-stage={stage}"]
+    # Web pipelines keep runtime feature branches; native-only overrides use their defaults.
+    cmd.append("-DGE_WGSL_COOK=1")
     for define in defines:
         cmd.append(f"-D{define}")
     for inc in include_dirs:

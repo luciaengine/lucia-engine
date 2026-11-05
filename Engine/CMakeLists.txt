@@ -448,6 +448,7 @@ add_library(RenderServices OBJECT
 	Source/Engine/Rendering/Pipeline/PipelineEnumTables.cpp
 	Source/Engine/Rendering/Pipeline/ExpressionEvaluator.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/WorldRenderNode.cpp
+	Source/Engine/Rendering/Pipeline/Nodes/ForwardShaderSpecialization.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/SortedTransparentNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/TransmissivePassNode.cpp
 	Source/Engine/Rendering/Pipeline/Nodes/DepthPrepassNode.cpp
