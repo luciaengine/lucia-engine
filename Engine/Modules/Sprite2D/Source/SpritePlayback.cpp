@@ -2,11 +2,26 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace GameEngine
 {
 namespace Sprite2D
 {
+namespace
+{
+float32 NormalizeTime(float64 timeSeconds, float32 duration, bool loop)
+{
+    if (!std::isfinite(timeSeconds) || !std::isfinite(duration) || duration <= 0.0f)
+        return 0.0f;
+    if (!loop)
+        return static_cast<float32>(std::clamp(timeSeconds, 0.0, static_cast<float64>(duration)));
+    float64 wrapped = std::fmod(timeSeconds, duration);
+    if (wrapped < 0)
+        wrapped += duration;
+    return std::min(static_cast<float32>(wrapped), std::nextafter(duration, 0.0f));
+}
+}
 
 float32 SpriteAnimationDuration(const SpriteFrameAnimation& animation)
 {
@@ -18,23 +33,44 @@ float32 SpriteAnimationDuration(const SpriteFrameAnimation& animation)
 
 float32 NormalizeSpriteTime(const SpriteFrameAnimation& animation, float32 timeSeconds)
 {
-    const float32 duration = SpriteAnimationDuration(animation);
-    if (duration <= 0.0f)
-        return 0.0f;
-
-    if (!animation.Loop)
-        return std::clamp(timeSeconds, 0.0f, duration);
-
-    float32 wrapped = std::fmod(timeSeconds, duration);
-    if (wrapped < 0.0f)
-        wrapped += duration;
-    return wrapped;
+    return NormalizeTime(timeSeconds, SpriteAnimationDuration(animation), animation.Loop);
 }
 
-float32 AdvanceSpriteTime(const SpriteFrameAnimation& animation, float32 timeSeconds,
-                          float32 deltaSeconds, float32 speedScale)
+SpritePlaybackStep AdvanceSpritePlayback(const SpriteFrameAnimation& animation, float32 timeSeconds,
+                                         float32 deltaSeconds, float32 speedScale)
 {
-    return NormalizeSpriteTime(animation, timeSeconds + deltaSeconds * speedScale);
+    SpritePlaybackStep step;
+    const float32 duration = SpriteAnimationDuration(animation);
+    step.TimeSeconds = NormalizeTime(timeSeconds, duration, animation.Loop);
+    step.FrameIndex = SpriteFrameIndexAt(animation, step.TimeSeconds);
+    if (animation.Frames.empty() || !std::isfinite(timeSeconds) || !std::isfinite(duration) ||
+        !std::isfinite(deltaSeconds) || !std::isfinite(speedScale))
+        return step;
+    const float64 movement = static_cast<float64>(deltaSeconds) * speedScale;
+    if (movement == 0)
+        return step;
+    const float64 destination = step.TimeSeconds + movement;
+    const auto previousFrame = step.FrameIndex;
+    step.TimeSeconds = NormalizeTime(destination, duration, animation.Loop);
+    step.FrameIndex = SpriteFrameIndexAt(animation, step.TimeSeconds);
+    if (animation.Loop && duration > 0)
+    {
+        const float64 loops = std::floor(destination / duration);
+        if (loops >= static_cast<float64>(std::numeric_limits<int64>::max()))
+            step.LoopCount = std::numeric_limits<int64>::max();
+        else if (loops <= static_cast<float64>(std::numeric_limits<int64>::min()))
+            step.LoopCount = std::numeric_limits<int64>::min();
+        else
+            step.LoopCount = static_cast<int64>(loops);
+        if (step.LoopCount != 0)
+            step.Events |= static_cast<uint32>(SpritePlaybackEvent::Looped);
+    }
+    else if (!animation.Loop && ((movement > 0 && destination >= duration) ||
+                                (movement < 0 && destination <= 0)))
+        step.Events |= static_cast<uint32>(SpritePlaybackEvent::Finished);
+    if (step.FrameIndex != previousFrame || step.LoopCount != 0)
+        step.Events |= static_cast<uint32>(SpritePlaybackEvent::FrameChanged);
+    return step;
 }
 
 std::size_t SpriteFrameIndexAt(const SpriteFrameAnimation& animation, float32 timeSeconds)

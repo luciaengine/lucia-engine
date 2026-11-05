@@ -1388,6 +1388,7 @@ if(ENABLE_SCRIPTING)
       Source/Scripting/ScriptingABI.cpp
       Source/Scripting/TimelineABI.cpp
       Source/Scripting/AnimatorABI.cpp
+      Source/Scripting/SpriteAnimationABI.cpp
       Source/Scripting/ModelABI.cpp
       Source/Scripting/ECSABI.cpp
       Source/Scripting/GameUIABI.cpp
@@ -3470,6 +3471,10 @@ endif()
 	        Tests/SpriteAtlasSamplingTests.cpp
 	        Tests/EngineTestShaderSetup.cpp)
 	    target_link_libraries(SpriteRuntimeTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+	    if(TARGET GameEngine.Native)
+	        target_sources(SpriteRuntimeTests PRIVATE Tests/SpriteAnimationEventsAbiTests.cpp)
+	        target_link_libraries(SpriteRuntimeTests PRIVATE GameEngine.Native)
+	    endif()
 	    target_compile_definitions(SpriteRuntimeTests PRIVATE ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
 	    target_compile_features(SpriteRuntimeTests PRIVATE cxx_std_20)
 	    ge_set_output_tests(SpriteRuntimeTests)

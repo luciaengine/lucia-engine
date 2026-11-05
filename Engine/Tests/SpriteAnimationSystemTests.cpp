@@ -41,7 +41,8 @@ protected:
 
         const auto path = m_Workspace / "Assets" / "idle.spriteframes";
         std::ofstream(path) << R"({"schemaVersion":1,"animations":[{"name":"Idle","loop":false,
-            "frames":[{"durationSeconds":0.1},{"durationSeconds":0.1}]}]})";
+            "frames":[{"durationSeconds":0.1},{"durationSeconds":0.1}]},
+            {"name":"Loop","loop":true,"frames":[{"durationSeconds":0.1},{"durationSeconds":0.1}]}]})";
         auto& assets = engine.GetAssetManager();
         const auto registered = assets.GetRegistry().RegisterAssetByPath(path);
         ASSERT_TRUE(registered.IsOk());
@@ -125,7 +126,11 @@ TEST_F(SpriteAnimationWrites, FinishedClockLeavesChangeTrackingQuiet)
 {
     auto sprite = Sprite();
     sprite.TimeSeconds = 0.2f;
-    AddSprite(sprite);
+    auto entity = AddSprite(sprite);
+    SpriteAnimationSystem system(&m_Services);
+    system.Update(m_World, 0.1f);
+    EXPECT_FALSE(entity.Get<Components::AnimatedSprite2D>()->Playing);
+    system.Update(m_World, 0.1f);
     EXPECT_EQ(UpdateAndCountChanged(), 0u);
 }
 
@@ -144,4 +149,43 @@ TEST_F(SpriteAnimationWrites, PlayingSpriteStillAdvancesAndPublishesAChange)
     const auto* sprite = entity.Get<Components::AnimatedSprite2D>();
     ASSERT_NE(sprite, nullptr);
     EXPECT_NEAR(sprite->TimeSeconds, 0.06f, 1.0e-6f);
+}
+
+TEST_F(SpriteAnimationWrites, OneShotPublishesCompletionOnceAndHoldsItsLastFrame)
+{
+    auto entity = AddSprite(Sprite());
+    SpriteAnimationSystem system(&m_Services);
+    system.Update(m_World, 0.25f);
+    const auto* sprite = entity.Get<Components::AnimatedSprite2D>();
+    ASSERT_NE(sprite, nullptr);
+    EXPECT_FALSE(sprite->Playing);
+    EXPECT_FLOAT_EQ(sprite->TimeSeconds, 0.2f);
+    EXPECT_EQ(sprite->PlaybackEventFrame, 1u);
+    EXPECT_EQ(sprite->PendingPlaybackEvents, 5u);
+    system.Update(m_World, 0.25f);
+    EXPECT_EQ(sprite->PendingPlaybackEvents, 0u);
+    EXPECT_EQ(UpdateAndCountChanged(), 0u);
+}
+
+TEST_F(SpriteAnimationWrites, LoopEventsAdvanceHiddenSpritesAndExpireAtTheNextUpdate)
+{
+    auto initial = Sprite();
+    initial.SetAnimationName("Loop");
+    initial.Visible = false;
+    initial.SpeedScale = -1;
+    auto entity = AddSprite(initial);
+    SpriteAnimationSystem system(&m_Services);
+    system.Update(m_World, 0.45f);
+    const auto* sprite = entity.Get<Components::AnimatedSprite2D>();
+    ASSERT_NE(sprite, nullptr);
+    EXPECT_TRUE(sprite->Playing);
+    EXPECT_EQ(sprite->PendingPlaybackEvents, 3u);
+    EXPECT_EQ(sprite->PlaybackEventLoops, -3);
+    EXPECT_EQ(sprite->PlaybackEventFrame, 1u);
+    auto paused = *sprite;
+    paused.Playing = false;
+    entity.Set(paused);
+    m_World.ProcessCommands();
+    system.Update(m_World, 0.1f);
+    EXPECT_EQ(entity.Get<Components::AnimatedSprite2D>()->PendingPlaybackEvents, 0u);
 }

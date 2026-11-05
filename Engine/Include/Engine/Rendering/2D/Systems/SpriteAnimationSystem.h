@@ -8,6 +8,20 @@
 
 #include <optional>
 
+namespace GameEngine
+{
+class AssetManager;
+namespace Components
+{
+struct AnimatedSprite2D;
+struct WorldTransform;
+}
+namespace ECS
+{
+template <typename T> class Writable;
+}
+}
+
 namespace GameEngine::Engine::Renderer
 {
 class RenderServices;
@@ -34,6 +48,9 @@ public:
     void Update(ECS::World& world, float32 deltaTime) override;
 
 private:
+    void AdvanceAndExtractSprite(ECS::World& world, AssetManager& assets, ECS::EntityHandle entity,
+                                 ECS::Writable<Components::AnimatedSprite2D> spriteRow,
+                                 const Components::WorldTransform& worldTransform, float32 deltaTime);
     /** Frame pixel extent of a sprite sheet, needed to size a quad from PixelsPerUnit. */
     struct TextureSize
     {
