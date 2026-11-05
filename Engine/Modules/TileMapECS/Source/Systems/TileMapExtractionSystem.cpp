@@ -35,6 +35,8 @@ void TileMapExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
     store->DrainPendingReloads();
 
     const auto sortingLayers = Rendering::SortingLayers::Current();
+    std::optional<bool> hasSortingGroups;
+    const std::size_t sortingScanBudget = world.Query<ECS::Read<Components::TileMapLayerRef>>().Count();
     std::vector<TileMapLayerDraw> draws;
     world.Query<ECS::Read<Components::TileMapLayerRef>, ECS::Read<Components::WorldTransform>>()
         .Without<ECS::Disabled>()
@@ -55,7 +57,7 @@ void TileMapExtractionSystem::Update(ECS::World& world, float32 /*deltaTime*/)
                 draw.ZOffset = layerRef.ZOffset;
                 // Transform the local layer plane before resolving its depth per view.
                 draw.WorldZ = worldXf.matrix[10] * layerRef.ZOffset + worldXf.matrix[14];
-                draw.Sorting = Engine::Renderer::ResolveRenderSorting(world, entity, sortingLayers);
+                draw.Sorting = Engine::Renderer::ResolveRenderSortingForBatch(world, entity, sortingLayers, hasSortingGroups, sortingScanBudget);
                 draw.Opacity = std::clamp(layerRef.Opacity, 0.0f, 1.0f);
                 draw.TintRGBA = layerRef.TintRGBA;
                 draw.ParallaxX = layerRef.ParallaxX;

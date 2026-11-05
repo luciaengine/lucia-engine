@@ -82,3 +82,90 @@ TEST(RenderYSorting, OutermostGroupUsesItsGroundPointAndKeepsMembersContiguous)
     EXPECT_FLOAT_EQ(key.Depth, 7);
     EXPECT_FLOAT_EQ(key.MemberDepth, -10);
 }
+
+TEST(RenderYSorting, GroupPresenceTracksAuthoredChangesIncludingDisabledAncestors)
+{
+    ECS::World world;
+    EXPECT_FALSE(HasRenderSortingGroups(world));
+    Components::RenderSorting sorting;
+    sorting.SortByY = true;
+    auto parent = world.Create(sorting, Components::WorldTransform{});
+    world.ProcessCommands();
+    EXPECT_FALSE(HasRenderSortingGroups(world));
+    sorting.GroupChildren = true;
+    parent.Set(sorting);
+    world.ProcessCommands();
+    EXPECT_TRUE(HasRenderSortingGroups(world));
+    parent.SetEnabled(false);
+    world.ProcessCommands();
+    EXPECT_TRUE(HasRenderSortingGroups(world));
+    parent.Remove<Components::RenderSorting>();
+    world.ProcessCommands();
+    EXPECT_FALSE(HasRenderSortingGroups(world));
+}
+
+TEST(RenderYSorting, NoGroupGuardPreservesOwnGroundSortingAndGroupDiscovery)
+{
+    ECS::World world;
+    auto parent = world.Create(Components::WorldTransform{});
+    Components::RenderSorting sorting;
+    sorting.Layer = 4;
+    sorting.OrderInLayer = -3;
+    sorting.SortByY = true;
+    Components::WorldTransform transform;
+    transform.matrix[13] = -7;
+    auto child = world.Create(sorting, transform, Components::Parent{parent.GetHandle()});
+    world.ProcessCommands();
+    const auto layers = Rendering::SortingLayers::Defaults();
+    const auto guarded = ResolveRenderSorting(world, child.GetHandle(), layers, HasRenderSortingGroups(world));
+    const auto original = ResolveRenderSorting(world, child.GetHandle(), layers);
+    EXPECT_EQ(guarded.Layer, original.Layer);
+    EXPECT_EQ(guarded.Order, original.Order);
+    EXPECT_EQ(guarded.MemberOrder, original.MemberOrder);
+    EXPECT_EQ(guarded.SortByY, original.SortByY);
+    EXPECT_FLOAT_EQ(guarded.SortOriginY, original.SortOriginY);
+    EXPECT_EQ(guarded.Grouped, original.Grouped);
+    EXPECT_EQ(guarded.GroupSortByY, original.GroupSortByY);
+    for (int axis = 0; axis < 3; ++axis)
+        EXPECT_FLOAT_EQ(guarded.GroupPosition[axis], original.GroupPosition[axis]);
+    EXPECT_EQ(guarded.Authored, original.Authored);
+    EXPECT_EQ(guarded.Group, original.Group);
+    EXPECT_FLOAT_EQ(guarded.SortY, original.SortY);
+    sorting.GroupChildren = true;
+    parent.Set(sorting);
+    world.ProcessCommands();
+    EXPECT_TRUE(HasRenderSortingGroups(world));
+    EXPECT_EQ(ResolveRenderSorting(world, child.GetHandle(), layers, HasRenderSortingGroups(world)).Group,
+              parent.GetHandle());
+}
+
+TEST(RenderYSorting, BatchGuardIsLazyAndBoundsUnrelatedSortingScan)
+{
+    ECS::World world;
+    auto parent = world.Create(Components::WorldTransform{});
+    auto child = world.Create(Components::WorldTransform{}, Components::Parent{parent.GetHandle()});
+    world.ProcessCommands();
+    std::optional<bool> groups;
+    EXPECT_FALSE(groups.has_value());
+    const auto layers = Rendering::SortingLayers::Defaults();
+    ResolveRenderSortingForBatch(world, child.GetHandle(), layers, groups, 1);
+    ASSERT_TRUE(groups.has_value());
+    EXPECT_FALSE(*groups);
+    for (int index = 0; index < 3; ++index)
+        world.Create(Components::RenderSorting{});
+    world.ProcessCommands();
+    groups.reset();
+    ResolveRenderSortingForBatch(world, child.GetHandle(), layers, groups, 1);
+    ASSERT_TRUE(groups.has_value());
+    EXPECT_TRUE(*groups);
+    Components::RenderSorting sorting;
+    sorting.GroupChildren = true;
+    parent.Set(sorting);
+    parent.SetEnabled(false);
+    world.ProcessCommands();
+    groups.reset();
+    const auto guarded = ResolveRenderSortingForBatch(world, child.GetHandle(), layers, groups, 10);
+    const auto original = ResolveRenderSorting(world, child.GetHandle(), layers);
+    EXPECT_EQ(guarded.Group, original.Group);
+    EXPECT_EQ(guarded.Group, parent.GetHandle());
+}

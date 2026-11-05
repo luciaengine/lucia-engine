@@ -104,7 +104,7 @@ std::optional<SpriteAnimationSystem::TextureSize> SpriteAnimationSystem::Resolve
 
 void SpriteAnimationSystem::AdvanceAndExtractSprite(ECS::World& world, AssetManager& assets,
     ECS::EntityHandle entity, ECS::Writable<Components::AnimatedSprite2D> spriteRow,
-    const Components::WorldTransform& worldTransform, float32 deltaTime)
+    const Components::WorldTransform& worldTransform, float32 deltaTime, std::optional<bool>& hasSortingGroups, std::size_t sortingScanBudget)
 {
     const auto& sprite = spriteRow.Get();
     if (sprite.PendingPlaybackEvents != 0)
@@ -157,7 +157,7 @@ void SpriteAnimationSystem::AdvanceAndExtractSprite(ECS::World& world, AssetMana
     draw.Texture = frame.TextureGuid;
     draw.RenderLayers = sprite.RenderLayers;
     draw.Entity = entity;
-    draw.Sorting = ResolveRenderSorting(world, entity, m_SortingLayers);
+    draw.Sorting = ResolveRenderSortingForBatch(world, entity, m_SortingLayers, hasSortingGroups, sortingScanBudget);
     for (int32 i = 0; i < 3; ++i)
     {
         draw.Center[i] = placement.Center[i];
@@ -200,13 +200,17 @@ void SpriteAnimationSystem::Update(ECS::World& world, float32 deltaTime)
         m_SortingLayersRevision = revision;
     }
     const auto& layers = m_SortingLayers;
+    std::optional<bool> hasSortingGroups;
+    const std::size_t sortingScanBudget =
+        world.Query<ECS::Read<Components::AnimatedSprite2D>>().Count() +
+        world.Query<ECS::Read<Components::Sprite2D>>().Count();
 
     world.Query<ECS::Write<Components::AnimatedSprite2D>, ECS::Read<Components::WorldTransform>>()
         .Without<ECS::Disabled>()
-        .Each([this, &world, &assets, deltaTime](ECS::EntityHandle entity,
+        .Each([this, &world, &assets, deltaTime, &hasSortingGroups, sortingScanBudget](ECS::EntityHandle entity,
             ECS::Writable<Components::AnimatedSprite2D> spriteRow, const Components::WorldTransform& transform)
         {
-            AdvanceAndExtractSprite(world, assets, entity, spriteRow, transform, deltaTime);
+            AdvanceAndExtractSprite(world, assets, entity, spriteRow, transform, deltaTime, hasSortingGroups, sortingScanBudget);
         });
 
     world.Query<ECS::Read<Components::Sprite2D>, ECS::Read<Components::WorldTransform>>()
@@ -242,7 +246,7 @@ void SpriteAnimationSystem::Update(ECS::World& world, float32 deltaTime)
         const float h=std::abs(v1-v0)*sheet->Height/sprite.PixelsPerUnit;
         if(!std::isfinite(w)||!std::isfinite(h)||w<=0||h<=0)return;
         const auto placement=BuildSpriteQuad(xf.matrix,w,h,sprite.PivotX,sprite.PivotY,sprite.FlipX,sprite.FlipY);
-        draw.Entity=entity;draw.Sorting=ResolveRenderSorting(world,entity,layers);
+        draw.Entity=entity;draw.Sorting=ResolveRenderSortingForBatch(world,entity,layers,hasSortingGroups,sortingScanBudget);
         for(int j=0;j<3;++j){draw.Center[j]=placement.Center[j];draw.AxisX[j]=placement.AxisX[j];draw.AxisY[j]=placement.AxisY[j];}
         draw.UVRect[0]=sprite.FlipX?u1:u0;draw.UVRect[2]=sprite.FlipX?u0:u1;
         draw.UVRect[1]=sprite.FlipY?v1:v0;draw.UVRect[3]=sprite.FlipY?v0:v1;

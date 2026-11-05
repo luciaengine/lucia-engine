@@ -37,6 +37,27 @@ GroundSortPoint ResolveGroundPoint(ECS::World& world, ECS::EntityHandle entity, 
 }
 }
 
+bool HasRenderSortingGroups(ECS::World& world, std::size_t scanBudget)
+{
+    bool hasGroups = false;
+    auto sortingRows = world.Query<ECS::Read<Components::RenderSorting>>();
+    sortingRows.IncludeDisabled();
+    // Sparse producers retain parent walking instead of scanning unrelated rows.
+    if (sortingRows.Count() > scanBudget)
+        return true;
+    sortingRows.Each(
+        [&hasGroups](const Components::RenderSorting& sorting) { hasGroups |= sorting.GroupChildren; });
+    return hasGroups;
+}
+
+RenderSortingData ResolveRenderSortingForBatch(ECS::World& world, ECS::EntityHandle entity,
+    const Rendering::SortingLayers& layers, std::optional<bool>& hasGroups, std::size_t scanBudget)
+{
+    if (!hasGroups.has_value())
+        hasGroups = HasRenderSortingGroups(world, scanBudget);
+    return ResolveRenderSorting(world, entity, layers, *hasGroups);
+}
+
 RenderSortingData ResolveRenderSorting(ECS::World& world, ECS::EntityHandle entity,
                                        const Rendering::SortingLayers& layers, bool hasGroups)
 {
