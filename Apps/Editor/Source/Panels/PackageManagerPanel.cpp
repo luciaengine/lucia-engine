@@ -1,11 +1,13 @@
 #include "Panels/PackageManagerPanel.h"
 
-#include "UI/EditorSearchBars.h"
 #include "Editor/Settings/AssetPreviewSettings.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Label.h"
 #include "UI/Controls/ScrollView.h"
-#include "UI/Controls/SearchFieldWithFilter.h"
+#include "UI/Controls/ListView.h"
+#include "UI/EditorSearchBars.h"
+#include "UI/PanelSearchBar.h"
+#include "Types/Fnv1a.h"
 #include "UI/Controls/Splitter.h"
 #include "UI/Controls/TextField.h"
 #include "UI/Controls/WeightedPane.h"
@@ -94,6 +96,20 @@ std::string KindLabel(const std::string& sourceKind)
 
 } // namespace
 
+class PackageManagerPanel::PackageListProvider final : public ListChangeTrackingProvider
+{
+  public:
+    explicit PackageListProvider(const std::vector<PackageManagerEntry>& entries) : m_Entries(entries) {}
+    int GetItemCount() const override { return static_cast<int>(m_Entries.size()); }
+    ListId GetItemId(int index) const override
+    {
+        return Hashing::Fnv1a64(m_Entries[static_cast<size_t>(index)].Name);
+    }
+    float GetItemHeight(int) const override { return 36.0f; }
+  private:
+    const std::vector<PackageManagerEntry>& m_Entries;
+};
+
 PackageManagerPanel::PackageManagerPanel()
     : DockPanel("Packages")
 {
@@ -106,19 +122,24 @@ PackageManagerPanel::PackageManagerPanel()
         [this]() { PostSafeAction([this]() { RefreshList(); }); });
 }
 
+PackageManagerPanel::~PackageManagerPanel()
+{
+    EditorSearchBars::Unregister(m_SearchBar);
+    m_ListView->SetDataProvider(nullptr);
+    m_ListView->SetSelectionModel(nullptr);
+}
+
 void PackageManagerPanel::BuildLayout()
 {
     auto root = std::make_unique<UIElement>();
     root->AddClass("pkg-root");
 
-    auto search = std::make_unique<SearchFieldWithFilter>();
-    search->AddClass("pkg-search");
-    search->SetFieldId("PackageSearchField");
-    search->SetPlaceholder("Search packages");
-    EditorSearchBars::RegisterHintTarget(search.get());
-    search->SetOnQueryChanging([this](const std::string& query) { SetSearchQuery(query); });
-    search->SetOnQueryChanged([this](const std::string& query) { SetSearchQuery(query); });
-    root->AddChild(std::move(search));
+    auto search = BuildPanelSearchBar("PackageSearchField", [this](const std::string& query) { SetSearchQuery(query); });
+    m_SearchBar = search.RootPtr;
+    search.RootPtr->SetPlaceholder("Search packages");
+    search.RootPtr->AddClass("pkg-search");
+    root->AddChild(std::move(search.Root));
+    EditorSearchBars::Register(m_SearchBar);
 
     // Toolbar: global actions — add (text path / git URL), browse, refresh-all.
     auto toolbar = std::make_unique<UIElement>();
@@ -216,10 +237,24 @@ void PackageManagerPanel::BuildLayout()
     auto listPane = std::make_unique<WeightedPane>(kListPaneWeight);
     listPane->AddClass("pkg-pane");
     {
-        auto listScroll = std::make_unique<ScrollView>();
-        listScroll->AddClass("pkg-list");
-        m_ListContainer = listScroll->GetViewport();
-        listPane->AddChild(std::move(listScroll));
+        auto list = std::make_unique<ListView>();
+        list->SetId("PackageList");
+        list->AddClass("pkg-list");
+        list->SetFocusable(true);
+        m_ListView = list.get();
+        m_ListProvider = std::make_unique<PackageListProvider>(m_VisibleEntries);
+        list->SetDataProvider(m_ListProvider.get());
+        list->SetSelectionModel(&m_Selection);
+        list->SetItemFactory([](ListId, IListDataProvider*) { return std::make_unique<UIElement>(); });
+        list->SetItemBinder([this](UIElement* row, ListId, int index, IListDataProvider*) {
+            BindRow(*row, m_VisibleEntries[static_cast<size_t>(index)]);
+        });
+        m_Selection.SetOnChanged([this]() {
+            m_ConfirmRemovePackage.clear();
+            PostSafeAction([this]() { RebuildDetail(m_VisibleEntries); });
+        });
+        list->RegisterEventHandler(kEventKeyDown, [this](UIEvent& event) { m_ListView->HandleArrowKey(event); });
+        listPane->AddChild(std::move(list));
     }
     body->AddChild(std::move(listPane));
 
@@ -235,6 +270,7 @@ void PackageManagerPanel::BuildLayout()
         auto detailScroll = std::make_unique<ScrollView>();
         detailScroll->AddClass("pkg-detail");
         m_DetailContainer = detailScroll->GetViewport();
+        m_DetailContainer->SetId("PackageDetails");
         detailPane->AddChild(std::move(detailScroll));
     }
     body->AddChild(std::move(detailPane));
@@ -256,16 +292,6 @@ void PackageManagerPanel::SetActionStatus(const std::string& text, bool isError)
     m_ActionStatusIsError = isError;
     if (isError && !text.empty())
         Logger::Log::Error("PackageManager: {}", text);
-}
-
-void PackageManagerPanel::SelectPackage(const std::string& name)
-{
-    if (m_SelectedPackage == name)
-        return;
-    m_SelectedPackage = name;
-    m_ConfirmRemovePackage.clear();
-    // Defer — the mouse-down handler runs inside the row about to be torn down.
-    PostAction([this]() { RefreshList(); });
 }
 
 void PackageManagerPanel::RunAction(const std::function<bool(std::string& outError)>& action,
@@ -305,7 +331,7 @@ void PackageManagerPanel::OnAddClicked(const std::string& input)
 
 void PackageManagerPanel::RefreshList()
 {
-    if (!m_ListContainer)
+    if (!m_ListView)
         return;
 
     if (m_ActionStatusLabel)
@@ -391,27 +417,37 @@ void PackageManagerPanel::ApplyFilter()
     }
     RebuildRows(visible);
     RebuildDetail(visible);
-    if (visible.empty() && !m_SearchQuery.empty() && m_ListContainer)
-        m_ListContainer->AddChild(MakeLabel("pkg-detail-empty", "No packages match your search."));
 }
 
 void PackageManagerPanel::RebuildRows(const std::vector<PackageManagerEntry>& entries)
 {
-    if (!m_ListContainer)
+    if (!m_ListView)
         return;
-    m_ListContainer->RemoveAllChildren();
-    for (const PackageManagerEntry& entry : entries)
-        m_ListContainer->AddChild(std::unique_ptr<UIElement>(BuildRow(entry)));
+    m_VisibleEntries = entries;
+    std::vector<UI::Interaction::ItemId> retained;
+    for (const auto& entry : entries)
+    {
+        const auto id = Hashing::Fnv1a64(entry.Name);
+        if (m_Selection.IsSelected(id))
+            retained.push_back(id);
+    }
+    const auto anchor = m_Selection.GetAnchor();
+    const bool anchorSurvives = std::find(retained.begin(), retained.end(), anchor) != retained.end();
+    if (retained.size() != m_Selection.GetSelection().size() || (!anchorSurvives && anchor != 0))
+        m_Selection.SetSelection(retained, anchorSurvives ? anchor : (retained.empty() ? 0 : retained.front()));
+    m_ListView->RefreshFromProvider();
 }
 
-UIElement* PackageManagerPanel::BuildRow(const PackageManagerEntry& entry)
+void PackageManagerPanel::BindRow(UIElement& element, const PackageManagerEntry& entry)
 {
-    auto row = std::make_unique<UIElement>();
+    auto* row = &element;
+    row->RemoveAllChildren();
     row->SetId("pkg-row-" + entry.Name);
     row->AddClass("pkg-row");
+    row->RemoveClass("enabled");
+    row->RemoveClass("disabled");
+    row->RemoveClass("missing");
     row->AddClass(entry.Enabled ? "enabled" : "disabled");
-    if (entry.Name == m_SelectedPackage)
-        row->AddClass("selected");
     if (entry.Missing)
         row->AddClass("missing");
     row->SetTooltip("Select to manage this package");
@@ -459,16 +495,6 @@ UIElement* PackageManagerPanel::BuildRow(const PackageManagerEntry& entry)
     }
     main->AddChild(MakePill(entry.SourceKind, KindLabel(entry.SourceKind)));
     row->AddChild(std::move(main));
-
-    const std::string name = entry.Name;
-    row->RegisterEventHandler(kEventMouseDown, [this, name](UIEvent& e) {
-        if (e.Button != 0)
-            return;
-        SelectPackage(name);
-        e.Stop();
-    });
-
-    return row.release();
 }
 
 void PackageManagerPanel::RebuildDetail(const std::vector<PackageManagerEntry>& entries)
@@ -477,10 +503,34 @@ void PackageManagerPanel::RebuildDetail(const std::vector<PackageManagerEntry>& 
         return;
     m_DetailContainer->RemoveAllChildren();
 
+    const auto selectionCount = m_Selection.GetSelection().size();
+    if (selectionCount > 1)
+    {
+        m_DetailContainer->AddChild(MakeLabel("pkg-detail-name",
+            std::to_string(selectionCount) + " packages selected"));
+        auto actions = std::make_unique<UIElement>();
+        actions->AddClass("pkg-actions");
+        for (bool disable : {false, true})
+        {
+            auto button = MakeActionButton(disable ? "PackageDisableSelected" : "PackageEnableSelected",
+                disable ? "Disable selected" : "Enable selected");
+            const bool canToggle = std::any_of(entries.begin(), entries.end(), [this, disable](const auto& entry) {
+                return m_Selection.IsSelected(Hashing::Fnv1a64(entry.Name)) && entry.Enabled == disable;
+            });
+            button->SetEnabled(m_Actions.Toggle && canToggle);
+            button->RegisterEventHandler(kEventButtonClick,
+                [this, disable](UIEvent&) { ToggleSelectedPackages(disable); });
+            actions->AddChild(std::move(button));
+        }
+        m_DetailContainer->AddChild(std::move(actions));
+        m_DetailContainer->AddChild(MakeLabel("pkg-detail-state", "Changes apply on project reopen."));
+        return;
+    }
+
     const PackageManagerEntry* selected = nullptr;
     for (const PackageManagerEntry& entry : entries)
     {
-        if (entry.Name == m_SelectedPackage)
+        if (m_Selection.IsSelected(Hashing::Fnv1a64(entry.Name)))
         {
             selected = &entry;
             break;
@@ -491,7 +541,7 @@ void PackageManagerPanel::RebuildDetail(const std::vector<PackageManagerEntry>& 
     {
         m_DetailContainer->AddChild(MakeLabel(
             "pkg-detail-empty", entries.empty()
-                                    ? "No packages to show."
+                                    ? (m_SearchQuery.empty() ? "No packages to show." : "No packages match your search.")
                                     : "Select a package to view its details and controls."));
         return;
     }
@@ -527,6 +577,20 @@ void PackageManagerPanel::RebuildDetail(const std::vector<PackageManagerEntry>& 
 
     BuildDetailInfo(*m_DetailContainer, entry);
     BuildDetailActions(*m_DetailContainer, entry);
+}
+
+void PackageManagerPanel::ToggleSelectedPackages(bool disable)
+{
+    if (!m_Actions.Toggle)
+        return;
+    std::vector<std::string> names;
+    for (const auto& entry : m_VisibleEntries)
+        if (m_Selection.IsSelected(Hashing::Fnv1a64(entry.Name)) && entry.Enabled == disable)
+            names.push_back(entry.Name);
+    RunAction([this, names, disable](std::string& outError) {
+        return m_Actions.Toggle(names, disable, outError);
+    }, std::string(disable ? "Disabled " : "Enabled ") + std::to_string(names.size()) +
+        " package(s) — applies on project reopen.");
 }
 
 void PackageManagerPanel::BuildDetailInfo(UIElement& detail, const PackageManagerEntry& entry)
@@ -586,7 +650,7 @@ void PackageManagerPanel::BuildDetailActions(UIElement& detail, const PackageMan
         if (!m_Actions.Toggle)
             return;
         RunAction([this, name, disable](std::string& outError)
-                  { return m_Actions.Toggle(name, disable, outError); },
+                  { return m_Actions.Toggle({name}, disable, outError); },
                   std::string(disable ? "Disabled '" : "Enabled '") + name +
                       "' — applies on project reopen.");
     });

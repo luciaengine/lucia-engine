@@ -23,6 +23,15 @@ namespace GameEngine
 
 namespace
 {
+int FindItemIndex(const IListDataProvider* provider, ListId id)
+{
+    if (provider && id != 0)
+        for (int index = 0; index < provider->GetItemCount(); ++index)
+            if (provider->GetItemId(index) == id)
+                return index;
+    return -1;
+}
+
 static int RoundToPx(float v)
 {
     // UI layout can be fractional (DPI scaling), but absolute override
@@ -185,7 +194,9 @@ ListView::ListView()
             }
         }
         m_SelectedId = 0;
+        m_SelectionCursorId = 0;
         m_SelectedIndex = -1;
+        m_ShiftAnchorIndex = -1;
         m_PendingCollapseToSingle = false;
         m_PendingCollapseId = 0;
         e.Stop(); });
@@ -401,7 +412,9 @@ void ListView::SetDataProvider(IListDataProvider* provider)
     m_LastProviderStructureVersion = 0;
     m_PendingChangeSetValid = false;
     m_SelectedId = 0;
+    m_SelectionCursorId = 0;
     m_SelectedIndex = -1;
+    m_ShiftAnchorIndex = -1;
     m_LastClickedId = 0;
     m_DataDirty = true;
     m_LayoutCacheDirty = true;
@@ -431,6 +444,7 @@ void ListView::SetSelectedId(ListId id)
     if (m_SelectedId == id)
         return;
     m_SelectedId = id;
+    m_SelectionCursorId = id;
     if (m_Provider && m_SelectedId != 0)
     {
         const int count = m_Provider->GetItemCount();
@@ -649,11 +663,13 @@ void ListView::EnsureCellPoolSize(int desired)
                     m_ShiftAnchorIndex = m_CellPool[slotIndex].boundIndex;
                 }
                 m_SelectedId = lid;
+                m_SelectionCursorId = lid;
                 m_SelectedIndex = m_CellPool[slotIndex].boundIndex;
             }
             else
             {
                 m_SelectedId = lid;
+                m_SelectionCursorId = lid;
                 m_SelectedIndex = m_CellPool[slotIndex].boundIndex;
             }
 
@@ -1343,8 +1359,11 @@ void ListView::RefreshFromProvider()
 
     ClearHover();
     m_PendingChangeSetValid = false;
+    if (!m_Selection || !m_Selection->IsSelected(m_SelectionCursorId))
+        m_SelectionCursorId = 0;
+    m_SelectedIndex = FindItemIndex(m_Provider, m_SelectionCursorId);
+    m_ShiftAnchorIndex = m_Selection ? FindItemIndex(m_Provider, m_Selection->GetAnchor()) : -1;
     m_SelectedId = 0;
-    m_SelectedIndex = -1;
     m_LastClickedId = 0;
     m_DataDirty = true;
     m_LayoutCacheDirty = true;
@@ -1391,6 +1410,26 @@ void ListView::InvalidateVirtualization()
     RequestRelayout();
 }
 
+bool ListView::HandleArrowKey(UIEvent& event)
+{
+    if (event.Handled || event.Id != kEventKeyDown || !m_Provider)
+        return false;
+    const bool shift = (event.Mods & Input::kModShift) != 0;
+    if ((event.Mods & ~Input::kModShift) != 0 ||
+        (event.Key != Input::kKeyCode_Up && event.Key != Input::kKeyCode_Down))
+        return false;
+    const int count = m_Provider->GetItemCount();
+    if (count > 0)
+    {
+        const int current = GetSelectedIndex();
+        const int next = current < 0 ? 0 : std::clamp(current +
+            (event.Key == Input::kKeyCode_Up ? -1 : 1), 0, count - 1);
+        SetSelectedIndexKeyboard(next, shift, true);
+    }
+    event.Stop();
+    return true;
+}
+
 void ListView::OnEvent(UIEvent& e)
 {
     if (e.Id == kEventKeyDown && m_Provider)
@@ -1420,7 +1459,9 @@ void ListView::OnEvent(UIEvent& e)
                     const ListId anchor = ids.front();
                     m_Selection->SetSelection(ids, anchor);
                     m_SelectedId = anchor;
+                    m_SelectionCursorId = anchor;
                     m_SelectedIndex = 0;
+                    m_ShiftAnchorIndex = 0;
                     ApplySelectionStylesToPool();
                     if (m_OnSelectionChanged)
                         m_OnSelectionChanged(anchor);
@@ -1569,24 +1610,12 @@ int ListView::GetSelectedIndex() const
     if (count <= 0)
         return m_SelectedIndex;
 
-    const auto findIndexForId = [this, count](UI::Interaction::ItemId id) -> int
-    {
-        if (id == 0)
-            return -1;
-        for (int i = 0; i < count; ++i)
-        {
-            if (m_Provider->GetItemId(i) == static_cast<ListId>(id))
-                return i;
-        }
-        return -1;
-    };
-
-    if (const int anchorIndex = findIndexForId(m_Selection->GetAnchor()); anchorIndex >= 0)
+    if (const int anchorIndex = FindItemIndex(m_Provider, m_Selection->GetAnchor()); anchorIndex >= 0)
         return anchorIndex;
 
     for (UI::Interaction::ItemId id : m_Selection->GetSelection())
     {
-        if (const int selectedIndex = findIndexForId(id); selectedIndex >= 0)
+        if (const int selectedIndex = FindItemIndex(m_Provider, id); selectedIndex >= 0)
             return selectedIndex;
     }
 
@@ -1662,6 +1691,7 @@ void ListView::SetSelectedIndexKeyboard(int index, bool extendRange, bool scroll
         m_SelectedIndex = clamped;
         m_ShiftAnchorIndex = clamped;
         m_SelectedId = id;
+        m_SelectionCursorId = id;
         if (m_Selection)
             m_Selection->SetSingle(id);
     }
@@ -1672,6 +1702,8 @@ void ListView::SetSelectedIndexKeyboard(int index, bool extendRange, bool scroll
     m_PendingCollapseId = 0;
 
     m_SelectedId = id;
+
+    m_SelectionCursorId = id;
     m_SelectedIndex = clamped;
     ApplySelectionStylesToPool();
     if (m_OnSelectionChanged)

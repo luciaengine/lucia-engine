@@ -375,21 +375,7 @@ AssetsPanel::AssetsPanel()
                 return;
             }
 
-            const bool shift = (e.Mods & 0x0001) != 0; // Input::kModShift
-            if ((e.Mods == 0 || (shift && (e.Mods & ~0x0001) == 0)) &&
-                (e.Key == Input::kKeyCode_Up || e.Key == Input::kKeyCode_Down))
-            {
-                const int count = m_ListView ? m_ListView->GetItemCount() : 0;
-                if (count <= 0 || !m_ListView)
-                    return;
-                int index = m_ListView->GetSelectedIndex();
-                if (index < 0)
-                    index = 0;
-                index += (e.Key == Input::kKeyCode_Up) ? -1 : 1;
-                index = std::clamp(index, 0, count - 1);
-                m_ListView->SetSelectedIndexKeyboard(index, /*extendRange*/ shift, /*scrollIntoView*/ true);
-                e.Stop();
-            }
+            m_ListView->HandleArrowKey(e);
         });
         viewsContainer->AddChild(std::move(table));
 

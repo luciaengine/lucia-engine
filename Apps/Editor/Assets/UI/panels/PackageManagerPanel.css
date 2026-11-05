@@ -24,8 +24,23 @@
 
 .pkg-search {
     flex: 0 0 auto;
+    order: 1;
+    position: relative;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    left: auto;
     width: 100%;
-    min-width: 0;
+    height: 22px;
+}
+
+.pkg-search.search-bar-at-top {
+    top: auto;
+    order: -1;
+}
+
+.search-field-with-filter-placeholder {
+    font-style: normal;
 }
 
 .pkg-refresh-status {
@@ -164,8 +179,8 @@
 .package-manager-panel .pkg-list .scroll-content {
     display: flex;
     flex-direction: column;
-    padding: 4px;
-    gap: 1px;
+    padding: 0;
+    gap: 0;
     min-width: 0;
 }
 
@@ -209,19 +224,18 @@
     white-space: nowrap;
 }
 
-.package-manager-panel .pkg-row.selected .pkg-row-name,
-.package-manager-panel .pkg-row.enabled .pkg-row-name {
+.package-manager-panel .pkg-row.selected .pkg-row-name {
     color: var(--ui_color_text_bright);
 }
 
-.package-manager-panel .pkg-row.disabled .pkg-row-name {
-    color: #7A7266;
+.package-manager-panel .pkg-row:hover .pkg-row-name {
+    color: var(--ui_color_text_bright);
 }
 
 .package-manager-panel .pkg-row-version {
     flex: 0 0 auto;
-    font-size: 11px;
-    color: #808890;
+    font-size: 12px;
+    color: var(--ui_color_text_dim);
     white-space: nowrap;
 }
 

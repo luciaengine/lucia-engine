@@ -135,6 +135,8 @@ class ListView : public UIElement
 
     int GetItemCount() const;
     int GetSelectedIndex() const;
+    /// Hosts call this after their shortcuts to share arrow navigation and Shift-range selection.
+    bool HandleArrowKey(UIEvent& event);
     void SetSelectedIndex(int index, bool scrollIntoView = true);
     // Keyboard-aware selection helper used by editor panels to implement arrow-key
     // navigation. When extendRange is true, selection is expanded/collapsed as a
@@ -287,6 +289,7 @@ class ListView : public UIElement
     std::function<void(float)> m_OnItemResizeGesture;
     bool m_PickerActivation = false;
     int m_SelectedIndex = -1;
+    ListId m_SelectionCursorId = 0; // survives a full refresh while the selection model retains it
     int m_ShiftAnchorIndex = -1; // cached index for Shift-range selection
 
     std::chrono::steady_clock::time_point m_LastClickTime{};

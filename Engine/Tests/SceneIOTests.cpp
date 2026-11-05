@@ -12468,7 +12468,7 @@ TEST(ProjectPackagesManifest, DisableCreatesMissingManifest)
 
     std::string error;
     ASSERT_TRUE(SetPackageDisabledInProjectManifest(
-        manifestFile, "film-simulation", true, error)) << error;
+        manifestFile, {"film-simulation"}, true, error)) << error;
     EXPECT_TRUE(std::filesystem::is_regular_file(manifestFile));
 
     ProjectPackagesManifest manifest;
@@ -12476,7 +12476,7 @@ TEST(ProjectPackagesManifest, DisableCreatesMissingManifest)
     EXPECT_EQ(manifest.Disabled.count("film-simulation"), 1u);
 
     ASSERT_TRUE(SetPackageDisabledInProjectManifest(
-        manifestFile, "film-simulation", false, error)) << error;
+        manifestFile, {"film-simulation"}, false, error)) << error;
     ASSERT_TRUE(TryLoadProjectPackagesManifest(manifestFile, manifest, error)) << error;
     EXPECT_TRUE(manifest.Disabled.empty());
 }

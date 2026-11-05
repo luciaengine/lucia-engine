@@ -4,6 +4,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace GameEngine
 {
@@ -38,14 +39,10 @@ bool TryLoadProjectPackagesManifest(const std::filesystem::path& manifestFile,
                                     ProjectPackagesManifest& out,
                                     std::string& outError);
 
-// Add or remove `packageName` in the manifest's "disabled" array, preserving
-// every other field (parse -> mutate -> rewrite; JSON comments do not survive
-// the rewrite). The Package Manager panel's enable/disable toggle; mounts and
-// code modules pick the change up on the next project open. Either choice creates
-// a missing manifest and parent directory; enabling records an explicit opt-in. Fails when an existing manifest is malformed or writing
-// fails.
+// Update all package names in one manifest read/write, preserving unrelated fields.
+// Names are validated before editing; enable records explicit opt-ins. Mounts update on reopen.
 bool SetPackageDisabledInProjectManifest(const std::filesystem::path& manifestFile,
-                                         const std::string& packageName,
+                                         const std::vector<std::string>& packageNames,
                                          bool disabled,
                                          std::string& outError);
 
