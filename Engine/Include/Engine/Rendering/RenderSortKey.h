@@ -22,6 +22,8 @@ struct RenderSortingData
     float32 SortOriginY = 0.0f;
     float32 SortY = 0.0f;
     bool GroupSortByY = false;
+    /// World Y offset of the entity's sector, shared by tile and sprite ground keys.
+    float32 SectorOffsetY = 0;
 };
 struct RenderSortKey
 {

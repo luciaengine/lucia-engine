@@ -2,6 +2,7 @@
 
 #include "Components/Hierarchy.h"
 #include "Components/Rendering/RenderSorting.h"
+#include "Components/Rendering/WorldSectorCoord.h"
 #include "Components/Transform.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/World.h"
@@ -46,6 +47,18 @@ TEST(RenderYSorting, ManualLayerAndOrderTakePriorityOverGroundPoint)
     EXPECT_TRUE(RenderSortBefore(front, back));
     front.Layer = 1;
     EXPECT_TRUE(RenderSortBefore(back, front));
+}
+
+TEST(RenderYSorting, GroundPointCarriesTheSectorOffsetForTileRows)
+{
+    ECS::World world;
+    Components::RenderSorting sorting;
+    sorting.SortByY = true;
+    auto entity = world.Create(sorting, Components::WorldTransform{}, Components::WorldSectorCoord{0, 1, 0});
+    world.ProcessCommands();
+    const auto data = ResolveRenderSorting(world, entity.GetHandle(), Rendering::SortingLayers::Defaults());
+    EXPECT_FLOAT_EQ(data.SectorOffsetY, Components::kWorldSectorSize);
+    EXPECT_FLOAT_EQ(data.SortY, Components::kWorldSectorSize);
 }
 
 TEST(RenderYSorting, OutermostGroupUsesItsGroundPointAndKeepsMembersContiguous)

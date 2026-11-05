@@ -657,7 +657,7 @@ void TileMapRenderFeature::AppendChunkDraws(const ChunkBuffer& chunk, const Tile
         const float32 localY = push.ChunkOriginCellSize[1] +
             static_cast<float32>(cell / TileMap::kChunkSize) * push.ChunkOriginCellSize[3] + sorting.SortOriginY;
         const float32 groundY = Engine::Renderer::FiniteRenderDepth(
-            model.TransformPoint({localX, localY, push.LayerZ[0]}).y);
+            model.TransformPoint({localX, localY, push.LayerZ[0]}).y + sorting.SectorOffsetY);
         uint32 end = first + 1;
         // An untilted row shares one ground height and one contiguous instance range.
         if (push.Model[1] == 0.0f)

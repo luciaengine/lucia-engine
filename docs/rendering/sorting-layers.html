@@ -9,7 +9,7 @@
 <p>2. Add **Render Sorting** from **Add Component &gt; Rendering**.</p>
 <p>3. Choose a **Sorting Layer**.</p>
 <p>4. Set **Order in Layer**. Lower values draw first.</p>
-<p>The renderer compares layer priority first, then order within the layer, then camera depth. Equal authored orders retain back-to-front depth sorting. Objects without Render Sorting use the Default layer and order zero. Draws with equal keys keep a fixed order; assign different order values when their overlap matters.</p>
+<p>The renderer compares layer priority first, then order within the layer, then camera depth by default. Enable Sort by Y to compare ground points instead. See <a href="ground-sorting.mdx">Ground sorting for 2D artwork</a>. Objects without Render Sorting use the Default layer and order zero. Draws with equal keys keep a fixed order; assign different order values when their overlap matters.</p>
 <p>The Inspector shows the effective layer, order, and outermost group beneath the fields.</p>
 <p>The component does not move the object. Its transform, collider, and visibility mask stay independent of its draw order.</p>
 <h2>Edit layers in the Hierarchy</h2>
@@ -21,7 +21,7 @@
 <p>Use **Add Sorting Layer** to create another layer. Change its name and priority in the same page. **Remove Layer** removes a custom layer definition. The Default layer cannot be removed. Removed IDs stay reserved so a later layer cannot take over existing scene references. Names and priorities must be unique. Names must contain text and cannot exceed 80 characters. Priorities are signed whole numbers.</p>
 <p>Changing a name or priority keeps the layer ID. Scene references therefore continue to select the same layer. Project settings are saved in `.Editor/ProjectSettings.json` and included in a built player&#x27;s `game.config`.</p>
 <h2>Keep children together</h2>
-<p>Add Render Sorting to a parent and enable **Group Children**. The outermost enabled group places its descendants together at the parent&#x27;s layer, order, and camera depth. Descendants use their authored order within that group.</p>
+<p>Add Render Sorting to a parent and enable **Group Children**. The outermost enabled group places its descendants together at the parent&#x27;s layer, order, and camera depth by default. Enable Sort by Y on the group to use its ground point. Descendants use their authored order within that group.</p>
 <p>Use a group for artwork made from several renderers that should remain together when it overlaps another object. The group does not change hierarchy order or parent transforms.</p>
 <p>If a scene references a layer that is not in the project settings, the picker shows **Missing layer**. Rendering uses the Default layer&#x27;s priority until a valid layer is assigned.</p>
 <h2>Sprites, tiles and custom pipelines</h2>

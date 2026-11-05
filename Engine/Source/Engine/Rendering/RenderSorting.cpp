@@ -13,17 +13,24 @@ namespace GameEngine::Engine::Renderer
 {
 namespace
 {
-Mathematics::Vector3 ResolveGroundPoint(ECS::World& world, ECS::EntityHandle entity, float32 originY)
+struct GroundSortPoint
 {
-    Mathematics::Vector3 point;
+    Mathematics::Vector3 Position;
+    float32 SectorOffsetY = 0;
+};
+
+GroundSortPoint ResolveGroundPoint(ECS::World& world, ECS::EntityHandle entity, float32 originY)
+{
+    GroundSortPoint point;
     if (const auto* transform = world.GetComponent<Components::WorldTransform>(entity))
     {
-        point = Mathematics::Matrix4x4::FromColumnMajor(transform->matrix).TransformPoint({0, originY, 0});
+        point.Position = Mathematics::Matrix4x4::FromColumnMajor(transform->matrix).TransformPoint({0, originY, 0});
         if (const auto* sector = world.GetComponent<Components::WorldSectorCoord>(entity))
         {
             Mathematics::Vector3 offset;
             SectorToWorld(*sector, offset.x, offset.y, offset.z);
-            point = point + offset;
+            point.Position = point.Position + offset;
+            point.SectorOffsetY = offset.y;
         }
     }
     return point;
@@ -51,7 +58,11 @@ RenderSortingData ResolveRenderSorting(ECS::World& world, ECS::EntityHandle enti
                 result.SortByY = sorting->SortByY;
                 result.SortOriginY = sorting->SortOriginY;
                 if (result.SortByY)
-                    result.SortY = ResolveGroundPoint(world, entity, sorting->SortOriginY).y;
+                {
+                    const auto point = ResolveGroundPoint(world, entity, sorting->SortOriginY);
+                    result.SortY = point.Position.y;
+                    result.SectorOffsetY = point.SectorOffsetY;
+                }
                 result.Authored = sorting->Layer != 0 || sorting->OrderInLayer != 0 ||
                                   sorting->GroupChildren || sorting->SortByY;
             }
@@ -64,7 +75,7 @@ RenderSortingData ResolveRenderSorting(ECS::World& world, ECS::EntityHandle enti
                 result.Group = current;
                 result.GroupSortByY = sorting->SortByY;
                 result.GroupPosition = ResolveGroundPoint(world, current,
-                    sorting->SortByY ? sorting->SortOriginY : 0.0f);
+                    sorting->SortByY ? sorting->SortOriginY : 0.0f).Position;
             }
         }
         if (!hasGroups)
