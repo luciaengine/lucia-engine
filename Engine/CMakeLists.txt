@@ -2107,6 +2107,14 @@ endif()
                     ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Testing)
             endif()
 
+            ge_add_render_services_test(ComputeDescriptorScratchTests
+                Tests/ComputeDescriptorScratchTests.cpp)
+            target_compile_definitions(ComputeDescriptorScratchTests PRIVATE
+                GE_DESCRIPTOR_ALLOCATION_COUNTING=$<NOT:$<BOOL:${ENABLE_MIMALLOC}>>)
+            if(NOT ENABLE_MIMALLOC)
+                target_sources(ComputeDescriptorScratchTests PRIVATE ${_allocation_hook_source})
+            endif()
+
             # Opt-in render checks no gate runs: the Slang lane's parity gate, which needs an
             # external slangc (GE_SLANGC), and the extraction fast path's manual
             # microbenchmark. Build EngineRenderOptInTests and run a test by name.
