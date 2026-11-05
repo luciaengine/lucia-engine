@@ -223,7 +223,10 @@ void FidelityFXDofNode::DeclareForView(ViewDeclare& d)
         d.PassName(".Tile").c_str(), PassPhase::kPostProcess,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(m_Stages[1].Pipeline); p.Read(half, RenderGraph::RGTextureRead::Sampled); p.Write(tile, RenderGraph::RGTextureWrite::Storage); },
+            p.UsePipeline(m_Stages[1].Pipeline);
+                p.Read(half, RenderGraph::RGTextureRead::Sampled);
+                p.Write(tile, RenderGraph::RGTextureWrite::Storage);
+            },
         [this, half, tile, tileW, tileH](RenderGraph::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice(); auto* cl = ctx.Cmd; if (!dev || !cl) return;
@@ -241,7 +244,10 @@ void FidelityFXDofNode::DeclareForView(ViewDeclare& d)
         d.PassName(".Dilate").c_str(), PassPhase::kPostProcess,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(m_Stages[2].Pipeline); p.Read(tile, RenderGraph::RGTextureRead::Sampled); p.Write(dilated, RenderGraph::RGTextureWrite::Storage); },
+            p.UsePipeline(m_Stages[2].Pipeline);
+                p.Read(tile, RenderGraph::RGTextureRead::Sampled);
+                p.Write(dilated, RenderGraph::RGTextureWrite::Storage);
+            },
         [this, tile, dilated, settings, tileGX, tileGY](RenderGraph::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice(); auto* cl = ctx.Cmd; if (!dev || !cl) return;

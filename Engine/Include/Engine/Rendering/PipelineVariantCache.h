@@ -33,7 +33,6 @@
 
 namespace GameEngine::Rendering::RenderGraph
 {
-class RGContext;
 class RGPrepareContext;
 }
 
@@ -134,11 +133,11 @@ class PipelineVariantCache
     // reflected bindings.
     struct VariantServeUnit
     {
-        // Interned id of the compiled variant pipeline. The record path
+        // Interned id of the compiled variant pipeline. Preparation
         // resolves the concrete PipelineHandle per draw with the device's
         // non-building TryGetWarmGraphicsPipeline probe (ResolveWarmPipeline);
         // a (id, formatKey) pair that is cold for the active pass is handed to
-        // a prewarm worker instead of being built on the record thread.
+        // the frame-begin drain instead of being built during preparation.
         GraphicsPipelineId PipelineId{};
         // Cached descriptor-set-layout ids for this unit's pipeline —
         // MaterialBinder's sticky-bind invalidation reads these on SetPipeline
@@ -185,42 +184,20 @@ class PipelineVariantCache
     // camera's own read-only depth.
     enum class DepthFragmentMode : uint8_t { None, CoverageDiscard, GlassTintColor, MotionColor };
 
-    // Compile (or fetch) a color-pass variant for material x vertex flags x
-    // pass keywords against the active pass formats. The returned unit is the
-    // one the handle was resolved from (current, or previous during a rebuild
-    // window), so its meta/set layouts always match the bound pipeline.
-    // {invalid, nullptr} on failure.
-    std::pair<PipelineHandle, const VariantServeUnit*> GetOrCompileColorVariant(
-        const Material& material,
-        VertexAttributeFlags vertexFlags,
-        PrimitiveTopology topology,
-        MaterialKeyword passKeywords,
-        FrontFace frontFace,
-        const RenderGraph::RGContext& ctx);
-
-    /// Select the warm unit for this pass. Its generation is recorded when the draw runs.
+    /// Select a warm unit during graph preparation; cold builds are queued for frame begin.
+    /// The returned unit is borrowed until the next serial material-frame begin.
+    /// Copy its generation into the draw packet and stamp it only after recording that draw.
     std::pair<PipelineHandle, const VariantServeUnit*> PrepareColorVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
         PrimitiveTopology topology,
         MaterialKeyword passKeywords,
         FrontFace frontFace,
-        const RenderGraph::RGPrepareContext& ctx);
+        const RenderGraph::RGPrepareContext& context);
 
-    // Depth-pass mirror of GetOrCompileColorVariant: compiles with passKeywords
-    // only (fragment-stage keywords are irrelevant depth-only).
-    std::pair<PipelineHandle, const VariantServeUnit*> GetOrCompileDepthInstancedVariant(
-        const Material& material,
-        VertexAttributeFlags vertexFlags,
-        PrimitiveTopology topology,
-        MaterialKeyword passKeywords,
-        uint32_t samples,
-        bool depthBiasEnable,
-        bool depthClampEnable,
-        FrontFace frontFace,
-        const RenderGraph::RGContext& ctx);
-
-    /// Select the warm unit for this pass. Its generation is recorded when the draw runs.
+    /// Select a warm unit during graph preparation; cold builds are queued for frame begin.
+    /// The returned unit is borrowed until the next serial material-frame begin.
+    /// Copy its generation into the draw packet and stamp it only after recording that draw.
     std::pair<PipelineHandle, const VariantServeUnit*> PrepareDepthInstancedVariant(
         const Material& material,
         VertexAttributeFlags vertexFlags,
@@ -230,7 +207,7 @@ class PipelineVariantCache
         bool depthBiasEnable,
         bool depthClampEnable,
         FrontFace frontFace,
-        const RenderGraph::RGPrepareContext& ctx);
+        const RenderGraph::RGPrepareContext& context);
 
     // The published camera-prepass variant a draw producer pins on a head it
     // emits while the frame is declared (DrawCommand::InternedPipeline and
@@ -280,8 +257,7 @@ class PipelineVariantCache
     // (vertexFlags, topology, cullMode, depthBiasEnable, depthClampEnable) combo
     // regardless of material, so MaterialBinder's sticky-bind collapses N
     // pipeline binds per pass to 1 for any opaque draw. INVALID id if the shared
-    // .spv isn't available — caller falls back to
-    // GetOrCompileDepthInstancedVariant.
+    // .spv is unavailable; preparation can request a material-specific depth variant.
     // `vertexFlags` MUST match the bucket flags the bound vertex buffer was
     // filled with (the binding stride feeds position fetches).
     GraphicsPipelineId GetSharedDepthPipelineId(
@@ -312,8 +288,8 @@ class PipelineVariantCache
     size_t PendingEvictionCount() const;
     void DrainPendingEvictions();
 
-    // Publish-gate drain. A record-worker variant miss does NOT compile inline
-    // (a cold shaderc variant is 10+s and would stall the record thread / scene-
+    // Publish-gate drain. A variant miss during preparation does NOT compile inline
+    // (a cold shaderc variant is 10+s and would stall preparation / scene-
     // build pump); it enqueues the miss and skips the draw. This serial main-
     // thread drain — called from MaterialSystem::BeginFrame before any parallel
     // record window opens — submits each queued compile to the prewarm workers
@@ -365,10 +341,8 @@ class PipelineVariantCache
     // snapshot and its guard's marker erase becomes a no-op.
     void PurgePendingVariantCompiles(const Material* mat);
 
-    // Test seam: enqueue a color variant compile exactly as the record-worker
-    // miss path would, and return the key it built so a test can assert warmth
-    // via HasColorVariantForTesting after SubmitPendingVariantCompiles. Test-only
-    // (the production entry is the private miss path, which needs a live RGContext).
+    // Enqueue a color variant compile through the preparation miss path for tests.
+    // The returned key can be probed after submission and publication.
     InstancedVariantKey EnqueueColorVariantCompileForTesting(
         const Material& material,
         VertexAttributeFlags vertexFlags,
@@ -436,13 +410,14 @@ class PipelineVariantCache
         return m_AsyncVariantCompilesTotal.load(std::memory_order_relaxed);
     }
 
-    // A later pass compares the shader generations actually drawn for this material.
-    // Reset the table at frame begin and stamp it only from a recorded draw.
+    /// Reset served generations on the serial material-frame thread, before preparation or recording.
     void BeginServeFrame(uint32_t materialIndexCount) { m_ServedGenerations.BeginFrame(materialIndexCount); }
+    /// Stamp the selected generation after issuing its draw; recording workers may call concurrently.
     void RecordServedGeneration(uint32_t materialIndex, ServedPassClass passClass, uint32_t generation)
     {
         m_ServedGenerations.Record(materialIndex, passClass, generation);
     }
+    /// Read a generation after the graph dependencies for its drawing pass have completed recording.
     std::optional<uint32_t> ServedGeneration(uint32_t materialIndex, ServedPassClass passClass) const
     {
         return m_ServedGenerations.Get(materialIndex, passClass);
@@ -472,34 +447,26 @@ class PipelineVariantCache
 
     bool EnsureSharedDepthShaderLoaded(bool isSkinned);
 
-    // Resolve the concrete pipeline for an entry WITHOUT building it here. A
-    // record worker must never run a backend pipeline build: on Metal that is
-    // ~500 ms of MSL compilation per stage, which freezes the editor for the
-    // length of the build. Cold newest id -> hand the build to a worker and
-    // serve the entry's PREVIOUS unit for this frame; invalid handle only when
-    // there is no previous one either (first-ever use, which the publish gate
-    // already handles by skipping the draw). The returned unit is the one the
-    // handle came from, so the binder's meta always matches the bound pipeline.
+    // Probe current and previous pipelines without building on the preparation thread.
+    // A cold current pipeline is queued; the handle and metadata always name the same unit.
     std::pair<PipelineHandle, const VariantServeUnit*> ResolveWarmPipeline(
-        const Material& material, const InstancedVariantEntry& entry, const Rendering::PipelineFormatKey& fk);
+        const Material& material, const InstancedVariantEntry& entry, const Rendering::PipelineFormatKey& formatKey);
 
-    // Fire-and-forget backend build of one (pipeline id, pass format) pair,
-    // requested from the device (IDevice::RequestGraphicsPipeline), which builds
-    // each pair once and does not retry a failed one. `material` is recorded as
-    // waiting on the build (HasPipelineBuildsInFlight).
+    // Request a backend build outside preparation and track materials waiting on it.
+    // The device may build inline when no dispatcher is installed.
     void RequestConcreteWarm(const Material& material, GraphicsPipelineId id,
-                             const Rendering::PipelineFormatKey& fk);
-    // Record callbacks only enqueue: RequestGraphicsPipeline may build inline on
+                             const Rendering::PipelineFormatKey& formatKey);
+    // Preparation only enqueues: RequestGraphicsPipeline may build inline on
     // an owning-thread backend or when no build dispatcher is installed.
     void QueueConcreteWarm(const Material& material, GraphicsPipelineId id,
-                           const Rendering::PipelineFormatKey& fk);
+                           const Rendering::PipelineFormatKey& formatKey);
 
     // Rate-limited (power-of-two) warning for a dual-cold serve — fires per draw
     // per frame during a backend-build window, so the raw line would flood.
     void WarnColdServe(const Material& material, GraphicsPipelineId pipelineId,
-                       const Rendering::PipelineFormatKey& fk);
+                       const Rendering::PipelineFormatKey& formatKey);
 
-    // Publish-gate: a queued variant miss (enqueued by the record path, drained
+    // Publish-gate: a queued variant miss (enqueued during preparation, drained
     // by SubmitPendingVariantCompiles). Carries only the cache key — which now
     // includes the depth-only raster bits — the rest of the compile inputs are
     // snapshotted from the (process-lifetime) Material on the serial drain thread.
@@ -582,11 +549,11 @@ class PipelineVariantCache
 
     // Per-frame (material index, pass class) -> served generation; see
     // BeginServeFrame / ServedGeneration. Written from the record workers by
-    // ResolveWarmPipeline, grown only on the serial frame-begin thread.
+    // RecordServedGeneration, grown only on the serial frame-begin thread.
     ServedGenerationTable m_ServedGenerations;
 
-    // A2.4-D6 record-cache thread-safety. The three variant maps are read by up
-    // to N record workers concurrently and cold-inserted rarely. Lookups take a
+    // Variant-cache synchronization. Preparation reads the three variant maps;
+    // frame-begin publication inserts entries. Lookups take a
     // shared_lock (on an L1 miss); the cold insert takes a unique_lock. A
     // per-thread L1 (below) fronts each map so steady-state hits never touch the
     // mutex — the exact pattern the device PipelineCache ships.
@@ -625,7 +592,7 @@ class PipelineVariantCache
     std::vector<const Material*> m_PendingVariantCacheEvictions;
 
     // Publish-gate handoff. m_PendingVariantCompiles is the this-frame submit
-    // queue (record workers append on a cold miss, the serial drain swaps it out
+    // queue (preparation appends on a cold miss, the serial drain swaps it out
     // and submits); m_PendingVariantPublishes is the return leg (compile workers
     // append the finished unit, the serial apply swaps it out and inserts). The
     // two in-flight sets dedupe across frames: a key stays in its set from

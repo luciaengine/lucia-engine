@@ -1852,6 +1852,7 @@ public:
         uint32_t TargetW = 0;
         uint32_t TargetH = 0;
     };
+    struct SdfRenderGraphPass;
     SdfFrameData PrepareSdfFrameData();
 
     // Debug capture (extracted from Update to reduce file size). Reads

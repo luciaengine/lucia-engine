@@ -634,6 +634,20 @@ bool GraphPreviewAtlas::IblAvailable() const
     return ibl != nullptr && ibl->IsInitialized();
 }
 
+void GraphPreviewAtlas::PublishToUi(UIManager* ui, RG::RGFrame& frame,
+                                    RG::RGTexture atlas, bool hasPlannedProducer)
+{
+    // Planned producers are protected by preparation and the UI's graph read.
+    // An idle graph publishes only previously recorded content.
+    if (!ui || (!m_AtlasInitialized && !hasPlannedProducer))
+        return;
+    ui->SetExternalTextureRG(m_UiResourceName, m_AtlasWidth, m_AtlasHeight,
+                             UI::UITextureSpace::DisplayLinearSdr(),
+                             Rendering::TextureFormat::R16G16B16A16_FLOAT);
+    ui->PublishExternalTextureRG(m_UiResourceName, frame, atlas);
+    m_UiBound = true;
+}
+
 void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& frame)
 {
     if (!m_Services || windowId == 0 || windowId != m_WindowId)
@@ -668,25 +682,11 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
     if (!atlas.IsValid())
         return;
 
-    // A planned producer may publish before it records: required preparation
-    // gates the whole graph, and the UI read orders its sample after tonemap.
-    // An idle graph publishes only previously recorded content.
-    const auto publishToUi = [&](bool planned = false)
-    {
-        if (!ui || (!m_AtlasInitialized && !planned))
-            return;
-        ui->SetExternalTextureRG(m_UiResourceName, m_AtlasWidth, m_AtlasHeight,
-                                 UI::UITextureSpace::DisplayLinearSdr(),
-                                 Rendering::TextureFormat::R16G16B16A16_FLOAT);
-        ui->PublishExternalTextureRG(m_UiResourceName, frame, atlas);
-        m_UiBound = true;
-    };
-
     const uint64_t contentDigest = ComputeContentDigest();
     const bool contentMoved = contentDigest != m_ContentDigest;
     if (!m_Dirty && !contentMoved && m_UndrawnCells == 0)
     {
-        publishToUi();
+        PublishToUi(ui, frame, atlas, false);
         return;
     }
 
@@ -724,7 +724,7 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
     if (draws.empty())
     {
         m_UndrawnCells = undrawn;
-        publishToUi();
+        PublishToUi(ui, frame, atlas, false);
         return;
     }
 
@@ -900,23 +900,23 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
     }
     frame.AddPass(
         m_PassName.c_str(), Rendering::PassPhase::kWorldRender,
-        [&](RG::RGPassBuilder& p)
+        [plan, msaa, msaaColor, hdr, depth](RG::RGPassBuilder& pass)
         {
             RG::RGAttachmentOps color{};
             color.Load = RG::RGLoadOp::Clear;
             color.Store = RG::RGStoreOp::Store;
             if (msaa)
-                p.AttachColorResolve(0, msaaColor, hdr, color);
+                pass.AttachColorResolve(0, msaaColor, hdr, color);
             else
-                p.AttachColor(0, hdr, color);
+                pass.AttachColor(0, hdr, color);
 
             RG::RGAttachmentOps depthOps{};
             depthOps.Load = RG::RGLoadOp::Clear;
             depthOps.Store = RG::RGStoreOp::Store;
             // Reverse-Z: the far value is 0.
             depthOps.Clear.Depth = 0.0f;
-            p.AttachDepth(depth, depthOps, RG::RGDepthAccess::ReadWrite);
-            p.Prepare([plan](RG::RGPrepareContext& context) { return plan->Prepare(context); });
+            pass.AttachDepth(depth, depthOps, RG::RGDepthAccess::ReadWrite);
+            pass.Prepare([plan](RG::RGPrepareContext& context) { return plan->Prepare(context); });
         },
         [plan](RG::RGContext& context) { plan->Record(context); });
 
@@ -940,7 +940,7 @@ void GraphPreviewAtlas::TickRG(uint64_t windowId, UIManager* ui, RG::RGFrame& fr
         [plan](RG::RGContext& context) { plan->Acknowledge(context); });
     frame.AddOrderingEdge(tonemap, acknowledgment);
     frame.MarkOutput(atlas, RG::RGImageLayout::ShaderReadOnly);
-    publishToUi(true);
+    PublishToUi(ui, frame, atlas, true);
 }
 
 } // namespace GameEngine::Editor

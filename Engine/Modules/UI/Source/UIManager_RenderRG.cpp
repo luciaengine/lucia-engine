@@ -71,6 +71,202 @@ bool UIManager::RenderRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture tar
     return RenderRG(frame, target, targetSpace, RenderGraph::RGLoadOp::Clear);
 }
 
+#if defined(GE_HAVE_YOGA) && GE_HAVE_YOGA
+struct UIManager::SdfRenderGraphPass
+{
+    struct ResolvedBinding
+    {
+        uint32_t Slot = 0;
+        RenderGraph::RGTexture Texture{};
+    };
+
+    UIManager* Owner = nullptr;
+    std::vector<ResolvedBinding> Bindings;
+    BufferHandle PrimitiveBuffer{};
+    BufferHandle ClipBuffer{};
+    BufferHandle DrawOrderBuffer{};
+    bool UploadsOk = false;
+    int OutputEncoding = 0;
+    bool BlendEncoded = false;
+    TextCoverageConstants TextCoverage{};
+    GraphicsPipelineId Pipeline{};
+
+    void Declare(RenderGraph::RGFrame& frame, RenderGraph::RGPassBuilder& pass,
+                 RenderGraph::RGTexture target, RenderGraph::RGLoadOp loadOp) const
+    {
+        // Clear when the UI owns the target; load when compositing over a scene.
+        // The clear color is ignored under Load.
+        RenderGraph::RGAttachmentOps ops{};
+        ops.Load = loadOp;
+        ops.Store = RenderGraph::RGStoreOp::Store;
+        ops.Clear.Color[0] = 0.0f;
+        ops.Clear.Color[1] = 0.0f;
+        ops.Clear.Color[2] = 0.0f;
+        ops.Clear.Color[3] = 1.0f;
+        pass.AttachColor(0, target, ops);
+        if (Pipeline.IsValid())
+            pass.UsePipeline(Pipeline);
+
+        // SSBO reads (ring buffers rotate per device frame; the import
+        // dedups by physical so repeat declares are id-stable).
+        if (PrimitiveBuffer.IsValid())
+            pass.Read(frame.ImportExternalBuffer("UISdfPrims", PrimitiveBuffer),
+                   RenderGraph::RGBufferRead::Storage);
+        if (ClipBuffer.IsValid())
+            pass.Read(frame.ImportExternalBuffer("UISdfClips", ClipBuffer),
+                   RenderGraph::RGBufferRead::Storage);
+        if (DrawOrderBuffer.IsValid())
+            pass.Read(frame.ImportExternalBuffer("UISdfDrawOrder", DrawOrderBuffer),
+                   RenderGraph::RGBufferRead::Storage);
+
+        // Sampled reads order each published texture producer before UI sampling.
+        for (const ResolvedBinding& binding : Bindings)
+            pass.Read(binding.Texture, RenderGraph::RGTextureRead::Sampled);
+    }
+
+    void Record(RenderGraph::RGContext& context) const
+    {
+        UIManager& owner = *Owner;
+        // Slot updates run even on draw-skipped frames: the published
+        // producers rendered this frame, and the registry slots must
+        // track the current physicals for the NEXT drawn frame.
+        if (owner.m_SdfTextureRegistry)
+        {
+            for (const ResolvedBinding& binding : Bindings)
+            {
+                const TextureHandle physical = context.GetTexture(binding.Texture);
+                if (physical.IsValid())
+                    owner.m_SdfTextureRegistry->UpdateSlot(binding.Slot, physical);
+            }
+        }
+        const size_t drawCount = owner.m_DrawOrder.size();
+        if (!UploadsOk || drawCount == 0)
+            return;
+        const size_t totalSlots = owner.m_PrimitiveAllocator.GetTotalSlots();
+        if (totalSlots == 0)
+            return;
+
+        const uint32_t frameIndex = owner.m_Device->GetFrameIndex();
+
+        // Device metadata controls lift strength; the declared target space enables it.
+        const auto hdrState = owner.m_Device->GetHdrOutputState();
+
+        // An encoded target requires its staged encoded shader variant.
+        if (BlendEncoded && !owner.m_SdfEncodedVariantAvailable)
+            return;
+
+        const PipelineHandle pipeline = context.GetOrCreatePipelineVariant(Pipeline);
+        if (!pipeline.IsValid())
+            return;
+        context.Cmd->SetPipeline(pipeline);
+
+        uint32_t width = owner.m_LastLayoutWidth;
+        uint32_t height = owner.m_LastLayoutHeight;
+        if (width == 0 || height == 0)
+            owner.m_Device->GetSwapchainSize(width, height);
+
+        context.Cmd->SetViewport(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
+        context.Cmd->SetScissor(0, 0, width, height);
+
+        // Push constants control linear-space compositing; the terminal pass encodes.
+        SdfPushConstants pushConstants{};
+        pushConstants.TargetSize[0] = static_cast<float>(width);
+        pushConstants.TargetSize[1] = static_cast<float>(height);
+        pushConstants.TimeSeconds = owner.m_Time;
+        // Read the OS caret setting each frame so changes take effect immediately.
+        pushConstants.CaretPhaseTogglesPerSecond =
+            UI::CaretPhaseTogglesPerSecond(Platform::GetCaretBlinkHalfPeriod());
+        pushConstants.TextContrast = TextCoverage.Contrast;
+        pushConstants.TextBlendGamma = TextCoverage.BlendGamma;
+        pushConstants.TextBlendSpaceEncoded = TextCoverage.BlendSpaceEncoded;
+        pushConstants.EdgeSoftness = std::max(0.01f, owner.m_TextSmoothingGamma);
+        pushConstants.OutputEncoding = OutputEncoding;
+        const float deviceWhite =
+            std::clamp(hdrState.staticMetadata.paperWhiteNits, kHdrPaperWhiteFloorNits, 1000.0f);
+        pushConstants.PaperWhiteNits = owner.m_HdrUiPaperWhiteNits > 0.0f
+            ? std::clamp(owner.m_HdrUiPaperWhiteNits, 40.0f, 350.0f)
+            : deviceWhite;
+        pushConstants.DeviceWhiteNits = deviceWhite;
+        // Auto (< 0): in HDR modes, lift by the display's black floor so
+        // dark chrome sits at the darkest level the panel can actually
+        // show — effectively 0 on OLED, the backlight floor on LCD.
+        pushConstants.BlackLiftNits = owner.m_HdrUiBlackLiftNits >= 0.0f
+            ? owner.m_HdrUiBlackLiftNits
+            : (pushConstants.OutputEncoding >= 2
+                   ? std::clamp(hdrState.staticMetadata.minMasteringLuminance,
+                                kHdrUiBlackLiftMinNits, kHdrUiBlackLiftMaxNits)
+                   : 0.0f);
+        if (!PrimitiveBuffer.IsValid() || !DrawOrderBuffer.IsValid())
+            return;
+
+        DescriptorSetDesc descriptorDesc{};
+        descriptorDesc.layout = owner.m_SdfSsboSetLayout;
+        descriptorDesc.debugName = "UISdf_SSBO_Set";
+        descriptorDesc.transient = true;
+        DescriptorSetHandle storageSet = owner.m_Device->CreateDescriptorSet(descriptorDesc);
+        if (!storageSet.IsValid())
+            return;
+
+        const size_t primitiveBytes  = totalSlots * sizeof(UI::UIPrimitive);
+        const size_t primitiveOffset = owner.m_SdfPrimRing->GetFrameOffset(frameIndex);
+        owner.m_Device->UpdateStorageBufferBinding(storageSet, 0, PrimitiveBuffer, primitiveOffset, primitiveBytes);
+
+        if (ClipBuffer.IsValid())
+        {
+            const size_t clipSlots = owner.m_ClipAllocator.GetTotalSlots();
+            const size_t clipBytes = std::max(clipSlots, size_t(1)) * sizeof(UI::UIClipRect);
+            const size_t clipOffset = owner.m_SdfClipRing->GetFrameOffset(frameIndex);
+            owner.m_Device->UpdateStorageBufferBinding(storageSet, 1, ClipBuffer, clipOffset, clipBytes);
+        }
+
+        const size_t drawOrderBytes  = drawCount * sizeof(uint32_t);
+        const size_t drawOrderOffset = owner.m_SdfDrawOrderRing->GetFrameOffset(frameIndex);
+        owner.m_Device->UpdateStorageBufferBinding(storageSet, 2, DrawOrderBuffer, drawOrderOffset,
+                                             drawOrderBytes);
+
+        context.Cmd->BindDescriptorSet(0, storageSet, pipeline);
+
+        // Each compatibility run binds its own textures and draw-order offset.
+        // Consecutive runs preserve painter order.
+        if (owner.m_SdfCompatProfile)
+        {
+            if (!owner.m_SdfTextureRegistry)
+                return;
+            for (const UI::UICompatDrawRun& run : owner.m_SdfCompatRuns.Runs())
+            {
+                if (run.Count == 0)
+                    continue;
+                const DescriptorSetHandle textureSet = owner.m_SdfTextureRegistry->CreateDrawRunSet(run);
+                if (!textureSet.IsValid())
+                    continue;
+                context.Cmd->BindDescriptorSet(1, textureSet, pipeline);
+                pushConstants.DrawBase = run.First;
+                context.Cmd->SetConstants(0, sizeof(pushConstants), &pushConstants);
+                context.Cmd->Draw(/*vertexCount=*/6u,
+                              /*instanceCount=*/run.Count,
+                              /*firstVertex=*/0u,
+                              /*firstInstance=*/0u);
+            }
+            return;
+        }
+
+        context.Cmd->SetConstants(0, sizeof(pushConstants), &pushConstants);
+
+        if (owner.m_SdfTextureRegistry)
+        {
+            DescriptorSetHandle textureSet = owner.m_SdfTextureRegistry->CreateTransientFrameSet();
+            if (textureSet.IsValid())
+                context.Cmd->BindDescriptorSet(1, textureSet, pipeline);
+        }
+
+        context.Cmd->Draw(/*vertexCount=*/6u,
+                      /*instanceCount=*/static_cast<uint32_t>(drawCount),
+                      /*firstVertex=*/0u,
+                      /*firstInstance=*/0u);
+    }
+};
+#endif
+
 bool UIManager::RenderRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture target,
                          UI::UITargetSpace targetSpace, RenderGraph::RGLoadOp loadOp)
 {
@@ -78,61 +274,37 @@ bool UIManager::RenderRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture tar
     if (!target.IsValid() || !m_Device)
         return false;
 
-    // Per-frame prep (init, styles, primitives, ring uploads). The pass is
-    // declared even on zero-draw or
-    // unready (!fd.ready: no root / shaders missing) frames — the UI pass is
-    // the target's CLEARER (it absorbed the old Editor.ClearPresentationTarget),
-    // and a presented target must never hold unwritten memory. The exec body
-    // keeps every draw early-out; the attachment ClearOps run regardless.
-    const SdfFrameData fd = PrepareSdfFrameData();
+    // The attachment clears even when preparation produces no drawable UI.
+    const SdfFrameData frameData = PrepareSdfFrameData();
 
-    // Resolve this frame's deferred bindings against the per-frame publish
-    // map. Only stamps matching THIS (frame, frameIndex) are consumable —
-    // anything else is a stale publish from a previous frame/incarnation and
-    // is skipped (the slot keeps its last physical; CreateTransientFrameSet's
-    // dead-handle repair covers destruction). Old-graph rgRef bindings are
-    // skipped entirely on RenderGraph frames: their producers force old-arm excursion
-    // frames, so they are never sampled stale here.
-    struct ResolvedBinding
-    {
-        uint32_t Slot = 0;
-        RenderGraph::RGTexture Tex{};
-    };
-    std::vector<ResolvedBinding> resolved;
-    resolved.reserve(m_SdfDeferredRGBindings.size());
+    // Resolve only textures published for this frame incarnation.
+    // Unresolved slots retain their last physical texture.
+    std::vector<SdfRenderGraphPass::ResolvedBinding> resolvedBindings;
+    resolvedBindings.reserve(m_SdfDeferredRGBindings.size());
     for (const auto& binding : m_SdfDeferredRGBindings)
     {
         if (binding.ExternalName.empty())
-            continue; // old-arm-only binding (rgRef) — not consumable here
-        const auto itPub = m_ExternalRGPublished.find(binding.ExternalName);
-        if (itPub == m_ExternalRGPublished.end())
+            continue; // No frame publication names this binding.
+        const auto publication = m_ExternalRGPublished.find(binding.ExternalName);
+        if (publication == m_ExternalRGPublished.end())
             continue;
-        const PublishedRGTexture& pub = itPub->second;
-        if (!pub.For.IsFor(frame) || pub.TexId == RenderGraph::kInvalidId)
+        const PublishedRGTexture& published = publication->second;
+        if (!published.For.IsFor(frame) || published.TexId == RenderGraph::kInvalidId)
             continue; // stale publish — never consume a foreign frame's id
-        resolved.push_back({binding.Slot, RenderGraph::RGTexture{pub.TexId}});
+        resolvedBindings.push_back({binding.Slot, RenderGraph::RGTexture{published.TexId}});
     }
 
-    const BufferHandle primBuf      = m_SdfPrimRing ? m_SdfPrimRing->GetBuffer() : BufferHandle{};
-    const BufferHandle clipBuf      = m_SdfClipRing ? m_SdfClipRing->GetBuffer() : BufferHandle{};
-    const BufferHandle drawOrderBuf = m_SdfDrawOrderRing ? m_SdfDrawOrderRing->GetBuffer() : BufferHandle{};
+    const BufferHandle primitiveBuffer      = m_SdfPrimRing ? m_SdfPrimRing->GetBuffer() : BufferHandle{};
+    const BufferHandle clipBuffer      = m_SdfClipRing ? m_SdfClipRing->GetBuffer() : BufferHandle{};
+    const BufferHandle drawOrderBuffer = m_SdfDrawOrderRing ? m_SdfDrawOrderRing->GetBuffer() : BufferHandle{};
 
-    const bool uploadsOk = fd.UploadsOk;
+    const bool uploadsOk = frameData.UploadsOk;
 
-    // Output encoding resolves before pipeline selection: it feeds both the
-    // push constants and the subpixel activation gate. Both derive from the
-    // HOST-declared target space — never from the display (#784): an SDR
-    // offscreen attachment stays unlifted (and subpixel-eligible) under an
-    // HDR display, and an HDR-bound attachment takes its lift under an SDR
-    // display.
+    // The declared target space controls encoding and subpixel activation.
     const int outputEncoding = ResolveOutputEncoding(targetSpace);
 
-    // The encoded-blend target selects the UI_BLEND_SPACE_ENCODED shader
-    // variants: paint adapters pass CSS bytes raw and encode sampled linear
-    // sources, so the ROP interpolates encoded values (#767). A build staged
-    // without the variant renders NOTHING into an encoded declaration (the
-    // clear still runs — the pass owns the target) rather than silently
-    // blending in the wrong space.
+    // Encoded targets require the matching shader variant.
+    // A missing variant skips draws while preserving the attachment clear.
     const bool blendEncoded =
         targetSpace.GetKind() == UI::UITargetSpace::Kind::EncodedSrgb;
 #if defined(GE_DEV_DIAG)
@@ -149,11 +321,7 @@ bool UIManager::RenderRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture tar
     }
 #endif
 
-    // Subpixel RGB text AA swaps in the dual-source pipeline twin — the twin
-    // of whichever blend-space variant the target selected. Every gate miss
-    // (setting off, HDR-space target, no dualSrcBlend, no staged variant)
-    // lands on the matching grayscale pipeline — same draws, never dropped
-    // content and never a wrong-space pipeline.
+    // Unsupported subpixel rendering uses the matching grayscale variant.
     const bool subpixelActive = ResolveTextSubpixelActive(
         m_TextSubpixelAA, outputEncoding,
         m_Device->GetCapabilities().supportsDualSourceBlending,
@@ -190,199 +358,25 @@ bool UIManager::RenderRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture tar
         pipelineId = cachedPipelineId;
     }
 
+    auto* data = frame.AllocatePassData<SdfRenderGraphPass>();
+    data->Owner = this;
+    data->Bindings = resolvedBindings;
+    data->PrimitiveBuffer = primitiveBuffer;
+    data->ClipBuffer = clipBuffer;
+    data->DrawOrderBuffer = drawOrderBuffer;
+    data->UploadsOk = uploadsOk;
+    data->OutputEncoding = outputEncoding;
+    data->BlendEncoded = blendEncoded;
+    data->TextCoverage = textCoverage;
+    data->Pipeline = pipelineId;
+
     frame.AddPass(
         "UI Overlay", static_cast<int32_t>(PassPhase::kUI),
-        [&](RenderGraph::RGPassBuilder& p)
+        [data, &frame, target, loadOp](RenderGraph::RGPassBuilder& pass)
         {
-            // Load-op is caller-chosen. Clear when the UI owns/initializes the
-            // target (backbuffer direct-attach, or the FinalLinear transient —
-            // the editor chrome path; Clear is the import contract there). Load
-            // when compositing the UI OVER existing content (a game HUD over the
-            // scene's FinalColor). The clear color below is ignored under Load.
-            RenderGraph::RGAttachmentOps ops{};
-            ops.Load = loadOp;
-            ops.Store = RenderGraph::RGStoreOp::Store;
-            ops.Clear.Color[0] = 0.0f;
-            ops.Clear.Color[1] = 0.0f;
-            ops.Clear.Color[2] = 0.0f;
-            ops.Clear.Color[3] = 1.0f;
-            p.AttachColor(0, target, ops);
-            if (pipelineId.IsValid())
-                p.UsePipeline(pipelineId);
-
-            // SSBO reads (ring buffers rotate per device frame; the import
-            // dedups by physical so repeat declares are id-stable).
-            if (primBuf.IsValid())
-                p.Read(frame.ImportExternalBuffer("UISdfPrims", primBuf),
-                       RenderGraph::RGBufferRead::Storage);
-            if (clipBuf.IsValid())
-                p.Read(frame.ImportExternalBuffer("UISdfClips", clipBuf),
-                       RenderGraph::RGBufferRead::Storage);
-            if (drawOrderBuf.IsValid())
-                p.Read(frame.ImportExternalBuffer("UISdfDrawOrder", drawOrderBuf),
-                       RenderGraph::RGBufferRead::Storage);
-
-            // One sampled read per resolved deferred binding — this IS the
-            // barrier that orders the producers (scene/game pipelines) before
-            // the UI samples them; in the hybrid era that ordering came from
-            // executing the RenderGraph frame before the old graph compiled.
-            for (const ResolvedBinding& rb : resolved)
-                p.Read(rb.Tex, RenderGraph::RGTextureRead::Sampled);
+            data->Declare(frame, pass, target, loadOp);
         },
-        [this, resolved, primBuf, clipBuf, drawOrderBuf, uploadsOk, outputEncoding,
-         blendEncoded, textCoverage, pipelineId](RenderGraph::RGContext& ctx)
-        {
-            // Slot updates run even on draw-skipped frames: the published
-            // producers rendered this frame, and the registry slots must
-            // track the current physicals for the NEXT drawn frame.
-            if (m_SdfTextureRegistry)
-            {
-                for (const ResolvedBinding& rb : resolved)
-                {
-                    const TextureHandle physical = ctx.GetTexture(rb.Tex);
-                    if (physical.IsValid())
-                        m_SdfTextureRegistry->UpdateSlot(rb.Slot, physical);
-                }
-            }
-            const size_t drawCount = m_DrawOrder.size();
-            if (!uploadsOk || drawCount == 0)
-                return;
-            const size_t totalSlots = m_PrimitiveAllocator.GetTotalSlots();
-            if (totalSlots == 0)
-                return;
-
-            const uint32_t frameIdx = m_Device->GetFrameIndex();
-
-            // The paper-white / black-lift constants stay device-derived: they
-            // parameterize the lift's STRENGTH for a target whose declared
-            // space enables it; the target space alone decides WHETHER the
-            // lift runs.
-            const auto hdrState = m_Device->GetHdrOutputState();
-
-            // Encoded declaration without the staged variant: skip the draws
-            // (the attachment clear above already ran). Falling back to the
-            // linear pipeline here would be a wrong-SPACE render, which is
-            // strictly worse than missing content.
-            if (blendEncoded && !m_SdfEncodedVariantAvailable)
-                return;
-
-            const PipelineHandle pipeline = ctx.GetOrCreatePipelineVariant(pipelineId);
-            if (!pipeline.IsValid())
-                return;
-            ctx.Cmd->SetPipeline(pipeline);
-
-            uint32_t w = m_LastLayoutWidth;
-            uint32_t h = m_LastLayoutHeight;
-            if (w == 0 || h == 0)
-                m_Device->GetSwapchainSize(w, h);
-
-            ctx.Cmd->SetViewport(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
-            ctx.Cmd->SetScissor(0, 0, w, h);
-
-            // Verbatim twin of the old arm's push-constant block — the
-            // single-OETF invariant lives here (outputEncoding/paperWhite/
-            // blackLift drive LINEAR-space compositing; no encode).
-            SdfPushConstants pc{};
-            pc.TargetSize[0] = static_cast<float>(w);
-            pc.TargetSize[1] = static_cast<float>(h);
-            pc.TimeSeconds = m_Time;
-            // Read per frame rather than cached, so changing the OS caret
-            // setting takes effect without restarting the editor. This is a
-            // win32k transition, not a shared-memory read like GetTickCount —
-            // roughly two orders of magnitude dearer — but at sub-microsecond
-            // cost once per frame it sits far below a frame's noise floor.
-            pc.CaretPhaseTogglesPerSecond =
-                UI::CaretPhaseTogglesPerSecond(Platform::GetCaretBlinkHalfPeriod());
-            pc.TextContrast = textCoverage.Contrast;
-            pc.TextBlendGamma = textCoverage.BlendGamma;
-            pc.TextBlendSpaceEncoded = textCoverage.BlendSpaceEncoded;
-            pc.EdgeSoftness = std::max(0.01f, m_TextSmoothingGamma);
-            pc.OutputEncoding = outputEncoding;
-            const float deviceWhite =
-                std::clamp(hdrState.staticMetadata.paperWhiteNits, kHdrPaperWhiteFloorNits, 1000.0f);
-            pc.PaperWhiteNits = m_HdrUiPaperWhiteNits > 0.0f
-                ? std::clamp(m_HdrUiPaperWhiteNits, 40.0f, 350.0f)
-                : deviceWhite;
-            pc.DeviceWhiteNits = deviceWhite;
-            // Auto (< 0): in HDR modes, lift by the display's black floor so
-            // dark chrome sits at the darkest level the panel can actually
-            // show — effectively 0 on OLED, the backlight floor on LCD.
-            pc.BlackLiftNits = m_HdrUiBlackLiftNits >= 0.0f
-                ? m_HdrUiBlackLiftNits
-                : (pc.OutputEncoding >= 2
-                       ? std::clamp(hdrState.staticMetadata.minMasteringLuminance,
-                                    kHdrUiBlackLiftMinNits, kHdrUiBlackLiftMaxNits)
-                       : 0.0f);
-            if (!primBuf.IsValid() || !drawOrderBuf.IsValid())
-                return;
-
-            DescriptorSetDesc dsDesc{};
-            dsDesc.layout = m_SdfSsboSetLayout;
-            dsDesc.debugName = "UISdf_SSBO_Set";
-            dsDesc.transient = true;
-            DescriptorSetHandle ssboSet = m_Device->CreateDescriptorSet(dsDesc);
-            if (!ssboSet.IsValid())
-                return;
-
-            const size_t primBytes  = totalSlots * sizeof(UI::UIPrimitive);
-            const size_t primOffset = m_SdfPrimRing->GetFrameOffset(frameIdx);
-            m_Device->UpdateStorageBufferBinding(ssboSet, 0, primBuf, primOffset, primBytes);
-
-            if (clipBuf.IsValid())
-            {
-                const size_t clipSlots = m_ClipAllocator.GetTotalSlots();
-                const size_t clipBytes = std::max(clipSlots, size_t(1)) * sizeof(UI::UIClipRect);
-                const size_t clipOffset = m_SdfClipRing->GetFrameOffset(frameIdx);
-                m_Device->UpdateStorageBufferBinding(ssboSet, 1, clipBuf, clipOffset, clipBytes);
-            }
-
-            const size_t drawOrderBytes  = drawCount * sizeof(uint32_t);
-            const size_t drawOrderOffset = m_SdfDrawOrderRing->GetFrameOffset(frameIdx);
-            m_Device->UpdateStorageBufferBinding(ssboSet, 2, drawOrderBuf, drawOrderOffset,
-                                                 drawOrderBytes);
-
-            ctx.Cmd->BindDescriptorSet(0, ssboSet, pipeline);
-
-            // Compat profile: one draw per run, each against the bind group
-            // holding exactly that run's textures, with the run's first
-            // draw-order index on a push constant. Painter's order is intact —
-            // runs are consecutive spans of the same list, never a reordering.
-            if (m_SdfCompatProfile)
-            {
-                if (!m_SdfTextureRegistry)
-                    return;
-                for (const UI::UICompatDrawRun& run : m_SdfCompatRuns.Runs())
-                {
-                    if (run.Count == 0)
-                        continue;
-                    const DescriptorSetHandle texSet = m_SdfTextureRegistry->CreateDrawRunSet(run);
-                    if (!texSet.IsValid())
-                        continue;
-                    ctx.Cmd->BindDescriptorSet(1, texSet, pipeline);
-                    pc.DrawBase = run.First;
-                    ctx.Cmd->SetConstants(0, sizeof(pc), &pc);
-                    ctx.Cmd->Draw(/*vertexCount=*/6u,
-                                  /*instanceCount=*/run.Count,
-                                  /*firstVertex=*/0u,
-                                  /*firstInstance=*/0u);
-                }
-                return;
-            }
-
-            ctx.Cmd->SetConstants(0, sizeof(pc), &pc);
-
-            if (m_SdfTextureRegistry)
-            {
-                DescriptorSetHandle texSet = m_SdfTextureRegistry->CreateTransientFrameSet();
-                if (texSet.IsValid())
-                    ctx.Cmd->BindDescriptorSet(1, texSet, pipeline);
-            }
-
-            ctx.Cmd->Draw(/*vertexCount=*/6u,
-                          /*instanceCount=*/static_cast<uint32_t>(drawCount),
-                          /*firstVertex=*/0u,
-                          /*firstInstance=*/0u);
-        });
+        [data](RenderGraph::RGContext& context) { data->Record(context); });
     return true;
 #else
     (void)frame;

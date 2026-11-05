@@ -65,20 +65,19 @@ public:
     // {buffer, offset} to PrepareDispatch.
     void FillParams(OceanFFTParamsGPU& out);
 
-    // Records SpectrumInit (when dirty) -> SpectrumUpdate -> FFT rows -> FFT cols,
-    // with barriers, leaving the displacement array sampleable by the world pass.
-    // All four dispatches bind the same params. Params come from the frame's
-    // upload ring (FillParams above) — no per-class buffer ring.
-    /// Declare these IDs with RGPassBuilder::UsePipeline before recording.
+    /// Declare these IDs with RGPassBuilder::UsePipeline before preparation.
     std::array<::GameEngine::Rendering::ComputePipelineId, 4> GetPipelineIds() const
     {
         return {m_InitPipe, m_UpdatePipe, m_FFTHPipe, m_FFTVPipe};
     }
 
+    /// Render-thread preparation borrows the frame upload and allocates frame-local bindings.
+    /// Keep this simulation and its textures unchanged until the graph records.
     OceanPreparedFFTDispatch PrepareDispatch(::GameEngine::Rendering::IDevice* device,
                                               ::GameEngine::Rendering::BufferHandle paramsBuffer,
                                               uint64 paramsOffset) const;
-    void RecordDispatch(::GameEngine::Rendering::CommandList* cl,
+    /// Render-thread recording commits spectrum initialization only after commands are emitted.
+    void RecordDispatch(::GameEngine::Rendering::CommandList* commands,
                         const OceanPreparedFFTDispatch& dispatch);
 
     ::GameEngine::Rendering::TextureHandle GetDisplacementTexture() const { return m_Displacement; }

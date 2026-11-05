@@ -178,22 +178,22 @@ struct PreparedForwardDraw
 
 // The command and its spans belong to the frame's declaration snapshot.
 std::optional<PreparedForwardDraw> PrepareForwardDrawCommand(
-    const DrawCommand& cmd, uint32_t pipelineSetCount, RenderServices& services,
-    const PassBindingContext& pass, Rendering::FrontFace winding, const RenderGraph::RGPrepareContext& ctx)
+    const DrawCommand& command, uint32_t pipelineSetCount, RenderServices& services,
+    const PassBindingContext& pass, Rendering::FrontFace winding, const RenderGraph::RGPrepareContext& context)
 {
     const auto& meshRegistry = services.GetMeshGPURegistry();
     auto& variants = services.Materials().Variants();
     auto& binder = services.Materials().Binder();
-    const auto* material = cmd.Material;
-    if (!material && (!cmd.InternedPipeline.IsValid() || !cmd.PipelineMeta))
+    const auto* material = command.Material;
+    if (!material && (!command.InternedPipeline.IsValid() || !command.PipelineMeta))
         return std::nullopt;
 
     const Rendering::MeshGPUEntry* meshEntry = nullptr;
     Rendering::MeshGPUEntryBindings meshBindings{};
-    Rendering::VertexAttributeFlags effectiveFlags = cmd.VertexFlags;
-    if (cmd.Geometry.Mesh.IsValid())
+    Rendering::VertexAttributeFlags effectiveFlags = command.VertexFlags;
+    if (command.Geometry.Mesh.IsValid())
     {
-        meshEntry = meshRegistry.Find(cmd.Geometry.Mesh);
+        meshEntry = meshRegistry.Find(command.Geometry.Mesh);
         if (!meshEntry || meshEntry->indexCount == 0)
             return std::nullopt;
         if (!meshRegistry.TryGetDrawableBindings(*meshEntry, meshBindings))
@@ -202,22 +202,22 @@ std::optional<PreparedForwardDraw> PrepareForwardDrawCommand(
             *meshEntry, meshBindings, material && material->IgnoresVertexColor());
     }
 
-    Rendering::PipelineHandle resolvedPipe{};
-    if (cmd.InternedPipeline.IsValid())
-        resolvedPipe = ctx.PreparePipeline(cmd.InternedPipeline);
-    const Rendering::ShaderMeta* variantMeta = cmd.PipelineMeta;
+    Rendering::PipelineHandle pipeline{};
+    if (command.InternedPipeline.IsValid())
+        pipeline = context.PreparePipeline(command.InternedPipeline);
+    const Rendering::ShaderMeta* variantMeta = command.PipelineMeta;
     std::span<const Rendering::DescriptorSetLayoutId> pipelineSetLayouts;
     const PipelineVariantCache::VariantServeUnit* served = nullptr;
-    if (!resolvedPipe.IsValid() && material)
+    if (!pipeline.IsValid() && material)
     {
         const Rendering::MaterialKeyword contributorKeywords =
-            ContributorColorKeywords(pass.PassKeywords, cmd.PassKeywords,
+            ContributorColorKeywords(pass.PassKeywords, command.PassKeywords,
                                      meshEntry != nullptr);
         // Contributor draws use the view's base winding (not parity-split).
-        auto [pipeline, unit] = variants.PrepareColorVariant(
+        auto [servedPipeline, unit] = variants.PrepareColorVariant(
             *material, effectiveFlags, ContributorTopology(meshEntry),
-            contributorKeywords, winding, ctx);
-        resolvedPipe = pipeline;
+            contributorKeywords, winding, context);
+        pipeline = servedPipeline;
         served = unit;
         if (served)
         {
@@ -225,17 +225,17 @@ std::optional<PreparedForwardDraw> PrepareForwardDrawCommand(
             pipelineSetLayouts = served->SetLayouts;
         }
     }
-    if (!resolvedPipe.IsValid())
+    if (!pipeline.IsValid())
         return std::nullopt;
 
     auto bindings = material
-        ? binder.PrepareMaterialForDraw(pass, *material, resolvedPipe, variantMeta, cmd.Bindings,
-                                        pipelineSetCount, pipelineSetLayouts)
-        : binder.PreparePipelineForDraw(pass, resolvedPipe, *cmd.PipelineMeta, cmd.Bindings,
-                                        pipelineSetCount, pipelineSetLayouts);
+                        ? binder.PrepareMaterialForDraw(pass, *material, pipeline, variantMeta, command.Bindings,
+                                                        pipelineSetCount, pipelineSetLayouts)
+                        : binder.PreparePipelineForDraw(pass, pipeline, *command.PipelineMeta, command.Bindings,
+                                                        pipelineSetCount, pipelineSetLayouts);
     if (!bindings.Pipeline.IsValid())
         return std::nullopt;
-    DrawSubCommand direct{cmd.IndexCount, cmd.InstanceCount, cmd.FirstIndex, cmd.FirstInstance, cmd.VertexOffset};
+    DrawSubCommand direct{command.IndexCount, command.InstanceCount, command.FirstIndex, command.FirstInstance, command.VertexOffset};
     if (meshEntry)
     {
         meshBindings.indexType = meshEntry->indexType;
@@ -248,12 +248,12 @@ std::optional<PreparedForwardDraw> PrepareForwardDrawCommand(
     }
     else
     {
-        meshBindings.coreVB = cmd.Geometry.AltGeom.VB;
-        meshBindings.indexBuffer = cmd.Geometry.AltGeom.IB;
-        meshBindings.indexType = static_cast<uint32_t>(cmd.Geometry.AltGeom.IndexType);
+        meshBindings.coreVB = command.Geometry.AltGeom.VB;
+        meshBindings.indexBuffer = command.Geometry.AltGeom.IB;
+        meshBindings.indexType = static_cast<uint32_t>(command.Geometry.AltGeom.IndexType);
     }
 
-    PreparedForwardDraw result{&cmd, bindings, meshBindings, direct, {}, 0};
+    PreparedForwardDraw result{&command, bindings, meshBindings, direct, {}, 0};
     if (served)
     {
         result.MaterialIndex = material->GetGpuSceneMaterialIndex();
@@ -263,44 +263,44 @@ std::optional<PreparedForwardDraw> PrepareForwardDrawCommand(
 }
 
 void RecordForwardDrawCommand(const PreparedForwardDraw& prepared, RenderServices& services,
-                              PassBindingContext& pass, const auto& setVbSticky, const auto& setIbSticky)
+                              PassBindingContext& pass, DrawGeometryBindings& geometryBindings)
 {
-    const auto& cmd = *prepared.Source;
+    const auto& command = *prepared.Source;
     const auto& mesh = prepared.Geometry;
-    setVbSticky(mesh.coreVB, 0);
-    setVbSticky(mesh.tangentVB, 1);
-    setVbSticky(mesh.colorVB, 2);
-    setVbSticky(mesh.uv1VB, 3);
-    setVbSticky(mesh.jointsVB, 4);
-    setVbSticky(mesh.weightsVB, 5);
-    setVbSticky(mesh.joints1VB, 6);
-    setVbSticky(mesh.weights1VB, 7);
-    for (uint32_t i = 0; i < mesh.extraUvVB.size(); ++i)
-        setVbSticky(mesh.extraUvVB[i], 8u + i);
-    setIbSticky(mesh.indexBuffer, static_cast<Rendering::IndexType>(mesh.indexType));
-    services.Materials().Binder().BindPreparedForDraw(pass, prepared.Bindings, cmd.Bindings.PushConstants);
+    geometryBindings.BindVertexBuffer(mesh.coreVB, 0);
+    geometryBindings.BindVertexBuffer(mesh.tangentVB, 1);
+    geometryBindings.BindVertexBuffer(mesh.colorVB, 2);
+    geometryBindings.BindVertexBuffer(mesh.uv1VB, 3);
+    geometryBindings.BindVertexBuffer(mesh.jointsVB, 4);
+    geometryBindings.BindVertexBuffer(mesh.weightsVB, 5);
+    geometryBindings.BindVertexBuffer(mesh.joints1VB, 6);
+    geometryBindings.BindVertexBuffer(mesh.weights1VB, 7);
+    for (uint32_t streamIndex = 0; streamIndex < mesh.extraUvVB.size(); ++streamIndex)
+        geometryBindings.BindVertexBuffer(mesh.extraUvVB[streamIndex], 8u + streamIndex);
+    geometryBindings.BindIndexBuffer(mesh.indexBuffer, static_cast<Rendering::IndexType>(mesh.indexType));
+    services.Materials().Binder().BindPreparedForDraw(pass, prepared.Bindings, command.Bindings.PushConstants);
 
-    if (cmd.UseIndirect && cmd.IndirectCommandBuffer.IsValid())
+    if (command.UseIndirect && command.IndirectCommandBuffer.IsValid())
     {
         pass.Cmd->DrawIndexedIndirectCount(
-            cmd.IndirectCommandBuffer,
-            cmd.IndirectCountBuffer,
-            cmd.IndirectMaxDrawCount,
-            cmd.IndirectStride,
-            cmd.IndirectCommandOffset,
-            cmd.IndirectCountOffset);
+            command.IndirectCommandBuffer,
+            command.IndirectCountBuffer,
+            command.IndirectMaxDrawCount,
+            command.IndirectStride,
+            command.IndirectCommandOffset,
+            command.IndirectCountOffset);
     }
-    else if (cmd.SubDraws.empty())
+    else if (command.SubDraws.empty())
     {
         pass.Cmd->DrawIndexed(prepared.Direct.IndexCount, prepared.Direct.InstanceCount, prepared.Direct.FirstIndex,
-                        prepared.Direct.VertexOffset, prepared.Direct.FirstInstance);
+                              prepared.Direct.VertexOffset, prepared.Direct.FirstInstance);
     }
     else
     {
-        for (const auto& sub : cmd.SubDraws)
+        for (const auto& sub : command.SubDraws)
         {
             pass.Cmd->DrawIndexed(sub.IndexCount, sub.InstanceCount,
-                            sub.FirstIndex, sub.VertexOffset, sub.FirstInstance);
+                                  sub.FirstIndex, sub.VertexOffset, sub.FirstInstance);
         }
     }
     if (prepared.ServedVersion)
@@ -404,6 +404,43 @@ void LogPropCoverageCensus(const Rendering::GPUScene& gpuScene,
         100.0 * subFloor / visible, subAdmit, 100.0 * subAdmit / visible, sub1, sub2, sub4,
         sub8);
 }
+
+struct PreparedWorldDraw
+{
+    DrawCommand Command;
+    PreparedForwardDraw Prepared;
+    size_t PushConstantOffset = 0;
+    size_t PushConstantSize = 0;
+    bool Entity = false;
+    uint32_t MaterialIndex = 0;
+    uint32_t MeshIndex = 0;
+    uint32_t MaxDrawCount = 0;
+    size_t RangeCount = 0;
+};
+struct WorldPassData
+{
+    PassBindingContext Inputs;
+    std::span<const DrawCommand> Commands;
+    std::vector<PreparedWorldDraw> Draws;
+    std::vector<std::byte> PushConstants;
+    size_t BaseTextureCount = 0;
+    bool HasAnyDraws = false;
+    size_t EntityBatchCount = 0;
+    bool Consolidated = false;
+    uint32_t LiveGroupCount = 0;
+};
+struct WorldBatchPreparation
+{
+    const WorldDrawBuilder::BatchKey& Key;
+    const Engine::Renderer::Material* Material;
+    const Rendering::MeshGPUEntry* Mesh;
+    Rendering::MeshGPUEntryBindings Geometry;
+    Rendering::VertexAttributeFlags VertexFlags;
+    Rendering::MaterialKeyword Keywords;
+    Rendering::GPUDrawStreamBuilder::BatchDrawRange Range;
+    DrawBindings Bindings;
+    uint64_t IndirectionAddress;
+};
 
 } // namespace
 
@@ -1074,6 +1111,482 @@ SceneColorGrab& RenderServices::GetOrCreateTransmissionSceneGrab()
     return *m_TransmissionSceneGrab;
 }
 
+class RenderServices::WorldPassPreparation
+{
+  public:
+    WorldPassPreparation(RenderServices& services, WorldPassData& data,
+                         RenderGraph::RGPrepareContext& context, Rendering::ViewId viewId,
+                         Rendering::MaterialKeyword keywords, ReliefDepthSource reliefDepthSource,
+                         WorldPassDrawScope scope, Rendering::GPUDrawStreamBuilder::SlicePhase phase,
+                         uint8_t sliceCascadeIndex, RenderGraph::RGTexture prepassDepth,
+                         Rendering::SamplerHandle prepassDepthSampler)
+        : m_Services(services), m_Data(&data), m_Context(context), m_ViewId(viewId),
+          m_PassKeywords(keywords), m_ReliefDepthSource(reliefDepthSource), m_Scope(scope),
+          m_Phase(phase), m_SliceCascadeIndex(sliceCascadeIndex), m_PrepassDepth(prepassDepth),
+          m_PrepassDepthSampler(prepassDepthSampler)
+    {
+    }
+
+    bool Prepare()
+    {
+        m_Data->Draws.clear();
+        m_Data->PushConstants.clear();
+        m_Data->Inputs.PassResources.Textures.resize(m_Data->BaseTextureCount);
+        m_Data->HasAnyDraws = false;
+        m_Data->EntityBatchCount = 0;
+        m_Data->Consolidated = false;
+        m_Data->LiveGroupCount = 0;
+        m_EntityKeys = m_Services.m_WorldDrawBuilder.GetBatchKeys(m_ViewId);
+        LogMeshPassDiagnostic(
+            "color", "pass-enter", m_ViewId,
+            m_EntityKeys.size(), m_Data->Commands.size(),
+            m_Services.m_DrawStreamBuilder ? m_Services.m_DrawStreamBuilder->GetRangeCount() : 0u);
+        // Contributors can draw even when the entity batch list is empty.
+        m_HasEntityDraws = !m_EntityKeys.empty();
+        m_Data->HasAnyDraws = m_HasEntityDraws || !m_Data->Commands.empty();
+        if (!m_Data->HasAnyDraws)
+        {
+            LogMeshPassDiagnostic(
+                "color", "pass-no-draws", m_ViewId,
+                m_EntityKeys.size(), m_Data->Commands.size(),
+                m_Services.m_DrawStreamBuilder ? m_Services.m_DrawStreamBuilder->GetRangeCount() : 0u);
+            return true;
+        }
+
+        m_Scene = m_Services.GetGPUScene();
+
+        m_InstanceAddress = 0;
+        if (m_Services.m_Device && m_Scene && m_Scene->GetInstanceBuffer().IsValid())
+            m_InstanceAddress =
+                m_Services.m_Device->GetBufferDeviceAddress(m_Scene->GetInstanceBuffer());
+
+        if (m_PrepassDepth.IsValid())
+        {
+            if (const TextureHandle depth = m_Context.GetTexture(m_PrepassDepth); depth.IsValid())
+                m_Data->Inputs.PassResources.Textures.push_back(
+                    {HashStringId("ge_prepassDepth"), depth, m_PrepassDepthSampler});
+        }
+        m_UploadedCompatListBytes =
+            UploadedCompatInstanceListBytes(m_Data->Inputs.PassResources);
+        m_Data->EntityBatchCount = m_EntityKeys.size();
+        m_Data->Consolidated = !m_Services.MeshPoolGroupSpanForDraws().empty();
+        m_Data->LiveGroupCount = m_Services.m_MeshPoolGroups.LiveGroupCount();
+        m_ScatterReady = m_Services.m_DrawStreamBuilder && m_Services.m_DrawStreamBuilder->IntrospectScatter().PipelineReady;
+
+        DrainForwardOpaqueFirst([this](bool blendPhase)
+                                { PrepareEntities(blendPhase); },
+                                [this](bool blendPhase)
+                                { PrepareContributors(blendPhase); });
+
+        // Vector growth is finished: install stable command/PC addresses once.
+        for (auto& draw : m_Data->Draws)
+        {
+            draw.Command.Bindings.PushConstants = draw.PushConstantSize == 0
+                                                      ? std::span<const std::byte>{}
+                                                      : std::span<const std::byte>(m_Data->PushConstants.data() + draw.PushConstantOffset,
+                                                                                   draw.PushConstantSize);
+            draw.Prepared.Source = &draw.Command;
+        }
+        return true;
+    }
+
+  private:
+    void Append(const DrawCommand& command, const PreparedForwardDraw& prepared,
+                bool entity = false, uint32_t materialIndex = 0, uint32_t meshIndex = 0,
+                uint32_t maxDrawCount = 0, size_t rangeCount = 0)
+    {
+        const auto bytes = command.Bindings.PushConstants;
+        const size_t offset = m_Data->PushConstants.size();
+        m_Data->PushConstants.insert(m_Data->PushConstants.end(), bytes.begin(), bytes.end());
+        m_Data->Draws.push_back({command, prepared, offset, bytes.size(), entity,
+                                 materialIndex, meshIndex, maxDrawCount, rangeCount});
+    }
+
+    void PrepareEntityBatch(const WorldDrawBuilder::BatchKey& key, const DrawStreamLookupKey& lookup,
+                            const CpuDrawStreamBuilder::InstanceList* orderedRun = nullptr)
+    {
+        ComposedPCInstanced instanceConstants{};
+
+        const Material* material = key.material;
+        if (!material)
+        {
+            LogMeshDrawSkipDiagnostic(
+                "color", "material-null", m_ViewId,
+                key.materialIndex, key.meshIndex,
+                m_ScatterReady,
+                false, 0ull, m_InstanceAddress,
+                m_Services.m_Device ? m_Services.m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
+                m_Services.m_DrawStreamBuilder ? m_Services.m_DrawStreamBuilder->GetRangeCount() : 0u);
+            return;
+        }
+        if (IsOrderDependentBlendMaterial(*material) && m_Services.IsSortedTransparentActive(m_ViewId))
+        {
+            return;
+        }
+        if (m_Scope != WorldPassDrawScope::All)
+        {
+            const bool isTransmissive = Rendering::HasKeyword(
+                material->GetVariantKey().materialKeywords, Rendering::MaterialKeyword::Transmission);
+            if (m_Scope == WorldPassDrawScope::OpaqueOnly && isTransmissive)
+            {
+                LogMeshDrawSkipDiagnostic(
+                    "color", "scope-opaque-filter", m_ViewId,
+                    key.materialIndex, key.meshIndex,
+                    m_ScatterReady,
+                    false, 0ull, m_InstanceAddress,
+                    m_Services.m_Device ? m_Services.m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
+                    m_Services.m_DrawStreamBuilder ? m_Services.m_DrawStreamBuilder->GetRangeCount() : 0u);
+                return;
+            }
+            if (m_Scope == WorldPassDrawScope::TransmissiveOnly && !isTransmissive)
+            {
+                LogMeshDrawSkipDiagnostic(
+                    "color", "scope-transmissive-filter", m_ViewId,
+                    key.materialIndex, key.meshIndex,
+                    m_ScatterReady,
+                    false, 0ull, m_InstanceAddress,
+                    m_Services.m_Device ? m_Services.m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
+                    m_Services.m_DrawStreamBuilder ? m_Services.m_DrawStreamBuilder->GetRangeCount() : 0u);
+                return;
+            }
+        }
+        const auto* entry = m_Services.GetMeshGPURegistry().Find(key.mesh);
+        if (!entry)
+        {
+            LogMeshDrawSkipDiagnostic(
+                "color", "mesh-entry-missing", m_ViewId,
+                key.materialIndex, key.meshIndex,
+                m_ScatterReady,
+                false, 0ull, m_InstanceAddress,
+                m_Services.m_Device ? m_Services.m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
+                m_Services.m_DrawStreamBuilder ? m_Services.m_DrawStreamBuilder->GetRangeCount() : 0u);
+            return;
+        }
+        Rendering::MeshGPUEntryBindings entryBindings{};
+        const bool drawable = m_Services.GetMeshGPURegistry().TryGetDrawableBindings(*entry, entryBindings);
+        if (!drawable || entry->indexCount == 0)
+        {
+            LogMeshDrawSkipDiagnostic(
+                "color", !drawable ? kMeshNotDrawableReason : "index-count-zero",
+                m_ViewId, key.materialIndex, key.meshIndex,
+                m_ScatterReady,
+                false, 0ull, m_InstanceAddress,
+                m_Services.m_Device ? m_Services.m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
+                m_Services.m_DrawStreamBuilder ? m_Services.m_DrawStreamBuilder->GetRangeCount() : 0u);
+            return;
+        }
+
+        const Rendering::VertexAttributeFlags effectiveFlags =
+            BoundStreamVertexFlags(*entry, entryBindings, material->IgnoresVertexColor());
+
+        const Rendering::MaterialKeyword entityKeywords =
+            m_PassKeywords | Rendering::MaterialKeyword::Instanced | WorldPassReliefDepthKeywords(material->GetVariantKey().materialKeywords, material->GetAlphaMode(), m_ReliefDepthSource);
+
+        if (m_Services.m_Profile.IsCompat())
+        {
+            const CpuDrawStreamBuilder::InstanceList instances =
+                orderedRun ? *orderedRun : m_Services.m_CpuDrawStream.GetInstances(m_ViewId, key.materialIndex, key.meshIndex, CpuDrawStreamBuilder::InstanceSet::Camera);
+            if (instances.Count == 0u)
+                return;
+            assert(m_UploadedCompatListBytes == m_Services.m_CpuDrawStream.GetIndexList(m_ViewId).size_bytes() &&
+                   "the view's instance list was rebuilt after its first pass declared");
+
+            auto [pipeline, variantEntry] = m_Services.m_MaterialSystem.Variants().PrepareColorVariant(
+                *material, effectiveFlags, entry->topology, entityKeywords, m_Services.m_FrontFace, m_Context);
+            if (!pipeline.IsValid())
+            {
+                LogMeshDrawSkipDiagnostic(
+                    "color", "color-pipeline-invalid", m_ViewId,
+                    key.materialIndex, key.meshIndex, false, false, 0ull,
+                    m_InstanceAddress, false, 0u);
+                return;
+            }
+
+            // firstInstance stays 0: it does not reach gl_InstanceIndex
+            // through SPIRV-Cross/Metal, so the list offset is the push
+            // constant on every compat backend.
+            const uint32_t compatListFirst = instances.First;
+            Engine::Renderer::DrawBindings compatBindings{};
+            compatBindings.PushConstants = std::span<const std::byte>(
+                reinterpret_cast<const std::byte*>(&compatListFirst),
+                sizeof(compatListFirst));
+
+            const auto preparedBindings = m_Services.Materials().Binder().PrepareMaterialForDraw(
+                m_Data->Inputs, *material, pipeline,
+                variantEntry ? variantEntry->VariantMeta.get() : nullptr, compatBindings, /*pipelineSetCount=*/0,
+                variantEntry ? std::span<const Rendering::DescriptorSetLayoutId>(variantEntry->SetLayouts)
+                             : std::span<const Rendering::DescriptorSetLayoutId>{});
+            if (!preparedBindings.Pipeline.IsValid())
+            {
+                LogMeshDrawSkipDiagnostic(
+                    "color", "material-bind-invalid", m_ViewId,
+                    key.materialIndex, key.meshIndex, false, false, 0ull,
+                    m_InstanceAddress, false, 0u);
+                return;
+            }
+
+            DrawCommand command{};
+            command.Bindings = compatBindings;
+            PreparedForwardDraw prepared{nullptr, preparedBindings, entryBindings, {entry->indexCount, instances.Count, entry->firstIndex, 0u, static_cast<int32_t>(entry->vertexOffset)}, {}, material->GetGpuSceneMaterialIndex()};
+            prepared.Geometry.indexType = entry->indexType;
+            if (variantEntry)
+                prepared.ServedVersion = variantEntry->MaterialVersion;
+            Append(command, prepared, true, key.materialIndex, key.meshIndex, 1u, 0u);
+            return;
+        }
+
+        if (!m_ScatterReady)
+        {
+            LogMeshDrawSkipDiagnostic(
+                "color", "drawstream-pipeline-invalid", m_ViewId,
+                key.materialIndex, key.meshIndex,
+                false, false, 0ull, m_InstanceAddress,
+                m_Services.m_Device ? m_Services.m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
+                m_Services.m_DrawStreamBuilder ? m_Services.m_DrawStreamBuilder->GetRangeCount() : 0u);
+            return;
+        }
+        // The pass's own Color-table slice; the caller resolved both axes.
+        // The representative material (key.material) binds the PSO.
+        const Rendering::GPUDrawStreamBuilder::BatchDrawRange drawRange =
+            m_Services.m_DrawStreamBuilder->FindBatchDrawRange(
+                static_cast<uint32_t>(m_ViewId), m_SliceCascadeIndex,
+                lookup.classKey, lookup.meshKey, m_Phase);
+        if (!drawRange.IsValid() || !m_Services.m_Device)
+        {
+            LogMeshDrawSkipDiagnostic(
+                "color", !m_Services.m_Device ? "device-null" : "draw-range-invalid", m_ViewId,
+                key.materialIndex, key.meshIndex,
+                true, drawRange.IsValid(), 0ull, m_InstanceAddress,
+                m_Services.m_Device ? m_Services.m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
+                m_Services.m_DrawStreamBuilder->GetRangeCount());
+            return;
+        }
+        // Shared indirection buffer: records carry arena-global
+        // firstInstance, so one BDA serves every batch and slice.
+        const uint64_t slotIndirectionBda =
+            m_Services.m_DrawStreamBuilder->GetSharedIndirectionAddress();
+        if (slotIndirectionBda == 0 || m_InstanceAddress == 0)
+        {
+            LogMeshDrawSkipDiagnostic(
+                "color", slotIndirectionBda == 0 ? "indirection-bda-zero" : "instance-bda-zero",
+                m_ViewId, key.materialIndex, key.meshIndex,
+                true, true, slotIndirectionBda, m_InstanceAddress,
+                m_Services.m_Device->GetCapabilities().supportsBufferDeviceAddress,
+                m_Services.m_DrawStreamBuilder->GetRangeCount());
+            return;
+        }
+
+        instanceConstants.indirectionAddr = slotIndirectionBda;
+        instanceConstants.gpuInstancesAddr = m_InstanceAddress;
+        std::span<const std::byte> constantBytes(
+            reinterpret_cast<const std::byte*>(&instanceConstants), sizeof(instanceConstants));
+
+        Engine::Renderer::DrawBindings drawBindings{};
+        drawBindings.PushConstants = constantBytes;
+
+        const WorldBatchPreparation batch{key, material, entry, entryBindings, effectiveFlags,
+                                          entityKeywords, drawRange, drawBindings, slotIndirectionBda};
+        const Rendering::FrontFace baseWinding = m_Services.m_FrontFace;
+        for (const auto& drawSegment : drawRange.Segments())
+            PrepareSegment(batch, drawSegment.mirrored ? Rendering::FlipWinding(baseWinding) : baseWinding,
+                           drawSegment.crossfading, drawSegment.segment);
+    }
+
+    void PrepareSegment(const WorldBatchPreparation& batch, Rendering::FrontFace winding,
+                        bool crossfading, const Rendering::GPUDrawStreamBuilder::BatchDrawSegment& segment)
+    {
+        const size_t commandOffset = segment.cmdByteOffset;
+        const size_t countOffset = segment.countByteOffset;
+        const uint32_t maxDrawCount = segment.maxDrawCount;
+        const Rendering::MaterialKeyword segmentKeywords =
+            crossfading ? (batch.Keywords | Rendering::MaterialKeyword::LodCrossfade)
+                        : batch.Keywords;
+        auto variant = m_Services.m_MaterialSystem.Variants().PrepareColorVariant(
+            *batch.Material, batch.VertexFlags, batch.Mesh->topology, segmentKeywords, winding, m_Context);
+        // A cold fade variant uses the head variant to preserve mesh coverage.
+        if (!variant.first.IsValid() && crossfading)
+        {
+            variant = m_Services.m_MaterialSystem.Variants().PrepareColorVariant(
+                *batch.Material, batch.VertexFlags, batch.Mesh->topology, batch.Keywords, winding,
+                m_Context);
+        }
+        auto [pipeline, variantEntry] = variant;
+        if (!pipeline.IsValid())
+        {
+            LogMeshDrawSkipDiagnostic(
+                "color", "color-pipeline-invalid", m_ViewId,
+                batch.Key.materialIndex, batch.Key.meshIndex, true,
+                false, batch.IndirectionAddress, m_InstanceAddress,
+                m_Services.m_Device->GetCapabilities().supportsBufferDeviceAddress,
+                m_Services.m_DrawStreamBuilder->GetRangeCount());
+            return;
+        }
+        const auto preparedBindings = m_Services.Materials().Binder().PrepareMaterialForDraw(
+            m_Data->Inputs, *batch.Material, pipeline,
+            variantEntry ? variantEntry->VariantMeta.get() : nullptr, batch.Bindings, /*pipelineSetCount=*/0,
+            variantEntry ? std::span<const Rendering::DescriptorSetLayoutId>(variantEntry->SetLayouts)
+                         : std::span<const Rendering::DescriptorSetLayoutId>{});
+        if (!preparedBindings.Pipeline.IsValid())
+        {
+            LogMeshDrawSkipDiagnostic(
+                "color", "material-bind-invalid", m_ViewId,
+                batch.Key.materialIndex, batch.Key.meshIndex,
+                true, true, batch.IndirectionAddress, m_InstanceAddress,
+                m_Services.m_Device->GetCapabilities().supportsBufferDeviceAddress,
+                m_Services.m_DrawStreamBuilder->GetRangeCount());
+            return;
+        }
+        DrawCommand command{};
+        command.Bindings = batch.Bindings;
+        command.UseIndirect = true;
+        command.IndirectCommandBuffer = batch.Range.recordBuffer;
+        command.IndirectCountBuffer = batch.Range.countBuffer;
+        command.IndirectMaxDrawCount = maxDrawCount;
+        command.IndirectStride = 5u * sizeof(uint32_t);
+        command.IndirectCommandOffset = commandOffset;
+        command.IndirectCountOffset = countOffset;
+        PreparedForwardDraw prepared{nullptr, preparedBindings, batch.Geometry, {}, {}, batch.Material->GetGpuSceneMaterialIndex()};
+        prepared.Geometry.indexType = batch.Mesh->indexType;
+        if (variantEntry)
+            prepared.ServedVersion = variantEntry->MaterialVersion;
+        Append(command, prepared, true, batch.Key.materialIndex, batch.Key.meshIndex,
+               maxDrawCount, m_Services.m_DrawStreamBuilder->GetRangeCount());
+    }
+
+    void PrepareContributor(const DrawCommand& command)
+    {
+        // Main-world contributors require a material, unlike the separate forward API.
+        if (!command.Material)
+            return;
+        if (auto prepared = PrepareForwardDrawCommand(command, 0, m_Services, m_Data->Inputs, m_Services.m_FrontFace, m_Context))
+            Append(command, *prepared);
+    }
+
+    void PrepareEntities(bool blendPhase)
+    {
+        if (!m_HasEntityDraws)
+            return;
+        const std::span<const uint32_t> meshGroups = m_Services.MeshPoolGroupSpanForDraws();
+        // Color-table slices key on the color class whatever their
+        // cascade index: MaterialDependent keeps the depth-class remap
+        // (a Shadow-table concern) out of the resolution.
+
+        if (blendPhase && m_Services.m_Profile.IsCompat() && m_Scene)
+        {
+            struct OrderedInstance
+            {
+                const WorldDrawBuilder::BatchKey* Key;
+                uint32_t IndexOffset;
+                float Depth;
+            };
+            std::vector<OrderedInstance> ordered;
+            const auto camera = Rendering::DeriveCameraData(m_Services.m_ViewRegistry.ResolveCameraData(m_ViewId));
+            const auto& instances = m_Scene->GetInstances();
+            for (const auto& key : m_EntityKeys)
+            {
+                if (!IsBlendedMaterial(key.material))
+                    continue;
+                const auto list = m_Services.m_CpuDrawStream.GetInstances(m_ViewId, key.materialIndex,
+                                                                          key.meshIndex, CpuDrawStreamBuilder::InstanceSet::Camera);
+                const auto indices = m_Services.m_CpuDrawStream.GetIndexList(m_ViewId);
+                {
+                    for (uint32_t instanceIndex = 0; instanceIndex < list.Count; ++instanceIndex)
+                    {
+                        const uint32_t instance = indices[list.First + instanceIndex];
+                        if (instance >= instances.size())
+                            continue;
+                        const auto& center = instances[instance].boundingCenter;
+                        const float depth = (center.x - camera.Position.x) * camera.Forward.x +
+                                            (center.y - camera.Position.y) * camera.Forward.y +
+                                            (center.z - camera.Position.z) * camera.Forward.z;
+                        ordered.push_back({&key, list.First + instanceIndex, depth});
+                    }
+                }
+            }
+            std::stable_sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b)
+                             {
+                    if (a.Depth != b.Depth) return a.Depth > b.Depth;
+                    return a.IndexOffset < b.IndexOffset; });
+            for (size_t instanceIndex = 0; instanceIndex < ordered.size();)
+            {
+                const auto& first = ordered[instanceIndex];
+                CpuDrawStreamBuilder::InstanceList run{first.IndexOffset, 1};
+                size_t next = instanceIndex + 1;
+                // Coalesce only neighbours whose sorted order remains
+                // identical to consecutive entries in the uploaded index list.
+                while (next < ordered.size() && ordered[next].Key == first.Key &&
+                       ordered[next].IndexOffset == run.First + run.Count)
+                {
+                    ++run.Count;
+                    ++next;
+                }
+                PrepareEntityBatch(*first.Key, Lookup(*first.Key, meshGroups), &run);
+                instanceIndex = next;
+            }
+            return;
+        }
+        if (meshGroups.empty())
+        {
+            for (const auto& key : m_EntityKeys)
+                if (IsBlendedMaterial(key.material) == blendPhase)
+                    PrepareEntityBatch(key, Lookup(key, meshGroups));
+        }
+        else
+        {
+            std::unordered_set<uint64_t> drawnGroups;
+            drawnGroups.reserve(m_EntityKeys.size());
+            for (const auto& key : m_EntityKeys)
+            {
+                if (IsBlendedMaterial(key.material) != blendPhase)
+                    continue;
+                const DrawStreamLookupKey lookup = Lookup(key, meshGroups);
+                if (lookup.meshKey == Rendering::MeshPoolGroupPlan::kAbsentGroup)
+                    continue; // dead mesh row — instances self-reject GPU-side
+                const uint64_t drawKey =
+                    (static_cast<uint64_t>(lookup.classKey) << 24) | lookup.meshKey;
+                if (!drawnGroups.insert(drawKey).second)
+                    continue;
+                PrepareEntityBatch(key, lookup);
+            }
+        }
+    }
+
+    DrawStreamLookupKey Lookup(const WorldDrawBuilder::BatchKey& key,
+                               std::span<const uint32_t> meshGroups) const
+    {
+        return ResolveDrawStreamLookupKey(
+            key, m_SliceCascadeIndex,
+            Rendering::MaterialDepthClass::MaterialDependent, meshGroups);
+    }
+
+    void PrepareContributors(bool blendPhase)
+    {
+        if (m_Scope == WorldPassDrawScope::TransmissiveOnly)
+            return;
+        for (const auto& command : m_Data->Commands)
+            if (IsBlendedContributor(command) == blendPhase)
+                PrepareContributor(command);
+    }
+
+    RenderServices& m_Services;
+    WorldPassData* m_Data;
+    RenderGraph::RGPrepareContext& m_Context;
+    Rendering::ViewId m_ViewId;
+    Rendering::MaterialKeyword m_PassKeywords;
+    ReliefDepthSource m_ReliefDepthSource;
+    WorldPassDrawScope m_Scope;
+    Rendering::GPUDrawStreamBuilder::SlicePhase m_Phase;
+    uint8_t m_SliceCascadeIndex;
+    RenderGraph::RGTexture m_PrepassDepth;
+    Rendering::SamplerHandle m_PrepassDepthSampler;
+    std::span<const WorldDrawBuilder::BatchKey> m_EntityKeys;
+    Rendering::GPUScene* m_Scene = nullptr;
+    uint64_t m_InstanceAddress = 0;
+    uint64_t m_UploadedCompatListBytes = 0;
+    bool m_HasEntityDraws = false;
+    bool m_ScatterReady = false;
+};
+
 RenderServices::WorldPassRG RenderServices::AddWorldPassForView(
     Rendering::RenderGraph::RGFrame& frame, ViewId viewId,
     const WorldPassTargetsRG& targets, MaterialKeyword passKeywords, WorldPassDrawScope scope,
@@ -1417,30 +1930,6 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
         forwardSnapshot = CaptureForwardCommands(frame, emitted);
     }
 
-    struct PreparedWorldDraw
-    {
-        DrawCommand Command;
-        PreparedForwardDraw Prepared;
-        size_t PushConstantOffset = 0;
-        size_t PushConstantSize = 0;
-        bool Entity = false;
-        uint32_t MaterialIndex = 0;
-        uint32_t MeshIndex = 0;
-        uint32_t MaxDrawCount = 0;
-        size_t RangeCount = 0;
-    };
-    struct WorldPassData
-    {
-        PassBindingContext Inputs;
-        std::span<const DrawCommand> Commands;
-        std::vector<PreparedWorldDraw> Draws;
-        std::vector<std::byte> PushConstants;
-        size_t BaseTextureCount = 0;
-        bool HasAnyDraws = false;
-        size_t EntityBatchCount = 0;
-        bool Consolidated = false;
-        uint32_t LiveGroupCount = 0;
-    };
     auto* data = frame.AllocatePassData<WorldPassData>();
     data->Inputs.View = viewId;
     data->Inputs.PassKeywords = passKeywords;
@@ -1671,515 +2160,10 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
                               targets.DepthRange);
             }
             p.Prepare([this, data, viewId, passKeywords, reliefDepthSource, scope, phase,
-                       sliceCascadeIndex, prepassDepth, prepassDepthSampler](RenderGraph::RGPrepareContext& ctx)
+                       sliceCascadeIndex, prepassDepth, prepassDepthSampler](RenderGraph::RGPrepareContext& context)
             {
-                data->Draws.clear();
-                data->PushConstants.clear();
-                data->Inputs.PassResources.Textures.resize(data->BaseTextureCount);
-                data->HasAnyDraws = false;
-                data->EntityBatchCount = 0;
-                data->Consolidated = false;
-                data->LiveGroupCount = 0;
-                auto entityKeys = m_WorldDrawBuilder.GetBatchKeys(viewId);
-                LogMeshPassDiagnostic(
-                    "color", "pass-enter", viewId,
-                    entityKeys.size(), data->Commands.size(),
-                    m_DrawStreamBuilder ? m_DrawStreamBuilder->GetRangeCount() : 0u);
-                // Entity-draw guard: contributors always dispatch when present
-                // (they share targets/viewport but record their own pipelines) —
-                // the regression the contributor-dispatch test pins.
-                const bool runEntityDraws = !entityKeys.empty();
-                data->HasAnyDraws = runEntityDraws || !data->Commands.empty();
-                if (!data->HasAnyDraws)
-                {
-                    LogMeshPassDiagnostic(
-                        "color", "pass-no-draws", viewId,
-                        entityKeys.size(), data->Commands.size(),
-                        m_DrawStreamBuilder ? m_DrawStreamBuilder->GetRangeCount() : 0u);
-                    return true;
-                }
-
-                GPUScene* gpuScene = GetGPUScene();
-                const auto& meshRegistry = GetMeshGPURegistry();
-
-                uint64_t instGpuInstancesAddr = 0;
-                if (m_Device && gpuScene && gpuScene->GetInstanceBuffer().IsValid())
-                    instGpuInstancesAddr =
-                        m_Device->GetBufferDeviceAddress(gpuScene->GetInstanceBuffer());
-
-                auto& binder = Materials().Binder();
-                if (prepassDepth.IsValid())
-                {
-                    if (const TextureHandle depth = ctx.GetTexture(prepassDepth); depth.IsValid())
-                        data->Inputs.PassResources.Textures.push_back(
-                            {HashStringId("ge_prepassDepth"), depth, prepassDepthSampler});
-                }
-                auto& pass = data->Inputs;
-                [[maybe_unused]] const uint64_t uploadedCompatListBytes =
-                    UploadedCompatInstanceListBytes(pass.PassResources);
-                data->EntityBatchCount = entityKeys.size();
-                data->Consolidated = !MeshPoolGroupSpanForDraws().empty();
-                data->LiveGroupCount = m_MeshPoolGroups.LiveGroupCount();
-                const bool scatterReady = m_DrawStreamBuilder && m_DrawStreamBuilder->IntrospectScatter().PipelineReady;
-                auto append = [&](const DrawCommand& command, const PreparedForwardDraw& prepared,
-                                  bool entity = false, uint32_t materialIndex = 0,
-                                  uint32_t meshIndex = 0, uint32_t maxDrawCount = 0,
-                                  size_t rangeCount = 0)
-                {
-                    const auto bytes = command.Bindings.PushConstants;
-                    const size_t offset = data->PushConstants.size();
-                    data->PushConstants.insert(data->PushConstants.end(), bytes.begin(), bytes.end());
-                    data->Draws.push_back({command, prepared, offset, bytes.size(), entity,
-                                           materialIndex, meshIndex, maxDrawCount, rangeCount});
-                };
-
-                // Temporary push constants are copied into frame-owned storage by append.
-                ComposedPCInstanced pcInst{};
-
-                // One indirect draw per (Material, mesh) batch via the bucketer-
-                // written slot — or per (class, pool group) under draw
-                // consolidation. `lookup` is the resolved axis pair the scatter
-                // published this batch's range under (ResolveDrawStreamLookupKey).
-                // FindBatchDrawRange during preparation; an unpopulated range (first frame
-                // for a newly-spawned batch) is skipped this frame.
-                auto prepareEntityBatch = [&](const WorldDrawBuilder::BatchKey& key,
-                                             const DrawStreamLookupKey& lookup,
-                                             const CpuDrawStreamBuilder::InstanceList* orderedRun = nullptr)
-                {
-                    const Material* material = key.material;
-                    if (!material)
-                    {
-                        LogMeshDrawSkipDiagnostic(
-                            "color", "material-null", viewId,
-                            key.materialIndex, key.meshIndex,
-                            scatterReady,
-                            false, 0ull, instGpuInstancesAddr,
-                            m_Device ? m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
-                            m_DrawStreamBuilder ? m_DrawStreamBuilder->GetRangeCount() : 0u);
-                        return;
-                    }
-                    // Sorted transparent peel (T2/S2): when the sorted transparent pass owns this
-                    // view's ORDER-DEPENDENT Blend draws this frame, drop them here so they are
-                    // not also drawn unsorted in the opaque batch order. Order-independent blends
-                    // (additive/multiply — IsOrderDependentBlendState) stay batched: sorting them
-                    // gains nothing. When the sorted path is inactive (no order-dependent Blend
-                    // in the view, or a pipeline without the drain node), Blend rides the batched
-                    // path as before. Independent of the transmissive scope (peeled in both All
-                    // and OpaqueOnly opaque passes). MUST match the collection filter in
-                    // BuildSortedTransparentForView and the extraction class bit exactly
-                    // (Risk 3) — all three use IsOrderDependentBlendMaterial.
-                    if (IsOrderDependentBlendMaterial(*material) && IsSortedTransparentActive(viewId))
-                    {
-                        return;
-                    }
-                    // Transmissive glass is peeled out of the opaque colour pass and drawn in the
-                    // dedicated post-grab transmissive pass (and vice-versa). The bucketer slot
-                    // exists either way, so FindSlot below is unaffected by which pass draws it. Only the
-                    // scoped passes need the keyword read; the All path (every glass-free view) skips it.
-                    if (scope != WorldPassDrawScope::All)
-                    {
-                        const bool isTransmissive = Rendering::HasKeyword(
-                            material->GetVariantKey().materialKeywords, Rendering::MaterialKeyword::Transmission);
-                        if (scope == WorldPassDrawScope::OpaqueOnly && isTransmissive)
-                        {
-                            LogMeshDrawSkipDiagnostic(
-                                "color", "scope-opaque-filter", viewId,
-                                key.materialIndex, key.meshIndex,
-                                scatterReady,
-                                false, 0ull, instGpuInstancesAddr,
-                                m_Device ? m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
-                                m_DrawStreamBuilder ? m_DrawStreamBuilder->GetRangeCount() : 0u);
-                            return;
-                        }
-                        if (scope == WorldPassDrawScope::TransmissiveOnly && !isTransmissive)
-                        {
-                            LogMeshDrawSkipDiagnostic(
-                                "color", "scope-transmissive-filter", viewId,
-                                key.materialIndex, key.meshIndex,
-                                scatterReady,
-                                false, 0ull, instGpuInstancesAddr,
-                                m_Device ? m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
-                                m_DrawStreamBuilder ? m_DrawStreamBuilder->GetRangeCount() : 0u);
-                            return;
-                        }
-                    }
-                    const auto* entry = meshRegistry.Find(key.mesh);
-                    if (!entry)
-                    {
-                        LogMeshDrawSkipDiagnostic(
-                            "color", "mesh-entry-missing", viewId,
-                            key.materialIndex, key.meshIndex,
-                            scatterReady,
-                            false, 0ull, instGpuInstancesAddr,
-                            m_Device ? m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
-                            m_DrawStreamBuilder ? m_DrawStreamBuilder->GetRangeCount() : 0u);
-                        return;
-                    }
-                    Rendering::MeshGPUEntryBindings entryBindings{};
-                    const bool drawable = meshRegistry.TryGetDrawableBindings(*entry, entryBindings);
-                    if (!drawable || entry->indexCount == 0)
-                    {
-                        LogMeshDrawSkipDiagnostic(
-                            "color", !drawable ? kMeshNotDrawableReason : "index-count-zero",
-                            viewId, key.materialIndex, key.meshIndex,
-                            scatterReady,
-                            false, 0ull, instGpuInstancesAddr,
-                            m_Device ? m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
-                            m_DrawStreamBuilder ? m_DrawStreamBuilder->GetRangeCount() : 0u);
-                        return;
-                    }
-
-                    const Rendering::VertexAttributeFlags effectiveFlags =
-                        BoundStreamVertexFlags(*entry, entryBindings, material->IgnoresVertexColor());
-
-                    // Entity batches always need GE_INSTANCED (indirect vertex
-                    // fetch) even when callers pass keywords=None (thumbnails).
-                    // A parallax material writes its relief's depth when no prepass
-                    // wrote it, and reads the prepass's when one did
-                    // (WorldPassReliefDepthKeywords).
-                    const Rendering::MaterialKeyword entityKeywords =
-                        passKeywords | Rendering::MaterialKeyword::Instanced
-                        | WorldPassReliefDepthKeywords(material->GetVariantKey().materialKeywords,
-                                                       material->GetAlphaMode(), reliefDepthSource);
-
-                    // Compatibility profile: no GPU scatter and no device addresses.
-                    // The CPU draw stream's frustum-culled instance list replaces
-                    // the indirection buffer — ONE instanced DrawIndexed per batch,
-                    // the batch's offset into the view's CompatInstanceList riding
-                    // a push constant the vertex stage adds gl_InstanceIndex to
-                    // (instance_io.glsl's compat branch).
-                    if (m_Profile.IsCompat())
-                    {
-                        const CpuDrawStreamBuilder::InstanceList instances =
-                            orderedRun ? *orderedRun : m_CpuDrawStream.GetInstances(viewId, key.materialIndex, key.meshIndex,
-                                                         CpuDrawStreamBuilder::InstanceSet::Camera);
-                        if (instances.Count == 0u)
-                            return;
-                        assert(uploadedCompatListBytes == m_CpuDrawStream.GetIndexList(viewId).size_bytes() &&
-                               "the view's instance list was rebuilt after its first pass declared");
-
-                        auto [p, ve] = m_MaterialSystem.Variants().PrepareColorVariant(
-                            *material, effectiveFlags, entry->topology, entityKeywords, m_FrontFace, ctx);
-                        if (!p.IsValid())
-                        {
-                            LogMeshDrawSkipDiagnostic(
-                                "color", "color-pipeline-invalid", viewId,
-                                key.materialIndex, key.meshIndex, false, false, 0ull,
-                                instGpuInstancesAddr, false, 0u);
-                            return;
-                        }
-
-                        // firstInstance stays 0: it does not reach gl_InstanceIndex
-                        // through SPIRV-Cross/Metal, so the list offset is the push
-                        // constant on every compat backend.
-                        const uint32_t compatListFirst = instances.First;
-                        Engine::Renderer::DrawBindings compatBindings{};
-                        compatBindings.PushConstants = std::span<const std::byte>(
-                            reinterpret_cast<const std::byte*>(&compatListFirst),
-                            sizeof(compatListFirst));
-
-                        const auto resolvedPipe = binder.PrepareMaterialForDraw(
-                            pass, *material, p,
-                            ve ? ve->VariantMeta.get() : nullptr, compatBindings, /*pipelineSetCount=*/0,
-                            ve ? std::span<const Rendering::DescriptorSetLayoutId>(ve->SetLayouts)
-                               : std::span<const Rendering::DescriptorSetLayoutId>{});
-                        if (!resolvedPipe.Pipeline.IsValid())
-                        {
-                            LogMeshDrawSkipDiagnostic(
-                                "color", "material-bind-invalid", viewId,
-                                key.materialIndex, key.meshIndex, false, false, 0ull,
-                                instGpuInstancesAddr, false, 0u);
-                            return;
-                        }
-
-                        DrawCommand command{};
-                        command.Bindings = compatBindings;
-                        PreparedForwardDraw prepared{nullptr, resolvedPipe, entryBindings,
-                            {entry->indexCount, instances.Count, entry->firstIndex, 0u,
-                             static_cast<int32_t>(entry->vertexOffset)}, {}, material->GetGpuSceneMaterialIndex()};
-                        prepared.Geometry.indexType = entry->indexType;
-                        if (ve)
-                            prepared.ServedVersion = ve->MaterialVersion;
-                        append(command, prepared, true, key.materialIndex, key.meshIndex, 1u, 0u);
-                        return;
-                    }
-
-                    if (!scatterReady)
-                    {
-                        LogMeshDrawSkipDiagnostic(
-                            "color", "drawstream-pipeline-invalid", viewId,
-                            key.materialIndex, key.meshIndex,
-                            false, false, 0ull, instGpuInstancesAddr,
-                            m_Device ? m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
-                            m_DrawStreamBuilder ? m_DrawStreamBuilder->GetRangeCount() : 0u);
-                        return;
-                    }
-                    // The pass's own Color-table slice; the caller resolved both axes.
-                    // The representative material (key.material) binds the PSO.
-                    const Rendering::GPUDrawStreamBuilder::BatchDrawRange drawRange =
-                        m_DrawStreamBuilder->FindBatchDrawRange(
-                            static_cast<uint32_t>(viewId), sliceCascadeIndex,
-                            lookup.classKey, lookup.meshKey, phase);
-                    if (!drawRange.IsValid() || !m_Device)
-                    {
-                        LogMeshDrawSkipDiagnostic(
-                            "color", !m_Device ? "device-null" : "draw-range-invalid", viewId,
-                            key.materialIndex, key.meshIndex,
-                            true, drawRange.IsValid(), 0ull, instGpuInstancesAddr,
-                            m_Device ? m_Device->GetCapabilities().supportsBufferDeviceAddress : false,
-                            m_DrawStreamBuilder->GetRangeCount());
-                        return;
-                    }
-                    // Shared indirection buffer: records carry arena-global
-                    // firstInstance, so one BDA serves every batch and slice.
-                    const uint64_t slotIndirectionBda =
-                        m_DrawStreamBuilder->GetSharedIndirectionAddress();
-                    if (slotIndirectionBda == 0 || instGpuInstancesAddr == 0)
-                    {
-                        LogMeshDrawSkipDiagnostic(
-                            "color", slotIndirectionBda == 0 ? "indirection-bda-zero" : "instance-bda-zero",
-                            viewId, key.materialIndex, key.meshIndex,
-                            true, true, slotIndirectionBda, instGpuInstancesAddr,
-                            m_Device->GetCapabilities().supportsBufferDeviceAddress,
-                            m_DrawStreamBuilder->GetRangeCount());
-                        return;
-                    }
-
-                    pcInst.indirectionAddr  = slotIndirectionBda;
-                    pcInst.gpuInstancesAddr = instGpuInstancesAddr;
-                    std::span<const std::byte> pcBytes(
-                        reinterpret_cast<const std::byte*>(&pcInst), sizeof(pcInst));
-
-                    Engine::Renderer::DrawBindings drawBindings{};
-                    drawBindings.PushConstants = pcBytes;
-
-                    // Prepare one segment: resolve the color variant for its winding
-                    // (mirrored instances flip relative to the view base) and its
-                    // fade state and capture its bindings and indirect draw. Only segments
-                    // present in the range compile a variant, so mirror-free scenes
-                    // never compile the flipped winding.
-                    auto issueSegment =
-                        [&](Rendering::FrontFace winding, bool crossfading,
-                            const Rendering::GPUDrawStreamBuilder::BatchDrawSegment& seg)
-                    {
-                        const size_t   cmdOffset    = seg.cmdByteOffset;
-                        const size_t   countOffset  = seg.countByteOffset;
-                        const uint32_t maxDrawCount = seg.maxDrawCount;
-                        // Per-SEGMENT, never per-view: the dither's `discard` costs
-                        // early-Z on every fragment of every draw it is compiled
-                        // into, and only a tail segment's records can carry a
-                        // non-zero fade code.
-                        const Rendering::MaterialKeyword segmentKeywords =
-                            crossfading ? (entityKeywords | Rendering::MaterialKeyword::LodCrossfade)
-                                        : entityKeywords;
-                        auto variant = m_MaterialSystem.Variants().PrepareColorVariant(
-                            *material, effectiveFlags, entry->topology, segmentKeywords, winding, ctx);
-                        if (!variant.first.IsValid() && crossfading)
-                        {
-                            // Cold LodCrossfade variant: the miss enqueued an async
-                            // compile and would otherwise skip this draw. A fading
-                            // instance writes NO head record, so skipping its tail
-                            // removes it from colour entirely — it vanishes for the
-                            // whole compile window. Fall back to the head variant,
-                            // which this pass already draws and is therefore warm:
-                            // the indirection word's index mask is unconditional
-                            // (lod_crossfade.glsl), so the transform and mesh are
-                            // correct and only the dither is absent. Both levels then
-                            // draw solid, and each still passes the depth its own
-                            // dither half wrote in the prepass, so coverage stays
-                            // complete and the cost is overdraw plus a pop — a
-                            // quality degradation, where a vanish is a correctness
-                            // break.
-                            variant = m_MaterialSystem.Variants().PrepareColorVariant(
-                                *material, effectiveFlags, entry->topology, entityKeywords, winding,
-                                ctx);
-                        }
-                        auto [p, ve] = variant;
-                        if (!p.IsValid())
-                        {
-                            LogMeshDrawSkipDiagnostic(
-                                "color", "color-pipeline-invalid", viewId,
-                                key.materialIndex, key.meshIndex, true,
-                                false, slotIndirectionBda, instGpuInstancesAddr,
-                                m_Device->GetCapabilities().supportsBufferDeviceAddress,
-                                m_DrawStreamBuilder->GetRangeCount());
-                            return;
-                        }
-                        const auto resolvedPipe = binder.PrepareMaterialForDraw(
-                            pass, *material, p,
-                            ve ? ve->VariantMeta.get() : nullptr, drawBindings, /*pipelineSetCount=*/0,
-                            ve ? std::span<const Rendering::DescriptorSetLayoutId>(ve->SetLayouts)
-                               : std::span<const Rendering::DescriptorSetLayoutId>{});
-                        if (!resolvedPipe.Pipeline.IsValid())
-                        {
-                            LogMeshDrawSkipDiagnostic(
-                                "color", "material-bind-invalid", viewId,
-                                key.materialIndex, key.meshIndex,
-                                true, true, slotIndirectionBda, instGpuInstancesAddr,
-                                m_Device->GetCapabilities().supportsBufferDeviceAddress,
-                                m_DrawStreamBuilder->GetRangeCount());
-                            return;
-                        }
-                        DrawCommand command{};
-                        command.Bindings = drawBindings;
-                        command.UseIndirect = true;
-                        command.IndirectCommandBuffer = drawRange.recordBuffer;
-                        command.IndirectCountBuffer = drawRange.countBuffer;
-                        command.IndirectMaxDrawCount = maxDrawCount;
-                        command.IndirectStride = 5u * sizeof(uint32_t);
-                        command.IndirectCommandOffset = cmdOffset;
-                        command.IndirectCountOffset = countOffset;
-                        PreparedForwardDraw prepared{nullptr, resolvedPipe, entryBindings, {}, {}, material->GetGpuSceneMaterialIndex()};
-                        prepared.Geometry.indexType = entry->indexType;
-                        if (ve)
-                            prepared.ServedVersion = ve->MaterialVersion;
-                        append(command, prepared, true, key.materialIndex, key.meshIndex,
-                               maxDrawCount, m_DrawStreamBuilder->GetRangeCount());
-
-                    };
-
-                    // Segments(): head AND crossfade tail, per parity — the same
-                    // set the depth prepass issues, which is what lets early-Z
-                    // admit exactly the fragments the dither below keeps. Tail
-                    // segments are absent (maxDrawCount 0) only while the feature is
-                    // OFF, which is what makes the default byte-identical; with it
-                    // ON they are issued on every frame, at rest included —
-                    // Segments() states that cost.
-                    const Rendering::FrontFace baseWinding = m_FrontFace;
-                    for (const auto& sd : drawRange.Segments())
-                        issueSegment(sd.mirrored ? Rendering::FlipWinding(baseWinding) : baseWinding,
-                                     sd.crossfading, sd.segment);
-                };
-
-                auto prepareContributor = [&](const DrawCommand& command)
-                {
-                    // Main-world contributors require a material, unlike the separate forward API.
-                    if (!command.Material)
-                        return;
-                    if (auto prepared = PrepareForwardDrawCommand(command, 0, *this, pass, m_FrontFace, ctx))
-                        append(command, *prepared);
-                };
-
-                const auto prepareEntities = [&](bool blendPhase)
-                {
-                    if (!runEntityDraws) return;
-                    const std::span<const uint32_t> meshGroups = MeshPoolGroupSpanForDraws();
-                    // Color-table slices key on the color class whatever their
-                    // cascade index: MaterialDependent keeps the depth-class remap
-                    // (a Shadow-table concern) out of the resolution.
-                    const auto lookupOf = [&](const WorldDrawBuilder::BatchKey& key)
-                    {
-                        return ResolveDrawStreamLookupKey(
-                            key, sliceCascadeIndex,
-                            Rendering::MaterialDepthClass::MaterialDependent, meshGroups);
-                    };
-                    if (blendPhase && m_Profile.IsCompat() && gpuScene)
-                    {
-                        // Transparent sprites cannot retain material-batch order:
-                        // a closer translucent sprite may otherwise write depth
-                        // before the surfaces that should show through it.
-                        // Sort the already culled instances across ALL batches.
-                        struct OrderedInstance
-                        {
-                            const WorldDrawBuilder::BatchKey* Key;
-                            uint32_t IndexOffset;
-                            float Depth;
-                        };
-                        std::vector<OrderedInstance> ordered;
-                        const auto camera = Rendering::DeriveCameraData(m_ViewRegistry.ResolveCameraData(viewId));
-                        const auto& instances = gpuScene->GetInstances();
-                        for (const auto& key : entityKeys)
-                        {
-                            if (!IsBlendedMaterial(key.material)) continue;
-                            const auto list = m_CpuDrawStream.GetInstances(viewId, key.materialIndex,
-                                     key.meshIndex, CpuDrawStreamBuilder::InstanceSet::Camera);
-                            const auto indices = m_CpuDrawStream.GetIndexList(viewId);
-                            {
-                                for (uint32_t i = 0; i < list.Count; ++i)
-                                {
-                                    const uint32_t instance = indices[list.First + i];
-                                    if (instance >= instances.size()) continue;
-                                    const auto& center = instances[instance].boundingCenter;
-                                    const float depth = (center.x-camera.Position.x)*camera.Forward.x +
-                                        (center.y-camera.Position.y)*camera.Forward.y +
-                                        (center.z-camera.Position.z)*camera.Forward.z;
-                                    ordered.push_back({&key, list.First + i, depth});
-                                }
-                            }
-                        }
-                        std::stable_sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
-                            if (a.Depth != b.Depth) return a.Depth > b.Depth;
-                            return a.IndexOffset < b.IndexOffset;
-                    });
-                    for (size_t i = 0; i < ordered.size();)
-                    {
-                        const auto& first = ordered[i];
-                        CpuDrawStreamBuilder::InstanceList run{first.IndexOffset, 1};
-                        size_t next = i+1;
-                        // Coalesce only neighbours whose sorted order remains
-                        // identical to consecutive entries in the uploaded index list.
-                        while (next < ordered.size() && ordered[next].Key == first.Key &&
-                               ordered[next].IndexOffset == run.First+run.Count)
-                        { ++run.Count; ++next; }
-                        prepareEntityBatch(*first.Key, lookupOf(*first.Key), &run);
-                        i = next;
-                    }
-                    return;
-                }
-                if (meshGroups.empty())
-                {
-                    for (const auto& key : entityKeys)
-                        if (IsBlendedMaterial(key.material) == blendPhase)
-                            prepareEntityBatch(key, lookupOf(key));
-                }
-                else
-                {
-                    // Draw consolidation: ONE indirect draw per (colorClassId,
-                    // pool group). The first key of a group is its
-                    // representative (keys sort by class then mesh); the
-                    // per-material filters above are class-uniform (blend
-                    // state, transmission, ignoreVertexColor all ride the
-                    // class signature), so evaluating them on the
-                    // representative is exact. Consume-on-attempt: a
-                    // representative skipped by a guard drops its group for
-                    // one frame — the same self-healing semantics as an
-                    // unpopulated range.
-                    std::unordered_set<uint64_t> drawnGroups;
-                    drawnGroups.reserve(entityKeys.size());
-                    for (const auto& key : entityKeys)
-                    {
-                        if (IsBlendedMaterial(key.material) != blendPhase)
-                            continue;
-                        const DrawStreamLookupKey lookup = lookupOf(key);
-                        if (lookup.meshKey == Rendering::MeshPoolGroupPlan::kAbsentGroup)
-                            continue; // dead mesh row — instances self-reject GPU-side
-                        const uint64_t drawKey =
-                            (static_cast<uint64_t>(lookup.classKey) << 24) | lookup.meshKey;
-                        if (!drawnGroups.insert(drawKey).second)
-                            continue;
-                        prepareEntityBatch(key, lookup);
-                    }
-                }
-            };
-            const auto prepareContributors = [&](bool blendPhase)
-            {
-                if (scope == WorldPassDrawScope::TransmissiveOnly) return;
-                for (const auto& command : data->Commands)
-                    if (IsBlendedContributor(command) == blendPhase)
-                        prepareContributor(command);
-            };
-            DrainForwardOpaqueFirst(prepareEntities, prepareContributors);
-
-            // Vector growth is finished: install stable command/PC addresses once.
-            for (auto& draw : data->Draws)
-            {
-                draw.Command.Bindings.PushConstants = draw.PushConstantSize == 0
-                    ? std::span<const std::byte>{}
-                    : std::span<const std::byte>(data->PushConstants.data() + draw.PushConstantOffset,
-                                                  draw.PushConstantSize);
-                draw.Prepared.Source = &draw.Command;
-            }
-            return true;
+                return WorldPassPreparation(*this, *data, context, viewId, passKeywords, reliefDepthSource,
+                    scope, phase, sliceCascadeIndex, prepassDepth, prepassDepthSampler).Prepare();
             });
         },
         [this, data, viewId, viewportW, viewportH, letterbox, flipViewportY](RenderGraph::RGContext& ctx)
@@ -2222,32 +2206,11 @@ RenderServices::WorldPassRG RenderServices::AddWorldPassImpl(
             PassBindingContext pass{};
             pass.Cmd = cl;
             uint32_t attribDrawsIssued = 0;
-            Rendering::BufferHandle boundVbSlot[14]{};
-            Rendering::BufferHandle boundIb{};
-            Rendering::IndexType boundIbType = Rendering::IndexType::Uint16;
-            bool boundIbInit = false;
-            auto setVbSticky = [&](Rendering::BufferHandle want, uint32_t slot)
-            {
-                if (want.IsValid() && (slot >= 14 || boundVbSlot[slot] != want))
-                {
-                    cl->SetVertexBuffer(want, slot);
-                    if (slot < 14) boundVbSlot[slot] = want;
-                }
-            };
-            auto setIbSticky = [&](Rendering::BufferHandle want, Rendering::IndexType type)
-            {
-                if (want.IsValid() && (!boundIbInit || boundIb != want || boundIbType != type))
-                {
-                    cl->SetIndexBuffer(want, type);
-                    boundIb = want;
-                    boundIbType = type;
-                    boundIbInit = true;
-                }
-            };
+            DrawGeometryBindings geometryBindings(*cl);
 
             for (const auto& draw : data->Draws)
             {
-                RecordForwardDrawCommand(draw.Prepared, *this, pass, setVbSticky, setIbSticky);
+                RecordForwardDrawCommand(draw.Prepared, *this, pass, geometryBindings);
                 if (draw.Entity)
                 {
                     ++attribDrawsIssued;
@@ -2539,32 +2502,11 @@ Rendering::RenderGraph::RGPass RenderServices::AddForwardCommandPassForView(
             PassBindingContext pass{};
             pass.Cmd = cl;
 
-            Rendering::BufferHandle boundVbSlot[6]{};
-            Rendering::BufferHandle boundIb{};
-            Rendering::IndexType boundIbType = Rendering::IndexType::Uint16;
-            bool boundIbInit = false;
-            auto setVbSticky = [&](Rendering::BufferHandle want, uint32_t slot)
-            {
-                if (want.IsValid() && (slot >= 6 || boundVbSlot[slot] != want))
-                {
-                    cl->SetVertexBuffer(want, slot);
-                    if (slot < 6)
-                        boundVbSlot[slot] = want;
-                }
-            };
-            auto setIbSticky = [&](Rendering::BufferHandle want, Rendering::IndexType type)
-            {
-                if (want.IsValid() && (!boundIbInit || boundIb != want || boundIbType != type))
-                {
-                    cl->SetIndexBuffer(want, type);
-                    boundIb = want;
-                    boundIbType = type;
-                    boundIbInit = true;
-                }
-            };
+            constexpr uint32_t kForwardTrackedVertexSlots = 6;
+            DrawGeometryBindings geometryBindings(*cl, kForwardTrackedVertexSlots);
 
             for (const auto& prepared : data->Prepared)
-                RecordForwardDrawCommand(prepared, *this, pass, setVbSticky, setIbSticky);
+                RecordForwardDrawCommand(prepared, *this, pass, geometryBindings);
 
             binder.EndPass(pass);
         });

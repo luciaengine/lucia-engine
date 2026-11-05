@@ -5,18 +5,18 @@
 // The decoder also reads a file off disk, so the truncation and corruption
 // cases matter as much as the round trip: a damaged package must fail, not read
 // past its buffer or allocate on a length it invented.
-#include <gtest/gtest.h>
-
 #include "Rendering/ShaderCache/ShaderMetaBinary.h"
+
 #include "Rendering/Materials/ShaderMetaJson.h"
 #include "Types/Fnv1a.h"
-
-#include <nlohmann/json.hpp>
 
 #include <cstring>
 #include <iterator>
 #include <string>
 #include <vector>
+
+#include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 using namespace GameEngine::Rendering;
 
@@ -273,8 +273,8 @@ TEST(ShaderMetaBinaryTest, DerivedBindingFieldsAreRecomputedNotStored)
     // would let a package assert a hash that disagrees with its own data;
     // recomputing on read is what makes that impossible.
     ShaderMeta original = MakePopulatedMeta();
-    for (auto& b : original.Sets[0].Bindings)
-        b.NameId = 0;
+    for (auto& binding : original.Sets[0].Bindings)
+        binding.NameId = 0;
     original.Sets[0].BuiltLayoutHash = 0;
 
     const std::vector<uint8_t> encoded = Encode(original);
@@ -286,13 +286,13 @@ TEST(ShaderMetaBinaryTest, DerivedBindingFieldsAreRecomputedNotStored)
     EXPECT_EQ(set.BuiltLayoutHash, ComputeDescriptorSetLayoutHash(set));
     ASSERT_TRUE(set.BindingPlan);
     ASSERT_EQ(set.BindingPlan->Slots.size(), set.Bindings.size());
-    for (size_t i = 0; i < set.Bindings.size(); ++i)
+    for (size_t bindingIndex = 0; bindingIndex < set.Bindings.size(); ++bindingIndex)
     {
-        const auto& b = set.Bindings[i];
-        EXPECT_EQ(set.BindingPlan->Slots[i].NameId, b.NameId);
-        EXPECT_EQ(set.BindingPlan->Slots[i].Type, MapShaderMetaBindingType(b.Type));
-        EXPECT_NE(b.NameId, 0u) << "binding name id was not rebuilt";
-        EXPECT_EQ(b.NameId, GameEngine::HashStringId(b.Name));
+        const auto& binding = set.Bindings[bindingIndex];
+        EXPECT_EQ(set.BindingPlan->Slots[bindingIndex].NameId, binding.NameId);
+        EXPECT_EQ(set.BindingPlan->Slots[bindingIndex].Type, MapShaderMetaBindingType(binding.Type));
+        EXPECT_NE(binding.NameId, 0u) << "binding name id was not rebuilt";
+        EXPECT_EQ(binding.NameId, GameEngine::HashStringId(binding.Name));
     }
 }
 

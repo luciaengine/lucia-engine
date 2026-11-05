@@ -763,34 +763,34 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                  set0 = GizmoCameraSet0Layout(), camBuf = camAlloc.Buffer,
                  camOff = camAlloc.Offset, camValid = camAlloc.Valid(), lineBuf,
                  lineDraws = std::move(lineDraws), triBuf, triDraws = std::move(triDraws), w, h,
-                 cam, grid, gridRenderer = &m_GridRenderer, gridPipeline](RenderGraph::RGContext& ctx)
+                 cam, grid, gridRenderer = &m_GridRenderer, gridPipeline](RenderGraph::RGContext& context)
                 {
-                    auto* cl = ctx.Cmd;
-                    auto* dev = ctx.GetDevice();
-                    if (!cl || !dev)
+                    auto* commands = context.Cmd;
+                    auto* device = context.GetDevice();
+                    if (!commands || !device)
                         return;
 
-                    cl->SetViewport(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
-                    cl->SetScissor(0, 0, static_cast<int>(w), static_cast<int>(h));
+                    commands->SetViewport(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
+                    commands->SetScissor(0, 0, static_cast<int>(w), static_cast<int>(h));
 
                     if (grid.Show)
                     {
                         const float cells[4] = {grid.Cells.OriginX, grid.Cells.OriginY,
                                                 grid.Cells.Valid ? grid.Cells.Width : 0.0f,
                                                 grid.Cells.Valid ? grid.Cells.Height : 0.0f};
-                        gridRenderer->RecordRG(ctx, *gridPipeline, &cam, grid.CamPos, grid.Is2D,
+                        gridRenderer->RecordRG(context, *gridPipeline, &cam, grid.CamPos, grid.Is2D,
                                                grid.CamDistance, static_cast<float>(h),
                                                grid.Opacity, grid.Color, cells);
                     }
 
                     if (!camValid || (!lineDraws.size() && !triDraws.size()))
                         return;
-                    const PipelineHandle pipeLinesVisible = ctx.GetOrCreatePipelineVariant(idLinesVisible);
-                    const PipelineHandle pipeLinesOccluded = ctx.GetOrCreatePipelineVariant(idLinesOccluded);
-                    const PipelineHandle pipeTrisVisible = ctx.GetOrCreatePipelineVariant(idTrisVisible);
-                    const PipelineHandle pipeTrisOccluded = ctx.GetOrCreatePipelineVariant(idTrisOccluded);
-                    const PipelineHandle pipeLinesAlways = ctx.GetOrCreatePipelineVariant(idLinesAlways);
-                    const PipelineHandle pipeTrisAlways = ctx.GetOrCreatePipelineVariant(idTrisAlways);
+                    const PipelineHandle pipeLinesVisible = context.GetOrCreatePipelineVariant(idLinesVisible);
+                    const PipelineHandle pipeLinesOccluded = context.GetOrCreatePipelineVariant(idLinesOccluded);
+                    const PipelineHandle pipeTrisVisible = context.GetOrCreatePipelineVariant(idTrisVisible);
+                    const PipelineHandle pipeTrisOccluded = context.GetOrCreatePipelineVariant(idTrisOccluded);
+                    const PipelineHandle pipeLinesAlways = context.GetOrCreatePipelineVariant(idLinesAlways);
+                    const PipelineHandle pipeTrisAlways = context.GetOrCreatePipelineVariant(idTrisAlways);
                     if (!pipeLinesVisible.IsValid() || !pipeLinesOccluded.IsValid() ||
                         !pipeTrisVisible.IsValid() || !pipeTrisOccluded.IsValid() ||
                         !pipeLinesAlways.IsValid() || !pipeTrisAlways.IsValid())
@@ -800,10 +800,10 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                     dsDesc.layout = set0;
                     dsDesc.transient = true;
                     dsDesc.debugName = "SV_Gizmos_DS";
-                    const DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
+                    const DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
                     if (!ds.IsValid())
                         return;
-                    dev->UpdateBufferBinding(ds, 5, camBuf, static_cast<uint32_t>(camOff),
+                    device->UpdateBufferBinding(ds, 5, camBuf, static_cast<uint32_t>(camOff),
                                              static_cast<uint32_t>(sizeof(CameraData)));
 
                     GizmoPC pc{};
@@ -827,17 +827,17 @@ void SceneViewController::DeclareOverlaysRG(RenderGraph::RGFrame& frame, RenderG
                                 continue;
                             if (!bound)
                             {
-                                cl->SetPipeline(pipe);
-                                cl->BindDescriptorSet(0, ds, pipe);
-                                cl->SetVertexBuffer(buf, 0);
+                                commands->SetPipeline(pipe);
+                                commands->BindDescriptorSet(0, ds, pipe);
+                                commands->SetVertexBuffer(buf, 0);
                                 bound = true;
                             }
                             pc.color[0] = draw.color.r;
                             pc.color[1] = draw.color.g;
                             pc.color[2] = draw.color.b;
                             pc.color[3] = draw.color.a * alphaScale;
-                            cl->SetPushConstants(pc);
-                            cl->Draw(draw.vertexCount, 1u, draw.firstVertex, 0u);
+                            commands->SetPushConstants(pc);
+                            commands->Draw(draw.vertexCount, 1u, draw.firstVertex, 0u);
                         }
                     };
 

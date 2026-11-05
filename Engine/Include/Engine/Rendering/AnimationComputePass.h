@@ -5,26 +5,22 @@
 
 #include <vector>
 
-namespace GameEngine { namespace Engine { namespace Renderer {
+namespace GameEngine::Engine::Renderer
+{
 
 class GPUAnimationDataStore;
 
 // Render graph compute pass that dispatches the GPU animation skinning shader.
 // One dispatch per frame for all accumulated animation instances.
 // Writes skin matrices directly into the SkinPaletteAtlas SSBO.
-class AnimationComputePass final {
+class AnimationComputePass final
+{
 public:
     void SetComputeShader(const std::vector<uint8_t>& spirv) { m_ComputeShader = spirv; }
     void SetDataStore(GPUAnimationDataStore* store) { m_DataStore = store; }
 
-    // Set the atlas buffer handle for the current frame (called before compile).
-    void SetAtlasBuffer(GameEngine::Rendering::BufferHandle atlas) { m_AtlasBuffer = atlas; }
-
-    // Phase 6-iii: runtime-visibility gate config. When enabled and Declare()
-    // receives a valid runtimeVisible buffer, the skinning compute shader
-    // early-outs for runtimes whose entities are all off-screen.
-    // `runtimeVisibleCap` is the buffer capacity in element units (uint32s),
-    // bounds-checked inside the shader against AnimInstance.runtimeId.
+    // Visibility gates skinning when every entity for a runtime is off-screen.
+    // runtimeVisibleCap is the visibility buffer capacity in uint32_t elements.
     void SetRuntimeVisibility(bool gateEnabled, uint32_t runtimeVisibleCap)
     {
         m_GateEnabled       = gateEnabled;
@@ -41,20 +37,18 @@ public:
 private:
     struct PreparedDispatch;
     bool PrepareDispatch(GameEngine::Rendering::RenderGraph::RGPrepareContext& context,
-                         GameEngine::Rendering::BufferHandle atlasBuf,
-                         GameEngine::Rendering::BufferHandle runtimeVisBuf,
+                         GameEngine::Rendering::BufferHandle atlasBuffer,
+                         GameEngine::Rendering::BufferHandle visibilityBuffer,
                          PreparedDispatch& dispatch);
     void RecordDispatch(GameEngine::Rendering::CommandList* commandList,
                         const PreparedDispatch& dispatch);
     std::vector<uint8_t> m_ComputeShader;
     GPUAnimationDataStore* m_DataStore = nullptr;
-    GameEngine::Rendering::BufferHandle m_AtlasBuffer;
 
-    // Phase 6-iii: visibility-gate state.
     bool     m_GateEnabled       = false;
     uint32_t m_RuntimeVisibleCap = 0;
 
     GameEngine::Rendering::ComputePipelineId m_PipelineId{};
 };
 
-}}} // namespace GameEngine::Engine::Renderer
+} // namespace GameEngine::Engine::Renderer

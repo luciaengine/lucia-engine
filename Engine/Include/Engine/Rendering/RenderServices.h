@@ -1892,6 +1892,7 @@ class RenderServices
     // Shared body for AddWorldPassForView (phase A) and
     // AddWorldColorRecoverPassForView (phase B). Phase B loads colour+depth,
     // skips WorldDeclared, and looks up SlicePhase::B draw ranges.
+    class WorldPassPreparation;
     WorldPassRG AddWorldPassImpl(Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId,
                                  const WorldPassTargetsRG& targets,
                                  Rendering::MaterialKeyword passKeywords, WorldPassDrawScope scope,

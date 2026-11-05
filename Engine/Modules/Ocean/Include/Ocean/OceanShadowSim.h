@@ -42,6 +42,7 @@ class OceanShadowSim
         m_Inputs = std::move(inputs);
     }
     void RebaseOrigin(float x, float z);
+    /// Render-thread declaration retains a frame-owned history lease until graph retirement.
     bool DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, const OceanParamsGPU &params);
     // Sampling is available only to the graph that declared this view.
     bool FillSampling(Rendering::ViewId view, const Rendering::RenderGraph::RGFrame& frame,
@@ -50,6 +51,7 @@ class OceanShadowSim
     Rendering::TextureHandle GetTexture(Rendering::ViewId view) const;
     Rendering::TextureHandle GetTexture(Rendering::ViewId view,
                                         const Rendering::RenderGraph::RGFrame& frame) const;
+    /// Render-thread retirement clears borrowed plans while retaining submitted history.
     void ForgetFrame(const Rendering::RenderGraph::RGFrame& frame);
     Rendering::SamplerHandle GetSampler() const
     {

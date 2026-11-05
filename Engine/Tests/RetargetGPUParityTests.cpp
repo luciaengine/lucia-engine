@@ -56,11 +56,13 @@ namespace AAnim = GameEngine::Animation;
 class RetargetGPUParityTest : public ::testing::Test
 {
 protected:
+    virtual GraphicsAPI RequestedAPI() const { return GraphicsAPI::Vulkan; }
+
     void SetUp() override
     {
         DeviceDesc dd{};
         dd.applicationName = "RetargetGPUParityTest";
-        dd.preferredAPI = GraphicsAPI::Vulkan;
+        dd.preferredAPI = RequestedAPI();
         dd.enableDebugLayer = true;
         dd.enableSwapchain = false;
         dd.pipelineCacheDirectory = m_PipelineCache.Path().string();
@@ -72,7 +74,7 @@ protected:
             return;
         }
 
-        ASSERT_EQ(m_Device->GetAPI(), GraphicsAPI::Vulkan);
+        ASSERT_EQ(m_Device->GetAPI(), RequestedAPI());
         m_ShaderSpirv = LoadShader("retarget_full.comp.spv");
     }
 
@@ -409,7 +411,8 @@ protected:
         const AAnim::AnimationClip& clip,
         float clipTime,
         uint32_t skinJointCount,
-        const BlendFrom* blend = nullptr)
+        const BlendFrom* blend = nullptr,
+        bool retryAfterClearing = false)
     {
         m_DataStore.Initialize(m_Device.get());
         m_DataStore.BeginFrame(0);
@@ -492,11 +495,57 @@ protected:
             frame.MarkOutput(atlas);
             EXPECT_FALSE(m_DataStore.IsDispatchScheduledThisFrame());
             EXPECT_EQ(frame.Graph().PassCount(), 2u);
+            bool abortPreparation = retryAfterClearing;
+            if (retryAfterClearing)
+            {
+                constexpr float kSentinel = -37.0f;
+                const std::vector<float> sentinel(atlasBytes / sizeof(float), kSentinel);
+                m_Device->UpdateBuffer(atlasBuf, 0, atlasBytes, sentinel.data());
+                frame.AddPass("RetargetRetry.Gate", PassPhase::kEarlySetup + 1,
+                    [atlas, &abortPreparation](RG::RGPassBuilder& builder)
+                    {
+                        builder.Read(atlas);
+                        builder.PreventCulling();
+                        builder.Prepare([&abortPreparation](RG::RGPrepareContext&) { return !abortPreparation; });
+                    },
+                    [](RG::RGContext& context)
+                    {
+                        context.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
+                            static_cast<uint64_t>(PipelineStageMask::ComputeShader),
+                            static_cast<uint64_t>(PipelineStageMask::Host),
+                            static_cast<uint64_t>(ResourceAccessMask::ShaderWrite),
+                            static_cast<uint64_t>(ResourceAccessMask::HostRead)));
+                    });
+                const uint64_t submissions = frame.SubmittedFrameCount();
+                frame.Execute();
+                EXPECT_EQ(frame.SubmittedFrameCount(), submissions);
+                EXPECT_EQ(frame.Stats().PreparedPasses, 2u);
+                EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+                EXPECT_FALSE(observedReadyPipeline);
+                EXPECT_FALSE(m_DataStore.IsDispatchScheduledThisFrame());
+
+                m_DataStore.BeginFrame(0);
+                EXPECT_EQ(m_DataStore.GetActiveCharacterCount(), 0u);
+                abortPreparation = false;
+                frame.Execute();
+                m_Device->WaitForIdle();
+                EXPECT_EQ(frame.SubmittedFrameCount(), submissions + 1u);
+                EXPECT_FALSE(m_DataStore.IsDispatchScheduledThisFrame());
+                const void* unchanged = m_Device->MapBuffer(atlasBuf);
+                EXPECT_NE(unchanged, nullptr);
+                if (unchanged)
+                    EXPECT_EQ(std::memcmp(unchanged, sentinel.data(), atlasBytes), 0)
+                        << "An empty retry replayed the dispatch prepared before the abort";
+                m_Device->UnmapBuffer(atlasBuf);
+
+                // Restore the character to prove the production shader still writes its palette.
+                m_DataStore.AppendCharacterParams(chars);
+            }
             frame.Execute();
             m_Device->WaitForIdle();
             EXPECT_TRUE(observedReadyPipeline);
-            EXPECT_EQ(frame.Stats().PreparedPasses, 1u);
-            EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
+            EXPECT_EQ(frame.Stats().PreparedPasses, retryAfterClearing ? 6u : 1u);
+            EXPECT_EQ(frame.Stats().PreparationFailures, retryAfterClearing ? 1u : 0u);
             EXPECT_TRUE(m_DataStore.IsDispatchScheduledThisFrame());
         }
 
@@ -596,6 +645,69 @@ private:
         return {};
     }
 };
+
+class RetargetPreparationRetryTest : public RetargetGPUParityTest,
+                                     public ::testing::WithParamInterface<GraphicsAPI>
+{
+protected:
+    GraphicsAPI RequestedAPI() const override { return GetParam(); }
+    void SetUp() override
+    {
+        RetargetGPUParityTest::SetUp();
+        if (m_Device)
+        {
+            m_FrameOpen = m_Device->BeginFrame();
+            ASSERT_TRUE(m_FrameOpen);
+        }
+    }
+    void TearDown() override
+    {
+        if (m_FrameOpen)
+        {
+            m_Device->FinalizeFrame();
+            m_Device->WaitForIdle();
+        }
+        RetargetGPUParityTest::TearDown();
+    }
+private:
+    bool m_FrameOpen = false;
+};
+
+TEST_P(RetargetPreparationRetryTest, EmptyRetryPreservesAtlasAndLaterWorkStillRuns)
+{
+    if (!HasDevice())
+        GTEST_SKIP() << "Requested native device unavailable";
+    ASSERT_TRUE(HasShader()) << "retarget_full.comp.spv is not staged";
+    auto sourceSkeleton = MakeChainSkeleton(3);
+    auto targetSkeleton = MakeChainSkeleton(3);
+    const std::vector<AAnim::HumanBone> canonical = {
+        AAnim::HumanBone::Hips, AAnim::HumanBone::Spine, AAnim::HumanBone::Head};
+    const std::vector<Mathematics::Quaternion> restRotations(3, Mathematics::Quaternion::Identity());
+    auto sourceRig = MakeRig(canonical, restRotations);
+    auto targetRig = MakeRig(canonical, restRotations);
+    auto map = MakeMap();
+    const Mathematics::Quaternion start = Mathematics::Quaternion::Identity();
+    const Mathematics::Quaternion end(glm::angleAxis(glm::radians(30.0f), glm::vec3(1, 0, 0)));
+    auto clip = MakeRotationClip(1, start, end, 1.0f);
+    constexpr float kSampleTime = 0.5f;
+    const auto expected = ComputeCPUReference(sourceSkeleton, targetSkeleton, *sourceRig, *targetRig,
+                                               *map, *clip, kSampleTime);
+    const auto actual = DispatchGPU(sourceSkeleton, targetSkeleton, *sourceRig, *targetRig,
+                                    *map, *clip, kSampleTime, 3, nullptr, true);
+    ExpectAtlasMatches(expected, actual);
+}
+
+namespace
+{
+constexpr GraphicsAPI kPreparationRetryAPIs[] = {
+    GraphicsAPI::Vulkan,
+#ifdef __APPLE__
+    GraphicsAPI::Metal,
+#endif
+};
+}
+
+INSTANTIATE_TEST_SUITE_P(NativeAPIs, RetargetPreparationRetryTest, ::testing::ValuesIn(kPreparationRetryAPIs));
 
 // ---------------------------------------------------------------------------
 // Scenario 1 — same-rig animated.

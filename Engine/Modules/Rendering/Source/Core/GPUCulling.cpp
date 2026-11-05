@@ -117,51 +117,51 @@ bool PrepareHzbCullingPass(RenderGraph::RGPrepareContext& context, HzbCullingPas
         return false;
     const BufferHandle instances = context.GetBuffer(data.Instances);
     const BufferHandle visibility = context.GetBuffer(data.Visibility);
-    const BufferHandle prevVisible = context.GetBuffer(data.PrevVisible);
+    const BufferHandle previousVisible = context.GetBuffer(data.PrevVisible);
     const BufferHandle stats = context.GetBuffer(data.Stats);
     const TextureHandle hzb = context.GetTexture(data.Hzb);
-    if (!instances.IsValid() || !visibility.IsValid() || !prevVisible.IsValid() ||
+    if (!instances.IsValid() || !visibility.IsValid() || !previousVisible.IsValid() ||
         !stats.IsValid() || !hzb.IsValid())
         return false;
-    DescriptorSetDesc setDesc{};
-    setDesc.layout = MakeHzbCullingDescriptorSetLayout();
-    setDesc.transient = true;
-    setDesc.debugName = "GPUCulling_HzbCull_DS0";
-    data.DescriptorSet = device->CreateDescriptorSet(setDesc);
+    DescriptorSetDesc descriptorSetDescription{};
+    descriptorSetDescription.layout = MakeHzbCullingDescriptorSetLayout();
+    descriptorSetDescription.transient = true;
+    descriptorSetDescription.debugName = "GPUCulling_HzbCull_DS0";
+    data.DescriptorSet = device->CreateDescriptorSet(descriptorSetDescription);
     if (!data.DescriptorSet.IsValid())
         return false;
     device->UpdateStorageBufferBinding(data.DescriptorSet, 0, instances, 0, data.InstanceBytes);
     device->UpdateStorageBufferBinding(data.DescriptorSet, 1, data.CullingData, data.CullingDataOffset,
                                       sizeof(GPUCullingData));
     device->UpdateStorageBufferBinding(data.DescriptorSet, 2, visibility, 0, data.VisibilityBytes);
-    device->UpdateStorageBufferBinding(data.DescriptorSet, 3, prevVisible, 0, data.PrevVisibleBytes);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 3, previousVisible, 0, data.PrevVisibleBytes);
     device->UpdateCombinedImageSamplerBinding(data.DescriptorSet, 4, hzb, data.Sampler);
     device->UpdateStorageBufferBinding(data.DescriptorSet, 5, stats, 0, data.StatsBytes);
     data.StatsBuffer = stats;
     return true;
 }
 
-void RecordHzbCullingPass(RenderGraph::RGContext& ctx, const HzbCullingPassData& data)
+void RecordHzbCullingPass(RenderGraph::RGContext& context, const HzbCullingPassData& data)
 {
     if (data.IsPhaseB)
     {
         // Zero the stats before the atomic-accumulate; FillBuffer is
         // Transfer, the dispatch is Compute — intra-pass hazard, so the
         // manual barrier stays (RG auto-barriers are inter-pass).
-        ctx.Cmd->FillBuffer(data.StatsBuffer, 0, data.StatsBytes, 0u);
+        context.Cmd->FillBuffer(data.StatsBuffer, 0, data.StatsBytes, 0u);
         ResourceBarrier clearBarrier = ResourceBarrier::CreateMemoryBarrier(
             static_cast<uint64_t>(PipelineStageMask::Transfer),
             static_cast<uint64_t>(PipelineStageMask::ComputeShader),
             static_cast<uint64_t>(ResourceAccessMask::TransferWrite),
             static_cast<uint64_t>(ResourceAccessMask::ShaderRead) |
                 static_cast<uint64_t>(ResourceAccessMask::ShaderWrite));
-        ctx.Cmd->Barrier(clearBarrier);
+        context.Cmd->Barrier(clearBarrier);
     }
 
-    ctx.Cmd->SetPipeline(data.Pipeline);
-    ctx.Cmd->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
-    ctx.Cmd->SetPushConstants(data.PushConstants);
-    ctx.Cmd->Dispatch((data.PushConstants.instanceCount + 63u) / 64u, 1, 1);
+    context.Cmd->SetPipeline(data.Pipeline);
+    context.Cmd->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
+    context.Cmd->SetPushConstants(data.PushConstants);
+    context.Cmd->Dispatch((data.PushConstants.instanceCount + 63u) / 64u, 1, 1);
 }
 
 struct VisibilityUnionPassData
@@ -186,8 +186,8 @@ bool PrepareVisibilityUnionPass(RenderGraph::RGPrepareContext& context, Visibili
     const BufferHandle offsets = data.Offsets;
     if (!visibility.IsValid() || !anyVisible.IsValid() || !offsets.IsValid())
         return false;
-    DescriptorSetDesc setDesc{};
-    setDesc.layout.debugName = "VisibilityUnion_SetLayout";
+    DescriptorSetDesc descriptorSetDescription{};
+    descriptorSetDescription.layout.debugName = "VisibilityUnion_SetLayout";
     for (uint32_t binding = 0; binding < 3; ++binding)
     {
         DescriptorBinding desc{};
@@ -195,11 +195,11 @@ bool PrepareVisibilityUnionPass(RenderGraph::RGPrepareContext& context, Visibili
         desc.type = DescriptorType::StorageBuffer;
         desc.count = 1;
         desc.shaderStages = kShaderStageCompute;
-        setDesc.layout.bindings.push_back(desc);
+        descriptorSetDescription.layout.bindings.push_back(desc);
     }
-    setDesc.transient = true;
-    setDesc.debugName = "VisibilityUnion_DS0";
-    data.DescriptorSet = device->CreateDescriptorSet(setDesc);
+    descriptorSetDescription.transient = true;
+    descriptorSetDescription.debugName = "VisibilityUnion_DS0";
+    data.DescriptorSet = device->CreateDescriptorSet(descriptorSetDescription);
     if (!data.DescriptorSet.IsValid())
         return false;
     device->UpdateStorageBufferBinding(data.DescriptorSet, 0, visibility, 0, data.VisibilityBytes);
@@ -208,12 +208,12 @@ bool PrepareVisibilityUnionPass(RenderGraph::RGPrepareContext& context, Visibili
     return true;
 }
 
-void RecordVisibilityUnionPass(RenderGraph::RGContext& ctx, const VisibilityUnionPassData& data)
+void RecordVisibilityUnionPass(RenderGraph::RGContext& context, const VisibilityUnionPassData& data)
 {
-    ctx.Cmd->SetPipeline(data.Pipeline);
-    ctx.Cmd->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
-    ctx.Cmd->SetPushConstants(data.PushConstants);
-    ctx.Cmd->Dispatch((data.PushConstants.instanceCount + 63u) / 64u, 1, 1);
+    context.Cmd->SetPipeline(data.Pipeline);
+    context.Cmd->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
+    context.Cmd->SetPushConstants(data.PushConstants);
+    context.Cmd->Dispatch((data.PushConstants.instanceCount + 63u) / 64u, 1, 1);
 }
 
 struct RuntimeVisibilityPassData
@@ -240,8 +240,8 @@ bool PrepareRuntimeVisibilityPass(RenderGraph::RGPrepareContext& context, Runtim
     if (!anyVisible.IsValid() || !instances.IsValid() || !runtimeVisible.IsValid())
         return false;
     data.RuntimeVisibleBuffer = runtimeVisible;
-    DescriptorSetDesc setDesc{};
-    setDesc.layout.debugName = "RuntimeVisibility_SetLayout";
+    DescriptorSetDesc descriptorSetDescription{};
+    descriptorSetDescription.layout.debugName = "RuntimeVisibility_SetLayout";
     for (uint32_t binding = 0; binding < 3; ++binding)
     {
         DescriptorBinding desc{};
@@ -249,11 +249,11 @@ bool PrepareRuntimeVisibilityPass(RenderGraph::RGPrepareContext& context, Runtim
         desc.type = DescriptorType::StorageBuffer;
         desc.count = 1;
         desc.shaderStages = kShaderStageCompute;
-        setDesc.layout.bindings.push_back(desc);
+        descriptorSetDescription.layout.bindings.push_back(desc);
     }
-    setDesc.transient = true;
-    setDesc.debugName = "RuntimeVisibility_DS0";
-    data.DescriptorSet = device->CreateDescriptorSet(setDesc);
+    descriptorSetDescription.transient = true;
+    descriptorSetDescription.debugName = "RuntimeVisibility_DS0";
+    data.DescriptorSet = device->CreateDescriptorSet(descriptorSetDescription);
     if (!data.DescriptorSet.IsValid())
         return false;
     device->UpdateStorageBufferBinding(data.DescriptorSet, 0, anyVisible, 0, data.FlagsBytes);
@@ -263,12 +263,12 @@ bool PrepareRuntimeVisibilityPass(RenderGraph::RGPrepareContext& context, Runtim
     return true;
 }
 
-void RecordRuntimeVisibilityPass(RenderGraph::RGContext& ctx, const RuntimeVisibilityPassData& data)
+void RecordRuntimeVisibilityPass(RenderGraph::RGContext& context, const RuntimeVisibilityPassData& data)
 {
     // Zero before atomic-ORs accumulate; FillBuffer is Transfer
     // stage, the dispatch is Compute — intra-pass hazard, so the
     // manual barrier stays (RG auto-barriers are inter-pass).
-    ctx.Cmd->FillBuffer(data.RuntimeVisibleBuffer, 0,
+    context.Cmd->FillBuffer(data.RuntimeVisibleBuffer, 0,
                         data.PushConstants.runtimeVisibleCap * sizeof(uint32_t), 0u);
     ResourceBarrier clearBarrier = ResourceBarrier::CreateMemoryBarrier(
         static_cast<uint64_t>(PipelineStageMask::Transfer),
@@ -276,12 +276,12 @@ void RecordRuntimeVisibilityPass(RenderGraph::RGContext& ctx, const RuntimeVisib
         static_cast<uint64_t>(ResourceAccessMask::TransferWrite),
         static_cast<uint64_t>(ResourceAccessMask::ShaderRead) |
             static_cast<uint64_t>(ResourceAccessMask::ShaderWrite));
-    ctx.Cmd->Barrier(clearBarrier);
+    context.Cmd->Barrier(clearBarrier);
 
-    ctx.Cmd->SetPipeline(data.Pipeline);
-    ctx.Cmd->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
-    ctx.Cmd->SetPushConstants(data.PushConstants);
-    ctx.Cmd->Dispatch((data.PushConstants.instanceCount + 63u) / 64u, 1, 1);
+    context.Cmd->SetPipeline(data.Pipeline);
+    context.Cmd->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
+    context.Cmd->SetPushConstants(data.PushConstants);
+    context.Cmd->Dispatch((data.PushConstants.instanceCount + 63u) / 64u, 1, 1);
     // Make atomicOr results visible to the downstream skinning
     // compute through the same-pass tail barrier.
     ResourceBarrier readyBarrier = ResourceBarrier::CreateMemoryBarrier(
@@ -289,7 +289,7 @@ void RecordRuntimeVisibilityPass(RenderGraph::RGContext& ctx, const RuntimeVisib
         static_cast<uint64_t>(PipelineStageMask::ComputeShader),
         static_cast<uint64_t>(ResourceAccessMask::ShaderWrite),
         static_cast<uint64_t>(ResourceAccessMask::ShaderRead));
-    ctx.Cmd->Barrier(readyBarrier);
+    context.Cmd->Barrier(readyBarrier);
 }
 
 // Shared between EndFrameRG's per-view dispatch and the deferred phase-B

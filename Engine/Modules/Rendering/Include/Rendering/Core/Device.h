@@ -1,9 +1,14 @@
 #pragma once
 
+#include "Rendering/Core/DescriptorType.h"
+#include "Rendering/Core/Handle.h"
+#include "Rendering/Core/PipelineIdentifiers.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -11,11 +16,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include "Rendering/Core/DescriptorType.h"
-#include "Rendering/Core/Handle.h"
-#include "Rendering/Core/PipelineIdentifiers.h"
-#include <functional>
 
 namespace GameEngine
 {

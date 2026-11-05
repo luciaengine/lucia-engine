@@ -1,9 +1,10 @@
-#include <gtest/gtest.h>
-#include "Rendering/Materials/ShaderMeta.h"
 #include "Rendering/Materials/ShaderMetaJson.h"
+
 #include "Rendering/Materials/MaterialBuilder.h"
 #include "Rendering/Materials/ShaderLayoutShape.h"
+#include "Rendering/Materials/ShaderMeta.h"
 
+#include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 using namespace GameEngine::Rendering;

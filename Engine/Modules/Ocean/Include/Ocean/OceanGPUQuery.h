@@ -79,14 +79,18 @@ public:
                         ::GameEngine::Rendering::SamplerHandle fftSampler,
                         ::GameEngine::Rendering::TextureHandle combined,
                         ::GameEngine::Rendering::SamplerHandle combinedSampler);
-    /// Declare this ID with RGPassBuilder::UsePipeline before recording.
+    /// Declare this ID with RGPassBuilder::UsePipeline before preparation.
     ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipeline; }
 
+    /// Render-thread preparation reserves a frame-owned slot without consuming pending work.
+    /// Keep the parameter upload alive through recording; notify submission or abort afterward.
     bool PrepareDispatch(Rendering::IDevice* device, Rendering::RenderGraph::RGFrame& frame,
                          Rendering::BufferHandle paramsBuffer, uint64 paramsOffset,
                          const OceanGPUQueryParamsGPU& params, OceanGPUQueryToken token,
                          OceanPreparedQueryDispatch& prepared);
+    /// Render-thread recording validates the reservation before writing its physical slot.
     void RecordDispatch(Rendering::CommandList* commands, const OceanPreparedQueryDispatch& prepared);
+    /// Render-thread notification releases this frame's reservations that were not submitted.
     void OnFrameAborted(const Rendering::RenderGraph::RGFrame& frame)
     {
         m_Readback.CancelUnsubmitted(frame);

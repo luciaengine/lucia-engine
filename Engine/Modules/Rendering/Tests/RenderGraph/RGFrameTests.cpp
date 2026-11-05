@@ -8,10 +8,10 @@
 #include "Tests/RenderGraph/RGTestDevice.h"
 #include "TestTempDir.h"
 
-#include <gtest/gtest.h>
-
 #include <string>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine::Rendering;     // TextureDesc/BufferDesc/handles/enums/IDevice
 using namespace GameEngine::Rendering::RenderGraph;
@@ -1184,7 +1184,7 @@ TEST(RGFrame, PreparationFinishesForEveryLivePassBeforeRecording)
     const RGTexture source = frame.CreateTexture("PreparedSource", ColorDesc());
     const RGTexture output = frame.CreateTexture("PreparedOutput", ColorDesc());
     frame.AddPass("Source", 0,
-                  [&](RGPassBuilder& pass)
+                  [source, &events](RGPassBuilder& pass)
                   {
                       pass.AttachColor(0, source, {.Load = RGLoadOp::Clear});
                       pass.Prepare([&events, source](RGPrepareContext& context)
@@ -1196,7 +1196,7 @@ TEST(RGFrame, PreparationFinishesForEveryLivePassBeforeRecording)
                   },
                   [&events](RGContext&) { events.push_back("record source"); });
     frame.AddPass("Consumer", 0,
-                  [&](RGPassBuilder& pass)
+                  [source, output, &events](RGPassBuilder& pass)
                   {
                       pass.Read(source);
                       pass.AttachColor(0, output, {.Load = RGLoadOp::Clear});
@@ -1229,7 +1229,7 @@ TEST(RGFrame, PreparationFailureSubmitsNothingAndDoesNotAdvanceTheFrame)
     bool recorded = false;
     const RGTexture output = frame.CreateTexture("UnreadyOutput", ColorDesc());
     frame.AddPass("UnreadyWriter", 0,
-                  [&](RGPassBuilder& pass)
+                  [output](RGPassBuilder& pass)
                   {
                       pass.AttachColor(0, output, {.Load = RGLoadOp::Clear});
                       pass.Prepare([](RGPrepareContext&) { return false; });
@@ -1246,7 +1246,7 @@ TEST(RGFrame, PreparationFailureSubmitsNothingAndDoesNotAdvanceTheFrame)
     frame.BeginFrame(1);
     const RGTexture retry = frame.CreateTexture("UnreadyOutput", ColorDesc());
     frame.AddPass("StillUnready", 0,
-                  [&](RGPassBuilder& pass)
+                  [retry](RGPassBuilder& pass)
                   {
                       pass.AttachColor(0, retry, {.Load = RGLoadOp::Clear});
                       pass.Prepare([](RGPrepareContext&) { return false; });
@@ -1270,7 +1270,7 @@ TEST(RGFrame, CulledAndDiscardedPassesNeverPrepare)
     uint32_t prepared = 0;
     const RGTexture dead = frame.CreateTexture("DeadPreparation", ColorDesc());
     frame.AddPass("Dead", 0,
-                  [&](RGPassBuilder& pass)
+                  [dead, &prepared](RGPassBuilder& pass)
                   {
                       pass.AttachColor(0, dead);
                       pass.Prepare([&prepared](RGPrepareContext&) { ++prepared; return true; });
@@ -1299,7 +1299,7 @@ TEST(RGFrame, PreparedPhysicalFormatKeyMatchesRecordingAfterMsaaRealization)
     const RGTexture output = frame.CreateTexture("PreparedResolve", ColorDesc());
     PipelineFormatKey preparedKey{};
     frame.AddPass("PreparedMsaa", 0,
-                  [&](RGPassBuilder& pass)
+                  [multisample, output, &preparedKey](RGPassBuilder& pass)
                   {
                       pass.AttachColorResolve(0, multisample, output, {.Load = RGLoadOp::Clear});
                       pass.Prepare([&preparedKey](RGPrepareContext& context)

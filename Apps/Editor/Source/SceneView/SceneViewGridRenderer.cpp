@@ -171,47 +171,47 @@ PipelineHandle SceneViewGridRenderer::PrepareRG(const RenderGraph::RGPrepareCont
     return context.PreparePipeline(pipeline);
 }
 
-void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ctx,
+void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& context,
                                       Rendering::PipelineHandle pipeline,
-                                      const Rendering::CameraData* cam,
-                                      const float camPos[3],
+                                      const Rendering::CameraData* camera,
+                                      const float cameraPosition[3],
                                       bool is2DMode,
-                                      float camDistance,
-                                      float viewportH,
+                                      float cameraDistance,
+                                      float viewportHeight,
                                       float gridOpacity,
                                       uint32_t gridColor,
                                       const float cells2D[4])
 {
-    if (!cam)
+    if (!camera)
         return;
 
-    CommandList* cl = ctx.Cmd;
-    if (!cl || !pipeline.IsValid())
+    CommandList* commands = context.Cmd;
+    if (!commands || !pipeline.IsValid())
         return;
-    cl->SetPipeline(pipeline);
+    commands->SetPipeline(pipeline);
 
     if (!is2DMode)
     {
-        GridPC pc{};
-        FillGridPCCommon(pc.invVP, pc.cameraPos, pc.gridColor, pc.opacity, *cam, camPos,
+        GridPC constants{};
+        FillGridPCCommon(constants.invVP, constants.cameraPos, constants.gridColor, constants.opacity, *camera, cameraPosition,
                          gridOpacity, gridColor);
-        pc.fadeStart = 80.0f;
-        pc.fadeEnd = 200.0f;
-        cl->SetPushConstants(pc);
+        constants.fadeStart = 80.0f;
+        constants.fadeEnd = 200.0f;
+        commands->SetPushConstants(constants);
     }
     else
     {
-        Grid2DPC pc{};
+        Grid2DPC constants{};
         float unusedCameraPos[4];
-        FillGridPCCommon(pc.invVP, unusedCameraPos, pc.gridColor, pc.opacity, *cam, camPos,
+        FillGridPCCommon(constants.invVP, unusedCameraPos, constants.gridColor, constants.opacity, *camera, cameraPosition,
                          gridOpacity, gridColor);
-        std::memcpy(pc.cells, cells2D, sizeof(pc.cells));
-        pc.camDistance = camDistance;
-        pc.viewportH = viewportH;
-        cl->SetPushConstants(pc);
+        std::memcpy(constants.cells, cells2D, sizeof(constants.cells));
+        constants.camDistance = cameraDistance;
+        constants.viewportH = viewportHeight;
+        commands->SetPushConstants(constants);
     }
 
-    cl->Draw(3u, 1u);
+    commands->Draw(3u, 1u);
 }
 
 } // namespace GameEngine

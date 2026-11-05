@@ -1,10 +1,9 @@
-#include <gtest/gtest.h>
-
 #include "Ocean/OceanClipSim.h"
 #include "Ocean/OceanDynWaves.h"
 #include "Ocean/OceanFFT.h"
 #include "Ocean/OceanFoamSim.h"
 #include "Ocean/OceanGPUQuery.h"
+#include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/PassPhase.h"
@@ -13,12 +12,15 @@
 #include "Rendering/Materials/ShaderCompileService.h"
 #include "Rendering/Materials/ShaderLayoutShape.h"
 #include "TestTempDir.h"
+#include "Types/Fnv1a.h"
 
 #include <cmath>
 #include <cstring>
 #include <memory>
 #include <type_traits>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -28,11 +30,7 @@ namespace
 {
 std::string SampleChecksum(const std::vector<float>& data)
 {
-    uint64_t hash = 1469598103934665603ull;
-    const auto* bytes = reinterpret_cast<const uint8_t*>(data.data());
-    for (size_t i = 0; i < data.size() * sizeof(float); ++i)
-        hash = (hash ^ bytes[i]) * 1099511628211ull;
-    return std::to_string(hash);
+    return std::to_string(Hashing::Fnv1a64(data.data(), data.size() * sizeof(float)));
 }
 
 DescriptorBinding ComputeBinding(uint32_t slot, DescriptorType type)
@@ -112,30 +110,6 @@ void main()
         const auto probePipeline = m_Device->GetOrCreateComputePipeline(m_Device->InternComputePipeline(desc));
         ASSERT_TRUE(probePipeline.IsValid());
 
-        auto sample = [&]()
-        {
-            std::array<float, 4> values{-17.0f, -17.0f, -17.0f, -17.0f};
-            const auto resultBuffer = MakeBuffer(sizeof(values), BufferUsage::Storage, values.data());
-            DescriptorSetDesc set{};
-            set.layout = probeLayout;
-            const auto probeSet = m_Device->CreateDescriptorSet(set);
-            m_Device->UpdateStorageBufferBinding(probeSet, 0, resultBuffer, 0, sizeof(values));
-            m_Device->UpdateCombinedImageSamplerBinding(probeSet, 1, clip.GetClipTexture(), clip.GetClipSampler());
-            auto commands = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
-            commands->Begin();
-            commands->SetPipeline(probePipeline);
-            commands->BindDescriptorSet(0, probeSet, probePipeline);
-            commands->Dispatch(1, 1, 1);
-            commands->End();
-            m_Device->ExecuteCommandLists({commands.get()});
-            m_Device->WaitForIdle();
-            if (void* data = m_Device->MapBuffer(resultBuffer))
-            {
-                std::memcpy(values.data(), data, sizeof(values));
-                m_Device->UnmapBuffer(resultBuffer);
-            }
-            return values;
-        };
 
         RenderGraph::RGResourcePool persistent(m_Device.get());
         RenderGraph::RGTransientPool transient(m_Device.get());
@@ -155,7 +129,7 @@ void main()
             bool recorded = false;
             const auto observer = frame.AddPass("OceanClip.PrepareWitness", PassPhase::kEarlySetup,
                 [](RenderGraph::RGPassBuilder& pass) { pass.PreventCulling(); },
-                [&](RenderGraph::RGContext&)
+                [prepared, &clip](RenderGraph::RGContext&)
                 {
                     EXPECT_TRUE(prepared->Pipeline.IsValid());
                     EXPECT_TRUE(prepared->Set.IsValid());
@@ -163,19 +137,19 @@ void main()
                 });
             const auto target = clip.ImportRG(frame);
             const auto writer = frame.AddPass("OceanClip.PreparedWriter", PassPhase::kEarlySetup,
-                [&](RenderGraph::RGPassBuilder& pass)
+                [&clip, prepared, target, params](RenderGraph::RGPassBuilder& pass)
                 {
                     pass.UsePipeline(clip.GetPipelineId());
                     pass.Write(target, RenderGraph::RGTextureWrite::Storage);
-                    pass.Prepare([&, prepared, buffer = params.Buffer, offset = params.Offset](RenderGraph::RGPrepareContext& ctx)
+                    pass.Prepare([&clip, prepared, buffer = params.Buffer, offset = params.Offset](RenderGraph::RGPrepareContext& context)
                     {
-                        *prepared = clip.PrepareDispatch(ctx.GetDevice(), buffer, offset);
+                        *prepared = clip.PrepareDispatch(context.GetDevice(), buffer, offset);
                         return prepared->IsValid();
                     });
                 },
-                [&](RenderGraph::RGContext& ctx)
+                [&clip, prepared, &recorded](RenderGraph::RGContext& context)
                 {
-                    clip.RecordDispatch(ctx.Cmd, *prepared);
+                    clip.RecordDispatch(context.Cmd, *prepared);
                     recorded = true;
                 });
             frame.AddOrderingEdge(observer, writer);
@@ -199,9 +173,71 @@ void main()
             EXPECT_EQ(frame.SubmittedFrameCount(), before + (index == 1 ? 0u : 1u));
             m_Device->FinalizeFrame();
             m_Device->WaitForIdle();
-            for (const float value : sample())
+            for (const float value : SampleField(probePipeline, probeLayout, clip.GetClipTexture(),
+                                                  clip.GetClipSampler(), 4u, 1u, 1u, 1u))
                 EXPECT_FLOAT_EQ(value, index == 2 ? 0.0f : 1.0f);
         }
+    }
+
+    void ExecuteFFTDispatch(OceanFFT& fft, RenderGraph::RGFrame& frame, uint32& frameIndex,
+                            bool abort, bool initialize)
+    {
+        SCOPED_TRACE(::testing::Message() << "FFT frame " << frameIndex);
+        ASSERT_TRUE(m_Device->BeginFrame());
+        frame.BeginFrame(frameIndex++);
+        const auto params = frame.AllocUpload<OceanFFTParamsGPU>();
+        ASSERT_TRUE(params.Valid());
+        fft.FillParams(*params.Ptr);
+        auto* prepared = frame.AllocatePassData<OceanPreparedFFTDispatch>();
+        bool recorded = false;
+        const auto observer = frame.AddPass("OceanFFT.PrepareWitness", PassPhase::kEarlySetup,
+            [](RenderGraph::RGPassBuilder& pass) { pass.PreventCulling(); },
+            [prepared, initialize](RenderGraph::RGContext&)
+            {
+                EXPECT_TRUE(prepared->Update.Set.IsValid());
+                EXPECT_TRUE(prepared->Horizontal.Set.IsValid());
+                EXPECT_TRUE(prepared->Vertical.Set.IsValid());
+                EXPECT_EQ(prepared->Init.Set.IsValid(), initialize);
+            });
+        const auto output = fft.ImportDisplacementRG(frame);
+        const auto writer = frame.AddPass("OceanFFT.PreparedWriter", PassPhase::kEarlySetup,
+            [&fft, prepared, output, params](RenderGraph::RGPassBuilder& pass)
+            {
+                for (const auto pipeline : fft.GetPipelineIds())
+                    pass.UsePipeline(pipeline);
+                pass.Write(output, RenderGraph::RGTextureWrite::Storage);
+                pass.Prepare([&fft, prepared, buffer = params.Buffer, offset = params.Offset](RenderGraph::RGPrepareContext& context)
+                {
+                    *prepared = fft.PrepareDispatch(context.GetDevice(), buffer, offset);
+                    return prepared->IsValid();
+                });
+            },
+            [&fft, prepared, &recorded](RenderGraph::RGContext& context)
+            {
+                fft.RecordDispatch(context.Cmd, *prepared);
+                recorded = true;
+            });
+        frame.AddOrderingEdge(observer, writer);
+        if (abort)
+        {
+            const auto failure = frame.AddPass("OceanFFT.Abort", PassPhase::kFinalize,
+                [](RenderGraph::RGPassBuilder& pass)
+                {
+                    pass.PreventCulling();
+                    pass.Prepare([](RenderGraph::RGPrepareContext&) { return false; });
+                }, [](RenderGraph::RGContext&) {});
+            frame.AddOrderingEdge(writer, failure);
+        }
+        frame.MarkOutput(output, RenderGraph::RGImageLayout::ShaderReadOnly);
+        const auto before = frame.SubmittedFrameCount();
+        frame.Execute();
+        EXPECT_TRUE(prepared->IsValid());
+        EXPECT_EQ(prepared->InitializeSpectrum, initialize);
+        EXPECT_EQ(recorded, !abort);
+        EXPECT_EQ(frame.Stats().PreparationFailures, abort ? 1u : 0u);
+        EXPECT_EQ(frame.SubmittedFrameCount(), before + (abort ? 0u : 1u));
+        m_Device->FinalizeFrame();
+        m_Device->WaitForIdle();
     }
 
     void CheckPreparedFFTDispatch(GraphicsAPI expectedAPI)
@@ -255,112 +291,34 @@ void main()
         desc.DescriptorSetLayouts.push_back(m_Device->InternDescriptorSetLayout(layout));
         const auto probe = m_Device->GetOrCreateComputePipeline(m_Device->InternComputePipeline(desc));
         ASSERT_TRUE(probe.IsValid());
-        auto sample = [&](const OceanFFT& fft)
+        const auto sample = [this, probe, &layout](const OceanFFT& fft)
         {
-            std::vector<float> values(4u * 4u * fft.GetCascadeCount() * 4u, -17.0f);
-            const auto output = MakeBuffer(values.size() * sizeof(float), BufferUsage::Storage, values.data());
-            DescriptorSetDesc setDesc{};
-            setDesc.layout = layout;
-            const auto set = m_Device->CreateDescriptorSet(setDesc);
-            m_Device->UpdateStorageBufferBinding(set, 0, output, 0, values.size() * sizeof(float));
-            m_Device->UpdateCombinedImageSamplerBinding(set, 1, fft.GetDisplacementTexture(), fft.GetSampler());
-            auto commands = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
-            commands->Begin();
-            commands->SetPipeline(probe);
-            commands->BindDescriptorSet(0, set, probe);
-            commands->Dispatch(1, 1, fft.GetCascadeCount());
-            commands->End();
-            m_Device->ExecuteCommandLists({commands.get()});
-            m_Device->WaitForIdle();
-            if (void* data = m_Device->MapBuffer(output))
-            {
-                std::memcpy(values.data(), data, values.size() * sizeof(float));
-                m_Device->UnmapBuffer(output);
-            }
-            return values;
+            return SampleField(probe, layout, fft.GetDisplacementTexture(), fft.GetSampler(),
+                               4u * 4u * fft.GetCascadeCount() * 4u, 1u, 1u, fft.GetCascadeCount());
         };
         RenderGraph::RGResourcePool persistent(m_Device.get());
         RenderGraph::RGTransientPool transient(m_Device.get());
         RenderGraph::RGUploadRing uploads(m_Device.get(), 2, 65536);
         RenderGraph::RGFrame frame(m_Device.get(), &persistent, &transient, &uploads);
         uint32_t frameIndex = 0;
-        auto dispatch = [&](OceanFFT& fft, bool abort, bool initialize)
-        {
-            SCOPED_TRACE(::testing::Message() << "FFT frame " << frameIndex);
-            ASSERT_TRUE(m_Device->BeginFrame());
-            frame.BeginFrame(frameIndex++);
-            const auto params = frame.AllocUpload<OceanFFTParamsGPU>();
-            ASSERT_TRUE(params.Valid());
-            fft.FillParams(*params.Ptr);
-            auto* prepared = frame.AllocatePassData<OceanPreparedFFTDispatch>();
-            bool recorded = false;
-            const auto observer = frame.AddPass("OceanFFT.PrepareWitness", PassPhase::kEarlySetup,
-                [](RenderGraph::RGPassBuilder& pass) { pass.PreventCulling(); },
-                [&](RenderGraph::RGContext&)
-                {
-                    EXPECT_TRUE(prepared->Update.Set.IsValid());
-                    EXPECT_TRUE(prepared->Horizontal.Set.IsValid());
-                    EXPECT_TRUE(prepared->Vertical.Set.IsValid());
-                    EXPECT_EQ(prepared->Init.Set.IsValid(), initialize);
-                });
-            const auto output = fft.ImportDisplacementRG(frame);
-            const auto writer = frame.AddPass("OceanFFT.PreparedWriter", PassPhase::kEarlySetup,
-                [&](RenderGraph::RGPassBuilder& pass)
-                {
-                    for (const auto pipeline : fft.GetPipelineIds())
-                        pass.UsePipeline(pipeline);
-                    pass.Write(output, RenderGraph::RGTextureWrite::Storage);
-                    pass.Prepare([&, prepared, buffer = params.Buffer, offset = params.Offset](RenderGraph::RGPrepareContext& ctx)
-                    {
-                        *prepared = fft.PrepareDispatch(ctx.GetDevice(), buffer, offset);
-                        return prepared->IsValid();
-                    });
-                },
-                [&](RenderGraph::RGContext& ctx)
-                {
-                    fft.RecordDispatch(ctx.Cmd, *prepared);
-                    recorded = true;
-                });
-            frame.AddOrderingEdge(observer, writer);
-            if (abort)
-            {
-                const auto failure = frame.AddPass("OceanFFT.Abort", PassPhase::kFinalize,
-                    [](RenderGraph::RGPassBuilder& pass)
-                    {
-                        pass.PreventCulling();
-                        pass.Prepare([](RenderGraph::RGPrepareContext&) { return false; });
-                    }, [](RenderGraph::RGContext&) {});
-                frame.AddOrderingEdge(writer, failure);
-            }
-            frame.MarkOutput(output, RenderGraph::RGImageLayout::ShaderReadOnly);
-            const auto before = frame.SubmittedFrameCount();
-            frame.Execute();
-            EXPECT_TRUE(prepared->IsValid());
-            EXPECT_EQ(prepared->InitializeSpectrum, initialize);
-            EXPECT_EQ(recorded, !abort);
-            EXPECT_EQ(frame.Stats().PreparationFailures, abort ? 1u : 0u);
-            EXPECT_EQ(frame.SubmittedFrameCount(), before + (abort ? 0u : 1u));
-            m_Device->FinalizeFrame();
-            m_Device->WaitForIdle();
-        };
-        ASSERT_NO_FATAL_FAILURE(dispatch(recovered, true, true));
-        ASSERT_NO_FATAL_FAILURE(dispatch(recovered, false, true));
-        ASSERT_NO_FATAL_FAILURE(dispatch(control, false, true));
+        ASSERT_NO_FATAL_FAILURE(ExecuteFFTDispatch(recovered, frame, frameIndex, true, true));
+        ASSERT_NO_FATAL_FAILURE(ExecuteFFTDispatch(recovered, frame, frameIndex, false, true));
+        ASSERT_NO_FATAL_FAILURE(ExecuteFFTDispatch(control, frame, frameIndex, false, true));
         const auto first = sample(recovered);
         EXPECT_EQ(first, sample(control));
         bool nonzero = false;
-        for (size_t i = 0; i < first.size(); ++i)
+        for (size_t sampleIndex = 0; sampleIndex < first.size(); ++sampleIndex)
         {
-            EXPECT_TRUE(std::isfinite(first[i]));
-            if (i % 4u != 3u && std::abs(first[i]) > 1.0e-7f)
+            EXPECT_TRUE(std::isfinite(first[sampleIndex]));
+            if (sampleIndex % 4u != 3u && std::abs(first[sampleIndex]) > 1.0e-7f)
                 nonzero = true;
         }
         EXPECT_TRUE(nonzero) << "the GPU comparison must contain actual waves";
         settings.Time = 0.75f;
         recovered.SetParams(settings, false);
         control.SetParams(settings, false);
-        ASSERT_NO_FATAL_FAILURE(dispatch(recovered, false, false));
-        ASSERT_NO_FATAL_FAILURE(dispatch(control, false, false));
+        ASSERT_NO_FATAL_FAILURE(ExecuteFFTDispatch(recovered, frame, frameIndex, false, false));
+        ASSERT_NO_FATAL_FAILURE(ExecuteFFTDispatch(control, frame, frameIndex, false, false));
         const auto later = sample(recovered);
         EXPECT_EQ(later, sample(control));
         EXPECT_NE(later, first) << "the update must use the new time slice";
@@ -369,59 +327,195 @@ void main()
     }
 
     template<class Simulation>
+    static TextureHandle SimulationTexture(const Simulation& simulation)
+    {
+        if constexpr (std::is_same_v<Simulation, OceanFoamSim>)
+            return simulation.GetFoamTexture();
+        else
+            return simulation.GetTexture();
+    }
+
+    template<class Simulation>
+    static const OceanCascadeLayoutGPU& SimulationLayout(const Simulation& simulation)
+    {
+        if constexpr (std::is_same_v<Simulation, OceanFoamSim>)
+            return simulation.GetFoamLayout();
+        else
+            return simulation.GetLayout();
+    }
+
+    template<class Simulation>
+    static SamplerHandle SimulationSampler(const Simulation& simulation)
+    {
+        if constexpr (std::is_same_v<Simulation, OceanFoamSim>)
+            return simulation.GetFoamSampler();
+        else
+            return simulation.GetSampler();
+    }
+
+    template<class Simulation>
+    static void SetTemporalInputs(Simulation& simulation, const OceanCascadeArray& displacement,
+                                  float deltaTime, bool hasImpulse)
+    {
+        if constexpr (std::is_same_v<Simulation, OceanFoamSim>)
+        {
+            simulation.SetFrameInputs(displacement.GetTexture(), SimulationSampler(simulation),
+                0u, 0.8f, 0.55f, 1.0f, deltaTime, 0.0f, 15.0f, 10.0f, 1.0f, 10.0f, 0.0f, 0.0f);
+            OceanFoamInputGPU source{};
+            source.OriginExtent[2] = source.OriginExtent[3] = 24.0f;
+            source.AmountFeatherBlend[0] = 0.5f;
+            simulation.SetAuthoredSources(&source, 1u);
+        }
+        else
+        {
+            OceanWaveImpulseGPU source{};
+            source.CenterRadiusAmp[2] = 12.0f;
+            source.CenterRadiusAmp[3] = 0.5f;
+            simulation.SetFrameInputs(hasImpulse ? &source : nullptr, hasImpulse ? 1u : 0u,
+                                      4.0f, 0.2f, deltaTime);
+        }
+    }
+
+    template<class Simulation>
+    void ExecuteTemporalDispatch(Simulation& simulation, RenderGraph::RGFrame& graph,
+                                 RenderGraph::RGFrame& other, uint32& frameIndex,
+                                 uint32 count, float cameraX, bool abort, bool reset,
+                                 bool* allowSubmission = nullptr)
+    {
+        constexpr bool kFoam = std::is_same_v<Simulation, OceanFoamSim>;
+        using Params = std::conditional_t<kFoam, OceanFoamParamsGPU, OceanDynWavesParamsGPU>;
+        SCOPED_TRACE(::testing::Message() << "simulation frame " << frameIndex);
+        const auto committedTexture = SimulationTexture(simulation);
+        const auto committedLayout = SimulationLayout(simulation);
+        ASSERT_EQ(simulation.GetPendingSubstepCount(), count);
+        ASSERT_TRUE(m_Device->BeginFrame());
+        graph.BeginFrame(frameIndex++);
+        const auto& plan = simulation.PlanSubsteps(graph, cameraX, 0.0f);
+        ASSERT_EQ(plan.Steps.size(), count);
+        ASSERT_GT(count, 0u);
+        EXPECT_EQ(std::memcmp(&plan.Steps.front().PrevCascade, &committedLayout,
+                               sizeof(committedLayout)), 0);
+        EXPECT_EQ(&simulation.PlanSubsteps(graph, cameraX + 1000.0f, 0.0f), &plan);
+        EXPECT_EQ(SimulationTexture(simulation), committedTexture);
+        EXPECT_EQ(std::memcmp(&SimulationLayout(simulation), &committedLayout, sizeof(committedLayout)), 0);
+        other.BeginFrame(frameIndex);
+        if constexpr (kFoam)
+        {
+            EXPECT_EQ(simulation.GetFoamTexture(other), committedTexture);
+            EXPECT_EQ(std::memcmp(&simulation.GetFoamLayout(other), &committedLayout, sizeof(committedLayout)), 0);
+            EXPECT_EQ(std::memcmp(&simulation.GetFoamLayout(graph), &plan.Steps.back().Cascade, sizeof(committedLayout)), 0);
+        }
+        else
+        {
+            EXPECT_EQ(simulation.GetTexture(other), committedTexture);
+            EXPECT_EQ(std::memcmp(&simulation.GetLayout(other), &committedLayout, sizeof(committedLayout)), 0);
+            EXPECT_EQ(std::memcmp(&simulation.GetLayout(graph), &plan.Steps.back().Cascade, sizeof(committedLayout)), 0);
+        }
+        auto* packets = graph.AllocatePassData<std::vector<OceanPreparedSimulationDispatch*>>();
+        const auto observer = graph.AddPass("OceanTemporal.PrepareWitness", PassPhase::kEarlySetup,
+            [](RenderGraph::RGPassBuilder& pass) { pass.PreventCulling(); },
+            [&simulation, packets, count](RenderGraph::RGContext&)
+            {
+                for (auto* packet : *packets)
+                {
+                    EXPECT_TRUE(packet->Commands.Pipeline.IsValid());
+                    EXPECT_TRUE(packet->Commands.Set.IsValid());
+                }
+                EXPECT_EQ(simulation.GetPendingSubstepCount(), count);
+            });
+        RenderGraph::RGPass last = observer;
+        for (uint32 index = 0; index < count; ++index)
+        {
+            const auto step = plan.Steps[index];
+            if (index > 0)
+            {
+                EXPECT_NE(step.WriteIndex, plan.Steps[index - 1u].WriteIndex);
+                EXPECT_EQ(std::memcmp(&step.PrevCascade, &plan.Steps[index - 1u].Cascade,
+                                       sizeof(step.Cascade)), 0);
+            }
+            const auto params = graph.AllocUpload<Params>();
+            ASSERT_TRUE(params.Valid());
+            simulation.FillParams(*params.Ptr, step, index);
+            EXPECT_FLOAT_EQ(params.Ptr->DeltaTime, 0.05f);
+            EXPECT_EQ(params.Ptr->ResetHistory, reset && index == 0u ? 1u : 0u);
+            if constexpr (!kFoam)
+                EXPECT_EQ(params.Ptr->ImpulseCount, index == 0u ? 1u : 0u);
+            auto* packet = graph.AllocatePassData<OceanPreparedSimulationDispatch>();
+            packets->push_back(packet);
+            const auto output = simulation.ImportWriteRG(graph, step.WriteIndex);
+            const auto previous = simulation.ImportPrevRG(graph, step.WriteIndex);
+            const auto pass = graph.AddPass("OceanTemporal.Step", PassPhase::kEarlySetup,
+                [&simulation, previous, output, packet, &plan, index, params](RenderGraph::RGPassBuilder& pass)
+                {
+                    pass.UsePipeline(simulation.GetPipelineId());
+                    pass.Read(previous, RenderGraph::RGTextureRead::SampledCompute);
+                    pass.Write(output, RenderGraph::RGTextureWrite::Storage);
+                    pass.Prepare([&simulation, packet, ownerPlan = &plan, index,
+                                  buffer = params.Buffer, offset = params.Offset](RenderGraph::RGPrepareContext& context)
+                    {
+                        *packet = simulation.PrepareDispatch(context.GetDevice(), buffer, offset, *ownerPlan, index);
+                        return packet->IsValid();
+                    });
+                },
+                [&simulation, packet](RenderGraph::RGContext& context) { simulation.RecordDispatch(context.Cmd, *packet); });
+            graph.AddOrderingEdge(last, pass);
+            last = pass;
+            graph.MarkOutput(output, RenderGraph::RGImageLayout::ShaderReadOnly);
+        }
+        if (abort)
+        {
+            const auto failure = graph.AddPass("OceanTemporal.Abort", PassPhase::kFinalize,
+                [allowSubmission](RenderGraph::RGPassBuilder& pass)
+                {
+                    pass.PreventCulling();
+                    pass.Prepare([allowSubmission](RenderGraph::RGPrepareContext&)
+                    {
+                        return allowSubmission && *allowSubmission;
+                    });
+                }, [](RenderGraph::RGContext&) {});
+            graph.AddOrderingEdge(last, failure);
+        }
+        for (uint32 attempt = 0; attempt < (abort ? 2u : 1u); ++attempt)
+        {
+            const auto submitted = graph.SubmittedFrameCount();
+            const auto preparationFailures = graph.Stats().PreparationFailures;
+            graph.Execute();
+            EXPECT_EQ(graph.SubmittedFrameCount(), submitted + (abort ? 0u : 1u));
+            EXPECT_EQ(graph.Stats().PreparationFailures, preparationFailures + (abort ? 1u : 0u));
+            for (auto* packet : *packets)
+                EXPECT_TRUE(packet->IsValid());
+            EXPECT_EQ(simulation.GetPendingSubstepCount(), abort ? count : 0u);
+            if (abort)
+            {
+                EXPECT_EQ(SimulationTexture(simulation), committedTexture);
+                EXPECT_EQ(std::memcmp(&SimulationLayout(simulation), &committedLayout, sizeof(committedLayout)), 0);
+            }
+        }
+        m_Device->FinalizeFrame();
+        m_Device->WaitForIdle();
+        if (!abort)
+            EXPECT_EQ(std::memcmp(&SimulationLayout(simulation), &plan.Steps.back().Cascade, sizeof(committedLayout)), 0);
+    }
+
+    template<class Simulation>
     void CheckPreparedTemporalDispatch(GraphicsAPI expectedAPI)
     {
         ASSERT_EQ(m_Device->GetAPI(), expectedAPI);
         constexpr bool kFoam = std::is_same_v<Simulation, OceanFoamSim>;
-        using Params = std::conditional_t<kFoam, OceanFoamParamsGPU, OceanDynWavesParamsGPU>;
         Simulation recovered, control;
         OceanCascadeArray displacement;
         ASSERT_TRUE(displacement.Initialize(m_Device.get(), 16, 4, TextureFormat::R16G16B16A16_FLOAT,
                                              64.0f, "TemporalDummyDisplacement"));
-        for (auto* sim : {&recovered, &control})
+        for (auto* simulation : {&recovered, &control})
         {
-            ASSERT_TRUE(sim->Initialize(m_Device.get()));
-            sim->ConfigureCascades(m_Device.get(), 64.0f, 16u);
+            ASSERT_TRUE(simulation->Initialize(m_Device.get()));
+            simulation->ConfigureCascades(m_Device.get(), 64.0f, 16u);
             if constexpr (kFoam)
-                sim->ConfigureSimulation(20.0f, 4u);
+                simulation->ConfigureSimulation(20.0f, 4u);
             else
-                sim->ConfigureSimulation(20.0f, 4u, 0.1f, 0.6f, 9.81f, 0.75f, 0.4f, 2.0f, 0u, 3u);
-            sim->InvalidateHistory();
+                simulation->ConfigureSimulation(20.0f, 4u, 0.1f, 0.6f, 9.81f, 0.75f, 0.4f, 2.0f, 0u, 3u);
+            simulation->InvalidateHistory();
         }
-        const auto texture = [](const Simulation& sim)
-        {
-            if constexpr (kFoam) return sim.GetFoamTexture();
-            else return sim.GetTexture();
-        };
-        const auto layoutOf = [](const Simulation& sim) -> const OceanCascadeLayoutGPU&
-        {
-            if constexpr (kFoam) return sim.GetFoamLayout();
-            else return sim.GetLayout();
-        };
-        const auto sampler = [](const Simulation& sim)
-        {
-            if constexpr (kFoam) return sim.GetFoamSampler();
-            else return sim.GetSampler();
-        };
-        const auto inputs = [&](Simulation& sim, float dt, bool impulse)
-        {
-            if constexpr (kFoam)
-            {
-                sim.SetFrameInputs(displacement.GetTexture(), sampler(sim), 0u, 0.8f, 0.55f, 1.0f, dt,
-                                    0.0f, 15.0f, 10.0f, 1.0f, 10.0f, 0.0f, 0.0f);
-                OceanFoamInputGPU source{};
-                source.OriginExtent[2] = source.OriginExtent[3] = 24.0f;
-                source.AmountFeatherBlend[0] = 0.5f;
-                sim.SetAuthoredSources(&source, 1u);
-            }
-            else
-            {
-                OceanWaveImpulseGPU source{};
-                source.CenterRadiusAmp[2] = 12.0f;
-                source.CenterRadiusAmp[3] = 0.5f;
-                sim.SetFrameInputs(impulse ? &source : nullptr, impulse ? 1u : 0u, 4.0f, 0.2f, dt);
-            }
-        };
 
         TestUtils::ScopedTempDir cache{TestUtils::MakeUniqueTempDirectory("ocean_temporal_probe")};
         ShaderProgramCompileRequest request{};
@@ -456,31 +550,10 @@ void main()
         desc.DescriptorSetLayouts.push_back(m_Device->InternDescriptorSetLayout(probeLayout));
         const auto probe = m_Device->GetOrCreateComputePipeline(m_Device->InternComputePipeline(desc));
         ASSERT_TRUE(probe.IsValid());
-        const auto sample = [&](const Simulation& sim)
+        const auto sample = [this, probe, &probeLayout](const Simulation& simulation)
         {
-            std::vector<float> values(16u * 16u * 4u * 4u, -17.0f);
-            const auto output = MakeBuffer(values.size() * sizeof(float), BufferUsage::Storage, values.data());
-            DescriptorSetDesc setDesc{};
-            setDesc.layout = probeLayout;
-            const auto set = m_Device->CreateDescriptorSet(setDesc);
-            m_Device->UpdateStorageBufferBinding(set, 0, output, 0, values.size() * sizeof(float));
-            m_Device->UpdateCombinedImageSamplerBinding(set, 1, texture(sim), sampler(sim));
-            auto commands = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
-            commands->Begin();
-            commands->SetPipeline(probe);
-            commands->BindDescriptorSet(0, set, probe);
-            commands->Dispatch(2, 2, 4);
-            commands->End();
-            m_Device->ExecuteCommandLists({commands.get()});
-            m_Device->WaitForIdle();
-            void* data = m_Device->MapBuffer(output);
-            EXPECT_NE(data, nullptr);
-            if (data)
-            {
-                std::memcpy(values.data(), data, values.size() * sizeof(float));
-                m_Device->UnmapBuffer(output);
-            }
-            return values;
+            return SampleField(probe, probeLayout, SimulationTexture(simulation), SimulationSampler(simulation),
+                               16u * 16u * 4u * 4u, 2u, 2u, 4u);
         };
         RenderGraph::RGResourcePool persistent(m_Device.get());
         RenderGraph::RGTransientPool transient(m_Device.get());
@@ -489,158 +562,41 @@ void main()
         RenderGraph::RGUploadRing otherUploads(m_Device.get(), 2, 65536);
         RenderGraph::RGFrame other(m_Device.get(), &persistent, &transient, &otherUploads);
         uint32 frameIndex = 1u;
-        const auto dispatch = [&](Simulation& sim, uint32 count, float cameraX, bool abort, bool reset,
-                                  RenderGraph::RGFrame* retainedGraph = nullptr,
-                                  bool* allowSubmission = nullptr)
-        {
-            auto& graph = retainedGraph ? *retainedGraph : frame;
-            SCOPED_TRACE(::testing::Message() << "simulation frame " << frameIndex);
-            const auto committedTexture = texture(sim);
-            const auto committedLayout = layoutOf(sim);
-            ASSERT_EQ(sim.GetPendingSubstepCount(), count);
-            ASSERT_TRUE(m_Device->BeginFrame());
-            graph.BeginFrame(frameIndex++);
-            const auto& plan = sim.PlanSubsteps(graph, cameraX, 0.0f);
-            ASSERT_EQ(plan.Steps.size(), count);
-            ASSERT_GT(count, 0u);
-            EXPECT_EQ(std::memcmp(&plan.Steps.front().PrevCascade, &committedLayout,
-                                   sizeof(committedLayout)), 0);
-            EXPECT_EQ(&sim.PlanSubsteps(graph, cameraX + 1000.0f, 0.0f), &plan);
-            EXPECT_EQ(texture(sim), committedTexture);
-            EXPECT_EQ(std::memcmp(&layoutOf(sim), &committedLayout, sizeof(committedLayout)), 0);
-            other.BeginFrame(frameIndex);
-            if constexpr (kFoam)
-            {
-                EXPECT_EQ(sim.GetFoamTexture(other), committedTexture);
-                EXPECT_EQ(std::memcmp(&sim.GetFoamLayout(other), &committedLayout, sizeof(committedLayout)), 0);
-                EXPECT_EQ(std::memcmp(&sim.GetFoamLayout(graph), &plan.Steps.back().Cascade, sizeof(committedLayout)), 0);
-            }
-            else
-            {
-                EXPECT_EQ(sim.GetTexture(other), committedTexture);
-                EXPECT_EQ(std::memcmp(&sim.GetLayout(other), &committedLayout, sizeof(committedLayout)), 0);
-                EXPECT_EQ(std::memcmp(&sim.GetLayout(graph), &plan.Steps.back().Cascade, sizeof(committedLayout)), 0);
-            }
-            auto* packets = graph.AllocatePassData<std::vector<OceanPreparedSimulationDispatch*>>();
-            const auto observer = graph.AddPass("OceanTemporal.PrepareWitness", PassPhase::kEarlySetup,
-                [](RenderGraph::RGPassBuilder& pass) { pass.PreventCulling(); },
-                [&sim, packets, count](RenderGraph::RGContext&)
-                {
-                    for (auto* packet : *packets)
-                    {
-                        EXPECT_TRUE(packet->Commands.Pipeline.IsValid());
-                        EXPECT_TRUE(packet->Commands.Set.IsValid());
-                    }
-                    EXPECT_EQ(sim.GetPendingSubstepCount(), count);
-                });
-            RenderGraph::RGPass last = observer;
-            for (uint32 index = 0; index < count; ++index)
-            {
-                const auto step = plan.Steps[index];
-                if (index > 0)
-                {
-                    EXPECT_NE(step.WriteIndex, plan.Steps[index - 1u].WriteIndex);
-                    EXPECT_EQ(std::memcmp(&step.PrevCascade, &plan.Steps[index - 1u].Cascade,
-                                           sizeof(step.Cascade)), 0);
-                }
-                const auto params = graph.AllocUpload<Params>();
-                ASSERT_TRUE(params.Valid());
-                sim.FillParams(*params.Ptr, step, index);
-                EXPECT_FLOAT_EQ(params.Ptr->DeltaTime, 0.05f);
-                EXPECT_EQ(params.Ptr->ResetHistory, reset && index == 0u ? 1u : 0u);
-                if constexpr (!kFoam)
-                    EXPECT_EQ(params.Ptr->ImpulseCount, index == 0u ? 1u : 0u);
-                auto* packet = graph.AllocatePassData<OceanPreparedSimulationDispatch>();
-                packets->push_back(packet);
-                const auto output = sim.ImportWriteRG(graph, step.WriteIndex);
-                const auto previous = sim.ImportPrevRG(graph, step.WriteIndex);
-                const auto pass = graph.AddPass("OceanTemporal.Step", PassPhase::kEarlySetup,
-                    [&](RenderGraph::RGPassBuilder& pass)
-                    {
-                        pass.UsePipeline(sim.GetPipelineId());
-                        pass.Read(previous, RenderGraph::RGTextureRead::SampledCompute);
-                        pass.Write(output, RenderGraph::RGTextureWrite::Storage);
-                        pass.Prepare([&sim, packet, ownerPlan = &plan, index,
-                                      buffer = params.Buffer, offset = params.Offset](RenderGraph::RGPrepareContext& ctx)
-                        {
-                            *packet = sim.PrepareDispatch(ctx.GetDevice(), buffer, offset, *ownerPlan, index);
-                            return packet->IsValid();
-                        });
-                    },
-                    [&sim, packet](RenderGraph::RGContext& ctx) { sim.RecordDispatch(ctx.Cmd, *packet); });
-                graph.AddOrderingEdge(last, pass);
-                last = pass;
-                graph.MarkOutput(output, RenderGraph::RGImageLayout::ShaderReadOnly);
-            }
-            if (abort)
-            {
-                const auto failure = graph.AddPass("OceanTemporal.Abort", PassPhase::kFinalize,
-                    [allowSubmission](RenderGraph::RGPassBuilder& pass)
-                    {
-                        pass.PreventCulling();
-                        pass.Prepare([allowSubmission](RenderGraph::RGPrepareContext&)
-                        {
-                            return allowSubmission && *allowSubmission;
-                        });
-                    }, [](RenderGraph::RGContext&) {});
-                graph.AddOrderingEdge(last, failure);
-            }
-            for (uint32 attempt = 0; attempt < (abort ? 2u : 1u); ++attempt)
-            {
-                const auto submitted = graph.SubmittedFrameCount();
-                const auto preparationFailures = graph.Stats().PreparationFailures;
-                graph.Execute();
-                EXPECT_EQ(graph.SubmittedFrameCount(), submitted + (abort ? 0u : 1u));
-                EXPECT_EQ(graph.Stats().PreparationFailures, preparationFailures + (abort ? 1u : 0u));
-                for (auto* packet : *packets)
-                    EXPECT_TRUE(packet->IsValid());
-                EXPECT_EQ(sim.GetPendingSubstepCount(), abort ? count : 0u);
-                if (abort)
-                {
-                    EXPECT_EQ(texture(sim), committedTexture);
-                    EXPECT_EQ(std::memcmp(&layoutOf(sim), &committedLayout, sizeof(committedLayout)), 0);
-                }
-            }
-            m_Device->FinalizeFrame();
-            m_Device->WaitForIdle();
-            if (!abort)
-                EXPECT_EQ(std::memcmp(&layoutOf(sim), &plan.Steps.back().Cascade, sizeof(committedLayout)), 0);
-        };
-        inputs(recovered, 0.1f, true);
-        inputs(control, 0.1f, true);
-        ASSERT_NO_FATAL_FAILURE(dispatch(recovered, 2u, 0.0f, false, true));
-        ASSERT_NO_FATAL_FAILURE(dispatch(control, 2u, 0.0f, false, true));
+        SetTemporalInputs(recovered, displacement, 0.1f, true);
+        SetTemporalInputs(control, displacement, 0.1f, true);
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(recovered, frame, other, frameIndex, 2u, 0.0f, false, true));
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(control, frame, other, frameIndex, 2u, 0.0f, false, true));
         const auto first = sample(recovered);
         EXPECT_EQ(first, sample(control));
         RecordProperty("temporalFirstSamples", SampleChecksum(first));
         bool nonzero = false;
-        for (size_t i = 0; i < first.size(); ++i)
+        for (size_t sampleIndex = 0; sampleIndex < first.size(); ++sampleIndex)
         {
-            EXPECT_TRUE(std::isfinite(first[i]));
-            if (i % 4u == 0u && std::abs(first[i]) > 1.0e-7f)
+            EXPECT_TRUE(std::isfinite(first[sampleIndex]));
+            if (sampleIndex % 4u == 0u && std::abs(first[sampleIndex]) > 1.0e-7f)
                 nonzero = true;
         }
         ASSERT_TRUE(nonzero) << "the GPU comparison must contain simulated data";
         recovered.InvalidateHistory();
         control.InvalidateHistory();
-        inputs(recovered, 0.15f, true);
-        ASSERT_NO_FATAL_FAILURE(dispatch(recovered, 3u, 8.0f, true, true));
+        SetTemporalInputs(recovered, displacement, 0.15f, true);
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(recovered, frame, other, frameIndex, 3u, 8.0f, true, true));
         EXPECT_EQ(first, sample(recovered));
-        inputs(recovered, 0.0f, false);
-        inputs(control, 0.15f, true);
-        ASSERT_NO_FATAL_FAILURE(dispatch(recovered, 3u, 8.0f, false, true));
-        ASSERT_NO_FATAL_FAILURE(dispatch(control, 3u, 8.0f, false, true));
+        SetTemporalInputs(recovered, displacement, 0.0f, false);
+        SetTemporalInputs(control, displacement, 0.15f, true);
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(recovered, frame, other, frameIndex, 3u, 8.0f, false, true));
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(control, frame, other, frameIndex, 3u, 8.0f, false, true));
         const auto recoveredValues = sample(recovered);
         EXPECT_EQ(recoveredValues, sample(control));
         EXPECT_NE(recoveredValues, first);
         RecordProperty("temporalResetRecoverySamples", SampleChecksum(recoveredValues));
-        inputs(recovered, 0.15f, true);
-        ASSERT_NO_FATAL_FAILURE(dispatch(recovered, 3u, 16.0f, true, false));
+        SetTemporalInputs(recovered, displacement, 0.15f, true);
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(recovered, frame, other, frameIndex, 3u, 16.0f, true, false));
         EXPECT_EQ(recoveredValues, sample(recovered));
-        inputs(recovered, 0.0f, false);
-        inputs(control, 0.15f, true);
-        ASSERT_NO_FATAL_FAILURE(dispatch(recovered, 3u, 16.0f, false, false));
-        ASSERT_NO_FATAL_FAILURE(dispatch(control, 3u, 16.0f, false, false));
+        SetTemporalInputs(recovered, displacement, 0.0f, false);
+        SetTemporalInputs(control, displacement, 0.15f, true);
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(recovered, frame, other, frameIndex, 3u, 16.0f, false, false));
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(control, frame, other, frameIndex, 3u, 16.0f, false, false));
         const auto historyRecovery = sample(recovered);
         EXPECT_EQ(historyRecovery, sample(control));
         RecordProperty("temporalHistoryRecoverySamples", SampleChecksum(historyRecovery));
@@ -648,20 +604,20 @@ void main()
         RenderGraph::RGUploadRing staleUploads(m_Device.get(), 2, 65536);
         RenderGraph::RGFrame stale(m_Device.get(), &persistent, &transient, &staleUploads);
         bool allowStaleSubmission = false;
-        inputs(recovered, 0.15f, true);
-        ASSERT_NO_FATAL_FAILURE(dispatch(recovered, 3u, 128.0f, true, false,
-                                         &stale, &allowStaleSubmission));
-        inputs(recovered, 0.0f, false);
-        inputs(control, 0.15f, true);
-        ASSERT_NO_FATAL_FAILURE(dispatch(recovered, 3u, 0.0f, false, false));
-        ASSERT_NO_FATAL_FAILURE(dispatch(control, 3u, 0.0f, false, false));
+        SetTemporalInputs(recovered, displacement, 0.15f, true);
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(recovered, stale, other, frameIndex, 3u, 128.0f, true, false,
+                                                     &allowStaleSubmission));
+        SetTemporalInputs(recovered, displacement, 0.0f, false);
+        SetTemporalInputs(control, displacement, 0.15f, true);
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(recovered, frame, other, frameIndex, 3u, 0.0f, false, false));
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(control, frame, other, frameIndex, 3u, 0.0f, false, false));
         const auto beforeStaleRetry = sample(recovered);
         ASSERT_EQ(beforeStaleRetry, sample(control));
-        const auto recordedTexture = texture(recovered);
-        const auto recordedLayout = layoutOf(recovered);
+        const auto recordedTexture = SimulationTexture(recovered);
+        const auto recordedLayout = SimulationLayout(recovered);
         // These new inputs must remain pending when the older graph is refused.
-        inputs(recovered, 0.1f, true);
-        inputs(control, 0.1f, true);
+        SetTemporalInputs(recovered, displacement, 0.1f, true);
+        SetTemporalInputs(control, displacement, 0.1f, true);
         ASSERT_EQ(recovered.GetPendingSubstepCount(), 2u);
         allowStaleSubmission = true;
         ASSERT_TRUE(m_Device->BeginFrame());
@@ -670,15 +626,15 @@ void main()
         stale.Execute();
         EXPECT_EQ(stale.SubmittedFrameCount(), staleSubmissions);
         EXPECT_GT(stale.Stats().PreparationFailures, staleFailures);
-        EXPECT_EQ(texture(recovered), recordedTexture);
-        EXPECT_EQ(std::memcmp(&layoutOf(recovered), &recordedLayout, sizeof(recordedLayout)), 0);
+        EXPECT_EQ(SimulationTexture(recovered), recordedTexture);
+        EXPECT_EQ(std::memcmp(&SimulationLayout(recovered), &recordedLayout, sizeof(recordedLayout)), 0);
         EXPECT_EQ(recovered.GetPendingSubstepCount(), 2u);
         m_Device->FinalizeFrame();
         m_Device->WaitForIdle();
         EXPECT_EQ(sample(recovered), beforeStaleRetry)
             << "refusing publication after dispatch cannot protect the recorded texture";
-        ASSERT_NO_FATAL_FAILURE(dispatch(recovered, 2u, 0.0f, false, false));
-        ASSERT_NO_FATAL_FAILURE(dispatch(control, 2u, 0.0f, false, false));
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(recovered, frame, other, frameIndex, 2u, 0.0f, false, false));
+        ASSERT_NO_FATAL_FAILURE(ExecuteTemporalDispatch(control, frame, other, frameIndex, 2u, 0.0f, false, false));
         EXPECT_EQ(sample(recovered), sample(control))
             << "the refused graph must not consume newer time or impulses";
         recovered.ForgetFrame(stale);
@@ -686,9 +642,9 @@ void main()
         other.BeginFrame(frameIndex++);
         EXPECT_TRUE(recovered.PlanSubsteps(other, 1000.0f, 0.0f).Steps.empty());
         if constexpr (kFoam)
-            EXPECT_EQ(recovered.GetFoamTexture(other), texture(recovered));
+            EXPECT_EQ(recovered.GetFoamTexture(other), SimulationTexture(recovered));
         else
-            EXPECT_EQ(recovered.GetTexture(other), texture(recovered));
+            EXPECT_EQ(recovered.GetTexture(other), SimulationTexture(recovered));
         recovered.ForgetFrame(other);
     }
 
@@ -722,22 +678,22 @@ void main()
             query.FillParams(*params.Ptr);
             auto* prepared = frame.AllocatePassData<OceanPreparedQueryDispatch>();
             frame.AddPass("OceanQuery.CompletedBatch", PassPhase::kEarlySetup,
-                [&](RenderGraph::RGPassBuilder& pass)
+                [&query, &frame, prepared, token, params](RenderGraph::RGPassBuilder& pass)
                 {
                     pass.UsePipeline(query.GetPipelineId());
                     pass.PreventCulling();
-                    pass.Prepare([&, prepared, token, buffer = params.Buffer, offset = params.Offset,
-                                  values = params.Ptr](RenderGraph::RGPrepareContext& ctx)
+                    pass.Prepare([&query, &frame, prepared, token, buffer = params.Buffer, offset = params.Offset,
+                                  values = params.Ptr](RenderGraph::RGPrepareContext& context)
                     {
-                        return query.PrepareDispatch(ctx.GetDevice(), frame, buffer, offset,
+                        return query.PrepareDispatch(context.GetDevice(), frame, buffer, offset,
                                                      *values, token, *prepared);
                     });
                 },
-                [&, prepared](RenderGraph::RGContext& ctx)
+                [&query, prepared](RenderGraph::RGContext& context)
                 {
                     EXPECT_TRUE(prepared->Readback.Commands.Pipeline.IsValid());
                     EXPECT_TRUE(prepared->Readback.Commands.Set.IsValid());
-                    query.RecordDispatch(ctx.Cmd, *prepared);
+                    query.RecordDispatch(context.Cmd, *prepared);
                 });
             const auto submitted = frame.SubmittedFrameCount();
             frame.Execute();
@@ -762,6 +718,48 @@ void main()
             EXPECT_FLOAT_EQ(samples[0].NormalWS[1], 1.0f);
             EXPECT_EQ(samples[0].Source, OceanQuerySource::GPUQuery);
         }
+    }
+
+    std::vector<float> SampleField(PipelineHandle pipeline, const DescriptorSetLayoutDesc& layout,
+                                   TextureHandle texture, SamplerHandle sampler, size_t valueCount,
+                                   uint32 groupsX, uint32 groupsY, uint32 groupsZ)
+    {
+        constexpr float kUnwrittenSample = -17.0f;
+        std::vector<float> values(valueCount, kUnwrittenSample);
+        const auto output = MakeBuffer(values.size() * sizeof(float), BufferUsage::Storage, values.data());
+        EXPECT_TRUE(output.IsValid());
+        if (!output.IsValid())
+            return values;
+        DescriptorSetDesc descriptor{};
+        descriptor.layout = layout;
+        const auto set = m_Device->CreateDescriptorSet(descriptor);
+        EXPECT_TRUE(set.IsValid());
+        if (!set.IsValid())
+            return values;
+        m_Device->UpdateStorageBufferBinding(set, 0, output, 0, values.size() * sizeof(float));
+        m_Device->UpdateCombinedImageSamplerBinding(set, 1, texture, sampler);
+        auto commands = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
+        commands->Begin();
+        commands->SetPipeline(pipeline);
+        commands->BindDescriptorSet(0, set, pipeline);
+        commands->Dispatch(groupsX, groupsY, groupsZ);
+        commands->Barrier(ResourceBarrier::CreateMemoryBarrier(
+            static_cast<uint64>(PipelineStageMask::ComputeShader),
+            static_cast<uint64>(PipelineStageMask::Host),
+            static_cast<uint64>(ResourceAccessMask::ShaderWrite),
+            static_cast<uint64>(ResourceAccessMask::HostRead)));
+        commands->End();
+        m_Device->ExecuteCommandLists({commands.get()});
+        m_Device->WaitForIdle();
+        void* mapped = m_Device->MapBuffer(output);
+        EXPECT_NE(mapped, nullptr);
+        if (mapped)
+        {
+            std::memcpy(values.data(), mapped, values.size() * sizeof(float));
+            m_Device->UnmapBuffer(output);
+        }
+        m_Device->DestroyDescriptorSet(set);
+        return values;
     }
 
     BufferHandle MakeBuffer(size_t size, BufferUsage usage, const void* data)

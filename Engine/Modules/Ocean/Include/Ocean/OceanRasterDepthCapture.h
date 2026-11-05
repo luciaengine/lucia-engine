@@ -57,7 +57,8 @@ public:
     bool DeclareForView(Engine::Renderer::Pipeline::ViewDeclare& d,
                         float32 centerX, float32 centerZ, float32 seaLevel,
                         const OceanRasterDepthCaptureSettings& settings);
-    // The frame retains the selected output generation and its matching footprint.
+    /// Render-thread sampling retains the selected output generation and its matching footprint.
+    /// The result remains valid for this frame; foreign frames see only committed captures.
     bool GetSampling(Rendering::RenderGraph::RGFrame& frame, OceanRasterDepthSampling& out) const;
     Rendering::ViewId GetCaptureViewId() const { return m_ViewId; }
     bool SampleDepth(float32 worldX, float32 worldZ, float32& outDepth) const;
@@ -68,10 +69,12 @@ public:
     {
         m_Readback.OnFrameSubmitted(frame, token);
     }
+    /// Render-thread notification cancels this frame's unsubmitted readback reservations.
     void OnFrameAborted(const Rendering::RenderGraph::RGFrame& frame)
     {
         m_Readback.CancelUnsubmitted(frame);
     }
+    /// Render-thread retirement clears borrowed plans before the frame is destroyed.
     void OnFrameStreamRetired(const Rendering::RenderGraph::RGFrame& frame);
 
 private:

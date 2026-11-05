@@ -13,7 +13,8 @@ class CommandList;
 
 namespace GameEngine::Ocean
 {
-// One graph pass owns each packet, including when several simulation steps are live.
+/// A frame-owned packet borrows handles whose resources must survive GPU submission.
+/// Build it during render-thread preparation; recording only reads the packet.
 struct OceanPreparedDispatch
 {
     Rendering::PipelineHandle Pipeline{};
@@ -29,6 +30,7 @@ struct OceanPreparedDispatch
     }
 };
 
+/// The owner frame retains Plan; retirement must clear any simulation-side borrowed pointer.
 struct OceanPreparedSimulationDispatch
 {
     OceanPreparedDispatch Commands;
@@ -40,6 +42,7 @@ struct OceanPreparedSimulationDispatch
     bool IsValid() const { return Commands.IsValid() && Plan != nullptr; }
 };
 
+/// The ring owns Output; Reservation prevents an obsolete packet from writing a reused slot.
 struct OceanPreparedReadbackDispatch
 {
     OceanPreparedDispatch Commands;
@@ -48,5 +51,6 @@ struct OceanPreparedReadbackDispatch
     uint64_t Reservation = 0;
 };
 
+/// Emit a valid packet on the calling recorder thread; the caller provides resource barriers.
 bool RecordOceanPreparedDispatch(Rendering::CommandList* commands, const OceanPreparedDispatch& dispatch);
 } // namespace GameEngine::Ocean

@@ -128,17 +128,16 @@ public:
     // allocation and hands the {buffer, offset} to PrepareDispatch.
     void FillParams(OceanClipParamsGPU& out);
 
-    // Records the clip bake dispatch with barriers, leaving the cascade sampleable
-    // by the world pass. Params come from the frame's upload ring (FillParams
-    // above) — no per-class buffer ring.
-    /// Declare this ID with RGPassBuilder::UsePipeline before recording.
+    /// Declare this ID with RGPassBuilder::UsePipeline before preparation.
     ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipe; }
 
-    // Create frame-local descriptors before recording; simulation state is unchanged.
+    /// Render-thread preparation; the frame retains descriptors and the parameter upload.
+    /// The caller keeps input textures alive and unchanged until this graph records.
     OceanPreparedDispatch PrepareDispatch(::GameEngine::Rendering::IDevice* device,
                                            ::GameEngine::Rendering::BufferHandle paramsBuffer,
                                            uint64 paramsOffset) const;
-    void RecordDispatch(::GameEngine::Rendering::CommandList* cl,
+    /// Record on the render thread using this frame's prepared bindings.
+    void RecordDispatch(::GameEngine::Rendering::CommandList* commands,
                         const OceanPreparedDispatch& dispatch);
 
 private:

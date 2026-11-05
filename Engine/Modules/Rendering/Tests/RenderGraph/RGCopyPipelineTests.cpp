@@ -121,25 +121,25 @@ TEST_P(PreparedCopyTest, ColdPipelineIsReadyBeforeRecordingAndCopiesTheFirstFram
     bool allowRecording = false;
     uint32_t recordCount = 0;
     uint32_t forkCount = 0;
-    frame.SetRecordParallel([&](uint32_t count, const std::function<void(uint32_t)>& record) {
+    frame.SetRecordParallel([&forkCount](uint32_t count, const std::function<void(uint32_t)>& record) {
         forkCount += count;
         for (uint32_t index = 0; index < count; ++index)
             record(index);
     });
     frame.AddPass("Source", 0,
-                  [&](RGPassBuilder& pass)
+                  [source](RGPassBuilder& pass)
                   {
                       pass.AttachColor(0, source, {.Load = RGLoadOp::Clear, .Clear = {.Color = {0, 1, 0, 1}}});
                       pass.RecordInSecondary();
                   },
-                  [&](RGContext&)
+                  [&recordCount, &pipelineWasReadyAtFirstRecord, &device, pipeline, formatKey](RGContext&)
                   {
                       ++recordCount;
                       pipelineWasReadyAtFirstRecord = device->TryGetWarmGraphicsPipeline(pipeline, formatKey).IsValid();
                   });
     AddCopyPass(frame, source, output, "PreparedCopy", 0, pipeline, {}, layout, {}, sampler);
     frame.AddPass("Readback", 0,
-                  [&](RGPassBuilder& pass)
+                  [output, destination, &allowRecording, &frame](RGPassBuilder& pass)
                   {
                       pass.Read(output, RGTextureRead::CopySrc);
                       pass.Write(destination, RGBufferWrite::CopyDst);
@@ -242,10 +242,10 @@ TEST_P(PreparedCopyTest, FinalizeChainPreparesDescriptorsAndDrawsTheColdFirstFra
     const uint32_t allocatedBefore = device->GetDescriptorAllocatorStats().TransientAllocated;
     bool observedPreparation = false;
     frame.AddPass("Finalize.Source", 0,
-                  [&](RGPassBuilder& pass) {
+                  [source](RGPassBuilder& pass) {
                       pass.AttachColor(0, source, {.Load = RGLoadOp::Clear, .Clear = {.Color = {0, 1, 0, 1}}});
                   },
-                  [&](RGContext&) {
+                  [&observedPreparation, &frame, &device, allocatedBefore](RGContext&) {
                       observedPreparation = frame.Stats().PreparedPasses == 3u;
                       if (device->GetAPI() == GraphicsAPI::Vulkan &&
                           GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_CAPTURE_COMPAT", false))
@@ -266,7 +266,7 @@ TEST_P(PreparedCopyTest, FinalizeChainPreparesDescriptorsAndDrawsTheColdFirstFra
     ASSERT_TRUE(Passes::AddPixelPerfectUpscalePassRG(
         frame, upscale, Passes::FinalizeInputSpace::EncodedSrgb).IsValid());
     frame.AddPass("Finalize.Readback", 0,
-                  [&](RGPassBuilder& pass) {
+                  [output, destination](RGPassBuilder& pass) {
                       pass.Read(output, RGTextureRead::CopySrc);
                       pass.Write(destination, RGBufferWrite::CopyDst);
                   },
@@ -338,16 +338,16 @@ TEST_P(PreparedCopyTest, OnlyLiveRequiredPipelinesBuildForTheirActualAttachments
     textureDesc.sampleCount = 4;
     const RGTexture multisample = frame.CreateTexture("Required.Msaa", textureDesc);
     frame.AddPass("Dead", 0,
-                  [&](RGPassBuilder& pass) { pass.AttachColor(0, dead); pass.UsePipeline(pipeline); },
+                  [dead, pipeline](RGPassBuilder& pass) { pass.AttachColor(0, dead); pass.UsePipeline(pipeline); },
                   [](RGContext&) { ADD_FAILURE() << "culled pass recorded"; });
     bool readyBeforeRecord = false;
     frame.AddPass("Required", 0,
-                  [&](RGPassBuilder& pass)
+                  [multisample, resolve, pipeline](RGPassBuilder& pass)
                   {
                       pass.AttachColorResolve(0, multisample, resolve, {.Load = RGLoadOp::Clear});
                       pass.UsePipeline(pipeline);
                   },
-                  [&](RGContext& context)
+                  [&readyBeforeRecord, &device, pipeline, liveKey](RGContext& context)
                   {
                       EXPECT_EQ(context.BuildCurrentFormatKey(), liveKey);
                       readyBeforeRecord = device->TryGetWarmGraphicsPipeline(pipeline, liveKey).IsValid();

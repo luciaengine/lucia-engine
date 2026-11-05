@@ -35,7 +35,6 @@
 #include "Rendering/CameraTypes.h"
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/HashUtils.h"
-#include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Materials/ShaderVariantKey.h"
 #include "Types/StringId.h"
 
@@ -43,10 +42,10 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <shared_mutex>
 #include <span>
 #include <unordered_map>
-#include <memory>
 #include <vector>
 
 namespace GameEngine::Rendering
@@ -56,7 +55,6 @@ class IDevice;
 struct ShaderMeta;
 struct DescriptorSetMeta;
 struct DescriptorBindingPlan;
-struct DescriptorBindingMeta;
 } // namespace GameEngine::Rendering
 
 namespace GameEngine::Engine::Renderer
@@ -65,7 +63,8 @@ namespace GameEngine::Engine::Renderer
 class Material;
 class RenderServices;
 
-/// Device handles resolved for one draw in this device frame.
+/// Immutable binding handles and copied layouts for one device frame.
+/// The owning pass retains the GPU resources until its commands complete.
 struct PreparedDrawBindings
 {
     Rendering::PipelineHandle Pipeline{};
@@ -83,17 +82,9 @@ class MaterialBinder
     MaterialBinder(const MaterialBinder&) = delete;
     MaterialBinder& operator=(const MaterialBinder&) = delete;
 
-    // Begins a pass-scope binding session. The per-pass resource table arrives
-    // PRE-RESOLVED — RenderGraph callers build it at declaration from AllocUpload/import
-    // handles, so there is no logical-handle resolution to run against a
-    // context. Returns a stateful context the caller threads through every
-    // BindMaterialForDraw call inside the pass.
-    //
-    // `passInstanceIndex` disambiguates multiple instances of the same logical
-    // pass that share (view, keywords, layout) but bind distinct per-pass
-    // resources — shadow cascades pass their cascade index; depth prepass and
-    // forward pass 0. Routes through the per-pass descriptor-set cache key so
-    // each instance gets its own cached set.
+    /// Start a binding session on the thread that owns the command list.
+    /// Resources are resolved device handles; each pass instance has an independent cache scope.
+    /// The returned sticky state belongs to this encoder and device frame.
     PassBindingContext BeginPass(
         ::GameEngine::Rendering::CommandList& cmd,
         ::GameEngine::Rendering::ViewId view,
@@ -102,103 +93,33 @@ class MaterialBinder
         ResolvedPassResources resources,
         uint32_t passInstanceIndex = 0);
 
-    /// Resolve the sets of the served material variant without recording commands.
+    /// Resolve the served variant's sets during graph preparation, without commands.
+    /// Inputs need only outlive this call; the returned handles expire at device-frame reset.
+    /// A nonzero set count bounds the reflected set walk; layouts must match the pipeline.
     PreparedDrawBindings PrepareMaterialForDraw(
         const PassBindingContext& pass, const Material& material, Rendering::PipelineHandle pipeline,
         const Rendering::ShaderMeta* servedMeta, const DrawBindings& draw, uint32_t pipelineSetCount = 0,
         std::span<const Rendering::DescriptorSetLayoutId> pipelineSetLayouts = {});
 
-    /// Resolve a materialless pipeline's sets from draw and pass resources.
+    /// Resolve a materialless pipeline's sets during graph preparation, without commands.
+    /// Inputs need only outlive this call; retain their GPU resources through command completion.
+    /// A nonzero set count bounds the reflected set walk; layouts must match the pipeline.
     PreparedDrawBindings PreparePipelineForDraw(
         const PassBindingContext& pass, Rendering::PipelineHandle pipeline, const Rendering::ShaderMeta& meta,
         const DrawBindings& draw, uint32_t pipelineSetCount = 0,
         std::span<const Rendering::DescriptorSetLayoutId> pipelineSetLayouts = {});
 
-    /// Bind a prepared packet against the sticky state of this command encoder.
+    /// Record bindings on the thread that owns pass.Cmd and its sticky state.
+    /// The packet must belong to this device frame; push-constant bytes need only outlive the call.
     Rendering::PipelineHandle BindPreparedForDraw(
         PassBindingContext& pass, const PreparedDrawBindings& prepared, std::span<const std::byte> pushConstants = {});
-
-    // Binds pipeline + every reflected descriptor set + push constants. The
-    // binder walks `material.GetShaderMeta()->Sets` and resolves each set
-    // independently by name — no set-index policy. Returns the resolved
-    // pipeline handle so callers can chain SetVertexBuffer / SetIndexBuffer
-    // / DrawIndexed using it.
-    //
-    // `preResolvedPipeline`: when valid, the binder skips its own pipeline
-    // resolution and uses this handle directly. Callers that maintain their
-    // own variant cache (e.g. the world pass's instanced-format-keyed cache,
-    // the depth pass's narrowed pipelines) resolve there and hand the result
-    // in. When invalid (default), the binder resolves via
-    // material.GetGraphicsPipelineIdForFlags + passCtx.GetOrCreatePipelineVariant.
-    //
-    // `pipelineSetCount`: when non-zero, bounds the set walk to indices
-    // [0, pipelineSetCount). Depth-only pipelines compile only the vertex
-    // stage and declare a single set 0, while the material's reflected meta
-    // still carries fragment-stage sets — binding them would violate
-    // VUID-vkCmdSetDescriptorBufferOffsetsEXT-firstSet-08066. Callers using
-    // narrowed pipelines must pass the pipeline's actual set-layout count.
-    //
-    // `metaOverride`: when non-null, the binder walks this meta instead of
-    // `material.GetShaderMeta()`. Required when the pipeline was compiled
-    // from a different keyword set than the material's base — e.g. the
-    // world-pass instanced variant adds Instanced/ForwardPlus/Shadows which
-    // introduce extra set-0 bindings (Light/Cluster/Shadow SSBOs + shadow
-    // textures) that the base material's reflection doesn't see.
-    //
-    // `pipelineSetLayouts`: when non-empty, the binder uses these layout
-    // ids on a pipeline change to find the first set whose layout differs
-    // from the prior pipeline's and only invalidate the sticky-bind cache
-    // from that set onward (Vulkan's pipeline-layout-compatibility rule).
-    // When empty, the binder conservatively clears all sticky-bind
-    // tracking — same behavior as before this optimisation. Passing
-    // precomputed ids avoids the device's mutex-guarded
-    // LookupGraphicsPipeline on every SetPipeline; cache them once at
-    // variant-compile time and reuse.
-    ::GameEngine::Rendering::PipelineHandle BindMaterialForDraw(
-        PassBindingContext& pass,
-        const Material& material,
-        ::GameEngine::Rendering::VertexAttributeFlags meshVertexFlags,
-        const DrawBindings& draw,
-        ::GameEngine::Rendering::PipelineHandle preResolvedPipeline = {},
-        const ::GameEngine::Rendering::ShaderMeta* metaOverride = nullptr,
-        uint32_t pipelineSetCount = 0,
-        std::span<const ::GameEngine::Rendering::DescriptorSetLayoutId> pipelineSetLayouts = {});
-
-    // Bind a raw graphics/compute pipeline that has no backing Material
-    // (terrain depth, debug-line draws, particle emitters, decals). Walks
-    // `meta.Sets` and resolves each binding by `StringId` against two sources:
-    //
-    //   1. DrawBindings  (per-draw)
-    //   2. PassResources (per-pass — Cam, Light, shadow textures, etc.)
-    //
-    // Bindless texture sets short-circuit to the engine's global handle. There
-    // is no per-material source — callers carrying a per-pipeline UBO push it
-    // through DrawBindings.
-    //
-    // `pipelineSetCount` mirrors the BindMaterialForDraw parameter: when
-    // non-zero it bounds the set walk to `[0, pipelineSetCount)` so callers
-    // can use narrowed pipeline layouts whose set count is smaller than the
-    // reflected meta's set count.
-    ::GameEngine::Rendering::PipelineHandle BindPipelineForDraw(
-        PassBindingContext& pass,
-        ::GameEngine::Rendering::PipelineHandle pipeline,
-        const ::GameEngine::Rendering::ShaderMeta& meta,
-        const DrawBindings& draw,
-        uint32_t pipelineSetCount = 0,
-        std::span<const ::GameEngine::Rendering::DescriptorSetLayoutId> pipelineSetLayouts = {});
 
     // Symmetric pass terminator. No-op today; reserved for parallel-record
     // finalization hooks.
     void EndPass(PassBindingContext& pass);
 
-    // Apply Vulkan's pipeline-layout-compatibility rule on a pipeline change:
-    // bindings stay sticky up to and including the highest set whose layout
-    // is identical between the old and new pipelines; sets from the first
-    // differing layout upward are invalidated. When `pipelineSetLayouts` is
-    // empty (caller didn't precompute them), the binder conservatively
-    // clears every set (legacy behavior). Public so callers that bypass
-    // BindMaterialForDraw / BindPipelineForDraw can maintain consistent
-    // state.
+    /// Invalidate sticky sets from the first incompatible pipeline layout upward.
+    /// Empty layout IDs invalidate all sets; call on the thread that owns this encoder.
     void InvalidateStickyBindsForPipeline(
         PassBindingContext& pass,
         std::span<const ::GameEngine::Rendering::DescriptorSetLayoutId> pipelineSetLayouts);
@@ -210,48 +131,22 @@ class MaterialBinder
 
     // Build (or fetch from cache) the descriptor set for the given set index
     // declared by the material's reflected meta. Returns an invalid handle if
-    // the set isn't in the meta or has no bindings. Public so siblings like
-    // BindPipelineForDraw can reuse the same construction path.
+    // the set is not in the meta or has no bindings.
     ::GameEngine::Rendering::DescriptorSetHandle BuildSetForBinding(
         PassBindingContext& pass,
         const Material& material,
         uint32_t setIdx,
         const DrawBindings& draw);
 
-    // Variant of BuildSetForBinding that accepts a pre-located setMeta. Used
-    // when the caller already walked an override meta (e.g. the world pass's
-    // compiled variant reflection, which differs from the material's stored
-    // base meta). The setMeta pointer must outlive the call.
-    // `outUnresolvable`, when non-null, is set true if a statically-used
-    // uniform/storage buffer binding in this set resolved from neither
-    // DrawBindings nor PassResources, or an unresolved sampled-image binding's
-    // shape has no slot default (ResolveSlotDefault). BindMaterialForDraw uses it to SKIP the
-    // draw rather than issue it with an unbound (garbage-address) descriptor.
+    /// Resolve one reflected set during preparation; inputs need only outlive this call.
+    /// Set outUnresolvable when a required buffer or image has no provider or valid fallback.
+    /// Returned transient handles expire at device-frame reset; retain GPU resources through execution.
     ::GameEngine::Rendering::DescriptorSetHandle BuildSetForBindingFromMeta(
         const PassBindingContext& pass,
         const Material& material,
         const ::GameEngine::Rendering::DescriptorSetMeta& setMeta,
         const DrawBindings& draw,
         bool* outUnresolvable = nullptr);
-
-    // What a sampled-image slot that no source provides is bound to. The default has the
-    // slot's own shape: a depth slot gets a reverse-Z-far depth texture of its view dimension
-    // with the comparison sampler (a shadow tap against it reads fully lit), a cube slot the
-    // black cube, a 2D-array slot the white array, a 2D slot the per-name 1x1 default.
-    // Sampler is the one the binder writes beside it: the comparison sampler for a depth slot,
-    // `materialSampler` otherwise. This is the binder's whole decision for the slot, which is
-    // why it is public: MaterialBinderTests pins it per shape. Texture is invalid
-    // for a shape with no default (3D, multisampled, integer, a depth or arrayed cube): the
-    // binder then flags the set unresolvable, so the draw is skipped with an error naming the
-    // slot, because a default of the wrong shape or an unwritten entry is an invalid bind group
-    // on WebGPU and an undefined read on any backend that uses the slot.
-    struct SlotDefault
-    {
-        ::GameEngine::Rendering::TextureHandle Texture;
-        ::GameEngine::Rendering::SamplerHandle Sampler;
-    };
-    SlotDefault ResolveSlotDefault(const ::GameEngine::Rendering::DescriptorBindingMeta& binding,
-                                   ::GameEngine::Rendering::SamplerHandle materialSampler);
 
   private:
     // One entry per plan slot, in reflection order. Flat rows let a worker
@@ -275,13 +170,16 @@ class MaterialBinder
     Resolution ResolveBindings(const ResolvedPassResources& pass, const Material& material, uint32_t setIndex,
                                const Rendering::DescriptorBindingPlan& plan, const DrawBindings& draw,
                                std::vector<ResolvedBinding>& writes);
+    Rendering::SamplerHandle ResolveMaterialSampler(const Material& material,
+                                                    Rendering::SamplerHandle& cachedSampler);
+    static bool ShouldWarnBinding(const Material& material, uint32_t setIndex, uint32_t binding);
     Rendering::DescriptorSetHandle BuildSetInternal(const Rendering::DescriptorSetMeta& setMeta,
                                                     const Rendering::DescriptorBindingPlan& plan,
                                                     std::span<const ResolvedBinding> writes);
 
     // Build a transient descriptor set for the materialless path. Resolves
     // bindings against DrawBindings and PassResources only — no material
-    // sources. Used by BindPipelineForDraw.
+    // sources. Used during materialless preparation.
     ::GameEngine::Rendering::DescriptorSetHandle BuildPipelineSet(
         const PassBindingContext& pass,
         const ::GameEngine::Rendering::DescriptorSetMeta& setMeta,
@@ -300,39 +198,32 @@ class MaterialBinder
     };
     struct PerPassCacheKeyHash
     {
-        size_t operator()(const PerPassCacheKey& k) const noexcept
+        size_t operator()(const PerPassCacheKey& key) const noexcept
         {
             using Rendering::HashUtils::HashCombine;
-            uint64_t h = k.ViewBits;
-            h = HashCombine(h, k.PassKwBits);
-            h = HashCombine(h, k.ContentsHash);
-            h = HashCombine(h, k.SetIndex);
-            h = HashCombine(h, k.PassInstanceIndex);
-            return static_cast<size_t>(h);
+            uint64_t hash = key.ViewBits;
+            hash = HashCombine(hash, key.PassKwBits);
+            hash = HashCombine(hash, key.ContentsHash);
+            hash = HashCombine(hash, key.SetIndex);
+            hash = HashCombine(hash, key.PassInstanceIndex);
+            return static_cast<size_t>(hash);
         }
     };
 
-    // Warn-once key for missing bindings. Per (material, setIdx) so unrelated
-    // materials with similar layouts don't suppress each other's warnings.
-    // The warn maps are per-worker thread_local (A2.4-D6) — see the .cpp — so a
-    // genuinely-missing binding may log once per worker that hits it (harmless).
-    // WarnKey/WarnKeyHash key the thread_local map in ResolveBindings.
+    // Missing-binding diagnostics are keyed by material and set on each preparation thread.
     struct WarnKey
     {
-        const Material* Mat;
-        uint32_t        SetIdx;
-        bool operator==(const WarnKey& o) const noexcept
-        {
-            return Mat == o.Mat && SetIdx == o.SetIdx;
-        }
+        const Material* SourceMaterial;
+        uint32_t SetIndex;
+        bool operator==(const WarnKey&) const = default;
     };
     struct WarnKeyHash
     {
-        size_t operator()(const WarnKey& k) const noexcept
+        size_t operator()(const WarnKey& key) const noexcept
         {
-            const uint64_t h =
-                Rendering::HashUtils::HashCombine(std::hash<const void*>{}(k.Mat), k.SetIdx);
-            return static_cast<size_t>(h);
+            const uint64_t hash =
+                Rendering::HashUtils::HashCombine(std::hash<const void*>{}(key.SourceMaterial), key.SetIndex);
+            return static_cast<size_t>(hash);
         }
     };
 
@@ -353,6 +244,9 @@ class MaterialBinder
         bool Matches(const Rendering::DescriptorBindingPlan& plan,
                      const std::vector<ResolvedBinding>& writes) const;
     };
+    // The caller holds m_PerPassCacheMutex while searching immutable entries.
+    const CachedSet* FindCachedSet(const PerPassCacheKey& key, const Rendering::DescriptorBindingPlan& plan,
+                                  const std::vector<ResolvedBinding>& writes) const;
     std::unordered_multimap<PerPassCacheKey, CachedSet, PerPassCacheKeyHash> m_PerPassCache;
     mutable std::shared_mutex m_PerPassCacheMutex;
 

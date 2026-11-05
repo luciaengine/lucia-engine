@@ -1,6 +1,7 @@
+#include "Rendering/Core/RenderGraph/RGFrame.h"
+
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
-#include "Rendering/Core/RenderGraph/RGFrame.h"
 
 // Engine stage/access mask bits. (Header drags the old RenderGraph.h include
 // chain — pruned when the old graph is deleted at Stage 2c.)
@@ -407,12 +408,12 @@ bool RGFrame::PreparePasses()
     // Per-pass attachment ranges (attachments are recorded contiguously per pass
     // during the AddPass setup lambda — single-threaded declaration).
     m_ScratchAttRange.assign(passCount, {0u, 0u});
-    for (uint32_t i = 0; i < m_Attachments.size(); ++i)
+    for (uint32_t attachmentIndex = 0; attachmentIndex < m_Attachments.size(); ++attachmentIndex)
     {
-        auto& r = m_ScratchAttRange[m_Attachments[i].Pass];
-        if (r.second == 0)
-            r.first = i;
-        ++r.second;
+        auto& range = m_ScratchAttRange[m_Attachments[attachmentIndex].Pass];
+        if (range.second == 0)
+            range.first = attachmentIndex;
+        ++range.second;
     }
 
     for (RGPassId pass : m_Graph.ScheduledOrder())

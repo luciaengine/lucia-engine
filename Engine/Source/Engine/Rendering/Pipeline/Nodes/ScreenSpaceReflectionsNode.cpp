@@ -540,7 +540,9 @@ void ScreenSpaceReflectionsNode::DeclareForView(ViewDeclare& d)
         d.PassName("PrepareArgs").c_str(), PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
-            p.UsePipeline(m_Programs[PrepareArgs].Pipeline); p.Write(indirectArgs, RenderGraph::RGBufferWrite::Storage); },
+            p.UsePipeline(m_Programs[PrepareArgs].Pipeline);
+                p.Write(indirectArgs, RenderGraph::RGBufferWrite::Storage);
+            },
         [=, this](RenderGraph::RGContext& ctx)
         {
             auto* device = ctx.GetDevice();

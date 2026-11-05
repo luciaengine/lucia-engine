@@ -154,6 +154,7 @@
 #include "TerrainGrass/TerrainGrassClamps.h"
 #include "PhysicsECS/PhysicsWorldService.h"
 #include "UI/Controls/DockspaceElement.h"
+#include "Types/FlatMap.h"
 #include "Types/Fnv1a.h"
 #include "UI/Controls/ListView.h"
 #include "UI/Controls/Mount.h"
@@ -2558,10 +2559,13 @@ inline bool ApplyMainSceneViewPose(EditorApplication& app, const SceneViewCamera
 
     [[maybe_unused]] static auto RgTimingMap(RG::RGFrame* frame)
     {
-        std::unordered_map<std::string, RG::RGFrame::RGPassTiming> timings;
-        if (frame)
-            for (const auto& timing : frame->LastFrameTimings())
-                timings[timing.Name] = timing;
+        FlatMap<std::string, RG::RGFrame::RGPassTiming> timings;
+        if (!frame)
+            return timings;
+        const auto resolvedTimings = frame->LastFrameTimings();
+        timings.Reserve(resolvedTimings.size());
+        for (const auto& timing : resolvedTimings)
+            timings.InsertOrAssign(timing.Name, timing);
         return timings;
     }
 

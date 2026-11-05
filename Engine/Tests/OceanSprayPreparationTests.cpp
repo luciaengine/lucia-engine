@@ -1,5 +1,3 @@
-#include <gtest/gtest.h>
-
 #include "Engine/Rendering/Pipeline/PipelineResourceNames.h"
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
@@ -23,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include <gtest/gtest.h>
+
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
 using namespace GameEngine::Engine::Renderer;
@@ -33,6 +33,7 @@ namespace
 {
 constexpr uint32 kExtent = 64;
 constexpr uint32 kCapacity = 256;
+// These fields mirror the shader storage-buffer layout.
 struct alignas(16) SprayParticleSample
 {
     float PositionAge[4]{}, VelocityLife[4]{}, Look[4]{}, Radiance[4]{};
@@ -347,6 +348,11 @@ void main() { imageStore(field, ivec3(gl_GlobalInvocationID), vec4(0)); }
         commands->Barrier(ResourceBarrier::CreateBufferBarrier(m_Scratch, ResourceState::UnorderedAccess,
                                                                 ResourceState::CopySource));
         commands->CopyBuffer(m_Scratch, m_Readback, kSnapshotBytes);
+        commands->Barrier(ResourceBarrier::CreateMemoryBarrier(
+            static_cast<uint64>(PipelineStageMask::Transfer),
+            static_cast<uint64>(PipelineStageMask::Host),
+            static_cast<uint64>(ResourceAccessMask::TransferWrite),
+            static_cast<uint64>(ResourceAccessMask::HostRead)));
         commands->Barrier(ResourceBarrier::CreateBufferBarrier(m_Scratch, ResourceState::CopySource,
                                                                 ResourceState::UnorderedAccess));
         commands->End();

@@ -23,6 +23,7 @@ struct RGTexture;
 namespace GameEngine::Ocean
 {
 
+/// Immutable parameters for one frame-owned simulation step.
 struct OceanCascadeStep
 {
     uint32 WriteIndex = 0;
@@ -30,6 +31,7 @@ struct OceanCascadeStep
     OceanCascadeLayoutGPU PrevCascade{};
 };
 
+/// The frame owns Steps; the simulation owns the textures and must retain them through recording.
 struct OceanCascadeFramePlan
 {
     std::vector<OceanCascadeStep> Steps;
@@ -101,7 +103,9 @@ public:
     // While the coarsest layer is anchored (AnchorCoarsestLevel), SnapToCamera
     // leaves that layer where the anchor put it and snaps only the finer ones.
     bool SnapToCamera(float cameraX, float cameraZ);
+    /// Compute a camera-snapped layout on the render thread without changing recorded history.
     OceanCascadeLayoutGPU ProjectedLayout(float cameraX, float cameraZ) const;
+    /// Publish the layout on the render thread after recording its simulation step.
     void CommitLayout(const OceanCascadeLayoutGPU& layout) { m_Layout = layout; }
 
     // Pin the coarsest LOD layer to a fixed world square that holds the XZ
@@ -148,7 +152,8 @@ private:
     float m_CoarsestAnchor[4] = {};
 };
 
-// The frame owns the immutable step sequence; the persistent arrays retain only recorded layouts.
+/// Render-thread declaration allocates the immutable step sequence in the frame arena.
+/// The persistent arrays retain only recorded layouts; the frame owns the returned plan.
 const OceanCascadeFramePlan* PlanOceanCascadeSteps(
     Rendering::RenderGraph::RGFrame& frame, const OceanCascadeArray (&arrays)[2],
     uint32 committedIndex, uint32 stepCount, float cameraX, float cameraZ);

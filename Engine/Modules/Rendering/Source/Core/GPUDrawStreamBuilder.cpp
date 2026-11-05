@@ -1608,47 +1608,47 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
     bool Ready = false;
     std::vector<PreparedSlice> PreparedSlices;
 
-    bool Prepare(RenderGraph::RGPrepareContext& ctx)
+    bool Prepare(RenderGraph::RGPrepareContext& context)
     {
         Ready = false;
         for (PreparedSlice& slice : PreparedSlices)
             slice = {};
-        IDevice* device = ctx.GetDevice();
-        const BufferHandle visibilityBuffer = ctx.GetBuffer(Visibility);
-        const BufferHandle instanceBuffer = ctx.GetBuffer(Instances);
-        const BufferHandle meshBuffer = ctx.GetBuffer(Meshes);
+        IDevice* device = context.GetDevice();
+        const BufferHandle visibilityBuffer = context.GetBuffer(Visibility);
+        const BufferHandle instanceBuffer = context.GetBuffer(Instances);
+        const BufferHandle meshBuffer = context.GetBuffer(Meshes);
         if (!device || !visibilityBuffer.IsValid() || !instanceBuffer.IsValid()
             || !meshBuffer.IsValid() || !Pipeline.IsValid()
             || (GroupActive && !CompactPipeline.IsValid()))
             return false;
 
-        for (uint32_t s = 0; s < static_cast<uint32_t>(Slices.size()); ++s)
+        for (uint32_t sliceIndex = 0; sliceIndex < static_cast<uint32_t>(Slices.size()); ++sliceIndex)
         {
-            if (!PrepareScatter(device, visibilityBuffer, instanceBuffer, meshBuffer, s))
+            if (!PrepareScatter(device, visibilityBuffer, instanceBuffer, meshBuffer, sliceIndex))
                 return false;
-            PreparedSlice& slice = PreparedSlices[s];
+            PreparedSlice& slice = PreparedSlices[sliceIndex];
             if (!slice.ScatterSet.IsValid())
                 continue;
-            slice.ScatterConstants = MakeScatterConstants(s);
+            slice.ScatterConstants = MakeScatterConstants(sliceIndex);
             if (!GroupActive)
                 continue;
-            if (!PrepareCompact(device, s))
+            if (!PrepareCompact(device, sliceIndex))
                 return false;
-            slice.CompactRegionCount = SliceTailIndex[s] != kNoTailBlock ? 2u : 1u;
+            slice.CompactRegionCount = SliceTailIndex[sliceIndex] != kNoTailBlock ? 2u : 1u;
             for (uint32_t region = 0; region < slice.CompactRegionCount; ++region)
-                slice.CompactConstants[region] = MakeCompactConstants(s, region);
+                slice.CompactConstants[region] = MakeCompactConstants(sliceIndex, region);
         }
         Ready = true;
         return true;
     }
 
-    bool PrepareScatter(IDevice* device, BufferHandle visBuf, BufferHandle instBuf,
-                        BufferHandle meshBuf, uint32_t s)
+    bool PrepareScatter(IDevice* device, BufferHandle visibilityBuffer, BufferHandle instanceBuffer,
+                        BufferHandle meshBuffer, uint32_t sliceIndex)
     {
         const size_t visibilityReadBytes = static_cast<size_t>(InstanceCount) * sizeof(uint32_t);
         const size_t instanceReadBytes = static_cast<size_t>(InstanceCount) * InstanceStride;
         const size_t meshReadBytes = static_cast<size_t>(std::max(MeshTableCount, 1u)) * sizeof(GPUMesh);
-        const SliceRegistration& slice = Slices[s];
+        const SliceRegistration& slice = Slices[sliceIndex];
         const bool sliceIsShadow = slice.table == SliceTable::Shadow;
         // Shadow slices bind the shadow table + route on the depth
         // class (classMode == Shadow); color/main-view + depth prepass
@@ -1659,19 +1659,19 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         if (sliceBatchCount == 0u || sliceTableBytes == 0u)
             return true;
 
-        DescriptorSetDesc setDesc{};
-        setDesc.layout    = MakeScatterDescriptorSetLayout();
-        setDesc.transient = true;
-        setDesc.debugName = "GPUDrawScatter_DS0";
-        DescriptorSetHandle setHandle = device->CreateDescriptorSet(setDesc);
+        DescriptorSetDesc descriptorSetDescription{};
+        descriptorSetDescription.layout    = MakeScatterDescriptorSetLayout();
+        descriptorSetDescription.transient = true;
+        descriptorSetDescription.debugName = "GPUDrawScatter_DS0";
+        DescriptorSetHandle setHandle = device->CreateDescriptorSet(descriptorSetDescription);
         if (!setHandle.IsValid())
             return false;
 
-        device->UpdateStorageBufferBinding(setHandle, 0, visBuf,
+        device->UpdateStorageBufferBinding(setHandle, 0, visibilityBuffer,
                                            slice.visibilityOffsetBytes,
                                            visibilityReadBytes);
-        device->UpdateStorageBufferBinding(setHandle, 1, instBuf, 0, instanceReadBytes);
-        device->UpdateStorageBufferBinding(setHandle, 2, meshBuf, 0, meshReadBytes);
+        device->UpdateStorageBufferBinding(setHandle, 1, instanceBuffer, 0, instanceReadBytes);
+        device->UpdateStorageBufferBinding(setHandle, 2, meshBuffer, 0, meshReadBytes);
         device->UpdateStorageBufferBinding(setHandle, 3, TableRing, sliceTableOffset,
                                            sliceTableBytes);
         device->UpdateStorageBufferBinding(setHandle, 4, Records, 0,
@@ -1686,9 +1686,8 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         device->UpdateStorageBufferBinding(
             setHandle, 7, Stats, 0,
             static_cast<size_t>(kStatsSliceCapacity) * sizeof(ScatterSliceStats));
-        // materialColorClass (P2). Bound on every dispatch so the 9th
-        // layout binding is always valid; only color slices with merge
-        // active actually read it (classMode == Color).
+        // Every dispatch binds the color-class table. Only color slices
+        // with merging enabled read it (classMode == Color).
         device->UpdateStorageBufferBinding(setHandle, 8, TableRing, ClassBindOffset,
                                            ClassBindBytes);
         // meshPoolGroup (draw consolidation). Bound on every dispatch so
@@ -1696,39 +1695,35 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         // meshGroupMode != 0.
         device->UpdateStorageBufferBinding(setHandle, 9, TableRing, GroupBindOffset,
                                            GroupBindBytes);
-        BindHistory(device, setHandle, s);
-        PreparedSlices[s].ScatterSet = setHandle;
+        BindHistory(device, setHandle, sliceIndex);
+        PreparedSlices[sliceIndex].ScatterSet = setHandle;
         return true;
     }
 
-    void BindHistory(IDevice* device, DescriptorSetHandle setHandle, uint32_t s)
+    void BindHistory(IDevice* device, DescriptorSetHandle setHandle, uint32_t sliceIndex)
     {
         // prevLod (dwell band). Either this view's persistent history or
-        // the never-read stand-in; SliceBand[s] is 0 in the latter case,
+        // the never-read stand-in; SliceBand[sliceIndex] is 0 in the latter case,
         // which is what stops the shader touching it.
-        const PrevLodBinding& prevBind = SlicePrevLod[s];
-        if (prevBind.handle.IsValid())
+        const PrevLodBinding& previousLodBinding = SlicePrevLod[sliceIndex];
+        if (previousLodBinding.handle.IsValid())
             device->UpdateStorageBufferBinding(
-                setHandle, 10, prevBind.handle, 0,
+                setHandle, 10, previousLodBinding.handle, 0,
                 static_cast<size_t>(InstanceCount) * sizeof(uint32_t));
         else
             device->UpdateStorageBufferBinding(setHandle, 10, HistoryStandIn, 0,
                                                static_cast<size_t>(kPerInstanceHistoryMinBytes));
-        // lodFade (crossfade state). A crossfading slice binds its view's
-        // persistent buffer; every other slice binds the stand-in, which
-        // is legal precisely because ge_UpdateLodFade returns before its
-        // first read when crossfadeTailActive is 0.
-        const LodFadeBinding& fade = SliceFade[s];
+        // Crossfading slices bind persistent fade state. Other slices bind a
+        // stand-in; ge_UpdateLodFade returns before reading it when crossfadeTailActive is 0.
+        const LodFadeBinding& fade = SliceFade[sliceIndex];
         if (fade.handle.IsValid())
             device->UpdateStorageBufferBinding(setHandle, 11, fade.handle, 0, fade.bytes);
         else
             device->UpdateStorageBufferBinding(setHandle, 11, TableRing, ColorTableOffset,
                                                ColorTableBytes);
-        // prevRendered / currentRendered. Either this view's rotated
-        // pair or the never-read stand-in at both; renderedHistoryEnabled
-        // below moves in lockstep with the choice, so the shader can
-        // never read or write the stand-in.
-        const RenderedHistoryBinding& history = SliceRenderedHistory[s];
+        // Rendered history binds the rotated pair or a stand-in at both bindings.
+        // renderedHistoryEnabled prevents shader access to the stand-in.
+        const RenderedHistoryBinding& history = SliceRenderedHistory[sliceIndex];
         const bool historyBound =
             history.previous.IsValid() && history.current.IsValid();
         if (historyBound)
@@ -1749,63 +1744,61 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         }
     }
 
-    ScatterPushConstants MakeScatterConstants(uint32_t s) const
+    ScatterPushConstants MakeScatterConstants(uint32_t sliceIndex) const
     {
-        const SliceRegistration& slice = Slices[s];
+        const SliceRegistration& slice = Slices[sliceIndex];
         const bool sliceIsShadow = slice.table == SliceTable::Shadow;
         const uint32_t sliceBatchCount = sliceIsShadow ? ShadowBatchCount : ColorBatchCount;
-        const LodFadeBinding& fade = SliceFade[s];
-        const RenderedHistoryBinding& history = SliceRenderedHistory[s];
+        const LodFadeBinding& fade = SliceFade[sliceIndex];
+        const RenderedHistoryBinding& history = SliceRenderedHistory[sliceIndex];
         const bool historyBound = history.previous.IsValid() && history.current.IsValid();
-        ScatterPushConstants pc{};
-        pc.instanceCount   = InstanceCount; // call-captured
-        pc.batchCount      = sliceBatchCount;                 // this slice's table row count
-        pc.cursorBase      = CallCursorBase + SliceCursorOffset[s];
-        pc.recordBase      = CallRecordBase + s * SnapshotRecords;
-        pc.disableVisCheck = slice.disableVisibilityCheck ? 1u : 0u;
-        pc.viewWorldKey    = slice.viewWorldKey;
-        pc.cameraPosX      = slice.lod.cameraPos[0];
-        pc.cameraPosY      = slice.lod.cameraPos[1];
-        pc.cameraPosZ      = slice.lod.cameraPos[2];
-        pc.projScaleY      = slice.lod.projScaleY;
-        pc.lodBiasGlobal   = slice.lod.lodBiasGlobal;
-        pc.forceLod        = slice.lod.forceLod;
-        // Shadow slices always route on the R1.5 depth class; color /
-        // depth-prepass slices route on the color class only when the
-        // merge is active (otherwise raw materialIndex, today's path).
-        pc.classMode = sliceIsShadow ? kClassModeShadow
+        ScatterPushConstants pushConstants{};
+        pushConstants.instanceCount   = InstanceCount;
+        pushConstants.batchCount      = sliceBatchCount;                 // this slice's table row count
+        pushConstants.cursorBase      = CallCursorBase + SliceCursorOffset[sliceIndex];
+        pushConstants.recordBase      = CallRecordBase + sliceIndex * SnapshotRecords;
+        pushConstants.disableVisCheck = slice.disableVisibilityCheck ? 1u : 0u;
+        pushConstants.viewWorldKey    = slice.viewWorldKey;
+        pushConstants.cameraPosX      = slice.lod.cameraPos[0];
+        pushConstants.cameraPosY      = slice.lod.cameraPos[1];
+        pushConstants.cameraPosZ      = slice.lod.cameraPos[2];
+        pushConstants.projScaleY      = slice.lod.projScaleY;
+        pushConstants.lodBiasGlobal   = slice.lod.lodBiasGlobal;
+        pushConstants.forceLod        = slice.lod.forceLod;
+        // Shadow slices use the depth class. Color and depth-prepass slices use
+        // the color class when merging is active, otherwise the material index.
+        pushConstants.classMode = sliceIsShadow ? kClassModeShadow
                                      : (ColorMergeActive ? kClassModeColor : kClassModeOff);
-        // Per-slice stats row (clamped to the scratch row on overflow —
-        // matches the no-binding path in the range-publish loop above).
-        pc.statsBase = std::min(CallStatsBase + s, kStatsSliceCapacity - 1u);
+        // Clamp each slice's stats index to the scratch row on overflow.
+        pushConstants.statsBase = std::min(CallStatsBase + sliceIndex, kStatsSliceCapacity - 1u);
         // Draw consolidation: every slice of a call routes its mesh axis
         // the same way its tables were built — grouped or per-mesh.
-        pc.meshGroupMode = GroupActive ? 1u : 0u;
-        pc.smallCullCoverage = slice.lod.smallCullCoverage;
-        pc.sseThresholdToCoverage      = slice.lod.sseThresholdToCoverage;
-        pc.sseThresholdToCoverageTight = slice.lod.sseThresholdToCoverageTight;
+        pushConstants.meshGroupMode = GroupActive ? 1u : 0u;
+        pushConstants.smallCullCoverage = slice.lod.smallCullCoverage;
+        pushConstants.sseThresholdToCoverage      = slice.lod.sseThresholdToCoverage;
+        pushConstants.sseThresholdToCoverageTight = slice.lod.sseThresholdToCoverageTight;
         // Crossfade: the tail is armed ONLY where a real per-view state
         // buffer is bound, so the shader can never read the stand-in at
         // binding 11 nor claim a tail slot the arena did not reserve.
-        pc.nowSeconds = FrameTimeSeconds;
-        if (fade.handle.IsValid() && SliceTailIndex[s] != kNoTailBlock)
+        pushConstants.nowSeconds = FrameTimeSeconds;
+        if (fade.handle.IsValid() && SliceTailIndex[sliceIndex] != kNoTailBlock)
         {
-            pc.invFadeDuration      = 1.0f / slice.lod.crossfadeDuration;
-            pc.crossfadeTailActive  = 1u;
-            pc.tailCursorBase       = pc.cursorBase + CursorHalfStride;
-            pc.tailRecordBase =
+            pushConstants.invFadeDuration      = 1.0f / slice.lod.crossfadeDuration;
+            pushConstants.crossfadeTailActive  = 1u;
+            pushConstants.tailCursorBase       = pushConstants.cursorBase + CursorHalfStride;
+            pushConstants.tailRecordBase =
                 CallRecordBase
-                + (TailStagingBlockOffset + SliceTailIndex[s]) * SnapshotRecords;
+                + (TailStagingBlockOffset + SliceTailIndex[sliceIndex]) * SnapshotRecords;
         }
-        pc.lodHysteresisBand = SliceBand[s];
-        pc.renderedHistoryEnabled = historyBound ? 1u : 0u;
-        return pc;
+        pushConstants.lodHysteresisBand = SliceBand[sliceIndex];
+        pushConstants.renderedHistoryEnabled = historyBound ? 1u : 0u;
+        return pushConstants;
     }
 
-    bool PrepareCompact(IDevice* device, uint32_t s)
+    bool PrepareCompact(IDevice* device, uint32_t sliceIndex)
     {
         const bool sliceIsShadow =
-            Slices[s].table == SliceTable::Shadow;
+            Slices[sliceIndex].table == SliceTable::Shadow;
         const uint32_t sliceTableOffset =
             sliceIsShadow ? ShadowTableOffset : ColorTableOffset;
         const size_t   sliceTableBytes =
@@ -1818,11 +1811,11 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             return true;
 
         // Head and tail share one set. Failure cancels preparation before either region records.
-        DescriptorSetDesc setDesc{};
-        setDesc.layout    = MakeGroupCompactDescriptorSetLayout();
-        setDesc.transient = true;
-        setDesc.debugName = "GPUDrawGroupCompact_DS0";
-        DescriptorSetHandle setHandle = device->CreateDescriptorSet(setDesc);
+        DescriptorSetDesc descriptorSetDescription{};
+        descriptorSetDescription.layout    = MakeGroupCompactDescriptorSetLayout();
+        descriptorSetDescription.transient = true;
+        descriptorSetDescription.debugName = "GPUDrawGroupCompact_DS0";
+        DescriptorSetHandle setHandle = device->CreateDescriptorSet(descriptorSetDescription);
         if (!setHandle.IsValid())
             return false;
 
@@ -1841,61 +1834,61 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             setHandle, 4, Indirection, 0,
             static_cast<size_t>(CallRecordBase + NeededRecords) * sizeof(uint32_t));
 
-        PreparedSlices[s].CompactSet = setHandle;
+        PreparedSlices[sliceIndex].CompactSet = setHandle;
         return true;
     }
 
-    GroupCompactPushConstants MakeCompactConstants(uint32_t s, uint32_t region) const
+    GroupCompactPushConstants MakeCompactConstants(uint32_t sliceIndex, uint32_t region) const
     {
-        const bool sliceIsShadow = Slices[s].table == SliceTable::Shadow;
+        const bool sliceIsShadow = Slices[sliceIndex].table == SliceTable::Shadow;
         const uint32_t sliceRowCount = sliceIsShadow ? ShadowBatchCount : ColorBatchCount;
         const bool isTail = region != 0u;
         // Head blocks index by slice, tail blocks by the dense
         // tail index — the same addressing the claim reserved.
-        const uint32_t blockIndex = isTail ? SliceTailIndex[s] : s;
+        const uint32_t blockIndex = isTail ? SliceTailIndex[sliceIndex] : sliceIndex;
 
-        const uint32_t sliceCursorBase = CallCursorBase + SliceCursorOffset[s];
-        GroupCompactPushConstants cpc{};
-        cpc.recordCount = SnapshotRecords;
-        cpc.rowCount    = sliceRowCount;
-        cpc.cursorBase  = isTail ? sliceCursorBase + CursorHalfStride
+        const uint32_t sliceCursorBase = CallCursorBase + SliceCursorOffset[sliceIndex];
+        GroupCompactPushConstants compactPushConstants{};
+        compactPushConstants.recordCount = SnapshotRecords;
+        compactPushConstants.rowCount    = sliceRowCount;
+        compactPushConstants.cursorBase  = isTail ? sliceCursorBase + CursorHalfStride
                                  : sliceCursorBase;
-        cpc.countBase   = cpc.cursorBase + sliceRowCount;
-        cpc.srcRecordBase =
+        compactPushConstants.countBase   = compactPushConstants.cursorBase + sliceRowCount;
+        compactPushConstants.srcRecordBase =
             CallRecordBase
             + ((isTail ? TailStagingBlockOffset : 0u) + blockIndex)
                   * SnapshotRecords;
-        cpc.dstRecordBase =
+        compactPushConstants.dstRecordBase =
             CallRecordBase
             + ((isTail ? TailDrawBlockOffset : HeadDrawBlockOffset) + blockIndex)
                   * SnapshotRecords;
-        cpc.pairedRecords = isTail ? 1u : 0u;
-        return cpc;
+        compactPushConstants.pairedRecords = isTail ? 1u : 0u;
+        return compactPushConstants;
     }
 
-    void ResetOutputRanges(RenderGraph::RGContext& ctx)
+    void ResetOutputRanges(RenderGraph::RGContext& context)
     {
         // Each call clears its own cursor and stats ranges. Count emulation also clears records.
-        ctx.Cmd->FillBuffer(Cursors,
+        context.Cmd->FillBuffer(Cursors,
                             static_cast<size_t>(CallCursorBase) * sizeof(uint32_t),
                             static_cast<size_t>(NeededCursors) * sizeof(uint32_t), 0u);
         if (CallStatsBase < kStatsSliceCapacity)
         {
             const uint32_t statsRows = std::min(static_cast<uint32_t>(Slices.size()),
                                                 kStatsSliceCapacity - CallStatsBase);
-            ctx.Cmd->FillBuffer(Stats,
+            context.Cmd->FillBuffer(Stats,
                                 static_cast<size_t>(CallStatsBase) * sizeof(ScatterSliceStats),
                                 static_cast<size_t>(statsRows) * sizeof(ScatterSliceStats), 0u);
         }
         if (ClearRecordRange)
         {
-            ctx.Cmd->FillBuffer(Records,
+            context.Cmd->FillBuffer(Records,
                                 static_cast<size_t>(CallRecordBase) * kDrawCommandStride,
                                 static_cast<size_t>(NeededRecords) * kDrawCommandStride, 0u);
         }
     }
 
-    void ResetFadeHistory(RenderGraph::RGContext& ctx)
+    void ResetFadeHistory(RenderGraph::RGContext& context)
     {
         // The sentinel adopts the first visible LOD; zero would start a fade from LOD0.
         for (const LodFadeBinding& fade : SliceFade)
@@ -1904,7 +1897,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
                 continue;
             if (fade.clearAll)
             {
-                ctx.Cmd->FillBuffer(fade.handle, 0, fade.bytes, kLodNoHistory);
+                context.Cmd->FillBuffer(fade.handle, 0, fade.bytes, kLodNoHistory);
                 continue;
             }
             for (const auto& [startElement, countElements] : fade.resetRuns)
@@ -1912,41 +1905,41 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
                 const size_t offset =
                     static_cast<size_t>(startElement) * kLodFadeStateBytes;
                 if (offset >= fade.bytes)
-                    continue; // trimmed past the buffer; the next grow re-zeroes it
+                    continue; // Buffer growth initializes the truncated range.
                 const size_t bytes =
                     std::min(static_cast<size_t>(countElements) * kLodFadeStateBytes,
                              fade.bytes - offset);
-                ctx.Cmd->FillBuffer(fade.handle, offset, bytes, kLodNoHistory);
+                context.Cmd->FillBuffer(fade.handle, offset, bytes, kLodNoHistory);
             }
         }
     }
 
-    void ResetDwellHistory(RenderGraph::RGContext& ctx)
+    void ResetDwellHistory(RenderGraph::RGContext& context)
     {
         // Recycled slots must not inherit the previous tenant's held LOD.
-        for (const PrevLodBinding& prev : SlicePrevLod)
+        for (const PrevLodBinding& previousLod : SlicePrevLod)
         {
-            if (!prev.handle.IsValid())
+            if (!previousLod.handle.IsValid())
                 continue;
-            if (prev.clearAll)
+            if (previousLod.clearAll)
             {
-                ctx.Cmd->FillBuffer(prev.handle, 0, prev.bytes, kLodNoHistory);
+                context.Cmd->FillBuffer(previousLod.handle, 0, previousLod.bytes, kLodNoHistory);
                 continue;
             }
-            for (const auto& [startElement, countElements] : prev.resetRuns)
+            for (const auto& [startElement, countElements] : previousLod.resetRuns)
             {
                 const size_t offset = static_cast<size_t>(startElement) * sizeof(uint32_t);
-                if (offset >= prev.bytes)
-                    continue; // trimmed past the buffer; the next grow refills it
+                if (offset >= previousLod.bytes)
+                    continue; // Buffer growth initializes the truncated range.
                 const size_t bytes =
                     std::min(static_cast<size_t>(countElements) * sizeof(uint32_t),
-                             prev.bytes - offset);
-                ctx.Cmd->FillBuffer(prev.handle, offset, bytes, kLodNoHistory);
+                             previousLod.bytes - offset);
+                context.Cmd->FillBuffer(previousLod.handle, offset, bytes, kLodNoHistory);
             }
         }
     }
 
-    void ResetRenderedHistory(RenderGraph::RGContext& ctx)
+    void ResetRenderedHistory(RenderGraph::RGContext& context)
     {
         // Clear current once per frame and invalidate previous entries whose tenant changed.
         for (const RenderedHistoryBinding& history : SliceRenderedHistory)
@@ -1954,36 +1947,36 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             if (!history.current.IsValid())
                 continue;
             if (history.clearCurrent)
-                ctx.Cmd->FillBuffer(history.current, 0, history.bytes, kLodNoHistory);
+                context.Cmd->FillBuffer(history.current, 0, history.bytes, kLodNoHistory);
             if (history.clearPreviousAll)
             {
-                ctx.Cmd->FillBuffer(history.previous, 0, history.bytes, kLodNoHistory);
+                context.Cmd->FillBuffer(history.previous, 0, history.bytes, kLodNoHistory);
                 continue;
             }
             for (const auto& [startElement, countElements] : history.previousResetRuns)
             {
                 const size_t offset = static_cast<size_t>(startElement) * sizeof(uint32_t);
                 if (offset >= history.bytes)
-                    continue; // trimmed past the buffer; the next grow refills it
+                    continue; // Buffer growth initializes the truncated range.
                 const size_t bytes =
                     std::min(static_cast<size_t>(countElements) * sizeof(uint32_t),
                              history.bytes - offset);
-                ctx.Cmd->FillBuffer(history.previous, offset, bytes, kLodNoHistory);
+                context.Cmd->FillBuffer(history.previous, offset, bytes, kLodNoHistory);
             }
         }
     }
 
-    void RecordScatter(RenderGraph::RGContext& ctx) const
+    void RecordScatter(RenderGraph::RGContext& context) const
     {
-        ctx.Cmd->SetPipeline(Pipeline);
+        context.Cmd->SetPipeline(Pipeline);
         const uint32_t groupCount = (InstanceCount + 63u) / 64u;
         for (const PreparedSlice& slice : PreparedSlices)
         {
             if (!slice.ScatterSet.IsValid())
                 continue;
-            ctx.Cmd->SetPushConstants(slice.ScatterConstants);
-            ctx.Cmd->BindDescriptorSet(0, slice.ScatterSet, Pipeline);
-            ctx.Cmd->Dispatch(groupCount, 1, 1);
+            context.Cmd->SetPushConstants(slice.ScatterConstants);
+            context.Cmd->BindDescriptorSet(0, slice.ScatterSet, Pipeline);
+            context.Cmd->Dispatch(groupCount, 1, 1);
         }
     }
 
@@ -1996,17 +1989,17 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
                 history.recorded->store(true, std::memory_order_release);
     }
 
-    void RecordCompact(RenderGraph::RGContext& ctx) const
+    void RecordCompact(RenderGraph::RGContext& context) const
     {
         if (!GroupActive)
             return;
-        ctx.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
+        context.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
             static_cast<uint64_t>(PipelineStageMask::ComputeShader),
             static_cast<uint64_t>(PipelineStageMask::ComputeShader),
             static_cast<uint64_t>(ResourceAccessMask::ShaderWrite),
             static_cast<uint64_t>(ResourceAccessMask::ShaderRead)
                 | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)));
-        ctx.Cmd->SetPipeline(CompactPipeline);
+        context.Cmd->SetPipeline(CompactPipeline);
         const uint32_t groupCount = (SnapshotRecords + 63u) / 64u;
         for (const PreparedSlice& slice : PreparedSlices)
         {
@@ -2014,22 +2007,22 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
                 continue;
             for (uint32_t region = 0; region < slice.CompactRegionCount; ++region)
             {
-                ctx.Cmd->SetPushConstants(slice.CompactConstants[region]);
-                ctx.Cmd->BindDescriptorSet(0, slice.CompactSet, CompactPipeline);
-                ctx.Cmd->Dispatch(groupCount, 1, 1);
+                context.Cmd->SetPushConstants(slice.CompactConstants[region]);
+                context.Cmd->BindDescriptorSet(0, slice.CompactSet, CompactPipeline);
+                context.Cmd->Dispatch(groupCount, 1, 1);
             }
         }
     }
 
-    void CopyReadbacks(RenderGraph::RGContext& ctx)
+    void CopyReadbacks(RenderGraph::RGContext& context)
     {
         // The next BeginArenaFrame reduces these completed cursor and stats ranges.
-        ctx.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
+        context.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
             static_cast<uint64_t>(PipelineStageMask::ComputeShader),
             static_cast<uint64_t>(PipelineStageMask::Transfer),
             static_cast<uint64_t>(ResourceAccessMask::ShaderWrite),
             static_cast<uint64_t>(ResourceAccessMask::TransferRead)));
-        ctx.Cmd->CopyBuffer(Cursors, CursorReadback,
+        context.Cmd->CopyBuffer(Cursors, CursorReadback,
                             static_cast<size_t>(NeededCursors) * sizeof(uint32_t),
                             static_cast<size_t>(CallCursorBase) * sizeof(uint32_t),
                             static_cast<size_t>(CallCursorBase) * sizeof(uint32_t));
@@ -2038,32 +2031,32 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         {
             const uint32_t statsRows =
                 std::min(static_cast<uint32_t>(Slices.size()), kStatsSliceCapacity - CallStatsBase);
-            ctx.Cmd->CopyBuffer(Stats, StatsReadback,
+            context.Cmd->CopyBuffer(Stats, StatsReadback,
                                 static_cast<size_t>(statsRows) * sizeof(ScatterSliceStats),
                                 static_cast<size_t>(CallStatsBase) * sizeof(ScatterSliceStats),
                                 static_cast<size_t>(CallStatsBase) * sizeof(ScatterSliceStats));
         }
     }
 
-    void Record(RenderGraph::RGContext& ctx)
+    void Record(RenderGraph::RGContext& context)
     {
         if (!Ready)
             return;
-        ResetOutputRanges(ctx);
-        ResetFadeHistory(ctx);
-        ResetDwellHistory(ctx);
-        ResetRenderedHistory(ctx);
-        ctx.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
+        ResetOutputRanges(context);
+        ResetFadeHistory(context);
+        ResetDwellHistory(context);
+        ResetRenderedHistory(context);
+        context.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
             static_cast<uint64_t>(PipelineStageMask::Transfer),
             static_cast<uint64_t>(PipelineStageMask::ComputeShader),
             static_cast<uint64_t>(ResourceAccessMask::TransferWrite),
             static_cast<uint64_t>(ResourceAccessMask::ShaderRead)
                 | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)));
-        RecordScatter(ctx);
+        RecordScatter(context);
         CommitRenderedHistory();
-        RecordCompact(ctx);
-        CopyReadbacks(ctx);
-        ctx.Cmd->Barrier(CreateStreamReadyBarrier());
+        RecordCompact(context);
+        CopyReadbacks(context);
+        context.Cmd->Barrier(CreateStreamReadyBarrier());
     }
 };
 

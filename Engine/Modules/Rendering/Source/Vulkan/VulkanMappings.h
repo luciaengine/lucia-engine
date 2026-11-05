@@ -3,6 +3,7 @@
 #include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
+
 #include <vulkan/vulkan.h>
 
 namespace GameEngine
@@ -14,17 +15,17 @@ namespace VulkanMappings
 {
 
 // Translate engine-level PipelineStageMask to Vulkan flags
-inline VkPipelineStageFlags TranslatePipelineStageMask(uint64_t maskVal)
+inline VkPipelineStageFlags TranslatePipelineStageMask(uint64_t maskValue)
 {
-    if (maskVal == 0)
+    if (maskValue == 0)
         return static_cast<VkPipelineStageFlags>(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 
     VkPipelineStageFlags flags = 0;
     using StageMask = PipelineStageMask;
 
     // Note: Use explicit casts to check bits against the engine-level uint64_t
-    auto has = [&](StageMask bit)
-    { return (maskVal & static_cast<uint64_t>(bit)) != 0; };
+    const auto has = [maskValue](StageMask bit)
+    { return (maskValue & static_cast<uint64_t>(bit)) != 0; };
 
     if (has(StageMask::GraphicsColor))
         flags |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -40,6 +41,8 @@ inline VkPipelineStageFlags TranslatePipelineStageMask(uint64_t maskVal)
         flags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
     if (has(StageMask::DrawIndirect))
         flags |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+    if (has(StageMask::Host))
+        flags |= VK_PIPELINE_STAGE_HOST_BIT;
 
     return flags != 0
                ? flags
@@ -47,16 +50,16 @@ inline VkPipelineStageFlags TranslatePipelineStageMask(uint64_t maskVal)
 }
 
 // Translate engine-level ResourceAccessMask to Vulkan flags
-inline VkAccessFlags TranslateResourceAccessMask(uint64_t maskVal)
+inline VkAccessFlags TranslateResourceAccessMask(uint64_t maskValue)
 {
-    if (maskVal == 0)
+    if (maskValue == 0)
         return 0;
 
     VkAccessFlags flags = 0;
     using AccessMask = ResourceAccessMask;
 
-    auto has = [&](AccessMask bit)
-    { return (maskVal & static_cast<uint64_t>(bit)) != 0; };
+    const auto has = [maskValue](AccessMask bit)
+    { return (maskValue & static_cast<uint64_t>(bit)) != 0; };
 
     if (has(AccessMask::ColorAttachmentRead))
         flags |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
@@ -80,6 +83,8 @@ inline VkAccessFlags TranslateResourceAccessMask(uint64_t maskVal)
         flags |= VK_ACCESS_TRANSFER_WRITE_BIT;
     if (has(AccessMask::IndirectCommandRead))
         flags |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    if (has(AccessMask::HostRead))
+        flags |= VK_ACCESS_HOST_READ_BIT;
 
     return flags;
 }

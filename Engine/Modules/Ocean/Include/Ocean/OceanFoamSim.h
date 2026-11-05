@@ -68,8 +68,11 @@ public:
     ::GameEngine::Rendering::RenderGraph::RGTexture ImportPrevRG(
         ::GameEngine::Rendering::RenderGraph::RGFrame& frame, uint32 writeIndex) const;
 
+    /// Render-thread declaration; the frame owns the plan until it resets or is destroyed.
+    /// Call ForgetFrame before destroying the stream; planning does not commit history.
     const OceanCascadeFramePlan& PlanSubsteps(Rendering::RenderGraph::RGFrame& frame,
                                              float cameraX, float cameraZ);
+    /// Render-thread retirement releases borrowed plan pointers and preserves recorded history.
     void ForgetFrame(const Rendering::RenderGraph::RGFrame& frame)
     {
         if (m_PlannedFrame.Frame == &frame)
@@ -146,9 +149,11 @@ public:
     /// Declare this ID with RGPassBuilder::UsePipeline before preparation.
     ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipe; }
 
+    /// Render-thread preparation borrows this frame's plan and upload; it does not consume steps.
     OceanPreparedSimulationDispatch PrepareDispatch(Rendering::IDevice* device,
         Rendering::BufferHandle paramsBuffer, uint64 paramsOffset,
         const OceanCascadeFramePlan& plan, uint32 substepIndex) const;
+    /// Record on the render thread in substep order; stale or consumed plans do not dispatch.
     void RecordDispatch(Rendering::CommandList* commands,
                         const OceanPreparedSimulationDispatch& dispatch);
 

@@ -8,10 +8,11 @@
 #include "ECS/World.h"
 #include "ECS/ECSTemplates.h"
 
-#include <gtest/gtest.h>
-#include <memory_resource>
 #include <chrono>
 #include <filesystem>
+#include <memory_resource>
+
+#include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 using namespace GameEngine;
@@ -42,28 +43,28 @@ TEST(RenderSorting, SameMaterialLayerAndOrderOverrideDepth)
 
 TEST(RenderSorting, MeshOnlyAlternatingMaterialsStayInDepthOrderAtLargeCounts)
 {
-    constexpr uint32_t count = 4097;
-    std::vector<SortedTransparentRecord> records(count);
-    std::vector<RenderSortKey> keys(count);
-    for (uint32_t i = 0; i < count; ++i)
+    constexpr uint32_t kCount = 4097;
+    std::vector<SortedTransparentRecord> records(kCount);
+    std::vector<RenderSortKey> keys(kCount);
+    for (uint32_t recordIndex = 0; recordIndex < kCount; ++recordIndex)
     {
-        records[i].RunGroup = i % 2;
-        records[i].ViewDepth = static_cast<float>(i);
-        keys[i].Depth = records[i].ViewDepth;
+        records[recordIndex].RunGroup = recordIndex % 2;
+        records[recordIndex].ViewDepth = static_cast<float>(recordIndex);
+        keys[recordIndex].Depth = records[recordIndex].ViewDepth;
     }
     SortedTransparentRunPartition partition;
     std::pmr::monotonic_buffer_resource scratch;
-    std::vector<ECS::EntityHandle> entities(count);
+    std::vector<ECS::EntityHandle> entities(kCount);
     std::vector<uint32> order;
     std::vector<TransparentCompositionSlot> slots;
     BuildTransparentComposition(records, keys, entities, {}, scratch, partition, order, slots, false);
-    ASSERT_EQ(partition.RunCount.size(), count);
-    for (uint32_t i = 0; i < count; ++i)
+    ASSERT_EQ(partition.RunCount.size(), kCount);
+    for (uint32_t recordIndex = 0; recordIndex < kCount; ++recordIndex)
     {
-        EXPECT_EQ(order[i], count - 1 - i);
-        EXPECT_EQ(partition.GroupOfSlot[i], (count - 1 - i) % 2);
-        EXPECT_EQ(partition.RunStart[i], i);
-        EXPECT_EQ(partition.RunCount[i], 1u);
+        EXPECT_EQ(order[recordIndex], kCount - 1 - recordIndex);
+        EXPECT_EQ(partition.GroupOfSlot[recordIndex], (kCount - 1 - recordIndex) % 2);
+        EXPECT_EQ(partition.RunStart[recordIndex], recordIndex);
+        EXPECT_EQ(partition.RunCount[recordIndex], 1u);
     }
 }
 

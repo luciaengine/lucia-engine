@@ -12,6 +12,7 @@
 namespace GameEngine::Rendering::RenderGraph
 {
 
+/// Controls whether a new write may replace an unread result.
 enum class RGReadbackRetention : uint8_t
 {
     SupersedeUnread,
@@ -32,6 +33,8 @@ enum class RGReadbackRetention : uint8_t
 // valid — sparse, bursty, or quiescent-with-gaps — there is no warmup window
 // and nothing to reset. Size the ring to frames-in-flight + 2 so a reused
 // slot's previous write has always retired.
+/// The owner serializes reservation, recording, submission and mapping calls.
+/// Mapped data belongs to the ring and is valid until Unmap or Destroy.
 template <class Payload>
 class RGReadbackRing
 {
@@ -130,9 +133,9 @@ class RGReadbackRing
     uint32_t Count() const { return m_Count; }
     uint64_t SlotBytes() const { return m_SlotBytes; }
 
-    // Register a promised write. The caller must record it in this frame.
-    // SupersedeUnread permits slot reuse; PreserveUnread applies backpressure.
-    // ReserveWrite instead requires explicit confirmation after recording.
+    /// Registers a write that the caller guarantees will record in this frame.
+    /// SupersedeUnread permits slot reuse; PreserveUnread applies backpressure.
+    /// Use ReserveWrite when preparation can succeed without recording the write.
     BufferHandle BeginWrite(const RGFrame& frame, const Payload& payload)
     {
         uint64_t reservation = 0;
@@ -142,9 +145,12 @@ class RGReadbackRing
         return output;
     }
 
-    // A prepared slot is publishable only after its dispatch or copy records.
+    /// Reserves a slot without publishing it; returns an invalid handle when full.
+    /// Confirm its reservation with MarkRecorded only after the GPU write records.
     BufferHandle ReserveWrite(const RGFrame& frame, const Payload& payload, uint64_t& reservation);
 
+    /// Confirms the matching reservation after its dispatch or copy records.
+    /// Returns false for a canceled, replaced or submitted reservation.
     bool MarkRecorded(BufferHandle output, uint64_t reservation)
     {
         for (auto& pending : m_Pending)
@@ -159,6 +165,7 @@ class RGReadbackRing
         return false;
     }
 
+    /// Tests whether this frame incarnation still owns the unsubmitted reservation.
     bool HasPendingWrite(const RGFrame& frame, BufferHandle output, uint64_t reservation) const
     {
         for (const auto& pending : m_Pending)
@@ -169,9 +176,10 @@ class RGReadbackRing
         return false;
     }
 
+    /// Cancels this frame incarnation's reservations without discarding submitted results.
     void CancelUnsubmitted(const RGFrame& frame)
     {
-        std::erase_if(m_Pending, [&](const PendingSlot& pending)
+        std::erase_if(m_Pending, [&frame](const PendingSlot& pending)
         {
             return !pending.Stamped && pending.FrameKey == &frame &&
                    pending.FrameIndex == frame.FrameIndex();
@@ -257,7 +265,8 @@ class RGReadbackRing
         return MapReadySlot(device, readyIdx, outPayload, true);
     }
 
-    // Token-addressed results retain every ready entry until it is consumed.
+    /// Maps and consumes the oldest completed result, preserving other entries.
+    /// The caller must Unmap before requesting another map or reusing the slot.
     const void* MapOldestReady(IDevice* device, Payload* outPayload)
     {
         if (!device || m_Count == 0)
@@ -331,7 +340,7 @@ BufferHandle RGReadbackRing<Payload>::ReserveWrite(const RGFrame& frame, const P
         return {};
     if (m_Retention == RGReadbackRetention::PreserveUnread)
     {
-        std::erase_if(m_Pending, [&](const PendingSlot& pending)
+        std::erase_if(m_Pending, [&frame](const PendingSlot& pending)
         {
             return !pending.Stamped && pending.FrameKey == &frame &&
                    pending.FrameIndex != frame.FrameIndex();

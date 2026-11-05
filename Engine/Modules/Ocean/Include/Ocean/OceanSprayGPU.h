@@ -30,7 +30,9 @@ class OceanSprayGPU
         return m_Surface.Spray;
     }
     void RebaseOrigin(float x, float y, float z);
+    /// Render-thread declaration retains a frame-owned history lease until graph retirement.
     bool DeclareForView(Engine::Renderer::Pipeline::ViewDeclare &d, OceanRenderFeature &ocean);
+    /// Render-thread retirement clears borrowed plans while retaining submitted history.
     void ForgetFrame(const Rendering::RenderGraph::RGFrame& frame);
 
   private:

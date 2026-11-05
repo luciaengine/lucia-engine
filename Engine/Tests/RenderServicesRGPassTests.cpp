@@ -1,5 +1,4 @@
 #include "Engine/Rendering/Pipeline/Nodes/WorldRenderNode.h"
-#include <gtest/gtest.h>
 
 #include "Engine/Rendering/DDGIProbeFeature.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -18,19 +17,21 @@
 #include "Rendering/CameraTypes.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "AssetCore/GUID.h"
+#include "Mathematics/Matrix4x4.h"
 #include "Types/StringId.h"
+#include "PerFrameWritePoolRotation.h"
+#include "TestDeviceHelper.h"
 
 #include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include <gtest/gtest.h>
+
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
 using namespace GameEngine::Engine::Renderer;
-
-#include "PerFrameWritePoolRotation.h"
-#include "TestDeviceHelper.h"
 
 // Slice-3 pins for the RenderGraph pass arms (AddWorldPassForView /
 // AddWorldDepthPrepassForView / AddShadowCascadePassForView /
@@ -652,29 +653,83 @@ TEST(RenderServicesRGPassTests, ShadowCascadesShareOnePoolImportWithTheWorldPass
     f.Down();
 }
 
+namespace
+{
+class CascadeFitFrame
+{
+  public:
+    CascadeFitFrame(RsFixture& fixture, RenderGraph::RGFrame& frame,
+                    ShadowMapRenderFeature& feature, uint32_t resolution)
+        : m_Fixture(fixture), m_Frame(frame), m_Feature(feature), m_Resolution(resolution)
+    {
+    }
+
+    RenderGraph::RGPass Declare(uint64_t frameIndex, const CascadeFrameData& fit)
+    {
+        m_Frame.BeginFrame(frameIndex);
+        m_Fixture.Rs.BeginWorldDrawFrame();
+        m_Fixture.Rs.BuildWorldBatchKeys();
+        m_Feature.CacheFrameData(m_Fixture.View, fit);
+        auto context = m_Fixture.Rs.MakeFeatureDeclareContext(
+            m_Frame, m_Fixture.View, 1, m_Resolution, nullptr, {});
+        // A cleared cascade without contributors can become cacheable.
+        context.ViewNeedsCascades = true;
+        return m_Feature.DeclareCascadePass(m_Frame, m_Fixture.Rs, context, 0, "AbortFit.Cascade");
+    }
+
+    ShadowDataGPU BuildSamplingData(const CascadeFrameData& fit)
+    {
+        ShadowDataGPU data{};
+        m_Feature.BuildShadowDataGPU(fit, m_Fixture.View, m_Fixture.Rs, m_Frame, 0, data);
+        return data;
+    }
+
+    void Execute()
+    {
+        const auto color = m_Frame.ImportPersistentTexture("AbortFit.Anchor", ColorTargetDesc());
+        m_Frame.AddPass("AbortFit.Anchor", 0,
+                       [color](RenderGraph::RGPassBuilder& pass)
+                       { pass.AttachColor(0, color, {.Load = RenderGraph::RGLoadOp::Clear}); },
+                       [](RenderGraph::RGContext&) {});
+        m_Frame.MarkOutput(color);
+        m_Frame.Execute();
+        m_Fixture.Device->WaitForIdle();
+    }
+
+    void ExpectSamplingFit(const ShadowDataGPU& data, const CascadeFrameData& expected) const
+    {
+        EXPECT_EQ(std::memcmp(data.shadowVP[0], expected.LightVPRel[0].Data(), sizeof(data.shadowVP[0])), 0);
+        EXPECT_FLOAT_EQ(data.shadowPcssCascades[0][0], 2 * expected.OrthoHalfExtent[0] / m_Resolution);
+        EXPECT_FLOAT_EQ(data.shadowPcssCascades[0][1], expected.DepthSpan[0]);
+    }
+
+  private:
+    RsFixture& m_Fixture;
+    RenderGraph::RGFrame& m_Frame;
+    ShadowMapRenderFeature& m_Feature;
+    uint32_t m_Resolution;
+};
+} // namespace
+
 TEST(RenderServicesRGPassTests, AbortedPreparationKeepsTheRenderedCascadeFit)
 {
-    RsFixture f;
-    if (!f.Up())
+    RsFixture fixture;
+    if (!fixture.Up())
         GTEST_SKIP() << "No Vulkan device available";
     {
-        FramePools pools(f.Device.get());
-        RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
-        auto& feature = f.Rs.EnsureFeature<ShadowMapRenderFeature>();
-        CascadedShadowConfig cfg{};
-        cfg.NumCascades = 1;
-        cfg.Resolution = 128;
-        ASSERT_TRUE(feature.Initialize(f.Device.get(), cfg));
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
+        CascadedShadowConfig config{};
+        config.NumCascades = 1;
+        config.Resolution = 128;
+        ASSERT_TRUE(feature.Initialize(fixture.Device.get(), config));
         feature.SetMotionCap(0);
 
         CascadeFrameData fitA{};
         fitA.NumCascades = 1;
-        for (uint32_t i = 0; i < 16; ++i)
-        {
-            const float value = i % 5 == 0 ? 1.0f : 0.0f;
-            fitA.LightVP[0].Data()[i] = value;
-            fitA.LightVPRel[0].Data()[i] = value;
-        }
+        fitA.LightVP[0] = Mathematics::Matrix4x4::Identity();
+        fitA.LightVPRel[0] = Mathematics::Matrix4x4::Identity();
         fitA.OrthoHalfExtent[0] = 16.0f;
         fitA.DepthSpan[0] = 32.0f;
         CascadeFrameData fitB = fitA;
@@ -683,49 +738,18 @@ TEST(RenderServicesRGPassTests, AbortedPreparationKeepsTheRenderedCascadeFit)
         fitB.OrthoHalfExtent[0] = 24.0f;
         fitB.DepthSpan[0] = 48.0f;
 
-        auto declare = [&](uint64_t index, const CascadeFrameData& fit)
-        {
-            frame.BeginFrame(index);
-            f.Rs.BeginWorldDrawFrame();
-            f.Rs.BuildWorldBatchKeys();
-            feature.CacheFrameData(f.View, fit);
-            auto ctx = f.Rs.MakeFeatureDeclareContext(frame, f.View, 1, cfg.Resolution, nullptr, {});
-            // No contributors: the empty but cleared cascade can become cacheable.
-            ctx.ViewNeedsCascades = true;
-            return feature.DeclareCascadePass(frame, f.Rs, ctx, 0, "AbortFit.Cascade");
-        };
-        auto samplingFit = [&](const CascadeFrameData& fit)
-        {
-            ShadowDataGPU data{};
-            feature.BuildShadowDataGPU(fit, f.View, f.Rs, frame, 0, data);
-            return data;
-        };
-        auto execute = [&]()
-        {
-            const auto color = frame.ImportPersistentTexture("AbortFit.Anchor", ColorTargetDesc());
-            frame.AddPass("AbortFit.Anchor", 0,
-                          [&](RenderGraph::RGPassBuilder& pass)
-                          { pass.AttachColor(0, color, {.Load = RenderGraph::RGLoadOp::Clear}); },
-                          [](RenderGraph::RGContext&) {});
-            frame.MarkOutput(color);
-            frame.Execute();
-            f.Device->WaitForIdle();
-        };
-        auto expectFit = [&](const ShadowDataGPU& data, const CascadeFrameData& expected)
-        {
-            EXPECT_EQ(std::memcmp(data.shadowVP[0], expected.LightVPRel[0].Data(), 16 * sizeof(float)), 0);
-            EXPECT_FLOAT_EQ(data.shadowPcssCascades[0][0], 2 * expected.OrthoHalfExtent[0] / cfg.Resolution);
-            EXPECT_FLOAT_EQ(data.shadowPcssCascades[0][1], expected.DepthSpan[0]);
-        };
+        CascadeFitFrame cascadeFrame(fixture, frame, feature, config.Resolution);
 
-        ASSERT_TRUE(declare(0, fitA).IsValid());
-        execute();
+        ASSERT_TRUE(cascadeFrame.Declare(0, fitA).IsValid());
+        cascadeFrame.Execute();
         EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
-        ASSERT_TRUE(declare(1, fitA).IsValid());
-        execute(); // Two identical renders settle the cull/content cache.
+        ASSERT_TRUE(cascadeFrame.Declare(1, fitA).IsValid());
+        // Two identical renders settle the cull/content cache.
+        cascadeFrame.Execute();
 
-        ASSERT_TRUE(declare(2, fitB).IsValid());
-        expectFit(samplingFit(fitB), fitB); // Same-frame receivers need the scheduled fit.
+        ASSERT_TRUE(cascadeFrame.Declare(2, fitB).IsValid());
+        // Same-frame receivers need the scheduled fit.
+        cascadeFrame.ExpectSamplingFit(cascadeFrame.BuildSamplingData(fitB), fitB);
         frame.AddPass("AbortFit.FailPreparation", 0,
                       [](RenderGraph::RGPassBuilder& pass)
                       {
@@ -733,15 +757,16 @@ TEST(RenderServicesRGPassTests, AbortedPreparationKeepsTheRenderedCascadeFit)
                           pass.Prepare([](RenderGraph::RGPrepareContext&) { return false; });
                       }, [](RenderGraph::RGContext&) {});
         const auto submitted = frame.SubmittedFrameCount();
-        execute();
+        cascadeFrame.Execute();
         EXPECT_EQ(frame.SubmittedFrameCount(), submitted);
         EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
 
-        ASSERT_FALSE(declare(3, fitA).IsValid()) << "the settled A layer must be reused";
-        expectFit(samplingFit(fitA), fitA); // Aborted B must not replace retained A.
-        execute();
+        ASSERT_FALSE(cascadeFrame.Declare(3, fitA).IsValid()) << "the settled A layer must be reused";
+        // Aborted B must not replace retained A.
+        cascadeFrame.ExpectSamplingFit(cascadeFrame.BuildSamplingData(fitA), fitA);
+        cascadeFrame.Execute();
     }
-    f.Down();
+    fixture.Down();
 }
 
 // F3 (slice-3-final review) — the F1 UAF's REAL trigger: a pooled-physical

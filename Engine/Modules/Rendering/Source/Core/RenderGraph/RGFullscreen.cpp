@@ -116,6 +116,22 @@ void RecordFullscreenPass(RGContext& context, const FullscreenPassData& data)
     commands->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
     commands->Draw(3, 1);
 }
+
+void DeclareFullscreenPass(RGPassBuilder& pass, FullscreenPassData& data,
+                           RGTexture target, const RGAttachmentOps& attachmentOps)
+{
+    for (uint32_t index = 0; index < data.TextureCount; ++index)
+        if (data.Textures[index].Texture.IsValid())
+            pass.Read(data.Textures[index].Texture, RGTextureRead::Sampled);
+    for (uint32_t index = 0; index < data.BufferCount; ++index)
+    {
+        const RGFullscreenBufferInput& buffer = data.Buffers[index];
+        if (buffer.Declare.IsValid())
+            pass.Read(buffer.Declare, buffer.IsStorage ? RGBufferRead::Storage : RGBufferRead::Uniform);
+    }
+    pass.AttachColor(0, target, attachmentOps);
+    pass.Prepare([data = &data](RGPrepareContext& context) { return PrepareFullscreenPass(context, *data); });
+}
 } // namespace
 
 RGPass AddFullscreenPass(RGFrame& frame, const RGFullscreenDesc& desc)
@@ -137,20 +153,7 @@ RGPass AddFullscreenPass(RGFrame& frame, const RGFullscreenDesc& desc)
 
     return frame.AddPass(
         desc.Name, desc.Phase,
-        [&](RGPassBuilder& pass)
-        {
-            for (uint32_t index = 0; index < data->TextureCount; ++index)
-                if (data->Textures[index].Texture.IsValid())
-                    pass.Read(data->Textures[index].Texture, RGTextureRead::Sampled);
-            for (uint32_t index = 0; index < data->BufferCount; ++index)
-            {
-                const RGFullscreenBufferInput& buffer = data->Buffers[index];
-                if (buffer.Declare.IsValid())
-                    pass.Read(buffer.Declare, buffer.IsStorage ? RGBufferRead::Storage : RGBufferRead::Uniform);
-            }
-            pass.AttachColor(0, desc.Target, desc.Ops);
-            pass.Prepare([data](RGPrepareContext& context) { return PrepareFullscreenPass(context, *data); });
-        },
+        [data, &desc](RGPassBuilder& pass) { DeclareFullscreenPass(pass, *data, desc.Target, desc.Ops); },
         [data](RGContext& context) { RecordFullscreenPass(context, *data); });
 }
 

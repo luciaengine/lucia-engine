@@ -7,9 +7,9 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/RenderGraph/RGReadbackRing.h"
 
-#include <gtest/gtest.h>
-
 #include <cstring>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine::Rendering;
 using namespace GameEngine::Rendering::RenderGraph;

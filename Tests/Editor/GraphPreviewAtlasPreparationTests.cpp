@@ -14,20 +14,17 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
-#include "Rendering/Core/RenderGraph/RGResourcePool.h"
-#include "Rendering/Core/RenderGraph/RGTransientPool.h"
-#include "Rendering/Core/RenderGraph/RGUploadRing.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/ShaderCompileService.h"
 #include "Rendering/Materials/ShaderLayoutShape.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "StagedTestPaths.h"
 #include "TestTempDir.h"
+#include "Types/Color.h"
+#include "UIRgTestHarness.h"
 #include "UI/Parsers/XMLParser.h"
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/UIManager.h"
-
-#include <gtest/gtest.h>
 
 #include <array>
 #include <cstring>
@@ -38,6 +35,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 using namespace GameEngine::Editor;
@@ -79,7 +78,7 @@ class ScopedStagedShaderHooks
     Rendering::Utils::ShaderPathResolverFunc m_PreviousResolver;
 };
 
-// Every assertion after Open returns through this scope, including a failing red control.
+// Every opened device frame is finalized before its resources leave scope.
 class DeviceFrame
 {
   public:
@@ -100,15 +99,6 @@ class DeviceFrame
   private:
     IDevice& m_Device;
     bool m_Open = false;
-};
-
-struct FramePools
-{
-    RG::RGResourcePool Persistent;
-    RG::RGTransientPool Transient;
-    RG::RGUploadRing Uploads;
-    explicit FramePools(IDevice* device)
-        : Persistent(device), Transient(device), Uploads(device, 2, 262144) {}
 };
 
 struct DescriptorWitness
@@ -166,13 +156,13 @@ class GraphPreviewAtlasPreparationTest : public ::testing::TestWithParam<Graphic
         m_Device->Shutdown();
     }
 
-    void RegisterColor(const GUID& guid, const std::array<float, 4>& color)
+    void RegisterColor(const GUID& guid, const ColorLinear& color)
     {
         MaterialDocument document{};
         document.materialName = "Atlas native color";
         document.lightingModel = "Unlit";
         document.surfaceShader = "Surfaces/unlit_solid.glsl";
-        document.properties["baseColor"] = std::vector<float>(color.begin(), color.end());
+        document.properties["baseColor"] = std::vector<float>{color.r, color.g, color.b, color.a};
         const auto* material = m_Services->Materials().RegisterMaterialFromDocument(guid, document);
         ASSERT_NE(material, nullptr);
         ASSERT_TRUE(material->GetGraphicsPipelineId().IsValid());
@@ -242,6 +232,7 @@ void main() { imageStore(result, ivec2(0), texelFetch(atlas, ivec2(128,128), 0))
         ASSERT_TRUE(m_ProbeOutput.IsValid() && m_Readback.IsValid() && m_Sampler.IsValid());
     }
 
+    // Four contiguous 32-bit channels match the RGBA32F readback buffer.
     void Sample(TextureHandle texture, std::array<float, 4>& value)
     {
         ASSERT_TRUE(texture.IsValid());
@@ -365,10 +356,10 @@ TEST_P(GraphPreviewAtlasPreparationTest, NativePixelsSurviveAbortRetryAndRefuseS
 {
     GraphPreviewAtlas atlas;
     atlas.Initialize(m_Services.get());
-    FramePools firstPools(m_Device.get()), oldPools(m_Device.get()), newerPools(m_Device.get());
-    RG::RGFrame first(m_Device.get(), &firstPools.Persistent, &firstPools.Transient, &firstPools.Uploads);
-    RG::RGFrame old(m_Device.get(), &oldPools.Persistent, &oldPools.Transient, &oldPools.Uploads);
-    RG::RGFrame newer(m_Device.get(), &newerPools.Persistent, &newerPools.Transient, &newerPools.Uploads);
+    UiRgHarness firstPools(m_Device.get()), oldPools(m_Device.get()), newerPools(m_Device.get());
+    RG::RGFrame first(m_Device.get(), &firstPools.Persistent, &firstPools.Transient, &firstPools.Ring);
+    RG::RGFrame old(m_Device.get(), &oldPools.Persistent, &oldPools.Transient, &oldPools.Ring);
+    RG::RGFrame newer(m_Device.get(), &newerPools.Persistent, &newerPools.Transient, &newerPools.Ring);
     DescriptorWitness witness;
     TextureHandle output{};
     {
@@ -472,10 +463,10 @@ TEST_P(GraphPreviewAtlasPreparationTest, IblPreviousDrawRemainsPendingUntilCurre
     GraphPreviewAtlas atlas;
     atlas.Initialize(m_Services.get());
     atlas.SetIblEnabled(true);
-    FramePools firstPools(m_Device.get()), retryPools(m_Device.get()), currentPools(m_Device.get());
-    RG::RGFrame first(m_Device.get(), &firstPools.Persistent, &firstPools.Transient, &firstPools.Uploads);
-    RG::RGFrame retry(m_Device.get(), &retryPools.Persistent, &retryPools.Transient, &retryPools.Uploads);
-    RG::RGFrame current(m_Device.get(), &currentPools.Persistent, &currentPools.Transient, &currentPools.Uploads);
+    UiRgHarness firstPools(m_Device.get()), retryPools(m_Device.get()), currentPools(m_Device.get());
+    RG::RGFrame first(m_Device.get(), &firstPools.Persistent, &firstPools.Transient, &firstPools.Ring);
+    RG::RGFrame retry(m_Device.get(), &retryPools.Persistent, &retryPools.Transient, &retryPools.Ring);
+    RG::RGFrame current(m_Device.get(), &currentPools.Persistent, &currentPools.Transient, &currentPools.Ring);
     TextureHandle output{};
     {
         DeviceFrame active(*m_Device);
@@ -561,8 +552,8 @@ TEST_P(GraphPreviewAtlasPreparationTest, ColdFirstFramePublishesThePlannedAtlasB
             << binding.Resource << "); }\n";
     }
     ASSERT_TRUE(ui.AttachStyleFromFile(style.string()));
-    FramePools pools(m_Device.get());
-    RG::RGFrame frame(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Uploads);
+    UiRgHarness pools(m_Device.get());
+    RG::RGFrame frame(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
     TextureHandle output{};
     {
         DeviceFrame active(*m_Device);
@@ -592,8 +583,8 @@ TEST_P(GraphPreviewAtlasPreparationTest, ShutdownBeforeExecuteRefusesTheOwnedGra
 {
     GraphPreviewAtlas atlas;
     atlas.Initialize(m_Services.get());
-    FramePools pools(m_Device.get());
-    RG::RGFrame frame(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Uploads);
+    UiRgHarness pools(m_Device.get());
+    RG::RGFrame frame(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
     DeviceFrame active(*m_Device);
     ASSERT_TRUE(active.Open());
     ASSERT_NO_FATAL_FAILURE(Build(atlas, frame, 1u, m_Red));

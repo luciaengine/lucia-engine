@@ -74,6 +74,8 @@ namespace ShaderMetaBindingType
     static constexpr uint32_t kAccelerationStructure = 6;
 }
 
+/// Maps reflection binding types to device descriptor types.
+/// Unknown raw values resolve to UniformBuffer.
 inline DescriptorType MapShaderMetaBindingType(uint32_t rawType)
 {
     switch (rawType)
@@ -141,12 +143,14 @@ struct DescriptorBindingMeta {
     }
 };
 
-// Derived from one served shader generation. The per-pass cache retains the plan
-// while a descriptor is live, so its identity survives shader replacement.
+/// Binding metadata published through shared ownership of a const plan.
+/// Build before sharing with render workers; create a new plan when reflection changes.
+/// Descriptor caches retain plan ownership while descriptors are live.
 struct DescriptorBindingPlan
 {
     enum class Source { Named, BindlessTextures, MaterialTextures };
     enum class ImageDefault { Named2D, ColorArray, ColorCube, Depth2D, DepthArray, Unavailable };
+    /// Selects an image fallback shape; unsupported shapes have no fallback.
     static ImageDefault DefaultFor(const std::optional<DescriptorBindingMeta::ImageInfo>& image)
     {
         if (!image)
@@ -208,33 +212,37 @@ inline uint64_t ComputeDescriptorSetLayoutHash(const DescriptorSetMeta& sm) noex
     return h != 0 ? h : 1ull;
 }
 
-inline std::shared_ptr<const DescriptorBindingPlan> BuildDescriptorBindingPlan(const DescriptorSetMeta& sm)
+/// Builds an immutable plan from a stable reflection snapshot.
+/// The caller protects snapshot access and rebuilds the plan when bindings change.
+inline std::shared_ptr<const DescriptorBindingPlan> BuildDescriptorBindingPlan(const DescriptorSetMeta& setMeta)
 {
     auto plan = std::make_shared<DescriptorBindingPlan>();
-    plan->Slots.reserve(sm.Bindings.size());
-    for (const auto& b : sm.Bindings)
+    plan->Slots.reserve(setMeta.Bindings.size());
+    for (const auto& binding : setMeta.Bindings)
     {
-        const auto type = MapShaderMetaBindingType(b.Type);
-        plan->Slots.push_back({b.Name, b.ResolvedNameId(), type, b.Binding, b.Count, b.StagesMask, b.ReadOnly,
-                               b.Image, DescriptorBindingPlan::DefaultFor(b.Image)});
-        if (b.Binding == 0 && (type == DescriptorType::Texture || type == DescriptorType::CombinedImageSampler))
+        const auto type = MapShaderMetaBindingType(binding.Type);
+        plan->Slots.push_back({binding.Name, binding.ResolvedNameId(), type, binding.Binding, binding.Count,
+                              binding.StagesMask, binding.ReadOnly, binding.Image,
+                              DescriptorBindingPlan::DefaultFor(binding.Image)});
+        if (binding.Binding == 0 && (type == DescriptorType::Texture || type == DescriptorType::CombinedImageSampler))
         {
-            if (b.Name == "ge_BindlessTextures")
+            if (binding.Name == "ge_BindlessTextures")
                 plan->SetSource = DescriptorBindingPlan::Source::BindlessTextures;
-            else if (b.Name == "ge_MaterialTextures0")
+            else if (binding.Name == "ge_MaterialTextures0")
                 plan->SetSource = DescriptorBindingPlan::Source::MaterialTextures;
         }
     }
     return plan;
 }
 
-// Called after reflection merge and after decoding a shader package or JSON.
-inline void FinalizeSetLayout(DescriptorSetMeta& sm)
+/// Rebuilds derived binding data after reflection merge or decode.
+/// Requires exclusive access; finalize each changed snapshot before publication.
+inline void FinalizeSetLayout(DescriptorSetMeta& setMeta)
 {
-    sm.BuiltLayoutHash = ComputeDescriptorSetLayoutHash(sm);
-    for (auto& b : sm.Bindings)
-        b.NameId = HashStringId(b.Name);
-    sm.BindingPlan = BuildDescriptorBindingPlan(sm);
+    setMeta.BuiltLayoutHash = ComputeDescriptorSetLayoutHash(setMeta);
+    for (auto& binding : setMeta.Bindings)
+        binding.NameId = HashStringId(binding.Name);
+    setMeta.BindingPlan = BuildDescriptorBindingPlan(setMeta);
 }
 
 struct StageIO {

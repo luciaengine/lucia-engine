@@ -1,15 +1,5 @@
 #include "Rendering/Passes/SRGBEncodePass.h"
 
-#include <algorithm>
-#include <atomic>
-#include <memory>
-#include <string>
-#include <vector>
-#include <unordered_map>
-#include <cstdlib>
-#include <cstdint>
-#include <cstddef>
-
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/DeviceFormatting.h"
@@ -21,6 +11,16 @@
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "Logger/Logger.h"
 #include "Platform/Environment.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace GameEngine {
 namespace Rendering {
@@ -405,11 +405,60 @@ static bool PrepareSRGBEncodeDescriptors(RenderGraph::RGPrepareContext& context,
     return true;
 }
 
-RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture src, RenderGraph::RGTexture dst,
+static void RecordSRGBEncodePass(RenderGraph::RGContext& context, GraphicsPipelineId pipelineId,
+                              DescriptorSetHandle descriptors, const NamedPushConstantWriter& pushConstants,
+                              uint32_t width, uint32_t height)
+{
+    auto* commands = context.Cmd;
+    auto* device = context.GetDevice();
+    if (!commands || !device)
+        return;
+    const PipelineHandle pipeline = device->TryGetWarmGraphicsPipeline(pipelineId, context.BuildCurrentFormatKey());
+    if (!pipeline.IsValid())
+        return;
+
+    commands->SetPipeline(pipeline);
+    if (pushConstants.IsValid() && !pushConstants.Flush(commands))
+    {
+        static bool s_WarnedFlush = false;
+        if (!s_WarnedFlush)
+        {
+            s_WarnedFlush = true;
+            Logger::Log::Warning(
+                "SRGBEncodePass: push-constant flush rejected by command list; "
+                "terminal encode running with zeroed constants");
+        }
+    }
+    commands->SetViewport(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
+    commands->SetScissor(0, 0, static_cast<int>(width), static_cast<int>(height));
+
+    commands->BindDescriptorSet(0, descriptors, pipeline);
+    commands->Draw(3, 1);
+}
+
+static void DeclareSRGBEncodePass(RenderGraph::RGPassBuilder& pass, GraphicsPipelineId pipelineId,
+                               DescriptorSetHandle* descriptors, RenderGraph::RGTexture source,
+                               RenderGraph::RGTexture destination, const DescriptorSetLayoutDesc& set0,
+                               const ShaderMeta& meta)
+{
+    pass.UsePipeline(pipelineId);
+    pass.Prepare([descriptors, source, set0, meta = &meta](RenderGraph::RGPrepareContext& context) {
+        return PrepareSRGBEncodeDescriptors(context, source, set0, *meta, *descriptors);
+    });
+    pass.Read(source, RenderGraph::RGTextureRead::Sampled);
+    RenderGraph::RGAttachmentOps ops{};
+    // Full-screen overwrite; the imported backbuffer's contract is
+    // discard-on-first-write (its contents are presentation history).
+    ops.Load = RenderGraph::RGLoadOp::DontCare;
+    ops.Store = RenderGraph::RGStoreOp::Store;
+    pass.AttachColor(0, destination, ops);
+}
+
+RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph::RGTexture source, RenderGraph::RGTexture destination,
                                 const FinalizeParams& params, const char* passName)
 {
 	IDevice* device = frame.Device();
-	if (!device || !src.IsValid() || !dst.IsValid() || src.Id == dst.Id)
+	if (!device || !source.IsValid() || !destination.IsValid() || source.Id == destination.Id)
 		return {};
 	// The two required operands, enforced. An aggregate cannot make a field
 	// mandatory, so a designated initializer that omits one arrives as the
@@ -444,48 +493,48 @@ RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph
 
 	// Layout + push-constant block derived from the shaderpkg's reflection meta.
 	// Interned per device; the per-frame cost is the variant-cache hit.
-	GraphicsPipelineDesc gd{};
-	gd.Kind = GraphicsPipelineKind::VertexFragment;
-	gd.VertexShader = std::make_shared<const std::vector<uint8_t>>(shaders.vs);
-	gd.PixelShader = std::make_shared<const std::vector<uint8_t>>(shaders.fs);
-	gd.Topology = PrimitiveTopology::TriangleList;
-	gd.Rasterization.cullMode = CullModeFlagBits::None;
-	gd.Rasterization.frontFace = FrontFace::CounterClockwise;
-	gd.DepthStencil.depthTestEnable = false;
-	gd.DepthStencil.depthWriteEnable = false;
-	DynamicStateInfo dyn{};
-	dyn.states.push_back(DynamicState::Viewport);
-	dyn.states.push_back(DynamicState::Scissor);
-	gd.DynamicState = std::move(dyn);
-	gd.DebugName = "SRGBEncode.Pipeline";
+	GraphicsPipelineDesc pipelineDesc{};
+	pipelineDesc.Kind = GraphicsPipelineKind::VertexFragment;
+	pipelineDesc.VertexShader = std::make_shared<const std::vector<uint8_t>>(shaders.vs);
+	pipelineDesc.PixelShader = std::make_shared<const std::vector<uint8_t>>(shaders.fs);
+	pipelineDesc.Topology = PrimitiveTopology::TriangleList;
+	pipelineDesc.Rasterization.cullMode = CullModeFlagBits::None;
+	pipelineDesc.Rasterization.frontFace = FrontFace::CounterClockwise;
+	pipelineDesc.DepthStencil.depthTestEnable = false;
+	pipelineDesc.DepthStencil.depthWriteEnable = false;
+	DynamicStateInfo dynamicState{};
+	dynamicState.states.push_back(DynamicState::Viewport);
+	dynamicState.states.push_back(DynamicState::Scissor);
+	pipelineDesc.DynamicState = std::move(dynamicState);
+	pipelineDesc.DebugName = "SRGBEncode.Pipeline";
 	DescriptorSetLayoutDesc set0{};
 	{
-		std::string metaErr;
+		std::string metaError;
 		if (!MaterialHelper::ApplyShaderMetaToGraphicsDesc(
-				*device, shaders.meta, gd, MaterialBuilder::MergeMode::Auto, {true, 128},
-				[&](uint32_t setIndex, DescriptorSetLayoutDesc& dsl)
+				*device, shaders.meta, pipelineDesc, MaterialBuilder::MergeMode::Auto, {true, 128},
+				[&set0](uint32_t setIndex, DescriptorSetLayoutDesc& setLayout)
 				{
 					if (setIndex == 0)
-						set0 = dsl;
+						set0 = setLayout;
 				},
-				&metaErr))
+				&metaError))
 		{
 			static bool s_WarnedMeta = false;
 			if (!s_WarnedMeta)
 			{
 				s_WarnedMeta = true;
-				Logger::Log::Warning("SRGBEncodePass: shader meta rejected ({})", metaErr);
+				Logger::Log::Warning("SRGBEncodePass: shader meta rejected ({})", metaError);
 			}
 			return {};
 		}
 	}
-	const GraphicsPipelineId pipelineId = device->InternGraphicsPipeline(std::move(gd));
+	const GraphicsPipelineId pipelineId = device->InternGraphicsPipeline(std::move(pipelineDesc));
 	if (!pipelineId.IsValid())
 		return {};
 
 	// Encoding decided at DECLARATION (the by-value contract); the dither
 	// step is sized to the real destination bit depth.
-	const bool dstIsBackbuffer = frame.IsBackbuffer(dst);
+	const bool dstIsBackbuffer = frame.IsBackbuffer(destination);
 	OutputEncodeValues pc{};
 	const HdrOutputState hdrState = device->GetHdrOutputState();
 	pc.paperWhiteNits = hdrState.staticMetadata.paperWhiteNits;
@@ -525,7 +574,7 @@ RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph
 	// re-encodes in its ROP) regardless of which quantizer the caller named.
 	const TextureFormat dstFormat =
 		dstIsBackbuffer ? device->GetSwapchainTextureFormat()
-		                : static_cast<TextureFormat>(frame.Graph().ResourceDesc(dst.Id).Format);
+		                : static_cast<TextureFormat>(frame.Graph().ResourceDesc(destination.Id).Format);
 	// The quantizer the FILTERS are sized to, which is not always the same
 	// surface (FinalizeQuantizer): a finalize writing an FP16 intermediate the
 	// UI still composites onto must dither at the presented step, and a transfer
@@ -643,20 +692,20 @@ RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph
 	// write leaves the block zeroed: outEncoding 0 falls through to the
 	// shader's manual-sRGB arm with dither off — a correct-looking image
 	// with the dither dead, so failures here must be loud.
-	NamedPushConstantWriter pcw =
+	NamedPushConstantWriter pushConstants =
 		shaders.meta.PushConstants.empty()
 			? NamedPushConstantWriter(shaders.meta, std::string{})
 			: NamedPushConstantWriter(shaders.meta, shaders.meta.PushConstants[0].Name);
-	bool wroteAllPc = pcw.IsValid();
-	if (pcw.IsValid())
+	bool wroteAllPc = pushConstants.IsValid();
+	if (pushConstants.IsValid())
 	{
-		wroteAllPc &= pcw.Add("outEncoding", pc.outEncoding);
-		wroteAllPc &= pcw.Add("paperWhiteNits", pc.paperWhiteNits);
-		wroteAllPc &= pcw.Add("ditherLsb", pc.ditherLsb);
-		wroteAllPc &= pcw.Add("scRGBRefWhiteNits", pc.scRGBRefWhiteNits);
-		wroteAllPc &= pcw.Add("debandThreshold", pc.debandThreshold);
-		wroteAllPc &= pcw.Add("debandRadius", pc.debandRadius);
-		wroteAllPc &= pcw.Add("ditherPhase", pc.ditherPhase);
+		wroteAllPc &= pushConstants.Add("outEncoding", pc.outEncoding);
+		wroteAllPc &= pushConstants.Add("paperWhiteNits", pc.paperWhiteNits);
+		wroteAllPc &= pushConstants.Add("ditherLsb", pc.ditherLsb);
+		wroteAllPc &= pushConstants.Add("scRGBRefWhiteNits", pc.scRGBRefWhiteNits);
+		wroteAllPc &= pushConstants.Add("debandThreshold", pc.debandThreshold);
+		wroteAllPc &= pushConstants.Add("debandRadius", pc.debandRadius);
+		wroteAllPc &= pushConstants.Add("ditherPhase", pc.ditherPhase);
 	}
 	if (dstIsBackbuffer)
 	{
@@ -677,7 +726,7 @@ RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph
 				"SRGBEncodePass: backbuffer outEncoding={} ditherLsb={:.6f} debandThreshold={:.6f} "
 				"debandRadius={:.1f} mode={} pcValid={} pcWroteAll={}",
 				pc.outEncoding, pc.ditherLsb, pc.debandThreshold, pc.debandRadius,
-				HdrOutputModeToString(outputMode), pcw.IsValid(), wroteAllPc);
+				HdrOutputModeToString(outputMode), pushConstants.IsValid(), wroteAllPc);
 		}
 	}
 	if (!wroteAllPc)
@@ -692,9 +741,9 @@ RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph
 		}
 	}
 
-	const RenderGraph::RGResourceDesc dd = frame.Graph().ResourceDesc(dst.Id);
-	const uint32_t w = dd.Width > 0 ? dd.Width : 1u;
-	const uint32_t h = dd.Height > 0 ? dd.Height : 1u;
+	const RenderGraph::RGResourceDesc destinationDesc = frame.Graph().ResourceDesc(destination.Id);
+	const uint32_t width = destinationDesc.Width > 0 ? destinationDesc.Width : 1u;
+	const uint32_t height = destinationDesc.Height > 0 ? destinationDesc.Height : 1u;
 
 	// I11, and this pass is the only transport that can break it. An encoded
 	// source arrives already dithered at the presented quantisation step, and
@@ -721,8 +770,8 @@ RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph
 	if (params.InputSpace == FinalizeInputSpace::EncodedSrgb &&
 	    params.Quantizer == FinalizeQuantizer::None)
 	{
-		const RenderGraph::RGResourceDesc sd = frame.Graph().ResourceDesc(src.Id);
-		if (sd.Width != dd.Width || sd.Height != dd.Height)
+		const RenderGraph::RGResourceDesc sd = frame.Graph().ResourceDesc(source.Id);
+		if (sd.Width != destinationDesc.Width || sd.Height != destinationDesc.Height)
 		{
 			const char* name = passName ? passName : "FinalSRGBEncode";
 			if (std::find(g_ReportedRescalePasses.begin(), g_ReportedRescalePasses.end(), name) ==
@@ -737,7 +786,7 @@ RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph
 					"undithered (I11). Either give this pass a destination at the source's extent "
 					"and rescale outside the dithered domain, or finalize again at the destination "
 					"extent so the dither is sized to it",
-					name, sd.Width, sd.Height, dd.Width, dd.Height);
+					name, sd.Width, sd.Height, destinationDesc.Width, destinationDesc.Height);
 			}
 		}
 	}
@@ -745,47 +794,13 @@ RenderGraph::RGPass AddSRGBEncodePassRG(RenderGraph::RGFrame& frame, RenderGraph
 	auto* descriptors = frame.AllocatePassData<DescriptorSetHandle>();
 	return frame.AddPass(
 		passName ? passName : "FinalSRGBEncode", PassPhase::kFinalize,
-		[&](RenderGraph::RGPassBuilder& p)
+		[pipelineId, descriptors, source, destination, &set0, &shaders](RenderGraph::RGPassBuilder& pass)
 		{
-			p.UsePipeline(pipelineId);
-			p.Prepare([descriptors, src, set0, meta = &shaders.meta](RenderGraph::RGPrepareContext& context) {
-			    return PrepareSRGBEncodeDescriptors(context, src, set0, *meta, *descriptors);
-			});
-			p.Read(src, RenderGraph::RGTextureRead::Sampled);
-			RenderGraph::RGAttachmentOps ops{};
-			// Full-screen overwrite; the imported backbuffer's contract is
-			// discard-on-first-write (its contents are presentation history).
-			ops.Load = RenderGraph::RGLoadOp::DontCare;
-			ops.Store = RenderGraph::RGStoreOp::Store;
-			p.AttachColor(0, dst, ops);
+		    DeclareSRGBEncodePass(pass, pipelineId, descriptors, source, destination, set0, shaders.meta);
 		},
-		[pipelineId, descriptors, pcw, w, h](RenderGraph::RGContext& ctx)
+		[pipelineId, descriptors, pushConstants, width, height](RenderGraph::RGContext& context)
 		{
-			auto* cl = ctx.Cmd;
-			auto* dev = ctx.GetDevice();
-			if (!cl || !dev)
-				return;
-			const PipelineHandle pipeline = dev->TryGetWarmGraphicsPipeline(pipelineId, ctx.BuildCurrentFormatKey());
-			if (!pipeline.IsValid())
-				return;
-
-			cl->SetPipeline(pipeline);
-			if (pcw.IsValid() && !pcw.Flush(cl))
-			{
-				static bool s_WarnedFlush = false;
-				if (!s_WarnedFlush)
-				{
-					s_WarnedFlush = true;
-					Logger::Log::Warning(
-						"SRGBEncodePass: push-constant flush rejected by command list; "
-						"terminal encode running with zeroed constants");
-				}
-			}
-			cl->SetViewport(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
-			cl->SetScissor(0, 0, static_cast<int>(w), static_cast<int>(h));
-
-			cl->BindDescriptorSet(0, *descriptors, pipeline);
-			cl->Draw(3, 1);
+		    RecordSRGBEncodePass(context, pipelineId, *descriptors, pushConstants, width, height);
 		});
 }
 

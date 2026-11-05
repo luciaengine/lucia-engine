@@ -24,20 +24,16 @@ public:
     Rendering::PipelineHandle PrepareRG(const Rendering::RenderGraph::RGPrepareContext& context,
                                          bool is2DMode);
 
-    // Record grid draw commands into the current gizmo overlay pass.
-    // Call exactly once per frame, inside the gizmo overlay execute lambda.
-    // gridColor is ARGB packed; only the rgb channels reach the shader (the
-    // axis lines keep their hardcoded conventional colors).
-    // cells2D = {originX, originY, cellWidth, cellHeight} in world units; a
-    // non-positive width makes the 2D grid fall back to zoom-based decades.
-    //
-    void RecordRG(const Rendering::RenderGraph::RGContext& ctx,
+    /// Records a prepared pipeline in the current overlay pass; an invalid handle draws nothing.
+    /// gridColor is packed ARGB; cells2D stores origin X/Y and cell width/height in world units.
+    /// A nonpositive cell width selects zoom-based spacing. Raw arrays feed the grid shader layout.
+    void RecordRG(const Rendering::RenderGraph::RGContext& context,
                    Rendering::PipelineHandle pipeline,
-                   const Rendering::CameraData* cam,
-                   const float camPos[3],
+                   const Rendering::CameraData* camera,
+                   const float cameraPosition[3],
                    bool is2DMode,
-                   float camDistance,
-                   float viewportH,
+                   float cameraDistance,
+                   float viewportHeight,
                    float gridOpacity,
                    uint32_t gridColor,
                    const float cells2D[4]);

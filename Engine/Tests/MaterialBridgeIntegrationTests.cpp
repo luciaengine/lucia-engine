@@ -2572,13 +2572,51 @@ TEST_F(MaterialPipelineCompilationTest, PublishGate_VariantMissEnqueuesAsync_Dra
     EXPECT_FALSE(variants.HasPipelineBuildsInFlight(*mat)) << "the publish ends the in-flight window";
 }
 
-// A draw that finds a backend pipeline cold records its material as waiting on
-// the device's build (EnsureConcreteWarm). Render-once consumers (model
-// thumbnails) poll HasPipelineBuildsInFlight and must not render inside that
-// window. Once the build settles, Warm or Failed, the material no longer waits
-// and nothing is queued again; the per-frame prune then forgets the wait, so a
-// later hot-reload invalidation does not request a pipeline no draw uses.
-TEST_F(MaterialPipelineCompilationTest, ConcreteColdRecordDefersBackendBuildUntilFrameBegin)
+namespace
+{
+namespace RG = GameEngine::Rendering::RenderGraph;
+
+struct ColdVariantPreparation
+{
+    PipelineVariantCache& Variants;
+    const Material& SourceMaterial;
+    VertexAttributeFlags VertexFlags;
+    MaterialKeyword Keywords;
+    uint32_t PrepareCalls = 0;
+    uint32_t RecordCalls = 0;
+
+    bool Prepare(RG::RGPrepareContext& context)
+    {
+        ++PrepareCalls;
+        constexpr uint32_t kLookupAttempts = 2;
+        for (uint32_t retry = 0; retry < kLookupAttempts; ++retry)
+        {
+            const auto served = Variants.PrepareColorVariant(
+                SourceMaterial, VertexFlags, PrimitiveTopology::TriangleList,
+                Keywords, FrontFace::CounterClockwise, context);
+            EXPECT_FALSE(served.first.IsValid());
+        }
+        return true;
+    }
+
+    void Declare(RG::RGPassBuilder& pass, RG::RGTexture target)
+    {
+        pass.AttachColor(0, target, {.Load = RG::RGLoadOp::Clear});
+        pass.Prepare([this](RG::RGPrepareContext& context) { return Prepare(context); });
+    }
+
+    void Record()
+    {
+        ++RecordCalls;
+        EXPECT_FALSE(Variants.ServedGeneration(SourceMaterial.GetGpuSceneMaterialIndex(),
+                                               ServedPassClass::Color).has_value());
+    }
+};
+} // namespace
+
+// Preparation queues cold backend pipelines without starting inline or dispatched builds.
+// The serial frame-begin drain deduplicates the requests and makes the pipeline available.
+TEST_F(MaterialPipelineCompilationTest, ConcreteColdPreparationDefersBackendBuildUntilFrameBegin)
 {
     namespace RG = GameEngine::Rendering::RenderGraph;
     MaterialDocument doc{};
@@ -2599,10 +2637,13 @@ TEST_F(MaterialPipelineCompilationTest, ConcreteColdRecordDefersBackendBuildUnti
     ASSERT_FALSE(published.PreviousPipelineId.IsValid());
 
     // The inline arm models owning-thread backends and headless clients. The
-    // dispatched arm also proves recording never submits work to a dispatcher.
+    // dispatched arm proves preparation never submits work to a dispatcher.
+    const uint32_t materialIndex = material->GetGpuSceneMaterialIndex();
+    ASSERT_NE(materialIndex, std::numeric_limits<uint32_t>::max());
     for (const bool dispatched : {false, true})
     {
         SCOPED_TRACE(dispatched ? "dispatcher" : "inline backend");
+        variants.BeginServeFrame(materialIndex + 1);
         std::unique_ptr<HeldPipelineBuilds> held;
         if (dispatched)
             held = std::make_unique<HeldPipelineBuilds>(*m_device);
@@ -2620,30 +2661,23 @@ TEST_F(MaterialPipelineCompilationTest, ConcreteColdRecordDefersBackendBuildUnti
         desc.format = static_cast<uint32_t>(format.ColorFormats[0]);
         desc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget);
         const auto target = frame.CreateTexture("DeferredConcrete.Target", desc);
-        uint32_t records = 0;
+        ColdVariantPreparation preparation{variants, *material, flags, keywords};
         frame.AddPass("DeferredConcrete.Record", 0,
-                      [&](RG::RGPassBuilder& pass) { pass.AttachColor(0, target, {.Load = RG::RGLoadOp::Clear}); },
-                      [&](RG::RGContext& context) {
-                          ++records;
-                          for (uint32_t retry = 0; retry < 2; ++retry)
-                          {
-                              auto served = variants.GetOrCompileColorVariant(
-                                  *material, flags, PrimitiveTopology::TriangleList,
-                                  keywords, FrontFace::CounterClockwise, context);
-                              EXPECT_FALSE(served.first.IsValid());
-                          }
-                      });
+                      [&preparation, target](RG::RGPassBuilder& pass) { preparation.Declare(pass, target); },
+                      [&preparation](RG::RGContext&) { preparation.Record(); });
         frame.MarkOutput(target);
         frame.Execute();
         m_device->WaitForIdle();
-        EXPECT_EQ(records, 1u);
+        EXPECT_EQ(preparation.PrepareCalls, 1u);
+        EXPECT_EQ(preparation.RecordCalls, 1u);
+        EXPECT_FALSE(variants.ServedGeneration(materialIndex, ServedPassClass::Color).has_value());
         EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
         if (held)
-            EXPECT_TRUE(held->Jobs.empty()) << "recording must only enqueue for the frame-begin drain";
+            EXPECT_TRUE(held->Jobs.empty()) << "preparation must only enqueue for the frame-begin drain";
         variants.PruneSettledConcreteWarmWaits();
         if (held)
         {
-            ASSERT_EQ(held->Jobs.size(), 1u) << "duplicate record misses share one backend build";
+            ASSERT_EQ(held->Jobs.size(), 1u) << "duplicate preparation misses share one backend build";
             held->RunAll();
         }
         EXPECT_TRUE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());

@@ -160,33 +160,33 @@ static constexpr float kShadowDepthBiasSlope = -1.75f;
 
 void PipelineVariantCache::RequestConcreteWarm(const Material& material,
                                                Rendering::GraphicsPipelineId id,
-                                               const Rendering::PipelineFormatKey& fk)
+                                               const Rendering::PipelineFormatKey& formatKey)
 {
     if (!id.IsValid())
         return;
     // Outside m_ConcreteWarmMutex: with no job system the device builds inline.
-    const Rendering::PipelineBuildState state = m_Materials->GetDevice()->RequestGraphicsPipeline(id, fk);
+    const Rendering::PipelineBuildState state = m_Materials->GetDevice()->RequestGraphicsPipeline(id, formatKey);
     if (state == Rendering::PipelineBuildState::Pending)
     {
-        QueueConcreteWarm(material, id, fk);
+        QueueConcreteWarm(material, id, formatKey);
         return;
     }
-    const uint64_t warmKey = Rendering::PipelineCache::CombineGraphicsKey(id, fk);
+    const uint64_t warmKey = Rendering::PipelineCache::CombineGraphicsKey(id, formatKey);
     std::lock_guard lock(m_ConcreteWarmMutex);
     m_ConcreteWarmWaits.erase(warmKey);
 }
 
 void PipelineVariantCache::QueueConcreteWarm(const Material& material,
                                              Rendering::GraphicsPipelineId id,
-                                             const Rendering::PipelineFormatKey& fk)
+                                             const Rendering::PipelineFormatKey& formatKey)
 {
     if (!id.IsValid())
         return;
-    const uint64_t warmKey = Rendering::PipelineCache::CombineGraphicsKey(id, fk);
+    const uint64_t warmKey = Rendering::PipelineCache::CombineGraphicsKey(id, formatKey);
     std::lock_guard lock(m_ConcreteWarmMutex);
     ConcreteWarmWait& wait = m_ConcreteWarmWaits[warmKey];
     wait.Id = id;
-    wait.FormatKey = fk;
+    wait.FormatKey = formatKey;
     ++wait.Generation;
     if (std::find(wait.Materials.begin(), wait.Materials.end(), &material) == wait.Materials.end())
         wait.Materials.push_back(&material);
@@ -229,39 +229,33 @@ void PipelineVariantCache::PruneSettledConcreteWarmWaits()
 
 void PipelineVariantCache::WarnColdServe(const Material& material,
                                          Rendering::GraphicsPipelineId pipelineId,
-                                         const Rendering::PipelineFormatKey& fk)
+                                         const Rendering::PipelineFormatKey& formatKey)
 {
-    // Dual-cold window (current AND previous cold for this pass): the caller
-    // skips the draw and a worker is already building, so this fires per draw
-    // per frame until the build lands. First occurrence, then every power of
-    // two — a normal build window logs a handful of lines and stops.
-    const uint64_t n = m_ColdServeWarnCount.fetch_add(1, std::memory_order_relaxed) + 1;
-    if ((n & (n - 1)) != 0)
+    // Report the first cold draw and each power-of-two repetition while its pipeline builds.
+    const uint64_t warningCount = m_ColdServeWarnCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if ((warningCount & (warningCount - 1)) != 0)
         return;
     Logger::Log::Warning(
-        "GetOrCompileColorVariant '{}': cached graphics pipeline id={} failed for current pass ({}) [{}x]",
-        material.GetName(), pipelineId.Value, FormatPipelineKey(fk), n);
+        "PrepareColorVariant '{}': cached graphics pipeline id={} failed for current pass ({}) [{}x]",
+        material.GetName(), pipelineId.Value, FormatPipelineKey(formatKey), warningCount);
 }
 
 std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
 PipelineVariantCache::ResolveWarmPipeline(const Material& material,
                                           const InstancedVariantEntry& entry,
-                                          const Rendering::PipelineFormatKey& fk)
+                                          const Rendering::PipelineFormatKey& formatKey)
 {
     Rendering::IDevice* device = m_Materials->GetDevice();
-    if (auto h = device->TryGetWarmGraphicsPipeline(entry.Current.PipelineId, fk); h.IsValid())
-        return {h, &entry.Current};
+    if (auto pipeline = device->TryGetWarmGraphicsPipeline(entry.Current.PipelineId, formatKey); pipeline.IsValid())
+        return {pipeline, &entry.Current};
 
-    // Cold for this pass. Even RequestGraphicsPipeline can compile inline on
-    // Metal or without a dispatcher. Queue for the serial frame-begin drain and
-    // serve the entry's previous unit meanwhile:
-    // pipeline, meta and set layouts as one snapshot, so the descriptor set the
-    // binder builds matches the pipeline layout it binds.
-    QueueConcreteWarm(material, entry.Current.PipelineId, fk);
+    // Queue cold pipelines for the serial frame-begin drain; the backend may build inline.
+    // Serve a warm previous pipeline with its matching metadata and layouts meanwhile.
+    QueueConcreteWarm(material, entry.Current.PipelineId, formatKey);
     if (entry.Previous.PipelineId.IsValid())
     {
-        auto h = device->TryGetWarmGraphicsPipeline(entry.Previous.PipelineId, fk);
-        return {h, &entry.Previous};
+        auto pipeline = device->TryGetWarmGraphicsPipeline(entry.Previous.PipelineId, formatKey);
+        return {pipeline, &entry.Previous};
     }
     return {{}, nullptr};
 }
@@ -288,11 +282,8 @@ PipelineVariantCache::ResolveColorVariant(
     const uint32_t materialVersion = material.GetVersion();
     const uint64_t epoch = m_CacheEpoch.load(std::memory_order_acquire);
 
-    // Hit path: a per-thread L1 (no lock) fronts the map, then a shared_lock
-    // find. A2.4-D6: up to N record workers share the map concurrently, so the
-    // find is a pure `find` (operator[] would mutate on read) under a
-    // shared_lock, and the L1 lets steady-state hits skip the lock entirely.
-    // Resolve the concrete handle with this pass's attachment formats.
+    // The per-thread L1 skips locking for immutable entries in the current frame.
+    // A miss searches under the shared lock; concrete handles use this pass's formats.
     thread_local std::array<InstancedL1Slot, kVariantL1Slots> l1{};
     auto& slot = l1[VariantL1Index(InstancedVariantKeyHash{}(key))];
     if (slot.Epoch == epoch && slot.Entry != nullptr
@@ -306,13 +297,9 @@ PipelineVariantCache::ResolveColorVariant(
             WarnColdServe(material, slot.Entry->Current.PipelineId, formatKey);
         return serve;
     }
-    // Stale-serve: an entry whose Current generation has moved on (a shader edit
-    // recompiled the material) still holds a working pipeline. Keep drawing it
-    // and rebuild in the background — evicting first would leave the object out
-    // of the frame for the whole rebuild. `staleEntry` is set inside the lock and
-    // dereferenced after it, which is safe because node writes (the serial
-    // publish apply and the eviction drain) are phase-separated from the record
-    // window; the enqueue below never nests the cache lock inside the pending one.
+    // Keep a published unit visible while its replacement compiles.
+    // Serial frame-begin publication and eviction cannot overlap preparation or recording,
+    // so a borrowed cache entry stays valid after releasing the shared lock.
     const InstancedVariantEntry* staleEntry = nullptr;
     {
         std::shared_lock lock(m_CacheMutex);
@@ -333,19 +320,13 @@ PipelineVariantCache::ResolveColorVariant(
         }
     }
 
-    // Publish-gate (record worker): a cold miss must NOT compile here — a shaderc
-    // variant compile is 10+s cold and would stall the record thread / scene-build
-    // pump. Enqueue an async compile (deduped) that MaterialSystem::BeginFrame's
-    // serial drain submits to the prewarm workers. A first-ever miss skips this
-    // draw; the caller already handles {invalid, nullptr} and the mesh self-heals
-    // to visible once the variant lands (a few frames later). The build context is
-    // populated serially in BeginFrame; if it is not ready yet, skip WITHOUT enqueue
-    // and let a later frame retry (the compile would fail anyway).
+    // Cold misses enqueue a deduplicated compile for the serial frame-begin drain.
+    // An unavailable build context cannot compile; retain a published unit or skip the draw.
     if (!m_Materials->IsMaterialBuildContextReady())
     {
         if (staleEntry == nullptr)
             Logger::Log::Warning(
-                "GetOrCompileColorVariant '{}': material build context unavailable ({})",
+                "PrepareColorVariant '{}': material build context unavailable ({})",
                 material.GetName(),
                 FormatPipelineKey(formatKey));
         return staleEntry != nullptr
@@ -359,31 +340,15 @@ PipelineVariantCache::ResolveColorVariant(
 }
 
 std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
-PipelineVariantCache::GetOrCompileColorVariant(
-    const Material& material,
-    Rendering::VertexAttributeFlags vertexFlags,
-    Rendering::PrimitiveTopology topology,
-    Rendering::MaterialKeyword passKeywords,
-    Rendering::FrontFace frontFace,
-    const Rendering::RenderGraph::RGContext& ctx)
-{
-    const auto served = ResolveColorVariant(material, vertexFlags, topology, passKeywords, frontFace,
-                                            ctx.BuildCurrentFormatKey());
-    if (served.first.IsValid())
-        RecordServedGeneration(material.GetGpuSceneMaterialIndex(), ServedPassClass::Color, served.second->MaterialVersion);
-    return served;
-}
-
-std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
 PipelineVariantCache::PrepareColorVariant(
     const Material& material,
     Rendering::VertexAttributeFlags vertexFlags,
     Rendering::PrimitiveTopology topology,
     Rendering::MaterialKeyword passKeywords,
     Rendering::FrontFace frontFace,
-    const Rendering::RenderGraph::RGPrepareContext& ctx)
+    const Rendering::RenderGraph::RGPrepareContext& context)
 {
-    return ResolveColorVariant(material, vertexFlags, topology, passKeywords, frontFace, ctx.BuildCurrentFormatKey());
+    return ResolveColorVariant(material, vertexFlags, topology, passKeywords, frontFace, context.BuildCurrentFormatKey());
 }
 
 std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
@@ -436,11 +401,8 @@ PipelineVariantCache::ResolveDepthVariant(
         }
     }
 
-    // Publish-gate (record worker): skip the cold compile, enqueue an async depth
-    // variant compile (deduped), and skip the draw — the caller falls back to the
-    // shared-depth pipeline or skips, and the per-material depth variant self-heals
-    // once it lands. Read-only readiness check — populate runs serially in
-    // MaterialSystem::BeginFrame (A2.4-P0-R); see the color path.
+    // Depth misses enqueue for the same serial frame-begin drain as color variants.
+    // An unavailable build context can only retain a published unit or skip the draw.
     if (!m_Materials->IsMaterialBuildContextReady())
         return staleEntry != nullptr
             ? ResolveWarmPipeline(material, *staleEntry, formatKey)
@@ -449,25 +411,6 @@ PipelineVariantCache::ResolveDepthVariant(
     if (staleEntry != nullptr)
         return ResolveWarmPipeline(material, *staleEntry, formatKey);
     return {{}, nullptr};
-}
-
-std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
-PipelineVariantCache::GetOrCompileDepthInstancedVariant(
-    const Material& material,
-    Rendering::VertexAttributeFlags vertexFlags,
-    Rendering::PrimitiveTopology topology,
-    Rendering::MaterialKeyword passKeywords,
-    uint32_t samples,
-    bool depthBiasEnable,
-    bool depthClampEnable,
-    Rendering::FrontFace frontFace,
-    const Rendering::RenderGraph::RGContext& ctx)
-{
-    const auto served = ResolveDepthVariant(material, vertexFlags, topology, passKeywords, samples, depthBiasEnable,
-                                            depthClampEnable, frontFace, ctx.BuildCurrentFormatKey());
-    if (served.first.IsValid())
-        RecordServedGeneration(material.GetGpuSceneMaterialIndex(), ServedPassClass::Depth, served.second->MaterialVersion);
-    return served;
 }
 
 std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
@@ -480,10 +423,10 @@ PipelineVariantCache::PrepareDepthInstancedVariant(
     bool depthBiasEnable,
     bool depthClampEnable,
     Rendering::FrontFace frontFace,
-    const Rendering::RenderGraph::RGPrepareContext& ctx)
+    const Rendering::RenderGraph::RGPrepareContext& context)
 {
     return ResolveDepthVariant(material, vertexFlags, topology, passKeywords, samples, depthBiasEnable,
-                               depthClampEnable, frontFace, ctx.BuildCurrentFormatKey());
+                               depthClampEnable, frontFace, context.BuildCurrentFormatKey());
 }
 
 const PipelineVariantCache::VariantServeUnit* PipelineVariantCache::FindOrRequestPrepassVariant(
@@ -903,7 +846,7 @@ void PipelineVariantCache::ApplyPendingVariantPublishes()
         InsertVariantEntry(rec.IsDepth ? m_DepthInstancedVariantCache : m_InstancedVariantCache,
                            rec.Key, rec.PipelineId, rec.MaterialVersion,
                            std::move(rec.SetLayouts), std::move(rec.VariantMeta));
-        // Marker erase strictly AFTER the insert: a record worker that misses the
+        // Marker erase strictly AFTER the insert: preparation that misses the
         // cache must always find the marker set, or it would re-enqueue a variant
         // that is already compiled.
         {
@@ -921,7 +864,7 @@ void PipelineVariantCache::RunColorVariantCompile(const VariantCompileRequest& r
     // mid-compile — bad_alloc under a 10-30s shaderc run). A wedged marker would
     // dedup-block the key from ever re-enqueueing — permanently dark draws. On
     // the success path the marker is handed to the serial apply instead, which
-    // erases it AFTER inserting the cache entry, so a record worker never
+    // erases it AFTER inserting the cache entry, so preparation never
     // observes a cache miss with no marker (which would re-enqueue a compiled
     // variant).
     struct ReleaseScope

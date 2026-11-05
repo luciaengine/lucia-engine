@@ -487,7 +487,9 @@ void SkyRenderNode::Declare(RenderPipelineInstance& instance, const PipelineDecl
                           {
                               Rendering::IDevice* device = context.GetDevice();
                               return device && context.PreparePipeline(rendererPtr->EnsureTransmittanceId(*device)).IsValid();
-                          }); p.Write(trans, RenderGraph::RGTextureWrite::Storage); },
+                          });
+                p.Write(trans, RenderGraph::RGTextureWrite::Storage);
+            },
             [this, rendererPtr](RenderGraph::RGContext& c)
             {
                 auto* cl = c.Cmd;

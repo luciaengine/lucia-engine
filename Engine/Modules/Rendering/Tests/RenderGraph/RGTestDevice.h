@@ -15,15 +15,15 @@ namespace GameEngine::Rendering::RenderGraph::Test
 
 inline std::unique_ptr<IDevice> MakeHeadlessDevice(const std::string& pipelineCacheDirectory = {})
 {
-    DeviceDesc dd{};
-    dd.pipelineCacheDirectory = pipelineCacheDirectory;
-    dd.preferredAPI = GraphicsAPI::Vulkan;
-    dd.enableDynamicRendering = true;
-    dd.enableSwapchain = false; // headless: no window/surface in the test harness
-    auto dev = DeviceFactory::CreateDevice(dd);
-    if (!dev || !dev->Initialize(dd))
+    DeviceDesc descriptor{};
+    descriptor.pipelineCacheDirectory = pipelineCacheDirectory;
+    descriptor.preferredAPI = GraphicsAPI::Vulkan;
+    descriptor.enableDynamicRendering = true;
+    descriptor.enableSwapchain = false; // headless: no window/surface in the test harness
+    auto device = DeviceFactory::CreateDevice(descriptor);
+    if (!device || !device->Initialize(descriptor))
         return nullptr;
-    return dev;
+    return device;
 }
 
 } // namespace GameEngine::Rendering::RenderGraph::Test

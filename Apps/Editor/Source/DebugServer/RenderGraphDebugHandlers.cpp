@@ -70,12 +70,11 @@ server.RegisterHandler("get_render_graph_passes", [&app](const EditorDebugServer
             jp["barrierCount"] = RgBarrierCountForPass(g, p);
             if (name)
             {
-                auto it = timings.find(name);
-                if (it != timings.end())
+                if (const auto* timing = timings.Find(name))
                 {
-                    jp["cpuMs"] = it->second.CpuMs;
-                    jp["workerRecordMs"] = it->second.WorkerRecordMs;
-                    jp["gpuSpanMs"] = it->second.GpuSpanMs;
+                    jp["cpuMs"] = timing->CpuMs;
+                    jp["workerRecordMs"] = timing->WorkerRecordMs;
+                    jp["gpuSpanMs"] = timing->GpuSpanMs;
                 }
             }
             if (includeAccesses)
@@ -214,12 +213,11 @@ server.RegisterHandler("get_render_graph_pass_detail", [&app](const EditorDebugS
         detail["barriers"] = std::move(barriers);
         detail["successors"] = std::move(successors);
         const auto timings = RgTimingMap(frame);
-        auto it = timings.find(wanted);
-        if (it != timings.end())
+        if (const auto* timing = timings.Find(wanted))
         {
-            detail["cpuMs"] = it->second.CpuMs;
-            detail["workerRecordMs"] = it->second.WorkerRecordMs;
-            detail["gpuSpanMs"] = it->second.GpuSpanMs;
+            detail["cpuMs"] = timing->CpuMs;
+            detail["workerRecordMs"] = timing->WorkerRecordMs;
+            detail["gpuSpanMs"] = timing->GpuSpanMs;
         }
         return detail; });
 
