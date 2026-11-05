@@ -4,6 +4,7 @@
  */
 
 #include "VulkanDevice.h"
+#include "Rendering/Core/BarrierMapping.h"
 #include "Rendering/Core/TextureFormatSupportGate.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/RendererProfile.h"
@@ -640,6 +641,8 @@ bool VulkanDevice::Initialize(const DeviceDesc& desc)
     m_ApplicationName = desc.applicationName;
 
     m_EnableDescriptorValidation = desc.enableDescriptorValidation;
+    m_FillNewTargetsWithNaN =
+        GameEngine::Platform::EnvironmentSwitchEnabled("GE_VK_FILL_NEW_TARGETS_NAN", false);
     // Respect config toggle for bindless capability gating
     m_ForceDisableBindlessResources = desc.forceDisableBindlessResources;
     // Record whether swapchain/WSI should be enabled for this device
@@ -4330,14 +4333,18 @@ void VulkanDevice::FillNewStorageBufferWithNaN(BufferHandle buffer, uint64_t siz
     const uint64_t fillBytes = sizeBytes & ~uint64_t{3};
     if (fillBytes == 0)
         return;
-    auto cl = CreateCommandList(QueueType::Graphics);
-    cl->Begin();
-    cl->FillBuffer(buffer, 0, static_cast<size_t>(fillBytes), kNaNPattern);
-    cl->End();
-    CommandList* raw = cl.get();
-    // Waited, not just submitted: the caller's next write may come from the
-    // host through a mapping or from another queue, and must land after the fill.
-    WaitGpuSyncToken(ExecuteCommandListsTracked({raw}).graphics);
+    auto commands = CreateCommandList(QueueType::Graphics);
+    commands->Begin();
+    commands->FillBuffer(buffer, 0, static_cast<size_t>(fillBytes), kNaNPattern);
+    commands->Barrier(ResourceBarrier::CreateMemoryBarrier(
+        static_cast<uint64_t>(PipelineStageMask::Transfer),
+        static_cast<uint64_t>(PipelineStageMask::Host),
+        static_cast<uint64_t>(ResourceAccessMask::TransferWrite),
+        static_cast<uint64_t>(ResourceAccessMask::HostRead)));
+    commands->End();
+    CommandList* commandList = commands.get();
+    // Wait before returning so mapped reads and later writes follow the fill.
+    WaitGpuSyncToken(ExecuteCommandListsTracked({commandList}).graphics);
 }
 
 TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
