@@ -65,7 +65,7 @@ void WriteLegacyLane(uint8_t* row, std::string_view name, std::initializer_list<
     std::memcpy(row + LegacyLaneByteOffset(*lane), std::data(values), LegacyLaneByteSize(*lane));
 }
 
-struct Vertex
+struct LitCubeVertex
 {
     float pos[3];
     float nrm[3];
@@ -73,7 +73,7 @@ struct Vertex
 };
 
 // 24-vertex cube in [-0.5, 0.5] (unique normals/UVs per face).
-void BuildCube(std::vector<Vertex>& outVerts, std::vector<uint16_t>& outIdx)
+void BuildCube(std::vector<LitCubeVertex>& outVerts, std::vector<uint16_t>& outIdx)
 {
     outVerts.clear();
     outIdx.clear();
@@ -82,10 +82,10 @@ void BuildCube(std::vector<Vertex>& outVerts, std::vector<uint16_t>& outIdx)
                         const Vector3& a, const Vector3& b, const Vector3& c, const Vector3& d)
     {
         const uint16_t base = static_cast<uint16_t>(outVerts.size());
-        outVerts.push_back(Vertex{{a.x, a.y, a.z}, {nx, ny, nz}, {0.0f, 0.0f}});
-        outVerts.push_back(Vertex{{b.x, b.y, b.z}, {nx, ny, nz}, {1.0f, 0.0f}});
-        outVerts.push_back(Vertex{{c.x, c.y, c.z}, {nx, ny, nz}, {1.0f, 1.0f}});
-        outVerts.push_back(Vertex{{d.x, d.y, d.z}, {nx, ny, nz}, {0.0f, 1.0f}});
+        outVerts.push_back(LitCubeVertex{{a.x, a.y, a.z}, {nx, ny, nz}, {0.0f, 0.0f}});
+        outVerts.push_back(LitCubeVertex{{b.x, b.y, b.z}, {nx, ny, nz}, {1.0f, 0.0f}});
+        outVerts.push_back(LitCubeVertex{{c.x, c.y, c.z}, {nx, ny, nz}, {1.0f, 1.0f}});
+        outVerts.push_back(LitCubeVertex{{d.x, d.y, d.z}, {nx, ny, nz}, {0.0f, 1.0f}});
         for (int i : {0, 1, 2, 0, 2, 3})
             outIdx.push_back(static_cast<uint16_t>(base + i));
     };
@@ -234,13 +234,13 @@ TEST(MaterialShaders, MaterialV2_RendersLitCube)
     ASSERT_TRUE(depth.IsValid());
 
     // Geometry
-    std::vector<Vertex> verts;
+    std::vector<LitCubeVertex> verts;
     std::vector<uint16_t> idx;
     BuildCube(verts, idx);
 
-    BufferHandle vb = CreateUploadBuffer(*dev, BufferUsage::Vertex, verts.size() * sizeof(Vertex), "MaterialLit.CubeVB");
+    BufferHandle vb = CreateUploadBuffer(*dev, BufferUsage::Vertex, verts.size() * sizeof(LitCubeVertex), "MaterialLit.CubeVB");
     ASSERT_TRUE(vb.IsValid());
-    Upload(*dev, vb, verts.data(), verts.size() * sizeof(Vertex));
+    Upload(*dev, vb, verts.data(), verts.size() * sizeof(LitCubeVertex));
 
     BufferHandle ib = CreateUploadBuffer(*dev, BufferUsage::Index, idx.size() * sizeof(uint16_t), "MaterialLit.CubeIB");
     ASSERT_TRUE(ib.IsValid());
@@ -348,10 +348,10 @@ TEST(MaterialShaders, MaterialV2_RendersLitCube)
     pd.SetCullingMode(CullModeFlagBits::None, FrontFace::CounterClockwise);
     pd.colorAttachmentFormats = {static_cast<uint32_t>(TextureFormat::RGBA8_UNORM)};
     pd.depthAttachmentFormat = static_cast<uint32_t>(TextureFormat::D32_FLOAT);
-    pd.vertexBindings.push_back(VertexInputBinding{0u, static_cast<uint32_t>(sizeof(Vertex)), 0u});
-    pd.vertexAttributes.push_back(VertexInputAttribute{0u, 0u, Format::R32G32B32_FLOAT, static_cast<uint32_t>(offsetof(Vertex, pos))});
-    pd.vertexAttributes.push_back(VertexInputAttribute{1u, 0u, Format::R32G32B32_FLOAT, static_cast<uint32_t>(offsetof(Vertex, nrm))});
-    pd.vertexAttributes.push_back(VertexInputAttribute{2u, 0u, Format::R32G32_FLOAT, static_cast<uint32_t>(offsetof(Vertex, uv))});
+    pd.vertexBindings.push_back(VertexInputBinding{0u, static_cast<uint32_t>(sizeof(LitCubeVertex)), 0u});
+    pd.vertexAttributes.push_back(VertexInputAttribute{0u, 0u, Format::R32G32B32_FLOAT, static_cast<uint32_t>(offsetof(LitCubeVertex, pos))});
+    pd.vertexAttributes.push_back(VertexInputAttribute{1u, 0u, Format::R32G32B32_FLOAT, static_cast<uint32_t>(offsetof(LitCubeVertex, nrm))});
+    pd.vertexAttributes.push_back(VertexInputAttribute{2u, 0u, Format::R32G32_FLOAT, static_cast<uint32_t>(offsetof(LitCubeVertex, uv))});
 
     MaterialBuilder::FormatsHint fh{};
     fh.ColorFormats = {static_cast<uint32_t>(TextureFormat::RGBA8_UNORM)};
