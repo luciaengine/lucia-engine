@@ -188,3 +188,28 @@ TEST(SpritePlayback, ExtremeLoopStepsSaturateCountsAndKeepTheClockFinite)
     EXPECT_EQ(step.LoopCount, std::numeric_limits<int64>::max());
     EXPECT_EQ(step.Events, 3u);
 }
+
+TEST(SpritePlayback, LargeWholeLoopsPreserveNonzeroPhaseInBothDirections)
+{
+    auto animation = MakeAnimation(true);
+    animation.Frames.resize(2);
+    for (auto& frame : animation.Frames) frame.DurationSeconds = 0.5f;
+    for (const float32 speed : {-1.0f, 1.0f})
+    {
+        const auto step = AdvanceSpritePlayback(animation, 0.75f, std::ldexp(1.0f, 55), speed);
+        EXPECT_FLOAT_EQ(step.TimeSeconds, 0.75f);
+        EXPECT_EQ(step.FrameIndex, 1u);
+        EXPECT_EQ(step.LoopCount, (int64{1} << 55) * static_cast<int64>(speed));
+    }
+}
+
+TEST(SpritePlayback, LargeFractionalLoopsPreserveResidualCarryAndExactCounts)
+{
+    auto animation = MakeAnimation(true);
+    animation.Frames.resize(2);
+    for (auto& frame : animation.Frames) frame.DurationSeconds = 0.75f;
+    const auto step = AdvanceSpritePlayback(animation, 1.25f, std::ldexp(1.0f, 63), 1);
+    constexpr int64 kExpectedLoops = 6'148'914'691'236'517'206;
+    EXPECT_EQ(step.LoopCount, kExpectedLoops);
+    EXPECT_FLOAT_EQ(step.TimeSeconds, 0.25f);
+}
