@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Rendering/Core/Device.h"
-#include "TestTempDir.h"
+#include "../../Tests/TestTempDir.h"
 
 #include <atomic>
 #include <memory>
