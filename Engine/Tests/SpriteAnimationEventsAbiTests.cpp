@@ -30,6 +30,7 @@ TEST(SpriteAnimationEventsAbi, PollConsumesTheSnapshotOnceAndEmptyPollsDoNotWrit
     sprite.PlaybackEventFrame = 7;
     sprite.PlaybackEventLoops = -2;
     sprite.TimeSeconds = 0.25f;
+    sprite.PlaybackEventTimeSeconds = 0.25f;
     auto entity = world.Create(sprite);
     world.ProcessCommands();
     GE_SpriteAnimationEvents events{};
@@ -67,6 +68,22 @@ TEST(SpriteAnimationEventsAbi, InvalidArgumentsAndDeadEntitiesHaveNoPayload)
     auto empty = world.Create();
     world.ProcessCommands();
     EXPECT_EQ(GE_SpriteAnimation_PollEvents(handle, empty.GetHandle().id, &events), GE_Result_NotFound);
+}
+
+TEST(SpriteAnimationEventsAbi, SeekingBeforePollingPreservesThePublishedEventTime)
+{
+    ECS::World world;
+    Components::AnimatedSprite2D sprite;
+    sprite.PendingPlaybackEvents = 1;
+    sprite.PlaybackEventFrame = 1;
+    sprite.TimeSeconds = sprite.PlaybackEventTimeSeconds = 0.75f;
+    auto entity = world.Create(sprite);
+    world.ProcessCommands();
+    entity.GetForWrite<Components::AnimatedSprite2D>()->TimeSeconds = 0;
+    GE_SpriteAnimationEvents events{};
+    ASSERT_EQ(GE_SpriteAnimation_PollEvents(WorldHandle(world), entity.GetHandle().id, &events), GE_Result_Ok);
+    EXPECT_EQ(events.frameIndex, 1u);
+    EXPECT_FLOAT_EQ(events.timeSeconds, 0.75f);
 }
 
 TEST(SpriteAnimationEventsAbi, WorkerPollIsRefusedAndLeavesEventsForTheMainThread)

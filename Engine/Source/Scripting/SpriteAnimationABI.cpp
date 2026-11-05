@@ -36,7 +36,7 @@ GE_API GE_Result GE_CDECL GE_SpriteAnimation_PollEvents(GE_Handle worldHandle, u
         if (sprite->PendingPlaybackEvents == 0)
             return GE_Result_Ok;
         *outEvents = {sprite->PendingPlaybackEvents, sprite->PlaybackEventFrame,
-                      sprite->PlaybackEventLoops, sprite->TimeSeconds};
+                      sprite->PlaybackEventLoops, sprite->PlaybackEventTimeSeconds};
         world->GetComponentForWrite<GameEngine::Components::AnimatedSprite2D>(entity)->PendingPlaybackEvents = 0;
         return GE_Result_Ok;
     }

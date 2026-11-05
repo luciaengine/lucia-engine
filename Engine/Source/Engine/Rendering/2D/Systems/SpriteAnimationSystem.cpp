@@ -52,6 +52,7 @@ std::size_t AdvancePlayback(const Sprite2D::SpriteFrameAnimation& animation,
     {
         updated.PlaybackEventFrame = static_cast<uint32>(step.FrameIndex);
         updated.PlaybackEventLoops = step.LoopCount;
+        updated.PlaybackEventTimeSeconds = step.TimeSeconds;
     }
     if (finished)
         updated.Playing = false;

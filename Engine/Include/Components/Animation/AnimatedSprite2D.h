@@ -72,6 +72,8 @@ struct AnimatedSprite2D
     uint32 PlaybackEventFrame = 0;
     // [DoNotSerialize] Signed loop count of the update that produced PendingPlaybackEvents.
     int64 PlaybackEventLoops = 0;
+    // [DoNotSerialize] Clock captured when PendingPlaybackEvents was published.
+    float32 PlaybackEventTimeSeconds = 0;
 
     void SetAnimationName(std::string_view value)
     {

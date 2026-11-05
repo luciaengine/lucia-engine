@@ -162,6 +162,7 @@ TEST_F(SpriteAnimationWrites, OneShotPublishesCompletionOnceAndHoldsItsLastFrame
     EXPECT_FLOAT_EQ(sprite->TimeSeconds, 0.2f);
     EXPECT_EQ(sprite->PlaybackEventFrame, 1u);
     EXPECT_EQ(sprite->PendingPlaybackEvents, 5u);
+    EXPECT_FLOAT_EQ(sprite->PlaybackEventTimeSeconds, 0.2f);
     system.Update(m_World, 0.25f);
     EXPECT_EQ(sprite->PendingPlaybackEvents, 0u);
     EXPECT_EQ(UpdateAndCountChanged(), 0u);
