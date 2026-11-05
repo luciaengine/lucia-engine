@@ -197,6 +197,7 @@ void ShadowMinMaxPyramid::DeclareLevelPass(Rendering::RenderGraph::RGFrame& fram
         passName.c_str(), Rendering::PassPhase::kDefault,
         [&](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(m_PipelineId);
             // Declared ranges match what the pass's DESCRIPTORS reach, not just
             // the texels one dispatch stores: uSrcDepth binds the whole cascade
             // array and uDst a whole mip level. Z workgroups reduce all active

@@ -2073,10 +2073,10 @@ endif()
                 Tests/SceneBuildPumpTests.cpp
                 Tests/SceneResolveFrameTests.cpp
                 Tests/SceneResolveServiceTests.cpp
+                Tests/SortedTransparentPixelTests.cpp
                 Tests/SortedTransparentCullTests.cpp
                 Tests/SortedTransparentRunTests.cpp
                 Tests/RenderSortingTests.cpp
-                Tests/GPUSortTests.cpp
                 Tests/SortedTransparentDeciderTests.cpp
                 Tests/SkinPaletteAtlasTests.cpp
                 Tests/SkinPaletteRefusalTests.cpp
@@ -2211,6 +2211,10 @@ endif()
                 Tests/DDGIRelocationComputeTests.cpp
                 Tests/DDGIResolveBlurComputeTests.cpp
                 Tests/OceanCascadeLayoutTests.cpp
+                Tests/OceanPreparedDispatchTests.cpp
+                Tests/OceanSprayPreparationTests.cpp
+                Tests/OceanReadbackPreparationTests.cpp
+                Tests/OceanRasterCapturePreparationTests.cpp
                 Tests/OceanSeabedDepthShaderTests.cpp
                 Tests/OceanShallowClarityShaderTests.cpp
                 Tests/OceanSurfaceComposeTests.cpp
@@ -2226,6 +2230,7 @@ endif()
                 Tests/IblShaderContractTests.cpp
                 Tests/GlassTransmissionShaderContractTests.cpp
                 Tests/SkyGroundBounceContractTests.cpp
+                Tests/SkyLutRestingLayoutTests.cpp
                 Tests/SkySunColorTests.cpp
                 Tests/SkySunAnchorTests.cpp
                 Tests/SkySunIlluminanceTests.cpp
@@ -2995,6 +3000,7 @@ endif()
 	    # Engine.dll; linking it directly as well would put a second copy of the
 	    # module's file-scope state in the exe (issue #356, same disease as
 	    # #340). Animation headers propagate via Engine's re-exported INTERFACE.
+	    target_include_directories(RetargetGPUParityTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
 	    target_link_libraries(RetargetGPUParityTests PRIVATE
 	        Engine GameEngine.Native
 	        GTest::gtest GTest::gtest_main)

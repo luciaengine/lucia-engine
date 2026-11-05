@@ -1,26 +1,12 @@
 #include "Rendering/Materials/MaterialBuilder.h"
-#include <algorithm>
-#include <stdexcept>
+
 #include "Rendering/Materials/ShaderLayoutShape.h"
 #include "Rendering/Materials/ShaderMetaValidation.h"
 
+#include <algorithm>
+#include <stdexcept>
 
 namespace GameEngine { namespace Rendering {
-
-static DescriptorType MapBindingType(uint32_t t) {
-    using namespace ShaderMetaBindingType;
-    switch (t) {
-        case kUniformBuffer:        return DescriptorType::UniformBuffer;
-        case kStorageBuffer:        return DescriptorType::StorageBuffer;
-        case kSampler:              return DescriptorType::Sampler;
-        case kSampledImage:         return DescriptorType::Texture;
-        case kStorageImage:         return DescriptorType::StorageImage;
-        case kCombinedImageSampler: return DescriptorType::CombinedImageSampler;
-        case kAccelerationStructure: return DescriptorType::AccelerationStructure;
-        default: return DescriptorType::UniformBuffer;
-    }
-}
-
 
 // Map the ShaderMeta stage mask (ShaderMetaStage) to backend-native flags (Vulkan by default)
 static uint32_t MapAbstractStagesToBackend(uint32_t m) {
@@ -37,21 +23,23 @@ static uint32_t MapAbstractStagesToBackend(uint32_t m) {
 }
 
 
-DescriptorSetLayoutDesc MaterialBuilder::BuildSetLayout(const DescriptorSetMeta& setMeta) {
-    DescriptorSetLayoutDesc dsl{};
-    dsl.bindings.reserve(setMeta.Bindings.size());
-    for (const auto& b : setMeta.Bindings) {
-        DescriptorBinding db{};
-        db.binding = b.Binding;
-        db.type = MapBindingType(b.Type);
-        db.count = b.Count;
-        db.shaderStages = MapAbstractStagesToBackend(b.StagesMask);
-        db.debugName = b.Name.c_str();
-        dsl.bindings.push_back(db);
+DescriptorSetLayoutDesc MaterialBuilder::BuildSetLayout(const DescriptorSetMeta& setMeta)
+{
+    DescriptorSetLayoutDesc layout{};
+    layout.bindings.reserve(setMeta.Bindings.size());
+    for (const auto& binding : setMeta.Bindings)
+    {
+        DescriptorBinding descriptor{};
+        descriptor.binding = binding.Binding;
+        descriptor.type = MapShaderMetaBindingType(binding.Type);
+        descriptor.count = binding.Count;
+        descriptor.shaderStages = MapAbstractStagesToBackend(binding.StagesMask);
+        descriptor.debugName = binding.Name.c_str();
+        layout.bindings.push_back(descriptor);
     }
-    // The storage access, texel format and image shape, by the rule hand-built layouts follow.
-    ApplySetMetaImageShapeToLayout(setMeta, dsl);
-    return dsl;
+    // Apply the same storage access, texel format and image shape as hand-built layouts.
+    ApplySetMetaImageShapeToLayout(setMeta, layout);
+    return layout;
 }
 
 std::vector<DescriptorSetLayoutDesc> MaterialBuilder::BuildSetLayouts(const ShaderMeta& meta) {

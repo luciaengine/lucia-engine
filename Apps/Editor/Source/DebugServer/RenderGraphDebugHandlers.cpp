@@ -52,7 +52,7 @@ server.RegisterHandler("get_render_graph_passes", [&app](const EditorDebugServer
         if (!frame)
             return Editor::RefuseRequest(kRgNoFrameMsg);
         const RG::RGGraph& g = frame->Graph();
-        const auto timings = rgTimingMap(frame);
+        const auto timings = RgTimingMap(frame);
         const bool includeAccesses = ctx.params.value("includeAccesses", false);
 
         json passes = json::array();
@@ -70,11 +70,11 @@ server.RegisterHandler("get_render_graph_passes", [&app](const EditorDebugServer
             jp["barrierCount"] = RgBarrierCountForPass(g, p);
             if (name)
             {
-                auto it = timings.find(name);
-                if (it != timings.end())
+                if (const auto* timing = timings.Find(name))
                 {
-                    jp["cpuMs"] = it->second.first;
-                    jp["gpuSpanMs"] = it->second.second;
+                    jp["cpuMs"] = timing->CpuMs;
+                    jp["workerRecordMs"] = timing->WorkerRecordMs;
+                    jp["gpuSpanMs"] = timing->GpuSpanMs;
                 }
             }
             if (includeAccesses)
@@ -212,12 +212,12 @@ server.RegisterHandler("get_render_graph_pass_detail", [&app](const EditorDebugS
         detail["accesses"] = std::move(accesses);
         detail["barriers"] = std::move(barriers);
         detail["successors"] = std::move(successors);
-        const auto timings = rgTimingMap(frame);
-        auto it = timings.find(wanted);
-        if (it != timings.end())
+        const auto timings = RgTimingMap(frame);
+        if (const auto* timing = timings.Find(wanted))
         {
-            detail["cpuMs"] = it->second.first;
-            detail["gpuSpanMs"] = it->second.second;
+            detail["cpuMs"] = timing->CpuMs;
+            detail["workerRecordMs"] = timing->WorkerRecordMs;
+            detail["gpuSpanMs"] = timing->GpuSpanMs;
         }
         return detail; });
 

@@ -1,4 +1,3 @@
-#include "Engine/Rendering/AuthoredTransparentRuns.h"
 #include "Engine/Rendering/SortedTransparentComposition.h"
 #include "Engine/Build/GameConfig.h"
 #include "Engine/Rendering/RenderSorting.h"
@@ -9,16 +8,17 @@
 #include "ECS/World.h"
 #include "ECS/ECSTemplates.h"
 
-#include <gtest/gtest.h>
-#include <memory_resource>
 #include <chrono>
 #include <filesystem>
+#include <memory_resource>
+
+#include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
 using namespace GameEngine;
 using namespace GameEngine::Engine::Renderer;
 
-TEST(RenderSorting, SameMaterialLayerAndOrderOverrideDepthOnBothDrainPaths)
+TEST(RenderSorting, SameMaterialLayerAndOrderOverrideDepth)
 {
     std::vector<SortedTransparentRecord> records(3);
     records[0].ViewDepth = 1;
@@ -33,40 +33,38 @@ TEST(RenderSorting, SameMaterialLayerAndOrderOverrideDepthOnBothDrainPaths)
     keys[2].Depth = 50;
     SortedTransparentRunPartition partition;
     std::pmr::monotonic_buffer_resource scratch;
-    BuildAuthoredTransparentRunPartition(records, keys, scratch, partition);
-    const auto order = BuildSortedTransparentCpuOrder(records, partition);
+    std::vector<ECS::EntityHandle> entities(records.size());
+    std::vector<uint32> order;
+    std::vector<TransparentCompositionSlot> slots;
+    BuildTransparentComposition(records, keys, entities, {}, scratch, partition, order, slots, false);
     EXPECT_EQ(order, (std::vector<uint32_t>{0, 2, 1}));
-    ASSERT_EQ(partition.RunCount.size(), 3u);
-    for (size_t i = 1; i < order.size(); ++i)
-    {
-        const auto before = order[i - 1], after = order[i];
-        EXPECT_TRUE(SortedTransparentKeyLess(
-            MakeSortedTransparentKey(records[before].ViewDepth, static_cast<uint16_t>(records[before].RunGroup), static_cast<uint16_t>(before)),
-            MakeSortedTransparentKey(records[after].ViewDepth, static_cast<uint16_t>(records[after].RunGroup), static_cast<uint16_t>(after))));
-    }
+    EXPECT_EQ(partition.RunCount, (std::vector<uint32_t>{3}));
 }
 
-TEST(RenderSorting, AlternatingMaterialsRemainInterleavedBeyondGpuCapacity)
+TEST(RenderSorting, MeshOnlyAlternatingMaterialsStayInDepthOrderAtLargeCounts)
 {
-    const uint32_t count = kSortedTransparentSortCapacity + 1;
-    std::vector<SortedTransparentRecord> records(count);
-    std::vector<RenderSortKey> keys(count);
-    for (uint32_t i = 0; i < count; ++i)
+    constexpr uint32_t kCount = 4097;
+    std::vector<SortedTransparentRecord> records(kCount);
+    std::vector<RenderSortKey> keys(kCount);
+    for (uint32_t recordIndex = 0; recordIndex < kCount; ++recordIndex)
     {
-        records[i].RunGroup = i % 2;
-        records[i].ViewDepth = static_cast<float>(i);
-        keys[i].Order = static_cast<int32>(i);
-        keys[i].Depth = records[i].ViewDepth;
+        records[recordIndex].RunGroup = recordIndex % 2;
+        records[recordIndex].ViewDepth = static_cast<float>(recordIndex);
+        keys[recordIndex].Depth = records[recordIndex].ViewDepth;
     }
     SortedTransparentRunPartition partition;
     std::pmr::monotonic_buffer_resource scratch;
-    BuildAuthoredTransparentRunPartition(records, keys, scratch, partition);
-    const auto order = BuildSortedTransparentCpuOrder(records, partition);
-    ASSERT_EQ(partition.RunCount.size(), count);
-    for (uint32_t i = 0; i < count; ++i)
+    std::vector<ECS::EntityHandle> entities(kCount);
+    std::vector<uint32> order;
+    std::vector<TransparentCompositionSlot> slots;
+    BuildTransparentComposition(records, keys, entities, {}, scratch, partition, order, slots, false);
+    ASSERT_EQ(partition.RunCount.size(), kCount);
+    for (uint32_t recordIndex = 0; recordIndex < kCount; ++recordIndex)
     {
-        EXPECT_EQ(order[i], i);
-        EXPECT_EQ(partition.GroupOfSlot[i], i % 2);
+        EXPECT_EQ(order[recordIndex], kCount - 1 - recordIndex);
+        EXPECT_EQ(partition.GroupOfSlot[recordIndex], (kCount - 1 - recordIndex) % 2);
+        EXPECT_EQ(partition.RunStart[recordIndex], recordIndex);
+        EXPECT_EQ(partition.RunCount[recordIndex], 1u);
     }
 }
 

@@ -113,6 +113,7 @@ RG::RGTexture PlanarReflectionNode::BlurCapture(ViewDeclare& d, RG::RGTexture so
         d.Frame.AddPass(name.c_str(), PassPhase::kDefault,
             [&](RG::RGPassBuilder& p)
             {
+                p.UsePipeline(m_BlurPipeline);
                 p.Read(input, RG::RGTextureRead::SampledCompute);
                 p.Write(output, RG::RGTextureWrite::Storage);
             },
@@ -216,6 +217,7 @@ void PlanarReflectionNode::DeclareForView(ViewDeclare& d)
         d.Frame.AddPass(d.PassName(suffix.c_str()).c_str(), PassPhase::kDefault,
             [&](RG::RGPassBuilder& p)
             {
+                p.UsePipeline(m_Pipeline);
                 for (auto texture : {source, capture.Color, captureColor, depth, normal, weight, radiance, previousMask})
                     p.Read(texture, RG::RGTextureRead::SampledCompute);
                 p.Write(output, RG::RGTextureWrite::Storage);

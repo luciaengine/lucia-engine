@@ -401,7 +401,7 @@ bool OceanForwardContributor::BuildForwardCommand(
     bool boundFoam = false;
     if (m_Feature.IsFoamReady())
     {
-        const auto foamTex = m_Feature.GetFoamTexture();
+        const auto foamTex = m_Feature.GetFoamTexture(*ctx.Frame);
         if (foamTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};
@@ -436,7 +436,7 @@ bool OceanForwardContributor::BuildForwardCommand(
     if (const auto layoutAlloc = ctx.Frame->AllocUpload<OceanSampledCascadeLayoutsGPU>();
         layoutAlloc.Valid())
     {
-        *layoutAlloc.Ptr = m_Feature.SampledCascadeLayouts(available);
+        *layoutAlloc.Ptr = m_Feature.SampledCascadeLayouts(*ctx.Frame, available);
         scratch.Buffers.push_back({HashStringId("OceanCascadeLayout"), layoutAlloc.Buffer,
                                    layoutAlloc.Offset,
                                    static_cast<uint64_t>(sizeof(OceanSampledCascadeLayoutsGPU))});
@@ -584,14 +584,14 @@ bool OceanForwardContributor::BuildForwardCommand(
     if (shadowInfo.Valid())
     {
         const bool ready =
-            m_Feature.GetShadows().FillSampling(viewId, ctx.Frame->FrameIndex(), *shadowInfo.Ptr);
+            m_Feature.GetShadows().FillSampling(viewId, *ctx.Frame, *shadowInfo.Ptr);
         scratch.Buffers.push_back({HashStringId("OceanShadowInfo"), shadowInfo.Buffer, shadowInfo.Offset,
                                    sizeof(OceanShadowSamplingGPU)});
         if (ready)
         {
             DrawBindings::TextureEntry tex{};
             tex.Name = HashStringId("uOceanShadows");
-            tex.Texture = m_Feature.GetShadows().GetTexture(viewId);
+            tex.Texture = m_Feature.GetShadows().GetTexture(viewId, *ctx.Frame);
             tex.Sampler = m_Feature.GetShadows().GetSampler();
             scratch.Textures.push_back(tex);
             collectRG([&] { return m_Feature.GetShadows().ImportRG(*ctx.Frame, viewId); });
@@ -625,7 +625,7 @@ bool OceanForwardContributor::BuildForwardCommand(
     // default-slot fallback covers the unbound case.
     if (dynWavesReady)
     {
-        const auto dynTex = m_Feature.GetDynWavesTexture();
+        const auto dynTex = m_Feature.GetDynWavesTexture(*ctx.Frame);
         if (dynTex.IsValid())
         {
             DrawBindings::TextureEntry tex{};

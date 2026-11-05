@@ -272,102 +272,100 @@ void OceanFFT::FillParams(OceanFFTParamsGPU& out)
     out = m_Params;
 }
 
-void OceanFFT::RecordPass(IDevice* device, CommandList* cl, ComputePipelineId pipeline,
+OceanPreparedDispatch OceanFFT::PreparePass(IDevice* device, ComputePipelineId pipeline,
                           const DescriptorSetLayoutDesc& layout, BufferHandle paramsBuffer,
                           uint64 paramsOffset, const TextureHandle* images, const uint32* slots,
-                          uint32 imageCount, uint32 groupsX, uint32 groupsY, uint32 groupsZ)
+                          uint32 imageCount, uint32 groupsX, uint32 groupsY, uint32 groupsZ) const
 {
-    PipelineHandle pipe = device->GetOrCreateComputePipeline(pipeline);
-    if (!pipe)
-        return;
-
-    cl->SetPipeline(pipe);
-
-    DescriptorSetDesc dsDesc{};
-    dsDesc.layout = layout;
-    dsDesc.transient = true;
-    dsDesc.debugName = "OceanFFT_DS";
-    DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
-
-    device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanFFTParamsGPU));
+    const PipelineHandle pipe = device->TryGetWarmComputePipeline(pipeline);
+    if (!pipe.IsValid())
+        return {};
+    DescriptorSetDesc desc{};
+    desc.layout = layout;
+    desc.transient = true;
+    desc.debugName = "OceanFFT_DS";
+    const auto set = device->CreateDescriptorSet(desc);
+    if (!set.IsValid())
+        return {};
+    device->UpdateBufferBinding(set, 0, paramsBuffer, paramsOffset, sizeof(OceanFFTParamsGPU));
     for (uint32 i = 0; i < imageCount; ++i)
-        device->UpdateStorageImageBinding(ds, slots[i], images[i]);
-
-    cl->BindDescriptorSet(0, ds, pipe);
-    cl->Dispatch(groupsX, groupsY, groupsZ);
+        device->UpdateStorageImageBinding(set, slots[i], images[i]);
+    return {pipe, set, groupsX, groupsY, groupsZ, images[imageCount - 1u]};
 }
 
-void OceanFFT::RecordDispatch(IDevice* device, CommandList* cl, BufferHandle paramsBuffer,
-                              uint64 paramsOffset)
+OceanPreparedFFTDispatch OceanFFT::PrepareDispatch(
+    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset) const
 {
-    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
-        return;
-
+    OceanPreparedFFTDispatch dispatch{};
+    if (!m_Ready || !device || !paramsBuffer.IsValid())
+        return dispatch;
     const uint32 layers = kOceanFFTCascades;
-    auto uavBarrier = [&](TextureHandle t) {
-        cl->Barrier(ResourceBarrier::CreateTextureBarrier(
-            t, ResourceState::UnorderedAccess, ResourceState::UnorderedAccess, 0, 1, 0, layers));
-    };
+    const uint32 res = kOceanFFTResolution;
+    const uint32 g8 = (res + 7u) / 8u;
+    dispatch.InitializeSpectrum = m_SpectrumDirty;
+    if (dispatch.InitializeSpectrum)
+    {
+        const TextureHandle images[] = {m_H0};
+        const uint32 slots[] = {1};
+        dispatch.Init = PreparePass(device, m_InitPipe, m_InitLayout, paramsBuffer, paramsOffset,
+                                    images, slots, 1, g8, g8, layers);
+    }
+    {
+        const TextureHandle images[] = {m_H0, m_SpecH, m_SpecX, m_SpecZ};
+        const uint32 slots[] = {1, 2, 3, 4};
+        dispatch.Update = PreparePass(device, m_UpdatePipe, m_UpdateLayout, paramsBuffer, paramsOffset,
+                                      images, slots, 4, g8, g8, layers);
+    }
+    {
+        const TextureHandle images[] = {m_SpecH, m_SpecX, m_SpecZ, m_Butterfly, m_TmpH, m_TmpX, m_TmpZ};
+        const uint32 slots[] = {1, 2, 3, 4, 5, 6, 7};
+        dispatch.Horizontal = PreparePass(device, m_FFTHPipe, m_FFTHLayout, paramsBuffer, paramsOffset,
+                                          images, slots, 7, 1, res, layers);
+    }
+    {
+        const TextureHandle images[] = {m_TmpH, m_TmpX, m_TmpZ, m_Butterfly, m_Displacement};
+        const uint32 slots[] = {1, 2, 3, 4, 5};
+        dispatch.Vertical = PreparePass(device, m_FFTVPipe, m_FFTVLayout, paramsBuffer, paramsOffset,
+                                        images, slots, 5, res, 1, layers);
+    }
+    return dispatch;
+}
 
-    // First-use layout init: bring the INTERNAL storage textures into
-    // UnorderedAccess (they never leave it — intra-pass only, invisible to the
-    // render graph). The displacement is graph-owned: the pass's declared Write
-    // provides its ShaderResource->General entry transition, the first declared
-    // reader restores ShaderReadOnly, and MarkOutput covers reader-less frames.
+void OceanFFT::RecordDispatch(CommandList* cl, const OceanPreparedFFTDispatch& dispatch)
+{
+    if (!cl || !dispatch.IsValid())
+        return;
+    const uint32 layers = kOceanFFTCascades;
+    auto uavBarrier = [&](TextureHandle texture)
+    {
+        cl->Barrier(ResourceBarrier::CreateTextureBarrier(
+            texture, ResourceState::UnorderedAccess, ResourceState::UnorderedAccess, 0, 1, 0, layers));
+    };
+    // Only actual recorded work initializes the internal images. A later prepare
+    // can still abort the whole frame after all four packets have been built.
     if (!m_DisplacementWritten)
     {
-        for (auto t : {m_H0, m_SpecH, m_SpecX, m_SpecZ, m_TmpH, m_TmpX, m_TmpZ})
+        for (auto texture : {m_H0, m_SpecH, m_SpecX, m_SpecZ, m_TmpH, m_TmpX, m_TmpZ})
             cl->Barrier(ResourceBarrier::CreateTextureBarrier(
-                t, ResourceState::Undefined, ResourceState::UnorderedAccess, 0, 1, 0, layers));
-        // Butterfly was uploaded as ShaderResource but is read as a storage image.
+                texture, ResourceState::Undefined, ResourceState::UnorderedAccess, 0, 1, 0, layers));
         cl->Barrier(ResourceBarrier::CreateTextureBarrier(
             m_Butterfly, ResourceState::ShaderResource, ResourceState::UnorderedAccess, 0, 1, 0, 1));
     }
-
-    const uint32 res = kOceanFFTResolution;
-    const uint32 g8 = (res + 7u) / 8u;
-
-    // 1. Spectrum init (H0) — only when the spectrum changed.
-    if (m_SpectrumDirty)
+    if (dispatch.InitializeSpectrum && m_SpectrumDirty)
     {
-        const TextureHandle imgs[] = {m_H0};
-        const uint32 slots[] = {1};
-        RecordPass(device, cl, m_InitPipe, m_InitLayout, paramsBuffer, paramsOffset, imgs, slots, 1,
-                   g8, g8, layers);
+        RecordOceanPreparedDispatch(cl, dispatch.Init);
         uavBarrier(m_H0);
         m_SpectrumDirty = false;
     }
-
-    // 2. Spectrum update (time evolution -> spectral H/X/Z).
-    {
-        const TextureHandle imgs[] = {m_H0, m_SpecH, m_SpecX, m_SpecZ};
-        const uint32 slots[] = {1, 2, 3, 4};
-        RecordPass(device, cl, m_UpdatePipe, m_UpdateLayout, paramsBuffer, paramsOffset, imgs, slots,
-                   4, g8, g8, layers);
-        uavBarrier(m_SpecH);
-        uavBarrier(m_SpecX);
-        uavBarrier(m_SpecZ);
-    }
-
-    // 3. FFT horizontal (rows): one workgroup per row.
-    {
-        const TextureHandle imgs[] = {m_SpecH, m_SpecX, m_SpecZ, m_Butterfly, m_TmpH, m_TmpX, m_TmpZ};
-        const uint32 slots[] = {1, 2, 3, 4, 5, 6, 7};
-        RecordPass(device, cl, m_FFTHPipe, m_FFTHLayout, paramsBuffer, paramsOffset, imgs, slots, 7,
-                   1, res, layers);
-        uavBarrier(m_TmpH);
-        uavBarrier(m_TmpX);
-        uavBarrier(m_TmpZ);
-    }
-
-    // 4. FFT vertical (cols): one workgroup per column; writes the displacement.
-    {
-        const TextureHandle imgs[] = {m_TmpH, m_TmpX, m_TmpZ, m_Butterfly, m_Displacement};
-        const uint32 slots[] = {1, 2, 3, 4, 5};
-        RecordPass(device, cl, m_FFTVPipe, m_FFTVLayout, paramsBuffer, paramsOffset, imgs, slots, 5,
-                   res, 1, layers);
-    }
-
+    RecordOceanPreparedDispatch(cl, dispatch.Update);
+    uavBarrier(m_SpecH);
+    uavBarrier(m_SpecX);
+    uavBarrier(m_SpecZ);
+    RecordOceanPreparedDispatch(cl, dispatch.Horizontal);
+    uavBarrier(m_TmpH);
+    uavBarrier(m_TmpX);
+    uavBarrier(m_TmpZ);
+    RecordOceanPreparedDispatch(cl, dispatch.Vertical);
     m_DisplacementWritten = true;
 }
 

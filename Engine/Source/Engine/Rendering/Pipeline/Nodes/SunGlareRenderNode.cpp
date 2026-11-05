@@ -325,6 +325,7 @@ void SunGlareRenderNode::DeclareForView(ViewDeclare& d)
         d.PassName().c_str(), Rendering::PassPhase::kPostProcess,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(pipe);
             RenderGraph::RGAttachmentOps ops{};
             ops.Load = RenderGraph::RGLoadOp::Load; // additive over the scene
             ops.Store = RenderGraph::RGStoreOp::Store;

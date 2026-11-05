@@ -200,55 +200,53 @@ void OceanHeightField::FillParams(OceanHeightQueryParamsGPU& out) const
     out = p;
 }
 
-void OceanHeightField::RecordDispatch(IDevice* device, CommandList* cl,
-                                      const RenderGraph::RGFrame& frame,
-                                      BufferHandle paramsBuffer, uint64 paramsOffset)
+bool OceanHeightField::PrepareDispatch(IDevice* device, RenderGraph::RGFrame& frame,
+    BufferHandle paramsBuffer, uint64 paramsOffset, const OceanHeightQueryParamsGPU& params,
+    OceanPreparedReadbackDispatch& prepared)
 {
-    if (!m_Ready || !cl || !device || !m_Readback.IsInitialized())
+    prepared.Commands = {};
+    prepared.Owner = {};
+    if (!m_Ready || !device || !m_Readback.IsInitialized() || !paramsBuffer.IsValid() ||
+        !m_FFTDisplacement.IsValid() || !m_FFTSampler.IsValid())
+        return true;
+    const PipelineHandle pipeline = device->TryGetWarmComputePipeline(m_Pipe);
+    if (!pipeline.IsValid())
+        return false;
+    DescriptorSetDesc desc{};
+    desc.layout = m_Layout;
+    desc.transient = true;
+    desc.debugName = "OceanHeightField_DS";
+    const auto set = device->CreateDescriptorSet(desc);
+    if (!set.IsValid())
+        return false;
+    if (prepared.Output.IsValid() &&
+        !m_Readback.HasPendingWrite(frame, prepared.Output, prepared.Reservation))
+        prepared.Output = {};
+    if (!prepared.Output.IsValid())
+        prepared.Output = m_Readback.ReserveWrite(frame, {params.OriginX, params.OriginZ},
+                                          prepared.Reservation);
+    if (!prepared.Output.IsValid())
+        return true;
+    device->UpdateBufferBinding(set, 0, paramsBuffer, paramsOffset, sizeof(OceanHeightQueryParamsGPU));
+    device->UpdateCombinedImageSamplerBinding(set, 1, m_FFTDisplacement, m_FFTSampler);
+    device->UpdateStorageBufferBinding(set, 2, prepared.Output, 0, sizeof(DisplacementSample) * size_t(kResolution) * size_t(kResolution));
+    const uint32 groups = (kResolution + 7u) / 8u;
+    prepared.Owner.Stamp(frame);
+    prepared.Commands = {pipeline, set, groups, groups, 1u, {}};
+    return true;
+}
+
+void OceanHeightField::RecordDispatch(IDevice* device, CommandList* cl,
+                           const OceanPreparedReadbackDispatch& prepared)
+{
+    if (!prepared.Owner.Frame || !prepared.Owner.IsFor(*prepared.Owner.Frame) ||
+        !m_Readback.HasPendingWrite(*prepared.Owner.Frame, prepared.Output, prepared.Reservation))
         return;
-    if (!m_FFTDisplacement.IsValid() || !m_FFTSampler.IsValid())
+    if (!RecordOceanPreparedDispatch(cl, prepared.Commands))
         return;
-    if (!paramsBuffer.IsValid())
+    m_Readback.RecordResolve(cl, prepared.Output);
+    if (!m_Readback.MarkRecorded(prepared.Output, prepared.Reservation))
         return;
-
-    // Resolve the pipeline before BeginWrite: a pending must only register on
-    // frames that actually record a dispatch.
-    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
-    if (!pipe)
-        return;
-
-    ReadbackMeta meta{};
-    meta.OriginX = m_OriginX;
-    meta.OriginZ = m_OriginZ;
-    const BufferHandle outBuf = m_Readback.BeginWrite(frame, meta);
-    if (!outBuf.IsValid())
-        return;
-
-    cl->SetPipeline(pipe);
-
-    DescriptorSetDesc dsDesc{};
-    dsDesc.layout = m_Layout;
-    dsDesc.transient = true;
-    dsDesc.debugName = "OceanHeightQuery_DS";
-    DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
-
-    device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanHeightQueryParamsGPU));
-    device->UpdateCombinedImageSamplerBinding(ds, 1, m_FFTDisplacement, m_FFTSampler);
-    device->UpdateStorageBufferBinding(ds, 2, outBuf, 0,
-                                       sizeof(DisplacementSample) *
-                                           size_t(kResolution) * size_t(kResolution));
-
-    cl->BindDescriptorSet(0, ds, pipe);
-
-    const uint32 g8 = (kResolution + 7u) / 8u;
-    cl->Dispatch(g8, g8, 1);
-
-    // No GPU-side barrier: nothing else reads this buffer in-frame, and a slot
-    // only becomes readable once its frame's submission token has signaled. The
-    // signaled timeline wait plus MapBuffer's invalidate make the compute write
-    // visible to the CPU read below — a host-cached type need not be coherent,
-    // which is why the invalidate is load-bearing here (the same
-    // fence-not-barrier readback contract the SDSM depth-bounds path relies on).
 
     // Map the newest token-signaled slot into the CPU cache — null until the
     // first stamped write completes, so we never read a slot mid-flight.

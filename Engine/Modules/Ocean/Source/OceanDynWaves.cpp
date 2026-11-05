@@ -130,14 +130,23 @@ const OceanCascadeLayoutGPU& OceanDynWaves::GetLayout() const
     return m_State[m_WriteIndex].GetLayout();
 }
 
-RenderGraph::RGTexture OceanDynWaves::ImportWriteRG(RenderGraph::RGFrame& frame) const
+TextureHandle OceanDynWaves::GetTexture(const RenderGraph::RGFrame& frame) const
 {
-    return m_State[m_WriteIndex].ImportRG(frame);
+    return m_PlannedFrame.IsFor(frame) && !m_Plan->Steps.empty()
+        ? m_State[m_Plan->Steps.back().WriteIndex].GetTexture() : GetTexture();
 }
 
-RenderGraph::RGTexture OceanDynWaves::ImportPrevRG(RenderGraph::RGFrame& frame) const
+const OceanCascadeLayoutGPU& OceanDynWaves::GetLayout(const RenderGraph::RGFrame& frame) const
 {
-    return m_State[m_WriteIndex ^ 1u].ImportRG(frame);
+    return m_PlannedFrame.IsFor(frame) && !m_Plan->Steps.empty()
+        ? m_Plan->Steps.back().Cascade : GetLayout();
+}
+
+RenderGraph::RGTexture OceanDynWaves::ImportWriteRG(RenderGraph::RGFrame& frame) const
+{
+    const uint32 index = m_PlannedFrame.IsFor(frame) && !m_Plan->Steps.empty()
+        ? m_Plan->Steps.back().WriteIndex : m_WriteIndex;
+    return m_State[index].ImportRG(frame);
 }
 
 RenderGraph::RGTexture OceanDynWaves::ImportWriteRG(RenderGraph::RGFrame& frame,
@@ -152,18 +161,16 @@ RenderGraph::RGTexture OceanDynWaves::ImportPrevRG(RenderGraph::RGFrame& frame,
     return m_State[(writeIndex & 1u) ^ 1u].ImportRG(frame);
 }
 
-void OceanDynWaves::BeginFrame(float cameraX, float cameraZ)
+const OceanCascadeFramePlan& OceanDynWaves::PlanSubsteps(
+    RenderGraph::RGFrame& frame, float cameraX, float cameraZ)
 {
-    // Flip first so the write target is fixed for the whole frame (binding +
-    // dispatch agree); the previous write becomes this frame's wave-equation read.
-    m_WriteIndex ^= 1u;
-    m_State[m_WriteIndex].SnapToCamera(cameraX, cameraZ);
-}
-
-uint32 OceanDynWaves::BeginSubstep(float cameraX, float cameraZ)
-{
-    BeginFrame(cameraX, cameraZ);
-    return m_WriteIndex;
+    if (!m_PlannedFrame.IsFor(frame))
+    {
+        m_Plan = PlanOceanCascadeSteps(frame, m_State, m_WriteIndex, m_PendingSubsteps, cameraX, cameraZ);
+        m_PlannedFrame.Stamp(frame);
+        m_NextSubstep = 0;
+    }
+    return *m_Plan;
 }
 
 void OceanDynWaves::ConfigureSimulation(float32 frequency, uint32 maximumSubsteps,
@@ -212,6 +219,15 @@ void OceanDynWaves::SetShallowWaterInputs(TextureHandle seabedDepth,
 void OceanDynWaves::SetFrameInputs(const OceanWaveImpulseGPU* impulses, uint32 count,
                                    float waveSpeed, float damping, float deltaTime)
 {
+    if (IsQuiescent())
+    {
+        m_TimeAccumulator = 0.0f;
+        m_PendingSubsteps = 0u;
+        m_SubstepDelta = 0.0f;
+        m_PendingImpulseCount = 0u;
+        m_Params.ImpulseCount = 0u;
+    }
+    const float32 pendingSeconds = static_cast<float32>(m_PendingSubsteps) * m_SubstepDelta;
     const uint32 n = std::min(count, kMaxOceanWaveImpulses);
     if (n > 0)
         m_SimulatedSecondsSinceImpulse = 0.0f;
@@ -220,9 +236,10 @@ void OceanDynWaves::SetFrameInputs(const OceanWaveImpulseGPU* impulses, uint32 c
             std::min(kQuiescentSeconds, m_SimulatedSecondsSinceImpulse + deltaTime);
     if (impulses && n > 0)
     {
-        std::memcpy(m_Params.Impulses, impulses,
-                    static_cast<size_t>(n) * sizeof(OceanWaveImpulseGPU));
-        m_PendingImpulseCount = n;
+        const uint32 appended = std::min(n, kMaxOceanWaveImpulses - m_PendingImpulseCount);
+        std::memcpy(m_Params.Impulses + m_PendingImpulseCount, impulses,
+                    static_cast<size_t>(appended) * sizeof(OceanWaveImpulseGPU));
+        m_PendingImpulseCount += appended;
     }
     m_Params.WaveSpeed = waveSpeed;
     if (!m_UseFixedStep)
@@ -233,7 +250,7 @@ void OceanDynWaves::SetFrameInputs(const OceanWaveImpulseGPU* impulses, uint32 c
         if (IsQuiescent() && n == 0u)
             m_TimeAccumulator = 0.0f;
         else
-            m_TimeAccumulator += std::max(deltaTime, 0.0f);
+            m_TimeAccumulator += pendingSeconds + std::max(deltaTime, 0.0f);
         const float32 fixedDelta = 1.0f / m_SimulationFrequency;
         const uint32 available = static_cast<uint32>(
             std::floor((m_TimeAccumulator + 1e-6f) / fixedDelta));
@@ -247,24 +264,12 @@ void OceanDynWaves::SetFrameInputs(const OceanWaveImpulseGPU* impulses, uint32 c
     }
     else
     {
-        m_PendingSubsteps = (deltaTime > 0.0f || n > 0u) ? 1u : 0u;
-        m_SubstepDelta = std::max(deltaTime, 0.0f);
+        m_SubstepDelta = pendingSeconds + std::max(deltaTime, 0.0f);
+        m_PendingSubsteps = (m_SubstepDelta > 0.0f || m_PendingImpulseCount > 0u) ? 1u : 0u;
     }
 }
 
-void OceanDynWaves::FillParams(OceanDynWavesParamsGPU& out)
-{
-    m_Params.Resolution = m_Resolution;
-    m_Params.LodCount = m_LodCount;
-    // The write target's layout drives the dispatch. The previous target keeps the
-    // layout it was written with, so the shader can reproject history by world XZ
-    // instead of by same-UV.
-    m_Params.Cascade = m_State[m_WriteIndex].GetLayout();
-    m_Params.PrevCascade = m_State[m_WriteIndex ^ 1u].GetLayout();
-    out = m_Params;
-}
-
-void OceanDynWaves::FillParams(OceanDynWavesParamsGPU& out, uint32 writeIndex,
+void OceanDynWaves::FillParams(OceanDynWavesParamsGPU& out, const OceanCascadeStep& step,
                                uint32 substepIndex) const
 {
     out = m_Params;
@@ -273,8 +278,8 @@ void OceanDynWaves::FillParams(OceanDynWavesParamsGPU& out, uint32 writeIndex,
     out.DeltaTime = m_SubstepDelta;
     out.ImpulseCount = substepIndex == 0u ? m_PendingImpulseCount : 0u;
     out.ResetHistory = m_ResetHistory && substepIndex == 0u ? 1u : 0u;
-    out.Cascade = m_State[writeIndex & 1u].GetLayout();
-    out.PrevCascade = m_State[(writeIndex & 1u) ^ 1u].GetLayout();
+    out.Cascade = step.Cascade;
+    out.PrevCascade = step.PrevCascade;
 }
 
 void OceanDynWaves::FinishSubsteps()
@@ -285,41 +290,38 @@ void OceanDynWaves::FinishSubsteps()
     m_ResetHistory = false;
 }
 
-void OceanDynWaves::RecordDispatch(IDevice* device, CommandList* cl,
-                                   BufferHandle paramsBuffer, uint64 paramsOffset)
+OceanPreparedSimulationDispatch OceanDynWaves::PrepareDispatch(
+    IDevice* device, BufferHandle paramsBuffer, uint64 paramsOffset,
+    const OceanCascadeFramePlan& plan, uint32 substepIndex) const
 {
-    RecordDispatch(device, cl, paramsBuffer, paramsOffset, m_WriteIndex);
-}
+    // Every step prepares before the first step records. Only consumed steps are refused here.
+    if (m_Plan != &plan || substepIndex >= plan.Steps.size() || substepIndex < m_NextSubstep)
+        return {};
+    const auto& step = plan.Steps[substepIndex];
+    if (step.WriteIndex >= 2u ||
+        m_State[0].GetTexture() != plan.Textures[0] ||
+        m_State[1].GetTexture() != plan.Textures[1])
+        return {};
+    if (!m_Ready || !device || !paramsBuffer.IsValid())
+        return {};
 
-void OceanDynWaves::RecordDispatch(IDevice* device, CommandList* cl,
-                                   BufferHandle paramsBuffer, uint64 paramsOffset,
-                                   uint32 writeIndex)
-{
-    if (!m_Ready || !cl || !device || !paramsBuffer.IsValid())
-        return;
-
-    writeIndex &= 1u;
+    const uint32 writeIndex = step.WriteIndex;
     const uint32 readIndex = writeIndex ^ 1u;
     const TextureHandle prevState = m_State[readIndex].GetTexture();
     const TextureHandle nextState = m_State[writeIndex].GetTexture();
     const uint32 layers = m_LodCount;
 
-    PipelineHandle pipe = device->GetOrCreateComputePipeline(m_Pipe);
+    PipelineHandle pipe = device->TryGetWarmComputePipeline(m_Pipe);
     if (!pipe)
-        return;
-
-    // Sync is graph-derived: the pass declares Read(prev) + Write(next), the
-    // first declared reader (the query pass / surface span) restores
-    // ShaderReadOnly, and MarkOutput covers reader-less frames. On the first
-    // dispatch both arrays were created in ShaderResource (initialState) and the
-    // read target samples zeroed (calm-water) contents — no clear needed.
-    cl->SetPipeline(pipe);
+        return {};
 
     DescriptorSetDesc dsDesc{};
     dsDesc.layout = m_Layout;
     dsDesc.transient = true;
     dsDesc.debugName = "OceanDynWaves_DS";
     DescriptorSetHandle ds = device->CreateDescriptorSet(dsDesc);
+    if (!ds.IsValid())
+        return {};
 
     device->UpdateBufferBinding(ds, 0, paramsBuffer, paramsOffset, sizeof(OceanDynWavesParamsGPU));
     device->UpdateCombinedImageSamplerBinding(ds, 1, prevState, m_Sampler);
@@ -328,10 +330,33 @@ void OceanDynWaves::RecordDispatch(IDevice* device, CommandList* cl,
     const SamplerHandle seabedSampler = m_SeabedSampler.IsValid() ? m_SeabedSampler : m_Sampler;
     device->UpdateCombinedImageSamplerBinding(ds, 3, seabed, seabedSampler);
 
-    cl->BindDescriptorSet(0, ds, pipe);
-
     const uint32 g8 = (m_Resolution + 7u) / 8u;
-    cl->Dispatch(g8, g8, layers);
+    return {{pipe, ds, g8, g8, layers, nextState},
+            step, m_PlannedFrame, &plan, substepIndex};
+}
+
+bool OceanDynWaves::IsCurrentPlan(const OceanPreparedSimulationDispatch& dispatch) const
+{
+    return m_Plan && dispatch.Plan == m_Plan &&
+        dispatch.Owner.Frame == m_PlannedFrame.Frame &&
+        dispatch.Owner.FrameIndex == m_PlannedFrame.FrameIndex &&
+        dispatch.SubstepIndex < m_Plan->Steps.size() &&
+        dispatch.SubstepIndex == m_NextSubstep &&
+        dispatch.Step.WriteIndex < 2u &&
+        dispatch.Step.WriteIndex == m_Plan->Steps[dispatch.SubstepIndex].WriteIndex &&
+        m_Plan->Textures[dispatch.Step.WriteIndex] == dispatch.Commands.Target &&
+        m_State[dispatch.Step.WriteIndex].GetTexture() == dispatch.Commands.Target;
+}
+
+void OceanDynWaves::RecordDispatch(CommandList* commands, const OceanPreparedSimulationDispatch& dispatch)
+{
+    if (!IsCurrentPlan(dispatch) || !RecordOceanPreparedDispatch(commands, dispatch.Commands))
+        return;
+    m_WriteIndex = dispatch.Step.WriteIndex;
+    m_State[m_WriteIndex].CommitLayout(dispatch.Step.Cascade);
+    ++m_NextSubstep;
+    if (m_NextSubstep == m_Plan->Steps.size())
+        FinishSubsteps();
 }
 
 } // namespace GameEngine::Ocean

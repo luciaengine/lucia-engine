@@ -29,6 +29,8 @@
 #include "AssetCore/GUID.h"
 #include "Engine/Rendering/BonePaletteLayout.h"
 #include "Engine/Rendering/RetargetGPUDataStore.h"
+#include "Engine/Rendering/RetargetFullPass.h"
+#include "TestTempDir.h"
 #include "Rendering/Common/Utils.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
@@ -54,12 +56,16 @@ namespace AAnim = GameEngine::Animation;
 class RetargetGPUParityTest : public ::testing::Test
 {
 protected:
+    virtual GraphicsAPI RequestedAPI() const { return GraphicsAPI::Vulkan; }
+
     void SetUp() override
     {
         DeviceDesc dd{};
         dd.applicationName = "RetargetGPUParityTest";
-        dd.preferredAPI = GraphicsAPI::Vulkan;
+        dd.preferredAPI = RequestedAPI();
         dd.enableDebugLayer = true;
+        dd.enableSwapchain = false;
+        dd.pipelineCacheDirectory = m_PipelineCache.Path().string();
 
         m_Device = DeviceFactory::CreateDevice(dd);
         if (!m_Device || !m_Device->Initialize(dd))
@@ -68,6 +74,7 @@ protected:
             return;
         }
 
+        ASSERT_EQ(m_Device->GetAPI(), RequestedAPI());
         m_ShaderSpirv = LoadShader("retarget_full.comp.spv");
     }
 
@@ -404,7 +411,8 @@ protected:
         const AAnim::AnimationClip& clip,
         float clipTime,
         uint32_t skinJointCount,
-        const BlendFrom* blend = nullptr)
+        const BlendFrom* blend = nullptr,
+        bool retryAfterClearing = false)
     {
         m_DataStore.Initialize(m_Device.get());
         m_DataStore.BeginFrame(0);
@@ -445,7 +453,6 @@ protected:
             chars[0].blendAlpha = blend->Alpha;
         }
         m_DataStore.AppendCharacterParams(chars);
-        m_DataStore.FlushIfDirty();
 
         // Atlas readback buffer. Storage layout is mat3x4 (3 vec4 rows per
         // bone = 48 bytes), see Engine/Include/Engine/Rendering/
@@ -464,65 +471,85 @@ protected:
         std::vector<uint8_t> zeros(atlasBytes, 0);
         m_Device->UpdateBuffer(atlasBuf, 0, atlasBytes, zeros.data());
 
-        // Pipeline.
-        DescriptorSetLayoutDesc set0{};
-        set0.debugName = "RetargetParity_Set0";
-        for (uint32_t i = 0; i < 4; ++i)
+        // Exercise the production graph pass, including uploads and descriptors
+        // prepared before any command recording.
+        namespace RG = GameEngine::Rendering::RenderGraph;
         {
-            DescriptorBinding b{};
-            b.binding = i;
-            b.type = DescriptorType::StorageBuffer;
-            b.count = 1;
-            b.shaderStages = kShaderStageCompute;
-            set0.bindings.push_back(b);
+            RG::RGResourcePool persistent(m_Device.get());
+            RG::RGTransientPool transient(m_Device.get());
+            RG::RGUploadRing uploads(m_Device.get(), 2, 4096);
+            RG::RGFrame frame(m_Device.get(), &persistent, &transient, &uploads);
+            RetargetFullPass pass;
+            pass.SetComputeShader(m_ShaderSpirv);
+            pass.SetDataStore(&m_DataStore);
+            frame.BeginFrame(0);
+            EXPECT_EQ(m_Device->GetPipelineCacheStats().ConcreteSize, 0u);
+            bool observedReadyPipeline = false;
+            frame.AddPass("RetargetParity.Observer", PassPhase::kEarlySetup - 1,
+                          [](RG::RGPassBuilder& builder) { builder.PreventCulling(); },
+                          [&](RG::RGContext&) {
+                              observedReadyPipeline = m_Device->GetPipelineCacheStats().ConcreteSize == 1u;
+                          });
+            const auto atlas = frame.ImportExternalBuffer("RetargetParity.Atlas", atlasBuf, atlasBytes);
+            pass.Declare(frame, atlas);
+            frame.MarkOutput(atlas);
+            EXPECT_FALSE(m_DataStore.IsDispatchScheduledThisFrame());
+            EXPECT_EQ(frame.Graph().PassCount(), 2u);
+            bool abortPreparation = retryAfterClearing;
+            if (retryAfterClearing)
+            {
+                constexpr float kSentinel = -37.0f;
+                const std::vector<float> sentinel(atlasBytes / sizeof(float), kSentinel);
+                m_Device->UpdateBuffer(atlasBuf, 0, atlasBytes, sentinel.data());
+                frame.AddPass("RetargetRetry.Gate", PassPhase::kEarlySetup + 1,
+                    [atlas, &abortPreparation](RG::RGPassBuilder& builder)
+                    {
+                        builder.Read(atlas);
+                        builder.PreventCulling();
+                        builder.Prepare([&abortPreparation](RG::RGPrepareContext&) { return !abortPreparation; });
+                    },
+                    [](RG::RGContext& context)
+                    {
+                        context.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
+                            static_cast<uint64_t>(PipelineStageMask::ComputeShader),
+                            static_cast<uint64_t>(PipelineStageMask::Host),
+                            static_cast<uint64_t>(ResourceAccessMask::ShaderWrite),
+                            static_cast<uint64_t>(ResourceAccessMask::HostRead)));
+                    });
+                const uint64_t submissions = frame.SubmittedFrameCount();
+                frame.Execute();
+                EXPECT_EQ(frame.SubmittedFrameCount(), submissions);
+                EXPECT_EQ(frame.Stats().PreparedPasses, 2u);
+                EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+                EXPECT_FALSE(observedReadyPipeline);
+                EXPECT_FALSE(m_DataStore.IsDispatchScheduledThisFrame());
+
+                m_DataStore.BeginFrame(0);
+                EXPECT_EQ(m_DataStore.GetActiveCharacterCount(), 0u);
+                abortPreparation = false;
+                frame.Execute();
+                m_Device->WaitForIdle();
+                EXPECT_EQ(frame.SubmittedFrameCount(), submissions + 1u);
+                EXPECT_FALSE(m_DataStore.IsDispatchScheduledThisFrame());
+                const void* unchanged = m_Device->MapBuffer(atlasBuf);
+                EXPECT_NE(unchanged, nullptr);
+                if (unchanged)
+                    EXPECT_EQ(std::memcmp(unchanged, sentinel.data(), atlasBytes), 0)
+                        << "An empty retry replayed the dispatch prepared before the abort";
+                m_Device->UnmapBuffer(atlasBuf);
+
+                // Restore the character to prove the production shader still writes its palette.
+                m_DataStore.AppendCharacterParams(chars);
+            }
+            frame.Execute();
+            m_Device->WaitForIdle();
+            EXPECT_TRUE(observedReadyPipeline);
+            EXPECT_EQ(frame.Stats().PreparedPasses, retryAfterClearing ? 6u : 1u);
+            EXPECT_EQ(frame.Stats().PreparationFailures, retryAfterClearing ? 1u : 0u);
+            EXPECT_TRUE(m_DataStore.IsDispatchScheduledThisFrame());
         }
-        PipelineDesc pd{};
-        pd.type = PipelineType::Compute;
-        pd.debugName = "RetargetParityPipeline";
-        pd.computeShader = m_ShaderSpirv;
-        pd.descriptorSetLayouts.push_back(set0);
-        pd.pushConstantSize = sizeof(uint32_t);
-        pd.pushConstantStagesMask = kShaderStageCompute;
 
-        PipelineHandle pipe = m_Device->CreatePipeline(pd);
-        EXPECT_NE(pipe, PipelineHandle{});
-
-        DescriptorSetDesc dsDesc{};
-        dsDesc.layout = set0;
-        dsDesc.debugName = "RetargetParity_DS0";
-        DescriptorSetHandle ds = m_Device->CreateDescriptorSet(dsDesc);
-
-        auto bindSSBO = [&](uint32_t binding, BufferHandle buf, size_t offset, size_t size) {
-            DescriptorSetUpdate upd{};
-            upd.binding = binding;
-            upd.type = DescriptorType::StorageBuffer;
-            upd.buffers = {buf};
-            upd.bufferOffsets = {offset};
-            upd.bufferRanges = {size};
-            m_Device->UpdateDescriptorSet(ds, upd);
-        };
-        bindSSBO(0, m_DataStore.GetClipBuffer(),  0, m_DataStore.GetClipUsedBytes());
-        bindSSBO(1, m_DataStore.GetRigBuffer(),   0, m_DataStore.GetRigUsedBytes());
-        bindSSBO(2, m_DataStore.GetCharsBuffer(), 0, m_DataStore.GetCharsUsedBytes());
-        bindSSBO(3, atlasBuf, 0, atlasBytes);
-
-        auto cl = m_Device->CreateCommandList(IDevice::QueueType::Compute);
-        cl->Begin();
-        cl->SetPipeline(pipe);
-        cl->BindDescriptorSet(0, ds, pipe);
-        uint32_t characterCount = 1;
-        cl->SetPushConstants(characterCount);
-        cl->Dispatch(1, 1, 1);
-        cl->End();
-
-        std::vector<CommandList*> lists{cl.get()};
-        m_Device->ExecuteCommandLists(lists);
-        m_Device->WaitForIdle();
-
-        // Read back the packed mat3x4 form (12 floats/bone) and unpack to
-        // the canonical mat4 layout (16 floats/bone) so the parity
-        // comparison stays expressed in mat4 terms — keeps the existing
-        // CPU reference path unchanged.
+        // Unpack three rows per bone to the canonical mat4 layout for the CPU reference.
         using namespace GameEngine::Engine::Renderer::BonePaletteLayout;
         std::vector<float> packed(skinJointCount * kFloatsPerBone);
         void* mapped = m_Device->MapBuffer(atlasBuf);
@@ -537,7 +564,6 @@ protected:
         }
 
         m_Device->DestroyBuffer(atlasBuf);
-        m_Device->DestroyPipeline(pipe);
         return result;
     }
 
@@ -591,6 +617,7 @@ protected:
         }
     }
 
+    TestUtils::ScopedTempDir m_PipelineCache{TestUtils::MakeUniqueTempDirectory("retarget-preparation")};
     std::unique_ptr<IDevice> m_Device;
     std::vector<uint8_t> m_ShaderSpirv;
     RetargetGPUDataStore m_DataStore;
@@ -618,6 +645,69 @@ private:
         return {};
     }
 };
+
+class RetargetPreparationRetryTest : public RetargetGPUParityTest,
+                                     public ::testing::WithParamInterface<GraphicsAPI>
+{
+protected:
+    GraphicsAPI RequestedAPI() const override { return GetParam(); }
+    void SetUp() override
+    {
+        RetargetGPUParityTest::SetUp();
+        if (m_Device)
+        {
+            m_FrameOpen = m_Device->BeginFrame();
+            ASSERT_TRUE(m_FrameOpen);
+        }
+    }
+    void TearDown() override
+    {
+        if (m_FrameOpen)
+        {
+            m_Device->FinalizeFrame();
+            m_Device->WaitForIdle();
+        }
+        RetargetGPUParityTest::TearDown();
+    }
+private:
+    bool m_FrameOpen = false;
+};
+
+TEST_P(RetargetPreparationRetryTest, EmptyRetryPreservesAtlasAndLaterWorkStillRuns)
+{
+    if (!HasDevice())
+        GTEST_SKIP() << "Requested native device unavailable";
+    ASSERT_TRUE(HasShader()) << "retarget_full.comp.spv is not staged";
+    auto sourceSkeleton = MakeChainSkeleton(3);
+    auto targetSkeleton = MakeChainSkeleton(3);
+    const std::vector<AAnim::HumanBone> canonical = {
+        AAnim::HumanBone::Hips, AAnim::HumanBone::Spine, AAnim::HumanBone::Head};
+    const std::vector<Mathematics::Quaternion> restRotations(3, Mathematics::Quaternion::Identity());
+    auto sourceRig = MakeRig(canonical, restRotations);
+    auto targetRig = MakeRig(canonical, restRotations);
+    auto map = MakeMap();
+    const Mathematics::Quaternion start = Mathematics::Quaternion::Identity();
+    const Mathematics::Quaternion end(glm::angleAxis(glm::radians(30.0f), glm::vec3(1, 0, 0)));
+    auto clip = MakeRotationClip(1, start, end, 1.0f);
+    constexpr float kSampleTime = 0.5f;
+    const auto expected = ComputeCPUReference(sourceSkeleton, targetSkeleton, *sourceRig, *targetRig,
+                                               *map, *clip, kSampleTime);
+    const auto actual = DispatchGPU(sourceSkeleton, targetSkeleton, *sourceRig, *targetRig,
+                                    *map, *clip, kSampleTime, 3, nullptr, true);
+    ExpectAtlasMatches(expected, actual);
+}
+
+namespace
+{
+constexpr GraphicsAPI kPreparationRetryAPIs[] = {
+    GraphicsAPI::Vulkan,
+#ifdef __APPLE__
+    GraphicsAPI::Metal,
+#endif
+};
+}
+
+INSTANTIATE_TEST_SUITE_P(NativeAPIs, RetargetPreparationRetryTest, ::testing::ValuesIn(kPreparationRetryAPIs));
 
 // ---------------------------------------------------------------------------
 // Scenario 1 — same-rig animated.

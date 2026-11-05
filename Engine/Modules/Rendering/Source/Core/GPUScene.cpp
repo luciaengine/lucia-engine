@@ -122,6 +122,50 @@ struct CullingPushConstants
 // dispatch silently reads garbage offsets.
 static_assert(sizeof(CullingPushConstants) == 32,
               "CullingPushConstants must match frustum_culling.comp push-constant block layout");
+
+struct SceneCullingPassData
+{
+    PipelineHandle Pipeline{};
+    RenderGraph::RGBuffer Instances{}, Visibility{};
+    BufferHandle CullingData{};
+    size_t CullingDataOffset = 0, InstanceBytes = 0;
+    uint32_t VisibilityBytes = 0;
+    CullingPushConstants PushConstants{};
+    DescriptorSetHandle DescriptorSet{};
+};
+
+bool PrepareSceneCullingPass(RenderGraph::RGPrepareContext& context, SceneCullingPassData& data)
+{
+    data.DescriptorSet = {};
+    IDevice* device = context.GetDevice();
+    if (device == nullptr || !data.Pipeline.IsValid() || !data.CullingData.IsValid())
+        return false;
+    const BufferHandle instances = context.GetBuffer(data.Instances);
+    const BufferHandle visibility = context.GetBuffer(data.Visibility);
+    if (!instances.IsValid() || !visibility.IsValid())
+        return false;
+    DescriptorSetDesc setDesc{};
+    setDesc.layout = MakeCullingDescriptorSetLayout();
+    setDesc.transient = true;
+    setDesc.debugName = "GPUScene_Culling_DS0";
+    data.DescriptorSet = device->CreateDescriptorSet(setDesc);
+    if (!data.DescriptorSet.IsValid())
+        return false;
+    // Every storage binding uses its explicit byte range.
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 0, instances, 0, data.InstanceBytes);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 1, data.CullingData, data.CullingDataOffset,
+                                      sizeof(GPUCullingData));
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 2, visibility, 0, data.VisibilityBytes);
+    return true;
+}
+
+void RecordSceneCullingPass(RenderGraph::RGContext& context, const SceneCullingPassData& data)
+{
+    context.Cmd->SetPipeline(data.Pipeline);
+    context.Cmd->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
+    context.Cmd->SetPushConstants(data.PushConstants);
+    context.Cmd->Dispatch((data.PushConstants.instanceCount + 63u) / 64u, 1, 1);
+}
 } // anonymous namespace
 
 void GPUScene::SetCullingShaderLoader(CullingShaderLoaderFunc loader)
@@ -872,6 +916,16 @@ void GPUScene::ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSce
     // these inline on the graphics CL; AddComputePass would smuggle in real
     // async compute + cross-queue semaphores. Flip-to-compute is a post-gate-2
     // experiment.
+    auto* data = frame.AllocatePassData<SceneCullingPassData>();
+    data->Pipeline = pipeline;
+    data->Instances = sceneRG.Instances;
+    data->Visibility = visibility;
+    data->CullingData = cd.Buffer;
+    data->CullingDataOffset = cd.Offset;
+    data->InstanceBytes = instBytes;
+    data->VisibilityBytes = visibilityTotalBytes;
+    data->PushConstants = pc;
+
     frame.AddPass(passName, static_cast<int32_t>(PassPhase::kEarlySetup),
                   [&](RenderGraph::RGPassBuilder& p)
                   {
@@ -880,33 +934,11 @@ void GPUScene::ScheduleCullingPassImpl(RenderGraph::RGFrame& frame, const GPUSce
                       // import-name dedup).
                       p.Read(sceneRG.Instances);
                       p.Write(visibility);
+                      p.Prepare([data](RenderGraph::RGPrepareContext& context)
+                                { return PrepareSceneCullingPass(context, *data); });
                   },
-                  [pipeline, cdBuf = cd.Buffer, cdOff = cd.Offset, instances = sceneRG.Instances,
-                   visibility, pc, instBytes, visibilityTotalBytes, instanceCount](RenderGraph::RGContext& ctx)
-                  {
-                      DescriptorSetLayoutDesc layout = MakeCullingDescriptorSetLayout();
-                      DescriptorSetDesc setDesc{};
-                      setDesc.layout = layout;
-                      setDesc.transient = true;
-                      setDesc.debugName = "GPUScene_Culling_DS0";
-                      DescriptorSetHandle set = ctx.GetDevice()->CreateDescriptorSet(setDesc);
-                      if (!set.IsValid())
-                          return;
-                      // Explicit byte sizes everywhere — range=0 semantics are
-                      // contested between backends (slice-2 risk R1).
-                      ctx.GetDevice()->UpdateStorageBufferBinding(set, 0, ctx.GetBuffer(instances), 0,
-                                                                  instBytes);
-                      ctx.GetDevice()->UpdateStorageBufferBinding(set, 1, cdBuf, cdOff,
-                                                                  sizeof(GPUCullingData));
-                      ctx.GetDevice()->UpdateStorageBufferBinding(set, 2, ctx.GetBuffer(visibility), 0,
-                                                                  visibilityTotalBytes);
-                      ctx.Cmd->SetPipeline(pipeline);
-                      ctx.Cmd->BindDescriptorSet(0, set, pipeline);
-                      ctx.Cmd->SetPushConstants(pc);
-                      ctx.Cmd->Dispatch((instanceCount + 63u) / 64u, 1, 1);
-                  });
+                  [data](RenderGraph::RGContext& context) { RecordSceneCullingPass(context, *data); });
 }
-
 
 void GPUScene::CreateBuffers()
 {

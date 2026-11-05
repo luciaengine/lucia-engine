@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include "Rendering/Core/Device.h"
+#include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Common/Utils.h"
 #include "Engine/Rendering/AnimationComputePass.h"
@@ -384,14 +385,16 @@ constexpr uint32 kUnknownSkeletonId = 0x7FFFFFF0u;
 
 } // namespace
 
-class GPUAnimationComputeTest : public ::testing::TestWithParam<KernelCase>
+class GPUAnimationComputeFixture : public ::testing::Test
 {
 protected:
+    virtual GraphicsAPI RequestedAPI() const { return GraphicsAPI::Vulkan; }
+
     void SetUp() override
     {
         DeviceDesc desc{};
         desc.applicationName = "GPUAnimationComputeTest";
-        desc.preferredAPI = GraphicsAPI::Vulkan;
+        desc.preferredAPI = RequestedAPI();
         desc.enableDebugLayer = true;
         m_Device = DeviceFactory::CreateDevice(desc);
         if (!m_Device || !m_Device->Initialize(desc))
@@ -408,7 +411,8 @@ protected:
 
     // One production dispatch: the data store uploads skeleton, clip and instance,
     // AnimationComputePass declares its pass on a render-graph frame, the frame executes.
-    std::vector<float> DispatchProductionPass(const Kernel& kernel, const Rig& rig, float time)
+    std::vector<float> DispatchProductionPass(const Kernel& kernel, const Rig& rig, float time,
+                                              bool retryAfterClearing = false)
     {
         const std::vector<uint8_t> shader = Utils::ReadFile(
             (TestPaths::StagedRoot() / "Shaders" / kernel.File).string());
@@ -420,7 +424,6 @@ protected:
         m_DataStore.BeginFrame(0);
         const uint32 skeletonGpuIndex = m_DataStore.EnsureSkeletonUploaded(rig.SkeletonId);
         const uint32 clipGpuIndex = m_DataStore.EnsureClipUploaded(rig.ClipIndex);
-        m_DataStore.AddInstance(MakeInstance(skeletonGpuIndex, clipGpuIndex, time));
 
         std::vector<float> packedRows(rig.JointCount * BonePaletteLayout::kFloatsPerBone);
         const size_t atlasBytes = packedRows.size() * sizeof(float);
@@ -438,9 +441,66 @@ protected:
             frame.BeginFrame(0);
             const RG::RGBuffer atlasResource = frame.ImportExternalBuffer("SkinPaletteAtlas", atlas, atlasBytes);
             pass.Declare(frame, atlasResource, RG::RGBuffer{});
+            // Preview worlds append instances after the main graph is declared.
+            // Preparation must observe these late arrivals before any recording.
+            m_DataStore.AddInstance(MakeInstance(skeletonGpuIndex, clipGpuIndex, time));
             EXPECT_EQ(frame.Graph().PassCount(), 1u) << "AnimationComputePass declared no pass";
-            frame.Execute();
-            m_Device->WaitForIdle();
+            if (retryAfterClearing)
+            {
+                constexpr float kSentinel = -37.0f;
+                const std::vector<float> sentinel(packedRows.size(), kSentinel);
+                m_Device->UpdateBuffer(atlas, 0, atlasBytes, sentinel.data());
+                bool abortPreparation = true;
+                uint32_t records = 0;
+                frame.AddPass("AnimationRetry.Gate", PassPhase::kEarlySetup + 1,
+                    [atlasResource, &abortPreparation](RG::RGPassBuilder& builder)
+                    {
+                        builder.Read(atlasResource);
+                        builder.PreventCulling();
+                        builder.Prepare([&abortPreparation](RG::RGPrepareContext&) { return !abortPreparation; });
+                    },
+                    [&records](RG::RGContext& context)
+                    {
+                        context.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
+                            static_cast<uint64_t>(PipelineStageMask::ComputeShader),
+                            static_cast<uint64_t>(PipelineStageMask::Host),
+                            static_cast<uint64_t>(ResourceAccessMask::ShaderWrite),
+                            static_cast<uint64_t>(ResourceAccessMask::HostRead)));
+                        ++records;
+                    });
+                frame.MarkOutput(atlasResource);
+                const uint64_t submissions = frame.SubmittedFrameCount();
+                frame.Execute();
+                EXPECT_EQ(frame.SubmittedFrameCount(), submissions);
+                EXPECT_EQ(frame.Stats().PreparedPasses, 2u);
+                EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+                EXPECT_EQ(records, 0u);
+
+                m_DataStore.BeginFrame(0);
+                EXPECT_EQ(m_DataStore.GetInstanceCount(), 0u);
+                abortPreparation = false;
+                frame.Execute();
+                m_Device->WaitForIdle();
+                EXPECT_EQ(frame.SubmittedFrameCount(), submissions + 1u);
+                EXPECT_EQ(records, 1u);
+                const void* unchanged = m_Device->MapBuffer(atlas);
+                EXPECT_NE(unchanged, nullptr);
+                if (unchanged)
+                    EXPECT_EQ(std::memcmp(unchanged, sentinel.data(), atlasBytes), 0)
+                        << "An empty retry replayed the dispatch prepared before the abort";
+                m_Device->UnmapBuffer(atlas);
+
+                // The same graph must still write valid matrices when work returns.
+                m_DataStore.AddInstance(MakeInstance(skeletonGpuIndex, clipGpuIndex, time));
+                frame.Execute();
+                m_Device->WaitForIdle();
+                EXPECT_EQ(records, 2u);
+            }
+            else
+            {
+                frame.Execute();
+                m_Device->WaitForIdle();
+            }
         }
 
         if (const void* mapped = m_Device->MapBuffer(atlas))
@@ -453,6 +513,64 @@ protected:
     std::unique_ptr<IDevice> m_Device;
     GPUAnimationDataStore m_DataStore;
 };
+
+class GPUAnimationComputeTest : public GPUAnimationComputeFixture,
+                                public ::testing::WithParamInterface<KernelCase>
+{
+};
+
+class GPUAnimationPreparationRetryTest : public GPUAnimationComputeFixture,
+                                         public ::testing::WithParamInterface<GraphicsAPI>
+{
+protected:
+    GraphicsAPI RequestedAPI() const override { return GetParam(); }
+    void SetUp() override
+    {
+        GPUAnimationComputeFixture::SetUp();
+        if (m_Device)
+        {
+            ASSERT_EQ(m_Device->GetAPI(), GetParam());
+            m_FrameOpen = m_Device->BeginFrame();
+            ASSERT_TRUE(m_FrameOpen);
+        }
+    }
+    void TearDown() override
+    {
+        if (m_FrameOpen)
+        {
+            m_Device->FinalizeFrame();
+            m_Device->WaitForIdle();
+        }
+        GPUAnimationComputeFixture::TearDown();
+    }
+private:
+    bool m_FrameOpen = false;
+};
+
+TEST_P(GPUAnimationPreparationRetryTest, EmptyRetryPreservesAtlasAndLaterWorkStillRuns)
+{
+    if (!m_Device)
+        GTEST_SKIP() << "Requested native device unavailable";
+    const Rig rig = CreateChainRig();
+    constexpr float kSampleTime = 0.5f;
+    const auto expected = SampleCpuReference(rig.SkeletonId, rig.ClipIndex, kSampleTime);
+    const auto actual = DispatchProductionPass(kDesktopKernel, rig, kSampleTime, true);
+    ASSERT_EQ(actual.size(), expected.size());
+    for (size_t element = 0; element < expected.size(); ++element)
+        EXPECT_NEAR(actual[element], expected[element], kMatrixTolerance) << element;
+}
+
+namespace
+{
+constexpr GraphicsAPI kPreparationRetryAPIs[] = {
+    GraphicsAPI::Vulkan,
+#ifdef __APPLE__
+    GraphicsAPI::Metal,
+#endif
+};
+}
+
+INSTANTIATE_TEST_SUITE_P(NativeAPIs, GPUAnimationPreparationRetryTest, ::testing::ValuesIn(kPreparationRetryAPIs));
 
 TEST_P(GPUAnimationComputeTest, SkinMatricesMatchCpuReference)
 {

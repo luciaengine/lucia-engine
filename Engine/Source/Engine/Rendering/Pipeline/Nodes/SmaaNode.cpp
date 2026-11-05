@@ -175,6 +175,7 @@ void SmaaNode::DeclareForView(ViewDeclare& d)
         d.PassName("SMAAEdges").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_EdgesPipelineId);
             p.Read(input, RenderGraph::RGTextureRead::Sampled);
             p.Write(edgesTex, RenderGraph::RGTextureWrite::Storage);
         },
@@ -218,6 +219,7 @@ void SmaaNode::DeclareForView(ViewDeclare& d)
         d.PassName("SMAAWeights").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_WeightsPipelineId);
             p.Read(edgesTex, RenderGraph::RGTextureRead::Sampled);
             p.Write(weightsTex, RenderGraph::RGTextureWrite::Storage);
         },
@@ -261,6 +263,7 @@ void SmaaNode::DeclareForView(ViewDeclare& d)
         d.PassName("SMAABlend").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_BlendPipelineId);
             p.Read(input, RenderGraph::RGTextureRead::Sampled);
             p.Read(weightsTex, RenderGraph::RGTextureRead::Sampled);
             p.Write(outColor, RenderGraph::RGTextureWrite::Storage);

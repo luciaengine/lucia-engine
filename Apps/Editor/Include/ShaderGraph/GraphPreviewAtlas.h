@@ -1,16 +1,8 @@
 #pragma once
 
-// One render-graph pass that draws every material-graph node preview into a
-// single persistent atlas texture: one unit sphere per cell, the node's preview
-// material bound per draw.
-//
-// Replaces the per-slot thumbnail machinery for every preview the material graph
-// draws — the node plates and the panel's own preview sphere, which is one more
-// cell. The asset browser still uses ModelThumbnailHandler.
-//
-// One instance per material-graph panel. Every GPU and UI resource it owns is
-// named with the instance's own id, so two open material graphs never write each
-// other's atlas.
+// Renders a material graph's node plates and main preview into one persistent atlas.
+// Each cell draws a unit sphere with its preview material. Each panel owns an atlas
+// with unique GPU and UI resource names.
 
 #include "AssetCore/GUID.h"
 #include "ShaderGraph/GraphNodePreviewBinding.h"
@@ -20,6 +12,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -30,6 +23,7 @@ class UIManager;
 namespace Rendering::RenderGraph
 {
 class RGFrame;
+struct RGTexture;
 }
 
 namespace Engine::Renderer
@@ -43,6 +37,11 @@ namespace Editor
 class GraphPreviewAtlas
 {
   public:
+    GraphPreviewAtlas() = default;
+    ~GraphPreviewAtlas();
+    GraphPreviewAtlas(const GraphPreviewAtlas&) = delete;
+    GraphPreviewAtlas& operator=(const GraphPreviewAtlas&) = delete;
+
     /// Silhouette fraction of a cell: full-bleed for node plates, framed for the
     /// graph's own preview panel.
     static constexpr float kNodeCellFill = 0.88f;
@@ -61,7 +60,9 @@ class GraphPreviewAtlas
         float FillFraction = kNodeCellFill;
     };
 
+    /// Binds services on the editor frame thread; they must stay stable through Execute.
     void Initialize(Engine::Renderer::RenderServices* services);
+    /// Invalidates queued plans and releases this atlas on the editor frame thread.
     void Shutdown();
 
     /// The node previews the graph panel wants drawn, in graph order. Replaces
@@ -88,9 +89,8 @@ class GraphPreviewAtlas
         it clears the flag: call it once per frame and act on the result. */
     bool TakeDeferredRebuild(bool gestureActive);
 
-    /// Forces a redraw on the next frame (a parameter scrub the digest cannot
-    /// see, an IBL toggle, a rebuild).
-    void MarkDirty() { m_Dirty = true; }
+    /// Requests a redraw and invalidates previously declared plans on the editor frame thread.
+    void MarkDirty();
 
     /// Spins one cell's sphere. Redraws only when the angle actually moves, so
     /// a still preview leaves the pass out of the frame.
@@ -98,8 +98,8 @@ class GraphPreviewAtlas
 
     bool TryGetBinding(const std::string& nodeId, GraphNodePreviewBinding& out) const;
 
-    /// Declares the atlas pass into this window's frame when the atlas is dirty
-    /// and registers the texture with the window's UIManager.
+    /// Declares atlas rendering and UI reads on the editor frame thread.
+    /// RenderServices and its device must remain stable through the frame's Execute.
     void TickRG(uint64_t windowId, UIManager* ui, Rendering::RenderGraph::RGFrame& frame);
 
     /** Renders cells with each material's IBL keyword variant (environment
@@ -109,17 +109,27 @@ class GraphPreviewAtlas
     void SetIblEnabled(bool enabled);
 
   private:
+    struct AtlasGeneration;
+    struct Completion;
+    struct State;
+    struct FramePlan;
+
     struct CellDraw
     {
         uint32_t Cell = 0;
         GUID MaterialGuid{};
+        uint64_t Registration = 0;
+        uint32_t Version = 0;
+        uint32_t ContentRevision = 0;
         float YawRadians = 0.f;
         float FillFraction = kNodeCellFill;
     };
 
-    // True when the material set, their parameters, or their pipelines moved
-    // since the last successful render.
-    bool ContentDigestMoved();
+    // Desired content is compared against the last recorded atlas completion.
+    uint64_t ComputeContentDigest() const;
+    void DrainCompletion();
+    void PublishToUi(UIManager* ui, Rendering::RenderGraph::RGFrame& frame,
+                     Rendering::RenderGraph::RGTexture atlas, bool hasPlannedProducer);
     void EnsureView();
     bool EnsureAtlasTexture(uint32_t width, uint32_t height);
     void SubmitPreviewLights();
@@ -130,6 +140,9 @@ class GraphPreviewAtlas
     bool IblAvailable() const;
 
     Engine::Renderer::RenderServices* m_Services = nullptr;
+    std::weak_ptr<std::atomic<bool>> m_ServiceLifetime;
+    std::shared_ptr<State> m_State;
+    std::shared_ptr<AtlasGeneration> m_Generation;
 
     GraphPreviewAtlasLayout m_Layout;
     std::vector<NodeRequest> m_Requests;
@@ -165,11 +178,7 @@ class GraphPreviewAtlas
     int m_RebuildDeferredFrames = 0;
     static constexpr int kMaxDeferredRebuildFrames = 90;
 
-    // Record-time skips (cold IBL variants) that must re-declare the pass;
-    // written on the render thread, drained in TickRG.
-    std::atomic<uint32_t> m_RecordSkippedDraws{0};
-    // Cells whose material had no valid base pipeline last render: the pass
-    // keeps re-declaring until every requested cell has been drawn once.
+    // Missing or older shader versions keep the atlas pending until current.
     uint32_t m_UndrawnCells = 0;
     uint64_t m_ContentDigest = 0;
 };

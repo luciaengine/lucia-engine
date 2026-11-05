@@ -6,11 +6,12 @@
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/RenderGraph/RGWindowFrame.h"
 #include "Tests/RenderGraph/RGTestDevice.h"
-
-#include <gtest/gtest.h>
+#include "TestTempDir.h"
 
 #include <string>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine::Rendering;     // TextureDesc/BufferDesc/handles/enums/IDevice
 using namespace GameEngine::Rendering::RenderGraph;
@@ -1167,4 +1168,150 @@ TEST(RGWindowFrame, MakeWindowRGFrameBuildsAFrameStreamThatExecutes)
         window.Frame->Execute();
         EXPECT_TRUE(ran) << "frame " << frameIndex;
     }
+}
+
+TEST(RGFrame, PreparationFinishesForEveryLivePassBeforeRecording)
+{
+    GameEngine::TestUtils::ScopedTempDir pipelineCache(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("prepared-frame"));
+    auto device = MakeHeadlessDevice(pipelineCache.Path().string());
+    if (!device)
+        GTEST_SKIP() << "no headless device available";
+    FramePools pools(device.get());
+    RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    std::vector<std::string> events;
+    const RGTexture source = frame.CreateTexture("PreparedSource", ColorDesc());
+    const RGTexture output = frame.CreateTexture("PreparedOutput", ColorDesc());
+    frame.AddPass("Source", 0,
+                  [source, &events](RGPassBuilder& pass)
+                  {
+                      pass.AttachColor(0, source, {.Load = RGLoadOp::Clear});
+                      pass.Prepare([&events, source](RGPrepareContext& context)
+                                   {
+                                       EXPECT_TRUE(context.GetTexture(source).IsValid());
+                                       events.push_back("prepare source");
+                                       return true;
+                                   });
+                  },
+                  [&events](RGContext&) { events.push_back("record source"); });
+    frame.AddPass("Consumer", 0,
+                  [source, output, &events](RGPassBuilder& pass)
+                  {
+                      pass.Read(source);
+                      pass.AttachColor(0, output, {.Load = RGLoadOp::Clear});
+                      pass.Prepare([&events, output](RGPrepareContext& context)
+                                   {
+                                       EXPECT_TRUE(context.GetTexture(output).IsValid());
+                                       events.push_back("prepare consumer");
+                                       return true;
+                                   });
+                  },
+                  [&events](RGContext&) { events.push_back("record consumer"); });
+    frame.MarkOutput(output);
+    frame.Execute();
+    EXPECT_EQ(events, (std::vector<std::string>{"prepare source", "prepare consumer",
+                                               "record source", "record consumer"}));
+    EXPECT_EQ(frame.Stats().PreparedPasses, 2u);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 0u);
+}
+
+TEST(RGFrame, PreparationFailureSubmitsNothingAndDoesNotAdvanceTheFrame)
+{
+    GameEngine::TestUtils::ScopedTempDir pipelineCache(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("prepared-frame"));
+    auto device = MakeHeadlessDevice(pipelineCache.Path().string());
+    if (!device)
+        GTEST_SKIP() << "no headless device available";
+    FramePools pools(device.get());
+    RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    bool recorded = false;
+    const RGTexture output = frame.CreateTexture("UnreadyOutput", ColorDesc());
+    frame.AddPass("UnreadyWriter", 0,
+                  [output](RGPassBuilder& pass)
+                  {
+                      pass.AttachColor(0, output, {.Load = RGLoadOp::Clear});
+                      pass.Prepare([](RGPrepareContext&) { return false; });
+                  },
+                  [&recorded](RGContext&) { recorded = true; });
+    frame.MarkOutput(output);
+    frame.Execute();
+    EXPECT_FALSE(recorded);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+    EXPECT_EQ(frame.Stats().SubmissionsMade, 0u);
+    EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
+    EXPECT_EQ(pools.Transient.Allocs(), 1u);
+
+    frame.BeginFrame(1);
+    const RGTexture retry = frame.CreateTexture("UnreadyOutput", ColorDesc());
+    frame.AddPass("StillUnready", 0,
+                  [retry](RGPassBuilder& pass)
+                  {
+                      pass.AttachColor(0, retry, {.Load = RGLoadOp::Clear});
+                      pass.Prepare([](RGPrepareContext&) { return false; });
+                  }, [](RGContext&) {});
+    frame.MarkOutput(retry);
+    frame.Execute();
+    EXPECT_EQ(pools.Transient.Allocs(), 1u) << "aborted frames release their transient allocations";
+    EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
+}
+
+TEST(RGFrame, CulledAndDiscardedPassesNeverPrepare)
+{
+    GameEngine::TestUtils::ScopedTempDir pipelineCache(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("prepared-frame"));
+    auto device = MakeHeadlessDevice(pipelineCache.Path().string());
+    if (!device)
+        GTEST_SKIP() << "no headless device available";
+    FramePools pools(device.get());
+    RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    uint32_t prepared = 0;
+    const RGTexture dead = frame.CreateTexture("DeadPreparation", ColorDesc());
+    frame.AddPass("Dead", 0,
+                  [dead, &prepared](RGPassBuilder& pass)
+                  {
+                      pass.AttachColor(0, dead);
+                      pass.Prepare([&prepared](RGPrepareContext&) { ++prepared; return true; });
+                  }, [](RGContext&) {});
+    frame.Execute();
+    EXPECT_EQ(prepared, 0u);
+    frame.MarkOutput(dead);
+    frame.DiscardRecordedPasses();
+    frame.Execute();
+    EXPECT_EQ(prepared, 0u);
+}
+
+TEST(RGFrame, PreparedPhysicalFormatKeyMatchesRecordingAfterMsaaRealization)
+{
+    GameEngine::TestUtils::ScopedTempDir pipelineCache(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("prepared-frame"));
+    auto device = MakeHeadlessDevice(pipelineCache.Path().string());
+    if (!device)
+        GTEST_SKIP() << "no headless device available";
+    FramePools pools(device.get());
+    RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    TextureDesc multisampleDesc = ColorDesc();
+    multisampleDesc.sampleCount = 4;
+    const RGTexture multisample = frame.CreateTexture("PreparedMsaa", multisampleDesc);
+    const RGTexture output = frame.CreateTexture("PreparedResolve", ColorDesc());
+    PipelineFormatKey preparedKey{};
+    frame.AddPass("PreparedMsaa", 0,
+                  [multisample, output, &preparedKey](RGPassBuilder& pass)
+                  {
+                      pass.AttachColorResolve(0, multisample, output, {.Load = RGLoadOp::Clear});
+                      pass.Prepare([&preparedKey](RGPrepareContext& context)
+                                   { preparedKey = context.BuildCurrentFormatKey(); return true; });
+                  },
+                  [&preparedKey](RGContext& context)
+                  {
+                      EXPECT_EQ(preparedKey, context.BuildCurrentFormatKey());
+                      EXPECT_EQ(preparedKey.RasterizationSamples, 4u);
+                      EXPECT_EQ(preparedKey.ColorFormats[0], TextureFormat::RGBA8_UNORM);
+                  });
+    frame.MarkOutput(output);
+    frame.Execute();
+    EXPECT_EQ(frame.Stats().PreparedPasses, 1u);
 }

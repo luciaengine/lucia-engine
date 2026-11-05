@@ -81,13 +81,16 @@ server.RegisterHandler("get_gpu_profiler", [&app](const EditorDebugServer::Reque
 
         json passes = json::array();
         double totalCpu = 0.0;
+        double totalWorkerRecord = 0.0;
         for (const auto& t : timings)
         {
             totalCpu += t.CpuMs;
+            totalWorkerRecord += t.WorkerRecordMs;
             passes.push_back({{"name", t.Name},
                               {"queue", RgQueueName(t.Queue)},
                               {"phase", t.Phase},
                               {"cpuMs", t.CpuMs},
+                              {"workerRecordMs", t.WorkerRecordMs},
                               {"gpuSpanMs", t.GpuSpanMs},
                               {"spanShared", t.SpanShared},
                               {"spanCounted", t.SpanCounted}});
@@ -123,6 +126,10 @@ server.RegisterHandler("get_gpu_profiler", [&app](const EditorDebugServer::Reque
         if (!frame->ProfilingEnabled())
             result["hint"] = "Profiling disarmed — call with {\"enabled\": true}, then poll again.";
         result["timingSemantics"] = encoderSpan ? "encoder-span" : "pipeline-point";
+        result["cpuTimingSemantics"] =
+            "cpuMs measures the primary pass bracket; workerRecordMs measures the secondary callback. "
+            "totalWorkerRecordMs sums worker work and is not elapsed frame time; "
+            "renderGraph.parallelRecordWallMs measures the fork and join.";
         result["warnings"] = std::move(warnings);
         result["resolveStats"] = {
             {"invalidQueryIndices", rs.InvalidQueryIndices},
@@ -134,7 +141,8 @@ server.RegisterHandler("get_gpu_profiler", [&app](const EditorDebugServer::Reque
         };
         result["lastFrame"] = {
             {"passes", std::move(passes)},
-            {"totalCpuMs", totalCpu}
+            {"totalCpuMs", totalCpu},
+            {"totalWorkerRecordMs", totalWorkerRecord}
         };
         return result; });
 

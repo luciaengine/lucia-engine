@@ -244,6 +244,7 @@ void HZBBuildNode::DeclareChainBuild(ViewDeclare& d, RenderGraph::RGTexture dept
         d.PassName("HZBBuild.Mip0").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_PipelineId);
             p.Read(depth, RenderGraph::RGTextureRead::Storage);
             p.Write(hzb, RenderGraph::RGTextureWrite::Storage,
                     RenderGraph::RGRange{.BaseMip = 0u, .MipCount = 1u});
@@ -297,6 +298,7 @@ void HZBBuildNode::DeclareChainBuild(ViewDeclare& d, RenderGraph::RGTexture dept
             Rendering::PassPhase::kDefault,
             [&, m](RenderGraph::RGPassBuilder& p)
             {
+                p.UsePipeline(m_PipelineId);
                 p.Read(hzb, RenderGraph::RGTextureRead::Storage,
                        RenderGraph::RGRange{.BaseMip = m - 1u, .MipCount = 1u});
                 p.Write(hzb, RenderGraph::RGTextureWrite::Storage,
@@ -348,6 +350,7 @@ void HZBBuildNode::DeclareSpdBuild(ViewDeclare& d, RenderGraph::RGTexture depth,
         d.PassName("HZBBuild.SPD").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_SpdPipelineId);
             p.Read(depth, RenderGraph::RGTextureRead::Storage);
             p.Write(hzb, RenderGraph::RGTextureWrite::Storage,
                     RenderGraph::RGRange{.BaseMip = 0u, .MipCount = tileMips});
@@ -412,6 +415,7 @@ void HZBBuildNode::DeclareSpdBuild(ViewDeclare& d, RenderGraph::RGTexture depth,
         d.PassName("HZBBuild.SPDFinalize").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_SpdFinalizePipelineId);
             // Reads mips 1..6 interior (tile-pass output), writes mips 2..
             // edges + mips 7.. whole. Declared as one identical-range
             // Read+Write pair so the graph merges them into a single storage
@@ -803,6 +807,7 @@ void HZBBuildNode::DeclareSpdMinMaxBuild(ViewDeclare& d, RenderGraph::RGTexture 
         d.PassName("HZBBuild.SPDMinMax").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_SpdMinMaxPipelineId);
             p.Read(depth, RenderGraph::RGTextureRead::Storage);
             p.Write(hzbMin, RenderGraph::RGTextureWrite::Storage,
                     RenderGraph::RGRange{.BaseMip = 0u, .MipCount = tileMips});
@@ -873,6 +878,7 @@ void HZBBuildNode::DeclareSpdMinMaxBuild(ViewDeclare& d, RenderGraph::RGTexture 
         d.PassName("HZBBuild.SPDMinMaxFinalize").c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_SpdMinMaxFinalizePipelineId);
             // Reads mips 1..6 interior (tile-pass output), writes mips 2..
             // edges + mips 7.. whole. Declared as one identical-range
             // Read+Write pair per pyramid so the graph merges each into a

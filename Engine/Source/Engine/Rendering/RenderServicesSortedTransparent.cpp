@@ -1,50 +1,15 @@
-// Sorted transparent path (T2/S2): peel order-dependent Blend materials off
-// the GPU-driven opaque batch path and draw them back-to-front as
-// per-(surface×blend) RUNS — one DrawIndexedIndirectCount per run over a
-// GPU-sorted indirect stream.
-//
-// Per frame per view:
-//  - BuildSortedTransparentForView (world node, before the opaque peel):
-//    collect order-dependent Blend submissions, frustum-cull them CPU-side
-//    against their GPUScene bounding spheres (camera-relative, byte-identical
-//    to the GPU cull's test), group survivors into runs (PSO identity ×
-//    geometry-pool identity — SortedTransparentRuns.h), and slot-order the
-//    runs coarsely back-to-front.
-//  - AddSortedTransparentDrainForView (SortedTransparent node, after
-//    HZBBuild): upload the records, dispatch the fused
-//    gather+key+sort+scatter compute (sorted_transparent_drain.comp — one
-//    single-workgroup dispatch, no atomics, no readback), then issue one
-//    indirect draw per run through the GE_INSTANCED vertex path, which
-//    fetches per-record transform/materialIndex/sectors/custom0/flags via
-//    the standard buffer_reference indirection. Views whose visible set
-//    exceeds kSortedTransparentSortCapacity take a CPU-sorted twin that
-//    writes the identical indirect stream into a host-visible ring slot —
-//    same draws, same run layout, CPU key order — so there is NO draw
-//    ceiling and NO whole-view fallback at any count.
-//
-// Scope limits (deliberate, disclosed):
-//  - Main-view (WorldRenderNode) pipelines only: reflections, probe faces,
-//    and thumbnails keep the pre-T2 unsorted Blend behavior (no vanish — the
-//    peel is inert there). Per-view strategy objects are design slice S3.
-//  - Records draw LOD0 (MeshGPUEntry's base index range); GPU LOD selection
-//    for the sorted stream is a follow-on.
-//  - All records draw with the view's base winding (S1 parity): a
-//    negative-determinant transparent that is not double-sided culls the
-//    wrong face, exactly as it did on the push-constant path.
+// The main view's sorted transparent pass draws artwork in authored order and
+// back-to-front by view depth. Only adjacent compatible meshes share a draw.
 
 #include "Engine/Rendering/RenderServices.h"
 
 #include "Engine/Rendering/Material.h"
-#include "Engine/Rendering/AuthoredTransparentRuns.h"
 #include "Engine/Rendering/RenderOrigin.h"
 #include "Engine/Rendering/SortedTransparentCull.h"
 #include "Engine/Rendering/WorldDrawTypes.h"
 #include "Rendering/CameraDerivation.h"
 #include "Rendering/Common/Frustum.h"
 #include "Rendering/Core/GPUScene.h"
-#include "Rendering/Core/PassPhase.h"
-#include "Rendering/Core/PipelineTypes.h"
-#include "Rendering/ShaderCache/ShaderPackageIO.h"
 
 #include "Logger/Logger.h"
 
@@ -63,21 +28,9 @@ using namespace ::GameEngine::Rendering;
 
 namespace
 {
-// Mirrors the DrainPC push-constant block in sorted_transparent_drain.comp.
-struct SortedTransparentDrainPC
-{
-    float CameraPos[3];
-    uint32_t LiveCount;
-    float CameraForward[3];
-    uint32_t RunCount;
-};
-static_assert(sizeof(SortedTransparentDrainPC) == 32,
-              "must match the drain shader's push-constant block");
-
 constexpr uint32_t kIndirectCommandStride = 5u * sizeof(uint32_t); // VkDrawIndexedIndirectCommand
 
-// Pack one record's VkDrawIndexedIndirectCommand at sorted position `slot` —
-// the CPU twin of the drain shader's scatter phase (keep in lockstep).
+// firstInstance selects the matching entry in the sorted instance-index list.
 inline void WriteIndirectCommand(uint32_t* dst, const SortedTransparentRecord& rec, uint32_t slot)
 {
     dst[0] = rec.IndexCount;
@@ -90,7 +43,7 @@ inline void WriteIndirectCommand(uint32_t* dst, const SortedTransparentRecord& r
 
 void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
 {
-    const uint64_t frame = m_Device ? m_Device->GetFrameIndex() : 0;
+    const uint64_t frame = m_FrameOrchestrator.WorldFrameEpoch();
     SortedTransparentView& holder = m_SortedTransparentByView[viewId];
     if (holder.Frame == frame)
         return; // already built this frame
@@ -107,7 +60,7 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
     holder.LoggedBuildTransition = false;
     holder.Records.clear();
     holder.Runs.clear();
-    holder.Partition = {};
+    holder.Partition.Clear();
     holder.Commands.clear();
     holder.CompositionMeshOrder.clear();
     holder.CompositionSlots.clear();
@@ -124,12 +77,6 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
     // Full-profile meshes use the buffer-reference path. Compatibility meshes
     // instead use the existing CPU instance list and direct indexed draws.
     if (!m_Device || (!m_Profile.IsCompat() && !m_Device->GetCapabilities().supportsBufferDeviceAddress))
-        return;
-    // Preserve the existing compatibility path unless authored ordering or
-    // another artwork family requires the shared drain.
-    if (m_Profile.IsCompat() && contributors.empty() &&
-        std::none_of(submissions.begin(), submissions.end(),
-                     [](const WorldSubmissionRecord& sub) { return sub.Sorting.Authored; }))
         return;
     const std::vector<Rendering::GPUInstance>& instances = scene->GetInstances();
     const auto& meshRegistry = GetMeshGPURegistry();
@@ -213,20 +160,16 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
     // Per-unique-material key cache (materials repeat heavily across records).
     std::vector<std::pair<const Material*, SortedTransparentRunMaterialKey>> matKeyCache;
 
-    const bool authored = std::any_of(visible.begin(), visible.end(),
-                                      [&](const TransparentCentroid& record)
-                                      { return pending[record.Key].Sorting.Authored; });
     std::pmr::monotonic_buffer_resource scratch;
     std::pmr::vector<RenderSortKey> sortingKeys{&scratch};
-    const bool composition = !contributors.empty() || m_Profile.IsCompat();
     std::pmr::vector<ECS::EntityHandle> sortingEntities{&scratch};
-    if (authored || composition)
-        sortingKeys.reserve(visible.size());
-    if (composition)
-        sortingEntities.reserve(visible.size());
+    sortingKeys.reserve(visible.size());
+    sortingEntities.reserve(visible.size());
     holder.Records.reserve(visible.size());
     const Rendering::Vector3 camPos = camDerived.Position;
     const Rendering::Vector3 camFwd = camDerived.Forward;
+    const float cameraPosition[]{camPos.x, camPos.y, camPos.z};
+    const float cameraForward[]{camFwd.x, camFwd.y, camFwd.z};
     for (const TransparentCentroid& vis : visible)
     {
         const PendingRecord& p = pending[vis.Key];
@@ -275,37 +218,17 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
                                 (vis.Center[2] - camPos.z) * camFwd.z;
         holder.Records.push_back({p.InstanceIndex, p.Entry->indexCount, p.Entry->firstIndex,
                                   static_cast<int32_t>(p.Entry->vertexOffset), group, viewDepth});
-        if (composition)
-            sortingEntities.push_back(p.Entity);
-        if (authored || composition)
-        {
-            const float cameraPosition[]{camPos.x, camPos.y, camPos.z};
-            const float cameraForward[]{camFwd.x, camFwd.y, camFwd.z};
-            sortingKeys.push_back(MakeRenderSortKey(p.Sorting, viewDepth, cameraPosition, cameraForward));
-        }
+        sortingEntities.push_back(p.Entity);
+        sortingKeys.push_back(MakeRenderSortKey(p.Sorting, viewDepth, cameraPosition, cameraForward));
     }
 
-    if (composition)
-        BuildTransparentComposition(holder.Records, sortingKeys, sortingEntities, contributors,
-                                    scratch, holder.Partition,
-                                    holder.CompositionMeshOrder, holder.CompositionSlots, m_Profile.IsCompat());
-    else if (authored)
-        BuildAuthoredTransparentRunPartition(holder.Records, sortingKeys, scratch, holder.Partition);
-    else
-        holder.Partition = BuildSortedTransparentRunPartition(
-            holder.Records, static_cast<uint32_t>(holder.Runs.size()));
-    holder.CameraPos[0] = camPos.x;
-    holder.CameraPos[1] = camPos.y;
-    holder.CameraPos[2] = camPos.z;
-    holder.CameraForward[0] = camFwd.x;
-    holder.CameraForward[1] = camFwd.y;
-    holder.CameraForward[2] = camFwd.z;
-
+    BuildTransparentComposition(holder.Records, sortingKeys, sortingEntities, contributors,
+                                scratch, holder.Partition, holder.CompositionMeshOrder,
+                                holder.CompositionSlots, m_Profile.IsCompat());
     holder.Stats.Collected = static_cast<uint32_t>(candidates.size());
     holder.Stats.Culled = culledCount;
     holder.Stats.Records = static_cast<uint32_t>(holder.Records.size());
     holder.Stats.Runs = static_cast<uint32_t>(holder.Partition.RunCount.size());
-    holder.Stats.CpuSorted = holder.Records.size() > kSortedTransparentSortCapacity;
     holder.Active = true;
     holder.StagedLastBuild = true;
 
@@ -324,32 +247,33 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
         // sorted path engaged.
         Logger::Log::Debug(
             "SortedTransparent: view {} collected {} order-dependent Blend candidates, "
-            "culled {} (frustum), staged {} records in {} runs ({} sort).",
+            "culled {} (frustum), staged {} records in {} runs.",
             static_cast<uint32_t>(viewId), holder.Stats.Collected, holder.Stats.Culled,
-            holder.Stats.Records, holder.Stats.Runs, holder.Stats.CpuSorted ? "CPU" : "GPU");
+            holder.Stats.Records, holder.Stats.Runs);
 
-        // Per-run [min,max] view-depth composition (R2-8): the coarse cross-run
-        // order is farthest-member-first, so overlapping run depth ranges are the
-        // one place run-granular compositing can differ from an exact global sort.
-        // Without this line a field report of wrong-order glass is undiagnosable —
-        // it rides the composition line's gate so it appears at every transition.
         const uint32_t slotCount = static_cast<uint32_t>(holder.Partition.RunCount.size());
-        std::vector<float> minDepth(slotCount, std::numeric_limits<float>::max());
-        std::vector<float> maxDepth(slotCount, std::numeric_limits<float>::lowest());
-        for (const SortedTransparentRecord& rec : holder.Records)
-        {
-            const uint32_t slot = holder.Partition.SlotOfGroup[rec.RunGroup];
-            minDepth[slot] = std::min(minDepth[slot], rec.ViewDepth);
-            maxDepth[slot] = std::max(maxDepth[slot], rec.ViewDepth);
-        }
+        // Alternating materials can produce one run per visible mesh.
+        constexpr uint32_t kMaxLoggedRuns = 12;
+        const uint32_t loggedRuns = std::min(slotCount, kMaxLoggedRuns);
         std::string runRanges;
-        for (uint32_t slot = 0; slot < slotCount; ++slot)
+        for (uint32_t slot = 0; slot < loggedRuns; ++slot)
         {
+            float minDepth = std::numeric_limits<float>::max();
+            float maxDepth = std::numeric_limits<float>::lowest();
+            const uint32_t start = holder.Partition.RunStart[slot];
+            for (uint32_t i = 0; i < holder.Partition.RunCount[slot]; ++i)
+            {
+                const float depth = holder.Records[holder.CompositionMeshOrder[start + i]].ViewDepth;
+                minDepth = std::min(minDepth, depth);
+                maxDepth = std::max(maxDepth, depth);
+            }
             runRanges += slot ? " r" : "r";
-            runRanges += std::to_string(slot) + "[" + std::to_string(minDepth[slot]) + "," +
-                         std::to_string(maxDepth[slot]) + "]x" +
+            runRanges += std::to_string(slot) + "[" + std::to_string(minDepth) + "," +
+                         std::to_string(maxDepth) + "]x" +
                          std::to_string(holder.Partition.RunCount[slot]);
         }
+        if (slotCount > loggedRuns)
+            runRanges += " ... (" + std::to_string(slotCount - loggedRuns) + " more)";
         Logger::Log::Debug("SortedTransparent: view {} run depth ranges: {}",
                            static_cast<uint32_t>(viewId), runRanges);
     }
@@ -357,84 +281,11 @@ void RenderServices::BuildSortedTransparentForView(Rendering::ViewId viewId)
 
 bool RenderServices::IsSortedTransparentActive(Rendering::ViewId viewId) const
 {
-    const uint64_t frame = m_Device ? m_Device->GetFrameIndex() : 0;
+    const uint64_t frame = m_FrameOrchestrator.WorldFrameEpoch();
     const auto it = m_SortedTransparentByView.find(viewId);
     // Guard on the build frame so a stale Active never leaks to a later frame or to
     // a view the world node did not (re)build this frame.
     return it != m_SortedTransparentByView.end() && it->second.Frame == frame && it->second.Active;
-}
-
-bool RenderServices::EnsureSortedTransparentDrainPipeline()
-{
-    if (m_SortedTransparentDrainPipeline.IsValid())
-        return true;
-    // m_SortedTransparentDrainAttempted latches only DEFINITIVE failures (bad
-    // SPIR-V rejected at intern). Package-load failures are treated as
-    // transient (hot-reload can catch the pkg mid-write) and retried on a
-    // frame backoff instead of sticking the drain on the CPU sorter for the
-    // whole session (R1-F4).
-    if (m_SortedTransparentDrainAttempted || !m_Device)
-        return false;
-    const uint64_t frame = m_Device->GetFrameIndex();
-    if (frame < m_SortedTransparentDrainRetryFrame)
-        return false;
-
-    ShaderPackage pkg{};
-    std::string err;
-    if (!LoadShaderPkg("Shaders/sorted_transparent_drain.shaderpkg", m_Device->PreferredShaderSource(), pkg, &err))
-    {
-        m_SortedTransparentDrainRetryFrame = frame + kSortedTransparentDrainRetryInterval;
-        Logger::Log::Warning(
-            "SortedTransparent: failed to load sorted_transparent_drain.shaderpkg ({}); "
-            "the drain will CPU-sort and retry in {} frames.",
-            err, kSortedTransparentDrainRetryInterval);
-        return false;
-    }
-    const auto itCs = pkg.stageBytes.find("cs");
-    if (itCs == pkg.stageBytes.end() || itCs->second.empty())
-    {
-        m_SortedTransparentDrainRetryFrame = frame + kSortedTransparentDrainRetryInterval;
-        Logger::Log::Warning(
-            "SortedTransparent: sorted_transparent_drain.shaderpkg has no cs stage; "
-            "the drain will CPU-sort and retry in {} frames.",
-            kSortedTransparentDrainRetryInterval);
-        return false;
-    }
-
-    m_SortedTransparentDrainLayout = {};
-    m_SortedTransparentDrainLayout.debugName = "SortedTransparentDrain_SetLayout";
-    const char* bindingNames[6] = {"Records", "Instances", "DrawArgs",
-                                   "DrawCounts", "Indirection", "RunCounts"};
-    for (uint32_t i = 0; i < 6u; ++i)
-    {
-        DescriptorBinding b{};
-        b.binding = i;
-        b.type = DescriptorType::StorageBuffer;
-        b.count = 1u;
-        b.shaderStages = kShaderStageCompute;
-        b.debugName = bindingNames[i];
-        m_SortedTransparentDrainLayout.bindings.push_back(b);
-    }
-
-    ComputePipelineDesc cd{};
-    cd.ComputeShader = std::make_shared<const std::vector<uint8_t>>(itCs->second);
-    cd.DescriptorSetLayouts.push_back(
-        m_Device->InternDescriptorSetLayout(m_SortedTransparentDrainLayout));
-    cd.PushConstants.Size = sizeof(SortedTransparentDrainPC);
-    cd.PushConstants.StageMask = kShaderStageCompute;
-    cd.DebugName = "SortedTransparentDrain";
-    m_SortedTransparentDrainPipeline = m_Device->InternComputePipeline(cd);
-    if (!m_SortedTransparentDrainPipeline.IsValid())
-    {
-        // Definitive: the loaded SPIR-V was rejected at intern — retrying the
-        // same bytes cannot succeed, so latch off for the session (R1-F4).
-        m_SortedTransparentDrainAttempted = true;
-        Logger::Log::Warning(
-            "SortedTransparent: sorted_transparent_drain compute pipeline intern failed; "
-            "the drain will CPU-sort for the rest of the session.");
-        return false;
-    }
-    return true;
 }
 
 void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RGFrame& frame,
@@ -449,15 +300,13 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
     if (GetDepthPixelationBandRange(viewId, bandStart, bandEnd, distanceMode))
         passKeywords |= Rendering::MaterialKeyword::DepthPixelationBand;
 
-    const uint64_t deviceFrame = m_Device ? m_Device->GetFrameIndex() : 0;
     const auto it = m_SortedTransparentByView.find(viewId);
-    if (it == m_SortedTransparentByView.end() || it->second.Frame != deviceFrame ||
+    if (it == m_SortedTransparentByView.end() || it->second.Frame != m_FrameOrchestrator.WorldFrameEpoch() ||
         !it->second.Active)
         return;
     SortedTransparentView& holder = it->second;
 
     const auto& contributors = m_ViewRegistry.PerView(viewId).SortedTransparentCommands;
-    const bool composition = !contributors.empty() || m_Profile.IsCompat();
     const auto& viewResources = m_ViewRegistry.PerView(viewId);
     const std::span<const RenderGraph::RGTexture> contributorTextures =
         viewResources.ForwardSampledFor.IsFor(frame)
@@ -468,7 +317,7 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
     for (const auto& read : viewResources.ForwardSampledBufferRG)
         if (read.For.IsFor(frame))
             contributorBuffers.push_back({read.Buffer, read.Access});
-    if (holder.Records.empty() && composition)
+    if (holder.Records.empty() && !contributors.empty())
     {
         std::pmr::monotonic_buffer_resource scratch;
         BuildTransparentComposition({}, {}, {}, contributors, scratch, holder.Partition,
@@ -553,7 +402,6 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
             command.Bindings.PushConstants = std::span<const std::byte>(push, sizeof(first));
             holder.Commands.push_back(command);
         }
-        holder.Stats.CpuSorted = true;
         holder.WarnedDrainBail = false;
         AddForwardCommandPassForView(frame, viewId, targets, passKeywords, holder.Commands,
                                      contributorTextures, "SortedTransparent", contributorBuffers);
@@ -562,248 +410,73 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
 
     const uint32_t liveCount = static_cast<uint32_t>(holder.Records.size());
     const uint32_t runCount = static_cast<uint32_t>(holder.Partition.RunCount.size());
-    const bool gpuSort =
-        !composition && liveCount <= kSortedTransparentSortCapacity && EnsureSortedTransparentDrainPipeline();
-    holder.Stats.CpuSorted = !gpuSort; // the build's capacity guess, made exact
+    // The CPU knows the final order before it can select a pipeline for each run.
+    // Write the indirect commands and instance list in that same order.
+    const uint64_t argsBytes = static_cast<uint64_t>(liveCount) * kIndirectCommandStride;
+    const uint64_t countsBytes = static_cast<uint64_t>(runCount) * sizeof(uint32_t);
+    const uint64_t indirectionBytes = static_cast<uint64_t>(liveCount) * sizeof(uint32_t);
+    const uint64_t neededBytes = argsBytes + countsBytes + indirectionBytes;
 
-    Rendering::BufferHandle argsBuffer{};
-    Rendering::BufferHandle countsBuffer{};
-    size_t argsBase = 0;
-    size_t countsBase = 0;
-    uint64_t indirectionAddr = 0;
-    // GPU-written buffers the draw pass must order after the drain dispatch.
-    // Empty on the CPU path (host writes are visible at submit; no producer
-    // pass exists to order against).
-    std::pmr::vector<ForwardBufferReadRG> drawReads = std::move(contributorBuffers);
-
-    if (gpuSort)
+    const uint32_t frameSlot = m_Device->GetFrameIndex();
+    if (!holder.CpuDrainBuffers[frameSlot].IsValid() ||
+        holder.CpuDrainCapacityBytes[frameSlot] < neededBytes)
     {
-        // Device-local per-view stream buffers from the persistent pool: fixed
-        // capacity so the desc never changes (no realloc churn), eager physical
-        // (the DrawCommands below need handles at declare), pool-managed
-        // lifetime + device-rebuild reprovision for free.
-        const std::string viewSuffix = ".View" + std::to_string(static_cast<uint32_t>(viewId));
-        auto importStream = [&](const char* what, uint64_t bytes, uint32_t usage,
-                                RenderGraph::RGBuffer& outRG, Rendering::BufferHandle& outPhys)
-        {
-            BufferDesc desc{};
-            desc.size = bytes;
-            desc.usage = usage;
-            desc.memoryUsage = BufferMemoryUsage::DeviceLocal;
-            const std::string name = std::string("SortedTransparent.") + what + viewSuffix;
-            desc.debugName = name.c_str();
-            bool needsZeroInit = false;
-            outRG = frame.ImportPersistentBuffer(name.c_str(), desc, &needsZeroInit);
-            if (!outRG.IsValid())
-                return false;
-            // Hygiene only — every byte a draw can read is written by the drain
-            // dispatch this frame (counts clamp the tail off) — but a fresh
-            // physical is recycled pool memory and clean captures beat stale
-            // garbage.
-            if (needsZeroInit)
-                frame.AddBufferZeroInit(outRG, "SortedTransparent.ZeroInit");
-            outPhys = frame.PhysicalBuffer(outRG);
-            return outPhys.IsValid();
-        };
-
-        RenderGraph::RGBuffer argsRG{};
-        RenderGraph::RGBuffer countsRG{};
-        RenderGraph::RGBuffer indirectionRG{};
-        Rendering::BufferHandle indirectionBuffer{};
-        const uint32_t streamUsage = static_cast<uint32_t>(BufferUsage::Storage) |
-                                     static_cast<uint32_t>(BufferUsage::Indirect) |
-                                     static_cast<uint32_t>(BufferUsage::TransferDst);
-        const uint32_t indirectionUsage = static_cast<uint32_t>(BufferUsage::Storage) |
-                                          static_cast<uint32_t>(BufferUsage::ShaderDeviceAddress) |
-                                          static_cast<uint32_t>(BufferUsage::TransferDst);
-        if (!importStream("Args", kSortedTransparentSortCapacity * kIndirectCommandStride,
-                          streamUsage, argsRG, argsBuffer) ||
-            !importStream("Counts", kSortedTransparentSortCapacity * sizeof(uint32_t),
-                          streamUsage, countsRG, countsBuffer) ||
-            !importStream("Indirection", kSortedTransparentSortCapacity * sizeof(uint32_t),
-                          indirectionUsage, indirectionRG, indirectionBuffer))
-        {
-            bailToBatched("stream buffer import failed");
-            return;
-        }
-        indirectionAddr = m_Device->GetBufferDeviceAddress(indirectionBuffer);
-        if (indirectionAddr == 0)
-        {
-            bailToBatched("indirection buffer has no device address");
-            return;
-        }
-
-        // CPU-written inputs ride the frame upload ring (Storage usage, per-
-        // frame rotation — no lifetime management here).
-        const auto recordsAlloc =
-            frame.AllocUpload(liveCount * sizeof(SortedTransparentRecordGPU));
-        const auto runCountsAlloc = frame.AllocUpload(runCount * sizeof(uint32_t));
-        if (!recordsAlloc.Valid() || !runCountsAlloc.Valid())
-        {
-            bailToBatched("upload ring allocation failed");
-            return;
-        }
-        auto* recordsGPU = static_cast<SortedTransparentRecordGPU*>(recordsAlloc.Ptr);
-        for (uint32_t i = 0; i < liveCount; ++i)
-        {
-            const SortedTransparentRecord& rec = holder.Records[i];
-            recordsGPU[i] = {rec.InstanceIndex, rec.IndexCount, rec.FirstIndex, rec.VertexOffset,
-                             holder.Partition.SlotOfGroup[rec.RunGroup]};
-        }
-        std::memcpy(runCountsAlloc.Ptr, holder.Partition.RunCount.data(),
-                    runCount * sizeof(uint32_t));
-
-        SortedTransparentDrainPC pc{};
-        pc.CameraPos[0] = holder.CameraPos[0];
-        pc.CameraPos[1] = holder.CameraPos[1];
-        pc.CameraPos[2] = holder.CameraPos[2];
-        pc.LiveCount = liveCount;
-        pc.CameraForward[0] = holder.CameraForward[0];
-        pc.CameraForward[1] = holder.CameraForward[1];
-        pc.CameraForward[2] = holder.CameraForward[2];
-        pc.RunCount = runCount;
-
-        const auto sceneRG = scene->ImportFrameResources(frame);
-        const Rendering::BufferHandle instanceBuffer = scene->GetInstanceBuffer();
-        const std::string passName =
-            "SortedTransparentDrain[View#" + std::to_string(static_cast<uint32_t>(viewId)) + "]";
-
-        frame.AddComputePass(
-            passName.c_str(), Rendering::PassPhase::kWorldRender,
-            [&](RenderGraph::RGPassBuilder& p)
-            {
-                if (sceneRG.Instances.IsValid())
-                    p.Read(sceneRG.Instances, RenderGraph::RGBufferRead::Storage);
-                p.Write(argsRG, RenderGraph::RGBufferWrite::Storage);
-                p.Write(countsRG, RenderGraph::RGBufferWrite::Storage);
-                p.Write(indirectionRG, RenderGraph::RGBufferWrite::Storage);
-            },
-            [this, recordsAlloc, runCountsAlloc, argsBuffer, countsBuffer, indirectionBuffer,
-             instanceBuffer, pc, liveCount, runCount](RenderGraph::RGContext& ctx)
-            {
-                auto* dev = ctx.GetDevice();
-                auto* cl = ctx.Cmd;
-                if (!dev || !cl)
-                    return;
-                const PipelineHandle pipe =
-                    ctx.GetOrCreatePipelineVariant(m_SortedTransparentDrainPipeline);
-                if (!pipe.IsValid())
-                    return;
-
-                DescriptorSetDesc dsDesc{};
-                dsDesc.layout = m_SortedTransparentDrainLayout;
-                dsDesc.transient = true;
-                dsDesc.debugName = "SortedTransparentDrain.Set0";
-                const DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
-                if (!ds.IsValid())
-                    return;
-                dev->UpdateStorageBufferBinding(ds, 0, recordsAlloc.Buffer, recordsAlloc.Offset,
-                                                liveCount * sizeof(SortedTransparentRecordGPU));
-                dev->UpdateStorageBufferBinding(ds, 1, instanceBuffer, 0, 0);
-                dev->UpdateStorageBufferBinding(ds, 2, argsBuffer, 0, 0);
-                dev->UpdateStorageBufferBinding(ds, 3, countsBuffer, 0, 0);
-                dev->UpdateStorageBufferBinding(ds, 4, indirectionBuffer, 0, 0);
-                dev->UpdateStorageBufferBinding(ds, 5, runCountsAlloc.Buffer,
-                                                runCountsAlloc.Offset,
-                                                runCount * sizeof(uint32_t));
-
-                cl->SetPipeline(pipe);
-                cl->BindDescriptorSet(0, ds, pipe);
-                cl->SetPushConstants(pc);
-                // Exactly ONE workgroup (F6): the fused sort's shared-memory
-                // picture covers the whole capacity; a second workgroup would
-                // race it.
-                cl->Dispatch(1, 1, 1);
-            });
-
-        drawReads.push_back({argsRG, RenderGraph::RGBufferRead::Indirect});
-        drawReads.push_back({countsRG, RenderGraph::RGBufferRead::Indirect});
-        drawReads.push_back({indirectionRG, RenderGraph::RGBufferRead::Storage});
+        if (holder.CpuDrainBuffers[frameSlot].IsValid())
+            m_Device->DestroyBuffer(holder.CpuDrainBuffers[frameSlot]); // deferred by the device
+        const uint64_t capacity =
+            std::max<uint64_t>(neededBytes, holder.CpuDrainCapacityBytes[frameSlot] * 2u);
+        BufferDesc desc{};
+        desc.size = capacity;
+        desc.usage = static_cast<uint32_t>(BufferUsage::Storage) |
+                     static_cast<uint32_t>(BufferUsage::Indirect) |
+                     static_cast<uint32_t>(BufferUsage::ShaderDeviceAddress);
+        desc.memoryUsage = BufferMemoryUsage::Upload;
+        // FrameSlotted: one element of a ring exactly as deep as the device paces.
+        // Written only from AddSortedTransparentDrainForView, which runs behind
+        // BeginFrame; a write from anywhere earlier would race a frame in flight.
+        desc.flags = BufferCreateFlags::FrameSlotted;
+        const std::string name =
+            "SortedTransparent.CpuDrain.View" + std::to_string(static_cast<uint32_t>(viewId)) +
+            ".Slot" + std::to_string(frameSlot);
+        desc.debugName = name.c_str();
+        holder.CpuDrainBuffers[frameSlot] = m_Device->CreateBuffer(desc);
+        holder.CpuDrainCapacityBytes[frameSlot] = holder.CpuDrainBuffers[frameSlot].IsValid() ? capacity : 0;
     }
-    else
+    if (!holder.CpuDrainBuffers[frameSlot].IsValid())
     {
-        // CPU-sorted twin: identical indirect stream (same run layout, same
-        // key order — BuildSortedTransparentCpuOrder mirrors the GPU key
-        // bit-exactly), written into a host-visible per-frame-in-flight ring
-        // slot. Engages past the GPU sort capacity (or if the drain shader
-        // failed to load), so removing the old ceiling never drops or
-        // reorders a draw — only the sorter moves.
-        std::vector<uint32_t> fallbackOrder;
-        if (!composition)
-            fallbackOrder = BuildSortedTransparentCpuOrder(holder.Records, holder.Partition);
-        const std::span<const uint32_t> order = composition
-            ? std::span<const uint32_t>(holder.CompositionMeshOrder)
-            : std::span<const uint32_t>(fallbackOrder);
-
-        const uint64_t argsBytes = static_cast<uint64_t>(liveCount) * kIndirectCommandStride;
-        const uint64_t countsBytes = static_cast<uint64_t>(runCount) * sizeof(uint32_t);
-        const uint64_t indirectionBytes = static_cast<uint64_t>(liveCount) * sizeof(uint32_t);
-        const uint64_t neededBytes = argsBytes + countsBytes + indirectionBytes;
-
-        const uint32_t slot = static_cast<uint32_t>(deviceFrame);
-        if (!holder.CpuDrainBuffers[slot].IsValid() ||
-            holder.CpuDrainCapacityBytes[slot] < neededBytes)
-        {
-            if (holder.CpuDrainBuffers[slot].IsValid())
-                m_Device->DestroyBuffer(holder.CpuDrainBuffers[slot]); // deferred by the device
-            const uint64_t capacity =
-                std::max<uint64_t>(neededBytes, holder.CpuDrainCapacityBytes[slot] * 2u);
-            BufferDesc desc{};
-            desc.size = capacity;
-            desc.usage = static_cast<uint32_t>(BufferUsage::Storage) |
-                         static_cast<uint32_t>(BufferUsage::Indirect) |
-                         static_cast<uint32_t>(BufferUsage::ShaderDeviceAddress);
-            desc.memoryUsage = BufferMemoryUsage::Upload;
-            // FrameSlotted: one element of a ring exactly as deep as the device paces.
-            // Written only from AddSortedTransparentDrainForView, which runs behind
-            // BeginFrame; a write from anywhere earlier would race a frame in flight.
-            desc.flags = BufferCreateFlags::FrameSlotted;
-            const std::string name =
-                "SortedTransparent.CpuDrain.View" + std::to_string(static_cast<uint32_t>(viewId)) +
-                ".Slot" + std::to_string(slot);
-            desc.debugName = name.c_str();
-            holder.CpuDrainBuffers[slot] = m_Device->CreateBuffer(desc);
-            holder.CpuDrainCapacityBytes[slot] = holder.CpuDrainBuffers[slot].IsValid() ? capacity : 0;
-        }
-        if (!holder.CpuDrainBuffers[slot].IsValid())
-        {
-            bailToBatched("CPU drain buffer creation failed");
-            return;
-        }
-
-        auto* mapped = static_cast<uint8_t*>(m_Device->MapBuffer(holder.CpuDrainBuffers[slot]));
-        if (!mapped)
-        {
-            bailToBatched("CPU drain buffer map failed");
-            return;
-        }
-        auto* args = reinterpret_cast<uint32_t*>(mapped);
-        auto* counts = reinterpret_cast<uint32_t*>(mapped + argsBytes);
-        auto* indirection = reinterpret_cast<uint32_t*>(mapped + argsBytes + countsBytes);
-        for (uint32_t pos = 0; pos < liveCount; ++pos)
-        {
-            const SortedTransparentRecord& rec = holder.Records[order[pos]];
-            WriteIndirectCommand(args + pos * 5u, rec, pos);
-            indirection[pos] = rec.InstanceIndex;
-        }
-        for (uint32_t r = 0; r < runCount; ++r)
-            counts[r] = holder.Partition.RunCount[r];
-        m_Device->UnmapBuffer(holder.CpuDrainBuffers[slot]);
-
-        argsBuffer = holder.CpuDrainBuffers[slot];
-        countsBuffer = holder.CpuDrainBuffers[slot];
-        argsBase = 0;
-        countsBase = argsBytes;
-        indirectionAddr = m_Device->GetBufferDeviceAddress(holder.CpuDrainBuffers[slot]);
-        if (indirectionAddr == 0)
-        {
-            bailToBatched("CPU drain buffer has no device address");
-            return;
-        }
-        indirectionAddr += argsBytes + countsBytes;
+        bailToBatched("CPU drain buffer creation failed");
+        return;
     }
 
-    // Stage one indirect draw per run, in slot order (coarse back-to-front).
+    auto* mapped = static_cast<uint8_t*>(m_Device->MapBuffer(holder.CpuDrainBuffers[frameSlot]));
+    if (!mapped)
+    {
+        bailToBatched("CPU drain buffer map failed");
+        return;
+    }
+    auto* args = reinterpret_cast<uint32_t*>(mapped);
+    auto* counts = reinterpret_cast<uint32_t*>(mapped + argsBytes);
+    auto* indirection = reinterpret_cast<uint32_t*>(mapped + argsBytes + countsBytes);
+    for (uint32_t pos = 0; pos < liveCount; ++pos)
+    {
+        const SortedTransparentRecord& rec = holder.Records[holder.CompositionMeshOrder[pos]];
+        WriteIndirectCommand(args + pos * 5u, rec, pos);
+        indirection[pos] = rec.InstanceIndex;
+    }
+    for (uint32_t r = 0; r < runCount; ++r)
+        counts[r] = holder.Partition.RunCount[r];
+    m_Device->UnmapBuffer(holder.CpuDrainBuffers[frameSlot]);
+
+    const Rendering::BufferHandle stream = holder.CpuDrainBuffers[frameSlot];
+    uint64_t indirectionAddr = m_Device->GetBufferDeviceAddress(stream);
+    if (indirectionAddr == 0)
+    {
+        bailToBatched("CPU drain buffer has no device address");
+        return;
+    }
+    indirectionAddr += argsBytes + countsBytes;
+
+    // Stage one indirect draw per run, in composition order.
     // All runs share the 16-byte GE_INSTANCED push-constant block: the drain's
     // indirection buffer + GPUScene's per-frame instance buffer, both by
     // device address.
@@ -820,28 +493,27 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
 
     holder.Commands.clear();
     holder.Commands.reserve(runCount + contributors.size());
-    const uint32_t commandCount = composition
-        ? static_cast<uint32_t>(holder.CompositionSlots.size()) : runCount;
+    const uint32_t commandCount = static_cast<uint32_t>(holder.CompositionSlots.size());
     for (uint32_t commandIndex = 0; commandIndex < commandCount; ++commandIndex)
     {
-        if (composition && holder.CompositionSlots[commandIndex].Contributor)
+        if (holder.CompositionSlots[commandIndex].Contributor)
         {
             holder.Commands.push_back(contributors[holder.CompositionSlots[commandIndex].Index].Command);
             continue;
         }
-        const uint32_t slot = composition ? holder.CompositionSlots[commandIndex].Index : commandIndex;
+        const uint32_t slot = holder.CompositionSlots[commandIndex].Index;
         const SortedTransparentView::Run& run = holder.Runs[holder.Partition.GroupOfSlot[slot]];
         DrawCommand cmd{};
         cmd.Material = run.Representative;
         cmd.Geometry.Mesh = run.Mesh;
         cmd.UseIndirect = true;
-        cmd.IndirectCommandBuffer = argsBuffer;
-        cmd.IndirectCountBuffer = countsBuffer;
+        cmd.IndirectCommandBuffer = stream;
+        cmd.IndirectCountBuffer = stream;
         cmd.IndirectMaxDrawCount = holder.Partition.RunCount[slot];
         cmd.IndirectStride = kIndirectCommandStride;
         cmd.IndirectCommandOffset =
-            argsBase + static_cast<size_t>(holder.Partition.RunStart[slot]) * kIndirectCommandStride;
-        cmd.IndirectCountOffset = countsBase + static_cast<size_t>(slot) * sizeof(uint32_t);
+            static_cast<size_t>(holder.Partition.RunStart[slot]) * kIndirectCommandStride;
+        cmd.IndirectCountOffset = argsBytes + static_cast<size_t>(slot) * sizeof(uint32_t);
         cmd.Bindings.PushConstants =
             std::span<const std::byte>(holder.PcBytes.data(), holder.PcBytes.size());
         holder.Commands.push_back(cmd);
@@ -852,23 +524,12 @@ void RenderServices::AddSortedTransparentDrainForView(Rendering::RenderGraph::RG
     const bool recoveredFromBail = holder.WarnedDrainBail;
     holder.WarnedDrainBail = false; // successful declare ends any bail episode
 
-    // Same log-on-transition convention as the build's composition lines:
-    // fire when the drain composition changes (run/record counts, the exact
-    // GPU-vs-CPU sort decision), when the build line fired this frame (the
-    // pair reads together), or on bail recovery. Steady state logs nothing.
-    if (Logger::ShouldLog(Logger::LogLevel::Debug, Logger::Log::GetLogLevel()) &&
-        (holder.LoggedBuildTransition || recoveredFromBail ||
-         runCount != holder.LastLoggedDrain.Runs || liveCount != holder.LastLoggedDrain.Records ||
-         gpuSort != holder.LastLoggedDrain.GpuSort))
-    {
-        holder.LastLoggedDrain = {runCount, liveCount, gpuSort};
-        Logger::Log::Debug(
-            "SortedTransparent: view {} drain issued {} run draws over {} records ({} sort).",
-            static_cast<uint32_t>(viewId), runCount, liveCount, gpuSort ? "GPU" : "CPU");
-    }
+    if (holder.LoggedBuildTransition || recoveredFromBail)
+        Logger::Log::Debug("SortedTransparent: view {} issued {} mesh runs over {} records.",
+                           static_cast<uint32_t>(viewId), runCount, liveCount);
 
     AddForwardCommandPassForView(frame, viewId, targets, passKeywords, holder.Commands, contributorTextures,
-                                 "SortedTransparent", drawReads);
+                                 "SortedTransparent", contributorBuffers);
 }
 
 } // namespace Engine::Renderer

@@ -734,8 +734,9 @@ void DDGIProbeFeature::DispatchClear(Rendering::RenderGraph::RGFrame& frame, Ren
     const std::string debugNameOwned = passName;
     frame.AddComputePass(
         passName, Rendering::PassPhase::kEarlySetup,
-        [targetRG](RG::RGPassBuilder& p)
+        [targetRG, &clearPipe](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(clearPipe);
             p.PreventCulling();
             p.Write(targetRG, RG::RGBufferWrite::Storage);
         },
@@ -1131,8 +1132,9 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
                 frame.AddComputePass(
                     names.ClassifySW, Rendering::PassPhase::kEarlySetup,
                     [swNodesRG = shared.SwNodesRG, swVertexDataRG = shared.SwVertexDataRG,
-                     swPackedSceneRG = shared.SwPackedSceneRG, probeCellRG, probeStateRG](RG::RGPassBuilder& p)
+                     swPackedSceneRG = shared.SwPackedSceneRG, probeCellRG, probeStateRG, &classifyPipe](RG::RGPassBuilder& p)
                     {
+                        p.UsePipeline(classifyPipe);
                         p.PreventCulling();
                         p.Read(swPackedSceneRG, RG::RGBufferRead::Storage);
                         // Order after the skinned BVH refit's writes — the
@@ -1197,8 +1199,9 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
                 const RG::RGAccelerationStructure tlasRG = frame.ImportAccelerationStructure("DDGI.TLAS", tlasSlot);
                 frame.AddComputePass(
                     names.Classify, Rendering::PassPhase::kEarlySetup,
-                    [probeCellRG, probeStateRG, tlasRG](RG::RGPassBuilder& p)
+                    [probeCellRG, probeStateRG, tlasRG, &classifyPipe](RG::RGPassBuilder& p)
                     {
+                        p.UsePipeline(classifyPipe);
                         p.PreventCulling();
                         p.Read(tlasRG);
                         p.Write(probeCellRG, RG::RGBufferWrite::Storage);
@@ -1403,8 +1406,9 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
         frame.AddComputePass(
             names.TraceHW, Rendering::PassPhase::kDefault,
             [mapAtlasRG, mapAtlasTracked, skyIrradianceRG, rayRG, irradianceRG, depthAtlasRG,
-             probeStateRG, tlasRG](RG::RGPassBuilder& p)
+             probeStateRG, tlasRG, &tracePipe](RG::RGPassBuilder& p)
             {
+                p.UsePipeline(tracePipe);
                 p.PreventCulling();
                 p.Read(tlasRG);
                 if (mapAtlasTracked)
@@ -1515,8 +1519,9 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
             names.TraceSW, Rendering::PassPhase::kDefault,
             [mapAtlasRG, mapAtlasTracked, rayRG, irradianceRG, depthAtlasRG, probeStateRG,
              swNodesRG = shared.SwNodesRG, swVertexDataRG = shared.SwVertexDataRG,
-             swPackedSceneRG = shared.SwPackedSceneRG, skyIrradianceRG](RG::RGPassBuilder& p)
+             swPackedSceneRG = shared.SwPackedSceneRG, skyIrradianceRG, &tracePipe](RG::RGPassBuilder& p)
             {
+                p.UsePipeline(tracePipe);
                 p.PreventCulling();
                 if (mapAtlasTracked)
                     p.Read(mapAtlasRG, RG::RGTextureRead::Sampled);
@@ -1658,8 +1663,9 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
         const Rendering::ShaderMeta* depthBlendMeta = m_DepthBlend.Meta.get();
         frame.AddComputePass(
             names.DepthBlend, Rendering::PassPhase::kDefault,
-            [rayRG, depthStateRG, probeCellRG](RG::RGPassBuilder& p)
+            [rayRG, depthStateRG, probeCellRG, &depthBlendPipe](RG::RGPassBuilder& p)
             {
+                p.UsePipeline(depthBlendPipe);
                 p.PreventCulling();
                 p.Read(rayRG, RG::RGBufferRead::Storage);
                 p.Read(probeCellRG, RG::RGBufferRead::Storage);
@@ -1698,8 +1704,9 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
     const Rendering::ShaderMeta* blendMeta = m_Blend.Meta.get();
     frame.AddComputePass(
         names.Blend, Rendering::PassPhase::kDefault,
-        [rayRG, temporalStateRG, probeCellRG, irradianceStateRG, depthStateRG, fineDepth](RG::RGPassBuilder& p)
+        [rayRG, temporalStateRG, probeCellRG, irradianceStateRG, depthStateRG, fineDepth, &blendPipe](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(blendPipe);
             p.PreventCulling();
             p.Read(rayRG, RG::RGBufferRead::Storage);
             p.Write(irradianceStateRG, RG::RGBufferWrite::Storage);
@@ -1793,8 +1800,9 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
     const uint32_t probeTotalForUpload = uploadCount;
     frame.AddComputePass(
         names.Upload, Rendering::PassPhase::kDefault,
-        [irradianceRG, depthAtlasRG, probeCellRG, irradianceStateRG, depthStateRG, fineDepth](RG::RGPassBuilder& p)
+        [irradianceRG, depthAtlasRG, probeCellRG, irradianceStateRG, depthStateRG, fineDepth, &uploadPipe](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(uploadPipe);
             p.PreventCulling();
             p.Read(probeCellRG, RG::RGBufferRead::Storage);
             p.Read(irradianceStateRG, RG::RGBufferRead::Storage);
@@ -1864,8 +1872,9 @@ void DDGIProbeFeature::DeclareCascadeGridPasses(Rendering::RenderGraph::RGFrame&
         const Rendering::ShaderMeta* depthUploadMeta = m_DepthUpload.Meta.get();
         frame.AddComputePass(
             names.DepthUpload, Rendering::PassPhase::kDefault,
-            [depthStateRG, depthAtlasRG, probeCellRG](RG::RGPassBuilder& p)
+            [depthStateRG, depthAtlasRG, probeCellRG, &depthUploadPipe](RG::RGPassBuilder& p)
             {
+                p.UsePipeline(depthUploadPipe);
                 p.PreventCulling();
                 p.Read(depthStateRG, RG::RGBufferRead::Storage);
                 p.Read(probeCellRG, RG::RGBufferRead::Storage);
@@ -2207,8 +2216,9 @@ void DDGIProbeFeature::DeclareReflectionPasses(Rendering::RenderGraph::RGFrame& 
     const Rendering::ShaderMeta* roughBlendMeta = m_RoughBlend.Meta.get();
     frame.AddComputePass(
         names.RoughBlend, Rendering::PassPhase::kDefault,
-        [rayRG, probeCellRG, roughStateRG](RG::RGPassBuilder& p)
+        [rayRG, probeCellRG, roughStateRG, &roughBlendPipe](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(roughBlendPipe);
             p.PreventCulling();
             p.Read(rayRG, RG::RGBufferRead::Storage);
             p.Write(roughStateRG, RG::RGBufferWrite::Storage);
@@ -2267,8 +2277,9 @@ void DDGIProbeFeature::DeclareReflectionPasses(Rendering::RenderGraph::RGFrame& 
     const Rendering::ShaderMeta* roughUploadMeta = m_RoughUpload.Meta.get();
     frame.AddComputePass(
         names.RoughUpload, Rendering::PassPhase::kDefault,
-        [roughStateRG, roughAtlasRG](RG::RGPassBuilder& p)
+        [roughStateRG, roughAtlasRG, &roughUploadPipe](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(roughUploadPipe);
             p.PreventCulling();
             p.Read(roughStateRG, RG::RGBufferRead::Storage);
             p.Write(roughAtlasRG, RG::RGTextureWrite::Storage);
@@ -2343,8 +2354,9 @@ void DDGIProbeFeature::DeclareReflectionPasses(Rendering::RenderGraph::RGFrame& 
     const Rendering::ShaderMeta* glossyBlendMeta = m_GlossyBlend.Meta.get();
     frame.AddComputePass(
         names.GlossyBlend, Rendering::PassPhase::kDefault,
-        [rayRG, probeCellRG, glossyNumRG, glossyWeightRG](RG::RGPassBuilder& p)
+        [rayRG, probeCellRG, glossyNumRG, glossyWeightRG, &glossyBlendPipe](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(glossyBlendPipe);
             p.PreventCulling();
             p.Read(rayRG, RG::RGBufferRead::Storage);
             p.Write(glossyNumRG, RG::RGBufferWrite::Storage);
@@ -2408,8 +2420,9 @@ void DDGIProbeFeature::DeclareReflectionPasses(Rendering::RenderGraph::RGFrame& 
     const Rendering::ShaderMeta* glossyUploadMeta = m_GlossyUpload.Meta.get();
     frame.AddComputePass(
         names.GlossyUpload, Rendering::PassPhase::kDefault,
-        [glossyNumRG, glossyWeightRG, glossyAtlasRG](RG::RGPassBuilder& p)
+        [glossyNumRG, glossyWeightRG, glossyAtlasRG, &glossyUploadPipe](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(glossyUploadPipe);
             p.PreventCulling();
             p.Read(glossyNumRG, RG::RGBufferRead::Storage);
             p.Read(glossyWeightRG, RG::RGBufferRead::Storage);
@@ -2524,8 +2537,9 @@ void DDGIProbeFeature::DeclareMapAtlasPasses(Rendering::RenderGraph::RGFrame& fr
         // has to be recorded ahead of them.
         frame.AddComputePass(
             "DDGI.MapBlit", Rendering::PassPhase::kEarlySetup,
-            [atlasRG, sourceRG, layer = blit.Layer](RG::RGPassBuilder& p)
+            [atlasRG, sourceRG, layer = blit.Layer, &blitPipe](RG::RGPassBuilder& p)
             {
+                p.UsePipeline(blitPipe);
                 p.PreventCulling();
                 p.Read(sourceRG, RG::RGTextureRead::Sampled);
                 RG::RGRange range = RG::RGRange::All();
@@ -2658,8 +2672,9 @@ void DDGIProbeFeature::DeclareSwSkinnedRefit(Rendering::RenderGraph::RGFrame& fr
     const uint64_t vertsBytes = sw.VertexDataBytes;
     frame.AddComputePass(
         "DDGI.SwSkinnedRefit", Rendering::PassPhase::kEarlySetup,
-        [nodesRG, vertsRG, posedHandles](RG::RGPassBuilder& p)
+        [nodesRG, vertsRG, posedHandles, &refitPipe](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(refitPipe);
             p.PreventCulling();
             p.Write(nodesRG, RG::RGBufferWrite::Storage);
             p.Write(vertsRG, RG::RGBufferWrite::Storage);
@@ -3531,8 +3546,9 @@ void DDGIProbeFeature::DeclareVariabilityPass(Rendering::RenderGraph::RGFrame& f
     const Rendering::ShaderMeta* meta = m_Variability.Meta.get();
     frame.AddComputePass(
         names.Variability, Rendering::PassPhase::kDefault,
-        [temporalRG](RG::RGPassBuilder& p)
+        [temporalRG, &pipeId](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(pipeId);
             p.PreventCulling();
             p.Read(temporalRG, RG::RGBufferRead::Storage);
         },

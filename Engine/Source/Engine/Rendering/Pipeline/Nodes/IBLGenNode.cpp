@@ -82,7 +82,8 @@ void IBLGenNode::ScheduleBrdfLutBake(RenderGraph::RGFrame& frame, IDevice& devic
         "IBL_BrdfLut", feature.GetBrdfLut(), ResourceState::Common, TextureFormat{}, 1, 1);
     frame.AddComputePass(
         "IBLGen.BrdfLut", PassPhase::kEarlySetup,
-        [lut](RenderGraph::RGPassBuilder& p) {
+        [lut, &pipeId](RenderGraph::RGPassBuilder& p) {
+            p.UsePipeline(pipeId);
             p.Write(lut, RenderGraph::RGTextureWrite::Storage);
             p.PreventCulling();
         },

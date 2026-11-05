@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Ocean/OceanPreparedDispatch.h"
+
 #include "Ocean/OceanRecentMaximum.h"
 #include "Rendering/Core/Device.h" // DescriptorSetLayoutDesc
 #include "Rendering/Core/Handle.h"
@@ -80,18 +82,25 @@ public:
     // Finalize this frame's GPU params (tile origin snapped by BeginFrame, shape
     // controls from SetFrameInputs). Called at DECLARE time; the caller writes the
     // result into a render-graph upload-ring allocation and hands the
-    // {buffer, offset} to RecordDispatch.
+    // {buffer, offset} to PrepareDispatch.
     void FillParams(OceanHeightQueryParamsGPU& out) const;
 
-    // Record the bake into the next ring slot, then map the newest token-
-    // signaled slot back into the CPU displacement cache. Once per frame,
-    // after the FFT. `frame` keys the readback's completion pending (stamped
-    // by OnFrameSubmitted); params come from the frame's upload ring
-    // (FillParams above) — no per-class buffer ring.
-    void RecordDispatch(::GameEngine::Rendering::IDevice* device,
-                        ::GameEngine::Rendering::CommandList* cl,
-                        const ::GameEngine::Rendering::RenderGraph::RGFrame& frame,
-                        ::GameEngine::Rendering::BufferHandle paramsBuffer, uint64 paramsOffset);
+    /// Declare this ID with RGPassBuilder::UsePipeline before preparation.
+    ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipe; }
+
+    /// Render-thread preparation reserves a frame-owned slot without consuming pending work.
+    /// Keep the parameter upload alive through recording; notify submission or abort afterward.
+    bool PrepareDispatch(Rendering::IDevice* device, Rendering::RenderGraph::RGFrame& frame,
+                         Rendering::BufferHandle paramsBuffer, uint64 paramsOffset,
+                         const OceanHeightQueryParamsGPU& params, OceanPreparedReadbackDispatch& prepared);
+    /// Render-thread recording validates the reservation before writing its physical slot.
+    void RecordDispatch(Rendering::IDevice* device, Rendering::CommandList* commands,
+                        const OceanPreparedReadbackDispatch& prepared);
+    /// Render-thread notification releases this frame's reservations that were not submitted.
+    void OnFrameAborted(const Rendering::RenderGraph::RGFrame& frame)
+    {
+        m_Readback.CancelUnsubmitted(frame);
+    }
 
     // Post-submit stamp: attaches the submission's fence token to this frame's
     // pending readback (RGReadbackRing completion contract).

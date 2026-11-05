@@ -99,6 +99,11 @@ class IRenderFeature
     {
     }
 
+    // Cancel only reservations from this graph incarnation when nothing submitted.
+    virtual void OnFrameAbortedRG(::GameEngine::Rendering::RenderGraph::RGFrame& /*frame*/)
+    {
+    }
+
     // Called when a frame stream is retired (window closed). Features purge
     // readback pendings keyed to the dying RGFrame so a heap-recycled frame
     // at the same address cannot falsely stamp them

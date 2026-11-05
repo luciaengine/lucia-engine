@@ -876,6 +876,7 @@ void ComputeShaderNode::DeclareForView(ViewDeclare& d)
         d.PassName().c_str(), Rendering::PassPhase::kDefault,
         [&](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(m_PipelineId);
             for (const auto& [t, isWrite] : texEdges)
             {
                 if (isWrite)

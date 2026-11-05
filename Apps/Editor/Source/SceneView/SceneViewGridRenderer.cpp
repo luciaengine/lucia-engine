@@ -153,60 +153,65 @@ static void FillGridPCCommon(float invVPOut[16], float cameraPosOut[4], float gr
 // Record
 // ---------------------------------------------------------------------------
 
-void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& ctx,
-                                      const Rendering::CameraData* cam,
-                                      const float camPos[3],
+PipelineHandle SceneViewGridRenderer::PrepareRG(const RenderGraph::RGPrepareContext& context,
+                                                  bool is2DMode)
+{
+    IDevice* device = context.GetDevice();
+    if (device == nullptr)
+        return {};
+    std::vector<uint8_t> vertexShader;
+    std::vector<uint8_t> fragmentShader;
+    const bool loaded = is2DMode ? LoadGrid2DShaderBytes(vertexShader, fragmentShader)
+                                 : LoadGridShaderBytes(vertexShader, fragmentShader);
+    if (!loaded)
+        return {};
+    const GraphicsPipelineId pipeline = device->InternGraphicsPipeline(
+        BuildGridPipelineDesc(vertexShader, fragmentShader,
+                              is2DMode ? "SV_InfiniteGrid2D" : "SV_InfiniteGrid"));
+    return context.PreparePipeline(pipeline);
+}
+
+void SceneViewGridRenderer::RecordRG(const Rendering::RenderGraph::RGContext& context,
+                                      Rendering::PipelineHandle pipeline,
+                                      const Rendering::CameraData* camera,
+                                      const float cameraPosition[3],
                                       bool is2DMode,
-                                      float camDistance,
-                                      float viewportH,
+                                      float cameraDistance,
+                                      float viewportHeight,
                                       float gridOpacity,
                                       uint32_t gridColor,
                                       const float cells2D[4])
 {
-    if (!cam)
+    if (!camera)
         return;
 
-    auto* cl = ctx.Cmd;
-    auto* device = ctx.GetDevice();
-    if (!cl || !device)
+    CommandList* commands = context.Cmd;
+    if (!commands || !pipeline.IsValid())
         return;
-
-    // The format key (incl. sample count) comes from the RenderGraph pass's declared
-    // attachments, so no member sample-keyed cache is needed: intern the desc
-    // (device-deduped) and resolve through the device's variant cache.
-    std::vector<uint8_t> vs, fs;
-    const bool loaded = is2DMode ? LoadGrid2DShaderBytes(vs, fs) : LoadGridShaderBytes(vs, fs);
-    if (!loaded)
-        return;
-    const PipelineHandle pipe = ctx.GetOrCreatePipelineVariant(device->InternGraphicsPipeline(
-        BuildGridPipelineDesc(vs, fs, is2DMode ? "SV_InfiniteGrid2D" : "SV_InfiniteGrid")));
-    if (!pipe.IsValid())
-        return;
-
-    cl->SetPipeline(pipe);
+    commands->SetPipeline(pipeline);
 
     if (!is2DMode)
     {
-        GridPC pc{};
-        FillGridPCCommon(pc.invVP, pc.cameraPos, pc.gridColor, pc.opacity, *cam, camPos,
+        GridPC constants{};
+        FillGridPCCommon(constants.invVP, constants.cameraPos, constants.gridColor, constants.opacity, *camera, cameraPosition,
                          gridOpacity, gridColor);
-        pc.fadeStart = 80.0f;
-        pc.fadeEnd = 200.0f;
-        cl->SetPushConstants(pc);
+        constants.fadeStart = 80.0f;
+        constants.fadeEnd = 200.0f;
+        commands->SetPushConstants(constants);
     }
     else
     {
-        Grid2DPC pc{};
+        Grid2DPC constants{};
         float unusedCameraPos[4];
-        FillGridPCCommon(pc.invVP, unusedCameraPos, pc.gridColor, pc.opacity, *cam, camPos,
+        FillGridPCCommon(constants.invVP, unusedCameraPos, constants.gridColor, constants.opacity, *camera, cameraPosition,
                          gridOpacity, gridColor);
-        std::memcpy(pc.cells, cells2D, sizeof(pc.cells));
-        pc.camDistance = camDistance;
-        pc.viewportH = viewportH;
-        cl->SetPushConstants(pc);
+        std::memcpy(constants.cells, cells2D, sizeof(constants.cells));
+        constants.camDistance = cameraDistance;
+        constants.viewportH = viewportHeight;
+        commands->SetPushConstants(constants);
     }
 
-    cl->Draw(3u, 1u);
+    commands->Draw(3u, 1u);
 }
 
 } // namespace GameEngine

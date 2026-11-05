@@ -154,6 +154,7 @@
 #include "TerrainGrass/TerrainGrassClamps.h"
 #include "PhysicsECS/PhysicsWorldService.h"
 #include "UI/Controls/DockspaceElement.h"
+#include "Types/FlatMap.h"
 #include "Types/Fnv1a.h"
 #include "UI/Controls/ListView.h"
 #include "UI/Controls/Mount.h"
@@ -2556,15 +2557,17 @@ inline bool ApplyMainSceneViewPose(EditorApplication& app, const SceneViewCamera
     static constexpr const char* kRgNoFrameMsg =
         "No live render graph (headless, or no frame rendered yet)";
 
-    // Build a name -> {cpuMs, gpuSpanMs} overlay from the last resolved timings.
-    // See get_gpu_profiler's timingSemantics for what the GPU value measures.
-    [[maybe_unused]] static auto rgTimingMap = [](RG::RGFrame* frame) {
-        std::unordered_map<std::string, std::pair<double, double>> m;
-        if (frame)
-            for (const auto& t : frame->LastFrameTimings())
-                m[t.Name] = {t.CpuMs, t.GpuSpanMs};
-        return m;
-    };
+    [[maybe_unused]] static auto RgTimingMap(RG::RGFrame* frame)
+    {
+        FlatMap<std::string, RG::RGFrame::RGPassTiming> timings;
+        if (!frame)
+            return timings;
+        const auto resolvedTimings = frame->LastFrameTimings();
+        timings.Reserve(resolvedTimings.size());
+        for (const auto& timing : resolvedTimings)
+            timings.InsertOrAssign(timing.Name, timing);
+        return timings;
+    }
 
 
 } // namespace GameEngine

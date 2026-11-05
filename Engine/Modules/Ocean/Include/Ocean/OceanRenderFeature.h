@@ -200,11 +200,11 @@ public:
         m_LastFlowDispatchFrame = frameIndex;
         return true;
     }
-    bool TryClaimDynWavesDispatch(uint32 frameIndex)
+    bool TryClaimDynWavesDispatch(uint64 appFrameEpoch)
     {
-        if (m_LastDynWavesDispatchFrame == frameIndex)
+        if (m_LastDynWavesDispatchEpoch == appFrameEpoch)
             return false;
-        m_LastDynWavesDispatchFrame = frameIndex;
+        m_LastDynWavesDispatchEpoch = appFrameEpoch;
         return true;
     }
     bool TryClaimWaveMaskDispatch(uint32 frameIndex)
@@ -214,11 +214,11 @@ public:
         m_LastWaveMaskDispatchFrame = frameIndex;
         return true;
     }
-    bool TryClaimFoamDispatch(uint32 frameIndex)
+    bool TryClaimFoamDispatch(uint64 appFrameEpoch)
     {
-        if (m_LastFoamDispatchFrame == frameIndex)
+        if (m_LastFoamDispatchEpoch == appFrameEpoch)
             return false;
-        m_LastFoamDispatchFrame = frameIndex;
+        m_LastFoamDispatchEpoch = appFrameEpoch;
         return true;
     }
 
@@ -311,6 +311,16 @@ public:
         m_RasterDepthCapture.OnFrameSubmitted(frame, token);
     }
 
+    void OnFrameAbortedRG(Rendering::RenderGraph::RGFrame& frame) override
+    {
+        m_HeightField.OnFrameAborted(frame);
+        for (auto& local : m_LocalHeightField)
+            local.OnFrameAborted(frame);
+        m_DynWavesReadback.OnFrameAborted(frame);
+        m_GPUQuery.OnFrameAborted(frame);
+        m_RasterDepthCapture.OnFrameAborted(frame);
+    }
+
     // Frame-stream retirement (window closed): purge unstamped pendings keyed
     // to the dying frame so a recycled-address incarnation cannot falsely
     // stamp them.
@@ -320,6 +330,10 @@ public:
         for (auto& localHF : m_LocalHeightField)
             localHF.OnFrameStreamRetired(frame);
         m_DynWavesReadback.OnFrameStreamRetired(frame);
+        m_DynWaves.ForgetFrame(frame);
+        m_FoamSim.ForgetFrame(frame);
+        m_Shadows.ForgetFrame(frame);
+        m_SprayGPU.ForgetFrame(frame);
         m_GPUQuery.OnFrameStreamRetired(frame);
         m_RasterDepthCapture.OnFrameStreamRetired(frame);
     }
@@ -346,11 +360,11 @@ public:
     const IOceanCollisionProvider& GetCollisionProvider() const;
     bool IsGPUQueryReady() const { return m_GPUQueryReady; }
     OceanGPUQuery& GetGPUQuery() { return m_GPUQuery; }
-    bool TryClaimGPUQueryDispatch(uint32 frameIndex)
+    bool TryClaimGPUQueryDispatch(uint64 appFrameEpoch)
     {
-        if (m_LastGPUQueryDispatchFrame == frameIndex)
+        if (m_LastGPUQueryDispatchEpoch == appFrameEpoch)
             return false;
-        m_LastGPUQueryDispatchFrame = frameIndex;
+        m_LastGPUQueryDispatchEpoch = appFrameEpoch;
         return true;
     }
 
@@ -366,7 +380,11 @@ public:
     // behind the surface when the FFT claim is skipped by another view/path.
     bool IsFoamReady() const { return m_FoamReady; }
     OceanFoamSim& GetFoamSim() { return m_FoamSim; }
-    ::GameEngine::Rendering::TextureHandle GetFoamTexture() const { return m_FoamSim.GetFoamTexture(); }
+    ::GameEngine::Rendering::TextureHandle GetFoamTexture(
+        const Rendering::RenderGraph::RGFrame& frame) const
+    {
+        return m_FoamSim.GetFoamTexture(frame);
+    }
     ::GameEngine::Rendering::SamplerHandle GetFoamSampler() const { return m_FoamSim.GetFoamSampler(); }
 
     // ---- Displacement combine cascade (reserved perf path) ----
@@ -429,7 +447,11 @@ public:
     // never initialized.
     bool IsDynWavesReady() const { return m_DynWavesReady; }
     OceanDynWaves& GetDynWaves() { return m_DynWaves; }
-    ::GameEngine::Rendering::TextureHandle GetDynWavesTexture() const { return m_DynWaves.GetTexture(); }
+    ::GameEngine::Rendering::TextureHandle GetDynWavesTexture(
+        const Rendering::RenderGraph::RGFrame& frame) const
+    {
+        return m_DynWaves.GetTexture(frame);
+    }
     ::GameEngine::Rendering::SamplerHandle GetDynWavesSampler() const { return m_DynWaves.GetSampler(); }
     bool IsDynWavesReadbackReady() const { return m_DynWavesReadbackReady; }
     OceanDynWavesReadback& GetDynWavesReadback() { return m_DynWavesReadback; }
@@ -480,7 +502,8 @@ public:
     // water); LodCount 0 for the others. Each sim snaps on its own
     // schedule, so a texture sampled with another cascade's layout is drawn where
     // that cascade was snapped, not where it was written.
-    OceanSampledCascadeLayoutsGPU SampledCascadeLayouts(const SampledCascadeAvailability& available) const;
+    OceanSampledCascadeLayoutsGPU SampledCascadeLayouts(const Rendering::RenderGraph::RGFrame& frame,
+                                                       const SampledCascadeAvailability& available) const;
 
     // Authored cascade LOD-count limit (from OceanRenderer.LodCount), set by the
     // extraction system. Clamps the uploaded layout's LodCount down so the surface
@@ -842,14 +865,14 @@ private:
         0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
     uint32 m_LastSeabedDispatchFrame = 0xFFFFFFFFu;
     uint32 m_LastFlowDispatchFrame = 0xFFFFFFFFu;
-    uint32 m_LastDynWavesDispatchFrame = 0xFFFFFFFFu;
+    uint64 m_LastDynWavesDispatchEpoch = ~uint64{0};
     uint32 m_LastWaveMaskDispatchFrame = 0xFFFFFFFFu;
-    uint32 m_LastFoamDispatchFrame = 0xFFFFFFFFu;
+    uint64 m_LastFoamDispatchEpoch = ~uint64{0};
     uint32 m_LastClipDispatchFrame = 0xFFFFFFFFu;
     uint32 m_LastAlbedoDispatchFrame = 0xFFFFFFFFu;
     uint32 m_LastReflectionDispatchFrame = 0xFFFFFFFFu;
     uint32 m_LastCombineDispatchFrame = 0xFFFFFFFFu;
-    uint32 m_LastGPUQueryDispatchFrame = 0xFFFFFFFFu;
+    uint64 m_LastGPUQueryDispatchEpoch = ~uint64{0};
 
     // Optional per-water-body local spectrum streams.
     std::array<OceanFFT, kMaxOceanLocalFFTStreams> m_LocalFFT;

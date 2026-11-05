@@ -5,6 +5,7 @@
 #include "Rendering/Materials/ShaderLayoutShape.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 
@@ -24,126 +25,136 @@ PipelineDesc MakeFullscreenPipelineDesc(const char* debugName)
     return pd;
 }
 
+namespace
+{
+struct FullscreenPassData
+{
+    std::array<RGFullscreenTextureInput, kMaxFullscreenTextureInputs> Textures{};
+    std::array<RGFullscreenBufferInput, kMaxFullscreenBufferInputs> Buffers{};
+    uint32_t TextureCount = 0;
+    uint32_t BufferCount = 0;
+    uint32_t Width = 0;
+    uint32_t Height = 0;
+    GraphicsPipelineId PipelineId{};
+    DescriptorSetLayoutDesc Layout;
+    PipelineHandle Pipeline{};
+    DescriptorSetHandle DescriptorSet{};
+};
+
+bool PrepareFullscreenPass(RGPrepareContext& context, FullscreenPassData& data)
+{
+    IDevice* device = context.GetDevice();
+    if (device == nullptr)
+        return false;
+    data.Pipeline = context.PreparePipeline(data.PipelineId);
+    if (!data.Pipeline.IsValid())
+        return false;
+
+    std::array<TextureHandle, kMaxFullscreenTextureInputs> resolved{};
+    std::array<SamplerHandle, kMaxFullscreenTextureInputs> samplers{};
+    for (uint32_t index = 0; index < data.TextureCount; ++index)
+    {
+        const RGFullscreenTextureInput& input = data.Textures[index];
+        TextureHandle physical{};
+        if (input.Texture.IsValid())
+        {
+            physical = context.GetTexture(input.Texture);
+            if (!physical.IsValid() && input.Required)
+                return false;
+        }
+        if (!physical.IsValid())
+            physical = input.RawTexture;
+        SamplerHandle sampler = input.Sampler;
+        if (!physical.IsValid())
+        {
+            physical = input.Fallback;
+            if (input.FallbackSampler.IsValid())
+                sampler = input.FallbackSampler;
+        }
+        if (!physical.IsValid() || !sampler.IsValid())
+            return false;
+        resolved[index] = physical;
+        samplers[index] = sampler;
+    }
+    for (uint32_t index = 0; index < data.BufferCount; ++index)
+        if (!data.Buffers[index].Buffer.IsValid())
+            return false;
+
+    DescriptorSetDesc descriptorDesc{};
+    descriptorDesc.layout = data.Layout;
+    descriptorDesc.transient = true;
+    descriptorDesc.debugName = "RGFullscreen.DS";
+    data.DescriptorSet = device->CreateDescriptorSet(descriptorDesc);
+    if (!data.DescriptorSet.IsValid())
+        return false;
+    for (uint32_t index = 0; index < data.TextureCount; ++index)
+        device->UpdateCombinedImageSamplerBinding(data.DescriptorSet, data.Textures[index].Binding,
+                                                 resolved[index], samplers[index]);
+    for (uint32_t index = 0; index < data.BufferCount; ++index)
+    {
+        const RGFullscreenBufferInput& buffer = data.Buffers[index];
+        if (buffer.IsStorage)
+            device->UpdateStorageBufferBinding(data.DescriptorSet, buffer.Binding, buffer.Buffer,
+                                                static_cast<size_t>(buffer.Offset),
+                                                static_cast<size_t>(buffer.Size));
+        else
+            device->UpdateBufferBinding(data.DescriptorSet, buffer.Binding, buffer.Buffer,
+                                         static_cast<size_t>(buffer.Offset),
+                                         static_cast<size_t>(buffer.Size));
+    }
+    return true;
+}
+
+void RecordFullscreenPass(RGContext& context, const FullscreenPassData& data)
+{
+    CommandList* commands = context.Cmd;
+    if (commands == nullptr)
+        return;
+    commands->SetPipeline(data.Pipeline);
+    commands->SetViewport(0.0f, 0.0f, static_cast<float>(data.Width), static_cast<float>(data.Height));
+    commands->SetScissor(0, 0, data.Width, data.Height);
+    commands->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
+    commands->Draw(3, 1);
+}
+
+void DeclareFullscreenPass(RGPassBuilder& pass, FullscreenPassData& data,
+                           RGTexture target, const RGAttachmentOps& attachmentOps)
+{
+    for (uint32_t index = 0; index < data.TextureCount; ++index)
+        if (data.Textures[index].Texture.IsValid())
+            pass.Read(data.Textures[index].Texture, RGTextureRead::Sampled);
+    for (uint32_t index = 0; index < data.BufferCount; ++index)
+    {
+        const RGFullscreenBufferInput& buffer = data.Buffers[index];
+        if (buffer.Declare.IsValid())
+            pass.Read(buffer.Declare, buffer.IsStorage ? RGBufferRead::Storage : RGBufferRead::Uniform);
+    }
+    pass.AttachColor(0, target, attachmentOps);
+    pass.Prepare([data = &data](RGPrepareContext& context) { return PrepareFullscreenPass(context, *data); });
+}
+} // namespace
+
 RGPass AddFullscreenPass(RGFrame& frame, const RGFullscreenDesc& desc)
 {
     assert(desc.Name && desc.Target.IsValid() && "AddFullscreenPass: name + target required");
-    assert(desc.Textures.size() <= kMaxFullscreenTextureInputs &&
-           "AddFullscreenPass: raise kMaxFullscreenTextureInputs");
-    assert(desc.Buffers.size() <= kMaxFullscreenBufferInputs &&
-           "AddFullscreenPass: raise kMaxFullscreenBufferInputs");
+    assert(desc.Textures.size() <= kMaxFullscreenTextureInputs);
+    assert(desc.Buffers.size() <= kMaxFullscreenBufferInputs);
 
-    // The spans die with the caller's frame; the exec lambda carries copies.
-    std::array<RGFullscreenTextureInput, kMaxFullscreenTextureInputs> textures{};
-    const uint32_t textureCount =
-        static_cast<uint32_t>(std::min(desc.Textures.size(), textures.size()));
-    for (uint32_t i = 0; i < textureCount; ++i)
-        textures[i] = desc.Textures[i];
-    std::array<RGFullscreenBufferInput, kMaxFullscreenBufferInputs> buffers{};
-    const uint32_t bufferCount = static_cast<uint32_t>(std::min(desc.Buffers.size(), buffers.size()));
-    for (uint32_t i = 0; i < bufferCount; ++i)
-        buffers[i] = desc.Buffers[i];
-
-    uint32_t width = desc.Width;
-    uint32_t height = desc.Height;
-    if (width == 0 || height == 0)
-    {
-        const RGResourceDesc& td = frame.Graph().ResourceDesc(desc.Target.Id);
-        width = td.Width;
-        height = td.Height;
-    }
+    FullscreenPassData* data = frame.AllocatePassData<FullscreenPassData>();
+    data->TextureCount = static_cast<uint32_t>(std::min(desc.Textures.size(), data->Textures.size()));
+    data->BufferCount = static_cast<uint32_t>(std::min(desc.Buffers.size(), data->Buffers.size()));
+    std::copy_n(desc.Textures.begin(), data->TextureCount, data->Textures.begin());
+    std::copy_n(desc.Buffers.begin(), data->BufferCount, data->Buffers.begin());
+    data->PipelineId = desc.Pipeline;
+    data->Layout = desc.Layout;
+    const RGResourceDesc& targetDesc = frame.Graph().ResourceDesc(desc.Target.Id);
+    data->Width = desc.Width == 0 ? targetDesc.Width : desc.Width;
+    data->Height = desc.Height == 0 ? targetDesc.Height : desc.Height;
 
     return frame.AddPass(
         desc.Name, desc.Phase,
-        [&](RGPassBuilder& p)
-        {
-            for (uint32_t i = 0; i < textureCount; ++i)
-            {
-                if (textures[i].Texture.IsValid())
-                    p.Read(textures[i].Texture, RGTextureRead::Sampled);
-            }
-            for (uint32_t i = 0; i < bufferCount; ++i)
-            {
-                if (buffers[i].Declare.IsValid())
-                    p.Read(buffers[i].Declare,
-                           buffers[i].IsStorage ? RGBufferRead::Storage : RGBufferRead::Uniform);
-            }
-            p.AttachColor(0, desc.Target, desc.Ops);
-        },
-        [textures, textureCount, buffers, bufferCount, pipeline = desc.Pipeline,
-         layout = desc.Layout, width, height](RGContext& ctx)
-        {
-            auto* dev = ctx.GetDevice();
-            auto* cl = ctx.Cmd;
-            if (!dev || !cl)
-                return;
-            const auto pso = ctx.GetOrCreatePipelineVariant(pipeline);
-            if (!pso.IsValid())
-                return;
-
-            // Resolve every texture input BEFORE creating the descriptor set: a
-            // required input whose physical is missing skips the draw entirely
-            // (the graph's cull already dropped truly-dead reads; this covers
-            // declined imports), and a binding that would end up unwritten also
-            // skips rather than feeding the driver an invalid descriptor.
-            std::array<TextureHandle, kMaxFullscreenTextureInputs> resolved{};
-            std::array<SamplerHandle, kMaxFullscreenTextureInputs> samplers{};
-            for (uint32_t i = 0; i < textureCount; ++i)
-            {
-                const RGFullscreenTextureInput& in = textures[i];
-                TextureHandle physical{};
-                if (in.Texture.IsValid())
-                {
-                    physical = ctx.GetTexture(in.Texture);
-                    if (!physical.IsValid() && in.Required)
-                        return;
-                }
-                if (!physical.IsValid())
-                    physical = in.RawTexture;
-                SamplerHandle sampler = in.Sampler;
-                if (!physical.IsValid())
-                {
-                    physical = in.Fallback;
-                    if (in.FallbackSampler.IsValid())
-                        sampler = in.FallbackSampler;
-                }
-                if (!physical.IsValid() || !sampler.IsValid())
-                    return;
-                resolved[i] = physical;
-                samplers[i] = sampler;
-            }
-            for (uint32_t i = 0; i < bufferCount; ++i)
-            {
-                if (!buffers[i].Buffer.IsValid())
-                    return; // e.g. an upload-ring allocation that failed at declare
-            }
-
-            DescriptorSetDesc dsDesc{};
-            dsDesc.layout = layout;
-            dsDesc.transient = true;
-            dsDesc.debugName = "RGFullscreen.DS";
-            const auto ds = dev->CreateDescriptorSet(dsDesc);
-            for (uint32_t i = 0; i < textureCount; ++i)
-                dev->UpdateCombinedImageSamplerBinding(ds, textures[i].Binding, resolved[i],
-                                                       samplers[i]);
-            for (uint32_t i = 0; i < bufferCount; ++i)
-            {
-                const RGFullscreenBufferInput& b = buffers[i];
-                if (b.IsStorage)
-                    dev->UpdateStorageBufferBinding(ds, b.Binding, b.Buffer,
-                                                    static_cast<size_t>(b.Offset),
-                                                    static_cast<size_t>(b.Size));
-                else
-                    dev->UpdateBufferBinding(ds, b.Binding, b.Buffer,
-                                             static_cast<size_t>(b.Offset),
-                                             static_cast<size_t>(b.Size));
-            }
-
-            cl->SetPipeline(pso);
-            cl->SetViewport(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
-            cl->SetScissor(0, 0, width, height);
-            cl->BindDescriptorSet(0, ds, pso);
-            cl->Draw(3, 1);
-        });
+        [data, &desc](RGPassBuilder& pass) { DeclareFullscreenPass(pass, *data, desc.Target, desc.Ops); },
+        [data](RGContext& context) { RecordFullscreenPass(context, *data); });
 }
 
 RGPass AddCopyPass(RGFrame& frame, RGTexture source, RGTexture dest, const char* name,

@@ -1,5 +1,5 @@
 // Pass-scope state owned by MaterialBinder. Returned from BeginPass and
-// threaded through BindMaterialForDraw calls; tracks the resolved per-view
+// threaded through PrepareMaterialForDraw calls; tracks the resolved per-view
 // world-shared resource table plus the sticky pipeline / per-set state that
 // lets the binder skip redundant vkCmdBindDescriptorSets calls.
 //
@@ -89,7 +89,7 @@ struct PassBindingContext
     // sources it consults.
     ResolvedPassResources PassResources{};
 
-    // Dirty state mutated by BindMaterialForDraw. Used to skip redundant
+    // Dirty state mutated by PrepareMaterialForDraw. Used to skip redundant
     // pipeline + descriptor-set binds when consecutive draws share state.
     ::GameEngine::Rendering::PipelineHandle      CurrentPipeline{};
 

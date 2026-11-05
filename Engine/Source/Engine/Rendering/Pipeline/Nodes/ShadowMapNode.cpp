@@ -557,6 +557,7 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
                         d.PassName(suffix).c_str(), Rendering::PassPhase::kDefault,
                         [&](RenderGraph::RGPassBuilder& p)
                         {
+                            p.UsePipeline(m_MsmCascadeComputePipelineId);
                             // This frame's cascade depth writes feed the
                             // moments resolve (RAW through the shared id).
                             p.Read(depthArr, RenderGraph::RGTextureRead::SampledCompute);
@@ -665,6 +666,7 @@ void ShadowMapNode::DeclareForView(ViewDeclare& d)
                         overlayPassName.c_str(), Rendering::PassPhase::kOverlay,
                         [&](RenderGraph::RGPassBuilder& p)
                         {
+                            p.UsePipeline(m_OverlayPipelineId);
                             RenderGraph::RGAttachmentOps ops{};
                             ops.Load = RenderGraph::RGLoadOp::Load; // composite over the final image
                             ops.Store = RenderGraph::RGStoreOp::Store;

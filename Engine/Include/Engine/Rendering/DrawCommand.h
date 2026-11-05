@@ -69,10 +69,10 @@ struct DrawCommand
     ::GameEngine::Rendering::GraphicsPipelineId  InternedPipeline{};
     const Material*                              Material = nullptr;
     // Reflection meta for the actual interned pipeline. Two roles:
-    //   1. Material == nullptr: routes through BindPipelineForDraw, this is
+    //   1. Material == nullptr: routes through PreparePipelineForDraw, this is
     //      the materialless path's only descriptor source (terrain depth).
     //   2. Material != nullptr: serves as `metaOverride` to
-    //      BindMaterialForDraw, so the binder walks the variant's reflected
+    //      PrepareMaterialForDraw, so the binder walks the variant's reflected
     //      set layout instead of the material's base ShaderMeta. Required
     //      when InternedPipeline was compiled with keywords beyond the
     //      material's authored set (e.g. a forward contributor that picks
@@ -103,7 +103,7 @@ struct DrawCommand
     uint32_t FirstInstance = 0;
     int32_t  VertexOffset  = 0;
 
-    // Per-draw resource bindings forwarded to MaterialBinder::BindMaterialForDraw.
+    // Per-draw resource bindings forwarded to MaterialBinder::PrepareMaterialForDraw.
     DrawBindings Bindings{};
 
     // Optional GPU-driven draw source. When enabled, IndexCount/InstanceCount

@@ -1014,16 +1014,8 @@ void RenderServices::OnDeviceRebuilt()
     if (m_DrawStreamBuilder)
         m_DrawStreamBuilder->ReprovisionAfterDeviceRebuild();
 
-    // 8b. Sorted transparent drain state: the CPU-drain ring buffers are dead but
-    //     their handles still read IsValid(), so the capacity gate in
-    //     AddSortedTransparentDrainForView would skip recreation and MapBuffer a
-    //     dead handle — the CPU-path view's transparents would vanish silently
-    //     and stickily (S2 review R1-F1). Zero handles + capacities (no
-    //     DestroyBuffer — the rebuild teardown already freed the VkBuffers) so
-    //     the next past-capacity drain recreates lazily. The drain compute
-    //     pipeline's concrete VkPipeline was dropped with the cache in step 1;
-    //     its interned desc survives, and the pool-imported args/counts/
-    //     indirection buffers are pool-owned (reprovisioned with the pool).
+    // 8b. The device teardown freed the sorted transparent draw streams.
+    // Drop their handles so the next frame allocates live buffers.
     for (auto& [sortedViewId, sortedView] : m_SortedTransparentByView)
     {
         (void)sortedViewId;
@@ -1566,8 +1558,7 @@ void RenderServices::Shutdown()
             if (buf.IsValid())
                 m_Device->DestroyBuffer(buf);
         }
-        // Sorted transparent CPU-drain ring buffers (host-visible, lazily
-        // created only for views that exceeded the GPU sort capacity).
+        // Per-view sorted transparent draw streams.
         for (auto& [viewId, view] : m_SortedTransparentByView)
         {
             for (auto& buf : view.CpuDrainBuffers)

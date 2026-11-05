@@ -931,6 +931,7 @@ set(EDITOR_TEST_SOURCES
 	# cells, and handed back on Shutdown. Needs a real device + RenderServices, so
 	# it skips where no Vulkan device is available.
 	GraphPreviewAtlasViewLifetimeTests.cpp
+	GraphPreviewAtlasPreparationTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/ShaderGraph/GraphPreviewAtlas.cpp
 	# The registration surface panel-owned render-graph participants reach the
 	# frame through. Needs a real RGFrame (headless device via UIRgTestHarness),
@@ -1007,6 +1008,7 @@ target_include_directories(HierarchyEnableStateTests PRIVATE
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
 	# UIRgTestHarness.h: a headless device for the tree the row test lays out.
 	${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests
+	${CMAKE_SOURCE_DIR}/Tests
 )
 target_link_libraries(HierarchyEnableStateTests PRIVATE
 	Engine
@@ -1138,6 +1140,7 @@ add_executable(SkySunDriveRowsTests
 	SkySunDriveRowsTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SkySunDriveRows.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SkyDayCurveRow.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/InspectorComponentSection.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SkySunCurveReference.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/LuxText.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Sky/SkySunIlluminanceSwitch.cpp

@@ -10,23 +10,28 @@
 #include "Rendering/Core/GPUDrawStreamBuilder.h"
 #include "Rendering/Core/GPUInstanceDepthClass.h"
 #include "Rendering/Core/GPUScene.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/HzbCullingStrategy.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/ShaderCache/ShaderPackageIO.h"
 #include "RGPassQuery.h"
+#include "TestTempDir.h"
 #include "Tests/RenderGraph/RGTestDevice.h"
 #include "Tests/ScopedEnvVar.h"
 #include "Tests/TestUtils.h"
 
-#include <gtest/gtest.h>
-
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <initializer_list>
+#include <limits>
+#include <memory>
 #include <string>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine::Rendering;
 using namespace GameEngine::Rendering::RenderGraph;
@@ -550,6 +555,379 @@ TEST(RGGpuDriven, VisibilityUnionReadsPostPhaseBSliceForHzbView)
 
     dev->DestroyTexture(hzbTex);
 }
+
+namespace
+{
+class CoreCullingDeviceFrameScope
+{
+  public:
+    explicit CoreCullingDeviceFrameScope(IDevice& device) : m_Device(device), m_Open(device.BeginFrame()) {}
+    ~CoreCullingDeviceFrameScope() { Finish(); }
+    bool IsOpen() const { return m_Open; }
+    void Finish()
+    {
+        if (!m_Open)
+            return;
+        m_Device.FinalizeFrame();
+        m_Device.WaitForIdle();
+        m_Open = false;
+    }
+
+  private:
+    IDevice& m_Device;
+    bool m_Open = false;
+};
+
+DescriptorSetLayoutDesc MakeCoreReadbackLayout()
+{
+    DescriptorSetLayoutDesc layout{};
+    for (uint32_t binding = 0; binding < 3u; ++binding)
+    {
+        DescriptorBinding description{};
+        description.binding = binding;
+        description.type = DescriptorType::StorageBuffer;
+        description.count = 1;
+        description.shaderStages = kShaderStageCompute;
+        layout.bindings.push_back(description);
+    }
+    return layout;
+}
+
+PipelineHandle CreateCoreReadbackPipeline(IDevice& device)
+{
+    auto bytes = LoadComputeStageBytes("Shaders/visibility_union.shaderpkg", device.PreferredShaderSource(),
+                                      &TestShaderLoader);
+    if (bytes.empty())
+        return {};
+    ComputePipelineDesc description{};
+    description.ComputeShader = std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
+    description.DescriptorSetLayouts.push_back(device.InternDescriptorSetLayout(MakeCoreReadbackLayout()));
+    description.PushConstants.Size = 2u * sizeof(uint32_t);
+    description.PushConstants.StageMask = kShaderStageCompute;
+    description.DebugName = "CorePrepare.ReadbackCopy";
+    return device.GetOrCreateComputePipeline(device.InternComputePipeline(description));
+}
+
+struct CoreReadbackPassData
+{
+    RGBuffer Source{}, Target{};
+    PipelineHandle Pipeline{};
+    BufferHandle Offsets{};
+    size_t OffsetsOffset = 0;
+    uint32_t Count = 0;
+    DescriptorSetHandle DescriptorSet{};
+};
+
+bool PrepareCoreReadback(RGPrepareContext& context, CoreReadbackPassData& data)
+{
+    data.DescriptorSet = {};
+    IDevice* device = context.GetDevice();
+    const BufferHandle source = context.GetBuffer(data.Source);
+    const BufferHandle target = context.GetBuffer(data.Target);
+    if (!device || !data.Pipeline.IsValid() || !data.Offsets.IsValid() ||
+        !source.IsValid() || !target.IsValid())
+        return false;
+    DescriptorSetDesc description{};
+    description.layout = MakeCoreReadbackLayout();
+    description.transient = true;
+    description.debugName = "CorePrepare.ReadbackCopy.DS";
+    data.DescriptorSet = device->CreateDescriptorSet(description);
+    if (!data.DescriptorSet.IsValid())
+        return false;
+    const size_t bytes = data.Count * sizeof(uint32_t);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 0, source, 0, bytes);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 1, target, 0, bytes);
+    device->UpdateStorageBufferBinding(data.DescriptorSet, 2, data.Offsets, data.OffsetsOffset,
+                                      sizeof(uint32_t));
+    return true;
+}
+
+void RecordCoreReadback(RGContext& context, const CoreReadbackPassData& data)
+{
+    struct PushConstants
+    {
+        uint32_t Count;
+        uint32_t ViewCount;
+    };
+    context.Cmd->SetPipeline(data.Pipeline);
+    context.Cmd->BindDescriptorSet(0, data.DescriptorSet, data.Pipeline);
+    context.Cmd->SetPushConstants(PushConstants{data.Count, 1u});
+    context.Cmd->Dispatch((data.Count + 63u) / 64u, 1u, 1u);
+}
+
+RGBuffer AddCoreReadbackCopy(RGFrame& frame, const char* name, RGBuffer source,
+                             PipelineHandle pipeline, uint32_t count)
+{
+    auto offsets = frame.AllocUpload<uint32_t>();
+    if (!offsets.Valid())
+        return {};
+    *offsets.Ptr = 0u;
+    BufferDesc description{};
+    description.size = count * sizeof(uint32_t);
+    description.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::TransferSrc);
+    const RGBuffer target = frame.CreateBuffer(name, description);
+    auto* data = frame.AllocatePassData<CoreReadbackPassData>();
+    data->Source = source;
+    data->Target = target;
+    data->Pipeline = pipeline;
+    data->Offsets = offsets.Buffer;
+    data->OffsetsOffset = offsets.Offset;
+    data->Count = count;
+    frame.AddPass(name, 0,
+                  [&source, &target, &data](RGPassBuilder& pass)
+                  {
+                      pass.Read(source);
+                      pass.Write(target);
+                      pass.Prepare([data](RGPrepareContext& context)
+                                   { return PrepareCoreReadback(context, *data); });
+                  },
+                  [data](RGContext& context) { RecordCoreReadback(context, *data); });
+    return target;
+}
+
+void RecordCoreCullingOutputs(RGContext& context, RGBuffer visibility, RGBuffer anyCopy,
+                              RGBuffer runtimeCopy, BufferHandle readback,
+                              const std::vector<ViewVisibilityRange>& ranges, uint32_t instanceCount)
+{
+    const size_t sliceBytes = instanceCount * sizeof(uint32_t);
+    for (size_t ordinal = 0; ordinal < ranges.size(); ++ordinal)
+    {
+        const ViewVisibilityRange& range = ranges[ordinal];
+        context.Cmd->CopyBuffer(context.GetBuffer(visibility), readback, sliceBytes,
+                                range.visibilityOffset * sizeof(uint32_t), ordinal * sliceBytes);
+    }
+    context.Cmd->CopyBuffer(context.GetBuffer(anyCopy), readback, sliceBytes, 0, 3u * sliceBytes);
+    context.Cmd->CopyBuffer(context.GetBuffer(runtimeCopy), readback,
+                            (instanceCount + 1u) * sizeof(uint32_t), 0, 4u * sliceBytes);
+}
+} // namespace
+
+namespace
+{
+void CheckCoreCullingPreparation(GraphicsAPI graphicsAPI)
+{
+    GameEngine::TestUtils::ScopedTempDir cache(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("prepared-core-culling"));
+    DeviceDesc deviceDesc{};
+    deviceDesc.pipelineCacheDirectory = cache.Path().string();
+    deviceDesc.preferredAPI = graphicsAPI;
+    deviceDesc.enableDynamicRendering = true;
+    deviceDesc.enableSwapchain = false;
+    deviceDesc.descriptorBuffers = DescriptorBufferMode::Disabled;
+    auto device = DeviceFactory::CreateDevice(deviceDesc);
+    if (!device || !device->Initialize(deviceDesc))
+        GTEST_SKIP() << "Requested core culling backend unavailable";
+    ASSERT_EQ(device->GetAPI(), graphicsAPI);
+    if (const char* missing =
+            FirstUnloadablePkg({"Shaders/frustum_culling.shaderpkg",
+                                "Shaders/hzb_culling.shaderpkg",
+                                "Shaders/visibility_union.shaderpkg",
+                                "Shaders/runtime_visibility_aggregate.shaderpkg"}))
+        GTEST_SKIP() << missing << " unavailable";
+    GPUScene::SetCullingShaderLoader(&TestShaderLoader);
+    GPUCullingPipeline::SetHzbCullingShaderLoader(&TestShaderLoader);
+    GPUCullingPipeline::SetVisibilityUnionShaderLoader(&TestShaderLoader);
+    GPUCullingPipeline::SetRuntimeVisibilityShaderLoader(&TestShaderLoader);
+
+    CoreCullingDeviceFrameScope deviceFrame(*device);
+    if (!deviceFrame.IsOpen())
+        GTEST_SKIP() << "headless device frame unavailable";
+
+    auto scene = GPUSceneFactory::CreateSmallScene(device.get());
+    constexpr uint32_t kInstances = 8;
+    for (uint32_t instanceIndex = 0; instanceIndex < kInstances; ++instanceIndex)
+    {
+        GPUInstance instance{};
+        instance.runtimeId = instanceIndex + 1u;
+        instance.renderLayerMask = (instanceIndex % 3u == 0u) ? 1u : ((instanceIndex % 3u == 1u) ? 2u : 0u);
+        instance.boundingCenter = Vector3(0.0f, 0.0f, 0.5f);
+        instance.boundingRadius = 0.01f;
+        scene->AddInstance(instance);
+    }
+    ASSERT_EQ(scene->GetInstanceCount(), kInstances);
+    scene->BeginFrame();
+
+    auto pipeline = GPUCullingFactory::CreateBalanced(device.get());
+    FramePools pools(device.get());
+    RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    frame.BeginFrame(0);
+    uint32_t firstRecordAllocations = 0;
+    uint32_t recordCallbacks = 0;
+    uint32_t prepareAttempts = 0;
+    bool allowRecording = false;
+    frame.AddPass("CorePrepare.FirstRecord", std::numeric_limits<int32_t>::min(),
+                  [](RGPassBuilder& pass) { pass.PreventCulling(); },
+                  [&recordCallbacks, &firstRecordAllocations, &device](RGContext&)
+                  {
+                      ++recordCallbacks;
+                      firstRecordAllocations = device->GetDescriptorAllocatorStats().TransientAllocated;
+                  });
+
+    // Stand-in HZB pyramid for the phase-B (mode 2) dispatch to sample.
+    TextureDesc hzbDescription{};
+    hzbDescription.width = hzbDescription.height = hzbDescription.depth = 1u;
+    hzbDescription.mipLevels = hzbDescription.arrayLayers = hzbDescription.sampleCount = 1u;
+    hzbDescription.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
+    hzbDescription.usage = static_cast<uint32_t>(TextureUsage::ShaderResource | TextureUsage::TransferDst);
+    hzbDescription.debugName = "Test.HZB";
+    TextureHandle hzbTexture = device->CreateTexture(hzbDescription);
+    ASSERT_TRUE(hzbTexture.IsValid());
+    const RGTexture hzb =
+        frame.ImportExternalTexture("Test.HZB", hzbTexture, ResourceState::Undefined,
+                                    TextureFormat::R32_FLOAT, 1u, 1u);
+
+    frame.AddPass("CorePrepare.ClearHzb", 0,
+                  [&hzb](RGPassBuilder& pass) { pass.Write(hzb, RGTextureWrite::CopyDst); },
+                  [hzb](RGContext& context)
+                  {
+                      constexpr float kReverseZFarDepth = 0.0f;
+                      const float farDepth[4] = {kReverseZFarDepth, 0.0f, 0.0f, 0.0f};
+                      context.Cmd->ClearColorImageSubresource(context.GetTexture(hzb), 0, 0, farDepth);
+                  });
+
+    pipeline->BeginFrame(&frame, scene.get());
+    ViewCullingInput hzbView = MakeView(/*viewId=*/9, kInstances);
+    hzbView.reserveOcclusionSlice = true;
+    hzbView.renderLayerMask = 1u;
+    hzbView.viewMatrix = Matrix4x4::Identity();
+    hzbView.projMatrix = Matrix4x4::Identity();
+    hzbView.viewProjMatrix = Matrix4x4::Identity();
+    pipeline->SubmitView(hzbView);
+    auto frustumView = hzbView;
+    frustumView.viewId = 10u;
+    frustumView.reserveOcclusionSlice = false;
+    frustumView.renderLayerMask = 2u;
+    pipeline->SubmitView(frustumView);
+    pipeline->EndFrame();
+    ASSERT_TRUE(pipeline->GetVisibilityRG().IsValid());
+
+    pipeline->ScheduleOcclusionCullPass(frame, scene.get(), 9, hzb, /*hzbMipCount=*/1u);
+
+    pipeline->ScheduleVisibilityUnion(frame, scene.get());
+    pipeline->ScheduleRuntimeVisibilityAggregate(frame, scene.get());
+
+    // One-view union copies avoid adding TransferSrc to production aggregate buffers.
+    const PipelineHandle readbackPipeline = CreateCoreReadbackPipeline(*device);
+    ASSERT_TRUE(readbackPipeline.IsValid());
+    const RGBuffer anyCopy = AddCoreReadbackCopy(frame, "CorePrepare.CopyAny",
+        pipeline->GetAnyViewVisibleRG(), readbackPipeline, kInstances);
+    const RGBuffer runtimeCopy = AddCoreReadbackCopy(frame, "CorePrepare.CopyRuntime",
+        pipeline->GetRuntimeVisibleRG(), readbackPipeline, kInstances + 1u);
+    ASSERT_TRUE(anyCopy.IsValid());
+    ASSERT_TRUE(runtimeCopy.IsValid());
+    const auto ranges = pipeline->GetViewVisibilityRanges();
+    ASSERT_EQ(ranges.size(), 3u);
+    ASSERT_EQ(ranges[0].viewId, 9u);
+    ASSERT_EQ(ranges[0].slicePhase, 0u);
+    ASSERT_EQ(ranges[1].viewId, 10u);
+    ASSERT_EQ(ranges[1].slicePhase, 0u);
+    ASSERT_EQ(ranges[2].viewId, 9u);
+    ASSERT_EQ(ranges[2].slicePhase, 1u);
+    for (const auto& range : ranges)
+        ASSERT_EQ(range.visibilityCount, kInstances);
+    constexpr uint32_t kReadbackWords = 5u * kInstances + 1u;
+    const BufferHandle readback = device->CreateReadbackBuffer(kReadbackWords * sizeof(uint32_t));
+    ASSERT_TRUE(readback.IsValid());
+    const RGBuffer readbackRG = frame.ImportExternalBuffer("CorePrepare.Readback", readback,
+        kReadbackWords * sizeof(uint32_t));
+    const RGBuffer visibility = pipeline->GetVisibilityRG();
+    frame.AddPass("CorePrepare.Readback", 0,
+                  [&visibility, &anyCopy, &runtimeCopy, &readbackRG](RGPassBuilder& pass)
+                  {
+                      pass.Read(visibility, RGBufferRead::CopySrc);
+                      pass.Read(anyCopy, RGBufferRead::CopySrc);
+                      pass.Read(runtimeCopy, RGBufferRead::CopySrc);
+                      pass.Write(readbackRG, RGBufferWrite::CopyDst);
+                  },
+                  [visibility, anyCopy, runtimeCopy, readback, ranges](RGContext& context)
+                  {
+                      RecordCoreCullingOutputs(context, visibility, anyCopy, runtimeCopy,
+                                               readback, ranges, kInstances);
+                  });
+
+    frame.AddPass("CorePrepare.LastRecord", std::numeric_limits<int32_t>::max(),
+                  [&pipeline, &prepareAttempts, &allowRecording](RGPassBuilder& pass)
+                  {
+                      pass.Read(pipeline->GetRuntimeVisibleRG());
+                      pass.PreventCulling();
+                      pass.Prepare([&prepareAttempts, &allowRecording](RGPrepareContext&)
+                                   {
+                                       ++prepareAttempts;
+                                       return allowRecording;
+                                   });
+                  },
+                  [&recordCallbacks, &graphicsAPI, &device, &firstRecordAllocations](RGContext&)
+                  {
+                      ++recordCallbacks;
+                      if (graphicsAPI == GraphicsAPI::Vulkan)
+                          EXPECT_EQ(device->GetDescriptorAllocatorStats().TransientAllocated,
+                                    firstRecordAllocations)
+                              << "core culling must not allocate descriptors during Record";
+                  });
+    frame.MarkOutput(readbackRG);
+    const uint32_t allocatedBeforeAbort = device->GetDescriptorAllocatorStats().TransientAllocated;
+    frame.Execute();
+    EXPECT_EQ(prepareAttempts, 1u);
+    EXPECT_EQ(recordCallbacks, 0u);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+    EXPECT_EQ(frame.Stats().SubmissionsMade, 0u);
+    EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
+    constexpr uint32_t kPreparedDispatches = 7u; // Five production dispatches and two copy controls.
+    if (graphicsAPI == GraphicsAPI::Vulkan)
+        EXPECT_GE(device->GetDescriptorAllocatorStats().TransientAllocated,
+                  allocatedBeforeAbort + kPreparedDispatches);
+
+    // Keep the declared graph and its upload slices; preparation resolves resources again.
+    allowRecording = true;
+    const uint32_t allocatedBeforeRetry = device->GetDescriptorAllocatorStats().TransientAllocated;
+    frame.Execute();
+    deviceFrame.Finish();
+    EXPECT_EQ(prepareAttempts, 2u);
+    EXPECT_EQ(recordCallbacks, 2u);
+    EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
+    if (graphicsAPI == GraphicsAPI::Vulkan)
+        EXPECT_GE(firstRecordAllocations, allocatedBeforeRetry + kPreparedDispatches)
+            << "all production and control descriptors must exist before the first Record callback";
+    EXPECT_GE(PosOf(frame.Graph(), RGQuery::Exact{"GPUCulling.View10.C255"}), 0);
+    EXPECT_EQ(PosOf(frame.Graph(), RGQuery::Exact{"CorePrepare.FirstRecord"}), 0);
+    EXPECT_EQ(PosOf(frame.Graph(), RGQuery::Exact{"CorePrepare.LastRecord"}),
+              static_cast<int>(frame.Graph().ScheduledOrder().size()) - 1);
+
+    EXPECT_GE(PosOf(frame.Graph(), RGQuery::Exact{"GPUCulling.View9.C252"}), 0);
+    EXPECT_GE(PosOf(frame.Graph(), RGQuery::Exact{"GPUCulling.View9.C253"}), 0);
+    EXPECT_GE(PosOf(frame.Graph(), RGQuery::Exact{"GPUCulling.VisibilityUnion"}), 0);
+    EXPECT_GE(PosOf(frame.Graph(), RGQuery::Exact{"GPUCulling.RuntimeVisibilityAggregate"}), 0);
+
+    const auto* words = static_cast<const uint32_t*>(device->MapBuffer(readback));
+    ASSERT_NE(words, nullptr);
+    EXPECT_EQ(words[4u * kInstances], 0u) << "runtime zero must remain ungated";
+    for (uint32_t instanceIndex = 0; instanceIndex < kInstances; ++instanceIndex)
+    {
+        const uint32_t inHzbView = (instanceIndex % 3u == 0u) ? 1u : 0u;
+        const uint32_t inFrustumView = (instanceIndex % 3u == 1u) ? 1u : 0u;
+        const uint32_t inAnyView = inHzbView | inFrustumView;
+        EXPECT_EQ(words[instanceIndex], inHzbView) << "phase A, instance " << instanceIndex;
+        EXPECT_EQ(words[kInstances + instanceIndex], inFrustumView) << "frustum, instance " << instanceIndex;
+        EXPECT_EQ(words[2u * kInstances + instanceIndex], 0u) << "recovery, instance " << instanceIndex;
+        EXPECT_EQ(words[3u * kInstances + instanceIndex], inAnyView) << "union, instance " << instanceIndex;
+        EXPECT_EQ(words[4u * kInstances + instanceIndex + 1u], inAnyView) << "runtime, instance " << instanceIndex;
+    }
+    device->UnmapBuffer(readback);
+    device->DestroyBuffer(readback);
+    device->DestroyTexture(hzbTexture);
+}
+} // namespace
+
+TEST(RGGpuDriven, CoreCullingDescriptorsPrepareBeforeRecordingAndRetryAfterAbort)
+{
+    CheckCoreCullingPreparation(GraphicsAPI::Vulkan);
+}
+#if defined(__APPLE__)
+TEST(RGGpuDriven, MetalCoreCullingDescriptorsPrepareBeforeRecordingAndRetryAfterAbort)
+{
+    CheckCoreCullingPreparation(GraphicsAPI::Metal);
+}
+#endif
 
 namespace
 {
@@ -2498,3 +2876,465 @@ TEST(RGGpuDriven, RenderedHistoryKeepsHeadroomWhileTheSceneStreamsIn)
     builder->Shutdown();
     dev->DestroyBuffer(visPhys);
 }
+
+namespace
+{
+using ScatterBuilder = GPUDrawStreamBuilder;
+constexpr uint32_t kScatterProbeInstances = 4u;
+constexpr uint32_t kScatterProbeCommandWords = 5u;
+constexpr uint32_t kScatterProbeColorClass = ScatterBuilder::kColorClassBase;
+constexpr uint32_t kScatterProbeGroup = 3u;
+
+struct ScatterProbeRanges
+{
+    std::array<ScatterBuilder::BatchDrawRange, 5> Ranges{};
+    RGBuffer Ordering{};
+    uint32_t RecordCount = 0;
+    uint32_t CursorCount = 0;
+};
+
+void PopulateScatterProbeScene(GPUScene& scene)
+{
+    for (uint32_t meshIndex = 0; meshIndex < 2u; ++meshIndex)
+    {
+        GPUMesh mesh{};
+        mesh.indexCount = meshIndex == 0u ? 30u : 60u;
+        mesh.indexOffset = meshIndex == 0u ? 100u : 200u;
+        mesh.vertexOffset = meshIndex == 0u ? 7u : 19u;
+        mesh.vertexCount = 3u;
+        mesh.lodCount = 2u;
+        mesh.boundingRadius = 1.0f;
+        mesh.lodIndexCount[0] = mesh.indexCount;
+        mesh.lodIndexCount[1] = meshIndex == 0u ? 12u : 6u;
+        mesh.lodIndexOffset[0] = mesh.indexOffset;
+        mesh.lodIndexOffset[1] = mesh.indexOffset + mesh.indexCount;
+        mesh.lodThreshold[0] = 0.1f;
+        const uint32_t handle = scene.AddMesh(mesh);
+        ASSERT_EQ(handle, meshIndex);
+        for (uint32_t instanceIndex = 0; instanceIndex < 2u; ++instanceIndex)
+        {
+            GPUInstance instance{};
+            instance.meshIndex = meshIndex;
+            instance.materialIndex = 0u;
+            instance.boundingCenter = Vector3(meshIndex == 0u ? 0.0f : 100.0f, 0.0f, 0.0f);
+            instance.boundingRadius = 1.0f;
+            instance.flags = 1u | DepthClassInstanceFlagBits(MaterialDepthClass::EligibleSingleSided);
+            scene.AddInstance(instance);
+        }
+    }
+}
+
+ScatterProbeRanges DeclareScatterProbe(RGFrame& frame, ScatterBuilder& builder, GPUScene& scene,
+                                       RGBuffer visibility, uint32_t visibilityStride, float distance)
+{
+    const auto sceneResources = scene.ImportFrameResources(frame);
+    for (uint32_t ordinal = 0; ordinal < 3u; ++ordinal)
+    {
+        ScatterBuilder::SliceRegistration slice{};
+        slice.viewId = ordinal + 1u;
+        slice.visibilityOffsetBytes = ordinal * visibilityStride;
+        slice.lod.cameraPos[0] = distance;
+        slice.lod.projScaleY = 1.0f;
+        if (ordinal == 1u)
+        {
+            slice.table = ScatterBuilder::SliceTable::Shadow;
+            slice.cascadeIndex = 0u;
+            slice.lod.forceLod = 1u;
+        }
+        else
+        {
+            slice.cascadeIndex = ScatterBuilder::kCascadeIndexNone;
+            slice.lod.crossfadeDuration = 0.5f;
+            slice.lod.renderedLevelHistoryRequested = true;
+        }
+        builder.RegisterSlice(slice);
+    }
+    const std::array<uint8_t, 1> depthClass{
+        static_cast<uint8_t>(MaterialDepthClass::EligibleSingleSided)};
+    const std::array<uint32_t, 1> colorClass{kScatterProbeColorClass};
+    const std::array<uint32_t, 2> orderedMeshes{0u, 1u};
+    const std::array<uint32_t, 2> groups{kScatterProbeGroup, kScatterProbeGroup};
+    ScatterProbeRanges result{};
+    result.Ordering = builder.ScheduleUnifiedScatter(
+        frame, "PreparedGrouped", 0, visibility, sceneResources.Instances, sceneResources.ScatterHot,
+        sceneResources.Meshes, scene.GetBatchRegistry(), depthClass, colorClass, orderedMeshes, groups,
+        kScatterProbeInstances, 2u);
+    for (uint32_t ordinal = 0; ordinal < 3u; ++ordinal)
+    {
+        const bool shadow = ordinal == 1u;
+        result.Ranges[ordinal] = builder.FindBatchDrawRange(
+            ordinal + 1u, shadow ? 0u : ScatterBuilder::kCascadeIndexNone,
+            shadow ? ScatterBuilder::kSharedDepthSingleSidedSentinel : kScatterProbeColorClass,
+            kScatterProbeGroup, ScatterBuilder::SlicePhase::A);
+    }
+
+    // A later call changes the color map and table offsets before either call prepares.
+    ScatterBuilder::SliceRegistration second{};
+    second.viewId = 4u;
+    second.cascadeIndex = ScatterBuilder::kCascadeIndexNone;
+    second.lod.forceLod = 0u;
+    builder.RegisterSlice(second);
+    const std::array<uint32_t, 1> secondColorClass{kScatterProbeColorClass + 1u};
+    result.Ordering = builder.ScheduleUnifiedScatter(
+        frame, "PreparedSecond", 0, visibility, sceneResources.Instances, sceneResources.ScatterHot,
+        sceneResources.Meshes, scene.GetBatchRegistry(), {}, secondColorClass, {}, {},
+        kScatterProbeInstances, 2u);
+    for (uint32_t mesh = 0; mesh < 2u; ++mesh)
+        result.Ranges[3u + mesh] = builder.FindBatchDrawRange(
+            4u, ScatterBuilder::kCascadeIndexNone, kScatterProbeColorClass + 1u, mesh,
+            ScatterBuilder::SlicePhase::A);
+    for (const auto& range : result.Ranges)
+    {
+        result.RecordCount = std::max(result.RecordCount, static_cast<uint32_t>(
+            range.even.cmdByteOffset / (kScatterProbeCommandWords * sizeof(uint32_t)))
+            + range.even.maxDrawCount);
+        result.CursorCount = std::max(result.CursorCount,
+            static_cast<uint32_t>(range.even.countByteOffset / sizeof(uint32_t)) + 1u);
+    }
+    return result;
+}
+
+void RecordScatterWordCopy(RGContext& context, const CoreReadbackPassData& data)
+{
+    context.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
+        static_cast<uint64_t>(PipelineStageMask::ComputeShader),
+        static_cast<uint64_t>(PipelineStageMask::ComputeShader),
+        static_cast<uint64_t>(ResourceAccessMask::ShaderWrite),
+        static_cast<uint64_t>(ResourceAccessMask::ShaderRead)));
+    RecordCoreReadback(context, data);
+}
+
+RGBuffer AddScatterWordCopy(RGFrame& frame, const char* name, RGBuffer source, RGBuffer ordering,
+                            PipelineHandle pipeline, uint32_t count)
+{
+    auto offsets = frame.AllocUpload<uint32_t>();
+    if (!offsets.Valid())
+        return {};
+    *offsets.Ptr = 0u;
+    BufferDesc description{};
+    description.size = count * sizeof(uint32_t);
+    description.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::TransferSrc);
+    const RGBuffer target = frame.CreateBuffer(name, description);
+    auto* data = frame.AllocatePassData<CoreReadbackPassData>();
+    data->Source = source;
+    data->Target = target;
+    data->Pipeline = pipeline;
+    data->Offsets = offsets.Buffer;
+    data->OffsetsOffset = offsets.Offset;
+    data->Count = count;
+    frame.AddPass(name, 0,
+                  [&ordering, &source, &target, &data](RGPassBuilder& pass)
+                  {
+                      pass.Read(ordering);
+                      pass.Read(source);
+                      pass.Write(target);
+                      pass.Prepare([data](RGPrepareContext& context)
+                                   { return PrepareCoreReadback(context, *data); });
+                  },
+                  [data](RGContext& context) { RecordScatterWordCopy(context, *data); });
+    return target;
+}
+
+struct ScatterProbeOutput
+{
+    BufferHandle Readback{};
+    RGBuffer ReadbackRG{}, Cursors{}, Records{}, Indirection{};
+    uint32_t CursorWords = 0;
+    uint32_t RecordWords = 0;
+    uint32_t IndirectionWords = 0;
+};
+
+void RecordScatterProbeOutput(RGContext& context, const ScatterProbeOutput& output)
+{
+    context.Cmd->CopyBuffer(context.GetBuffer(output.Cursors), output.Readback,
+                            output.CursorWords * sizeof(uint32_t));
+    context.Cmd->CopyBuffer(context.GetBuffer(output.Records), output.Readback,
+                            output.RecordWords * sizeof(uint32_t), 0,
+                            output.CursorWords * sizeof(uint32_t));
+    context.Cmd->CopyBuffer(context.GetBuffer(output.Indirection), output.Readback,
+                            output.IndirectionWords * sizeof(uint32_t), 0,
+                            (output.CursorWords + output.RecordWords) * sizeof(uint32_t));
+}
+
+ScatterProbeOutput AddScatterProbeOutput(RGFrame& frame, IDevice& device, ScatterBuilder& builder,
+                                         const ScatterProbeRanges& ranges, PipelineHandle pipeline)
+{
+    ScatterProbeOutput output{};
+    output.CursorWords = ranges.CursorCount;
+    output.RecordWords = ranges.RecordCount * kScatterProbeCommandWords;
+    output.IndirectionWords = ranges.RecordCount;
+    const RGBuffer records = frame.ImportExternalBuffer("ScatterPrepare.Records",
+        ranges.Ranges[0].recordBuffer, output.RecordWords * sizeof(uint32_t));
+    const RGBuffer indirection = frame.ImportExternalBuffer("ScatterPrepare.Indirection",
+        builder.GetSharedIndirectionBuffer(), output.IndirectionWords * sizeof(uint32_t));
+    output.Cursors = frame.ImportExternalBuffer("ScatterPrepare.Cursors",
+        ranges.Ranges[0].countBuffer, output.CursorWords * sizeof(uint32_t));
+    output.Records = AddScatterWordCopy(frame, "ScatterPrepare.CopyRecords", records,
+        ranges.Ordering, pipeline, output.RecordWords);
+    output.Indirection = AddScatterWordCopy(frame, "ScatterPrepare.CopyIndirection", indirection,
+        ranges.Ordering, pipeline, output.IndirectionWords);
+    const size_t readbackBytes = (output.CursorWords + output.RecordWords + output.IndirectionWords)
+                                * sizeof(uint32_t);
+    output.Readback = device.CreateReadbackBuffer(readbackBytes, "ScatterPrepare.Readback");
+    output.ReadbackRG = frame.ImportExternalBuffer("ScatterPrepare.Readback", output.Readback,
+                                                   readbackBytes);
+    frame.AddPass("ScatterPrepare.Readback", 0,
+                  [&ranges, &output](RGPassBuilder& pass)
+                  {
+                      pass.Read(ranges.Ordering);
+                      pass.Read(output.Cursors, RGBufferRead::CopySrc);
+                      pass.Read(output.Records, RGBufferRead::CopySrc);
+                      pass.Read(output.Indirection, RGBufferRead::CopySrc);
+                      pass.Write(output.ReadbackRG, RGBufferWrite::CopyDst);
+                  },
+                  [output](RGContext& context) { RecordScatterProbeOutput(context, output); });
+    frame.MarkOutput(output.ReadbackRG);
+    return output;
+}
+
+struct ScatterProbeExpectedRecord
+{
+    uint32_t Instance;
+    uint32_t IndexCount;
+    uint32_t FirstIndex;
+    uint32_t VertexOffset;
+};
+
+void CheckScatterProbeSegment(const uint32_t* words, const ScatterProbeOutput& output,
+                               const ScatterBuilder::BatchDrawSegment& segment,
+                               std::initializer_list<ScatterProbeExpectedRecord> expected,
+                               bool fading = false)
+{
+    const size_t cursor = segment.countByteOffset / sizeof(uint32_t);
+    ASSERT_LT(cursor, output.CursorWords);
+    ASSERT_EQ(words[cursor], expected.size());
+    const size_t firstRecord = segment.cmdByteOffset / (kScatterProbeCommandWords * sizeof(uint32_t));
+    uint32_t ordinal = 0;
+    for (const auto& record : expected)
+    {
+        const size_t index = firstRecord + ordinal++;
+        ASSERT_LT(index, output.IndirectionWords);
+        const uint32_t* command = words + output.CursorWords + index * kScatterProbeCommandWords;
+        EXPECT_EQ(command[0], record.IndexCount);
+        EXPECT_EQ(command[1], 1u);
+        EXPECT_EQ(command[2], record.FirstIndex);
+        EXPECT_EQ(command[3], record.VertexOffset);
+        EXPECT_EQ(command[4], index) << "compaction must rewrite firstInstance to the published slot";
+        const uint32_t indirect = words[output.CursorWords + output.RecordWords + index];
+        EXPECT_EQ(indirect & ScatterBuilder::kLodFadeIndexMask, record.Instance);
+        const uint32_t weight = (indirect >> ScatterBuilder::kLodFadeWeightShift)
+                               & ScatterBuilder::kLodFadeWeightMask;
+        EXPECT_EQ(weight != 0u, fading);
+    }
+}
+
+void CheckScatterProbeOutputs(IDevice& device, const ScatterProbeRanges& ranges,
+                               const ScatterProbeOutput& output, bool transition)
+{
+    const auto* words = static_cast<const uint32_t*>(device.MapBuffer(output.Readback));
+    ASSERT_NE(words, nullptr);
+    for (uint32_t ordinal : {0u, 2u})
+    {
+        const auto& range = ranges.Ranges[ordinal];
+        const uint32_t nearInstance = ordinal == 0u ? 0u : 1u;
+        const uint32_t farInstance = ordinal == 0u ? 2u : 3u;
+        if (transition)
+        {
+            CheckScatterProbeSegment(words, output, range.even, {{farInstance, 6u, 260u, 19u}});
+            CheckScatterProbeSegment(words, output, range.evenTail,
+                {{nearInstance, 30u, 100u, 7u}, {nearInstance, 12u, 130u, 7u}}, true);
+        }
+        else
+        {
+            CheckScatterProbeSegment(words, output, range.even,
+                {{nearInstance, 12u, 130u, 7u}, {farInstance, 6u, 260u, 19u}});
+            CheckScatterProbeSegment(words, output, range.evenTail, {});
+        }
+    }
+    CheckScatterProbeSegment(words, output, ranges.Ranges[1].even,
+        {{1u, 12u, 130u, 7u}, {2u, 6u, 260u, 19u}});
+    CheckScatterProbeSegment(words, output, ranges.Ranges[3].even, {{0u, 30u, 100u, 7u}});
+    CheckScatterProbeSegment(words, output, ranges.Ranges[4].even, {{2u, 60u, 200u, 19u}});
+    device.UnmapBuffer(output.Readback);
+}
+
+struct ScatterPreparationWitness
+{
+    IDevice* Device = nullptr;
+    bool Vulkan = false;
+    bool AllowRecording = false;
+    uint32_t RecordCallbacks = 0;
+    uint32_t PrepareAttempts = 0;
+    uint32_t FirstRecordAllocations = 0;
+};
+
+void AddScatterPreparationWitness(RGFrame& frame, ScatterPreparationWitness& witness, bool first)
+{
+    if (first)
+    {
+        frame.AddPass("ScatterPrepare.First", std::numeric_limits<int32_t>::min(),
+                      [](RGPassBuilder& pass) { pass.PreventCulling(); },
+                      [&witness](RGContext&)
+                      {
+                          ++witness.RecordCallbacks;
+                          witness.FirstRecordAllocations =
+                              witness.Device->GetDescriptorAllocatorStats().TransientAllocated;
+                      });
+        return;
+    }
+    frame.AddPass("ScatterPrepare.Last", std::numeric_limits<int32_t>::max(),
+                  [&witness](RGPassBuilder& pass)
+                  {
+                      pass.PreventCulling();
+                      pass.Prepare([&witness](RGPrepareContext&)
+                                   { ++witness.PrepareAttempts; return witness.AllowRecording; });
+                  },
+                  [&witness](RGContext&)
+                  {
+                      ++witness.RecordCallbacks;
+                      if (witness.Vulkan)
+                          EXPECT_EQ(witness.Device->GetDescriptorAllocatorStats().TransientAllocated,
+                                    witness.FirstRecordAllocations);
+                  });
+}
+
+void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI)
+{
+    ScopedEnvVar statsEnvironment("GE_SCATTER_STATS", "1");
+    GameEngine::TestUtils::ScopedTempDir cache(
+        GameEngine::TestUtils::MakeUniqueTempDirectory("prepared-unified-scatter"));
+    DeviceDesc description{};
+    description.preferredAPI = graphicsAPI;
+    description.enableDynamicRendering = true;
+    description.enableSwapchain = false;
+    description.descriptorBuffers = DescriptorBufferMode::Disabled;
+    description.pipelineCacheDirectory = cache.Path().string();
+    auto device = DeviceFactory::CreateDevice(description);
+    if (!device || !device->Initialize(description))
+        GTEST_SKIP() << "Requested unified scatter backend unavailable";
+    ASSERT_EQ(device->GetAPI(), graphicsAPI);
+    GPUScene::SetCullingShaderLoader(&TestShaderLoader);
+    ScatterBuilder::SetShaderLoader(&TestShaderLoader);
+    GPUScene scene(device.get());
+    ASSERT_TRUE(scene.Initialize(256u, 32u));
+    ScatterBuilder builder(device.get());
+    ASSERT_TRUE(builder.Initialize());
+    ASSERT_TRUE(builder.GetOrCreateScatterPipeline().IsValid());
+    ASSERT_TRUE(builder.GetOrCreateGroupCompactPipeline().IsValid());
+    ASSERT_TRUE(builder.IsScatterStatsActive());
+    PopulateScatterProbeScene(scene);
+    ASSERT_EQ(scene.GetInstanceCount(), kScatterProbeInstances);
+    const PipelineHandle copyPipeline = CreateCoreReadbackPipeline(*device);
+    ASSERT_TRUE(copyPipeline.IsValid());
+    const uint32_t stride = static_cast<uint32_t>(std::max<size_t>(
+        device->GetCapabilities().minStorageBufferOffsetAlignment,
+        kScatterProbeInstances * sizeof(uint32_t)));
+    BufferDesc visibilityDesc{};
+    visibilityDesc.size = 3u * stride;
+    visibilityDesc.usage = static_cast<uint32_t>(BufferUsage::Storage);
+    visibilityDesc.memoryUsage = BufferMemoryUsage::Upload;
+    const BufferHandle visibilityBuffer = device->CreateBuffer(visibilityDesc);
+    ASSERT_TRUE(visibilityBuffer.IsValid());
+    std::vector<uint32_t> visibilityWords(visibilityDesc.size / sizeof(uint32_t), 0u);
+    visibilityWords[0] = visibilityWords[2] = 1u;
+    visibilityWords[stride / sizeof(uint32_t) + 1u] = 1u;
+    visibilityWords[stride / sizeof(uint32_t) + 2u] = 1u;
+    visibilityWords[2u * stride / sizeof(uint32_t) + 1u] = 1u;
+    visibilityWords[2u * stride / sizeof(uint32_t) + 3u] = 1u;
+    device->UpdateBuffer(visibilityBuffer, 0, visibilityDesc.size, visibilityWords.data());
+    FramePools pools(device.get());
+
+    for (uint32_t frameIndex = 0; frameIndex < 2u; ++frameIndex)
+    {
+        CoreCullingDeviceFrameScope deviceFrame(*device);
+        ASSERT_TRUE(deviceFrame.IsOpen());
+        builder.BeginArenaFrame();
+        builder.SetFrameTimeSeconds(static_cast<float>(frameIndex) * 0.1f);
+        scene.BeginFrame();
+        RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        frame.BeginFrame(100u + frameIndex * 7u);
+        ScatterPreparationWitness witness{device.get(), graphicsAPI == GraphicsAPI::Vulkan};
+        AddScatterPreparationWitness(frame, witness, true);
+        const RGBuffer visibility = frame.ImportExternalBuffer("ScatterPrepare.Visibility",
+            visibilityBuffer, visibilityDesc.size);
+        const auto ranges = DeclareScatterProbe(frame, builder, scene, visibility, stride,
+                                                 frameIndex == 0u ? 11.0f : 5.0f);
+        ASSERT_TRUE(ranges.Ordering.IsValid());
+        for (const auto& range : ranges.Ranges)
+            ASSERT_TRUE(range.IsValid());
+        constexpr size_t kBlockBytes = kScatterProbeInstances * kScatterProbeCommandWords
+                                      * sizeof(uint32_t);
+        EXPECT_EQ(ranges.Ranges[0].even.cmdByteOffset, 3u * kBlockBytes);
+        EXPECT_EQ(ranges.Ranges[1].even.cmdByteOffset, 4u * kBlockBytes);
+        EXPECT_EQ(ranges.Ranges[2].even.cmdByteOffset, 5u * kBlockBytes);
+        EXPECT_EQ(ranges.Ranges[0].evenTail.cmdByteOffset, 8u * kBlockBytes);
+        EXPECT_EQ(ranges.Ranges[2].evenTail.cmdByteOffset, 9u * kBlockBytes);
+        EXPECT_EQ(ranges.Ranges[1].evenTail.maxDrawCount, 0u);
+        EXPECT_EQ(ranges.Ranges[3].even.cmdByteOffset, 10u * kBlockBytes);
+        const auto output = AddScatterProbeOutput(frame, *device, builder, ranges, copyPipeline);
+        ASSERT_TRUE(output.Readback.IsValid());
+        ASSERT_TRUE(output.Records.IsValid() && output.Indirection.IsValid());
+        AddScatterPreparationWitness(frame, witness, false);
+        const uint64_t rotations = builder.IntrospectScatter().RenderedHistoryRotations;
+        for (uint32_t abort = 0; abort < 2u; ++abort)
+        {
+            const uint32_t before = device->GetDescriptorAllocatorStats().TransientAllocated;
+            frame.Execute();
+            EXPECT_EQ(witness.RecordCallbacks, 0u);
+            EXPECT_EQ(frame.Stats().SubmissionsMade, 0u);
+            EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
+            EXPECT_EQ(builder.IntrospectScatter().RenderedHistoryRotations, rotations);
+            if (witness.Vulkan)
+                EXPECT_GE(device->GetDescriptorAllocatorStats().TransientAllocated, before + 9u);
+        }
+        witness.AllowRecording = true;
+        const uint32_t before = device->GetDescriptorAllocatorStats().TransientAllocated;
+        frame.Execute();
+        deviceFrame.Finish();
+        EXPECT_EQ(witness.PrepareAttempts, 3u);
+        EXPECT_EQ(witness.RecordCallbacks, 2u);
+        EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
+        if (witness.Vulkan)
+            EXPECT_GE(witness.FirstRecordAllocations, before + 9u)
+                << "seven production sets and two copy controls must be ready before recording";
+        CheckScatterProbeOutputs(*device, ranges, output, frameIndex != 0u);
+        device->DestroyBuffer(output.Readback);
+    }
+    builder.BeginArenaFrame();
+    uint32_t statsRows = 0;
+    for (const auto& stats : builder.GetShadowArcStats())
+    {
+        if (stats.viewId == 1u || stats.viewId == 3u)
+        {
+            EXPECT_EQ(stats.passedCasters, 3u);
+            EXPECT_EQ(stats.drawnTriangles, 16u);
+        }
+        else if (stats.viewId == 2u)
+        {
+            EXPECT_EQ(stats.passedCasters, 2u);
+            EXPECT_EQ(stats.drawnTriangles, 6u);
+        }
+        else if (stats.viewId == 4u)
+        {
+            EXPECT_EQ(stats.passedCasters, 2u);
+            EXPECT_EQ(stats.drawnTriangles, 30u);
+        }
+        else
+            ADD_FAILURE() << "Unexpected stats view " << stats.viewId;
+        ++statsRows;
+    }
+    EXPECT_EQ(statsRows, 4u);
+    device->DestroyBuffer(visibilityBuffer);
+}
+} // namespace
+
+TEST(RGGpuDriven, UnifiedScatterPreparesBindingsAndPreservesInterleavedHeadAndTailSlices)
+{
+    CheckUnifiedScatterPreparation(GraphicsAPI::Vulkan);
+}
+#if defined(__APPLE__)
+TEST(RGGpuDriven, MetalUnifiedScatterPreparesBindingsAndPreservesInterleavedHeadAndTailSlices)
+{
+    CheckUnifiedScatterPreparation(GraphicsAPI::Metal);
+}
+#endif

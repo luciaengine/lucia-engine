@@ -261,6 +261,7 @@ void TerrainShadowBake::DeclareBakePass(RG::RGFrame& frame, RG::RGTexture map,
         "TerrainShadow.Bake", kBakePhase,
         [&](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(m_PipelineId);
             p.Read(height, RG::RGTextureRead::SampledCompute);
             p.Write(map, RG::RGTextureWrite::Storage);
         },

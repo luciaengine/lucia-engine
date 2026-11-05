@@ -48,20 +48,17 @@ using ::GameEngine::Rendering::DescriptorSetMeta;
 using ::GameEngine::Rendering::DescriptorSetUpdate;
 using ::GameEngine::Rendering::DescriptorType;
 
-DescriptorType MapShaderMetaBindingType(uint32_t t)
+using ::GameEngine::Rendering::DescriptorBindingPlan;
+
+// Tools and tests may construct reflection by hand. Published shader variants
+// already own a plan, including the previous generation served during reload.
+const std::shared_ptr<const DescriptorBindingPlan>& PlanFor(
+    const DescriptorSetMeta& set, std::shared_ptr<const DescriptorBindingPlan>& scratch)
 {
-    using namespace ::GameEngine::Rendering::ShaderMetaBindingType;
-    switch (t)
-    {
-        case kUniformBuffer:        return DescriptorType::UniformBuffer;
-        case kStorageBuffer:        return DescriptorType::StorageBuffer;
-        case kSampler:              return DescriptorType::Sampler;
-        case kSampledImage:         return DescriptorType::Texture;
-        case kStorageImage:         return DescriptorType::StorageImage;
-        case kCombinedImageSampler: return DescriptorType::CombinedImageSampler;
-        case kAccelerationStructure: return DescriptorType::AccelerationStructure;
-        default:                    return DescriptorType::UniformBuffer;
-    }
+    if (set.BindingPlan)
+        return set.BindingPlan;
+    scratch = BuildDescriptorBindingPlan(set);
+    return scratch;
 }
 
 // Locate the reflected set with index `setIdx`. Returns nullptr if missing.
@@ -120,6 +117,43 @@ const ResolvedPassResources::TextureEntry* FindPassTexture(
             return &e;
     }
     return nullptr;
+}
+
+struct ImageDefaultBinding
+{
+    Rendering::TextureHandle Texture;
+    Rendering::SamplerHandle Sampler;
+};
+
+ImageDefaultBinding ResolveImageDefault(RenderServices& services, DescriptorBindingPlan::ImageDefault shape,
+                                        std::string_view name, Rendering::SamplerHandle sampler)
+{
+    using Shape = DescriptorBindingPlan::ImageDefault;
+    switch (shape)
+    {
+        case Shape::Named2D: return {services.Textures().ResolveDefaultTexture(name), sampler};
+        case Shape::ColorArray: return {services.Textures().GetDefaultWhiteArrayTexture(), sampler};
+        case Shape::ColorCube: return {services.Textures().GetDefaultBlackCubeTexture(), sampler};
+        case Shape::Depth2D: return {services.GetAreaShadowFallbackTexture(), services.GetCascadeShadowSampler()};
+        case Shape::DepthArray: return {services.GetCascadeShadowFallbackTexture(), services.GetCascadeShadowSampler()};
+        case Shape::Unavailable: return {};
+    }
+    return {};
+}
+
+void WarnUnresolvedPipelineBinding(const DescriptorSetMeta& set, const DescriptorBindingMeta& binding,
+                                  const char* kind)
+{
+    if (binding.Binding >= kMaxWarnTrackedBinding)
+        return;
+    thread_local std::unordered_map<const DescriptorSetMeta*, uint64_t> warnedBindings;
+    auto& mask = warnedBindings[&set];
+    const uint64_t bit = 1ull << binding.Binding;
+    if ((mask & bit) != 0)
+        return;
+    mask |= bit;
+    Logger::Log::Warning("MaterialBinder.PipelineSet: set={} binding={} ('{}') {} not resolvable",
+                         set.Set, binding.Binding, binding.Name, kind);
 }
 
 } // namespace
@@ -231,83 +265,6 @@ void MaterialBinder::InvalidateStickyBindsForPipeline(
     }
 }
 
-bool MaterialBinder::IsBindlessTextureSet(const DescriptorSetMeta& setMeta)
-{
-    // The engine's bindless texture set is identified by binding 0 named
-    // `ge_BindlessTextures`. Post image/sampler split it is a SAMPLED_IMAGE array
-    // (binding 0) plus a SAMPLER array (binding 1, "ge_BindlessSamplers"); the
-    // sampler binding rides along in the same global set, so binding the set once
-    // covers both. Match on binding 0 by name (SPIR-V reflection collapses the
-    // unbounded array to Count=1, so the count isn't reliable). Accept both the
-    // split (Texture) and legacy (CombinedImageSampler) types so the classifier is
-    // robust to either shader ABI.
-    for (const auto& b : setMeta.Bindings)
-    {
-        if (b.Binding != 0 || b.Name != "ge_BindlessTextures")
-            continue;
-        const DescriptorType t = MapShaderMetaBindingType(b.Type);
-        return t == DescriptorType::Texture || t == DescriptorType::CombinedImageSampler;
-    }
-    return false;
-}
-
-bool MaterialBinder::IsCompatMaterialTextureSet(const DescriptorSetMeta& setMeta)
-{
-    // The compatibility profile's per-material set, identified by binding 0
-    // named `ge_MaterialTextures0` (bindless_textures.glsl under
-    // GE_COMPAT_PROFILE). Its samplers ride bindings 64..71 of the same set, so
-    // binding the set once covers both.
-    for (const auto& b : setMeta.Bindings)
-    {
-        if (b.Binding != 0 || b.Name != "ge_MaterialTextures0")
-            continue;
-        const DescriptorType t = MapShaderMetaBindingType(b.Type);
-        return t == DescriptorType::Texture || t == DescriptorType::CombinedImageSampler;
-    }
-    return false;
-}
-
-MaterialBinder::ResolvedSet MaterialBinder::ClassifySet(
-    const DescriptorSetMeta& setMeta,
-    const DrawBindings& draw) const
-{
-    ResolvedSet out{};
-    out.Meta       = &setMeta;
-    out.IsBindless = IsBindlessTextureSet(setMeta);
-    out.Scope      = SetScope::PerPass;
-    if (out.IsBindless)
-        return out;
-
-    // A set is per-draw if any binding resolves from DrawBindings; otherwise it
-    // draws only from PassResources (Cam/Light/MaterialParams SSBO/shadow maps)
-    // and is per-pass. Material params + textures are not a per-set source —
-    // they live in the shared SSBO and the global bindless set.
-    for (const auto& b : setMeta.Bindings)
-    {
-        const StringId nameId = b.ResolvedNameId();
-        const DescriptorType type = MapShaderMetaBindingType(b.Type);
-
-        if (type == DescriptorType::UniformBuffer || type == DescriptorType::StorageBuffer)
-        {
-            if (FindDrawBuffer(draw, nameId) != nullptr)
-            {
-                out.Scope = SetScope::PerDraw;
-                return out;
-            }
-        }
-        else if (type == DescriptorType::CombinedImageSampler || type == DescriptorType::Texture)
-        {
-            if (FindDrawTexture(draw, nameId) != nullptr)
-            {
-                out.Scope = SetScope::PerDraw;
-                return out;
-            }
-        }
-    }
-
-    return out;
-}
-
 DescriptorSetHandle MaterialBinder::BuildSetForBinding(
     PassBindingContext& pass,
     const Material& material,
@@ -324,7 +281,7 @@ DescriptorSetHandle MaterialBinder::BuildSetForBinding(
 }
 
 DescriptorSetHandle MaterialBinder::BuildSetForBindingFromMeta(
-    PassBindingContext& pass,
+    const PassBindingContext& pass,
     const Material& material,
     const ::GameEngine::Rendering::DescriptorSetMeta& setMeta,
     const DrawBindings& draw,
@@ -333,593 +290,384 @@ DescriptorSetHandle MaterialBinder::BuildSetForBindingFromMeta(
     if (setMeta.Bindings.empty())
         return {};
 
-    // Bindless short-circuit: return the engine's global bindless set without
-    // any per-material allocation.
-    if (IsBindlessTextureSet(setMeta))
-    {
-        if (m_Services.Textures().IsBindlessEnabled())
-            return m_Services.Textures().BindlessTextureSet();
-        // If bindless isn't enabled the engine should have compiled a
-        // non-bindless variant; fall through and build per-material so the
-        // descriptor layout still validates.
-    }
-
-    // Compat analogue: TextureService caches one set per material, keyed by
-    // GUID and rebuilt whenever a slot rebinds.
-    if (IsCompatMaterialTextureSet(setMeta))
+    std::shared_ptr<const DescriptorBindingPlan> scratchPlan;
+    const auto& plan = PlanFor(setMeta, scratchPlan);
+    if (plan->SetSource == DescriptorBindingPlan::Source::BindlessTextures && m_Services.Textures().IsBindlessEnabled())
+        return m_Services.Textures().BindlessTextureSet();
+    if (plan->SetSource == DescriptorBindingPlan::Source::MaterialTextures)
     {
         if (auto set = m_Services.Textures().MaterialTextureSet(material); set.IsValid())
             return set;
     }
 
-    const ResolvedSet rs = ClassifySet(setMeta, draw);
+    thread_local std::vector<ResolvedBinding> writes;
+    const auto resolution = ResolveBindings(pass.PassResources, material, setMeta.Set, *plan, draw, writes);
+    if (outUnresolvable && resolution.Unresolvable)
+        *outUnresolvable = true;
+    if (resolution.PerDraw || resolution.Unresolvable)
+        return BuildSetInternal(setMeta, *plan, writes);
 
-    // Per-pass: shared across every draw in the (view, keywords, layout,
-    // instanceIndex) tuple. Cheapest path — built once and bound sticky.
-    // PassInstanceIndex separates shadow cascades whose per-pass resources
-    // (Cam UBO) differ per-cascade while the layout is identical.
-    if (rs.Scope == SetScope::PerPass)
+    using Rendering::HashUtils::HashCombine;
+    uint64_t digest = setMeta.BuiltLayoutHash ? setMeta.BuiltLayoutHash : ComputeDescriptorSetLayoutHash(setMeta);
+    for (const auto& write : writes)
     {
-        // P1: the layout hash is precomputed on the reflected meta
-        // (FinalizeSetLayout, called from MergeStages + from_json). Falls
-        // back to an on-the-fly hash for test setups that synthesize a
-        // meta without calling FinalizeSetLayout — same value, just
-        // computed lazily here instead of eagerly upstream.
-        const uint64_t layoutHash = (setMeta.BuiltLayoutHash != 0)
-            ? setMeta.BuiltLayoutHash
-            : ComputeDescriptorSetLayoutHash(setMeta);
-        const PerPassCacheKey key{
-            static_cast<uint64_t>(pass.View),
-            static_cast<uint64_t>(pass.PassKeywords),
-            layoutHash,
-            pass.PassInstanceIndex};
+        digest = HashCombine(digest, write.Buffer.id);
+        digest = HashCombine(digest, write.Offset);
+        digest = HashCombine(digest, write.Range);
+        digest = HashCombine(digest, write.Texture.id);
+        digest = HashCombine(digest, write.Sampler.id);
+        digest = HashCombine(digest, write.ArrayIndex);
+    }
+    const PerPassCacheKey key{static_cast<uint64_t>(pass.View), static_cast<uint64_t>(pass.PassKeywords),
+                              digest, setMeta.Set, pass.PassInstanceIndex};
+    const uint64_t epoch = m_PerPassEpoch.load(std::memory_order_acquire);
+    thread_local std::array<PerPassL1Slot, kPerPassL1Slots> l1{};
+    auto& slot = l1[PerPassL1Index(PerPassCacheKeyHash{}(key))];
+    if (slot.Epoch == epoch && slot.Value && slot.Key == key && slot.Value->Matches(*plan, writes))
+        return slot.Value->Handle;
 
-        const uint64_t epoch = m_PerPassEpoch.load(std::memory_order_acquire);
-
-        // A2.4-D6: per-thread L1 (no lock) fronts m_PerPassCache; on a miss take a
-        // shared_lock find. Up to N record workers share the map concurrently.
-        // The array is thread_local and so outlives any one binder — the epoch is
-        // what makes a slot this binder's and this frame's.
-        thread_local std::array<PerPassL1Slot, kPerPassL1Slots> l1{};
-        auto& slot = l1[PerPassL1Index(PerPassCacheKeyHash{}(key))];
-        if (slot.Epoch == epoch && slot.Value.IsValid() && slot.Key == key)
-            return slot.Value;
+    // unordered_multimap keeps node addresses stable across insertion and
+    // rehash. OnBeginFrame retires all nodes serially, before workers run.
+    {
+        std::shared_lock lock(m_PerPassCacheMutex);
+        if (const auto* found = FindCachedSet(key, *plan, writes))
         {
-            std::shared_lock lock(m_PerPassCacheMutex);
-            if (auto it = m_PerPassCache.find(key); it != m_PerPassCache.end())
-            {
-                slot = {key, it->second, epoch};
-                return it->second;
-            }
+            slot = {key, found, epoch};
+            return found->Handle;
         }
-
-        // Build without the lock (per-draw descriptor allocation is thread-safe;
-        // it draws from the device's own pool).
-        bool unresolvable = false;
-        auto handle = BuildSetInternal(pass, material, setMeta, SetScope::PerPass, draw, &unresolvable);
-        // Never cache a set that tripped the unresolved-buffer guard: it would hand the
-        // (invalid) draw-skip decision to later frames without re-running resolution.
-        if (handle.IsValid() && !unresolvable)
-        {
-            std::unique_lock lock(m_PerPassCacheMutex);
-#if GE_DEBUG_INSTRUMENTATION
-            m_PerPassInsertLockHeldDebug = true;
-#endif
-            AssertPerPassLockHeld();
-            // Double-check: another worker may have inserted the same (view,
-            // keywords, layout, passInstance) set while we built without the lock.
-            // Keep the first; ours is a redundant transient set the pool reclaims.
-            auto [it, inserted] = m_PerPassCache.try_emplace(key, handle);
-            handle = it->second;
-            slot = {key, handle, epoch};
-#if GE_DEBUG_INSTRUMENTATION
-            m_PerPassInsertLockHeldDebug = false;
-#endif
-        }
-        if (outUnresolvable && unresolvable)
-            *outUnresolvable = true;
-        return handle;
     }
 
-    // Per-draw: always a fresh transient allocation, never cached. The
-    // device's per-frame DB pool absorbs the allocation cost.
-    return BuildSetInternal(pass, material, setMeta, SetScope::PerDraw, draw, outUnresolvable);
-}
-
-DescriptorSetHandle MaterialBinder::BuildSetInternal(
-    PassBindingContext& pass,
-    const Material& material,
-    const DescriptorSetMeta& setMeta,
-    SetScope scope,
-    const DrawBindings& draw,
-    bool* outUnresolvable)
-{
-    using namespace ::GameEngine::Rendering;
-
-    auto layout = ::GameEngine::Rendering::MaterialBuilder::BuildSetLayout(setMeta);
-
-    // Skip layouts that require UPDATE_AFTER_BIND (e.g. the bindless texture
-    // layout). Those can only come from the persistent pool — the binder's
-    // transient cache would trigger VUID-03044 on allocation. The bindless
-    // short-circuit catches the engine's standard case; this is a defensive
-    // guard for any future shader-declared UAB layout.
-    const bool needsUpdateAfterBind = std::any_of(
-        layout.bindings.begin(), layout.bindings.end(),
-        [](const DescriptorBinding& b) {
-            return (b.flags & kDescriptorBindingUpdateAfterBind) != 0;
-        });
-    if (needsUpdateAfterBind)
-        return {};
-
-    DescriptorSetDesc dsDesc{};
-    dsDesc.layout    = std::move(layout);
-    dsDesc.transient = true;
-    dsDesc.debugName = "MaterialBinder.Set";
-    auto handle = m_Device.CreateDescriptorSet(dsDesc);
+    auto handle = BuildSetInternal(setMeta, *plan, writes);
     if (!handle.IsValid())
         return {};
+    std::unique_lock lock(m_PerPassCacheMutex);
+#if GE_DEBUG_INSTRUMENTATION
+    m_PerPassInsertLockHeldDebug = true;
+#endif
+    AssertPerPassLockHeld();
+    // A competing worker may already have published the same contents while
+    // the device allocated our transient descriptor outside the lock.
+    const auto* found = FindCachedSet(key, *plan, writes);
+    if (!found)
+        found = &m_PerPassCache.emplace(key, CachedSet{plan, writes, handle})->second;
+    slot = {key, found, epoch};
+#if GE_DEBUG_INSTRUMENTATION
+    m_PerPassInsertLockHeldDebug = false;
+#endif
+    return found->Handle;
+}
 
-    // Warn-once diagnostics are per-worker thread_local (A2.4-D6): operator[]
-    // mutates on every lookup (default-constructs the slot), so a shared map is
-    // racy under concurrent record. A genuinely-missing binding may then log
-    // once per worker that hits it — harmless, and no lock / no shared state.
-    thread_local std::unordered_map<WarnKey, uint64_t, WarnKeyHash> warnedBindings;
-    uint64_t& warnedMask = warnedBindings[WarnKey{&material, setMeta.Set}];
+bool MaterialBinder::CachedSet::Matches(const DescriptorBindingPlan& plan,
+                                        const std::vector<ResolvedBinding>& writes) const
+{
+    return (Plan.get() == &plan || *Plan == plan) && Writes == writes;
+}
 
-    // Scratch buffer reused across draws on the same recording thread. Made
-    // thread_local because parallel command recording calls this concurrently
-    // from per-thread command lists.
-    thread_local std::vector<DescriptorSetUpdate> updates;
-    updates.clear();
-    updates.reserve(setMeta.Bindings.size());
-
-    auto materialSamplerCached = SamplerHandle{};
-    auto getMaterialSampler = [&]() {
-        if (!materialSamplerCached.IsValid())
-            materialSamplerCached = m_Services.Textures().GetSampler(material.GetSamplerPreset());
-        return materialSamplerCached;
-    };
-
-    for (const auto& b : setMeta.Bindings)
+const MaterialBinder::CachedSet* MaterialBinder::FindCachedSet(
+    const PerPassCacheKey& key, const DescriptorBindingPlan& plan,
+    const std::vector<ResolvedBinding>& writes) const
+{
+    const auto [first, last] = m_PerPassCache.equal_range(key);
+    for (auto entry = first; entry != last; ++entry)
     {
-        const StringId nameId = b.ResolvedNameId();
-        const DescriptorType type = MapShaderMetaBindingType(b.Type);
+        if (entry->second.Matches(plan, writes))
+            return &entry->second;
+    }
+    return nullptr;
+}
 
-        switch (type)
+Rendering::SamplerHandle MaterialBinder::ResolveMaterialSampler(
+    const Material& material, Rendering::SamplerHandle& cachedSampler)
+{
+    if (!cachedSampler.IsValid())
+        cachedSampler = m_Services.Textures().GetSampler(material.GetSamplerPreset());
+    return cachedSampler;
+}
+
+bool MaterialBinder::ShouldWarnBinding(const Material& material, uint32_t setIndex, uint32_t binding)
+{
+    if (binding >= kMaxWarnTrackedBinding)
+        return false;
+    thread_local std::unordered_map<WarnKey, uint64_t, WarnKeyHash> warnedBindings;
+    auto& mask = warnedBindings[WarnKey{&material, setIndex}];
+    const uint64_t bit = 1ull << binding;
+    const bool first = (mask & bit) == 0;
+    mask |= bit;
+    return first;
+}
+
+MaterialBinder::Resolution MaterialBinder::ResolveBindings(
+    const ResolvedPassResources& pass, const Material& material, uint32_t setIndex,
+    const DescriptorBindingPlan& plan, const DrawBindings& draw, std::vector<ResolvedBinding>& writes)
+{
+    using namespace ::GameEngine::Rendering;
+    Resolution result{};
+    writes.clear();
+    writes.reserve(plan.Slots.size());
+    SamplerHandle materialSampler{};
+    for (const auto& slot : plan.Slots)
+    {
+        auto& write = writes.emplace_back();
+        switch (slot.Type)
         {
             case DescriptorType::UniformBuffer:
             case DescriptorType::StorageBuffer:
-            {
-                // Resolve buffer by name across sources.
-                if (const auto* e = FindDrawBuffer(draw, nameId))
+                if (const auto* entry = FindDrawBuffer(draw, slot.NameId))
                 {
-                    DescriptorSetUpdate u{};
-                    u.binding = b.Binding;
-                    u.type    = type;
-                    u.buffers = {e->Buffer};
-                    if (e->Offset != 0 || e->Range != 0)
-                    {
-                        u.bufferOffsets = {static_cast<size_t>(e->Offset)};
-                        u.bufferRanges  = {static_cast<size_t>(e->Range)};
-                    }
-                    updates.push_back(std::move(u));
-                    break;
+                    result.PerDraw = true;
+                    write.Buffer = entry->Buffer;
+                    write.Offset = entry->Offset;
+                    write.Range = entry->Range;
                 }
-                if (const auto* e = FindPassBuffer(pass.PassResources, nameId);
-                    e && e->Buffer.IsValid())
+                else if (const auto* entry = FindPassBuffer(pass, slot.NameId))
                 {
-                    DescriptorSetUpdate u{};
-                    u.binding = b.Binding;
-                    u.type    = type;
-                    u.buffers = {e->Buffer};
-                    if (e->Offset != 0 || e->Range != 0)
-                    {
-                        u.bufferOffsets = {static_cast<size_t>(e->Offset)};
-                        u.bufferRanges  = {static_cast<size_t>(e->Range)};
-                    }
-                    updates.push_back(std::move(u));
-                    break;
+                    write.Buffer = entry->Buffer;
+                    write.Offset = entry->Offset;
+                    write.Range = entry->Range;
                 }
-                // Material params live in the shared MaterialParams SSBO (a
-                // PassResource), so a buffer that resolves from neither
-                // DrawBindings nor PassResources is genuinely unbound. Binding a draw
-                // with an unbound uniform/storage buffer is fatal under descriptor
-                // buffers (garbage device address on fetch), so flag the draw for skip
-                // rather than issuing it — BindMaterialForDraw drops it. Error (not
-                // Warning): a dropped draw + loud log beats a device lost. Throttled
-                // per (material,set,binding) via warnedMask, same as before.
-                if (outUnresolvable)
-                    *outUnresolvable = true;
-                if (b.Binding < kMaxWarnTrackedBinding && !(warnedMask & (1ull << b.Binding)))
+                if (!write.Buffer.IsValid())
                 {
-                    warnedMask |= (1ull << b.Binding);
-                    Logger::Log::Error(
-                        "MaterialBinder: set={} binding={} ('{}') buffer resolves from neither "
-                        "DrawBindings nor PassResources — SKIPPING the draw (an unbound descriptor "
-                        "is a garbage device address). Fix the binding's provider.",
-                        setMeta.Set, b.Binding, b.Name);
+                    result.Unresolvable = true;
+                    if (ShouldWarnBinding(material, setIndex, slot.Binding))
+                        Logger::Log::Error("MaterialBinder: set={} binding={} ('{}') has no valid buffer — SKIPPING the draw",
+                                           setIndex, slot.Binding, slot.Name);
                 }
                 break;
-            }
-            case DescriptorType::CombinedImageSampler:
+
             case DescriptorType::Texture:
+            case DescriptorType::CombinedImageSampler:
             {
-                // Per-draw wins.
-                if (const auto* e = FindDrawTexture(draw, nameId);
-                    e && e->Texture.IsValid())
+                if (const auto* entry = FindDrawTexture(draw, slot.NameId); entry && entry->Texture.IsValid())
                 {
-                    auto sampler = e->Sampler;
-                    if (!sampler.IsValid())
-                        sampler = getMaterialSampler();
-                    if (type == DescriptorType::CombinedImageSampler && sampler.IsValid())
-                    {
-                        m_Device.UpdateCombinedImageSamplerBinding(
-                            handle, b.Binding, e->Texture, sampler, e->ArrayIndex);
-                    }
-                    else
-                    {
-                        DescriptorSetUpdate u{};
-                        u.binding      = b.Binding;
-                        u.arrayElement = e->ArrayIndex;
-                        u.type         = type;
-                        u.textures     = {e->Texture};
-                        if (sampler.IsValid())
-                            u.samplers = {sampler};
-                        updates.push_back(std::move(u));
-                    }
-                    break;
+                    result.PerDraw = true;
+                    write.Texture = entry->Texture;
+                    write.Sampler = entry->Sampler.IsValid()
+                        ? entry->Sampler : ResolveMaterialSampler(material, materialSampler);
+                    write.ArrayIndex = entry->ArrayIndex;
                 }
-                // Then per-pass (shadow map, MSM moments). Material textures are
-                // not resolved here — they are sampled from the global bindless
-                // texture array indexed by the SSBO's per-instance TextureIndices.
-                if (const auto* e = FindPassTexture(pass.PassResources, nameId);
-                    e && e->Texture.IsValid())
+                else if (const auto* entry = FindPassTexture(pass, slot.NameId); entry && entry->Texture.IsValid())
                 {
-                    auto sampler = e->Sampler;
-                    if (!sampler.IsValid())
-                        sampler = getMaterialSampler();
-                    if (type == DescriptorType::CombinedImageSampler && sampler.IsValid())
-                    {
-                        m_Device.UpdateCombinedImageSamplerBinding(
-                            handle, b.Binding, e->Texture, sampler);
-                    }
-                    else
-                    {
-                        // A separate sampled image (ibl.glsl's compat arm) takes a
-                        // texture-only write: the combined update would also write
-                        // a split sampler at binding+64 that the reflected layout
-                        // never declared.
-                        DescriptorSetUpdate u{};
-                        u.binding  = b.Binding;
-                        u.type     = type;
-                        u.textures = {e->Texture};
-                        updates.push_back(std::move(u));
-                    }
-                    break;
+                    write.Texture = entry->Texture;
+                    if (slot.Type == DescriptorType::CombinedImageSampler)
+                        write.Sampler = entry->Sampler.IsValid()
+                            ? entry->Sampler : ResolveMaterialSampler(material, materialSampler);
                 }
-                // Nothing provides this slot. Bind the slot's default rather than
-                // leaving the descriptor alone: a partially-filled bind group is
-                // fatal on backends that validate a bind group against its whole
-                // layout (WebGPU rejects the CreateBindGroup outright, taking the
-                // frame's command buffer with it). The default has the slot's own
-                // shape (ResolveSlotDefault), which the same validation demands.
-                const SlotDefault fallback = ResolveSlotDefault(b, getMaterialSampler());
-                if (fallback.Texture.IsValid())
+                else
                 {
-                    const SamplerHandle sampler = fallback.Sampler;
-                    if (type == DescriptorType::CombinedImageSampler && sampler.IsValid())
+                    const auto fallback = ResolveImageDefault(
+                        m_Services, slot.Fallback, slot.Name, ResolveMaterialSampler(material, materialSampler));
+                    write.Texture = fallback.Texture;
+                    if (slot.Type == DescriptorType::CombinedImageSampler)
+                        write.Sampler = fallback.Sampler;
+                    if (!write.Texture.IsValid())
+                        result.Unresolvable = true;
+                    if (ShouldWarnBinding(material, setIndex, slot.Binding))
                     {
-                        m_Device.UpdateCombinedImageSamplerBinding(handle, b.Binding, fallback.Texture, sampler);
+                        if (write.Texture.IsValid())
+                            Logger::Log::Warning("MaterialBinder: set={} binding={} ('{}') texture not resolvable — bound the slot default",
+                                                 setIndex, slot.Binding, slot.Name);
+                        else
+                            Logger::Log::Error("MaterialBinder: set={} binding={} ('{}') texture not resolvable and its shape has no slot default — SKIPPING the draw",
+                                               setIndex, slot.Binding, slot.Name);
                     }
-                    else
-                    {
-                        DescriptorSetUpdate u{};
-                        u.binding  = b.Binding;
-                        u.type     = type;
-                        u.textures = {fallback.Texture};
-                        updates.push_back(std::move(u));
-                    }
-                }
-                // No default has this slot's shape: the entry stays unwritten, which is an
-                // invalid bind group on WebGPU and a garbage descriptor under descriptor
-                // buffers, so the draw is skipped, as for an unbound buffer.
-                else if (outUnresolvable)
-                {
-                    *outUnresolvable = true;
-                }
-                if (b.Binding < kMaxWarnTrackedBinding && !(warnedMask & (1ull << b.Binding)))
-                {
-                    warnedMask |= (1ull << b.Binding);
-                    if (fallback.Texture.IsValid())
-                        Logger::Log::Warning(
-                            "MaterialBinder: set={} binding={} ('{}') texture not resolvable — bound the "
-                            "slot default",
-                            setMeta.Set, b.Binding, b.Name);
-                    else
-                        Logger::Log::Error(
-                            "MaterialBinder: set={} binding={} ('{}') texture not resolvable and its shape "
-                            "has no slot default — SKIPPING the draw. Provide the binding from DrawBindings "
-                            "or the pass resources.",
-                            setMeta.Set, b.Binding, b.Name);
                 }
                 break;
             }
             case DescriptorType::Sampler:
-            {
-                // Per-draw wins, exactly as the texture cases above. A draw that binds its own
-                // split sampler (terrain's compat arm shares ONE REPEAT sampler across twelve
-                // layer maps) carries it in DrawBindings; resolving only from pass resources fell
-                // through to the material's sampler, whose wrap mode is not the one those maps
-                // need — every layer tap then clamped to a single texel and the terrain rendered
-                // one flat colour.
-                if (const auto* e = FindDrawTexture(draw, nameId); e && e->Sampler.IsValid())
+                if (const auto* entry = FindDrawTexture(draw, slot.NameId); entry && entry->Sampler.IsValid())
                 {
-                    m_Device.UpdateSamplerBinding(handle, b.Binding, e->Sampler);
-                    break;
+                    result.PerDraw = true;
+                    write.Sampler = entry->Sampler;
                 }
-                // Then pass resources by name; the entry's texture is carriage (TextureEntry has
-                // no sampler-only shape). First user: ibl.glsl's compat arm, which splits the IBL
-                // trio over one shared sampler to stay under WebGPU's per-stage sampler cap.
-                if (const auto* e = FindPassTexture(pass.PassResources, nameId);
-                    e && e->Sampler.IsValid())
+                else if (const auto* entry = FindPassTexture(pass, slot.NameId); entry && entry->Sampler.IsValid())
+                    write.Sampler = entry->Sampler;
+                else
                 {
-                    m_Device.UpdateSamplerBinding(handle, b.Binding, e->Sampler);
-                    break;
-                }
-                // Same completeness rule as the texture case above: an unwritten
-                // entry sinks the whole bind group, so fall back to the material's
-                // own sampler. The throttle only gates the log.
-                if (const auto sampler = getMaterialSampler(); sampler.IsValid())
-                {
-                    m_Device.UpdateSamplerBinding(handle, b.Binding, sampler);
-                }
-                if (b.Binding < kMaxWarnTrackedBinding && !(warnedMask & (1ull << b.Binding)))
-                {
-                    warnedMask |= (1ull << b.Binding);
-                    Logger::Log::Warning(
-                        "MaterialBinder: set={} binding={} ('{}') sampler not resolvable — bound the "
-                        "material sampler",
-                        setMeta.Set, b.Binding, b.Name);
+                    write.Sampler = ResolveMaterialSampler(material, materialSampler);
+                    if (ShouldWarnBinding(material, setIndex, slot.Binding))
+                        Logger::Log::Warning("MaterialBinder: set={} binding={} ('{}') sampler not resolvable — bound the material sampler",
+                                             setIndex, slot.Binding, slot.Name);
                 }
                 break;
-            }
+
             case DescriptorType::AccelerationStructure:
-            {
-                // Nothing on the world-pass path binds a TLAS today — DDGI
-                // traces in compute and binds its own set through
-                // NamedDescriptorWriter. Reaching here means a raster shader
-                // reflected an accelerationStructureEXT with no provider, which
-                // is a ray query against an unwritten descriptor slot: skip the
-                // draw rather than issue it, same rule as an unbound buffer.
-                if (outUnresolvable)
-                    *outUnresolvable = true;
-                if (b.Binding < kMaxWarnTrackedBinding && !(warnedMask & (1ull << b.Binding)))
-                {
-                    warnedMask |= (1ull << b.Binding);
-                    Logger::Log::Error(
-                        "MaterialBinder: set={} binding={} ('{}') is an acceleration structure, which "
-                        "this path has no provider for — SKIPPING the draw. Bind it from the owning "
-                        "feature's own descriptor set instead.",
-                        setMeta.Set, b.Binding, b.Name);
-                }
+                result.Unresolvable = true;
+                if (ShouldWarnBinding(material, setIndex, slot.Binding))
+                    Logger::Log::Error("MaterialBinder: set={} binding={} ('{}') has no acceleration structure provider — SKIPPING the draw",
+                                       setIndex, slot.Binding, slot.Name);
                 break;
-            }
             default:
-                // Storage image and friends: add concrete cases as callers
-                // need them. Keeps the binder honest about what it supports.
                 break;
         }
     }
+    return result;
+}
 
+DescriptorSetHandle MaterialBinder::BuildSetInternal(
+    const DescriptorSetMeta& setMeta, const DescriptorBindingPlan& plan, std::span<const ResolvedBinding> writes)
+{
+    using namespace ::GameEngine::Rendering;
+    auto layout = MaterialBuilder::BuildSetLayout(setMeta);
+    if (std::any_of(layout.bindings.begin(), layout.bindings.end(), [](const DescriptorBinding& binding) {
+            return (binding.flags & kDescriptorBindingUpdateAfterBind) != 0;
+        }))
+        return {};
+    DescriptorSetDesc desc{};
+    desc.layout = std::move(layout);
+    desc.transient = true;
+    desc.debugName = "MaterialBinder.Set";
+    const auto handle = m_Device.CreateDescriptorSet(desc);
+    if (!handle.IsValid())
+        return {};
+
+    thread_local std::vector<DescriptorSetUpdate> updates;
+    updates.clear();
+    for (size_t bindingIndex = 0; bindingIndex < writes.size(); ++bindingIndex)
+    {
+        const auto& slot = plan.Slots[bindingIndex];
+        const auto& write = writes[bindingIndex];
+        if (write.Buffer.IsValid())
+        {
+            auto& update = updates.emplace_back();
+            update.binding = slot.Binding;
+            update.type = slot.Type;
+            update.buffers = {write.Buffer};
+            if (write.Offset || write.Range)
+            {
+                update.bufferOffsets = {static_cast<size_t>(write.Offset)};
+                update.bufferRanges = {static_cast<size_t>(write.Range)};
+            }
+        }
+        else if (write.Texture.IsValid())
+        {
+            if (slot.Type == DescriptorType::CombinedImageSampler && write.Sampler.IsValid())
+                m_Device.UpdateCombinedImageSamplerBinding(handle, slot.Binding, write.Texture, write.Sampler, write.ArrayIndex);
+            else
+            {
+                auto& update = updates.emplace_back();
+                update.binding = slot.Binding;
+                update.arrayElement = write.ArrayIndex;
+                update.type = slot.Type;
+                update.textures = {write.Texture};
+                if (write.Sampler.IsValid())
+                    update.samplers = {write.Sampler};
+            }
+        }
+        else if (write.Sampler.IsValid())
+            m_Device.UpdateSamplerBinding(handle, slot.Binding, write.Sampler);
+    }
     if (!updates.empty())
         m_Device.UpdateDescriptorSetBatch(handle, updates);
-
-    (void)scope;
     return handle;
 }
 
-MaterialBinder::SlotDefault MaterialBinder::ResolveSlotDefault(const DescriptorBindingMeta& binding,
-                                                               SamplerHandle materialSampler)
+namespace
 {
-    // A meta synthesized without image reflection names no shape: the per-name 2D default.
-    if (!binding.Image)
-        return {m_Services.Textures().ResolveDefaultTexture(binding.Name), materialSampler};
-    const DescriptorBindingMeta::ImageInfo& image = *binding.Image;
-    if (image.Dim != 2 || image.Multisample || image.UnsignedInteger)
-        return {};
-    if (image.Cube)
-    {
-        if (image.Depth || image.Arrayed)
-            return {};
-        return {m_Services.Textures().GetDefaultBlackCubeTexture(), materialSampler};
-    }
-    // Both depth defaults hold reverse-Z far (0.0), so a GreaterOrEqual comparison passes and a
-    // shadow tap reads fully lit. The cascade fallback's several layers give it a 2D-array view;
-    // the one-layer area fallback has a 2D view.
-    if (image.Depth)
-    {
-        const TextureHandle depth = image.Arrayed ? m_Services.GetCascadeShadowFallbackTexture()
-                                                  : m_Services.GetAreaShadowFallbackTexture();
-        return {depth, m_Services.GetCascadeShadowSampler()};
-    }
-    if (image.Arrayed)
-        return {m_Services.Textures().GetDefaultWhiteArrayTexture(), materialSampler};
-    return {m_Services.Textures().ResolveDefaultTexture(binding.Name), materialSampler};
+PreparedDrawBindings MakePreparedDraw(Rendering::PipelineHandle pipeline,
+                                      std::span<const Rendering::DescriptorSetLayoutId> layouts)
+{
+    PreparedDrawBindings result{};
+    result.Pipeline = pipeline;
+    result.LayoutCount = static_cast<uint32_t>(std::min(layouts.size(), result.Layouts.size()));
+    std::copy_n(layouts.begin(), result.LayoutCount, result.Layouts.begin());
+    return result;
 }
 
-::GameEngine::Rendering::PipelineHandle MaterialBinder::BindMaterialForDraw(
-    PassBindingContext& pass,
-    const Material& material,
-    ::GameEngine::Rendering::VertexAttributeFlags meshVertexFlags,
-    const DrawBindings& draw,
-    ::GameEngine::Rendering::PipelineHandle preResolvedPipeline,
-    const ::GameEngine::Rendering::ShaderMeta* metaOverride,
-    uint32_t pipelineSetCount,
-    std::span<const ::GameEngine::Rendering::DescriptorSetLayoutId> pipelineSetLayouts)
+bool ShouldBindSet(const Rendering::DescriptorSetMeta& set, uint32_t pipelineSetCount)
 {
-    using namespace ::GameEngine::Rendering;
-
-    if (!pass.Cmd)
-    {
-        assert(false && "MaterialBinder::BindMaterialForDraw requires a valid PassBindingContext");
-        return {};
-    }
-
-    auto* cmd = pass.Cmd;
-
-    // 1. Resolve pipeline variant — honour a caller-resolved handle when
-    //    provided (instanced cache, depth-narrowed variants, etc.).
-    PipelineHandle pipe = preResolvedPipeline;
-    if (!pipe.IsValid())
-    {
-        const auto pipelineId = material.GetGraphicsPipelineIdForFlags(meshVertexFlags, &m_Device);
-        pipe = pass.PassRG ? pass.PassRG->GetOrCreatePipelineVariant(pipelineId)
-                           : PipelineHandle{};
-    }
-    if (!pipe.IsValid())
-        return {};
-
-    if (pipe != pass.CurrentPipeline)
-    {
-        cmd->SetPipeline(pipe);
-        pass.CurrentPipeline = pipe;
-        ++pass.PipelineBinds;
-        InvalidateStickyBindsForPipeline(pass, pipelineSetLayouts);
-    }
-
-    // 2. Walk every reflected set. Build each via the unified name-driven
-    //    resolver and skip BindDescriptorSet when the handle hasn't changed
-    //    since the previous draw (pipeline-layout compatibility sticky bind).
-    //
-    //    Callers using narrowed pipelines (depth-only) pass a non-zero
-    //    pipelineSetCount to bound the walk — the material's reflected meta
-    //    carries fragment-stage sets the depth pipeline layout doesn't have.
-    // Prefer the variant meta the caller supplied — it reflects the pipeline
-    // we actually bound. The base material's stored ShaderMeta reflects only
-    // the material's authored keywords; per-pass keywords (Instanced,
-    // ForwardPlus, Shadows) introduce additional set-0 bindings that the
-    // base meta doesn't see. Walking base meta against a variant pipeline
-    // leaves the variant's extra slots unwritten — descriptor data reads as
-    // zero/garbage and the surface renders black.
-    const auto& fallbackMeta = material.GetShaderMeta();
-    const ::GameEngine::Rendering::ShaderMeta* walkMeta =
-        metaOverride ? metaOverride : fallbackMeta.get();
-    if (walkMeta)
-    {
-        const uint32_t setBound =
-            (pipelineSetCount > 0) ? pipelineSetCount : kMaxDescriptorSets;
-        for (const auto& setMeta : walkMeta->Sets)
-        {
-            if (setMeta.Bindings.empty())
-                continue;
-            if (setMeta.Set >= kMaxDescriptorSets)
-                continue;
-            if (setMeta.Set >= setBound)
-                continue;
-            bool unresolvable = false;
-            auto setHandle = BuildSetForBindingFromMeta(pass, material, setMeta, draw, &unresolvable);
-            if (unresolvable)
-                return {}; // skip the draw: a required set buffer had no provider (would be unbound)
-            if (!setHandle.IsValid())
-                continue;
-            if (pass.CurrentSets[setMeta.Set] != setHandle)
-            {
-                cmd->BindDescriptorSet(setMeta.Set, setHandle, pipe);
-                pass.CurrentSets[setMeta.Set] = setHandle;
-                ++pass.DescriptorBinds;
-            }
-        }
-    }
-
-    // 3. Push constants. Layout matching is the caller's responsibility — the
-    //    binder treats them as opaque bytes.
-    if (!draw.PushConstants.empty())
-    {
-        cmd->SetConstants(0, 0,
-                          draw.PushConstants.size(),
-                          draw.PushConstants.data());
-    }
-
-    return pipe;
+    return !set.Bindings.empty() && set.Set < kMaxDescriptorSets
+        && (pipelineSetCount == 0 || set.Set < pipelineSetCount);
 }
+} // namespace
 
-::GameEngine::Rendering::PipelineHandle MaterialBinder::BindPipelineForDraw(
-    PassBindingContext& pass,
-    ::GameEngine::Rendering::PipelineHandle pipeline,
-    const ::GameEngine::Rendering::ShaderMeta& meta,
-    const DrawBindings& draw,
-    uint32_t pipelineSetCount,
-    std::span<const ::GameEngine::Rendering::DescriptorSetLayoutId> pipelineSetLayouts)
+PreparedDrawBindings MaterialBinder::PrepareMaterialForDraw(
+    const PassBindingContext& pass, const Material& material, Rendering::PipelineHandle pipeline,
+    const Rendering::ShaderMeta* servedMeta, const DrawBindings& draw, uint32_t pipelineSetCount,
+    std::span<const Rendering::DescriptorSetLayoutId> pipelineSetLayouts)
 {
-    using namespace ::GameEngine::Rendering;
-
-    if (!pass.Cmd)
-    {
-        assert(false && "MaterialBinder::BindPipelineForDraw requires a valid PassBindingContext");
-        return {};
-    }
     if (!pipeline.IsValid())
         return {};
-
-    auto* cmd = pass.Cmd;
-    if (pipeline != pass.CurrentPipeline)
+    auto prepared = MakePreparedDraw(pipeline, pipelineSetLayouts);
+    const auto* meta = servedMeta ? servedMeta : material.GetShaderMeta().get();
+    if (meta)
     {
-        cmd->SetPipeline(pipeline);
-        pass.CurrentPipeline = pipeline;
-        InvalidateStickyBindsForPipeline(pass, pipelineSetLayouts);
+        for (const auto& set : meta->Sets)
+        {
+            if (!ShouldBindSet(set, pipelineSetCount))
+                continue;
+            bool unresolvable = false;
+            prepared.Sets[set.Set] = BuildSetForBindingFromMeta(pass, material, set, draw, &unresolvable);
+            if (unresolvable)
+                return {};
+        }
     }
+    return prepared;
+}
 
-    const uint32_t setBound =
-        (pipelineSetCount > 0) ? pipelineSetCount : kMaxDescriptorSets;
+PreparedDrawBindings MaterialBinder::PreparePipelineForDraw(
+    const PassBindingContext& pass, Rendering::PipelineHandle pipeline, const Rendering::ShaderMeta& meta,
+    const DrawBindings& draw, uint32_t pipelineSetCount,
+    std::span<const Rendering::DescriptorSetLayoutId> pipelineSetLayouts)
+{
+    using namespace ::GameEngine::Rendering;
+    if (!pipeline.IsValid())
+        return {};
+    auto prepared = MakePreparedDraw(pipeline, pipelineSetLayouts);
     for (const auto& setMeta : meta.Sets)
     {
-        if (setMeta.Bindings.empty())
+        if (!ShouldBindSet(setMeta, pipelineSetCount))
             continue;
-        if (setMeta.Set >= kMaxDescriptorSets)
-            continue;
-        if (setMeta.Set >= setBound)
-            continue;
-
-        // Bindless short-circuit: hand back the engine's global set without
-        // any per-pass allocation. The materialless path mirrors what
-        // BuildSetForBinding does for material-backed sets — except on the
-        // compat profile, where there is no material to key a set by, so the
-        // all-defaults set stands in.
         DescriptorSetHandle setHandle{};
-        if (IsBindlessTextureSet(setMeta))
+        std::shared_ptr<const DescriptorBindingPlan> scratchPlan;
+        const auto& plan = PlanFor(setMeta, scratchPlan);
+        if (plan->SetSource == DescriptorBindingPlan::Source::BindlessTextures)
         {
             if (m_Services.Textures().IsBindlessEnabled())
                 setHandle = m_Services.Textures().BindlessTextureSet();
         }
-        else if (IsCompatMaterialTextureSet(setMeta))
+        else if (plan->SetSource == DescriptorBindingPlan::Source::MaterialTextures)
         {
             setHandle = m_Services.Textures().DefaultMaterialTextureSet();
         }
         if (!setHandle.IsValid())
-            setHandle = BuildPipelineSet(pass, setMeta, draw);
-        if (!setHandle.IsValid())
-            continue;
-        if (pass.CurrentSets[setMeta.Set] != setHandle)
+            setHandle = BuildPipelineSet(pass, setMeta, *plan, draw);
+        prepared.Sets[setMeta.Set] = setHandle;
+    }
+    return prepared;
+}
+
+Rendering::PipelineHandle MaterialBinder::BindPreparedForDraw(
+    PassBindingContext& pass, const PreparedDrawBindings& prepared, std::span<const std::byte> pushConstants)
+{
+    assert(pass.Cmd && "BindPreparedForDraw requires a command list");
+    if (!pass.Cmd || !prepared.Pipeline.IsValid())
+        return {};
+    if (prepared.Pipeline != pass.CurrentPipeline)
+    {
+        pass.Cmd->SetPipeline(prepared.Pipeline);
+        pass.CurrentPipeline = prepared.Pipeline;
+        ++pass.PipelineBinds;
+        InvalidateStickyBindsForPipeline(pass, std::span(prepared.Layouts).first(prepared.LayoutCount));
+    }
+    for (uint32_t setIndex = 0; setIndex < kMaxDescriptorSets; ++setIndex)
+    {
+        const auto handle = prepared.Sets[setIndex];
+        if (handle.IsValid() && handle != pass.CurrentSets[setIndex])
         {
-            cmd->BindDescriptorSet(setMeta.Set, setHandle, pipeline);
-            pass.CurrentSets[setMeta.Set] = setHandle;
+            pass.Cmd->BindDescriptorSet(setIndex, handle, prepared.Pipeline);
+            pass.CurrentSets[setIndex] = handle;
+            ++pass.DescriptorBinds;
         }
     }
-
-    if (!draw.PushConstants.empty())
-    {
-        cmd->SetConstants(0, 0,
-                          draw.PushConstants.size(),
-                          draw.PushConstants.data());
-    }
-
-    return pipeline;
+    if (!pushConstants.empty())
+        pass.Cmd->SetConstants(0, 0, pushConstants.size(), pushConstants.data());
+    return prepared.Pipeline;
 }
 
 ::GameEngine::Rendering::DescriptorSetHandle MaterialBinder::BuildPipelineSet(
-    PassBindingContext& pass,
+    const PassBindingContext& pass,
     const ::GameEngine::Rendering::DescriptorSetMeta& setMeta,
-    const DrawBindings& draw)
+    const DescriptorBindingPlan& plan, const DrawBindings& draw)
 {
     using namespace ::GameEngine::Rendering;
 
@@ -930,116 +678,93 @@ MaterialBinder::SlotDefault MaterialBinder::ResolveSlotDefault(const DescriptorB
     // defensive guard mirroring BuildSetInternal.
     const bool needsUpdateAfterBind = std::any_of(
         layout.bindings.begin(), layout.bindings.end(),
-        [](const DescriptorBinding& b) {
-            return (b.flags & kDescriptorBindingUpdateAfterBind) != 0;
+        [](const DescriptorBinding& binding) {
+            return (binding.flags & kDescriptorBindingUpdateAfterBind) != 0;
         });
     if (needsUpdateAfterBind)
         return {};
 
-    DescriptorSetDesc dsDesc{};
-    dsDesc.layout    = std::move(layout);
-    dsDesc.transient = true;
-    dsDesc.debugName = "MaterialBinder.PipelineSet";
-    auto handle = m_Device.CreateDescriptorSet(dsDesc);
+    DescriptorSetDesc descriptor{};
+    descriptor.layout    = std::move(layout);
+    descriptor.transient = true;
+    descriptor.debugName = "MaterialBinder.PipelineSet";
+    auto handle = m_Device.CreateDescriptorSet(descriptor);
     if (!handle.IsValid())
         return {};
 
-    // Scratch buffer reused across draws on the same recording thread. Made
-    // thread_local because parallel command recording calls this concurrently
-    // from per-thread command lists.
+    // Each preparation thread reuses its own descriptor-update storage.
     thread_local std::vector<DescriptorSetUpdate> updates;
     updates.clear();
     updates.reserve(setMeta.Bindings.size());
 
-    // Warn-once mask for unresolved bindings — keyed by (meta, set). The
-    // materialless path has no Material* to key on, so it gets its own
-    // bookkeeping. A contributor that forgets to populate a required
-    // binding would otherwise produce a GPU-side garbage read with zero
-    // CPU diagnostic. Per-worker thread_local (A2.4-D6): operator[] mutates on
-    // every lookup, so a shared map is racy under concurrent record.
-    thread_local std::unordered_map<const ::GameEngine::Rendering::DescriptorSetMeta*, uint64_t>
-        warnedPipelineBindings;
-    uint64_t& warnedMask = warnedPipelineBindings[&setMeta];
-    auto warnUnresolved = [&](const ::GameEngine::Rendering::DescriptorBindingMeta& b,
-                              const char* kind)
+    for (size_t bindingIndex = 0; bindingIndex < plan.Slots.size(); ++bindingIndex)
     {
-        if (b.Binding < kMaxWarnTrackedBinding && !(warnedMask & (1ull << b.Binding)))
-        {
-            warnedMask |= (1ull << b.Binding);
-            Logger::Log::Warning(
-                "MaterialBinder.PipelineSet: set={} binding={} ('{}') {} not resolvable",
-                setMeta.Set, b.Binding, b.Name, kind);
-        }
-    };
-
-    for (const auto& b : setMeta.Bindings)
-    {
-        const StringId nameId = b.ResolvedNameId();
-        const DescriptorType type = MapShaderMetaBindingType(b.Type);
+        const auto& binding = setMeta.Bindings[bindingIndex];
+        const auto& slot = plan.Slots[bindingIndex];
+        const StringId nameId = slot.NameId;
+        const DescriptorType type = slot.Type;
 
         switch (type)
         {
             case DescriptorType::UniformBuffer:
             case DescriptorType::StorageBuffer:
             {
-                if (const auto* e = FindDrawBuffer(draw, nameId);
-                    e && e->Buffer.IsValid())
+                if (const auto* entry = FindDrawBuffer(draw, nameId);
+                    entry && entry->Buffer.IsValid())
                 {
-                    DescriptorSetUpdate u{};
-                    u.binding = b.Binding;
-                    u.type    = type;
-                    u.buffers = {e->Buffer};
-                    if (e->Offset != 0 || e->Range != 0)
+                    DescriptorSetUpdate update{};
+                    update.binding = binding.Binding;
+                    update.type    = type;
+                    update.buffers = {entry->Buffer};
+                    if (entry->Offset != 0 || entry->Range != 0)
                     {
-                        u.bufferOffsets = {static_cast<size_t>(e->Offset)};
-                        u.bufferRanges  = {static_cast<size_t>(e->Range)};
+                        update.bufferOffsets = {static_cast<size_t>(entry->Offset)};
+                        update.bufferRanges  = {static_cast<size_t>(entry->Range)};
                     }
-                    updates.push_back(std::move(u));
+                    updates.push_back(std::move(update));
                     break;
                 }
-                if (const auto* e = FindPassBuffer(pass.PassResources, nameId);
-                    e && e->Buffer.IsValid())
+                if (const auto* entry = FindPassBuffer(pass.PassResources, nameId);
+                    entry && entry->Buffer.IsValid())
                 {
-                    DescriptorSetUpdate u{};
-                    u.binding = b.Binding;
-                    u.type    = type;
-                    u.buffers = {e->Buffer};
-                    if (e->Offset != 0 || e->Range != 0)
+                    DescriptorSetUpdate update{};
+                    update.binding = binding.Binding;
+                    update.type    = type;
+                    update.buffers = {entry->Buffer};
+                    if (entry->Offset != 0 || entry->Range != 0)
                     {
-                        u.bufferOffsets = {static_cast<size_t>(e->Offset)};
-                        u.bufferRanges  = {static_cast<size_t>(e->Range)};
+                        update.bufferOffsets = {static_cast<size_t>(entry->Offset)};
+                        update.bufferRanges  = {static_cast<size_t>(entry->Range)};
                     }
-                    updates.push_back(std::move(u));
+                    updates.push_back(std::move(update));
                     break;
                 }
-                warnUnresolved(b, "buffer");
+                WarnUnresolvedPipelineBinding(setMeta, binding, "buffer");
                 break;
             }
             case DescriptorType::CombinedImageSampler:
             case DescriptorType::Texture:
             {
-                if (const auto* e = FindDrawTexture(draw, nameId);
-                    e && e->Texture.IsValid() && e->Sampler.IsValid())
+                if (const auto* entry = FindDrawTexture(draw, nameId);
+                    entry && entry->Texture.IsValid() && entry->Sampler.IsValid())
                 {
                     m_Device.UpdateCombinedImageSamplerBinding(
-                        handle, b.Binding, e->Texture, e->Sampler, e->ArrayIndex);
+                        handle, binding.Binding, entry->Texture, entry->Sampler, entry->ArrayIndex);
                     break;
                 }
-                if (const auto* e = FindPassTexture(pass.PassResources, nameId);
-                    e && e->Texture.IsValid() && e->Sampler.IsValid())
+                if (const auto* entry = FindPassTexture(pass.PassResources, nameId);
+                    entry && entry->Texture.IsValid() && entry->Sampler.IsValid())
                 {
                     m_Device.UpdateCombinedImageSamplerBinding(
-                        handle, b.Binding, e->Texture, e->Sampler);
+                        handle, binding.Binding, entry->Texture, entry->Sampler);
                     break;
                 }
-                warnUnresolved(b, "texture");
+                WarnUnresolvedPipelineBinding(setMeta, binding, "texture");
                 break;
             }
             case DescriptorType::AccelerationStructure:
-                // See the same case in BindMaterialSet — no pipeline-set
-                // provider exists, and silence here would leave a ray query
-                // reading an unwritten descriptor slot.
-                warnUnresolved(b, "acceleration structure");
+                // No pipeline-set provider exists for acceleration structures.
+                WarnUnresolvedPipelineBinding(setMeta, binding, "acceleration structure");
                 break;
             default:
                 break;

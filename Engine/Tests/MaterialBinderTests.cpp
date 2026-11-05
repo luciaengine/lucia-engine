@@ -6,10 +6,12 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <new>
 #include <thread>
@@ -17,17 +19,30 @@
 
 #include "AssetCore/GUID.h"
 #include "Engine/Rendering/DrawBindings.h"
+#include "Engine/Rendering/DrawCommand.h"
+#include "Engine/Rendering/DrawCommandProducer.h"
+#include "Engine/Rendering/FrameOrchestrator.h"
+#include "Engine/Rendering/ViewReadbackUtils.h"
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialBinder.h"
 #include "Engine/Rendering/PassBindingContext.h"
 #include "Engine/Rendering/RenderServices.h"
+#include "Rendering/Common/Utils.h"
 #include "Rendering/Core/CommandList.h"
+#include "Rendering/Core/RenderGraph/RGFrame.h"
+#include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Materials/MaterialBuilder.h"
+#include "Rendering/Materials/ShaderReflection.h"
+#include "Rendering/Materials/ShaderCompileService.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Materials/MaterialDocument.h"
 #include "Rendering/Materials/ShaderMeta.h"
 #include "Rendering/Materials/ShaderVariantKey.h"
+#include "Types/Color.h"
 #include "Types/StringId.h"
 
 #include "TestDeviceHelper.h"
+#include "TestTempDir.h"
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -417,7 +432,7 @@ TEST(MaterialBinderTests, PerPassL1_DoesNotServeADeadBindersHandle)
 // Device-lost hole closure (twice-fatal: grass 'Grass' UBO + C3 EditorPreview).
 // A statically-used set-2 uniform/storage buffer that resolves from neither
 // DrawBindings nor PassResources must set the outUnresolvable flag, so
-// BindMaterialForDraw SKIPS the draw instead of issuing it with an unbound
+// Preparation rejects the draw instead of issuing it with an unbound
 // descriptor — which under descriptor buffers is a garbage device address ->
 // fetch fault -> device lost. When a provider exists, the flag stays false.
 TEST(MaterialBinderTests, BuildSetForBindingFromMeta_FlagsUnresolvableStaticBuffer)
@@ -475,81 +490,114 @@ TEST(MaterialBinderTests, BuildSetForBindingFromMeta_FlagsUnresolvableStaticBuff
     device->Shutdown();
 }
 
-// -- Slot defaults --------------------------------------------------------------
-// A sampled-image slot nothing provides is bound to a default of the slot's own shape: WebGPU
-// validates every entry of a bind group against its layout, and a 2D colour default in a depth
-// 2D-array slot (the shadow arrays a depth-only head's set 0 declared) invalidated the bind group
-// and the frame's command buffer with it (#3368). A depth slot takes a reverse-Z-far depth texture
-// of its view dimension and the comparison sampler; a cube slot a cube; a 2D-array slot an array.
+// Missing sampled images use a default with the reflected view shape.
+// Depth defaults use the shadow comparison sampler; color defaults use the material sampler.
 
 namespace
 {
 DescriptorBindingMeta ImageBinding(const char* name, bool depth, bool arrayed, bool cube, bool multisample = false)
 {
-    DescriptorBindingMeta b{};
-    b.Binding    = 9;
-    b.Name       = name;
-    b.Type       = ShaderMetaBindingType::kCombinedImageSampler;
-    b.StagesMask = ShaderMetaStage::kFragment;
+    DescriptorBindingMeta binding{};
+    binding.Binding    = 9;
+    binding.Name       = name;
+    binding.Type       = ShaderMetaBindingType::kCombinedImageSampler;
+    binding.StagesMask = ShaderMetaStage::kFragment;
     DescriptorBindingMeta::ImageInfo image{};
     image.Dim         = 2;
     image.Depth       = depth;
     image.Arrayed     = arrayed;
     image.Cube        = cube;
     image.Multisample = multisample;
-    b.Image = image;
-    return b;
+    binding.Image = image;
+    return binding;
+}
+
+void ExpectImageFallbackMatchesProvidedResources(MaterialBinder& binder, const Material& material,
+                                                const DescriptorBindingMeta& binding,
+                                                TextureHandle texture, SamplerHandle sampler,
+                                                SamplerHandle differentSampler)
+{
+    SCOPED_TRACE(binding.Name);
+    ASSERT_TRUE(texture.IsValid());
+    ASSERT_TRUE(sampler.IsValid());
+    ASSERT_TRUE(differentSampler.IsValid());
+    ASSERT_NE(sampler, differentSampler);
+    DescriptorSetMeta set{};
+    set.Set = 2;
+    set.Bindings.push_back(binding);
+    FinalizeSetLayout(set);
+    auto pass = MakeEmptyPassContext();
+    bool unresolvable = false;
+    const auto fallback = binder.BuildSetForBindingFromMeta(pass, material, set, {}, &unresolvable);
+    ASSERT_FALSE(unresolvable);
+    ASSERT_TRUE(fallback.IsValid());
+
+    pass.PassResources.Textures.push_back({binding.ResolvedNameId(), texture, sampler});
+    const auto provided = binder.BuildSetForBindingFromMeta(pass, material, set, {}, &unresolvable);
+    EXPECT_FALSE(unresolvable);
+    EXPECT_EQ(fallback, provided)
+        << "the fallback and explicit expected resources must resolve to the same descriptor contents";
+    pass.PassResources.Textures.front().Sampler = differentSampler;
+    EXPECT_NE(fallback, binder.BuildSetForBindingFromMeta(pass, material, set, {}))
+        << "a different sampler must prevent reuse of the fallback descriptor";
 }
 } // namespace
 
-TEST(MaterialBinderTests, SlotDefault_HasTheSlotsShape)
+TEST(MaterialBinderTests, BuildSetForBindingFromMeta_UsesTheSlotShapeFallback)
 {
     auto device = CreateVulkanDeviceFast();
     if (!device)
         GTEST_SKIP() << "No Vulkan device available";
 
-    RenderServices rs;
-    ASSERT_TRUE(rs.Initialize(device.get()));
-    auto& binder = rs.Materials().Binder();
-    // The sampler the binder writes beside a colour default: the material's own.
-    const SamplerHandle materialSampler = rs.Textures().GetSampler(SamplerPreset::LinearRepeat);
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    auto& binder = services.Materials().Binder();
+    const Material material = Material::TestFactory::Create(GUID::Generate(), "SlotFallback", 16u);
+    const SamplerHandle materialSampler = services.Textures().GetSampler(material.GetSamplerPreset());
     ASSERT_TRUE(materialSampler.IsValid());
-    ASSERT_NE(materialSampler, rs.GetCascadeShadowSampler());
+    const auto shadowSampler = services.GetCascadeShadowSampler();
+    ASSERT_NE(materialSampler, shadowSampler);
+    const auto pointSampler = services.Textures().GetSampler(SamplerPreset::PointClamp);
 
-    const auto depthArray = binder.ResolveSlotDefault(ImageBinding("ge_shadowMapArray", true, true, false), materialSampler);
-    EXPECT_EQ(depthArray.Texture, rs.GetCascadeShadowFallbackTexture());
-    EXPECT_EQ(device->GetTextureFormat(depthArray.Texture), TextureFormat::D32_FLOAT);
-    EXPECT_GT(device->GetTextureArrayLayers(depthArray.Texture), 1u) << "a 2D-array view";
-    EXPECT_EQ(depthArray.Sampler, rs.GetCascadeShadowSampler()) << "a depth slot pairs with the comparison sampler";
+    const auto depthArray = services.GetCascadeShadowFallbackTexture();
+    EXPECT_EQ(device->GetTextureFormat(depthArray), TextureFormat::D32_FLOAT);
+    EXPECT_GT(device->GetTextureArrayLayers(depthArray), 1u);
+    ExpectImageFallbackMatchesProvidedResources(binder, material,
+        ImageBinding("ge_shadowMapArray", true, true, false), depthArray, shadowSampler, pointSampler);
 
-    const auto depth2D = binder.ResolveSlotDefault(ImageBinding("ge_areaShadowMap", true, false, false), materialSampler);
-    EXPECT_EQ(depth2D.Texture, rs.GetAreaShadowFallbackTexture());
-    EXPECT_EQ(device->GetTextureFormat(depth2D.Texture), TextureFormat::D32_FLOAT);
-    EXPECT_EQ(device->GetTextureArrayLayers(depth2D.Texture), 1u) << "a 2D view";
-    EXPECT_EQ(depth2D.Sampler, rs.GetCascadeShadowSampler());
+    const auto depth2D = services.GetAreaShadowFallbackTexture();
+    EXPECT_EQ(device->GetTextureFormat(depth2D), TextureFormat::D32_FLOAT);
+    EXPECT_EQ(device->GetTextureArrayLayers(depth2D), 1u);
+    ExpectImageFallbackMatchesProvidedResources(binder, material,
+        ImageBinding("ge_areaShadowMap", true, false, false), depth2D, shadowSampler, pointSampler);
 
-    const auto cube = binder.ResolveSlotDefault(ImageBinding("ge_irradianceCubeTex", false, false, true), materialSampler);
-    EXPECT_TRUE(cube.Texture.IsValid());
-    EXPECT_EQ(cube.Texture, rs.Textures().GetDefaultBlackCubeTexture());
-    EXPECT_EQ(device->GetTextureArrayLayers(cube.Texture), 6u) << "a cube's six faces";
-    EXPECT_EQ(cube.Sampler, materialSampler) << "a colour slot takes the material's sampler";
+    const auto cube = services.Textures().GetDefaultBlackCubeTexture();
+    EXPECT_EQ(device->GetTextureArrayLayers(cube), 6u);
+    ExpectImageFallbackMatchesProvidedResources(binder, material,
+        ImageBinding("ge_irradianceCubeTex", false, false, true), cube, materialSampler, pointSampler);
+    ExpectImageFallbackMatchesProvidedResources(binder, material,
+        ImageBinding("ge_shadowMomentsArray", false, true, false),
+        services.Textures().GetDefaultWhiteArrayTexture(), materialSampler, pointSampler);
+    ExpectImageFallbackMatchesProvidedResources(binder, material,
+        ImageBinding("ge_brdfLUTTex", false, false, false),
+        services.Textures().ResolveDefaultTexture("ge_brdfLUTTex"), materialSampler, pointSampler);
 
-    const auto colourArray = binder.ResolveSlotDefault(ImageBinding("ge_shadowMomentsArray", false, true, false), materialSampler);
-    EXPECT_TRUE(colourArray.Texture.IsValid());
-    EXPECT_EQ(colourArray.Texture, rs.Textures().GetDefaultWhiteArrayTexture());
-    EXPECT_EQ(colourArray.Sampler, materialSampler);
+    const std::array unsupported{
+        ImageBinding("ge_sceneDepthMS", false, false, false, true),
+        ImageBinding("ge_depthCube", true, false, true)};
+    for (const auto& binding : unsupported)
+    {
+        SCOPED_TRACE(binding.Name);
+        DescriptorSetMeta set{};
+        set.Set = 2;
+        set.Bindings.push_back(binding);
+        auto pass = MakeEmptyPassContext();
+        bool unresolvable = false;
+        binder.BuildSetForBindingFromMeta(pass, material, set, {}, &unresolvable);
+        EXPECT_TRUE(unresolvable) << "the reflected shape has no default resource";
+    }
 
-    const auto colour2D = binder.ResolveSlotDefault(ImageBinding("ge_brdfLUTTex", false, false, false), materialSampler);
-    EXPECT_EQ(colour2D.Texture, rs.Textures().ResolveDefaultTexture("ge_brdfLUTTex"));
-    EXPECT_NE(colour2D.Texture, depthArray.Texture);
-    EXPECT_EQ(colour2D.Sampler, materialSampler);
-
-    EXPECT_FALSE(binder.ResolveSlotDefault(ImageBinding("ge_sceneDepthMS", false, false, false, true), materialSampler).Texture.IsValid())
-        << "a multisampled slot has no default; binding a single-sample one would be the wrong shape";
-    EXPECT_FALSE(binder.ResolveSlotDefault(ImageBinding("ge_depthCube", true, false, true), materialSampler).Texture.IsValid())
-        << "a depth cube has no default";
-
-    rs.Shutdown();
+    services.Shutdown();
     device->Shutdown();
 }
 
@@ -859,3 +907,822 @@ TEST(MaterialBinderTests, VariantCacheEviction_BeginWorldDrawFrameDrainsQueue)
     rs.Shutdown();
     device->Shutdown();
 }
+
+namespace
+{
+class MaterialBindingPlanTests : public ::testing::Test
+{
+  protected:
+    virtual GraphicsAPI RequestedAPI() const { return GraphicsAPI::Vulkan; }
+    void CheckBufferReadback();
+    void CheckForwardCommandPreparation(bool worldPass = false);
+    void CheckForwardSpanOwnership(bool worldPass, bool afterDeclaration);
+    void CheckDepthCommandPreparation();
+
+    void SetUp() override
+    {
+        DeviceDesc desc{};
+        desc.preferredAPI = RequestedAPI();
+        desc.enableSwapchain = false;
+        desc.enableDebugLayer = false;
+        desc.pipelineCacheDirectory = m_Cache.Path().string();
+        m_Device = DeviceFactory::CreateDevice(desc);
+        if (!m_Device || !m_Device->Initialize(desc))
+            GTEST_SKIP() << "Requested device unavailable";
+        ASSERT_EQ(m_Device->GetAPI(), RequestedAPI());
+        ASSERT_TRUE(m_Services.Initialize(m_Device.get()));
+    }
+
+    void TearDown() override
+    {
+        m_Services.Shutdown();
+        if (m_Device)
+            m_Device->Shutdown();
+    }
+
+    static DescriptorSetMeta MakeSet(std::string name, uint32_t type, uint32_t index = 0)
+    {
+        DescriptorSetMeta set{};
+        set.Set = index;
+        DescriptorBindingMeta slot{};
+        slot.Name = std::move(name);
+        slot.Type = type;
+        slot.StagesMask = ShaderMetaStage::kFragment;
+        set.Bindings.push_back(std::move(slot));
+        FinalizeSetLayout(set);
+        return set;
+    }
+
+    TestUtils::ScopedTempDir m_Cache{TestUtils::MakeUniqueTempDirectory("lucia-material-binding-plans")};
+    std::unique_ptr<IDevice> m_Device;
+    RenderServices m_Services;
+    Material m_Material = Material::TestFactory::Create(GUID::Generate(), "BindingPlan", 16u);
+};
+} // namespace
+
+TEST_F(MaterialBindingPlanTests, ServedSetUsesItsProviderAndExactBufferSlice)
+{
+    auto camera = MakeSet("Camera", ShaderMetaBindingType::kUniformBuffer);
+    auto light = MakeSet("Light", ShaderMetaBindingType::kUniformBuffer);
+    auto moved = MakeSet("Camera", ShaderMetaBindingType::kUniformBuffer, 2);
+    const auto first = MakeTestBuffer(*m_Device, 1024, BufferUsage::Uniform);
+    const auto second = MakeTestBuffer(*m_Device, 1024, BufferUsage::Uniform);
+    ASSERT_TRUE(first.IsValid() && second.IsValid());
+    auto pass = MakeEmptyPassContext();
+    pass.PassResources.Buffers = {{HashStringId("Camera"), first, 0, 256},
+                                  {HashStringId("Light"), second, 0, 256}};
+    auto& binder = m_Services.Materials().Binder();
+    auto build = [&](const DescriptorSetMeta& set) {
+        return binder.BuildSetForBindingFromMeta(pass, m_Material, set, {});
+    };
+    const auto original = build(camera);
+    ASSERT_TRUE(original.IsValid());
+    EXPECT_NE(original, build(light));
+    pass.PassResources.Buffers.back().Buffer = first;
+    EXPECT_NE(original, build(light)) << "two provider names with identical physical writes";
+    auto sameCamera = MakeSet("Camera", ShaderMetaBindingType::kUniformBuffer);
+    EXPECT_EQ(original, build(sameCamera)) << "independently decoded equivalent plans can share";
+    EXPECT_NE(original, build(moved));
+    pass.PassResources.Buffers.front().Offset = 256;
+    const auto offset = build(camera);
+    EXPECT_NE(original, offset);
+    pass.PassResources.Buffers.front().Range = 128;
+    EXPECT_NE(offset, build(camera));
+    pass.PassResources.Buffers.front() = {HashStringId("Camera"), second, 0, 256};
+    EXPECT_NE(original, build(camera));
+    pass.PassResources.Buffers.front() = {HashStringId("Camera"), first, 0, 256};
+    EXPECT_EQ(original, build(camera));
+    pass.PassResources.Buffers.clear();
+    bool missing = false;
+    binder.BuildSetForBindingFromMeta(pass, m_Material, camera, {}, &missing);
+    EXPECT_TRUE(missing);
+    m_Device->DestroyBuffer(first);
+    m_Device->DestroyBuffer(second);
+}
+
+TEST_F(MaterialBindingPlanTests, SplitSamplerOverridesArePerDrawAndDoNotChangePassSet)
+{
+    const auto set = MakeSet("SurfaceSampler", ShaderMetaBindingType::kSampler);
+    const auto name = HashStringId("SurfaceSampler");
+    auto pass = MakeEmptyPassContext();
+    auto& binder = m_Services.Materials().Binder();
+    const auto fallback = binder.BuildSetForBindingFromMeta(pass, m_Material, set, {});
+    const auto point = m_Services.Textures().GetSampler(SamplerPreset::PointClamp);
+    ASSERT_TRUE(point.IsValid() && fallback.IsValid());
+    pass.PassResources.Textures.push_back({name, {}, point});
+    const auto passSet = binder.BuildSetForBindingFromMeta(pass, m_Material, set, {});
+    EXPECT_NE(fallback, passSet);
+    DrawBindings::TextureEntry sampler{name, {}, m_Services.Textures().GetSampler(SamplerPreset::LinearClamp)};
+    DrawBindings draw{};
+    draw.Textures = {&sampler, 1};
+    const auto overrideSet = binder.BuildSetForBindingFromMeta(pass, m_Material, set, draw);
+    EXPECT_NE(passSet, overrideSet);
+    EXPECT_NE(overrideSet, binder.BuildSetForBindingFromMeta(pass, m_Material, set, draw));
+    EXPECT_EQ(passSet, binder.BuildSetForBindingFromMeta(pass, m_Material, set, {}));
+}
+
+TEST_F(MaterialBindingPlanTests, ImageLayoutAndShapeFallbackFollowTheServedReflection)
+{
+    auto flat = MakeSet("Image", ShaderMetaBindingType::kSampledImage);
+    auto cube = flat;
+    cube.Bindings.front().Image.emplace().Cube = true;
+    FinalizeSetLayout(cube);
+    auto unsupported = flat;
+    unsupported.Bindings.front().Image.emplace().Dim = 3;
+    FinalizeSetLayout(unsupported);
+    auto pass = MakeEmptyPassContext();
+    auto& binder = m_Services.Materials().Binder();
+    const auto first = binder.BuildSetForBindingFromMeta(pass, m_Material, flat, {});
+    const auto second = binder.BuildSetForBindingFromMeta(pass, m_Material, cube, {});
+    ASSERT_TRUE(first.IsValid() && second.IsValid());
+    EXPECT_NE(first, second);
+    bool missing = false;
+    binder.BuildSetForBindingFromMeta(pass, m_Material, unsupported, {}, &missing);
+    EXPECT_TRUE(missing);
+    EXPECT_EQ(first, binder.BuildSetForBindingFromMeta(pass, m_Material, flat, {}));
+}
+
+TEST_F(MaterialBindingPlanTests, CombinedImageFollowsAnEditedMaterialSampler)
+{
+    auto doc = MaterialDocument::CreateDefaultPBR("FilteredImage");
+    const auto guid = GUID::Generate();
+    Material* edited = m_Services.Materials().Registry().Register(guid, doc);
+    ASSERT_NE(edited, nullptr);
+    const auto set = MakeSet("Image", ShaderMetaBindingType::kCombinedImageSampler);
+    auto pass = MakeEmptyPassContext();
+    pass.PassResources.Textures.push_back({HashStringId("Image"), m_Services.Textures().GetDefaultWhiteTexture(), {}});
+    auto& binder = m_Services.Materials().Binder();
+    const auto linear = binder.BuildSetForBindingFromMeta(pass, *edited, set, {});
+    doc.textureFilter = MaterialTextureFilter::Point;
+    m_Services.Textures().UpdateMaterialTextures(guid, doc);
+    ASSERT_NE(edited->GetSamplerPreset(), SamplerPreset::LinearRepeat);
+    const auto point = binder.BuildSetForBindingFromMeta(pass, *edited, set, {});
+    ASSERT_TRUE(linear.IsValid() && point.IsValid());
+    EXPECT_NE(linear, point);
+    pass.PassResources.Textures.front().Texture = m_Services.Textures().GetDefaultBlackTexture();
+    EXPECT_NE(point, binder.BuildSetForBindingFromMeta(pass, *edited, set, {}));
+}
+
+// ubo_copy copies one float from its UBO to its storage buffer. Both dispatches
+// share the pass, material and layout. Only the actual UBO slice changes.
+void MaterialBindingPlanTests::CheckBufferReadback()
+{
+    const auto shader = Utils::LoadShaderFile("Shaders/ubo_copy.comp.spv");
+    ASSERT_FALSE(shader.empty());
+    StageReflectionResult stage;
+    std::string error;
+    ASSERT_TRUE(ReflectSpirv(ShaderStageKind::Compute, reinterpret_cast<const uint32_t*>(shader.data()),
+                             shader.size() / sizeof(uint32_t), {}, stage, &error)) << error;
+    const auto meta = MergeStages({stage});
+    ASSERT_EQ(meta.Sets.size(), 1u);
+    const auto& set = meta.Sets.front();
+    ASSERT_EQ(set.Bindings.size(), 2u);
+    PipelineDesc pipelineDesc{};
+    pipelineDesc.type = PipelineType::Compute;
+    pipelineDesc.computeShader = shader;
+    pipelineDesc.descriptorSetLayouts = MaterialBuilder::BuildSetLayouts(meta);
+    const auto pipeline = m_Device->CreatePipeline(pipelineDesc);
+    ASSERT_TRUE(pipeline.IsValid());
+
+    ASSERT_TRUE(m_Device->BeginFrame());
+    const auto source = MakeTestBuffer(*m_Device, 512, BufferUsage::Uniform);
+    BufferDesc outDesc{};
+    outDesc.size = sizeof(float);
+    outDesc.usage = static_cast<uint32_t>(BufferUsage::Storage | BufferUsage::TransferSrc);
+    const auto output = m_Device->CreateBuffer(outDesc);
+    BufferDesc readbackDesc{};
+    readbackDesc.size = 2 * sizeof(float);
+    readbackDesc.usage = static_cast<uint32_t>(BufferUsage::TransferDst);
+    readbackDesc.memoryUsage = BufferMemoryUsage::Readback;
+    const auto readback = m_Device->CreateBuffer(readbackDesc);
+    ASSERT_TRUE(source.IsValid() && output.IsValid() && readback.IsValid());
+    constexpr std::array<float, 2> kExpected{3.0f, 17.0f};
+    auto pass = MakeEmptyPassContext();
+    for (const auto& binding : set.Bindings)
+    {
+        const bool input = binding.Binding == 0;
+        pass.PassResources.Buffers.push_back({binding.ResolvedNameId(), input ? source : output,
+                                              0, input ? 16u : sizeof(float)});
+    }
+    auto& binder = m_Services.Materials().Binder();
+    std::array<PreparedDrawBindings, kExpected.size()> packets{};
+    ASSERT_EQ(pass.Cmd, nullptr);
+    for (size_t i = 0; i < packets.size(); ++i)
+    {
+        const uint64_t offset = i * 256;
+        m_Device->UpdateBuffer(source, offset, sizeof(float), &kExpected[i]);
+        for (auto& buffer : pass.PassResources.Buffers)
+            if (buffer.Buffer == source)
+                buffer.Offset = offset;
+        packets[i] = binder.PrepareMaterialForDraw(pass, m_Material, pipeline, &meta, {});
+        ASSERT_TRUE(packets[i].Pipeline.IsValid());
+        ASSERT_TRUE(packets[i].Sets[0].IsValid());
+    }
+    EXPECT_NE(packets[0].Sets[0], packets[1].Sets[0]);
+    EXPECT_EQ(pass.PipelineBinds, 0u);
+    EXPECT_EQ(pass.DescriptorBinds, 0u);
+    pass.PassResources.Buffers.clear();
+
+    auto command = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
+    ASSERT_TRUE(command);
+    command->Begin();
+    for (size_t i = 0; i < packets.size(); ++i)
+    {
+        // CopyBuffer closes the compute encoder on Metal. Each new encoder
+        // needs its own sticky state and an explicit compute pipeline bind.
+        PassBindingContext record{};
+        record.Cmd = command.get();
+        EXPECT_EQ(binder.BindPreparedForDraw(record, packets[i]), pipeline);
+        EXPECT_EQ(binder.BindPreparedForDraw(record, packets[i]), pipeline);
+        EXPECT_EQ(record.PipelineBinds, 1u);
+        EXPECT_EQ(record.DescriptorBinds, 1u);
+        command->Dispatch(1, 1, 1);
+        command->Barrier(ResourceBarrier::CreateBufferBarrier(output, ResourceState::UnorderedAccess, ResourceState::CopySource));
+        command->CopyBuffer(output, readback, sizeof(float), 0, i * sizeof(float));
+        command->Barrier(ResourceBarrier::CreateBufferBarrier(output, ResourceState::CopySource, ResourceState::UnorderedAccess));
+    }
+    command->End();
+    m_Device->ExecuteCommandLists({command.get()});
+    m_Device->FinalizeFrame();
+    m_Device->WaitForIdle();
+
+    const auto* values = static_cast<const float*>(m_Device->MapBuffer(readback));
+    ASSERT_NE(values, nullptr);
+    EXPECT_FLOAT_EQ(values[0], kExpected[0]);
+    EXPECT_FLOAT_EQ(values[1], kExpected[1]);
+    m_Device->UnmapBuffer(readback);
+    m_Device->DestroyBuffer(readback);
+    m_Device->DestroyBuffer(output);
+    m_Device->DestroyBuffer(source);
+    m_Device->DestroyPipeline(pipeline);
+}
+
+void MaterialBindingPlanTests::CheckForwardCommandPreparation(bool worldPass)
+{
+    namespace RG = GameEngine::Rendering::RenderGraph;
+    const auto vertex = Utils::LoadShaderFile("Shaders/fullscreen_noinput.vert.spv");
+    const auto fragment = Utils::LoadShaderFile("Shaders/ubo_sample.frag.spv");
+    ASSERT_FALSE(vertex.empty());
+    ASSERT_FALSE(fragment.empty());
+    StageReflectionResult stage;
+    std::string error;
+    ASSERT_TRUE(ReflectSpirv(ShaderStageKind::Fragment, reinterpret_cast<const uint32_t*>(fragment.data()),
+                             fragment.size() / sizeof(uint32_t), {}, stage, &error)) << error;
+    const auto meta = MergeStages({stage});
+    ASSERT_EQ(meta.Sets.size(), 1u);
+    ASSERT_EQ(meta.Sets.front().Bindings.size(), 1u);
+    GraphicsPipelineDesc pipeline{};
+    pipeline.VertexShader = std::make_shared<const std::vector<uint8_t>>(vertex);
+    pipeline.PixelShader = std::make_shared<const std::vector<uint8_t>>(fragment);
+    pipeline.Rasterization.cullMode = GameEngine::Rendering::CullModeFlagBits::None;
+    pipeline.ColorBlend.attachments.emplace_back();
+    for (const auto& layout : MaterialBuilder::BuildSetLayouts(meta))
+        pipeline.DescriptorSetLayouts.push_back(m_Device->InternDescriptorSetLayout(layout));
+    const auto id = m_Device->InternGraphicsPipeline(pipeline);
+    ASSERT_TRUE(id.IsValid());
+    PipelineFormatKey format{};
+    format.ColorCount = 1;
+    format.ColorFormats[0] = TextureFormat::RGBA8_UNORM;
+    ASSERT_FALSE(m_Device->TryGetWarmGraphicsPipeline(id, format).IsValid());
+
+    ASSERT_TRUE(m_Device->BeginFrame());
+    const auto uniform = MakeTestBuffer(*m_Device, 512, BufferUsage::Uniform);
+    const std::array<uint16_t, 6> triangles{0, 0, 0, 0, 1, 2};
+    const auto indices = MakeTestBuffer(*m_Device, sizeof(triangles), BufferUsage::Index);
+    ASSERT_TRUE(uniform.IsValid() && indices.IsValid());
+    constexpr float kBlue = 0.0f, kGreen = 1.0f;
+    m_Device->UpdateBuffer(uniform, 0, sizeof(kBlue), &kBlue);
+    m_Device->UpdateBuffer(uniform, 256, sizeof(kGreen), &kGreen);
+    m_Device->UpdateBuffer(indices, 0, sizeof(triangles), triangles.data());
+    const auto name = meta.Sets.front().Bindings.front().ResolvedNameId();
+    std::array<DrawBindings::BufferEntry, 2> overrides{{{name, uniform, 0, 208}, {name, uniform, 256, 208}}};
+    std::array<DrawCommand, 2> commands{};
+    for (size_t i = 0; i < commands.size(); ++i)
+    {
+        commands[i].InternedPipeline = id;
+        commands[i].PipelineMeta = &meta;
+        commands[i].Geometry.AltGeom.IB = indices;
+        commands[i].Geometry.AltGeom.IndexType = IndexType::Uint16;
+        commands[i].Bindings.Buffers = {&overrides[i], 1};
+        commands[i].IndexCount = 3;
+        commands[i].FirstIndex = 3;
+    }
+    commands[0].Material = &m_Material;
+    if (worldPass)
+        commands[1].Material = &m_Material;
+    // The materialless contributor's primary range is degenerate. Its sub-draw covers the target.
+    commands[1].FirstIndex = 0;
+    const DrawSubCommand sub{3, 1, 3, 0, 0};
+    commands[1].SubDraws = {&sub, 1};
+
+    RG::RGResourcePool persistent(m_Device.get());
+    RG::RGTransientPool transient(m_Device.get());
+    RG::RGUploadRing uploads(m_Device.get(), 2, 4096);
+    RG::RGFrame frame(m_Device.get(), &persistent, &transient, &uploads);
+    frame.BeginFrame(0);
+    m_Services.BeginWorldDrawFrame();
+    const auto camera = m_Services.Views().AllocateCamera("PreparedContributorCamera");
+    const auto view = m_Services.Views().AllocateView("PreparedContributorView", camera);
+    TextureDesc desc{};
+    desc.width = desc.height = 4;
+    desc.format = static_cast<uint32_t>(format.ColorFormats[0]);
+    desc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::ShaderResource);
+    const auto target = frame.CreateTexture("PreparedContributor.Target", desc);
+    bool readyAtFirstRecord = false;
+    frame.AddPass("PreparedContributor.Clear", 0,
+                  [&](RG::RGPassBuilder& pass) {
+                      pass.AttachColor(0, target, {.Load = RG::RGLoadOp::Clear, .Clear = {.Color = {1, 0, 0, 1}}});
+                  },
+                  [&](RG::RGContext&) {
+                      readyAtFirstRecord = m_Device->TryGetWarmGraphicsPipeline(id, format).IsValid();
+                      // The packet must already own a descriptor for the green slice.
+                      overrides[1].Offset = 0;
+                  });
+    RenderServices::WorldPassTargetsRG targets{};
+    targets.Color = target;
+    if (worldPass)
+    {
+        m_Services.BuildWorldBatchKeys();
+        for (const auto& command : commands)
+            m_Services.EmitForwardCommand(view, command, ForwardDrawDepth::ColourPass);
+        ASSERT_TRUE(m_Services.AddWorldPassForView(frame, view, targets, MaterialKeyword::None).Pass.IsValid());
+    }
+    else
+        ASSERT_TRUE(m_Services.AddForwardCommandPassForView(frame, view, targets, MaterialKeyword::None, commands).IsValid());
+    const auto ticket = RequestTextureReadbackRG(m_Device.get(), frame, target, "PreparedContributor.Readback");
+    ASSERT_TRUE(ticket);
+    const auto count = frame.SubmittedFrameCount();
+    frame.Execute();
+    NotifyRenderGraphExecution(frame, count, nullptr);
+    m_Device->Present();
+    m_Device->WaitForIdle();
+    EXPECT_TRUE(readyAtFirstRecord);
+    ViewReadbackResult result{};
+    ASSERT_TRUE(ticket->TryGet(result));
+    ASSERT_EQ(result.pixels.size(), 64u);
+    for (size_t i = 0; i < result.pixels.size(); i += 4)
+    {
+        EXPECT_EQ(result.pixels[i], 0u);
+        EXPECT_EQ(result.pixels[i + 1], 255u);
+        EXPECT_EQ(result.pixels[i + 2], 0u);
+        EXPECT_EQ(result.pixels[i + 3], 255u);
+    }
+    m_Device->DestroyBuffer(indices);
+    m_Device->DestroyBuffer(uniform);
+}
+
+void MaterialBindingPlanTests::CheckDepthCommandPreparation()
+{
+    namespace RG = GameEngine::Rendering::RenderGraph;
+    const auto vertex = Utils::LoadShaderFile("Shaders/fullscreen_noinput.vert.spv");
+    ShaderProgramCompileRequest request{};
+    request.debugName = "PreparedDepthBindings";
+    request.baseDirectory = m_Cache.Path();
+    request.cacheRoot = m_Cache.Path() / "ShaderCache";
+    ShaderStageCompileSpec fragmentStage{};
+    fragmentStage.stage = "fs";
+    fragmentStage.sourcePath = m_Cache.Path() / "prepared_depth.frag";
+    fragmentStage.inlineSource = R"glsl(#version 450
+layout(set = 0, binding = 5) uniform CameraUBO { vec4 sampleValue; } cam;
+void main() { gl_FragDepth = cam.sampleValue.x; }
+)glsl";
+    request.stages.push_back(std::move(fragmentStage));
+    ShaderProgramCompileResult compiled{};
+    std::string compileError;
+    ASSERT_TRUE(ShaderCompileService::CompileProgramToCache(
+        request, ShaderSourceKind::SpirV, compiled, &compileError)) << compileError;
+    ASSERT_TRUE(compiled.stageBytes.contains("fs"));
+    const auto& fragment = compiled.stageBytes.at("fs");
+    ASSERT_FALSE(vertex.empty());
+    ASSERT_FALSE(fragment.empty());
+    StageReflectionResult stage;
+    std::string error;
+    ASSERT_TRUE(ReflectSpirv(ShaderStageKind::Fragment, reinterpret_cast<const uint32_t*>(fragment.data()),
+                             fragment.size() / sizeof(uint32_t), {}, stage, &error)) << error;
+    const auto meta = MergeStages({stage});
+    ASSERT_EQ(meta.Sets.size(), 1u);
+    ASSERT_EQ(meta.Sets.front().Bindings.size(), 1u);
+    GraphicsPipelineDesc pipeline{};
+    pipeline.VertexShader = std::make_shared<const std::vector<uint8_t>>(vertex);
+    pipeline.PixelShader = std::make_shared<const std::vector<uint8_t>>(fragment);
+    pipeline.Rasterization.cullMode = GameEngine::Rendering::CullModeFlagBits::None;
+    pipeline.DepthStencil.depthTestEnable = true;
+    pipeline.DepthStencil.depthWriteEnable = true;
+    pipeline.DepthStencil.depthCompareOp = CompareOp::Always;
+    for (const auto& layout : MaterialBuilder::BuildSetLayouts(meta))
+        pipeline.DescriptorSetLayouts.push_back(m_Device->InternDescriptorSetLayout(layout));
+    const auto id = m_Device->InternGraphicsPipeline(pipeline);
+    ASSERT_TRUE(id.IsValid());
+    PipelineFormatKey format{};
+    format.DepthFormat = TextureFormat::D32_FLOAT;
+    ASSERT_FALSE(m_Device->TryGetWarmGraphicsPipeline(id, format).IsValid());
+
+    ASSERT_TRUE(m_Device->BeginFrame());
+    const auto uniform = MakeTestBuffer(*m_Device, 512, BufferUsage::Uniform);
+    const std::array<uint16_t, 6> triangles{0, 0, 0, 0, 1, 2};
+    const auto indices = MakeTestBuffer(*m_Device, sizeof(triangles), BufferUsage::Index);
+    ASSERT_TRUE(uniform.IsValid() && indices.IsValid());
+    constexpr float kBlue = 0.25f, kGreen = 0.75f;
+    m_Device->UpdateBuffer(uniform, 0, sizeof(kBlue), &kBlue);
+    m_Device->UpdateBuffer(uniform, 256, sizeof(kGreen), &kGreen);
+    m_Device->UpdateBuffer(indices, 0, sizeof(triangles), triangles.data());
+    const auto name = meta.Sets.front().Bindings.front().ResolvedNameId();
+    std::array<DrawBindings::BufferEntry, 2> overrides{{{name, uniform, 0, 208}, {name, uniform, 256, 208}}};
+    std::array<DrawCommand, 2> commands{};
+    for (size_t i = 0; i < commands.size(); ++i)
+    {
+        commands[i].InternedPipeline = id;
+        commands[i].PipelineMeta = &meta;
+        commands[i].Geometry.AltGeom.IB = indices;
+        commands[i].Geometry.AltGeom.IndexType = IndexType::Uint16;
+        commands[i].Bindings.Buffers = {&overrides[i], 1};
+        commands[i].IndexCount = 3;
+        commands[i].FirstIndex = 3;
+    }
+    commands[0].Material = &m_Material;
+    // The materialless contributor's primary range is degenerate. Its sub-draw covers the target.
+    commands[1].FirstIndex = 0;
+    const DrawSubCommand sub{3, 1, 3, 0, 0};
+    commands[1].SubDraws = {&sub, 1};
+
+    RG::RGResourcePool persistent(m_Device.get());
+    RG::RGTransientPool transient(m_Device.get());
+    RG::RGUploadRing uploads(m_Device.get(), 2, 4096);
+    RG::RGFrame frame(m_Device.get(), &persistent, &transient, &uploads);
+    frame.BeginFrame(0);
+    m_Services.BeginWorldDrawFrame();
+    const auto camera = m_Services.Views().AllocateCamera("PreparedDepthContributorCamera");
+    const auto view = m_Services.Views().AllocateView("PreparedDepthContributorView", camera);
+    TextureDesc desc{};
+    desc.width = desc.height = 4;
+    desc.format = static_cast<uint32_t>(format.DepthFormat);
+    desc.usage = static_cast<uint32_t>(TextureUsage::DepthStencil | TextureUsage::ShaderResource | TextureUsage::TransferSrc);
+    const auto target = frame.CreateTexture("PreparedDepthContributor.Target", desc);
+    bool readyAtFirstRecord = false;
+    frame.AddPass("PreparedDepthContributor.Clear", 0,
+                  [&](RG::RGPassBuilder& pass) {
+                      pass.PreventCulling();
+                      pass.AttachDepth(target, {.Load = RG::RGLoadOp::Clear, .Clear = {.Depth = 0.0f}});
+                  },
+                  [&](RG::RGContext&) {
+                      readyAtFirstRecord = m_Device->TryGetWarmGraphicsPipeline(id, format).IsValid();
+                      // The packet must already own a descriptor for the green slice.
+                      overrides[1].Offset = 0;
+                  });
+    m_Services.BuildWorldBatchKeys();
+    for (const auto& command : commands)
+        m_Services.EmitDepthCommand(view, DepthPassType::Prepass, command);
+    ASSERT_TRUE(m_Services.AddWorldDepthPrepassForView(frame, view, target, 0.0f).IsValid());
+    const auto ticket = RequestTextureReadbackRG(m_Device.get(), frame, target, "PreparedDepthContributor.Readback");
+    ASSERT_TRUE(ticket);
+    const auto count = frame.SubmittedFrameCount();
+    frame.Execute();
+    NotifyRenderGraphExecution(frame, count, nullptr);
+    m_Device->Present();
+    m_Device->WaitForIdle();
+    EXPECT_TRUE(readyAtFirstRecord);
+    ViewReadbackResult result{};
+    ASSERT_TRUE(ticket->TryGet(result));
+    ASSERT_EQ(result.format, TextureFormat::D32_FLOAT);
+    ASSERT_EQ(result.pixels.size(), 64u);
+    for (size_t i = 0; i < result.pixels.size(); i += sizeof(float))
+    {
+        float depth = 0.0f;
+        std::memcpy(&depth, result.pixels.data() + i, sizeof(depth));
+        EXPECT_FLOAT_EQ(depth, kGreen);
+    }
+    m_Device->DestroyBuffer(indices);
+    m_Device->DestroyBuffer(uniform);
+}
+
+TEST_F(MaterialBindingPlanTests, ForwardCommandsPrepareBeforeFirstRecord)
+{
+    CheckForwardCommandPreparation();
+}
+
+TEST_F(MaterialBindingPlanTests, WorldCommandsPrepareBeforeFirstRecord)
+{
+    CheckForwardCommandPreparation(true);
+}
+
+TEST_F(MaterialBindingPlanTests, DepthCommandsPrepareBeforeFirstRecord)
+{
+    CheckDepthCommandPreparation();
+}
+
+TEST_F(MaterialBindingPlanTests, ComputeReadsTheNewBufferSlice)
+{
+    CheckBufferReadback();
+}
+
+#if defined(__APPLE__)
+class MetalMaterialBindingPlanTests : public MaterialBindingPlanTests
+{
+  protected:
+    GraphicsAPI RequestedAPI() const override { return GraphicsAPI::Metal; }
+};
+
+TEST_F(MetalMaterialBindingPlanTests, ForwardCommandsPrepareBeforeFirstRecord)
+{
+    CheckForwardCommandPreparation();
+}
+
+TEST_F(MetalMaterialBindingPlanTests, WorldCommandsPrepareBeforeFirstRecord)
+{
+    CheckForwardCommandPreparation(true);
+}
+
+TEST_F(MetalMaterialBindingPlanTests, DepthCommandsPrepareBeforeFirstRecord)
+{
+    CheckDepthCommandPreparation();
+}
+
+TEST_F(MetalMaterialBindingPlanTests, ComputeReadsTheNewBufferSlice)
+{
+    CheckBufferReadback();
+}
+#endif
+
+namespace
+{
+class ForwardSpanDeviceFrame
+{
+  public:
+    explicit ForwardSpanDeviceFrame(IDevice& device)
+        : m_Device(device), m_Open(device.BeginFrame()) {}
+    ~ForwardSpanDeviceFrame() { Finish(); }
+    bool IsOpen() const { return m_Open; }
+    void Finish()
+    {
+        if (!m_Open)
+            return;
+        m_Device.FinalizeFrame();
+        m_Device.WaitForIdle();
+        m_Open = false;
+    }
+
+  private:
+    IDevice& m_Device;
+    bool m_Open = false;
+};
+
+struct ForwardSpanSources
+{
+    ColorLinear Color{0.0f, 1.0f, 0.0f, 1.0f};
+    DrawSubCommand SubDraw{3u, 1u, 3u, 0u, -1};
+    DrawBindings::BufferEntry Buffer;
+
+    void Mutate()
+    {
+        Color = ColorLinear{0.0f, 0.0f, 1.0f, 1.0f};
+        SubDraw.FirstIndex = 0u;
+        Buffer.Offset = 0u;
+    }
+};
+
+void ExpectForwardSpanTarget(const ViewReadbackResult& result,
+                             const std::array<uint8_t, 4>& expected, const char* name)
+{
+    SCOPED_TRACE(name);
+    ASSERT_EQ(result.format, TextureFormat::RGBA8_UNORM);
+    ASSERT_EQ(result.pixels.size(), 64u);
+    for (size_t i = 0; i < result.pixels.size(); i += 4u)
+    {
+        for (size_t channel = 0; channel < expected.size(); ++channel)
+            EXPECT_EQ(result.pixels[i + channel], expected[channel])
+                << "pixel " << i / 4u << ", channel " << channel;
+    }
+}
+} // namespace
+
+void MaterialBindingPlanTests::CheckForwardSpanOwnership(bool worldPass, bool afterDeclaration)
+{
+    namespace RG = GameEngine::Rendering::RenderGraph;
+    const auto vertex = Utils::LoadShaderFile("Shaders/fullscreen_noinput.vert.spv");
+    const auto uniformFragment = Utils::LoadShaderFile("Shaders/ubo_sample.frag.spv");
+    ASSERT_FALSE(vertex.empty());
+    ASSERT_FALSE(uniformFragment.empty());
+
+    ShaderProgramCompileRequest request{};
+    request.debugName = "ForwardSpanOwnership";
+    request.baseDirectory = m_Cache.Path();
+    request.cacheRoot = m_Cache.Path() / "ShaderCache";
+    ShaderStageCompileSpec fragmentStage{};
+    fragmentStage.stage = "fs";
+    fragmentStage.sourcePath = m_Cache.Path() / "forward_span.frag";
+    fragmentStage.inlineSource = R"glsl(#version 450
+layout(push_constant) uniform SpanColor { vec4 color; } pc;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = pc.color; }
+)glsl";
+    request.stages.push_back(std::move(fragmentStage));
+    ShaderProgramCompileResult compiled{};
+    std::string error;
+    ASSERT_TRUE(ShaderCompileService::CompileProgramToCache(
+        request, ShaderSourceKind::SpirV, compiled, &error)) << error;
+    ASSERT_TRUE(compiled.stageBytes.contains("fs"));
+    const auto& colorFragment = compiled.stageBytes.at("fs");
+    ASSERT_FALSE(colorFragment.empty());
+
+    StageReflectionResult colorStage, uniformStage;
+    ASSERT_TRUE(ReflectSpirv(ShaderStageKind::Fragment,
+        reinterpret_cast<const uint32_t*>(colorFragment.data()), colorFragment.size() / sizeof(uint32_t),
+        {}, colorStage, &error)) << error;
+    ASSERT_TRUE(ReflectSpirv(ShaderStageKind::Fragment,
+        reinterpret_cast<const uint32_t*>(uniformFragment.data()), uniformFragment.size() / sizeof(uint32_t),
+        {}, uniformStage, &error)) << error;
+    const auto colorMeta = MergeStages({colorStage});
+    const auto uniformMeta = MergeStages({uniformStage});
+    ASSERT_TRUE(colorMeta.Sets.empty());
+    ASSERT_EQ(uniformMeta.Sets.size(), 1u);
+    ASSERT_EQ(uniformMeta.Sets.front().Bindings.size(), 1u);
+
+    GraphicsPipelineDesc colorPipeline{};
+    colorPipeline.VertexShader = std::make_shared<const std::vector<uint8_t>>(vertex);
+    colorPipeline.PixelShader = std::make_shared<const std::vector<uint8_t>>(colorFragment);
+    colorPipeline.Rasterization.cullMode = CullModeFlagBits::None;
+    colorPipeline.ColorBlend.attachments.emplace_back();
+    static_assert(sizeof(ColorLinear) == 16u);
+    colorPipeline.PushConstants.Size = sizeof(ColorLinear);
+    colorPipeline.PushConstants.StageMask = kShaderStageFragment;
+    const auto colorId = m_Device->InternGraphicsPipeline(colorPipeline);
+    ASSERT_TRUE(colorId.IsValid());
+
+    GraphicsPipelineDesc uniformPipeline{};
+    uniformPipeline.VertexShader = colorPipeline.VertexShader;
+    uniformPipeline.PixelShader = std::make_shared<const std::vector<uint8_t>>(uniformFragment);
+    uniformPipeline.Rasterization.cullMode = CullModeFlagBits::None;
+    uniformPipeline.ColorBlend.attachments.emplace_back();
+    for (const auto& layout : MaterialBuilder::BuildSetLayouts(uniformMeta))
+        uniformPipeline.DescriptorSetLayouts.push_back(m_Device->InternDescriptorSetLayout(layout));
+    const auto uniformId = m_Device->InternGraphicsPipeline(uniformPipeline);
+    ASSERT_TRUE(uniformId.IsValid());
+
+    ForwardSpanDeviceFrame deviceFrame(*m_Device);
+    ASSERT_TRUE(deviceFrame.IsOpen());
+    const std::array<uint16_t, 6> triangles{1, 1, 1, 1, 2, 3};
+    const auto indices = MakeTestBuffer(*m_Device, sizeof(triangles), BufferUsage::Index);
+    const auto uniform = MakeTestBuffer(*m_Device, 512, BufferUsage::Uniform);
+    ASSERT_TRUE(indices.IsValid() && uniform.IsValid());
+    m_Device->UpdateBuffer(indices, 0, sizeof(triangles), triangles.data());
+    constexpr float kBlue = 0.0f, kGreen = 1.0f;
+    m_Device->UpdateBuffer(uniform, 0, sizeof(kBlue), &kBlue);
+    m_Device->UpdateBuffer(uniform, 256, sizeof(kGreen), &kGreen);
+
+    ForwardSpanSources source;
+    source.Buffer = {uniformMeta.Sets.front().Bindings.front().ResolvedNameId(), uniform, 256, 208};
+    const ColorLinear subDrawColor{0.0f, 1.0f, 0.0f, 1.0f};
+    std::array<DrawCommand, 3> commands{};
+    for (auto& command : commands)
+    {
+        command.InternedPipeline = colorId;
+        command.PipelineMeta = &colorMeta;
+        command.Material = worldPass ? &m_Material : nullptr;
+        command.Geometry.AltGeom.IB = indices;
+        command.Geometry.AltGeom.IndexType = IndexType::Uint16;
+        command.IndexCount = 3u;
+        command.FirstIndex = 3u;
+        command.VertexOffset = -1;
+    }
+    commands[0].Bindings.PushConstants = {
+        reinterpret_cast<const std::byte*>(&source.Color), sizeof(source.Color)};
+    commands[1].Bindings.PushConstants = {
+        reinterpret_cast<const std::byte*>(&subDrawColor), sizeof(subDrawColor)};
+    commands[1].FirstIndex = 0u;
+    commands[1].SubDraws = {&source.SubDraw, 1u};
+    commands[2].InternedPipeline = uniformId;
+    commands[2].PipelineMeta = &uniformMeta;
+    commands[2].Bindings.Buffers = {&source.Buffer, 1u};
+
+    RG::RGResourcePool persistent(m_Device.get());
+    RG::RGTransientPool transient(m_Device.get());
+    RG::RGUploadRing uploads(m_Device.get(), 2, 4096);
+    RG::RGFrame frame(m_Device.get(), &persistent, &transient, &uploads);
+    frame.BeginFrame(41);
+    m_Services.BeginWorldDrawFrame();
+    const auto camera = m_Services.Views().AllocateCamera("ForwardSpanCamera");
+    std::array<RG::RGTexture, 4> targets{};
+    std::array<GameEngine::Rendering::ViewId, 3> views{};
+    constexpr std::array<const char*, 4> kNames{
+        "ForwardSpan.PushConstants", "ForwardSpan.SubDraws", "ForwardSpan.BufferSlice", "ForwardSpan.Background"};
+    TextureDesc desc{};
+    desc.width = desc.height = 4u;
+    desc.format = static_cast<uint32_t>(TextureFormat::RGBA8_UNORM);
+    desc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget | TextureUsage::ShaderResource);
+    for (size_t i = 0; i < targets.size(); ++i)
+        targets[i] = frame.CreateTexture(kNames[i], desc);
+    for (size_t i = 0; i < views.size(); ++i)
+        views[i] = m_Services.Views().AllocateView(kNames[i], camera);
+
+    uint32_t clearRecords = 0u;
+    frame.AddPass("ForwardSpan.Clear", 0,
+        [&](RG::RGPassBuilder& pass) {
+            for (uint32_t i = 0; i < targets.size(); ++i)
+                pass.AttachColor(i, targets[i],
+                    {.Load = RG::RGLoadOp::Clear, .Clear = {.Color = {1, 0, 0, 1}}});
+        },
+        [&](RG::RGContext&) {
+            ++clearRecords;
+            if (!afterDeclaration)
+                source.Mutate();
+        });
+
+    if (worldPass)
+        m_Services.BuildWorldBatchKeys();
+    for (size_t i = 0; i < commands.size(); ++i)
+    {
+        const auto view = views[i];
+        RenderServices::WorldPassTargetsRG passTargets{};
+        passTargets.Color = targets[i];
+        if (worldPass)
+        {
+            m_Services.EmitForwardCommand(view, commands[i], ForwardDrawDepth::ColourPass);
+            ASSERT_TRUE(m_Services.AddWorldPassForView(
+                frame, view, passTargets, MaterialKeyword::None).Pass.IsValid());
+        }
+        else
+            ASSERT_TRUE(m_Services.AddForwardCommandPassForView(
+                frame, view, passTargets, MaterialKeyword::None, {&commands[i], 1u}).IsValid());
+    }
+    const auto pushReadback = RequestTextureReadbackRG(m_Device.get(), frame, targets[0], "ForwardSpan.ReadPush");
+    const auto subReadback = RequestTextureReadbackRG(m_Device.get(), frame, targets[1], "ForwardSpan.ReadSub");
+    const auto bufferReadback = RequestTextureReadbackRG(m_Device.get(), frame, targets[2], "ForwardSpan.ReadBuffer");
+    const auto backgroundReadback = RequestTextureReadbackRG(m_Device.get(), frame, targets[3], "ForwardSpan.ReadBackground");
+    ASSERT_TRUE(pushReadback && subReadback && bufferReadback && backgroundReadback);
+
+    bool allowRecording = false;
+    uint32_t prepareAttempts = 0u;
+    frame.AddPass("ForwardSpan.Abort", std::numeric_limits<int32_t>::max(),
+        [&](RG::RGPassBuilder& pass) {
+            pass.PreventCulling();
+            pass.Prepare([&](RG::RGPrepareContext&) {
+                ++prepareAttempts;
+                return allowRecording;
+            });
+        }, [](RG::RGContext&) {});
+    if (afterDeclaration)
+        source.Mutate();
+    for (uint32_t attempt = 1u; attempt <= 2u; ++attempt)
+    {
+        frame.Execute();
+        EXPECT_EQ(prepareAttempts, attempt);
+        EXPECT_EQ(clearRecords, 0u);
+        EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
+    }
+    allowRecording = true;
+    const auto submitted = frame.SubmittedFrameCount();
+    frame.Execute();
+    NotifyRenderGraphExecution(frame, submitted, nullptr);
+    deviceFrame.Finish();
+    EXPECT_EQ(prepareAttempts, 3u);
+    EXPECT_EQ(clearRecords, 1u);
+    EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
+    ViewReadbackResult pushResult{}, subResult{}, bufferResult{}, backgroundResult{};
+    ASSERT_TRUE(pushReadback->TryGet(pushResult));
+    ASSERT_TRUE(subReadback->TryGet(subResult));
+    ASSERT_TRUE(bufferReadback->TryGet(bufferResult));
+    ASSERT_TRUE(backgroundReadback->TryGet(backgroundResult));
+    constexpr std::array<uint8_t, 4> kGreenPixel{0u, 255u, 0u, 255u};
+    constexpr std::array<uint8_t, 4> kRedPixel{255u, 0u, 0u, 255u};
+    ExpectForwardSpanTarget(pushResult, kGreenPixel, "push constants");
+    ExpectForwardSpanTarget(subResult, kGreenPixel, "sub-draw index range");
+    ExpectForwardSpanTarget(bufferResult, kGreenPixel, "buffer binding slice");
+    ExpectForwardSpanTarget(backgroundResult, kRedPixel, "cleared background control");
+    m_Device->DestroyBuffer(uniform);
+    m_Device->DestroyBuffer(indices);
+}
+
+TEST_F(MaterialBindingPlanTests, ForwardCommandSpansSurviveProducerReuseAfterDeclaration)
+{
+    CheckForwardSpanOwnership(false, true);
+}
+TEST_F(MaterialBindingPlanTests, ForwardCommandSpansStayFrozenDuringRecording)
+{
+    CheckForwardSpanOwnership(false, false);
+}
+TEST_F(MaterialBindingPlanTests, WorldCommandSpansSurviveProducerReuseAfterDeclaration)
+{
+    CheckForwardSpanOwnership(true, true);
+}
+TEST_F(MaterialBindingPlanTests, WorldCommandSpansStayFrozenDuringRecording)
+{
+    CheckForwardSpanOwnership(true, false);
+}
+#if defined(__APPLE__)
+TEST_F(MetalMaterialBindingPlanTests, ForwardCommandSpansSurviveProducerReuseAfterDeclaration)
+{
+    CheckForwardSpanOwnership(false, true);
+}
+TEST_F(MetalMaterialBindingPlanTests, ForwardCommandSpansStayFrozenDuringRecording)
+{
+    CheckForwardSpanOwnership(false, false);
+}
+TEST_F(MetalMaterialBindingPlanTests, WorldCommandSpansSurviveProducerReuseAfterDeclaration)
+{
+    CheckForwardSpanOwnership(true, true);
+}
+TEST_F(MetalMaterialBindingPlanTests, WorldCommandSpansStayFrozenDuringRecording)
+{
+    CheckForwardSpanOwnership(true, false);
+}
+#endif

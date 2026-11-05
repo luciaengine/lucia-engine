@@ -1446,7 +1446,7 @@ void ShadowMapRenderFeature::SelectCascadeSamplingFit(const CascadeContentFit* f
 
 float ShadowMapRenderFeature::PcssWidestKernelTexels(Rendering::ViewId viewId,
                                                      const CascadeFrameData& frame,
-                                                     uint32_t cascadeCount) const
+                                                     uint32_t cascadeCount, const RenderGraph::RGFrame& rgFrame) const
 {
     const float capWorld =
         GetPcssMaxPenumbra() > 0.0f ? GetPcssMaxPenumbra() : kPcssMaxPenumbraWorldAuto;
@@ -1454,13 +1454,16 @@ float ShadowMapRenderFeature::PcssWidestKernelTexels(Rendering::ViewId viewId,
     if (const auto it = m_CascadeContentFit.find(viewId); it != m_CascadeContentFit.end())
         contentFits = &it->second;
     const float resolution = static_cast<float>(GetConfig().Resolution);
+    const uint32_t scheduledMask = ScheduledCascadeMask(viewId, rgFrame);
     float widest = 1.0f;
     for (uint32_t i = 0; i < cascadeCount && i < kMaxShadowCascades; ++i)
     {
         float shadowVP[16];
         float worldPerTexel = 0.0f;
         float depthSpan = 0.0f;
-        SelectCascadeSamplingFit(contentFits ? &(*contentFits)[i] : nullptr, frame, i, resolution,
+        const CascadeContentFit* fit =
+            contentFits && (scheduledMask & (1u << i)) == 0 ? &(*contentFits)[i] : nullptr;
+        SelectCascadeSamplingFit(fit, frame, i, resolution,
                                  shadowVP, worldPerTexel, depthSpan);
         if (worldPerTexel > 0.0f)
             widest = std::max(widest, capWorld / worldPerTexel);
@@ -1533,29 +1536,24 @@ void ShadowMapRenderFeature::BuildShadowDataGPU(const CascadeFrameData& cascadeF
 
     const float resolution = static_cast<float>(std::max(1u, m_Config.Resolution));
 
-    // Content-fit invariant: receivers must transform by the fit of the depth
-    // content ACTUALLY retained in each cascade layer — the snapshot committed
-    // when the layer last rendered. On a frame where the cascade rendered (or
-    // the static cache skipped it byte-identically) the snapshot IS this
-    // frame's LightVPRel and uploads bit-for-bit, so the always-render path is
-    // unchanged. Only a motion-deferred cascade diverges: its older rel fit is
-    // re-anchored to the CURRENT origin (a sector step during the deferral
-    // window is absorbed by the exact integer-sector delta) so the fragment's
-    // vPosRel keys into the retained layer's texels instead of swimming with
-    // the current fit. Slots with no snapshot (first frames, post-invalidate,
-    // standalone test calls) fall back to the current fit — those slots render
-    // this frame anyway (FirstRender is a correctness class). Split distances
-    // stay CURRENT: they only select the cascade, and retained content covers
-    // the old slice plus the fit's overlap margins.
+    // Scheduled layers use this frame's rasterizing fit. Skipped layers use the
+    // snapshot of their retained depth, re-anchored to the current origin.
+    // Scheduling never replaces retained content: an aborted preparation must
+    // leave the last recorded matrix and PCSS metrics intact. Split distances
+    // stay current because they select a cascade rather than address its texels.
     const std::array<CascadeContentFit, kMaxShadowCascades>* contentFits = nullptr;
     if (const auto cfIt = m_CascadeContentFit.find(viewId); cfIt != m_CascadeContentFit.end())
         contentFits = &cfIt->second;
+
+    const uint32_t scheduledMask = ScheduledCascadeMask(viewId, rgFrame);
 
     for (uint32_t i = 0; i < cascadeFrame.NumCascades && i < kMaxShadowCascades; ++i)
     {
         // x = world-per-texel, y = depth span (both content-fit-following, see
         // SelectCascadeSamplingFit).
-        SelectCascadeSamplingFit(contentFits ? &(*contentFits)[i] : nullptr, cascadeFrame, i,
+        const CascadeContentFit* fit =
+            contentFits && (scheduledMask & (1u << i)) == 0 ? &(*contentFits)[i] : nullptr;
+        SelectCascadeSamplingFit(fit, cascadeFrame, i,
                                  resolution, out.shadowVP[i],
                                  out.shadowPcssCascades[i][0], out.shadowPcssCascades[i][1]);
         out.shadowSplits[i] = cascadeFrame.SplitDistances[i];
@@ -1575,8 +1573,9 @@ void ShadowMapRenderFeature::BuildShadowDataGPU(const CascadeFrameData& cascadeF
     // the frame. If this frame declared no cascade pass and no layer has
     // retained content, publish numCascades=0 so the shader fail-safe returns
     // fully lit.
-    if (rgFrame.FrameIndex() == m_CascadeDeclareFrameIndex &&
-        m_DeclaredCascadePassesThisFrame == 0)
+    const auto plan = m_MotionPlanByView.find(viewId);
+    if (plan != m_MotionPlanByView.end() && plan->second.For.IsFor(rgFrame) &&
+        scheduledMask == 0)
     {
         bool anyValidFit = false;
         if (const auto it = m_CascadeContentFit.find(viewId); it != m_CascadeContentFit.end())

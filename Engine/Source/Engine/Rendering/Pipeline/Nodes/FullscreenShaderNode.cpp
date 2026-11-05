@@ -1394,6 +1394,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
             d.PassName(kSegSuffix[seg]).c_str(), Rendering::PassPhase::kPostProcess,
             [&](RenderGraph::RGPassBuilder& p)
             {
+                p.UsePipeline(node.m_BasePipelineId);
                 for (size_t i = 0; i < texEdges.size(); ++i)
                 {
                     auto [t, isWrite] = texEdges[i];

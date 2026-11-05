@@ -932,15 +932,8 @@ class RenderServices
 
     // --- Sorted transparent path (T2/S2) ---
     //
-    // Order-dependent Blend materials are peeled out of the GPU-driven opaque
-    // batch path and drawn back-to-front as per-(surface×blend) RUNS — one
-    // DrawIndexedIndirectCount per run over a GPU-sorted indirect stream, the
-    // GE_INSTANCED vertex path fetching per-record data (materialIndex,
-    // sectors, custom0, flags) through the standard indirection. There is no
-    // draw ceiling and no whole-view fallback: views whose visible set exceeds
-    // the GPU sort capacity (kSortedTransparentSortCapacity) take a CPU-sorted
-    // twin of the same indirect stream. See SortedTransparentRuns.h for the
-    // run/ordering contract.
+    // The sorted transparent pass draws adjacent compatible meshes together in
+    // the same artwork order as sprites and other contributors.
 
     // Build (once per view per frame) the sorted transparent record set: reads
     // the view's Blend submissions, frustum-culls against their GPUScene
@@ -951,11 +944,7 @@ class RenderServices
     // True when this frame's sorted transparent pass owns the view's Blend draws,
     // so the opaque batch path must peel them. Read by recordEntityBatch.
     bool IsSortedTransparentActive(Rendering::ViewId viewId) const;
-    // Declare this frame's drain for the view: the fused GPU
-    // gather+key+sort+scatter dispatch (or its CPU-sorted twin) plus one
-    // indirect draw per run into the same HDR colour + depth the world pass
-    // wrote. Called by the SortedTransparent pipeline node (after HZBBuild).
-    // No-op when the view's set is inactive this frame.
+    // Draw the prepared artwork into the world pass's color and depth targets.
     void AddSortedTransparentDrainForView(Rendering::RenderGraph::RGFrame& frame,
                                           Rendering::ViewId viewId,
                                           const WorldPassTargetsRG& targets,
@@ -967,7 +956,6 @@ class RenderServices
         uint32_t Culled = 0;    // frustum-culled candidates
         uint32_t Records = 0;   // visible records staged for the drain
         uint32_t Runs = 0;      // per-(surface×blend) runs
-        bool CpuSorted = false; // past-capacity CPU order path engaged
 
         bool operator==(const SortedTransparentStats&) const = default;
     };
@@ -1904,6 +1892,7 @@ class RenderServices
     // Shared body for AddWorldPassForView (phase A) and
     // AddWorldColorRecoverPassForView (phase B). Phase B loads colour+depth,
     // skips WorldDeclared, and looks up SlicePhase::B draw ranges.
+    class WorldPassPreparation;
     WorldPassRG AddWorldPassImpl(Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId,
                                  const WorldPassTargetsRG& targets,
                                  Rendering::MaterialKeyword passKeywords, WorldPassDrawScope scope,
@@ -2493,24 +2482,15 @@ class RenderServices
     // under per-view names; each transmissive pass binds its own SceneGrab import.
     std::unique_ptr<SceneColorGrab> m_TransmissionSceneGrab;
 
-    // Sorted transparent (T2/S2) per-view staging, rebuilt once per view per
-    // frame by BuildSortedTransparentForView (records + run layout) and
-    // consumed by AddSortedTransparentDrainForView (uploads, drain dispatch,
-    // per-run indirect draws). PcBytes is the stable 16-byte GE_INSTANCED
-    // push-constant backing every run command's Bindings.PushConstants span
-    // aliases through render-graph execution. Frame stamps the last build so a
-    // stale Active never leaks across frames or to views the world node did
-    // not declare.
+    // Staged records, commands and their span backing live through graph execution.
     struct SortedTransparentView
     {
         std::vector<SortedTransparentRecord> Records;
         std::vector<uint32> CompositionMeshOrder;
         std::vector<TransparentCompositionSlot> CompositionSlots;
         DrawBindings::BufferEntry CompositionIndices;
-        // One entry per run GROUP in discovery order; the partition maps
-        // groups to draw slots. Representative binds the run's PSO +
-        // descriptor state; Mesh resolves the shared bucket pools every
-        // member of the run suballocates from.
+        // Bind-compatible groups in discovery order. Each ordered run selects
+        // its group's representative material and geometry pool bindings.
         struct Run
         {
             const Material* Representative = nullptr;
@@ -2520,10 +2500,6 @@ class RenderServices
         SortedTransparentRunPartition Partition;
         std::vector<DrawCommand> Commands;
         std::vector<std::byte> PcBytes;
-        // Camera snapshot from the build (the drain's GPU key must use the
-        // same values the CPU run metric + overflow order used).
-        float CameraPos[3]{};
-        float CameraForward[3]{};
         bool Active = false;
         uint64_t Frame = ~0ull;
         // One warning per drain-bail EPISODE, not per frame: a persistently
@@ -2534,7 +2510,7 @@ class RenderServices
         SortedTransparentStats Stats{};
         // Log-on-transition memory for the path's Debug lines: the lines fire
         // only when the path engages or its composition changes (records /
-        // runs / sort path), never per steady-state frame. LastLoggedStats is
+        // runs), never per steady-state frame. LastLoggedStats is
         // the composition the build line last printed; StagedLastBuild marks
         // whether the PREVIOUS build staged records, so a disengage ->
         // re-engage edge re-fires the lines even when the composition matches;
@@ -2544,40 +2520,11 @@ class RenderServices
         SortedTransparentStats LastLoggedStats{};
         bool StagedLastBuild = false;
         bool LoggedBuildTransition = false;
-        struct DrainLogSnapshot
-        {
-            uint32_t Runs = 0;
-            uint32_t Records = 0;
-            bool GpuSort = false;
-        };
-        DrainLogSnapshot LastLoggedDrain{};
-        // CPU-sorted drain buffers (host-visible args+counts+indirection),
-        // one per frame-in-flight slot, created lazily only when the view's
-        // visible set exceeds kSortedTransparentSortCapacity and grown
-        // geometrically. A ring exactly as deep as the device paces, so what makes
-        // rewrites and growth-destroys safe is that the only writer runs behind
-        // BeginFrame's fence wait (FrameBufferAllocator::BeginFrame states the rule);
-        // the buffers carry BufferCreateFlags::FrameSlotted so a write from any
-        // earlier phase is diagnosed.
+        // Per-frame slots hold the sorted indirect draws, counts and instance indices.
         Rendering::BufferHandle CpuDrainBuffers[Rendering::IDevice::kMaxSupportedFramesInFlight]{};
         uint64_t CpuDrainCapacityBytes[Rendering::IDevice::kMaxSupportedFramesInFlight]{};
     };
     std::unordered_map<Rendering::ViewId, SortedTransparentView> m_SortedTransparentByView;
-
-    // Sorted transparent drain compute (sorted_transparent_drain.comp), interned
-    // lazily on the first drain declare. The set layout is the six-binding
-    // records/instances/args/counts/indirection/runCounts block.
-    Rendering::ComputePipelineId m_SortedTransparentDrainPipeline{};
-    Rendering::DescriptorSetLayoutDesc m_SortedTransparentDrainLayout{};
-    // Latched only on DEFINITIVE failure (SPIR-V rejected at intern).
-    bool m_SortedTransparentDrainAttempted = false;
-    // Transient package-load failures (hot-reload mid-write) retry on a frame
-    // backoff instead of sticking the drain on the CPU sorter all session.
-    static constexpr uint64_t kSortedTransparentDrainRetryInterval = 512;
-    uint64_t m_SortedTransparentDrainRetryFrame = 0;
-    // Lazily create + intern the drain pipeline; false when the shader package
-    // is unavailable (the drain then uses the CPU-sorted twin at any count).
-    bool EnsureSortedTransparentDrainPipeline();
 
     // Registered draw producer callbacks. Small vectors of (handle, fn) —
     // registration is rare (feature setup) and iteration runs once per view

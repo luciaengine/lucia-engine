@@ -6,6 +6,7 @@
 #include "Components/Rendering/ReflectionProbe.h"
 #include "Core/Engine.h"
 #include "ECS/Entity.h"
+#include "ECS/ECSTemplates.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Engine/Rendering/ImageBasedLightingFeature.h"
 #include "Engine/Rendering/SceneReflectionProbeEnvironmentSource.h"

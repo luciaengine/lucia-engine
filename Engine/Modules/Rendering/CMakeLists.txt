@@ -1513,11 +1513,6 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(hzb_spd_minmax hzb_spd_minmax.comp)
     _ge_add_shaderpkg_compute(hzb_spd_minmax_finalize hzb_spd_minmax_finalize.comp)
     _ge_add_shaderpkg_compute(hzb_culling hzb_culling.comp)
-    # Sorted transparent GPU path (transparency-scale S1/S2): the reusable GPU
-    # sort primitive plus the fused runtime drain (gather + key + sort +
-    # scatter — one dispatch per view, see sorted_transparent_drain.comp).
-    _ge_add_shaderpkg_compute(sorted_transparent_sort sorted_transparent_sort.comp)
-    _ge_add_shaderpkg_compute(sorted_transparent_drain sorted_transparent_drain.comp)
     _ge_add_shaderpkg_compute(visibility_union visibility_union.comp)
     _ge_add_shaderpkg_compute(runtime_visibility_aggregate runtime_visibility_aggregate.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter draw_command_scatter.comp)
@@ -1838,7 +1833,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     # helpers (Buf/Tex/Bake/ColorDesc/FramePools) that ODR-collide when unity-concatenated.
     set_target_properties(RenderGraphTests PROPERTIES FOLDER "Rendering/Tests/RenderGraph" UNITY_BUILD OFF)
     # Include dir (for "Rendering/Core/RenderGraph/..") + module root (for "Tests/RenderGraph/.." test headers).
-    target_include_directories(RenderGraphTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_include_directories(RenderGraphTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Include ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/Tests)
     if(RENDERING_HAS_VULKAN)
         # The retirement regression observes the real backend's timeline wait.
         target_include_directories(RenderGraphTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Source ${VMA_INCLUDE_DIRS})

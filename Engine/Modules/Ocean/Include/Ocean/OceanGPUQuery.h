@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Ocean/OceanQuery.h"
+#include "Ocean/OceanPreparedDispatch.h"
 #include "Ocean/OceanTypes.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/Handle.h"
@@ -23,6 +24,12 @@ namespace GameEngine::Ocean
 
 inline constexpr uint32 kMaxOceanGPUQueryPointsPerDispatch = 256u;
 using OceanGPUQueryToken = uint64;
+
+struct OceanPreparedQueryDispatch
+{
+    OceanPreparedReadbackDispatch Readback;
+    OceanGPUQueryToken Token = 0;
+};
 
 struct OceanGPUQueryParamsGPU
 {
@@ -63,7 +70,7 @@ public:
     OceanGPUQueryToken Enqueue(const OceanSurfaceQueryPoint* points, uint32 count,
                                float32 minimumSpatialLength = 0.0f);
     bool HasPending() const;
-    bool PrepareNext(const OceanParamsGPU& oceanParams,
+    OceanGPUQueryToken PrepareNext(const OceanParamsGPU& oceanParams,
                      const OceanCascadeLayoutGPU& combinedLayout,
                      bool combinedAvailable);
     void FillParams(OceanGPUQueryParamsGPU& out) const { out = m_Params; }
@@ -72,11 +79,22 @@ public:
                         ::GameEngine::Rendering::SamplerHandle fftSampler,
                         ::GameEngine::Rendering::TextureHandle combined,
                         ::GameEngine::Rendering::SamplerHandle combinedSampler);
-    void RecordDispatch(::GameEngine::Rendering::IDevice* device,
-                        ::GameEngine::Rendering::CommandList* commandList,
-                        const ::GameEngine::Rendering::RenderGraph::RGFrame& frame,
-                        ::GameEngine::Rendering::BufferHandle paramsBuffer,
-                        uint64 paramsOffset);
+    /// Declare this ID with RGPassBuilder::UsePipeline before preparation.
+    ::GameEngine::Rendering::ComputePipelineId GetPipelineId() const { return m_Pipeline; }
+
+    /// Render-thread preparation reserves a frame-owned slot without consuming pending work.
+    /// Keep the parameter upload alive through recording; notify submission or abort afterward.
+    bool PrepareDispatch(Rendering::IDevice* device, Rendering::RenderGraph::RGFrame& frame,
+                         Rendering::BufferHandle paramsBuffer, uint64 paramsOffset,
+                         const OceanGPUQueryParamsGPU& params, OceanGPUQueryToken token,
+                         OceanPreparedQueryDispatch& prepared);
+    /// Render-thread recording validates the reservation before writing its physical slot.
+    void RecordDispatch(Rendering::CommandList* commands, const OceanPreparedQueryDispatch& prepared);
+    /// Render-thread notification releases this frame's reservations that were not submitted.
+    void OnFrameAborted(const Rendering::RenderGraph::RGFrame& frame)
+    {
+        m_Readback.CancelUnsubmitted(frame);
+    }
     void PollCompleted(::GameEngine::Rendering::IDevice* device);
     bool TryTake(OceanGPUQueryToken token, std::vector<OceanSurfaceSample>& out);
     void Clear();

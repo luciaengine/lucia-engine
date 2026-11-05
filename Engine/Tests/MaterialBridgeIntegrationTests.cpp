@@ -27,6 +27,8 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/PipelineCache.h"
 #include "Rendering/Core/PipelineTypes.h"
+#include "Rendering/Core/SpecializationConstants.h"
+#include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
@@ -2571,12 +2573,440 @@ TEST_F(MaterialPipelineCompilationTest, PublishGate_VariantMissEnqueuesAsync_Dra
     EXPECT_FALSE(variants.HasPipelineBuildsInFlight(*mat)) << "the publish ends the in-flight window";
 }
 
-// A draw that finds a backend pipeline cold records its material as waiting on
-// the device's build (EnsureConcreteWarm). Render-once consumers (model
-// thumbnails) poll HasPipelineBuildsInFlight and must not render inside that
-// window. Once the build settles, Warm or Failed, the material no longer waits
-// and nothing is queued again; the per-frame prune then forgets the wait, so a
-// later hot-reload invalidation does not request a pipeline no draw uses.
+namespace
+{
+namespace RG = GameEngine::Rendering::RenderGraph;
+
+struct ColdVariantPreparation
+{
+    PipelineVariantCache& Variants;
+    const Material& SourceMaterial;
+    VertexAttributeFlags VertexFlags;
+    MaterialKeyword Keywords;
+    uint32_t PrepareCalls = 0;
+    uint32_t RecordCalls = 0;
+
+    bool Prepare(RG::RGPrepareContext& context)
+    {
+        ++PrepareCalls;
+        constexpr uint32_t kLookupAttempts = 2;
+        for (uint32_t retry = 0; retry < kLookupAttempts; ++retry)
+        {
+            const auto served = Variants.PrepareColorVariant(
+                SourceMaterial, VertexFlags, PrimitiveTopology::TriangleList,
+                Keywords, FrontFace::CounterClockwise, context);
+            EXPECT_FALSE(served.first.IsValid());
+        }
+        return true;
+    }
+
+    void Declare(RG::RGPassBuilder& pass, RG::RGTexture target)
+    {
+        pass.AttachColor(0, target, {.Load = RG::RGLoadOp::Clear});
+        pass.Prepare([this](RG::RGPrepareContext& context) { return Prepare(context); });
+    }
+
+    void Record()
+    {
+        ++RecordCalls;
+        EXPECT_FALSE(Variants.ServedGeneration(SourceMaterial.GetGpuSceneMaterialIndex(),
+                                               ServedPassClass::Color).has_value());
+    }
+};
+} // namespace
+
+// Preparation queues cold backend pipelines without starting inline or dispatched builds.
+// The serial frame-begin drain deduplicates the requests and makes the pipeline available.
+TEST_F(MaterialPipelineCompilationTest, ConcreteColdPreparationDefersBackendBuildUntilFrameBegin)
+{
+    namespace RG = GameEngine::Rendering::RenderGraph;
+    MaterialDocument doc{};
+    doc.materialName = "DeferredConcretePBR";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = "Surfaces/standard_pbr.glsl";
+    Material* material = m_rs->Materials().RegisterMaterialFromDocument(GUID::Generate(), doc);
+    ASSERT_NE(material, nullptr);
+    auto& variants = m_rs->Materials().Variants();
+    const auto flags = VertexAttributeFlags::StandardMesh | VertexAttributeFlags::HasColor;
+    const auto keywords = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced;
+    const auto key = variants.EnqueueColorVariantCompileForTesting(
+        *material, flags, PrimitiveTopology::TriangleList, keywords, 1u, FrontFace::CounterClockwise);
+    variants.SubmitPendingVariantCompiles();
+    variants.ApplyPendingVariantPublishes();
+    const auto published = variants.SnapshotColorVariantForTesting(key);
+    ASSERT_TRUE(published.CurrentPipelineId.IsValid());
+    ASSERT_FALSE(published.PreviousPipelineId.IsValid());
+
+    // The inline arm models owning-thread backends and headless clients. The
+    // dispatched arm proves preparation never submits work to a dispatcher.
+    const uint32_t materialIndex = material->GetGpuSceneMaterialIndex();
+    ASSERT_NE(materialIndex, std::numeric_limits<uint32_t>::max());
+    for (const bool dispatched : {false, true})
+    {
+        SCOPED_TRACE(dispatched ? "dispatcher" : "inline backend");
+        variants.BeginServeFrame(materialIndex + 1);
+        std::unique_ptr<HeldPipelineBuilds> held;
+        if (dispatched)
+            held = std::make_unique<HeldPipelineBuilds>(*m_device);
+        PipelineFormatKey format{};
+        format.ColorCount = 1;
+        format.ColorFormats[0] = dispatched ? TextureFormat::R16_FLOAT : TextureFormat::R8_UNORM;
+        ASSERT_FALSE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
+        RG::RGResourcePool persistent(m_device.get());
+        RG::RGTransientPool transient(m_device.get());
+        RG::RGUploadRing uploads(m_device.get(), 2, 4096);
+        RG::RGFrame frame(m_device.get(), &persistent, &transient, &uploads);
+        frame.BeginFrame(0);
+        TextureDesc desc{};
+        desc.width = desc.height = 4;
+        desc.format = static_cast<uint32_t>(format.ColorFormats[0]);
+        desc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget);
+        const auto target = frame.CreateTexture("DeferredConcrete.Target", desc);
+        ColdVariantPreparation preparation{variants, *material, flags, keywords};
+        frame.AddPass("DeferredConcrete.Record", 0,
+                      [&preparation, target](RG::RGPassBuilder& pass) { preparation.Declare(pass, target); },
+                      [&preparation](RG::RGContext&) { preparation.Record(); });
+        frame.MarkOutput(target);
+        frame.Execute();
+        m_device->WaitForIdle();
+        EXPECT_EQ(preparation.PrepareCalls, 1u);
+        EXPECT_EQ(preparation.RecordCalls, 1u);
+        EXPECT_FALSE(variants.ServedGeneration(materialIndex, ServedPassClass::Color).has_value());
+        EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
+        if (held)
+            EXPECT_TRUE(held->Jobs.empty()) << "preparation must only enqueue for the frame-begin drain";
+        variants.PruneSettledConcreteWarmWaits();
+        if (held)
+        {
+            ASSERT_EQ(held->Jobs.size(), 1u) << "duplicate preparation misses share one backend build";
+            held->RunAll();
+        }
+        EXPECT_TRUE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
+        variants.PruneSettledConcreteWarmWaits();
+    }
+}
+
+namespace
+{
+struct SpecializedVariantPreparation
+{
+    PipelineVariantCache& Variants;
+    const Material& SourceMaterial;
+    VertexAttributeFlags VertexFlags;
+    MaterialKeyword Keywords;
+    bool AllowRecord = false;
+    uint32_t PrepareCalls = 0;
+    uint32_t RecordCalls = 0;
+    PipelineHandle SelectedPipeline{};
+    PipelineVariantCache::VariantServeUnit SelectedUnit{};
+    bool HasSelectedUnit = false;
+
+    bool Prepare(RG::RGPrepareContext& context)
+    {
+        ++PrepareCalls;
+        for (uint32_t attempt = 0; attempt < 2; ++attempt)
+        {
+            const auto [pipeline, unit] = Variants.PrepareColorVariant(
+                SourceMaterial, VertexFlags, PrimitiveTopology::TriangleList,
+                Keywords, FrontFace::CounterClockwise, context);
+            if (attempt != 0)
+            {
+                EXPECT_EQ(pipeline, SelectedPipeline);
+                EXPECT_EQ(unit != nullptr, HasSelectedUnit);
+            }
+            SelectedPipeline = pipeline;
+            HasSelectedUnit = unit != nullptr;
+            SelectedUnit = unit ? *unit : PipelineVariantCache::VariantServeUnit{};
+        }
+        EXPECT_FALSE(Variants.ServedGeneration(SourceMaterial.GetGpuSceneMaterialIndex(),
+                                               ServedPassClass::Color).has_value());
+        return AllowRecord;
+    }
+
+    void Declare(RG::RGPassBuilder& pass, RG::RGTexture target)
+    {
+        pass.AttachColor(0, target, {.Load = RG::RGLoadOp::Clear});
+        pass.Prepare([this](RG::RGPrepareContext& context) { return Prepare(context); });
+    }
+
+    void Record()
+    {
+        ++RecordCalls;
+        EXPECT_FALSE(Variants.ServedGeneration(SourceMaterial.GetGpuSceneMaterialIndex(),
+                                               ServedPassClass::Color).has_value());
+    }
+};
+
+std::shared_ptr<const SpecializationConstants> MakeForwardPreparationOverrides()
+{
+    auto constants = std::make_shared<SpecializationConstants>();
+    constexpr uint32_t kLocalLightsConstant = 300;
+    constexpr uint32_t kSecondaryLightsConstant = 305;
+    constants->AddConstant(kLocalLightsConstant, uint32_t{0});
+    constants->AddConstant(kSecondaryLightsConstant, uint32_t{0});
+    return constants;
+}
+} // namespace
+
+TEST_F(MaterialPipelineCompilationTest, SpecializedColdPreparationDefersBothBackendBuilds)
+{
+    ASSERT_EQ(m_device->GetAPI(), GraphicsAPI::Vulkan);
+    MaterialDocument document{};
+    document.materialName = "DeferredSpecializedPBR";
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    Material* material = m_rs->Materials().RegisterMaterialFromDocument(GUID::Generate(), document);
+    ASSERT_NE(material, nullptr);
+    auto& variants = m_rs->Materials().Variants();
+    const auto flags = VertexAttributeFlags::StandardMesh | VertexAttributeFlags::HasColor;
+    const auto keywords = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced;
+    const auto key = variants.EnqueueColorVariantCompileForTesting(
+        *material, flags, PrimitiveTopology::TriangleList, keywords, 1u, FrontFace::CounterClockwise);
+    variants.SubmitPendingVariantCompiles();
+    variants.ApplyPendingVariantPublishes();
+    const auto published = variants.SnapshotColorVariantForTesting(key);
+    ASSERT_TRUE(published.CurrentPipelineId.IsValid());
+    ASSERT_FALSE(published.PreviousPipelineId.IsValid());
+    const auto constants = MakeForwardPreparationOverrides();
+    const auto specialized = m_device->GetMutablePipelineCache().SpecializeGraphicsPipeline(
+        published.CurrentPipelineId, *constants);
+    ASSERT_TRUE(specialized.IsValid());
+    ASSERT_NE(specialized, published.CurrentPipelineId);
+    const uint32_t materialIndex = material->GetGpuSceneMaterialIndex();
+    ASSERT_NE(materialIndex, std::numeric_limits<uint32_t>::max());
+
+    for (const bool dispatched : {false, true})
+    {
+        SCOPED_TRACE(dispatched ? "dispatcher" : "inline backend");
+        variants.BeginServeFrame(materialIndex + 1);
+        std::unique_ptr<HeldPipelineBuilds> held;
+        if (dispatched)
+            held = std::make_unique<HeldPipelineBuilds>(*m_device);
+        PipelineFormatKey format{};
+        format.ColorCount = 1;
+        format.ColorFormats[0] = dispatched ? TextureFormat::R16_FLOAT : TextureFormat::R8_UNORM;
+        ASSERT_FALSE(m_device->TryGetWarmGraphicsPipeline(specialized, format).IsValid());
+        ASSERT_FALSE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
+        RG::RGResourcePool persistent(m_device.get());
+        RG::RGTransientPool transient(m_device.get());
+        RG::RGUploadRing uploads(m_device.get(), 2, 4096);
+        RG::RGFrame frame(m_device.get(), &persistent, &transient, &uploads);
+        frame.BeginFrame(0);
+        TextureDesc description{};
+        description.width = description.height = 4;
+        description.format = static_cast<uint32_t>(format.ColorFormats[0]);
+        description.usage = static_cast<uint32_t>(TextureUsage::RenderTarget);
+        const auto target = frame.CreateTexture("SpecializedCold.Target", description);
+        SpecializedVariantPreparation preparation{variants, *material, flags, keywords};
+        preparation.AllowRecord = true;
+        const auto pass = frame.AddPass("SpecializedCold.Record", 0,
+            [&preparation, target](RG::RGPassBuilder& builder) { preparation.Declare(builder, target); },
+            [&preparation](RG::RGContext&) { preparation.Record(); });
+        frame.SetGraphicsPipelineSpecialization(pass, constants);
+        frame.MarkOutput(target);
+        frame.Execute();
+        m_device->WaitForIdle();
+        EXPECT_EQ(preparation.PrepareCalls, 1u);
+        EXPECT_EQ(preparation.RecordCalls, 1u);
+        EXPECT_FALSE(preparation.SelectedPipeline.IsValid());
+        EXPECT_FALSE(preparation.HasSelectedUnit);
+        EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(specialized, format).IsValid());
+        EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
+        if (held)
+            EXPECT_TRUE(held->Jobs.empty());
+
+        variants.PruneSettledConcreteWarmWaits();
+        if (held)
+        {
+            EXPECT_EQ(held->Jobs.size(), 2u) << "one specialized and one runtime fallback build";
+            held->RunAll();
+        }
+        EXPECT_TRUE(m_device->TryGetWarmGraphicsPipeline(specialized, format).IsValid());
+        EXPECT_TRUE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
+        variants.PruneSettledConcreteWarmWaits();
+        EXPECT_FALSE(variants.ServedGeneration(materialIndex, ServedPassClass::Color).has_value());
+    }
+}
+
+TEST_F(MaterialPipelineCompilationTest, SpecializedCurrentFallbackSurvivesAbortedPreparationAndRetry)
+{
+    ASSERT_EQ(m_device->GetAPI(), GraphicsAPI::Vulkan);
+    MaterialDocument document{};
+    document.materialName = "SpecializedCurrentFallback";
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    Material* material = m_rs->Materials().RegisterMaterialFromDocument(GUID::Generate(), document);
+    ASSERT_NE(material, nullptr);
+    auto& variants = m_rs->Materials().Variants();
+    const auto flags = VertexAttributeFlags::StandardMesh | VertexAttributeFlags::HasColor;
+    const auto keywords = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced;
+    const auto key = variants.EnqueueColorVariantCompileForTesting(
+        *material, flags, PrimitiveTopology::TriangleList, keywords, 1u, FrontFace::CounterClockwise);
+    variants.SubmitPendingVariantCompiles();
+    variants.ApplyPendingVariantPublishes();
+    const auto published = variants.SnapshotColorVariantForTesting(key);
+    ASSERT_TRUE(published.CurrentPipelineId.IsValid());
+    ASSERT_FALSE(published.PreviousPipelineId.IsValid());
+    const auto constants = MakeForwardPreparationOverrides();
+    const auto specialized = m_device->GetMutablePipelineCache().SpecializeGraphicsPipeline(
+        published.CurrentPipelineId, *constants);
+    ASSERT_TRUE(specialized.IsValid());
+    ASSERT_NE(specialized, published.CurrentPipelineId);
+    PipelineFormatKey format{};
+    format.ColorCount = 1;
+    format.ColorFormats[0] = TextureFormat::R16_FLOAT;
+    const auto warmCurrent = m_device->GetOrCreateGraphicsPipeline(published.CurrentPipelineId, format);
+    ASSERT_TRUE(warmCurrent.IsValid());
+    ASSERT_FALSE(m_device->TryGetWarmGraphicsPipeline(specialized, format).IsValid());
+    const uint32_t materialIndex = material->GetGpuSceneMaterialIndex();
+    ASSERT_NE(materialIndex, std::numeric_limits<uint32_t>::max());
+    variants.BeginServeFrame(materialIndex + 1);
+    HeldPipelineBuilds held(*m_device);
+    RG::RGResourcePool persistent(m_device.get());
+    RG::RGTransientPool transient(m_device.get());
+    RG::RGUploadRing uploads(m_device.get(), 2, 4096);
+    RG::RGFrame frame(m_device.get(), &persistent, &transient, &uploads);
+    frame.BeginFrame(0);
+    TextureDesc description{};
+    description.width = description.height = 4;
+    description.format = static_cast<uint32_t>(format.ColorFormats[0]);
+    description.usage = static_cast<uint32_t>(TextureUsage::RenderTarget);
+    const auto target = frame.CreateTexture("SpecializedCurrent.Target", description);
+    SpecializedVariantPreparation preparation{variants, *material, flags, keywords};
+    const auto pass = frame.AddPass("SpecializedCurrent.Record", 0,
+        [&preparation, target](RG::RGPassBuilder& builder) { preparation.Declare(builder, target); },
+        [&preparation](RG::RGContext&) { preparation.Record(); });
+    frame.SetGraphicsPipelineSpecialization(pass, constants);
+    frame.MarkOutput(target);
+    for (uint32_t attempt = 0; attempt < 2; ++attempt)
+    {
+        frame.Execute();
+        EXPECT_EQ(frame.Stats().PreparationFailures, attempt + 1u);
+        EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
+        EXPECT_EQ(preparation.RecordCalls, 0u);
+        ASSERT_TRUE(preparation.HasSelectedUnit);
+        EXPECT_EQ(preparation.SelectedPipeline, warmCurrent);
+        EXPECT_EQ(preparation.SelectedUnit.PipelineId, published.CurrentPipelineId);
+        EXPECT_EQ(preparation.SelectedUnit.MaterialVersion, published.MaterialVersion);
+        EXPECT_TRUE(held.Jobs.empty());
+        EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(specialized, format).IsValid());
+        EXPECT_FALSE(variants.ServedGeneration(materialIndex, ServedPassClass::Color).has_value());
+    }
+    const auto runtimeUnit = preparation.SelectedUnit;
+    ASSERT_TRUE(runtimeUnit.VariantMeta);
+    variants.PruneSettledConcreteWarmWaits();
+    ASSERT_EQ(held.Jobs.size(), 1u);
+    held.RunAll();
+    variants.PruneSettledConcreteWarmWaits();
+    const auto warmSpecialized = m_device->TryGetWarmGraphicsPipeline(specialized, format);
+    ASSERT_TRUE(warmSpecialized.IsValid());
+    ASSERT_NE(warmSpecialized, warmCurrent);
+    preparation.AllowRecord = true;
+    frame.Execute();
+    m_device->WaitForIdle();
+    EXPECT_EQ(frame.Stats().PreparationFailures, 2u);
+    EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
+    EXPECT_EQ(preparation.PrepareCalls, 3u);
+    EXPECT_EQ(preparation.RecordCalls, 1u);
+    ASSERT_TRUE(preparation.HasSelectedUnit);
+    EXPECT_EQ(preparation.SelectedPipeline, warmSpecialized);
+    EXPECT_EQ(preparation.SelectedUnit.PipelineId, published.CurrentPipelineId);
+    EXPECT_EQ(preparation.SelectedUnit.MaterialVersion, published.MaterialVersion);
+    EXPECT_EQ(preparation.SelectedUnit.VariantMeta, runtimeUnit.VariantMeta);
+    EXPECT_EQ(preparation.SelectedUnit.SetLayouts, runtimeUnit.SetLayouts);
+    EXPECT_FALSE(variants.ServedGeneration(materialIndex, ServedPassClass::Color).has_value());
+}
+
+TEST_F(MaterialPipelineCompilationTest, SpecializedPreviousFallbackKeepsItsMetadataAndGeneration)
+{
+    ASSERT_EQ(m_device->GetAPI(), GraphicsAPI::Vulkan);
+    MaterialDocument document{};
+    document.materialName = "SpecializedPreviousFallback";
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    const GUID guid = GUID::Generate();
+    Material* material = m_rs->Materials().RegisterMaterialFromDocument(guid, document);
+    ASSERT_NE(material, nullptr);
+    auto& variants = m_rs->Materials().Variants();
+    const auto flags = VertexAttributeFlags::StandardMesh;
+    const auto keywords = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced | MaterialKeyword::Shadows;
+    const auto key = variants.EnqueueColorVariantCompileForTesting(
+        *material, flags, PrimitiveTopology::TriangleList, keywords, 1u, FrontFace::CounterClockwise);
+    variants.SubmitPendingVariantCompiles();
+    variants.ApplyPendingVariantPublishes();
+    const auto original = variants.SnapshotColorVariantForTesting(key);
+    ASSERT_TRUE(original.CurrentPipelineId.IsValid());
+    PipelineFormatKey format{};
+    format.ColorCount = 1;
+    format.ColorFormats[0] = TextureFormat::R16_FLOAT;
+    const auto warmOriginal = m_device->GetOrCreateGraphicsPipeline(original.CurrentPipelineId, format);
+    ASSERT_TRUE(warmOriginal.IsValid());
+    const uint32_t materialIndex = material->GetGpuSceneMaterialIndex();
+    ASSERT_NE(materialIndex, std::numeric_limits<uint32_t>::max());
+    variants.BeginServeFrame(materialIndex + 1);
+    RG::RGResourcePool persistent(m_device.get());
+    RG::RGTransientPool transient(m_device.get());
+    RG::RGUploadRing uploads(m_device.get(), 2, 4096);
+    RG::RGFrame frame(m_device.get(), &persistent, &transient, &uploads);
+    frame.BeginFrame(0);
+    TextureDesc description{};
+    description.width = description.height = 4;
+    description.format = static_cast<uint32_t>(format.ColorFormats[0]);
+    description.usage = static_cast<uint32_t>(TextureUsage::RenderTarget);
+    const auto target = frame.CreateTexture("SpecializedPrevious.Target", description);
+    SpecializedVariantPreparation preparation{variants, *material, flags, keywords};
+    const auto pass = frame.AddPass("SpecializedPrevious.Record", 0,
+        [&preparation, target](RG::RGPassBuilder& builder) { preparation.Declare(builder, target); },
+        [&preparation](RG::RGContext&) { preparation.Record(); });
+    frame.MarkOutput(target);
+    frame.Execute();
+    ASSERT_EQ(frame.Stats().PreparationFailures, 1u);
+    ASSERT_TRUE(preparation.HasSelectedUnit);
+    ASSERT_EQ(preparation.SelectedPipeline, warmOriginal);
+    const auto originalUnit = preparation.SelectedUnit;
+    ASSERT_TRUE(originalUnit.VariantMeta);
+
+    MaterialDocument edited = document;
+    edited.lightingModel = "Unlit";
+    edited.surfaceShader = "Surfaces/unlit_solid.glsl";
+    ASSERT_EQ(m_rs->Materials().RegisterMaterialFromDocument(guid, edited), material);
+    ASSERT_GT(material->GetVersion(), original.MaterialVersion);
+    variants.EnqueueColorVariantCompileForTesting(
+        *material, flags, PrimitiveTopology::TriangleList, keywords, 1u, FrontFace::CounterClockwise);
+    variants.SubmitPendingVariantCompiles();
+    variants.ApplyPendingVariantPublishes();
+    const auto republished = variants.SnapshotColorVariantForTesting(key);
+    ASSERT_EQ(republished.PreviousPipelineId, original.CurrentPipelineId);
+    ASSERT_NE(republished.CurrentPipelineId, republished.PreviousPipelineId);
+    const auto warmPrevious = m_device->GetOrCreateGraphicsPipeline(republished.PreviousPipelineId, format);
+    ASSERT_TRUE(warmPrevious.IsValid());
+    const auto constants = MakeForwardPreparationOverrides();
+    const auto specialized = m_device->GetMutablePipelineCache().SpecializeGraphicsPipeline(
+        republished.CurrentPipelineId, *constants);
+    ASSERT_TRUE(specialized.IsValid());
+    ASSERT_NE(specialized, republished.CurrentPipelineId);
+    ASSERT_FALSE(m_device->TryGetWarmGraphicsPipeline(specialized, format).IsValid());
+    ASSERT_FALSE(m_device->TryGetWarmGraphicsPipeline(republished.CurrentPipelineId, format).IsValid());
+    frame.SetGraphicsPipelineSpecialization(pass, constants);
+    HeldPipelineBuilds held(*m_device);
+    for (uint32_t attempt = 0; attempt < 2; ++attempt)
+    {
+        frame.Execute();
+        EXPECT_EQ(frame.Stats().PreparationFailures, attempt + 2u);
+        EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
+        EXPECT_EQ(preparation.RecordCalls, 0u);
+        ASSERT_TRUE(preparation.HasSelectedUnit);
+        EXPECT_EQ(preparation.SelectedPipeline, warmPrevious);
+        EXPECT_EQ(preparation.SelectedUnit.PipelineId, republished.PreviousPipelineId);
+        EXPECT_EQ(preparation.SelectedUnit.MaterialVersion, republished.PreviousMaterialVersion);
+        EXPECT_EQ(preparation.SelectedUnit.MaterialVersion, original.MaterialVersion);
+        EXPECT_EQ(preparation.SelectedUnit.VariantMeta, originalUnit.VariantMeta);
+        EXPECT_EQ(preparation.SelectedUnit.SetLayouts, originalUnit.SetLayouts);
+        EXPECT_TRUE(held.Jobs.empty());
+        EXPECT_FALSE(variants.ServedGeneration(materialIndex, ServedPassClass::Color).has_value());
+    }
+}
+
 TEST_F(MaterialPipelineCompilationTest, ConcreteWarm_MaterialWaitsWhileItsBackendBuildIsPending)
 {
     MaterialDocument doc{};
@@ -3063,6 +3493,49 @@ TEST_F(MaterialPipelineCompilationTest, VariantRepublish_PreviousUnitKeepsItsOwn
         << "the retained unit still names ITS generation, not the replacement's";
     EXPECT_NE(afterApply.PreviousMaterialVersion, afterApply.MaterialVersion)
         << "the two units a recompile window can serve are distinguishable";
+
+    // Only the previous unit is warm for this format. Selecting it in a
+    // pass that aborts before recording must leave this frame's table empty.
+    namespace RG = GameEngine::Rendering::RenderGraph;
+    PipelineFormatKey format{};
+    format.ColorCount = 1;
+    format.ColorFormats[0] = TextureFormat::R16_FLOAT;
+    const auto warmPrevious = m_device->GetOrCreateGraphicsPipeline(afterApply.PreviousPipelineId, format);
+    ASSERT_TRUE(warmPrevious.IsValid());
+    ASSERT_FALSE(m_device->TryGetWarmGraphicsPipeline(afterApply.CurrentPipelineId, format).IsValid());
+    const uint32_t index = mat->GetGpuSceneMaterialIndex();
+    ASSERT_NE(index, std::numeric_limits<uint32_t>::max());
+    variants.BeginServeFrame(index + 1);
+
+    RG::RGResourcePool persistent(m_device.get());
+    RG::RGTransientPool transient(m_device.get());
+    RG::RGUploadRing uploads(m_device.get(), 2, 4096);
+    RG::RGFrame frame(m_device.get(), &persistent, &transient, &uploads);
+    frame.BeginFrame(0);
+    TextureDesc desc{};
+    desc.width = desc.height = 4;
+    desc.format = static_cast<uint32_t>(format.ColorFormats[0]);
+    desc.usage = static_cast<uint32_t>(TextureUsage::RenderTarget);
+    const auto target = frame.CreateTexture("ServedGeneration.Color", desc);
+    bool previousSelected = false;
+    frame.AddPass("ServedGeneration.Aborted", 0,
+                  [&](RG::RGPassBuilder& pass) {
+                      pass.AttachColor(0, target, {.Load = RG::RGLoadOp::Clear});
+                      pass.Prepare([&](RG::RGPrepareContext& context) {
+                          auto [pipeline, unit] = variants.PrepareColorVariant(
+                              *mat, vf, PrimitiveTopology::TriangleList, passKw, FrontFace::CounterClockwise, context);
+                          previousSelected = pipeline == warmPrevious && unit
+                              && unit->PipelineId == afterApply.PreviousPipelineId
+                              && unit->MaterialVersion == afterApply.PreviousMaterialVersion;
+                          return false;
+                      });
+                  },
+                  [](RG::RGContext&) { ADD_FAILURE() << "An aborted frame recorded commands"; });
+    frame.MarkOutput(target);
+    frame.Execute();
+    EXPECT_TRUE(previousSelected);
+    EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+    EXPECT_FALSE(variants.ServedGeneration(index, ServedPassClass::Color).has_value());
 }
 
 // ---- Runtime Mask demotion (alpha source provably cannot discard) ----

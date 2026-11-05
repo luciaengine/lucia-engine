@@ -226,10 +226,21 @@ server.RegisterHandler("get_render_stats", [&app](const EditorDebugServer::Reque
                 {
                     const RG::RGFrame::FrameStats& fs = frame->Stats();
                     timeline["renderGraph"] = {
+                        {"frameIndex", frame->FrameIndex()},
                         {"compileMs", fs.CompileMs},
                         {"scheduleMs", fs.ScheduleMs},
                         {"generateBarriersMs", fs.GenerateBarriersMs},
                         {"buildSubmissionPlanMs", fs.BuildSubmissionPlanMs},
+                        {"prepareMs", fs.PrepareMs},
+                        {"recordAndSubmitMs", fs.RecordAndSubmitMs},
+                        {"preparedPasses", fs.PreparedPasses},
+                        {"preparationFailures", fs.PreparationFailures},
+                        {"parallelRecordWallMs", fs.ParallelRecordWallMs},
+                        {"workerRecordMs", fs.WorkerRecordMs},
+                        {"secondaryPassesEligible", fs.SecondaryPassesEligible},
+                        {"secondaryPassesRecorded", fs.SecondaryPassesRecorded},
+                        {"secondaryPassesFallback", fs.SecondaryPassesFallback},
+                        {"inlinePassesRecorded", fs.InlinePassesRecorded},
                         {"queueSubmitMs", fs.QueueSubmitMs},
                         {"barrierEmitMs", fs.BarrierEmitMs},
                         {"submissionsMade", fs.SubmissionsMade},

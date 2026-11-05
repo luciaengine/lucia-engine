@@ -745,13 +745,13 @@ OceanCascadeLayoutGPU OceanRenderFeature::ClampCascadeLayout(
 }
 
 OceanSampledCascadeLayoutsGPU OceanRenderFeature::SampledCascadeLayouts(
-    const SampledCascadeAvailability& available) const
+    const Rendering::RenderGraph::RGFrame& frame, const SampledCascadeAvailability& available) const
 {
     const OceanCascadeLayoutGPU* sources[static_cast<uint32>(OceanSampledCascade::Count)] = {};
-    sources[static_cast<uint32>(OceanSampledCascade::Foam)] = &m_FoamSim.GetFoamLayout();
+    sources[static_cast<uint32>(OceanSampledCascade::Foam)] = &m_FoamSim.GetFoamLayout(frame);
     sources[static_cast<uint32>(OceanSampledCascade::SeabedDepth)] = &m_SeabedDepth.GetLayout();
     sources[static_cast<uint32>(OceanSampledCascade::Flow)] = &m_Flow.GetLayout();
-    sources[static_cast<uint32>(OceanSampledCascade::DynWaves)] = &m_DynWaves.GetLayout();
+    sources[static_cast<uint32>(OceanSampledCascade::DynWaves)] = &m_DynWaves.GetLayout(frame);
     sources[static_cast<uint32>(OceanSampledCascade::WaveMask)] = &m_WaveMask.GetLayout();
     sources[static_cast<uint32>(OceanSampledCascade::Clip)] = &m_Clip.GetLayout();
     sources[static_cast<uint32>(OceanSampledCascade::Albedo)] = &m_Albedo.GetLayout();
@@ -1376,7 +1376,7 @@ void OceanRenderFeature::ForgetSimulationClaimsBefore(uint32 frameIndex)
 {
     constexpr uint32 kNoClaim = 0xFFFFFFFFu;
     for (uint32* claim : {&m_LastFFTDispatchFrame, &m_LastSeabedDispatchFrame, &m_LastFlowDispatchFrame,
-                          &m_LastWaveMaskDispatchFrame, &m_LastFoamDispatchFrame, &m_LastClipDispatchFrame,
+                          &m_LastWaveMaskDispatchFrame, &m_LastClipDispatchFrame,
                           &m_LastAlbedoDispatchFrame, &m_LastReflectionDispatchFrame,
                           &m_LastCombineDispatchFrame})
     {

@@ -281,8 +281,9 @@ void ShadowReceiverReduce::DeclareLate(RenderGraph::RGFrame& frame, ShadowMapRen
     const uint64_t paramsOffset = params.Offset;
     frame.AddPass(
         request.PassName.c_str(), PassPhase::kDefault,
-        [&request](RenderGraph::RGPassBuilder& p)
+        [this, &request](RenderGraph::RGPassBuilder& p)
         {
+            p.UsePipeline(request.Multisampled ? m_Multisampled.Id : m_SingleSample.Id);
             // Stage-qualified: the dispatch samples the depth, so the barrier out
             // of its writers must name the compute stage.
             p.Read(request.Depth, RenderGraph::RGTextureRead::SampledCompute);

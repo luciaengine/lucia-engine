@@ -9404,13 +9404,14 @@ void EditorApplication::RecordAndPresentWindowFrameRG(EditorWindowContext* ctx, 
             pool.Wait(counter);
         });
 
+    const uint64_t submittedFramesBefore = frame.SubmittedFrameCount();
     const auto tExec0 = std::chrono::high_resolution_clock::now();
     frame.Execute();
     result.rgExecuteMs = StartupMillisecondsSince(tExec0);
     result.rgCompileMs = 0.0; // RenderGraph has no compile phase — declaration IS the build
-    if (auto* rs = MainRenderServices())
-        rs->Spine().OnFrameSubmittedRG(frame, frame.SubmissionToken());
-    Rendering::OnFrameSubmittedReadbacksRG(frame, frame.SubmissionToken());
+    auto* submittedFrameServices = MainRenderServices();
+    Engine::Renderer::NotifyRenderGraphExecution(
+        frame, submittedFramesBefore, submittedFrameServices ? &submittedFrameServices->Spine() : nullptr);
 
     AppendRgCsvSidecarRow(result);
 

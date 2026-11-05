@@ -869,15 +869,9 @@ void RuntimeHost::RenderFrameRG(Engine::Renderer::RenderServices& rs,
         }
     }
 
+    const uint64_t submittedFramesBefore = m_RenderGraphStream.Frame->SubmittedFrameCount();
     m_RenderGraphStream.Frame->Execute();
-
-    // Stamp the frame's graphics token onto the CPU-readback pendings
-    // (GPU-culling visibility + SDSM bounds) queued during declaration.
-    rs.Spine().OnFrameSubmittedRG(*m_RenderGraphStream.Frame, m_RenderGraphStream.Frame->SubmissionToken());
-
-    // Every readback declared on the frame, the composite hook's and any pass's,
-    // becomes pollable only once it carries this frame's submission token.
-    Rendering::OnFrameSubmittedReadbacksRG(*m_RenderGraphStream.Frame, m_RenderGraphStream.Frame->SubmissionToken());
+    Engine::Renderer::NotifyRenderGraphExecution(*m_RenderGraphStream.Frame, submittedFramesBefore, &rs.Spine());
 
     // GE_RG_DIAG=1: a pass dump and per-pass GPU timings.
     if (m_RenderGraphDiagnostics && m_RGFrameIndex == 2)

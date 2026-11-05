@@ -769,6 +769,7 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareMaskPass(
         passName, Rendering::PassPhase::kDefault,
         [&](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(m_MaskPipelineId);
             p.Read(depth, RG::RGTextureRead::Sampled);
             p.Read(tlasRG);
             p.Write(mask, RG::RGTextureWrite::Storage);
@@ -934,6 +935,7 @@ Rendering::RenderGraph::RGTexture RTShadowMaskService::DeclareDenoisePass(
         passName, Rendering::PassPhase::kDefault,
         [&](RG::RGPassBuilder& p)
         {
+            p.UsePipeline(m_DenoisePipelineId);
             p.Read(rawMask, RG::RGTextureRead::Sampled);
             p.Read(depth, RG::RGTextureRead::Sampled);
             p.Write(denoised, RG::RGTextureWrite::Storage);
