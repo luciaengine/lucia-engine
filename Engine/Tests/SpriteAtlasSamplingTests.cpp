@@ -94,11 +94,11 @@ protected:
     {
         m_Sampler = m_Device->CreateSampler(linear ? SamplerDesc::MaterialLinearClamp() : SamplerDesc::PointClamp());
         m_Set = m_Device->CreateDescriptorSet({m_Layout, "SpriteAtlasSampling", true});
-        const std::array<uint8, 8> colors = {0, 0, 255, 255, 255, 0, 0, 255};
-        const std::array<uint8, 16> normals = {128, 128, 255, 255, 128, 128, 255, 255,
-                                              255, 128, 255, 255, 255, 128, 255, 255};
-        const auto atlas = Upload(colors.data(), 2);
-        const auto normal = Upload(normals.data(), 4);
+        const std::array<uint8, 16> colors = {0, 0, 255, 255, 0, 0, 255, 255,
+                                             255, 0, 0, 255, 255, 0, 0, 255};
+        const std::array<uint8, 8> normals = {128, 128, 255, 255, 255, 128, 255, 255};
+        const auto atlas = Upload(colors.data(), 4);
+        const auto normal = Upload(normals.data(), 2);
         m_Device->UpdateCombinedImageSamplerBinding(m_Set, 1, atlas, m_Sampler);
         m_Device->UpdateCombinedImageSamplerBinding(m_Set, 2, normal, m_Sampler);
 
