@@ -31,6 +31,7 @@ struct TextureUsageSnapshot
  * and fails only on one that validates strictly — a port, years later, far from
  * whoever wrote it.
  *
+ * Backend-owned diagnostic clears add their required transfer usage before audit.
  * Two levels:
  *
  *  - AUDIT (default in developer configs) finds the drift at the use site: each
@@ -60,8 +61,8 @@ public:
     /**
      * @brief Whether declared transfer usage is authoritative at image creation.
      *
-     * When true the Vulkan backend maps exactly the declared bits and adds
-     * nothing, so a copy of an undeclared image is a validation error rather
+     * When true the Vulkan backend maps the declared bits and backend-owned
+     * diagnostic uses, so an undeclared copy is a validation error rather
      * than a silent success. GE_STRICT_TEXTURE_USAGE=1; off by default on every
      * config. Resolved once.
      */

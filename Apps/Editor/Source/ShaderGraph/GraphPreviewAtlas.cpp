@@ -21,6 +21,7 @@
 #include "Mathematics/Vector3.h"
 #include "Rendering/Core/HashUtils.h"
 #include "Rendering/Core/PassPhase.h"
+#include "Rendering/Core/PipelineTypes.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Core/ViewParamsLayout.h"
 #include "Rendering/Passes/TonemapPass.h"
@@ -231,9 +232,16 @@ struct GraphPreviewAtlas::FramePlan
             const Engine::Renderer::PipelineVariantCache::VariantServeUnit* served = nullptr;
             if (Ibl)
             {
+                // The keyword variant must keep the base material's device-aware winding.
+                Rendering::GraphicsPipelineDesc basePipeline{};
+                if (!context.GetDevice()->CopyGraphicsPipeline(material->GetGraphicsPipelineId(), basePipeline))
+                {
+                    ++Result->Undrawn;
+                    continue;
+                }
                 const auto variant = materials.Variants().PrepareColorVariant(
                     *material, VertexFlags, Rendering::PrimitiveTopology::TriangleList,
-                    MaterialKeyword::IBL, Rendering::FrontFace::CounterClockwise, context);
+                    MaterialKeyword::IBL, basePipeline.Rasterization.frontFace, context);
                 pipeline = variant.first;
                 served = variant.second;
             }

@@ -48,33 +48,47 @@ BufferDesc Buf(uint64_t size)
 
 TEST(RGTransientPool, ReusesFreeEntryOfMatchingDescAcrossFrames)
 {
-    RG_REQUIRE_DEVICE(dev);
-    RGTransientPool pool(dev.get());
-    const TextureHandle h0 = pool.AcquireTexture(Tex(64, 64), 0);
+    const ScopedEnvVar fill("GE_VK_FILL_NEW_TARGETS_NAN", "0");
+    RG_REQUIRE_DEVICE(device);
+    ASSERT_FALSE(device->DebugFillsNewResourcesWithNaN());
+    RGTransientPool pool(device.get());
+    const TextureHandle firstTexture = pool.AcquireTexture(Tex(64, 64), 0);
+    const BufferHandle firstBuffer = pool.AcquireBuffer(Buf(256), 0);
+    ASSERT_TRUE(firstTexture.IsValid());
+    ASSERT_TRUE(firstBuffer.IsValid());
     pool.ReleaseFrame(0);
-    const TextureHandle h1 = pool.AcquireTexture(Tex(64, 64), 1);
-    EXPECT_TRUE(h0.IsValid());
-    EXPECT_EQ(h0, h1) << "matching desc must reuse the freed entry";
-    EXPECT_EQ(pool.Allocs(), 1u);
-    EXPECT_EQ(pool.Hits(), 1u);
+    const TextureHandle secondTexture = pool.AcquireTexture(Tex(64, 64), 1);
+    const BufferHandle secondBuffer = pool.AcquireBuffer(Buf(256), 1);
+    EXPECT_EQ(firstTexture, secondTexture) << "matching desc must reuse the freed texture";
+    EXPECT_EQ(firstBuffer, secondBuffer) << "matching desc must reuse the freed buffer";
+    EXPECT_EQ(pool.Allocs(), 2u);
+    EXPECT_EQ(pool.Hits(), 2u);
     EXPECT_EQ(pool.TexturePoolSize(), 1u);
+    EXPECT_EQ(pool.BufferPoolSize(), 1u);
 }
 
-// Under the device's NaN fill a transient read before its first write must
-// read the fill, so the pool hands out a fresh physical every frame.
+// NaN fill requires a fresh physical resource each frame, so a read before
+// the first write sees the fill instead of the previous frame's contents.
 TEST(RGTransientPool, DoesNotRecycleWhileTheDeviceFillsNewResourcesWithNaN)
 {
+    const ScopedEnvVar api("GE_GFX_API", "vulkan");
     const ScopedEnvVar fill("GE_VK_FILL_NEW_TARGETS_NAN", "1");
-    RG_REQUIRE_DEVICE(dev);
-    ASSERT_TRUE(dev->DebugFillsNewResourcesWithNaN());
-    RGTransientPool pool(dev.get());
-    pool.AcquireTexture(Tex(64, 64), 0);
-    pool.AcquireBuffer(Buf(256), 0);
+    RG_REQUIRE_DEVICE(device);
+    ASSERT_EQ(device->GetAPI(), GraphicsAPI::Vulkan);
+    ASSERT_TRUE(device->DebugFillsNewResourcesWithNaN());
+    RGTransientPool pool(device.get());
+    const TextureDesc texture = Tex(64, 64, TextureFormat::R32_FLOAT);
+    ASSERT_TRUE(pool.AcquireTexture(texture, 0).IsValid());
+    ASSERT_TRUE(pool.AcquireBuffer(Buf(256), 0).IsValid());
+    EXPECT_EQ(pool.TexturePoolSize(), 1u);
+    EXPECT_EQ(pool.BufferPoolSize(), 1u);
     pool.ReleaseFrame(0);
     EXPECT_EQ(pool.TexturePoolSize(), 0u);
     EXPECT_EQ(pool.BufferPoolSize(), 0u);
-    pool.AcquireTexture(Tex(64, 64), 1);
-    pool.AcquireBuffer(Buf(256), 1);
+    ASSERT_TRUE(pool.AcquireTexture(texture, 1).IsValid());
+    ASSERT_TRUE(pool.AcquireBuffer(Buf(256), 1).IsValid());
+    EXPECT_EQ(pool.TexturePoolSize(), 1u);
+    EXPECT_EQ(pool.BufferPoolSize(), 1u);
     EXPECT_EQ(pool.Allocs(), 4u);
     EXPECT_EQ(pool.Hits(), 0u);
 }
