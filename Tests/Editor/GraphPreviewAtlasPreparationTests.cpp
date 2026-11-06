@@ -169,12 +169,15 @@ class GraphPreviewAtlasPreparationTest : public ::testing::TestWithParam<Graphic
     }
 
     void CompileIblVariant(Material& material, VertexAttributeFlags flags,
-                           PipelineVariantCache::VariantEntrySnapshotForTesting& published)
+                           PipelineVariantCache::VariantEntrySnapshotForTesting& published,
+                           std::optional<FrontFace> winding = std::nullopt)
     {
+        GraphicsPipelineDesc basePipeline{};
+        ASSERT_TRUE(m_Device->CopyGraphicsPipeline(material.GetGraphicsPipelineId(), basePipeline));
         auto& variants = m_Services->Materials().Variants();
         const auto key = variants.EnqueueColorVariantCompileForTesting(
             material, flags, PrimitiveTopology::TriangleList, MaterialKeyword::IBL,
-            1u, FrontFace::CounterClockwise);
+            1u, winding.value_or(basePipeline.Rasterization.frontFace));
         variants.SubmitPendingVariantCompiles();
         m_Services->Materials().FlushAsyncMaterialCompiles();
         published = variants.SnapshotColorVariantForTesting(key);
@@ -415,6 +418,93 @@ TEST_P(GraphPreviewAtlasPreparationTest, NativePixelsSurviveAbortRetryAndRefuseS
         ASSERT_NO_FATAL_FAILURE(Execute(old, false));
     }
     ASSERT_NO_FATAL_FAILURE(ExpectColor(output, 2u));
+}
+
+TEST_P(GraphPreviewAtlasPreparationTest, IblKeepsTheFrontFacingSphereSurface)
+{
+    const auto surface = m_Cache.Path() / "ibl_fresnel_facing.glsl";
+    {
+        std::ofstream shader(surface);
+        shader << R"glsl(#include "Graph/Nodes/Utility/Nodes.glsl"
+SurfaceOutput EvaluateSurface(SurfaceInput sIn)
+{
+    SurfaceOutput surfaceOutput = DefaultSurfaceOutput();
+    float fresnel = SG_Fresnel(sIn.normalWS, sIn.viewDirWS, 2.6);
+    surfaceOutput.baseColor = vec3(0.0);
+    surfaceOutput.metallic = 1.0;
+    surfaceOutput.roughness = 1.0;
+    surfaceOutput.ao = 0.0;
+    surfaceOutput.normalWS = normalize(sIn.normalWS);
+    surfaceOutput.emissive = 2.0 * vec3(fresnel, 1.0 - fresnel, 0.0);
+    surfaceOutput.opacity = 1.0;
+    return surfaceOutput;
+}
+)glsl";
+    }
+    auto& ibl = m_Services->EnsureFeature<ImageBasedLightingFeature>();
+    ASSERT_TRUE(ibl.Initialize(m_Device.get()));
+    m_Device->WaitForIdle();
+    ASSERT_TRUE(ibl.IsInitialized());
+    ASSERT_TRUE(ibl.GetIrradianceCube().IsValid() && ibl.GetPrefilterCube().IsValid());
+    ASSERT_TRUE(ibl.GetBrdfLut().IsValid());
+    MaterialDocument document{};
+    document.materialName = "Atlas Fresnel facing";
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = surface.string();
+    const GUID guid = GUID::Generate();
+    auto* material = m_Services->Materials().RegisterMaterialFromDocument(guid, document);
+    ASSERT_NE(material, nullptr);
+    if (!material->GetGraphicsPipelineId().IsValid())
+    {
+        for (const auto& compileError : m_Services->Materials().ShaderErrors().Snapshot())
+            for (const auto& diagnostic : compileError.Errors)
+                ADD_FAILURE() << compileError.MaterialName << ": " << diagnostic;
+    }
+    ASSERT_TRUE(material->GetGraphicsPipelineId().IsValid());
+    const auto* sphere = m_Services->GetMeshGPURegistry().FindByKey({PrimitiveGenerator::SphereGuid(), 0});
+    ASSERT_NE(sphere, nullptr);
+    PipelineFormatKey format{};
+    format.ColorCount = 1u;
+    format.ColorFormats[0] = TextureFormat::R16G16B16A16_FLOAT;
+    format.DepthFormat = m_Services->GetDepthFormat();
+    format.RasterizationSamples = 1u;
+    // Both windings are warm so a wrong-face failure must contain real pixels.
+    for (const auto winding : {FrontFace::CounterClockwise, FrontFace::Clockwise})
+    {
+        PipelineVariantCache::VariantEntrySnapshotForTesting published;
+        ASSERT_NO_FATAL_FAILURE(CompileIblVariant(*material, sphere->vertexFlags, published, winding));
+        ASSERT_TRUE(m_Device->GetOrCreateGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
+    }
+    GraphPreviewAtlas atlas;
+    atlas.Initialize(m_Services.get());
+    UiRgHarness basePools(m_Device.get()), iblPools(m_Device.get());
+    RG::RGFrame baseFrame(m_Device.get(), &basePools.Persistent, &basePools.Transient, &basePools.Ring);
+    RG::RGFrame iblFrame(m_Device.get(), &iblPools.Persistent, &iblPools.Transient, &iblPools.Ring);
+    TextureHandle output{};
+    {
+        DeviceFrame active(*m_Device);
+        ASSERT_TRUE(active.Open());
+        ASSERT_NO_FATAL_FAILURE(Build(atlas, baseFrame, 1u, guid));
+        ASSERT_NO_FATAL_FAILURE(Execute(baseFrame, true));
+        output = baseFrame.PhysicalTexture(m_LastAtlas);
+    }
+    // The front centre is green; the outward normal on the back shell produces red.
+    {
+        SCOPED_TRACE("IBL off front-facing control");
+        ASSERT_NO_FATAL_FAILURE(ExpectColor(output, 1u));
+    }
+    atlas.SetIblEnabled(true);
+    {
+        DeviceFrame active(*m_Device);
+        ASSERT_TRUE(active.Open());
+        ASSERT_NO_FATAL_FAILURE(Build(atlas, iblFrame, 2u, guid));
+        ASSERT_NO_FATAL_FAILURE(Execute(iblFrame, true));
+        ASSERT_EQ(iblFrame.PhysicalTexture(m_LastAtlas), output);
+    }
+    {
+        SCOPED_TRACE("IBL on front-facing result");
+        ASSERT_NO_FATAL_FAILURE(ExpectColor(output, 1u));
+    }
 }
 
 TEST_P(GraphPreviewAtlasPreparationTest, IblPreviousDrawRemainsPendingUntilCurrentRecordsWithoutAnotherEdit)
