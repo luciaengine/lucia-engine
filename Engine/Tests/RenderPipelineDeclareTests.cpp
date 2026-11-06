@@ -13242,7 +13242,7 @@ TEST(RenderPipelineDeclareTests, ReadbackTicketWaitsItsOwnSubmissionNotTheDevice
 {
     auto device = CreateVulkanDeviceFast();
     if (!device)
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
     {
         // Positive control: the counter moves on a real drain. Without this the
         // zero deltas below are absence of evidence, not evidence of absence.
@@ -16597,12 +16597,12 @@ struct HzbTwoViewRig
 // The lifetime pin. Two views, one node, one frame: the second view's execute
 // callback must not destroy the first view's single-mip image views — they are
 // already written into this frame's recorded descriptor sets, so destroying
-// them makes the submitted command buffer reference a dead VkImageView.
+// them makes the submitted command buffer reference a dead texture view.
 TEST(RenderPipelineDeclareTests, TwoHzbViewsInOneFrameKeepBothViewsMipViewsAlive)
 {
     auto device = CreateVulkanDeviceFast();
     if (!device)
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
     {
         HzbTwoViewRig rig;
         ASSERT_TRUE(rig.Init(device.get()));
@@ -16662,7 +16662,7 @@ TEST(RenderPipelineDeclareTests, HzbMipViewsOfAResizedViewOutliveTheFrameThatRep
 {
     auto device = CreateVulkanDeviceFast();
     if (!device)
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
     {
         HzbTwoViewRig rig;
         ASSERT_TRUE(rig.Init(device.get()));
@@ -18395,8 +18395,10 @@ TEST(RenderPipelineDeclareTests, SceneAsForgetsItsBlasMapOnADeviceRebuild)
 {
     const ScopedForcedDeviceLoss loss;
     auto device = CreateVulkanDeviceFast();
-    if (!device || !device->GetCapabilities().supportsRayQuery)
-        GTEST_SKIP() << "Vulkan fault injection requires a Vulkan ray-query backend; the Metal fallback does not implement GE_VK_FORCE_DEVICE_LOST";
+    if (!device || device->GetAPI() != GraphicsAPI::Vulkan)
+        GTEST_SKIP() << "GE_VK_FORCE_DEVICE_LOST requires Vulkan";
+    if (!device->GetCapabilities().supportsRayQuery)
+        GTEST_SKIP() << "Vulkan device does not support ray queries";
     {
         RenderServices rs;
         ASSERT_TRUE(rs.Initialize(device.get()));
@@ -18792,7 +18794,9 @@ TEST(RenderPipelineDeclareTests, TerrainExtractionUploadsAgainAfterADeviceRebuil
     const ScopedForcedDeviceLoss loss;
     TerrainFixture f;
     if (!f.Up())
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
+    if (f.Device->GetAPI() != GraphicsAPI::Vulkan)
+        GTEST_SKIP() << "GE_VK_FORCE_DEVICE_LOST requires Vulkan";
     {
         auto& terrain = f.Rs->EnsureFeature<TerrainECS::TerrainRenderFeature>();
         EXPECT_TRUE(terrain.Initialize(f.Device.get()));
@@ -18885,7 +18889,9 @@ TEST(RenderPipelineDeclareTests, TerrainFeatureForgetsEveryDeviceObjectAtARebuil
     const ScopedForcedDeviceLoss loss;
     TerrainFixture f;
     if (!f.Up())
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
+    if (f.Device->GetAPI() != GraphicsAPI::Vulkan)
+        GTEST_SKIP() << "GE_VK_FORCE_DEVICE_LOST requires Vulkan";
     {
         auto& terrain = f.Rs->EnsureFeature<TerrainECS::TerrainRenderFeature>();
         EXPECT_TRUE(terrain.Initialize(f.Device.get()));
