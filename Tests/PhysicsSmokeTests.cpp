@@ -37,6 +37,8 @@
 #include "TerrainECS/Systems/TerrainPhysicsSystem.h"
 #include "TerrainECS/Systems/TerrainWorldHooks.h"
 #include "TerrainECS/Components/TerrainTileCollider.h"
+#include "TerrainECS/Components/TerrainPageCollider.h"
+#include "PagedTiledTerrain.h"
 #include "TerrainECS/Components/TerrainPlanetFaceCollider.h"
 #include "CBTTerrain/SphereSculptPaging.h"      // SphereSculptSampler (empty view = no sculpt)
 #include "CBTTerrain/SphereAnalyticModifiers.h" // SphereAnalyticModifierSet (empty = no modifiers)
@@ -2631,6 +2633,217 @@ float PoleSurfaceHeight(float radius, float reliefAmp)
 // Play-enter provisions exactly six per-face colliders (one Jolt body each); a domain
 // switch back to Planar releases them; a double cycle holds 6 -> 0 -> 6 -> 0 without
 // leaking planet-face slots (the E6 4->0->4->0 proof, generalized to the sphere).
+// ---- Paged terrain colliders: one body per finest page inside a CPU window (design page-streaming D3) ----
+
+namespace
+{
+namespace PagedTE = GameEngine::TerrainECS;
+
+// A 2048 x 1024 m paged terrain (16 x 8 level-0 pages at 1 m) on an entity, its two tiles loaded at
+// Full as well: the oracle's heights, which the page bodies do not read. Frame drives the
+// terrain's height pages as the extraction does (the dynamic bodies' windows, the request, the
+// update), then TerrainPhysicsSystem and the flush.
+class PagedColliderTerrain
+{
+public:
+    explicit PagedColliderTerrain(GameEngine::ECS::World& world)
+        : Paged(PagedTE::Test::CreatePagedTiledTerrain(PagedTE::TerrainService::Get(), 2048.0f, 1024.0f, 64.0f))
+    {
+        using namespace GameEngine;
+        PagedTE::TerrainService& service = PagedTE::TerrainService::Get();
+        for (int32 x = 0; x < 2; ++x)
+        {
+            PagedTE::TerrainTileData* tile = service.LoadTile(Paged.Tiled, PagedTE::TileCoord{x, 0});
+            tile->LodState = PagedTE::TileLodState::Full;
+            tile->MarkFullDirty();
+        }
+        Entity = world.CreateEntity();
+        world.AddComponentImmediate<Components::Terrain>(Entity, Paged.Component);
+        world.AddComponentImmediate<Components::WorldTransform>(Entity, Components::WorldTransform{});
+    }
+
+    // The world point of terrain-local meters (x, z) from the footprint's minimum corner.
+    GameEngine::Mathematics::Vector3 At(GameEngine::float32 x, GameEngine::float32 z) const
+    {
+        return {Paged.Request.Shape.OriginX + x, 10.0f, Paged.Request.Shape.OriginZ + z};
+    }
+
+    // Frames with one camera at `camera` until `pages` page colliders exist (the window pages land
+    // on jobs). False when they never do.
+    bool ProvisionUntil(GameEngine::ECS::World& world, PagedTE::TerrainPhysicsSystem& system,
+                        const GameEngine::Mathematics::Vector3& camera, int pages)
+    {
+        for (int attempt = 0; attempt < 2000; ++attempt)
+        {
+            Frame(world, system, camera);
+            if (CountPageColliders(world) == pages)
+                return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return false;
+    }
+
+    void Frame(GameEngine::ECS::World& world, PagedTE::TerrainPhysicsSystem& system,
+               const GameEngine::Mathematics::Vector3& camera)
+    {
+        StreamPages(world, camera);
+        system.Update(world, 1.0f / 60.0f);
+        world.ProcessCommands();
+    }
+
+    // One frame of the height pages alone: the windows the next TerrainPhysicsSystem update reads.
+    void StreamPages(GameEngine::ECS::World& world, const GameEngine::Mathematics::Vector3& camera)
+    {
+        PagedTE::TerrainHeightPages& pages = PagedTE::TerrainService::Get().GetHeightPages();
+        pages.GatherBodyWindows(world);
+        pages.Request(Paged.Request, {&camera, 1}, View());
+        pages.Update(m_Frame++, 1.0f / 60.0f, false, 2);
+    }
+
+    static PagedTE::PageLevelView View()
+    {
+        return PagedTE::MakePageLevelView(PagedTE::kPageLevelReferenceRows, 1.0f, 11.0f);
+    }
+
+    static int CountPageColliders(GameEngine::ECS::World& world)
+    {
+        int count = 0;
+        world.Query<GameEngine::ECS::Read<GameEngine::Components::TerrainPageCollider>>().Each(
+            [&count](const GameEngine::Components::TerrainPageCollider&) { ++count; });
+        return count;
+    }
+
+    static GameEngine::ECS::EntityHandle FindPageCollider(GameEngine::ECS::World& world, GameEngine::uint32 pageX,
+                                                         GameEngine::uint32 pageZ)
+    {
+        GameEngine::ECS::EntityHandle found{};
+        world.Query<GameEngine::ECS::Read<GameEngine::Components::TerrainPageCollider>>().Each(
+            [&](GameEngine::ECS::EntityHandle entity, const GameEngine::Components::TerrainPageCollider& tag) {
+                if (tag.PageX == pageX && tag.PageZ == pageZ)
+                    found = entity;
+            });
+        return found;
+    }
+
+    PagedTE::Test::PagedTiledTerrain Paged;
+    GameEngine::ECS::EntityHandle Entity{};
+
+private:
+    GameEngine::uint64 m_Frame = 1;
+};
+
+// A downward ray at world (x, z): the height it meets, or false.
+bool GroundUnder(GameEngine::float32 x, GameEngine::float32 z, GameEngine::float32& outY)
+{
+    using namespace GameEngine::Physics;
+    RayCastQuery q{};
+    q.ray = Ray3D(Vector3(x, 10000.0f, z), Vector3(0.0f, -1.0f, 0.0f));
+    q.maxDistance = 20000.0f;
+    RayCastResult hit{};
+    if (!GameEngine::PhysicsECS::PhysicsWorldService::Get().RayCast(q, hit) || !hit.HasHit())
+        return false;
+    outY = hit.hitPoint.y;
+    return true;
+}
+
+} // namespace
+
+TEST(Physics, PagedTerrainGetsABodyPerWindowPageAndNoneOutside)
+{
+    using namespace GameEngine;
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::TerrainPageCollider;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    PagedColliderTerrain terrain(world);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, terrain.At(300.0f, 300.0f), 4));
+    PhysicsECS::PhysicsInitSystem init;
+    init.Update(world, 1.0f / 60.0f);
+    world.ProcessCommands();
+
+    world.Query<ECS::Read<TerrainPageCollider>, ECS::Read<PhysicsBody>>().Each(
+        [](const TerrainPageCollider& tag, const PhysicsBody& body) {
+            EXPECT_TRUE(tag.PageX == 1u || tag.PageX == 2u) << tag.PageX;
+            EXPECT_TRUE(tag.PageZ == 1u || tag.PageZ == 2u) << tag.PageZ;
+            EXPECT_TRUE(body.initialized) << "page " << tag.PageX << ", " << tag.PageZ;
+        });
+    EXPECT_EQ(PagedColliderTerrain::CountPageColliders(world), 4);
+
+    float32 y = 0.0f;
+    const Mathematics::Vector3 inside = terrain.At(300.0f, 300.0f);
+    EXPECT_TRUE(GroundUnder(inside.x, inside.z, y)) << "no ground under a window page";
+    const Mathematics::Vector3 outside = terrain.At(1500.0f, 700.0f);
+    EXPECT_FALSE(GroundUnder(outside.x, outside.z, y)) << "a page outside every window has a body";
+}
+
+TEST(Physics, APageColliderIsTornDownWhenItsPageLeavesEveryWindow)
+{
+    using namespace GameEngine;
+    using GameEngine::Components::TerrainPageCollider;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    PagedColliderTerrain terrain(world);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, terrain.At(300.0f, 300.0f), 4));
+    const ECS::EntityHandle left = PagedColliderTerrain::FindPageCollider(world, 2, 2);
+    ASSERT_TRUE(left.IsValid());
+    const TerrainPageCollider tag = *world.GetComponent<TerrainPageCollider>(left);
+
+    // Local (1500, 700): pages 11..12 x 5..6.
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, terrain.At(1500.0f, 700.0f), 4));
+    terrain.Frame(world, terrainPhysics, terrain.At(1500.0f, 700.0f));
+    EXPECT_EQ(PagedColliderTerrain::CountPageColliders(world), 4);
+    EXPECT_FALSE(world.IsValid(left)) << "the page the camera left kept its collider";
+    EXPECT_EQ(PagedTE::TerrainService::Get().ResolvePageCollider(tag.PhysicsHandleIndex, tag.PhysicsHandleGeneration),
+              nullptr)
+        << "the page slot was not released";
+    EXPECT_TRUE(PagedColliderTerrain::FindPageCollider(world, 11, 5).IsValid());
+}
+
+TEST(Physics, AStalePageSlotReleaseFreesNothingAndReleaseAllFreesEverySlot)
+{
+    using namespace GameEngine;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    PagedColliderTerrain terrain(world);
+    PagedTE::TerrainService& service = PagedTE::TerrainService::Get();
+    // The camera at local (300, 300) brings pages 1..2 x 1..2 to the CPU.
+    PagedTE::TerrainService::PagePhysicsHandle stale{};
+    for (int attempt = 0; attempt < 2000 && stale.Index == 0; ++attempt)
+    {
+        terrain.StreamPages(world, terrain.At(300.0f, 300.0f));
+        stale = service.AcquirePagePhysicsHandle(
+            service.SurfaceQuery(terrain.Paged.Component, Components::WorldTransform{}), 1, 1);
+        if (stale.Index == 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_NE(stale.Index, 0u) << "page (1, 1) never reached the CPU";
+    service.ReleasePagePhysicsHandle(stale.Index, stale.Generation);
+
+    const PagedTE::SurfaceHeightQuery query = service.SurfaceQuery(terrain.Paged.Component, Components::WorldTransform{});
+    const PagedTE::TerrainService::PagePhysicsHandle reused = service.AcquirePagePhysicsHandle(query, 1, 1);
+    const PagedTE::TerrainService::PagePhysicsHandle other = service.AcquirePagePhysicsHandle(query, 2, 2);
+    ASSERT_EQ(reused.Index, stale.Index) << "the new slot did not take the released index";
+    ASSERT_NE(reused.Generation, stale.Generation);
+    ASSERT_NE(other.Index, 0u);
+
+    service.ReleasePagePhysicsHandle(stale.Index, stale.Generation);
+    EXPECT_NE(service.ResolvePageCollider(reused.Index, reused.Generation), nullptr)
+        << "a stale release freed the slot that took its index";
+    EXPECT_NE(service.ResolvePageCollider(other.Index, other.Generation), nullptr);
+
+    service.ReleaseAllPagePhysicsHandles();
+    EXPECT_EQ(service.ResolvePageCollider(reused.Index, reused.Generation), nullptr);
+    EXPECT_EQ(service.ResolvePageCollider(other.Index, other.Generation), nullptr);
+}
+
 TEST(Physics, PlanetTerrainProvisionsSixFaceCollidersLifecycle)
 {
     using namespace GameEngine;

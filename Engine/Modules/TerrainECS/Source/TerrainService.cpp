@@ -10,6 +10,8 @@
 #include "TerrainECS/TerrainHeightPages.h"
 #include "TerrainECS/HeightPageStoreLoader.h"
 #include "Components/Terrain/Terrain.h"
+#include "Components/Transform.h"
+#include "Physics/PhysicsShapes.h"
 #include "Core/Engine.h"
 #include "Assets/AssetManager.h"
 #include "Assets/BinaryAsset.h"
@@ -197,6 +199,48 @@ UpsampleTap ComputeUpsampleTap(uint32 dstIndex, uint32 srcDim, uint32 dstDim)
     const uint32 hi = std::min(lo + 1u, srcDim - 1u);
     return {lo, hi, pos - static_cast<float32>(lo)};
 }
+// Reads finest page (pageX, pageZ)'s body samples (SurfaceHeightQuery::FillFinestPage) into `out`,
+// kFinestPageGridSamples squared, the samples past the field's last sample holes: no ground past the
+// edge. False, `out` unspecified, when the page is not on the CPU at level 0.
+bool ReadPageColliderSamples(const SurfaceHeightQuery& query, uint32 pageX, uint32 pageZ, std::span<float32> out)
+{
+    if (!query.FillFinestPage(pageX, pageZ, out))
+        return false;
+    const uint64 firstX = static_cast<uint64>(pageX) * PageStreaming::kPageOwnedSamples;
+    const uint64 firstZ = static_cast<uint64>(pageZ) * PageStreaming::kPageOwnedSamples;
+    const uint64 insideX = std::min<uint64>(kFinestPageGridSamples, query.LatticeSamplesX() - firstX);
+    const uint64 insideZ = std::min<uint64>(kFinestPageGridSamples, query.LatticeSamplesZ() - firstZ);
+    for (uint64 z = 0; z < kFinestPageGridSamples; ++z)
+        for (uint64 x = z < insideZ ? insideX : 0u; x < kFinestPageGridSamples; ++x)
+            out[z * kFinestPageGridSamples + x] = Physics::kHeightFieldNoCollision;
+    return true;
+}
+
+// True when an overlay edit over level-0 samples `rect` (inclusive) touches a sample of finest page
+// (pageX, pageZ)'s body: lattice samples 128 pageX to 128 pageX + 128 on X, the same on Z.
+bool OverlayRectReachesPage(const PageStreaming::PageSampleRect& rect, uint32 pageX, uint32 pageZ)
+{
+    const uint64 firstX = static_cast<uint64>(pageX) * PageStreaming::kPageOwnedSamples;
+    const uint64 firstZ = static_cast<uint64>(pageZ) * PageStreaming::kPageOwnedSamples;
+    return rect.MaxX >= firstX && rect.MinX <= firstX + PageStreaming::kPageOwnedSamples && rect.MaxZ >= firstZ &&
+           rect.MinZ <= firstZ + PageStreaming::kPageOwnedSamples;
+}
+
+// The bounds of the samples where two page body grids (kFinestPageGridSamples squared) differ; empty
+// when they are equal.
+DirtyRegionLog::Region DifferingSamples(std::span<const float32> before, std::span<const float32> after)
+{
+    constexpr int32 kGrid = static_cast<int32>(kFinestPageGridSamples);
+    DirtyRegionLog::Region region;
+    for (int32 z = 0; z < kGrid; ++z)
+        for (int32 x = 0; x < kGrid; ++x)
+        {
+            const std::size_t index = static_cast<std::size_t>(z) * kGrid + x;
+            if (before[index] != after[index])
+                region.Union(DirtyRegionLog::Region{x, z, x + 1, z + 1});
+        }
+    return region;
+}
 } // namespace
 
 void UpsampleHeightfieldBilinear(const float32* src, uint32 srcDim,
@@ -327,6 +371,75 @@ JobSystem::JobChannel& TerrainService::BakeStoreChannel(JobSystem::WorkStealingT
     return *m_BakeStoreChannel;
 }
 
+
+SurfaceHeightQuery TerrainService::SurfaceQuery(const Components::Terrain& terrain,
+                                                const Components::WorldTransform& transform)
+{
+    const float32 originY = transform.matrix[13];
+    if (const TiledTerrainData* tiled =
+            GetTiledTerrainData(TiledTerrainHandle{terrain.TiledTerrainHandle, terrain.TiledTerrainGeneration}))
+    {
+        if (m_HeightPages)
+        {
+            SurfaceHeightQuery paged = m_HeightPages->SurfaceQuery(
+                TerrainHandle{tiled->GlobalGpuHandleIndex, tiled->GlobalGpuHandleGeneration});
+            if (paged.IsValid())
+                return paged;
+        }
+        // No page source yet (a height store still cooking, or before its first request): the
+        // footprint on the tile lattice, every sample unsampled.
+        const TiledRenderExtent extent = ComputeTiledRenderExtent(tiled->Config);
+        if (extent.UnifiedWidth < 2u || extent.UnifiedHeight < 2u)
+            return {};
+        PageRequestTerrain shape;
+        shape.OriginX = tiled->WorldOriginX;
+        shape.OriginZ = tiled->WorldOriginZ;
+        shape.Level0TexelX = extent.WorldSizeX / static_cast<float32>(extent.UnifiedWidth - 1u);
+        shape.Level0TexelZ = extent.WorldSizeZ / static_cast<float32>(extent.UnifiedHeight - 1u);
+        shape.SamplesX = extent.UnifiedWidth;
+        shape.SamplesZ = extent.UnifiedHeight;
+        shape.MinHeight = std::min(originY, originY + terrain.HeightScale);
+        shape.MaxHeight = std::max(originY, originY + terrain.HeightScale);
+        return SurfaceHeightQuery(shape, originY, terrain.HeightScale);
+    }
+    const TerrainHandle handle{terrain.TerrainDataHandle, terrain.TerrainDataGeneration};
+    const TerrainData* data = GetTerrainData(handle);
+    // An allocated-but-empty heightfield is not a surface: sampling it would report the origin
+    // altitude everywhere.
+    if (!data || data->Heightfield.GetWidth() < 2u || data->Heightfield.GetHeight() < 2u)
+        return {};
+    // The terrain's transform is a translation for this purpose: the footprint is centered on it.
+    PageRequestTerrain shape;
+    shape.OriginX = transform.matrix[12] - terrain.SizeX * 0.5f;
+    shape.OriginZ = transform.matrix[14] - terrain.SizeZ * 0.5f;
+    shape.Level0TexelX = terrain.SizeX / static_cast<float32>(data->Heightfield.GetWidth() - 1u);
+    shape.Level0TexelZ = terrain.SizeZ / static_cast<float32>(data->Heightfield.GetHeight() - 1u);
+    shape.SamplesX = data->Heightfield.GetWidth();
+    shape.SamplesZ = data->Heightfield.GetHeight();
+    shape.MinHeight = std::min(originY, originY + terrain.HeightScale);
+    shape.MaxHeight = std::max(originY, originY + terrain.HeightScale);
+    return SurfaceHeightQuery(*data, handle, shape, originY, terrain.HeightScale);
+}
+
+bool TerrainService::FetchFinestHeightPage(const Components::Terrain& terrain, const Mathematics::Vector3& worldPoint)
+{
+    const TiledTerrainData* tiled =
+        GetTiledTerrainData(TiledTerrainHandle{terrain.TiledTerrainHandle, terrain.TiledTerrainGeneration});
+    if (!tiled || !m_HeightPages)
+        return false;
+    return m_HeightPages->FetchFinestPage(TerrainHandle{tiled->GlobalGpuHandleIndex, tiled->GlobalGpuHandleGeneration},
+                                          worldPoint);
+}
+
+std::span<const PageStreaming::PageAddress> TerrainService::FinestWindowPages(const Components::Terrain& terrain)
+{
+    const TiledTerrainData* tiled =
+        GetTiledTerrainData(TiledTerrainHandle{terrain.TiledTerrainHandle, terrain.TiledTerrainGeneration});
+    if (!tiled || !m_HeightPages)
+        return {};
+    return m_HeightPages->CpuWindowPages(TerrainHandle{tiled->GlobalGpuHandleIndex, tiled->GlobalGpuHandleGeneration});
+}
+
 TerrainHeightPages& TerrainService::GetHeightPages()
 {
     if (!m_HeightPages)
@@ -392,7 +505,17 @@ void TerrainService::Initialize()
         uint32 sampleCount = 0;
         uint64 version = 0;
         const DirtyRegionLog* dirtyLog = nullptr;
-        if (handle & TerrainService::kTilePhysicsHandleBit)
+        if (handle & TerrainService::kPagePhysicsHandleBit)
+        {
+            if (const auto* page = svc->ResolvePageCollider(handle, generation))
+            {
+                samples = page->Samples.data();
+                sampleCount = kFinestPageGridSamples;
+                version = page->Version;
+                dirtyLog = &page->DirtyLog;
+            }
+        }
+        else if (handle & TerrainService::kTilePhysicsHandleBit)
         {
             if (TerrainTileData* tile = svc->ResolveTilePhysicsTile(handle, generation);
                 tile && !tile->Heightfield.IsEmpty())
@@ -1313,6 +1436,103 @@ TiledTerrainData* TerrainService::GetTiledTerrainData(TiledTerrainHandle handle)
 
     return slot.Data.get();
 }
+
+
+// ---- Per-page collider registry (design page-streaming D3) ----
+
+TerrainService::PagePhysicsHandle TerrainService::AcquirePagePhysicsHandle(const SurfaceHeightQuery& query,
+                                                                           uint32 pageX, uint32 pageZ)
+{
+    // Grid sample i of page p is lattice sample p x kPageOwnedSamples + i. A page whose first
+    // sample is the field's last owns no cell.
+    const uint64 firstX = static_cast<uint64>(pageX) * PageStreaming::kPageOwnedSamples;
+    const uint64 firstZ = static_cast<uint64>(pageZ) * PageStreaming::kPageOwnedSamples;
+    if (firstX + 1u >= query.LatticeSamplesX() || firstZ + 1u >= query.LatticeSamplesZ())
+        return {};
+    PageColliderData data;
+    data.Samples.resize(static_cast<std::size_t>(kFinestPageGridSamples) * kFinestPageGridSamples);
+    if (!ReadPageColliderSamples(query, pageX, pageZ, data.Samples))
+        return {};
+    data.Version = 1;
+    constexpr int32 kGrid = static_cast<int32>(kFinestPageGridSamples);
+    data.DirtyLog.Append(data.Version, DirtyRegionLog::Region{0, 0, kGrid, kGrid});
+    data.ReadAt = query.PageStamp();
+    data.OverlayVersion = query.Edits().OverlayVersion;
+
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    const GenerationalVector::Handle slot = m_PagePhysicsSlots.Create(std::move(data));
+    assert(slot.Index() < kPagePhysicsHandleBit && "page physics slots overflow the handle's index bits");
+    return PagePhysicsHandle{slot.Index() | kPagePhysicsHandleBit, slot.Generation()};
+}
+
+void TerrainService::RefreshPagePhysicsHandle(const SurfaceHeightQuery& query, uint32 pageX, uint32 pageZ,
+                                              PagePhysicsHandle handle)
+{
+    if ((handle.Index & kPagePhysicsHandleBit) == 0)
+        return;
+    PageColliderData* data = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        data = m_PagePhysicsSlots.Get(GenerationalVector::Handle(handle.Index & ~kPagePhysicsHandleBit, handle.Generation));
+    }
+    if (!data)
+        return;
+    const SurfaceHeightPageStamp stamp = query.PageStamp();
+    const SurfaceHeightEdits& edits = query.Edits();
+    const bool pagesMoved = stamp.Epoch != data->ReadAt.Epoch || stamp.Change != data->ReadAt.Change;
+    const bool overlayMoved = edits.OverlayVersion != data->OverlayVersion;
+    if (!pagesMoved && !overlayMoved)
+        return;
+
+    bool reread = pagesMoved && query.FinestPageChangedSince(data->ReadAt, pageX, pageZ);
+    if (overlayMoved && !reread)
+        reread = edits.OverlayChangedSince != data->OverlayVersion ||
+                 OverlayRectReachesPage(edits.OverlayChanged, pageX, pageZ);
+    DirtyRegionLog::Region changed;
+    if (reread)
+    {
+        m_PageColliderScratch.resize(data->Samples.size());
+        if (!ReadPageColliderSamples(query, pageX, pageZ, m_PageColliderScratch))
+            return;
+        changed = DifferingSamples(data->Samples, m_PageColliderScratch);
+    }
+
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    if (!changed.IsEmpty())
+    {
+        std::copy(m_PageColliderScratch.begin(), m_PageColliderScratch.end(), data->Samples.begin());
+        ++data->Version;
+        data->DirtyLog.Append(data->Version, changed);
+    }
+    data->ReadAt = stamp;
+    data->OverlayVersion = edits.OverlayVersion;
+}
+
+void TerrainService::ReleasePagePhysicsHandle(uint32 handleIndex, uint32 generation)
+{
+    if ((handleIndex & kPagePhysicsHandleBit) == 0)
+        return;
+    const GenerationalVector::Handle slot(handleIndex & ~kPagePhysicsHandleBit, generation);
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    if (m_PagePhysicsSlots.IsValid(slot))
+        m_PagePhysicsSlots.Destroy(slot);
+}
+
+void TerrainService::ReleaseAllPagePhysicsHandles()
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    m_PagePhysicsSlots.Clear();
+}
+
+const TerrainService::PageColliderData* TerrainService::ResolvePageCollider(uint32 handleIndex,
+                                                                            uint32 generation) const
+{
+    if ((handleIndex & kPagePhysicsHandleBit) == 0)
+        return nullptr;
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    return m_PagePhysicsSlots.Get(GenerationalVector::Handle(handleIndex & ~kPagePhysicsHandleBit, generation));
+}
+
 
 TerrainService::TilePhysicsHandle
 TerrainService::AcquireTilePhysicsHandle(TiledTerrainHandle tiled, TileCoord coord)
