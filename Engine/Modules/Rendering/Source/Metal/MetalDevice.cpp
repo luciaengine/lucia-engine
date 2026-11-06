@@ -295,6 +295,7 @@ void MetalDevice::Shutdown()
             }
             slot.clear();
         }
+        m_DeferredTextureViewCounts.fill(0);
 
         m_Buffers.ForEach([](Handle, MetalBuffer& buffer) {
             if (buffer.buffer != nullptr)
@@ -664,14 +665,17 @@ const MetalPipeline* MetalDevice::GetMetalPipeline(PipelineHandle handle) const
     return m_Pipelines.Get(ToGeneric(handle));
 }
 
-void MetalDevice::DeferRelease(NS::Object* object)
+void MetalDevice::DeferRelease(NS::Object* object, bool isTextureView)
 {
     if (object == nullptr)
     {
         return;
     }
     std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
-    m_DeferredReleases[m_FrameIndex.load(std::memory_order_relaxed)].push_back(object);
+    const uint32_t slot = m_FrameIndex.load(std::memory_order_relaxed);
+    m_DeferredReleases[slot].push_back(object);
+    if (isTextureView)
+        ++m_DeferredTextureViewCounts[slot];
 }
 
 void MetalDevice::ScrubResidency(MTL::Resource* resource)
@@ -701,6 +705,7 @@ void MetalDevice::DrainDeferredReleases(uint32_t slot)
     {
         std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
         pending.swap(m_DeferredReleases[slot]);
+        m_DeferredTextureViewCounts[slot] = 0;
     }
     for (NS::Object* object : pending)
     {
@@ -1320,6 +1325,7 @@ IQueryPool* MetalDevice::GetQueryPool()
 
 void MetalDevice::WaitForIdle()
 {
+    m_IdleDrainCount.fetch_add(1, std::memory_order_relaxed);
     // Drain the submit workers first so every pending command buffer reaches
     // its queue before the marker buffers measure "idle".
     m_GraphicsSubmitQueue.Flush();

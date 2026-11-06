@@ -8036,6 +8036,110 @@ TEST(RenderPipelineDeclareTests, FullscreenCopySamplesARealizedIntermediate)
     f.Down();
 }
 
+TEST(RenderPipelineDeclareTests, SamplesAnOlderExplicitTextureVersionAfterWritingANewerOne)
+{
+    FxChainFixture fixture;
+    if (!fixture.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        const std::string source = R"json({
+          "schemaVersion": 2, "pipelineName": "VersionedCopy",
+          "resources": {
+            "ColorStep": { "scope": "PerView" },
+            "Result": { "scope": "PerView" },
+            "Alias": { "scope": "PerView" }
+          },
+          "passes": [
+            { "id": "Old", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+              "inputs": { "uTex": "View.Color" },
+              "output": { "resource": "ColorStep", "version": "Old" } },
+            { "id": "New", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+              "inputs": { "uTex": "View.Resolve" },
+              "output": { "resource": "ColorStep", "version": "New" } },
+            { "id": "ReadOld", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+              "inputs": { "uTex": { "resource": "ColorStep", "version": "Old" } },
+              "output": "Result", "elideWhenIdentity": true },
+            { "id": "SkipAlias", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+              "inputs": { "uTex": { "resource": "ColorStep", "version": "Old" } },
+              "skipWhen": { "bloomIntensity": 0 }, "output": "Alias" },
+            { "id": "Skipped", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+              "inputs": { "uTex": "View.Color" }, "skipWhen": { "bloomIntensity": 0 },
+              "output": { "resource": "ColorStep", "version": "Skipped" } },
+            { "id": "ReadSkipped", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+              "inputs": { "uTex": { "resource": "ColorStep", "version": "Skipped" } },
+              "output": { "resource": "ColorStep", "version": "Missing" } }
+          ],
+          "outputs": { "FinalColor": "Result",
+                       "Newest": { "resource": "ColorStep", "version": "New" },
+                       "Oldest": { "resource": "ColorStep", "version": "Old" },
+                       "Alias": "Alias",
+                       "Skipped": { "resource": "ColorStep", "version": "Skipped" },
+                       "Missing": { "resource": "ColorStep", "version": "Missing" } }
+        })json";
+        RenderPipelineAsset asset(GUID::Null(), std::filesystem::path("versions.rendergraph"));
+        asset.LoadFromData(Vector<uint8>(source.begin(), source.end()));
+        const auto blueprint = RenderPipelineCompiler{}.Compile(asset, fixture.Registry);
+        for (const auto& issue : blueprint.issues)
+            ASSERT_NE(issue.severity, PipelineIssueSeverity::Error) << issue.message;
+        RenderPipelineInstance instance(*fixture.Rs, fixture.Registry);
+        instance.SetBlueprint(blueprint);
+
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        ASSERT_TRUE(fixture.Device->BeginFrame());
+        frame.BeginFrame(0);
+        TextureDesc descriptor = ColorTargetDesc();
+        descriptor.usage |= static_cast<uint32_t>(TextureUsage::ShaderResource);
+        const auto red = frame.ImportPersistentTexture("VersionedCopy.Red", descriptor);
+        const auto green = frame.ImportPersistentTexture("VersionedCopy.Green", descriptor);
+        const auto depth = frame.ImportPersistentTexture("VersionedCopy.Depth", DepthTargetDesc());
+        frame.AddPass("VersionedCopy.Clear", 0, [red, green](RenderGraph::RGPassBuilder& builder)
+        {
+            RenderGraph::RGAttachmentOps ops{};
+            ops.Load = RenderGraph::RGLoadOp::Clear;
+            ops.Clear.Color[3] = 1.0f;
+            ops.Clear.Color[0] = 1.0f;
+            builder.AttachColor(0, red, ops);
+            ops.Clear.Color[0] = 0.0f;
+            ops.Clear.Color[1] = 1.0f;
+            builder.AttachColor(1, green, ops);
+        }, [](RenderGraph::RGContext&) {});
+
+        const ViewTargetsRG targets{fixture.View, red, depth, green};
+        instance.Declare(frame, std::span(&targets, 1), fixture.Rs->Views().GetViews());
+        const auto olderCopy = instance.GetOutputRG(fixture.View, "FinalColor");
+        const auto newer = instance.GetOutputRG(fixture.View, "Newest");
+        ASSERT_TRUE(olderCopy.IsValid());
+        ASSERT_TRUE(newer.IsValid());
+        const auto oldest = instance.GetOutputRG(fixture.View, "Oldest");
+        ASSERT_TRUE(oldest.IsValid());
+        EXPECT_NE(oldest.Id, olderCopy.Id);
+        EXPECT_FALSE(instance.GetOutputRG(fixture.View, "Alias").IsValid());
+        EXPECT_FALSE(instance.GetOutputRG(fixture.View, "Skipped").IsValid());
+        EXPECT_FALSE(instance.GetOutputRG(fixture.View, "Missing").IsValid());
+        auto olderReadback = RequestTextureReadbackRG(fixture.Device.get(), frame, olderCopy, "VersionedCopy.Old");
+        auto newerReadback = RequestTextureReadbackRG(fixture.Device.get(), frame, newer, "VersionedCopy.New");
+        ASSERT_NE(olderReadback, nullptr);
+        ASSERT_NE(newerReadback, nullptr);
+
+        frame.Execute();
+        OnFrameSubmittedReadbacksRG(frame, frame.SubmissionToken());
+        fixture.Device->FinalizeFrame();
+        fixture.Device->WaitForIdle();
+        ViewReadbackResult oldPixels{};
+        ViewReadbackResult newPixels{};
+        ASSERT_TRUE(olderReadback->TryGet(oldPixels));
+        ASSERT_TRUE(newerReadback->TryGet(newPixels));
+        ASSERT_GE(oldPixels.pixels.size(), 4u);
+        ASSERT_GE(newPixels.pixels.size(), 4u);
+        EXPECT_EQ(oldPixels.pixels[0], 255);
+        EXPECT_EQ(oldPixels.pixels[1], 0);
+        EXPECT_EQ(newPixels.pixels[0], 0);
+        EXPECT_EQ(newPixels.pixels[1], 255);
+    }
+    fixture.Down();
+}
+
 // One threshold decides scattering: just below it no scattering pass declares and
 // BloomCombine samples no scattering texture; just above it the chain feeds the
 // combine; scattering alone feeds the combine without the highlight pyramid; and
@@ -13242,7 +13346,7 @@ TEST(RenderPipelineDeclareTests, ReadbackTicketWaitsItsOwnSubmissionNotTheDevice
 {
     auto device = CreateVulkanDeviceFast();
     if (!device)
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
     {
         // Positive control: the counter moves on a real drain. Without this the
         // zero deltas below are absence of evidence, not evidence of absence.
@@ -16597,12 +16701,12 @@ struct HzbTwoViewRig
 // The lifetime pin. Two views, one node, one frame: the second view's execute
 // callback must not destroy the first view's single-mip image views — they are
 // already written into this frame's recorded descriptor sets, so destroying
-// them makes the submitted command buffer reference a dead VkImageView.
+// them makes the submitted command buffer reference a dead texture view.
 TEST(RenderPipelineDeclareTests, TwoHzbViewsInOneFrameKeepBothViewsMipViewsAlive)
 {
     auto device = CreateVulkanDeviceFast();
     if (!device)
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
     {
         HzbTwoViewRig rig;
         ASSERT_TRUE(rig.Init(device.get()));
@@ -16662,7 +16766,7 @@ TEST(RenderPipelineDeclareTests, HzbMipViewsOfAResizedViewOutliveTheFrameThatRep
 {
     auto device = CreateVulkanDeviceFast();
     if (!device)
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
     {
         HzbTwoViewRig rig;
         ASSERT_TRUE(rig.Init(device.get()));
@@ -18395,8 +18499,10 @@ TEST(RenderPipelineDeclareTests, SceneAsForgetsItsBlasMapOnADeviceRebuild)
 {
     const ScopedForcedDeviceLoss loss;
     auto device = CreateVulkanDeviceFast();
-    if (!device || !device->GetCapabilities().supportsRayQuery)
-        GTEST_SKIP() << "Vulkan fault injection requires a Vulkan ray-query backend; the Metal fallback does not implement GE_VK_FORCE_DEVICE_LOST";
+    if (!device || device->GetAPI() != GraphicsAPI::Vulkan)
+        GTEST_SKIP() << "GE_VK_FORCE_DEVICE_LOST requires Vulkan";
+    if (!device->GetCapabilities().supportsRayQuery)
+        GTEST_SKIP() << "Vulkan device does not support ray queries";
     {
         RenderServices rs;
         ASSERT_TRUE(rs.Initialize(device.get()));
@@ -18792,7 +18898,9 @@ TEST(RenderPipelineDeclareTests, TerrainExtractionUploadsAgainAfterADeviceRebuil
     const ScopedForcedDeviceLoss loss;
     TerrainFixture f;
     if (!f.Up())
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
+    if (f.Device->GetAPI() != GraphicsAPI::Vulkan)
+        GTEST_SKIP() << "GE_VK_FORCE_DEVICE_LOST requires Vulkan";
     {
         auto& terrain = f.Rs->EnsureFeature<TerrainECS::TerrainRenderFeature>();
         EXPECT_TRUE(terrain.Initialize(f.Device.get()));
@@ -18885,7 +18993,9 @@ TEST(RenderPipelineDeclareTests, TerrainFeatureForgetsEveryDeviceObjectAtARebuil
     const ScopedForcedDeviceLoss loss;
     TerrainFixture f;
     if (!f.Up())
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
+    if (f.Device->GetAPI() != GraphicsAPI::Vulkan)
+        GTEST_SKIP() << "GE_VK_FORCE_DEVICE_LOST requires Vulkan";
     {
         auto& terrain = f.Rs->EnsureFeature<TerrainECS::TerrainRenderFeature>();
         EXPECT_TRUE(terrain.Initialize(f.Device.get()));
