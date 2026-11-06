@@ -423,5 +423,17 @@ inline std::vector<Vector2> ConvexHull(std::span<const Vector2> points)
 	return hull;
 }
 
+// Projects a world point onto the ground plane.
+inline Vector2 GroundPoint(const Vector3& point)
+{
+	return Vector2(point.x, point.z);
+}
+
+// The distance between two points measured on the ground plane, ignoring their heights.
+inline float GroundDistance(const Vector3& a, const Vector3& b)
+{
+	return (GroundPoint(a) - GroundPoint(b)).Length();
+}
+
 } // namespace Mathematics
 } // namespace GameEngine

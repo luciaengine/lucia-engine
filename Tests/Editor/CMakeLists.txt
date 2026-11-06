@@ -606,14 +606,12 @@ set(EDITOR_TEST_SOURCES
 	# The Script Errors panel's rows kept per assembly; a leaf over the
 	# compile-server diagnostic type, same compile-the-source pattern.
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/ScriptDiagnosticsByAssembly.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/MeshBvhDiskFormat.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/TerrainPicking.cpp
 	# The scene pick entry points (ScenePickTerrainInclusionTests) plus the two leaf TUs
 	# they own outright. EditorPickProviderRegistry is deliberately NOT compiled in — it
 	# ships in EditorSDK.dll (linked below), so a second copy here would clone the
 	# registry singleton (issue #356 disease).
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/MeshPickingService.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/MeshBvhCache.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/PrimitiveMeshes.cpp
 	# The Scene View drop queries over the picks (MeshPickingPendingBvhTests).
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewDropPlacement.cpp

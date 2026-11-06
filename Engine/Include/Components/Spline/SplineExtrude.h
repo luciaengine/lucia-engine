@@ -213,6 +213,24 @@ struct SplineExtrude
     // first try rather than nothing.
     MaterialRef Material;
 
+    // The verge's size and surface, used when Verge is on.
+    // @ge-label Width (m)
+    // @ge-tooltip How wide the verge is, out from each edge of the road.
+    // @ge-range 0.01 10
+    float32 VergeWidth = 0.3f;
+    // @ge-label Height (m)
+    // @ge-tooltip How high the verge stands above the road's surface.
+    // @ge-range 0.01 10
+    float32 VergeHeight = 0.12f;
+    // @ge-label Material
+    // @ge-tooltip The surface drawn on the verge; empty uses the road's Material.
+    MaterialRef VergeMaterial;
+    // Channel only: a curb along both edges of the strip's top, standing out of the road. It has the
+    // paving curb's cross-section, and a paving's curb runs on into it where the road leaves the paving.
+    // @ge-label Build Verge
+    // @ge-tooltip Builds a curb along both edges of the road. Where the road leaves a Spline Paving, the paving's curb runs on into it as one piece. Turning this on fills an empty Material with that paving's curb material.
+    bool Verge = false;
+
     // What this run does to the terrain under it. Auto — the default — reads the
     // answer off Profile and WidthMode, so dropping a road recipe on a spline
     // grades and claims the ground without anyone opening the terrain effects at
@@ -300,6 +318,11 @@ struct SplineExtrude
     return SplineGroundAuthority::None;
 }
 
+[[nodiscard]] constexpr bool BuildsVerge(const SplineExtrude& recipe)
+{
+    return recipe.Verge && recipe.WidthMode == SplineExtrudeWidthMode::Channel;
+}
+
 static_assert(std::is_trivially_copyable_v<SplineExtrude>,
               "SplineExtrude must be trivially copyable for ECS storage");
 static_assert(std::is_standard_layout_v<SplineExtrude>,
@@ -321,6 +344,8 @@ struct SplineGroundProvisioned
     bool Flatten = false;
     bool Claim = false;
     bool Volume = false;
+    bool Grass = false;
+    bool Paint = false;
 
     bool operator==(const SplineGroundProvisioned&) const = default;
 };
