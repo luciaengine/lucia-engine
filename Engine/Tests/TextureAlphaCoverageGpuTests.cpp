@@ -68,6 +68,16 @@ struct TextureCoverageUploadTestAccess
         std::lock_guard lock(service.m_PendingTexturesMutex);
         ++service.m_TextureEpochByGuid[texture];
     }
+    static void SetMipBudget(TextureService& service, uint64 bytes)
+    {
+        service.m_MaterialMipBudgetBytes = bytes;
+    }
+    static TextureHandle StreamedHandle(TextureService& service, const GUID& guid)
+    {
+        std::lock_guard lock(service.m_PendingTexturesMutex);
+        const auto stream = service.m_MaterialMipStreams.find(guid);
+        return stream == service.m_MaterialMipStreams.end() ? TextureHandle{} : stream->second.Handle;
+    }
     static bool Uploaded(TextureService& service, const GUID& texture)
     {
         return service.m_TextureGPUCache.Contains(texture);
@@ -210,6 +220,30 @@ class TextureCoverageGPU : public testing::Test
         Set(path, kTextureAlphaCutoffMetaKey, ".538");
         return EngineCore::GetInstance().GetAssetManager().GetRegistry().GetAssetGUID(path);
     }
+    void MakeStreamedTexture(bool validSourceFile, GUID& texture, SharedPtr<TextureAsset>& asset)
+    {
+        const auto source = Read(Image(false, 512));
+        TextureCookInputs inputs;
+        std::vector<uint8> cooked;
+        std::string error;
+        ASSERT_TRUE(CookTexture(source.data(), source.size(), ".tga", inputs, TextureCookOutput::Uncompressed,
+                                cooked, error)) << error;
+        const auto path = s_Workspace / "Assets" / (GUID::Generate().ToString() + ".ktx2");
+        {
+            std::ofstream stream(path, std::ios::binary);
+            if (validSourceFile)
+                stream.write(reinterpret_cast<const char*>(cooked.data()), cooked.size());
+            else
+                stream << "invalid texture";
+            ASSERT_TRUE(stream.good());
+        }
+        texture = Register(path, false);
+        ASSERT_FALSE(texture.IsNull());
+        asset = MakeShared<TextureAsset>(texture, path);
+        ASSERT_TRUE(asset->LoadFromData(cooked));
+        ASSERT_EQ(asset->GetMipChain().size(), 10u);
+    }
+
     std::vector<float> Render(TextureHandle texture, uint32 width, uint32 height, float lod,
                               uint32 mode = 0, float phase = 0.0f)
     {
@@ -333,6 +367,116 @@ TEST_F(TextureCoverageGPU, RawUploadAndWorkerCookMatchEveryTexelThroughOneByOne)
 }
 
 #endif
+
+TEST_F(TextureCoverageGPU, MaterialMipStreamingRespectsBudgetAndKeepsDirectTextureSeparate)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    Access::SetMipBudget(m_Textures, kMiB);
+    GUID texture;
+    SharedPtr<TextureAsset> asset;
+    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(true, texture, asset));
+
+    const GUID materialGuid = GUID::Generate();
+    MaterialDocument doc{};
+    doc.schemaVersion = 3;
+    doc.materialName = "MipStreaming";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = "Surfaces/standard_pbr.glsl";
+    auto* material = m_Materials.Register(materialGuid, doc);
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    Access::Queue(m_Textures, texture, materialGuid, asset, slot);
+    m_Textures.FlushPendingUploads();
+
+    const auto tail = Access::StreamedHandle(m_Textures, texture);
+    ASSERT_TRUE(tail.IsValid());
+    EXPECT_EQ(material->GetTexture(slot), tail);
+    uint32 width = 0, height = 0;
+    m_Device->GetTextureSize(tail, width, height);
+    EXPECT_EQ(width, 256u);
+    EXPECT_EQ(height, 256u);
+    m_Textures.FlushPendingUploads();
+    EXPECT_EQ(material->GetTexture(slot), tail);
+
+    const auto direct = m_Textures.GetOrUpload(texture);
+    ASSERT_TRUE(direct.IsValid());
+    EXPECT_NE(direct, tail);
+    m_Device->GetTextureSize(direct, width, height);
+    EXPECT_EQ(width, 512u);
+    EXPECT_EQ(height, 512u);
+    EXPECT_EQ(Render(tail, 16, 16, 0), Render(direct, 16, 16, 1));
+
+    Access::SetMipBudget(m_Textures, 2 * kMiB);
+    m_Textures.FlushPendingUploads();
+    const auto promoted = material->GetTexture(slot);
+    EXPECT_NE(promoted, tail);
+    EXPECT_NE(promoted, direct);
+    m_Device->GetTextureSize(promoted, width, height);
+    EXPECT_EQ(width, 512u);
+    EXPECT_EQ(height, 512u);
+    EXPECT_EQ(Render(promoted, 16, 16, 0), Render(direct, 16, 16, 0));
+
+    // An override uses a direct image while the authored texture stays tracked.
+    m_Textures.BindMaterialTexture(material, slot, direct);
+    Access::SetMipBudget(m_Textures, kMiB);
+    m_Textures.FlushPendingUploads();
+    EXPECT_EQ(material->GetTexture(slot), direct);
+    m_Textures.RestoreMaterialTextureBinding(material, materialGuid, slot);
+    const auto demoted = material->GetTexture(slot);
+    ASSERT_TRUE(demoted.IsValid());
+    EXPECT_NE(demoted, direct);
+    m_Device->GetTextureSize(demoted, width, height);
+    EXPECT_EQ(width, 256u);
+    EXPECT_EQ(height, 256u);
+    EXPECT_EQ(m_Textures.GetOrUpload(texture), direct);
+
+    m_Textures.OnMaterialUnregistered(materialGuid);
+    m_Materials.Unregister(materialGuid);
+    m_Textures.FlushPendingUploads();
+    EXPECT_FALSE(Access::StreamedHandle(m_Textures, texture).IsValid());
+    EXPECT_EQ(m_Textures.GetOrUpload(texture), direct);
+}
+
+TEST_F(TextureCoverageGPU, FailedDirectTextureLoadKeepsItsMaterialStream)
+{
+    using Access = Engine::Renderer::TextureCoverageUploadTestAccess;
+    constexpr uint64 kMiB = 1024 * 1024;
+    Access::SetMipBudget(m_Textures, kMiB);
+    GUID texture;
+    SharedPtr<TextureAsset> asset;
+    ASSERT_NO_FATAL_FAILURE(MakeStreamedTexture(false, texture, asset));
+
+    const GUID materialGuid = GUID::Generate();
+    MaterialDocument doc{};
+    doc.schemaVersion = 3;
+    doc.materialName = "MipStreamingFailure";
+    doc.lightingModel = "StandardPBR";
+    doc.surfaceShader = "Surfaces/standard_pbr.glsl";
+    auto* material = m_Materials.Register(materialGuid, doc);
+    ASSERT_NE(material, nullptr);
+    const StringId slot = HashStringId("albedoMap");
+    m_Textures.TrackMaterialTextureRefForTesting(materialGuid, slot, texture);
+    Access::Queue(m_Textures, texture, materialGuid, asset, slot);
+    m_Textures.FlushPendingUploads();
+
+    const auto tail = Access::StreamedHandle(m_Textures, texture);
+    ASSERT_TRUE(tail.IsValid());
+    ASSERT_EQ(material->GetTexture(slot), tail);
+    EXPECT_FALSE(m_Textures.GetOrRequestTexture(texture).IsValid());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (Access::InFlight(m_Textures, texture) && std::chrono::steady_clock::now() < deadline)
+    {
+        EngineCore::GetInstance().GetAssetManager().Update();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_FALSE(Access::InFlight(m_Textures, texture));
+    ASSERT_TRUE(Access::Uploaded(m_Textures, texture));
+    m_Textures.FlushPendingUploads();
+    EXPECT_EQ(Access::StreamedHandle(m_Textures, texture), tail);
+    EXPECT_EQ(material->GetTexture(slot), tail);
+}
 
 TEST_F(TextureCoverageGPU, AsyncPreloadPollNeverUploadsInlineOrDuplicatesDecodedWork)
 {
