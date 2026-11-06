@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <vector>
 
 #include "Components/Transform.h"
@@ -32,7 +33,10 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Common/Frustum.h"
+#include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
+#include "StagedTestPaths.h"
+#include "TestTempDir.h"
 
 #include "Engine/Rendering/ShadowMapRenderFeature.h"
 #include "Mathematics/MatrixOps.h"
@@ -1295,51 +1299,52 @@ TEST(TransformHierarchyParallelTests, MixedHierarchy_OffAndOnBitwiseIdentical)
 	}
 }
 
-// User keywords (slice N): an in-place .material hot-reload that flips the
-// keyword set must recompile the pipeline (route through CompileMaterialPipeline),
-// while a no-op re-register must not. Guarded: if the harness cannot compile a
-// pipeline (no staged shaders), the device-free MaterialVariantKeyDerivation
-// tests still cover the recompile trigger.
+// A keyword edit recompiles the pipeline in place. Re-registering the same
+// keywords keeps the compiled pipeline and its version.
 TEST(RenderServicesWorldMaterialTests, KeywordEditRecompilesPipeline)
 {
-	auto device = CreateVulkanDeviceFast();
-	if (!device)
-	{
-	    GTEST_SKIP() << "No Vulkan device available";
-	}
+    constexpr const char* kSurfaceShader = "Surfaces/standard_surface.glsl";
+    const auto shaderDir = TestPaths::StagedRenderingShadersDir();
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderDir / kSurfaceShader)) << shaderDir / kSurfaceShader;
 
-	RenderServices rs;
-	ASSERT_TRUE(rs.Initialize(device.get()));
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
 
-	const GUID guid = GUID::Generate();
-	MaterialDocument doc{};
-	doc.materialName = "KwMat";
-	doc.lightingModel = "StandardPBR";
-	doc.surfaceShader = "surfaces/standard_surface.glsl";
-	doc.keywords = {"FLOW_MODE"};
+    const TestUtils::ScopedTempDir shaderCache{TestUtils::MakeUniqueTempDirectory("world-draw-keywords")};
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(device.get()));
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = shaderDir;
+    context.CacheRoot = shaderCache.Path();
+    context.IncludeDirs = {shaderDir};
+    auto& materials = services.Materials();
+    materials.SetMaterialBuildContext(context);
 
-	Material* mat = rs.Materials().RegisterMaterialFromDocument(guid, doc);
-	ASSERT_NE(mat, nullptr);
-	if (!mat->GetGraphicsPipelineId().IsValid())
-	{
-	    GTEST_SKIP() << "Harness did not compile a pipeline (no staged shaders)";
-	}
+    const GUID materialGuid = GUID::Generate();
+    MaterialDocument document{};
+    document.materialName = "KwMat";
+    document.lightingModel = "StandardPBR";
+    document.surfaceShader = kSurfaceShader;
+    document.keywords = {"FLOW_MODE"};
 
-	const uint32_t versionA = mat->GetVersion();
-	EXPECT_NE(mat->GetVariantKey().userKeywordHash, 0ull);
+    Material* material = materials.RegisterMaterialFromDocument(materialGuid, document);
+    ASSERT_NE(material, nullptr);
+    ASSERT_TRUE(material->GetGraphicsPipelineId().IsValid()) << "initial material must compile";
+    const auto versionBeforeEdit = material->GetVersion();
+    EXPECT_NE(material->GetVariantKey().userKeywordHash, 0ull);
 
-	// Hot-reload: same GUID, different keyword set -> variant key changes ->
-	// pipelineAffectingChanged -> recompile (version bumps).
-	doc.keywords = {"HIGH_DETAIL"};
-	Material* mat2 = rs.Materials().RegisterMaterialFromDocument(guid, doc);
-	EXPECT_EQ(mat2, mat); // in-place reload keeps the Material*
-	EXPECT_GT(mat->GetVersion(), versionA) << "keyword flip must recompile";
+    document.keywords = {"HIGH_DETAIL"};
+    ASSERT_EQ(materials.RegisterMaterialFromDocument(materialGuid, document), material);
+    const auto pipelineAfterEdit = material->GetGraphicsPipelineId();
+    ASSERT_TRUE(pipelineAfterEdit.IsValid());
+    const auto versionAfterEdit = material->GetVersion();
+    EXPECT_GT(versionAfterEdit, versionBeforeEdit) << "keyword edit must recompile";
 
-	// No-op re-register with the SAME keyword set -> no pipeline-affecting change.
-	const uint32_t versionB = mat->GetVersion();
-	rs.Materials().RegisterMaterialFromDocument(guid, doc);
-	EXPECT_EQ(mat->GetVersion(), versionB) << "identical keywords must not recompile";
+    ASSERT_EQ(materials.RegisterMaterialFromDocument(materialGuid, document), material);
+    EXPECT_EQ(material->GetGraphicsPipelineId(), pipelineAfterEdit);
+    EXPECT_EQ(material->GetVersion(), versionAfterEdit) << "identical keywords must keep the version";
 
-	rs.Shutdown();
-	device->Shutdown();
+    services.Shutdown();
+    device->Shutdown();
 }
