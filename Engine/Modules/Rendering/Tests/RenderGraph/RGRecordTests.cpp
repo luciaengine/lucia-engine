@@ -10,6 +10,9 @@
 #include "Source/Vulkan/VulkanCommandList.h"
 #include "Tests/RenderGraph/RGTestDevice.h"
 #include "Tests/ScopedEnvVar.h"
+#if defined(RENDERING_HAS_VULKAN)
+#include "Source/Vulkan/VulkanDevice.h"
+#endif
 
 #include <cstdlib>
 #include <string>
@@ -560,6 +563,58 @@ TEST(RGRecord, DestructionRightAfterExecuteDrainsOwnWork)
     }
     dev->WaitForIdle(); // device still healthy afterwards
 }
+
+#if defined(RENDERING_HAS_VULKAN)
+TEST(RGRecord, ConsumerSubmissionWaitsOnTheProducerTimeline)
+{
+    class WaitObservingDevice final : public VulkanDevice
+    {
+      public:
+        bool QueueSubmit(QueueType queue, const std::vector<CommandList*>& lists,
+                         const std::vector<std::pair<SemaphoreHandle, uint64_t>>& waits,
+                         const std::vector<std::pair<SemaphoreHandle, uint64_t>>& signals) override
+        {
+            Queue = queue;
+            Waits = waits;
+            return VulkanDevice::QueueSubmit(queue, lists, waits, signals);
+        }
+
+        QueueType Queue = QueueType::Graphics;
+        std::vector<std::pair<SemaphoreHandle, uint64_t>> Waits;
+    };
+
+    DeviceDesc desc{};
+    desc.preferredAPI = GraphicsAPI::Vulkan;
+    desc.enableDynamicRendering = true;
+    desc.enableSwapchain = false;
+    WaitObservingDevice device;
+    if (!device.Initialize(desc))
+        GTEST_SKIP() << "no headless Vulkan device available";
+
+    FramePools producerPools(&device);
+    RGFrame producer(&device, &producerPools.Persistent, &producerPools.Transient, &producerPools.Ring);
+    FramePools consumerPools(&device);
+    RGFrame consumer(&device, &consumerPools.Persistent, &consumerPools.Transient, &consumerPools.Ring);
+    consumer.SetPhysicalQueueMap(RGFrame::kIdentityQueueMap);
+    producer.BeginFrame(0);
+    producer.AddPass("ExternalWait.Producer", 0,
+                     [](RGPassBuilder& pass) { pass.PreventCulling(); }, [](RGContext&) {});
+    producer.Execute();
+    const auto token = producer.SubmissionToken();
+    ASSERT_TRUE(token.IsValid());
+
+    consumer.BeginFrame(0);
+    consumer.AddSubmissionWait(token);
+    consumer.AddComputePass("ExternalWait.Consumer", 0,
+                            [](RGPassBuilder& pass) { pass.PreventCulling(); }, [](RGContext&) {});
+    consumer.Execute();
+    EXPECT_EQ(device.Queue, IDevice::QueueType::Compute);
+    ASSERT_EQ(device.Waits.size(), 1u);
+    EXPECT_EQ(device.Waits.front().first, token.sem);
+    EXPECT_EQ(device.Waits.front().second, token.value);
+    device.WaitForIdle();
+}
+#endif
 
 // SubmissionToken replaces the old GetSubmissionToken for readback consumers:
 // a timeline (semaphore, value) pair pollable without a device stall.

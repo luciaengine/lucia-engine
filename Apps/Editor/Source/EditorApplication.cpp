@@ -1164,7 +1164,8 @@ static bool RecordWindowWorldViews(EditorApplication::EditorWindowContext* ctx,
                     targets.data(), targets.size());
                 params.BuildWorldDrawListsIfReady = true;
                 params.DeltaTime = deltaTimeSeconds;
-                rs->Spine().BuildFrameGraph(*rg2Frame, params);
+                if (!rs->Spine().BuildFrameGraph(*rg2Frame, params))
+                    return false;
                 if (sceneDeclared)
                 {
                     Editor::SceneViewRenderCoordinator::DeclareOverlaysRG(ctx, *rg2Frame,
@@ -9078,6 +9079,13 @@ EditorApplication::RenderWindowFrameResult EditorApplication::RenderWindowFrame(
     const bool uiRootReady =
         EnsureUiRootReadyForRender(ctx, passiveUi ? "single-window render" : "main-loop render");
     routing.pure = true;
+    if (m_Windows.size() > 1 && routing.rg2Scene && ctx->capabilities.worldRender)
+    {
+        if (!uiRootReady)
+            routing.rg2Scene = false;
+        else if (auto* rs = MainRenderServices())
+            rs->Spine().SelectSharedSceneProducer(*ctx->RenderGraphStream.Frame);
+    }
 
     if (ctx->ui)
         ctx->ui->ClearRenderTargetOverride();

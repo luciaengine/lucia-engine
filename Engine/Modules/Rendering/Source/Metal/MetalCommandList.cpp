@@ -87,6 +87,38 @@ void MetalCommandList::End()
     m_IsRecording = false;
 }
 
+bool MetalCommandList::EncodeTimelineWait(IDevice::GpuSyncToken token)
+{
+    if (!m_IsRecording)
+        return false;
+    EndActiveEncoders();
+    std::lock_guard lock(m_Device.m_ResourceMutex);
+    const auto* semaphore = m_Device.m_Semaphores.Get(ToGeneric(token.sem));
+    if (!semaphore || !semaphore->deviceEvent)
+        return false;
+    m_CommandBuffer->encodeWait(semaphore->deviceEvent, token.value);
+    return true;
+}
+
+bool MetalCommandList::EncodeTimelineSignal(IDevice::GpuSyncToken token)
+{
+    if (!m_IsRecording)
+        return false;
+    EndActiveEncoders();
+    std::lock_guard lock(m_Device.m_ResourceMutex);
+    auto* semaphore = m_Device.m_Semaphores.Get(ToGeneric(token.sem));
+    if (!semaphore)
+        return false;
+    // This point is consumed only by GPU command buffers on this Metal
+    // device. Keep it independent of the CPU-visible submission timeline.
+    if (!semaphore->deviceEvent)
+        semaphore->deviceEvent = m_Device.GetMTLDevice()->newEvent();
+    if (!semaphore->deviceEvent)
+        return false;
+    m_CommandBuffer->encodeSignalEvent(semaphore->deviceEvent, token.value);
+    return true;
+}
+
 void MetalCommandList::SetVisibilityResultMode(uint32_t mode, uint64_t offsetBytes)
 {
     if (m_RenderEncoder == nullptr)

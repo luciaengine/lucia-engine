@@ -4879,7 +4879,7 @@ std::vector<uint8_t> StagedCullingShaderLoader(const char* name)
 // shared physicals and runs the pipeline declare on its OWN instance and
 // blackboard. Pre-8a a single shared instance meant B's declare re-aimed the
 // one blackboard and killed A's GetPipelineOutputRG — the headline fix.
-TEST(RenderPipelineDeclareTests, TwoFrameStreamsOneAppFrameIsolateAndShareGlobalStages)
+static void CheckTwoFrameStreamsShareGlobalStages(bool selectProducer, bool retireProducer = false)
 {
     ASSERT_FALSE(StagedCullingShaderLoader("Shaders/frustum_culling.shaderpkg").empty())
         << "Required frustum_culling.shaderpkg is missing; build CompileShaderPkgs";
@@ -4934,17 +4934,46 @@ TEST(RenderPipelineDeclareTests, TwoFrameStreamsOneAppFrameIsolateAndShareGlobal
         const ViewTargetsRG vtA{viewA, colorA, depthA, {}};
         RenderServices::FrameGraphBuildParamsRG paramsA{};
         paramsA.ViewTargets = std::span<const ViewTargetsRG>(&vtA, 1);
-        rs.Spine().BuildFrameGraph(frameA, paramsA);
-
-        const auto outA = rs.GetPipelineOutputRG(frameA, viewA);
-        ASSERT_TRUE(outA.Out.IsValid()) << "owner stream's pipeline output must resolve";
-
         frameB.BeginFrame(0);
         RenderGraph::RGTexture colorB = frameB.ImportPersistentTexture("TwoStreamB.Color", ColorTargetDesc());
         RenderGraph::RGTexture depthB = frameB.ImportPersistentTexture("TwoStreamB.Depth", DepthTargetDesc());
         const ViewTargetsRG vtB{viewB, colorB, depthB, {}};
         RenderServices::FrameGraphBuildParamsRG paramsB{};
         paramsB.ViewTargets = std::span<const ViewTargetsRG>(&vtB, 1);
+
+        if (selectProducer)
+        {
+            rs.Spine().SelectSharedSceneProducer(frameA);
+            rs.Spine().BuildFrameGraph(frameB, paramsB);
+            EXPECT_FALSE(rs.GetPipelineOutputRG(frameB, viewB).Out.IsValid())
+                << "a consumer arriving before the producer must wait";
+        }
+        rs.Spine().BuildFrameGraph(frameA, paramsA);
+        const auto outA = rs.GetPipelineOutputRG(frameA, viewA);
+        ASSERT_TRUE(outA.Out.IsValid()) << "owner stream's pipeline output must resolve";
+
+        if (selectProducer)
+        {
+            bool allowSubmission = false;
+            frameA.AddPass("ProducerSubmissionGate", 0,
+                [&allowSubmission](RenderGraph::RGPassBuilder& pass)
+                {
+                    pass.PreventCulling();
+                    pass.Prepare([&allowSubmission](RenderGraph::RGPrepareContext&) { return allowSubmission; });
+                }, [](RenderGraph::RGContext&) {});
+            const uint64_t submitted = frameA.SubmittedFrameCount();
+            frameA.Execute();
+            NotifyRenderGraphExecution(frameA, submitted, &rs.Spine());
+            EXPECT_EQ(frameA.SubmittedFrameCount(), submitted);
+
+            rs.Spine().BuildFrameGraph(frameB, paramsB);
+            EXPECT_FALSE(rs.GetPipelineOutputRG(frameB, viewB).Out.IsValid())
+                << "an aborted producer cannot publish shared scene inputs";
+            allowSubmission = true;
+            frameA.Execute();
+            NotifyRenderGraphExecution(frameA, submitted, &rs.Spine());
+            ASSERT_EQ(frameA.SubmittedFrameCount(), submitted + 1u);
+        }
         rs.Spine().BuildFrameGraph(frameB, paramsB);
 
         // (a) The headline fix: B's declare must not kill A's output, and B
@@ -4999,15 +5028,45 @@ TEST(RenderPipelineDeclareTests, TwoFrameStreamsOneAppFrameIsolateAndShareGlobal
         }
 
         // (d) Submit choreography: both streams execute + stamp cleanly.
-        frameA.Execute();
-        rs.Spine().OnFrameSubmittedRG(frameA, frameA.SubmissionToken());
-        frameB.Execute();
-        rs.Spine().OnFrameSubmittedRG(frameB, frameB.SubmissionToken());
+        if (!selectProducer)
+        {
+            frameA.Execute();
+            rs.Spine().OnFrameSubmittedRG(frameA, frameA.SubmissionToken());
+        }
+        if (retireProducer)
+        {
+            rs.Spine().RemovePipelineInstanceForFrame(&frameA);
+            EXPECT_EQ(frameB.Graph().PassCount(), 0u);
+            EXPECT_FALSE(rs.GetPipelineOutputRG(frameB, viewB).Out.IsValid());
+            const uint64_t submitted = frameB.SubmittedFrameCount();
+            frameB.Execute();
+            EXPECT_EQ(frameB.SubmittedFrameCount(), submitted);
+        }
+        else
+        {
+            frameB.Execute();
+            rs.Spine().OnFrameSubmittedRG(frameB, frameB.SubmissionToken());
+        }
         device->WaitForIdle();
 
         rs.Shutdown();
     }
     device->Shutdown();
+}
+
+TEST(RenderPipelineDeclareTests, TwoFrameStreamsOneAppFrameIsolateAndShareGlobalStages)
+{
+    CheckTwoFrameStreamsShareGlobalStages(false);
+}
+
+TEST(RenderPipelineDeclareTests, TwoFrameStreamsWaitForTheSelectedSceneProducer)
+{
+    CheckTwoFrameStreamsShareGlobalStages(true);
+}
+
+TEST(RenderPipelineDeclareTests, RetiringSceneProducerDiscardsAnUnsubmittedConsumer)
+{
+    CheckTwoFrameStreamsShareGlobalStages(true, true);
 }
 
 // Slice-8a epoch stability (A1.4 S0 lock, spine F6): BuildFrameGraph must NEVER

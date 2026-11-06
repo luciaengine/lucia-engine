@@ -524,6 +524,8 @@ void RGFrame::BeginFrame(uint64_t frameIndex)
             m_TimelineCreated[q] = false;
             m_LastSignaled[q] = 0;
         }
+        m_ExportTimeline = {};
+        m_ExportSignalValue = 0;
         m_DeviceRebuildGen = rebuildGen;
     }
 
@@ -575,6 +577,10 @@ void RGFrame::ResetRecording()
     m_ZeroInitBufferIds.clear();
     m_InitializedTextureIds.clear();
     m_RequiredTransferUsage.clear();
+    m_ExternalSubmissionWaits.clear();
+    m_ExportPassCount = 0;
+    m_ExportedWork = {};
+    m_OrderedGraphicsWait = {};
     m_Attachments.clear();
     m_Physical.assign(m_Physical.size(), 0);
     m_HasPhysical.assign(m_HasPhysical.size(), 0);
