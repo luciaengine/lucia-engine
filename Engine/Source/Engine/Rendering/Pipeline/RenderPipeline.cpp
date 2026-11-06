@@ -1134,6 +1134,18 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
                      "resource '" + r.name + "': unknown kind '" + kind +
                          "' (expected Texture or Buffer).");
 
+        if (const auto transient = jr.find("transient"); transient != jr.end())
+        {
+            if (!isTexture || !transient->is_boolean())
+                addIssue(PipelineIssueSeverity::Error,
+                         "resource '" + r.name + "': 'transient' must be a Boolean on a texture");
+            else if (transient->get<bool>() &&
+                     std::any_of(bp.outputs.begin(), bp.outputs.end(),
+                                 [&r](const auto& output) { return output.resourceRef == r.name; }))
+                addIssue(PipelineIssueSeverity::Error,
+                         "resource '" + r.name + "': a transient texture cannot be a pipeline output");
+        }
+
         std::string scope;
         if (JsonTryGetString(jr, "scope", scope) && !scope.empty())
         {
