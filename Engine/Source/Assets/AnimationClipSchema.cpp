@@ -320,14 +320,13 @@ double FramesPerSecond(const std::vector<Animation::AnimChannel>& channels)
 
 // Reads the events of `value` into `events`, timed at `framesPerSecond` from the clip's time 0, sorted by time
 // with events at one time kept in file order. An event after the clip's end is refused: it could never fire.
-std::string ReadEvents(const json& value, double framesPerSecond, float32 duration,
+std::string ReadTimedNames(std::string_view fieldName, const json& value, double framesPerSecond, float32 duration,
                        Animation::AnimationEventTrack& events)
 {
     if (!value.is_array())
-        return "clip.events is not a JSON array";
+        return std::format("clip.{} is not a JSON array", fieldName);
     if (!value.empty() && framesPerSecond <= 0.0)
-        return "clip.events need the clip's frame rate, and the clip's channel with the most keys has no two keys "
-               "apart in time";
+        return std::format("clip.{} need the clip's frame rate, and the clip's channel with the most keys has no two keys apart in time", fieldName);
     const double lastFrame = static_cast<double>(duration) * framesPerSecond;
     const double lastFrameTolerance =
         std::min(lastFrame * kLastFrameToleranceInFloatEpsilons * std::numeric_limits<float32>::epsilon(),
@@ -339,7 +338,7 @@ std::string ReadEvents(const json& value, double framesPerSecond, float32 durati
     {
         const json& entry = value[index];
         if (!entry.is_object())
-            return std::format("clip.events[{}] is not a JSON object", index);
+            return std::format("clip.{}[{}] is not a JSON object", fieldName, index);
         std::optional<double> frame;
         Animation::AnimationEvent event;
         for (const auto& [key, field] : entry.items())
@@ -348,29 +347,29 @@ std::string ReadEvents(const json& value, double framesPerSecond, float32 durati
             {
                 frame = WholeNumber(field);
                 if (!frame)
-                    return std::format("clip.events[{}].frame is not a whole number of 0 or more", index);
+                    return std::format("clip.{}[{}].frame is not a whole number of 0 or more", fieldName, index);
             }
             else if (key == "name")
             {
-                if (std::string refusal = CheckName(field, std::format("clip.events[{}].name", index));
+                if (std::string refusal = CheckName(field, std::format("clip.{}[{}].name", fieldName, index));
                     !refusal.empty())
                     return refusal;
                 event.Name = field.get<std::string>();
             }
             else
             {
-                return std::format("clip.events[{}] has the field {}; its fields are frame and name", index,
+                return std::format("clip.{}[{}] has the field {}; its fields are frame and name", fieldName, index,
                                    Quoted(key));
             }
         }
         if (!frame)
-            return std::format("clip.events[{}] has no frame", index);
+            return std::format("clip.{}[{}] has no frame", fieldName, index);
         if (event.Name.empty())
-            return std::format("clip.events[{}] has no name", index);
+            return std::format("clip.{}[{}] has no name", fieldName, index);
         if (*frame > lastFrame + lastFrameTolerance)
-            return std::format("clip.events[{}] ({}) is at frame {}, after the clip ends at frame {} "
+            return std::format("clip.{}[{}] ({}) is at frame {}, after the clip ends at frame {} "
                                "({} frames per second); frame 0 is the clip's start",
-                               index, Quoted(event.Name), *frame, PlainNumber(lastFrame),
+                               fieldName, index, Quoted(event.Name), *frame, PlainNumber(lastFrame),
                                PlainNumber(framesPerSecond));
         event.Time = static_cast<float32>(*frame / framesPerSecond);
         read.push_back(std::move(event));
@@ -422,10 +421,29 @@ std::string ReadClipSchema(std::string_view extrasText, const std::vector<Animat
         else if (key == "translations")
             refusal = ReadTranslations(value, settings);
         else if (key == "events")
-            refusal = ReadEvents(value, FramesPerSecond(channels), duration, events);
+            refusal = ReadTimedNames(key, value, FramesPerSecond(channels), duration, events);
+        else if (key == "syncMarkers")
+        {
+            Animation::AnimationEventTrack markers;
+            refusal = ReadTimedNames(key, value, FramesPerSecond(channels), duration, markers);
+            if (refusal.empty())
+            {
+                for (const auto& marker : markers.GetEvents())
+                {
+                    if (marker.Time >= duration ||
+                        (!settings.SyncMarkers.empty() && marker.Time <= settings.SyncMarkers.back().Time))
+                    {
+                        return "clip.syncMarkers must be on distinct frames before the clip's end";
+                    }
+                    settings.SyncMarkers.push_back({marker.Time, marker.Name});
+                }
+                if (settings.SyncMarkers.size() == 1)
+                    return "clip.syncMarkers needs at least two markers to synchronize a cycle";
+            }
+        }
         else
             refusal = std::format("clip has the field {}; its fields are schemaVersion, loop, speed, rootMotion, "
-                                  "translations and events",
+                                  "translations, events and syncMarkers",
                                   Quoted(key));
         if (!refusal.empty())
             return refusal;

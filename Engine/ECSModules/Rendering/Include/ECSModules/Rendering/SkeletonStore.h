@@ -62,6 +62,9 @@ struct SkeletonRuntimeState {
     // SkeletonStore::RollPaletteOffsets at the top of the next frame.
     bool AtlasPaletteWrittenThisFrame = false;
 
+    // The graph owns this pose even when AnimatorRef has no clip.
+    bool GraphPoseActive = false;
+
     // The one way to publish a palette offset. Stamping and assignment are
     // fused so a new producer cannot silently opt out of motion vectors.
     void SetAtlasPaletteOffset(uint32 offsetInBones)
