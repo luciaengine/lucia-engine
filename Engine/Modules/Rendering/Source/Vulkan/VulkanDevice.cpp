@@ -2694,8 +2694,8 @@ bool VulkanDevice::CreateLogicalDevice()
             enabled13.pNext = &sync2KHR;
         }
     }
-    // Portability devices explicitly enable comparison-sampler updates and supported
-    // shader interpolation functions; unsupported interpolation uses the centroid footprint.
+    // Portability devices enable supported comparison-sampler updates, image-view swizzles,
+    // and shader interpolation functions; unsupported interpolation uses the centroid footprint.
     // The struct lives in vulkan_beta.h behind VK_ENABLE_BETA_EXTENSIONS; define
     // the sType constant and struct layout inline to avoid pulling in all beta APIs.
 #ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR
@@ -2736,6 +2736,7 @@ bool VulkanDevice::CreateLogicalDevice()
         vkGetPhysicalDeviceFeatures2(m_PhysicalDevice, &portabilityQuery);
 
         portabilityFeatures.mutableComparisonSamplers = supportedPortability.mutableComparisonSamplers;
+        portabilityFeatures.imageViewFormatSwizzle = supportedPortability.imageViewFormatSwizzle;
         portabilityFeatures.shaderSampleRateInterpolationFunctions =
             supportedFeatures.sampleRateShading && supportedPortability.shaderSampleRateInterpolationFunctions;
         portabilityFeatures.pNext = enabled13.pNext;

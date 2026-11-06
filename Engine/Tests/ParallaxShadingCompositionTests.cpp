@@ -385,8 +385,43 @@ void ExpectNoNewValidationErrors(const IDevice& device, const ValidationStats& b
     EXPECT_EQ(current.ErrorCount, baseline.ErrorCount) << errors;
     EXPECT_EQ(current.OverflowCount, baseline.OverflowCount);
     for (const auto* vuid : {"VUID-VkShaderModuleCreateInfo-pCode-08740",
-                             "VUID-RuntimeSpirv-shaderSampleRateInterpolationFunctions-06325"})
+                             "VUID-RuntimeSpirv-shaderSampleRateInterpolationFunctions-06325",
+                             "VUID-VkImageViewCreateInfo-imageViewFormatSwizzle-04465"})
         EXPECT_EQ(VuidCount(current, vuid), VuidCount(baseline, vuid)) << errors;
+}
+
+void CheckBc5NormalTextureViews(IDevice& device, const ValidationStats& baseline)
+{
+    constexpr uint32_t kBc5BlockExtent = 4;
+    TextureDesc textureDesc{};
+    textureDesc.width = kBc5BlockExtent;
+    textureDesc.height = kBc5BlockExtent;
+    textureDesc.mipLevels = 1;
+    textureDesc.arrayLayers = 1;
+    textureDesc.format = static_cast<uint32_t>(TextureFormat::BC5_UNORM);
+    textureDesc.usage = static_cast<uint32_t>(TextureUsage::ShaderResource);
+    textureDesc.debugName = "ParallaxBc5Normal";
+    const TextureHandle texture = device.CreateTexture(textureDesc);
+    ASSERT_TRUE(texture.IsValid());
+    EXPECT_EQ(device.GetTextureFormat(texture), TextureFormat::BC5_UNORM);
+
+    TextureViewDesc viewDesc{};
+    viewDesc.aspect = TextureAspect::Color;
+    viewDesc.debugName = "ParallaxBc5IdentityView";
+    const TextureViewHandle identityView = device.CreateTextureView(texture, viewDesc);
+    EXPECT_TRUE(identityView.IsValid()) << "the identity control view was not created";
+    ExpectNoNewValidationErrors(device, baseline);
+    // TextureService supplies B=1 for BC5 normal maps; the portability feature must allow it.
+    viewDesc.b = TextureSwizzle::One;
+    viewDesc.debugName = "ParallaxBc5NormalView";
+    const TextureViewHandle normalView = device.CreateTextureView(texture, viewDesc);
+    EXPECT_TRUE(normalView.IsValid()) << "the BC5 normal view was not created";
+
+    if (normalView.IsValid())
+        device.DestroyTextureView(normalView);
+    if (identityView.IsValid())
+        device.DestroyTextureView(identityView);
+    device.DestroyTexture(texture);
 }
 
 void CheckParallaxPipelineCapabilities(bool forceCentroidFootprint)
@@ -423,6 +458,8 @@ void CheckParallaxPipelineCapabilities(bool forceCentroidFootprint)
         ASSERT_TRUE(services.Initialize(device.get()));
         if (forceCentroidFootprint)
             SetInterpolationFunctionsAvailable(false);
+        else
+            CheckBc5NormalTextureViews(*device, baseline);
         MaterialBuildContext context{};
         context.AdapterShaderDir = shaderDir;
         context.CacheRoot = std::filesystem::temp_directory_path() / ("ge_parallax_validity_" + GUID::Generate().ToString());
