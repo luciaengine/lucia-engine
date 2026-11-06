@@ -449,7 +449,9 @@ TerrainHeightPages& TerrainService::GetHeightPages()
             profile.Slots = std::max(1u, static_cast<uint32>(std::strtoul(overrideSlots, nullptr, 10)));
         // No reader threads: the residency reads cooked pages on Background jobs, as it evaluates
         // generated ones.
-        m_HeightPages = std::make_unique<TerrainHeightPages>(&EngineCore::GetInstance().GetJobSystem(), nullptr, profile);
+        auto& engine = EngineCore::GetInstance();
+        auto* jobs = engine.IsInitialized() ? &engine.GetJobSystem() : nullptr;
+        m_HeightPages = std::make_unique<TerrainHeightPages>(jobs, nullptr, profile);
     }
     return *m_HeightPages;
 }
