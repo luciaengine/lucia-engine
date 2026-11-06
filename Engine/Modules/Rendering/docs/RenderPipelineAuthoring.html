@@ -213,6 +213,9 @@
   "passes": [ /* ordered pass entries */ ]
 }</code></pre>
 
+<p>The compiler declares registered view prerequisites before their consumers. These include view parameters, depth prepass inputs, prepass depth, and shadows. Authored order chooses which producer a consumer sees when more than one pass supplies the same view data. A disabled pass does not supply a prerequisite. A dependency cycle is an error.</p>
+<p>Keep passes in authored order for dependencies that use ordinary named resources or are internal to a node. Pass phase is a scheduling hint for the render graph.</p>
+
 <h3>Outputs</h3>
 
 <p>Maps a logical pipeline output to a resource reference. The editor consults this to know what to display:</p>

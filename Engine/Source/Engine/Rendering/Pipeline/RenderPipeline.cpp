@@ -228,39 +228,69 @@ namespace
 // at the FrameOrchestrator enforcement point (last-good pipeline kept);
 // warnings apply-but-log.
 
-// The passes that feed the camera depth prepass (RenderPipelineNodeTypeInfo::FeedsDepthPrepass) are
-// declared ahead of the first DepthPrepass, in their authored order, wherever the blueprint lists them:
-// the prepass declares its reads of their buffers when it is declared, and a feeder declared after it
-// would have the graph order the prepass's draw before the compute that fills those buffers. A feeder
-// authored below the prepass is moved and reported as a Warning (DepthPrepassFeederMoved) that names it, the
-// prepass, and the place to list it: between the pass authored just above the prepass and the prepass.
-void DeclareDepthPrepassFeedersFirst(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegistry& registry)
+using PassPrerequisites = std::vector<std::vector<size_t>>;
+
+bool ResolveDeclarationOrder(RenderPipelineBlueprint& blueprint, const PassPrerequisites& prerequisites)
 {
-    const auto prepass = std::find_if(bp.passes.begin(), bp.passes.end(),
-                                      [](const RenderPipelineBlueprint::Pass& pass) { return pass.type == "DepthPrepass"; });
-    if (prepass == bp.passes.end())
-        return;
-    const std::string prepassId = prepass->id;
-    const std::string place = prepass == bp.passes.begin()
-                                  ? "first, above '" + prepassId + "'"
-                                  : "between '" + std::prev(prepass)->id + "' and '" + prepassId + "'";
-    const auto feedsPrepass = [&registry](const RenderPipelineBlueprint::Pass& pass)
+    enum class Visit { Pending, Visiting, Done };
+    struct Cursor
     {
-        const RenderPipelineNodeTypeInfo* info = registry.Find(pass.type);
-        return info && info->FeedsDepthPrepass;
+        size_t Pass;
+        size_t NextDependency = 0;
     };
-    const auto movedEnd = std::stable_partition(prepass, bp.passes.end(), feedsPrepass);
-    for (auto moved = prepass; moved != movedEnd; ++moved)
+
+    std::vector<Visit> visits(blueprint.passes.size(), Visit::Pending);
+    std::vector<Cursor> stack;
+    std::vector<size_t> order;
+    order.reserve(blueprint.passes.size());
+
+    for (size_t passIndex = 0; passIndex < visits.size(); ++passIndex)
     {
-        PipelineIssue issue{};
-        issue.severity = PipelineIssueSeverity::Warning;
-        issue.code = PipelineIssueCode::DepthPrepassFeederMoved;
-        issue.nodeId = moved->id;
-        issue.message = "pass '" + moved->id + "' (" + moved->type + ") feeds the depth prepass but is listed after DepthPrepass '" +
-                        prepassId + "', so the compiler declares it above '" + prepassId + "'. List it " + place +
-                        " to clear this warning";
-        bp.issues.push_back(std::move(issue));
+        if (visits[passIndex] == Visit::Done)
+            continue;
+
+        visits[passIndex] = Visit::Visiting;
+        stack.push_back({passIndex});
+        while (!stack.empty())
+        {
+            Cursor& cursor = stack.back();
+            const auto& dependencies = prerequisites[cursor.Pass];
+            if (cursor.NextDependency == dependencies.size())
+            {
+                visits[cursor.Pass] = Visit::Done;
+                order.push_back(cursor.Pass);
+                stack.pop_back();
+                continue;
+            }
+
+            const size_t dependency = dependencies[cursor.NextDependency++];
+            if (visits[dependency] == Visit::Done)
+                continue;
+            if (visits[dependency] == Visit::Visiting)
+            {
+                const auto first = std::find_if(stack.begin(), stack.end(), [dependency](const Cursor& entry)
+                {
+                    return entry.Pass == dependency;
+                });
+                std::string cycle = "pass declaration dependency cycle: ";
+                for (auto entry = first; entry != stack.end(); ++entry)
+                    cycle += "'" + blueprint.passes[entry->Pass].id + "' -> ";
+                const auto& id = blueprint.passes[dependency].id;
+                blueprint.issues.push_back({PipelineIssueSeverity::Error, cycle + "'" + id + "'", id});
+                return false;
+            }
+
+            visits[dependency] = Visit::Visiting;
+            stack.push_back({dependency});
+        }
     }
+
+    std::vector<RenderPipelineBlueprint::Pass> sorted;
+    sorted.reserve(order.size());
+    for (const size_t passIndex : order)
+        sorted.push_back(std::move(blueprint.passes[passIndex]));
+    blueprint.passes = std::move(sorted);
+    return true;
 }
 
 bool RequiresShaderPkg(const std::string& type)
@@ -277,6 +307,83 @@ const RenderPipelineNodeResourceFields& ResourceFieldsForType(const RenderPipeli
     static const RenderPipelineNodeResourceFields kNoFields{};
     const RenderPipelineNodeTypeInfo* info = registry.Find(type);
     return info ? info->ResourceFields : kNoFields;
+}
+
+void OrderPipelinePasses(RenderPipelineBlueprint& blueprint, const RenderPipelineNodeRegistry& registry)
+{
+    const auto& passes = blueprint.passes;
+    PassPrerequisites prerequisites(passes.size());
+    std::unordered_map<RenderPipelineViewResource, std::vector<size_t>> producers;
+    size_t firstPrepass = passes.size();
+    for (size_t passIndex = 0; passIndex < passes.size(); ++passIndex)
+    {
+        const auto& pass = passes[passIndex];
+        if (!pass.enabled)
+            continue;
+        if (pass.type == "DepthPrepass" && firstPrepass == passes.size())
+            firstPrepass = passIndex;
+        for (const auto resource : ResourceFieldsForType(registry, pass.type).WritesViewResources)
+        {
+            auto& writers = producers[resource];
+            if (!writers.empty() && writers.back() == passIndex)
+                continue;
+            if (!writers.empty())
+                prerequisites[passIndex].push_back(writers.back());
+            writers.push_back(passIndex);
+        }
+    }
+
+    std::vector<PipelineIssue> feederWarnings;
+    for (size_t passIndex = 0; passIndex < passes.size(); ++passIndex)
+    {
+        const auto& pass = passes[passIndex];
+        if (!pass.enabled)
+            continue;
+        for (const auto resource : ResourceFieldsForType(registry, pass.type).ReadsViewResources)
+        {
+            const auto found = producers.find(resource);
+            if (found == producers.end())
+                continue;
+            const auto& writers = found->second;
+            auto nextWriter = std::lower_bound(writers.begin(), writers.end(), passIndex);
+            if (nextWriter != writers.begin())
+                prerequisites[passIndex].push_back(*std::prev(nextWriter));
+            else
+            {
+                prerequisites[passIndex].push_back(*nextWriter);
+                if (*nextWriter != passIndex)
+                    ++nextWriter;
+            }
+            // Preserve the authored read interval when another producer replaces this value.
+            if (nextWriter != writers.end() && *nextWriter != passIndex)
+                prerequisites[*nextWriter].push_back(passIndex);
+        }
+
+        const auto* type = registry.Find(pass.type);
+        if (!type || !type->FeedsDepthPrepass || firstPrepass == passes.size() || firstPrepass == passIndex)
+            continue;
+        prerequisites[firstPrepass].push_back(passIndex);
+        if (passIndex < firstPrepass)
+            continue;
+
+        const auto& prepassId = passes[firstPrepass].id;
+        const std::string place = firstPrepass == 0
+            ? "first, above '" + prepassId + "'"
+            : "between '" + passes[firstPrepass - 1].id + "' and '" + prepassId + "'";
+        feederWarnings.push_back({
+            PipelineIssueSeverity::Warning,
+            "pass '" + pass.id + "' (" + pass.type + ") feeds the depth prepass but is listed after DepthPrepass '" +
+                prepassId + "', so the compiler declares it above '" + prepassId + "'. List it " + place +
+                " to clear this warning",
+            pass.id,
+            PipelineIssueCode::DepthPrepassFeederMoved});
+    }
+
+    for (auto& dependencies : prerequisites)
+        std::sort(dependencies.begin(), dependencies.end());
+    if (ResolveDeclarationOrder(blueprint, prerequisites))
+        for (auto& warning : feederWarnings)
+            blueprint.issues.push_back(std::move(warning));
 }
 
 // The view resources the spine seeds every frame: a pass left out never leaves them unwritten.
@@ -538,32 +645,6 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
             validSet.insert(s);
     }
     const std::vector<std::string> validList(validSet.begin(), validSet.end());
-
-    std::unordered_map<RenderPipelineViewResource, size_t> firstViewProducer;
-    for (size_t i = 0; i < bp.passes.size(); ++i)
-    {
-        const auto& pass = bp.passes[i];
-        if (pass.enabled)
-            for (const auto resource : ResourceFieldsForType(registry, pass.type).WritesViewResources)
-                firstViewProducer.try_emplace(resource, i);
-    }
-    for (size_t i = 0; i < bp.passes.size(); ++i)
-    {
-        const auto& pass = bp.passes[i];
-        if (!pass.enabled)
-            continue;
-        for (const auto resource : ResourceFieldsForType(registry, pass.type).ReadsViewResources)
-        {
-            const auto producer = firstViewProducer.find(resource);
-            if (producer == firstViewProducer.end() || producer->second < i)
-                continue;
-            const auto& producerId = bp.passes[producer->second].id;
-            addIssue(PipelineIssueSeverity::Error,
-                     "pass '" + pass.id + "' reads a view resource from '" + producerId +
-                         "' before it is declared; move '" + producerId + "' above it",
-                     pass.id);
-        }
-    }
 
     // ── Resource-ref resolution (Error) ──
     auto checkRef = [&](const std::string& value, const std::string& field, const std::string& nodeId)
@@ -1223,7 +1304,7 @@ RenderPipelineBlueprint RenderPipelineCompiler::Compile(const GameEngine::Render
         bp.passes.push_back(std::move(nb));
     }
 
-    DeclareDepthPrepassFeedersFirst(bp, registry);
+    OrderPipelinePasses(bp, registry);
 
     // Semantic validation: resource refs, resource-blob enums, shaderpkg
     // reflection, skipWhen fields. Errors reject the blueprint wholesale at the
