@@ -38,7 +38,6 @@ add_library(SplineRecipes OBJECT
     Source/SplinePlacementController.cpp
     Source/SplineRebuildGate.cpp
     Source/SplineRecipeSystem.cpp
-    Source/SplineRecipesScriptApi.cpp
     Source/SplineSurfaceConform.cpp
     Source/SplineSweepStations.cpp
     Source/SplineWall/SplineWallBuild.cpp
@@ -51,9 +50,6 @@ target_compile_features(SplineRecipes PUBLIC cxx_std_20)
 target_include_directories(SplineRecipes
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/Include
-    PRIVATE
-        # Scripting/AbiMainThread.h: the script API's thread predicate.
-        ${CMAKE_SOURCE_DIR}/Engine/Source
 )
 
 target_link_libraries(SplineRecipes

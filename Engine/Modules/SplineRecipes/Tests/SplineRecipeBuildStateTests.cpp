@@ -22,13 +22,11 @@
 #include "SplineECS/SplineService.h"
 #include "SplineRecipes/RecipeBuildStates.h"
 #include "SplineRecipes/RecipeControllers.h"
-#include "SplineRecipes/SplineRecipesScriptApi.h"
 #include "SplineRecipes/SplineSurfaceConform.h"
 #include "TerrainECS/TerrainService.h"
 
 #include <gtest/gtest.h>
 
-#include <thread>
 
 namespace GameEngine::SplineRecipes
 {
@@ -200,27 +198,6 @@ TEST_F(SplineRecipeBuildStateTests, WithNoRenderDeviceEveryRecipeFailsAndTheScen
     EXPECT_TRUE(states.IsSceneSettled(m_World)) << "a run with no render device kept the scene unsettled";
     EXPECT_TRUE(states.IsSceneSettledAtLastUpdate(m_World));
     EXPECT_EQ(ChunkCount(), 0u);
-}
-
-// The script API answers on the main thread only: a call from another thread is refused and
-// returns the default, not the state.
-TEST_F(SplineRecipeBuildStateTests, AQueryFromAnotherThreadIsRefused)
-{
-    const ECS::EntityHandle prop = m_World.CreateEntity();
-    m_World.AddComponentImmediate(prop, Components::WorldTransform{});
-    ASSERT_TRUE(SplineRecipes::IsSceneSettled(m_World)) << "a world with no recipe is not settled on the main thread";
-    ASSERT_EQ(SplineRecipes::StateOf(m_World, prop).State, BuildState::Built);
-
-    bool settled = true;
-    BuildState state = BuildState::Built;
-    std::thread caller([&] {
-        settled = SplineRecipes::IsSceneSettled(m_World);
-        state = SplineRecipes::StateOf(m_World, prop).State;
-    });
-    caller.join();
-
-    EXPECT_FALSE(settled) << "IsSceneSettled answered off the main thread";
-    EXPECT_EQ(state, BuildState::Pending) << "StateOf answered off the main thread";
 }
 
 TEST_F(SplineRecipeBuildStateTests, ARecipeOverATerrainThatIsNotLoadedIsHeldAndBuildsWhenItLands)
@@ -409,27 +386,6 @@ TEST_F(SplineRecipeBuildStateTests, AMaterialSwapRebindsTheChunkAndRunsNoRebuild
     EXPECT_GT(ChunkTop(chunk), builtTop + 10.0f)
         << "a geometry edit did not rebuild, so the check above proves nothing";
     EXPECT_EQ(m_World.GetComponent<Components::MeshRenderer>(chunk)->materialAssetGuid.ToGuid(), material);
-}
-
-// The documented reading of the query in a process whose recipe system never ran
-// (docs/scripting/spline-recipes.mdx): a recipe is Pending, so only a world with no
-// recipe is settled, and an entity with no recipe is Built.
-TEST(SplineRecipesQuery, WithNoRecipeSystemOnlyAWorldWithNoRecipeIsSettled)
-{
-    ECS::World world;
-    const ECS::EntityHandle prop = world.CreateEntity();
-    world.AddComponentImmediate(prop, Components::WorldTransform{});
-    EXPECT_TRUE(IsSceneSettled(world));
-    EXPECT_EQ(StateOf(world, prop).State, BuildState::Built);
-
-    const ECS::EntityHandle road = world.CreateEntity();
-    world.AddComponentImmediate(road, Components::SplineComponent{});
-    world.AddComponentImmediate(road, Components::SplineExtrude{});
-    world.AddComponentImmediate(road, Components::WorldTransform{});
-    EXPECT_EQ(StateOf(world, road).State, BuildState::Pending);
-    EXPECT_FALSE(IsSceneSettled(world));
-    EXPECT_TRUE(ReasonOf(world, road).empty());
-    EXPECT_EQ(Failures(world, {}), 0);
 }
 
 } // namespace

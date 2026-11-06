@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Mathematics/Matrix4x4.h"
-#include "SplineRecipes/SplineRecipesScriptApi.h"
+#include "SplineRecipes/RecipeStatus.h"
 #include "SplineRecipes/SplineSurfaceConform.h"
 #include "Types/Types.h"
 
