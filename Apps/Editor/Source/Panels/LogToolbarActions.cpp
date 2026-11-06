@@ -17,8 +17,10 @@ constexpr const char* kLayoutPath = "UI/controls/LogToolbarActions.uxml";
 }
 
 LogToolbarActions::LogToolbarActions(std::function<void()> clear, std::function<void()> copy,
-                                   std::function<bool()> togglePaused)
-    : m_Clear(std::move(clear)), m_Copy(std::move(copy)), m_TogglePaused(std::move(togglePaused))
+                                   std::function<bool()> togglePaused,
+                                   std::function<void(const UIElement&)> toggleChannels)
+    : m_Clear(std::move(clear)), m_Copy(std::move(copy)), m_TogglePaused(std::move(togglePaused)),
+      m_ToggleChannels(std::move(toggleChannels))
 {
     AddClass("log-toolbar-main-actions");
     RequestSubtreeStyleAssetPath("UI/panels/LogPanel.css", "editor");
@@ -60,6 +62,13 @@ void LogToolbarActions::BindLayout()
     }
     clear->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { m_Clear(); });
     copy->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { m_Copy(); });
+    if (auto* channels = dynamic_cast<Button*>(FindById("LogChannels")))
+    {
+        channels->SetTooltip("Show or hide log channels and set the level each channel logs at.");
+        channels->RegisterEventHandler(kEventButtonClick, [this](UIEvent& event) {
+            m_ToggleChannels(*event.CurrentTarget);
+        });
+    }
     m_PauseButton->RegisterEventHandler(kEventButtonClick, [this](UIEvent&) { TogglePaused(); });
 }
 

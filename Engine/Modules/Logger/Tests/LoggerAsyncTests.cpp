@@ -612,3 +612,29 @@ TEST_F(LoggerAsyncTest, MultiThreadThroughputRegression)
 }
 
 } // anonymous namespace
+
+namespace
+{
+GE_LOG_CHANNEL(AsyncTestChannel, "Tests.AsyncChannel", Warning)
+}
+
+TEST_F(LoggerAsyncTest, NamedChannelLevelOnlyChangesThatChannel)
+{
+    const auto& channel = AsyncTestChannel();
+    Log::SetChannelLevel(channel.Index, std::nullopt);
+    int evaluations = 0;
+    GE_LOG(AsyncTestChannel, Info, "channel info {}", ++evaluations);
+    EXPECT_EQ(evaluations, 0);
+    EXPECT_EQ(Log::GetChannelName(channel.Index), "Tests.AsyncChannel");
+
+    Log::SetChannelLevel(channel.Index, LogLevel::Info);
+    GE_LOG(AsyncTestChannel, Info, "channel info {}", ++evaluations);
+    Log::SetChannelLevel(channel.Index, LogLevel::Off);
+    GE_LOG(AsyncTestChannel, Error, "channel error {}", ++evaluations);
+    Log::Info("core info");
+    Log::Flush();
+    EXPECT_EQ(evaluations, 1);
+    EXPECT_EQ(m_Spy->GetMessages(LogLevel::Info, 0, "channel info").size(), 1u);
+    EXPECT_EQ(m_Spy->GetMessages(LogLevel::Info, 0, "core info").size(), 1u);
+    Log::SetChannelLevel(channel.Index, std::nullopt);
+}

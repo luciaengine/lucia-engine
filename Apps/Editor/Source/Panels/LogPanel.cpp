@@ -1,4 +1,5 @@
 #include "Panels/LogPanel.h"
+#include "Panels/LogPanel/LogChannelPopover.h"
 #include "Panels/LogToolbarActions.h"
 
 #include "Logger/Logger.h"
@@ -155,7 +156,8 @@ LogPanel::LogPanel()
 
         auto mainActionsRow = std::make_unique<LogToolbarActions>(
             [this]() { ClearLog(); }, [this]() { CopyToClipboard(); },
-            [this]() { return ToggleLogPaused(); });
+            [this]() { return ToggleLogPaused(); },
+            [this](const UIElement& anchor) { ToggleChannels(anchor); });
 
         auto centerSlot = std::make_unique<UIElement>();
         centerSlot->AddClass("log-toolbar-center-slot");
@@ -178,7 +180,6 @@ LogPanel::LogPanel()
         built.FieldPtr->AddClass("log-toolbar-search-input");
         built.IconPtr->AddClass("log-toolbar-search-icon");
         m_SearchBar = built.RootPtr;
-        m_SearchField = built.FieldPtr;
         primary->AddChild(std::move(built.Root));
         SettingsPanel::RegisterSearchBar(m_SearchBar, built.IconPtr);
 
@@ -203,6 +204,9 @@ LogPanel::LogPanel()
 
     auto logView = std::make_unique<LogView>();
     m_LogView = logView.get();
+    auto channelPopover = std::make_unique<LogChannelPopover>(*m_LogView);
+    m_ChannelPopover = channelPopover.get();
+    AddChild(std::move(channelPopover));
 
     m_LogView->SetOnLineClicked([this](const std::string& lineText) {
         UIManager* ui = GetOwnerManager();
@@ -713,6 +717,14 @@ void LogPanel::PopulateDetailPaneForIndex(size_t messageIndex)
     m_DetailPane->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
 }
 
+void LogPanel::ToggleChannels(const UIElement& anchor)
+{
+    if (m_ChannelPopover->IsPopupOpen())
+        m_ChannelPopover->Close();
+    else
+        m_ChannelPopover->Open(anchor);
+}
+
 void LogPanel::CopyToClipboard()
 {
     if (!m_LogView)
@@ -721,16 +733,14 @@ void LogPanel::CopyToClipboard()
     std::string logText = m_LogView->GetSelectedLinesAsText();
     if (logText.empty())
     {
-        const bool useFiltered =
-            (m_SearchField && !m_SearchField->GetValue().empty()) ||
-            m_LogView->IsSeverityFilterActive();
-        logText = m_LogView->GetAllMessagesAsText(useFiltered);
+        logText = m_LogView->GetAllMessagesAsText(true);
     }
 
     const bool detailVisible = m_DetailWeightedPane && !m_DetailWeightedPane->HasClass("log-detail-pane--hidden");
     if (detailVisible && m_SelectedMessageIndex != kNoSelection)
     {
-        if (const auto* stored = m_LogView->GetMessage(m_SelectedMessageIndex))
+        if (const auto* stored = m_LogView->GetMessage(m_SelectedMessageIndex);
+            stored && m_LogView->IsChannelShown(stored->Channel))
         {
             const bool hasSource = !stored->SourceFile.empty();
             const bool hasBacktrace = stored->Backtrace && !stored->Backtrace->empty();

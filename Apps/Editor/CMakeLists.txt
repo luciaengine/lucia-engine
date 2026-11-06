@@ -141,6 +141,7 @@ set(EDITOR_SOURCES
     Source/Panels/InspectorPanel.cpp
     Source/Panels/AssetViewPanel.cpp
     Source/Panels/LogPanel.cpp
+    Source/Panels/LogPanel/LogChannelPopover.cpp
     Source/Panels/LogToolbarActions.cpp
     Source/Panels/LogView.cpp
     Source/Panels/ScriptDiagnosticsByAssembly.cpp

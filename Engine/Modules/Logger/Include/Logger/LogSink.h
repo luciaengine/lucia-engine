@@ -59,6 +59,8 @@ struct LogMessage {
     // Optional captured C++ callstack, auto-filled for Error/Critical.
     SharedPtr<const Vector<BacktraceFrame>> Backtrace;
 
+    std::uint16_t Channel = 0;
+
     LogMessage() = default;
     LogMessage(LogLevel lvl, String msg)
         : Level(lvl), Message(std::move(msg)), Timestamp(std::chrono::system_clock::now()) {}

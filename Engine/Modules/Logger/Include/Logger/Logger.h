@@ -2,6 +2,9 @@
 
 #include "Logger/Backtrace.h"
 #include "Logger/LogLevel.h"
+#include "Logger/LogChannel.h"
+
+#include <optional>
 #include "Logger/LogSink.h"
 #include "Logger/Types.h"
 #include <atomic>
@@ -17,6 +20,8 @@
 
 namespace Logger
 {
+
+class LogChannelTable;
 
 class Log
 {
@@ -52,6 +57,13 @@ class Log
     static void ClearSinks();
     static void SetLogLevel(LogLevel level);
     static LogLevel GetLogLevel();
+
+    /// Channel registrations are process-wide. An empty setting restores the default level.
+    static std::uint16_t GetChannelCount();
+    static std::string_view GetChannelName(std::uint16_t channel);
+    static std::optional<LogLevel> GetChannelSetting(std::uint16_t channel);
+    static LogLevel GetChannelLevelWithoutSetting(std::uint16_t channel);
+    static void SetChannelLevel(std::uint16_t channel, std::optional<LogLevel> level);
 
     /**
      * @brief Block until every queued entry has reached the sinks and the sinks
@@ -216,12 +228,13 @@ class Log
 
     // The gate every entry point and the source macros share: below the
     // effective level nothing is formatted, copied or queued.
-    static bool ShouldLog(LogLevel level)
-    {
-        return level >= GetState().m_EffectiveMinLevel.load(std::memory_order_relaxed);
-    }
+    static bool ShouldLog(LogLevel level);
 
   private:
+    friend LogChannel RegisterChannel(std::string_view name, LogLevel defaultLevel);
+    friend bool Enabled(const LogChannel& channel, LogLevel level);
+    friend void Enqueue(const LogChannel& channel, LogLevel level, const char* file, int line, const char* function,
+                        std::string_view format, std::format_args args);
 
     // Backtrace capture must run on the calling thread (the drain thread's stack
     // is meaningless for diagnostics). Only Error+ severities pay the cost.
@@ -258,6 +271,7 @@ class Log
                                        std::string_view file, int line, std::string_view function);
 
     static void PushEntry(LogMessage&& entry);
+    static void DispatchCritical(LogMessage& message);
 
     static const char* GetCachedThreadId();
     static std::string& GetFormatBuffer();
@@ -276,7 +290,7 @@ class Log
         Vector<UniquePtr<LogSink>> Sinks;
         std::mutex Mutex;
         std::atomic<bool> Initialized{false};
-        std::atomic<LogLevel> m_EffectiveMinLevel{LogLevel::Off};
+        std::unique_ptr<LogChannelTable> Channels;
 
         // Async drain infrastructure
         std::vector<LogMessage> Queue;
@@ -288,15 +302,8 @@ class Log
         std::thread::id DrainThreadId{};
         std::vector<std::promise<void>> FlushPromises;
 
-        ~LoggerState()
-        {
-            if (DrainThread.joinable())
-            {
-                DrainRunning.store(false, std::memory_order_release);
-                QueueCV.notify_one();
-                DrainThread.join();
-            }
-        }
+        LoggerState();
+        ~LoggerState();
     };
 
   private:

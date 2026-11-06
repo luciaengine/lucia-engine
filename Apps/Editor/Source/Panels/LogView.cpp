@@ -22,6 +22,7 @@ LogView::StoredMessage MakeStoredMessage(const Logger::LogMessage& msg)
 {
     LogView::StoredMessage stored;
     stored.Level = msg.Level;
+    stored.Channel = msg.Channel;
     stored.Text = msg.Message;
     stored.TimestampRaw = msg.Timestamp;
     stored.SourceFile = msg.SourceFile;
@@ -343,22 +344,23 @@ void LogView::FlushPendingMessages()
     // Maintain filtered indices (search text and/or severity toggles).
     if (filtering)
     {
-        if (trimmed || IsSeverityFilterActive())
+        if (trimmed)
         {
             RebuildFilteredIndices();
         }
-        else if (!m_SearchFilterLower.empty())
+        else
         {
-            // Search-only: append matching indices for new tail rows.
+            // Append matching indices for new tail rows.
             // GetDisplayLower() populates the message's cache on first use.
             const size_t start = m_Messages.size() - static_cast<size_t>(appendedCount);
             for (size_t i = start; i < m_Messages.size(); ++i)
             {
-                if (MatchesSearch(m_Messages[i]))
+                if (MatchesFilters(m_Messages[i]))
                     m_FilteredIndices.push_back(i);
             }
         }
-        appendedVisible = static_cast<int>(m_FilteredIndices.size() - prevFilteredCount);
+        appendedVisible = m_FilteredIndices.size() > prevFilteredCount
+            ? static_cast<int>(m_FilteredIndices.size() - prevFilteredCount) : 0;
     }
 
     // Update the ListView efficiently
@@ -410,7 +412,7 @@ bool LogView::IsSeverityFilterActive() const
 
 bool LogView::IsViewFiltered() const
 {
-    return !m_SearchFilterLower.empty() || IsSeverityFilterActive();
+    return !m_SearchFilterLower.empty() || IsSeverityFilterActive() || m_HiddenChannels.any();
 }
 
 bool LogView::PassesLevelFilter(const StoredMessage& stored) const
@@ -439,12 +441,35 @@ void LogView::RebuildFilteredIndices()
         return;
     for (size_t i = 0; i < m_Messages.size(); ++i)
     {
-        if (!PassesLevelFilter(m_Messages[i]))
-            continue;
-        if (!MatchesSearch(m_Messages[i]))
+        if (!MatchesFilters(m_Messages[i]))
             continue;
         m_FilteredIndices.push_back(i);
     }
+}
+
+bool LogView::MatchesFilters(const StoredMessage& stored) const
+{
+    return IsChannelShown(stored.Channel) && PassesLevelFilter(stored) && MatchesSearch(stored);
+}
+
+bool LogView::IsChannelShown(std::uint16_t channel) const
+{
+    return channel >= m_HiddenChannels.size() || !m_HiddenChannels[channel];
+}
+
+void LogView::SetChannelsShown(std::span<const std::uint16_t> channels, bool shown)
+{
+    const auto previous = m_HiddenChannels;
+    for (const auto channel : channels)
+    {
+        if (channel < m_HiddenChannels.size())
+            m_HiddenChannels.set(channel, !shown);
+    }
+    if (m_HiddenChannels == previous)
+        return;
+    RebuildFilteredIndices();
+    if (m_ListView)
+        m_ListView->RefreshFromProvider();
 }
 
 void LogView::SetDebugFilterEnabled(bool enabled)
@@ -565,7 +590,7 @@ std::string LogView::GetSelectedLinesAsText() const
         if (id == 0)
             continue;
         size_t msgIdx = static_cast<size_t>(id - 1);
-        if (msgIdx < m_Messages.size())
+        if (msgIdx < m_Messages.size() && IsChannelShown(m_Messages[msgIdx].Channel))
             indices.push_back(msgIdx);
     }
     if (indices.empty())

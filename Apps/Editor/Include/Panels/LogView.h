@@ -1,15 +1,18 @@
 #pragma once
 
+#include <bitset>
 #include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include "Logger/Backtrace.h"
+#include "Logger/LogChannel.h"
 #include "Logger/LogSink.h"
 #include "UI/UIElement.h"
 #include "UI/Controls/ListView.h"
@@ -89,6 +92,8 @@ public:
     bool IsWarningFilterEnabled() const { return m_ShowWarning; }
     bool IsErrorFilterEnabled() const { return m_ShowError; }
     bool IsSeverityFilterActive() const;
+    bool IsChannelShown(std::uint16_t channel) const;
+    void SetChannelsShown(std::span<const std::uint16_t> channels, bool shown);
 
     // Collect log lines into a single string (for copy/export).
     // If includeFiltered == true, the current filter (if any) is applied.
@@ -134,6 +139,7 @@ public:
     // keeps ingestion cheap regardless of message volume.
     struct StoredMessage {
         Logger::LogLevel Level;
+        std::uint16_t Channel = 0;
         std::string Text;
         std::chrono::system_clock::time_point TimestampRaw;
         std::string SourceFile;
@@ -194,6 +200,7 @@ private:
     bool IsViewFiltered() const;
     void RebuildFilteredIndices();
     bool MatchesSearch(const StoredMessage& stored) const;
+    bool MatchesFilters(const StoredMessage& stored) const;
 
     ListView* m_ListView = nullptr;
     std::unique_ptr<LogDataProvider> m_DataProvider;
@@ -208,6 +215,7 @@ private:
     std::string m_SearchFilterLower;
     std::string m_SearchField{"all"};
     std::vector<size_t> m_FilteredIndices;
+    std::bitset<Logger::kMaxLogChannels> m_HiddenChannels;
     bool m_ShowDebug = true;
     bool m_ShowInfo = true;
     bool m_ShowWarning = true;
