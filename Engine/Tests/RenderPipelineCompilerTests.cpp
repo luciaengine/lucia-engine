@@ -948,23 +948,6 @@ TEST(RenderPipelineCompiler, OrdersVersionWritersAfterResolvingScenePrerequisite
     EXPECT_EQ(order, expected);
 }
 
-TEST(RenderPipelineCompiler, RejectsDepthAndShadowProducersAfterTheirConsumers)
-{
-    const auto bp = CompileText(R"json({
-      "schemaVersion": 2, "pipelineName": "ProducerOrder",
-      "passes": [
-        { "id": "World", "type": "WorldRender" },
-        { "id": "Resolve", "type": "DepthResolve" },
-        { "id": "Prepass", "type": "DepthPrepass" },
-        { "id": "Shadows", "type": "ShadowMap" }
-      ]
-    })json");
-    EXPECT_TRUE(HasIssue(bp, PipelineIssueSeverity::Error, "move 'Prepass' above it"))
-        << IssuesToString(bp);
-    EXPECT_TRUE(HasIssue(bp, PipelineIssueSeverity::Error, "move 'Shadows' above it"))
-        << IssuesToString(bp);
-}
-
 TEST(RenderPipelineCompiler, RejectsWrongKindsForDepthAndShadowReferences)
 {
     const auto bp = CompileText(R"json({

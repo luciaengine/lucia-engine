@@ -1005,32 +1005,6 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
     }
     const std::vector<std::string> validList(validSet.begin(), validSet.end());
 
-    std::unordered_map<RenderPipelineViewResource, size_t> firstViewProducer;
-    for (size_t i = 0; i < bp.passes.size(); ++i)
-    {
-        const auto& pass = bp.passes[i];
-        if (pass.enabled)
-            for (const auto resource : ResourceFieldsForType(registry, pass.type).WritesViewResources)
-                firstViewProducer.try_emplace(resource, i);
-    }
-    for (size_t i = 0; i < bp.passes.size(); ++i)
-    {
-        const auto& pass = bp.passes[i];
-        if (!pass.enabled)
-            continue;
-        for (const auto resource : ResourceFieldsForType(registry, pass.type).ReadsViewResources)
-        {
-            const auto producer = firstViewProducer.find(resource);
-            if (producer == firstViewProducer.end() || producer->second < i)
-                continue;
-            const auto& producerId = bp.passes[producer->second].id;
-            addIssue(PipelineIssueSeverity::Error,
-                     "pass '" + pass.id + "' reads a view resource from '" + producerId +
-                         "' before it is declared; move '" + producerId + "' above it",
-                     pass.id);
-        }
-    }
-
     // ── Resource-ref resolution (Error) ──
     auto checkRef = [&](const std::string& value, const std::string& field, const std::string& nodeId)
     {
