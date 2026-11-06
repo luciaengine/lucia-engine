@@ -948,6 +948,57 @@ TEST(RenderPipelineCompiler, OrdersVersionWritersAfterResolvingScenePrerequisite
     EXPECT_EQ(order, expected);
 }
 
+TEST(RenderPipelineCompiler, RejectsDepthAndShadowProducersAfterTheirConsumers)
+{
+    const auto bp = CompileText(R"json({
+      "schemaVersion": 2, "pipelineName": "ProducerOrder",
+      "passes": [
+        { "id": "World", "type": "WorldRender" },
+        { "id": "Resolve", "type": "DepthResolve" },
+        { "id": "Prepass", "type": "DepthPrepass" },
+        { "id": "Shadows", "type": "ShadowMap" }
+      ]
+    })json");
+    EXPECT_TRUE(HasIssue(bp, PipelineIssueSeverity::Error, "move 'Prepass' above it"))
+        << IssuesToString(bp);
+    EXPECT_TRUE(HasIssue(bp, PipelineIssueSeverity::Error, "move 'Shadows' above it"))
+        << IssuesToString(bp);
+}
+
+TEST(RenderPipelineCompiler, RejectsWrongKindsForDepthAndShadowReferences)
+{
+    const auto bp = CompileText(R"json({
+      "schemaVersion": 2, "pipelineName": "ResourceKinds",
+      "resources": {
+        "WrongDepth": {"kind": "Buffer"},
+        "WrongShadowData": {"kind": "Texture"}
+      },
+      "passes": [
+        { "id": "Prepass", "type": "DepthPrepass", "depth": "WrongDepth" },
+        { "id": "Shadows", "type": "ShadowMap", "buffer": "WrongShadowData" },
+        { "id": "World", "type": "WorldRender" }
+      ]
+    })json");
+    EXPECT_TRUE(HasIssue(bp, PipelineIssueSeverity::Error, "field 'depth' requires a texture"))
+        << IssuesToString(bp);
+    EXPECT_TRUE(HasIssue(bp, PipelineIssueSeverity::Error, "field 'buffer' requires a buffer"))
+        << IssuesToString(bp);
+}
+
+TEST(RenderPipelineCompiler, CarriesPublishedResourceKindsToConsumers)
+{
+    const auto bp = CompileText(R"json({
+      "schemaVersion": 2, "pipelineName": "PublishedKinds",
+      "passes": [
+        { "id": "Camera", "type": "ViewParamsUpload" },
+        { "id": "Prepass", "type": "DepthPrepass", "depth": "ViewParams" },
+        { "id": "World", "type": "WorldRender" }
+      ]
+    })json");
+    EXPECT_TRUE(HasIssue(bp, PipelineIssueSeverity::Error, "field 'depth' requires a texture"))
+        << IssuesToString(bp);
+}
+
 // The passes that feed the camera depth prepass (the terrain upload, CBT terrain and the grass, whose
 // depth-only heads the prepass draws from buffers they fill this frame) are declared ahead of the first
 // DepthPrepass wherever a blueprint lists them. A game pipeline that lists them after the prepass

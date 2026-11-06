@@ -4,8 +4,8 @@
 #include "Engine/Rendering/Pipeline/PipelineFrameResources.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
-#include <functional>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>

@@ -455,8 +455,9 @@ void CollectWrites(const RenderPipelineNodeResourceFields& fields, const nlohman
 std::vector<std::string> CollectReads(const RenderPipelineNodeResourceFields& fields, const nlohmann::json& pass)
 {
     std::vector<std::string> reads;
-    for (const auto& key : fields.RefKeys)
+    for (const auto& ref : fields.RefKeys)
     {
+        const auto& key = ref.Key;
         const bool published = std::any_of(fields.PublishKeys.begin(), fields.PublishKeys.end(),
                                            [&key](const auto& publish) { return publish.first == key.Key; });
         std::string value;
@@ -1004,19 +1005,30 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
     }
     const std::vector<std::string> validList(validSet.begin(), validSet.end());
 
-    // ── Declaration order (Error): a pass that builds its binding table when it is declared reads the
-    // view parameters only if ViewParamsUpload was declared before it; declared after, it binds the
-    // fallback block (an identity projection, no TAAU mip bias) without a word.
+    std::unordered_map<RenderPipelineViewResource, size_t> firstViewProducer;
+    for (size_t i = 0; i < bp.passes.size(); ++i)
     {
-        const auto upload = std::find_if(bp.passes.begin(), bp.passes.end(),
-                                         [](const auto& p) { return p.type == "ViewParamsUpload"; });
-        for (auto it = bp.passes.begin(); upload != bp.passes.end() && it != upload; ++it)
-            if (it->type == "DepthPrepass" || it->type == "WorldRender")
-                addIssue(PipelineIssueSeverity::Error,
-                         "pass '" + it->id + "'" + (it->id == it->type ? std::string() : " (" + it->type + ")") +
-                             " is declared before '" + upload->id + "', so it draws without the view's camera; move '" +
-                             upload->id + "' above it",
-                         it->id);
+        const auto& pass = bp.passes[i];
+        if (pass.enabled)
+            for (const auto resource : ResourceFieldsForType(registry, pass.type).WritesViewResources)
+                firstViewProducer.try_emplace(resource, i);
+    }
+    for (size_t i = 0; i < bp.passes.size(); ++i)
+    {
+        const auto& pass = bp.passes[i];
+        if (!pass.enabled)
+            continue;
+        for (const auto resource : ResourceFieldsForType(registry, pass.type).ReadsViewResources)
+        {
+            const auto producer = firstViewProducer.find(resource);
+            if (producer == firstViewProducer.end() || producer->second < i)
+                continue;
+            const auto& producerId = bp.passes[producer->second].id;
+            addIssue(PipelineIssueSeverity::Error,
+                     "pass '" + pass.id + "' reads a view resource from '" + producerId +
+                         "' before it is declared; move '" + producerId + "' above it",
+                     pass.id);
+        }
     }
 
     // ── Resource-ref resolution (Error) ──
@@ -1092,17 +1104,10 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
         checkRef(o.resourceRef, "outputs." + o.name, std::string());
 
     // ── Resource blob schema (Error): kind/scope/format/usage/memoryUsage/size ──
-    for (const auto& r : bp.resources)
+    for (size_t i = 0; i < bp.resources.size(); ++i)
     {
-        nlohmann::json jr;
-        try
-        {
-            jr = nlohmann::json::parse(r.resourceJson);
-        }
-        catch (...)
-        {
-            continue;
-        }
+        const auto& r = bp.resources[i];
+        const auto& jr = resourceJson[i];
         if (!jr.is_object())
             continue;
 
