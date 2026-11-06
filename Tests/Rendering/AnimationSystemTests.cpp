@@ -1048,6 +1048,11 @@ TEST(AnimationGraphHost, EvaluateWritesCompactSkinMatricesAndClearsClipIndex)
     ASSERT_NE(runtime, nullptr);
     ASSERT_GE(runtime->CompactSkinMatrices.size(), 16u);
     EXPECT_NEAR(runtime->CompactSkinMatrices[12], 2.0f, 1e-4f);
+    EXPECT_TRUE(runtime->GraphPoseActive);
+
+    world.GetComponentForWrite<Components::Animator>(e)->active = false;
+    system.Update(world, 0.0f);
+    EXPECT_FALSE(runtime->GraphPoseActive);
 
     graphStore.ClearForTest();
 }

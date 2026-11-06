@@ -88,6 +88,17 @@
       fires them as it reaches them (<a href="animation-events.html">Animation events</a>).</td></tr>
 </table>
 
+<h3>Sync markers</h3>
+<p>Add <code>syncMarkers</code> to the clip block to align looping clip samples in a 1D Blend Space. Each marker
+uses the same <code>frame</code> and <code>name</code> fields as an event. Use at least two distinct frames before
+the end of the clip. Give both clips the same names in time order, such as <code>left</code> and
+<code>right</code>, and place them at the corresponding foot contacts.</p>
+<pre><code>"syncMarkers": [{"frame": 2, "name": "left"}, {"frame": 12, "name": "right"}]</code></pre>
+<p>The lower sample sets the pace between samples. The upper sample follows its matching marker spans.
+At an exact sample, that clip sets the pace and carries forward the current marker phase. With incompatible
+marker tracks or a non-looping sample, each clip uses its own timing. Markers control timing and do not fire
+script events.</p>
+
 <h3>Frames</h3>
 <p>
   An event's <code>frame</code> counts from the clip's start, frame 0, at the rate the clip is sampled: the key
