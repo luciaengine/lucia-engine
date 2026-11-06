@@ -41,7 +41,7 @@ RendererProfile RendererProfile::FromCapabilities(const RenderingDeviceCapabilit
     profile.UseInt64Compute = caps.supportsShaderInt64;
     profile.MaterialSamplerAnisotropy =
         std::clamp(caps.maxSamplerAnisotropy, 1.0f, kMaterialSamplerAnisotropy);
-    profile.UseInterpolationFunctions = caps.supportsSampleRateShading;
+    profile.UseInterpolationFunctions = caps.supportsShaderInterpolationFunctions;
     return profile;
 }
 
@@ -71,7 +71,7 @@ bool ApplyForceCompatOverride(RenderingDeviceCapabilities& caps)
     caps.supportsDrawIndirectCountNative = false;
     caps.supportsShaderInt64 = false;
     // WGSL has no interpolate-at-offset builtin.
-    caps.supportsSampleRateShading = false;
+    caps.supportsShaderInterpolationFunctions = false;
     caps.supportsMeshShaders = false;
     caps.supportsRayTracing = false;
     caps.supportsRayQuery = false;

@@ -18,7 +18,7 @@ RenderingDeviceCapabilities DesktopCapabilities()
     RenderingDeviceCapabilities caps{};
     caps.supportsBindlessResources = true;
     caps.supportsBufferDeviceAddress = true;
-    caps.supportsSampleRateShading = true;
+    caps.supportsShaderInterpolationFunctions = true;
     return caps;
 }
 
@@ -49,13 +49,13 @@ struct ScopedForceCompat
 };
 } // namespace
 
-TEST(RendererProfile, InterpolationFunctionsFollowSampleRateShading)
+TEST(RendererProfile, InterpolationFunctionsFollowEnabledShaderCapability)
 {
     RenderingDeviceCapabilities caps = DesktopCapabilities();
     EXPECT_TRUE(RendererProfile::FromCapabilities(caps).UseInterpolationFunctions);
-    caps.supportsSampleRateShading = false;
+    caps.supportsShaderInterpolationFunctions = false;
     EXPECT_FALSE(RendererProfile::FromCapabilities(caps).UseInterpolationFunctions)
-        << "a device without sampleRateShading must not be handed interpolateAtOffset";
+        << "a device without enabled interpolation functions must keep the centroid footprint";
 }
 
 TEST(RendererProfile, ForcedCompatibilityTakesNoInterpolationFunctions)
@@ -63,6 +63,6 @@ TEST(RendererProfile, ForcedCompatibilityTakesNoInterpolationFunctions)
     RenderingDeviceCapabilities caps = DesktopCapabilities();
     ScopedForceCompat forced;
     ASSERT_TRUE(ApplyForceCompatOverride(caps));
-    EXPECT_FALSE(caps.supportsSampleRateShading);
+    EXPECT_FALSE(caps.supportsShaderInterpolationFunctions);
     EXPECT_FALSE(RendererProfile::FromCapabilities(caps).UseInterpolationFunctions);
 }

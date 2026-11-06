@@ -2472,6 +2472,7 @@ bool VulkanDevice::SelectPhysicalDevice()
 
 bool VulkanDevice::CreateLogicalDevice()
 {
+    m_ShaderInterpolationFunctionsEnabledAtInit = false;
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
     std::set<uint32_t> uniqueQueueFamilies = {m_GraphicsQueueFamily, m_PresentQueueFamily};
 
@@ -2538,11 +2539,9 @@ bool VulkanDevice::CreateLogicalDevice()
     // (draw_command_scatter.comp) and the grass LOD pool both write it, and without this
     // feature any non-zero firstInstance is VUID-VkDrawIndexedIndirectCommand-firstInstance-00554.
     deviceFeatures.drawIndirectFirstInstance = supportedFeatures.drawIndirectFirstInstance;
-    // The parallax colour variants take their relief footprint through interpolateAtOffset, whose
-    // SPIR-V InterpolationFunction capability requires sampleRateShading (otherwise
-    // VUID-VkShaderModuleCreateInfo-pCode-08740 on every such module). Enabling the feature turns no
-    // pipeline to per-sample shading; that stays each pipeline's sampleShadingEnable. Enabled
-    // whenever supported, so capability reporting can assume support == enabled.
+    // InterpolationFunction requires the core feature; portability devices also
+    // need shaderSampleRateInterpolationFunctions in their extension feature chain.
+    // Per-sample pipeline shading remains controlled by sampleShadingEnable.
     deviceFeatures.sampleRateShading = supportedFeatures.sampleRateShading;
 
     // Query Vulkan 1.3 feature support (synchronization2)
@@ -2695,8 +2694,8 @@ bool VulkanDevice::CreateLogicalDevice()
             enabled13.pNext = &sync2KHR;
         }
     }
-    // On MoltenVK / portability subset devices, enable mutableComparisonSamplers so
-    // shadow-map comparison samplers can be written to descriptor sets.
+    // Portability devices enable supported comparison-sampler updates, image-view swizzles,
+    // and shader interpolation functions; unsupported interpolation uses the centroid footprint.
     // The struct lives in vulkan_beta.h behind VK_ENABLE_BETA_EXTENSIONS; define
     // the sType constant and struct layout inline to avoid pulling in all beta APIs.
 #ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR
@@ -2725,7 +2724,8 @@ bool VulkanDevice::CreateLogicalDevice()
 #endif
     VkPhysicalDevicePortabilitySubsetFeaturesKHR portabilityFeatures{};
     portabilityFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR;
-    if (CheckExtensionSupport("VK_KHR_portability_subset"))
+    const bool hasPortabilitySubset = CheckExtensionSupport("VK_KHR_portability_subset");
+    if (hasPortabilitySubset)
     {
         // Query which portability features the device actually supports
         VkPhysicalDevicePortabilitySubsetFeaturesKHR supportedPortability{};
@@ -2736,6 +2736,9 @@ bool VulkanDevice::CreateLogicalDevice()
         vkGetPhysicalDeviceFeatures2(m_PhysicalDevice, &portabilityQuery);
 
         portabilityFeatures.mutableComparisonSamplers = supportedPortability.mutableComparisonSamplers;
+        portabilityFeatures.imageViewFormatSwizzle = supportedPortability.imageViewFormatSwizzle;
+        portabilityFeatures.shaderSampleRateInterpolationFunctions =
+            supportedFeatures.sampleRateShading && supportedPortability.shaderSampleRateInterpolationFunctions;
         portabilityFeatures.pNext = enabled13.pNext;
         enabled13.pNext = &portabilityFeatures;
     }
@@ -2913,7 +2916,7 @@ bool VulkanDevice::CreateLogicalDevice()
     // VK_KHR_portability_subset device extension must be enabled whenever it
     // is reported. Guard it behind CheckExtensionSupport so we only request
     // it when available.
-    if (CheckExtensionSupport("VK_KHR_portability_subset"))
+    if (hasPortabilitySubset)
     {
         deviceExtensions.push_back("VK_KHR_portability_subset");
         m_IsPortabilitySubsetDevice = true;
@@ -3010,12 +3013,14 @@ bool VulkanDevice::CreateLogicalDevice()
         // Fallback: retry with a minimal feature/ext set to tolerate picky drivers/VMs.
         // Keep swapchain enabled when rendering to a window; otherwise the device
         // can be created but presentation entry points are unavailable.
-        Logger::Log::Warning("Retrying vkCreateDevice with minimal device features and required presentation extensions...");
+        Logger::Log::Warning("Retrying vkCreateDevice with minimal device features and required device extensions...");
         std::vector<const char*> fallbackExtensions;
         if (m_UseSwapchain && CheckExtensionSupport(VK_KHR_SWAPCHAIN_EXTENSION_NAME))
         {
             fallbackExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         }
+        if (hasPortabilitySubset)
+            fallbackExtensions.push_back("VK_KHR_portability_subset");
         VkPhysicalDeviceFeatures minimalFeatures{};
         minimalFeatures.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
         // Keep Int64 enabled in the fallback path too — buffer_reference shaders
@@ -3031,7 +3036,7 @@ bool VulkanDevice::CreateLogicalDevice()
         // device, and a PSO requesting it without the feature is invalid usage.
         minimalFeatures.depthClamp = supportedFeatures.depthClamp;
         minimalFeatures.drawIndirectFirstInstance = supportedFeatures.drawIndirectFirstInstance;
-        // Same support == enabled contract for sampleRateShading (the parallax footprint).
+        // Keep the core prerequisite enabled in both fallback attempts.
         minimalFeatures.sampleRateShading = supportedFeatures.sampleRateShading;
         VkPhysicalDeviceVulkan12Features fallback12{};
         fallback12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -3052,8 +3057,14 @@ bool VulkanDevice::CreateLogicalDevice()
         fallbackFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
         fallbackFeatures2.features = minimalFeatures;
         fallbackFeatures2.pNext = m_DeviceProperties.apiVersion >= VK_API_VERSION_1_2 ? &fallback12 : nullptr;
+        auto fallbackPortability = portabilityFeatures;
+        if (hasPortabilitySubset)
+        {
+            fallbackPortability.pNext = fallbackFeatures2.pNext;
+            fallbackFeatures2.pNext = &fallbackPortability;
+        }
         VkDeviceCreateInfo fallbackCreateInfo = createInfo;
-        fallbackCreateInfo.pNext = &fallbackFeatures2; // no optional extension feature structs
+        fallbackCreateInfo.pNext = &fallbackFeatures2; // only required portability extension features
         fallbackCreateInfo.pEnabledFeatures = nullptr;
         fallbackCreateInfo.enabledExtensionCount = static_cast<uint32_t>(fallbackExtensions.size());
         fallbackCreateInfo.ppEnabledExtensionNames = fallbackExtensions.data();
@@ -3076,6 +3087,11 @@ bool VulkanDevice::CreateLogicalDevice()
             minimalFeatures2.features = minimalFeatures;
             minimalFeatures2.pNext = m_DeviceProperties.apiVersion >= VK_API_VERSION_1_2 ? &minimal12 : nullptr;
 
+            if (hasPortabilitySubset)
+            {
+                fallbackPortability.pNext = minimalFeatures2.pNext;
+                minimalFeatures2.pNext = &fallbackPortability;
+            }
             VkDeviceCreateInfo minimalCreateInfo = createInfo;
             minimalCreateInfo.pNext = &minimalFeatures2;
             minimalCreateInfo.pEnabledFeatures = nullptr;
@@ -3107,17 +3123,14 @@ bool VulkanDevice::CreateLogicalDevice()
             fallback12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE;
         m_DescriptorBufferEnabledAtInit = false;
         m_Capabilities.supportsDescriptorBuffer = false;
-        // The fallback ext list carries presentation only, so the device this path
-        // creates genuinely does not enable descriptor buffer.
+        // The fallback enables presentation and required portability extensions only.
+        // Descriptor buffers remain disabled.
         m_DescriptorBufferExtensionEnabledOnDevice = false;
         m_RayQueryEnabledAtInit = false;
         m_SwapchainColorSpaceExtEnabled = false;
         m_HdrMetadataExtEnabled = false;
-        // The fallback ext list carries presentation only, so neither the
-        // checkpoints nor the device-fault extension is enabled on this device
-        // however their probes went. Leaving either flag set would resolve an
-        // entry point for an extension this device never enabled, and report the
-        // instrument as armed right up until the loss it cannot service.
+        // The fallback does not enable checkpoint or device-fault extensions.
+        // Clear their flags before resolving device entry points.
         m_DeviceDiagnosticCheckpointsEnabledAtInit = false;
         m_DeviceFaultEnabledAtInit = false;
         // m_DebugUtilsExtEnabled is deliberately NOT cleared with them:
@@ -3127,6 +3140,10 @@ bool VulkanDevice::CreateLogicalDevice()
         // ResolveDebugUtilsEntryPoints re-resolves them against whichever device
         // this path ended up creating.
     }
+
+    // All successful creation paths use the same core and required portability bits.
+    m_ShaderInterpolationFunctionsEnabledAtInit = deviceFeatures.sampleRateShading == VK_TRUE &&
+        (!hasPortabilitySubset || portabilityFeatures.shaderSampleRateInterpolationFunctions == VK_TRUE);
 
     m_PromotedCommands.Initialize(m_Device);
     vkGetDeviceQueue(m_Device, m_GraphicsQueueFamily, 0, &m_GraphicsQueue);
@@ -3550,8 +3567,8 @@ void VulkanDevice::QueryDeviceCapabilities()
         m_Capabilities.maxSamplerAnisotropy = (baseFeatures.samplerAnisotropy == VK_TRUE)
                                                   ? m_DeviceProperties.limits.maxSamplerAnisotropy
                                                   : 1.0f;
-        // Same contract: CreateLogicalDevice enables sampleRateShading whenever supported.
-        m_Capabilities.supportsSampleRateShading = (baseFeatures.sampleRateShading == VK_TRUE);
+        // Report enabled shader legality, including the portability-subset requirement.
+        m_Capabilities.supportsShaderInterpolationFunctions = m_ShaderInterpolationFunctionsEnabledAtInit;
     }
 
     // Basic capabilities - check for extensions

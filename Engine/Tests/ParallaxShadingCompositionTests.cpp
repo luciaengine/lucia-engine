@@ -16,6 +16,8 @@
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialPrewarmVariants.h"
 #include "Engine/Rendering/MaterialSystem.h"
+#include "Engine/Rendering/ParallaxReliefDepth.h"
+#include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/PipelineTypes.h"
@@ -31,6 +33,7 @@
 #include "ScopedCompatShaderProfile.h"
 #include "ScopedInterpolationFunctions.h"
 #include "StagedTestPaths.h"
+#include "TestTempDir.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -335,15 +338,12 @@ TEST_F(ParallaxShadingComposition, TheFootprintIsTakenAtThePixelCentreWhereSurfa
 
 TEST_F(ParallaxShadingComposition, WithoutTheInterpolationFunctionsTheFootprintKeepsTheCentroidInputs)
 {
-    // interpolateAtOffset declares the SPIR-V InterpolationFunction capability, which Vulkan allows
-    // only on a device that enabled sampleRateShading. Where the device did not, the relief's
-    // footprint takes the centroid inputs' own derivatives: valid everywhere, with a step-count
-    // seam along MSAA triangle edges.
+    // The march remains available when the backend cannot enable interpolation functions.
     TestSupport::ScopedInterpolationFunctions unavailable(false);
-    EXPECT_EQ(CountGlslStd450Instructions(Fragment(StandardDocument(true), kClusteredColour,
-                                                   VertexAttributeFlags::StandardMesh),
-                                          kGlslStd450InterpolateAtOffset),
-              0u);
+    const auto fragment = Fragment(StandardDocument(true), kClusteredColour,
+                                   VertexAttributeFlags::StandardMesh);
+    EXPECT_TRUE(Names(fragment, "GE_ParallaxMarch"));
+    EXPECT_EQ(CountGlslStd450Instructions(fragment, kGlslStd450InterpolateAtOffset), 0u);
 }
 
 // ---- A validating device accepts the parallax colour pipeline -----------------------------------
@@ -367,24 +367,94 @@ struct RestoredShaderCompileProfile
     bool InterpolationFunctions;
 };
 
-uint64_t VuidCount(const IDevice& device, std::string_view vuid, std::string* firstMessage)
+uint64_t VuidCount(const ValidationStats& stats, std::string_view vuid)
 {
-    for (const ValidationVuidStat& stat : device.GetValidationStats().Vuids)
+    for (const ValidationVuidStat& stat : stats.Vuids)
     {
         if (stat.Vuid != vuid)
             continue;
-        if (firstMessage)
-            *firstMessage = stat.FirstMessage;
         return stat.Count;
     }
     return 0;
 }
 
-// The shader module of every desktop parallax colour pipeline is created when a pass first draws
-// it. On a validating device that creation must raise no capability error: the
-// VUID-VkShaderModuleCreateInfo-pCode-08740 an interpolation function raises on a device that did
-// not enable sampleRateShading.
-TEST(ParallaxPipelineOnAValidatingDevice, TheCentroidParallaxColourPipelineDeclaresOnlyEnabledCapabilities)
+void ExpectNoNewValidationErrors(const IDevice& device, const ValidationStats& baseline)
+{
+    const auto current = device.GetValidationStats();
+    std::string errors;
+    for (const auto& entry : current.Vuids)
+        if (entry.IsError && entry.Count > VuidCount(baseline, entry.Vuid))
+            errors += entry.Vuid + ": " + entry.FirstMessage + "\n";
+    EXPECT_EQ(current.ErrorCount, baseline.ErrorCount) << errors;
+    EXPECT_EQ(current.OverflowCount, baseline.OverflowCount);
+    for (const auto* vuid : {"VUID-VkShaderModuleCreateInfo-pCode-08740",
+                             "VUID-RuntimeSpirv-shaderSampleRateInterpolationFunctions-06325",
+                             "VUID-VkImageViewCreateInfo-imageViewFormatSwizzle-04465"})
+        EXPECT_EQ(VuidCount(current, vuid), VuidCount(baseline, vuid)) << errors;
+}
+
+void CheckBc5NormalTextureViews(IDevice& device, const ValidationStats& baseline)
+{
+    constexpr uint32_t kBc5BlockExtent = 4;
+    TextureDesc textureDesc{};
+    textureDesc.width = kBc5BlockExtent;
+    textureDesc.height = kBc5BlockExtent;
+    textureDesc.mipLevels = 1;
+    textureDesc.arrayLayers = 1;
+    textureDesc.format = static_cast<uint32_t>(TextureFormat::BC5_UNORM);
+    textureDesc.usage = static_cast<uint32_t>(TextureUsage::ShaderResource);
+    textureDesc.debugName = "ParallaxBc5Normal";
+    const TextureHandle texture = device.CreateTexture(textureDesc);
+    ASSERT_TRUE(texture.IsValid());
+    EXPECT_EQ(device.GetTextureFormat(texture), TextureFormat::BC5_UNORM);
+
+    TextureViewDesc viewDesc{};
+    viewDesc.aspect = TextureAspect::Color;
+    viewDesc.debugName = "ParallaxBc5IdentityView";
+    const TextureViewHandle identityView = device.CreateTextureView(texture, viewDesc);
+    EXPECT_TRUE(identityView.IsValid()) << "the identity control view was not created";
+    ExpectNoNewValidationErrors(device, baseline);
+    // TextureService supplies B=1 for BC5 normal maps; the portability feature must allow it.
+    viewDesc.b = TextureSwizzle::One;
+    viewDesc.debugName = "ParallaxBc5NormalView";
+    const TextureViewHandle normalView = device.CreateTextureView(texture, viewDesc);
+    EXPECT_TRUE(normalView.IsValid()) << "the BC5 normal view was not created";
+
+    if (normalView.IsValid())
+        device.DestroyTextureView(normalView);
+    if (identityView.IsValid())
+        device.DestroyTextureView(identityView);
+    device.DestroyTexture(texture);
+}
+
+void CheckMultisampleParallaxPrepassPipeline(RenderServices& services, const Material& material,
+                                             IDevice& device, const PipelineFormatKey& format)
+{
+    auto& variants = services.Materials().Variants();
+    const MaterialKeyword prepassKeywords = kClusteredColour | WorldPassReliefDepthKeywords(
+        material.GetVariantKey().materialKeywords, material.GetAlphaMode(),
+        ReliefDepthSource::PrepassReadableMultisample);
+    ASSERT_TRUE(HasKeyword(prepassKeywords, MaterialKeyword::ParallaxDepthFromPrepass));
+    ASSERT_TRUE(HasKeyword(prepassKeywords, MaterialKeyword::ParallaxPrepassDepthMultisample));
+    const auto key = variants.EnqueueColorVariantCompileForTesting(
+        material, VertexAttributeFlags::StandardMesh, PrimitiveTopology::TriangleList,
+        prepassKeywords, format.RasterizationSamples, FrontFace::CounterClockwise);
+    variants.SubmitPendingVariantCompiles();
+    variants.ApplyPendingVariantPublishes();
+    const auto published = variants.SnapshotColorVariantForTesting(key);
+    ASSERT_TRUE(published.CurrentPipelineId.IsValid());
+    const GraphicsPipelineDesc* pipeline = device.LookupGraphicsPipeline(published.CurrentPipelineId);
+    ASSERT_NE(pipeline, nullptr);
+    ASSERT_TRUE(pipeline->PixelShader && !pipeline->PixelShader->empty());
+    ASSERT_TRUE(Names(*pipeline->PixelShader, "GE_ParallaxPrepassDepth"));
+    ASSERT_TRUE(Names(*pipeline->PixelShader, "ge_prepassDepth"));
+    const PipelineFormatKey formats[] = {format};
+    device.PrewarmGraphicsPipeline(published.CurrentPipelineId, formats);
+    EXPECT_TRUE(device.TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid())
+        << "the multisample prepass-reading colour pipeline was not built";
+}
+
+void CheckParallaxPipelineCapabilities(bool forceCentroidFootprint)
 {
     const std::filesystem::path shaderDir = TestPaths::StagedRenderingShadersDir();
     ASSERT_TRUE(std::filesystem::exists(shaderDir)) << "Staged engine shader tree not found: " << shaderDir.string();
@@ -399,8 +469,15 @@ TEST(ParallaxPipelineOnAValidatingDevice, TheCentroidParallaxColourPipelineDecla
     desc.preferredAPI = GraphicsAPI::Vulkan;
     desc.enableDynamicRendering = true;
     desc.enableDebugLayer = true;
+    desc.enableSwapchain = false;
+    desc.pipelineCacheDirectory = TestUtils::MakeUniqueTempDirectory("parallax-pipeline-cache").string();
+    ::testing::Test::RecordProperty("PipelineCacheDirectory", desc.pipelineCacheDirectory);
     std::unique_ptr<IDevice> device = DeviceFactory::CreateDevice(desc);
-    if (!device || !device->Initialize(desc))
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    // Vulkan validation counters are process-global; preserve earlier tests' observations.
+    const auto baseline = device->GetValidationStats();
+    if (!device->Initialize(desc))
         GTEST_SKIP() << "No Vulkan device available";
     if (!device->GetValidationStats().Enabled)
     {
@@ -411,6 +488,10 @@ TEST(ParallaxPipelineOnAValidatingDevice, TheCentroidParallaxColourPipelineDecla
     {
         RenderServices services;
         ASSERT_TRUE(services.Initialize(device.get()));
+        if (forceCentroidFootprint)
+            SetInterpolationFunctionsAvailable(false);
+        else
+            CheckBc5NormalTextureViews(*device, baseline);
         MaterialBuildContext context{};
         context.AdapterShaderDir = shaderDir;
         context.CacheRoot = std::filesystem::temp_directory_path() / ("ge_parallax_validity_" + GUID::Generate().ToString());
@@ -432,8 +513,11 @@ TEST(ParallaxPipelineOnAValidatingDevice, TheCentroidParallaxColourPipelineDecla
         // the pixel-centre footprint wherever this device allows it.
         ASSERT_TRUE(Names(*pipeline->PixelShader, "GE_ParallaxMarch")) << "the registered program does not march";
         EXPECT_EQ(CountGlslStd450Instructions(*pipeline->PixelShader, kGlslStd450InterpolateAtOffset) != 0,
-                  device->GetCapabilities().supportsSampleRateShading)
-            << "the pixel-centre footprint does not follow the device's sampleRateShading";
+                  device->GetCapabilities().supportsShaderInterpolationFunctions &&
+                      !forceCentroidFootprint && !IsCompatShaderProfile())
+            << "the footprint must follow the enabled shader interpolation capability";
+        ::testing::Test::RecordProperty("ShaderInterpolationFunctions",
+            device->GetCapabilities().supportsShaderInterpolationFunctions ? "enabled" : "unavailable");
 
         PipelineFormatKey format{};
         format.ColorCount = static_cast<uint8_t>(std::max<size_t>(pipeline->ColorBlend.attachments.size(), 1));
@@ -441,18 +525,29 @@ TEST(ParallaxPipelineOnAValidatingDevice, TheCentroidParallaxColourPipelineDecla
             format.ColorFormats[i] = TextureFormat::R16G16B16A16_FLOAT;
         format.DepthFormat = TextureFormat::D32_FLOAT;
         format.RasterizationSamples = 4;
-        device->ResetValidationStats();
         const PipelineFormatKey formats[] = {format};
         device->PrewarmGraphicsPipeline(id, formats);
         EXPECT_TRUE(device->TryGetWarmGraphicsPipeline(id, format).IsValid()) << "the colour pipeline was not built";
+        if (!forceCentroidFootprint)
+            CheckMultisampleParallaxPrepassPipeline(services, *material, *device, format);
 
-        std::string message;
-        EXPECT_EQ(VuidCount(*device, "VUID-VkShaderModuleCreateInfo-pCode-08740", &message), 0u) << message;
+        ExpectNoNewValidationErrors(*device, baseline);
         services.Shutdown();
         std::error_code ec;
         std::filesystem::remove_all(context.CacheRoot, ec);
     }
     device->Shutdown();
+    ExpectNoNewValidationErrors(*device, baseline);
+}
+
+TEST(ParallaxPipelineOnAValidatingDevice, TheCentroidParallaxColourPipelineDeclaresOnlyEnabledCapabilities)
+{
+    CheckParallaxPipelineCapabilities(false);
+}
+
+TEST(ParallaxPipelineOnAValidatingDevice, UnsupportedInterpolationKeepsAMarchingCentroidPipeline)
+{
+    CheckParallaxPipelineCapabilities(true);
 }
 
 // ---- The Parallax steps view --------------------------------------------------------------------
