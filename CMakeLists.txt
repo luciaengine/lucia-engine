@@ -1064,6 +1064,7 @@ if(EMSCRIPTEN)
     add_subdirectory(Engine/Modules/PlatformServices)
     add_subdirectory(Engine/Modules/PlatformProviders/${GE_PLATFORM_BACKEND})
     add_subdirectory(Engine/Modules/Scene)
+    add_subdirectory(Engine/Modules/SceneLoadTracker)
     add_subdirectory(Engine/Modules/SceneBvh)
     add_subdirectory(Engine/Modules/Particles)
     add_subdirectory(Engine/Modules/VolumetricFog)
@@ -1169,6 +1170,7 @@ add_subdirectory(Engine/Modules/MeshPicking)
 # Scene-level CPU spatial index (TLAS over per-entity AABBs). Shared by
 # picking, marquee select, AI line-of-sight, audio occlusion, streaming.
 add_subdirectory(Engine/Modules/Scene)
+add_subdirectory(Engine/Modules/SceneLoadTracker)
 
 # GPU-consumable threaded BVH (build/refit/pack) for the software ray-traversal
 # lane used where hardware ray queries are unavailable.

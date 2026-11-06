@@ -97,6 +97,8 @@ enum class EngineLifecycleState : uint8_t
 /**
  * @brief Main engine class that manages all subsystems
  */
+class SceneLoadTracker;
+
 class EngineCore
 {
   public:
@@ -316,6 +318,9 @@ class EngineCore
     void DisableRenderingLoop();
     // Non-owning access to the RenderServices instance currently driving the engine-managed rendering loop (if enabled).
     Engine::Renderer::RenderServices* GetRenderServices() const { return m_RenderServices; }
+
+    /// Read the readiness snapshot from the start of the current frame on the main thread.
+    SceneLoadTracker& GetSceneLoadTracker() { return *m_SceneLoadTracker; }
     // Control whether Engine::Update automatically steps the rendering loop.
     // Default is true; tools like the Editor can disable this and drive the
     // rendering loop explicitly at a more appropriate point in their frame.
@@ -394,6 +399,9 @@ class EngineCore
     // Subsystems
     UniquePtr<JobSystem::WorkStealingThreadPool> m_JobSystem;
     UniquePtr<AssetManager> m_AssetManager;
+    struct SceneLoadingGates;
+    UniquePtr<SceneLoadTracker> m_SceneLoadTracker;
+    UniquePtr<SceneLoadingGates> m_SceneLoadingGates;
     // Engine-managed rendering loop state
     UniquePtr<Engine::Renderer::RenderingLoop> m_RenderingLoop;
     bool m_RenderingLoopEnabled = false;

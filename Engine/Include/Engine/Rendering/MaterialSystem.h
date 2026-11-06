@@ -299,6 +299,9 @@ class MaterialSystem
     MaterialCompiler& Compiler();
     MaterialBinder& Binder();
     const MaterialBinder& Binder() const;
+    /// Number of foreground base shaders awaiting compile or publication. Main thread only.
+    size_t OutstandingBaseCompileCount() const { return m_BaseCompileInFlight.size(); }
+
     PipelineVariantCache& Variants() { return *m_PipelineVariants; }
     const PipelineVariantCache& Variants() const { return *m_PipelineVariants; }
 

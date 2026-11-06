@@ -1093,6 +1093,7 @@ endif()
 # other ECS-ish modules; Editor.exe drops its direct Graph link to avoid
 # duplicate-state across the DLL boundary.
 set(GE_ENGINE_MODULES
+    SceneLoadTracker
     Logger AssetCore AssetDatabase JobSystem ECS FileWatcher AssetRuntime Audio Scripting NativeScripting
     Platform FileSystem FileSystemCore Memory GameEngineRendering RenderServices VolumetricFog HeightFog GPUFogParticles Particles ParticlesAuthoring ParticlesAssets ParticlesSystems ParticlesRendering Animation Sprite2D NumericExpression UI Physics PhysicsECS
     Pathfinding PathfindingECS Terrain PageStreaming TerrainECS TerrainGrass CBTTerrain CBTTerrainECS Ocean Spline SplineGeometry SplineLayout SplineECS TileMap TileMapECS MarkupECS Graph

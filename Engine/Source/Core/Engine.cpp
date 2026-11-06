@@ -1,6 +1,9 @@
 #include "EngineShaderPath.h"
 #include "Core/Engine.h"
 
+#include "SceneLoadTracker/SceneLoadTracker.h"
+#include "Engine/Rendering/ModelRenderSetup.h"
+
 #include "EngineShaderHookState.h"
 #include "Logger/Logger.h"
 #include <algorithm>
@@ -356,7 +359,67 @@ class EngineCore::InitializeTransaction
 
 EngineCore* EngineCore::s_Instance = nullptr;
 
+struct EngineCore::SceneLoadingGates
+{
+    struct Report
+    {
+        SceneLoadTracker::Category Category;
+        SceneLoadTracker::Gate Gate;
+
+        template <typename Count>
+        Report(SceneLoadTracker& tracker, const SceneLoadTracker::CategoryDesc& desc,
+               std::string_view reason, Count count)
+            : Category(tracker.RegisterCategory(desc)),
+              Gate(Category.RegisterGate([count, reason]() -> SceneLoadTracker::GateReport {
+                  const size_t pending = count();
+                  if (pending == 0)
+                      return {};
+                  return {SceneLoadTracker::GateState::Waiting, reason, pending};
+              }))
+        {
+        }
+    };
+
+    explicit SceneLoadingGates(EngineCore& engine)
+        : Resolve(engine.GetSceneLoadTracker(), {"scene.resolve", "Preparing the scene"},
+                  "models or materials still resolving", [&engine]() {
+                      size_t pending = Engine::Renderer::IsSceneBuildPumpActive() ? 1 : 0;
+                      if (auto* loop = engine.GetRenderingLoop())
+                      {
+                          const auto counts = loop->GetSceneResolveService().Counts();
+                          pending += counts.HeldEntities + counts.PendingMaterials;
+                      }
+                      return pending;
+                  }),
+          BaseCompiles(engine.GetSceneLoadTracker(),
+                       {"shader.base-compile", "Compiling material shaders", SceneLoadTracker::CostUnit::Pipelines},
+                       "base shaders still compiling or waiting to publish", [&engine]() -> size_t {
+                           auto* render = engine.GetRenderServices();
+                           return render ? render->Materials().OutstandingBaseCompileCount() : 0;
+                       }),
+          Variants(engine.GetSceneLoadTracker(),
+                   {"shader.variant", "Compiling draw variants", SceneLoadTracker::CostUnit::Variants},
+                   "draw variants still compiling or waiting to publish", [&engine]() -> size_t {
+                       auto* render = engine.GetRenderServices();
+                       return render ? render->Materials().Variants().OutstandingVariantCount() : 0;
+                   }),
+          Textures(engine.GetSceneLoadTracker(), {"render.texture-upload", "Loading textures"},
+                   "material textures still waiting to bind", [&engine]() -> size_t {
+                       auto* render = engine.GetRenderServices();
+                       return render ? render->Textures().PendingMaterialTextureBindCount() : 0;
+                   })
+    {
+    }
+
+    Report Resolve;
+    Report BaseCompiles;
+    Report Variants;
+    Report Textures;
+};
+
 EngineCore::EngineCore()
+    : m_SceneLoadTracker(MakeUnique<SceneLoadTracker>()),
+      m_SceneLoadingGates(MakeUnique<SceneLoadingGates>(*this))
 {
     if (s_Instance != nullptr)
     {
@@ -1171,6 +1234,8 @@ void EngineCore::Update(float64 deltaTime)
     {
         return;
     }
+
+    m_SceneLoadTracker->Tick(std::chrono::steady_clock::now());
 
     // Update asset manager (process loading queue, check for file changes)
     if (m_AssetManager)
