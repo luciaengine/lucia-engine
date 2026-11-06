@@ -73,6 +73,8 @@ struct SplineStripParams
     // Honoured only for a closed profile. An open strip has no polygon to
     // triangulate and capping it would emit a degenerate sliver.
     bool GenerateCaps = true;
+    bool CapStart = true;
+    bool CapEnd = true;
     // Finite: the side faces (those whose edge normal is more lateral than
     // vertical) and the caps take V as the vertex's height above this datum
     // times TilesPerMetreV, so coursed stone stays level on a slope and meets

@@ -595,7 +595,7 @@ SplineStripMesh BuildSplineStrip(const SplineProfile& profile,
     // End caps close a solid cross-section. An open strip has no polygon to
     // triangulate, so capping it is not a toggle with a wrong setting -- it
     // simply does not apply.
-    if (profile.Closed && params.GenerateCaps && pointCount >= 3u)
+    if (profile.Closed && params.GenerateCaps && (params.CapStart || params.CapEnd) && pointCount >= 3u)
     {
         const auto emitCap = [&](uint32 ring, bool front)
         {
@@ -645,8 +645,10 @@ SplineStripMesh BuildSplineStrip(const SplineProfile& profile,
                 }
             }
         };
-        emitCap(0u, /*front=*/true);
-        emitCap(ringCount - 1u, /*front=*/false);
+        if (params.CapStart)
+            emitCap(0u, /*front=*/true);
+        if (params.CapEnd)
+            emitCap(ringCount - 1u, /*front=*/false);
     }
 
     V3 minBounds{std::numeric_limits<float32>::max(), std::numeric_limits<float32>::max(),

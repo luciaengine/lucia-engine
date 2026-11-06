@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -313,6 +314,51 @@ inline float PolygonDoubledSignedArea(std::span<const Vector2> polygon)
 }
 
 // Whether segments ab and cd share a point, ends and collinear overlaps included.
+inline Vector3 ClosestPointOnSegment(const Vector3& point, const Vector3& a, const Vector3& b)
+{
+	const Vector3 segment = b - a;
+	const float lengthSquared = segment.LengthSquared();
+	if (lengthSquared <= 0.0f)
+	    return a;
+	return a + segment * std::clamp(Vector3::Dot(point - a, segment) / lengthSquared, 0.0f, 1.0f);
+}
+
+// The point of segment ab nearest to `point` on the plane; `a` when the segment has no length.
+inline Vector2 ClosestPointOnSegment(const Vector2& point, const Vector2& a, const Vector2& b)
+{
+	const Vector2 segment = b - a;
+	const float lengthSquared = Vector2::Dot(segment, segment);
+	if (lengthSquared <= 0.0f)
+	    return a;
+	return a + segment * std::clamp(Vector2::Dot(point - a, segment) / lengthSquared, 0.0f, 1.0f);
+}
+
+// How far `point` is from segment ab on the plane.
+inline float DistanceToSegment(const Vector2& point, const Vector2& a, const Vector2& b)
+{
+	return (ClosestPointOnSegment(point, a, b) - point).Length();
+}
+
+// The point of triangle abc nearest to `point` (on its face, an edge or a corner). A degenerate
+// triangle (coincident or collinear corners, or a corner angle at `a` under about 0.001 radians)
+// resolves to the nearest point of its three edges.
+inline std::optional<Vector2> SegmentIntersectionFractions(const Vector2& a, const Vector2& b, const Vector2& c,
+                                                           const Vector2& d)
+{
+	const Vector2 ab = b - a;
+	const Vector2 cd = d - c;
+	const Vector2 ac = c - a;
+	const float denominator = ab.x * cd.y - ab.y * cd.x;
+	if (denominator == 0.0f)
+	    return std::nullopt;
+	const float s = (ac.x * cd.y - ac.y * cd.x) / denominator;
+	const float t = (ac.x * ab.y - ac.y * ab.x) / denominator;
+	if (s < 0.0f || s > 1.0f || t < 0.0f || t > 1.0f)
+	    return std::nullopt;
+	return Vector2(s, t);
+}
+
+// A point on the ground plane, seen from above (+Y up): (x, z).
 inline bool SegmentsIntersect(const Vector2& a, const Vector2& b, const Vector2& c, const Vector2& d)
 {
 	const auto cross = [](const Vector2& o, const Vector2& p, const Vector2& q) {
