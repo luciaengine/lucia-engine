@@ -212,6 +212,11 @@ class RGPassBuilder
         requires std::is_invocable_r_v<bool, std::decay_t<PrepareFn>&, RGPrepareContext&>
     void Prepare(PrepareFn&& prepare);
 
+    /// Runs on the caller thread when the submission containing this pass succeeds.
+    template <class SubmittedFn>
+        requires std::is_invocable_r_v<void, std::decay_t<SubmittedFn>&>
+    void OnSubmitted(SubmittedFn&& submitted);
+
   private:
     friend class RGFrame;
     RGFrame* m_Frame = nullptr;
@@ -805,6 +810,18 @@ class RGFrame
         m_Prepare[pass].Fn = function;
     }
 
+    template <class SubmittedFn>
+    void SetOnSubmitted(RGPassId pass, SubmittedFn&& submitted)
+    {
+        using Function = std::decay_t<SubmittedFn>;
+        if (m_OnSubmitted.size() <= pass)
+            m_OnSubmitted.resize(pass + 1);
+        auto& callback = m_OnSubmitted[pass];
+        assert(callback.Fn == nullptr && "a pass has one submission callback");
+        callback.Fn = m_Graph.Arena().New<Function>(std::forward<SubmittedFn>(submitted));
+        callback.Invoke = [](void* value) { (*static_cast<Function*>(value))(); };
+    }
+
     uint64_t PhysicalOf(RGResourceId id) const
     {
         // Loud in release too: a transient queried before Execute's
@@ -840,6 +857,11 @@ class RGFrame
         void* Fn = nullptr;
         uint32_t RequiredFirst = 0;
         uint32_t RequiredCount = 0;
+    };
+    struct SubmitThunk
+    {
+        void (*Invoke)(void*) = nullptr;
+        void* Fn = nullptr;
     };
     struct PipelineRequirement
     {
@@ -900,6 +922,7 @@ class RGFrame
 
     RGGraph m_Graph;
     std::vector<PrepareThunk> m_Prepare;
+    std::vector<SubmitThunk> m_OnSubmitted;
     std::vector<PipelineRequirement> m_RequiredPipelines;
     std::vector<ExecThunk> m_Exec; // indexed by pass id
     std::vector<PendingTex> m_PendingTex;
@@ -985,6 +1008,13 @@ template <class PrepareFn>
 void RGPassBuilder::Prepare(PrepareFn&& prepare)
 {
     m_Frame->SetPrepare(m_Pass, std::forward<PrepareFn>(prepare));
+}
+
+template <class SubmittedFn>
+    requires std::is_invocable_r_v<void, std::decay_t<SubmittedFn>&>
+void RGPassBuilder::OnSubmitted(SubmittedFn&& submitted)
+{
+    m_Frame->SetOnSubmitted(m_Pass, std::forward<SubmittedFn>(submitted));
 }
 
 } // namespace GameEngine::Rendering::RenderGraph

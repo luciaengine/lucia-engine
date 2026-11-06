@@ -565,6 +565,7 @@ void RGFrame::ResetRecording()
     m_Graph.BeginFrame(); // resets the arena → runs last frame's exec-lambda dtors
     m_Exec.clear();
     m_Prepare.clear();
+    m_OnSubmitted.clear();
     m_RequiredPipelines.clear();
     m_PassRecordSecondary.clear();
     m_GraphicsSpecializations.clear();

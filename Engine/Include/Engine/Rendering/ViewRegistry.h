@@ -295,12 +295,8 @@ public:
         Rendering::CameraData CurrCamera{};
         Rendering::CameraData PrevCamera{};
         uint64 FrameStamp = ~0ull;
-        // True once Prev* hold a real rendered frame's snapshot — the last
-        // frame this view advanced, however long ago. A frame gap (OnDemand
-        // lapse, hidden panel) does not invalidate reprojection: PrevCamera is
-        // exactly the camera that rendered the surviving history. Whether that
-        // history's physical still holds those texels is the render-graph
-        // pool's freshness arm, not the camera pair's.
+        uint64 PrevFrameStamp = ~0ull;
+        // True when the view has an earlier camera snapshot.
         bool PrevValid = false;
     };
     // `mode` selects the jitter generator (TAA Halton vs TemporalFXAA edge
