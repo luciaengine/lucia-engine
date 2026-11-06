@@ -131,9 +131,40 @@ struct InspectorContext {
 using InspectorFn = std::function<void(const InspectorContext&)>;
 
 // Simple registry for custom inspectors.
+enum class EntityBannerPlacement
+{
+    BeforeComponents,
+    AfterComponents,
+};
+
 class InspectorRegistry {
 public:
     static InspectorRegistry& Get();
+
+    void RegisterEntityBanner(std::string_view key, EntityBannerPlacement placement, InspectorFn fn)
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        for (EntityBanner& banner : m_EntityBanners)
+        {
+            if (banner.Key == key)
+            {
+                banner.Placement = placement;
+                banner.Fn = std::move(fn);
+                return;
+            }
+        }
+        m_EntityBanners.push_back({std::string(key), placement, std::move(fn)});
+    }
+    // The registered entity banners at `placement`, in registration order.
+    std::vector<InspectorFn> GetEntityBanners(EntityBannerPlacement placement) const
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        std::vector<InspectorFn> banners;
+        for (const EntityBanner& banner : m_EntityBanners)
+            if (banner.Placement == placement)
+                banners.push_back(banner.Fn);
+        return banners;
+    }
 
     // Register a custom inspector for a component type T.
     template<typename T>
@@ -219,6 +250,14 @@ private:
     // registry bookkeeping — see ECS/ModuleRegistration.h).
     std::unordered_map<ECS::ComponentTypeId, ECS::ModuleRegistrationStamp> m_ModuleOwners;
     std::unordered_map<int, ECS::ModuleRegistrationStamp> m_AssetInspectorOwners;
+    struct EntityBanner
+    {
+        std::string Key;
+        EntityBannerPlacement Placement = EntityBannerPlacement::BeforeComponents;
+        InspectorFn Fn;
+    };
+    std::vector<EntityBanner> m_EntityBanners;
+
     mutable std::mutex m_Mutex;
 };
 

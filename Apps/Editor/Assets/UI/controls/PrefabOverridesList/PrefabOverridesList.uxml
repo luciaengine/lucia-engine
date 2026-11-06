@@ -1,0 +1,17 @@
+<!-- PrefabOverridesList (Apps/Editor/Source/Prefabs/PrefabOverridesList/PrefabOverridesList.h): the title and the prefab on
+     one line, the groups (PrefabOverrideGroup.uxml) and rows (PrefabOverrideRow.uxml) in the scroll, a dim line when
+     the instance has no override, and at the foot a note, Revert all and Apply all. PrefabOverridesList.cpp sets the
+     texts; the ids are the contract with it. -->
+<UIElement class="popover-panel prefab-overrides">
+  <UIElement class="prefab-overrides-header">
+    <Label id="prefab-overrides-title" class="prefab-overrides-title" />
+    <Label id="prefab-overrides-against" class="prefab-overrides-against" />
+  </UIElement>
+  <ScrollView id="prefab-overrides-scroll" class="prefab-overrides-scroll" />
+  <Label id="prefab-overrides-empty" class="prefab-overrides-empty hidden" />
+  <UIElement id="prefab-overrides-footer" class="prefab-overrides-footer">
+    <Label id="prefab-overrides-note" class="prefab-overrides-note hidden" />
+    <Button id="prefab-overrides-revert-all" class="small secondary" text="Revert all" />
+    <Button id="prefab-overrides-apply-all" class="small secondary" />
+  </UIElement>
+</UIElement>

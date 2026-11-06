@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+
 #include "ECS/ECS.h"
 #include "ECS/ModuleRegistration.h"
 #include "PluginAPI/EnginePlugin.h"
@@ -16,6 +18,7 @@
 namespace GameEngine
 {
 struct EditorContext;
+class UIElement;
 }
 
 namespace GameEngine::Editor
@@ -43,6 +46,10 @@ struct HierarchyCommandContext
     std::function<void(ECS::EntityHandle)> SelectEntity;
     std::function<void(ECS::EntityHandle)> NotifyEntityCreated;
     std::function<void()> NotifyWorldStructureChanged;
+
+    UIElement* DialogHost = nullptr;
+    std::vector<ECS::EntityHandle> TargetEntities;
+    std::function<void(const std::filesystem::path&)> PingAsset;
 };
 
 // One draw the scene-view selection/hover outline mask should render for a

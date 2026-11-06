@@ -135,7 +135,11 @@ void RegisterCoreAssetTypes(AssetTypeRegistry& typeRegistry)
                      kScriptAssetTypePriority);
 
     // Text content for inspector and tooling (runtime loads via SceneIO).
-    RegisterCoreType(typeRegistry, AssetType::Scene, &CreateAssetAtPath<SceneAsset>, "Scene Asset");
+    const auto createSceneText = +[](const AssetMetadata& metadata) -> SharedPtr<Asset> {
+        return std::make_shared<SceneAsset>(metadata.Guid, metadata.Path, metadata.Type);
+    };
+    RegisterCoreType(typeRegistry, AssetType::Scene, createSceneText, "Scene Asset");
+    RegisterCoreType(typeRegistry, AssetType::Prefab, createSceneText, "Prefab Asset");
 
     RegisterCoreType(typeRegistry, AssetType::NavigationGrid, &CreateAssetAtPath<NavGridAsset>,
                      "Navigation Grid Asset");

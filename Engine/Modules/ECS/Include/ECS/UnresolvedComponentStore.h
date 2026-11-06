@@ -175,6 +175,28 @@ class UnresolvedComponentStore
         return erased;
     }
 
+    // Appends `from`'s preserved components and fields of `source` to `to` in this store.
+    void CopyEntity(const UnresolvedComponentStore& source, EntityHandle from, EntityHandle to)
+    {
+        if (const auto it = source.m_ByEntity.find(from); it != source.m_ByEntity.end())
+        {
+            std::vector<PreservedComponent>& components = m_ByEntity[to];
+            components.insert(components.end(), it->second.begin(), it->second.end());
+        }
+        if (const auto it = source.m_FieldsByEntity.find(from); it != source.m_FieldsByEntity.end())
+        {
+            std::vector<PreservedField>& fields = m_FieldsByEntity[to];
+            fields.insert(fields.end(), it->second.begin(), it->second.end());
+        }
+    }
+
+    // Adds every unresolved reference path of `source` that this store does not hold.
+    void CopyReferences(const UnresolvedComponentStore& source)
+    {
+        for (const auto& [guid, path] : source.m_ReferencePathsByGuid)
+            m_ReferencePathsByGuid.try_emplace(guid, path);
+    }
+
     // Drop every override belonging to an entity that no longer exists. The overrides describe
     // component instances the destroy just took with it.
     //

@@ -40,7 +40,10 @@ extern "C" {
 // through World::SetEntityEnabledImmediate, so both activity tags move together
 // and an entity switched back on under a parent that is on returns to queries
 // at once; queued while structural changes are deferred.
-static const uint32_t GE_ECS_ABI_VERSION_CURRENT = GE_ECS_ABI_VERSION_ENCODE(2u, 3u);
+// v2.4 (minor, appended): spawn and despawn resident prefabs. The previous
+// GE_ECS_FieldDesc reserved word carries an optional asset category.
+static const uint32_t GE_ECS_ABI_VERSION_CURRENT = GE_ECS_ABI_VERSION_ENCODE(2u, 4u);
+static const uint16_t GE_ECS_ASSET_CATEGORY_PREFAB = 45u;
 
 // Opaque entity identifier (packed index+version in engine ECS).
 // 0 is reserved to mean "none/invalid" at the ABI boundary.
@@ -155,7 +158,7 @@ typedef struct GE_ECS_FieldDesc
     uint32_t    offset;    // byte offset within the component
     uint32_t    size;      // total byte span (elementSize * count for arrays)
     uint16_t    fieldType; // ECS::FieldTypeId underlying value; 0 (Unknown) is invalid
-    uint16_t    reserved;  // must be 0
+    uint16_t    assetCategory; // v2.4: 0 for any category, or an AssetType for AssetGuid
 } GE_ECS_FieldDesc;
 
 // v2.1: Register a blob component together with its reflected field table.
@@ -234,6 +237,13 @@ typedef GE_Result (GE_CDECL *GE_ECSABI_CachedQueryGetEntityIdSlice_Fn)(
     uint32_t** outEntityIds,
     uint32_t* outCount);
 
+// Spawn is immediate, including under structural deferral. Despawn follows the
+// world's normal deferral. Both require the engine main thread outside a job.
+typedef GE_Result (GE_CDECL *GE_ECSABI_SpawnPrefab_Fn)(GE_Handle world, const uint8_t* prefabGuid,
+                                                       const GE_ECS_Transform* at, GE_ECS_Entity parent,
+                                                       GE_ECS_Entity* outRoot);
+typedef GE_Result (GE_CDECL *GE_ECSABI_DespawnPrefab_Fn)(GE_Handle world, GE_ECS_Entity root);
+
 typedef struct GE_ECS_Interface_v2
 {
     uint32_t sizeBytes;  // sizeof(GE_ECS_Interface_v2)
@@ -296,6 +306,10 @@ typedef struct GE_ECS_Interface_v2
 
     // v2.3: the entity switch (World::SetEntityEnabledImmediate)
     GE_ECSABI_SetEntityEnabled_Fn SetEntityEnabled;
+
+    // v2.4: reusable scene objects
+    GE_ECSABI_SpawnPrefab_Fn SpawnPrefab;
+    GE_ECSABI_DespawnPrefab_Fn DespawnPrefab;
 } GE_ECS_Interface_v2;
 
 // Bootstrap entry: returns a pointer to the requested ECS interface version.
@@ -352,6 +366,10 @@ GE_API GE_Result GE_CDECL GE_ECSABI_RegisterBlobComponentWithSchema(
 GE_API GE_Result GE_CDECL GE_ECSABI_GetComponentTypeIdByName(const char* nameUtf8, uint32_t nameLen, GE_ECS_ComponentTypeId* outTypeId);
 GE_API GE_Result GE_CDECL GE_ECSABI_GetComponentDisabledTypeId(GE_ECS_ComponentTypeId componentTypeId, GE_ECS_ComponentTypeId* outDisabledTypeId);
 GE_API GE_Result GE_CDECL GE_ECSABI_SetEntityEnabled(GE_Handle world, GE_ECS_Entity entity, int32_t enabled);
+GE_API GE_Result GE_CDECL GE_ECSABI_SpawnPrefab(GE_Handle world, const uint8_t* prefabGuid,
+                                                const GE_ECS_Transform* at, GE_ECS_Entity parent,
+                                                GE_ECS_Entity* outRoot);
+GE_API GE_Result GE_CDECL GE_ECSABI_DespawnPrefab(GE_Handle world, GE_ECS_Entity root);
 GE_API GE_Result GE_CDECL GE_ECSABI_SetComponentBytes(GE_Handle world, GE_ECS_Entity entity, GE_ECS_ComponentTypeId componentTypeId, const uint8_t* data, uint32_t dataLen);
 GE_API GE_Result GE_CDECL GE_ECSABI_GetComponentBytes(GE_Handle world, GE_ECS_Entity entity, GE_ECS_ComponentTypeId componentTypeId, uint8_t* outData, uint32_t outCap, uint32_t* outLen);
 GE_API GE_Result GE_CDECL GE_ECSABI_RemoveComponent(GE_Handle world, GE_ECS_Entity entity, GE_ECS_ComponentTypeId componentTypeId);

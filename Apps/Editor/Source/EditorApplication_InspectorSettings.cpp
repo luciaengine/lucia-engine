@@ -2,6 +2,9 @@
 
 #include "Panels/SettingsPanel.h"
 #include "Panels/InspectorPanel.h"
+#include "PlayMode/PlayModeManager.h"
+#include "Prefabs/PrefabHierarchyRows.h"
+#include "Scene/SceneEditorController.h"
 #include "Editor/Settings/ExperimentalRenderingSettingsPage.h"
 #include "Editor/Entities/DDGIVolumeComponentTraits.h"
 #include "Editor/Settings/InterfaceSettingsPage.h"
@@ -451,6 +454,9 @@ void EditorApplication::InitializeAssetsGridAndSmartFolderSettings(SettingsPanel
     // DDGIVolume owns its inspector/hierarchy icon through the component-traits
     // registry rather than another branch in the built-in icon chains.
     Editor::RegisterDDGIVolumeComponentTraits();
+    Editor::RegisterPrefabEditor(*m_ChangeNotifications, m_ThumbnailProvider.get(),
+        [this]() { return m_PlayMode && m_PlayMode->IsPlayingOrPaused(); },
+        [this]() { return m_SceneEditor ? m_SceneEditor->GetSceneDocument() : nullptr; });
     // Shared info-card background / outline / shadow on UI > Appearance.
     Editor::RegisterInfoCardAppearanceSettingsCategory();
     // Asset Preview (scroll-wheel dolly) registers declaratively and seeds

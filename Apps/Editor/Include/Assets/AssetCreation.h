@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <span>
 #include <vector>
 
 #include "AssetCore/GUID.h"
@@ -23,7 +24,8 @@ namespace GameEngine::Editor
 // until no conflict is found. Returns empty path on failure (4096 attempts exhausted).
 std::filesystem::path MakeUniqueFilePath(const std::filesystem::path& dir,
                                          const std::string& baseStem,
-                                         const std::string& extensionWithDot);
+                                         const std::string& extensionWithDot,
+                                         std::span<const std::filesystem::path> reserved = {});
 
 struct AssetFileResult
 {

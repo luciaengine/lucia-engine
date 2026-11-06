@@ -126,7 +126,8 @@ public class EntitySystemGeneratorTests
                 public readonly uint Offset;
                 public readonly uint Size;
                 public readonly ComponentFieldType Type;
-                public ComponentFieldDesc(string name, uint offset, uint size, ComponentFieldType type)
+                public ComponentFieldDesc(string name, uint offset, uint size, ComponentFieldType type,
+                                          ushort assetCategory = 0)
                 {
                     Name = name; Offset = offset; Size = size; Type = type;
                 }
@@ -2473,6 +2474,39 @@ class Outer
         Assert.Equal((uint)runtimeOffset, f.Offset);
         Assert.Equal(size, f.Size);
         Assert.Equal(type, f.Type);
+    }
+
+    [Fact]
+    public void ComponentSchema_PrefabRefUsesPackedGuidAndPrefabAssetCategory()
+    {
+        const string source = """
+            namespace GameEngine.Scripting
+            {
+                [System.Runtime.InteropServices.StructLayout(
+                    System.Runtime.InteropServices.LayoutKind.Sequential, Pack = 1)]
+                public readonly struct PrefabRef
+                {
+                    private readonly ulong first;
+                    private readonly ulong second;
+                }
+            }
+
+            namespace TestGame
+            {
+                public struct Spawner : GameEngine.Scripting.IComponent
+                {
+                    public byte Mode;
+                    public GameEngine.Scripting.PrefabRef Prefab;
+                }
+            }
+            """;
+
+        var (compilation, hub, diagnostics) = RunGeneratorSchemaHub(source);
+        Assert.DoesNotContain(diagnostics, d => d.Severity == DiagnosticSeverity.Error);
+        Assert.DoesNotContain(compilation.GetDiagnostics(), d => d.Severity == DiagnosticSeverity.Error);
+        Assert.Contains(
+            "new GameEngine.ECS.ComponentFieldDesc(\"Prefab\", 1, 16, (GameEngine.ECS.ComponentFieldType)18, 45)",
+            hub);
     }
 
     [Fact]

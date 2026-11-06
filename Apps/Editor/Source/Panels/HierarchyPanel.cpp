@@ -35,6 +35,7 @@
 #include "Components/Rendering/WindVolume.h"
 #include "Components/RuntimeOnlyEntity.h"
 #include "Components/SceneBlueprintInstance.h"
+#include "Prefabs/PrefabService.h"
 #include "Components/SceneEntityTag.h"
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Terrain/Terrain.h"
@@ -2772,6 +2773,16 @@ void HierarchyPanel::DropAssetPaths(const UI::Interaction::DropRequest& request,
             }
         }
 
+        if (GetAssetTypeFromExtension(ext) == AssetType::Prefab && m_Context->Assets)
+        {
+            Components::Transform at{};
+            at.SetIdentity();
+            const auto root = Editor::PrefabService(*m_Context->Assets).Place(*m_World, absPath, at, parent);
+            if (root.IsValid())
+                createdEntities.push_back(root);
+            continue;
+        }
+
         const ECS::EntityHandle blueprintEntity = CreateBlueprintInstanceEntity(*m_World, absPath, parent);
         if (blueprintEntity.IsValid())
             createdEntities.push_back(blueprintEntity);
@@ -3767,6 +3778,24 @@ bool HierarchyPanel::TryHandlePluginCommand(std::uint32_t cmd)
         if (m_Context && m_Context->OnSceneDirty)
             m_Context->OnSceneDirty();
     };
+    if (UIManager* manager = GetOwnerManager())
+        pluginCtx.DialogHost = manager->GetRootElement();
+    if (m_PingAsset)
+        pluginCtx.PingAsset = m_PingAsset;
+    if (m_Selection && pluginCtx.HasTargetEntity)
+    {
+        const auto selected = m_Selection->GetSelection();
+        if (std::find(selected.begin(), selected.end(), HierarchyDataProvider::Encode(pluginCtx.TargetEntity)) !=
+            selected.end())
+        {
+            for (const auto id : selected)
+            {
+                const auto entity = HierarchyDataProvider::Decode(static_cast<TreeId>(id));
+                if (m_World->IsValid(entity))
+                    pluginCtx.TargetEntities.push_back(entity);
+            }
+        }
+    }
     return Editor::EditorPluginRegistry::Get().HandleHierarchyCommand(cmd, pluginCtx);
 }
 

@@ -1,0 +1,226 @@
+/* PrefabOverridesList (Apps/Editor/Source/Prefabs/PrefabOverridesList/PrefabOverridesList.h); the surface is the theme's
+   .popover-panel, the pills are the Inspector's header pills. The anchor is a zero-size box at the bar's origin,
+   so a press beside the list is outside it. */
+
+.prefab-overrides-anchor {
+	position: absolute;
+	left: 0px;
+	top: 0px;
+	width: 0px;
+	height: 0px;
+}
+
+.prefab-overrides {
+	position: absolute;
+	width: 400px;
+	padding: var(--ui_spacing_md);
+}
+
+.prefab-overrides-header {
+	display: flex;
+	flex-direction: row;
+	align-items: baseline;
+	column-gap: var(--ui_spacing_md);
+	padding-bottom: var(--ui_spacing_xs);
+	border-bottom: 1px solid var(--ui_color_border_panel);
+}
+
+.prefab-overrides-title {
+	flex-grow: 1;
+	flex-shrink: 1;
+	min-width: 0;
+	font-weight: 600;
+	color: var(--ui_color_text_bright);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.prefab-overrides-against {
+	flex-shrink: 0;
+	font-size: var(--ui_font_size_small);
+	color: var(--ui_color_text_dim);
+	white-space: nowrap;
+}
+
+/* The list takes the height of its rows up to this cap, then scrolls. */
+.prefab-overrides-scroll {
+	max-height: 360px;
+}
+
+/* An entity's name with the Hierarchy's instance glyph (.entity-icon.hierarchy-entity-prefab sets the image). */
+.prefab-override-group {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	column-gap: var(--ui_spacing_xs);
+	padding: var(--ui_spacing_xs) 0px 2px 0px;
+}
+
+.prefab-override-group-glyph {
+	width: 14px;
+	height: 14px;
+	min-width: 14px;
+	background-size: 14px 14px;
+	background-position: center;
+	background-repeat: no-repeat;
+}
+
+.prefab-override-group-name {
+	flex-shrink: 1;
+	min-width: 0;
+	font-weight: 600;
+	color: var(--ui_color_text);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* An entity that the prefab does not have: the alert glyph and the name in amber. */
+.prefab-override-group-glyph-stale {
+	background-image: url("editor:Icons/alert-circle.svg");
+	background-image-tint: var(--ui_color_warning_text);
+}
+
+.prefab-override-group-name-stale {
+	color: var(--ui_color_warning_text);
+}
+
+/* One override: the kind's icon, the label, the pill or the prefab's value, then the row's actions. */
+.prefab-override-row {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	column-gap: var(--ui_spacing_xs);
+	min-height: 24px;
+	padding-left: 18px;
+}
+
+.prefab-override-icon {
+	width: 14px;
+	height: 14px;
+	min-width: 14px;
+	background-size: 14px 14px;
+	background-position: center;
+	background-repeat: no-repeat;
+	background-image-tint: var(--ui_color_prefab);
+}
+
+.prefab-override-icon-field {
+	background-image: url("editor:Icons/draw_curve.svg");
+}
+
+.prefab-override-icon-added {
+	background-image: url("editor:Icons/plus.svg");
+}
+
+.prefab-override-icon-removed {
+	background-image: url("editor:Icons/trash.svg");
+}
+
+.prefab-override-icon-stale {
+	background-image: url("editor:Icons/alert-circle.svg");
+	background-image-tint: var(--ui_color_warning_text);
+}
+
+/* The prefab value shrinks first, then the label. */
+.prefab-override-label {
+	flex-shrink: 1;
+	min-width: 0;
+	color: var(--ui_color_text);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* An override line whose entity the prefab does not have. */
+.prefab-override-label-stale {
+	color: var(--ui_color_warning_text);
+}
+
+/* The header pill's rule pushes the actions to the row's end; in a row the value does that. */
+.prefab-override-pill {
+	margin-right: 0;
+}
+
+.prefab-override-value {
+	flex-grow: 1;
+	flex-shrink: 1000;
+	min-width: 0;
+	font-size: var(--ui_font_size_small);
+	color: var(--ui_color_text_dim);
+	text-align: right;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* The prefab's color of a color field, after its value. */
+.prefab-override-swatch {
+	width: 12px;
+	height: 12px;
+	min-width: 12px;
+	flex-shrink: 0;
+	border-radius: 2px;
+	border: 1px solid var(--ui_color_border_subtle);
+}
+
+/* The auto margin keeps the actions at the row's end when the row shows no value. */
+.prefab-override-actions {
+	display: flex;
+	flex-direction: row;
+	flex-shrink: 0;
+	margin-left: auto;
+	column-gap: 2px;
+}
+
+.prefab-override-action-icon {
+	width: 14px;
+	height: 14px;
+	background-size: 14px 14px;
+	background-position: center;
+	background-repeat: no-repeat;
+	background-image-tint: var(--ui_color_text);
+}
+
+/* The glyphs of the override menu's Apply and Revert entries (EditorIcons kCube and kReset). */
+.prefab-override-action-icon-apply {
+	background-image: url("editor:Icons/Cube.svg");
+}
+
+.prefab-override-action-icon-revert {
+	background-image: url("editor:Icons/ResetReload.svg");
+}
+
+/* Discard keeps the row's height: a row is as tall as the icon buttons. */
+.prefab-override-discard {
+	height: 24px;
+}
+
+.prefab-overrides-footer {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: flex-end;
+	column-gap: var(--ui_spacing_xs);
+	row-gap: var(--ui_spacing_xs);
+	padding-top: var(--ui_spacing_xs);
+	border-top: 1px solid var(--ui_color_border_panel);
+}
+
+/* One dim line: the empty list, and the foot's note before its buttons. */
+.prefab-overrides-empty {
+	padding: var(--ui_spacing_xs) 0px;
+	font-size: var(--ui_font_size_small);
+	color: var(--ui_color_text_dim);
+}
+
+/* The note takes a line of its own above the buttons. */
+.prefab-overrides-note {
+	flex-basis: 100%;
+	min-width: 0;
+	font-size: var(--ui_font_size_small);
+	color: var(--ui_color_text_dim);
+	white-space: normal;
+}

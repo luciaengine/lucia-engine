@@ -1,5 +1,7 @@
 #include "Assets/AssetCreation.h"
 
+#include <algorithm>
+
 #include "AssetCore/Asset.h"
 #include "UndoRedo/UndoRedoService.h"
 #include "UndoRedo/CreateTextFileCommand.h"
@@ -94,14 +96,15 @@ static bool IsPermutationOfSlotIndices(const std::vector<uint32_t>& order, uint3
 
 std::filesystem::path MakeUniqueFilePath(const std::filesystem::path& dir,
                                          const std::string& baseStem,
-                                         const std::string& extensionWithDot)
+                                         const std::string& extensionWithDot,
+                                         std::span<const std::filesystem::path> reserved)
 {
     std::error_code ec;
     for (int i = 0; i < 4096; ++i)
     {
         const std::string stem = (i == 0) ? baseStem : (baseStem + std::to_string(i));
         const std::filesystem::path candidate = (dir / (stem + extensionWithDot)).lexically_normal();
-        if (!std::filesystem::exists(candidate, ec))
+        if (!std::filesystem::exists(candidate, ec) && std::find(reserved.begin(), reserved.end(), candidate) == reserved.end())
             return candidate;
     }
     return {};

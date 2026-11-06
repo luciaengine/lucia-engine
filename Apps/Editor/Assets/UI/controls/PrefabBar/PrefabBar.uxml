@@ -1,0 +1,27 @@
+<!-- PrefabBar (Apps/Editor/Source/Prefabs/PrefabBar.h): the glyph and the title in three phrases on line 1,
+     the button that selects the prefab file and the counts on line 2: grey text for no overrides, the teal
+     override pills, and the amber pill of the override lines that the prefab does not have. PrefabBar.cpp sets the
+     texts; the ids are the contract with it. -->
+<UIElement class="prefab-bar">
+  <UIElement id="prefab-bar-title" class="prefab-bar-title">
+    <UIElement id="prefab-bar-glyph" class="entity-icon hierarchy-entity-prefab prefab-bar-glyph" />
+    <Label id="prefab-bar-title-lead" class="prefab-bar-title-text" />
+    <Label id="prefab-bar-prefab" class="prefab-bar-title-text prefab-bar-prefab" />
+    <Label id="prefab-bar-title-tail" class="prefab-bar-title-text" />
+  </UIElement>
+  <UIElement class="prefab-bar-actions">
+    <Button id="prefab-bar-select-asset" class="secondary small prefab-bar-select" />
+    <UIElement id="prefab-bar-counts" class="prefab-bar-counts">
+      <Label id="prefab-bar-count-none" class="prefab-bar-count-none hidden" />
+      <Button id="prefab-bar-count" class="badge-button">
+        <Label id="prefab-bar-count-text" class="inspector-section-header-badge inspector-section-header-badge-override prefab-bar-count-text" />
+      </Button>
+      <Button id="prefab-bar-instance-count" class="badge-button">
+        <Label id="prefab-bar-instance-count-text" class="inspector-section-header-badge inspector-section-header-badge-override prefab-bar-count-text" />
+      </Button>
+      <Button id="prefab-bar-stale-count" class="badge-button hidden">
+        <Label id="prefab-bar-stale-count-text" class="inspector-section-header-badge prefab-bar-count-text" />
+      </Button>
+    </UIElement>
+  </UIElement>
+</UIElement>

@@ -71,6 +71,7 @@ class Archetype
     // worldMutex disappeared — the redundant lock measured 15-20% of
     // archetype-transition cost when MoveEntity dropped it).
     EntityLocation AddEntityUnsafe(EntityHandle entity);
+    RowRun AddEntitiesUnsafe(std::span<const EntityHandle> entities);
 
     // Remove entity at the given location. Returns the entity that was swapped
     // into the vacated slot (for metadata fixup), or Invalid if none was moved.

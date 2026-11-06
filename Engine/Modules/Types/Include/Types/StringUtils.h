@@ -6,6 +6,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace GameEngine
 {
@@ -233,6 +234,24 @@ inline std::string IdentifierToWords(std::string_view identifier)
         words += firstOfWord ? static_cast<char>(std::toupper(c)) : static_cast<char>(c);
     }
     return words;
+}
+
+/// The fields of `text` between each `delimiter`, as views into `text`: "a,,b" gives "a", "" and
+/// "b", and "a," gives "a" and "". Empty fields are kept; an empty `text` gives no fields. The views
+/// live as long as the text they point into.
+inline std::vector<std::string_view> Split(std::string_view text, char delimiter)
+{
+    std::vector<std::string_view> fields;
+    if (text.empty())
+        return fields;
+    std::size_t start = 0;
+    for (std::size_t at = text.find(delimiter); at != std::string_view::npos; at = text.find(delimiter, start))
+    {
+        fields.push_back(text.substr(start, at - start));
+        start = at + 1;
+    }
+    fields.push_back(text.substr(start));
+    return fields;
 }
 
 } // namespace GameEngine

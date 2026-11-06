@@ -3,6 +3,7 @@
 // AbiMainThread.h - The scripting ABI's rule for exports that may run only on the engine's main thread.
 
 #include "Core/Engine.h"
+#include "JobSystem/WorkStealingThreadPool.h"
 #include "Scripting/ScriptManager.h"
 
 namespace GameEngine::ScriptingAbi
@@ -18,6 +19,11 @@ namespace GameEngine::ScriptingAbi
  * protect nothing. The ScriptManager is resolved per call because EngineCore::Initialize and Shutdown
  * replace it.
  */
+inline bool IsMainThreadOutsideJobFor(const EngineCore& engine)
+{
+    return engine.IsMainThread() && !JobSystem::WorkStealingThreadPool::IsExecutingJob();
+}
+
 inline bool OnEngineMainThread()
 {
     const ScriptManager& scripts = EngineCore::GetInstance().GetScriptManager();

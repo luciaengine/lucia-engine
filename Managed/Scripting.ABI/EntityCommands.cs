@@ -1,3 +1,4 @@
+using System;
 using System.Runtime.CompilerServices;
 using GameEngine.ECS;
 using GameEngine.ECS.Internal;
@@ -17,6 +18,26 @@ namespace GameEngine.Scripting
         public uint CreateEntity()
         {
             return ChunkQueryNative.CreateEntityRaw(WorldHandle);
+        }
+
+        /// <summary>
+        /// Instantiates a loaded prefab immediately and returns its root, or 0 when the prefab is
+        /// unavailable. The transform is relative to the optional parent. Call on the engine main thread.
+        /// </summary>
+        public uint Spawn(PrefabRef prefab, in Transform at, uint parent = 0)
+        {
+            if (prefab.IsNone)
+                throw new ArgumentException("Assign a prefab to this field in the Inspector.", nameof(prefab));
+            fixed (Transform* transform = &at)
+                return ChunkQueryNative.SpawnPrefab(WorldHandle, (byte*)&prefab, (float*)transform, parent);
+        }
+
+        /// <summary>
+        /// Destroys the root and its descendants after the systems complete. Call on the engine main thread.
+        /// </summary>
+        public void Despawn(uint root)
+        {
+            ChunkQueryNative.DespawnPrefab(WorldHandle, root);
         }
 
         /// <summary>Queues entity destruction. Executes after all systems complete.</summary>

@@ -22,6 +22,7 @@ class WorkStealingThreadPool;
 // Forward declare ECS World to avoid heavy includes in header
 namespace GameEngine
 {
+namespace Scene { class PrefabLibrary; }
 namespace Input
 {
 class InputSystem;
@@ -151,6 +152,8 @@ class EngineCore
                m_InitializingThread.load(std::memory_order_acquire) == std::this_thread::get_id();
     }
 
+    bool IsMainThread() const { return m_MainThreadId.load(std::memory_order_acquire) == std::this_thread::get_id(); }
+
     /**
      * @brief True once Initialize() has been called in this process, whatever it returned.
      *
@@ -183,6 +186,7 @@ class EngineCore
     // run before/without a full engine init (e.g. loading a model from a bare test
     // harness) fall back to defaults instead of asserting on a manager it never had.
     AssetManager* TryGetAssetManager() noexcept { return m_AssetManager.get(); }
+    Scene::PrefabLibrary* TryGetPrefabLibrary() noexcept { return m_PrefabLibrary.get(); }
 
     /**
      * @brief Get script manager (lazily constructs if missing to support C-ABI test scenarios)
@@ -377,6 +381,7 @@ class EngineCore
     // Set on entry to Initialize(), before the lifecycle is claimed, so a reader that
     // sees Initializing or Initialized also sees this. Never cleared.
     std::atomic<bool> m_EverInitialized{false};
+    std::atomic<std::thread::id> m_MainThreadId{};
     ApplicationConfig m_Config;
     std::optional<ScriptsConfig> m_ScriptsConfig;
 
@@ -394,6 +399,7 @@ class EngineCore
     // Subsystems
     UniquePtr<JobSystem::WorkStealingThreadPool> m_JobSystem;
     UniquePtr<AssetManager> m_AssetManager;
+    UniquePtr<Scene::PrefabLibrary> m_PrefabLibrary;
     // Engine-managed rendering loop state
     UniquePtr<Engine::Renderer::RenderingLoop> m_RenderingLoop;
     bool m_RenderingLoopEnabled = false;

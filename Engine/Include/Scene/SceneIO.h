@@ -48,6 +48,7 @@ void ClearLastSceneIOError();
 // entity or resource reference is a claim about the document, not a value a component can decline.
 struct SceneLoadSkip
 {
+    enum class SkipKind { Unapplied, OrphanedOverride, UnderRemovedEntity };
     std::string entityId;       // instantiated scene entity id (include/blueprint prefix applied)
     std::string component;      // authored component name
     std::string field;          // authored property key; empty when the whole component failed
@@ -66,6 +67,9 @@ struct SceneLoadSkip
     // The entity the override was recorded on, so SkipIsOutstanding can find it in the store
     // without resolving `entityId` back through the scene tags. Meaningless when !preserved.
     ECS::EntityHandle entityHandle{};
+    ECS::ComponentTypeId componentType = 0;
+    SkipKind kind = SkipKind::Unapplied;
+    std::string address;
 };
 
 // Everything one load could not apply. Empty => the scene loaded cleanly.
@@ -196,9 +200,17 @@ struct SaveOptions
 {
     bool ensureSceneEntityTags = true; // assign SceneEntityTag to entities that lack one
 
-    // If true, entities that were loaded from [blueprint] sections and tagged in-world will be re-saved
-    // back to [blueprint] sections (with [resource] lines), rather than being flattened into [entity] blocks.
+    // Preserve existing [blueprint] instance sections when saving.
     bool preserveBlueprintInstances = true;
+
+    // If true, the file is a prefab file: it starts with the [prefab version=1] header. The world
+    // must hold one root entity, with the id "root", and every other id must be a valid prefab id.
+    bool writePrefabHeader = false;
+
+    // If true, each prefab instance is saved as a [prefab] section (with its [resource] line) that holds
+    // what the instance changes in its prefab, rather than flattened into [entity] blocks. The save
+    // reads each prefab's path from assetResolver and refuses an instance it cannot name.
+    bool preservePrefabInstances = true;
 
     // If true, entities that were loaded from [subscene] sections and tagged in-world will be re-saved
     // back to [subscene] sections (with [resource] lines), rather than being flattened into [entity] blocks.

@@ -75,6 +75,7 @@
 #include "Components/Measure/MeasureComponent.h"
 #include "Components/Name.h"
 #include "Components/SceneBlueprintInstance.h"
+#include "Prefabs/PrefabService.h"
 #include "Components/Transform.h"
 #include "ECS/Components.h"
 #include "ECS/ComponentFieldRegistry.h"
@@ -4376,6 +4377,17 @@ void SceneViewPanel::PerformDrop(const UI::Interaction::DropRequest& request)
             world->AddComponentImmediate(flareEntity, source);
             Editor::AppendUnorderedRootsToHierarchyEnd(*world, std::span(&flareEntity, 1));
             droppedRoots.push_back(flareEntity);
+            continue;
+        }
+
+        if (GetAssetTypeFromExtension(ext) == AssetType::Prefab)
+        {
+            Components::Transform at{};
+            at.SetIdentity();
+            at.Translate(worldPos.x, worldPos.y, worldPos.z);
+            const auto root = Editor::PrefabService(am).Place(*world, absPath, at, {});
+            if (root.IsValid())
+                droppedRoots.push_back(root);
             continue;
         }
 

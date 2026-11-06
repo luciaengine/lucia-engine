@@ -83,6 +83,22 @@
 namespace JobSystem
 {
 
+namespace Detail
+{
+class JobExecutionScope
+{
+public:
+    JobExecutionScope() { ++s_Depth; }
+    ~JobExecutionScope() { --s_Depth; }
+    JobExecutionScope(const JobExecutionScope&) = delete;
+    JobExecutionScope& operator=(const JobExecutionScope&) = delete;
+    static bool IsActive() { return s_Depth != 0; }
+
+private:
+    inline static thread_local unsigned s_Depth = 0;
+};
+}
+
 class JobCounter
 {
   public:
@@ -199,6 +215,7 @@ class JobCounter
 
         void Execute() override
         {
+            const Detail::JobExecutionScope jobScope;
             // F16: the guard decrements on EVERY exit path, including unwind.
             // The sticky failure flag is set inside the catch, i.e. BEFORE the
             // guard's decrement, so a waiter released by this task's zero-

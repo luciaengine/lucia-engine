@@ -135,6 +135,21 @@ std::vector<GE_ECS_FieldDesc> StatsFields()
     };
 }
 
+TEST_F(BlobComponentSchemaAbiTests, PrefabGuidCategorySurvivesAbiRegistration)
+{
+    auto field = Desc("Prefab", 1, 16, static_cast<uint16_t>(GameEngine::ECS::FieldTypeId::AssetGuid));
+    field.assetCategory = GE_ECS_ASSET_CATEGORY_PREFAB;
+    const auto id = RegisterSchema("CsSchemaTest.PrefabSpawner", 17, {field});
+    ASSERT_NE(id, 0u);
+
+    const auto fields = GameEngine::ECS::ComponentFieldRegistry::Get(id);
+    ASSERT_EQ(fields.size(), 1u);
+    EXPECT_EQ(fields[0].Type, GameEngine::ECS::FieldTypeId::AssetGuid);
+    EXPECT_EQ(fields[0].AssetCategory, GE_ECS_ASSET_CATEGORY_PREFAB);
+    EXPECT_EQ(fields[0].Offset, 1u);
+    EXPECT_EQ(fields[0].Size, 16u);
+}
+
 TEST_F(BlobComponentSchemaAbiTests, SceneRoundTripThroughAbiSchema)
 {
     const auto scenePath = TempScene("ge_blob_schema_roundtrip.scene");

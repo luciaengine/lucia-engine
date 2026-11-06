@@ -3664,6 +3664,21 @@ void InspectorPanel::AddEntityEnableToggle(UIElement* headerContainer, ECS::Enti
 bool InspectorPanel::CollectDisplayComponentIds(ECS::EntityHandle entity, bool isMultiEdit,
                                            std::vector<ECS::ComponentTypeId>& displayComponentIds)
 {
+    InspectorContext bannerContext{};
+    bannerContext.Parent = m_ContentRoot;
+    bannerContext.World = m_World;
+    bannerContext.Entity = entity;
+    bannerContext.Entities = m_Entities;
+    bannerContext.Undo = m_Undo;
+    bannerContext.ChangeNotifications = m_ChangeNotifications;
+    bannerContext.PingAsset = m_PingAsset;
+    bannerContext.SelectEntity = m_SelectEntity;
+    bannerContext.EditorCtx = m_Context;
+    bannerContext.RequestInspectorRefresh = [this]() { RequestEntityRefresh(); };
+    for (const InspectorFn& banner : InspectorRegistry::Get().GetEntityBanners(EntityBannerPlacement::BeforeComponents))
+        banner(bannerContext);
+
+
     // Enumerate the entity's components from its archetype signature and build one
     // inspector section per component.
     ECS::Archetype* archetype = m_World->GetEntityArchetype(entity);

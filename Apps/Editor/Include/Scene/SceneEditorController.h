@@ -124,6 +124,7 @@ class SceneEditorController
     std::vector<std::uint8_t> CaptureWorldSnapshot() const;
     bool ApplyWorldSnapshot(const std::vector<std::uint8_t>& snapshot) const;
 
+    SceneDocumentManager* GetSceneDocument() { return m_Doc.get(); }
     std::optional<std::filesystem::path> GetActiveScenePath() const;
     std::optional<std::string> GetActiveSceneDisplayName() const;
     std::vector<std::filesystem::path> GetRecentScenePaths() const;
