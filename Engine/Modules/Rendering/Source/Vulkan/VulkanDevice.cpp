@@ -4302,27 +4302,28 @@ void VulkanDevice::LogSampleCountFallbackIfNeeded(uint32_t requestedSamples, uin
 
 void VulkanDevice::FillNewTargetWithNaN(TextureHandle texture, const TextureDesc& desc)
 {
-    const auto format = static_cast<TextureFormat>(desc.format);
-    const bool floatColor = format == TextureFormat::R32G32B32A32_FLOAT || format == TextureFormat::R16G16B16A16_FLOAT ||
-                            format == TextureFormat::R11G11B10_FLOAT || format == TextureFormat::R16_FLOAT ||
-                            format == TextureFormat::R16G16_FLOAT || format == TextureFormat::R32_FLOAT ||
-                            format == TextureFormat::R32G32_FLOAT;
-    const uint32_t targetUsage = static_cast<uint32_t>(TextureUsage::RenderTarget) |
-                                 static_cast<uint32_t>(TextureUsage::UnorderedAccess);
-    if (!floatColor || (desc.usage & targetUsage) == 0)
-        return;
     const float nan = std::numeric_limits<float>::quiet_NaN();
     const float rgba[4] = {nan, nan, nan, nan};
-    auto cl = CreateCommandList(QueueType::Graphics);
-    cl->Begin();
+    auto commands = CreateCommandList(QueueType::Graphics);
+    commands->Begin();
     const uint32_t mips = desc.mipLevels > 0 ? desc.mipLevels : 1;
     const uint32_t layers = desc.arrayLayers > 0 ? desc.arrayLayers : 1;
     for (uint32_t mip = 0; mip < mips; ++mip)
         for (uint32_t layer = 0; layer < layers; ++layer)
-            cl->ClearColorImageSubresource(texture, mip, layer, rgba);
-    cl->End();
-    CommandList* raw = cl.get();
-    ExecuteCommandLists({raw});
+            commands->ClearColorImageSubresource(texture, mip, layer, rgba);
+    // Diagnostic clears precede the graph's first-use discard. Make their writes
+    // available without changing the graph's authority over image layouts.
+    VkMemoryBarrier clearWrites{};
+    clearWrites.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    clearWrites.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    clearWrites.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    vkCmdPipelineBarrier(static_cast<VulkanCommandList*>(commands.get())->GetVkCommandBuffer(),
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         0, 1, &clearWrites, 0, nullptr, 0, nullptr);
+    commands->End();
+    CommandList* commandList = commands.get();
+    // Allocation returns after the clear so any queue can use the new image.
+    WaitGpuSyncToken(ExecuteCommandListsTracked({commandList}).graphics);
 }
 
 void VulkanDevice::FillNewStorageBufferWithNaN(BufferHandle buffer, uint64_t sizeBytes)
@@ -4411,10 +4412,22 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
         return INVALID_TEXTURE_HANDLE;
     }
 
+    const auto format = static_cast<TextureFormat>(desc.format);
+    const bool floatColor = format == TextureFormat::R32G32B32A32_FLOAT || format == TextureFormat::R16G16B16A16_FLOAT ||
+                            format == TextureFormat::R11G11B10_FLOAT || format == TextureFormat::R16_FLOAT ||
+                            format == TextureFormat::R16G16_FLOAT || format == TextureFormat::R32_FLOAT ||
+                            format == TextureFormat::R32G32_FLOAT;
+    const uint32_t targetUsage = static_cast<uint32_t>(TextureUsage::RenderTarget) |
+                                 static_cast<uint32_t>(TextureUsage::UnorderedAccess);
+    const bool fillWithNaN = m_FillNewTargetsWithNaN && floatColor && (desc.usage & targetUsage) != 0;
+
     VulkanTexture* vulkanTexture = new VulkanTexture();
     vulkanTexture->device = m_Device;
     vulkanTexture->extent = {desc.width, desc.height, desc.depth > 0 ? desc.depth : 1};
     vulkanTexture->usage = static_cast<TextureUsage>(desc.usage);
+    // The backend owns this extra transfer use, including under strict auditing.
+    if (fillWithNaN)
+        vulkanTexture->usage = vulkanTexture->usage | TextureUsage::TransferDst;
     vulkanTexture->debugName = desc.debugName ? desc.debugName : "";
     vulkanTexture->trackedLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     vulkanTexture->arrayLayers = is3DTexture ? 1 : (desc.arrayLayers > 0 ? desc.arrayLayers : 1);
@@ -4464,14 +4477,14 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
     {
         vkUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     }
-    if (desc.usage & static_cast<uint32_t>(TextureUsage::TransferDst))
+    if (static_cast<uint32_t>(vulkanTexture->usage & TextureUsage::TransferDst) != 0)
     {
         vkUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     }
     // Every image gets both transfer bits regardless of what it declared, which is
     // why TransferSrc/TransferDst are the only usage bits this backend does not
-    // enforce. Strict mode maps exactly the declaration instead, turning an
-    // undeclared copy into a validation error at the command. Not yet the default:
+    // enforce. Strict mode maps the declaration plus backend-owned diagnostic
+    // uses, turning an undeclared copy into a validation error. Not yet the default:
     // paths no platform has exercised would fail here first.
     if (!TextureUsagePolicy::IsStrict())
     {
@@ -4749,7 +4762,7 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
             m_LiveTextures.push_back(h);
         }
 
-        if (m_FillNewTargetsWithNaN)
+        if (fillWithNaN)
             FillNewTargetWithNaN(h, desc);
 
         // If caller requested a non-Undefined initial state, transition now via a
@@ -4760,7 +4773,7 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc)
             cl->Begin();
             cl->Barrier(ResourceBarrier::CreateTextureBarrier(
                 h,
-                m_FillNewTargetsWithNaN ? ResourceState::CopyDest : ResourceState::Undefined,
+                fillWithNaN ? ResourceState::CopyDest : ResourceState::Undefined,
                 desc.initialState,
                 0, desc.mipLevels > 0 ? desc.mipLevels : 1,
                 0, desc.arrayLayers > 0 ? desc.arrayLayers : 1));
