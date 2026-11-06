@@ -25,6 +25,7 @@ namespace GameEngine::TerrainECS
 // in TerrainGpuBake.cpp (not header-inline) so the test override below is one instance across the
 // Engine-dll / test-exe boundary — a DATA symbol does not export reliably under the auto-export.
 bool IsGpuHeightBakeEnabled();
+bool IsGpuSculptNormalEnabled();
 
 // Test seam for the GPU eval-skip oracles: force the gate on/off (state 0/1) or clear back to the
 // env (state -1). The env gate caches on first read, so a test can't arm the path by setting the
@@ -204,7 +205,7 @@ inline SurfaceRuleBindingSizes ComputeSurfaceRuleBindingSizes(size_t ruleCount,
 }
 
 // Push constants for one tile's bake dispatch (mirror PushConstants in
-// terrain_height_bake.comp). 84 bytes, under the 128-byte guaranteed minimum.
+// terrain_height_bake.comp). Under the 128-byte guaranteed minimum.
 struct TerrainHeightBakePush
 {
     int32  RectMinX;   // tile-local interior sample rect (inclusive origin)
@@ -244,8 +245,16 @@ struct TerrainHeightBakePush
     // measures its world-space target against this, mirroring NormalizedHeightForWorldY on the
     // CPU arm.
     float TerrainOriginY;
+
+    // Uploaded heights use adjacent slots instead of the procedural height apron.
+    // An absent neighbor uses the same sentinel as the atlas table.
+    uint32 NormalReadsUploadedHeight = 0;
+    uint32 NormalNeighborLeft = 0xFFFFFFFFu;
+    uint32 NormalNeighborRight = 0xFFFFFFFFu;
+    uint32 NormalNeighborUp = 0xFFFFFFFFu;
+    uint32 NormalNeighborDown = 0xFFFFFFFFu;
 };
-static_assert(sizeof(TerrainHeightBakePush) == 84, "TerrainHeightBakePush must match terrain_height_bake.comp push_constant layout");
+static_assert(sizeof(TerrainHeightBakePush) == 104, "TerrainHeightBakePush must match terrain_height_bake.comp push_constant layout");
 
 // One tile's GPU height-bake request. The TerrainModifierSystem records these (with the
 // tile-local sample rect it would have CPU-baked) onto the service when the GPU path is

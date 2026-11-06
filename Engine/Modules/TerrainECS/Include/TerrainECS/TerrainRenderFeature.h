@@ -345,7 +345,7 @@ public:
     // preserving, at absolute atlas texel origin (dstX,dstY). `data` is tightly-packed R32F bytes
     // (PackTileEditRegionIntoSlot). This is what makes a 16-texel edit cost a 16-texel upload
     // instead of a whole-slot (slotStride^2) re-upload.
-    void UploadAtlasHeightSlotRegion(TerrainHandle handle, const uint8* data,
+    bool UploadAtlasHeightSlotRegion(TerrainHandle handle, const uint8* data,
                                      uint32 regionW, uint32 regionH, uint32 dstX, uint32 dstY);
     // The layer-material textures a profile with no binding arrays binds by name. Only the first
     // two role slots: cbt_surface's compat arm clamps the layer ordinal to two bound layers and
@@ -937,7 +937,7 @@ private:
 
     // Content-preserving 2D sub-rect upload of a standalone srcW*srcH block into
     // an existing texture at (dstX,dstY). Used for unified tiled-terrain patches.
-    void QueueRegionUpload(Rendering::TextureHandle texture,
+    bool QueueRegionUpload(Rendering::TextureHandle texture,
                            const uint8* srcBytes, uint32 srcW, uint32 srcH,
                            size_t bytesPerTexel, uint32 dstX, uint32 dstY,
                            const char* stagingName);
@@ -981,6 +981,8 @@ public:
                             float splatMinH, float splatMaxH, bool splatEligible,
                             std::vector<SurfaceRuleGpu> surfaceRules,
                             std::vector<SurfaceRuleConditionGpu> surfaceRuleConditions);
+    // Queue normals from atlas heights staged by the CPU.
+    bool QueueAtlasSculptNormals(TerrainHandle handle, const TerrainHeightBakePush& dispatch);
     bool HasPendingBakes() const;
     // Record the bake dispatches (+ any settle readback copies) into the command list. Recorded
     // right after FlushPendingUploads in the same pass so the atlas clear/normal/splat upload
@@ -1022,6 +1024,7 @@ public:
 
 private:
     bool EnsureGpuBakePipeline();
+    void FlushSculptNormals(Rendering::CommandList& commandList);
 
     Rendering::PipelineHandle m_GpuBakePipeline{};
     bool m_GpuBakePipelineAttempted = false;
@@ -1045,6 +1048,16 @@ private:
         std::vector<SurfaceRuleConditionGpu> SurfaceRuleConditions;
     };
     std::vector<PendingBake> m_PendingBakes;
+
+    struct PendingSculptNormals
+    {
+        TerrainHandle Handle;
+        Rendering::TextureHandle Height;
+        Rendering::TextureHandle Normal;
+        Rendering::DescriptorSetHandle Set;
+        std::vector<TerrainHeightBakePush> Dispatches;
+    };
+    std::vector<PendingSculptNormals> m_PendingSculptNormals;
 
     struct PendingReadback
     {
