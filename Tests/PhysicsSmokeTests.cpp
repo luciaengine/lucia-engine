@@ -2779,6 +2779,32 @@ TEST(Physics, PagedTerrainGetsABodyPerWindowPageAndNoneOutside)
     EXPECT_FALSE(GroundUnder(outside.x, outside.z, y)) << "a page outside every window has a body";
 }
 
+TEST(Physics, APageColliderFollowsTerrainElevationAndHeightScaleEdits)
+{
+    using namespace GameEngine;
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ScopedTerrainService terrainService;
+    ECS::World world;
+    PagedColliderTerrain terrain(world);
+    PagedTE::TerrainPhysicsSystem terrainPhysics;
+    const auto camera = terrain.At(300.0f, 300.0f);
+    ASSERT_TRUE(terrain.ProvisionUntil(world, terrainPhysics, camera, 4));
+
+    terrain.Paged.Request.OriginY = 24.0f;
+    terrain.Paged.Request.HeightScale = 96.0f;
+    terrain.Frame(world, terrainPhysics, camera);
+
+    const auto entity = PagedColliderTerrain::FindPageCollider(world, 1, 1);
+    ASSERT_TRUE(world.IsValid(entity));
+    const auto* transform = world.GetComponent<Components::WorldTransform>(entity);
+    const auto* shape = world.GetComponent<Components::HeightFieldColliderShape>(entity);
+    ASSERT_NE(transform, nullptr);
+    ASSERT_NE(shape, nullptr);
+    EXPECT_FLOAT_EQ(transform->matrix[13], 24.0f);
+    EXPECT_FLOAT_EQ(shape->heightScale, 96.0f);
+    EXPECT_EQ(PagedColliderTerrain::CountPageColliders(world), 4);
+}
+
 TEST(Physics, APageColliderIsTornDownWhenItsPageLeavesEveryWindow)
 {
     using namespace GameEngine;
