@@ -1655,9 +1655,13 @@ bool ModelAsset::LoadGLTF(std::span<const uint8> data, const FbxLoaderOptions& l
             if (!havePositions || positionVertexCount == 0)
                 continue;
 
-            const std::string indexPastTheVertices = IndexPastTheVertices(mesh.Indices, mesh.Vertices.size());
-            if (!indexPastTheVertices.empty()) {
-                RefuseGltfFile(GetPath(), PrimitiveAccessorRefusal(pi, mi, m.name, "indices") + indexPastTheVertices);
+            // POSITION defines the vertex count for index validation.
+            if (mesh.Vertices.size() != positionVertexCount)
+                mesh.Vertices.resize(positionVertexCount);
+            if (const std::string problem = IndexPastTheVertices(mesh.Indices, positionVertexCount);
+                !problem.empty())
+            {
+                RefuseGltfFile(GetPath(), PrimitiveAccessorRefusal(pi, mi, m.name, "indices") + problem);
                 m_Meshes.clear();
                 return false;
             }
