@@ -1216,9 +1216,8 @@ void FrameOrchestrator::SelectSharedSceneProducer(Rendering::RenderGraph::RGFram
     m_SceneProducerTokens.fill({});
 }
 
-
 bool FrameOrchestrator::BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame,
-                                     const FrameGraphBuildParamsRG& params)
+                                       const FrameGraphBuildParamsRG& params)
 {
     GE_CPU_PROFILE_SCOPE("RenderServices.BuildFrameGraphRG");
 

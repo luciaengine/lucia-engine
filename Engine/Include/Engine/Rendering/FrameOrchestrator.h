@@ -289,7 +289,10 @@ class FrameOrchestrator
     // Borrows the frame until RemovePipelineInstanceForFrame. The caller must
     // remove the stream while frame/device are alive, before destroying either.
     // Includes short-lived capture/test frames as well as window-owned streams.
+    // The multi-window driver selects the first ready world window before it
+    // declares any view. Other streams can declare after that graph submits.
     void SelectSharedSceneProducer(Rendering::RenderGraph::RGFrame& frame);
+    // Returns false while the selected producer has no successful submission.
     bool BuildFrameGraph(Rendering::RenderGraph::RGFrame& frame, const FrameGraphBuildParamsRG& params);
     void OnFrameAbortedRG(Rendering::RenderGraph::RGFrame& frame);
     void OnFrameSubmittedRG(Rendering::RenderGraph::RGFrame& frame,
