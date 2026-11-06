@@ -261,7 +261,7 @@ struct TextureMipUploadEntry
 // upload tightly packed; uncompressed levels use Width * BytesPerPixel rows).
 // Initial layout is assumed Undefined; final state is ShaderResource across all
 // uploaded levels.
-inline void UploadTextureMips(IDevice* device,
+inline bool UploadTextureMips(IDevice* device,
                               TextureHandle tex,
                               const TextureMipUploadEntry* mips,
                               uint32_t mipCount,
@@ -269,7 +269,7 @@ inline void UploadTextureMips(IDevice* device,
                               const char* stagingDebugName = "TexMipUploadStaging")
 {
     if (!device || !mips || mipCount == 0)
-        return;
+        return false;
 
     const bool isBlock = IsBlockCompressedFormat(format);
     const uint32_t bpp = BytesPerPixel(format);
@@ -281,10 +281,10 @@ inline void UploadTextureMips(IDevice* device,
     {
         // No DXGI mapping exists for the BC TextureFormats yet, so a BC texture
         // handle cannot have been created on this backend.
-        return;
+        return false;
     }
     if (!isBlock && bpp == 0)
-        return;
+        return false;
 
     // Staging layout: one buffer, each level 16-byte aligned so Vulkan's
     // bufferOffset % texel-block-size rule holds for every supported format
@@ -318,7 +318,7 @@ inline void UploadTextureMips(IDevice* device,
 
     BufferHandle staging = device->CreateUploadBuffer(totalBytes, stagingDebugName);
     if (!staging.IsValid())
-        return;
+        return false;
 
     std::vector<unsigned char> padded;
     for (uint32_t m = 0; m < mipCount; ++m)
@@ -340,6 +340,11 @@ inline void UploadTextureMips(IDevice* device,
     }
 
     auto cl = device->CreateCommandList(IDevice::QueueType::Graphics);
+    if (!cl)
+    {
+        device->DestroyBuffer(staging);
+        return false;
+    }
     cl->Begin();
     cl->Barrier(ResourceBarrier::CreateTextureBarrier(
         tex, ResourceState::Undefined, ResourceState::CopyDest, 0, mipCount));
@@ -360,6 +365,7 @@ inline void UploadTextureMips(IDevice* device,
     // Safe: the backend defers deallocation until GPU work completes (see the
     // contract at the top of this header).
     device->DestroyBuffer(staging);
+    return true;
 }
 
 // Upload tightly or explicitly pitched voxel data to a single existing 3D texture.
