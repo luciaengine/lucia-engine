@@ -466,6 +466,16 @@ size_t MetalDevice::DebugGetAllocationCount() const
     return m_Buffers.Size() + m_Textures.Size();
 }
 
+IDevice::ResourcePoolStats MetalDevice::GetResourcePoolStats() const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
+    ResourcePoolStats stats{};
+    stats.liveTextureViews = m_TextureViews.Size();
+    for (const size_t count : m_DeferredTextureViewCounts)
+        stats.deferredTextureViews += count;
+    return stats;
+}
+
 // Like the Vulkan/VMA path (which sums vmaGetAllocationInfo().size), these report
 // the REAL device footprint via MTL::Resource::allocatedSize() rather than the
 // logical request size — so alignment/padding and the full mip chain are
@@ -647,7 +657,7 @@ void MetalDevice::DestroyTextureView(TextureViewHandle handle)
         return;
     }
     ScrubResidency(view->view);
-    DeferRelease(view->view);
+    DeferRelease(view->view, /*isTextureView=*/true);
     view->view = nullptr;
     m_TextureViews.Destroy(ToGeneric(handle));
 }

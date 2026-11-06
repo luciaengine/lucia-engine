@@ -9,6 +9,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -110,6 +111,7 @@ struct RenderPipelineBlueprint
     {
         std::string name;
         std::string resourceJson;
+        std::string VersionProducer; ///< The sole writer; empty for ordinary named resources.
     };
 
     std::vector<Pass> passes;
@@ -254,7 +256,7 @@ class RenderPipelineInstance
                                                  Rendering::ViewId viewId,
                                                  const std::string& name, uint32_t renderW,
                                                  uint32_t renderH, uint32_t outputW = 0,
-                                                 uint32_t outputH = 0);
+                                                 uint32_t outputH = 0, std::string_view producer = {});
     PipelineBufferBindingRG MaterializeBuffer(Rendering::RenderGraph::RGFrame& frame,
                                               Rendering::ViewId viewId, const std::string& name,
                                               uint32_t renderW, uint32_t renderH);
