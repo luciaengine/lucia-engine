@@ -2729,96 +2729,104 @@ TEST(BufferDeviceAddress, ForcedCompatibilityHandlesAddresslessInstances)
     dev->DestroyBuffer(buffer);
 }
 
-// GE_VK_FILL_NEW_TARGETS_NAN makes a read before the first write visible: a new
-// float target starts as NaN, so a pass that consumes it unwritten shows NaN on
-// every run instead of whatever freed memory happened to hold (#2768).
+// NaN fill makes an unwritten float target read as NaN on every run.
 TEST(DeviceDiagnostics, FillNewTargetsNaNClearsNewFloatTargets)
 {
     SetEnvHeadless();
+    const ScopedEnvVar api("GE_GFX_API", "vulkan");
     const ScopedEnvVar fill("GE_VK_FILL_NEW_TARGETS_NAN", "1");
-    DeviceDesc dd{}; dd.preferredAPI = GraphicsAPI::Vulkan; dd.enableDynamicRendering = true;
-    auto dev = DeviceFactory::CreateDevice(dd);
-    ASSERT_TRUE(dev);
-    ASSERT_TRUE(dev->Initialize(dd));
-    ASSERT_TRUE(dev->BeginFrame());
+    DeviceDesc deviceDesc{};
+    deviceDesc.preferredAPI = GraphicsAPI::Vulkan;
+    deviceDesc.enableDynamicRendering = true;
+    deviceDesc.enableSwapchain = false;
+    auto device = DeviceFactory::CreateDevice(deviceDesc);
+    ASSERT_TRUE(device);
+    ASSERT_TRUE(device->Initialize(deviceDesc));
+    ASSERT_EQ(device->GetAPI(), GraphicsAPI::Vulkan);
+    ASSERT_TRUE(device->DebugFillsNewResourcesWithNaN());
+    ASSERT_TRUE(device->BeginFrame());
 
-    constexpr uint32_t kW = 4u;
-    constexpr uint32_t kH = 4u;
-    TextureDesc td{};
-    td.width = kW;
-    td.height = kH;
-    td.depth = 1u;
-    td.mipLevels = 1u;
-    td.arrayLayers = 1u;
-    td.sampleCount = 1u;
-    td.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
-    td.usage = static_cast<uint32_t>(TextureUsage::UnorderedAccess | TextureUsage::ShaderResource |
-                                     TextureUsage::TransferSrc);
-    td.debugName = "FillNaNTest.Target";
-    const TextureHandle target = dev->CreateTexture(td);
+    constexpr uint32_t kWidth = 4u;
+    constexpr uint32_t kHeight = 4u;
+    TextureDesc textureDesc{};
+    textureDesc.width = kWidth;
+    textureDesc.height = kHeight;
+    textureDesc.depth = 1u;
+    textureDesc.mipLevels = 1u;
+    textureDesc.arrayLayers = 1u;
+    textureDesc.sampleCount = 1u;
+    textureDesc.format = static_cast<uint32_t>(TextureFormat::R32_FLOAT);
+    textureDesc.usage = static_cast<uint32_t>(TextureUsage::UnorderedAccess | TextureUsage::ShaderResource |
+                                              TextureUsage::TransferSrc);
+    textureDesc.debugName = "FillNaNTest.Target";
+    const TextureHandle target = device->CreateTexture(textureDesc);
     ASSERT_TRUE(target.IsValid());
 
-    const BufferHandle readback = dev->CreateReadbackBuffer(kW * kH * sizeof(float), "FillNaNTest.Read");
+    const BufferHandle readback = device->CreateReadbackBuffer(kWidth * kHeight * sizeof(float), "FillNaNTest.Read");
     ASSERT_TRUE(readback.IsValid());
-    auto cl = dev->CreateCommandList(IDevice::QueueType::Graphics);
-    ASSERT_TRUE(cl != nullptr);
-    cl->Begin();
-    cl->Barrier(ResourceBarrier::CreateTextureBarrier(target, ResourceState::CopyDest, ResourceState::CopySource));
-    cl->CopyTextureSubresourceToBuffer(target, 0, 0, readback, kW, kH);
-    cl->End();
-    std::vector<CommandList*> lists{cl.get()};
-    dev->ExecuteCommandLists(lists);
-    dev->WaitForIdle();
+    auto commands = device->CreateCommandList(IDevice::QueueType::Graphics);
+    ASSERT_TRUE(commands != nullptr);
+    commands->Begin();
+    commands->Barrier(ResourceBarrier::CreateTextureBarrier(target, ResourceState::CopyDest, ResourceState::CopySource));
+    commands->CopyTextureSubresourceToBuffer(target, 0, 0, readback, kWidth, kHeight);
+    commands->End();
+    std::vector<CommandList*> lists{commands.get()};
+    device->ExecuteCommandLists(lists);
+    device->WaitForIdle();
 
-    std::vector<float> texels(static_cast<size_t>(kW) * kH, 0.0f);
-    const void* mapped = dev->MapBuffer(readback);
+    std::vector<float> texels(static_cast<size_t>(kWidth) * kHeight, 0.0f);
+    const void* mapped = device->MapBuffer(readback);
     ASSERT_NE(mapped, nullptr);
     std::memcpy(texels.data(), mapped, texels.size() * sizeof(float));
-    dev->UnmapBuffer(readback);
-    for (size_t i = 0; i < texels.size(); ++i)
-        EXPECT_TRUE(std::isnan(texels[i])) << "texel " << i << " of an unwritten target is " << texels[i];
+    device->UnmapBuffer(readback);
+    for (size_t texelIndex = 0; texelIndex < texels.size(); ++texelIndex)
+        EXPECT_TRUE(std::isnan(texels[texelIndex])) << "texel " << texelIndex << " of an unwritten target is " << texels[texelIndex];
 
-    dev->DestroyBuffer(readback);
-    dev->DestroyTexture(target);
-    dev->Present();
+    device->DestroyBuffer(readback);
+    device->DestroyTexture(target);
+    device->Present();
 }
 
-// Host-visible so the test reads the buffer straight after CreateBuffer: the
-// fill must already have landed, as a host write through a mapping would.
+// The fill is visible to a mapped read as soon as CreateBuffer returns.
 TEST(DeviceDiagnostics, FillNewTargetsNaNFillsNewStorageBuffers)
 {
     SetEnvHeadless();
+    const ScopedEnvVar api("GE_GFX_API", "vulkan");
     const ScopedEnvVar fill("GE_VK_FILL_NEW_TARGETS_NAN", "1");
-    DeviceDesc dd{}; dd.preferredAPI = GraphicsAPI::Vulkan; dd.enableDynamicRendering = true;
-    auto dev = DeviceFactory::CreateDevice(dd);
-    ASSERT_TRUE(dev);
-    ASSERT_TRUE(dev->Initialize(dd));
-    EXPECT_TRUE(dev->DebugFillsNewResourcesWithNaN());
+    DeviceDesc deviceDesc{};
+    deviceDesc.preferredAPI = GraphicsAPI::Vulkan;
+    deviceDesc.enableDynamicRendering = true;
+    deviceDesc.enableSwapchain = false;
+    auto device = DeviceFactory::CreateDevice(deviceDesc);
+    ASSERT_TRUE(device);
+    ASSERT_TRUE(device->Initialize(deviceDesc));
+    ASSERT_EQ(device->GetAPI(), GraphicsAPI::Vulkan);
+    ASSERT_TRUE(device->DebugFillsNewResourcesWithNaN());
 
     constexpr size_t kWords = 16u;
-    BufferDesc bd{};
-    bd.size = kWords * sizeof(float);
-    bd.usage = static_cast<uint32_t>(BufferUsage::Storage);
-    bd.memoryUsage = BufferMemoryUsage::Readback;
-    bd.debugName = "FillNaNTest.Storage";
-    const BufferHandle storage = dev->CreateBuffer(bd);
+    BufferDesc bufferDesc{};
+    bufferDesc.size = kWords * sizeof(float);
+    bufferDesc.usage = static_cast<uint32_t>(BufferUsage::Storage);
+    bufferDesc.memoryUsage = BufferMemoryUsage::Readback;
+    bufferDesc.debugName = "FillNaNTest.Storage";
+    const BufferHandle storage = device->CreateBuffer(bufferDesc);
     ASSERT_TRUE(storage.IsValid());
 
     std::vector<uint32_t> words(kWords, 0u);
-    const void* mapped = dev->MapBuffer(storage);
+    const void* mapped = device->MapBuffer(storage);
     ASSERT_NE(mapped, nullptr);
     std::memcpy(words.data(), mapped, words.size() * sizeof(uint32_t));
-    dev->UnmapBuffer(storage);
-    for (size_t i = 0; i < words.size(); ++i)
+    device->UnmapBuffer(storage);
+    for (size_t wordIndex = 0; wordIndex < words.size(); ++wordIndex)
     {
         float asFloat = 0.0f;
-        std::memcpy(&asFloat, &words[i], sizeof(asFloat));
-        EXPECT_TRUE(std::isnan(asFloat)) << "word " << i << " of an unwritten storage buffer is 0x" << std::hex << words[i];
-        for (const uint32_t half : {words[i] & 0xFFFFu, words[i] >> 16u})
+        std::memcpy(&asFloat, &words[wordIndex], sizeof(asFloat));
+        EXPECT_TRUE(std::isnan(asFloat)) << "word " << wordIndex << " of an unwritten storage buffer is 0x" << std::hex << words[wordIndex];
+        for (const uint32_t half : {words[wordIndex] & 0xFFFFu, words[wordIndex] >> 16u})
             EXPECT_TRUE((half & 0x7C00u) == 0x7C00u && (half & 0x03FFu) != 0u)
-                << "half of word " << i << " is 0x" << std::hex << half << ", not a float16 NaN";
+                << "half of word " << wordIndex << " is 0x" << std::hex << half << ", not a float16 NaN";
     }
-    dev->DestroyBuffer(storage);
+    device->DestroyBuffer(storage);
 }
 
 TEST(DeviceDiagnostics, SubmittedLegacyFramebufferOutlivesItsCommandList)
