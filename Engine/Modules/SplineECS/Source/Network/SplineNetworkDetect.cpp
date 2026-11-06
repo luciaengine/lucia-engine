@@ -417,9 +417,10 @@ void BuildArms(const MemberCurve& first, const MemberCurve& second, SplineNode& 
             arm.Direction = direction;
             arm.Forward = forward * static_cast<float32>(direction);
             arm.AngleRadians = std::atan2(arm.Forward.z, arm.Forward.x);
-            // -X with a negative-zero z comes back as -pi; the range is (-pi, pi].
-            if (arm.AngleRadians <= -std::numbers::pi_v<float32>)
-                arm.AngleRadians = std::numbers::pi_v<float32>;
+            // Canonicalize the -X seam, including atan2 implementations that round one step toward zero.
+            constexpr float32 kPi = std::numbers::pi_v<float32>;
+            if (arm.AngleRadians <= std::nextafter(-kPi, 0.0f))
+                arm.AngleRadians = kPi;
         }
     }
     std::sort(node.Arms, node.Arms + node.ArmCount,
