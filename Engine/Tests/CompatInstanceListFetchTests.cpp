@@ -161,6 +161,8 @@ TEST(CompatInstanceListFetch, EachBatchDrawsItsOwnListedSceneInstances)
     pd.vertexShader = vertexSpv;
     pd.pixelShader = fragmentSpv;
     pd.debugName = "CompatInstanceListProbe";
+    // Test instance fetch independently of face winding.
+    pd.rasterizationState.cullMode = CullModeFlagBits::None;
     MaterialBuilder::FormatsHint formats{};
     formats.ColorFormats = {static_cast<uint32_t>(TextureFormat::RGBA8_UNORM)};
     ASSERT_TRUE(MaterialBuilder::BuildPipelineDescFromMeta(meta, pd, formats, MaterialBuilder::MergeMode::Auto,
