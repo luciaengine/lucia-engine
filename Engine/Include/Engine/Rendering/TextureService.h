@@ -24,6 +24,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -501,6 +502,18 @@ class TextureService
     // The CPU half of a texture upload (TextureService.cpp): an adopted cooked container, or a
     // raw decode with its mip chain built. Built off the render thread for the async paths.
     struct PreparedTextureUpload;
+    struct MaterialMipData;
+    struct MaterialMipStream
+    {
+        std::shared_ptr<const MaterialMipData> Data;
+        TextureHandle Handle;
+        uint32_t FirstMip = 0;
+    };
+    bool TryGetMaterialTextureLocked(const GUID& guid, TextureHandle& out) const;
+    bool StartMaterialMipStream(const GUID& guid, uint32_t epoch, const PreparedTextureUpload& prepared);
+    void AdvanceMaterialMipStreams();
+    TextureHandle RemoveMaterialMipStreamLocked(const GUID& guid);
+
     struct PendingGpuUpload
     {
         GUID TextureGuid;
@@ -545,7 +558,8 @@ class TextureService
                                                                       bool logTiming);
     // The upload half: create, upload and publish (or publish the refusal). Render thread, or an
     // extraction worker through GetOrUpload.
-    Rendering::TextureHandle SubmitPreparedUpload(const GUID& textureGuid, const PreparedTextureUpload& prepared);
+    Rendering::TextureHandle SubmitPreparedUpload(const GUID& textureGuid, const PreparedTextureUpload& prepared,
+                                                  std::optional<uint32_t> epoch = std::nullopt);
 
     struct CubeLutGpuCacheKey
     {
@@ -703,6 +717,10 @@ class TextureService
     // const queries (IsMaterialTextureBindingComplete) can lock.
     std::chrono::microseconds m_UploadBudget{2000};
     mutable std::mutex m_PendingTexturesMutex;
+    // Material images have a separate lifetime from full-resolution handles returned to callers.
+    uint64_t m_MaterialMipBudgetBytes = 0;
+    std::unordered_map<GUID, MaterialMipStream> m_MaterialMipStreams;
+    std::unordered_set<GUID> m_FullTextureRequests;
     std::vector<PendingGpuUpload> m_PendingGpuUploads;
     std::vector<PendingTextureBind> m_PendingTextureBinds;
     // GUIDs requested for re-upload from another thread; drained + hot-swapped

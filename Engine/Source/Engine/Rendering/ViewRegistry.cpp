@@ -192,15 +192,10 @@ const ViewRegistry::ViewAntiAliasing* ViewRegistry::AdvanceViewAntiAliasing(View
     {
         // First raster-domain resolve of this frame rotates; SceneViewController
         // produces CameraData twice per frame (Update + Declare), so keying on
-        // the frame index — never call count — is what keeps one jitter sample
-        // per rendered frame.
-        // Prev* snapshot the LAST RENDERED frame, however long ago: an OnDemand
-        // view that lapses (hidden tab, collapsed pane) resumes with a frame
-        // gap, and its surviving history was written by exactly that last
-        // rendered camera — so the pair stays valid for reprojection. Whether
-        // the history PHYSICAL survived is the render-graph pool's freshness
-        // arm (TemporalAANode), not the camera pair's concern.
-        taa.PrevValid = (taa.FrameStamp != ~0ull);
+        // the frame index keeps one jitter sample per view declaration.
+        // The previous snapshot can belong to a frame that did not submit.
+        taa.PrevFrameStamp = taa.FrameStamp;
+        taa.PrevValid = (taa.PrevFrameStamp != ~0ull);
         taa.PrevCamera = taa.CurrCamera;
         taa.PrevJitterX = taa.JitterX;
         taa.PrevJitterY = taa.JitterY;
