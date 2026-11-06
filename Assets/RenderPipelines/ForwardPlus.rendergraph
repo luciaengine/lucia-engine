@@ -2160,6 +2160,7 @@
       "zeroOnCreate": true
     },
     "BloomA": {
+      "transient": true,
       "extent": {
         "basis": "output",
         "scale": [
@@ -2231,6 +2232,7 @@
       ]
     },
     "BloomQuarter": {
+      "transient": true,
       "extent": {
         "basis": "output",
         "scale": [
@@ -2250,6 +2252,7 @@
       ]
     },
     "BloomEighth": {
+      "transient": true,
       "extent": {
         "basis": "output",
         "scale": [
@@ -2269,6 +2272,7 @@
       ]
     },
     "BloomSixteenth": {
+      "transient": true,
       "extent": {
         "basis": "output",
         "scale": [0.0625, 0.0625]
@@ -2280,6 +2284,7 @@
       "usage": ["RenderTarget", "ShaderResource"]
     },
     "BloomThirtySecond": {
+      "transient": true,
       "extent": {
         "basis": "output",
         "scale": [0.03125, 0.03125]
@@ -2291,6 +2296,7 @@
       "usage": ["RenderTarget", "ShaderResource"]
     },
     "BloomSixtyFourth": {
+      "transient": true,
       "extent": {
         "basis": "output",
         "scale": [0.015625, 0.015625]
@@ -2302,6 +2308,7 @@
       "usage": ["RenderTarget", "ShaderResource"]
     },
     "BloomOneTwentyEighth": {
+      "transient": true,
       "extent": {
         "basis": "output",
         "scale": [0.0078125, 0.0078125]
@@ -2313,6 +2320,7 @@
       "usage": ["RenderTarget", "ShaderResource"]
     },
     "BloomTwoFiftySixth": {
+      "transient": true,
       "extent": {
         "basis": "output",
         "scale": [0.00390625, 0.00390625]
@@ -2324,6 +2332,7 @@
       "usage": ["RenderTarget", "ShaderResource"]
     },
     "BloomLensDirtLight": {
+      "transient": true,
       "extent": {
         "basis": "output",
         "scale": [0.125, 0.125]
@@ -2335,6 +2344,7 @@
       "usage": ["RenderTarget", "ShaderResource"]
     },
     "BloomNormalized": {
+      "transient": true,
       "extent": { "basis": "output", "scale": [0.5, 0.5] },
       "format": "R16G16B16A16_FLOAT",
       "kind": "Texture",

@@ -244,6 +244,7 @@
   <tbody>
     <tr><td><code>format</code></td><td>Any <code>TextureFormat</code> enum value as a string. Common: <code>R8_UNORM</code>, <code>R8G8B8A8_UNORM</code>, <code>R16G16B16A16_FLOAT</code>, <code>R11G11B10_FLOAT</code>, <code>D32_FLOAT</code>, <code>R32_UINT</code></td></tr>
     <tr><td><code>scope</code></td><td><code>PerView</code> (one per camera), <code>Frame</code> (one per frame), <code>Persistent</code> (across frames)</td></tr>
+    <tr><td><code>transient</code></td><td>Optional Boolean. Set to <code>true</code> for a texture written and sampled by fullscreen passes in the same graph. Give it a producer that fully writes it. Use a pooled texture for history or pipeline outputs.</td></tr>
     <tr><td><code>extent.scale</code></td><td><code>[sx, sy]</code> relative to view size. Omit for view-sized.</td></tr>
     <tr><td><code>extent.absolute</code></td><td><code>[w, h]</code> for fixed-size targets (e.g. shadow maps)</td></tr>
     <tr><td><code>usage</code></td><td>Array of: <code>RenderTarget</code>, <code>DepthStencil</code>, <code>ShaderResource</code>, <code>Storage</code>, <code>CopySource</code>, <code>CopyDestination</code></td></tr>

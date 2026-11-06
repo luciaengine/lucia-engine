@@ -668,6 +668,18 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
                      "resource '" + r.name + "': unknown kind '" + kind +
                          "' (expected Texture or Buffer).");
 
+        if (const auto transient = jr.find("transient"); transient != jr.end())
+        {
+            if (!isTexture || !transient->is_boolean())
+                addIssue(PipelineIssueSeverity::Error,
+                         "resource '" + r.name + "': 'transient' must be a Boolean on a texture");
+            else if (transient->get<bool>() &&
+                     std::any_of(bp.outputs.begin(), bp.outputs.end(),
+                                 [&r](const auto& output) { return output.resourceRef == r.name; }))
+                addIssue(PipelineIssueSeverity::Error,
+                         "resource '" + r.name + "': a transient texture cannot be a pipeline output");
+        }
+
         std::string scope;
         if (JsonTryGetString(jr, "scope", scope) && !scope.empty())
         {
@@ -1255,6 +1267,7 @@ struct RenderPipelineInstance::ResourceDescription
     bool PerView = false;
     bool AbsoluteExtent = false;
     bool OutputExtent = false;
+    bool Transient = false;
     float ScaleX = 1.0f;
     float ScaleY = 1.0f;
     Rendering::TextureDesc Texture{};
@@ -1290,6 +1303,7 @@ struct RenderPipelineInstance::ResourceDescription
         if (!kind.empty() && kind != "texture")
             return;
         Type = Kind::Texture;
+        (void)JsonTryGetBool(jr, "transient", Transient);
 
         Rendering::TextureFormat fmt = Rendering::TextureFormat::RGBA8_UNORM;
         std::string fmtStr;
@@ -2035,9 +2049,10 @@ Rendering::RenderGraph::RGTexture RenderPipelineInstance::MaterializeTexture(
         perView ? ("Pipeline." + m_Blueprint.pipelineName + ".View" +
                    std::to_string(static_cast<uint32_t>(viewId)) + "." + name)
                 : ("Pipeline." + m_Blueprint.pipelineName + "." + name);
-    td.debugName = poolName.c_str();
-
-    const Rendering::RenderGraph::RGTexture t = frame.ImportPersistentTexture(poolName.c_str(), td);
+    td.debugName = resource->Transient ? "Pipeline.Transient" : poolName.c_str();
+    const Rendering::RenderGraph::RGTexture t = resource->Transient
+        ? frame.CreateTexture(poolName.c_str(), td)
+        : frame.ImportPersistentTexture(poolName.c_str(), td);
     if (t.IsValid())
         m_FrameResources.Textures[{scopeView, name}] = t;
     return t;

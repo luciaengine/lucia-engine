@@ -7806,6 +7806,7 @@ struct ShippedBloomFrame
     bool ShadersStaged = true;
     std::vector<std::string> DeclaredNodes;       // bloom-family node ids that declared a pass
     std::vector<std::string> CombineSampledNames; // last segment of each texture BloomCombine samples
+    std::vector<std::string> TransientCombineInputs;
 };
 
 bool IsBloomFamilyNode(const std::string& id)
@@ -7886,7 +7887,12 @@ ShippedBloomFrame DeclareShippedBloomFrame(FxChainFixture& f, const PostProcessS
             for (const RenderGraph::RGAccessRecord& access : g.Accesses())
             {
                 if (access.Pass == p && access.Access == RenderGraph::RGAccess::Sampled)
-                    result.CombineSampledNames.push_back(LastNameSegment(g.ResourceName(access.Resource)));
+                {
+                    const std::string resourceName = LastNameSegment(g.ResourceName(access.Resource));
+                    result.CombineSampledNames.push_back(resourceName);
+                    if (!g.IsImported(access.Resource))
+                        result.TransientCombineInputs.push_back(resourceName);
+                }
             }
         }
     }
@@ -7946,6 +7952,86 @@ TEST(RenderPipelineDeclareTests, DisabledBloomDeclaresNoBloomPassWithDepthVeilOn
         settings.DisableBloom();
         const ShippedBloomFrame off = DeclareShippedBloomFrame(f, settings);
         EXPECT_TRUE(off.DeclaredNodes.empty()) << "declared with bloom off: " << Joined(off.DeclaredNodes);
+    }
+    f.Down();
+}
+
+TEST(RenderPipelineDeclareTests, ShippedBloomCombineReadsTransientHighlights)
+{
+    FxChainFixture f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    ASSERT_TRUE(f.Registry.Register(
+        "ViewParamsUpload", [] { return std::make_unique<Nodes::ViewParamsUploadNode>(); }, true));
+
+    PostProcessSettings settings{};
+    settings.BloomIntensity = 0.45f;
+    const ShippedBloomFrame frame = DeclareShippedBloomFrame(f, settings);
+    ASSERT_TRUE(frame.ShadersStaged) << "bloom shader packages must be staged";
+    EXPECT_TRUE(Contains(frame.CombineSampledNames, "BloomNormalized"));
+    EXPECT_TRUE(Contains(frame.TransientCombineInputs, "BloomNormalized"));
+    f.Down();
+}
+
+TEST(RenderPipelineDeclareTests, FullscreenCopySamplesARealizedIntermediate)
+{
+    FxChainFixture f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        RenderPipelineBlueprint bp;
+        bp.pipelineName = "TransientFullscreenCopy";
+        bp.passes.push_back(FxChainFixture::FxPass("CopyIn",
+            R"({"id":"CopyIn","type":"FullscreenShader","inputs":{"uTex":"View.Color"},"output":"Intermediate","shaderPkg":"Shaders/copy.shaderpkg"})"));
+        bp.passes.push_back(FxChainFixture::FxPass("CopyOut",
+            R"({"id":"CopyOut","type":"FullscreenShader","inputs":{"uTex":"Intermediate"},"output":"Result","shaderPkg":"Shaders/copy.shaderpkg"})"));
+        bp.resources.push_back({"Intermediate",
+            R"({"kind":"Texture","scope":"PerView","transient":true,"format":"RGBA8_UNORM"})"});
+        FxChainFixture::AddTexResource(bp, "Result");
+        bp.outputs.push_back({"FinalColor", "Result"});
+        RenderPipelineInstance instance(*f.Rs, f.Registry);
+        instance.SetBlueprint(std::move(bp));
+
+        FramePools pools(f.Device.get());
+        RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        ASSERT_TRUE(f.Device->BeginFrame());
+        frame.BeginFrame(0);
+        TextureDesc desc = ColorTargetDesc();
+        desc.usage |= static_cast<uint32_t>(TextureUsage::ShaderResource);
+        const auto color = frame.ImportPersistentTexture("FullscreenCopy.Color", desc);
+        const auto depth = frame.ImportPersistentTexture("FullscreenCopy.Depth", DepthTargetDesc());
+        frame.AddPass("FullscreenCopy.Clear", 0,
+            [color](RenderGraph::RGPassBuilder& builder)
+            {
+                RenderGraph::RGAttachmentOps ops{};
+                ops.Load = RenderGraph::RGLoadOp::Clear;
+                ops.Clear.Color[0] = 1.0f;
+                ops.Clear.Color[3] = 1.0f;
+                builder.AttachColor(0, color, ops);
+            }, [](RenderGraph::RGContext&) {});
+
+        const ViewTargetsRG targets{f.View, color, depth, {}};
+        instance.Declare(frame, std::span(&targets, 1), f.Rs->Views().GetViews());
+        const auto* resources = instance.FrameResourcesFor(&frame);
+        ASSERT_NE(resources, nullptr);
+        const auto intermediate = resources->Textures.find({f.View, "Intermediate"});
+        ASSERT_NE(intermediate, resources->Textures.end()) << "copy shader package must be staged";
+        EXPECT_FALSE(frame.Graph().IsImported(intermediate->second.Id));
+
+        const auto output = instance.GetOutputRG(f.View, "FinalColor");
+        ASSERT_TRUE(output.IsValid());
+        auto readback = RequestTextureReadbackRG(f.Device.get(), frame, output, "FullscreenCopy.Readback");
+        ASSERT_NE(readback, nullptr);
+        frame.Execute();
+        OnFrameSubmittedReadbacksRG(frame, frame.SubmissionToken());
+        f.Device->FinalizeFrame();
+        f.Device->WaitForIdle();
+        ViewReadbackResult result{};
+        ASSERT_TRUE(readback->TryGet(result));
+        ASSERT_GE(result.pixels.size(), 4u);
+        EXPECT_EQ(result.pixels[0], 255);
+        EXPECT_EQ(result.pixels[1], 0);
+        EXPECT_EQ(result.pixels[2], 0);
     }
     f.Down();
 }
