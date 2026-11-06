@@ -230,6 +230,14 @@
 
 <p>Each entry declares one texture or buffer the pipeline owns. Resources have a <strong>scope</strong> (<code>PerView</code>, <code>Frame</code>, <code>Persistent</code>) and a <strong>kind</strong> (<code>Texture</code> or <code>Buffer</code>).</p>
 
+<h4>Explicit texture versions</h4>
+<p>A fullscreen pass can write a named version of a declared <code>PerView</code> 2D color texture with one sample, mip, and layer. Give its <code>output</code> a resource and version, then use that same reference in a sampled fullscreen input or in <code>outputs</code>.</p>
+<pre><code>"output": { "resource": "SceneColor", "version": "BeforeTonemap" }
+"inputs": { "uTex": { "resource": "SceneColor", "version": "BeforeTonemap" } }</code></pre>
+<p>Each version has one enabled writer and its own texture. A pass that skips rendering leaves its version unavailable for that frame. Version writers use a cleared attachment with blending disabled. Ordinary string references still use authored publication order. Do not use <code>@</code> in a version label or its base resource name.</p>
+
+<p>The compiler orders registered view prerequisites first. It then reorders adjacent version writers to satisfy version reads. Ordinary passes and outputs keep their positions in that second step. List a reader after its writer if an ordinary pass separates them.</p>
+
 <h4>Texture entry</h4>
 
 <pre><code>"BloomA": {

@@ -820,6 +820,131 @@ TEST(RenderPipelineCompiler, CarriesPublishedResourceKindsToConsumers)
         << IssuesToString(bp);
 }
 
+TEST(RenderPipelineCompiler, BindsEachExplicitTextureVersionToItsWriter)
+{
+    const auto blueprint = CompileText(R"json({
+      "schemaVersion": 2, "pipelineName": "Versions",
+      "resources": { "ColorStep": { "scope": "PerView" } },
+      "passes": [
+        { "id": "Later", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+          "inputs": { "uTex": { "resource": "ColorStep", "version": "Early" } },
+          "output": { "resource": "ColorStep", "version": "Later" } },
+        { "id": "Early", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+          "inputs": { "uTex": "View.Color" },
+          "output": { "resource": "ColorStep", "version": "Early" } }
+      ],
+      "outputs": { "FinalColor": { "resource": "ColorStep", "version": "Later" } }
+    })json");
+    EXPECT_EQ(CountSeverity(blueprint, PipelineIssueSeverity::Error), 0) << IssuesToString(blueprint);
+    ASSERT_EQ(blueprint.resources.size(), 3u);
+    EXPECT_EQ(blueprint.resources[1].VersionProducer, "Later");
+    EXPECT_EQ(blueprint.resources[2].VersionProducer, "Early");
+    EXPECT_NE(blueprint.resources[1].name, blueprint.resources[2].name);
+    ASSERT_EQ(blueprint.passes.size(), 2u);
+    EXPECT_EQ(blueprint.passes[0].id, "Early");
+    EXPECT_EQ(blueprint.passes[1].id, "Later");
+    const auto reader = nlohmann::json::parse(blueprint.passes[1].passJson);
+    EXPECT_EQ(reader.at("inputs").at("uTex"), blueprint.resources[2].name);
+    ASSERT_EQ(blueprint.outputs.size(), 1u);
+    EXPECT_EQ(blueprint.outputs[0].resourceRef, blueprint.resources[1].name);
+}
+
+TEST(RenderPipelineCompiler, RejectsMissingWritersDuplicateVersionsAndMutableInputs)
+{
+    const auto blueprint = CompileText(R"json({
+      "schemaVersion": 2, "pipelineName": "Versions",
+      "resources": { "ColorStep": { "scope": "PerView" },
+                     "Mipped": { "scope": "PerView", "mipLevels": 2 } },
+      "passes": [
+        { "id": "First", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+          "output": { "resource": "ColorStep", "version": "Same" } },
+        { "id": "Second", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+          "output": { "resource": "ColorStep", "version": "Same" } },
+        { "id": "Read", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+          "inputUsages": { "mutates": "StorageWrite" },
+          "inputs": { "mutates": { "resource": "ColorStep", "version": "Same" },
+                      "missing": { "resource": "ColorStep", "version": "Absent" } } },
+        { "id": "WriteMip", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+          "output": { "resource": "Mipped", "version": "A" } },
+        { "id": "Compute", "type": "ComputeShader",
+          "targetTexture": { "resource": "ColorStep", "version": "Same" } }
+      ]
+    })json");
+    EXPECT_TRUE(HasIssue(blueprint, PipelineIssueSeverity::Error, "more than one writer"));
+    EXPECT_TRUE(HasIssue(blueprint, PipelineIssueSeverity::Error, "without a writer"));
+    EXPECT_TRUE(HasIssue(blueprint, PipelineIssueSeverity::Error, "sampled FullscreenShader inputs"));
+    EXPECT_TRUE(HasIssue(blueprint, PipelineIssueSeverity::Error, "single-mip"));
+    EXPECT_TRUE(HasIssue(blueprint, PipelineIssueSeverity::Error, "field 'targetTexture' cannot reference a texture version"));
+}
+
+TEST(RenderPipelineCompiler, ReportsCyclesAcrossExplicitTextureVersions)
+{
+    const auto blueprint = CompileText(R"json({
+      "schemaVersion": 2, "pipelineName": "Versions",
+      "resources": { "ColorStep": { "scope": "PerView" } },
+      "passes": [
+        { "id": "A", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+          "inputs": { "uTex": { "resource": "ColorStep", "version": "B" } },
+          "output": { "resource": "ColorStep", "version": "A" } },
+        { "id": "B", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+          "inputs": { "uTex": { "resource": "ColorStep", "version": "A" } },
+          "output": { "resource": "ColorStep", "version": "B" } }
+      ]
+    })json");
+    EXPECT_TRUE(HasIssue(blueprint, PipelineIssueSeverity::Error,
+                        "pass declaration dependency cycle: 'A' -> 'B' -> 'A'"))
+        << IssuesToString(blueprint);
+}
+
+TEST(RenderPipelineCompiler, RefusesToPullATextureVersionWriterAcrossALegacyPass)
+{
+    const auto blueprint = CompileText(R"json({
+      "schemaVersion": 2, "pipelineName": "Versions",
+      "resources": { "ColorStep": { "scope": "PerView" } },
+      "passes": [
+        { "id": "Read", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+          "inputs": { "uTex": { "resource": "ColorStep", "version": "A" } },
+          "output": { "resource": "ColorStep", "version": "B" } },
+        { "id": "World", "type": "WorldRender" },
+        { "id": "Write", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+          "inputs": { "uTex": "View.Color" },
+          "output": { "resource": "ColorStep", "version": "A" } }
+      ]
+    })json");
+    EXPECT_TRUE(HasIssue(blueprint, PipelineIssueSeverity::Error,
+                        "pass 'Read' cannot move after its texture version writer 'Write'"))
+        << IssuesToString(blueprint);
+}
+
+TEST(RenderPipelineCompiler, OrdersVersionWritersAfterResolvingScenePrerequisites)
+{
+    const auto blueprint = CompileText(R"json({
+      "schemaVersion": 2, "pipelineName": "VersionedSceneColor",
+      "resources": { "ColorStep": { "scope": "PerView" } },
+      "passes": [
+        { "id": "Camera", "type": "ViewParamsUpload" },
+        { "id": "Depth", "type": "DepthPrepass" },
+        { "id": "World", "type": "WorldRender" },
+        { "id": "Sky", "type": "SkyRender", "output": "View.Color" },
+        { "id": "Lights", "type": "LightUpload" },
+        { "id": "Later", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+          "inputs": { "uTex": { "resource": "ColorStep", "version": "Early" } },
+          "output": { "resource": "ColorStep", "version": "Later" } },
+        { "id": "Early", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+          "inputs": { "uTex": "View.Color" },
+          "output": { "resource": "ColorStep", "version": "Early" } },
+        { "id": "Shadows", "type": "ShadowMap" }
+      ],
+      "outputs": { "FinalColor": { "resource": "ColorStep", "version": "Later" } }
+    })json");
+    ASSERT_FALSE(blueprint.HasErrors()) << IssuesToString(blueprint);
+    std::vector<std::string> order;
+    for (const auto& pass : blueprint.passes)
+        order.push_back(pass.id);
+    const std::vector<std::string> expected = {"Camera", "Depth", "Shadows", "World", "Sky", "Lights", "Early", "Later"};
+    EXPECT_EQ(order, expected);
+}
+
 // The passes that feed the camera depth prepass (the terrain upload, CBT terrain and the grass, whose
 // depth-only heads the prepass draws from buffers they fill this frame) are declared ahead of the first
 // DepthPrepass wherever a blueprint lists them. A game pipeline that lists them after the prepass
