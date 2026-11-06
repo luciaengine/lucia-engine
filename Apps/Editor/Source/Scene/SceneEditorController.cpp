@@ -171,6 +171,7 @@ void SceneEditorController::AttachToRoot(UIElement& root,
     // Document manager
     m_Doc = std::make_unique<SceneDocumentManager>();
     m_Doc->SetWorld(m_World);
+    m_Doc->SetUndoRedoService(m_UndoRedo);
     m_Doc->SetChangeNotifications(m_Notifications);
     m_Doc->MarkClean();
     // Supplied before this point: the owner wires it at service-construction
@@ -677,6 +678,8 @@ void SceneEditorController::ShowLoadFailure(LoadFailureKind kind, const Outgoing
 
 void SceneEditorController::Execute(const PendingAction& a)
 {
+    if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
+        return;
     if (!m_Doc)
         return;
 

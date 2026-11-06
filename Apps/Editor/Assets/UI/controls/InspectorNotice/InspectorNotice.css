@@ -15,27 +15,25 @@
 	margin: 4px 0;
 }
 
-/* The text and the action share a row, the action on the text's first line (their baselines
-   aligned). The action wraps onto a line of its own under the text only when the row cannot give the
-   text its basis beside it. */
+/* Top-align the action with the first line of the notice text. The action wraps below the text
+   when the row cannot fit both. */
 .inspector-notice-plate {
 	display: flex;
 	flex-direction: row;
 	flex-wrap: wrap;
-	align-items: baseline;
+	align-items: flex-start;
 	column-gap: 8px;
 	row-gap: 6px;
 	padding: 6px 8px;
 	border-radius: 4px;
 }
 
-/* Asks for 240 px beside the action and wraps inside the width it gets; a row that cannot give that
-   puts the action under the text instead, where the text shrinks to the panel however narrow. A path
-   or an identifier with no space in it breaks rather than run past the plate. */
+/* Reserve a readable text column beside the action. The text can shrink to fit narrow panels
+   and wrap long paths or identifiers. */
 .inspector-notice-text {
 	flex-grow: 1;
 	flex-shrink: 1;
-	flex-basis: 240px;
+	flex-basis: 224px;
 	overflow-wrap: break-word;
 }
 

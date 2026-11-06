@@ -346,6 +346,17 @@ ScopedSubscription World::CreateComponentHookSubscription(ComponentHookToken tok
     }
 }
 
+World* World::FindLiveWorld(uint64 worldId)
+{
+    std::lock_guard<std::mutex> registryLock(LiveWorldsMutex());
+    for (World* world : LiveWorlds())
+    {
+        if (world->GetWorldId() == worldId)
+            return world;
+    }
+    return nullptr;
+}
+
 void World::UnregisterLiveComponentHook(ComponentHookToken token)
 {
     // Match the reload migrator's lifetime protocol: registry before worldMutex.

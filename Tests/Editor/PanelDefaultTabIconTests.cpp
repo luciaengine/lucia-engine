@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "Panels/UIDemoPanel.h"
-#include "Panels/UndoHistoryPanel.h"
+#include "Panels/UndoHistory/UndoHistoryPanel.h"
 #include "UI/ClassBackgroundImageQuery.h"
 #include "UI/Parsers/CSSParser.h"
 #include "UI/UIStyle.h"
@@ -178,7 +178,7 @@ std::map<std::string, ClassInfo> ScanPanelHeaders()
 {
     std::map<std::string, ClassInfo> out;
     const std::filesystem::path dir = EditorSourceRoot() / "Include" / "Panels";
-    for (const auto& entry : std::filesystem::directory_iterator(dir))
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(dir))
     {
         if (entry.path().extension() != ".h")
             continue;

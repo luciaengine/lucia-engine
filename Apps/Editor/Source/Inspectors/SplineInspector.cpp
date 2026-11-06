@@ -674,7 +674,7 @@ void RegisterSplineInspectors()
                                 {
                                     if (commit)
                                     {
-                                        undo->BeginCompound("Resample Spline");
+                                        undo->BeginCompound("Resample Spline", true);
                                         compoundOpen = true;
                                         previewState->Edit.value().Commit();
                                         previewState->Edit.reset();

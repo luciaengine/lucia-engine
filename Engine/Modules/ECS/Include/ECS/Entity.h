@@ -369,6 +369,9 @@ public:
 
     uint64 GetWorldId() const { return m_WorldId; }
 
+    /// Find a live world by ID on the thread that owns its lifetime.
+    static World* FindLiveWorld(uint64 worldId);
+
     // Side-table of scene components whose type was not registered at load time (e.g. a user
     // native module still compiling). Preserved verbatim so a save round-trips them, and the
     // editor re-applies them once the type registers. Lazily created; main-thread access only.

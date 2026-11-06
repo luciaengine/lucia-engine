@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Graph/GraphModel.h"
+#include "Graph/GraphSelectionHistory.h"
 #include "Graph/GraphCanvas.h"
 #include "Graph/GraphNest.h"
 #include "Graph/GraphTransitionStore.h"
@@ -303,6 +304,7 @@ private:
 
     const EditorContext* m_Context = nullptr;
     Editor::UndoRedoService* m_Undo = nullptr;
+    Editor::GraphSelectionHistory m_SelectionHistory;
     OpenColorPickerWindowFn m_OpenColorPickerWindow;
     Editor::UndoRedoService::InteractiveEdit m_GraphDragEdit{};
 

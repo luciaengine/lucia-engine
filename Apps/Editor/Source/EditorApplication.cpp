@@ -148,7 +148,7 @@
 #include "Panels/AssetsPanel.h"
 #include "Panels/TodoPanel.h"
 #include "Panels/BookmarksPanel.h"
-#include "Panels/UndoHistoryPanel.h"
+#include "Panels/UndoHistory/UndoHistoryPanel.h"
 #include "Panels/TilePalettePanel.h"
 #include "Panels/TileSetEditorPanel.h"
 #include "TileMap/TileMapEditorIntegration.h"
@@ -4282,10 +4282,6 @@ void EditorApplication::ConnectPanelsWithoutDockspace(const StartupPanels& panel
     if (undoHistoryPanel)
     {
         undoHistoryPanel->SetUndoRedoService(m_UndoRedo.get());
-        m_UndoRedo->SetOnHistoryChanged([this, undoHistoryPanel]() {
-            if (m_EditorToolbar) m_EditorToolbar->UpdateUndoRedoTitles();
-            undoHistoryPanel->Rebuild();
-        });
     }
     if (bookmarksPanel)
     {
@@ -4521,10 +4517,6 @@ void EditorApplication::ConnectPanelsToEditorServices(
     if (undoHistoryPanel)
     {
         undoHistoryPanel->SetUndoRedoService(m_UndoRedo.get());
-        m_UndoRedo->SetOnHistoryChanged([this, undoHistoryPanel]() {
-            if (m_EditorToolbar) m_EditorToolbar->UpdateUndoRedoTitles();
-            undoHistoryPanel->Rebuild();
-        });
     }
     GraphPanel::ForEachLive([this, editorCtx](GraphPanel& panel) {
         panel.SetUndoRedoService(m_UndoRedo.get());
