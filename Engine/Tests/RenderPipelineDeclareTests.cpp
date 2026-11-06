@@ -1509,6 +1509,113 @@ TEST(RenderPipelineDeclareTests, TaaHistoryValidityIgnoresInternalExtent)
         << "first frame for a view";
 }
 
+TEST(RenderPipelineDeclareTests, TaaHistoryAdvancesOnlyWhenTheResolveSubmits)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        RenderServices rs;
+        ASSERT_TRUE(rs.Initialize(device.get()));
+        const CameraId camera = rs.Views().AllocateCamera("TaaHistoryCamera");
+        CameraData cameraData{};
+        for (uint32_t diagonal = 0; diagonal < 16; diagonal += 5)
+        {
+            cameraData.view[diagonal] = 1.0f;
+            cameraData.proj[diagonal] = 1.0f;
+            cameraData.viewProj[diagonal] = 1.0f;
+        }
+        rs.Views().SetCameraData(camera, cameraData);
+        const ViewId view = rs.Views().AllocateView("TaaHistoryView", camera);
+        rs.Views().SetViewRenderLayerMask(view, 1u);
+        rs.Views().SetViewTargets(view, 0, 0, 0, ViewClearConfig{});
+        rs.Views().SetViewAntiAliasing(view, true, AntiAliasingMode::TAA, 8u);
+
+        RenderPipelineNodeRegistry registry;
+        ASSERT_TRUE(registry.Register("TemporalAA",
+            [] { return std::make_unique<Nodes::TemporalAANode>(); }, true));
+        RenderPipelineBlueprint blueprint;
+        blueprint.pipelineName = "TaaHistoryTest";
+        RenderPipelineBlueprint::Pass pass;
+        pass.id = "TemporalAA";
+        pass.type = "TemporalAA";
+        pass.enabled = true;
+        pass.perView = true;
+        pass.passJson = R"({"id":"TemporalAA","type":"TemporalAA","input":"View.Color","output":"TaaColor"})";
+        blueprint.passes.push_back(std::move(pass));
+        blueprint.outputs.push_back({"FinalColor", "TaaColor"});
+
+        RenderPipelineInstance instance(rs, registry);
+        instance.SetBlueprint(std::move(blueprint));
+        FramePools pools(device.get());
+        RenderGraph::RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        const std::string historyPrefix = "TAA.View" + std::to_string(view) + ".History";
+
+        enum class Attempt { Submit, Discard, Abort };
+        auto render = [&device, &frame, &rs, &instance, view, &historyPrefix](uint64_t index, Attempt attempt, uint32_t expectedWriteSlot)
+        {
+            SCOPED_TRACE(index);
+            ASSERT_TRUE(device->BeginFrame());
+            frame.BeginFrame(index);
+            rs.BeginWorldDrawFrame();
+
+            TextureDesc colorDesc = ColorTargetDesc();
+            colorDesc.usage |= static_cast<uint32_t>(TextureUsage::ShaderResource);
+            const auto color = frame.CreateTexture("TaaHistory.SceneColor", colorDesc);
+            const auto depth = frame.CreateTexture("TaaHistory.SceneDepth", DepthTargetDesc());
+            frame.AddPass("TaaHistory.Clear", 0,
+                [color, depth](RenderGraph::RGPassBuilder& builder)
+                {
+                    RenderGraph::RGAttachmentOps ops{};
+                    ops.Load = RenderGraph::RGLoadOp::Clear;
+                    builder.AttachColor(0, color, ops);
+                    builder.AttachDepth(depth, ops);
+                }, [](RenderGraph::RGContext&) {});
+
+            const ViewTargetsRG target{view, color, depth, {}};
+            instance.Declare(frame, std::span(&target, 1), rs.Views().GetViews());
+            const auto output = instance.GetOutputRG(view, "FinalColor");
+            ASSERT_TRUE(output.IsValid());
+            ASSERT_NE(output.Id, color.Id) << "TAA resolve must be staged and declare a real output";
+
+            const auto write = frame.FindTexture((historyPrefix + std::to_string(expectedWriteSlot)).c_str());
+            ASSERT_TRUE(write.IsValid());
+            bool writesExpectedSlot = false;
+            for (RenderGraph::RGPassId passId = 0; passId < frame.Graph().PassCount(); ++passId)
+                if (frame.Graph().HasWriteAccess(passId, output.Id))
+                    writesExpectedSlot |= frame.Graph().HasWriteAccess(passId, write.Id);
+            EXPECT_TRUE(writesExpectedSlot);
+
+            if (attempt == Attempt::Discard)
+                frame.DiscardRecordedPasses();
+            else
+                frame.MarkOutput(output);
+            frame.AddPass("TaaHistory.SubmissionControl", 0,
+                [attempt](RenderGraph::RGPassBuilder& builder)
+                {
+                    builder.PreventCulling();
+                    if (attempt == Attempt::Abort)
+                        builder.Prepare([](RenderGraph::RGPrepareContext&) { return false; });
+                }, [](RenderGraph::RGContext&) {});
+
+            const uint64_t submitted = frame.SubmittedFrameCount();
+            frame.Execute();
+            EXPECT_EQ(frame.SubmittedFrameCount(), submitted + (attempt != Attempt::Abort ? 1u : 0u));
+            device->FinalizeFrame();
+            device->WaitForIdle();
+        };
+
+        render(0u, Attempt::Submit, 0u);
+        render(1u, Attempt::Submit, 1u);
+        render(2u, Attempt::Discard, 0u);
+        render(3u, Attempt::Submit, 0u);
+        render(4u, Attempt::Abort, 1u);
+        render(5u, Attempt::Submit, 1u);
+        rs.Shutdown();
+    }
+    device->Shutdown();
+}
+
 // A view that draws content moving without an instance or an epoch (moving particles) is
 // never certified stationary: its history is clipped (+1) the frame it is reported and the
 // frame after, so the last moving copy is cleared, then the still view is certified again (-1).

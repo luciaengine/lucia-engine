@@ -356,14 +356,15 @@ struct SkinPaletteOffsets
     bool Active() const { return Current != 0u; }
 };
 
-SkinPaletteOffsets ResolveSkinPaletteOffsets(uint32 skeletonId, bool hasActiveAnimation,
+SkinPaletteOffsets ResolveSkinPaletteOffsets(uint32 skeletonId, bool hasClipAnimation,
                                              uint32 runtimeId)
 {
     SkinPaletteOffsets offsets{};
-    if (skeletonId == 0 || !hasActiveAnimation || runtimeId == 0)
+    if (skeletonId == 0 || runtimeId == 0)
         return offsets;
     const auto* runtime = SkeletonStore::Instance().GetRuntime(runtimeId);
-    if (runtime == nullptr || runtime->CompactSkinMatrices.empty())
+    if (runtime == nullptr || (!hasClipAnimation && !runtime->GraphPoseActive) ||
+        runtime->CompactSkinMatrices.empty())
         return offsets;
     offsets.Current = runtime->AtlasPaletteOffsetBones;
     offsets.Previous = runtime->PrevAtlasPaletteValid
@@ -622,7 +623,7 @@ void PrepareRecord(const WorldRenderableRecord& rec,
     // Bone-palette atlas offset (SkinDiag logging is intentionally omitted here —
     // it is env-gated diagnostics that would log unordered from workers).
     const SkinPaletteOffsets paletteOffsets =
-        ResolveSkinPaletteOffsets(rec.skeletonId, rec.hasActiveAnimation, rec.runtimeId);
+        ResolveSkinPaletteOffsets(rec.skeletonId, rec.hasClipAnimation, rec.runtimeId);
     const uint32 skinPaletteOffset = paletteOffsets.Current;
 
     const float boundsRadius = rec.hasBounds ? rec.bounds.Box.Radius() : -1.0f;
@@ -2145,7 +2146,7 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
         const uint32 skeletonId =
             (smr && !skinnedOff && smr->skeletonId != 0) ? smr->skeletonId : 0u;
         const uint32 runtimeId = (skelRef && skelRef->runtimeId != 0) ? skelRef->runtimeId : 0u;
-        const bool hasActiveAnimation = anim && anim->ClipIndex != 0;
+        const bool hasClipAnimation = anim && anim->ClipIndex != 0;
         const float lodBias = lodGroup ? lodGroup->Bias : 0.0f;
 
         const bool castShadows = mr->castShadows && (!hasBounds || lb->CastShadows);
@@ -2155,7 +2156,7 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
                                  IsOrderDependentBlendMaterial(*material), giEmitter, worldId);
 
         const SkinPaletteOffsets paletteOffsets =
-            ResolveSkinPaletteOffsets(skeletonId, hasActiveAnimation, runtimeId);
+            ResolveSkinPaletteOffsets(skeletonId, hasClipAnimation, runtimeId);
         const uint32 skinPaletteOffset = paletteOffsets.Current;
 
         const float boundsRadius = hasBounds ? lb->Box.Radius() : -1.0f;
@@ -2639,7 +2640,7 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                           if (skelRef && skelRef->runtimeId != 0)
                               rec.runtimeId = skelRef->runtimeId;
                           if (anim && anim->ClipIndex != 0)
-                              rec.hasActiveAnimation = true;
+                              rec.hasClipAnimation = true;
                           if (lodGroup)
                               rec.lodBias = lodGroup->Bias;
                           records.push_back(rec); });

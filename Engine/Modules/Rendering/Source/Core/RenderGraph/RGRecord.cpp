@@ -875,16 +875,25 @@ void RGFrame::RecordAndSubmit()
             // of this frame and let the health machine drive recovery. A submit
             // failure on a healthy device is still a bug worth catching (and the
             // GE_DEVICE_RECOVERY=0 lane keeps that assert — health stays Healthy).
-            if (m_Device->GetDeviceHealth() != DeviceHealth::Healthy)
-            {
-                break;
-            }
-            assert(ok && "RenderGraph: QueueSubmit failed");
+            assert(m_Device->GetDeviceHealth() != DeviceHealth::Healthy &&
+                   "RenderGraph: QueueSubmit failed");
+            break;
         }
-        if (ok && exportedWork.IsValid())
+        if (exportedWork.IsValid())
             m_ExportedWork = exportedWork;
         m_LastSignaled[sub.PhysicalQueue] = sub.SignalValue; // WaitForPendingWork target
         ++m_Stats.SubmissionsMade;
+
+        if (!m_OnSubmitted.empty())
+        {
+            const uint32_t end = sub.ScheduledFirst + sub.ScheduledCount;
+            for (uint32_t scheduledIndex = sub.ScheduledFirst; scheduledIndex < end; ++scheduledIndex)
+            {
+                const RGPassId pass = order[scheduledIndex];
+                if (pass < m_OnSubmitted.size() && m_OnSubmitted[pass].Invoke)
+                    m_OnSubmitted[pass].Invoke(m_OnSubmitted[pass].Fn);
+            }
+        }
     }
 
     // Retire the Phase-R1 secondaries AFTER the last QueueSubmit (the primaries
