@@ -75,6 +75,7 @@ struct MetalTextureView
 struct MetalSemaphore
 {
     MTL::SharedEvent* event = nullptr; // owned (+1)
+    MTL::Event* deviceEvent = nullptr; // optional GPU-only timeline, owned (+1)
 };
 
 // One descriptor set = one Metal 3 argument table (Tier2, raw 8-byte slots)

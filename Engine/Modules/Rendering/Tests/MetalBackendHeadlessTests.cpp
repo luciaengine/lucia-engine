@@ -15,6 +15,7 @@
 #include "Mathematics/HalfFloat.h"
 
 #include "../Source/Metal/MetalArgumentBufferLayout.h"
+#include "../Source/Metal/MetalCommandList.h"
 #include "../Source/Metal/MetalDevice.h"
 #include "../Source/Metal/MetalShaderTranslator.h"
 #include "PushBlockMslLayout.h"
@@ -37,6 +38,25 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace GameEngine::Rendering
+{
+struct MetalCommandListTestAccess
+{
+    static MTL::CommandBuffer* GetBuffer(CommandList& list)
+    {
+        return static_cast<MetalCommandList&>(list).m_CommandBuffer;
+    }
+
+    static MTL::CommandBuffer* RetainBuffer(CommandList& list)
+    {
+        auto* buffer = GetBuffer(list);
+        if (buffer)
+            buffer->retain();
+        return buffer;
+    }
+};
+} // namespace GameEngine::Rendering
 
 using namespace GameEngine::Rendering;
 
@@ -645,6 +665,116 @@ TEST(MetalResources, TimelineSemaphoreSignalAndWait)
 
     device->DestroySemaphore(semaphore);
     device->Shutdown();
+}
+
+namespace
+{
+void ConfigureSceneWaitConsumer(RenderGraph::RGFrame& consumer, IDevice::GpuSyncToken tail,
+                                IDevice::GpuSyncToken shared)
+{
+    consumer.SetPhysicalQueueMap(RenderGraph::RGFrame::kIdentityQueueMap);
+    consumer.BeginFrame(0);
+    consumer.AddSubmissionWait(tail, /*orderedGraphicsFallback=*/true);
+    consumer.AddOrderedGraphicsWait(shared);
+}
+
+void KeepSceneWaitPass(RenderGraph::RGPassBuilder& pass)
+{
+    pass.PreventCulling();
+}
+} // namespace
+
+TEST(MetalResources, RenderGraphPublishesDeclaredWorkBeforeTheUnrelatedTail)
+{
+    auto device = CreateHeadlessMetalDevice();
+    if (!device)
+    {
+        GTEST_SKIP() << "Metal backend unavailable";
+    }
+
+    namespace RG = RenderGraph;
+    auto& metal = static_cast<MetalDevice&>(*device);
+    auto* tailGate = metal.GetMTLDevice()->newSharedEvent();
+    ASSERT_NE(tailGate, nullptr);
+    RG::RGResourcePool persistent(device.get());
+    RG::RGTransientPool transient(device.get());
+    RG::RGUploadRing ring(device.get(), 2, 4096);
+    RG::RGFrame producer(device.get(), &persistent, &transient, &ring);
+    producer.BeginFrame(0);
+    producer.AddPass("Shared.Prologue", 0, KeepSceneWaitPass, [](RG::RGContext&) {});
+    producer.ExportDeclaredWorkCompletion();
+    producer.AddPass("Unrelated.Tail", 1, KeepSceneWaitPass,
+                     [tailGate](RG::RGContext& context) {
+                         MetalCommandListTestAccess::GetBuffer(*context.Cmd)->encodeWait(tailGate, 1);
+                     });
+    producer.Execute();
+
+    const auto shared = producer.DeclaredWorkCompletionToken();
+    const auto tail = producer.SubmissionToken();
+    EXPECT_TRUE(shared.IsValid());
+    EXPECT_TRUE(tail.IsValid());
+    EXPECT_NE(shared.sem, tail.sem);
+    // An independent queue observes the GPU-only signal and forwards it to a
+    // host-visible completion. The producer's graphics tail stays gated.
+    const auto observed = device->CreateTimelineSemaphore(0);
+    EXPECT_TRUE(observed.IsValid());
+    if (shared.IsValid() && observed.IsValid())
+    {
+        constexpr auto kObserverQueue = IDevice::QueueType::Compute;
+        auto observer = device->CreateCommandList(kObserverQueue);
+        observer->Begin();
+        EXPECT_TRUE(observer->EncodeTimelineWait(shared));
+        observer->End();
+        EXPECT_TRUE(device->QueueSubmit(kObserverQueue, {observer.get()}, {}, {{observed, 1}}));
+        EXPECT_TRUE(device->WaitTimelineSemaphoreValue(observed, 1, 2'000'000'000ull));
+    }
+    uint64_t tailValue = 0;
+    EXPECT_TRUE(device->GetTimelineSemaphoreValue(tail.sem, tailValue));
+    EXPECT_LT(tailValue, tail.value);
+
+    RG::RGUploadRing graphicsRing(device.get(), 2, 4096);
+    RG::RGFrame graphicsConsumer(device.get(), &persistent, &transient, &graphicsRing);
+    RG::RGUploadRing computeRing(device.get(), 2, 4096);
+    RG::RGFrame computeConsumer(device.get(), &persistent, &transient, &computeRing);
+    MTL::CommandBuffer* graphicsBuffer = nullptr;
+    MTL::CommandBuffer* computeBuffer = nullptr;
+    if (shared.IsValid() && tail.IsValid())
+    {
+        ConfigureSceneWaitConsumer(graphicsConsumer, tail, shared);
+        graphicsConsumer.AddPass("Shared.Graphics", 0, KeepSceneWaitPass,
+                                 [&graphicsBuffer](RG::RGContext& context) {
+                                     graphicsBuffer = MetalCommandListTestAccess::RetainBuffer(*context.Cmd);
+                                 });
+        graphicsConsumer.Execute();
+        EXPECT_NE(graphicsBuffer, nullptr);
+        if (graphicsBuffer)
+            EXPECT_GE(graphicsBuffer->status(), MTL::CommandBufferStatusCommitted);
+
+        ConfigureSceneWaitConsumer(computeConsumer, tail, shared);
+        computeConsumer.AddComputePass("Shared.Compute", 0, KeepSceneWaitPass,
+                                       [&computeBuffer](RG::RGContext& context) {
+                                           computeBuffer = MetalCommandListTestAccess::RetainBuffer(*context.Cmd);
+                                       });
+        computeConsumer.Execute();
+        EXPECT_NE(computeBuffer, nullptr);
+        if (computeBuffer)
+            EXPECT_EQ(computeBuffer->status(), MTL::CommandBufferStatusNotEnqueued);
+    }
+
+    // Release the tail before a fatal assertion or the graph's teardown.
+    tailGate->setSignaledValue(1);
+    tailGate->release();
+    EXPECT_TRUE(device->WaitTimelineSemaphoreValue(tail.sem, tail.value, 5'000'000'000ull));
+    for (auto* buffer : {graphicsBuffer, computeBuffer})
+    {
+        if (!buffer)
+            continue;
+        buffer->waitUntilCompleted();
+        EXPECT_EQ(buffer->status(), MTL::CommandBufferStatusCompleted);
+        buffer->release();
+    }
+    if (observed.IsValid())
+        device->DestroySemaphore(observed);
 }
 
 // The draw stream reduces a GPU->CPU readback mirror only when this poll says the

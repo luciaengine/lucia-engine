@@ -338,6 +338,11 @@ void MetalDevice::Shutdown()
                 sem.event->release();
                 sem.event = nullptr;
             }
+            if (sem.deviceEvent != nullptr)
+            {
+                sem.deviceEvent->release();
+                sem.deviceEvent = nullptr;
+            }
         });
         m_Semaphores.Clear();
         m_UploadSemaphore = SemaphoreHandle{};
@@ -740,7 +745,9 @@ void MetalDevice::DestroySemaphore(SemaphoreHandle handle)
         return;
     }
     DeferRelease(sem->event);
+    DeferRelease(sem->deviceEvent);
     sem->event = nullptr;
+    sem->deviceEvent = nullptr;
     m_Semaphores.Destroy(ToGeneric(handle));
 }
 
