@@ -193,15 +193,20 @@ void ClipPlayerNode::Evaluate(EvaluationContext& ctx, AnimationPose& outPose)
         return;
     }
 
+    EvaluateStep(ctx, outPose, Advance(ctx.DeltaTime));
+}
+
+PlaybackStep ClipPlayerNode::Advance(float deltaTime) const
+{
     // Advance playback time. Non-finite speed/dt would livelock a
     // subtract-while wrap; fmod is O(1) for huge finite values too.
     const float previousTime = m_Time;
-    float dt = std::max(0.0f, ctx.DeltaTime) * std::max(0.0f, m_Speed);
+    float dt = std::max(0.0f, deltaTime) * std::max(0.0f, m_Speed);
     if (!std::isfinite(dt))
         dt = 0.0f;
-    m_Time += dt;
-    if (!std::isfinite(m_Time))
-        m_Time = 0.0f;
+    float nextTime = m_Time + dt;
+    if (!std::isfinite(nextTime))
+        nextTime = 0.0f;
 
     float duration = m_Clip->GetDuration();
     PlaybackStepKind stepKind = PlaybackStepKind::Forward;
@@ -210,24 +215,27 @@ void ClipPlayerNode::Evaluate(EvaluationContext& ctx, AnimationPose& outPose)
         if (m_Loop)
         {
             // A step that did not move crosses nothing, even sitting on the lap's end.
-            if (m_Time >= duration && m_Time != previousTime)
-                stepKind = m_Time - std::max(previousTime, 0.0f) >= duration ? PlaybackStepKind::WholeLap
+            if (nextTime >= duration && nextTime != previousTime)
+                stepKind = nextTime - std::max(previousTime, 0.0f) >= duration ? PlaybackStepKind::WholeLap
                                                                              : PlaybackStepKind::Wrapped;
-            m_Time = std::fmod(m_Time, duration);
-            if (m_Time < 0.0f)
-                m_Time += duration;
+            nextTime = std::fmod(nextTime, duration);
+            if (nextTime < 0.0f)
+                nextTime += duration;
         }
-        else if (m_Time > duration)
+        else if (nextTime > duration)
         {
-            m_Time = duration;
+            nextTime = duration;
         }
     }
 
+    return {previousTime, nextTime, 0.0f, duration, stepKind};
+}
+
+void ClipPlayerNode::EvaluateStep(EvaluationContext& ctx, AnimationPose& outPose, const PlaybackStep& step)
+{
+    m_Time = step.To;
     if (ctx.Events && ctx.Weight > 0.0f)
-    {
-        const PlaybackStep step{previousTime, m_Time, 0.0f, duration, stepKind};
         CollectCrossedEvents(m_Clip->GetEventTrack(), step, *ctx.Events);
-    }
 
     // Determine bone count from clip channels
     uint32_t maxBone = 0;

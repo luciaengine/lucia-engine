@@ -2322,7 +2322,7 @@ TEST_F(ExtractionFastPathTest, SkinnedMoverCarriesNoPreviousPaletteSentinelOnSpa
     skelRef.runtimeId = runtimeId;
     skinned.Set(skelRef);
     AnimatorRef anim{};
-    anim.ClipIndex = 1; // hasActiveAnimation
+    anim.ClipIndex = 1; // hasClipAnimation
     skinned.Set(anim);
 
     // Spawn frame: a palette was published, but RollPaletteOffsets has never
