@@ -129,7 +129,7 @@ set(EDITOR_SOURCES
     Source/Panels/AssetsPanel.cpp
     Source/Panels/TodoPanel.cpp
     Source/Panels/BookmarksPanel.cpp
-    Source/Panels/UndoHistoryPanel.cpp
+    Source/Panels/UndoHistory/UndoHistoryPanel.cpp
     Source/Panels/BuildPanel.cpp
     Source/Panels/BuiltInPanelTypes.cpp
     Source/Panels/MovieRecorderPanel.cpp
@@ -137,6 +137,7 @@ set(EDITOR_SOURCES
     Source/Panels/HierarchyPanelCommands.cpp
     Source/Editor/Hierarchy/HierarchyEntityIcon.cpp
     Source/Editor/Hierarchy/HierarchyOrdering.cpp
+    Source/Inspectors/EntityHeader/InspectorEntityNameField.cpp
     Source/Panels/InspectorPanel.cpp
     Source/Panels/AssetViewPanel.cpp
     Source/Panels/LogPanel.cpp
@@ -743,6 +744,7 @@ set(EDITOR_HEADERS
     Include/UndoRedo/TagCommands.h
     Include/UndoRedo/MultiEntityComponentSnapshot.h
     Include/Inspectors/TransformInspector.h
+    Source/Inspectors/EntityHeader/InspectorEntityNameField.h
 	Include/Inspectors/MeshRendererInspector.h
 	Include/Inspectors/SkinnedMeshRendererInspector.h
 	Include/Inspectors/ValueCurveInspector.h
@@ -841,7 +843,7 @@ set(EDITOR_HEADERS
     Include/Panels/TodoPanel.h
     Include/Panels/BookmarksPanel.h
     Include/Panels/BuiltInPanelTypes.h
-    Include/Panels/UndoHistoryPanel.h
+    Include/Panels/UndoHistory/UndoHistoryPanel.h
 		Include/Panels/HierarchyPanel.h
 		Include/Editor/Entities/CopiedEntityRuntimeRefs.h
 		Include/Editor/Entities/EntityDuplicate.h
@@ -985,6 +987,8 @@ set(EDITOR_SDK_SOURCES
     Source/Panels/ConfirmActionModal.cpp
 	# Shared inspector section chrome used by optional editor packages.
 	Source/UI/InspectorSection.cpp
+	Source/UndoRedo/History/HistoryComponentTargets.cpp
+	Source/UndoRedo/History/HistoryValueFormatter.cpp
 	Source/Editor/Registries/BuildExporterRegistry.cpp
 	Source/Editor/Registries/DebugRequestGateRegistry.cpp
 	Source/Editor/Registries/EditorPluginRegistry.cpp

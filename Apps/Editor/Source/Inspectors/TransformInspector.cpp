@@ -519,6 +519,11 @@ private:
 
     void EnsureEditStarted(const char* name)
     {
+        if (m_ActiveEdit && m_ActiveEditName != name)
+        {
+            m_ActiveEdit.Commit();
+            m_ActiveEdit = {};
+        }
         if (m_ActiveEdit || !m_Undo || !m_World || !m_Entity.IsValid())
         {
             return;
@@ -531,6 +536,7 @@ private:
         }
 
         const char* label = (name && *name) ? name : "Transform";
+        m_ActiveEditName = label;
         m_ActiveEdit = m_Undo->BeginInteractiveEdit(
             label,
             Editor::MultiEntityUndo::MakeComponentSnapshotTarget(
@@ -557,6 +563,7 @@ private:
                 m_ActiveEdit.Preview(std::forward<ApplyFn>(applyFn));
                 return;
             }
+            return;
         }
 
         // Fallback (no undo service): still apply and emit preview notifications.
@@ -576,11 +583,14 @@ private:
     {
         if (!m_Undo || !m_ActiveEdit)
         {
+            if (m_Undo)
+                m_Undo->CommitPendingEdit();
             ClearMultiEditBaseline();
             return;
         }
         m_ActiveEdit.Commit();
         m_ActiveEdit = {};
+        m_Undo->CommitPendingEdit();
         ClearMultiEditBaseline();
     }
 
@@ -604,6 +614,7 @@ private:
                 ClearMultiEditBaseline();
                 return;
             }
+            return;
         }
 
         // Fallback (no undo service): apply and emit commit notifications.
@@ -1418,6 +1429,7 @@ private:
     Label* m_ComposedWorldValue = nullptr;
 
     Editor::UndoRedoService::InteractiveEdit m_ActiveEdit{};
+    std::string m_ActiveEditName;
 
     // PERF: avoid updating fields unless values actually changed.
     bool m_HasLastLocalPos = false;

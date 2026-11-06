@@ -51,6 +51,24 @@
 
 ---
 
+## Undo and History Branches
+
+Use **Ctrl + Z** on Windows or Linux, or **Cmd + Z** on macOS, to undo. Use
+**Ctrl + Shift + Z** or **Cmd + Shift + Z** to redo.
+
+Value edits preview immediately. Repeated adjustments to the same position, rotation, scale,
+color, or numeric property stay in one pending action. Releasing a drag ends the gesture.
+Starting a different edit or changing the selection records the pending action. Saving also
+records it. Undo restores the value from before the pending action, and Redo restores its final value.
+A canceled action or a value returned to its original state adds no history entry.
+
+The **Undo History** panel shows the recorded actions and the pending action. Select a recorded
+action to restore its resulting state. Editing after Undo creates another branch and keeps the
+existing branch. The panel shows both branches. Redo follows the branch most recently visited.
+**Clear** removes every branch from the history. History belongs to the current editor session.
+
+---
+
 ## View Navigation
 
 | Input | Action | Description |
