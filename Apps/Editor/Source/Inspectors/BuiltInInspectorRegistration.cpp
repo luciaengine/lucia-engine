@@ -1,3 +1,4 @@
+#include "DayCycle/DayCycleProfile/DayCycleProfileInspector.h"
 #include "Inspectors/BuiltInInspectorRegistration.h"
 #include "Rendering/Sorting/RenderSortingEditor.h"
 #include "Inspectors/Sprite2DComponentTraits.h"
@@ -103,6 +104,7 @@ void RegisterBuiltInInspectors()
     RegisterMeasureInspector();
     RegisterTileMapLayerInspector();
     RegisterSkyEnvironmentInspector();
+    Editor::RegisterDayCycleProfileInspector();
     RegisterAmbientLightInspector();
     RegisterSkyboxInspector();
     RegisterOceanDepthCacheSourceInspector();

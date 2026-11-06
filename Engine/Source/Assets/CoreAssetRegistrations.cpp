@@ -21,6 +21,7 @@
 #include "Assets/AnimationGraphAsset.h"
 #include "Assets/NavGridAsset.h"
 #include "Assets/NavMeshAsset.h"
+#include "Assets/DayCycleProfile.h"
 #include "Assets/SceneAsset.h"
 #include "Graph/GraphAsset.h"
 #include "TileMap/TileMapAsset.h"
@@ -135,6 +136,8 @@ void RegisterCoreAssetTypes(AssetTypeRegistry& typeRegistry)
                      kScriptAssetTypePriority);
 
     // Text content for inspector and tooling (runtime loads via SceneIO).
+    RegisterCoreType(typeRegistry, AssetType::DayCycleProfile, &CreateAssetAtPath<DayCycleProfile>,
+                     "Day Cycle Profile");
     RegisterCoreType(typeRegistry, AssetType::Scene, &CreateAssetAtPath<SceneAsset>, "Scene Asset");
 
     RegisterCoreType(typeRegistry, AssetType::NavigationGrid, &CreateAssetAtPath<NavGridAsset>,

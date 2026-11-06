@@ -631,5 +631,32 @@ std::string FormatAssetRef(std::string_view path, std::string_view guid)
     return out;
 }
 
+// A Math::Curve as one scene property line, every field of every key: "t,v,inTan,outTan,interp,mode"
+// per key, keys separated by ';'. The one format for a curve whose keys may be Smooth, with tangents
+// (ValueCurve's shape, the sky's sun illuminance curve): the compact sky format above keeps only time
+// and value, and every key would come back Linear.
+std::string FormatCurveKeys(const Math::Curve& curve)
+{
+    std::string out;
+    for (std::uint8_t i = 0; i < curve.KeyCount; ++i)
+    {
+        const Math::CurveKey& k = curve.Keys[i];
+        if (i > 0)
+            out += ';';
+        out += FormatFloat(k.Time);
+        out += ',';
+        out += FormatFloat(k.Value);
+        out += ',';
+        out += FormatFloat(k.InTangent);
+        out += ',';
+        out += FormatFloat(k.OutTangent);
+        out += ',';
+        out += std::to_string(static_cast<int>(k.Interp));
+        out += ',';
+        out += std::to_string(static_cast<int>(k.TangentMode));
+    }
+    return out;
+}
+
 } // namespace GameEngine::Scene
 

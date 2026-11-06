@@ -26,6 +26,7 @@ set(ASSET_TEST_SOURCES
     AssetTypeLoadingTests.cpp
     AssetErrorHandlingTests.cpp
     Complete4StagePipelineIntegrationTest.cpp
+    DayCycleProfileAssetTests.cpp
     AudioAssetPolicyTests.cpp
     MetaFileRegistryTests.cpp
     AssetMetaMaintenanceTests.cpp
