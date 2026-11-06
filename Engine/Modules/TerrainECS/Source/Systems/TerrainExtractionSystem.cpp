@@ -1817,8 +1817,17 @@ void TerrainExtractionSystem::UploadAtlasSplatSlot(AtlasPatchContext& patch, Ter
                                       geo.SlotOriginTexelY(slot));
 }
 
-void TerrainExtractionSystem::PatchAtlasSlotRegion(AtlasPatchContext& patch, const TileCoord& coord, TerrainTileData& tp,
-                              uint32 slot, int32 x0, int32 z0, int32 x1, int32 z1)
+static uint32 FindFullAtlasNeighborSlot(const AtlasIndirectionTable& table, bool needsNeighbor, int32 x, int32 z)
+{
+    if (!needsNeighbor || !table.InBounds(x, z))
+        return kAtlasNoSlot;
+    const auto& row = table.Row(x, z);
+    return row.LodBias == kAtlasLodBiasFull ? row.Slot : kAtlasNoSlot;
+}
+
+void TerrainExtractionSystem::PatchAtlasSlotRegion(AtlasPatchContext& patch, const TileCoord& coord,
+                                                    TerrainTileData& tile, uint32 slot,
+                                                    int32 x0, int32 z0, int32 x1, int32 z1)
 {
     GE_CPU_PROFILE_SCOPE("Terrain.AtlasEdit.Region");
     auto& frame = patch.Frame;
@@ -1828,42 +1837,36 @@ void TerrainExtractionSystem::PatchAtlasSlotRegion(AtlasPatchContext& patch, con
     const auto& terrain = context.Component;
     auto& tiled = extraction.Data;
     auto& globalGpuHandle = extraction.GlobalGpuHandle;
-    const auto& geo = patch.Geometry;
-    const bool kAtlasSurfDebug = patch.SurfaceDebug;
+    const auto& geometry = patch.Geometry;
+    const bool atlasSurfaceDebug = patch.SurfaceDebug;
     auto& anySlotPatched = patch.AnySlotPatched;
     // The dirty rect already includes the height-derivative and splat footprints.
     // Each upload copies the packed rectangle into its own staging buffer.
     using EditClock = std::chrono::steady_clock;
-    const auto editStart = kAtlasSurfDebug ? EditClock::now() : EditClock::time_point{};
+    const auto editStart = atlasSurfaceDebug ? EditClock::now() : EditClock::time_point{};
 
     const float32 tileWorld = tiled->Config.TileWorldSize;
-    const Terrain::HeightfieldData* nL = FindAtlasNeighborHeightfield(patch, coord.X - 1, coord.Z);
-    const Terrain::HeightfieldData* nR = FindAtlasNeighborHeightfield(patch, coord.X + 1, coord.Z);
-    const Terrain::HeightfieldData* nU = FindAtlasNeighborHeightfield(patch, coord.X, coord.Z - 1);
-    const Terrain::HeightfieldData* nD = FindAtlasNeighborHeightfield(patch, coord.X, coord.Z + 1);
-    const auto* heightBytes =
-        reinterpret_cast<const uint8*>(tp.Heightfield.GetRawSamples());
-    const AtlasSlotUploadRect hRect = PackTileEditRegionIntoSlot(
-        m_AtlasEditScratch, heightBytes, sizeof(float32), geo, slot, x0, z0, x1, z1);
+    const Terrain::HeightfieldData* leftHeightfield = FindAtlasNeighborHeightfield(patch, coord.X - 1, coord.Z);
+    const Terrain::HeightfieldData* rightHeightfield = FindAtlasNeighborHeightfield(patch, coord.X + 1, coord.Z);
+    const Terrain::HeightfieldData* upperHeightfield = FindAtlasNeighborHeightfield(patch, coord.X, coord.Z - 1);
+    const Terrain::HeightfieldData* lowerHeightfield = FindAtlasNeighborHeightfield(patch, coord.X, coord.Z + 1);
+    const auto* heightBytes = reinterpret_cast<const uint8*>(tile.Heightfield.GetRawSamples());
+    const AtlasSlotUploadRect heightRect = PackTileEditRegionIntoSlot(
+        m_AtlasEditScratch, heightBytes, sizeof(float32), geometry, slot, x0, z0, x1, z1);
     if (!feature->UploadAtlasHeightSlotRegion(globalGpuHandle, m_AtlasEditScratch.data(),
-                                              hRect.Width, hRect.Height, hRect.DstTexelX, hRect.DstTexelY))
+                                              heightRect.Width, heightRect.Height,
+                                              heightRect.DstTexelX, heightRect.DstTexelY))
         return;
 
     bool gpuNormals = false;
     if (IsGpuSculptNormalEnabled())
     {
         const auto& table = patch.Controller->Table();
-        const auto resolveNeighbor = [&](bool needsNeighbor, int32 nx, int32 nz) {
-            if (!needsNeighbor || !table.InBounds(nx, nz))
-                return kAtlasNoSlot;
-            const auto& row = table.Row(nx, nz);
-            return row.LodBias == kAtlasLodBiasFull ? row.Slot : kAtlasNoSlot;
-        };
-        const int32 last = static_cast<int32>(geo.TileRes) - 1;
-        const bool needsLeft = x0 == 0 && nL;
-        const bool needsRight = x1 == last && nR;
-        const bool needsUp = z0 == 0 && nU;
-        const bool needsDown = z1 == last && nD;
+        const int32 last = static_cast<int32>(geometry.TileRes) - 1;
+        const bool needsLeft = x0 == 0 && leftHeightfield != nullptr;
+        const bool needsRight = x1 == last && rightHeightfield != nullptr;
+        const bool needsUp = z0 == 0 && upperHeightfield != nullptr;
+        const bool needsDown = z1 == last && lowerHeightfield != nullptr;
         TerrainHeightBakePush normal{};
         normal.RectMinX = x0;
         normal.RectMinZ = z0;
@@ -1872,14 +1875,14 @@ void TerrainExtractionSystem::PatchAtlasSlotRegion(AtlasPatchContext& patch, con
         normal.Slot = slot;
         normal.TileSize = tileWorld;
         normal.HeightScale = terrain.HeightScale;
-        normal.TileRes = geo.TileRes;
-        normal.SlotStride = geo.SlotStride;
-        normal.SlotsPerRow = geo.SlotsPerRow;
+        normal.TileRes = geometry.TileRes;
+        normal.SlotStride = geometry.SlotStride;
+        normal.SlotsPerRow = geometry.SlotsPerRow;
         normal.NormalReadsUploadedHeight = 1;
-        normal.NormalNeighborLeft = resolveNeighbor(needsLeft, coord.X - 1, coord.Z);
-        normal.NormalNeighborRight = resolveNeighbor(needsRight, coord.X + 1, coord.Z);
-        normal.NormalNeighborUp = resolveNeighbor(needsUp, coord.X, coord.Z - 1);
-        normal.NormalNeighborDown = resolveNeighbor(needsDown, coord.X, coord.Z + 1);
+        normal.NormalNeighborLeft = FindFullAtlasNeighborSlot(table, needsLeft, coord.X - 1, coord.Z);
+        normal.NormalNeighborRight = FindFullAtlasNeighborSlot(table, needsRight, coord.X + 1, coord.Z);
+        normal.NormalNeighborUp = FindFullAtlasNeighborSlot(table, needsUp, coord.X, coord.Z - 1);
+        normal.NormalNeighborDown = FindFullAtlasNeighborSlot(table, needsDown, coord.X, coord.Z + 1);
         if ((!needsLeft || normal.NormalNeighborLeft != kAtlasNoSlot) &&
             (!needsRight || normal.NormalNeighborRight != kAtlasNoSlot) &&
             (!needsUp || normal.NormalNeighborUp != kAtlasNoSlot) &&
@@ -1891,45 +1894,46 @@ void TerrainExtractionSystem::PatchAtlasSlotRegion(AtlasPatchContext& patch, con
     size_t normalUploadBytes = 0;
     if (gpuNormals)
     {
-        tp.AtlasNormalVersion = tp.HeightfieldVersion;
+        tile.AtlasNormalVersion = tile.HeightfieldVersion;
     }
     else
     {
         GE_CPU_PROFILE_SCOPE("Terrain.NormalRegen.Region");
-        if (tp.AtlasNormalVersion > tp.NormalmapVersion)
+        if (tile.AtlasNormalVersion > tile.NormalmapVersion)
         {
-            GenerateNormalmapFromHeightfield(tp.Heightfield, tileWorld, tileWorld, terrain.HeightScale,
-                                            tp.Normalmap, tp.NormalmapWidth, tp.NormalmapHeight,
-                                            nL, nR, nU, nD);
+            GenerateNormalmapFromHeightfield(tile.Heightfield, tileWorld, tileWorld, terrain.HeightScale,
+                                            tile.Normalmap, tile.NormalmapWidth, tile.NormalmapHeight,
+                                            leftHeightfield, rightHeightfield, upperHeightfield, lowerHeightfield);
         }
         else
         {
-            GenerateNormalmapRegionFromHeightfield(tp.Heightfield, tileWorld, tileWorld, terrain.HeightScale,
-                                                  tp.Normalmap, x0, z0, x1, z1, nL, nR, nU, nD);
+            GenerateNormalmapRegionFromHeightfield(tile.Heightfield, tileWorld, tileWorld, terrain.HeightScale,
+                                                  tile.Normalmap, x0, z0, x1, z1,
+                                                  leftHeightfield, rightHeightfield, upperHeightfield, lowerHeightfield);
         }
-        const AtlasSlotUploadRect nRect = PackTileEditRegionIntoSlot(
-            m_AtlasEditScratch, tp.Normalmap.data(), 4u, geo, slot, x0, z0, x1, z1);
-        if (nRect.Width > 0)
+        const AtlasSlotUploadRect normalRect = PackTileEditRegionIntoSlot(
+            m_AtlasEditScratch, tile.Normalmap.data(), 4u, geometry, slot, x0, z0, x1, z1);
+        if (normalRect.Width > 0)
         {
             feature->UploadAtlasNormalSlotRegion(globalGpuHandle, m_AtlasEditScratch.data(),
-                                                 nRect.Width, nRect.Height,
-                                                 nRect.DstTexelX, nRect.DstTexelY);
-            normalUploadBytes = static_cast<size_t>(nRect.Width) * nRect.Height * 4u;
+                                                 normalRect.Width, normalRect.Height,
+                                                 normalRect.DstTexelX, normalRect.DstTexelY);
+            normalUploadBytes = static_cast<size_t>(normalRect.Width) * normalRect.Height * 4u;
         }
-        tp.NormalmapVersion = tp.HeightfieldVersion;
+        tile.NormalmapVersion = tile.HeightfieldVersion;
     }
-    const AtlasSlotUploadRect sRect = PackTileEditRegionIntoSlot(
-        m_AtlasEditScratch, tp.Splatmap.data(), 4u, geo, slot, x0, z0, x1, z1);
-    if (sRect.Width > 0)
+    const AtlasSlotUploadRect splatRect = PackTileEditRegionIntoSlot(
+        m_AtlasEditScratch, tile.Splatmap.data(), 4u, geometry, slot, x0, z0, x1, z1);
+    if (splatRect.Width > 0)
         feature->UploadAtlasSplatSlotRegion(globalGpuHandle, m_AtlasEditScratch.data(),
-                                            sRect.Width, sRect.Height,
-                                            sRect.DstTexelX, sRect.DstTexelY);
+                                            splatRect.Width, splatRect.Height,
+                                            splatRect.DstTexelX, splatRect.DstTexelY);
 
     PublishAtlasHeightSourceChanged(patch, coord);
     anySlotPatched = true;
-    tp.ClearDirty();
-    tp.SplatmapDirty = false;
-    if (kAtlasSurfDebug)
+    tile.ClearDirty();
+    tile.SplatmapDirty = false;
+    if (atlasSurfaceDebug)
     {
         const auto cpuUs = std::chrono::duration<double, std::micro>(EditClock::now() - editStart).count();
         Logger::Log::Info("Terrain.AtlasSurface tile=({},{}) slot={} src=region "

@@ -232,7 +232,7 @@ void TerrainRenderFeature::ReleaseTerrainResources(TerrainHandle handle)
     std::erase_if(m_PendingBakes,
                   [&](const PendingBake& b) { return b.Handle.Index == handle.Index; });
     std::erase_if(m_PendingSculptNormals,
-                  [&](const PendingSculptNormals& batch) {
+                  [this, handle](const PendingSculptNormals& batch) {
                       if (batch.Handle.Index != handle.Index)
                           return false;
                       m_Device->DestroyDescriptorSet(batch.Set);
@@ -2131,7 +2131,7 @@ bool TerrainRenderFeature::QueueAtlasSculptNormals(TerrainHandle handle, const T
     if (!EnsureGpuBakePipeline() || !m_GpuNormalPipeline.IsValid())
         return false;
 
-    std::erase_if(m_PendingSculptNormals, [&](const PendingSculptNormals& batch) {
+    std::erase_if(m_PendingSculptNormals, [this, handle, &height, &normal](const PendingSculptNormals& batch) {
         if (batch.Handle.Index != handle.Index ||
             (batch.Handle == handle && batch.Height == height.Texture && batch.Normal == normal.Texture))
             return false;
@@ -2139,7 +2139,7 @@ bool TerrainRenderFeature::QueueAtlasSculptNormals(TerrainHandle handle, const T
         return true;
     });
     auto batch = std::find_if(m_PendingSculptNormals.begin(), m_PendingSculptNormals.end(),
-        [&](const PendingSculptNormals& pending) { return pending.Handle == handle; });
+        [handle](const PendingSculptNormals& pending) { return pending.Handle == handle; });
     if (batch == m_PendingSculptNormals.end())
     {
         Rendering::DescriptorSetDesc desc{};
@@ -2185,7 +2185,7 @@ void TerrainRenderFeature::FlushSculptNormals(Rendering::CommandList& commandLis
             // A graph can skip a frame, allowing two dirty rectangles for the same slot
             // to reach this flush. Serialize those writes, including any shared apron.
             if (std::any_of(pending.Dispatches.cbegin(), next,
-                            [&](const auto& previous) { return previous.Slot == dispatch.Slot; }))
+                            [slot = dispatch.Slot](const auto& previous) { return previous.Slot == slot; }))
             {
                 commandList.Barrier(Rendering::ResourceBarrier::CreateMemoryBarrier(
                     static_cast<uint64>(Rendering::PipelineStageMask::ComputeShader),

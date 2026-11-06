@@ -341,10 +341,8 @@ public:
     // Patch one slot's slotStride^2 pre-packed block at atlas texel origin (dstX,dstY).
     void UploadAtlasHeightSlot(TerrainHandle handle, const float32* slotData,
                                uint32 slotStride, uint32 dstX, uint32 dstY);
-    // Region variant: patch only a regionW*regionH sub-rect of a slot (a brush dab), content-
-    // preserving, at absolute atlas texel origin (dstX,dstY). `data` is tightly-packed R32F bytes
-    // (PackTileEditRegionIntoSlot). This is what makes a 16-texel edit cost a 16-texel upload
-    // instead of a whole-slot (slotStride^2) re-upload.
+    /// Stage tightly packed R32F texels at an absolute atlas position.
+    /// Return false if the copy was not queued. The caller retains ownership of data.
     bool UploadAtlasHeightSlotRegion(TerrainHandle handle, const uint8* data,
                                      uint32 regionW, uint32 regionH, uint32 dstX, uint32 dstY);
     // The layer-material textures a profile with no binding arrays binds by name. Only the first
@@ -981,7 +979,8 @@ public:
                             float splatMinH, float splatMaxH, bool splatEligible,
                             std::vector<SurfaceRuleGpu> surfaceRules,
                             std::vector<SurfaceRuleConditionGpu> surfaceRuleConditions);
-    // Queue normals from atlas heights staged by the CPU.
+    /// Queue a normal update under the feature mutex. Stage the matching heights first.
+    /// The upload pass runs the update after the height copies.
     bool QueueAtlasSculptNormals(TerrainHandle handle, const TerrainHeightBakePush& dispatch);
     bool HasPendingBakes() const;
     // Record the bake dispatches (+ any settle readback copies) into the command list. Recorded

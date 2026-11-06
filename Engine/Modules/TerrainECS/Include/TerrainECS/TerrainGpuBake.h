@@ -25,6 +25,7 @@ namespace GameEngine::TerrainECS
 // in TerrainGpuBake.cpp (not header-inline) so the test override below is one instance across the
 // Engine-dll / test-exe boundary — a DATA symbol does not export reliably under the auto-export.
 bool IsGpuHeightBakeEnabled();
+/// Return true when the sculpt normal experiment is enabled and GPU height baking is disabled.
 bool IsGpuSculptNormalEnabled();
 
 // Test seam for the GPU eval-skip oracles: force the gate on/off (state 0/1) or clear back to the

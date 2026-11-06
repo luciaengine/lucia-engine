@@ -15245,80 +15245,93 @@ TEST(TerrainGpuNormalBake, SculptDirtyRectReadsAdjacentUploadedSlot)
     if (!device)
         GTEST_SKIP() << "No rendering device available";
 
-    constexpr uint32_t res = 8;
-    constexpr uint32_t stride = res + 2;
-    constexpr uint32_t width = 2 * stride;
-    constexpr uint32_t firstRow = 2;
-    constexpr uint32_t rows = 4;
-    constexpr TerrainHandle terrain{0, 1};
+    constexpr uint32_t kTileResolution = 8;
+    constexpr uint32_t kSlotStride = kTileResolution + 2;
+    constexpr uint32_t kAtlasWidth = 2 * kSlotStride;
+    constexpr uint32_t kFirstRow = 2;
+    constexpr uint32_t kRowCount = 4;
+    constexpr float kSeamGradientX = 0.25f;
+    constexpr float kGradientZ = 0.125f;
+    constexpr float kHalfFloatTolerance = 0.001f;
+    constexpr TerrainHandle kTerrain{0, 1};
     {
         TerrainRenderFeature feature;
         ASSERT_TRUE(feature.Initialize(device.get()));
-        feature.EnsureAtlasHeightTexture(terrain, width);
-        feature.EnsureAtlasNormalTexture(terrain, width);
+        feature.EnsureAtlasHeightTexture(kTerrain, kAtlasWidth);
+        feature.EnsureAtlasNormalTexture(kTerrain, kAtlasWidth);
 
         // Simulate two sculpt uploads with clamped height aprons and a common edge.
         // The one-inboard samples give a cross-edge gradient of (0.375 + 0.125) / 2.
-        std::array<float, stride * stride> heights{};
+        std::array<float, kSlotStride * kSlotStride> heights{};
         for (uint32_t slot = 0; slot < 2; ++slot)
         {
-            for (uint32_t z = 0; z < stride; ++z)
-                for (uint32_t x = 0; x < stride; ++x)
+            for (uint32_t z = 0; z < kSlotStride; ++z)
+                for (uint32_t x = 0; x < kSlotStride; ++x)
                 {
-                    const int local = std::clamp(static_cast<int>(x) - 1, 0, static_cast<int>(res) - 1);
-                    const int fromSeam = slot == 0 ? local - static_cast<int>(res) + 1 : local;
-                    heights[z * stride + x] = 0.25f + fromSeam * (slot == 0 ? 0.125f : 0.375f);
+                    const int last = static_cast<int>(kTileResolution) - 1;
+                    const int localX = std::clamp(static_cast<int>(x) - 1, 0, last);
+                    const int localZ = std::clamp(static_cast<int>(z) - 1, 0, last);
+                    const int fromSeam = slot == 0 ? localX - last : localX;
+                    const float gradientX = slot == 0 ? 0.125f : 0.375f;
+                    heights[z * kSlotStride + x] = 0.25f + fromSeam * gradientX + localZ * kGradientZ;
                 }
-            ASSERT_TRUE(feature.UploadAtlasHeightSlotRegion(terrain,
-                reinterpret_cast<const uint8_t*>(heights.data()), stride, stride, slot * stride, 0));
+            ASSERT_TRUE(feature.UploadAtlasHeightSlotRegion(kTerrain,
+                reinterpret_cast<const uint8_t*>(heights.data()), kSlotStride, kSlotStride, slot * kSlotStride, 0));
 
             TerrainHeightBakePush push{};
-            push.RectMinX = slot == 0 ? res - 1 : 0;
-            push.RectMinZ = firstRow;
+            push.RectMinX = slot == 0 ? kTileResolution - 1 : 0;
+            push.RectMinZ = kFirstRow;
             push.RectW = 1;
-            push.RectH = rows;
+            push.RectH = kRowCount;
             push.Slot = slot;
-            push.TileSize = res - 1;
+            push.TileSize = kTileResolution - 1;
             push.HeightScale = 1;
-            push.TileRes = res;
-            push.SlotStride = stride;
+            push.TileRes = kTileResolution;
+            push.SlotStride = kSlotStride;
             push.SlotsPerRow = 2;
             push.NormalReadsUploadedHeight = 1;
             if (slot == 0)
                 push.NormalNeighborRight = 1;
             else
                 push.NormalNeighborLeft = 0;
-            ASSERT_TRUE(feature.QueueAtlasSculptNormals(terrain, push));
+            ASSERT_TRUE(feature.QueueAtlasSculptNormals(kTerrain, push));
         }
 
-        const auto normal = feature.GetAtlasNormalTexture(terrain);
-        const auto readback = device->CreateReadbackBuffer(width * stride * 4);
+        const auto normal = feature.GetAtlasNormalTexture(kTerrain);
+        const auto readback = device->CreateReadbackBuffer(kAtlasWidth * kSlotStride * 4);
         ASSERT_TRUE(normal.IsValid());
         ASSERT_TRUE(readback.IsValid());
-        auto cl = device->CreateCommandList(GameEngine::Rendering::IDevice::QueueType::Graphics);
-        cl->Begin();
-        feature.FlushPendingUploads(cl.get());
-        feature.FlushPendingBakes(cl.get());
-        cl->Barrier(ResourceBarrier::CreateTextureBarrier(normal, ResourceState::ShaderResource,
-                                                          ResourceState::CopySource));
-        cl->CopyTextureToBuffer(normal, readback, width, stride);
-        cl->End();
-        device->ExecuteCommandLists({cl.get()});
+        auto commandList = device->CreateCommandList(GameEngine::Rendering::IDevice::QueueType::Graphics);
+        commandList->Begin();
+        feature.FlushPendingUploads(commandList.get());
+        feature.FlushPendingBakes(commandList.get());
+        commandList->Barrier(ResourceBarrier::CreateTextureBarrier(normal, ResourceState::ShaderResource,
+                                                                   ResourceState::CopySource));
+        commandList->CopyTextureToBuffer(normal, readback, kAtlasWidth, kSlotStride);
+        commandList->End();
+        device->ExecuteCommandLists({commandList.get()});
         device->FinalizeFrame();
         device->WaitForIdle();
 
-        const auto* half = static_cast<const uint16_t*>(device->MapBuffer(readback));
-        ASSERT_NE(half, nullptr);
-        for (uint32_t z = 0; z < stride; ++z)
+        const float length = std::sqrt(1.0f + kSeamGradientX * kSeamGradientX + kGradientZ * kGradientZ);
+        const auto* packedNormals = static_cast<const uint16_t*>(device->MapBuffer(readback));
+        ASSERT_NE(packedNormals, nullptr);
+        for (uint32_t z = 0; z < kSlotStride; ++z)
         {
-            const uint32_t seam = (z * width + res) * 2;
-            const bool dirty = z >= firstRow + 1 && z < firstRow + rows + 1;
+            const uint32_t seam = (z * kAtlasWidth + kTileResolution) * 2;
+            const bool dirty = z >= kFirstRow + 1 && z < kFirstRow + kRowCount + 1;
             SCOPED_TRACE(z);
-            EXPECT_NEAR(HalfToFloatOracle(half[seam]), dirty ? -0.25f / std::sqrt(1.0625f) : 0.0f, 0.001f);
+            EXPECT_NEAR(HalfToFloatOracle(packedNormals[seam]),
+                        dirty ? -kSeamGradientX / length : 0.0f, kHalfFloatTolerance);
+            EXPECT_NEAR(HalfToFloatOracle(packedNormals[seam + 1]),
+                        dirty ? -kGradientZ / length : 0.0f, kHalfFloatTolerance);
             for (uint32_t texel = 1; texel <= 3; ++texel)
-                EXPECT_EQ(half[seam], half[seam + texel * 2]);
-            EXPECT_EQ(half[seam - 2], 0u);
-            EXPECT_EQ(half[seam + 8], 0u);
+            {
+                EXPECT_EQ(packedNormals[seam], packedNormals[seam + texel * 2]);
+                EXPECT_EQ(packedNormals[seam + 1], packedNormals[seam + texel * 2 + 1]);
+            }
+            EXPECT_EQ(packedNormals[seam - 2], 0u);
+            EXPECT_EQ(packedNormals[seam + 8], 0u);
         }
         device->UnmapBuffer(readback);
         device->DestroyBuffer(readback);
