@@ -32,9 +32,10 @@ namespace GameEngine::TerrainGrass
 inline constexpr float32 kGrassCellSize = 8.0f;
 inline constexpr float32 kGrassCellArea = kGrassCellSize * kGrassCellSize;
 
-// Hard per-cell slot ceiling; bounds the compute's inner loop and the worst-case cell cost.
-// 4096 slots over a 64 m² cell is 64 blades/m², above any density this system is meant to serve.
-inline constexpr uint32 kGrassMaxSlotsPerCell = 4096u;
+// Bound the emit loop at 256 blades/m². The per-view pool stays fixed, so higher density reduces range.
+inline constexpr uint32 kGrassMaxSlotsPerCell = 16384u;
+inline constexpr float32 kGrassMaxBladesPerSquareMeter =
+    static_cast<float32>(kGrassMaxSlotsPerCell) / kGrassCellArea;
 
 // Slots below this growth are skipped. A blade at 2 % of its authored height is sub-pixel wherever
 // the growth ramp puts it (the outermost metres of the fade radius), so dropping it is invisible
