@@ -489,7 +489,8 @@ float GE_SamplePointShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 
 
     vec3 sampleDir = biasedLightToFrag / biasedDist;
     int face = GE_PointShadowFace(sampleDir);
-    vec4 shadowClip = ps.faceVP[face] * vec4(biasedPos, 1.0);
+    mat4 faceVP = ps.faceVP[face];
+    vec4 shadowClip = faceVP * vec4(biasedPos, 1.0);
     if (shadowClip.w <= 1e-6)
         return 1.0;
 
@@ -511,7 +512,8 @@ float GE_SamplePointShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 
     float halfAtlasTexel = 0.5 / atlasRes;
     vec2 subLo = vec2(halfAtlasTexel);
     vec2 subHi = vec2(tileScale - halfAtlasTexel);
-    float layer = ps.params.y + float(face); // baseLayer + face
+    float baseLayer = ps.params.y;
+    bool nearSeam = any(lessThan(min(faceUV, 1.0 - faceUV), vec2(kLocalFilterRadiusUV)));
 
     vec2 sc = GE_PointShadowRotation(faceUV, float(face), tileRes);
     float shadow = 0.0;
@@ -524,10 +526,26 @@ float GE_SamplePointShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 
         // defect: tileRes moves at runtime with the coverage tier, so the blur
         // changed size mid-scene as a light dollied across a tier boundary.
         vec2 offset = GE_VogelDisk(i, taps, sc) * kLocalFilterRadiusUV;
-        // Map the tap into the tile sub-rect and clamp (+half-texel gutter) so its
-        // PCF comparison footprint can never bleed into the cleared-far border.
-        vec2 atlasUV = clamp((faceUV + offset) * tileScale, subLo, subHi);
-        shadow += GE_SHADOW_TAP(ge_pointShadowMap, vec4(atlasUV, layer, refDepth));
+        vec2 tapUV = faceUV + offset;
+        int tapFace = face;
+        float tapDepth = refDepth;
+        if (nearSeam && any(notEqual(tapUV, clamp(tapUV, 0.0, 1.0))))
+        {
+            // The 90-degree square projection has unit scale. Its first two
+            // rows are the face axes. UV Y runs opposite to clip Y.
+            vec3 right = vec3(faceVP[0].x, faceVP[1].x, faceVP[2].x);
+            vec3 up = vec3(faceVP[0].y, faceVP[1].y, faceVP[2].y);
+            vec3 tapOffset = (right * offset.x - up * offset.y) * (2.0 * shadowClip.w);
+            tapFace = GE_PointShadowFace(biasedLightToFrag + tapOffset);
+            mat4 tapVP = ps.faceVP[tapFace];
+            vec4 tapClip = tapVP * vec4(biasedPos, 1.0) + tapVP * vec4(tapOffset, 0.0);
+            vec3 tapNDC = tapClip.xyz / tapClip.w;
+            tapUV = tapNDC.xy * vec2(0.5, -0.5) + 0.5;
+            tapDepth = clamp(tapNDC.z + ps.params.z, 0.0, 1.0);
+        }
+        // Keep the hardware comparison footprint inside the selected tile.
+        vec2 atlasUV = clamp(tapUV * tileScale, subLo, subHi);
+        shadow += GE_SHADOW_TAP(ge_pointShadowMap, vec4(atlasUV, baseLayer + float(tapFace), tapDepth));
     }
     return shadow / float(taps);
 }
