@@ -11,6 +11,7 @@
 #include "Editor/Entities/EntityDisplayName.h"
 #include "InspectorRegistry.h"
 #include "Inspectors/DefaultComponentInspector.h"
+#include "Inspectors/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorDragHelpers.h"
 #include "Spline/SplineData.h"
 #include "Inspectors/InspectorUIHelpers.h"
