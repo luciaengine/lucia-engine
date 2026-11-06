@@ -207,6 +207,8 @@ struct TerrainTileData
     // NOT re-generate the normal on the extraction thread (it only re-generates when a modifier bumps
     // HeightfieldVersion — heights actually changed). Guards the O(tileRes^2) extraction-thread stall.
     uint64 NormalmapVersion = 0;
+    // Last height version queued for a GPU normal update in this tile's atlas slot.
+    uint64 AtlasNormalVersion = 0;
 
     bool HeightfieldDirty = true;
     uint64 HeightfieldVersion = 0;
