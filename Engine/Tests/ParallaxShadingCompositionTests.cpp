@@ -16,6 +16,8 @@
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialPrewarmVariants.h"
 #include "Engine/Rendering/MaterialSystem.h"
+#include "Engine/Rendering/ParallaxReliefDepth.h"
+#include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/PipelineTypes.h"
@@ -31,6 +33,7 @@
 #include "ScopedCompatShaderProfile.h"
 #include "ScopedInterpolationFunctions.h"
 #include "StagedTestPaths.h"
+#include "TestTempDir.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -424,6 +427,33 @@ void CheckBc5NormalTextureViews(IDevice& device, const ValidationStats& baseline
     device.DestroyTexture(texture);
 }
 
+void CheckMultisampleParallaxPrepassPipeline(RenderServices& services, const Material& material,
+                                             IDevice& device, const PipelineFormatKey& format)
+{
+    auto& variants = services.Materials().Variants();
+    const MaterialKeyword prepassKeywords = kClusteredColour | WorldPassReliefDepthKeywords(
+        material.GetVariantKey().materialKeywords, material.GetAlphaMode(),
+        ReliefDepthSource::PrepassReadableMultisample);
+    ASSERT_TRUE(HasKeyword(prepassKeywords, MaterialKeyword::ParallaxDepthFromPrepass));
+    ASSERT_TRUE(HasKeyword(prepassKeywords, MaterialKeyword::ParallaxPrepassDepthMultisample));
+    const auto key = variants.EnqueueColorVariantCompileForTesting(
+        material, VertexAttributeFlags::StandardMesh, PrimitiveTopology::TriangleList,
+        prepassKeywords, format.RasterizationSamples, FrontFace::CounterClockwise);
+    variants.SubmitPendingVariantCompiles();
+    variants.ApplyPendingVariantPublishes();
+    const auto published = variants.SnapshotColorVariantForTesting(key);
+    ASSERT_TRUE(published.CurrentPipelineId.IsValid());
+    const GraphicsPipelineDesc* pipeline = device.LookupGraphicsPipeline(published.CurrentPipelineId);
+    ASSERT_NE(pipeline, nullptr);
+    ASSERT_TRUE(pipeline->PixelShader && !pipeline->PixelShader->empty());
+    ASSERT_TRUE(Names(*pipeline->PixelShader, "GE_ParallaxPrepassDepth"));
+    ASSERT_TRUE(Names(*pipeline->PixelShader, "ge_prepassDepth"));
+    const PipelineFormatKey formats[] = {format};
+    device.PrewarmGraphicsPipeline(published.CurrentPipelineId, formats);
+    EXPECT_TRUE(device.TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid())
+        << "the multisample prepass-reading colour pipeline was not built";
+}
+
 void CheckParallaxPipelineCapabilities(bool forceCentroidFootprint)
 {
     const std::filesystem::path shaderDir = TestPaths::StagedRenderingShadersDir();
@@ -440,6 +470,8 @@ void CheckParallaxPipelineCapabilities(bool forceCentroidFootprint)
     desc.enableDynamicRendering = true;
     desc.enableDebugLayer = true;
     desc.enableSwapchain = false;
+    desc.pipelineCacheDirectory = TestUtils::MakeUniqueTempDirectory("parallax-pipeline-cache").string();
+    ::testing::Test::RecordProperty("PipelineCacheDirectory", desc.pipelineCacheDirectory);
     std::unique_ptr<IDevice> device = DeviceFactory::CreateDevice(desc);
     if (!device)
         GTEST_SKIP() << "No Vulkan device available";
@@ -496,6 +528,8 @@ void CheckParallaxPipelineCapabilities(bool forceCentroidFootprint)
         const PipelineFormatKey formats[] = {format};
         device->PrewarmGraphicsPipeline(id, formats);
         EXPECT_TRUE(device->TryGetWarmGraphicsPipeline(id, format).IsValid()) << "the colour pipeline was not built";
+        if (!forceCentroidFootprint)
+            CheckMultisampleParallaxPrepassPipeline(services, *material, *device, format);
 
         ExpectNoNewValidationErrors(*device, baseline);
         services.Shutdown();
