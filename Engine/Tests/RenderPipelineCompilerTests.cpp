@@ -721,50 +721,69 @@ TEST(RenderPipelineCompilerFleet, PassScopeComesFromTheRuntimeRegistration)
     EXPECT_TRUE(bp.passes[2].perView) << "WorldRender registers perView=true";
 }
 
-// A depth prepass or world pass declared before ViewParamsUpload builds its binding table before the
-// upload exists and binds the fallback view parameters (an identity projection, no TAAU mip bias)
-// silently; the compiler refuses the order and names the fix. The fleet gate below holds every
-// committed blueprint to it.
-TEST(RenderPipelineCompiler, APassDeclaredBeforeViewParamsUploadIsRejected)
+TEST(RenderPipelineCompiler, OrdersTransitiveViewPrerequisitesBeforeTheirConsumers)
 {
-    const std::string misordered = R"json({
-      "schemaVersion": 2, "pipelineName": "Order",
-      "passes": [
-        { "id": "DepthPrepass", "type": "DepthPrepass" },
-        { "id": "ViewParamsUpload", "type": "ViewParamsUpload", "buffer": "ViewParams" },
-        { "id": "World", "type": "WorldRender" }
-      ]
-    })json";
-    const auto bad = CompileText(misordered);
-    EXPECT_TRUE(HasIssue(bad, PipelineIssueSeverity::Error, "move 'ViewParamsUpload' above it")) << IssuesToString(bad);
-
-    const std::string ordered = R"json({
-      "schemaVersion": 2, "pipelineName": "Order",
-      "passes": [
-        { "id": "ViewParamsUpload", "type": "ViewParamsUpload", "buffer": "ViewParams" },
-        { "id": "DepthPrepass", "type": "DepthPrepass" },
-        { "id": "World", "type": "WorldRender" }
-      ]
-    })json";
-    const auto good = CompileText(ordered);
-    EXPECT_FALSE(HasIssue(good, PipelineIssueSeverity::Error, "ViewParamsUpload")) << IssuesToString(good);
-}
-
-TEST(RenderPipelineCompiler, RejectsDepthAndShadowProducersAfterTheirConsumers)
-{
-    const auto bp = CompileText(R"json({
+    const auto blueprint = CompileText(R"json({
       "schemaVersion": 2, "pipelineName": "ProducerOrder",
       "passes": [
         { "id": "World", "type": "WorldRender" },
         { "id": "Resolve", "type": "DepthResolve" },
         { "id": "Prepass", "type": "DepthPrepass" },
-        { "id": "Shadows", "type": "ShadowMap" }
+        { "id": "Shadows", "type": "ShadowMap" },
+        { "id": "Camera", "type": "ViewParamsUpload" }
       ]
     })json");
-    EXPECT_TRUE(HasIssue(bp, PipelineIssueSeverity::Error, "move 'Prepass' above it"))
-        << IssuesToString(bp);
-    EXPECT_TRUE(HasIssue(bp, PipelineIssueSeverity::Error, "move 'Shadows' above it"))
-        << IssuesToString(bp);
+    EXPECT_EQ(CountSeverity(blueprint, PipelineIssueSeverity::Error), 0) << IssuesToString(blueprint);
+    std::vector<std::string> order;
+    for (const auto& pass : blueprint.passes)
+        order.push_back(pass.id);
+    EXPECT_EQ(order, (std::vector<std::string>{"Camera", "Prepass", "Shadows", "World", "Resolve"}));
+}
+
+TEST(RenderPipelineCompiler, KeepsAnEarlierReaderAheadOfAProducerMovedForward)
+{
+    auto registry = BuildRegistry();
+    const auto unusedFactory = [] { return std::unique_ptr<IRenderPipelineNode>(); };
+    ASSERT_TRUE(registry.Register("SecondProducer",
+        unusedFactory, true,
+        {.WritesViewResources = {RenderPipelineViewResource::ViewParameters, RenderPipelineViewResource::Shadows}}));
+    ASSERT_TRUE(registry.Register("ShadowReader", unusedFactory, true,
+        {.ReadsViewResources = {RenderPipelineViewResource::Shadows}}));
+    const auto blueprint = CompileText(R"json({
+      "schemaVersion": 2, "pipelineName": "ProducerOrder",
+      "passes": [
+        { "id": "ReadShadows", "type": "ShadowReader" },
+        { "id": "First", "type": "ViewParamsUpload" },
+        { "id": "Prepass", "type": "DepthPrepass", "enabled": false },
+        { "id": "Reader", "type": "DepthPrepass" },
+        { "id": "Second", "type": "SecondProducer" }
+      ]
+    })json", registry);
+    EXPECT_EQ(CountSeverity(blueprint, PipelineIssueSeverity::Error), 0) << IssuesToString(blueprint);
+    std::vector<std::string> order;
+    for (const auto& pass : blueprint.passes)
+        order.push_back(pass.id);
+    EXPECT_EQ(order, (std::vector<std::string>{"First", "Reader", "Second", "ReadShadows", "Prepass"}));
+}
+
+TEST(RenderPipelineCompiler, ReportsAViewPrerequisiteCycleWithThePassIds)
+{
+    auto registry = BuildRegistry();
+    const auto unusedFactory = [] { return std::unique_ptr<IRenderPipelineNode>(); };
+    ASSERT_TRUE(registry.Register("ViewCycle",
+        unusedFactory, true,
+        {.ReadsViewResources = {RenderPipelineViewResource::PrepassDepth},
+         .WritesViewResources = {RenderPipelineViewResource::ViewParameters}}));
+    const auto blueprint = CompileText(R"json({
+      "schemaVersion": 2, "pipelineName": "Cycle",
+      "passes": [
+        { "id": "Prepass", "type": "DepthPrepass" },
+        { "id": "View", "type": "ViewCycle" }
+      ]
+    })json", registry);
+    EXPECT_TRUE(HasIssue(blueprint, PipelineIssueSeverity::Error,
+                        "pass declaration dependency cycle: 'Prepass' -> 'View' -> 'Prepass'"))
+        << IssuesToString(blueprint);
 }
 
 TEST(RenderPipelineCompiler, RejectsWrongKindsForDepthAndShadowReferences)
