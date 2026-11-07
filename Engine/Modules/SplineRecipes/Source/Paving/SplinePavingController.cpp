@@ -6,6 +6,7 @@
 #include "Core/Engine.h"
 #include "ECS/Systems.h"
 #include "ECS/World.h"
+#include "ECS/ECSTemplates.h"
 #include "ECSModules/Rendering/RenderingLoop.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Mathematics/Geometry.h"
