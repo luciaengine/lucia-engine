@@ -8,17 +8,23 @@
 
 namespace GameEngine
 {
+namespace
+{
+size_t PendingSceneResolveWork(EngineCore& engine)
+{
+    size_t pending = Engine::Renderer::IsSceneBuildPumpActive() ? 1 : 0;
+    if (auto* loop = engine.GetRenderingLoop())
+    {
+        const auto counts = loop->GetSceneResolveService().Counts();
+        pending += counts.HeldEntities + counts.PendingMaterials;
+    }
+    return pending;
+}
+} // namespace
+
 SceneLoadingGates::SceneLoadingGates(EngineCore& engine)
     : m_Resolve(engine.GetSceneLoadTracker(), {"scene.resolve", "Preparing the scene"},
-              "models or materials still resolving", [&engine]() {
-                  size_t pending = Engine::Renderer::IsSceneBuildPumpActive() ? 1 : 0;
-                  if (auto* loop = engine.GetRenderingLoop())
-                  {
-                      const auto counts = loop->GetSceneResolveService().Counts();
-                      pending += counts.HeldEntities + counts.PendingMaterials;
-                  }
-                  return pending;
-              }),
+              "models or materials still resolving", [&engine]() { return PendingSceneResolveWork(engine); }),
       m_BaseCompiles(engine.GetSceneLoadTracker(),
                    {"shader.base-compile", "Compiling material shaders", SceneLoadTracker::CostUnit::Pipelines},
                    "base shaders still compiling or waiting to publish", [&engine]() -> size_t {
