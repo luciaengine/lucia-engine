@@ -18,7 +18,7 @@ constexpr const char* kLayoutPath = "UI/controls/LogToolbarActions.uxml";
 
 LogToolbarActions::LogToolbarActions(std::function<void()> clear, std::function<void()> copy,
                                    std::function<bool()> togglePaused,
-                                   std::function<void(const UIElement&)> toggleChannels)
+                                   std::function<void(UIElement&)> toggleChannels)
     : m_Clear(std::move(clear)), m_Copy(std::move(copy)), m_TogglePaused(std::move(togglePaused)),
       m_ToggleChannels(std::move(toggleChannels))
 {

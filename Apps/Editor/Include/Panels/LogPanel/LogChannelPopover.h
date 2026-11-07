@@ -32,7 +32,7 @@ public:
 
     /// Opens under `anchor` (over it when the window has no room below), with an empty search field that has
     /// the focus. `anchor` must stay alive while the list is open.
-    void Open(const UIElement& anchor);
+    void Open(UIElement& anchor);
     void Close();
 
     void OnPostLayout() override;
@@ -62,7 +62,7 @@ private:
 
     LogView& m_View;
     bool m_Open = false;
-    const UIElement* m_Anchor = nullptr;
+    UIElement::WeakRef<> m_Anchor;
     UIElement* m_Panel = nullptr;
     ScrollView* m_Scroll = nullptr;
     UIElement* m_Columns = nullptr;

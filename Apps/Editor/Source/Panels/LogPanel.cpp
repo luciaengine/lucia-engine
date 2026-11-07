@@ -157,7 +157,7 @@ LogPanel::LogPanel()
         auto mainActionsRow = std::make_unique<LogToolbarActions>(
             [this]() { ClearLog(); }, [this]() { CopyToClipboard(); },
             [this]() { return ToggleLogPaused(); },
-            [this](const UIElement& anchor) { ToggleChannels(anchor); });
+            [this](UIElement& anchor) { ToggleChannels(anchor); });
 
         auto centerSlot = std::make_unique<UIElement>();
         centerSlot->AddClass("log-toolbar-center-slot");
@@ -717,7 +717,7 @@ void LogPanel::PopulateDetailPaneForIndex(size_t messageIndex)
     m_DetailPane->MarkDirty(UIElement::LayoutDirty | UIElement::VisualDirty);
 }
 
-void LogPanel::ToggleChannels(const UIElement& anchor)
+void LogPanel::ToggleChannels(UIElement& anchor)
 {
     if (m_ChannelPopover->IsPopupOpen())
         m_ChannelPopover->Close();

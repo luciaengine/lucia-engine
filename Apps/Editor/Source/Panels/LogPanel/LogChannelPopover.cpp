@@ -156,7 +156,7 @@ void LogChannelPopover::BindLayout()
 
 LogChannelPopover::~LogChannelPopover() = default;
 
-void LogChannelPopover::Open(const UIElement& anchor)
+void LogChannelPopover::Open(UIElement& anchor)
 {
     if (!GetOwnerManager())
         return;
@@ -164,7 +164,7 @@ void LogChannelPopover::Open(const UIElement& anchor)
         BindLayout();
     if (!m_Panel)
         return;
-    m_Anchor = &anchor;
+    m_Anchor = MakeWeakRef(&anchor);
     m_Open = true;
     m_PlacedX = -1.0f;
     m_PlacedY = -1.0f;
@@ -184,7 +184,7 @@ void LogChannelPopover::Close()
     if (!m_Open)
         return;
     m_Open = false;
-    m_Anchor = nullptr;
+    m_Anchor = {};
     AddClass(kHiddenClass);
 }
 
@@ -192,7 +192,7 @@ bool LogChannelPopover::PressWithinPopupGroup(const UIElement* pressTarget) cons
 {
     for (auto* element = pressTarget; element; element = element->GetParent())
     {
-        if (element == m_Anchor)
+        if (element == m_Anchor.Get())
             return true;
     }
     return false;
@@ -330,9 +330,15 @@ void LogChannelPopover::Place()
 {
     UIManager* manager = GetOwnerManager();
     UIElement* root = manager ? manager->GetRootElement() : nullptr;
-    if (!m_Anchor || !root)
+    const UIElement* anchorElement = m_Anchor.Get();
+    if (!anchorElement)
+    {
+        Close();
         return;
-    const Mathematics::Rect anchor = m_Anchor->GetWindowRect();
+    }
+    if (!root)
+        return;
+    const Mathematics::Rect anchor = anchorElement->GetWindowRect();
     const Mathematics::Rect window = root->GetWindowRect();
     const Mathematics::Rect origin = GetWindowRect();
     const float width = m_Panel->GetLayoutWidth();

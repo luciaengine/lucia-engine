@@ -68,7 +68,7 @@ private:
     void OnLogMessage(const Logger::LogMessage& message);
     void OnSearchTextChanged(const std::string& searchText);
     void CopyToClipboard();
-    void ToggleChannels(const UIElement& anchor);
+    void ToggleChannels(UIElement& anchor);
     bool ToggleLogPaused();
     void BuildDetailPane(UIElement* parent);
     void PopulateDetailPaneForIndex(size_t messageIndex);

@@ -1,4 +1,5 @@
 #include "EditorChromeFixture.h"
+#include "Panels/LogPanel/LogChannelPopover.h"
 
 using namespace GameEngine;
 using namespace EditorChromeTesting;
@@ -123,4 +124,21 @@ TEST(LogPanelActions, ChannelPickerHidesAndRestoresRows)
     EXPECT_NE(view->GetAllMessagesAsText(false).find(message.Message), std::string::npos);
     Click(showAll);
     EXPECT_NE(view->GetAllMessagesAsText(true).find(message.Message), std::string::npos);
+}
+
+TEST(LogPanelActions, ChannelPickerClosesWhenItsAnchorIsRemoved)
+{
+    EditorChromeHost host;
+    if (!host.Device)
+        GTEST_SKIP() << "No Vulkan device available";
+    ASSERT_TRUE(host.Ready);
+    auto* channels = dynamic_cast<LogChannelPopover*>(ClassIn(host.Panel, "log-channels-anchor"));
+    ASSERT_NE(channels, nullptr);
+    {
+        UIElement anchor;
+        channels->Open(anchor);
+        ASSERT_TRUE(channels->IsPopupOpen());
+    }
+    host.Settle();
+    EXPECT_FALSE(channels->IsPopupOpen());
 }
