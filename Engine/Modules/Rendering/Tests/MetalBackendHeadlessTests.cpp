@@ -3857,9 +3857,16 @@ struct SpanResult
     uint64_t EndTicks = 0;
     bool Resolved = false;
 };
+
+class MetalTimestampSpans : public ::testing::Test
+{
+private:
+    // Keep autoreleased encoder descriptors and their sample buffers within one test.
+    NS::SharedPtr<NS::AutoreleasePool> m_AutoreleasePool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+};
 } // namespace
 
-TEST(MetalTimestampSpans, SpanSamplesItsOwnEncoderBoundaries)
+TEST_F(MetalTimestampSpans, SpanSamplesItsOwnEncoderBoundaries)
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)
@@ -4005,7 +4012,7 @@ TEST(MetalTimestampSpans, SpanSamplesItsOwnEncoderBoundaries)
 // A span over several encoders must be charged their work, not the wall extent
 // from the first one's start to the last one's end — the GPU can idle between
 // them, and a render encoder's vertex and fragment stages are scheduled apart.
-TEST(MetalTimestampSpans, MultiEncoderSpanExcludesTheGapsBetweenEncoders)
+TEST_F(MetalTimestampSpans, MultiEncoderSpanExcludesTheGapsBetweenEncoders)
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)
@@ -4100,7 +4107,7 @@ TEST(MetalTimestampSpans, MultiEncoderSpanExcludesTheGapsBetweenEncoders)
 
 // A span that records no GPU work at all has no encoder to name; it must report
 // zero, not the interval up to whatever encoder happens to come next.
-TEST(MetalTimestampSpans, SpanWithoutGpuWorkReportsZero)
+TEST_F(MetalTimestampSpans, SpanWithoutGpuWorkReportsZero)
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)
@@ -4183,7 +4190,7 @@ TEST(MetalTimestampSpans, SpanWithoutGpuWorkReportsZero)
 // timestamps never share), so the fold has to be exercised here: two passes
 // whose work lands in one blit encoder must report one distinct measurement,
 // not two.
-TEST(MetalTimestampSpans, RenderGraphFoldsOneEncoderSharedByTwoPassesIntoOneMeasurement)
+TEST_F(MetalTimestampSpans, RenderGraphFoldsOneEncoderSharedByTwoPassesIntoOneMeasurement)
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)
