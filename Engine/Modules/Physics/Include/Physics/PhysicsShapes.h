@@ -1,5 +1,7 @@
 #pragma once
 
+#include <limits>
+
 #include "Physics/PhysicsTypes.h"
 
 #include <algorithm>
@@ -8,6 +10,8 @@
 
 namespace GameEngine::Physics
 {
+
+inline constexpr float32 kHeightFieldNoCollision = std::numeric_limits<float32>::max();
 struct SphereShapeDef
 {
     float32 radius = 0.5f;

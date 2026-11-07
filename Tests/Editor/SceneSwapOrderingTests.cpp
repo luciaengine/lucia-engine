@@ -183,29 +183,36 @@ TEST(SceneSwapOrdering, TheSharedStepReleasesTheSplineGenerators)
            "survive the swap and the next sweep destroys entities of the incoming scene";
 }
 
-// The release is supplied by the generators' owner, so the wiring is part of the
-// contract: an unwired hook is a silent no-op that reads exactly like a fix. The
-// editor wires it to RecipeControllers, which owns the generators, and that
-// release must reach every one of them.
+// The editor releases the shared recipe system before the scene is replaced.
 TEST(SceneSwapOrdering, EditorApplicationWiresTheSplineGeneratorRelease)
 {
-    const std::string src = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication.cpp");
-    ASSERT_FALSE(src.empty());
+    const std::string source = ReadFile(EditorSourceRoot() / "Source" / "EditorApplication.cpp");
+    const size_t wire = source.find("SetSceneScopedGeneratorRelease(");
+    ASSERT_NE(wire, std::string::npos);
+    const size_t callbackEnd = source.find("});", wire);
+    ASSERT_NE(callbackEnd, std::string::npos);
+    EXPECT_NE(source.substr(wire, callbackEnd - wire).find("m_RecipeEditorHooks->ReleaseSceneScoped("),
+              std::string::npos);
 
-    const size_t wire = src.find("SetSceneScopedGeneratorRelease(");
-    ASSERT_NE(wire, std::string::npos)
-        << "EditorApplication must supply the release to the scene editor";
-    EXPECT_NE(src.substr(wire).find("m_RecipeControllers->ReleaseSceneScoped("), std::string::npos)
-        << "the release must reach the owner of the spline generators";
+    const std::string hooks = ReadFile(EditorSourceRoot() / "Source" / "Placement" / "RecipeEditorHooks.cpp");
+    const std::string hookBody = FunctionBody(hooks, "RecipeEditorHooks::",
+                                              "void RecipeEditorHooks::ReleaseSceneScoped(");
+    EXPECT_NE(hookBody.find("m_Recipes.ReleaseSceneScoped("), std::string::npos);
 
-    const std::string owner =
-        ReadFile(EditorSourceRoot() / "Source" / "Placement" / "RecipeControllers.cpp");
-    const std::string body = FunctionBody(owner, "RecipeControllers::",
+    const auto recipeSources = EditorSourceRoot().parent_path().parent_path()
+        / "Engine" / "Modules" / "SplineRecipes" / "Source";
+    const std::string system = ReadFile(recipeSources / "SplineRecipeSystem.cpp");
+    const std::string systemBody = FunctionBody(system, "SplineRecipeSystem::",
+                                                "void SplineRecipeSystem::ReleaseSceneScoped(");
+    EXPECT_NE(systemBody.find("m_Controllers->ReleaseSceneScoped("), std::string::npos);
+
+    const std::string controllers = ReadFile(recipeSources / "RecipeControllers.cpp");
+    const std::string body = FunctionBody(controllers, "RecipeControllers::",
                                           "void RecipeControllers::ReleaseSceneScoped(");
-    ASSERT_FALSE(body.empty()) << "RecipeControllers::ReleaseSceneScoped not found";
-    // Every generator caches handles; releasing only some still drops entities.
+    ASSERT_FALSE(body.empty());
     EXPECT_NE(body.find("m_Placement->Shutdown("), std::string::npos);
     EXPECT_NE(body.find("m_Fence->Shutdown("), std::string::npos);
+    EXPECT_NE(body.find("m_Paving->Shutdown("), std::string::npos);
     EXPECT_NE(body.find("m_Extrude->Shutdown("), std::string::npos);
     EXPECT_NE(body.find("m_Wall->Shutdown("), std::string::npos);
 }

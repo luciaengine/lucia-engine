@@ -2,7 +2,7 @@
 #include "ECS/ComponentFieldRegistry.h"
 #include "ECS/ECSTemplates.h"
 #include "ECS/UnresolvedComponentStore.h"
-#include "Placement/SplineExtrudeSanitize.h"
+#include "SplineRecipes/SplineExtrudeSanitize.h"
 #include "Scene/SceneIO.h"
 
 #include "TestTempDir.h"
@@ -22,7 +22,7 @@ using Components::SplineExtrude;
 using Components::SplineExtrudeProfile;
 using Components::SplineExtrudeWidthMode;
 using Components::SplineExtrudeWidthScale;
-using Editor::SanitizeExtrudeRecipe;
+using SplineRecipes::SanitizeExtrudeRecipe;
 
 namespace
 {
@@ -64,7 +64,7 @@ TEST(SplineExtrudeRecipe, EveryFieldParticipatesInEquality)
     };
     // If this fires you added a field: add it to the flip table below (and, if
     // it is a float, to SanitizeExtrudeRecipe), then re-baseline the size.
-    static_assert(sizeof(SplineExtrude) == 96u,
+    static_assert(sizeof(SplineExtrude) == 124u,
                   "SplineExtrude changed size: update the flip table beside this assert and "
                   "SanitizeExtrudeRecipe before re-baselining");
     const Case cases[] = {
@@ -90,12 +90,16 @@ TEST(SplineExtrudeRecipe, EveryFieldParticipatesInEquality)
         {"VerticalOffset", [](SplineExtrude& e) { e.VerticalOffset = 0.08f; }},
         {"TilesPerMetreU", [](SplineExtrude& e) { e.TilesPerMetreU = 0.35f; }},
         {"TilesPerMetreV", [](SplineExtrude& e) { e.TilesPerMetreV = 2.5f; }},
+        {"VergeWidth", [](SplineExtrude& e) { e.VergeWidth = 0.6f; }},
+        {"VergeHeight", [](SplineExtrude& e) { e.VergeHeight = 0.25f; }},
+        {"VergeMaterial", [](SplineExtrude& e) { e.VergeMaterial = MaterialTestRef(11); }},
         {"Material", [](SplineExtrude& e) { e.Material = MaterialTestRef(9); }},
         {"GroundAuthority",
          [](SplineExtrude& e)
          { e.GroundAuthority = Components::SplineGroundAuthority::None; }},
         {"CastShadows", [](SplineExtrude& e) { e.CastShadows = false; }},
         {"ReceiveShadows", [](SplineExtrude& e) { e.ReceiveShadows = false; }},
+        {"Verge", [](SplineExtrude& e) { e.Verge = true; }},
     };
 
     for (const Case& c : cases)
@@ -128,7 +132,7 @@ TEST(SplineExtrudeRecipe, DefaultsDescribeAUsablePathOnTheFirstTry)
     // No material means the controller mints its own default rather than
     // rendering nothing.
     EXPECT_EQ(recipe.Material.ToGuid(), GUID::Null());
-    // The sea-level floor is OFF by default, and "off" is the arithmetic
+    // The floor height is OFF by default, and "off" is the arithmetic
     // identity of the clamp that applies it rather than a magic value compared
     // for equality -- so it survives a scene round-trip without special casing.
     EXPECT_EQ(recipe.SeaLevelFloor, Components::kNoSeaLevelFloor);
@@ -150,9 +154,9 @@ TEST(SplineExtrudeRecipe, NaNRecipeIsSelfUnequalUntilSanitized)
     // The hazard, stated so it cannot be argued away: this is what would loop.
     EXPECT_FALSE(poisoned == poisoned);
 
-    const SplineExtrude clean = SanitizeExtrudeRecipe(poisoned);
+    const SplineExtrude clean = SplineRecipes::SanitizeExtrudeRecipe(poisoned);
     EXPECT_TRUE(clean == clean);
-    EXPECT_TRUE(clean == SanitizeExtrudeRecipe(poisoned));
+    EXPECT_TRUE(clean == SplineRecipes::SanitizeExtrudeRecipe(poisoned));
     EXPECT_FLOAT_EQ(clean.Width, SplineExtrude{}.Width);
 }
 
@@ -177,11 +181,13 @@ TEST(SplineExtrudeRecipe, SanitizeRepairsEveryFloatAndKeepsTheRest)
     poisoned.VerticalOffset = nan;
     poisoned.TilesPerMetreU = inf;
     poisoned.TilesPerMetreV = nan;
+    poisoned.VergeWidth = inf;
+    poisoned.VergeHeight = nan;
     poisoned.Profile = SplineExtrudeProfile::Crown;
     poisoned.Material = MaterialTestRef(5);
     poisoned.CastShadows = false;
 
-    const SplineExtrude clean = SanitizeExtrudeRecipe(poisoned);
+    const SplineExtrude clean = SplineRecipes::SanitizeExtrudeRecipe(poisoned);
     // A non-finite value carries no authored intent, so it falls back to the
     // default rather than being clamped into range.
     EXPECT_FLOAT_EQ(clean.Width, defaults.Width);
@@ -196,6 +202,8 @@ TEST(SplineExtrudeRecipe, SanitizeRepairsEveryFloatAndKeepsTheRest)
     EXPECT_FLOAT_EQ(clean.VerticalOffset, defaults.VerticalOffset);
     EXPECT_FLOAT_EQ(clean.TilesPerMetreU, defaults.TilesPerMetreU);
     EXPECT_FLOAT_EQ(clean.TilesPerMetreV, defaults.TilesPerMetreV);
+    EXPECT_FLOAT_EQ(clean.VergeWidth, defaults.VergeWidth);
+    EXPECT_FLOAT_EQ(clean.VergeHeight, defaults.VergeHeight);
     // The repaired recipe is self-equal — buildable by the settle scheduler.
     EXPECT_TRUE(clean == clean);
     // Untouched fields survive verbatim.
@@ -203,6 +211,17 @@ TEST(SplineExtrudeRecipe, SanitizeRepairsEveryFloatAndKeepsTheRest)
     EXPECT_EQ(clean.Material.ToGuid(), poisoned.Material.ToGuid());
     EXPECT_FALSE(clean.CastShadows);
     EXPECT_TRUE(clean.ReceiveShadows);
+}
+
+// The verge's width and height clamp to the paving curb's range, 0.01 m to 10 m.
+TEST(SplineExtrudeRecipe, SanitizeClampsTheVergeToTheCurbsRange)
+{
+    SplineExtrude authored{};
+    authored.VergeWidth = 50.0f;
+    authored.VergeHeight = 0.0f;
+    const SplineExtrude clean = SanitizeExtrudeRecipe(authored);
+    EXPECT_FLOAT_EQ(clean.VergeWidth, 10.0f);
+    EXPECT_FLOAT_EQ(clean.VergeHeight, 0.01f);
 }
 
 TEST(SplineExtrudeRecipe, TheWaterCaseIsAuthorableWithoutANewProfileShape)
@@ -223,19 +242,8 @@ TEST(SplineExtrudeRecipe, TheWaterCaseIsAuthorableWithoutANewProfileShape)
     EXPECT_NE(water.Material.ToGuid(), GUID::Null());
 }
 
-// The extrude recipe has no bespoke inspector: its fields reach the author
-// through DefaultComponentInspector, whose row tooltip is FieldInfo::Tooltip
-// and nothing else. So an unmarked field renders with NO tooltip,
-// and the only thing standing between ConformTarget and a bare row is the
-// "// @ge-tooltip" marker above it in SplineExtrude.h, which the component
-// scanner turns into a GE_REFLECT_FIELD_TOOLTIP line in the generated
-// reflection TU.
-//
-// Marker, scanner and registry are three separate moving parts and none of them
-// fails loudly: a marker that stops being harvested, a scanner that stops
-// emitting, or a registration ordered before the component's own leaves the
-// field silently bare. This asserts the end of that chain — what the registry
-// actually holds at runtime — rather than the marker's presence in the header.
+// An unmarked field shows no tooltip, so ConformTarget's tooltip depends on its "@ge-tooltip" marker, the
+// component scanner and the reflection registry. This asserts what the registry holds at runtime.
 TEST(SplineExtrudeRecipe, ConformTargetCarriesItsAuthorTooltipThroughReflection)
 {
     const ECS::ComponentTypeId typeId = ECS::GetComponentTypeId<SplineExtrude>();
@@ -259,11 +267,17 @@ TEST(SplineExtrudeRecipe, ConformTargetCarriesItsAuthorTooltipThroughReflection)
         << "the tooltip no longer warns that the drape line ignores the conform target; it reads: "
         << field->Tooltip;
 
-    // Positive control: an unmarked sibling field must still be bare, or the
-    // assertion above would pass on a registry that hands every field a string.
-    const auto unmarked = std::find_if(fields.begin(), fields.end(),
-                                       [](const ECS::FieldInfo& f) { return f.Name == "LateralOffset"; });
-    ASSERT_NE(unmarked, fields.end());
+    // Every row of the extrude explains itself.
+    for (const ECS::FieldInfo& each : fields)
+        EXPECT_FALSE(each.Tooltip.empty()) << each.Name << " has no tooltip";
+
+    // Positive control: an unmarked field must still be bare, or the assertions
+    // above would pass on a registry that hands every field a string.
+    const std::span<const ECS::FieldInfo> provisioned =
+        ECS::ComponentFieldRegistry::Get(ECS::GetComponentTypeId<Components::SplineGroundProvisioned>());
+    const auto unmarked = std::find_if(provisioned.begin(), provisioned.end(),
+                                       [](const ECS::FieldInfo& f) { return f.Name == "Flatten"; });
+    ASSERT_NE(unmarked, provisioned.end());
     EXPECT_TRUE(unmarked->Tooltip.empty())
         << "an unmarked field carries tooltip text, so this test cannot tell a harvested marker "
            "from a default";
@@ -277,7 +291,7 @@ TEST(SplineExtrudeRecipe, OnlyAKeptRectangleProfileMarksTheRetiredWall)
     ECS::World world;
     const ECS::EntityHandle run = world.CreateEntity();
     world.AddComponentImmediate(run, SplineExtrude{});
-    EXPECT_FALSE(Editor::CarriesRetiredWallProfile(world, run));
+    EXPECT_FALSE(SplineRecipes::CarriesRetiredWallProfile(world, run));
 
     ECS::PreservedField otherField;
     otherField.Component = "SplineExtrude";
@@ -289,15 +303,15 @@ TEST(SplineExtrudeRecipe, OnlyAKeptRectangleProfileMarksTheRetiredWall)
     otherValue.Field = "Profile";
     otherValue.RawText = "Hexagon";
     world.GetUnresolvedComponents().AddField(run, otherValue);
-    EXPECT_FALSE(Editor::CarriesRetiredWallProfile(world, run));
+    EXPECT_FALSE(SplineRecipes::CarriesRetiredWallProfile(world, run));
 
     ECS::PreservedField retired;
     retired.Component = "SplineExtrude";
     retired.Field = "Profile";
     retired.RawText = "Rectangle";
     world.GetUnresolvedComponents().AddField(run, retired);
-    EXPECT_TRUE(Editor::CarriesRetiredWallProfile(world, run));
-    EXPECT_NE(Editor::RetiredWallProfileValidation().find("Replace it with a Spline Wall"),
+    EXPECT_TRUE(SplineRecipes::CarriesRetiredWallProfile(world, run));
+    EXPECT_NE(SplineRecipes::RetiredWallProfileValidation().find("Replace it with a Spline Wall"),
               std::string::npos);
 }
 
@@ -317,7 +331,7 @@ TEST(SplineExtrudeRecipe, ChoosingAProfileRevivesARunSavedWithTheRetiredWall)
                "SplineExtrude.Width = 0.8\n";
     }
     ECS::World world;
-    ASSERT_TRUE(Scene::LoadSceneFromFile(world, scenePath, Scene::LoadOptions{Scene::LoadMode::Replace}));
+    ASSERT_TRUE(Scene::LoadSceneFromFile(world, scenePath, Scene::LoadOptions{}));
     std::filesystem::remove(scenePath);
 
     ECS::EntityHandle run{};
@@ -327,12 +341,12 @@ TEST(SplineExtrudeRecipe, ChoosingAProfileRevivesARunSavedWithTheRetiredWall)
     ASSERT_NE(kept, nullptr);
     ASSERT_EQ(kept->size(), 1u);
     ASSERT_NE(kept->front().FieldSize, 0u) << "the kept Profile has no byte range to compare";
-    EXPECT_TRUE(Editor::CarriesRetiredWallProfile(world, run));
+    EXPECT_TRUE(SplineRecipes::CarriesRetiredWallProfile(world, run));
 
     // Positive control: a write to a sibling field leaves the kept Profile standing.
     world.GetComponentForWrite<SplineExtrude>(run)->Width = 1.2f;
-    EXPECT_TRUE(Editor::CarriesRetiredWallProfile(world, run));
+    EXPECT_TRUE(SplineRecipes::CarriesRetiredWallProfile(world, run));
 
     world.GetComponentForWrite<SplineExtrude>(run)->Profile = SplineExtrudeProfile::Crown;
-    EXPECT_FALSE(Editor::CarriesRetiredWallProfile(world, run));
+    EXPECT_FALSE(SplineRecipes::CarriesRetiredWallProfile(world, run));
 }
