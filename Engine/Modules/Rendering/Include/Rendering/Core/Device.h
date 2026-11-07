@@ -79,7 +79,7 @@ enum class ShaderSourceKind : uint8_t
 // by polling. Lost means the backend reported a real device loss on some op;
 // rendering is suppressed until the recovery machine rebuilds.
 //
-// The remaining states drive the Tier-2 in-place rebuild (slice 2):
+// Recovery and terminal states:
 //   Rebuilding          — a rebuild is running on the render thread; device-scoped
 //                         Vulkan objects are being replaced. No work is issued.
 //   AwaitingReprovision — the device was rebuilt and is fully functional, but the
@@ -89,8 +89,8 @@ enum class ShaderSourceKind : uint8_t
 //                         pass completes and calls NotifyReprovisionComplete()
 //                         (slice 3a owns that consumer). Direct device GPU ops
 //                         (buffer create/upload, submit, fence) work here.
-//   Failed              — the rebuild exhausted its bounded retries (a persistently
-//                         dying GPU). No healthy device; only save-and-restart is
+//   Failed              — recovery is unavailable or exhausted its bounded retries.
+//                         No healthy device; only save-and-restart is
 //                         viable (slice 6 owns the UX).
 // The backend reads this once per window per frame plus on error paths, so a
 // healthy steady state pays nothing.
