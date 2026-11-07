@@ -1,7 +1,9 @@
 #pragma once
 
 #include <Metal/Metal.hpp>
+#include <dispatch/dispatch.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -14,6 +16,7 @@ namespace GameEngine
 {
 namespace Rendering
 {
+class MetalDevice;
 
 // FIFO deferred-commit worker for one MTLCommandQueue.
 //
@@ -32,15 +35,21 @@ class MetalSubmitQueue
   public:
     struct Submit
     {
+        struct TrackedBuffer
+        {
+            MTL::CommandBuffer* Buffer = nullptr;
+            uint32_t FrameSlot = 0;
+            dispatch_semaphore_t FrameSemaphore = nullptr;
+        };
         std::vector<std::pair<MTL::SharedEvent*, uint64_t>> Waits;   // retained
-        std::vector<MTL::CommandBuffer*> Buffers;                    // retained, uncommitted
+        std::vector<TrackedBuffer> Buffers;                       // retained, uncommitted
         std::vector<std::pair<MTL::SharedEvent*, uint64_t>> Signals; // retained
     };
 
     ~MetalSubmitQueue();
 
-    void Start(MTL::CommandQueue* queue);
-    // Drains the FIFO, then joins the worker.
+    void Start(MTL::CommandQueue* queue, MetalDevice& device);
+    // Cancels deferred work, then joins the worker.
     void Stop();
     // Takes ownership of the submit's retained references.
     void Enqueue(Submit&& submit);
@@ -50,15 +59,17 @@ class MetalSubmitQueue
   private:
     void Run();
     void Execute(Submit& submit);
+    void Cancel(Submit& submit);
 
     MTL::CommandQueue* m_Queue = nullptr;
+    MetalDevice* m_Device = nullptr;
     std::thread m_Thread;
     std::mutex m_Mutex;
     std::condition_variable m_WorkCv;
     std::condition_variable m_IdleCv;
     std::deque<Submit> m_Pending;
     bool m_Busy = false;
-    bool m_ShutdownRequested = false;
+    std::atomic<bool> m_ShutdownRequested{false};
 };
 
 } // namespace Rendering

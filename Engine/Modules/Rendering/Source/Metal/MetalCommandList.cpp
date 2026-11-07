@@ -64,6 +64,7 @@ void MetalCommandList::Begin()
     if (m_CommandBuffer == nullptr)
     {
         Logger::Log::Error("MetalCommandList: failed to obtain MTLCommandBuffer");
+        m_Device.RecordSubmissionFailure();
         return;
     }
     m_CommandBuffer->retain();
