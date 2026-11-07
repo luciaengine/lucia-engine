@@ -23,7 +23,7 @@ bool EditsText(UIElement& element)
         return true;
     for (const auto& child : element.GetChildren())
     {
-        if (child->GetAsTextInput() && child->GetFocusProxy() == &element)
+        if (child->GetAsTextInput() && child->ResolveFocusTarget() == &element)
             return true;
     }
     return false;
@@ -72,11 +72,11 @@ bool FocusIsInTextInput(const UIManager& manager, const UIElement* within)
     bool editsText = false;
     bool inside = within == nullptr;
     int depth = 0;
-    for (UIElement* el = root->FindById(focusId); el && depth++ < kMaxAncestorDepth;
-         el = el->GetParent())
+    for (UIElement* focused = root->FindById(focusId); focused && depth++ < kMaxAncestorDepth;
+         focused = focused->GetParent())
     {
-        editsText = editsText || EditsText(*el);
-        inside = inside || el == within;
+        editsText = editsText || EditsText(*focused);
+        inside = inside || focused == within;
     }
     return editsText && inside;
 }
