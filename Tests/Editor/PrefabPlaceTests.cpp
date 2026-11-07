@@ -386,10 +386,10 @@ TEST_F(PrefabPlaceTests, AnUndoOfCreateAfterASavedSceneUsesThePrefabKeepsTheFile
     EngineCore& engine = EngineCore::GetInstance();
     Scene::AssetManagerSceneResolver resolver(engine.GetAssetManager(), engine.GetAssetManager().GetAssetRoot(),
                                               Scene::AssetManagerSceneResolver::UnknownFile::Register);
-    Scene::SceneWriteOptions options;
+    Scene::SaveOptions options;
     options.assetResolver = &resolver;
     const std::filesystem::path scene = m_Folder / "Yard.scene";
-    ASSERT_TRUE(Scene::WriteSceneFile(world, scene, options)) << Scene::GetLastSceneIOError().message;
+    ASSERT_TRUE(Scene::SaveSceneToFile(world, scene, options)) << Scene::GetLastSceneIOError().message;
     ASSERT_TRUE(engine.GetAssetManager().GetRegistry().RegisterAssetByPath(scene).IsOk());
 
     undo.Undo();
