@@ -127,6 +127,9 @@ public:
     uint32 NodeCount() const;
     bool   IsEmpty() const;
 
+    /// Changes when a reconcile, refit, or clear changes the published tree.
+    uint64 Version() const;
+
     // ---- Bringing the tree current (main thread, between frames) --------
 
     enum class Readiness : uint8
