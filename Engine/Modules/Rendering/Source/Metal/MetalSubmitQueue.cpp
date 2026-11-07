@@ -117,8 +117,8 @@ void MetalSubmitQueue::Execute(Submit& submit)
     }
     for (auto& tracked : submit.Buffers)
     {
-        tracked.Buffer->commit();
-        tracked.Buffer->release();
+        tracked->Buffer->commit();
+        tracked->Buffer->release();
     }
     if (!submit.Signals.empty() && m_Queue != nullptr)
     {
@@ -152,11 +152,11 @@ void MetalSubmitQueue::Cancel(Submit& submit)
 {
     for (auto& tracked : submit.Buffers)
     {
-        m_Device->RetireTrackedCommandBuffer(tracked.FrameSlot,
-            tracked.Buffer->commandQueue() == m_Device->GetQueue(IDevice::QueueType::Graphics));
-        if (tracked.FrameSemaphore != nullptr)
-            dispatch_semaphore_signal(tracked.FrameSemaphore);
-        tracked.Buffer->release();
+        if (!tracked->RetirementClaimed.exchange(true, std::memory_order_acq_rel))
+        {
+            m_Device->RetireTrackedCommandBuffer(*tracked, nullptr);
+        }
+        tracked->Buffer->release();
     }
     for (auto& [event, value] : submit.Waits)
         event->release();

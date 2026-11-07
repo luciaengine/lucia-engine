@@ -776,6 +776,7 @@ TEST(MetalResources, FailedSubmissionCancelsDependentCopiesAndReturnsFramePermit
     ASSERT_TRUE(device->BeginFrame());
     auto commandList = device->CreateCommandList(IDevice::QueueType::Graphics);
     commandList->Begin();
+    auto deferredBuffer = NS::TransferPtr(MetalCommandListTestAccess::RetainBuffer(*commandList));
     auto* encoder = MetalCommandListTestAccess::GetBuffer(*commandList)->blitCommandEncoder();
     encoder->copyFromBuffer(source.get(), 0, destination.get(), 0, sizeof(uint32_t));
     encoder->endEncoding();
@@ -795,6 +796,15 @@ TEST(MetalResources, FailedSubmissionCancelsDependentCopiesAndReturnsFramePermit
         EXPECT_EQ(*static_cast<uint32_t*>(destination->contents()), 0u);
         EXPECT_EQ(result->signaledValue(), 0u);
     }
+    else
+    {
+        gate->setSignaledValue(1);
+    }
+    commandList.reset();
+    device->Shutdown();
+    device.reset();
+    // The native completion can run after the device has been destroyed.
+    deferredBuffer.reset();
 }
 
 namespace

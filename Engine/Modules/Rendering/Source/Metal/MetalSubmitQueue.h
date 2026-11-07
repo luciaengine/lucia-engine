@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -35,14 +36,17 @@ class MetalSubmitQueue
   public:
     struct Submit
     {
+        // Shared with completion; the submit owns the buffer's retained reference.
         struct TrackedBuffer
         {
             MTL::CommandBuffer* Buffer = nullptr;
             uint32_t FrameSlot = 0;
             dispatch_semaphore_t FrameSemaphore = nullptr;
+            bool OnGraphicsQueue = false;
+            std::atomic<bool> RetirementClaimed{false};
         };
         std::vector<std::pair<MTL::SharedEvent*, uint64_t>> Waits;   // retained
-        std::vector<TrackedBuffer> Buffers;                       // retained, uncommitted
+        std::vector<std::shared_ptr<TrackedBuffer>> Buffers;      // retained, uncommitted
         std::vector<std::pair<MTL::SharedEvent*, uint64_t>> Signals; // retained
     };
 

@@ -552,29 +552,29 @@ void MetalDevice::CommitResidencyIfDirty()
     }
 }
 
-uint32_t MetalDevice::TrackFrameCommandBuffer(MTL::CommandBuffer* buffer)
+std::shared_ptr<MetalSubmitQueue::Submit::TrackedBuffer> MetalDevice::TrackFrameCommandBuffer(
+    MTL::CommandBuffer* buffer, dispatch_semaphore_t frameSemaphore)
 {
     if (buffer == nullptr)
-    {
-        return 0;
-    }
-    // A buffer added to the residency set since the last commit is not resident
-    // until commit()+requestResidency() runs. Every enqueue path funnels here,
-    // so commit any pending membership change before this CB reaches the GPU.
+        return {};
+    // Commit new residency membership before the command buffer reaches the GPU.
     CommitResidencyIfDirty();
-    const uint32_t slot = m_FrameIndex.load(std::memory_order_relaxed);
-    const bool onGraphicsQueue = buffer->commandQueue() == m_GraphicsQueue;
-    m_SlotInFlightCbs[slot].fetch_add(1, std::memory_order_acq_rel);
-    if (onGraphicsQueue)
-    {
+    auto tracked = std::make_shared<MetalSubmitQueue::Submit::TrackedBuffer>();
+    tracked->Buffer = buffer;
+    tracked->FrameSlot = m_FrameIndex.load(std::memory_order_relaxed);
+    tracked->FrameSemaphore = frameSemaphore;
+    tracked->OnGraphicsQueue = buffer->commandQueue() == m_GraphicsQueue;
+    m_SlotInFlightCbs[tracked->FrameSlot].fetch_add(1, std::memory_order_acq_rel);
+    if (tracked->OnGraphicsQueue)
         m_GraphicsCbsInFlight.fetch_add(1, std::memory_order_acq_rel);
-    }
-    buffer->addCompletedHandler([this, slot, onGraphicsQueue](MTL::CommandBuffer* completed) {
-        if (completed->status() == MTL::CommandBufferStatusError)
-            RecordSubmissionFailure();
-        RetireTrackedCommandBuffer(slot, onGraphicsQueue);
+    buffer->addCompletedHandler([this, tracked](MTL::CommandBuffer* completed) {
+        // Metal also invokes this handler when an uncommitted buffer is destroyed.
+        // Cancellation can retire it before the handler runs or the device is destroyed.
+        if (tracked->RetirementClaimed.exchange(true, std::memory_order_acq_rel))
+            return;
+        RetireTrackedCommandBuffer(*tracked, completed);
     });
-    return slot;
+    return tracked;
 }
 
 void MetalDevice::RecordSubmissionFailure()
@@ -583,14 +583,23 @@ void MetalDevice::RecordSubmissionFailure()
         Logger::Log::Error("MetalDevice: GPU submission failed; rendering is stopped. Restart the editor to recreate the Metal device.");
 }
 
-void MetalDevice::RetireTrackedCommandBuffer(uint32_t slot, bool onGraphicsQueue)
+void MetalDevice::RetireTrackedCommandBuffer(const MetalSubmitQueue::Submit::TrackedBuffer& tracked,
+                                           MTL::CommandBuffer* completed)
 {
+    if (completed != nullptr && completed->status() == MTL::CommandBufferStatusError)
+        RecordSubmissionFailure();
+    if (tracked.FrameSemaphore != nullptr)
+    {
+        if (completed != nullptr)
+            RecordFrameGpuTiming(completed);
+        dispatch_semaphore_signal(tracked.FrameSemaphore);
+    }
     std::lock_guard<std::mutex> lock(m_SlotCbMutex);
-    if (onGraphicsQueue)
+    if (tracked.OnGraphicsQueue)
     {
         m_GraphicsCbsInFlight.fetch_sub(1, std::memory_order_acq_rel);
     }
-    if (m_SlotInFlightCbs[slot].fetch_sub(1, std::memory_order_acq_rel) == 1)
+    if (m_SlotInFlightCbs[tracked.FrameSlot].fetch_sub(1, std::memory_order_acq_rel) == 1)
     {
         m_SlotCbCv.notify_all();
     }
@@ -866,8 +875,8 @@ bool MetalDevice::QueueSubmit(QueueType queue,
         MTL::CommandBuffer* cb = static_cast<MetalCommandList*>(list)->Detach();
         if (cb != nullptr)
         {
-            const uint32_t slot = TrackFrameCommandBuffer(cb);
-            submit.Buffers.push_back({cb, slot});
+            auto tracked = TrackFrameCommandBuffer(cb);
+            submit.Buffers.push_back(std::move(tracked));
         }
     }
     worker->Enqueue(std::move(submit));
@@ -937,11 +946,11 @@ IDevice::GpuSyncToken MetalDevice::SubmitTextureUploads(const TextureUploadReque
             cb->encodeSignalEvent(sem->event, value);
         }
     }
-    const uint32_t slot = TrackFrameCommandBuffer(cb);
+    auto tracked = TrackFrameCommandBuffer(cb);
     cb->retain();
     {
         MetalSubmitQueue::Submit submit;
-        submit.Buffers.push_back({cb, slot});
+        submit.Buffers.push_back(std::move(tracked));
         m_TransferSubmitQueue.Enqueue(std::move(submit));
     }
     staging->release(); // command buffer retains it until completion
@@ -1345,7 +1354,7 @@ void MetalDevice::ExecuteCommandLists(const std::vector<CommandList*>& commandLi
         {
             continue;
         }
-        const uint32_t slot = TrackFrameCommandBuffer(cb);
+        auto tracked = TrackFrameCommandBuffer(cb);
         MetalSubmitQueue* worker = GetSubmitQueue(metalList->GetQueueType());
         if (worker == nullptr)
         {
@@ -1354,7 +1363,7 @@ void MetalDevice::ExecuteCommandLists(const std::vector<CommandList*>& commandLi
             continue;
         }
         MetalSubmitQueue::Submit submit;
-        submit.Buffers.push_back({cb, slot});
+        submit.Buffers.push_back(std::move(tracked));
         worker->Enqueue(std::move(submit));
     }
 }
@@ -1513,17 +1522,12 @@ void MetalDevice::Present()
         NS::String::string("GE Present", NS::UTF8StringEncoding)->retain();
     cb->setLabel(kPresentLabel);
     swapchain->Present(cb);
-    dispatch_semaphore_t semaphore = m_FrameSemaphore;
-    cb->addCompletedHandler([this, semaphore](MTL::CommandBuffer* completed) {
-        RecordFrameGpuTiming(completed);
-        dispatch_semaphore_signal(semaphore);
-    });
-    const uint32_t slot = TrackFrameCommandBuffer(cb);
+    auto tracked = TrackFrameCommandBuffer(cb, m_FrameSemaphore);
     // Through the submit worker so the present cannot overtake frame work
     // still waiting on semaphores in the FIFO.
     cb->retain();
     MetalSubmitQueue::Submit submit;
-    submit.Buffers.push_back({cb, slot, semaphore});
+    submit.Buffers.push_back(std::move(tracked));
     m_GraphicsSubmitQueue.Enqueue(std::move(submit));
 
     SignalFrameCompletion();
@@ -1547,15 +1551,10 @@ void MetalDevice::FinalizeFrame()
         static NS::String* const kFinalizeLabel =
             NS::String::string("GE FinalizeFrame", NS::UTF8StringEncoding)->retain();
         cb->setLabel(kFinalizeLabel);
-        dispatch_semaphore_t semaphore = m_FrameSemaphore;
-        cb->addCompletedHandler([this, semaphore](MTL::CommandBuffer* completed) {
-            RecordFrameGpuTiming(completed);
-            dispatch_semaphore_signal(semaphore);
-        });
-        const uint32_t slot = TrackFrameCommandBuffer(cb);
+        auto tracked = TrackFrameCommandBuffer(cb, m_FrameSemaphore);
         cb->retain();
         MetalSubmitQueue::Submit submit;
-        submit.Buffers.push_back({cb, slot, semaphore});
+        submit.Buffers.push_back(std::move(tracked));
         m_GraphicsSubmitQueue.Enqueue(std::move(submit));
     }
     else

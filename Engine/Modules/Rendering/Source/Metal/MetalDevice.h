@@ -437,10 +437,12 @@ class MetalDevice : public IDevice
     // (late submissions like thumbnail views would otherwise still be
     // executing when their resources recycle). A buffer on m_GraphicsQueue is
     // also counted in m_GraphicsCbsInFlight.
-    uint32_t TrackFrameCommandBuffer(MTL::CommandBuffer* buffer);
+    std::shared_ptr<MetalSubmitQueue::Submit::TrackedBuffer> TrackFrameCommandBuffer(
+        MTL::CommandBuffer* buffer, dispatch_semaphore_t frameSemaphore = nullptr);
     void RecordSubmissionFailure();
-    // Completion handler of a tracked buffer (a Metal-owned thread).
-    void RetireTrackedCommandBuffer(uint32_t slot, bool onGraphicsQueue);
+    // Retires a claimed completion or cancellation.
+    void RetireTrackedCommandBuffer(const MetalSubmitQueue::Submit::TrackedBuffer& tracked,
+                                   MTL::CommandBuffer* completed);
     void WaitForSlotCommandBuffers(uint32_t slot);
     // Capture the frame-terminal command buffer's GPU end time (called from its
     // completion handler on a background queue) to derive frameGpuPeriodMs.
