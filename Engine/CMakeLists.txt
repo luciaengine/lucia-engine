@@ -2477,7 +2477,6 @@ endif()
 			endif()
 
 			if(GTest_FOUND OR TARGET GTest::gtest)
-			    # Which EngineCore GetInstance() returns once an owned engine is gone.
             add_executable(EngineSceneReadinessTests Tests/EngineSceneReadinessTests.cpp)
             target_link_libraries(EngineSceneReadinessTests PRIVATE Engine GTest::gtest GTest::gtest_main)
             target_include_directories(EngineSceneReadinessTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
@@ -2485,6 +2484,7 @@ endif()
             ge_stage_runtime_dependencies(EngineSceneReadinessTests)
             add_test(NAME EngineSceneReadinessTests COMMAND $<TARGET_FILE:EngineSceneReadinessTests>)
 
+			    # Which EngineCore GetInstance() returns once an owned engine is gone.
 			    # Its own binary: the test controls when the process's default
 			    # instance is created, which any earlier test in a shared binary would
 			    # do first.
