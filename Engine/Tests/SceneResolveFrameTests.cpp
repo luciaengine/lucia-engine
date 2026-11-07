@@ -115,7 +115,7 @@ TEST_F(SceneResolveFrameTest, ASpawnWhoseModelIsStillImportingHoldsTheReadyQuery
     EXPECT_FALSE(tracker.IsReadyToShow());
 
     m_Gate.Release();
-    EXPECT_TRUE(StepFramesUntil([&] { return !ResolveRowHolds(tracker); }));
+    EXPECT_TRUE(StepFramesUntil([&tracker] { return !ResolveRowHolds(tracker); }));
 }
 
 // A spawned model whose load fails is reported, named by GUID and path, and no

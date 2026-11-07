@@ -17,6 +17,7 @@ using GameEngine::EventSubscription;
 using GameEngine::SceneLoadTracker;
 using GameEngine::SceneLoadTrackerTestAccess;
 namespace Memory = GameEngine::Memory;
+namespace TestLog = GameEngine::TestLog;
 using Clock = std::chrono::steady_clock;
 
 namespace
