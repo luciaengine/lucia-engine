@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Types/Types.h"
+#include "TerrainECS/SurfaceHeightQuery.h"
 
 namespace GameEngine::ECS { class World; }
 
@@ -28,6 +29,7 @@ struct PlanarHeightQuery
     // whose resident tile is chosen per sample.
     const TerrainData* Single = nullptr;
     const TiledTerrainData* Tiled = nullptr;
+    SurfaceHeightQuery Pages;
     // Footprint corner (centre minus half size) and base altitude, in world
     // metres — the terrain's transform is a translation for these purposes, the
     // same reading TerrainPicking takes.

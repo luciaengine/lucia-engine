@@ -122,10 +122,20 @@ bool RaycastPlanarTerrains(const Mathematics::Ray3D& ray,
             const float32 originZ = centerZ - terrain.SizeZ * 0.5f;
             const float32 originY = worldXf.matrix[13];
 
+            auto pages = terrainService->SurfaceQuery(terrain, worldXf);
+
             // World-space terrain height at (wx,wz). Returns false outside the terrain
             // footprint (single) or when the containing tile is not resident (tiled).
             auto sampleHeight = [&](float32 wx, float32 wz, float32& outY) -> bool
             {
+                if (pages.HasPageSource())
+                {
+                    TerrainECS::SurfaceHeightSample sample;
+                    if (!pages.SampleHeight({wx, 0.0f, wz}, TerrainECS::SurfaceHeightPolicy::AcceptCoarse, sample))
+                        return false;
+                    outY = sample.Height;
+                    return true;
+                }
                 if (tiled)
                 {
                     float32 h;
@@ -179,8 +189,20 @@ bool RaycastPlanarTerrains(const Mathematics::Ray3D& ray,
 
             float32 hitT = 0.0f;
             Vector3 hitPos{};
-            if (MarchTerrainSurface(ray, aabbMin, aabbMax, bestT, sampleHeight, hitT, hitPos)
-                && hitT < bestT)
+            if (!MarchTerrainSurface(ray, aabbMin, aabbMax, bestT, sampleHeight, hitT, hitPos))
+                return;
+
+            TerrainECS::SurfaceHeightSample sample;
+            if (pages.HasPageSource() &&
+                pages.SampleHeight(hitPos, TerrainECS::SurfaceHeightPolicy::AcceptCoarse, sample) &&
+                sample.Detail == TerrainECS::SurfaceHeightDetail::Coarse &&
+                terrainService->FetchFinestHeightPage(terrain, hitPos))
+            {
+                pages = terrainService->SurfaceQuery(terrain, worldXf);
+                if (!MarchTerrainSurface(ray, aabbMin, aabbMax, bestT, sampleHeight, hitT, hitPos))
+                    return;
+            }
+            if (hitT < bestT)
             {
                 bestT = hitT;
                 bestPos = hitPos;
