@@ -1,6 +1,9 @@
 #include "EngineShaderPath.h"
 #include "Core/Engine.h"
 
+#include "SceneLoadTracker/SceneLoadTracker.h"
+#include "Scene/SceneLoadingGates.h"
+
 #include "EngineShaderHookState.h"
 #include "Logger/Logger.h"
 #include <algorithm>
@@ -361,6 +364,8 @@ class EngineCore::InitializeTransaction
 EngineCore* EngineCore::s_Instance = nullptr;
 
 EngineCore::EngineCore()
+    : m_SceneLoadTracker(MakeUnique<SceneLoadTracker>()),
+      m_SceneLoadingGates(MakeUnique<SceneLoadingGates>(*this))
 {
     if (s_Instance != nullptr)
     {
@@ -1175,6 +1180,8 @@ void EngineCore::Update(float64 deltaTime)
     {
         return;
     }
+
+    m_SceneLoadTracker->Tick(std::chrono::steady_clock::now());
 
     // Update asset manager (process loading queue, check for file changes)
     if (m_AssetManager)
