@@ -318,6 +318,19 @@ TEST(GrassPlacementModel, OverSubscriptionShortensRangeAndHoldsNearDensity)
     EXPECT_LE(plan.PlannedCandidates, 524288u);
 }
 
+TEST(GrassPlacementModel, DensePlacementUsesUpTo256BladesPerSquareMeter)
+{
+    const auto dense = MakeParams(256.0f, 500.0f, 2.0f);
+    const auto overCap = MakeParams(300.0f, 500.0f, 2.0f);
+    EXPECT_FLOAT_EQ(GrassSlotsWantedForCell(dense, 0.0f), 16384.0f);
+    EXPECT_EQ(GrassSlotsToIterate(GrassSlotsWantedForCell(overCap, 0.0f)), 16384u);
+    constexpr uint32 kBudget = 524288u;
+    const auto fit = GrassFitPlacementToBudget(dense, kBudget);
+    EXPECT_EQ(fit.Capacity, kBudget);
+    EXPECT_FLOAT_EQ(fit.Params.NearDensity, 256.0f);
+    EXPECT_LT(fit.Params.FarRadius, dense.FarRadius);
+}
+
 TEST(GrassPlacementModel, TheFitNeverCollapsesTheNearField)
 {
     const GrassPlacementParams params = MakeParams(64.0f, 2000.0f, 1.0f);

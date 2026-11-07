@@ -15,6 +15,7 @@
 #include "Editor/Entities/EditorECSHelpers.h"
 #include "SceneView/TerrainBrushTool.h"
 #include "Terrain/TerrainBaseSourceSection.h"
+#include "Terrain/TerrainGrassPresetRow.h"
 #include "Terrain/TerrainGrassVocabulary.h"
 #include "Terrain/TerrainLayers.h"
 #include "Terrain/TerrainMaterialLibraryMint.h"
@@ -1115,11 +1116,15 @@ void RegisterTerrainInspector()
         // turns. Everything below the fold is either expert or a stylisation escape hatch, and
         // nothing up here can make the field objectively wrong.
         UIElement* grassSection = AddSection(ctx.Parent, "TerrainGrass", "Grass");
+        AddTerrainGrassPresetRow(grassSection, w, e, n, ctx.Undo, ctx.RequestInspectorRefresh);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             grassSection, "blades / m² (at camera)", grass->BladesPerSquareMeter, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.BladesPerSquareMeter = std::max(0.0f, v); },
-            "Blade count per square metre at the camera, independent of terrain size", {}, 0.0f, 64.0f);
+            [](Components::TerrainGrass& u, float v) {
+                u.BladesPerSquareMeter = std::clamp(v, 0.0f, TerrainGrass::kGrassMaxBladesPerSquareMeter);
+            },
+            "Blade count per square meter at the camera. Higher density reduces the fitted range.",
+            {}, 0.0f, TerrainGrass::kGrassMaxBladesPerSquareMeter);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             grassSection, "Range (m)", grass->Range, w, e, n,
@@ -1517,7 +1522,9 @@ void RegisterTerrainInspector()
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(
             texture, "cards / m² (at camera)", grass->TextureCardsPerSquareMeter, w, e, n,
-            [](Components::TerrainGrass& u, float v) { u.TextureCardsPerSquareMeter = std::max(0.0f, v); },
+            [](Components::TerrainGrass& u, float v) {
+                u.TextureCardsPerSquareMeter = std::clamp(v, 0.0f, TerrainGrass::kGrassMaxBladesPerSquareMeter);
+            },
             "Texture card count per square metre at the camera", {}, 0.0f, 16.0f);
 
         AddComponentFloatRowWithDrag<Components::TerrainGrass>(

@@ -1,0 +1,15 @@
+.option-picture--grass-meadow {
+    background-image: url("editor:Icons/OptionPictures/grass-meadow.png");
+}
+
+.option-picture--grass-lawn {
+    background-image: url("editor:Icons/OptionPictures/grass-lawn.png");
+}
+
+.option-picture--grass-steppe {
+    background-image: url("editor:Icons/OptionPictures/grass-steppe.png");
+}
+
+.option-picture--grass-stylized {
+    background-image: url("editor:Icons/OptionPictures/grass-stylized.png");
+}
