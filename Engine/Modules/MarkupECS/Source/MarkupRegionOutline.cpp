@@ -32,23 +32,11 @@ constexpr int kMaxLabelCells = 100000;
 // The Douglas-Peucker tolerance an agent's ring starts from, in meters.
 constexpr float32 kRingTolerance = 0.1f;
 
-float32 DistanceToSegment(const Vector2& p, const Vector2& a, const Vector2& b)
-{
-    const float32 abx = b.x - a.x;
-    const float32 aby = b.y - a.y;
-    const float32 lengthSquared = abx * abx + aby * aby;
-    float32 t = lengthSquared > 0.0f ? ((p.x - a.x) * abx + (p.y - a.y) * aby) / lengthSquared : 0.0f;
-    t = std::clamp(t, 0.0f, 1.0f);
-    const float32 dx = p.x - (a.x + abx * t);
-    const float32 dy = p.y - (a.y + aby * t);
-    return std::sqrt(dx * dx + dy * dy);
-}
-
 float32 DistanceToRing(const Vector2& p, std::span<const Vector2> ring)
 {
     float32 nearest = std::numeric_limits<float32>::max();
     for (std::size_t i = 0, j = ring.size() - 1; i < ring.size(); j = i++)
-        nearest = std::min(nearest, DistanceToSegment(p, ring[j], ring[i]));
+        nearest = std::min(nearest, Mathematics::DistanceToSegment(p, ring[j], ring[i]));
     return nearest;
 }
 

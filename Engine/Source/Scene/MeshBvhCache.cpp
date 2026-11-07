@@ -1,4 +1,4 @@
-#include "Picking/MeshBvhCache.h"
+#include "Scene/MeshBvhCache.h"
 
 #include <atomic>
 #include <chrono>
@@ -22,9 +22,9 @@
 #include "MeshPicking/MeshBvh.h"
 #include "MeshPicking/PickTypes.h"
 
-#include "Picking/MeshBvhDiskFormat.h"
+#include "Scene/MeshBvhDiskFormat.h"
 
-namespace GameEngine::Editor::Picking
+namespace GameEngine::Scene
 {
 
 namespace

@@ -1,4 +1,4 @@
-#include "Picking/TerrainPicking.h"
+#include "Scene/TerrainPicking.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,7 +16,7 @@
 #include "Engine/Rendering/RenderServices.h"
 #include "TerrainECS/TerrainService.h"
 
-namespace GameEngine::Editor::Picking
+namespace GameEngine::Scene
 {
 
 namespace
