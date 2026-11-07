@@ -40,14 +40,15 @@ Math::Curve CurveOf(const std::vector<Math::CurveKey>& keys)
     return curve;
 }
 
-bool SameKeys(const std::vector<Math::CurveKey>& a, const std::vector<Math::CurveKey>& b)
+bool SameKeys(const std::vector<Math::CurveKey>& left, const std::vector<Math::CurveKey>& right)
 {
-    if (a.size() != b.size())
+    if (left.size() != right.size())
         return false;
-    for (size_t i = 0; i < a.size(); ++i)
+    for (size_t index = 0; index < left.size(); ++index)
     {
-        if (a[i].Time != b[i].Time || a[i].Value != b[i].Value || a[i].InTangent != b[i].InTangent ||
-            a[i].OutTangent != b[i].OutTangent || a[i].Interp != b[i].Interp || a[i].TangentMode != b[i].TangentMode)
+        if (left[index].Time != right[index].Time || left[index].Value != right[index].Value ||
+            left[index].InTangent != right[index].InTangent || left[index].OutTangent != right[index].OutTangent ||
+            left[index].Interp != right[index].Interp || left[index].TangentMode != right[index].TangentMode)
             return false;
     }
     return true;
@@ -58,10 +59,10 @@ std::vector<Math::CurveKey> ElevationSamples(const DayCycleTrackKeys& keys, bool
 {
     std::vector<Math::CurveKey> samples;
     constexpr int kSamples = 97;
-    for (int i = 0; i < kSamples; ++i)
+    for (int index = 0; index < kSamples; ++index)
     {
         const float degrees = kDayCycleAxisLowestDegrees + (kDayCycleAxisZenithDegrees - kDayCycleAxisLowestDegrees) *
-                                                              static_cast<float>(i) / static_cast<float>(kSamples - 1);
+                                                              static_cast<float>(index) / static_cast<float>(kSamples - 1);
         Math::CurveKey sample{};
         sample.Time = degrees;
         sample.Value = EvaluateDayCycleTrack(keys, degrees * kRadiansPerDegree, duskHalf);
@@ -75,9 +76,9 @@ std::vector<Math::CurveKey> ElevationSamples(const DayCycleTrackKeys& keys, bool
 std::vector<Math::CurveKey> DaySamples(const DayCycleTrackKeys& keys, const Rendering::SolarFrame& path)
 {
     std::vector<Math::CurveKey> samples;
-    for (int i = 0; i < kDaySamples; ++i)
+    for (int index = 0; index < kDaySamples; ++index)
     {
-        const float hours = kHoursPerDay * static_cast<float>(i) / static_cast<float>(kDaySamples - 1);
+        const float hours = kHoursPerDay * static_cast<float>(index) / static_cast<float>(kDaySamples - 1);
         Math::CurveKey sample{};
         sample.Time = hours;
         sample.Value = EvaluateDayCycleTrack(keys, ElevationDegreesAtHour(path, hours) * kRadiansPerDegree,
@@ -93,9 +94,9 @@ std::vector<CurveField::ShadedSpan> TwilightHours(const Rendering::SolarFrame& p
     std::vector<CurveField::ShadedSpan> spans;
     bool inside = false;
     float start = 0.0f;
-    for (int i = 0; i < kDaySamples; ++i)
+    for (int index = 0; index < kDaySamples; ++index)
     {
-        const float hours = kHoursPerDay * static_cast<float>(i) / static_cast<float>(kDaySamples - 1);
+        const float hours = kHoursPerDay * static_cast<float>(index) / static_cast<float>(kDaySamples - 1);
         const float elevation = ElevationDegreesAtHour(path, hours);
         const bool twilight = elevation >= kDayCycleTwilightLowestDegrees && elevation <= 0.0f;
         if (twilight && !inside)

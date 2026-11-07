@@ -57,7 +57,7 @@ float HourAtElevation(const Rendering::SolarFrame& path, float degrees, bool dus
             continue;
         }
         float below = hours;
-        for (int i = 0; i < kBisections; ++i)
+        for (int index = 0; index < kBisections; ++index)
         {
             const float middle = 0.5f * (above + below);
             (ElevationDegreesAtHour(path, middle) > degrees ? above : below) = middle;

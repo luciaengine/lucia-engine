@@ -12,11 +12,11 @@
 #include "UI/StyleProperties.h"
 
 #include <algorithm>
-#include <limits>
-#include <optional>
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <limits>
+#include <optional>
 #include <cstdio>
 #include <string>
 
@@ -149,10 +149,8 @@ void CurveField::SetConfig(const Config& config)
 {
     assert((!config.LogarithmicValues || config.LogarithmicFloor > 0.0f) &&
            "a logarithmic CurveField needs LogarithmicFloor above 0, the floor its keys are evaluated with");
-    // The time-label strip is added under the plot, not taken out of it: the control grows by the
-    // strip when labels are switched on and shrinks back when they are switched off. Only a change of
-    // the option, of the second label line (or, with labels on, of their font size) touches the
-    // height, so a host that sets its own height on a graph without labels keeps it.
+    // Label rows extend the plot's height. Hosts without labels keep their authored height.
+    // The height changes only when label rows or the label font size change.
     const bool labelsChanged = config.TimeAxisLabels != m_Config.TimeAxisLabels ||
                                static_cast<bool>(config.SecondaryTimeLabel) !=
                                    static_cast<bool>(m_Config.SecondaryTimeLabel);

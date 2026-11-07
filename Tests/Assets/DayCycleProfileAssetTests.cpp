@@ -118,20 +118,20 @@ TEST(DayCycleProfileAsset, AWrittenProfileReadsBackTheSame)
     EXPECT_TRUE(back.SeparateDusk);
     ASSERT_EQ(back.Keys.KeyCount, track.Keys.KeyCount);
     ASSERT_EQ(back.DuskKeys.KeyCount, track.DuskKeys.KeyCount);
-    for (uint8 i = 0; i < track.Keys.KeyCount; ++i)
+    for (uint8 index = 0; index < track.Keys.KeyCount; ++index)
     {
-        EXPECT_EQ(back.Keys.Keys[i].Time, track.Keys.Keys[i].Time);
-        EXPECT_EQ(back.Keys.Keys[i].Value, track.Keys.Keys[i].Value);
-        EXPECT_EQ(back.Keys.Keys[i].InTangent, track.Keys.Keys[i].InTangent);
-        EXPECT_EQ(back.Keys.Keys[i].OutTangent, track.Keys.Keys[i].OutTangent);
-        EXPECT_EQ(back.Keys.Keys[i].Interp, track.Keys.Keys[i].Interp);
-        EXPECT_EQ(back.Keys.Keys[i].TangentMode, track.Keys.Keys[i].TangentMode);
+        EXPECT_EQ(back.Keys.Keys[index].Time, track.Keys.Keys[index].Time);
+        EXPECT_EQ(back.Keys.Keys[index].Value, track.Keys.Keys[index].Value);
+        EXPECT_EQ(back.Keys.Keys[index].InTangent, track.Keys.Keys[index].InTangent);
+        EXPECT_EQ(back.Keys.Keys[index].OutTangent, track.Keys.Keys[index].OutTangent);
+        EXPECT_EQ(back.Keys.Keys[index].Interp, track.Keys.Keys[index].Interp);
+        EXPECT_EQ(back.Keys.Keys[index].TangentMode, track.Keys.Keys[index].TangentMode);
     }
-    for (uint8 i = 0; i < track.DuskKeys.KeyCount; ++i)
+    for (uint8 index = 0; index < track.DuskKeys.KeyCount; ++index)
     {
-        EXPECT_EQ(back.DuskKeys.Keys[i].Time, track.DuskKeys.Keys[i].Time);
-        EXPECT_EQ(back.DuskKeys.Keys[i].Value, track.DuskKeys.Keys[i].Value);
-        EXPECT_EQ(back.DuskKeys.Keys[i].Interp, track.DuskKeys.Keys[i].Interp);
+        EXPECT_EQ(back.DuskKeys.Keys[index].Time, track.DuskKeys.Keys[index].Time);
+        EXPECT_EQ(back.DuskKeys.Keys[index].Value, track.DuskKeys.Keys[index].Value);
+        EXPECT_EQ(back.DuskKeys.Keys[index].Interp, track.DuskKeys.Keys[index].Interp);
     }
 }
 
@@ -160,12 +160,12 @@ TEST(DayCycleProfileAsset, AReloadPublishesANewProfileWhileAReaderHoldsTheOld)
     });
 
     constexpr int kReloads = 50;
-    for (int i = 0; i < kReloads; ++i)
+    for (int index = 0; index < kReloads; ++index)
     {
         std::string text = kDuskDip;
-        text.replace(text.find("\"Dusk\""), 6, "\"Dusk " + std::to_string(i) + "\"");
+        text.replace(text.find("\"Dusk\""), 6, "\"Dusk " + std::to_string(index) + "\"");
         std::ofstream(path, std::ios::binary | std::ios::trunc) << text;
-        ASSERT_EQ(asset.Reload(), ReloadOutcome::Reloaded) << "reload " << i;
+        ASSERT_EQ(asset.Reload(), ReloadOutcome::Reloaded) << "reload " << index;
     }
     std::ofstream(path, std::ios::binary | std::ios::trunc) << R"({ "tracks": { "fog": {} } })";
     EXPECT_EQ(asset.Reload(), ReloadOutcome::Failed);

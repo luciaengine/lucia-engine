@@ -75,13 +75,13 @@ bool ParseKey(std::string_view text, const std::string& name, Math::CurveKey& ou
         return false;
     }
     float values[std::size(kKeyFields)] = {};
-    for (size_t i = 0; i < fields.size(); ++i)
+    for (size_t index = 0; index < fields.size(); ++index)
     {
         // A key field is a strict decimal float without the leading '+' ParseStrictDecimal allows.
-        const std::string_view field = TrimWhitespaceView(fields[i]);
-        if (field.starts_with('+') || !ParseStrictDecimalFloat(field, values[i]))
+        const std::string_view field = TrimWhitespaceView(fields[index]);
+        if (field.starts_with('+') || !ParseStrictDecimalFloat(field, values[index]))
         {
-            outError = name + "'s " + std::string(kKeyFields[i]) + " \"" + std::string(field) +
+            outError = name + "'s " + std::string(kKeyFields[index]) + " \"" + std::string(field) +
                        "\" is not a finite number; write a decimal number such as -6 or 1.5";
             return false;
         }
