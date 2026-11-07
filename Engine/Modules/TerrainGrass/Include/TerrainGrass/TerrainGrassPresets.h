@@ -108,10 +108,10 @@ inline GrassPreset MatchTerrainGrassPreset(const Components::TerrainGrass& grass
     for (size_t index = 0; index < std::size(kTerrainGrassPresets); ++index)
     {
         const auto& look = kTerrainGrassPresets[index];
-        const bool floatsMatch = std::ranges::all_of(Detail::kTerrainGrassPresetFloatDials, [&](const auto dial)
+        const bool floatsMatch = std::ranges::all_of(Detail::kTerrainGrassPresetFloatDials, [&grass, &look](const auto dial)
             { return Detail::TerrainGrassPresetValueMatches(grass.*dial, look.*dial); });
         const bool colorsMatch = std::ranges::all_of(Detail::kTerrainGrassPresetColorDials,
-            [&](const auto dial) { return grass.*dial == look.*dial; });
+            [&grass, &look](const auto dial) { return grass.*dial == look.*dial; });
         if (floatsMatch && colorsMatch)
             return static_cast<GrassPreset>(index);
     }

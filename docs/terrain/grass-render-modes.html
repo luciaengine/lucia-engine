@@ -45,6 +45,22 @@
 the default and the right answer for almost all content. This page is what the choice means, when the
 other one is worth reaching for, and what the editor does when your choice cannot apply.</p>
 
+<h2>Grass presets and density</h2>
+<p>In the Terrain Grass inspector, the Preset dropdown applies Meadow, Lawn, Steppe or Stylized
+as one undoable edit. The thumbnails preview each look. Changing a look setting makes the dropdown
+read Custom. Presets keep the scene's range, placement seed, layer, textures and wind strength.</p>
+<table>
+<thead><tr><th>Preset</th><th>Look</th><th>Blades per square meter at the camera</th></tr></thead>
+<tbody>
+<tr><td>Meadow</td><td>Medium-height green blades</td><td>21</td></tr>
+<tr><td>Lawn</td><td>Short, upright and dense</td><td>64</td></tr>
+<tr><td>Steppe</td><td>Tall, sparse and dry</td><td>12</td></tr>
+<tr><td>Stylized</td><td>Short, even blades in soft clumps</td><td>128</td></tr>
+</tbody>
+</table>
+<p>The density ceiling is 256 blades per square meter. The per-view instance budget stays fixed,
+so higher density can reduce the fitted range shown in the inspector.</p>
+
 <h2>The short version</h2>
 
 <div class="panel ok">
