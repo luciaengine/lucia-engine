@@ -2530,6 +2530,7 @@ TEST(MetalCommandList, DrawIndexedIndirectCountDrawsEachCountedRecordOnceAcrossL
 // it writes, so a draw that is not ordered behind it reads the stale count.
 TEST(MetalCommandList, DrawIndexedIndirectCountReadsACountWrittenThroughADeviceAddress)
 {
+    const NS::SharedPtr<NS::AutoreleasePool> autoreleasePool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
     auto device = CreateHeadlessMetalDevice();
     if (!device)
     {
@@ -2538,7 +2539,8 @@ TEST(MetalCommandList, DrawIndexedIndirectCountReadsACountWrittenThroughADeviceA
 
     constexpr uint32_t kMaxDrawCount = 8;
     constexpr uint32_t kCount = 5;
-    constexpr uint32_t kSpinIterations = 2'000'000;
+    constexpr uint32_t kProducerDispatchCount = 10;
+    constexpr uint32_t kSpinIterations = 200'000;
 
     std::vector<DrawRecord> records(kMaxDrawCount);
     for (uint32_t i = 0; i < kMaxDrawCount; ++i)
@@ -2599,7 +2601,6 @@ void main()
     CountWriterConstants constants{};
     constants.CountAddress = device->GetBufferDeviceAddress(countBuffer);
     constants.SpinIterations = kSpinIterations;
-    constants.Count = kCount;
     ASSERT_NE(constants.CountAddress, 0u);
 
     const PipelineHandle pipeline = CreateCellQuadPipeline(*device, TextureFormat::BGRA8_UNORM, /*additive=*/false);
@@ -2612,8 +2613,13 @@ void main()
     auto cl = device->CreateCommandList(IDevice::QueueType::Graphics);
     cl->Begin();
     cl->SetPipeline(computePipeline);
-    cl->SetConstants(0, sizeof(constants), &constants);
-    cl->Dispatch(1, 1, 1);
+    // Limit the work in each dispatch. Publish the draw count from the last one.
+    for (uint32_t dispatchIndex = 0; dispatchIndex < kProducerDispatchCount; ++dispatchIndex)
+    {
+        constants.Count = dispatchIndex + 1 == kProducerDispatchCount ? kCount : staleCount;
+        cl->SetConstants(0, sizeof(constants), &constants);
+        cl->Dispatch(1, 1, 1);
+    }
     BeginCellPass(*cl, target, pipeline, indexBuffer, IndexType::Uint16);
     cl->DrawIndexedIndirectCount(recordBuffer, countBuffer, kMaxDrawCount, sizeof(DrawRecord), 0, 0);
     cl->EndRenderPass();
