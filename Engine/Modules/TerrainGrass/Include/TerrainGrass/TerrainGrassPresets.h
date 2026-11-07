@@ -23,7 +23,7 @@ enum class GrassPreset : uint8
 // one decodes to is in its comment.
 inline const Components::TerrainGrass kTerrainGrassPresets[] = {
     // Meadow, the component's defaults: a leaf green (0.19, 0.30, 0.075) on 0.72 m blades, 21 per
-    // square meter at 36 mm so the field covers the ground from eye height and from a strategy
+    // square meter at the default blade width so the field covers the ground from eye height and from a strategy
     // camera within the instance budget's 369 m.
     {},
     // Lawn: short, upright and dense, a deeper green (0.15, 0.27, 0.07). 64 per square meter fit
