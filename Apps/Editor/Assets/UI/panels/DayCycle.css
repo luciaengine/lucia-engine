@@ -96,6 +96,11 @@
 	color: var(--ui_color_text_secondary);
 }
 
+.day-cycle-preset {
+	min-width: 140px;
+	flex-grow: 1;
+}
+
 .day-cycle-scrub {
 	flex-direction: row;
 	align-items: center;

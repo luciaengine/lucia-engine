@@ -6,6 +6,7 @@
 #include "DayCycle/DayCycleUi.h"
 #include "DayCycle/DayCycleWorkingCopy.h"
 #include "UI/Controls/Button.h"
+#include "UI/Controls/Dropdown.h"
 #include "UI/Controls/Label.h"
 #include "UI/UIElement.h"
 #include "UI/UIEvents.h"
@@ -96,6 +97,17 @@ void LoadPreset(const std::shared_ptr<DayCycleWorkingCopy>& profile, const std::
     data.Tracks = preset.Tracks;
     profile->Commit(data, "Load the " + presetName + " preset", undo);
 }
+void SelectPreset(Dropdown& choice, const std::shared_ptr<DayCycleWorkingCopy>& profile,
+                  const std::vector<std::filesystem::path>& paths, UndoRedoService* undo)
+{
+    const int index = choice.GetSelectedIndex();
+    if (index <= 0 || static_cast<size_t>(index) > paths.size())
+        return;
+    const std::filesystem::path path = paths[static_cast<size_t>(index) - 1];
+    const std::string name = choice.GetSelectedLabel();
+    choice.SetSelectedIndexWithoutNotify(0);
+    LoadPreset(profile, path, name, undo);
+}
 } // namespace
 
 void AddDayCycleAxisToggle(UIElement& parent, DayCycleAxisView view, std::function<void(DayCycleAxisView)> onChoose)
@@ -134,7 +146,9 @@ void AddDayCyclePresets(UIElement& parent, AssetManager& assets, const std::shar
 {
     UIElement* group = AddDayCycleChild<UIElement>(parent, "day-cycle-presets");
     Label* title = AddDayCycleChild<Label>(*group, "day-cycle-presets-title");
-    title->SetText("Presets (loads the preset's tracks)");
+    title->SetText("Preset");
+    std::vector<std::filesystem::path> paths;
+    std::vector<std::string> labels{"Load preset..."};
     for (const std::filesystem::path& path : ShippedDayCycleProfiles(assets))
     {
         std::string text;
@@ -142,9 +156,16 @@ void AddDayCyclePresets(UIElement& parent, AssetManager& assets, const std::shar
         std::string error;
         if (!ReadFileTextShared(path, text) || !ParseDayCycleProfile(text, preset, error))
             continue;
-        Button* button = AddButton(*group, preset.Name, "day-cycle-preset");
-        button->SetOnClick([profile, path, name = preset.Name, undo](UIEvent&) { LoadPreset(profile, path, name, undo); });
+        paths.push_back(path);
+        labels.push_back(preset.Name);
     }
+    Dropdown* choice = AddDayCycleChild<Dropdown>(*group, "day-cycle-preset");
+    choice->SetOptionsFromLabels(labels);
+    choice->SetTooltip("Replace this profile's tracks with a shipped preset. Undo restores the previous tracks.");
+    choice->SetEnabled(!paths.empty());
+    choice->SetOnValueChanged([choice, profile, paths = std::move(paths), undo](const std::string&) {
+        SelectPreset(*choice, profile, paths, undo);
+    });
 }
 
 } // namespace GameEngine::Editor

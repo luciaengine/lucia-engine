@@ -9,6 +9,7 @@
 #include "DayCycle/DayCycleSunNow.h"
 #include "DayCycle/DayCycleTrackRows.h"
 #include "UI/Controls/CurveField.h"
+#include "UI/Controls/Dropdown.h"
 #include "UI/Controls/Toggle.h"
 #include "UI/UiContext.h"
 #include "UI/UiDispatcher.h"
@@ -89,15 +90,22 @@ TEST_F(DayCycleEditorTests, TheInspectorFollowsAPresetLoad)
     ASSERT_TRUE(HasText(root, "Separate dusk"));
     ASSERT_EQ(All<Toggle>(root).size(), 1u);
     ASSERT_TRUE(All<Toggle>(root).front()->GetValue());
-    Button* clearDay = nullptr;
-    for (Button* button : All<Button>(root))
-        if (button->GetText() == "Clear day")
-            clearDay = button;
-    ASSERT_NE(clearDay, nullptr);
-    clearDay->TriggerClick();
+    const auto presets = All<Dropdown>(root);
+    ASSERT_EQ(presets.size(), 1u);
+    presets.front()->SetSelectedValue("Clear day");
     dispatcher.Drain();
     ASSERT_EQ(All<Toggle>(root).size(), 1u);
     EXPECT_FALSE(All<Toggle>(root).front()->GetValue()) << "the inspector still shows the split dusk after the load";
+    EXPECT_EQ(All<CurveField>(root).front()->GetKeys().size(), 1u);
+    ASSERT_TRUE(Undo.CanUndo());
+    Undo.Undo();
+    dispatcher.Drain();
+    ASSERT_EQ(All<Toggle>(root).size(), 1u);
+    EXPECT_TRUE(All<Toggle>(root).front()->GetValue());
+    EXPECT_EQ(All<CurveField>(root).front()->GetKeys().size(), 3u);
+    Undo.Redo();
+    dispatcher.Drain();
+    EXPECT_FALSE(All<Toggle>(root).front()->GetValue());
     EXPECT_EQ(All<CurveField>(root).front()->GetKeys().size(), 1u);
 }
 
@@ -111,18 +119,16 @@ TEST_F(DayCycleEditorTests, SaveIsEnabledOnlyWithUnsavedChanges)
         UIElement root;
         BuildInspector(root, asset);
         Button* save = nullptr;
-        Button* clearDay = nullptr;
         for (Button* button : All<Button>(root))
         {
             if (button->GetText() == "Save")
                 save = button;
-            if (button->GetText() == "Clear day")
-                clearDay = button;
         }
         ASSERT_NE(save, nullptr);
-        ASSERT_NE(clearDay, nullptr);
+        const auto presets = All<Dropdown>(root);
+        ASSERT_EQ(presets.size(), 1u);
         EXPECT_FALSE(save->IsEnabled()) << "nothing to save yet";
-        clearDay->TriggerClick();
+        presets.front()->SetSelectedValue("Clear day");
         dispatcher.Drain();
         EXPECT_TRUE(save->IsEnabled()) << "the preset load left unsaved changes";
     }

@@ -31,8 +31,7 @@ void AddDayCycleAxisToggle(UIElement& parent, DayCycleAxisView view, std::functi
 UIElement& AddDayCycleSaveButton(UIElement& parent, const std::shared_ptr<DayCycleWorkingCopy>& profile,
                            std::function<void(const std::filesystem::path&)> onCopied);
 
-/// The presets: one button per shipped profile, which loads that profile's tracks into this one as
-/// one undo step. The name and the description stay this profile's.
+/// A dropdown of shipped presets. Loading tracks is one undo step; the profile keeps its name and description.
 void AddDayCyclePresets(UIElement& parent, AssetManager& assets, const std::shared_ptr<DayCycleWorkingCopy>& profile,
                         UndoRedoService* undo);
 
