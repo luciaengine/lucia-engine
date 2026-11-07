@@ -795,8 +795,10 @@ bool MetalDevice::WaitTimelineSemaphoreValue(SemaphoreHandle handle, uint64_t va
         }
         event = NS::RetainPtr(sem->event);
     }
+    if (event->waitUntilSignaledValue(value, 0))
+        return GetDeviceHealth() == DeviceHealth::Healthy;
     if (timeoutNs == 0)
-        return event->waitUntilSignaledValue(value, 0) && GetDeviceHealth() == DeviceHealth::Healthy;
+        return false;
 
     constexpr uint64_t kWaitSliceNs = 100'000'000;
     constexpr uint64_t kNanosecondsPerMillisecond = 1'000'000;

@@ -705,6 +705,7 @@ TEST(MetalResources, FailedSubmissionRejectsTimelineSuccessAndNewWork)
     const auto semaphore = device->CreateTimelineSemaphore(2);
     ASSERT_TRUE(semaphore.IsValid());
     EXPECT_TRUE(device->WaitTimelineSemaphoreValue(semaphore, 2, 0));
+    EXPECT_TRUE(device->WaitTimelineSemaphoreValue(semaphore, 2, 1));
     EXPECT_FALSE(device->WaitTimelineSemaphoreValue(semaphore, 3, 0));
     EXPECT_FALSE(device->WaitTimelineSemaphoreValue(semaphore, 3, 1'000'000));
 

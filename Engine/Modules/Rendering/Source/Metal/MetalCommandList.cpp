@@ -1640,9 +1640,8 @@ void MetalCommandList::ClearColorImageSubresourceByBlit(const MetalTexture& tex,
                                 MTL::Origin(0, y, z));
         }
     }
-    // The copies read the staging buffer when the GPU runs them, so it lives
-    // until this command buffer completes.
-    m_CommandBuffer->addCompletedHandler([staging](MTL::CommandBuffer*) { staging->release(); });
+    // The command buffer retains the copy source, including before commit.
+    staging->release();
 }
 
 void MetalCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, TextureHandle dstTexture, uint32_t mip,
