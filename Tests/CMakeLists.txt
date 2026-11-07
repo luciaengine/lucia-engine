@@ -1080,6 +1080,7 @@ add_executable(TerrainAtlasTests
   TerrainPageResolveGpuTests.cpp
   # The height source of a tiled terrain and the main-thread half of its height pages.
   TerrainHeightPagesTests.cpp
+  TerrainCpuHeightPagesTests.cpp
   ${_GE_PAGE_RESOLVE_HEADERS}
   ${_GE_PAGE_RESOLVE_PROBE_SPV}
 )

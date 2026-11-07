@@ -1,5 +1,8 @@
 #pragma once
 
+#include <concepts>
+#include <ranges>
+
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
@@ -233,6 +236,24 @@ inline std::string IdentifierToWords(std::string_view identifier)
         words += firstOfWord ? static_cast<char>(std::toupper(c)) : static_cast<char>(c);
     }
     return words;
+}
+
+/// The elements of `parts` (anything that converts to std::string_view) with `separator` between
+/// each pair: Join({"a", "b"}, ", ") is "a, b". An empty range gives an empty string.
+template <std::ranges::input_range Range>
+    requires std::convertible_to<std::ranges::range_reference_t<const Range&>, std::string_view>
+std::string Join(const Range& parts, std::string_view separator)
+{
+    std::string text;
+    bool first = true;
+    for (const auto& part : parts)
+    {
+        if (!first)
+            text += separator;
+        text += std::string_view(part);
+        first = false;
+    }
+    return text;
 }
 
 } // namespace GameEngine
