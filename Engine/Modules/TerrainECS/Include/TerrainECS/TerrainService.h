@@ -15,6 +15,8 @@
 #include "AssetCore/AssetReloadInvalidator.h"
 #include "AssetCore/GUID.h"
 #include "PageStreaming/HeightPageOverlay.h"
+#include "TerrainECS/SurfaceHeightQuery.h"
+#include "GenerationalVector/GenerationalVector.h"
 
 #include <algorithm>
 #include <array>
@@ -606,6 +608,63 @@ public:
 
     // dataHandle discriminator: set on HeightFieldColliderShape.dataHandle to
     // mark a tile-physics handle. Cleared to reach the raw slot index.
+    // ---- Per-page collider addressing (design page-streaming D3) ----
+    //
+    // A paged terrain gets one Jolt heightfield body per finest page inside a CPU window. A body's
+    // samples live in a slot here from the frame its page is provisioned until its collider is torn
+    // down; the physics HeightFieldDataProvider resolves a handle carrying kPagePhysicsHandleBit to
+    // the slot. TerrainPhysicsSystem owns the page -> handle mapping (TerrainPageCollider).
+
+    // dataHandle discriminator marking a page handle. Distinct from the planet-face bit.
+    static constexpr uint32 kPagePhysicsHandleBit = 0x20000000u;
+
+    struct PagePhysicsHandle
+    {
+        uint32 Index = 0;      // slot index OR'd with kPagePhysicsHandleBit; 0 for no slot
+        uint32 Generation = 0;
+    };
+
+    // One page body's height data and where its samples were read.
+    struct PageColliderData
+    {
+        // kFinestPageGridSamples squared, normalized (SurfaceHeightQuery::FillFinestPage), with
+        // Physics::kHeightFieldNoCollision past the field's last sample: no ground past the edge.
+        std::vector<float32> Samples;
+        uint64 Version = 0;
+        DirtyRegionLog DirtyLog;
+        // The terrain's CPU page record and overlay version when the samples were read: a region
+        // update reads the page changes and the overlay edits since (CollectPageChanges).
+        SurfaceHeightPageStamp ReadAt;
+        uint64 OverlayVersion = 0;
+    };
+
+    // Reads finest page (pageX, pageZ) of the paged terrain `query` reads into a new slot. No slot
+    // (Index 0) when that page is not on the CPU at level 0 or owns no cell (the last page on an
+    // axis owns the field's last sample alone; its neighbor's body covers it).
+    PagePhysicsHandle AcquirePagePhysicsHandle(const SurfaceHeightQuery& query, uint32 pageX, uint32 pageZ);
+
+    // Brings page body `handle` (finest page (pageX, pageZ) of the terrain `query` reads) up to the
+    // page and the modifier overlay as they are now. When the page changed in the CPU page record, or
+    // an overlay edit reached its samples, since they were read, it reads them again and records the
+    // samples that differ as one region of a new version: the physics region update
+    // (PhysicsWorld::UpdateHeightFieldRegion) then rewrites only those, never the whole body for a
+    // small edit. A page not on the CPU at level 0 keeps its samples and its read position, so a
+    // later frame reads it. Main thread; a stale handle does nothing.
+    void RefreshPagePhysicsHandle(const SurfaceHeightQuery& query, uint32 pageX, uint32 pageZ,
+                                  PagePhysicsHandle handle);
+
+    // Release a page handle (the page left every window, or its collider was torn down). The
+    // release is generation-checked, so a stale handle frees nothing. No-op for other handles.
+    void ReleasePagePhysicsHandle(uint32 handleIndex, uint32 generation);
+
+    // Release every page slot, at the world-transition seams that destroy the collider entities
+    // without the teardown sweep (Play-exit), as ReleaseAllPlanetFacePhysicsHandles.
+    void ReleaseAllPagePhysicsHandles();
+
+    // The page body data a handle names, or null when the slot is stale. handleIndex includes the
+    // discriminator bit. Used by the physics provider.
+    const PageColliderData* ResolvePageCollider(uint32 handleIndex, uint32 generation) const;
+
     static constexpr uint32 kTilePhysicsHandleBit = 0x80000000u;
 
     struct TilePhysicsHandle
@@ -1025,6 +1084,18 @@ public:
 
     // The process's one height-page residency, created on first use with the engine's job pool.
     TerrainHeightPages& GetHeightPages();
+    /// valid until the next height-page Update: its pages when it is tiled (unsampled while they have no
+    /// source), its heightfield when it is one map; an invalid query when it has no height data yet.
+    SurfaceHeightQuery SurfaceQuery(const Components::Terrain& terrain, const Components::WorldTransform& transform);
+    /// Fetches the finest CPU height page under `worldPoint` of the paged terrain `terrain` describes
+    /// now, on the main thread (TerrainHeightPages::FetchFinestPage): a pick reads the finest height
+    /// where it lands, wherever the cameras are. Returns whether that page is then on the CPU.
+    bool FetchFinestHeightPage(const Components::Terrain& terrain, const Mathematics::Vector3& worldPoint);
+    /// The level-0 pages of the CPU windows of the paged terrain `terrain` describes
+    /// (TerrainHeightPages::CpuWindowPages): the pages its colliders stand on. Empty when it is not
+    /// paged.
+    std::span<const PageStreaming::PageAddress> FinestWindowPages(const Components::Terrain& terrain);
+
     // The cooked height stores of the heightmaps paged terrains read.
     HeightPageStoreLoader& GetHeightPageStores();
     // Where height stores are found or cooked; set at startup by the engine, like SetBakeCache.
@@ -1285,6 +1356,10 @@ private:
         uint32 Generation = 0;
         bool Active = false;
     };
+    GenerationalVector::GenerationalVector<PageColliderData> m_PagePhysicsSlots;
+    // The page a refresh reads before it compares (RefreshPagePhysicsHandle), kept across calls.
+    std::vector<float32> m_PageColliderScratch;
+
     std::vector<TilePhysicsSlot> m_TilePhysicsSlots;
     std::vector<uint32> m_TilePhysicsFreeList;
 

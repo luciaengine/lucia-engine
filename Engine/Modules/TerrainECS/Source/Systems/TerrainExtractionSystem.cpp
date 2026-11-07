@@ -9,6 +9,7 @@
 #include "TerrainECS/TerrainSizingPlan.h"
 #include "TerrainECS/PlanarHeightQuery.h"
 #include "TerrainECS/TerrainHeightPageDriver.h"
+#include "TerrainECS/TerrainHeightPages.h"
 #include "TerrainECS/TerrainHeightPageFeature.h"
 #include "CBTTerrain/CBTLayout.h" // kAtlasMaxTiles (F2 cap warn)
 #include "AssetCore/GUID.h"
@@ -654,6 +655,7 @@ void TerrainExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     ExtractionFrame frame{terrainService, feature, device, deltaTime,
                           deviceFrameIndex, atlasFrame, reuploadAll};
     CollectViews(frame);
+    terrainService->GetHeightPages().GatherBodyWindows(world);
     terrainService->AssertNoModifierAccess();
     world.Query<ECS::Read<Components::Terrain>, ECS::Read<Components::WorldTransform>>()
         .Each([&](ECS::EntityHandle entity, const Components::Terrain& terrain,

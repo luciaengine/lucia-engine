@@ -14,6 +14,14 @@ namespace GameEngine::TerrainECS
 
 bool PlanarHeightQuery::SampleHeight(float32 worldX, float32 worldZ, float32& outY) const
 {
+    if (Pages.HasPageSource())
+    {
+        SurfaceHeightSample sample;
+        if (!Pages.SampleHeight({worldX, 0.0f, worldZ}, SurfaceHeightPolicy::RequireFinest, sample))
+            return false;
+        outY = sample.Height;
+        return true;
+    }
     if (Tiled)
     {
         float32 normalized;
@@ -126,6 +134,8 @@ PlanarHeightQuery ResolvePlanarHeightQuery(ECS::World& world)
                 terrain.TerrainDataHandle, terrain.TerrainDataGeneration});
             query.Tiled = service->GetTiledTerrainData(TiledTerrainHandle{
                 terrain.TiledTerrainHandle, terrain.TiledTerrainGeneration});
+            if (query.Tiled)
+                query.Pages = service->SurfaceQuery(terrain, xf);
             // An allocated-but-empty heightfield is not a surface: sampling it
             // would report the origin altitude everywhere.
             if (query.Single && query.Single->Heightfield.IsEmpty())
