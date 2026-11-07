@@ -56,6 +56,35 @@ struct MetalCommandListTestAccess
         return buffer;
     }
 };
+
+struct MetalDeviceTestAccess
+{
+    static void FailSubmission(MetalDevice& device) { device.RecordSubmissionFailure(); }
+
+    static NS::SharedPtr<MTL::SharedEvent> GetSemaphore(MetalDevice& device, SemaphoreHandle handle)
+    {
+        std::lock_guard lock(device.m_ResourceMutex);
+        return NS::RetainPtr(device.m_Semaphores.Get(ToGeneric(handle))->event);
+    }
+
+    static bool AllBuffersRetired(MetalDevice& device)
+    {
+        for (const auto& count : device.m_SlotInFlightCbs)
+            if (count.load() != 0)
+                return false;
+        return device.m_GraphicsCbsInFlight.load() == 0;
+    }
+
+    static uint32_t FramePermits(MetalDevice& device)
+    {
+        uint32_t count = 0;
+        while (dispatch_semaphore_wait(device.m_FrameSemaphore, DISPATCH_TIME_NOW) == 0)
+            ++count;
+        for (uint32_t i = 0; i < count; ++i)
+            dispatch_semaphore_signal(device.m_FrameSemaphore);
+        return count;
+    }
+};
 } // namespace GameEngine::Rendering
 
 using namespace GameEngine::Rendering;
@@ -665,6 +694,117 @@ TEST(MetalResources, TimelineSemaphoreSignalAndWait)
 
     device->DestroySemaphore(semaphore);
     device->Shutdown();
+}
+
+TEST(MetalResources, FailedSubmissionRejectsTimelineSuccessAndNewWork)
+{
+    auto device = CreateHeadlessMetalDevice();
+    if (!device)
+        GTEST_SKIP() << "Metal backend unavailable";
+    auto& metal = static_cast<MetalDevice&>(*device);
+    const auto semaphore = device->CreateTimelineSemaphore(2);
+    ASSERT_TRUE(semaphore.IsValid());
+    EXPECT_TRUE(device->WaitTimelineSemaphoreValue(semaphore, 2, 0));
+    EXPECT_TRUE(device->WaitTimelineSemaphoreValue(semaphore, 2, 1));
+    EXPECT_FALSE(device->WaitTimelineSemaphoreValue(semaphore, 3, 0));
+    EXPECT_FALSE(device->WaitTimelineSemaphoreValue(semaphore, 3, 1'000'000));
+
+    MetalDeviceTestAccess::FailSubmission(metal);
+    EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Failed);
+    if (device->GetDeviceHealth() == DeviceHealth::Failed)
+    {
+        EXPECT_FALSE(device->WaitTimelineSemaphoreValue(semaphore, 3));
+        EXPECT_FALSE(device->WaitTimelineSemaphoreValue(semaphore, 2, 0));
+        uint64_t value = 0;
+        EXPECT_FALSE(device->GetTimelineSemaphoreValue(semaphore, value));
+        EXPECT_FALSE(device->QueueSubmit(IDevice::QueueType::Graphics, {}, {}, {{semaphore, 3}}));
+        EXPECT_FALSE(device->BeginFrame());
+        EXPECT_FALSE(device->IsPreviousFrameGraphicsComplete());
+    }
+    device->DestroySemaphore(semaphore);
+    device->Shutdown();
+}
+
+TEST(MetalResources, FailedSubmissionInterruptsAnActiveTimelineWait)
+{
+    auto device = CreateHeadlessMetalDevice();
+    if (!device)
+        GTEST_SKIP() << "Metal backend unavailable";
+    auto& metal = static_cast<MetalDevice&>(*device);
+    const auto semaphore = device->CreateTimelineSemaphore(0);
+    ASSERT_TRUE(semaphore.IsValid());
+    auto fault = NS::RetainPtr(metal.GetQueue(IDevice::QueueType::Transfer)->commandBuffer());
+    ASSERT_NE(fault.get(), nullptr);
+    // Inject a terminal fault from a native completion while the host waits.
+    fault->addCompletedHandler([&metal](MTL::CommandBuffer*) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        MetalDeviceTestAccess::FailSubmission(metal);
+    });
+    fault->commit();
+    EXPECT_FALSE(device->WaitTimelineSemaphoreValue(semaphore, 1));
+    fault->waitUntilCompleted();
+    EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Failed);
+    EXPECT_EQ(MetalDeviceTestAccess::GetSemaphore(metal, semaphore)->signaledValue(), 0u);
+    device->DestroySemaphore(semaphore);
+    device->Shutdown();
+}
+
+TEST(MetalResources, FailedSubmissionCancelsDependentCopiesAndReturnsFramePermits)
+{
+    auto device = CreateHeadlessMetalDevice();
+    if (!device)
+        GTEST_SKIP() << "Metal backend unavailable";
+    auto& metal = static_cast<MetalDevice&>(*device);
+    const auto gateHandle = device->CreateTimelineSemaphore(0);
+    const auto resultHandle = device->CreateTimelineSemaphore(0);
+    ASSERT_TRUE(gateHandle.IsValid());
+    ASSERT_TRUE(resultHandle.IsValid());
+    auto gate = MetalDeviceTestAccess::GetSemaphore(metal, gateHandle);
+    auto result = MetalDeviceTestAccess::GetSemaphore(metal, resultHandle);
+    struct ReleaseGate
+    {
+        MTL::SharedEvent* Event;
+        ~ReleaseGate() { Event->setSignaledValue(1); }
+    } releaseGate{gate.get()};
+
+    auto source = NS::TransferPtr(metal.GetMTLDevice()->newBuffer(sizeof(uint32_t), MTL::ResourceStorageModeShared));
+    auto destination = NS::TransferPtr(metal.GetMTLDevice()->newBuffer(sizeof(uint32_t), MTL::ResourceStorageModeShared));
+    ASSERT_NE(source.get(), nullptr);
+    ASSERT_NE(destination.get(), nullptr);
+    *static_cast<uint32_t*>(source->contents()) = 42;
+    *static_cast<uint32_t*>(destination->contents()) = 0;
+    ASSERT_TRUE(device->BeginFrame());
+    auto commandList = device->CreateCommandList(IDevice::QueueType::Graphics);
+    commandList->Begin();
+    auto deferredBuffer = NS::TransferPtr(MetalCommandListTestAccess::RetainBuffer(*commandList));
+    auto* encoder = MetalCommandListTestAccess::GetBuffer(*commandList)->blitCommandEncoder();
+    encoder->copyFromBuffer(source.get(), 0, destination.get(), 0, sizeof(uint32_t));
+    encoder->endEncoding();
+    commandList->End();
+    ASSERT_TRUE(device->QueueSubmit(IDevice::QueueType::Graphics, {commandList.get()},
+                                   {{gateHandle, 1}}, {{resultHandle, 1}}));
+    device->FinalizeFrame();
+    EXPECT_FALSE(MetalDeviceTestAccess::AllBuffersRetired(metal));
+    EXPECT_EQ(MetalDeviceTestAccess::FramePermits(metal), device->GetFramesInFlight() - 1);
+    MetalDeviceTestAccess::FailSubmission(metal);
+    EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Failed);
+    if (device->GetDeviceHealth() == DeviceHealth::Failed)
+    {
+        device->WaitForIdle();
+        EXPECT_TRUE(MetalDeviceTestAccess::AllBuffersRetired(metal));
+        EXPECT_EQ(MetalDeviceTestAccess::FramePermits(metal), device->GetFramesInFlight());
+        EXPECT_EQ(*static_cast<uint32_t*>(destination->contents()), 0u);
+        EXPECT_EQ(result->signaledValue(), 0u);
+    }
+    else
+    {
+        gate->setSignaledValue(1);
+    }
+    commandList.reset();
+    device->Shutdown();
+    device.reset();
+    // The native completion can run after the device has been destroyed.
+    deferredBuffer.reset();
 }
 
 namespace
@@ -2530,6 +2670,7 @@ TEST(MetalCommandList, DrawIndexedIndirectCountDrawsEachCountedRecordOnceAcrossL
 // it writes, so a draw that is not ordered behind it reads the stale count.
 TEST(MetalCommandList, DrawIndexedIndirectCountReadsACountWrittenThroughADeviceAddress)
 {
+    const NS::SharedPtr<NS::AutoreleasePool> autoreleasePool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
     auto device = CreateHeadlessMetalDevice();
     if (!device)
     {
@@ -2538,7 +2679,8 @@ TEST(MetalCommandList, DrawIndexedIndirectCountReadsACountWrittenThroughADeviceA
 
     constexpr uint32_t kMaxDrawCount = 8;
     constexpr uint32_t kCount = 5;
-    constexpr uint32_t kSpinIterations = 2'000'000;
+    constexpr uint32_t kProducerDispatchCount = 10;
+    constexpr uint32_t kSpinIterations = 200'000;
 
     std::vector<DrawRecord> records(kMaxDrawCount);
     for (uint32_t i = 0; i < kMaxDrawCount; ++i)
@@ -2599,7 +2741,6 @@ void main()
     CountWriterConstants constants{};
     constants.CountAddress = device->GetBufferDeviceAddress(countBuffer);
     constants.SpinIterations = kSpinIterations;
-    constants.Count = kCount;
     ASSERT_NE(constants.CountAddress, 0u);
 
     const PipelineHandle pipeline = CreateCellQuadPipeline(*device, TextureFormat::BGRA8_UNORM, /*additive=*/false);
@@ -2612,8 +2753,13 @@ void main()
     auto cl = device->CreateCommandList(IDevice::QueueType::Graphics);
     cl->Begin();
     cl->SetPipeline(computePipeline);
-    cl->SetConstants(0, sizeof(constants), &constants);
-    cl->Dispatch(1, 1, 1);
+    // Limit the work in each dispatch. Publish the draw count from the last one.
+    for (uint32_t dispatchIndex = 0; dispatchIndex < kProducerDispatchCount; ++dispatchIndex)
+    {
+        constants.Count = dispatchIndex + 1 == kProducerDispatchCount ? kCount : staleCount;
+        cl->SetConstants(0, sizeof(constants), &constants);
+        cl->Dispatch(1, 1, 1);
+    }
     BeginCellPass(*cl, target, pipeline, indexBuffer, IndexType::Uint16);
     cl->DrawIndexedIndirectCount(recordBuffer, countBuffer, kMaxDrawCount, sizeof(DrawRecord), 0, 0);
     cl->EndRenderPass();
@@ -3851,9 +3997,16 @@ struct SpanResult
     uint64_t EndTicks = 0;
     bool Resolved = false;
 };
+
+class MetalTimestampSpans : public ::testing::Test
+{
+private:
+    // Keep autoreleased encoder descriptors and their sample buffers within one test.
+    NS::SharedPtr<NS::AutoreleasePool> m_AutoreleasePool = NS::TransferPtr(NS::AutoreleasePool::alloc()->init());
+};
 } // namespace
 
-TEST(MetalTimestampSpans, SpanSamplesItsOwnEncoderBoundaries)
+TEST_F(MetalTimestampSpans, SpanSamplesItsOwnEncoderBoundaries)
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)
@@ -3999,7 +4152,7 @@ TEST(MetalTimestampSpans, SpanSamplesItsOwnEncoderBoundaries)
 // A span over several encoders must be charged their work, not the wall extent
 // from the first one's start to the last one's end — the GPU can idle between
 // them, and a render encoder's vertex and fragment stages are scheduled apart.
-TEST(MetalTimestampSpans, MultiEncoderSpanExcludesTheGapsBetweenEncoders)
+TEST_F(MetalTimestampSpans, MultiEncoderSpanExcludesTheGapsBetweenEncoders)
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)
@@ -4094,7 +4247,7 @@ TEST(MetalTimestampSpans, MultiEncoderSpanExcludesTheGapsBetweenEncoders)
 
 // A span that records no GPU work at all has no encoder to name; it must report
 // zero, not the interval up to whatever encoder happens to come next.
-TEST(MetalTimestampSpans, SpanWithoutGpuWorkReportsZero)
+TEST_F(MetalTimestampSpans, SpanWithoutGpuWorkReportsZero)
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)
@@ -4177,7 +4330,7 @@ TEST(MetalTimestampSpans, SpanWithoutGpuWorkReportsZero)
 // timestamps never share), so the fold has to be exercised here: two passes
 // whose work lands in one blit encoder must report one distinct measurement,
 // not two.
-TEST(MetalTimestampSpans, RenderGraphFoldsOneEncoderSharedByTwoPassesIntoOneMeasurement)
+TEST_F(MetalTimestampSpans, RenderGraphFoldsOneEncoderSharedByTwoPassesIntoOneMeasurement)
 {
     auto device = CreateHeadlessMetalDevice();
     if (!device)

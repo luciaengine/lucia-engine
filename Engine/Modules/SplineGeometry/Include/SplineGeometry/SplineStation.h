@@ -3,6 +3,8 @@
 #include "Mathematics/Vector3.h"
 #include "Types/Types.h"
 
+#include <cmath>
+
 namespace GameEngine::SplineGeometry
 {
 
@@ -92,6 +94,8 @@ struct SplineStripStation
     // on the ground; where a Crease ring's top stands at another height than
     // the ring before it, the builder closes the step with a riser.
     float32 TopOffset = 0.0f;
+    // A road lowers the crown to meet a flat paved region.
+    float32 RiseScale = 1.0f;
     // Per side of travel, the length a side face has run beyond the centreline
     // up to this station, per metre the face stands from it: a side-face vertex
     // x metres to that side takes U from Distance + |x| · FaceTurn (x in the
@@ -115,5 +119,13 @@ struct SplineStripStation
     float32 CornerTurnLeft = 0.0f;
     float32 CornerTurnRight = 0.0f;
 };
+
+// The station's Right rolled about Forward by RollRadians, as the strip builder rolls its basis.
+inline Mathematics::Vector3 RolledRight(const SplineStripStation& station)
+{
+    const float32 c = std::cos(station.RollRadians);
+    const float32 s = std::sin(station.RollRadians);
+    return station.Right * c + station.Up * s;
+}
 
 } // namespace GameEngine::SplineGeometry

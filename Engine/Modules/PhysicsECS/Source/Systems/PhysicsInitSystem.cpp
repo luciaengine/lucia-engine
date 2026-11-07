@@ -398,6 +398,8 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
                                 for (int32 rx = hfData.regionMinX; rx < hfData.regionMaxX; ++rx)
                                 {
                                     const float32 s = hfData.samples[static_cast<size_t>(rz) * N + rx];
+                                    if (s == Physics::kHeightFieldNoCollision)
+                                        continue;
                                     regionMin = std::min(regionMin, s);
                                     regionMax = std::max(regionMax, s);
                                 }
@@ -444,6 +446,8 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
                 float32 fullMax = std::numeric_limits<float32>::lowest();
                 for (const float32 s : hfDef.Samples)
                 {
+                    if (s == Physics::kHeightFieldNoCollision)
+                        continue;
                     fullMin = std::min(fullMin, s);
                     fullMax = std::max(fullMax, s);
                 }
