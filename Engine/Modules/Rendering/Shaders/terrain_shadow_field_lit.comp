@@ -1,16 +1,8 @@
 #version 460
 
-// The terrain shadow's lit field (TerrainShadowFieldLit) as a mip chain over the clearance map, so a
-// receiver whose pixel covers many samples reads the average of the shadow it covers instead of one
-// sample of it. Two channels per texel, averages over the map samples it covers:
-//   r = the lit share: 1 for a sample that sees the sun's center (clearance <= 0), else 0;
-//   g = the occluder octaves: 0 for a lit sample, for a shadowed one log2 of its occluder's distance
-//       over one map texel, at least 0 (read back by terrain_shadow.glsl GE_TerrainShadowLocalShare).
-// A sample outside the lines and samples in use has no caster and is lit.
-//
-// Level 0 is half the map's side: each texel averages the 2 x 2 map samples it covers. Level k > 0
-// averages 2 x 2 texels of level k - 1, a texel past the source's edge repeating the edge. One
-// dispatch per level, 8 x 8 threads per group, one thread per texel written.
+// RG stores lit share and log2 occluder distance in map texels; lit samples store distance zero.
+// Mip 0 averages 2x2 clearance samples; each later mip averages 2x2 source texels.
+// Edges repeat, unused map samples are lit, and each 8x8 dispatch writes one level.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 

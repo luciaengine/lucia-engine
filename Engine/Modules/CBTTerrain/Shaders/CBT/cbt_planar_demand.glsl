@@ -1,37 +1,6 @@
-// cbt_planar_demand.glsl: the planar split demand of a CBT node, from the node's 3D box.
-//
-// A node's box is its UV bounding box in XZ, with the height pyramid's range over that box in Y,
-// in the render-origin-relative frame. A child's triangle lies inside its parent's, so its box lies
-// inside its parent's box, and every quantity below is a bound over the box that can only shrink
-// (a size, a range, a tangent) or only grow (a depth, a distance) on a sub-box. So a child's demand
-// is never above its parent's, and a veto on the parent holds on the child: the demand is monotone
-// in depth by construction. With one threshold, the tree a pose asks for is then one tree, whatever
-// path the camera took (Kernel_Classify).
-//
-// The demand is the node's size, sqrt(E^2 + r^2), over a view depth bound of its box, in pixels:
-//   E   the undisplaced split edge (meters);
-//   r   how far the surface the draw shows over the box can stand from the facet's own plane (meters):
-//       the smallest of the level-0 range (bounded below the pyramid's block size by the steepest step
-//       times the box's extent, CBT_PlanarStepBoundRange, and by the second differences times its
-//       extent squared, CBT_PlanarCurvatureBound), the width of the slab about a plane that holds
-//       the level-0 surface over the box (the plane width of the smallest pyramid block that contains
-//       it, CBT_PlaneFoldChild), and farther out the range of the prefiltered chain level the draw reads.
-//       Each bounds the distance between the surface over the facet and the facet's plane (a range or a
-//       slab that holds the surface holds the facet's corners, so the facet's plane too). The plane
-//       width and the curvature bound are zero on a plane of any slope, so r is too;
-//   D   max(least view depth of the box's corners, kappa x the box distance, 1 m), where kappa is the
-//       cosine of the half-diagonal field of view (no point in view sits at a larger angle);
-//   the off-axis stretch sqrt(1 + tx^2 + ty^2) of the wide-screen projection, tx and ty the box's
-//   largest view tangents, clamped to the margin frustum's.
-// A box wholly outside the margin frustum, or behind the eye, takes the isotropic form
-// size x f / max(distance, 1 m), which is never above the in-frustum form of the same box.
-// The flat veto: a node whose r projects at most flatPx at the box's nearest point does not split,
-// because its children would draw the same plane.
-//
-// The block between the GE_SHARED_PLANAR_DEMAND markers is compiled as C++ by CBTTerrainTests
-// (GlslShim.h): written component-wise, float literals suffixed `f`, no out parameters. Pure math, no
-// bindings. Every operation is precise (no fused multiply-add), so the copies Kernel_Classify inlines
-// for a node, its parent and its twin compute the same bits for the same box.
+// Planar demand bounds projected node size and surface deviation over its 3D box.
+// Bounds nest inside parent boxes, so child demand cannot exceed parent demand.
+// The GE_SHARED_PLANAR_DEMAND block also compiles through the C++ test shim.
 #ifndef CBT_PLANAR_DEMAND_GLSL
 #define CBT_PLANAR_DEMAND_GLSL
 
@@ -151,26 +120,16 @@ float CBT_PlanarNodeSize(float edgeM, float rangeM)
     return size;
 }
 
-// The range of the surface over a box (meters): `rangeM`, the range of the pyramid blocks that cover
-// it, or `stepM` x (`cellsX` + `cellsZ`) when that is smaller, where stepM is the steepest step between
-// two neighboring lattice samples in those blocks and cellsX, cellsZ the box's extent in lattice
-// cells. The surface between the samples is bilinear, so along X it changes by at most the steepest X
-// step per cell, along Z likewise: any two points of the box differ by at most stepM times their X
-// distance plus their Z distance, in cells. On a sub-box the blocks, the step and the extents only
-// shrink, so the bound nests: a box smaller than one block keeps a range that shrinks with it instead
-// of the whole block's.
+// Bilinear relief is bounded by min(rangeM, stepM*(cellsX+cellsZ)) in meters.
+// The steepest lattice step and box extents shrink on sub-boxes, so the bound nests.
 float CBT_PlanarStepBoundRange(float rangeM, float stepM, float cellsX, float cellsZ)
 {
     precise float stepRange = stepM * (cellsX + cellsZ);
     return min(rangeM, stepRange);
 }
 
-// How far a piecewise-linear profile can stand from its chord over a span of `cells` lattice cells
-// that crosses `knots` lattice lines, per unit of the largest slope change at a line: 0 with no line
-// crossed, else min(knots x cells / 4, (cells^2 + 1) / 8). The profile minus its chord is the sum over
-// the crossed lines of the slope change times the span's tent function there, the tent's peak at most
-// cells / 4; the tent summed over lines one cell apart is at most its integral, cells^2 / 8, plus 1/8
-// for the cell that holds the peak.
+// A piecewise-linear profile deviates from its chord by at most the largest slope change
+// times min(knots*cells/4, (cells*cells+1)/8). No crossed lattice line means zero deviation.
 float CBT_PlanarChordSpan(float cells, float knots)
 {
     if (!(knots > 0.0f))
@@ -180,19 +139,8 @@ float CBT_PlanarChordSpan(float cells, float knots)
     return min(few, wide);
 }
 
-// A bound on the distance between the level-0 surface over a facet and the facet's own plane (meters),
-// from the box alone: `secondXM` and `secondZM` the largest second differences along X and Z of the
-// lattice samples the box touches (meters per cell squared), `mixedM` their largest mixed difference,
-// `cellsX`, `cellsZ` the box's extent in cells and `knotsX`, `knotsZ` the lattice lines strictly inside
-// it. The surface is bilinear between the samples: along a line its slope changes only where it crosses
-// a lattice line, by at most the second difference there, and inside a cell it curves by the mixed
-// difference. A facet with its legs along the axes has three of the box's corners: the surface stands
-// at most secondX x span(cellsX) + secondZ x span(cellsZ) from the bilinear patch through the box's
-// corners, and that patch at most mixed x cellsX x cellsZ / 4 from the facet's plane. A facet with its
-// long edge along an axis has that edge's ends and the opposite side's midpoint: along the long edge
-// the facet's plane is the chord, and from there to the apex the segment spans at most half the long
-// edge, which adds secondX x span(cellsX / 2) and halves the mixed term. The bound below holds for both
-// kinds and either axis, and over a sub-box every input only shrinks, so it nests.
+// Bounds surface-to-facet distance in meters from lattice second and mixed differences.
+// The bound covers axis-leg and axis-hypotenuse facets and shrinks on sub-boxes.
 float CBT_PlanarCurvatureBound(float secondXM, float secondZM, float mixedM, float cellsX, float cellsZ,
                                float knotsX, float knotsZ)
 {
@@ -204,13 +152,8 @@ float CBT_PlanarCurvatureBound(float secondXM, float secondZM, float mixedM, flo
     return alongX + alongZ + twist;
 }
 
-// The interval of the surface's height minus a pyramid block's plane over one of its four children
-// (normalized height). `child` is the child's plane and residual (CBTLayout.h kCBTHeightPlaneFirstWord:
-// slopes per cell about its center, the residual's low end, its width), `parentSlopeX` and
-// `parentSlopeZ` the block's slopes about its own center, `offsetX` and `offsetZ` the child's center
-// minus the block's (cells), `halfCells` half the child's width in cells. The two planes differ by a
-// linear function: the block's plane at the child's center (`shift`) plus the slope difference times
-// the offset from that center, at most `spread` over the child.
+// Child residual intervals are measured against the parent plane in normalized height.
+// Center offsets and halfCells use lattice cells; slope differences bound the linear spread.
 vec2 CBT_PlaneFoldChild(vec4 child, float parentSlopeX, float parentSlopeZ, float offsetX, float offsetZ,
                         float halfCells)
 {
@@ -221,10 +164,8 @@ vec2 CBT_PlaneFoldChild(vec4 child, float parentSlopeX, float parentSlopeZ, floa
     return vec2(low, high);
 }
 
-// A pyramid block's plane and residual from its four children's (CBTLayout.h kCBTHeightPlaneFirstWord):
-// the mean of the children's slopes, the union of the children's intervals about that plane
-// (CBT_PlaneFoldChild; `offset0` .. `offset3` each child's center minus the block's, in cells), and a
-// width never below a child's, so a block's width bounds every block inside it.
+// Fold four child planes by their mean slopes and union of residual intervals.
+// The resulting width cannot be smaller than a child's width.
 vec4 CBT_PlaneFold(vec4 child0, vec4 child1, vec4 child2, vec4 child3, vec2 offset0, vec2 offset1, vec2 offset2,
                    vec2 offset3, float halfCells)
 {
@@ -252,11 +193,8 @@ bool CBT_PlanarBoxFlat(CBTPlanarView v, float rangeM, float dist, float flatPx)
     return rangePx <= flatPx;
 }
 
-// The chain levels whose range bounds the surface the draw shows over a box whose nearest point sits
-// at continuous level `lambdaNear` (CBT_ChainLevel): every level from 1 up to floor(lambdaNear),
-// because each drawn vertex there reads that level or a coarser one, and a coarser level is a convex
-// combination of a finer one. 0 while a vertex of the box can still read level 0 (lambda under 1:
-// level 0 alone up to 0.75, blended toward level 1 above). At most `stored`.
+// All levels through floor(lambdaNear) bound the drawn range, capped by stored levels.
+// Return zero while any vertex can still sample level 0 (lambdaNear < 1).
 uint CBT_DrawnRangeChainLevels(float lambdaNear, uint stored)
 {
     if (!(lambdaNear >= 1.0f))

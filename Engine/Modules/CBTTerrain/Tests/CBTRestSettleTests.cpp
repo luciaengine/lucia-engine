@@ -1,21 +1,5 @@
-// The tree a still camera settles to is a function of the pose, not of the path the camera took.
-//
-// Merges keep a hysteresis band while the camera moves: a pair merges only once its parents' demand is
-// well under the split threshold, so a moving boundary does not churn. Every leaf inside that band is
-// a valid rest state, so a camera that arrives from close by keeps finer leaves than one that arrives
-// from far away. While the inputs hold still the update applies the rest rule
-// (CBTClassifyDesc::Settle, CBT_PlanarClassify): the split and the merge use one threshold, and the
-// planar demand is monotone in depth (a child never demands more than its parent), so the only tree
-// that holds still is the one the pose asks for. These tests drive the kernels the way CBTRenderFeature
-// does: the first update at a new pose has Settle 0, every later one at that pose Settle 1.
-//
-// Instrument: the live heap ids read back from the GPU after the tree is quiet, compared as a sorted
-// set. Two arrivals settle to one tree when the sets are equal, not merely the counts.
-//
-// The pool-pressure controllers (the off-frustum keep step and the near-bias contention) carry their
-// own state across a path when they engage; the poses here converge below the occupancy where either
-// engages (keep step 0, contention 0 under 50% occupancy), which the tests assert, so the rest rule
-// alone is under test.
+// A still pose must settle to identical GPU heap IDs after near and far approaches.
+// Settle removes moving-camera hysteresis; the unpressured fixtures isolate this rule.
 
 #include <gtest/gtest.h>
 
@@ -73,10 +57,8 @@ struct Pose
     float YawDeg, PitchDeg;
 };
 
-// Two rest poses with an approach from close by (the tree arrives finer than the pose needs) and one
-// from far away (it arrives coarser). The overview looks across the relief from above it, so the domain
-// metric owns most of the tree; the walk stands 2 m above the ground looking along it, so the near-field
-// bound owns the ground under the eye.
+// The overview pose exercises domain demand; the walk pose stands 2 m above the surface.
+// Each pose is approached from both finer and coarser trees.
 struct Arrival
 {
     const char* Label;
@@ -373,10 +355,8 @@ TEST_F(CBTRestSettle, PairsAgreeOnTheMergeAtRest)
     }
 }
 
-// #2600, the half diamond: a merge flag that stands at rest although its diamond could merge. The four
-// children of a diamond ask the same two parents (the facet's parent and its twin) the same question,
-// so once the tree is quiet every flag that stands belongs to a diamond conformity holds: a finer
-// neighbor splits a child of the twin, and PrepareSimplify waits for it.
+// At rest, a remaining merge flag must belong to a diamond held by conformity.
+// A finer neighbor can split the twin's child and prevent PrepareSimplify from merging.
 TEST_F(CBTRestSettle, NoMergeFlagStandsOnADiamondThatCanMerge)
 {
     for (const Arrival& a : kArrivals)
@@ -404,12 +384,8 @@ TEST_F(CBTRestSettle, NoMergeFlagStandsOnADiamondThatCanMerge)
     }
 }
 
-// The rest rule has no hysteresis band, so if a still camera's thresholds followed the live count the
-// rest itself changes, a facet on the near-bias contention's threshold would split and merge on
-// alternate updates forever. Kernel_Reset latches the live count on every update with moving inputs; at
-// rest the latch follows only a move larger than 1/kRestLatchDeadbandDivisor of the pool, which a camera
-// jump's rebuild makes and a rest's own flips do not. The depth-target classify sets the live count
-// exactly: 2^depth facets.
+// Rest thresholds use a latched live count to prevent split/merge oscillation.
+// Only changes larger than 1/kRestLatchDeadbandDivisor of the pool move the latch at rest.
 TEST_F(CBTRestSettle, TheRestLatchFollowsOnlyLargeMovesAtRest)
 {
     CBTInstance inst;
@@ -464,11 +440,8 @@ TEST_F(CBTRestSettle, AFullPoolKeepsItsTreeAtRest)
         << "the rest must not take the tree apart";
 }
 
-// A pool on the near-bias contention ramp, where the contention moves with the live count: the walk
-// pose's rest tree sits past the ramp's foot and under its top. At rest the planar classify reads the
-// live count latched at the stop
-// (CBT_WQ_REST_LIVE_COUNT), so the contention's thresholds hold still and the tree goes quiet; read live,
-// a facet on a threshold the tree's own size sets splits and merges on alternate updates forever.
+// The walk fixture exercises the near-bias contention ramp.
+// Latched rest occupancy must keep thresholds fixed while the tree settles.
 TEST_F(CBTRestSettle, AContendedPoolGoesQuietAtRest)
 {
     Shaping contended;

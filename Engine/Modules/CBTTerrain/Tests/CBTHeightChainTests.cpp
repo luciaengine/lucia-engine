@@ -1,39 +1,5 @@
-// The terrain draw's prefiltered height chain (cbt_height_chain.glsl; #2651). The draw moves a far
-// vertex to the chain level its distance asks for, so far facets show the surface at the detail the
-// screen can show instead of aliasing the level-0 relief.
-//
-// The shared block of cbt_height_chain.glsl is extracted at build time (Tests/ExtractShaderBlock.cmake)
-// and compiled here through GlslShim.h, so these tests run the shader's own level rule, addressing and
-// blend. The real-device arms build the chain with the shipped kernels and read it back.
-//
-//   NearVerticesKeepTheirCachedCornerBits — below lambda 0.75 a vertex draws its cached level-0 height,
-//     the same bits, so the near field draws what it drew without the chain.
-//   ChainMatchesTheTentOracleAtThreeLevels — levels 1 to 3 of the GPU chain over a non-square lattice
-//     equal the page store's filter ([1 2 1] / 4 around 2j, edges clamped, HeightPyramidBuilder's order)
-//     restated on the CPU.
-//   EditRectRebuildsOnlyTheSamplesItsTentsReach — an edit announced by its rect rewrites the samples
-//     whose tents read the edited texels, at every level, and leaves the rest as they were: a change
-//     outside the rect that was not announced stays out of the chain.
-//   FacetDrawnIntoTheFrustumIsKept — a facet whose cached corners lie outside the frustum but whose drawn
-//     triangle reaches into it stays in the VISIBLE stream; facets that are out either way stay culled.
-//   NormalChainMatchesTheChainSurfaceAtThreeMips — mips 0 to 2 of the far-field normal chain hold the
-//     normal of chain levels 1 to 3 at each texel's center (the central difference across one level
-//     sample each way, at world scale), restated on the CPU from the GPU's own height chain.
-//   FragmentsTakeTheNormalAtTheirOwnLevel — the surface's normal weight: the level-0 map alone up to
-//     lambda 1.75 (the near field unchanged, and level 1's ring), the chain alone from lambda 2 at mip
-//     lambda - 1.
-//   GrazingFootprintEndsARidgeRowWithoutAStep — along screen rows over a ridge field at a grazing
-//     angle, the shading moves from the ridge faces to the averaged far surface over a distance band:
-//     no two neighboring pixels differ by more than the critics' edge step (40 luma levels), while the
-//     near field keeps the level-0 map and the far field reads the whole footprint.
-//   SharedVertexDrawsOneHeight — every copy of a vertex in a converged tree, across facets of different
-//     depths, draws one height, including vertices in the blend at lambda 1.4 to 1.8. The positive
-//     control: a height chosen per facet (its centroid's level) cracks the same tree.
-//   AFieldTheChainDrawsFlatDoesNotSplitPastItsDrawnRelief — the planar split's flat veto reads the range
-//     of the surface the draw shows: on the stripe field, which every chain level draws flat, a converged
-//     tree keeps no diamond of four leaves whose two parents both lie where the draw shows chain level 1
-//     or coarser, although the level-0 relief there projects tens of pixels. (A diamond whose twin's child
-//     a finer neighbor splits stays: conformity holds it.)
+// Exercises the shader's height-chain math through GlslShim and the production GPU kernels.
+// Checks tent filtering, normal footprints, edit bounds, culling, shared vertices and flat vetoes.
 
 #include <gtest/gtest.h>
 
@@ -525,13 +491,8 @@ TEST(CBTHeightChainShim, FragmentsTakeTheNormalAtTheirOwnLevel)
 
 TEST(CBTHeightChainShim, GrazingFootprintEndsARidgeRowWithoutAStep)
 {
-    // The R3 evidence pose B: the eye 6 m over the mean plane, pitched 30 degrees down, a 60-degree
-    // vertical field of view on a 3067 x 900 view; the level rule of a 0.5 m lattice at target error
-    // 8 px over 1080 reference rows. Every pixel of a row sees the ground at its own distance and
-    // grazing angle. A row over a ridge face shades the face (luma 60, the dark stripes the captures
-    // show) where the normal is the level-0 map, the averaged far surface (luma 150) where it is the
-    // chain, and the mix between. An edge is a step above 40 luma levels between horizontal neighbors
-    // (the critics' vertical-edge instrument).
+    // Ridge fixture: eye 6 m above the mean, pitch -30 degrees, vertical FOV 60 degrees, 3067x900.
+    // The 0.5 m lattice targets 8 px at 1080 rows; adjacent horizontal samples may differ by at most 40 luma.
     constexpr float kEyeHeight = 6.0f;
     constexpr float kPitchDeg = 30.0f;
     constexpr int kWidth = 3067;
@@ -603,11 +564,8 @@ TEST(CBTHeightChainShim, GrazingFootprintEndsARidgeRowWithoutAStep)
     EXPECT_FLOAT_EQ(Shader::CBT_GrazingShare(0.5f), 0.5f);
 }
 
-// The terrain surface takes its far normal's level from the level rule the test above pins, so the
-// fade it proves is the one drawn, and hands the terrain shadow its head-on footprint, which the
-// shadow widens by the same rule (TerrainShadowMap.FootprintWidensByTheDrawsLevelRule). A surface
-// that read the grazing level as lambda + log2(spread) or widened the footprint by the bare spread
-// would switch the footprint on at lambda 0, the ring a ridge field cuts into a staircase.
+// Checks that surface shading and terrain shadows consume the shared footprint rule.
+// Applying grazing spread from lambda 0 would introduce a visible ring over ridges.
 TEST(CBTHeightChainShim, SurfaceTakesTheGrazingFootprintFromTheLevelRule)
 {
     const std::string path = std::string(CBT_SHADER_SOURCE_DIR) + "/cbt_surface.glsl";
@@ -820,10 +778,8 @@ TEST_F(CBTHeightChain, FacetDrawnIntoTheFrustumIsKept)
 
 namespace
 {
-// The chain level-1 cover the planar split reads for a node's UV box [lo, hi] under the reach of a
-// facet at continuous level `lambdaFar` (cbt_kernels.comp CBT_DrawnReachUV, CBT_RangeCells,
-// CBT_ChainRangeOverUV): the lattice cells, along X, of the blocks of the coarsest level that holds the
-// widened box to two blocks per axis, never finer than the level the chain-1 pyramid starts at.
+// Computes the chain-1 pyramid cover of the draw-expanded UV box.
+// Uses the coarsest level with at most two blocks per axis, bounded by the first stored level.
 std::array<int64_t, 2> ChainOneCoverCellsX(std::array<float, 2> lo, std::array<float, 2> hi, float lambdaFar,
                                            uint32_t cells, uint32_t top)
 {
@@ -856,11 +812,8 @@ std::array<float, 2> BoxHi(std::array<float, 2> a, std::array<float, 2> b, std::
     return {std::max({a[0], b[0], c[0]}), std::max({a[1], b[1], c[1]})};
 }
 
-// Whether the planar split vetoes a node of the stripe scene: the box sits wholly where the draw shows
-// chain level 1 or coarser (lambda >= 1 at its nearest point), and the chain-1 cover the split reads
-// there holds no sample at the lattice's first or last column, the only ones the tent's clamped edge
-// lifts off 0.5. The box's Y spans the whole relief, so its distance is never above the shader's and
-// its farthest corner never nearer: the reach is never narrower.
+// The stripe interior is flat in chain level 1 and coarser; only clamped edge columns rise.
+// The full-relief Y box gives a conservative drawn reach and flat-veto oracle.
 bool FlatForTheSplit(const StripeScene& scene, std::array<float, 2> lo, std::array<float, 2> hi, uint32_t samples)
 {
     const float size = scene.Params.TerrainSize[0];
@@ -888,11 +841,8 @@ bool FlatForTheSplit(const StripeScene& scene, std::array<float, 2> lo, std::arr
 
 TEST_F(CBTHeightChain, AFieldTheChainDrawsFlatDoesNotSplitPastItsDrawnRelief)
 {
-    // 2 m above the ridges' feet looking 3 degrees down along +Z: lambda reaches 1 about 130 m out, and
-    // the 4 m level-0 relief there still projects about 24 pixels. Every chain level draws the stripes as
-    // the plane at 2 m, so the veto, on the drawn range, holds every node there. Neither parent of a
-    // diamond the veto holds wants a split, so a converged tree has merged it, unless a finer neighbor
-    // splits a child of the twin and conformity keeps the diamond.
+    // Eye is 2 m above the ridge base, pitch -3 degrees along +Z; lambda reaches 1 near 130 m.
+    // The chain draws a plane at 2 m, so only conformity can retain a diamond in the flat-veto region.
     using GameEngine::CBTTerrain::Test::Diamond;
     using GameEngine::CBTTerrain::Test::DiamondOf;
     constexpr uint32_t kN = 1025u;

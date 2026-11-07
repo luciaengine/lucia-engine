@@ -1,7 +1,6 @@
-// cbt_draw_level.glsl: the terrain draw's level rule as both graphics stages read it (mirror CBTLayout.h
-// CBTDrawLevelParams), offset-bound to this frame's ring slot on set 2. The vertex modifier moves a far
-// vertex to the height chain level of its distance; the surface samples the normal chain at the level of
-// the fragment's distance. Not declared under the compat profile (its kernels build no chain).
+// Terrain draw levels mirror CBTDrawLevelParams in this frame's set-2 ring slot.
+// Vertices use distance-filtered heights; fragments use distance-filtered normals.
+// The compatibility profile has no chain.
 #ifndef CBT_DRAW_LEVEL_GLSL
 #define CBT_DRAW_LEVEL_GLSL
 
