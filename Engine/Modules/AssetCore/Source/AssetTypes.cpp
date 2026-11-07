@@ -151,8 +151,8 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         // A terrain's ordered material list, keyed by stable slot ID
         {".terrainmatlib", AssetType::TerrainMaterialLibrary},
 
-        // A particle emitter's processor stack
         {".daycycle.json", AssetType::DayCycleProfile},
+        // A particle emitter's processor stack
         {".particlestack", AssetType::ParticleStack},
 
         // Ocean formats

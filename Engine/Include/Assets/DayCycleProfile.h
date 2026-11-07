@@ -56,16 +56,8 @@ std::string WriteDayCycleProfile(const DayCycleProfileData& data);
 /// `duskHalf` (which reads DuskKeys under SeparateDusk).
 float EvaluateDayCycleTrack(const DayCycleTrackKeys& keys, Mathematics::Radians elevation, bool duskHalf);
 
-/// Whether the sun stands on the setting half of its day: its bearing west of the meridian, azimuth in
-/// (pi, 2 pi). The same in both hemispheres and under a sun set by hand (the azimuth is computed from
-/// its direction); a polar day that never sets splits at local noon and midnight, its afternoon the
-/// setting half.
-
-/// A Day Cycle profile asset (<name>.daycycle.json), created by the asset type registry's factory
-/// (CoreAssetRegistrations) and loaded through Load. The loaded profile is an immutable object held
-/// through a shared pointer: a reload parses a new one and publishes it, and a reader that took the
-/// old one keeps it as long as it holds it. A file that does not parse leaves the last good profile
-/// published. GetData is safe from any thread.
+/// A Day Cycle profile asset with immutable snapshots. Readers can retain a snapshot across reloads.
+/// A failed reload keeps the last valid profile. GetData is safe from any thread.
 class DayCycleProfile final : public Asset
 {
   public:
