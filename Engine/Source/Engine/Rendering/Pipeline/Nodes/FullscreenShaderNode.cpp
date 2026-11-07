@@ -837,6 +837,8 @@ void FullscreenShaderNode::Declare(RenderPipelineInstance& instance,
 
 void FullscreenShaderNode::StitchThrough(ViewDeclare& d)
 {
+    if (d.IsVersionedTexture(m_OutputRef))
+        return;
     std::string srcRef;
     if (!m_PassthroughInputName.empty())
     {
@@ -861,6 +863,8 @@ void FullscreenShaderNode::StitchThrough(ViewDeclare& d)
         }
         return;
     }
+    if (d.IsVersionedTexture(srcRef))
+        return;
     const RenderGraph::RGTexture src = d.ResolveTexture(srcRef);
     if (src.IsValid())
         d.PublishTexture(m_OutputRef, src);
@@ -1042,7 +1046,9 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
     // everything downstream, or (when the output is the smaller of the two) a
     // downscale of the finished image. Running the stage performs the resample
     // the extents ask for.
-    if (node.m_ElideWhenIdentity && node.m_Inputs.size() == 1 && !node.m_AlphaBlend &&
+    const bool versionedOutput = d.IsVersionedTexture(node.m_OutputRef);
+    if (!versionedOutput && node.m_ElideWhenIdentity && node.m_Inputs.size() == 1 &&
+        !d.IsVersionedTexture(node.m_Inputs.begin()->second) && !node.m_AlphaBlend &&
         node.m_BlendMode == FullscreenShaderNode::BlendMode::Disabled)
     {
         const RenderGraph::RGTexture in = d.ResolveTexture(node.m_Inputs.begin()->second);
@@ -1415,8 +1421,10 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                 // would also derive a read that keeps dead producers alive) —
                 // flagged for the gate-1 visual pass. Non-final chain segments
                 // always fully overwrite their ping target.
-                ops.Load = (blendEnabled && finalSeg) ? RenderGraph::RGLoadOp::Load
-                                                      : RenderGraph::RGLoadOp::DontCare;
+                if (versionedOutput)
+                    ops.Load = RenderGraph::RGLoadOp::Clear;
+                else
+                    ops.Load = (blendEnabled && finalSeg) ? RenderGraph::RGLoadOp::Load : RenderGraph::RGLoadOp::DontCare;
                 ops.Store = RenderGraph::RGStoreOp::Store;
                 if (finalSeg && resolvePair.IsValid())
                     p.AttachColorResolve(0, segOut, resolvePair, ops);

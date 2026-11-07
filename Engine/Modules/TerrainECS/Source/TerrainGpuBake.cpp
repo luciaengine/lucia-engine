@@ -29,4 +29,10 @@ bool IsGpuHeightBakeEnabled()
 
 void SetGpuHeightBakeEnabledForTests(int state) { g_GpuHeightBakeTestOverride = state; }
 
+bool IsGpuSculptNormalEnabled()
+{
+    static const bool enabled = Platform::EnvironmentSwitchEnabled("GE_TERRAIN_GPU_SCULPT_NORMALS", false);
+    return enabled && !IsGpuHeightBakeEnabled();
+}
+
 } // namespace GameEngine::TerrainECS
