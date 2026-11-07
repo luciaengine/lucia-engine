@@ -710,8 +710,8 @@ TEST(MetalResources, FailedSubmissionRejectsTimelineSuccessAndNewWork)
     EXPECT_FALSE(device->WaitTimelineSemaphoreValue(semaphore, 3, 1'000'000));
 
     MetalDeviceTestAccess::FailSubmission(metal);
-    EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Lost);
-    if (device->GetDeviceHealth() == DeviceHealth::Lost)
+    EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Failed);
+    if (device->GetDeviceHealth() == DeviceHealth::Failed)
     {
         EXPECT_FALSE(device->WaitTimelineSemaphoreValue(semaphore, 3));
         EXPECT_FALSE(device->WaitTimelineSemaphoreValue(semaphore, 2, 0));
@@ -743,7 +743,7 @@ TEST(MetalResources, FailedSubmissionInterruptsAnActiveTimelineWait)
     fault->commit();
     EXPECT_FALSE(device->WaitTimelineSemaphoreValue(semaphore, 1));
     fault->waitUntilCompleted();
-    EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Lost);
+    EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Failed);
     EXPECT_EQ(MetalDeviceTestAccess::GetSemaphore(metal, semaphore)->signaledValue(), 0u);
     device->DestroySemaphore(semaphore);
     device->Shutdown();
@@ -786,8 +786,8 @@ TEST(MetalResources, FailedSubmissionCancelsDependentCopiesAndReturnsFramePermit
     EXPECT_FALSE(MetalDeviceTestAccess::AllBuffersRetired(metal));
     EXPECT_EQ(MetalDeviceTestAccess::FramePermits(metal), device->GetFramesInFlight() - 1);
     MetalDeviceTestAccess::FailSubmission(metal);
-    EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Lost);
-    if (device->GetDeviceHealth() == DeviceHealth::Lost)
+    EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Failed);
+    if (device->GetDeviceHealth() == DeviceHealth::Failed)
     {
         device->WaitForIdle();
         EXPECT_TRUE(MetalDeviceTestAccess::AllBuffersRetired(metal));

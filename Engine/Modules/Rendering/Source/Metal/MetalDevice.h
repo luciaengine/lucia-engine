@@ -296,7 +296,7 @@ class MetalDevice : public IDevice
     void WaitForIdle() override;
     DeviceHealth GetDeviceHealth() const override
     {
-        return m_SubmissionFailed.load(std::memory_order_acquire) ? DeviceHealth::Lost : DeviceHealth::Healthy;
+        return m_SubmissionFailed.load(std::memory_order_acquire) ? DeviceHealth::Failed : DeviceHealth::Healthy;
     }
     uint64_t GetIdleDrainCount() const override { return m_IdleDrainCount.load(std::memory_order_relaxed); }
 
