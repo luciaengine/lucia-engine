@@ -1489,6 +1489,17 @@ bool TerrainExtractionSystem::TryUploadUnifiedTileRegion(UnifiedTileUpload& uplo
     return false;
 }
 
+const CoarseTileStandIn& TerrainExtractionSystem::ResolveCoarseStandIn(
+    const TerrainTileData& tile, uint32 resolution, float32 tileWorldSize, float32 heightScale)
+{
+    if (tile.CoarseStandIn &&
+        tile.CoarseStandIn->Matches(resolution, tileWorldSize, heightScale, tile.HeightfieldVersion))
+        return *tile.CoarseStandIn;
+
+    BuildCoarseTileStandIn(tile.Heightfield, resolution, tileWorldSize, heightScale, m_CoarseStandInScratch);
+    return m_CoarseStandInScratch;
+}
+
 void TerrainExtractionSystem::UploadCoarseUnifiedTile(UnifiedTileUpload& upload)
 {
     auto& frame = upload.Frame;
@@ -1518,10 +1529,10 @@ void TerrainExtractionSystem::UploadCoarseUnifiedTile(UnifiedTileUpload& upload)
     const CoarsePatchRect pr = ComputeCoarsePatchRect(tileRegionDim, nb);
     if (pr.Width > 0 && pr.Height > 0)
     {
-        UpsampleHeightfieldBilinear(tile->Heightfield.GetRawSamples(),
-                                    tile->Heightfield.GetWidth(),
-                                    m_CoarseHeightScratch, tileRegionDim);
-        ExtractSubBlock(m_CoarseHeightScratch.data(), tileRegionDim,
+        const auto& standIn = ResolveCoarseStandIn(*tile, tileRegionDim, tileSize, terrain.HeightScale);
+        if (standIn.Heights.GetWidth() != tileRegionDim)
+            return;
+        ExtractSubBlock(standIn.Heights.GetRawSamples(), tileRegionDim,
                         pr.X0, pr.Z0, pr.Width, pr.Height, m_CoarseHeightPatch);
         feature->UploadHeightmapRegion(globalGpuHandle,
                                        m_CoarseHeightPatch.data(),
@@ -1540,25 +1551,9 @@ void TerrainExtractionSystem::UploadCoarseUnifiedTile(UnifiedTileUpload& upload)
                 reinterpret_cast<const uint8*>(m_CoarseSplatPatch.data()),
                 pr.Width, pr.Height, dstX + pr.X0, dstY + pr.Z0);
         }
-        // Real normals from the upsampled coarse heights (was ZEROED, which
-        // shaded coarse tiles flat-lit — the tiled dark-shard gap). Generate
-        // over the full region then extract the same interior-clamped sub-block
-        // so it never stomps a resident-Full neighbour's edge. Full re-uploads
-        // its high-detail normal on upgrade.
-        if (m_CoarseNormalHf.GetWidth() != tileRegionDim ||
-            m_CoarseNormalHf.GetHeight() != tileRegionDim)
-            m_CoarseNormalHf.Resize(tileRegionDim, tileRegionDim, 0.0f);
-        std::memcpy(m_CoarseNormalHf.GetMutableSamples(),
-                    m_CoarseHeightScratch.data(),
-                    static_cast<size_t>(tileRegionDim) * tileRegionDim * sizeof(float32));
-        uint32 cnW = 0, cnH = 0;
-        GenerateNormalmapFromHeightfield(m_CoarseNormalHf, tileSize, tileSize,
-                                         terrain.HeightScale,
-                                         m_CoarseNormalScratch, cnW, cnH);
-        if (m_CoarseNormalScratch.size() ==
-            static_cast<size_t>(tileRegionDim) * tileRegionDim * 4u)
+        if (standIn.Normalmap.size() == static_cast<size_t>(tileRegionDim) * tileRegionDim * 4u)
         {
-            ExtractSubBlock(reinterpret_cast<const uint32*>(m_CoarseNormalScratch.data()),
+            ExtractSubBlock(reinterpret_cast<const uint32*>(standIn.Normalmap.data()),
                             tileRegionDim, pr.X0, pr.Z0, pr.Width, pr.Height,
                             m_CoarseNormalPatch);
             feature->UploadNormalmapRegion(globalGpuHandle,
@@ -1962,63 +1957,45 @@ void TerrainExtractionSystem::PatchAtlasSlot(AtlasPatchContext& patch, const Til
     // already-resident Full slot takes the region fast-path above when the dab is a
     // strict sub-rect.
 
-        auto tileIt = tiled->Tiles.find(coord);
-        if (tileIt == tiled->Tiles.end() || !tileIt->second)
-            return;
-        auto* tp = tileIt->second.get();
-        if (tp->LodState == TileLodState::Empty)
-            return;
-        const uint32 res = geo.TileRes;
-        const bool fullNative = isFull && tp->Heightfield.GetWidth() == res;
+    auto tileIt = tiled->Tiles.find(coord);
+    if (tileIt == tiled->Tiles.end() || !tileIt->second)
+        return;
+    auto* tp = tileIt->second.get();
+    if (tp->LodState == TileLodState::Empty)
+        return;
+    const uint32 res = geo.TileRes;
+    const bool fullNative = isFull && tp->Heightfield.GetWidth() == res;
 
-        if (TryPatchAtlasSlotRegion(patch, coord, tp, slot, fullNative, wholeSlot))
+    if (TryPatchAtlasSlotRegion(patch, coord, tp, slot, fullNative, wholeSlot))
         return;
 
-    const float32* heights = nullptr;
-        if (fullNative)
-        {
-            heights = tp->Heightfield.GetRawSamples();
-        }
-        else
-        {
-            // Coarse (or mismatched-res) tile: bilinear-upsample to tileRes^2.
-            UpsampleHeightfieldBilinear(tp->Heightfield.GetRawSamples(),
-                                        tp->Heightfield.GetWidth(),
-                                        m_CoarseHeightScratch, geo.TileRes);
-            heights = m_CoarseHeightScratch.data();
-        }
-        PackTileHeightIntoSlot(m_AtlasSlotScratch.data(), slotGeo, 0u, heights,
-                               isFull, AtlasTileNeighbors{}, AtlasNeighborEdges{});
-        feature->UploadAtlasHeightSlot(globalGpuHandle, m_AtlasSlotScratch.data(),
-                                       geo.SlotStride, geo.SlotOriginTexelX(slot),
-                                       geo.SlotOriginTexelY(slot));
+    const auto* standIn = fullNative ? nullptr : &ResolveCoarseStandIn(
+        *tp, res, tiled->Config.TileWorldSize, patch.Context.Component.HeightScale);
+    if (standIn && standIn->Heights.GetWidth() != res)
+        return;
+    const float32* heights = standIn ? standIn->Heights.GetRawSamples() : tp->Heightfield.GetRawSamples();
+    PackTileHeightIntoSlot(m_AtlasSlotScratch.data(), slotGeo, 0u, heights,
+                           isFull, AtlasTileNeighbors{}, AtlasNeighborEdges{});
+    feature->UploadAtlasHeightSlot(globalGpuHandle, m_AtlasSlotScratch.data(),
+                                   geo.SlotStride, geo.SlotOriginTexelX(slot),
+                                   geo.SlotOriginTexelY(slot));
 
-        UploadAtlasSlotNormal(patch, coord, tp, slot, fullNative, heights);
+    UploadAtlasSlotNormal(patch, coord, tp, slot, standIn);
 
     UploadAtlasSplatSlot(patch, tp, slot);
 
-        if (kAtlasSurfDebug)
-            Logger::Log::Info("Terrain.AtlasSurface tile=({},{}) slot={} "
-                              "src=height+splat+normal lod={}",
-                              coord.X, coord.Z, slot, isFull ? "full" : "coarse");
+    if (kAtlasSurfDebug)
+        Logger::Log::Info("Terrain.AtlasSurface tile=({},{}) slot={} "
+                          "src=height+splat+normal lod={}",
+                          coord.X, coord.Z, slot, isFull ? "full" : "coarse");
 
-        PublishAtlasHeightSourceChanged(patch, coord);
-        anySlotPatched = true;
-        // Only a fullNative pack WROTE the persistent normal (tp->Normalmap); a coarse
-        // pack generated a transient normal (m_AtlasNormalTileScratch) and left the
-        // persistent store untouched. Advancing NormalmapVersion on the coarse branch
-        // would falsely mark that store current — so a later coarse->Full transition
-        // that reaches this tile via the height-dirty route (not the residency LOD-flip
-        // UploadRequest) could take the region fast-path against a persistent normal that
-        // is still coarse. Advance the version only when the store was actually written,
-        // so the invariant "a tile at Full carries a full-res normal in its slot" holds
-        // regardless of which path drives the upgrade (the flat-slot-normal class the
-        // AtlasFullTileNormalIsDetailedWhileCoarseFallbackIsFlat oracle guards). A
-        // fullNative pack makes the region collect (CollectSince) see only the next dab's rect.
-        if (fullNative)
-            tp->NormalmapVersion = tp->HeightfieldVersion;
-        tp->ClearDirty();
-        tp->SplatmapDirty = false; // the full patch re-uploaded splat too
+    PublishAtlasHeightSourceChanged(patch, coord);
+    anySlotPatched = true;
+    // Only the full tile writes the persistent normal used by region edits.
+    if (fullNative)
+        tp->NormalmapVersion = tp->HeightfieldVersion;
+    tp->ClearDirty();
+    tp->SplatmapDirty = false; // the full patch re-uploaded splat too
 }
 
 bool TerrainExtractionSystem::TryPatchAtlasSlotRegion(AtlasPatchContext& patch, const TileCoord& coord, TerrainTileData* tp,
@@ -2066,73 +2043,36 @@ bool TerrainExtractionSystem::TryPatchAtlasSlotRegion(AtlasPatchContext& patch, 
     return false;
 }
 
-void TerrainExtractionSystem::UploadAtlasSlotNormal(AtlasPatchContext& patch, const TileCoord& coord, TerrainTileData* tp,
-                               uint32 slot, bool fullNative, const float32* heights)
+void TerrainExtractionSystem::UploadAtlasSlotNormal(AtlasPatchContext& patch, const TileCoord& coord,
+                                                    TerrainTileData* tile, uint32 slot,
+                                                    const CoarseTileStandIn* standIn)
 {
-    auto& frame = patch.Frame;
+    const auto& geometry = patch.Geometry;
+    const auto& slotGeometry = patch.SlotGeometry;
     auto& extraction = patch.Extraction;
-    auto* feature = frame.Feature;
-    auto& globalGpuHandle = extraction.GlobalGpuHandle;
-    auto& tiled = extraction.Data;
-    const auto& geo = patch.Geometry;
-    const auto& slotGeo = patch.SlotGeometry;
-    const auto& context = patch.Context;
-    const auto& terrain = context.Component;
-    // Neighbour-aware normal (R2): a Full tile passes its 4 axis Full neighbours so
-        // adjacent slots' shared boundary texel is bit-equal (no seam); a coarse tile
-        // uses the upsampled heights single-tile (neighbours skipped — transient). A Full
-        // tile's normal is regenerated into its PERSISTENT store (tp->Normalmap) so the
-        // region fast-path above can update it in place next dab; a coarse tile's is
-        // transient (upsample scratch), never persisted.
-        const float32 tileWorld = tiled->Config.TileWorldSize;
-        const Terrain::HeightfieldData* normalHf = nullptr;
-        const Terrain::HeightfieldData* nL = nullptr;
-        const Terrain::HeightfieldData* nR = nullptr;
-        const Terrain::HeightfieldData* nU = nullptr;
-        const Terrain::HeightfieldData* nD = nullptr;
-        if (fullNative)
-        {
-            normalHf = &tp->Heightfield;
-            nL = FindAtlasNeighborHeightfield(patch, coord.X - 1, coord.Z);
-            nR = FindAtlasNeighborHeightfield(patch, coord.X + 1, coord.Z);
-            nU = FindAtlasNeighborHeightfield(patch, coord.X, coord.Z - 1);
-            nD = FindAtlasNeighborHeightfield(patch, coord.X, coord.Z + 1);
-        }
-        else
-        {
-            if (m_AtlasNormalTileHf.GetWidth() != geo.TileRes ||
-                m_AtlasNormalTileHf.GetHeight() != geo.TileRes)
-                m_AtlasNormalTileHf.Resize(geo.TileRes, geo.TileRes, 0.0f);
-            std::memcpy(m_AtlasNormalTileHf.GetMutableSamples(), heights,
-                        static_cast<size_t>(geo.TileRes) * geo.TileRes * sizeof(float32));
-            normalHf = &m_AtlasNormalTileHf;
-        }
-        uint32 nW = 0, nH = 0;
-        std::vector<uint8>& normalOut =
-            fullNative ? tp->Normalmap : m_AtlasNormalTileScratch;
-        {
-            GE_CPU_PROFILE_SCOPE("Terrain.NormalRegen.Whole");
-            GenerateNormalmapFromHeightfield(*normalHf, tileWorld, tileWorld,
-                                             terrain.HeightScale, normalOut,
-                                             nW, nH, nL, nR, nU, nD);
-        }
-        if (fullNative)
-        {
-            tp->NormalmapWidth = nW;
-            tp->NormalmapHeight = nH;
-        }
-        if (normalOut.size() ==
-            static_cast<size_t>(geo.TileRes) * geo.TileRes * 4u)
-        {
-            PackTileBytesIntoSlot(m_AtlasNormalSlotScratch.data(), slotGeo, 0u,
-                                  normalOut.data(), 4u);
-            feature->UploadAtlasNormalSlot(globalGpuHandle, m_AtlasNormalSlotScratch.data(),
-                                           geo.SlotStride, geo.SlotOriginTexelX(slot),
-                                           geo.SlotOriginTexelY(slot));
-        }
+
+    if (!standIn)
+    {
+        GE_CPU_PROFILE_SCOPE("Terrain.NormalRegen.Whole");
+        const float32 tileWorldSize = extraction.Data->Config.TileWorldSize;
+        GenerateNormalmapFromHeightfield(
+            tile->Heightfield, tileWorldSize, tileWorldSize, patch.Context.Component.HeightScale,
+            tile->Normalmap, tile->NormalmapWidth, tile->NormalmapHeight,
+            FindAtlasNeighborHeightfield(patch, coord.X - 1, coord.Z),
+            FindAtlasNeighborHeightfield(patch, coord.X + 1, coord.Z),
+            FindAtlasNeighborHeightfield(patch, coord.X, coord.Z - 1),
+            FindAtlasNeighborHeightfield(patch, coord.X, coord.Z + 1));
+    }
+
+    const auto& normals = standIn ? standIn->Normalmap : tile->Normalmap;
+    if (normals.size() != static_cast<size_t>(geometry.TileRes) * geometry.TileRes * 4u)
+        return;
+
+    PackTileBytesIntoSlot(m_AtlasNormalSlotScratch.data(), slotGeometry, 0u, normals.data(), 4u);
+    patch.Frame.Feature->UploadAtlasNormalSlot(extraction.GlobalGpuHandle, m_AtlasNormalSlotScratch.data(),
+                                               geometry.SlotStride, geometry.SlotOriginTexelX(slot),
+                                               geometry.SlotOriginTexelY(slot));
 }
-
-
 
 void TerrainExtractionSystem::PatchAtlasSlotSplatOnly(AtlasPatchContext& patch, const TileCoord& coord, uint32 slot)
 {

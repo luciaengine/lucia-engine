@@ -1,5 +1,6 @@
 #pragma once
 
+#include "TerrainECS/CoarseTileStandIn.h"
 #include "TerrainECS/DirtyRegionLog.h"
 #include "TerrainECS/TerrainBakeCache.h"
 #include "TerrainECS/TerrainZonePayload.h"
@@ -186,6 +187,7 @@ enum class TileLodState : uint8
 // and splatmap, but shares the single global CDLOD quadtree for selection.
 struct TerrainTileData
 {
+    std::shared_ptr<const CoarseTileStandIn> CoarseStandIn;
     TerrainGrassField GrassField;
     TileCoord Coord;
     float32 WorldOriginX = 0.0f;    // world-space corner of this tile

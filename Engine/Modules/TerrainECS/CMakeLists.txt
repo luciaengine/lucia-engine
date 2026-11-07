@@ -4,6 +4,7 @@ project(TerrainECS LANGUAGES CXX)
 
 add_library(TerrainECS OBJECT
     Source/TerrainService.cpp
+    Source/CoarseTileStandIn.cpp
     Source/TerrainBakeCache.cpp
     Source/BakeWarningLatch.cpp
     Source/TerrainCollisionReadiness.cpp

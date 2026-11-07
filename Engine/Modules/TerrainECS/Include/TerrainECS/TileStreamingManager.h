@@ -85,6 +85,7 @@ struct TileGenerationResult
 
     // Stage 1 output: coarse heightfield
     Terrain::HeightfieldData CoarseHeightfield;
+    std::shared_ptr<CoarseTileStandIn> CoarseStandIn;
 
     // Stage 2 output: full heightfield
     Terrain::HeightfieldData FullHeightfield;

@@ -3549,6 +3549,42 @@ void HoldTheOnlyWorker(JobSystem::WorkStealingThreadPool& pool, std::shared_futu
 }
 } // namespace
 
+TEST(TerrainRegionBake, CoarseArrivalCarriesCurrentHeightsAndNormalsFromTheStreamingJob)
+{
+    ScopedTerrainService scoped;
+    auto& service = TerrainService::Get();
+    const GUID heightmapGuid = GUID::Generate();
+    ASSERT_NE(SeedNoiseHeightmap(service, heightmapGuid), nullptr);
+    const std::array terrains{
+        ProvisionStreamedTerrain(service, "coarse terrain", Components::TerrainBaseSource::HeightmapAsset,
+                                 heightmapGuid)};
+    ASSERT_NE(terrains[0].Tiled, nullptr);
+
+    JobSystem::WorkStealingThreadPool pool(4);
+    TileStreamingManager streaming(&pool);
+    ASSERT_TRUE(StreamUntilAFullJobIsInFlight(streaming, service, terrains));
+    const auto& tiled = *terrains[0].Tiled;
+    const auto coarse = std::find_if(tiled.Tiles.begin(), tiled.Tiles.end(),
+        [](const auto& entry) { return entry.second && entry.second->LodState == TileLodState::Coarse; });
+    ASSERT_NE(coarse, tiled.Tiles.end());
+    const auto& tile = *coarse->second;
+    ASSERT_NE(tile.CoarseStandIn, nullptr);
+
+    const uint32 resolution = tiled.Config.TileConfig.HeightmapWidth;
+    const float32 tileSize = tiled.Config.TileWorldSize;
+    const float32 heightScale = tiled.Config.HeightScale;
+    const auto& standIn = *tile.CoarseStandIn;
+    EXPECT_TRUE(standIn.Matches(resolution, tileSize, heightScale, tile.HeightfieldVersion));
+    EXPECT_FALSE(standIn.Matches(resolution, tileSize, heightScale, tile.HeightfieldVersion + 1));
+
+    CoarseTileStandIn rebuilt;
+    BuildCoarseTileStandIn(tile.Heightfield, resolution, tileSize, heightScale, rebuilt);
+    ASSERT_EQ(standIn.Heights.GetSampleCount(), rebuilt.Heights.GetSampleCount());
+    EXPECT_EQ(0, std::memcmp(standIn.Heights.GetRawSamples(), rebuilt.Heights.GetRawSamples(),
+                            rebuilt.Heights.GetSampleCount() * sizeof(float32)));
+    EXPECT_EQ(standIn.Normalmap, rebuilt.Normalmap);
+}
+
 // Forgetting a terrain whose jobs are still running (its re-provision or teardown, through
 // ForgetTiledTerrain): each job owns the result it writes, so it finishes into memory nothing
 // else holds; none of its output reaches the terrain that next takes the slot; and the other
