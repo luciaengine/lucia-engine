@@ -827,18 +827,18 @@ TEST(SkySunAnchor, DayCyclePreviewChangesTheRenderedSunWithoutWritingTheClock)
     sky.AnimateTimeOfDay = true;
     harness.SetSky(sky);
 
+    harness.System.Update(harness.World, 0.0f);
     auto* feature = harness.Services.GetFeature<Engine::Renderer::SkyRenderFeature>();
     ASSERT_NE(feature, nullptr);
-    harness.System.Update(harness.World, 0.0f);
-    const float originalElevation = feature->GetSettings().primarySunDir[1];
+    const float originalElevation = feature->GetSystemState().sunDirWS[1];
 
     const auto worldId = harness.World.GetWorldId();
     harness.System.SetPreviewHour(worldId, 18.5f);
     harness.System.Update(harness.World, 1.0f);
-    EXPECT_NE(feature->GetSettings().primarySunDir[1], originalElevation);
+    EXPECT_NE(feature->GetSystemState().sunDirWS[1], originalElevation);
     EXPECT_FLOAT_EQ(harness.Sky().TimeOfDayHours, 10.0f);
 
     harness.System.ClearPreviewHour(worldId);
     harness.System.Update(harness.World, 0.0f);
-    EXPECT_FLOAT_EQ(feature->GetSettings().primarySunDir[1], originalElevation);
+    EXPECT_FLOAT_EQ(feature->GetSystemState().sunDirWS[1], originalElevation);
 }

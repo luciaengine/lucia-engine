@@ -42,7 +42,7 @@ DayCycleSunNow ReadDayCycleSunNow(ECS::World& world, const Engine::Renderer::Ren
     const auto* feature = render ? render->GetFeature<Engine::Renderer::SkyRenderFeature>() : nullptr;
     if (now.HasSky && feature && feature->HasActiveSettings())
     {
-        const auto& direction = feature->GetSettings().primarySunDir;
+        const auto& direction = feature->GetSystemState().sunDirWS;
         now.ElevationDegrees = std::asin(std::clamp(direction[1], -1.0f, 1.0f)) *
                                (180.0f / std::numbers::pi_v<float>);
         now.DuskHalf = IsDuskHour(now.Path, Rendering::SolarHourFromDirection(now.Path, direction));

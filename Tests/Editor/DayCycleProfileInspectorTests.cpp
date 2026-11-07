@@ -252,7 +252,9 @@ TEST_F(DayCycleEditorTests, TheScrubStripSharesTheTracksAxis)
     DayCycleTrackRowsContext context;
     context.Profile = DayCycleWorkingCopy::Open(Assets, ShippedDefault(), error);
     ASSERT_NE(context.Profile, nullptr) << error;
-    context.Path = DayCyclePathOf(SkyNow());
+    auto sky = SkyNow();
+    sky.Latitude = 40.0f;
+    context.Path = DayCyclePathOf(sky);
     context.OnScrub = [](float) {};
     context.ScrubRow = true;
     UIElement root;

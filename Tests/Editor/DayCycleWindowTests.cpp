@@ -8,6 +8,7 @@
 #include "Components/Transform.h"
 #include "DayCycle/DayCycleAxis.h"
 #include "DayCycle/DayCycleScrub.h"
+#include "DayCycle/DayCycleSunNow.h"
 #include "DayCycle/DayCycleWindow/DayCycleWindow.h"
 #include "Editor/Entities/EditorECSHelpers.h"
 #include "Engine/Rendering/SkyRenderFeature.h"
@@ -140,8 +141,11 @@ TEST_F(DayCycleEditorTests, AScrubPreviewsTheHourAndLeavesTheSceneAlone)
     Sky.Update(World, 0.0f);
     const auto* feature = Render.GetFeature<Engine::Renderer::SkyRenderFeature>();
     ASSERT_NE(feature, nullptr);
-    const float elevation = std::asin(std::clamp(feature->GetSettings().primarySunDir[1], -1.0f, 1.0f));
+    const float elevation = std::asin(std::clamp(feature->GetSystemState().sunDirWS[1], -1.0f, 1.0f));
     EXPECT_NEAR(elevation * kRadiansToDegrees, ElevationDegreesAtHour(DayCyclePathOf(SkyNow()), 18.5f), 0.01f);
+    const DayCycleSunNow now = ReadDayCycleSunNow(World, &Render, &Sky);
+    EXPECT_NEAR(now.ElevationDegrees, ElevationDegreesAtHour(DayCyclePathOf(SkyNow()), 18.5f), 0.01f);
+    EXPECT_TRUE(now.DuskHalf);
 
     EXPECT_EQ(SkyNow().TimeOfDayHours, 10.0f);
     EXPECT_EQ(Undo.GetUndoCount(), 0u);
