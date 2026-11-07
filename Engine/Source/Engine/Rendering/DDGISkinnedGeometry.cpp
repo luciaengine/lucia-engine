@@ -3,6 +3,7 @@
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/SceneAccelerationStructureService.h"
 #include "Logger/Logger.h"
+#include "Platform/Environment.h"
 #include "Rendering/Core/GPUScene.h"
 #include "Rendering/Core/NamedDescriptorWriter.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
@@ -249,13 +250,14 @@ DDGISkinnedGeometry::TickResult DDGISkinnedGeometry::Tick(
             info.WeightsVB = bindings.weightsVB;
             info.Joints1VB = bindings.joints1VB;
             info.Weights1VB = bindings.weights1VB;
-            info.IndexBuffer = bindings.indexBuffer;
+            info.IndexAddress = m_Device->GetBufferDeviceAddress(bindings.indexBuffer);
             info.CoreStrideBytes = coreStride;
             info.VertexOffset = entry.vertexOffset;
             info.VertexCount = static_cast<uint32_t>(entry.coreSubAlloc.size / coreStride);
             info.FirstIndex = entry.firstIndex;
             info.IndexCount = entry.indexCount;
             info.IndexType = entry.indexType;
+            info.UploadSequence = entry.uploadSeq;
             info.Uv0OffsetFloats = CoreVertexUv0OffsetFloats(entry.vertexFlags);
             info.NormalOffsetFloats = CoreVertexNormalOffsetFloats(entry.vertexFlags);
             info.HasSecondInfluence =
@@ -268,8 +270,7 @@ DDGISkinnedGeometry::TickResult DDGISkinnedGeometry::Tick(
         });
 
     // Sweep this tick's instances; every skinned instance re-skins and
-    // rebuilds each tick (same-address in-place rebuild — topology is fixed,
-    // so the created storage always suffices).
+    // updates each tick. A changed mesh upload retires the previous topology.
     struct TouchedEntry
     {
         Entry* E = nullptr;
@@ -307,6 +308,18 @@ DDGISkinnedGeometry::TickResult DDGISkinnedGeometry::Tick(
             EntryKey(inst.skinPaletteOffset != 0u ? inst.runtimeId : 0u, inst.meshIndex);
         const bool firstTouch = touchedKeys.insert(key).second;
         auto itEntry = m_Entries.find(key);
+        if (itEntry != m_Entries.end() &&
+            (itEntry->second.VertexCount != info.VertexCount ||
+             itEntry->second.UploadSequence != info.UploadSequence ||
+             itEntry->second.Geometry.IndexAddress != info.IndexAddress ||
+             itEntry->second.Geometry.FirstIndex != info.FirstIndex ||
+             itEntry->second.Geometry.IndexCount != info.IndexCount ||
+             itEntry->second.Geometry.IndexKind != static_cast<Rendering::IndexType>(info.IndexType)))
+        {
+            RetireEntry(itEntry->second);
+            m_Entries.erase(itEntry);
+            itEntry = m_Entries.end();
+        }
         if (itEntry == m_Entries.end())
         {
             if (m_Entries.size() >= kMaxSkinnedEntries)
@@ -323,6 +336,7 @@ DDGISkinnedGeometry::TickResult DDGISkinnedGeometry::Tick(
             }
             Entry fresh;
             fresh.VertexCount = info.VertexCount;
+            fresh.UploadSequence = info.UploadSequence;
             fresh.HasUv0 = info.Uv0OffsetFloats != 0xFFFFFFFFu;
 
             Rendering::BufferDesc bd{};
@@ -340,10 +354,12 @@ DDGISkinnedGeometry::TickResult DDGISkinnedGeometry::Tick(
             fresh.Geometry.VertexStrideBytes = kSkinnedVertexStrideBytes;
             fresh.Geometry.FirstVertex = 0;  // dense output; index values stay mesh-local
             fresh.Geometry.MaxVertex = info.VertexCount - 1u;
-            fresh.Geometry.IndexAddress = m_Device->GetBufferDeviceAddress(info.IndexBuffer);
+            fresh.Geometry.IndexAddress = info.IndexAddress;
             fresh.Geometry.FirstIndex = info.FirstIndex;
             fresh.Geometry.IndexCount = info.IndexCount;
             fresh.Geometry.IndexKind = static_cast<Rendering::IndexType>(info.IndexType);
+            fresh.Geometry.AllowUpdate = Platform::EnvironmentSwitchEnabled(
+                "GE_DDGI_SKINNED_REFIT", true);
             if (fresh.Geometry.VertexAddress == 0 || fresh.Geometry.IndexAddress == 0)
             {
                 m_RetiredBuffers.push_back(RetiredBuffer{fresh.SkinnedPositions, m_TickClock});
@@ -363,14 +379,6 @@ DDGISkinnedGeometry::TickResult DDGISkinnedGeometry::Tick(
         }
         Entry& entry = itEntry->second;
         entry.LastSeenTick = m_TickClock;
-        if (entry.VertexCount != info.VertexCount)
-        {
-            // Repooled/reimported mesh under the same key: the created BLAS
-            // storage no longer matches. Retire now; next tick recreates.
-            RetireEntry(entry);
-            m_Entries.erase(itEntry);
-            continue;
-        }
 
         if (hardwareLane && entry.Ready)
             result.TlasRows.push_back(SkinnedTlasRow{i, entry.BlasAddress});
@@ -380,7 +388,7 @@ DDGISkinnedGeometry::TickResult DDGISkinnedGeometry::Tick(
         {
             if (!backend->ReserveBlasScratch(entry.Blas))
                 continue;
-            result.Builds.push_back(PendingSkinnedBuild{entry.Blas, entry.Geometry, {}});
+            result.Builds.push_back(PendingSkinnedBuild{entry.Blas, entry.Geometry, {}, entry.Ready});
         }
         touched.push_back(TouchedEntry{&entry, &info, inst.skinPaletteOffset, {}});
     }
