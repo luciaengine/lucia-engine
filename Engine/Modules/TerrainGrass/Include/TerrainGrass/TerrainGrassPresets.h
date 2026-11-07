@@ -22,12 +22,9 @@ enum class GrassPreset : uint8
 // the component's default. Colors are sRGB bytes, as the picker writes them; the linear albedo each
 // one decodes to is in its comment.
 inline const Components::TerrainGrass kTerrainGrassPresets[] = {
-    // Meadow, the component's defaults: a leaf green (0.19, 0.30, 0.075) on 0.72 m blades, 21 per
-    // square meter at the default blade width so the field covers the ground from eye height and from a strategy
-    // camera within the instance budget's 369 m.
+    // Meadow uses the component defaults: green, 0.72 m blades at 21 blades per square meter.
     {},
-    // Lawn: short, upright and dense, a deeper green (0.15, 0.27, 0.07). 64 per square meter fit
-    // the budget to about 211 m.
+    // Lawn uses short, upright blades at 64 blades per square meter.
     {.BladesPerSquareMeter = 64.0f,
      .BladeHeight = 0.4f,
      .BladeWidth = 0.024f,

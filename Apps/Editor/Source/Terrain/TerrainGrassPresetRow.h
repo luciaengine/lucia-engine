@@ -13,12 +13,8 @@ class EditorChangeNotifications;
 class UndoRedoService;
 } // namespace Editor
 
-/// The Terrain Grass "Preset" row: a list with a picture, the name and one line per kind of field
-/// (Meadow, Lawn, Steppe, Stylized). Picking one writes its whole look
-/// (TerrainGrass::ApplyTerrainGrassPreset) as one undo step, then calls `requestRefresh` so the dial
-/// rows below show the preset's values. The field shows the preset the grass is on, or Custom once a
-/// look dial differs from it (TerrainGrass::ReconcileTerrainGrassPreset); Custom is a state, never an
-/// entry in the list. The row follows the grass's changes (a dial dragged, an undo) while it lives.
+/// Adds an image preset picker with one undo step per selection.
+/// Requests an inspector refresh after applying a preset. Shows Custom when look values differ.
 void AddTerrainGrassPresetRow(UIElement* parent, ECS::World* world, ECS::EntityHandle terrain,
                               Editor::EditorChangeNotifications* notifications, Editor::UndoRedoService* undo,
                               std::function<void()> requestRefresh);
