@@ -15,6 +15,8 @@
 #include <string>
 
 #include "Picking/TerrainPicking.h"
+#include "PagedTiledTerrain.h"
+#include "Scene/TerrainPicking.h"
 
 #include "CBTTerrain/CBTLayout.h"
 #include "CBTTerrain/CBTPlanetShading.h"
@@ -185,6 +187,41 @@ TEST(TerrainPickingRay, PlanarTerrainWithHeightfieldIsPickable)
     ASSERT_TRUE(RaycastTerrain(ray, world, 1000.0f, hit));
     EXPECT_EQ(hit.Entity.id, entity.id);
     EXPECT_NEAR(hit.WorldPosition.y, 0.0f, 0.1f); // flat zero-filled heightfield
+}
+
+// The runtime and editor must pick streamed height pages before any full tile is resident.
+TEST(TerrainPickingRay, RuntimeAndEditorPickTheSamePagedTerrain)
+{
+    constexpr float kTerrainSizeMeters = 1024.0f;
+    constexpr float kRayHeightMeters = 100.0f;
+    constexpr float kMaxDistanceMeters = 1000.0f;
+    constexpr float kHeightToleranceMeters = 0.01f;
+    TerrainServiceScope scope;
+    World world;
+    auto& service = TerrainService::Get();
+    const auto paged = GameEngine::TerrainECS::Test::CreatePagedTiledTerrain(
+        service, kTerrainSizeMeters, kTerrainSizeMeters, kTestHeightScale);
+    const auto entity = world.CreateEntity();
+    world.AddComponentImmediate(entity, paged.Component);
+    world.AddComponentImmediate(entity, Components::WorldTransform{});
+    const Vector3 camera(0.0f, kRayHeightMeters, 0.0f);
+    ASSERT_TRUE(GameEngine::TerrainECS::Test::StreamPagesUntilTheCameraPageLands(
+        service, paged, camera));
+
+    GameEngine::TerrainECS::SurfaceHeightSample expected;
+    ASSERT_TRUE(service.SurfaceQuery(paged.Component, Components::WorldTransform{})
+                    .SampleHeight(camera, GameEngine::TerrainECS::SurfaceHeightPolicy::RequireFinest,
+                                  expected));
+    const Ray3D ray = MakeRay(camera, Vector3(0.0f, -1.0f, 0.0f));
+    TerrainPickHit editorHit{};
+    ASSERT_TRUE(RaycastTerrain(ray, world, kMaxDistanceMeters, editorHit));
+    EXPECT_NEAR(editorHit.WorldPosition.y, expected.Height, kHeightToleranceMeters);
+
+    GameEngine::Scene::TerrainPickHit runtimeHit{};
+    ASSERT_TRUE(GameEngine::Scene::RaycastTerrain(ray, world, kMaxDistanceMeters, runtimeHit));
+    EXPECT_EQ(runtimeHit.Entity.id, entity.id);
+    EXPECT_NEAR(runtimeHit.WorldPosition.y, expected.Height, kHeightToleranceMeters);
+    EXPECT_NEAR(runtimeHit.Distance, editorHit.Distance, kHeightToleranceMeters);
 }
 
 // ---- Unclamped baked heights: the march slab must follow the real surface ----

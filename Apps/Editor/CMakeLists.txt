@@ -594,7 +594,6 @@ set(EDITOR_SOURCES
 	Source/Picking/MeshPickingService.cpp
 	Source/Picking/PickRootResolver.cpp
 	Source/Picking/PrimitiveMeshes.cpp
-	Source/Picking/TerrainPicking.cpp
 	Source/EditorApplication_InspectorSettings.cpp
 	Source/Editor/Settings/EditorHiDpiPlatformSettings.cpp
 	Source/EditorApplication_Fullscreen.cpp

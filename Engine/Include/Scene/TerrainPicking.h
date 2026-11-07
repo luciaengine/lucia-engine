@@ -277,12 +277,9 @@ inline bool SolvePlanetSurfaceHit(const Mathematics::Ray3D& ray, float32 radius,
     return true;
 }
 
-// Cast a ray against the active terrain in the world and return the closest hit, refined to
-// the surface. Planar terrains are marched over their heightfield footprint; the spherical
-// (planet) domain is solved against the displaced sphere the CBT renderer draws. A spherical
-// terrain is never tested against its residual planar heightfield — that footprint is not
-// drawn, so presenting it as a pick target would be a phantom. `maxDistance` bounds the ray
-// length; hits beyond it are not reported.
+// Returns the nearest terrain hit within maxDistance. Planar terrain uses CPU height pages or
+// resident heightfields; a coarse page hit fetches the finest page and retries when available.
+// Spherical terrain is cast against the displaced CBT surface, never its residual planar field.
 bool RaycastTerrain(const Mathematics::Ray3D& ray,
                     GameEngine::ECS::World& world,
                     float32 maxDistance,
