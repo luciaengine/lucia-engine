@@ -1,5 +1,6 @@
 #include "UI/Interaction/FocusIsInside.h"
 
+#include "UI/Controls/TextArea.h"
 #include "UI/UIElement.h"
 #include "UI/UIManager.h"
 
@@ -7,6 +8,28 @@
 
 namespace GameEngine::UI
 {
+
+namespace
+{
+
+// Depth budget on an ancestor walk, as the event bubble and the hover descendant test carry:
+// a malformed parent cycle must not hang a keystroke.
+constexpr int kMaxAncestorDepth = 2048;
+
+// A text field takes the focus for its text input, which passes its focus to the field.
+bool EditsText(UIElement& element)
+{
+    if (element.GetAsTextInput() || dynamic_cast<const TextArea*>(&element))
+        return true;
+    for (const auto& child : element.GetChildren())
+    {
+        if (child->GetAsTextInput() && child->GetFocusProxy() == &element)
+            return true;
+    }
+    return false;
+}
+
+} // namespace
 
 bool FocusIsInside(const UIElement& element)
 {
@@ -35,6 +58,27 @@ bool FocusIsInside(const UIElement& element)
             return true;
     }
     return false;
+}
+
+bool FocusIsInTextInput(const UIManager& manager, const UIElement* within)
+{
+    const std::string& focusId = manager.GetFocusedElementId();
+    if (focusId.empty())
+        return false;
+    UIElement* root = manager.GetRootElement();
+    if (!root)
+        return false;
+
+    bool editsText = false;
+    bool inside = within == nullptr;
+    int depth = 0;
+    for (UIElement* el = root->FindById(focusId); el && depth++ < kMaxAncestorDepth;
+         el = el->GetParent())
+    {
+        editsText = editsText || EditsText(*el);
+        inside = inside || el == within;
+    }
+    return editsText && inside;
 }
 
 } // namespace GameEngine::UI

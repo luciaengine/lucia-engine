@@ -94,17 +94,39 @@ static bool IsPermutationOfSlotIndices(const std::vector<uint32_t>& order, uint3
 } // namespace
 
 
+// True when a file is at `path` or `reserved` holds it.
+static bool IsPathTaken(const std::filesystem::path& path, std::span<const std::filesystem::path> reserved)
+{
+    std::error_code ec;
+    return std::filesystem::exists(path, ec) || std::find(reserved.begin(), reserved.end(), path) != reserved.end();
+}
+
+std::filesystem::path MakeNumberedFilePath(const std::filesystem::path& dir, const std::filesystem::path& fileName,
+                                           std::span<const std::filesystem::path> reserved)
+{
+    constexpr int kLastNumber = 9999;
+    std::filesystem::path candidate = (dir / fileName).lexically_normal();
+    const std::string stem = fileName.stem().string();
+    const std::string extension = fileName.extension().string();
+    for (int number = 1; IsPathTaken(candidate, reserved); ++number)
+    {
+        if (number > kLastNumber)
+            return {};
+        candidate = (dir / (stem + " (" + std::to_string(number) + ")" + extension)).lexically_normal();
+    }
+    return candidate;
+}
+
 std::filesystem::path MakeUniqueFilePath(const std::filesystem::path& dir,
                                          const std::string& baseStem,
-                                         const std::string& extensionWithDot,
-                                         std::span<const std::filesystem::path> reserved)
+                                         const std::string& extensionWithDot)
 {
     std::error_code ec;
     for (int i = 0; i < 4096; ++i)
     {
         const std::string stem = (i == 0) ? baseStem : (baseStem + std::to_string(i));
         const std::filesystem::path candidate = (dir / (stem + extensionWithDot)).lexically_normal();
-        if (!std::filesystem::exists(candidate, ec) && std::find(reserved.begin(), reserved.end(), candidate) == reserved.end())
+        if (!std::filesystem::exists(candidate, ec))
             return candidate;
     }
     return {};

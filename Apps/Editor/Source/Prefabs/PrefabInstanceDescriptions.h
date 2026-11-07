@@ -16,6 +16,12 @@ namespace GameEngine
 {
 }
 
+namespace GameEngine
+{
+struct OverrideMenuEntry;
+struct OverrideMenuTarget;
+}
+
 namespace GameEngine::ECS
 {
 class World;
@@ -87,6 +93,9 @@ class PrefabInstanceDescriptions final
 /// The reflected field of `typeId` that the scene key `key` of an override writes: the field of that name, or
 /// the array field whose name the element's index follows. Empty when no reflected field matches.
 std::string_view ReflectedFieldForSceneKey(ECS::ComponentTypeId typeId, std::string_view key);
+
+/// Apply and Revert menu entries for an instance field or component header.
+std::vector<OverrideMenuEntry> QueryPrefabOverrideMenu(const OverrideMenuTarget& target);
 
 /// Writes `targets` into their prefab files as one undo step named `undoName`. A refusal shows a notice.
 void ApplyPrefabOverridesAsOneStep(ECS::World& world, std::span<const Scene::PrefabOverrideTarget> targets,

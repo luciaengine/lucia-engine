@@ -196,6 +196,41 @@ PrefabRowState ClassifyPrefabRow(ECS::World& world, ECS::EntityHandle entity, co
     return state;
 }
 
+void DecoratePrefabRow(ECS::World& world, ECS::EntityHandle entity, HierarchyRowParts& parts)
+{
+    const AssetRegistry& registry = EngineCore::GetInstance().GetAssetManager().GetRegistry();
+    const PrefabRowState state = ClassifyPrefabRow(world, entity, registry);
+    const PrefabEntityMark mark = state.Role == PrefabRowRole::None
+                                      ? PrefabEntityMark::Unknown
+                                      : FindEntityMark(world, entity);
+
+    const bool wasMissing = parts.Row.HasClass(kMissingClass);
+    parts.Row.RemoveClass(kRootClass);
+    parts.Row.RemoveClass(kMemberClass);
+    parts.Row.RemoveClass(kMissingClass);
+    ApplyMarker(parts.Row, mark);
+
+    // An entity added on an instance, and the entities under it, are not part of the prefab.
+    const bool inPrefab = mark != PrefabEntityMark::Added && mark != PrefabEntityMark::NotInPrefab;
+    if (state.Role == PrefabRowRole::InstanceRoot)
+        parts.Row.AddClass(state.SourceMissing ? kMissingClass : kRootClass);
+    // The root of a nested instance has both classes: its glyph is a root's, its badge a member's.
+    if (state.InsideInstance && inPrefab)
+        parts.Row.AddClass(kMemberClass);
+
+    // The tooltip is this decoration's only while the row shows a missing file.
+    if (!parts.Title)
+        return;
+    if (state.SourceMissing)
+    {
+        const GUID source = world.GetComponent<Components::PrefabInstance>(entity)->Source;
+        const std::string& path = FindMissingPrefabPath(MissingPathsFor(world), registry, source);
+        parts.Title->SetTooltip(MissingPrefabTooltip(path, source));
+    }
+    else if (wasMissing)
+        parts.Title->SetTooltip("");
+}
+
 void SetShownText(Label& label, const std::string& text)
 {
     label.SetText(text);

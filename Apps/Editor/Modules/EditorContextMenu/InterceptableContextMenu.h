@@ -73,6 +73,8 @@ class InterceptableContextMenu final : public INativeContextMenu
     void SetItemChecked(uint32_t commandId, bool checked) override;
     void SetItemColor(uint32_t commandId, const std::string& hexColor) override;
     void SetItemIcon(uint32_t commandId, const std::string& imagePath) override;
+    void SetItemShortcut(uint32_t commandId, const std::string& keyText) override;
+    void SetItemTooltip(uint32_t commandId, const std::string& text) override;
     void SetSubMenuIcon(uint32_t submenuId, const std::string& imagePath) override;
     void Show(Platform::Window* window, int x, int y) override;
 

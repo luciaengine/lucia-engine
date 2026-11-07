@@ -1,4 +1,6 @@
 #include "Panels/HierarchyPanel.h"
+
+#include "UI/Interaction/FocusIsInside.h"
 #include "Panels/HierarchyCommandIds.h"
 #include "AssetCore/Asset.h"
 #include "AssetCore/AssetTypes.h"
@@ -1775,6 +1777,8 @@ HierarchyPanel::HierarchyPanel()
             }
             if (m_VcsController)
                 m_VcsController->DecorateRow(handle, *row);
+            Editor::HierarchyRowParts parts{*row, titleEl};
+            Editor::ApplyHierarchyRowDecorations(*m_World, handle, parts);
             if (titleEl && !previewIconEl)
             {
                 auto previewIcon = std::make_unique<UIElement>();
@@ -2391,6 +2395,24 @@ HierarchyPanel::HierarchyPanel()
         builder.Build(m_ContextMenu.get());
         m_ContextMenu->Show(m_Window, (int)x, (int)y); };
     m_Tree->SetOnContextMenu(m_ShowContextMenu);
+
+    m_Tree->RegisterEventHandler(kEventKeyDown, [this](UIEvent& event) {
+        const auto* manager = GetOwnerManager();
+        if (!manager || !UI::FocusIsInside(*m_Tree) || UI::FocusIsInTextInput(*manager, m_Tree))
+            return;
+        const uint32_t command = Editor::EditorPluginRegistry::Get().HierarchyCommandForKey(event.Key, event.Mods);
+        if (command == 0)
+            return;
+        m_ContextTargetEntity = {};
+        if (m_Selection)
+        {
+            const auto& selected = m_Selection->GetSelection();
+            if (!selected.empty())
+                m_ContextTargetEntity = HierarchyDataProvider::Decode(static_cast<TreeId>(selected.front()));
+        }
+        if (HandleCommand(command))
+            event.Stop();
+    });
 
     // Cmd/Ctrl+D: duplicate selected entities.
     m_Tree->RegisterEventHandler(kEventKeyDown, [this](UIEvent& e)

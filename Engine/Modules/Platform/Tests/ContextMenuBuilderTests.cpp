@@ -63,12 +63,22 @@ public:
     {
         m_SubMenuIcons.emplace_back(submenuId, imagePath);
     }
+    void SetItemShortcut(uint32_t commandId, const std::string& keyText) override
+    {
+        m_Shortcuts.emplace_back(commandId, keyText);
+    }
+    void SetItemTooltip(uint32_t commandId, const std::string& text) override
+    {
+        m_Tooltips.emplace_back(commandId, text);
+    }
     void Show(Platform::Window*, int, int) override {}
 
     std::vector<SubMenuRecord>    m_SubMenus;
     std::vector<ItemRecord>       m_Items;
     std::vector<SeparatorRecord>  m_Separators;
     std::vector<std::pair<uint32_t, std::string>> m_SubMenuIcons;
+    std::vector<std::pair<uint32_t, std::string>> m_Shortcuts;
+    std::vector<std::pair<uint32_t, std::string>> m_Tooltips;
 
 private:
     uint32_t m_NextId = 1;
@@ -184,6 +194,19 @@ TEST(ContextMenuBuilderTests, AppliesIconToCommandlessSubmenu)
     EXPECT_EQ(menu.m_SubMenuIcons[0].second, "editor:Icons/terrain.png");
 }
 
+
+TEST(ContextMenuBuilderTests, GivesDisabledItemsTheirShortcutAndRefusalText)
+{
+    FakeContextMenu menu;
+    ContextMenuBuilder builder;
+    builder.AddItem("Create Prefab", 7, MenuItemFlag_Disabled, 0, {}, "Ctrl+Shift+P", "Select an entity first.")
+        .AddItem("Refresh", 8);
+    builder.Build(&menu);
+    const std::vector<std::pair<uint32_t, std::string>> shortcuts{{7u, "Ctrl+Shift+P"}};
+    const std::vector<std::pair<uint32_t, std::string>> tooltips{{7u, "Select an entity first."}};
+    EXPECT_EQ(menu.m_Shortcuts, shortcuts);
+    EXPECT_EQ(menu.m_Tooltips, tooltips);
+}
 
 TEST(PlatformShellTests, OpenPath_ReturnsFalseForEmptyAndNonExisting)
 {

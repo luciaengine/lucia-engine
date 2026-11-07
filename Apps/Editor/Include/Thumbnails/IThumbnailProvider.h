@@ -2,11 +2,14 @@
 #include <array>
 
 #include "AssetCore/GUID.h"
+#include "AssetCore/AssetTypes.h"
+#include "Thumbnails/AssetThumbnailHandler.h"
 #include "Thumbnails/FolderBakeReport.h"
 
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -22,6 +25,9 @@ public:
         const std::array<float, 4>& /*uv*/, std::function<void(const std::string&)> /*ready*/,
         const std::array<float, 2>& /*magentaKey*/ = {-1.0f, 0.0f}) { return {}; }
     virtual ~IThumbnailProvider() = default;
+
+    /// Registers a feature's thumbnail handler when the provider supports handlers.
+    virtual void RegisterHandler(AssetType, std::unique_ptr<AssetThumbnailHandler>) {}
 
     // Set the runtime Assets/ root so returned paths can be relative to it.
     virtual void SetAssetsRoot(const std::filesystem::path& root) = 0;

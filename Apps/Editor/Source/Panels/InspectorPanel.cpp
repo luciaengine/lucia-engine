@@ -71,6 +71,8 @@
 #include "UI/UIManager.h"
 
 #include "InspectorRegistry.h"
+#include "UI/ControlLayoutLoader.h"
+#include "UI/Interaction/FocusIsInside.h"
 #include "Inspectors/ComponentPresets.h"
 #include "Inspectors/GeneratedEntityNotice.h"
 #include "Inspectors/InspectorEntityActivity.h"
@@ -150,6 +152,10 @@ std::size_t MaterialSlotOrderKeyHash::operator()(const MaterialSlotOrderKey& k) 
 
 namespace
 {
+constexpr const char* kHeaderTrailingLayoutAssetPath = "UI/inspectors/EntityHeader/EntityHeader.uxml";
+constexpr std::array<std::string_view, 4> kHeaderTrailingRequiredIds = {
+    "inspector-header-badge", "inspector-header-history", "inspector-history-back", "inspector-history-forward"};
+
 
 // Icon for an Add Component category submenu row.
 const char* CategoryIcon(const std::string& category)
@@ -466,6 +472,11 @@ constexpr uint32_t kCmdInspectorRestoreLastSettings = 0x5243;
 constexpr uint32_t kCmdInspectorResetComponentValues = 0x5244;
 constexpr uint32_t kCmdInspectorRestoreSavedSettingsBase = 0x5260;
 constexpr uint32_t kCmdInspectorRestoreSavedSettingsMax = 16;
+constexpr uint32_t kCmdInspectorOverrideMenuBase = 0x5280;
+constexpr uint32_t kCmdInspectorOverrideMenuMax = 16;
+// The override entries lead the component header menu, before Copy (-3), with a separator after them.
+constexpr int kOverrideMenuPriority = -6;
+constexpr int kOverrideMenuSeparatorPriority = -5;
 constexpr size_t kMaxSavedComponentSettingsPerType = 24;
 constexpr size_t kMaxSavedComponentSettingsMenuItems = 10;
 constexpr const char* kProjectInspectorSavedSettingsKey = "inspector.componentSavedSettings";
@@ -1964,6 +1975,10 @@ void InspectorPanel::ClearContent()
     m_HistoryButtonsRow = nullptr;
     m_HistoryBackButton = nullptr;
     m_HistoryForwardButton = nullptr;
+    m_EntityRefreshAfterTextEdit = false;
+    m_EntityNameHeader = nullptr;
+    m_EntityNameField = nullptr;
+    m_ContextOverrideMenuEntries.clear();
     m_HeaderIconHost = nullptr;
     m_HeaderTitleField = nullptr;
     m_SectionTypeIds.clear();
@@ -2199,44 +2214,29 @@ void InspectorPanel::RecordInspectorHistory(InspectorSelectionHistoryEntry entry
 
 void InspectorPanel::MountHistoryButtons(UIElement& headerContainer)
 {
-    auto historyRow = std::make_unique<UIElement>();
-    historyRow->SetId("inspector-header-history");
-    historyRow->AddClass("inspector-header-history");
-    historyRow->Overrides()
-        .Set(Style::Display, DisplayMode::Flex)
-        .Set(Style::FlexDir, FlexDirection::Row)
-        .Set(Style::AlignItems, AlignItems::Center)
-        .Set(Style::Gap, StyleLength::Px(2.0f))
-        .Set(Style::FlexShrink, 0.0f);
-    m_HistoryButtonsRow = historyRow.get();
-
-    auto backBtn = std::make_unique<Button>();
-    backBtn->SetId("inspector-history-back");
-    backBtn->AddClass("icon-button");
-    backBtn->AddClass("inspector-header-history-icon");
-    backBtn->AddClass("inspector-history-back-btn");
-    backBtn->SetText("");
-    backBtn->SetTooltip("Previous selection");
-    backBtn->Overrides().Set(Style::FlexShrink, 0.0f);
-    m_HistoryBackButton = backBtn.get();
-    backBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&)
-                        { NavigateSelectionHistoryBack(); });
-
-    auto fwdBtn = std::make_unique<Button>();
-    fwdBtn->SetId("inspector-history-forward");
-    fwdBtn->AddClass("icon-button");
-    fwdBtn->AddClass("inspector-header-history-icon");
-    fwdBtn->AddClass("inspector-history-forward-btn");
-    fwdBtn->SetText("");
-    fwdBtn->SetTooltip("Next selection");
-    fwdBtn->Overrides().Set(Style::FlexShrink, 0.0f);
-    m_HistoryForwardButton = fwdBtn.get();
-    fwdBtn->RegisterEventHandler(kEventButtonClick, [this](UIEvent&)
-                       { NavigateSelectionHistoryForward(); });
-
-    historyRow->AddChild(std::move(backBtn));
-    historyRow->AddChild(std::move(fwdBtn));
-    headerContainer.AddChild(std::move(historyRow));
+    std::unique_ptr<UIElement> slot = Editor::ControlLayoutLoader::Load(kHeaderTrailingLayoutAssetPath,
+                                                                        kHeaderTrailingRequiredIds);
+    if (!slot)
+        return;
+    m_HistoryButtonsRow = slot->FindById("inspector-header-history");
+    m_HistoryBackButton = dynamic_cast<Button*>(slot->FindById("inspector-history-back"));
+    m_HistoryForwardButton = dynamic_cast<Button*>(slot->FindById("inspector-history-forward"));
+    if (m_HistoryBackButton)
+    {
+        m_HistoryBackButton->SetTooltip("Previous selection");
+        m_HistoryBackButton->RegisterEventHandler(kEventButtonClick,
+                                                  [this](UIEvent&) { NavigateSelectionHistoryBack(); });
+    }
+    if (m_HistoryForwardButton)
+    {
+        m_HistoryForwardButton->SetTooltip("Next selection");
+        m_HistoryForwardButton->RegisterEventHandler(kEventButtonClick,
+                                                     [this](UIEvent&) { NavigateSelectionHistoryForward(); });
+    }
+    headerContainer.AddChild(std::move(slot));
+    // The name mark writes the badge, so it runs here, after the badge exists.
+    if (&headerContainer == m_EntityNameHeader && m_EntityNameField && m_World)
+        UpdateEntityNameOverrideMark(headerContainer, *m_EntityNameField, *m_World, m_Entity);
 }
 
 namespace
@@ -3053,6 +3053,50 @@ void InspectorPanel::ShowEntities(World* world, const std::vector<EntityHandle>&
     m_SuppressInspectorHistory = prevSuppress;
 }
 
+void InspectorPanel::AddOverrideMenuEntries(ContextMenuBuilder& builder, ECS::ComponentTypeId typeId)
+{
+    m_ContextOverrideMenuEntries.clear();
+    if (!m_World || m_Entities.size() > 1)
+        return;
+    const OverrideMenuTarget target{m_World, m_Entity, typeId, {}, m_Undo, m_ChangeNotifications};
+    m_ContextOverrideMenuEntries = InspectorRegistry::Get().QueryOverrideMenu(target);
+    if (m_ContextOverrideMenuEntries.size() > kCmdInspectorOverrideMenuMax)
+        m_ContextOverrideMenuEntries.resize(kCmdInspectorOverrideMenuMax);
+    if (m_ContextOverrideMenuEntries.empty())
+        return;
+    for (uint32_t index = 0; index < m_ContextOverrideMenuEntries.size(); ++index)
+        builder.AddItem(m_ContextOverrideMenuEntries[index].Label, kCmdInspectorOverrideMenuBase + index,
+                        MenuItemFlag_None, kOverrideMenuPriority, m_ContextOverrideMenuEntries[index].IconPath);
+    builder.AddItem("---override", 0, MenuItemFlag_None, kOverrideMenuSeparatorPriority);
+}
+
+bool InspectorPanel::RunOverrideMenuCommand(uint32_t commandId)
+{
+    if (commandId < kCmdInspectorOverrideMenuBase ||
+        commandId >= kCmdInspectorOverrideMenuBase + m_ContextOverrideMenuEntries.size())
+        return false;
+    // A copy: the entry's edit can rebuild the panel, which clears the kept entries.
+    const std::function<void()> run = m_ContextOverrideMenuEntries[commandId - kCmdInspectorOverrideMenuBase].Run;
+    m_ContextOverrideMenuEntries.clear();
+    if (run)
+        run();
+    ShowEntity(m_World, m_Entity, /*force=*/true);
+    return true;
+}
+
+void InspectorPanel::RefreshOverrideMarks()
+{
+    if (!m_World || !m_World->IsValid(m_Entity) || m_Entities.size() > 1)
+        return;
+    if (m_EntityNameHeader && m_EntityNameField)
+        UpdateEntityNameOverrideMark(*m_EntityNameHeader, *m_EntityNameField, *m_World, m_Entity);
+    for (const auto& [section, typeId] : m_SectionTypeIds)
+        section->SetOverridden(InspectorRegistry::Get().QueryComponentOverrides(*m_World, m_Entity, typeId).Overridden);
+    for (auto& entry : m_SectionRefreshCallbacks)
+        for (auto& callback : entry.second.OverrideMarks)
+            callback();
+}
+
 void InspectorPanel::RefreshTrackedComponentSignature()
 {
     m_LastComponentSignature = CollectVisibleComponentSignature(m_World, m_Entity);
@@ -3078,6 +3122,7 @@ void InspectorPanel::BuildComponentSectionBody(InspectorSection* section, ECS::C
     SectionRefreshCallbacks& refreshCallbacks = m_SectionRefreshCallbacks[typeId];
     ctx.SimulationRefreshCallbacks = &refreshCallbacks.Simulation;
     ctx.FrameRefreshCallbacks = &refreshCallbacks.Frame;
+    ctx.OverrideMarkRefreshCallbacks = &refreshCallbacks.OverrideMarks;
     ctx.PingAsset = m_PingAsset;
     ctx.PingAssetPreserveInspector = m_PingAssetPreserveInspector;
     ctx.SelectEntity = m_SelectEntity;
@@ -3622,6 +3667,10 @@ void InspectorPanel::AddEntityHeaderName(UIElement* headerContainer, ECS::Entity
         nameContext.ChangeNotifications = m_ChangeNotifications;
         auto headerField = std::make_unique<InspectorEntityNameField>(
             nameContext, [this] { RefreshTrackedComponentSignature(); });
+        m_EntityNameHeader = headerContainer;
+        m_EntityNameField = headerField.get();
+        AttachOverrideMenu(*headerField, {m_World, entity, ECS::GetComponentTypeId<Name>(), "value", m_Undo,
+                                         m_ChangeNotifications}, [this]() { RequestEntityRefresh(); });
         headerContainer->AddChild(std::move(headerField));
     }
     else
@@ -3674,7 +3723,8 @@ bool InspectorPanel::CollectDisplayComponentIds(ECS::EntityHandle entity, bool i
     bannerContext.PingAsset = m_PingAsset;
     bannerContext.SelectEntity = m_SelectEntity;
     bannerContext.EditorCtx = m_Context;
-    bannerContext.RequestInspectorRefresh = [this]() { RequestEntityRefresh(); };
+    bannerContext.RequestInspectorRefresh = [this]() { m_EntityRefreshAfterTextEdit = true; };
+    bannerContext.RefreshOverrideMarks = [this]() { RefreshOverrideMarks(); };
     for (const InspectorFn& banner : InspectorRegistry::Get().GetEntityBanners(EntityBannerPlacement::BeforeComponents))
         banner(bannerContext);
 
@@ -3821,6 +3871,13 @@ int InspectorPanel::BuildComponentSections(ECS::EntityHandle entity, const std::
         auto section = std::make_unique<InspectorSection>(title);
         InspectorSection* sectionRaw = section.get();
         m_SectionTypeIds[sectionRaw] = typeId;
+        if (m_Entities.size() <= 1)
+        {
+            const auto overrides = InspectorRegistry::Get().QueryComponentOverrides(*m_World, entity, typeId);
+            sectionRaw->SetOverridden(overrides.Overridden);
+            if (!overrides.Badge.empty())
+                sectionRaw->SetHeaderBadge(overrides.Badge, overrides.BadgeTooltip, InspectorSection::BadgeKind::Override);
+        }
         m_ComponentSectionsByType[typeId] = sectionRaw;
         // The material slots are the renderer's own settings: they read as off with its body.
         if (typeId == pseudoMaterialSectionId)
@@ -4028,6 +4085,7 @@ void InspectorPanel::ShowComponentSectionContextMenu(ECS::ComponentTypeId typeId
     m_ContextMenu->Clear();
     ContextMenuBuilder builder;
     m_ContextSavedSettingsMenuIndices.clear();
+    AddOverrideMenuEntries(builder, typeId);
 
     // Component settings snapshots + copy/paste (skip the pseudo material section, which isn't a real component).
     if (typeId != pseudoMaterialSectionId)
@@ -4171,6 +4229,9 @@ void InspectorPanel::ShowComponentSectionContextMenu(ECS::ComponentTypeId typeId
 void InspectorPanel::HandleComponentContextMenuCommand(uint32_t cmd)
 {
     if (!m_World || !m_Entity.IsValid() || !m_World->IsValid(m_Entity))
+        return;
+
+    if (RunOverrideMenuCommand(cmd))
         return;
 
     if (cmd == kCmdInspectorCopyComponent)
@@ -6068,6 +6129,14 @@ void InspectorPanel::TickSimulationRefresh()
     PollPendingAssetLoad();
     if (!m_World || !m_Entity.IsValid() || !m_World->IsValid(m_Entity))
         return;
+
+    const auto* manager = GetOwnerManager();
+    if (m_EntityRefreshAfterTextEdit &&
+        (!manager || (!UI::FocusIsInTextInput(*manager, m_TopRoot) && !UI::FocusIsInTextInput(*manager, m_ContentRoot))))
+    {
+        m_EntityRefreshAfterTextEdit = false;
+        RequestEntityRefresh();
+    }
 
     // The derived state lands with the hierarchy pass, a frame after the switch that caused it.
     SyncEntityActivityPresentation();

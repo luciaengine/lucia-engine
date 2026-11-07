@@ -299,7 +299,7 @@ void CreatePrefabDialog::ShowFiles()
     std::string shown;
     for (const std::string& name : m_Names)
     {
-        m_Files.push_back(MakeUniqueFilePath(m_Folder, name, ".prefab", m_Files));
+        m_Files.push_back(MakeNumberedFilePath(m_Folder, name + ".prefab", m_Files));
         shown += (shown.empty() ? "" : ", ") + m_Files.back().filename().string();
     }
     m_FilesLabel->SetText(shown);

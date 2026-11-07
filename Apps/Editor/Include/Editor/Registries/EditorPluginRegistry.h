@@ -100,6 +100,8 @@ public:
     {
         return false;
     }
+    /// The focused Hierarchy's command for this key; zero when the plugin has no binding.
+    virtual uint32_t HierarchyCommandForKey(int /*key*/, int /*mods*/) const { return 0; }
     // Selection/hover outline contribution for entities whose rendered meshes
     // are plugin-generated. Append zero or more parts; entities the plugin
     // does not own must be left untouched.
@@ -145,6 +147,8 @@ public:
                                    const HierarchyContextMenuContext& context);
     bool HandleHierarchyCommand(uint32_t commandId,
                                 const HierarchyCommandContext& context);
+    /// The first enabled plugin's Hierarchy command for this key, or zero.
+    uint32_t HierarchyCommandForKey(int key, int mods) const;
     void CollectSelectionMaskParts(ECS::World& world,
                                    ECS::EntityHandle entity,
                                    std::vector<SelectionMaskPart>& outParts);

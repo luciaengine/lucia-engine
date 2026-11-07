@@ -466,6 +466,18 @@ UIContextMenu::UIContextMenu() = default;
             item->colorHex = hexColor;
     }
 
+    void UIContextMenu::SetItemShortcut(uint32_t commandId, const std::string& keyText)
+    {
+        auto* item = FindItem(commandId, m_RootItems);
+        if (item) item->shortcut = keyText;
+    }
+
+    void UIContextMenu::SetItemTooltip(uint32_t commandId, const std::string& text)
+    {
+        auto* item = FindItem(commandId, m_RootItems);
+        if (item) item->tooltip = text;
+    }
+
     void UIContextMenu::SetItemIcon(uint32_t commandId, const std::string& imagePath)
     {
         auto* item = FindItem(commandId, m_RootItems);
@@ -1042,12 +1054,22 @@ UIContextMenu::UIContextMenu() = default;
         lbl->SetText(item.title);
         raw->AddChild(std::move(lbl));
 
-        // Two commands can share a name under different submenus, so a filtered
-        // row says where it came from.
-        // Filtered rows show icon + command name only; the submenu the match
-        // came from stays available as a tooltip rather than a trailing label.
-        if (!path.empty())
-            raw->SetTooltip(path + kMenuPathSeparator + item.title);
+        if (!item.shortcut.empty() && !item.isSubMenu)
+        {
+            auto key = std::make_unique<Label>();
+            key->AddClass("dropdown-item-shortcut");
+            key->Overrides().Set(Style::PointerEvents, false);
+            key->SetText(item.shortcut);
+            raw->AddChild(std::move(key));
+        }
+
+        // A filtered row shows only its icon and name, and two commands can share a name under different
+        // submenus, so its tooltip starts with its submenu path. The item's own tooltip text follows.
+        std::string tooltip = path.empty() ? std::string() : path + kMenuPathSeparator + item.title;
+        if (!item.tooltip.empty())
+            tooltip += (tooltip.empty() ? "" : "\n") + item.tooltip;
+        if (!tooltip.empty())
+            raw->SetTooltip(std::move(tooltip));
 
         if (!item.colorHex.empty())
         {

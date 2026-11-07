@@ -1,6 +1,7 @@
 #include "Prefabs/PrefabHierarchyRows.h"
 
 #include "Assets/AssetCreation.h"
+#include "Assets/AssetsFolderDropRegistry.h"
 #include "Editor/DragDropPayloads.h"
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Entities/EntityDisplayName.h"
@@ -8,6 +9,8 @@
 #include "Editor/Registries/EditorPluginRegistry.h"
 #include "Editor/Shortcuts/EditorShortcuts.h"
 #include "InspectorRegistry.h"
+#include "Inspectors/DefaultComponentInspector.h"
+#include "Prefabs/PrefabRemovedComponents.h"
 #include "Prefabs/CreatePrefab/CreatePrefabCommand.h"
 #include "Prefabs/CreatePrefab/CreatePrefabDialog.h"
 #include "Prefabs/PrefabOverridesList/PrefabOverridesList.h"
@@ -16,11 +19,11 @@
 #include "Prefabs/PrefabThumbnailHandler.h"
 #include "Prefabs/UnpackPrefabCommand.h"
 #include "SceneView/SceneViewNoticeOverlay.h"
-#include "Thumbnails/ThumbnailService.h"
 #include "UI/Controls/Button.h"
 #include "UI/EditorIcons.h"
 #include "UI/InspectorSection.h"
 #include "UI/UIManager.h"
+#include "Thumbnails/IThumbnailProvider.h"
 #include "EditorContext.h"
 #include "UndoRedo/UndoRedoService.h"
 
@@ -63,6 +66,8 @@ constexpr uint32_t kCmdSelectPrefabAsset = 0x5102u;
 constexpr uint32_t kCmdUnpackPrefab = 0x5103u;
 constexpr uint32_t kCmdUnpackPrefabCompletely = 0x5104u;
 constexpr int kPrefabMenuPriority = -46;
+constexpr const char* kShortcutGroup = "Hierarchy";
+constexpr const char* kCreatePrefabShortcut = "Create Prefab";
 
 // What a confirmed Create Prefab dialog acts on: the roots, one prefab each, and the services of the
 // Hierarchy that opened the dialog.
@@ -302,6 +307,59 @@ void OpenCreatePrefabDialog(const HierarchyCommandContext& context)
                            DefaultPrefabFolder(context.EditorCtx));
 }
 
+// The roots of a Hierarchy drag, each of which becomes a prefab when it is dropped on an Assets folder.
+std::vector<ECS::EntityHandle> DraggedRoots(const AssetsFolderDrop& drop)
+{
+    ECS::World* world = drop.EditorCtx ? drop.EditorCtx->World : nullptr;
+    return world ? FindTopRoots(*world, DecodeHierarchyEntities(drop.Request)) : std::vector<ECS::EntityHandle>{};
+}
+
+// A Hierarchy drag dropped on an Assets folder makes a prefab of each dragged root there.
+UI::Interaction::DropFeedback CanDropEntityOnFolder(const AssetsFolderDrop& drop)
+{
+    if (!drop.Request.payload.TryGet<HierarchyEntityDragPayload>())
+        return {false, "Drag entities from the Hierarchy to create prefabs."};
+    const std::vector<ECS::EntityHandle> roots = DraggedRoots(drop);
+    if (roots.empty())
+        return {false, "The entities are not in the open scene."};
+    std::string refusal = DescribeCreateRefusal(*drop.EditorCtx->World, roots);
+    return {refusal.empty(), std::move(refusal)};
+}
+
+// The drop makes a prefab of each root at once in the drop folder, named for the root, with a number
+// when the name is taken, and returns the new files; the menu's dialog is the path that asks for a
+// name. A notice states what happens to the fields that name an entity outside the prefabs.
+std::vector<std::filesystem::path> CreatePrefabFromFolderDrop(const AssetsFolderDrop& drop)
+{
+    if (!CanDropEntityOnFolder(drop).Allowed)
+        return {};
+    const EditorContext& editor = *drop.EditorCtx;
+    const CreatePrefabTarget target{editor.World, DraggedRoots(drop), editor.ChangeNotifications, editor.UndoRedo,
+                                    {}, editor.OnSceneDirty};
+    std::vector<std::filesystem::path> files;
+    std::size_t outgoing = 0;
+    for (const ECS::EntityHandle root : target.Roots)
+    {
+        files.push_back(MakeNumberedFilePath(drop.Folder, PrefabFileStem(*target.World, root) + ".prefab", files));
+        outgoing += Scene::CollectOutgoingReferences(*target.World, root).size();
+    }
+    std::string error = std::format("Every name for a prefab in {} is taken. Drop on another folder.",
+                                    drop.Folder.filename().string());
+    const bool named = std::find(files.begin(), files.end(), std::filesystem::path()) == files.end();
+    if (!named || !CreatePrefabsFromDialog(target, files, false, error))
+    {
+        ShowSceneViewNotice(std::move(error));
+        return {};
+    }
+    if (outgoing > 0)
+    {
+        const std::string created = files.size() == 1 ? files.front().filename().string()
+                                                      : std::format("{} prefabs", files.size());
+        ShowSceneViewNotice(std::format("Created {}. {}", created, CreatePrefabDialog::DescribeOutgoingReferences(outgoing)));
+    }
+    return files;
+}
+
 void SelectPrefabAsset(const HierarchyCommandContext& context)
 {
     if (!context.HasTargetEntity || !context.World || !context.PingAsset)
@@ -352,50 +410,67 @@ void AddPrefabBar(const InspectorContext& context)
     PrefabInstanceDescriptions::Get().Forget(*context.World, context.Entity);
     context.Parent->AddChild(std::make_unique<PrefabBar>(*context.World, context.Entity, context.ChangeNotifications,
                                                          context.Undo, OverridesListContext(), context.PingAsset,
-                                                         std::function<void()>{},
+                                                         context.RefreshOverrideMarks,
                                                          context.RequestInspectorRefresh));
 }
 
-void AddRemovedComponentRows(const InspectorContext& context)
+// The Inspector's answer for one component of an instance entity: the fields it overrides and whether
+// the instance added it.
+ComponentOverrides QueryPrefabComponentOverrides(ECS::World& world, ECS::EntityHandle entity,
+                                                 ECS::ComponentTypeId typeId)
 {
-    if (!context.World || !context.Parent || context.Entities.size() > 1)
+    ComponentOverrides answer;
+    const Scene::PrefabInstanceEntity* described = PrefabInstanceDescriptions::Get().FindEntity(world, entity);
+    if (!described)
+        return answer;
+    // The entity header asks for the Name: an entity the instance added reads "Added" there.
+    if (described->AddedOnInstance && typeId == ECS::GetComponentTypeId<Components::Name>())
+    {
+        answer.Overridden = true;
+        answer.Badge = "Added";
+        answer.BadgeTooltip = "Added on this instance. The prefab does not have this entity.";
+        return answer;
+    }
+    const std::string_view token = Scene::SceneSchemaRegistry::SchemaTokenForComponentType(typeId);
+    if (token.empty())
+        return answer;
+    for (const Scene::PrefabOverride& entry : described->Overrides)
+    {
+        if (entry.Component != token)
+            continue;
+        if (entry.Kind == Scene::PrefabOverrideKind::AddedComponent)
+        {
+            answer.Overridden = true;
+            answer.Badge = "Added";
+            answer.BadgeTooltip = "Added on this instance. The prefab does not have this component.";
+        }
+        else if (entry.Kind == Scene::PrefabOverrideKind::Field)
+        {
+            answer.Overridden = true;
+            const std::string_view field = ReflectedFieldForSceneKey(typeId, entry.Field);
+            if (!field.empty() && !answer.IsFieldOverridden(field))
+                answer.Fields.emplace_back(field);
+        }
+    }
+    return answer;
+}
+
+// The muted headers, after an instance entity's components, of the components it removed.
+void AddRemovedComponentHeaders(const InspectorContext& context)
+{
+    if (!context.World || !context.Parent)
         return;
-    const auto* described = PrefabInstanceDescriptions::Get().FindEntity(*context.World, context.Entity);
+    const Scene::PrefabInstanceEntity* described = PrefabInstanceDescriptions::Get().FindEntity(*context.World, context.Entity);
     if (!described)
         return;
-
-    const auto isInPlayMode = OverridesListContext().IsInPlayMode;
-    for (const auto& entry : described->Overrides)
-    {
-        if (entry.Kind != Scene::PrefabOverrideKind::RemovedComponent)
-            continue;
-
-        auto section = std::make_unique<InspectorSection>(IdentifierToWords(entry.Component));
-        section->SetEnabledTogglePlaceholder(true);
-        section->SetHeaderBadge("Removed", "The prefab has this component. This instance removed it.");
-        if (!isInPlayMode || !isInPlayMode())
-        {
-            auto restore = std::make_unique<Button>();
-            restore->SetText("Restore Component");
-            restore->SetOnClick([target = Scene::PrefabOverrideTarget{context.Entity, entry},
-                                 getWorld = context.GetWorld, originalWorld = context.World,
-                                 undo = context.Undo, notifications = context.ChangeNotifications,
-                                 refresh = context.RequestInspectorRefresh, isInPlayMode](UIEvent&)
-            {
-                if (isInPlayMode && isInPlayMode())
-                    return;
-                ECS::World* world = getWorld ? getWorld() : originalWorld;
-                if (!world || world != originalWorld || !world->IsValid(target.Entity))
-                    return;
-                RevertPrefabOverridesAsOneStep(*world, std::span(&target, 1), undo, notifications,
-                                                "Restore Prefab Component");
-                if (refresh)
-                    refresh();
-            });
-            section->GetContentRoot()->AddChild(std::move(restore));
-        }
-        context.Parent->AddChild(std::move(section));
-    }
+    std::vector<std::string> removed;
+    for (const Scene::PrefabOverride& entry : described->Overrides)
+        if (entry.Kind == Scene::PrefabOverrideKind::RemovedComponent)
+            removed.push_back(entry.Component);
+    if (removed.empty())
+        return;
+    const OverrideMenuTarget entity{context.World, context.Entity, 0, {}, context.Undo, context.ChangeNotifications};
+    context.Parent->AddChild(std::make_unique<PrefabRemovedComponents>(removed, entity, context.RequestInspectorRefresh));
 }
 
 // The menu entry that selects the prefab file, named for the prefab as the Inspector's bar names it.
@@ -426,7 +501,7 @@ class PrefabHierarchyMenu final : public IEditorPlugin
         const uint32_t unpackFlags = FlagsFor(CanUnpack(world, entity));
         builder.AddItem("Prefab", 0, MenuItemFlag_None, kPrefabMenuPriority, EditorIcons::kCube);
         builder.AddItem("Prefab/Create Prefab\xe2\x80\xa6", kCmdCreatePrefab, FlagsFor(createRefusal.empty()),
-                        kPrefabMenuPriority);
+                        kPrefabMenuPriority, {}, CatalogShortcutLabel(kShortcutGroup, kCreatePrefabShortcut), createRefusal);
         builder.AddItem(SelectPrefabLabel(world, entity), kCmdSelectPrefabAsset, selectFlags, kPrefabMenuPriority);
         builder.AddItem("Prefab/Unpack", kCmdUnpackPrefab, unpackFlags, kPrefabMenuPriority);
         builder.AddItem("Prefab/Unpack Completely", kCmdUnpackPrefabCompletely, unpackFlags, kPrefabMenuPriority);
@@ -451,6 +526,11 @@ class PrefabHierarchyMenu final : public IEditorPlugin
         default:
             return false;
         }
+    }
+
+    uint32_t HierarchyCommandForKey(int key, int mods) const override
+    {
+        return MatchesCatalogShortcut(kShortcutGroup, kCreatePrefabShortcut, key, mods) ? kCmdCreatePrefab : 0u;
     }
 
   private:
@@ -491,14 +571,24 @@ void RegisterPrefabEditor(EditorChangeNotifications& notifications, IThumbnailPr
         [&notifications](ECS::World& world) { RefreshViewsOf(notifications, world); });
     EditorComponentTraits traits;
     traits.HiddenInInspector = true;
+    traits.HierarchyRowClass = "hierarchy-entity-prefab";
+    traits.IsPickClimbRoot = true;
+    traits.DecorateHierarchyRow = &DecoratePrefabRow;
     EditorComponentTraitsRegistry::Get().Register(ECS::GetComponentTypeId<Components::PrefabInstance>(),
                                                   std::move(traits));
     InspectorRegistry::Get().RegisterEntityBanner("prefab-bar", EntityBannerPlacement::BeforeComponents, &AddPrefabBar);
     InspectorRegistry::Get().RegisterEntityBanner("prefab-removed-components", EntityBannerPlacement::AfterComponents,
-                                                   &AddRemovedComponentRows);
+                                                   &AddRemovedComponentHeaders);
+    InspectorRegistry::Get().SetComponentOverridesAnswerer(&QueryPrefabComponentOverrides);
+    InspectorRegistry::Get().SetOverrideMenuAnswerer(
+        [isInPlayMode](const OverrideMenuTarget& target) {
+            return isInPlayMode && isInPlayMode() ? std::vector<OverrideMenuEntry>{} : QueryPrefabOverrideMenu(target);
+        });
     EditorPluginRegistry::Get().RegisterPlugin(Menu());
-    if (auto* service = dynamic_cast<ThumbnailService*>(thumbnails))
-        service->RegisterHandler(AssetType::Prefab, std::make_unique<PrefabThumbnailHandler>());
+    AssetsFolderDropRegistry::Get().Register(UI::Interaction::GetPayloadTypeId<HierarchyEntityDragPayload>(),
+                                           {&CanDropEntityOnFolder, &CreatePrefabFromFolderDrop});
+    if (thumbnails)
+        thumbnails->RegisterHandler(AssetType::Prefab, std::make_unique<PrefabThumbnailHandler>());
 }
 
 } // namespace GameEngine::Editor

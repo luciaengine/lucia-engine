@@ -24,8 +24,11 @@ namespace GameEngine::Editor
 // until no conflict is found. Returns empty path on failure (4096 attempts exhausted).
 std::filesystem::path MakeUniqueFilePath(const std::filesystem::path& dir,
                                          const std::string& baseStem,
-                                         const std::string& extensionWithDot,
-                                         std::span<const std::filesystem::path> reserved = {});
+                                         const std::string& extensionWithDot);
+
+/// A numbered copy name, keeping names reserved by the same batch apart.
+std::filesystem::path MakeNumberedFilePath(const std::filesystem::path& dir, const std::filesystem::path& fileName,
+                                          std::span<const std::filesystem::path> reserved = {});
 
 struct AssetFileResult
 {

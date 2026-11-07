@@ -429,11 +429,28 @@ void ClearHierarchyEntityIconClasses(UIElement* row)
     }
 }
 
+void ApplyHierarchyRowDecorations(ECS::World& world, ECS::EntityHandle entity, HierarchyRowParts& parts)
+{
+    for (const auto& decorate : EditorComponentTraitsRegistry::Get().HierarchyRowDecorators())
+        decorate(world, entity, parts);
+}
+
 void ApplyHierarchyEntityIconClasses(ECS::World* world, UIElement* row, ECS::EntityHandle handle)
 {
     ClearHierarchyEntityIconClasses(row);
     if (!world || !row || !handle.IsValid() || !world->IsValid(handle))
         return;
+
+    // Plugin-owned components (editor packages) contribute row classes via
+    // registered traits.
+    for (const auto& [typeId, rowClass] : Editor::EditorComponentTraitsRegistry::Get().HierarchyRowClasses())
+    {
+        if (world->HasComponent(handle, typeId))
+        {
+            row->AddClass(rowClass);
+            return;
+        }
+    }
 
     if (world->GetComponent<Components::Camera>(handle) != nullptr)
     {
@@ -551,17 +568,6 @@ void ApplyHierarchyEntityIconClasses(ECS::World* world, UIElement* row, ECS::Ent
             return;
         }
         return;
-    }
-
-    // Plugin-owned components (editor packages) contribute row classes via
-    // registered traits.
-    for (const auto& [typeId, rowClass] : Editor::EditorComponentTraitsRegistry::Get().HierarchyRowClasses())
-    {
-        if (world->HasComponent(handle, typeId))
-        {
-            row->AddClass(rowClass);
-            return;
-        }
     }
 
     if (world->GetComponent<Components::OceanSurface>(handle) != nullptr)

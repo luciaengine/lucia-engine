@@ -98,6 +98,7 @@ set(EDITOR_SOURCES
 	Source/Automation/UiReplayRunner.cpp
 	Source/Telemetry/RGCsvSidecar.cpp
     Source/Assets/AssetCreation.cpp
+    Source/Assets/AssetsFolderDropRegistry.cpp
     Source/Assets/AssetPipelineCommands.cpp
     Source/Assets/AssetRename.cpp
     Source/Assets/AssetRenameController.cpp
@@ -106,6 +107,7 @@ set(EDITOR_SOURCES
     Source/Prefabs/PrefabHierarchyRows.cpp
     Source/Prefabs/PrefabInstanceDescriptions.cpp
     Source/Prefabs/PrefabEditorRegistration.cpp
+    Source/Prefabs/PrefabRemovedComponents.cpp
     Source/Prefabs/PrefabThumbnailHandler.cpp
     Source/Prefabs/UnpackPrefabCommand.cpp
     Source/Prefabs/PrefabBar.cpp

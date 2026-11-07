@@ -2406,3 +2406,19 @@ button.large,
 .context-menu-search .search-field-with-filter-input {
 	padding-right: 36px;
 }
+
+.context-menu .dropdown-item-shortcut {
+	flex-shrink: 0;
+	margin-left: 24px;
+	margin-right: -32px;
+	text-align: right;
+	color: var(--ui_color_text_dim);
+}
+
+.context-menu .dropdown-item:hover .dropdown-item-shortcut {
+	color: var(--ui_color_text_bright);
+}
+
+.context-menu .dropdown-item.disabled .dropdown-item-shortcut {
+	color: var(--ui_color_menu_text_disabled);
+}

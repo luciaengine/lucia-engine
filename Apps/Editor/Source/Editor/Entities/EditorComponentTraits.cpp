@@ -110,6 +110,19 @@ bool EditorComponentTraitsRegistry::IsHiddenInInspector(ECS::ComponentTypeId typ
     return it != m_Traits.end() && it->second.HiddenInInspector;
 }
 
+std::vector<std::function<void(ECS::World&, ECS::EntityHandle, HierarchyRowParts&)>>
+EditorComponentTraitsRegistry::HierarchyRowDecorators() const
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    std::vector<std::function<void(ECS::World&, ECS::EntityHandle, HierarchyRowParts&)>> decorators;
+    for (const auto& [typeId, traits] : m_Traits)
+    {
+        if (traits.DecorateHierarchyRow)
+            decorators.push_back(traits.DecorateHierarchyRow);
+    }
+    return decorators;
+}
+
 std::vector<std::pair<ECS::ComponentTypeId, std::string>> EditorComponentTraitsRegistry::HierarchyRowClasses() const
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
