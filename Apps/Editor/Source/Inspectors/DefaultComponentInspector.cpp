@@ -1412,6 +1412,8 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
 
     for (const ECS::FieldInfo& field : fields)
     {
+        if (!onlyFields.empty() && std::find(onlyFields.begin(), onlyFields.end(), field.Name) == onlyFields.end())
+            continue;
         const std::string tooltip(field.Tooltip);
         const char* tooltipPtr = tooltip.empty() ? nullptr : tooltip.c_str();
 

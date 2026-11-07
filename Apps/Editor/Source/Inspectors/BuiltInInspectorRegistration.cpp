@@ -66,6 +66,7 @@
 #include "Inspectors/SplineFenceSpanPieceInspector.h"
 #include "Inspectors/SplineInspector.h"
 #include "Inspectors/SplinePlacementInspector.h"
+#include "Inspectors/SplineRecipe/Paving/SplinePavingInspector.h"
 #include "Inspectors/TextureInspector.h"
 #include "Inspectors/TransformInspector.h"
 #include "Inspectors/ValueCurveInspector.h"
@@ -144,6 +145,7 @@ void RegisterBuiltInInspectors()
     RegisterTerrainModifierInspectors();
     RegisterSplineInspectors();
     RegisterSplinePlacementInspector();
+    RegisterSplinePavingInspector();
     RegisterSplineFenceInspector();
     RegisterSplineFenceSpanPieceInspector();
 

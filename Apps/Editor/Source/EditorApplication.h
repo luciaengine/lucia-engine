@@ -90,7 +90,7 @@ class SceneThumbnailCapture;
 class PackageManagerController;
 class MovieRecorderController;
 class PlayModeManager;
-class RecipeControllers;
+class RecipeEditorHooks;
 class UniversalSearchController;
 enum class PlayModeState : std::uint8_t;
 namespace Telemetry
@@ -489,7 +489,7 @@ class EditorApplication : public Application
     std::unique_ptr<Editor::SceneThumbnailCapture> m_SceneThumbnailCapture;
     std::unique_ptr<Editor::PlayModeManager> m_PlayMode;
     std::unique_ptr<Editor::MovieRecorderController> m_MovieRecorder;
-    std::unique_ptr<Editor::RecipeControllers> m_RecipeControllers;
+    std::unique_ptr<Editor::RecipeEditorHooks> m_RecipeEditorHooks;
     std::unique_ptr<MissingAssetTracker> m_MissingAssetTracker;
 
     // Separate InputSystem for gameplay code — only receives events when

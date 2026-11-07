@@ -755,6 +755,10 @@ public:
 
     Event<std::span<const GUID>>& GetFilesChangedEvent();
 
+    /// Dispatches an event with all GUIDs redirected to its asset.
+    /// Call on the owner thread for AssetReloaded events.
+    void DispatchWithRedirectSources(AssetEvent event);
+
     /**
      * @brief Get the job system for task submission
      */
@@ -874,12 +878,6 @@ private:
      * @brief Check for assets that need reloading
      */
     void CheckForReloads();
-
-    /**
-     * @brief Dispatch an asset event with its RedirectSources filled, so an invalidator reaches a
-     * cache that holds the asset under a GUID redirected to it. Safe from any thread.
-     */
-    void DispatchWithRedirectSources(AssetEvent event);
 
     /**
      * @brief Start the reloads RequestAsyncReload kept for first loads that

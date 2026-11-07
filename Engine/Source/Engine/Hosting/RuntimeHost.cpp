@@ -1,6 +1,7 @@
 #include "Engine/Rendering/Pipeline/RenderPipeline.h"
 #include "Engine/Rendering/Pipeline/RenderPipelineNodes.h"
 #include "Engine/Hosting/RuntimeHost.h"
+#include "SplineRecipes/SplineRecipeSystem.h"
 
 #include "Assets/AssetManager.h"
 #include "Assets/AssetRegistry.h"
@@ -365,6 +366,17 @@ Engine::Renderer::PipelineResolveFailure RuntimeHost::LoadRenderPipeline()
     return Engine::Renderer::PipelineResolveFailure::None;
 }
 
+namespace
+{
+void ReleaseSceneRecipes(EngineCore& engine, ECS::World& world)
+{
+    auto* loop = engine.GetRenderingLoop();
+    auto* systems = loop ? loop->GetSystemManager() : nullptr;
+    if (auto* recipes = systems ? systems->GetSystem<SplineRecipes::SplineRecipeSystem>() : nullptr)
+        recipes->ReleaseSceneScoped(world);
+}
+} // namespace
+
 bool RuntimeHost::OpenScene(const std::filesystem::path& scenePath)
 {
     auto& engine = EngineCore::GetInstance();
@@ -379,6 +391,8 @@ bool RuntimeHost::OpenScene(const std::filesystem::path& scenePath)
     const auto sceneFile = assetRoot / scenePath;
 
     RuntimeSceneAssetResolver assetResolver(engine.GetAssetManager(), assetRoot);
+
+    ReleaseSceneRecipes(engine, *world);
 
     Scene::LoadOptions opts{};
     opts.mode = Scene::LoadMode::Replace;
@@ -934,7 +948,10 @@ void RuntimeHost::Shutdown()
     m_UiPostProcessLifetime.reset();
     m_GameUI.reset();
 
-    EngineCore::GetInstance().DisableRenderingLoop();
+    auto& engine = EngineCore::GetInstance();
+    if (auto* world = engine.GetPrimaryWorld())
+        ReleaseSceneRecipes(engine, *world);
+    engine.DisableRenderingLoop();
 
     if (m_RenderCtx)
     {

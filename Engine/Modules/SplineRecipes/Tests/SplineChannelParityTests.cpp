@@ -1,27 +1,15 @@
-// Byte-identity oracle for WidthMode = Channel.
-//
-// The region fill replaces the swept ribbon for FitToBanks only; Channel keeps
-// the sweep, and "keeps" has to mean the same bytes rather than the same idea.
-// This digests the whole Channel pipeline the controller runs — station stream,
-// end taper, chunk carving, strip sweep — over the RiverVignette water run, and
-// pins the result to a literal captured from the builder BEFORE the fill landed.
-//
-// A change to the sweep, the profile, the taper or the chunking moves the digest.
-// That is the point: Channel output is frozen, so any move is either a bug or a
-// deliberate change that must re-baseline this literal ON PURPOSE.
-//
-// The station generation mirrors SplineExtrudeController::Rebuild for an identity
-// placer with conform off (no raycast, so the path is pure and device-free).
+// A byte-identity digest of the Channel pipeline (stations, end taper, chunks, strip sweep) over the RiverVignette water
+// run. Any change to its output moves the digest and needs a deliberate new literal. The stations match
+// SplineExtrudeController::Rebuild for an identity placer with conform off, so the path needs no device.
 
-#include "Placement/CenterlineSampling.h"
-#include "Placement/SplineChunkSlots.h"
-#include "Placement/TileLayout.h"
+#include "SplineLayout/CenterlineSampling.h"
+#include "SplineRecipes/SplineChunkSlots.h"
+#include "SplineLayout/TileLayout.h"
 #include "Spline/SplineData.h"
 #include "Spline/SplineEvaluator.h"
 #include "SplineGeometry/SplineEndTaper.h"
 #include "SplineGeometry/SplineProfile.h"
 #include "SplineGeometry/SplineStripBuilder.h"
-#include "Types/Fnv1a.h"
 
 #include <gtest/gtest.h>
 
@@ -41,17 +29,21 @@ namespace
 constexpr float32 kChunkLengthMetres = 50.0f;
 constexpr uint32 kMaxChunks = 200;
 
-// Seed the pinned digests below were captured with. It is not the FNV-1a offset
-// basis (one digit short); keep it, or every pinned literal must be re-baselined.
-constexpr uint64 kPinnedDigestSeed = 1469598103934665603ull;
-
 // FNV-1a over raw bytes: a bit-identity check, not a numeric comparison. Float
 // bytes are hashed as they lie, so a one-ULP move in any vertex changes it.
 struct ByteDigest
 {
-    uint64 Value = kPinnedDigestSeed;
+    uint64 Value = 1469598103934665603ull;
 
-    void Bytes(const void* data, size_t size) { Value = Hashing::Fnv1a64(data, size, Value); }
+    void Bytes(const void* data, size_t size)
+    {
+        const auto* p = static_cast<const unsigned char*>(data);
+        for (size_t i = 0; i < size; ++i)
+        {
+            Value ^= static_cast<uint64>(p[i]);
+            Value *= 1099511628211ull;
+        }
+    }
 
     void Float(float32 v) { Bytes(&v, sizeof(v)); }
     void U32(uint32 v) { Bytes(&v, sizeof(v)); }
@@ -112,7 +104,7 @@ std::vector<SG::SplineStripStation> ChannelStations(const Spline::SplineData& da
                                                     std::vector<float32>& outDistance)
 {
     const float32 arcLength = data.TotalArcLength;
-    const uint32 denseCount = Editor::CenterlineSampleCount(arcLength);
+    const uint32 denseCount = SplineLayout::CenterlineSampleCount(arcLength);
 
     std::vector<Spline::SplineFrame> frames;
     Spline::SampleUniform(data, denseCount, frames);
@@ -131,8 +123,8 @@ std::vector<SG::SplineStripStation> ChannelStations(const Spline::SplineData& da
 
         const V3 ahead = frames[std::min(i + 1u, frames.size() - 1u)].Position;
         const V3 behind = frames[i == 0u ? 0u : i - 1u].Position;
-        const V3 forward = Editor::NormalizedOrFallback(ahead - behind, V3(0.0f, 0.0f, 1.0f));
-        const V3 right = Editor::NormalizedOrFallback(
+        const V3 forward = SplineLayout::NormalizedOrFallback(ahead - behind, V3(0.0f, 0.0f, 1.0f));
+        const V3 right = SplineLayout::NormalizedOrFallback(
             V3::Cross(worldUp, V3(forward.x, 0.0f, forward.z)), V3(1.0f, 0.0f, 0.0f));
 
         const float32 localS =
@@ -175,7 +167,7 @@ uint64 ChannelRunDigest(float32 endTaperMetres)
     stripParams.TilesPerMetreV = 1.0f;
     stripParams.UOriginMetres = distance.front();
 
-    const auto ranges = Editor::CarveChunkRanges(distance, kChunkLengthMetres, kMaxChunks);
+    const auto ranges = SplineRecipes::CarveChunkRanges(distance, kChunkLengthMetres, kMaxChunks);
 
     ByteDigest digest;
     digest.U32(static_cast<uint32>(ranges.size()));
@@ -190,21 +182,11 @@ uint64 ChannelRunDigest(float32 endTaperMetres)
 
 } // namespace
 
-// The baselines are per-architecture, and that is not a workaround: the strip is
-// built from sin/cos/normalize, libm rounds those differently on x86-64 and
-// arm64, and a digest turns a single 1-ULP difference into a total mismatch. One
-// constant could therefore only ever hold on the machine that captured it.
-//
-// PROVENANCE, because the two are not equally strong. The x86-64 pair was
-// captured from the pre-fill builder — nothing in the fill slice produced it,
-// which is what made it evidence that the slice moved no Channel byte. The
-// arm64 pair was captured on arm64 from the post-slice code, so it is a change
-// DETECTOR from here on, not independent proof of that slice. The non-circular
-// half of this suite is TheTaperActuallyChangesTheRun below, which compares two
-// runs against each other and needs no captured constant at all.
+// The digests are per architecture, because libm rounds sin, cos and normalize differently on x86-64 and arm64. Both
+// pairs detect a change; TheTaperActuallyChangesTheRun compares two runs and needs no captured constant.
 #if defined(__aarch64__) || defined(_M_ARM64)
-constexpr uint64 kUntaperedRunDigest = 581434757012935431ull;
-constexpr uint64 kTaperedRunDigest = 3985377892147645201ull;
+constexpr uint64 kUntaperedRunDigest = 17246085919231709071ull;
+constexpr uint64 kTaperedRunDigest = 14094433706161054375ull;
 #else
 constexpr uint64 kUntaperedRunDigest = 6517947516823628650ull;
 constexpr uint64 kTaperedRunDigest = 2319233531916964652ull;

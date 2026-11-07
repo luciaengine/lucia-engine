@@ -433,6 +433,7 @@ set(EDITOR_SOURCES
 	Source/Inspectors/SplineFenceSpanPieceInspector.cpp
 	Source/Inspectors/SplineFenceOverrideFields.cpp
 	Source/Inspectors/SplinePlacementInspector.cpp
+	Source/Inspectors/SplineRecipe/Paving/SplinePavingInspector.cpp
 	Source/ExternalScriptEditorLauncher.cpp
 	Source/ScriptEditor/SourceLocation.cpp
 	Source/ScriptEditor/SourceLocationOpener.cpp
@@ -586,7 +587,7 @@ set(EDITOR_SOURCES
 	Source/Placement/FenceSpanOverrideRemap.cpp
 	Source/Placement/FenceSpanOverrides.cpp
 	Source/Placement/PlacementGroundGap.cpp
-	Source/Placement/RecipeControllers.cpp
+	Source/Placement/RecipeEditorHooks.cpp
 	Source/Placement/RecipeValidation.cpp
 	Source/Placement/SplineFillRebuild.cpp
 	Source/Placement/SplineChunkCommit.cpp
@@ -605,11 +606,8 @@ set(EDITOR_SOURCES
 	Source/Placement/SplineWallSanitize.cpp
 	# Mesh picking service (shared per-triangle CPU raycaster).
 	Source/Picking/MeshPickingService.cpp
-	Source/Picking/MeshBvhCache.cpp
-	Source/Picking/MeshBvhDiskFormat.cpp
 	Source/Picking/PickRootResolver.cpp
 	Source/Picking/PrimitiveMeshes.cpp
-	Source/Picking/TerrainPicking.cpp
 	Source/EditorApplication_InspectorSettings.cpp
 	Source/Editor/Settings/EditorHiDpiPlatformSettings.cpp
 	Source/EditorApplication_Fullscreen.cpp
@@ -1109,7 +1107,6 @@ if(EMSCRIPTEN)
 		${EDITOR_SDK_SOURCES}
 		${EDITOR_MINIZ_SOURCES}
 		$<TARGET_OBJECTS:VCSIntegration>
-		$<TARGET_OBJECTS:MeshPicking>
 	)
 	# Tree Generator (eztree) ships as two MODULE DLLs on desktop. Wasm cannot
 	# dlopen them, and this file return()s before ge_add_engine_package_module.
@@ -1826,9 +1823,7 @@ target_link_libraries(Editor PRIVATE AssetDatabaseSqlite)
 # (git, svn, diversion, lore) lives in an Editor-kind package module under
 # Packages/ — the editor core carries zero provider code and packaged
 # games ship no VCS code.
-set(_GE_EDITOR_OBJECT_MODULES
-	MeshPicking
-)
+set(_GE_EDITOR_OBJECT_MODULES)
 foreach(_ge_editor_object_module IN LISTS _GE_EDITOR_OBJECT_MODULES)
 	if(TARGET ${_ge_editor_object_module})
 		target_sources(Editor PRIVATE $<TARGET_OBJECTS:${_ge_editor_object_module}>)
