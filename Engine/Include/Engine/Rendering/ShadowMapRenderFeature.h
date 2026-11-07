@@ -349,6 +349,7 @@ struct alignas(16) ShadowDataGPU
     //                       w = metres per normalized height
     //   terrainShadowSource: x = map bindless index; y = height texture bindless index;
     //                        z = 1 when present; w = map side (texels)
+    //   terrainShadowField: x = the lit field's bindless index (0: none); y = its levels; zw = 0
     float terrainShadowGrid0[4];
     float terrainShadowGrid1[4];
     float terrainShadowGrid2[4];
@@ -357,8 +358,9 @@ struct alignas(16) ShadowDataGPU
     // Optional source-camera depth plane in receiver-relative world space.
     // Zero xyz selects the ordinary receiver camera depth.
     float ShadowReferenceDepth[4];
+    uint32_t terrainShadowField[4];
 };
-static_assert(sizeof(ShadowDataGPU) == 560, "ShadowDataGPU must be 560 bytes");
+static_assert(sizeof(ShadowDataGPU) == 576, "ShadowDataGPU must be 576 bytes");
 
 /// Rebase shared directional cascades, terrain coordinates and source-view depth.
 void RebaseDirectionalShadowData(ShadowDataGPU& data, const Rendering::CameraData& source,
