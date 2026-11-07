@@ -1,4 +1,4 @@
-#include "Picking/MeshBvhDiskFormat.h"
+#include "Scene/MeshBvhDiskFormat.h"
 
 #include <format>
 #include <fstream>
@@ -10,7 +10,7 @@
 #include "Mathematics/Vector3.h"
 #include "Types/Fnv1a.h"
 
-namespace GameEngine::Editor::Picking
+namespace GameEngine::Scene
 {
 
 namespace

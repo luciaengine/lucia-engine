@@ -27,6 +27,7 @@ add_library(TerrainECS OBJECT
     Source/PagedHeightSampler.cpp
     Source/TerrainHeightSource.cpp
     Source/TerrainHeightPages.cpp
+    Source/SurfaceHeightQuery.cpp
     Source/TerrainHeightPageFeature.cpp
     Source/TerrainHeightPageDriver.cpp
     Source/HeightPageStoreLoader.cpp
