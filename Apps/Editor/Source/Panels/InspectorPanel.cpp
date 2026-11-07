@@ -3667,10 +3667,13 @@ void InspectorPanel::AddEntityHeaderName(UIElement* headerContainer, ECS::Entity
         nameContext.ChangeNotifications = m_ChangeNotifications;
         auto headerField = std::make_unique<InspectorEntityNameField>(
             nameContext, [this] { RefreshTrackedComponentSignature(); });
-        m_EntityNameHeader = headerContainer;
-        m_EntityNameField = headerField.get();
-        AttachOverrideMenu(*headerField, {m_World, entity, ECS::GetComponentTypeId<Name>(), "value", m_Undo,
-                                         m_ChangeNotifications}, [this]() { RequestEntityRefresh(); });
+        if (!isMultiEdit)
+        {
+            m_EntityNameHeader = headerContainer;
+            m_EntityNameField = headerField.get();
+            AttachOverrideMenu(*headerField, {m_World, entity, ECS::GetComponentTypeId<Name>(), "value", m_Undo,
+                                             m_ChangeNotifications}, [this]() { RequestEntityRefresh(); });
+        }
         headerContainer->AddChild(std::move(headerField));
     }
     else

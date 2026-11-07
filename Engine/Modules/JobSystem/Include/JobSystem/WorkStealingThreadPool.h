@@ -524,6 +524,7 @@ class WorkStealingThreadPool
      * @return The index, or SIZE_MAX on a thread that is no pool's worker
      */
     size_t GetCurrentWorkerId() const;
+    /// Returns whether the calling thread is a worker or is executing an inline job.
     static bool IsExecutingJob();
 
     /**
