@@ -1,0 +1,28 @@
+---
+title: Scene readiness
+description: Check whether a loaded scene is ready to show.
+---
+
+A game can read the scene readiness snapshot from a native C++ system update.
+The snapshot is taken at the start of the frame and includes pending model and
+material resolution, editor scene opening, material shader compilation,
+draw variant compilation, device pipeline builds, and material texture binds.
+
+```cpp title="Read the scene readiness snapshot"
+#include "Core/Engine.h"
+#include "SceneLoadTracker/SceneLoadTracker.h"
+
+const auto& loading = GameEngine::EngineCore::GetInstance().GetSceneLoadTracker();
+if (loading.IsReadyToShow())
+    RevealWorld();
+```
+
+Work requested in the current frame appears in the next snapshot. Keep the
+loading screen visible in the frame that starts a load. If loads generate work
+over several frames, wait for several consecutive ready snapshots before
+revealing the world. `GetStatus()` gives the pending counts by category and
+`Describe()` gives the details for a stalled load. Read both on the main thread.
+
+A game can register a category for its own work and start a `WorkTicket` before
+submitting that work. Call `Complete()` when it finishes. A background ticket
+contributes to the counts without holding readiness.
