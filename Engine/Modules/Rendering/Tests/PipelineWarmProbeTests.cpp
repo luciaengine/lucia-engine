@@ -189,11 +189,13 @@ TEST(PipelineBuildRequest, RequestedPipelineIsNotBuiltOnTheCallerAndIsWarmOnceIt
     EXPECT_FALSE(dev->TryGetWarmComputePipeline(id).IsValid()) << "the request built on the calling thread";
     EXPECT_EQ(dev->RequestComputePipeline(id), PipelineBuildState::Pending);
     EXPECT_EQ(held.Jobs.size(), 1u) << "a second request of a pending pipeline queued a second build";
+    EXPECT_EQ(dev->PendingPipelineBuildCount(), 1u);
 
     held.RunAll();
     EXPECT_TRUE(dev->TryGetWarmComputePipeline(id).IsValid());
     EXPECT_EQ(dev->RequestComputePipeline(id), PipelineBuildState::Warm);
     EXPECT_TRUE(held.Jobs.empty());
+    EXPECT_EQ(dev->PendingPipelineBuildCount(), 0u);
 }
 
 TEST(PipelineBuildRequest, GetOrCreateTakesAQueuedBuildOverAndTheQueuedJobBuildsNothing)
@@ -232,6 +234,7 @@ TEST(PipelineBuildRequest, FailedBuildIsNotRequestedAgainUntilTheCacheIsInvalida
     held.RunAll();
     EXPECT_EQ(dev->RequestComputePipeline(id), PipelineBuildState::Failed);
     EXPECT_TRUE(held.Jobs.empty()) << "a failed pipeline was queued again";
+    EXPECT_EQ(dev->PendingPipelineBuildCount(), 0u);
 
     // Hot reload invalidates the cache: what failed may build now, so it is asked for again.
     dev->GetMutablePipelineCache().Clear();
