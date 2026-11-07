@@ -255,6 +255,7 @@ class MetalDevice : public IDevice
     size_t DebugGetAllocatedBytes() const override;
     size_t DebugGetTextureBytes() const override;
     size_t DebugGetBufferBytes() const override;
+    ResourcePoolStats GetResourcePoolStats() const override;
     void DebugEnumerateResources(const std::function<void(const DebugResourceInfo&)>& fn) const override;
     bool GetLastFrameSyncTimings(FrameSyncTimings& out) const override;
 
@@ -291,6 +292,7 @@ class MetalDevice : public IDevice
     std::unique_ptr<CommandList> CreateCommandList(QueueType queue) override;
     void ExecuteCommandLists(const std::vector<CommandList*>& commandLists) override;
     void WaitForIdle() override;
+    uint64_t GetIdleDrainCount() const override { return m_IdleDrainCount.load(std::memory_order_relaxed); }
 
     // Frame loop
     bool BeginFrame() override;
@@ -402,7 +404,7 @@ class MetalDevice : public IDevice
 
     // Queue an owned Metal object for release once the current frame slot's
     // GPU work has provably completed (kFramesInFlight frames later).
-    void DeferRelease(NS::Object* object);
+    void DeferRelease(NS::Object* object, bool isTextureView = false);
 
   private:
     static constexpr uint32_t kFramesInFlight = 3;
@@ -487,6 +489,8 @@ class MetalDevice : public IDevice
     NS::AutoreleasePool* m_FramePool = nullptr;
 
     std::array<std::vector<NS::Object*>, kFramesInFlight> m_DeferredReleases;
+    std::array<size_t, kFramesInFlight> m_DeferredTextureViewCounts{};
+    std::atomic<uint64_t> m_IdleDrainCount{0};
 
     mutable std::recursive_mutex m_ResourceMutex;
     GenerationalVector<MetalBuffer> m_Buffers;

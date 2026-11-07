@@ -228,39 +228,69 @@ namespace
 // at the FrameOrchestrator enforcement point (last-good pipeline kept);
 // warnings apply-but-log.
 
-// The passes that feed the camera depth prepass (RenderPipelineNodeTypeInfo::FeedsDepthPrepass) are
-// declared ahead of the first DepthPrepass, in their authored order, wherever the blueprint lists them:
-// the prepass declares its reads of their buffers when it is declared, and a feeder declared after it
-// would have the graph order the prepass's draw before the compute that fills those buffers. A feeder
-// authored below the prepass is moved and reported as a Warning (DepthPrepassFeederMoved) that names it, the
-// prepass, and the place to list it: between the pass authored just above the prepass and the prepass.
-void DeclareDepthPrepassFeedersFirst(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegistry& registry)
+using PassPrerequisites = std::vector<std::vector<size_t>>;
+
+bool ResolveDeclarationOrder(RenderPipelineBlueprint& blueprint, const PassPrerequisites& prerequisites)
 {
-    const auto prepass = std::find_if(bp.passes.begin(), bp.passes.end(),
-                                      [](const RenderPipelineBlueprint::Pass& pass) { return pass.type == "DepthPrepass"; });
-    if (prepass == bp.passes.end())
-        return;
-    const std::string prepassId = prepass->id;
-    const std::string place = prepass == bp.passes.begin()
-                                  ? "first, above '" + prepassId + "'"
-                                  : "between '" + std::prev(prepass)->id + "' and '" + prepassId + "'";
-    const auto feedsPrepass = [&registry](const RenderPipelineBlueprint::Pass& pass)
+    enum class Visit { Pending, Visiting, Done };
+    struct Cursor
     {
-        const RenderPipelineNodeTypeInfo* info = registry.Find(pass.type);
-        return info && info->FeedsDepthPrepass;
+        size_t Pass;
+        size_t NextDependency = 0;
     };
-    const auto movedEnd = std::stable_partition(prepass, bp.passes.end(), feedsPrepass);
-    for (auto moved = prepass; moved != movedEnd; ++moved)
+
+    std::vector<Visit> visits(blueprint.passes.size(), Visit::Pending);
+    std::vector<Cursor> stack;
+    std::vector<size_t> order;
+    order.reserve(blueprint.passes.size());
+
+    for (size_t passIndex = 0; passIndex < visits.size(); ++passIndex)
     {
-        PipelineIssue issue{};
-        issue.severity = PipelineIssueSeverity::Warning;
-        issue.code = PipelineIssueCode::DepthPrepassFeederMoved;
-        issue.nodeId = moved->id;
-        issue.message = "pass '" + moved->id + "' (" + moved->type + ") feeds the depth prepass but is listed after DepthPrepass '" +
-                        prepassId + "', so the compiler declares it above '" + prepassId + "'. List it " + place +
-                        " to clear this warning";
-        bp.issues.push_back(std::move(issue));
+        if (visits[passIndex] == Visit::Done)
+            continue;
+
+        visits[passIndex] = Visit::Visiting;
+        stack.push_back({passIndex});
+        while (!stack.empty())
+        {
+            Cursor& cursor = stack.back();
+            const auto& dependencies = prerequisites[cursor.Pass];
+            if (cursor.NextDependency == dependencies.size())
+            {
+                visits[cursor.Pass] = Visit::Done;
+                order.push_back(cursor.Pass);
+                stack.pop_back();
+                continue;
+            }
+
+            const size_t dependency = dependencies[cursor.NextDependency++];
+            if (visits[dependency] == Visit::Done)
+                continue;
+            if (visits[dependency] == Visit::Visiting)
+            {
+                const auto first = std::find_if(stack.begin(), stack.end(), [dependency](const Cursor& entry)
+                {
+                    return entry.Pass == dependency;
+                });
+                std::string cycle = "pass declaration dependency cycle: ";
+                for (auto entry = first; entry != stack.end(); ++entry)
+                    cycle += "'" + blueprint.passes[entry->Pass].id + "' -> ";
+                const auto& id = blueprint.passes[dependency].id;
+                blueprint.issues.push_back({PipelineIssueSeverity::Error, cycle + "'" + id + "'", id});
+                return false;
+            }
+
+            visits[dependency] = Visit::Visiting;
+            stack.push_back({dependency});
+        }
     }
+
+    std::vector<RenderPipelineBlueprint::Pass> sorted;
+    sorted.reserve(order.size());
+    for (const size_t passIndex : order)
+        sorted.push_back(std::move(blueprint.passes[passIndex]));
+    blueprint.passes = std::move(sorted);
+    return true;
 }
 
 bool RequiresShaderPkg(const std::string& type)
@@ -277,6 +307,83 @@ const RenderPipelineNodeResourceFields& ResourceFieldsForType(const RenderPipeli
     static const RenderPipelineNodeResourceFields kNoFields{};
     const RenderPipelineNodeTypeInfo* info = registry.Find(type);
     return info ? info->ResourceFields : kNoFields;
+}
+
+void OrderPipelinePasses(RenderPipelineBlueprint& blueprint, const RenderPipelineNodeRegistry& registry)
+{
+    const auto& passes = blueprint.passes;
+    PassPrerequisites prerequisites(passes.size());
+    std::unordered_map<RenderPipelineViewResource, std::vector<size_t>> producers;
+    size_t firstPrepass = passes.size();
+    for (size_t passIndex = 0; passIndex < passes.size(); ++passIndex)
+    {
+        const auto& pass = passes[passIndex];
+        if (!pass.enabled)
+            continue;
+        if (pass.type == "DepthPrepass" && firstPrepass == passes.size())
+            firstPrepass = passIndex;
+        for (const auto resource : ResourceFieldsForType(registry, pass.type).WritesViewResources)
+        {
+            auto& writers = producers[resource];
+            if (!writers.empty() && writers.back() == passIndex)
+                continue;
+            if (!writers.empty())
+                prerequisites[passIndex].push_back(writers.back());
+            writers.push_back(passIndex);
+        }
+    }
+
+    std::vector<PipelineIssue> feederWarnings;
+    for (size_t passIndex = 0; passIndex < passes.size(); ++passIndex)
+    {
+        const auto& pass = passes[passIndex];
+        if (!pass.enabled)
+            continue;
+        for (const auto resource : ResourceFieldsForType(registry, pass.type).ReadsViewResources)
+        {
+            const auto found = producers.find(resource);
+            if (found == producers.end())
+                continue;
+            const auto& writers = found->second;
+            auto nextWriter = std::lower_bound(writers.begin(), writers.end(), passIndex);
+            if (nextWriter != writers.begin())
+                prerequisites[passIndex].push_back(*std::prev(nextWriter));
+            else
+            {
+                prerequisites[passIndex].push_back(*nextWriter);
+                if (*nextWriter != passIndex)
+                    ++nextWriter;
+            }
+            // Preserve the authored read interval when another producer replaces this value.
+            if (nextWriter != writers.end() && *nextWriter != passIndex)
+                prerequisites[*nextWriter].push_back(passIndex);
+        }
+
+        const auto* type = registry.Find(pass.type);
+        if (!type || !type->FeedsDepthPrepass || firstPrepass == passes.size() || firstPrepass == passIndex)
+            continue;
+        prerequisites[firstPrepass].push_back(passIndex);
+        if (passIndex < firstPrepass)
+            continue;
+
+        const auto& prepassId = passes[firstPrepass].id;
+        const std::string place = firstPrepass == 0
+            ? "first, above '" + prepassId + "'"
+            : "between '" + passes[firstPrepass - 1].id + "' and '" + prepassId + "'";
+        feederWarnings.push_back({
+            PipelineIssueSeverity::Warning,
+            "pass '" + pass.id + "' (" + pass.type + ") feeds the depth prepass but is listed after DepthPrepass '" +
+                prepassId + "', so the compiler declares it above '" + prepassId + "'. List it " + place +
+                " to clear this warning",
+            pass.id,
+            PipelineIssueCode::DepthPrepassFeederMoved});
+    }
+
+    for (auto& dependencies : prerequisites)
+        std::sort(dependencies.begin(), dependencies.end());
+    if (ResolveDeclarationOrder(blueprint, prerequisites))
+        for (auto& warning : feederWarnings)
+            blueprint.issues.push_back(std::move(warning));
 }
 
 // The view resources the spine seeds every frame: a pass left out never leaves them unwritten.
@@ -349,6 +456,288 @@ std::vector<std::string> CollectReads(const RenderPipelineNodeResourceFields& fi
                 reads.push_back(entry.value().get<std::string>());
     }
     return reads;
+}
+
+bool IsVersionReference(const nlohmann::json& value)
+{
+    return value.is_object() && (value.contains("resource") || value.contains("version"));
+}
+
+std::string ReadVersionKey(const nlohmann::json& value, std::string& resource)
+{
+    std::string version;
+    if (value.size() != 2 || !JsonTryGetString(value, "resource", resource) ||
+        !JsonTryGetString(value, "version", version) || resource.empty() || version.empty() ||
+        resource.starts_with("View.") || resource.find('@') != std::string::npos ||
+        version.find('@') != std::string::npos || resource.find(char{}) != std::string::npos ||
+        version.find(char{}) != std::string::npos)
+        return {};
+    return resource + '@' + version;
+}
+
+bool CanVersionTexture(const std::string& resourceJson)
+{
+    const auto descriptor = nlohmann::json::parse(resourceJson, nullptr, false);
+    std::string kind;
+    std::string scope;
+    (void)JsonTryGetString(descriptor, "kind", kind);
+    (void)JsonTryGetString(descriptor, "scope", scope);
+    scope = ToLowerAscii(scope);
+    if (!descriptor.is_object() || (!kind.empty() && ToLowerAscii(kind) != "texture") ||
+        (scope != "perview" && scope != "view"))
+        return false;
+
+    std::string formatName;
+    if (JsonTryGetString(descriptor, "format", formatName))
+        if (const auto format = TextureFormatTable().Lookup(formatName); format && IsDepthFormat(*format))
+            return false;
+
+    const auto single = [](const nlohmann::json& object, const char* name)
+    {
+        const auto field = object.find(name);
+        return field == object.end() || (field->is_number_integer() && *field == 1);
+    };
+    const auto extent = descriptor.find("extent");
+    for (const char* name : {"mipLevels", "mips", "arrayLayers", "layers"})
+        if (!single(descriptor, name) || (extent != descriptor.end() && extent->is_object() && !single(*extent, name)))
+            return false;
+    if (!single(descriptor, "sampleCount") ||
+        (extent != descriptor.end() && extent->is_object() && !single(*extent, "depth")))
+        return false;
+    const auto usage = descriptor.find("usage");
+    if (usage == descriptor.end())
+        return true;
+    if (!usage->is_array())
+        return false;
+    Rendering::TextureUsage flags = Rendering::TextureUsage::None;
+    for (const auto& entry : *usage)
+        if (entry.is_string())
+            if (auto flag = TextureUsageTable().Lookup(entry.get<std::string>()))
+                flags = flags | *flag;
+    return (flags & Rendering::TextureUsage::RenderTarget) != Rendering::TextureUsage::None &&
+           (flags & Rendering::TextureUsage::ShaderResource) != Rendering::TextureUsage::None;
+}
+
+void OrderVersionWriters(RenderPipelineBlueprint& blueprint,
+                         const std::vector<bool>& versionWriters, const std::vector<bool>& roots,
+                         std::span<const std::pair<size_t, size_t>> dependencies)
+{
+    const size_t count = blueprint.passes.size();
+    PassPrerequisites prerequisites(count);
+    std::vector<size_t> region(count, count);
+    size_t index = 0;
+    while (index < count)
+    {
+        if (!versionWriters[index])
+        {
+            ++index;
+            continue;
+        }
+        const size_t start = index;
+        size_t previousRoot = count;
+        while (index < count && versionWriters[index])
+        {
+            region[index] = start;
+            if (roots[index])
+            {
+                if (previousRoot != count)
+                    prerequisites[index].push_back(previousRoot);
+                previousRoot = index;
+            }
+            ++index;
+        }
+    }
+
+    // Registered prerequisites have already fixed the scene order. Only a
+    // version chain can move a later pass forward, and only within its region.
+    for (const auto& [reader, writer] : dependencies)
+    {
+        if (writer > reader && region[reader] != region[writer])
+        {
+            const auto& passes = blueprint.passes;
+            blueprint.issues.push_back({PipelineIssueSeverity::Error,
+                "pass '" + passes[reader].id + "' cannot move after its texture version writer '" +
+                    passes[writer].id + "' across a legacy pass or output; place the reader after the writer",
+                passes[reader].id});
+            continue;
+        }
+        prerequisites[reader].push_back(writer);
+    }
+    for (auto& passPrerequisites : prerequisites)
+        std::sort(passPrerequisites.begin(), passPrerequisites.end());
+    ResolveDeclarationOrder(blueprint, prerequisites);
+}
+
+// Lower declared versions to separate texture names. Only a fullscreen color
+// writer can publish one, and only sampled inputs can read it.
+void LowerAndOrderTextureVersions(RenderPipelineBlueprint& blueprint, const RenderPipelineNodeRegistry& registry,
+                                  const nlohmann::json& root)
+{
+    const auto outputs = root.find("outputs");
+    const bool versionedPipelineOutput = outputs != root.end() && outputs->is_object() &&
+        std::any_of(outputs->begin(), outputs->end(), IsVersionReference);
+    const bool versionedPass = std::any_of(blueprint.passes.begin(), blueprint.passes.end(),
+        [](const RenderPipelineBlueprint::Pass& pass)
+        {
+            return pass.passJson.find("\"version\"") != std::string::npos ||
+                   pass.passJson.find("\"resource\"") != std::string::npos;
+        });
+    if (!versionedPass && !versionedPipelineOutput)
+        return;
+
+    std::vector<std::pair<size_t, size_t>> dependencies;
+    std::vector<nlohmann::json> passes;
+    passes.reserve(blueprint.passes.size());
+    for (const auto& pass : blueprint.passes)
+        passes.push_back(nlohmann::json::parse(pass.passJson, nullptr, false));
+
+    std::unordered_set<std::string> authoredNames;
+    std::unordered_map<std::string, size_t> descriptions;
+    for (size_t index = 0; index < blueprint.resources.size(); ++index)
+    {
+        descriptions.try_emplace(blueprint.resources[index].name, index);
+        authoredNames.insert(blueprint.resources[index].name);
+    }
+    for (const auto& output : blueprint.outputs)
+        authoredNames.insert(output.resourceRef);
+    for (size_t index = 0; index < passes.size(); ++index)
+    {
+        CollectNamedResources(passes[index], false, authoredNames);
+        CollectWrites(ResourceFieldsForType(registry, blueprint.passes[index].type), passes[index], authoredNames);
+    }
+    const auto report = [&blueprint](std::string message, const std::string& node)
+    {
+        blueprint.issues.push_back({PipelineIssueSeverity::Error, std::move(message), node});
+    };
+
+    std::unordered_map<std::string, size_t> writers;
+    std::vector<bool> versionWriters(passes.size());
+    std::vector<bool> roots(passes.size());
+    for (size_t index = 0; index < passes.size(); ++index)
+    {
+        auto& fields = passes[index];
+        auto output = fields.find("output");
+        if (output == fields.end() || !IsVersionReference(*output))
+            continue;
+        const auto& pass = blueprint.passes[index];
+        std::string resource;
+        const auto key = ReadVersionKey(*output, resource);
+        const auto description = descriptions.find(resource);
+        if (key.empty() || description == descriptions.end() ||
+            !CanVersionTexture(blueprint.resources[description->second].resourceJson))
+        {
+            report("version output requires a declared single-mip, single-layer, single-sample PerView color texture",
+                   pass.id);
+            continue;
+        }
+
+        bool alphaBlend = false;
+        std::string blendMode;
+        (void)JsonTryGetBool(fields, "alphaBlend", alphaBlend);
+        (void)JsonTryGetString(fields, "blendMode", blendMode);
+        if (!pass.enabled || pass.type != "FullscreenShader" || alphaBlend ||
+            (!blendMode.empty() && ToLowerAscii(blendMode) != "disabled"))
+        {
+            report("version output requires an enabled FullscreenShader without blending", pass.id);
+            continue;
+        }
+        const auto writesStorage = [](const nlohmann::json& values)
+        {
+            return values.is_object() && std::any_of(values.begin(), values.end(), [](const nlohmann::json& value)
+            {
+                return value.is_string() && ToLowerAscii(value.get<std::string>()) == "storagewrite";
+            });
+        };
+        for (const char* usages : {"inputUsages", "bufferUsages"})
+            if (const auto usage = fields.find(usages); usage != fields.end() && writesStorage(*usage))
+                report("version writer cannot have writable auxiliary bindings", pass.id);
+        if (fields.contains("depthOutput"))
+            report("version writer cannot have a depth output", pass.id);
+
+        if (authoredNames.contains(key) || !writers.try_emplace(key, index).second)
+        {
+            report("texture version '" + key + "' has more than one writer or conflicts with an authored name", pass.id);
+            continue;
+        }
+        versionWriters[index] = true;
+        const auto inputs = fields.find("inputs");
+        roots[index] = inputs == fields.end() || !inputs->is_object() || inputs->empty() ||
+            !std::all_of(inputs->begin(), inputs->end(), IsVersionReference) ||
+            fields.contains("buffers") || fields.contains("serviceTextures");
+        auto version = blueprint.resources[description->second];
+        version.name = key;
+        version.VersionProducer = pass.id;
+        blueprint.resources.push_back(std::move(version));
+        *output = key;
+    }
+
+    for (size_t index = 0; index < passes.size(); ++index)
+    {
+        auto& fields = passes[index];
+        const auto& pass = blueprint.passes[index];
+        const auto& contract = ResourceFieldsForType(registry, pass.type);
+        for (const auto& reference : contract.RefKeys)
+        {
+            const auto field = fields.find(reference.Key);
+            if (reference.Key != "output" && field != fields.end() && IsVersionReference(*field))
+                report("field '" + reference.Key + "' cannot reference a texture version", pass.id);
+        }
+        for (const auto& name : contract.RefMapKeys)
+        {
+            const auto map = fields.find(name);
+            if (name != "inputs" && map != fields.end() && map->is_object() &&
+                std::any_of(map->begin(), map->end(), IsVersionReference))
+                report("field '" + name + "' cannot reference a texture version", pass.id);
+        }
+        for (const char* name : {"colorResolveTarget", "depthOutput"})
+        {
+            const auto field = fields.find(name);
+            if (field != fields.end() && IsVersionReference(*field))
+                report("field '" + std::string(name) + "' cannot reference a texture version", pass.id);
+        }
+        auto inputs = fields.find("inputs");
+        if (inputs != fields.end() && inputs->is_object())
+            for (auto binding = inputs->begin(); binding != inputs->end(); ++binding)
+            {
+                if (!IsVersionReference(*binding))
+                    continue;
+                const auto usages = fields.find("inputUsages");
+                std::string usage;
+                if (usages != fields.end())
+                    (void)JsonTryGetString(*usages, binding.key().c_str(), usage);
+                if (pass.type != "FullscreenShader" || (!usage.empty() && ToLowerAscii(usage) != "sampled"))
+                {
+                    report("texture versions can only be read by sampled FullscreenShader inputs", pass.id);
+                    continue;
+                }
+                std::string resource;
+                const auto key = ReadVersionKey(*binding, resource);
+                const auto writer = writers.find(key);
+                if (writer == writers.end())
+                {
+                    report("input '" + binding.key() + "' references a texture version without a writer", pass.id);
+                    continue;
+                }
+                if (pass.enabled)
+                    dependencies.emplace_back(index, writer->second);
+                *binding = key;
+            }
+        blueprint.passes[index].passJson = fields.dump();
+    }
+
+    if (outputs != root.end() && outputs->is_object())
+        for (auto output = outputs->begin(); output != outputs->end(); ++output)
+        {
+            if (!IsVersionReference(*output))
+                continue;
+            std::string resource;
+            const auto key = ReadVersionKey(*output, resource);
+            if (!writers.contains(key))
+                report("output '" + output.key() + "' references a texture version without a writer", {});
+            else
+                blueprint.outputs.push_back({output.key(), key});
+        }
+    OrderVersionWriters(blueprint, versionWriters, roots, dependencies);
 }
 
 // The resources each waiting pass may write, mapped to that pass. A pass of an unregistered type
@@ -538,32 +927,6 @@ void ValidateBlueprint(RenderPipelineBlueprint& bp, const RenderPipelineNodeRegi
             validSet.insert(s);
     }
     const std::vector<std::string> validList(validSet.begin(), validSet.end());
-
-    std::unordered_map<RenderPipelineViewResource, size_t> firstViewProducer;
-    for (size_t i = 0; i < bp.passes.size(); ++i)
-    {
-        const auto& pass = bp.passes[i];
-        if (pass.enabled)
-            for (const auto resource : ResourceFieldsForType(registry, pass.type).WritesViewResources)
-                firstViewProducer.try_emplace(resource, i);
-    }
-    for (size_t i = 0; i < bp.passes.size(); ++i)
-    {
-        const auto& pass = bp.passes[i];
-        if (!pass.enabled)
-            continue;
-        for (const auto resource : ResourceFieldsForType(registry, pass.type).ReadsViewResources)
-        {
-            const auto producer = firstViewProducer.find(resource);
-            if (producer == firstViewProducer.end() || producer->second < i)
-                continue;
-            const auto& producerId = bp.passes[producer->second].id;
-            addIssue(PipelineIssueSeverity::Error,
-                     "pass '" + pass.id + "' reads a view resource from '" + producerId +
-                         "' before it is declared; move '" + producerId + "' above it",
-                     pass.id);
-        }
-    }
 
     // ── Resource-ref resolution (Error) ──
     auto checkRef = [&](const std::string& value, const std::string& field, const std::string& nodeId)
@@ -1223,7 +1586,8 @@ RenderPipelineBlueprint RenderPipelineCompiler::Compile(const GameEngine::Render
         bp.passes.push_back(std::move(nb));
     }
 
-    DeclareDepthPrepassFeedersFirst(bp, registry);
+    OrderPipelinePasses(bp, registry);
+    LowerAndOrderTextureVersions(bp, registry, root);
 
     // Semantic validation: resource refs, resource-blob enums, shaderpkg
     // reflection, skipWhen fields. Errors reject the blueprint wholesale at the
@@ -1272,14 +1636,16 @@ struct RenderPipelineInstance::ResourceDescription
     float ScaleY = 1.0f;
     Rendering::TextureDesc Texture{};
     nlohmann::json Buffer;
+    std::string VersionProducer;
 
-    explicit ResourceDescription(const std::string& resourceJson)
+    explicit ResourceDescription(const RenderPipelineBlueprint::Resource& resource)
+        : VersionProducer(resource.VersionProducer)
     {
         nlohmann::json jr;
         try
         {
             GE_CPU_PROFILE_SCOPE("RenderPipeline.ParseResource");
-            jr = nlohmann::json::parse(resourceJson);
+            jr = nlohmann::json::parse(resource.resourceJson);
         }
         catch (...)
         {
@@ -1428,7 +1794,7 @@ void RenderPipelineInstance::SetBlueprint(RenderPipelineBlueprint blueprint)
         // Preserve first-entry lookup behavior for a manually supplied duplicate.
         if (!m_ResourceDescriptions.contains(resource.name))
             m_ResourceDescriptions.emplace(resource.name,
-                std::make_unique<ResourceDescription>(resource.resourceJson));
+                std::make_unique<ResourceDescription>(resource));
     }
 }
 
@@ -2017,10 +2383,11 @@ RenderPipelineInstance::FindResourceDescription(const std::string& name) const
 
 Rendering::RenderGraph::RGTexture RenderPipelineInstance::MaterializeTexture(
     Rendering::RenderGraph::RGFrame& frame, Rendering::ViewId viewId, const std::string& name,
-    uint32_t renderW, uint32_t renderH, uint32_t outputW, uint32_t outputH)
+    uint32_t renderW, uint32_t renderH, uint32_t outputW, uint32_t outputH, std::string_view producer)
 {
     const auto* resource = FindResourceDescription(name);
-    if (!resource || resource->Type != ResourceDescription::Kind::Texture)
+    if (!resource || resource->Type != ResourceDescription::Kind::Texture ||
+        (!resource->VersionProducer.empty() && resource->VersionProducer != producer))
         return {};
     const bool perView = resource->PerView;
     const Rendering::ViewId scopeView = perView ? viewId : 0;
@@ -2053,7 +2420,7 @@ Rendering::RenderGraph::RGTexture RenderPipelineInstance::MaterializeTexture(
     const Rendering::RenderGraph::RGTexture t = resource->Transient
         ? frame.CreateTexture(poolName.c_str(), td)
         : frame.ImportPersistentTexture(poolName.c_str(), td);
-    if (t.IsValid())
+    if (t.IsValid() && resource->VersionProducer.empty())
         m_FrameResources.Textures[{scopeView, name}] = t;
     return t;
 }
@@ -2254,7 +2621,15 @@ Rendering::RenderGraph::RGTexture ViewDeclare::ResolveTexture(const std::string&
     if (auto t = m_Instance->TableTexture(View.id, ref); t.IsValid())
         return t;
     return m_Instance->MaterializeTexture(Frame, View.id, ref, RenderWidth, RenderHeight,
-                                          OutputWidth, OutputHeight);
+                                          OutputWidth, OutputHeight, NodeId ? NodeId : "");
+}
+
+bool ViewDeclare::IsVersionedTexture(const std::string& ref) const
+{
+    if (!m_Instance || ref.find('@') == std::string::npos)
+        return false;
+    const auto* resource = m_Instance->FindResourceDescription(ref);
+    return resource && !resource->VersionProducer.empty();
 }
 
 PipelineBufferBindingRG ViewDeclare::ResolveBuffer(const std::string& ref) const
@@ -2268,8 +2643,13 @@ PipelineBufferBindingRG ViewDeclare::ResolveBuffer(const std::string& ref) const
 
 void ViewDeclare::PublishTexture(const std::string& name, Rendering::RenderGraph::RGTexture t)
 {
-    if (m_Instance)
-        m_Instance->m_FrameResources.Textures[{View.id, name}] = t;
+    if (!m_Instance)
+        return;
+    if (name.find('@') != std::string::npos)
+        if (const auto* resource = m_Instance->FindResourceDescription(name);
+            resource && !resource->VersionProducer.empty() && resource->VersionProducer != (NodeId ? NodeId : ""))
+            return;
+    m_Instance->m_FrameResources.Textures[{View.id, name}] = t;
 }
 
 void ViewDeclare::PublishBuffer(const std::string& name, const PipelineBufferBindingRG& b)

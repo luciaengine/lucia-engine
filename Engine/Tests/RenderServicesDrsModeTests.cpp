@@ -183,6 +183,8 @@ TEST(RenderServicesDrsMode, UnreachableWarningLatchesUntilConfigOrModeChange)
                 Logger::String::npos)
                 warningCount->fetch_add(1);
         });
+    // Drain pending warnings from earlier tests before this sink can count them.
+    Logger::Log::Flush();
     Logger::Log::AddSink(std::move(sink));
 
     RenderServices rs;
