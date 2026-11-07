@@ -376,7 +376,9 @@ public:
 
     /// Find a live world by ID on the thread that owns its lifetime.
     static World* FindLiveWorld(uint64 worldId);
+    /// Returns a live world's handle namespace epoch without retaining the world.
     static std::optional<uint64> FindLiveEntityHandleEpoch(uint64 worldId);
+    /// Clear invalidates the namespace; serialized undo restores the same namespace.
     uint64 GetEntityHandleEpoch() const { return m_EntityHandleEpoch.load(std::memory_order_relaxed); }
 
     // Side-table of scene components whose type was not registered at load time (e.g. a user
@@ -664,36 +666,14 @@ public:
     // Batch create entities from bundle
     std::vector<EntityHandle> CreateBatchFromBundle(size_t count, const ComponentBundle& bundle);
 
-    /**
-     * Plans copies of `entities` of this world for CreateBatchFromWorld: the
-     * entities grouped by archetype and every entity field of their rows
-     * (Parent, and each reflected EntityHandle field) with the entity of the
-     * list it names. A field that names an entity outside the list is copied
-     * as the invalid handle. A source entity listed k times yields k copies;
-     * copy k's fields point at copy k's entities (see ClonePlan).
-     *
-     * Returns false and leaves `plan` empty when an entity is not alive.
-     * The world must not be written during the call.
-     */
+    /// Groups live source entities and reference remaps; repeated entries become separate copies.
+    /// References outside the list become invalid. The source must remain unwritten during planning.
+    /// Returns false with an empty plan if a source entity is dead.
     [[nodiscard]] bool PlanClone(std::span<const EntityHandle> entities, ClonePlan& plan) const;
 
-    /**
-     * Creates one entity in this world for each entry of `plan`, a copy of
-     * its row in `source`, the world the plan was built from: every
-     * component's bytes, then every entity field re-pointed as the plan says.
-     * Rows are copied a chunk run at a time: one memcpy per column for each
-     * run of rows consecutive in a source chunk and in a target chunk. The
-     * source's preserved unknown components and fields are copied with the
-     * rows.
-     *
-     * One lock of this world, one reserve and one Added batch per archetype, so
-     * lifecycle consumers see ordinary adds. Add hooks are not run, as for
-     * CreateBatchFromBundle. Entities are created in plan order.
-     *
-     * `source` must be another world and must not be written during the call.
-     * Returns false and creates nothing when `source` is not the plan's world,
-     * or a planned entity is no longer alive or has changed archetype.
-     */
+    /// Copies planned entities and unknown fields from another, unwritten source world in plan order.
+    /// Emits batched Added events without add hooks and remaps references as the plan specifies.
+    /// Returns false without creating entities if the source differs, an entity died, or its archetype changed.
     [[nodiscard]] bool CreateBatchFromWorld(const World& source, const ClonePlan& plan, EntityRemap& remap);
 
     // Component operations (thread-safe, deferred by default) -

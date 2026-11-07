@@ -51,11 +51,8 @@ struct SceneDoc
         std::string originalKey;
     };
 
-    // Insertion-ordered flat storage of a component's properties. Replaces a nested
-    // unordered_map; the parse path only ever appends and the load/save/validate paths
-    // only ever range-iterate, so a vector keeps file order deterministic and avoids the
-    // per-entity, per-component map allocations.
-    // components: [ { "transform", [ {"position", {"(1, 2, 3)", line}}, ... ] }, ... ]
+    // Insertion-ordered component properties. Parsing appends; loading, saving and validation iterate.
+    // Contiguous records preserve file order without per-component property-map allocations.
     struct ComponentProps
     {
         std::string name;

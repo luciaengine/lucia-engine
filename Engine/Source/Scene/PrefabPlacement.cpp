@@ -513,11 +513,8 @@ static void RemoveMemberAndItsChildren(ECS::World& world, PlacedPrefab& placed, 
     placed.members.erase(first, placed.members.end());
 }
 
-// Applies one [prefab] section's override lines to the instance `placed`, whose root is at
-// `instancePath`: removed entities, removed components, added components, then changed fields. A
-// line whose address names no entity, a removal of a component no build registers and a removal of a
-// component the entity does not have are load-report rows, never a failure. The entities a "-entity"
-// line removes go to `removed`.
+// Applies removed entities, removed components, added components, then changed fields.
+// Missing addresses or components produce load-report rows. Removed entities enter removed.
 static bool ApplyInstanceOverrides(ECS::World& world, const SceneLoadContext& ctx,
                                    const std::filesystem::path& ownerFile,
                                    const SceneDoc::PrefabInstanceSection& section, const std::string& instancePath,

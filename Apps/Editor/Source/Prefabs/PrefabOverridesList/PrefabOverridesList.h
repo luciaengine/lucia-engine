@@ -53,10 +53,8 @@ struct PrefabOverridesListContext
     PrefabOverridesListReopen* Reopen = nullptr;
 };
 
-/// The prefab bar's Overrides list: every override of the instance, grouped by entity, with the prefab's value
-/// beside a changed field, Apply and Revert on each row, and Revert all and Apply all at the foot. A stale group
-/// comes from the scene's load report: its rows are override lines whose address the prefab does not have, and
-/// each offers Discard. Main thread only.
+/// Instance overrides grouped by entity, with per-row and bulk Apply/Revert actions.
+/// Stale addresses from the scene load report offer Discard. Main thread only.
 /// Layout and style: UI/controls/PrefabOverridesList/.
 class PrefabOverridesList final : public UIElement, public DismissablePopup
 {

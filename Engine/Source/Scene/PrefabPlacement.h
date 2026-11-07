@@ -1,9 +1,7 @@
 #pragma once
 
-// Places prefab instances into a world: each prefab resolved once into a template of the prefab
-// library and each instance a batch clone of it, or, for the override writer's templates, each
-// instance placed from its file's text; then the instance's override lines applied. Private to the
-// scene IO sources.
+// Private SceneIO placement helpers: clone resolved templates or place override-writer text,
+// then apply each instance's overrides.
 
 #include "ECS/EntityRemap.h"
 #include "Scene/PrefabLibrary.h"

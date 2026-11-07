@@ -302,10 +302,8 @@ void ApplyClonedEntityFields(ECS::World& world, const SceneLoadContext& context,
     }
 }
 
-// Clones into the instance at `instanceId` every entity `after` has at an address `before` does not
-// have, under the instance entity at its parent's address and with the identity of its address. A clone
-// whose parent the instance removed is not kept. Records the identity of each clone in `entityByTag`.
-// Returns each kept clone.
+// Clones newly added template addresses under their instance parents and records their identities.
+// A removed instance parent excludes its new children. Returns the retained clones.
 std::vector<GainedMember> AddGainedMembers(ECS::World& world, PrefabLibrary& library, std::string_view instanceId,
                                            const PrefabTemplate& before, const PrefabTemplate& after,
                                            const std::vector<PrefabInstanceEntity>& described,

@@ -7,11 +7,19 @@ A prefab is a saved tree of entities with their components that you place many t
 
 A prefab is not a scene. A scene is a place with its own sky, terrain and lighting; a prefab is a thing, with exactly one root and no environment.
 
-:::note
+## Create and place a prefab
 
-In this version you write a prefab file by hand and place it with a `[prefab]` section in a scene. The editor loads, shows and saves the instances, and an edit you make to an instance's entity in the editor is saved as an override.
+Select an entity in the Hierarchy. Choose **Prefab > Create Prefab...** from its context menu, then choose the project folder and name. You can also drag a hierarchy selection onto a folder in the Assets browser. The dialog reports references outside the selected tree before it writes the prefab.
 
-:::
+Drag a `.prefab` asset into the Scene View to place an instance. Select the instance to see its prefab bar in the Inspector. The Hierarchy marks instance members and local additions.
+
+## Edit an instance
+
+Edit an instance's fields in the Inspector. The Inspector marks fields and components that differ from the prefab. Its override menu can apply a change to the prefab or revert the instance to the prefab's value. The overrides list also shows removed components and changes whose source entity no longer exists.
+
+Applying a change writes the prefab and updates the other placed instances that follow it. Reverting changes only the selected instance. The normal Undo and Redo commands cover these edits.
+
+Choose **Prefab > Unpack** to turn the outer instance into ordinary scene entities while retaining nested instances. **Unpack Completely** also unpacks nested instances. The entities keep their world placement.
 
 ## The prefab file
 
@@ -41,7 +49,7 @@ Transform.position = (-0.5, 0, 0)
 The rules a load checks, each refused with the line and the fix:
 
 - **One root.** Exactly one section has no `parent`, and its id is `root`: an `[entity id="root"]`, or a `[prefab id="root" source=...]` for a variant.
-- **Ids.** Every entity has an id, unique in its file. An id never holds `.`, `/` or `~` (in a scene or a prefab): `.` joins ids into a path, `/` separates an address from its component line, and `~` marks a long scene identity. An id in a prefab file is at most 46 characters.
+- **Ids.** Every prefab entity and prefab instance has an id, unique in its file. These ids cannot contain `.`, `/`, or `~`. The address syntax reserves those characters for paths and long scene identities. An id inside a prefab file is at most 46 bytes.
 - **No subscene.** A prefab holds entities and prefab instances; a subscene goes in a scene. A mark-up goes in a scene too.
 - **No cycle.** A prefab that holds itself through other prefabs is refused, with the chain in the message.
 
@@ -107,14 +115,3 @@ Name.value = "Moss"
 Each entity of an instance has a scene identity: the instance id and the entity's address, joined by `.` (`crate2.lid`, `house_01.porch.lamp`). It is unique in the scene, so two instances of one prefab give their entities two identities, and what keys on an identity (the navigation bake's files, the level of detail bake's members) tells them apart. An identity longer than 63 characters is written as 16 hex digits of its hash, `~` and the entity's own id (`3f9a1c77e02b5d41~lamp`); two that hash alike are refused, and the fix is to shorten an id in one of the chains.
 
 An entity dragged out of an instance, or from one instance into another, is saved as an entity added on the instance it is under, with a scene id of its own from its name.
-
-## Converting scene blueprints
-
-A project with `.blueprint` files or `[blueprint]` sections converts with one script; the scene loader refuses such a file with a message that names it. The script renames every `.blueprint` to `.prefab`, rewrites the headers, the `[blueprint]` sections and the `.blueprint` paths of every scene and prefab, and gives each entry of `AssetDatabase.assetdb` the new path and the prefab type, so each prefab keeps its GUID. Close the editor on the project first: an open editor writes `AssetDatabase.assetdb` and can write the old entries back.
-
-```sh title="Convert a project, after a dry run"
-python Tools/Scripts/migrate_blueprints_to_prefabs.py --dry-run MyGame
-python Tools/Scripts/migrate_blueprints_to_prefabs.py MyGame
-```
-
-It refuses a project folder with uncommitted changes, so the conversion is one change you review and can revert, and it prints each file it changes. Files it does not edit that still mention `.blueprint` (your own scripts and documents) are listed at the end. Running it twice changes nothing.

@@ -65,10 +65,8 @@ void DecoratePrefabRow(ECS::World& world, ECS::EntityHandle entity, HierarchyRow
 /// Shows `text` on `label`; an empty `text` hides the label, so it takes no space.
 void SetShownText(Label& label, const std::string& text);
 
-/// Registers the prefab editor: the Scene View pick climb, the Hierarchy glyph, rows and menu, the Inspector's prefab
-/// bar, override marks and override menus (empty while `isInPlayMode` returns true), the drop on an Assets folder and
-/// the `.prefab` tile in `thumbnails` when there is one. The Overrides list reads the load report of the document that
-/// `document` returns, which may be null. Call once at startup.
+/// Registers prefab hierarchy, picking, Inspector, folder-drop and thumbnail behavior at startup.
+/// Override menus are empty in Play mode. document may return null for the Overrides load report.
 void RegisterPrefabEditor(EditorChangeNotifications& notifications, IThumbnailProvider* thumbnails,
                           std::function<bool()> isInPlayMode, std::function<SceneDocumentManager*()> document);
 

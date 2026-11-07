@@ -129,10 +129,8 @@ void GiveCopySceneIdentities(ECS::World& world, std::span<const ECS::EntityHandl
 /// undo of CreatePrefab and UnpackPrefabInstance. Main thread only.
 void RestorePrefabIdentities(ECS::World& world, std::span<const PrefabIdentityBefore> before);
 
-/// Rebuilds, as a new generation, every resident template built from the file of `prefab`, after a
-/// write the file watcher has not reported yet, and gives the instances of every world that holds it the
-/// new generation. A template that does not build is logged and keeps its previous generation. Main
-/// thread only.
+/// Rebuilds resident templates that read prefab and propagates them to their placed instances.
+/// A failed rebuild logs its error and retains the current generation. Main thread only.
 void RebuildPrefab(const GUID& prefab);
 
 /// While `deferred` is true, a prefab file change does not change the instances in `world`, also after
@@ -171,10 +169,9 @@ struct PrefabOverrideTarget
     PrefabOverride Override;
 };
 
-/// Writes each of `targets` into the innermost prefab file that authors its entity, with one write per file, then
-/// rebuilds the written files once and updates the instances in every open world as WritePrefabFileText does. `outEdits` holds
-/// the text before and after of each written file. False, with the cause in `outError`, when the prefab does not have
-/// a target (then no file is written) or a write fails. Main thread only.
+/// Applies targets to their innermost authoring files, writes each file once, and propagates changes.
+/// outEdits receives before/after text. A missing target writes nothing; write failures set outError.
+/// Main thread only.
 bool ApplyPrefabOverrides(ECS::World& world, std::span<const PrefabOverrideTarget> targets,
                           std::vector<PrefabFileEdit>& outEdits, std::string& outError);
 

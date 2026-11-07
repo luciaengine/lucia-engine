@@ -433,10 +433,8 @@ std::vector<Scene::PrefabOverride> OverridesOf(ECS::World& world, ECS::EntityHan
     return FindDescribed(entities, entity).Overrides;
 }
 
-// Design 4.4 item 3, 2.6 and 4.11: Apply writes the field into the prefab file, under the file's own
-// name, and every other instance in the world shows it; the applier has no override left, and an
-// instance with its own override keeps it. Writing the text from before (the undo) gives the
-// instances the old value back.
+// Apply writes the source field and updates following instances while preserving local overrides.
+// Writing the undo snapshot restores the source value.
 TEST_F(PrefabLibraryTests, AnApplyWritesTheFieldIntoThePrefabAndTheOtherInstancesFollowItAndItsUndo)
 {
     const std::filesystem::path file = Write("Crate.prefab", kCratePrefab);

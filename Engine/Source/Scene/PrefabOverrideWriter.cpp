@@ -100,13 +100,9 @@ static bool AddsAComponent(const std::vector<ComponentText>& instance, const std
     });
 }
 
-// The override lines of the instance entity at `address` ("" for the root): every line that differs
-// from the template entity's, "+address/Component" and its lines for a component the template does
-// not have, "-address/Component" for one the instance does not have. `instance` and `templateText`
-// hold every field (SceneSaveContext::WriteEveryField), so a field the instance clears differs from
-// the template's line; `added` is the instance's plain text, which an added component writes, and is
-// empty when the instance adds none. Sibling order is the prefab's, so a member's HierarchyOrder is
-// never written.
+// Writes field differences and added/removed components at address (empty for the root).
+// Full-field text distinguishes cleared references; added contains plain added-component text.
+// Member HierarchyOrder is inherited and never written as an override.
 static void WriteEntityOverrides(std::string_view address, const std::vector<ComponentText>& instance,
                                  const std::vector<ComponentText>& added,
                                  const std::vector<ComponentText>& templateText, std::string& out)
@@ -204,11 +200,9 @@ void AssignSceneLevelIdIfNeeded(ECS::World& world, ECS::EntityHandle h,
     world.AddComponentImmediate(h, MakeTag(it->second));
 }
 
-// Sorts the scene's entities into prefab instances and the rest. An entity is a member of the
-// outermost instance above it when its parent is that instance's root or a member, its tag is a
-// member tag, and the address its parent chain gives it is one the prefab has and no other member
-// took; its tag is then written again from its path. Any other entity is the scene's own (one added
-// on an instance among them) and keeps a scene-level id. Members and roots go to `excluded`.
+// Partitions scene entities into outermost prefab members and scene-owned additions.
+// Unique valid addresses receive member tags; other entities keep scene-level IDs.
+// Instance roots and members enter excluded.
 bool CollectPrefabInstances(ECS::World& world, const std::vector<ECS::EntityHandle>& entities,
                             const SaveOptions& options, const SceneSaveContext& saveCtx,
                             const std::filesystem::path& sceneFilePath,

@@ -1,13 +1,8 @@
 #pragma once
 
-// The prefab library: one private world that holds a template of every resident prefab, resolved
-// once from its file with its nesting and variant chain applied. A placed instance and a spawn are
-// batch clones of a template (World::CreateBatchFromWorld). The engine owns one (EngineCore,
-// beside its AssetManager); a scene load off the main thread or with no engine builds one of its
-// own for that load.
-//
-// Thread rule: written on the main thread only, at scene load, at PrefabRef resolution and at
-// asset reload completion, never while systems run. A spawn reads it with no lock.
+// One private template world for resolved prefabs, nesting and variants.
+// The engine library is main-thread owned; off-thread or standalone loads use a private library.
+// Spawns read immutable templates without a lock.
 
 #include "AssetCore/GUID.h"
 #include "ECS/ClonePlan.h"
@@ -179,10 +174,8 @@ class PrefabLibrary
     mutable FastHashSet<GUID> m_ReportedNotResident;
 };
 
-// Gives every outermost instance of the prefab of `after` in `world` the change from the generation
-// `before` to `after`: the fields and components it does not override, the children the prefab gained
-// and the children it lost. Returns true when an instance changed. Defined with the override edits
-// (PrefabOverrideEdits.cpp).
+// Propagates generation changes to outermost instances, preserving their overrides.
+// Returns true if any instance changes. Defined in PrefabOverrideEdits.cpp.
 bool PropagatePrefabGeneration(ECS::World& world, PrefabLibrary& library, const PrefabTemplate& before,
                                const PrefabTemplate& after);
 
