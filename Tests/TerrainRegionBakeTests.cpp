@@ -3576,6 +3576,9 @@ TEST(TerrainRegionBake, CoarseArrivalCarriesCurrentHeightsAndNormalsFromTheStrea
     const auto& standIn = *tile.CoarseStandIn;
     EXPECT_TRUE(standIn.Matches(resolution, tileSize, heightScale, tile.HeightfieldVersion));
     EXPECT_FALSE(standIn.Matches(resolution, tileSize, heightScale, tile.HeightfieldVersion + 1));
+    EXPECT_FALSE(standIn.Matches(resolution + 1, tileSize, heightScale, tile.HeightfieldVersion));
+    EXPECT_FALSE(standIn.Matches(resolution, tileSize * 2.0f, heightScale, tile.HeightfieldVersion));
+    EXPECT_FALSE(standIn.Matches(resolution, tileSize, heightScale + 1.0f, tile.HeightfieldVersion));
 
     CoarseTileStandIn rebuilt;
     BuildCoarseTileStandIn(tile.Heightfield, resolution, tileSize, heightScale, rebuilt);

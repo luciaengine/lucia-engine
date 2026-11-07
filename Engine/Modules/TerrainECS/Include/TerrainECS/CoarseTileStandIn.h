@@ -8,10 +8,8 @@
 namespace GameEngine::TerrainECS
 {
 
-/// What a Coarse tile renders until its Full detail arrives: its coarse heights bilinear-upsampled
-/// to the tile's full resolution, and the normal of those upsampled heights (no neighbors). The
-/// coarse streaming job builds it on a worker, so the frame that integrates the tile copies texels
-/// instead of computing a full-resolution normal.
+/// Full-resolution heights and normals prepared by the coarse streaming job.
+/// Extraction copies these texels until full detail arrives. Normals use no neighbor tiles.
 struct CoarseTileStandIn
 {
     Terrain::HeightfieldData Heights; ///< tileRes x tileRes
