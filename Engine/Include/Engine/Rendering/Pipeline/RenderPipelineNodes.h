@@ -109,6 +109,8 @@ struct ViewDeclare
     // publication overwrites (a node republishing "View.Depth" redirects every
     // LATER node in blueprint order — declaration order is the only ordering).
     Rendering::RenderGraph::RGTexture ResolveTexture(const std::string& ref) const;
+    /// Explicit versions cannot be exposed under a mutable resource name.
+    bool IsVersionedTexture(const std::string& ref) const;
     // Lookup only: read another view's published output from THIS pipeline/frame.
     // Missing output returns an invalid handle; it never allocates a fallback.
     Rendering::RenderGraph::RGTexture FindPublishedViewTexture(Rendering::ViewId view, const std::string& ref) const;

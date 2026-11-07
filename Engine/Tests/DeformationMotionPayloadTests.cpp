@@ -286,6 +286,8 @@ ProbeResult RenderProbe(const DeformationMotionParamsGPU& params, const float pr
     pd.vertexShader = vertexSpv;
     pd.pixelShader = fragmentSpv;
     pd.debugName = "DeformationMotionPayloadProbe";
+    // Test the motion payload independently of face winding.
+    pd.rasterizationState.cullMode = CullModeFlagBits::None;
     MaterialBuilder::FormatsHint formats{};
     formats.ColorFormats = {static_cast<uint32_t>(TextureFormat::R16G16B16A16_FLOAT)};
     std::string buildError;
