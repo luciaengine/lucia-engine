@@ -109,14 +109,15 @@ bool TerrainShadowFieldLit::Declare(Engine::Renderer::RenderServices& rs, RG::RG
 
     if (fresh || mapBaked)
     {
-        DeclareRebuildPass(frame, map, field, grid);
+        if (!DeclareRebuildPass(frame, map, field, grid))
+            return false;
         frame.MarkPersistentTextureInitialized(field);
     }
     m_Field = field;
     return true;
 }
 
-void TerrainShadowFieldLit::DeclareRebuildPass(RG::RGFrame& frame, RG::RGTexture map, RG::RGTexture field,
+bool TerrainShadowFieldLit::DeclareRebuildPass(RG::RGFrame& frame, RG::RGTexture map, RG::RGTexture field,
                                                const CBTTerrain::TerrainShadowGrid& grid)
 {
     std::vector<RG::RGFrame::TypedUpload<LevelParamsUBO>> params;
@@ -125,16 +126,17 @@ void TerrainShadowFieldLit::DeclareRebuildPass(RG::RGFrame& frame, RG::RGTexture
     {
         auto ub = frame.AllocUpload<LevelParamsUBO>();
         if (!ub.Valid())
-            return;
+            return false;
         *ub.Ptr = LevelParamsUBO{{level, grid.SamplesU, grid.SamplesV, 0u}, {grid.Texel, 0.0f, 0.0f, 0.0f}};
         params.push_back(ub);
     }
     frame.AddPass(
         "TerrainShadow.FieldLit", kRebuildPhase,
-        [&](RG::RGPassBuilder& p)
+        [this, map, field](RG::RGPassBuilder& pass)
         {
-            p.Read(map, RG::RGTextureRead::Storage);
-            p.Write(field, RG::RGTextureWrite::Storage);
+            pass.UsePipeline(m_PipelineId);
+            pass.Read(map, RG::RGTextureRead::Storage);
+            pass.Write(field, RG::RGTextureWrite::Storage);
         },
         [this, map, params = std::move(params)](RG::RGContext& ctx)
         {
@@ -181,6 +183,7 @@ void TerrainShadowFieldLit::DeclareRebuildPass(RG::RGFrame& frame, RG::RGTexture
                     static_cast<uint64_t>(Rendering::ResourceAccessMask::ShaderRead)));
             }
         });
+    return true;
 }
 
 void TerrainShadowFieldLit::Release(Engine::Renderer::RenderServices& rs)

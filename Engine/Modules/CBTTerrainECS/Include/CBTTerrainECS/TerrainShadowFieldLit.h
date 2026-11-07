@@ -56,7 +56,7 @@ class TerrainShadowFieldLit
 
   private:
     bool EnsurePipeline(Rendering::IDevice& device);
-    void DeclareRebuildPass(Rendering::RenderGraph::RGFrame& frame, Rendering::RenderGraph::RGTexture map,
+    bool DeclareRebuildPass(Rendering::RenderGraph::RGFrame& frame, Rendering::RenderGraph::RGTexture map,
                             Rendering::RenderGraph::RGTexture field, const CBTTerrain::TerrainShadowGrid& grid);
     void DestroyViews(Rendering::IDevice& device);
 
