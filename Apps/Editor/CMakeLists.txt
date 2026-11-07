@@ -408,6 +408,7 @@ set(EDITOR_SOURCES
 	Source/Terrain/TerrainHeightmapInspector.cpp
 	Source/Terrain/RawHeightmapSettingsCommit.cpp
 	Source/Terrain/TerrainInspector.cpp
+    Source/Terrain/TerrainGrassPresetRow.cpp
 	Source/Terrain/TerrainPageCookOverlay.cpp
 	Source/Terrain/TerrainModifierInspectors.cpp
 	Source/Terrain/TerrainMaterialLibraryMint.cpp
