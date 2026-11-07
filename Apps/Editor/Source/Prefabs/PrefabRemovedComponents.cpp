@@ -1,7 +1,7 @@
 #include "Prefabs/PrefabRemovedComponents.h"
 
 #include "InspectorRegistry.h"
-#include "Inspectors/ComponentIconClass.h"
+#include "Editor/Entities/EditorComponentTraits.h"
 #include "Inspectors/DefaultComponentInspector.h"
 #include "UI/InspectorSection.h"
 

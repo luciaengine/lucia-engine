@@ -329,12 +329,13 @@ UI::Interaction::DropFeedback CanDropEntityOnFolder(const AssetsFolderDrop& drop
 // The drop makes a prefab of each root at once in the drop folder, named for the root, with a number
 // when the name is taken, and returns the new files; the menu's dialog is the path that asks for a
 // name. A notice states what happens to the fields that name an entity outside the prefabs.
-std::vector<std::filesystem::path> CreatePrefabFromFolderDrop(const AssetsFolderDrop& drop)
+std::vector<std::filesystem::path> CreatePrefabFromFolderDrop(const AssetsFolderDrop& drop,
+                                                                  EditorChangeNotifications& notifications)
 {
     if (!CanDropEntityOnFolder(drop).Allowed)
         return {};
     const EditorContext& editor = *drop.EditorCtx;
-    const CreatePrefabTarget target{editor.World, DraggedRoots(drop), editor.ChangeNotifications, editor.UndoRedo,
+    const CreatePrefabTarget target{editor.World, DraggedRoots(drop), &notifications, editor.UndoRedo,
                                     {}, editor.OnSceneDirty};
     std::vector<std::filesystem::path> files;
     std::size_t outgoing = 0;
@@ -586,7 +587,9 @@ void RegisterPrefabEditor(EditorChangeNotifications& notifications, IThumbnailPr
         });
     EditorPluginRegistry::Get().RegisterPlugin(Menu());
     AssetsFolderDropRegistry::Get().Register(UI::Interaction::GetPayloadTypeId<HierarchyEntityDragPayload>(),
-                                           {&CanDropEntityOnFolder, &CreatePrefabFromFolderDrop});
+                                           {&CanDropEntityOnFolder, [&notifications](const AssetsFolderDrop& drop) {
+                                                return CreatePrefabFromFolderDrop(drop, notifications);
+                                            }});
     if (thumbnails)
         thumbnails->RegisterHandler(AssetType::Prefab, std::make_unique<PrefabThumbnailHandler>());
 }

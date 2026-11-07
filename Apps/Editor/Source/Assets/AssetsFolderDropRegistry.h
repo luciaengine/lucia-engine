@@ -4,6 +4,7 @@
 #include "UI/Interaction/Types.h"
 
 #include <filesystem>
+#include <functional>
 #include <vector>
 
 namespace GameEngine
@@ -36,7 +37,7 @@ struct AssetsFolderDropAcceptor
     UI::Interaction::DropFeedback (*CanDrop)(const AssetsFolderDrop& drop) = nullptr;
     /// Runs on the release after CanDrop allowed the drop. Returns the files it wrote; the Assets panel
     /// lists the drop folder and selects them.
-    std::vector<std::filesystem::path> (*PerformDrop)(const AssetsFolderDrop& drop) = nullptr;
+    std::function<std::vector<std::filesystem::path>(const AssetsFolderDrop&)> PerformDrop;
 };
 
 /// The drops the Assets views accept on a folder besides asset files, keyed by payload type. The

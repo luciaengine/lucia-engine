@@ -1,6 +1,7 @@
 #include "Editor/Entities/EditorComponentTraits.h"
 
 #include "ECS/ComponentRegistry.h"
+#include "ECS/World.h"
 #include "Logger/Logger.h"
 
 #include <string>
@@ -226,6 +227,24 @@ void EditorComponentTraitsRegistry::AppendModulePins(std::string_view moduleId,
         if (stamp.ModuleId == moduleId)
             outPins.push_back("component traits '" + ComponentDisplayName(typeId) + "'");
     }
+}
+
+// The CSS class that controls a component's inspector header icon, from its
+// registered traits. `world` may be null (the Add Component picker), which
+// skips the per-entity resolver.
+std::string ComponentIconClass(ECS::World* world, ECS::EntityHandle entity, ECS::ComponentTypeId typeId)
+{
+    constexpr const char* kDefaultIconClass = "inspector-section-icon-default";
+    EditorComponentTraits traits;
+    if (!EditorComponentTraitsRegistry::Get().TryGet(typeId, traits))
+        return kDefaultIconClass;
+    if (world && world->IsValid(entity) && traits.InspectorIconClassForEntity)
+    {
+        std::string entityIconClass = traits.InspectorIconClassForEntity(*world, entity);
+        if (!entityIconClass.empty())
+            return entityIconClass;
+    }
+    return traits.InspectorIconClass.empty() ? std::string(kDefaultIconClass) : traits.InspectorIconClass;
 }
 
 } // namespace GameEngine::Editor

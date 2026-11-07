@@ -862,24 +862,6 @@ static std::string_view RequiredPackageForComponent(ECS::ComponentTypeId typeId)
     return {};
 }
 
-// The CSS class that controls a component's inspector header icon, from its
-// registered traits. `world` may be null (the Add Component picker), which
-// skips the per-entity resolver.
-static std::string ComponentIconClass(ECS::World* world, ECS::EntityHandle entity, ECS::ComponentTypeId typeId)
-{
-    constexpr const char* kDefaultIconClass = "inspector-section-icon-default";
-    Editor::EditorComponentTraits traits;
-    if (!Editor::EditorComponentTraitsRegistry::Get().TryGet(typeId, traits))
-        return kDefaultIconClass;
-    if (world && world->IsValid(entity) && traits.InspectorIconClassForEntity)
-    {
-        std::string entityIconClass = traits.InspectorIconClassForEntity(*world, entity);
-        if (!entityIconClass.empty())
-            return entityIconClass;
-    }
-    return traits.InspectorIconClass.empty() ? std::string(kDefaultIconClass) : traits.InspectorIconClass;
-}
-
 static bool IsRemovableComponent(ECS::ComponentTypeId typeId)
 {
     Editor::EditorComponentTraits traits;
@@ -1114,7 +1096,7 @@ static const char* ComponentPickerFallbackIconClass(const std::string& category)
 
 static std::string ComponentPickerIconClass(ECS::ComponentTypeId typeId, const std::string& category)
 {
-    std::string iconClass = ComponentIconClass(nullptr, ECS::EntityHandle{}, typeId);
+    std::string iconClass = Editor::ComponentIconClass(nullptr, ECS::EntityHandle{}, typeId);
     if (!iconClass.empty() && iconClass != "inspector-section-icon-default")
         return iconClass;
     return ComponentPickerFallbackIconClass(category);
@@ -1125,7 +1107,7 @@ static std::string ComponentPickerIconClass(ComponentPreset preset, const std::s
     const std::vector<ECS::ComponentTypeId> typeIds = ComponentTypeIdsForPreset(preset);
     for (auto it = typeIds.rbegin(); it != typeIds.rend(); ++it)
     {
-        std::string iconClass = ComponentIconClass(nullptr, ECS::EntityHandle{}, *it);
+        std::string iconClass = Editor::ComponentIconClass(nullptr, ECS::EntityHandle{}, *it);
         if (!iconClass.empty() && iconClass != "inspector-section-icon-default")
             return iconClass;
     }
@@ -3900,7 +3882,7 @@ int InspectorPanel::BuildComponentSections(ECS::EntityHandle entity, const std::
         else if (effectDesc && !effectDesc->IconPath.empty())
             sectionRaw->SetHeaderIconImagePath(std::string(effectDesc->IconPath));
         else
-            sectionRaw->SetHeaderIconClass(ComponentIconClass(m_World, entity, typeId));
+            sectionRaw->SetHeaderIconClass(Editor::ComponentIconClass(m_World, entity, typeId));
         if (effectDesc && !effectDesc->Description.empty())
             sectionRaw->SetHeaderTooltip(std::string(effectDesc->Description));
         else if (std::string tip = ComponentTooltip(typeId); !tip.empty())

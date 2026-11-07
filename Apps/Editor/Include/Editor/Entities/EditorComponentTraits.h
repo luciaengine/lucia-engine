@@ -217,4 +217,7 @@ private:
     std::unordered_map<ECS::ComponentTypeId, ECS::ModuleRegistrationStamp> m_ModuleOwners;
 };
 
+/// Resolves an inspector icon from registered traits. A null world skips per-entity overrides.
+std::string ComponentIconClass(ECS::World* world, ECS::EntityHandle entity, ECS::ComponentTypeId typeId);
+
 } // namespace GameEngine::Editor
