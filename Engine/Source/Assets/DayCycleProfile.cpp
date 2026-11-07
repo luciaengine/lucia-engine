@@ -4,6 +4,7 @@
 #include "Logger/Logger.h"
 #include "Scene/SceneValue.h"
 #include "Types/ParseNumber.h"
+#include "Types/StringUtils.h"
 
 #include <nlohmann/json.hpp>
 
@@ -48,15 +49,6 @@ constexpr int kInterpolationCount = 3;
 constexpr int kTangentModeCount = 5;
 constexpr std::string_view kKeyFormat = "elevation,value,inTangent,outTangent,interpolation,tangentMode";
 
-std::string_view TrimSpaces(std::string_view text)
-{
-    while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
-        text.remove_prefix(1);
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
-        text.remove_suffix(1);
-    return text;
-}
-
 std::vector<std::string_view> SplitOn(std::string_view text, char separator)
 {
     std::vector<std::string_view> parts;
@@ -86,7 +78,7 @@ bool ParseKey(std::string_view text, const std::string& name, Math::CurveKey& ou
     for (size_t i = 0; i < fields.size(); ++i)
     {
         // A key field is a strict decimal float without the leading '+' ParseStrictDecimal allows.
-        const std::string_view field = TrimSpaces(fields[i]);
+        const std::string_view field = TrimWhitespaceView(fields[i]);
         if (field.starts_with('+') || !ParseStrictDecimalFloat(field, values[i]))
         {
             outError = name + "'s " + std::string(kKeyFields[i]) + " \"" + std::string(field) +
@@ -130,7 +122,7 @@ bool ParseKeyList(std::string_view text, const std::string& where, Math::Curve& 
     size_t count = 0;
     for (const std::string_view key : SplitOn(text, ';'))
     {
-        if (TrimSpaces(key).empty())
+        if (TrimWhitespaceView(key).empty())
             continue;
         ++count;
         if (count > Math::Curve::Capacity)
@@ -171,25 +163,30 @@ const DayCycleTrackDesc* FindTrackByFileKey(std::string_view fileKey)
     return nullptr;
 }
 
-// The first key written twice in one object of `text`, or empty. JSON leaves a repeated key to the
-// reader, which keeps the last; a profile refuses it instead, so no definition is lost unseen.
+void RecordProfileKey(std::vector<std::vector<std::string>>& objects, std::string& repeated,
+                      nlohmann::json::parse_event_t event, const nlohmann::json& parsed)
+{
+    if (event == nlohmann::json::parse_event_t::object_start)
+        objects.emplace_back();
+    else if (event == nlohmann::json::parse_event_t::object_end && !objects.empty())
+        objects.pop_back();
+    else if (event == nlohmann::json::parse_event_t::key && !objects.empty() && repeated.empty())
+    {
+        const std::string key = parsed.get<std::string>();
+        std::vector<std::string>& seen = objects.back();
+        if (std::find(seen.begin(), seen.end(), key) != seen.end())
+            repeated = key;
+        seen.push_back(key);
+    }
+}
+
+// Returns the first repeated object key, or an empty string when each key is unique.
 std::string FirstRepeatedKey(std::string_view text)
 {
     std::vector<std::vector<std::string>> objects;
     std::string repeated;
-    const auto callback = [&](int, nlohmann::json::parse_event_t event, nlohmann::json& parsed) {
-        if (event == nlohmann::json::parse_event_t::object_start)
-            objects.emplace_back();
-        else if (event == nlohmann::json::parse_event_t::object_end && !objects.empty())
-            objects.pop_back();
-        else if (event == nlohmann::json::parse_event_t::key && !objects.empty() && repeated.empty())
-        {
-            const std::string key = parsed.get<std::string>();
-            std::vector<std::string>& seen = objects.back();
-            if (std::find(seen.begin(), seen.end(), key) != seen.end())
-                repeated = key;
-            seen.push_back(key);
-        }
+    const auto callback = [&objects, &repeated](int, nlohmann::json::parse_event_t event, nlohmann::json& parsed) {
+        RecordProfileKey(objects, repeated, event, parsed);
         return true;
     };
     // Only the callback is wanted. GCC does not let a void cast drop a warn_unused_result value.
