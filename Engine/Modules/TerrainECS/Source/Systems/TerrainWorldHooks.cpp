@@ -6,6 +6,7 @@
 #include "Components/Terrain/Terrain.h"
 #include "TerrainECS/Components/TerrainPlanetFaceCollider.h"
 #include "TerrainECS/Components/TerrainTileCollider.h"
+#include "TerrainECS/Components/TerrainPageCollider.h"
 #include "Core/Engine.h"
 #include "ECS/Entity.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -50,6 +51,12 @@ void ReleaseTerrainOwnedResources(Components::Terrain& terrain)
     terrain.TiledTerrainGeneration = 0;
 }
 
+void ReleaseTerrainPageCollider(Components::TerrainPageCollider& collider)
+{
+    if (auto* terrain = TerrainService::TryGet())
+        terrain->ReleasePagePhysicsHandle(collider.PhysicsHandleIndex, collider.PhysicsHandleGeneration);
+}
+
 void ReleaseTerrainTileCollider(Components::TerrainTileCollider& collider)
 {
     if (auto* service = TerrainService::TryGet())
@@ -71,6 +78,7 @@ void ReleaseTerrainPlanetFaceCollider(Components::TerrainPlanetFaceCollider& col
 void RegisterTerrainWorldHooks(ECS::World& world)
 {
     world.RegisterOnRemove<Components::Terrain>(&ReleaseTerrainOwnedResources);
+    world.RegisterOnRemove<Components::TerrainPageCollider>(&ReleaseTerrainPageCollider);
     world.RegisterOnRemove<Components::TerrainTileCollider>(&ReleaseTerrainTileCollider);
     world.RegisterOnRemove<Components::TerrainPlanetFaceCollider>(
         &ReleaseTerrainPlanetFaceCollider);
