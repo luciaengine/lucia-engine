@@ -136,10 +136,10 @@ class ScriptingAbiPrefabSpawnTest : public ::testing::Test
         const GUID squad = registered.Value();
         const std::string relative =
             std::filesystem::relative(m_Folder / "Squad.prefab", m_Resolver->GetAssetRoot()).generic_string();
-        Scene::SceneReadOptions options{};
+        Scene::LoadOptions options{};
         options.assetResolver = &*m_Resolver;
         options.assetRootOverride = m_Resolver->GetAssetRoot();
-        const bool loaded = Scene::ReadSceneInto(
+        const bool loaded = Scene::LoadSceneFromFile(
             world,
             Write("Barracks.scene", "[scene name=\"Barracks\" version=1]\n"
                                     "[entity id=\"spawner\"]\n"
@@ -196,7 +196,7 @@ TEST_F(ScriptingAbiPrefabSpawnTest, SpawnReturnsARootWhoseTreeMatchesThePrefab)
     world.Query<ECS::Read<Components::Parent>>().Each(
         [&](const Components::Parent& parent)
         {
-            if (parent.Entity == root)
+            if (parent.parent == root)
                 ++children;
         });
     EXPECT_EQ(children, 2u);
@@ -224,7 +224,7 @@ TEST_F(ScriptingAbiPrefabSpawnTest, SpawnWhileChangesAreDeferredCreatesAtOnceAnd
     EXPECT_EQ(world.GetComponent<Components::Transform>(first), firstTransform);
     const auto* parent = world.GetComponent<Components::Parent>(ECS::EntityHandle(secondId));
     ASSERT_NE(parent, nullptr);
-    EXPECT_EQ(parent->Entity, first);
+    EXPECT_EQ(parent->parent, first);
     world.SetDeferStructuralChanges(false);
 }
 
