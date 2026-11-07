@@ -28,7 +28,7 @@ LogChannelTable::LogChannelTable()
 std::uint16_t LogChannelTable::Register(std::string_view name, LogLevel defaultLevel)
 {
     assert(!name.empty() && "a log channel needs a name");
-    assert(name.size() <= kMaxNameLength && "a log channel name is at most kMaxNameLength characters");
+    assert(name.size() <= kMaxNameLength && "a log channel name is at most kMaxNameLength UTF-8 bytes");
     name = name.substr(0, kMaxNameLength);
 
     std::lock_guard<std::mutex> lock(m_Mutex);

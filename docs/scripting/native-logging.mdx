@@ -22,7 +22,7 @@ all channels. These settings last for the current process.
 
 Declare a channel once in the owning module's header. Its first call registers
 its name. Registrations with the same name share one channel across modules.
-Names have at most 63 characters. A process has at most 256 channels, including
+Names have at most 63 UTF-8 bytes. A process has at most 256 channels, including
 **Core**.
 
 ```cpp title="Declare and use a gameplay channel"
