@@ -6,7 +6,7 @@ description: Check whether a loaded scene is ready to show.
 A game can read the scene readiness snapshot from a native C++ system update.
 The snapshot is taken at the start of the frame and includes pending model and
 material resolution, editor scene opening, material shader compilation,
-draw variant compilation, and material texture binds.
+draw variant compilation, device pipeline builds, and material texture binds.
 
 ```cpp title="Read the scene readiness snapshot"
 #include "Core/Engine.h"

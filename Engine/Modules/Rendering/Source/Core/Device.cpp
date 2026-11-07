@@ -687,6 +687,11 @@ std::unique_ptr<CommandList> IDevice::CreateSecondaryCommandList(QueueType /*que
         return CreateConcreteGraphicsPipeline(*gd, fk);
     }
 
+    size_t IDevice::PendingPipelineBuildCount() const
+    {
+        return m_PipelineBuilds->CountPending();
+    }
+
     PipelineCacheStats IDevice::GetPipelineCacheStats() const
     {
         return m_PipelineCache->GetStats();

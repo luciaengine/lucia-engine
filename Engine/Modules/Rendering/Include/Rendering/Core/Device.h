@@ -2666,6 +2666,8 @@ class IDevice
     // combination is left un-cached.
     PipelineHandle CreateGraphicsPipelineDirect(GraphicsPipelineId id, const PipelineFormatKey& fk);
 
+    /// Number of queued or running pipeline builds at the time of the call. Thread-safe.
+    size_t PendingPipelineBuildCount() const;
     PipelineCacheStats GetPipelineCacheStats() const;
 
     // Direct access to the pipeline cache. Used by hot-reload paths that need

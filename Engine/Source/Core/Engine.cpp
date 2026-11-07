@@ -403,6 +403,13 @@ struct EngineCore::SceneLoadingGates
                        auto* render = engine.GetRenderServices();
                        return render ? render->Materials().Variants().OutstandingVariantCount() : 0;
                    }),
+          DevicePipelines(engine.GetSceneLoadTracker(),
+                          {"gpu.pipeline", "Building device pipelines", SceneLoadTracker::CostUnit::Pipelines},
+                          "device pipelines still queued or building", [&engine]() -> size_t {
+                              auto* render = engine.GetRenderServices();
+                              auto* device = render ? render->GetDevice() : nullptr;
+                              return device ? device->PendingPipelineBuildCount() : 0;
+                          }),
           Textures(engine.GetSceneLoadTracker(), {"render.texture-upload", "Loading textures"},
                    "material textures still waiting to bind", [&engine]() -> size_t {
                        auto* render = engine.GetRenderServices();
@@ -414,6 +421,7 @@ struct EngineCore::SceneLoadingGates
     Report Resolve;
     Report BaseCompiles;
     Report Variants;
+    Report DevicePipelines;
     Report Textures;
 };
 

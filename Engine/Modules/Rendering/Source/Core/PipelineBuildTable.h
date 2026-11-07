@@ -71,6 +71,8 @@ class PipelineBuildTable
     // `invalidationEpoch`, nullopt otherwise.
     std::optional<PipelineBuildState> Find(uint64_t key, uint64_t invalidationEpoch) const;
 
+    size_t CountPending() const;
+
     // Before the device's GPU objects die: forget Queued and Failed rows (their
     // jobs then do nothing, and a build that failed against a dying device is
     // not remembered), and wait for every Running build to end.
