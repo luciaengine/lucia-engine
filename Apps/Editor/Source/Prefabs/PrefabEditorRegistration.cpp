@@ -17,7 +17,9 @@
 #include "Prefabs/UnpackPrefabCommand.h"
 #include "SceneView/SceneViewNoticeOverlay.h"
 #include "Thumbnails/ThumbnailService.h"
+#include "UI/Controls/Button.h"
 #include "UI/EditorIcons.h"
+#include "UI/InspectorSection.h"
 #include "UI/UIManager.h"
 #include "EditorContext.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -43,6 +45,7 @@
 #include <format>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -353,6 +356,48 @@ void AddPrefabBar(const InspectorContext& context)
                                                          context.RequestInspectorRefresh));
 }
 
+void AddRemovedComponentRows(const InspectorContext& context)
+{
+    if (!context.World || !context.Parent || context.Entities.size() > 1)
+        return;
+    const auto* described = PrefabInstanceDescriptions::Get().FindEntity(*context.World, context.Entity);
+    if (!described)
+        return;
+
+    const auto isInPlayMode = OverridesListContext().IsInPlayMode;
+    for (const auto& entry : described->Overrides)
+    {
+        if (entry.Kind != Scene::PrefabOverrideKind::RemovedComponent)
+            continue;
+
+        auto section = std::make_unique<InspectorSection>(IdentifierToWords(entry.Component));
+        section->SetEnabledTogglePlaceholder(true);
+        section->SetHeaderBadge("Removed", "The prefab has this component. This instance removed it.");
+        if (!isInPlayMode || !isInPlayMode())
+        {
+            auto restore = std::make_unique<Button>();
+            restore->SetText("Restore Component");
+            restore->SetOnClick([target = Scene::PrefabOverrideTarget{context.Entity, entry},
+                                 getWorld = context.GetWorld, originalWorld = context.World,
+                                 undo = context.Undo, notifications = context.ChangeNotifications,
+                                 refresh = context.RequestInspectorRefresh, isInPlayMode](UIEvent&)
+            {
+                if (isInPlayMode && isInPlayMode())
+                    return;
+                ECS::World* world = getWorld ? getWorld() : originalWorld;
+                if (!world || world != originalWorld || !world->IsValid(target.Entity))
+                    return;
+                RevertPrefabOverridesAsOneStep(*world, std::span(&target, 1), undo, notifications,
+                                                "Restore Prefab Component");
+                if (refresh)
+                    refresh();
+            });
+            section->GetContentRoot()->AddChild(std::move(restore));
+        }
+        context.Parent->AddChild(std::move(section));
+    }
+}
+
 // The menu entry that selects the prefab file, named for the prefab as the Inspector's bar names it.
 std::string SelectPrefabLabel(ECS::World& world, ECS::EntityHandle entity)
 {
@@ -449,6 +494,8 @@ void RegisterPrefabEditor(EditorChangeNotifications& notifications, IThumbnailPr
     EditorComponentTraitsRegistry::Get().Register(ECS::GetComponentTypeId<Components::PrefabInstance>(),
                                                   std::move(traits));
     InspectorRegistry::Get().RegisterEntityBanner("prefab-bar", EntityBannerPlacement::BeforeComponents, &AddPrefabBar);
+    InspectorRegistry::Get().RegisterEntityBanner("prefab-removed-components", EntityBannerPlacement::AfterComponents,
+                                                   &AddRemovedComponentRows);
     EditorPluginRegistry::Get().RegisterPlugin(Menu());
     if (auto* service = dynamic_cast<ThumbnailService*>(thumbnails))
         service->RegisterHandler(AssetType::Prefab, std::make_unique<PrefabThumbnailHandler>());
