@@ -458,6 +458,7 @@ void PlayModeManager::ExitPlayMode()
     if (auto* terrain = TerrainECS::TerrainService::TryGet())
     {
         terrain->ReleaseAllTilePhysicsHandles();
+        terrain->ReleaseAllPagePhysicsHandles();
         terrain->ReleaseAllPlanetFacePhysicsHandles();
     }
 
