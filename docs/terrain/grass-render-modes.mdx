@@ -1,0 +1,96 @@
+---
+title: Grass render modes
+description: Choose grass presets, density, and alpha rendering behavior.
+---
+
+Grass supports **Dither** and **Blend** render modes. Dither is the default.
+Use it for geometric blades and for card grass that needs depth-correct edges.
+Use Blend for card grass when smooth alpha blending matters more than ordering
+between blades.
+
+## Grass presets and density
+
+In the Terrain Grass inspector, the **Preset** dropdown applies Meadow, Lawn,
+Steppe, or Stylized as one undoable edit. The thumbnails preview each look.
+Changing a look setting makes the dropdown read **Custom**. Presets keep the
+scene's range, placement seed, layer, textures, and wind strength.
+
+| Preset | Look | Blades per square meter at the camera |
+| --- | --- | --- |
+| Meadow | Medium-height green blades | 21 |
+| Lawn | Short, upright, and dense | 64 |
+| Steppe | Tall, sparse, and dry | 12 |
+| Stylized | Short, even blades in soft clumps | 128 |
+
+The density ceiling is 256 blades per square meter. The per-view instance
+budget stays fixed. Higher density can reduce the fitted range shown in the
+inspector.
+
+## Alpha rendering
+
+| Authored mode | View | Soft alpha | Depth | Ordering between blades |
+| --- | --- | --- | --- | --- |
+| Dither | MSAA | Alpha-to-coverage | Write and test | Depth-correct |
+| Dither | Single sample | Static screen-door discard | Write and test | Depth-correct |
+| Blend | Any | Alpha blending | Test only | Placement order within a distance band |
+
+The view's sample count selects the Dither implementation. Alpha-to-coverage
+requires multiple samples. A single-sample view uses screen-door discard.
+
+### Opaque grass
+
+A view with no grass texture that carries live alpha draws grass as opaque.
+This applies to geometric ribbons and to card textures classified as opaque.
+The opaque path has no alpha-to-coverage or discard instruction. It takes
+precedence over the authored render mode, including Blend.
+
+The Render Mode row explains when the choice has no current effect. It stays
+enabled because other active terrains also affect the render-mode decision.
+
+:::caution[Opaque texture classification]
+A texture classified as opaque renders as a solid card. The alpha probe accepts
+KTX2 content. For PNG or TGA sources, it can identify the absence of an alpha
+channel from the header, but it cannot infer the cooked BC7 alpha from source
+pixels. Check the rendered cutout when choosing card textures.
+:::
+
+## Shared render mode
+
+All active grass terrains share an instance buffer and an indirect draw for
+each distance band. Render mode is pipeline state on that draw.
+
+**Blend requires every active grass terrain to select Blend.** If any active
+terrain selects Dither, all grass in the view uses Dither. The decision includes
+active terrains outside the camera frustum. The view's sample count then selects
+the Dither implementation.
+
+Geometric blades have opaque fragments. Blend does not improve their edges and
+can expose placement order. Their texture-free opaque path normally takes
+precedence over the selected mode.
+
+Card grass with texture alpha can use either mode. Blend preserves soft alpha
+but does not sort blades within a distance band. Far bands draw before near
+bands. Dither resolves alpha through coverage or discard and writes depth.
+
+## Authoring
+
+| Surface | Setting |
+| --- | --- |
+| Inspector | Terrain → Grass → Advanced → **Render Mode** |
+| Component | `TerrainGrass.RenderMode`, with `Dither` or `Blend` |
+| Scene file | `TerrainGrass.renderMode = Dither` or `TerrainGrass.renderMode = Blend` |
+| Debug server | `set_component TerrainGrass {"RenderMode": "Blend"}` |
+
+The scene reader accepts mode names or numeric values. Names are case tolerant
+and can be quoted. Component snapshots and per-terrain grass diagnostics report
+the authored value.
+
+The **Alpha Cutoff** row appears when a bound texture carries alpha.
+
+## Limits
+
+- Blend does not sort blades within a distance band. Instance order comes from
+  subgroup atomic compaction and is not deterministic.
+- An opaque classification removes the card cutout from the shader. Verify
+  textures that need transparent holes.
+- Grass placement supports planar terrain. Spherical terrain emits no grass.
