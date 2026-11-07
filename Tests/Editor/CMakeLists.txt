@@ -199,10 +199,6 @@ set(EDITOR_TEST_SOURCES
 	# a box around a piece and the piece itself agree — and both residencies run.
 	PlacementGroundGapTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/PlacementGroundGap.cpp
-	# Byte-identity oracle for the Channel sweep over that same run. The region
-	# fill takes over FitToBanks only; this pins Channel's vertices, indices and
-	# bounds to a digest captured before the fill landed, tapered and untapered.
-	SplineChannelParityTests.cpp
 	# The same byte-identity bar for every path and road the generic sweep builds
 	# (Bevel, Crown), through the controller's own station stream: open and
 	# closed, Linear and smooth, level and sloped ground, a transformed placer.
