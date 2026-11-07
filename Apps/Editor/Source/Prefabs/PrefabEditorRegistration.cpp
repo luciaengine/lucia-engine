@@ -13,9 +13,10 @@
 #include "Prefabs/PrefabOverridesList/PrefabOverridesList.h"
 #include "Prefabs/PrefabBar.h"
 #include "Prefabs/PrefabInstanceDescriptions.h"
+#include "Prefabs/PrefabThumbnailHandler.h"
 #include "Prefabs/UnpackPrefabCommand.h"
 #include "SceneView/SceneViewNoticeOverlay.h"
-#include "Thumbnails/IThumbnailProvider.h"
+#include "Thumbnails/ThumbnailService.h"
 #include "UI/EditorIcons.h"
 #include "UI/UIManager.h"
 #include "EditorContext.h"
@@ -449,7 +450,8 @@ void RegisterPrefabEditor(EditorChangeNotifications& notifications, IThumbnailPr
                                                   std::move(traits));
     InspectorRegistry::Get().RegisterEntityBanner("prefab-bar", EntityBannerPlacement::BeforeComponents, &AddPrefabBar);
     EditorPluginRegistry::Get().RegisterPlugin(Menu());
-    (void)thumbnails;
+    if (auto* service = dynamic_cast<ThumbnailService*>(thumbnails))
+        service->RegisterHandler(AssetType::Prefab, std::make_unique<PrefabThumbnailHandler>());
 }
 
 } // namespace GameEngine::Editor

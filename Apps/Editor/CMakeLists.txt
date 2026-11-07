@@ -106,6 +106,7 @@ set(EDITOR_SOURCES
     Source/Prefabs/PrefabHierarchyRows.cpp
     Source/Prefabs/PrefabInstanceDescriptions.cpp
     Source/Prefabs/PrefabEditorRegistration.cpp
+    Source/Prefabs/PrefabThumbnailHandler.cpp
     Source/Prefabs/UnpackPrefabCommand.cpp
     Source/Prefabs/PrefabBar.cpp
     Source/Prefabs/PrefabService.cpp
