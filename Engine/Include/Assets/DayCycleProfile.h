@@ -40,13 +40,9 @@ struct DayCycleProfileData
     DayCycleTrackKeys* Find(DayCycleTrack track);
 };
 
-/// Reads a profile file's text. The format has one version and no version field. Refused, with the
-/// reason and the fix in `outError`: text that is not a JSON object, a key written twice in one
-/// object, a field the format does not have, a field of the wrong type, a track the table does not
-/// declare (named, with the tracks it does), a track with no keys or more keys than a curve holds, a
-/// key field that is not a finite number, an elevation outside -90 to 90 degrees, an interpolation or
-/// tangent mode outside its list, keys that are not in ascending elevation, and a dusk list without
-/// separateDusk or separateDusk without one.
+/// Parses the supported JSON profile format; returns a reason and corrective action in `outError`.
+/// Rejects duplicate or unknown fields, wrong types, invalid curves and inconsistent dusk keys.
+/// Curve keys must be finite, within -90..90 degrees, ordered and within capacity.
 bool ParseDayCycleProfile(std::string_view text, DayCycleProfileData& out, std::string& outError);
 
 /// The file text for `data`, which ParseDayCycleProfile reads back to the same data.

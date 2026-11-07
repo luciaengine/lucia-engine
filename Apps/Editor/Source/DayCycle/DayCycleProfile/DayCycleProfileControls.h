@@ -24,10 +24,9 @@ class UndoRedoService;
 /// active. `onChoose` is called with the view clicked.
 void AddDayCycleAxisToggle(UIElement& parent, DayCycleAxisView view, std::function<void(DayCycleAxisView)> onChoose);
 
-/// Save for a project profile, Save a copy to the project for one the editor or a package ships,
-/// with the unsaved mark and the outcome in a caption beside it. A copy's working copy becomes the
-/// one the Day Cycle window shows, and `onCopied` is called with its path. Returns the group that
-/// holds the caption and Save.
+/// Adds Save, or Save a copy to the project for shipped assets, with status text.
+/// A saved copy becomes the window's working copy and calls `onCopied` with its path.
+/// Returns the group containing the status and button.
 UIElement& AddDayCycleSaveButton(UIElement& parent, const std::shared_ptr<DayCycleWorkingCopy>& profile,
                            std::function<void(const std::filesystem::path&)> onCopied);
 

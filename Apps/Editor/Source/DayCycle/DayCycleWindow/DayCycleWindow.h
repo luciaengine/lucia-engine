@@ -24,13 +24,9 @@ class DayCycleScrub;
 class DayCycleTrackRows;
 class DayCycleWorkingCopy;
 
-/// The Day Cycle window: the profile the editor last opened (the asset selected in the asset browser,
-/// or Open in the Day Cycle window on its inspector), else the shipped Default, edited against the
-/// shipped Default where it leaves a track out. Its static layout is UI/panels/DayCycleWindow.uxml: a
-/// toolbar with the profile and the volume it is shown on, the axis toggle, Save and the presets, and
-/// the scrub's readout; the scrub strip and the tracks are built here from the track table, on one
-/// shared axis with one playhead through all of them. The
-/// window and the profile's inspector edit one working copy.
+/// Authors the most recently opened profile, or the shipped Default, in a shared working copy.
+/// UI/panels/DayCycleWindow.uxml owns the static layout; track rows share one axis and playhead.
+/// Tracks omitted from the profile display values from the shipped Default.
 class DayCycleWindow final : public AssetBoundDockPanel
 {
   public:

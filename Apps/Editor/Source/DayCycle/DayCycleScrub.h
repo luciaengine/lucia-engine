@@ -24,15 +24,9 @@ namespace GameEngine::Editor
 {
 class UndoRedoService;
 
-/// The Day Cycle window's scrub of the open scene's time of day. A drag sets the world's preview
-/// hour on the sky system, which every view of the world renders in place of the Sky Environment's
-/// own hour; the component is never written, so the scene's unsaved mark, its save and undo do not
-/// see a scrub. The preview ends when this object goes (the window closes), when the sky is edited
-/// (an edit to its Time of Day field then shows), when the scene it was set for is gone (a scene
-/// opened or closed, the sky entity removed) and when play starts; the scrub is off while the editor
-/// plays. Under AnimateTimeOfDay the clock holds while the playhead is held, and the release writes
-/// the scrubbed hour to the component as one undoable edit, so the clock runs on from there. Main
-/// thread only.
+/// Main-thread sky-hour preview; ordinary scrubs leave the authored component unchanged.
+/// Closing, sky edits, scene changes and play start clear the preview.
+/// An animated clock pauses while held and commits the release hour as one undoable edit.
 class DayCycleScrub
 {
   public:
