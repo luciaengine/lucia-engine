@@ -238,9 +238,9 @@
 	color: var(--ui_color_text_secondary);
 }
 
-/* The scrub strip: the tracks' axis with a thin grab band. */
+/* The scrub strip keeps a 28-pixel drag area above its axis labels. */
 .day-cycle-scrub-graph {
-	--curve-field-plot-height: 28px;
+	--curve-field-plot-height: 56px;
 }
 
 .day-cycle-scrub-off {
