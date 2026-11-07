@@ -36,7 +36,6 @@ struct BoundedField
 
 // Every float field the pass floors at zero and does not cap.
 constexpr BoundedField kNonNegativeFields[] = {
-    {"BladesPerSquareMeter", &Components::TerrainGrass::BladesPerSquareMeter},
     {"Range", &Components::TerrainGrass::Range},
     {"DensityFalloff", &Components::TerrainGrass::DensityFalloff},
     {"ClumpSize", &Components::TerrainGrass::ClumpSize},
@@ -52,9 +51,13 @@ constexpr BoundedField kNonNegativeFields[] = {
     {"RandomBrightness", &Components::TerrainGrass::RandomBrightness},
     {"BladeScatterGain", &Components::TerrainGrass::BladeScatterGain},
     {"Translucency", &Components::TerrainGrass::Translucency},
-    {"TextureCardsPerSquareMeter", &Components::TerrainGrass::TextureCardsPerSquareMeter},
     {"TextureSize", &Components::TerrainGrass::TextureSize},
     {"NormalStrength", &Components::TerrainGrass::NormalStrength},
+};
+
+constexpr BoundedField kDensityFields[] = {
+    {"BladesPerSquareMeter", &Components::TerrainGrass::BladesPerSquareMeter},
+    {"TextureCardsPerSquareMeter", &Components::TerrainGrass::TextureCardsPerSquareMeter},
 };
 
 // Every float field the pass holds inside [0, 1].
@@ -89,6 +92,21 @@ TEST(TerrainGrassClamps, NonNegativeFieldsFloorAtZeroAndKeepLargeValues)
         grass.*field.Member = 1000.0f;
         ClampFields(grass);
         EXPECT_FLOAT_EQ(grass.*field.Member, 1000.0f) << field.Name << " was capped";
+    }
+}
+
+TEST(TerrainGrassClamps, DensityFieldsRespectThePlacementBudget)
+{
+    for (const BoundedField& field : kDensityFields)
+    {
+        Components::TerrainGrass grass{};
+        grass.*field.Member = -1.0f;
+        ClampFields(grass);
+        EXPECT_FLOAT_EQ(grass.*field.Member, 0.0f) << field.Name;
+
+        grass.*field.Member = kGrassMaxBladesPerSquareMeter + 1.0f;
+        ClampFields(grass);
+        EXPECT_FLOAT_EQ(grass.*field.Member, kGrassMaxBladesPerSquareMeter) << field.Name;
     }
 }
 

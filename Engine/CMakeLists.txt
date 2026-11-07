@@ -3545,7 +3545,8 @@ endif()
 	        Tests/SceneExportStripTests.cpp
 	        Tests/SplineSceneSerializationTests.cpp
 	        Tests/ReflectedComponentJsonTests.cpp
-	        Modules/TerrainGrass/Tests/TerrainGrassClampsTests.cpp)
+	        Modules/TerrainGrass/Tests/TerrainGrassClampsTests.cpp
+        Modules/TerrainGrass/Tests/TerrainGrassPresetTests.cpp)
 	    target_link_libraries(EngineSceneIOTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 	    target_include_directories(EngineSceneIOTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 	    # TerrainGrassClamps.SceneSchemaCarriesNoInlineClampCall reads the scene schema and fails on
