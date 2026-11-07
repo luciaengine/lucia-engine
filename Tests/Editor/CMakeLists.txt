@@ -144,11 +144,6 @@ set(EDITOR_TEST_SOURCES
 	# fixture (terrain + picker) from the drape group above as well as the fence
 	# runtime layout linked through Engine.
 	FenceConformTargetTests.cpp
-	# Same contract again for the generated-geometry recipe, whose every-field
-	# equality guard is what keeps a mesh regenerating after a profile edit,
-	# plus the NaN self-inequality guard shared with the fence. The sanitize TU
-	# is a leaf over the component header only.
-	SplineExtrudeRecipeTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineExtrudeSanitize.cpp
 	# The swept wall's recipe contract: its exact size, every field in equality,
 	# the sanitizer, and the corner a wall starts with, derived from its spline's
@@ -1929,7 +1924,7 @@ if(TARGET EditorTests)
 	  COMMAND "${CMAKE_COMMAND}"
 	    -DTEST_EXE=$<TARGET_FILE:EditorTests>
 	    -DTEST_WORKING_DIR=$<TARGET_FILE_DIR:EditorTests>
-	    -DTEST_ARGS=--gtest_filter=FenceLayout.*:FenceEmission.*:FencePieceReuse.*:FenceRecipeLayout.*:FenceSpanOverrides.*:FenceSpanOverrideRemap.*:SplinePointEdits.*:SplineFenceRecipe.*:SplinePlacementRecipe.*:SplineExtrudeRecipe.*:SplineWallRecipe.*:SplineChunkSlots.*:SplineChunkCommit.*:FenceMitreVariants.*:CarveChunkRanges.*:SplineExtrudeCoverage.*:SplineSweepParity.*:SplineSweepWall.*:SplineSurfaceObservation.*:SplinePoolSelection.*:TileLayout.*
+	    -DTEST_ARGS=--gtest_filter=FenceLayout.*:FenceEmission.*:FencePieceReuse.*:FenceRecipeLayout.*:FenceSpanOverrides.*:FenceSpanOverrideRemap.*:SplinePointEdits.*:SplineFenceRecipe.*:SplinePlacementRecipe.*:SplineWallRecipe.*:SplineChunkSlots.*:SplineChunkCommit.*:FenceMitreVariants.*:CarveChunkRanges.*:SplineExtrudeCoverage.*:SplineSweepParity.*:SplineSweepWall.*:SplineSurfaceObservation.*:SplinePoolSelection.*:TileLayout.*
 	    -P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
 	)
 
