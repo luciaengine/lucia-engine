@@ -17,13 +17,13 @@ namespace GameEngine
 class EngineCore;
 struct SceneLoadTrackerTestAccess;
 
-/// Collects the work that the first frame of a scene needs, from the owners that do it.
-/// It never issues work. Owners register a category, then report work as tickets (a unit
-/// of work with a start and an end) or as gates (a condition read from state the owner
-/// keeps). Once per frame, Tick takes a snapshot that says if the scene is ready to show.
+/// Snapshots scene readiness once per frame from owner-reported work tickets and gates.
 /// EngineCore::GetSceneLoadTracker() returns the engine's instance.
 class SceneLoadTracker
 {
+    struct CategoryState;
+    struct TrackerState;
+
   public:
     enum class CostUnit : uint8_t
     {
@@ -67,8 +67,6 @@ class SceneLoadTracker
         std::size_t Pending = 0; // the items the owner still waits for
     };
 
-    struct CategoryState;
-    struct TrackerState;
     class Category;
 
     /// One unit of work, move-only. Any thread can call it, one call at a time. A ticket

@@ -20,6 +20,8 @@
 #include "Engine/Rendering/SceneBuildPump.h"
 #include "EngineLogCapture.h"
 #include "Logger/Logger.h"
+#include "SceneLoadTracker/SceneLoadTracker.h"
+#include "SceneLoadTrackerTestAccess.h"
 
 #include <chrono>
 #include <iostream>
@@ -61,6 +63,18 @@ class SceneResolveFrameTest : public Testing::HeldAssetImportFixture
         return done();
     }
 
+    static bool ResolveRowHolds(SceneLoadTracker& tracker)
+    {
+        SceneLoadTrackerTestAccess::Tick(tracker, std::chrono::steady_clock::now());
+        for (const auto& row : tracker.GetStatus().Categories)
+        {
+            if (row.Id == "scene.resolve")
+                return row.HoldsReady();
+        }
+        ADD_FAILURE() << "The engine did not register scene.resolve";
+        return false;
+    }
+
     bool MaterialRegistered(const GUID& materialGuid) { return m_Services.Materials().Registry().Find(materialGuid) != nullptr; }
 };
 
@@ -84,6 +98,24 @@ TEST_F(SceneResolveFrameTest, ASpawnOfAnUncachedModelDoesNotBlockTheFrame)
     m_Gate.Release();
     EXPECT_TRUE(StepFramesUntil([&] { return MeshHandle(*world, entity) != 0; }))
         << "the entity was never bound once its model landed";
+}
+
+TEST_F(SceneResolveFrameTest, ASpawnWhoseModelIsStillImportingHoldsTheReadyQuery)
+{
+    const GUID modelGuid = RegisterHeldModel(/*fails=*/false);
+    ASSERT_FALSE(modelGuid.IsNull());
+    ECS::World* world = EnableRenderingLoop();
+    ASSERT_NE(world, nullptr);
+    auto& tracker = EngineCore::GetInstance().GetSceneLoadTracker();
+    StepFrame();
+    Spawn(*world, modelGuid);
+    StepFrame();
+    ASSERT_TRUE(m_Gate.WaitForEntered(1));
+    EXPECT_TRUE(ResolveRowHolds(tracker));
+    EXPECT_FALSE(tracker.IsReadyToShow());
+
+    m_Gate.Release();
+    EXPECT_TRUE(StepFramesUntil([&] { return !ResolveRowHolds(tracker); }));
 }
 
 // A spawned model whose load fails is reported, named by GUID and path, and no

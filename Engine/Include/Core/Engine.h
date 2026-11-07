@@ -94,11 +94,12 @@ enum class EngineLifecycleState : uint8_t
     Initialized,
 };
 
+class SceneLoadTracker;
+class SceneLoadingGates;
+
 /**
  * @brief Main engine class that manages all subsystems
  */
-class SceneLoadTracker;
-
 class EngineCore
 {
   public:
@@ -399,7 +400,6 @@ class EngineCore
     // Subsystems
     UniquePtr<JobSystem::WorkStealingThreadPool> m_JobSystem;
     UniquePtr<AssetManager> m_AssetManager;
-    struct SceneLoadingGates;
     UniquePtr<SceneLoadTracker> m_SceneLoadTracker;
     UniquePtr<SceneLoadingGates> m_SceneLoadingGates;
     // Engine-managed rendering loop state

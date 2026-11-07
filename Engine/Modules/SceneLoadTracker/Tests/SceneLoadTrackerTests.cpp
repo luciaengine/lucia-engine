@@ -13,7 +13,10 @@
 #include <string>
 #include <vector>
 
-using namespace GameEngine;
+using GameEngine::EventSubscription;
+using GameEngine::SceneLoadTracker;
+using GameEngine::SceneLoadTrackerTestAccess;
+namespace Memory = GameEngine::Memory;
 using Clock = std::chrono::steady_clock;
 
 namespace
@@ -38,7 +41,7 @@ TEST(SceneLoadTracker, ATrackerWithNoWorkIsReadyToShow)
 {
     SceneLoadTracker tracker;
     SceneLoadTracker::Category category = tracker.RegisterCategory({.Id = "test.work", .Label = "Working"});
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_TRUE(tracker.IsReadyToShow());
     ASSERT_NE(FindRow(tracker, "test.work"), nullptr);
     EXPECT_EQ(FindRow(tracker, "test.work")->Label, "Working");
@@ -54,19 +57,19 @@ TEST(SceneLoadTracker, TheQueryIsFalseWhileAnyCategoryHasPendingWork)
     SceneLoadTracker::Gate gate = gated.RegisterGate([&gatePending] { return WaitingFor(gatePending); });
 
     SceneLoadTracker::WorkTicket ticket = tickets.BeginWork(tracker.Intern("Materials/Water.material"), 4.0);
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_FALSE(tracker.IsReadyToShow()) << "a queued ticket holds";
     EXPECT_EQ(FindRow(tracker, "test.tickets")->Queued, 1u);
     EXPECT_DOUBLE_EQ(FindRow(tracker, "test.tickets")->RemainingUnits, 4.0);
 
     ticket.Start();
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_FALSE(tracker.IsReadyToShow()) << "a running ticket holds";
     EXPECT_EQ(FindRow(tracker, "test.tickets")->Running, 1u);
 
     ticket.Complete();
     gatePending = 3;
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_FALSE(tracker.IsReadyToShow()) << "a waiting gate holds";
     const SceneLoadTracker::CategoryStatus* gatedRow = FindRow(tracker, "test.gated");
     ASSERT_NE(gatedRow, nullptr);
@@ -77,7 +80,7 @@ TEST(SceneLoadTracker, TheQueryIsFalseWhileAnyCategoryHasPendingWork)
     EXPECT_EQ(FindRow(tracker, "test.tickets")->Done, 1u);
 
     gatePending = 0;
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_TRUE(tracker.IsReadyToShow()) << "every category settled";
 }
 
@@ -87,11 +90,11 @@ TEST(SceneLoadTracker, BackgroundWorkIsCountedAndNeverHolds)
     SceneLoadTracker::Category category = tracker.RegisterCategory({.Id = "test.warm-up"});
     SceneLoadTracker::WorkTicket ticket =
         category.BeginWork(tracker.Intern("warm-up"), 1.0, SceneLoadTracker::Need::Background);
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_TRUE(tracker.IsReadyToShow());
     EXPECT_EQ(FindRow(tracker, "test.warm-up")->Background, 1u);
     ticket.Complete();
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_EQ(FindRow(tracker, "test.warm-up")->Background, 0u);
     EXPECT_EQ(FindRow(tracker, "test.warm-up")->Done, 1u);
 }
@@ -106,7 +109,7 @@ TEST(SceneLoadTracker, ATicketDroppedBeforeItCompletesStopsHoldingAndCountsAsFai
         SceneLoadTracker::WorkTicket ticket = category.BeginWork(tracker.Intern("dropped"), 1.0);
         ticket.Start();
     }
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_TRUE(tracker.IsReadyToShow());
     EXPECT_EQ(FindRow(tracker, "test.work")->Failed, 1u);
     Logger::Log::Flush();
@@ -139,11 +142,11 @@ TEST(SceneLoadTracker, RevokingACategoryReleasesItsWorkAndItsGates)
     std::optional<SceneLoadTracker::Category> category = tracker.RegisterCategory({.Id = "test.module"});
     SceneLoadTracker::Gate gate = category->RegisterGate([] { return WaitingFor(1); });
     SceneLoadTracker::WorkTicket ticket = category->BeginWork(tracker.Intern("module work"), 1.0);
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_FALSE(tracker.IsReadyToShow());
 
     category.reset();
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_TRUE(tracker.IsReadyToShow());
     EXPECT_EQ(FindRow(tracker, "test.module"), nullptr);
     ticket.Complete();
@@ -156,7 +159,7 @@ TEST(SceneLoadTracker, RegistrationsThatShareAnIdAddIntoOneRow)
     SceneLoadTracker::Category second = tracker.RegisterCategory({.Id = "scene.resolve"});
     SceneLoadTracker::Gate firstGate = first.RegisterGate([] { return WaitingFor(2); });
     SceneLoadTracker::Gate secondGate = second.RegisterGate([] { return WaitingFor(5); });
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     ASSERT_EQ(tracker.GetStatus().Categories.size(), 1u);
     EXPECT_EQ(FindRow(tracker, "scene.resolve")->WaitingGates, 2u);
     EXPECT_EQ(FindRow(tracker, "scene.resolve")->GatePending, 7u);
@@ -170,11 +173,11 @@ TEST(SceneLoadTracker, ReadyIsRaisedOnceWhenThePendingWorkSettles)
     EventSubscription subscription = tracker.Ready.Subscribe([&raised] { ++raised; });
 
     SceneLoadTracker::WorkTicket ticket = category.BeginWork(tracker.Intern("work"), 1.0);
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_EQ(raised, 0);
     ticket.Complete();
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_EQ(raised, 1);
 }
 
@@ -209,22 +212,22 @@ TEST(SceneLoadTracker, ATrackedTaskHoldsUntilItReturns)
     SceneLoadTracker tracker;
     SceneLoadTracker::Category compiles = tracker.RegisterCategory({.Id = "shader.variant"});
     std::function<void()> task = compiles.Track("Materials/Water.material", SceneLoadTracker::Need::Frame, [] {});
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     const SceneLoadTracker::CategoryStatus* row = FindRow(tracker, "shader.variant");
     ASSERT_NE(row, nullptr);
     EXPECT_EQ(row->Queued, 1u);
     EXPECT_EQ(tracker.NameOf(row->OldestPending), "Materials/Water.material");
     task();
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_TRUE(tracker.IsReadyToShow());
     EXPECT_EQ(FindRow(tracker, "shader.variant")->Done, 1u);
 
     std::optional<std::function<void()>> dropped =
         compiles.Track("Materials/Rock.material", SceneLoadTracker::Need::Frame, [] {});
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_FALSE(tracker.IsReadyToShow());
     dropped.reset();
-    SceneLoadTrackerTestAccess::Tick(tracker,Clock::now());
+    SceneLoadTrackerTestAccess::Tick(tracker, Clock::now());
     EXPECT_TRUE(tracker.IsReadyToShow());
     EXPECT_EQ(FindRow(tracker, "shader.variant")->Failed, 1u);
 }
