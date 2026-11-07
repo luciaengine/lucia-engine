@@ -9,7 +9,7 @@
 	height: 0px;
 }
 
-/* --log-channels-row-width: the 362 px inside the border and the padding less the 18 px of the vertical scrollbar
+/* --log-channels-row-width: the 344 px inside the border and the padding less the 18 px of the vertical scrollbar
    and its margin (Scrollbar::kDefaultThicknessPx, theme/core.css .scrollbar.vertical). The column names and the
    rows take this width whether the list scrolls or not, so the columns stay in place and line up. */
 .log-channels {
