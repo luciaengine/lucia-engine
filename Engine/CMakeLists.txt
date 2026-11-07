@@ -9,6 +9,7 @@ set(ENGINE_SOURCES
     Source/Core/NvtxRange.cpp
     Source/Core/DeferredActionQueue.cpp
     Source/Core/Engine.cpp
+    Source/Scene/SceneLoadingGates.cpp
     Source/Core/EngineLoggerBridge.cpp
     Source/Core/WindowInputRouter.cpp
     Source/Core/WindowUiBootstrap.cpp
@@ -1097,6 +1098,7 @@ endif()
 # other ECS-ish modules; Editor.exe drops its direct Graph link to avoid
 # duplicate-state across the DLL boundary.
 set(GE_ENGINE_MODULES
+    SceneLoadTracker
     Logger AssetCore AssetDatabase JobSystem ECS FileWatcher AssetRuntime Audio Scripting NativeScripting
     Platform FileSystem FileSystemCore Memory GameEngineRendering RenderServices VolumetricFog HeightFog GPUFogParticles Particles ParticlesAuthoring ParticlesAssets ParticlesSystems ParticlesRendering Animation Sprite2D NumericExpression UI Physics PhysicsECS
     Pathfinding PathfindingECS Terrain PageStreaming TerrainECS TerrainGrass CBTTerrain CBTTerrainECS Ocean Spline SplineGeometry SplineLayout SplineECS SplineRecipes MeshPicking TileMap TileMapECS MarkupECS Graph
@@ -2475,6 +2477,13 @@ endif()
 			endif()
 
 			if(GTest_FOUND OR TARGET GTest::gtest)
+            add_executable(EngineSceneReadinessTests Tests/EngineSceneReadinessTests.cpp)
+            target_link_libraries(EngineSceneReadinessTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+            target_include_directories(EngineSceneReadinessTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
+            ge_set_output_tests(EngineSceneReadinessTests)
+            ge_stage_runtime_dependencies(EngineSceneReadinessTests)
+            add_test(NAME EngineSceneReadinessTests COMMAND $<TARGET_FILE:EngineSceneReadinessTests>)
+
 			    # Which EngineCore GetInstance() returns once an owned engine is gone.
 			    # Its own binary: the test controls when the process's default
 			    # instance is created, which any earlier test in a shared binary would
