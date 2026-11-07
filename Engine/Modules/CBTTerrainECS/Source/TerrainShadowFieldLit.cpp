@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <span>
 #include <string>
 
 namespace GameEngine::CBTTerrainECS
@@ -52,16 +53,65 @@ bool BindStorageViewByName(Rendering::IDevice& device, Rendering::DescriptorSetH
     device.UpdateDescriptorSet(set0, u);
     return true;
 }
+
+void RecordLitField(RG::RGContext& context, RG::RGTexture map, Rendering::ComputePipelineId pipelineId,
+                    const Rendering::ShaderMeta& metadata, const Rendering::DescriptorSetLayoutDesc& layout,
+                    std::span<const Rendering::TextureViewHandle> levelViews,
+                    std::span<const RG::RGFrame::TypedUpload<LevelParamsUBO>> params, uint32_t side)
+{
+    Rendering::IDevice* device = context.GetDevice();
+    auto* commands = context.Cmd;
+    const Rendering::TextureHandle clearanceTexture = context.GetTexture(map);
+    if (!device || !commands || !clearanceTexture.IsValid())
+        return;
+    const Rendering::PipelineHandle pipeline = context.GetOrCreatePipelineVariant(pipelineId);
+    if (!pipeline.IsValid())
+        return;
+    commands->SetMarker("TerrainShadow.FieldLit");
+    commands->SetPipeline(pipeline);
+    for (uint32_t level = 0; level < levelViews.size(); ++level)
+    {
+        Rendering::DescriptorSetDesc descriptorDesc{};
+        descriptorDesc.layout = layout;
+        descriptorDesc.transient = true;
+        descriptorDesc.debugName = "TerrainShadow.FieldLit.Set0";
+        const Rendering::DescriptorSetHandle descriptor = device->CreateDescriptorSet(descriptorDesc);
+        Rendering::NamedDescriptorWriter writer(device, descriptor, metadata, 0);
+        writer.AddUniformBuffer("TerrainShadowFieldLitParams", params[level].Buffer, params[level].Offset,
+                            sizeof(LevelParamsUBO));
+        writer.Flush();
+        const Rendering::TextureViewHandle source = levelViews[level == 0u ? 0u : level - 1u];
+        if (!Engine::Renderer::Pipeline::Nodes::Detail::BindStorageImageByName(device, descriptor, metadata, "uClearance",
+                                                                               clearanceTexture) ||
+            !BindStorageViewByName(*device, descriptor, metadata, "uSource", source) ||
+            !BindStorageViewByName(*device, descriptor, metadata, "uTarget", levelViews[level]))
+        {
+            Logger::Log::Error("TerrainShadowFieldLit: terrain_shadow_field_lit.comp does not reflect "
+                               "uClearance, uSource and uTarget; the lit field is not rebuilt");
+            return;
+        }
+        commands->BindDescriptorSet(0, descriptor, pipeline);
+        const uint32_t levelSide = std::max(side >> level, 1u);
+        const uint32_t groups = (levelSide + kGroupSide - 1u) / kGroupSide;
+        commands->Dispatch(groups, groups, 1);
+        // The next level reads this one.
+        commands->Barrier(Rendering::ResourceBarrier::CreateMemoryBarrier(
+            static_cast<uint64_t>(Rendering::PipelineStageMask::ComputeShader),
+            static_cast<uint64_t>(Rendering::PipelineStageMask::ComputeShader),
+            static_cast<uint64_t>(Rendering::ResourceAccessMask::ShaderWrite),
+            static_cast<uint64_t>(Rendering::ResourceAccessMask::ShaderRead)));
+    }
+}
 } // namespace
 
 TerrainShadowFieldLit::TerrainShadowFieldLit() = default;
 TerrainShadowFieldLit::~TerrainShadowFieldLit() = default;
 
-bool TerrainShadowFieldLit::Declare(Engine::Renderer::RenderServices& rs, RG::RGFrame& frame, RG::RGTexture map,
+bool TerrainShadowFieldLit::Declare(Engine::Renderer::RenderServices& services, RG::RGFrame& frame, RG::RGTexture map,
                                     uint32_t mapSide, const CBTTerrain::TerrainShadowGrid& grid, bool mapBaked)
 {
     m_Field = {};
-    Rendering::IDevice* device = rs.GetDevice();
+    Rendering::IDevice* device = services.GetDevice();
     if (!device || mapSide < 2u || !EnsurePipeline(*device))
         return false;
 
@@ -89,16 +139,22 @@ bool TerrainShadowFieldLit::Declare(Engine::Renderer::RenderServices& rs, RG::RG
     const Rendering::TextureHandle physical = frame.PhysicalTexture(field);
     if (physical != m_Texture)
     {
-        Release(rs);
+        Release(services);
         m_Texture = physical;
-        m_BindlessIndex = physical.IsValid() ? rs.Textures().GetBindlessIndex(physical) : 0u;
+        m_BindlessIndex = physical.IsValid() ? services.Textures().GetBindlessIndex(physical) : 0u;
         for (uint32_t level = 0; physical.IsValid() && level < desc.mipLevels; ++level)
         {
             Rendering::TextureViewDesc view{};
             view.baseMip = level;
             view.levelCount = 1;
             view.debugName = "TerrainShadow.FieldLit.Level";
-            m_LevelViews.push_back(device->CreateTextureView(physical, view));
+            const auto levelView = device->CreateTextureView(physical, view);
+            if (!levelView.IsValid())
+            {
+                Release(services);
+                return false;
+            }
+            m_LevelViews.push_back(levelView);
         }
         fresh = true;
     }
@@ -124,11 +180,11 @@ bool TerrainShadowFieldLit::DeclareRebuildPass(RG::RGFrame& frame, RG::RGTexture
     params.reserve(m_Levels);
     for (uint32_t level = 0; level < m_Levels; ++level)
     {
-        auto ub = frame.AllocUpload<LevelParamsUBO>();
-        if (!ub.Valid())
+        auto upload = frame.AllocUpload<LevelParamsUBO>();
+        if (!upload.Valid())
             return false;
-        *ub.Ptr = LevelParamsUBO{{level, grid.SamplesU, grid.SamplesV, 0u}, {grid.Texel, 0.0f, 0.0f, 0.0f}};
-        params.push_back(ub);
+        *upload.Ptr = LevelParamsUBO{{level, grid.SamplesU, grid.SamplesV, 0u}, {grid.Texel, 0.0f, 0.0f, 0.0f}};
+        params.push_back(upload);
     }
     frame.AddPass(
         "TerrainShadow.FieldLit", kRebuildPhase,
@@ -138,61 +194,20 @@ bool TerrainShadowFieldLit::DeclareRebuildPass(RG::RGFrame& frame, RG::RGTexture
             pass.Read(map, RG::RGTextureRead::Storage);
             pass.Write(field, RG::RGTextureWrite::Storage);
         },
-        [this, map, params = std::move(params)](RG::RGContext& ctx)
+        [this, map, params = std::move(params)](RG::RGContext& context)
         {
-            Rendering::IDevice* dev = ctx.GetDevice();
-            auto* cl = ctx.Cmd;
-            const Rendering::TextureHandle mapTex = ctx.GetTexture(map);
-            if (!dev || !cl || !mapTex.IsValid())
-                return;
-            const Rendering::PipelineHandle pipe = ctx.GetOrCreatePipelineVariant(m_PipelineId);
-            if (!pipe.IsValid())
-                return;
-            cl->SetMarker("TerrainShadow.FieldLit");
-            cl->SetPipeline(pipe);
-            for (uint32_t level = 0; level < m_Levels; ++level)
-            {
-                Rendering::DescriptorSetDesc dsDesc{};
-                dsDesc.layout = m_Set0Layout;
-                dsDesc.transient = true;
-                dsDesc.debugName = "TerrainShadow.FieldLit.Set0";
-                const Rendering::DescriptorSetHandle ds = dev->CreateDescriptorSet(dsDesc);
-                Rendering::NamedDescriptorWriter wd(dev, ds, *m_Meta, 0);
-                wd.AddUniformBuffer("TerrainShadowFieldLitParams", params[level].Buffer, params[level].Offset,
-                                    sizeof(LevelParamsUBO));
-                wd.Flush();
-                const Rendering::TextureViewHandle source = m_LevelViews[level == 0u ? 0u : level - 1u];
-                if (!Engine::Renderer::Pipeline::Nodes::Detail::BindStorageImageByName(dev, ds, *m_Meta, "uClearance",
-                                                                                       mapTex) ||
-                    !BindStorageViewByName(*dev, ds, *m_Meta, "uSource", source) ||
-                    !BindStorageViewByName(*dev, ds, *m_Meta, "uTarget", m_LevelViews[level]))
-                {
-                    Logger::Log::Error("TerrainShadowFieldLit: terrain_shadow_field_lit.comp does not reflect "
-                                       "uClearance, uSource and uTarget; the lit field is not rebuilt");
-                    return;
-                }
-                cl->BindDescriptorSet(0, ds, pipe);
-                const uint32_t levelSide = std::max(m_Side >> level, 1u);
-                const uint32_t groups = (levelSide + kGroupSide - 1u) / kGroupSide;
-                cl->Dispatch(groups, groups, 1);
-                // The next level reads this one.
-                cl->Barrier(Rendering::ResourceBarrier::CreateMemoryBarrier(
-                    static_cast<uint64_t>(Rendering::PipelineStageMask::ComputeShader),
-                    static_cast<uint64_t>(Rendering::PipelineStageMask::ComputeShader),
-                    static_cast<uint64_t>(Rendering::ResourceAccessMask::ShaderWrite),
-                    static_cast<uint64_t>(Rendering::ResourceAccessMask::ShaderRead)));
-            }
+            RecordLitField(context, map, m_PipelineId, *m_Meta, m_Set0Layout, m_LevelViews, params, m_Side);
         });
     return true;
 }
 
-void TerrainShadowFieldLit::Release(Engine::Renderer::RenderServices& rs)
+void TerrainShadowFieldLit::Release(Engine::Renderer::RenderServices& services)
 {
     // The slot is dropped before the pool may age the texture out, so it never describes a freed
     // image; the views go with it.
     if (m_Texture.IsValid())
-        rs.Textures().InvalidateBindless(m_Texture);
-    if (Rendering::IDevice* device = rs.GetDevice())
+        services.Textures().InvalidateBindless(m_Texture);
+    if (Rendering::IDevice* device = services.GetDevice())
         DestroyViews(*device);
     m_LevelViews.clear();
     m_Texture = {};
@@ -255,9 +270,13 @@ bool TerrainShadowFieldLit::EnsurePipeline(Rendering::IDevice& device)
             m_Set0Layout = layout;
     };
     std::string err;
-    Rendering::MaterialHelper::ApplyShaderMetaToComputeDesc(device, *m_Meta, cd,
-                                                            Rendering::MaterialBuilder::MergeMode::Auto,
-                                                            {true, 128}, captureSet0, &err);
+    if (!Rendering::MaterialHelper::ApplyShaderMetaToComputeDesc(device, *m_Meta, cd,
+                                                               Rendering::MaterialBuilder::MergeMode::Auto,
+                                                               {true, 128}, captureSet0, &err))
+    {
+        Logger::Log::Error("TerrainShadowFieldLit: cannot build the compute layout ({})", err);
+        return false;
+    }
     m_PipelineId = device.InternComputePipeline(std::move(cd));
     return m_PipelineId.IsValid();
 }

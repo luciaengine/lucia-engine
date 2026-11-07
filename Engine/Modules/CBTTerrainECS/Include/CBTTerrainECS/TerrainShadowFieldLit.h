@@ -22,13 +22,8 @@ class RenderServices;
 namespace GameEngine::CBTTerrainECS
 {
 
-// The terrain shadow's lit field: over the clearance map's samples, the share that sees the sun's center
-// and the mean of their occluder octaves (how far the relief that shadows them lies), as an RG16F mip
-// chain (terrain_shadow_field_lit.comp). Level 0 is half the map's side. A terrain pixel that covers many
-// map samples reads the average of the shadow it covers at the level of its footprint, counted toward
-// what the view sees (terrain_shadow.glsl GE_TerrainShadowFootprintLit, in both directional-shadow
-// modes); a single read of the map would take one sample of the relief's shadow per pixel and alias it
-// into bands along the screen rows. Rebuilt from the map whenever the map is baked.
+/// Filtered terrain shadow coverage and occluder distances, stored as an RG16F mip chain.
+/// Rebuilt after the clearance map changes. Receivers sample the mip for their pixel footprint.
 class TerrainShadowFieldLit
 {
   public:
@@ -40,7 +35,7 @@ class TerrainShadowFieldLit
     // Declares the field of a `mapSide` square map into `frame`, and its rebuild from `map` (laid out by
     // `grid`; the graph orders it after the map's bake) when `mapBaked` or when the field is new. False
     // when it cannot be published (no pipeline, no bindless slot): the receivers then read the map alone.
-    bool Declare(Engine::Renderer::RenderServices& rs, Rendering::RenderGraph::RGFrame& frame,
+    bool Declare(Engine::Renderer::RenderServices& services, Rendering::RenderGraph::RGFrame& frame,
                  Rendering::RenderGraph::RGTexture map, uint32_t mapSide, const CBTTerrain::TerrainShadowGrid& grid,
                  bool mapBaked);
 
@@ -50,7 +45,7 @@ class TerrainShadowFieldLit
     uint32_t Levels() const { return m_Levels; }
 
     // Drops the bindless registration and the level views (a frame without a map).
-    void Release(Engine::Renderer::RenderServices& rs);
+    void Release(Engine::Renderer::RenderServices& services);
     // Forgets every handle of the dead device; the next Declare re-creates them and rebuilds.
     void OnDeviceRebuilt();
 
