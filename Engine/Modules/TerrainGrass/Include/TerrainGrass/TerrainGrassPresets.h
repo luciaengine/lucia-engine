@@ -18,7 +18,6 @@ enum class GrassPreset : uint8
     Custom
 };
 
-
 // Each preset is a whole component: its look dials are the preset, and a dial it does not name keeps
 // the component's default. Colors are sRGB bytes, as the picker writes them; the linear albedo each
 // one decodes to is in its comment.
@@ -69,16 +68,12 @@ namespace Detail
 inline constexpr float32 Components::TerrainGrass::*kTerrainGrassPresetFloatDials[] = {
     &Components::TerrainGrass::BladesPerSquareMeter, &Components::TerrainGrass::ClumpSize,
     &Components::TerrainGrass::ClumpHeightVariance,  &Components::TerrainGrass::ClumpAlignment,
-           &Components::TerrainGrass::BladeHeight,
-    &Components::TerrainGrass::BladeWidth,
-
-
+    &Components::TerrainGrass::BladeHeight,          &Components::TerrainGrass::BladeWidth,
     &Components::TerrainGrass::RandomScale,          &Components::TerrainGrass::WindRestingLean,
     &Components::TerrainGrass::WindFlutterAmount,    &Components::TerrainGrass::WindFlutterSpeed,
     &Components::TerrainGrass::Brightness,           &Components::TerrainGrass::RandomBrightness,
     &Components::TerrainGrass::HueVariation,         &Components::TerrainGrass::RootFadeStart,
-    &Components::TerrainGrass::RootFadeEnd,          &Components::TerrainGrass::GroundingStrength,
-
+    &Components::TerrainGrass::RootFadeEnd,           &Components::TerrainGrass::GroundingStrength,
     &Components::TerrainGrass::Translucency,
 };
 inline constexpr uint32 Components::TerrainGrass::*kTerrainGrassPresetColorDials[] = {
@@ -89,7 +84,8 @@ inline constexpr uint32 Components::TerrainGrass::*kTerrainGrassPresetColorDials
 
 inline bool TerrainGrassPresetValueMatches(float32 value, float32 preset)
 {
-    return std::abs(value - preset) <= 1e-5f * std::max(1.0f, std::abs(preset));
+    constexpr float32 kRelativeTolerance = 1e-5f;
+    return std::abs(value - preset) <= kRelativeTolerance * std::max(1.0f, std::abs(preset));
 }
 } // namespace Detail
 
