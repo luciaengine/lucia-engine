@@ -71,6 +71,7 @@ class GrassPresetDropdown final : public Dropdown
         , m_Undo(undo)
         , m_RequestRefresh(std::move(requestRefresh))
     {
+        SetId("terrain-grass-preset");
         AddClass("inspector-dropdown");
         RequestSubtreeStyleAssetPath("UI/panels/Terrain/TerrainGrassPresets.css", "editor");
         SetOptions(PresetOptions());
