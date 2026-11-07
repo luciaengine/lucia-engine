@@ -205,17 +205,13 @@ TEST_F(DayCycleEditorTests, AnUndoPastASaveMarksTheProfileUnsavedAgain)
     UIElement root;
     BuildInspector(root, asset);
     Button* save = nullptr;
-    Button* clearDay = nullptr;
     for (Button* button : All<Button>(root))
-    {
         if (button->GetText() == "Save")
             save = button;
-        if (button->GetText() == "Clear day")
-            clearDay = button;
-    }
     ASSERT_NE(save, nullptr);
-    ASSERT_NE(clearDay, nullptr);
-    clearDay->TriggerClick();
+    const auto presets = All<Dropdown>(root);
+    ASSERT_EQ(presets.size(), 1u);
+    presets.front()->SetSelectedValue("Clear day");
     dispatcher.Drain();
     save->TriggerClick();
     dispatcher.Drain();
