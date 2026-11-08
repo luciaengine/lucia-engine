@@ -1,5 +1,6 @@
 #include "EngineShaderPath.h"
 #include "Core/Engine.h"
+#include "Scene/PrefabLibrary.h"
 
 #include "SceneLoadTracker/SceneLoadTracker.h"
 #include "Scene/SceneLoadingGates.h"
@@ -422,6 +423,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         return false;
     }
     m_InitializingThread.store(std::this_thread::get_id(), std::memory_order_release);
+    m_MainThreadId.store(std::this_thread::get_id(), std::memory_order_release);
     InitializeTransaction transaction(*this);
 
     // Unreachable by construction: Shutdown() and the Initialize rollback both join
@@ -537,6 +539,7 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
     // initializing/scanning so startup indexing can assign correct types.
     tPhase = std::chrono::high_resolution_clock::now();
     m_AssetManager = MakeUnique<AssetManager>();
+    m_PrefabLibrary = MakeUnique<Scene::PrefabLibrary>(*m_AssetManager);
 
     // Register core engine asset types
     try
@@ -1070,6 +1073,7 @@ void EngineCore::Shutdown()
         Logger::Log::Info("Audio system shutdown");
     }
 
+    m_PrefabLibrary.reset();
     if (m_AssetManager)
     {
         // If we registered the rendering hot-reload bridge, unregister it before tearing down assets
@@ -1188,6 +1192,8 @@ void EngineCore::Update(float64 deltaTime)
     {
         m_AssetManager->Update();
     }
+    if (m_PrefabLibrary)
+        m_PrefabLibrary->CollectAtFrameBoundary();
 
     // Update audio system once per frame on the main thread.
     if (m_AudioSystem)

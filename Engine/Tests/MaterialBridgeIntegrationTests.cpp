@@ -2620,6 +2620,11 @@ struct ColdVariantPreparation
 TEST_F(MaterialPipelineCompilationTest, ConcreteColdPreparationDefersBackendBuildUntilFrameBegin)
 {
     namespace RG = GameEngine::Rendering::RenderGraph;
+    std::vector<std::string> lines;
+    TestLog::ScopedEngineLogCapture capture(&lines, Logger::LogLevel::Warning);
+    Logger::Log::Warning("cold pipeline capture live");
+    Logger::Log::Flush();
+    ASSERT_EQ(TestLog::CountLinesContaining(lines, "cold pipeline capture live"), 1u);
     MaterialDocument doc{};
     doc.materialName = "DeferredConcretePBR";
     doc.lightingModel = "StandardPBR";
@@ -2684,6 +2689,9 @@ TEST_F(MaterialPipelineCompilationTest, ConcreteColdPreparationDefersBackendBuil
         EXPECT_TRUE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
         variants.PruneSettledConcreteWarmWaits();
     }
+    Logger::Log::Flush();
+    EXPECT_EQ(TestLog::CountLinesContaining(lines, "cached graphics pipeline"), 0u)
+        << "A deferred pipeline is cold until frame begin builds it, not failed";
 }
 
 namespace
@@ -2750,7 +2758,6 @@ std::shared_ptr<const SpecializationConstants> MakeForwardPreparationOverrides()
 
 TEST_F(MaterialPipelineCompilationTest, SpecializedColdPreparationDefersBothBackendBuilds)
 {
-    ASSERT_EQ(m_device->GetAPI(), GraphicsAPI::Vulkan);
     MaterialDocument document{};
     document.materialName = "DeferredSpecializedPBR";
     document.lightingModel = "StandardPBR";
@@ -2830,7 +2837,6 @@ TEST_F(MaterialPipelineCompilationTest, SpecializedColdPreparationDefersBothBack
 
 TEST_F(MaterialPipelineCompilationTest, SpecializedCurrentFallbackSurvivesAbortedPreparationAndRetry)
 {
-    ASSERT_EQ(m_device->GetAPI(), GraphicsAPI::Vulkan);
     MaterialDocument document{};
     document.materialName = "SpecializedCurrentFallback";
     document.lightingModel = "StandardPBR";
@@ -2919,7 +2925,6 @@ TEST_F(MaterialPipelineCompilationTest, SpecializedCurrentFallbackSurvivesAborte
 
 TEST_F(MaterialPipelineCompilationTest, SpecializedPreviousFallbackKeepsItsMetadataAndGeneration)
 {
-    ASSERT_EQ(m_device->GetAPI(), GraphicsAPI::Vulkan);
     MaterialDocument document{};
     document.materialName = "SpecializedPreviousFallback";
     document.lightingModel = "StandardPBR";

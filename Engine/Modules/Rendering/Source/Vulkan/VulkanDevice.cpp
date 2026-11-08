@@ -3599,10 +3599,11 @@ void VulkanDevice::QueryDeviceCapabilities()
         m_Capabilities.vendorId = m_DeviceProperties.vendorID;
         m_Capabilities.vendor   = ClassifyGpuVendor(m_DeviceProperties.vendorID);
         m_Capabilities.prefersForwardShaderSpecialization =
-            m_DeviceProperties.vendorID == 0x5143u &&
-            std::strstr(m_DeviceProperties.deviceName, "Adreno") != nullptr &&
-            std::strstr(m_DeviceProperties.deviceName, "630") != nullptr &&
-            m_DeviceProperties.apiVersion < VK_API_VERSION_1_2;
+            m_Capabilities.vendor == GpuVendor::Amd ||
+            (m_DeviceProperties.vendorID == 0x5143u &&
+             std::strstr(m_DeviceProperties.deviceName, "Adreno") != nullptr &&
+             std::strstr(m_DeviceProperties.deviceName, "630") != nullptr &&
+             m_DeviceProperties.apiVersion < VK_API_VERSION_1_2);
         const bool isAmd = m_Capabilities.vendor == GpuVendor::Amd;
         const char* deviceName = m_DeviceProperties.deviceName;
         const bool isRadeon = std::strstr(deviceName, "Radeon") != nullptr;

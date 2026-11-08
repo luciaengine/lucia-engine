@@ -47,13 +47,18 @@ namespace GameEngine.ECS
         public readonly uint Offset;
         public readonly uint Size;
         public readonly ComponentFieldType Type;
+        public readonly ushort AssetCategory;
 
         public ComponentFieldDesc(string name, uint offset, uint size, ComponentFieldType type)
+            : this(name, offset, size, type, 0) {}
+
+        public ComponentFieldDesc(string name, uint offset, uint size, ComponentFieldType type, ushort assetCategory)
         {
             Name = name;
             Offset = offset;
             Size = size;
             Type = type;
+            AssetCategory = assetCategory;
         }
     }
 

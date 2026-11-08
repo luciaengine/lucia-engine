@@ -85,6 +85,9 @@ struct SceneSaveContext
     // The saved world's unresolved scene data, if it has any: FormatAssetReferenceForSave reads the
     // authored path of a reference whose GUID still names no asset from it.
     const ECS::UnresolvedComponentStore* Unresolved = nullptr; // not owned
+
+    // Prefab comparison includes default and cleared values so they can override the source.
+    bool WriteEveryField = false;
 };
 
 } // namespace GameEngine::Scene

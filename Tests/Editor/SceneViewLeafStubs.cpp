@@ -64,7 +64,15 @@ namespace GameEngine::Editor
 {
     // The Mark-up tool's play-mode notice (real impl in SceneViewNoticeOverlay.cpp, a view
     // overlay); the mark-up tests read the refusal instead.
-    void ShowSceneViewNotice(std::string) {}
+    namespace TestStubs
+    {
+        std::string& LastSceneViewNotice()
+        {
+            static std::string s_Notice;
+            return s_Notice;
+        }
+    }
+    void ShowSceneViewNotice(std::string text) { TestStubs::LastSceneViewNotice() = std::move(text); }
 }
 
 namespace GameEngine::Editor

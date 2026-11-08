@@ -36,6 +36,7 @@ set_tests_properties(QueryAllocationTests PROPERTIES TIMEOUT 30)
 set(ECS_CORE_TEST_SOURCES
     StandaloneECSTest.cpp
     ECSCoreTest.cpp
+    CreateBatchFromWorldTest.cpp
     OversizedChunkAllocationTest.cpp
     RegisterComponentsTest.cpp
     QueryInvalidationAndOverflowTest.cpp

@@ -1001,6 +1001,7 @@ void WorkStealingThreadPool::DrainQueuesOnThisThread() {
         // handle task they Wait() on is already terminal from phase 2.
         for (DrainedTask& entry : drained) {
             if (entry.Task) {
+                const Detail::JobExecutionScope jobScope;
                 ExecuteTaskOptimized(std::move(entry.Task));
                 if (entry.PoolCounted)
                     pendingTasks.fetch_sub(1, std::memory_order_relaxed);
@@ -1054,6 +1055,7 @@ void WorkStealingThreadPool::DisposeEnvelopeAfterGate(UniquePtr<TaskBase> task) 
         CancelUnrunEnvelope(std::move(task));
         return;
     }
+    const Detail::JobExecutionScope jobScope;
     ExecuteTaskOptimized(std::move(task));
 }
 
@@ -1213,6 +1215,7 @@ void WorkStealingThreadPool::DrainInlineTasksOnThisThread() {
         trampoline.Deferred.erase(pending);
         // A synchronous join must make progress even at the recursion bound.
         // Children published by this task stay in the same bounded queue.
+        const Detail::JobExecutionScope jobScope;
         ++trampoline.Depth;
         ExecuteTaskOptimized(std::move(task));
         --trampoline.Depth;
@@ -1231,6 +1234,7 @@ void WorkStealingThreadPool::ExecuteInlineBounded(UniquePtr<TaskBase> task) {
         return;
     }
 
+    const Detail::JobExecutionScope jobScope;
     ++trampoline.Depth;
     ExecuteTaskOptimized(std::move(task));
     if (trampoline.Depth == 1) {
@@ -1580,6 +1584,11 @@ bool WorkStealingThreadPool::TryStealTask(size_t thiefId, UniquePtr<TaskBase>& t
 
     m_Census.StealMisses.fetch_add(1, std::memory_order_relaxed);
     return false;
+}
+
+bool WorkStealingThreadPool::IsExecutingJob()
+{
+    return s_CurrentPool != nullptr || Detail::JobExecutionScope::IsActive();
 }
 
 void WorkStealingThreadPool::ExecuteTaskOptimized(UniquePtr<TaskBase> task) {

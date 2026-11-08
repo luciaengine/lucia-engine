@@ -10,6 +10,7 @@
 
 #include "Core/CpuProfiler.h"
 #include "ECS/ECS.h"
+#include "Events/Event.h"
 #include "UndoRedo/History/EditChangeKind.h"
 
 namespace GameEngine::ECS
@@ -26,6 +27,9 @@ class EditorChangeNotifications
 {
 public:
     using ChangeKind = EditChangeKind;
+    std::uint64_t GetChannelId() const { return m_ChannelId; }
+
+    Event<> ProjectSwitched;
 
     struct ComponentChangedEvent
     {
@@ -169,6 +173,8 @@ private:
     };
 
     std::mutex m_Mutex;
+    inline static std::atomic<std::uint64_t> s_NextChannelId{1};
+    const std::uint64_t m_ChannelId = s_NextChannelId.fetch_add(1, std::memory_order_relaxed);
     std::uint64_t m_NextId = 1;
     std::unordered_map<std::uint64_t, std::shared_ptr<ComponentSlot>> m_ComponentChanged;
     std::unordered_map<std::uint64_t, std::shared_ptr<WorldStructureSlot>> m_WorldStructureChanged;

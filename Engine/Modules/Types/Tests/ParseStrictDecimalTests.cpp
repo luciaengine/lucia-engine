@@ -81,3 +81,13 @@ TEST(ParseStrictDecimal, RefusesAnOverflowRatherThanReturningInfinity)
     EXPECT_TRUE(Rejects("1e400"));
     EXPECT_TRUE(Rejects("-1e400"));
 }
+
+TEST(ParseStrictDecimal, FloatRefusesValuesOutsideItsFiniteRange)
+{
+    float value = 2.0f;
+    EXPECT_FALSE(GameEngine::ParseStrictDecimalFloat("1e39", value));
+    EXPECT_FLOAT_EQ(value, 2.0f);
+    EXPECT_FALSE(GameEngine::ParseStrictDecimalFloat("-1e39", value));
+    EXPECT_TRUE(GameEngine::ParseStrictDecimalFloat(" 1.25 ", value));
+    EXPECT_FLOAT_EQ(value, 1.25f);
+}

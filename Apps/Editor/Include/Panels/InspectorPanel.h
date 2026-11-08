@@ -24,6 +24,8 @@
 #include <chrono>
 
 namespace GameEngine {
+class ContextMenuBuilder;
+
 
 struct EditorContext;
 class INativeContextMenu;
@@ -285,6 +287,9 @@ private:
     // the entity enable toggle and the lazy Name-add on first rename keystroke both depend
     // on that.
     void RefreshTrackedComponentSignature();
+    void RefreshOverrideMarks();
+    void AddOverrideMenuEntries(ContextMenuBuilder& builder, ECS::ComponentTypeId typeId);
+    bool RunOverrideMenuCommand(uint32_t commandId);
     // Shows the selected entity's activity once it changes: while the entity is off, itself or
     // through an ancestor, every section's dot is muted, and while an ancestor is the reason the
     // header says so (m_EntityActivity). Keyed on the entity's own state and its derived state
@@ -480,6 +485,7 @@ private:
     bool m_PendingShowKeepMultiSelection = true;
     bool m_ModuleInspectorRefreshPending = false;
     bool m_EntityRefreshPosted = false;
+    bool m_EntityRefreshAfterTextEdit = false;
     std::function<void(ECS::World*, ECS::EntityHandle)> m_OnHistoryEntityNavigate;
     std::function<void(ECS::World*, const std::vector<ECS::EntityHandle>&)> m_OnHistoryEntitiesNavigate;
     std::function<void(const std::vector<std::filesystem::path>&)> m_OnHistoryAssetNavigate;
@@ -517,6 +523,10 @@ private:
     
     // Search state
     std::string m_CurrentSearchText;
+    UIElement* m_EntityNameHeader = nullptr;
+    UIElement* m_EntityNameField = nullptr;
+    std::vector<OverrideMenuEntry> m_ContextOverrideMenuEntries;
+
     std::vector<UIElement*> m_SearchHighlightedElements;
     std::vector<UIElement*> m_SearchFilteredElements;
 
@@ -532,6 +542,7 @@ private:
     {
         std::vector<std::function<void()>> Simulation;
         std::vector<std::function<void()>> Frame;
+        std::vector<std::function<void()>> OverrideMarks;
     };
     std::unordered_map<ECS::ComponentTypeId, SectionRefreshCallbacks> m_SectionRefreshCallbacks;
     std::chrono::steady_clock::time_point m_LastSimulationRefresh{};

@@ -67,6 +67,7 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         {".hh", AssetType::NativeSource},
 
         // Scene formats
+        {".prefab", AssetType::Prefab},
         {".scene", AssetType::Scene},
         {".blueprint", AssetType::Scene},
 
@@ -151,6 +152,7 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         // A terrain's ordered material list, keyed by stable slot ID
         {".terrainmatlib", AssetType::TerrainMaterialLibrary},
 
+        {".daycycle.json", AssetType::DayCycleProfile},
         // A particle emitter's processor stack
         {".particlestack", AssetType::ParticleStack},
 
@@ -258,6 +260,15 @@ String GetCompoundExtensionFromPath(const String& path) {
     return lowerName.substr(lastDot);
 }
 
+String GetAssetNameFromPath(const String& path) {
+    const size_t lastSlash = path.find_last_of("/\\");
+    const String filename = (lastSlash == String::npos) ? path : path.substr(lastSlash + 1);
+    const String extension = GetCompoundExtensionFromPath(filename);
+    if (extension.size() >= filename.size())
+        return filename;
+    return filename.substr(0, filename.size() - extension.size());
+}
+
 String AssetStateToString(AssetState state) {
     switch (state) {
         case AssetState::Unloaded:  return "Unloaded";
@@ -296,6 +307,7 @@ bool IsTextBasedAssetType(AssetType type) {
         case AssetType::TileSet:
         case AssetType::TileMap:
         case AssetType::PhysicsMaterial:
+        case AssetType::Prefab:
         case AssetType::Timeline:
         case AssetType::AnimationGraph:
         case AssetType::ClipSet:
@@ -310,6 +322,7 @@ bool IsTextBasedAssetType(AssetType type) {
         case AssetType::FlareAtlas:
         case AssetType::LensFlareDefinition:
         case AssetType::TerrainMaterialLibrary:
+        case AssetType::DayCycleProfile:
         case AssetType::ParticleStack:
             return true;
         default:

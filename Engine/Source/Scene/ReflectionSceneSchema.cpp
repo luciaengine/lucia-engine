@@ -146,7 +146,7 @@ void WriteStructArrayLines(const ECS::FieldInfo& f, const std::uint8_t* field, c
     {
         const std::uint8_t* element = field + static_cast<std::size_t>(i) * layout.Stride;
         const std::uint8_t* elementDefault = defaults + static_cast<std::size_t>(i) * layout.Stride;
-        if (std::memcmp(element, elementDefault, layout.Stride) == 0)
+        if (!ctx.WriteEveryField && std::memcmp(element, elementDefault, layout.Stride) == 0)
             continue;
         const std::string index = prefix + std::to_string(i) + ".";
         for (const ECS::FieldInfo& sub : layout.ElementFields)

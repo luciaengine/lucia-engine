@@ -1174,4 +1174,24 @@ void SceneDocumentManager::Subscribe()
         });
 }
 
+std::optional<Scene::SceneLoadSkip> SceneDocumentManager::DiscardLoadSkip(std::size_t index)
+{
+    if (!m_LastLoadDegraded.has_value() || index >= m_LastLoadDegraded->Census.skips.size())
+        return std::nullopt;
+    std::vector<Scene::SceneLoadSkip>& skips = m_LastLoadDegraded->Census.skips;
+    Scene::SceneLoadSkip skip = std::move(skips[index]);
+    skips.erase(skips.begin() + static_cast<std::ptrdiff_t>(index));
+    MarkDirty();
+    return skip;
+}
+
+void SceneDocumentManager::RestoreLoadSkip(std::size_t index, Scene::SceneLoadSkip skip)
+{
+    if (!m_LastLoadDegraded.has_value())
+        return;
+    std::vector<Scene::SceneLoadSkip>& skips = m_LastLoadDegraded->Census.skips;
+    skips.insert(skips.begin() + static_cast<std::ptrdiff_t>(std::min(index, skips.size())), std::move(skip));
+    MarkDirty();
+}
+
 } // namespace GameEngine::Editor
