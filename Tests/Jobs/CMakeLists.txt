@@ -76,13 +76,8 @@ set_tests_properties(JobSystemUnitTests PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
-# ── Scripting / hot-reload suites (Windows-only, shim-dependent) ──────────
-if(NOT ENABLE_SCRIPTING OR NOT WIN32)
-  return()
-endif()
-
-# Build and deploy a tiny native shim DLL to satisfy CoreBridge's ABI probe in tests
-if(WIN32)
+# The managed UI binding tests use this test double on every desktop platform.
+if(ENABLE_SCRIPTING)
   # GameEngineNativeShimUi.cpp is a TEST DOUBLE for the game-UI element ABI, so the managed
   # binding's own bookkeeping (wrapper identity, one native subscription per event, listener
   # isolation, ALC revocation) can be driven from a dotnet-test host that has no engine. The
@@ -94,6 +89,10 @@ if(WIN32)
   # must build into its own directory or it clobbers the real DLL/.lib in the
   # shared output dirs (consumers copy it via $<TARGET_FILE:...>, which follows).
   set_target_properties(GameEngine.NativeShim PROPERTIES OUTPUT_NAME "GameEngine.Native")
+  set_target_properties(GameEngine.NativeShim PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/NativeShim"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/NativeShim"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/NativeShim")
   # Per-config variants required: the top-level CMAKE_*_OUTPUT_DIRECTORY_<CONFIG>
   # globals initialize per-config target properties, which override the generic ones.
   foreach(cfg ${CMAKE_CONFIGURATION_TYPES})
@@ -107,6 +106,11 @@ if(WIN32)
   # Include Engine public headers so the shim can include ScriptingABI.h
   target_include_directories(GameEngine.NativeShim PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Include)
 
+endif()
+
+# Engine-side hot-reload suites require the Windows host.
+if(NOT ENABLE_SCRIPTING OR NOT WIN32)
+  return()
 endif()
 
 # Create test executable for job system (defined later) and only then wire copy
