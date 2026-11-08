@@ -22,6 +22,7 @@
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/MaterialSystem.h"
+#include "ScopedShaderCompileTarget.h"
 #include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
@@ -701,6 +702,41 @@ TEST_F(MaterialPipelineCompilationTest, AsyncPublish_FailedCompileDoesNotClobber
     EXPECT_EQ(mat->GetGraphicsPipelineId().Value, freshPid.Value)
         << "a failed publish's stale last-good must not clobber a pipeline "
            "something newer already published";
+}
+
+TEST_F(MaterialPipelineCompilationTest, FailedBasePublicationCannotRestoreAnotherTarget)
+{
+    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
+    const ShaderCompileTarget originalTarget = CurrentShaderCompileTarget();
+    for (const bool flipBeforeAdmission : {false, true})
+    {
+        ApplyShaderCompileProfile(originalTarget);
+        MaterialDocument document{};
+        document.materialName = "FailedBaseTarget";
+        document.lightingModel = "StandardPBR";
+        document.surfaceShader = "Surfaces/standard_pbr.glsl";
+        const GUID guid = GUID::Generate();
+        Material* material = m_rs->Materials().RegisterMaterialFromDocument(guid, document);
+        ASSERT_NE(material, nullptr);
+        const auto lastGood = material->GetGraphicsPipelineId();
+        ASSERT_TRUE(lastGood.IsValid());
+        ShaderCacheKey captured{};
+        captured.VariantKey = material->GetVariantKey();
+        captured.Source.SurfaceShaderPath = document.surfaceShader;
+        captured.Source.MaterialAssetPath = material->GetMaterialAssetPath();
+        Material::TestFactory::SetGraphicsPipelineId(*material, {});
+        ShaderCompileTarget later = captured.Target;
+        later.Compatibility = !later.Compatibility;
+        if (flipBeforeAdmission)
+        {
+            ApplyShaderCompileProfile(later);
+            captured.Target = later;
+        }
+        m_rs->Materials().EnqueueBasePipelinePublishForTesting(guid, {}, nullptr, captured, lastGood);
+        ApplyShaderCompileProfile(later);
+        m_rs->Materials().FlushAsyncMaterialCompiles();
+        EXPECT_FALSE(material->GetGraphicsPipelineId().IsValid());
+    }
 }
 
 namespace
@@ -2679,7 +2715,9 @@ TEST_F(MaterialPipelineCompilationTest, ConcreteColdPreparationDefersBackendBuil
         EXPECT_FALSE(variants.ServedGeneration(materialIndex, ServedPassClass::Color).has_value());
         EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
         if (held)
+        {
             EXPECT_TRUE(held->Jobs.empty()) << "preparation must only enqueue for the frame-begin drain";
+        }
         variants.PruneSettledConcreteWarmWaits();
         if (held)
         {
@@ -2820,7 +2858,9 @@ TEST_F(MaterialPipelineCompilationTest, SpecializedColdPreparationDefersBothBack
         EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(specialized, format).IsValid());
         EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
         if (held)
+        {
             EXPECT_TRUE(held->Jobs.empty());
+        }
 
         variants.PruneSettledConcreteWarmWaits();
         if (held)
@@ -3010,6 +3050,22 @@ TEST_F(MaterialPipelineCompilationTest, SpecializedPreviousFallbackKeepsItsMetad
         EXPECT_TRUE(held.Jobs.empty());
         EXPECT_FALSE(variants.ServedGeneration(materialIndex, ServedPassClass::Color).has_value());
     }
+    const ShaderCompileTarget originalTarget = CurrentShaderCompileTarget();
+    ShaderCompileTarget otherTarget = originalTarget;
+    otherTarget.Compatibility = !originalTarget.Compatibility;
+    {
+        TestSupport::ScopedShaderCompileTarget changedTarget{otherTarget};
+        frame.Execute();
+        EXPECT_FALSE(preparation.SelectedPipeline.IsValid());
+        EXPECT_FALSE(preparation.HasSelectedUnit);
+        EXPECT_TRUE(held.Jobs.empty());
+    }
+    frame.Execute();
+    EXPECT_TRUE(preparation.HasSelectedUnit);
+    EXPECT_EQ(preparation.SelectedPipeline, warmPrevious);
+    EXPECT_EQ(preparation.SelectedUnit.PipelineId, republished.PreviousPipelineId);
+    EXPECT_EQ(preparation.SelectedUnit.VariantMeta, originalUnit.VariantMeta);
+
 }
 
 TEST_F(MaterialPipelineCompilationTest, ConcreteWarm_MaterialWaitsWhileItsBackendBuildIsPending)

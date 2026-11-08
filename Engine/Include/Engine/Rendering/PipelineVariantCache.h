@@ -96,19 +96,20 @@ class PipelineVariantCache
         // state. Always false on the colour path.
         bool DepthBiasEnable = false;
         bool DepthClampEnable = false;
+        Rendering::ShaderCompileTarget Target = Rendering::CurrentShaderCompileTarget();
         bool operator==(const InstancedVariantKey& o) const
         {
             return material == o.material && VertexFlags == o.VertexFlags
                 && PassKeywords == o.PassKeywords && SampleCount == o.SampleCount
                 && Topology == o.Topology && CullMode == o.CullMode
                 && Winding == o.Winding && DepthBiasEnable == o.DepthBiasEnable
-                && DepthClampEnable == o.DepthClampEnable;
+                && DepthClampEnable == o.DepthClampEnable && Target == o.Target;
         }
     };
     // SampleCount shares the 8-byte slot after VertexFlags so the 64-bit
     // PassKeywords adds no padding hole. The size holds wherever pointers are
     // 8 bytes; the wasm32 build differs.
-    static_assert(sizeof(void*) != 8 || sizeof(InstancedVariantKey) == 40,
+    static_assert(sizeof(void*) != 8 || sizeof(InstancedVariantKey) == 48,
                   "InstancedVariantKey changed size: order its fields so none leaves a padding hole, then update this size");
     struct InstancedVariantKeyHash
     {
@@ -123,6 +124,7 @@ class PipelineVariantCache
             h = HashCombine(h, static_cast<uint32_t>(k.CullMode));
             h = HashCombine(h, static_cast<uint32_t>(k.Winding));
             h = HashCombine(h, (k.DepthBiasEnable ? 1u : 0u) | (k.DepthClampEnable ? 2u : 0u));
+            h = HashCombine(h, k.Target.Hash());
             return static_cast<size_t>(h);
         }
     };

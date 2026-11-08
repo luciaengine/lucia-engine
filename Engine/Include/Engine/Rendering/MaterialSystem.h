@@ -527,6 +527,8 @@ class MaterialSystem
     // serial frame-begin thread (before the parallel record window opens) so the
     // Material field writes never race a draw-time read. Main-thread only (asserted).
     void ApplyPendingPipelinePublishes();
+    void RestoreBasePipeline(Material& material, Rendering::GraphicsPipelineId pipeline,
+                             const Rendering::ShaderCompileTarget& target);
     // True when an async submit can actually run: device present, the device
     // creates resources off its owning thread, and the engine / job system are
     // up. Off => compile inline instead, so headless, test and WebGPU paths keep
@@ -643,6 +645,7 @@ class MaterialSystem
         // the last good shader until the edit compiles). Invalid for a first
         // registration — there is nothing to restore.
         Rendering::GraphicsPipelineId LastGoodPipelineId{};
+        Rendering::ShaderCompileTarget LastGoodTarget{};
     };
     std::unordered_map<GUID, BaseCompileState> m_BaseCompileInFlight;
     // Thread that constructed this system (Initialize). The async submit + publish
