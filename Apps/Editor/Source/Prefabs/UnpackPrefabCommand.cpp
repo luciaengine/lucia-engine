@@ -1,6 +1,7 @@
 #include "Prefabs/UnpackPrefabCommand.h"
 
 #include "EditorChangeNotifications.h"
+#include "Prefabs/PrefabInstanceDescriptions.h"
 
 #include "Components/Name.h"
 #include "ECS/ECSTemplates.h"
@@ -35,14 +36,14 @@ std::unique_ptr<UnpackPrefabCommand> UnpackPrefabCommand::Create(ECS::World& wor
     command->m_Before = Scene::UnpackPrefabInstance(world, root, depth, outError);
     if (command->m_Before.empty())
         return nullptr;
-    NotifyWorldStructure(notifications, &world);
+    NotifyPrefabIdentityChanges(notifications, world, command->m_Before);
     return command;
 }
 
 void UnpackPrefabCommand::Undo()
 {
     Scene::RestorePrefabIdentities(m_World, m_Before);
-    NotifyWorldStructure(m_Notifications, &m_World);
+    NotifyPrefabIdentityChanges(m_Notifications, m_World, m_Before);
 }
 
 void UnpackPrefabCommand::Redo()
@@ -51,7 +52,7 @@ void UnpackPrefabCommand::Redo()
     m_Before = Scene::UnpackPrefabInstance(m_World, m_Root, m_Depth, error);
     if (m_Before.empty())
         Logger::Log::Error("Prefabs: the redo of {} failed: {}", m_Name, error);
-    NotifyWorldStructure(m_Notifications, &m_World);
+    NotifyPrefabIdentityChanges(m_Notifications, m_World, m_Before);
 }
 
 } // namespace GameEngine::Editor

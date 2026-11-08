@@ -21,7 +21,6 @@ namespace GameEngine.Scripting
             WorldHandle = worldHandle;
         }
 
-
         /// <summary>Creates a new empty entity (no components). Returns a valid entity ID immediately.</summary>
         public uint CreateEntity()
         {

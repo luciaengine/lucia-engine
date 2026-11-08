@@ -280,6 +280,35 @@ static std::string ReadFileText(const std::filesystem::path& path)
 
 // Create Prefab is one undo step: the undo deletes the file and gives the entities back their
 // identities, the redo writes the file again under the same GUID and makes the instance again.
+TEST_F(PrefabPlaceTests, CreatePrefabRefreshesSelectedEntityBannersOnCreateUndoAndRedo)
+{
+    ECS::World world;
+    const ECS::EntityHandle crate = CreateTagged(world, "Crate", "crate", {});
+    const ECS::EntityHandle lid = CreateTagged(world, "Lid", "lid", crate);
+    Editor::EditorChangeNotifications notifications;
+    std::vector<ECS::EntityHandle> refreshed;
+    const auto subscription = notifications.SubscribeComponentChanged(
+        [&world, &refreshed](const Editor::EditorChangeNotifications::ComponentChangedEvent& change)
+        {
+            if (change.world == &world && change.componentType == 0 &&
+                change.kind == Editor::EditorChangeNotifications::ChangeKind::InspectorRebuild)
+                refreshed.push_back(change.entity);
+        });
+    std::filesystem::create_directories(m_Folder);
+    std::string error;
+    auto command = Editor::CreatePrefabCommand::Create(world, &notifications, crate,
+                                                       m_Folder / "Crate.prefab", false, error);
+    ASSERT_NE(command, nullptr) << error;
+    EXPECT_EQ(refreshed, (std::vector<ECS::EntityHandle>{crate, lid}));
+    refreshed.clear();
+    command->Undo();
+    EXPECT_EQ(refreshed, (std::vector<ECS::EntityHandle>{crate, lid}));
+    refreshed.clear();
+    command->Redo();
+    EXPECT_EQ(refreshed, (std::vector<ECS::EntityHandle>{crate, lid}));
+    notifications.Unsubscribe(subscription);
+}
+
 TEST_F(PrefabPlaceTests, CreatePrefabIsOneUndoStepThatDeletesAndRewritesTheFile)
 {
     ECS::World world;

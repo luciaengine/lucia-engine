@@ -90,6 +90,10 @@ class PrefabInstanceDescriptions final
     std::vector<uint64> m_TrackedChannels;
 };
 
+/// Refreshes the Inspector banners of entities whose prefab identity changed.
+void NotifyPrefabIdentityChanges(EditorChangeNotifications* notifications, ECS::World& world,
+                                 std::span<const Scene::PrefabIdentityBefore> members);
+
 /// The reflected field of `typeId` that the scene key `key` of an override writes: the field of that name, or
 /// the array field whose name the element's index follows. Empty when no reflected field matches.
 std::string_view ReflectedFieldForSceneKey(ECS::ComponentTypeId typeId, std::string_view key);

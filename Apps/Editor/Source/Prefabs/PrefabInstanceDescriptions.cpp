@@ -120,4 +120,16 @@ std::string_view ReflectedFieldForSceneKey(ECS::ComponentTypeId typeId, std::str
     return arrayField;
 }
 
+void NotifyPrefabIdentityChanges(EditorChangeNotifications* notifications, ECS::World& world,
+                                 std::span<const Scene::PrefabIdentityBefore> members)
+{
+    NotifyWorldStructure(notifications, &world);
+    if (!notifications)
+        return;
+    for (const Scene::PrefabIdentityBefore& member : members)
+        if (world.IsValid(member.Entity))
+            notifications->NotifyComponentChanged(
+                {&world, member.Entity, 0, EditorChangeNotifications::ChangeKind::InspectorRebuild});
+}
+
 } // namespace GameEngine::Editor

@@ -1,6 +1,7 @@
 #include "Prefabs/CreatePrefab/CreatePrefabCommand.h"
 
 #include "EditorChangeNotifications.h"
+#include "Prefabs/PrefabInstanceDescriptions.h"
 #include "SceneView/SceneViewNoticeOverlay.h"
 
 #include "Assets/AssetManager.h"
@@ -116,7 +117,7 @@ std::unique_ptr<CreatePrefabCommand> CreatePrefabCommand::Create(ECS::World& wor
     command->m_Prefab = created.Prefab;
     command->m_MembersBefore = std::move(created.Members);
     command->m_WrittenAt = std::filesystem::last_write_time(prefabFile, ec);
-    NotifyWorldStructure(notifications, &world);
+    NotifyPrefabIdentityChanges(notifications, world, command->m_MembersBefore);
     return command;
 }
 
@@ -180,7 +181,7 @@ void CreatePrefabCommand::Undo()
     }
     else
         RemoveFileUnlessASceneUsesIt();
-    NotifyWorldStructure(m_Notifications, &m_World);
+    NotifyPrefabIdentityChanges(m_Notifications, m_World, m_MembersBefore);
 }
 
 void CreatePrefabCommand::Redo()
@@ -203,7 +204,7 @@ void CreatePrefabCommand::Redo()
     }
     else
         m_WrittenAt = std::filesystem::last_write_time(m_PrefabFile, ec);
-    NotifyWorldStructure(m_Notifications, &m_World);
+    NotifyPrefabIdentityChanges(m_Notifications, m_World, m_MembersBefore);
 }
 
 } // namespace GameEngine::Editor
