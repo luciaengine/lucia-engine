@@ -7,7 +7,7 @@
 #include "TerrainECS/TerrainAtlas.h"
 
 #include "PageStreaming/PageCache.h"
-#include "PageStreaming/PageStoreFormat.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
 
 #include <gtest/gtest.h>
 

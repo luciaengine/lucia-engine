@@ -19,7 +19,7 @@
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "PageStreaming/HeightPageOverlay.h"
-#include "PageStreaming/PageStoreFormat.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
 #include "Terrain/Heightfield.h"
 #include "TerrainECS/TerrainModifierComponents.h"
 #include "TerrainECS/TerrainModifierSystem.h"

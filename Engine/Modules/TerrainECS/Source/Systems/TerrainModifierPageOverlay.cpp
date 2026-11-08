@@ -5,7 +5,7 @@
 #include "TerrainECS/TerrainModifierSystem.h"
 
 #include "PageStreaming/HeightPageOverlay.h"
-#include "PageStreaming/PageStoreFormat.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
 
 #include <algorithm>
 #include <atomic>

@@ -7,7 +7,7 @@
 #include "TerrainECS/PagedHeightSampler.h"
 
 #include "PageStreaming/PageCache.h"
-#include "PageStreaming/PageStoreFormat.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
 
 #include <algorithm>
 #include <cmath>

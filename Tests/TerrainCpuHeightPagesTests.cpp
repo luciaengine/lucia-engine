@@ -4,10 +4,10 @@
 
 #include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "PageStreaming/HeightPageOverlay.h"
-#include "PageStreaming/HeightStoreCache.h"
+#include "PageStreaming/Height/HeightStoreCache.h"
 #include "PageStreaming/PageResidency.h"
-#include "PageStreaming/PageStoreFormat.h"
-#include "PageStreaming/PageStoreReader.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
+#include "PageStreaming/PageStore/PageStoreReader.h"
 #include "Components/Transform.h"
 #include "Mathematics/Rect.h"
 #include "ECS/ECSTemplates.h"
@@ -612,7 +612,7 @@ TEST(CpuHeightPages, AFailedFetchLeavesACoarserPageAnsweringUntilARetryLands)
         stores.Ensure(GUID::Generate(), heightmap, kWidth, kHeight, nullptr, nullptr);
     ASSERT_EQ(store.Error, "");
     auto reader = std::make_shared<PageStreaming::PageStoreReader>();
-    ASSERT_EQ(reader->Open(store.Store), "");
+    ASSERT_EQ(reader->Open(store.Store, PageStreaming::PageFieldKind::Height), "");
     std::vector<char> bytes;
     {
         std::ifstream in(store.Store, std::ios::binary);
