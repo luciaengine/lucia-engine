@@ -394,6 +394,46 @@ TEST(CBTSourceRebind, UnknownCompletionLeavesBindingsUnchangedAndRetries)
     EXPECT_EQ(device.GetValidationStats().ErrorCount, 0u);
 }
 
+#if defined(__APPLE__)
+TEST(CBTSourceRebind, NativeMetalBindsAndResizesWithoutADeviceDrain)
+{
+    SetHeadlessEnv();
+    DeviceDesc description{};
+    description.preferredAPI = GraphicsAPI::Metal;
+    description.enableDebugLayer = true;
+    auto device = DeviceFactory::CreateDevice(description);
+    if (!device || !device->Initialize(description))
+        GTEST_SKIP() << "native Metal device unavailable";
+    ASSERT_EQ(device->GetAPI(), GraphicsAPI::Metal);
+    ASSERT_FALSE(device->LastGraphicsSubmissionToken().IsValid());
+    CBTKernelSet kernels;
+    ASSERT_TRUE(kernels.Initialize(*device, ShaderOutputDir()));
+    CBTInstance instance;
+    ASSERT_TRUE(instance.Initialize(*device, kernels));
+    ASSERT_TRUE(instance.InitializeRoots());
+    const auto source = instance.GetResources().GetDefaultAtlasHeightTexture();
+    ASSERT_TRUE(source.IsValid());
+    const uint64_t drains = device->GetIdleDrainCount();
+    ASSERT_TRUE(instance.SetHeightSource(0u, source));
+    EXPECT_EQ(instance.GetResources().GetBoundHeightSource(0u), source);
+    bool changed = false;
+    ASSERT_TRUE(instance.RefreshTerrainSources(changed));
+    EXPECT_TRUE(changed);
+    RecordProperty("normal_chain_supported", kernels.IsNarrowHeap() ? 0 : 1);
+    if (!kernels.IsNarrowHeap())
+    {
+        ASSERT_TRUE(instance.ProvisionHeightChainWords(CBTHeightChainWords(513u, 513u)));
+        ASSERT_TRUE(instance.ProvisionNormalChain(513u, 513u));
+        EXPECT_TRUE(instance.GetResources().HasNormalChainFor(513u, 513u));
+        ASSERT_TRUE(instance.ProvisionHeightChainWords(CBTHeightChainWords(769u, 769u)));
+        ASSERT_TRUE(instance.ProvisionNormalChain(769u, 769u));
+        EXPECT_TRUE(instance.GetResources().HasNormalChainFor(769u, 769u));
+    }
+    EXPECT_EQ(device->GetIdleDrainCount(), drains);
+    EXPECT_EQ(device->GetDeviceHealth(), DeviceHealth::Healthy);
+}
+#endif
+
 TEST_F(CBTBringUpTest, SourceRebindRetiresPendingSetsWithoutADeviceDrain)
 {
     CBTInstance instance;
