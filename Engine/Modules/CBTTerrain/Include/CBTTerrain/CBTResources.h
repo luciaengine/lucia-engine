@@ -112,16 +112,13 @@ class CBTResources
     Rendering::TextureHandle GetBoundHeightSource(uint32_t frameCounter) const;
     // The height-range pyramid (binding 21); invalid on the narrow-heap arm.
     Rendering::BufferHandle GetHeightRangeBuffer() const { return m_HeightRange; }
-    // The draw's prefiltered height chain (binding 24 on the compute set, gCbtChain on the graphics
-    // set 2). Valid on both arms so the draw always binds a buffer; it holds only a zeroed header
-    // until ProvisionHeightChainWords grows it, and the narrow arm never does, so a header that names
-    // no lattice makes the draw keep the cached corners.
+    // Compute binding 24 and graphics gCbtChain always bind a valid buffer.
+    // Its zeroed header names no lattice until the wide heap provisions a chain.
+    // The narrow heap keeps that header, so drawing uses cached corners.
     Rendering::BufferHandle GetHeightChainBuffer() const { return m_HeightChain; }
     uint32_t GetHeightChainWords() const { return m_HeightChainWords; }
-    // Grows the chain to hold `words` (CBTHeightChainWords of the bound lattice; the wide arm only),
-    // never shrinking. The new buffer starts with a zeroed header, so whatever the old one held is
-    // rebuilt before the draw reads it. False when the allocation fails or the arm builds no chain:
-    // the previous buffer stays bound and the terrain draws its cached corners.
+    // Grow to CBTHeightChainWords for the lattice; never shrink. A new buffer has a zeroed header.
+    // Allocation failure or an unsupported heap preserves the old binding and cached-corner draw.
     bool ProvisionHeightChainWords(uint32_t words);
     // The far-field normal chain (binding 25 on the compute set as one storage view per mip,
     // cbt_NormalChain on the graphics set 2). A 1x1 placeholder until ProvisionNormalChain creates it for

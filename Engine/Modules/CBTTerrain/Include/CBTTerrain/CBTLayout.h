@@ -300,11 +300,9 @@ inline uint32_t PackSectorPair(int32_t lo, int32_t hi)
 inline int32_t UnpackSectorLo(uint32_t v) { return static_cast<int32_t>(v << 16) >> 16; }
 inline int32_t UnpackSectorHi(uint32_t v) { return static_cast<int32_t>(v) >> 16; }
 
-// Per-frame camera + terrain params consumed by Classify (screen-space error) and
-// VertexEval (world-space height displacement). std140 mirror of CBTFrameParams in
-// cbt_layout.glsl — mat4 + 13 vec4 + the 16 x 3 vec4 analytic modifier set + the
-// height-chain vec4 = 1056 bytes, then the cell-mask tail, ring-buffered on the GPU. All
-// floats (GPU-upload-ready, column-major matrix).
+// Ring-buffered std140 mirror of CBTFrameParams in cbt_layout.glsl.
+// The matrix, terrain/modifier vectors and height-chain vector occupy 1056 bytes before the cell-mask tail.
+// Matrices are column-major; all scalar words are GPU-ready floats.
 struct CBTFrameParams
 {
     // Rebased (render-origin-relative) world -> clip (reverse-Z LH). Classify's frustum
@@ -410,11 +408,9 @@ struct CBTFrameParams
     // transient dabs by PackSphereAnalyticDab ([N.xyz | AngularRadius], [Amplitude, CosThreshold,
     // 0, 0], zero) in the slots after the flattens. PlanetRadius rides PlanetParams.x.
     float SphereAnalytic[kMaxSphereAnalyticModifiers * kSphereAnalyticFloatsPerModifier] = {};
-    // The draw's prefiltered height chain, as Classify's frustum cull needs it (planar, wide arm).
-    // x = the level scale t / (f x s0) of the draw's level rule lambda = log2(distance x scale)
-    // (TerrainECS PageLevelRule: t the split threshold px, f the focal length px, s0 the level-0
-    // texel m); 0 = the draw keeps the cached corners and the cull tests them alone. y = the chain's
-    // top level (an integer as float). zw = 0.
+    // Planar wide-heap draw filtering: x is scale t/(f*s0), so level = log2(distance*scale).
+    // t is target pixels, f is focal pixels and s0 is the level-0 texel size in meters.
+    // x=0 keeps cached corners; y is the integer top level stored as float; zw are zero.
     Mathematics::Vector4 HeightChain;
     // S3 per-cell placement culling: 16-bit placement mask per face cell (2 cells per word, low
     // half = even cell), built by BuildSphereAnalyticCellMasks over the SAME slot order as
@@ -781,42 +777,24 @@ inline constexpr uint32_t kCBTDescriptorBindingCount = 26;
 // and from level 3 at 4096.
 inline constexpr uint32_t kCBTHeightRangeEntries = 1u << 20;
 inline constexpr uint32_t kCBTHeightRangeMaxFirstLevel = 4u;
-// The ranges of the draw's prefiltered height chain (below), after the level-0 entries: one pyramid
-// per chain level j, over the same blocks as the level-0 pyramid's levels from CBTHeightChainRangeBase
-// up (a block holds the level-j samples whose lattice positions it covers, its boundary included). The
-// planar split reads them for the range of the surface the draw shows (cbt_planar_demand.glsl). Level
-// j holds a quarter of the samples of level j - 1, so the chain ranges of a lattice whose level-0
-// pyramid fills kCBTHeightRangeEntries take about a third of that.
+// Chain-level range pyramids follow the level-0 entries, one pyramid per filtered level.
+// Each block includes its boundary lattice samples and uses the level-0 block geometry.
+// Planar demand reads these ranges to bound the filtered surface.
 inline constexpr uint32_t kCBTHeightChainRangeEntries = 1u << 19;
-// Words ahead of the entries: [0] the lattice cells (x | y << 16) the pyramid was built from, [1] the
-// first and top stored levels (first | top << 8), [2 + k] the first entry of level k, [18] the
-// level-0 samples (x | z << 16) the chain ranges were built from (0: none), [19] the chain levels
-// with a range, [20 + j] the first entry of chain level j's base level. Classify reads the level
-// tables here instead of recomputing them for every facet. Entry e sits at words
-// kCBTHeightRangeHeaderWords + 2e (low) and + 2e + 1 (high).
+// Header: words 0/1 pack lattice cells and first/top levels; words 2+k locate level k.
+// Words 18/19 hold chain lattice and level count; words 20+j locate each chain range base.
+// Range entry e uses words kCBTHeightRangeHeaderWords+2e and +2e+1 for low/high.
 inline constexpr uint32_t kCBTHeightRangeHeaderWords = 64u;
-// The first and second differences of each block of the first stored level, after the chain ranges:
-// four words per block (row-major, as that level's ranges), normalized, as raw floats. [0] the steepest
-// step between two neighboring lattice samples along X or Z among the samples the block covers; [1] the
-// largest |h(i - 1, j) - 2 h(i, j) + h(i + 1, j)| over the block's samples (i, j) with a neighbor on
-// both sides along X, the samples one past the block read as neighbors; [2] the same along Z; [3] the
-// largest |h(i + 1, j + 1) - h(i + 1, j) - h(i, j + 1) + h(i, j)| over the block's cells. The first
-// stored level never holds more blocks than kCBTHeightRangeEntries. The planar split bounds the surface
-// over a box smaller than its blocks by the step times the box's extent (cbt_planar_demand.glsl
-// CBT_PlanarStepBoundRange) and by the second differences times its extent squared
-// (CBT_PlanarCurvatureBound), so r keeps shrinking with the box below the block size. 16 MiB.
+// Four float words per first-level block hold the largest step and second differences along X, Z and mixed XZ.
+// Boundary differences include neighboring samples one cell beyond the block.
+// Planar bounds use these values to shrink below a block: linear in extent for steps, quadratic for curvature.
 inline constexpr uint32_t kCBTHeightDifferencesEntries = kCBTHeightRangeEntries;
 inline constexpr uint32_t kCBTHeightDifferencesWordsPerEntry = 4u;
 inline constexpr uint32_t kCBTHeightDifferencesFirstWord =
     kCBTHeightRangeHeaderWords + 2u * (kCBTHeightRangeEntries + kCBTHeightChainRangeEntries);
-// The plane of each block of the level-0 pyramid, after the differences: four words per entry, indexed as the
-// level-0 entries, as raw floats in normalized height: the plane's slopes along X and Z per lattice cell
-// about the block's center, then the low end and the width of the surface's height minus that plane
-// over the block. The first stored level fits the plane to the block's samples by least squares; a
-// coarser block takes the mean of its children's slopes and bounds its interval from theirs, and its
-// width is never below a child's. The planar split reads the width of the smallest block that holds a
-// node's box as the surface's distance from a plane there (cbt_planar_demand.glsl). 16 MiB at 2^20
-// entries; a 4097^2 lattice fills 349,525 of them.
+// Four float words per level-0 block store least-squares X/Z slopes and the low/width of height minus that plane.
+// Parent slopes average their children; parent residual intervals contain every child interval.
+// Planar demand reads the smallest enclosing block, whose residual width cannot be smaller than a child.
 inline constexpr uint32_t kCBTHeightPlaneEntries = kCBTHeightRangeEntries;
 inline constexpr uint32_t kCBTHeightPlaneWordsPerEntry = 4u;
 inline constexpr uint32_t kCBTHeightPlaneFirstWord =
@@ -868,14 +846,9 @@ static_assert(CBTHeightRangeFirstLevel(1024, 1024) == 1, "a 1025^2 heightfield s
 static_assert(CBTHeightRangeFirstLevel(2048, 2048) == 2, "a 2049^2 unified set stores from level 2");
 static_assert(CBTHeightRangeFirstLevel(4096, 4096) == 3, "a 4097^2 unified set stores from level 3");
 
-// The prefiltered height chain: the unified height texture's surface at the detail of each distance,
-// for the terrain draw (cbt_height_chain.glsl). Level 0 is the height texture itself; level L + 1 has
-// S / 2 + 1 samples along an axis where level L has S (PageStreaming::BuildPageStoreLevels' shapes),
-// and its sample j is the [1 2 1] / 4 tent of level L around sample 2j, both axes, edges clamped
-// (HeightPyramidBuilder's filter). So a unified terrain draws the surface a paged store holds.
-// Words: [0] the level-0 samples the chain was built from (x | z << 16), [1] the top level, [2, 4)
-// zero; then levels 1..top, row-major, each sample a normalized height as float bits. Mirror
-// cbt_height_chain.glsl CBT_CHAIN_* and CBT_Chain*.
+// Level 0 is the height texture; each next axis has floor(S/2)+1 samples of the clamped [1,2,1]/4 tent.
+// Header words 0/1 pack base samples (x|z<<16) and top level; words 2/3 are zero.
+// Levels 1..top follow as row-major normalized-height float bits, matching CBT_Chain* in cbt_height_chain.glsl.
 inline constexpr uint32_t kCBTHeightChainHeaderWords = 4u;
 inline constexpr uint32_t kCBTHeightChainMaxLevel = 15u;
 
@@ -944,12 +917,9 @@ constexpr uint32_t CBTHeightChainRangeLevels(uint32_t samplesX, uint32_t samples
     return entries <= kCBTHeightChainRangeEntries ? levels : 0u;
 }
 
-// The far-field normal chain: an R16G16_FLOAT texture (world normal x, z; y rebuilt on read, as the
-// unified normal map) whose mip m holds the normal of chain level m + 1, the drawn surface at that
-// level. Mip 0 has (samples - 1) / 2 texels along an axis (level 1's cells), each mip half the last, and
-// the chain stops at the top level, the last mip with a texel, or kCBTNormalChainMaxMips. A texel's
-// normal is taken at the texel's own center, so a hardware sample at any coordinate reads the surface
-// there. The surface samples it with an explicit level, one fetch beyond the first level's ring.
+// R16G16_FLOAT mips store world-normal XZ; readers reconstruct Y.
+// Mip m describes filtered height level m+1 at each normal texel center.
+// Mip 0 has (samples-1)/2 texels per axis; later mips halve until one texel or the mip cap.
 inline constexpr uint32_t kCBTNormalChainMaxMips = 14u;
 
 // Texels along an axis of `level0Samples` at normal-chain mip `mip`.
@@ -1068,10 +1038,9 @@ static_assert(kCBTSurfaceParamsSlotStride % 256u == 0u && kCBTSurfaceParamsSlotS
                   sizeof(CBTSurfaceParams),
               "surface-params slot stride must be 256-aligned and hold one struct");
 
-// The terrain draw's level rule (cbt_vertex_modifier.glsl, cbt_height_chain.glsl): what the vertex
-// modifier needs to move a far vertex to the chain level its distance asks for. A GRAPHICS-only
-// uniform ring like CBTSurfaceParams, offset-bound per frame slot as gCbtDrawLevel on set 2. Mirror
-// CBTDrawLevelParamsData in cbt_layout.glsl.
+// Graphics-only draw-level uniform ring, offset-bound as gCbtDrawLevel on set 2.
+// The vertex modifier uses it to select a distance-filtered height.
+// Mirrors CBTDrawLevelParamsData in cbt_layout.glsl.
 struct CBTDrawLevelParams
 {
     // xyz = the CBT camera (world, the one Classify culls with, so every view of the tree draws one

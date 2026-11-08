@@ -99,13 +99,9 @@ void EmitCbtForwardDraw(Pipeline::ViewDeclare& d, CBTRenderFeature& feature)
     // its per-draw set 2.
     rs.EmitForwardCommand(d.View.id, cmd, hasHead ? ForwardDrawDepth::Prepass : ForwardDrawDepth::ColourPass,
                           hasHead ? &head : nullptr);
-    // Order CBT.Update before the draws: the indirect args need an Indirect read edge,
-    // the VISIBLE index stream, the per-bisector vertex buffer and the height chain a
-    // Storage read (all vertex-stage SSBOs). The camera draw rides the VISIBLE stream (Classify frustum-
-    // culls into it); the ALL stream is still MarkOutput'd by the update for the (later)
-    // shadow path, which reads it instead. The identity index + count buffers are static
-    // (settled at init), so they are not declared. The world pass and the prepass declare
-    // these in their setup, forming the compute->graphics barriers.
+    // Order update storage writes before vertex/index/height-chain reads and indirect-argument reads.
+    // Camera draws use visible indices; shadows use all indices. Both streams remain graph outputs.
+    // Static identity/count buffers need no per-frame edge; draw and prepass setup declare the dynamic reads.
     const std::pair<RG::RGBuffer, RG::RGBufferRead> drawReads[] = {
         {outputs.IndirectDraw, RG::RGBufferRead::Indirect},
         {outputs.IndicesVisible, RG::RGBufferRead::Storage},

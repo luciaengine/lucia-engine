@@ -321,11 +321,9 @@ class CBTRenderFeature final : public Engine::Renderer::IRenderFeature
     // unified heightmap (invalid until uploaded).
     static Rendering::TextureHandle BoundHeightSource(bool atlasBacked, Rendering::TextureHandle atlas,
                                                       Rendering::TextureHandle heightmap);
-    // The draw's prefiltered height chain for this frame: the level rule of TerrainECS PageLevelRule
-    // for the CBT camera, written into `out.HeightChain` (Classify's cull) and this frame's draw-level
-    // ring slot (the vertex modifier), with the chain grown for the terrain's lattice. Off (scale 0,
-    // the cached corners at every distance) on the sphere, the narrow heap, an atlas-backed or paged
-    // terrain, a heightmap not yet uploaded, or a lattice without a height-range pyramid.
+    // Provision a distance-filtered chain and draw-level ring for the CBT camera from PageLevelRule.
+    // Write its scale/top into out.HeightChain for conservative classification.
+    // Unsupported domains/heaps or missing unified source/range storage retain cached corners with scale zero.
     void ApplyHeightChain(const TerrainECS::TerrainInstanceInfo& terrain, const Rendering::CameraData& camera,
                           uint32_t frameIndex, CBTTerrain::CBTFrameParams& out);
     // The height page cache the update samples for terrain `terrainIndex` when its height is paged

@@ -22,11 +22,9 @@ struct TerrainShadowMap
     Rendering::TextureHandle MapTexture{};
     uint32_t MapBindlessIndex = 0;
     uint32_t MapSide = 0;
-    // The map's lit field (RG16F, half the map's side, a full mip chain): level 0 holds, over each 2 x 2
-    // map samples, the share that sees the sun's center and the mean of their occluder octaves
-    // (terrain_shadow_field_lit.comp); each next level averages 2 x 2 of the one below. A terrain pixel
-    // that covers many samples reads it at its footprint's level, in both directional-shadow modes.
-    // Invalid, 0 and 0 when not published: the receivers then read the map alone.
+    // RG16F mip 0 stores sun-center visibility and mean occluder octave over each 2x2 map block.
+    // Later mips average 2x2 children; receivers select a mip from the pixel footprint.
+    // An unpublished field has an invalid texture and zero index/levels; receivers then sample only the map.
     Rendering::RenderGraph::RGTexture FieldLit{};
     uint32_t FieldLitBindlessIndex = 0;
     uint32_t FieldLitLevels = 0;

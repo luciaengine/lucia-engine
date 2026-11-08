@@ -1,20 +1,6 @@
-// The planar merge is decided on the parent, not on the facet's own edge.
-//
-// A facet's split edge is one LEG of its parent and its sibling's is the other. Under a grazing
-// perspective camera the two legs project an order of magnitude apart, so a per-child screen-space
-// merge test could only ever be answered YES by one of the two, and PrepareSimplify needs BOTH to
-// carry CBT_STATE_SIMPLIFY before a diamond can collapse. The planar criterion (cbt_kernels.comp
-// CBT_PlanarClassify) asks the parent and the parent's twin instead, each from the UV box both
-// children rebuild bit for bit, so the two children ask the same question and reach the same answer,
-// on flat ground and on relief alike.
-//
-// The instrument here is the GPU's own CBTBisectorData::BisectorState, read back after the tree has
-// converged: with nothing left to serve, that word is exactly the decision Kernel_Classify reached.
-// The CPU mirror below (ClassifyPairs) restates the screen-space edge rule the arms without a height
-// pyramid keep; here it only sorts the pairs into the population the census counts.
-//
-// EVERY test runs BOTH height regimes: flat ground and the shipped ComposedIsland relief (512 m,
-// heightScale 60).
+// A diamond merges only when both siblings request it. Parent-box decisions must agree on flat and relief terrain.
+// Read the converged GPU state; use the CPU edge model only to classify the census populations.
+// Each test exercises flat ground and the 512-meter, heightScale-60 composed relief.
 
 #include <gtest/gtest.h>
 
@@ -519,13 +505,7 @@ void BuildGrazingPlanarParams(CBTFrameParams& p, const Pose& pose, const Regime&
 }
 } // namespace
 
-// The defect, stated as the property it violated: two children of one parent must reach the SAME
-// merge decision. Under the per-child metric they could not — bothMerge was 0 over 447k pairs and
-// every merge candidate died at PrepareSimplify's pair-state test. Under the reflected parent edge
-// the relief arm still split 53 of 11,408 pairs; the parent's box leaves none.
-//
-// RED ARM: decide the merge on the facet's own box in CBT_PlanarClassify and the disagreement count
-// jumps into the thousands.
+// Both children must agree on the parent-box merge decision after convergence.
 TEST_F(CBTParentMergeMetric, SiblingsAgreeOnTheMergeDecision)
 {
     for (const Regime& regime : kRegimes)
@@ -622,16 +602,8 @@ TEST_F(CBTParentMergeMetric, SiblingsAgreeOnTheMergeDecision)
     }
 }
 
-// The parent-edge merge of the screen-space edge rule, on an arm without a height pyramid. The flat
-// regime binds no height texture, so the planar criterion is off (CBT_PlanarCriterionOn) and Classify
-// runs the edge rule the atlas source, the narrow heap and a lattice too large for the pyramid keep: a
-// facet merges on its parent's split edge (CBT_ParentSplitEdgeFar), not on its own. The over-conservative
-// case: a pair where at least one child REFUSES on its own edge while the parent they would collapse into
-// is comfortably inside the merge band. A per-child metric pins exactly these; the parent edge must merge
-// them.
-//
-// RED ARM: neuter the parent branch and this population is classified NOT-SIMPLIFY on the refusing
-// child, so bothSimplify collapses to 0 while the population itself stays non-empty.
+// Without a height pyramid, use the parent split edge for screen-space merging.
+// A parent comfortably within the merge band must merge even if one child edge would refuse.
 TEST_F(CBTParentMergeMetric, ChildRefusesButAdequateParentIsMerged)
 {
     const Regime& regime = kFlat;
@@ -706,10 +678,8 @@ TEST_F(CBTParentMergeMetric, ChildRefusesButAdequateParentIsMerged)
         continue;
     }
 
-    // ATTRIBUTION, not a tuned threshold. An over-conservative pair either merges, or it sits so close
-    // to the bound that this CPU mirror cannot say which side the shader chose (kMirrorBoundaryRelTol).
-    // On flat ground the two children rebuild the parent edge exactly, so the reconstruction model
-    // predicts no disagreement and every other pair merges.
+    // A pair merges unless it lies within the CPU mirror boundary tolerance.
+    // Flat siblings reconstruct the same parent edge, so other flat pairs must agree.
     EXPECT_EQ(unexplainedRefusals, 0u)
         << regime.Label << "/" << pose.Label << ": " << unexplainedRefusals << " of "
         << overConservative
@@ -744,20 +714,8 @@ TEST_F(CBTParentMergeMetric, ChildRefusesButAdequateParentIsMerged)
     }
 }
 
-// Conformance across the largest topology change the merge side can drive: raise the pixel target
-// 4x on a converged tree and let ~86% of the facets merge away, checking the LEB invariants every
-// frame of the cascade. Bounded on both sides — it must drain, and it must not collapse to base, so
-// a merge rule that fired regardless of the parent would fail the second bound.
-//
-// RELIEF ONLY (heightScale 60). The flat cascade is no longer exercised anywhere: this was the
-// last flat cascade arm, and it was moved rather than duplicated because conformance through a
-// large merge cascade is harder to hold with relief, not easier. A flat regression in the cascade
-// path would therefore not be caught here.
-//
-// NOT part of the parent merge's red arm: bulk coarsening is served under either rule, because a 4x
-// threshold move puts BOTH legs of a parent far below the band, and the legs' projected spread
-// only decides pairs sitting near it. What the parent merge changes is the converged fringe,
-// which the census above gates.
+// Raise the pixel target fourfold on converged relief and check conformity through the merge cascade.
+// Bound both drainage and remaining detail; an unconditional merge must fail the lower bound.
 TEST_F(CBTParentMergeMetric, CoarseningCascadeStaysConforming)
 {
     CBTInstance inst;

@@ -41,17 +41,11 @@ float ge_ReceiveShadows = 1.0;
 // GE_TERRAIN_SHADOW_RECEIVER_DECLARED announces it, as GE_RECEIVE_SHADOWS_DECLARED does above.
 #define GE_TERRAIN_SHADOW_RECEIVER_DECLARED 1
 float ge_ShadowReceiverOnTerrain = 0.0;
-// The terrain surface's head-on pixel footprint in meters: the distance times the view ray's angle
-// per pixel. The terrain surface sets it per fragment, inside its far-field branch (cbt_surface.glsl);
-// it stays 0 elsewhere. The terrain shadow widens it for the grazing view (terrain_shadow.glsl
-// GE_TerrainShadowFootprint), and a terrain pixel whose footprint covers more than one sample of the
-// clearance map reads the lit field at the level of its footprint (GE_TerrainShadow). 0: one read of
-// the map.
+// Head-on terrain pixel footprint in meters, set per fragment in the far-field branch; zero elsewhere.
+// Terrain shadows widen it for grazing views and select a lit-field mip when it covers multiple map samples.
 float ge_ShadowReceiverFootprint = 0.0;
-// The cosine between the view and the terrain's mean surface at the fragment, the unit direction toward
-// the eye and the terrain's continuous draw level there, set beside the footprint; 1, 0 and 0
-// elsewhere. The lit field counts them toward what the view sees (terrain_shadow.glsl
-// GE_TerrainShadowFootprintLit).
+// Mean-surface view cosine, unit direction toward the eye and continuous terrain draw level.
+// Defaults are 1, zero direction and level 0; footprint filtering uses these to estimate visible ground.
 float ge_ShadowReceiverViewCos = 1.0;
 vec3 ge_ShadowReceiverToEye = vec3(0.0);
 float ge_ShadowReceiverDrawLevel = 0.0;
@@ -96,24 +90,14 @@ layout(set = 0, binding = 8, std140) uniform ShadowData
     //   x = dither basis (0 = screen space, 1 = shadow space) — ShadowDitherBasis
     //   y = authored distance fade fraction, zw = reserved (0)
     vec4 ge_shadowFilterParams;
-    // The terrain's sun-space clearance map (terrain_shadow.glsl), ShadowDataGPU terrainShadow*:
-    //   grid0: x, y = grid centre X, Z; z, w = terrain corner X, Z (render-origin relative)
-    //   grid1: x, y = terrain extent X, Z; z, w = sun horizontal direction X, Z
-    //   grid2: x = tan(elevation); y = texel (m); z, w = u of sample 0, v of line 0
-    //   grid3: x = samples per line; y = lines; z = the terrain's base height (render-origin
-    //          relative); w = metres per normalized height
-    //   source: x = map bindless index; y = height texture bindless index; z = 1 when a map is
-    //           published for this view this frame; w = map side (texels)
-    //   field: x = the lit field's bindless index (0: none, TerrainShadowMap FieldLit); y = its levels
-    // Order matters more than naming: std140 lays this block out by position, matching
-    // ShadowDataGPU member for member. A mismatch here is silent garbage, not a compile error.
-    vec4 ge_terrainShadowGrid0;
-    vec4 ge_terrainShadowGrid1;
-    vec4 ge_terrainShadowGrid2;
-    vec4 ge_terrainShadowGrid3;
-    uvec4 ge_terrainShadowSource;
+    // Sun-space terrain clearance uniforms. std140 member order must match ShadowDataGPU.
+    vec4 ge_terrainShadowGrid0; // xy: grid center XZ; zw: terrain corner XZ, view-relative
+    vec4 ge_terrainShadowGrid1; // xy: terrain extent XZ; zw: horizontal sun direction XZ
+    vec4 ge_terrainShadowGrid2; // x: elevation tangent; y: texel meters; zw: first u/v sample
+    vec4 ge_terrainShadowGrid3; // xy: grid dimensions; z: base height; w: meters per normalized height
+    uvec4 ge_terrainShadowSource; // xy: map/height indices; z: present; w: map side in texels
     vec4 ge_shadowReferenceDepth; // source-camera depth plane for mirror receivers
-    uvec4 ge_terrainShadowField;
+    uvec4 ge_terrainShadowField; // x: lit-field index (0 absent); y: mip levels; zw: zero
 };
 
 layout(set = 0, binding = 9) uniform sampler2DArrayShadow ge_shadowMapArray;

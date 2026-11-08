@@ -161,12 +161,9 @@ const uint kCBTLayerTexPerMaterial = 3u;
 #define CBT_HAS_SPLATMAP(tp) (tp.SplatmapBindless != 0u)
 #define CBT_HAS_ATLAS_MAP(idx) ((idx) != 0u)
 
-// The far-field normal chain: mip m holds the normal of height chain level m + 1, the surface the draw
-// shows there (cbt_height_chain.glsl CBT_ChainNormal, built beside the height chain). A far fragment
-// reads its normal at the level of its own distance with an explicit level, from level 2 on: one fetch,
-// the hardware blending two mips, instead of the level-0 map, whose one mip aliases into a moire where the far ridges
-// are drawn as their mean surface. The draw's level rule rides gCbtDrawLevel; scale 0 or a lattice the
-// chain was not built for keeps the level-0 map everywhere.
+// Far fragments sample the normal chain at an explicit distance level, blending adjacent mips in hardware.
+// Mip m describes filtered height level m+1; the first distance ring retains the level-0 normal.
+// A disabled or mismatched chain uses the level-0 map everywhere.
 #define CBT_DRAW_NORMAL_CHAIN 1
 // The level-0 map at its one mip, explicitly: the same texels as the implicit tap (a one-mip texture
 // filters mip 0 whatever the derivatives say), legal inside the branch that skips it far away.
@@ -1062,28 +1059,17 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
             vec2 level0XZ = vec2(0.0);
             if (chainWeight < 1.0)
                 level0XZ = CBT_SAMPLE_NORMALMAP_LOD0(normalmapIdx, sIn.uv0).rg;
-            // At most two chain reads per fragment: the smooth surface at the distance's level, then the
-            // normal at the level of the ground the pixel covers, which is that same read when the two
-            // levels agree. Both levels are clamped to the chain's top mip, so the farthest ground, where
-            // both reach it, reads the chain once.
+            // Read the distance-level normal and the pixel-footprint normal, sharing the fetch when levels match.
+            // Clamp both to the top mip, so the farthest ground requires only one fetch.
             float readWeight = chainWeight;
             float readLod = chainLod;
             float smoothLod = -1.0;
             vec2 smoothXZ = vec2(0.0);
             if (eye.w > 0.0 && normalMips > 0u && lambda > 0.0)
             {
-                // A pixel seen at a grazing angle covers 1 / cos more ground along the view than a
-                // head-on pixel at its distance. The cosine is taken against the chain's surface at the
-                // distance's level, which neighboring facets share, and the pixel reads the chain at
-                // the level of the ground it covers: its normal then averages the relief there instead
-                // of taking one phase of it per screen row. The terrain shadow averages the same
-                // footprint: it takes the head-on footprint, the cosine and lambda, and widens by the
-                // same rule (terrain_shadow.glsl GE_TerrainShadowFootprint). The footprint takes over from
-                // lambda 0 to lambda 1 (CBT_GrazingShare), so nearer than lambda 0 there is nothing to
-                // read here. The grazing level is never finer than the distance's, so it replaces the
-                // distance's read.
-                // Clamped to the top mip as the sampler clamps the fetch: the same texel, and a level
-                // that compares equal to the grazing level once both reach the top.
+                // Grazing pixels cover 1/cosine more ground; use the distance-filtered normal to measure that cosine.
+                // Blend this wider footprint in across levels 0..1, matching terrain-shadow filtering.
+                // The grazing level is no finer than distance level and is clamped to the same top mip.
                 smoothLod = clamp(lambda - 1.0, 0.0, float(max(normalMips, 2u) - 1u));
                 smoothXZ = textureLod(cbt_NormalChain, sIn.uv0, smoothLod).rg;
                 vec3 smoothNormal = vec3(smoothXZ.x, sqrt(max(1.0 - dot(smoothXZ, smoothXZ), 0.0)), smoothXZ.y);

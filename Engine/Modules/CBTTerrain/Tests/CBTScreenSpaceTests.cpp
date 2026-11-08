@@ -2397,10 +2397,8 @@ TEST_F(CBTScreenSpaceTest, ViewPriorityNearPatchPlanar)
 // a strict superset of the metric without it.
 TEST_F(CBTScreenSpaceTest, SubmergedSeabedStaysCoarseWhileShorelineRefines)
 {
-    // 4 m samples, and the depth cap at that spacing (a leaf's hypotenuse 4 m x sqrt(2)), as a
-    // terrain resolves its cap from its data. The planar split bounds a facet by the height range of
-    // the samples it covers, so a facet inside one sample's cell reads that cell's whole range: on the
-    // shore's ramp the cap, not the target, stops the facets.
+    // Use 4-meter samples and their data-derived depth cap.
+    // A shore cell retains its complete height range, so the cap can stop refinement before the pixel target.
     constexpr uint32_t kTexels = 256u;
     constexpr float kTerrain = 1024.0f;
     constexpr float kOrigin = -kTerrain * 0.5f;
@@ -2556,10 +2554,8 @@ TEST_F(CBTScreenSpaceTest, SubmergedSeabedStaysCoarseWhileShorelineRefines)
     EXPECT_LE(resurfaced.SubmergedMax, kCoarsen * kSplitPx);
     EXPECT_LE(resurfaced.LandMax, kSplitPx);
 
-    // A depth cap far finer than the data (16 m samples, the decode cap), as a paged terrain or an
-    // override sets it: a facet smaller than a cell reads a range that shrinks with it (the steepest
-    // step times its extent), so the shore's facets stop at the target instead of the cap. Reading the
-    // whole cell's range instead drives the ramp's legs down to 2 px.
+    // Use 16-meter samples with a finer decode cap.
+    // Sub-cell step bounds must shrink with the facet, letting the pixel target stop the shore refinement.
     const EdgeScan fineCap = converge(kCoarsen, {50.0f}, 64u, kDefaultBaseDepth + kMaxDecodeSubdiv);
     std::printf("[water-plane] cap finer than the data: straddling=%u (max %.1f px) land=%u (max %.1f px)\n",
                 fineCap.Straddling, fineCap.StraddlingMax, fineCap.Land, fineCap.LandMax);

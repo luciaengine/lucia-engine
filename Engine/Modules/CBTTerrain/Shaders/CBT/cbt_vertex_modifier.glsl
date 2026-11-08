@@ -1,38 +1,13 @@
-// CBT vertex output modifier (graphics side of the CBT/LEB terrain renderer).
-// Included by adapter_vertex.glsl via GE_VERTEX_MODIFIER_PATH when the material's
-// customVertexShader=true (which the clamp turns into HAS_VERTEX_OUTPUT_MODIFIER +
-// CUSTOM_VERTEX_SHADER). There is NO vertex buffer: geometry is decoded entirely
-// from the CBT SSBOs the compute update wrote this frame.
-//
-// Draw contract (plan §8 C3/C6): the camera forward pass issues DrawIndexedIndirectCount
-// over the VISIBLE bisector stream (Classify frustum-culls into it) with an identity
-// index buffer, so gl_VertexIndex walks 0..(3*visibleBisectors-1). Each run of three
-// consecutive vertex ids is one bisector triangle:
-//   triangle = gl_VertexIndex / 3     -> bisector slot via IndicesVisible[triangle]
-//   corner   = gl_VertexIndex % 3     -> which of the LEB corners (0,1,2)
-//
-// C4: the compute VertexEval already displaced each corner to its real WORLD
-// position (height sampled from the SAME terrain heightmap CDLOD samples) and stored
-// the terrain UV alongside. Those cached corners are camera-independent, so the update
-// keeps them while the camera moves. The draw then moves a far planar vertex to the
-// prefiltered height its distance asks for (CBT_DrawnCornerHeight, cbt_height_chain.glsl):
-// the surface at the detail the screen can show there, so far facets stop aliasing the
-// level-0 relief. Near vertices keep the cached corner bit for bit.
-//
-// Set 2 (the DrawBindings route terrain uses): CBT_DESCRIPTOR_SET=2 puts the draw's
-// buffers on set 2, resolved by the MaterialBinder from DrawBindings by instance
-// name (gIdxVis / gVertex, and gCbtChain / gCbtDrawLevel outside the compat profile). CBT_GRAPHICS_INCLUDE keeps the include int64-free and
-// strips every compute-only write/atomic helper (plan §9 silent-null-variant trap).
+// The vertex modifier reads evaluated positions/UVs from CBT storage buffers; no vertex buffer is bound.
+// Each three vertex indices address one visible bisector and its three corners.
+// Set 2 binds those streams plus the draw-level/height chain; far planar corners filter by distance, near corners retain cached bits.
 #define CBT_GRAPHICS_INCLUDE
 #define CBT_DESCRIPTOR_SET 2
 #include "cbt_layout.glsl"
 
 #if defined(CBT_DRAW_HEIGHT_CHAIN)
-// The height a planar corner at world `pos` and terrain `uv` draws at: the chain level of its distance
-// from the CBT camera, or the cached height `pos.y` where the rule asks for level 0, the chain is off
-// (scale 0: the sphere, the atlas and paged arms, the narrow heap) or the chain was built for another
-// lattice than the bound one. A pure function of (uv, pos, the frame's eye), so every facet that
-// shares the corner draws it at one height.
+// Choose the corner height from its distance-filtered chain level, or retain its cached Y if disabled or mismatched.
+// The rule depends only on shared UV, cached position and frame eye, so neighboring facets share one height.
 float CBT_DrawnCornerHeight(vec3 pos, vec2 uv)
 {
     CBTDrawLevelParamsData p = gCbtDrawLevel.Params;

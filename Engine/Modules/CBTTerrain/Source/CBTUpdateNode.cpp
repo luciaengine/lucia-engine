@@ -82,13 +82,9 @@ CBTUpdateOutputs CBTUpdateNode::DeclareUpdatePass(RGFrame& frame, CBTInstance& i
         heightRG = frame.ImportExternalTexture("CBT.HeightSource", heightSource,
                                                ResourceState::ShaderResource);
 
-    // Declare the draw ARGS (indirect count) plus the DATA the draw reads (the
-    // all/visible index streams, the per-bisector vertex buffer and the prefiltered
-    // height chain) as Storage writes + MarkOutput. The forward pass re-imports these (idempotent) and
-    // declares its reads against them, forming the cross-pass barriers for both
-    // the args and the data. Every other CBT buffer stays graph-invisible and is
-    // manually barriered inside the pass (the Ocean single-pass-owns-its-barriers
-    // model).
+    // Publish storage writes for draw arguments, index/vertex streams and the filtered height chain.
+    // Forward-pass imports declare their reads, forming graph barriers for both arguments and data.
+    // Other CBT buffers remain private to the pass and use explicit internal barriers.
     CBTInstance* inst = &instance;
     const CBTClassifyDesc desc = classify;
     const CBTFrameParams frameParams = params;

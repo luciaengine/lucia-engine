@@ -328,10 +328,8 @@ TEST(CBTLayout, StructSizesMatchStd430)
     EXPECT_EQ(offsetof(CBTVertexData, Meta), 48u);
     EXPECT_EQ(offsetof(CBTVertexData, Sector0), 64u);
     EXPECT_EQ(offsetof(CBTVertexData, DeepTag), 88u);
-    // The scalar vec4 block (mat4 + 13 vec4 = 256B, the water plane last) is followed by the
-    // analytic sphere-modifier set (1 count vec4 + 16 x 3 vec4 placements), the draw's height-chain
-    // vec4 and then the per-cell placement-cull mask tail (48 uvec4 = 768B). Every field before the
-    // water plane keeps its offset (the flag-off GLSL reads are byte-stable) — locked below.
+    // Camera/terrain vectors precede the analytic modifiers, height-chain vector and 768-byte cell-mask tail.
+    // Assert every offset so fields preceding the water plane retain their ABI layout.
     EXPECT_EQ(sizeof(CBTFrameParams), 1824u); // mat4 + 13 vec4 + analytic set + height chain + cell masks
     EXPECT_EQ(offsetof(CBTFrameParams, PriorityParams), 224u); // last field before the water plane
     EXPECT_EQ(offsetof(CBTFrameParams, WaterPlane), 240u);
@@ -1400,10 +1398,7 @@ TEST(CBTLayout, PoolAndBaseDepth)
     EXPECT_EQ(kCBTDescriptorBindingCount, 26u);
 }
 
-// The height-range buffer's constants are hand-mirrored between CBTLayout.h and cbt_layout.glsl (the
-// CPU sizes the buffer and the build dispatches, the kernels address it): the pyramid's entries, first
-// level and header, and the first words of the differences and of the planes. Parse the GLSL defines
-// and lock them to the C++ constants.
+// Compare shader range-pyramid/header/difference/plane constants with their C++ allocation and dispatch constants.
 TEST(CBTLayout, GlslHeightRangeConstantsMatchCpp)
 {
 #if defined(CBT_SHADER_SOURCE_DIR)
@@ -1457,11 +1452,8 @@ TEST(CBTLayout, EveryUnifiedLatticeHasAPyramidAndChainRanges)
     EXPECT_EQ(chainless, 0u) << "a unified lattice whose chain ranges do not fit vetoes on the level-0 range";
 }
 
-// The draw's prefiltered height chain is addressed on both sides: the CPU sizes the buffer and the
-// build regions (CBTLayout.h), the kernels and the vertex modifier read it (cbt_height_chain.glsl), and
-// the vertex modifier reads the level rule from a uniform the CPU writes (CBTDrawLevelParams). Lock
-// the two constants, the addressing at a lattice that exercises every rounding, and the uniform's
-// layout. A drift here is a far field drawn from the wrong samples, not a crash.
+// Compare CPU/shader height-chain constants, rounded lattice addressing and draw-level uniform layout.
+// Both allocation and sampling must name the same samples.
 TEST(CBTLayout, GlslHeightChainMirrorsCpp)
 {
 #if defined(CBT_SHADER_SOURCE_DIR)
@@ -2144,15 +2136,8 @@ TEST(CBTLayout, GlslStorageBindingNumbersMatchCpp)
 TEST(CBTLayout, PushConstantsWithinPolicy)
 {
     EXPECT_LE(sizeof(CBTPushConstants), 128u); // device push-constant policy
-    // 10 u32 + 4 f32 dirty rect + 2 u32 (DirtyFace, SphereSculptEnabled — planet editing) +
-    // 1 u32 (GateVertexEval — planet-shading quiescence gate) + 1 u32 (EditRetessEnabled — the
-    // edit-driven-retess crease-term A/B toggle, round-8b) + 1 u32 (NearFieldGate — the near-field
-    // force-split occupancy gate A/B toggle, round-8e saturation-deadlock fix) + 1 u32 (RegionFreeMask
-    // — the far-field-drain region-reseed root bitmask, round-9) + 1 u32 (DeepDecode — the
-    // Earth-scale (sector, local) storage A/B, arc S2a; GLSL mirror pc.deepDecode) + 1 u32
-    // (PoolPressure — the planar pool-pressure scale's A/B arm; GLSL mirror pc.poolPressure) + 2 u32
-    // (the height chain build's region; GLSL mirror pc.heightChainRegionMin / Extent) + 1 u32
-    // (Settle — the rest rule; GLSL mirror pc.settle).
+    // The 100-byte push block includes dirty bounds, domain/refinement flags, height-chain region and Settle.
+    // Assert the packed offsets against the GLSL mirror.
     EXPECT_EQ(sizeof(CBTPushConstants), 100u);
 }
 

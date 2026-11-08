@@ -196,16 +196,10 @@ const uint CBT_WQ_OFF_FRUSTUM_KEEP_STEP = 15u;
 const uint CBT_OFF_FRUSTUM_KEEP_STEPS = 24u;             // the last step: band 0
 const float CBT_OFF_FRUSTUM_KEEP_WIDEST_NDC = 1024.0;    // step 1's band
 const uint CBT_OFF_FRUSTUM_KEEP_STEPS_PER_OCTAVE = 2u;   // the band halves every two steps
-const uint CBT_OFF_FRUSTUM_KEEP_SATURATED_STRIDE = 2u;    // steps per update while occupancy is at
-                                                         // or above CBT_PRESSURE_FULL_OCC
-// The live count the planar classify reads its occupancy from while the camera holds still
-// (pc.settle). Kernel_Reset copies the live count here on every update whose inputs moved; at rest it
-// follows only a move larger than the deadband (1/CBT_REST_LATCH_DEADBAND_DIVISOR of the pool), so the
-// near-bias contention and the near-field occupancy gate hold still under the few splits and merges
-// the rest itself makes, and still follow the rebuild after a camera jump. Without it a facet on the
-// threshold the tree's own size sets splits and merges on alternate updates forever. The deadband
-// bounds how far two arrivals' latched counts can differ while the near-bias is engaged.
-// CBTLayout.h mirrors both.
+const uint CBT_OFF_FRUSTUM_KEEP_SATURATED_STRIDE = 2u;    // steps per update at full pool pressure
+// At rest, classify uses an occupancy latch that follows changes only beyond pool/deadbandDivisor.
+// Moving inputs refresh it each update. The deadband holds pressure thresholds stable through rest refinement.
+// CBTLayout.h mirrors the slot and divisor.
 const uint CBT_WQ_REST_LIVE_COUNT = 16u;
 const uint CBT_REST_LATCH_DEADBAND_DIVISOR = 1024u;
 const uint CBT_WQ_COUNTER_SLOTS = 17u;
@@ -333,10 +327,8 @@ layout(std430, set = CBT_DESCRIPTOR_SET, binding = 12) CBT_SSBO_QUAL buffer CBTV
 } gVertex;
 
 #if !defined(GE_COMPAT_PROFILE)
-// The draw's level rule (mirror CBTLayout.h CBTDrawLevelParams), offset-bound to this frame's ring
-// slot, and the prefiltered height chain the compute update builds (binding 24 there). The compat
-// profile (WebGPU class) declares neither: its vertex stage has no storage-buffer budget to spare,
-// and its kernels build no chain, so it draws the cached corners.
+// Graphics draw-level ring and filtered-height buffer, mirrored by CBTDrawLevelParams.
+// The compat profile omits both and draws cached corners within its vertex storage-buffer budget.
 #define CBT_DRAW_HEIGHT_CHAIN 1
 #include "cbt_draw_level.glsl"
 
@@ -490,12 +482,8 @@ layout(std430, set = CBT_DESCRIPTOR_SET, binding = 13) CBT_SSBO_QUAL buffer CBTV
 // the placement array.
 #include "cbt_analytic.glsl"
 
-// -------- C4 per-frame params UBO + terrain height source (compute only) --------
-// Camera + terrain params consumed by Classify (screen-space error) and VertexEval
-// (world-space displacement). NOT declared in the graphics include: the vertex
-// modifier reads evaluated positions and needs neither (plan §8 C4). std140 mirror
-// of CBTFrameParams (CBTLayout.h) — mat4 + 13 vec4 + the 16 x 3 vec4 analytic set + the
-// height-chain vec4 = 1056 B; ring-buffered so the CPU can write frame N while the GPU reads frame N-1.
+// Compute-only camera and terrain std140 uniform, mirrored by CBTFrameParams in CBTLayout.h.
+// The pre-mask portion is 1056 bytes. Ring slots separate current CPU writes from in-flight GPU reads.
 struct CBTFrameParams
 {
     mat4 viewProjRel;   // REBASED world -> clip (reverse-Z LH): consumes render-origin-relative corners (slice 1b); == the full-world viewProj when the origin is inactive
@@ -621,12 +609,9 @@ layout(std430, set = CBT_DESCRIPTOR_SET, binding = 20) CBT_SSBO_QUAL buffer CBTS
 } gSphereSculptTable;
 
 #if !defined(CBT_DECODE_INT32)
-// Height-range pyramid (binding 21, compute only, wide arm only — mirror CBTLayout.h
-// kCBTHeightRangeEntries, kCBTHeightChainRangeEntries). Kernel_HeightRangeBuild writes it from the
-// bound height texture and the height chain whenever either may have changed; Classify reads it for
-// the planar split's node boxes and drawn ranges. Each entry is a square block of height-lattice cells
-// at one level: the lowest and highest normalized height over the block as two raw floats, after a
-// header (CBT_HEIGHT_RANGE_HEADER words). The chain levels' pyramids follow the level-0 entries.
+// Wide compute binding 21 holds level-0 and chain-level range pyramids after the header.
+// Each block stores low/high normalized height as float bits. Rebuild after an announced source/chain change.
+// Planar classification reads these ranges for node boxes and the drawn surface.
 #define CBT_HEIGHT_RANGE_ENTRIES (1u << 20)
 #define CBT_HEIGHT_RANGE_MAX_FIRST_LEVEL 4u
 // [0] lattice cells, [1] first | top << 8, [2 + k] level first entries, [18] the chain ranges' level-0
@@ -750,10 +735,8 @@ layout(set = CBT_DESCRIPTOR_SET, binding = 23) uniform sampler2D gPageCache CBT_
 #include "cbt_page.glsl"
 #endif
 
-// ---------------------------------------------------------------------------
-// Push constants (compute only; the graphics adapter owns the sole PC block —
-// plan §9). 96 bytes, mirror of CBTPushConstants.
-// ---------------------------------------------------------------------------
+// Compute push constants: 100 bytes, mirrored by CBTPushConstants.
+// The graphics adapter owns its separate push-constant block.
 #ifndef CBT_GRAPHICS_INCLUDE
 layout(push_constant) uniform CBTPushConstants
 {

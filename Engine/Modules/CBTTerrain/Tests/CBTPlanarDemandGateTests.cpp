@@ -982,37 +982,9 @@ TEST_F(CBTPlanarDemandGate, ConvergedPlanarTreeServesItsSplitDemand)
     }
 }
 
-// ============================================================================
-// Sibling merge metric — why the merge side of a converged planar tree never serves.
-// ============================================================================
-// A merge collapses a whole LEB diamond, and Kernel_PrepareSimplify serves one only when EVERY
-// member carries CBT_STATE_SIMPLIFY. Two siblings do NOT share a split edge — each child's
-// hypotenuse is a different LEG of the parent, and the two legs run in different directions — so
-// under a grazing perspective camera they project an ORDER OF MAGNITUDE apart. Deciding the merge
-// on a facet's own edge therefore had exactly one sibling asking and the other never doing so, and
-// the demand was unservable by construction.
-//
-// Both merge rules decide on the PARENT. Without a height pyramid (the flat arms) the edge rule
-// measures the parent's split edge, rebuilt from each child's corners. With one (the relief arm) the
-// planar criterion (CBT_PlanarClassify) asks whether the parent's UV box or its twin's would split;
-// both children rebuild those boxes bit for bit from their dyadic UVs. This census locks the
-// structural facts the two rules rest on, and its printed population statistics compare the rules:
-//   1. the corner convention — siblings share c1, and evenC2 == oddC0, so the parent's hypotenuse
-//      runs between the two UNSHARED corners with c1 as its midpoint;
-//   2. ON FLAT GROUND ONLY, sibling split edges are exactly congruent in world space, so the
-//      pixel spread there is purely projection. This is NOT a general LEB fact and a world-space
-//      merge criterion is NOT diamond-consistent for free: the relief arm measures the same ratio
-//      at 0.249-3.917, which is why CBT_NearFieldWantMerge's world-space bound carries the very
-//      asymmetry the domain metric no longer does;
-//   3. on the flat arms (the edge rule), the parent's hypotenuse rebuilt from either child reaches
-//      the same merge decision. This is exact only at heightScale 0, where no corner height is
-//      extrapolated;
-//   4. on the relief arm (the criterion), the GPU's own state for the two siblings never differs:
-//      a pair where neither child asks to split carries CBT_STATE_SIMPLIFY on both or on neither.
-//      The arm reads CBTBisectorData::BisectorState after convergence and expects 0 such pairs.
-//      The pool must stay below the keep ceiling, because the off-frustum gate decides each child
-//      on its own box.
-// The blocked-population counts are PRINTED, not asserted: they characterize how the rules differ.
+// The census checks shared-corner reconstruction and the merge decision on flat and relief domains.
+// Only flat sibling edges are world-congruent; relief criterion decisions instead share exact parent UV boxes.
+// Converge below the keep ceiling to isolate the criterion; population counts are diagnostic, not assertions.
 TEST_F(CBTPlanarDemandGate, SiblingMergeMetricCensus)
 {
     struct Arm
@@ -1330,10 +1302,8 @@ TEST_F(CBTPlanarDemandGate, SiblingMergeMetricCensus)
                     EXPECT_EQ(shareMatrix[ci][cj], 0u)
                         << a.Label << ": unexpected shared corner c" << ci << "/c" << cj;
 
-        // 2, 3 and 4 are REGIME-SPLIT. Sibling split edges are congruent in world space only
-        // when heightScale is 0 and every corner shares one y; with relief each leg carries its
-        // own sampled heights, so the world lengths diverge. The flat arms run the edge rule and
-        // the relief arm runs the criterion, so each arm asserts the agreement of the rule it runs.
+        // Assert edge congruence only for heightScale zero. Relief siblings have different sampled edge lengths.
+        // Each regime checks the agreement of its active rule: edge fallback on flat arms, planar criterion on relief.
         ASSERT_GT(worldN, 1000u) << a.Label << ": congruence sample too small";
         if (a.HeightScale == 0.0f)
         {
@@ -1359,11 +1329,8 @@ TEST_F(CBTPlanarDemandGate, SiblingMergeMetricCensus)
             EXPECT_GT(worldRatioMax, 1.05f)
                 << a.Label << ": relief arm reports congruent split edges, so the height source "
                               "never reached the corners";
-            // The criterion asks both children the same two boxes, so the GPU's state agrees on
-            // every pair. A converged tree has served every merge both children ask for, so what
-            // stands is a one-sided SIMPLIFY that can never be served. The off-frustum gate decides
-            // each child on its own box, so the arm must converge below the keep ceiling for the
-            // census to read the criterion alone.
+            // Both children ask the same parent boxes and must share a converged merge state.
+            // Stay below the keep ceiling so the per-child off-frustum gate cannot affect this census.
             ASSERT_TRUE(relief.IsArmed()) << a.Label << ": the relief arm bound no height source";
             ASSERT_EQ(inst.ReadWorkQueueCounter(kWQOffFrustumKeepStep), 0)
                 << a.Label << ": the off-frustum gate is live, so the census does not read the "
@@ -1564,13 +1531,8 @@ struct PresetPhase
 TEST_F(CBTPlanarDemandGate, OverDemandingPlanarPoseConvergesUnderThePoolPressureScale)
 {
     using namespace GameEngine::Mathematics;
-    // The rest and back phases are judged over a 100-frame window. From cold the planar criterion
-    // with the flat veto off asks this pose for more than the pool holds (the scale lands at step 3
-    // at rest), and the climb outlasts a 200-frame fill, so a 300-frame fill leaves the window entirely inside
-    // the rest state; from a full drain the return settles well inside its 200 frames. A
-    // limit cycle slower than the controller's own 1-step-per-frame rate would still show up as
-    // live-count spread. The turn phase only has to drain the pool, so it keeps a short window and
-    // carries no fixed-point assertion.
+    // Judge each fixed-pose phase over 100 frames after its fill window.
+    // The cold pose needs 300 fill frames; the drained return needs 200. The turn phase checks drainage only.
     constexpr uint32_t kFillFrames = 300u;
     constexpr uint32_t kTurnFrames = 100u;
     constexpr uint32_t kBackFrames = 200u;
@@ -1694,12 +1656,8 @@ TEST_F(CBTPlanarDemandGate, OverDemandingPlanarPoseConvergesUnderThePoolPressure
     //    100-frame window.
     EXPECT_EQ(scaled[0].WindowLiveMax, scaled[0].WindowLiveMin)
         << "live count still moving across the rest window — the scale is oscillating";
-    // 4. The same contract after an excursion, on a pool the turn drained and the return refilled.
-    //    The STEP is not part of the contract: the controller climbs while the pool is still
-    //    filling and holds anywhere inside the band between the recover and full marks, so the
-    //    return keeps the step the turned view climbed to (3 cold, 9 after the return at this pose).
-    //    The two landings hold fields a few percent apart (5.0% measured), which is what sets the
-    //    live-count band below.
+    // After returning from an excursion, bound live-count stability rather than a particular pressure step.
+    // The controller may retain any step inside its recovery/full band while refilling.
     EXPECT_GT(scaled[2].Final.PressureStep, 0) << "the scale did not re-engage after the return";
     EXPECT_LT(scaled[2].FinalOcc, kPressureFullOcc) << "the pool is back at the full mark after the return";
     EXPECT_GE(scaled[2].FinalOcc, kPressureRecoverOcc)
@@ -1714,24 +1672,9 @@ TEST_F(CBTPlanarDemandGate, OverDemandingPlanarPoseConvergesUnderThePoolPressure
 }
 
 
-// The 4 km preset at rest. The budget clause of the monotone split design (cbt-monotone-split-test,
-// section 5.4) asks that the criterion alone never push the pool into coarsening at a gated pose. The pose
-// is the A/B's 4 km cell: the editor's 4 km preset seen from 50 m above the ground at the origin, yaw 30,
-// pitch -8, at the editor's default Target Pixel Error (11 px at 1080 rows). The size's height term is the
-// surface's distance from a plane over the facet's box (cbt_planar_demand.glsl), so a slope with no
-// relief on it asks for no split.
-//
-//   LargePresetSettlesAtTheTargetFromWalkingHeight - the camera arrives in motion at the pose, then rests:
-//     the pool-pressure step is 0 and the pool is under the full mark.
-//   ArrivalsFromNearAndFarSettleToOneVisibleMeshAtTheLargePreset - one arrival from 2 m above the
-//     ground, one from the 650 m pose looking 55 degrees down; both rest at the 50 m pose and draw the
-//     same heap ids in the visible stream. Two history terms stay out of the claim until the budget
-//     index replaces them (section 6 of the design): the off-frustum keep step holds what an arrival
-//     refined outside the rest frustum (about 140,000 leaves differ off-screen), and the near-bias
-//     contention follows total occupancy, which that retention moves (with it on, a few hundred visible
-//     leaves differ). The arrivals run with the near bias off, so the visible mesh is the criterion's alone.
-//   ATiltedPlainSplitsNoMoreThanALevelPlain - a plain tilted 10% along X and 5% along Z holds no more
-//     facets at rest than a level plain at the same height under the same pose.
+// At the 4-kilometer walking pose, demand alone must stay below the pool-pressure full mark.
+// Near and far arrivals must produce one visible mesh with near bias disabled; off-frustum retention is not compared.
+// A tilted plane must request no more rest detail than a level plane at the same height.
 namespace
 {
 constexpr uint32_t kPresetArriveFrames = 200u;

@@ -41,10 +41,8 @@ inline float ReliefSmoothNoiseAt(float u, float v, uint32_t period)
     return (n00 * (1.0f - wx) + n10 * wx) * (1.0f - wy) + (n01 * (1.0f - wx) + n11 * wx) * wy;
 }
 
-// The relief's normalized height at a UV in [0, 1], the function MakeReliefHeightTexture samples at
-// texel centers. Six octaves of value noise, so the height is non-linear along edges at every
-// subdivision depth rather than only the coarse ones. A single smooth octave leaves the deep facets
-// locally planar, which would understate exactly the residual these arms exist to measure.
+// Six-octave normalized relief sampled at texel centers by MakeReliefHeightTexture.
+// Nonlinear edges retain relief at deep subdivision levels.
 inline float ReliefHeightAt(float u, float v)
 {
     float amp = 0.5f, sum = 0.0f, norm = 0.0f;

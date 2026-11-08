@@ -88,12 +88,8 @@ struct CBTClassifyDesc
     // GE_CBT_POOL_PRESSURE for the same purpose on a live build); it is not a setting.
     uint32_t PoolPressure = 1u;
 
-    // The rest rule. 1 = this update's inputs match the previous update's (the camera is still):
-    // Kernel_Classify's planar split and merge use one threshold, the merge end of the band, so the tree
-    // settles to the one tree the pose asks for, whatever path the camera took (the planar demand is
-    // monotone in depth, cbt_planar_demand.glsl). 0 (default) = splits and merges keep the hysteresis
-    // band that stops a moving camera from churning the boundary. Chosen per recorded update by the
-    // render feature (CBTRenderFeature::InputsHeld); not an input of the rest gate.
+    // Stable update inputs use the merge threshold for both planar split and merge, so one pose has one target tree.
+    // Moving inputs retain the hysteresis band. The render feature derives this state; it is not a rest-gate input.
     uint32_t Settle = 0u;
 };
 
@@ -386,21 +382,15 @@ class CBTInstance
     void PrepareIndirect(Rendering::CommandList& cl, CBTPushConstants pc, uint32_t counterSlot);
     void RecordDataBarrier(Rendering::CommandList& cl);
     void RecordReduce(Rendering::CommandList& cl, const CBTPushConstants& pc);
-    // The planar split: rebuilds the height-range pyramid from this frame's height texture, with the
-    // ranges of the chain levels when the chain holds the texture's lattice, level by level, when the
-    // heights may have changed since the last build (`heightsChanged`: a forced corner refresh, an edit
-    // rect or a chain rebuild), another texture is bound or the chain's ranges came or went. No-op for
-    // the atlas source, a spherical domain, the narrow-heap arm and a lattice too large for the buffer.
+    // Rebuild the planar height-range pyramid after a height, source or chain-range change.
+    // Include chain-level ranges when their lattice matches the texture.
+    // Atlas, sphere, narrow heaps and oversized lattices do not build this pyramid.
     void RecordHeightRangeBuild(Rendering::CommandList& cl, const CBTClassifyDesc& classify,
                                 const CBTFrameParams& params, CBTPushConstants pc,
                                 uint32_t frameCounter, bool heightsChanged);
-    // The draw's prefiltered height chain (CBTLayout.h kCBTHeightChain*), level by level beside the
-    // pyramid: every level when another texture or lattice is bound, the buffer was regrown or the
-    // corners are force-refreshed (`forced`); only the samples whose tents read the edit rect when
-    // `edited`. No-op when the frame turns the chain off (HeightChain.x 0: the sphere, the atlas
-    // and paged arms, the narrow heap) or the buffer is not provisioned for the lattice. The far-field
-    // normal chain follows, over the texels whose normals read the rebuilt samples, when its texture
-    // is provisioned for the lattice. Returns whether it rebuilt any of the height chain.
+    // Rebuild all filtered heights for a new source/lattice, a grown buffer or a forced refresh.
+    // Edits rebuild only tents that read the dirty rectangle; dependent normal texels follow.
+    // A disabled or unprovisioned chain does no work. Return whether any height level was rebuilt.
     bool RecordHeightChainBuild(Rendering::CommandList& cl, const CBTClassifyDesc& classify,
                                 const CBTFrameParams& params, CBTPushConstants pc, uint32_t frameCounter,
                                 bool forced, bool edited);
