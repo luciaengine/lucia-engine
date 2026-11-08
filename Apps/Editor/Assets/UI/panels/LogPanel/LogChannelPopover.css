@@ -26,6 +26,12 @@
 	column-gap: var(--ui_spacing_xs);
 }
 
+.log-channels-bulk-action {
+	white-space: nowrap;
+	flex-shrink: 0;
+	min-width: 72px;
+}
+
 .log-channels-title {
 	flex-grow: 1;
 	color: var(--ui_color_text_bright);

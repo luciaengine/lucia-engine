@@ -4,8 +4,8 @@
 <UIElement class="popover-panel log-channels">
   <UIElement class="log-channels-header">
     <Label class="log-channels-title" text="Channels" />
-    <Button id="LogChannelsShowAll" class="small secondary" text="Show All" />
-    <Button id="LogChannelsHideAll" class="small secondary" text="Hide All" />
+    <Button id="LogChannelsShowAll" class="small secondary log-channels-bulk-action" text="Show All" />
+    <Button id="LogChannelsHideAll" class="small secondary log-channels-bulk-action" text="Hide All" />
   </UIElement>
   <UIElement id="LogChannelsSearchHost" class="log-channels-search-host" />
   <UIElement id="LogChannelsColumns" class="log-channels-columns">
