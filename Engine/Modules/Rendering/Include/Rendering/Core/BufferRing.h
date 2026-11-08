@@ -59,40 +59,39 @@ public:
     BufferRing(const BufferRing&) = delete;
     BufferRing& operator=(const BufferRing&) = delete;
 
-    bool Initialize(IDevice* dev,
+    bool Initialize(IDevice* device,
                     size_t capacityBytes,
                     BufferUsage usage = BufferUsage::Uniform,
-                    size_t DefaultAlign = 256,
-                    const char* DebugName = "BufferRing")
+                    size_t defaultAlign = 256,
+                    const char* debugName = "BufferRing")
     {
-        if (!dev || capacityBytes == 0) return false;
-        m_Device = dev;
-        m_Capacity = capacityBytes;
-        m_DefaultAlign = std::max<size_t>(1, DefaultAlign);
-        BufferDesc bd{};
-        bd.size = capacityBytes;
-        bd.usage = static_cast<uint32_t>(usage);
-        bd.memoryUsage = BufferMemoryUsage::Upload;
-        bd.flags = BufferCreateFlags::PersistentlyMapped;
-        bd.persistent = true;
-        bd.debugName = DebugName;
-        m_Buffer = m_Device->CreateBuffer(bd);
-        if (!m_Buffer.IsValid()) return false;
-        m_BasePtr = m_Device->MapBuffer(m_Buffer);
+        if (!device || capacityBytes == 0)
+            return false;
+        m_Device = device;
+        m_DefaultAlign = std::max<size_t>(1, defaultAlign);
+        BufferDesc description{};
+        description.size = capacityBytes;
+        description.usage = static_cast<uint32_t>(usage);
+        description.memoryUsage = BufferMemoryUsage::Upload;
+        description.flags = BufferCreateFlags::PersistentlyMapped;
+        description.persistent = true;
+        description.debugName = debugName;
+        m_Buffer = m_Device->CreateBuffer(description);
+        m_BasePtr = m_Buffer.IsValid() ? m_Device->MapBuffer(m_Buffer) : nullptr;
         if (!m_BasePtr)
         {
-            // The buffer exists but is not mappable (MapBuffer refuses non
-            // host-visible memory). Release it here and leave the ring
-            // as-if-uninitialized: callers retry Initialize at a different
-            // capacity and would otherwise overwrite m_Buffer, leaking this
-            // one for the life of the device.
-            m_Device->DestroyBuffer(m_Buffer);
+            // Only mapped storage can provide capacity for reservations.
+            if (m_Buffer.IsValid())
+                m_Device->DestroyBuffer(m_Buffer);
             m_Buffer = {};
             m_Capacity = 0;
             m_Device = nullptr;
             return false;
         }
-        m_Head = 0; m_FrameStart = 0; m_AnyAllocThisFrame.store(false, std::memory_order_relaxed);
+        m_Capacity = capacityBytes;
+        m_Head = 0;
+        m_FrameStart = 0;
+        m_AnyAllocThisFrame.store(false, std::memory_order_relaxed);
         return true;
     }
 
