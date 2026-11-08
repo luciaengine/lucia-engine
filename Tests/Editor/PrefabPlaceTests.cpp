@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include "Assets/AssetsFolderDropRegistry.h"
+#include "Assets/AssetPlacementRegistry.h"
 #include "Editor/DragDropPayloads.h"
 #include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Entities/EntityDuplicate.h"
@@ -162,7 +163,13 @@ TEST_F(PrefabPlaceTests, ADroppedPrefabIsALiveInstanceWithItsTree)
     const std::filesystem::path crate = WriteAsset("Props/Crate.prefab", kCratePrefab);
     ECS::World world;
 
-    const ECS::EntityHandle root = PlaceAt(world, crate, 1.0f, 2.0f, 3.0f);
+    Editor::RegisterPrefabEditor(Notifications(), nullptr, {}, {});
+    const auto place = Editor::AssetPlacementRegistry::Get().Find(AssetType::Prefab);
+    ASSERT_NE(place, nullptr);
+    Components::Transform at{};
+    at.SetIdentity();
+    at.Translate(1.0f, 2.0f, 3.0f);
+    const ECS::EntityHandle root = place(world, EngineCore::GetInstance().GetAssetManager(), crate, at, {});
 
     ASSERT_TRUE(root.IsValid());
     const auto* marker = world.GetComponent<Components::PrefabInstance>(root);
@@ -233,11 +240,12 @@ TEST(PrefabDropStepNameTests, SeveralRootsNameTheirCount)
 // dropped alone, is not refused.
 TEST(PrefabDropRefusalTests, AFileTheSceneCannotPlaceIsRefusedWithANotice)
 {
+    Editor::RegisterPrefabEditor(Notifications(), nullptr, {}, {});
     using Paths = std::vector<std::filesystem::path>;
     EXPECT_EQ(Editor::DescribeRefusedDrop(Paths{"Navigation/Town.navgrid"}),
               "Navigation Grid files cannot be placed in a scene. Add a Navigation Surface component and assign the "
               "file to its Authored Cells.");
-    EXPECT_EQ(Editor::DescribeRefusedDrop(Paths{"Levels/Town.scene"}), "Scene files cannot be placed in a scene.");
+    EXPECT_EQ(Editor::DescribeRefusedDrop(Paths{"Levels/Town.scene"}), "") << "scene Blueprint drops stay supported";
     EXPECT_EQ(Editor::DescribeRefusedDrop(Paths{"Models/House.blend"}), ".blend files cannot be placed in a scene.");
     EXPECT_EQ(Editor::DescribeRefusedDrop(Paths{"Textures/A.png", "Textures/B.png"}),
               "Texture files cannot be placed in a scene.");
@@ -859,7 +867,7 @@ TEST_F(PrefabPlaceTests, ACreateOfSeveralRootsThatFailsAtOneRootLeavesNoPrefab)
     Editor::UndoRedoService undo;
     EditorContext editor;
     editor.World = &world;
-    editor.AssetsPanelFolder = [this]() { return m_Folder; };
+    editor.AssetsRoot = m_Folder;
     UIManager ui(device);
     ui.SetRoot(std::make_unique<UIElement>());
     UIElement& root = *ui.GetRootElement();
@@ -2544,7 +2552,7 @@ TEST_F(PrefabPlaceTests, OnlyTheLoadersOrphanedOverridesAreStaleRows)
     ASSERT_TRUE(document.GetLastLoadDegraded().has_value());
     const std::vector<Scene::SceneLoadSkip>& skips = document.GetLastLoadDegraded()->Census.skips;
     const auto isUnappliedOnRoot = [root](const Scene::SceneLoadSkip& skip)
-    { return skip.kind == Scene::SceneLoadSkipKind::Unapplied && !skip.preserved && skip.entityHandle == root; };
+    { return skip.kind == Scene::SceneLoadSkip::SkipKind::Unapplied && !skip.preserved && skip.entityHandle == root; };
     ASSERT_GE(std::count_if(skips.begin(), skips.end(), isUnappliedOnRoot), 1) << "the faults are no load rows";
 
     const Editor::PrefabOverridesListModel model = Editor::PrefabOverridesListModel::Describe(world, root, skips);

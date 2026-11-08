@@ -45,6 +45,9 @@ class SceneViewDropUndoCommand final : public IEditorCommand
 
     const char* GetName() const override { return m_Name.c_str(); }
 
+    /// Describes one placed root by name, or several roots by count.
+    static std::string NameFor(const ECS::World& world, const std::vector<ECS::EntityHandle>& droppedRoots);
+
     void Do() override {}
 
     void Undo() override

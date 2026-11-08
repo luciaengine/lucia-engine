@@ -99,6 +99,8 @@ set(EDITOR_SOURCES
 	Source/Telemetry/RGCsvSidecar.cpp
     Source/Assets/AssetCreation.cpp
     Source/Assets/AssetsFolderDropRegistry.cpp
+    Source/Assets/AssetPlacementRegistry.cpp
+    Source/UndoRedo/SceneViewDropUndoCommand.cpp
     Source/Assets/AssetPipelineCommands.cpp
     Source/Assets/AssetRename.cpp
     Source/Assets/AssetRenameController.cpp

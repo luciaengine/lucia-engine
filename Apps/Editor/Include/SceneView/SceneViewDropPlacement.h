@@ -4,6 +4,9 @@
 #include "Mathematics/Types.h"
 
 #include <span>
+#include <filesystem>
+#include <string>
+#include <string_view>
 
 namespace GameEngine
 {
@@ -19,6 +22,12 @@ struct Ray3D;
 
 namespace GameEngine::Editor
 {
+
+/// Returns whether an extension names a model format the editor can place.
+bool IsPlacedModelExtension(std::string_view extension);
+
+/// Gives the reason and remedy when none of the dropped files can be placed or assigned.
+std::string DescribeRefusedDrop(std::span<const std::filesystem::path> files);
 
 // Shown when a drop is refused because the point it aims at is on a mesh still being
 // prepared for picking (SceneViewDropPoint::OnPendingMesh, SceneViewDropMesh::Pending).

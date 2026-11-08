@@ -24,6 +24,8 @@ set(EDITOR_TEST_SOURCES
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabOverridesList/PrefabOverridesList.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabOverridesList/PrefabOverridesListModel.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetsFolderDropRegistry.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetPlacementRegistry.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UndoRedo/SceneViewDropUndoCommand.cpp
     LogPanelTests.cpp
     TopToolbarIconTests.cpp
     ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests/UITestShaderSetup.cpp

@@ -1,6 +1,7 @@
 #include "Prefabs/PrefabHierarchyRows.h"
 
 #include "Assets/AssetCreation.h"
+#include "Assets/AssetPlacementRegistry.h"
 #include "Assets/AssetsFolderDropRegistry.h"
 #include "Editor/DragDropPayloads.h"
 #include "Editor/Entities/EditorComponentTraits.h"
@@ -15,6 +16,7 @@
 #include "Prefabs/CreatePrefab/CreatePrefabDialog.h"
 #include "Prefabs/PrefabOverridesList/PrefabOverridesList.h"
 #include "Prefabs/PrefabBar.h"
+#include "Prefabs/PrefabService.h"
 #include "Prefabs/PrefabInstanceDescriptions.h"
 #include "Prefabs/PrefabThumbnailHandler.h"
 #include "Prefabs/UnpackPrefabCommand.h"
@@ -560,11 +562,18 @@ void RefreshViewsOf(EditorChangeNotifications& notifications, ECS::World& world)
     notifications.NotifyWorldStructureChanged(change);
 }
 
+ECS::EntityHandle PlacePrefabAsset(ECS::World& world, AssetManager& assets, const std::filesystem::path& path,
+                                    const Components::Transform& at, ECS::EntityHandle parent)
+{
+    return PrefabService(assets).Place(world, path, at, parent);
+}
+
 } // namespace
 
 void RegisterPrefabEditor(EditorChangeNotifications& notifications, IThumbnailProvider* thumbnails,
                           std::function<bool()> isInPlayMode, std::function<SceneDocumentManager*()> document)
 {
+    AssetPlacementRegistry::Get().Register(AssetType::Prefab, &PlacePrefabAsset);
     OverridesListReopen() = {};
     OverridesListContext() = {std::move(document), isInPlayMode, &OverridesListReopen()};
     PrefabInstanceDescriptions::Get().Track(notifications);

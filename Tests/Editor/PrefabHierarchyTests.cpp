@@ -258,14 +258,16 @@ TEST(PrefabHierarchyGlyphTint, AMemberRowShowsAFullTealNameAndABadgeOnItsGlyph)
     // The badge is the prefab cube in miniature: three face paths and a hexagon outline. It has no
     // round shape, so it does not read as the round override dot in the gutter.
     const std::string badge = ReadEditorFile("Assets/Icons/prefab-member-badge.svg");
-    EXPECT_EQ(GameEngine::CountOccurrences(badge, "<path"), 4u) << "three cube faces and the outline";
+    std::size_t pathCount = 0;
     const std::string_view text = badge;
     for (std::size_t at = text.find("<path"); at != std::string_view::npos; at = text.find("<path", at + 1))
     {
+        ++pathCount;
         const std::size_t data = text.find(" d=\"", at) + 4;
         const std::string_view pathData = text.substr(data, text.find('"', data) - data);
         EXPECT_EQ(pathData.find_first_of("AaCcQqSsTt"), std::string_view::npos) << "a curve in the path: " << pathData;
     }
+    EXPECT_EQ(pathCount, 4u) << "three cube faces and the outline";
     EXPECT_EQ(badge.find("<rect"), std::string::npos);
     EXPECT_EQ(badge.find("<circle"), std::string::npos);
     EXPECT_EQ(badge.find("<ellipse"), std::string::npos);
