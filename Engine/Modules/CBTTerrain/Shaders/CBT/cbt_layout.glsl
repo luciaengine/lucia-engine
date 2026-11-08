@@ -196,9 +196,13 @@ const uint CBT_WQ_OFF_FRUSTUM_KEEP_STEP = 15u;
 const uint CBT_OFF_FRUSTUM_KEEP_STEPS = 24u;             // the last step: band 0
 const float CBT_OFF_FRUSTUM_KEEP_WIDEST_NDC = 1024.0;    // step 1's band
 const uint CBT_OFF_FRUSTUM_KEEP_STEPS_PER_OCTAVE = 2u;   // the band halves every two steps
-const uint CBT_OFF_FRUSTUM_KEEP_SATURATED_STRIDE = 2u;    // steps per update while occupancy is at
-                                                         // or above CBT_PRESSURE_FULL_OCC
-const uint CBT_WQ_COUNTER_SLOTS = 16u;
+const uint CBT_OFF_FRUSTUM_KEEP_SATURATED_STRIDE = 2u;    // steps per update at full pool pressure
+// At rest, classify uses an occupancy latch that follows changes only beyond pool/deadbandDivisor.
+// Moving inputs refresh it each update. The deadband holds pressure thresholds stable through rest refinement.
+// CBTLayout.h mirrors the slot and divisor.
+const uint CBT_WQ_REST_LIVE_COUNT = 16u;
+const uint CBT_REST_LATCH_DEADBAND_DIVISOR = 1024u;
+const uint CBT_WQ_COUNTER_SLOTS = 17u;
 
 // Work-queue payload lanes — 3 ALIASED physical lanes over the 6 logical queues (slot-diet r2;
 // mirror of CBTLayout.h WQ*Offset). The six queues' live spans over the per-frame kernel sequence
@@ -321,6 +325,24 @@ layout(std430, set = CBT_DESCRIPTOR_SET, binding = 12) CBT_SSBO_QUAL buffer CBTV
 {
     CBTVertexData Vertex[];
 } gVertex;
+
+#if !defined(GE_COMPAT_PROFILE)
+// Graphics draw-level ring and filtered-height buffer, mirrored by CBTDrawLevelParams.
+// The compat profile omits both and draws cached corners within its vertex storage-buffer budget.
+#define CBT_DRAW_HEIGHT_CHAIN 1
+#include "cbt_draw_level.glsl"
+
+layout(std430, set = CBT_DESCRIPTOR_SET, binding = 13) CBT_SSBO_QUAL buffer CBTHeightChainDrawBuffer
+{
+    uint Words[];
+} gCbtChain;
+
+#include "cbt_height_chain.glsl"
+float CBT_ChainLoad(uint word)
+{
+    return uintBitsToFloat(gCbtChain.Words[word]);
+}
+#endif
 
 #else // !CBT_GRAPHICS_INCLUDE — full compute layout
 // The heap is 8 bytes per slot in BOTH arms: the u32 arm declares uvec2 so the stride
@@ -460,12 +482,8 @@ layout(std430, set = CBT_DESCRIPTOR_SET, binding = 13) CBT_SSBO_QUAL buffer CBTV
 // the placement array.
 #include "cbt_analytic.glsl"
 
-// -------- C4 per-frame params UBO + terrain height source (compute only) --------
-// Camera + terrain params consumed by Classify (screen-space error) and VertexEval
-// (world-space displacement). NOT declared in the graphics include: the vertex
-// modifier reads evaluated positions and needs neither (plan §8 C4). std140 mirror
-// of CBTFrameParams (CBTLayout.h) — mat4 + 13 vec4 + the 16 x 3 vec4 analytic set = 1040 B;
-// ring-buffered so the CPU can write frame N while the GPU reads frame N-1.
+// Compute-only camera and terrain std140 uniform, mirrored by CBTFrameParams in CBTLayout.h.
+// The pre-mask portion is 1056 bytes. Ring slots separate current CPU writes from in-flight GPU reads.
 struct CBTFrameParams
 {
     mat4 viewProjRel;   // REBASED world -> clip (reverse-Z LH): consumes render-origin-relative corners (slice 1b); == the full-world viewProj when the origin is inactive
@@ -524,6 +542,9 @@ struct CBTFrameParams
     // dark-ship) skips every analytic branch — no float op is added.
     vec4 analyticParams;
     CBTSphereAnalyticFlatten sphereAnalytic[CBT_MAX_SPHERE_ANALYTIC];
+    // The draw's prefiltered height chain, for Classify's frustum cull (mirror CBTLayout.h HeightChain).
+    // x = the level scale of the draw's rule lambda = log2(distance x scale), 0 = off; y = the top level.
+    vec4 heightChain;
 };
 
 // One ring slot: the frame params PLUS the S3 per-cell placement-cull masks (mirror CBTLayout.h
@@ -588,18 +609,45 @@ layout(std430, set = CBT_DESCRIPTOR_SET, binding = 20) CBT_SSBO_QUAL buffer CBTS
 } gSphereSculptTable;
 
 #if !defined(CBT_DECODE_INT32)
-// Height-range pyramid (binding 21, compute only, wide arm only — mirror CBTLayout.h
-// kCBTHeightRangeEntries). Kernel_HeightRangeBuild writes it from the bound height texture
-// whenever the heights may have changed; Classify reads it for the content-aware split. Each
-// entry is a square block of height-lattice cells at one level: the lowest and highest normalized
-// height over the block as two raw floats, after a header (CBT_HEIGHT_RANGE_HEADER words).
+// Wide compute binding 21 holds level-0 and chain-level range pyramids after the header.
+// Each block stores low/high normalized height as float bits. Rebuild after an announced source/chain change.
+// Planar classification reads these ranges for node boxes and the drawn surface.
 #define CBT_HEIGHT_RANGE_ENTRIES (1u << 20)
 #define CBT_HEIGHT_RANGE_MAX_FIRST_LEVEL 4u
-#define CBT_HEIGHT_RANGE_HEADER 32u // [0] lattice cells, [1] first | top << 8, [2 + k] level first entries
+// [0] lattice cells, [1] first | top << 8, [2 + k] level first entries, [18] the chain ranges' level-0
+// samples (0: none), [19] chain levels with a range, [20 + j] chain level j's first entry
+#define CBT_HEIGHT_RANGE_HEADER 64u
+// The first stored level's differences per block (steepest step, largest second difference along X and
+// along Z, largest mixed difference), four words per block, after the chain ranges (CBTLayout.h
+// kCBTHeightDifferencesFirstWord): header + 2 x (2^20 + 2^19) words.
+#define CBT_HEIGHT_DIFFERENCES_FIRST_WORD 3145792u
+// Each level-0 block's plane (x slope, z slope, residual low, residual width), four words per entry,
+// after the differences (CBTLayout.h kCBTHeightPlaneFirstWord): CBT_HEIGHT_DIFFERENCES_FIRST_WORD +
+// 4 x 2^20 words.
+#define CBT_HEIGHT_PLANE_FIRST_WORD 7340096u
 layout(std430, set = CBT_DESCRIPTOR_SET, binding = 21) CBT_SSBO_QUAL buffer CBTHeightRangeBuffer
 {
     uint Range[];
 } gHeightRange;
+
+// The prefiltered height chain (binding 24, wide arm only — mirror CBTLayout.h kCBTHeightChainBinding).
+// Kernel_HeightChainBuild writes it beside the pyramid; the terrain draw reads it (gCbtChain on the
+// graphics set 2). Layout in cbt_height_chain.glsl.
+layout(std430, set = CBT_DESCRIPTOR_SET, binding = 24) CBT_SSBO_QUAL buffer CBTHeightChainBuffer
+{
+    uint Words[];
+} gHeightChain;
+
+// The far-field normal chain's mips as storage images (binding 25, wide arm only — mirror CBTLayout.h
+// kCBTNormalChainBinding / kCBTNormalChainMaxMips); Kernel_NormalChainBuild writes mip pc.passIndex.
+#define CBT_NORMAL_CHAIN_MAX_MIPS 14
+layout(set = CBT_DESCRIPTOR_SET, binding = 25, rg16f) uniform writeonly image2D gNormalChain[CBT_NORMAL_CHAIN_MAX_MIPS];
+
+#include "cbt_height_chain.glsl"
+float CBT_ChainLoad(uint word)
+{
+    return uintBitsToFloat(gHeightChain.Words[word]);
+}
 #endif
 
 // Paging index math (constants + CBTSculptGeom + CBT_SculptTableEntry / CBT_SculptPoolIndex). Pure
@@ -687,10 +735,8 @@ layout(set = CBT_DESCRIPTOR_SET, binding = 23) uniform sampler2D gPageCache CBT_
 #include "cbt_page.glsl"
 #endif
 
-// ---------------------------------------------------------------------------
-// Push constants (compute only; the graphics adapter owns the sole PC block —
-// plan §9). 64 bytes, mirror of CBTPushConstants.
-// ---------------------------------------------------------------------------
+// Compute push constants: 100 bytes, mirrored by CBTPushConstants.
+// The graphics adapter owns its separate push-constant block.
 #ifndef CBT_GRAPHICS_INCLUDE
 layout(push_constant) uniform CBTPushConstants
 {
@@ -740,6 +786,14 @@ layout(push_constant) uniform CBTPushConstants
     // Only VertexEval reads it (selects what to WRITE); consumers branch on the per-slot deepTag.
     uint deepDecode;
     uint poolPressure; // 1 = planar pool-pressure scale on; 0 = the A/B arm (tests), scale held at 1x
+    // Kernel_HeightChainBuild's region at level passIndex: first sample (x | z << 16), extent
+    // (width | height << 16). Only that kernel reads them.
+    uint heightChainRegionMin;
+    uint heightChainRegionExtent;
+    // The rest rule (mirror CBTPushConstants::Settle). 1 = every input matches the previous update's:
+    // Kernel_Classify's planar split and merge use one threshold (CBT_PlanarClassify). Classify and
+    // Kernel_Reset's live-count latch read it.
+    uint settle;
 } pc;
 #endif
 
@@ -1062,7 +1116,8 @@ float CBT_SampleHeight(vec2 uv, CBTFrameParams fp)
         vec2 dim = vec2(textureSize(CBT_RING(gHeight, frameSlot), 0));
         texel = textureLod(CBT_RING(gHeight, frameSlot), CBT_LatticeTextureUV(cuv, dim), 0.0).r;
     }
-    return texel * fp.terrainSize.z + fp.terrainSize.w;
+    precise float height = texel * fp.terrainSize.z + fp.terrainSize.w; // see CBT_TerrainToWorldXZ
+    return height;
 }
 
 // Sphere sculpt geometry for THIS frame — on the spherical VertexEval path atlasParams0 is free
