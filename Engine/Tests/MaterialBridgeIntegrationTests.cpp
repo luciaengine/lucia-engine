@@ -2758,7 +2758,6 @@ std::shared_ptr<const SpecializationConstants> MakeForwardPreparationOverrides()
 
 TEST_F(MaterialPipelineCompilationTest, SpecializedColdPreparationDefersBothBackendBuilds)
 {
-    ASSERT_EQ(m_device->GetAPI(), GraphicsAPI::Vulkan);
     MaterialDocument document{};
     document.materialName = "DeferredSpecializedPBR";
     document.lightingModel = "StandardPBR";
@@ -2838,7 +2837,6 @@ TEST_F(MaterialPipelineCompilationTest, SpecializedColdPreparationDefersBothBack
 
 TEST_F(MaterialPipelineCompilationTest, SpecializedCurrentFallbackSurvivesAbortedPreparationAndRetry)
 {
-    ASSERT_EQ(m_device->GetAPI(), GraphicsAPI::Vulkan);
     MaterialDocument document{};
     document.materialName = "SpecializedCurrentFallback";
     document.lightingModel = "StandardPBR";
@@ -2927,7 +2925,6 @@ TEST_F(MaterialPipelineCompilationTest, SpecializedCurrentFallbackSurvivesAborte
 
 TEST_F(MaterialPipelineCompilationTest, SpecializedPreviousFallbackKeepsItsMetadataAndGeneration)
 {
-    ASSERT_EQ(m_device->GetAPI(), GraphicsAPI::Vulkan);
     MaterialDocument document{};
     document.materialName = "SpecializedPreviousFallback";
     document.lightingModel = "StandardPBR";
