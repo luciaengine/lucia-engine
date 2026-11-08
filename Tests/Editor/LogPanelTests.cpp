@@ -1,4 +1,5 @@
 #include "EditorChromeFixture.h"
+#include "Panels/LogPanel/LogChannelPopover.h"
 
 using namespace GameEngine;
 using namespace EditorChromeTesting;
@@ -96,4 +97,49 @@ TEST(LogPanelActions, ResponsiveReparentingRestoresSearchAndActionsTogether)
     primary->AddChild(std::move(moved)); host.Settle();
     EXPECT_EQ(center->GetParent(), search->GetParent());
     EXPECT_EQ(search->HasClass("log-toolbar-search-compact"), search->GetParent() == secondary);
+}
+
+TEST(LogPanelActions, ChannelPickerHidesAndRestoresRows)
+{
+    EditorChromeHost host;
+    if (!host.Device) GTEST_SKIP() << "No Vulkan device available";
+    ASSERT_TRUE(host.Ready);
+
+    Logger::LogMessage message(Logger::LogLevel::Info, "Channel picker regression fixture");
+    message.Channel = Logger::RegisterChannel("Editor.ChannelPickerRegression", Logger::LogLevel::Trace).Index;
+    auto* view = host.Panel->GetLogView();
+    view->AddMessage(message);
+    host.Panel->Update();
+
+    auto* channels = dynamic_cast<Button*>(host.Panel->FindById("LogChannels"));
+    ASSERT_NE(channels, nullptr);
+    Click(channels);
+    host.Settle();
+    auto* hideAll = dynamic_cast<Button*>(host.Panel->FindById("LogChannelsHideAll"));
+    auto* showAll = dynamic_cast<Button*>(host.Panel->FindById("LogChannelsShowAll"));
+    ASSERT_NE(hideAll, nullptr);
+    ASSERT_NE(showAll, nullptr);
+
+    Click(hideAll);
+    EXPECT_EQ(view->GetAllMessagesAsText(true).find(message.Message), std::string::npos);
+    EXPECT_NE(view->GetAllMessagesAsText(false).find(message.Message), std::string::npos);
+    Click(showAll);
+    EXPECT_NE(view->GetAllMessagesAsText(true).find(message.Message), std::string::npos);
+}
+
+TEST(LogPanelActions, ChannelPickerClosesWhenItsAnchorIsRemoved)
+{
+    EditorChromeHost host;
+    if (!host.Device)
+        GTEST_SKIP() << "No Vulkan device available";
+    ASSERT_TRUE(host.Ready);
+    auto* channels = dynamic_cast<LogChannelPopover*>(ClassIn(host.Panel, "log-channels-anchor"));
+    ASSERT_NE(channels, nullptr);
+    {
+        UIElement anchor;
+        channels->Open(anchor);
+        ASSERT_TRUE(channels->IsPopupOpen());
+    }
+    host.Settle();
+    EXPECT_FALSE(channels->IsPopupOpen());
 }

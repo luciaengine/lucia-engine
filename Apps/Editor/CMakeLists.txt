@@ -155,6 +155,7 @@ set(EDITOR_SOURCES
     Source/DayCycle/DayCycleWindow/DayCycleWindowRegistration.cpp
     Source/DayCycle/DayCycleWorkingCopy.cpp
     Source/Panels/LogPanel.cpp
+    Source/Panels/LogPanel/LogChannelPopover.cpp
     Source/Panels/LogToolbarActions.cpp
     Source/Panels/LogView.cpp
     Source/Panels/ScriptDiagnosticsByAssembly.cpp
