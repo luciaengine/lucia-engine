@@ -17,6 +17,7 @@
 #include "ECSModules/Rendering/SkeletonStore.h"
 #include "ECSModules/Rendering/ClipStore.h"
 #include "Assets/AnimationClip.h"
+#include "Animation/BoneEvaluationPlan.h"
 #include "StagedTestPaths.h"
 #include "Components/Animation/AnimatorRef.h"
 #include "Components/Animation/SkeletonRef.h"
@@ -344,13 +345,15 @@ GPUAnimInstance MakeInstance(uint32 skeletonGpuIndex, uint32 clipGpuIndex, float
     return instance;
 }
 
-void AddCrowdInstances(GPUAnimationDataStore& store, uint32 skeletonGpuIndex, uint32 clipGpuIndex,
-    float time, uint32 jointCount, uint32 population)
+constexpr float kLODInstanceTimeStep = 0.125f;
+
+void AddTestInstances(GPUAnimationDataStore& store, uint32 skeletonGpuIndex, uint32 clipGpuIndex,
+    float time, uint32 jointCount, uint32 population, float instanceTimeStep = kCrowdInstanceTimeStep)
 {
     for (uint32 instanceIndex = 0u; instanceIndex < population; ++instanceIndex)
     {
         auto instance = MakeInstance(skeletonGpuIndex, clipGpuIndex,
-            time + kCrowdInstanceTimeStep * static_cast<float>(instanceIndex));
+            time + instanceTimeStep * static_cast<float>(instanceIndex));
         instance.atlasOutputOffset = instanceIndex * jointCount;
         ASSERT_TRUE(store.TryAddInstance(instance));
     }
@@ -397,6 +400,7 @@ constexpr Kernel kDesktopKernel{"Desktop", "animation_skinning.comp.spv"};
 constexpr Kernel kCompatKernel{"Compat", "Tests/animation_skinning_compat.comp.spv"};
 
 using KernelCase = std::tuple<SampleCase, Kernel>;
+using LODCase = std::tuple<uint32, Kernel>;
 
 void PrintTo(const SampleCase& sampleCase, std::ostream* os) { *os << sampleCase.Name; }
 
@@ -414,7 +418,15 @@ constexpr uint32 kUnknownSkeletonId = 0x7FFFFFF0u;
 class GPUAnimationComputeFixture : public ::testing::Test
 {
 protected:
-    virtual GraphicsAPI RequestedAPI() const { return GraphicsAPI::Vulkan; }
+    virtual GraphicsAPI RequestedAPI() const
+    {
+#ifdef __APPLE__
+        return GraphicsAPI::Metal;
+#else
+        return GraphicsAPI::Vulkan;
+#endif
+    }
+    virtual bool RequiresRequestedAPI() const { return false; }
     virtual std::unique_ptr<IDevice> CreateDevice(const DeviceDesc& description)
     {
         return DeviceFactory::CreateDevice(description);
@@ -429,21 +441,52 @@ protected:
         m_Device = CreateDevice(desc);
         if (!m_Device || !m_Device->Initialize(desc))
             m_Device.reset();
+        if (m_Device)
+        {
+            RecordProperty("graphics_api", static_cast<int>(m_Device->GetAPI()));
+            RecordProperty("native_metal", m_Device->GetAPI() == GraphicsAPI::Metal ? "true" : "false");
+            if (RequiresRequestedAPI() && m_Device->GetAPI() != RequestedAPI())
+                GTEST_SKIP() << "Native animation coverage requires API " << static_cast<int>(RequestedAPI())
+                    << "; the backend override selected API " << static_cast<int>(m_Device->GetAPI());
+        }
     }
 
     void TearDown() override
     {
+        FinishDeviceFrame();
         m_DataStore.Shutdown();
         if (m_Device)
             m_Device->Shutdown();
         m_Device.reset();
     }
 
+    bool BeginDeviceFrame()
+    {
+        if (!m_FrameOpen)
+            m_FrameOpen = m_Device->BeginFrame();
+        return m_FrameOpen;
+    }
+
+    void FinishDeviceFrame()
+    {
+        if (!m_FrameOpen)
+            return;
+        m_Device->FinalizeFrame();
+        m_Device->WaitForIdle();
+        m_FrameOpen = false;
+    }
+
     // One production dispatch: the data store uploads skeleton, clip and instance,
     // AnimationComputePass declares its pass on a render-graph frame, the frame executes.
     std::vector<float> DispatchProductionPass(const Kernel& kernel, const Rig& rig, float time,
-                                              bool retryAfterClearing = false, uint32 population = 1u)
+                                              bool retryAfterClearing = false,
+                                              const SharedPtr<const Animation::BoneEvaluationPlan>& plan = {}, uint32 population = 1u,
+                                              float instanceTimeStep = kCrowdInstanceTimeStep)
     {
+        const bool frameOpen = BeginDeviceFrame();
+        EXPECT_TRUE(frameOpen);
+        if (!frameOpen)
+            return {};
         const std::vector<uint8_t> shader = Utils::ReadFile(
             (TestPaths::StagedRoot() / "Shaders" / kernel.File).string());
         EXPECT_FALSE(shader.empty()) << kernel.File << " is not staged under <build>/Shaders";
@@ -452,7 +495,10 @@ protected:
 
         EXPECT_TRUE(m_DataStore.Initialize(m_Device.get()));
         m_DataStore.BeginFrame(0);
-        const uint32 skeletonGpuIndex = m_DataStore.EnsureSkeletonUploaded(rig.SkeletonId);
+        const uint32 skeletonGpuIndex = m_DataStore.EnsureSkeletonUploaded(rig.SkeletonId, plan);
+        EXPECT_NE(skeletonGpuIndex, GPUAnimationDataStore::kNotUploaded);
+        if (skeletonGpuIndex == GPUAnimationDataStore::kNotUploaded)
+            return {};
         const uint32 clipGpuIndex = m_DataStore.EnsureClipUploaded(rig.ClipIndex);
 
         std::vector<float> packedRows(rig.JointCount * population * BonePaletteLayout::kFloatsPerBone);
@@ -473,7 +519,7 @@ protected:
             pass.Declare(frame, atlasResource, RG::RGBuffer{});
             // Preview worlds append instances after the main graph is declared.
             // Preparation must observe these late arrivals before any recording.
-            AddCrowdInstances(m_DataStore, skeletonGpuIndex, clipGpuIndex, time, rig.JointCount, population);
+            AddTestInstances(m_DataStore, skeletonGpuIndex, clipGpuIndex, time, rig.JointCount, population, instanceTimeStep);
             EXPECT_EQ(frame.Graph().PassCount(), 1u) << "AnimationComputePass declared no pass";
             if (retryAfterClearing)
             {
@@ -521,7 +567,7 @@ protected:
                 m_Device->UnmapBuffer(atlas);
 
                 // The same graph must still write valid matrices when work returns.
-                AddCrowdInstances(m_DataStore, skeletonGpuIndex, clipGpuIndex, time, rig.JointCount, population);
+                AddTestInstances(m_DataStore, skeletonGpuIndex, clipGpuIndex, time, rig.JointCount, population, instanceTimeStep);
                 frame.Execute();
                 m_Device->WaitForIdle();
                 EXPECT_EQ(records, 2u);
@@ -542,12 +588,87 @@ protected:
 
     std::unique_ptr<IDevice> m_Device;
     GPUAnimationDataStore m_DataStore;
+private:
+    bool m_FrameOpen = false;
 };
 
 class GPUAnimationComputeTest : public GPUAnimationComputeFixture,
                                 public ::testing::WithParamInterface<KernelCase>
 {
 };
+
+class GPUAnimationLODTest : public GPUAnimationComputeFixture,
+                            public ::testing::WithParamInterface<LODCase>
+{
+protected:
+    bool RequiresRequestedAPI() const override { return true; }
+};
+
+TEST_P(GPUAnimationLODTest, ReducedSelectionMatchesIndependentRestClampedCpuReference)
+{
+    if (!m_Device)
+        GTEST_SKIP() << "Requested native device unavailable";
+    Rig rig = CreateFingerRig(std::get<0>(GetParam()));
+    auto* skeleton = SkeletonStore::Instance().Get(rig.SkeletonId);
+    std::reverse(skeleton->JointNodes.begin(), skeleton->JointNodes.end());
+    const glm::mat4 meshRoot = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, -2.0f, 1.0f));
+    std::memcpy(skeleton->MeshRootWorld, glm::value_ptr(meshRoot), sizeof(glm::mat4));
+    skeleton->RestLocalMatrix[33u * 16u + 4u] += 0.25f;
+    skeleton->ComputeTopologicalSort();
+    auto plan = MakeShared<Animation::BoneEvaluationPlan>();
+    const uint32 pinned[] = {18u, 25u};
+    ASSERT_TRUE(plan->Build(*skeleton, pinned));
+    ASSERT_LT(plan->Nodes().size(), skeleton->JointClosure.size());
+
+    std::vector<AnimChannel> channels;
+    std::vector<AnimChannel> referenceChannels;
+    for (uint32 node = 0; node < skeleton->BoneCount; ++node)
+    {
+        channels.push_back(TranslationChannel(node, 0.1f * static_cast<float>(node + 1u)));
+        channels.push_back(RotationChannel(node));
+        if (plan->EvaluatedAncestors()[node] == node)
+        {
+            referenceChannels.push_back(channels[channels.size() - 2u]);
+            referenceChannels.push_back(channels.back());
+        }
+    }
+    rig.ClipIndex = RegisterClip(std::move(channels));
+    const uint32 referenceClip = RegisterClip(std::move(referenceChannels));
+    constexpr float kSampleTime = 0.375f;
+    constexpr uint32 kPopulation = 2u;
+    std::vector<float> expected;
+    for (uint32 instance = 0u; instance < kPopulation; ++instance)
+    {
+        const auto palette = SampleCpuReference(rig.SkeletonId, referenceClip,
+            kSampleTime + kLODInstanceTimeStep * static_cast<float>(instance));
+        expected.insert(expected.end(), palette.begin(), palette.end());
+    }
+    PoseSampleWorkspace workspace;
+    std::vector<float> cpuReduced;
+    const auto clip = ClipStore::Instance().Get(rig.ClipIndex);
+    for (uint32 instance = 0u; instance < kPopulation; ++instance)
+    {
+        std::vector<float> palette;
+        SampleAnimationPose(*skeleton, clip.get(), kSampleTime + kLODInstanceTimeStep * static_cast<float>(instance),
+            nullptr, &palette, workspace, plan.get());
+        cpuReduced.insert(cpuReduced.end(), palette.begin(), palette.end());
+    }
+    EXPECT_EQ(workspace.ChangedTranslation[33u], 0u);
+    EXPECT_EQ(workspace.ChangedRotation[33u], 0u);
+    const auto actual = DispatchProductionPass(std::get<1>(GetParam()), rig, kSampleTime, false, plan, kPopulation, kLODInstanceTimeStep);
+    ASSERT_EQ(actual.size(), expected.size());
+    ASSERT_EQ(cpuReduced.size(), expected.size());
+    for (size_t element = 0; element < expected.size(); ++element)
+    {
+        EXPECT_NEAR(cpuReduced[element], expected[element], kMatrixTolerance) << element;
+        EXPECT_NEAR(actual[element], expected[element], kMatrixTolerance) << element;
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(Kernels, GPUAnimationLODTest,
+    ::testing::Combine(::testing::Values(48u, 300u, 1024u), ::testing::Values(kDesktopKernel, kCompatKernel)),
+    [](const ::testing::TestParamInfo<LODCase>& info)
+    { return "Joints" + std::to_string(std::get<0>(info.param)) + "_" + std::get<1>(info.param).Name; });
 
 #if RENDERING_HAS_METAL || RENDERING_HAS_VULKAN
 class GPUAnimationCrowdTest : public GPUAnimationComputeFixture,
@@ -569,22 +690,9 @@ protected:
         ASSERT_TRUE(m_Device);
         ASSERT_EQ(m_Device->GetAPI(), RequestedAPI());
         RecordProperty("graphics_api", m_Device->GetAPI() == GraphicsAPI::Metal ? "Metal" : "Vulkan");
-        m_FrameOpen = m_Device->BeginFrame();
-        ASSERT_TRUE(m_FrameOpen);
+        ASSERT_TRUE(BeginDeviceFrame());
     }
 
-    void TearDown() override
-    {
-        if (m_FrameOpen)
-        {
-            m_Device->FinalizeFrame();
-            m_Device->WaitForIdle();
-        }
-        GPUAnimationComputeFixture::TearDown();
-    }
-
-private:
-    bool m_FrameOpen = false;
 };
 
 TEST_P(GPUAnimationCrowdTest, EveryBoundaryPaletteMatchesItsOwnSampleTime)
@@ -592,7 +700,7 @@ TEST_P(GPUAnimationCrowdTest, EveryBoundaryPaletteMatchesItsOwnSampleTime)
     const auto& [population, kernel] = GetParam();
     const Rig rig = CreateFingerRig(48u);
     constexpr float kSampleTime = 0.375f;
-    const auto actual = DispatchProductionPass(kernel, rig, kSampleTime, false, population);
+    const auto actual = DispatchProductionPass(kernel, rig, kSampleTime, false, {}, population);
     ASSERT_EQ(actual.size(), population * rig.JointCount * 16u);
     const std::array<uint32, 4u> probes{0u, (std::min)(population - 1u, 1023u),
         (std::min)(population - 1u, 1024u), population - 1u};
@@ -692,19 +800,6 @@ protected:
         FinishDeviceFrame();
         GPUAnimationComputeFixture::TearDown();
     }
-    bool BeginDeviceFrame()
-    {
-        m_FrameOpen = m_Device->BeginFrame();
-        return m_FrameOpen;
-    }
-    void FinishDeviceFrame()
-    {
-        if (!m_FrameOpen)
-            return;
-        m_Device->FinalizeFrame();
-        m_Device->WaitForIdle();
-        m_FrameOpen = false;
-    }
     RefusingAnimationDevice& Device() { return static_cast<RefusingAnimationDevice&>(*m_Device); }
 
     void CheckGrowthRefusal(bool refuseMapping)
@@ -736,8 +831,6 @@ protected:
         EXPECT_EQ(m_DataStore.GetInstanceCount(), 2000u);
     }
 
-private:
-    bool m_FrameOpen = false;
 };
 
 TEST_F(GPUAnimationAdmissionTest, InvalidBufferInitializationLeavesNoCapacity)
@@ -912,7 +1005,7 @@ TEST_F(GPUAnimationAdmissionTest, RefusedInstanceUsesCpuSamplingAndUploadsItsOwn
     const Rig rig = CreateFingerRig(48u);
     const uint32 skeletonIndex = store.EnsureSkeletonUploaded(rig.SkeletonId);
     const uint32 clipIndex = store.EnsureClipUploaded(rig.ClipIndex);
-    AddCrowdInstances(store, skeletonIndex, clipIndex, 0.0f, rig.JointCount, 1024u);
+    AddTestInstances(store, skeletonIndex, clipIndex, 0.0f, rig.JointCount, 1024u);
     Device().RefuseInstanceCreation = true;
     const uint32 runtimeId = SkeletonStore::Instance().CreateRuntime(rig.SkeletonId);
     ASSERT_NE(runtimeId, 0u);
@@ -1004,27 +1097,7 @@ class GPUAnimationPreparationRetryTest : public GPUAnimationComputeFixture,
 {
 protected:
     GraphicsAPI RequestedAPI() const override { return GetParam(); }
-    void SetUp() override
-    {
-        GPUAnimationComputeFixture::SetUp();
-        if (m_Device)
-        {
-            ASSERT_EQ(m_Device->GetAPI(), GetParam());
-            m_FrameOpen = m_Device->BeginFrame();
-            ASSERT_TRUE(m_FrameOpen);
-        }
-    }
-    void TearDown() override
-    {
-        if (m_FrameOpen)
-        {
-            m_Device->FinalizeFrame();
-            m_Device->WaitForIdle();
-        }
-        GPUAnimationComputeFixture::TearDown();
-    }
-private:
-    bool m_FrameOpen = false;
+    bool RequiresRequestedAPI() const override { return true; }
 };
 
 TEST_P(GPUAnimationPreparationRetryTest, EmptyRetryPreservesAtlasAndLaterWorkStillRuns)
@@ -1055,7 +1128,7 @@ INSTANTIATE_TEST_SUITE_P(NativeAPIs, GPUAnimationPreparationRetryTest, ::testing
 TEST_P(GPUAnimationComputeTest, SkinMatricesMatchCpuReference)
 {
     if (!m_Device)
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "Requested native device unavailable";
 
     const auto& [sampleCase, kernel] = GetParam();
     const Rig rig = sampleCase.CreateRig();
@@ -1112,4 +1185,56 @@ TEST(GPUAnimationDataStoreTest, RefusesSkeletonsTheKernelCannotHold)
     EXPECT_NE(store.EnsureSkeletonUploaded(atBoneLimit), GPUAnimationDataStore::kNotUploaded);
     store.InvalidateSkeleton(atBoneLimit);
     EXPECT_EQ(store.EnsureSkeletonUploaded(atBoneLimit), GPUAnimationDataStore::kNotUploaded);
+}
+
+TEST(GPUAnimationDataStoreTest, ReducedUploadUsesSelectedKernelLimitsAndKeepsFullPalette)
+{
+    const uint32 skeletonId = CreateRigSkeleton(FlatParents(300u), EveryNodeAJoint(300u));
+    const auto* skeleton = SkeletonStore::Instance().Get(skeletonId);
+    auto plan = MakeShared<Animation::BoneEvaluationPlan>();
+    const uint32 requested[] = {1u, 299u};
+    ASSERT_TRUE(plan->Build(*skeleton, requested));
+    ASSERT_EQ(plan->Nodes().size(), 3u);
+    GPUAnimationDataStore store;
+    EXPECT_EQ(store.EnsureSkeletonUploaded(skeletonId), GPUAnimationDataStore::kNotUploaded);
+    const uint32 reduced = store.EnsureSkeletonUploaded(skeletonId, plan);
+    EXPECT_NE(reduced, GPUAnimationDataStore::kNotUploaded);
+    EXPECT_EQ(store.EnsureSkeletonUploaded(skeletonId, plan), reduced);
+    EXPECT_EQ(store.GetSkeletonHeaderUsedBytes(), sizeof(GPUSkeletonHeader));
+    EXPECT_EQ(plan->JointCorrections().size(), 300u);
+    store.InvalidateSkeleton(skeletonId);
+    EXPECT_NE(store.EnsureSkeletonUploaded(skeletonId, plan), reduced);
+}
+
+TEST(GPUAnimationDataStoreTest, VariantCacheOwnsPlanUntilSkeletonInvalidation)
+{
+    const uint32 skeletonId = CreateTestSkeleton();
+    const uint32 foreignId = CreateTestSkeleton();
+    auto plan = MakeShared<Animation::BoneEvaluationPlan>();
+    ASSERT_TRUE(plan->Build(*SkeletonStore::Instance().Get(skeletonId), {}));
+    GPUAnimationDataStore store;
+    EXPECT_EQ(store.EnsureSkeletonUploaded(foreignId, plan), GPUAnimationDataStore::kNotUploaded);
+    const uint32 full = store.EnsureSkeletonUploaded(skeletonId);
+    const uint32 reduced = store.EnsureSkeletonUploaded(skeletonId, plan);
+    EXPECT_NE(full, reduced);
+    EXPECT_EQ(store.EnsureSkeletonUploaded(skeletonId), full);
+    std::weak_ptr<const Animation::BoneEvaluationPlan> lifetime = plan;
+    plan.reset();
+    EXPECT_FALSE(lifetime.expired());
+    store.InvalidateSkeleton(skeletonId);
+    EXPECT_TRUE(lifetime.expired());
+}
+
+TEST(GPUAnimationDataStoreTest, DeviceFreeShutdownReleasesVariantPlanOwnership)
+{
+    const uint32 skeletonId = CreateTestSkeleton();
+    auto plan = MakeShared<Animation::BoneEvaluationPlan>();
+    ASSERT_TRUE(plan->Build(*SkeletonStore::Instance().Get(skeletonId), {}));
+    GPUAnimationDataStore store;
+    ASSERT_NE(store.EnsureSkeletonUploaded(skeletonId, plan), GPUAnimationDataStore::kNotUploaded);
+    std::weak_ptr<const Animation::BoneEvaluationPlan> lifetime = plan;
+    plan.reset();
+    ASSERT_FALSE(lifetime.expired());
+    store.Shutdown();
+    EXPECT_TRUE(lifetime.expired());
 }

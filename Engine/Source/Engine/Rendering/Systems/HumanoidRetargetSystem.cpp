@@ -691,7 +691,7 @@ void HumanoidRetargetSystem::Update(ECS::World& world, float32 deltaTime)
                     blendPrevTime = anim->PrevTime;
                     blendAlpha = anim->BlendAlpha();
                     SampleClipOntoSkeleton(*srcSkel, prev.get(), blendPrevTime, m_BlendFromWorkspace);
-                    BlendLocalPoses(m_SourceSampleWorkspace, m_BlendFromWorkspace, blendAlpha);
+                    Animation::BlendLocalPoses(*srcSkel, m_SourceSampleWorkspace, m_BlendFromWorkspace, blendAlpha);
                 }
             }
         }

@@ -16,6 +16,7 @@
 #include "Engine/Rendering/MeshLODThresholds.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "InspectorRegistry.h"
+#include "Inspectors/BoneLOD/ModelBoneLODSection.h"
 #include "Inspectors/InspectorComponentRowHelpers.h"
 #include "Inspectors/InspectorComponentSection.h"
 #include "Inspectors/InspectorDragHelpers.h"
@@ -574,7 +575,8 @@ void BuildExplicitLodSlotSection(UIElement* root, const std::filesystem::path& a
     }
 }
 
-void BuildLodSection(UIElement* root, ModelAsset* model, std::function<void()> requestInspectorRefresh)
+void BuildLodSection(UIElement* root, ModelAsset* model, Editor::UndoRedoService* undo,
+    std::function<void()> requestInspectorRefresh)
 {
     const std::filesystem::path assetPath = model->GetPath();
     auto& assets = EngineCore::GetInstance().GetAssetManager();
@@ -694,6 +696,8 @@ void BuildLodSection(UIElement* root, ModelAsset* model, std::function<void()> r
     auto previewTargets = std::make_shared<std::vector<SubmeshPreviewTarget>>();
     BuildLodResultsPerSubmesh(root, model, hasSlots, previewTargets);
     BuildLodPreviewSlider(root, model, previewTargets);
+    if (ModelHasSkinnedMesh(model))
+        root->AddChild(std::make_unique<Editor::ModelBoneLODSection>(*model, undo, requestInspectorRefresh));
 }
 
 void ReloadModel(const std::filesystem::path& path)
@@ -1110,6 +1114,7 @@ void BuildRigTab(UIElement* root,
 
 void BuildModelInspector(UIElement* root,
                          ModelAsset* model,
+                         Editor::UndoRedoService* undo,
                          std::function<void()> requestInspectorRefresh,
                          IThumbnailProvider* thumbs)
 {
@@ -1123,7 +1128,7 @@ void BuildModelInspector(UIElement* root,
     switch (tab)
     {
     case ModelInspectorTab::Lod:
-        BuildLodSection(root, model, requestInspectorRefresh);
+        BuildLodSection(root, model, undo, requestInspectorRefresh);
         break;
     case ModelInspectorTab::Rig:
         BuildRigTab(root, model, assetPath, requestInspectorRefresh);
@@ -1149,7 +1154,7 @@ void RegisterModelInspector()
             auto* model = dynamic_cast<ModelAsset*>(asset);
             if (!model)
                 return;
-            BuildModelInspector(ctx.Parent, model, ctx.RequestInspectorRefresh, ctx.Thumbnails);
+            BuildModelInspector(ctx.Parent, model, ctx.Undo, ctx.RequestInspectorRefresh, ctx.Thumbnails);
         });
 }
 
