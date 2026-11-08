@@ -106,6 +106,7 @@ TEST(LogPanelActions, ChannelPickerHidesAndRestoresRows)
     ASSERT_TRUE(host.Ready);
 
     Logger::LogMessage message(Logger::LogLevel::Info, "Channel picker regression fixture");
+    message.Channel = Logger::RegisterChannel("Editor.ChannelPickerRegression", Logger::LogLevel::Trace).Index;
     auto* view = host.Panel->GetLogView();
     view->AddMessage(message);
     host.Panel->Update();
