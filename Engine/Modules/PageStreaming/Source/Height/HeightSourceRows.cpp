@@ -9,7 +9,7 @@ namespace GameEngine::PageStreaming
 namespace
 {
 
-// Today's 16-bit decoders' constant (Terrain/Heightfield.cpp): a normalized sample is word * this.
+// R16 source words map to normalized heights in the range [0, 1].
 constexpr float32 kInv65535 = 1.0f / 65535.0f;
 
 std::size_t BytesPerSample(HeightSourceFormat format)

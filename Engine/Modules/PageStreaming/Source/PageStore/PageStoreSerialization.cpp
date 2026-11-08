@@ -260,17 +260,22 @@ std::string ReadPageStoreHead(SharedFileReader& file, PageFieldKind kind, uint64
                    std::to_string(kHeightStepExponentMax);
         header.StepPerLevel[level] = step;
     }
+    const uint64 indexStart = kPageStoreHeaderBytes + directoryBytes;
+    const uint64 availableEntries = (availableBytes - indexStart) / kPageIndexEntryBytes;
     uint64 entryCount = 0;
-    for (PageStoreRange& range : layout.Ranges)
+    for (std::size_t rangeIndex = 0; rangeIndex < layout.Ranges.size(); ++rangeIndex)
     {
+        PageStoreRange& range = layout.Ranges[rangeIndex];
+        const PageStoreLevel& level = layout.Levels[rangeIndex % layout.Levels.size()];
         range.First = Take<uint64>(directory.data(), cursor);
         range.Count = Take<uint64>(directory.data(), cursor);
+        if (range.First != entryCount || range.Count > static_cast<uint64>(level.PagesX) * level.PagesZ)
+            return "the page store's index is corrupt: its ranges are out of order";
+        if (range.Count > availableEntries - entryCount)
+            return "the page store is truncated in its index";
         entryCount += range.Count;
     }
 
-    const uint64 indexStart = kPageStoreHeaderBytes + directoryBytes;
-    if (entryCount > (availableBytes - indexStart) / kPageIndexEntryBytes)
-        return "the page store is truncated in its index";
     const uint64 headBytes = indexStart + entryCount * kPageIndexEntryBytes;
     std::vector<uint8> index(static_cast<std::size_t>(entryCount * kPageIndexEntryBytes));
     if (!ReadExact(file, baseOffset + indexStart, index.data(), index.size()))
