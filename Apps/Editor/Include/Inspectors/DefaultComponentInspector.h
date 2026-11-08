@@ -8,6 +8,11 @@
 
 namespace GameEngine {
 
+namespace ECS
+{
+class World;
+}
+
 struct InspectorContext;
 struct OverrideMenuTarget;
 class UIElement;
