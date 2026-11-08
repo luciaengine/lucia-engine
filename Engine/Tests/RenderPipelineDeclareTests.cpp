@@ -10559,27 +10559,28 @@ constexpr std::initializer_list<std::string_view> kShadowAndIblSlots = {
 struct PrepassHeadDeclaration
 {
     std::shared_ptr<Rendering::ShaderMeta> Meta;
+    std::shared_ptr<Rendering::ShaderMeta> MaterialMeta;
     std::vector<std::string> FragmentOnly;
 };
 
 // Registers the material and compiles its fragment-less prepass head under the profile the caller's scope
 // sets (CompatVertexStageDepthMeta under the compatibility profile).
-PrepassHeadDeclaration DeclarePrepassHead(TerrainFixture& f, const MaterialDocument& doc,
+PrepassHeadDeclaration DeclarePrepassHead(TerrainFixture& fixture, const MaterialDocument& document,
                                           Rendering::MaterialKeyword keywords,
                                           Rendering::VertexAttributeFlags vertexFlags)
 {
-    Material* material = f.Rs->Materials().RegisterMaterialFromDocument(GUID::Generate(), doc, keywords);
-    EXPECT_NE(material, nullptr) << doc.materialName;
+    Material* material = fixture.Rs->Materials().RegisterMaterialFromDocument(GUID::Generate(), document, keywords);
+    EXPECT_NE(material, nullptr) << document.materialName;
     if (!material)
         return {};
-    const PipelineVariantCache::VariantServeUnit* head = CompileFragmentlessPrepassHead(*f.Rs, *material, vertexFlags);
-    EXPECT_NE(head, nullptr) << doc.materialName << ": the prepass depth variant published";
+    const PipelineVariantCache::VariantServeUnit* head = CompileFragmentlessPrepassHead(*fixture.Rs, *material, vertexFlags);
+    EXPECT_NE(head, nullptr) << document.materialName << ": the prepass depth variant published";
     if (!head)
         return {};
-    const Rendering::GraphicsPipelineDesc* desc = f.Device->LookupGraphicsPipeline(head->PipelineId);
-    EXPECT_TRUE(desc != nullptr && desc->PixelShader == nullptr) << doc.materialName << ": no fragment stage";
-    EXPECT_GE(head->SetLayouts.size(), 3u) << doc.materialName << ": the vertex stage reads set 2";
-    return {head->VariantMeta, FragmentOnlyBindingsTheHeadDeclares(*f.Device, *head)};
+    const Rendering::GraphicsPipelineDesc* pipelineDesc = fixture.Device->LookupGraphicsPipeline(head->PipelineId);
+    EXPECT_TRUE(pipelineDesc != nullptr && pipelineDesc->PixelShader == nullptr) << document.materialName << ": no fragment stage";
+    EXPECT_GE(head->SetLayouts.size(), 3u) << document.materialName << ": the vertex stage reads set 2";
+    return {head->VariantMeta, material->GetShaderMeta(), FragmentOnlyBindingsTheHeadDeclares(*fixture.Device, *head)};
 }
 
 // The bindings `reference` declares for its vertex stage (outside set 1, which the pipeline patches in
@@ -10611,31 +10612,37 @@ std::vector<std::string> VertexReadBindingsMissingFrom(const Rendering::ShaderMe
     return missing;
 }
 
-// The rule both prepass heads are held to (#3367). Under the compatibility profile the head declares no
-// binding that only the fragment stage reads, and every binding the desktop head's vertex stage reads is
-// still declared. The desktop head keeps the variant's whole reflected layout, shadow and IBL slots included.
-void ExpectCompatHeadDeclaresOnlyVertexReads(TerrainFixture& f, const MaterialDocument& doc,
+// A compatibility head keeps its own profile's vertex reads and omits fragment-only bindings.
+// Desktop heads retain the full reflected layout. Compare each head with its profile's material;
+// optional desktop resources need not exist in compatibility shaders.
+void ExpectCompatHeadDeclaresOnlyVertexReads(TerrainFixture& fixture, const MaterialDocument& document,
                                              Rendering::MaterialKeyword keywords,
                                              Rendering::VertexAttributeFlags vertexFlags)
 {
     PrepassHeadDeclaration compat;
     {
         TestSupport::ScopedCompatShaderProfile compatProfile;
-        compat = DeclarePrepassHead(f, doc, keywords, vertexFlags);
+        compat = DeclarePrepassHead(fixture, document, keywords, vertexFlags);
     }
-    const PrepassHeadDeclaration desktop = DeclarePrepassHead(f, doc, keywords, vertexFlags);
+    const PrepassHeadDeclaration desktop = DeclarePrepassHead(fixture, document, keywords, vertexFlags);
     EXPECT_TRUE(compat.FragmentOnly.empty())
-        << doc.materialName << ": the compat head declares " << compat.FragmentOnly.size()
+        << document.materialName << ": the compat head declares " << compat.FragmentOnly.size()
         << " binding(s) only the fragment stage reads, first '"
         << (compat.FragmentOnly.empty() ? std::string{} : compat.FragmentOnly.front()) << "'";
     EXPECT_TRUE(NamesAny(desktop.FragmentOnly, kShadowAndIblSlots))
-        << doc.materialName << ": the desktop head keeps the variant's whole reflected layout";
-    if (!compat.Meta || !desktop.Meta)
+        << document.materialName << ": the desktop head keeps the variant's whole reflected layout";
+    EXPECT_NE(compat.MaterialMeta, nullptr);
+    EXPECT_NE(desktop.MaterialMeta, nullptr);
+    if (!compat.Meta || !compat.MaterialMeta || !desktop.Meta || !desktop.MaterialMeta)
         return;
-    const std::vector<std::string> missing = VertexReadBindingsMissingFrom(*compat.Meta, *desktop.Meta);
-    EXPECT_TRUE(missing.empty()) << doc.materialName << ": the compat head drops " << missing.size()
-                                 << " binding(s) the vertex stage reads, first '"
-                                 << (missing.empty() ? std::string{} : missing.front()) << "'";
+    const std::vector<std::string> missingCompat = VertexReadBindingsMissingFrom(*compat.Meta, *compat.MaterialMeta);
+    EXPECT_TRUE(missingCompat.empty()) << document.materialName << ": the compat head drops " << missingCompat.size()
+                                       << " binding(s) its vertex stage reads, first '"
+                                       << (missingCompat.empty() ? std::string{} : missingCompat.front()) << "'";
+    const std::vector<std::string> missingDesktop = VertexReadBindingsMissingFrom(*desktop.Meta, *desktop.MaterialMeta);
+    EXPECT_TRUE(missingDesktop.empty()) << document.materialName << ": the desktop head drops " << missingDesktop.size()
+                                        << " binding(s) its vertex stage reads, first '"
+                                        << (missingDesktop.empty() ? std::string{} : missingDesktop.front()) << "'";
 }
 
 // The grass's opaque-blade material as TerrainGrassRenderFeature registers it (GrassDrawMode::Opaque).
