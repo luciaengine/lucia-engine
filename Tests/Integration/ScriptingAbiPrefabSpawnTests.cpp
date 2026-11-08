@@ -194,7 +194,7 @@ TEST_F(ScriptingAbiPrefabSpawnTest, SpawnReturnsARootWhoseTreeMatchesThePrefab)
 
     std::size_t children = 0;
     world.Query<ECS::Read<Components::Parent>>().Each(
-        [&](const Components::Parent& parent)
+        [&children, root](const Components::Parent& parent)
         {
             if (parent.parent == root)
                 ++children;

@@ -196,8 +196,8 @@ static bool WritePrefabFile(ECS::World& world, std::span<const SubtreeEntity> su
         return false;
     }
     const std::span<const ECS::EntityHandle> copies = remap.GetTargets();
-    for (std::size_t i = 0; i < copies.size(); ++i)
-        scratch.AddComponentImmediate(copies[i], MakeTag(SceneTagForPath(subtree[i].FilePath)));
+    for (std::size_t index = 0; index < copies.size(); ++index)
+        scratch.AddComponentImmediate(copies[index], MakeTag(SceneTagForPath(subtree[index].FilePath)));
     scratch.RemoveComponentImmediate<Components::Parent>(copies.front());
     scratch.AddComponentImmediate(copies.front(), Components::Transform{});
 
@@ -278,9 +278,9 @@ ECS::EntityHandle PlacePrefab(ECS::World& world, const GUID& prefab, const Compo
     std::unordered_set<std::string> used = CollectSceneIdentities(world);
     const std::string instanceId = AllocateUniqueSceneEntityId(preferred, used);
     const std::span<const ECS::EntityHandle> targets = remap.GetTargets();
-    for (std::size_t i = 0; i < targets.size(); ++i)
-        world.AddComponentImmediate(targets[i],
-                                    MakeTag(SceneTagForPath(JoinPath(instanceId, prefabTemplate->Addresses[i]))));
+    for (std::size_t index = 0; index < targets.size(); ++index)
+        world.AddComponentImmediate(targets[index],
+                                    MakeTag(SceneTagForPath(JoinPath(instanceId, prefabTemplate->Addresses[index]))));
     HoldReferencedPrefabs(*library, world, options, targets);
     return root;
 }

@@ -2010,9 +2010,9 @@ TEST_F(PrefabPlaceTests, ANameTypedOnAMemberKeepsTheFieldFocusedAndMarksItInPlac
     header->AddChild(std::move(ownedField));
     inspector->AddChild(std::move(ownedHeader));
     int rebuilds = 0;
-    const auto refreshMarks = [&]() { UpdateEntityNameOverrideMark(*header, *field, world, lid); };
+    const auto refreshMarks = [header, field, &world, lid]() { UpdateEntityNameOverrideMark(*header, *field, world, lid); };
     // A rebuild makes a new header, as the Inspector does.
-    const auto rebuild = [&]()
+    const auto rebuild = [&rebuilds, header]()
     {
         ++rebuilds;
         header->RemoveAllChildren();

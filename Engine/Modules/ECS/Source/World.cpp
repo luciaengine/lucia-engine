@@ -2758,9 +2758,9 @@ bool World::PlanClone(std::span<const EntityHandle> entities, ClonePlan& plan) c
                 metadata.chunkIndex, metadata.indexInChunk, slot.TypeId));
             if (!bytes)
                 continue;
-            for (uint32 i = 0; i < slot.Count; ++i)
+            for (uint32 fieldIndex = 0; fieldIndex < slot.Count; ++fieldIndex)
             {
-                const uint32 offset = slot.Offset + i * static_cast<uint32>(sizeof(EntityHandle));
+                const uint32 offset = slot.Offset + fieldIndex * static_cast<uint32>(sizeof(EntityHandle));
                 EntityHandle value;
                 std::memcpy(&value, bytes + offset, sizeof(value));
                 uint32 target = ClonePlan::kNoPosition;

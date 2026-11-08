@@ -1155,7 +1155,7 @@ void SpawnInAJobTheMainThreadRuns(ECS::World& world, const GUID& prefab)
 {
     JobSystem::WorkStealingThreadPool pool(0);
     JobSystem::JobCounter spawn;
-    pool.Run([&] { Scene::SpawnPrefab(world, prefab, Components::Transform{}, {}); }, spawn);
+    pool.Run([&world, prefab] { Scene::SpawnPrefab(world, prefab, Components::Transform{}, {}); }, spawn);
     pool.Wait(spawn);
 }
 

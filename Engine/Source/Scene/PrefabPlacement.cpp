@@ -404,16 +404,16 @@ static bool PlaceInstanceFromLibrary(PrefabPlacement& placement, const SceneLoad
     out.root = targets.front();
     out.members.clear();
     out.members.reserve(targets.size());
-    for (std::size_t i = 0; i < targets.size(); ++i)
+    for (std::size_t index = 0; index < targets.size(); ++index)
     {
-        const std::string& address = prefab->Addresses[i];
+        const std::string& address = prefab->Addresses[index];
         const std::string path = JoinPath(instancePath, address);
         const std::string tag = SceneTagForPath(path);
-        const PrefabTemplate::Origin& origin = prefab->Origins[i];
+        const PrefabTemplate::Origin& origin = prefab->Origins[index];
         if (!ClaimHashedTag(placement, tag, path, prefab->Files[origin.File], origin.Line, failure))
             return false;
-        world.AddComponentImmediate(targets[i], MakeTag(tag));
-        out.members.emplace_back(address, targets[i]);
+        world.AddComponentImmediate(targets[index], MakeTag(tag));
+        out.members.emplace_back(address, targets[index]);
     }
     if (prefab->RootTakesFallbackName)
         ApplyFallbackName(world, ownerCtx, out.root, LastIdOf(instancePath), instancePath);

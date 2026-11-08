@@ -66,20 +66,20 @@ std::vector<EntityHandle> BuildTemplate(World& world, EntityHandle outside)
     const EntityHandle root = world.CreateEntity();
     world.AddComponentImmediate(root, Position{1.0f, 2.0f, 3.0f});
     entities.push_back(root);
-    for (std::size_t i = 1; i < kTemplateSize; ++i)
+    for (std::size_t index = 1; index < kTemplateSize; ++index)
     {
         const EntityHandle entity = world.CreateEntity();
-        world.AddComponentImmediate(entity, Position{static_cast<float32>(i), 0.5f, -static_cast<float32>(i)});
-        const EntityHandle parent = (i % 3 == 0) ? entities[i - 1] : root;
-        world.AddComponentImmediate(entity, CloneParentLink{static_cast<uint32>(i), parent});
-        if (i % 2 == 0)
-            world.AddComponentImmediate(entity, Velocity{static_cast<float32>(i) * 2.0f, 0.0f, 1.0f});
-        if (i % 5 == 0)
+        world.AddComponentImmediate(entity, Position{static_cast<float32>(index), 0.5f, -static_cast<float32>(index)});
+        const EntityHandle parent = (index % 3 == 0) ? entities[index - 1] : root;
+        world.AddComponentImmediate(entity, CloneParentLink{static_cast<uint32>(index), parent});
+        if (index % 2 == 0)
+            world.AddComponentImmediate(entity, Velocity{static_cast<float32>(index) * 2.0f, 0.0f, 1.0f});
+        if (index % 5 == 0)
         {
             CloneTargets targets;
-            targets.Weight = static_cast<float>(i) * 0.25f;
+            targets.Weight = static_cast<float>(index) * 0.25f;
             targets.Target = root;
-            targets.Others[0] = entities[i - 1];
+            targets.Others[0] = entities[index - 1];
             targets.Others[1] = outside;
             world.AddComponentImmediate(entity, targets);
         }
@@ -98,34 +98,34 @@ std::size_t CountOf(std::span<const EntityHandle> entities, EntityHandle entity)
     return static_cast<std::size_t>(std::count(entities.begin(), entities.end(), entity));
 }
 
-// Every component of targets[i] equals sources[i]'s, its entity fields re-pointed into `targets`.
+// Every component of targets[index] equals sources[index]'s, its entity fields re-pointed into `targets`.
 void ExpectCopyOf(const World& source, std::span<const EntityHandle> sources, const World& target,
                   std::span<const EntityHandle> targets)
 {
-    for (std::size_t i = 0; i < sources.size(); ++i)
+    for (std::size_t index = 0; index < sources.size(); ++index)
     {
-        const Position* sourcePosition = source.GetComponent<Position>(sources[i]);
-        const Position* targetPosition = target.GetComponent<Position>(targets[i]);
-        ASSERT_NE(targetPosition, nullptr) << "entity " << i;
+        const Position* sourcePosition = source.GetComponent<Position>(sources[index]);
+        const Position* targetPosition = target.GetComponent<Position>(targets[index]);
+        ASSERT_NE(targetPosition, nullptr) << "entity " << index;
         EXPECT_EQ(targetPosition->x, sourcePosition->x);
         EXPECT_EQ(targetPosition->y, sourcePosition->y);
         EXPECT_EQ(targetPosition->z, sourcePosition->z);
-        EXPECT_EQ(target.HasComponent<Velocity>(targets[i]), source.HasComponent<Velocity>(sources[i]));
-        if (const Velocity* velocity = source.GetComponent<Velocity>(sources[i]))
+        EXPECT_EQ(target.HasComponent<Velocity>(targets[index]), source.HasComponent<Velocity>(sources[index]));
+        if (const Velocity* velocity = source.GetComponent<Velocity>(sources[index]))
         {
-            EXPECT_EQ(target.GetComponent<Velocity>(targets[i])->x, velocity->x);
+            EXPECT_EQ(target.GetComponent<Velocity>(targets[index])->x, velocity->x);
         }
 
-        if (const CloneParentLink* link = source.GetComponent<CloneParentLink>(sources[i]))
+        if (const CloneParentLink* link = source.GetComponent<CloneParentLink>(sources[index]))
         {
-            const CloneParentLink* cloned = target.GetComponent<CloneParentLink>(targets[i]);
+            const CloneParentLink* cloned = target.GetComponent<CloneParentLink>(targets[index]);
             ASSERT_NE(cloned, nullptr);
             EXPECT_EQ(cloned->Depth, link->Depth);
-            EXPECT_EQ(cloned->Parent, targets[IndexOf(sources, link->Parent)]) << "entity " << i;
+            EXPECT_EQ(cloned->Parent, targets[IndexOf(sources, link->Parent)]) << "entity " << index;
         }
-        if (const CloneTargets* fields = source.GetComponent<CloneTargets>(sources[i]))
+        if (const CloneTargets* fields = source.GetComponent<CloneTargets>(sources[index]))
         {
-            const CloneTargets* cloned = target.GetComponent<CloneTargets>(targets[i]);
+            const CloneTargets* cloned = target.GetComponent<CloneTargets>(targets[index]);
             ASSERT_NE(cloned, nullptr);
             EXPECT_EQ(cloned->Weight, fields->Weight);
             EXPECT_EQ(cloned->Target, targets[IndexOf(sources, fields->Target)]);
@@ -156,7 +156,7 @@ TEST(CreateBatchFromWorld, CopiesEveryComponentAndRepointsEntityFields)
     RegisterCloneComponents(source);
     RegisterCloneComponents(target);
     // Offset the target's allocator so a copied, unpatched handle would not alias its copy.
-    for (int i = 0; i < 7; ++i)
+    for (int index = 0; index < 7; ++index)
         target.AddComponentImmediate(target.CreateEntity(), Velocity{});
     const EntityHandle outside = source.CreateEntity();
     const std::vector<EntityHandle> sources = BuildTemplate(source, outside);
@@ -202,7 +202,7 @@ TEST(CreateBatchFromWorld, AFieldThatNamesItsOwnEntityNamesTheCopyAndANullFieldS
     RegisterCloneComponents(source);
     RegisterCloneComponents(target);
     // Entities in the target first, so a copy's handle differs from its source's handle.
-    for (int i = 0; i < 5; ++i)
+    for (int index = 0; index < 5; ++index)
         target.AddComponentImmediate(target.CreateEntity(), Velocity{});
     const EntityHandle self = source.CreateEntity();
     CloneTargets fields;
@@ -334,19 +334,19 @@ TEST(CreateBatchFromWorld, CopiesEachRowAsAPerEntityCloneDoes)
     target.AddComponentImmediate(first, Position{});
     const Archetype* positionArchetype = target.GetEntityArchetype(first);
     const uint32_t capacity = positionArchetype->GetTable().GetLayout().Capacity;
-    for (uint32_t i = 1; i + 5 < capacity; ++i)
+    for (uint32_t index = 1; index + 5 < capacity; ++index)
         target.AddComponentImmediate(target.CreateEntity(), Position{});
     // Two archetypes over several source chunks; every seventh entity is destroyed after the
     // others are listed, so the listed rows of each archetype are not one consecutive run.
     std::vector<EntityHandle> sources;
     std::vector<EntityHandle> spacers;
-    for (uint32_t i = 0; i < 3 * capacity; ++i)
+    for (uint32_t index = 0; index < 3 * capacity; ++index)
     {
         const EntityHandle entity = source.CreateEntity();
-        source.AddComponentImmediate(entity, Position{static_cast<float32>(i), 0.5f, -static_cast<float32>(i)});
-        if (i % 3 == 0)
-            source.AddComponentImmediate(entity, Velocity{1.0f, static_cast<float32>(i), 2.0f});
-        (i % 7 == 3 ? spacers : sources).push_back(entity);
+        source.AddComponentImmediate(entity, Position{static_cast<float32>(index), 0.5f, -static_cast<float32>(index)});
+        if (index % 3 == 0)
+            source.AddComponentImmediate(entity, Velocity{1.0f, static_cast<float32>(index), 2.0f});
+        (index % 7 == 3 ? spacers : sources).push_back(entity);
     }
     for (const EntityHandle spacer : spacers)
         source.DestroyEntityImmediate(spacer);
@@ -358,10 +358,10 @@ TEST(CreateBatchFromWorld, CopiesEachRowAsAPerEntityCloneDoes)
 
     const std::span<const EntityHandle> targets = remap.GetTargets();
     ASSERT_EQ(targets.size(), sources.size());
-    for (std::size_t i = 0; i < sources.size(); ++i)
+    for (std::size_t index = 0; index < sources.size(); ++index)
     {
-        const EntityHandle clone = source.CloneEntity(sources[i]);
-        ExpectSameBytes<Position>(source, clone, target, targets[i], i);
-        ExpectSameBytes<Velocity>(source, clone, target, targets[i], i);
+        const EntityHandle clone = source.CloneEntity(sources[index]);
+        ExpectSameBytes<Position>(source, clone, target, targets[index], index);
+        ExpectSameBytes<Velocity>(source, clone, target, targets[index], index);
     }
 }

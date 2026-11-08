@@ -58,11 +58,11 @@ std::string IntegerAt(const std::vector<std::uint8_t>& bytes, std::size_t offset
 std::string FormatAxes(std::span<const float> axes)
 {
     std::string text = "(";
-    for (std::size_t i = 0; i < axes.size(); ++i)
+    for (std::size_t index = 0; index < axes.size(); ++index)
     {
-        if (i != 0)
+        if (index != 0)
             text += ", ";
-        text += FormatFloat(axes[i]);
+        text += FormatFloat(axes[index]);
     }
     return text + ")";
 }
