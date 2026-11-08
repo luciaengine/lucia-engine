@@ -2975,6 +2975,17 @@ bool DDGIProbeFeature::TickHardwareLane(Rendering::RenderGraph::RGFrame& frame, 
             std::move(builds));
         auto skinnedBuilds = std::make_shared<std::vector<DDGISkinnedGeometry::PendingSkinnedBuild>>(
             std::move(skinned.Builds));
+        static const bool batchSkinned = Platform::EnvironmentSwitchEnabled(
+            "GE_DDGI_BATCH_SKINNED_BLAS", true);
+        const bool recordSkinnedBatch = batchSkinned && skinnedBuilds->size() > 1;
+        if (recordSkinnedBatch)
+        {
+            static const bool logged = [] {
+                Logger::Log::Info("DDGI skinned BLAS submission: batched");
+                return true;
+            }();
+            (void)logged;
+        }
         auto skinnedConfirm = skinned.ConfirmToken;
         const Rendering::TlasSlotHandle tlasSlot = m_TlasSlot;
         const RG::RGAccelerationStructure tlasRG =
@@ -2992,15 +3003,30 @@ bool DDGIProbeFeature::TickHardwareLane(Rendering::RenderGraph::RGFrame& frame, 
                         p.Read(b.SkinnedRG, RG::RGBufferRead::Storage);
             },
             [backend, blasBuilds, skinnedBuilds, skinnedConfirm, blasConfirmToken, tlasSlot,
-             instanceBuffer, instanceCount, recordTlas, tlasExecuted](RG::RGContext& ctx)
+             instanceBuffer, instanceCount, recordTlas, tlasExecuted, recordSkinnedBatch](RG::RGContext& ctx)
             {
                 if (!ctx.Cmd)
                     return;
                 backend->RecordPreBuildBarrier(*ctx.Cmd);
                 for (const auto& b : *blasBuilds)
                     backend->RecordBlasBuild(*ctx.Cmd, b.Handle, b.Geometry);
-                for (const auto& b : *skinnedBuilds)
-                    backend->RecordBlasBuild(*ctx.Cmd, b.Handle, b.Geometry);
+                if (recordSkinnedBatch)
+                {
+                    // Tick emits one build per unique posed BLAS.
+                    std::vector<Rendering::BlasBuildRequest> requests;
+                    requests.reserve(skinnedBuilds->size());
+                    for (const auto& b : *skinnedBuilds)
+                        requests.push_back({b.Handle, b.Geometry, b.PreferUpdate});
+                    backend->RecordBlasBuildBatch(*ctx.Cmd, requests);
+                }
+                else
+                {
+                    for (const auto& b : *skinnedBuilds)
+                    {
+                        const Rendering::BlasBuildRequest request{b.Handle, b.Geometry, b.PreferUpdate};
+                        backend->RecordBlasBuildBatch(*ctx.Cmd, std::span(&request, 1));
+                    }
+                }
                 if (recordTlas)
                     backend->RecordTlasBuild(*ctx.Cmd, tlasSlot, instanceBuffer, 0, instanceCount);
                 if (blasConfirmToken)

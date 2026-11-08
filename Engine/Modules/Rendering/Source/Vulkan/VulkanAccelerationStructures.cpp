@@ -170,6 +170,8 @@ void VulkanAccelerationStructures::FillBlasBuildInfo(
     outBuild.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
     outBuild.type  = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
     outBuild.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    if (geometry.AllowUpdate)
+        outBuild.flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
     outBuild.mode  = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     outBuild.geometryCount = 1;
     outBuild.pGeometries   = &outGeom;
@@ -282,7 +284,8 @@ AccelerationStructureHandle VulkanAccelerationStructures::CreateBlas(
     slot.Storage       = storage;
     slot.Address       = m_FpAsAddress(m_Device.GetVkDevice(), &addrInfo);
     slot.StorageBytes  = sizes.accelerationStructureSize;
-    slot.BuildSize     = sizes.buildScratchSize;
+    slot.BuildSize     = std::max(sizes.buildScratchSize, sizes.updateScratchSize);
+    slot.BuildFlags    = build.flags;
     slot.Live          = true;
     m_Blas.push_back(slot);
     ++m_LiveBlasCount;
@@ -309,21 +312,17 @@ bool VulkanAccelerationStructures::ReserveBlasScratch(AccelerationStructureHandl
 
 void VulkanAccelerationStructures::RecordPreBuildBarrier(CommandList& cmd)
 {
-    // Orders this frame's builds after any prior in-flight build on the same
-    // (graphics) queue: BLAS/TLAS reads-after-writes AND scratch reuse
-    // (write-after-write at recurring offsets). COMPUTE is in the source
-    // stages for the write-after-READ against the previous frame's ray-query
-    // mask pass (an execution dependency is sufficient for WAR; the read bit
-    // in srcAccessMask is inert but keeps the intent visible). Sync1 barrier —
-    // the AS stage/access bits exist in both sync models; sync1 keeps this
-    // independent of the sync2 fallback matrix.
+    // Publish compute-skinned vertices to build input reads and order
+    // scratch/AS reuse after prior builds and compute ray queries.
     VkCommandBuffer vkCmd = static_cast<VulkanCommandList&>(cmd).GetVkCommandBuffer();
     VkMemoryBarrier barrier{};
     barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     barrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR
-                          | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+                          | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR
+                          | VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR
-                          | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+                          | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR
+                          | VK_ACCESS_SHADER_READ_BIT;
     vkCmdPipelineBarrier(vkCmd,
                          VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR
                              | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -331,29 +330,84 @@ void VulkanAccelerationStructures::RecordPreBuildBarrier(CommandList& cmd)
                          &barrier, 0, nullptr, 0, nullptr);
 }
 
+bool VulkanAccelerationStructures::FillBlasBuildCommand(
+    AccelerationStructureHandle blas, const BlasTriangleGeometry& geometry,
+    VkAccelerationStructureGeometryKHR& outGeom,
+    VkAccelerationStructureBuildGeometryInfoKHR& outBuild,
+    VkAccelerationStructureBuildRangeInfoKHR& outRange, bool preferUpdate) const
+{
+    if (!m_Functional || !blas.IsValid() || blas.id > m_Blas.size())
+        return false;
+    const BlasSlot& slot = m_Blas[blas.id - 1];
+    if (!slot.Live)
+        return false;
+
+    FillBlasBuildInfo(geometry, outGeom, outBuild, outRange);
+    outBuild.flags = slot.BuildFlags;
+    outBuild.dstAccelerationStructure = slot.As;
+    if (preferUpdate && (slot.BuildFlags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR))
+    {
+        outBuild.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+        outBuild.srcAccelerationStructure = slot.As;
+    }
+    // Scratch growth finishes during declaration, before recording starts.
+    outBuild.scratchData.deviceAddress = m_ScratchAddress + slot.ScratchOffset;
+    return true;
+}
+
 void VulkanAccelerationStructures::RecordBlasBuild(CommandList& cmd,
                                                    AccelerationStructureHandle blas,
                                                    const BlasTriangleGeometry& geometry)
 {
-    if (!m_Functional || !blas.IsValid() || blas.id > m_Blas.size())
-        return;
-    const BlasSlot& slot = m_Blas[blas.id - 1];
-    if (!slot.Live)
-        return;
-
     VkAccelerationStructureGeometryKHR geom;
     VkAccelerationStructureBuildGeometryInfoKHR build;
     VkAccelerationStructureBuildRangeInfoKHR range;
-    FillBlasBuildInfo(geometry, geom, build, range);
-    build.dstAccelerationStructure  = slot.As;
-    // The scratch buffer is final by record time: RG2 declaration (all
-    // CreateBlas calls) strictly precedes Execute(), so a mid-batch grow
-    // re-based every region into the one buffer all records now read.
-    build.scratchData.deviceAddress = m_ScratchAddress + slot.ScratchOffset;
+    if (!FillBlasBuildCommand(blas, geometry, geom, build, range))
+        return;
 
     const VkAccelerationStructureBuildRangeInfoKHR* rangePtr = &range;
     VkCommandBuffer vkCmd = static_cast<VulkanCommandList&>(cmd).GetVkCommandBuffer();
     m_FpCmdBuild(vkCmd, 1, &build, &rangePtr);
+}
+
+void VulkanAccelerationStructures::RecordBlasBuildBatch(
+    CommandList& cmd, std::span<const BlasBuildRequest> requests)
+{
+    if (requests.empty())
+        return;
+
+    struct Inputs
+    {
+        VkAccelerationStructureGeometryKHR Geometry;
+        VkAccelerationStructureBuildRangeInfoKHR Range;
+    };
+    std::vector<Inputs> inputs(requests.size());
+    std::vector<VkAccelerationStructureBuildGeometryInfoKHR> builds(requests.size());
+    std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> ranges(requests.size());
+
+    uint32_t count = 0;
+    bool hasRebuild = false;
+    for (const auto& request : requests)
+    {
+        auto& input = inputs[count];
+        if (!FillBlasBuildCommand(request.Handle, request.Geometry, input.Geometry,
+                                   builds[count], input.Range, request.PreferUpdate))
+            continue;
+        hasRebuild |= builds[count].mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        ranges[count++] = &input.Range;
+    }
+    if (count > 0)
+    {
+        VkCommandBuffer vkCmd = static_cast<VulkanCommandList&>(cmd).GetVkCommandBuffer();
+        constexpr uint32_t kRebuildBatchSize = 8;
+        constexpr uint32_t kUpdateBatchSize = 32;
+        const uint32_t batchSize = hasRebuild ? kRebuildBatchSize : kUpdateBatchSize;
+        for (uint32_t offset = 0; offset < count; offset += batchSize)
+        {
+            const uint32_t batchCount = std::min(count - offset, batchSize);
+            m_FpCmdBuild(vkCmd, batchCount, builds.data() + offset, ranges.data() + offset);
+        }
+    }
 }
 
 uint64_t VulkanAccelerationStructures::GetBlasDeviceAddress(
