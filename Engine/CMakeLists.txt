@@ -9,6 +9,7 @@ set(ENGINE_SOURCES
     Source/Core/NvtxRange.cpp
     Source/Core/DeferredActionQueue.cpp
     Source/Core/Engine.cpp
+    Source/Scene/SceneLoadingGates.cpp
     Source/Core/EngineLoggerBridge.cpp
     Source/Core/WindowInputRouter.cpp
     Source/Core/WindowUiBootstrap.cpp
@@ -19,6 +20,8 @@ set(ENGINE_SOURCES
     # target_sources(Engine ...) in the codegen block near the bottom of this file.
     Source/Assets/NavGridAsset.cpp
     Source/Assets/NavMeshAsset.cpp
+    Source/Assets/DayCycleProfile.cpp
+    Source/Assets/DayCycleTracks.cpp
     Source/Assets/SceneAsset.cpp
     Source/Assets/CoreAssetRegistrations.cpp
     Source/Assets/TextureAsset.cpp
@@ -90,6 +93,10 @@ set(ENGINE_SOURCES
     Source/Components/Rendering/SkySunIlluminance.cpp
     Source/Components/Rendering/SkySunPath.cpp
     Source/Scene/SceneIO.cpp
+    Source/Scene/SceneRaycast.cpp
+    Source/Scene/TerrainPicking.cpp
+    Source/Scene/MeshBvhCache.cpp
+    Source/Scene/MeshBvhDiskFormat.cpp
     Source/Scene/SceneEngineEmbedMaterializer.cpp
 
     # Derives the hierarchy half of entity enable state.
@@ -201,6 +208,8 @@ set(ENGINE_HEADERS
     Include/Assets/ParserRegistry.h
     Include/Assets/FileWatchingService.h
     Include/Assets/CoreAssetRegistrations.h
+    Include/Assets/DayCycleProfile.h
+    Include/Assets/DayCycleTracks.h
     Include/Assets/SceneAsset.h
 
     Include/Assets/TextureAsset.h
@@ -1081,7 +1090,7 @@ endif()
 # splices each module's .obj files into Engine's SHARED link, and CMake's
 # __create_def walks them for export when WINDOWS_EXPORT_ALL_SYMBOLS=ON.
 #
-# Editor-only modules (MeshPicking; VCSIntegration, which lives in
+# Editor-only modules (VCSIntegration, which lives in
 # EditorSDK.dll) are NOT listed here — Engine.dll doesn't use them, and
 # packaged games must ship no VCS code (every VCS provider is an
 # Packages/*-vcs Editor-kind package module). Header-only INTERFACE
@@ -1093,9 +1102,10 @@ endif()
 # other ECS-ish modules; Editor.exe drops its direct Graph link to avoid
 # duplicate-state across the DLL boundary.
 set(GE_ENGINE_MODULES
+    SceneLoadTracker
     Logger AssetCore AssetDatabase JobSystem ECS FileWatcher AssetRuntime Audio Scripting NativeScripting
     Platform FileSystem FileSystemCore Memory GameEngineRendering RenderServices VolumetricFog HeightFog GPUFogParticles Particles ParticlesAuthoring ParticlesAssets ParticlesSystems ParticlesRendering Animation Sprite2D NumericExpression UI Physics PhysicsECS
-    Pathfinding PathfindingECS Terrain PageStreaming TerrainECS TerrainGrass CBTTerrain CBTTerrainECS Ocean Spline SplineGeometry SplineLayout SplineECS TileMap TileMapECS MarkupECS Graph
+    Pathfinding PathfindingECS Terrain PageStreaming TerrainECS TerrainGrass CBTTerrain CBTTerrainECS Ocean Spline SplineGeometry SplineLayout SplineECS SplineRecipes MeshPicking TileMap TileMapECS MarkupECS Graph
     GenerationalVector Scheduler Scene SceneBvh Text Localization Input PluginAPI
     PlatformServices PlatformProvider${GE_PLATFORM_BACKEND})
 target_link_libraries(Engine
@@ -2471,6 +2481,13 @@ endif()
 			endif()
 
 			if(GTest_FOUND OR TARGET GTest::gtest)
+            add_executable(EngineSceneReadinessTests Tests/EngineSceneReadinessTests.cpp)
+            target_link_libraries(EngineSceneReadinessTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+            target_include_directories(EngineSceneReadinessTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
+            ge_set_output_tests(EngineSceneReadinessTests)
+            ge_stage_runtime_dependencies(EngineSceneReadinessTests)
+            add_test(NAME EngineSceneReadinessTests COMMAND $<TARGET_FILE:EngineSceneReadinessTests>)
+
 			    # Which EngineCore GetInstance() returns once an owned engine is gone.
 			    # Its own binary: the test controls when the process's default
 			    # instance is created, which any earlier test in a shared binary would
@@ -3532,7 +3549,8 @@ endif()
 	        Tests/SceneExportStripTests.cpp
 	        Tests/SplineSceneSerializationTests.cpp
 	        Tests/ReflectedComponentJsonTests.cpp
-	        Modules/TerrainGrass/Tests/TerrainGrassClampsTests.cpp)
+	        Modules/TerrainGrass/Tests/TerrainGrassClampsTests.cpp
+        Modules/TerrainGrass/Tests/TerrainGrassPresetTests.cpp)
 	    target_link_libraries(EngineSceneIOTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 	    target_include_directories(EngineSceneIOTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
 	    # TerrainGrassClamps.SceneSchemaCarriesNoInlineClampCall reads the scene schema and fails on

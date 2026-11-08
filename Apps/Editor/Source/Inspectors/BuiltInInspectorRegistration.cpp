@@ -1,3 +1,4 @@
+#include "DayCycle/DayCycleProfile/DayCycleProfileInspector.h"
 #include "Inspectors/BuiltInInspectorRegistration.h"
 #include "Rendering/Sorting/RenderSortingEditor.h"
 #include "Inspectors/Sprite2DComponentTraits.h"
@@ -66,6 +67,7 @@
 #include "Inspectors/SplineFenceSpanPieceInspector.h"
 #include "Inspectors/SplineInspector.h"
 #include "Inspectors/SplinePlacementInspector.h"
+#include "Inspectors/SplineRecipe/Paving/SplinePavingInspector.h"
 #include "Inspectors/TextureInspector.h"
 #include "Inspectors/TransformInspector.h"
 #include "Inspectors/ValueCurveInspector.h"
@@ -103,6 +105,7 @@ void RegisterBuiltInInspectors()
     RegisterMeasureInspector();
     RegisterTileMapLayerInspector();
     RegisterSkyEnvironmentInspector();
+    Editor::RegisterDayCycleProfileInspector();
     RegisterAmbientLightInspector();
     RegisterSkyboxInspector();
     RegisterOceanDepthCacheSourceInspector();
@@ -144,6 +147,7 @@ void RegisterBuiltInInspectors()
     RegisterTerrainModifierInspectors();
     RegisterSplineInspectors();
     RegisterSplinePlacementInspector();
+    RegisterSplinePavingInspector();
     RegisterSplineFenceInspector();
     RegisterSplineFenceSpanPieceInspector();
 

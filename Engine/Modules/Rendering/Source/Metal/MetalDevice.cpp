@@ -37,6 +37,7 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
         return true;
     }
     m_Desc = desc;
+    m_SubmissionFailed.store(false, std::memory_order_release);
     // The EDR decision needs the window's screen, which exists only once a
     // window target does; SetActiveWindowTarget applies this request through
     // SetHdrOutputMode on the first activation.
@@ -62,9 +63,9 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
     m_ComputeQueue->setLabel(NS::String::string("GE Compute Queue", NS::UTF8StringEncoding));
     m_TransferQueue->setLabel(NS::String::string("GE Transfer Queue", NS::UTF8StringEncoding));
 
-    m_GraphicsSubmitQueue.Start(m_GraphicsQueue);
-    m_ComputeSubmitQueue.Start(m_ComputeQueue);
-    m_TransferSubmitQueue.Start(m_TransferQueue);
+    m_GraphicsSubmitQueue.Start(m_GraphicsQueue, *this);
+    m_ComputeSubmitQueue.Start(m_ComputeQueue, *this);
+    m_TransferSubmitQueue.Start(m_TransferQueue, *this);
 
     // Residency-set + fence path for the BDA registry (macOS 15+): declare the
     // device-address buffers resident once on the queues instead of a blanket
@@ -295,6 +296,7 @@ void MetalDevice::Shutdown()
             }
             slot.clear();
         }
+        m_DeferredTextureViewCounts.fill(0);
 
         m_Buffers.ForEach([](Handle, MetalBuffer& buffer) {
             if (buffer.buffer != nullptr)
@@ -337,6 +339,11 @@ void MetalDevice::Shutdown()
             {
                 sem.event->release();
                 sem.event = nullptr;
+            }
+            if (sem.deviceEvent != nullptr)
+            {
+                sem.deviceEvent->release();
+                sem.deviceEvent = nullptr;
             }
         });
         m_Semaphores.Clear();
@@ -545,37 +552,55 @@ void MetalDevice::CommitResidencyIfDirty()
     }
 }
 
-void MetalDevice::TrackFrameCommandBuffer(MTL::CommandBuffer* buffer)
+std::shared_ptr<MetalSubmitQueue::Submit::TrackedBuffer> MetalDevice::TrackFrameCommandBuffer(
+    MTL::CommandBuffer* buffer, dispatch_semaphore_t frameSemaphore)
 {
     if (buffer == nullptr)
-    {
-        return;
-    }
-    // A buffer added to the residency set since the last commit is not resident
-    // until commit()+requestResidency() runs. Every enqueue path funnels here,
-    // so commit any pending membership change before this CB reaches the GPU.
+        return {};
+    // Commit new residency membership before the command buffer reaches the GPU.
     CommitResidencyIfDirty();
-    const uint32_t slot = m_FrameIndex.load(std::memory_order_relaxed);
-    const bool onGraphicsQueue = buffer->commandQueue() == m_GraphicsQueue;
-    m_SlotInFlightCbs[slot].fetch_add(1, std::memory_order_acq_rel);
-    if (onGraphicsQueue)
-    {
+    auto tracked = std::make_shared<MetalSubmitQueue::Submit::TrackedBuffer>();
+    tracked->Buffer = buffer;
+    tracked->FrameSlot = m_FrameIndex.load(std::memory_order_relaxed);
+    tracked->FrameSemaphore = frameSemaphore;
+    tracked->OnGraphicsQueue = buffer->commandQueue() == m_GraphicsQueue;
+    m_SlotInFlightCbs[tracked->FrameSlot].fetch_add(1, std::memory_order_acq_rel);
+    if (tracked->OnGraphicsQueue)
         m_GraphicsCbsInFlight.fetch_add(1, std::memory_order_acq_rel);
-    }
-    buffer->addCompletedHandler([this, slot, onGraphicsQueue](MTL::CommandBuffer*) {
-        RetireTrackedCommandBuffer(slot, onGraphicsQueue);
+    buffer->addCompletedHandler([this, tracked](MTL::CommandBuffer* completed) {
+        // Metal also invokes this handler when an uncommitted buffer is destroyed.
+        // Cancellation can retire it before the handler runs or the device is destroyed.
+        if (tracked->RetirementClaimed.exchange(true, std::memory_order_acq_rel))
+            return;
+        RetireTrackedCommandBuffer(*tracked, completed);
     });
+    return tracked;
 }
 
-void MetalDevice::RetireTrackedCommandBuffer(uint32_t slot, bool onGraphicsQueue)
+void MetalDevice::RecordSubmissionFailure()
 {
-    if (onGraphicsQueue)
+    if (!m_SubmissionFailed.exchange(true, std::memory_order_acq_rel))
+        Logger::Log::Error("MetalDevice: GPU submission failed; rendering is stopped. Restart the editor to recreate the Metal device.");
+}
+
+void MetalDevice::RetireTrackedCommandBuffer(const MetalSubmitQueue::Submit::TrackedBuffer& tracked,
+                                           MTL::CommandBuffer* completed)
+{
+    if (completed != nullptr && completed->status() == MTL::CommandBufferStatusError)
+        RecordSubmissionFailure();
+    if (tracked.FrameSemaphore != nullptr)
+    {
+        if (completed != nullptr)
+            RecordFrameGpuTiming(completed);
+        dispatch_semaphore_signal(tracked.FrameSemaphore);
+    }
+    std::lock_guard<std::mutex> lock(m_SlotCbMutex);
+    if (tracked.OnGraphicsQueue)
     {
         m_GraphicsCbsInFlight.fetch_sub(1, std::memory_order_acq_rel);
     }
-    if (m_SlotInFlightCbs[slot].fetch_sub(1, std::memory_order_acq_rel) == 1)
+    if (m_SlotInFlightCbs[tracked.FrameSlot].fetch_sub(1, std::memory_order_acq_rel) == 1)
     {
-        std::lock_guard<std::mutex> lock(m_SlotCbMutex);
         m_SlotCbCv.notify_all();
     }
 }
@@ -588,8 +613,9 @@ bool MetalDevice::IsPreviousFrameGraphicsComplete() const
     // therefore means the newest graphics submission, and any readback copy it
     // carried, has completed. A buffer the submit worker still holds behind a
     // semaphore wait was counted at enqueue and reads as in flight. Nothing
-    // submitted yet reads as complete: there is no stale mirror to guard.
-    return m_GraphicsCbsInFlight.load(std::memory_order_acquire) == 0;
+    // submitted yet reads as complete. A failed device reports incomplete.
+    return GetDeviceHealth() == DeviceHealth::Healthy &&
+           m_GraphicsCbsInFlight.load(std::memory_order_acquire) == 0;
 }
 
 void MetalDevice::WaitForSlotCommandBuffers(uint32_t slot)
@@ -659,14 +685,17 @@ const MetalPipeline* MetalDevice::GetMetalPipeline(PipelineHandle handle) const
     return m_Pipelines.Get(ToGeneric(handle));
 }
 
-void MetalDevice::DeferRelease(NS::Object* object)
+void MetalDevice::DeferRelease(NS::Object* object, bool isTextureView)
 {
     if (object == nullptr)
     {
         return;
     }
     std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
-    m_DeferredReleases[m_FrameIndex.load(std::memory_order_relaxed)].push_back(object);
+    const uint32_t slot = m_FrameIndex.load(std::memory_order_relaxed);
+    m_DeferredReleases[slot].push_back(object);
+    if (isTextureView)
+        ++m_DeferredTextureViewCounts[slot];
 }
 
 void MetalDevice::ScrubResidency(MTL::Resource* resource)
@@ -696,6 +725,7 @@ void MetalDevice::DrainDeferredReleases(uint32_t slot)
     {
         std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
         pending.swap(m_DeferredReleases[slot]);
+        m_DeferredTextureViewCounts[slot] = 0;
     }
     for (NS::Object* object : pending)
     {
@@ -740,12 +770,16 @@ void MetalDevice::DestroySemaphore(SemaphoreHandle handle)
         return;
     }
     DeferRelease(sem->event);
+    DeferRelease(sem->deviceEvent);
     sem->event = nullptr;
+    sem->deviceEvent = nullptr;
     m_Semaphores.Destroy(ToGeneric(handle));
 }
 
 bool MetalDevice::GetTimelineSemaphoreValue(SemaphoreHandle handle, uint64_t& outValue) const
 {
+    if (GetDeviceHealth() != DeviceHealth::Healthy)
+        return false;
     std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
     const MetalSemaphore* sem = m_Semaphores.Get(ToGeneric(handle));
     if (sem == nullptr || sem->event == nullptr)
@@ -758,7 +792,9 @@ bool MetalDevice::GetTimelineSemaphoreValue(SemaphoreHandle handle, uint64_t& ou
 
 bool MetalDevice::WaitTimelineSemaphoreValue(SemaphoreHandle handle, uint64_t value, uint64_t timeoutNs)
 {
-    MTL::SharedEvent* event = nullptr;
+    if (GetDeviceHealth() != DeviceHealth::Healthy)
+        return false;
+    NS::SharedPtr<MTL::SharedEvent> event;
     {
         std::lock_guard<std::recursive_mutex> lock(m_ResourceMutex);
         MetalSemaphore* sem = m_Semaphores.Get(ToGeneric(handle));
@@ -766,10 +802,32 @@ bool MetalDevice::WaitTimelineSemaphoreValue(SemaphoreHandle handle, uint64_t va
         {
             return false;
         }
-        event = sem->event;
+        event = NS::RetainPtr(sem->event);
     }
-    const uint64_t timeoutMs = timeoutNs == ~0ull ? ~0ull : timeoutNs / 1'000'000ull;
-    return event->waitUntilSignaledValue(value, timeoutMs);
+    if (event->waitUntilSignaledValue(value, 0))
+        return GetDeviceHealth() == DeviceHealth::Healthy;
+    if (timeoutNs == 0)
+        return false;
+
+    constexpr uint64_t kWaitSliceNs = 100'000'000;
+    constexpr uint64_t kNanosecondsPerMillisecond = 1'000'000;
+    const auto start = std::chrono::steady_clock::now();
+    while (GetDeviceHealth() == DeviceHealth::Healthy)
+    {
+        uint64_t sliceNs = kWaitSliceNs;
+        if (timeoutNs != ~0ull)
+        {
+            const auto elapsedNs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - start).count());
+            if (elapsedNs >= timeoutNs)
+                return false;
+            sliceNs = std::min(sliceNs, timeoutNs - elapsedNs);
+        }
+        const uint64_t sliceMs = (sliceNs + kNanosecondsPerMillisecond - 1) / kNanosecondsPerMillisecond;
+        if (event->waitUntilSignaledValue(value, sliceMs))
+            return GetDeviceHealth() == DeviceHealth::Healthy;
+    }
+    return false;
 }
 
 bool MetalDevice::QueueSubmit(QueueType queue,
@@ -778,7 +836,7 @@ bool MetalDevice::QueueSubmit(QueueType queue,
                               const std::vector<std::pair<SemaphoreHandle, uint64_t>>& signalSemaphores)
 {
     MetalSubmitQueue* worker = GetSubmitQueue(queue);
-    if (worker == nullptr)
+    if (worker == nullptr || GetDeviceHealth() != DeviceHealth::Healthy)
     {
         return false;
     }
@@ -817,16 +875,18 @@ bool MetalDevice::QueueSubmit(QueueType queue,
         MTL::CommandBuffer* cb = static_cast<MetalCommandList*>(list)->Detach();
         if (cb != nullptr)
         {
-            TrackFrameCommandBuffer(cb);
-            submit.Buffers.push_back(cb);
+            auto tracked = TrackFrameCommandBuffer(cb);
+            submit.Buffers.push_back(std::move(tracked));
         }
     }
     worker->Enqueue(std::move(submit));
-    return true;
+    return GetDeviceHealth() == DeviceHealth::Healthy;
 }
 
 IDevice::GpuSyncToken MetalDevice::SubmitTextureUploads(const TextureUploadRequest* requests, uint32_t count)
 {
+    if (GetDeviceHealth() != DeviceHealth::Healthy)
+        return {};
     if (m_Device == nullptr || requests == nullptr || count == 0 || m_TransferQueue == nullptr)
     {
         return {};
@@ -886,11 +946,11 @@ IDevice::GpuSyncToken MetalDevice::SubmitTextureUploads(const TextureUploadReque
             cb->encodeSignalEvent(sem->event, value);
         }
     }
-    TrackFrameCommandBuffer(cb);
+    auto tracked = TrackFrameCommandBuffer(cb);
     cb->retain();
     {
         MetalSubmitQueue::Submit submit;
-        submit.Buffers.push_back(cb);
+        submit.Buffers.push_back(std::move(tracked));
         m_TransferSubmitQueue.Enqueue(std::move(submit));
     }
     staging->release(); // command buffer retains it until completion
@@ -1280,6 +1340,8 @@ std::unique_ptr<CommandList> MetalDevice::CreateCommandList(QueueType queue)
 
 void MetalDevice::ExecuteCommandLists(const std::vector<CommandList*>& commandLists)
 {
+    if (GetDeviceHealth() != DeviceHealth::Healthy)
+        return;
     for (CommandList* list : commandLists)
     {
         if (list == nullptr)
@@ -1292,7 +1354,7 @@ void MetalDevice::ExecuteCommandLists(const std::vector<CommandList*>& commandLi
         {
             continue;
         }
-        TrackFrameCommandBuffer(cb);
+        auto tracked = TrackFrameCommandBuffer(cb);
         MetalSubmitQueue* worker = GetSubmitQueue(metalList->GetQueueType());
         if (worker == nullptr)
         {
@@ -1301,7 +1363,7 @@ void MetalDevice::ExecuteCommandLists(const std::vector<CommandList*>& commandLi
             continue;
         }
         MetalSubmitQueue::Submit submit;
-        submit.Buffers.push_back(cb);
+        submit.Buffers.push_back(std::move(tracked));
         worker->Enqueue(std::move(submit));
     }
 }
@@ -1313,24 +1375,15 @@ IQueryPool* MetalDevice::GetQueryPool()
 
 void MetalDevice::WaitForIdle()
 {
-    // Drain the submit workers first so every pending command buffer reaches
-    // its queue before the marker buffers measure "idle".
+    m_IdleDrainCount.fetch_add(1, std::memory_order_relaxed);
     m_GraphicsSubmitQueue.Flush();
     m_ComputeSubmitQueue.Flush();
     m_TransferSubmitQueue.Flush();
-    for (MTL::CommandQueue* queue : {m_GraphicsQueue, m_ComputeQueue, m_TransferQueue})
-    {
-        if (queue == nullptr)
-        {
-            continue;
-        }
-        MTL::CommandBuffer* cb = queue->commandBuffer();
-        if (cb != nullptr)
-        {
-            cb->commit();
-            cb->waitUntilCompleted();
-        }
-    }
+    // Completion callbacks retire committed work; cancellation retires deferred work.
+    // No new command buffer allocation is needed when memory is exhausted.
+    for (uint32_t slot = 0; slot < kFramesInFlight; ++slot)
+        WaitForSlotCommandBuffers(slot);
+    std::lock_guard<std::mutex> lock(m_SlotCbMutex);
 }
 
 // ---------------------------------------------------------------------------
@@ -1339,7 +1392,7 @@ void MetalDevice::WaitForIdle()
 
 bool MetalDevice::BeginFrame()
 {
-    if (!m_Initialized)
+    if (!m_Initialized || GetDeviceHealth() != DeviceHealth::Healthy)
     {
         return false;
     }
@@ -1351,6 +1404,12 @@ bool MetalDevice::BeginFrame()
     // buffers enqueued after it (late views, uploads) are tracked per slot
     // and must also drain before the slot's resources recycle.
     WaitForSlotCommandBuffers(m_FrameIndex);
+    if (GetDeviceHealth() != DeviceHealth::Healthy)
+    {
+        dispatch_semaphore_signal(m_FrameSemaphore);
+        m_FrameActive = false;
+        return false;
+    }
 
     // The waits above guarantee this slot's prior GPU work completed, so the
     // slot's counter samples can be resolved without stalling.
@@ -1463,17 +1522,12 @@ void MetalDevice::Present()
         NS::String::string("GE Present", NS::UTF8StringEncoding)->retain();
     cb->setLabel(kPresentLabel);
     swapchain->Present(cb);
-    dispatch_semaphore_t semaphore = m_FrameSemaphore;
-    cb->addCompletedHandler([this, semaphore](MTL::CommandBuffer* completed) {
-        RecordFrameGpuTiming(completed);
-        dispatch_semaphore_signal(semaphore);
-    });
-    TrackFrameCommandBuffer(cb);
+    auto tracked = TrackFrameCommandBuffer(cb, m_FrameSemaphore);
     // Through the submit worker so the present cannot overtake frame work
     // still waiting on semaphores in the FIFO.
     cb->retain();
     MetalSubmitQueue::Submit submit;
-    submit.Buffers.push_back(cb);
+    submit.Buffers.push_back(std::move(tracked));
     m_GraphicsSubmitQueue.Enqueue(std::move(submit));
 
     SignalFrameCompletion();
@@ -1497,15 +1551,10 @@ void MetalDevice::FinalizeFrame()
         static NS::String* const kFinalizeLabel =
             NS::String::string("GE FinalizeFrame", NS::UTF8StringEncoding)->retain();
         cb->setLabel(kFinalizeLabel);
-        dispatch_semaphore_t semaphore = m_FrameSemaphore;
-        cb->addCompletedHandler([this, semaphore](MTL::CommandBuffer* completed) {
-            RecordFrameGpuTiming(completed);
-            dispatch_semaphore_signal(semaphore);
-        });
-        TrackFrameCommandBuffer(cb);
+        auto tracked = TrackFrameCommandBuffer(cb, m_FrameSemaphore);
         cb->retain();
         MetalSubmitQueue::Submit submit;
-        submit.Buffers.push_back(cb);
+        submit.Buffers.push_back(std::move(tracked));
         m_GraphicsSubmitQueue.Enqueue(std::move(submit));
     }
     else

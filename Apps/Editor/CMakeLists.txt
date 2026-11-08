@@ -140,6 +140,20 @@ set(EDITOR_SOURCES
     Source/Inspectors/EntityHeader/InspectorEntityNameField.cpp
     Source/Panels/InspectorPanel.cpp
     Source/Panels/AssetViewPanel.cpp
+    Source/DayCycle/DayCycleAxis.cpp
+    Source/DayCycle/DayCycleDescriptionField.cpp
+    Source/DayCycle/DayCycleEditorServices.cpp
+    Source/DayCycle/DayCycleProfile/DayCycleProfileControls.cpp
+    Source/DayCycle/DayCycleProfile/DayCycleProfileInspector.cpp
+    Source/DayCycle/DayCycleProfile/DayCycleProfileSave.cpp
+    Source/DayCycle/DayCycleRowsHost.cpp
+    Source/DayCycle/DayCycleScrub.cpp
+    Source/DayCycle/DayCycleShippedProfiles.cpp
+    Source/DayCycle/DayCycleSunNow.cpp
+    Source/DayCycle/DayCycleTrackRows.cpp
+    Source/DayCycle/DayCycleWindow/DayCycleWindow.cpp
+    Source/DayCycle/DayCycleWindow/DayCycleWindowRegistration.cpp
+    Source/DayCycle/DayCycleWorkingCopy.cpp
     Source/Panels/LogPanel.cpp
     Source/Panels/LogToolbarActions.cpp
     Source/Panels/LogView.cpp
@@ -394,6 +408,7 @@ set(EDITOR_SOURCES
 	Source/Terrain/TerrainHeightmapInspector.cpp
 	Source/Terrain/RawHeightmapSettingsCommit.cpp
 	Source/Terrain/TerrainInspector.cpp
+    Source/Terrain/TerrainGrassPresetRow.cpp
 	Source/Terrain/TerrainPageCookOverlay.cpp
 	Source/Terrain/TerrainModifierInspectors.cpp
 	Source/Terrain/TerrainMaterialLibraryMint.cpp
@@ -419,6 +434,7 @@ set(EDITOR_SOURCES
 	Source/Inspectors/SplineFenceSpanPieceInspector.cpp
 	Source/Inspectors/SplineFenceOverrideFields.cpp
 	Source/Inspectors/SplinePlacementInspector.cpp
+	Source/Inspectors/SplineRecipe/Paving/SplinePavingInspector.cpp
 	Source/ExternalScriptEditorLauncher.cpp
 	Source/ScriptEditor/SourceLocation.cpp
 	Source/ScriptEditor/SourceLocationOpener.cpp
@@ -572,7 +588,7 @@ set(EDITOR_SOURCES
 	Source/Placement/FenceSpanOverrideRemap.cpp
 	Source/Placement/FenceSpanOverrides.cpp
 	Source/Placement/PlacementGroundGap.cpp
-	Source/Placement/RecipeControllers.cpp
+	Source/Placement/RecipeEditorHooks.cpp
 	Source/Placement/RecipeValidation.cpp
 	Source/Placement/SplineFillRebuild.cpp
 	Source/Placement/SplineChunkCommit.cpp
@@ -591,11 +607,8 @@ set(EDITOR_SOURCES
 	Source/Placement/SplineWallSanitize.cpp
 	# Mesh picking service (shared per-triangle CPU raycaster).
 	Source/Picking/MeshPickingService.cpp
-	Source/Picking/MeshBvhCache.cpp
-	Source/Picking/MeshBvhDiskFormat.cpp
 	Source/Picking/PickRootResolver.cpp
 	Source/Picking/PrimitiveMeshes.cpp
-	Source/Picking/TerrainPicking.cpp
 	Source/EditorApplication_InspectorSettings.cpp
 	Source/Editor/Settings/EditorHiDpiPlatformSettings.cpp
 	Source/EditorApplication_Fullscreen.cpp
@@ -1094,7 +1107,6 @@ if(EMSCRIPTEN)
 		${EDITOR_SDK_SOURCES}
 		${EDITOR_MINIZ_SOURCES}
 		$<TARGET_OBJECTS:VCSIntegration>
-		$<TARGET_OBJECTS:MeshPicking>
 	)
 	# Tree Generator (eztree) ships as two MODULE DLLs on desktop. Wasm cannot
 	# dlopen them, and this file return()s before ge_add_engine_package_module.
@@ -1811,9 +1823,7 @@ target_link_libraries(Editor PRIVATE AssetDatabaseSqlite)
 # (git, svn, diversion, lore) lives in an Editor-kind package module under
 # Packages/ — the editor core carries zero provider code and packaged
 # games ship no VCS code.
-set(_GE_EDITOR_OBJECT_MODULES
-	MeshPicking
-)
+set(_GE_EDITOR_OBJECT_MODULES)
 foreach(_ge_editor_object_module IN LISTS _GE_EDITOR_OBJECT_MODULES)
 	if(TARGET ${_ge_editor_object_module})
 		target_sources(Editor PRIVATE $<TARGET_OBJECTS:${_ge_editor_object_module}>)
@@ -2288,6 +2298,7 @@ file(GLOB_RECURSE _GE_STAGE_INPUTS CONFIGURE_DEPENDS
 	"${CMAKE_SOURCE_DIR}/Managed/licenses/*"
 	"${CMAKE_CURRENT_SOURCE_DIR}/Assets/*"
 	"${CMAKE_CURRENT_SOURCE_DIR}/ProjectTemplates/*"
+	"${CMAKE_SOURCE_DIR}/Assets/DayCycles/*"
 	"${CMAKE_SOURCE_DIR}/Assets/SkeletonProfiles/*"
 	"${CMAKE_SOURCE_DIR}/Assets/Materials/*"
 	"${CMAKE_SOURCE_DIR}/Assets/RenderPipelines/*"
@@ -2374,6 +2385,8 @@ list(APPEND _GE_EDITOR_MIRROR_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy_if_diffe
 # template content never enters the editor asset mount.
 _ge_editor_mirror_commands(_GE_EDITOR_MIRROR_COMMANDS
 	"${CMAKE_CURRENT_SOURCE_DIR}/ProjectTemplates" "${_GE_EDITOR_TEMPLATES_DEST}")
+_ge_editor_mirror_commands(_GE_EDITOR_MIRROR_COMMANDS
+    "${CMAKE_SOURCE_DIR}/Assets/DayCycles" "${_GE_EDITOR_ASSETS_DEST}/DayCycles")
 # Runtime humanoid profiles are shared by Editor and Player.
 _ge_editor_mirror_commands(_GE_EDITOR_MIRROR_COMMANDS
 	"${CMAKE_SOURCE_DIR}/Assets/SkeletonProfiles" "${_GE_EDITOR_ASSETS_DEST}/SkeletonProfiles")

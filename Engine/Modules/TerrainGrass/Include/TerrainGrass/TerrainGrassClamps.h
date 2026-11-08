@@ -17,6 +17,7 @@
 
 #include "Components/Terrain/TerrainGrass.h"
 #include "Terrain/TerrainTypes.h"
+#include "TerrainGrass/GrassPlacementModel.h"
 
 #include <algorithm>
 
@@ -40,7 +41,7 @@ inline constexpr uint32 kMinGrassAtlasTileCount = 1u;
 // refs, the enum) are deliberately absent.
 inline void ClampFields(Components::TerrainGrass& grass)
 {
-    grass.BladesPerSquareMeter = std::max(0.0f, grass.BladesPerSquareMeter);
+    grass.BladesPerSquareMeter = std::clamp(grass.BladesPerSquareMeter, 0.0f, kGrassMaxBladesPerSquareMeter);
     grass.Range = std::max(0.0f, grass.Range);
     grass.DensityFalloff = std::max(0.0f, grass.DensityFalloff);
     grass.ClumpSize = std::max(0.0f, grass.ClumpSize);
@@ -73,7 +74,7 @@ inline void ClampFields(Components::TerrainGrass& grass)
     grass.BladeScatterGain = std::max(0.0f, grass.BladeScatterGain);
     grass.GroundingStrength = std::clamp(grass.GroundingStrength, 0.0f, 1.0f);
     grass.Translucency = std::max(0.0f, grass.Translucency);
-    grass.TextureCardsPerSquareMeter = std::max(0.0f, grass.TextureCardsPerSquareMeter);
+    grass.TextureCardsPerSquareMeter = std::clamp(grass.TextureCardsPerSquareMeter, 0.0f, kGrassMaxBladesPerSquareMeter);
     grass.TextureSize = std::max(0.0f, grass.TextureSize);
     grass.AtlasColumns =
         std::clamp(grass.AtlasColumns, kMinGrassAtlasDimension, kMaxGrassAtlasDimension);

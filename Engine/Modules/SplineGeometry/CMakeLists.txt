@@ -8,7 +8,19 @@ project(SplineGeometry LANGUAGES CXX)
 # ground lattice as input, which is what keeps the terrain and raycast
 # dependencies (the editor-bound pieces of the pipeline) on the caller's side of
 # the seam and keeps the geometry itself unit testable without a device.
+find_package(Clipper2 CONFIG REQUIRED)
+
 add_library(SplineGeometry OBJECT
+    Source/AreaBoolean.cpp
+    Source/AreaGround.cpp
+    Source/ArmSideLine.cpp
+    Source/PavedArmPath.cpp
+    Source/PavedBorder.cpp
+    Source/PavedFootprint.cpp
+    Source/PavedMouth.cpp
+    Source/PavedStopSolver.cpp
+    Source/PavedTaggedRing.cpp
+    Source/RingWalk.cpp
     Source/SplineCorner.cpp
     Source/SplineProfile.cpp
     Source/SplineStripBuilder.cpp
@@ -32,6 +44,8 @@ target_link_libraries(SplineGeometry
     PUBLIC
         Types
         Mathematics
+    PRIVATE
+        Clipper2::Clipper2
 )
 
 # Self-find GTest (UI/Input/Spline pattern): gating on root-scope GTest state
@@ -39,6 +53,11 @@ target_link_libraries(SplineGeometry
 if(BUILD_TESTING)
     find_package(GTest REQUIRED)
     add_executable(SplineGeometryTests
+        Tests/AreaBooleanTests.cpp
+        Tests/AreaGroundTests.cpp
+        Tests/PavedBorderTests.cpp
+        Tests/PavedFootprintTests.cpp
+        Tests/PavedMouthTests.cpp
         Tests/SplineProfileTests.cpp
         Tests/SplineStripBuilderTests.cpp
         Tests/SplineCornerTests.cpp

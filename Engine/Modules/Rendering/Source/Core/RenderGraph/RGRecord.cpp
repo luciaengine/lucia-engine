@@ -165,6 +165,8 @@ RGFrame::~RGFrame()
     for (uint32_t q = 0; q < kQueueCount; ++q)
         if (m_TimelineCreated[q])
             m_Device->DestroySemaphore(m_QueueTimelines[q]);
+    if (m_ExportTimeline.IsValid() && m_DeviceRebuildGen == m_Device->GetDeviceRebuildGeneration())
+        m_Device->DestroySemaphore(m_ExportTimeline);
 }
 
 void RGFrame::SetPhysicalQueueMap(const uint8_t physicalOfLogical[3])
@@ -577,11 +579,26 @@ void RGFrame::RecordAndSubmit()
     bool queryResetDone = false;
 
     const std::vector<RGSubmission>& submissions = m_Graph.Submissions();
+    uint32_t exportAfter = kInvalidId;
+    if (m_ExportPassCount && submissions.size() == 1 && submissions.front().PhysicalQueue == 0 &&
+        m_Device->GetAPI() == GraphicsAPI::Metal)
+    {
+        // The schedule may reorder or cull a producer pass. Signal after the
+        // last surviving member of the declared prefix, in schedule order.
+        for (uint32_t si = 0; si < order.size(); ++si)
+            if (order[si] < m_ExportPassCount)
+                exportAfter = si;
+        if (exportAfter != kInvalidId && !m_ExportTimeline.IsValid())
+            m_ExportTimeline = m_Device->CreateTimelineSemaphore(0);
+    }
     for (uint32_t subIndex = 0; subIndex < submissions.size(); ++subIndex)
     {
         const RGSubmission& sub = submissions[subIndex];
         CommandList* cl = GetOrCreateCommandList(sub.PhysicalQueue);
         cl->Begin();
+        const bool encodedWait = m_OrderedGraphicsWait.IsValid() && submissions.size() == 1 &&
+                                 sub.PhysicalQueue == 0 && cl->EncodeTimelineWait(m_OrderedGraphicsWait);
+        IDevice::GpuSyncToken exportedWork{};
 
         if (resetPool && !queryResetDone)
         {
@@ -765,6 +782,12 @@ void RGFrame::RecordAndSubmit()
                 cl->SetMarker(endMarker);
             }
             cl->EndEvent();
+            if (si == exportAfter && m_ExportTimeline.IsValid())
+            {
+                const IDevice::GpuSyncToken token{m_ExportTimeline, ++m_ExportSignalValue};
+                if (cl->EncodeTimelineSignal(token))
+                    exportedWork = token;
+            }
         }
 
         // Barriers the plan placed on THIS submission record at its tail —
@@ -824,6 +847,18 @@ void RGFrame::RecordAndSubmit()
             EnsureTimeline(static_cast<uint8_t>(w.Queue));
             m_ScratchWaits.push_back({m_QueueTimelines[w.Queue], w.Value});
         }
+        for (const auto& external : m_ExternalSubmissionWaits)
+        {
+            if (encodedWait && external.OrderedGraphicsFallback)
+                continue;
+            const auto& token = external.Token;
+            const auto wait = std::find_if(m_ScratchWaits.begin(), m_ScratchWaits.end(),
+                                          [&token](const auto& item) { return item.first == token.sem; });
+            if (wait == m_ScratchWaits.end())
+                m_ScratchWaits.emplace_back(token.sem, token.value);
+            else
+                wait->second = std::max(wait->second, token.value);
+        }
         m_ScratchSignals.clear();
         m_ScratchSignals.push_back({m_QueueTimelines[sub.PhysicalQueue], sub.SignalValue});
         m_ScratchSubmitLists.clear();
@@ -840,14 +875,25 @@ void RGFrame::RecordAndSubmit()
             // of this frame and let the health machine drive recovery. A submit
             // failure on a healthy device is still a bug worth catching (and the
             // GE_DEVICE_RECOVERY=0 lane keeps that assert — health stays Healthy).
-            if (m_Device->GetDeviceHealth() != DeviceHealth::Healthy)
-            {
-                break;
-            }
-            assert(ok && "RenderGraph: QueueSubmit failed");
+            assert(m_Device->GetDeviceHealth() != DeviceHealth::Healthy &&
+                   "RenderGraph: QueueSubmit failed");
+            break;
         }
+        if (exportedWork.IsValid())
+            m_ExportedWork = exportedWork;
         m_LastSignaled[sub.PhysicalQueue] = sub.SignalValue; // WaitForPendingWork target
         ++m_Stats.SubmissionsMade;
+
+        if (!m_OnSubmitted.empty())
+        {
+            const uint32_t end = sub.ScheduledFirst + sub.ScheduledCount;
+            for (uint32_t scheduledIndex = sub.ScheduledFirst; scheduledIndex < end; ++scheduledIndex)
+            {
+                const RGPassId pass = order[scheduledIndex];
+                if (pass < m_OnSubmitted.size() && m_OnSubmitted[pass].Invoke)
+                    m_OnSubmitted[pass].Invoke(m_OnSubmitted[pass].Fn);
+            }
+        }
     }
 
     // Retire the Phase-R1 secondaries AFTER the last QueueSubmit (the primaries
@@ -877,6 +923,18 @@ void RGFrame::RecordAndSubmit()
         std::swap(m_ProfilingPendingBySlot[m_Device->GetFrameIndex() % fif], m_ProfilingCurrent);
         m_ProfilingCurrent.clear();
     }
+}
+
+void RGFrame::AddSubmissionWait(IDevice::GpuSyncToken producer, bool orderedGraphicsFallback)
+{
+    assert(producer.IsValid() && "external wait requires a submitted producer");
+    m_ExternalSubmissionWaits.push_back({producer, orderedGraphicsFallback});
+}
+
+void RGFrame::AddOrderedGraphicsWait(IDevice::GpuSyncToken producer)
+{
+    assert(producer.IsValid() && !m_OrderedGraphicsWait.IsValid());
+    m_OrderedGraphicsWait = producer;
 }
 
 IDevice::GpuSyncToken RGFrame::SubmissionToken(RGQueue queue) const

@@ -12,6 +12,8 @@
 namespace GameEngine::Animation
 {
 
+class ClipPlayerNode;
+
 struct BlendSpace1DSample
 {
     std::unique_ptr<AnimGraphNode> Node;
@@ -34,6 +36,10 @@ public:
     void Evaluate(EvaluationContext& ctx, AnimationPose& outPose) override;
 
 private:
+    void EvaluateSamples(EvaluationContext& ctx, AnimationPose& outPose, AnimGraphNode& lower,
+                         AnimGraphNode* upper, float alpha);
+
+    ClipPlayerNode* m_SyncLeader = nullptr;
     std::vector<BlendSpace1DSample> m_Samples;
     float m_Parameter = 0.0f;
     std::string m_ParameterName;

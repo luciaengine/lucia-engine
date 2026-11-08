@@ -64,6 +64,7 @@ void MetalCommandList::Begin()
     if (m_CommandBuffer == nullptr)
     {
         Logger::Log::Error("MetalCommandList: failed to obtain MTLCommandBuffer");
+        m_Device.RecordSubmissionFailure();
         return;
     }
     m_CommandBuffer->retain();
@@ -85,6 +86,38 @@ void MetalCommandList::End()
     EndActiveEncoders();
     FlushPendingTimestampQueries();
     m_IsRecording = false;
+}
+
+bool MetalCommandList::EncodeTimelineWait(IDevice::GpuSyncToken token)
+{
+    if (!m_IsRecording)
+        return false;
+    EndActiveEncoders();
+    std::lock_guard lock(m_Device.m_ResourceMutex);
+    const auto* semaphore = m_Device.m_Semaphores.Get(ToGeneric(token.sem));
+    if (!semaphore || !semaphore->deviceEvent)
+        return false;
+    m_CommandBuffer->encodeWait(semaphore->deviceEvent, token.value);
+    return true;
+}
+
+bool MetalCommandList::EncodeTimelineSignal(IDevice::GpuSyncToken token)
+{
+    if (!m_IsRecording)
+        return false;
+    EndActiveEncoders();
+    std::lock_guard lock(m_Device.m_ResourceMutex);
+    auto* semaphore = m_Device.m_Semaphores.Get(ToGeneric(token.sem));
+    if (!semaphore)
+        return false;
+    // This point is consumed only by GPU command buffers on this Metal
+    // device. Keep it independent of the CPU-visible submission timeline.
+    if (!semaphore->deviceEvent)
+        semaphore->deviceEvent = m_Device.GetMTLDevice()->newEvent();
+    if (!semaphore->deviceEvent)
+        return false;
+    m_CommandBuffer->encodeSignalEvent(semaphore->deviceEvent, token.value);
+    return true;
 }
 
 void MetalCommandList::SetVisibilityResultMode(uint32_t mode, uint64_t offsetBytes)
@@ -1607,9 +1640,8 @@ void MetalCommandList::ClearColorImageSubresourceByBlit(const MetalTexture& tex,
                                 MTL::Origin(0, y, z));
         }
     }
-    // The copies read the staging buffer when the GPU runs them, so it lives
-    // until this command buffer completes.
-    m_CommandBuffer->addCompletedHandler([staging](MTL::CommandBuffer*) { staging->release(); });
+    // The command buffer retains the copy source, including before commit.
+    staging->release();
 }
 
 void MetalCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, TextureHandle dstTexture, uint32_t mip,

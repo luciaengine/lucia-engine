@@ -837,6 +837,8 @@ void FullscreenShaderNode::Declare(RenderPipelineInstance& instance,
 
 void FullscreenShaderNode::StitchThrough(ViewDeclare& d)
 {
+    if (d.IsVersionedTexture(m_OutputRef))
+        return;
     std::string srcRef;
     if (!m_PassthroughInputName.empty())
     {
@@ -861,6 +863,8 @@ void FullscreenShaderNode::StitchThrough(ViewDeclare& d)
         }
         return;
     }
+    if (d.IsVersionedTexture(srcRef))
+        return;
     const RenderGraph::RGTexture src = d.ResolveTexture(srcRef);
     if (src.IsValid())
         d.PublishTexture(m_OutputRef, src);
@@ -1042,7 +1046,9 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
     // everything downstream, or (when the output is the smaller of the two) a
     // downscale of the finished image. Running the stage performs the resample
     // the extents ask for.
-    if (node.m_ElideWhenIdentity && node.m_Inputs.size() == 1 && !node.m_AlphaBlend &&
+    const bool versionedOutput = d.IsVersionedTexture(node.m_OutputRef);
+    if (!versionedOutput && node.m_ElideWhenIdentity && node.m_Inputs.size() == 1 &&
+        !d.IsVersionedTexture(node.m_Inputs.begin()->second) && !node.m_AlphaBlend &&
         node.m_BlendMode == FullscreenShaderNode::BlendMode::Disabled)
     {
         const RenderGraph::RGTexture in = d.ResolveTexture(node.m_Inputs.begin()->second);
@@ -1070,7 +1076,9 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
     struct TexBind
     {
         std::string Name;
-        Rendering::TextureHandle Tex;
+        Rendering::TextureHandle External;
+        RenderGraph::RGTexture Graph;
+        bool StorageWrite = false;
     };
     struct BufBind
     {
@@ -1081,13 +1089,12 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
     };
     std::vector<TexBind> texBinds;
     texBinds.reserve(node.m_InputNames.size());
-    std::vector<std::pair<RenderGraph::RGTexture, bool>> texEdges; // (texture, isWrite)
     for (const auto& name : node.m_InputNames)
     {
         if (auto gate = node.m_InputGates.find(name);
             gate != node.m_InputGates.end() && IsGateInactive(settings, gate->second))
         {
-            texBinds.push_back({name, services->Textures().GetDefaultBlackTexture()});
+            texBinds.push_back({name, services->Textures().GetDefaultBlackTexture(), {}});
             continue;
         }
         const RenderGraph::RGTexture t = d.ResolveTexture(node.m_Inputs[name]);
@@ -1124,8 +1131,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
             node.StitchThrough(d);
             return;
         }
-        texEdges.push_back({t, isWrite});
-        texBinds.push_back({name, d.Frame.PhysicalTexture(t)});
+        texBinds.push_back({name, {}, t, isWrite});
     }
 
     // Asset textures are ordinary descriptors, not render-graph resources.
@@ -1139,7 +1145,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
             const GUID guid = assets->ResolveAssetGuid(path);
             const Rendering::TextureHandle texture = services->Textures().GetOrUpload(guid);
             if (texture.IsValid())
-                texBinds.push_back({name, texture});
+                texBinds.push_back({name, texture, {}});
         }
     }
 
@@ -1187,8 +1193,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
         const auto irradiance = d.Frame.ImportExternalTexture(
             "IBL_Irradiance", ibl->GetIrradianceCube(), ResourceState::ShaderResource,
             TextureFormat{}, 1, 6);
-        texEdges.push_back({irradiance, false});
-        texBinds.push_back({"ge_irradianceCube", d.Frame.PhysicalTexture(irradiance)});
+        texBinds.push_back({"ge_irradianceCube", {}, irradiance});
         // Env owns an intensity of zero when the source is disabled, so a
         // retained last-baked cube cannot leave the rain lit by a stale sky.
         bufBinds.push_back({"Env", ibl->UploadEnvData(services->GetDevice()), 0,
@@ -1216,9 +1221,9 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
     // graph would silently merge (the combined access takes the write layout)
     // — reachable when chain threading desynchronizes a ping-pong pair.
     // Decline + stitch; only Sampled (non-write) inputs participate.
-    for (const auto& [t, isWrite] : texEdges)
+    for (const auto& binding : texBinds)
     {
-        if (isWrite || t.Id != out.Id)
+        if (binding.StorageWrite || binding.Graph.Id != out.Id)
             continue;
         if (!node.m_LoggedSelfReferentialOutput)
         {
@@ -1255,8 +1260,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
     {
         if (!texture.IsValid())
             continue;
-        texEdges.push_back({texture, false});
-        texBinds.push_back({binding, d.Frame.PhysicalTexture(texture)});
+        texBinds.push_back({binding, {}, texture});
     }
     const RenderGraph::RGTexture passOutput =
         customization.Output.IsValid() ? customization.Output : out;
@@ -1316,7 +1320,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
     {
         for (size_t i = 0; i < node.m_InputNames.size(); ++i)
         {
-            if (node.m_InputNames[i] == node.m_PingPongSceneColorBinding)
+            if (texBinds[i].Name == node.m_PingPongSceneColorBinding && !texBinds[i].StorageWrite)
             {
                 sceneColorIdx = i;
                 break;
@@ -1368,9 +1372,8 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                                             Rendering::TextureUsage::ShaderResource);
         const std::string pingAName = d.PassName(".PingA");
         const std::string pingBName = d.PassName(".PingB");
-        pdesc.debugName = pingAName.c_str();
+        pdesc.debugName = "Fullscreen.PingPong";
         ping[0] = d.Frame.CreateTexture(pingAName.c_str(), pdesc);
-        pdesc.debugName = pingBName.c_str();
         ping[1] = d.Frame.CreateTexture(pingBName.c_str(), pdesc);
         if (!ping[0].IsValid() || !ping[1].IsValid())
             chainCount = 1;
@@ -1386,24 +1389,23 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
         const RenderGraph::RGTexture finalOut = passOutput;
         const RenderGraph::RGTexture segOut = finalSeg ? finalOut : ping[seg & 1];
 
-        std::vector<TexBind> segTexBinds = texBinds;
+        auto* segTexBinds = d.Frame.AllocatePassData<std::vector<TexBind>>(texBinds);
         if (seg > 0)
-            segTexBinds[sceneColorIdx].Tex = d.Frame.PhysicalTexture(segSrc);
+            (*segTexBinds)[sceneColorIdx].Graph = segSrc;
 
         d.Frame.AddPass(
             d.PassName(kSegSuffix[seg]).c_str(), Rendering::PassPhase::kPostProcess,
             [&](RenderGraph::RGPassBuilder& p)
             {
                 p.UsePipeline(node.m_BasePipelineId);
-                for (size_t i = 0; i < texEdges.size(); ++i)
+                for (const auto& binding : *segTexBinds)
                 {
-                    auto [t, isWrite] = texEdges[i];
-                    if (seg > 0 && i == sceneColorIdx)
-                        t = segSrc;
-                    if (isWrite)
-                        p.Write(t, RenderGraph::RGTextureWrite::Storage);
+                    if (!binding.Graph.IsValid())
+                        continue;
+                    if (binding.StorageWrite)
+                        p.Write(binding.Graph, RenderGraph::RGTextureWrite::Storage);
                     else
-                        p.Read(t, RenderGraph::RGTextureRead::Sampled);
+                        p.Read(binding.Graph, RenderGraph::RGTextureRead::Sampled);
                 }
                 for (const auto& [b, isWrite] : bufEdges)
                 {
@@ -1419,8 +1421,10 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                 // would also derive a read that keeps dead producers alive) —
                 // flagged for the gate-1 visual pass. Non-final chain segments
                 // always fully overwrite their ping target.
-                ops.Load = (blendEnabled && finalSeg) ? RenderGraph::RGLoadOp::Load
-                                                      : RenderGraph::RGLoadOp::DontCare;
+                if (versionedOutput)
+                    ops.Load = RenderGraph::RGLoadOp::Clear;
+                else
+                    ops.Load = (blendEnabled && finalSeg) ? RenderGraph::RGLoadOp::Load : RenderGraph::RGLoadOp::DontCare;
                 ops.Store = RenderGraph::RGStoreOp::Store;
                 if (finalSeg && resolvePair.IsValid())
                     p.AttachColorResolve(0, segOut, resolvePair, ops);
@@ -1434,7 +1438,7 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                     p.AttachDepth(depthOutput, depthOps, RenderGraph::RGDepthAccess::ReadWrite);
                 }
             },
-            [&node, texBinds = std::move(segTexBinds), bufBinds, settings, cubeLut, bloomLensDirt,
+            [&node, segTexBinds, bufBinds, settings, cubeLut, bloomLensDirt,
              shaderAnimationTime, floatPushConstants = customization.FloatPushConstants,
              outW, outH](
                 RenderGraph::RGContext& ctx)
@@ -1551,15 +1555,18 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                     }
 
                     Rendering::NamedDescriptorWriter wdesc(device, set0, *node.m_ShaderMeta, 0);
-                    for (const auto& tb : texBinds)
+                    for (const auto& tb : *segTexBinds)
                     {
-                        if (!tb.Tex.IsValid() || !wdesc.Has(tb.Name))
+                        if (!wdesc.Has(tb.Name))
+                            continue;
+                        const auto texture = tb.Graph.IsValid() ? ctx.GetTexture(tb.Graph) : tb.External;
+                        if (!texture.IsValid())
                             continue;
                         std::string samplerPreset;
                         if (auto it = node.m_Samplers.find(tb.Name); it != node.m_Samplers.end())
                             samplerPreset = it->second;
                         const auto sampler = Detail::RequiresPointSampling(
-                            device->GetTextureFormat(tb.Tex), device->GetCapabilities())
+                            device->GetTextureFormat(texture), device->GetCapabilities())
                             ? node.m_PointClampSampler : node.SamplerForPreset(samplerPreset);
                         if (sampler.IsValid() && Detail::TryGetSet0BindingByName(*node.m_ShaderMeta, tb.Name, binding, dtype))
                         {
@@ -1573,9 +1580,9 @@ void Detail::FullscreenShaderNodeRenderer::Declare(
                                 continue;
                             dtype = layoutBinding->type;
                             if (dtype == Rendering::DescriptorType::Texture)
-                                wdesc.AddTexture(tb.Name, tb.Tex);
+                                wdesc.AddTexture(tb.Name, texture);
                             else if (dtype == Rendering::DescriptorType::CombinedImageSampler && sampler.IsValid())
-                                wdesc.AddCombinedImageSampler(tb.Name, tb.Tex, sampler);
+                                wdesc.AddCombinedImageSampler(tb.Name, texture, sampler);
                             else
                                 continue;
                             writtenBindings.insert(binding);

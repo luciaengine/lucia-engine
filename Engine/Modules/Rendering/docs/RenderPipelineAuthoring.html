@@ -213,6 +213,9 @@
   "passes": [ /* ordered pass entries */ ]
 }</code></pre>
 
+<p>The compiler declares registered view prerequisites before their consumers. These include view parameters, depth prepass inputs, prepass depth, and shadows. Authored order chooses which producer a consumer sees when more than one pass supplies the same view data. A disabled pass does not supply a prerequisite. A dependency cycle is an error.</p>
+<p>Keep passes in authored order for dependencies that use ordinary named resources or are internal to a node. Pass phase is a scheduling hint for the render graph.</p>
+
 <h3>Outputs</h3>
 
 <p>Maps a logical pipeline output to a resource reference. The editor consults this to know what to display:</p>
@@ -226,6 +229,14 @@
 <h3>Resources</h3>
 
 <p>Each entry declares one texture or buffer the pipeline owns. Resources have a <strong>scope</strong> (<code>PerView</code>, <code>Frame</code>, <code>Persistent</code>) and a <strong>kind</strong> (<code>Texture</code> or <code>Buffer</code>).</p>
+
+<h4>Explicit texture versions</h4>
+<p>A fullscreen pass can write a named version of a declared <code>PerView</code> 2D color texture with one sample, mip, and layer. Give its <code>output</code> a resource and version, then use that same reference in a sampled fullscreen input or in <code>outputs</code>.</p>
+<pre><code>"output": { "resource": "SceneColor", "version": "BeforeTonemap" }
+"inputs": { "uTex": { "resource": "SceneColor", "version": "BeforeTonemap" } }</code></pre>
+<p>Each version has one enabled writer and its own texture. A pass that skips rendering leaves its version unavailable for that frame. Version writers use a cleared attachment with blending disabled. Ordinary string references still use authored publication order. Do not use <code>@</code> in a version label or its base resource name.</p>
+
+<p>The compiler orders registered view prerequisites first. It then reorders adjacent version writers to satisfy version reads. Ordinary passes and outputs keep their positions in that second step. List a reader after its writer if an ordinary pass separates them.</p>
 
 <h4>Texture entry</h4>
 
@@ -244,6 +255,7 @@
   <tbody>
     <tr><td><code>format</code></td><td>Any <code>TextureFormat</code> enum value as a string. Common: <code>R8_UNORM</code>, <code>R8G8B8A8_UNORM</code>, <code>R16G16B16A16_FLOAT</code>, <code>R11G11B10_FLOAT</code>, <code>D32_FLOAT</code>, <code>R32_UINT</code></td></tr>
     <tr><td><code>scope</code></td><td><code>PerView</code> (one per camera), <code>Frame</code> (one per frame), <code>Persistent</code> (across frames)</td></tr>
+    <tr><td><code>transient</code></td><td>Optional Boolean. Set to <code>true</code> for a texture written and sampled by fullscreen passes in the same graph. Give it a producer that fully writes it. Use a pooled texture for history or pipeline outputs.</td></tr>
     <tr><td><code>extent.scale</code></td><td><code>[sx, sy]</code> relative to view size. Omit for view-sized.</td></tr>
     <tr><td><code>extent.absolute</code></td><td><code>[w, h]</code> for fixed-size targets (e.g. shadow maps)</td></tr>
     <tr><td><code>usage</code></td><td>Array of: <code>RenderTarget</code>, <code>DepthStencil</code>, <code>ShaderResource</code>, <code>Storage</code>, <code>CopySource</code>, <code>CopyDestination</code></td></tr>

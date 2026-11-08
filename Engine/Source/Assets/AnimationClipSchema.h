@@ -21,7 +21,7 @@ namespace GameEngine
  *        channels are `channels` and which lasts `duration` seconds.
  *
  * The schema is the object under the extras' "clip" key at schemaVersion 1: "loop", "speed", "rootMotion",
- * "translations" and "events", each optional. An event's "frame" counts from the clip's time 0 at the rate the
+ * "translations", "events" and "syncMarkers", each optional. An event's "frame" counts from the clip's time 0 at the rate the
  * clip is sampled. The extras text is attacker-controlled, so it is read only within the schema bounds: at most
  * ModelExtras::kObjectBoundBytes of text, nested at most 16 levels deep, with no key twice in one object, in time
  * linear in the text. A block that is read replaces `outSettings` and `outEvents`; a refused block sets neither.

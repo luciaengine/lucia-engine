@@ -4,6 +4,8 @@
 #include <string_view>
 #include <vector>
 
+#include "Mathematics/Curve.h"
+
 namespace GameEngine::Scene
 {
 
@@ -106,6 +108,9 @@ std::string FormatQuoted(std::string_view s);
 // Shortest round-trip form (std::to_chars): exact on reload, unlike ostream's 6-significant-digit
 // default. The one scalar float serializer the scene schemas share with FormatFloat2/3/4.
 std::string FormatFloat(float value);
+
+/// Formats every key and tangent of a curve as a scene property value.
+std::string FormatCurveKeys(const Math::Curve& curve);
 std::string FormatFloat2(float x, float y);
 std::string FormatFloat3(float x, float y, float z);
 std::string FormatFloat4(float x, float y, float z, float w);

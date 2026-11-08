@@ -324,18 +324,9 @@ void TemporalAANode::DeclareForView(ViewDeclare& d)
         return;
 
     ViewHistory& vh = m_ViewHistory[static_cast<uint32_t>(d.View.id)];
-    // Folded with the pool's freshness answer once the history import below has
-    // reported it; declared here because the snapshot fields are overwritten
-    // further down.
-    const uint64_t prevWrittenFrame = vh.LastWrittenFrame;
-    const uint32_t prevOutWidth = vh.OutWidth;
-    const uint32_t prevOutHeight = vh.OutHeight;
-    const bool prevCameraValid = state->PrevValid;
+    // The camera snapshot and motion data must describe the image in the read slot.
+    const bool prevCameraValid = state->PrevValid && state->PrevFrameStamp == vh.LastWrittenFrame;
     const uint32_t parity = static_cast<uint32_t>(vh.HistoryFrame & 1ull);
-    vh.HistoryFrame++;
-    vh.LastWrittenFrame = frameIndex;
-    vh.OutWidth = outW;
-    vh.OutHeight = outH;
 
     // ── Resources ──────────────────────────────────────────────────────────
     const std::string base = "TAA.View" + std::to_string(static_cast<uint32_t>(d.View.id));
@@ -359,7 +350,7 @@ void TemporalAANode::DeclareForView(ViewDeclare& d)
     const RenderGraph::RGTexture historyRead =
         d.Frame.ImportPersistentTexture(readName.c_str(), historyDesc, &historyReadFresh);
     const bool historyValid =
-        ComputeHistoryValid(prevWrittenFrame, frameIndex, prevOutWidth, prevOutHeight, outW, outH,
+        ComputeHistoryValid(vh.LastWrittenFrame, frameIndex, vh.OutWidth, vh.OutHeight, outW, outH,
                             prevCameraValid, historyReadFresh);
     if (!historyWrite.IsValid() || !historyRead.IsValid())
         return;
@@ -477,6 +468,23 @@ void TemporalAANode::DeclareForView(ViewDeclare& d)
         paramsSize = sizeof(TaaResolveParamsCPU);
     }
 
+    ViewHistory next{};
+    next.HistoryFrame = vh.HistoryFrame + 1;
+    next.LastWrittenFrame = frameIndex;
+    next.OutWidth = outW;
+    next.OutHeight = outH;
+    next.RenderWidth = w;
+    next.RenderHeight = h;
+    next.WorldId = worldId;
+    next.RenderContentVersion = renderVersion;
+    next.ShadowCasterContentVersion = casterVersion;
+    next.LightListVersion = lightVersion;
+    next.DepthDynamicEpoch = dynamicEpoch;
+    struct ResolveOutcome
+    {
+        bool Dispatched = false;
+    };
+    auto* outcome = d.Frame.AllocatePassData<ResolveOutcome>();
     const RenderGraph::RGTexture depthResolved = d.ViewDepthResolved;
     d.Frame.AddComputePass(
         d.PassName("TAAResolve").c_str(), Rendering::PassPhase::kDefault,
@@ -489,9 +497,22 @@ void TemporalAANode::DeclareForView(ViewDeclare& d)
             p.Read(historyRead, RenderGraph::RGTextureRead::Sampled);
             p.Write(historyWrite, RenderGraph::RGTextureWrite::Storage);
             p.Write(outColor, RenderGraph::RGTextureWrite::Storage);
+            p.Prepare([&vh, expected = vh.HistoryFrame, outcome](RenderGraph::RGPrepareContext&)
+            {
+                outcome->Dispatched = false;
+                return vh.HistoryFrame == expected;
+            });
+            p.OnSubmitted([&vh, next, outcome, frame = &d.Frame, historyWrite]
+            {
+                if (outcome->Dispatched)
+                {
+                    vh = next;
+                    frame->MarkPersistentTextureInitialized(historyWrite);
+                }
+            });
         },
         [this, input, depthResolved, mvTex, historyRead, historyWrite, outColor, paramsBuffer,
-         paramsOffset, paramsSize, taau, outW, outH](RenderGraph::RGContext& ctx)
+         paramsOffset, paramsSize, taau, outW, outH, outcome](RenderGraph::RGContext& ctx)
         {
             auto* dev = ctx.GetDevice();
             auto* cl = ctx.Cmd;
@@ -513,6 +534,8 @@ void TemporalAANode::DeclareForView(ViewDeclare& d)
             dsDesc.transient = true;
             dsDesc.debugName = "TAAResolve.Set0";
             auto ds = dev->CreateDescriptorSet(dsDesc);
+            if (!ds.IsValid())
+                return;
             dev->UpdateStorageImageBinding(ds, 0, histW);
             dev->UpdateStorageImageBinding(ds, 1, outTex);
             {
@@ -548,19 +571,8 @@ void TemporalAANode::DeclareForView(ViewDeclare& d)
             cl->BindDescriptorSet(0, ds, pipe);
             // Dispatch over the OUTPUT extent (== render extent outside TAAU).
             cl->Dispatch((outW + 7) / 8, (outH + 7) / 8, 1);
+            outcome->Dispatched = true;
         });
-    // Mark only now that the resolve pass DECLARING the full-surface write
-    // exists: marking before the early-outs above would discharge the pool's
-    // freshness arm on a frame that never declared the rewrite, and the next
-    // frame would blend against an undefined physical as "resident" history.
-    d.Frame.MarkPersistentTextureInitialized(historyWrite);
-    vh.WorldId = worldId;
-    vh.RenderContentVersion = renderVersion;
-    vh.ShadowCasterContentVersion = casterVersion;
-    vh.LightListVersion = lightVersion;
-    vh.DepthDynamicEpoch = dynamicEpoch;
-    vh.RenderWidth = w;
-    vh.RenderHeight = h;
 
     d.PublishTexture(m_OutputKey, outColor);
 

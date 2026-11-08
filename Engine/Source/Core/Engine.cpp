@@ -1,6 +1,9 @@
 #include "EngineShaderPath.h"
 #include "Core/Engine.h"
 
+#include "SceneLoadTracker/SceneLoadTracker.h"
+#include "Scene/SceneLoadingGates.h"
+
 #include "EngineShaderHookState.h"
 #include "Logger/Logger.h"
 #include <algorithm>
@@ -69,6 +72,8 @@
 #include "TileMapECS/TileMapRuntimeStore.h"
 #include "MarkupECS/MarkupService.h"
 #include "SplineECS/SplineService.h"
+#include "SplineRecipes/SplineRecipeSystem.h"
+#include "SplineECS/SplineNetwork.h"
 #include "SplineECS/Systems/RegisterSplineSystems.h"
 #include "PathfindingECS/NavigationService.h"
 #include "PathfindingECS/Systems/RegisterPathfindingSystems.h"
@@ -275,6 +280,8 @@ const WorldServiceLifecycle kWorldServices[] = {
      &TerrainECS::TerrainService::Shutdown},
     {&SplineECS::SplineService::IsInitialized, &SplineECS::SplineService::Initialize,
      &SplineECS::SplineService::Shutdown},
+    {&SplineECS::SplineNetwork::IsInitialized, &SplineECS::SplineNetwork::Initialize,
+     &SplineECS::SplineNetwork::Shutdown},
     {&MarkupECS::MarkupService::IsInitialized, &MarkupECS::MarkupService::Initialize,
      &MarkupECS::MarkupService::Shutdown},
     {&PathfindingECS::NavigationService::IsInitialized, &PathfindingECS::NavigationService::Initialize,
@@ -357,6 +364,8 @@ class EngineCore::InitializeTransaction
 EngineCore* EngineCore::s_Instance = nullptr;
 
 EngineCore::EngineCore()
+    : m_SceneLoadTracker(MakeUnique<SceneLoadTracker>()),
+      m_SceneLoadingGates(MakeUnique<SceneLoadingGates>(*this))
 {
     if (s_Instance != nullptr)
     {
@@ -1172,6 +1181,8 @@ void EngineCore::Update(float64 deltaTime)
         return;
     }
 
+    m_SceneLoadTracker->Tick(std::chrono::steady_clock::now());
+
     // Update asset manager (process loading queue, check for file changes)
     if (m_AssetManager)
     {
@@ -1410,6 +1421,7 @@ bool EngineCore::EnableRenderingLoop(Engine::Renderer::RenderServices* renderSer
             {"RenderExtraction", "TerrainExtraction", "SpriteAnimation", "TileMapExtraction"},
             renderServices ? renderServices->GetDevice() : nullptr, renderServices);
         SplineECS::AddSplineSystemsToSchedule(schedule);
+        SplineRecipes::AddSplineRecipeSystemsToSchedule(schedule, renderServices);
         PathfindingECS::AddPathfindingSystemsToSchedule(schedule);
         // Associate contributions with their plugin so reload reconciliation
         // can replace or retire that plugin's systems.

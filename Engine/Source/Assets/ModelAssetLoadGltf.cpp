@@ -1438,6 +1438,7 @@ bool ModelAsset::LoadGLTF(const Vector<uint8>& data, const FbxLoaderOptions& loa
                     // Use the same unpacked accessor as UV0, including sparse overrides.
                     mesh.TexCoords1.assign(attributeFloats.begin(), attributeFloats.end());
                 } else if (a.type == cgltf_attribute_type_tangent && a.index == 0) {
+                    haveTangents = true;
                     for (size_t i = 0; i < count; ++i) {
                         const float* tangent = attributeFloats.data() + i * 4;
                         convertVec(tangent[0], tangent[1], tangent[2], mesh.Vertices[i].Tangent);
@@ -1482,11 +1483,16 @@ bool ModelAsset::LoadGLTF(const Vector<uint8>& data, const FbxLoaderOptions& loa
             if (!havePositions || positionVertexCount == 0)
                 continue;
 
-            // POSITION defines the authoritative vertex count for indexed geometry.
-            // Other attributes can be missing or sparse; trim any oversize tail so
-            // index validation stays tied to real POSITION vertices.
+            // POSITION defines the vertex count for index validation.
             if (mesh.Vertices.size() != positionVertexCount)
                 mesh.Vertices.resize(positionVertexCount);
+            if (const std::string problem = IndexPastTheVertices(mesh.Indices, positionVertexCount);
+                !problem.empty())
+            {
+                RefuseGltfFile(GetPath(), PrimitiveAccessorRefusal(pi, mi, m.name, "indices") + problem);
+                m_Meshes.clear();
+                return false;
+            }
             if (!mesh.HasTexCoords1())
                 mesh.TexCoords1.clear();
 

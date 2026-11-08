@@ -1064,6 +1064,7 @@ if(EMSCRIPTEN)
     add_subdirectory(Engine/Modules/PlatformServices)
     add_subdirectory(Engine/Modules/PlatformProviders/${GE_PLATFORM_BACKEND})
     add_subdirectory(Engine/Modules/Scene)
+    add_subdirectory(Engine/Modules/SceneLoadTracker)
     add_subdirectory(Engine/Modules/SceneBvh)
     add_subdirectory(Engine/Modules/Particles)
     add_subdirectory(Engine/Modules/VolumetricFog)
@@ -1080,6 +1081,7 @@ if(EMSCRIPTEN)
     add_subdirectory(Engine/Modules/SplineGeometry)
     add_subdirectory(Engine/Modules/SplineLayout)
     add_subdirectory(Engine/Modules/SplineECS)
+    add_subdirectory(Engine/Modules/SplineRecipes)
     add_subdirectory(Engine/Modules/TileMap)
     add_subdirectory(Engine/Modules/MarkupECS)
     add_subdirectory(Engine/Modules/PathfindingECS)
@@ -1169,6 +1171,7 @@ add_subdirectory(Engine/Modules/MeshPicking)
 # Scene-level CPU spatial index (TLAS over per-entity AABBs). Shared by
 # picking, marquee select, AI line-of-sight, audio occlusion, streaming.
 add_subdirectory(Engine/Modules/Scene)
+add_subdirectory(Engine/Modules/SceneLoadTracker)
 
 # GPU-consumable threaded BVH (build/refit/pack) for the software ray-traversal
 # lane used where hardware ray queries are unavailable.
@@ -1188,6 +1191,7 @@ add_subdirectory(Engine/Modules/Spline)
 add_subdirectory(Engine/Modules/SplineGeometry)
 add_subdirectory(Engine/Modules/SplineLayout)
 add_subdirectory(Engine/Modules/SplineECS)
+add_subdirectory(Engine/Modules/SplineRecipes)
 add_subdirectory(Engine/Modules/TileMap)
 add_subdirectory(Engine/Modules/MarkupECS)
 

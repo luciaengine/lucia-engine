@@ -75,6 +75,7 @@ struct MetalTextureView
 struct MetalSemaphore
 {
     MTL::SharedEvent* event = nullptr; // owned (+1)
+    MTL::Event* deviceEvent = nullptr; // optional GPU-only timeline, owned (+1)
 };
 
 // One descriptor set = one Metal 3 argument table (Tier2, raw 8-byte slots)
@@ -207,6 +208,8 @@ class MetalDevice : public IDevice
 {
     friend class MetalSwapchain;
     friend class MetalCommandList;
+    friend class MetalSubmitQueue;
+    friend struct MetalDeviceTestAccess;
 
   public:
     MetalDevice();
@@ -254,6 +257,7 @@ class MetalDevice : public IDevice
     size_t DebugGetAllocatedBytes() const override;
     size_t DebugGetTextureBytes() const override;
     size_t DebugGetBufferBytes() const override;
+    ResourcePoolStats GetResourcePoolStats() const override;
     void DebugEnumerateResources(const std::function<void(const DebugResourceInfo&)>& fn) const override;
     bool GetLastFrameSyncTimings(FrameSyncTimings& out) const override;
 
@@ -290,6 +294,11 @@ class MetalDevice : public IDevice
     std::unique_ptr<CommandList> CreateCommandList(QueueType queue) override;
     void ExecuteCommandLists(const std::vector<CommandList*>& commandLists) override;
     void WaitForIdle() override;
+    DeviceHealth GetDeviceHealth() const override
+    {
+        return m_SubmissionFailed.load(std::memory_order_acquire) ? DeviceHealth::Failed : DeviceHealth::Healthy;
+    }
+    uint64_t GetIdleDrainCount() const override { return m_IdleDrainCount.load(std::memory_order_relaxed); }
 
     // Frame loop
     bool BeginFrame() override;
@@ -401,7 +410,7 @@ class MetalDevice : public IDevice
 
     // Queue an owned Metal object for release once the current frame slot's
     // GPU work has provably completed (kFramesInFlight frames later).
-    void DeferRelease(NS::Object* object);
+    void DeferRelease(NS::Object* object, bool isTextureView = false);
 
   private:
     static constexpr uint32_t kFramesInFlight = 3;
@@ -428,9 +437,12 @@ class MetalDevice : public IDevice
     // (late submissions like thumbnail views would otherwise still be
     // executing when their resources recycle). A buffer on m_GraphicsQueue is
     // also counted in m_GraphicsCbsInFlight.
-    void TrackFrameCommandBuffer(MTL::CommandBuffer* buffer);
-    // Completion handler of a tracked buffer (a Metal-owned thread).
-    void RetireTrackedCommandBuffer(uint32_t slot, bool onGraphicsQueue);
+    std::shared_ptr<MetalSubmitQueue::Submit::TrackedBuffer> TrackFrameCommandBuffer(
+        MTL::CommandBuffer* buffer, dispatch_semaphore_t frameSemaphore = nullptr);
+    void RecordSubmissionFailure();
+    // Retires a claimed completion or cancellation.
+    void RetireTrackedCommandBuffer(const MetalSubmitQueue::Submit::TrackedBuffer& tracked,
+                                   MTL::CommandBuffer* completed);
     void WaitForSlotCommandBuffers(uint32_t slot);
     // Capture the frame-terminal command buffer's GPU end time (called from its
     // completion handler on a background queue) to derive frameGpuPeriodMs.
@@ -447,6 +459,7 @@ class MetalDevice : public IDevice
     MetalSubmitQueue m_GraphicsSubmitQueue;
     MetalSubmitQueue m_ComputeSubmitQueue;
     MetalSubmitQueue m_TransferSubmitQueue;
+    std::atomic<bool> m_SubmissionFailed{false};
     std::unique_ptr<MetalQueryPool> m_QueryPool;
     HdrOutputState m_HdrState{};
     // The DeviceDesc HDR request, pending until the first window target is
@@ -455,9 +468,7 @@ class MetalDevice : public IDevice
     std::array<std::atomic<uint32_t>, kFramesInFlight> m_SlotInFlightCbs{};
     // Tracked command buffers on m_GraphicsQueue that are enqueued and not yet
     // completed, whatever their frame slot. Counted before a buffer can reach
-    // the GPU and uncounted by its completion handler, so zero means every
-    // tracked graphics buffer has completed. The untracked ones (the submit
-    // worker's signal-only buffer, WaitForIdle's marker) write no resource.
+    // the GPU and retired on completion or cancellation.
     std::atomic<uint32_t> m_GraphicsCbsInFlight{0};
     std::mutex m_SlotCbMutex;
     std::condition_variable m_SlotCbCv;
@@ -486,6 +497,8 @@ class MetalDevice : public IDevice
     NS::AutoreleasePool* m_FramePool = nullptr;
 
     std::array<std::vector<NS::Object*>, kFramesInFlight> m_DeferredReleases;
+    std::array<size_t, kFramesInFlight> m_DeferredTextureViewCounts{};
+    std::atomic<uint64_t> m_IdleDrainCount{0};
 
     mutable std::recursive_mutex m_ResourceMutex;
     GenerationalVector<MetalBuffer> m_Buffers;

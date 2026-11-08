@@ -102,6 +102,25 @@ vec4 GE_StandardSampleAt(GE_MaterialTexture map, vec4 st, vec4 st2, vec2 uv0, ve
 }
 #endif
 
+#ifndef GE_PARALLAX_MARCH
+// The branch reads one flat material value for each primitive.
+vec4 GE_StandardSampleBlend(GE_MaterialTexture map, vec2 uvA, vec2 uvB, float blend)
+{
+    vec4 first = texture(map, uvA);
+    if (!GE_FORWARD_HEX_TILING || Mat.uParams0.z < 0.5)
+        return first;
+    return mix(first, texture(map, uvB), blend);
+}
+
+vec3 GE_StandardSampleNormalBlend(GE_MaterialTexture map, vec2 uvA, vec2 uvB, float blend)
+{
+    vec3 first = GE_DecodeTangentNormal(texture(map, uvA));
+    if (!GE_FORWARD_HEX_TILING || Mat.uParams0.z < 0.5)
+        return first;
+    return mix(first, GE_DecodeTangentNormal(texture(map, uvB)), blend);
+}
+#endif
+
 SurfaceOutput EvaluateSurface(SurfaceInput sIn)
 {
     SurfaceOutput o = DefaultSurfaceOutput();
@@ -140,9 +159,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
                          uvNormalA, uvNormalB, uvNormalBlend);
 
     // Albedo: texture * UBO tint
-    vec4 albedoA = texture(albedoMap, uvAlbedoA);
-    vec4 albedoB = texture(albedoMap, uvAlbedoB);
-    vec4 albedo = mix(albedoA, albedoB, uvAlbedoBlend);
+    vec4 albedo = GE_StandardSampleBlend(albedoMap, uvAlbedoA, uvAlbedoB, uvAlbedoBlend);
 #endif
     o.baseColor = albedo.rgb * Mat.uBaseColor.rgb * sIn.vertexColor.rgb;
 #if defined(GE_PARALLAX_MARCH) && defined(ALPHA_TEST)
@@ -159,9 +176,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec4 mr = GE_StandardSampleAt(metallicRoughnessMap, sIn.textureST[2], sIn.textureST2[2], reliefUv0,
                                   sIn.uvFootprint);
 #else
-    vec4 mrA = texture(metallicRoughnessMap, uvMRA);
-    vec4 mrB = texture(metallicRoughnessMap, uvMRB);
-    vec4 mr = mix(mrA, mrB, uvMRBlend);
+    vec4 mr = GE_StandardSampleBlend(metallicRoughnessMap, uvMRA, uvMRB, uvMRBlend);
 #endif
     o.roughness = mr.g * Mat.uParams0.y;
     o.metallic = mr.b * Mat.uParams0.x;
@@ -186,13 +201,13 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     float uvAOBlend = 0.0;
     GE_ComputeHexBlendUV(sIn.uv0, sIn.textureST[4], sIn.textureST2[4], Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x,
                          uvAOA, uvAOB, uvAOBlend);
-    o.ao = mix(texture(aoMap, uvAOA).r, texture(aoMap, uvAOB).r, uvAOBlend);
+    o.ao = GE_StandardSampleBlend(aoMap, uvAOA, uvAOB, uvAOBlend).r;
 
     vec2 uvEmissiveA, uvEmissiveB;
     float uvEmissiveBlend = 0.0;
     GE_ComputeHexBlendUV(sIn.uv0, sIn.textureST[3], sIn.textureST2[3], Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x,
                          uvEmissiveA, uvEmissiveB, uvEmissiveBlend);
-    vec3 emissiveTex = mix(texture(emissiveMap, uvEmissiveA).rgb, texture(emissiveMap, uvEmissiveB).rgb, uvEmissiveBlend);
+    vec3 emissiveTex = GE_StandardSampleBlend(emissiveMap, uvEmissiveA, uvEmissiveB, uvEmissiveBlend).rgb;
 #endif
     // Emission authored in nits: texture x colour x luminance, scaled into scene-linear by the
     // reference-white anchor (OpenPBR emission_color x emission_luminance; an unbound texture
@@ -206,9 +221,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     vec3 tn = GE_DecodeTangentNormal(
         GE_StandardSampleAt(normalMap, sIn.textureST[1], sIn.textureST2[1], reliefUv0, sIn.uvFootprint));
   #else
-    vec3 tnA = GE_DecodeTangentNormal(texture(normalMap, uvNormalA));
-    vec3 tnB = GE_DecodeTangentNormal(texture(normalMap, uvNormalB));
-    vec3 tn = mix(tnA, tnB, uvNormalBlend);
+    vec3 tn = GE_StandardSampleNormalBlend(normalMap, uvNormalA, uvNormalB, uvNormalBlend);
   #endif
     o.normalWS = normalize(sIn.TBN * tn);
 #else
@@ -228,8 +241,7 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
     float uvCoatNormalBlend = 0.0;
     GE_ComputeHexBlendUV(sIn.uv0, sIn.textureST[5], sIn.textureST2[5], Mat.uParams0.z, Mat.uParams0.w, Mat.uParams3.x,
                          uvCoatNormalA, uvCoatNormalB, uvCoatNormalBlend);
-    vec3 ctn = mix(GE_DecodeTangentNormal(texture(coatNormalMap, uvCoatNormalA)),
-                   GE_DecodeTangentNormal(texture(coatNormalMap, uvCoatNormalB)), uvCoatNormalBlend);
+    vec3 ctn = GE_StandardSampleNormalBlend(coatNormalMap, uvCoatNormalA, uvCoatNormalB, uvCoatNormalBlend);
     #endif
     o.coatNormalWS = normalize(sIn.TBN * ctn);
   #else

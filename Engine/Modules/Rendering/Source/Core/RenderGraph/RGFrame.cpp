@@ -524,6 +524,8 @@ void RGFrame::BeginFrame(uint64_t frameIndex)
             m_TimelineCreated[q] = false;
             m_LastSignaled[q] = 0;
         }
+        m_ExportTimeline = {};
+        m_ExportSignalValue = 0;
         m_DeviceRebuildGen = rebuildGen;
     }
 
@@ -563,6 +565,7 @@ void RGFrame::ResetRecording()
     m_Graph.BeginFrame(); // resets the arena → runs last frame's exec-lambda dtors
     m_Exec.clear();
     m_Prepare.clear();
+    m_OnSubmitted.clear();
     m_RequiredPipelines.clear();
     m_PassRecordSecondary.clear();
     m_GraphicsSpecializations.clear();
@@ -575,6 +578,10 @@ void RGFrame::ResetRecording()
     m_ZeroInitBufferIds.clear();
     m_InitializedTextureIds.clear();
     m_RequiredTransferUsage.clear();
+    m_ExternalSubmissionWaits.clear();
+    m_ExportPassCount = 0;
+    m_ExportedWork = {};
+    m_OrderedGraphicsWait = {};
     m_Attachments.clear();
     m_Physical.assign(m_Physical.size(), 0);
     m_HasPhysical.assign(m_HasPhysical.size(), 0);

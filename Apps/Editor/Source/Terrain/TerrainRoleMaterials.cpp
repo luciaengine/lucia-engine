@@ -6,6 +6,7 @@
 #include "Terrain/TerrainLayers.h"
 #include "UndoRedo/UndoRedoService.h"
 
+#include "AssetCore/AssetEvents.h"
 #include "AssetCore/SharedFileRead.h"
 #include "Assets/AssetManager.h"
 #include "Assets/TerrainMaterialLibraryAsset.h"
@@ -157,6 +158,14 @@ void AddAddTile(UIElement& grid, const std::function<void()>& add)
     grid.AddChild(std::move(tile));
 }
 
+void NotifyLibraryReload(const TerrainMaterialLibraryAsset& library)
+{
+    auto& engine = EngineCore::GetInstance();
+    if (engine.IsInitialized())
+        engine.GetAssetManager().DispatchWithRedirectSources(
+            AssetEvents::AssetReloaded(library.GetGUID(), library.GetType(), library.GetPath().string()));
+}
+
 // The whole document, captured before an edit and rewritten on undo.
 UndoRedoService::SnapshotTarget MakeLibrarySnapshotTarget(TerrainMaterialLibraryAsset* library,
                                                           const std::string& label)
@@ -186,7 +195,10 @@ UndoRedoService::SnapshotTarget MakeLibrarySnapshotTarget(TerrainMaterialLibrary
             out.write(reinterpret_cast<const char*>(snapshot.data()),
                       static_cast<std::streamsize>(snapshot.size()));
         out.close();
-        return library->Load();
+        if (!out || !library->Load())
+            return false;
+        NotifyLibraryReload(*library);
+        return true;
     };
 
     return target;
@@ -222,7 +234,8 @@ void EditLibraryUndoable(TerrainMaterialLibraryAsset* library, UndoRedoService* 
         edit = undo->BeginInteractiveEdit(label, MakeLibrarySnapshotTarget(library, label));
 
     mutate(library->EditMaterials());
-    (void)library->Save();
+    if (library->Save())
+        NotifyLibraryReload(*library);
 
     if (edit)
         edit.Commit();

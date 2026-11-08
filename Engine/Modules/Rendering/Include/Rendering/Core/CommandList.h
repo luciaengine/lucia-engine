@@ -286,6 +286,10 @@ class CommandList
     // Command list management
     virtual void Begin() = 0;
     virtual void End() = 0;
+    // Optional GPU events inside a command list. The caller must enqueue the
+    // signal first and record its wait before dependent work on the same queue.
+    virtual bool EncodeTimelineWait(IDevice::GpuSyncToken) { return false; }
+    virtual bool EncodeTimelineSignal(IDevice::GpuSyncToken) { return false; }
 
     // Pipeline state
     virtual void SetPipeline(PipelineHandle pipeline) = 0;

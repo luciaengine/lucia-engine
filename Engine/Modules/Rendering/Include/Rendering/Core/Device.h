@@ -79,7 +79,7 @@ enum class ShaderSourceKind : uint8_t
 // by polling. Lost means the backend reported a real device loss on some op;
 // rendering is suppressed until the recovery machine rebuilds.
 //
-// The remaining states drive the Tier-2 in-place rebuild (slice 2):
+// Recovery and terminal states:
 //   Rebuilding          — a rebuild is running on the render thread; device-scoped
 //                         Vulkan objects are being replaced. No work is issued.
 //   AwaitingReprovision — the device was rebuilt and is fully functional, but the
@@ -89,8 +89,8 @@ enum class ShaderSourceKind : uint8_t
 //                         pass completes and calls NotifyReprovisionComplete()
 //                         (slice 3a owns that consumer). Direct device GPU ops
 //                         (buffer create/upload, submit, fence) work here.
-//   Failed              — the rebuild exhausted its bounded retries (a persistently
-//                         dying GPU). No healthy device; only save-and-restart is
+//   Failed              — recovery is unavailable or exhausted its bounded retries.
+//                         No healthy device; only save-and-restart is
 //                         viable (slice 6 owns the UX).
 // The backend reads this once per window per frame plus on error paths, so a
 // healthy steady state pays nothing.
@@ -952,7 +952,7 @@ struct RenderingDeviceCapabilities
     // Vulkan drivers handle the engine's bindless raw-depth PCSS reads
     // unreliably, while the comparison-sampler PCF path remains stable.
     bool prefersStableShadowFiltering = false;
-    // Legacy Adreno compilers benefit from pipeline constants for absent forward features.
+    // Prefer pipeline constants for absent forward features on AMD and legacy Adreno.
     bool prefersForwardShaderSpecialization = false;
     // Whether one buffer may be both a shader storage target and CPU-mappable.
     // Vulkan and Metal allow it (a storage buffer in host-visible memory);
@@ -2666,6 +2666,8 @@ class IDevice
     // combination is left un-cached.
     PipelineHandle CreateGraphicsPipelineDirect(GraphicsPipelineId id, const PipelineFormatKey& fk);
 
+    /// Number of queued or running pipeline builds at the time of the call. Thread-safe.
+    size_t PendingPipelineBuildCount() const;
     PipelineCacheStats GetPipelineCacheStats() const;
 
     // Direct access to the pipeline cache. Used by hot-reload paths that need

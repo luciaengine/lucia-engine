@@ -212,6 +212,11 @@ class RGPassBuilder
         requires std::is_invocable_r_v<bool, std::decay_t<PrepareFn>&, RGPrepareContext&>
     void Prepare(PrepareFn&& prepare);
 
+    /// Runs on the caller thread when the submission containing this pass succeeds.
+    template <class SubmittedFn>
+        requires std::is_invocable_r_v<void, std::decay_t<SubmittedFn>&>
+    void OnSubmitted(SubmittedFn&& submitted);
+
   private:
     friend class RGFrame;
     RGFrame* m_Frame = nullptr;
@@ -585,6 +590,18 @@ class RGFrame
     // Invalid when nothing has been submitted there, which reads as
     // GpuSyncStatus::Unknown — never as completion.
     IDevice::GpuSyncToken SubmissionToken(RGQueue queue = RGQueue::Graphics) const;
+    // Every submission in this frame depends on this already-enqueued producer.
+    // Retain the producer timeline until the waiting submissions complete.
+    void AddSubmissionWait(IDevice::GpuSyncToken producer, bool orderedGraphicsFallback = false);
+    // Export completion of all live passes declared so far, if the backend
+    // can signal between passes on a single graphics submission. The caller
+    // still owns the fallback to the final token for other submission plans.
+    void ExportDeclaredWorkCompletion() { m_ExportPassCount = m_Graph.PassCount(); }
+    // GPU-only completion point. Use SubmissionToken for CPU waits or queries.
+    IDevice::GpuSyncToken DeclaredWorkCompletionToken() const { return m_ExportedWork; }
+    // A submitted early token replaces only waits tagged as its fallback,
+    // and only when it can be encoded on the sole graphics submission.
+    void AddOrderedGraphicsWait(IDevice::GpuSyncToken producer);
 
     // Recording statistics for the last Execute() (tests + MCP).
     struct FrameStats
@@ -793,6 +810,18 @@ class RGFrame
         m_Prepare[pass].Fn = function;
     }
 
+    template <class SubmittedFn>
+    void SetOnSubmitted(RGPassId pass, SubmittedFn&& submitted)
+    {
+        using Function = std::decay_t<SubmittedFn>;
+        if (m_OnSubmitted.size() <= pass)
+            m_OnSubmitted.resize(pass + 1);
+        auto& callback = m_OnSubmitted[pass];
+        assert(callback.Fn == nullptr && "a pass has one submission callback");
+        callback.Fn = m_Graph.Arena().New<Function>(std::forward<SubmittedFn>(submitted));
+        callback.Invoke = [](void* value) { (*static_cast<Function*>(value))(); };
+    }
+
     uint64_t PhysicalOf(RGResourceId id) const
     {
         // Loud in release too: a transient queried before Execute's
@@ -828,6 +857,11 @@ class RGFrame
         void* Fn = nullptr;
         uint32_t RequiredFirst = 0;
         uint32_t RequiredCount = 0;
+    };
+    struct SubmitThunk
+    {
+        void (*Invoke)(void*) = nullptr;
+        void* Fn = nullptr;
     };
     struct PipelineRequirement
     {
@@ -888,6 +922,7 @@ class RGFrame
 
     RGGraph m_Graph;
     std::vector<PrepareThunk> m_Prepare;
+    std::vector<SubmitThunk> m_OnSubmitted;
     std::vector<PipelineRequirement> m_RequiredPipelines;
     std::vector<ExecThunk> m_Exec; // indexed by pass id
     std::vector<PendingTex> m_PendingTex;
@@ -941,6 +976,17 @@ class RGFrame
     std::vector<std::pair<uint32_t, uint32_t>> m_ScratchAttRange; // per pass (first,count)
     std::vector<const RGBarrierBatch*> m_ScratchBatchOfSched;
     std::vector<CommandList*> m_ScratchSubmitLists;
+    struct ExternalSubmissionWait
+    {
+        IDevice::GpuSyncToken Token;
+        bool OrderedGraphicsFallback;
+    };
+    std::vector<ExternalSubmissionWait> m_ExternalSubmissionWaits;
+    size_t m_ExportPassCount = 0;
+    SemaphoreHandle m_ExportTimeline{};
+    uint64_t m_ExportSignalValue = 0;
+    IDevice::GpuSyncToken m_ExportedWork{};
+    IDevice::GpuSyncToken m_OrderedGraphicsWait{};
     std::vector<std::pair<SemaphoreHandle, uint64_t>> m_ScratchWaits;
     std::vector<std::pair<SemaphoreHandle, uint64_t>> m_ScratchSignals;
 
@@ -962,6 +1008,13 @@ template <class PrepareFn>
 void RGPassBuilder::Prepare(PrepareFn&& prepare)
 {
     m_Frame->SetPrepare(m_Pass, std::forward<PrepareFn>(prepare));
+}
+
+template <class SubmittedFn>
+    requires std::is_invocable_r_v<void, std::decay_t<SubmittedFn>&>
+void RGPassBuilder::OnSubmitted(SubmittedFn&& submitted)
+{
+    m_Frame->SetOnSubmitted(m_Pass, std::forward<SubmittedFn>(submitted));
 }
 
 } // namespace GameEngine::Rendering::RenderGraph

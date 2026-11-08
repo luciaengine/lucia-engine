@@ -1509,6 +1509,113 @@ TEST(RenderPipelineDeclareTests, TaaHistoryValidityIgnoresInternalExtent)
         << "first frame for a view";
 }
 
+TEST(RenderPipelineDeclareTests, TaaHistoryAdvancesOnlyWhenTheResolveSubmits)
+{
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        RenderServices rs;
+        ASSERT_TRUE(rs.Initialize(device.get()));
+        const CameraId camera = rs.Views().AllocateCamera("TaaHistoryCamera");
+        CameraData cameraData{};
+        for (uint32_t diagonal = 0; diagonal < 16; diagonal += 5)
+        {
+            cameraData.view[diagonal] = 1.0f;
+            cameraData.proj[diagonal] = 1.0f;
+            cameraData.viewProj[diagonal] = 1.0f;
+        }
+        rs.Views().SetCameraData(camera, cameraData);
+        const ViewId view = rs.Views().AllocateView("TaaHistoryView", camera);
+        rs.Views().SetViewRenderLayerMask(view, 1u);
+        rs.Views().SetViewTargets(view, 0, 0, 0, ViewClearConfig{});
+        rs.Views().SetViewAntiAliasing(view, true, AntiAliasingMode::TAA, 8u);
+
+        RenderPipelineNodeRegistry registry;
+        ASSERT_TRUE(registry.Register("TemporalAA",
+            [] { return std::make_unique<Nodes::TemporalAANode>(); }, true));
+        RenderPipelineBlueprint blueprint;
+        blueprint.pipelineName = "TaaHistoryTest";
+        RenderPipelineBlueprint::Pass pass;
+        pass.id = "TemporalAA";
+        pass.type = "TemporalAA";
+        pass.enabled = true;
+        pass.perView = true;
+        pass.passJson = R"({"id":"TemporalAA","type":"TemporalAA","input":"View.Color","output":"TaaColor"})";
+        blueprint.passes.push_back(std::move(pass));
+        blueprint.outputs.push_back({"FinalColor", "TaaColor"});
+
+        RenderPipelineInstance instance(rs, registry);
+        instance.SetBlueprint(std::move(blueprint));
+        FramePools pools(device.get());
+        RenderGraph::RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        const std::string historyPrefix = "TAA.View" + std::to_string(view) + ".History";
+
+        enum class Attempt { Submit, Discard, Abort };
+        auto render = [&device, &frame, &rs, &instance, view, &historyPrefix](uint64_t index, Attempt attempt, uint32_t expectedWriteSlot)
+        {
+            SCOPED_TRACE(index);
+            ASSERT_TRUE(device->BeginFrame());
+            frame.BeginFrame(index);
+            rs.BeginWorldDrawFrame();
+
+            TextureDesc colorDesc = ColorTargetDesc();
+            colorDesc.usage |= static_cast<uint32_t>(TextureUsage::ShaderResource);
+            const auto color = frame.CreateTexture("TaaHistory.SceneColor", colorDesc);
+            const auto depth = frame.CreateTexture("TaaHistory.SceneDepth", DepthTargetDesc());
+            frame.AddPass("TaaHistory.Clear", 0,
+                [color, depth](RenderGraph::RGPassBuilder& builder)
+                {
+                    RenderGraph::RGAttachmentOps ops{};
+                    ops.Load = RenderGraph::RGLoadOp::Clear;
+                    builder.AttachColor(0, color, ops);
+                    builder.AttachDepth(depth, ops);
+                }, [](RenderGraph::RGContext&) {});
+
+            const ViewTargetsRG target{view, color, depth, {}};
+            instance.Declare(frame, std::span(&target, 1), rs.Views().GetViews());
+            const auto output = instance.GetOutputRG(view, "FinalColor");
+            ASSERT_TRUE(output.IsValid());
+            ASSERT_NE(output.Id, color.Id) << "TAA resolve must be staged and declare a real output";
+
+            const auto write = frame.FindTexture((historyPrefix + std::to_string(expectedWriteSlot)).c_str());
+            ASSERT_TRUE(write.IsValid());
+            bool writesExpectedSlot = false;
+            for (RenderGraph::RGPassId passId = 0; passId < frame.Graph().PassCount(); ++passId)
+                if (frame.Graph().HasWriteAccess(passId, output.Id))
+                    writesExpectedSlot |= frame.Graph().HasWriteAccess(passId, write.Id);
+            EXPECT_TRUE(writesExpectedSlot);
+
+            if (attempt == Attempt::Discard)
+                frame.DiscardRecordedPasses();
+            else
+                frame.MarkOutput(output);
+            frame.AddPass("TaaHistory.SubmissionControl", 0,
+                [attempt](RenderGraph::RGPassBuilder& builder)
+                {
+                    builder.PreventCulling();
+                    if (attempt == Attempt::Abort)
+                        builder.Prepare([](RenderGraph::RGPrepareContext&) { return false; });
+                }, [](RenderGraph::RGContext&) {});
+
+            const uint64_t submitted = frame.SubmittedFrameCount();
+            frame.Execute();
+            EXPECT_EQ(frame.SubmittedFrameCount(), submitted + (attempt != Attempt::Abort ? 1u : 0u));
+            device->FinalizeFrame();
+            device->WaitForIdle();
+        };
+
+        render(0u, Attempt::Submit, 0u);
+        render(1u, Attempt::Submit, 1u);
+        render(2u, Attempt::Discard, 0u);
+        render(3u, Attempt::Submit, 0u);
+        render(4u, Attempt::Abort, 1u);
+        render(5u, Attempt::Submit, 1u);
+        rs.Shutdown();
+    }
+    device->Shutdown();
+}
+
 // A view that draws content moving without an instance or an epoch (moving particles) is
 // never certified stationary: its history is clipped (+1) the frame it is reported and the
 // frame after, so the last moving copy is cleared, then the still view is certified again (-1).
@@ -4879,7 +4986,7 @@ std::vector<uint8_t> StagedCullingShaderLoader(const char* name)
 // shared physicals and runs the pipeline declare on its OWN instance and
 // blackboard. Pre-8a a single shared instance meant B's declare re-aimed the
 // one blackboard and killed A's GetPipelineOutputRG — the headline fix.
-TEST(RenderPipelineDeclareTests, TwoFrameStreamsOneAppFrameIsolateAndShareGlobalStages)
+static void CheckTwoFrameStreamsShareGlobalStages(bool selectProducer, bool retireProducer = false)
 {
     ASSERT_FALSE(StagedCullingShaderLoader("Shaders/frustum_culling.shaderpkg").empty())
         << "Required frustum_culling.shaderpkg is missing; build CompileShaderPkgs";
@@ -4934,17 +5041,46 @@ TEST(RenderPipelineDeclareTests, TwoFrameStreamsOneAppFrameIsolateAndShareGlobal
         const ViewTargetsRG vtA{viewA, colorA, depthA, {}};
         RenderServices::FrameGraphBuildParamsRG paramsA{};
         paramsA.ViewTargets = std::span<const ViewTargetsRG>(&vtA, 1);
-        rs.Spine().BuildFrameGraph(frameA, paramsA);
-
-        const auto outA = rs.GetPipelineOutputRG(frameA, viewA);
-        ASSERT_TRUE(outA.Out.IsValid()) << "owner stream's pipeline output must resolve";
-
         frameB.BeginFrame(0);
         RenderGraph::RGTexture colorB = frameB.ImportPersistentTexture("TwoStreamB.Color", ColorTargetDesc());
         RenderGraph::RGTexture depthB = frameB.ImportPersistentTexture("TwoStreamB.Depth", DepthTargetDesc());
         const ViewTargetsRG vtB{viewB, colorB, depthB, {}};
         RenderServices::FrameGraphBuildParamsRG paramsB{};
         paramsB.ViewTargets = std::span<const ViewTargetsRG>(&vtB, 1);
+
+        if (selectProducer)
+        {
+            rs.Spine().SelectSharedSceneProducer(frameA);
+            rs.Spine().BuildFrameGraph(frameB, paramsB);
+            EXPECT_FALSE(rs.GetPipelineOutputRG(frameB, viewB).Out.IsValid())
+                << "a consumer arriving before the producer must wait";
+        }
+        rs.Spine().BuildFrameGraph(frameA, paramsA);
+        const auto outA = rs.GetPipelineOutputRG(frameA, viewA);
+        ASSERT_TRUE(outA.Out.IsValid()) << "owner stream's pipeline output must resolve";
+
+        if (selectProducer)
+        {
+            bool allowSubmission = false;
+            frameA.AddPass("ProducerSubmissionGate", 0,
+                [&allowSubmission](RenderGraph::RGPassBuilder& pass)
+                {
+                    pass.PreventCulling();
+                    pass.Prepare([&allowSubmission](RenderGraph::RGPrepareContext&) { return allowSubmission; });
+                }, [](RenderGraph::RGContext&) {});
+            const uint64_t submitted = frameA.SubmittedFrameCount();
+            frameA.Execute();
+            NotifyRenderGraphExecution(frameA, submitted, &rs.Spine());
+            EXPECT_EQ(frameA.SubmittedFrameCount(), submitted);
+
+            rs.Spine().BuildFrameGraph(frameB, paramsB);
+            EXPECT_FALSE(rs.GetPipelineOutputRG(frameB, viewB).Out.IsValid())
+                << "an aborted producer cannot publish shared scene inputs";
+            allowSubmission = true;
+            frameA.Execute();
+            NotifyRenderGraphExecution(frameA, submitted, &rs.Spine());
+            ASSERT_EQ(frameA.SubmittedFrameCount(), submitted + 1u);
+        }
         rs.Spine().BuildFrameGraph(frameB, paramsB);
 
         // (a) The headline fix: B's declare must not kill A's output, and B
@@ -4999,15 +5135,45 @@ TEST(RenderPipelineDeclareTests, TwoFrameStreamsOneAppFrameIsolateAndShareGlobal
         }
 
         // (d) Submit choreography: both streams execute + stamp cleanly.
-        frameA.Execute();
-        rs.Spine().OnFrameSubmittedRG(frameA, frameA.SubmissionToken());
-        frameB.Execute();
-        rs.Spine().OnFrameSubmittedRG(frameB, frameB.SubmissionToken());
+        if (!selectProducer)
+        {
+            frameA.Execute();
+            rs.Spine().OnFrameSubmittedRG(frameA, frameA.SubmissionToken());
+        }
+        if (retireProducer)
+        {
+            rs.Spine().RemovePipelineInstanceForFrame(&frameA);
+            EXPECT_EQ(frameB.Graph().PassCount(), 0u);
+            EXPECT_FALSE(rs.GetPipelineOutputRG(frameB, viewB).Out.IsValid());
+            const uint64_t submitted = frameB.SubmittedFrameCount();
+            frameB.Execute();
+            EXPECT_EQ(frameB.SubmittedFrameCount(), submitted);
+        }
+        else
+        {
+            frameB.Execute();
+            rs.Spine().OnFrameSubmittedRG(frameB, frameB.SubmissionToken());
+        }
         device->WaitForIdle();
 
         rs.Shutdown();
     }
     device->Shutdown();
+}
+
+TEST(RenderPipelineDeclareTests, TwoFrameStreamsOneAppFrameIsolateAndShareGlobalStages)
+{
+    CheckTwoFrameStreamsShareGlobalStages(false);
+}
+
+TEST(RenderPipelineDeclareTests, TwoFrameStreamsWaitForTheSelectedSceneProducer)
+{
+    CheckTwoFrameStreamsShareGlobalStages(true);
+}
+
+TEST(RenderPipelineDeclareTests, RetiringSceneProducerDiscardsAnUnsubmittedConsumer)
+{
+    CheckTwoFrameStreamsShareGlobalStages(true, true);
 }
 
 // Slice-8a epoch stability (A1.4 S0 lock, spine F6): BuildFrameGraph must NEVER
@@ -7640,6 +7806,7 @@ struct ShippedBloomFrame
     bool ShadersStaged = true;
     std::vector<std::string> DeclaredNodes;       // bloom-family node ids that declared a pass
     std::vector<std::string> CombineSampledNames; // last segment of each texture BloomCombine samples
+    std::vector<std::string> TransientCombineInputs;
 };
 
 bool IsBloomFamilyNode(const std::string& id)
@@ -7720,7 +7887,12 @@ ShippedBloomFrame DeclareShippedBloomFrame(FxChainFixture& f, const PostProcessS
             for (const RenderGraph::RGAccessRecord& access : g.Accesses())
             {
                 if (access.Pass == p && access.Access == RenderGraph::RGAccess::Sampled)
-                    result.CombineSampledNames.push_back(LastNameSegment(g.ResourceName(access.Resource)));
+                {
+                    const std::string resourceName = LastNameSegment(g.ResourceName(access.Resource));
+                    result.CombineSampledNames.push_back(resourceName);
+                    if (!g.IsImported(access.Resource))
+                        result.TransientCombineInputs.push_back(resourceName);
+                }
             }
         }
     }
@@ -7782,6 +7954,190 @@ TEST(RenderPipelineDeclareTests, DisabledBloomDeclaresNoBloomPassWithDepthVeilOn
         EXPECT_TRUE(off.DeclaredNodes.empty()) << "declared with bloom off: " << Joined(off.DeclaredNodes);
     }
     f.Down();
+}
+
+TEST(RenderPipelineDeclareTests, ShippedBloomCombineReadsTransientHighlights)
+{
+    FxChainFixture f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    ASSERT_TRUE(f.Registry.Register(
+        "ViewParamsUpload", [] { return std::make_unique<Nodes::ViewParamsUploadNode>(); }, true));
+
+    PostProcessSettings settings{};
+    settings.BloomIntensity = 0.45f;
+    const ShippedBloomFrame frame = DeclareShippedBloomFrame(f, settings);
+    ASSERT_TRUE(frame.ShadersStaged) << "bloom shader packages must be staged";
+    EXPECT_TRUE(Contains(frame.CombineSampledNames, "BloomNormalized"));
+    EXPECT_TRUE(Contains(frame.TransientCombineInputs, "BloomNormalized"));
+    f.Down();
+}
+
+TEST(RenderPipelineDeclareTests, FullscreenCopySamplesARealizedIntermediate)
+{
+    FxChainFixture f;
+    if (!f.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        RenderPipelineBlueprint bp;
+        bp.pipelineName = "TransientFullscreenCopy";
+        bp.passes.push_back(FxChainFixture::FxPass("CopyIn",
+            R"({"id":"CopyIn","type":"FullscreenShader","inputs":{"uTex":"View.Color"},"output":"Intermediate","shaderPkg":"Shaders/copy.shaderpkg"})"));
+        bp.passes.push_back(FxChainFixture::FxPass("CopyOut",
+            R"({"id":"CopyOut","type":"FullscreenShader","inputs":{"uTex":"Intermediate"},"output":"Result","shaderPkg":"Shaders/copy.shaderpkg"})"));
+        bp.resources.push_back({"Intermediate",
+            R"({"kind":"Texture","scope":"PerView","transient":true,"format":"RGBA8_UNORM"})"});
+        FxChainFixture::AddTexResource(bp, "Result");
+        bp.outputs.push_back({"FinalColor", "Result"});
+        RenderPipelineInstance instance(*f.Rs, f.Registry);
+        instance.SetBlueprint(std::move(bp));
+
+        FramePools pools(f.Device.get());
+        RenderGraph::RGFrame frame(f.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        ASSERT_TRUE(f.Device->BeginFrame());
+        frame.BeginFrame(0);
+        TextureDesc desc = ColorTargetDesc();
+        desc.usage |= static_cast<uint32_t>(TextureUsage::ShaderResource);
+        const auto color = frame.ImportPersistentTexture("FullscreenCopy.Color", desc);
+        const auto depth = frame.ImportPersistentTexture("FullscreenCopy.Depth", DepthTargetDesc());
+        frame.AddPass("FullscreenCopy.Clear", 0,
+            [color](RenderGraph::RGPassBuilder& builder)
+            {
+                RenderGraph::RGAttachmentOps ops{};
+                ops.Load = RenderGraph::RGLoadOp::Clear;
+                ops.Clear.Color[0] = 1.0f;
+                ops.Clear.Color[3] = 1.0f;
+                builder.AttachColor(0, color, ops);
+            }, [](RenderGraph::RGContext&) {});
+
+        const ViewTargetsRG targets{f.View, color, depth, {}};
+        instance.Declare(frame, std::span(&targets, 1), f.Rs->Views().GetViews());
+        const auto* resources = instance.FrameResourcesFor(&frame);
+        ASSERT_NE(resources, nullptr);
+        const auto intermediate = resources->Textures.find({f.View, "Intermediate"});
+        ASSERT_NE(intermediate, resources->Textures.end()) << "copy shader package must be staged";
+        EXPECT_FALSE(frame.Graph().IsImported(intermediate->second.Id));
+
+        const auto output = instance.GetOutputRG(f.View, "FinalColor");
+        ASSERT_TRUE(output.IsValid());
+        auto readback = RequestTextureReadbackRG(f.Device.get(), frame, output, "FullscreenCopy.Readback");
+        ASSERT_NE(readback, nullptr);
+        frame.Execute();
+        OnFrameSubmittedReadbacksRG(frame, frame.SubmissionToken());
+        f.Device->FinalizeFrame();
+        f.Device->WaitForIdle();
+        ViewReadbackResult result{};
+        ASSERT_TRUE(readback->TryGet(result));
+        ASSERT_GE(result.pixels.size(), 4u);
+        EXPECT_EQ(result.pixels[0], 255);
+        EXPECT_EQ(result.pixels[1], 0);
+        EXPECT_EQ(result.pixels[2], 0);
+    }
+    f.Down();
+}
+
+TEST(RenderPipelineDeclareTests, SamplesAnOlderExplicitTextureVersionAfterWritingANewerOne)
+{
+    FxChainFixture fixture;
+    if (!fixture.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        const std::string source = R"json({
+          "schemaVersion": 2, "pipelineName": "VersionedCopy",
+          "resources": {
+            "ColorStep": { "scope": "PerView" },
+            "Result": { "scope": "PerView" },
+            "Alias": { "scope": "PerView" }
+          },
+          "passes": [
+            { "id": "Old", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+              "inputs": { "uTex": "View.Color" },
+              "output": { "resource": "ColorStep", "version": "Old" } },
+            { "id": "New", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+              "inputs": { "uTex": "View.Resolve" },
+              "output": { "resource": "ColorStep", "version": "New" } },
+            { "id": "ReadOld", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+              "inputs": { "uTex": { "resource": "ColorStep", "version": "Old" } },
+              "output": "Result", "elideWhenIdentity": true },
+            { "id": "SkipAlias", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+              "inputs": { "uTex": { "resource": "ColorStep", "version": "Old" } },
+              "skipWhen": { "bloomIntensity": 0 }, "output": "Alias" },
+            { "id": "Skipped", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+              "inputs": { "uTex": "View.Color" }, "skipWhen": { "bloomIntensity": 0 },
+              "output": { "resource": "ColorStep", "version": "Skipped" } },
+            { "id": "ReadSkipped", "type": "FullscreenShader", "shaderPkg": "Shaders/copy.shaderpkg",
+              "inputs": { "uTex": { "resource": "ColorStep", "version": "Skipped" } },
+              "output": { "resource": "ColorStep", "version": "Missing" } }
+          ],
+          "outputs": { "FinalColor": "Result",
+                       "Newest": { "resource": "ColorStep", "version": "New" },
+                       "Oldest": { "resource": "ColorStep", "version": "Old" },
+                       "Alias": "Alias",
+                       "Skipped": { "resource": "ColorStep", "version": "Skipped" },
+                       "Missing": { "resource": "ColorStep", "version": "Missing" } }
+        })json";
+        RenderPipelineAsset asset(GUID::Null(), std::filesystem::path("versions.rendergraph"));
+        asset.LoadFromData(Vector<uint8>(source.begin(), source.end()));
+        const auto blueprint = RenderPipelineCompiler{}.Compile(asset, fixture.Registry);
+        for (const auto& issue : blueprint.issues)
+            ASSERT_NE(issue.severity, PipelineIssueSeverity::Error) << issue.message;
+        RenderPipelineInstance instance(*fixture.Rs, fixture.Registry);
+        instance.SetBlueprint(blueprint);
+
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        ASSERT_TRUE(fixture.Device->BeginFrame());
+        frame.BeginFrame(0);
+        TextureDesc descriptor = ColorTargetDesc();
+        descriptor.usage |= static_cast<uint32_t>(TextureUsage::ShaderResource);
+        const auto red = frame.ImportPersistentTexture("VersionedCopy.Red", descriptor);
+        const auto green = frame.ImportPersistentTexture("VersionedCopy.Green", descriptor);
+        const auto depth = frame.ImportPersistentTexture("VersionedCopy.Depth", DepthTargetDesc());
+        frame.AddPass("VersionedCopy.Clear", 0, [red, green](RenderGraph::RGPassBuilder& builder)
+        {
+            RenderGraph::RGAttachmentOps ops{};
+            ops.Load = RenderGraph::RGLoadOp::Clear;
+            ops.Clear.Color[3] = 1.0f;
+            ops.Clear.Color[0] = 1.0f;
+            builder.AttachColor(0, red, ops);
+            ops.Clear.Color[0] = 0.0f;
+            ops.Clear.Color[1] = 1.0f;
+            builder.AttachColor(1, green, ops);
+        }, [](RenderGraph::RGContext&) {});
+
+        const ViewTargetsRG targets{fixture.View, red, depth, green};
+        instance.Declare(frame, std::span(&targets, 1), fixture.Rs->Views().GetViews());
+        const auto olderCopy = instance.GetOutputRG(fixture.View, "FinalColor");
+        const auto newer = instance.GetOutputRG(fixture.View, "Newest");
+        ASSERT_TRUE(olderCopy.IsValid());
+        ASSERT_TRUE(newer.IsValid());
+        const auto oldest = instance.GetOutputRG(fixture.View, "Oldest");
+        ASSERT_TRUE(oldest.IsValid());
+        EXPECT_NE(oldest.Id, olderCopy.Id);
+        EXPECT_FALSE(instance.GetOutputRG(fixture.View, "Alias").IsValid());
+        EXPECT_FALSE(instance.GetOutputRG(fixture.View, "Skipped").IsValid());
+        EXPECT_FALSE(instance.GetOutputRG(fixture.View, "Missing").IsValid());
+        auto olderReadback = RequestTextureReadbackRG(fixture.Device.get(), frame, olderCopy, "VersionedCopy.Old");
+        auto newerReadback = RequestTextureReadbackRG(fixture.Device.get(), frame, newer, "VersionedCopy.New");
+        ASSERT_NE(olderReadback, nullptr);
+        ASSERT_NE(newerReadback, nullptr);
+
+        frame.Execute();
+        OnFrameSubmittedReadbacksRG(frame, frame.SubmissionToken());
+        fixture.Device->FinalizeFrame();
+        fixture.Device->WaitForIdle();
+        ViewReadbackResult oldPixels{};
+        ViewReadbackResult newPixels{};
+        ASSERT_TRUE(olderReadback->TryGet(oldPixels));
+        ASSERT_TRUE(newerReadback->TryGet(newPixels));
+        ASSERT_GE(oldPixels.pixels.size(), 4u);
+        ASSERT_GE(newPixels.pixels.size(), 4u);
+        EXPECT_EQ(oldPixels.pixels[0], 255);
+        EXPECT_EQ(oldPixels.pixels[1], 0);
+        EXPECT_EQ(newPixels.pixels[0], 0);
+        EXPECT_EQ(newPixels.pixels[1], 255);
+    }
+    fixture.Down();
 }
 
 // One threshold decides scattering: just below it no scattering pass declares and
@@ -12990,7 +13346,7 @@ TEST(RenderPipelineDeclareTests, ReadbackTicketWaitsItsOwnSubmissionNotTheDevice
 {
     auto device = CreateVulkanDeviceFast();
     if (!device)
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
     {
         // Positive control: the counter moves on a real drain. Without this the
         // zero deltas below are absence of evidence, not evidence of absence.
@@ -14985,6 +15341,108 @@ TEST(TerrainGpuNormalBake, SharedEdgeNormalsBitEqualAcrossAdjacentTiles)
     device->Shutdown();
 }
 
+TEST(TerrainGpuNormalBake, SculptDirtyRectReadsAdjacentUploadedSlot)
+{
+    using GameEngine::TerrainECS::TerrainHandle;
+    using GameEngine::TerrainECS::TerrainRenderFeature;
+    auto device = CreateVulkanDeviceFast();
+    if (!device)
+        GTEST_SKIP() << "No rendering device available";
+
+    constexpr uint32_t kTileResolution = 8;
+    constexpr uint32_t kSlotStride = kTileResolution + 2;
+    constexpr uint32_t kAtlasWidth = 2 * kSlotStride;
+    constexpr uint32_t kFirstRow = 2;
+    constexpr uint32_t kRowCount = 4;
+    constexpr float kSeamGradientX = 0.25f;
+    constexpr float kGradientZ = 0.125f;
+    constexpr float kHalfFloatTolerance = 0.001f;
+    constexpr TerrainHandle kTerrain{0, 1};
+    {
+        TerrainRenderFeature feature;
+        ASSERT_TRUE(feature.Initialize(device.get()));
+        feature.EnsureAtlasHeightTexture(kTerrain, kAtlasWidth);
+        feature.EnsureAtlasNormalTexture(kTerrain, kAtlasWidth);
+
+        // Simulate two sculpt uploads with clamped height aprons and a common edge.
+        // The one-inboard samples give a cross-edge gradient of (0.375 + 0.125) / 2.
+        std::array<float, kSlotStride * kSlotStride> heights{};
+        for (uint32_t slot = 0; slot < 2; ++slot)
+        {
+            for (uint32_t z = 0; z < kSlotStride; ++z)
+                for (uint32_t x = 0; x < kSlotStride; ++x)
+                {
+                    const int last = static_cast<int>(kTileResolution) - 1;
+                    const int localX = std::clamp(static_cast<int>(x) - 1, 0, last);
+                    const int localZ = std::clamp(static_cast<int>(z) - 1, 0, last);
+                    const int fromSeam = slot == 0 ? localX - last : localX;
+                    const float gradientX = slot == 0 ? 0.125f : 0.375f;
+                    heights[z * kSlotStride + x] = 0.25f + fromSeam * gradientX + localZ * kGradientZ;
+                }
+            ASSERT_TRUE(feature.UploadAtlasHeightSlotRegion(kTerrain,
+                reinterpret_cast<const uint8_t*>(heights.data()), kSlotStride, kSlotStride, slot * kSlotStride, 0));
+
+            TerrainHeightBakePush push{};
+            push.RectMinX = slot == 0 ? kTileResolution - 1 : 0;
+            push.RectMinZ = kFirstRow;
+            push.RectW = 1;
+            push.RectH = kRowCount;
+            push.Slot = slot;
+            push.TileSize = kTileResolution - 1;
+            push.HeightScale = 1;
+            push.TileRes = kTileResolution;
+            push.SlotStride = kSlotStride;
+            push.SlotsPerRow = 2;
+            push.NormalReadsUploadedHeight = 1;
+            if (slot == 0)
+                push.NormalNeighborRight = 1;
+            else
+                push.NormalNeighborLeft = 0;
+            ASSERT_TRUE(feature.QueueAtlasSculptNormals(kTerrain, push));
+        }
+
+        const auto normal = feature.GetAtlasNormalTexture(kTerrain);
+        const auto readback = device->CreateReadbackBuffer(kAtlasWidth * kSlotStride * 4);
+        ASSERT_TRUE(normal.IsValid());
+        ASSERT_TRUE(readback.IsValid());
+        auto commandList = device->CreateCommandList(GameEngine::Rendering::IDevice::QueueType::Graphics);
+        commandList->Begin();
+        feature.FlushPendingUploads(commandList.get());
+        feature.FlushPendingBakes(commandList.get());
+        commandList->Barrier(ResourceBarrier::CreateTextureBarrier(normal, ResourceState::ShaderResource,
+                                                                   ResourceState::CopySource));
+        commandList->CopyTextureToBuffer(normal, readback, kAtlasWidth, kSlotStride);
+        commandList->End();
+        device->ExecuteCommandLists({commandList.get()});
+        device->FinalizeFrame();
+        device->WaitForIdle();
+
+        const float length = std::sqrt(1.0f + kSeamGradientX * kSeamGradientX + kGradientZ * kGradientZ);
+        const auto* packedNormals = static_cast<const uint16_t*>(device->MapBuffer(readback));
+        ASSERT_NE(packedNormals, nullptr);
+        for (uint32_t z = 0; z < kSlotStride; ++z)
+        {
+            const uint32_t seam = (z * kAtlasWidth + kTileResolution) * 2;
+            const bool dirty = z >= kFirstRow + 1 && z < kFirstRow + kRowCount + 1;
+            SCOPED_TRACE(z);
+            EXPECT_NEAR(HalfToFloatOracle(packedNormals[seam]),
+                        dirty ? -kSeamGradientX / length : 0.0f, kHalfFloatTolerance);
+            EXPECT_NEAR(HalfToFloatOracle(packedNormals[seam + 1]),
+                        dirty ? -kGradientZ / length : 0.0f, kHalfFloatTolerance);
+            for (uint32_t texel = 1; texel <= 3; ++texel)
+            {
+                EXPECT_EQ(packedNormals[seam], packedNormals[seam + texel * 2]);
+                EXPECT_EQ(packedNormals[seam + 1], packedNormals[seam + texel * 2 + 1]);
+            }
+            EXPECT_EQ(packedNormals[seam - 2], 0u);
+            EXPECT_EQ(packedNormals[seam + 8], 0u);
+        }
+        device->UnmapBuffer(readback);
+        device->DestroyBuffer(readback);
+    }
+    device->Shutdown();
+}
+
 TEST(TerrainGpuNormalBake, IsBitStableAcrossIdenticalRuns)
 {
     auto device = CreateVulkanDeviceFast();
@@ -16243,12 +16701,12 @@ struct HzbTwoViewRig
 // The lifetime pin. Two views, one node, one frame: the second view's execute
 // callback must not destroy the first view's single-mip image views — they are
 // already written into this frame's recorded descriptor sets, so destroying
-// them makes the submitted command buffer reference a dead VkImageView.
+// them makes the submitted command buffer reference a dead texture view.
 TEST(RenderPipelineDeclareTests, TwoHzbViewsInOneFrameKeepBothViewsMipViewsAlive)
 {
     auto device = CreateVulkanDeviceFast();
     if (!device)
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
     {
         HzbTwoViewRig rig;
         ASSERT_TRUE(rig.Init(device.get()));
@@ -16308,7 +16766,7 @@ TEST(RenderPipelineDeclareTests, HzbMipViewsOfAResizedViewOutliveTheFrameThatRep
 {
     auto device = CreateVulkanDeviceFast();
     if (!device)
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
     {
         HzbTwoViewRig rig;
         ASSERT_TRUE(rig.Init(device.get()));
@@ -18041,8 +18499,10 @@ TEST(RenderPipelineDeclareTests, SceneAsForgetsItsBlasMapOnADeviceRebuild)
 {
     const ScopedForcedDeviceLoss loss;
     auto device = CreateVulkanDeviceFast();
-    if (!device || !device->GetCapabilities().supportsRayQuery)
-        GTEST_SKIP() << "Vulkan fault injection requires a Vulkan ray-query backend; the Metal fallback does not implement GE_VK_FORCE_DEVICE_LOST";
+    if (!device || device->GetAPI() != GraphicsAPI::Vulkan)
+        GTEST_SKIP() << "GE_VK_FORCE_DEVICE_LOST requires Vulkan";
+    if (!device->GetCapabilities().supportsRayQuery)
+        GTEST_SKIP() << "Vulkan device does not support ray queries";
     {
         RenderServices rs;
         ASSERT_TRUE(rs.Initialize(device.get()));
@@ -18438,7 +18898,9 @@ TEST(RenderPipelineDeclareTests, TerrainExtractionUploadsAgainAfterADeviceRebuil
     const ScopedForcedDeviceLoss loss;
     TerrainFixture f;
     if (!f.Up())
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
+    if (f.Device->GetAPI() != GraphicsAPI::Vulkan)
+        GTEST_SKIP() << "GE_VK_FORCE_DEVICE_LOST requires Vulkan";
     {
         auto& terrain = f.Rs->EnsureFeature<TerrainECS::TerrainRenderFeature>();
         EXPECT_TRUE(terrain.Initialize(f.Device.get()));
@@ -18531,7 +18993,9 @@ TEST(RenderPipelineDeclareTests, TerrainFeatureForgetsEveryDeviceObjectAtARebuil
     const ScopedForcedDeviceLoss loss;
     TerrainFixture f;
     if (!f.Up())
-        GTEST_SKIP() << "No Vulkan device available";
+        GTEST_SKIP() << "No graphics device available";
+    if (f.Device->GetAPI() != GraphicsAPI::Vulkan)
+        GTEST_SKIP() << "GE_VK_FORCE_DEVICE_LOST requires Vulkan";
     {
         auto& terrain = f.Rs->EnsureFeature<TerrainECS::TerrainRenderFeature>();
         EXPECT_TRUE(terrain.Initialize(f.Device.get()));

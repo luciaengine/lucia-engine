@@ -107,7 +107,8 @@ namespace GameEngine {
     /* Shared contact surface (.physmat JSON). */ \
     X(PhysicsMaterial) \
     X(TileSet) \
-    X(TileMap)
+    X(TileMap) \
+    X(DayCycleProfile)
 
 /**
  * @brief Asset types supported by the engine

@@ -144,11 +144,6 @@ set(EDITOR_TEST_SOURCES
 	# fixture (terrain + picker) from the drape group above as well as the fence
 	# runtime layout linked through Engine.
 	FenceConformTargetTests.cpp
-	# Same contract again for the generated-geometry recipe, whose every-field
-	# equality guard is what keeps a mesh regenerating after a profile edit,
-	# plus the NaN self-inequality guard shared with the fence. The sanitize TU
-	# is a leaf over the component header only.
-	SplineExtrudeRecipeTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/SplineExtrudeSanitize.cpp
 	# The swept wall's recipe contract: its exact size, every field in equality,
 	# the sanitizer, and the corner a wall starts with, derived from its spline's
@@ -204,10 +199,6 @@ set(EDITOR_TEST_SOURCES
 	# a box around a piece and the piece itself agree — and both residencies run.
 	PlacementGroundGapTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Placement/PlacementGroundGap.cpp
-	# Byte-identity oracle for the Channel sweep over that same run. The region
-	# fill takes over FitToBanks only; this pins Channel's vertices, indices and
-	# bounds to a digest captured before the fill landed, tapered and untapered.
-	SplineChannelParityTests.cpp
 	# The same byte-identity bar for every path and road the generic sweep builds
 	# (Bevel, Crown), through the controller's own station stream: open and
 	# closed, Linear and smooth, level and sloped ground, a transformed placer.
@@ -606,14 +597,11 @@ set(EDITOR_TEST_SOURCES
 	# The Script Errors panel's rows kept per assembly; a leaf over the
 	# compile-server diagnostic type, same compile-the-source pattern.
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/ScriptDiagnosticsByAssembly.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/MeshBvhDiskFormat.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/TerrainPicking.cpp
 	# The scene pick entry points (ScenePickTerrainInclusionTests) plus the two leaf TUs
 	# they own outright. EditorPickProviderRegistry is deliberately NOT compiled in — it
 	# ships in EditorSDK.dll (linked below), so a second copy here would clone the
 	# registry singleton (issue #356 disease).
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/MeshPickingService.cpp
-	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/MeshBvhCache.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Picking/PrimitiveMeshes.cpp
 	# The Scene View drop queries over the picks (MeshPickingPendingBvhTests).
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/SceneView/SceneViewDropPlacement.cpp
@@ -1931,7 +1919,7 @@ if(TARGET EditorTests)
 	  COMMAND "${CMAKE_COMMAND}"
 	    -DTEST_EXE=$<TARGET_FILE:EditorTests>
 	    -DTEST_WORKING_DIR=$<TARGET_FILE_DIR:EditorTests>
-	    -DTEST_ARGS=--gtest_filter=FenceLayout.*:FenceEmission.*:FencePieceReuse.*:FenceRecipeLayout.*:FenceSpanOverrides.*:FenceSpanOverrideRemap.*:SplinePointEdits.*:SplineFenceRecipe.*:SplinePlacementRecipe.*:SplineExtrudeRecipe.*:SplineWallRecipe.*:SplineChunkSlots.*:SplineChunkCommit.*:FenceMitreVariants.*:CarveChunkRanges.*:SplineExtrudeCoverage.*:SplineSweepParity.*:SplineSweepWall.*:SplineSurfaceObservation.*:SplinePoolSelection.*:TileLayout.*
+	    -DTEST_ARGS=--gtest_filter=FenceLayout.*:FenceEmission.*:FencePieceReuse.*:FenceRecipeLayout.*:FenceSpanOverrides.*:FenceSpanOverrideRemap.*:SplinePointEdits.*:SplineFenceRecipe.*:SplinePlacementRecipe.*:SplineWallRecipe.*:SplineChunkSlots.*:SplineChunkCommit.*:FenceMitreVariants.*:CarveChunkRanges.*:SplineExtrudeCoverage.*:SplineSweepParity.*:SplineSweepWall.*:SplineSurfaceObservation.*:SplinePoolSelection.*:TileLayout.*
 	    -P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
 	)
 
@@ -2120,3 +2108,74 @@ set_property(TARGET EditorTests APPEND PROPERTY LINK_DEPENDS
 set_property(TARGET EditorTests APPEND PROPERTY LINK_DEPENDS
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/EditorTopToolbar.css"
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/EditorTopToolbar.uxml")
+
+# Profile authoring, shared working copies and nonpersistent sky scrubbing.
+add_executable(DayCycleEditorTests
+	DayCycleWindowBindingTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/EditorAssetRegistrations.cpp
+	DayCycleProfileSaveTests.cpp
+	DayCycleProfileInspectorTests.cpp
+	DayCycleWindowTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleAxis.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleDescriptionField.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleEditorServices.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleProfile/DayCycleProfileControls.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleProfile/DayCycleProfileInspector.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleProfile/DayCycleProfileSave.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleRowsHost.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleScrub.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleShippedProfiles.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleSunNow.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleTrackRows.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleWindow/DayCycleWindow.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleWindow/DayCycleWindowRegistration.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleWorkingCopy.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetCreation.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/EntityMaterialTextureAssign.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/LuxText.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SkySunPathCaptions.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SkySunReadoutText.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Sky/SkySunDayKind.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Sky/SkyEnvironmentEdit.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Sky/SkySunLinkUndo.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/CurveField.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/CurveTangents.cpp
+	${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
+)
+target_include_directories(DayCycleEditorTests PRIVATE
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source
+	${CMAKE_SOURCE_DIR}/Engine/Tests
+	${CMAKE_SOURCE_DIR}/Tests
+)
+target_link_libraries(DayCycleEditorTests PRIVATE
+	Engine
+	EditorSDK
+	GTest::gtest
+	GTest::gtest_main
+)
+set_target_properties(DayCycleEditorTests PROPERTIES
+	CXX_STANDARD 20
+	CXX_STANDARD_REQUIRED ON
+	VCPKG_APPLOCAL_DEPS OFF
+)
+ge_set_output_tests(DayCycleEditorTests)
+ge_stage_runtime_dependencies(DayCycleEditorTests)
+ge_stage_test_asset(DayCycleEditorTests
+	"${CMAKE_SOURCE_DIR}/Assets/DayCycles/Default.daycycle.json"
+	"Assets/DayCycles/Default.daycycle.json"
+)
+ge_stage_test_asset(DayCycleEditorTests
+	"${CMAKE_SOURCE_DIR}/Assets/DayCycles/ClearDay.daycycle.json"
+	"Assets/DayCycles/ClearDay.daycycle.json"
+)
+ge_stage_test_asset(DayCycleEditorTests
+	"${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/DayCycleWindow.uxml"
+	"Assets/UI/panels/DayCycleWindow.uxml"
+)
+add_test(NAME DayCycleEditorTests
+	COMMAND "${CMAKE_COMMAND}"
+		-DTEST_EXE=$<TARGET_FILE:DayCycleEditorTests>
+		-DTEST_WORKING_DIR=$<TARGET_FILE_DIR:DayCycleEditorTests>
+		-P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
+)

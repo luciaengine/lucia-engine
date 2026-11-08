@@ -4,9 +4,10 @@
 #include "Engine/Rendering/Pipeline/PipelineFrameResources.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
-#include <functional>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -108,6 +109,8 @@ struct ViewDeclare
     // publication overwrites (a node republishing "View.Depth" redirects every
     // LATER node in blueprint order — declaration order is the only ordering).
     Rendering::RenderGraph::RGTexture ResolveTexture(const std::string& ref) const;
+    /// Explicit versions cannot be exposed under a mutable resource name.
+    bool IsVersionedTexture(const std::string& ref) const;
     // Lookup only: read another view's published output from THIS pipeline/frame.
     // Missing output returns an invalid handle; it never allocates a fallback.
     Rendering::RenderGraph::RGTexture FindPublishedViewTexture(Rendering::ViewId view, const std::string& ref) const;
@@ -177,6 +180,25 @@ class IRenderPipelineNode
 
 using RenderPipelineNodeFactory = std::function<std::unique_ptr<IRenderPipelineNode>()>;
 
+struct RenderPipelineResourceRef
+{
+    std::string Key;
+    std::optional<RenderGraph::RGResourceKind> Kind;
+
+    RenderPipelineResourceRef(const char* key,
+                              std::optional<RenderGraph::RGResourceKind> kind = std::nullopt)
+        : Key(key), Kind(kind)
+    {}
+};
+
+// Per-view products that the consumer resolves during declaration.
+enum class RenderPipelineViewResource
+{
+    ViewParameters,
+    PrepassDepth,
+    Shadows
+};
+
 // The JSON keys through which a node type references and publishes pipeline
 // resources. Blueprint validation resolves every reference against the builtin
 // view names, the declared resources and the names passes publish, so a type
@@ -185,7 +207,7 @@ using RenderPipelineNodeFactory = std::function<std::unique_ptr<IRenderPipelineN
 struct RenderPipelineNodeResourceFields
 {
     // Keys whose string value names one resource.
-    std::vector<std::string> RefKeys;
+    std::vector<RenderPipelineResourceRef> RefKeys;
     // Keys whose object value maps binding names to resources.
     std::vector<std::string> RefMapKeys;
     // Key whose value must name one of the pass's own "inputs" keys.
@@ -195,6 +217,10 @@ struct RenderPipelineNodeResourceFields
     std::vector<std::pair<std::string, std::string>> PublishKeys;
     // Names the node publishes regardless of its JSON.
     std::vector<std::string> StaticPublishNames;
+    // The built-in consumer has a fallback when the blueprint omits a
+    // producer. A producer included in the blueprint must declare first.
+    std::vector<RenderPipelineViewResource> ReadsViewResources;
+    std::vector<RenderPipelineViewResource> WritesViewResources;
 };
 
 struct RenderPipelineNodeTypeInfo

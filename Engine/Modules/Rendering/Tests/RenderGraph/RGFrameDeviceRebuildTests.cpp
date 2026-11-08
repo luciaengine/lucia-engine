@@ -226,3 +226,54 @@ TEST(RGFrameDeviceRebuild, EmptyRecordingRetirementStillWaitsForPreviousSubmissi
     device->Shutdown();
 }
 #endif
+
+TEST(RGFrameDeviceRebuild, PassSubmissionCallbackRequiresSuccessfulQueueSubmit)
+{
+    ScopedEnvVar forcedLoss("GE_VK_FORCE_DEVICE_LOST", "2");
+    auto device = MakeHeadlessDevice();
+    if (!device)
+        GTEST_SKIP() << "No Vulkan device available";
+
+    {
+        FramePools pools(device.get());
+        RGFrame frame(device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        uint32_t recorded = 0;
+        uint32_t published = 0;
+        uint32_t culledPublished = 0;
+        auto declare = [&frame, &recorded, &published, &culledPublished]
+        {
+            frame.AddPass("SubmissionCallback.Live", 0,
+                [&published](RGPassBuilder& pass)
+                {
+                    pass.PreventCulling();
+                    pass.OnSubmitted([&published] { ++published; });
+                },
+                [&recorded](RGContext&) { ++recorded; });
+            frame.AddPass("SubmissionCallback.Culled", 0,
+                [&culledPublished](RGPassBuilder& pass)
+                {
+                    pass.OnSubmitted([&culledPublished] { ++culledPublished; });
+                }, [](RGContext&) {});
+        };
+
+        ASSERT_TRUE(device->BeginFrame());
+        frame.BeginFrame(0);
+        declare();
+        frame.Execute();
+        EXPECT_EQ(recorded, 1u);
+        EXPECT_EQ(published, 1u);
+        EXPECT_EQ(culledPublished, 0u);
+        device->Present();
+        device->WaitForIdle();
+
+        ASSERT_TRUE(device->BeginFrame());
+        frame.BeginFrame(1);
+        declare();
+        frame.Execute();
+        EXPECT_EQ(recorded, 2u);
+        EXPECT_NE(device->GetDeviceHealth(), DeviceHealth::Healthy);
+        EXPECT_EQ(published, 1u) << "recording succeeded, but the queue submit failed";
+        EXPECT_EQ(culledPublished, 0u);
+    }
+    device->Shutdown();
+}

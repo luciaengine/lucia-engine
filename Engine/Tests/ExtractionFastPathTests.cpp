@@ -923,9 +923,9 @@ TEST_F(ExtractionFastPathTest, SubsetRefreshesSkinnedStateAndMorphEditsEscalate)
     ASSERT_NE(runtime, nullptr);
     runtime->CompactSkinMatrices.resize(12, 0.0f); // non-empty => palette offset consumed
     runtime->AtlasPaletteOffsetBones = 64u;
+    runtime->GraphPoseActive = true;
 
-    // "Playing" skinned entity: palette offset churns per frame (the
-    // SkinningUpload shape) — never probed, refreshed by the subset.
+    // Graph playback uses the palette without an AnimatorRef clip.
     ECS::Entity skinned = h.SpawnRenderable(0.0f, 0.0f, 0.0f);
     SkinnedMeshRenderer smr{};
     smr.skeletonId = skeletonId;
@@ -934,9 +934,7 @@ TEST_F(ExtractionFastPathTest, SubsetRefreshesSkinnedStateAndMorphEditsEscalate)
     skelRef.skeletonId = skeletonId;
     skelRef.runtimeId = runtimeId;
     skinned.Set(skelRef);
-    AnimatorRef anim{};
-    anim.ClipIndex = 1; // hasActiveAnimation
-    skinned.Set(anim);
+    skinned.Set(AnimatorRef{});
 
     // Morph carrier (idle): takes no grants while idle, so it must not cost
     // fast frames; its edits are probed like any other archetype's.
@@ -969,14 +967,27 @@ TEST_F(ExtractionFastPathTest, SubsetRefreshesSkinnedStateAndMorphEditsEscalate)
     EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[mgSkinned->instanceIndex].skinPaletteOffset,
               128u);
 
-    // Animation stop via AnimatorRef edit: not probed, subset recomputes.
-    if (auto* a = h.world->GetComponentForWrite<AnimatorRef>(skinned.GetHandle()))
-        a->ClipIndex = 0;
+    // A stopped graph returns the instance to the bind pose.
+    runtime->GraphPoseActive = false;
     h.StepFrame();
-    EXPECT_EQ(h.Stats().FastFrame, 1u) << "AnimatorRef edits must not escalate";
+    EXPECT_EQ(h.Stats().FastFrame, 1u) << "graph pose changes must not escalate";
     EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[mgSkinned->instanceIndex].skinPaletteOffset,
               0u)
         << "stopping playback must drop the palette offset to the bind-pose block";
+
+    auto* clipAnimation = h.world->GetComponentForWrite<AnimatorRef>(skinned.GetHandle());
+    ASSERT_NE(clipAnimation, nullptr);
+    clipAnimation->ClipIndex = 1;
+    h.StepFrame();
+    EXPECT_EQ(h.Stats().FastFrame, 1u);
+    EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[mgSkinned->instanceIndex].skinPaletteOffset, 128u);
+
+    clipAnimation = h.world->GetComponentForWrite<AnimatorRef>(skinned.GetHandle());
+    ASSERT_NE(clipAnimation, nullptr);
+    clipAnimation->ClipIndex = 0;
+    h.StepFrame();
+    EXPECT_EQ(h.Stats().FastFrame, 1u);
+    EXPECT_EQ(h.rs.GetGPUScene()->GetInstances()[mgSkinned->instanceIndex].skinPaletteOffset, 0u);
 
     // Morph bounds edit: submission-adjacent record input on a morph carrier
     // — must escalate via the LocalBounds probe (the impl-review F1 class:

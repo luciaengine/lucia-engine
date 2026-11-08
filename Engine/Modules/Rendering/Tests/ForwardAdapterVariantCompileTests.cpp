@@ -349,6 +349,41 @@ TEST(ForwardAdapterVariantCompile, ShippedTexturedSurfacesUseAdapterTextureAlias
     }
 }
 
+TEST(ForwardAdapterVariantCompile, CanonicalStandardPbrCompilesForLayeredAndCoveragePasses)
+{
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = GameEngine::Rendering::Tests::GetAdapterShaderDir();
+    const TestUtils::ScopedTempDir cache{MakeTempCacheRoot()};
+    context.CacheRoot = cache.Path();
+    const fs::path surface = context.AdapterShaderDir / "Surfaces/standard_pbr.glsl";
+    ASSERT_TRUE(fs::is_regular_file(surface));
+
+    MaterialDocument document{};
+    document.materialName = "CanonicalStandardPbrProbe";
+    document.lightingModel = "StandardPBR";
+    // An absolute staged path selects the canonical surface rather than a material-local copy.
+    document.surfaceShader = surface.string();
+    constexpr MaterialKeyword kColour = kWorldDrawBase | MaterialKeyword::ForwardPlus |
+        MaterialKeyword::Shadows | MaterialKeyword::IBL | MaterialKeyword::DDGI;
+    for (const auto alphaMode : {MaterialAlphaMode::Opaque, MaterialAlphaMode::Mask})
+    {
+        document.alphaMode = alphaMode;
+        for (const auto keywords : {kColour,
+                 kColour | MaterialKeyword::ClearCoat | MaterialKeyword::CoatNormal |
+                     MaterialKeyword::SSSRNormalRoughness,
+                 kWorldDrawBase | MaterialKeyword::DepthOnlyFragment})
+        {
+            SCOPED_TRACE(static_cast<uint64_t>(keywords));
+            SCOPED_TRACE(static_cast<uint32_t>(alphaMode));
+            const auto result = BuildMaterialToShaderPackage(document,
+                context.CacheRoot / "CanonicalStandardPbrProbe.material", document.materialName,
+                context, ShaderSourceKind::SpirV, keywords, VertexAttributeFlags::StandardMeshWithTangent);
+            SKIP_WITHOUT_SHADERC(result);
+            ExpectBuildSucceeded(result);
+        }
+    }
+}
+
 // The relief's depth is the only thing that gives a fragment stage a depth output: a height-mapped
 // material's prepass head and its colour pipeline without a prepass (ParallaxDepthOffset), and its
 // colour pipeline after a prepass (ParallaxDepthFromPrepass), which tests at the depth it reads and does
@@ -379,7 +414,9 @@ TEST(ForwardAdapterVariantCompile, TheReliefDepthDeclaresDepthLessOnlyUnderItsKe
         // discard whose condition is made always false keeps it, so only a deleted discard reads red.
         EXPECT_EQ(depth.Discards, fromPrepass);
         if (fromPrepass)
+        {
             EXPECT_FALSE(FragmentSpvNames(result, "GE_ParallaxMarch(")) << "the colour pass reads the hit, never marches";
+        }
     }
     for (const MaterialKeyword keywords : {kColour, kPrepass})
     {
@@ -623,8 +660,10 @@ void main()
                 }
             }
         if (mode == 2)
+        {
             EXPECT_GT(partial, size_t(kProbeWidth) * kProbeHeight / 4)
                 << "the coverage material lost its fractional sample masks";
+        }
     }
     EXPECT_EQ(device->GetValidationStats().ErrorCount, 0u);
     device->Shutdown();
