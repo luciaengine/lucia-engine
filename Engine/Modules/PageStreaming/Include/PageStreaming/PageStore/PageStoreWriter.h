@@ -19,12 +19,9 @@ namespace GameEngine::PageStreaming
 
 struct EncodedPage;
 
-/// Writes one page store, a page at a time in any order, then publishes it whole.
-///
-/// The store is assembled in a temporary sibling of its target and put in place by rename in
-/// Finish, so a reader never opens a partial store. A writer destroyed before Finish removes its
-/// temporary file. WritePage and ReadPage may be called from any number of threads at once;
-/// Create, OpenForPatch, AddPresentPages, Finish and Abandon from one thread with no page call in flight.
+/// Assembles a store in a temporary sibling; Finish publishes it by rename.
+/// Concurrent WritePage/ReadPage calls are allowed. Other operations require no page call in flight.
+/// Destruction before Finish removes the temporary file.
 class PageStoreWriter
 {
 public:
@@ -51,10 +48,8 @@ public:
 
     const PageStoreLayout& Layout() const { return m_Layout; }
 
-    /// Writes a present page's bytes and records its entry. A page keeps its place in the file while
-    /// its size does; a first write, or one that changes the size, appends. False on an absent or
-    /// out-of-store address, bytes that do not match the store's format and the page's flags, or an
-    /// I/O failure.
+    /// Writes a present page and its entry, appending when its stored size changes.
+    /// Returns false on an invalid address, a byte count inconsistent with the format/flags, or I/O failure.
     bool WritePage(const PageAddress& address, const EncodedPage& page);
 
     /// Reads back the stored bytes and the entry of a present page already written (or kept by a

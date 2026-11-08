@@ -52,13 +52,9 @@ struct HeightCookSource
 std::string ResolveHeightCookSource(const std::filesystem::path& file, uint32 samplesX, uint32 samplesZ,
                                     HeightCookSource& out);
 
-/// Reads the whole source once: the FNV-1a 64 of its bytes and, for an .r32 source, each level's
-/// step (the finest power of two at which at most 1 percent of the level's pages, and at least one,
-/// need 32-bit integers). An .r32 sample that is not a finite number is refused (nodata must be filled
-/// before export). The
-/// file is read through `io`'s reader threads a chunk ahead of the hashing, or on the calling
-/// thread when `io` is null. Blocks: call from a thread that is not a job-pool worker. Returns an
-/// empty string and fills `out`, else the reason worded as the fix.
+/// Reads the source hash and chooses each height level's step; non-finite samples are refused.
+/// Uses io read-ahead when available; blocks a caller outside the job pool.
+/// Fills out and returns an empty string on success, otherwise the required fix.
 std::string ScanHeightSource(const HeightCookSource& source, AssetIOService* io, HeightSourceIdentity& out,
                              const std::atomic<bool>* cancel = nullptr, HeightCookProgress* progress = nullptr);
 
@@ -92,13 +88,9 @@ struct HeightCookResult
     bool Patched = false;
 };
 
-/// Cooks a height store: level 0 from the source a band of rows at a time, each coarser level
-/// from the one below with the [1 2 1] / 4 tent as soon as its rows are complete, every page
-/// encoded in its level's step (kNormalizedHeightStep for 16-bit sources, the identity's steps
-/// for .r32). Memory is bounded by a few page
-/// rows per level, never by the source. The editor and the build pipeline cook; the Player never
-/// does. Blocks the calling thread until the store is published or the cook fails: call it from a
-/// thread that is not a job-pool worker.
+/// Cooks a tent pyramid in bands, with each height encoded in its level's step.
+/// Memory holds a few page rows per level. The editor and export cook; the Player reads stores.
+/// Blocks a caller outside the job pool until publication or failure.
 HeightCookResult CookHeightPageStore(const HeightCookRequest& request);
 
 /// One cook of a planet's height store: six cube faces on the equal-angle lattice

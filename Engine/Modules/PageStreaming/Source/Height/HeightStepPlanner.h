@@ -12,24 +12,17 @@ namespace GameEngine::PageStreaming
 /// The finest step of an absolute store's level: 2^-20 of the source's units (under a micrometer in
 /// meters), finer than any elevation source measures.
 inline constexpr int32 kHeightStepExponentMin = -20;
-/// The share of a level's pages the step rule lets store 32-bit integers: 1 percent, and at least
-/// one page, so a level under 100 pages also lets its steepest page escape. The step is the finest
-/// that keeps the rest 16-bit, so a few steep pages cost bytes, not every page's precision. A level
-/// of one page has no other page to keep: that page sets the step.
+/// Allows 1 percent of a level's pages, at least one, to use 32-bit integers.
+/// A single-page level must fit its only page in 16 bits.
 inline constexpr float64 kHeightWidePageShare = 0.01;
 
 /// The exponent of the finest power-of-two step at which values spanning `range` fit a page's 16-bit
 /// words, the rounding of the base and the top included; at least kHeightStepExponentMin.
 int32 SixteenBitStepExponent(float32 range);
 
-/// Chooses each level's step of an absolute store from its level-0 samples, pushed in row-major
-/// order in chunks of any size. A level's step is the finest power of two at which at most
-/// kHeightWidePageShare of its pages, and at least one, never every page, need 32-bit integers, judged by each page's range of level-0
-/// values under its footprint (the bound PagePyramidBuilder gives the page's base), never finer
-/// than kHeightStepExponentMin, and never so fine that the largest height passes kHeightIntegerMax
-/// steps. The steps are a function of the samples and the grid alone, so every cook of one source
-/// chooses them alike. A store of several faces pushes them one after another, each in row-major
-/// order, and a level's pages are every face's. Memory: two floats per level-0 page.
+/// Chooses deterministic power-of-two steps from row-major level-0 samples and footprint ranges.
+/// The step limits wide pages and integer magnitude, and never falls below kHeightStepExponentMin.
+/// Faces follow one another in row-major order; memory uses two floats per level-0 page.
 class HeightStepPlanner
 {
 public:

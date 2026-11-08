@@ -17,11 +17,8 @@ inline constexpr float32 kNormalizedHeightStep = 1.0f / 65535.0f;
 /// lattice is returned unchanged.
 float32 QuantizeHeight(float32 value, float32 step);
 
-/// Encodes the kPageSampleCount samples of a level-`level` page (row-major, apron included) in that
-/// level's step, with the footprint's lowest and highest level-0 values: 16-bit words above the
-/// page's MinWord when its largest integer is at most 65535 above it, else 32-bit integers. Every
-/// sample is on the level's lattice (the cooker quantizes before it filters or bounds), so each
-/// encodes to its own integer.
+/// Encodes lattice heights in their level's step, with conservative level-0 footprint bounds.
+/// Uses 16-bit words above MinWord when the largest offset fits 65535, otherwise 32-bit integers.
 void EncodeHeightPage(const PageStoreHeader& header, uint32 level, std::span<const float32> samples,
                       float32 footprintMin, float32 footprintMax, EncodedPage& out);
 

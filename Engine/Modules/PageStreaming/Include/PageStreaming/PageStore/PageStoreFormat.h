@@ -17,30 +17,9 @@ struct Vector3;
 namespace GameEngine::PageStreaming
 {
 
-// The page store (.gepage): one field of a terrain as a pyramid of fixed-size pages.
-//
-// The field is a lattice: level-0 sample i sits at field coordinate i / (samples - 1), and level N
-// has sample j at the position of level-0 sample j * 2^N. A level's samples continue past the
-// field's last sample when (samples - 1) is not a multiple of 2^N; such samples evaluate the
-// field's filter over edge-clamped inputs, so every level covers the whole field. A page owns
-// kPageOwnedSamples samples per axis (page p owns samples 128p to 128p + 127) and stores an apron
-// of the neighbors' edge samples on each side, so bilinear filtering and central differences
-// inside a page never read another page; past the field's edge the apron repeats the edge sample.
-// The apron is one sample (a stride of 130), or one 4 x 4 block (a stride of 136) for a block
-// format: 128 is a multiple of 4, so the block grid sits on the page's origin and an apron block
-// encodes the same 16 samples as the neighbor's edge block, bit for bit.
-//
-// Heights are integers in their level's step: a sample is h = StepPerLevel[L] x k, relative to
-// the reference radius (h = r - R; R is 0 on a flat store). A page stores k as 16-bit words above
-// its base (k = MinWord + word) when its range fits, else as 32-bit integers at the same step. The
-// apron sample a page stores and the same sample its neighbor owns are one integer k in both, so
-// they decode to one float, bit for bit, at every level.
-//
-// On disk, little-endian: the fixed header, the level directory (each level's shape and step), the
-// (face, level) directory of ranges into the index, the index of present pages only (sorted by
-// face, level and Morton code), then the pages in the order the cook wrote them. Offsets are from
-// the start of the store, so a store packed into a terrain container (TerrainPageContainer.h) is
-// read at a base offset unchanged.
+// A .gepage store holds one terrain field as a sparse pyramid on a sample lattice.
+// Each page includes its neighbor samples; block formats use a full block apron.
+// Offsets are relative to the store start, including stores inside a terrain container.
 
 /// Samples a page owns per axis.
 inline constexpr uint32 kPageOwnedSamples = 128u;
@@ -232,10 +211,8 @@ struct PageIndexEntry
     uint64 Morton = 0; ///< PageMortonCode of the page in its level: the key the index is sorted by
     uint64 Offset = 0; ///< from the start of the store; 0 until the page is written
     uint64 Hash = 0;   ///< FNV-1a 64 of the page's stored bytes
-    /// The lowest and highest value of the page as integers in its level's step: the floor and the
-    /// ceiling over the level-0 values under its footprint (shared edge included) and every sample
-    /// it stores (apron included). MinWord is the base of its 16-bit words. Zero on every format but
-    /// HeightSteps.
+    /// The floor and ceiling over the level-0 footprint and every stored sample, in level steps.
+    /// MinWord is the base of 16-bit words. Non-height formats keep both values zero.
     int32 MinWord = 0;
     int32 MaxWord = 0;
     uint8 Flags = 0; ///< kPageWideWords
@@ -315,10 +292,8 @@ std::span<const float32> HeightSamples(std::span<const uint8> bytes);
 /// The same view, writable: the page's heights change in place.
 std::span<float32> HeightSamples(std::vector<uint8>& bytes);
 
-/// The layout of a store with `header`: every level, and an entry for each page that `present`
-/// (one byte per page of the dense table, face-major, then level, then row-major) marks non-zero;
-/// an empty `present` makes every page present. Offsets are assigned as the pages are written
-/// (PageStoreWriter).
+/// Builds every level and the present-page index from a face/level/row-major dense mask.
+/// An empty mask includes every page. PageStoreWriter assigns offsets when it writes pages.
 PageStoreLayout MakePageStoreLayout(const PageStoreHeader& header, std::span<const uint8> present = {});
 
 /// The layout of `layout`'s store with more pages present: its own present pages keep their

@@ -1,12 +1,5 @@
-// PageStoreTests: the terrain page store (Engine/Modules/PageStreaming) as pure oracles. The store
-// round trip, the apron's bit-equality under the per-level step (a 32-bit page beside a 16-bit one
-// included), the present-page index against the dense lookup, the sparse resolve, the incremental
-// re-cook, the lattice-preserving tent, the generated provider's level 0 against the terrain's own
-// tile fill, the cook key, the step rule, the terrain container, the PNG limit, the
-// asynchronous loader, and the surface kinds' codecs and filters. HeightPageCodec.h,
-// HeightStepPlanner.h, PagePyramidBuilder.h and PageStoreSerialization.h are the module's private
-// headers: the height encoding, the step rule, the builder the surface stores are made with, and
-// the byte layout a refusal test patches.
+// Page-store oracles cover encoding, aprons, sparse lookup, filters, cooking and patching.
+// Runtime oracles cover the planar generated provider, loader and residency.
 
 #include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "PageStreaming/Height/HeightPageCooker.h"
@@ -943,10 +936,8 @@ TEST_F(PageStoreTest, CoarserLevelsAreTheTentOfTheStoredLevelBelow)
 
 TEST_F(PageStoreTest, TentKeepsEveryCoarserSampleAtItsLatticePosition)
 {
-    // A plane through the origin with integer heights, on every level's lattice: the tent of a
-    // plane centered on a sample is the sample, so level N sample j is the plane at level-0
-    // sample j * 2^N wherever the tent stays inside the field. A cell-centered average would sit
-    // half a finer cell off.
+    // An integer plane stays on every level's lattice under the centered tent.
+    // A cell-centered average shifts that plane by half a finer cell.
     constexpr uint32 kWidth = 401;
     constexpr uint32 kHeight = 257;
     const std::filesystem::path source = m_Dir / "plane.r32";
@@ -1084,10 +1075,9 @@ TEST_F(PageStoreTest, ARangeChangeCooksAFreshStoreAndLeavesThePreviousOne)
 
 TEST_F(PageStoreTest, LevelStepsComeFromTheDataAndOnlyTheSteepestPagesStoreThirtyTwoBits)
 {
-    // 11 x 11 level-0 pages of the relief, one with a 3 km tower. Every level of two or more pages
-    // (121, 36, 9 and 4) may let one page escape, so it keeps the step the relief alone gets and the
-    // tower's page alone stores 32-bit integers. The one-page top level has no page to spare: its
-    // step coarsens until the tower fits 16 bits.
+    // One 3 km tower occupies a page among 121 level-0 relief pages.
+    // Multi-page levels keep the relief's step and let the tower use wide words.
+    // The single-page top level coarsens until all heights fit 16 bits.
     constexpr uint32 kSide = 11u * kPageOwnedSamples;
     const auto tower = [](uint32 x, uint32 z) {
         const bool inside = x >= 650u && x < 670u && z >= 650u && z < 670u;
@@ -1650,10 +1640,9 @@ TEST_F(PageStoreTest, ABc5PagesApronBlockIsItsNeighborsEdgeBlockBitForBit)
 
 TEST_F(PageStoreTest, ABc5PageHoldsTheSamplesAtItsOwnPositionsApronIncluded)
 {
-    // 300 x 300 normals, one value per 4 x 4 block of the field and another in each neighbor: BC5
-    // stores a constant block exactly, so stored sample c of page p is field sample 128p - 4 + c
-    // (edge-clamped) at every level-0 page. A window one sample off mixes two field blocks in its
-    // blocks and reads every sample from its neighbor's position.
+    // Each field block has a constant normal that BC5 stores exactly.
+    // Page sample c maps to field sample 128p - 4 + c, with edge clamping.
+    // An offset of one sample mixes adjacent blocks and changes the decoded values.
     constexpr uint32 kSide = 300u;
     std::vector<uint8> normals(static_cast<std::size_t>(kSide) * kSide * 2u);
     for (uint32 z = 0; z < kSide; ++z)
@@ -1691,10 +1680,8 @@ TEST_F(PageStoreTest, ABc5PageHoldsTheSamplesAtItsOwnPositionsApronIncluded)
 
 TEST_F(PageStoreTest, TheNormalTentKeepsAThirtyDegreeSlopeThatTheNormalOfAveragedHeightsFlattens)
 {
-    // A ridge along Z at x = 100 with 30-degree flanks, one unit between samples. Level 0 holds the
-    // central-difference normals of its heights. Coarser sample 51 covers finer samples 101 to 103,
-    // all on the flank, so the tent of their normals is the 30-degree normal. The normal of the
-    // averaged heights there is 26.8 degrees: coarser sample 50's height has the ridge in it.
+    // A 30-degree ridge flank lies under finer samples 101 through 103.
+    // Their filtered normal remains 30 degrees; the normal of filtered heights becomes 26.8 degrees.
     constexpr uint32 kWidth = 200u;
     constexpr uint32 kHeight = 130u;
     std::vector<uint8> normals(static_cast<std::size_t>(kWidth) * kHeight * 2u);
@@ -1733,10 +1720,9 @@ TEST_F(PageStoreTest, TheNormalTentKeepsAThirtyDegreeSlopeThatTheNormalOfAverage
 
 TEST_F(PageStoreTest, TheNormalTentRenormalizesTheUnitNormalsOfAFootprintThatMixesSlopes)
 {
-    // A 60-degree flank for x <= 100, flat past it. Coarser sample 50 covers finer samples 99 and
-    // 100 on the flank (weights 1 and 2) and 101 on the flat (weight 1): the tent of the unit
-    // normals, renormalized, tilts 46.1 degrees (47.8 after BC5); a tent of the stored bytes tilts
-    // 40.3 (38.0 after BC5).
+    // A footprint mixes a 60-degree flank with flat ground at weights 3:1.
+    // Normalized-vector filtering tilts 46.1 degrees (47.8 after BC5).
+    // Byte filtering tilts 40.3 degrees (38.0 after BC5).
     constexpr uint32 kWidth = 200u;
     constexpr uint32 kHeight = 130u;
     const uint8 flankX = static_cast<uint8>(std::lround((-std::sin(60.0f / kDegreesPerRadian) * 0.5f + 0.5f) * 255.0f));
@@ -1904,10 +1890,9 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST_F(PageStoreTest, NineteenPointNineKilometersOfReliefStoreSixteenBitPagesWithinHalfAStep)
 {
-    // Earth's relief over one field: a ramp of 19.9 km. One store-wide 16-bit step would be 30 cm,
-    // past the 1 cm the encoding allows; a step per level with a base per page keeps the pages 16-bit
-    // (each level-0 page spans about 3.1 km, so level 0's step is at most 2^-4 m). A level under 100
-    // pages may let its steepest page store 32-bit integers, one page at most.
+    // A 19.9 km ramp uses per-page bases and per-level steps.
+    // Its level-0 pages span about 3.1 km, so their step is at most 2^-4 meters.
+    // A multi-page level under 100 pages permits at most one wide page.
     constexpr uint32 kWidth = 1024;
     constexpr uint32 kHeight = 640;
     constexpr float32 kRelief = 19900.0f;
@@ -3054,3 +3039,266 @@ TEST(PageResidencyTest, ARefreshedResidentPageIsRewrittenInItsSlotAndNeverLeaves
     EXPECT_EQ(rewritten.size(), provider->Levels().size()) << "one page per level reads the edit";
     pool.Shutdown();
 }
+
+namespace
+{
+
+// The analytic height fixture uses a 2 km reference radius.
+constexpr float64 kPlanetRadius = 2000.0;
+
+float32 AnalyticPlanetHeight(uint8, uint32, uint32, const Mathematics::Vector3& direction)
+{
+    return 64.0f * direction.x * direction.y + 32.0f * direction.z;
+}
+
+// The unit direction of sample (x, z) of `face` on the equal-angle lattice of `samples` a side.
+Mathematics::Vector3 LatticeDirection(uint8 face, uint32 x, uint32 z, uint32 samples)
+{
+    const Mathematics::CubeFaceAxes& axes = Mathematics::kCubeFaceAxes[face];
+    std::array<float64, 3> cube{};
+    cube[axes.NormalAxis] = axes.NormalSign;
+    cube[axes.XAxis] = GnomonicFaceCoordinate(EqualAngleSampleCoordinate(x, samples));
+    cube[axes.ZAxis] = GnomonicFaceCoordinate(EqualAngleSampleCoordinate(z, samples));
+    const float64 length = std::sqrt(cube[0] * cube[0] + cube[1] * cube[1] + cube[2] * cube[2]);
+    return Mathematics::Vector3(static_cast<float32>(cube[0] / length), static_cast<float32>(cube[1] / length),
+                                static_cast<float32>(cube[2] / length));
+}
+
+// The 2 km planet at 257 samples a face side (about 12 m): three levels of 3 x 3, 2 x 2 and one page a
+// face.
+PlanetCookRequest SmallPlanetRequest(const std::filesystem::path& output)
+{
+    PlanetCookRequest request;
+    request.Height = AnalyticPlanetHeight;
+    request.ReferenceRadius = kPlanetRadius;
+    request.FaceSamples = 2u * kPageOwnedSamples + 1u;
+    request.Key = 0x5eed;
+    request.Output = output;
+    return request;
+}
+
+// A face's stored samples at a level, (x, z) in [-1, samples]: an owned sample, or the apron one past
+// a side, read from the page that owns the nearest owned sample.
+class FaceSamples
+{
+public:
+    FaceSamples(const PageStoreReader& reader, uint8 face, uint8 level)
+        : m_Reader(reader), m_Face(face), m_Level(level), m_Last(reader.Layout().Levels[level].SamplesX - 1u)
+    {
+    }
+
+    float32 At(int64 x, int64 z)
+    {
+        const uint32 pageX = static_cast<uint32>(std::clamp<int64>(x, 0, m_Last)) / kPageOwnedSamples;
+        const uint32 pageZ = static_cast<uint32>(std::clamp<int64>(z, 0, m_Last)) / kPageOwnedSamples;
+        const PageAddress address{m_Face, m_Level, pageX, pageZ};
+        auto [page, inserted] = m_Pages.try_emplace(address);
+        if (inserted)
+            page->second = PageSamples(m_Reader, address);
+        const int64 column = x - static_cast<int64>(pageX) * kPageOwnedSamples + kPageApronSamples;
+        const int64 row = z - static_cast<int64>(pageZ) * kPageOwnedSamples + kPageApronSamples;
+        return page->second[static_cast<std::size_t>(row * kPageStrideSamples + column)];
+    }
+
+    // The sample `depth` in from `side` (-1 is the apron past it) at `along`.
+    float32 FromSide(PageFaceSide side, int64 along, int64 depth)
+    {
+        const int64 last = m_Last;
+        switch (side)
+        {
+        case PageFaceSide::MinZ: return At(along, depth);
+        case PageFaceSide::MaxZ: return At(along, last - depth);
+        case PageFaceSide::MinX: return At(depth, along);
+        case PageFaceSide::MaxX: return At(last - depth, along);
+        }
+        return 0.0f;
+    }
+
+private:
+    const PageStoreReader& m_Reader;
+    uint8 m_Face;
+    uint8 m_Level;
+    uint32 m_Last;
+    std::map<PageAddress, std::vector<float32>> m_Pages;
+};
+
+// The point (x, z) of the cube face `axes`, each of x and z -1 or +1: a corner of the face.
+Mathematics::Vector3Int FaceCubePoint(const Mathematics::CubeFaceAxes& axes, int32 x, int32 z)
+{
+    const auto component = [&axes, x, z](uint8 axis) {
+        return axis == axes.NormalAxis ? int32{axes.NormalSign} : (axis == axes.XAxis ? axes.XSign * x : axes.ZSign * z);
+    };
+    return Mathematics::Vector3Int(component(0), component(1), component(2));
+}
+
+} // namespace
+
+TEST(PageStoreFormatTest, TheEqualAngleCoordinateIsOddExactAtTheEdgesAndNewtonInvertsIt)
+{
+    EXPECT_EQ(EqualAngleFaceCoordinate(1.0), 1.0);
+    EXPECT_EQ(EqualAngleFaceCoordinate(-1.0), -1.0);
+    EXPECT_EQ(EqualAngleFaceCoordinate(0.0), 0.0);
+    EXPECT_EQ(GnomonicFaceCoordinate(1.0), 1.0);
+    EXPECT_EQ(GnomonicFaceCoordinate(-1.0), -1.0);
+    float64 previous = -2.0;
+    for (int32 i = -1000; i <= 1000; ++i)
+    {
+        const float64 a = i / 1000.0;
+        const float64 s = EqualAngleFaceCoordinate(a);
+        EXPECT_EQ(EqualAngleFaceCoordinate(-a), -s);
+        EXPECT_GT(s, previous);
+        EXPECT_NEAR(s, 4.0 / std::numbers::pi * std::atan(a), 3.7e-5);
+        EXPECT_NEAR(GnomonicFaceCoordinate(s), a, 1e-14);
+        EXPECT_EQ(GnomonicFaceCoordinate(-s), -GnomonicFaceCoordinate(s));
+        previous = s;
+    }
+    for (uint32 index = 0; index < 257u; ++index)
+        EXPECT_EQ(EqualAngleSampleCoordinate(256u - index, 257u), -EqualAngleSampleCoordinate(index, 257u));
+}
+
+TEST(PageStoreFormatTest, TheEqualAngleCoordinateAndItsInverseKeepTheirRecordedBits)
+{
+    // Recorded without contraction. At these lattice points a fused multiply-add changes the bits.
+    struct Pin
+    {
+        uint32 Index;
+        uint64 EqualAngleBits;
+        uint64 GnomonicBits;
+    };
+    constexpr Pin kPins[] = {
+        {4u, 0xbfef5a77e71c1f8eull, 0xbfee775bc10fbb38ull},
+        {16u, 0xbfed49c7b5b42538ull, 0xbfea4301ee0e1fb9ull},
+        {55u, 0xbfe51e0441b53dceull, 0xbfdec01676186171ull},
+        {73u, 0xbfe0894798b708fbull, 0xbfd674a2e394d8d6ull},
+        {95u, 0xbfd48fcd339e54eaull, 0xbfca4724a57772feull},
+        {99u, 0xbfd227ef2b17f50aull, 0xbfc705295dfd3983ull},
+        {109u, 0xbfc803f6476b13dcull, 0xbfbdfb8e69612e86ull},
+        {114u, 0xbfc1c0f76ef5005eull, 0xbfb60c04fd5e2667ull},
+        {122u, 0xbfae8862eeba6d73ull, 0xbfa2dc1930c14c73ull},
+        {142u, 0x3fc1c0f76ef5005eull, 0x3fb60c04fd5e2667ull},
+        {147u, 0x3fc803f6476b13dcull, 0x3fbdfb8e69612e86ull},
+        {157u, 0x3fd227ef2b17f50aull, 0x3fc705295dfd3983ull},
+        {161u, 0x3fd48fcd339e54eaull, 0x3fca4724a57772feull},
+        {183u, 0x3fe0894798b708fbull, 0x3fd674a2e394d8d6ull},
+        {240u, 0x3fed49c7b5b42538ull, 0x3fea4301ee0e1fb9ull},
+        {251u, 0x3fef3048316a5696ull, 0x3fee180cef6ec44bull},
+    };
+    for (const Pin& pin : kPins)
+    {
+        const float64 coordinate = EqualAngleSampleCoordinate(pin.Index, 257u);
+        EXPECT_EQ(std::bit_cast<uint64>(EqualAngleFaceCoordinate(coordinate)), pin.EqualAngleBits) << pin.Index;
+        EXPECT_EQ(std::bit_cast<uint64>(GnomonicFaceCoordinate(coordinate)), pin.GnomonicBits) << pin.Index;
+    }
+}
+
+TEST(PageStoreFormatTest, CubeFaceFramesRunFromTheirCornersAndEveryEdgePairsTwoFaces)
+{
+    for (uint8 face = 0; face < kPageStoreMaxFaces; ++face)
+    {
+        // The face's corners 0, 1 and 3: sample (0, 0), the end of X, the end of Z.
+        const Mathematics::CubeFaceAxes& axes = Mathematics::kCubeFaceAxes[face];
+        EXPECT_EQ(FaceCubePoint(axes, -1, -1), Mathematics::CubeCorner(Mathematics::kCubeFaces[face * 4u + 0u]));
+        EXPECT_EQ(FaceCubePoint(axes, 1, -1), Mathematics::CubeCorner(Mathematics::kCubeFaces[face * 4u + 1u]));
+        EXPECT_EQ(FaceCubePoint(axes, -1, 1), Mathematics::CubeCorner(Mathematics::kCubeFaces[face * 4u + 3u]));
+        for (uint32 side = 0; side < kPageFaceSides; ++side)
+        {
+            const PageFaceEdge edge = PageFaceNeighbor(face, static_cast<PageFaceSide>(side));
+            EXPECT_NE(edge.Face, face);
+            const PageFaceEdge back = PageFaceNeighbor(edge.Face, edge.Side);
+            EXPECT_EQ(back.Face, face);
+            EXPECT_EQ(back.Side, static_cast<PageFaceSide>(side));
+            EXPECT_EQ(back.Reversed, edge.Reversed);
+        }
+    }
+}
+
+TEST_F(PageStoreTest, APlanetSourceGetsEachLatticePointOnceWithItsDirection)
+{
+    PlanetCookRequest request = SmallPlanetRequest(m_Dir / "planet.gepage");
+    std::atomic<uint64> calls{0};
+    std::atomic<uint64> mismatches{0};
+    request.Height = [&calls, &mismatches, &request](uint8 face, uint32 x, uint32 z, const Mathematics::Vector3& direction) {
+        const Mathematics::Vector3 shared = EqualAngleSampleDirection(face, x, z, request.FaceSamples);
+        const Mathematics::Vector3 expected = LatticeDirection(face, x, z, request.FaceSamples);
+        if (direction.x != shared.x || direction.y != shared.y || direction.z != shared.z ||
+            Mathematics::Vector3::Dot(direction - expected, direction - expected) > 1e-12f)
+            mismatches.fetch_add(1);
+        calls.fetch_add(1);
+        return AnalyticPlanetHeight(face, x, z, direction);
+    };
+    ASSERT_EQ(CookPlanetPageStore(request).Error, "");
+    EXPECT_EQ(mismatches.load(), 0u);
+    EXPECT_EQ(calls.load(), uint64{kPageStoreMaxFaces} * request.FaceSamples * request.FaceSamples);
+}
+
+TEST_F(PageStoreTest, APlanetCookWithoutAHeightFunctionIsRefusedAndWritesNothing)
+{
+    PlanetCookRequest request = SmallPlanetRequest(m_Dir / "planet.gepage");
+    request.Height = nullptr;
+    EXPECT_EQ(CookPlanetPageStore(request).Error, "the planet cook has no height function: set PlanetCookRequest::Height");
+    EXPECT_TRUE(std::filesystem::is_empty(m_Dir));
+}
+
+TEST_F(PageStoreTest, APlanetStoreHasSixFacesWhoseEdgesAndApronsAreTheNeighborsBitForBitAtEveryLevel)
+{
+    const PlanetCookRequest request = SmallPlanetRequest(m_Dir / "planet.gepage");
+    const HeightCookResult result = CookPlanetPageStore(request);
+    ASSERT_EQ(result.Error, "");
+    // The level-0 file the cook reads back is gone with the cook: the store is all it leaves.
+    EXPECT_EQ(std::distance(std::filesystem::directory_iterator(m_Dir), std::filesystem::directory_iterator()), 1);
+    PageStoreReader reader;
+    ASSERT_EQ(reader.Open(request.Output, PageFieldKind::Height), "");
+    const PageStoreLayout& layout = reader.Layout();
+    EXPECT_EQ(layout.Header.FaceCount, kPageStoreMaxFaces);
+    EXPECT_EQ(layout.Header.FaceMap, PageFaceMap::EqualAngleCube);
+    EXPECT_EQ(layout.Header.Units, PageHeightUnits::Absolute);
+    EXPECT_EQ(layout.Header.ReferenceRadius, kPlanetRadius);
+    ASSERT_EQ(layout.Levels.size(), 3u);
+    EXPECT_EQ(layout.Entries.size(), 6u * (9u + 4u + 1u));
+    EXPECT_EQ(result.PagesWritten, layout.Entries.size());
+
+    for (uint8 face = 0; face < kPageStoreMaxFaces; ++face)
+        for (uint8 level = 0; level < layout.Levels.size(); ++level)
+            for (uint32 z = 0; z < layout.Levels[level].PagesZ; ++z)
+                for (uint32 x = 0; x < layout.Levels[level].PagesX; ++x)
+                {
+                    const PageAddress address{face, level, x, z};
+                    EXPECT_NE(layout.FindPresent(address), nullptr);
+                    EXPECT_EQ(layout.ResolvePresent(address), std::optional<PageAddress>(address));
+                }
+
+    // Level 0 is the relief at each lattice point's direction, within half a step.
+    const float32 expected = AnalyticPlanetHeight(4, 200, 37, LatticeDirection(4, 200, 37, request.FaceSamples));
+    FaceSamples plusZ(reader, 4, 0);
+    EXPECT_NEAR(plusZ.At(200, 37), expected, 0.5f * layout.Header.StepPerLevel[0] + 1e-4f);
+
+    // Every edge from both of its faces, at every level: the edge sample is one value, and the apron
+    // past it is the neighbor's sample one in; past a corner the apron repeats the corner sample.
+    for (uint8 level = 0; level < layout.Levels.size(); ++level)
+    {
+        const int64 last = layout.Levels[level].SamplesX - 1;
+        for (uint8 face = 0; face < kPageStoreMaxFaces; ++face)
+        {
+            FaceSamples own(reader, face, level);
+            for (uint32 side = 0; side < kPageFaceSides; ++side)
+            {
+                const PageFaceEdge edge = PageFaceNeighbor(face, static_cast<PageFaceSide>(side));
+                FaceSamples neighbor(reader, edge.Face, level);
+                for (int64 t = 0; t <= last; ++t)
+                {
+                    const int64 mapped = edge.Reversed ? last - t : t;
+                    const PageFaceSide ownSide = static_cast<PageFaceSide>(side);
+                    ASSERT_EQ(std::bit_cast<uint32>(own.FromSide(ownSide, t, 0)),
+                              std::bit_cast<uint32>(neighbor.FromSide(edge.Side, mapped, 0)))
+                        << "edge, face " << int(face) << " side " << side << " level " << int(level) << " at " << t;
+                    ASSERT_EQ(std::bit_cast<uint32>(own.FromSide(ownSide, t, -1)),
+                              std::bit_cast<uint32>(neighbor.FromSide(edge.Side, mapped, 1)))
+                        << "apron, face " << int(face) << " side " << side << " level " << int(level) << " at " << t;
+                }
+            }
+            for (const auto& [x, z] : {std::pair<int64, int64>{0, 0}, {0, last}, {last, 0}, {last, last}})
+                EXPECT_EQ(own.At(x == 0 ? -1 : last + 1, z == 0 ? -1 : last + 1), own.At(x, z));
+        }
+    }
+}
+
