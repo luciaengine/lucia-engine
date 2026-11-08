@@ -46,7 +46,7 @@
 #include <functional>
 #include <future>
 #include <limits>
-#include <map>
+#include "Types/FlatMap.h"
 #include <memory>
 #include <numbers>
 #include <random>
@@ -3092,12 +3092,12 @@ public:
         const uint32 pageX = static_cast<uint32>(std::clamp<int64>(x, 0, m_Last)) / kPageOwnedSamples;
         const uint32 pageZ = static_cast<uint32>(std::clamp<int64>(z, 0, m_Last)) / kPageOwnedSamples;
         const PageAddress address{m_Face, m_Level, pageX, pageZ};
-        auto [page, inserted] = m_Pages.try_emplace(address);
-        if (inserted)
-            page->second = PageSamples(m_Reader, address);
+        std::vector<float32>& samples = m_Pages.GetOrInsert(address);
+        if (samples.empty())
+            samples = PageSamples(m_Reader, address);
         const int64 column = x - static_cast<int64>(pageX) * kPageOwnedSamples + kPageApronSamples;
         const int64 row = z - static_cast<int64>(pageZ) * kPageOwnedSamples + kPageApronSamples;
-        return page->second[static_cast<std::size_t>(row * kPageStrideSamples + column)];
+        return samples[static_cast<std::size_t>(row * kPageStrideSamples + column)];
     }
 
     // The sample `depth` in from `side` (-1 is the apron past it) at `along`.
@@ -3119,7 +3119,7 @@ private:
     uint8 m_Face;
     uint8 m_Level;
     uint32 m_Last;
-    std::map<PageAddress, std::vector<float32>> m_Pages;
+    FlatMap<PageAddress, std::vector<float32>> m_Pages;
 };
 
 // The point (x, z) of the cube face `axes`, each of x and z -1 or +1: a corner of the face.
