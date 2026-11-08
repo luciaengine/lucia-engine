@@ -150,6 +150,17 @@ TEST_F(BlobComponentSchemaAbiTests, PrefabGuidCategorySurvivesAbiRegistration)
     EXPECT_EQ(fields[0].Size, 16u);
 }
 
+TEST_F(BlobComponentSchemaAbiTests, RejectsUnknownAssetCategoriesBeforeRegisteringSchema)
+{
+    constexpr char kName[] = "CsSchemaTest.UnknownAssetCategory";
+    auto field = Desc("Asset", 0, 16, static_cast<uint16_t>(GameEngine::ECS::FieldTypeId::AssetGuid));
+    field.assetCategory = 0xFFFFu;
+    GE_ECS_ComponentTypeId id = 0;
+    EXPECT_EQ(GE_ECSABI_RegisterBlobComponentWithSchema(kName, sizeof(kName) - 1, 16, &field, 1, &id),
+              GE_Result_InvalidArg);
+    EXPECT_EQ(id, 0u);
+}
+
 TEST_F(BlobComponentSchemaAbiTests, SceneRoundTripThroughAbiSchema)
 {
     const auto scenePath = TempScene("ge_blob_schema_roundtrip.scene");

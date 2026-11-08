@@ -599,7 +599,9 @@ GE_API GE_Result GE_CDECL GE_ECSABI_RegisterBlobComponentWithSchema(
                                    static_cast<uint64_t>(d.offset) + d.size <= sizeBytes &&
                                    (elem == 0 || (d.size % elem) == 0);
             const bool categoryValid =
-                d.assetCategory == 0 || d.fieldType == static_cast<uint16_t>(FieldTypeId::AssetGuid);
+                d.assetCategory == 0 ||
+                (d.fieldType == static_cast<uint16_t>(FieldTypeId::AssetGuid) &&
+                 GameEngine::AssetTypeToString(static_cast<GameEngine::AssetType>(d.assetCategory)) != "Unknown");
             if (d.nameUtf8 == nullptr || d.nameLen == 0 || !typeKnown || !spanValid || !categoryValid)
             {
                 Logger::Log::Error("[ECSABI] blob component '{}' field schema REJECTED: field {} ('{}') "
