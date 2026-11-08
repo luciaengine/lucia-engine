@@ -328,7 +328,8 @@ server.RegisterHandler("get_skeleton_store_state", [](const EditorDebugServer::R
                 // bind world rotations identifies whether two rigs share
                 // a canonical T-pose at bind.
                 json worldRest = json::array();
-                std::vector<Mathematics::Quaternion> worldRotations(skeleton->BoneCount);
+                std::vector<Mathematics::Quaternion> worldRotations(
+                    skeleton->BoneCount, Mathematics::Quaternion(0.0f, 0.0f, 0.0f, 0.0f));
                 const bool hasTopologicalOrder = !skeleton->TopologicalOrder.empty()
                     && skeleton->TopologicalOrder.size() == skeleton->BoneCount;
                 for (uint32_t index = 0; index < skeleton->BoneCount; ++index)
@@ -377,7 +378,7 @@ server.RegisterHandler("get_skeleton_store_state", [](const EditorDebugServer::R
             // How many live SkeletonRef components name this runtime — one per
             // entity of the model instance. Deleting one sibling drops it by
             // one; the slot is freed only when the last reference goes.
-            rtJson["refCount"] = store.GetRuntimeRefCount(runtimeId);
+            runtimeJson["refCount"] = store.GetRuntimeRefCount(runtimeId);
             runtimeJson["atlasPaletteOffsetBones"] = runtime->AtlasPaletteOffsetBones;
             runtimeJson["paletteMatrixCount"] = static_cast<uint32_t>(runtime->CompactSkinMatrices.size() / 16);
             const auto* selection = animationSystem ? animationSystem->GetBoneLODSelection(runtimeId) : nullptr;
