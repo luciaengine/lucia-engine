@@ -71,8 +71,9 @@ class SkinPaletteAtlas
     {
         m_Pool = &pool;
 
-        // Reserve atlas slot 0 with identity matrices. 256 covers the largest
-        // bone-count bucket used by SkinningUploadSystem.
+        // Keep the existing reserved block and caller offsets. Shader read
+        // helpers treat offset zero as a sentinel and read its first identity
+        // matrix for every joint, including palettes larger than this block.
         UploadIdentityPalette(kIdentityBoneCount);
 
         // Reset diagnostic counters *after* the identity upload so that stats
