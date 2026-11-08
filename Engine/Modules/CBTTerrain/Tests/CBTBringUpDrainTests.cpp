@@ -30,6 +30,7 @@
 #include "CBTTerrain/CBTSphereRoots.h"
 #include "Rendering/Core/CommandList.h"
 #include "CBTTestHarness.h"
+#include "SourceCompletionProbeDevice.h"
 #include "../../Rendering/Source/Vulkan/VulkanCommandList.h"
 #include "../../Rendering/Source/Vulkan/VulkanDevice.h"
 
@@ -133,17 +134,6 @@ class PendingUpdate
     std::unique_ptr<CommandList> m_Commands;
     IDevice::GpuSyncToken m_Token;
     std::jthread m_ReleaseThread;
-};
-
-class SourceCompletionProbeDevice : public VulkanDevice
-{
-  public:
-    bool HideGraphicsToken = false;
-
-    GpuSyncToken LastGraphicsSubmissionToken() const override
-    {
-        return HideGraphicsToken ? GpuSyncToken{} : VulkanDevice::LastGraphicsSubmissionToken();
-    }
 };
 
 std::vector<uint32_t> ReadIdentityIndices(IDevice& device, CBTInstance& instance,
@@ -361,6 +351,16 @@ TEST(CBTSourceRebind, UnknownCompletionLeavesBindingsUnchangedAndRetries)
     const uint32_t originalTableWords = instance.GetResources().PageTableSlotWords();
     EXPECT_FALSE(instance.ProvisionPageTableWords(originalTableWords + 1u));
     EXPECT_EQ(instance.GetResources().PageTableSlotWords(), originalTableWords);
+    const auto originalHeightChain = instance.GetResources().GetHeightChainBuffer();
+    const uint32_t originalHeightWords = instance.GetResources().GetHeightChainWords();
+    EXPECT_FALSE(instance.ProvisionHeightChainWords(originalHeightWords + 1u));
+    EXPECT_EQ(instance.GetResources().GetHeightChainBuffer(), originalHeightChain);
+    EXPECT_EQ(instance.GetResources().GetHeightChainWords(), originalHeightWords);
+    const auto originalNormalChain = instance.GetResources().GetNormalChainTexture();
+    const uint32_t originalNormalMips = instance.GetResources().GetNormalChainMips();
+    EXPECT_FALSE(instance.ProvisionNormalChain(513u, 513u));
+    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), originalNormalChain);
+    EXPECT_EQ(instance.GetResources().GetNormalChainMips(), originalNormalMips);
     EXPECT_FALSE(instance.SetHeightSource(1u, source));
     EXPECT_EQ(instance.GetResources().GetBoundHeightSource(1u),
               instance.GetResources().GetDefaultHeightTexture());
@@ -373,9 +373,24 @@ TEST(CBTSourceRebind, UnknownCompletionLeavesBindingsUnchangedAndRetries)
     device.HideGraphicsToken = false;
     EXPECT_TRUE(instance.ProvisionPageTableWords(originalTableWords + 1u));
     EXPECT_GT(instance.GetResources().PageTableSlotWords(), originalTableWords);
+    EXPECT_TRUE(instance.ProvisionHeightChainWords(originalHeightWords + 1u));
+    EXPECT_GT(instance.GetResources().GetHeightChainWords(), originalHeightWords);
+    EXPECT_TRUE(instance.ProvisionNormalChain(513u, 513u));
+    EXPECT_EQ(instance.GetResources().GetNormalChainMips(), CBTNormalChainMips(513u, 513u));
     EXPECT_TRUE(instance.RefreshTerrainSources(changed));
     EXPECT_TRUE(changed);
     EXPECT_EQ(instance.CountTerrainSourceSlots(source), originalSlots);
+    // The real Vulkan queue exercises the scoped-fence path without a global token.
+    device.UseScopedGraphicsFence = true;
+    PendingUpdate pending(device);
+    ASSERT_TRUE(pending.Submit(instance, 0u));
+    ASSERT_EQ(pending.Status(), IDevice::GpuSyncStatus::Pending);
+    pending.ReleaseSoon();
+    const uint64_t drains = device.GetIdleDrainCount();
+    EXPECT_TRUE(instance.SetHeightSource(2u, source));
+    EXPECT_EQ(pending.Status(), IDevice::GpuSyncStatus::Complete);
+    EXPECT_EQ(device.GetIdleDrainCount(), drains);
+    device.UseScopedGraphicsFence = false;
     EXPECT_EQ(device.GetValidationStats().ErrorCount, 0u);
 }
 
