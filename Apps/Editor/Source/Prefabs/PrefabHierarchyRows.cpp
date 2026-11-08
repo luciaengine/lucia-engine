@@ -16,9 +16,11 @@
 #include "Scene/PrefabAuthoring.h"
 #include "Types/FlatMap.h"
 #include "UI/Controls/Label.h"
+#include "UI/Layout/ElementOverrideHelpers.h"
 #include "UI/UIElement.h"
 
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -132,6 +134,36 @@ void ApplyMarker(UIElement& row, PrefabEntityMark mark)
         row.SetTooltip("");
 }
 
+UIElement* FindGlyph(UIElement& row)
+{
+    for (const auto& child : row.GetChildren())
+    {
+        if (child->HasClass("hierarchy-preview-icon"))
+            return child.get();
+    }
+    return nullptr;
+}
+
+UIElement* FindMemberBadge(UIElement& glyph)
+{
+    for (const auto& child : glyph.GetChildren())
+    {
+        if (child->HasClass("hierarchy-prefab-member-badge"))
+            return child.get();
+    }
+    return nullptr;
+}
+
+bool TreeShowsBadges(const UIElement& row)
+{
+    for (const UIElement* ancestor = &row; ancestor; ancestor = ancestor->GetParent())
+    {
+        if (ancestor->HasClass("tree-icons-show-badges"))
+            return true;
+    }
+    return false;
+}
+
 } // namespace
 
 ECS::EntityHandle FindInstanceRoot(ECS::World& world, ECS::EntityHandle entity)
@@ -196,6 +228,38 @@ PrefabRowState ClassifyPrefabRow(ECS::World& world, ECS::EntityHandle entity, co
     return state;
 }
 
+void UpdatePrefabRowPresentation(HierarchyRowParts& parts)
+{
+    UIElement* glyph = FindGlyph(parts.Row);
+    if (!glyph)
+        return;
+    const bool missing = parts.Row.HasClass(kMissingClass);
+    glyph->RemoveClass("hierarchy-prefab-missing-icon");
+    if (missing)
+        glyph->AddClass("hierarchy-prefab-missing-icon");
+    if (missing || parts.Row.HasClass(kRootClass))
+        UI::Layout::DisableBackgroundOverride(*glyph);
+
+    const bool showBadge = parts.Row.HasClass(kMemberClass) && TreeShowsBadges(parts.Row);
+    UIElement* badge = FindMemberBadge(*glyph);
+    if (showBadge)
+    {
+        glyph->AddClass("hierarchy-prefab-badge-host");
+        if (!badge)
+        {
+            auto memberBadge = std::make_unique<UIElement>();
+            memberBadge->AddClass("hierarchy-prefab-member-badge");
+            glyph->AddChild(std::move(memberBadge));
+        }
+    }
+    else
+    {
+        glyph->RemoveClass("hierarchy-prefab-badge-host");
+        if (badge)
+            glyph->RemoveChild(badge);
+    }
+}
+
 void DecoratePrefabRow(ECS::World& world, ECS::EntityHandle entity, HierarchyRowParts& parts)
 {
     const AssetRegistry& registry = EngineCore::GetInstance().GetAssetManager().GetRegistry();
@@ -217,6 +281,8 @@ void DecoratePrefabRow(ECS::World& world, ECS::EntityHandle entity, HierarchyRow
     // The root of a nested instance has both classes: its glyph is a root's, its badge a member's.
     if (state.InsideInstance && inPrefab)
         parts.Row.AddClass(kMemberClass);
+
+    UpdatePrefabRowPresentation(parts);
 
     // The tooltip is this decoration's only while the row shows a missing file.
     if (!parts.Title)

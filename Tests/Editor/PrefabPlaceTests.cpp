@@ -482,7 +482,7 @@ TEST_F(PrefabPlaceTests, TheCreatePrefabDialogShowsTheFieldsAndCreatesInTheFolde
     EXPECT_EQ(DialogPart<Label>(dialog, "create-prefab-folder").GetText(),
               "Assets/" + m_Folder.filename().string());
     EXPECT_EQ(DialogPart<Label>(dialog, "create-prefab-count").GetText(), "The prefab holds 3 entities.");
-    EXPECT_FALSE(DialogPart<Label>(dialog, "create-prefab-references").HasClass("visible"));
+    EXPECT_FALSE(DialogPart<Label>(dialog, "create-prefab-references").HasClass("create-prefab-content-shown"));
 
     DialogPart<Button>(dialog, "create-prefab-create").TriggerClick();
     ASSERT_EQ(requests.size(), 1u);
@@ -495,7 +495,7 @@ TEST_F(PrefabPlaceTests, TheCreatePrefabDialogShowsTheFieldsAndCreatesInTheFolde
                               m_Folder),
                 [](const std::vector<std::filesystem::path>&, bool, std::string&) { return true; }, {});
     Label& references = DialogPart<Label>(dialog, "create-prefab-references");
-    EXPECT_TRUE(references.HasClass("visible"));
+    EXPECT_TRUE(references.HasClass("create-prefab-content-shown"));
     EXPECT_EQ(references.GetText(), "These fields point at entities outside the prefab. This instance keeps them; the "
                                     "prefab file leaves them empty.\nTrigger's Target points at Gate\n"
                                     "Trigger's Source points at Door");
@@ -529,7 +529,7 @@ TEST_F(PrefabPlaceTests, TheCreatePrefabDialogAsksBeforeAReplaceAndCancelChanges
     create.TriggerClick();
     EXPECT_TRUE(requests.empty()) << "the first Create only asks";
     EXPECT_EQ(create.GetText(), "Replace");
-    EXPECT_TRUE(message.HasClass("visible"));
+    EXPECT_TRUE(message.HasClass("create-prefab-content-shown"));
     EXPECT_NE(message.GetText().find("Crate.prefab"), std::string::npos) << message.GetText();
 
     create.TriggerClick();
@@ -581,7 +581,7 @@ TEST_F(PrefabPlaceTests, TheCreatePrefabDialogRefusesAReplaceThatInstancesBlockB
     create.TriggerClick();
     EXPECT_EQ(message.GetText(), "Crate.prefab cannot be replaced while 1 instance in this scene uses it. Choose "
                                  "another name.");
-    EXPECT_TRUE(message.HasClass("visible"));
+    EXPECT_TRUE(message.HasClass("create-prefab-content-shown"));
     EXPECT_EQ(create.GetText(), "Create") << "no Replace is offered";
     EXPECT_FALSE(create.IsEnabled());
     create.TriggerClick();
@@ -591,7 +591,7 @@ TEST_F(PrefabPlaceTests, TheCreatePrefabDialogRefusesAReplaceThatInstancesBlockB
     ui.OnKey(Input::kKeyCode_End, Input::kKeyActionPress, 0);
     ui.OnChar('2');
     EXPECT_TRUE(create.IsEnabled()) << "a new name enables Create";
-    EXPECT_FALSE(message.HasClass("visible"));
+    EXPECT_FALSE(message.HasClass("create-prefab-content-shown"));
     create.TriggerClick();
     ASSERT_EQ(requests.size(), 1u);
     EXPECT_EQ(requests[0].File, (m_Folder / "Crate2.prefab").lexically_normal());

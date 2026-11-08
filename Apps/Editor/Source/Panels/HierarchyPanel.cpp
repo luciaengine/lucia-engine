@@ -1777,8 +1777,6 @@ HierarchyPanel::HierarchyPanel()
             }
             if (m_VcsController)
                 m_VcsController->DecorateRow(handle, *row);
-            Editor::HierarchyRowParts parts{*row, titleEl};
-            Editor::ApplyHierarchyRowDecorations(*m_World, handle, parts);
             if (titleEl && !previewIconEl)
             {
                 auto previewIcon = std::make_unique<UIElement>();
@@ -1966,7 +1964,10 @@ HierarchyPanel::HierarchyPanel()
                 {
                     titleEl->RemoveClass("search-match");
                 }
-            } });
+            }
+            Editor::HierarchyRowParts parts{*row, titleEl};
+            Editor::ApplyHierarchyRowDecorations(*m_World, handle, parts);
+        });
 
     // The tree takes every payload the panel takes, plus entity drags for reparenting.
     m_Tree->SetAcceptsPayload([this](UI::Interaction::PayloadTypeId tid)

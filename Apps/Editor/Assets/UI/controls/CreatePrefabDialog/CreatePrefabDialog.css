@@ -15,7 +15,7 @@
 }
 
 /* The folder is a read-only field box beside Browse, so it reads as a value. */
-.create-prefab-folder-row .create-prefab-folder-field {
+.create-prefab-folder-field {
 	flex: 1 1 auto;
 	width: auto;
 	overflow: hidden;
@@ -29,10 +29,6 @@
 	font-size: 13px;
 }
 
-.create-prefab-note.visible {
-	display: block;
-}
-
 /* Hidden until a conflict or an error has something to say. */
 .create-prefab-message {
 	display: none;
@@ -40,6 +36,6 @@
 	font-size: 13px;
 }
 
-.create-prefab-message.visible {
+.create-prefab-content-shown {
 	display: block;
 }

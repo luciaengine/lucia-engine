@@ -35,6 +35,7 @@ constexpr std::array<std::string_view, 11> kRequiredIds = {
     "create-prefab-browse",   "create-prefab-create",    "create-prefab-cancel",
 };
 constexpr const char* kVisibleClass = "visible";
+constexpr const char* kContentShownClass = "create-prefab-content-shown";
 constexpr const char* kHiddenClass = "hidden";
 constexpr std::string_view kForbiddenNameCharacters = "<>:\"/\\|?*";
 // Characters below this are control characters, which no file name may hold.
@@ -154,9 +155,9 @@ void CreatePrefabDialog::Open(Request request, CreateHandler onCreate, ReplaceCh
     const std::string references = ListOutgoingReferences(request.OutgoingReferences, prefabCount);
     m_ReferencesLabel->SetText(references);
     if (references.empty())
-        m_ReferencesLabel->RemoveClass(kVisibleClass);
+        m_ReferencesLabel->RemoveClass(kContentShownClass);
     else
-        m_ReferencesLabel->AddClass(kVisibleClass);
+        m_ReferencesLabel->AddClass(kContentShownClass);
     ClearConflict();
     m_Open = true;
     AddClass(kVisibleClass);
@@ -252,7 +253,7 @@ void CreatePrefabDialog::OnBrowseClicked()
 
 void CreatePrefabDialog::OnNameEdited()
 {
-    if (m_MessageLabel->HasClass(kVisibleClass))
+    if (m_MessageLabel->HasClass(kContentShownClass))
         ClearConflict();
 }
 
@@ -308,14 +309,14 @@ void CreatePrefabDialog::ShowFiles()
 void CreatePrefabDialog::ShowError(const std::string& text)
 {
     m_MessageLabel->SetText(text);
-    m_MessageLabel->AddClass(kVisibleClass);
+    m_MessageLabel->AddClass(kContentShownClass);
 }
 
 void CreatePrefabDialog::ClearConflict()
 {
     m_ConflictFile.clear();
     m_MessageLabel->SetText("");
-    m_MessageLabel->RemoveClass(kVisibleClass);
+    m_MessageLabel->RemoveClass(kContentShownClass);
     m_CreateButton->SetText("Create");
     m_CreateButton->SetEnabled(true);
 }

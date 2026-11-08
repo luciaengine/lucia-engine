@@ -62,6 +62,9 @@ PrefabRowState ClassifyPrefabRow(ECS::World& world, ECS::EntityHandle entity, co
 /// The rows read the instance descriptions of PrefabInstanceDescriptions.
 void DecoratePrefabRow(ECS::World& world, ECS::EntityHandle entity, HierarchyRowParts& parts);
 
+/// Presents existing prefab row roles on its glyph and badge after the row is composed.
+void UpdatePrefabRowPresentation(HierarchyRowParts& parts);
+
 /// Shows `text` on `label`; an empty `text` hides the label, so it takes no space.
 void SetShownText(Label& label, const std::string& text);
 

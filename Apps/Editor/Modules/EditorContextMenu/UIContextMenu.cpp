@@ -1057,7 +1057,11 @@ UIContextMenu::UIContextMenu() = default;
         if (!item.shortcut.empty() && !item.isSubMenu)
         {
             auto key = std::make_unique<Label>();
-            key->AddClass("dropdown-item-shortcut");
+            key->AddClass("context-menu-shortcut");
+            if (enabled)
+                raw->AddClass("context-menu-shortcut-hover");
+            else
+                key->AddClass("context-menu-shortcut-disabled");
             key->Overrides().Set(Style::PointerEvents, false);
             key->SetText(item.shortcut);
             raw->AddChild(std::move(key));
