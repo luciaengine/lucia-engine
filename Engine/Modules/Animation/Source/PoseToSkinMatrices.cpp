@@ -1,5 +1,9 @@
 #include "Animation/PoseToSkinMatrices.h"
 
+#include "Animation/BoneEvaluationPlan.h"
+
+#include <algorithm>
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -27,18 +31,47 @@ void StoreColumnMajor(const glm::mat4& matrix, float* out)
 
 } // namespace
 
+void BlendLocalPoses(const SkeletonData& skeleton,
+                     PoseSampleWorkspace& current,
+                     const PoseSampleWorkspace& previous,
+                     float32 alpha,
+                     const BoneEvaluationPlan* plan)
+{
+    const uint32 count = static_cast<uint32>(std::min(current.Pose.size(), previous.Pose.size()));
+    const bool reduced = plan && plan->IsForSkeleton(skeleton);
+    const float weight = std::clamp(alpha, 0.0f, 1.0f);
+    for (uint32 node = 0; node < count; ++node)
+    {
+        if (reduced && node < skeleton.BoneCount && plan->EvaluatedAncestors()[node] != node)
+            continue;
+        current.Pose[node].t = glm::mix(previous.Pose[node].t, current.Pose[node].t, weight);
+        current.Pose[node].r = glm::slerp(previous.Pose[node].r, current.Pose[node].r, weight);
+        current.Pose[node].s = glm::mix(previous.Pose[node].s, current.Pose[node].s, weight);
+        if (node < current.ChangedTranslation.size())
+            current.ChangedTranslation[node] = 1u;
+        if (node < current.ChangedRotation.size())
+            current.ChangedRotation[node] = 1u;
+        if (node < current.ChangedScale.size())
+            current.ChangedScale[node] = 1u;
+    }
+}
+
 void BuildPoseToSkinMatrices(const SkeletonData& skeleton,
                              std::vector<float>* outNodeWorldMatrices,
                              std::vector<float>* outCompactSkinMatrices,
-                             PoseSampleWorkspace& ws)
+                             PoseSampleWorkspace& ws,
+                             const BoneEvaluationPlan* plan)
 {
     const uint32_t bones = skeleton.BoneCount;
+    const bool reduced = plan && plan->IsForSkeleton(skeleton);
 
     ws.Local.clear();
     ws.Local.resize(bones, glm::mat4(1.0f));
     const bool haveRestLocal = skeleton.RestLocalMatrix.size() >= static_cast<size_t>(bones) * 16u;
     for (uint32_t i = 0; i < bones; ++i)
     {
+        if (reduced && plan->EvaluatedAncestors()[i] != i)
+            continue;
         const bool anyChanged = (ws.ChangedTranslation[i] | ws.ChangedRotation[i] | ws.ChangedScale[i]) != 0u;
         if (haveRestLocal && !anyChanged)
             ws.Local[i] = glm::make_mat4(&skeleton.RestLocalMatrix[i * 16u]);
@@ -67,8 +100,30 @@ void BuildPoseToSkinMatrices(const SkeletonData& skeleton,
         }
         ws.Built[nodeIndex] = 1u;
     };
-    for (uint32_t i = 0; i < bones; ++i)
-        buildWorld(buildWorld, i);
+    if (reduced)
+    {
+        for (uint32 node : plan->Nodes())
+        {
+            const int32 parent = skeleton.Parent[node];
+            ws.World[node] = parent >= 0
+                ? ws.World[static_cast<uint32>(parent)] * ws.Local[node]
+                : ws.Local[node];
+        }
+        if (outNodeWorldMatrices)
+        {
+            for (uint32 node = 0; node < bones; ++node)
+            {
+                const uint32 ancestor = plan->EvaluatedAncestors()[node];
+                if (ancestor != node)
+                    ws.World[node] = ws.World[ancestor] * plan->RestFromAncestors()[node].GetGLM();
+            }
+        }
+    }
+    else
+    {
+        for (uint32_t i = 0; i < bones; ++i)
+            buildWorld(buildWorld, i);
+    }
 
     if (outNodeWorldMatrices)
     {
@@ -94,8 +149,10 @@ void BuildPoseToSkinMatrices(const SkeletonData& skeleton,
         if (nodeIndex >= bones)
             continue;
 
-        const glm::mat4 inverseBind = glm::make_mat4(&skeleton.InverseBind[static_cast<size_t>(nodeIndex) * 16u]);
-        const glm::mat4 modelRelative = meshRootInverse * ws.World[nodeIndex];
+        const uint32 evaluatedNode = reduced ? plan->EvaluatedAncestors()[nodeIndex] : nodeIndex;
+        const glm::mat4 inverseBind = reduced ? plan->JointCorrections()[jointIndex].GetGLM()
+            : glm::make_mat4(&skeleton.InverseBind[static_cast<size_t>(nodeIndex) * 16u]);
+        const glm::mat4 modelRelative = meshRootInverse * ws.World[evaluatedNode];
         const glm::mat4 skinMatrix = modelRelative * inverseBind;
         StoreColumnMajor(skinMatrix, outCompactSkinMatrices->data() + static_cast<size_t>(jointIndex) * 16u);
     }
@@ -104,7 +161,8 @@ void BuildPoseToSkinMatrices(const SkeletonData& skeleton,
 void EmitSkinMatricesFromAnimationPose(const SkeletonData& skeleton,
                                        const AnimationPose& localPose,
                                        std::vector<float>& outCompactSkinMatrices,
-                                       PoseSampleWorkspace& ws)
+                                       PoseSampleWorkspace& ws,
+                                       const BoneEvaluationPlan* plan)
 {
     const uint32_t boneCount = skeleton.BoneCount;
     if (boneCount == 0)
@@ -114,8 +172,11 @@ void EmitSkinMatricesFromAnimationPose(const SkeletonData& skeleton,
     }
 
     ws.Pose.assign(boneCount, PoseSampleWorkspace::TRS{});
+    const bool reduced = plan && plan->IsForSkeleton(skeleton);
     for (uint32_t i = 0; i < boneCount && i < localPose.BoneCount; ++i)
     {
+        if (reduced && plan->EvaluatedAncestors()[i] != i)
+            continue;
         const auto& p = localPose.Positions[i];
         const auto& q = localPose.Rotations[i].GetGLM();
         const auto& s = localPose.Scales[i];
@@ -127,7 +188,7 @@ void EmitSkinMatricesFromAnimationPose(const SkeletonData& skeleton,
     ws.ChangedRotation.assign(boneCount, 1u);
     ws.ChangedScale.assign(boneCount, 1u);
 
-    BuildPoseToSkinMatrices(skeleton, nullptr, &outCompactSkinMatrices, ws);
+    BuildPoseToSkinMatrices(skeleton, nullptr, &outCompactSkinMatrices, ws, plan);
 }
 
 } // namespace Animation

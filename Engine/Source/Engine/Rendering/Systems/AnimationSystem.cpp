@@ -898,7 +898,7 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                                 nullptr, nullptr, m_BlendFrom);
             SampleAnimationPose(*item.CachedSkeleton, clipPtr.get(), item.Time,
                                 nullptr, nullptr, m_Workspace);
-            BlendLocalPoses(m_Workspace, m_BlendFrom, item.BlendAlpha);
+            Animation::BlendLocalPoses(*item.CachedSkeleton, m_Workspace, m_BlendFrom, item.BlendAlpha);
             ::GameEngine::Animation::BuildPoseToSkinMatrices(
                 *item.CachedSkeleton, nullptr, &runtime->CompactSkinMatrices, m_Workspace);
             continue;
@@ -1085,7 +1085,7 @@ void SampleByRefsForTest(Components::AnimatorRef& animRef, uint32 skeletonId, fl
         {
             SampleAnimationPose(*skel, prev.get(), animRef.PrevTime, nullptr, nullptr, blendFrom);
             SampleAnimationPose(*skel, clip.get(), animRef.Time, nullptr, nullptr, workspace);
-            BlendLocalPoses(workspace, blendFrom, animRef.BlendAlpha());
+            Animation::BlendLocalPoses(*skel, workspace, blendFrom, animRef.BlendAlpha());
             ::GameEngine::Animation::BuildPoseToSkinMatrices(
                 *skel, nullptr, &runtime->CompactSkinMatrices, workspace);
             return;

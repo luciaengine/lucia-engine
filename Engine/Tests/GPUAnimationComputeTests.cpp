@@ -19,6 +19,7 @@
 #include "ECSModules/Rendering/SkeletonStore.h"
 #include "ECSModules/Rendering/ClipStore.h"
 #include "Assets/AnimationClip.h"
+#include "Animation/BoneEvaluationPlan.h"
 #include "StagedTestPaths.h"
 
 #include <glm/glm.hpp>
@@ -412,7 +413,8 @@ protected:
     // One production dispatch: the data store uploads skeleton, clip and instance,
     // AnimationComputePass declares its pass on a render-graph frame, the frame executes.
     std::vector<float> DispatchProductionPass(const Kernel& kernel, const Rig& rig, float time,
-                                              bool retryAfterClearing = false)
+                                              bool retryAfterClearing = false,
+                                              const SharedPtr<const Animation::BoneEvaluationPlan>& plan = {})
     {
         const std::vector<uint8_t> shader = Utils::ReadFile(
             (TestPaths::StagedRoot() / "Shaders" / kernel.File).string());
@@ -422,7 +424,10 @@ protected:
 
         EXPECT_TRUE(m_DataStore.Initialize(m_Device.get()));
         m_DataStore.BeginFrame(0);
-        const uint32 skeletonGpuIndex = m_DataStore.EnsureSkeletonUploaded(rig.SkeletonId);
+        const uint32 skeletonGpuIndex = m_DataStore.EnsureSkeletonUploaded(rig.SkeletonId, plan);
+        EXPECT_NE(skeletonGpuIndex, GPUAnimationDataStore::kNotUploaded);
+        if (skeletonGpuIndex == GPUAnimationDataStore::kNotUploaded)
+            return {};
         const uint32 clipGpuIndex = m_DataStore.EnsureClipUploaded(rig.ClipIndex);
 
         std::vector<float> packedRows(rig.JointCount * BonePaletteLayout::kFloatsPerBone);
@@ -518,6 +523,97 @@ class GPUAnimationComputeTest : public GPUAnimationComputeFixture,
                                 public ::testing::WithParamInterface<KernelCase>
 {
 };
+
+class GPUAnimationLODTest : public GPUAnimationComputeFixture,
+                            public ::testing::WithParamInterface<Kernel>
+{
+protected:
+    GraphicsAPI RequestedAPI() const override
+    {
+#ifdef __APPLE__
+        return GraphicsAPI::Metal;
+#else
+        return GraphicsAPI::Vulkan;
+#endif
+    }
+
+    void SetUp() override
+    {
+        GPUAnimationComputeFixture::SetUp();
+        if (m_Device)
+        {
+            if (m_Device->GetAPI() != RequestedAPI())
+                GTEST_SKIP() << "Native animation LOD requires API " << static_cast<int>(RequestedAPI())
+                    << "; the backend override selected API " << static_cast<int>(m_Device->GetAPI());
+            m_FrameOpen = m_Device->BeginFrame();
+            ASSERT_TRUE(m_FrameOpen);
+        }
+    }
+
+    void TearDown() override
+    {
+        if (m_FrameOpen)
+        {
+            m_Device->FinalizeFrame();
+            m_Device->WaitForIdle();
+        }
+        GPUAnimationComputeFixture::TearDown();
+    }
+
+private:
+    bool m_FrameOpen = false;
+};
+
+TEST_P(GPUAnimationLODTest, ReducedSelectionMatchesIndependentRestClampedCpuReference)
+{
+    if (!m_Device)
+        GTEST_SKIP() << "Requested native device unavailable";
+    Rig rig = CreateFingerRig(48u);
+    auto* skeleton = SkeletonStore::Instance().Get(rig.SkeletonId);
+    std::reverse(skeleton->JointNodes.begin(), skeleton->JointNodes.end());
+    const glm::mat4 meshRoot = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, -2.0f, 1.0f));
+    std::memcpy(skeleton->MeshRootWorld, glm::value_ptr(meshRoot), sizeof(glm::mat4));
+    skeleton->RestLocalMatrix[33u * 16u + 4u] += 0.25f;
+    skeleton->ComputeTopologicalSort();
+    auto plan = MakeShared<Animation::BoneEvaluationPlan>();
+    const uint32 pinned[] = {18u, 25u};
+    ASSERT_TRUE(plan->Build(*skeleton, pinned));
+    ASSERT_LT(plan->Nodes().size(), skeleton->JointClosure.size());
+
+    std::vector<AnimChannel> channels;
+    std::vector<AnimChannel> referenceChannels;
+    for (uint32 node = 0; node < skeleton->BoneCount; ++node)
+    {
+        channels.push_back(TranslationChannel(node, 0.1f * static_cast<float>(node + 1u)));
+        channels.push_back(RotationChannel(node));
+        if (plan->EvaluatedAncestors()[node] == node)
+        {
+            referenceChannels.push_back(channels[channels.size() - 2u]);
+            referenceChannels.push_back(channels.back());
+        }
+    }
+    rig.ClipIndex = RegisterClip(std::move(channels));
+    const uint32 referenceClip = RegisterClip(std::move(referenceChannels));
+    constexpr float kSampleTime = 0.375f;
+    const auto expected = SampleCpuReference(rig.SkeletonId, referenceClip, kSampleTime);
+    PoseSampleWorkspace workspace;
+    std::vector<float> cpuReduced;
+    const auto clip = ClipStore::Instance().Get(rig.ClipIndex);
+    SampleAnimationPose(*skeleton, clip.get(), kSampleTime, nullptr, &cpuReduced, workspace, plan.get());
+    EXPECT_EQ(workspace.ChangedTranslation[33u], 0u);
+    EXPECT_EQ(workspace.ChangedRotation[33u], 0u);
+    const auto actual = DispatchProductionPass(GetParam(), rig, kSampleTime, false, plan);
+    ASSERT_EQ(actual.size(), expected.size());
+    ASSERT_EQ(cpuReduced.size(), expected.size());
+    for (size_t element = 0; element < expected.size(); ++element)
+    {
+        EXPECT_NEAR(cpuReduced[element], expected[element], kMatrixTolerance) << element;
+        EXPECT_NEAR(actual[element], expected[element], kMatrixTolerance) << element;
+    }
+}
+
+INSTANTIATE_TEST_SUITE_P(Kernels, GPUAnimationLODTest, ::testing::Values(kDesktopKernel, kCompatKernel),
+    [](const ::testing::TestParamInfo<Kernel>& info) { return std::string(info.param.Name); });
 
 class GPUAnimationPreparationRetryTest : public GPUAnimationComputeFixture,
                                          public ::testing::WithParamInterface<GraphicsAPI>
@@ -632,4 +728,56 @@ TEST(GPUAnimationDataStoreTest, RefusesSkeletonsTheKernelCannotHold)
     EXPECT_NE(store.EnsureSkeletonUploaded(atBoneLimit), GPUAnimationDataStore::kNotUploaded);
     store.InvalidateSkeleton(atBoneLimit);
     EXPECT_EQ(store.EnsureSkeletonUploaded(atBoneLimit), GPUAnimationDataStore::kNotUploaded);
+}
+
+TEST(GPUAnimationDataStoreTest, ReducedUploadUsesSelectedKernelLimitsAndKeepsFullPalette)
+{
+    const uint32 skeletonId = CreateRigSkeleton(FlatParents(300u), EveryNodeAJoint(300u));
+    const auto* skeleton = SkeletonStore::Instance().Get(skeletonId);
+    auto plan = MakeShared<Animation::BoneEvaluationPlan>();
+    const uint32 requested[] = {1u, 299u};
+    ASSERT_TRUE(plan->Build(*skeleton, requested));
+    ASSERT_EQ(plan->Nodes().size(), 3u);
+    GPUAnimationDataStore store;
+    EXPECT_EQ(store.EnsureSkeletonUploaded(skeletonId), GPUAnimationDataStore::kNotUploaded);
+    const uint32 reduced = store.EnsureSkeletonUploaded(skeletonId, plan);
+    EXPECT_NE(reduced, GPUAnimationDataStore::kNotUploaded);
+    EXPECT_EQ(store.EnsureSkeletonUploaded(skeletonId, plan), reduced);
+    EXPECT_EQ(store.GetSkeletonHeaderUsedBytes(), sizeof(GPUSkeletonHeader));
+    EXPECT_EQ(plan->JointCorrections().size(), 300u);
+    store.InvalidateSkeleton(skeletonId);
+    EXPECT_NE(store.EnsureSkeletonUploaded(skeletonId, plan), reduced);
+}
+
+TEST(GPUAnimationDataStoreTest, VariantCacheOwnsPlanUntilSkeletonInvalidation)
+{
+    const uint32 skeletonId = CreateTestSkeleton();
+    const uint32 foreignId = CreateTestSkeleton();
+    auto plan = MakeShared<Animation::BoneEvaluationPlan>();
+    ASSERT_TRUE(plan->Build(*SkeletonStore::Instance().Get(skeletonId), {}));
+    GPUAnimationDataStore store;
+    EXPECT_EQ(store.EnsureSkeletonUploaded(foreignId, plan), GPUAnimationDataStore::kNotUploaded);
+    const uint32 full = store.EnsureSkeletonUploaded(skeletonId);
+    const uint32 reduced = store.EnsureSkeletonUploaded(skeletonId, plan);
+    EXPECT_NE(full, reduced);
+    EXPECT_EQ(store.EnsureSkeletonUploaded(skeletonId), full);
+    std::weak_ptr<const Animation::BoneEvaluationPlan> lifetime = plan;
+    plan.reset();
+    EXPECT_FALSE(lifetime.expired());
+    store.InvalidateSkeleton(skeletonId);
+    EXPECT_TRUE(lifetime.expired());
+}
+
+TEST(GPUAnimationDataStoreTest, DeviceFreeShutdownReleasesVariantPlanOwnership)
+{
+    const uint32 skeletonId = CreateTestSkeleton();
+    auto plan = MakeShared<Animation::BoneEvaluationPlan>();
+    ASSERT_TRUE(plan->Build(*SkeletonStore::Instance().Get(skeletonId), {}));
+    GPUAnimationDataStore store;
+    ASSERT_NE(store.EnsureSkeletonUploaded(skeletonId, plan), GPUAnimationDataStore::kNotUploaded);
+    std::weak_ptr<const Animation::BoneEvaluationPlan> lifetime = plan;
+    plan.reset();
+    ASSERT_FALSE(lifetime.expired());
+    store.Shutdown();
+    EXPECT_TRUE(lifetime.expired());
 }

@@ -2,6 +2,7 @@
 
 #include "Rendering/Core/Handle.h"
 #include "Rendering/Core/FrameBufferAllocator.h"
+#include "Types/FlatMap.h"
 #include "Types/Types.h"
 
 #include <cstdint>
@@ -10,18 +11,18 @@
 #include <vector>
 
 namespace GameEngine { namespace Rendering { class IDevice; } }
-namespace GameEngine { namespace Animation { struct SkeletonData; } }
+namespace GameEngine { namespace Animation { struct SkeletonData; class BoneEvaluationPlan; } }
 
 namespace GameEngine { namespace Engine { namespace Renderer {
 
 // GPU-side skeleton header. Packed std430 — 128 bytes per entry.
-// The bones are the skeleton's joint closure (SkeletonData::JointClosure) in
-// its level order, so a parent precedes its children and level L holds bones
+// Evaluated bones are the joint closure or an ancestor-closed LOD selection in
+// level order, so a parent precedes its children and level L holds bones
 // [levelOffsets[L], levelOffsets[L + 1]).
 // Offsets are element-index offsets into the flat skeleton data SSBO
 // (uint32 elements; floats reinterpret via uintBitsToFloat in GLSL).
 struct GPUSkeletonHeader {
-    uint32 boneCount;               // joint closure bones, at most GPUAnimationDataStore::kMaxBones
+    uint32 boneCount;               // evaluated bones, at most GPUAnimationDataStore::kMaxBones
     uint32 skinJointCount;
     uint32 levelCount;
     uint32 parentsOffset;           // index into data SSBO (int32 per bone: parent bone, -1 for a root)
@@ -109,7 +110,7 @@ public:
 
     // Ensure skeleton/clip data is uploaded. Returns GPU header index (0-based).
     // EnsureSkeletonUploaded returns kNotUploaded for a missing skeleton, one
-    // without a computed joint closure, or one over the kernel's limits.
+    // without a computed joint closure, or a selection over the kernel's limits.
     // Contract: never called concurrently. Callers are AnimationSystem::Update
     // in the animation wave (on a JobSystem worker when the wave runs its
     // systems in parallel) and the model thumbnail's AnimationSystem on the
@@ -119,7 +120,10 @@ public:
     // invoke from View().Parallel(...) or any other concurrent path, or you
     // will race with the used-bytes accessors that AnimationComputePass reads
     // during render-graph execute.
-    uint32 EnsureSkeletonUploaded(uint32 skeletonId);
+    // A supplied plan is immutable for the upload's lifetime. Invalidate the
+    // skeleton before changing authored data or rebuilding an uploaded plan.
+    uint32 EnsureSkeletonUploaded(uint32 skeletonId,
+        const SharedPtr<const Animation::BoneEvaluationPlan>& plan = {});
     uint32 EnsureClipUploaded(uint32 clipIndex);
 
     // Drop the id→header map so the next Ensure* re-packs current CPU
@@ -157,6 +161,12 @@ public:
     size_t GetClipDataUsedBytes()       const { return m_ClipData.size() * sizeof(uint32); }
 
 private:
+    struct SkeletonVariant
+    {
+        uint32 GPUIndex;
+        SharedPtr<const Animation::BoneEvaluationPlan> Plan;
+    };
+
     GameEngine::Rendering::IDevice* m_Device = nullptr;
 
     // Skeleton GPU buffers (persistent, grow-on-demand).
@@ -165,6 +175,7 @@ private:
     std::vector<GPUSkeletonHeader> m_SkelHeaders;
     std::vector<uint32> m_SkelData;                    // flat packed: ints and floats as uint32
     std::unordered_map<uint32, uint32> m_SkelIdToGPU;  // skeletonId → GPU header index
+    FlatMap<std::pair<uint32, uintptr_t>, SkeletonVariant> m_SkelPlanToGPU;
     size_t m_SkelHeaderCapacity = 0;
     size_t m_SkelDataCapacity = 0;
     bool m_SkelDirty = false;

@@ -18,6 +18,7 @@ set(ANIMATION_SOURCES
     Source/AnimationPlayer.cpp
     Source/AnimationPose.cpp
     Source/AnimationTimeline.cpp
+    Source/BoneEvaluationPlan.cpp
     Source/BoneMask.cpp
     Source/HumanBone.cpp
     Source/HumanoidImport.cpp

@@ -1,4 +1,6 @@
 #include "Engine/Rendering/GPUAnimationDataStore.h"
+
+#include "Animation/BoneEvaluationPlan.h"
 #include "ECSModules/Rendering/SkeletonStore.h"
 #include "ECSModules/Rendering/ClipStore.h"
 #include "Assets/AnimationClip.h"
@@ -61,6 +63,7 @@ bool GPUAnimationDataStore::Initialize(GameEngine::Rendering::IDevice* device)
 
 void GPUAnimationDataStore::Shutdown()
 {
+    m_SkelPlanToGPU.Clear();
     if (!m_Device) return;
     m_InstanceAllocator.Shutdown();
     if (m_SkelHeaderBuf.IsValid()) m_Device->DestroyBuffer(m_SkelHeaderBuf);
@@ -187,6 +190,7 @@ void GPUAnimationDataStore::InvalidateSkeleton(uint32 skeletonId)
     if (skeletonId == 0)
         return;
     m_SkelIdToGPU.erase(skeletonId);
+    m_SkelPlanToGPU.EraseIf([skeletonId](const auto& key, const auto&) { return key.first == skeletonId; });
 }
 
 void GPUAnimationDataStore::InvalidateAllClips()
@@ -200,19 +204,36 @@ bool GPUAnimationDataStore::FitsKernelLimits(const SkeletonData& skeleton)
         && skeleton.JointClosureLevelCount() <= kMaxHierarchyLevels;
 }
 
-uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
+uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId,
+    const SharedPtr<const Animation::BoneEvaluationPlan>& plan)
 {
-    auto it = m_SkelIdToGPU.find(skeletonId);
-    if (it != m_SkelIdToGPU.end())
-        return it->second;
+    if (!plan)
+    {
+        const auto it = m_SkelIdToGPU.find(skeletonId);
+        if (it != m_SkelIdToGPU.end())
+            return it->second;
+    }
 
     auto& skStore = SkeletonStore::Instance();
     const SkeletonData* skel = skStore.Get(skeletonId);
-    if (!skel || skel->JointClosure.empty() || !FitsKernelLimits(*skel))
+    if (!skel || skel->JointClosure.empty() || (plan && !plan->IsForSkeleton(*skel)))
+        return kNotUploaded;
+    const auto variantKey = std::make_pair(skeletonId, reinterpret_cast<uintptr_t>(plan.get()));
+    if (plan)
+    {
+        if (const auto* variant = m_SkelPlanToGPU.Find(variantKey))
+            return variant->GPUIndex;
+    }
+
+    const std::span<const uint32> evaluatedNodes = plan ? plan->Nodes() : std::span<const uint32>(skel->JointClosure);
+    const std::span<const uint32> levelOffsets = plan ? plan->LevelOffsets()
+        : std::span<const uint32>(skel->JointClosureLevelOffsets);
+    const uint32 levelCount = levelOffsets.empty() ? 0u : static_cast<uint32>(levelOffsets.size() - 1u);
+    if (evaluatedNodes.size() > kMaxBones || levelCount > kMaxHierarchyLevels)
         return kNotUploaded;
 
     const uint32 nodes = skel->BoneCount;
-    const uint32 bones = static_cast<uint32>(skel->JointClosure.size());
+    const uint32 bones = static_cast<uint32>(evaluatedNodes.size());
     // FBX-imported skeletons commonly leave SkinJointCount==0 and JointNodes
     // empty; mirror the CPU BuildPoseToSkinMatrices fallback (joint j == bone j
     // identity, BoneCount palette entries) so the GPU shader writes a full
@@ -225,15 +246,15 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
     const bool synthesizeJoints = !jointTableValid;
     const uint32 joints = synthesizeJoints ? nodes : skel->SkinJointCount;
 
-    // The closure bone of each skeleton node; nodes outside the closure have none.
+    // The compact evaluated index of each original node; omitted nodes have none.
     std::vector<uint32> boneOfNode(nodes, kNoBone);
     for (uint32 bone = 0; bone < bones; ++bone)
-        boneOfNode[skel->JointClosure[bone]] = bone;
+        boneOfNode[evaluatedNodes[bone]] = bone;
 
     GPUSkeletonHeader hdr{};
     hdr.boneCount = bones;
     hdr.skinJointCount = joints;
-    hdr.levelCount = skel->JointClosureLevelCount();
+    hdr.levelCount = levelCount;
 
     // Pre-compute meshRootInverse (column-major).
     {
@@ -245,12 +266,11 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
     // Pack data in closure order: parents, restTRS, restLocalMat, boneNodes;
     // then per joint: jointBones, inverseBind; then levelOffsets.
 
-    // Parents (int32 as uint32 reinterpret). An ancestor of a closure bone is
-    // itself in the closure, so every parent maps to a bone.
+    // Parents (int32 as uint32 reinterpret). The selection is ancestor-closed.
     hdr.parentsOffset = static_cast<uint32>(m_SkelData.size());
     for (uint32 bone = 0; bone < bones; ++bone)
     {
-        const uint32 node = skel->JointClosure[bone];
+        const uint32 node = evaluatedNodes[bone];
         const int32 parentNode = (node < skel->Parent.size()) ? skel->Parent[node] : -1;
         const int32 parent = (parentNode >= 0 && static_cast<uint32>(parentNode) < nodes)
             ? static_cast<int32>(boneOfNode[static_cast<uint32>(parentNode)]) : -1;
@@ -263,7 +283,7 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
     hdr.restTRSOffset = static_cast<uint32>(m_SkelData.size());
     for (uint32 bone = 0; bone < bones; ++bone)
     {
-        const size_t i = skel->JointClosure[bone];
+        const size_t i = evaluatedNodes[bone];
         // Translation (3 floats).
         for (int c = 0; c < 3; ++c)
             PackFloat(m_SkelData, (i * 3 + c < skel->RestTranslation.size()) ? skel->RestTranslation[i * 3 + c] : 0.0f);
@@ -281,7 +301,7 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
     {
         for (int c = 0; c < 16; ++c)
         {
-            size_t idx = static_cast<size_t>(skel->JointClosure[bone]) * 16 + c;
+            size_t idx = static_cast<size_t>(evaluatedNodes[bone]) * 16 + c;
             PackFloat(m_SkelData, (idx < skel->RestLocalMatrix.size()) ? skel->RestLocalMatrix[idx] : ((c % 5 == 0) ? 1.0f : 0.0f));
         }
     }
@@ -289,7 +309,7 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
     // Skeleton node per bone (uint32): the clip's channel table is per node.
     hdr.boneNodesOffset = static_cast<uint32>(m_SkelData.size());
     for (uint32 bone = 0; bone < bones; ++bone)
-        m_SkelData.push_back(skel->JointClosure[bone]);
+        m_SkelData.push_back(evaluatedNodes[bone]);
 
     // Joint nodes, in skin order. When synthesizing the joint mapping
     // (FBX fallback, see above), JointNodes is empty so the lookup falls
@@ -298,17 +318,26 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
     for (uint32 j = 0; j < joints; ++j)
         jointNodes[j] = (j < skel->JointNodes.size()) ? skel->JointNodes[j] : j;
 
-    // Bone per joint (uint32), kNoBone for a joint that names no node.
+    // Evaluated ancestor per joint. The correction below restores omitted rest chains.
     hdr.jointBonesOffset = static_cast<uint32>(m_SkelData.size());
     for (uint32 j = 0; j < joints; ++j)
-        m_SkelData.push_back((jointNodes[j] < nodes) ? boneOfNode[jointNodes[j]] : kNoBone);
+    {
+        const uint32 node = jointNodes[j];
+        const uint32 evaluatedNode = plan && node < nodes ? plan->EvaluatedAncestors()[node] : node;
+        m_SkelData.push_back(evaluatedNode < nodes ? boneOfNode[evaluatedNode] : kNoBone);
+    }
 
-    // Inverse bind matrices (16 floats per joint, column-major).
+    // Rest-chain times inverse bind (16 floats per joint, column-major).
     hdr.inverseBindOffset = static_cast<uint32>(m_SkelData.size());
     for (uint32 j = 0; j < joints; ++j)
     {
         for (int c = 0; c < 16; ++c)
         {
+            if (plan)
+            {
+                PackFloat(m_SkelData, plan->JointCorrections()[j].Data()[c]);
+                continue;
+            }
             size_t idx = static_cast<size_t>(jointNodes[j]) * 16 + c;
             PackFloat(m_SkelData, (idx < skel->InverseBind.size()) ? skel->InverseBind[idx] : ((c % 5 == 0) ? 1.0f : 0.0f));
         }
@@ -316,12 +345,15 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId)
 
     // Level offsets (uint32, levelCount + 1 entries).
     hdr.levelOffsetsOffset = static_cast<uint32>(m_SkelData.size());
-    for (size_t i = 0; i < skel->JointClosureLevelOffsets.size(); ++i)
-        m_SkelData.push_back(skel->JointClosureLevelOffsets[i]);
+    for (uint32 offset : levelOffsets)
+        m_SkelData.push_back(offset);
 
     const uint32 gpuIndex = static_cast<uint32>(m_SkelHeaders.size());
     m_SkelHeaders.push_back(hdr);
-    m_SkelIdToGPU[skeletonId] = gpuIndex;
+    if (plan)
+        m_SkelPlanToGPU.InsertOrAssign(variantKey, SkeletonVariant{gpuIndex, plan});
+    else
+        m_SkelIdToGPU[skeletonId] = gpuIndex;
     m_SkelDirty = true;
 
     FlushSkeletonBuffers();
