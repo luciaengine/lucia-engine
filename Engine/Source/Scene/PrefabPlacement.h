@@ -26,59 +26,59 @@ namespace GameEngine::Scene
 {
 
 // What a template build records beyond the entities it places: every entity it created, in
-// creation order, with the file (an index into `files`) and header line that author it, and every
+// creation order, with the file (an index into `Files`) and header line that author it, and every
 // prefab file it read.
 struct TemplateBuildLog
 {
-    std::vector<ECS::EntityHandle> entities;
-    std::vector<PrefabTemplate::Origin> origins;
-    std::vector<std::filesystem::path> files;
+    std::vector<ECS::EntityHandle> Entities;
+    std::vector<PrefabTemplate::Origin> Origins;
+    std::vector<std::filesystem::path> Files;
 };
 
 // A prefab file read once for one load or save, with the tables its lines resolve against.
 struct ParsedPrefab
 {
-    std::filesystem::path path;
-    SceneDoc doc;
-    SceneLoadContext ctx;
+    std::filesystem::path Path;
+    SceneDoc Document;
+    SceneLoadContext Context;
 };
 
 // What one load (or one save's template placement) shares across the prefab instances it places.
 struct PrefabPlacement
 {
-    ECS::World& world;
-    const LoadOptions& options;
-    SceneLoadDegradation* degradation = nullptr;
+    ECS::World& World;
+    const LoadOptions& Options;
+    SceneLoadDegradation* Degradation = nullptr;
 
     // Each prefab file parsed once, by its absolute path. A scene places thousands of instances
     // of a few hundred prefabs.
-    FlatMap<std::string, std::unique_ptr<ParsedPrefab>> parsedByPath;
+    FlatMap<std::string, std::unique_ptr<ParsedPrefab>> ParsedByPath;
 
     // The prefab files being placed, outermost first: a file already on the chain closes a cycle.
-    std::vector<std::filesystem::path> chain;
+    std::vector<std::filesystem::path> Chain;
 
     // Every hashed scene identity the load assigned, with its path; two paths with one identity
     // are refused. A path that fits the tag is its own identity and cannot collide.
-    FlatMap<std::string, std::string> pathByHashedTag;
+    FlatMap<std::string, std::string> PathByHashedTag;
 
-    // True: each instance is a clone of a template in `library` (one this placement creates and
+    // True: each instance is a clone of a template in `Library` (one this placement creates and
     // owns when none is set before the first instance). False: each instance is placed from its
     // file's text, as a template build does.
-    bool usesLibrary = false;
-    PrefabLibrary* library = nullptr;
-    std::unique_ptr<PrefabLibrary> ownedLibrary;
+    bool UsesLibrary = false;
+    PrefabLibrary* Library = nullptr;
+    std::unique_ptr<PrefabLibrary> OwnedLibrary;
 
     // Builds templates into the library's world; created with the first template.
-    std::unique_ptr<PrefabPlacement> templateBuild;
+    std::unique_ptr<PrefabPlacement> TemplateBuild;
 
     // False while a template is built: the library holds no scene identities (SceneEntityTag).
-    bool writesSceneTags = true;
+    bool WritesSceneTags = true;
 
     // Set while a template is built.
-    TemplateBuildLog* buildLog = nullptr;
+    TemplateBuildLog* BuildLog = nullptr;
 
     // Reused by every clone.
-    ECS::EntityRemap remap;
+    ECS::EntityRemap Remap;
 
     PrefabPlacement(ECS::World& targetWorld, const LoadOptions& loadOptions, SceneLoadDegradation* loadDegradation);
     ~PrefabPlacement();
@@ -88,8 +88,8 @@ struct PrefabPlacement
 // order. The root is at the empty address.
 struct PlacedPrefab
 {
-    ECS::EntityHandle root{};
-    std::vector<std::pair<std::string, ECS::EntityHandle>> members;
+    ECS::EntityHandle Root{};
+    std::vector<std::pair<std::string, ECS::EntityHandle>> Members;
 };
 
 // Places the prefab `section` names at `instancePath`; the section's override lines are the caller's.

@@ -177,7 +177,7 @@ static const PrefabTemplates::Template* GetPrefabTemplate(PrefabTemplates& templ
     if (!PlaceInstanceSection(*templates.placement, ownerCtx, sceneFilePath, owner, section, section.id, made->placed,
                               LoadFailure{&outError, &outFile, &outLine}))
         return nullptr;
-    for (const auto& [address, h] : made->placed.members)
+    for (const auto& [address, h] : made->placed.Members)
         made->byAddress.InsertOrAssign(address, h);
     return templates.byPath.InsertOrAssign(key, std::move(made)).get();
 }
@@ -334,8 +334,8 @@ void WritePrefabInstanceBody(ECS::World& world, const SavedPrefabInstance& insta
 {
     // A template's entity references write as the identities the instance's entities have.
     std::unordered_map<ECS::EntityId, std::string> templateTags;
-    templateTags.reserve(instance.templ->placed.members.size());
-    for (const auto& [address, h] : instance.templ->placed.members)
+    templateTags.reserve(instance.templ->placed.Members.size());
+    for (const auto& [address, h] : instance.templ->placed.Members)
         templateTags[h.id] = SceneTagForPath(JoinPath(instance.id, address));
     SceneSaveContext templateCtx = saveCtx;
     templateCtx.EntityTagById = &templateTags;
@@ -358,7 +358,7 @@ void WritePrefabInstanceBody(ECS::World& world, const SavedPrefabInstance& insta
         WriteEntityOverrides(address, instanceText, addedText, templateText, out);
     }
 
-    for (const auto& [address, h] : instance.templ->placed.members)
+    for (const auto& [address, h] : instance.templ->placed.Members)
     {
         if (address.empty() || instance.addresses.Contains(address))
             continue;
