@@ -91,13 +91,15 @@ CBTDf CBT_DfMulF(CBTDf a, float b)
     return CBT_DfFastTwoSum(p.Hi, lo);
 }
 
-// int64 -> df64 (deterministic, exactly power-of-two-scale invariant; relative error
-// <= ~2^-47). ConvertSToF is correctly rounded RTE, ConvertFToS truncates — both sides.
+// Bounded decode numerator |v| <= 2^50; mirror DeepDecode::FromI64. Each
+// integer-to-float cast is exact. A float-to-int64 roundtrip need not preserve
+// the residual on every backend; signed upper plus unsigned limbs avoids it.
 CBTDf CBT_DfFromI64(int64_t v)
 {
-    float hi = float(v);
-    float lo = float(v - int64_t(hi));
-    return CBTDf(hi, lo);
+    precise float upper = float(int(v >> 32)) * 4294967296.0;
+    precise float middle = float(uint((uint64_t(v) >> 16) & uint64_t(65535))) * 65536.0;
+    precise float lower = float(uint(uint64_t(v) & uint64_t(65535)));
+    return CBT_DfAdd(CBTDf(upper, 0.0), CBT_DfTwoSum(middle, lower));
 }
 
 // r(t) of the page store's equal-angle map (mirror PageStreaming::EqualAngleFaceCoordinate,
