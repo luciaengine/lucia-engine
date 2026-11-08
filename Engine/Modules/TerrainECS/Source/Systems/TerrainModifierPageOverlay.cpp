@@ -69,12 +69,6 @@ std::optional<PageSampleRect> LatticeRect(const TileLattice& lattice, float32 mi
     return rect;
 }
 
-PageSampleRect Union(const PageSampleRect& a, const PageSampleRect& b)
-{
-    return PageSampleRect{std::min(a.MinX, b.MinX), std::min(a.MinZ, b.MinZ), std::max(a.MaxX, b.MaxX),
-                          std::max(a.MaxZ, b.MaxZ)};
-}
-
 std::optional<PageSampleRect> Intersect(const PageSampleRect& a, const PageSampleRect& b)
 {
     const PageSampleRect r{std::max(a.MinX, b.MinX), std::max(a.MinZ, b.MinZ), std::min(a.MaxX, b.MaxX),

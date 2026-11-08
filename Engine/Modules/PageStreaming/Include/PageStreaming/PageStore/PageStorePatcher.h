@@ -54,6 +54,8 @@ public:
     uint64 PagesUnchanged() const { return m_PagesUnchanged.load(); }
 
 private:
+    struct RefilterBatch;
+
     bool CanPatch() const;
     /// Writes one page's stride samples. False on a write error.
     bool StorePage(const PageAddress& address, const EncodedPage& encoded, const EncodedPage& unencoded);

@@ -198,6 +198,49 @@ bool FilterCoarserPage(const PageStoreLayout& layout, uint32 level, uint32 px, u
 
 } // namespace
 
+struct PageStorePatcher::RefilterBatch
+{
+    const PageStorePatcher& Owner;
+    PageStoreWriter& Source;
+    const PageCodec& SourceCodec;
+    uint32 Level;
+    uint32 SourceApron;
+    FinerWindow& Window;
+    Span PagesX;
+    Span PagesZ;
+    std::vector<EncodedPage> Encoded;
+    std::vector<EncodedPage> Unencoded;
+    std::vector<PageRemake> States;
+
+    void Gather(std::size_t first, std::size_t last)
+    {
+        for (std::size_t index = first; index < last; ++index)
+        {
+            const uint32 pageX = Window.PagesX.First + static_cast<uint32>(index % Window.PagesX.Count());
+            const uint32 pageZ = Window.PagesZ.First + static_cast<uint32>(index / Window.PagesX.Count());
+            Window.PageReady[index] =
+                GatherFinerPage(Source, SourceCodec, Level - 1u, pageX, pageZ, SourceApron, Window) ? 1u : 0u;
+        }
+    }
+
+    void Remake(std::size_t first, std::size_t last)
+    {
+        for (std::size_t index = first; index < last; ++index)
+        {
+            const uint32 pageX = PagesX.First + static_cast<uint32>(index % PagesX.Count());
+            const uint32 pageZ = PagesZ.First + static_cast<uint32>(index / PagesX.Count());
+            std::vector<uint8> samples;
+            if (!FilterCoarserPage(Owner.m_Writer.Layout(), Level, pageX, pageZ, Window, samples))
+                continue;
+            Owner.EncodePage(Level, samples, Encoded[index], Unencoded[index]);
+            States[index] = Owner.HoldsPage(PageAddress{0, static_cast<uint8>(Level), pageX, pageZ},
+                                           Encoded[index], Unencoded[index])
+                                ? PageRemake::Unchanged
+                                : PageRemake::Changed;
+        }
+    }
+};
+
 PageStorePatcher::PageStorePatcher(PageStoreWriter& writer, JobSystem::WorkStealingThreadPool* pool)
     : m_Writer(writer)
     , m_Pool(pool)
@@ -361,34 +404,15 @@ bool PageStorePatcher::RefilterLevel(uint32 level, const std::optional<PageSampl
     window.PagesZ = OwningPages(window.Z);
     window.Texels.resize(static_cast<std::size_t>(window.X.Count()) * window.Z.Count() * texelBytes);
     window.PageReady.assign(static_cast<std::size_t>(window.PagesX.Count()) * window.PagesZ.Count(), 0u);
-    JobSystem::ParallelFor(m_Pool, 0, window.PageReady.size(), [&](std::size_t first, std::size_t last) {
-        for (std::size_t i = first; i < last; ++i)
-        {
-        const uint32 px = window.PagesX.First + static_cast<uint32>(i % window.PagesX.Count());
-        const uint32 pz = window.PagesZ.First + static_cast<uint32>(i / window.PagesX.Count());
-        window.PageReady[i] = GatherFinerPage(source, sourceCodec, level - 1u, px, pz, sourceApron, window) ? 1u : 0u;
-    
-        }
-    }, 1);
-
     const std::size_t remakeCount = static_cast<std::size_t>(pagesX.Count()) * pagesZ.Count();
-    std::vector<EncodedPage> encoded(remakeCount);
-    std::vector<EncodedPage> unencoded(remakeCount);
-    std::vector<PageRemake> remake(remakeCount, PageRemake::Waiting);
-    JobSystem::ParallelFor(m_Pool, 0, remakeCount, [&](std::size_t first, std::size_t last) {
-        for (std::size_t i = first; i < last; ++i)
-        {
-        const uint32 px = pagesX.First + static_cast<uint32>(i % pagesX.Count());
-        const uint32 pz = pagesZ.First + static_cast<uint32>(i / pagesX.Count());
-        std::vector<uint8> samples;
-        if (!FilterCoarserPage(layout, level, px, pz, window, samples))
-            continue;
-        EncodePage(level, samples, encoded[i], unencoded[i]);
-        remake[i] = HoldsPage(PageAddress{0, static_cast<uint8>(level), px, pz}, encoded[i], unencoded[i])
-                        ? PageRemake::Unchanged
-                        : PageRemake::Changed;
-    
-        }
+    RefilterBatch work{*this, source, sourceCodec, level, sourceApron, window, pagesX, pagesZ,
+                       std::vector<EncodedPage>(remakeCount), std::vector<EncodedPage>(remakeCount),
+                       std::vector<PageRemake>(remakeCount, PageRemake::Waiting)};
+    JobSystem::ParallelFor(m_Pool, 0, window.PageReady.size(), [&work](std::size_t first, std::size_t last) {
+        work.Gather(first, last);
+    }, 1);
+    JobSystem::ParallelFor(m_Pool, 0, remakeCount, [&work](std::size_t first, std::size_t last) {
+        work.Remake(first, last);
     }, 1);
 
     // A page WritePage wrote is a new input to the level above, whatever this call made of it.
@@ -397,13 +421,13 @@ bool PageStorePatcher::RefilterLevel(uint32 level, const std::optional<PageSampl
     // Written in address order, so the store's bytes do not depend on the workers.
     for (std::size_t i = 0; i < remakeCount; ++i)
     {
-        if (remake[i] == PageRemake::Unchanged)
+        if (work.States[i] == PageRemake::Unchanged)
             m_PagesUnchanged.fetch_add(1);
-        if (remake[i] != PageRemake::Changed)
+        if (work.States[i] != PageRemake::Changed)
             continue;
         const PageAddress address{0, static_cast<uint8>(level), pagesX.First + static_cast<uint32>(i % pagesX.Count()),
                                   pagesZ.First + static_cast<uint32>(i / pagesX.Count())};
-        if (!StorePage(address, encoded[i], unencoded[i]))
+        if (!StorePage(address, work.Encoded[i], work.Unencoded[i]))
             return false;
         m_PagesWritten.fetch_add(1);
         const PageSampleRect stored = StoredSamples(address, apron, shape);

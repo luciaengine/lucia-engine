@@ -49,23 +49,26 @@ public:
         out.resize(static_cast<std::size_t>(samples) * count);
         std::atomic<bool> finite{true};
         JobSystem::ParallelFor(m_Request.Pool, 0, count, [&](std::size_t first, std::size_t last) {
-        for (std::size_t bandRow = first; bandRow < last; ++bandRow)
-        {
-            float32* row = out.data() + bandRow * samples;
-            const uint32 z = firstRow + static_cast<uint32>(bandRow);
-            for (uint32 x = 0; x < samples; ++x)
-            {
-                row[x] = m_Request.Height(face, x, z, GnomonicFaceDirection(face, m_Gnomonic[x], m_Gnomonic[z]));
-                if (!std::isfinite(row[x]))
+            for (std::size_t bandRow = first; bandRow < last; ++bandRow)
+                if (!FillRow(face, firstRow + static_cast<uint32>(bandRow), out.data() + bandRow * samples))
                     finite.store(false);
-            }
-        
-        }
-    }, 1);
+        }, 1);
         return finite.load();
     }
 
 private:
+    bool FillRow(uint8 face, uint32 rowIndex, float32* row) const
+    {
+        bool finite = true;
+        for (uint32 column = 0; column < m_Request.FaceSamples; ++column)
+        {
+            row[column] = m_Request.Height(face, column, rowIndex,
+                                          GnomonicFaceDirection(face, m_Gnomonic[column], m_Gnomonic[rowIndex]));
+            finite = std::isfinite(row[column]) && finite;
+        }
+        return finite;
+    }
+
     const PlanetCookRequest& m_Request;
     std::vector<float64> m_Gnomonic;
 };
