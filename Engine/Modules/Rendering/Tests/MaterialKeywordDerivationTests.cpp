@@ -238,7 +238,7 @@ TEST(MaterialKeywordDerivation, SurfaceWithoutAHeightSlotIsRefusedNamingTheSurfa
 TEST(MaterialKeywordDerivation, HexTilingWithAHeightMapIsRefused)
 {
     const TextureSlotResolution slots = ShippedSurfaceSlots("standard_pbr.glsl");
-    for (const GameEngine::MaterialValue hexOn :
+    for (const GameEngine::MaterialValue& hexOn :
          {GameEngine::MaterialValue{1.0f}, GameEngine::MaterialValue{true}, GameEngine::MaterialValue{int32_t{1}}})
     {
         auto doc = HeightMappedDocument();
@@ -276,11 +276,11 @@ TEST(MaterialKeywordDerivation, TheStepsViewReachesOnlyAMaterialThatMarches)
     const MaterialKeyword pass = MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::Instanced |
                                  MaterialKeyword::GTAO | MaterialKeyword::ParallaxStepsView;
     const MaterialKeyword withoutView = pass & ~MaterialKeyword::ParallaxStepsView;
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::Parallax, pass), pass);
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::Parallax | MaterialKeyword::AlphaTest, pass), pass);
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::None, pass), withoutView);
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::ClearCoat | MaterialKeyword::AlphaTest, pass), withoutView);
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::None, withoutView), withoutView);
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::Parallax, pass, GameEngine::Rendering::CurrentShaderCompileTarget()), pass);
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::Parallax | MaterialKeyword::AlphaTest, pass, GameEngine::Rendering::CurrentShaderCompileTarget()), pass);
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::None, pass, GameEngine::Rendering::CurrentShaderCompileTarget()), withoutView);
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::ClearCoat | MaterialKeyword::AlphaTest, pass, GameEngine::Rendering::CurrentShaderCompileTarget()), withoutView);
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::None, withoutView, GameEngine::Rendering::CurrentShaderCompileTarget()), withoutView);
 }
 
 TEST(MaterialKeywordDerivation, TheReliefDepthReachesOnlyAMarchingMaterialAndNeverTheCompatProfile)
@@ -293,11 +293,11 @@ TEST(MaterialKeywordDerivation, TheReliefDepthReachesOnlyAMarchingMaterialAndNev
     const MaterialKeyword pass = MaterialKeyword::ForwardPlus | MaterialKeyword::Shadows | MaterialKeyword::Instanced;
     const bool previousCompat = GameEngine::Rendering::IsCompatShaderProfile();
     GameEngine::Rendering::SetCompatShaderProfile(false);
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::Parallax, pass | relief), pass | relief);
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::None, pass | relief), pass);
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::Parallax, pass | relief, GameEngine::Rendering::CurrentShaderCompileTarget()), pass | relief);
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::None, pass | relief, GameEngine::Rendering::CurrentShaderCompileTarget()), pass);
     GameEngine::Rendering::SetCompatShaderProfile(true);
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::Parallax, pass | relief), pass);
-    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::Parallax, pass | MaterialKeyword::ParallaxStepsView),
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::Parallax, pass | relief, GameEngine::Rendering::CurrentShaderCompileTarget()), pass);
+    EXPECT_EQ(NarrowColorPassKeywords(MaterialKeyword::Parallax, pass | MaterialKeyword::ParallaxStepsView, GameEngine::Rendering::CurrentShaderCompileTarget()),
               pass | MaterialKeyword::ParallaxStepsView)
         << "the compat arm still draws the steps view";
     GameEngine::Rendering::SetCompatShaderProfile(previousCompat);

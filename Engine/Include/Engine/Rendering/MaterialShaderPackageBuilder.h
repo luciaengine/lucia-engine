@@ -35,7 +35,8 @@ public:
     Rendering::MaterialBuildResult Build(
         Rendering::ShaderSourceKind kind,
         Rendering::MaterialKeyword pipelineKeywords = Rendering::MaterialKeyword::None,
-        Rendering::VertexAttributeFlags meshVertexFlags = Rendering::VertexAttributeFlags::None) const;
+        Rendering::VertexAttributeFlags meshVertexFlags = Rendering::VertexAttributeFlags::None,
+        const Rendering::ShaderCompileTarget& target = Rendering::CurrentShaderCompileTarget()) const;
 
 private:
     MaterialDocument m_Document;

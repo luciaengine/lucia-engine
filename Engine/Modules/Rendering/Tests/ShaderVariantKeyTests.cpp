@@ -8,6 +8,7 @@
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 #include "Rendering/Geometry/VertexLayoutBuilder.h"
 #include "TestUtils.h"
+#include "ScopedShaderCompileTarget.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -568,4 +569,31 @@ TEST(UserKeywordHash, VariantKeyEqualityAndHashIncludeTheLane)
     ShaderVariantKey c = b;
     EXPECT_TRUE(b == c);
     EXPECT_EQ(b.Hash(), c.Hash());
+}
+
+TEST(ShaderVariantKeyTest, ExistingValueHashDoesNotFollowDeviceDefaults)
+{
+    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
+    const ShaderVariantKey key{};
+    const uint64_t original = key.Hash();
+    ApplyShaderCompileProfile({SpirvTarget::Spirv_1_3, true, false});
+    EXPECT_EQ(key.Hash(), original);
+    ApplyShaderCompileProfile({SpirvTarget::Spirv_1_6, false, true});
+    EXPECT_EQ(key.Hash(), original);
+    EXPECT_EQ(key, ShaderVariantKey{});
+}
+
+TEST(ShaderVariantKeyTest, ExplicitCompileTargetKeepsReliefDefinesAcrossDefaultChanges)
+{
+    const ShaderCompileTarget captured{SpirvTarget::Spirv_1_3, false, true};
+    TestSupport::ScopedShaderCompileTarget changedDefaults({SpirvTarget::Spirv_1_6, true, false});
+    ShaderVariantKey relief{};
+    relief.materialKeywords = MaterialKeyword::Parallax;
+    const auto defines = GenerateDefines(relief, "StandardPBR", captured);
+    EXPECT_NE(std::find(defines.begin(), defines.end(), "GE_INTERPOLATION_FUNCTIONS"), defines.end());
+    EXPECT_EQ(std::find(defines.begin(), defines.end(), "GE_COMPAT_PROFILE"), defines.end());
+
+    const auto compatible = GenerateDefines(relief, "StandardPBR", {SpirvTarget::Spirv_1_3, true, true});
+    EXPECT_NE(std::find(compatible.begin(), compatible.end(), "GE_COMPAT_PROFILE"), compatible.end());
+    EXPECT_EQ(std::find(compatible.begin(), compatible.end(), "GE_INTERPOLATION_FUNCTIONS"), compatible.end());
 }

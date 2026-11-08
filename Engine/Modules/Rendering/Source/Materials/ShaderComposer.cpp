@@ -428,9 +428,10 @@ static void MergeSurfaceShaderVariantDefines(std::vector<std::string>& defines,
 } // namespace
 
 std::string ShaderComposer::GenerateDefinePreamble(const ShaderVariantKey& key,
-                                                    const std::string& lightingModelName)
+                                                    const std::string& lightingModelName,
+                                                    const ShaderCompileTarget& target)
 {
-    return GenerateDefinePreamble(GenerateDefines(key, lightingModelName));
+    return GenerateDefinePreamble(GenerateDefines(key, lightingModelName, target));
 }
 
 std::string ShaderComposer::GenerateDefinePreamble(const std::vector<std::string>& defines)
@@ -719,11 +720,12 @@ ComposedShaderSource ShaderComposer::Compose(const MaterialDocument& doc,
                                               const ShaderVariantKey& key,
                                               const std::filesystem::path& materialDir,
                                               const MaterialBuildContext& context,
-                                              std::vector<std::string>* outErrors)
+                                              std::vector<std::string>* outErrors,
+                                              const ShaderCompileTarget& target)
 {
     const std::filesystem::path& adapterShaderDir = context.AdapterShaderDir;
     ComposedShaderSource result{};
-    result.defines = GenerateDefines(key, doc.lightingModel.empty() ? "Unlit" : doc.lightingModel);
+    result.defines = GenerateDefines(key, doc.lightingModel.empty() ? "Unlit" : doc.lightingModel, target);
 
     auto addError = [&](const std::string& msg)
     {

@@ -2596,6 +2596,7 @@ if(GTest_FOUND)
             Tests/ParallaxOcclusionTests.cpp
             Tests/RendererProfileTests.cpp
             Tests/ShaderVariantKeyTests.cpp
+            Tests/ShaderCompileTargetTests.cpp
             Tests/MaterialKeywordDerivationTests.cpp
             Tests/ShaderCompileCacheKeyTests.cpp
             Tests/ShaderMetaBinaryTests.cpp
