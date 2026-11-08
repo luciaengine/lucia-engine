@@ -2111,6 +2111,8 @@ set_property(TARGET EditorTests APPEND PROPERTY LINK_DEPENDS
 
 # Profile authoring, shared working copies and nonpersistent sky scrubbing.
 add_executable(DayCycleEditorTests
+	DayCycleWindowBindingTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/EditorAssetRegistrations.cpp
 	DayCycleProfileSaveTests.cpp
 	DayCycleProfileInspectorTests.cpp
 	DayCycleWindowTests.cpp
@@ -2166,6 +2168,10 @@ ge_stage_test_asset(DayCycleEditorTests
 ge_stage_test_asset(DayCycleEditorTests
 	"${CMAKE_SOURCE_DIR}/Assets/DayCycles/ClearDay.daycycle.json"
 	"Assets/DayCycles/ClearDay.daycycle.json"
+)
+ge_stage_test_asset(DayCycleEditorTests
+	"${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/DayCycleWindow.uxml"
+	"Assets/UI/panels/DayCycleWindow.uxml"
 )
 add_test(NAME DayCycleEditorTests
 	COMMAND "${CMAKE_COMMAND}"
