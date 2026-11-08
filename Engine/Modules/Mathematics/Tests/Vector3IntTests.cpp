@@ -8,10 +8,10 @@ using GameEngine::Mathematics::Vector3Int;
 
 TEST(Vector3IntTests, IndexReadsTheComponentsInAConstantExpression)
 {
-    constexpr Vector3Int v(1, -2, 3);
-    static_assert(v[0] == 1 && v[1] == -2 && v[2] == 3);
+    constexpr Vector3Int kPoint(1, -2, 3);
+    static_assert(kPoint[0] == 1 && kPoint[1] == -2 && kPoint[2] == 3);
     static_assert(Vector3Int()[0] == 0 && Vector3Int()[1] == 0 && Vector3Int()[2] == 0);
-    EXPECT_EQ(v[1], v.y);
+    EXPECT_EQ(kPoint[1], kPoint.Y);
 }
 
 TEST(Vector3IntTests, EqualityComparesEveryComponent)

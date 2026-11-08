@@ -63,7 +63,7 @@ struct CBTSphereRoot
 inline std::array<int32_t, 3> CBTCubeCorner(int index)
 {
     const Mathematics::Vector3Int corner = Mathematics::CubeCorner(index);
-    return {corner.x, corner.y, corner.z};
+    return {corner.X, corner.Y, corner.Z};
 }
 
 // Builds all 24 roots: HeapIDs, neighbor links (n0/n1 within-face legs, twin across the

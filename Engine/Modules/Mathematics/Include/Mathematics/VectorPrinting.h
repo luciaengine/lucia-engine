@@ -22,7 +22,7 @@ inline void PrintTo(const Vector2& value, std::ostream* out)
 
 inline void PrintTo(const Vector3Int& value, std::ostream* out)
 {
-    *out << "(" << value.x << ", " << value.y << ", " << value.z << ")";
+    *out << "(" << value.X << ", " << value.Y << ", " << value.Z << ")";
 }
 
 } // namespace Mathematics

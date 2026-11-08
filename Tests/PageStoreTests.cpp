@@ -372,6 +372,24 @@ TEST(PageStoreFormatTest, NormalizedStepKeepsTodaysSixteenBitValues)
     }
 }
 
+namespace
+{
+float32 TowerReliefSample(const PageStoreHeader& header, int64 x, int64 z)
+{
+    const uint32 clampedX = ClampSample(x, header.SamplesX);
+    const uint32 clampedZ = ClampSample(z, header.SamplesZ);
+    const bool tower = clampedX >= 180u && clampedX < 200u && clampedZ >= 40u && clampedZ < 60u;
+    return QuantizeHeight(Relief(clampedX, clampedZ) + (tower ? 2000.0f : 0.0f), header.StepPerLevel[0]);
+}
+
+bool DensePageIsPresent(std::span<const PageStoreLevel> levels, std::span<const uint8> present,
+                        const PageAddress& address)
+{
+    const PageStoreLevel& shape = levels[address.Level];
+    return present[static_cast<std::size_t>(shape.FirstEntry + static_cast<uint64>(address.Z) * shape.PagesX + address.X)] != 0;
+}
+} // namespace
+
 TEST(PageStoreFormatTest, AThirtyTwoBitPageBesideASixteenBitOneSharesItsApronIntegers)
 {
     // Two level-0 pages side by side at a 2^-6 m step: the left one rolls gently, the right one
@@ -381,13 +399,6 @@ TEST(PageStoreFormatTest, AThirtyTwoBitPageBesideASixteenBitOneSharesItsApronInt
     header.SamplesX = 2u * kPageOwnedSamples + 1u;
     header.SamplesZ = kPageOwnedSamples;
     header.StepPerLevel.fill(std::ldexp(1.0f, -6));
-    const float32 step = header.StepPerLevel[0];
-    const auto height = [&](int64 x, int64 z) {
-        const uint32 cx = ClampSample(x, header.SamplesX);
-        const uint32 cz = ClampSample(z, header.SamplesZ);
-        const bool tower = cx >= 180u && cx < 200u && cz >= 40u && cz < 60u;
-        return QuantizeHeight(Relief(cx, cz) + (tower ? 2000.0f : 0.0f), step);
-    };
     std::array<EncodedPage, 2> encoded;
     std::array<PageIndexEntry, 2> entries;
     std::array<std::vector<float32>, 2> decoded;
@@ -396,13 +407,13 @@ TEST(PageStoreFormatTest, AThirtyTwoBitPageBesideASixteenBitOneSharesItsApronInt
         std::vector<float32> samples(kPageSampleCount);
         float32 lowest = std::numeric_limits<float32>::max();
         float32 highest = std::numeric_limits<float32>::lowest();
-        for (uint32 r = 0; r < kPageStrideSamples; ++r)
+        for (uint32 rowIndex = 0; rowIndex < kPageStrideSamples; ++rowIndex)
         {
-            for (uint32 c = 0; c < kPageStrideSamples; ++c)
+            for (uint32 columnIndex = 0; columnIndex < kPageStrideSamples; ++columnIndex)
             {
-                const float32 value = height(int64(page) * kPageOwnedSamples + c - 1, int64(r) - 1);
-                samples[static_cast<std::size_t>(r) * kPageStrideSamples + c] = value;
-                if (r >= 1u && c >= 1u)
+                const float32 value = TowerReliefSample(header, int64(page) * kPageOwnedSamples + columnIndex - 1, int64(rowIndex) - 1);
+                samples[static_cast<std::size_t>(rowIndex) * kPageStrideSamples + columnIndex] = value;
+                if (rowIndex >= 1u && columnIndex >= 1u)
                 {
                     lowest = std::min(lowest, value);
                     highest = std::max(highest, value);
@@ -415,16 +426,16 @@ TEST(PageStoreFormatTest, AThirtyTwoBitPageBesideASixteenBitOneSharesItsApronInt
         entries[page].Flags = encoded[page].Flags;
         decoded[page].resize(kPageSampleCount);
         DecodeHeightPage(header, 0, entries[page], encoded[page].Bytes, decoded[page]);
-        for (std::size_t i = 0; i < kPageSampleCount; ++i)
-            ASSERT_EQ(decoded[page][i], samples[i]) << page << " " << i;
+        for (std::size_t sampleIndex = 0; sampleIndex < kPageSampleCount; ++sampleIndex)
+            ASSERT_EQ(decoded[page][sampleIndex], samples[sampleIndex]) << page << " " << sampleIndex;
     }
     ASSERT_FALSE(entries[0].HasWideWords());
     ASSERT_TRUE(entries[1].HasWideWords());
     EXPECT_EQ(encoded[0].Bytes.size(), PageStoredBytes(PageFieldFormat::HeightSteps, false));
     EXPECT_EQ(encoded[1].Bytes.size(), PageStoredBytes(PageFieldFormat::HeightSteps, true));
-    for (uint32 r = 0; r < kPageStrideSamples; ++r)
+    for (uint32 rowIndex = 0; rowIndex < kPageStrideSamples; ++rowIndex)
     {
-        const std::size_t row = static_cast<std::size_t>(r) * kPageStrideSamples;
+        const std::size_t row = static_cast<std::size_t>(rowIndex) * kPageStrideSamples;
         EXPECT_EQ(std::bit_cast<uint32>(decoded[0][row + kPageStrideSamples - 1u]),
                   std::bit_cast<uint32>(decoded[1][row + 1u]));
         EXPECT_EQ(std::bit_cast<uint32>(decoded[0][row + kPageStrideSamples - 2u]), std::bit_cast<uint32>(decoded[1][row]));
@@ -493,10 +504,6 @@ TEST(PageStoreFormatTest, PresentPageLookupEqualsTheDenseLookup)
         present[i] = static_cast<uint8>(((i * 2654435761u) >> 7u) % 3u != 0u);
     present.back() = 1u;
     const PageStoreLayout sparse = MakePageStoreLayout(header, present);
-    const auto densePresent = [&](const PageAddress& a) {
-        const PageStoreLevel& shape = levels[a.Level];
-        return present[static_cast<std::size_t>(shape.FirstEntry + static_cast<uint64>(a.Z) * shape.PagesX + a.X)] != 0;
-    };
     std::size_t found = 0;
     for (uint8 level = 0; level < levels.size(); ++level)
     {
@@ -505,11 +512,11 @@ TEST(PageStoreFormatTest, PresentPageLookupEqualsTheDenseLookup)
             for (uint32 x = 0; x < levels[level].PagesX; ++x)
             {
                 const PageAddress address{0, level, x, z};
-                ASSERT_EQ(sparse.FindPresent(address) != nullptr, densePresent(address))
+                ASSERT_EQ(sparse.FindPresent(address) != nullptr, DensePageIsPresent(levels, present, address))
                     << int(level) << " " << x << "," << z;
-                found += densePresent(address) ? 1u : 0u;
+                found += DensePageIsPresent(levels, present, address) ? 1u : 0u;
                 PageAddress walk = address;
-                while (!densePresent(walk))
+                while (!DensePageIsPresent(levels, present, walk))
                     walk = walk.Parent();
                 ASSERT_EQ(sparse.ResolvePresent(address), walk);
             }
@@ -1733,10 +1740,10 @@ TEST_F(PageStoreTest, TheNormalTentKeepsAThirtyDegreeSlopeThatTheNormalOfAverage
     // The method the tent replaces: tent the heights, then difference the coarser heights 50 and 52
     // (finer samples 99 to 101 and 103 to 105), four units apart.
     float32 coarse[2] = {};
-    for (uint32 n = 0; n < 2u; ++n)
+    for (uint32 sampleIndex = 0; sampleIndex < 2u; ++sampleIndex)
     {
-        const int64 center = 100 + 4 * static_cast<int64>(n);
-        coarse[n] = 0.25f * RidgeHeight(center - 1, kWidth) + 0.5f * RidgeHeight(center, kWidth) +
+        const int64 center = 100 + 4 * static_cast<int64>(sampleIndex);
+        coarse[sampleIndex] = 0.25f * RidgeHeight(center - 1, kWidth) + 0.5f * RidgeHeight(center, kWidth) +
                     0.25f * RidgeHeight(center + 1, kWidth);
     }
     const float32 averagedDegrees = std::atan(std::abs(coarse[1] - coarse[0]) / 4.0f) * kDegreesPerRadian;
