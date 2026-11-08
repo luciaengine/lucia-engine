@@ -18954,6 +18954,7 @@ CbtNormalDrawFrame RenderCbtNormalDrawFrame(TerrainFixture& fixture, RenderPipel
                     out.Applied.Lattice[1] = 0u;
                     std::memcpy(mapped + entry.Offset, &out.Applied, sizeof(out.Applied));
                 }
+                std::memcpy(&out.Applied, mapped + entry.Offset, sizeof(out.Applied));
                 fixture.Device->UnmapBuffer(entry.Buffer);
                 out.HasBindings = true;
             }
@@ -19056,6 +19057,10 @@ TEST(RenderPipelineDeclareTests, CbtForwardNormalChainChangesColorWithoutChangin
     const auto disabled = RenderCbtNormalDrawFrame(fixture, pipeline, frame, view, terrain, frameIndex++, false);
     const auto restored = RenderCbtNormalDrawFrame(fixture, pipeline, frame, view, terrain, frameIndex++, true);
     ASSERT_TRUE(disabled.HasBindings && restored.HasBindings);
+    EXPECT_EQ(std::memcmp(&enabled.Published, &disabled.Published, sizeof(enabled.Published)), 0);
+    EXPECT_EQ(std::memcmp(&enabled.Published, &restored.Published, sizeof(enabled.Published)), 0);
+    EXPECT_EQ(std::memcmp(&enabled.Published, &enabled.Applied, sizeof(enabled.Published)), 0);
+    EXPECT_EQ(std::memcmp(&restored.Published, &restored.Applied, sizeof(restored.Published)), 0);
     auto expectedControl = disabled.Published;
     expectedControl.Lattice[1] = 0u;
     EXPECT_EQ(std::memcmp(&expectedControl, &disabled.Applied, sizeof(expectedControl)), 0);
