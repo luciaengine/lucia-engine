@@ -61,7 +61,7 @@ void RunUpdate(IDevice& device, CBTInstance& instance, uint32_t frameIndex)
     device.WaitForIdle();
 }
 
-// An unsignaled host event keeps a real update pending independently of GPU speed.
+// A host-signaled timeline keeps a real update pending independently of GPU speed.
 // The bounded host release also makes a mistakenly restored device drain fail its
 // counter assertion instead of hanging the suite.
 class PendingUpdate
@@ -76,33 +76,69 @@ class PendingUpdate
             m_ReleaseThread.request_stop();
             m_ReleaseThread.join();
         }
-        if (m_Event != VK_NULL_HANDLE)
+        if (m_Gate != VK_NULL_HANDLE)
         {
             Release();
-            m_Device.WaitGpuSyncToken(m_Token);
-            vkDestroyEvent(NativeDevice(), m_Event, nullptr);
+            if (m_Submitted)
+                EXPECT_EQ(vkWaitForFences(NativeDevice(), 1u, &m_Fence, VK_TRUE, ~0ull), VK_SUCCESS);
+            if (m_Token.IsValid())
+                EXPECT_TRUE(m_Device.WaitGpuSyncToken(m_Token));
+            if (m_Fence != VK_NULL_HANDLE)
+                vkDestroyFence(NativeDevice(), m_Fence, nullptr);
+            vkDestroySemaphore(NativeDevice(), m_Gate, nullptr);
         }
     }
 
     bool Submit(CBTInstance& instance, uint32_t frameIndex)
     {
-        VkEventCreateInfo info{};
-        info.sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO;
-        if (vkCreateEvent(NativeDevice(), &info, nullptr, &m_Event) != VK_SUCCESS)
+        VkSemaphoreTypeCreateInfo type{};
+        type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+        type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        VkSemaphoreCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        info.pNext = &type;
+        if (vkCreateSemaphore(NativeDevice(), &info, nullptr, &m_Gate) != VK_SUCCESS)
+            return false;
+        VkFenceCreateInfo fence{};
+        fence.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        if (vkCreateFence(NativeDevice(), &fence, nullptr, &m_Fence) != VK_SUCCESS)
             return false;
         m_Commands = m_Device.CreateCommandList(IDevice::QueueType::Graphics);
         if (!m_Commands)
             return false;
         m_Commands->Begin();
         const auto native = static_cast<VulkanCommandList&>(*m_Commands).GetVkCommandBuffer();
-        vkCmdWaitEvents(native, 1, &m_Event, VK_PIPELINE_STAGE_HOST_BIT,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, nullptr, 0, nullptr, 0, nullptr);
         instance.RecordUpdate(*m_Commands, CBTInertClassify(), CBTIdentityFrameParams(), frameIndex);
         instance.RecordReadback(*m_Commands);
         m_Commands->End();
-        m_Device.ExecuteCommandLists({m_Commands.get()});
+        constexpr uint64_t kReleasedValue = 1u;
+        const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        VkTimelineSemaphoreSubmitInfo timeline{};
+        timeline.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+        timeline.waitSemaphoreValueCount = 1u;
+        timeline.pWaitSemaphoreValues = &kReleasedValue;
+        VkSubmitInfo submit{};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.pNext = &timeline;
+        submit.waitSemaphoreCount = 1u;
+        submit.pWaitSemaphores = &m_Gate;
+        submit.pWaitDstStageMask = &stage;
+        submit.commandBufferCount = 1u;
+        submit.pCommandBuffers = &native;
+        // This single-host-submitter fixture retains the raw list and its fence until completion.
+        if (vkQueueSubmit(static_cast<VulkanDevice&>(m_Device).GetGraphicsQueue(), 1u, &submit, m_Fence) != VK_SUCCESS)
+            return false;
+        m_Submitted = true;
+        const auto before = m_Device.LastGraphicsSubmissionToken();
+        m_Marker = m_Device.CreateCommandList(IDevice::QueueType::Graphics);
+        if (!m_Marker)
+            return false;
+        m_Marker->Begin();
+        m_Marker->End();
+        m_Device.ExecuteCommandLists({m_Marker.get()});
         m_Token = m_Device.LastGraphicsSubmissionToken();
-        return m_Token.IsValid();
+        return m_Token.IsValid() && (!before.IsValid() ||
+               (m_Token.sem == before.sem && m_Token.value > before.value));
     }
 
     IDevice::GpuSyncStatus Status() const { return m_Device.QueryGpuSyncToken(m_Token); }
@@ -115,7 +151,17 @@ class PendingUpdate
   private:
     VkDevice NativeDevice() const { return static_cast<VulkanDevice&>(m_Device).GetVkDevice(); }
 
-    void Release() { EXPECT_EQ(vkSetEvent(NativeDevice(), m_Event), VK_SUCCESS); }
+    void Release()
+    {
+        if (m_Released)
+            return;
+        VkSemaphoreSignalInfo signal{};
+        signal.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
+        signal.semaphore = m_Gate;
+        signal.value = 1u;
+        EXPECT_EQ(vkSignalSemaphore(NativeDevice(), &signal), VK_SUCCESS);
+        m_Released = true;
+    }
 
     void ReleaseWhenDue(std::stop_token stop)
     {
@@ -130,8 +176,12 @@ class PendingUpdate
     }
 
     IDevice& m_Device;
-    VkEvent m_Event = VK_NULL_HANDLE;
+    VkSemaphore m_Gate = VK_NULL_HANDLE;
+    VkFence m_Fence = VK_NULL_HANDLE;
+    bool m_Submitted = false;
+    bool m_Released = false;
     std::unique_ptr<CommandList> m_Commands;
+    std::unique_ptr<CommandList> m_Marker;
     IDevice::GpuSyncToken m_Token;
     std::jthread m_ReleaseThread;
 };
