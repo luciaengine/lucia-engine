@@ -8,6 +8,9 @@ set(EDITOR_TEST_SOURCES
     PrefabPlaceTests.cpp
     PrefabPropagationTests.cpp
     PrefabHierarchyTests.cpp
+    ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests/SharedHeadlessDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/DefaultComponentInspector.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyEntityIcon.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabBar.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabEditorRegistration.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabHierarchyRows.cpp
