@@ -684,6 +684,30 @@ TEST_F(PageStoreTest, TruncatedOrForeignFilesAreRefusedWithAReason)
     EXPECT_NE(coarseRefusal.find("height step is past 2^100"), std::string::npos) << coarseRefusal;
 }
 
+TEST_F(PageStoreTest, WrappedDirectoryCountsAreRefusedBeforeReadingTheIndex)
+{
+    PageStoreHeader header;
+    header.SamplesX = 200;
+    header.SamplesZ = 200;
+    header.StepPerLevel.fill(1.0f);
+    PageStoreLayout layout = MakePageStoreLayout(header);
+    ASSERT_EQ(layout.Ranges.size(), 2u);
+    layout.Entries.clear();
+    layout.Ranges[0] = PageStoreRange{0, 2};
+    layout.Ranges[1] = PageStoreRange{2, std::numeric_limits<uint64>::max() - 1u};
+    const std::vector<uint8> bytes = SerializePageStoreHead(layout);
+    const std::filesystem::path file = m_Dir / "wrapped-ranges.gepage";
+    {
+        std::ofstream output(file, std::ios::binary);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        ASSERT_TRUE(output.good());
+    }
+
+    PageStoreReader reader;
+    EXPECT_FALSE(reader.Open(file, PageFieldKind::Height).empty());
+    EXPECT_FALSE(reader.IsOpen());
+}
+
 TEST_F(PageStoreTest, AbsentPagesResolveToTheirNearestPresentAncestor)
 {
     PageStoreHeader header;
