@@ -40,6 +40,7 @@
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -4016,6 +4017,46 @@ bool TryResolveEntityReference(const SceneLoadContext& ctx, std::string_view val
     return true; // unknown id -> leave invalid (a dangling link just unlinks)
 }
 
+namespace
+{
+enum class InstanceVisit : std::uint8_t
+{
+    Unvisited,
+    Active,
+    Complete
+};
+
+bool VisitInstanceParent(std::size_t index, std::span<const std::optional<std::size_t>> parents,
+                         std::vector<InstanceVisit>& visits, std::vector<std::size_t>& sorted)
+{
+    if (visits[index] == InstanceVisit::Complete)
+        return true;
+    if (visits[index] == InstanceVisit::Active)
+        return false;
+    visits[index] = InstanceVisit::Active;
+    if (parents[index] && !VisitInstanceParent(*parents[index], parents, visits, sorted))
+        return false;
+    visits[index] = InstanceVisit::Complete;
+    sorted.push_back(index);
+    return true;
+}
+
+// The serialized order of instance roots. False when their parent links form a cycle.
+bool SortInstanceParents(std::span<const std::optional<std::size_t>> parents, std::vector<std::size_t>& sorted)
+{
+    sorted.clear();
+    sorted.reserve(parents.size());
+    std::vector<InstanceVisit> visits(parents.size(), InstanceVisit::Unvisited);
+    for (std::size_t index = 0; index < parents.size(); ++index)
+    {
+        if (!VisitInstanceParent(index, parents, visits, sorted))
+            return false;
+    }
+    std::reverse(sorted.begin(), sorted.end());
+    return true;
+}
+} // namespace
+
 bool SaveSceneToFile(ECS::World& world,
                     const std::filesystem::path& sceneFilePath,
                     const SaveOptions& options)
@@ -4592,93 +4633,33 @@ bool SaveSceneToFile(ECS::World& world,
             out << "\n";
         }
 
-        // Sort prefab instances so an instance whose parent belongs to another comes after it.
-        std::vector<size_t> sorted;
-        sorted.reserve(prefabRoots.size());
-        enum class Mark : uint8_t
+        std::vector<std::optional<std::size_t>> prefabParents;
+        prefabParents.reserve(prefabRoots.size());
+        for (const auto& root : prefabRoots)
+            prefabParents.push_back(root.parentInstance);
+        std::vector<std::size_t> sorted;
+        if (!SortInstanceParents(prefabParents, sorted))
         {
-            None,
-            Temp,
-            Perm
-        };
-        std::vector<Mark> marks(prefabRoots.size(), Mark::None);
-        std::function<bool(size_t)> dfs = [&](size_t i) -> bool
-        {
-            if (marks[i] == Mark::Perm)
-                return true;
-            if (marks[i] == Mark::Temp)
-                return false;
-            marks[i] = Mark::Temp;
-            if (const auto parentInstance = prefabRoots[i].parentInstance)
-            {
-                if (!dfs(*parentInstance))
-                    return false;
-            }
-            marks[i] = Mark::Perm;
-            sorted.push_back(i);
-            return true;
-        };
-        for (size_t i = 0; i < prefabRoots.size(); ++i)
-        {
-            if (marks[i] == Mark::None)
-            {
-                if (!dfs(i))
-                {
-                    SetError(sceneFilePath, 0, "Cycle detected in prefab instance parenting (cannot save)");
-                    return false;
-                }
-            }
+            SetError(sceneFilePath, 0, "Cycle detected in prefab instance parenting (cannot save)");
+            return false;
         }
-        std::reverse(sorted.begin(), sorted.end());
 
-        // Sort blueprint instances so parent blueprint roots come first (to satisfy load-time ordering).
-        std::unordered_map<std::string, size_t> idxByIdBlueprint;
-        idxByIdBlueprint.reserve(blueprintRoots.size());
-        for (size_t i = 0; i < blueprintRoots.size(); ++i)
-            idxByIdBlueprint[blueprintRoots[i].id] = i;
-
-        std::vector<size_t> sortedBlueprints;
-        sortedBlueprints.reserve(blueprintRoots.size());
-        enum class MarkBlueprint : uint8_t
+        FlatMap<std::string, std::size_t> blueprintIndexById;
+        for (std::size_t index = 0; index < blueprintRoots.size(); ++index)
+            blueprintIndexById.InsertOrAssign(blueprintRoots[index].id, index);
+        std::vector<std::optional<std::size_t>> blueprintParents;
+        blueprintParents.reserve(blueprintRoots.size());
+        for (const auto& root : blueprintRoots)
         {
-            None,
-            Temp,
-            Perm
-        };
-        std::vector<MarkBlueprint> marksBlueprint(blueprintRoots.size(), MarkBlueprint::None);
-        std::function<bool(size_t)> dfsBlueprint = [&](size_t i) -> bool
-        {
-            if (marksBlueprint[i] == MarkBlueprint::Perm)
-                return true;
-            if (marksBlueprint[i] == MarkBlueprint::Temp)
-                return false;
-            marksBlueprint[i] = MarkBlueprint::Temp;
-            const std::string& p = blueprintRoots[i].parentId;
-            if (!p.empty())
-            {
-                auto it = idxByIdBlueprint.find(p);
-                if (it != idxByIdBlueprint.end())
-                {
-                    if (!dfsBlueprint(it->second))
-                        return false;
-                }
-            }
-            marksBlueprint[i] = MarkBlueprint::Perm;
-            sortedBlueprints.push_back(i);
-            return true;
-        };
-        for (size_t i = 0; i < blueprintRoots.size(); ++i)
-        {
-            if (marksBlueprint[i] == MarkBlueprint::None)
-            {
-                if (!dfsBlueprint(i))
-                {
-                    SetError(sceneFilePath, 0, "Cycle detected in blueprint instance parenting (cannot save)");
-                    return false;
-                }
-            }
+            const std::size_t* parent = root.parentId.empty() ? nullptr : blueprintIndexById.Find(root.parentId);
+            blueprintParents.push_back(parent ? std::optional<std::size_t>(*parent) : std::nullopt);
         }
-        std::reverse(sortedBlueprints.begin(), sortedBlueprints.end());
+        std::vector<std::size_t> sortedBlueprints;
+        if (!SortInstanceParents(blueprintParents, sortedBlueprints))
+        {
+            SetError(sceneFilePath, 0, "Cycle detected in blueprint instance parenting (cannot save)");
+            return false;
+        }
 
         // Emit non-instanced entities first (depth-first hierarchy order matching the editor Hierarchy panel).
         std::vector<std::string> lines;
