@@ -1,8 +1,7 @@
 #pragma once
 
 // ShaderCompilationCache: global shader compilation cache. Materials with the
-// same shader sources and variant key share compiled SPIR-V. Keyed on
-// (ShaderVariantKey + surface/vertex paths).
+// same source, variant, captured target and stage format share a program.
 //
 // Owned by RenderServices.
 
@@ -92,8 +91,8 @@ struct ShaderSourceKey
     }
 };
 
-// This key is the IN-MEMORY identity only, and is literally a variant key plus a
-// source identity. The on-disk shaderpkg key (v6, ShaderCompileService) hashes
+// This in-memory identity retains the variant, source and captured target.
+// The on-disk shaderpkg key (v6, ShaderCompileService) hashes
 // the true compile inputs — composed source, inlined adapters, and the CONTENT
 // of the whole #include closure — so donor-seeding `.Cache/Shaders` between
 // builds is safe and the historical hand-wipe discipline ("adapter cache-key
@@ -106,10 +105,11 @@ struct ShaderCacheKey
 {
     Rendering::ShaderVariantKey VariantKey;
     ShaderSourceKey Source;
+    Rendering::ShaderCompileTarget Target = Rendering::CurrentShaderCompileTarget();
 
     bool operator==(const ShaderCacheKey& other) const
     {
-        return VariantKey == other.VariantKey && Source == other.Source;
+        return VariantKey == other.VariantKey && Source == other.Source && Target == other.Target;
     }
 };
 
@@ -154,7 +154,7 @@ struct std::hash<GameEngine::Engine::Renderer::ShaderCacheKey>
     {
         const uint64_t h = GameEngine::Rendering::HashUtils::HashCombine(
             k.VariantKey.Hash(), std::hash<GameEngine::Engine::Renderer::ShaderSourceKey>{}(k.Source));
-        return static_cast<size_t>(h);
+        return static_cast<size_t>(GameEngine::Rendering::HashUtils::HashCombine(h, k.Target.Hash()));
     }
 };
 
@@ -181,8 +181,8 @@ class ShaderCompilationCache
         const std::string& debugName,
         Rendering::ShaderSourceKind kind);
 
-    // Drop a global dedup entry so the next GetOrCompile re-reads surface sources
-    // from disk. Needed when shader file content changes but paths stay the same.
+    // Drop every target and stage format of this variant/source identity.
+    // Content edits invalidate retained programs even when their target is inactive.
     void InvalidateGlobalEntry(const ShaderCacheKey& key);
 
     // Drop every global entry that DEPENDS on the given shader file, and name
@@ -247,8 +247,21 @@ class ShaderCompilationCache
     void Clear();
 
   private:
-    // Global dedup cache: ShaderCacheKey -> compiled variant.
-    std::unordered_map<ShaderCacheKey, std::shared_ptr<SharedShaderVariant>> m_Cache;
+    struct ProgramKey
+    {
+        ShaderCacheKey Shader;
+        Rendering::ShaderSourceKind Kind;
+        bool operator==(const ProgramKey&) const = default;
+    };
+    struct ProgramKeyHash
+    {
+        size_t operator()(const ProgramKey& key) const noexcept
+        {
+            return static_cast<size_t>(Rendering::HashUtils::HashCombine(
+                std::hash<ShaderCacheKey>{}(key.Shader), static_cast<uint32_t>(key.Kind)));
+        }
+    };
+    std::unordered_map<ProgramKey, std::shared_ptr<SharedShaderVariant>, ProgramKeyHash> m_Cache;
 
     // Single-flight: per-key in-flight compile future so same-key racers WAIT for
     // the first compiler instead of re-compiling (A2.4-P0-R: the depth prepass, 4
@@ -264,7 +277,7 @@ class ShaderCompilationCache
     // publish-side erase on the epoch would leak the entry instead and pin every
     // later request to that stale future forever.
     using CompileFuture = std::shared_future<std::shared_ptr<SharedShaderVariant>>;
-    std::unordered_map<ShaderCacheKey, CompileFuture> m_InFlight;
+    std::unordered_map<ProgramKey, CompileFuture, ProgramKeyHash> m_InFlight;
 
     // Recorded include closures, one row per ShaderSourceKey. Values are
     // LOWERCASED FILENAMES of every file any build of that identity read:

@@ -107,7 +107,7 @@ using TestSupport::ScopedCompatShaderProfile;
 // pins the compat profile, or it passes alone and fails after any device-creating test.
 struct ScopedWebCacheSpirvTarget
 {
-    using Target = Rendering::ShaderCompileService::SpirvTarget;
+    using Target = ::GameEngine::Rendering::SpirvTarget;
     ScopedWebCacheSpirvTarget() : Prev(Rendering::ShaderCompileService::MaxSupportedSpirv())
     {
         Rendering::ShaderCompileService::SetMaxSupportedSpirv(Target::Spirv_1_5);
