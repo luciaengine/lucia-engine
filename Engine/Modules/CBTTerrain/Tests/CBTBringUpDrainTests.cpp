@@ -80,9 +80,13 @@ class PendingUpdate
         {
             Release();
             if (m_Submitted)
+            {
                 EXPECT_EQ(vkWaitForFences(NativeDevice(), 1u, &m_Fence, VK_TRUE, ~0ull), VK_SUCCESS);
+            }
             if (m_Token.IsValid())
+            {
                 EXPECT_TRUE(m_Device.WaitGpuSyncToken(m_Token));
+            }
             if (m_Fence != VK_NULL_HANDLE)
                 vkDestroyFence(NativeDevice(), m_Fence, nullptr);
             vkDestroySemaphore(NativeDevice(), m_Gate, nullptr);
