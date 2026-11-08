@@ -73,7 +73,7 @@
 
 /* The entity's count, then the instance's count when only other entities of the instance have overrides, then
    the count of the override lines that the prefab does not have. Each pill is a header pill (theme/inspector.css)
-   in a .badge-button (controls/Button.css) that opens the Overrides list. */
+   in a count button that opens the Overrides list. */
 .prefab-bar-counts {
 	display: flex;
 	flex-direction: column;
@@ -97,4 +97,15 @@
 	padding: 1px 0px;
 	font-size: 12px;
 	color: var(--ui_color_text_secondary);
+}
+
+/* The count's label owns the pill; its button adds only the hit target and focus ring. */
+.prefab-bar-count-button {
+    padding: 0;
+    min-height: 0;
+    min-width: 0;
+    max-width: 100%;
+    border-width: 0;
+    background-color: transparent;
+    justify-content: flex-start;
 }

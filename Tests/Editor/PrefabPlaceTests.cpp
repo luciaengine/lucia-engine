@@ -1515,11 +1515,11 @@ TEST_F(PrefabPlaceTests, TheDefaultRowsMarkTheFieldsAnInstanceOverrides)
     context.Entity = lid;
     ASSERT_TRUE(RenderDefaultComponentInspector(context, probeType));
     const UIElement* intensity = FindFieldRow(parent, "Intensity");
-    const UIElement* boxProjection = FindFieldRow(parent, "Box Projection");
+    const UIElement* priority = FindFieldRow(parent, "Priority");
     ASSERT_NE(intensity, nullptr);
-    ASSERT_NE(boxProjection, nullptr);
+    ASSERT_NE(priority, nullptr);
     EXPECT_TRUE(HasOverrideMark(*intensity));
-    EXPECT_FALSE(HasOverrideMark(*boxProjection));
+    EXPECT_FALSE(HasOverrideMark(*priority));
 }
 
 // The entity's name is a field row of the Name component: an overridden name gets the mark too.

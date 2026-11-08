@@ -165,6 +165,11 @@ bool EntityIconIsCssOnly(const UIElement& element)
         if (element.HasClass(c))
             return true;
     }
+    for (const auto& [typeId, rowClass] : EditorComponentTraitsRegistry::Get().HierarchyRowClasses())
+    {
+        if (element.HasClass(rowClass))
+            return true;
+    }
     return false;
 }
 
