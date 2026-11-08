@@ -174,7 +174,7 @@ static const PrefabTemplate* BuildTemplate(PrefabPlacement& placement, const Sce
     {
         placement.TemplateBuild =
             std::make_unique<PrefabPlacement>(library.GetWorld(), placement.Options, nullptr);
-        placement.TemplateBuild->writesSceneTags = false;
+        placement.TemplateBuild->WritesSceneTags = false;
     }
     PrefabPlacement& build = *placement.TemplateBuild;
     SceneLoadDegradation rows;
