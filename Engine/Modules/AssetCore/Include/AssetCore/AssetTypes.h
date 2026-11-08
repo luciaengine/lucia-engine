@@ -108,7 +108,8 @@ namespace GameEngine {
     X(PhysicsMaterial) \
     X(TileSet) \
     X(TileMap) \
-    X(DayCycleProfile)
+    X(DayCycleProfile) \
+    X(Prefab)
 
 /**
  * @brief Asset types supported by the engine
@@ -213,6 +214,9 @@ AssetType GetAssetTypeFromExtension(const String& extension);
  *         Empty string when the path has no extension.
  */
 String GetCompoundExtensionFromPath(const String& path);
+
+/// The filename without its registered extension, including compound extensions.
+String GetAssetNameFromPath(const String& path);
 
 /**
  * @brief Convert asset state to string

@@ -75,6 +75,7 @@
 #include "Components/Measure/MeasureComponent.h"
 #include "Components/Name.h"
 #include "Components/SceneBlueprintInstance.h"
+#include "Assets/AssetPlacementRegistry.h"
 #include "Components/Transform.h"
 #include "ECS/Components.h"
 #include "ECS/ComponentFieldRegistry.h"
@@ -227,11 +228,7 @@ constexpr uint32_t kCmdSceneToolbarToggleBase = 0x5301;
 constexpr uint32_t kCmdSceneToolbarFpsToggle  = 0x5401;
 constexpr uint32_t kCmdSceneFpsToggleVsync    = 0x5402;
 
-bool IsModelFileExtension(const std::string& ext)
-{
-    return ext == ".glb" || ext == ".gltf" || ext == ".obj" || ext == ".fbx" || ext == ".GLB" || ext == ".GLTF" || ext == ".OBJ"
-           || ext == ".FBX";
-}
+
 
 void ApplyRootWorldPosition(ECS::World& world, ECS::EntityHandle root, const Mathematics::Vector3& worldPos)
 {
@@ -3723,7 +3720,7 @@ UI::Interaction::DropFeedback SceneViewPanel::CanDrop(const UI::Interaction::Dro
         std::filesystem::path absPath = metadata.Path;
         if (!absPath.is_absolute() && !m_Context->AssetsRoot.empty())
             absPath = m_Context->AssetsRoot / absPath;
-        const bool isModel = IsModelFileExtension(absPath.extension().string());
+        const bool isModel = Editor::IsPlacedModelExtension(absPath.extension().string());
         if (isModel && !ResolveRenderServices())
             return {false, "No render services"};
         return {true, {}, isModel};
@@ -3742,12 +3739,14 @@ UI::Interaction::DropFeedback SceneViewPanel::CanDrop(const UI::Interaction::Dro
     const auto* pl = request.payload.TryGet<Editor::AssetPathsDragPayload>();
     if (!pl || pl->paths.empty())
         return {false, "Empty payload"};
+    if (std::string refusal = Editor::DescribeRefusedDrop(pl->paths); !refusal.empty())
+        return {false, std::move(refusal)};
     bool needsModelPipeline = false;
     for (const auto& p : pl->paths)
     {
         if (p.empty())
             continue;
-        if (IsModelFileExtension(p.extension().string()))
+        if (Editor::IsPlacedModelExtension(p.extension().string()))
         {
             needsModelPipeline = true;
             break;
@@ -4146,6 +4145,11 @@ void SceneViewPanel::PerformDrop(const UI::Interaction::DropRequest& request)
     }
     if (!payload)
         return;
+    if (const std::string refusal = Editor::DescribeRefusedDrop(payload->paths); !refusal.empty())
+    {
+        Editor::ShowSceneViewNotice(refusal);
+        return;
+    }
 
     ECS::World* world = EngineCore::GetInstance().EnsurePrimaryWorld();
     if (!world)
@@ -4379,7 +4383,18 @@ void SceneViewPanel::PerformDrop(const UI::Interaction::DropRequest& request)
             continue;
         }
 
-        const bool isModel = IsModelFileExtension(ext);
+        if (const auto place = Editor::AssetPlacementRegistry::Get().Find(assetType))
+        {
+            Components::Transform at{};
+            at.SetIdentity();
+            at.Translate(worldPos.x, worldPos.y, worldPos.z);
+            const auto root = place(*world, am, absPath, at, {});
+            if (root.IsValid())
+                droppedRoots.push_back(root);
+            continue;
+        }
+
+        const bool isModel = Editor::IsPlacedModelExtension(ext);
 
         if (isModel)
         {
@@ -4979,7 +4994,7 @@ void SceneViewPanel::SetDropPreview(const UI::Interaction::DropPreviewState& sta
         }
     }
 
-    if (first.empty() || !IsModelFileExtension(first.extension().string()))
+    if (first.empty() || !Editor::IsPlacedModelExtension(first.extension().string()))
     {
         ClearDropPreviewModel();
         return;

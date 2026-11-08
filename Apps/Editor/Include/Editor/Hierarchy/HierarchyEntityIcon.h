@@ -16,6 +16,10 @@ struct EditorContext;
 
 namespace Editor {
 
+struct HierarchyRowParts;
+/// Applies registered feature decorations while binding an entity row.
+void ApplyHierarchyRowDecorations(ECS::World& world, ECS::EntityHandle entity, HierarchyRowParts& parts);
+
 void ClearHierarchyEntityIconClasses(UIElement* element);
 void ApplyHierarchyEntityIconClasses(ECS::World* world, UIElement* element, ECS::EntityHandle handle);
 /// Same, for the element that actually draws the glyph. Adds the shared

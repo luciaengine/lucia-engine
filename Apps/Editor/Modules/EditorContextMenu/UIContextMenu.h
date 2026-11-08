@@ -43,6 +43,8 @@ namespace GameEngine
         void SetItemEnabled(uint32_t commandId, bool enabled) override;
         void SetItemChecked(uint32_t commandId, bool checked) override;
         void SetItemIcon(uint32_t commandId, const std::string& imagePath) override;
+    void SetItemShortcut(uint32_t commandId, const std::string& keyText) override;
+    void SetItemTooltip(uint32_t commandId, const std::string& text) override;
         void SetSubMenuIcon(uint32_t submenuId, const std::string& imagePath) override;
 
         void SetItemColor(uint32_t commandId, const std::string& hexColor) override;
@@ -54,6 +56,8 @@ namespace GameEngine
 
         struct MenuItem
         {
+            std::string shortcut;
+            std::string tooltip;
             std::string title;
             uint32_t id = 0;
             bool isSubMenu = false;

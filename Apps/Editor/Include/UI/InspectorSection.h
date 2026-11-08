@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <functional>
 
@@ -41,10 +42,19 @@ public:
     // via FindById. Returns the id passed in.
     const std::string& AssignHeaderIconId(const std::string& id);
 
+    enum class BadgeKind : uint8_t { Warning, Override };
+    /// Marks a component changed on this instance.
+    void SetOverridden(bool overridden);
+    /// Mutes a removed component's title and icon.
+    void Fade();
+    /// Hides options for a removed component header.
+    void HideOptions();
+
     // Show a small right-aligned status badge in the header (e.g. "Not Loaded"),
     // inserted just before the options affordance. Empty text hides it.
     // An optional tooltip is applied to the badge itself.
-    void SetHeaderBadge(const std::string& text, const std::string& tooltip = "");
+    void SetHeaderBadge(const std::string& text, const std::string& tooltip = "",
+                        BadgeKind kind = BadgeKind::Warning);
 
     UIElement* GetContentRoot() const { return m_ContentRoot; }
 

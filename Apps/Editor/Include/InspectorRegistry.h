@@ -67,6 +67,10 @@ struct InspectorContext {
     // Owned by InspectorPanel; cleared on each ShowEntity rebuild.
     std::vector<std::function<void()>>* FrameRefreshCallbacks = nullptr;
 
+    // Refreshed in place after an instance edit; owned by the Inspector panel.
+    std::vector<std::function<void()>>* OverrideMarkRefreshCallbacks = nullptr;
+    std::function<void()> RefreshOverrideMarks;
+
     // Optional: navigate to and highlight an asset in the asset browser by path.
     std::function<void(const std::filesystem::path&)> PingAsset;
     // Optional: navigate to and highlight an asset while preserving current inspector target.
@@ -130,10 +134,89 @@ struct InspectorContext {
 
 using InspectorFn = std::function<void(const InspectorContext&)>;
 
+// How one component of an entity differs from the source the entity derives from, as a registered
+// answerer reports it. Empty for an entity that derives from nothing.
+struct ComponentOverrides
+{
+    // True when the component or any of its fields differs from the source.
+    bool Overridden = false;
+    // The header badge for the component ("Added"), and its tooltip; empty for none.
+    std::string Badge;
+    std::string BadgeTooltip;
+    // The reflected names of the fields that differ from the source.
+    std::vector<std::string> Fields;
+
+    bool IsFieldOverridden(std::string_view fieldName) const
+    {
+        for (const std::string& field : Fields)
+            if (field == fieldName)
+                return true;
+        return false;
+    }
+};
+
+using ComponentOverridesFn =
+    std::function<ComponentOverrides(ECS::World& world, ECS::EntityHandle entity, ECS::ComponentTypeId typeId)>;
+
+// One entry that a registered answerer adds to the context menu of a field row or a component header.
+struct OverrideMenuEntry
+{
+    std::string Label;
+    // The row icon: an EditorIcons path.
+    std::string IconPath;
+    // Does the entry's edit as one undo step. The Inspector shows the entity again after it runs.
+    std::function<void()> Run;
+};
+
+// The field row or the component header that an override menu opens on.
+struct OverrideMenuTarget
+{
+    ECS::World* World = nullptr;
+    ECS::EntityHandle Entity{};
+    ECS::ComponentTypeId Component = 0;
+    // The reflected name of the field; empty for the component's header.
+    std::string Field;
+    Editor::UndoRedoService* Undo = nullptr;
+    Editor::EditorChangeNotifications* Notifications = nullptr;
+};
+
+using OverrideMenuFn = std::function<std::vector<OverrideMenuEntry>(const OverrideMenuTarget& target)>;
+
 // Simple registry for custom inspectors.
+enum class EntityBannerPlacement
+{
+    BeforeComponents,
+    AfterComponents,
+};
+
 class InspectorRegistry {
 public:
     static InspectorRegistry& Get();
+
+    void RegisterEntityBanner(std::string_view key, EntityBannerPlacement placement, InspectorFn fn)
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        for (EntityBanner& banner : m_EntityBanners)
+        {
+            if (banner.Key == key)
+            {
+                banner.Placement = placement;
+                banner.Fn = std::move(fn);
+                return;
+            }
+        }
+        m_EntityBanners.push_back({std::string(key), placement, std::move(fn)});
+    }
+    // The registered entity banners at `placement`, in registration order.
+    std::vector<InspectorFn> GetEntityBanners(EntityBannerPlacement placement) const
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        std::vector<InspectorFn> banners;
+        for (const EntityBanner& banner : m_EntityBanners)
+            if (banner.Placement == placement)
+                banners.push_back(banner.Fn);
+        return banners;
+    }
 
     // Register a custom inspector for a component type T.
     template<typename T>
@@ -188,6 +271,42 @@ public:
         return &it->second;
     }
 
+    // Set the one answerer the component sections and the default field rows ask how a component
+    // differs from its entity's source; a second call replaces the first. The entity header asks for
+    // the Name component.
+    void SetComponentOverridesAnswerer(ComponentOverridesFn fn)
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        m_ComponentOverrides = std::move(fn);
+    }
+    // How `typeId` on `entity` differs from the entity's source; empty when no answerer is set.
+    ComponentOverrides QueryComponentOverrides(ECS::World& world, ECS::EntityHandle entity,
+                                               ECS::ComponentTypeId typeId) const
+    {
+        ComponentOverridesFn answerer;
+        {
+            std::lock_guard<std::mutex> lock(m_Mutex);
+            answerer = m_ComponentOverrides;
+        }
+        return answerer ? answerer(world, entity, typeId) : ComponentOverrides{};
+    }
+    // Set the one answerer that the field rows and the component headers ask for the entries that apply
+    // or revert their difference from the entity's source; a second call replaces the first.
+    void SetOverrideMenuAnswerer(OverrideMenuFn fn)
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        m_OverrideMenu = std::move(fn);
+    }
+    // The override entries for `target`; empty when no answerer is set or the target has no difference.
+    std::vector<OverrideMenuEntry> QueryOverrideMenu(const OverrideMenuTarget& target) const
+    {
+        OverrideMenuFn answerer;
+        {
+            std::lock_guard<std::mutex> lock(m_Mutex);
+            answerer = m_OverrideMenu;
+        }
+        return answerer ? answerer(target) : std::vector<OverrideMenuEntry>{};
+    }
     // Register an inspector for an asset type (Material, Shader, etc.)
     void RegisterAssetInspector(AssetType type, InspectorFn fn)
     {
@@ -219,6 +338,16 @@ private:
     // registry bookkeeping — see ECS/ModuleRegistration.h).
     std::unordered_map<ECS::ComponentTypeId, ECS::ModuleRegistrationStamp> m_ModuleOwners;
     std::unordered_map<int, ECS::ModuleRegistrationStamp> m_AssetInspectorOwners;
+    struct EntityBanner
+    {
+        std::string Key;
+        EntityBannerPlacement Placement = EntityBannerPlacement::BeforeComponents;
+        InspectorFn Fn;
+    };
+    std::vector<EntityBanner> m_EntityBanners;
+    ComponentOverridesFn m_ComponentOverrides;
+    OverrideMenuFn m_OverrideMenu;
+
     mutable std::mutex m_Mutex;
 };
 

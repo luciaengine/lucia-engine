@@ -93,6 +93,18 @@ set(ENGINE_SOURCES
     Source/Components/Rendering/SkySunIlluminance.cpp
     Source/Components/Rendering/SkySunPath.cpp
     Source/Scene/SceneIO.cpp
+    Source/Scene/PrefabPlacement.h
+    Source/Scene/PrefabAuthoring.cpp
+    Source/Scene/PrefabOverrideEdits.cpp
+    Source/Scene/PrefabOverrideWriter.h
+    Source/Scene/PrefabOverrideWriter.cpp
+    Source/Scene/PrefabSpawn.cpp
+    Source/Scene/PrefabLibrary.cpp
+    Source/Scene/PrefabPlacement.cpp
+    Source/Scene/PrefabLibrary.h
+    Source/Scene/AssetManagerSceneResolver.cpp
+    Source/Scene/SceneDoc.h
+
     Source/Scene/SceneRaycast.cpp
     Source/Scene/TerrainPicking.cpp
     Source/Scene/MeshBvhCache.cpp
@@ -301,6 +313,10 @@ set(ENGINE_HEADERS
     # Scene authoring/persistence components
     Include/Components/SceneEntityTag.h
     Include/Components/SceneBlueprintInstance.h
+    Include/Components/PrefabInstance.h
+    Include/Scene/PrefabAuthoring.h
+    Include/Scene/PrefabSpawn.h
+    Include/Scene/AssetManagerSceneResolver.h
     Include/Components/SceneSubsceneInstance.h
 
 	# Rendering hot-reload bridge header
@@ -3542,6 +3558,9 @@ endif()
 	    add_executable(EngineSceneIOTests
 	        Tests/WeatherWindTests.cpp
 	        Tests/SceneIOTests.cpp
+	        Tests/PrefabLibraryTests.cpp
+	        Tests/PrefabFormatTests.cpp
+	        Tests/PrefabSpawnTests.cpp
 	        Tests/EmbeddedAnimationPersistenceTests.cpp
 	        Tests/SceneIntegerTests.cpp
 	        Tests/SceneStructArrayTests.cpp
@@ -3552,7 +3571,7 @@ endif()
 	        Modules/TerrainGrass/Tests/TerrainGrassClampsTests.cpp
         Modules/TerrainGrass/Tests/TerrainGrassPresetTests.cpp)
 	    target_link_libraries(EngineSceneIOTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-	    target_include_directories(EngineSceneIOTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+	    target_include_directories(EngineSceneIOTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests ${CMAKE_CURRENT_SOURCE_DIR}/Source)
 	    # TerrainGrassClamps.SceneSchemaCarriesNoInlineClampCall reads the scene schema and fails on
 	    # any field bound written inline there instead of in the shared clamp pass.
 	    target_compile_definitions(EngineSceneIOTests PRIVATE

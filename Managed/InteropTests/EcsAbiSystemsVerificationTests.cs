@@ -49,6 +49,41 @@ namespace GameEngine.ManagedInteropTests
     /// </summary>
     public class EcsAbiSystemsVerificationTests
     {
+        private sealed class CommandSystemProbe : GameSystem
+        {
+            public EntityCommands ReadCommands() => Commands;
+        }
+
+        /// <summary>A system without a runner-assigned world refuses commands before native calls.</summary>
+        [Test]
+        public void GameSystemCommandsRequireAnAssignedWorld()
+        {
+            var system = new CommandSystemProbe();
+            Assert.Throws<InvalidOperationException>(() => system.ReadCommands());
+        }
+
+        /// <summary>A system's commands create entities in its current world.</summary>
+        [Test]
+        public void GameSystemCommandsUseTheAssignedWorld()
+        {
+            var world = RequireWorld();
+            var system = new CommandSystemProbe { World = world };
+            var commands = system.ReadCommands();
+            Assert.That(commands.WorldHandle, Is.EqualTo(world.Handle));
+            uint entity = commands.CreateEntity();
+            try
+            {
+                Assert.That(world.IsEntityValid(entity), Is.True);
+                system.World = default;
+                Assert.Throws<InvalidOperationException>(() => system.ReadCommands());
+            }
+            finally
+            {
+                world.DestroyEntity(entity);
+                ChunkQueryNative.FlushDeferredCommands(world.Handle);
+            }
+        }
+
         private static WorldHandle RequireWorld()
         {
             try

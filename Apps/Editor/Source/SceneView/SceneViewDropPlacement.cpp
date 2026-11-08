@@ -1,5 +1,8 @@
 #include "SceneView/SceneViewDropPlacement.h"
 
+#include "Assets/AssetPlacementRegistry.h"
+#include "AssetCore/AssetTypes.h"
+#include "Types/StringUtils.h"
 #include "Components/Hierarchy.h"
 #include "Components/Rendering/MeshRenderer.h"
 #include "Components/Transform.h"
@@ -13,6 +16,7 @@
 #include "Picking/MeshPickingService.h"
 
 #include <cmath>
+#include <format>
 
 namespace GameEngine::Editor
 {
@@ -131,6 +135,39 @@ SceneViewDropMesh PickSceneViewDropMesh(const Mathematics::Ray3D& cameraRay,
     mesh.Entity = pick.Best.Entity;
     mesh.Pending = pick.Best.MeshBvhPending;
     return mesh;
+}
+
+bool IsPlacedModelExtension(std::string_view extension)
+{
+    const std::string lower = ToLowerAscii(extension);
+    return lower == ".glb" || lower == ".gltf" || lower == ".obj" || lower == ".fbx";
+}
+
+std::string DescribeRefusedDrop(std::span<const std::filesystem::path> files)
+{
+    const std::filesystem::path* first = nullptr;
+    for (const auto& file : files)
+    {
+        if (file.empty())
+            continue;
+        const AssetType type = GetAssetTypeFromExtension(file.extension().string());
+        if (IsPlacedModelExtension(file.extension().string()) || AssetPlacementRegistry::Get().Find(type) ||
+            type == AssetType::LensFlareDefinition || type == AssetType::Scene)
+            return {};
+        if (!first)
+            first = &file;
+    }
+    if (!first)
+        return "Nothing to drop.";
+    const AssetType type = GetAssetTypeFromExtension(first->extension().string());
+    if (files.size() == 1 && (type == AssetType::Texture || type == AssetType::Material))
+        return {};
+    if (type == AssetType::NavigationGrid)
+        return "Navigation Grid files cannot be placed in a scene. Add a Navigation Surface component and "
+               "assign the file to its Authored Cells.";
+    if (type == AssetType::Model || type == AssetType::Unknown)
+        return std::format("{} files cannot be placed in a scene.", first->extension().string());
+    return std::format("{} files cannot be placed in a scene.", IdentifierToWords(AssetTypeToString(type)));
 }
 
 } // namespace GameEngine::Editor

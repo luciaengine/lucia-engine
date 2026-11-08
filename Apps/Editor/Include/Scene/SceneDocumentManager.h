@@ -94,6 +94,8 @@ class SceneDocumentManager
     // will now do wants the outstanding view below instead: an override can retire after the load,
     // and this record cannot see it happen.
     const std::optional<SceneLoadDegraded>& GetLastLoadDegraded() const { return m_LastLoadDegraded; }
+    std::optional<Scene::SceneLoadSkip> DiscardLoadSkip(std::size_t index);
+    void RestoreLoadSkip(std::size_t index, Scene::SceneLoadSkip skip);
 
     // The same record filtered to the skips still outstanding against the world — see
     // Scene::SkipIsOutstanding. This is what the debug surface reports and what the save guard and

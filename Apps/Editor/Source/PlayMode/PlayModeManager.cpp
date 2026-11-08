@@ -5,6 +5,7 @@
 
 #include "Automation/UiReplayCommandIds.h"
 #include "Editor/Registries/EditorMenuRegistry.h"
+#include "Scene/PrefabAuthoring.h"
 #include "Scene/SceneEditorController.h"
 #include "UndoRedo/IEditorCommand.h"
 #include "UndoRedo/UndoRedoService.h"
@@ -341,6 +342,9 @@ void PlayModeManager::EnterPlayMode()
             m_PrePlayEntityIds.insert(e.id);
     }
 
+    // Keep file changes out of the running world until the editor snapshot is restored.
+    Scene::SetPrefabPropagationDeferred(*m_World, true);
+
     // Hot-reload is allowed during play mode: the assembly swap executes on the
     // main thread between frames, and PlayModeDriver detects the domain change
     // to rebuild hooks and re-register entity/game systems automatically.
@@ -478,6 +482,9 @@ void PlayModeManager::ExitPlayMode()
     m_EnteredSnapshot.reset();
     m_EnteredMarkupNotes.reset();
     m_PrePlayEntityIds.clear();
+
+    if (m_World)
+        Scene::SetPrefabPropagationDeferred(*m_World, false);
 
     // Re-enable native hot-reload and flush any source edit made during play (deferred in
     // EnterPlayMode) now that we're back in edit mode — so the rebuild + re-register happens

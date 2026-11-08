@@ -1,4 +1,10 @@
 :root {
+  --ui_color_prefab: #2EC4B6;
+  /* The fill of an override pill: the prefab color at 16 percent. */
+  --ui_color_prefab_background: rgba(46, 196, 182, 0.16);
+  /* The fill of an override pill on hover and while pressed. */
+  --ui_color_prefab_background_hover: rgba(46, 196, 182, 0.30);
+  --ui_color_prefab_background_pressed: rgba(46, 196, 182, 0.08);
   /* Core colors */
   --ui_color_bg_root: transparent;
   --ui_color_bg_panel: #272727;

@@ -49,25 +49,11 @@ constexpr int kInterpolationCount = 3;
 constexpr int kTangentModeCount = 5;
 constexpr std::string_view kKeyFormat = "elevation,value,inTangent,outTangent,interpolation,tangentMode";
 
-std::vector<std::string_view> SplitOn(std::string_view text, char separator)
-{
-    std::vector<std::string_view> parts;
-    size_t start = 0;
-    while (true)
-    {
-        const size_t stop = text.find(separator, start);
-        parts.push_back(text.substr(start, stop == std::string_view::npos ? text.size() - start : stop - start));
-        if (stop == std::string_view::npos)
-            return parts;
-        start = stop + 1;
-    }
-}
-
 // Reads one key (elevation,value[,inTangent,outTangent,interpolation,tangentMode]); `name` is
 // "<where>: key <n>" for the refusal.
 bool ParseKey(std::string_view text, const std::string& name, Math::CurveKey& out, std::string& outError)
 {
-    const std::vector<std::string_view> fields = SplitOn(text, ',');
+    const std::vector<std::string_view> fields = Split(text, ',');
     if (fields.size() < kRequiredKeyFields || fields.size() > std::size(kKeyFields))
     {
         outError = name + " has " + std::to_string(fields.size()) + " fields; write it as " + std::string(kKeyFormat) +
@@ -120,7 +106,7 @@ bool ParseKeyList(std::string_view text, const std::string& where, Math::Curve& 
 {
     Math::Curve curve{};
     size_t count = 0;
-    for (const std::string_view key : SplitOn(text, ';'))
+    for (const std::string_view key : Split(text, ';'))
     {
         if (TrimWhitespaceView(key).empty())
             continue;

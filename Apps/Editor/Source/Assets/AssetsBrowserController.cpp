@@ -1,4 +1,5 @@
 #include "Assets/AssetsBrowserController.h"
+#include "Assets/AssetsFolderDropRegistry.h"
 #include "Assets/AssetDeletePathGuard.h"
 #include "Assets/AssetGridDragState.h"
 #include "Assets/AssetPathKey.h"
@@ -212,24 +213,8 @@ namespace
         if (fileName.empty())
             return {};
 
-        std::error_code ec;
-        std::filesystem::path candidate = destDir / fileName;
-        if (!std::filesystem::exists(candidate, ec))
-            return candidate;
-
-        const std::filesystem::path stem = fileName.stem();
-        const std::filesystem::path ext = fileName.extension();
-
-        // Try "Name (N).ext"
-        for (int i = 1; i < 10000; ++i)
-        {
-            std::filesystem::path alt = destDir / (stem.string() + " (" + std::to_string(i) + ")" + ext.string());
-            if (!std::filesystem::exists(alt, ec))
-                return alt;
-        }
-
-        // Give up: return the original candidate and let caller log/handle.
-        return candidate;
+        const auto numbered = Editor::MakeNumberedFilePath(destDir, fileName);
+        return numbered.empty() ? destDir / fileName : numbered;
     }
 
     // Report every file that landed at `dst`. A directory is only knowable as a file
@@ -338,6 +323,38 @@ namespace
                 written.push_back(dst);
         }
         return written;
+    }
+
+    // The asset files of a drag may land in `dest` unless a file is the folder itself, a folder would
+    // move into its own descendant, or a file is in `dest` already.
+    static UI::Interaction::DropFeedback CanDropAssetPaths(const Editor::AssetPathsDragPayload& payload,
+                                                           const std::filesystem::path& dest, int mods)
+    {
+        const std::string destKey = AssetPathKey(dest);
+        const bool copy = payload.copyOnly || IsCopyDrop(mods);
+        for (const auto& src : payload.paths)
+        {
+            if (src.empty())
+                continue;
+            if (AssetPathKey(src) == destKey)
+                return {false, "Cannot move into itself"};
+            if (std::filesystem::is_directory(src))
+            {
+                if (copy)
+                    return {false, "Copy folder not supported"};
+                if (IsUnderAssetDir(src, dest))
+                    return {false, "Cannot move folder into its descendant"};
+            }
+            if (IsDirectChildOfAssetDir(dest, src))
+                return {false, "Already in destination"};
+        }
+        return {true, {}};
+    }
+
+    static bool AcceptsFolderDropPayload(UI::Interaction::PayloadTypeId typeId)
+    {
+        return typeId == UI::Interaction::GetPayloadTypeId<Editor::AssetPathsDragPayload>() ||
+               Editor::AssetsFolderDropRegistry::Get().Accepts(typeId);
     }
 
     // OPFS (wasm) rejects std::filesystem::copy_file with EPERM because it has
@@ -523,6 +540,77 @@ AssetsBrowserController::~AssetsBrowserController()
     m_Alive->store(false, std::memory_order_release);
     // Bump generation so any in-flight Polyhaven loads become stale.
     ++m_PolyhavenLoadGeneration;
+}
+
+AssetsBrowserController::DropFolder
+AssetsBrowserController::ResolveTreeDropFolder(const UI::Interaction::DropRequest& request) const
+{
+    if (!m_TreeProvider || !m_GridProvider)
+        return {{}, "No destination"};
+    const TreeId target = request.hit.TargetId;
+    if (target == 0)
+        return {m_GridProvider->GetCurrentDirectory(), nullptr};
+    if (m_TreeProvider->IsSmartFolder(target) || m_TreeProvider->IsSmartFoldersSection(target))
+        return {{}, "Cannot drop onto smart folders"};
+    if (m_TreeProvider->IsOnlineAssetsSection(target) || m_TreeProvider->IsPolyhaven(target) ||
+        m_TreeProvider->IsPolyhavenCategory(target) || m_TreeProvider->IsPolyhavenCategoryChild(target))
+        return {{}, "Cannot drop onto online assets"};
+    return {m_TreeProvider->GetPath(target), nullptr};
+}
+
+AssetsBrowserController::DropFolder
+AssetsBrowserController::ResolveGridDropFolder(const UI::Interaction::DropRequest& request) const
+{
+    if (!m_GridProvider)
+        return {{}, "No destination"};
+    if (request.hit.Location != UI::Interaction::DropLocation::OnItem || request.hit.TargetId == 0)
+        return {m_GridProvider->GetCurrentDirectory(), nullptr};
+    const GridId item = static_cast<GridId>(request.hit.TargetId);
+    if (!m_GridProvider->IsDirectory(item))
+        return {{}, "Drop onto a folder"};
+    return {m_GridProvider->GetPath(item), nullptr};
+}
+
+AssetsBrowserController::DropFolder
+AssetsBrowserController::ResolveListDropFolder(const UI::Interaction::DropRequest& request) const
+{
+    if (!m_ListProvider || !m_GridProvider)
+        return {{}, "No destination"};
+    if (request.hit.Location != UI::Interaction::DropLocation::OnItem || request.hit.TargetId == 0)
+        return {m_GridProvider->GetCurrentDirectory(), nullptr};
+    const ListId item = static_cast<ListId>(request.hit.TargetId);
+    if (!m_ListProvider->IsDirectory(item))
+        return {{}, "Drop onto a folder"};
+    return {m_ListProvider->GetPath(item), nullptr};
+}
+
+UI::Interaction::DropFeedback AssetsBrowserController::CanDropOnFolder(const UI::Interaction::DropRequest& request,
+                                                                       const DropFolder& folder) const
+{
+    if (folder.Refusal)
+        return {false, folder.Refusal};
+    if (folder.Path.empty())
+        return {false, "No destination"};
+    if (const auto* payload = request.payload.TryGet<Editor::AssetPathsDragPayload>())
+        return CanDropAssetPaths(*payload, folder.Path, request.mods);
+    return Editor::AssetsFolderDropRegistry::Get().CanDrop({request, folder.Path, m_Context});
+}
+
+void AssetsBrowserController::PerformDropOnFolder(const UI::Interaction::DropRequest& request, const DropFolder& folder)
+{
+    if (folder.Refusal || folder.Path.empty())
+        return;
+    const auto* payload = request.payload.TryGet<Editor::AssetPathsDragPayload>();
+    std::vector<std::filesystem::path> written;
+    if (payload)
+        written = CopyOrMoveAssetPaths(*payload, folder.Path, payload->copyOnly || IsCopyDrop(request.mods),
+                                       m_Context ? m_Context->Assets : nullptr);
+    else
+        written = Editor::AssetsFolderDropRegistry::Get().PerformDrop({request, folder.Path, m_Context});
+    if (!payload && written.empty())
+        return;
+    RevealImportedAssets(folder.Path, written);
+    NotifyVcsStatusDirty();
 }
 
 void AssetsBrowserController::NotifyVcsStatusDirty()
@@ -1096,64 +1184,12 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
         });
 
         // Accept asset drags onto folders.
-        m_Tree->SetAcceptsPayload([](UI::Interaction::PayloadTypeId tid) {
-            return tid == UI::Interaction::GetPayloadTypeId<Editor::AssetPathsDragPayload>();
+        m_Tree->SetAcceptsPayload(&AcceptsFolderDropPayload);
+        m_Tree->SetOnCanDrop([this](const UI::Interaction::DropRequest& request) {
+            return CanDropOnFolder(request, ResolveTreeDropFolder(request));
         });
-        m_Tree->SetOnCanDrop([this](const UI::Interaction::DropRequest& req) -> UI::Interaction::DropFeedback {
-            const auto* payload = req.payload.TryGet<Editor::AssetPathsDragPayload>();
-            if (!payload)
-                return {false, "Wrong payload"};
-            if (!m_TreeProvider || !m_GridProvider)
-                return {false, "No providers"};
-
-            std::filesystem::path dest = (req.hit.TargetId != 0) ? m_TreeProvider->GetPath(req.hit.TargetId)
-                                                                 : m_GridProvider->GetCurrentDirectory();
-            if (dest.empty())
-                return {false, "No destination"};
-            if (req.hit.TargetId != 0)
-            {
-                if (m_TreeProvider->IsSmartFolder(req.hit.TargetId) || m_TreeProvider->IsSmartFoldersSection(req.hit.TargetId))
-                    return {false, "Cannot drop onto smart folders"};
-                if (m_TreeProvider->IsOnlineAssetsSection(req.hit.TargetId) || m_TreeProvider->IsPolyhaven(req.hit.TargetId) || m_TreeProvider->IsPolyhavenCategory(req.hit.TargetId) || m_TreeProvider->IsPolyhavenCategoryChild(req.hit.TargetId))
-                    return {false, "Cannot drop onto online assets"};
-            }
-
-            const std::string destKey = AssetPathKey(dest);
-            const bool copy = payload->copyOnly || IsCopyDrop(req.mods);
-            for (const auto& src : payload->paths)
-            {
-                if (src.empty())
-                    continue;
-                if (AssetPathKey(src) == destKey)
-                    return {false, "Cannot move into itself"};
-                if (std::filesystem::is_directory(src))
-                {
-                    if (copy)
-                        return {false, "Copy folder not supported"};
-                    // Prevent moving a folder into its own descendant.
-                    if (IsUnderAssetDir(src, dest))
-                        return {false, "Cannot move folder into its descendant"};
-                }
-                if (IsDirectChildOfAssetDir(dest, src))
-                    return {false, "Already in destination"};
-            }
-
-            return {true, {}};
-        });
-        m_Tree->SetOnPerformDrop([this](const UI::Interaction::DropRequest& req) {
-            const auto* payload = req.payload.TryGet<Editor::AssetPathsDragPayload>();
-            if (!payload || !m_TreeProvider || !m_GridProvider)
-                return;
-
-            std::filesystem::path dest = (req.hit.TargetId != 0) ? m_TreeProvider->GetPath(req.hit.TargetId)
-                                                                 : m_GridProvider->GetCurrentDirectory();
-            if (dest.empty())
-                return;
-
-            const bool copy = payload->copyOnly || IsCopyDrop(req.mods);
-            const auto written = CopyOrMoveAssetPaths(*payload, dest, copy, m_Context ? m_Context->Assets : nullptr);
-            RevealImportedAssets(dest, written);
-            NotifyVcsStatusDirty();
+        m_Tree->SetOnPerformDrop([this](const UI::Interaction::DropRequest& request) {
+            PerformDropOnFolder(request, ResolveTreeDropFolder(request));
         });
         // Selecting a folder in the tree drives the grid's directory
         m_Tree->SetShowRoot(false);
@@ -1701,67 +1737,12 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
         });
 
         // Accept asset drops onto folders in the grid (and onto grid empty space for current dir).
-        m_Grid->SetAcceptsPayload([](UI::Interaction::PayloadTypeId tid) {
-            return tid == UI::Interaction::GetPayloadTypeId<Editor::AssetPathsDragPayload>();
+        m_Grid->SetAcceptsPayload(&AcceptsFolderDropPayload);
+        m_Grid->SetOnCanDrop([this](const UI::Interaction::DropRequest& request) {
+            return CanDropOnFolder(request, ResolveGridDropFolder(request));
         });
-        m_Grid->SetOnCanDrop([this](const UI::Interaction::DropRequest& req) -> UI::Interaction::DropFeedback {
-            const auto* payload = req.payload.TryGet<Editor::AssetPathsDragPayload>();
-            if (!payload)
-                return {false, "Wrong payload"};
-            if (!m_GridProvider)
-                return {false, "No provider"};
-
-            std::filesystem::path dest = m_GridProvider->GetCurrentDirectory();
-            if (req.hit.Location == UI::Interaction::DropLocation::OnItem && req.hit.TargetId != 0)
-            {
-                const GridId gid = static_cast<GridId>(req.hit.TargetId);
-                if (!m_GridProvider->IsDirectory(gid))
-                    return {false, "Drop onto a folder"};
-                dest = m_GridProvider->GetPath(gid);
-            }
-            if (dest.empty())
-                return {false, "No destination"};
-
-            const std::string destKey = AssetPathKey(dest);
-            const bool copy = payload->copyOnly || IsCopyDrop(req.mods);
-            for (const auto& src : payload->paths)
-            {
-                if (src.empty())
-                    continue;
-                if (AssetPathKey(src) == destKey)
-                    return {false, "Cannot move into itself"};
-                if (std::filesystem::is_directory(src))
-                {
-                    if (copy)
-                        return {false, "Copy folder not supported"};
-                    if (IsUnderAssetDir(src, dest))
-                        return {false, "Cannot move folder into its descendant"};
-                }
-                if (IsDirectChildOfAssetDir(dest, src))
-                    return {false, "Already in destination"};
-            }
-            return {true, {}};
-        });
-        m_Grid->SetOnPerformDrop([this](const UI::Interaction::DropRequest& req) {
-            const auto* payload = req.payload.TryGet<Editor::AssetPathsDragPayload>();
-            if (!payload || !m_GridProvider)
-                return;
-
-            std::filesystem::path dest = m_GridProvider->GetCurrentDirectory();
-            if (req.hit.Location == UI::Interaction::DropLocation::OnItem && req.hit.TargetId != 0)
-            {
-                const GridId gid = static_cast<GridId>(req.hit.TargetId);
-                if (!m_GridProvider->IsDirectory(gid))
-                    return;
-                dest = m_GridProvider->GetPath(gid);
-            }
-            if (dest.empty())
-                return;
-
-            const bool copy = payload->copyOnly || IsCopyDrop(req.mods);
-            const auto written = CopyOrMoveAssetPaths(*payload, dest, copy, m_Context ? m_Context->Assets : nullptr);
-            RevealImportedAssets(dest, written);
-            NotifyVcsStatusDirty();
+        m_Grid->SetOnPerformDrop([this](const UI::Interaction::DropRequest& request) {
+            PerformDropOnFolder(request, ResolveGridDropFolder(request));
         });
 
         // Virtualized binding for pooled cells: update folder style + thumbnail + label.
@@ -2505,67 +2486,12 @@ void AssetsBrowserController::Initialize(TreeView* tree, GridView* grid, ListVie
         });
 
         // Accept asset drops onto folders in the list (and onto list empty space for current dir).
-        m_List->SetAcceptsPayload([](UI::Interaction::PayloadTypeId tid) {
-            return tid == UI::Interaction::GetPayloadTypeId<Editor::AssetPathsDragPayload>();
+        m_List->SetAcceptsPayload(&AcceptsFolderDropPayload);
+        m_List->SetOnCanDrop([this](const UI::Interaction::DropRequest& request) {
+            return CanDropOnFolder(request, ResolveListDropFolder(request));
         });
-        m_List->SetOnCanDrop([this](const UI::Interaction::DropRequest& req) -> UI::Interaction::DropFeedback {
-            const auto* payload = req.payload.TryGet<Editor::AssetPathsDragPayload>();
-            if (!payload)
-                return {false, "Wrong payload"};
-            if (!m_ListProvider || !m_GridProvider)
-                return {false, "No provider"};
-
-            std::filesystem::path dest = m_GridProvider->GetCurrentDirectory();
-            if (req.hit.Location == UI::Interaction::DropLocation::OnItem && req.hit.TargetId != 0)
-            {
-                const ListId lid = static_cast<ListId>(req.hit.TargetId);
-                if (!m_ListProvider->IsDirectory(lid))
-                    return {false, "Drop onto a folder"};
-                dest = m_ListProvider->GetPath(lid);
-            }
-            if (dest.empty())
-                return {false, "No destination"};
-
-            const std::string destKey = AssetPathKey(dest);
-            const bool copy = payload->copyOnly || IsCopyDrop(req.mods);
-            for (const auto& src : payload->paths)
-            {
-                if (src.empty())
-                    continue;
-                if (AssetPathKey(src) == destKey)
-                    return {false, "Cannot move into itself"};
-                if (std::filesystem::is_directory(src))
-                {
-                    if (copy)
-                        return {false, "Copy folder not supported"};
-                    if (IsUnderAssetDir(src, dest))
-                        return {false, "Cannot move folder into its descendant"};
-                }
-                if (IsDirectChildOfAssetDir(dest, src))
-                    return {false, "Already in destination"};
-            }
-            return {true, {}};
-        });
-        m_List->SetOnPerformDrop([this](const UI::Interaction::DropRequest& req) {
-            const auto* payload = req.payload.TryGet<Editor::AssetPathsDragPayload>();
-            if (!payload || !m_ListProvider || !m_GridProvider)
-                return;
-
-            std::filesystem::path dest = m_GridProvider->GetCurrentDirectory();
-            if (req.hit.Location == UI::Interaction::DropLocation::OnItem && req.hit.TargetId != 0)
-            {
-                const ListId lid = static_cast<ListId>(req.hit.TargetId);
-                if (!m_ListProvider->IsDirectory(lid))
-                    return;
-                dest = m_ListProvider->GetPath(lid);
-            }
-            if (dest.empty())
-                return;
-
-            const bool copy = payload->copyOnly || IsCopyDrop(req.mods);
-            const auto written = CopyOrMoveAssetPaths(*payload, dest, copy, m_Context ? m_Context->Assets : nullptr);
-            RevealImportedAssets(dest, written);
-            NotifyVcsStatusDirty();
+        m_List->SetOnPerformDrop([this](const UI::Interaction::DropRequest& request) {
+            PerformDropOnFolder(request, ResolveListDropFolder(request));
         });
     }
 

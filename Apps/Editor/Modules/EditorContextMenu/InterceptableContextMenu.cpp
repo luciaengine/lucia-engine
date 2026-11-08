@@ -243,6 +243,18 @@ void InterceptableContextMenu::SetItemColor(uint32_t commandId, const std::strin
             item.ColorHex = hexColor;
 }
 
+void InterceptableContextMenu::SetItemShortcut(uint32_t commandId, const std::string& keyText)
+{
+    if (m_Inner)
+        m_Inner->SetItemShortcut(commandId, keyText);
+}
+
+void InterceptableContextMenu::SetItemTooltip(uint32_t commandId, const std::string& text)
+{
+    if (m_Inner)
+        m_Inner->SetItemTooltip(commandId, text);
+}
+
 void InterceptableContextMenu::SetItemIcon(uint32_t commandId, const std::string& imagePath)
 {
     if (commandId == 0)

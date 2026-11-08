@@ -1,0 +1,8 @@
+<!-- One entity of the Overrides list (PrefabOverridesList.uxml): the Hierarchy's instance glyph and the entity's
+     name, or for an entity that the prefab does not have the alert glyph, the name in amber and the amber pill. The
+     ids are the contract with PrefabOverridesList.cpp. -->
+<UIElement class="prefab-override-group">
+  <UIElement id="prefab-override-group-glyph" class="entity-icon hierarchy-entity-prefab prefab-override-group-glyph" />
+  <Label id="prefab-override-group-name" class="prefab-override-group-name" />
+  <Label id="prefab-override-group-pill" class="inspector-section-header-badge prefab-override-pill hidden" text="Not in prefab" />
+</UIElement>
