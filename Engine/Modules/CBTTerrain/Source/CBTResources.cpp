@@ -700,6 +700,13 @@ bool CBTResources::CreateNormalChain(uint32_t width, uint32_t height, uint32_t m
     }
     // Shared compute storage descriptors and sampled draws both require GENERAL.
     auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
+    if (!cl)
+    {
+        for (const auto view : views)
+            m_Device->DestroyTextureView(view);
+        m_Device->DestroyTexture(texture);
+        return false;
+    }
     cl->Begin();
     cl->Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::Undefined, ResourceState::UnorderedAccess, 0u, mips));
     cl->End();

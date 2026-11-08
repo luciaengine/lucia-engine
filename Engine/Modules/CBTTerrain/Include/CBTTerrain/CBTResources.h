@@ -116,16 +116,18 @@ class CBTResources
     Rendering::BufferHandle GetHeightChainBuffer() const { return m_HeightChain; }
     uint32_t GetHeightChainWords() const { return m_HeightChainWords; }
     // Grow to CBTHeightChainWords for the lattice; never shrink. A new buffer has a zeroed header.
-    // Allocation failure or an unsupported heap preserves the old binding and cached-corner draw.
+    // Allocation or completion failure, or an unsupported heap, preserves the old binding.
     bool ProvisionHeightChainWords(uint32_t words);
     // The far-field normal chain (binding 25 on the compute set as one storage view per mip,
     // cbt_NormalChain on the graphics set 2). A 1x1 placeholder until ProvisionNormalChain creates it for
     // a lattice; storage and sampled descriptors share GENERAL. Wide arm only, like the height chain.
     Rendering::TextureHandle GetNormalChainTexture() const { return m_NormalChain; }
     uint32_t GetNormalChainMips() const { return m_NormalChainMips; }
+    /// True when the allocated normal chain matches this source lattice.
     bool HasNormalChainFor(uint32_t samplesX, uint32_t samplesZ) const
     {
-        return m_NormalChain.IsValid() && m_NormalChainLattice == (samplesX | (samplesZ << 16u));
+        return samplesX >= 2u && samplesZ >= 2u && samplesX <= 0xFFFFu && samplesZ <= 0xFFFFu &&
+               m_NormalChain.IsValid() && m_NormalChainLattice == (samplesX | (samplesZ << 16u));
     }
     // Creates the chain for a lattice of `samplesX` x `samplesZ` (CBTNormalChainTexels / Mips), replacing
     // one made for another lattice; true when it matches. False when the arm builds no chain or the
