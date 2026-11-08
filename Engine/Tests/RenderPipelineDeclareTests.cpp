@@ -18927,6 +18927,7 @@ CbtNormalDrawFrame RenderCbtNormalDrawFrame(TerrainFixture& fixture, RenderPipel
     sun.directionWS[2] = 0.0f;
     sun.intensity = 1.0f;
     fixture.Rs->SubmitLight(0u, sun);
+    fixture.Rs->WriteViewLightBuffer(view);
     const std::vector<ViewTargetsRG> targets{{view, color, depth, {}}};
     const std::vector<Rendering::ViewDesc> views(fixture.Rs->Views().GetViews().begin(), fixture.Rs->Views().GetViews().end());
     pipeline.Declare(frame, targets, views);
@@ -19067,6 +19068,8 @@ TEST(RenderPipelineDeclareTests, CbtForwardNormalChainChangesColorWithoutChangin
     EXPECT_EQ(restored.Color, enabled.Color);
     size_t covered = 0;
     size_t changed = 0;
+    int maximumChannelDelta = 0;
+    int maximumCoveredColor = 0;
     for (size_t pixel = 0; pixel < enabled.Depth.size(); ++pixel)
     {
         if (enabled.Depth[pixel] == 0.0f)
@@ -19074,11 +19077,20 @@ TEST(RenderPipelineDeclareTests, CbtForwardNormalChainChangesColorWithoutChangin
         ++covered;
         int difference = 0;
         for (size_t channel = 0; channel < 3u; ++channel)
-            difference += std::abs(int(enabled.Color[pixel * 4u + channel]) - int(disabled.Color[pixel * 4u + channel]));
+        {
+            const int delta = std::abs(int(enabled.Color[pixel * 4u + channel]) - int(disabled.Color[pixel * 4u + channel]));
+            difference += delta;
+            maximumChannelDelta = std::max(maximumChannelDelta, delta);
+            maximumCoveredColor = std::max({maximumCoveredColor, int(enabled.Color[pixel * 4u + channel]),
+                                            int(disabled.Color[pixel * 4u + channel])});
+        }
         changed += difference >= 6 ? 1u : 0u;
     }
     EXPECT_GT(covered, 32u);
     EXPECT_GT(changed, covered / 10u);
+    EXPECT_LT(maximumCoveredColor, 255) << "the colour witness must not saturate";
+    RecordProperty("maximum_channel_delta", maximumChannelDelta);
+    RecordProperty("maximum_covered_color", maximumCoveredColor);
     RecordProperty("covered_pixels", int(covered));
     RecordProperty("normal_changed_pixels", int(changed));
     RecordProperty("minimum_lambda_x1000", int(minimumLambda * 1000.0f));
