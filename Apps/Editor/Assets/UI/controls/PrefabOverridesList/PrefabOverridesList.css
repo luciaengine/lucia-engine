@@ -107,7 +107,7 @@
 }
 
 .prefab-override-icon-field {
-	background-image: url("editor:Icons/draw_curve.svg");
+	background-image: url("editor:Icons/draw_curve.png");
 }
 
 .prefab-override-icon-added {
@@ -189,7 +189,7 @@
 }
 
 .prefab-override-action-icon-revert {
-	background-image: url("editor:Icons/ResetReload.svg");
+	background-image: url("editor:Icons/ResetReload.png");
 }
 
 /* Discard keeps the row's height: a row is as tall as the icon buttons. */
