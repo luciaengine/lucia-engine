@@ -1564,10 +1564,10 @@ static bool ValidateEntityId(const std::string& id, int headerLine, bool inPrefa
     {
         if (outError)
             *outError = "Entity id \"" + id + "\" at line " + std::to_string(headerLine) + " is " +
-                        std::to_string(id.size()) + " characters. An id in a prefab file is at most " +
+                        std::to_string(id.size()) + " bytes. An id in a prefab file is at most " +
                         std::to_string(kMaxPrefabIdLength) +
-                        " characters, so a long scene identity keeps it whole. Shorten the id to " +
-                        std::to_string(kMaxPrefabIdLength) + " characters.";
+                        " bytes, so a long scene identity keeps it whole. Shorten the id to " +
+                        std::to_string(kMaxPrefabIdLength) + " bytes.";
         if (outErrorLine)
             *outErrorLine = headerLine;
         return false;

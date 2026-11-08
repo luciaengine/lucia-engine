@@ -112,6 +112,6 @@ Name.value = "Moss"
 
 ## Scene identity
 
-Each entity of an instance has a scene identity: the instance id and the entity's address, joined by `.` (`crate2.lid`, `house_01.porch.lamp`). It is unique in the scene, so two instances of one prefab give their entities two identities, and what keys on an identity (the navigation bake's files, the level of detail bake's members) tells them apart. An identity longer than 63 characters is written as 16 hex digits of its hash, `~` and the entity's own id (`3f9a1c77e02b5d41~lamp`); two that hash alike are refused, and the fix is to shorten an id in one of the chains.
+Each entity of an instance has a scene identity: the instance id and the entity's address, joined by `.` (`crate2.lid`, `house_01.porch.lamp`). It is unique in the scene, so two instances of one prefab give their entities two identities, and what keys on an identity (the navigation bake's files, the level of detail bake's members) tells them apart. An identity longer than 63 bytes is written as 16 hex digits of its hash, `~` and the entity's own id (`3f9a1c77e02b5d41~lamp`); two that hash alike are refused, and the fix is to shorten an id in one of the chains.
 
 An entity dragged out of an instance, or from one instance into another, is saved as an entity added on the instance it is under, with a scene id of its own from its name.

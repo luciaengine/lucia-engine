@@ -113,7 +113,7 @@ static ChildrenByParent CollectChildrenByParent(ECS::World& world)
     return childrenOf;
 }
 
-// A new id in the prefab file from `preferred`, at most kMaxPrefabIdLength characters.
+// A new id in the prefab file from `preferred`, at most kMaxPrefabIdLength bytes.
 static std::string AllocatePrefabId(std::string preferred, std::unordered_set<std::string>& used)
 {
     if (preferred.size() > kMaxPrefabIdLength)
