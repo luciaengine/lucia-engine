@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 
 #include "Rendering/Core/CommandList.h"  // IndexType
 #include "Rendering/Core/Device.h"
@@ -42,6 +43,16 @@ struct BlasTriangleGeometry
     uint32_t FirstIndex        = 0;
     uint32_t IndexCount        = 0;
     IndexType IndexKind        = IndexType::Uint16;
+    // Updates require fixed indices, topology and active primitive membership.
+    bool AllowUpdate          = false;
+};
+
+struct BlasBuildRequest
+{
+    AccelerationStructureHandle Handle;
+    BlasTriangleGeometry Geometry;
+    // The caller confirms the initial build executed. Backends may rebuild.
+    bool PreferUpdate = false;
 };
 
 // CPU-written TLAS instance record, 64 bytes, laid out so a backend can hand it
@@ -110,6 +121,15 @@ class IAccelerationStructureBackend
     virtual void RecordBlasBuild(CommandList& cmd,
                                  AccelerationStructureHandle blas,
                                  const BlasTriangleGeometry& geometry) = 0;
+
+    // Requests name distinct BLASes with disjoint reserved scratch regions.
+    // PreferUpdate requires unchanged topology and an exec-confirmed initial
+    // build. Backends may use full builds for every request.
+    virtual void RecordBlasBuildBatch(CommandList& cmd, std::span<const BlasBuildRequest> builds)
+    {
+        for (const auto& build : builds)
+            RecordBlasBuild(cmd, build.Handle, build.Geometry);
+    }
 
     virtual uint64_t GetBlasDeviceAddress(AccelerationStructureHandle blas) const = 0;
 

@@ -28,6 +28,7 @@ set(EDITOR_TEST_SOURCES
     TopToolbarIconTests.cpp
     ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests/UITestShaderSetup.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/LogPanel.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/LogPanel/LogChannelPopover.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/LogView.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/BacktraceFrameView.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/LogToolbarActions.cpp
@@ -2119,6 +2120,9 @@ endforeach()
 
 set_property(TARGET EditorTests APPEND PROPERTY LINK_DEPENDS
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/LogPanel.css"
+    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/LogPanel/LogChannelPopover.css"
+    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/LogPanel/LogChannelPopover.uxml"
+    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/LogPanel/LogChannelRow.uxml"
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/LogToolbarActions.uxml"
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Icons/copy.svg"
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Icons/trash.svg"

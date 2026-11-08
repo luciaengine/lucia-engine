@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include "Logger/Logger.h"
+#include "LogChannelTable.h"
 #include "Logger/LogSink.h"
 #include <algorithm>
 #include <atomic>
@@ -74,6 +75,21 @@ bool TryLockUntil(std::mutex& mutex, std::chrono::steady_clock::time_point deadl
 }
 } // namespace
 
+Log::LoggerState::LoggerState()
+    : Channels(std::make_unique<LogChannelTable>())
+{
+}
+
+Log::LoggerState::~LoggerState()
+{
+    if (DrainThread.joinable())
+    {
+        DrainRunning.store(false, std::memory_order_release);
+        QueueCV.notify_one();
+        DrainThread.join();
+    }
+}
+
 Log::LoggerState& Log::GetState()
 {
     if (s_RedirectedState)
@@ -118,7 +134,7 @@ void Log::Initialize(const Config& config)
             state.Sinks.push_back(MakeUnique<ConsoleSink>(consoleConfig));
         }
 
-        state.m_EffectiveMinLevel.store(state.m_Config.GlobalMinLevel, std::memory_order_relaxed);
+        state.Channels->SetGlobalLevel(state.m_Config.GlobalMinLevel);
     }
 
     // Start drain thread. Threadless wasm cannot: std::thread construction
@@ -222,7 +238,7 @@ void Log::Shutdown()
     }
 
     state.Initialized.store(false, std::memory_order_release);
-    state.m_EffectiveMinLevel.store(LogLevel::Off, std::memory_order_relaxed);
+    state.Channels->SetGlobalLevel(LogLevel::Off);
 }
 
 void Log::AddSink(UniquePtr<LogSink> sink)
@@ -236,7 +252,7 @@ void Log::AddSink(UniquePtr<LogSink> sink)
     state.Sinks.push_back(std::move(sink));
 
     LogLevel effective = state.m_Config.GlobalMinLevel;
-    state.m_EffectiveMinLevel.store(effective, std::memory_order_relaxed);
+    state.Channels->SetGlobalLevel(effective);
 }
 
 void Log::ClearSinks()
@@ -264,7 +280,7 @@ void Log::ClearSinks()
     }
 
     state.Sinks.clear();
-    state.m_EffectiveMinLevel.store(LogLevel::Off, std::memory_order_relaxed);
+    state.Channels->SetGlobalLevel(LogLevel::Off);
 }
 
 void Log::SetLogLevel(LogLevel level)
@@ -273,12 +289,54 @@ void Log::SetLogLevel(LogLevel level)
     std::lock_guard<std::mutex> lock(state.Mutex);
 
     state.m_Config.GlobalMinLevel = level;
-    state.m_EffectiveMinLevel.store(level, std::memory_order_relaxed);
+    state.Channels->SetGlobalLevel(level);
 }
 
 LogLevel Log::GetLogLevel()
 {
-    return GetState().m_EffectiveMinLevel.load(std::memory_order_relaxed);
+    return GetState().Channels->GetGlobalLevel();
+}
+
+bool Log::ShouldLog(LogLevel level)
+{
+    return Enabled(CoreLog(), level);
+}
+
+LogChannel RegisterChannel(std::string_view name, LogLevel defaultLevel)
+{
+    auto& channels = *Log::GetState().Channels;
+    const auto index = channels.Register(name, defaultLevel);
+    return {channels.GetName(index), channels.GetDefaultLevel(index), index};
+}
+
+bool Enabled(const LogChannel& channel, LogLevel level)
+{
+    return Log::GetState().Channels->Enabled(channel.Index, level);
+}
+
+std::uint16_t Log::GetChannelCount()
+{
+    return GetState().Channels->GetCount();
+}
+
+std::string_view Log::GetChannelName(std::uint16_t channel)
+{
+    return GetState().Channels->GetName(channel);
+}
+
+std::optional<LogLevel> Log::GetChannelSetting(std::uint16_t channel)
+{
+    return GetState().Channels->GetSetting(channel);
+}
+
+LogLevel Log::GetChannelLevelWithoutSetting(std::uint16_t channel)
+{
+    return GetState().Channels->GetLevelWithoutSetting(channel);
+}
+
+void Log::SetChannelLevel(std::uint16_t channel, std::optional<LogLevel> level)
+{
+    GetState().Channels->SetSetting(channel, level);
 }
 
 // ========================================
@@ -312,6 +370,18 @@ void FormatRecordMessage(LogMessage& record, std::string_view format, std::forma
 #endif
 }
 } // namespace
+
+void Enqueue(const LogChannel& channel, LogLevel level, const char* file, int line, const char* function,
+             std::string_view format, std::format_args args)
+{
+    auto record = Log::MakeOwnedRecord(level, file, line, function);
+    record.Channel = channel.Index;
+    FormatRecordMessage(record, format, args);
+    if (level == LogLevel::Critical)
+        Log::DispatchCritical(record);
+    else
+        Log::PushEntry(std::move(record));
+}
 
 void Log::EnqueueFormatted(LogLevel level, std::string_view format, std::format_args args,
                           const char* file, int line, const char* function)
@@ -387,56 +457,39 @@ void Log::EnqueueStringWithSource(LogLevel level, std::string_view message,
 
 void Log::CriticalImpl(std::string_view message)
 {
-    auto& state = GetState();
-
-    if (!state.Initialized.load(std::memory_order_acquire))
-    {
-        std::cout << "[CRITICAL] " << message << '\n';
-        return;
-    }
-
-    LogMessage msg(LogLevel::Critical, String(message.data(), message.size()));
-    msg.SetThreadId(GetCachedThreadId());
-    MaybeAttachBacktrace(msg);
-
-    // Re-entrancy guard: drain thread already holds state.Mutex during dispatch.
-    // Acquiring it again would deadlock (non-recursive mutex).
-    if (std::this_thread::get_id() == state.DrainThreadId)
-    {
-        DispatchToSinks(msg);
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(state.Mutex);
-    DispatchToSinks(msg);
+    CriticalImplWithSource(message, {}, 0, {});
 }
 
 void Log::CriticalImplWithSource(std::string_view message,
                                   std::string_view file, int line, std::string_view function)
 {
-    auto& state = GetState();
+    LogMessage record(LogLevel::Critical, String(message.data(), message.size()));
+    record.SetThreadId(GetCachedThreadId());
+    record.SourceFile = file;
+    record.SourceLine = line;
+    record.Function = function;
+    DispatchCritical(record);
+}
 
+void Log::DispatchCritical(LogMessage& record)
+{
+    auto& state = GetState();
     if (!state.Initialized.load(std::memory_order_acquire))
     {
-        std::cout << "[CRITICAL] " << message << '\n';
+        std::cout << "[CRITICAL] " << record.Message << '\n';
         return;
     }
 
-    LogMessage msg(LogLevel::Critical, String(message.data(), message.size()));
-    msg.SetThreadId(GetCachedThreadId());
-    msg.SourceFile = file;
-    msg.SourceLine = line;
-    msg.Function = function;
-    MaybeAttachBacktrace(msg);
-
+    MaybeAttachBacktrace(record);
+    // The drain thread already holds the sink mutex during dispatch.
     if (std::this_thread::get_id() == state.DrainThreadId)
     {
-        DispatchToSinks(msg);
+        DispatchToSinks(record);
         return;
     }
 
     std::lock_guard<std::mutex> lock(state.Mutex);
-    DispatchToSinks(msg);
+    DispatchToSinks(record);
 }
 
 // ========================================

@@ -462,11 +462,6 @@ class PipelineVariantCache
     void QueueConcreteWarm(const Material& material, GraphicsPipelineId id,
                            const Rendering::PipelineFormatKey& formatKey);
 
-    // Rate-limited (power-of-two) warning for a dual-cold serve — fires per draw
-    // per frame during a backend-build window, so the raw line would flood.
-    void WarnColdServe(const Material& material, GraphicsPipelineId pipelineId,
-                       const Rendering::PipelineFormatKey& formatKey);
-
     // Publish-gate: a queued variant miss (enqueued during preparation, drained
     // by SubmitPendingVariantCompiles). Carries only the cache key — which now
     // includes the depth-only raster bits — the rest of the compile inputs are
@@ -616,12 +611,6 @@ class PipelineVariantCache
     // work that used to block the record thread on a cold miss). Bumped on the
     // worker/inline compile path; read for diagnostics like the cache-size getters.
     std::atomic<uint64_t> m_AsyncVariantCompilesTotal{0};
-
-    // Occurrence count for the dual-cold serve warning (neither the current nor
-    // the previous pipeline warm for the active pass). Fires per draw per frame
-    // for the whole backend-build window, so the log line is rate-limited to
-    // powers of two of this count.
-    std::atomic<uint64_t> m_ColdServeWarnCount{0};
 
     // Variant compiles currently dispatched-but-not-finished. Incremented before
     // each submit, decremented on every Run* exit (via ReleaseVariantCompile). The
