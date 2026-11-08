@@ -247,10 +247,11 @@ class CBTHeightChain : public ::testing::Test
     }
     void TearDown() override
     {
+        if (m_Device)
+            m_Device->WaitForIdle();
         m_KernelSet.Shutdown();
         if (!m_Device)
             return;
-        m_Device->WaitForIdle();
         const auto validation = m_Device->GetValidationStats();
         if (validation.Enabled)
         {
