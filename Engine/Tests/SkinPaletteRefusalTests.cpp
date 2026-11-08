@@ -130,6 +130,7 @@ class SkinPaletteRefusalTest : public ::testing::Test
     // ages last frame's offsets — all before any producer runs.
     void BeginPaletteFrame(uint32_t frameIndex)
     {
+        m_RenderServices.GetGPUAnimationDataStore().BeginFrame(frameIndex);
         m_RenderServices.GetPerFrameWritePool().BeginFrame(frameIndex);
         m_RenderServices.GetSkinPaletteAtlas().BeginFrame(
             m_RenderServices.GetPerFrameWritePool());
