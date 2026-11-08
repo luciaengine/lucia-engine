@@ -520,11 +520,8 @@ float GE_SamplePointShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 
     const int taps = 12;
     for (int i = 0; i < taps; ++i)
     {
-        // Constant radius in FACE UV, which is already tile-normalized — the
-        // atlas mapping below scales it by tileScale, so no separate
-        // tile-fraction correction is needed. Being tile-texel-relative was the
-        // defect: tileRes moves at runtime with the coverage tier, so the blur
-        // changed size mid-scene as a light dollied across a tier boundary.
+        // Face UV keeps the angular filter radius constant across coverage tiers.
+        // The atlas mapping applies the tile scale.
         vec2 offset = GE_VogelDisk(i, taps, sc) * kLocalFilterRadiusUV;
         vec2 tapUV = faceUV + offset;
         int tapFace = face;
