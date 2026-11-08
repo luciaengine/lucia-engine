@@ -1,7 +1,5 @@
-<!-- PrefabOverridesList (Apps/Editor/Source/Prefabs/PrefabOverridesList/PrefabOverridesList.h): the title and the prefab on
-     one line, the groups (PrefabOverrideGroup.uxml) and rows (PrefabOverrideRow.uxml) in the scroll, a dim line when
-     the instance has no override, and at the foot a note, Revert all and Apply all. PrefabOverridesList.cpp sets the
-     texts; the ids are the contract with it. -->
+<!-- The scroll area holds override groups and rows; the footer holds the note and batch actions.
+     IDs bind PrefabOverridesList behavior to this layout. -->
 <UIElement class="popover-panel prefab-overrides">
   <UIElement class="prefab-overrides-header">
     <Label id="prefab-overrides-title" class="prefab-overrides-title" />

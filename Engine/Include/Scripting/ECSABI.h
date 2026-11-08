@@ -19,29 +19,9 @@ extern "C" {
 #define GE_ECS_ABI_VERSION_MAJOR(v)             (((v) >> 16) & 0xFFFFu)
 #define GE_ECS_ABI_VERSION_MINOR(v)             ((v) & 0xFFFFu)
 
-// Current ECS ABI version exposed via GE_ECS_GetInterface.
-// v2.0: legacy per-entity query family (QueryCreate/QueryDestroy/QueryNext)
-// deleted — CachedQuery chunk iteration is the sole query surface — and
-// component type ids widened to the full 64-bit ComponentTypeId (consteval
-// Hash64 identity; the former uint32 fields truncated it and could not
-// round-trip).
-// v2.1 (minor, appended): RegisterBlobComponentWithSchema — a blob (C#)
-// component registers a reflected field table alongside its name+size, making
-// it first-class for scene save/load, the inspector, and hot-reload layout
-// migration through the same ComponentFieldRegistry machinery native
-// components use.
-// v2.2 (minor, appended): GetComponentDisabledTypeId — the type id of the tag
-// that switches a component off, so managed code enables and disables
-// components through the deferred add/remove commands. The cached query
-// follows the native enable model: it excludes disabled entities and every
-// required component that is switched off, and ArchetypeHasComponent reports
-// a switched-off optional component as absent.
-// v2.3 (minor, appended): SetEntityEnabled — switches an entity on or off
-// through World::SetEntityEnabledImmediate, so both activity tags move together
-// and an entity switched back on under a parent that is on returns to queries
-// at once; queued while structural changes are deferred.
-// v2.4 (minor, appended): spawn and despawn resident prefabs. The previous
-// GE_ECS_FieldDesc reserved word carries an optional asset category.
+// The ECS ABI uses append-only function tables; clients validate the returned size.
+// The table exposes chunk queries, reflected schemas, activity switches and resident prefab operations.
+// Asset GUID fields carry an optional category in GE_ECS_FieldDesc.
 static const uint32_t GE_ECS_ABI_VERSION_CURRENT = GE_ECS_ABI_VERSION_ENCODE(2u, 4u);
 static const uint16_t GE_ECS_ASSET_CATEGORY_PREFAB = 46u;
 

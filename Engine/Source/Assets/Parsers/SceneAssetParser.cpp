@@ -134,11 +134,8 @@ void EmitAssetRefEdges(const DepEdge& base, std::string_view guidStr, std::strin
     }
 }
 
-// The section a body line belongs to, for its field locator: "entities[<id>]" under an
-// `[entity id=...]` header, "prefabs[<id>]" under a `[prefab id=... source=...]`
-// instance header, and similarly for legacy blueprints. Empty under any
-// other header ([scene], [resource], [subscene], ...), whose lines are not component
-// fields. A section header is a trimmed line in brackets, as the scene reader reads it.
+// Return the entity, prefab or blueprint section prefix used in field locators.
+// Return empty for headers whose body lines are not component fields.
 bool TryParseSectionLocator(std::string_view line, std::string& outLocator)
 {
     const std::string_view trimmed = Scene::TrimSceneWhitespace(line);
@@ -214,10 +211,8 @@ std::string_view WithoutOverrideAddress(std::string_view text)
     return slash == std::string_view::npos ? text : Scene::TrimSceneWhitespace(text.substr(slash + 1));
 }
 
-// The component a section line belongs to, as the scene reader reads it: `Component` of
-// a `Component.field = value` line, of a bare `Component` line, and of a prefab override's
-// `-Component` removal or `+Component` addition, each with or without an `address/` in front.
-// Empty for a header, a comment, a blank line, a `-entity address` removal, or anything else.
+// Read the component name from a field, component declaration or addressed override operation.
+// Return empty for headers, comments, blank lines and entity removals.
 std::string_view LineComponent(std::string_view line)
 {
     std::string_view trimmed = Scene::TrimSceneWhitespace(line);
@@ -245,10 +240,8 @@ bool IsMarkupOwnedComponent(std::string_view component)
                        [component](std::string_view owned) { return EqualsIgnoreCase(component, owned); });
 }
 
-// Appends the lines [first, last) of one section to `out`, without the lines a game
-// export drops. Under an [entity] or [prefab] instance header (`componentSection`)
-// those are the editor-only components' lines and, when the section carries a
-// `Markup` line, the mark-up's own Name and Spline lines; any other section is kept.
+// Append this section without editor-only component lines.
+// Remove Name and Spline data from markup entities; preserve other sections unchanged.
 void AppendExportedSection(const std::vector<std::string_view>& lines, size_t first, size_t last,
                            bool componentSection,
                            const std::function<bool(std::string_view)>& isEditorOnly, std::string& out)

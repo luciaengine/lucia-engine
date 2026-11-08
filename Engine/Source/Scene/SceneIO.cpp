@@ -1880,14 +1880,8 @@ bool ValidateDocument(const SceneDoc& doc, std::string* outError, int* outErrorL
         return doc.resources.find(id) != doc.resources.end() || doc.embeds.find(id) != doc.embeds.end();
     };
 
-    // A value this parser cannot read is only worth aborting the load for where nothing downstream
-    // can report it. Entity and prefab-instance component properties are applied tolerantly: the
-    // apply records the failure in the census and keeps the authored text for the re-save, which is
-    // strictly better than losing the whole scene over one line. Embed properties have no such
-    // path, so a syntax error there still stops the load rather than failing later somewhere worse.
-    //
-    // Dangling entity and resource references stay fatal either way: those are structural claims
-    // about the document, not values a component is free to decline.
+    // Preserve unreadable entity and prefab property text as reported degradation.
+    // Embed-property syntax and dangling entity or resource references remain fatal structural errors.
     enum class BadValueSyntax
     {
         Fatal,
@@ -2322,11 +2316,9 @@ std::filesystem::path ResolveResourcePath(const SceneLoadContext& context,
     return p;
 }
 
-// A prefab or subscene instance whose [resource] file the load cannot read. The error belongs to
-// `ownerFile` at the instance's line, which is where the load stopped. The message says which of the
-// three causes it is, names the path the loader searched (relative to `projectRoot` when it lies
-// inside it), names both lines involved (the instance and the [resource] that declares the path),
-// and says what to change. The resolved absolute path goes to the Debug log only.
+// Report an unreadable instance resource at its owner's instance line.
+// Name the cause, searched project-relative path, resource declaration and repair action.
+// Keep resolved absolute paths in the Debug log.
 void ReportUnreadableResource(std::string_view kind, const SceneDoc::Resource& r,
                               const std::filesystem::path& resolvedPath,
                               const std::filesystem::path& projectRoot,
@@ -4345,22 +4337,15 @@ bool SaveSceneToFile(ECS::World& world,
     std::vector<SubsceneRoot> subsceneRoots;
     std::unordered_set<ECS::EntityId> excluded; // instance roots and members, subscene roots and children, runtime-only entities
 
-    // Runtime-only entities (HLOD proxies, spline placement pieces, terrain collider
-    // tiles) are engine-created and reconstructed at runtime; they must never be written
-    // to the scene, mirroring the prefab/subscene root exclusion below. Both emission
-    // arms below consult `excluded`, so this holds whatever the preserve-* options say.
+    // Exclude engine-created runtime entities from both emission paths, including preserve modes.
     for (auto h : entities)
     {
         if (world.HasComponent<Components::RuntimeOnlyEntity>(h))
             excluded.insert(h.id);
     }
 
-    // An entity parented to a runtime-only one would emit a parent= naming no block
-    // in the file, and the loader hard-rejects a missing parent — a scene that fails
-    // to open, silently. Refuse the save and name the fix, as the instanced-parent
-    // cases do. Keyed on the tag rather than on `excluded`, which also holds
-    // prefab and subscene roots: those ARE written, as their own sections, and
-    // parenting under one is legal.
+    // Refuse parent links to runtime-only entities, which have no serialized section.
+    // Prefab and subscene roots do have sections and remain valid parents.
     const auto RuntimeOnlyParentOf = [&world](ECS::EntityHandle h) -> ECS::EntityHandle
     {
         const auto* p = world.GetComponent<Components::Parent>(h);
