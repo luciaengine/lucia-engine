@@ -101,7 +101,7 @@ const std::string& InspectorSection::AssignHeaderIconId(const std::string& id)
     return id;
 }
 
-void InspectorSection::SetHeaderBadge(const std::string& text, const std::string& tooltip)
+void InspectorSection::SetHeaderBadge(const std::string& text, const std::string& tooltip, BadgeKind kind)
 {
     if (!m_HeaderRow)
         return;
@@ -129,6 +129,10 @@ void InspectorSection::SetHeaderBadge(const std::string& text, const std::string
 
     m_HeaderBadge->SetText(text);
     m_HeaderBadge->SetTooltip(tooltip);
+    if (kind == BadgeKind::Override)
+        m_HeaderBadge->AddClass("inspector-section-header-badge-override");
+    else
+        m_HeaderBadge->RemoveClass("inspector-section-header-badge-override");
     if (text.empty())
     {
         m_HeaderBadge->AddClass("hidden");
@@ -289,6 +293,29 @@ void InspectorSection::SetShowEnabledToggle(bool show)
     if (!show)
         m_EnabledTogglePlaceholder = false;
     RefreshEnabledDotPresentation();
+}
+
+void InspectorSection::SetOverridden(bool overridden)
+{
+    if (!m_HeaderRow)
+        return;
+    if (overridden)
+        m_HeaderRow->AddClass("inspector-section-header-row-overridden");
+    else
+        m_HeaderRow->RemoveClass("inspector-section-header-row-overridden");
+}
+
+void InspectorSection::Fade()
+{
+    AddClass("inspector-section-faded");
+    if (m_Icon)
+        m_Icon->AddClass("inspector-section-icon-faded");
+}
+
+void InspectorSection::HideOptions()
+{
+    if (m_Options)
+        m_Options->AddClass("hidden");
 }
 
 void InspectorSection::SetEnabledTogglePlaceholder(bool placeholder)
@@ -695,7 +722,7 @@ bool InspectorSection::IsPointInHeader(float x, float y) const
 
 bool InspectorSection::IsPointInOptions(float x, float y) const
 {
-    if (!m_Options)
+    if (!m_Options || m_Options->HasClass("hidden"))
         return false;
     float ox = m_Options->GetLayoutX();
     float oy = m_Options->GetLayoutY();

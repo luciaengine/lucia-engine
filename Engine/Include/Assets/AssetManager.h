@@ -1,5 +1,7 @@
 #pragma once
 
+#include <span>
+
 #include "Types/Types.h"
 #include "AssetCore/Asset.h"
 #include "AssetCore/Result.h"
@@ -35,6 +37,7 @@ class AssetManager;
 class AssetBatchCoordinator;
 class AssetIOService;
 class TextureCookWorkers;
+template <typename... Args> class Event;
 
 /**
  * @brief Asset loading result for async operations
@@ -750,6 +753,8 @@ public:
      */
     AssetEventDispatcher& GetEventDispatcher() { return m_EventDispatcher; }
 
+    Event<std::span<const GUID>>& GetFilesChangedEvent();
+
     /// Dispatches an event with all GUIDs redirected to its asset.
     /// Call on the owner thread for AssetReloaded events.
     void DispatchWithRedirectSources(AssetEvent event);
@@ -1157,6 +1162,7 @@ private:
 
     // Event system
     AssetEventDispatcher m_EventDispatcher;
+    UniquePtr<Event<std::span<const GUID>>> m_FilesChanged;
 
     // Job system integration
     JobSystem::WorkStealingThreadPool* m_JobSystem;

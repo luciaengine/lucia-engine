@@ -3,6 +3,9 @@
 #include "ECS/ECS.h"
 
 #include <functional>
+#include <utility>
+#include <vector>
+#include <cstdint>
 #include <string>
 
 namespace GameEngine::ECS
@@ -28,5 +31,10 @@ class UndoRedoService;
 bool CommitEntityComponentsEdit(ECS::World& world, ECS::EntityHandle entity, UndoRedoService* undo,
                                 EditorChangeNotifications* notifications, const std::string& label,
                                 const std::function<bool()>& edit);
+
+using EntityComponentBytes = std::vector<std::pair<ECS::ComponentTypeId, std::vector<std::uint8_t>>>;
+EntityComponentBytes CaptureEntityComponents(const ECS::World& world, ECS::EntityHandle entity);
+void RestoreEntityComponents(ECS::World& world, ECS::EntityHandle entity, const EntityComponentBytes& captured,
+                             EditorChangeNotifications* notifications);
 
 } // namespace GameEngine::Editor

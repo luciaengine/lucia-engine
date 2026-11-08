@@ -186,6 +186,7 @@ class SceneSchemaRegistry
     static std::string_view SchemaTokenForComponentType(ECS::ComponentTypeId typeId);
 
     static std::vector<const ISceneComponentSchema*> GetAllSorted();
+    static std::vector<ECS::ComponentTypeId> GetSavedComponentTypes();
 
     // Save-side reflection fallback: returns a synthesized reflection schema for `typeId` ONLY when
     // the type is reflected AND no hand-written schema serializes it (FindForComponentType is null),

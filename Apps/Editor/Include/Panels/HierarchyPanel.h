@@ -270,6 +270,9 @@ private:
     // One handler per payload type.
     void DropBookmark(const UI::Interaction::DropRequest& request, const Bookmark& bookmark);
     void DropAssetPaths(const UI::Interaction::DropRequest& request, const std::vector<std::filesystem::path>& paths);
+    void CommitDropStep(const std::vector<ECS::EntityHandle>& roots,
+                        const std::vector<UI::Interaction::ItemId>& selectionBefore,
+                        UI::Interaction::ItemId anchorBefore);
     void DropOnlineAssets(const UI::Interaction::DropRequest& request, const Editor::OnlineAssetDragPayload& payload);
     void DropEntities(const UI::Interaction::DropRequest& request, const Editor::HierarchyEntityDragPayload& payload);
 

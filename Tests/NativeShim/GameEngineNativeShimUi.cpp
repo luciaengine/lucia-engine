@@ -1,9 +1,3 @@
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 // A TEST DOUBLE for the game-UI element ABI, not a UI implementation.
 //
 // The managed binding (GameEngine.Scripting.Ui) has bookkeeping of its own worth testing
@@ -855,4 +849,3 @@ GE_API GE_Result GE_CDECL GE_TestUI_ResetTypeLifecycle()
 }
 
 } // extern "C"
-#endif

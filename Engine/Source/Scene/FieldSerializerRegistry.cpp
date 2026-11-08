@@ -291,7 +291,7 @@ struct AssetGuidSerializer final : IFieldSerializer
         std::uint8_t raw[GUID::kSize];
         std::memcpy(raw, f, GUID::kSize);
         const GUID guid = GUID::FromBytes(raw);
-        if (guid.IsNull())
+        if (guid.IsNull() && !ctx.WriteEveryField)
             return {}; // omit the line for an unset reference
         return FormatAssetReferenceForSave(ctx, guid, "");
     }
@@ -322,7 +322,10 @@ struct EntityHandleSerializer final : IFieldSerializer
 {
     std::string Write(const std::byte* f, const FieldInfo&, const SceneSaveContext& ctx) const override
     {
-        return FormatEntityReferenceForSave(ctx, ReadPod<ECS::EntityHandle>(f));
+        const auto handle = ReadPod<ECS::EntityHandle>(f);
+        if (!handle.IsValid() && ctx.WriteEveryField)
+            return FormatQuoted({});
+        return FormatEntityReferenceForSave(ctx, handle);
     }
     bool Read(std::string_view t, std::byte* f, const FieldInfo&, const SceneLoadContext& ctx, std::string* e) const override
     {

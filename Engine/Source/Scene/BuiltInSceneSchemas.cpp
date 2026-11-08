@@ -624,7 +624,7 @@ void MeshRendererSchema::Serialize(const ECS::World& world, ECS::EntityHandle en
                 outLines.push_back(std::string("MeshRenderer.meshAsset = ") +
                                    FormatAssetReferenceForSave(ctx, meshGuid, ""));
                 // Submesh index within the model (0 for single-mesh models).
-                if (mr->meshId != 0)
+                if (mr->meshId != 0 || ctx.WriteEveryField)
                     outLines.push_back(std::string("MeshRenderer.meshId = ") + std::to_string(mr->meshId));
                 meshSerialized = true;
             }
@@ -633,6 +633,8 @@ void MeshRendererSchema::Serialize(const ECS::World& world, ECS::EntityHandle en
 
     if (!meshSerialized)
     {
+        if (ctx.WriteEveryField)
+            outLines.push_back("MeshRenderer.meshAsset = 0");
         // Legacy fallback: serialize numeric meshId
         outLines.push_back(std::string("MeshRenderer.meshId = ") + std::to_string(mr->meshId));
     }
@@ -663,11 +665,16 @@ void MeshRendererSchema::Serialize(const ECS::World& world, ECS::EntityHandle en
         }
     }
 
+    else if (ctx.WriteEveryField)
+    {
+        outLines.push_back("MeshRenderer.meshNameHash = 0");
+    }
+
     // Material: serialize the AssetRef path+guid pair via FormatAssetReferenceForSave,
     // which queries the active save context's resolver to heal stale data.
     {
         const GUID g = mr->materialAssetGuid.ToGuid();
-        if (!g.IsNull())
+        if (!g.IsNull() || ctx.WriteEveryField)
         {
             outLines.push_back(std::string("MeshRenderer.material = ") +
                                FormatAssetReferenceForSave(ctx, g, ""));
@@ -2561,6 +2568,8 @@ class SkyEnvironmentSchema final : public ISceneComponentSchema
         outLines.push_back(std::string("SkyEnvironment.GroundHazeStrength = ") + FormatFloat(c->GroundHazeStrength));
         if (std::string sunLightRef = FormatEntityReferenceForSave(ctx, c->SunLight); !sunLightRef.empty())
             outLines.push_back(std::string("SkyEnvironment.SunLight = ") + sunLightRef);
+        else if (!c->SunLight.IsValid() && ctx.WriteEveryField)
+            outLines.push_back("SkyEnvironment.SunLight = \"\"");
         outLines.push_back(std::string("SkyEnvironment.TimeOfDayDrivesSunLight = ") + (c->TimeOfDayDrivesSunLight ? "true" : "false"));
         outLines.push_back(std::string("SkyEnvironment.DriveSunColor = ") + (c->DriveSunColor ? "true" : "false"));
         outLines.push_back(std::string("SkyEnvironment.SunIlluminanceSource = ") +
@@ -3944,9 +3953,9 @@ class SkyboxSchema final : public ISceneComponentSchema
         outLines.push_back(std::string("Skybox.IblIntensity = ") + FormatFloat(c->IblIntensity));
         outLines.push_back(std::string("Skybox.IblLowerHemisphereDarkness = ") + FormatFloat(c->IblLowerHemisphereDarkness));
         outLines.push_back(std::string("Skybox.RotationDegrees = ") + FormatFloat(c->RotationDegrees));
-        if (c->Resolution[0] != '\0')
+        if (c->Resolution[0] != '\0' || ctx.WriteEveryField)
             outLines.push_back(std::string("Skybox.Resolution = ") + FormatQuoted(c->GetResolution()));
-        if (c->SourceSlug[0] != '\0')
+        if (c->SourceSlug[0] != '\0' || ctx.WriteEveryField)
             outLines.push_back(std::string("Skybox.SourceSlug = ") + FormatQuoted(c->GetSourceSlug()));
         // Single canonical AssetRef line. The save context's resolver heals
         // stale/missing components — see FormatAssetReferenceForSave docs.
@@ -3954,7 +3963,7 @@ class SkyboxSchema final : public ISceneComponentSchema
         // load, but new saves emit only the consolidated property.
         const bool hasGuid = c->HDRIAssetGuid[0] != '\0';
         const bool hasPath = c->HDRIPath[0] != '\0';
-        if (hasGuid || hasPath)
+        if (hasGuid || hasPath || ctx.WriteEveryField)
         {
             GUID g = GUID::Null();
             if (hasGuid)
@@ -5108,26 +5117,26 @@ class AnimatorSchema final : public ISceneComponentSchema
                 outLines.push_back("Animator.clipSourceModelGuid = " + FormatAssetReferenceForSave(ctx, c->clipSourceModelGuid.ToGuid(), ""));
             outLines.push_back("Animator.clipSourceAnimationIndex = " + std::to_string(c->clipSourceAnimationIndex));
         }
-        else if (!c->clipGuid.IsNull())
+        else if (!c->clipGuid.IsNull() || ctx.WriteEveryField)
             outLines.push_back(std::string("Animator.clipGuid = ") +
                                FormatAssetReferenceForSave(ctx, c->clipGuid.ToGuid(), ""));
-        if (!c->libraryGuid.IsNull())
+        if (!c->libraryGuid.IsNull() || ctx.WriteEveryField)
             outLines.push_back(std::string("Animator.libraryGuid = ") +
                                FormatAssetReferenceForSave(ctx, c->libraryGuid.ToGuid(), ""));
-        if (!c->timelineGuid.IsNull())
+        if (!c->timelineGuid.IsNull() || ctx.WriteEveryField)
             outLines.push_back(std::string("Animator.timelineGuid = ") +
                                FormatAssetReferenceForSave(ctx, c->timelineGuid.ToGuid(), ""));
-        if (!c->controllerGuid.IsNull())
+        if (!c->controllerGuid.IsNull() || ctx.WriteEveryField)
             outLines.push_back(std::string("Animator.controllerGuid = ") +
                                FormatAssetReferenceForSave(ctx, c->controllerGuid.ToGuid(), ""));
-        if (!c->graphGuid.IsNull())
+        if (!c->graphGuid.IsNull() || ctx.WriteEveryField)
             outLines.push_back(std::string("Animator.graphGuid = ") +
                                FormatAssetReferenceForSave(ctx, c->graphGuid.ToGuid(), ""));
-        if (!c->AssignedAnimation().empty())
+        if (!c->AssignedAnimation().empty() || ctx.WriteEveryField)
             outLines.push_back(std::string("Animator.assignedAnimation = ") + FormatQuoted(std::string(c->AssignedAnimation())));
-        if (!c->RootNode().empty())
+        if (!c->RootNode().empty() || ctx.WriteEveryField)
             outLines.push_back(std::string("Animator.rootNode = ") + FormatQuoted(std::string(c->RootNode())));
-        if (!c->RootMotionTrack().empty())
+        if (!c->RootMotionTrack().empty() || ctx.WriteEveryField)
             outLines.push_back(std::string("Animator.rootMotionTrack = ") + FormatQuoted(std::string(c->RootMotionTrack())));
         outLines.push_back(std::string("Animator.speedScale = ") + FormatFloat(c->speedScale));
         outLines.push_back(std::string("Animator.blendSeconds = ") + FormatFloat(c->blendSeconds));
@@ -5273,7 +5282,7 @@ class GameLogicGraphRefSchema final : public ISceneComponentSchema
         if (!c)
             return;
 
-        if (!c->graphGuid.IsNull())
+        if (!c->graphGuid.IsNull() || ctx.WriteEveryField)
         {
             outLines.push_back(std::string("GameLogicGraph.graph = ") +
                                FormatAssetReferenceForSave(ctx, c->graphGuid.ToGuid(), ""));
@@ -6322,7 +6331,7 @@ class BloomEffectSchema final : public ISceneComponentSchema
         outLines.push_back(std::string("BloomEffect.lensDirtVignetteColorB = ") + FormatFloat(c->LensDirtVignetteColor[2]));
         outLines.push_back(std::string("BloomEffect.lensDirtIntensity = ") + FormatFloat(c->LensDirtIntensity));
         outLines.push_back(std::string("BloomEffect.lensDirtScatter = ") + FormatFloat(c->LensDirtScatter));
-        if (!c->LensDirtTexture.IsNull())
+        if (!c->LensDirtTexture.IsNull() || ctx.WriteEveryField)
             outLines.push_back(std::string("BloomEffect.lensDirtTexture = ") +
                                FormatAssetReferenceForSave(ctx, c->LensDirtTexture.ToGuid(), ""));
     }
@@ -6575,7 +6584,7 @@ class CubeLutEffectSchema final : public ISceneComponentSchema
         outLines.push_back(std::string("CubeLutEffect.textureFormat = ") + std::to_string(c->TextureFormat));
         // AssetRef stores only a GUID; a cleared slot has nothing to reference, so skip the
         // line rather than emit an empty [] that would round-trip back to a parse error.
-        if (!c->LutAssetGuid.IsNull())
+        if (!c->LutAssetGuid.IsNull() || ctx.WriteEveryField)
             outLines.push_back(std::string("CubeLutEffect.lutAsset = ") +
                                FormatAssetReferenceForSave(ctx, c->LutAssetGuid.ToGuid(), ""));
     }
