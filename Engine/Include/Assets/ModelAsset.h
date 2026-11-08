@@ -16,6 +16,7 @@
 namespace GameEngine {
 
 class AssetManager;
+class ModelBoneLOD;
 struct ModelAssetFbxTestAccess;
 namespace Animation { struct SkeletonData; class AnimationClip; }
 
@@ -413,6 +414,7 @@ public:
     virtual ~ModelAsset();
 
     uint32 GetSkeletonId() const { return m_SkeletonId; }
+    const SharedPtr<const ModelBoneLOD>& GetBoneLOD() const { return m_BoneLOD; }
 
     /**
      * @brief Load model from file
@@ -641,6 +643,8 @@ protected:
     bool AdoptReloadedPayload(Asset& staged) override;
 
 private:
+    void BuildBoneLOD();
+
     friend struct ModelAssetFbxTestAccess;
 
     /**
@@ -761,6 +765,7 @@ private:
     ModelExtras m_Extras;
     uint32 m_TotalVertexCount;
     uint32 m_TotalIndexCount;
+    SharedPtr<const ModelBoneLOD> m_BoneLOD;
     uint32 m_SkeletonId = 0;
     uint64 m_SourceContentHash = 0;
     // Hash of the resolved format-specific parse options that shaped the parsed

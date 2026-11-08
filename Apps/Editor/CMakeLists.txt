@@ -358,6 +358,8 @@ set(EDITOR_SOURCES
 	Source/Inspectors/DeclaredPropertyRowModel.cpp
 	Source/Inspectors/UndeclaredKeysNotice.cpp
 	Source/Inspectors/ModelInspector.cpp
+	Source/Inspectors/BoneLOD/BoneLODTreeProvider.cpp
+	Source/Inspectors/BoneLOD/ModelBoneLODSection.cpp
 	Source/Inspectors/ModelSettingsReload.cpp
 	Source/Inspectors/SubmeshLodProvenance.cpp
 	Source/Inspectors/TextureCoveragePolicyNotice.cpp

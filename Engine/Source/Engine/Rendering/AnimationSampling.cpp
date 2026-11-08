@@ -1,6 +1,7 @@
 #include "Engine/Rendering/AnimationSampling.h"
 
 #include "Animation/AnimationEvent.h"
+#include "Animation/BoneEvaluationPlan.h"
 #include "Animation/PoseToSkinMatrices.h"
 #include "ECSModules/Rendering/ClipStore.h"
 #include "Logger/Logger.h"
@@ -107,9 +108,11 @@ void SampleAnimationPose(const SkeletonData& skeleton,
                          float time,
                          std::vector<float>* outNodeWorldMatrices,
                          std::vector<float>* outCompactSkinMatrices,
-                         PoseSampleWorkspace& ws)
+                         PoseSampleWorkspace& ws,
+                         const Animation::BoneEvaluationPlan* plan)
 {
     const uint32 bones = skeleton.BoneCount;
+    const bool reduced = plan && plan->IsForSkeleton(skeleton);
     if (bones == 0)
     {
         if (outNodeWorldMatrices)
@@ -154,6 +157,8 @@ void SampleAnimationPose(const SkeletonData& skeleton,
         auto sampleChannel = [&](const std::vector<AnimKeyframe>& keys, AnimPath path, AnimInterp interp, uint32 nodeIndex)
         {
             if (nodeIndex >= bones || keys.empty())
+                return;
+            if (reduced && plan->EvaluatedAncestors()[nodeIndex] != nodeIndex)
                 return;
 
             size_t hi = 0;
@@ -320,7 +325,7 @@ void SampleAnimationPose(const SkeletonData& skeleton,
         }
     }
 
-    ::GameEngine::Animation::BuildPoseToSkinMatrices(skeleton, outNodeWorldMatrices, outCompactSkinMatrices, ws);
+    ::GameEngine::Animation::BuildPoseToSkinMatrices(skeleton, outNodeWorldMatrices, outCompactSkinMatrices, ws, plan);
 }
 
 namespace
@@ -453,26 +458,6 @@ void TickAnimatorRef(Components::AnimatorRef& anim, ClipStore& clips, float32 de
         Animation::CollectCrossedEvents(previous->GetEventTrack(), outgoingStep, *events);
     if (clip && anim.BlendAlpha() > 0.0f)
         Animation::CollectCrossedEvents(clip->GetEventTrack(), incomingStep, *events);
-}
-
-void BlendLocalPoses(PoseSampleWorkspace& current,
-                     const PoseSampleWorkspace& previous,
-                     float32 alpha)
-{
-    const uint32 n = static_cast<uint32>(std::min(current.Pose.size(), previous.Pose.size()));
-    const float w = std::clamp(alpha, 0.0f, 1.0f);
-    for (uint32 i = 0; i < n; ++i)
-    {
-        current.Pose[i].t = glm::mix(previous.Pose[i].t, current.Pose[i].t, w);
-        current.Pose[i].r = glm::slerp(previous.Pose[i].r, current.Pose[i].r, w);
-        current.Pose[i].s = glm::mix(previous.Pose[i].s, current.Pose[i].s, w);
-        if (i < current.ChangedTranslation.size())
-            current.ChangedTranslation[i] = 1u;
-        if (i < current.ChangedRotation.size())
-            current.ChangedRotation[i] = 1u;
-        if (i < current.ChangedScale.size())
-            current.ChangedScale[i] = 1u;
-    }
 }
 
 } // namespace Engine::Renderer
