@@ -20,12 +20,12 @@
 // CBTSphereRootsTests assert reciprocity, twin-across-cube-edge, outward winding, and
 // (via the real-device cross-face conformity oracle) that refinement stays conforming.
 
+#include "CBTTerrain/CBTLayout.h"
+#include "Mathematics/CubeFaces.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
-
-#include "CBTTerrain/CBTLayout.h"
-#include "Mathematics/CubeFaces.h"
 
 namespace GameEngine::CBTTerrain
 {

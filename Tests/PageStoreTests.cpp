@@ -31,6 +31,7 @@
 #include "TestTempDir.h"
 #include "Types/ByteBuffer.h"
 #include "Types/Color.h"
+#include "Types/FlatMap.h"
 #include "Types/Fnv1a.h"
 
 #include <gtest/gtest.h>
@@ -46,7 +47,6 @@
 #include <functional>
 #include <future>
 #include <limits>
-#include "Types/FlatMap.h"
 #include <memory>
 #include <numbers>
 #include <random>
