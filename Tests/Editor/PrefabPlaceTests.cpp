@@ -1858,6 +1858,20 @@ namespace
 const std::vector<std::string> kPrefabBarSheets{"Assets/UI/theme/views.css", "Assets/UI/controls/Button.css",
                                                 "Assets/UI/controls/PrefabBar/PrefabBar.css"};
 
+// Controls attach their own sheets below their owner's scope in the live editor.
+void AttachRequestedControlSheets(UIElement& element)
+{
+    for (const UIElement::SubtreeStyleAssetRequest& request : element.ConsumeRequestedSubtreeStyleAssetPaths())
+    {
+        const std::string css = InspectorLayoutTesting::ReadEditorFile("Assets/" + request.Path);
+        ASSERT_FALSE(css.empty()) << request.Path;
+        Stylesheet sheet{};
+        ASSERT_TRUE(UIParsing::CSSParser::ParseStylesFromString(css, sheet)) << request.Path;
+        sheet.SourceName = request.Path;
+        element.AddStylesheet(std::make_shared<const Stylesheet>(std::move(sheet)));
+    }
+}
+
 // The resolved style of the element `id` of `bar`; null when the bar has no such element.
 const ResolvedStyle* BarStyle(UIElement& bar, std::string_view id)
 {
@@ -1938,6 +1952,13 @@ TEST_F(PrefabPlaceTests, ThePrefabBarsSelectButtonKeepsOneHeightWhenTheCountLine
     Editor::PrefabBar& rootOne = *rootBar;
     panel->AddChild(std::move(memberBar));
     panel->AddChild(std::move(rootBar));
+    for (Editor::PrefabBar* bar : {&member, &rootOne})
+        for (const char* id : {"prefab-bar-count", "prefab-bar-instance-count", "prefab-bar-stale-count"})
+        {
+            UIElement* pill = bar->FindById(id);
+            ASSERT_NE(pill, nullptr);
+            AttachRequestedControlSheets(*pill);
+        }
     InspectorLayoutTesting::InspectorLayoutFixture fixture;
     fixture.ViewportW = 360;
     fixture.ExtraSheets = kPrefabBarSheets;
