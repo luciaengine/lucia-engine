@@ -1,0 +1,37 @@
+.bone-lod-section {
+    flex-shrink: 0;
+}
+.bone-lod-body {
+    display: flex;
+    flex-direction: column;
+    row-gap: 6px;
+}
+.bone-lod-help {
+    font-size: 12px;
+    white-space: normal;
+    overflow-wrap: break-word;
+    color: var(--ui_color_text_dim);
+    flex-shrink: 0;
+}
+.bone-lod-status {
+    font-size: 12px;
+    white-space: normal;
+    overflow-wrap: break-word;
+    color: var(--ui_color_warning_text);
+    flex-shrink: 0;
+}
+.bone-lod-tree {
+    height: 240px;
+    flex-shrink: 0;
+}
+.bone-lod-pin {
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.bone-lod-actions {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 6px;
+    flex-shrink: 0;
+}

@@ -90,7 +90,8 @@ public:
 
     // True when the skeleton's joint closure fits kMaxBones and
     // kMaxHierarchyLevels; a skeleton over either animates on the CPU path.
-    static bool FitsKernelLimits(const GameEngine::Animation::SkeletonData& skeleton);
+    static bool FitsKernelLimits(const GameEngine::Animation::SkeletonData& skeleton,
+        const Animation::BoneEvaluationPlan* plan = nullptr);
 
     bool Initialize(GameEngine::Rendering::IDevice* device);
     void Shutdown();

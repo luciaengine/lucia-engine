@@ -55,7 +55,8 @@ void BoneEvaluationPlan::Clear()
 {
     m_Skeleton = nullptr;
     m_Nodes.clear();
-    m_LevelOffsets.clear();
+    m_SkinNodes.clear();
+    m_SkinLevelOffsets.clear();
     m_EvaluatedAncestors.clear();
     m_RestFromAncestors.clear();
     m_JointCorrections.clear();
@@ -99,19 +100,12 @@ bool BoneEvaluationPlan::Build(const SkeletonData& skeleton, std::span<const uin
     }
 
     m_Nodes.reserve(count);
-    m_LevelOffsets.push_back(0u);
     m_EvaluatedAncestors.resize(count);
     m_RestFromAncestors.resize(count);
-    uint32 currentLevel = 0u;
     for (uint32 node : skeleton.TopologicalOrder)
     {
         if (active[node] != 0u)
         {
-            if (levels[node] != currentLevel)
-            {
-                m_LevelOffsets.push_back(static_cast<uint32>(m_Nodes.size()));
-                currentLevel = levels[node];
-            }
             m_Nodes.push_back(node);
             m_EvaluatedAncestors[node] = node;
             m_RestFromAncestors[node] = Mathematics::Matrix4x4::Identity();
@@ -124,17 +118,38 @@ bool BoneEvaluationPlan::Build(const SkeletonData& skeleton, std::span<const uin
             Mathematics::Matrix4x4::FromColumnMajor(skeleton.RestLocalMatrix.data() +
                 static_cast<size_t>(node) * 16u);
     }
-    if (count != 0u)
-        m_LevelOffsets.push_back(static_cast<uint32>(m_Nodes.size()));
     m_JointCorrections.reserve(jointCount);
+    std::vector<uint8> reachesSkin(count, 0u);
     for (uint32 joint = 0; joint < jointCount; ++joint)
     {
         const uint32 node = joint < skeleton.JointNodes.size() ? skeleton.JointNodes[joint] : joint;
+        reachesSkin[m_EvaluatedAncestors[node]] = 1u;
         const Mathematics::Matrix4x4 inverseBind = Mathematics::Matrix4x4::FromColumnMajor(
             skeleton.InverseBind.data() + static_cast<size_t>(node) * 16u);
         m_JointCorrections.push_back(active[node] != 0u
             ? inverseBind : m_RestFromAncestors[node] * inverseBind);
     }
+    for (auto node = skeleton.TopologicalOrder.rbegin(); node != skeleton.TopologicalOrder.rend(); ++node)
+    {
+        const int32 parent = skeleton.Parent[*node];
+        if (reachesSkin[*node] != 0u && parent >= 0)
+            reachesSkin[static_cast<uint32>(parent)] = 1u;
+    }
+    m_SkinLevelOffsets.push_back(0u);
+    uint32 currentLevel = 0u;
+    for (uint32 node : m_Nodes)
+    {
+        if (reachesSkin[node] == 0u)
+            continue;
+        if (levels[node] != currentLevel)
+        {
+            m_SkinLevelOffsets.push_back(static_cast<uint32>(m_SkinNodes.size()));
+            currentLevel = levels[node];
+        }
+        m_SkinNodes.push_back(node);
+    }
+    if (!m_SkinNodes.empty())
+        m_SkinLevelOffsets.push_back(static_cast<uint32>(m_SkinNodes.size()));
     if (!std::all_of(m_RestFromAncestors.begin(), m_RestFromAncestors.end(), IsFiniteMatrix) ||
         !std::all_of(m_JointCorrections.begin(), m_JointCorrections.end(), IsFiniteMatrix))
     {

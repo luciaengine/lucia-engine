@@ -102,7 +102,8 @@ void BuildPoseToSkinMatrices(const SkeletonData& skeleton,
     };
     if (reduced)
     {
-        for (uint32 node : plan->Nodes())
+        const auto evaluatedNodes = outNodeWorldMatrices ? plan->Nodes() : plan->SkinNodes();
+        for (uint32 node : evaluatedNodes)
         {
             const int32 parent = skeleton.Parent[node];
             ws.World[node] = parent >= 0

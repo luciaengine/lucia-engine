@@ -65,7 +65,7 @@ TEST(BoneEvaluationPlan, RetainsRequestedLeafAncestorsAndAllRootsInStableLevels)
     BoneEvaluationPlan plan;
     ASSERT_TRUE(plan.Build(skeleton, requested));
     EXPECT_EQ(CopyNodes(plan), (std::vector<uint32>{1u, 4u, 2u, 3u, 5u}));
-    EXPECT_EQ((std::vector<uint32>{plan.LevelOffsets().begin(), plan.LevelOffsets().end()}),
+    EXPECT_EQ((std::vector<uint32>{plan.SkinLevelOffsets().begin(), plan.SkinLevelOffsets().end()}),
         (std::vector<uint32>{0u, 2u, 3u, 4u, 5u}));
     EXPECT_EQ(plan.EvaluatedAncestors()[0], 2u);
     EXPECT_EQ(plan.EvaluatedAncestors()[5], 5u);
@@ -109,6 +109,22 @@ TEST(BoneEvaluationPlan, FullSelectionKeepsOriginalNodeIndicesAndIdentityCorrect
     }
 }
 
+TEST(BoneEvaluationPlan, PaletteEvaluationExcludesUnrelatedRootsButRetainsRequestedNodeWorlds)
+{
+    SkeletonData skeleton = MakePlanSkeleton({-1, 0, 1, 2, -1, 4});
+    skeleton.SkinJointCount = 1u;
+    skeleton.JointNodes = {3u};
+    skeleton.ComputeTopologicalSort();
+    const uint32 requested[] = {1u, 5u};
+    BoneEvaluationPlan plan;
+    ASSERT_TRUE(plan.Build(skeleton, requested));
+    EXPECT_EQ(CopyNodes(plan), (std::vector<uint32>{0u, 4u, 1u, 5u}));
+    EXPECT_EQ((std::vector<uint32>{plan.SkinNodes().begin(), plan.SkinNodes().end()}),
+        (std::vector<uint32>{0u, 1u}));
+    EXPECT_EQ((std::vector<uint32>{plan.SkinLevelOffsets().begin(), plan.SkinLevelOffsets().end()}),
+        (std::vector<uint32>{0u, 1u, 2u}));
+}
+
 TEST(BoneEvaluationPlan, RejectsInvalidSelectionAndClearsPreviousPlan)
 {
     const SkeletonData skeleton = MakePlanSkeleton({-1, 0});
@@ -117,7 +133,7 @@ TEST(BoneEvaluationPlan, RejectsInvalidSelectionAndClearsPreviousPlan)
     const uint32 invalid[] = {2u};
     EXPECT_FALSE(plan.Build(skeleton, invalid));
     EXPECT_TRUE(plan.Nodes().empty());
-    EXPECT_TRUE(plan.LevelOffsets().empty());
+    EXPECT_TRUE(plan.SkinLevelOffsets().empty());
     EXPECT_TRUE(plan.EvaluatedAncestors().empty());
     EXPECT_TRUE(plan.RestFromAncestors().empty());
     EXPECT_TRUE(plan.JointCorrections().empty());
@@ -166,8 +182,8 @@ TEST(BoneEvaluationPlan, EmptySkeletonHasNoLevelsOrNodes)
     BoneEvaluationPlan plan;
     ASSERT_TRUE(plan.Build(skeleton, {}));
     EXPECT_TRUE(plan.Nodes().empty());
-    EXPECT_EQ(plan.LevelOffsets().size(), 1u);
-    EXPECT_EQ(plan.LevelOffsets()[0], 0u);
+    EXPECT_EQ(plan.SkinLevelOffsets().size(), 1u);
+    EXPECT_EQ(plan.SkinLevelOffsets()[0], 0u);
 }
 
 TEST(BoneEvaluationPlan, ReducedSkinPaletteMatchesRestClampedReferenceWithMeshRootAndJointPermutation)

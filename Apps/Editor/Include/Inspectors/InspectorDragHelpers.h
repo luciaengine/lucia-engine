@@ -141,14 +141,7 @@ inline void SetLabelDragHighlight(Label* label, bool on)
     if (!label)
         return;
 
-    const unsigned flags = UIElement::StyleDirty | UIElement::VisualDirty;
-    std::function<void(UIElement*)> markSubtree = [&markSubtree, flags](UIElement* el) {
-        if (!el)
-            return;
-        el->MarkDirty(flags);
-        for (const auto& ch : el->GetChildren())
-            markSubtree(ch.get());
-    };
+    constexpr unsigned kFlags = UIElement::StyleDirty | UIElement::VisualDirty;
 
     if (on)
     {
@@ -158,7 +151,7 @@ inline void SetLabelDragHighlight(Label* label, bool on)
     {
         label->RemoveClass("dragging");
     }
-    label->MarkDirty(flags);
+    label->MarkDirty(kFlags);
 
     if (UIElement* row = FindDragHighlightRow(label))
     {
@@ -170,7 +163,7 @@ inline void SetLabelDragHighlight(Label* label, bool on)
         {
             row->RemoveClass("dragging");
         }
-        markSubtree(row);
+        row->MarkDirtySubtree(kFlags);
     }
 }
 

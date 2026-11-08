@@ -1,6 +1,7 @@
 # Engine library
 set(ENGINE_SOURCES
     Source/Engine/Rendering/SortingLayers.cpp
+    Source/Engine/Rendering/BoneLOD/BoneLODPolicy.cpp
     Source/Engine/Rendering/RenderSorting.cpp
 	Source/Core/Application.cpp
     Source/Core/Time.cpp
@@ -55,6 +56,9 @@ set(ENGINE_SOURCES
     Source/Assets/LodAssetSettings.cpp
     Source/Assets/ProjectLodReimport.cpp
     Source/Assets/ModelAssetSettings.cpp
+    Source/Assets/BoneLOD/BoneLODAssetSettings.cpp
+    Source/Assets/BoneLOD/ModelBoneLOD.cpp
+    Source/Assets/BoneLOD/ModelAssetBoneLOD.cpp
     Source/Assets/AuthoredLodImport.cpp
     Source/Assets/HlodClustering.cpp
     Source/Assets/HlodBenefit.cpp
@@ -1739,6 +1743,8 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         Tests/MeshLODGeneratorTests.cpp
         Tests/MeshLODGeometryTests.cpp
         Tests/LodAssetSettingsTests.cpp
+        Tests/BoneLODAssetSettingsTests.cpp
+        Tests/ModelBoneLODTests.cpp
         Tests/MeshLODCacheTests.cpp
         Tests/PackagedModelLodTests.cpp
         Tests/AuthoredLODColorTests.cpp

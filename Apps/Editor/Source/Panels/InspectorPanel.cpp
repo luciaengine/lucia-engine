@@ -2000,8 +2000,11 @@ void InspectorPanel::RefreshCurrentAssetInspector()
 
     if (UIElement::IsInEventDispatch())
     {
-        this->PostAction([this]()
-                         { this->RefreshCurrentAssetInspector(); });
+        this->PostAction([panel = UIElement::MakeWeakRef(this)]()
+        {
+            if (auto* current = panel.Get())
+                current->RefreshCurrentAssetInspector();
+        });
         return;
     }
 
@@ -2018,11 +2021,15 @@ void InspectorPanel::RequestEntityRefresh()
     if (m_EntityRefreshPosted)
         return;
     m_EntityRefreshPosted = true;
-    const bool posted = PostAction([this]()
-                                   {
-        m_EntityRefreshPosted = false;
-        if (m_World && m_Entity.IsValid() && m_World->IsValid(m_Entity))
-            ShowEntity(m_World, m_Entity, true); });
+    const bool posted = PostAction([panel = UIElement::MakeWeakRef(this)]()
+    {
+        if (auto* current = panel.Get())
+        {
+            current->m_EntityRefreshPosted = false;
+            if (current->m_World && current->m_Entity.IsValid() && current->m_World->IsValid(current->m_Entity))
+                current->ShowEntity(current->m_World, current->m_Entity, true);
+        }
+    });
     // A dropped action never runs to clear the latch, and every later request would be ignored.
     if (!posted)
         m_EntityRefreshPosted = false;
@@ -2638,7 +2645,7 @@ void InspectorPanel::BindSectionHeaderDragReorder(
             }
         } });
 
-    sectionRaw->SetOnHeaderDragMoved([this, sectionRaw, reorderRoot, restrictToMaterialSlotSections](float x, float y)
+    sectionRaw->SetOnHeaderDragMoved([this, reorderRoot, restrictToMaterialSlotSections](float x, float y)
                                      {
         if (m_SectionDragGhost)
         {
@@ -2726,7 +2733,7 @@ void InspectorPanel::BindSectionHeaderDragReorder(
         if (dropIndex < 0 || !reorderRoot)
             return;
 
-        sectionRaw->PostAction([this, sectionRaw, dropIndex, reorderRoot, persistCopy]() {
+        sectionRaw->PostAction([sectionRaw, dropIndex, reorderRoot, persistCopy]() {
             if (!reorderRoot)
                 return;
 
@@ -2996,8 +3003,11 @@ void InspectorPanel::ShowSelectedAssets(const std::vector<std::filesystem::path>
     ctx.OpenScript = m_OpenScript;
     ctx.OpenMaterialGraph = m_OpenMaterialGraph;
     ctx.OpenAsset = m_OpenAsset;
-    ctx.RequestInspectorRefresh = [this]()
-    { RefreshCurrentAssetInspector(); };
+    ctx.RequestInspectorRefresh = [panel = UIElement::MakeWeakRef(this)]()
+    {
+        if (auto* current = panel.Get())
+            current->RefreshCurrentAssetInspector();
+    };
     ctx.AssetReloadedCallbacks = &m_AssetReloadedCallbacks;
     ctx.Window = m_Window;
     ctx.EditorCtx = m_Context;
@@ -3081,8 +3091,11 @@ void InspectorPanel::BuildComponentSectionBody(InspectorSection* section, ECS::C
     ctx.PingAsset = m_PingAsset;
     ctx.PingAssetPreserveInspector = m_PingAssetPreserveInspector;
     ctx.SelectEntity = m_SelectEntity;
-    ctx.RequestInspectorRefresh = [this]()
-    { RequestEntityRefresh(); };
+    ctx.RequestInspectorRefresh = [panel = UIElement::MakeWeakRef(this)]()
+    {
+        if (auto* current = panel.Get())
+            current->RequestEntityRefresh();
+    };
     ctx.GetWorld = [this]() -> ECS::World*
     { return m_World; };
     ctx.Window = m_Window;
@@ -3918,7 +3931,7 @@ int InspectorPanel::BuildComponentSections(ECS::EntityHandle entity, const std::
 
         sectionRaw->SetInactive(!m_PresentedEntityActive);
 
-        sectionRaw->SetOnHeaderContextMenu([this, typeId, title, pseudoMaterialSectionId](float x, float y)
+        sectionRaw->SetOnHeaderContextMenu([this, typeId, title](float x, float y)
                                            {
             ShowComponentSectionContextMenu(typeId, title, pseudoMaterialSectionId, x, y);
         });

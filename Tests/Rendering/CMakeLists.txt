@@ -12,6 +12,7 @@ find_package(GTest REQUIRED)
 # Source/HotReloadNativeStubs.cpp). Tests linking Engine inherit them via the
 # import lib; no per-target compile of the stub source needed.
 add_executable(AnimationSystemTests AnimationSystemTests.cpp
+    BoneLODPolicyTests.cpp
     AnimationEventDispatchTests.cpp
     AnimatorClipTimeTests.cpp
     ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp)

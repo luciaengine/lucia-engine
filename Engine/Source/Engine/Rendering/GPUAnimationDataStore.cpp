@@ -198,8 +198,11 @@ void GPUAnimationDataStore::InvalidateAllClips()
     m_ClipIdToGPU.clear();
 }
 
-bool GPUAnimationDataStore::FitsKernelLimits(const SkeletonData& skeleton)
+bool GPUAnimationDataStore::FitsKernelLimits(const SkeletonData& skeleton, const Animation::BoneEvaluationPlan* plan)
 {
+    if (plan)
+        return plan->IsForSkeleton(skeleton) && plan->SkinNodes().size() <= kMaxBones &&
+            !plan->SkinLevelOffsets().empty() && plan->SkinLevelOffsets().size() - 1u <= kMaxHierarchyLevels;
     return skeleton.JointClosure.size() <= kMaxBones
         && skeleton.JointClosureLevelCount() <= kMaxHierarchyLevels;
 }
@@ -225,8 +228,8 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId,
             return variant->GPUIndex;
     }
 
-    const std::span<const uint32> evaluatedNodes = plan ? plan->Nodes() : std::span<const uint32>(skel->JointClosure);
-    const std::span<const uint32> levelOffsets = plan ? plan->LevelOffsets()
+    const std::span<const uint32> evaluatedNodes = plan ? plan->SkinNodes() : std::span<const uint32>(skel->JointClosure);
+    const std::span<const uint32> levelOffsets = plan ? plan->SkinLevelOffsets()
         : std::span<const uint32>(skel->JointClosureLevelOffsets);
     const uint32 levelCount = levelOffsets.empty() ? 0u : static_cast<uint32>(levelOffsets.size() - 1u);
     if (evaluatedNodes.size() > kMaxBones || levelCount > kMaxHierarchyLevels)

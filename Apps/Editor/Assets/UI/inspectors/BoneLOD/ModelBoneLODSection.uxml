@@ -1,0 +1,16 @@
+<UIElement class="bone-lod-body">
+  <Label text="Bone LOD" class="inspector-section-subheader" />
+  <Label text="Reduce animation work for distant characters. Add Bone LOD to the model instance to opt in." class="bone-lod-help" />
+  <UIElement id="BoneLODFields" />
+  <Label id="BoneLODSummary" class="bone-lod-help" />
+  <Label id="BoneLODStatus" class="bone-lod-status" />
+  <Label text="Mandatory bones" class="inspector-section-subheader" />
+  <Label text="Check Keep for attachments or gameplay bones that must remain animated. Ancestors are retained automatically." class="bone-lod-help" />
+  <Label text="Search bones" class="bone-lod-help" />
+  <TextField id="BoneLODSearch" />
+  <TreeView id="BoneLODTree" class="bone-lod-tree" />
+  <UIElement class="bone-lod-actions">
+    <Button id="BoneLODClear" text="Clear mandatory bones" class="small secondary" tooltip="Remove every mandatory bone path, including paths missing from a reimported model." />
+    <Button id="BoneLODReset" text="Reset invalid settings" class="small secondary" tooltip="Replace invalid bone settings with the default budget and no mandatory bones." />
+  </UIElement>
+</UIElement>

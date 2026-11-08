@@ -1,5 +1,8 @@
 #include "DebugHandlerHelpers.h"
 
+#include "Assets/BoneLOD/ModelBoneLOD.h"
+#include "ECSModules/Rendering/Systems/AnimationSystem.h"
+
 namespace GameEngine
 {
 void RegisterAssetDebugHandlers(EditorDebugServer& server, EditorApplication& app)
@@ -273,7 +276,7 @@ server.RegisterHandler("get_asset_list", [](const EditorDebugServer::RequestCont
         }
         return json{{"source", sourceAlias}, {"total", guids.size()}, {"assets", assets}}; });
 
-server.RegisterHandler("get_skeleton_store_state", [&app](const EditorDebugServer::RequestContext& ctx) -> json
+server.RegisterHandler("get_skeleton_store_state", [](const EditorDebugServer::RequestContext& ctx) -> json
                            {
         auto& store = Engine::Renderer::SkeletonStore::Instance();
         const uint32_t count = store.GetCount();
@@ -291,6 +294,9 @@ server.RegisterHandler("get_skeleton_store_state", [&app](const EditorDebugServe
 
         auto* primaryWorld = EngineCore::GetInstance().GetPrimaryWorld();
         const uint64_t primaryWorldId = primaryWorld ? primaryWorld->GetWorldId() : 0;
+        auto* loop = EngineCore::GetInstance().GetRenderingLoop();
+        auto* systems = loop ? loop->GetSystemManager() : nullptr;
+        const auto* animation = systems ? systems->GetSystem<Engine::Renderer::AnimationSystem>() : nullptr;
 
         const bool withBoneNames = ctx.params.value("withBoneNames", false);
         const int onlySkeletonId = ctx.params.value("skeletonId", 0);
@@ -380,6 +386,23 @@ server.RegisterHandler("get_skeleton_store_state", [&app](const EditorDebugServe
             rtJson["refCount"] = store.GetRuntimeRefCount(rtId);
             rtJson["atlasPaletteOffsetBones"] = runtime->AtlasPaletteOffsetBones;
             rtJson["paletteMatrixCount"] = static_cast<uint32_t>(runtime->CompactSkinMatrices.size() / 16);
+            const auto* selection = animation ? animation->GetBoneLODSelection(rtId) : nullptr;
+            const bool selectionCurrent = selection &&
+                selection->RuntimeGeneration == store.GetRuntimeGeneration(rtId) &&
+                runtime->Source.WorldId == primaryWorldId && primaryWorld &&
+                runtime->Source.WorldGeneration == primaryWorld->GetLifecycleResetGeneration();
+            const auto* boneData = selectionCurrent ? selection->Data.get() : nullptr;
+            const bool reduced = boneData && selection->Reduced;
+            const auto* skeleton = store.Get(skelId);
+            rtJson["boneLOD"] = json{
+                {"selectionKnown", selectionCurrent},
+                {"tier", reduced ? "reduced" : "full"},
+                {"requestedBudget", boneData ? boneData->RequestedBoneBudget() : 0u},
+                {"requiredBones", boneData ? boneData->RequiredBoneCount() : 0u},
+                {"evaluatedBones", reduced ? boneData->ActualBoneCount() :
+                    (skeleton ? static_cast<uint32>(skeleton->JointClosure.size()) : 0u)},
+                {"error", boneData ? boneData->Error() : std::string{}},
+                {"warning", boneData ? boneData->Warning() : std::string{}}};
 
             // Atlas owner: which subsystem wrote this runtime's atlas slot
             // this frame. The skin-matrix probe below reads the CPU mirror,

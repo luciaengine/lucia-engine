@@ -23,7 +23,8 @@ public:
     /// The skeleton must keep its address and authored data until the plan is rebuilt.
     bool IsForSkeleton(const SkeletonData& skeleton) const;
     std::span<const uint32> Nodes() const { return m_Nodes; }
-    std::span<const uint32> LevelOffsets() const { return m_LevelOffsets; }
+    std::span<const uint32> SkinNodes() const { return m_SkinNodes; }
+    std::span<const uint32> SkinLevelOffsets() const { return m_SkinLevelOffsets; }
     std::span<const uint32> EvaluatedAncestors() const { return m_EvaluatedAncestors; }
     std::span<const Mathematics::Matrix4x4> RestFromAncestors() const { return m_RestFromAncestors; }
     /// Skin-joint order: omitted rest chain times that joint's inverse bind.
@@ -34,7 +35,8 @@ private:
 
     const SkeletonData* m_Skeleton = nullptr;
     std::vector<uint32> m_Nodes;
-    std::vector<uint32> m_LevelOffsets;
+    std::vector<uint32> m_SkinNodes;
+    std::vector<uint32> m_SkinLevelOffsets;
     std::vector<uint32> m_EvaluatedAncestors;
     std::vector<Mathematics::Matrix4x4> m_RestFromAncestors;
     std::vector<Mathematics::Matrix4x4> m_JointCorrections;

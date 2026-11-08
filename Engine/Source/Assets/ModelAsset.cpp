@@ -1,4 +1,6 @@
 #include "Assets/ModelAsset.h"
+
+#include "Assets/BoneLOD/ModelBoneLOD.h"
 #include "Assets/ImportedMaterialCache.h"
 #include "Assets/MeshLODGeometry.h"
 #include "AssetCore/SharedFileRead.h"
@@ -803,6 +805,7 @@ void ModelAsset::PostLoad() {
     // the load-time mesh set never covered. Runs on both initial load and
     // hot-reload (idempotent — a demoted material is no longer Mask).
     DemoteInferredMaskMaterials();
+    BuildBoneLOD();
 
     // Record the final materials (after the demotion above, so the record matches
     // what registration converts) in the derived cache, where consumers that need
@@ -943,6 +946,7 @@ bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
     std::swap(m_EmbeddedClipGuids, other->m_EmbeddedClipGuids);
     std::swap(m_PendingRuntimeClips, other->m_PendingRuntimeClips);
     std::swap(m_SubassetDeriveKeys, other->m_SubassetDeriveKeys);
+    std::swap(m_BoneLOD, other->m_BoneLOD);
     for (int i = 0; i < 3; ++i) {
         std::swap(m_MinBounds[i], other->m_MinBounds[i]);
         std::swap(m_MaxBounds[i], other->m_MaxBounds[i]);
@@ -951,6 +955,11 @@ bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
     {
         m_SkeletonId = liveSkeletonId;
         CopySkeletonStoreEntry(liveSkeletonId, stagedSkeletonId);
+        if (m_BoneLOD)
+        {
+            const auto* skeleton = Engine::Renderer::SkeletonStore::Instance().Get(liveSkeletonId);
+            m_BoneLOD = skeleton ? m_BoneLOD->Rebind(*skeleton) : nullptr;
+        }
     }
     else
     {
@@ -962,6 +971,7 @@ bool ModelAsset::AdoptReloadedPayload(Asset& staged) {
 }
 
 void ModelAsset::Unload() {
+    m_BoneLOD.reset();
     m_Meshes.clear();
     m_Materials.clear();
     m_EmbeddedImages.clear();
