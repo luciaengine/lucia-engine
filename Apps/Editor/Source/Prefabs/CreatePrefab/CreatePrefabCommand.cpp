@@ -185,6 +185,12 @@ void CreatePrefabCommand::Undo()
 
 void CreatePrefabCommand::Redo()
 {
+    if (!m_World.IsValid(m_Root))
+    {
+        Logger::Log::Error("Prefabs: cannot redo {} because its source entity no longer exists. "
+                           "Restore the source entity and try again; the prefab file is unchanged.", m_Name);
+        return;
+    }
     std::error_code ec;
     if (m_ReplacedBytes || m_FileKept)
         std::filesystem::remove(m_PrefabFile, ec);

@@ -400,6 +400,33 @@ TEST_F(PrefabPlaceTests, AnUndoOfCreateAfterASavedSceneUsesThePrefabKeepsTheFile
     EXPECT_TRUE(std::filesystem::exists(file));
 }
 
+TEST_F(PrefabPlaceTests, RedoWithARemovedSourceKeepsThePrefabThatASavedSceneUses)
+{
+    ECS::World world;
+    const ECS::EntityHandle crate = CreateTagged(world, "Crate", "crate", {});
+    const std::filesystem::path file = m_Folder / "Crate.prefab";
+    std::filesystem::create_directories(m_Folder);
+    std::string error;
+    auto command = Editor::CreatePrefabCommand::Create(world, nullptr, crate, file, false, error);
+    ASSERT_NE(command, nullptr) << error;
+    EngineCore& engine = EngineCore::GetInstance();
+    Scene::AssetManagerSceneResolver resolver(engine.GetAssetManager(), engine.GetAssetManager().GetAssetRoot(),
+                                              Scene::AssetManagerSceneResolver::UnknownFile::Register);
+    Scene::SaveOptions options;
+    options.assetResolver = &resolver;
+    const std::filesystem::path scene = m_Folder / "Yard.scene";
+    ASSERT_TRUE(Scene::SaveSceneToFile(world, scene, options));
+    ASSERT_TRUE(engine.GetAssetManager().GetRegistry().RegisterAssetByPath(scene).IsOk());
+
+    command->Undo();
+    ASSERT_TRUE(std::filesystem::exists(file));
+    const std::string saved = ReadFileText(file);
+    world.DestroyEntityImmediate(crate);
+    command->Redo();
+    EXPECT_TRUE(std::filesystem::exists(file));
+    EXPECT_EQ(ReadFileText(file), saved);
+}
+
 namespace
 {
 
