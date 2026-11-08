@@ -2397,7 +2397,9 @@ TEST_F(CBTScreenSpaceTest, ViewPriorityNearPatchPlanar)
 // a strict superset of the metric without it.
 TEST_F(CBTScreenSpaceTest, SubmergedSeabedStaysCoarseWhileShorelineRefines)
 {
-    constexpr uint32_t kTexels = 64u;
+    // Use 4-meter samples and their data-derived depth cap.
+    // A shore cell retains its complete height range, so the cap can stop refinement before the pixel target.
+    constexpr uint32_t kTexels = 256u;
     constexpr float kTerrain = 1024.0f;
     constexpr float kOrigin = -kTerrain * 0.5f;
     constexpr float kHeightScale = 40.0f;
@@ -2416,7 +2418,7 @@ TEST_F(CBTScreenSpaceTest, SubmergedSeabedStaysCoarseWhileShorelineRefines)
     // 64 m legs one sqrt(2) step per ring (~135 m of rings), so the seabed the water is supposed
     // to keep coarse is judged past that: every corner farther than this from the shore (Z = 0).
     constexpr float kInteriorZ = -160.0f;
-    const uint32_t cap = kDefaultBaseDepth + kMaxDecodeSubdiv;
+    constexpr uint32_t cap = 17u; // root hypotenuse 1024 x sqrt(2) m, sqrt(2) shorter per level
 
     struct EdgeScan
     {
@@ -2476,14 +2478,14 @@ TEST_F(CBTScreenSpaceTest, SubmergedSeabedStaysCoarseWhileShorelineRefines)
 
     // One instance converged through one camera height per phase, kFrames each, scanned at the end:
     // a second phase exercises the merge direction from a tree the first phase refined.
-    auto converge = [&](float coarsen, std::initializer_list<float> cameraYs) {
+    auto converge = [&](float coarsen, std::initializer_list<float> cameraYs, uint32_t texels, uint32_t depthCap) {
         CBTInstance instance;
         EXPECT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
         EXPECT_TRUE(instance.InitializeRoots(kDomainPlanar));
-        // Rows [0, 32) stay at texel 0 (seabed), rows [32, 64) become texel 1 (land): the shore
-        // runs along the plane's Z midline, one texel (16 m) of linear ramp wide.
-        TextureHandle height = MakeHeightTextureN(*m_Device, kTexels, 0.0f);
-        PokeHeightBand(*m_Device, height, kTexels, kTexels / 2u, kTexels, 1.0f);
+        // Rows [0, 128) stay at texel 0 (seabed), rows [128, 256) become texel 1 (land): the shore
+        // runs along the plane's Z midline, one texel (4 m) of linear ramp wide.
+        TextureHandle height = MakeHeightTextureN(*m_Device, texels, 0.0f);
+        PokeHeightBand(*m_Device, height, texels, texels / 2u, texels, 1.0f);
 
         float vp[16];
         MakeOrthoTopDown(2.0f / kTerrain, vp); // the whole plane fills the viewport
@@ -2496,7 +2498,7 @@ TEST_F(CBTScreenSpaceTest, SubmergedSeabedStaysCoarseWhileShorelineRefines)
 
         CBTClassifyDesc classify{};
         classify.Mode = kClassifyScreenSpace;
-        classify.TargetDepth = cap;
+        classify.TargetDepth = depthCap;
         uint32_t frame = 0;
         for (float cameraY : cameraYs)
         {
@@ -2513,12 +2515,12 @@ TEST_F(CBTScreenSpaceTest, SubmergedSeabedStaysCoarseWhileShorelineRefines)
         return es;
     };
 
-    const EdgeScan on = converge(kCoarsen, {50.0f});
-    const EdgeScan under = converge(kCoarsen, {kWaterY - 10.0f});
-    const EdgeScan off = converge(0.0f, {50.0f});
+    const EdgeScan on = converge(kCoarsen, {50.0f}, kTexels, cap);
+    const EdgeScan under = converge(kCoarsen, {kWaterY - 10.0f}, kTexels, cap);
+    const EdgeScan off = converge(0.0f, {50.0f}, kTexels, cap);
     // Refined uniformly from under the surface, then the camera climbs out: the merge side has to
     // coarsen the hidden seabed back, which is what the coarsened MERGE threshold is for.
-    const EdgeScan resurfaced = converge(kCoarsen, {kWaterY - 10.0f, 50.0f});
+    const EdgeScan resurfaced = converge(kCoarsen, {kWaterY - 10.0f, 50.0f}, kTexels, cap);
     std::printf("[water-plane] on: submerged=%u (max %.1f px) interior=%u [%.1f..%.1f px] "
                 "straddling=%u (max %.1f px) land=%u (max %.1f px) | under: submerged max %.1f px | "
                 "off: submerged max %.1f px | resurfaced: interior=%u [%.1f..%.1f px] land max %.1f px\n",
@@ -2551,4 +2553,14 @@ TEST_F(CBTScreenSpaceTest, SubmergedSeabedStaysCoarseWhileShorelineRefines)
     EXPECT_GT(resurfaced.InteriorMin, kSplitPx);
     EXPECT_LE(resurfaced.SubmergedMax, kCoarsen * kSplitPx);
     EXPECT_LE(resurfaced.LandMax, kSplitPx);
+
+    // Use 16-meter samples with a finer decode cap.
+    // Sub-cell step bounds must shrink with the facet, letting the pixel target stop the shore refinement.
+    const EdgeScan fineCap = converge(kCoarsen, {50.0f}, 64u, kDefaultBaseDepth + kMaxDecodeSubdiv);
+    std::printf("[water-plane] cap finer than the data: straddling=%u (max %.1f px) land=%u (max %.1f px)\n",
+                fineCap.Straddling, fineCap.StraddlingMax, fineCap.Land, fineCap.LandMax);
+    ASSERT_GT(fineCap.Straddling, 4u);
+    EXPECT_GT(fineCap.StraddlingMax, 2.5f) << "the shore refines to the cap where the cap is finer than the data";
+    EXPECT_LE(fineCap.StraddlingMax, kSplitPx);
+    EXPECT_LE(fineCap.LandMax, kSplitPx);
 }

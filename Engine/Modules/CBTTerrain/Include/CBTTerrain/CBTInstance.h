@@ -87,6 +87,10 @@ struct CBTClassifyDesc
     // the two oracles that characterise the pinned regime (CBTUpdateSystem drives it from
     // GE_CBT_POOL_PRESSURE for the same purpose on a live build); it is not a setting.
     uint32_t PoolPressure = 1u;
+
+    // Stable update inputs use the merge threshold for both planar split and merge, so one pose has one target tree.
+    // Moving inputs retain the hysteresis band. The render feature derives this state; it is not a rest-gate input.
+    uint32_t Settle = 0u;
 };
 
 // Inert classify (nothing to split or merge): leaves the tree unchanged.
@@ -295,6 +299,19 @@ class CBTInstance
         m_Resources.UploadSurfaceParams(frameCounter, params);
     }
 
+    // The draw's prefiltered height chain: grow it for a lattice (CBTHeightChainWords; false keeps the
+    // draw on its cached corners), and write this frame's level rule for the vertex modifier. Same
+    // frameCounter and ring discipline as the surface params.
+    bool ProvisionHeightChainWords(uint32_t words) { return m_Resources.ProvisionHeightChainWords(words); }
+    bool ProvisionNormalChain(uint32_t samplesX, uint32_t samplesZ)
+    {
+        return m_Resources.ProvisionNormalChain(samplesX, samplesZ);
+    }
+    void UploadDrawLevelParams(uint32_t frameCounter, const CBTDrawLevelParams& params)
+    {
+        m_Resources.UploadDrawLevelParams(frameCounter, params);
+    }
+
     // Far-field drain (round-9 far-field-drain, design candidate 3): bulk-free the selected root
     // subtrees back to base in one standalone hand-barriered event — CLEAR (free every bisector
     // whose root is in the mask) -> reduce -> SEED (reseed each freed root's base bisector into a
@@ -365,14 +382,18 @@ class CBTInstance
     void PrepareIndirect(Rendering::CommandList& cl, CBTPushConstants pc, uint32_t counterSlot);
     void RecordDataBarrier(Rendering::CommandList& cl);
     void RecordReduce(Rendering::CommandList& cl, const CBTPushConstants& pc);
-    // Content-aware split: rebuilds the height-range pyramid from this frame's height texture,
-    // level by level, when the heights may have changed since the last build (`heightsChanged`:
-    // a forced corner refresh or an edit rect) or another texture is bound. No-op when the
-    // content-aware split is off for this frame (the threshold is 0, the atlas source, a
-    // spherical domain, the narrow-heap arm, a lattice too large for the buffer).
+    // Rebuild the planar height-range pyramid after a height, source or chain-range change.
+    // Include chain-level ranges when their lattice matches the texture.
+    // Atlas, sphere, narrow heaps and oversized lattices do not build this pyramid.
     void RecordHeightRangeBuild(Rendering::CommandList& cl, const CBTClassifyDesc& classify,
                                 const CBTFrameParams& params, CBTPushConstants pc,
                                 uint32_t frameCounter, bool heightsChanged);
+    // Rebuild all filtered heights for a new source/lattice, a grown buffer or a forced refresh.
+    // Edits rebuild only tents that read the dirty rectangle; dependent normal texels follow.
+    // A disabled or unprovisioned chain does no work. Return whether any height level was rebuilt.
+    bool RecordHeightChainBuild(Rendering::CommandList& cl, const CBTClassifyDesc& classify,
+                                const CBTFrameParams& params, CBTPushConstants pc, uint32_t frameCounter,
+                                bool forced, bool edited);
     void EnsureDispatchUAV(Rendering::CommandList& cl);
     void EnsureDispatchIndirect(Rendering::CommandList& cl);
 
@@ -404,6 +425,12 @@ class CBTInstance
     bool m_VerticesInitialized = false;
     // The height texture the pyramid was last built from (invalid = never built).
     Rendering::TextureHandle m_HeightRangeSource{};
+    // The chain levels whose ranges that build stored (CBTHeightChainRangeLevels; 0 = none).
+    uint32_t m_HeightRangeChainLevels = 0u;
+    // What the chain was last built whole from: the texture, its lattice (x | z << 16) and the buffer.
+    Rendering::TextureHandle m_HeightChainSource{};
+    uint32_t m_HeightChainLattice = 0u;
+    Rendering::BufferHandle m_HeightChainBuffer{};
 };
 
 } // namespace GameEngine::CBTTerrain
