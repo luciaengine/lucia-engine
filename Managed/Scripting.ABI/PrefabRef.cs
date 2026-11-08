@@ -35,7 +35,7 @@ namespace GameEngine.Scripting
         public bool IsNone => m_First == 0 && m_Second == 0;
 
         public bool Equals(PrefabRef other) => m_First == other.m_First && m_Second == other.m_Second;
-        public override bool Equals(object? obj) => obj is PrefabRef other && Equals(other);
+        public override bool Equals(object? value) => value is PrefabRef other && Equals(other);
         public override int GetHashCode() => HashCode.Combine(m_First, m_Second);
         public override string ToString() => Guid.ToString();
         public static bool operator ==(PrefabRef left, PrefabRef right) => left.Equals(right);
