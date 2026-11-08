@@ -51,6 +51,7 @@
 #include <numbers>
 #include <random>
 #include <span>
+#include <stdexcept>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -3302,3 +3303,17 @@ TEST_F(PageStoreTest, APlanetStoreHasSixFacesWhoseEdgesAndApronsAreTheNeighborsB
     }
 }
 
+
+TEST_F(PageStoreTest, APlanetCookRethrowsTheSourceErrorAfterJoiningItsWorkerBatches)
+{
+    JobSystem::WorkStealingThreadPool pool(2);
+    PlanetCookRequest request = SmallPlanetRequest(m_Dir / "failed-planet.gepage");
+    request.Pool = &pool;
+    request.Height = [](uint8 face, uint32 column, uint32 row, const Mathematics::Vector3& direction) {
+        if (face == 0 && column == 0 && row == 0)
+            throw std::runtime_error("planet height fixture failed");
+        return AnalyticPlanetHeight(face, column, row, direction);
+    };
+    EXPECT_THROW(CookPlanetPageStore(request), std::runtime_error);
+    EXPECT_TRUE(std::filesystem::is_empty(m_Dir)) << "a failed source published a store or leaked its scratch file";
+}
