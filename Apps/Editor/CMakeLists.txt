@@ -140,6 +140,20 @@ set(EDITOR_SOURCES
     Source/Inspectors/EntityHeader/InspectorEntityNameField.cpp
     Source/Panels/InspectorPanel.cpp
     Source/Panels/AssetViewPanel.cpp
+    Source/DayCycle/DayCycleAxis.cpp
+    Source/DayCycle/DayCycleDescriptionField.cpp
+    Source/DayCycle/DayCycleEditorServices.cpp
+    Source/DayCycle/DayCycleProfile/DayCycleProfileControls.cpp
+    Source/DayCycle/DayCycleProfile/DayCycleProfileInspector.cpp
+    Source/DayCycle/DayCycleProfile/DayCycleProfileSave.cpp
+    Source/DayCycle/DayCycleRowsHost.cpp
+    Source/DayCycle/DayCycleScrub.cpp
+    Source/DayCycle/DayCycleShippedProfiles.cpp
+    Source/DayCycle/DayCycleSunNow.cpp
+    Source/DayCycle/DayCycleTrackRows.cpp
+    Source/DayCycle/DayCycleWindow/DayCycleWindow.cpp
+    Source/DayCycle/DayCycleWindow/DayCycleWindowRegistration.cpp
+    Source/DayCycle/DayCycleWorkingCopy.cpp
     Source/Panels/LogPanel.cpp
     Source/Panels/LogPanel/LogChannelPopover.cpp
     Source/Panels/LogToolbarActions.cpp
@@ -2285,6 +2299,7 @@ file(GLOB_RECURSE _GE_STAGE_INPUTS CONFIGURE_DEPENDS
 	"${CMAKE_SOURCE_DIR}/Managed/licenses/*"
 	"${CMAKE_CURRENT_SOURCE_DIR}/Assets/*"
 	"${CMAKE_CURRENT_SOURCE_DIR}/ProjectTemplates/*"
+	"${CMAKE_SOURCE_DIR}/Assets/DayCycles/*"
 	"${CMAKE_SOURCE_DIR}/Assets/SkeletonProfiles/*"
 	"${CMAKE_SOURCE_DIR}/Assets/Materials/*"
 	"${CMAKE_SOURCE_DIR}/Assets/RenderPipelines/*"
@@ -2371,6 +2386,8 @@ list(APPEND _GE_EDITOR_MIRROR_COMMANDS COMMAND ${CMAKE_COMMAND} -E copy_if_diffe
 # template content never enters the editor asset mount.
 _ge_editor_mirror_commands(_GE_EDITOR_MIRROR_COMMANDS
 	"${CMAKE_CURRENT_SOURCE_DIR}/ProjectTemplates" "${_GE_EDITOR_TEMPLATES_DEST}")
+_ge_editor_mirror_commands(_GE_EDITOR_MIRROR_COMMANDS
+    "${CMAKE_SOURCE_DIR}/Assets/DayCycles" "${_GE_EDITOR_ASSETS_DEST}/DayCycles")
 # Runtime humanoid profiles are shared by Editor and Player.
 _ge_editor_mirror_commands(_GE_EDITOR_MIRROR_COMMANDS
 	"${CMAKE_SOURCE_DIR}/Assets/SkeletonProfiles" "${_GE_EDITOR_ASSETS_DEST}/SkeletonProfiles")

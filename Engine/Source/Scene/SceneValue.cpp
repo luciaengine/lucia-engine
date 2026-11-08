@@ -631,5 +631,29 @@ std::string FormatAssetRef(std::string_view path, std::string_view guid)
     return out;
 }
 
+// Serializes every curve key field as comma-separated values, with semicolons between keys.
+std::string FormatCurveKeys(const Math::Curve& curve)
+{
+    std::string text;
+    for (std::uint8_t index = 0; index < curve.KeyCount; ++index)
+    {
+        const Math::CurveKey& key = curve.Keys[index];
+        if (index > 0)
+            text += ';';
+        text += FormatFloat(key.Time);
+        text += ',';
+        text += FormatFloat(key.Value);
+        text += ',';
+        text += FormatFloat(key.InTangent);
+        text += ',';
+        text += FormatFloat(key.OutTangent);
+        text += ',';
+        text += std::to_string(static_cast<int>(key.Interp));
+        text += ',';
+        text += std::to_string(static_cast<int>(key.TangentMode));
+    }
+    return text;
+}
+
 } // namespace GameEngine::Scene
 

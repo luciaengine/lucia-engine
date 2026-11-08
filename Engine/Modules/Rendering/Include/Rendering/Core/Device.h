@@ -952,7 +952,7 @@ struct RenderingDeviceCapabilities
     // Vulkan drivers handle the engine's bindless raw-depth PCSS reads
     // unreliably, while the comparison-sampler PCF path remains stable.
     bool prefersStableShadowFiltering = false;
-    // Legacy Adreno compilers benefit from pipeline constants for absent forward features.
+    // Prefer pipeline constants for absent forward features on AMD and legacy Adreno.
     bool prefersForwardShaderSpecialization = false;
     // Whether one buffer may be both a shader storage target and CPU-mappable.
     // Vulkan and Metal allow it (a storage buffer in host-visible memory);

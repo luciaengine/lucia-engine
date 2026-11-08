@@ -392,6 +392,7 @@ void SkyEnvironmentSystem::Update(ECS::World& world, float32 deltaTime)
     Components::SkyEnvironment comp{};
     bool foundEnvironment = false;
     int environmentCount = 0;
+    const auto previewHour = GetPreviewHour(world.GetWorldId());
 
     {
         world.Query<ECS::Write<Components::SkyEnvironment>>()
@@ -399,9 +400,11 @@ void SkyEnvironmentSystem::Update(ECS::World& world, float32 deltaTime)
                 ++environmentCount;
                 if (foundEnvironment)
                     return;
-                if (env->AnimateTimeOfDay)
+                if (!previewHour && env->AnimateTimeOfDay)
                     TickAnimatedTimeOfDay(env.Mutable(), deltaTime);
                 comp = env.Get();
+                if (previewHour)
+                    comp.TimeOfDayHours = *previewHour;
                 foundEnvironment = true;
             });
     }
@@ -796,6 +799,41 @@ void SkyEnvironmentSystem::Update(ECS::World& world, float32 deltaTime)
     settings.skyTimeSeconds = m_AccumulatedSkyTime;
 
     sky.SetSettings(settings, state);
+}
+
+void SkyEnvironmentSystem::SetPreviewHour(uint64 worldId, float32 hours)
+{
+    std::lock_guard lock(m_PreviewMutex);
+    for (PreviewHour& preview : m_PreviewHours)
+    {
+        if (preview.WorldId == worldId)
+        {
+            preview.Hours = hours;
+            return;
+        }
+    }
+    m_PreviewHours.push_back({worldId, hours});
+    m_PreviewCount.store(static_cast<uint32>(m_PreviewHours.size()), std::memory_order_release);
+}
+
+void SkyEnvironmentSystem::ClearPreviewHour(uint64 worldId)
+{
+    std::lock_guard lock(m_PreviewMutex);
+    std::erase_if(m_PreviewHours, [worldId](const PreviewHour& preview) { return preview.WorldId == worldId; });
+    m_PreviewCount.store(static_cast<uint32>(m_PreviewHours.size()), std::memory_order_release);
+}
+
+std::optional<float32> SkyEnvironmentSystem::GetPreviewHour(uint64 worldId) const
+{
+    if (m_PreviewCount.load(std::memory_order_acquire) == 0)
+        return std::nullopt;
+    std::lock_guard lock(m_PreviewMutex);
+    for (const PreviewHour& preview : m_PreviewHours)
+    {
+        if (preview.WorldId == worldId)
+            return preview.Hours;
+    }
+    return std::nullopt;
 }
 
 void SkyEnvironmentSystem::TrackDrive(ECS::World& world, ECS::EntityHandle candidate,
