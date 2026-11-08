@@ -35,7 +35,8 @@ void AnimationComputePass::RecordDispatch(IDevice* dev, CommandList* cl,
     const uint32_t instanceCount = m_DataStore->GetInstanceCount();
     if (instanceCount == 0) return;
 
-    m_DataStore->FlushInstances();
+    if (!m_DataStore->FlushInstances())
+        return false;
 
     // Descriptor set layout: 7 storage buffers; binding 6 is the runtime-visibility flags.
     // The shader declares all but binding 5 (the bone palette atlas) `readonly`, so the layout marks them read-only too.
