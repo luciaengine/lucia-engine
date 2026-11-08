@@ -662,8 +662,8 @@ TEST_F(CBTHeightChain, NormalChainMatchesTheChainSurfaceAtThreeMips)
 
 TEST_F(CBTHeightChain, FailedNormalInitializationKeepsTheOldLatticeAndItsContents)
 {
-    constexpr uint32_t kOldSamples = 513u;
-    constexpr uint32_t kNewSamples = 769u;
+    constexpr uint32_t kOldSamples = 769u;
+    constexpr uint32_t kNewSamples = 513u;
     constexpr float kHeightScale = 40.0f;
     static_assert(CBTNormalChainMips(kOldSamples, kOldSamples) == CBTNormalChainMips(kNewSamples, kNewSamples));
     const auto originalSource = MakeTexture(RandomField(kOldSamples, kOldSamples, 31u), kOldSamples, kOldSamples);
@@ -746,6 +746,13 @@ TEST_F(CBTHeightChain, FailedNormalSubmissionPreservesResourcesAndItsCompletionO
     ASSERT_TRUE(instance.ProvisionNormalChain(kOldSamples, kOldSamples));
     EXPECT_EQ(probe.LastAttemptedSignal.sem, submitted.sem);
     EXPECT_GT(probe.LastAttemptedSignal.value, submitted.value);
+    probe.RefuseNextGraphicsSubmit = true;
+    EXPECT_FALSE(instance.ProvisionNormalChain(kNewSamples, kNewSamples));
+    EXPECT_FALSE(probe.RefuseNextGraphicsSubmit);
+    const auto unissued = probe.LastAttemptedSignal;
+    EXPECT_EQ(unissued.sem, submitted.sem);
+    EXPECT_TRUE(m_Device->GetTimelineSemaphoreValue(unissued.sem, completed));
+    EXPECT_LT(completed, unissued.value);
     instance.Shutdown();
     EXPECT_FALSE(m_Device->GetTimelineSemaphoreValue(submitted.sem, completed));
     EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
