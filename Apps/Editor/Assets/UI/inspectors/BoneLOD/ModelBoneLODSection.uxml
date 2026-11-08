@@ -7,7 +7,7 @@
   <Label text="Mandatory bones" class="inspector-section-subheader" />
   <Label text="Check Keep for attachments or gameplay bones that must remain animated. Ancestors are retained automatically." class="bone-lod-help" />
   <Label text="Search bones" class="bone-lod-help" />
-  <TextField id="BoneLODSearch" />
+  <UIElement id="BoneLODSearchHost" />
   <TreeView id="BoneLODTree" class="bone-lod-tree" />
   <UIElement class="bone-lod-actions">
     <Button id="BoneLODClear" text="Clear mandatory bones" class="small secondary" tooltip="Remove every mandatory bone path, including paths missing from a reimported model." />

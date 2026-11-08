@@ -16,7 +16,7 @@
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Checkbox.h"
 #include "UI/Controls/Label.h"
-#include "UI/Controls/TextField.h"
+#include "UI/Controls/SearchFieldWithFilter.h"
 #include "UI/Controls/TreeView.h"
 #include "UI/Parsers/XMLParser.h"
 
@@ -59,11 +59,11 @@ ModelBoneLODSection::ModelBoneLODSection(const ModelAsset& model, UndoRedoServic
     m_Tree = dynamic_cast<TreeView*>(FindById("BoneLODTree"));
     m_Status = dynamic_cast<Label*>(FindById("BoneLODStatus"));
     auto* summary = dynamic_cast<Label*>(FindById("BoneLODSummary"));
-    auto* search = dynamic_cast<TextField*>(FindById("BoneLODSearch"));
+    auto* searchHost = FindById("BoneLODSearchHost");
     auto* fields = FindById("BoneLODFields");
     auto* clear = dynamic_cast<Button*>(FindById("BoneLODClear"));
     auto* reset = dynamic_cast<Button*>(FindById("BoneLODReset"));
-    if (!m_Tree || !m_Status || !summary || !search || !fields || !clear || !reset)
+    if (!m_Tree || !m_Status || !summary || !searchHost || !fields || !clear || !reset)
     {
         Logger::Log::Error("Bone LOD settings layout is missing its fields, tree, search, summary, status, or actions.");
         return;
@@ -101,15 +101,22 @@ ModelBoneLODSection::ModelBoneLODSection(const ModelAsset& model, UndoRedoServic
     if (!skeleton)
         return;
     m_Provider = MakeUnique<BoneLODTreeProvider>(*skeleton);
+    auto search = MakeUnique<SearchFieldWithFilter>();
+    search->AddClass("bone-lod-search");
+    search->SetFieldId("BoneLODSearch");
+    search->SetPlaceholder("Filter bone names");
     m_Tree->SetDataProvider(m_Provider.get());
     m_Tree->SetVisibilityFilter([this](TreeId id) { return m_Provider->IsVisible(id); });
     m_Tree->SetOnRowBound([this](TreeId id, UIElement* row) { BindRow(id, row); });
     m_Tree->ExpandAll();
-    search->SetOnValueChanging([this](const std::string& value)
+    const auto filter = [this](const std::string& value)
     {
         m_Provider->SetSearch(value);
         m_Tree->ExpandAll();
-    });
+    };
+    search->SetOnQueryChanging(filter);
+    search->SetOnQueryChanged(filter);
+    searchHost->AddChild(std::move(search));
 }
 
 ModelBoneLODSection::~ModelBoneLODSection()

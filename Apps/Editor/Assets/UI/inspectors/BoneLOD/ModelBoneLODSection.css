@@ -24,6 +24,11 @@
     height: 240px;
     flex-shrink: 0;
 }
+.bone-lod-search {
+    width: 100%;
+    height: 26px;
+    flex-shrink: 0;
+}
 .bone-lod-pin {
     margin-left: auto;
     flex-shrink: 0;
