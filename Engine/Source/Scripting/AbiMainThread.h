@@ -9,21 +9,14 @@
 namespace GameEngine::ScriptingAbi
 {
 
-/**
- * @brief True on the thread that runs the engine's frames, the only thread that mutates the state such an
- * export reads (the UI tree, a model's payload during a hot reload).
- *
- * A host that never marked a main thread answers true. That is not a weakening: it is the standalone-host
- * case (gtest, dotnet test), where no frame loop exists, nothing else mutates that state, and the caller is
- * the only thread. Refusing there would fail every suite that drives an export without an engine, and would
- * protect nothing. The ScriptManager is resolved per call because EngineCore::Initialize and Shutdown
- * replace it.
- */
+/// True on the initialized engine main thread, outside a worker or inline job body.
 inline bool IsMainThreadOutsideJobFor(const EngineCore& engine)
 {
     return engine.IsMainThread() && !JobSystem::WorkStealingThreadPool::IsExecutingJob();
 }
 
+/// True when no script main thread is marked, or the caller is that thread. Standalone hosts have no
+/// frame loop. Resolve ScriptManager per call because engine initialization and shutdown replace it.
 inline bool OnEngineMainThread()
 {
     const ScriptManager& scripts = EngineCore::GetInstance().GetScriptManager();
