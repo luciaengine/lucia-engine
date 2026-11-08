@@ -109,20 +109,9 @@ public:
     // frameIndex selects which double-buffer slot to use for the instance ring.
     void BeginFrame(uint32_t frameIndex);
 
-    // Ensure skeleton/clip data is uploaded. Returns GPU header index (0-based).
-    // EnsureSkeletonUploaded returns kNotUploaded for a missing skeleton, one
-    // without a computed joint closure, or a selection over the kernel's limits.
-    // Contract: never called concurrently. Callers are AnimationSystem::Update
-    // in the animation wave (on a JobSystem worker when the wave runs its
-    // systems in parallel) and the model thumbnail's AnimationSystem on the
-    // main thread inside Render(); the wave is joined before Render() starts,
-    // so the two run one after the other. The CPU-side storage (m_SkelHeaders
-    // / m_ClipHeaders / their data vectors) is not guarded by a mutex — do not
-    // invoke from View().Parallel(...) or any other concurrent path, or you
-    // will race with the used-bytes accessors that AnimationComputePass reads
-    // during render-graph execute.
-    // A supplied plan is immutable for the upload's lifetime. Invalidate the
-    // skeleton before changing authored data or rebuilding an uploaded plan.
+    /// Returns a GPU header index, or kNotUploaded for missing topology or kernel overflow.
+    /// Uploads are serialized across animation waves and main-thread previews.
+    /// Plans stay immutable and owned until skeleton invalidation or Shutdown.
     uint32 EnsureSkeletonUploaded(uint32 skeletonId,
         const SharedPtr<const Animation::BoneEvaluationPlan>& plan = {});
     uint32 EnsureClipUploaded(uint32 clipIndex);

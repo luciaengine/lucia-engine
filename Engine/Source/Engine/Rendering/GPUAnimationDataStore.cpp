@@ -286,16 +286,16 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId,
     hdr.restTRSOffset = static_cast<uint32>(m_SkelData.size());
     for (uint32 bone = 0; bone < bones; ++bone)
     {
-        const size_t i = evaluatedNodes[bone];
+        const size_t nodeIndex = evaluatedNodes[bone];
         // Translation (3 floats).
         for (int c = 0; c < 3; ++c)
-            PackFloat(m_SkelData, (i * 3 + c < skel->RestTranslation.size()) ? skel->RestTranslation[i * 3 + c] : 0.0f);
+            PackFloat(m_SkelData, (nodeIndex * 3 + c < skel->RestTranslation.size()) ? skel->RestTranslation[nodeIndex * 3 + c] : 0.0f);
         // Rotation (4 floats: x,y,z,w).
         for (int c = 0; c < 4; ++c)
-            PackFloat(m_SkelData, (i * 4 + c < skel->RestRotation.size()) ? skel->RestRotation[i * 4 + c] : (c == 3 ? 1.0f : 0.0f));
+            PackFloat(m_SkelData, (nodeIndex * 4 + c < skel->RestRotation.size()) ? skel->RestRotation[nodeIndex * 4 + c] : (c == 3 ? 1.0f : 0.0f));
         // Scale (3 floats).
         for (int c = 0; c < 3; ++c)
-            PackFloat(m_SkelData, (i * 3 + c < skel->RestScale.size()) ? skel->RestScale[i * 3 + c] : 1.0f);
+            PackFloat(m_SkelData, (nodeIndex * 3 + c < skel->RestScale.size()) ? skel->RestScale[nodeIndex * 3 + c] : 1.0f);
     }
 
     // Rest local matrices (16 floats per bone, column-major).
@@ -304,8 +304,8 @@ uint32 GPUAnimationDataStore::EnsureSkeletonUploaded(uint32 skeletonId,
     {
         for (int c = 0; c < 16; ++c)
         {
-            size_t idx = static_cast<size_t>(evaluatedNodes[bone]) * 16 + c;
-            PackFloat(m_SkelData, (idx < skel->RestLocalMatrix.size()) ? skel->RestLocalMatrix[idx] : ((c % 5 == 0) ? 1.0f : 0.0f));
+            size_t matrixElementIndex = static_cast<size_t>(evaluatedNodes[bone]) * 16 + c;
+            PackFloat(m_SkelData, (matrixElementIndex < skel->RestLocalMatrix.size()) ? skel->RestLocalMatrix[matrixElementIndex] : ((c % 5 == 0) ? 1.0f : 0.0f));
         }
     }
 

@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <string>
 
 namespace GameEngine
 {
@@ -26,6 +27,7 @@ public:
 
 private:
     void BindRow(uint64 id, UIElement* row);
+    void ApplySearch(const std::string& query);
     void SetMandatory(uint64 id, bool mandatory);
     void SetBudget(int budget);
     void ClearMandatory();

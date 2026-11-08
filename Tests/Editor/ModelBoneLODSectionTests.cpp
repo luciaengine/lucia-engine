@@ -1,5 +1,4 @@
 #include "Inspectors/BoneLOD/ModelBoneLODSection.h"
-
 #include "Assets/AssetManager.h"
 #include "Assets/BoneLOD/BoneLODAssetSettings.h"
 #include "Assets/ModelAsset.h"
@@ -12,9 +11,9 @@
 #include "UI/Registration/ElementRegistration.h"
 #include "UndoRedo/UndoRedoService.h"
 
-#include <gtest/gtest.h>
-
 #include <fstream>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 

@@ -18,10 +18,13 @@
 #include <vector>
 
 namespace GameEngine {
+namespace ECS { template <typename T> class Writable; }
+namespace Components { struct SkeletonRef; struct MeshRenderer; struct MorphTargetWeights; }
 namespace Engine::Renderer {
 
 class RenderServices;
 class ClipStore;
+class SkeletonStore;
 // SkeletonData is provided by SkeletonStore.h via the Animation module shim.
 
 // Collects animated entities per frame and dispatches animation work to the GPU
@@ -38,21 +41,18 @@ public:
         return m_BoneLODPolicy.Find(runtimeId);
     }
 
-    // Per-(skeletonId, clipIndex) GPU-safety predicate. Returns true when
-    // the selected skeleton tier fits the kernel's bone and level limits
-    // (GPUAnimationDataStore::FitsKernelLimits; a skeleton over either logs
-    // one warning naming its model) and every clip channel's stored
-    // boneIndex points to a bone whose name hashes to the channel's
-    // targetNameId — i.e. the GPU upload's raw boneIndex flow will drive
-    // the correct bone. Same-FBX clips satisfy the name test by
-    // construction; cross-rig clips fail because positional ordering
-    // doesn't carry across rigs. Public so test hooks can probe routing
-    // decisions deterministically.
+    /// Requires a selected tier within kernel limits and exact clip-channel index alignment.
+    /// Cross-rig channels use CPU name resolution instead.
     bool IsClipSkeletonGPUSafe(uint32 skeletonId, uint32 clipIndex,
                                const SkeletonData& skeleton, ClipStore& clipStore,
                                const Animation::BoneEvaluationPlan* plan = nullptr);
 
 private:
+    void CollectWorkItem(ECS::World& world, ECS::EntityHandle entity,
+        ECS::Writable<Components::AnimatorRef> animatorRow, const Components::SkeletonRef& reference,
+        const Components::MeshRenderer* meshRenderer, Components::MorphTargetWeights* morphWeights,
+        ClipStore& clipStore, SkeletonStore& skeletonStore, float32 deltaTime);
+
     RenderServices* m_RenderServices;
     BoneLODPolicy m_BoneLODPolicy;
 
@@ -76,19 +76,8 @@ private:
     PoseSampleWorkspace m_Workspace; // CPU fallback (used until compute shader loads)
     PoseSampleWorkspace m_BlendFrom; // outgoing clip locals during a crossfade
 
-    // Idle-recompute-elision palette signal: the exact inputs every runtime's
-    // bone palette was built from last frame. A palette is a pure function of
-    // (skeleton, clip, time) on the GPU path, plus (prev clip, blend alpha)
-    // on the CPU fade path, plus model-plan identity, tier and allocation
-    // generation. The GPU kernel is single-clip; a live fade
-    // forces CPU dual-sample and these extra keys keep elision honest.
-    // Any delta — time advance, scrub, clip switch, blend weight, runtime
-    // added or removed — means palette CONTENT can differ from last
-    // frame's, which changes rasterized depth with no other elision key
-    // moving (see RenderServices::NotifySkinPaletteContentChanged).
-    // Time / blend alpha are compared as raw float bits: exact equality, no
-    // epsilons. A paused or run-to-end animator produces byte-identical
-    // inputs and stays elidable.
+    // Exact playback bits, model-plan identity, tier, and runtime generation
+    // define palette content. A changed key invalidates skin-dependent depth.
     struct PaletteInputs
     {
         uint32 SkeletonId = 0;

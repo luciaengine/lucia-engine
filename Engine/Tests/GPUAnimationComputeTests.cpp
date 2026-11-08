@@ -6,8 +6,6 @@
 // desktop kernel and on its compat-profile arm (the one the web cook translates).
 // The store's refusal of what the kernel cannot hold needs no device.
 
-#include <gtest/gtest.h>
-
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
@@ -22,11 +20,6 @@
 #include "Animation/BoneEvaluationPlan.h"
 #include "StagedTestPaths.h"
 
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/quaternion.hpp>
-#include <glm/gtc/type_ptr.hpp>
-
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
@@ -34,6 +27,12 @@
 #include <string>
 #include <tuple>
 #include <vector>
+
+#include <gtest/gtest.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;

@@ -28,6 +28,7 @@ namespace Engine::Renderer
 class ViewRegistry;
 
 /// Selects one immutable model plan from every consumer's current view demand.
+/// Update and Find are serialized; views and model metadata stay stable during Update.
 class BoneLODPolicy
 {
 public:

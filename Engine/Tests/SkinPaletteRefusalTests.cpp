@@ -13,8 +13,6 @@
 // grow. The first test pins that slot 0 really is that block; the second pins
 // the producer behaviour that depends on it.
 
-#include <gtest/gtest.h>
-
 #include "Components/Animation/SkeletonRef.h"
 #include "Components/Animation/AnimatorRef.h"
 #include "Assets/AnimationClip.h"
@@ -35,6 +33,7 @@
 #include "Rendering/Materials/ShaderCompileService.h"
 #include "StagedTestPaths.h"
 #include "TestTempDir.h"
+#include "TestDeviceHelper.h"
 
 #include <algorithm>
 #include <array>
@@ -42,11 +41,12 @@
 #include <memory>
 #include <vector>
 
+#include <gtest/gtest.h>
+
 using namespace GameEngine;
 using namespace GameEngine::Engine::Renderer;
 using namespace GameEngine::Rendering;
 
-#include "TestDeviceHelper.h"
 
 namespace
 {
@@ -445,6 +445,7 @@ void main() {
     description.descriptorSetLayouts = {layout};
     const auto pipeline = m_Device->CreatePipeline(description);
     ASSERT_TRUE(pipeline.IsValid());
+    // Each std430 shader result is one four-float vec4 record.
     std::array<std::array<float, 4u>, 20u> actual{};
     BufferDesc outputDescription;
     outputDescription.size = sizeof(actual);

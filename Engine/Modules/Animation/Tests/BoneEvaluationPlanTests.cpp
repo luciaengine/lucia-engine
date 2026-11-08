@@ -1,13 +1,12 @@
 #include "Animation/BoneEvaluationPlan.h"
-
 #include "Animation/SkeletonData.h"
 #include "Animation/PoseToSkinMatrices.h"
 #include "Mathematics/Vector3.h"
 
-#include <gtest/gtest.h>
-
 #include <algorithm>
 #include <limits>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 using namespace GameEngine::Animation;

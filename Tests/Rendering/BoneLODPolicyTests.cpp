@@ -1,5 +1,4 @@
 #include "Engine/Rendering/BoneLOD/BoneLODPolicy.h"
-
 #include "Animation/BoneEvaluationPlan.h"
 #include "Assets/AnimationClip.h"
 #include "Assets/AssetManager.h"
@@ -28,11 +27,11 @@
 #include "Scene/SceneIO.h"
 #include "TestTempDir.h"
 
-#include <gtest/gtest.h>
-
 #include <algorithm>
 #include <fstream>
 #include <numbers>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 namespace Renderer = GameEngine::Engine::Renderer;

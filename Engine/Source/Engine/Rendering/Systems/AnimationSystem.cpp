@@ -270,6 +270,49 @@ void WarnSkeletonOverGPULimitsOnce(uint32 skeletonId, const SkeletonData& skelet
 
 } // anonymous namespace
 
+void AnimationSystem::CollectWorkItem(ECS::World& world, ECS::EntityHandle entity,
+    ECS::Writable<Components::AnimatorRef> animatorRow, const Components::SkeletonRef& reference,
+    const Components::MeshRenderer* meshRenderer, Components::MorphTargetWeights* morphWeights,
+    ClipStore& clipStore, SkeletonStore& skeletonStore, float32 deltaTime)
+{
+    if (animatorRow->ClipIndex == 0 || reference.skeletonId == 0 || reference.runtimeId == 0) return;
+    const uint64 runtimeGeneration = skeletonStore.GetRuntimeGeneration(reference.runtimeId);
+    const bool proceduralReference = reference.runtimeGeneration == 0u && reference.sourceModelGuid.IsNull();
+    if (runtimeGeneration == 0u || skeletonStore.GetRuntimeSkeletonId(reference.runtimeId) != reference.skeletonId ||
+        (!proceduralReference && reference.runtimeGeneration != runtimeGeneration))
+        return;
+
+    // Retargeted entities are evaluated by HumanoidRetargetSystem.
+    if (world.HasComponent<HumanoidRetargeterComponent>(entity)) return;
+
+    auto clip = clipStore.Get(animatorRow->ClipIndex);
+    if (!clip) return;
+
+    auto* skeleton = skeletonStore.Get(reference.skeletonId);
+    if (!skeleton || skeleton->BoneCount == 0) return;
+
+    AnimatorRef& animator = animatorRow.Mutable();
+    TickAnimatorRef(animator, clipStore, deltaTime, ClaimClipPlaybackEvents(world, entity));
+
+    // Morph weights hard-cut to the incoming clip. Dual-sample lerp is
+    // skeletal locals only.
+    ApplyMorphAnimationChannels(world, entity, *clip, animator.Time, meshRenderer, morphWeights);
+
+    WorkItem item{};
+    item.SkeletonId = reference.skeletonId;
+    item.RuntimeId = reference.runtimeId;
+    item.ClipIndex = animator.ClipIndex;
+    item.Time = animator.Time;
+    item.CachedSkeleton = skeleton;
+    item.Entity = entity;
+    item.PrevClipIndex = animator.IsBlending() ? animator.PrevClipIndex : 0u;
+    item.PrevTime = animator.PrevTime;
+    item.BlendAlpha = animator.BlendAlpha();
+    item.RuntimeGeneration = runtimeGeneration;
+    item.BoneSelection = m_BoneLODPolicy.Find(reference.runtimeId);
+    m_WorkItems.push_back(item);
+}
+
 void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
     auto& clipStore = ClipStore::Instance();
     auto& skStore = SkeletonStore::Instance();
@@ -287,50 +330,12 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                          ECS::Read<SkeletonRef>,
                          ECS::Optional<Components::MeshRenderer>,
                          ECS::Optional<Components::MorphTargetWeights>>();
-    q.Each([&](ECS::EntityHandle entity,
-               ECS::Writable<AnimatorRef> animRow,
-               const SkeletonRef& sref,
-               const Components::MeshRenderer* meshRenderer,
-               Components::MorphTargetWeights* morph) {
-        if (animRow->ClipIndex == 0 || sref.skeletonId == 0 || sref.runtimeId == 0) return;
-        const uint64 runtimeGeneration = skStore.GetRuntimeGeneration(sref.runtimeId);
-        const bool proceduralReference = sref.runtimeGeneration == 0u && sref.sourceModelGuid.IsNull();
-        if (runtimeGeneration == 0u || skStore.GetRuntimeSkeletonId(sref.runtimeId) != sref.skeletonId ||
-            (!proceduralReference && sref.runtimeGeneration != runtimeGeneration))
-            return;
-
-        // Skip entities already routed through HumanoidRetargetSystem so we
-        // don't double-sample the clip onto the (now-unused) AnimatorRef
-        // path. The HumanoidRetargeter component takes precedence; the
-        // animation wave runs Animation -> HumanoidRetarget sequentially.
-        if (world.HasComponent<HumanoidRetargeterComponent>(entity)) return;
-
-        auto clip = clipStore.Get(animRow->ClipIndex);
-        if (!clip) return;
-
-        auto* skel = skStore.Get(sref.skeletonId);
-        if (!skel || skel->BoneCount == 0) return;
-
-        AnimatorRef& anim = animRow.Mutable();
-        TickAnimatorRef(anim, clipStore, deltaTime, ClaimClipPlaybackEvents(world, entity));
-
-        // Morph weights hard-cut to the incoming clip. Dual-sample lerp is
-        // skeletal locals only.
-        ApplyMorphAnimationChannels(world, entity, *clip, anim.Time, meshRenderer, morph);
-
-        WorkItem item{};
-        item.SkeletonId = sref.skeletonId;
-        item.RuntimeId = sref.runtimeId;
-        item.ClipIndex = anim.ClipIndex;
-        item.Time = anim.Time;
-        item.CachedSkeleton = skel;
-        item.Entity = entity;
-        item.PrevClipIndex = anim.IsBlending() ? anim.PrevClipIndex : 0u;
-        item.PrevTime = anim.PrevTime;
-        item.BlendAlpha = anim.BlendAlpha();
-        item.RuntimeGeneration = runtimeGeneration;
-        item.BoneSelection = m_BoneLODPolicy.Find(sref.runtimeId);
-        m_WorkItems.push_back(item);
+    q.Each([this, &world, &clipStore, &skStore, deltaTime](ECS::EntityHandle entity,
+               ECS::Writable<AnimatorRef> animatorRow, const SkeletonRef& reference,
+               const Components::MeshRenderer* meshRenderer, Components::MorphTargetWeights* morphWeights)
+    {
+        CollectWorkItem(world, entity, animatorRow, reference, meshRenderer, morphWeights,
+            clipStore, skStore, deltaTime);
     });
 
     // Deduplicate by runtimeId — multi-submesh models sharing a runtimeId

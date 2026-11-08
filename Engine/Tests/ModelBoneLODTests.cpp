@@ -1,5 +1,4 @@
 #include "Assets/BoneLOD/ModelBoneLOD.h"
-
 #include "Animation/BoneEvaluationPlan.h"
 #include "Animation/SkeletonData.h"
 #include "Assets/BoneLOD/BoneLODAssetSettings.h"
@@ -11,11 +10,11 @@
 #include "Mathematics/MatrixOps.h"
 #include "TestTempDir.h"
 
-#include <gtest/gtest.h>
-
 #include <algorithm>
 #include <fstream>
 #include <limits>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 

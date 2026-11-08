@@ -109,13 +109,8 @@ ModelBoneLODSection::ModelBoneLODSection(const ModelAsset& model, UndoRedoServic
     m_Tree->SetVisibilityFilter([this](TreeId id) { return m_Provider->IsVisible(id); });
     m_Tree->SetOnRowBound([this](TreeId id, UIElement* row) { BindRow(id, row); });
     m_Tree->ExpandAll();
-    const auto filter = [this](const std::string& value)
-    {
-        m_Provider->SetSearch(value);
-        m_Tree->ExpandAll();
-    };
-    search->SetOnQueryChanging(filter);
-    search->SetOnQueryChanged(filter);
+    search->SetOnQueryChanging([this](const std::string& value) { ApplySearch(value); });
+    search->SetOnQueryChanged([this](const std::string& value) { ApplySearch(value); });
     searchHost->AddChild(std::move(search));
 }
 
@@ -142,6 +137,12 @@ void ModelBoneLODSection::BindRow(uint64 id, UIElement* row)
         != m_Settings.MandatoryPaths.end());
     checkbox->SetOnValueChanged([this, id](bool value) { SetMandatory(id, value); });
     row->SetTooltip(Join(path, " / "));
+}
+
+void ModelBoneLODSection::ApplySearch(const std::string& query)
+{
+    m_Provider->SetSearch(query);
+    m_Tree->ExpandAll();
 }
 
 void ModelBoneLODSection::SetMandatory(uint64 id, bool mandatory)

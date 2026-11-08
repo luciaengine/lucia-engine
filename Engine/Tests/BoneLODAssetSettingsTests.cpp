@@ -1,12 +1,11 @@
 #include "Assets/BoneLOD/BoneLODAssetSettings.h"
-
 #include "Assets/AssetRegistry.h"
 #include "TestTempDir.h"
 
-#include <gtest/gtest.h>
-
 #include <fstream>
 #include <limits>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 
