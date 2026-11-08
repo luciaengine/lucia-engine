@@ -484,6 +484,8 @@ class Material
         static void SetGraphicsPipelineId(Material& mat, Rendering::GraphicsPipelineId id)
         {
             mat.m_GraphicsPipelineId = id;
+            if (id.IsValid())
+                mat.m_GraphicsPipelineTarget = Rendering::CurrentShaderCompileTarget();
         }
 
         static void SetGpuSceneMaterialIndex(Material& mat, uint32_t index)
@@ -656,6 +658,7 @@ class Material
 
     // GPU state (managed exclusively by MaterialRegistry).
     Rendering::GraphicsPipelineId m_GraphicsPipelineId{};
+    Rendering::ShaderCompileTarget m_GraphicsPipelineTarget{};
 
     // Shader metadata for descriptor binding-by-name (shared, not owned).
     std::shared_ptr<Rendering::ShaderMeta> m_ShaderMeta{};

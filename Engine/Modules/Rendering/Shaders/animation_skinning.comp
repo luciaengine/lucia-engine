@@ -3,11 +3,12 @@
 #include "Includes/storage_access.glsl"
 
 // GPU compute skinning. One workgroup per animation instance, 64 threads per
-// workgroup. The skeleton's bones are its joint closure (every skin joint and
-// every ancestor up to its root), level-sorted by GPUAnimationDataStore so a
+// workgroup. Evaluated bones are the joint closure or an ancestor-closed LOD
+// selection, level-sorted by GPUAnimationDataStore so a
 // parent precedes its children. Phase 1 samples each bone's clip channels into
 // its local matrix, phase 2 turns local matrices into world matrices level by
-// level in place, phase 3 writes the skin palette to the atlas.
+// level in place, phase 3 writes every original skin joint to the atlas using
+// its uploaded rest-chain and inverse-bind correction.
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
@@ -22,13 +23,13 @@ const uint kMaxHierarchyLevels = 64u;
 // ---------------------------------------------------------------------------
 
 struct SkeletonHeader {
-    uint boneCount;          // joint closure bones
+    uint boneCount;          // evaluated bones
     uint skinJointCount;
     uint levelCount;
     uint parentsOffset;      // uint per bone: its parent bone, 0xFFFFFFFF for a root
     uint restTRSOffset;      // 10 floats per bone: t3, r4 (xyzw), s3
     uint restLocalMatOffset; // 16 floats per bone, column-major
-    uint inverseBindOffset;  // 16 floats per joint, column-major
+    uint inverseBindOffset;  // 16 floats per joint: omitted rest chain times inverse bind
     uint jointBonesOffset;   // uint per joint: its bone, 0xFFFFFFFF when it has none
     uint levelOffsetsOffset; // levelCount + 1 prefix offsets into the bones
     uint boneNodesOffset;    // uint per bone: its skeleton node, the clip's channel index
