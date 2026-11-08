@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using GameEngine.ECS;
 using GameEngine.ECS.Internal;
@@ -12,6 +13,14 @@ namespace GameEngine.Scripting
     public unsafe struct EntityCommands
     {
         internal ulong WorldHandle;
+
+        /// <summary>Creates the command context for a generated system's assigned world.</summary>
+        [EditorBrowsable(EditorBrowsableState.Never)]
+        public EntityCommands(ulong worldHandle)
+        {
+            WorldHandle = worldHandle;
+        }
+
 
         /// <summary>Creates a new empty entity (no components). Returns a valid entity ID immediately.</summary>
         public uint CreateEntity()

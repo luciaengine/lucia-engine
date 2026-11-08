@@ -185,6 +185,7 @@ public class EntitySystemGeneratorTests
             public unsafe struct EntityCommands
             {
                 internal ulong WorldHandle;
+                public EntityCommands(ulong worldHandle) { WorldHandle = worldHandle; }
                 public uint CreateEntity() => 0;
                 public void DestroyEntity(uint entityId) { }
                 public void AddComponent<T>(uint entityId, in T component) where T : unmanaged, IComponent { }
@@ -1530,6 +1531,36 @@ class Outer
     // EntityCommands_GeneratesCommandsInjection
     // ------------------------------------------------------------------
     [Fact]
+    public void EntityCommands_CompileAgainstSeparateApiAssembly()
+    {
+        const string source = """
+            using GameEngine.Scripting;
+            [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+            public struct Health : IComponent { public float Value; }
+            public partial struct SpawnSystem : IEntitySystem
+            {
+                public void Execute(ref Health health, EntityCommands commands, float deltaTime) { }
+            }
+            """;
+        var compilation = CreateCompilation(source);
+        var stubTree = compilation.SyntaxTrees.First();
+        var apiCompilation = compilation.RemoveAllSyntaxTrees()
+            .AddSyntaxTrees(stubTree).WithAssemblyName("GameEngine.Scripting.ABI");
+        using var apiImage = new MemoryStream();
+        var apiResult = apiCompilation.Emit(apiImage);
+        Assert.True(apiResult.Success, string.Join("\n", apiResult.Diagnostics));
+        compilation = compilation.RemoveSyntaxTrees(stubTree)
+            .AddReferences(MetadataReference.CreateFromImage(apiImage.ToArray()));
+
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new EntitySystemGenerator());
+        driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        var errors = output.GetDiagnostics().Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        Assert.True(!errors.Any(), string.Join("\n", errors));
+    }
+
+    [Fact]
     public void EntityCommands_GeneratesCommandsInjection()
     {
         const string source = """
@@ -1557,7 +1588,7 @@ class Outer
 
         // Should create __commands variable.
         Assert.Contains("var __commands = new GameEngine.Scripting.EntityCommands", text);
-        Assert.Contains("WorldHandle = worldHandle", text);
+        Assert.Contains("new GameEngine.Scripting.EntityCommands(worldHandle)", text);
 
         // Should pass __commands to Execute.
         Assert.Contains("__commands", text);

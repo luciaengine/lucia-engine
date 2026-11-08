@@ -23,7 +23,7 @@ namespace GameEngine.Scripting
                 if (World.Handle == 0)
                     throw new InvalidOperationException("The system has no world. Let the engine create the system " +
                         "and assign its world before using Commands.");
-                return new EntityCommands { WorldHandle = World.Handle };
+                return new EntityCommands(World.Handle);
             }
         }
 
