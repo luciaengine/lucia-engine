@@ -187,6 +187,7 @@ class CBTResources
     uint32_t PageTableSlotWords() const { return m_PageTableSlotWords; }
     Rendering::TextureHandle GetDefaultAtlasHeightTexture() const { return m_DefaultAtlasHeight; }
     Rendering::TextureHandle GetDefaultAtlasCoarseTexture() const { return m_DefaultAtlasCoarse; }
+    Rendering::TextureHandle GetDefaultPageCacheTexture() const { return m_DefaultPageCache; }
     Rendering::BufferHandle GetAtlasRowsBuffer() const { return m_AtlasRows; }
 
     // Sphere sculpt physical page POOL (binding 16) + page TABLE (binding 20) — planet editing v2.
