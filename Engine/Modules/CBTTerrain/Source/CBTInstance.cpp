@@ -254,7 +254,8 @@ bool CBTInstance::InitializeRoots(uint32_t domainMode)
     {
         for (const TextureHandle texture : {m_Resources.GetDefaultHeightTexture(),
                  m_Resources.GetDefaultAtlasHeightTexture(),
-                 m_Resources.GetDefaultAtlasCoarseTexture()})
+                 m_Resources.GetDefaultAtlasCoarseTexture(),
+                 m_Resources.GetDefaultPageCacheTexture()})
         {
             if (!texture.IsValid())
                 continue;
@@ -815,11 +816,11 @@ bool CBTInstance::RecordHeightChainBuild(CommandList& cl, const CBTClassifyDesc&
     }
     if (!normals)
         return true; // not provisioned for this lattice: the surface keeps the level-0 normal map
-    // The normal chain reads the finished height chain; its mips are independent of each other. It rests
-    // in ShaderResource for the surface, so the build takes it to storage and back.
+    // The normal chain stays GENERAL for its shared storage and sampled descriptors.
+    // Order prior reads before these writes, then publish the completed mips.
     const TextureHandle normalChain = m_Resources.GetNormalChainTexture();
     cl.SetMarker("CBT.NormalChainBuild");
-    cl.Barrier(ResourceBarrier::CreateTextureBarrier(normalChain, ResourceState::ShaderResource,
+    cl.Barrier(ResourceBarrier::CreateTextureBarrier(normalChain, ResourceState::UnorderedAccess,
                                                      ResourceState::UnorderedAccess, 0u, normalMips));
     for (uint32_t mip = 0u; mip < normalMips; ++mip)
     {
@@ -839,7 +840,7 @@ bool CBTInstance::RecordHeightChainBuild(CommandList& cl, const CBTClassifyDesc&
         DispatchDirect(cl, CBTKernel::NormalChainBuild, pc, CeilDiv(width * height, kComputeWorkgroupSize));
     }
     cl.Barrier(ResourceBarrier::CreateTextureBarrier(normalChain, ResourceState::UnorderedAccess,
-                                                     ResourceState::ShaderResource, 0u, normalMips));
+                                                     ResourceState::UnorderedAccess, 0u, normalMips));
     return true;
 }
 

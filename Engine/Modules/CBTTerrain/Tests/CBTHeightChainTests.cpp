@@ -225,9 +225,21 @@ class CBTHeightChain : public ::testing::Test
   protected:
     void SetUp() override
     {
-        m_Device = MakeHeadlessDevice();
+        SetHeadlessEnv();
+        DeviceDesc description{};
+        description.preferredAPI = GraphicsAPI::Vulkan;
+        description.enableDynamicRendering = true;
+        description.enableDebugLayer = true;
+        m_Device = DeviceFactory::CreateDevice(description);
         if (!m_Device)
             GTEST_SKIP() << "no headless Vulkan device";
+        m_Device->ResetValidationStats();
+        if (!m_Device->Initialize(description))
+        {
+            m_Device.reset();
+            GTEST_SKIP() << "no headless Vulkan device";
+        }
+        RecordProperty("validation_enabled", m_Device->GetValidationStats().Enabled ? 1 : 0);
         if (!m_Device->GetCapabilities().supportsShaderInt64)
             GTEST_SKIP() << "device lacks shaderInt64 (the narrow arm builds no chain)";
         if (!m_KernelSet.Initialize(*m_Device, ShaderOutputDir()))
@@ -236,8 +248,18 @@ class CBTHeightChain : public ::testing::Test
     void TearDown() override
     {
         m_KernelSet.Shutdown();
-        if (m_Device)
-            m_Device->Shutdown();
+        if (!m_Device)
+            return;
+        m_Device->WaitForIdle();
+        const auto validation = m_Device->GetValidationStats();
+        if (validation.Enabled)
+        {
+            EXPECT_EQ(validation.ErrorCount, 0u);
+            for (const auto& entry : validation.Vuids)
+                EXPECT_FALSE(entry.IsError) << entry.Vuid << ": " << entry.FirstMessage
+                                           << " objects: " << entry.FirstObjects;
+        }
+        m_Device->Shutdown();
     }
 
     void Upload(TextureHandle tex, const std::vector<float>& data, uint32_t width, uint32_t height, ResourceState prior)
@@ -276,6 +298,9 @@ class CBTHeightChain : public ::testing::Test
     bool Bring(CBTInstance& inst, TextureHandle tex, uint32_t samplesX, uint32_t samplesZ)
     {
         if (!inst.Initialize(*m_Device, m_KernelSet) || !inst.InitializeRoots(kDomainPlanar))
+            return false;
+        // The initial reduction submitted the shared set that the source rebind changes.
+        if (!m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken()))
             return false;
         for (uint32_t slot = 0; slot < kCBTFrameParamsRing; ++slot)
             inst.SetHeightSource(slot, tex);
@@ -399,9 +424,9 @@ class CBTHeightChain : public ::testing::Test
         BufferHandle readback = m_Device->CreateReadbackBuffer(bytes, "CBT.Test.NormalReadback");
         auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
         cl->Begin();
-        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::ShaderResource, ResourceState::CopySource, mip, 1u));
+        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::UnorderedAccess, ResourceState::CopySource, mip, 1u));
         cl->CopyTextureSubresourceToBuffer(tex, mip, 0, readback, width, height, 0, 0, 0, static_cast<size_t>(width) * 4u);
-        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopySource, ResourceState::ShaderResource, mip, 1u));
+        cl->Barrier(ResourceBarrier::CreateTextureBarrier(tex, ResourceState::CopySource, ResourceState::UnorderedAccess, mip, 1u));
         cl->End();
         std::vector<CommandList*> lists{cl.get()};
         m_Device->ExecuteCommandLists(lists);
@@ -629,6 +654,8 @@ TEST_F(CBTHeightChain, NormalChainMatchesTheChainSurfaceAtThreeMips)
         EXPECT_LE(worst, 2e-3f) << "mip " << mip; // RG16F holds about three decimal digits
     }
     Shader::g_ChainWords = nullptr;
+    // Copies restore GENERAL so the next update's shared storage descriptors stay valid.
+    Run(inst, CameraParams({192.0f, 3.0f, 10.0f}, 0.2f, kX, kHeightScale), 1u, 1u);
     inst.Shutdown();
     m_Device->DestroyTexture(tex);
 }

@@ -221,6 +221,9 @@ TEST_F(CBTUpdateNodeTest, DeclaredOutputsCarryTheirByteSize)
     EXPECT_EQ(declaredSize(out.IndicesAll), res.GetBufferByteSize(CBTBinding::IndicesAll));
     EXPECT_EQ(declaredSize(out.IndicesVisible), res.GetBufferByteSize(CBTBinding::IndicesVisible));
     EXPECT_EQ(declaredSize(out.CurrentVertex), res.GetBufferByteSize(CBTBinding::CurrentVertex));
+    ASSERT_TRUE(out.NormalChain.IsValid());
+    EXPECT_TRUE(frame.Graph().ResourceDesc(out.NormalChain.Id).SampledInGeneralLayout);
+    EXPECT_TRUE(frame.Graph().HasWriteAccess(out.Update.Id, out.NormalChain.Id));
 }
 
 // The RG-pass path and the direct CommandList path must converge to the same

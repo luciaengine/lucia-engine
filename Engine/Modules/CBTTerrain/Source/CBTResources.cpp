@@ -673,6 +673,7 @@ bool CBTResources::CreateNormalChain(uint32_t width, uint32_t height, uint32_t m
     td.usage = static_cast<uint32_t>(TextureUsage::ShaderResource) | static_cast<uint32_t>(TextureUsage::UnorderedAccess) |
                static_cast<uint32_t>(TextureUsage::TransferSrc); // TransferSrc: readback for the tests and the debug server
     td.persistent = true;
+    td.sampledInGeneralLayout = true;
     td.debugName = "CBT.NormalChain";
     const TextureHandle texture = m_Device->CreateTexture(td);
     if (!texture.IsValid())
@@ -692,10 +693,10 @@ bool CBTResources::CreateNormalChain(uint32_t width, uint32_t height, uint32_t m
             return false;
         }
     }
-    // Rest it in ShaderResource, the state the render graph imports it in every frame.
+    // Shared compute storage descriptors and sampled draws both require GENERAL.
     auto cl = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
     cl->Begin();
-    cl->Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::Undefined, ResourceState::ShaderResource, 0u, mips));
+    cl->Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::Undefined, ResourceState::UnorderedAccess, 0u, mips));
     cl->End();
     std::vector<CommandList*> lists{cl.get()};
     m_Device->ExecuteCommandLists(lists);
