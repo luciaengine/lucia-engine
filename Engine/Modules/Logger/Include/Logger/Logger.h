@@ -1,12 +1,11 @@
 #pragma once
 
 #include "Logger/Backtrace.h"
-#include "Logger/LogLevel.h"
 #include "Logger/LogChannel.h"
-
-#include <optional>
+#include "Logger/LogLevel.h"
 #include "Logger/LogSink.h"
 #include "Logger/Types.h"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -14,6 +13,7 @@
 #include <future>
 #include <iterator>
 #include <mutex>
+#include <optional>
 #include <string_view>
 #include <thread>
 #include <utility>

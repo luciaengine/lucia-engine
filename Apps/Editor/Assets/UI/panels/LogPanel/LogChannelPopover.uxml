@@ -1,4 +1,4 @@
-<!-- The Log panel's Channels list (Panels/LogChannelPopover.h): Show All, Hide All, the search, the column names,
+<!-- The Log panel's Channels list (Panels/LogPanel/LogChannelPopover.h): Show All, Hide All, the search, the column names,
      the scrolling rows (LogChannelRow.uxml) and the count line. LogChannelPopover.cpp finds the ids and adds the
      rows to LogChannelsScroll. -->
 <UIElement class="popover-panel log-channels">

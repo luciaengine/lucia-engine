@@ -1,18 +1,17 @@
 #include "Panels/LogView.h"
 
+#include "Logger/LogLevel.h"
 #include "Platform/SystemMetrics.h"
 #include "Types/StringUtils.h"
+#include "UI/Controls/Label.h"
+#include "UI/Controls/ScrollView.h"
 
-#include <chrono>
+#include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <deque>
 #include <iomanip>
 #include <sstream>
-#include <algorithm>
-
-#include "Logger/LogLevel.h"
-#include "UI/Controls/Label.h"
-#include "UI/Controls/ScrollView.h"
 
 namespace GameEngine {
 

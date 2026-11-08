@@ -31,7 +31,7 @@ public:
     void DismissPopup() override { Close(); }
 
     /// Opens under `anchor` (over it when the window has no room below), with an empty search field that has
-    /// the focus. `anchor` must stay alive while the list is open.
+    /// the focus. The list closes if the anchor is removed.
     void Open(UIElement& anchor);
     void Close();
 

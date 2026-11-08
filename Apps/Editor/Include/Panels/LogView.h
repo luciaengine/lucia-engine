@@ -1,5 +1,12 @@
 #pragma once
 
+#include "Logger/Backtrace.h"
+#include "Logger/LogChannel.h"
+#include "Logger/LogSink.h"
+#include "UI/Controls/ListView.h"
+#include "UI/Interaction/Selection.h"
+#include "UI/UIElement.h"
+
 #include <bitset>
 #include <chrono>
 #include <cstdint>
@@ -11,12 +18,6 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "Logger/Backtrace.h"
-#include "Logger/LogChannel.h"
-#include "Logger/LogSink.h"
-#include "UI/UIElement.h"
-#include "UI/Controls/ListView.h"
-#include "UI/Interaction/Selection.h"
 
 namespace GameEngine {
 
