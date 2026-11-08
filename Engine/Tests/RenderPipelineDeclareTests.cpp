@@ -18896,6 +18896,199 @@ std::vector<std::pair<std::string, bool>> TerrainDeviceObjectsValid(const Terrai
 }
 } // namespace
 
+namespace
+{
+struct CbtNormalDrawFrame
+{
+    std::vector<float> Depth;
+    std::vector<uint8_t> Color;
+    CBTTerrain::CBTDrawLevelParams Published;
+    CBTTerrain::CBTDrawLevelParams Applied;
+    bool HasBindings = false;
+};
+
+CbtNormalDrawFrame RenderCbtNormalDrawFrame(TerrainFixture& fixture, RenderPipelineInstance& pipeline,
+    RenderGraph::RGFrame& frame, ViewId view, TerrainECS::TerrainRenderFeature& terrain,
+    uint32 frameIndex, bool enableNormalChain)
+{
+    CbtNormalDrawFrame out;
+    UploadCbtTerrainParams(terrain, frameIndex);
+    frame.BeginFrame(frameIndex);
+    auto colorDescription = ColorTargetDesc();
+    colorDescription.usage |= static_cast<uint32>(TextureUsage::TransferSrc);
+    auto depthDescription = DepthTargetDesc();
+    depthDescription.usage |= static_cast<uint32>(TextureUsage::TransferSrc);
+    const auto color = frame.ImportPersistentTexture("CbtNormal.Color", colorDescription);
+    const auto depth = frame.ImportPersistentTexture("CbtNormal.Depth", depthDescription);
+    fixture.Rs->BeginWorldDrawFrame();
+    fixture.Rs->BuildWorldBatchKeys();
+    ExtractedLight sun{};
+    sun.directionWS[0] = sun.directionWS[1] = -std::sqrt(0.5f);
+    sun.directionWS[2] = 0.0f;
+    sun.intensity = 1.0f;
+    fixture.Rs->SubmitLight(0u, sun);
+    const std::vector<ViewTargetsRG> targets{{view, color, depth, {}}};
+    const std::vector<Rendering::ViewDesc> views(fixture.Rs->Views().GetViews().begin(), fixture.Rs->Views().GetViews().end());
+    pipeline.Declare(frame, targets, views);
+    auto& feature = fixture.Rs->EnsureFeature<CBTTerrainECS::CBTRenderFeature>();
+    const auto& resources = feature.GetInstance().GetResources();
+    for (const auto& draw : fixture.Rs->GetForwardCommands(view))
+    {
+        const auto normal = std::find_if(draw.Bindings.Textures.begin(), draw.Bindings.Textures.end(),
+            [](const auto& entry) { return entry.Name == HashStringId("cbt_NormalChain"); });
+        if (normal == draw.Bindings.Textures.end() || normal->Texture != resources.GetNormalChainTexture())
+            continue;
+        for (const auto& entry : draw.Bindings.Buffers)
+        {
+            if (entry.Name != HashStringId("gCbtDrawLevel") || entry.Buffer != resources.GetDrawLevelParamsBuffer() ||
+                entry.Range < sizeof(out.Published) || entry.Offset % CBTTerrain::kCBTDrawLevelParamsSlotStride != 0u ||
+                entry.Offset / CBTTerrain::kCBTDrawLevelParamsSlotStride >= CBTTerrain::kCBTFrameParamsRing)
+                continue;
+            if (auto* mapped = static_cast<std::byte*>(fixture.Device->MapBuffer(entry.Buffer)))
+            {
+                std::memcpy(&out.Published, mapped + entry.Offset, sizeof(out.Published));
+                out.Applied = out.Published;
+                if (!enableNormalChain)
+                {
+                    out.Applied.Lattice[1] = 0u;
+                    std::memcpy(mapped + entry.Offset, &out.Applied, sizeof(out.Applied));
+                }
+                fixture.Device->UnmapBuffer(entry.Buffer);
+                out.HasBindings = true;
+            }
+        }
+    }
+    const auto colorTicket = Rendering::RequestTextureReadbackRG(fixture.Device.get(), frame, color, "CbtNormal.Color");
+    const auto depthTicket = Rendering::RequestTextureReadbackRG(fixture.Device.get(), frame, depth, "CbtNormal.Depth");
+    frame.MarkOutput(color);
+    frame.Execute();
+    feature.OnFrameSubmittedRG(frame, frame.SubmissionToken());
+    Rendering::OnFrameSubmittedReadbacksRG(frame, frame.SubmissionToken());
+    fixture.Device->WaitForIdle();
+    Rendering::ViewReadbackResult result;
+    if (depthTicket && depthTicket->TryGet(result) && result.format == TextureFormat::D32_FLOAT &&
+        result.width == depthDescription.width && result.height == depthDescription.height &&
+        result.pixels.size() == size_t(result.width) * result.height * sizeof(float))
+    {
+        out.Depth.resize(result.pixels.size() / sizeof(float));
+        std::memcpy(out.Depth.data(), result.pixels.data(), result.pixels.size());
+    }
+    if (colorTicket && colorTicket->TryGet(result) && result.format == TextureFormat::RGBA8_UNORM &&
+        result.width == colorDescription.width && result.height == colorDescription.height &&
+        result.pixels.size() == size_t(result.width) * result.height * 4u)
+        out.Color = std::move(result.pixels);
+    return out;
+}
+} // namespace
+
+TEST(RenderPipelineDeclareTests, CbtForwardNormalChainChangesColorWithoutChangingGeometry)
+{
+    TerrainFixture fixture;
+    if (!fixture.Up(true))
+        GTEST_SKIP() << "No Vulkan device available";
+    if (!fixture.Device->GetValidationStats().Enabled)
+        GTEST_SKIP() << "Vulkan validation layer unavailable";
+    if (!fixture.Device->GetCapabilities().supportsShaderInt64 || !fixture.Rs->Textures().IsBindlessEnabled())
+        GTEST_SKIP() << "wide CBT and bindless textures required";
+    auto& terrain = fixture.Rs->EnsureFeature<TerrainECS::TerrainRenderFeature>();
+    const ViewId view = fixture.AddView("CbtNormalChain", 1u);
+    ASSERT_TRUE(ActivateCbtTerrain(fixture, terrain));
+    const TerrainECS::TerrainHandle handle{3u, 1u};
+    constexpr uint32 kSamples = 513u;
+    std::vector<float> heights(size_t(kSamples) * kSamples);
+    for (uint32 row = 0; row < kSamples; ++row)
+        for (uint32 column = 0; column < kSamples; ++column)
+            heights[size_t(row) * kSamples + column] = 0.25f + 0.25f * float(column) / float(kSamples - 1u);
+    terrain.UploadHeightmap(handle, heights.data(), kSamples, kSamples);
+    // RG16F normal XZ=(-0.75,0), intentionally different from the height ramp's normal.
+    const std::array<uint16_t, 2> normal{0xba00u, 0u};
+    terrain.UploadNormalmap(handle, reinterpret_cast<const uint8*>(normal.data()), 1u, 1u);
+    FlushTerrainUploads(fixture, terrain);
+    terrain.RegisterHeightmapBindless(handle, *fixture.Rs);
+    terrain.RegisterNormalmapBindless(handle, *fixture.Rs);
+    ASSERT_NE(terrain.GetHeightmapBindlessIndex(handle), 0u);
+    ASSERT_NE(terrain.GetNormalmapBindlessIndex(handle), 0u);
+    auto infos = terrain.GetActiveTerrains();
+    ASSERT_EQ(infos.size(), 1u);
+    infos.front().HeightmapTexture = terrain.GetHeightmapTexture(handle);
+    infos.front().HeightmapBindlessIndex = terrain.GetHeightmapBindlessIndex(handle);
+    infos.front().NormalmapBindlessIndex = terrain.GetNormalmapBindlessIndex(handle);
+    terrain.SetActiveTerrains(std::move(infos));
+    fixture.SetCameraLookingAt({256.0f, 640.0f, -256.0f}, {256.0f, 32.0f, 256.0f});
+    auto& feature = fixture.Rs->EnsureFeature<CBTTerrainECS::CBTRenderFeature>();
+    CBTTerrain::CBTClassifyDesc classify{};
+    classify.Mode = CBTTerrain::kClassifyScreenSpace;
+    classify.TargetDepth = CBTTerrain::kDefaultBaseDepth + 12u;
+    feature.SetActive(true, classify, 8.0f, Components::kNoTerrainSeaLevel,
+                      CBTTerrainECS::CBTRenderFeature::DomainConfig{}, 0u);
+    const auto blueprint = CompileTestBlueprint(fixture, R"json({
+      "schemaVersion": 2, "pipelineName": "CbtNormalChain",
+      "passes": [
+        { "id": "Upload", "type": "TerrainUpload" },
+        { "id": "Terrain", "type": "CBTRender" },
+        { "id": "World", "type": "WorldRender", "keywords": ["ForwardPlus", "Instanced"] }
+      ]
+    })json", "cbt_normal_chain.rendergraph");
+    ASSERT_FALSE(blueprint.HasErrors());
+    RenderPipelineInstance pipeline(*fixture.Rs, fixture.Registry);
+    pipeline.SetBlueprint(blueprint);
+    FramePools pools(fixture.Device.get());
+    RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    GameEngine::Testing::ScopedPipelineFrame lifetime(fixture.Rs->Spine(), frame);
+    uint32 frameIndex = 0;
+    CbtNormalDrawFrame enabled;
+    bool settled = false;
+    while (frameIndex < 120u && !settled)
+    {
+        auto next = RenderCbtNormalDrawFrame(fixture, pipeline, frame, view, terrain, frameIndex++, true);
+        settled = next.HasBindings && !next.Depth.empty() && !next.Color.empty() &&
+                  SameBits(next.Depth, enabled.Depth) && next.Color == enabled.Color && !feature.WritesDynamicDepth();
+        enabled = std::move(next);
+    }
+    ASSERT_TRUE(settled);
+    ASSERT_GT(enabled.Published.Eye.w, 0.0f);
+    const float minimumLambda = std::log2((enabled.Published.Eye.y - 32.0f) * enabled.Published.Eye.w);
+    ASSERT_GT(minimumLambda, 2.0f);
+    ASSERT_EQ(enabled.Published.Lattice[0], kSamples | (kSamples << 16u));
+    ASSERT_EQ(enabled.Published.Lattice[1], feature.GetInstance().GetResources().GetNormalChainMips());
+    ASSERT_GE(enabled.Published.Lattice[1], 2u);
+    const auto disabled = RenderCbtNormalDrawFrame(fixture, pipeline, frame, view, terrain, frameIndex++, false);
+    const auto restored = RenderCbtNormalDrawFrame(fixture, pipeline, frame, view, terrain, frameIndex++, true);
+    ASSERT_TRUE(disabled.HasBindings && restored.HasBindings);
+    auto expectedControl = disabled.Published;
+    expectedControl.Lattice[1] = 0u;
+    EXPECT_EQ(std::memcmp(&expectedControl, &disabled.Applied, sizeof(expectedControl)), 0);
+    EXPECT_EQ(disabled.Published.Lattice[1], enabled.Published.Lattice[1]);
+    EXPECT_EQ(restored.Applied.Lattice[1], enabled.Applied.Lattice[1]);
+    EXPECT_TRUE(SameBits(enabled.Depth, disabled.Depth));
+    EXPECT_TRUE(SameBits(enabled.Depth, restored.Depth));
+    ASSERT_EQ(enabled.Color.size(), enabled.Depth.size() * 4u);
+    ASSERT_EQ(disabled.Color.size(), enabled.Color.size());
+    EXPECT_EQ(restored.Color, enabled.Color);
+    size_t covered = 0;
+    size_t changed = 0;
+    for (size_t pixel = 0; pixel < enabled.Depth.size(); ++pixel)
+    {
+        if (enabled.Depth[pixel] == 0.0f)
+            continue;
+        ++covered;
+        int difference = 0;
+        for (size_t channel = 0; channel < 3u; ++channel)
+            difference += std::abs(int(enabled.Color[pixel * 4u + channel]) - int(disabled.Color[pixel * 4u + channel]));
+        changed += difference >= 6 ? 1u : 0u;
+    }
+    EXPECT_GT(covered, 32u);
+    EXPECT_GT(changed, covered / 10u);
+    RecordProperty("covered_pixels", int(covered));
+    RecordProperty("normal_changed_pixels", int(changed));
+    RecordProperty("minimum_lambda_x1000", int(minimumLambda * 1000.0f));
+    RecordProperty("normal_mips", int(enabled.Published.Lattice[1]));
+    const auto validation = fixture.Device->GetValidationStats();
+    EXPECT_EQ(validation.ErrorCount, 0u);
+    for (const auto& entry : validation.Vuids)
+        EXPECT_FALSE(entry.IsError) << entry.Vuid << ": " << entry.FirstMessage;
+}
+
 // The extraction owns a terrain's uploads from the terrain service's CPU data. After a device
 // rebuild the terrain feature has dropped every texture (CbtTerrainBindsLiveHandlesAfterADeviceRebuild);
 // the extraction must see the feature's device-resource epoch move and upload the heights and the
