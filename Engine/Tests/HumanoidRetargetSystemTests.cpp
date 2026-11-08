@@ -42,6 +42,8 @@
 
 #include "Engine/Rendering/RetargetGPUDataStore.h"
 #include "Engine/Rendering/RetargetSubmission.h"
+#include "Rendering/Core/Device.h"
+#include "../../Tests/TestTempDir.h"
 
 #include "Assets/AnimationClip.h"
 #include "AssetCore/AssetEvents.h"
@@ -65,6 +67,36 @@ namespace
 {
 
 constexpr float kPi = 3.14159265358979323846f;
+
+#ifdef __APPLE__
+constexpr Rendering::GraphicsAPI kClipUploadAPI = Rendering::GraphicsAPI::Metal;
+#else
+constexpr Rendering::GraphicsAPI kClipUploadAPI = Rendering::GraphicsAPI::Vulkan;
+#endif
+
+struct NativeClipUpload
+{
+    bool Initialize()
+    {
+        Rendering::DeviceDesc description{};
+        description.preferredAPI = kClipUploadAPI;
+        description.enableSwapchain = false;
+        description.pipelineCacheDirectory = Cache.Path().string();
+        Device = Rendering::DeviceFactory::CreateDevice(description);
+        return Device && Device->Initialize(description) && Store.Initialize(Device.get());
+    }
+
+    ~NativeClipUpload()
+    {
+        Store.Shutdown();
+        if (Device)
+            Device->Shutdown();
+    }
+
+    TestUtils::ScopedTempDir Cache{TestUtils::MakeUniqueTempDirectory("retarget-clip-upload")};
+    std::unique_ptr<Rendering::IDevice> Device;
+    GERender::RetargetGPUDataStore Store;
+};
 
 // Build a 2-bone skeleton (Hips -> Spine) suitable for a synthetic
 // retarget test. Both bones identity-rest.
@@ -673,10 +705,12 @@ TEST_F(HumanoidRetargetSystemTest, GPUDataStore_ReleaseOnAssetUnload)
     // destruction. Declaring dispatcher first makes it destruct last.
     AssetEventDispatcher dispatcher;
 
-    // Headless data store — no IDevice, so all upload paths skip the GPU
-    // CreateBuffer call but still maintain the CPU mirror tables. That's
-    // what we exercise.
-    RetargetGPUDataStore store;
+    NativeClipUpload upload;
+    if (!upload.Initialize())
+        GTEST_SKIP() << "Native device unavailable for retarget clip upload lifecycle";
+    ASSERT_EQ(upload.Device->GetAPI(), kClipUploadAPI);
+    RecordProperty("native_metal", upload.Device->GetAPI() == Rendering::GraphicsAPI::Metal ? "true" : "false");
+    auto& store = upload.Store;
 
     // Synthetic clip with one channel so EnsureClipUploaded actually appends.
     GUID clipGuid = GUID::Generate();
@@ -757,7 +791,12 @@ TEST_F(HumanoidRetargetSystemTest, GPUDataStore_SharedClip_NotReleasedByMapUnloa
     // Dispatcher must outlive the store (see ReleaseOnAssetUnload above).
     AssetEventDispatcher dispatcher;
 
-    RetargetGPUDataStore store;
+    NativeClipUpload upload;
+    if (!upload.Initialize())
+        GTEST_SKIP() << "Native device unavailable for shared retarget clip upload lifecycle";
+    ASSERT_EQ(upload.Device->GetAPI(), kClipUploadAPI);
+    RecordProperty("native_metal", upload.Device->GetAPI() == Rendering::GraphicsAPI::Metal ? "true" : "false");
+    auto& store = upload.Store;
 
     auto& skStore = GERender::SkeletonStore::Instance();
     uint32 srcSkelId = CreateSyntheticSkeleton();

@@ -48,7 +48,7 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer Rig {
 
 struct CharacterParams {
     uint  rigPairHeaderIdx;     // vec4 offset into rig.data of the GPURigPairHeader (5 vec4)
-    uint  clipHeaderIdx;        // vec4 offset into clip.data of the GPURetargetClipHeader (2 vec4)
+    uint  clipHeaderIdx;        // logical slot in the contiguous two-vec4 clip header table
     float clipTime;
     uint  paletteOffset;        // bone-slot offset into atlas (1 slot = 3 vec4 rows)
     uint  prevClipHeaderIdx;    // crossfade source clip header, kInvalid when not blending
@@ -100,7 +100,8 @@ struct ClipHeader {
     uint  transCount;
 };
 
-ClipHeader readClipHeader(uint headerVec4Off) {
+ClipHeader readClipHeader(uint headerSlot) {
+    uint headerVec4Off = headerSlot * 2u;
     vec4 v0 = clip.data[headerVec4Off + 0u];
     vec4 v1 = clip.data[headerVec4Off + 1u];
     ClipHeader h;

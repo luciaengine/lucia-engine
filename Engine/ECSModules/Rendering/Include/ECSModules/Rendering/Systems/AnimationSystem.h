@@ -68,6 +68,8 @@ private:
         float32 BlendAlpha = 1.0f;
         uint64 RuntimeGeneration = 0u;
         const BoneLODPolicy::Selection* BoneSelection = nullptr;
+        uint64 ClipRevision = 0u;
+        uint64 PreviousClipRevision = 0u;
     };
 
     std::vector<WorkItem> m_WorkItems;
@@ -89,12 +91,19 @@ private:
         uint64 RuntimeGeneration = 0u;
         SharedPtr<const ModelBoneLOD> BoneData;
         bool BoneReduced = false;
+        uint64 ClipRevision = 0u;
+        uint64 PreviousClipRevision = 0u;
     };
     std::unordered_map<uint32, PaletteInputs> m_LastPaletteInputs;
 
     // Clip channel-index alignment, cleared when source assets change.
     // Kernel limits are checked for the current selection before this cache.
-    std::unordered_map<uint64_t, bool> m_GPUSafeCache;
+    struct ClipSafety
+    {
+        uint64 Revision;
+        bool Safe;
+    };
+    std::unordered_map<uint64_t, ClipSafety> m_GPUSafeCache;
 
     // Cross-rig humanoid retargeting lives in HumanoidRetargetSystem (Phase
     // 6). It runs immediately after this system in the Animation wave and

@@ -56,7 +56,14 @@ namespace AAnim = GameEngine::Animation;
 class RetargetGPUParityTest : public ::testing::Test
 {
 protected:
-    virtual GraphicsAPI RequestedAPI() const { return GraphicsAPI::Vulkan; }
+    virtual GraphicsAPI RequestedAPI() const
+    {
+#ifdef __APPLE__
+        return GraphicsAPI::Metal;
+#else
+        return GraphicsAPI::Vulkan;
+#endif
+    }
 
     void SetUp() override
     {
@@ -75,6 +82,7 @@ protected:
         }
 
         ASSERT_EQ(m_Device->GetAPI(), RequestedAPI());
+        RecordProperty("native_metal", m_Device->GetAPI() == GraphicsAPI::Metal ? "true" : "false");
         m_ShaderSpirv = LoadShader("retarget_full.comp.spv");
     }
 
@@ -412,10 +420,17 @@ protected:
         float clipTime,
         uint32_t skinJointCount,
         const BlendFrom* blend = nullptr,
-        bool retryAfterClearing = false)
+        bool retryAfterClearing = false,
+        AAnim::AnimationClip* revisePrevious = nullptr)
     {
         m_DataStore.Initialize(m_Device.get());
         m_DataStore.BeginFrame(0);
+        if (revisePrevious)
+        {
+            EXPECT_NE(m_DataStore.EnsureClipUploaded(revisePrevious->GetGUID(), *revisePrevious),
+                kRetargetInvalidIndex);
+            revisePrevious->SetDuration(4.0f);
+        }
 
         // Build a CPU RetargetNode to source the GPU export from.
         struct StaticPose : public AAnim::AnimGraphNode {
@@ -452,12 +467,20 @@ protected:
             chars[0].prevClipTime = blend->Time;
             chars[0].blendAlpha = blend->Alpha;
         }
+        if (revisePrevious)
+        {
+            auto unchanged = chars[0];
+            unchanged.prevClipHeaderIdx = kRetargetInvalidIndex;
+            unchanged.paletteOffset = skinJointCount;
+            chars.push_back(unchanged);
+            EXPECT_EQ(m_DataStore.ResolveClipIdx(clipGuid), clipIdx);
+        }
         m_DataStore.AppendCharacterParams(chars);
 
         // Atlas readback buffer. Storage layout is mat3x4 (3 vec4 rows per
         // bone = 48 bytes), see Engine/Include/Engine/Rendering/
         // BonePaletteLayout.h.
-        const size_t atlasBytes = static_cast<size_t>(skinJointCount)
+        const size_t atlasBytes = static_cast<size_t>(skinJointCount) * chars.size()
                                 * GameEngine::Engine::Renderer::BonePaletteLayout::kFloatsPerBone
                                 * sizeof(float);
         BufferDesc atlasDesc{};
@@ -551,16 +574,17 @@ protected:
 
         // Unpack three rows per bone to the canonical mat4 layout for the CPU reference.
         using namespace GameEngine::Engine::Renderer::BonePaletteLayout;
-        std::vector<float> packed(skinJointCount * kFloatsPerBone);
+        const uint32_t totalJoints = skinJointCount * static_cast<uint32_t>(chars.size());
+        std::vector<float> packed(totalJoints * kFloatsPerBone);
         void* mapped = m_Device->MapBuffer(atlasBuf);
         if (mapped) std::memcpy(packed.data(), mapped, atlasBytes);
         m_Device->UnmapBuffer(atlasBuf);
 
-        std::vector<float> result(skinJointCount * 16);
-        for (uint32_t j = 0; j < skinJointCount; ++j)
+        std::vector<float> result(totalJoints * 16);
+        for (uint32_t joint = 0; joint < totalJoints; ++joint)
         {
-            UnpackRowsToMat4(packed.data() + j * kFloatsPerBone,
-                             result.data() + j * 16);
+            UnpackRowsToMat4(packed.data() + joint * kFloatsPerBone,
+                             result.data() + joint * 16);
         }
 
         m_Device->DestroyBuffer(atlasBuf);
@@ -876,6 +900,29 @@ TEST_F(RetargetGPUParityTest, CrossfadeSamplesThePreviousClipAtItsOwnTime)
     auto current = MakeRotationClip(1, Mathematics::Quaternion::Identity(), AboutX(60.0f), 1.0f);
     auto previous = MakeRotationClip(2, Mathematics::Quaternion::Identity(), AboutX(-70.0f), 1.0f);
     ExpectCrossfade(*current, 0.5f, BlendFrom{previous.get(), 1.0f, 0.3f});
+}
+
+TEST_F(RetargetGPUParityTest, RevisedPreviousClipKeepsCurrentSlotsAndOtherCharactersValid)
+{
+    ASSERT_TRUE(HasDevice());
+    ASSERT_TRUE(HasShader());
+    auto source = MakeChainSkeleton(3u);
+    auto target = MakeChainSkeleton(3u);
+    const std::vector<AAnim::HumanBone> canonical{
+        AAnim::HumanBone::Hips, AAnim::HumanBone::Spine, AAnim::HumanBone::Head};
+    const std::vector<Mathematics::Quaternion> rotations(3u, Mathematics::Quaternion::Identity());
+    auto sourceRig = MakeRig(canonical, rotations);
+    auto targetRig = MakeRig(canonical, rotations);
+    auto map = MakeMap();
+    auto current = MakeRotationClip(1u, AboutX(0.0f), AboutX(60.0f), 1.0f);
+    auto previous = MakeRotationClip(2u, AboutX(0.0f), AboutX(-70.0f), 1.0f);
+    const BlendFrom blend{previous.get(), 1.0f, 0.3f};
+    auto expected = ComputeCPUReference(source, target, *sourceRig, *targetRig, *map, *current, 0.5f, &blend);
+    const auto unchanged = ComputeCPUReference(source, target, *sourceRig, *targetRig, *map, *current, 0.5f);
+    expected.insert(expected.end(), unchanged.begin(), unchanged.end());
+    const auto actual = DispatchGPU(source, target, *sourceRig, *targetRig, *map, *current, 0.5f, 3u,
+        &blend, false, previous.get());
+    ExpectAtlasMatches(expected, actual);
 }
 
 TEST_F(RetargetGPUParityTest, CrossfadeTakesTheShortArc)

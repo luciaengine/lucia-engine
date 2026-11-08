@@ -3079,7 +3079,7 @@ endif()
 
 	# Engine tests: Phase 6 ECS bridge — HumanoidRetargetSystem end-to-end,
 	# auto-bootstrap, layered-blend integration, hot-reload race, same-rig
-	# coexistence. Runs in pure CPU mode (no GPU device required).
+	# coexistence. Clip-upload lifecycle cases use a native headless device.
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(HumanoidRetargetSystemTests
 	        Tests/HumanoidRetargetSystemTests.cpp

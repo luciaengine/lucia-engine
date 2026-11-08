@@ -20,6 +20,7 @@
 #include "Engine/Rendering/AnimationSampling.h"
 #include "Engine/Rendering/AnimationEventDispatch.h"
 #include "Animation/PoseToSkinMatrices.h"
+#include "Animation/Compression/AnimationClipData.h"
 #include "Animation/BoneEvaluationPlan.h"
 #include "Engine/Rendering/GPUAnimationDataStore.h"
 #include "Engine/Rendering/RenderServices.h"
@@ -150,28 +151,6 @@ bool IsTransformAnimPath(AnimPath path)
     return path == AnimPath::Translation || path == AnimPath::Rotation || path == AnimPath::Scale;
 }
 
-float SampleScalarChannel(const AnimChannel& channel, float time)
-{
-    if (channel.keys.empty())
-        return 0.0f;
-
-    size_t hi = 0;
-    while (hi < channel.keys.size() && channel.keys[hi].time < time)
-        ++hi;
-    size_t lo = (hi == 0) ? 0 : (hi - 1);
-    if (hi >= channel.keys.size())
-        hi = channel.keys.size() - 1;
-
-    const AnimKeyframe& k0 = channel.keys[lo];
-    const AnimKeyframe& k1 = channel.keys[hi];
-    const float dt = k1.time - k0.time;
-    const float alpha = (dt > 0.0f) ? std::clamp((time - k0.time) / dt, 0.0f, 1.0f) : 0.0f;
-    const AnimInterp segInterp = k0.hasSegmentInterpOverride ? k0.segmentInterp : channel.interp;
-    if (segInterp == AnimInterp::Step || dt <= 0.0f)
-        return k0.translation[0];
-    return k0.translation[0] + (k1.translation[0] - k0.translation[0]) * alpha;
-}
-
 void ApplyMorphAnimationChannels(ECS::World& world,
                                  ECS::EntityHandle entity,
                                  const AnimationClip& clip,
@@ -205,29 +184,35 @@ void ApplyMorphAnimationChannels(ECS::World& world,
 
     bool changed = false;
     const uint32 count = std::min<uint32>(morph->weightCount, static_cast<uint32>(mesh.MorphTargets.size()));
-    for (const AnimChannel& channel : clip.GetChannels())
+    const auto data = clip.GetRuntimeData();
+    if (!data)
+        return;
+    for (const auto& channel : data->Tracks())
     {
-        if (channel.path != AnimPath::MorphWeight)
+        if (channel.Path != AnimPath::MorphWeight)
             continue;
-        if (channel.boneIndex != UINT32_MAX && mesh.SourceNodeIndex >= 0 &&
-            channel.boneIndex != static_cast<uint32>(mesh.SourceNodeIndex))
+        if (channel.BoneIndex != UINT32_MAX && mesh.SourceNodeIndex >= 0 &&
+            channel.BoneIndex != static_cast<uint32>(mesh.SourceNodeIndex))
             continue;
 
         for (uint32 i = 0; i < count; ++i)
         {
             const MorphTarget& target = mesh.MorphTargets[i];
-            if (channel.targetNameId != 0)
+            if (channel.TargetNameId != 0)
             {
                 const StringId targetId = target.Name.empty() ? 0u : HashStringId(target.Name);
-                if (targetId != channel.targetNameId)
+                if (targetId != channel.TargetNameId)
                     continue;
             }
-            else if (!channel.targetName.empty() && channel.targetName != target.Name)
+            else if (!channel.TargetName.empty() && channel.TargetName != target.Name)
             {
                 continue;
             }
 
-            const float value = SampleScalarChannel(channel, time);
+            Mathematics::Vector4 sampled;
+            if (!data->Sample(channel, time, sampled))
+                break;
+            const float value = sampled.x;
             if (std::abs(morph->weights[i] - value) > 1e-6f)
             {
                 morph->weights[i] = value;
@@ -310,6 +295,11 @@ void AnimationSystem::CollectWorkItem(ECS::World& world, ECS::EntityHandle entit
     item.BlendAlpha = animator.BlendAlpha();
     item.RuntimeGeneration = runtimeGeneration;
     item.BoneSelection = m_BoneLODPolicy.Find(reference.runtimeId);
+    const auto data = clip->GetRuntimeData();
+    const auto previousClip = clipStore.Get(item.PrevClipIndex);
+    const auto previousData = previousClip ? previousClip->GetRuntimeData() : nullptr;
+    item.ClipRevision = data ? data->Revision() : 0u;
+    item.PreviousClipRevision = previousData ? previousData->Revision() : 0u;
     m_WorkItems.push_back(item);
 }
 
@@ -380,7 +370,9 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                     it->second.BlendAlphaBits != timeBits(item.BlendAlpha) ||
                     it->second.RuntimeGeneration != item.RuntimeGeneration ||
                     it->second.BoneData != (item.BoneSelection ? item.BoneSelection->Data : nullptr) ||
-                    it->second.BoneReduced != (item.BoneSelection && item.BoneSelection->Reduced))
+                    it->second.BoneReduced != (item.BoneSelection && item.BoneSelection->Reduced) ||
+                    it->second.ClipRevision != item.ClipRevision ||
+                    it->second.PreviousClipRevision != item.PreviousClipRevision)
                 {
                     paletteChanged = true;
                     break;
@@ -400,7 +392,9 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                     timeBits(item.BlendAlpha),
                     item.RuntimeGeneration,
                     item.BoneSelection ? item.BoneSelection->Data : nullptr,
-                    item.BoneSelection && item.BoneSelection->Reduced};
+                    item.BoneSelection && item.BoneSelection->Reduced,
+                    item.ClipRevision,
+                    item.PreviousClipRevision};
             if (m_RenderServices)
                 m_RenderServices->NotifySkinPaletteContentChanged(world.GetWorldId());
         }
@@ -569,14 +563,17 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                 bool structuralMismatchSeen = false;
                 uint32 channelsResolved = 0;
                 uint32 channelsUnresolved = 0;
-                for (const auto& channel : clipForBootstrap->GetChannels())
+                const auto bootstrapData = clipForBootstrap->GetRuntimeData();
+                const auto bootstrapTracks = bootstrapData ? bootstrapData->Tracks() :
+                    std::span<const Animation::AnimationClipData::Track>{};
+                for (const auto& channel : bootstrapTracks)
                 {
-                    if (!IsTransformAnimPath(channel.path)) continue;
-                    if (channel.targetNameId == 0) continue;
-                    if (channel.boneIndex == UINT32_MAX) continue;
-                    const bool inRange = channel.boneIndex < item.CachedSkeleton->BoneCount
-                                      && channel.boneIndex < boneNameIds.size();
-                    if (inRange && boneNameIds[channel.boneIndex] == channel.targetNameId)
+                    if (!IsTransformAnimPath(channel.Path)) continue;
+                    if (channel.TargetNameId == 0) continue;
+                    if (channel.BoneIndex == UINT32_MAX) continue;
+                    const bool inRange = channel.BoneIndex < item.CachedSkeleton->BoneCount
+                                      && channel.BoneIndex < boneNameIds.size();
+                    if (inRange && boneNameIds[channel.BoneIndex] == channel.TargetNameId)
                     {
                         // Self-consistent — same-rig (possibly with duplicate
                         // names). Treat as resolved without consulting
@@ -585,13 +582,13 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                         continue;
                     }
                     const uint32 resolved = item.CachedSkeleton->ResolveBoneIndex(
-                        channel.targetNameId, UINT32_MAX);
+                        channel.TargetNameId, UINT32_MAX);
                     if (resolved == UINT32_MAX) {
                         ++channelsUnresolved;
                         continue;
                     }
                     ++channelsResolved;
-                    if (resolved != channel.boneIndex) {
+                    if (resolved != channel.BoneIndex) {
                         structuralMismatchSeen = true;
                     }
                 }
@@ -938,7 +935,10 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
         if (itemGpuSafe && skeletonGpuIndex == GPUAnimationDataStore::kNotUploaded
             && !GPUAnimationDataStore::FitsKernelLimits(*item.CachedSkeleton, plan.get()))
             WarnSkeletonOverGPULimitsOnce(item.SkeletonId, *item.CachedSkeleton, plan.get());
-        if (skeletonGpuIndex != GPUAnimationDataStore::kNotUploaded
+        const uint32 clipGpuIndex = skeletonGpuIndex != GPUAnimationDataStore::kNotUploaded
+            ? m_RenderServices->GetGPUAnimationDataStore().EnsureClipUploaded(item.ClipIndex)
+            : GPUAnimationDataStore::kNotUploaded;
+        if (clipGpuIndex != GPUAnimationDataStore::kNotUploaded
             && m_RenderServices->GetGPUAnimationDataStore().TryReserveInstanceCapacity(
                 m_RenderServices->GetGPUAnimationDataStore().GetInstanceCount() + 1u))
         {
@@ -949,8 +949,6 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                 item.CachedSkeleton->JointNodes.size() == item.CachedSkeleton->SkinJointCount)
                 ? item.CachedSkeleton->SkinJointCount : item.CachedSkeleton->BoneCount;
             if (jointCount == 0) continue;
-
-            uint32 clipGpuIndex = gpuStore.EnsureClipUploaded(item.ClipIndex);
 
             uint32 atlasOffset = atlas.Reserve(jointCount);
             auto* runtime = skStore.GetRuntime(item.RuntimeId);
@@ -1001,16 +999,21 @@ bool AnimationSystem::IsClipSkeletonGPUSafe(uint32 skeletonId, uint32 clipIndex,
         return false;
     }
     const uint64_t key = (static_cast<uint64_t>(skeletonId) << 32) | static_cast<uint64_t>(clipIndex);
-    if (auto it = m_GPUSafeCache.find(key); it != m_GPUSafeCache.end())
-        return it->second;
+    const auto clip = clipStore.Get(clipIndex);
+    const auto data = clip ? clip->GetRuntimeData() : nullptr;
+    if (!data)
+        return false;
+    if (auto found = m_GPUSafeCache.find(key); found != m_GPUSafeCache.end() &&
+        found->second.Revision == data->Revision())
+        return found->second.Safe;
 
     bool safe = true;
-    if (auto clip = clipStore.Get(clipIndex); clip && !skeleton.BoneNameIds.empty())
+    if (!skeleton.BoneNameIds.empty())
     {
-        for (const auto& channel : clip->GetChannels())
+        for (const auto& channel : data->Tracks())
         {
-            if (!IsTransformAnimPath(channel.path)) continue;
-            if (channel.targetNameId == 0) continue; // legacy clip; trust stored boneIndex
+            if (!IsTransformAnimPath(channel.Path)) continue;
+            if (channel.TargetNameId == 0) continue; // legacy clip; trust stored boneIndex
 
             // Self-consistency: the clip's stored boneIndex must point to a
             // bone whose name hashes to the channel's targetNameId. For
@@ -1023,10 +1026,10 @@ bool AnimationSystem::IsClipSkeletonGPUSafe(uint32 skeletonId, uint32 clipIndex,
             // For cross-rig (clip authored against a different skeleton),
             // names don't align positionally → fails → CPU sample handles
             // it via name resolution + drop policy.
-            const bool inRange = channel.boneIndex < skeleton.BoneCount
-                              && channel.boneIndex < skeleton.BoneNameIds.size();
-            const StringId boneName = inRange ? skeleton.BoneNameIds[channel.boneIndex] : 0u;
-            if (!inRange || boneName != channel.targetNameId)
+            const bool inRange = channel.BoneIndex < skeleton.BoneCount
+                              && channel.BoneIndex < skeleton.BoneNameIds.size();
+            const StringId boneName = inRange ? skeleton.BoneNameIds[channel.BoneIndex] : 0u;
+            if (!inRange || boneName != channel.TargetNameId)
             {
                 safe = false;
                 static const bool s_Diag = Platform::EnvironmentSwitchEnabled("GE_ANIM_GPUSAFE_DIAG", false);
@@ -1035,8 +1038,8 @@ bool AnimationSystem::IsClipSkeletonGPUSafe(uint32 skeletonId, uint32 clipIndex,
                     Logger::Log::Info(
                         "[AnimGPUSafeDiag] skeletonId={} clipIndex={} channelBone={} "
                         "stored={} storedName={} reason={} (boneCount={}, namedBones={})",
-                        skeletonId, clipIndex, channel.targetNameId,
-                        channel.boneIndex, boneName,
+                        skeletonId, clipIndex, channel.TargetNameId,
+                        channel.BoneIndex, boneName,
                         !inRange ? "stored-out-of-range" : "name-mismatch",
                         skeleton.BoneCount, skeleton.BoneNameIds.size());
                 }
@@ -1044,7 +1047,7 @@ bool AnimationSystem::IsClipSkeletonGPUSafe(uint32 skeletonId, uint32 clipIndex,
             }
         }
     }
-    m_GPUSafeCache.emplace(key, safe);
+    m_GPUSafeCache.insert_or_assign(key, ClipSafety{data->Revision(), safe});
     return safe;
 }
 

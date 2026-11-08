@@ -1,16 +1,20 @@
 #include "Assets/AnimationClip.h"
+#include "Animation/Compression/AnimationClipArchive.h"
+#include "Animation/Compression/AnimationClipData.h"
 
 #include "AnimationClipSchema.h"
 #include "AssetCore/SharedFileRead.h"
 #include "Logger/Logger.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -405,6 +409,27 @@ bool AnimationClip::Load()
 
 bool AnimationClip::LoadFromData(const Vector<uint8>& data)
 {
+    AnimationClip loaded(GetGUID(), GetPath());
+    loaded.m_SelectedAnimation = m_SelectedAnimation;
+    if (!loaded.LoadSourceData(data))
+    {
+        if (GetState() != AssetState::Loaded)
+            SetState(AssetState::Failed);
+        return false;
+    }
+    auto runtime = AnimationClipData::Build(loaded.m_Channels);
+    if (!runtime)
+    {
+        if (GetState() != AssetState::Loaded)
+            SetState(AssetState::Failed);
+        return false;
+    }
+    AdoptLoadedData(loaded, std::move(runtime));
+    return true;
+}
+
+bool AnimationClip::LoadSourceData(const Vector<uint8>& input)
+{
     if (GetState() == AssetState::Loaded)
         return true;
 
@@ -414,10 +439,15 @@ bool AnimationClip::LoadFromData(const Vector<uint8>& data)
     m_Settings = {};
     m_EventTrack = {};
 
+    Vector<uint8> decoded;
+    const bool cooked = AnimationClipArchive::IsArchive(input);
+    if (cooked && !AnimationClipArchive::Decode(input, decoded))
+        return false;
+    const Vector<uint8>& data = cooked ? decoded : input;
     const std::string extension = NormalizeExtension(GetExtension());
     bool success = false;
 
-    if (extension == ".anim" || extension == ".animation")
+    if (cooked || extension == ".anim" || extension == ".animation")
     {
         success = LoadEditableData(data);
     }
@@ -1055,11 +1085,16 @@ void AnimationClip::SetSourceInfo(const std::filesystem::path& sourcePath, uint3
 
 void AnimationClip::CopyFrom(const AnimationClip& other)
 {
+    if (this == &other)
+        return;
+    std::scoped_lock lock(m_AuthoringMutex, other.m_AuthoringMutex);
     m_SelectedAnimation = other.m_SelectedAnimation;
     m_SourcePath = other.m_SourcePath;
     m_SourceAnimationIndex = other.m_SourceAnimationIndex;
     m_Duration = other.m_Duration;
-    m_Channels = other.m_Channels;
+    std::vector<AnimChannel>().swap(m_Channels);
+    std::atomic_store_explicit(&m_RuntimeData, other.GetRuntimeData(), std::memory_order_release);
+    m_PublishedDuration = m_Duration;
     m_Settings = {};
     m_EventTrack = {};
     SetState(other.GetState());
@@ -1067,13 +1102,20 @@ void AnimationClip::CopyFrom(const AnimationClip& other)
 
 void AnimationClip::SetChannelsAndDurationForTest(const std::vector<AnimChannel>& channels, float32 duration)
 {
-    m_Channels = channels;
+    auto runtime = AnimationClipData::Build(channels);
+    if (!runtime)
+        return;
+    std::lock_guard lock(m_AuthoringMutex);
+    std::vector<AnimChannel>().swap(m_Channels);
+    std::atomic_store_explicit(&m_RuntimeData, std::move(runtime), std::memory_order_release);
     m_Duration = duration;
+    m_PublishedDuration = duration;
     SetState(AssetState::Loaded);
 }
 
 bool AnimationClip::SetKeyframeTime(size_t channelIndex, float currentTime, float newTime)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1089,11 +1131,12 @@ bool AnimationClip::SetKeyframeTime(size_t channelIndex, float currentTime, floa
                   return left.time < right.time;
               });
     RecomputeDuration();
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetKeyframeComponentValue(size_t channelIndex, float currentTime, uint32 componentIndex, float value)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1124,11 +1167,12 @@ bool AnimationClip::SetKeyframeComponentValue(size_t channelIndex, float current
         }
     }
 
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetKeyframeTangent(size_t channelIndex, float currentTime, uint32 componentIndex, bool incoming, float tangent, float weight)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1151,11 +1195,12 @@ bool AnimationClip::SetKeyframeTangent(size_t channelIndex, float currentTime, u
         channel.keys[keyIndex].outWeight[componentIndex] = ClampTangentWeight(weight);
     }
 
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::AddKeyframe(size_t channelIndex, float time)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1209,11 +1254,12 @@ bool AnimationClip::AddKeyframe(size_t channelIndex, float time)
     }
 
     RecomputeDuration();
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::AddKeyframeWithData(size_t channelIndex, const AnimKeyframe& keyframe)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1228,11 +1274,12 @@ bool AnimationClip::AddKeyframeWithData(size_t channelIndex, const AnimKeyframe&
                   return left.time < right.time;
               });
     RecomputeDuration();
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::DuplicateKeyframe(size_t channelIndex, float currentTime, float newTime)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1250,11 +1297,12 @@ bool AnimationClip::DuplicateKeyframe(size_t channelIndex, float currentTime, fl
                   return left.time < right.time;
               });
     RecomputeDuration();
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::RemoveKeyframe(size_t channelIndex, float currentTime)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1265,30 +1313,33 @@ bool AnimationClip::RemoveKeyframe(size_t channelIndex, float currentTime)
 
     channel.keys.erase(channel.keys.begin() + static_cast<std::ptrdiff_t>(keyIndex));
     RecomputeDuration();
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetChannelInterpolation(size_t channelIndex, AnimInterp interpolation)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
     m_Channels[channelIndex].interp = interpolation;
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetChannelExtrapolation(size_t channelIndex, AnimExtrapolation pre, AnimExtrapolation post)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
     m_Channels[channelIndex].preInfinity  = pre;
     m_Channels[channelIndex].postInfinity = post;
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetKeyframeTangentType(size_t channelIndex, float keyTime, uint32 componentIndex, bool incoming, AnimTangentType type)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1304,11 +1355,12 @@ bool AnimationClip::SetKeyframeTangentType(size_t channelIndex, float keyTime, u
         channel.keys[keyIndex].inTangentType[componentIndex] = type;
     else
         channel.keys[keyIndex].outTangentType[componentIndex] = type;
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetKeyframeTangentBroken(size_t channelIndex, float keyTime, uint32 componentIndex, bool broken)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1325,11 +1377,12 @@ bool AnimationClip::SetKeyframeTangentBroken(size_t channelIndex, float keyTime,
         channel.keys[keyIndex].tangentBroken |= bit;
     else
         channel.keys[keyIndex].tangentBroken &= static_cast<uint8>(~bit);
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetKeyframeSegmentInterp(size_t channelIndex, float keyTime, AnimInterp interp)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
     AnimChannel& channel = m_Channels[channelIndex];
@@ -1338,11 +1391,12 @@ bool AnimationClip::SetKeyframeSegmentInterp(size_t channelIndex, float keyTime,
         return false;
     channel.keys[keyIndex].segmentInterp = interp;
     channel.keys[keyIndex].hasSegmentInterpOverride = true;
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::ResampleBakedChannelToCurve(size_t channelIndex)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1360,7 +1414,7 @@ bool AnimationClip::ResampleBakedChannelToCurve(size_t channelIndex)
 
         channel.interp = AnimInterp::Linear;
         RecomputeDuration();
-        return true;
+        return RebuildRuntimeData();
     }
 
     if (channel.interp != AnimInterp::Step && channel.interp != AnimInterp::Linear)
@@ -1409,11 +1463,12 @@ bool AnimationClip::ResampleBakedChannelToCurve(size_t channelIndex)
     }
 
     RecomputeDuration();
-    return true;
+    return RebuildRuntimeData();
 }
 
 size_t AnimationClip::FindOrAddChannel(uint32 boneIndex, const String& targetName, AnimPath path)
 {
+    GetChannels();
     for (size_t index = 0; index < m_Channels.size(); ++index)
     {
         if (m_Channels[index].boneIndex == boneIndex && m_Channels[index].path == path)
@@ -1422,6 +1477,8 @@ size_t AnimationClip::FindOrAddChannel(uint32 boneIndex, const String& targetNam
             {
                 m_Channels[index].targetName = targetName;
                 m_Channels[index].targetNameId = HashStringId(targetName);
+                if (!RebuildRuntimeData())
+                    return std::numeric_limits<size_t>::max();
             }
             return index;
         }
@@ -1434,7 +1491,7 @@ size_t AnimationClip::FindOrAddChannel(uint32 boneIndex, const String& targetNam
     channel.path = path;
     channel.interp = AnimInterp::Linear;
     m_Channels.push_back(std::move(channel));
-    return m_Channels.size() - 1u;
+    return RebuildRuntimeData() ? m_Channels.size() - 1u : std::numeric_limits<size_t>::max();
 }
 
 bool AnimationClip::SaveToPath(const std::filesystem::path& path) const
@@ -1476,7 +1533,7 @@ bool AnimationClip::SaveToData(Vector<uint8>& outData) const
         }
 
         json channels = json::array();
-        for (const AnimChannel& channel : m_Channels)
+        for (const AnimChannel& channel : GetChannels())
         {
             json keys = json::array();
             for (const AnimKeyframe& keyframe : channel.keys)
@@ -1510,15 +1567,13 @@ bool AnimationClip::SaveToData(Vector<uint8>& outData) const
 
 bool AnimationClip::RestoreFromData(const Vector<uint8>& data)
 {
-    const AssetState previousState = GetState();
-    SetState(AssetState::Loading);
-    if (!LoadEditableData(data))
-    {
-        SetState(previousState);
+    AnimationClip loaded(GetGUID(), GetPath());
+    if (!loaded.LoadEditableData(data))
         return false;
-    }
-
-    SetState(AssetState::Loaded);
+    auto runtime = AnimationClipData::Build(loaded.m_Channels);
+    if (!runtime)
+        return false;
+    AdoptLoadedData(loaded, std::move(runtime));
     return true;
 }
 
@@ -1537,8 +1592,11 @@ void AnimationClip::RecomputeDuration()
 
 void AnimationClip::Unload()
 {
-    m_Channels.clear();
+    std::lock_guard lock(m_AuthoringMutex);
+    std::vector<AnimChannel>().swap(m_Channels);
+    std::atomic_store_explicit(&m_RuntimeData, SharedPtr<const AnimationClipData>{}, std::memory_order_release);
     m_Duration = 0.0f;
+    m_PublishedDuration = 0.0f;
     m_Settings = {};
     m_EventTrack = {};
     SetState(AssetState::Unloaded);
