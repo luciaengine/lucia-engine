@@ -305,6 +305,8 @@ void TileStreamingManager::DispatchCoarseJob(TerrainStream& stream,
     const float32 terrainOriginZ = tiled.WorldOriginZ;
     const float32 tileWorld = tiled.Config.TileWorldSize;
     const uint32 coarseRes = m_Config.CoarseResolution;
+    const uint32 tileRes = tiled.Config.TileConfig.HeightmapWidth;
+    const float32 heightScale = tiled.Config.HeightScale;
     const uint32 tileLODLevels = tiled.Config.TileConfig.LODLevels;
     // By value: the copy shares the base heightmap, so the job reads it safely even
     // if the terrain is re-provisioned or the decode cache evicts it meanwhile.
@@ -316,7 +318,7 @@ void TileStreamingManager::DispatchCoarseJob(TerrainStream& stream,
 
     tracker.ActiveJob = m_JobSystem->Submit([result, worldOriginX, worldOriginZ,
                                              terrainOriginX, terrainOriginZ, config,
-                                             tileWorld, coarseRes, coord,
+                                             tileWorld, coarseRes, tileRes, heightScale, coord,
                                              tileLODLevels, completedQueue]()
     {
         result->Coord = coord;
@@ -338,12 +340,10 @@ void TileStreamingManager::DispatchCoarseJob(TerrainStream& stream,
         result->MinHeight = minH;
         result->MaxHeight = maxH;
 
-        // Size the coarse splatmap so the streaming tile has one to upload. It stays
-        // unbaked (reads as channel 0) until the modifier bake composites the surface
-        // rules on arrival. Extraction bilinear-upsamples this (and the coarse
-        // heightfield) into the unified tile region; the coarse NORMAL is
-        // intentionally not generated — the tile is distant (streaming edge) where
-        // flat-up lighting is imperceptible, and Full uploads the real normal on upgrade.
+        result->CoarseStandIn = std::make_shared<CoarseTileStandIn>();
+        BuildCoarseTileStandIn(result->CoarseHeightfield, tileRes, tileWorld, heightScale, *result->CoarseStandIn);
+
+        // Surface rules bake into this splatmap when the coarse tile arrives.
         ResetSplatmap(
             result->CoarseHeightfield,
             result->Splatmap, result->SplatmapWidth, result->SplatmapHeight);
@@ -541,10 +541,7 @@ void TileStreamingManager::IntegrateCompletedTiles(TerrainStream& stream,
                                        std::move(result->CoarseHeightfield),
                                        result->MinHeight, result->MaxHeight);
 
-            // Move the coarse splatmap only — the coarse job generates no normalmap
-            // (extraction uploads a flat-up normal for the coarse region), so pass an
-            // empty normal rather than shipping/wiping one. Extraction bilinear-
-            // upsamples this splat into the unified tile region.
+            // Extraction uploads the coarse normal from the stand-in.
             if (!result->Splatmap.empty())
             {
                 service.SetTileMaps(tiledHandle, result->Coord,
@@ -558,9 +555,11 @@ void TileStreamingManager::IntegrateCompletedTiles(TerrainStream& stream,
                 auto tileIt = tiled.Tiles.find(result->Coord);
                 if (tileIt != tiled.Tiles.end() && tileIt->second)
                 {
-                    auto& t = *tileIt->second;
-                    t.PrecomputedQuadtreeNodes = std::move(result->QuadtreeNodes);
-                    t.PrecomputedQuadtreeNodesPerAxis = result->QuadtreeNodesPerAxis;
+                    auto& tile = *tileIt->second;
+                    tile.PrecomputedQuadtreeNodes = std::move(result->QuadtreeNodes);
+                    tile.PrecomputedQuadtreeNodesPerAxis = result->QuadtreeNodesPerAxis;
+                    result->CoarseStandIn->HeightfieldVersion = tile.HeightfieldVersion;
+                    tile.CoarseStandIn = std::move(result->CoarseStandIn);
                 }
             }
 

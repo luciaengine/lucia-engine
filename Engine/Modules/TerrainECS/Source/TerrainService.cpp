@@ -2531,6 +2531,7 @@ void TerrainService::SetTileHeightfield(TiledTerrainHandle handle, TileCoord coo
                             heightfield.GetHeight() == tile.Config.HeightmapHeight);
 
     tile.Heightfield = std::move(heightfield);
+    tile.CoarseStandIn.reset();
     tile.CachedMinH = minH;
     tile.CachedMaxH = maxH;
     // Streamed content replaced the heights wholesale; the modifier system's
