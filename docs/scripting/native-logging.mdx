@@ -1,0 +1,52 @@
+---
+title: Native logging
+description: Write named log channels and filter them in the editor.
+---
+
+Open the **Log** panel and select **Channels** to show or hide registered channels.
+The channel filter combines with the existing search and severity filters. All
+three conditions must match for a line to appear. Copy without a selection
+copies the lines that pass those filters.
+
+The channel list has its own search. **Show all** and **Hide all** apply to the
+channels that match that search. Closing the list keeps its visibility choices
+for the current panel. Hiding a channel keeps its stored lines.
+
+Each channel also has a minimum logging level. This controls whether the logger
+creates new records. It does not remove records already stored in the panel.
+**Default** uses the stricter of the global level and the channel's declared
+level. An explicit channel level overrides that threshold. Global **Off** stops
+all channels. These settings last for the current process.
+
+## Declare a channel
+
+Declare a channel once in the owning module's header. Its first call registers
+its name. Registrations with the same name share one channel across modules.
+Names have at most 63 UTF-8 bytes. A process has at most 256 channels, including
+**Core**.
+
+Channel handles belong to their logger state. A host or module that calls
+`Logger::Log::RedirectToSharedState` must redirect before registering channels
+or using `GE_LOG`. Registration can then precede logger initialization.
+
+```cpp title="Declare and use a gameplay channel"
+#include "Logger/LogChannel.h"
+
+namespace MyGame
+{
+GE_LOG_CHANNEL(GameplayLog, "Gameplay", Info)
+
+void ReportSpawn(int entityCount)
+{
+    GE_LOG(GameplayLog, Info, "Spawned {} entities", entityCount);
+}
+}
+```
+
+`GE_LOG` does not evaluate format arguments when the channel rejects the level.
+Trace and Debug calls are compiled out when debug instrumentation is disabled.
+Critical records flush to the sinks before the call returns.
+
+Existing `Logger::Log` calls and `LOG_` macros use **Core**. Named channels appear
+after their owners register them. Changing existing engine call sites to named
+channels is separate from adding the picker.
