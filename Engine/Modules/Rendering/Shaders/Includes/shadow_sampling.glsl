@@ -200,21 +200,7 @@ const float kCascadeBlendMinDistance = 3.0; // Minimum blend zone in world units
 // capped at runtime via `tapCount` (clamped to [8, 64] from ge_shadowPcss.y).
 const int kPcssMaxTaps = 64;
 
-// Vogel disk: well-distributed sample positions on a unit disk for any N.
-// Replaces the fixed kPoisson16 array — works for 8/16/32/64 taps with the
-// same code path, denser at the disk edge than Poisson which dissolves the
-// "kernel arc" pattern that a static Poisson kernel showed at low N.
-// `sc` is the per-pixel rotation from GE_PoissonRotation: (cos a, sin a).
-vec2 GE_VogelDisk(int sampleIndex, int totalSamples, vec2 sc)
-{
-    const float goldenAngle = 2.39996323; // 137.5° in radians
-    float r = sqrt((float(sampleIndex) + 0.5) / float(totalSamples));
-    float theta = float(sampleIndex) * goldenAngle;
-    float ct = cos(theta);
-    float st = sin(theta);
-    // Apply per-pixel rotation `sc` on top of Vogel theta.
-    return r * vec2(ct * sc.x - st * sc.y, ct * sc.y + st * sc.x);
-}
+#include "vogel_disk.glsl"
 
 // Per-pixel pseudo-random rotation for the Vogel disk. Returns (cosA, sinA).
 //

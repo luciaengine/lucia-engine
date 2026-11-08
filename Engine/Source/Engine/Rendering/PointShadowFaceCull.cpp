@@ -26,8 +26,8 @@ static_assert(kFaceCullMarginFloor > kPointShadowNormalBias,
               "else a normal-biased fragment could sample a culled (cleared-far) face");
 
 // A separating plane must clear the opposing hull by more than the margin.
-// The margin also covers the point filter's UV radius (1.5/1024), whose
-// world-space offset is at most 2 * radius * range plus the normal bias.
+// This margin covers normal bias and the filter's bilinear footprint for
+// the point atlas's 256-, 512-, and 1024-texel tiles.
 inline float KeepBiasMargin(float range)
 {
     return std::max(range * 0.02f, kFaceCullMarginFloor);

@@ -304,19 +304,6 @@ TEST(LocalShadowWorldRadiusContract, SpotAndPointRadiusIsNotATexelMultiple)
         << "the radius must be a constant in UV, which is resolution-free";
 }
 
-TEST(LocalShadowWorldRadiusContract, CrossingPointTapsUseTheirOwnFaceAndComparisonDepth)
-{
-    const std::string source = ClusteredLightingSource();
-    const auto filterStart = source.find("float GE_SamplePointShadow(");
-    ASSERT_NE(filterStart, std::string::npos);
-    const std::string pointFilter = source.substr(filterStart, source.find("\n#else", filterStart) - filterStart);
-
-    EXPECT_NE(pointFilter.find("GE_PointShadowFace(biasedLightToFrag + tapOffset)"), std::string::npos);
-    EXPECT_NE(pointFilter.find("ps.faceVP[tapFace]"), std::string::npos);
-    EXPECT_NE(pointFilter.find("tapDepth = clamp(tapNDC.z + ps.params.z"), std::string::npos);
-    EXPECT_NE(pointFilter.find("baseLayer + float(tapFace), tapDepth"), std::string::npos);
-}
-
 TEST(LocalShadowWorldRadiusContract, AreaClampsAreNotTexelMultiples)
 {
     const std::string src = ClusteredLightingSource();

@@ -2151,6 +2151,7 @@ endif()
                 Tests/ShadowFilterDefaultTests.cpp
                 Tests/ShadowMinMaxPyramidTests.cpp
                 Tests/ShadowFilterComputeTests.cpp
+                Tests/PointShadowFilterComputeTests.cpp
                 Tests/RTShadowMaskShaderContractTests.cpp
                 Tests/RTShadowDenoiseShaderContractTests.cpp
                 Tests/ShadowDitherBasisTests.cpp
@@ -2165,6 +2166,9 @@ endif()
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${CMAKE_BINARY_DIR}/Shaders/shadow_filter_test.comp.spv"
                     "$<TARGET_FILE_DIR:EngineShadowTests>/TestData/ShadowFilter/shadow_filter_test.spv"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_BINARY_DIR}/Shaders/point_shadow_filter_test.comp.spv"
+                    "$<TARGET_FILE_DIR:EngineShadowTests>/TestData/ShadowFilter/point_shadow_filter_test.spv"
                 VERBATIM)
             add_dependencies(ShadowFilterTestShader CompileShaders)
             add_dependencies(EngineShadowTests ShadowFilterTestShader)
