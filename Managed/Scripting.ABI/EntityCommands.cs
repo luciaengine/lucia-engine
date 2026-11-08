@@ -6,9 +6,8 @@ using GameEngine.ECS.Internal;
 namespace GameEngine.Scripting
 {
     /// <summary>
-    /// Buffers structural ECS operations for deferred execution.
-    /// Pass as a parameter to IEntitySystem.Execute.
-    /// Zero managed heap allocations — all data passed via stack pinning.
+    /// Provides immediate entity creation and resident prefab spawning, with deferred removals and component edits.
+    /// Pass as a parameter to IEntitySystem.Execute. Deferred operations run after all systems complete.
     /// </summary>
     public unsafe struct EntityCommands
     {

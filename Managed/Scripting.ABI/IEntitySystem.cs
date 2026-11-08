@@ -38,9 +38,9 @@ namespace GameEngine.Scripting
     /// <para>Use <c>[Without(typeof(Static))]</c> on the struct to exclude entities
     /// with specific components from the query.</para>
     ///
-    /// <para><b>Important:</b> Do not perform structural changes (entity create/destroy,
-    /// component add/remove) inside <c>Execute</c>. Structural changes are deferred and
-    /// flushed after all systems complete for the frame.</para>
+    /// <para>Use <see cref="EntityCommands"/> for structural changes inside <c>Execute</c>.
+    /// Entity creation and resident prefab spawning run at once without moving existing entities.
+    /// Removals and component edits are deferred until all systems complete for the frame.</para>
     /// </summary>
     /// <remarks>
     /// The source generator emits a companion partial struct with:
