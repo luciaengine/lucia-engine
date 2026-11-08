@@ -381,11 +381,11 @@ TEST(CBTSourceRebind, UnknownCompletionLeavesBindingsUnchangedAndRetries)
     EXPECT_TRUE(changed);
     EXPECT_EQ(instance.CountTerrainSourceSlots(source), originalSlots);
     // The real Vulkan queue exercises the scoped-fence path without a global token.
-    device.UseScopedGraphicsFence = true;
     PendingUpdate pending(device);
     ASSERT_TRUE(pending.Submit(instance, 0u));
     ASSERT_EQ(pending.Status(), IDevice::GpuSyncStatus::Pending);
     pending.ReleaseSoon();
+    device.UseScopedGraphicsFence = true;
     const uint64_t drains = device.GetIdleDrainCount();
     EXPECT_TRUE(instance.SetHeightSource(2u, source));
     EXPECT_EQ(pending.Status(), IDevice::GpuSyncStatus::Complete);
