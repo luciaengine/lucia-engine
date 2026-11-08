@@ -59,7 +59,7 @@ class LogChannelTable
         std::uint8_t Length = 0;
     };
 
-    /// The bytes Enabled reads: one byte for each channel, 256 bytes in four cache lines.
+    /// One byte per channel. Enabled reads only the selected slot.
     std::array<std::atomic<std::uint8_t>, kMaxLogChannels> m_Effective{};
     std::array<std::atomic<std::uint8_t>, kMaxLogChannels> m_Settings{};
     std::array<LogLevel, kMaxLogChannels> m_Defaults{};
