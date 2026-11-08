@@ -392,6 +392,8 @@ TEST(CBTSourceRebind, UnknownCompletionLeavesBindingsUnchangedAndRetries)
     EXPECT_EQ(device.GetIdleDrainCount(), drains);
     device.UseScopedGraphicsFence = false;
     EXPECT_EQ(device.GetValidationStats().ErrorCount, 0u);
+    for (const auto& entry : device.GetValidationStats().Vuids)
+        EXPECT_FALSE(entry.IsError) << entry.Vuid << ": " << entry.FirstMessage;
 }
 
 #if defined(__APPLE__)
