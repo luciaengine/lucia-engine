@@ -1389,7 +1389,7 @@ ListView {
 }
 
 .hierarchy-prefab-overridden {
-    background-image: url("editor:Icons/dot.svg");
+    background-image: url("editor:Icons/dot.png");
     background-size: 6px 6px;
     background-position: 3px center;
     background-repeat: no-repeat;
@@ -1397,7 +1397,7 @@ ListView {
 }
 
 .hierarchy-prefab-added {
-    background-image: url("editor:Icons/plus.svg");
+    background-image: url("editor:Icons/plus.png");
     background-size: 10px 10px;
     background-position: 1px center;
     background-repeat: no-repeat;

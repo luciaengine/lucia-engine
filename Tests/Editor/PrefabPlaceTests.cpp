@@ -1882,21 +1882,24 @@ const ResolvedStyle* BarStyle(UIElement& bar, std::string_view id)
 
 } // namespace
 
-TEST(PrefabOverridesStyleAssets, EveryActionIconIsShippedWithTheEditor)
+TEST(PrefabStyleAssets, EveryIconIsShippedWithTheEditor)
 {
-    const std::string css = InspectorLayoutTesting::ReadEditorFile(
-        "Assets/UI/controls/PrefabOverridesList/PrefabOverridesList.css");
-    ASSERT_FALSE(css.empty());
     const std::regex iconUrl(R"icon(url\("editor:([^"]+)"\))icon");
-    std::size_t checked = 0;
-    for (std::sregex_iterator icon(css.begin(), css.end(), iconUrl), end; icon != end; ++icon)
+    for (const char* sheetPath : {"Assets/UI/controls/PrefabOverridesList/PrefabOverridesList.css",
+                                 "Assets/UI/theme/views.css"})
     {
-        const std::filesystem::path path =
-            std::filesystem::path(GE_EDITOR_SOURCE_DIR) / "Assets" / (*icon)[1].str();
-        EXPECT_TRUE(std::filesystem::is_regular_file(path)) << path;
-        ++checked;
+        const std::string css = InspectorLayoutTesting::ReadEditorFile(sheetPath);
+        ASSERT_FALSE(css.empty()) << sheetPath;
+        std::size_t checked = 0;
+        for (std::sregex_iterator icon(css.begin(), css.end(), iconUrl), end; icon != end; ++icon)
+        {
+            const std::filesystem::path path =
+                std::filesystem::path(GE_EDITOR_SOURCE_DIR) / "Assets" / (*icon)[1].str();
+            EXPECT_TRUE(std::filesystem::is_regular_file(path)) << sheetPath << ": " << path;
+            ++checked;
+        }
+        EXPECT_GT(checked, 0u) << sheetPath;
     }
-    EXPECT_GT(checked, 0u);
 }
 
 // On the editor's sheets the glyph and the prefab's name take the prefab color; with the prefab file not
