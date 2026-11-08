@@ -3559,6 +3559,7 @@ endif()
 	        Tests/WeatherWindTests.cpp
 	        Tests/SceneIOTests.cpp
 	        Tests/PrefabLibraryTests.cpp
+	        Tests/PrefabFormatTests.cpp
 	        Tests/PrefabSpawnTests.cpp
 	        Tests/EmbeddedAnimationPersistenceTests.cpp
 	        Tests/SceneIntegerTests.cpp
