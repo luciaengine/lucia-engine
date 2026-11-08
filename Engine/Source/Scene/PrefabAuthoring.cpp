@@ -58,7 +58,7 @@ struct SubtreeEntity
 };
 
 // The children of each entity of a world, disabled branches included.
-using ChildrenByParent = std::unordered_map<ECS::EntityId, std::vector<ECS::EntityHandle>>;
+using ChildrenByParent = FastHashMap<ECS::EntityId, std::vector<ECS::EntityHandle>>;
 
 // What ReidentifySubtrees does with the entities of a subtree.
 enum class Reidentify

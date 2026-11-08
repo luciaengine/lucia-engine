@@ -15,6 +15,7 @@
 #include "Scene/SceneSchemaRegistry.h"
 #include "Types/StringUtils.h"
 #include "Types/FlatMap.h"
+#include "Types/Types.h"
 
 #include <algorithm>
 
@@ -229,7 +230,7 @@ bool CollectPrefabInstances(ECS::World& world, const std::vector<ECS::EntityHand
     usedTags.reserve(tagByEntity.size());
     for (const auto& [id, tag] : tagByEntity)
         usedTags.insert(tag);
-    std::unordered_map<ECS::EntityId, std::pair<std::size_t, std::string>> placeById; // instance, address
+    FastHashMap<ECS::EntityId, std::pair<std::size_t, std::string>> placeById; // instance, address
     FlatMap<std::string, std::string> pathByHashedTag;
 
     for (const ECS::EntityHandle h : entities)
@@ -417,9 +418,9 @@ static void CollectEntityOverrides(const std::string& address, std::vector<Compo
 }
 
 // The children of every entity in `world` that has a parent, keyed by the parent's id.
-static std::unordered_map<ECS::EntityId, std::vector<ECS::EntityHandle>> CollectChildren(ECS::World& world)
+static FastHashMap<ECS::EntityId, std::vector<ECS::EntityHandle>> CollectChildren(ECS::World& world)
 {
-    std::unordered_map<ECS::EntityId, std::vector<ECS::EntityHandle>> childrenOf;
+    FastHashMap<ECS::EntityId, std::vector<ECS::EntityHandle>> childrenOf;
     world.Query<ECS::Read<Components::Parent>>().IncludeDisabled().Each(
         [&childrenOf](ECS::EntityHandle child, const Components::Parent& parent)
         {
