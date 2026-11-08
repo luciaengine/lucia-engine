@@ -369,6 +369,56 @@ TEST(CBTDeepDecode, SharedCornerDeterminism)
 // ---------------------------------------------------------------------------
 // Probe 4 — df64 arithmetic bounds (falsifies contraction / fast-math breakage)
 // ---------------------------------------------------------------------------
+// Integer-to-double is exact throughout the supported numerator range. Keep
+// this oracle independent of both mirrored limb implementations and verify the
+// normalized pair, not only a loose relative error on the reconstructed value.
+TEST(CBTDeepDecode, IntegerConversionKeepsResidualAndScaleAcrossSignedLimbBoundaries)
+{
+    constexpr int64_t limit = int64_t{1} << DD::kDeepDecodeSubdiv;
+    const auto check = [](int64_t value)
+    {
+        SCOPED_TRACE(value);
+        const DD::DF actual = DD::FromI64(value);
+        const double exact = static_cast<double>(value);
+        const float expectedHigh = static_cast<float>(exact);
+        const float expectedLow = static_cast<float>(exact - static_cast<double>(expectedHigh));
+        EXPECT_EQ(std::bit_cast<uint32_t>(actual.Hi), std::bit_cast<uint32_t>(expectedHigh));
+        EXPECT_EQ(std::bit_cast<uint32_t>(actual.Lo), std::bit_cast<uint32_t>(expectedLow));
+        EXPECT_LE(std::abs(static_cast<double>(actual.Hi) + actual.Lo - exact),
+                  std::max(1.0, std::abs(exact)) * 1e-13);
+        if (value >= -(limit / 2) && value <= limit / 2)
+        {
+            const DD::DF scaled = DD::MulF(DD::FromI64(value * 2), 0.5f);
+            EXPECT_EQ(std::bit_cast<uint32_t>(actual.Hi), std::bit_cast<uint32_t>(scaled.Hi));
+            EXPECT_EQ(std::bit_cast<uint32_t>(actual.Lo), std::bit_cast<uint32_t>(scaled.Lo));
+        }
+    };
+    check(0);
+    check(limit);
+    check(-limit);
+    for (uint32_t bit = 0; bit <= DD::kDeepDecodeSubdiv; ++bit)
+    {
+        const int64_t base = int64_t{1} << bit;
+        for (const int64_t offset : {-65537LL, -65536LL, -65535LL, -2LL, -1LL, 0LL,
+                                     1LL, 2LL, 65535LL, 65536LL, 65537LL})
+        {
+            const int64_t value = base + offset;
+            if (value >= 0 && value <= limit)
+            {
+                check(value);
+                check(-value);
+            }
+        }
+    }
+    uint64_t state = 0x347d93512a61747bull;
+    for (uint32_t index = 0; index < 4096; ++index)
+    {
+        state = state * 6364136223846793005ull + 1442695040888963407ull;
+        const int64_t magnitude = static_cast<int64_t>(state & ((uint64_t{1} << 50) - 1u));
+        check((state >> 63) != 0 ? -magnitude : magnitude);
+    }
+}
+
 TEST(CBTDeepDecode, Df64ArithmeticHoldsExtendedPrecision)
 {
     // Deterministic LCG over the deep numerator range; compare df64 against double.

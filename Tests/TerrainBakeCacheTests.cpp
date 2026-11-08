@@ -49,15 +49,16 @@ constexpr float32 kWorldSize = 256.0f;
 constexpr float32 kHeightScale = 64.0f;
 
 // The fixtures generate their heightmaps and erosion with floating-point math.
-// Apple ARM's contraction and math-library results differ from the scalar reference
-// producer. Each reference pins that producer's exact bytes without changing the
-// evaluator or the cache format; authored content still hashes its actual bytes.
+// Apple ARM's generated input bytes differ from the scalar reference producer.
+// Both references use the explicit modifier order below. The generic evaluator
+// output is unchanged; Apple's old fixture used a different tied gather order.
+// These pins change authored fixture priorities, never the evaluator or format.
 #if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
-constexpr uint64 kPinnedBakeKey = 0xbb6921e35ad93cf4ull;
-constexpr uint64 kPinnedBakeOutput = 0x22bf76c390a627a5ull;
+constexpr uint64 kPinnedBakeKey = 0x3afab1dd46195081ull;
+constexpr uint64 kPinnedBakeOutput = 0xf27bc38c0186b5c2ull;
 constexpr uint64 kPinnedProceduralOutput = 0xd64e992494511367ull;
 #else
-constexpr uint64 kPinnedBakeKey = 0xdcc535cfbbbe9a3full;
+constexpr uint64 kPinnedBakeKey = 0x31928b8147b8e35eull;
 constexpr uint64 kPinnedBakeOutput = 0xf19e25b84ba58001ull;
 constexpr uint64 kPinnedProceduralOutput = 0xe901d8350a11b30full;
 #endif
@@ -74,6 +75,7 @@ struct SceneInputs
     float32 SplineX = -100.0f;
     float32 MaskScale = 1.0f;
     float32 PayloadScale = 30.0f;
+    bool ExplicitModifierOrder = false;
 };
 
 struct BakeResult
@@ -124,9 +126,12 @@ struct BakeSession
     ECS::EntityHandle flattenEntity{};
 
     BakeSession(const SceneInputs& in, const TerrainBakeCacheConfig& cache, bool sceneIdentity = true,
-                JobSystem::WorkStealingThreadPool* pool = nullptr)
+                JobSystem::WorkStealingThreadPool* pool = nullptr, bool primeNoiseArchetype = false)
         : world(pool)
     {
+        if (primeNoiseArchetype)
+            world.ReserveArchetypeCapacity<Components::TerrainModifierVolume,
+                                          Components::TerrainNoiseEffect, Components::WorldTransform>(1);
         if (TerrainService::IsInitialized())
             TerrainService::Shutdown();
         TerrainService::Initialize();
@@ -156,12 +161,14 @@ struct BakeSession
         data = svc.GetTerrainData(handle);
 
         EnableTerrainModifierLifecycleEvents(world);
-        const auto addVolume = [&](float32 x, float32 z, Components::TerrainVolumeShape shape, float32 radius) {
+        const auto addVolume = [&](float32 x, float32 z, Components::TerrainVolumeShape shape,
+                                   float32 radius, float32 priority = 0.0f) {
             auto e = world.CreateEntity();
             Components::TerrainModifierVolume volume{};
             volume.Shape = shape;
             volume.Radius = radius;
             volume.Falloff = 8.0f;
+            volume.Priority = in.ExplicitModifierOrder ? priority : 0.0f;
             world.AddComponentImmediate<Components::TerrainModifierVolume>(e, volume);
             Components::WorldTransform xf{};
             xf.matrix[12] = x;
@@ -190,7 +197,7 @@ struct BakeSession
         {
             Components::TerrainFlattenEffect flatten{};
             flatten.TargetHeight = in.FlattenTarget;
-            flattenEntity = addVolume(in.TerrainX + in.FlattenX, 40.0f, Components::TerrainVolumeShape::Circle, 25.0f);
+            flattenEntity = addVolume(in.TerrainX + in.FlattenX, 40.0f, Components::TerrainVolumeShape::Circle, 25.0f, 1.0f);
             world.AddComponentImmediate(flattenEntity, flatten);
             Components::TerrainNoiseEffect noise{};
             noise.Amplitude = 5.0f;
@@ -201,12 +208,12 @@ struct BakeSession
             Components::TerrainStampEffect stamp{};
             stamp.HeightScale = 20.0f;
             stamp.StampAssetGuid.Set(kMaskGuid);
-            world.AddComponentImmediate(addVolume(in.TerrainX + 60.0f, -60.0f, Components::TerrainVolumeShape::Circle, 25.0f),
+            world.AddComponentImmediate(addVolume(in.TerrainX + 60.0f, -60.0f, Components::TerrainVolumeShape::Circle, 25.0f, 2.0f),
                                         stamp);
             Components::TerrainPaintLayerEffect paint{};
             paint.LayerIndex = 1;
             paint.Strength = 0.8f;
-            world.AddComponentImmediate(addVolume(in.TerrainX - 30.0f, -60.0f, Components::TerrainVolumeShape::Circle, 20.0f),
+            world.AddComponentImmediate(addVolume(in.TerrainX - 30.0f, -60.0f, Components::TerrainVolumeShape::Circle, 20.0f, 3.0f),
                                         paint);
             Components::TerrainSurfaceRulesEffect rules{};
             rules.RuleCount = 1;
@@ -216,7 +223,7 @@ struct BakeSession
             rules.Rules[0].Conditions[0].Kind = Components::TerrainRuleConditionKind::HeightNormalized;
             rules.Rules[0].Conditions[0].Min = 0.3f;
             rules.Rules[0].Conditions[0].Max = 0.9f;
-            world.AddComponentImmediate(addVolume(0.0f, 0.0f, Components::TerrainVolumeShape::Global, 0.0f), rules);
+            world.AddComponentImmediate(addVolume(0.0f, 0.0f, Components::TerrainVolumeShape::Global, 0.0f, 4.0f), rules);
         }
         {
             auto& splines = SplineECS::SplineService::Get();
@@ -227,7 +234,7 @@ struct BakeSession
                                                       80.0f - 20.0f * static_cast<float32>(i)),
                                  10.0f);
             splines.RebuildCache(spline);
-            auto e = addVolume(0.0f, 0.0f, Components::TerrainVolumeShape::SplinePath, 0.0f);
+            auto e = addVolume(0.0f, 0.0f, Components::TerrainVolumeShape::SplinePath, 0.0f, 5.0f);
             Components::SplineComponent component{};
             component.SplineDataIndex = spline.Index();
             component.SplineDataGeneration = spline.Generation();
@@ -278,9 +285,9 @@ struct BakeSession
 };
 
 // One open of the scene: the first (full) bake with `cache` configured.
-BakeResult BakeScene(const SceneInputs& in, const TerrainBakeCacheConfig& cache)
+BakeResult BakeScene(const SceneInputs& in, const TerrainBakeCacheConfig& cache, bool primeNoiseArchetype = false)
 {
-    BakeSession session(in, cache);
+    BakeSession session(in, cache, true, nullptr, primeNoiseArchetype);
     return session.Result();
 }
 
@@ -899,16 +906,27 @@ TEST(TerrainBakeCache, ASaveStoresNothingForATerrainWithoutATag)
 // the new values from the failure message.
 TEST(TerrainBakeCache, TheKeyAndTheBakeOutputArePinnedToTheFormatVersion)
 {
-    TempDirectory dir;
-    const BakeResult bake = BakeScene({}, {dir.Path, true});
-    const std::vector<fs::path> files = Artifacts(dir.Path);
-    ASSERT_EQ(files.size(), 1u);
-    const uint64 key = StoredKey(files[0]);
-    const uint64 output = OutputHash(bake);
-    EXPECT_EQ(key, kPinnedBakeKey) << std::hex << "the bake key changed (now 0x" << key
-                               << "): bump kTerrainBakeFormatVersion, then pin the new value";
-    EXPECT_EQ(output, kPinnedBakeOutput) << std::hex << "the bake output changed (now 0x" << output
-                                     << "): bump kTerrainBakeFormatVersion, then pin the new value";
+    // The reference evaluator order is noise, flatten, stamp, paint, rules, spline,
+    // then sculpt. Distinct authored priorities preserve it across ECS hash-table
+    // layouts. Priming the noise archetype changes the insertion order without
+    // changing authored data. The generic output golden is unchanged; Apple's
+    // output also changes because its former tied gather order was different.
+    SceneInputs inputs;
+    inputs.ExplicitModifierOrder = true;
+    for (const bool primeNoiseArchetype : {false, true})
+    {
+        SCOPED_TRACE(primeNoiseArchetype);
+        TempDirectory dir;
+        const BakeResult bake = BakeScene(inputs, {dir.Path, true}, primeNoiseArchetype);
+        const std::vector<fs::path> files = Artifacts(dir.Path);
+        ASSERT_EQ(files.size(), 1u);
+        const uint64 key = StoredKey(files[0]);
+        const uint64 output = OutputHash(bake);
+        EXPECT_EQ(key, kPinnedBakeKey) << std::hex << "the bake key changed (now 0x" << key
+                                   << "): bump kTerrainBakeFormatVersion, then pin the new value";
+        EXPECT_EQ(output, kPinnedBakeOutput) << std::hex << "the bake output changed (now 0x" << output
+                                         << "): bump kTerrainBakeFormatVersion, then pin the new value";
+    }
 }
 
 // The procedural base and the effect kinds the pin above lacks: a change to the base
