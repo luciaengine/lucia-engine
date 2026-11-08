@@ -1993,7 +1993,9 @@ TEST_F(PrefabPlaceTests, ThePrefabBarsSelectButtonKeepsOneHeightWhenTheCountLine
     ASSERT_TRUE(memberButton && rootButton && entityLine && instanceLine) << "a bar did not load its layout";
     ASSERT_GT(instanceLine->GetLayoutHeight(), entityLine->GetLayoutHeight())
         << "the instance's count line does not wrap: " << BarText(member, "prefab-bar-instance-count");
-    EXPECT_FLOAT_EQ(memberButton->GetLayoutHeight(), rootButton->GetLayoutHeight())
+    // YogaLayout rounds each edge on a 1/64-device-pixel grid; equal intrinsic heights can differ by one step.
+    constexpr float kLayoutSnapStepPx = 1.0f / 64.0f;
+    EXPECT_NEAR(memberButton->GetLayoutHeight(), rootButton->GetLayoutHeight(), kLayoutSnapStepPx)
         << "the button grows when the count lines wrap";
     EXPECT_LT(memberButton->GetLayoutHeight(), kDefaultButtonMinHeight) << "the button is not the small size";
     // Both texts are 12 px. On one baseline their text boxes start within 1 px of one y: the button's
