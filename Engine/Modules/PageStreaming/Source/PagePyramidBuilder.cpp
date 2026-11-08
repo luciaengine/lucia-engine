@@ -134,8 +134,8 @@ void PagePyramidBuilder::PushLevel0Rows(const uint8* rows, uint32 rowCount)
     for (uint32 r = 0; r < rowCount; ++r)
         level0.Rows.emplace_back(rows + r * rowBytes, rows + (r + 1u) * rowBytes);
     if (IsHeight())
-        RunParallel(rowCount, [&](uint32 r) {
-            Quantize(0, reinterpret_cast<float32*>(level0.Rows[firstNew + r].data()), level0.Shape.SamplesX);
+        RunParallel(rowCount, [this, &level0, firstNew](uint32 row) {
+            Quantize(0, reinterpret_cast<float32*>(level0.Rows[firstNew + row].data()), level0.Shape.SamplesX);
         });
     level0.RowsReceived += rowCount;
     CaptureInnerLines(0, level0.RowsReceived - rowCount, rowCount);
@@ -207,8 +207,8 @@ void PagePyramidBuilder::EmitPageRow(uint32 levelIndex, uint32 pageRow)
     for (uint32 first = 0; first < pagesX; first += kPagesEncodedPerChunk)
     {
         const uint32 count = std::min(kPagesEncodedPerChunk, pagesX - first);
-        RunParallel(count, [&](uint32 i) {
-            changed[i] = EncodePage(levelIndex, first + i, pageRow, encoded[i]) ? 1u : 0u;
+        RunParallel(count, [this, &changed, &encoded, levelIndex, first, pageRow](uint32 index) {
+            changed[index] = EncodePage(levelIndex, first + index, pageRow, encoded[index]) ? 1u : 0u;
         });
         for (uint32 i = 0; i < count; ++i)
         {
@@ -311,7 +311,9 @@ void PagePyramidBuilder::MakeCoarserRows(uint32 levelIndex, uint32 firstRow, uin
 {
     LevelState& coarser = m_Levels[levelIndex + 1u];
     std::vector<std::vector<uint8>> rows(rowCount);
-    RunParallel(rowCount, [&](uint32 r) { MakeCoarserRow(levelIndex, firstRow + r, rows[r]); });
+    RunParallel(rowCount, [this, levelIndex, firstRow, &rows](uint32 row) {
+        MakeCoarserRow(levelIndex, firstRow + row, rows[row]);
+    });
     for (std::vector<uint8>& row : rows)
         coarser.Rows.push_back(std::move(row));
     coarser.RowsReceived += rowCount;

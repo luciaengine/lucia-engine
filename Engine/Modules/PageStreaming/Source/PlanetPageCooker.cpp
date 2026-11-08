@@ -48,7 +48,7 @@ public:
         const uint32 samples = m_Request.FaceSamples;
         out.resize(static_cast<std::size_t>(samples) * count);
         std::atomic<bool> finite{true};
-        JobSystem::ParallelFor(m_Request.Pool, 0, count, [&](std::size_t first, std::size_t last) {
+        JobSystem::ParallelFor(m_Request.Pool, 0, count, [this, face, firstRow, samples, &out, &finite](std::size_t first, std::size_t last) {
             for (std::size_t bandRow = first; bandRow < last; ++bandRow)
                 if (!FillRow(face, firstRow + static_cast<uint32>(bandRow), out.data() + bandRow * samples))
                     finite.store(false);

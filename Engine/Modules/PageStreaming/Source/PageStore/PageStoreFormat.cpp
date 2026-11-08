@@ -415,14 +415,13 @@ Mathematics::Vector3 EqualAngleSampleDirection(uint8 face, uint32 x, uint32 z, u
 Mathematics::Vector3 GnomonicFaceDirection(uint8 face, float64 alongX, float64 alongZ)
 {
     const Mathematics::CubeFaceAxes& axes = Mathematics::kCubeFaceAxes[face];
-    const auto onCube = [&](uint8 axis) -> float64 {
-        if (axis == axes.NormalAxis)
-            return axes.NormalSign;
-        return axis == axes.XAxis ? axes.XSign * alongX : axes.ZSign * alongZ;
-    };
-    const float64 cubeX = onCube(0);
-    const float64 cubeY = onCube(1);
-    const float64 cubeZ = onCube(2);
+    float64 coordinates[3]{};
+    coordinates[axes.NormalAxis] = axes.NormalSign;
+    coordinates[axes.XAxis] = axes.XSign * alongX;
+    coordinates[axes.ZAxis] = axes.ZSign * alongZ;
+    const float64 cubeX = coordinates[0];
+    const float64 cubeY = coordinates[1];
+    const float64 cubeZ = coordinates[2];
     const float64 inverseLength = 1.0 / std::sqrt(cubeX * cubeX + cubeY * cubeY + cubeZ * cubeZ);
     return Mathematics::Vector3(static_cast<float32>(cubeX * inverseLength), static_cast<float32>(cubeY * inverseLength),
                                 static_cast<float32>(cubeZ * inverseLength));
