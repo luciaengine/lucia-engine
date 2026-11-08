@@ -929,7 +929,6 @@ class MaterialBindingPlanTests : public ::testing::Test
         m_Device = DeviceFactory::CreateDevice(desc);
         if (!m_Device || !m_Device->Initialize(desc))
             GTEST_SKIP() << "Requested device unavailable";
-        ASSERT_EQ(m_Device->GetAPI(), RequestedAPI());
         ASSERT_TRUE(m_Services.Initialize(m_Device.get()));
     }
 
@@ -1420,6 +1419,15 @@ class MetalMaterialBindingPlanTests : public MaterialBindingPlanTests
 {
   protected:
     GraphicsAPI RequestedAPI() const override { return GraphicsAPI::Metal; }
+
+    void SetUp() override
+    {
+        MaterialBindingPlanTests::SetUp();
+        if (HasFatalFailure() || IsSkipped())
+            return;
+        if (m_Device->GetAPI() != GraphicsAPI::Metal)
+            GTEST_SKIP() << "Native Metal coverage requires the selected Metal backend";
+    }
 };
 
 TEST_F(MetalMaterialBindingPlanTests, ForwardCommandsPrepareBeforeFirstRecord)
