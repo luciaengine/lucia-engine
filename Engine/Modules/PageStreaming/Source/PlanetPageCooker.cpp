@@ -10,7 +10,7 @@
 #include "PageStreaming/PageStore/PageStoreWriter.h"
 
 #include "FileSystem/FileSystem.h"
-#include "JobSystem/WorkStealingThreadPool.h"
+#include "JobSystem/ParallelAlgorithms.h"
 #include "Mathematics/Vector3.h"
 
 #include <algorithm>
@@ -48,7 +48,9 @@ public:
         const uint32 samples = m_Request.FaceSamples;
         out.resize(static_cast<std::size_t>(samples) * count);
         std::atomic<bool> finite{true};
-        JobSystem::ParallelFor(m_Request.Pool, count, [&](size_t bandRow) {
+        JobSystem::ParallelFor(m_Request.Pool, 0, count, [&](std::size_t first, std::size_t last) {
+        for (std::size_t bandRow = first; bandRow < last; ++bandRow)
+        {
             float32* row = out.data() + bandRow * samples;
             const uint32 z = firstRow + static_cast<uint32>(bandRow);
             for (uint32 x = 0; x < samples; ++x)
@@ -57,7 +59,9 @@ public:
                 if (!std::isfinite(row[x]))
                     finite.store(false);
             }
-        });
+        
+        }
+    }, 1);
         return finite.load();
     }
 

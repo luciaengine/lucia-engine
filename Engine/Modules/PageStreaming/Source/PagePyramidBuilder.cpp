@@ -6,7 +6,7 @@
 #include "PageStreaming/PageStore/PageStoreWriter.h"
 #include "PageStore/PageStoreSerialization.h"
 
-#include "JobSystem/WorkStealingThreadPool.h"
+#include "JobSystem/ParallelAlgorithms.h"
 #include "Mathematics/Matrix3x3.h"
 #include "Mathematics/Vector3.h"
 
@@ -441,7 +441,10 @@ void PagePyramidBuilder::Discard(uint32 levelIndex)
 
 void PagePyramidBuilder::RunParallel(uint32 count, const std::function<void(uint32)>& body) const
 {
-    JobSystem::ParallelFor(m_Pool, count, [&body](size_t i) { body(static_cast<uint32>(i)); });
+    JobSystem::ParallelFor(m_Pool, 0, count, [&body](std::size_t first, std::size_t last) {
+        for (std::size_t index = first; index < last; ++index)
+            body(static_cast<uint32>(index));
+    }, 1);
 }
 
 } // namespace GameEngine::PageStreaming

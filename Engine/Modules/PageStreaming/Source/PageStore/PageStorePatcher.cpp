@@ -4,7 +4,7 @@
 #include "PageFieldFilter.h"
 #include "PageStreaming/PageStore/PageStoreWriter.h"
 
-#include "JobSystem/WorkStealingThreadPool.h"
+#include "JobSystem/ParallelAlgorithms.h"
 #include "Types/ByteBuffer.h"
 
 #include <algorithm>
@@ -361,27 +361,35 @@ bool PageStorePatcher::RefilterLevel(uint32 level, const std::optional<PageSampl
     window.PagesZ = OwningPages(window.Z);
     window.Texels.resize(static_cast<std::size_t>(window.X.Count()) * window.Z.Count() * texelBytes);
     window.PageReady.assign(static_cast<std::size_t>(window.PagesX.Count()) * window.PagesZ.Count(), 0u);
-    JobSystem::ParallelFor(m_Pool, window.PageReady.size(), [&](std::size_t i) {
+    JobSystem::ParallelFor(m_Pool, 0, window.PageReady.size(), [&](std::size_t first, std::size_t last) {
+        for (std::size_t i = first; i < last; ++i)
+        {
         const uint32 px = window.PagesX.First + static_cast<uint32>(i % window.PagesX.Count());
         const uint32 pz = window.PagesZ.First + static_cast<uint32>(i / window.PagesX.Count());
         window.PageReady[i] = GatherFinerPage(source, sourceCodec, level - 1u, px, pz, sourceApron, window) ? 1u : 0u;
-    });
+    
+        }
+    }, 1);
 
     const std::size_t remakeCount = static_cast<std::size_t>(pagesX.Count()) * pagesZ.Count();
     std::vector<EncodedPage> encoded(remakeCount);
     std::vector<EncodedPage> unencoded(remakeCount);
     std::vector<PageRemake> remake(remakeCount, PageRemake::Waiting);
-    JobSystem::ParallelFor(m_Pool, remakeCount, [&](std::size_t i) {
+    JobSystem::ParallelFor(m_Pool, 0, remakeCount, [&](std::size_t first, std::size_t last) {
+        for (std::size_t i = first; i < last; ++i)
+        {
         const uint32 px = pagesX.First + static_cast<uint32>(i % pagesX.Count());
         const uint32 pz = pagesZ.First + static_cast<uint32>(i / pagesX.Count());
         std::vector<uint8> samples;
         if (!FilterCoarserPage(layout, level, px, pz, window, samples))
-            return;
+            continue;
         EncodePage(level, samples, encoded[i], unencoded[i]);
         remake[i] = HoldsPage(PageAddress{0, static_cast<uint8>(level), px, pz}, encoded[i], unencoded[i])
                         ? PageRemake::Unchanged
                         : PageRemake::Changed;
-    });
+    
+        }
+    }, 1);
 
     // A page WritePage wrote is a new input to the level above, whatever this call made of it.
     if (written)
