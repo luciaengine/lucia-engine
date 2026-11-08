@@ -6,7 +6,8 @@
 #include "PageStreaming/PageStore/PageStoreWriter.h"
 #include "PageStore/PageStoreSerialization.h"
 
-#include "JobSystem/ParallelAlgorithms.h"
+#include "JobSystem/JobCounter.h"
+#include "JobSystem/WorkStealingThreadPool.h"
 #include "Mathematics/Matrix3x3.h"
 #include "Mathematics/Vector3.h"
 
@@ -14,12 +15,40 @@
 #include <array>
 #include <cassert>
 #include <cstring>
+#include <exception>
+#include <mutex>
 #include <limits>
 
 namespace GameEngine::PageStreaming
 {
 namespace
 {
+
+struct PageWorkBatch
+{
+    const std::function<void(std::size_t)>& Body;
+    std::mutex ErrorMutex;
+    std::exception_ptr Error;
+
+    void CaptureError()
+    {
+        const std::lock_guard lock(ErrorMutex);
+        if (!Error)
+            Error = std::current_exception();
+    }
+
+    void operator()(std::size_t index)
+    {
+        try
+        {
+            Body(index);
+        }
+        catch (...)
+        {
+            CaptureError();
+        }
+    }
+};
 
 // Pages of a row encoded at once before they are written: enough work for the pool, a bounded
 // buffer (64 pages of at most 67.6 KB).
@@ -66,6 +95,33 @@ float32 AscendingSum(Mathematics::Vector3 values)
 }
 
 } // namespace
+
+void RunPageWork(JobSystem::WorkStealingThreadPool* pool, std::size_t count,
+                 const std::function<void(std::size_t)>& body)
+{
+    PageWorkBatch work{body, {}, {}};
+    if (!pool || pool->IsShuttingDown() || count < 2u)
+    {
+        for (std::size_t index = 0; index < count; ++index)
+            work(index);
+    }
+    else
+    {
+        JobSystem::JobCounter counter;
+        try
+        {
+            for (std::size_t index = 0; index < count; ++index)
+                pool->Run([&work, index]() { work(index); }, counter);
+        }
+        catch (...)
+        {
+            work.CaptureError();
+        }
+        pool->Wait(counter);
+    }
+    if (work.Error)
+        std::rethrow_exception(work.Error);
+}
 
 float32 CubeFaceTent(const Mathematics::Matrix3x3& taps)
 {
@@ -443,10 +499,7 @@ void PagePyramidBuilder::Discard(uint32 levelIndex)
 
 void PagePyramidBuilder::RunParallel(uint32 count, const std::function<void(uint32)>& body) const
 {
-    JobSystem::ParallelFor(m_Pool, 0, count, [&body](std::size_t first, std::size_t last) {
-        for (std::size_t index = first; index < last; ++index)
-            body(static_cast<uint32>(index));
-    }, 1);
+    RunPageWork(m_Pool, count, [&body](std::size_t index) { body(static_cast<uint32>(index)); });
 }
 
 } // namespace GameEngine::PageStreaming

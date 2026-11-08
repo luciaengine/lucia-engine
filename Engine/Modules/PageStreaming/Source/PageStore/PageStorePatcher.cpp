@@ -2,9 +2,9 @@
 
 #include "PageCodec.h"
 #include "PageFieldFilter.h"
+#include "PagePyramidBuilder.h"
 #include "PageStreaming/PageStore/PageStoreWriter.h"
 
-#include "JobSystem/ParallelAlgorithms.h"
 #include "Types/ByteBuffer.h"
 
 #include <algorithm>
@@ -408,12 +408,8 @@ bool PageStorePatcher::RefilterLevel(uint32 level, const std::optional<PageSampl
     RefilterBatch work{*this, source, sourceCodec, level, sourceApron, window, pagesX, pagesZ,
                        std::vector<EncodedPage>(remakeCount), std::vector<EncodedPage>(remakeCount),
                        std::vector<PageRemake>(remakeCount, PageRemake::Waiting)};
-    JobSystem::ParallelFor(m_Pool, 0, window.PageReady.size(), [&work](std::size_t first, std::size_t last) {
-        work.Gather(first, last);
-    }, 1);
-    JobSystem::ParallelFor(m_Pool, 0, remakeCount, [&work](std::size_t first, std::size_t last) {
-        work.Remake(first, last);
-    }, 1);
+    RunPageWork(m_Pool, window.PageReady.size(), [&work](std::size_t index) { work.Gather(index, index + 1u); });
+    RunPageWork(m_Pool, remakeCount, [&work](std::size_t index) { work.Remake(index, index + 1u); });
 
     // A page WritePage wrote is a new input to the level above, whatever this call made of it.
     if (written)

@@ -24,6 +24,11 @@ struct Vector3;
 namespace GameEngine::PageStreaming
 {
 
+/// Runs page units through the job system and joins them before propagating the first error.
+/// The callback storage stays alive until every in-flight unit completes, including on failure.
+void RunPageWork(JobSystem::WorkStealingThreadPool* pool, std::size_t count,
+                 const std::function<void(std::size_t)>& body);
+
 class PageCodec;
 class PageStoreWriter;
 struct EncodedPage;
