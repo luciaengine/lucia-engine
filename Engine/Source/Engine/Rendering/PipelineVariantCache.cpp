@@ -227,19 +227,6 @@ void PipelineVariantCache::PruneSettledConcreteWarmWaits()
             m_ConcreteWarmWaits.erase(it);
 }
 
-void PipelineVariantCache::WarnColdServe(const Material& material,
-                                         Rendering::GraphicsPipelineId pipelineId,
-                                         const Rendering::PipelineFormatKey& formatKey)
-{
-    // Report the first cold draw and each power-of-two repetition while its pipeline builds.
-    const uint64_t warningCount = m_ColdServeWarnCount.fetch_add(1, std::memory_order_relaxed) + 1;
-    if ((warningCount & (warningCount - 1)) != 0)
-        return;
-    Logger::Log::Warning(
-        "PrepareColorVariant '{}': cached graphics pipeline id={} failed for current pass ({}) [{}x]",
-        material.GetName(), pipelineId.Value, FormatPipelineKey(formatKey), warningCount);
-}
-
 std::pair<Rendering::PipelineHandle, const PipelineVariantCache::VariantServeUnit*>
 PipelineVariantCache::ResolveWarmPipeline(const Material& material,
                                           const InstancedVariantEntry& entry,
@@ -299,11 +286,7 @@ PipelineVariantCache::ResolveColorVariant(
         && slot.Entry->Current.PipelineId.IsValid()
         && slot.Entry->Current.MaterialVersion == materialVersion)
     {
-        const auto serve =
-            ResolveWarmPipeline(material, *slot.Entry, formatKey, context);
-        if (!serve.first.IsValid())
-            WarnColdServe(material, slot.Entry->Current.PipelineId, formatKey);
-        return serve;
+        return ResolveWarmPipeline(material, *slot.Entry, formatKey, context);
     }
     // Keep a published unit visible while its replacement compiles.
     // Serial frame-begin publication and eviction cannot overlap preparation or recording,
@@ -317,12 +300,7 @@ PipelineVariantCache::ResolveColorVariant(
             if (it->second.Current.MaterialVersion == materialVersion)
             {
                 slot = {key, &it->second, epoch};
-                const auto serve =
-                    ResolveWarmPipeline(material, it->second, formatKey, context);
-                if (!serve.first.IsValid())
-                    WarnColdServe(material, it->second.Current.PipelineId,
-                                  formatKey);
-                return serve;
+                return ResolveWarmPipeline(material, it->second, formatKey, context);
             }
             staleEntry = &it->second;
         }
