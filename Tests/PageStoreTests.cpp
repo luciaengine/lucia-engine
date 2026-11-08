@@ -1152,6 +1152,22 @@ std::vector<PageWant> EveryPage(const GeneratedHeightPageProvider& provider)
     return wanted;
 }
 
+uint32 VerifyPageUploads(PageResidencyManager& residency, uint32 field,
+                         const GeneratedHeightPageProvider& provider, std::vector<float32>& expected)
+{
+    uint32 uploaded = 0;
+    for (const PageUploadRequest& upload : residency.FieldCache(field).Uploads())
+    {
+        EXPECT_TRUE(provider.FillPage(upload.Page.Address, expected));
+        const std::vector<float32>* samples = residency.Samples(upload.Page.Stream, upload.Page.Address);
+        EXPECT_NE(samples, nullptr);
+        if (samples != nullptr)
+            EXPECT_EQ(*samples, expected);
+        ++uploaded;
+    }
+    return uploaded;
+}
+
 // Frames until `done` holds (loads land between frames on the pool), at most a few seconds.
 template <typename Done>
 uint64 RunFramesUntil(PageResidencyManager& residency, uint64 frame, Done done)
@@ -1181,25 +1197,17 @@ TEST(PageResidencyTest, WantedPagesLoadAssignAndThenAParkedCameraDoesNoWork)
     // Each frame's uploads carry their page's samples until the next Update.
     std::vector<float32> expected(kPageSampleCount);
     uint32 uploaded = 0;
-    frame = RunFramesUntil(residency, frame, [&] {
-        for (const PageUploadRequest& upload : residency.FieldCache(7).Uploads())
-        {
-            EXPECT_TRUE(provider->FillPage(upload.Page.Address, expected));
-            const std::vector<float32>* samples = residency.Samples(7, upload.Page.Address);
-            EXPECT_NE(samples, nullptr);
-            if (samples != nullptr)
-                EXPECT_EQ(*samples, expected);
-            ++uploaded;
-        }
+    frame = RunFramesUntil(residency, frame, [&residency, &provider, &expected, &uploaded, &wanted] {
+        uploaded += VerifyPageUploads(residency, 7, *provider, expected);
         return residency.FieldCache(7).ResidentCount() == wanted.size();
     });
     ASSERT_EQ(residency.FieldCache(7).ResidentCount(), wanted.size());
     EXPECT_EQ(uploaded, wanted.size());
 
     // Past the arrival fades, a parked camera starts and assigns nothing.
-    for (int i = 0; i < 40; ++i)
+    for (int frameOffset = 0; frameOffset < 40; ++frameOffset)
         residency.Update(++frame, 1.0f / 60.0f, false);
-    for (int i = 0; i < 5; ++i)
+    for (int frameOffset = 0; frameOffset < 5; ++frameOffset)
     {
         residency.Request(7, wanted);
         residency.Update(++frame, 1.0f / 60.0f, false);
@@ -1237,7 +1245,7 @@ TEST(PageResidencyTest, EveryStreamSharesOneUploadCapAndOneCpuBudget)
     residency.Request(2, few);
 
     uint64 frame = 0;
-    frame = RunFramesUntil(residency, frame, [&] {
+    frame = RunFramesUntil(residency, frame, [&residency] {
         EXPECT_LE(residency.FieldCache(1).AssignsThisFrame() + residency.FieldCache(2).AssignsThisFrame(), 3u);
         return residency.FieldCache(1).ResidentCount() == 5u && residency.FieldCache(2).ResidentCount() == 5u;
     });
