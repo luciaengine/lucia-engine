@@ -18,6 +18,7 @@
 namespace GameEngine::Rendering
 {
 class IDevice;
+class CommandList;
 }
 
 namespace GameEngine::CBTTerrain
@@ -298,8 +299,11 @@ class CBTResources
     void WriteOneSet(Rendering::DescriptorSetHandle set, const std::vector<uint32_t>& only);
     // Rewrites one ring element of a terrain-source binding in every set that
     // binds it (the per-kernel sets, or the single shared set).
-    bool WaitForSourceReaders() const;
-    bool WaitForGraphicsReaders() const;
+    bool WaitForSourceReaders();
+    bool WaitForGraphicsReaders();
+    bool SubmitGraphicsAndWait(Rendering::CommandList& command);
+    Rendering::SemaphoreHandle m_GraphicsCompletion{};
+    uint64_t m_GraphicsCompletionValue = 0;
     bool RebindSourceRingToDefault(std::array<Rendering::TextureHandle, kCBTTextureRingMax>& ring,
                                     Rendering::TextureHandle texture, uint32_t binding, bool& changed);
     bool UpdateTerrainSourceBinding(uint32_t binding, Rendering::TextureHandle texture,

@@ -686,9 +686,10 @@ TEST_F(CBTHeightChain, FailedNormalInitializationKeepsTheOldLatticeAndItsContent
     ASSERT_TRUE(instance.ProvisionHeightChainWords(CBTHeightChainWords(kNewSamples, kNewSamples)));
     auto& probe = static_cast<SourceCompletionProbeDevice&>(*m_Device);
     const uint64_t drains = m_Device->GetIdleDrainCount();
-    probe.HideGraphicsTokensAfter = probe.LastGraphicsSubmissionToken().value;
+    probe.RejectCompletionAfter = probe.LastGraphicsSubmissionToken().value;
     const bool provisioned = instance.ProvisionNormalChain(kNewSamples, kNewSamples);
-    probe.HideGraphicsTokensAfter = std::numeric_limits<uint64_t>::max();
+    EXPECT_EQ(probe.RejectCompletionAfter, std::numeric_limits<uint64_t>::max());
+    probe.RejectCompletionAfter = std::numeric_limits<uint64_t>::max();
     EXPECT_FALSE(provisioned);
     EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
     ASSERT_EQ(instance.GetResources().GetNormalChainTexture(), originalTexture);
@@ -706,6 +707,49 @@ TEST_F(CBTHeightChain, FailedNormalInitializationKeepsTheOldLatticeAndItsContent
     instance.Shutdown();
     m_Device->DestroyTexture(originalSource);
     m_Device->DestroyTexture(nextSource);
+}
+
+TEST_F(CBTHeightChain, FailedNormalSubmissionPreservesResourcesAndItsCompletionOwner)
+{
+    constexpr uint32_t kOldSamples = 513u;
+    constexpr uint32_t kNewSamples = 769u;
+    const auto source = MakeTexture(RandomField(kOldSamples, kOldSamples, 31u), kOldSamples, kOldSamples);
+    ASSERT_TRUE(source.IsValid());
+    CBTInstance instance;
+    ASSERT_TRUE(Bring(instance, source, kOldSamples, kOldSamples));
+    auto& probe = static_cast<SourceCompletionProbeDevice&>(*m_Device);
+    const auto original = instance.GetResources().GetNormalChainTexture();
+    const uint64_t drains = m_Device->GetIdleDrainCount();
+    EXPECT_FALSE(instance.ProvisionNormalChain(0u, kOldSamples));
+    EXPECT_FALSE(instance.ProvisionNormalChain(0x10000u, kOldSamples));
+    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), original);
+    probe.RefuseNextGraphicsSubmit = true;
+    EXPECT_FALSE(instance.ProvisionNormalChain(kNewSamples, kNewSamples));
+    EXPECT_FALSE(probe.RefuseNextGraphicsSubmit);
+    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), original);
+    const auto refused = probe.LastAttemptedSignal;
+    ASSERT_TRUE(refused.IsValid());
+    ASSERT_TRUE(instance.ProvisionNormalChain(kNewSamples, kNewSamples));
+    EXPECT_EQ(probe.LastAttemptedSignal.sem, refused.sem);
+    EXPECT_GT(probe.LastAttemptedSignal.value, refused.value);
+    const auto retained = instance.GetResources().GetNormalChainTexture();
+    probe.ReportFailureAfterGraphicsSubmit = true;
+    EXPECT_FALSE(instance.ProvisionNormalChain(kOldSamples, kOldSamples));
+    EXPECT_FALSE(probe.ReportFailureAfterGraphicsSubmit);
+    EXPECT_EQ(instance.GetResources().GetNormalChainTexture(), retained);
+    const auto submitted = probe.LastAttemptedSignal;
+    ASSERT_TRUE(submitted.IsValid());
+    ASSERT_TRUE(m_Device->WaitGpuSyncToken(submitted));
+    uint64_t completed = 0;
+    EXPECT_TRUE(m_Device->GetTimelineSemaphoreValue(submitted.sem, completed));
+    EXPECT_GE(completed, submitted.value);
+    ASSERT_TRUE(instance.ProvisionNormalChain(kOldSamples, kOldSamples));
+    EXPECT_EQ(probe.LastAttemptedSignal.sem, submitted.sem);
+    EXPECT_GT(probe.LastAttemptedSignal.value, submitted.value);
+    instance.Shutdown();
+    EXPECT_FALSE(m_Device->GetTimelineSemaphoreValue(submitted.sem, completed));
+    EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
+    m_Device->DestroyTexture(source);
 }
 
 TEST_F(CBTHeightChain, EditRectRebuildsOnlyTheSamplesItsTentsReach)

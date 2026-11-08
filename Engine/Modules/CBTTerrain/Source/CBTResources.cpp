@@ -9,6 +9,7 @@
 #include "Logger/Logger.h"
 
 #include <cstring>
+#include <limits>
 
 namespace GameEngine::CBTTerrain
 {
@@ -710,9 +711,7 @@ bool CBTResources::CreateNormalChain(uint32_t width, uint32_t height, uint32_t m
     cl->Begin();
     cl->Barrier(ResourceBarrier::CreateTextureBarrier(texture, ResourceState::Undefined, ResourceState::UnorderedAccess, 0u, mips));
     cl->End();
-    std::vector<CommandList*> lists{cl.get()};
-    m_Device->ExecuteCommandLists(lists);
-    if (!WaitForGraphicsReaders())
+    if (!SubmitGraphicsAndWait(*cl))
     {
         for (const auto view : views)
             m_Device->DestroyTextureView(view);
@@ -743,6 +742,8 @@ void CBTResources::DestroyNormalChain()
 
 bool CBTResources::ProvisionNormalChain(uint32_t samplesX, uint32_t samplesZ)
 {
+    if (samplesX < 2u || samplesZ < 2u || samplesX > 0xFFFFu || samplesZ > 0xFFFFu)
+        return false;
     if (!m_NormalChain.IsValid() || !m_HeightRange.IsValid())
         return false; // the narrow arm builds no chain
     const uint32_t lattice = samplesX | (samplesZ << 16u);
@@ -802,12 +803,12 @@ void CBTResources::UploadSurfaceParams(uint32_t frameCounter, const CBTSurfacePa
 // land in the texture yet the terrain renders flat, with no validation error).
 // The backend drops writes to bindings a set's layout does not declare, so the
 // fan-out is safe for kernels without the binding.
-bool CBTResources::WaitForSourceReaders() const
+bool CBTResources::WaitForSourceReaders()
 {
     return !m_SourceReadersSubmitted || WaitForGraphicsReaders();
 }
 
-bool CBTResources::WaitForGraphicsReaders() const
+bool CBTResources::WaitForGraphicsReaders()
 {
     const auto submitted = m_Device->LastGraphicsSubmissionToken();
     if (submitted.IsValid())
@@ -816,23 +817,25 @@ bool CBTResources::WaitForGraphicsReaders() const
         return false;
 
     // A queue signal orders all earlier graphics work without a device-wide idle claim.
-    const auto semaphore = m_Device->CreateTimelineSemaphore(0u);
-    if (!semaphore.IsValid())
-        return false;
     auto command = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
     if (!command)
-    {
-        m_Device->DestroySemaphore(semaphore);
         return false;
-    }
     command->Begin();
     command->End();
-    constexpr uint64_t kCompletedValue = 1u;
-    const bool queued = m_Device->QueueSubmit(IDevice::QueueType::Graphics, {command.get()}, {},
-                                             {{semaphore, kCompletedValue}});
-    const bool complete = queued && m_Device->WaitGpuSyncToken({semaphore, kCompletedValue});
-    m_Device->DestroySemaphore(semaphore);
-    return complete;
+    return SubmitGraphicsAndWait(*command);
+}
+
+bool CBTResources::SubmitGraphicsAndWait(CommandList& command)
+{
+    if (!m_GraphicsCompletion.IsValid())
+        m_GraphicsCompletion = m_Device->CreateTimelineSemaphore(0u);
+    if (!m_GraphicsCompletion.IsValid() || m_GraphicsCompletionValue == std::numeric_limits<uint64_t>::max())
+        return false;
+    // A failed return can follow a real submit. Keep its semaphore and never reuse its value.
+    const uint64_t value = ++m_GraphicsCompletionValue;
+    if (!m_Device->QueueSubmit(IDevice::QueueType::Graphics, {&command}, {}, {{m_GraphicsCompletion, value}}))
+        return false;
+    return m_Device->WaitGpuSyncToken({m_GraphicsCompletion, value});
 }
 
 bool CBTResources::UpdateTerrainSourceBinding(uint32_t binding, Rendering::TextureHandle texture,
@@ -1087,6 +1090,12 @@ void CBTResources::Shutdown()
 {
     if (m_Device)
     {
+        // Retirement covers queued attempts too; a reserved value might never have been submitted.
+        if (m_GraphicsCompletion.IsValid() && WaitForGraphicsReaders())
+            m_Device->DestroySemaphore(m_GraphicsCompletion);
+        // Unobservable work keeps the registered semaphore alive until device teardown.
+        m_GraphicsCompletion = {};
+        m_GraphicsCompletionValue = 0;
         if (m_DescriptorSet.IsValid())
             m_Device->DestroyDescriptorSet(m_DescriptorSet);
         m_DescriptorSet = {};
@@ -1163,6 +1172,8 @@ void CBTResources::ReprovisionAfterDeviceRebuild()
     // rebuild teardown, so calling Destroy* here would re-enter destruction on dead
     // handles. Nulling m_Device additionally makes the Shutdown() that Initialize()
     // runs first a no-op, so the re-bring-up cannot resurrect that path.
+    m_GraphicsCompletion = {};
+    m_GraphicsCompletionValue = 0;
     m_DescriptorSet = {};
     for (auto& b : m_Buffers)
         b = {};
