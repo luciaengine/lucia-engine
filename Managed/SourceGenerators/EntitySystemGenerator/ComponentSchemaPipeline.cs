@@ -187,7 +187,7 @@ namespace GameEngine.SourceGenerators
         private const ushort kVec2 = 12, kVec3 = 13, kVec4 = 14, kQuat = 15, kColor = 17;
 
         private const ushort kAssetGuid = 18;
-        private const ushort kAssetCategoryPrefab = 45; // ECSABI.h
+        private const ushort kAssetCategoryPrefab = 46; // ECSABI.h
 
         private static TypeLayout LayoutOfType(ITypeSymbol type)
         {

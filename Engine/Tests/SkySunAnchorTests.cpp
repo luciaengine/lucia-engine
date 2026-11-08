@@ -816,3 +816,29 @@ TEST(SkyLinkedSun, TheFogSunAtNightIsUnchanged)
             << "moon " << (expected.ShowMoon ? "shown" : "hidden") << ": the fog's sun at 00:00";
     }
 }
+
+TEST(SkySunAnchor, DayCyclePreviewChangesTheRenderedSunWithoutWritingTheClock)
+{
+    SkySunAnchorHarness harness;
+    harness.AddDefaultSky();
+    auto sky = harness.Sky();
+    sky.AutoSunMoon = true;
+    sky.TimeOfDayHours = 10.0f;
+    sky.AnimateTimeOfDay = true;
+    harness.SetSky(sky);
+
+    harness.System.Update(harness.World, 0.0f);
+    auto* feature = harness.Services.GetFeature<Engine::Renderer::SkyRenderFeature>();
+    ASSERT_NE(feature, nullptr);
+    const float originalElevation = feature->GetSystemState().sunDirWS[1];
+
+    const auto worldId = harness.World.GetWorldId();
+    harness.System.SetPreviewHour(worldId, 18.5f);
+    harness.System.Update(harness.World, 1.0f);
+    EXPECT_NE(feature->GetSystemState().sunDirWS[1], originalElevation);
+    EXPECT_FLOAT_EQ(harness.Sky().TimeOfDayHours, 10.0f);
+
+    harness.System.ClearPreviewHour(worldId);
+    harness.System.Update(harness.World, 0.0f);
+    EXPECT_FLOAT_EQ(feature->GetSystemState().sunDirWS[1], originalElevation);
+}

@@ -43,7 +43,7 @@ extern "C" {
 // v2.4 (minor, appended): spawn and despawn resident prefabs. The previous
 // GE_ECS_FieldDesc reserved word carries an optional asset category.
 static const uint32_t GE_ECS_ABI_VERSION_CURRENT = GE_ECS_ABI_VERSION_ENCODE(2u, 4u);
-static const uint16_t GE_ECS_ASSET_CATEGORY_PREFAB = 45u;
+static const uint16_t GE_ECS_ASSET_CATEGORY_PREFAB = 46u;
 
 // Opaque entity identifier (packed index+version in engine ECS).
 // 0 is reserved to mean "none/invalid" at the ABI boundary.

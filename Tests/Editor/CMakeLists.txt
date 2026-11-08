@@ -2140,3 +2140,73 @@ foreach(layout
         "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/${layout}.uxml"
         "Assets/UI/${layout}.uxml")
 endforeach()
+# Profile authoring, shared working copies and nonpersistent sky scrubbing.
+add_executable(DayCycleEditorTests
+	DayCycleWindowBindingTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/EditorAssetRegistrations.cpp
+	DayCycleProfileSaveTests.cpp
+	DayCycleProfileInspectorTests.cpp
+	DayCycleWindowTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleAxis.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleDescriptionField.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleEditorServices.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleProfile/DayCycleProfileControls.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleProfile/DayCycleProfileInspector.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleProfile/DayCycleProfileSave.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleRowsHost.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleScrub.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleShippedProfiles.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleSunNow.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleTrackRows.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleWindow/DayCycleWindow.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleWindow/DayCycleWindowRegistration.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleWorkingCopy.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetCreation.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/EntityMaterialTextureAssign.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/LuxText.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SkySunPathCaptions.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SkySunReadoutText.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Sky/SkySunDayKind.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Sky/SkyEnvironmentEdit.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Sky/SkySunLinkUndo.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/CurveField.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/Controls/CurveTangents.cpp
+	${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
+)
+target_include_directories(DayCycleEditorTests PRIVATE
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Include
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source
+	${CMAKE_SOURCE_DIR}/Engine/Tests
+	${CMAKE_SOURCE_DIR}/Tests
+)
+target_link_libraries(DayCycleEditorTests PRIVATE
+	Engine
+	EditorSDK
+	GTest::gtest
+	GTest::gtest_main
+)
+set_target_properties(DayCycleEditorTests PROPERTIES
+	CXX_STANDARD 20
+	CXX_STANDARD_REQUIRED ON
+	VCPKG_APPLOCAL_DEPS OFF
+)
+ge_set_output_tests(DayCycleEditorTests)
+ge_stage_runtime_dependencies(DayCycleEditorTests)
+ge_stage_test_asset(DayCycleEditorTests
+	"${CMAKE_SOURCE_DIR}/Assets/DayCycles/Default.daycycle.json"
+	"Assets/DayCycles/Default.daycycle.json"
+)
+ge_stage_test_asset(DayCycleEditorTests
+	"${CMAKE_SOURCE_DIR}/Assets/DayCycles/ClearDay.daycycle.json"
+	"Assets/DayCycles/ClearDay.daycycle.json"
+)
+ge_stage_test_asset(DayCycleEditorTests
+	"${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/DayCycleWindow.uxml"
+	"Assets/UI/panels/DayCycleWindow.uxml"
+)
+add_test(NAME DayCycleEditorTests
+	COMMAND "${CMAKE_COMMAND}"
+		-DTEST_EXE=$<TARGET_FILE:DayCycleEditorTests>
+		-DTEST_WORKING_DIR=$<TARGET_FILE_DIR:DayCycleEditorTests>
+		-P "${CMAKE_SOURCE_DIR}/cmake/RunTestExecutable.cmake"
+)

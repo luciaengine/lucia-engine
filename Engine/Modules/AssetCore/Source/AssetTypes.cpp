@@ -152,6 +152,7 @@ static const std::unordered_map<String, AssetType>& GetExtensionMap()
         // A terrain's ordered material list, keyed by stable slot ID
         {".terrainmatlib", AssetType::TerrainMaterialLibrary},
 
+        {".daycycle.json", AssetType::DayCycleProfile},
         // A particle emitter's processor stack
         {".particlestack", AssetType::ParticleStack},
 
@@ -321,6 +322,7 @@ bool IsTextBasedAssetType(AssetType type) {
         case AssetType::FlareAtlas:
         case AssetType::LensFlareDefinition:
         case AssetType::TerrainMaterialLibrary:
+        case AssetType::DayCycleProfile:
         case AssetType::ParticleStack:
             return true;
         default:

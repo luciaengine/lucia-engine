@@ -108,6 +108,7 @@ namespace GameEngine {
     X(PhysicsMaterial) \
     X(TileSet) \
     X(TileMap) \
+    X(DayCycleProfile) \
     X(Prefab)
 
 /**

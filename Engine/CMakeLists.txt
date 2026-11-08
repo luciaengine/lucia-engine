@@ -20,6 +20,8 @@ set(ENGINE_SOURCES
     # target_sources(Engine ...) in the codegen block near the bottom of this file.
     Source/Assets/NavGridAsset.cpp
     Source/Assets/NavMeshAsset.cpp
+    Source/Assets/DayCycleProfile.cpp
+    Source/Assets/DayCycleTracks.cpp
     Source/Assets/SceneAsset.cpp
     Source/Assets/CoreAssetRegistrations.cpp
     Source/Assets/TextureAsset.cpp
@@ -218,6 +220,8 @@ set(ENGINE_HEADERS
     Include/Assets/ParserRegistry.h
     Include/Assets/FileWatchingService.h
     Include/Assets/CoreAssetRegistrations.h
+    Include/Assets/DayCycleProfile.h
+    Include/Assets/DayCycleTracks.h
     Include/Assets/SceneAsset.h
 
     Include/Assets/TextureAsset.h

@@ -2505,7 +2505,7 @@ class Outer
         Assert.DoesNotContain(diagnostics, d => d.Severity == DiagnosticSeverity.Error);
         Assert.DoesNotContain(compilation.GetDiagnostics(), d => d.Severity == DiagnosticSeverity.Error);
         Assert.Contains(
-            "new GameEngine.ECS.ComponentFieldDesc(\"Prefab\", 1, 16, (GameEngine.ECS.ComponentFieldType)18, 45)",
+            "new GameEngine.ECS.ComponentFieldDesc(\"Prefab\", 1, 16, (GameEngine.ECS.ComponentFieldType)18, 46)",
             hub);
     }
 
