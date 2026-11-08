@@ -57,10 +57,10 @@
 
 // The error-free transforms below are correct ONLY without FP contraction (see header
 // note). MSVC: float_control(push) saves the includer's fp_contract state so this
-// header cannot leak a contraction change into the including TU; GCC/Clang honor the
-// STDC pragma (leaking OFF there is conservative — stricter, never wrong). The
-// Df64ArithmeticHoldsExtendedPrecision probe fails loudly if contraction ever breaks
-// the transforms regardless of pragma behavior.
+// header cannot leak a contraction change into the including TU. Other compilers
+// may ignore STDC FP_CONTRACT, so the arithmetic and GPU bit-parity probes remain
+// required checks under the actual build flags. Df64ArithmeticHoldsExtendedPrecision
+// fails loudly if contraction breaks the transforms.
 #if defined(_MSC_VER)
 #pragma float_control(push)
 #pragma fp_contract(off)
@@ -229,14 +229,17 @@ inline DF MulF(DF a, float b)
     return FastTwoSum(p.Hi, p.Lo);
 }
 
-// int64 -> df64. Not exact past 48 bits (fp32 holds 24; the residual may round), but
-// deterministic and exactly power-of-two-scale invariant — which is what crack-freedom
-// needs (header note). Relative error <= ~2^-47.
+// Decode numerators satisfy |v| <= 2^50. Split into an exact signed upper limb
+// and two unsigned 16-bit limbs: every integer-to-float conversion is exact in
+// this range. Avoid a rounded float-to-int64 roundtrip losing its residual on
+// GPU backends. The normalized pair keeps ~2^-47 relative precision and exact
+// power-of-two scale invariance; this is not a full-range int64 conversion.
 inline DF FromI64(int64_t v)
 {
-    const float hi = static_cast<float>(v);
-    const float lo = static_cast<float>(v - static_cast<int64_t>(hi));
-    return {hi, lo};
+    const float upper = static_cast<float>(static_cast<int32_t>(v >> 32)) * 4294967296.0f;
+    const float middle = static_cast<float>(static_cast<uint32_t>((static_cast<uint64_t>(v) >> 16) & 65535u)) * 65536.0f;
+    const float lower = static_cast<float>(static_cast<uint32_t>(static_cast<uint64_t>(v) & 65535u));
+    return Add({upper, 0.0f}, TwoSum(middle, lower));
 }
 
 // Deterministic shared 1/sqrt seed (S2a): hardware rsqrt estimates differ CPU<->GPU (and
