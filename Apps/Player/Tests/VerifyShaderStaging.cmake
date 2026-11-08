@@ -34,6 +34,10 @@ foreach(_destination IN LISTS _destinations)
     foreach(_kernel cbt_kernels.comp.spv cbt_kernels_heap32.comp.spv)
         require_matching_file("${COMPILED_SHADER_DIR}/${_kernel}" "${_destination}/CBT/${_kernel}")
     endforeach()
+    foreach(_include cbt_draw_level.glsl cbt_height_chain.glsl)
+        require_matching_file("${ENGINE_MODULES_DIR}/CBTTerrain/Shaders/CBT/${_include}"
+                              "${_destination}/CBT/${_include}")
+    endforeach()
     # ShaderComposer reads these for runtime material variants, even when no
     # fixed shader package depends on a particular authored surface.
     foreach(_mapping

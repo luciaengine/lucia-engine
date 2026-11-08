@@ -524,6 +524,8 @@ class WorkStealingThreadPool
      * @return The index, or SIZE_MAX on a thread that is no pool's worker
      */
     size_t GetCurrentWorkerId() const;
+    /// Returns whether the calling thread is a worker or is executing an inline job.
+    static bool IsExecutingJob();
 
     /**
      * @brief Shut the pool down.
@@ -1287,6 +1289,7 @@ void WorkStealingThreadPool::Run(F&& fn, JobCounter& counter)
 template <typename F>
 void WorkStealingThreadPool::RunBareInline(F& func)
 {
+    const Detail::JobExecutionScope scope;
     try
     {
         func();

@@ -3,6 +3,7 @@
 namespace GameEngine
 {
 class UIElement;
+class UIManager;
 
 namespace UI
 {
@@ -17,6 +18,9 @@ namespace UI
 /// keeps one keystroke from firing twice then swallows the application binding
 /// on that keystroke instead.
 bool FocusIsInside(const UIElement& element);
+
+/// True when the manager focuses a text editor inside within, or anywhere when within is null.
+bool FocusIsInTextInput(const UIManager& manager, const UIElement* within = nullptr);
 
 } // namespace UI
 } // namespace GameEngine

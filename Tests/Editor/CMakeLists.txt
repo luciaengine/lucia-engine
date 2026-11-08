@@ -5,10 +5,35 @@
 # the new UI module via AssetRuntime's ParserRegistry (UILayoutAsset/UIStyleAsset
 # registration).
 set(EDITOR_TEST_SOURCES
+    PrefabPlaceTests.cpp
+    PrefabPropagationTests.cpp
+    PrefabHierarchyTests.cpp
+    ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests/SharedHeadlessDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/DefaultComponentInspector.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyEntityIcon.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabBar.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabEditorRegistration.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabHierarchyRows.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabInstanceDescriptions.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabRemovedComponents.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabService.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabThumbnailHandler.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/UnpackPrefabCommand.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/ApplyRevert/ApplyPrefabOverrideCommand.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/ApplyRevert/PrefabOverrideMenu.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/CreatePrefab/CreatePrefabCommand.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/CreatePrefab/CreatePrefabDialog.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabOverridesList/DiscardStaleOverrideCommand.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabOverridesList/PrefabOverridesList.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabOverridesList/PrefabOverridesListModel.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetsFolderDropRegistry.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetPlacementRegistry.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UndoRedo/SceneViewDropUndoCommand.cpp
     LogPanelTests.cpp
     TopToolbarIconTests.cpp
     ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests/UITestShaderSetup.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/LogPanel.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/LogPanel/LogChannelPopover.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/LogView.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/BacktraceFrameView.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Panels/LogToolbarActions.cpp
@@ -2107,6 +2132,9 @@ endforeach()
 
 set_property(TARGET EditorTests APPEND PROPERTY LINK_DEPENDS
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/LogPanel.css"
+    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/LogPanel/LogChannelPopover.css"
+    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/LogPanel/LogChannelPopover.uxml"
+    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/LogPanel/LogChannelRow.uxml"
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/LogToolbarActions.uxml"
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Icons/copy.svg"
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/Icons/trash.svg"
@@ -2116,6 +2144,18 @@ set_property(TARGET EditorTests APPEND PROPERTY LINK_DEPENDS
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/EditorTopToolbar.css"
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/EditorTopToolbar.uxml")
 
+# Prefab controls load their layouts from the editor's staged asset mount.
+foreach(layout
+    controls/CreatePrefabDialog/CreatePrefabDialog
+    controls/PrefabBar/PrefabBar
+    controls/PrefabOverridesList/PrefabOverridesList
+    controls/PrefabOverridesList/PrefabOverrideGroup
+    controls/PrefabOverridesList/PrefabOverrideRow
+    inspectors/EntityHeader/EntityHeader)
+    ge_stage_test_asset(EditorTests
+        "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/${layout}.uxml"
+        "Assets/UI/${layout}.uxml")
+endforeach()
 # Profile authoring, shared working copies and nonpersistent sky scrubbing.
 add_executable(DayCycleEditorTests
 	DayCycleWindowBindingTests.cpp

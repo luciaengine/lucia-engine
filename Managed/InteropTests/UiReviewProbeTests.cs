@@ -54,13 +54,29 @@ namespace GameEngine.ManagedInteropTests
         {
             AddElement("probe0");
             string? path = null;
-            foreach (System.Diagnostics.ProcessModule m in
-                     System.Diagnostics.Process.GetCurrentProcess().Modules)
+            if (OperatingSystem.IsMacOS())
             {
-                if (m.ModuleName != null && IsNativeLibraryFileName(m.ModuleName))
+                uint count = DyldImageCount();
+                for (uint index = 0; index < count; ++index)
                 {
-                    path = m.FileName;
-                    break;
+                    string? image = Marshal.PtrToStringUTF8(DyldGetImageName(index));
+                    if (image != null && IsNativeLibraryFileName(System.IO.Path.GetFileName(image)))
+                    {
+                        path = image;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                foreach (System.Diagnostics.ProcessModule module in
+                         System.Diagnostics.Process.GetCurrentProcess().Modules)
+                {
+                    if (module.ModuleName != null && IsNativeLibraryFileName(module.ModuleName))
+                    {
+                        path = module.FileName;
+                        break;
+                    }
                 }
             }
             TestContext.Out.WriteLine("LOADED GameEngine.Native = " + (path ?? "<not loaded>"));
@@ -69,6 +85,12 @@ namespace GameEngine.ManagedInteropTests
                 "the REAL engine native DLL won the probe, not the shim double — every UI shim "
                 + "assertion in this suite would then be measuring something else");
         }
+
+        [DllImport("/usr/lib/libSystem.B.dylib", EntryPoint = "_dyld_image_count")]
+        private static extern uint DyldImageCount();
+
+        [DllImport("/usr/lib/libSystem.B.dylib", EntryPoint = "_dyld_get_image_name")]
+        private static extern nint DyldGetImageName(uint index);
 
         // The file names CMake gives GameEngine.Native on Windows, macOS and Linux.
         private static bool IsNativeLibraryFileName(string moduleName) =>

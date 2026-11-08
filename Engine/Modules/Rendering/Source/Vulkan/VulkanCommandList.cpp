@@ -4660,7 +4660,7 @@ void VulkanCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, T
     // command-list-local tracking, which for a fresh list means UNDEFINED — correct only
     // for whole-subresource rewrites.
     VkImageSubresourceRange range{};
-    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    range.aspectMask = GetVkImageAspectFlags(dstTexture);
     range.baseMipLevel = mip;
     range.levelCount = 1;
     range.baseArrayLayer = is3DTexture ? 0 : layer;
@@ -4721,7 +4721,9 @@ void VulkanCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, T
     region.bufferOffset = srcOffsetBytes;
     region.bufferRowLength = (srcRowPitchBytes && bpp) ? static_cast<uint32_t>(srcRowPitchBytes / bpp) : 0;
     region.bufferImageHeight = (srcSlicePitchBytes && srcRowPitchBytes) ? static_cast<uint32_t>(srcSlicePitchBytes / srcRowPitchBytes) : 0;
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    // Buffer copies name one aspect; combined depth/stencil uploads carry depth.
+    region.imageSubresource.aspectMask = (range.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT)
+        ? static_cast<VkImageAspectFlags>(VK_IMAGE_ASPECT_DEPTH_BIT) : range.aspectMask;
     region.imageSubresource.mipLevel = mip;
     region.imageSubresource.baseArrayLayer = is3DTexture ? 0 : layer;
     region.imageSubresource.layerCount = 1;

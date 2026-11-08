@@ -932,25 +932,27 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
             continue;
         }
 
-        const uint32 skelGPUIdx = itemGpuSafe ? m_RenderServices->GetGPUAnimationDataStore().EnsureSkeletonUploaded(item.SkeletonId, plan)
+        const uint32 skeletonGpuIndex = itemGpuSafe ? m_RenderServices->GetGPUAnimationDataStore().EnsureSkeletonUploaded(item.SkeletonId, plan)
                                               : GPUAnimationDataStore::kNotUploaded;
         // A refused upload uses CPU sampling without changing the palette layout.
-        if (itemGpuSafe && skelGPUIdx == GPUAnimationDataStore::kNotUploaded
+        if (itemGpuSafe && skeletonGpuIndex == GPUAnimationDataStore::kNotUploaded
             && !GPUAnimationDataStore::FitsKernelLimits(*item.CachedSkeleton, plan.get()))
             WarnSkeletonOverGPULimitsOnce(item.SkeletonId, *item.CachedSkeleton, plan.get());
-        if (skelGPUIdx != GPUAnimationDataStore::kNotUploaded)
+        if (skeletonGpuIndex != GPUAnimationDataStore::kNotUploaded
+            && m_RenderServices->GetGPUAnimationDataStore().TryReserveInstanceCapacity(
+                m_RenderServices->GetGPUAnimationDataStore().GetInstanceCount() + 1u))
         {
             // Uploaded, so gpuReady held and the render services exist.
             auto& gpuStore = m_RenderServices->GetGPUAnimationDataStore();
             auto& atlas = m_RenderServices->GetSkinPaletteAtlas();
-            const uint32 jc = (item.CachedSkeleton->SkinJointCount > 0 &&
+            const uint32 jointCount = (item.CachedSkeleton->SkinJointCount > 0 &&
                 item.CachedSkeleton->JointNodes.size() == item.CachedSkeleton->SkinJointCount)
                 ? item.CachedSkeleton->SkinJointCount : item.CachedSkeleton->BoneCount;
-            if (jc == 0) continue;
+            if (jointCount == 0) continue;
 
-            uint32 clipGPUIdx = gpuStore.EnsureClipUploaded(item.ClipIndex);
+            uint32 clipGpuIndex = gpuStore.EnsureClipUploaded(item.ClipIndex);
 
-            uint32 atlasOffset = atlas.Reserve(jc);
+            uint32 atlasOffset = atlas.Reserve(jointCount);
             auto* runtime = skStore.GetRuntime(item.RuntimeId);
             if (atlasOffset == UINT32_MAX)
             {
@@ -963,30 +965,27 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                 continue;
             }
 
-            if (runtime) runtime->SetAtlasPaletteOffset(atlasOffset);
-
-            GPUAnimInstance gpuInst{};
-            gpuInst.skeletonGPUIndex = skelGPUIdx;
-            gpuInst.clipGPUIndex = clipGPUIdx;
-            gpuInst.time = item.Time;
-            gpuInst.atlasOutputOffset = atlasOffset;
-            // Phase 6-iii: stash runtime id so the skinning compute can read
-            // the per-runtime visibility flag and early-out when off-screen.
-            gpuInst.runtimeId = item.RuntimeId;
-            gpuStore.AddInstance(gpuInst);
-            gpuStore.MarkGPUHandled(item.RuntimeId);
+            GPUAnimInstance instance{};
+            instance.skeletonGPUIndex = skeletonGpuIndex;
+            instance.clipGPUIndex = clipGpuIndex;
+            instance.time = item.Time;
+            instance.atlasOutputOffset = atlasOffset;
+            // Runtime visibility gates compute work for off-screen instances.
+            instance.runtimeId = item.RuntimeId;
+            if (gpuStore.TryAddInstance(instance))
+            {
+                if (runtime)
+                    runtime->SetAtlasPaletteOffset(atlasOffset);
+                gpuStore.MarkGPUHandled(item.RuntimeId);
+                continue;
+            }
         }
-        else
-        {
-            // CPU sample: name-resolution-aware, and no bone or level limit.
-            // SkinningUploadSystem will upload the resulting
-            // CompactSkinMatrices to the atlas SSBO.
-            auto clip = clipStore.Get(item.ClipIndex);
-            auto* runtime = skStore.GetRuntime(item.RuntimeId);
-            if (!clip || !runtime || !item.CachedSkeleton) continue;
-            SampleAnimationPose(*item.CachedSkeleton, clip.get(), item.Time,
-                                nullptr, &runtime->CompactSkinMatrices, m_Workspace, plan.get());
-        }
+        // Refused GPU admission keeps the runtime on the CPU palette-upload path.
+        auto* runtime = skStore.GetRuntime(item.RuntimeId);
+        if (!runtime || !item.CachedSkeleton)
+            continue;
+        SampleAnimationPose(*item.CachedSkeleton, clipPtr.get(), item.Time,
+                            nullptr, &runtime->CompactSkinMatrices, m_Workspace, plan.get());
     }
 }
 

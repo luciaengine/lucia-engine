@@ -106,7 +106,7 @@ public:
     void ReprovisionAfterDeviceRebuild();
 
     // Call once per frame before any AnimationSystem::Update runs.
-    // frameIndex selects which double-buffer slot to use for the instance ring.
+    // frameIndex is a device-frame change token, not a ring-slot selector.
     void BeginFrame(uint32_t frameIndex);
 
     /// Returns a GPU header index, or kNotUploaded for missing topology or kernel overflow.
@@ -122,13 +122,16 @@ public:
     void InvalidateSkeleton(uint32 skeletonId);
     void InvalidateAllClips();
 
-    // Per-frame instance accumulation (called from AnimationSystem per world).
-    void AddInstance(const GPUAnimInstance& inst);
+    /// Reserve a complete upload before publishing palette offsets. Serialized with
+    /// TryAddInstance and FlushInstances; refusal leaves previously admitted rows valid.
+    [[nodiscard]] bool TryReserveInstanceCapacity(uint32 instanceCount);
+    /// Reserve capacity and append one row; refusal leaves existing rows unchanged.
+    [[nodiscard]] bool TryAddInstance(const GPUAnimInstance& instance);
     uint32 GetInstanceCount() const { return static_cast<uint32>(m_FrameInstances.size()); }
 
-    // Flush accumulated instances to the GPU ring buffer. Call once per frame
-    // after all worlds have been processed.
-    void FlushInstances();
+    /// Upload admitted rows after device BeginFrame. Unchanged rows reuse their range;
+    /// appended rows receive a disjoint range so earlier prepared bindings stay valid.
+    [[nodiscard]] bool FlushInstances();
 
     // GPU-handled runtime tracking (for SkinningUploadSystem skip).
     void MarkGPUHandled(uint32 runtimeId);
@@ -180,15 +183,17 @@ private:
     size_t m_ClipDataCapacity = 0;
     bool m_ClipDirty = false;
 
-    // Per-frame instance buffer, one ring per frame in flight. BeginFrame claims the
-    // slot in the update phase but FlushInstances — the only writer — runs from
-    // AnimationComputePass::RecordDispatch, inside a render-graph execute lambda and so
-    // behind IDevice::BeginFrame's fence wait. That phase, not the depth, is what keeps
-    // the write off a slot a frame in flight still reads; a ring this shallow filled in
-    // the update phase would race (FrameBufferAllocator::BeginFrame states the rule).
+    // Reservation can replace a buffer before device BeginFrame waits. The ring
+    // therefore has device pacing plus one slot, even though copying happens later.
     GameEngine::Rendering::FrameBufferAllocator m_InstanceAllocator;
     std::vector<GPUAnimInstance> m_FrameInstances;
     size_t m_InstanceBufferOffset = 0;
+    size_t m_InstanceAlignment = sizeof(GPUAnimInstance);
+    size_t m_AdmittedUploadEndBytes = 0;
+    uint32 m_AdmittedInstanceCount = 0;
+    uint32 m_UploadedInstanceCount = 0;
+    uint32 m_MaxInstanceCount = 0;
+    bool m_InstanceFrameActive = false;
 
     // Per-frame GPU-handled runtime IDs.
     std::unordered_set<uint32> m_GPUHandledRuntimeIds;
@@ -210,6 +215,8 @@ private:
         size_t& currentCapacity,
         size_t requiredSize,
         const char* debugName);
+
+    void ResetInstances();
 
     // Upload dirty CPU data to GPU buffers.
     void FlushSkeletonBuffers();

@@ -22,6 +22,12 @@ struct TerrainShadowMap
     Rendering::TextureHandle MapTexture{};
     uint32_t MapBindlessIndex = 0;
     uint32_t MapSide = 0;
+    // RG16F mip 0 stores sun-center visibility and mean occluder octave over each 2x2 map block.
+    // Later mips average 2x2 children; receivers select a mip from the pixel footprint.
+    // An unpublished field has an invalid texture and zero index/levels; receivers then sample only the map.
+    Rendering::RenderGraph::RGTexture FieldLit{};
+    uint32_t FieldLitBindlessIndex = 0;
+    uint32_t FieldLitLevels = 0;
     // The terrain's height texture (one texel per lattice sample) and its bindless index.
     Rendering::TextureHandle HeightTexture{};
     uint32_t HeightBindlessIndex = 0;
@@ -43,6 +49,10 @@ struct TerrainShadowMap
     float VMin = 0.0f;
     float SamplesU = 0.0f;
     float SamplesV = 0.0f;
+    // The terrain draw's level scale for this view: a receiver d meters from the eye is drawn at the
+    // continuous level log2(d x DrawLevelScale) (cbt_height_chain.glsl CBT_ChainLevel); 0 when the draw
+    // has no level rule (no height chain), and then no receiver reads the lit field.
+    float DrawLevelScale = 0.0f;
 };
 
 } // namespace GameEngine::Engine::Renderer

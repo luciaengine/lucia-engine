@@ -2,6 +2,7 @@
 
 #include "ECS/Systems.h"
 #include "Engine/Rendering/SunGlareRenderFeature.h" // ViewSkyline (per-frame scratch)
+#include "TerrainECS/CoarseTileStandIn.h"
 #include "TerrainECS/GrassWindVolumeExtractor.h"
 #include "Terrain/Heightfield.h" // HeightfieldData scratch for atlas normal regen
 #include "TerrainECS/TerrainAtlas.h" // kAtlasUpgradeFadeSeconds (device-free, pure)
@@ -141,7 +142,9 @@ private:
     bool TryPatchAtlasSlotRegion(AtlasPatchContext& patch, const TileCoord& coord, TerrainTileData* tp,
                                  uint32 slot, bool fullNative, bool wholeSlot);
     void UploadAtlasSlotNormal(AtlasPatchContext& patch, const TileCoord& coord, TerrainTileData* tp,
-                               uint32 slot, bool fullNative, const float32* heights);
+                               uint32 slot, const CoarseTileStandIn* standIn);
+    const CoarseTileStandIn& ResolveCoarseStandIn(const TerrainTileData& tile, uint32 resolution,
+                                               float32 tileWorldSize, float32 heightScale);
     void PatchAtlasSlotSplatOnly(AtlasPatchContext& patch, const TileCoord& coord, uint32 slot);
     void PatchDirtyAtlasTiles(AtlasPatchContext& patch);
     void AdoptGpuHeightReadback(AtlasPatchContext& patch, int32 tileX, int32 tileZ, const float32* samples,
@@ -221,16 +224,11 @@ private:
     // a parked camera pays nothing. The *Patch buffers hold the interior-clamped
     // sub-block actually uploaded (boundary texels shared with a resident-Full
     // neighbor are excluded so a coarse write never stomps the Full edge).
-    std::vector<float32> m_CoarseHeightScratch;
     std::vector<uint8> m_CoarseSplatScratch;
     std::vector<float32> m_CoarseHeightPatch;
     std::vector<uint32> m_CoarseSplatPatch;
-    // Normals for a coarse (not-yet-Full) tile region are regenerated from its upsampled heights
-    // (was ZEROED — the tiled coarse dark-shard gap): the full region normal + the interior-clamped
-    // sub-block actually uploaded, plus a HeightfieldData wrap of the upsampled scratch.
-    std::vector<uint8> m_CoarseNormalScratch;
     std::vector<uint32> m_CoarseNormalPatch;
-    Terrain::HeightfieldData m_CoarseNormalHf;
+    CoarseTileStandIn m_CoarseStandInScratch;
 
     // Phase E: single-slot pack scratch (slotStride^2 floats) reused across the atlas slot
     // patches so each tile upload does not reallocate. Resized on a tileRes change.
@@ -252,18 +250,10 @@ private:
     std::vector<float32> m_UnifiedHeightRegionScratch;
     std::vector<uint32> m_UnifiedSurfaceRegionScratch;
 
-    // Quality-sweep slice 1: atlas SPLAT (RGBA8) + NORMAL (R16G16F) slot sources ride the same
-    // slot geometry as height. Reused per-patch scratch so streaming does not reallocate. The
-    // *SlotScratch hold the packed slotStride^2 block (apron included) uploaded to the atlas; the
-    // *TileScratch hold the per-tile source at tileRes (upsampled splat / freshly regenerated
-    // normal). The normal is regenerated from the tile's POST-modifier heights every patch (fixing
-    // the tiled base-noise-normal gap on atlas terrains too), via GenerateNormalmapFromHeightfield
-    // over m_AtlasNormalTileHf (a coarse tile's upsampled heights; a Full tile uses its own field).
+    // The slot scratch includes the atlas apron. The tile scratch holds the upsampled splat.
     std::vector<uint8> m_AtlasSplatSlotScratch;
     std::vector<uint8> m_AtlasNormalSlotScratch;
     std::vector<uint8> m_AtlasSplatTileScratch;
-    std::vector<uint8> m_AtlasNormalTileScratch;
-    Terrain::HeightfieldData m_AtlasNormalTileHf;
     // Out-of-window coarse splat (RGBA8, downsampled tile splats) + coarse normal (R16G16F, derived
     // from the coarse HEIGHT field so distant shading matches the coarse geometry — no lit bumps on
     // smooth terrain). Rebuilt with the coarse height field (same gate), so a parked camera pays nothing.

@@ -9,8 +9,8 @@
 namespace GameEngine {
 
 class LogView;
+class LogChannelPopover;
 class Label;
-class TextField;
 class UIElement;
 class Button;
 class Splitter;
@@ -68,6 +68,7 @@ private:
     void OnLogMessage(const Logger::LogMessage& message);
     void OnSearchTextChanged(const std::string& searchText);
     void CopyToClipboard();
+    void ToggleChannels(UIElement& anchor);
     bool ToggleLogPaused();
     void BuildDetailPane(UIElement* parent);
     void PopulateDetailPaneForIndex(size_t messageIndex);
@@ -81,6 +82,7 @@ private:
     void RepairLogToolbarChromeIfNeeded();
 
     LogView* m_LogView = nullptr;
+    LogChannelPopover* m_ChannelPopover = nullptr;
     UIElement* m_SplitBody = nullptr;
     WeightedPane* m_LogPane = nullptr;
     Splitter* m_DetailSplitter = nullptr;
@@ -93,7 +95,6 @@ private:
     UIElement* m_LogToolbarSecondary = nullptr;
     UIElement* m_LogCenterSlot = nullptr;
     UIElement* m_SearchBar = nullptr;
-    TextField* m_SearchField = nullptr;
     
     // Callback registration ID for unregistering on destruction
     Logger::uint64 m_CallbackId = 0;

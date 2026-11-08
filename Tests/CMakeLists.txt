@@ -489,6 +489,7 @@ endif()
 
 # Scripting ABI Integration Tests (GTest)
 add_executable(ScriptingAbiIntegrationTests
+    Integration/ScriptingAbiPrefabSpawnTests.cpp
     Integration/ScriptingAbiPackageTest.cpp
     Integration/ScriptingAbiDomainTests.cpp
     Integration/ScriptingAbiAdditionalTests.cpp

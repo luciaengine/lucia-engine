@@ -129,6 +129,10 @@ std::filesystem::path GetExecutableDirectoryForGraphNodes()
     if (len == 0 || len >= MAX_PATH)
         return {};
     return std::filesystem::path(buffer).parent_path();
+#elif defined(__linux__)
+    std::error_code ec;
+    const std::filesystem::path executable = std::filesystem::read_symlink("/proc/self/exe", ec);
+    return ec ? std::filesystem::path{} : executable.parent_path();
 #else
     return {};
 #endif

@@ -1,4 +1,5 @@
 #include "Assets/AssetManager.h"
+#include "Events/Event.h"
 #include "AssetPathSyntax.h"
 
 #include "Assets/AssetDbProfiler.h"
@@ -262,6 +263,13 @@ AssetManager::AssetManager()
     : m_Initialized(false), m_HotReloadEnabled(false), m_JobSystem(nullptr),
       m_ExpectedWrites(kWriteEchoWindow)
 {
+}
+
+Event<std::span<const GUID>>& AssetManager::GetFilesChangedEvent()
+{
+    if (!m_FilesChanged)
+        m_FilesChanged = MakeUnique<Event<std::span<const GUID>>>();
+    return *m_FilesChanged;
 }
 
 AssetManager::~AssetManager()
@@ -2269,6 +2277,9 @@ void AssetManager::CheckForReloads()
                            toReload.end());
         }
     }
+
+    if (m_FilesChanged && !toReload.empty())
+        m_FilesChanged->Invoke(toReload);
 
     std::vector<GUID> timestampCandidates;
     const auto now = std::chrono::steady_clock::now();

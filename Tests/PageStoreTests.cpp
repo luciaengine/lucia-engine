@@ -1152,6 +1152,22 @@ std::vector<PageWant> EveryPage(const GeneratedHeightPageProvider& provider)
     return wanted;
 }
 
+uint32 VerifyPageUploads(PageResidencyManager& residency, uint32 field,
+                         const GeneratedHeightPageProvider& provider, std::vector<float32>& expected)
+{
+    uint32 uploaded = 0;
+    for (const PageUploadRequest& upload : residency.FieldCache(field).Uploads())
+    {
+        EXPECT_TRUE(provider.FillPage(upload.Page.Address, expected));
+        const std::vector<float32>* samples = residency.Samples(upload.Page.Stream, upload.Page.Address);
+        EXPECT_NE(samples, nullptr);
+        if (samples != nullptr)
+            EXPECT_EQ(*samples, expected);
+        ++uploaded;
+    }
+    return uploaded;
+}
+
 // Frames until `done` holds (loads land between frames on the pool), at most a few seconds.
 template <typename Done>
 uint64 RunFramesUntil(PageResidencyManager& residency, uint64 frame, Done done)
@@ -1181,25 +1197,17 @@ TEST(PageResidencyTest, WantedPagesLoadAssignAndThenAParkedCameraDoesNoWork)
     // Each frame's uploads carry their page's samples until the next Update.
     std::vector<float32> expected(kPageSampleCount);
     uint32 uploaded = 0;
-    frame = RunFramesUntil(residency, frame, [&] {
-        for (const PageUploadRequest& upload : residency.FieldCache(7).Uploads())
-        {
-            EXPECT_TRUE(provider->FillPage(upload.Page.Address, expected));
-            const std::vector<float32>* samples = residency.Samples(7, upload.Page.Address);
-            EXPECT_NE(samples, nullptr);
-            if (samples != nullptr)
-                EXPECT_EQ(*samples, expected);
-            ++uploaded;
-        }
+    frame = RunFramesUntil(residency, frame, [&residency, &provider, &expected, &uploaded, &wanted] {
+        uploaded += VerifyPageUploads(residency, 7, *provider, expected);
         return residency.FieldCache(7).ResidentCount() == wanted.size();
     });
     ASSERT_EQ(residency.FieldCache(7).ResidentCount(), wanted.size());
     EXPECT_EQ(uploaded, wanted.size());
 
     // Past the arrival fades, a parked camera starts and assigns nothing.
-    for (int i = 0; i < 40; ++i)
+    for (int frameOffset = 0; frameOffset < 40; ++frameOffset)
         residency.Update(++frame, 1.0f / 60.0f, false);
-    for (int i = 0; i < 5; ++i)
+    for (int frameOffset = 0; frameOffset < 5; ++frameOffset)
     {
         residency.Request(7, wanted);
         residency.Update(++frame, 1.0f / 60.0f, false);
@@ -1207,9 +1215,15 @@ TEST(PageResidencyTest, WantedPagesLoadAssignAndThenAParkedCameraDoesNoWork)
         EXPECT_EQ(residency.FieldCache(7).AssignsThisFrame(), 0u);
         EXPECT_TRUE(residency.FieldCache(7).Transitions().empty());
     }
-    // Uploaded, the pages keep no samples on the CPU (nothing there reads a resident page).
+    // Wanted resident pages keep their decoded samples in the shared CPU cache.
+    constexpr uint64 kPageBytes = uint64{kPageSampleCount} * sizeof(float32);
+    EXPECT_EQ(residency.CpuBytes(), static_cast<uint64>(wanted.size()) * kPageBytes);
+    ASSERT_TRUE(provider->FillPage(wanted.front().Address, expected));
+    const std::vector<float32>* cached = residency.Samples(7, wanted.front().Address);
+    ASSERT_NE(cached, nullptr);
+    EXPECT_EQ(*cached, expected);
+    residency.Forget(7);
     EXPECT_EQ(residency.CpuBytes(), 0u);
-    EXPECT_EQ(residency.Samples(7, wanted.front().Address), nullptr);
     pool.Shutdown();
 }
 
@@ -1231,15 +1245,26 @@ TEST(PageResidencyTest, EveryStreamSharesOneUploadCapAndOneCpuBudget)
     residency.Request(2, few);
 
     uint64 frame = 0;
-    frame = RunFramesUntil(residency, frame, [&] {
+    frame = RunFramesUntil(residency, frame, [&residency] {
         EXPECT_LE(residency.FieldCache(1).AssignsThisFrame() + residency.FieldCache(2).AssignsThisFrame(), 3u);
         return residency.FieldCache(1).ResidentCount() == 5u && residency.FieldCache(2).ResidentCount() == 5u;
     });
     EXPECT_EQ(residency.FieldCache(1).ResidentCount(), 5u);
     EXPECT_EQ(residency.FieldCache(2).ResidentCount(), 5u);
 
-    // Once uploaded, both streams' pages leave the CPU budget.
+    // Placeable pages form the budget floor while both streams still want them.
+    constexpr uint64 kStreamCount = 2;
+    constexpr uint64 kPageBytes = uint64{kPageSampleCount} * sizeof(float32);
+    const uint64 retainedBytes = kStreamCount * static_cast<uint64>(few.size()) * kPageBytes;
     residency.Update(++frame, 1.0f / 60.0f, false);
+    EXPECT_EQ(residency.CpuBytes(), retainedBytes);
+    EXPECT_GT(retainedBytes, budget.CpuBytes);
+    residency.Request(1, {});
+    residency.Request(2, {});
+    residency.Update(++frame, 1.0f / 60.0f, false);
+    EXPECT_LE(residency.CpuBytes(), budget.CpuBytes);
+    residency.Forget(1);
+    residency.Forget(2);
     EXPECT_EQ(residency.CpuBytes(), 0u);
     pool.Shutdown();
 }
@@ -1410,7 +1435,12 @@ TEST(PageResidencyTest, ALoadOfARestartedStreamsOldSourceNeverLands)
         residency.Request(1, std::vector<PageWant>{top});
         residency.Update(++frame, 1.0f / 60.0f, false);
     }
-    EXPECT_EQ(residency.CpuBytes(), 0u) << "the old source's load landed after the restart";
+    // A late completion cannot replace the current source's retained page.
+    EXPECT_EQ(residency.CpuBytes(), uint64{kPageSampleCount} * sizeof(float32));
+    ASSERT_NE(residency.Samples(1, top.Address), nullptr);
+    EXPECT_EQ(*residency.Samples(1, top.Address), expected);
+    residency.Forget(1);
+    EXPECT_EQ(residency.CpuBytes(), 0u);
     pool.Shutdown();
 }
 
