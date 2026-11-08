@@ -351,6 +351,9 @@
 
 /* Entity selection history: 24×24 glyph in 36×36 hit area, no fill. */
 .inspector-header-history {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
 	flex-shrink: 0;
 	align-self: center;
 	gap: 0;
