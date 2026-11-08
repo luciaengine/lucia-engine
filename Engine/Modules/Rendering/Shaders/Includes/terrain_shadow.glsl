@@ -1,48 +1,11 @@
-// Terrain shadows from the sun-space clearance map (issue #2699).
-//
-// The map is a grid laid along the sun's horizontal direction: axis u points toward the sun, axis
-// v across it, one line per v. Each sample stores its clearance: the height by which the terrain
-// upstream (larger u) rises above the sun's ray through the sample, measured from the ground
-// there. Positive clearance is shadow up to that height above the ground; negative clearance is
-// the margin by which the ground clears the sun, so lit ground needs no self-shadow bias. Beside
-// it each sample stores its occluder's distance: the horizontal distance (metres along u) to the
-// terrain that sizes its penumbra (GE_TerrainShadowSampleValue: in shadow the caster of the shadow
-// volume's top; lit, the caster that blocks the sun disc's lower edge most, whose margin then
-// replaces the clearance, both negative).
-//
-// Along one line the top of the shadow volume is a suffix maximum:
-//   top(k) = max over j > k of (h(j) - (j - k) * texel * tan(elevation))
-// so the bake (terrain_shadow_bake.comp) is one scan per line, linear in the samples and
-// independent of the sun's elevation, and a receiver needs one bilinear read and a compare. The scan
-// carries a second maximum for the ray through the sun disc's lower edge, which finds the occluder
-// of a lit receiver's penumbra: the largest margin under the centre ray there is usually the ground
-// just upwind, which says nothing about the ridge whose penumbra the receiver stands in.
-//
-// The penumbra is the uniform disc of the sun (angular radius a) cut by the edge ray over the
-// occluder, the model the mesh shadows use (the cascades' PCSS disc, the ray-traced mask's cone).
-// For a receiver whose margin under the shadow volume's top is m metres (vertically) and whose
-// occluder is D metres away horizontally, the edge ray passes m * cos(e) from the receiver across
-// the ray, and the sun's disc there has the radius r = (D / cos(e)) * tan(a): the receiver is fully
-// shadowed at m * cos(e) >= r and fully lit at m * cos(e) <= -r. Across the penumbra the margin
-// changes by 2 * D * tan(a) / cos^2(e) metres, and on level ground the penumbra is
-// 2 * r / sin(e) metres wide.
-//
-// The block between the markers is compiled by the shaders and, through GlslShim, by
-// CBTTerrainTests, so it uses only what the shim provides: no out parameters, no samplers.
-// The includer defines, before this file:
-//   vec2 GE_TerrainShadowReadClearance(vec2 gridCoord)   bilinear read of the map at a grid
-//                                                         position in samples (clamped in range):
-//                                                         x = margin, y = occluder distance
-//   float GE_TerrainShadowReadGround(float x, float z)    the terrain's height at x, z relative to
-//                                                         its base, clamped to the terrain's edge,
-//                                                         the surface the terrain renders
-// All positions share one frame (the grid's centre and the terrain's corner are given in it);
-// heights are metres above the terrain's base height.
+// Sun-aligned clearance samples store the shadow-volume margin and horizontal occluder distance in meters.
+// The bake scans upwind suffix maxima for center/lower sun rays; receivers compare margin over an analytic sun disc.
+// Shared shader/CPU math requires includer-provided GE_TerrainShadowReadClearance and GE_TerrainShadowReadGround.
 
 // GE_SHARED_TERRAIN_SHADOW_BEGIN
 struct GE_TerrainShadowGrid
 {
-    // The grid's centre and the terrain's corner and extent, in the receivers' frame (x, z).
+    // The grid's center and the terrain's corner and extent, in the receivers' frame (x, z).
     float CenterX;
     float CenterZ;
     float TerrainX;
@@ -52,9 +15,9 @@ struct GE_TerrainShadowGrid
     // The sun's horizontal direction (unit length): the u axis. v = (-SunZ, SunX).
     float SunX;
     float SunZ;
-    // tan of the sun's elevation, metres of rise per metre along u.
+    // tan of the sun's elevation, meters of rise per meter along u.
     float TanElevation;
-    // Metres between samples, and the first sample's u and v.
+    // Meters between samples, and the first sample's u and v.
     float Texel;
     float UMin;
     float VMin;
@@ -64,15 +27,27 @@ struct GE_TerrainShadowGrid
 };
 
 // A sample with no caster (outside the terrain), and the magnitude the map can hold (RG16F; the
-// limit bounds both the clearance and the occluder distance, in metres).
+// limit bounds both the clearance and the occluder distance, in meters).
 const float kGE_TerrainShadowNoCaster = -1.0e30f;
 const float kGE_TerrainShadowClearanceLimit = 60000.0f;
-// The smallest penumbra radius (metres across the ray), so an occluder at the receiver (a facet's
+// The smallest penumbra radius (meters across the ray), so an occluder at the receiver (a facet's
 // own terminator) gives a hard edge without dividing by zero.
 const float kGE_TerrainShadowMinPenumbraRadius = 1.0e-4f;
 // The penumbra radius bound for a caller whose meshes bound theirs by nothing (the ray-traced mask).
 const float kGE_TerrainShadowUncappedPenumbra = 1.0e30f;
 const float kGE_TerrainShadowPi = 3.14159265f;
+const float kGE_TerrainShadowLn2 = 0.693147181f;
+// Tangent/cosine floors describe the same minimum grazing elevation, about 0.9 degrees.
+// They cap footprint growth and visible-ground masking at the same view angle.
+const float kGE_TerrainShadowMinViewTan = 1.0f / 64.0f;
+// The lowest view cosine the pixel footprint widens for, so a grazing pixel covers at most 64 times
+// its head-on footprint: the terrain surface's floor on the grazing cosine (cbt_surface.glsl
+// kCBTMinGrazingCos).
+const float kGE_TerrainShadowMinViewCos = 1.0f / 64.0f;
+// How fast the view's and the sun's masking stop selecting the same ground as their azimuths part, per
+// radian: the fit of Ginneken, Stavridi and Koenderink (1998) used in the height-direction correlated
+// masking-shadowing form (GE_TerrainShadowSeenShare).
+const float kGE_TerrainShadowAzimuthCorrelation = 4.41f;
 
 // The grid position, in samples, of the point (x, z).
 vec2 GE_TerrainShadowGridCoord(GE_TerrainShadowGrid g, float x, float z)
@@ -111,16 +86,13 @@ vec2 GE_TerrainShadowCasterAndGround(GE_TerrainShadowGrid g, float k, float line
     return vec2(casts > 0.5f ? ground : kGE_TerrainShadowNoCaster, ground);
 }
 
-// A carry of the scan, seen from one sample: x = the shadow volume's top for the ray through the sun's
-// centre, y = the horizontal distance to the caster that sets it; z, w = the same for the ray through
-// the sun disc's lower edge (slope `tanLower`). Of two carries seen from the same sample the higher top
-// wins, ray by ray (the carries' maximum); on a tie `a` is kept, so every caller passes the nearer
-// carry as `a` and a tie keeps the nearer caster.
+// Carry xy stores center-ray top/distance; zw stores lower-disc-ray top/distance.
+// Keep each ray maximum; equal tops keep a, which callers supply as the nearer caster.
 vec4 GE_TerrainShadowHigherCarry(vec4 a, vec4 b)
 {
-    bool centre = b.x > a.x;
+    bool center = b.x > a.x;
     bool lower = b.z > a.z;
-    return vec4(centre ? b.x : a.x, centre ? b.y : a.y, lower ? b.z : a.z, lower ? b.w : a.w);
+    return vec4(center ? b.x : a.x, center ? b.y : a.y, lower ? b.z : a.z, lower ? b.w : a.w);
 }
 
 // A caster's own carry at its sample: its height on both rays, at distance 0.
@@ -130,26 +102,17 @@ vec4 GE_TerrainShadowCasterCarry(float caster)
 }
 
 // A carry seen `samplesDownwind` samples downwind of the sample it was seen from: each ray's top
-// falls by its slope, and its caster recedes, per metre. The operator the line's runs are combined
+// falls by its slope, and its caster recedes, per meter. The operator the line's runs are combined
 // with, and one step of the walk.
 vec4 GE_TerrainShadowCarryDownwind(GE_TerrainShadowGrid g, vec4 carry, float samplesDownwind, float tanLower)
 {
-    float metres = samplesDownwind * g.Texel;
-    return vec4(carry.x - metres * g.TanElevation, carry.y + metres, carry.z - metres * tanLower, carry.w + metres);
+    float meters = samplesDownwind * g.Texel;
+    return vec4(carry.x - meters * g.TanElevation, carry.y + meters, carry.z - meters * tanLower, carry.w + meters);
 }
 
-// What the map stores at a sample whose ground is `ground`, from `seen`, the carry of every caster
-// upwind of it: x = the margin, y = the distance of the occluder that sizes its penumbra. In shadow
-// (the centre ray's top above the ground) that is the centre ray's caster: x = the clearance. Lit,
-// it is the caster that blocks the disc's lower edge most, which the lit half of the penumbra
-// depends on: x = that caster's margin under the centre ray, at most the clearance and so never
-// positive (each sample's sign, the hard compare at a sample, is unchanged; between samples the
-// bilinear zero crossing can move by up to a texel where the two rays pick different casters). With a
-// point sun (`tanLower` = tan(elevation)) both are the clearance.
-// One caster per side is kept, the one with the largest vertical margin, which can be a farther caster
-// than the one that hides the most of the disc: a near low occluder's umbra inside a far ridge's
-// penumbra reads as the ridge's penumbra (measured on a 1.5 m mound inside a 30 m ridge's penumbra,
-// sun 15 degrees, uncapped: 0.325 lit where the marched disc reads 0 at a 0.53 degree sun).
+// Store center-ray clearance/caster in shadow; when lit, use the lower-disc caster and its nonpositive center margin.
+// A point sun makes both choices identical. Bilinear zero crossings can differ by one texel between casters.
+// One caster per ray approximates overlapping penumbras and can overestimate light behind multiple occluders.
 vec2 GE_TerrainShadowSampleValue(GE_TerrainShadowGrid g, vec4 seen, float ground, float tanLower)
 {
     float clearance = seen.x - ground;
@@ -185,13 +148,9 @@ vec2 GE_TerrainShadowTop(GE_TerrainShadowGrid g, vec2 gridCoord)
     return vec2(read.x + ga + (gb - ga) * fy, read.y);
 }
 
-// The receiver at (x, y, z) against the shadow volume: x = its margin, the metres by which the
-// volume's top passes above it (positive: the terrain hides the sun's centre), y = the occluder
-// distance. `onGround` is 1 for the terrain's own surface, which stands on the field whatever
-// height its facet put it at, so its shadow does not follow the tessellation (one tap). Other
-// receivers on the terrain keep their height, a base sunk into the terrain counting as on the
-// ground (two taps); receivers off it (water beyond the terrain's edge) compare their height with
-// the shadow's top (five).
+// Return receiver margin above its shadow-volume top and horizontal occluder distance.
+// Terrain receivers follow the ground field; other receivers retain height unless sunk below terrain.
+// Off-terrain receivers compare against the extended volume.
 vec2 GE_TerrainShadowMargin(GE_TerrainShadowGrid g, float x, float y, float z, float onGround)
 {
     vec2 c = GE_TerrainShadowGridCoord(g, x, z);
@@ -201,8 +160,8 @@ vec2 GE_TerrainShadowMargin(GE_TerrainShadowGrid g, float x, float y, float z, f
     if (c.x < 0.0f)
     {
         // Downwind of the grid (off the terrain) nothing casts: the shadow volume's top falls by
-        // tan(elevation) per metre from the grid's first sample on the receiver's line, and the
-        // occluder recedes by the same metres.
+        // tan(elevation) per meter from the grid's first sample on the receiver's line, and the
+        // occluder recedes by the same meters.
         vec2 edge = GE_TerrainShadowTop(g, vec2(0.0f, c.y));
         float top = edge.x + c.x * g.Texel * g.TanElevation;
         return vec2(top - y, edge.y - c.x * g.Texel);
@@ -219,10 +178,8 @@ vec2 GE_TerrainShadowMargin(GE_TerrainShadowGrid g, float x, float y, float z, f
     return vec2(read.x - above, read.y);
 }
 
-// The share of the sun's disc that reaches the receiver at (x, y, z) past the terrain: 1 lit, 0 in
-// full shadow. `tanHalfAngle` is tan of the sun's angular radius (0: a point sun, a hard edge, the
-// one compare); `maxPenumbraRadius` bounds the penumbra's radius across the ray in metres, as the
-// caller's mesh shadows bound theirs. See GE_TerrainShadowMargin for `onGround`.
+// Return sun-disc visibility: 1 lit, 0 fully shadowed. tanHalfAngle=0 gives a hard point-sun compare.
+// maxPenumbraRadius caps the transverse radius in meters; onGround follows GE_TerrainShadowMargin.
 float GE_TerrainShadowLit(GE_TerrainShadowGrid g, float x, float y, float z, float onGround, float tanHalfAngle,
                           float maxPenumbraRadius)
 {
@@ -237,7 +194,111 @@ float GE_TerrainShadowLit(GE_TerrainShadowGrid g, float x, float y, float z, flo
         return 0.0f;
     if (t <= -1.0f)
         return 1.0f;
-    // The share of a unit disc beyond a chord at signed distance t from its centre.
+    // The share of a unit disc beyond a chord at signed distance t from its center.
     return (acos(t) - t * sqrt(1.0f - t * t)) / kGE_TerrainShadowPi;
 }
+
+// The lit field averages visibility and shadowed-sample log2 occluder distance in map-texel units.
+// Sample at the pixel footprint to separate local relief shadow from distant cast shadow.
+
+// Estimate the shadowed share cast within footprintSamples from visibility and mean occluder octaves.
+// Assume distances spread uniformly to a longest occluder; approximate the cumulative share with an octave ramp.
+// The ramp is 0 below mean-1/ln(2), 0.5 at the mean and 1 at the longest distance.
+float GE_TerrainShadowLocalShare(float litShare, float meanOctaves, float footprintSamples)
+{
+    float shadow = clamp(1.0f - litShare, 0.0f, 1.0f);
+    if (shadow <= 0.0f)
+        return 0.0f;
+    float mean = meanOctaves / shadow;
+    float footprint = log2(max(footprintSamples, 1.0f));
+    return shadow * clamp((footprint - mean) * (0.5f * kGE_TerrainShadowLn2) + 0.5f, 0.0f, 1.0f);
+}
+
+// Blend unresolved-relief masking across draw levels 1..2.
+// Taking light away only after fine relief filters out prevents noisy near-chain visibility from speckling the band.
+float GE_TerrainShadowUndrawnRelief(float drawLevel)
+{
+    return clamp(drawLevel - 1.0f, 0.0f, 1.0f);
+}
+
+// Estimate visible lit ground from local shadow, view/sun elevations and their horizontal angle.
+// Correlated groove masking uses joint visibility 1/(1+max(L)+c*min(L)); sunward views hide lit faces first.
+// Distant cast shadow stays proportional; without local relief, preserve the field share.
+float GE_TerrainShadowSeenShare(float litShare, float localShadow, float tanView, float tanSun, float sunSide)
+{
+    float local = clamp(localShadow, 0.0f, 1.0f);
+    float open = 1.0f - local;
+    if (local <= 0.0f || open <= 0.0f)
+        return litShare;
+    float relief = local * max(tanSun, 0.0f);
+    float clear = open * max(tanView, kGE_TerrainShadowMinViewTan);
+    float visible = clear / (relief + clear);
+    float sunHidden = local / open;
+    float viewHidden = relief / clear;
+    float azimuth = min(acos(clamp(sunSide, -1.0f, 1.0f)), 0.5f * kGE_TerrainShadowPi);
+    float correlation = kGE_TerrainShadowAzimuthCorrelation * azimuth /
+                        (kGE_TerrainShadowAzimuthCorrelation * azimuth + 1.0f);
+    // The ground outside the local shadow that the pixel sees, as a share of all the ground.
+    float seenOpen = 1.0f / (1.0f + max(sunHidden, viewHidden) + correlation * min(sunHidden, viewHidden));
+    if (sunSide < 0.0f)
+        seenOpen = mix(seenOpen, max(open + visible - 1.0f, 0.0f), min(-sunSide, 1.0f));
+    return clamp(litShare * seenOpen / (open * visible), 0.0f, 1.0f);
+}
+
+// Widen headOn footprint by grazing angle: no widening at draw level 0, full 1/cosine at level 1.
+// Intermediate levels use (1/cosine)^drawLevel. Both directional-shadow modes share this rule.
+float GE_TerrainShadowFootprint(float headOn, float viewCos, float drawLevel)
+{
+    float spread = 1.0f / max(viewCos, kGE_TerrainShadowMinViewCos);
+    return headOn * pow(spread, clamp(drawLevel, 0.0f, 1.0f));
+}
+
+// Convert sampled field visibility/occluder octaves into the share visible from this pixel.
+// Always show additional visible light; reduce light only by the unresolved-relief share at drawLevel.
+float GE_TerrainShadowFieldShown(GE_TerrainShadowGrid g, vec2 read, float samplesPerPixel, vec2 toEyeAcross,
+                                 float viewCos, float drawLevel)
+{
+    float local = GE_TerrainShadowLocalShare(read.x, read.y, samplesPerPixel);
+    float across = length(toEyeAcross);
+    float sunSide = across > 0.0f ? dot(toEyeAcross / across, vec2(g.SunX, g.SunZ)) : 0.0f;
+    float cosView = clamp(viewCos, 0.0f, 1.0f);
+    // The view's elevation above the mean surface as a tangent, at most 64 (a view straight down).
+    float tanView = cosView / max(sqrt(1.0f - cosView * cosView), cosView * kGE_TerrainShadowMinViewTan);
+    float seen = GE_TerrainShadowSeenShare(read.x, local, tanView, g.TanElevation, sunSide);
+    return seen >= read.x ? seen : mix(read.x, seen, GE_TerrainShadowUndrawnRelief(drawLevel));
+}
 // GE_SHARED_TERRAIN_SHADOW_END
+
+#ifdef GE_TERRAIN_SHADOW_READS_FIELD
+// Both shadow modes use this terrain-shadow entry point. Field readers define
+// GE_TerrainShadowReadField(gridCoord,level) for its two channels and GE_TerrainShadowFieldLevels() for availability.
+
+// Compute terrain visibility at a receiver height above the terrain base using the shared pixel footprint.
+// Blend the lit field in over one to two map samples per pixel; at two samples it replaces the map read.
+// Footprint inputs describe view direction, mean-surface cosine and continuous draw level.
+float GE_TerrainShadowFootprintLit(GE_TerrainShadowGrid g, float x, float y, float z, float onGround,
+                                   float tanHalfAngle, float maxPenumbraRadius, float headOn, vec3 toEye,
+                                   float viewCos, float drawLevel)
+{
+    float samplesPerPixel = GE_TerrainShadowFootprint(headOn, viewCos, drawLevel) / g.Texel;
+    float levels = GE_TerrainShadowFieldLevels();
+    float field = 1.0;
+    float fieldWeight = 0.0;
+    if (levels > 0.0 && samplesPerPixel > 1.0)
+    {
+        vec2 c = GE_TerrainShadowGridCoord(g, x, z);
+        if (c.x >= 0.0 && c.y >= 0.0 && c.x <= g.SamplesU - 1.0 && c.y <= g.SamplesV - 1.0)
+        {
+            // Level 0 holds 2 x 2 samples.
+            float level = clamp(log2(samplesPerPixel) - 1.0, 0.0, levels - 1.0);
+            field = GE_TerrainShadowFieldShown(g, GE_TerrainShadowReadField(c, level), samplesPerPixel, toEye.xz,
+                                               viewCos, drawLevel);
+            fieldWeight = smoothstep(1.0, 2.0, samplesPerPixel);
+        }
+    }
+    if (fieldWeight >= 1.0)
+        return field;
+    float lit = GE_TerrainShadowLit(g, x, y, z, onGround, tanHalfAngle, maxPenumbraRadius);
+    return fieldWeight > 0.0 ? mix(lit, field, fieldWeight) : lit;
+}
+#endif

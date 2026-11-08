@@ -1413,6 +1413,7 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(rt_shadow_denoise rt_shadow_denoise.comp)
     # Terrain shadows: the sun-space clearance map bake (TerrainShadowBake).
     _ge_add_shaderpkg_compute(terrain_shadow_bake terrain_shadow_bake.comp)
+    _ge_add_shaderpkg_compute(terrain_shadow_field_lit terrain_shadow_field_lit.comp)
     _ge_add_shaderpkg_compute(screen_space_shadow screen_space_shadow.comp)
     _ge_add_shaderpkg_compute(screen_space_shadow_prepare screen_space_shadow_prepare.comp)
     _ge_add_shaderpkg_compute(screen_space_shadow_resolve screen_space_shadow_resolve.comp)

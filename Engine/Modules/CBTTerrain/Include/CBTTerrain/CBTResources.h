@@ -112,6 +112,23 @@ class CBTResources
     Rendering::TextureHandle GetBoundHeightSource(uint32_t frameCounter) const;
     // The height-range pyramid (binding 21); invalid on the narrow-heap arm.
     Rendering::BufferHandle GetHeightRangeBuffer() const { return m_HeightRange; }
+    // Compute binding 24 and graphics gCbtChain always bind a valid buffer.
+    // Its zeroed header names no lattice until the wide heap provisions a chain.
+    // The narrow heap keeps that header, so drawing uses cached corners.
+    Rendering::BufferHandle GetHeightChainBuffer() const { return m_HeightChain; }
+    uint32_t GetHeightChainWords() const { return m_HeightChainWords; }
+    // Grow to CBTHeightChainWords for the lattice; never shrink. A new buffer has a zeroed header.
+    // Allocation failure or an unsupported heap preserves the old binding and cached-corner draw.
+    bool ProvisionHeightChainWords(uint32_t words);
+    // The far-field normal chain (binding 25 on the compute set as one storage view per mip,
+    // cbt_NormalChain on the graphics set 2). A 1x1 placeholder until ProvisionNormalChain creates it for
+    // a lattice; the texture rests in ShaderResource between frames. Wide arm only, like the height chain.
+    Rendering::TextureHandle GetNormalChainTexture() const { return m_NormalChain; }
+    uint32_t GetNormalChainMips() const { return m_NormalChainMips; }
+    // Creates the chain for a lattice of `samplesX` x `samplesZ` (CBTNormalChainTexels / Mips), replacing
+    // one made for another lattice; true when it matches. False when the arm builds no chain or the
+    // allocation fails: the previous texture stays bound and the surface keeps the level-0 normal map.
+    bool ProvisionNormalChain(uint32_t samplesX, uint32_t samplesZ);
     Rendering::SamplerHandle GetHeightSampler() const { return m_HeightSampler; }
 
     // In-place re-provision safety. The per-slot SetHeightSource/SetAtlasSource/SetCoarseSource
@@ -209,11 +226,19 @@ class CBTResources
     Rendering::BufferHandle GetSurfaceParamsBuffer() const { return m_SurfaceParams; }
     void UploadSurfaceParams(uint32_t frameCounter, const CBTSurfaceParams& params);
 
+    // The draw's level rule (CBTDrawLevelParams), a host-visible uniform ring the vertex modifier reads
+    // as gCbtDrawLevel; written once per frame, offset-bound per slot (kCBTDrawLevelParamsSlotStride).
+    Rendering::BufferHandle GetDrawLevelParamsBuffer() const { return m_DrawLevelParams; }
+    void UploadDrawLevelParams(uint32_t frameCounter, const CBTDrawLevelParams& params);
+
     // Total device-local footprint of the persistent buffers, in bytes.
     uint64_t GetPersistentByteSize() const { return m_PersistentBytes; }
 
   private:
     Rendering::BufferHandle CreateStorageBuffer(uint64_t size, uint32_t extraUsage, const char* name);
+    Rendering::BufferHandle CreateHeightChain(uint32_t words);
+    bool CreateNormalChain(uint32_t width, uint32_t height, uint32_t mips);
+    void DestroyNormalChain();
     void WriteDescriptorSet();
     // One pair of sculpt rings and its shape, built before it replaces the bound pair.
     struct SculptRings
@@ -252,6 +277,13 @@ class CBTResources
     Rendering::SamplerHandle m_HeightSampler{};    // linear-clamp, matches CDLOD's GE_TS_CLAMP
     Rendering::BufferHandle m_AtlasRows{};         // host-visible SSBO ring (binding 17)
     Rendering::BufferHandle m_HeightRange{};       // device-local height-range pyramid (binding 21)
+    Rendering::BufferHandle m_HeightChain{};       // device-local prefiltered height chain (binding 24)
+    uint32_t m_HeightChainWords = 0u;              // words m_HeightChain holds
+    Rendering::BufferHandle m_DrawLevelParams{};   // host-visible ring, graphics set 2 (gCbtDrawLevel)
+    Rendering::TextureHandle m_NormalChain{};      // far-field normal chain, rg16f with mips (binding 25)
+    std::array<Rendering::TextureViewHandle, kCBTNormalChainMaxMips> m_NormalChainViews{}; // one per mip
+    uint32_t m_NormalChainMips = 0u;
+    uint32_t m_NormalChainLattice = 0u;            // samples x | z << 16 the chain was made for
     Rendering::TextureHandle m_DefaultAtlasHeight{}; // 1x1 flat fallback atlas height
     std::array<Rendering::TextureHandle, kCBTTextureRingMax> m_BoundAtlasHeight{}; // per-ring-slot atlas texture (binding 18)
     Rendering::TextureHandle m_DefaultAtlasCoarse{}; // 1x1 flat fallback coarse field

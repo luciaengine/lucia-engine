@@ -161,6 +161,28 @@ const uint kCBTLayerTexPerMaterial = 3u;
 #define CBT_HAS_SPLATMAP(tp) (tp.SplatmapBindless != 0u)
 #define CBT_HAS_ATLAS_MAP(idx) ((idx) != 0u)
 
+// Far fragments sample the normal chain at an explicit distance level, blending adjacent mips in hardware.
+// Mip m describes filtered height level m+1; the first distance ring retains the level-0 normal.
+// A disabled or mismatched chain uses the level-0 map everywhere.
+#define CBT_DRAW_NORMAL_CHAIN 1
+// The level-0 map at its one mip, explicitly: the same texels as the implicit tap (a one-mip texture
+// filters mip 0 whatever the derivatives say), legal inside the branch that skips it far away.
+#define CBT_SAMPLE_NORMALMAP_LOD0(idx, uv) \
+    textureLod(GE_BTEX(idx, GE_TS_CLAMP), \
+               CBT_LatticeTextureUV(uv, vec2(textureSize(GE_BTEX(idx, GE_TS_CLAMP), 0))), 0.0)
+#define CBT_CHAIN_LEVEL_RULE_ONLY 1
+#include "cbt_height_chain.glsl"
+#include "cbt_draw_level.glsl"
+// The normal chain's mip for a fragment at continuous level `lambda`: mip m holds level m + 1, read
+// from level 2 on.
+float CBT_SurfaceNormalChainLod(float lambda, uint normalMips)
+{
+    return clamp(lambda - 1.0, 1.0, float(max(normalMips, 2u) - 1u));
+}
+// The smallest view cosine the grazing spread reads: at most 64 times the head-on footprint.
+const float kCBTMinGrazingCos = 1.0 / 64.0;
+layout(set = 2, binding = 33) uniform sampler2D cbt_NormalChain;
+
 #endif // GE_COMPAT_PROFILE
 
 
@@ -1015,7 +1037,64 @@ SurfaceOutput EvaluateSurface(SurfaceInput sIn)
         CBTSurfaceParamsData spN = gCbtSurf.Params;
         if (CBT_HAS_NORMALMAP(tp, normalmapIdx))
         {
+            // Near the eye (weight 0) the level-0 map alone, read at its one mip: the same texels as the
+            // implicit tap, and legal where the far branch skips it; far away the normal chain at the
+            // fragment's level (see cbt_NormalChain above).
+#if defined(CBT_DRAW_NORMAL_CHAIN)
+            vec4 eye = gCbtDrawLevel.Params.eye;
+            uint normalMips = gCbtDrawLevel.Params.lattice.y;
+            float lambda = 0.0;
+            float eyeDistance = 0.0;
+            float pixelAngle = 0.0;
+            if (eye.w > 0.0 && normalMips > 0u)
+            {
+                eyeDistance = distance(sIn.positionWS, eye.xyz);
+                lambda = CBT_ChainLevel(eyeDistance, eye.w);
+                // The view ray's angle per pixel: smooth across facets, unlike a derivative of the
+                // position, which changes with each facet's tilt.
+                pixelAngle = length(fwidth(normalize(sIn.positionWS - eye.xyz)));
+            }
+            float chainWeight = eye.w > 0.0 && normalMips > 0u ? CBT_ChainNormalWeight(lambda) : 0.0;
+            float chainLod = CBT_SurfaceNormalChainLod(lambda, normalMips);
+            vec2 level0XZ = vec2(0.0);
+            if (chainWeight < 1.0)
+                level0XZ = CBT_SAMPLE_NORMALMAP_LOD0(normalmapIdx, sIn.uv0).rg;
+            // Read the distance-level normal and the pixel-footprint normal, sharing the fetch when levels match.
+            // Clamp both to the top mip, so the farthest ground requires only one fetch.
+            float readWeight = chainWeight;
+            float readLod = chainLod;
+            float smoothLod = -1.0;
+            vec2 smoothXZ = vec2(0.0);
+            if (eye.w > 0.0 && normalMips > 0u && lambda > 0.0)
+            {
+                // Grazing pixels cover 1/cosine more ground; use the distance-filtered normal to measure that cosine.
+                // Blend this wider footprint in across levels 0..1, matching terrain-shadow filtering.
+                // The grazing level is no finer than distance level and is clamped to the same top mip.
+                smoothLod = clamp(lambda - 1.0, 0.0, float(max(normalMips, 2u) - 1u));
+                smoothXZ = textureLod(cbt_NormalChain, sIn.uv0, smoothLod).rg;
+                vec3 smoothNormal = vec3(smoothXZ.x, sqrt(max(1.0 - dot(smoothXZ, smoothXZ), 0.0)), smoothXZ.y);
+                vec3 toEye = normalize(eye.xyz - sIn.positionWS);
+                float cosView = abs(dot(normalize(smoothNormal), toEye));
+                float spread = 1.0 / max(cosView, kCBTMinGrazingCos);
+                float grazingLambda = CBT_GrazingLevel(lambda, spread);
+                readWeight = CBT_ChainNormalWeight(grazingLambda);
+                readLod = CBT_SurfaceNormalChainLod(grazingLambda, normalMips);
+#ifdef GE_TERRAIN_SHADOW_RECEIVER_DECLARED
+                ge_ShadowReceiverFootprint = eyeDistance * pixelAngle;
+                ge_ShadowReceiverViewCos = cosView;
+                ge_ShadowReceiverToEye = toEye;
+                ge_ShadowReceiverDrawLevel = lambda;
+#endif
+            }
+            vec2 nXZ = level0XZ;
+            if (readWeight > 0.0)
+            {
+                vec2 chainXZ = readLod == smoothLod ? smoothXZ : textureLod(cbt_NormalChain, sIn.uv0, readLod).rg;
+                nXZ = mix(level0XZ, chainXZ, readWeight);
+            }
+#else
             vec2 nXZ = CBT_SAMPLE_NORMALMAP(normalmapIdx, sIn.uv0).rg;
+#endif
             float ny = sqrt(max(1.0 - dot(nXZ, nXZ), 0.0));
             normalWS = normalize(vec3(nXZ.x, ny, nXZ.y));
         }
