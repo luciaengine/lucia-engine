@@ -1,0 +1,52 @@
+#version 460
+
+// RG stores lit share and log2 occluder distance in map texels; lit samples store distance zero.
+// Mip 0 averages 2x2 clearance samples; each later mip averages 2x2 source texels.
+// Edges repeat, unused map samples are lit, and each 8x8 dispatch writes one level.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std140) uniform TerrainShadowFieldLitParams
+{
+    // x = the level written; y, z = the map's samples per line and lines in use; w = unused.
+    uvec4 uLevel;
+    // x = the map's texel (meters between samples); yzw = unused.
+    vec4 uMap;
+};
+
+layout(set = 0, binding = 1, rg16f) uniform readonly image2D uClearance;
+layout(set = 0, binding = 2, rg16f) uniform readonly image2D uSource;
+layout(set = 0, binding = 3, rg16f) uniform writeonly image2D uTarget;
+
+vec2 MapSample(ivec2 at)
+{
+    if (at.x >= int(uLevel.y) || at.y >= int(uLevel.z))
+        return vec2(1.0, 0.0);
+    vec2 clearance = imageLoad(uClearance, at).rg;
+    if (!(clearance.r > 0.0))
+        return vec2(1.0, 0.0);
+    float texel = uMap.x;
+    return vec2(0.0, log2(max(clearance.g, texel) / texel));
+}
+
+void main()
+{
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 targetSize = imageSize(uTarget);
+    if (texel.x >= targetSize.x || texel.y >= targetSize.y)
+        return;
+    ivec2 base = texel * 2;
+    vec2 sum = vec2(0.0);
+    if (uLevel.x == 0u)
+    {
+        sum = MapSample(base) + MapSample(base + ivec2(1, 0)) + MapSample(base + ivec2(0, 1)) +
+              MapSample(base + ivec2(1, 1));
+    }
+    else
+    {
+        ivec2 last = imageSize(uSource) - 1;
+        sum = imageLoad(uSource, min(base, last)).rg + imageLoad(uSource, min(base + ivec2(1, 0), last)).rg +
+              imageLoad(uSource, min(base + ivec2(0, 1), last)).rg + imageLoad(uSource, min(base + ivec2(1, 1), last)).rg;
+    }
+    imageStore(uTarget, texel, vec4(0.25 * sum, 0.0, 0.0));
+}
