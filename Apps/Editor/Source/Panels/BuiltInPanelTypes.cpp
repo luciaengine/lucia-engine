@@ -49,6 +49,7 @@ struct BuiltInPanelType
     const char* TypeKey;
     PanelFactory Factory;
     const char* DefaultAnchorPanelId = "";
+    void (*Update)(UIElement&, const PanelUpdateContext&) = nullptr;
 };
 
 template <typename T>
@@ -87,7 +88,8 @@ constexpr BuiltInPanelType kBuiltInPanelTypes[] = {
     {"UIDemoPanel", &MakePanel<UIDemoPanel>},
     {"MissingAssetsPanel", &MakePanel<MissingAssetsPanel>},
     {"PackageManagerPanel", &MakePanel<PackageManagerPanel>},
-    {"LogPanel", &MakePanel<LogPanel>},
+    {"LogPanel", &MakePanel<LogPanel>, "",
+     [](UIElement& panel, const PanelUpdateContext&) { static_cast<LogPanel&>(panel).Update(); }},
     {"ScriptErrorsPanel", &MakePanel<ScriptErrorsPanel>},
     {"ShaderErrorsPanel", &MakePanel<ShaderErrorsPanel>},
     {"MonitorsPanel", &MakePanel<MonitorsPanel>},
@@ -145,6 +147,7 @@ void RegisterBuiltInPanelTypes()
     {
         EditorPanelTypeDescriptor descriptor{type.TypeKey, type.Factory};
         descriptor.DefaultAnchorPanelId = type.DefaultAnchorPanelId;
+        descriptor.Update = type.Update;
         registry.RegisterPanelType(std::move(descriptor));
     }
 }

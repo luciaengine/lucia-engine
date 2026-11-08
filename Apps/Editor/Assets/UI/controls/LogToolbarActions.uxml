@@ -1,4 +1,5 @@
 <UIElement class="log-toolbar-main-actions">
+  <Button id="LogChannels" class="small secondary log-action-button" text="Channels" />
   <Button id="LogPause" class="small secondary log-action-button log-pause-button" text="Pause">
     <UIElement id="LogPauseIcon" class="log-action-icon log-action-pause-icon" />
   </Button>

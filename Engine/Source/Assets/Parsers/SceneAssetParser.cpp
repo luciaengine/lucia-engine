@@ -93,11 +93,11 @@ std::string_view FindBracketAttr(std::string_view body, std::string_view key)
 // header body between the brackets; on failure, returns empty string_view.
 std::string_view TryParseResourceHeader(std::string_view line)
 {
-    const std::string_view trimmed = TrimWhitespaceView(line);
+    const std::string_view trimmed = Scene::TrimSceneWhitespace(line);
     if (trimmed.size() < 2 || trimmed.front() != '[' || trimmed.back() != ']')
         return {};
     constexpr std::string_view kPrefix = "resource";
-    const std::string_view body = TrimWhitespaceView(trimmed.substr(1, trimmed.size() - 2));
+    const std::string_view body = Scene::TrimSceneWhitespace(trimmed.substr(1, trimmed.size() - 2));
     if (body.size() <= kPrefix.size() || body.substr(0, kPrefix.size()) != kPrefix ||
         (body[kPrefix.size()] != ' ' && body[kPrefix.size()] != '\t'))
     {
@@ -134,14 +134,11 @@ void EmitAssetRefEdges(const DepEdge& base, std::string_view guidStr, std::strin
     }
 }
 
-// The section a body line belongs to, for its field locator: "entities[<id>]" under an
-// `[entity id=...]` header, "blueprints[<id>]" under a `[blueprint id=... source=...]`
-// instance header, whose lines override the spawned blueprint's root. Empty under any
-// other header ([scene], [resource], [subscene], ...), whose lines are not component
-// fields. A section header is a trimmed line in brackets, as the scene reader reads it.
+// Return the entity, prefab or blueprint section prefix used in field locators.
+// Return empty for headers whose body lines are not component fields.
 bool TryParseSectionLocator(std::string_view line, std::string& outLocator)
 {
-    const std::string_view trimmed = TrimWhitespaceView(line);
+    const std::string_view trimmed = Scene::TrimSceneWhitespace(line);
     if (trimmed.size() < 2 || trimmed.front() != '[' || trimmed.back() != ']')
         return false;
     outLocator.clear();
@@ -150,14 +147,14 @@ bool TryParseSectionLocator(std::string_view line, std::string& outLocator)
         outLocator = "entities[" + std::string(entityId) + "]";
         return true;
     }
-    constexpr std::string_view kBlueprint = "blueprint";
-    const std::string_view body = TrimWhitespaceView(trimmed.substr(1, trimmed.size() - 2));
-    if (body.size() > kBlueprint.size() && body.substr(0, kBlueprint.size()) == kBlueprint &&
-        (body[kBlueprint.size()] == ' ' || body[kBlueprint.size()] == '\t'))
+    const std::string_view body = Scene::TrimSceneWhitespace(trimmed.substr(1, trimmed.size() - 2));
+    const size_t space = body.find_first_of(" \t");
+    const std::string_view kind = body.substr(0, space);
+    if (kind == "prefab" || kind == "blueprint")
     {
         const std::string_view id = FindBracketAttr(body, "id");
         if (!id.empty() && !FindBracketAttr(body, "source").empty())
-            outLocator = "blueprints[" + std::string(id) + "]";
+            outLocator = std::string(kind) + "s[" + std::string(id) + "]";
     }
     return true;
 }
@@ -206,20 +203,34 @@ std::pair<std::string_view, std::string_view> TryParseFieldAssignment(std::strin
 constexpr std::string_view kMarkupComponent = "Markup";
 constexpr std::array<std::string_view, 2> kMarkupOwnedComponents = {"Name", "Spline"};
 
-// The component a section line belongs to, as the scene reader reads it: `Component` of
-// a `Component.field = value` line, and of a blueprint override's `-Component` removal,
-// `+Component` addition or bare `Component` addition line. Empty for a header, a
-// comment, a blank line, or anything else.
+// `text` without a prefab override's address: the part after the first '/', which never occurs in
+// a component name or a field ("lid/MeshRenderer.material" reads as "MeshRenderer.material").
+std::string_view WithoutOverrideAddress(std::string_view text)
+{
+    const size_t slash = text.find('/');
+    return slash == std::string_view::npos ? text : Scene::TrimSceneWhitespace(text.substr(slash + 1));
+}
+
+// Read the component name from a field, component declaration or addressed override operation.
+// Return empty for headers, comments, blank lines and entity removals.
 std::string_view LineComponent(std::string_view line)
 {
-    std::string_view trimmed = TrimWhitespaceView(line);
+    std::string_view trimmed = Scene::TrimSceneWhitespace(line);
     if (trimmed.empty() || trimmed.front() == ';' || trimmed.front() == '[')
         return {};
     if (trimmed.front() == '-' || trimmed.front() == '+')
-        return TrimWhitespaceView(trimmed.substr(1));
+    {
+        const std::string_view rest = Scene::TrimSceneWhitespace(trimmed.substr(1));
+        constexpr std::string_view kRemovedEntityWord = "entity";
+        if (trimmed.front() == '-' && rest.size() > kRemovedEntityWord.size() &&
+            rest.substr(0, kRemovedEntityWord.size()) == kRemovedEntityWord &&
+            (rest[kRemovedEntityWord.size()] == ' ' || rest[kRemovedEntityWord.size()] == '\t'))
+            return {};
+        return WithoutOverrideAddress(rest);
+    }
     if (trimmed.find('=') == std::string_view::npos && trimmed.find('.') == std::string_view::npos)
         return trimmed;
-    const std::string_view lhs = TryParseFieldAssignment(line).first;
+    const std::string_view lhs = WithoutOverrideAddress(TryParseFieldAssignment(line).first);
     return lhs.substr(0, lhs.find('.'));
 }
 
@@ -229,10 +240,8 @@ bool IsMarkupOwnedComponent(std::string_view component)
                        [component](std::string_view owned) { return EqualsIgnoreCase(component, owned); });
 }
 
-// Appends the lines [first, last) of one section to `out`, without the lines a game
-// export drops. Under an [entity] or [blueprint] instance header (`componentSection`)
-// those are the editor-only components' lines and, when the section carries a
-// `Markup` line, the mark-up's own Name and Spline lines; any other section is kept.
+// Append this section without editor-only component lines.
+// Remove Name and Spline data from markup entities; preserve other sections unchanged.
 void AppendExportedSection(const std::vector<std::string_view>& lines, size_t first, size_t last,
                            bool componentSection,
                            const std::function<bool(std::string_view)>& isEditorOnly, std::string& out)
@@ -271,7 +280,7 @@ bool SceneAssetParser::ExtractDependencies(const GUID& referrer,
     if (body.empty())
         return false;
 
-    std::string currentSection; // "" outside [entity ...] and [blueprint ...] instance sections
+    std::string currentSection; // "" outside [entity ...] and [prefab ...] instance sections
     uint32_t ordinal = 0;
 
     std::string_view view(body);
@@ -290,7 +299,7 @@ bool SceneAssetParser::ExtractDependencies(const GUID& referrer,
             currentSection.clear();
             DepEdge edge;
             edge.Referrer = referrer;
-            edge.Kind = DepEdgeKind::SceneResource;
+            edge.Kind = m_Type == AssetType::Prefab ? DepEdgeKind::PrefabComponent : DepEdgeKind::SceneResource;
             edge.FieldLocator = "resources[" + std::string(FindBracketAttr(resourceHeader, "id")) + "]";
             EmitAssetRefEdges(edge, FindBracketAttr(resourceHeader, "guid"),
                               FindBracketAttr(resourceHeader, "path"), ordinal, sink);
@@ -298,7 +307,7 @@ bool SceneAssetParser::ExtractDependencies(const GUID& referrer,
         }
 
         // Every section header ends the section before it. Field assignments only
-        // matter inside [entity ...] and [blueprint ...] instance sections; the
+        // matter inside [entity ...] and [prefab ...] instance sections; the
         // [scene ...] header block and the other sections are skipped.
         if (TryParseSectionLocator(line, currentSection))
             continue;
@@ -315,7 +324,7 @@ bool SceneAssetParser::ExtractDependencies(const GUID& referrer,
 
         DepEdge edge;
         edge.Referrer = referrer;
-        edge.Kind = DepEdgeKind::SceneEntityComponent;
+        edge.Kind = m_Type == AssetType::Prefab ? DepEdgeKind::PrefabComponent : DepEdgeKind::SceneEntityComponent;
         edge.FieldLocator = currentSection + "." + std::string(lhs);
 
         if (ParserExtraction::LooksLikeGuid(rawValue))
@@ -367,7 +376,7 @@ bool SceneAssetParser::ExtractDependencies(const GUID& referrer,
 
 void SceneAssetParser::CollectComponentNames(std::string_view body, std::unordered_set<std::string>& outNames)
 {
-    std::string currentSection; // "" outside [entity ...] and [blueprint ...] instance sections
+    std::string currentSection; // "" outside [entity ...] and [prefab ...] instance sections
     size_t lineStart = 0;
     while (lineStart <= body.size())
     {
@@ -378,7 +387,7 @@ void SceneAssetParser::CollectComponentNames(std::string_view body, std::unorder
 
         if (TryParseSectionLocator(line, currentSection) || currentSection.empty())
             continue;
-        const std::string_view lhs = TryParseFieldAssignment(line).first;
+        const std::string_view lhs = WithoutOverrideAddress(TryParseFieldAssignment(line).first);
         if (!lhs.empty())
             outNames.emplace(lhs.substr(0, lhs.find('.')));
     }

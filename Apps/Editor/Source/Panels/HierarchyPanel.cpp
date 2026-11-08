@@ -1,4 +1,6 @@
 #include "Panels/HierarchyPanel.h"
+
+#include "UI/Interaction/FocusIsInside.h"
 #include "Panels/HierarchyCommandIds.h"
 #include "AssetCore/Asset.h"
 #include "AssetCore/AssetTypes.h"
@@ -35,6 +37,10 @@
 #include "Components/Rendering/WindVolume.h"
 #include "Components/RuntimeOnlyEntity.h"
 #include "Components/SceneBlueprintInstance.h"
+#include "Assets/AssetPlacementRegistry.h"
+#include "SceneView/SceneViewDropPlacement.h"
+#include "SceneView/SceneViewNoticeOverlay.h"
+#include "UndoRedo/SceneViewDropUndoCommand.h"
 #include "Components/SceneEntityTag.h"
 #include "Components/Spline/SplineComponent.h"
 #include "Components/Terrain/Terrain.h"
@@ -58,6 +64,7 @@
 #include "Editor/Hierarchy/HierarchyLightIconTint.h"
 #include "Editor/Hierarchy/HierarchyRenderLayerEdit.h"
 #include "Editor/Hierarchy/HierarchyEntityIcon.h"
+#include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Hierarchy/HierarchyOrdering.h"
 #include "Editor/Hierarchy/HierarchyNavigationBar.h"
 #include "Editor/Settings/FbxImportSettings.h"
@@ -336,11 +343,7 @@ void ParentUnder(ECS::World& world, ECS::EntityHandle child, ECS::EntityHandle p
     world.AddComponentImmediate(child, p);
 }
 
-bool IsModelFileExtension(std::string_view ext)
-{
-    const std::string lower = ToLowerAscii(ext);
-    return lower == ".glb" || lower == ".gltf" || lower == ".obj" || lower == ".fbx";
-}
+
 
 // A lens flare source named after the definition file.
 ECS::EntityHandle CreateLensFlareEntity(ECS::World& world,
@@ -1961,7 +1964,10 @@ HierarchyPanel::HierarchyPanel()
                 {
                     titleEl->RemoveClass("search-match");
                 }
-            } });
+            }
+            Editor::HierarchyRowParts parts{*row, titleEl};
+            Editor::ApplyHierarchyRowDecorations(*m_World, handle, parts);
+        });
 
     // The tree takes every payload the panel takes, plus entity drags for reparenting.
     m_Tree->SetAcceptsPayload([this](UI::Interaction::PayloadTypeId tid)
@@ -2391,6 +2397,24 @@ HierarchyPanel::HierarchyPanel()
         m_ContextMenu->Show(m_Window, (int)x, (int)y); };
     m_Tree->SetOnContextMenu(m_ShowContextMenu);
 
+    m_Tree->RegisterEventHandler(kEventKeyDown, [this](UIEvent& event) {
+        const auto* manager = GetOwnerManager();
+        if (!manager || !UI::FocusIsInside(*m_Tree) || UI::FocusIsInTextInput(*manager, m_Tree))
+            return;
+        const uint32_t command = Editor::EditorPluginRegistry::Get().HierarchyCommandForKey(event.Key, event.Mods);
+        if (command == 0)
+            return;
+        m_ContextTargetEntity = {};
+        if (m_Selection)
+        {
+            const auto& selected = m_Selection->GetSelection();
+            if (!selected.empty())
+                m_ContextTargetEntity = HierarchyDataProvider::Decode(static_cast<TreeId>(selected.front()));
+        }
+        if (HandleCommand(command))
+            event.Stop();
+    });
+
     // Cmd/Ctrl+D: duplicate selected entities.
     m_Tree->RegisterEventHandler(kEventKeyDown, [this](UIEvent& e)
                                  {
@@ -2570,6 +2594,8 @@ UI::Interaction::DropFeedback HierarchyPanel::CanDrop(const UI::Interaction::Dro
             return {false, "No editor context"};
         if (assetPayload->paths.empty())
             return {false, "Empty payload"};
+        if (std::string refusal = Editor::DescribeRefusedDrop(assetPayload->paths); !refusal.empty())
+            return {false, std::move(refusal)};
         return {true, {}};
     }
 
@@ -2720,6 +2746,12 @@ void HierarchyPanel::DropAssetPaths(const UI::Interaction::DropRequest& request,
     if (!m_World || !m_Context)
         return;
 
+    if (const std::string refusal = Editor::DescribeRefusedDrop(paths); !refusal.empty())
+    {
+        Editor::ShowSceneViewNotice(refusal);
+        return;
+    }
+
     // Asset drops parent under a row only when dropped onto it; between rows they land at the root.
     const ECS::EntityHandle parent = request.hit.Location == UI::Interaction::DropLocation::OnItem
                                          ? ResolveDropPlacement(request.hit).Parent
@@ -2727,6 +2759,9 @@ void HierarchyPanel::DropAssetPaths(const UI::Interaction::DropRequest& request,
 
     if (paths.size() == 1 && !paths[0].empty() && m_Context->Assets && DropSingleAsset(paths[0], parent))
         return;
+
+    const auto selectionBefore = GetSelectionItemIds();
+    const auto anchorBefore = GetSelectionAnchor();
 
     // Parenting keeps the model's own scale instead of multiplying it by the parent's.
     Mathematics::Vector3 parentInvScale{1.0f, 1.0f, 1.0f};
@@ -2762,7 +2797,7 @@ void HierarchyPanel::DropAssetPaths(const UI::Interaction::DropRequest& request,
             continue;
         }
 
-        if (IsModelFileExtension(ext) && m_Context->Assets && m_Context->RenderServices)
+        if (Editor::IsPlacedModelExtension(ext) && m_Context->Assets && m_Context->RenderServices)
         {
             const GUID modelGuid = m_Context->Assets->ResolveAssetGuid(absPath);
             if (!modelGuid.IsNull())
@@ -2770,6 +2805,17 @@ void HierarchyPanel::DropAssetPaths(const UI::Interaction::DropRequest& request,
                 SpawnModelWhenLoaded(absPath, modelGuid, parent, parentInvScale);
                 continue;
             }
+        }
+
+        if (const auto place = Editor::AssetPlacementRegistry::Get().Find(GetAssetTypeFromExtension(ext));
+            place && m_Context->Assets)
+        {
+            Components::Transform at{};
+            at.SetIdentity();
+            const auto root = place(*m_World, *m_Context->Assets, absPath, at, parent);
+            if (root.IsValid())
+                createdEntities.push_back(root);
+            continue;
         }
 
         const ECS::EntityHandle blueprintEntity = CreateBlueprintInstanceEntity(*m_World, absPath, parent);
@@ -2781,6 +2827,20 @@ void HierarchyPanel::DropAssetPaths(const UI::Interaction::DropRequest& request,
         Editor::AppendUnorderedRootsToHierarchyEnd(*m_World, createdEntities);
     MarkSceneStructureChanged();
     RebuildTreeAndSelect(createdEntities.empty() ? ECS::EntityHandle{} : createdEntities.back());
+    CommitDropStep(createdEntities, selectionBefore, anchorBefore);
+}
+
+void HierarchyPanel::CommitDropStep(const std::vector<ECS::EntityHandle>& roots,
+                                   const std::vector<UI::Interaction::ItemId>& selectionBefore,
+                                   UI::Interaction::ItemId anchorBefore)
+{
+    if (!m_Undo || !m_World || roots.empty())
+        return;
+    m_Undo->CommitAlreadyApplied(std::make_unique<Editor::SceneViewDropUndoCommand>(
+        Editor::SceneViewDropUndoCommand::NameFor(*m_World, roots), m_World, m_ChangeNotifications,
+        roots, selectionBefore, anchorBefore, GetSelectionItemIds(), GetSelectionAnchor(),
+        [this](const std::vector<UI::Interaction::ItemId>& ids, UI::Interaction::ItemId anchor)
+        { ApplySelectionProgrammatic(ids, anchor); }));
 }
 
 bool HierarchyPanel::DropSingleAsset(const std::filesystem::path& path, ECS::EntityHandle parent)
@@ -2983,7 +3043,7 @@ ECS::EntityHandle HierarchyPanel::SpawnDownloadedOnlineAsset(const Editor::Onlin
         return sprite;
     }
 
-    if (!IsModelFileExtension(ext))
+    if (!Editor::IsPlacedModelExtension(ext))
         return {};
 
     const GUID assetGuid = assets.ResolveAssetGuid(mainFilePath);
@@ -3767,6 +3827,24 @@ bool HierarchyPanel::TryHandlePluginCommand(std::uint32_t cmd)
         if (m_Context && m_Context->OnSceneDirty)
             m_Context->OnSceneDirty();
     };
+    if (UIManager* manager = GetOwnerManager())
+        pluginCtx.DialogHost = manager->GetRootElement();
+    if (m_PingAsset)
+        pluginCtx.PingAsset = m_PingAsset;
+    if (m_Selection && pluginCtx.HasTargetEntity)
+    {
+        const auto selected = m_Selection->GetSelection();
+        if (std::find(selected.begin(), selected.end(), HierarchyDataProvider::Encode(pluginCtx.TargetEntity)) !=
+            selected.end())
+        {
+            for (const auto id : selected)
+            {
+                const auto entity = HierarchyDataProvider::Decode(static_cast<TreeId>(id));
+                if (m_World->IsValid(entity))
+                    pluginCtx.TargetEntities.push_back(entity);
+            }
+        }
+    }
     return Editor::EditorPluginRegistry::Get().HandleHierarchyCommand(cmd, pluginCtx);
 }
 

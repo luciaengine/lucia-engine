@@ -17,6 +17,7 @@ add_executable(TypesTests
     ColorTests.cpp
     FalseSharingTests.cpp
     FlatMapTests.cpp
+    FlatSetTests.cpp
     FormatNumberTests.cpp
     Fnv1aTests.cpp
     NearestNameTests.cpp

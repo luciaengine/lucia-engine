@@ -68,6 +68,39 @@ inline UIElement* AddFieldContainer(UIElement* row)
     return raw;
 }
 
+// Shows or hides the marks of a field that differs from the entity's source on `row`: a bold label,
+// and the override edge, which its modifier class moves from the row's left to the Inspector's gutter.
+inline void SetRowOverridden(UIElement* row, bool overridden)
+{
+    if (!row)
+        return;
+    UIElement* mark = nullptr;
+    for (const auto& cell : row->GetChildren())
+    {
+        if (cell->HasClass("inspector-override-mark"))
+            mark = cell.get();
+        if (!cell->HasClass("inspector-label-cell"))
+            continue;
+        for (const auto& label : cell->GetChildren())
+        {
+            if (!label->HasClass("inspector-label"))
+                continue;
+            if (overridden)
+                label->AddClass("inspector-label-overridden");
+            else
+                label->RemoveClass("inspector-label-overridden");
+        }
+    }
+    if (!overridden && mark)
+        row->RemoveChild(mark);
+    if (!overridden || mark)
+        return;
+    auto newMark = std::make_unique<UIElement>();
+    newMark->AddClass("inspector-override-mark");
+    newMark->AddClass("inspector-override-mark-row");
+    row->AddChild(std::move(newMark));
+}
+
 // A row that holds one action in the value column: an empty label cell and one field cell. Adds
 // `rowClass` to the row and returns the field cell, whose parent is the row.
 inline UIElement* AddActionRow(UIElement* parent, const char* rowClass)

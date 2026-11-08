@@ -506,8 +506,9 @@ void ParserRegistry::RegisterDefaultParsers()
     // Register material parser (.material -> Material v2 doc)
     RegisterParser(std::make_shared<MaterialAssetParser>());
 
-    // Register scene parser (.scene / .blueprint -> SceneAsset, INI-style).
+    // Both asset kinds use the scene text parser.
     RegisterParser(std::make_shared<SceneAssetParser>());
+    RegisterParser(std::make_shared<SceneAssetParser>(AssetType::Prefab));
 
     // Register lens-flare parsers (.flareatlas / .lensflare JSON).
     RegisterParser(std::make_shared<FlareAtlasParser>());

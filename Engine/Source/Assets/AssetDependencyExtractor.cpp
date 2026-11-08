@@ -20,7 +20,7 @@ namespace GameEngine
 
 namespace
 {
-// Fast, schema-aware extraction for .scene/.blueprint INI-ish files. Walks
+// Fast extraction for scene, blueprint and prefab text files. Walks
 // the content for `path="..."` / `path=...` / `@"path"` forms.
 static std::vector<std::string> ExtractSceneIniPathRefs(const std::string& content)
 {
@@ -138,9 +138,10 @@ AssetDependencyInfo AssetDependencyExtractor::ExtractDependencies(const AssetMet
         info.Dependencies = ExtractGUIDReferences(content);
         info.DependencyPaths = ExtractPathReferences(content);
 
-        if (metadata.Type == AssetType::Scene ||
+        if (metadata.Type == AssetType::Scene || metadata.Type == AssetType::Prefab ||
             EndsWithIgnoreCase(metadata.Path.string(), ".scene") ||
-            EndsWithIgnoreCase(metadata.Path.string(), ".blueprint"))
+            EndsWithIgnoreCase(metadata.Path.string(), ".blueprint") ||
+            EndsWithIgnoreCase(metadata.Path.string(), ".prefab"))
         {
             std::vector<std::string> extra = ExtractSceneIniPathRefs(content);
             if (!extra.empty())

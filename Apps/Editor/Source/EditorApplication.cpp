@@ -1,4 +1,5 @@
 #include "EditorApplication.h"
+#include "DayCycle/DayCycleWindow/DayCycleWindowRegistration.h"
 #include "Editor/BuildExporters/SteamDeckBuildExporter.h"
 #include "Editor/BuildExporters/WebBuildExporter.h"
 #include "Editor/BuildExporters/MobileBuildExporter.h"
@@ -1385,6 +1386,13 @@ EditorApplication::EditorApplication(const ApplicationConfig& config)
     Editor::InstallSceneViewEntityLinks([this]() -> SceneViewController* {
         return !m_Windows.empty() ? m_Windows[0]->scene.get() : nullptr;
     });
+    Editor::RegisterDayCycleWindow(
+        m_UndoRedo.get(), *m_ChangeNotifications,
+        [this]() {
+            const auto* view = !m_Windows.empty() ? m_Windows[0]->scene.get() : nullptr;
+            return view ? view->GetSelectedEntities() : std::vector<ECS::EntityHandle>{};
+        },
+        [this]() { return m_PlayMode && m_PlayMode->IsPlayingOrPaused(); });
     m_SceneEditor = std::make_unique<GameEngine::Editor::SceneEditorController>();
     // Manual save reads the same write inhibit the autosave tick does
     // (IsPlayModeBlockingSceneWrites), because both protect the authored .scene file from the
@@ -5656,6 +5664,7 @@ void EditorApplication::FinishProjectFolderSwitch(const ProjectSwitch& pending)
 
     // Update Engine's workspace root so that GetCurrentEditorProjectPaths() returns correct paths
     engine.SetWorkspaceRoot(projectPath);
+    m_ChangeNotifications->ProjectSwitched.Invoke();
     if (m_MarkupBridge)
         m_MarkupBridge->LoadProjectState(projectPath);
     Editor::SvgRasterSettings::ApplySavedDefaults(projectPath);

@@ -1,5 +1,8 @@
 #include "Inspectors/DefaultComponentInspector.h"
 
+#include "Components/Name.h"
+#include "UI/Controls/Label.h"
+#include "UI/Interaction/ContextMenuManipulator.h"
 #include "InspectorRegistry.h"           // InspectorContext
 #include "EditorChangeNotifications.h"
 #include "Editor/Entities/EditorComponentTraits.h"   // per-component field labels and presets
@@ -1349,6 +1352,89 @@ std::string FormatReadOnlyValue(const Snapshot& bytes, const ECS::FieldInfo& fie
 
 } // namespace
 
+namespace
+{
+
+// The rows of one reflected field, which carry its override marks.
+struct FieldRows
+{
+    std::string Field;
+    std::vector<UIElement*> Rows;
+};
+
+// Adds the rows `parent` holds from child `begin` on to `rows`.
+void CollectRows(UIElement* parent, std::size_t begin, std::vector<UIElement*>& rows)
+{
+    const auto& children = parent->GetChildren();
+    for (std::size_t index = begin; index < children.size(); ++index)
+        rows.push_back(children[index].get());
+}
+
+// The menu items of the entries the override answerer gives `target`, each followed by `refresh`.
+std::vector<ContextMenuManipulator::Item> OverrideMenuItems(const OverrideMenuTarget& target,
+                                                            const std::function<void()>& refresh)
+{
+    std::vector<ContextMenuManipulator::Item> items;
+    if (!target.World || !target.World->IsValid(target.Entity))
+        return items;
+    for (OverrideMenuEntry& entry : InspectorRegistry::Get().QueryOverrideMenu(target))
+    {
+        items.push_back({.Path = std::move(entry.Label),
+                         .IconPath = std::move(entry.IconPath),
+                         .OnActivate = [run = std::move(entry.Run), refresh]()
+                         {
+                             run();
+                             if (refresh)
+                                 refresh();
+                         }});
+    }
+    return items;
+}
+
+void SetFieldRowMarks(const std::vector<FieldRows>& fields, const ComponentOverrides& overrides)
+{
+    for (const FieldRows& field : fields)
+        for (UIElement* row : field.Rows)
+            InspectorUI::SetRowOverridden(row, overrides.IsFieldOverridden(field.Field));
+}
+
+// The header's declared badge (InspectorPanel::MountHeaderTrailingSlot) shows `text`; an empty `text` hides it.
+void SetEntityHeaderBadge(UIElement& header, const std::string& text, const std::string& tooltip)
+{
+    auto* badge = dynamic_cast<Label*>(header.FindById("inspector-header-badge"));
+    if (!badge)
+        return;
+    badge->SetText(text);
+    badge->SetTooltip(tooltip);
+    if (text.empty())
+        badge->AddClass("hidden");
+    else
+        badge->RemoveClass("hidden");
+}
+
+} // namespace
+
+void AttachOverrideMenu(UIElement& element, const OverrideMenuTarget& target, std::function<void()> refresh)
+{
+    element.AddManipulator(ContextMenuManipulator::Create([target, refresh = std::move(refresh)]()
+                                                          { return OverrideMenuItems(target, refresh); }));
+}
+
+void UpdateEntityNameOverrideMark(UIElement& header, UIElement& nameField, ECS::World& world, ECS::EntityHandle entity)
+{
+    const ECS::ComponentTypeId nameType = ECS::GetComponentTypeId<Components::Name>();
+    const ComponentOverrides answer = InspectorRegistry::Get().QueryComponentOverrides(world, entity, nameType);
+    SetEntityHeaderBadge(header, answer.Badge, answer.BadgeTooltip);
+    if (answer.Overridden)
+    {
+        header.AddClass("inspector-header-container-overridden");
+        nameField.AddClass("inspector-header-overridden");
+        return;
+    }
+    header.RemoveClass("inspector-header-container-overridden");
+    nameField.RemoveClass("inspector-header-overridden");
+}
+
 // The rows of `typeId`'s reflected fields, or of only the fields `onlyFields` names (declaration
 // order either way).
 static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId typeId,
@@ -1410,8 +1496,14 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
     const bool keepsEnabledField =
         componentInfo && ECS::HasAnyFlag(componentInfo->Flags, ECS::ComponentFlags::KeepsOwnEnabledField);
 
+    const bool marksOverrides = fecBase.Extras.empty();
+    std::vector<FieldRows> fieldRows;
+    std::optional<std::size_t> fieldRowsBegin;
+
     for (const ECS::FieldInfo& field : fields)
     {
+        if (fieldRowsBegin)
+            CollectRows(parent, *std::exchange(fieldRowsBegin, std::nullopt), fieldRows.back().Rows);
         if (!onlyFields.empty() && std::find(onlyFields.begin(), onlyFields.end(), field.Name) == onlyFields.end())
             continue;
         const std::string tooltip(field.Tooltip);
@@ -1423,6 +1515,12 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
         // toward the live value.
         Editor::AddPreservedFieldNotice(parent, *ctx.World, ctx.Entity, typeId, field.Name,
                                         ctx.RequestInspectorRefresh);
+
+        if (marksOverrides)
+        {
+            fieldRows.push_back({std::string(field.Name), {}});
+            fieldRowsBegin = parent->GetChildren().size();
+        }
 
         // Per-field policy: Hidden fields are omitted; ReadOnly fields render as a
         // non-editable value line (and set_component skips them — see DebugHandlers).
@@ -1752,6 +1850,23 @@ static bool RenderFieldRows(const InspectorContext& ctx, ECS::ComponentTypeId ty
                 break;
             }
         }
+    }
+
+    if (fieldRowsBegin)
+        CollectRows(parent, *fieldRowsBegin, fieldRows.back().Rows);
+    if (marksOverrides)
+    {
+        SetFieldRowMarks(fieldRows, InspectorRegistry::Get().QueryComponentOverrides(*ctx.World, ctx.Entity, typeId));
+        for (const FieldRows& field : fieldRows)
+        {
+            const OverrideMenuTarget target{ctx.World, ctx.Entity, typeId, field.Field, ctx.Undo, ctx.ChangeNotifications};
+            for (UIElement* row : field.Rows)
+                AttachOverrideMenu(*row, target, ctx.RequestInspectorRefresh);
+        }
+        if (ctx.OverrideMarkRefreshCallbacks)
+            ctx.OverrideMarkRefreshCallbacks->push_back(
+                [world = ctx.World, entity = ctx.Entity, typeId, fields = std::move(fieldRows)]()
+                { SetFieldRowMarks(fields, InspectorRegistry::Get().QueryComponentOverrides(*world, entity, typeId)); });
     }
 
     // One sim-refresh callback for the whole section: re-capture the component bytes

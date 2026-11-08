@@ -49,6 +49,7 @@ class VulkanAccelerationStructures final : public IAccelerationStructureBackend
     void RecordBlasBuild(CommandList& cmd,
                          AccelerationStructureHandle blas,
                          const BlasTriangleGeometry& geometry) override;
+    void RecordBlasBuildBatch(CommandList& cmd, std::span<const BlasBuildRequest> builds) override;
     uint64_t GetBlasDeviceAddress(AccelerationStructureHandle blas) const override;
     void DestroyBlas(AccelerationStructureHandle blas) override;
     uint64_t ReleaseAllStructures() override;
@@ -99,7 +100,8 @@ class VulkanAccelerationStructures final : public IAccelerationStructureBackend
         uint64_t StorageBytes         = 0;
         // Scratch region assigned by ReserveBlasScratch for this frame.
         uint64_t ScratchOffset        = 0;
-        uint64_t BuildSize            = 0;  // buildScratchSize
+        uint64_t BuildSize            = 0;  // maximum build/update scratch
+        VkBuildAccelerationStructureFlagsKHR BuildFlags = 0;
         bool Live                     = false;
     };
 
@@ -116,6 +118,13 @@ class VulkanAccelerationStructures final : public IAccelerationStructureBackend
                            VkAccelerationStructureGeometryKHR& outGeom,
                            VkAccelerationStructureBuildGeometryInfoKHR& outBuild,
                            VkAccelerationStructureBuildRangeInfoKHR& outRange) const;
+
+    bool FillBlasBuildCommand(AccelerationStructureHandle blas,
+                              const BlasTriangleGeometry& geometry,
+                              VkAccelerationStructureGeometryKHR& outGeom,
+                              VkAccelerationStructureBuildGeometryInfoKHR& outBuild,
+                              VkAccelerationStructureBuildRangeInfoKHR& outRange,
+                              bool preferUpdate = false) const;
 
     bool LoadEntryPoints();
     bool EnsureScratchCapacity(uint64_t bytes);

@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -158,6 +159,16 @@ inline bool ParseStrictDecimal(std::string_view text, double& outValue)
     if (!parsed || consumed != number.size() || !std::isfinite(*parsed))
         return false;
     outValue = *parsed;
+    return true;
+}
+
+/// Parses a strict decimal that fits in a finite float.
+inline bool ParseStrictDecimalFloat(std::string_view text, float& outValue)
+{
+    double parsed = 0.0;
+    if (!ParseStrictDecimal(text, parsed) || std::abs(parsed) > std::numeric_limits<float>::max())
+        return false;
+    outValue = static_cast<float>(parsed);
     return true;
 }
 

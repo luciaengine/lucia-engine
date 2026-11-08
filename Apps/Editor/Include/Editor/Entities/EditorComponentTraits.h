@@ -27,6 +27,11 @@
 #include <unordered_map>
 #include <vector>
 
+namespace GameEngine
+{
+class UIElement;
+}
+
 namespace GameEngine::ECS
 {
 class World;
@@ -47,6 +52,14 @@ inline constexpr int kDefaultInspectorSortKey = 1000;
 // for a component that is the one thing an author edits on an entity whose
 // other sections are generated (a fence's span piece).
 inline constexpr int kLeadingInspectorSortKey = -1;
+
+// The parts of a Hierarchy row a decoration may style (see
+// EditorComponentTraits::DecorateHierarchyRow). Title is null while the row has none.
+struct HierarchyRowParts
+{
+    UIElement& Row;
+    UIElement* Title = nullptr;
+};
 
 struct EditorComponentTraits
 {
@@ -116,6 +129,8 @@ struct EditorComponentTraits
     // CSS class added to the entity's hierarchy row when the component is
     // present (empty = no contribution).
     std::string HierarchyRowClass;
+    // Runs for all bound rows so a feature can mark descendants of its component too.
+    std::function<void(ECS::World&, ECS::EntityHandle, HierarchyRowParts&)> DecorateHierarchyRow;
     // The entity is its own pick target: the instance-root upward walk stops
     // here instead of grouping it under a model root.
     bool IsPickInstanceRoot = false;
@@ -163,6 +178,8 @@ public:
     // Presence scans. Each returns only the types that set the trait, so a
     // per-row or per-node scan does not copy every registered component.
     std::vector<std::pair<ECS::ComponentTypeId, std::string>> HierarchyRowClasses() const;
+    /// Snapshot of row decorations; callers run them outside the registry lock.
+    std::vector<std::function<void(ECS::World&, ECS::EntityHandle, HierarchyRowParts&)>> HierarchyRowDecorators() const;
     std::vector<ECS::ComponentTypeId> PickInstanceRootTypes() const;
     std::vector<ECS::ComponentTypeId> GizmoPivotAtEntityOriginTypes() const;
     // Every registered BeforeGenericEdit; the caller runs them outside the
@@ -199,5 +216,8 @@ private:
     // part of the module-facing traits struct).
     std::unordered_map<ECS::ComponentTypeId, ECS::ModuleRegistrationStamp> m_ModuleOwners;
 };
+
+/// Resolves an inspector icon from registered traits. A null world skips per-entity overrides.
+std::string ComponentIconClass(ECS::World* world, ECS::EntityHandle entity, ECS::ComponentTypeId typeId);
 
 } // namespace GameEngine::Editor
