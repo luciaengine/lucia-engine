@@ -2,6 +2,7 @@
 
 #include "Assets/BoneLOD/ModelBoneLOD.h"
 #include "ECSModules/Rendering/Systems/AnimationSystem.h"
+#include "Mathematics/Quaternion.h"
 
 namespace GameEngine
 {
@@ -276,50 +277,50 @@ server.RegisterHandler("get_asset_list", [](const EditorDebugServer::RequestCont
         }
         return json{{"source", sourceAlias}, {"total", guids.size()}, {"assets", assets}}; });
 
-server.RegisterHandler("get_skeleton_store_state", [](const EditorDebugServer::RequestContext& ctx) -> json
+server.RegisterHandler("get_skeleton_store_state", [](const EditorDebugServer::RequestContext& requestContext) -> json
                            {
         auto& store = Engine::Renderer::SkeletonStore::Instance();
-        const uint32_t count = store.GetCount();
+        const uint32_t skeletonCount = store.GetCount();
 
         // Resolve the optional GPU stores so we can label each runtime's
         // atlas owner. The skin-matrix probe below operates on the runtime's
         // CompactSkinMatrices (CPU cache), which is intentionally not
         // refreshed when GPU owns the slot — without an owner tag, the
         // identity-looking probe values can be misread as a rendering bug.
-        auto* rs = EngineCore::GetInstance().GetRenderServices();
-        const auto* gpuAnim = rs ? &rs->GetGPUAnimationDataStore() : nullptr;
-        const auto* retargetFeat = rs ? rs->GetFeature<Engine::Renderer::RetargetRenderFeature>() : nullptr;
-        const auto* retargetStore = (retargetFeat && retargetFeat->IsInitialized())
-            ? &retargetFeat->GetDataStore() : nullptr;
+        auto* renderServices = EngineCore::GetInstance().GetRenderServices();
+        const auto* gpuAnimation = renderServices ? &renderServices->GetGPUAnimationDataStore() : nullptr;
+        const auto* retargetFeature = renderServices ? renderServices->GetFeature<Engine::Renderer::RetargetRenderFeature>() : nullptr;
+        const auto* retargetStore = (retargetFeature && retargetFeature->IsInitialized())
+            ? &retargetFeature->GetDataStore() : nullptr;
 
         auto* primaryWorld = EngineCore::GetInstance().GetPrimaryWorld();
         const uint64_t primaryWorldId = primaryWorld ? primaryWorld->GetWorldId() : 0;
-        auto* loop = EngineCore::GetInstance().GetRenderingLoop();
-        auto* systems = loop ? loop->GetSystemManager() : nullptr;
-        const auto* animation = systems ? systems->GetSystem<Engine::Renderer::AnimationSystem>() : nullptr;
+        auto* renderingLoop = EngineCore::GetInstance().GetRenderingLoop();
+        auto* systemManager = renderingLoop ? renderingLoop->GetSystemManager() : nullptr;
+        const auto* animationSystem = systemManager ? systemManager->GetSystem<Engine::Renderer::AnimationSystem>() : nullptr;
 
-        const bool withBoneNames = ctx.params.value("withBoneNames", false);
-        const int onlySkeletonId = ctx.params.value("skeletonId", 0);
+        const bool withBoneNames = requestContext.params.value("withBoneNames", false);
+        const int onlySkeletonId = requestContext.params.value("skeletonId", 0);
 
         json skeletons = json::array();
-        for (uint32_t id = 1; id <= count; ++id)
+        for (uint32_t id = 1; id <= skeletonCount; ++id)
         {
             if (onlySkeletonId != 0 && static_cast<int>(id) != onlySkeletonId) continue;
-            const auto* skel = store.Get(id);
-            if (!skel) continue;
+            const auto* skeleton = store.Get(id);
+            if (!skeleton) continue;
 
-            json skelJson;
-            skelJson["id"] = id;
-            skelJson["boneCount"] = skel->BoneCount;
-            skelJson["skinJointCount"] = skel->SkinJointCount;
-            skelJson["jointNodeCount"] = static_cast<uint32_t>(skel->JointNodes.size());
+            json skeletonJson;
+            skeletonJson["id"] = id;
+            skeletonJson["boneCount"] = skeleton->BoneCount;
+            skeletonJson["skinJointCount"] = skeleton->SkinJointCount;
+            skeletonJson["jointNodeCount"] = static_cast<uint32_t>(skeleton->JointNodes.size());
 
             if (withBoneNames)
             {
                 json names = json::array();
-                for (const auto& n : skel->BoneNames)
-                    names.push_back(n);
-                skelJson["boneNames"] = std::move(names);
+                for (const auto& boneName : skeleton->BoneNames)
+                    names.push_back(boneName);
+                skeletonJson["boneNames"] = std::move(names);
 
                 // Compute per-bone world rest rotations (composing local
                 // RestRotation from root). Returns {x, y, z, w} per bone.
@@ -327,38 +328,31 @@ server.RegisterHandler("get_skeleton_store_state", [](const EditorDebugServer::R
                 // bind world rotations identifies whether two rigs share
                 // a canonical T-pose at bind.
                 json worldRest = json::array();
-                std::vector<std::array<float, 4>> worldQuats(skel->BoneCount);
-                const bool useTopo = !skel->TopologicalOrder.empty()
-                    && skel->TopologicalOrder.size() == skel->BoneCount;
-                for (uint32_t i = 0; i < skel->BoneCount; ++i)
+                std::vector<Mathematics::Quaternion> worldRotations(skeleton->BoneCount);
+                const bool hasTopologicalOrder = !skeleton->TopologicalOrder.empty()
+                    && skeleton->TopologicalOrder.size() == skeleton->BoneCount;
+                for (uint32_t index = 0; index < skeleton->BoneCount; ++index)
                 {
-                    const uint32_t b = useTopo ? skel->TopologicalOrder[i] : i;
-                    const float* rp = (b * 4u + 3u < skel->RestRotation.size())
-                        ? &skel->RestRotation[b * 4u] : nullptr;
-                    glm::quat local = rp
-                        ? glm::quat(rp[3], rp[0], rp[1], rp[2])
-                        : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-                    const int32 parent = (b < skel->Parent.size()) ? skel->Parent[b] : -1;
-                    glm::quat world;
-                    if (parent < 0) world = local;
-                    else
-                    {
-                        const auto& p = worldQuats[static_cast<size_t>(parent)];
-                        glm::quat parentW(p[3], p[0], p[1], p[2]);
-                        world = parentW * local;
-                    }
-                    world = glm::normalize(world);
-                    worldQuats[b] = {world.x, world.y, world.z, world.w};
+                    const uint32_t boneIndex = hasTopologicalOrder ? skeleton->TopologicalOrder[index] : index;
+                    const float* restRotation = (boneIndex * 4u + 3u < skeleton->RestRotation.size())
+                        ? &skeleton->RestRotation[boneIndex * 4u] : nullptr;
+                    Mathematics::Quaternion local = restRotation
+                        ? Mathematics::Quaternion(restRotation[3], restRotation[0], restRotation[1], restRotation[2])
+                        : Mathematics::Quaternion::Identity();
+                    const int32 parent = (boneIndex < skeleton->Parent.size()) ? skeleton->Parent[boneIndex] : -1;
+                    const Mathematics::Quaternion world = parent < 0
+                        ? local : worldRotations[static_cast<size_t>(parent)] * local;
+                    worldRotations[boneIndex] = world.Normalized();
                 }
-                for (uint32_t b = 0; b < skel->BoneCount; ++b)
+                for (uint32_t boneIndex = 0; boneIndex < skeleton->BoneCount; ++boneIndex)
                 {
-                    const auto& w = worldQuats[b];
-                    worldRest.push_back({w[0], w[1], w[2], w[3]});
+                    const auto& worldRotation = worldRotations[boneIndex].GetGLM();
+                    worldRest.push_back({worldRotation.x, worldRotation.y, worldRotation.z, worldRotation.w});
                 }
-                skelJson["restWorld"] = std::move(worldRest);
+                skeletonJson["restWorld"] = std::move(worldRest);
             }
 
-            skeletons.push_back(skelJson);
+            skeletons.push_back(skeletonJson);
         }
 
         // Per-entity runtimes — required to debug retarget / skinning data
@@ -366,35 +360,35 @@ server.RegisterHandler("get_skeleton_store_state", [](const EditorDebugServer::R
         // non-identity transform to indicate whether the per-frame writer
         // (AnimationSystem CPU branch, HumanoidRetargetSystem, or GPU
         // compute) actually populated motion vs. left bind-pose identity.
-        const size_t runtimeHighWater = store.GetRuntimeHighWaterMark();
+        const size_t runtimeHighWaterMark = store.GetRuntimeHighWaterMark();
         json runtimes = json::array();
-        for (size_t i = 0; i < runtimeHighWater; ++i)
+        for (size_t index = 0; index < runtimeHighWaterMark; ++index)
         {
-            const uint32_t rtId = static_cast<uint32_t>(i + 1);
-            const uint32_t skelId = store.GetRuntimeSkeletonId(rtId);
-            if (skelId == 0) continue; // freed slot
+            const uint32_t runtimeId = static_cast<uint32_t>(index + 1);
+            const uint32_t skeletonId = store.GetRuntimeSkeletonId(runtimeId);
+            if (skeletonId == 0) continue; // freed slot
 
-            const auto* runtime = store.GetRuntime(rtId);
+            const auto* runtime = store.GetRuntime(runtimeId);
             if (!runtime) continue;
 
-            json rtJson;
-            rtJson["runtimeId"] = rtId;
-            rtJson["skeletonId"] = skelId;
+            json runtimeJson;
+            runtimeJson["runtimeId"] = runtimeId;
+            runtimeJson["skeletonId"] = skeletonId;
             // How many live SkeletonRef components name this runtime — one per
             // entity of the model instance. Deleting one sibling drops it by
             // one; the slot is freed only when the last reference goes.
-            rtJson["refCount"] = store.GetRuntimeRefCount(rtId);
-            rtJson["atlasPaletteOffsetBones"] = runtime->AtlasPaletteOffsetBones;
-            rtJson["paletteMatrixCount"] = static_cast<uint32_t>(runtime->CompactSkinMatrices.size() / 16);
-            const auto* selection = animation ? animation->GetBoneLODSelection(rtId) : nullptr;
+            rtJson["refCount"] = store.GetRuntimeRefCount(runtimeId);
+            runtimeJson["atlasPaletteOffsetBones"] = runtime->AtlasPaletteOffsetBones;
+            runtimeJson["paletteMatrixCount"] = static_cast<uint32_t>(runtime->CompactSkinMatrices.size() / 16);
+            const auto* selection = animationSystem ? animationSystem->GetBoneLODSelection(runtimeId) : nullptr;
             const bool selectionCurrent = selection &&
-                selection->RuntimeGeneration == store.GetRuntimeGeneration(rtId) &&
+                selection->RuntimeGeneration == store.GetRuntimeGeneration(runtimeId) &&
                 runtime->Source.WorldId == primaryWorldId && primaryWorld &&
                 runtime->Source.WorldGeneration == primaryWorld->GetLifecycleResetGeneration();
             const auto* boneData = selectionCurrent ? selection->Data.get() : nullptr;
             const bool reduced = boneData && selection->Reduced;
-            const auto* skeleton = store.Get(skelId);
-            rtJson["boneLOD"] = json{
+            const auto* skeleton = store.Get(skeletonId);
+            runtimeJson["boneLOD"] = json{
                 {"selectionKnown", selectionCurrent},
                 {"tier", reduced ? "reduced" : "full"},
                 {"requestedBudget", boneData ? boneData->RequestedBoneBudget() : 0u},
@@ -410,59 +404,59 @@ server.RegisterHandler("get_skeleton_store_state", [](const EditorDebugServer::R
             // the slot, the probe values reflect the last CPU eval (often
             // never), NOT what the renderer reads.
             const char* atlasOwner = "cpu"; // SkinningUploadSystem default
-            if (retargetStore && retargetStore->IsRetargetGPUHandled(rtId))
+            if (retargetStore && retargetStore->IsRetargetGPUHandled(runtimeId))
                 atlasOwner = "gpu-retarget";
-            else if (gpuAnim && gpuAnim->IsGPUHandled(rtId))
+            else if (gpuAnimation && gpuAnimation->IsGPUHandled(runtimeId))
                 atlasOwner = "gpu-skinning";
-            rtJson["atlasOwner"] = atlasOwner;
-            rtJson["paletteProbeIsStale"] = (atlasOwner[0] == 'g'); // gpu-* owners
+            runtimeJson["atlasOwner"] = atlasOwner;
+            runtimeJson["paletteProbeIsStale"] = (atlasOwner[0] == 'g'); // gpu-* owners
 
             // Probe for the first non-identity matrix and report its
             // translation magnitude + max diagonal deviation. This tells
             // the caller whether the palette is bind-pose-identity
             // (suggesting the writer never ran or produced no motion) or
             // contains real animated transforms.
-            uint32_t firstNonIdentityIdx = UINT32_MAX;
-            float maxTranslationMag = 0.0f;
-            float maxOffDiagonalAbs = 0.0f;
-            const auto& m = runtime->CompactSkinMatrices;
-            const size_t mats = m.size() / 16;
-            for (size_t j = 0; j < mats; ++j)
+            uint32_t firstNonIdentityIndex = UINT32_MAX;
+            float maxTranslationMagnitude = 0.0f;
+            float maxOffDiagonalMagnitude = 0.0f;
+            const auto& matrices = runtime->CompactSkinMatrices;
+            const size_t matrixCount = matrices.size() / 16;
+            for (size_t matrixIndex = 0; matrixIndex < matrixCount; ++matrixIndex)
             {
-                const float* p = &m[j * 16];
+                const float* values = &matrices[matrixIndex * 16];
                 // Column-major: translation is at indices [12..14]; diagonal at [0],[5],[10].
-                const float tx = p[12], ty = p[13], tz = p[14];
-                const float tmag = std::sqrt(tx*tx + ty*ty + tz*tz);
+                const float translationX = values[12], translationY = values[13], translationZ = values[14];
+                const float translationMagnitude = std::sqrt(translationX*translationX + translationY*translationY + translationZ*translationZ);
                 // Off-diagonal deviation captures any rotation away from identity.
-                const float od = std::max({
-                    std::fabs(p[1]), std::fabs(p[2]), std::fabs(p[4]),
-                    std::fabs(p[6]), std::fabs(p[8]), std::fabs(p[9])
+                const float offDiagonalMagnitude = std::max({
+                    std::fabs(values[1]), std::fabs(values[2]), std::fabs(values[4]),
+                    std::fabs(values[6]), std::fabs(values[8]), std::fabs(values[9])
                 });
-                if (tmag > maxTranslationMag) maxTranslationMag = tmag;
-                if (od > maxOffDiagonalAbs) maxOffDiagonalAbs = od;
+                if (translationMagnitude > maxTranslationMagnitude) maxTranslationMagnitude = translationMagnitude;
+                if (offDiagonalMagnitude > maxOffDiagonalMagnitude) maxOffDiagonalMagnitude = offDiagonalMagnitude;
                 const bool isIdentityIsh =
-                    tmag < 1e-5f &&
-                    std::fabs(p[0] - 1.0f) < 1e-5f &&
-                    std::fabs(p[5] - 1.0f) < 1e-5f &&
-                    std::fabs(p[10] - 1.0f) < 1e-5f &&
-                    od < 1e-5f;
-                if (!isIdentityIsh && firstNonIdentityIdx == UINT32_MAX)
-                    firstNonIdentityIdx = static_cast<uint32_t>(j);
+                    translationMagnitude < 1e-5f &&
+                    std::fabs(values[0] - 1.0f) < 1e-5f &&
+                    std::fabs(values[5] - 1.0f) < 1e-5f &&
+                    std::fabs(values[10] - 1.0f) < 1e-5f &&
+                    offDiagonalMagnitude < 1e-5f;
+                if (!isIdentityIsh && firstNonIdentityIndex == UINT32_MAX)
+                    firstNonIdentityIndex = static_cast<uint32_t>(matrixIndex);
             }
-            rtJson["firstNonIdentityJointIndex"] = firstNonIdentityIdx == UINT32_MAX
+            runtimeJson["firstNonIdentityJointIndex"] = firstNonIdentityIndex == UINT32_MAX
                 ? -1
-                : static_cast<int>(firstNonIdentityIdx);
-            rtJson["maxTranslationMag"] = maxTranslationMag;
-            rtJson["maxRotationOffDiagonal"] = maxOffDiagonalAbs;
-            runtimes.push_back(rtJson);
+                : static_cast<int>(firstNonIdentityIndex);
+            runtimeJson["maxTranslationMag"] = maxTranslationMagnitude;
+            runtimeJson["maxRotationOffDiagonal"] = maxOffDiagonalMagnitude;
+            runtimes.push_back(runtimeJson);
         }
 
         json result;
-        result["skeletonCount"] = count;
+        result["skeletonCount"] = skeletonCount;
         result["primaryWorldId"] = primaryWorldId;
         result["skeletons"] = skeletons;
         result["runtimes"] = runtimes;
-        result["runtimeHighWaterMark"] = static_cast<uint32_t>(runtimeHighWater);
+        result["runtimeHighWaterMark"] = static_cast<uint32_t>(runtimeHighWaterMark);
         return result; });
 }
 }
