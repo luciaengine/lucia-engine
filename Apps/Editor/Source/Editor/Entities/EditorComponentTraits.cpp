@@ -1,7 +1,7 @@
 #include "Editor/Entities/EditorComponentTraits.h"
 
 #include "ECS/ComponentRegistry.h"
-#include "ECS/World.h"
+#include "ECS/Entity.h"
 #include "Logger/Logger.h"
 
 #include <string>
