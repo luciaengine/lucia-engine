@@ -25,6 +25,10 @@ its name. Registrations with the same name share one channel across modules.
 Names have at most 63 UTF-8 bytes. A process has at most 256 channels, including
 **Core**.
 
+Channel handles belong to their logger state. A host or module that calls
+`Logger::Log::RedirectToSharedState` must redirect before registering channels
+or using `GE_LOG`. Registration can then precede logger initialization.
+
 ```cpp title="Declare and use a gameplay channel"
 #include "Logger/LogChannel.h"
 
