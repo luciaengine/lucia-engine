@@ -40,7 +40,7 @@ float GE_ComparePointShadowTexel(int slot, int face, vec2 faceUV, float referenc
 float GE_ComparePointShadowVertex(int slot, vec3 position, vec3 vertexDirection)
 {
     // A cube vertex belongs to three faces. Give its virtual corner texel
-    // equal weight from each face, with absoluteDirection separate projective depth reference.
+    // equal weight from each face, with a separate projective depth reference.
     float visibility = 0.0;
     for (int axis = 0; axis < 3; ++axis)
     {
@@ -124,8 +124,7 @@ float GE_PointShadowTap(int slot, int face, vec3 position, vec3 lightToPosition,
 
 vec2 GE_PointShadowRotation(vec2 shadowUV, float face, float tileResolution)
 {
-    // Per-texel Vogel rotation seed. tileResolution (this slot's tile resolution) sets the
-    // grid frequency so the noise scales with the tile, not absoluteDirection global resolution.
+    // The tile resolution sets the Vogel rotation seed's grid frequency.
     vec2 shadowTexel = floor(clamp(shadowUV, vec2(0.0), vec2(0.999999)) * max(tileResolution, 1.0));
     shadowTexel += vec2(face * 17.0, face * 31.0);
     float angle = fract(52.9829189 * fract(dot(shadowTexel, vec2(0.06711056, 0.00583715)))) * 6.2831853;
