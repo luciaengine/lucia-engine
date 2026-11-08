@@ -3000,10 +3000,18 @@ endif()
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(GPUAnimationComputeTests
 	        Tests/GPUAnimationComputeTests.cpp
+	        Tests/EngineTestShaderSetup.cpp
 	        )
 	    target_link_libraries(GPUAnimationComputeTests PRIVATE
 	        Engine GameEngine.Native
 	        GTest::gtest GTest::gtest_main)
+	    if(APPLE)
+	        # Native fault injection derives from MetalDevice, which includes metal-cpp.
+	        target_include_directories(GPUAnimationComputeTests SYSTEM PRIVATE
+	            ${CMAKE_SOURCE_DIR}/ThirdParty/metal-cpp)
+	    endif()
+	    target_compile_definitions(GPUAnimationComputeTests PRIVATE
+	        ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
 	    set_target_properties(GPUAnimationComputeTests PROPERTIES
 	        CXX_STANDARD 20
 	        CXX_STANDARD_REQUIRED ON

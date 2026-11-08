@@ -3,13 +3,15 @@
 #include "ECSModules/Rendering/ClipStore.h"
 #include "Assets/AnimationClip.h"
 #include "Rendering/Core/Device.h"
-
-#include <glm/glm.hpp>
-#include <glm/gtc/type_ptr.hpp>
+#include "Rendering/Common/Utils.h"
+#include "Logger/Logger.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cstring>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
 namespace GameEngine { namespace Engine { namespace Renderer {
 
@@ -26,7 +28,11 @@ static constexpr size_t kSkelHeaderInitial = 8 * sizeof(GPUSkeletonHeader);    /
 static constexpr size_t kSkelDataInitial   = 64u << 10;                        // 64 KB
 static constexpr size_t kClipHeaderInitial = 16 * sizeof(GPUClipHeader);       // 1 KB (16 clips)
 static constexpr size_t kClipDataInitial   = 256u << 10;                       // 256 KB
-static constexpr size_t kInstanceRingSize  = 32u << 10;                        // 32 KB (1024 instances)
+static constexpr size_t kInstanceRingSize = 32u << 10;
+// Per-slot ceiling. Growth temporarily retains the prior slot buffer as well.
+static constexpr size_t kInstanceRingMaxSize = 32u << 20;
+// One instance per workgroup; Vulkan and WebGPU guarantee this many groups in X.
+static constexpr uint32 kMaxInstanceWorkgroups = 65535u;
 
 // A joint that names no skeleton node, or a node outside the joint closure.
 static constexpr uint32 kNoBone = UINT32_MAX;
@@ -45,15 +51,23 @@ bool GPUAnimationDataStore::Initialize(GameEngine::Rendering::IDevice* device)
     m_ClipHeaderBuf = CreateOrGrowBuffer({}, m_ClipHeaderCapacity, kClipHeaderInitial,  "GPUAnimClipHeaders");
     m_ClipDataBuf   = CreateOrGrowBuffer({}, m_ClipDataCapacity,   kClipDataInitial,    "GPUAnimClipData");
 
-    // One ring slot per device frame-in-flight: the ring is rotated by the
-    // device frame index (RenderingLoop BeginFrame), so fewer slots than the
-    // device paces would hand a slot back to the CPU while the GPU still
-    // reads it — a hardcoded 2 under 3-frame pacing put consecutive frames
-    // on the same slot (0,1,0|0,1,0), tearing GPUAnimInstance records under
-    // GPU-bound load.
-    if (!m_InstanceAllocator.Initialize(device, kInstanceRingSize, BufferUsage::Storage,
-                                        device->GetFramesInFlight(), 32, "GPUAnimInstances"))
+    const auto& capabilities = device->GetCapabilities();
+    const size_t bindingLimit = capabilities.maxStorageBufferBindingSize;
+    const size_t maximumCapacity = bindingLimit == 0
+        ? kInstanceRingMaxSize : (std::min)(kInstanceRingMaxSize, bindingLimit);
+    m_InstanceAlignment = (std::max)(sizeof(GPUAnimInstance), capabilities.minStorageBufferOffsetAlignment);
+    if (maximumCapacity < sizeof(GPUAnimInstance)
+        || m_InstanceAlignment > maximumCapacity
+        || (m_InstanceAlignment & (m_InstanceAlignment - 1u)) != 0)
         return false;
+    m_MaxInstanceCount = static_cast<uint32>((std::min)(static_cast<size_t>(kMaxInstanceWorkgroups),
+        maximumCapacity / sizeof(GPUAnimInstance)));
+    // Reservation grows during update, before the device fence wait.
+    if (!m_InstanceAllocator.Initialize(device, (std::min)(kInstanceRingSize, maximumCapacity),
+            BufferUsage::Storage, device->GetFramesInFlight() + 1u, m_InstanceAlignment,
+            "GPUAnimInstances", maximumCapacity))
+        return false;
+    ResetInstances();
 
     return m_SkelHeaderBuf.IsValid() && m_SkelDataBuf.IsValid() &&
            m_ClipHeaderBuf.IsValid() && m_ClipDataBuf.IsValid();
@@ -68,6 +82,7 @@ void GPUAnimationDataStore::Shutdown()
     if (m_ClipHeaderBuf.IsValid()) m_Device->DestroyBuffer(m_ClipHeaderBuf);
     if (m_ClipDataBuf.IsValid())   m_Device->DestroyBuffer(m_ClipDataBuf);
     m_Device = nullptr;
+    ResetInstances();
 }
 
 void GPUAnimationDataStore::ReprovisionAfterDeviceRebuild()
@@ -95,15 +110,26 @@ void GPUAnimationDataStore::ReprovisionAfterDeviceRebuild()
     // The per-frame instance ring's backing buffers are dead too; re-create them so
     // the next BeginFrame/Allocate writes into live mapped memory.
     m_InstanceAllocator.ReprovisionAfterDeviceRebuild();
+    ResetInstances();
+}
+
+void GPUAnimationDataStore::ResetInstances()
+{
+    m_FrameInstances.clear();
+    m_GPUHandledRuntimeIds.clear();
+    m_InstanceBufferOffset = 0;
+    m_AdmittedUploadEndBytes = 0;
+    m_AdmittedInstanceCount = 0;
+    m_UploadedInstanceCount = 0;
+    m_InstanceFrameActive = false;
+    m_DispatchScheduledThisFrame = false;
 }
 
 void GPUAnimationDataStore::BeginFrame(uint32_t frameIndex)
 {
-    m_FrameInstances.clear();
-    m_GPUHandledRuntimeIds.clear();
+    ResetInstances();
     m_InstanceAllocator.BeginFrame(frameIndex);
-    m_InstanceBufferOffset = 0;
-    m_DispatchScheduledThisFrame = false;
+    m_InstanceFrameActive = true;
 }
 
 // ----------------------------------------------------------------
@@ -475,22 +501,57 @@ uint32 GPUAnimationDataStore::EnsureClipUploaded(uint32 clipIndex)
 // Per-frame instance management
 // ----------------------------------------------------------------
 
-void GPUAnimationDataStore::AddInstance(const GPUAnimInstance& inst)
+bool GPUAnimationDataStore::TryReserveInstanceCapacity(uint32 instanceCount)
 {
-    m_FrameInstances.push_back(inst);
+    if (!m_Device || !m_InstanceFrameActive || instanceCount > m_MaxInstanceCount
+        || instanceCount < m_FrameInstances.size())
+        return false;
+    if (instanceCount == 0)
+        return true;
+    const size_t bytes = static_cast<size_t>(instanceCount) * sizeof(GPUAnimInstance);
+    const size_t usage = m_InstanceAllocator.GetCurrentUsage();
+    const size_t capacityLimit = m_InstanceAllocator.GetMaxCapacity();
+    if (usage > capacityLimit || m_InstanceAlignment - 1u > capacityLimit - usage)
+        return false;
+    const size_t offset = GameEngine::Rendering::Utils::AlignUp(usage, m_InstanceAlignment);
+    if (bytes > capacityLimit - offset || !m_InstanceAllocator.Reserve(offset + bytes))
+        return false;
+    m_AdmittedInstanceCount = instanceCount;
+    m_AdmittedUploadEndBytes = offset + bytes;
+    return true;
 }
 
-void GPUAnimationDataStore::FlushInstances()
+bool GPUAnimationDataStore::TryAddInstance(const GPUAnimInstance& instance)
 {
-    if (m_FrameInstances.empty()) return;
+    if (!TryReserveInstanceCapacity(GetInstanceCount() + 1u))
+        return false;
+    m_FrameInstances.push_back(instance);
+    return true;
+}
 
-    const size_t bytes = m_FrameInstances.size() * sizeof(GPUAnimInstance);
-    auto alloc = m_InstanceAllocator.Allocate(bytes, 32);
-    if (alloc.ptr)
+bool GPUAnimationDataStore::FlushInstances()
+{
+    const uint32 instanceCount = GetInstanceCount();
+    if (instanceCount == 0 || instanceCount == m_UploadedInstanceCount)
+        return true;
+
+    const size_t bytes = static_cast<size_t>(instanceCount) * sizeof(GPUAnimInstance);
+    // Only this method allocates. Admission reserved this aligned range, and
+    // transactional growth preserves its mapping if a later reservation fails.
+    const auto allocation = m_InstanceAllocator.Allocate(bytes, m_InstanceAlignment);
+    const bool admitted = instanceCount <= m_AdmittedInstanceCount && allocation.IsValid()
+        && allocation.offset + bytes <= m_AdmittedUploadEndBytes;
+    if (!admitted)
     {
-        std::memcpy(alloc.ptr, m_FrameInstances.data(), bytes);
-        m_InstanceBufferOffset = alloc.offset;
+        Logger::Log::Error("GPU animation instance upload violated its capacity reservation");
+        assert(admitted);
+        return false;
     }
+    std::memcpy(allocation.ptr, m_FrameInstances.data(), bytes);
+    m_InstanceBufferOffset = allocation.offset;
+    m_UploadedInstanceCount = instanceCount;
+    m_AdmittedInstanceCount = instanceCount;
+    return true;
 }
 
 void GPUAnimationDataStore::MarkGPUHandled(uint32 runtimeId)
