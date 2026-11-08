@@ -64,6 +64,7 @@
 #include "Editor/Hierarchy/HierarchyLightIconTint.h"
 #include "Editor/Hierarchy/HierarchyRenderLayerEdit.h"
 #include "Editor/Hierarchy/HierarchyEntityIcon.h"
+#include "Editor/Entities/EditorComponentTraits.h"
 #include "Editor/Hierarchy/HierarchyOrdering.h"
 #include "Editor/Hierarchy/HierarchyNavigationBar.h"
 #include "Editor/Settings/FbxImportSettings.h"
