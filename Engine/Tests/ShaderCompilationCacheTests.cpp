@@ -8,14 +8,19 @@
 // the staged adapters (no device needed) because the epoch guard's whole point is
 // which BYTES end up cached.
 
+#include "Engine/Rendering/ShaderCompilationCache.h"
+
+#include "AssetCore/GUID.h"
+#include "Engine/Rendering/ShaderCompileErrorLog.h"
 #include "Rendering/Core/Device.h"
-#include <gtest/gtest.h>
+#include "ScopedShaderCompileTarget.h"
+#include "StagedTestPaths.h"
+#include "TestTempDir.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
-#include <spirv/unified1/spirv.hpp>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -23,17 +28,12 @@
 #include <string_view>
 #include <vector>
 
-#include "Engine/Rendering/ShaderCompilationCache.h"
-#include "Engine/Rendering/ShaderCompileErrorLog.h"
-#include "AssetCore/GUID.h"
+#include <gtest/gtest.h>
+#include <spirv/unified1/spirv.hpp>
 
 using namespace GameEngine;
 using namespace GameEngine::Engine::Renderer;
 using namespace GameEngine::Rendering;
-
-#include "StagedTestPaths.h"
-#include "ScopedShaderCompileTarget.h"
-#include "TestTempDir.h"
 
 namespace
 {
