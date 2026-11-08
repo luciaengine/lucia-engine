@@ -87,8 +87,8 @@ target_link_libraries(Animation
         AssetCore
         GenerationalVector
         nlohmann_json::nlohmann_json
-        ZLIB::ZLIB
     PRIVATE
+        ZLIB::ZLIB
         Logger
 )
 
