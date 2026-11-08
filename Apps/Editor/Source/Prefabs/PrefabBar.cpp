@@ -199,6 +199,9 @@ PrefabBar::PrefabBar(ECS::World& world, ECS::EntityHandle entity, EditorChangeNo
     m_StaleCountText = dynamic_cast<Label*>(layout->FindById("prefab-bar-stale-count-text"));
     m_SelectAssetButton = dynamic_cast<Button*>(layout->FindById("prefab-bar-select-asset"));
     AddChild(std::move(layout));
+    for (Button* pill : {m_Count, m_InstanceCount, m_StaleCount})
+        if (pill)
+            pill->RequestSubtreeStyleAssetPath(kStyleAssetPath, "editor");
     if (m_SelectAssetButton)
         m_SelectAssetButton->SetOnClick([this](UIEvent&) { SelectAsset(); });
     for (Button* pill : {m_Count, m_InstanceCount})
