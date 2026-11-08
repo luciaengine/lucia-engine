@@ -101,6 +101,7 @@ inline vec3 normalize(const vec3& v)
     assert(len > 0.0f);
     return {v.x / len, v.y / len, v.z / len};
 }
+inline float mix(float first, float second, float amount) { return first * (1.0f - amount) + second * amount; }
 inline vec3 mix(const vec3& a, const vec3& b, float t) { return a * (1.0f - t) + b * t; }
 inline float length(const vec3& v) { return std::sqrt(dot(v, v)); }
 inline vec3 cross(const vec3& a, const vec3& b)
