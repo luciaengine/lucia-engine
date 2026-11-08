@@ -791,7 +791,8 @@ bool CBTInstance::RecordHeightChainBuild(CommandList& cl, const CBTClassifyDesc&
     const ResourceBarrier written =
         ResourceBarrier::CreateBufferBarrier(chain, ResourceState::UnorderedAccess, ResourceState::UnorderedAccess);
     const uint32_t normalMips = m_Resources.GetNormalChainMips();
-    const bool normals = normalMips == CBTNormalChainMips(samplesX, samplesZ) && normalMips > 0u;
+    const bool normals = m_Resources.HasNormalChainFor(samplesX, samplesZ) &&
+                         normalMips == CBTNormalChainMips(samplesX, samplesZ) && normalMips > 0u;
     std::array<CBTHeightChainRegion, kCBTNormalChainMaxMips> levelRegions{};
     cl.SetMarker("CBT.HeightChainBuild");
     for (uint32_t level = 1u; level <= top; ++level)

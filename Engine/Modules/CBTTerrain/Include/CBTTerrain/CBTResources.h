@@ -103,7 +103,7 @@ class CBTResources
 
     // The current frame's ring element selects the height texture (binding 15).
     // Call source setters before recording. False leaves the requested binding unapplied.
-    // Vulkan retires submitted graphics readers before changing the shared descriptor set.
+    // Retires submitted graphics readers before changing the shared descriptor set.
     bool SetHeightSource(uint32_t frameCounter, Rendering::TextureHandle texture);
     Rendering::TextureHandle GetDefaultHeightTexture() const { return m_DefaultHeight; }
     // The height texture bound in `frameCounter`'s ring element (the flat default when none).
@@ -120,12 +120,16 @@ class CBTResources
     bool ProvisionHeightChainWords(uint32_t words);
     // The far-field normal chain (binding 25 on the compute set as one storage view per mip,
     // cbt_NormalChain on the graphics set 2). A 1x1 placeholder until ProvisionNormalChain creates it for
-    // a lattice; the texture rests in ShaderResource between frames. Wide arm only, like the height chain.
+    // a lattice; storage and sampled descriptors share GENERAL. Wide arm only, like the height chain.
     Rendering::TextureHandle GetNormalChainTexture() const { return m_NormalChain; }
     uint32_t GetNormalChainMips() const { return m_NormalChainMips; }
+    bool HasNormalChainFor(uint32_t samplesX, uint32_t samplesZ) const
+    {
+        return m_NormalChain.IsValid() && m_NormalChainLattice == (samplesX | (samplesZ << 16u));
+    }
     // Creates the chain for a lattice of `samplesX` x `samplesZ` (CBTNormalChainTexels / Mips), replacing
     // one made for another lattice; true when it matches. False when the arm builds no chain or the
-    // allocation fails: the previous texture stays bound and the surface keeps the level-0 normal map.
+    // allocation or completion fails: the previous texture stays bound and the surface keeps the level-0 normal map.
     bool ProvisionNormalChain(uint32_t samplesX, uint32_t samplesZ);
     Rendering::SamplerHandle GetHeightSampler() const { return m_HeightSampler; }
 
@@ -293,6 +297,7 @@ class CBTResources
     // Rewrites one ring element of a terrain-source binding in every set that
     // binds it (the per-kernel sets, or the single shared set).
     bool WaitForSourceReaders() const;
+    bool WaitForGraphicsReaders() const;
     bool RebindSourceRingToDefault(std::array<Rendering::TextureHandle, kCBTTextureRingMax>& ring,
                                     Rendering::TextureHandle texture, uint32_t binding, bool& changed);
     bool UpdateTerrainSourceBinding(uint32_t binding, Rendering::TextureHandle texture,

@@ -652,7 +652,12 @@ bool CBTResources::ProvisionHeightChainWords(uint32_t words)
     // The compute sets are shared by every frame slot and rewritten in place, and the draw binds the
     // buffer by handle: wait for the previous graphics users before replacing it, without changing the
     // device-wide idle state during render-graph declaration.
-    m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken());
+    if (!WaitForGraphicsReaders())
+    {
+        m_Device->DestroyBuffer(next);
+        Logger::Log::Error("CBTResources: height-chain growth could not retire graphics readers");
+        return false;
+    }
     m_Device->DestroyBuffer(m_HeightChain);
     m_PersistentBytes -= static_cast<uint64_t>(m_HeightChainWords) * sizeof(uint32_t);
     m_HeightChain = next;
@@ -700,7 +705,14 @@ bool CBTResources::CreateNormalChain(uint32_t width, uint32_t height, uint32_t m
     cl->End();
     std::vector<CommandList*> lists{cl.get()};
     m_Device->ExecuteCommandLists(lists);
-    m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken());
+    if (!WaitForGraphicsReaders())
+    {
+        for (const auto view : views)
+            m_Device->DestroyTextureView(view);
+        m_Device->DestroyTexture(texture);
+        return false;
+    }
+    DestroyNormalChain();
     m_NormalChain = texture;
     m_NormalChainViews = views;
     m_NormalChainMips = mips;
@@ -734,15 +746,13 @@ bool CBTResources::ProvisionNormalChain(uint32_t samplesX, uint32_t samplesZ)
         return true;
     // The descriptor sets are shared by every frame slot and the surface binds the texture by handle:
     // wait for the previous graphics users before replacing it (as ProvisionHeightChainWords).
-    m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken());
-    DestroyNormalChain();
+    if (!WaitForGraphicsReaders())
+        return false;
     if (!CreateNormalChain(CBTNormalChainTexels(samplesX, 0u), CBTNormalChainTexels(samplesZ, 0u), mips))
     {
         Logger::Log::Error("CBTResources: failed to create the normal chain for a {} x {} lattice; the terrain "
                            "shades its far field from the level-0 normal map",
                            samplesX, samplesZ);
-        CreateNormalChain(1u, 1u, 1u);
-        WriteDescriptorSet();
         return false;
     }
     m_NormalChainLattice = lattice;
@@ -787,14 +797,41 @@ void CBTResources::UploadSurfaceParams(uint32_t frameCounter, const CBTSurfacePa
 // fan-out is safe for kernels without the binding.
 bool CBTResources::WaitForSourceReaders() const
 {
-    return !m_SourceReadersSubmitted || m_Device->GetAPI() != GraphicsAPI::Vulkan ||
-           m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken());
+    return !m_SourceReadersSubmitted || WaitForGraphicsReaders();
+}
+
+bool CBTResources::WaitForGraphicsReaders() const
+{
+    const auto submitted = m_Device->LastGraphicsSubmissionToken();
+    if (submitted.IsValid())
+        return m_Device->WaitGpuSyncToken(submitted);
+    if (m_Device->GetAPI() == GraphicsAPI::Vulkan)
+        return false;
+
+    // A queue signal orders all earlier graphics work without a device-wide idle claim.
+    const auto semaphore = m_Device->CreateTimelineSemaphore(0u);
+    if (!semaphore.IsValid())
+        return false;
+    auto command = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
+    if (!command)
+    {
+        m_Device->DestroySemaphore(semaphore);
+        return false;
+    }
+    command->Begin();
+    command->End();
+    constexpr uint64_t kCompletedValue = 1u;
+    const bool queued = m_Device->QueueSubmit(IDevice::QueueType::Graphics, {command.get()}, {},
+                                             {{semaphore, kCompletedValue}});
+    const bool complete = queued && m_Device->WaitGpuSyncToken({semaphore, kCompletedValue});
+    m_Device->DestroySemaphore(semaphore);
+    return complete;
 }
 
 bool CBTResources::UpdateTerrainSourceBinding(uint32_t binding, Rendering::TextureHandle texture,
                                               uint32_t slot)
 {
-    // Plain Vulkan sets cannot change while any submitted command uses the set.
+    // Shared sets cannot change while any submitted command uses the set.
     // Call before graph recording; a wait cannot repair an unsubmitted command buffer.
     if (!WaitForSourceReaders())
     {

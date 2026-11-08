@@ -226,7 +226,7 @@ class CBTInstance
     bool ValidatesEachUpdate() const { return m_ValidateEachUpdate; }
 
     /// Binds this frame's height texture, or the flat default. Call before recording.
-    /// Returns false if Vulkan cannot retire the shared descriptor set's graphics readers.
+    /// Returns false if the shared descriptor set's graphics readers cannot be retired.
     bool SetHeightSource(uint32_t frameCounter, Rendering::TextureHandle heightTexture);
 
     /// Restores default source bindings before recording. Returns success separately from changed.
