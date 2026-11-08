@@ -62,7 +62,8 @@ bool AnimationComputePass::PrepareDispatch(RenderGraph::RGPrepareContext& contex
     if (instanceCount == 0)
         return true;
 
-    m_DataStore->FlushInstances();
+    if (!m_DataStore->FlushInstances())
+        return false;
 
     // Bindings cover skeletons, clips, instances, the atlas and visibility.
     constexpr uint32_t kStorageBindingCount = 7;
