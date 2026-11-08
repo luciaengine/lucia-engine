@@ -1,3 +1,5 @@
+using System;
+
 namespace GameEngine.Scripting
 {
     /// <summary>
@@ -8,6 +10,22 @@ namespace GameEngine.Scripting
     {
         /// <summary>The primary ECS world.</summary>
         protected internal GameEngine.ECS.WorldHandle World { get; internal set; }
+
+        /// <summary>
+        /// Commands on this system's world. Entity creation and prefab spawning act immediately;
+        /// deferred operations run after all systems complete. Call on the engine main thread.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">The runner has not assigned a world.</exception>
+        protected EntityCommands Commands
+        {
+            get
+            {
+                if (World.Handle == 0)
+                    throw new InvalidOperationException("The system has no world. Let the engine create the system " +
+                        "and assign its world before using Commands.");
+                return new EntityCommands { WorldHandle = World.Handle };
+            }
+        }
 
         /// <summary>Enable/disable this system at runtime.</summary>
         public bool Enabled { get; set; } = true;
