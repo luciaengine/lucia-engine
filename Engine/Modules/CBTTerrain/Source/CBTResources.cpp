@@ -785,33 +785,49 @@ void CBTResources::UploadSurfaceParams(uint32_t frameCounter, const CBTSurfacePa
 // land in the texture yet the terrain renders flat, with no validation error).
 // The backend drops writes to bindings a set's layout does not declare, so the
 // fan-out is safe for kernels without the binding.
-void CBTResources::UpdateTerrainSourceBinding(uint32_t binding, Rendering::TextureHandle texture,
+bool CBTResources::WaitForSourceReaders() const
+{
+    return !m_SourceReadersSubmitted || m_Device->GetAPI() != GraphicsAPI::Vulkan ||
+           m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken());
+}
+
+bool CBTResources::UpdateTerrainSourceBinding(uint32_t binding, Rendering::TextureHandle texture,
                                               uint32_t slot)
 {
+    // Plain Vulkan sets cannot change while any submitted command uses the set.
+    // Call before graph recording; a wait cannot repair an unsubmitted command buffer.
+    if (!WaitForSourceReaders())
+    {
+        Logger::Log::Error("CBTResources: source binding {} has no completed graphics submission", binding);
+        return false;
+    }
     if (m_KernelSets.empty())
     {
         m_Device->UpdateCombinedImageSamplerBinding(m_DescriptorSet, binding, texture,
                                                     m_HeightSampler, slot);
-        return;
+        return true;
     }
     for (const auto& set : m_KernelSets)
     {
         if (set.IsValid())
             m_Device->UpdateCombinedImageSamplerBinding(set, binding, texture, m_HeightSampler, slot);
     }
+    return true;
 }
 
-void CBTResources::SetHeightSource(uint32_t frameCounter, Rendering::TextureHandle texture)
+bool CBTResources::SetHeightSource(uint32_t frameCounter, Rendering::TextureHandle texture)
 {
     if (!m_Ready)
-        return;
+        return false;
     const uint32_t slot = CBTTextureRingSlot(frameCounter, m_TextureRing);
     const Rendering::TextureHandle target = texture.IsValid() ? texture : m_DefaultHeight;
     if (target == m_BoundHeight[slot])
-        return; // unchanged — nothing to rewrite in this frame's element
+        return true; // unchanged — nothing to rewrite in this frame's element
+    if (!UpdateTerrainSourceBinding(kCBTHeightTextureBinding, target, slot))
+        return false;
     m_BoundHeight[slot] = target;
-    UpdateTerrainSourceBinding(kCBTHeightTextureBinding, m_BoundHeight[slot], slot);
     ++m_TerrainSourceGeneration;
+    return true;
 }
 
 Rendering::TextureHandle CBTResources::GetBoundHeightSource(uint32_t frameCounter) const
@@ -822,43 +838,51 @@ Rendering::TextureHandle CBTResources::GetBoundHeightSource(uint32_t frameCounte
     return bound.IsValid() ? bound : m_DefaultHeight;
 }
 
-void CBTResources::SetAtlasSource(uint32_t frameCounter, Rendering::TextureHandle atlasTexture)
+bool CBTResources::SetAtlasSource(uint32_t frameCounter, Rendering::TextureHandle atlasTexture)
 {
     if (!m_Ready)
-        return;
+        return false;
     const uint32_t slot = CBTTextureRingSlot(frameCounter, m_TextureRing);
     const Rendering::TextureHandle target = atlasTexture.IsValid() ? atlasTexture : m_DefaultAtlasHeight;
     if (target == m_BoundAtlasHeight[slot])
-        return; // unchanged — nothing to rewrite in this frame's element
+        return true; // unchanged — nothing to rewrite in this frame's element
+    if (!UpdateTerrainSourceBinding(kCBTAtlasHeightBinding, target, slot))
+        return false;
     m_BoundAtlasHeight[slot] = target;
-    UpdateTerrainSourceBinding(kCBTAtlasHeightBinding, m_BoundAtlasHeight[slot], slot);
     ++m_TerrainSourceGeneration;
+    return true;
 }
 
-void CBTResources::SetCoarseSource(uint32_t frameCounter, Rendering::TextureHandle coarseTexture)
+bool CBTResources::SetCoarseSource(uint32_t frameCounter, Rendering::TextureHandle coarseTexture)
 {
     if (!m_Ready)
-        return;
+        return false;
     const uint32_t slot = CBTTextureRingSlot(frameCounter, m_TextureRing);
     const Rendering::TextureHandle target = coarseTexture.IsValid() ? coarseTexture : m_DefaultAtlasCoarse;
     if (target == m_BoundAtlasCoarse[slot])
-        return;
+        return true;
+    if (!UpdateTerrainSourceBinding(kCBTAtlasCoarseBinding, target, slot))
+        return false;
     m_BoundAtlasCoarse[slot] = target;
-    UpdateTerrainSourceBinding(kCBTAtlasCoarseBinding, m_BoundAtlasCoarse[slot], slot);
     ++m_TerrainSourceGeneration;
+    return true;
 }
 
-void CBTResources::SetPageCacheSource(uint32_t frameCounter, Rendering::TextureHandle cacheTexture)
+bool CBTResources::SetPageCacheSource(uint32_t frameCounter, Rendering::TextureHandle cacheTexture)
 {
-    if (!m_Ready || !m_DefaultPageCache.IsValid())
-        return;
+    if (!m_Ready)
+        return false;
+    if (!m_DefaultPageCache.IsValid())
+        return !cacheTexture.IsValid();
     const uint32_t slot = CBTTextureRingSlot(frameCounter, m_TextureRing);
     const Rendering::TextureHandle target = cacheTexture.IsValid() ? cacheTexture : m_DefaultPageCache;
     if (target == m_BoundPageCache[slot])
-        return;
+        return true;
+    if (!UpdateTerrainSourceBinding(kCBTPageCacheBinding, target, slot))
+        return false;
     m_BoundPageCache[slot] = target;
-    UpdateTerrainSourceBinding(kCBTPageCacheBinding, m_BoundPageCache[slot], slot);
     ++m_TerrainSourceGeneration;
+    return true;
 }
 
 size_t CBTResources::PageTableRingBytes(uint32_t slotWords)
@@ -908,7 +932,12 @@ bool CBTResources::ProvisionPageTableWords(uint32_t words)
     // The descriptor sets are shared by every frame slot and rewritten in place below. Wait for
     // their previous graphics users before replacing the ring and its stride, without changing
     // the device-wide idle state during render-graph declaration.
-    m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken());
+    if (!WaitForSourceReaders())
+    {
+        m_Device->DestroyBuffer(next);
+        Logger::Log::Error("CBTResources: page-table growth has no completed graphics submission");
+        return false;
+    }
     m_Device->DestroyBuffer(m_PageTable);
     m_PersistentBytes -= PageTableRingBytes(m_PageTableSlotWords);
     m_PageTable = next;
@@ -937,31 +966,34 @@ void CBTResources::UploadPageTable(uint32_t frameCounter, std::span<const uint32
     m_Device->UnmapBuffer(m_PageTable);
 }
 
-bool CBTResources::RebindTerrainSourcesToDefault()
+bool CBTResources::RebindSourceRingToDefault(
+    std::array<Rendering::TextureHandle, kCBTTextureRingMax>& ring,
+    Rendering::TextureHandle texture, uint32_t binding, bool& changed)
 {
+    if (!texture.IsValid())
+        return true;
+    for (uint32_t slot = 0; slot < m_TextureRing; ++slot)
+    {
+        if (ring[slot] == texture)
+            continue;
+        if (!UpdateTerrainSourceBinding(binding, texture, slot))
+            return false;
+        ring[slot] = texture;
+        changed = true;
+        ++m_TerrainSourceGeneration;
+    }
+    return true;
+}
+
+bool CBTResources::RebindTerrainSourcesToDefault(bool& changed)
+{
+    changed = false;
     if (!m_Ready)
         return false;
-    bool changed = false;
-    auto rebindRing = [&](std::array<Rendering::TextureHandle, kCBTTextureRingMax>& ring,
-                          Rendering::TextureHandle def, uint32_t binding)
-    {
-        for (uint32_t slot = 0; slot < m_TextureRing; ++slot)
-        {
-            if (ring[slot] == def)
-                continue; // already the default — leave the descriptor untouched
-            ring[slot] = def;
-            UpdateTerrainSourceBinding(binding, def, slot);
-            changed = true;
-        }
-    };
-    rebindRing(m_BoundHeight, m_DefaultHeight, kCBTHeightTextureBinding);
-    rebindRing(m_BoundAtlasHeight, m_DefaultAtlasHeight, kCBTAtlasHeightBinding);
-    rebindRing(m_BoundAtlasCoarse, m_DefaultAtlasCoarse, kCBTAtlasCoarseBinding);
-    if (m_DefaultPageCache.IsValid())
-        rebindRing(m_BoundPageCache, m_DefaultPageCache, kCBTPageCacheBinding);
-    if (changed)
-        ++m_TerrainSourceGeneration;
-    return changed;
+    return RebindSourceRingToDefault(m_BoundHeight, m_DefaultHeight, kCBTHeightTextureBinding, changed) &&
+           RebindSourceRingToDefault(m_BoundAtlasHeight, m_DefaultAtlasHeight, kCBTAtlasHeightBinding, changed) &&
+           RebindSourceRingToDefault(m_BoundAtlasCoarse, m_DefaultAtlasCoarse, kCBTAtlasCoarseBinding, changed) &&
+           RebindSourceRingToDefault(m_BoundPageCache, m_DefaultPageCache, kCBTPageCacheBinding, changed);
 }
 
 uint32_t CBTResources::CountTerrainSourceSlots(Rendering::TextureHandle texture) const
@@ -1077,6 +1109,7 @@ void CBTResources::Shutdown()
     m_PersistentBytes = 0;
     m_ReadbackSize = 0;
     m_Ready = false;
+    m_SourceReadersSubmitted = false;
     m_Device = nullptr;
 }
 
@@ -1124,6 +1157,7 @@ void CBTResources::ReprovisionAfterDeviceRebuild()
     m_PersistentBytes = 0;
     m_ReadbackSize = 0;
     m_Ready = false;
+    m_SourceReadersSubmitted = false;
     m_Device = nullptr;
     // m_TerrainSourceGeneration is deliberately NOT reset: it is a monotonic binding
     // version that readers compare for change, so rewinding it could mask a rebind.

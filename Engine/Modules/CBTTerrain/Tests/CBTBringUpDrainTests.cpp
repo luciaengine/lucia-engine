@@ -135,6 +135,17 @@ class PendingUpdate
     std::jthread m_ReleaseThread;
 };
 
+class SourceCompletionProbeDevice : public VulkanDevice
+{
+  public:
+    bool HideGraphicsToken = false;
+
+    GpuSyncToken LastGraphicsSubmissionToken() const override
+    {
+        return HideGraphicsToken ? GpuSyncToken{} : VulkanDevice::LastGraphicsSubmissionToken();
+    }
+};
+
 std::vector<uint32_t> ReadIdentityIndices(IDevice& device, CBTInstance& instance,
                                         uint32_t firstWord, uint32_t wordCount)
 {
@@ -306,7 +317,9 @@ TEST_F(CBTBringUpTest, RefreshTerrainSourcesPerformsNoDeviceDrain)
 
     const uint64_t before = m_Device->GetIdleDrainCount();
     ASSERT_EQ(pending.Status(), IDevice::GpuSyncStatus::Pending);
-    EXPECT_TRUE(instance.RefreshTerrainSources());
+    bool changed = false;
+    EXPECT_TRUE(instance.RefreshTerrainSources(changed));
+    EXPECT_TRUE(changed);
     EXPECT_EQ(pending.Status(), IDevice::GpuSyncStatus::Complete)
         << "descriptor rebinding returned while its prior graphics user was pending";
     EXPECT_EQ(m_Device->GetIdleDrainCount(), before)
@@ -319,6 +332,84 @@ TEST_F(CBTBringUpTest, RefreshTerrainSourcesPerformsNoDeviceDrain)
     EXPECT_EQ(instance.ReadValidationCounter(kValidationErrorCounter), 0u) << "post-refresh update";
 
     m_Device->DestroyTexture(retired);
+}
+
+TEST(CBTSourceRebind, UnknownCompletionLeavesBindingsUnchangedAndRetries)
+{
+    SetHeadlessEnv();
+    DeviceDesc description{};
+    description.preferredAPI = GraphicsAPI::Vulkan;
+    description.enableDebugLayer = true;
+    description.enableDynamicRendering = true;
+    SourceCompletionProbeDevice device;
+    if (!device.Initialize(description))
+        GTEST_SKIP() << "no headless Vulkan device";
+    if (!device.GetValidationStats().Enabled)
+        GTEST_SKIP() << "Vulkan validation layer unavailable";
+    CBTKernelSet kernels;
+    if (!kernels.Initialize(device, ShaderOutputDir()))
+        GTEST_SKIP() << "CBT kernels unavailable";
+    CBTInstance instance;
+    ASSERT_TRUE(instance.Initialize(device, kernels));
+    ASSERT_TRUE(instance.InitializeRoots());
+    const auto source = instance.GetResources().GetDefaultAtlasHeightTexture();
+    ASSERT_TRUE(source.IsValid());
+    const uint32_t originalSlots = instance.CountTerrainSourceSlots(source);
+    ASSERT_TRUE(instance.SetHeightSource(0u, source));
+    const uint64_t generation = instance.GetTerrainSourceGeneration();
+    device.HideGraphicsToken = true;
+    const uint32_t originalTableWords = instance.GetResources().PageTableSlotWords();
+    EXPECT_FALSE(instance.ProvisionPageTableWords(originalTableWords + 1u));
+    EXPECT_EQ(instance.GetResources().PageTableSlotWords(), originalTableWords);
+    EXPECT_FALSE(instance.SetHeightSource(1u, source));
+    EXPECT_EQ(instance.GetResources().GetBoundHeightSource(1u),
+              instance.GetResources().GetDefaultHeightTexture());
+    EXPECT_EQ(instance.GetTerrainSourceGeneration(), generation);
+    bool changed = false;
+    EXPECT_FALSE(instance.RefreshTerrainSources(changed));
+    EXPECT_FALSE(changed);
+    EXPECT_EQ(instance.CountTerrainSourceSlots(source), originalSlots + 1u);
+    EXPECT_EQ(instance.GetTerrainSourceGeneration(), generation);
+    device.HideGraphicsToken = false;
+    EXPECT_TRUE(instance.ProvisionPageTableWords(originalTableWords + 1u));
+    EXPECT_GT(instance.GetResources().PageTableSlotWords(), originalTableWords);
+    EXPECT_TRUE(instance.RefreshTerrainSources(changed));
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(instance.CountTerrainSourceSlots(source), originalSlots);
+    EXPECT_EQ(device.GetValidationStats().ErrorCount, 0u);
+}
+
+TEST_F(CBTBringUpTest, SourceRebindRetiresPendingSetsWithoutADeviceDrain)
+{
+    CBTInstance instance;
+    ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
+    ASSERT_TRUE(instance.InitializeRoots());
+    const TextureHandle height = instance.GetResources().GetDefaultHeightTexture();
+    const TextureHandle atlas = instance.GetResources().GetDefaultAtlasHeightTexture();
+    ASSERT_TRUE(height.IsValid());
+    ASSERT_TRUE(atlas.IsValid());
+    for (const uint32_t binding : {kCBTHeightTextureBinding, kCBTAtlasHeightBinding,
+                                   kCBTAtlasCoarseBinding, kCBTPageCacheBinding})
+    {
+        PendingUpdate pending(*m_Device);
+        ASSERT_TRUE(pending.Submit(instance, 0u));
+        ASSERT_EQ(pending.Status(), IDevice::GpuSyncStatus::Pending);
+        pending.ReleaseSoon();
+        const uint64_t drains = m_Device->GetIdleDrainCount();
+        bool applied = false;
+        switch (binding)
+        {
+        case kCBTHeightTextureBinding: applied = instance.SetHeightSource(1u, atlas); break;
+        case kCBTAtlasHeightBinding: applied = instance.SetAtlasSource(1u, height); break;
+        case kCBTAtlasCoarseBinding: applied = instance.SetCoarseSource(1u, height); break;
+        case kCBTPageCacheBinding: applied = instance.SetPageCacheSource(1u, height); break;
+        }
+        EXPECT_TRUE(applied);
+        EXPECT_EQ(pending.Status(), IDevice::GpuSyncStatus::Complete) << "binding " << binding;
+        EXPECT_EQ(m_Device->GetIdleDrainCount(), drains);
+        RunUpdate(*m_Device, instance, 1u);
+        EXPECT_EQ(instance.ReadValidationCounter(kValidationErrorCounter), 0u);
+    }
 }
 
 TEST_F(CBTBringUpTest, PageTableGrowthWaitsForPendingGraphicsWithoutDeviceDrain)

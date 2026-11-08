@@ -386,28 +386,31 @@ void CBTRenderFeature::EnsureSeeded(uint32_t frameCounter)
                       ToString(reason));
 }
 
-void CBTRenderFeature::ConsumeTerrainRetire(uint64_t retireGeneration)
+bool CBTRenderFeature::ConsumeTerrainRetire(uint64_t retireGeneration)
 {
     if (!m_Initialized)
-        return;
+        return true;
     // First sight: adopt the current generation without acting. A re-provision (or a terrain
     // teardown) that ran before CBT initialized must not trigger a rebind of an already-clean ring.
     if (!m_TerrainRetireGenerationSynced)
     {
         m_LastTerrainRetireGeneration = retireGeneration;
         m_TerrainRetireGenerationSynced = true;
-        return;
+        return true;
     }
     if (retireGeneration == m_LastTerrainRetireGeneration)
-        return;
-    m_LastTerrainRetireGeneration = retireGeneration;
+        return true;
 
     // A terrain texture set was retired this frame. Drop the retired heightmap from EVERY ring
     // element now (RefreshTerrainSources retires the submitted graphics work first), so no
     // descriptor outlives the image once the terrain feature's quarantine frees it. BuildFrameParams
     // re-binds this frame's slot to the live source (the flat default during the re-provision
     // withhold, then the new heightmap) immediately after.
-    if (m_Instance.RefreshTerrainSources())
+    bool changed = false;
+    if (!m_Instance.RefreshTerrainSources(changed))
+        return false;
+    m_LastTerrainRetireGeneration = retireGeneration;
+    if (changed)
     {
         // The recreated heightmap staled every cached bisector corner (gVertex was evaluated from
         // the old texture at the old resolution); force a full-pool VertexEval on the next update.
@@ -419,6 +422,7 @@ void CBTRenderFeature::ConsumeTerrainRetire(uint64_t retireGeneration)
     // The tree grew on the retired terrain: EnsureSeeded restarts it from its roots (CBTTreeSeed
     // decides when).
     m_TreeSeed.NoteTerrainRetired();
+    return true;
 }
 
 bool CBTRenderFeature::EnsureMaterial(RenderServices& rs)
@@ -941,10 +945,10 @@ bool CBTRenderFeature::BuildFrameParams(RenderServices& rs, Rendering::ViewId vi
     }
     const TerrainECS::TerrainInstanceInfo& t = terrains.front();
 
-    // Bind the terrain heightmap into THIS frame's height-source ring slot (or the
-    // flat default until it is uploaded). Only the current frame slot is rewritten, so
-    // a mid-session heightmap handle change never touches an in-flight ring element.
-    m_Instance.SetHeightSource(frameIndex, t.HeightmapTexture);
+    // Bind this frame's source before graph recording. A changed Vulkan binding
+    // retires submitted readers of the shared descriptor set.
+    if (!m_Instance.SetHeightSource(frameIndex, t.HeightmapTexture))
+        return false;
     // The paged height resolve (TerrainHeightPageFeature): when the terrain's height is paged, the
     // update samples the page cache through its page table (bindings 23 and 22) instead of the
     // unified or atlas texture, which stay bound for the readers that still use them.
@@ -955,17 +959,6 @@ bool CBTRenderFeature::BuildFrameParams(RenderServices& rs, Rendering::ViewId vi
     // failed allocation keeps the terrain on its texture this frame.
     if (pageCache.IsValid() && !m_Instance.ProvisionPageTableWords(static_cast<uint32_t>(pageWords.size())))
         pageCache = {};
-    m_BoundTerrainIndex = t.Handle.Index;
-    LogCommittedHeightSource(t.Handle.Index, t.Handle.Generation, pageCache.IsValid(), frameIndex);
-    // Invalid until the heightmap uploads; feeds the C5 read edge (the page cache when paged, the
-    // atlas when atlas-backed).
-    m_BoundHeightmap =
-        pageCache.IsValid() ? pageCache : BoundHeightSource(t.AtlasBacked, t.AtlasHeightTexture, t.HeightmapTexture);
-    // The clearance map reads the unified height texture; an atlas-backed terrain has none.
-    m_TerrainShadowSource.HeightTexture = t.AtlasBacked ? Rendering::TextureHandle{} : t.HeightmapTexture;
-    m_TerrainShadowSource.HeightBindlessIndex = t.AtlasBacked ? 0u : t.HeightmapBindlessIndex;
-    m_TerrainShadowSource.CastShadows = t.CastShadows;
-
     // Phase E resident-window atlas (design §3). An atlas-backed terrain drives the CBT
     // height sample through the indirection SSBO (binding 17) + atlas texture (binding 18)
     // instead of the unified heightmap: bind the atlas texture for this ring slot, upload the
@@ -976,10 +969,12 @@ bool CBTRenderFeature::BuildFrameParams(RenderServices& rs, Rendering::ViewId vi
     const uint32_t atlasSlot = CBTTerrain::CBTFrameRingSlot(frameIndex);
     if (t.AtlasBacked && t.AtlasHeightTexture.IsValid())
     {
-        m_Instance.SetAtlasSource(frameIndex, t.AtlasHeightTexture);
+        if (!m_Instance.SetAtlasSource(frameIndex, t.AtlasHeightTexture))
+            return false;
         // Bind the out-of-window coarse height field (binding 19): an out-of-window tile resolves
         // through it, height-continuous with the resident relief at the window edge (design Risk 3).
-        m_Instance.SetCoarseSource(frameIndex, t.AtlasCoarseTexture);
+        if (!m_Instance.SetCoarseSource(frameIndex, t.AtlasCoarseTexture))
+            return false;
         // F1: a bound-terrain change brings a different atlas texture whose TableVersion may
         // numerically equal the previous terrain's; the version gate alone would then skip the row
         // upload and terrain B would resolve through terrain A's rows. A texture change resets the
@@ -1009,14 +1004,28 @@ bool CBTRenderFeature::BuildFrameParams(RenderServices& rs, Rendering::ViewId vi
     }
     else
     {
-        m_Instance.SetAtlasSource(frameIndex, Rendering::TextureHandle{});  // reset slot to default
-        m_Instance.SetCoarseSource(frameIndex, Rendering::TextureHandle{}); // no dangling coarse descriptor
+        if (!m_Instance.SetAtlasSource(frameIndex, Rendering::TextureHandle{}))
+            return false;
+        if (!m_Instance.SetCoarseSource(frameIndex, Rendering::TextureHandle{}))
+            return false;
         m_AtlasBoundTexture[atlasSlot] = {};              // a later re-enable re-uploads the rows
         m_AtlasUploadedTableVersion[atlasSlot] = ~0ull;
         out.AtlasParams1[2] = 0.0f; // disabled -> the unified height sample path
     }
     const uint32_t pageSlot = CBTTerrain::CBTFrameRingSlot(frameIndex);
-    m_Instance.SetPageCacheSource(frameIndex, pageCache);
+    if (!m_Instance.SetPageCacheSource(frameIndex, pageCache))
+        return false;
+    m_BoundTerrainIndex = t.Handle.Index;
+    // Invalid until the heightmap uploads; feeds the C5 read edge (the page cache when paged, the
+    // atlas when atlas-backed).
+    m_BoundHeightmap =
+        pageCache.IsValid() ? pageCache : BoundHeightSource(t.AtlasBacked, t.AtlasHeightTexture, t.HeightmapTexture);
+    // The clearance map reads the unified height texture; an atlas-backed terrain has none.
+    m_TerrainShadowSource.HeightTexture = t.AtlasBacked ? Rendering::TextureHandle{} : t.HeightmapTexture;
+    m_TerrainShadowSource.HeightBindlessIndex = t.AtlasBacked ? 0u : t.HeightmapBindlessIndex;
+    m_TerrainShadowSource.CastShadows = t.CastShadows;
+
+    LogCommittedHeightSource(t.Handle.Index, t.Handle.Generation, pageCache.IsValid(), frameIndex);
     if (pageCache.IsValid())
     {
         // Upload the page table only when this slot has not seen this terrain's current version.

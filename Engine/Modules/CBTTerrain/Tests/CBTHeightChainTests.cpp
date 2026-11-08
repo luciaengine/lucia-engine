@@ -300,11 +300,9 @@ class CBTHeightChain : public ::testing::Test
     {
         if (!inst.Initialize(*m_Device, m_KernelSet) || !inst.InitializeRoots(kDomainPlanar))
             return false;
-        // The initial reduction submitted the shared set that the source rebind changes.
-        if (!m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken()))
-            return false;
         for (uint32_t slot = 0; slot < kCBTFrameParamsRing; ++slot)
-            inst.SetHeightSource(slot, tex);
+            if (!inst.SetHeightSource(slot, tex))
+                return false;
         return inst.ProvisionHeightChainWords(CBTHeightChainWords(samplesX, samplesZ)) &&
                inst.ProvisionNormalChain(samplesX, samplesZ);
     }

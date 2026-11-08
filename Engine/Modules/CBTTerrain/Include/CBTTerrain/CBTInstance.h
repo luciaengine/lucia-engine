@@ -225,23 +225,12 @@ class CBTInstance
     void SetValidateEachUpdate(bool enabled) { m_ValidateEachUpdate = enabled; }
     bool ValidatesEachUpdate() const { return m_ValidateEachUpdate; }
 
-    // Rebinds the terrain height texture the VertexEval kernel samples for this frame
-    // (binding 15 ring element CBTFrameRingSlot(frameCounter)), or the built-in flat
-    // default when invalid. Call with the SAME frameCounter passed to RecordUpdate this
-    // frame — the shader reduces the pushed counter identically — so a mid-session handle
-    // change never rewrites an in-flight ring element. The same texture the CDLOD path
-    // samples (plan §8 C4).
-    void SetHeightSource(uint32_t frameCounter, Rendering::TextureHandle heightTexture);
+    /// Binds this frame's height texture, or the flat default. Call before recording.
+    /// Returns false if Vulkan cannot retire the shared descriptor set's graphics readers.
+    bool SetHeightSource(uint32_t frameCounter, Rendering::TextureHandle heightTexture);
 
-    // In-place re-provision safety (plan §re-provision). Retires the graphics work already
-    // submitted, then rewrites EVERY height/atlas/coarse ring element back to its built-in default
-    // in one shot (see CBTResources::RebindTerrainSourcesToDefault), so a retired terrain heightmap
-    // is dropped from the whole ring deterministically instead of relying on the per-slot lazy
-    // refresh to rotate through every element before the image is freed. That timeline wait — one
-    // value on one queue, not a device drain — is why this is safe to call from the render-graph
-    // declare, and why it stays reserved for the rare re-provision rather than the per-frame path.
-    // Returns true when a slot changed.
-    bool RefreshTerrainSources();
+    /// Restores default source bindings before recording. Returns success separately from changed.
+    bool RefreshTerrainSources(bool& changed);
     uint64_t GetTerrainSourceGeneration() const { return m_Resources.GetTerrainSourceGeneration(); }
     uint32_t CountTerrainSourceSlots(Rendering::TextureHandle texture) const
     {
@@ -253,13 +242,13 @@ class CBTInstance
     // with the SAME frameCounter passed to RecordUpdate; a host-visible ring write that
     // completes before submit (like the params UBO). SetAtlasSource with an invalid handle
     // resets the slot to the flat default. See CBTResources.
-    void SetAtlasSource(uint32_t frameCounter, Rendering::TextureHandle atlasTexture)
+    bool SetAtlasSource(uint32_t frameCounter, Rendering::TextureHandle atlasTexture)
     {
-        m_Resources.SetAtlasSource(frameCounter, atlasTexture);
+        return m_Resources.SetAtlasSource(frameCounter, atlasTexture);
     }
-    void SetCoarseSource(uint32_t frameCounter, Rendering::TextureHandle coarseTexture)
+    bool SetCoarseSource(uint32_t frameCounter, Rendering::TextureHandle coarseTexture)
     {
-        m_Resources.SetCoarseSource(frameCounter, coarseTexture);
+        return m_Resources.SetCoarseSource(frameCounter, coarseTexture);
     }
     void UploadAtlasRows(uint32_t frameCounter, const void* rows, uint32_t rowCount)
     {
@@ -268,9 +257,9 @@ class CBTInstance
 
     // The paged height resolve (bindings 23 and 22, wide arm only): the frame's page cache texture
     // and the terrain's page-table words. Same frameCounter and ring discipline as the atlas above.
-    void SetPageCacheSource(uint32_t frameCounter, Rendering::TextureHandle cacheTexture)
+    bool SetPageCacheSource(uint32_t frameCounter, Rendering::TextureHandle cacheTexture)
     {
-        m_Resources.SetPageCacheSource(frameCounter, cacheTexture);
+        return m_Resources.SetPageCacheSource(frameCounter, cacheTexture);
     }
     bool ProvisionPageTableWords(uint32_t words) { return m_Resources.ProvisionPageTableWords(words); }
     void UploadPageTable(uint32_t frameCounter, std::span<const uint32_t> words)

@@ -278,6 +278,7 @@ bool CBTInstance::InitializeRoots(uint32_t domainMode)
     cl->End();
     std::vector<CommandList*> lists{cl.get()};
     m_Device->ExecuteCommandLists(lists);
+    m_Resources.OnRootInitializationSubmitted();
     // The submit above cleared the device's known-idle flag and advanced the graphics timeline, so
     // this destroy takes the timeline-deferred path keyed at this submission's value: the staging
     // buffer outlives the copies that read it.
@@ -392,24 +393,17 @@ void CBTInstance::EnsureDispatchIndirect(CommandList& cl)
     }
 }
 
-bool CBTInstance::RefreshTerrainSources()
+bool CBTInstance::RefreshTerrainSources(bool& changed)
 {
+    changed = false;
     if (!m_Ready || m_Device == nullptr)
         return false;
-    // The retired heightmap is still alive (its owner defers the destroy behind a frames-in-flight
-    // quarantine), but rewriting a ring element an in-flight frame is still sampling is a
-    // descriptor-in-use hazard. The readers are all graphics-queue submissions — CBT.Update and the
-    // forward draw are both RGQueue::Graphics — so retiring the graphics timeline's last submitted
-    // value is the whole protection, with none of a device drain's reach: no compute/transfer wait,
-    // no bulk deferred-resource flush, and no flip of the device's known-idle flag (which would
-    // reroute every later-declaring node's destroys to the immediate path).
-    m_Device->WaitGpuSyncToken(m_Device->LastGraphicsSubmissionToken());
-    return m_Resources.RebindTerrainSourcesToDefault();
+    return m_Resources.RebindTerrainSourcesToDefault(changed);
 }
 
-void CBTInstance::SetHeightSource(uint32_t frameCounter, TextureHandle heightTexture)
+bool CBTInstance::SetHeightSource(uint32_t frameCounter, TextureHandle heightTexture)
 {
-    m_Resources.SetHeightSource(frameCounter, heightTexture);
+    return m_Resources.SetHeightSource(frameCounter, heightTexture);
 }
 
 void CBTInstance::RegionFreeToBase(uint32_t freeSetMask)
