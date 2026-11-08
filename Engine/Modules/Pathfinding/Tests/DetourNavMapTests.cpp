@@ -1,13 +1,16 @@
-#include <gtest/gtest.h>
 #include "Pathfinding/DetourNavMap.h"
 #include "Pathfinding/ObstacleAvoidance.h"
 #include "Pathfinding/PathBuffer.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
-using namespace GameEngine;
-using namespace GameEngine::Pathfinding;
+#include <gtest/gtest.h>
+
+namespace GameEngine::Pathfinding
+{
 
 // ---------------------------------------------------------------------------
 // Test geometry: a subdivided 20x20 flat plane at Y=0, centered at origin.
@@ -18,9 +21,8 @@ namespace DetourTestHelpers
 namespace
 {
 
-constexpr uint32 kGridRes = 10; // 10x10 quads = 200 triangles
+constexpr uint32 kGridResolution = 10; // 10x10 quads = 200 triangles
 static constexpr float32 kPlaneSize = 20.0f;
-static constexpr float32 kPlaneHalf = kPlaneSize * 0.5f;
 
 struct PlaneGeometry
 {
@@ -30,79 +32,111 @@ struct PlaneGeometry
     uint32 TriangleCount = 0;
 };
 
-PlaneGeometry BuildPlane()
+PlaneGeometry BuildPlane(uint32 gridResolution = kGridResolution, float32 planeSize = kPlaneSize)
 {
-    PlaneGeometry g;
-    const uint32 vertsPerSide = kGridRes + 1;
-    g.VertexCount = vertsPerSide * vertsPerSide;
-    g.Vertices.resize(g.VertexCount * 3);
+    PlaneGeometry geometry;
+    const uint32 verticesPerSide = gridResolution + 1;
+    geometry.VertexCount = verticesPerSide * verticesPerSide;
+    geometry.Vertices.resize(geometry.VertexCount * 3);
 
-    for (uint32 z = 0; z <= kGridRes; ++z)
+    for (uint32 z = 0; z <= gridResolution; ++z)
     {
-        for (uint32 x = 0; x <= kGridRes; ++x)
+        for (uint32 x = 0; x <= gridResolution; ++x)
         {
-            uint32 idx = (z * vertsPerSide + x) * 3;
-            g.Vertices[idx + 0] = -kPlaneHalf + static_cast<float32>(x) * (kPlaneSize / kGridRes);
-            g.Vertices[idx + 1] = 0.0f;
-            g.Vertices[idx + 2] = -kPlaneHalf + static_cast<float32>(z) * (kPlaneSize / kGridRes);
+            uint32 vertexOffset = (z * verticesPerSide + x) * 3;
+            geometry.Vertices[vertexOffset + 0] = -planeSize * 0.5f + static_cast<float32>(x) * (planeSize / gridResolution);
+            geometry.Vertices[vertexOffset + 1] = 0.0f;
+            geometry.Vertices[vertexOffset + 2] = -planeSize * 0.5f + static_cast<float32>(z) * (planeSize / gridResolution);
         }
     }
 
-    g.TriangleCount = kGridRes * kGridRes * 2;
-    g.Indices.resize(g.TriangleCount * 3);
-    uint32 ti = 0;
-    for (uint32 z = 0; z < kGridRes; ++z)
+    geometry.TriangleCount = gridResolution * gridResolution * 2;
+    geometry.Indices.resize(geometry.TriangleCount * 3);
+    uint32 indexOffset = 0;
+    for (uint32 z = 0; z < gridResolution; ++z)
     {
-        for (uint32 x = 0; x < kGridRes; ++x)
+        for (uint32 x = 0; x < gridResolution; ++x)
         {
-            uint32 topLeft = z * vertsPerSide + x;
+            uint32 topLeft = z * verticesPerSide + x;
             uint32 topRight = topLeft + 1;
-            uint32 botLeft = topLeft + vertsPerSide;
-            uint32 botRight = botLeft + 1;
+            uint32 bottomLeft = topLeft + verticesPerSide;
+            uint32 bottomRight = bottomLeft + 1;
 
-            g.Indices[ti++] = topLeft;
-            g.Indices[ti++] = botLeft;
-            g.Indices[ti++] = topRight;
+            geometry.Indices[indexOffset++] = topLeft;
+            geometry.Indices[indexOffset++] = bottomLeft;
+            geometry.Indices[indexOffset++] = topRight;
 
-            g.Indices[ti++] = topRight;
-            g.Indices[ti++] = botLeft;
-            g.Indices[ti++] = botRight;
+            geometry.Indices[indexOffset++] = topRight;
+            geometry.Indices[indexOffset++] = bottomLeft;
+            geometry.Indices[indexOffset++] = bottomRight;
         }
     }
-    return g;
+    return geometry;
 }
 
 NavMeshSettings MakeDetourSettings()
 {
-    NavMeshSettings s;
-    s.CellSize = 0.3f;
-    s.CellHeight = 0.2f;
-    s.AgentRadius = 0.6f;
-    s.AgentHeight = 2.0f;
-    s.AgentMaxClimb = 0.9f;
-    s.AgentMaxSlope = 45.0f;
-    s.RegionMinSize = 1.0f;
-    s.RegionMergeSize = 20.0f;
-    s.EdgeMaxLen = 12.0f;
-    s.EdgeMaxError = 1.3f;
-    s.DetailSampleDist = 6.0f;
-    s.DetailSampleMaxError = 1.0f;
-    s.VertsPerPoly = 6;
-    return s;
+    NavMeshSettings settings;
+    settings.CellSize = 0.3f;
+    settings.CellHeight = 0.2f;
+    settings.AgentRadius = 0.6f;
+    settings.AgentHeight = 2.0f;
+    settings.AgentMaxClimb = 0.9f;
+    settings.AgentMaxSlope = 45.0f;
+    settings.RegionMinSize = 1.0f;
+    settings.RegionMergeSize = 20.0f;
+    settings.EdgeMaxLen = 12.0f;
+    settings.EdgeMaxError = 1.3f;
+    settings.DetailSampleDist = 6.0f;
+    settings.DetailSampleMaxError = 1.0f;
+    settings.VertsPerPoly = 6;
+    return settings;
 }
 
 DetourNavMap::InputGeometry MakePlaneInput(const PlaneGeometry& plane)
 {
-    DetourNavMap::InputGeometry geo;
-    geo.Vertices = plane.Vertices.data();
-    geo.VertexCount = plane.VertexCount;
-    geo.Indices = plane.Indices.data();
-    geo.TriangleCount = plane.TriangleCount;
-    return geo;
+    DetourNavMap::InputGeometry geometry;
+    geometry.Vertices = plane.Vertices.data();
+    geometry.VertexCount = plane.VertexCount;
+    geometry.Indices = plane.Indices.data();
+    geometry.TriangleCount = plane.TriangleCount;
+    return geometry;
+}
+
+std::vector<uint64> ReadTileReferences(const std::vector<uint8>& data)
+{
+    constexpr size_t kTileCountOffset = 36;
+    uint32 tileCount = 0;
+    if (data.size() < kTileCountOffset + sizeof(tileCount))
+        return {};
+    std::memcpy(&tileCount, data.data() + kTileCountOffset, sizeof(tileCount));
+    size_t offset = kTileCountOffset + sizeof(tileCount);
+    std::vector<uint64> references;
+    for (uint32 tileIndex = 0; tileIndex < tileCount; ++tileIndex)
+    {
+        uint64 reference = 0;
+        uint32 dataSize = 0;
+        if (offset + sizeof(reference) + sizeof(dataSize) > data.size())
+            return {};
+        std::memcpy(&reference, data.data() + offset, sizeof(reference));
+        offset += sizeof(reference);
+        std::memcpy(&dataSize, data.data() + offset, sizeof(dataSize));
+        offset += sizeof(dataSize);
+        if (dataSize > data.size() - offset)
+            return {};
+        offset += dataSize;
+        references.push_back(reference);
+    }
+    return references;
 }
 
 } // anonymous namespace
 } // namespace DetourTestHelpers
+
+using DetourTestHelpers::BuildPlane;
+using DetourTestHelpers::MakeDetourSettings;
+using DetourTestHelpers::MakePlaneInput;
+using DetourTestHelpers::ReadTileReferences;
 
 // ---------------------------------------------------------------------------
 // Fixture: builds a navmesh once for tests that need it
@@ -203,6 +237,120 @@ TEST(DetourNavMapTests, BuildWithValidGeometrySucceeds)
     EXPECT_TRUE(navMap.Build(settings, geometry));
     EXPECT_TRUE(navMap.IsBuilt());
 }
+
+TEST(DetourNavMapTests, LocalEditKeepsUntouchedTilesAndUpdatesPathAcrossTheirBoundaries)
+{
+    constexpr uint32 kResolution = 80;
+    auto plane = BuildPlane(kResolution, 160.0f);
+    const auto uneditedIndices = plane.Indices;
+    const auto settings = MakeDetourSettings();
+    DetourNavMap map;
+    ASSERT_TRUE(map.Build(settings, MakePlaneInput(plane)));
+
+    std::vector<uint8> before;
+    ASSERT_TRUE(map.Serialize(before));
+    const auto originalReferences = ReadTileReferences(before);
+    ASSERT_GT(originalReferences.size(), 1u);
+    void* originalMesh = map.GetDetourNavMesh();
+    EXPECT_TRUE(map.IsPointNavigable(18.0f, 0.0f, 8.0f, 0.5f));
+
+    // Remove a 12 m square away from tile boundaries.
+    constexpr uint32 kHoleMinX = 46, kHoleMaxX = 52;
+    constexpr uint32 kHoleMinZ = 41, kHoleMaxZ = 47;
+    for (uint32 z = kHoleMaxZ; z-- > kHoleMinZ;)
+    {
+        const auto rowStart = plane.Indices.begin() + (z * kResolution + kHoleMinX) * 6;
+        plane.Indices.erase(rowStart, rowStart + (kHoleMaxX - kHoleMinX) * 6);
+    }
+    plane.TriangleCount = static_cast<uint32>(plane.Indices.size() / 3);
+    ASSERT_TRUE(map.Build(settings, MakePlaneInput(plane)));
+    EXPECT_EQ(map.GetDetourNavMesh(), originalMesh);
+    EXPECT_FALSE(map.IsPointNavigable(18.0f, 0.0f, 8.0f, 0.5f));
+
+    std::vector<uint8> after;
+    ASSERT_TRUE(map.Serialize(after));
+    const auto editedReferences = ReadTileReferences(after);
+    ASSERT_EQ(editedReferences.size(), originalReferences.size());
+    const auto unchanged = std::ranges::count_if(editedReferences, [&originalReferences](uint64 reference) {
+        return std::ranges::find(originalReferences, reference) != originalReferences.end();
+    });
+    EXPECT_EQ(static_cast<size_t>(unchanged), originalReferences.size() - 1);
+
+    DetourNavMap restored;
+    ASSERT_TRUE(restored.Deserialize(after.data(), static_cast<uint32>(after.size())));
+    PathBuffer paths;
+    PathHandle path;
+    PathRequest request;
+    request.StartX = -72.0f;
+    request.EndX = 72.0f;
+    request.StartZ = request.EndZ = 8.0f;
+    EXPECT_EQ(map.FindPath(request, paths, path), PathStatus::Complete);
+    EXPECT_GE(paths.GetPointCount(path), 3u);
+    EXPECT_EQ(restored.FindPath(request, paths, path), PathStatus::Complete);
+    EXPECT_GE(paths.GetPointCount(path), 3u);
+
+    // Filling the hole after reopening the baked map still edits a single tile.
+    void* restoredMesh = restored.GetDetourNavMesh();
+    plane.Indices = uneditedIndices;
+    plane.TriangleCount = static_cast<uint32>(plane.Indices.size() / 3);
+    ASSERT_TRUE(restored.Build(settings, MakePlaneInput(plane)));
+    EXPECT_EQ(restored.GetDetourNavMesh(), restoredMesh);
+    EXPECT_TRUE(restored.IsPointNavigable(18.0f, 0.0f, 8.0f, 0.5f));
+    std::vector<uint8> filled;
+    ASSERT_TRUE(restored.Serialize(filled));
+    const auto filledReferences = ReadTileReferences(filled);
+    ASSERT_EQ(filledReferences.size(), editedReferences.size());
+    const auto stillUnchanged = std::ranges::count_if(filledReferences, [&editedReferences](uint64 reference) {
+        return std::ranges::find(editedReferences, reference) != editedReferences.end();
+    });
+    EXPECT_EQ(static_cast<size_t>(stillUnchanged), editedReferences.size() - 1);
+}
+
+class DetourEmptyBakeTest : public ::testing::TestWithParam<uint32>
+{
+};
+
+TEST_P(DetourEmptyBakeTest, EmptyBakeReplacesWalkabilityAndSurvivesReopen)
+{
+    const bool singleTile = GetParam() == 0;
+    auto plane = BuildPlane(singleTile ? 8u : 80u, singleTile ? 16.0f : 160.0f);
+    auto settings = MakeDetourSettings();
+    DetourNavMap map;
+    ASSERT_TRUE(map.Build(settings, MakePlaneInput(plane)));
+    ASSERT_TRUE(map.IsPointNavigable(0.0f, 0.0f, 0.0f, 0.5f));
+
+    for (size_t index = 0; index < plane.Indices.size(); index += 3)
+        std::swap(plane.Indices[index + 1], plane.Indices[index + 2]);
+    if (GetParam() == 2)
+        settings.CellSize *= 0.75f;
+    DetourNavMap initiallyEmpty;
+    ASSERT_TRUE(initiallyEmpty.Build(settings, MakePlaneInput(plane)));
+    EXPECT_FALSE(initiallyEmpty.IsPointNavigable(0.0f, 0.0f, 0.0f, 0.5f));
+    EXPECT_TRUE(map.Build(settings, MakePlaneInput(plane)));
+    EXPECT_FALSE(map.IsPointNavigable(0.0f, 0.0f, 0.0f, 0.5f));
+    EXPECT_EQ(map.GetDebugTriangleCount(), 0u);
+
+    PathBuffer paths;
+    PathHandle path;
+    PathRequest request;
+    request.StartX = -4.0f;
+    request.EndX = 4.0f;
+    EXPECT_EQ(map.FindPath(request, paths, path), PathStatus::Failed);
+    std::vector<uint8> bytes;
+    ASSERT_TRUE(map.Serialize(bytes));
+    DetourNavMap restored;
+    ASSERT_TRUE(restored.Deserialize(bytes.data(), static_cast<uint32>(bytes.size())));
+    EXPECT_FALSE(restored.IsPointNavigable(0.0f, 0.0f, 0.0f, 0.5f));
+    EXPECT_EQ(restored.GetDebugTriangleCount(), 0u);
+
+    for (size_t index = 0; index < plane.Indices.size(); index += 3)
+        std::swap(plane.Indices[index + 1], plane.Indices[index + 2]);
+    ASSERT_TRUE(restored.Build(settings, MakePlaneInput(plane)));
+    EXPECT_TRUE(restored.IsPointNavigable(0.0f, 0.0f, 0.0f, 0.5f));
+}
+
+INSTANTIATE_TEST_SUITE_P(SingleTileIncrementalAndChangedSettings, DetourEmptyBakeTest,
+                         ::testing::Values(0u, 1u, 2u));
 
 TEST(DetourNavMapTests, BuildWithNullGeometryFails)
 {
@@ -641,3 +789,5 @@ TEST_F(DetourNavMapBuiltTest, GetClosestNavigablePointRejectsAABBCorner)
     EXPECT_GT(outX, 7.0f);
     EXPECT_GT(outZ, 7.0f);
 }
+
+} // namespace GameEngine::Pathfinding

@@ -37,6 +37,7 @@ public:
         const uint32* Indices = nullptr;   // [TriangleCount * 3]
         uint32 TriangleCount = 0;
     };
+    /// @brief Bakes valid input, including empty walkability. Queries on an empty bake find no paths.
     bool Build(const NavMeshSettings& settings, const InputGeometry& geometry);
     bool IsBuilt() const;
 

@@ -759,9 +759,10 @@ void NavigationBuildSystem::Update(ECS::World& world, float32 /*deltaTime*/)
                     return;
                 }
 
-                // Try loading from cache first using content hash.
+                // A cache can seed an unbuilt map. Rebuild a live map from the current
+                // geometry so scene edits can replace tiles even when the asset hash matches.
                 bool loadedFromCache = false;
-                if (HasAssetGuid(source.AssetGuid))
+                if (!detourMap->IsBuilt() && HasAssetGuid(source.AssetGuid))
                 {
                     GUID assetGuid = GuidFromBytes(source.AssetGuid);
                     auto& rebuildAssetMgr = EngineCore::GetInstance().GetAssetManager();

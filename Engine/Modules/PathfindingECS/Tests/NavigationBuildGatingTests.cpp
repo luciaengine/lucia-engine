@@ -1,9 +1,14 @@
 #include "PathfindingECS/NavigationService.h"
 #include "PathfindingECS/Components/NavigationGrid.h"
+#include "PathfindingECS/Components/NavigationMesh.h"
 #include "PathfindingECS/Components/NavigationObstacle.h"
 #include "PathfindingECS/Systems/NavigationBuildSystem.h"
 #include "PathfindingECS/Systems/NavigationWorldHooks.h"
+#include "Assets/AssetManager.h"
 #include "Assets/FileWatchingService.h"
+#include "Assets/ModelAsset.h"
+#include "Assets/NavMeshAsset.h"
+#include "Components/Rendering/MeshRenderer.h"
 #include "Components/Transform.h"
 #include "Core/Application.h"
 #include "Core/Engine.h"
@@ -12,11 +17,11 @@
 #include "ECS/ECSTemplates.h"
 #include "ECS/ComponentRegistry.h"
 #include "Pathfinding/GridMap.h"
+#include "Pathfinding/DetourNavMap.h"
+#include "Pathfinding/NavCacheManager.h"
 #include "Pathfinding/NavigationWorld.h"
 #include "Scene/SceneIOContext.h"
 #include "Scene/SceneSchemaRegistry.h"
-
-#include <gtest/gtest.h>
 
 #include <atomic>
 #include <chrono>
@@ -26,8 +31,10 @@
 #include <system_error>
 #include <thread>
 
-using namespace GameEngine;
-using namespace GameEngine::PathfindingECS;
+#include <gtest/gtest.h>
+
+namespace GameEngine::PathfindingECS
+{
 
 namespace
 {
@@ -555,6 +562,91 @@ TEST_F(NavigationAssetWatchTest, EditingANavGridUnderTheAssetRootMarksGridsForRe
            "navigation watch is not subscribed on the project asset root";
 }
 
+#if GE_PATHFINDING_BACKEND_DETOUR
+class NavigationMeshCacheTest : public NavigationAssetWatchTest
+{
+protected:
+    ECS::Entity PlacePlatform(const GUID& modelGuid, float32 x)
+    {
+        Components::MeshRenderer renderer{};
+        renderer.modelAssetGuid.Set(modelGuid);
+        Components::WorldTransform transform;
+        transform.matrix[12] = x;
+        auto entity = world->Create();
+        entity.Set(renderer);
+        entity.Set(transform);
+        return entity;
+    }
+
+    void TearDown() override
+    {
+        Pathfinding::NavCacheManager::SetProjectRoot({});
+        NavigationAssetWatchTest::TearDown();
+    }
+};
+
+TEST_F(NavigationMeshCacheTest, RebuildUsesEditedSceneGeometryWhenAssetCacheStillMatches)
+{
+    Pathfinding::NavCacheManager::SetProjectRoot(testDir);
+    const GUID navGuid = GUID::Generate();
+    const auto navPath = assetRoot / "SceneGeometry.navmesh";
+    ASSERT_TRUE(NavMeshAsset::SaveToFile(navPath, {}, {}));
+    auto navAsset = MakeShared<NavMeshAsset>(navGuid, navPath);
+    ASSERT_TRUE(navAsset->Load());
+
+    const GUID modelGuid = GUID::Generate();
+    auto model = MakeShared<ModelAsset>(modelGuid, assetRoot / "Platform.gltf");
+    Mesh quad;
+    quad.Vertices.resize(4);
+    quad.Vertices[1].Position[2] = 12.0f;
+    quad.Vertices[2].Position[0] = 12.0f;
+    quad.Vertices[2].Position[2] = 12.0f;
+    quad.Vertices[3].Position[0] = 12.0f;
+    quad.Indices = {0, 1, 2, 0, 2, 3};
+    Vector<Mesh> meshes;
+    meshes.push_back(std::move(quad));
+    model->SetMeshesForTest(std::move(meshes));
+    auto& assets = engine->GetAssetManager();
+    assets.RegisterLoadedAsset(navGuid, navAsset);
+    assets.RegisterLoadedAsset(modelGuid, model);
+
+    PlacePlatform(modelGuid, 0.0f);
+    auto movable = PlacePlatform(modelGuid, 40.0f);
+    PlacePlatform(modelGuid, 116.0f);
+
+    auto navigation = world->Create();
+    Components::NavigationMesh source;
+    navGuid.WriteBytes(source.AssetGuid);
+    navigation.Set(source);
+    world->ProcessCommands();
+
+    NavigationBuildSystem system;
+    system.Update(*world, kDeltaTime);
+    const auto* state = navigation.Get<Components::NavigationMesh>();
+    ASSERT_TRUE(state->Initialized);
+    auto* map = NavigationService::Get().GetDetourNavMap({state->NavMapIndex, state->NavMapGeneration});
+    ASSERT_NE(map, nullptr);
+    ASSERT_TRUE(map->IsBuilt());
+    ASSERT_TRUE(map->IsPointNavigable(46.0f, 0.0f, 6.0f, source.AgentRadius));
+    ASSERT_FALSE(map->IsPointNavigable(70.0f, 0.0f, 6.0f, source.AgentRadius));
+    const void* mesh = map->GetDetourNavMesh();
+
+    const uint64 sourceHash = Pathfinding::NavCacheManager::ComputeFileContentHash(navPath);
+    std::vector<uint8> cached;
+    ASSERT_NE(sourceHash, 0u);
+    ASSERT_TRUE(Pathfinding::NavCacheManager::LoadNavMeshCache(
+        navGuid, reinterpret_cast<const uint8*>(&sourceHash), sizeof(sourceHash), cached));
+
+    movable.GetForWrite<Components::WorldTransform>()->matrix[12] = 64.0f;
+    navigation.GetForWrite<Components::NavigationMesh>()->NeedsRebuild = true;
+    system.Update(*world, kDeltaTime);
+
+    EXPECT_TRUE(map->IsPointNavigable(70.0f, 0.0f, 6.0f, source.AgentRadius));
+    EXPECT_FALSE(map->IsPointNavigable(46.0f, 0.0f, 6.0f, source.AgentRadius));
+    EXPECT_EQ(map->GetDetourNavMesh(), mesh);
+}
+#endif
+
 // Shutdown-order hazard: the editor destroys the SystemManager (and every
 // system in it) before it stops file watching, so a navigation-asset event can
 // land while the system is being destroyed.
@@ -606,3 +698,5 @@ TEST_F(NavigationAssetWatchTest, EventDispatchedWhileTheSystemIsDestroyedDoesNot
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     EXPECT_EQ(system, nullptr);
 }
+
+} // namespace GameEngine::PathfindingECS

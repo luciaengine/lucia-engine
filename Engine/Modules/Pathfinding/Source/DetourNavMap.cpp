@@ -1,8 +1,14 @@
 #include "Pathfinding/DetourNavMap.h"
 #include "Pathfinding/PathBuffer.h"
+#include "Types/Fnv1a.h"
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
+#include <limits>
+#include <span>
+#include <tuple>
 #include <vector>
 
 #if GE_PATHFINDING_BACKEND_DETOUR
@@ -25,14 +31,17 @@ static constexpr float32 kPolySearchExtent[3] = {2.0f, 4.0f, 2.0f};
 
 struct DetourNavMap::Impl
 {
-    rcPolyMesh* PolyMesh = nullptr;
-    rcPolyMeshDetail* DetailMesh = nullptr;
     dtNavMesh* NavMesh = nullptr;
     dtNavMeshQuery* NavQuery = nullptr;
     dtQueryFilter Filter;
 
     std::vector<float32> DebugVertices;
     std::vector<uint32> DebugIndices;
+    std::vector<uint64> TileDigests;
+    NavMeshSettings BakeSettings;
+    float32 BakeMinY = 0;
+    float32 BakeMaxY = 0;
+    int32 BakeTilesX = 0;
 
     ~Impl()
     {
@@ -45,16 +54,6 @@ struct DetourNavMap::Impl
         {
             dtFreeNavMesh(NavMesh);
             NavMesh = nullptr;
-        }
-        if (DetailMesh)
-        {
-            rcFreePolyMeshDetail(DetailMesh);
-            DetailMesh = nullptr;
-        }
-        if (PolyMesh)
-        {
-            rcFreePolyMesh(PolyMesh);
-            PolyMesh = nullptr;
         }
     }
 
@@ -112,225 +111,396 @@ DetourNavMap::~DetourNavMap() = default;
 DetourNavMap::DetourNavMap(DetourNavMap&&) noexcept = default;
 DetourNavMap& DetourNavMap::operator=(DetourNavMap&&) noexcept = default;
 
-bool DetourNavMap::Build(const NavMeshSettings& settings, const InputGeometry& geometry)
+namespace
 {
-    if (!geometry.Vertices || geometry.VertexCount == 0 ||
-        !geometry.Indices || geometry.TriangleCount == 0)
-    {
+
+struct TileData
+{
+    std::unique_ptr<uint8, decltype(&dtFree)> Bytes{nullptr, dtFree};
+    int32 Size = 0;
+};
+
+constexpr int32 kPreferredTileCells = 128;
+constexpr int32 kMaxBakeTiles = 1024;
+
+struct TileInput
+{
+    std::vector<int32> Indices;
+    uint64 Digest = Hashing::kFnv1a64OffsetBasis;
+};
+
+struct TileChange
+{
+    TileData Replacement;
+    TileData Previous;
+    dtTileRef PreviousReference = 0;
+    dtTileRef ReplacementReference = 0;
+};
+
+auto BakeSettingsKey(const NavMeshSettings& settings)
+{
+    return std::tie(settings.CellSize, settings.CellHeight, settings.AgentRadius, settings.AgentHeight,
+                    settings.AgentMaxClimb, settings.AgentMaxSlope, settings.RegionMinSize,
+                    settings.RegionMergeSize, settings.EdgeMaxLen, settings.EdgeMaxError,
+                    settings.DetailSampleDist, settings.DetailSampleMaxError, settings.VertsPerPoly);
+}
+
+int32 ComputeTileIndex(float32 coordinate, float32 origin, float32 tileSize, int32 count)
+{
+    return std::clamp(static_cast<int32>(std::floor((coordinate - origin) / tileSize)), 0, count - 1);
+}
+
+void WriteNavBytes(std::span<uint8> bytes, size_t& offset, const void* source, size_t count)
+{
+    std::memcpy(bytes.data() + offset, source, count);
+    offset += count;
+}
+
+bool ReadNavBytes(std::span<const uint8> bytes, size_t& offset, void* destination, size_t count)
+{
+    if (count > bytes.size() - offset)
         return false;
-    }
+    std::memcpy(destination, bytes.data() + offset, count);
+    offset += count;
+    return true;
+}
 
-    m_Impl = std::make_unique<Impl>();
+rcConfig MakeBakeConfig(const NavMeshSettings& settings)
+{
+    rcConfig config = {};
+    config.cs = settings.CellSize;
+    config.ch = settings.CellHeight;
+    config.walkableSlopeAngle = settings.AgentMaxSlope;
+    config.walkableHeight = static_cast<int32>(std::ceil(settings.AgentHeight / settings.CellHeight));
+    config.walkableClimb = static_cast<int32>(std::floor(settings.AgentMaxClimb / settings.CellHeight));
+    config.walkableRadius = static_cast<int32>(std::ceil(settings.AgentRadius / settings.CellSize));
+    config.maxEdgeLen = static_cast<int32>(settings.EdgeMaxLen / settings.CellSize);
+    config.maxSimplificationError = settings.EdgeMaxError;
+    config.minRegionArea = static_cast<int32>(settings.RegionMinSize * settings.RegionMinSize);
+    config.mergeRegionArea = static_cast<int32>(settings.RegionMergeSize * settings.RegionMergeSize);
+    config.maxVertsPerPoly = settings.VertsPerPoly;
+    config.detailSampleDist = settings.DetailSampleDist < 0.9f ? 0.0f : settings.CellSize * settings.DetailSampleDist;
+    config.detailSampleMaxError = settings.CellHeight * settings.DetailSampleMaxError;
+    return config;
+}
 
-    rcContext ctx;
+bool BakeTile(const NavMeshSettings& settings, const rcConfig& config,
+              const DetourNavMap::InputGeometry& geometry, std::span<const int32> indices,
+              int32 tileX, int32 tileZ, TileData& output)
+{
+    if (indices.empty())
+        return true;
 
-    // Step 1: Calculate bounds
-    float32 bmin[3], bmax[3];
-    rcCalcBounds(geometry.Vertices, static_cast<int32>(geometry.VertexCount), bmin, bmax);
-
-    // Step 2: Create heightfield
-    rcConfig cfg = {};
-    cfg.cs = settings.CellSize;
-    cfg.ch = settings.CellHeight;
-    cfg.walkableSlopeAngle = settings.AgentMaxSlope;
-    cfg.walkableHeight = static_cast<int32>(std::ceil(settings.AgentHeight / settings.CellHeight));
-    cfg.walkableClimb = static_cast<int32>(std::floor(settings.AgentMaxClimb / settings.CellHeight));
-    cfg.walkableRadius = static_cast<int32>(std::ceil(settings.AgentRadius / settings.CellSize));
-    cfg.maxEdgeLen = static_cast<int32>(settings.EdgeMaxLen / settings.CellSize);
-    cfg.maxSimplificationError = settings.EdgeMaxError;
-    cfg.minRegionArea = static_cast<int32>(settings.RegionMinSize * settings.RegionMinSize);
-    cfg.mergeRegionArea = static_cast<int32>(settings.RegionMergeSize * settings.RegionMergeSize);
-    cfg.maxVertsPerPoly = settings.VertsPerPoly;
-    cfg.detailSampleDist = settings.DetailSampleDist < 0.9f ? 0.0f : settings.CellSize * settings.DetailSampleDist;
-    cfg.detailSampleMaxError = settings.CellHeight * settings.DetailSampleMaxError;
-    rcVcopy(cfg.bmin, bmin);
-    rcVcopy(cfg.bmax, bmax);
-    rcCalcGridSize(cfg.bmin, cfg.bmax, cfg.cs, &cfg.width, &cfg.height);
-
-    rcHeightfield* heightfield = rcAllocHeightfield();
-    if (!heightfield)
+    rcContext context;
+    const std::unique_ptr<rcHeightfield, decltype(&rcFreeHeightField)> heightfield(
+        rcAllocHeightfield(), rcFreeHeightField);
+    if (!heightfield || !rcCreateHeightfield(&context, *heightfield, config.width, config.height,
+                                              config.bmin, config.bmax, config.cs, config.ch))
         return false;
 
-    if (!rcCreateHeightfield(&ctx, *heightfield, cfg.width, cfg.height,
-                             cfg.bmin, cfg.bmax, cfg.cs, cfg.ch))
-    {
-        rcFreeHeightField(heightfield);
+    const int32 vertexCount = static_cast<int32>(geometry.VertexCount);
+    const int32 triangleCount = static_cast<int32>(indices.size() / 3);
+    std::vector<uint8> areas(triangleCount);
+    rcMarkWalkableTriangles(&context, config.walkableSlopeAngle, geometry.Vertices, vertexCount,
+                            indices.data(), triangleCount, areas.data());
+    if (!rcRasterizeTriangles(&context, geometry.Vertices, vertexCount, indices.data(), areas.data(),
+                              triangleCount, *heightfield, config.walkableClimb))
         return false;
-    }
 
-    // Step 3: Rasterize triangles
-    const int32 triCount = static_cast<int32>(geometry.TriangleCount);
-    std::vector<uint8> triAreas(triCount, 0);
-    rcMarkWalkableTriangles(&ctx, cfg.walkableSlopeAngle,
-                            geometry.Vertices, static_cast<int32>(geometry.VertexCount),
-                            reinterpret_cast<const int32*>(geometry.Indices), triCount,
-                            triAreas.data());
-    if (!rcRasterizeTriangles(&ctx, geometry.Vertices, static_cast<int32>(geometry.VertexCount),
-                              reinterpret_cast<const int32*>(geometry.Indices), triAreas.data(),
-                              triCount, *heightfield, cfg.walkableClimb))
-    {
-        rcFreeHeightField(heightfield);
+    rcFilterLowHangingWalkableObstacles(&context, config.walkableClimb, *heightfield);
+    rcFilterLedgeSpans(&context, config.walkableHeight, config.walkableClimb, *heightfield);
+    rcFilterWalkableLowHeightSpans(&context, config.walkableHeight, *heightfield);
+
+    const std::unique_ptr<rcCompactHeightfield, decltype(&rcFreeCompactHeightfield)> compact(
+        rcAllocCompactHeightfield(), rcFreeCompactHeightfield);
+    if (!compact || !rcBuildCompactHeightfield(&context, config.walkableHeight, config.walkableClimb,
+                                                *heightfield, *compact) ||
+        !rcErodeWalkableArea(&context, config.walkableRadius, *compact) ||
+        !rcBuildDistanceField(&context, *compact) ||
+        !rcBuildRegions(&context, *compact, config.borderSize, config.minRegionArea, config.mergeRegionArea))
         return false;
-    }
 
-    // Step 4: Filter walkable surfaces
-    rcFilterLowHangingWalkableObstacles(&ctx, cfg.walkableClimb, *heightfield);
-    rcFilterLedgeSpans(&ctx, cfg.walkableHeight, cfg.walkableClimb, *heightfield);
-    rcFilterWalkableLowHeightSpans(&ctx, cfg.walkableHeight, *heightfield);
-
-    // Step 5: Build compact heightfield
-    rcCompactHeightfield* compactHf = rcAllocCompactHeightfield();
-    if (!compactHf)
-    {
-        rcFreeHeightField(heightfield);
+    const std::unique_ptr<rcContourSet, decltype(&rcFreeContourSet)> contours(rcAllocContourSet(), rcFreeContourSet);
+    if (!contours || !rcBuildContours(&context, *compact, config.maxSimplificationError, config.maxEdgeLen, *contours))
         return false;
-    }
+    if (contours->nconts == 0)
+        return true;
 
-    if (!rcBuildCompactHeightfield(&ctx, cfg.walkableHeight, cfg.walkableClimb,
-                                   *heightfield, *compactHf))
-    {
-        rcFreeCompactHeightfield(compactHf);
-        rcFreeHeightField(heightfield);
+    const std::unique_ptr<rcPolyMesh, decltype(&rcFreePolyMesh)> mesh(rcAllocPolyMesh(), rcFreePolyMesh);
+    if (!mesh || !rcBuildPolyMesh(&context, *contours, config.maxVertsPerPoly, *mesh))
         return false;
-    }
+    if (mesh->npolys == 0)
+        return true;
 
-    rcFreeHeightField(heightfield);
-
-    if (!rcErodeWalkableArea(&ctx, cfg.walkableRadius, *compactHf))
-    {
-        rcFreeCompactHeightfield(compactHf);
+    const std::unique_ptr<rcPolyMeshDetail, decltype(&rcFreePolyMeshDetail)> detail(
+        rcAllocPolyMeshDetail(), rcFreePolyMeshDetail);
+    if (!detail || !rcBuildPolyMeshDetail(&context, *mesh, *compact, config.detailSampleDist,
+                                         config.detailSampleMaxError, *detail))
         return false;
-    }
-
-    // Step 6: Build regions
-    if (!rcBuildDistanceField(&ctx, *compactHf))
-    {
-        rcFreeCompactHeightfield(compactHf);
-        return false;
-    }
-
-    if (!rcBuildRegions(&ctx, *compactHf, 0, cfg.minRegionArea, cfg.mergeRegionArea))
-    {
-        rcFreeCompactHeightfield(compactHf);
-        return false;
-    }
-
-    // Step 7: Build contours
-    rcContourSet* contourSet = rcAllocContourSet();
-    if (!contourSet)
-    {
-        rcFreeCompactHeightfield(compactHf);
-        return false;
-    }
-
-    if (!rcBuildContours(&ctx, *compactHf, cfg.maxSimplificationError,
-                         cfg.maxEdgeLen, *contourSet))
-    {
-        rcFreeContourSet(contourSet);
-        rcFreeCompactHeightfield(compactHf);
-        return false;
-    }
-
-    // Step 8: Build poly mesh
-    m_Impl->PolyMesh = rcAllocPolyMesh();
-    if (!m_Impl->PolyMesh)
-    {
-        rcFreeContourSet(contourSet);
-        rcFreeCompactHeightfield(compactHf);
-        return false;
-    }
-
-    if (!rcBuildPolyMesh(&ctx, *contourSet, cfg.maxVertsPerPoly, *m_Impl->PolyMesh))
-    {
-        rcFreeContourSet(contourSet);
-        rcFreeCompactHeightfield(compactHf);
-        return false;
-    }
-
-    // Step 9: Build detail mesh
-    m_Impl->DetailMesh = rcAllocPolyMeshDetail();
-    if (!m_Impl->DetailMesh)
-    {
-        rcFreeContourSet(contourSet);
-        rcFreeCompactHeightfield(compactHf);
-        return false;
-    }
-
-    if (!rcBuildPolyMeshDetail(&ctx, *m_Impl->PolyMesh, *compactHf,
-                                cfg.detailSampleDist, cfg.detailSampleMaxError,
-                                *m_Impl->DetailMesh))
-    {
-        rcFreeContourSet(contourSet);
-        rcFreeCompactHeightfield(compactHf);
-        return false;
-    }
-
-    rcFreeContourSet(contourSet);
-    rcFreeCompactHeightfield(compactHf);
-
-    // Step 10: Create Detour navmesh
-    for (int32 i = 0; i < m_Impl->PolyMesh->npolys; ++i)
-    {
-        m_Impl->PolyMesh->flags[i] = 1;
-    }
+    std::fill_n(mesh->flags, mesh->npolys, 1);
 
     dtNavMeshCreateParams params = {};
-    params.verts = m_Impl->PolyMesh->verts;
-    params.vertCount = m_Impl->PolyMesh->nverts;
-    params.polys = m_Impl->PolyMesh->polys;
-    params.polyAreas = m_Impl->PolyMesh->areas;
-    params.polyFlags = m_Impl->PolyMesh->flags;
-    params.polyCount = m_Impl->PolyMesh->npolys;
-    params.nvp = m_Impl->PolyMesh->nvp;
-    params.detailMeshes = m_Impl->DetailMesh->meshes;
-    params.detailVerts = m_Impl->DetailMesh->verts;
-    params.detailVertsCount = m_Impl->DetailMesh->nverts;
-    params.detailTris = m_Impl->DetailMesh->tris;
-    params.detailTriCount = m_Impl->DetailMesh->ntris;
+    params.verts = mesh->verts;
+    params.vertCount = mesh->nverts;
+    params.polys = mesh->polys;
+    params.polyAreas = mesh->areas;
+    params.polyFlags = mesh->flags;
+    params.polyCount = mesh->npolys;
+    params.nvp = mesh->nvp;
+    params.detailMeshes = detail->meshes;
+    params.detailVerts = detail->verts;
+    params.detailVertsCount = detail->nverts;
+    params.detailTris = detail->tris;
+    params.detailTriCount = detail->ntris;
     params.walkableHeight = settings.AgentHeight;
     params.walkableRadius = settings.AgentRadius;
     params.walkableClimb = settings.AgentMaxClimb;
-    rcVcopy(params.bmin, m_Impl->PolyMesh->bmin);
-    rcVcopy(params.bmax, m_Impl->PolyMesh->bmax);
-    params.cs = cfg.cs;
-    params.ch = cfg.ch;
+    rcVcopy(params.bmin, mesh->bmin);
+    rcVcopy(params.bmax, mesh->bmax);
+    params.cs = config.cs;
+    params.ch = config.ch;
     params.buildBvTree = true;
 
-    uint8* navData = nullptr;
-    int32 navDataSize = 0;
-    if (!dtCreateNavMeshData(&params, &navData, &navDataSize))
+    params.tileX = tileX;
+    params.tileY = tileZ;
+
+    uint8* data = nullptr;
+    if (!dtCreateNavMeshData(&params, &data, &output.Size))
+        return false;
+    output.Bytes.reset(data);
+    return true;
+}
+
+std::vector<TileInput> BinTriangles(const DetourNavMap::InputGeometry& geometry, const rcConfig& config,
+                                    int32 tilesX, int32 tilesZ)
+{
+    const float32 tileSize = config.tileSize * config.cs;
+    const float32 border = config.borderSize * config.cs;
+    std::vector<TileInput> tiles(static_cast<size_t>(tilesX) * tilesZ);
+    for (uint32 triangle = 0; triangle < geometry.TriangleCount; ++triangle)
+    {
+        const uint32* indices = geometry.Indices + static_cast<size_t>(triangle) * 3;
+        const float32* vertexA = geometry.Vertices + static_cast<size_t>(indices[0]) * 3;
+        const float32* vertexB = geometry.Vertices + static_cast<size_t>(indices[1]) * 3;
+        const float32* vertexC = geometry.Vertices + static_cast<size_t>(indices[2]) * 3;
+        const int32 minX = ComputeTileIndex(std::min({vertexA[0], vertexB[0], vertexC[0]}) - border, config.bmin[0], tileSize, tilesX);
+        const int32 maxX = ComputeTileIndex(std::max({vertexA[0], vertexB[0], vertexC[0]}) + border, config.bmin[0], tileSize, tilesX);
+        const int32 minZ = ComputeTileIndex(std::min({vertexA[2], vertexB[2], vertexC[2]}) - border, config.bmin[2], tileSize, tilesZ);
+        const int32 maxZ = ComputeTileIndex(std::max({vertexA[2], vertexB[2], vertexC[2]}) + border, config.bmin[2], tileSize, tilesZ);
+        uint64 digest = Hashing::Fnv1a64(vertexA, 3 * sizeof(float32));
+        digest = Hashing::Fnv1a64(vertexB, 3 * sizeof(float32), digest);
+        digest = Hashing::Fnv1a64(vertexC, 3 * sizeof(float32), digest);
+        for (int32 z = minZ; z <= maxZ; ++z)
+        {
+            for (int32 x = minX; x <= maxX; ++x)
+            {
+                TileInput& tile = tiles[static_cast<size_t>(z) * tilesX + x];
+                tile.Indices.insert(tile.Indices.end(), indices, indices + 3);
+                tile.Digest = Hashing::Fnv1a64Value(tile.Digest, digest);
+            }
+        }
+    }
+    return tiles;
+}
+
+rcConfig MakeTileConfig(rcConfig config, int32 x, int32 z)
+{
+    const float32 tileSize = config.tileSize * config.cs;
+    const float32 border = config.borderSize * config.cs;
+    config.width = config.height = config.tileSize + 2 * config.borderSize;
+    config.bmax[0] = config.bmin[0] + (x + 1) * tileSize + border;
+    config.bmax[2] = config.bmin[2] + (z + 1) * tileSize + border;
+    config.bmin[0] += x * tileSize - border;
+    config.bmin[2] += z * tileSize - border;
+    return config;
+}
+
+bool ApplyTileChanges(dtNavMesh& mesh, std::span<TileChange> changes)
+{
+    size_t committed = 0;
+    for (TileChange& change : changes)
+    {
+        if (change.PreviousReference && dtStatusFailed(mesh.removeTile(change.PreviousReference, nullptr, nullptr)))
+            break;
+        ++committed;
+        if (change.Replacement.Bytes)
+        {
+            if (dtStatusFailed(mesh.addTile(change.Replacement.Bytes.get(), change.Replacement.Size,
+                                            DT_TILE_FREE_DATA, 0, &change.ReplacementReference)))
+                break;
+            change.Replacement.Bytes.release();
+        }
+    }
+    if (committed == changes.size() &&
+        (changes.empty() || !changes.back().Replacement.Bytes))
+        return true;
+
+    for (TileChange& change : changes.first(committed))
+    {
+        if (change.ReplacementReference)
+            mesh.removeTile(change.ReplacementReference, nullptr, nullptr);
+    }
+    for (TileChange& change : changes.first(committed))
+    {
+        if (change.Previous.Bytes &&
+            dtStatusSucceed(mesh.addTile(change.Previous.Bytes.get(), change.Previous.Size,
+                                        DT_TILE_FREE_DATA, change.PreviousReference, nullptr)))
+            change.Previous.Bytes.release();
+    }
+    return false;
+}
+
+bool InitializeTileGrid(dtNavMesh& mesh, const rcConfig& config, float32 tileWorldSize, size_t tileCount)
+{
+    dtNavMeshParams params{};
+    rcVcopy(params.orig, config.bmin);
+    params.tileWidth = params.tileHeight = tileWorldSize;
+    params.maxTiles = static_cast<int32>(tileCount);
+    // Keep enough salt bits to invalidate paths through replaced tiles.
+    constexpr unsigned int kTileAndPolygonBits = 22;
+    params.maxPolys = 1 << (kTileAndPolygonBits - std::bit_width(static_cast<unsigned int>(tileCount - 1)));
+    return dtStatusSucceed(mesh.init(&params));
+}
+
+} // namespace
+
+bool DetourNavMap::Build(const NavMeshSettings& settings, const InputGeometry& geometry)
+{
+    if (!geometry.Vertices || geometry.VertexCount == 0 ||
+        !geometry.Indices || geometry.TriangleCount == 0 ||
+        geometry.VertexCount > std::numeric_limits<int32>::max() ||
+        geometry.TriangleCount > std::numeric_limits<int32>::max() ||
+        !(settings.CellSize > 0 && settings.CellHeight > 0))
         return false;
 
-    m_Impl->NavMesh = dtAllocNavMesh();
-    if (!m_Impl->NavMesh)
-    {
-        dtFree(navData);
+    const std::span indices(geometry.Indices, static_cast<size_t>(geometry.TriangleCount) * 3);
+    if (std::ranges::any_of(indices, [&geometry](uint32 index) { return index >= geometry.VertexCount; }))
         return false;
+
+    rcConfig config = MakeBakeConfig(settings);
+    rcCalcBounds(geometry.Vertices, static_cast<int32>(geometry.VertexCount), config.bmin, config.bmax);
+    constexpr float32 kMaxGridCells = static_cast<float32>(std::numeric_limits<int32>::max() / 4);
+    if (!((config.bmax[0] - config.bmin[0]) / config.cs <= kMaxGridCells &&
+          (config.bmax[2] - config.bmin[2]) / config.cs <= kMaxGridCells))
+        return false;
+    rcCalcGridSize(config.bmin, config.bmax, config.cs, &config.width, &config.height);
+    if (config.width <= 0 || config.height <= 0)
+        return false;
+
+    int32 tilesX = 0;
+    int32 tilesZ = 0;
+    size_t tileCount = 0;
+    config.tileSize = kPreferredTileCells;
+    for (;; config.tileSize *= 2)
+    {
+        tilesX = (config.width - 1) / config.tileSize + 1;
+        tilesZ = (config.height - 1) / config.tileSize + 1;
+        tileCount = static_cast<size_t>(tilesX) * tilesZ;
+        if (tileCount <= kMaxBakeTiles)
+            break;
     }
 
-    dtStatus status = m_Impl->NavMesh->init(navData, navDataSize, DT_TILE_FREE_DATA);
-    if (dtStatusFailed(status))
+    const bool isTiled = tileCount > 1;
+    const float32 tileWorldSize = config.tileSize * config.cs;
+    const dtNavMeshParams* previousParameters = IsBuilt() ? m_Impl->NavMesh->getParams() : nullptr;
+    const bool canReuse = isTiled && previousParameters && m_Impl->TileDigests.size() == tileCount &&
+        m_Impl->BakeTilesX == tilesX && BakeSettingsKey(m_Impl->BakeSettings) == BakeSettingsKey(settings) &&
+        m_Impl->BakeMinY <= config.bmin[1] && m_Impl->BakeMaxY >= config.bmax[1] &&
+        previousParameters->orig[0] == config.bmin[0] && previousParameters->orig[2] == config.bmin[2] &&
+        previousParameters->tileWidth == tileWorldSize;
+    std::unique_ptr<Impl> candidate;
+    if (!canReuse)
     {
-        dtFree(navData);
-        dtFreeNavMesh(m_Impl->NavMesh);
-        m_Impl->NavMesh = nullptr;
-        return false;
+        candidate = std::make_unique<Impl>();
+        candidate->NavMesh = dtAllocNavMesh();
+        if (!candidate->NavMesh)
+            return false;
     }
 
-    // Step 11: Create query object
-    m_Impl->NavQuery = dtAllocNavMeshQuery();
-    if (!m_Impl->NavQuery)
-        return false;
-
-    status = m_Impl->NavQuery->init(m_Impl->NavMesh, 2048);
-    if (dtStatusFailed(status))
+    if (!isTiled)
     {
-        dtFreeNavMeshQuery(m_Impl->NavQuery);
-        m_Impl->NavQuery = nullptr;
-        return false;
+        config.tileSize = 0;
+        const std::span signedIndices(reinterpret_cast<const int32*>(indices.data()), indices.size());
+        TileData tile;
+        if (!BakeTile(settings, config, geometry, signedIndices, 0, 0, tile))
+            return false;
+        if (tile.Bytes)
+        {
+            if (dtStatusFailed(candidate->NavMesh->init(tile.Bytes.get(), tile.Size, DT_TILE_FREE_DATA)))
+                return false;
+            tile.Bytes.release();
+        }
+        else if (!InitializeTileGrid(*candidate->NavMesh, config, tileWorldSize, 1))
+            return false;
+    }
+    else
+    {
+        Impl& target = canReuse ? *m_Impl : *candidate;
+        dtNavMesh& mesh = *target.NavMesh;
+        if (canReuse)
+        {
+            config.bmin[1] = target.BakeMinY;
+            config.bmax[1] = target.BakeMaxY;
+        }
+        else
+        {
+            // Keep the voxel origin stable when a local edit adds short geometry.
+            config.bmin[1] -= config.walkableHeight * config.ch;
+            config.bmax[1] += config.walkableHeight * config.ch;
+            if (!InitializeTileGrid(mesh, config, tileWorldSize, tileCount))
+                return false;
+        }
+
+        constexpr int32 kRecastBorderCells = 3;
+        config.borderSize = config.walkableRadius + kRecastBorderCells;
+        const auto inputs = BinTriangles(geometry, config, tilesX, tilesZ);
+        std::vector<TileChange> changes;
+        for (size_t index = 0; index < tileCount; ++index)
+        {
+            const int32 x = static_cast<int32>(index % tilesX);
+            const int32 z = static_cast<int32>(index / tilesX);
+            const dtMeshTile* old = mesh.getTileAt(x, z, 0);
+            const TileInput& input = inputs[index];
+            if (canReuse && input.Digest == target.TileDigests[index])
+            {
+                continue;
+            }
+
+            TileChange& change = changes.emplace_back();
+            if (!BakeTile(settings, MakeTileConfig(config, x, z), geometry, input.Indices, x, z, change.Replacement))
+                return false;
+            if (old)
+            {
+                change.PreviousReference = mesh.getTileRef(old);
+                change.Previous.Size = old->dataSize;
+                change.Previous.Bytes.reset(static_cast<uint8*>(dtAlloc(old->dataSize, DT_ALLOC_PERM)));
+                if (!change.Previous.Bytes)
+                    return false;
+                std::memcpy(change.Previous.Bytes.get(), old->data, old->dataSize);
+            }
+        }
+        if (!ApplyTileChanges(mesh, changes))
+            return false;
+
+        target.TileDigests.resize(tileCount);
+        std::ranges::transform(inputs, target.TileDigests.begin(), &TileInput::Digest);
+        target.BakeSettings = settings;
+        target.BakeMinY = config.bmin[1];
+        target.BakeMaxY = config.bmax[1];
+        target.BakeTilesX = tilesX;
+        if (canReuse)
+        {
+            if (!changes.empty())
+                target.BuildDebugMesh();
+            return true;
+        }
     }
 
-    m_Impl->BuildDebugMesh();
+    candidate->NavQuery = dtAllocNavMeshQuery();
+    if (!candidate->NavQuery || dtStatusFailed(candidate->NavQuery->init(candidate->NavMesh, 2048)))
+        return false;
+    candidate->BuildDebugMesh();
+    m_Impl = std::move(candidate);
     return true;
 }
 
@@ -494,8 +664,19 @@ bool DetourNavMap::Raycast(float32 startX, float32 startY, float32 startZ,
 // Serialization format (supports multi-tile navmeshes):
 // [magic "DTNM"][version uint32][dtNavMeshParams (28 bytes)][tileCount uint32]
 // For each tile: [tileRef uint64][dataSize uint32][tile data bytes]
+// Optional suffix: [tiled bake tag][bake layout][one digest per grid tile]
 static constexpr char kSerializeMagic[4] = {'D', 'T', 'N', 'M'};
 static constexpr uint32 kSerializeVersion = 1;
+static constexpr char kTiledBakeTag[4] = {'L', 'T', 'B', '1'};
+
+struct TiledBakeMemo
+{
+    int32 Columns = 0;
+    float32 MinY = 0;
+    float32 MaxY = 0;
+    NavMeshSettings Settings;
+};
+static_assert(sizeof(TiledBakeMemo) == 16 * sizeof(uint32));
 
 bool DetourNavMap::Serialize(std::vector<uint8>& outData) const
 {
@@ -508,46 +689,48 @@ bool DetourNavMap::Serialize(std::vector<uint8>& outData) const
     // Count active tiles and compute total size
     uint32 tileCount = 0;
     size_t totalTileDataSize = 0;
-    for (int32 i = 0; i < navMesh->getMaxTiles(); ++i)
+    for (int32 tileIndex = 0; tileIndex < navMesh->getMaxTiles(); ++tileIndex)
     {
-        const dtMeshTile* tile = navMesh->getTile(i);
+        const dtMeshTile* tile = navMesh->getTile(tileIndex);
         if (!tile || !tile->header || tile->dataSize == 0)
             continue;
         ++tileCount;
         totalTileDataSize += tile->dataSize;
     }
 
-    if (tileCount == 0)
-        return false;
-
     // Header: magic(4) + version(4) + params(28) + tileCount(4) = 40
     // Per tile: tileRef(8) + dataSize(4) + data(variable)
     const size_t headerSize = 4 + sizeof(uint32) + sizeof(dtNavMeshParams) + sizeof(uint32);
     const size_t perTileOverhead = sizeof(uint64) + sizeof(uint32);
-    outData.resize(headerSize + tileCount * perTileOverhead + totalTileDataSize);
+    const size_t digestBytes = m_Impl->TileDigests.size() * sizeof(uint64);
+    const size_t memoBytes = digestBytes ? sizeof(kTiledBakeTag) + sizeof(TiledBakeMemo) + digestBytes : 0;
+    outData.resize(headerSize + tileCount * perTileOverhead + totalTileDataSize + memoBytes);
 
     size_t offset = 0;
-    auto writeBytes = [&](const void* src, size_t count) {
-        std::memcpy(outData.data() + offset, src, count);
-        offset += count;
-    };
 
-    writeBytes(kSerializeMagic, 4);
-    writeBytes(&kSerializeVersion, sizeof(uint32));
-    writeBytes(meshParams, sizeof(dtNavMeshParams));
-    writeBytes(&tileCount, sizeof(uint32));
+    WriteNavBytes(outData, offset, kSerializeMagic, 4);
+    WriteNavBytes(outData, offset, &kSerializeVersion, sizeof(uint32));
+    WriteNavBytes(outData, offset, meshParams, sizeof(dtNavMeshParams));
+    WriteNavBytes(outData, offset, &tileCount, sizeof(uint32));
 
-    for (int32 i = 0; i < navMesh->getMaxTiles(); ++i)
+    for (int32 tileIndex = 0; tileIndex < navMesh->getMaxTiles(); ++tileIndex)
     {
-        const dtMeshTile* tile = navMesh->getTile(i);
+        const dtMeshTile* tile = navMesh->getTile(tileIndex);
         if (!tile || !tile->header || tile->dataSize == 0)
             continue;
 
         const uint64 tileRef = static_cast<uint64>(navMesh->getTileRef(tile));
         const uint32 dataSize = static_cast<uint32>(tile->dataSize);
-        writeBytes(&tileRef, sizeof(uint64));
-        writeBytes(&dataSize, sizeof(uint32));
-        writeBytes(tile->data, dataSize);
+        WriteNavBytes(outData, offset, &tileRef, sizeof(uint64));
+        WriteNavBytes(outData, offset, &dataSize, sizeof(uint32));
+        WriteNavBytes(outData, offset, tile->data, dataSize);
+    }
+    if (digestBytes)
+    {
+        const TiledBakeMemo memo{m_Impl->BakeTilesX, m_Impl->BakeMinY, m_Impl->BakeMaxY, m_Impl->BakeSettings};
+        WriteNavBytes(outData, offset, kTiledBakeTag, sizeof(kTiledBakeTag));
+        WriteNavBytes(outData, offset, &memo, sizeof(memo));
+        WriteNavBytes(outData, offset, m_Impl->TileDigests.data(), digestBytes);
     }
 
     return true;
@@ -563,17 +746,11 @@ bool DetourNavMap::Deserialize(const uint8* data, uint32 size)
         return false;
 
     size_t offset = 0;
-    auto readBytes = [&](void* dst, size_t count) -> bool {
-        if (offset + count > size)
-            return false;
-        std::memcpy(dst, data + offset, count);
-        offset += count;
-        return true;
-    };
+    const std::span bytes(data, size);
 
     // Check magic
     char magic[4];
-    if (!readBytes(magic, 4) || std::memcmp(magic, kSerializeMagic, 4) != 0)
+    if (!ReadNavBytes(bytes, offset, magic, 4) || std::memcmp(magic, kSerializeMagic, 4) != 0)
     {
         // Try legacy single-tile format (no header, raw Detour tile data).
         // The old format wrote tile data directly with no magic/version.
@@ -581,15 +758,15 @@ bool DetourNavMap::Deserialize(const uint8* data, uint32 size)
     }
 
     uint32 version = 0;
-    if (!readBytes(&version, sizeof(uint32)) || version != kSerializeVersion)
+    if (!ReadNavBytes(bytes, offset, &version, sizeof(uint32)) || version != kSerializeVersion)
         return false;
 
     dtNavMeshParams meshParams;
-    if (!readBytes(&meshParams, sizeof(dtNavMeshParams)))
+    if (!ReadNavBytes(bytes, offset, &meshParams, sizeof(dtNavMeshParams)))
         return false;
 
     uint32 tileCount = 0;
-    if (!readBytes(&tileCount, sizeof(uint32)) || tileCount == 0)
+    if (!ReadNavBytes(bytes, offset, &tileCount, sizeof(uint32)))
         return false;
 
     m_Impl = std::make_unique<Impl>();
@@ -607,11 +784,11 @@ bool DetourNavMap::Deserialize(const uint8* data, uint32 size)
     }
 
     uint32 tilesLoaded = 0;
-    for (uint32 t = 0; t < tileCount; ++t)
+    for (uint32 tileIndex = 0; tileIndex < tileCount; ++tileIndex)
     {
         uint64 tileRef = 0;
         uint32 dataSize = 0;
-        if (!readBytes(&tileRef, sizeof(uint64)) || !readBytes(&dataSize, sizeof(uint32)))
+        if (!ReadNavBytes(bytes, offset, &tileRef, sizeof(uint64)) || !ReadNavBytes(bytes, offset, &dataSize, sizeof(uint32)))
         {
             dtFreeNavMesh(m_Impl->NavMesh);
             m_Impl->NavMesh = nullptr;
@@ -645,11 +822,33 @@ bool DetourNavMap::Deserialize(const uint8* data, uint32 size)
             ++tilesLoaded;
     }
 
-    if (tilesLoaded == 0)
+    if (tileCount != 0 && tilesLoaded == 0)
     {
         dtFreeNavMesh(m_Impl->NavMesh);
         m_Impl->NavMesh = nullptr;
         return false;
+    }
+
+    const int32 gridTiles = meshParams.maxTiles;
+    if (tilesLoaded == tileCount && gridTiles > 1 && gridTiles <= kMaxBakeTiles)
+    {
+        char tag[sizeof(kTiledBakeTag)];
+        TiledBakeMemo memo;
+        const size_t digestBytes = static_cast<size_t>(gridTiles) * sizeof(uint64);
+        // The suffix is a bake hint. A file without the hint still contains a usable navmesh.
+        if (ReadNavBytes(bytes, offset, tag, sizeof(tag)) && std::memcmp(tag, kTiledBakeTag, sizeof(tag)) == 0 &&
+            ReadNavBytes(bytes, offset, &memo, sizeof(memo)) && digestBytes == size - offset &&
+            memo.Columns > 0 && gridTiles % memo.Columns == 0 &&
+            std::isfinite(memo.MinY) && std::isfinite(memo.MaxY) &&
+            memo.MinY == meshParams.orig[1] && memo.MinY <= memo.MaxY)
+        {
+            m_Impl->TileDigests.resize(gridTiles);
+            std::memcpy(m_Impl->TileDigests.data(), data + offset, digestBytes);
+            m_Impl->BakeTilesX = memo.Columns;
+            m_Impl->BakeMinY = memo.MinY;
+            m_Impl->BakeMaxY = memo.MaxY;
+            m_Impl->BakeSettings = memo.Settings;
+        }
     }
 
     m_Impl->NavQuery = dtAllocNavMeshQuery();
