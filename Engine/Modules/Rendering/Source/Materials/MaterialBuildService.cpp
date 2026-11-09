@@ -93,7 +93,8 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
                                                  const MaterialBuildContext& context,
                                                  ShaderSourceKind kind,
                                                  MaterialKeyword pipelineKeywords,
-                                                 VertexAttributeFlags meshVertexFlags)
+                                                 VertexAttributeFlags meshVertexFlags,
+                                                 const ShaderCompileTarget& target)
 {
     MaterialBuildResult out{};
 
@@ -114,6 +115,7 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
         const auto& adapterDir = context.AdapterShaderDir;
 
         ShaderProgramCompileRequest creq{};
+        creq.Target = target;
         creq.debugName = debugName.empty() ? materialPath.stem().string() : debugName;
         creq.baseDirectory = materialPath.parent_path();
         creq.cacheRoot = cacheRoot;
@@ -143,7 +145,7 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
             MaterialKeyword::ParallaxPrepassDepthMultisample | MaterialKeyword::ParallaxDepthTolerance;
         variantKey.materialKeywords =
             (variantKey.materialKeywords & ~reliefDepth)
-            | NarrowColorPassKeywords(variantKey.materialKeywords, variantKey.materialKeywords & reliefDepth);
+            | NarrowColorPassKeywords(variantKey.materialKeywords, variantKey.materialKeywords & reliefDepth, target);
         if (doc.customVertexShader)
             ApplyCustomVertexShaderClamp(variantKey);
         variantKey.lightingModel = doc.lightingModel.empty()
@@ -158,7 +160,7 @@ MaterialBuildResult BuildMaterialToShaderPackage(const GameEngine::MaterialDocum
 
         std::vector<std::string> composeErrors;
         auto composed = ShaderComposer::Compose(
-            doc, variantKey, materialPath.parent_path(), context, &composeErrors);
+            doc, variantKey, materialPath.parent_path(), context, &composeErrors, target);
 
         if (!composed.IsValid())
         {

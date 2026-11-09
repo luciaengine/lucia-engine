@@ -5,14 +5,19 @@
 #include <gtest/gtest.h>
 
 #include "Assets/ModelAsset.h"
+#include "Core/Application.h"
+#include "Core/Engine.h"
+#include "Engine/Rendering/CompileConcurrencyGate.h"
 #include "Engine/Rendering/MaterialDepthClassify.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/MaterialPrewarmVariants.h"
+#include "Engine/Rendering/MaterialPrewarmPolicy.h"
 #include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/ParallaxReliefDepth.h"
 #include "Engine/Rendering/ModelMaterialBridge.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
+#include "Rendering/Common/Utils.h"
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Rendering/Materials/MaterialBuildService.h"
 #include "Rendering/Materials/MaterialDocument.h"
@@ -22,6 +27,7 @@
 #include "Types/StringId.h"
 
 #include "ScopedCompatShaderProfile.h"
+#include "ScopedShaderCompileTarget.h"
 #include "StagedTestPaths.h"
 
 #include <algorithm>
@@ -1481,9 +1487,81 @@ class MaterialShaderIdentityTest : public ::MaterialRegistryTest
         EXPECT_EQ(identity.Spec.parallax, spec.parallax);
         EXPECT_EQ(identity.AlphaMode, mat->GetAlphaMode());
     }
+    static void SetCompileHook(RenderServices& services, std::function<void()> hook)
+    {
+        services.Materials().m_ShaderCompilationCache.SetCompileEnteredHookForTesting(std::move(hook));
+    }
+
+    static void HoldPrewarmJobs(RenderServices& services, std::vector<std::function<void()>>& jobs)
+    {
+        auto& materials = services.Materials();
+        ASSERT_NE(materials.m_CompileGate, nullptr);
+        ASSERT_EQ(materials.m_CompileGate->Running(), 0u);
+        ASSERT_EQ(materials.m_CompileGate->PendingCount(), 0u);
+        materials.m_CompileGate = std::make_unique<CompileConcurrencyGate>(1u,
+            [&jobs](std::function<void()> job, JobSystem::JobPriority) { jobs.push_back(std::move(job)); });
+    }
+
+    static std::shared_ptr<SharedShaderVariant> ReadProgram(
+        RenderServices& services, const ShaderCacheKey& key, const MaterialCompileSpec& spec,
+        const Rendering::MaterialBuildContext& context)
+    {
+        return services.Materials().m_ShaderCompilationCache.GetOrCompile(
+            key, spec, context, "CapturedPrewarm", Rendering::ShaderSourceKind::SpirV);
+    }
+
+};
+
+class MaterialTargetPrewarmTest : public MaterialShaderIdentityTest
+{
+  protected:
+    void SetUp() override
+    {
+        MaterialShaderIdentityTest::SetUp();
+        if (HasFatalFailure() || IsSkipped())
+            return;
+        m_PreviousDirectory = std::filesystem::current_path();
+        m_PreviousResolver = Rendering::Utils::GetShaderPathResolver();
+        m_Workspace = std::filesystem::temp_directory_path() / ("ge-target-prewarm-" + GUID::Generate().ToString());
+        std::filesystem::create_directories(m_Workspace / "Assets");
+        auto& engine = EngineCore::GetInstance();
+        ASSERT_FALSE(engine.IsInitialized());
+        ScriptsConfig scripts;
+        scripts.disableClr = true;
+        scripts.enableHotReload = false;
+        scripts.enableAsyncHotReload = false;
+        scripts.enableAutoProjectGeneration = false;
+        engine.SetScriptsConfig(scripts);
+        ApplicationConfig config;
+        config.WorkspaceDirectory = m_Workspace.string();
+        config.EnableEditor = false;
+        m_EngineInitialized = engine.Initialize(config);
+        ASSERT_TRUE(m_EngineInitialized);
+    }
+
+    void TearDown() override
+    {
+        if (m_EngineInitialized)
+            EngineCore::GetInstance().Shutdown();
+        if (!m_PreviousDirectory.empty())
+        {
+            std::filesystem::current_path(m_PreviousDirectory);
+            Rendering::Utils::SetShaderPathResolver(m_PreviousResolver);
+        }
+        std::error_code error;
+        if (!m_Workspace.empty())
+            std::filesystem::remove_all(m_Workspace, error);
+        MaterialShaderIdentityTest::TearDown();
+    }
+
+    std::filesystem::path m_Workspace;
+    std::filesystem::path m_PreviousDirectory;
+    Rendering::Utils::ShaderPathResolverFunc m_PreviousResolver = nullptr;
+    bool m_EngineInitialized = false;
 };
 } // namespace GameEngine::Engine::Renderer
 using GameEngine::Engine::Renderer::MaterialShaderIdentityTest;
+using GameEngine::Engine::Renderer::MaterialTargetPrewarmTest;
 
 TEST_F(MaterialShaderIdentityTest, KeywordedMaterialMatchesRegistration)
 {
@@ -1560,4 +1638,163 @@ TEST(MaterialVariantKeyDerivation, BlendedTransmissionStillUsesReplacementRender
     EXPECT_FALSE(DeriveCompileSpec(doc).alphaTest);
     doc.properties["enableTransmission"] = false;
     EXPECT_EQ(DeriveRenderedAlphaMode(doc), MaterialAlphaMode::Blend);
+}
+
+TEST_F(MaterialShaderIdentityTest, InFlightDepthPublicationKeepsTheCapturedMetadataProfile)
+{
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(m_device.get()));
+    TestSupport::ScopedShaderCompileTarget restore{Rendering::CurrentShaderCompileTarget()};
+    const auto captured = Rendering::CurrentShaderCompileTarget();
+    Rendering::ShaderCompileTarget later = captured;
+    later.Compatibility = !captured.Compatibility;
+    Rendering::MaterialBuildContext context{};
+    context.AdapterShaderDir = TestPaths::StagedRenderingShadersDir();
+    context.CacheRoot = std::filesystem::temp_directory_path() / ("ge-depth-target-" + GUID::Generate().ToString());
+    context.IncludeDirs = {context.AdapterShaderDir};
+    services.Materials().SetMaterialBuildContext(context);
+    auto document = MakeTestPBRDocument("CapturedDepthTarget");
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    Material* material = services.Materials().RegisterMaterialFromDocument(GUID::Generate(), document);
+    ASSERT_NE(material, nullptr);
+    services.Materials().FlushAsyncMaterialCompiles();
+    auto& variants = services.Materials().Variants();
+    const auto flags = Rendering::VertexAttributeFlags::StandardMesh | Rendering::VertexAttributeFlags::HasColor;
+    const auto keywords = Rendering::MaterialKeyword::ForwardPlus | Rendering::MaterialKeyword::Instanced |
+                          Rendering::MaterialKeyword::Shadows | Rendering::MaterialKeyword::IBL;
+    int entered = 0;
+    SetCompileHook(services, [&entered, later]
+    {
+        ++entered;
+        Rendering::ApplyShaderCompileProfile(later);
+    });
+    const auto key = variants.EnqueueDepthVariantCompileForTesting(
+        *material, flags, Rendering::PrimitiveTopology::TriangleList, keywords, 0u, false, false,
+        Rendering::FrontFace::CounterClockwise);
+    variants.SubmitPendingVariantCompiles();
+    services.Materials().FlushAsyncMaterialCompiles();
+    variants.ApplyPendingVariantPublishes();
+    SetCompileHook(services, {});
+    ASSERT_EQ(entered, 1);
+    EXPECT_TRUE(variants.HasDepthVariantForTesting(key));
+    Rendering::ApplyShaderCompileProfile(captured);
+    const auto* published = variants.FindOrRequestPrepassVariant(
+        *material, flags, Rendering::PrimitiveTopology::TriangleList, keywords,
+        Rendering::FrontFace::CounterClockwise);
+    ASSERT_NE(published, nullptr);
+    ASSERT_NE(published->VariantMeta, nullptr);
+    size_t fragmentOnly = 0;
+    for (const auto& set : published->VariantMeta->Sets)
+        for (const auto& binding : set.Bindings)
+            if (set.Set != 1u && (binding.StagesMask & Rendering::ShaderMetaStage::kVertex) == 0u)
+                ++fragmentOnly;
+    if (captured.Compatibility)
+    {
+        EXPECT_EQ(fragmentOnly, 0u);
+    }
+    else
+    {
+        EXPECT_GT(fragmentOnly, 0u);
+    }
+    services.Shutdown();
+    std::error_code error;
+    std::filesystem::remove_all(context.CacheRoot, error);
+}
+
+TEST_F(MaterialShaderIdentityTest, FailedInlineRecompileCannotRestoreAnotherTarget)
+{
+    TestSupport::ScopedShaderCompileTarget restore{Rendering::CurrentShaderCompileTarget()};
+    const auto captured = Rendering::CurrentShaderCompileTarget();
+    for (const bool flipBeforeAdmission : {false, true})
+    {
+        Rendering::ApplyShaderCompileProfile(captured);
+        RenderServices services;
+        ASSERT_TRUE(services.Initialize(m_device.get()));
+        Rendering::ShaderCompileTarget later = captured;
+        later.Compatibility = !captured.Compatibility;
+        Rendering::MaterialBuildContext context{};
+        context.AdapterShaderDir = TestPaths::StagedRenderingShadersDir();
+        context.IncludeDirs = {context.AdapterShaderDir};
+        context.CacheRoot = std::filesystem::temp_directory_path() / ("ge-failed-target-" + GUID::Generate().ToString());
+        services.Materials().SetMaterialBuildContext(context);
+        const GUID guid = GUID::Generate();
+        auto document = MakeTestPBRDocument("FailedInlineTarget");
+        document.surfaceShader = "Surfaces/standard_pbr.glsl";
+        Material* material = services.Materials().RegisterMaterialFromDocument(guid, document);
+        ASSERT_NE(material, nullptr);
+        ASSERT_TRUE(material->GetGraphicsPipelineId().IsValid());
+        int entered = 0;
+        if (flipBeforeAdmission)
+            Rendering::ApplyShaderCompileProfile(later);
+        SetCompileHook(services, [&entered, later]
+        {
+            ++entered;
+            Rendering::ApplyShaderCompileProfile(later);
+        });
+        document.surfaceShader = "Missing/failed_target_surface.glsl";
+        services.Materials().RecompileMaterialPipeline(guid, document);
+        SetCompileHook(services, {});
+        ASSERT_EQ(entered, 1);
+        EXPECT_FALSE(material->GetGraphicsPipelineId().IsValid());
+        services.Shutdown();
+        std::error_code error;
+        std::filesystem::remove_all(context.CacheRoot, error);
+    }
+}
+
+TEST_F(MaterialTargetPrewarmTest, QueuedVariantSetRetainsItsAdmissionTarget)
+{
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(m_device.get()));
+    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
+    const ShaderCompileTarget captured = CurrentShaderCompileTarget();
+    ShaderCompileTarget later = captured;
+    later.Compatibility = !later.Compatibility;
+    MaterialBuildContext context{};
+    context.AdapterShaderDir = TestPaths::StagedRenderingShadersDir();
+    context.IncludeDirs = {context.AdapterShaderDir};
+    context.CacheRoot = m_Workspace / "CompiledShaders";
+    services.Materials().SetMaterialBuildContext(context);
+    auto document = MakeTestPBRDocument("CapturedPrewarmSet");
+    document.surfaceShader = "Surfaces/standard_pbr.glsl";
+    Material* material = services.Materials().RegisterMaterialFromDocument(GUID::Generate(), document);
+    ASSERT_NE(material, nullptr);
+    ASSERT_TRUE(material->GetGraphicsPipelineId().IsValid());
+    services.Materials().FlushAsyncMaterialCompiles();
+    std::vector<std::function<void()>> jobs;
+    HoldPrewarmJobs(services, jobs);
+    constexpr auto kPassKeywords = MaterialKeyword::ForwardPlus | MaterialKeyword::Instanced | MaterialKeyword::Shadows;
+    ASSERT_EQ(GetMaterialPrewarmPolicy(), MaterialPrewarmPolicy::Full);
+    const auto keys = MaterialPrewarmVariantKeys(material->GetVariantKey(), kPassKeywords, false,
+                                                material->GetAlphaMode(), CrossfadeTailWarmup::Warm);
+    ASSERT_GT(keys.size(), 1u);
+    int entered = 0;
+    SetCompileHook(services, [&entered] { ++entered; });
+    services.Materials().PrewarmMaterialVariants(*material, kPassKeywords);
+    ASSERT_EQ(jobs.size(), 1u);
+    ApplyShaderCompileProfile(later);
+    while (!jobs.empty())
+    {
+        auto job = std::move(jobs.back());
+        jobs.pop_back();
+        job();
+    }
+    services.Materials().FlushAsyncMaterialCompiles();
+    const int admittedCompiles = entered;
+    ASSERT_GT(admittedCompiles, 1);
+    for (const auto& variant : keys)
+    {
+        ShaderCacheKey key{};
+        key.Target = captured;
+        key.VariantKey = variant;
+        key.Source.SurfaceShaderPath = material->GetCompileSpec().surfaceShaderPath;
+        key.Source.VertexModifierPath = material->GetCompileSpec().vertexModifierPath;
+        key.Source.MaterialAssetPath = material->GetMaterialAssetPath();
+        const auto program = ReadProgram(services, key, material->GetCompileSpec(), context);
+        ASSERT_NE(program, nullptr);
+        EXPECT_FALSE(program->vertexBytes.empty());
+    }
+    SetCompileHook(services, {});
+    EXPECT_EQ(entered, admittedCompiles);
+    services.Shutdown();
 }

@@ -3584,10 +3584,10 @@ void VulkanDevice::QueryDeviceCapabilities()
     // 1.2 devices cap at 1.5 so their packages remain loadable.
     ShaderCompileService::SetMaxSupportedSpirv(
         m_DeviceProperties.apiVersion >= VK_API_VERSION_1_3
-            ? ShaderCompileService::SpirvTarget::Spirv_1_6
+            ? ::GameEngine::Rendering::SpirvTarget::Spirv_1_6
             : m_DeviceProperties.apiVersion >= VK_API_VERSION_1_2
-                ? ShaderCompileService::SpirvTarget::Spirv_1_5
-                : ShaderCompileService::SpirvTarget::Spirv_1_3);
+                ? ::GameEngine::Rendering::SpirvTarget::Spirv_1_5
+                : ::GameEngine::Rendering::SpirvTarget::Spirv_1_3);
     m_Capabilities.maxPerStageSamplers = m_DeviceProperties.limits.maxPerStageDescriptorSamplers;
     m_Capabilities.maxPerStageSampledImages = m_DeviceProperties.limits.maxPerStageDescriptorSampledImages;
     m_Capabilities.maxPerStageResources = m_DeviceProperties.limits.maxPerStageResources;
@@ -6861,7 +6861,7 @@ bool VulkanDevice::QueueSubmit(QueueType queue,
         }
     }
     if (cbs.empty())
-        return true;
+        return false;
 
     bool touchesSwapchainPath = false;
     if (queue == QueueType::Graphics && m_HasActiveWindowTarget && m_ActiveWindowTargetId != 0)

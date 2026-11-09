@@ -49,11 +49,9 @@ CBTUpdateOutputs CBTUpdateNode::ImportOutputs(RGFrame& frame, CBTInstance& insta
     out.HeightChain = frame.ImportExternalBuffer(
         "CBT.HeightChain", res.GetHeightChainBuffer(),
         static_cast<uint64_t>(res.GetHeightChainWords()) * sizeof(uint32_t));
-    // It rests in ShaderResource between frames: CBTResources creates it there, and the update's normal
-    // build barriers it to storage and back inside the pass (CBTInstance::RecordHeightChainBuild), so the
-    // graph sees only the draw's read.
+    // Storage and sampled descriptors share GENERAL throughout the chain's lifetime.
     out.NormalChain = frame.ImportExternalTexture("CBT.NormalChain", res.GetNormalChainTexture(),
-                                                  ResourceState::ShaderResource, TextureFormat::R16G16_FLOAT,
+                                                  ResourceState::UnorderedAccess, TextureFormat::R16G16_FLOAT,
                                                   std::max(res.GetNormalChainMips(), 1u));
     return out;
 }
@@ -97,6 +95,7 @@ CBTUpdateOutputs CBTUpdateNode::DeclareUpdatePass(RGFrame& frame, CBTInstance& i
             p.Write(out.IndicesVisible, RGBufferWrite::Storage);
             p.Write(out.CurrentVertex, RGBufferWrite::Storage);
             p.Write(out.HeightChain, RGBufferWrite::Storage);
+            p.Write(out.NormalChain, RGTextureWrite::Storage);
             if (haveHeight)
                 p.Read(heightRG, RGTextureRead::SampledCompute);
         },

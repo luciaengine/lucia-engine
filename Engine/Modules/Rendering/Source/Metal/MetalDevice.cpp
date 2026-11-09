@@ -161,7 +161,7 @@ bool MetalDevice::Initialize(const DeviceDesc& desc)
 
     // The Metal backend consumes SPIR-V via SPIRV-Cross, which accepts up to
     // SPIR-V 1.6, so material shaders can use the full 1.6 target here too.
-    ShaderCompileService::SetMaxSupportedSpirv(ShaderCompileService::SpirvTarget::Spirv_1_6);
+    ShaderCompileService::SetMaxSupportedSpirv(::GameEngine::Rendering::SpirvTarget::Spirv_1_6);
     m_Capabilities.maxPerStageSamplers = 16;
     // Metal's per-stage buffer argument table.
     m_Capabilities.maxPerStageStorageBuffers = tier2ArgumentBuffers ? 31 : 25;

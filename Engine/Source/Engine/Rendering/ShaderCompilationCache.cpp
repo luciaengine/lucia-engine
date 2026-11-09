@@ -26,6 +26,7 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
     const std::string& debugName,
     Rendering::ShaderSourceKind kind)
 {
+    const ProgramKey programKey{key, kind};
     // The build context may not be ready yet during early startup: the editor
     // 'editor' asset source that resolves AdapterShaderDir can be registered
     // after the first per-frame prewarm pass runs. Treat an empty AdapterShaderDir
@@ -47,7 +48,7 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
     std::function<void()> compileEnteredHook;
     {
         std::lock_guard lock(m_Mutex);
-        auto it = m_Cache.find(key);
+        auto it = m_Cache.find(programKey);
         if (it != m_Cache.end())
         {
             // Another material in this resolution directory may have rebuilt
@@ -61,14 +62,14 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
         // Snapshot the invalidation epoch alongside the election: publish()
         // compares it to decide whether this compile's result is still current.
         epochAtStart = m_InvalidationEpoch;
-        if (auto inflight = m_InFlight.find(key); inflight != m_InFlight.end())
+        if (auto inflight = m_InFlight.find(programKey); inflight != m_InFlight.end())
         {
             waitFuture = inflight->second;
         }
         else
         {
             myPromise = std::make_shared<std::promise<std::shared_ptr<SharedShaderVariant>>>();
-            m_InFlight.emplace(key, myPromise->get_future().share());
+            m_InFlight.emplace(programKey, myPromise->get_future().share());
             compileEnteredHook = m_CompileEnteredHook;
         }
     }
@@ -101,8 +102,8 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
             // result (the same pre-edit variant they were already blocked on),
             // and their own next lookup misses too, so nobody is wedged.
             if (m_InvalidationEpoch == epochAtStart)
-                m_Cache[key] = result;
-            m_InFlight.erase(key);
+                m_Cache[programKey] = result;
+            m_InFlight.erase(programKey);
             // Record what this build READ so InvalidateEntriesForShaderFile can
             // match include/adapter edits. Deliberately NOT epoch-gated the way
             // the SPIR-V insert is: the affected-material scan runs off these
@@ -188,7 +189,7 @@ std::shared_ptr<SharedShaderVariant> ShaderCompilationCache::GetOrCompile(
     Rendering::MaterialBuildContext ctx = buildContext;
     MaterialShaderPackageBuilder builder(std::move(doc), buildMaterialPath, debugName, ctx);
     Rendering::MaterialBuildResult buildResult = builder.Build(
-        kind, key.VariantKey.materialKeywords, key.VariantKey.vertexFlags);
+        kind, key.VariantKey.materialKeywords, key.VariantKey.vertexFlags, key.Target);
 
     // Populated even when the build failed (attempted dependencies) — publish
     // records it either way. Empty when composition itself failed.
@@ -255,7 +256,10 @@ void ShaderCompilationCache::InvalidateGlobalEntry(const ShaderCacheKey& key)
     // case the resurrection guard exists for. Without the bump, that compile's
     // publish() re-inserts SPIR-V built from the pre-edit source.
     ++m_InvalidationEpoch;
-    m_Cache.erase(key);
+    std::erase_if(m_Cache, [&key](const auto& entry)
+    {
+        return entry.first.Shader.VariantKey == key.VariantKey && entry.first.Shader.Source == key.Source;
+    });
 }
 
 ShaderFileDependents ShaderCompilationCache::InvalidateEntriesForShaderFile(
@@ -313,9 +317,9 @@ ShaderFileDependents ShaderCompilationCache::InvalidateEntriesForShaderFile(
         // identities the caller will requeue on. The direct reference checks
         // stay because an entry whose build failed before recording any
         // dependency has no row to be named by.
-        if (references(it->first.Source.SurfaceShaderPath)
-            || references(it->first.Source.VertexModifierPath)
-            || matched.count(it->first.Source) != 0)
+        if (references(it->first.Shader.Source.SurfaceShaderPath)
+            || references(it->first.Shader.Source.VertexModifierPath)
+            || matched.count(it->first.Shader.Source) != 0)
         {
             ++dependents.DroppedEntries;
             it = m_Cache.erase(it);

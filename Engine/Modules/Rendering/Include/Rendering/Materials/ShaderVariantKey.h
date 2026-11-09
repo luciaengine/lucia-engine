@@ -151,12 +151,6 @@ struct ShaderVariantKey
         h = HashUtils::HashCombine(h, static_cast<uint64_t>(materialKeywords));
         h = HashUtils::HashCombine(h, static_cast<uint64_t>(lightingModel));
         h = HashUtils::HashCombine(h, userKeywordHash);
-        // The compat profile is process-wide. Its on-disk cache entries fork
-        // through the GE_COMPAT_PROFILE define (GenerateDefines), not through
-        // this hash; folding it here only keeps a compat key's hash and its
-        // stand-in material path apart from the desktop key's.
-        if (IsCompatShaderProfile())
-            h ^= 0xC0FFEEULL + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
         return h;
     }
 };
@@ -185,7 +179,8 @@ inline void ApplyCustomVertexShaderClamp(ShaderVariantKey& key)
 // produce the LIGHTING_MODEL_* define. It must correspond to the StringId
 // stored in key.lightingModel.
 inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
-                                                const std::string& lightingModelName)
+                                                const std::string& lightingModelName,
+                                                const ShaderCompileTarget& target = CurrentShaderCompileTarget())
 {
     std::vector<std::string> defs;
 
@@ -313,7 +308,7 @@ inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
     // Device-wide, not per-material: the compat profile selects the fixed
     // material texture bindings and the derivative/LOD fallbacks that the
     // WebGPU-class target needs (Includes/compat_profile.glsl).
-    if (IsCompatShaderProfile())
+    if (target.Compatibility)
         defs.push_back("GE_COMPAT_PROFILE");
     // Device-wide as well. Only the relief footprint reads it, so it reaches only the keys that march:
     // a Parallax key in a shading shape or in the depth-offset prepass shape, the condition
@@ -324,7 +319,7 @@ inline std::vector<std::string> GenerateDefines(const ShaderVariantKey& key,
     const bool marchesParallax = HasKeyword(key.materialKeywords, MaterialKeyword::Parallax) &&
                                  (!shadesNothing || depthOffsetPrepass) &&
                                  !HasKeyword(key.materialKeywords, MaterialKeyword::DepthOnlyTransmissionColor);
-    if (marchesParallax && AreInterpolationFunctionsAvailable() && !IsCompatShaderProfile())
+    if (marchesParallax && target.InterpolationFunctions && !target.Compatibility)
         defs.push_back("GE_INTERPOLATION_FUNCTIONS");
 
     return defs;

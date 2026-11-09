@@ -263,16 +263,17 @@ PipelineVariantCache::ResolveColorVariant(
     Rendering::FrontFace frontFace,
     const Rendering::RenderGraph::RGPrepareContext& context)
 {
+    const Rendering::ShaderCompileTarget target = Rendering::CurrentShaderCompileTarget();
     const auto formatKey = context.BuildCurrentFormatKey();
     auto& cache = m_InstancedVariantCache;
     InstancedVariantKey key{
         &material,
         vertexFlags,
         formatKey.RasterizationSamples,
-        Rendering::NarrowColorPassKeywords(material.GetVariantKey().materialKeywords, passKeywords),
+        Rendering::NarrowColorPassKeywords(material.GetVariantKey().materialKeywords, passKeywords, target),
         topology,
-        material.IsDoubleSided() ? Rendering::CullModeFlagBits::None : m_Materials->DebugCullMode(),
-        frontFace};
+        material.IsDoubleSided() ? Rendering::CullModeFlags{Rendering::CullModeFlagBits::None} : m_Materials->DebugCullMode(),
+        frontFace, false, false, target};
 
     const uint32_t materialVersion = material.GetVersion();
     const uint64_t epoch = m_CacheEpoch.load(std::memory_order_acquire);
@@ -352,7 +353,7 @@ PipelineVariantCache::ResolveDepthVariant(
     const auto formatKey = context.BuildCurrentFormatKey();
     auto& cache = m_DepthInstancedVariantCache;
     const Rendering::CullModeFlags depthCullMode = material.IsDoubleSided()
-        ? Rendering::CullModeFlagBits::None
+        ? Rendering::CullModeFlags{Rendering::CullModeFlagBits::None}
         : m_Materials->DebugCullMode();
     InstancedVariantKey key{&material,     vertexFlags,      samples,
                             passKeywords,  topology,         depthCullMode,
@@ -429,7 +430,7 @@ const PipelineVariantCache::VariantServeUnit* PipelineVariantCache::FindOrReques
                                   0u,
                                   passKeywords,
                                   topology,
-                                  material.IsDoubleSided() ? Rendering::CullModeFlagBits::None
+                                  material.IsDoubleSided() ? Rendering::CullModeFlags{Rendering::CullModeFlagBits::None}
                                                            : m_Materials->DebugCullMode(),
                                   frontFace};
     {
@@ -691,6 +692,7 @@ void PipelineVariantCache::SubmitPendingVariantCompiles()
             if (job.Spec.customVertexShader)
                 Rendering::ApplyCustomVertexShaderClamp(mergedKey);
             job.CacheKey.VariantKey = mergedKey;
+            job.CacheKey.Target = req.Key.Target;
             job.CacheKey.Source.SurfaceShaderPath = job.Spec.surfaceShaderPath;
             job.CacheKey.Source.VertexModifierPath = job.Spec.vertexModifierPath;
             job.CacheKey.Source.MaterialAssetPath = material->GetMaterialAssetPath();
@@ -1002,7 +1004,7 @@ void PipelineVariantCache::RunDepthVariantCompile(const VariantCompileRequest& r
     // Under the compatibility profile a fragment-less pipeline declares, and the binder walks, only
     // what its vertex stage reads (CompatVertexStageDepthMeta). Desktop keeps the variant's meta.
     std::shared_ptr<Rendering::ShaderMeta> compatMeta;
-    if (fragmentMode == DepthFragmentMode::None && variant->meta && Rendering::IsCompatShaderProfile())
+    if (fragmentMode == DepthFragmentMode::None && variant->meta && req.Key.Target.Compatibility)
         compatMeta = std::make_shared<Rendering::ShaderMeta>(CompatVertexStageDepthMeta(*variant->meta));
     // Material params are always bindless (D1), so set 1 is always patched.
     const auto pipelineId = InternDepthPipelineId(
@@ -1042,7 +1044,7 @@ PipelineVariantCache::EnqueueColorVariantCompileForTesting(
 {
     InstancedVariantKey key{
         &material, vertexFlags, sampleCount, passKeywords, topology,
-        material.IsDoubleSided() ? Rendering::CullModeFlagBits::None : m_Materials->DebugCullMode(),
+        material.IsDoubleSided() ? Rendering::CullModeFlags{Rendering::CullModeFlagBits::None} : m_Materials->DebugCullMode(),
         frontFace};
     EnqueueVariantCompile(key, /*isDepth=*/false);
     return key;
@@ -1089,7 +1091,7 @@ PipelineVariantCache::EnqueueDepthVariantCompileForTesting(
 {
     InstancedVariantKey key{
         &material, vertexFlags, sampleCount, passKeywords, topology,
-        material.IsDoubleSided() ? Rendering::CullModeFlagBits::None : m_Materials->DebugCullMode(),
+        material.IsDoubleSided() ? Rendering::CullModeFlags{Rendering::CullModeFlagBits::None} : m_Materials->DebugCullMode(),
         frontFace, depthBiasEnable, depthClampEnable};
     EnqueueVariantCompile(key, /*isDepth=*/true);
     return key;
