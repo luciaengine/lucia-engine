@@ -92,7 +92,7 @@ protected:
         m_Services = std::make_unique<Engine::Renderer::RenderServices>();
         ASSERT_TRUE(m_Services->Initialize(m_Device.get()));
         m_Publication = &m_Services->EnsureFeature<TerrainHeightPageFeature>();
-        m_Pages = std::make_unique<TerrainHeightPages>(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.TableWordCap});
+        m_Pages = std::make_unique<TerrainHeightPages>(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.DenseTableWords});
         m_Pages->Update(1, 1.0f / 60.0f, false, 2);
         ASSERT_TRUE(m_Upload.Initialize("Upload", "{}", nullptr));
         m_Persistent = std::make_unique<Rendering::RenderGraph::RGResourcePool>(m_Device.get());

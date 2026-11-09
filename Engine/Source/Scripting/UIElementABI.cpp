@@ -35,6 +35,7 @@
 #include "UI/Controls/BaseField.h"
 #include "UI/Controls/Button.h"
 #include "UI/Controls/Label.h"
+#include "UI/Controls/MarkdownText.h"
 #include "UI/Controls/ScrollView.h"
 #include "UI/Registration/ElementRegistration.h"
 #include "UI/StyleOverrides.h"
@@ -227,6 +228,25 @@ GE_API GE_Result GE_CDECL GE_UIElement_SetLabelText(uint64_t instanceId, const c
 // SetVisible on UIElement by design: visibility is the Display/Visibility style, so a script
 // toggles a class and the stylesheet decides what that means. Adding a class that is already
 // present, or removing one that is absent, is a no-op.
+GE_API GE_Result GE_CDECL GE_UIElement_SetMarkdownText(uint64_t instanceId, const char* text)
+{
+    try
+    {
+        GameEngine::UIElement* el = ResolveElement(instanceId);
+        if (!el)
+            return GE_Result_NotFound;
+        auto* markdown = dynamic_cast<GameEngine::MarkdownText*>(el);
+        if (!markdown)
+            return GE_Result_InvalidArg;
+        markdown->SetMarkdown(text ? text : "");
+        return GE_Result_Ok;
+    }
+    catch (...)
+    {
+        return GE_Result_Fail;
+    }
+}
+
 GE_API GE_Result GE_CDECL GE_UIElement_SetClass(uint64_t instanceId, const char* className, int32_t on)
 {
     try

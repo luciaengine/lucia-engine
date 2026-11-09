@@ -8,6 +8,10 @@ add_executable(AudioECSTests
     AudioEmitterSystemTests.cpp
     AudioListenerSystemTests.cpp
     DeviceOutputTests.cpp
+    AudioMasterMuteTests.cpp
+    AudioOggVorbisTests.cpp
+    AudioOutputTests.cpp
+    AudioVoiceControlTests.cpp
 )
 
 # Modules are OBJECT libs aggregated into Engine.dll; link Engine alone and
@@ -23,6 +27,11 @@ target_link_libraries(AudioECSTests
 )
 
 target_include_directories(AudioECSTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Modules/Audio/Source)
+
+target_include_directories(AudioECSTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests ${CMAKE_SOURCE_DIR}/Engine/Tests)
+if(TARGET StageTestAssets)
+    add_dependencies(AudioECSTests StageTestAssets)
+endif()
 
 ge_set_output_tests(AudioECSTests)
 ge_stage_runtime_dependencies(AudioECSTests)

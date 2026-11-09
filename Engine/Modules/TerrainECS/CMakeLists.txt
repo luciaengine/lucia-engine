@@ -25,6 +25,7 @@ add_library(TerrainECS OBJECT
     Source/RawHeightmap.cpp
     Source/AtlasResidencyController.cpp
     Source/PageLevelRule.cpp
+    Source/PageTable.cpp
     Source/PagedHeightSampler.cpp
     Source/TerrainHeightSource.cpp
     Source/TerrainHeightPages.cpp

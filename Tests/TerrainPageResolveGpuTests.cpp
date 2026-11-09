@@ -43,6 +43,8 @@ struct FieldShape
     const char* Name;
     uint32 SamplesX;
     uint32 SamplesZ;
+    PageTableBudget Budget{1ull << 21, 640u, 640u};
+    GraphicsAPI Api = GraphicsAPI::Vulkan;
 };
 
 using QueryPoint = TerrainPageGpuProbe::QueryPoint;
@@ -119,14 +121,15 @@ protected:
     void SetUp() override
     {
         DeviceDesc desc{};
-        desc.preferredAPI = GraphicsAPI::Vulkan;
+        desc.preferredAPI = GetParam().Api;
         desc.enableDynamicRendering = true;
         m_Device = DeviceFactory::CreateDevice(desc);
         if (!m_Device || !m_Device->Initialize(desc))
         {
             m_Device.reset();
-            GTEST_SKIP() << "no Vulkan device";
+            GTEST_SKIP() << "requested graphics device unavailable for " << GetParam().Name;
         }
+        ASSERT_EQ(m_Device->GetAPI(), GetParam().Api);
         m_Probe = std::make_unique<TerrainPageGpuProbe>(*m_Device);
         ASSERT_TRUE(m_Probe->Initialize()) << "the staged page resolve probe must initialize";
     }
@@ -193,7 +196,8 @@ protected:
 TEST_P(TerrainPageResolveGpu, TheDeviceResolveIsTheMirrorWithinTheSubTexelQuantum)
 {
     const FieldShape shape = GetParam();
-    PagedField field(640, 0.4f, shape.SamplesX, shape.SamplesZ);
+    PagedField field(640, 0.4f, shape.SamplesX, shape.SamplesZ, shape.Budget);
+    ASSERT_EQ(field.Table.TierCount(), shape.Budget.DenseWords == 4u ? 2u : 0u);
     DriveToMixedResidency(field);
     ASSERT_NE(field.Cache.SlotOf(PagedField::Page(PageAddress{0, 0, 3, 2})), PageStreaming::kNoResidentSlot);
     ASSERT_LT(field.Cache.FadeOf(PagedField::Page(PageAddress{0, 1, 1, 1})), 1.0f) << "the fade chain is not mid-fade";
@@ -221,7 +225,20 @@ TEST_P(TerrainPageResolveGpu, TheDeviceResolveIsTheMirrorWithinTheSubTexelQuantu
     std::printf("[ %s ] %zu points, worst |device - mirror| %.6g, bound %.6g\n", shape.Name, points.size(), worst, bound);
 }
 
-INSTANTIATE_TEST_SUITE_P(FieldShapes, TerrainPageResolveGpu,
-                         ::testing::Values(FieldShape{"UnifiedTiled8193x2049", 8193u, 2049u},
-                                           FieldShape{"AtlasTiled16385x4097", 16385u, 4097u}),
+namespace
+{
+
+constexpr FieldShape kFieldShapes[] = {
+    {"UnifiedTiled8193x2049", 8193u, 2049u},
+    {"AtlasTiled16385x4097", 16385u, 4097u},
+    {"Tiered16385x4097", 16385u, 4097u, {4u, 640u, 640u}},
+#if defined(__APPLE__)
+    {"MetalDense16385x4097", 16385u, 4097u, {1ull << 21, 640u, 640u}, GraphicsAPI::Metal},
+    {"MetalTiered16385x4097", 16385u, 4097u, {4u, 640u, 640u}, GraphicsAPI::Metal},
+#endif
+};
+
+} // namespace
+
+INSTANTIATE_TEST_SUITE_P(FieldShapes, TerrainPageResolveGpu, ::testing::ValuesIn(kFieldShapes),
                          [](const ::testing::TestParamInfo<FieldShape>& info) { return std::string(info.param.Name); });

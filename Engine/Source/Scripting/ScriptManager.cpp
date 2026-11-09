@@ -1,4 +1,5 @@
 #include "Scripting/ScriptManager.h"
+#include <utility>
 #include "JobSystem/JobChannel.h"
 #include "Scripting/ScriptTargetFramework.h"
 #include "Assets/Packages/PackageNativeCache.h"
@@ -25,7 +26,6 @@
 #include <sstream>
 #include <span>
 #include <unordered_set>
-#include <utility>
 
 #include "Scripting/ScriptingABI.h"
 
@@ -45,6 +45,7 @@ namespace GameEngine
 
 namespace
 {
+std::atomic<ScriptManager::ManagedPostDrain> s_ManagedPostDrain{nullptr};
 // A compile that lost to a newer file change reports failure with a
 // "superseded" message (see HotReloadTasks / CompileProject); it is the
 // debounce working as designed and must not log as an error.
@@ -652,6 +653,18 @@ bool ScriptManager::RebindProjectScripts(const ScriptsConfig& newConfig)
 
 void ScriptManager::Shutdown()
 {
+    // Posts queued at quit are discarded, not run. EngineCore has already closed its post
+    // gate, so no post lands after this.
+    {
+        std::lock_guard<std::mutex> lock(m_MainThreadTasksMutex);
+        m_ManagedPostDrainRequested = false;
+    }
+    if (const ManagedPostDrain drain = s_ManagedPostDrain.load(std::memory_order_acquire))
+    {
+        drain(0);
+    }
+
+
     if (!m_Initialized)
     {
         return;
@@ -2131,6 +2144,24 @@ size_t ScriptManager::ProcessMainThreadTasks()
         return 0;
     }
 
+    // The MainThread.Post drain step: once per call, before the task loop and outside its cap,
+    // so a flood of posts is one batch and an action that posts itself runs once per pump.
+    // Inside the processing lock, so posted actions never run on two threads at once.
+    const bool mayDrainPosts = !HasMarkedMainThread() || IsMainThread();
+    bool drainPosts = false;
+    {
+        std::lock_guard<std::mutex> lock(m_MainThreadTasksMutex);
+        if (mayDrainPosts)
+            drainPosts = std::exchange(m_ManagedPostDrainRequested, false);
+    }
+    if (drainPosts)
+    {
+        if (const ManagedPostDrain drain = s_ManagedPostDrain.load(std::memory_order_acquire))
+        {
+            drain(1);
+        }
+    }
+
     // RACE CONDITION FIX: Check if hot-reload is in progress and prioritize those tasks
     bool hotReloadInProgress = IsAsyncHotReloadInProgress();
 
@@ -2188,6 +2219,18 @@ size_t ScriptManager::ProcessMainThreadTasks()
     }
 
     return tasksProcessed;
+}
+
+void ScriptManager::RequestManagedPostDrain()
+{
+    std::lock_guard<std::mutex> lock(m_MainThreadTasksMutex);
+    m_ManagedPostDrainRequested = true;
+}
+
+bool ScriptManager::InstallManagedPostDrain(ManagedPostDrain drain)
+{
+    ManagedPostDrain expected = nullptr;
+    return s_ManagedPostDrain.compare_exchange_strong(expected, drain, std::memory_order_acq_rel);
 }
 
 void ScriptManager::MarkMainThread()

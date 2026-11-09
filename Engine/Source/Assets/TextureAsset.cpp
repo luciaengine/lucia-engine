@@ -774,9 +774,6 @@ bool TextureAsset::LoadWithSTB() {
     // Decide whether this is an HDR texture based on file extension
     const bool isHDRFile = (extension == ".hdr");
 
-    // For glTF baseColor textures we do not flip (UVs match), but if needed:
-    stbi_set_flip_vertically_on_load(false);
-
     if (isHDRFile) {
         float* data = stbi_loadf_from_memory(bytes.data(), static_cast<int>(bytes.size()),
                                              &width, &height, &channels, 0);
@@ -846,7 +843,6 @@ bool TextureAsset::LoadWithSTBFromData(const Vector<uint8>& data) {
     }
 #if defined(GE_HAVE_STB)
     int width=0, height=0, channels=0;
-    stbi_set_flip_vertically_on_load(false);
     // Worker loads arrive as bytes too: retain HDR range on a missing package
     // bake just as the direct file path does, without an implicit LDR conversion.
     if (extension == ".hdr")

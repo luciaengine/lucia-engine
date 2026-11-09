@@ -70,10 +70,11 @@ public:
         const auto entries = table.subspan(CBTTerrain::kCBTPageFadeOffsetWords + table[4]);
         const auto fades = table.subspan(CBTTerrain::kCBTPageFadeOffsetWords, table[4]);
         const auto levels = table.subspan(CBTTerrain::kCBTPageHeaderWords, 4u * table[2]);
-        std::vector<uint32> queries(8u + 4u * points.size(), 0);
+        std::vector<uint32> queries(12u + 4u * points.size(), 0);
         std::copy_n(table.begin(), 4, queries.begin());
-        queries[4] = static_cast<uint32>(points.size());
-        std::memcpy(queries.data() + 8, points.data(), points.size_bytes());
+        std::copy_n(table.begin() + 5, 3, queries.begin() + 4); // floor, tier count, directory offset
+        queries[8] = static_cast<uint32>(points.size());
+        std::memcpy(queries.data() + 12, points.data(), points.size_bytes());
         const auto entryBuffer = MakeBuffer(entries.data(), entries.size_bytes());
         const auto fadeBuffer = MakeBuffer(fades.data(), fades.size_bytes());
         const auto levelBuffer = MakeBuffer(levels.data(), levels.size_bytes());

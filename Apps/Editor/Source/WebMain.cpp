@@ -1,3 +1,4 @@
+#include "Audio/AudioTypes.h"
 #include "Platform/Window.h"
 // Web Editor entry (web platform plan, Phase 7): the same EditorApplication as
 // the desktop editor, driven by the browser instead of a blocking main loop.
@@ -307,6 +308,7 @@ int main()
 
     GameEngine::ApplicationConfig config;
     config.Name = "Lucia Engine";
+    config.AudioOutput = GameEngine::Audio::AudioOutput::Device;
     config.EnableEditor = true;
     config.PersistScenesEagerly = true; // browser storage is the only place a scene survives
     // A project opened in the first frames deadlocks the wasm main thread in

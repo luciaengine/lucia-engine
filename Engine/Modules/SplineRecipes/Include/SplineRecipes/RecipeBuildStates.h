@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ECS/ECS.h"
-#include "SplineRecipes/RecipeStatus.h"
+#include "SplineRecipes/SplineRecipesScriptApi.h"
 #include "Types/FlatMap.h"
 #include "Types/Types.h"
 

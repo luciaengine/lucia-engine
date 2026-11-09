@@ -83,6 +83,7 @@ inline GE_Result EnsureEngineInitialized()
         return GE_Result_NotInitialized;
 
     ApplicationConfig cfg;
+    cfg.StandaloneHosted = true;
     if (const char* nativeDirEnv = std::getenv("GE_NATIVE_DIR"); nativeDirEnv && nativeDirEnv[0] != '\0')
     {
         std::filesystem::path nativeDir(nativeDirEnv);

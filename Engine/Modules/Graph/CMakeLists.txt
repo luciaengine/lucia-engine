@@ -96,8 +96,7 @@ if(BUILD_TESTING)
         GTest::gtest_main
     )
     target_include_directories(MaterialGraphCompilerTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
-    target_sources(MaterialGraphCompilerTests PRIVATE
-        ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+    target_link_libraries(MaterialGraphCompilerTests PRIVATE Image)
     target_compile_definitions(MaterialGraphCompilerTests PRIVATE GE_HAVE_STB)
     # StagedTestPaths.h — staged-fixture resolution shared by all fixture suites.
     target_include_directories(MaterialGraphCompilerTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Tests)
@@ -125,8 +124,7 @@ if(BUILD_TESTING)
         GTest::gtest
         GTest::gtest_main
     )
-    target_sources(GraphSerializationTests PRIVATE
-        ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+    target_link_libraries(GraphSerializationTests PRIVATE Image)
     target_compile_definitions(GraphSerializationTests PRIVATE GE_HAVE_STB)
     if(COMMAND ge_set_output_tests)
         ge_set_output_tests(GraphSerializationTests)

@@ -5662,7 +5662,7 @@ void InspectorPanel::ShowGraphNode(const std::string& nodeId, const std::string&
                 const std::string value = (valueIt != parameters.end()) ? valueIt->second : std::string();
                 AssetManager& am = EngineCore::GetInstance().GetAssetManager();
                 InspectorUI::AddAssetFieldRow(
-                    sectionContent, plannedRow.Label, GUID(value), {AssetType::Animation},
+                    sectionContent, plannedRow.Label, GUID(value), {plannedRow.AssetReference},
                     &am.GetRegistry(),
                     [this, nodeId, key](const GUID& picked)
                     {
@@ -5670,7 +5670,7 @@ void InspectorPanel::ShowGraphNode(const std::string& nodeId, const std::string&
                         if (m_OnGraphNodeParameterChanged)
                             m_OnGraphNodeParameterChanged(nodeId, key, text, true);
                     },
-                    nullptr, "Animation clip");
+                    nullptr, "Asset reference");
                 break;
             }
             case GraphInspectorRowKind::NodeInt:

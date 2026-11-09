@@ -1027,6 +1027,7 @@ if(EMSCRIPTEN)
     add_subdirectory(Engine/Modules/Events)
     add_subdirectory(Engine/Modules/GenerationalVector)
     add_subdirectory(Engine/Modules/Types)
+    add_subdirectory(Engine/Modules/Image)
     add_subdirectory(Engine/Modules/AssetCore)
     add_subdirectory(Engine/Modules/JobSystem)
     add_subdirectory(Engine/Modules/Mathematics)
@@ -1111,6 +1112,7 @@ add_subdirectory(Engine/Modules/Logger)        # Unified logging system for all 
 add_subdirectory(Engine/Modules/GenerationalVector)  # Generational handle system
 # Types: cross-cutting basic types (Types/Types.h)
 add_subdirectory(Engine/Modules/Types)
+add_subdirectory(Engine/Modules/Image)
 # Event: header-only multicast event with self-detaching handles (Events/Event.h)
 add_subdirectory(Engine/Modules/Events)
 # Native plugin lifecycle API used by Engine and Editor extension modules.

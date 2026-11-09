@@ -30,6 +30,7 @@ struct GraphInspectorRow
     std::string Key;
     int VecAxis = -1;
     int VecCount = 0;
+    AssetType AssetReference = AssetType::Unknown;
 };
 
 /** Null when `typeId` is missing or registered under more than one kind. */

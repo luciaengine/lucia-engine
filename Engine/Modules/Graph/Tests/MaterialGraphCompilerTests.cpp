@@ -1163,3 +1163,39 @@ TEST(MaterialGraphSurfaceDigestTest, WiringAndNodeParametersMoveTheDigest)
     retypedNode.Nodes[0].TypeId = "FloatConstant";
     EXPECT_NE(MaterialGraphSurfaceDigest(retypedNode), digest);
 }
+
+TEST(GameLogicGraphCompilerTest, SpawnPrefabCompilesToTheContextSpawn)
+{
+    const GameLogicActionSpec* spec = FindGameLogicActionSpec("SpawnPrefab");
+    ASSERT_NE(spec, nullptr);
+    EXPECT_EQ(spec->DisplayName, "Spawn Prefab");
+    EXPECT_EQ(spec->Category, "Game Object");
+
+    Graph::Model model{};
+    model.KindId.assign(Graph::kKindIdGameLogic);
+
+    Graph::Node entry{};
+    entry.Id = "entry";
+    entry.TypeId = "Entry";
+    entry.Ports.push_back({"out", Graph::PortDirection::Out, "flow", "Out"});
+
+    Graph::Node spawn{};
+    spawn.Id = "spawn";
+    spawn.TypeId = "SpawnPrefab";
+    spawn.Ports.push_back({"in", Graph::PortDirection::In, "flow", "In"});
+    spawn.Ports.push_back({"out", Graph::PortDirection::Out, "flow", "Out"});
+    spawn.Parameters["prefab"] = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+    spawn.Parameters["position"] = "4, 0, 2";
+    spawn.Parameters["rotation"] = "0, 90, 0";
+
+    model.Nodes = {entry, spawn};
+    model.Links.push_back({"l0", "entry", "out", "spawn", "in"});
+
+    const auto result = GameLogicGraphCompiler::CompileToCpp(model, "RunGraph");
+    ASSERT_TRUE(result.success) << (result.errors.empty() ? "" : result.errors.front());
+    EXPECT_NE(result.cppSource.find("(void)ctx.SpawnPrefab(\"0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0\", "
+                                    "GameLogicVec3{4.000000f, 0.000000f, 2.000000f}, "
+                                    "GameLogicVec3{0.000000f, 90.000000f, 0.000000f});"),
+              std::string::npos)
+        << result.cppSource;
+}

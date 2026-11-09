@@ -1031,8 +1031,8 @@ bool CBTRenderFeature::BuildFrameParams(RenderServices& rs, Rendering::ViewId vi
     uint64_t pageRevision = 0;
     Rendering::TextureHandle pageCache = PagedHeightSource(t.Handle.Index, pageWords, pageVersion, contentGeneration,
                                                          &frame, &pageRevision);
-    // The ring slot grows to the terrain's table (its platform cap is checked where it is paged); a
-    // failed allocation keeps the terrain on its texture this frame.
+    // The ring slot grows to the terrain's dense or bounded tiered table. A failed allocation keeps
+    // the terrain on its texture this frame.
     if (pageCache.IsValid() && !m_Instance.ProvisionPageTableWords(static_cast<uint32_t>(pageWords.size())))
         pageCache = {};
     // Phase E resident-window atlas (design §3). An atlas-backed terrain drives the CBT

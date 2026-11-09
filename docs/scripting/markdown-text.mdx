@@ -1,0 +1,26 @@
+---
+title: Updating Markdown text
+description: Update a MarkdownText control from game code.
+---
+
+A `MarkdownText` element in a UI document is returned as `Ui.MarkdownText` by `Ui.FindElement`. Set its text on the main thread. A null or empty string clears the control; `SetText` returns false when its element no longer resolves.
+
+:::::tabs
+::::tab[C++]
+
+```cpp title="UI/Controls/MarkdownText.h"
+notes.SetMarkdown("## Objectives\nFind the **lantern**.");
+```
+
+::::
+::::tab[C#]
+
+```csharp title="GameEngine.Scripting.Ui"
+if (Ui.FindElement("notes") is Ui.MarkdownText notes)
+    notes.SetText("## Objectives\nFind the **lantern**.");
+```
+
+::::
+:::::
+
+The native scripting ABI is `GE_UIElement_SetMarkdownText`. It rejects an element of another type, an invalid handle, and a handle whose element was replaced during a UI reload.

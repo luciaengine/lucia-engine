@@ -31,7 +31,7 @@ struct Vector3Int
     constexpr Vector3Int operator/(int32_t divisor) const { return Vector3Int(X / divisor, Y / divisor, Z / divisor); }
 
     /// The same point as a float vector.
-    explicit operator Vector3() const
+    constexpr explicit operator Vector3() const
     {
         return Vector3(static_cast<float>(X), static_cast<float>(Y), static_cast<float>(Z));
     }

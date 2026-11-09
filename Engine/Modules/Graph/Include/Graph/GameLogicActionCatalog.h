@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AssetCore/AssetTypes.h"
 #include "Graph/GraphModel.h"
 #include "Graph/NodeParamOption.h"
 
@@ -16,6 +17,9 @@ struct GameLogicActionParameter
     /** Non-empty = enum: every editor surface offers exactly these choices,
         matching the value vocabulary the runtime accepts. */
     Graph::NodeParamOptions Options;
+    /** The type of asset whose GUID the parameter holds; Unknown when it holds no asset
+        reference. Editors show an asset reference field filtered to this type. */
+    AssetType AssetReference = AssetType::Unknown;
 };
 
 struct GameLogicActionSpec

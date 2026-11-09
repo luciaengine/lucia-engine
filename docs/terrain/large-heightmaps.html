@@ -212,9 +212,9 @@ time instead of decoding the whole file.</p>
 <thead><tr><th></th><th>Desktop</th><th>Steam Deck</th></tr></thead>
 <tbody>
 <tr><td>Page cache (GPU)</td><td>512 pages, 33 MiB</td><td>256 pages, 16.5 MiB</td></tr>
-<tr><td>Largest terrain that streams</td><td>a page table of 2,097,152 entries (8 MiB): a 60 &times; 15 km
-terrain at 0.25 m streams</td><td>524,288 entries (2 MiB): about 24 &times; 6 km at 0.5 m, or 60 &times; 15 km
-at 1 m</td></tr>
+<tr><td>Height page table</td><td>Dense through 2,097,152 words; larger fields use bounded pools of
+10 mid blocks and 160 leaf blocks</td><td>Dense through 524,288 words; larger fields use five mid blocks and
+80 leaf blocks</td></tr>
 <tr><td>Height modifiers (system memory)</td><td>512 MiB of modified area per terrain: about 6 km&sup2; at
 0.25 m</td><td>128 MiB: about 1.5 km&sup2; at 0.25 m</td></tr>
 </tbody>
@@ -227,10 +227,10 @@ at 1 m</td></tr>
   with the bake margin on a 0.25 m lattice can require about 91 MiB, including its coarser pages.</p>
 <p>A terrain over one of these limits draws from its height texture, and the log states why, once, with the fix:</p>
 <ul>
-  <li>Too large: <i>"&lt;terrain&gt; (X x Z samples) does not stream its height on this platform: its page
-  table needs ... words,
-  over the platform's cap of ... words. It draws from its height texture. Lower its samples per meter or its
-  size to stream it."</i></li>
+  <li>Too many samples along an axis: the CPU directory supports at most 4,194,304 samples per axis.
+  Lower Samples Per Meter or import the heightmap at a lower resolution. A larger GPU table alone does
+  not refuse paging: bounded blocks map resident pages, and a page waiting for a block resolves through
+  its resident ancestor.</li>
   <li>Modifiers reach too much of it: <i>"&lt;terrain&gt; does not stream its height on this platform: its height
   modifiers reach so much of it that their page overlay needs ... bytes, over the platform's cap of ... bytes.
   It draws from its height texture. Shrink the modifiers' bounds (a terrain-wide modifier reaches every

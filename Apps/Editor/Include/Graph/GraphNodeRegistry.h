@@ -1,5 +1,7 @@
 #pragma once
 
+#include "AssetCore/AssetTypes.h"
+
 #include "Graph/GraphModel.h"
 #include "Graph/NodeParamOption.h"
 #include <functional>
@@ -33,6 +35,7 @@ struct NodeParamSpec {
     /* Editing range; vector params clamp per component. */
     std::optional<float> Min;
     std::optional<float> Max;
+    AssetType AssetReference = AssetType::Unknown;
 };
 
 /** Resolved [Min, Max] editing range for one node value key. */
