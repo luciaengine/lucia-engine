@@ -3,8 +3,29 @@
 #include "Types/StringUtils.h"
 
 #include <cstring>
+#include <string>
+#include <string_view>
+#include <utility>
 
 using namespace GameEngine;
+
+namespace
+{
+
+template <class Text>
+concept CanSplit = requires(Text&& text) { Split(std::forward<Text>(text), ','); };
+
+template <class Text>
+concept CanTrimToView = requires(Text&& text) { TrimWhitespaceView(std::forward<Text>(text)); };
+
+// A view into a temporary std::string dangles once the full expression ends, so the helpers that
+// return views refuse one at compile time; a named string, a view and a literal are accepted.
+static_assert(CanSplit<const std::string&> && CanSplit<std::string&> && CanSplit<std::string_view> && CanSplit<const char*>);
+static_assert(!CanSplit<std::string> && !CanSplit<std::string&&> && !CanSplit<const std::string&&>);
+static_assert(CanTrimToView<const std::string&> && CanTrimToView<std::string_view> && CanTrimToView<const char*>);
+static_assert(!CanTrimToView<std::string> && !CanTrimToView<std::string&&>);
+
+} // namespace
 
 TEST(StringUtilsTests, TrimRemovesEveryAsciiWhitespaceKindFromBothEnds)
 {

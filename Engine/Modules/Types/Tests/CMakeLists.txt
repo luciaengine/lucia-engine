@@ -28,6 +28,7 @@ add_executable(TypesTests
     ParseStrictDecimalTests.cpp
     PathUtilsTests.cpp
     StringUtilsTests.cpp
+    DisjointSetsTests.cpp
     Utf8Tests.cpp
 )
 

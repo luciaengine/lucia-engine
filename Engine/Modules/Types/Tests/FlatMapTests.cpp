@@ -7,6 +7,16 @@
 
 using GameEngine::FlatMap;
 
+namespace
+{
+struct NotAComparator {};
+template <class Compare>
+concept ValidFlatMapComparator = requires { typename FlatMap<int, int, Compare>; };
+static_assert(ValidFlatMapComparator<std::less<int>>);
+static_assert(!ValidFlatMapComparator<NotAComparator>);
+}
+
+
 TEST(FlatMapTests, EmptyOnConstruction)
 {
     FlatMap<int, std::string> map;

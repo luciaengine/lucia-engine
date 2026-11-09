@@ -1,0 +1,12 @@
+# String views
+
+`Types/StringUtils.h` provides `Split` and `TrimWhitespaceView` without copying the characters. Their results refer to the input text, which must remain alive while those views are used.
+
+Name an owned string before taking views from it:
+
+```cpp
+const std::string text = ReadText(path);
+const auto lines = GameEngine::Split(text, '\n');
+```
+
+These two helpers reject temporary `std::string` arguments at compile time. Named strings, string literals, and `std::string_view` arguments are accepted. Constructing a view explicitly from a temporary string still creates a dangling reference, so the caller must preserve the owner.
