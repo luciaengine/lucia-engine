@@ -1,0 +1,20 @@
+# Build dynamic UI trees
+
+Use `UI::Element<T>` from `UI/ElementBuilder.h` for controls built from runtime data. Use XML layouts for a fixed tree and CSS for its style.
+
+Register each control type with `UIRegistration::Registrar<T>` before creating it. The builder uses its registered factory, applies attribute defaults, and then invokes explicit setters in call order.
+
+```cpp
+UIElement::WeakRef<Label> caption;
+auto row = UI::Element<UIElement>().Class("result-row").Children(
+    UI::Element<Label>().Class("result-caption")
+        .Set(&Label::SetText, result.Name).Capture(caption)).Build();
+if (row)
+    resultList.AddChild(std::move(row));
+```
+
+Create and attach controls on the UI thread. Include the headers for each control used by the builder. `Build()` transfers ownership and consumes the builder. `Children()` consumes child builders and owned subtrees in argument order. A null child invalidates the whole tree and releases its controls.
+
+`Capture()` assigns a weak reference. It expires when construction fails or the owning subtree is destroyed. `On()` registers an event handler for the element lifetime.
+
+A type with several canonical tags requires an explicit tag, such as `UI::Element<MyControl>("result")`. Aliases are accepted. A missing registration, mismatched factory, or ambiguous tag returns a null tree and logs the registration error.

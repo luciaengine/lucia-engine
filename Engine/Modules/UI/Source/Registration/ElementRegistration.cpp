@@ -36,7 +36,9 @@ bool ElementFactoryRegistry::RegisterFactory(std::string_view tagLower, FactoryF
     m_OwnerByTag[key] = owner;
     // Canonical mapping: a canonical tag maps to itself.
     m_CanonicalByLower[key] = key;
+    ForgetCanonicalTag(key);
     m_TypeInfoByTag[key] = &typeInfo;
+    m_CanonicalTagsByType.GetOrInsert(std::type_index(typeInfo)).push_back(key);
     // Reverse maps: the RTTI answer for elements that carry no creation stamp, i.e. ones
     // built directly in C++ rather than through Create. They are lossy by construction —
     // registering two tags against one C++ class leaves whichever registered last — which is
@@ -56,6 +58,65 @@ std::unique_ptr<UIElement> ElementFactoryRegistry::Create(std::string_view tagLo
     if (el)
         UIAttributeAccess::SetCreatedTagId(*el, CanonicalTagIdFromKey(key));
     return el;
+}
+
+std::unique_ptr<UIElement> ElementFactoryRegistry::CreateTyped(
+    const std::type_info& type, std::string_view tag) const
+{
+    std::string key = ToLowerAscii(tag);
+    if (key.empty())
+    {
+        const std::vector<std::string>* tags = m_CanonicalTagsByType.Find(std::type_index(type));
+        if (!tags)
+        {
+            Logger::Log::Error(
+                "UI C++ layout: type '{}' is not registered. Register its factory before calling Element<T>().",
+                type.name());
+            return nullptr;
+        }
+        if (tags->size() > 1)
+        {
+            Logger::Log::Error(
+                "UI C++ layout: type '{}' has several canonical tags. Pass an explicit tag to Element<T>(tag).",
+                type.name());
+            return nullptr;
+        }
+        key = tags->front();
+    }
+
+    const std::type_info* registeredType = GetTypeInfoFromKey(key);
+    if (!registeredType || *registeredType != type)
+    {
+        Logger::Log::Error(
+            "UI C++ layout: tag '{}' is not registered for type '{}'. Register that type or choose its tag.",
+            key, type.name());
+        return nullptr;
+    }
+    auto element = Create(key);
+    // typeid reads the dynamic type through a raw pointer: unique_ptr::operator* is a call that clang flags.
+    const UIElement* created = element.get();
+    if (!created || typeid(*created) != type)
+    {
+        Logger::Log::Error(
+            "UI C++ layout: factory '{}' did not return type '{}'. Fix the registered factory.",
+            key, type.name());
+        return nullptr;
+    }
+    return element;
+}
+
+void ElementFactoryRegistry::ForgetCanonicalTag(const std::string& key)
+{
+    const auto type = m_TypeInfoByTag.find(key);
+    if (type == m_TypeInfoByTag.end() || !type->second)
+        return;
+    const std::type_index typeKey(*type->second);
+    std::vector<std::string>* tags = m_CanonicalTagsByType.Find(typeKey);
+    if (!tags)
+        return;
+    std::erase(*tags, key);
+    if (tags->empty())
+        m_CanonicalTagsByType.Erase(typeKey);
 }
 
 void ElementFactoryRegistry::RegisterFactoryAlias(std::string_view aliasLower, std::string_view existingLower) {
@@ -83,6 +144,8 @@ void ElementFactoryRegistry::RegisterFactoryAlias(std::string_view aliasLower, s
         auto itCan = m_CanonicalByLower.find(existingKey);
         const std::string canonical = (itCan != m_CanonicalByLower.end()) ? itCan->second : existingKey;
         m_CanonicalByLower[aliasKey] = canonical;
+        if (aliasKey != canonical)
+            ForgetCanonicalTag(aliasKey);
         // Alias shares the same type_info as the canonical tag.
         auto itTi = m_TypeInfoByTag.find(canonical);
         if (itTi != m_TypeInfoByTag.end())
@@ -221,6 +284,7 @@ std::size_t ElementFactoryRegistry::UnregisterFactoriesOwnedBy(std::uint64_t own
         m_Factories.erase(key);
         m_OwnerByTag.erase(key);
         m_CanonicalByLower.erase(key);
+        ForgetCanonicalTag(key);
         m_TypeInfoByTag.erase(key);
     }
 
