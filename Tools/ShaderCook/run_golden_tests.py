@@ -15,9 +15,11 @@ import difflib
 import subprocess
 import sys
 import tempfile
+import unittest
 from pathlib import Path
 
 import shadercook
+import test_shadercook
 
 kRoot = Path(__file__).resolve().parent
 kRepo = kRoot.parent.parent
@@ -57,46 +59,51 @@ def Cook(source: Path, out_dir: Path) -> Path:
     return out_dir / (source.stem + ".wgsl")
 
 
-def main() -> int:
+def Main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--update", action="store_true",
                         help="regenerate the snapshots from the current toolchain")
-    args = parser.parse_args()
+    arguments = parser.parse_args()
 
     # The cook needs naga; a clone that has not run toolchain/setup.py has none.
     if shadercook.FindTool("naga", None) is None:
         print("SKIP: naga not found - run Tools/ShaderCook/toolchain/setup.py to fetch it")
         return kCannotRun
 
+    regressionResult = unittest.TextTestRunner(verbosity=2).run(
+        unittest.defaultTestLoader.loadTestsFromTestCase(test_shadercook.DescriptorTypeHoistTests))
+    if not regressionResult.wasSuccessful():
+        return 1
+
     kGolden.mkdir(exist_ok=True)
     failures = []
-    with tempfile.TemporaryDirectory() as tempdir:
-        out_dir = Path(tempdir)
+    with tempfile.TemporaryDirectory() as temporaryDirectory:
+        outputDirectory = Path(temporaryDirectory)
         for case in kCases:
-            cooked = Cook(kShaders / case, out_dir)
+            cooked = Cook(kShaders / case, outputDirectory)
             snapshot = kGolden / cooked.name
-            if args.update:
+            if arguments.update:
                 snapshot.write_text(NormalizeSnapshot(cooked.read_text()))
                 print(f"updated {snapshot.relative_to(kRoot)}")
                 continue
             if not snapshot.exists():
                 failures.append(f"{case}: no snapshot (run --update once)")
                 continue
-            got = NormalizeSnapshot(cooked.read_text())
-            want = NormalizeSnapshot(snapshot.read_text())
-            if got != want:
+            actual = NormalizeSnapshot(cooked.read_text())
+            expected = NormalizeSnapshot(snapshot.read_text())
+            if actual != expected:
                 diff = "".join(difflib.unified_diff(
-                    want.splitlines(keepends=True), got.splitlines(keepends=True),
+                    expected.splitlines(keepends=True), actual.splitlines(keepends=True),
                     fromfile=str(snapshot.name) + " (golden)",
                     tofile=str(cooked.name) + " (cooked)", n=2))
                 failures.append(f"{case}: WGSL drifted\n{diff[:2000]}")
     if failures:
         print("GOLDEN FAILURES:\n" + "\n".join(failures), file=sys.stderr)
         return 1
-    if not args.update:
+    if not arguments.update:
         print(f"golden OK ({len(kCases)} snapshots match)")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(Main())
