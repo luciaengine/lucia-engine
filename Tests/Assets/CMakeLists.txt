@@ -32,6 +32,7 @@ set(ASSET_TEST_SOURCES
     AssetMetaMaintenanceTests.cpp
     FilePatternTests.cpp
     AssetRegistryConcurrencyTests.cpp
+    RegistryScanFanoutTests.cpp
     AssetRootSeparationTests.cpp
     FoldedPathIndexTests.cpp
     AssetDbLegacyPathNormalizationTests.cpp

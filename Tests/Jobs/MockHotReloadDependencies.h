@@ -62,40 +62,4 @@ public:
     }
 };
 
-/**
- * @brief Mock assembly swapper for testing
- */
-class MockAssemblySwapper : public Jobs::IAssemblySwapper {
-public:
-    explicit MockAssemblySwapper(bool shouldSucceed = true, int simulatedDelayMs = 5)
-        : m_ShouldSucceed(shouldSucceed), m_SimulatedDelayMs(simulatedDelayMs) {}
-
-    SwapResult swapAssembly(const std::vector<uint8_t>& /*assemblyBytes*/, const String& assemblyPath) override {
-        auto start = std::chrono::high_resolution_clock::now();
-        
-        // Simulate swap time
-        std::this_thread::sleep_for(std::chrono::milliseconds(m_SimulatedDelayMs));
-        
-        auto end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        
-        SwapResult result;
-        result.success = m_ShouldSucceed;
-        result.duration = duration;
-        
-        if (!m_ShouldSucceed) {
-            result.errorMessage = "Mock swap failed for " + assemblyPath;
-        }
-        
-        return result;
-    }
-    
-    void setShouldSucceed(bool shouldSucceed) { m_ShouldSucceed = shouldSucceed; }
-    void setSimulatedDelay(int delayMs) { m_SimulatedDelayMs = delayMs; }
-
-private:
-    bool m_ShouldSucceed;
-    int m_SimulatedDelayMs;
-};
-
 } // namespace GameEngine::Tests

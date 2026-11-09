@@ -1,13 +1,13 @@
 #pragma once
 
+#include "JobSystem/TaskHandle.h"
 #include "JobSystem/TaskTypes.h"
-#include "JobSystem/Task.h"
-#include "Jobs/HotReloadCancellation.h"
 #include "Logger/Logger.h"
 #include "Types/Types.h"
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <functional>
 #include <future>
@@ -30,7 +30,6 @@ namespace Jobs
 {
 class ICompiler;
 class IAssemblyLoader;
-class IAssemblySwapper;
 } // namespace Jobs
 
 // Use fully qualified JobSystem types to avoid conflicts
@@ -224,30 +223,13 @@ class IAssemblyLoader
     virtual std::vector<uint8_t> loadAssemblyBytes(const String& assemblyPath) = 0;
 };
 
-/**
- * @brief Interface for assembly swapping operations
- */
-class IAssemblySwapper
-{
-  public:
-    virtual ~IAssemblySwapper() = default;
-
-    struct SwapResult
-    {
-        bool success;
-        std::chrono::milliseconds duration;
-        String errorMessage;
-    };
-
-    virtual SwapResult swapAssembly(const std::vector<uint8_t>& assemblyBytes, const String& assemblyPath) = 0;
-};
-
 } // namespace Jobs
 
 /**
- * @brief Base class for all hot-reload pipeline tasks
+ * @brief Base class for the hot-reload pipeline stages. The pipeline calls a
+ * stage's Execute inside the job that runs the stage.
  */
-class HotReloadTask : public JobSystem::Task
+class HotReloadTask
 {
   public:
     // Lightweight cancellation exception to short-circuit task work
@@ -256,11 +238,8 @@ class HotReloadTask : public JobSystem::Task
         const char* what() const noexcept override { return "HotReload task cancelled"; }
     };
 
-    HotReloadTask(JobSystem::WorkStealingThreadPool* jobSystem, const String& assemblyPath,
-                  const std::shared_ptr<std::atomic<bool>>& cancelToken = nullptr)
-        : JobSystem::Task(jobSystem), m_AssemblyPath(assemblyPath), m_StartTime(std::chrono::high_resolution_clock::now()), m_CancelToken(cancelToken) {}
-
-    virtual ~HotReloadTask() = default;
+    HotReloadTask(const String& assemblyPath, const std::shared_ptr<std::atomic<bool>>& cancelToken = nullptr)
+        : m_AssemblyPath(assemblyPath), m_StartTime(std::chrono::high_resolution_clock::now()), m_CancelToken(cancelToken) {}
 
     /**
      * @brief Get the assembly path being processed
@@ -296,9 +275,8 @@ class HotReloadTask : public JobSystem::Task
         m_ErrorMessage = errorMessage;
 
         bool success = (result == HotReloadResult::Success);
-        JobSystem::TaskId taskId = GetTaskId();
-        Logger::Log::Debug("[HotReload] Task {} completed with result: {}",
-                           taskId, success ? "success" : "failed");
+        Logger::Log::Debug("[HotReload] Stage for {} completed with result: {}",
+                           m_AssemblyPath, success ? "success" : "failed");
     }
 
     /**
@@ -326,11 +304,10 @@ class HotReloadTask : public JobSystem::Task
 class CompilationTask : public HotReloadTask
 {
   public:
-    CompilationTask(JobSystem::WorkStealingThreadPool* jobSystem,
-                    const String& assemblyPath,
+    CompilationTask(const String& assemblyPath,
                     std::unique_ptr<Jobs::ICompiler> compiler = nullptr,
                     const std::shared_ptr<std::atomic<bool>>& cancelToken = nullptr)
-        : HotReloadTask(jobSystem, assemblyPath, cancelToken), m_Compiler(std::move(compiler))
+        : HotReloadTask(assemblyPath, cancelToken), m_Compiler(std::move(compiler))
     {
         if (!m_Compiler)
         {
@@ -345,7 +322,7 @@ class CompilationTask : public HotReloadTask
      * fails, so the task handle reports Failed and the dependent stages never
      * run. A cancelled compile returns normally with result Cancelled.
      */
-    void Execute() override;
+    void Execute();
 
     /**
      * @brief Get compilation output
@@ -376,44 +353,14 @@ class CompilationTask : public HotReloadTask
 };
 
 /**
- * @brief Stage 2: Asynchronous file loading task
+ * @brief Read the compiled assembly's bytes and check that they start with a
+ * PE signature. The compile job calls it after the compile.
+ * @param loader Supplies the bytes instead of the file when set (tests).
+ * @return The bytes. Empty when the file cannot be read, is not an assembly,
+ * or the run is cancelled; the preparation stage then reads the file itself.
  */
-class FileLoadingTask : public HotReloadTask
-{
-  public:
-    FileLoadingTask(JobSystem::WorkStealingThreadPool* jobSystem, const String& assemblyPath,
-                    std::unique_ptr<Jobs::IAssemblyLoader> loader = nullptr,
-                    const std::shared_ptr<std::atomic<bool>>& cancelToken = nullptr)
-        : HotReloadTask(jobSystem, assemblyPath, cancelToken), m_Loader(std::move(loader)) {}
-
-    void Execute() override;
-
-    /**
-     * @brief Get loaded assembly bytes
-     */
-    const std::vector<uint8_t>& GetAssemblyBytes() const { return m_AssemblyBytes; }
-
-    /**
-     * @brief Get file size in bytes
-     */
-    size_t GetFileSize() const { return m_AssemblyBytes.size(); }
-
-  private:
-    /**
-     * @brief Load file asynchronously with progress monitoring
-     */
-    bool LoadFileAsync();
-
-    /**
-     * @brief Validate assembly file format
-     */
-    bool ValidateAssemblyFormat() const;
-
-  private:
-    std::vector<uint8_t> m_AssemblyBytes;
-    std::filesystem::file_time_type m_FileTimestamp;
-    std::unique_ptr<Jobs::IAssemblyLoader> m_Loader;
-};
+std::vector<uint8_t> ReadAssemblyBytes(const String& assemblyPath, Jobs::IAssemblyLoader* loader,
+                                       const std::atomic<bool>* cancelToken);
 
 // Per-pipeline synchronization for preloaded context readiness (replaces previous static sync)
 struct PreloadSync
@@ -424,17 +371,17 @@ struct PreloadSync
 };
 
 /**
- * @brief Stage 3: Background assembly preparation task
+ * @brief Stage 2: Background assembly preparation task
  */
 class AssemblyPrepTask : public HotReloadTask
 {
   public:
-    AssemblyPrepTask(JobSystem::WorkStealingThreadPool* jobSystem, const String& assemblyPath, JobSystem::TaskHandle fileLoadTaskHandle,
+    AssemblyPrepTask(const String& assemblyPath, std::vector<uint8_t> assemblyBytes,
                      std::shared_ptr<PreloadSync> preloadSync,
                      const std::shared_ptr<std::atomic<bool>>& cancelToken = nullptr)
-        : HotReloadTask(jobSystem, assemblyPath, cancelToken), m_FileLoadTaskHandle(fileLoadTaskHandle), m_PreloadSync(std::move(preloadSync)) {}
+        : HotReloadTask(assemblyPath, cancelToken), m_AssemblyBytes(std::move(assemblyBytes)), m_PreloadSync(std::move(preloadSync)) {}
 
-    void Execute() override;
+    void Execute();
 
     /**
      * @brief Get prepared assembly context (only valid after successful execution)
@@ -469,8 +416,8 @@ class AssemblyPrepTask : public HotReloadTask
     void ExtractAssemblyMetadata();
 
   private:
-    JobSystem::TaskHandle m_FileLoadTaskHandle;
-    std::vector<uint8_t> m_AssemblyBytes; // Will be populated from FileLoadingTask
+    // The compile job's read; empty when that read failed.
+    std::vector<uint8_t> m_AssemblyBytes;
     void* m_PreparedContext{nullptr};
     void* m_PreparedAssembly{nullptr};
     String m_AssemblyName;
@@ -482,19 +429,23 @@ class AssemblyPrepTask : public HotReloadTask
 };
 
 /**
- * @brief Stage 4: Minimal main-thread synchronization task
+ * @brief Stage 3: swap the prepared assembly in, on the calling thread.
+ *
+ * The pipeline calls Execute on the main thread when a frame loop runs, and
+ * on the thread that prepared the assembly when none runs.
  */
-class MainThreadSwapTask : public HotReloadTask
+class AssemblySwapTask : public HotReloadTask
 {
   public:
-    MainThreadSwapTask(JobSystem::WorkStealingThreadPool* jobSystem, const String& assemblyPath, void* preparedContext,
-                       std::shared_ptr<PreloadSync> preloadSync,
-                       std::unique_ptr<Jobs::IAssemblySwapper> swapper = nullptr,
-                       std::shared_ptr<HotReloadCancellation> cancellation = nullptr)
-        : HotReloadTask(jobSystem, assemblyPath, HotReloadCancellation::Token(cancellation)), m_PreparedContext(preparedContext), m_Swapper(std::move(swapper)), m_PreloadSync(std::move(preloadSync)),
-          m_Cancellation(cancellation ? std::move(cancellation) : std::make_shared<HotReloadCancellation>()) {}
+    /**
+     * @param jobSystem Runs the old context's cleanup; null skips the cleanup.
+     */
+    AssemblySwapTask(JobSystem::WorkStealingThreadPool* jobSystem, const String& assemblyPath,
+                     std::shared_ptr<PreloadSync> preloadSync,
+                     const std::shared_ptr<std::atomic<bool>>& cancelToken = nullptr)
+        : HotReloadTask(assemblyPath, cancelToken), m_JobSystem(jobSystem), m_PreloadSync(std::move(preloadSync)) {}
 
-    void Execute() override;
+    void Execute();
 
     /**
      * @brief Get swap duration (should be <1ms)
@@ -523,19 +474,20 @@ class MainThreadSwapTask : public HotReloadTask
     void UpdateAssemblyReferences();
 
   private:
-    void* m_PreparedContext;
+    JobSystem::WorkStealingThreadPool* m_JobSystem;
     void* m_OldContext{nullptr};
     std::chrono::milliseconds m_SwapDuration{0};
     bool m_SwapCompleted{false};
-    std::unique_ptr<Jobs::IAssemblySwapper> m_Swapper;
     std::shared_ptr<PreloadSync> m_PreloadSync;
-    // The run's cancellation (never null): the wait for the main thread ends
-    // as soon as the run is cancelled.
-    std::shared_ptr<HotReloadCancellation> m_Cancellation;
 };
 
 /**
  * @brief Hot-reload pipeline coordinator
+ *
+ * A run is one "Script compiles" job that compiles and reads the assembly's
+ * bytes, one pool job that prepares the assembly after it, and the swap. The
+ * preparation job's completion queues the swap on the main thread, so no
+ * thread waits for a run and nothing polls it.
  */
 class HotReloadPipeline
 {
@@ -557,46 +509,58 @@ class HotReloadPipeline
     };
 
     /**
-     * @param threadPool Runs the file load, preparation and swap stages.
-     * @param compiles The process's "Script compiles" channel: the compile
-     *        stage is a job of it, so it never runs beside another compile of
-     *        the process at the compile server's pipe and never holds a
-     *        compute worker while the server compiles. Must outlive the
-     *        pipeline.
+     * @param threadPool Runs the preparation stage and the stages' continuations.
+     * @param compiles The process's "Script compiles" channel: the job that
+     *        compiles and reads the bytes is a job of it, so it never runs
+     *        beside another compile of the process at the compile server's
+     *        pipe and never holds a compute worker while the server compiles.
+     *        Must outlive the pipeline.
      */
     HotReloadPipeline(JobSystem::WorkStealingThreadPool& threadPool, JobSystem::JobChannel& compiles);
 
     /**
      * @brief Cancels the current run and joins every run this pipeline started.
      *
-     * Blocks until every stage task of every run has finished, including a
-     * stage that was already Running when it was cancelled or superseded (a
-     * compile runs to completion). Stages hold what the factories gave them,
-     * such as a compiler that points at its owner, so the owner must destroy
-     * the pipeline before anything those stages reference.
+     * Blocks until every stage job of every run has finished, including a
+     * compile that was Running when its run was cancelled or superseded, and
+     * until no continuation of a run still uses the pipeline. A swap still
+     * queued for the main thread does nothing when it runs later. Stages hold
+     * what the factories gave them, such as a compiler that points at its
+     * owner, so the owner must destroy the pipeline before anything those
+     * stages reference.
      */
     ~HotReloadPipeline();
 
     /**
-     * @brief Execute the complete hot-reload pipeline asynchronously
+     * @brief Start a run, superseding the run in flight (last wins).
      * @param assemblyPath Path to the assembly to reload
-     * @return Future that resolves when pipeline completes
+     * @return Future that resolves when the run ends
      */
     std::future<PipelineStats> ExecuteAsync(const String& assemblyPath);
 
     // Dependency injection hooks for tests/tools
     void SetCompilerFactory(std::function<std::unique_ptr<Jobs::ICompiler>()> factory) { m_CompilerFactory = std::move(factory); }
     void SetAssemblyLoaderFactory(std::function<std::unique_ptr<Jobs::IAssemblyLoader>()> factory) { m_LoaderFactory = std::move(factory); }
-    void SetSwapperFactory(std::function<std::unique_ptr<Jobs::IAssemblySwapper>()> factory) { m_SwapperFactory = std::move(factory); }
+
+    /// Called with a run's stats on the thread that ends the run (the main thread after a swap, a pool
+    /// thread after a failed stage, the caller of Cancel), before the run's future is ready. Set before
+    /// the first ExecuteAsync.
+    void SetRunCompletedCallback(std::function<void(const PipelineStats&)> callback) { m_RunCompletedCallback = std::move(callback); }
 
     /**
-     * @brief Request cancellation of the current run and return without waiting.
+     * @brief Cancel the current run and return without waiting.
      *
-     * Queued stages never run. The run's future resolves as
-     * CancelledByNewOperation once its monitor sees the token; a stage that is
-     * already Running finishes in the background, and the destructor joins it.
+     * When this returns, the run's future has resolved as
+     * CancelledByNewOperation. Queued stages never run; a stage that is already Running
+     * finishes in the background, and the destructor joins it.
      */
     void Cancel();
+
+    /**
+     * @brief End the current run as timed out when it started 10 minutes or
+     * more before @p now. ScriptManager's per-frame pump calls it.
+     */
+    void CancelOverdueRun(std::chrono::steady_clock::time_point now);
 
     /**
      * @brief Check if pipeline is currently executing
@@ -609,43 +573,25 @@ class HotReloadPipeline
     float GetProgress() const;
 
   private:
-    /**
-     * @brief Monitor pipeline execution and collect statistics
-     * @param cancelToken The monitored run's own token — passed explicitly so
-     * a run that lost a supersede race never polls a successor's token.
-     */
-    PipelineStats MonitorExecution(std::chrono::high_resolution_clock::time_point runStart,
-                                   JobSystem::TaskHandle compilationHandle, JobSystem::TaskHandle fileLoadHandle,
-                                   JobSystem::TaskHandle assemblyPrepHandle, JobSystem::TaskHandle swapHandle,
-                                   const std::shared_ptr<std::atomic<bool>>& cancelToken);
+    struct Run;
+    struct Lifetime;
+
+    void OnCompileFailed(Run& run, const String& message);
+    void OnPrepFailed(Run& run, const String& message);
+    void StartSwap(const std::shared_ptr<Run>& run);
+    void RunSwap(Run& run);
+    void CancelRun(Run& run, const std::array<JobSystem::TaskHandle, 2>& stages, HotReloadResult result, const String& message);
 
     /**
-     * @brief Wait for the compile stage, polling the run's own token so
-     * Cancel and supersede resolve the run while the compile still runs.
-     * `compileStarted` is set by the compile job's first statement: a handle
-     * that ends neither Completed nor started was cancelled before the job ran
-     * (the pool's drain, without the run's token) and reports Cancelled, not
-     * CompilationFailed.
-     * @return The run's result when it ends at the compile (cancelled,
-     * failed, refused at the pool's shutdown, timed out); nothing when the
-     * compile completed and the later stages should run.
+     * @brief End @p run with @p stats: the first call for a run wins and later
+     * calls do nothing. Releases the pipeline when @p run is the current run,
+     * then calls the run-completed callback and resolves the run's future.
+     * @return True when this call ended the run.
      */
-    std::optional<PipelineStats> AwaitCompilation(const JobSystem::TaskHandle& compilationHandle,
-                                                  const std::atomic<bool>& compileStarted,
-                                                  const std::shared_ptr<std::atomic<bool>>& cancelToken);
+    bool Publish(Run& run, PipelineStats stats);
 
     /**
-     * @brief Cancel the current run's stage handles (F12 arbitration).
-     *
-     * Queued stages never run, the compile included while it waits in the
-     * "Script compiles" channel; a Running stage completes normally and its
-     * result is defused by the per-run cancel token. The later stages are
-     * submitted only after the compile completed.
-     */
-    void CancelStageHandles();
-
-    /**
-     * @brief Block until every run's launcher thread, and so every stage, has finished.
+     * @brief Block until every stage job has finished and no continuation uses the pipeline.
      */
     void JoinRuns();
 
@@ -655,44 +601,26 @@ class HotReloadPipeline
     std::atomic<bool> m_IsExecuting{false};
     std::atomic<float> m_Progress{0.0f};
 
-    // One launcher thread per ExecuteAsync. A launcher publishes its run's
-    // result first, so Cancel and supersede stay prompt, and then waits for its
-    // own stage tasks (the compile, and the three later stages when the compile
-    // completed) before it exits. Joining the launchers therefore
-    // joins every stage the pipeline submitted, including a superseded run's
-    // compile that was still Running. ExecuteAsync appends (pruning finished
-    // launchers) and the destructor joins. m_RunsMutex guards the vector:
-    // ExecuteAsync can run on the file watcher and on the main thread. The
-    // owner must not call ExecuteAsync once destruction has started.
-    std::mutex m_RunsMutex;
-    std::vector<std::future<void>> m_Runs;
+    // Continuations (stage callbacks and the queued swap) hold it and use the
+    // pipeline only while JoinRuns has not closed it.
+    std::shared_ptr<Lifetime> m_Lifetime;
 
-    // The current run's cancellation, shared with that run's stages.
-    // ExecuteAsync replaces it and Cancel reads it, and the two can run on
-    // different threads (the file watcher starts runs, the main thread and the
-    // destructor cancel them), so every access holds m_CancellationMutex. Each
-    // run keeps its own copy, so it never observes a successor's cancellation.
-    std::mutex m_CancellationMutex;
-    std::shared_ptr<HotReloadCancellation> m_Cancellation;
-
-    // The current run's stage handles (Compilation, FileLoad, AssemblyPrep,
-    // Swap; the last three are invalid until the compile has completed),
-    // retained so Cancel()/supersede can retire queued stages instantly
-    // instead of letting each run to a token bail-out.
-    // Generation-tagged so a zombie run (forced-execution timeout path)
-    // cannot clear a newer run's handles.
-    std::mutex m_StageHandlesMutex;
-    std::array<JobSystem::TaskHandle, 4> m_StageHandles;
-    uint64_t m_StageHandleGeneration{0};
+    // m_RunMutex guards the three members below. ExecuteAsync runs on the file
+    // watcher and on the main thread, Cancel on the main thread and in the
+    // destructor, and Publish on any thread.
+    std::mutex m_RunMutex;
+    // The run in flight, and its compile and preparation handles, retained so
+    // Cancel and supersede retire queued stages at once (F12). The handles
+    // stay out of Run: the stages' callbacks hold the Run.
+    std::shared_ptr<Run> m_CurrentRun;
+    std::array<JobSystem::TaskHandle, 2> m_CurrentStages;
+    // Every run's stage handles until they are terminal; JoinRuns waits on them.
+    std::vector<JobSystem::TaskHandle> m_RunStages;
 
     // Optional factories (used primarily in tests)
     std::function<std::unique_ptr<Jobs::ICompiler>()> m_CompilerFactory;
-    // Last-wins pending request coalescing when multiple triggers arrive while executing
-    std::mutex m_PendingMutex;
-    std::optional<String> m_PendingAssemblyPath;
-
     std::function<std::unique_ptr<Jobs::IAssemblyLoader>()> m_LoaderFactory;
-    std::function<std::unique_ptr<Jobs::IAssemblySwapper>()> m_SwapperFactory;
+    std::function<void(const PipelineStats&)> m_RunCompletedCallback;
 
     DISALLOW_COPY_AND_ASSIGN(HotReloadPipeline);
 };

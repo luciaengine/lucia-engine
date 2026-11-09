@@ -4,6 +4,7 @@ project(Platform VERSION 1.0.0 LANGUAGES CXX)
 
 set(PLATFORM_SOURCES
 	Source/Capabilities.cpp
+	Source/Thread.cpp
 )
 
 # Desktop-only implementations: GLFW clipboard and gamepad mapping, OS shell
@@ -327,6 +328,7 @@ if(BUILD_TESTING)
 
     add_executable(PlatformCapabilitiesTests
         Tests/CapabilitiesTests.cpp
+        Tests/ThreadNameTests.cpp
         Tests/SpeechInputTests.cpp
     )
 

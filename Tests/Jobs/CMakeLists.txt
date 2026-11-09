@@ -1,6 +1,6 @@
 # Job system tests.
 #
-# JobSystemTests is the PURE module suite (links JobSystem + Logger only —
+# JobSystemTests is the PURE module suite (links JobSystem, Memory, and Logger —
 # never Engine, no scripting, no shim) and builds on every platform. The
 # scripting/hot-reload suites below the platform gate rely on the legacy
 # GameEngine.NativeShim and a Windows-only layout for managed test projects;
@@ -28,15 +28,21 @@ set(JOB_SYSTEM_TEST_SOURCES
     JobChannelTests.cpp
     JobCounterTests.cpp
     JobPriorityTests.cpp
+    JobSystemStatisticsTests.cpp
+    LatencyBudgetTests.cpp
     QueueFairnessTests.cpp
+    FrameJoinedCarrierTests.cpp
+    ParallelForTests.cpp
     TaskSlabPoolTests.cpp
+    TaskQueueAllocationTests.cpp
     TopologyCensusBench.cpp
-    AllocCounterOverride.cpp
     PerformanceRegressionTests.cpp
     ../Performance/WorkStealingTest.cpp
 )
 
 add_executable(JobSystemTests ${JOB_SYSTEM_TEST_SOURCES})
+target_sources(JobSystemTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Source/AllocationHook.cpp)
+target_include_directories(JobSystemTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Testing)
 # The blocking-capability contract uses Platform's header-only thread helper.
 target_include_directories(JobSystemTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Include)
 
@@ -53,13 +59,14 @@ endif()
 # No GTest::Main: JobSystemTestsMain.cpp provides main() so Debug CRT asserts
 # report to stderr instead of a modal dialog (which wedges unattended runs
 # silently — see the PR #342 participating-wait triage).
-# The alloc tripwires (AllocCounterOverride.cpp) replace operator new only for
+# The allocation tripwires (Memory/AllocationHook.cpp) replace operator new only for
 # code linked into this exe, so the module under test must be the exe-local
 # copy. Logger is listed directly because OBJECT-library objects propagate
 # only one level (same pattern as Tests/ECS).
 target_link_libraries(JobSystemTests
     JobSystem
     Logger
+    Memory
     GTest::GTest
 )
 
@@ -106,6 +113,15 @@ if(ENABLE_SCRIPTING)
   # Include Engine public headers so the shim can include ScriptingABI.h
   target_include_directories(GameEngine.NativeShim PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Include)
 
+endif()
+
+if(ENABLE_SCRIPTING)
+    add_executable(ScriptsProjectFileTests ScriptsProjectFileTests.cpp)
+    target_compile_features(ScriptsProjectFileTests PRIVATE cxx_std_20)
+    target_link_libraries(ScriptsProjectFileTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+    ge_set_output_tests(ScriptsProjectFileTests)
+    ge_stage_runtime_dependencies(ScriptsProjectFileTests)
+    add_test(NAME ScriptsProjectFileTests COMMAND ScriptsProjectFileTests)
 endif()
 
 # Engine-side hot-reload suites require the Windows host.

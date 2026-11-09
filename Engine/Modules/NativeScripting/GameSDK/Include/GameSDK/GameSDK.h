@@ -29,3 +29,7 @@
 
 #include "Component.h"                            // ECS::ComponentBase tag + ECS alias (light)
 #include "Components/ComponentRegistrationLite.h" // GE_REGISTER_COMPONENT / GE_REFLECT (type-erased)
+
+#include "Memory/FrameMemory.h"
+#include "Memory/ObjectPool.h"
+#include "Memory/ScratchScope.h"

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "JobSystem/JobSystemStatistics.h"
 #include "JobSystem/Types.h"
 
 #include <deque>
@@ -13,6 +14,18 @@ class TaskBase;
 namespace Detail
 {
 class ChannelSlot;
+
+/**
+ * @brief A channel job outside its channel's FIFO: the envelope and the name
+ * of the channel it belongs to, which the thread that runs it runs the body
+ * as (the blocking threads, the shutdown drain, a refused dispatch).
+ */
+struct ChannelJob
+{
+    UniquePtr<TaskBase> Envelope;
+    // The channel's static literal.
+    const char* Channel = nullptr;
+};
 
 /**
  * @brief The state a JobChannel shares with its in-flight jobs: the cap, the
@@ -60,7 +73,10 @@ class JobChannelState
     void ReleaseSlot();
 
     /** @brief Moves every queued job out of the FIFO (the drain and the channel's destructor). */
-    void TakeQueued(Vector<UniquePtr<TaskBase>>& out);
+    void TakeQueued(Vector<ChannelJob>& out);
+
+    /** @brief The channel's row of JobSystemStatistics, read under its mutex. */
+    JobSystemStatistics::Channel Statistics();
 
     void SetBeforeDispatchHook(std::function<void()> hook);
     void RunBeforeDispatchHook();
@@ -71,6 +87,8 @@ class JobChannelState
         UniquePtr<TaskBase> Envelope;
         // Points into Envelope; valid while the envelope lives.
         ChannelSlot* Slot;
+        // When it entered the FIFO (steady_clock ns), for the queue wait.
+        uint64 QueuedAtNs;
     };
 
     WorkStealingThreadPool& m_Pool;
@@ -80,6 +98,10 @@ class JobChannelState
     std::mutex m_Mutex;
     uint32 m_Running = 0;
     std::deque<QueuedJob> m_Queued;
+    // Jobs that took a running slot, and the time the promoted ones waited
+    // in the FIFO first. The clock is read only for a job that queues.
+    uint64 m_Jobs = 0;
+    uint64 m_QueueWaitNs = 0;
     std::function<void()> m_BeforeDispatchHookForTests;
 };
 

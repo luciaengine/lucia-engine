@@ -288,6 +288,7 @@ void GPUDrawStreamBuilder::ResetTrackingState()
     m_RangeMap.clear();
     m_SentinelBuffer               = BufferHandle{};
     m_ScatterPipeline              = PipelineHandle{};
+    m_InstanceCompactPipeline      = PipelineHandle{};
     m_GroupCompactPipeline         = PipelineHandle{};
     m_GroupCompactFailureLogged    = false;
     m_ScatterPipelineFailureLogged = false;
@@ -969,48 +970,56 @@ PipelineHandle GPUDrawStreamBuilder::GetOrCreateGroupCompactPipeline()
     if (m_GroupCompactPipeline.IsValid())
         return m_GroupCompactPipeline;
 
-    std::string loadErr;
-    std::vector<uint8_t> shaderBytes =
-        LoadComputeStageBytes("Shaders/draw_stream_group_compact.shaderpkg",
-                              m_Device->PreferredShaderSource(), s_ShaderLoader, &loadErr);
-    if (shaderBytes.empty())
+    m_GroupCompactPipeline = CreateCompactionPipeline(
+        "Shaders/draw_stream_group_compact.shaderpkg", "GPUDrawStreamGroupCompact");
+    return m_GroupCompactPipeline;
+}
+
+PipelineHandle GPUDrawStreamBuilder::GetOrCreateInstanceCompactPipeline()
+{
+    if (!m_Device)
+        return {};
+    std::lock_guard<std::mutex> lock(m_ScatterInitMutex);
+    if (!m_InstanceCompactPipeline.IsValid())
+        m_InstanceCompactPipeline = CreateCompactionPipeline(
+            "Shaders/draw_stream_instance_compact.shaderpkg", "GPUDrawStreamInstanceCompact");
+    return m_InstanceCompactPipeline;
+}
+
+PipelineHandle GPUDrawStreamBuilder::CreateCompactionPipeline(const char* package, const char* name)
+{
+    std::string loadError;
+    auto bytes = LoadComputeStageBytes(package, m_Device->PreferredShaderSource(), s_ShaderLoader, &loadError);
+    if (bytes.empty())
     {
         if (!m_GroupCompactFailureLogged)
-        {
-            Logger::Log::Error("[GPUDrawStream] draw_stream_group_compact.shaderpkg unavailable "
-                               "({}); consolidated scatter dropped until retry", loadErr);
-            m_GroupCompactFailureLogged = true;
-        }
+            Logger::Log::Error("[GPUDrawStream] {} unavailable: {}", package, loadError);
+        m_GroupCompactFailureLogged = true;
         return {};
     }
     try
     {
-        ComputePipelineDesc cd{};
-        cd.ComputeShader = std::make_shared<const std::vector<uint8_t>>(std::move(shaderBytes));
-        cd.DescriptorSetLayouts.push_back(
+        ComputePipelineDesc description{};
+        description.ComputeShader = std::make_shared<const std::vector<uint8_t>>(std::move(bytes));
+        description.DescriptorSetLayouts.push_back(
             m_Device->InternDescriptorSetLayout(MakeGroupCompactDescriptorSetLayout()));
-        static_assert(sizeof(GroupCompactPushConstants) == 28,
-                      "GroupCompactPushConstants must match draw_stream_group_compact.comp");
-        cd.PushConstants.Size      = sizeof(GroupCompactPushConstants);
-        cd.PushConstants.StageMask = kShaderStageCompute;
-        cd.DebugName               = "GPUDrawStreamGroupCompact";
-        m_GroupCompactPipeline =
-            m_Device->GetOrCreateComputePipeline(m_Device->InternComputePipeline(cd));
+        static_assert(sizeof(GroupCompactPushConstants) == 32);
+        description.PushConstants.Size = sizeof(GroupCompactPushConstants);
+        description.PushConstants.StageMask = kShaderStageCompute;
+        description.DebugName = name;
+        auto pipeline = m_Device->GetOrCreateComputePipeline(m_Device->InternComputePipeline(description));
+        if (!pipeline.IsValid() && !m_GroupCompactFailureLogged)
+            Logger::Log::Error("[GPUDrawStream] {} creation returned an invalid pipeline", name);
+        m_GroupCompactFailureLogged = !pipeline.IsValid();
+        return pipeline;
     }
-    catch (const std::exception& e)
+    catch (const std::exception& error)
     {
         if (!m_GroupCompactFailureLogged)
-        {
-            Logger::Log::Error("[GPUDrawStream] failed to create group-compact pipeline: {}",
-                               e.what());
-            m_GroupCompactFailureLogged = true;
-        }
-        m_GroupCompactPipeline = PipelineHandle{};
+            Logger::Log::Error("[GPUDrawStream] {} creation failed: {}", name, error.what());
+        m_GroupCompactFailureLogged = true;
         return {};
     }
-    if (m_GroupCompactPipeline.IsValid())
-        m_GroupCompactFailureLogged = false;
-    return m_GroupCompactPipeline;
 }
 
 PipelineHandle GPUDrawStreamBuilder::CreateScatterPipelineForVariant(bool compact, bool stats)
@@ -1400,13 +1409,9 @@ GPUDrawStreamBuilder::ScatterStats GPUDrawStreamBuilder::ReadScatterStats() cons
 
 GPUDrawStreamBuilder::ScatterStats GPUDrawStreamBuilder::ReduceShadowArcStats()
 {
-    // Per-slice reduction of a completed frame's scatter counters:
-    //   drawnTriangles = sliceStats[statsIndex].drawnTriangles (GPU-accumulated)
-    //   passedCasters  = Σ cursor mirror entries over the slice's batch range
-    //                    (the DrawIndexedIndirectCount counts — no extra atomic)
-    // Both read from the host-CACHED readback mirrors the scatter pass copied into
-    // (a direct read of the write-combined Upload buffers does not reflect device
-    // writes). Tripwire = sum over the real slices only, cached for ReadScatterStats.
+    // Reduce completed stats and the original row survivor cursors. Command
+    // counts use a separate domain; caster and fade statistics count emitted
+    // instance records, including both records in a crossfade pair.
     m_ShadowArcStats.clear();
     m_LastTripwire = ScatterStats{};
     m_LastTripwireSlices.clear();
@@ -1559,6 +1564,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
     std::vector<SliceRegistration> Slices{};
     PipelineHandle Pipeline{};
     PipelineHandle CompactPipeline{};
+    PipelineHandle InstanceCompactPipeline{};
     BufferHandle Records{};
     BufferHandle Cursors{};
     BufferHandle Indirection{};
@@ -1593,6 +1599,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
     uint32_t GroupBindOffset{};
     size_t GroupBindBytes{};
     bool GroupActive{};
+    bool InstanceCompactionActive{};
     uint32_t ColorRowRunOffset{};
     uint32_t ShadowRowRunOffset{};
     std::vector<LodFadeBinding> SliceFade{};
@@ -1619,7 +1626,8 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         const BufferHandle meshBuffer = context.GetBuffer(Meshes);
         if (!device || !visibilityBuffer.IsValid() || !instanceBuffer.IsValid()
             || !meshBuffer.IsValid() || !Pipeline.IsValid()
-            || (GroupActive && !CompactPipeline.IsValid()))
+            || (GroupActive && !CompactPipeline.IsValid())
+            || (InstanceCompactionActive && !InstanceCompactPipeline.IsValid()))
             return false;
 
         for (uint32_t sliceIndex = 0; sliceIndex < static_cast<uint32_t>(Slices.size()); ++sliceIndex)
@@ -1853,7 +1861,10 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
         compactPushConstants.rowCount    = sliceRowCount;
         compactPushConstants.cursorBase  = isTail ? sliceCursorBase + CursorHalfStride
                                  : sliceCursorBase;
-        compactPushConstants.countBase   = compactPushConstants.cursorBase + sliceRowCount;
+        compactPushConstants.countBase = compactPushConstants.cursorBase
+            + (InstanceCompactionActive ? 2u : 1u) * sliceRowCount;
+        if (InstanceCompactionActive)
+            compactPushConstants.cursorBase += sliceRowCount;
         compactPushConstants.srcRecordBase =
             CallRecordBase
             + ((isTail ? TailStagingBlockOffset : 0u) + blockIndex)
@@ -1862,7 +1873,10 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
             CallRecordBase
             + ((isTail ? TailDrawBlockOffset : HeadDrawBlockOffset) + blockIndex)
                   * SnapshotRecords;
-        compactPushConstants.pairedRecords = isTail ? 1u : 0u;
+        compactPushConstants.pairedRecords = isTail && !InstanceCompactionActive ? 1u : 0u;
+        compactPushConstants.InstancedRecords = InstanceCompactionActive ? 1u : 0u;
+        if (InstanceCompactionActive)
+            std::swap(compactPushConstants.srcRecordBase, compactPushConstants.dstRecordBase);
         return compactPushConstants;
     }
 
@@ -1989,14 +2003,61 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
                 history.recorded->store(true, std::memory_order_release);
     }
 
-    void RecordCompact(RenderGraph::RGContext& context) const
+    void RecordInstanceCompaction(RenderGraph::RGContext& context) const
     {
-        if (!GroupActive)
+        if (!InstanceCompactionActive)
             return;
         context.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
             static_cast<uint64_t>(PipelineStageMask::ComputeShader),
             static_cast<uint64_t>(PipelineStageMask::ComputeShader),
             static_cast<uint64_t>(ResourceAccessMask::ShaderWrite),
+            static_cast<uint64_t>(ResourceAccessMask::ShaderRead)
+                | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)));
+        context.Cmd->SetPipeline(InstanceCompactPipeline);
+        const uint32_t groupCount = (SnapshotRecords + 63u) / 64u;
+        for (const PreparedSlice& slice : PreparedSlices)
+        {
+            if (!slice.CompactSet.IsValid())
+                continue;
+            for (uint32_t region = 0; region < slice.CompactRegionCount; ++region)
+            {
+                auto constants = slice.CompactConstants[region];
+                constants.cursorBase -= constants.rowCount;
+                constants.countBase = constants.cursorBase + constants.rowCount;
+                std::swap(constants.srcRecordBase, constants.dstRecordBase);
+                constants.pairedRecords = region != 0u ? 1u : 0u;
+                context.Cmd->SetPushConstants(constants);
+                context.Cmd->BindDescriptorSet(0, slice.CompactSet, InstanceCompactPipeline);
+                context.Cmd->Dispatch(groupCount, 1, 1);
+            }
+        }
+        if (ClearRecordRange)
+        {
+            // Count emulation issues the capacity, so raw scatter commands must be cleared.
+            context.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
+                static_cast<uint64_t>(PipelineStageMask::ComputeShader),
+                static_cast<uint64_t>(PipelineStageMask::Transfer),
+                static_cast<uint64_t>(ResourceAccessMask::ShaderRead)
+                    | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite),
+                static_cast<uint64_t>(ResourceAccessMask::TransferWrite)));
+            for (const PreparedSlice& slice : PreparedSlices)
+                for (uint32_t region = 0; region < slice.CompactRegionCount; ++region)
+                    context.Cmd->FillBuffer(Records,
+                        static_cast<size_t>(slice.CompactConstants[region].dstRecordBase) * kDrawCommandStride,
+                        static_cast<size_t>(SnapshotRecords) * kDrawCommandStride, 0u);
+        }
+    }
+
+    void RecordCompact(RenderGraph::RGContext& context) const
+    {
+        if (!GroupActive)
+            return;
+        context.Cmd->Barrier(ResourceBarrier::CreateMemoryBarrier(
+            static_cast<uint64_t>(PipelineStageMask::ComputeShader)
+                | static_cast<uint64_t>(PipelineStageMask::Transfer),
+            static_cast<uint64_t>(PipelineStageMask::ComputeShader),
+            static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)
+                | static_cast<uint64_t>(ResourceAccessMask::TransferWrite),
             static_cast<uint64_t>(ResourceAccessMask::ShaderRead)
                 | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)));
         context.Cmd->SetPipeline(CompactPipeline);
@@ -2054,6 +2115,7 @@ struct GPUDrawStreamBuilder::UnifiedScatterPass
                 | static_cast<uint64_t>(ResourceAccessMask::ShaderWrite)));
         RecordScatter(context);
         CommitRenderedHistory();
+        RecordInstanceCompaction(context);
         RecordCompact(context);
         CopyReadbacks(context);
         context.Cmd->Barrier(CreateStreamReadyBarrier());
@@ -2080,6 +2142,8 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     assert(meshPoolOrdered.empty() == orderedToGroup.empty()
            && "pass both consolidation spans or neither");
     const bool groupActive = !meshPoolOrdered.empty() && !orderedToGroup.empty();
+    const bool instanceCompactionRequested = groupActive
+        && Platform::EnvironmentSwitchEnabled("GE_DRAW_STREAM_INSTANCING", true);
     // The mesh-major compaction pass is load-bearing under consolidation (the
     // published draw block is ITS output); a missing package drops the call
     // loudly rather than publishing ranges over never-written records.
@@ -2177,6 +2241,13 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
                && "shadow table Σ capacities must equal color table's (merging only reduces rows)");
     }
 
+    // Positive row capacities sum to the record count. Equal counts mean
+    // every row is a singleton, so no instancing pass or pipeline is needed.
+    const bool instanceCompactionActive = instanceCompactionRequested
+        && (colorRecords > colorTable.size() || shadowRecords > shadowTable.size());
+    if (instanceCompactionActive && !GetOrCreateInstanceCompactPipeline().IsValid())
+        return {};
+
     // Consolidation runs: consecutive table rows sharing (classKey, pool
     // group, parity) — contiguous by the ordered-axis construction. Each run
     // is one published consumer range: its records compact densely from the
@@ -2229,15 +2300,13 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     const uint32_t snapshotRecords  = colorRecords;
     const uint32_t colorBatchCount  = static_cast<uint32_t>(colorTable.size());
     const uint32_t shadowBatchCount = static_cast<uint32_t>(shadowTable.size());
-    // One slice's cursor half-block. Shadow B <= color B by construction
-    // (merging only reduces rows), so this is colorBatchCount; std::max keeps it
-    // robust regardless. Under consolidation each half appends its table's
-    // per-RUN count slots after the row cursors — the DrawIndexedIndirectCount
-    // counts the compact pass writes (rows keep their scatter cursors for
-    // capacity bounds, passed-caster stats, and the compact pass's live sums).
+    // Keep survivor counts for statistics and fade history. Instancing adds
+    // row command counts before the per-run counts consumed by indirect draws.
+    // Each slice half uses the larger color or shadow cursor layout.
+    const uint32_t rowCursorCopies = instanceCompactionActive ? 2u : 1u;
     const uint32_t cursorHalfStride = std::max(
-        colorBatchCount + static_cast<uint32_t>(colorRuns.runs.size()),
-        shadowBatchCount + static_cast<uint32_t>(shadowRuns.runs.size()));
+        rowCursorCopies * colorBatchCount + static_cast<uint32_t>(colorRuns.runs.size()),
+        rowCursorCopies * shadowBatchCount + static_cast<uint32_t>(shadowRuns.runs.size()));
 
     const uint32_t sliceCount    = static_cast<uint32_t>(slices.size());
     // Tail blocks belong to the TAIL-CAPABLE slices, not to every slice. Only a
@@ -2260,15 +2329,9 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     const std::vector<uint32_t> sliceCursorOffset =
         BuildSliceCursorOffsets(sliceTailIndex, cursorHalfStride, &cursorOffsetEnd);
 
-    // Record blocks, in arena order, in BLOCK units of snapshotRecords:
-    //   [s]                                    head staging (the scatter's output)
-    //   [sliceCount + s]                       head draw    (consolidation only)
-    //   [blocksPerSlice*sliceCount + t]        tail staging (crossfade only)
-    //   [blocksPerSlice*sliceCount + tailSliceCount + t]
-    //                                          tail draw    (crossfade AND consolidation)
-    // with t = sliceTailIndex[s]. Head blocks come first and keep today's base
-    // expressions, so the OFF path claims the same arena bytes at the same
-    // offsets as before the tail existed.
+    // Consolidation gives each head or tail a scatter block and a scratch block.
+    // Instancing stores indirection in scratch and publishes commands in scatter
+    // storage. Group compaction alone publishes scratch storage.
     const uint32_t blocksPerSlice = groupActive ? 2u : 1u;
     const uint32_t neededRecords =
         (sliceCount + tailSliceCount) * blocksPerSlice * snapshotRecords;
@@ -2398,6 +2461,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         b.Append(meshTableCount);
         b.Append(colorMergeActive);
         b.Append(groupActive);
+        b.Append(instanceCompactionActive);
         // Sizes the arena claim, the cursor stride and the published tail
         // segments. Derivable from the per-slice durations below, but recorded
         // in its own right so the layout decision can never drift from the gate.
@@ -2638,14 +2702,9 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     const uint32_t groupBindBytes =
         groupActive ? groupMapBytes : static_cast<uint32_t>(colorTableBytes);
 
-    // Publish consumer ranges for every slice × batch. A shadow slice
-    // (SliceTable::Shadow) publishes from the shadow table — class-0 groups
-    // land under MakeStreamKey(view, cascade, sentinel, mesh), material-
-    // dependent groups under the real (material, mesh) — everything else uses
-    // the color table's (material, mesh) keys. Under consolidation ranges are
-    // published per RUN (class × pool group × parity) over the slice's DRAW
-    // block: the compact pass packs each run densely from its first row's
-    // capacity prefix and writes its live total into the run's count slot.
+    // Publish each slice's table keys. Consolidation publishes one range per
+    // class, pool group, and parity run, using command counts and the final
+    // command block selected by the compaction mode.
     for (uint32_t s = 0; s < sliceCount; ++s)
     {
         const SliceRegistration& slice = slices[s];
@@ -2653,7 +2712,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         const std::vector<BatchTableEntry>& sliceTable = sliceIsShadow ? shadowTable : colorTable;
         const TableRunLayout& sliceRuns = sliceIsShadow ? shadowRuns : colorRuns;
         const uint32_t sliceRecordBase =
-            callRecordBase + (headDrawBlockOffset + s) * snapshotRecords;
+            callRecordBase + ((instanceCompactionActive ? 0u : headDrawBlockOffset) + s) * snapshotRecords;
         const uint32_t sliceCursorBase = callCursorBase + sliceCursorOffset[s];
         // Tail publication runs only where the slice actually has a tail: a
         // shadow bucket in a crossfading call reserves no tail block and never
@@ -2662,7 +2721,8 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
         const bool sliceHasTail = sliceTailIndex[s] != kNoTailBlock;
         const uint32_t tailRecordBase =
             sliceHasTail
-                ? callRecordBase + (tailDrawBlockOffset + sliceTailIndex[s]) * snapshotRecords
+                ? callRecordBase + ((instanceCompactionActive ? tailStagingBlockOffset : tailDrawBlockOffset)
+                    + sliceTailIndex[s]) * snapshotRecords
                 : 0u;
         // Only a tail-capable slice reserved the second half; for any other slice
         // base + half is the NEXT slice's block, so it must never be formed.
@@ -2724,7 +2784,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
                 head.cmdByteOffset = static_cast<size_t>(sliceRecordBase + first.recordOffset)
                                      * kDrawCommandStride;
                 head.countByteOffset =
-                    static_cast<size_t>(sliceCursorBase + rowCount + g) * sizeof(uint32_t);
+                    static_cast<size_t>(sliceCursorBase + rowCursorCopies * rowCount + g) * sizeof(uint32_t);
                 head.maxDrawCount = run.capacity;
                 // The tail block is compacted by a second dispatch of the same
                 // pass, so its run layout — bases, run count slots, dense
@@ -2738,7 +2798,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
                     tail.cmdByteOffset = static_cast<size_t>(tailRecordBase + first.recordOffset)
                                          * kDrawCommandStride;
                     tail.countByteOffset =
-                        static_cast<size_t>(tailCursorBase + rowCount + g) * sizeof(uint32_t);
+                        static_cast<size_t>(tailCursorBase + rowCursorCopies * rowCount + g) * sizeof(uint32_t);
                     tail.maxDrawCount = run.capacity;
                 }
                 if (mirroredRun)
@@ -2906,6 +2966,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     pass->Slices = std::move(slices);
     pass->Pipeline = m_ScatterPipeline;
     pass->CompactPipeline = m_GroupCompactPipeline;
+    pass->InstanceCompactPipeline = m_InstanceCompactPipeline;
     pass->Records = m_SharedRecords;
     pass->Cursors = m_SharedCursors;
     pass->Indirection = m_SharedIndirection;
@@ -2940,6 +3001,7 @@ RenderGraph::RGBuffer GPUDrawStreamBuilder::ScheduleUnifiedScatter(
     pass->GroupBindOffset = groupBindOffset;
     pass->GroupBindBytes = groupBindBytes;
     pass->GroupActive = groupActive;
+    pass->InstanceCompactionActive = instanceCompactionActive;
     pass->ColorRowRunOffset = colorRowRunOffset;
     pass->ShadowRowRunOffset = shadowRowRunOffset;
     pass->SliceFade = std::move(sliceFade);

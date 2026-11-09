@@ -348,6 +348,8 @@ class ScriptManager
      * @return The subscription, or null when the directory is empty
      */
     UniquePtr<FileWatchSubscription> WatchScriptDirectory(const std::filesystem::path& directory);
+    Vector<FileWatchSubscription> WatchScriptsProjectFiles();
+    void OnScriptsProjectFileChanged(const FileChangeEvent& event);
 
     /**
      * @brief Replace the package module subscriptions with one per C# module
@@ -373,6 +375,7 @@ class ScriptManager
      * @return Future fulfilled with the reload outcome, or the exception it threw
      */
     std::future<HotReloadPipeline::PipelineStats> SubmitSyncHotReload();
+    void OnHotReloadRunCompleted(const HotReloadPipeline::PipelineStats& stats);
     void RunSyncHotReload(std::promise<HotReloadPipeline::PipelineStats>& promise);
     void SetCurrentAsyncFuture(std::future<HotReloadPipeline::PipelineStats> future);
 
@@ -484,6 +487,7 @@ class ScriptManager
     CoreCLRHost m_ClrHost;
     // FileWatchingService subscriptions for .cs/.csproj changes; held only while hot reload is enabled.
     UniquePtr<FileWatchSubscription> m_ScriptsWatchSubscription;
+    Vector<FileWatchSubscription> m_ScriptsProjectWatchSubscriptions;
     UniquePtr<FileWatchSubscription> m_EditorScriptsWatchSubscription;
     // One per watched package C# module root, rebuilt from the module set by
     // SetPackageCodeModules; same lifetime rule as the two handles above.

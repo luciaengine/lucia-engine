@@ -58,7 +58,6 @@ TEST(HotReloadPipelineCompileFailure, FailedCompileFailsThePipelineWithTheCompil
     HotReloadPipeline pipeline(pool, compiles);
     pipeline.SetCompilerFactory([] { return std::make_unique<Tests::MockCompiler>(false, 1); });
     pipeline.SetAssemblyLoaderFactory([] { return std::make_unique<Tests::MockAssemblyLoader>(); });
-    pipeline.SetSwapperFactory([] { return std::make_unique<Tests::MockAssemblySwapper>(true, 1); });
 
     auto run = pipeline.ExecuteAsync(assemblyPath.string());
     ASSERT_EQ(run.wait_for(kRunDeadline), std::future_status::ready) << "the run never finished";
@@ -79,7 +78,6 @@ TEST(HotReloadPipelineCompileFailure, CompileCancelledByThePoolShutdownReportsCa
     HotReloadPipeline pipeline(pool, compiles);
     pipeline.SetCompilerFactory([] { return std::make_unique<Tests::MockCompiler>(true, 1); });
     pipeline.SetAssemblyLoaderFactory([] { return std::make_unique<Tests::MockAssemblyLoader>(); });
-    pipeline.SetSwapperFactory([] { return std::make_unique<Tests::MockAssemblySwapper>(true, 1); });
 
     // Another compile holds the channel's only slot, so the run's compile
     // waits in the FIFO, where the shutdown drain cancels it without the

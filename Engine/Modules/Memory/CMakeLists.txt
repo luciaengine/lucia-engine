@@ -4,6 +4,9 @@ project(Memory VERSION 1.0.0 LANGUAGES CXX)
 
 set(MEMORY_SOURCES
     Source/Arena.cpp
+    Source/FrameJoinedScope.cpp
+    Source/FrameMemory.cpp
+    Source/ScratchScope.cpp
     Source/ObjectPool.cpp
     Source/RangeAllocator.cpp
     Source/StatsRegistry.cpp
@@ -46,6 +49,9 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
     find_package(GTest REQUIRED)
     add_executable(MemoryAllocatorTests
         Tests/ArenaImagePinTests.cpp
+        Tests/FrameJoinedScopeTests.cpp
+        Tests/FrameMemoryTests.cpp
+        Tests/ScratchScopeTests.cpp
         Tests/ArenaTests.cpp
         Tests/ArenaUseTests.cpp
         Tests/ObjectPoolTests.cpp
@@ -55,7 +61,8 @@ if(BUILD_TESTING AND NOT EMSCRIPTEN)
         Source/AllocationHook.cpp
     )
     target_compile_features(MemoryAllocatorTests PRIVATE cxx_std_20)
-    target_link_libraries(MemoryAllocatorTests PRIVATE Memory GTest::gtest GTest::gtest_main)
+    target_link_libraries(MemoryAllocatorTests PRIVATE Memory JobSystem Logger GTest::gtest GTest::gtest_main)
+    target_include_directories(MemoryAllocatorTests PRIVATE Testing)
     set_source_files_properties(Source/AllocationHook.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     ge_set_output_tests(MemoryAllocatorTests)
     ge_stage_runtime_dependencies(MemoryAllocatorTests)

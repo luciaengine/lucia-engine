@@ -16,6 +16,7 @@
 #include "Editor/Settings/PerformanceSettingsPage.h"
 #include "Editor/Settings/PhysicsSettingsPage.h"
 #include "Editor/Settings/ScriptSettingsPage.h"
+#include "Editor/Settings/ScriptPackages/ScriptPackagesSettingsPage.h"
 #include "Editor/Settings/SceneSettingsPage.h"
 #include "Editor/Settings/InfoCardAppearanceSettings.h"
 #include "Editor/Settings/GameUIScaleSettingsPage.h"
@@ -654,6 +655,7 @@ void EditorApplication::InitializeInspectorSettings(SettingsPanel* settingsPanel
         });
 
     Editor::RegisterScriptSettingsCategory();
+    Editor::RegisterScriptPackagesSettingsCategory();
 
     // VSync applies to the main window device only (editor preference, not per-project).
     Editor::RegisterPerformanceSettingsCategory([this](bool enabled)

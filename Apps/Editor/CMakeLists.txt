@@ -56,6 +56,8 @@ set(EDITOR_SOURCES
     Source/Editor/Settings/GizmoSettingsPage.cpp
     Source/Editor/Settings/PerformanceSettingsPage.cpp
     Source/Editor/Settings/ScriptSettingsPage.cpp
+    Source/Editor/Settings/ScriptPackages/ScriptPackagesSettingsPage.cpp
+    Source/Editor/Settings/ScriptPackages/ScriptPackagesList.cpp
     Source/Editor/Settings/AssetImportSettingsPage.cpp
     Source/Editor/Settings/SvgRasterSizeField.cpp
     Source/Editor/Settings/AnimationSettingsPage.cpp
@@ -641,6 +643,10 @@ set(EDITOR_SOURCES
 	Source/EditorApplication_Windows.cpp
 	Source/EditorApplication_Shortcuts.cpp
 	Source/EditorInputActions.cpp
+	Source/DebugServer/MemoryDebugHandlers.cpp
+	Source/DebugServer/SystemWaveTraceReport.cpp
+	Source/DebugServer/JobSystem/JobSystemDebugHandlers.cpp
+	Source/DebugServer/JobSystem/JobSystemReport.cpp
 	Source/DebugServer/EditorDebugServer.cpp
 	Source/DebugServer/AssetDebugHandlers.cpp
 	Source/DebugServer/BenchSceneHandlers.cpp
@@ -1873,7 +1879,7 @@ endif()
 
 # Winsock2 for EditorDebugServer (MCP debug server)
 if(WIN32)
-    target_link_libraries(Editor PRIVATE ws2_32 $<$<CONFIG:Debug>:dbghelp>)
+    target_link_libraries(Editor PRIVATE ws2_32 psapi $<$<CONFIG:Debug>:dbghelp>)
 endif()
 
 # stb_image for reading image dimensions in asset browser

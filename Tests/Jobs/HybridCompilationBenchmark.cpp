@@ -406,7 +406,7 @@ TEST_F(HybridCompilationBenchmark, LargeCodebasePerformance) {
     Logger::Log::Info("Benchmark 1: Initial full compilation");
     config.Strategy = IncrementalCompilationTask::CompilationStrategy::Full;
     
-    auto task = GameEngine::CreateIncrementalCompilationTask(threadPool.get(), *clrHost, config);
+    auto task = GameEngine::CreateIncrementalCompilationTask(*clrHost, config);
     
     auto startTime = std::chrono::high_resolution_clock::now();
     task->Execute();
@@ -422,7 +422,7 @@ TEST_F(HybridCompilationBenchmark, LargeCodebasePerformance) {
     modifyRandomFiles(1);
     
     config.Strategy = IncrementalCompilationTask::CompilationStrategy::Auto;
-    auto incrementalTask = GameEngine::CreateIncrementalCompilationTask(threadPool.get(), *clrHost, config);
+    auto incrementalTask = GameEngine::CreateIncrementalCompilationTask(*clrHost, config);
     
     startTime = std::chrono::high_resolution_clock::now();
     incrementalTask->Execute();
@@ -437,7 +437,7 @@ TEST_F(HybridCompilationBenchmark, LargeCodebasePerformance) {
     Logger::Log::Info("Benchmark 3: Multiple file incremental compilation");
     modifyRandomFiles(5);
     
-    auto multiFileTask = GameEngine::CreateIncrementalCompilationTask(threadPool.get(), *clrHost, config);
+    auto multiFileTask = GameEngine::CreateIncrementalCompilationTask(*clrHost, config);
     
     startTime = std::chrono::high_resolution_clock::now();
     multiFileTask->Execute();
@@ -493,7 +493,7 @@ TEST_F(HybridCompilationBenchmark, ScalabilityTest) {
         
         modifyRandomFiles(fileCount);
         
-        auto task = GameEngine::CreateIncrementalCompilationTask(threadPool.get(), *clrHost, config);
+        auto task = GameEngine::CreateIncrementalCompilationTask(*clrHost, config);
         
         auto startTime = std::chrono::high_resolution_clock::now();
         task->Execute();

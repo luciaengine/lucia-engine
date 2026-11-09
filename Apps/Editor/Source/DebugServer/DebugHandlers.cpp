@@ -19,6 +19,8 @@
 #include "SceneToolDebugHandlers.h"
 #include "AssetDebugHandlers.h"
 #include "BuildDebugHandlers.h"
+#include "MemoryDebugHandlers.h"
+#include "JobSystem/JobSystemDebugHandlers.h"
 
 namespace GameEngine
 {
@@ -46,6 +48,8 @@ void RegisterDebugHandlers(EditorDebugServer& server,
     RegisterSceneToolDebugHandlers(server, app);
     RegisterAssetDebugHandlers(server, app);
     RegisterBuildDebugHandlers(server, app);
+    RegisterMemoryDebugHandlers(server, app);
+    RegisterJobSystemDebugHandlers(server);
     // 1. get_editor_state
 
 

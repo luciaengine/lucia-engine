@@ -9,6 +9,31 @@ An arena that still holds a destructor from a reloaded native module keeps that 
 
 `Memory::ObjectPool<T>` retains fixed-size slots for repeated object creation and destruction. `Memory::RangeAllocator` manages contiguous ranges and supports stamped releases. `Memory::TrackedBytes` records externally owned byte counts.
 
-`Memory::SnapshotStats()` copies allocator names, kinds, CPU/GPU residency, used bytes, retained bytes, high-water values, and block counts. Take snapshots for diagnostics rather than from a frame hot path.
+`Memory::SnapshotStats()` copies allocator names, kinds, CPU/GPU residency, used bytes, retained bytes, high-water values, and block counts. Take snapshots for diagnostics rather than from a frame hot path. The editor's `get_memory_stats` MCP tool and debug method returns allocator records, scratch totals, the frame number, and the resident process size where available. Scratch and frame records include OS thread IDs and names where the platform can read them.
 
-Scratch scopes, frame memory, and frame-joined job propagation are separate parts of the allocator integration.
+## Scratch scopes
+
+`Memory::ScratchScope` provides temporary storage on the calling thread. Declare the scope before any PMR containers that use its `Resource()`. Allocations stay valid until the scope closes. Scopes nest in last-in, first-out order.
+
+```cpp title="Temporary storage for joined work"
+#include "Memory/ScratchScope.h"
+#include "JobSystem/WorkStealingThreadPool.h"
+
+GameEngine::Memory::ScratchScope scratch;
+auto values = scratch.AllocateArray<int>(count);
+JobSystem::ParallelFor(&pool, count, [values](size_t index) {
+    values[index] = static_cast<int>(index);
+});
+```
+
+Only the thread that opened a scope allocates through it. Other threads may access its allocations while the scope remains open. Join their work before closing the scope. Do not give its storage to asynchronous `Submit` or channel jobs that can outlive it. Arrays and `New<T>` require trivially destructible types. Use PMR containers for objects that need destructors.
+
+## Frame memory
+
+`Memory::FrameMemory` provides per-thread storage that stays valid through the next frame. `Application` advances the frame index before each frame. Storage from two frames ago becomes available for reuse.
+
+Use `AllocateArray<T>`, `AllocateArrayForOverwrite<T>`, or `CopyArray<T>` for trivially destructible data. `Resource()` supports PMR containers. Destroy containers before their storage expires.
+
+In Debug and DebugFast, allocations require frame-joined execution. The frame thread holds this scope during `Application::Tick`. Joined `Run` and `ParallelFor` units inherit it. `Submit`, bare `EnqueueWork`, and channel jobs do not inherit it because they can span frames. The next frame asserts that joined work from the preceding frame has completed.
+
+Both scratch and frame arenas retain reusable blocks and report their usage through `Memory::SnapshotStats()`.
