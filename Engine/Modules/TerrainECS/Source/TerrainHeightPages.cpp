@@ -306,6 +306,21 @@ void TerrainHeightPages::Request(const PagedTerrainRequest& request, std::span<c
         // The GPU starts or stops drawing the pages (its texture meanwhile); the CPU pages stay.
         terrain.GpuPages = request.GpuPages;
         terrain.Table.Reset(terrain.Shape.SamplesX, terrain.Shape.SamplesZ, m_SlotCount);
+        if (terrain.GpuPages)
+        {
+            // Retained slots emit no new transition when GPU paging resumes.
+            const PageStreaming::PageCache& cache = m_Residency.FieldCache(kHeightPageField);
+            for (const PageStreaming::CachedPage& page : cache.Resident())
+            {
+                if (page.Stream != terrain.Stream)
+                    continue;
+                const uint32 slot = cache.SlotOf(page);
+                const PageStreaming::PageAddress& address = page.Address;
+                terrain.Table.SetEntry(address.Level, address.X, address.Z,
+                                       PageStreaming::PackPageEntry(slot, address.Level));
+                terrain.Table.SlotFade[slot] = cache.FadeOf(page);
+            }
+        }
         PackPageTableWords(terrain.Table, m_Geometry, terrain.Words);
         terrain.Version = ++m_TableVersion;
         AddWholeTerrainDirty(request.Terrain, terrain);
@@ -589,7 +604,7 @@ void TerrainHeightPages::CollectStreamChanges(uint32 terrainKey, PagedTerrain& t
         const std::vector<float32>* samples = m_Residency.Samples(terrain.Stream, upload.Page.Address);
         if (samples == nullptr)
             continue;
-        HeightPageUpload& out = m_Uploads.emplace_back(HeightPageUpload{upload.Slot, *samples});
+        HeightPageUpload& out = m_Uploads.emplace_back(HeightPageUpload{upload.Slot, *samples, terrainKey});
         if (terrain.Overlay)
             terrain.Overlay->ApplyToPage(upload.Page.Address, out.Samples);
     }

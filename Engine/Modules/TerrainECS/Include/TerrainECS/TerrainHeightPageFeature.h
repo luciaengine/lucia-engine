@@ -2,108 +2,133 @@
 
 #include "Engine/Rendering/IRenderFeature.h"
 #include "TerrainECS/TerrainHeightPages.h"
-#include "Rendering/Core/Handle.h"
+#include "Types/FlatMap.h"
 
 #include <atomic>
 #include <memory>
 #include <mutex>
 #include <span>
-#include <unordered_map>
 #include <vector>
 
-namespace GameEngine::Rendering
+namespace GameEngine::Rendering::RenderGraph
 {
-class CommandList;
-class IDevice;
-} // namespace GameEngine::Rendering
+class RGFrame;
+class RGPassBuilder;
+} // namespace GameEngine::Rendering::RenderGraph
 
 namespace GameEngine::TerrainECS
 {
 
-/// The GPU side of the height pages: the field's physical cache texture (R32F, square-packed
-/// 130^2 slots, shared by every paged terrain) and each paged terrain's page-table words.
-///
-/// The main thread publishes a frame (Publish, after TerrainHeightPages::Update); the render side
-/// latches the published state once per render-graph frame (Latch, from the terrain upload node)
-/// and stages its slot uploads. The tables latched with uploads become readable (LatchedTable) only
-/// when the upload pass that records those uploads is declared (CommitLatch); until then, and
-/// whenever the staging cannot be created, readers keep the last committed tables, whose slots all
-/// hold their pages. A consumer declared before the upload node therefore reads the previous
-/// committed tables, one frame late. A released slot is quarantined for the frames in flight
-/// before a new page is uploaded into it, and the quarantine counts main-thread updates, not
-/// commits: while each frame's uploads commit within the frames in flight, those tables name no
-/// slot this frame writes. Staging that fails for that many frames in a row, with a consumer
-/// declared before the upload node and the scheduler running the copy first, can let the copy
-/// overwrite a slot the committed tables still name. A device rebuild clears the quarantine with
-/// the cache, which is correct: the new device has no frames in flight.
+/// Owns the shared GPU height cache. Tables outside the upload's graph name submitted payloads.
+/// Inside that graph, readers declared after its copy can use the staged table.
 class TerrainHeightPageFeature : public Engine::Renderer::IRenderFeature
 {
 public:
     ~TerrainHeightPageFeature() override;
 
-    /// Main thread: this frame's uploads (moved out of `pages`) and the words of every paged
-    /// terrain whose table changed since the last publish.
+    /// Main thread: takes pending page payloads and copies changed table words.
     void Publish(TerrainHeightPages& pages);
-
-    /// Render thread, once per render-graph frame (repeat calls in the same frame do nothing):
-    /// takes what was published since the last latch, and frees the staging of uploads the GPU has
-    /// finished with.
+    /// Render thread: latches published data and prepares retryable staging for the upload stream.
     void Latch(Rendering::IDevice& device, uint64 rgFrame);
-    /// True when latched uploads are staged and wait for an upload pass.
     bool HasStagedUploads() const { return m_Staging.IsValid(); }
-    /// Render thread, once the upload pass that will call FlushUploads is declared: the tables
-    /// latched with the staged uploads become the readable ones.
-    void CommitLatch();
-    /// Records the staged uploads: clears the cache texture to 0 on first use, copies each slot and
-    /// leaves the texture in ShaderResource.
-    void FlushUploads(Rendering::CommandList& cl);
+    /// Declares the cache overwrite and promotes its tables only after the recorded copy submits.
+    void DeclareUploads(Rendering::RenderGraph::RGFrame& frame, Rendering::RenderGraph::RGPassBuilder& pass);
+    /// Records copies in the graph's CopyDest layout. Payloads remain pending until submission.
+    void FlushUploads(Rendering::CommandList& commandList, const Rendering::RenderGraph::RGFrame& frame);
 
-    /// The cache texture, invalid until a latch after the one whose upload pass cleared it: a
-    /// consumer bound in the frame that creates it could run before that pass clears it (a draw
-    /// at rest has no edge to the upload pass), so it reads the texture of a later frame, whose
-    /// submission follows the clear.
-    Rendering::TextureHandle CacheTexture() const { return m_CacheReadable ? m_Cache : Rendering::TextureHandle{}; }
-    /// The committed words of paged terrain `terrain` and their version; false when it is not paged.
-    bool LatchedTable(uint32 terrain, std::span<const uint32>& words, uint64& version) const;
-    /// Bumped when the device was rebuilt: the main side restarts its cache (every page re-uploads).
+    /// Render thread: cache visible to this declaration, or the last submitted cache without a graph.
+    Rendering::TextureHandle CacheTexture(const Rendering::RenderGraph::RGFrame* frame = nullptr) const;
+    /// Render thread: table visible to this declaration and its payload generation.
+    bool LatchedTable(uint32 terrain, std::span<const uint32>& words, uint64& version,
+                      uint64& contentGeneration, const Rendering::RenderGraph::RGFrame* frame = nullptr, uint64* revision = nullptr) const;
+    /// Render thread: bounds proven to cover the consumer's interval in this selected snapshot.
+    bool DirtyRegionSince(uint32 terrain, uint32 terrainGeneration, uint64 consumedRevision,
+                          uint64 selectedRevision, const Rendering::RenderGraph::RGFrame* frame,
+                          HeightPageDirtyRect& region) const;
+    /// Retires accumulated bounds only when this exact geometry publication caught up.
+    void AcknowledgePublication(uint32 terrain, uint64 revision);
+    /// Any thread: requested data differs from the publication consumed by a terrain update.
+    bool HasPendingPublication(uint32 terrain, uint64 version, uint64 contentGeneration) const;
     uint64 DeviceEpoch() const { return m_DeviceEpoch.load(std::memory_order_acquire); }
 
+    struct TerrainReadiness
+    {
+        uint32 Terrain = 0;
+        uint64 RequestedVersion = 0;
+        uint64 CommittedVersion = 0;
+        uint64 RequestedContentGeneration = 0;
+        uint64 CommittedContentGeneration = 0;
+    };
+    struct Readiness
+    {
+        uint32 Slots = 0;
+        uint32 Resident = 0;
+        uint32 Deferred = 0;
+        uint32 LoadsStarted = 0;
+        uint64 CpuBytes = 0;
+        uint64 CacheBytes = 0;
+        uint64 PublishedUploads = 0;
+        uint64 LatchedUploads = 0;
+        uint64 PendingBytes = 0;
+        uint64 RetiringBytes = 0;
+        uint64 LatchedFrame = ~0ull;
+        uint64 SubmittedFrame = ~0ull;
+        bool CacheReady = false;
+        bool StagingReady = false;
+        std::vector<TerrainReadiness> Terrains;
+    };
+    /// Any thread: copied readiness counters; the shared cache totals appear once.
+    Readiness GetReadiness() const;
+
     void OnDeviceRebuilt(Rendering::IDevice* device) override;
+    void OnFrameStreamRetiredRG(Rendering::RenderGraph::RGFrame& frame) override;
 
 private:
-    // Words are shared, not copied, between the published, latched and committed sets: a table is
-    // copied once, by Publish, when its version changes.
     struct Table
     {
         std::shared_ptr<const std::vector<uint32>> Words;
         uint64 Version = 0;
+        uint64 ContentGeneration = 0;
+        uint64 Revision = 0;
+        uint64 DirtyBaseRevision = 0;
+        HeightPageDirtyRect Dirty;
+        bool DirtyPending = false;
+        bool DirtyFullRequired = false;
+        bool Changed = false;
     };
     struct RetiringBuffer
     {
         Rendering::BufferHandle Buffer;
-        uint64 Frame = 0;
+        Rendering::IDevice::GpuSyncToken Submission;
+        const Rendering::RenderGraph::RGFrame* Frame = nullptr;
+        uint64 Bytes = 0;
     };
 
+    bool HasPlannedUploads(const Rendering::RenderGraph::RGFrame* frame) const;
     void EnsureCache();
     void StageUploads();
-    void RetireStaging();
+    void SubmitUploads(Rendering::RenderGraph::RGFrame& frame);
+    void UpdateReadiness();
 
-    // Published by the main thread, under m_Mutex.
-    std::mutex m_Mutex;
-    std::vector<HeightPageUpload> m_PublishedUploads;
-    std::unordered_map<uint32, Table> m_PublishedTables;
+    mutable std::mutex m_Mutex;
+    Readiness m_Readiness;
+    FlatMap<uint32, HeightPageUpload> m_PublishedUploads;
+    FlatMap<uint32, Table> m_PublishedTables;
     uint32 m_CacheDim = 0;
+    uint64 m_ContentGeneration = 0;
+    uint64 m_PublicationRevision = 0; // never reset across device/source incarnations
 
-    // Render thread only.
     Rendering::IDevice* m_Device = nullptr;
-    std::vector<HeightPageUpload> m_LatchedUploads;
-    std::unordered_map<uint32, Table> m_LatchedTables;   // latched with m_LatchedUploads
-    std::unordered_map<uint32, Table> m_CommittedTables; // what LatchedTable reads
-    Rendering::BufferHandle m_Staging;                   // m_LatchedUploads, staged
+    FlatMap<uint32, HeightPageUpload> m_LatchedUploads;
+    FlatMap<uint32, Table> m_LatchedTables;
+    FlatMap<uint32, Table> m_CommittedTables;
+    Rendering::BufferHandle m_Staging;
     std::vector<RetiringBuffer> m_Retiring;
     Rendering::TextureHandle m_Cache;
-    bool m_CacheCleared = false;  // its clear is recorded (FlushUploads)
-    bool m_CacheReadable = false; // its clear was recorded before this latch
+    const Rendering::RenderGraph::RGFrame* m_UploadGraph = nullptr;
+    uint64 m_UploadFrame = ~0ull;
+    bool m_UploadRecorded = false;
+    bool m_CacheCleared = false;
     uint32 m_LatchedCacheDim = 0;
     uint64 m_LatchedFrame = ~0ull;
     std::atomic<uint64> m_DeviceEpoch{0};

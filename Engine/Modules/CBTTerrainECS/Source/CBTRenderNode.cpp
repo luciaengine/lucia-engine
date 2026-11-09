@@ -188,8 +188,6 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
     {
         if (!feature.UpdateDeclaredInGraph(&d.Frame, d.Frame.FrameIndex()))
             return;
-        EmitCbtForwardDraw(d, feature);
-        return;
     }
 
     // In-place re-provision safety: a SamplesPerMeter/size edit retires and recreates the terrain's
@@ -236,29 +234,32 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
     // settle. Waits only its graphics submissions; no-op when nothing changed.
     feature.EnsureSeeded(frameCounter);
 
+    const void* graph = &d.Frame;
+    const uint64_t rgFrame = d.Frame.FrameIndex();
+    const bool follower = feature.UpdateDeclaredInGraph(graph, rgFrame);
+    if (!follower && !feature.ClaimUpdate(graph, rgFrame))
+        return;
+
     // C4: gather this view's camera + the active terrain's heightmap/world-size (the
     // SAME data CDLOD renders) and bind the height source into this frame's ring slot.
     // Returns false when there is no active terrain -> nothing to render this frame.
     CBTTerrain::CBTFrameParams params{};
-    if (!feature.BuildFrameParams(rs, d.View.id, d.RenderWidth, d.RenderHeight, frameCounter, params))
+    if (!feature.BuildFrameParams(rs, d.View.id, d.RenderWidth, d.RenderHeight, frameCounter, params, d.Frame))
         return;
 
-    const void* graph = &d.Frame;
-    const uint64_t rgFrame = d.Frame.FrameIndex(); // monotonic, per-graph, stale-safe
+    if (d.View.purpose == Rendering::ViewPurpose::EditorPreview)
+    {
+        EmitCbtForwardDraw(d, feature);
+        return;
+    }
 
-    // Draw/producer INSEPARABILITY gate (the entity-deletion device-lost fix). The
-    // CBT forward draw consumes the CBT.Update compute pass output, so it may be
-    // emitted ONLY into the graph where that global sim ran this frame (or, at rest,
-    // would have run). Declare the update once per (graph, rgFrame); if another graph
-    // already claimed it this frame (an extra extraction/preview execute a deletion
-    // can spin up), THIS graph has no producer -> refuse the draw rather than emit one
-    // that reads buffers no pass produced here.
-    if (feature.UpdateDeclaredInGraph(graph, rgFrame))
+    // Followers draw the owner's buffers and keep its immutable frame bindings.
+    if (follower)
     {
         // Already declared for THIS graph this frame (an earlier view) -> draw.
         DeclareTerrainShadow(d, feature, params);
     }
-    else if (feature.ClaimUpdate(graph, rgFrame))
+    else
     {
         // Cross-graph ordering tripwire (multi-graph upload/update hazard, PR #506 ledger).
         // CBT.Update samples the heightmap this graph, but the once-per-device-frame upload
@@ -300,12 +301,14 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
             return;
         }
 
-        // Quiescence gate (plan §planet-shading perf): VertexEval evaluates only MODIFIED
-        // bisectors this frame (GateVertexEval = 1), unless a full-pool pass is due after init /
-        // a tree re-seed / a planet-param change (GateVertexEval = 0). Consumed once here, at
-        // the point the update actually records, so a change on a non-recording frame is kept.
+        // Page bounds must cover the selected publication, including abandoned updates.
+        // Missing coverage and explicit full requests conservatively evaluate every vertex.
         CBTTerrain::CBTClassifyDesc classify = feature.GetClassify();
-        classify.GateVertexEval = feature.ConsumeForceVertexEval() ? 0u : 1u;
+        const uint64_t fullEvaluationTicket = feature.PendingForceVertexEval();
+        bool fullEvaluation = fullEvaluationTicket != 0u;
+        if (!fullEvaluation && feature.HasUnconsumedHeightPages())
+            fullEvaluation = !feature.ApplyHeightPageDirtyRegion(classify);
+        classify.GateVertexEval = fullEvaluation ? 0u : 1u;
         classify.Settle = feature.InputsHeld() ? 1u : 0u;
         // Forward the bound heightmap so the update pass declares its read edge on
         // the texture VertexEval samples (plan §8 C5 — live-edit region uploads).
@@ -313,14 +316,13 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
             feature.BeginUpdateActivityReadback(d.Frame, classify.GateVertexEval == 0u);
         const CBTTerrain::CBTUpdateOutputs updateOut = CBTTerrain::CBTUpdateNode::DeclareUpdatePass(
             d.Frame, feature.GetInstance(), classify, params, frameCounter,
-            feature.GetBoundHeightmap(), activitySlot);
+            feature.GetBoundHeightmap(), activitySlot, feature.BuildUpdateSubmittedCallback(fullEvaluationTicket));
 
-        // VertexEval samples the terrain height texture the upload flush writes, and that write
-        // is invisible to the graph (bindless texture, raw copy inside the pass), so the declared
-        // accesses cannot order the two. Add the edge explicitly: without it the scheduler emits
-        // this whole component — the update and every draw reading its buffers — ahead of the
-        // flush, which is exactly what sampling a fresh texture uninitialized looks like.
-        if (auto* terrainFeature = rs.GetFeature<TerrainECS::TerrainRenderFeature>())
+        // Paged cache hazards order old readers before its overwrite and new readers after it.
+        // Other height sources still require an explicit edge from their bindless upload.
+        constexpr float kPagedHeightSourceMode = 2.0f; // CBTFrameParams::AtlasParams1.z
+        if (auto* terrainFeature = rs.GetFeature<TerrainECS::TerrainRenderFeature>();
+            terrainFeature != nullptr && params.AtlasParams1[2] != kPagedHeightSourceMode)
         {
             const Rendering::RenderGraph::RGPassId uploadPass =
                 terrainFeature->GetHeightmapUploadPassRG(rgFrame, graph);
@@ -333,11 +335,6 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
         static const bool kCbtValidateDbg = Platform::EnvironmentSwitchEnabled("GE_CBT_VALIDATE", false);
         if (kCbtValidateDbg)
             feature.GetValidationReadback().Tick(d.Frame, device, feature.GetInstance());
-
-        // Confirm to the extraction-side dirty-region cursor that this frame's classify
-        // (with whatever dirty rect it carries) was recorded, so CBTUpdateSystem can
-        // commit its log cursor rather than re-arm the rect (plan §8 C5).
-        feature.NotifyUpdateRecorded();
 
         // Falsifiable edit trace (GE_CBT_EDIT_DEBUG): log ONCE per edit frame, at the
         // point the update is recorded WITH a non-empty dirty rect. The C1 mirage
@@ -361,10 +358,6 @@ void CBTRenderNode::DeclareForView(Pipeline::ViewDeclare& d)
                                       c.DirtyMaxU, c.DirtyMaxV);
             }
         }
-    }
-    else
-    {
-        return; // the update ran in a DIFFERENT graph this frame — no producer here.
     }
 
     EmitCbtForwardDraw(d, feature);

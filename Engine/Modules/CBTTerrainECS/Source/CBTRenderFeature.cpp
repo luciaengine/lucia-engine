@@ -324,6 +324,11 @@ void CBTRenderFeature::OnDeviceRebuilt(IDevice* device)
     // Derived caches keyed on the dead resources.
     m_DrawBuffers.clear();  // rebuilt from live handles by BuildDrawCommand
     m_BoundHeightmap = {};
+    m_SelectedPages = {};
+    m_ConsumedPages = {};
+    m_ParamsFrame = ~0ull;
+    m_ParamsGraph = nullptr;
+    m_ParamsValid = false;
     m_TerrainShadowSource = {};
     m_TerrainShadowBake.OnDeviceRebuilt();
     for (uint32_t i = 0; i < CBTTerrain::kCBTFrameParamsRing; ++i)
@@ -345,7 +350,7 @@ void CBTRenderFeature::OnDeviceRebuilt(IDevice* device)
     m_UpdateGraph = nullptr;
     m_UpdateRgFrame = ~0ull;
     // Every cached bisector corner was evaluated against textures that no longer exist.
-    m_ForceVertexEval.store(true, std::memory_order_relaxed);
+    RequestForceVertexEval();
 
     // m_Material is a non-owning pointer into the RenderServices material registry, which
     // survives the rebuild and re-provisions its own GPU state; leaving it (and
@@ -377,7 +382,7 @@ void CBTRenderFeature::EnsureSeeded(uint32_t frameCounter)
     // its next version already differs from every slot's record; the reset keeps the re-upload from
     // depending on that.
     m_SphereSculptUploadGate.Reset();
-    m_ForceVertexEval.store(true, std::memory_order_relaxed); // re-seed staled every corner
+    RequestForceVertexEval(); // re-seed staled every corner
     Logger::Log::Info("GE_CBT.Planet domain={} roots={} baseDepth={} maxSubdiv={} (re-seeded: {})",
                       m_TreeSeed.Domain() == CBTTerrain::kDomainSpherical ? "spherical" : "planar",
                       m_Instance.GetRootCount(), m_Instance.GetBaseDepth(),
@@ -414,7 +419,7 @@ bool CBTRenderFeature::ConsumeTerrainRetire(uint64_t retireGeneration)
     {
         // The recreated heightmap staled every cached bisector corner (gVertex was evaluated from
         // the old texture at the old resolution); force a full-pool VertexEval on the next update.
-        m_ForceVertexEval.store(true, std::memory_order_relaxed);
+        RequestForceVertexEval();
         Logger::Log::Info("CBT.HeightSource re-provision refresh: dropped retired terrain views from "
                           "the height/atlas/coarse rings (gen={})",
                           m_Instance.GetTerrainSourceGeneration());
@@ -458,14 +463,8 @@ bool CBTRenderFeature::EnsureMaterial(RenderServices& rs)
 
 bool CBTRenderFeature::ClaimUpdate(const void* graph, uint64_t rgFrameIndex)
 {
-    // Single-frame-graph assumption (documented C3 limitation): the CBT sim runs
-    // its ping-pong update EXACTLY once per engine frame, in the first render graph
-    // that claims it. A second window (its own graph, same rgFrameIndex) loses the
-    // claim and CBTRenderNode refuses its draw — so CBT renders in one window only.
-    // Deliberately NOT fixed by updating per graph: two updates per engine frame
-    // would double-step the ping-pong and corrupt the sim (worse than a missing
-    // draw). Multi-window CBT needs a shared-update-once + per-graph-read-edge
-    // design (import the same outputs into each window's graph). C4+ ledger item.
+    // One terrain-owning stream claims each frame key. Retirement drops its pointer but keeps
+    // the last key. Independent stream counters do not identify a shared application frame.
     if (m_UpdateRgFrame == rgFrameIndex)
         return false; // the once-per-frame update is already claimed (this or another graph)
     m_UpdateGraph = graph;
@@ -478,7 +477,7 @@ bool CBTRenderFeature::WritesDynamicDepth() const
     if (!m_Initialized || !m_Active)
         return false;
     return !m_UpdateAtRest.load(std::memory_order_relaxed) ||
-           m_ForceVertexEval.load(std::memory_order_relaxed) || m_TreeSeed.IsRestartHeld() ||
+           PendingForceVertexEval() != 0u || m_TreeSeed.IsRestartHeld() ||
            TerrainSourceChanged();
 }
 
@@ -495,23 +494,33 @@ bool CBTRenderFeature::TerrainSourceChanged() const
         terrainFeature->GetActiveHeightSource();
     std::span<const uint32_t> pageWords;
     uint64_t pageVersion = 0;
-    const Rendering::TextureHandle paged = PagedHeightSource(m_BoundTerrainIndex, pageWords, pageVersion);
+    uint64_t contentGeneration = 0;
+    uint64_t revision = 0;
+    const Rendering::TextureHandle paged = PagedHeightSource(m_BoundTerrainIndex, pageWords, pageVersion,
+                                                            contentGeneration, nullptr, &revision);
     const Rendering::TextureHandle source =
         !active.Present ? Rendering::TextureHandle{}
         : paged.IsValid()
             ? paged
             : BoundHeightSource(active.AtlasBacked, active.AtlasHeightTexture, active.HeightmapTexture);
-    return source != m_BoundHeightmap;
+    const auto* pages = m_Services->GetFeature<TerrainECS::TerrainHeightPageFeature>();
+    const bool pendingPages = pages != nullptr && !m_KernelSet.IsNarrowHeap() &&
+        pages->HasPendingPublication(m_BoundTerrainIndex, m_ConsumedPages.Version, m_ConsumedPages.ContentGeneration);
+    return pendingPages || source != m_BoundHeightmap ||
+           (paged.IsValid() && (m_ConsumedPages.Terrain != m_BoundTerrainIndex ||
+            m_ConsumedPages.Version != pageVersion || m_ConsumedPages.ContentGeneration != contentGeneration ||
+            m_ConsumedPages.Revision != revision));
 }
 
 Rendering::TextureHandle CBTRenderFeature::PagedHeightSource(uint32_t terrainIndex, std::span<const uint32_t>& words,
-                                                             uint64_t& version) const
+                                                             uint64_t& version, uint64_t& contentGeneration,
+                                                             const Rendering::RenderGraph::RGFrame* frame, uint64_t* revision) const
 {
     const auto* pages = m_Services ? m_Services->GetFeature<TerrainECS::TerrainHeightPageFeature>() : nullptr;
-    if (pages == nullptr || m_KernelSet.IsNarrowHeap() || !pages->CacheTexture().IsValid() ||
-        !pages->LatchedTable(terrainIndex, words, version))
+    if (pages == nullptr || m_KernelSet.IsNarrowHeap() || !pages->CacheTexture(frame).IsValid() ||
+        !pages->LatchedTable(terrainIndex, words, version, contentGeneration, frame, revision))
         return {};
-    return pages->CacheTexture();
+    return pages->CacheTexture(frame);
 }
 
 void CBTRenderFeature::LogCommittedHeightSource(uint32_t terrainIndex, uint32_t generation, bool paged,
@@ -557,12 +566,66 @@ bool CBTRenderFeature::IsUpdateAtRest(const CBTTerrain::CBTFrameParams& params)
     AppendInputBytes(m_UpdateInputs, params);
     AppendInputBytes(m_UpdateInputs, classify);
     AppendInputBytes(m_UpdateInputs, m_BoundHeightmap.id);
+    AppendInputBytes(m_UpdateInputs, m_SelectedPages.Terrain);
+    AppendInputBytes(m_UpdateInputs, m_SelectedPages.TerrainGeneration);
+    AppendInputBytes(m_UpdateInputs, m_SelectedPages.Revision);
     const bool canSkip = m_RestGate.CanSkip(m_UpdateInputs);
     const bool edited =
         classify.DirtyMaxU > classify.DirtyMinU && classify.DirtyMaxV > classify.DirtyMinV;
-    const bool atRest = canSkip && !edited && !m_ForceVertexEval.load(std::memory_order_relaxed);
+    const bool atRest = canSkip && !edited && !HasUnconsumedHeightPages() &&
+                        PendingForceVertexEval() == 0u;
     m_UpdateAtRest.store(atRest, std::memory_order_relaxed);
     return atRest;
+}
+
+bool CBTRenderFeature::HasUnconsumedHeightPages() const
+{
+    return m_SelectedPages != m_ConsumedPages;
+}
+
+bool CBTRenderFeature::ApplyHeightPageDirtyRegion(CBTTerrain::CBTClassifyDesc& classify) const
+{
+    if (m_DomainConfig.DomainMode != CBTTerrain::kDomainPlanar ||
+        m_SelectedPages.Terrain != m_ConsumedPages.Terrain ||
+        m_SelectedPages.TerrainGeneration != m_ConsumedPages.TerrainGeneration)
+        return false;
+    const auto* pages = m_Services ? m_Services->GetFeature<TerrainECS::TerrainHeightPageFeature>() : nullptr;
+    TerrainECS::HeightPageDirtyRect region;
+    if (pages == nullptr || !pages->DirtyRegionSince(m_SelectedPages.Terrain, m_SelectedPages.TerrainGeneration,
+            m_ConsumedPages.Revision, m_SelectedPages.Revision, m_ParamsGraph, region))
+        return false;
+    if (classify.DirtyMaxU > classify.DirtyMinU && classify.DirtyMaxV > classify.DirtyMinV)
+    {
+        classify.DirtyMinU = std::min(classify.DirtyMinU, region.MinU);
+        classify.DirtyMinV = std::min(classify.DirtyMinV, region.MinV);
+        classify.DirtyMaxU = std::max(classify.DirtyMaxU, region.MaxU);
+        classify.DirtyMaxV = std::max(classify.DirtyMaxV, region.MaxV);
+    }
+    else
+    {
+        classify.DirtyMinU = region.MinU;
+        classify.DirtyMinV = region.MinV;
+        classify.DirtyMaxU = region.MaxU;
+        classify.DirtyMaxV = region.MaxV;
+    }
+    return true;
+}
+
+std::function<void()> CBTRenderFeature::BuildUpdateSubmittedCallback(uint64_t fullEvaluationTicket)
+{
+    return [this, publication = m_SelectedPages, fullEvaluationTicket]
+    {
+        uint64_t acknowledged = m_ForceVertexEvalAcknowledged.load(std::memory_order_relaxed);
+        while (acknowledged < fullEvaluationTicket &&
+               !m_ForceVertexEvalAcknowledged.compare_exchange_weak(acknowledged, fullEvaluationTicket,
+                                                                    std::memory_order_relaxed))
+        {
+        }
+        m_ConsumedPages = publication;
+        if (auto* pages = m_Services ? m_Services->GetFeature<TerrainECS::TerrainHeightPageFeature>() : nullptr)
+            pages->AcknowledgePublication(publication.Terrain, publication.Revision);
+        m_UpdateSubmissionCount.fetch_add(1u, std::memory_order_relaxed);
+    };
 }
 
 CBTTerrain::CBTActivitySlot CBTRenderFeature::BeginUpdateActivityReadback(
@@ -911,8 +974,18 @@ float CBTRenderFeature::SampleSphereSurfaceHeight(float dx, float dy, float dz) 
 
 bool CBTRenderFeature::BuildFrameParams(RenderServices& rs, Rendering::ViewId viewId,
                                         uint32_t renderWidth, uint32_t renderHeight,
-                                        uint32_t frameIndex, CBTTerrain::CBTFrameParams& out)
+                                        uint32_t frameIndex, CBTTerrain::CBTFrameParams& out,
+                                        Rendering::RenderGraph::RGFrame& frame)
 {
+    if (m_ParamsGraph == &frame && m_ParamsFrame == frame.FrameIndex())
+    {
+        out = m_OwnerParams;
+        return m_ParamsValid;
+    }
+    m_ParamsFrame = frame.FrameIndex();
+    m_ParamsGraph = &frame;
+    m_ParamsValid = false;
+    m_SelectedPages = {};
     // The first active terrain from TerrainRenderFeature — the SAME heightmap +
     // world size CDLOD renders, so the A/B compares identical data. C4 is
     // single-terrain (plan §8 C4); multi-terrain selection is a later slice.
@@ -945,8 +1018,8 @@ bool CBTRenderFeature::BuildFrameParams(RenderServices& rs, Rendering::ViewId vi
     }
     const TerrainECS::TerrainInstanceInfo& t = terrains.front();
 
-    // Bind this frame's source before graph recording. A changed Vulkan binding
-    // retires submitted readers of the shared descriptor set.
+    // Bind this frame's source before recording. A failed retirement leaves this
+    // owner's snapshot invalid, so followers cannot submit or acknowledge it.
     if (!m_Instance.SetHeightSource(frameIndex, t.HeightmapTexture))
         return false;
     // The paged height resolve (TerrainHeightPageFeature): when the terrain's height is paged, the
@@ -954,7 +1027,10 @@ bool CBTRenderFeature::BuildFrameParams(RenderServices& rs, Rendering::ViewId vi
     // unified or atlas texture, which stay bound for the readers that still use them.
     std::span<const uint32_t> pageWords;
     uint64_t pageVersion = 0;
-    Rendering::TextureHandle pageCache = PagedHeightSource(t.Handle.Index, pageWords, pageVersion);
+    uint64_t contentGeneration = 0;
+    uint64_t pageRevision = 0;
+    Rendering::TextureHandle pageCache = PagedHeightSource(t.Handle.Index, pageWords, pageVersion, contentGeneration,
+                                                         &frame, &pageRevision);
     // The ring slot grows to the terrain's table (its platform cap is checked where it is paged); a
     // failed allocation keeps the terrain on its texture this frame.
     if (pageCache.IsValid() && !m_Instance.ProvisionPageTableWords(static_cast<uint32_t>(pageWords.size())))
@@ -1028,6 +1104,7 @@ bool CBTRenderFeature::BuildFrameParams(RenderServices& rs, Rendering::ViewId vi
     LogCommittedHeightSource(t.Handle.Index, t.Handle.Generation, pageCache.IsValid(), frameIndex);
     if (pageCache.IsValid())
     {
+        m_SelectedPages = {t.Handle.Index, pageVersion, contentGeneration, pageRevision, t.Handle.Generation};
         // Upload the page table only when this slot has not seen this terrain's current version.
         if (m_PageBoundTerrain[pageSlot] != t.Handle.Index || m_PageUploadedTableVersion[pageSlot] != pageVersion)
         {
@@ -1308,6 +1385,8 @@ bool CBTRenderFeature::BuildFrameParams(RenderServices& rs, Rendering::ViewId vi
             }
         }
     }
+    m_OwnerParams = out;
+    m_ParamsValid = true;
     return true;
 }
 
