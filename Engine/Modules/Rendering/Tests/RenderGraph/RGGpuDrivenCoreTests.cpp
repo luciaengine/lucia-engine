@@ -861,9 +861,11 @@ void CheckCoreCullingPreparation(GraphicsAPI graphicsAPI)
                   {
                       ++recordCallbacks;
                       if (graphicsAPI == GraphicsAPI::Vulkan)
+                      {
                           EXPECT_EQ(device->GetDescriptorAllocatorStats().TransientAllocated,
                                     firstRecordAllocations)
                               << "core culling must not allocate descriptors during Record";
+                      }
                   });
     frame.MarkOutput(readbackRG);
     const uint32_t allocatedBeforeAbort = device->GetDescriptorAllocatorStats().TransientAllocated;
@@ -875,8 +877,10 @@ void CheckCoreCullingPreparation(GraphicsAPI graphicsAPI)
     EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
     constexpr uint32_t kPreparedDispatches = 7u; // Five production dispatches and two copy controls.
     if (graphicsAPI == GraphicsAPI::Vulkan)
+    {
         EXPECT_GE(device->GetDescriptorAllocatorStats().TransientAllocated,
                   allocatedBeforeAbort + kPreparedDispatches);
+    }
 
     // Keep the declared graph and its upload slices; preparation resolves resources again.
     allowRecording = true;
@@ -887,8 +891,10 @@ void CheckCoreCullingPreparation(GraphicsAPI graphicsAPI)
     EXPECT_EQ(recordCallbacks, 2u);
     EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
     if (graphicsAPI == GraphicsAPI::Vulkan)
+    {
         EXPECT_GE(firstRecordAllocations, allocatedBeforeRetry + kPreparedDispatches)
             << "all production and control descriptors must exist before the first Record callback";
+    }
     EXPECT_GE(PosOf(frame.Graph(), RGQuery::Exact{"GPUCulling.View10.C255"}), 0);
     EXPECT_EQ(PosOf(frame.Graph(), RGQuery::Exact{"CorePrepare.FirstRecord"}), 0);
     EXPECT_EQ(PosOf(frame.Graph(), RGQuery::Exact{"CorePrepare.LastRecord"}),
@@ -3169,7 +3175,9 @@ void CheckScatterProbeOutputs(IDevice& device, const ScatterProbeRanges& ranges,
         {{0u, 12u, 130u, 7u}, {1u, 12u, 130u, 7u}});
     const size_t shadowCursor = ranges.Ranges[1].even.countByteOffset / sizeof(uint32_t);
     if (shadowCursor < output.CursorWords)
+    {
         EXPECT_EQ(words[shadowCursor], instanceCompaction ? 1u : 2u);
+    }
     CheckScatterProbeSegment(words, output, ranges.Ranges[3].even, {{0u, 30u, 100u, 7u}});
     CheckScatterProbeSegment(words, output, ranges.Ranges[4].even, {{2u, 60u, 200u, 19u}});
     device.UnmapBuffer(output.Readback);
@@ -3210,8 +3218,10 @@ void AddScatterPreparationWitness(RGFrame& frame, ScatterPreparationWitness& wit
                   {
                       ++witness.RecordCallbacks;
                       if (witness.Vulkan)
+                      {
                           EXPECT_EQ(witness.Device->GetDescriptorAllocatorStats().TransientAllocated,
                                     witness.FirstRecordAllocations);
+                      }
                   });
 }
 
@@ -3306,7 +3316,9 @@ void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI, bool instanceCompac
             EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
             EXPECT_EQ(builder.IntrospectScatter().RenderedHistoryRotations, rotations);
             if (witness.Vulkan)
+            {
                 EXPECT_GE(device->GetDescriptorAllocatorStats().TransientAllocated, before + 9u);
+            }
         }
         witness.AllowRecording = true;
         const uint32_t before = device->GetDescriptorAllocatorStats().TransientAllocated;
@@ -3316,8 +3328,10 @@ void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI, bool instanceCompac
         EXPECT_EQ(witness.RecordCallbacks, 2u);
         EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
         if (witness.Vulkan)
+        {
             EXPECT_GE(witness.FirstRecordAllocations, before + 9u)
                 << "seven production sets and two copy controls must be ready before recording";
+        }
         CheckScatterProbeOutputs(*device, ranges, output, frameIndex != 0u, instanceCompaction);
         device->DestroyBuffer(output.Readback);
     }
