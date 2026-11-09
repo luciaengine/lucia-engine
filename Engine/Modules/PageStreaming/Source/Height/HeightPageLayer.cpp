@@ -1,5 +1,7 @@
 #include "PageStreaming/Height/HeightPageLayer.h"
 
+#include "PageFieldFilter.h"
+
 #include <algorithm>
 #include <cassert>
 #include <utility>
@@ -9,11 +11,6 @@ namespace GameEngine::PageStreaming
 
 namespace
 {
-
-uint32 ClampIndex(int64 index, uint32 count)
-{
-    return static_cast<uint32>(std::clamp<int64>(index, 0, static_cast<int64>(count) - 1));
-}
 
 // The samples of the coarser level whose tent reads a sample of `finer` (the coarser sample j
 // reads finer samples 2j - 1 to 2j + 1), within that level's `samplesX` x `samplesZ`.
