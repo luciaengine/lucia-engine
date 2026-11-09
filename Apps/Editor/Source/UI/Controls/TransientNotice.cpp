@@ -35,7 +35,7 @@ TransientNotice::TransientNotice()
     std::unique_ptr<UIElement> plate = Editor::ControlLayoutLoader::Load(kLayoutAssetPath, kRequiredIds);
     if (!plate)
         return;
-    m_Text = dynamic_cast<Label*>(plate->FindById(HashStringId(kTextId)));
+    m_Text = dynamic_cast<Label*>(plate->FindById(kTextId));
     if (!m_Text)
         Logger::Log::Error("TransientNotice: {} needs a Label with id '{}' in its plate.", kLayoutAssetPath, kTextId);
     AddChild(std::move(plate));
