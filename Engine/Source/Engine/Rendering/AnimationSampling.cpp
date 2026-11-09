@@ -1,6 +1,7 @@
 #include "Engine/Rendering/AnimationSampling.h"
 
 #include "Animation/AnimationEvent.h"
+#include "Animation/Compression/AnimationClipData.h"
 #include "Animation/BoneEvaluationPlan.h"
 #include "Animation/PoseToSkinMatrices.h"
 #include "ECSModules/Rendering/ClipStore.h"
@@ -41,27 +42,6 @@ namespace
 glm::mat4 BuildLocalTRS(const glm::vec3& t, const glm::quat& r, const glm::vec3& s)
 {
     return glm::translate(glm::mat4(1.0f), t) * glm::mat4_cast(r) * glm::scale(glm::mat4(1.0f), s);
-}
-
-static float EvalCubicHermite(float v0,
-                             float outTangent,
-                             float outWeight,
-                             float v1,
-                             float inTangent,
-                             float inWeight,
-                             float dt,
-                             float alpha)
-{
-    const float c0dt = dt * glm::clamp(outWeight, 0.05f, 0.49f);
-    const float c1dt = dt * glm::clamp(inWeight, 0.05f, 0.49f);
-    const float c0 = v0 + outTangent * c0dt;
-    const float c1 = v1 - inTangent * c1dt;
-    const float u2 = alpha * alpha;
-    const float u3 = u2 * alpha;
-    const float inv = 1.0f - alpha;
-    const float inv2 = inv * inv;
-    const float inv3 = inv2 * inv;
-    return inv3 * v0 + 3.0f * inv2 * alpha * c0 + 3.0f * inv * u2 * c1 + u3 * v1;
 }
 
 void StoreColumnMajor(const glm::mat4& matrix, float* out)
@@ -108,7 +88,7 @@ void SampleAnimationPose(const SkeletonData& skeleton,
                          float time,
                          std::vector<float>* outNodeWorldMatrices,
                          std::vector<float>* outCompactSkinMatrices,
-                         PoseSampleWorkspace& ws,
+                         PoseSampleWorkspace& workspace,
                          const Animation::BoneEvaluationPlan* plan)
 {
     const uint32 bones = skeleton.BoneCount;
@@ -123,131 +103,45 @@ void SampleAnimationPose(const SkeletonData& skeleton,
     }
 
     // Prepare workspace vectors (clear + resize retains capacity after first call).
-    ws.Pose.clear();
-    ws.Pose.resize(bones);
+    workspace.Pose.clear();
+    workspace.Pose.resize(bones);
     if (skeleton.RestTranslation.size() == bones * 3u &&
         skeleton.RestRotation.size() == bones * 4u &&
         skeleton.RestScale.size() == bones * 3u)
     {
-        for (uint32 i = 0; i < bones; ++i)
+        for (uint32 index = 0; index < bones; ++index)
         {
-            ws.Pose[i].t = glm::vec3(skeleton.RestTranslation[i * 3 + 0],
-                                     skeleton.RestTranslation[i * 3 + 1],
-                                     skeleton.RestTranslation[i * 3 + 2]);
-            ws.Pose[i].r = glm::quat(skeleton.RestRotation[i * 4 + 3],
-                                     skeleton.RestRotation[i * 4 + 0],
-                                     skeleton.RestRotation[i * 4 + 1],
-                                     skeleton.RestRotation[i * 4 + 2]);
-            ws.Pose[i].s = glm::vec3(skeleton.RestScale[i * 3 + 0],
-                                     skeleton.RestScale[i * 3 + 1],
-                                     skeleton.RestScale[i * 3 + 2]);
+            workspace.Pose[index].t = glm::vec3(skeleton.RestTranslation[index * 3 + 0],
+                                     skeleton.RestTranslation[index * 3 + 1],
+                                     skeleton.RestTranslation[index * 3 + 2]);
+            workspace.Pose[index].r = glm::quat(skeleton.RestRotation[index * 4 + 3],
+                                     skeleton.RestRotation[index * 4 + 0],
+                                     skeleton.RestRotation[index * 4 + 1],
+                                     skeleton.RestRotation[index * 4 + 2]);
+            workspace.Pose[index].s = glm::vec3(skeleton.RestScale[index * 3 + 0],
+                                     skeleton.RestScale[index * 3 + 1],
+                                     skeleton.RestScale[index * 3 + 2]);
         }
     }
 
-    ws.ChangedTranslation.clear();
-    ws.ChangedTranslation.resize(bones, 0u);
-    ws.ChangedRotation.clear();
-    ws.ChangedRotation.resize(bones, 0u);
-    ws.ChangedScale.clear();
-    ws.ChangedScale.resize(bones, 0u);
+    workspace.ChangedTranslation.clear();
+    workspace.ChangedTranslation.resize(bones, 0u);
+    workspace.ChangedRotation.clear();
+    workspace.ChangedRotation.resize(bones, 0u);
+    workspace.ChangedScale.clear();
+    workspace.ChangedScale.resize(bones, 0u);
 
     if (clip)
     {
-        const auto& channels = clip->GetChannels();
-        auto sampleChannel = [&](const std::vector<AnimKeyframe>& keys, AnimPath path, AnimInterp interp, uint32 nodeIndex)
-        {
-            if (nodeIndex >= bones || keys.empty())
-                return;
-            if (reduced && plan->EvaluatedAncestors()[nodeIndex] != nodeIndex)
-                return;
-
-            size_t hi = 0;
-            while (hi < keys.size() && keys[hi].time < time)
-                ++hi;
-            size_t lo = (hi == 0) ? 0 : (hi - 1);
-            if (hi >= keys.size())
-                hi = keys.size() - 1;
-
-            const AnimKeyframe& k0 = keys[lo];
-            const AnimKeyframe& k1 = keys[hi];
-            const float dt = k1.time - k0.time;
-            const float alpha = (dt > 0.0f) ? glm::clamp((time - k0.time) / dt, 0.0f, 1.0f) : 0.0f;
-            const AnimInterp segInterp = k0.hasSegmentInterpOverride ? k0.segmentInterp : interp;
-            const bool useStep = (segInterp == AnimInterp::Step) || (dt <= 0.0f);
-
-            if (path == AnimPath::Translation)
-            {
-                const glm::vec3 value0(k0.translation[0], k0.translation[1], k0.translation[2]);
-                if (useStep)
-                {
-                    ws.Pose[nodeIndex].t = value0;
-                }
-                else if (segInterp == AnimInterp::CubicSpline)
-                {
-                    ws.Pose[nodeIndex].t = glm::vec3(
-                        EvalCubicHermite(value0.x, k0.outTangent[0], k0.outWeight[0], k1.translation[0], k1.inTangent[0], k1.inWeight[0], dt, alpha),
-                        EvalCubicHermite(value0.y, k0.outTangent[1], k0.outWeight[1], k1.translation[1], k1.inTangent[1], k1.inWeight[1], dt, alpha),
-                        EvalCubicHermite(value0.z, k0.outTangent[2], k0.outWeight[2], k1.translation[2], k1.inTangent[2], k1.inWeight[2], dt, alpha));
-                }
-                else
-                {
-                    const glm::vec3 value1(k1.translation[0], k1.translation[1], k1.translation[2]);
-                    ws.Pose[nodeIndex].t = glm::mix(value0, value1, alpha);
-                }
-                ws.ChangedTranslation[nodeIndex] = 1u;
-            }
-            else if (path == AnimPath::Scale)
-            {
-                const glm::vec3 value0(k0.scale[0], k0.scale[1], k0.scale[2]);
-                if (useStep)
-                {
-                    ws.Pose[nodeIndex].s = value0;
-                }
-                else if (segInterp == AnimInterp::CubicSpline)
-                {
-                    ws.Pose[nodeIndex].s = glm::vec3(
-                        EvalCubicHermite(value0.x, k0.outTangent[0], k0.outWeight[0], k1.scale[0], k1.inTangent[0], k1.inWeight[0], dt, alpha),
-                        EvalCubicHermite(value0.y, k0.outTangent[1], k0.outWeight[1], k1.scale[1], k1.inTangent[1], k1.inWeight[1], dt, alpha),
-                        EvalCubicHermite(value0.z, k0.outTangent[2], k0.outWeight[2], k1.scale[2], k1.inTangent[2], k1.inWeight[2], dt, alpha));
-                }
-                else
-                {
-                    const glm::vec3 value1(k1.scale[0], k1.scale[1], k1.scale[2]);
-                    ws.Pose[nodeIndex].s = glm::mix(value0, value1, alpha);
-                }
-                ws.ChangedScale[nodeIndex] = 1u;
-            }
-            else
-            {
-                const glm::quat value0(k0.rotation[3], k0.rotation[0], k0.rotation[1], k0.rotation[2]);
-                if (useStep)
-                {
-                    ws.Pose[nodeIndex].r = value0;
-                }
-                else if (segInterp == AnimInterp::CubicSpline)
-                {
-                    const glm::quat q(
-                        EvalCubicHermite(value0.w, k0.outTangent[3], k0.outWeight[3], k1.rotation[3], k1.inTangent[3], k1.inWeight[3], dt, alpha),
-                        EvalCubicHermite(value0.x, k0.outTangent[0], k0.outWeight[0], k1.rotation[0], k1.inTangent[0], k1.inWeight[0], dt, alpha),
-                        EvalCubicHermite(value0.y, k0.outTangent[1], k0.outWeight[1], k1.rotation[1], k1.inTangent[1], k1.inWeight[1], dt, alpha),
-                        EvalCubicHermite(value0.z, k0.outTangent[2], k0.outWeight[2], k1.rotation[2], k1.inTangent[2], k1.inWeight[2], dt, alpha));
-                    ws.Pose[nodeIndex].r = glm::normalize(q);
-                }
-                else
-                {
-                    const glm::quat value1(k1.rotation[3], k1.rotation[0], k1.rotation[1], k1.rotation[2]);
-                    ws.Pose[nodeIndex].r = glm::slerp(value0, value1, alpha);
-                }
-                ws.ChangedRotation[nodeIndex] = 1u;
-            }
-        };
+        const auto data = clip->GetRuntimeData();
+        const auto channels = data ? data->Tracks() : std::span<const Animation::AnimationClipData::Track>{};
 
         // Resolution policy:
         //   - If both clip channel and skeleton carry name hashes (StringId),
         //     look up the channel's targetNameId in the skeleton's pre-built
         //     hashmap and write to that bone.
         //   - If a name id is set but the skeleton can't resolve it, drop
-        //     the channel. The legacy `channel.boneIndex` is the source-
+        //     the channel. The legacy `channel.BoneIndex` is the source-
         //     skeleton's index and would write to whatever unrelated bone
         //     happens to live at that slot in the destination skeleton —
         //     actively corrupting the pose. Skipping leaves the bone at its
@@ -258,30 +152,49 @@ void SampleAnimationPose(const SkeletonData& skeleton,
         uint32 resolvedByName = 0;
         uint32 dropped = 0;
         std::vector<std::string> unmatchedNames;
-        for (const AnimChannel& channel : channels)
+        for (const auto& channel : channels)
         {
-            if (channel.path == AnimPath::MorphWeight)
+            if (channel.Path == AnimPath::MorphWeight)
                 continue;
             uint32 resolvedIndex;
-            if (channel.targetNameId != 0 && skeletonHasNames)
+            if (channel.TargetNameId != 0 && skeletonHasNames)
             {
-                resolvedIndex = skeleton.ResolveBoneIndex(channel.targetNameId, UINT32_MAX);
+                resolvedIndex = skeleton.ResolveBoneIndex(channel.TargetNameId, UINT32_MAX);
                 if (resolvedIndex == UINT32_MAX)
                 {
                     ++dropped;
-                    if (!channel.targetName.empty()
-                        && std::find(unmatchedNames.begin(), unmatchedNames.end(), channel.targetName) == unmatchedNames.end())
-                        unmatchedNames.push_back(channel.targetName);
+                    if (!channel.TargetName.empty()
+                        && std::find(unmatchedNames.begin(), unmatchedNames.end(), channel.TargetName) == unmatchedNames.end())
+                        unmatchedNames.push_back(channel.TargetName);
                     continue; // drop — see policy comment above
                 }
-                if (resolvedIndex != channel.boneIndex)
+                if (resolvedIndex != channel.BoneIndex)
                     ++resolvedByName;
             }
             else
             {
-                resolvedIndex = channel.boneIndex;
+                resolvedIndex = channel.BoneIndex;
             }
-            sampleChannel(channel.keys, channel.path, channel.interp, resolvedIndex);
+            if (resolvedIndex >= bones || (reduced && plan->EvaluatedAncestors()[resolvedIndex] != resolvedIndex))
+                continue;
+            Mathematics::Vector4 value;
+            if (!data->Sample(channel, time, value))
+                continue;
+            if (channel.Path == AnimPath::Translation)
+            {
+                workspace.Pose[resolvedIndex].t = glm::vec3(value.x, value.y, value.z);
+                workspace.ChangedTranslation[resolvedIndex] = 1u;
+            }
+            else if (channel.Path == AnimPath::Scale)
+            {
+                workspace.Pose[resolvedIndex].s = glm::vec3(value.x, value.y, value.z);
+                workspace.ChangedScale[resolvedIndex] = 1u;
+            }
+            else
+            {
+                workspace.Pose[resolvedIndex].r = glm::quat(value.w, value.x, value.y, value.z);
+                workspace.ChangedRotation[resolvedIndex] = 1u;
+            }
         }
 
         // One-shot diagnostic per (skeletonBoneCount, channelCount) pair.
@@ -292,32 +205,32 @@ void SampleAnimationPose(const SkeletonData& skeleton,
             s_LoggedPairs[pairKey] = true;
             Logger::Log::Info("AnimationSampling: skeletonBones={} clipChannels={} | resolvedByName={} dropped={}",
                               bones, channels.size(), resolvedByName, dropped);
-            std::string skelHead;
-            for (uint32 i = 0; i < std::min<uint32>(bones, 6u); ++i)
+            std::string skeletonHead;
+            for (uint32 index = 0; index < std::min<uint32>(bones, 6u); ++index)
             {
-                if (i < skeleton.BoneNames.size() && !skeleton.BoneNames[i].empty())
+                if (index < skeleton.BoneNames.size() && !skeleton.BoneNames[index].empty())
                 {
-                    if (!skelHead.empty()) skelHead += ", ";
-                    skelHead += skeleton.BoneNames[i];
+                    if (!skeletonHead.empty()) skeletonHead += ", ";
+                    skeletonHead += skeleton.BoneNames[index];
                 }
             }
             std::string clipHead;
-            for (size_t i = 0; i < std::min<size_t>(channels.size(), 6u); ++i)
+            for (size_t index = 0; index < std::min<size_t>(channels.size(), 6u); ++index)
             {
-                if (!channels[i].targetName.empty())
+                if (!channels[index].TargetName.empty())
                 {
                     if (!clipHead.empty()) clipHead += ", ";
-                    clipHead += channels[i].targetName;
+                    clipHead += channels[index].TargetName;
                 }
             }
-            Logger::Log::Info("AnimationSampling: skel head=[{}] | clip head=[{}]", skelHead, clipHead);
+            Logger::Log::Info("AnimationSampling: skel head=[{}] | clip head=[{}]", skeletonHead, clipHead);
             if (!unmatchedNames.empty())
             {
                 std::string unmatched;
-                for (size_t i = 0; i < std::min<size_t>(unmatchedNames.size(), 30u); ++i)
+                for (size_t index = 0; index < std::min<size_t>(unmatchedNames.size(), 30u); ++index)
                 {
                     if (!unmatched.empty()) unmatched += ", ";
-                    unmatched += unmatchedNames[i];
+                    unmatched += unmatchedNames[index];
                 }
                 Logger::Log::Info("AnimationSampling: unmatched clip bones (first 30 of {}): [{}]",
                                   unmatchedNames.size(), unmatched);
@@ -325,7 +238,7 @@ void SampleAnimationPose(const SkeletonData& skeleton,
         }
     }
 
-    ::GameEngine::Animation::BuildPoseToSkinMatrices(skeleton, outNodeWorldMatrices, outCompactSkinMatrices, ws, plan);
+    ::GameEngine::Animation::BuildPoseToSkinMatrices(skeleton, outNodeWorldMatrices, outCompactSkinMatrices, workspace, plan);
 }
 
 namespace

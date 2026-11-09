@@ -13,6 +13,8 @@ straight into `SkinPaletteAtlas`. Setting the environment variable
 
 ## Reading order
 
+[Animation clip compression](clip-compression.mdx) describes packed playback, editable keys, and packaged source files.
+
 1. [`HumanoidRetargeting.html`](HumanoidRetargeting.html) — What the system
    does: assets, import, auto-bootstrap, what runs each frame, what is
    authored but not evaluated, and what it does not do.

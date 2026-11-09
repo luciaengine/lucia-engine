@@ -1,0 +1,16 @@
+---
+title: Animation clip compression
+description: How clips retain original animation values with smaller runtime tracks.
+---
+
+Loaded clips automatically pack translation, rotation, scale, and morph tracks into immutable playback data. Each key retains its original float values and time. Linear and step tracks omit unused tangent data. A track containing a cubic segment retains the tangent and weight components needed by that path. There is no quality setting or quantization error.
+
+The CPU sampler, animation graph, and GPU skinning path read these tracks. Sampling preserves duplicate-key order and each key's interpolation override. Times outside the key range hold the terminal values. Graph playback and morph curves honor the same segment interpolation as regular clip playback. Humanoid retargeting reads the packed tracks when building its existing 30 Hz GPU samples. That separate sample stream remains uncompressed.
+
+All original key fields, including inactive values and tangent editing flags, remain in a lossless compressed authoring archive. Opening an authoring view materializes the editable keys and increases resident memory. Saving and undo use that view. Successful edits publish a new playback snapshot; readers retaining the old snapshot can finish safely. Paused playback and GPU upload caches recognize the new revision.
+
+Standalone `.anim` and `.animation` files remain editable JSON in the project. Package export stores their source in a versioned compressed envelope. The runtime validates the envelope and expands at most 256 MiB before parsing it. Imported glTF and FBX containers keep their existing packaged representation. Their loaded clips still use packed playback tracks.
+
+Runtime compilation requires finite key times sorted in ascending order. Equal times are allowed. Repair a refused source by replacing non-finite times and sorting its keys. The authoring archive accepts at most 256 MiB of canonical key fields. Failed source replacement retains the last valid loaded snapshot. A refused GPU upload leaves regular clip playback on the CPU.
+
+For engine integrations, retain `AnimationClip::GetRuntimeData()` for the full evaluation or upload. `GetChannels()` supplies the authoring view and can allocate. First authoring reads are synchronized; edits, loads, unloads, and borrowed authoring views require external serialization. `GetMemoryUsage()` estimates storage capacity for the packed tracks, archive, materialized authoring keys, and retained source buffer. Separately retained snapshots can extend the lifetime of older data.
