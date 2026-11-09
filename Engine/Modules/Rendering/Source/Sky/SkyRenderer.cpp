@@ -38,7 +38,6 @@ TextureHandle LoadSkyTexture2D(IDevice* device, const std::filesystem::path& pat
     int width = 0;
     int height = 0;
     int channels = 0;
-    stbi_set_flip_vertically_on_load(false);
     stbi_uc* pixels = stbi_load(path.string().c_str(), &width, &height, &channels, 4);
     if (!pixels || width <= 0 || height <= 0)
     {
