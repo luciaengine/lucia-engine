@@ -1,6 +1,6 @@
 #pragma once
 
-#include "PageStreaming/HeightPageCooker.h"
+#include "PageStreaming/Height/HeightPageCooker.h"
 
 #include "SourceRangeReader.h"
 

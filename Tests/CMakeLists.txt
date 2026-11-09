@@ -1131,6 +1131,7 @@ if(MSVC)
 endif()
 target_link_libraries(PageStoreTests PRIVATE Engine GTest::gtest GTest::gtest_main)
 target_include_directories(PageStoreTests PRIVATE
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/PageStreaming/Source
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_SOURCE_DIR}/Engine/Include
   ${CMAKE_SOURCE_DIR}/Engine/Modules/PageStreaming/Include

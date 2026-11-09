@@ -250,7 +250,9 @@ TEST(CBTResources, ReprovisionDropEvictsRetiredTextureFromWholeRing)
     // The re-provision drop: every element holding the retired view is rebound to the default in the
     // same call, and the generation advances — no ring element outlives the retired texture.
     const uint64_t genBound = resources.GetTerrainSourceGeneration();
-    EXPECT_TRUE(resources.RebindTerrainSourcesToDefault());
+    bool changed = false;
+    EXPECT_TRUE(resources.RebindTerrainSourcesToDefault(changed));
+    EXPECT_TRUE(changed);
     EXPECT_EQ(resources.CountTerrainSourceSlots(retired), 0u)
         << "a retired texture must not remain in any ring element after the drop";
     EXPECT_GT(resources.GetTerrainSourceGeneration(), genBound)
@@ -260,7 +262,8 @@ TEST(CBTResources, ReprovisionDropEvictsRetiredTextureFromWholeRing)
 
     // Idempotent: an already-clean ring reports no change and does not churn the version.
     const uint64_t genClean = resources.GetTerrainSourceGeneration();
-    EXPECT_FALSE(resources.RebindTerrainSourcesToDefault());
+    EXPECT_TRUE(resources.RebindTerrainSourcesToDefault(changed));
+    EXPECT_FALSE(changed);
     EXPECT_EQ(resources.GetTerrainSourceGeneration(), genClean);
 
     // Path equivalence: the re-provision recreates the heightmap at the new resolution. Binding the
@@ -304,7 +307,9 @@ TEST(CBTResources, ReprovisionDropEvictsAtlasAndCoarseRings)
     EXPECT_EQ(resources.CountTerrainSourceSlots(atlas), kCBTFrameParamsRing);
     EXPECT_EQ(resources.CountTerrainSourceSlots(coarse), kCBTFrameParamsRing);
 
-    EXPECT_TRUE(resources.RebindTerrainSourcesToDefault());
+    bool changed = false;
+    EXPECT_TRUE(resources.RebindTerrainSourcesToDefault(changed));
+    EXPECT_TRUE(changed);
     EXPECT_EQ(resources.CountTerrainSourceSlots(atlas), 0u);
     EXPECT_EQ(resources.CountTerrainSourceSlots(coarse), 0u);
 

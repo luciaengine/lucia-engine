@@ -170,16 +170,19 @@ time instead of decoding the whole file.</p>
 <ul>
   <li>Cooked stores live in the project's <code>.Cache/TerrainPages</code> folder, one per heightmap, named for the
   asset and its content. Two terrains on the same heightmap share one store. After an edit of the heightmap, or of its
-  Samples X and Samples Z, the next export cooks it again; an edit that keeps the height range rewrites
+  Samples X and Samples Z, the next export cooks it again; an edit that keeps the per-level height steps rewrites
   only the pages that changed.</li>
   <li>The folder is derived data: deleting it is safe, and it is rebuilt on the next cook. Keep it out of version
   control, like the rest of <code>.Cache</code>.</li>
   <li>Exporting the game packs each shipped heightmap's store into one file,
   <code>Assets/Cooked/Terrain/&lt;asset id&gt;.geterrain</code>, cooking it first if it changed. A heightmap whose grid
   cannot be resolved is reported in the export's warnings, with the fix.</li>
-  <li>A cook reads the heightmap a band of rows at a time, so its memory does not grow with the file. Measured on
-  a 60 &times; 15 km heightmap at 0.25 m (57.6 GB of <code>.r32</code>): about 50 s to read the file once and 2.5
-  min to cook a 79 GB store, on a fast NVMe drive.</li>
+  <li>A cook reads the heightmap a band of rows at a time, keeping only the rows needed by the next pages.</li>
+  <li>Heights use integer steps chosen per level. Each page stores 16-bit offsets above its base when they fit,
+  or 32-bit integers at the same step. Neighboring apron samples decode to identical values. Surface stores
+  also support splat weights, BC5 normals, grass-control bytes and premultiplied color, with their own filters.</li>
+  <li>The current store format is version 2. An older cached store is cooked again automatically. Re-export
+  existing game packages to rebuild their terrain containers; the Player refuses containers with older stores.</li>
   <li>16-bit PNG heightmaps are not cooked into pages; they keep the limit stated below.</li>
 </ul>
 <h3>What streams at runtime</h3>

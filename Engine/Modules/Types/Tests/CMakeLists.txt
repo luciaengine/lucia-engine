@@ -13,6 +13,7 @@ if(NOT GTest_FOUND)
 endif()
 
 add_executable(TypesTests
+    ByteBufferTests.cpp
     Base64Tests.cpp
     ColorTests.cpp
     FalseSharingTests.cpp

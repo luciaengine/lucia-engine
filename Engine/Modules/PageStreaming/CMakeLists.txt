@@ -7,25 +7,34 @@ project(PageStreaming LANGUAGES CXX)
 # and the shipped terrain container. Device-free: the GPU half (physical caches, page tables, the
 # resolve) lives with the terrain renderer in TerrainECS and CBTTerrain.
 add_library(PageStreaming OBJECT
-    Source/PageAddress.cpp
-    Source/PageStoreFormat.cpp
-    Source/PageStoreSerialization.cpp
-    Source/HeightPageCodec.cpp
-    Source/PageStoreWriter.cpp
-    Source/PageStoreReader.cpp
-    Source/PageLoader.cpp
-    Source/PageCache.cpp
-    Source/PageResidency.cpp
+    Source/Bc5PageCodec.cpp
+    Source/BytePageCodec.cpp
     Source/GeneratedHeightPageProvider.cpp
+    Source/Height/HeightCookBands.cpp
+    Source/Height/HeightPageCodec.cpp
+    Source/Height/HeightPageCooker.cpp
+    Source/Height/HeightSourceRows.cpp
+    Source/Height/HeightStepPlanner.cpp
+    Source/Height/HeightStoreCache.cpp
+    Source/Height/HeightStoreKey.cpp
     Source/HeightPageOverlay.cpp
-    Source/HeightStoreKey.cpp
-    Source/HeightStoreCache.cpp
-    Source/HeightSourceRows.cpp
-    Source/SourceRangeReader.cpp
-    Source/HeightPyramidBuilder.cpp
-    Source/HeightPageCooker.cpp
-    Source/TerrainPageContainer.cpp
     Source/NonInheritedFile.cpp
+    Source/PageAddress.cpp
+    Source/PageCache.cpp
+    Source/PageCodec.cpp
+    Source/PageFaceSeams.cpp
+    Source/PageFieldFilter.cpp
+    Source/PageLoader.cpp
+    Source/PagePyramidBuilder.cpp
+    Source/PageResidency.cpp
+    Source/PageStore/PageStoreFormat.cpp
+    Source/PageStore/PageStorePatcher.cpp
+    Source/PageStore/PageStoreReader.cpp
+    Source/PageStore/PageStoreSerialization.cpp
+    Source/PageStore/PageStoreWriter.cpp
+    Source/PlanetPageCooker.cpp
+    Source/SourceRangeReader.cpp
+    Source/TerrainPageContainer.cpp
 )
 
 target_compile_features(PageStreaming PUBLIC cxx_std_20)
@@ -42,6 +51,7 @@ target_link_libraries(PageStreaming
     PUBLIC
         Types
         AssetCore
+        Mathematics
     PRIVATE
         # The loader's reader threads (Assets/AssetIOService.h); objects link once into Engine.
         AssetRuntime

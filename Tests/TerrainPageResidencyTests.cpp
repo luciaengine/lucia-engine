@@ -7,7 +7,7 @@
 #include "TerrainECS/TerrainAtlas.h"
 
 #include "PageStreaming/PageCache.h"
-#include "PageStreaming/PageStoreFormat.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
 
 #include <gtest/gtest.h>
 
@@ -516,7 +516,7 @@ float CBT_PageSlotFade(uint slot)
 CBTPageLevel CBT_PageLevelShape(uint level)
 {
     const PageStreaming::PageStoreLevel& shape = s_Bound.Table->Levels[level];
-    return CBTPageLevel{shape.FirstEntry, shape.PagesX, shape.PagesZ, 0u};
+    return CBTPageLevel{static_cast<uint32>(shape.FirstEntry), shape.PagesX, shape.PagesZ, 0u};
 }
 
 float CBT_PageCacheBilinear(float texelX, float texelZ)
