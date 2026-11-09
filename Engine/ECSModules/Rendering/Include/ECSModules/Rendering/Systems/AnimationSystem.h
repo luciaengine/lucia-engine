@@ -3,6 +3,7 @@
 #include "ECS/Systems.h"
 #include "ECS/Entity.h"
 #include "Types/Types.h"
+#include "Types/FlatMap.h"
 #include "AssetCore/GUID.h"
 #include "Assets/AnimationClip.h"
 #include "Components/Animation/AnimatorRef.h"
@@ -103,7 +104,7 @@ private:
         uint64 Revision;
         bool Safe;
     };
-    std::unordered_map<uint64_t, ClipSafety> m_GPUSafeCache;
+    FlatMap<uint64_t, ClipSafety> m_GPUSafeCache;
 
     // Cross-rig humanoid retargeting lives in HumanoidRetargetSystem (Phase
     // 6). It runs immediately after this system in the Animation wave and

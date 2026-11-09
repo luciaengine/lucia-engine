@@ -87,10 +87,11 @@ float ReadFloat(std::span<const uint32> words, size_t offset)
     return std::bit_cast<float>(words[offset]);
 }
 
-Mathematics::Vector4 ReadVector(std::span<const uint32> words, size_t offset, uint32 count)
+template<uint32 kComponents>
+Mathematics::Vector4 ReadVector(std::span<const uint32> words, size_t offset)
 {
     Mathematics::Vector4 value;
-    for (uint32 component = 0u; component < count; ++component)
+    for (uint32 component = 0u; component < kComponents; ++component)
         value[component] = ReadFloat(words, offset + component);
     return value;
 }
@@ -103,6 +104,62 @@ float SampleCubic(float first, float outgoing, float outgoingWeight, float secon
     const float inverse = 1.0f - alpha;
     return inverse * inverse * inverse * first + 3.0f * inverse * inverse * alpha * firstControl +
         3.0f * inverse * alpha * alpha * secondControl + alpha * alpha * alpha * second;
+}
+
+template<uint32 kComponents>
+bool SampleTrack(std::span<const uint32> words, const AnimationClipData::Track& track,
+    float32 time, Mathematics::Vector4& value)
+{
+    if (track.KeyCount == 0u)
+        return false;
+    uint32 lower = 0u;
+    uint32 upper = track.KeyCount;
+    while (lower < upper)
+    {
+        const uint32 middle = lower + (upper - lower) / 2u;
+        if (ReadFloat(words, track.WordOffset + middle * track.WordsPerKey) < time)
+            lower = middle + 1u;
+        else
+            upper = middle;
+    }
+    const uint32 first = lower == 0u ? 0u : lower - 1u;
+    const uint32 second = std::min(lower, track.KeyCount - 1u);
+    const size_t firstOffset = track.WordOffset + first * track.WordsPerKey;
+    const size_t secondOffset = track.WordOffset + second * track.WordsPerKey;
+    const float start = ReadFloat(words, firstOffset);
+    const float duration = ReadFloat(words, secondOffset) - start;
+    const float alpha = duration > 0.0f ? std::clamp((time - start) / duration, 0.0f, 1.0f) : 0.0f;
+    const uint32 flags = words[firstOffset + 1u];
+    const AnimInterp interpolation = (flags & kOverrideBit) != 0u
+        ? static_cast<AnimInterp>(flags & 3u) : track.Interpolation;
+    const auto firstValue = ReadVector<kComponents>(words, firstOffset + 2u);
+    const auto secondValue = ReadVector<kComponents>(words, secondOffset + 2u);
+    if (interpolation == AnimInterp::Step || duration <= 0.0f)
+        value = firstValue;
+    else if (interpolation == AnimInterp::CubicSpline)
+    {
+        for (uint32 component = 0u; component < kComponents; ++component)
+            value[component] = SampleCubic(firstValue[component],
+                ReadFloat(words, firstOffset + 2u + kComponents * 2u + component),
+                ReadFloat(words, firstOffset + 2u + kComponents * 4u + component), secondValue[component],
+                ReadFloat(words, secondOffset + 2u + kComponents + component),
+                ReadFloat(words, secondOffset + 2u + kComponents * 3u + component), duration, alpha);
+        if constexpr (kComponents == 4u)
+        {
+            const auto rotation = Mathematics::Quaternion(value.w, value.x, value.y, value.z).Normalized().GetGLM();
+            value = {rotation.x, rotation.y, rotation.z, rotation.w};
+        }
+    }
+    else if constexpr (kComponents == 4u)
+    {
+        const auto rotation = glm::slerp(
+            Mathematics::Quaternion(firstValue.w, firstValue.x, firstValue.y, firstValue.z).GetGLM(),
+            Mathematics::Quaternion(secondValue.w, secondValue.x, secondValue.y, secondValue.z).GetGLM(), alpha);
+        value = {rotation.x, rotation.y, rotation.z, rotation.w};
+    }
+    else
+        value = firstValue * (1.0f - alpha) + secondValue * alpha;
+    return true;
 }
 }
 
@@ -242,58 +299,11 @@ bool AnimationClipData::DecodeChannels(std::vector<AnimChannel>& channels) const
 
 bool AnimationClipData::Sample(const Track& track, float32 time, Mathematics::Vector4& value) const
 {
-    if (track.KeyCount == 0u)
-        return false;
-    const std::span<const uint32> words(m_Words);
-    uint32 lower = 0u;
-    uint32 upper = track.KeyCount;
-    while (lower < upper)
-    {
-        const uint32 middle = lower + (upper - lower) / 2u;
-        if (ReadFloat(words, track.WordOffset + middle * track.WordsPerKey) < time)
-            lower = middle + 1u;
-        else
-            upper = middle;
-    }
-    const uint32 first = lower == 0u ? 0u : lower - 1u;
-    const uint32 second = std::min(lower, track.KeyCount - 1u);
-    const size_t firstOffset = track.WordOffset + first * track.WordsPerKey;
-    const size_t secondOffset = track.WordOffset + second * track.WordsPerKey;
-    const float start = ReadFloat(words, firstOffset);
-    const float duration = ReadFloat(words, secondOffset) - start;
-    const float alpha = duration > 0.0f ? std::clamp((time - start) / duration, 0.0f, 1.0f) : 0.0f;
-    const uint32 flags = words[firstOffset + 1u];
-    const AnimInterp interpolation = (flags & kOverrideBit) != 0u
-        ? static_cast<AnimInterp>(flags & 3u) : track.Interpolation;
-    const uint32 components = ComponentCount(track.Path);
-    const auto firstValue = ReadVector(words, firstOffset + 2u, components);
-    const auto secondValue = ReadVector(words, secondOffset + 2u, components);
-    if (interpolation == AnimInterp::Step || duration <= 0.0f)
-        value = firstValue;
-    else if (interpolation == AnimInterp::CubicSpline)
-    {
-        for (uint32 component = 0u; component < components; ++component)
-            value[component] = SampleCubic(firstValue[component],
-                ReadFloat(words, firstOffset + 2u + components * 2u + component),
-                ReadFloat(words, firstOffset + 2u + components * 4u + component), secondValue[component],
-                ReadFloat(words, secondOffset + 2u + components + component),
-                ReadFloat(words, secondOffset + 2u + components * 3u + component), duration, alpha);
-        if (track.Path == AnimPath::Rotation)
-        {
-            const auto rotation = Mathematics::Quaternion(value.w, value.x, value.y, value.z).Normalized().GetGLM();
-            value = {rotation.x, rotation.y, rotation.z, rotation.w};
-        }
-    }
-    else if (track.Path == AnimPath::Rotation)
-    {
-        const auto rotation = glm::slerp(
-            Mathematics::Quaternion(firstValue.w, firstValue.x, firstValue.y, firstValue.z).GetGLM(),
-            Mathematics::Quaternion(secondValue.w, secondValue.x, secondValue.y, secondValue.z).GetGLM(), alpha);
-        value = {rotation.x, rotation.y, rotation.z, rotation.w};
-    }
-    else
-        value = firstValue * (1.0f - alpha) + secondValue * alpha;
-    return true;
+    if (track.Path == AnimPath::Rotation)
+        return SampleTrack<4u>(m_Words, track, time, value);
+    if (track.Path == AnimPath::MorphWeight)
+        return SampleTrack<1u>(m_Words, track, time, value);
+    return SampleTrack<3u>(m_Words, track, time, value);
 }
 
 } // namespace GameEngine::Animation

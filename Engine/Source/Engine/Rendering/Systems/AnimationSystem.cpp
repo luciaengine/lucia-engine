@@ -460,7 +460,7 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
             m_BootstrapWorldReset != reset)
         {
             m_BootstrapAttempted.clear();
-            m_GPUSafeCache.clear();
+            m_GPUSafeCache.Clear();
             m_BootstrapSourceVersion = sourceVersion;
             m_BootstrapWorldId = world.GetWorldId();
             m_BootstrapWorldReset = reset;
@@ -1003,9 +1003,8 @@ bool AnimationSystem::IsClipSkeletonGPUSafe(uint32 skeletonId, uint32 clipIndex,
     const auto data = clip ? clip->GetRuntimeData() : nullptr;
     if (!data)
         return false;
-    if (auto found = m_GPUSafeCache.find(key); found != m_GPUSafeCache.end() &&
-        found->second.Revision == data->Revision())
-        return found->second.Safe;
+    if (const auto* found = m_GPUSafeCache.Find(key); found && found->Revision == data->Revision())
+        return found->Safe;
 
     bool safe = true;
     if (!skeleton.BoneNameIds.empty())
@@ -1047,7 +1046,7 @@ bool AnimationSystem::IsClipSkeletonGPUSafe(uint32 skeletonId, uint32 clipIndex,
             }
         }
     }
-    m_GPUSafeCache.insert_or_assign(key, ClipSafety{data->Revision(), safe});
+    m_GPUSafeCache.InsertOrAssign(key, ClipSafety{data->Revision(), safe});
     return safe;
 }
 
