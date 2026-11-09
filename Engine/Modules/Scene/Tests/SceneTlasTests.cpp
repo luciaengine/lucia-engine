@@ -23,7 +23,7 @@
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
 #include "Mathematics/Geometry.h"
 #include "Mathematics/Vector3.h"
-#include "Scene/FunctionRef.h"
+#include "Types/FunctionRef.h"
 #include "Scene/SceneTlas.h"
 
 namespace

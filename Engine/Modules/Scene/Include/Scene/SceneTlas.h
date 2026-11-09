@@ -8,7 +8,7 @@
 #include "ECSModules/Rendering/Systems/RenderExtractionSystem.h"
 #include "Mathematics/Geometry.h"
 #include "Mathematics/Vector3.h"
-#include "Scene/FunctionRef.h"
+#include "Types/FunctionRef.h"
 #include "Scene/TlasInstance.h"
 #include "Types/Types.h"
 
