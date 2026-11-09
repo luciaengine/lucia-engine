@@ -1,9 +1,7 @@
 // Sparse height deltas applied to a tiled terrain's base pages.
 
 #include "TerrainECS/TerrainModifierSystem.h"
-#include "TerrainRowBands.h"
 
-#include "Core/CpuProfiler.h"
 #include "PageStreaming/Height/HeightPageLayer.h"
 #include "PageStreaming/PageSampleRect.h"
 #include "PageStreaming/PageStore/PageStoreFormat.h"
@@ -109,10 +107,8 @@ PageSampleRect ExtentOf(const PageStreaming::HeightPageLayer& layer)
     return layer.Extent(0).value_or(PageSampleRect{});
 }
 
-// Publishes `layer` as the terrain's overlay, `changed` the level-0 rect it changed from the
-// previous one. The version is unique across every terrain's data, so the height pages tell an
-// overlay derived from the one they hold from an overlay of rebuilt modifier data (a scene load
-// replaces the terrain's data while its pages stay resident).
+// Publishes the layer and its changed level-0 rect. Versions are unique across terrains, so
+// resident pages distinguish an incremental write from rebuilt modifier data after a scene load.
 void PublishPageOverlay(TiledTerrainData& tiled, std::shared_ptr<PageStreaming::HeightPageLayer> layer,
                         const PageSampleRect& changed)
 {

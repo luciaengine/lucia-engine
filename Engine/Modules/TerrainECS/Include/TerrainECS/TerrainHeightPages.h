@@ -40,15 +40,8 @@ namespace GameEngine::TerrainECS
 
 struct TerrainHandle;
 
-/// What a platform spends on height pages (design D5): the height cache's slots, the largest
-/// page table one GPU page-table ring slot may hold, the largest modifier overlay
-/// (PageStreaming::HeightPageLayer, in system memory) a terrain may hold, and the CPU height
-/// pages' bytes (the residency's one CPU budget, design D5) and synchronous window fetches a frame
-/// (design D3, PageResidencyBudget). The CBT sizes its ring
-/// slots to the bound terrain's table, up to the table cap (CBTResources::ProvisionPageTableWords),
-/// so the cap costs memory only where a terrain needs it; the overlay is built only for a terrain
-/// that pages, over the rect its height modifiers reach. GE_TERRAIN_PAGE_SLOTS overrides the slots
-/// for soaks.
+/// Platform limits for GPU height slots, page-table words per ring slot, sparse modifier bytes,
+/// CPU page bytes and synchronous CPU window fetches per frame.
 struct HeightPageProfile
 {
     uint32 Slots = 0;
@@ -58,20 +51,11 @@ struct HeightPageProfile
     uint32 CpuSyncFetchPages = 0;
 };
 
-/// Desktop: 512 slots (33 MiB); tables up to 2^21 words (8 MiB a ring slot), so the 60 x 15 km
-/// terrain at 0.25 m (1,174,877 words) pages; an overlay up to 512 MiB, about 6 km^2 of
-/// modifiers on a 0.25 m terrain (about 5.3 B per level-0 sample), a few percent of a 16 GiB
-/// machine's memory: a 1 km^2 stamp at 0.25 m holds about 82 MiB. Decoded pages on the CPU: 64 MiB
-/// (about 990 pages, the uploads waiting and the CPU readers' pages together; the 512 drawn pages
-/// fit with room for the windows) and up to 4 synchronous window fetches a frame inside the 0.5 ms
-/// deadline: a store page from the file cache takes about 8 us, so 4; a generated page about
-/// 0.36 ms, so 1 (Release, measured in slice 1c-iii); an SSD read that misses the file cache is not
-/// measured (0.1 to 0.3 ms assumed).
+/// Desktop: 512 slots (33 MiB), 2^21 table words per ring slot and 512 MiB of sparse modifier deltas.
+/// CPU pages have a 64 MiB budget and up to four synchronous window fetches per frame.
 inline constexpr HeightPageProfile kDesktopHeightPages{512u, 1u << 21, 512ull << 20, 64ull << 20, 4u};
-/// Steam Deck: half the desktop slots (256, 16.5 MiB) and a quarter of its table cap (2^19 words,
-/// 2 MiB a ring slot): about 24 x 6 km at 0.5 m, or 60 x 15 km at 1 m; a quarter of the desktop
-/// overlay (128 MiB of its 16 GiB shared with the GPU), which still holds 1 km^2 at 0.25 m. CPU height
-/// pages: 32 MiB and 1 synchronous window fetch a frame (a microSD's random read takes milliseconds).
+/// Steam Deck: 256 slots (16.5 MiB), 2^19 table words per ring slot and 128 MiB of modifier deltas.
+/// CPU pages have a 32 MiB budget and one synchronous window fetch per frame.
 inline constexpr HeightPageProfile kSteamDeckHeightPages{256u, 1u << 19, 128ull << 20, 32ull << 20, 1u};
 
 /// The profile of the platform this build targets.
