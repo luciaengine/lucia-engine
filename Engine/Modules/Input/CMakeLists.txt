@@ -5,6 +5,7 @@ project(Input LANGUAGES CXX)
 file(GLOB_RECURSE INPUT_PUBLIC_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/Include/Input/*.h)
 set(INPUT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/InputSystem.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Source/InputScriptApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/GamepadPolling.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/Source/GamepadEdgeTracker.cpp
 )
@@ -44,6 +45,7 @@ if(BUILD_TESTING)
 
     add_executable(InputSystemTests
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/InputSystemTests.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/InputScriptApiTests.cpp
     )
 
     # Modules are OBJECT libs aggregated into Engine.dll; link Engine to
