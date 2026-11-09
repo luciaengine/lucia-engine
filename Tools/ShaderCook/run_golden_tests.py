@@ -19,7 +19,6 @@ import unittest
 from pathlib import Path
 
 import shadercook
-import test_shadercook
 
 kRoot = Path(__file__).resolve().parent
 kRepo = kRoot.parent.parent
@@ -71,7 +70,7 @@ def Main() -> int:
         return kCannotRun
 
     regressionResult = unittest.TextTestRunner(verbosity=2).run(
-        unittest.defaultTestLoader.loadTestsFromTestCase(test_shadercook.DescriptorTypeHoistTests))
+        unittest.defaultTestLoader.discover(str(kRoot), pattern="test_shadercook*.py"))
     if not regressionResult.wasSuccessful():
         return 1
 
