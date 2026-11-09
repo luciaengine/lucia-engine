@@ -17,7 +17,7 @@ add_library(PageStreaming OBJECT
     Source/Height/HeightStepPlanner.cpp
     Source/Height/HeightStoreCache.cpp
     Source/Height/HeightStoreKey.cpp
-    Source/HeightPageOverlay.cpp
+    Source/Height/HeightPageLayer.cpp
     Source/NonInheritedFile.cpp
     Source/PageAddress.cpp
     Source/PageCache.cpp
@@ -48,6 +48,7 @@ target_include_directories(PageStreaming
 )
 
 target_link_libraries(PageStreaming
+    PRIVATE Image
     PUBLIC
         Types
         AssetCore
@@ -62,6 +63,6 @@ target_link_libraries(PageStreaming
         Logger
 )
 
-# stb_image for 16-bit PNG heightmaps; stb_image_impl.cpp is compiled by Engine.
+# Standalone consumers link Image objects for the shared image implementation.
 find_path(STB_INCLUDE_DIRS "stb_image.h")
 target_include_directories(PageStreaming PRIVATE ${STB_INCLUDE_DIRS})

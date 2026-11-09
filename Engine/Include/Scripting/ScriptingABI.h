@@ -454,6 +454,8 @@ GE_API GE_Result GE_CDECL GE_GameUI_FindElement(uint64_t entityId, const char* i
 
 GE_API GE_Result GE_CDECL GE_UIElement_SetWidthPercent(uint64_t instanceId, float pct);
 GE_API GE_Result GE_CDECL GE_UIElement_SetLabelText(uint64_t instanceId, const char* text);
+/// Sets Markdown text on the main thread. A null or empty string clears the control.
+GE_API GE_Result GE_CDECL GE_UIElement_SetMarkdownText(uint64_t instanceId, const char* text);
 GE_API GE_Result GE_CDECL GE_UIElement_SetClass(uint64_t instanceId, const char* className, int32_t on);
 // Liveness as a QUERY, not as a failure: Ok with *outAlive 0 or 1. A caller asking
 // "is this still there" is not making a mistake when the answer is no.
@@ -546,6 +548,23 @@ GE_API GE_Result GE_CDECL GE_UI_OrphanElementTypes(uint64_t owner, uint64_t* out
 //
 // MAIN THREAD ONLY, and after the batch — same window, same call, registrations first.
 GE_API GE_Result GE_CDECL GE_UI_NotifyReloadCompleted(uint64_t owner);
+
+// What GE_MainThread_RequestPump answered.
+typedef enum GE_MainThreadPost {
+    GE_MainThreadPost_Queued = 0,    // the main-thread pump drains the queue at the end of a frame
+    GE_MainThreadPost_RunInline = 1, // no queue to wait for (no engine initialized, a standalone-hosted one, or
+                                     // one with scripting off): run it now
+    GE_MainThreadPost_Dropped = 2    // the engine shut down or its Initialize failed: drop it; logged here, once per process
+} GE_MainThreadPost;
+
+// Install the managed drain, process-wide and first-wins: the main-thread pump calls it once per
+// pump that a request preceded, with run = 1, and ScriptManager's shutdown calls it with run = 0 to
+// discard the batch. GE_Result_Fail when a drain was already installed. Never initializes the engine.
+GE_API GE_Result GE_CDECL GE_MainThread_SetDrain(void (GE_CDECL* drain)(int32_t run));
+// Ask the next main-thread pump to call the drain. Callable from any thread; the caller holds its
+// queue's lock across this call and its append. Never initializes the engine and never constructs
+// a ScriptManager. Returns a GE_MainThreadPost.
+GE_API int32_t GE_CDECL GE_MainThread_RequestPump(void);
 
 // -------- Domains (AssemblyLoadContext) --------
 // NOTE: Deprecated in favor of GE_ScriptsDomainCreateFromPackage. Reserved for future implementation.

@@ -360,6 +360,25 @@ void ThumbnailService::RegisterHandler(AssetType type, std::unique_ptr<AssetThum
     ClearResultCache();
 }
 
+std::string ThumbnailService::GetOrRequestInlineImage(const std::filesystem::path& image,
+                                                      std::function<void(const std::string& path)> onReady)
+{
+    TextureThumbnailHandler* textures = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        const auto it = m_Handlers.find(AssetType::Texture);
+        if (it != m_Handlers.end())
+            textures = dynamic_cast<TextureThumbnailHandler*>(it->second.get());
+    }
+    if (!textures)
+    {
+        if (onReady)
+            onReady({});
+        return {};
+    }
+    return textures->GetOrRequestInlineImage(image, std::move(onReady));
+}
+
 std::string ThumbnailService::GetOrRequestBrowser(const std::filesystem::path& assetPath,
                                                   int desiredSize, const std::string& consumer,
                                                   std::function<bool()> stillVisible,

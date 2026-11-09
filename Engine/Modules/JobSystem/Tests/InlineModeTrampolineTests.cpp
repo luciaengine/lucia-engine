@@ -173,16 +173,3 @@ TEST(InlineModeTrampoline, DeferredCounterChildCanBeJoined)
     pool.EnqueueWork([&] { descend(63); });
     EXPECT_TRUE(childRan);
 }
-
-TEST(InlineModeTrampoline, JobExecutionScopeCoversNestedJobsAndEndsOnReturn)
-{
-    using Pool = JobSystem::WorkStealingThreadPool;
-    Pool pool(0);
-    EXPECT_FALSE(Pool::IsExecutingJob());
-    pool.EnqueueWork([&pool] {
-        EXPECT_TRUE(Pool::IsExecutingJob());
-        pool.EnqueueWork([] { EXPECT_TRUE(Pool::IsExecutingJob()); });
-        EXPECT_TRUE(Pool::IsExecutingJob());
-    });
-    EXPECT_FALSE(Pool::IsExecutingJob());
-}

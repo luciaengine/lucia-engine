@@ -4,6 +4,8 @@
 // Split from EditorApplication.cpp; shared bootstrap helpers live in
 // EditorWindowBootstrap.h.
 #include "EditorApplication.h"
+#include "PlayMode/GameViewPointerLock.h"
+#include "PlayMode/WindowCursorLock.h"
 
 #include "Core/Engine.h"
 #include "Core/WindowInputRouter.h"
@@ -313,6 +315,7 @@ void EditorApplication::UndockToFloatingWindow(const std::string& panelId)
                            panelId);
         return;
     }
+    ctx->cursorLock = std::make_unique<Editor::WindowCursorLock>(*ctx->window);
     ctx->window->SetPosition(toolX, toolY);
     if (ownerWindow)
     {
@@ -420,7 +423,7 @@ void EditorApplication::UndockToFloatingWindow(const std::string& panelId)
         Editor::ApplySavedHiDpiPlatformSettings(ctx->uiPlatform.get());
 
         // Set cursor callback for floating windows.
-        SetupUICursorCallback(ctx->ui.get(), ctx->window.get());
+        SetupUICursorCallback(ctx->ui.get(), ctx->window.get(), ctx->cursorLock.get());
     }
     // Floating window styling must be fully ready immediately; async-only style load can
     // leave torn windows visually blank/uninteractive for some users/build configs.
@@ -609,6 +612,8 @@ void EditorApplication::UndockToFloatingWindow(const std::string& panelId)
     };
     floatingInput.onKeyPre = [this, ctxRaw](int k, int a, int m) -> bool
     {
+        if (m_GameViewPointerLock)
+            m_GameViewPointerLock->OnKey(k, a);
 #if GE_ENABLE_CPU_PROFILING
         if (k == Input::kKeyCode_F2 && a == Input::kKeyActionPress)
         {

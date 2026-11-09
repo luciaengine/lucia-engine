@@ -75,6 +75,32 @@ inline void ArgbToRgbFloats(std::uint32_t argb, float out[3])
     out[2] = static_cast<float>(argb & 0xFFu) / 255.0f;
 }
 
+/// Luminance of a linear Rec.709 / sRGB-primaries color (the engine's scene-linear space), with the
+/// BT.709 weights. Relative: 1 for linear white. Alpha is ignored.
+constexpr float LinearRec709Luminance(const ColorLinear& linear)
+{
+    return 0.2126f * linear.r + 0.7152f * linear.g + 0.0722f * linear.b;
+}
+
+/// Interprets 0xAARRGGBB as sRGB-encoded bytes (as CSS, the UI and the color picker give it) and decodes it to a
+/// linear color, each channel in [0, 1].
+inline ColorLinear ArgbToLinear(std::uint32_t argb)
+{
+    const auto alpha = static_cast<std::uint8_t>((argb >> 24) & 0xFF);
+    const auto red = static_cast<std::uint8_t>((argb >> 16) & 0xFF);
+    const auto green = static_cast<std::uint8_t>((argb >> 8) & 0xFF);
+    const auto blue = static_cast<std::uint8_t>(argb & 0xFF);
+    return ColorSRGB::FromSRGB255(red, green, blue, alpha).ToLinear();
+}
+
+/// Encodes a linear color to sRGB bytes as 0xFFRRGGBB, each channel clamped to [0, 1]; alpha is ignored and the
+/// result is opaque. The inverse of ArgbToLinear for an opaque color.
+inline std::uint32_t LinearToArgb(const ColorLinear& linear)
+{
+    const ColorSRGB srgb = linear.ToSRGB();
+    return PackArgbRounded(srgb.r, srgb.g, srgb.b, 1.0f);
+}
+
 // Convert HSV to RGB (sRGB space).
 // h: hue in degrees (0-360), s: saturation (0-1), v: value (0-1)
 // Returns r, g, b in range 0-1

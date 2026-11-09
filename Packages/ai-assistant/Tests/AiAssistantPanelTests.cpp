@@ -954,10 +954,10 @@ TEST(AiAssistantPanelTests, AnImageResultIsOneInlineImageOfBoundedSize)
     EXPECT_EQ(FitAgentCallImage(400, 1600, 300.0f, 180.0f), (AgentCallImageSize{45.0f, 180.0f}));
     EXPECT_EQ(FitAgentCallImage(200, 100, 300.0f, 180.0f), (AgentCallImageSize{200.0f, 100.0f})) << "never up";
 
-    std::vector<std::pair<std::string, int>> asked;
+    std::vector<std::string> asked;
     Editor::EditorAssetActions thumbnails;
-    thumbnails.ShowThumbnail = [&asked](UIElement&, const std::filesystem::path& image, int sizePx) {
-        asked.emplace_back(image.generic_string(), sizePx);
+    thumbnails.ShowImage = [&asked](UIElement&, const std::filesystem::path& image) {
+        asked.push_back(image.generic_string());
     };
     Editor::SetEditorAssetActions(thumbnails);
     AgentCallRow row("1:0", [](uint64_t, AssistantAnswer) {});
@@ -972,8 +972,8 @@ TEST(AiAssistantPanelTests, AnImageResultIsOneInlineImageOfBoundedSize)
     };
     collect(row);
     ASSERT_EQ(images.size(), 1u);
-    EXPECT_EQ(asked, (std::vector<std::pair<std::string, int>>{{capture, 512}}))
-        << "the picture is the thumbnail service's downscaled copy";
+    EXPECT_EQ(asked, (std::vector<std::string>{capture}))
+        << "the picture is the thumbnail service's inline copy";
     EXPECT_FALSE(images[0]->Overrides().Get(Style::BackgroundImage).has_value())
         << "the view never loads the full-size capture itself";
 
@@ -1032,7 +1032,7 @@ TEST(AiAssistantPanelTests, AnInlineImageReleasesItsPictureWhenItLeavesThePanel)
         GTEST_SKIP() << "No device";
     int requests = 0;
     Editor::EditorAssetActions actions;
-    actions.ShowThumbnail = [&requests](UIElement& element, const std::filesystem::path&, int) {
+    actions.ShowImage = [&requests](UIElement& element, const std::filesystem::path&) {
         ++requests;
         UI::Layout::SetBackgroundPath(element, "C:/captures/screenshot_viewport_1_thumb.png");
     };

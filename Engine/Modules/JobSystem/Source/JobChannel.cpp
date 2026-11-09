@@ -16,19 +16,19 @@ JobChannel::JobChannel(WorkStealingThreadPool& pool, const JobChannelDesc& desc)
 JobChannel::~JobChannel()
 {
     m_Pool.UnregisterChannel(m_State.get(), m_State->MaxRunning());
-    Vector<UniquePtr<TaskBase>> queued;
+    Vector<Detail::ChannelJob> queued;
     m_State->TakeQueued(queued);
     // In FIFO order: a Submit job is cancelled, an Enqueue job goes on to the
     // blocking threads (never dropped).
-    for (UniquePtr<TaskBase>& job : queued)
+    for (Detail::ChannelJob& job : queued)
     {
-        if (job->NeedsTaskData())
+        if (job.Envelope->NeedsTaskData())
         {
-            m_Pool.CancelUnrunEnvelope(std::move(job));
+            m_Pool.CancelUnrunEnvelope(std::move(job.Envelope));
         }
         else
         {
-            m_Pool.HandOnToBlockingThreads(std::move(job));
+            m_Pool.HandOnToBlockingThreads(std::move(job.Envelope), job.Channel);
         }
     }
 }
@@ -49,13 +49,14 @@ bool JobChannel::Admit(UniquePtr<TaskBase> envelope, Detail::ChannelSlot& slot)
         // its first check and the channel's lock): a Submit job never runs and
         // its caller gets what a Submit after the gate gets; an Enqueue job
         // runs here, on the caller.
-        m_Pool.DisposeEnvelopeAfterGate(std::move(envelope));
+        m_Pool.DisposeEnvelopeAfterGate(std::move(envelope),
+                                        WorkStealingThreadPool::ChannelContext(m_State->Name()));
         return false;
     case Detail::JobChannelState::Admission::Dispatch:
         break;
     }
     m_State->RunBeforeDispatchHook();
-    m_Pool.DispatchToBlockingThreads(std::move(envelope));
+    m_Pool.DispatchToBlockingThreads(std::move(envelope), m_State->Name());
     return true;
 }
 

@@ -43,6 +43,8 @@ void RunRestore(bool expectCopy)
     auto device = CreateVulkanDeviceFast();
     if (!device)
         GTEST_SKIP() << "No Vulkan device available";
+    if (expectCopy && device->GetAPI() != GraphicsAPI::Vulkan)
+        GTEST_SKIP() << "Successful depth-layer copies require Vulkan";
     RenderServices services;
     ASSERT_TRUE(services.Initialize(device.get()));
     RenderGraph::RGResourcePool persistent(device.get());

@@ -26,6 +26,8 @@ if(EMSCRIPTEN)
         Source/WebPackReader.cpp
         Source/WebPackReader.h
         Source/PlayerApplication.cpp
+        Source/PlayerStartupReadiness.cpp
+        Source/PlayerStartupReadiness.h
         Source/PlayerApplication.h
     )
     target_include_directories(WebPlayer PRIVATE Source)

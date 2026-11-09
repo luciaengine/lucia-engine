@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Input/GamepadCodes.h"
+#include "Input/InputScriptApi.h"
 
 #include <cstdint>
 #include <functional>
@@ -68,38 +69,6 @@ enum ModifierMask : int
 
 // Common mask for differentiating shortcut-style modifier combinations.
 constexpr int kModShortcutMask = kModShift | kModControl | kModAlt | kModSuper;
-
-enum class DeviceType
-{
-    Keyboard,
-    Mouse,
-    Gamepad,
-    Unknown
-};
-
-struct ActionState
-{
-    bool pressed = false;      // currently held
-    bool justPressed = false;  // transitioned to pressed this frame
-    bool justReleased = false; // transitioned to released this frame
-    float value = 0.0f;        // for axes (e.g. -1..1, scroll delta)
-};
-
-struct ActionBinding
-{
-    DeviceType device = DeviceType::Keyboard;
-    int code = 0;       // key/button/axis code (platform-specific for now)
-    float scale = 1.0f; // for analog axes
-
-    // Optional modifier requirements. If set, the binding is only considered when:
-    // - (currentMods & requiredMods) == requiredMods
-    // - (currentMods & forbiddenMods) == 0
-    //
-    // This allows distinguishing e.g. A from Shift+A by setting forbiddenMods on
-    // the plain binding.
-    int requiredMods = 0;
-    int forbiddenMods = 0;
-};
 
 struct ActionDesc
 {
@@ -176,6 +145,8 @@ class IRawInputSink
     /// The window gained or lost focus. Like a move, never consumed: focus is
     /// state every stage keeps its own view of.
     virtual void OnWindowFocus(bool focused) = 0;
+    // The host reports whether it currently holds the pointer for this sink.
+    virtual void OnPointerLock(bool locked) = 0;
     /// A wheel or trackpad scroll.
     /// @param delta Scroll delta in platform wheel units, horizontal in x.
     /// @param mods  Platform modifier mask (kModShortcutMask bits) as held when
@@ -249,6 +220,11 @@ class InputSystem : public IRawInputSink
     // than on the position: the origin is where a pointer the platform never
     // placed would otherwise be read, and a game edge-scrolls toward it.
     Mathematics::Vector2 GetMousePosition() const;
+    /// Mouse movement accumulated for the current frame.
+    Mathematics::Vector2 GetMouseDelta() const;
+    void LockPointer();
+    void UnlockPointer();
+    PointerLockState GetPointerLockState() const;
     // True from the first move that reaches this sink until the pointer leaves
     // the window, and again from the next move. The platform keeps delivering
     // moves while a button is held, so a drag that crosses the window edge stays
@@ -334,6 +310,8 @@ class InputSystem : public IRawInputSink
     bool OnGamepadButton(int gamepadIndex, int button, bool down) override;
 
   private:
+    void OnPointerLock(bool locked) override;
+
     class Impl;
     std::unique_ptr<Impl> m_Impl;
 };

@@ -1,3 +1,4 @@
+#include "Audio/AudioTypes.h"
 #include "Platform/Window.h"
 // Web Player entry (web platform plan, Phase 6): the same PlayerApplication as
 // the desktop Player, driven by the browser instead of a blocking main loop.
@@ -96,6 +97,7 @@ int main()
 
     GameEngine::ApplicationConfig appConfig;
     appConfig.Name = gameConfig.gameName;
+    appConfig.AudioOutput = GameEngine::Audio::AudioOutput::Device;
     appConfig.WindowWidth = gameConfig.windowWidth;
     appConfig.WindowHeight = gameConfig.windowHeight;
     appConfig.Fullscreen = false; // the canvas is the window; CSS sizes it

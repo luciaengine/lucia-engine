@@ -2,6 +2,7 @@
 
 #include "Core/Application.h"
 #include "Engine/Build/GameConfig.h"
+#include "PlayerStartupReadiness.h"
 #include "Engine/Rendering/SceneResolveService.h"
 #include "Engine/Rendering/ViewReadbackUtils.h"
 #include "UI/UITextureSpace.h"
@@ -59,7 +60,9 @@ private:
     RuntimeHostDesc MakeRuntimeHostDesc() const;
     // Once the startup scene's resolve batch completes: logs it and starts the
     // scene's autoplay animators. Each frame until then.
-    void FinishStartupResolve(ECS::World& world);
+    void FinishStartupResolve(ECS::World& world, float64 deltaTime);
+    void FinishStartupBatch(ECS::World& world);
+    void LogStartupSceneReady(ECS::World& world);
     // The host's composite hook: the movie frame and the screenshot read the
     // composited frame back through it.
     void OnFrameComposited(RuntimeFrameReadback& readback);
@@ -68,6 +71,7 @@ private:
     void PollScreenshot();
     void RegisterManagedSystemBridge();
     void PollRuntimeDisplayControls();
+    void ApplyPointerLock();
     bool ToggleRuntimeHdrOutput();
     bool ApplyRuntimeHdrOutput(Rendering::HdrOutputMode mode);
 #if GE_PLAYER_MOVIE_RECORDER
@@ -134,6 +138,7 @@ private:
     // until every entity and standalone material of the scene has bound or missed.
     Engine::Renderer::SceneResolveBatch m_StartupResolve = Engine::Renderer::SceneResolveBatch::None;
     bool m_StartupResolvePending = false;
+    PlayerStartupReadiness m_StartupScene;
     std::chrono::steady_clock::time_point m_StartupResolveStart{};
     uint32_t m_StartupResolveFrames = 0;
     bool m_ScreenshotWritten = false;

@@ -44,6 +44,7 @@ ScriptsConfig BuildPlayerScriptsConfig(const PackagedGameLayout& layout, bool us
     if (!useNativeAOT && layout.PrebuiltScriptAssemblyExists)
         config.prebuiltAssemblyPath = layout.PrebuiltScriptAssembly;
 
+    config.nativeAot = useNativeAOT;
     config.disableClr = useNativeAOT || config.prebuiltAssemblyPath.empty();
     return config;
 }

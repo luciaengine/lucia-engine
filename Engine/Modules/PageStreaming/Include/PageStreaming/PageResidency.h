@@ -34,6 +34,8 @@ struct PageSampleRect;
 /// The synchronous CPU fetch's share of a frame (design page-streaming D3): CPU window pages are
 /// fetched on the main thread only while less than this has passed since the frame's Update began.
 inline constexpr std::chrono::microseconds kCpuSyncFetchDeadline{500};
+/// Largest sample count along either axis whose per-face CPU directory fits its 32-bit indices.
+inline constexpr uint32 kCpuDirectoryMaxSamplesPerAxis = 1u << 22u;
 
 /// The clock the synchronous fetch's deadline is read from.
 using PageFetchClock = std::function<std::chrono::steady_clock::time_point()>;

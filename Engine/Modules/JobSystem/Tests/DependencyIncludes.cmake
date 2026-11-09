@@ -23,6 +23,7 @@ file(MAKE_DIRECTORY "${CONCURRENTQUEUE_INCLUDE_DIR}"
     "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/include")
 
 add_library(Logger INTERFACE)
+add_library(Memory INTERFACE)
 add_library(Types INTERFACE)
 add_subdirectory("@JOBSYSTEM_SOURCE_DIR@" jobsystem)
 file(WRITE "${CMAKE_BINARY_DIR}/consumer.cpp" "int HeaderConsumer;\n")

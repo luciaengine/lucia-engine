@@ -101,7 +101,7 @@ GraphInspectorRowKind ScalarKindFromSchemaOrText(const NodeParamSpec* spec, cons
 {
     if (spec)
     {
-        if (spec->Default.IsGuid() && spec->Id == "clipGuid")
+        if (spec->AssetReference != AssetType::Unknown)
             return GraphInspectorRowKind::NodeAsset;
         if (spec->Default.IsInt())
             return GraphInspectorRowKind::NodeInt;
@@ -229,7 +229,9 @@ std::vector<GraphInspectorRow> PlanGraphInspectorRows(
         row.Kind = (spec && !spec->Options.empty()) ? GraphInspectorRowKind::NodeEnum
                                                     : ScalarKindFromSchemaOrText(spec, value);
         row.Key = key;
-        row.Label = (row.Kind == GraphInspectorRowKind::NodeAsset) ? "Clip" : key;
+        row.Label = (row.Kind == GraphInspectorRowKind::NodeAsset && key == "clipGuid") ? "Clip" : key;
+        if (row.Kind == GraphInspectorRowKind::NodeAsset)
+            row.AssetReference = spec->AssetReference;
         rows.push_back(std::move(row));
     };
 

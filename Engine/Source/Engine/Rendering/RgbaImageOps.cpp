@@ -1,10 +1,12 @@
 #include "Engine/Rendering/RgbaImageOps.h"
 
-#include <stb_image_resize2.h>
+#include "Image/Encode.h"
+#include "Image/Resample.h"
+
+#include <utility>
 #include <stb_image_write.h>
 
 #include <algorithm>
-#include <cmath>
 
 namespace GameEngine
 {
@@ -26,30 +28,15 @@ DecodedImage DownscaleRgbaToLongEdge(const DecodedImage& image, uint32_t maxLong
     if (longEdge <= maxLongEdge)
         return image;
 
-    const double scale = static_cast<double>(maxLongEdge) / static_cast<double>(longEdge);
-    DecodedImage scaled;
-    scaled.width = std::max(1u, static_cast<uint32_t>(std::lround(image.width * scale)));
-    scaled.height = std::max(1u, static_cast<uint32_t>(std::lround(image.height * scale)));
-    scaled.pixels.resize(static_cast<size_t>(scaled.width) * scaled.height * 4);
-    // Alpha rides STBIR_RGBA, which keeps coverage off the sRGB transfer curve.
-    if (!stbir_resize_uint8_srgb(image.pixels.data(), static_cast<int>(image.width), static_cast<int>(image.height), 0,
-                                 scaled.pixels.data(), static_cast<int>(scaled.width),
-                                 static_cast<int>(scaled.height), 0, STBIR_RGBA))
-        return {};
-    scaled.valid = true;
-    return scaled;
+    Image::Image8 scaled = Image::ResampleToLongEdge(image.pixels, image.width, image.height, maxLongEdge);
+    return {std::move(scaled.Pixels), scaled.Width, scaled.Height, scaled.Valid};
 }
 
 std::vector<uint8_t> EncodeRgbaPng(const DecodedImage& image)
 {
-    std::vector<uint8_t> png;
-    if (!image.valid || image.width == 0 || image.height == 0)
-        return png;
-    const int width = static_cast<int>(image.width);
-    if (!stbi_write_png_to_func(AppendBytes, &png, width, static_cast<int>(image.height), 4, image.pixels.data(),
-                                width * 4))
-        png.clear();
-    return png;
+    if (!image.valid)
+        return {};
+    return Image::EncodePng(image.pixels, image.width, image.height);
 }
 
 std::vector<uint8_t> EncodeRgbaJpeg(const DecodedImage& image, int quality)

@@ -15,6 +15,10 @@
 #include <emscripten/html5.h>
 #endif
 
+#if defined(_WIN32) || defined(__APPLE__)
+#include "Display/DisplayChangeListener.h"
+#endif
+
 #if defined(_WIN32)
 #ifndef OEMRESOURCE
 #define OEMRESOURCE
@@ -118,17 +122,19 @@ namespace {
             css);
     }
 
-    // The browser owns the window geometry on this target: the canvas fills
-    // the page, so the GLFW window tracks the viewport (CSS px). emscripten's
-    // GLFW only pushes sizes canvas-ward (glfwSetWindowSize -> canvas), so
-    // viewport changes have to be pushed back into GLFW here. The resize event
-    // also fires on browser zoom, where the viewport's CSS size and
+    // The page owns the window geometry on this target: its CSS sizes the
+    // canvas, so the GLFW window tracks the canvas's CSS size (CSS px).
+    // emscripten's GLFW only pushes sizes canvas-ward (glfwSetWindowSize ->
+    // canvas), so a browser resize has to be pushed back into GLFW here. The
+    // resize event also fires on browser zoom, where the CSS size and
     // devicePixelRatio change together.
-    bool WebViewportResizeThunk(int /*eventType*/, const EmscriptenUiEvent* event, void* userData)
+    bool WebViewportResizeThunk(int /*eventType*/, const EmscriptenUiEvent* /*event*/, void* userData)
     {
         auto* handle = static_cast<GLFWwindow*>(userData);
-        if (handle && event && event->windowInnerWidth > 0 && event->windowInnerHeight > 0)
-            glfwSetWindowSize(handle, event->windowInnerWidth, event->windowInnerHeight);
+        const int width = EM_ASM_INT({ return Module['canvas'] ? Module['canvas'].clientWidth : 0; });
+        const int height = EM_ASM_INT({ return Module['canvas'] ? Module['canvas'].clientHeight : 0; });
+        if (handle && width > 0 && height > 0)
+            glfwSetWindowSize(handle, width, height);
         return true;
     }
 
@@ -165,12 +171,24 @@ namespace {
 #endif
     }
 
+    static bool s_DisplayConfigurationChanged = false;
+#if defined(_WIN32) || defined(__APPLE__)
+    static GameEngine::Platform::DisplayChangeListener s_DisplayChangeListener;
+#endif
+
+    void OnDisplayConfigurationChanged()
+    {
+        GameEngine::Platform::InvalidateMonitors();
+        s_DisplayConfigurationChanged = true;
+    }
+
     void MonitorConfigThunk(GLFWmonitor* monitor, int event)
     {
         const char* name = monitor ? glfwGetMonitorName(monitor) : nullptr;
         Logger::Log::Info("Window: monitor {} '{}'",
                           event == GLFW_CONNECTED ? "connected" : "disconnected",
                           name ? name : "");
+        OnDisplayConfigurationChanged();
     }
 
 #if defined(_WIN32)
@@ -279,6 +297,9 @@ bool Window::Initialize()
     }
 
     glfwSetMonitorCallback(&MonitorConfigThunk);
+#if defined(_WIN32) || defined(__APPLE__)
+    s_DisplayChangeListener.Create(&OnDisplayConfigurationChanged);
+#endif
     s_GlfwInitialized = true;
     return true;
 }
@@ -396,13 +417,56 @@ bool Window::Create(const WindowDesc& desc)
     CheckMonitorChanged();
 
 #if defined(__EMSCRIPTEN__)
-    // The requested size is a desktop concept; here the canvas fills the page,
-    // so the window is the viewport — at creation and on every browser resize.
+    // The page's CSS owns the canvas's displayed size where it gives one; the
+    // engine owns only the drawing buffer (the CSS size times the pixel ratio).
+    // emscripten's GLFW writes the window size into the canvas's style as
+    // `!important` on every size change. On an axis the page's CSS sizes, that
+    // write would pin the canvas against the page (and, on a phone, widen the
+    // layout viewport), so it is dropped after each update. On an axis the
+    // page leaves to the canvas's intrinsic size (a bare <canvas>), the write
+    // stays: it holds the canvas at the window size, which without it would
+    // follow the drawing buffer and grow by the pixel ratio on every resize.
+    // Which axes the page sizes is decided once, on the first window: with
+    // the inline size removed, an axis whose CSS size follows the canvas's
+    // width or height attribute is not sized by the page.
+    EM_ASM({
+        if (Browser.geCanvasAxesSizedByPage)
+            return;
+        var canvas = Module['canvas'];
+        if (!canvas || !canvas.style)
+            return;
+        var glfwWidth = canvas.style.getPropertyValue('width');
+        var glfwHeight = canvas.style.getPropertyValue('height');
+        canvas.style.removeProperty('width');
+        canvas.style.removeProperty('height');
+        var bufferWidth = canvas.width;
+        var bufferHeight = canvas.height;
+        var cssWidth = canvas.clientWidth;
+        var cssHeight = canvas.clientHeight;
+        canvas.width = bufferWidth + 7;
+        canvas.height = bufferHeight + 7;
+        var sized = {};
+        sized.width = canvas.clientWidth === cssWidth;
+        sized.height = canvas.clientHeight === cssHeight;
+        canvas.width = bufferWidth;
+        canvas.height = bufferHeight;
+        if (!sized.width && glfwWidth)
+            canvas.style.setProperty('width', glfwWidth, 'important');
+        if (!sized.height && glfwHeight)
+            canvas.style.setProperty('height', glfwHeight, 'important');
+        Browser.geCanvasAxesSizedByPage = sized;
+        var updateCanvasDimensions = Browser.updateCanvasDimensions;
+        Browser.updateCanvasDimensions = function(target, wNative, hNative) {
+            updateCanvasDimensions(target, wNative, hNative);
+            if (target !== Module['canvas'] || !target.style)
+                return;
+            if (sized.width)
+                target.style.removeProperty('width');
+            if (sized.height)
+                target.style.removeProperty('height');
+        };
+    });
     {
-        const int viewportW = EM_ASM_INT({ return window.innerWidth; });
-        const int viewportH = EM_ASM_INT({ return window.innerHeight; });
-        if (viewportW > 0 && viewportH > 0)
-            glfwSetWindowSize(m_Handle, viewportW, viewportH);
         emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, m_Handle, false,
                                        &WebViewportResizeThunk);
         emscripten_set_fullscreenchange_callback(EMSCRIPTEN_EVENT_TARGET_DOCUMENT, m_Handle,
@@ -583,6 +647,8 @@ void Window::Destroy()
     glfwSetWindowCloseCallback(m_Handle, nullptr);
     glfwSetDropCallback(m_Handle, nullptr);
     glfwSetWindowUserPointer(m_Handle, nullptr);
+    UnlockCursor();
+    m_CursorHidden = false;
     // Clean up custom cursor
     if (m_Cursor)
     {
@@ -812,6 +878,28 @@ void Window::SetFullscreen(bool enable)
 }
 
 #if defined(__EMSCRIPTEN__)
+void Window::SetWebPixelRatio(double ratio)
+{
+    if (!m_Handle)
+        return;
+    // emscripten's GLFW sizes the drawing buffer by GLFW.getDevicePixelRatio(), on every
+    // size change and on a devicePixelRatio change; the page's ratio replaces it.
+    EM_ASM(
+        {
+            GLFW.geRequestedPixelRatio = $0;
+            if (!GLFW.geBrowserDevicePixelRatio)
+            {
+                GLFW.geBrowserDevicePixelRatio = GLFW.getDevicePixelRatio;
+                GLFW.getDevicePixelRatio = function() {
+                    return GLFW.geRequestedPixelRatio > 0 ? GLFW.geRequestedPixelRatio
+                                                          : GLFW.geBrowserDevicePixelRatio();
+                };
+            }
+            GLFW.onDevicePixelRatioChange();
+        },
+        ratio);
+}
+
 void Window::NotifyWebFullscreenChanged(bool isFullscreen)
 {
     if (m_IsFullscreen == isFullscreen)
@@ -872,11 +960,18 @@ void Window::PollEvents()
         PollScope() { pollingWindowEvents = true; }
         ~PollScope() { pollingWindowEvents = false; }
     } scope;
+#if !defined(_WIN32) && !defined(__APPLE__)
+    OnDisplayConfigurationChanged();
+#endif
     glfwPollEvents();
-    for (Window* window : s_Windows)
+    if (s_DisplayConfigurationChanged)
     {
-        if (window)
-            window->CheckMonitorChanged();
+        s_DisplayConfigurationChanged = false;
+        for (Window* window : s_Windows)
+        {
+            if (window)
+                window->CheckMonitorChanged();
+        }
     }
 #if defined(__EMSCRIPTEN__)
     for (Window* window : s_Windows)
@@ -924,7 +1019,11 @@ void Window::Terminate()
     if (!s_GlfwInitialized)
         return;
 
+#if defined(_WIN32) || defined(__APPLE__)
+    s_DisplayChangeListener.Destroy();
+#endif
     glfwTerminate();
+    InvalidateMonitors();
     s_GlfwInitialized = false;
 }
 
@@ -1596,13 +1695,11 @@ void Window::SetCursor(CursorType type)
         m_Cursor = nullptr;
     }
 
-    if (type == CursorType::Hidden)
-    {
-        glfwSetInputMode(m_Handle, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+    m_CursorHidden = type == CursorType::Hidden;
+    if (!m_CursorLocked)
+        glfwSetInputMode(m_Handle, GLFW_CURSOR, m_CursorHidden ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
+    if (m_CursorHidden)
         return;
-    }
-
-    glfwSetInputMode(m_Handle, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 
     int glfwShape = GLFW_ARROW_CURSOR;
     switch (type)
@@ -1651,8 +1748,40 @@ void Window::ResetCursor()
         m_Cursor = nullptr;
     }
 
-    glfwSetInputMode(m_Handle, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    m_CursorHidden = false;
+    if (!m_CursorLocked)
+        glfwSetInputMode(m_Handle, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     glfwSetCursor(m_Handle, nullptr); // reset to default
+}
+
+void Window::LockCursor(LockedCursorMotion motion)
+{
+    if (!m_Handle)
+        return;
+
+#if defined(__EMSCRIPTEN__)
+    // A browser grants pointer lock only inside a user gesture, which this
+    // per-frame call is not.
+    (void)motion;
+    return;
+#endif
+
+    if (!m_CursorLocked)
+        glfwSetInputMode(m_Handle, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    m_CursorLocked = true;
+    if (glfwRawMouseMotionSupported())
+        glfwSetInputMode(m_Handle, GLFW_RAW_MOUSE_MOTION, motion == LockedCursorMotion::Raw ? GLFW_TRUE : GLFW_FALSE);
+}
+
+void Window::UnlockCursor()
+{
+    if (!m_Handle || !m_CursorLocked)
+        return;
+
+    m_CursorLocked = false;
+    if (glfwRawMouseMotionSupported())
+        glfwSetInputMode(m_Handle, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+    glfwSetInputMode(m_Handle, GLFW_CURSOR, m_CursorHidden ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
 }
 
 } // namespace Platform

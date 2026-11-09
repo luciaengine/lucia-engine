@@ -494,6 +494,7 @@ void HdrOutputController::Tick()
     if (now - m_LastSdrWhitePollAt >= kSdrWhitePollInterval)
     {
         m_LastSdrWhitePollAt = now;
+        Platform::InvalidateMonitors();
         const float osSdrWhiteNits = Platform::GetPrimaryMonitorInfo().sdrWhiteLevelNits;
         if (osSdrWhiteNits > 0.0f && m_LastSdrWhiteLevelNits > 0.0f &&
             std::abs(osSdrWhiteNits - m_LastSdrWhiteLevelNits) > 0.5f)

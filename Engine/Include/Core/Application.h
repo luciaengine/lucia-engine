@@ -20,6 +20,7 @@
 namespace GameEngine {
 
 namespace Input { class GamepadEdgeTracker; class InputSystem; }
+namespace Audio { enum class AudioOutput : std::uint8_t; }
 
 /**
  * @brief Utility functions for path resolution
@@ -217,6 +218,10 @@ struct ApplicationConfig {
     // instead of running as fast as the CPU allows. For dedicated servers and
     // simulation runs; the host brings up no window or device of its own either.
     bool Headless = false;
+    /// A scripting ABI host with no frame loop; background posts run inline.
+    bool StandaloneHosted = false;
+    /// Silent by default; applications that play sound select AudioOutput::Device. Ignored under Headless.
+    Audio::AudioOutput AudioOutput{};
 };
 
 /**
@@ -295,6 +300,8 @@ public:
      * @brief Request application exit
      */
     void RequestExit() { m_ShouldExit = true; }
+    // The host can end a game session while keeping its application open.
+    virtual void RequestGameExit(int exitCode);
 
     /**
      * @brief Set process exit code returned by Run()

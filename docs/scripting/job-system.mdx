@@ -1,0 +1,83 @@
+---
+title: Job system
+description: Submit asynchronous jobs, join parallel work, and inspect the engine pool.
+---
+
+The engine owns one `JobSystem::WorkStealingThreadPool`. Get it through `EngineCore::GetInstance().GetJobSystem()`. Tools and tests may create their own pool.
+
+## Choose a submission path
+
+| Work | API | Completion |
+|---|---|---|
+| Fire-and-forget callable | `EnqueueWork(fn)` | The caller owns synchronization. |
+| Several fire-and-forget callables | `EnqueueWorkBatch(functions, count)` | Each callable runs before pool shutdown completes. |
+| A set of tasks joined by the caller | `Run(fn, counter)` and `Wait(counter)` | The caller observes task writes after the join. |
+| Indexed units or chunked ranges | `ParallelFor` | The call joins started units and propagates the first exception. |
+| An asynchronous result or cancellation | `Submit(fn)` | A `TaskHandle` reports the result and terminal state. |
+| Tasks ordered after other handles | `Submit(fn, dependencies)` | Dependencies control when the callable runs. |
+| Work that blocks on a process, driver, or OS call | `JobChannel::Submit(fn)` | A handle tracks work on blocking threads. |
+
+Submit a callable or function object. Keep state in its captures or members. Keep borrowed data alive until the callable finishes.
+
+## Joined work
+
+Use a `JobCounter` when the caller needs every task to finish. `pool.Wait(counter)` participates in the fork and is legal from a pool worker. Use the same pool for every task counted by one counter.
+
+```cpp title="Join independent units"
+#include "JobSystem/WorkStealingThreadPool.h"
+
+JobSystem::JobCounter counter;
+for (size_t index = 0; index < count; ++index)
+    pool.Run([index] { ProcessUnit(index); }, counter);
+pool.Wait(counter);
+```
+
+Check `counter.HasAnyFailed()` to detect a throwing unit. Reuse a counter with `Reset` only after all its work and waiters have finished.
+
+`ParallelFor` claims units on the caller and a bounded set of helpers. It supports nested calls from workers.
+
+```cpp title="Process indexed units and chunked ranges"
+#include "JobSystem/ParallelAlgorithms.h"
+
+JobSystem::ParallelFor(&pool, count, [&](size_t index) {
+    ProcessUnit(index);
+});
+
+JobSystem::ParallelFor(&pool, count, [&](size_t begin, size_t end) {
+    ProcessRange(begin, end);
+}, 64);
+```
+
+A body returns `void` or `bool`. Returning `false` stops new units. Started units finish before the call returns. A throwing unit stops the run, and the caller receives the first exception after started units finish. A null pool runs work on the caller.
+
+`ParallelForOptions::Helpers` limits helpers. `HelperPriority` selects their lane without promoting background work into the normal lane. `Stop` polls cancellation on the caller. `Admission` lets helpers acquire and release a per-unit budget. Keep option callbacks alive for the full call. `ParallelSort` sorts chunks in parallel and merges them on the caller.
+
+## Asynchronous results and dependencies
+
+`Submit` returns a `TaskHandle`. Inspect its state, register `OnComplete` or `OnFailure`, or call `TryGetResult<T>` with the callable's result type. Completion callbacks run outside the task's state lock and may run immediately when registered on a terminal handle.
+
+A worker must use callbacks or `Submit(fn, dependencies)` for continuations. `TaskHandle::Wait()` blocks and is not legal on a worker of that handle's pool. `Cancel()` can stop queued work. It does not interrupt an executing callable. A long-running body needs a cooperative cancellation signal.
+
+## Blocking work and shutdown
+
+Use a `JobChannel` for a service whose jobs block, with a concurrency cap. `Submit` returns a cancellable handle. `Enqueue` is for work that must run even when shutdown races its submission. Keep the channel alive until its owner has joined its work.
+
+Pool shutdown stops admission, cancels queued handle jobs, executes queued bare work, and joins running bodies. Do not publish a bare task that can block forever. Keep resources captured by jobs alive until shutdown or an explicit join completes.
+
+## Diagnostics and temporary storage
+
+`GetStatistics()` snapshots queue counts, executed tasks, and thread occupancy. It takes locks and allocates, so use it for diagnostics. The editor exposes this snapshot through the `get_job_system` MCP tool and debug method. `SnapshotOccupancy()` fills caller-owned storage when only occupancy is needed.
+
+Joined `Run` and `ParallelFor` work inherits the frame-memory scope of its caller. Asynchronous work does not. Follow the lifetime rules in [Native memory allocators](memory-allocators.mdx#frame-memory).
+
+## ECS wave tracing
+
+Use the editor's `get_ecs_wave_trace` tool to record how scheduled ECS waves run. Pass `enabled: true` to arm the trace. Arming clears its fixed ring of 256 frames. The tool can summarize a recent `window` and include individual frames through the `frames` parameter.
+
+The report includes wave makespans, join waits, dispatch delays, system durations, worker placement, and job publications. It records joined work that a live pool snapshot between frames can miss. Tracing is off by default. On macOS, enabled tracing also emits system, wave, and join intervals for Instruments.
+
+## Shared query matches
+
+Each World keeps one archetype match list per query filter. Temporary and retained queries share that list. A query refreshes its snapshot after structural changes. New archetypes become available on the next iteration. `World::PruneEmptyArchetypes()` removes empty archetypes and refreshes query and creation caches. Call it only when no query iteration is active.
+
+Required-component schemas remain hidden until they are complete. Query writes use `Writable<T>` so only mutations through `Mutable()` or `Set()` stamp a written column. A `Changed<T>` gate must name a declared read column.

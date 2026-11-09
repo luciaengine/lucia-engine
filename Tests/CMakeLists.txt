@@ -470,6 +470,7 @@ endfunction()
 add_executable(AbiNativeSmokeTest
     Integration/AbiNativeSmokeTest.cpp
     Integration/ScriptManagerMainThreadTaskTests.cpp
+    Integration/MainThreadPostTests.cpp
     Integration/ScriptingAbiDomainTests.cpp
     Integration/ScriptingAbiLoggerBridgeTests.cpp
     ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp
@@ -888,6 +889,12 @@ set_tests_properties(PhysicsSmokeTests PROPERTIES
 )
 
 if(GE_PHYSICS_BACKEND_JOLT)
+  add_executable(PhysicsRayCastTests PhysicsRayCastTests.cpp)
+  target_link_libraries(PhysicsRayCastTests PRIVATE Engine GTest::gtest)
+  ge_set_output_tests(PhysicsRayCastTests)
+  ge_stage_runtime_dependencies(PhysicsRayCastTests)
+  add_test(NAME PhysicsRayCastTests COMMAND $<TARGET_FILE:PhysicsRayCastTests>)
+  set_tests_properties(PhysicsRayCastTests PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
   add_executable(PhysicsBoxOverlapTests PhysicsBoxOverlapTests.cpp)
   target_link_libraries(PhysicsBoxOverlapTests PRIVATE Engine GTest::gtest)
   ge_set_output_tests(PhysicsBoxOverlapTests)
@@ -1000,6 +1007,7 @@ target_include_directories(TerrainRegionBakeTests PRIVATE
   # GlslShim.h, and the generated headers the extraction above writes.
   ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Tests
   ${CMAKE_CURRENT_BINARY_DIR}/generated
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Testing
 )
 ge_set_output_tests(TerrainRegionBakeTests)
 ge_stage_runtime_dependencies(TerrainRegionBakeTests)
@@ -1081,6 +1089,7 @@ add_executable(TerrainAtlasTests
   TerrainPageResolveGpuTests.cpp
   # The height source of a tiled terrain and the main-thread half of its height pages.
   TerrainHeightPagesTests.cpp
+  TerrainHeightPagePublicationTests.cpp
   TerrainCpuHeightPagesTests.cpp
   ${_GE_PAGE_RESOLVE_HEADERS}
   ${_GE_PAGE_RESOLVE_PROBE_SPV}

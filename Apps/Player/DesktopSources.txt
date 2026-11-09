@@ -6,3 +6,6 @@ PlayerHdrOptions.cpp
 PlayerHdrOptions.h
 PlayerLog.cpp
 PlayerLog.h
+
+PlayerStartupReadiness.cpp
+PlayerStartupReadiness.h

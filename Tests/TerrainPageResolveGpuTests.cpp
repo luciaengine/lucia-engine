@@ -7,22 +7,22 @@
 // 1025 samples, 16385 x 4097).
 
 #include "TerrainPagedField.h"
+#include "TerrainPageGpuProbe.h"
+#include "TerrainECS/TerrainHeightPages.h"
 
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/PipelineTypes.h"
 
-#include <gtest/gtest.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
-#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 using namespace GameEngine::Rendering;
@@ -43,38 +43,11 @@ struct FieldShape
     const char* Name;
     uint32 SamplesX;
     uint32 SamplesZ;
+    PageTableBudget Budget{1ull << 21, 640u, 640u};
+    GraphicsAPI Api = GraphicsAPI::Vulkan;
 };
 
-// The CBTPageField and CBTPageLevel of cbt_page.glsl, std430.
-struct GpuPageField
-{
-    uint32 Level0SamplesX;
-    uint32 Level0SamplesZ;
-    uint32 LevelCount;
-    uint32 SlotsPerRow;
-};
-
-struct GpuPageLevel
-{
-    uint32 FirstEntry;
-    uint32 PagesX;
-    uint32 PagesZ;
-    uint32 Pad;
-};
-
-struct QueryPoint
-{
-    float32 U;
-    float32 V;
-    float32 Lambda;
-    float32 Unused;
-};
-
-std::vector<uint8_t> ReadProbeSpirv()
-{
-    std::ifstream file(TERRAIN_PAGE_PROBE_SPV, std::ios::binary);
-    return std::vector<uint8_t>(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-}
+using QueryPoint = TerrainPageGpuProbe::QueryPoint;
 
 // Every page of the levels from 2 up, a corner of level 1 and a larger corner of level 0, with a
 // level-1 page and a level-0 page held back (the fallback walk), then the held level-1 page and a
@@ -148,60 +121,27 @@ protected:
     void SetUp() override
     {
         DeviceDesc desc{};
-        desc.preferredAPI = GraphicsAPI::Vulkan;
+        desc.preferredAPI = GetParam().Api;
         desc.enableDynamicRendering = true;
         m_Device = DeviceFactory::CreateDevice(desc);
         if (!m_Device || !m_Device->Initialize(desc))
         {
             m_Device.reset();
-            GTEST_SKIP() << "no Vulkan device";
+            GTEST_SKIP() << "requested graphics device unavailable for " << GetParam().Name;
         }
-        const std::vector<uint8_t> spirv = ReadProbeSpirv();
-        ASSERT_FALSE(spirv.empty()) << "the probe kernel is missing: " << TERRAIN_PAGE_PROBE_SPV;
-
-        m_Layout.debugName = "TerrainPageResolveProbe_SetLayout";
-        for (uint32_t binding = 0; binding < 6u; ++binding)
-        {
-            DescriptorBinding b{};
-            b.binding = binding;
-            b.type = binding == 0u ? DescriptorType::CombinedImageSampler : DescriptorType::StorageBuffer;
-            b.count = 1u;
-            b.shaderStages = kShaderStageCompute;
-            m_Layout.bindings.push_back(b);
-        }
-        ComputePipelineDesc pipeline{};
-        pipeline.ComputeShader = std::make_shared<const std::vector<uint8_t>>(spirv);
-        pipeline.DescriptorSetLayouts.push_back(m_Device->InternDescriptorSetLayout(m_Layout));
-        pipeline.DebugName = "TerrainPageResolveProbe";
-        m_Pipeline = m_Device->GetOrCreateComputePipeline(m_Device->InternComputePipeline(pipeline));
-        ASSERT_TRUE(m_Pipeline.IsValid());
+        ASSERT_EQ(m_Device->GetAPI(), GetParam().Api);
+        m_Probe = std::make_unique<TerrainPageGpuProbe>(*m_Device);
+        ASSERT_TRUE(m_Probe->Initialize()) << "the staged page resolve probe must initialize";
     }
 
     void TearDown() override
     {
         if (!m_Device)
             return;
-        for (BufferHandle buffer : m_Buffers)
-            m_Device->DestroyBuffer(buffer);
+        m_Probe.reset();
         if (m_Texture.IsValid())
             m_Device->DestroyTexture(m_Texture);
-        if (m_Sampler.IsValid())
-            m_Device->DestroySampler(m_Sampler);
         m_Device->Shutdown();
-    }
-
-    BufferHandle MakeBuffer(const void* data, size_t bytes, const char* name)
-    {
-        BufferDesc desc{};
-        desc.size = std::max<size_t>(bytes, 16);
-        desc.usage = static_cast<uint32_t>(BufferUsage::Storage) | static_cast<uint32_t>(BufferUsage::TransferDst);
-        desc.memoryUsage = BufferMemoryUsage::Upload;
-        desc.debugName = name;
-        BufferHandle buffer = m_Device->CreateBuffer(desc);
-        m_Buffers.push_back(buffer);
-        if (data != nullptr)
-            m_Device->UpdateBuffer(buffer, 0, bytes, data);
-        return buffer;
     }
 
     void UploadCache(const PagedField& field)
@@ -228,66 +168,27 @@ protected:
         m_Device->ExecuteCommandLists({list.get()});
         m_Device->WaitForIdle();
         m_Device->DestroyBuffer(staging);
-        m_Sampler = m_Device->CreateSampler(SamplerDesc::MaterialLinearClamp("TerrainPageResolveProbe.LinearClamp"));
-        ASSERT_TRUE(m_Sampler.IsValid());
     }
 
     // The device resolve at every point.
     std::vector<float32> Dispatch(const PagedField& field, const std::vector<QueryPoint>& points)
     {
-        std::vector<GpuPageLevel> levels;
-        for (const PageStreaming::PageStoreLevel& level : field.Table.Levels)
-            levels.push_back({static_cast<uint32>(level.FirstEntry), level.PagesX, level.PagesZ, 0u});
-        const GpuPageField shape{field.Table.Levels.front().SamplesX, field.Table.Levels.front().SamplesZ,
-                                 uint32(field.Table.Levels.size()), field.Geometry.SlotsPerRow};
-        std::vector<uint8_t> queries(sizeof(GpuPageField) + 16u + points.size() * sizeof(QueryPoint));
-        const uint32 count[4] = {uint32(points.size()), 0u, 0u, 0u};
-        std::memcpy(queries.data(), &shape, sizeof(shape));
-        std::memcpy(queries.data() + sizeof(shape), count, sizeof(count));
-        std::memcpy(queries.data() + sizeof(shape) + 16u, points.data(), points.size() * sizeof(QueryPoint));
-
-        const BufferHandle entries = MakeBuffer(field.Table.Entries.data(), field.Table.Entries.size() * sizeof(uint32), "Probe.Entries");
-        const BufferHandle fades = MakeBuffer(field.Table.SlotFade.data(), field.Table.SlotFade.size() * sizeof(float32), "Probe.Fades");
-        const BufferHandle shapes = MakeBuffer(levels.data(), levels.size() * sizeof(GpuPageLevel), "Probe.Levels");
-        const BufferHandle query = MakeBuffer(queries.data(), queries.size(), "Probe.Queries");
-        const size_t resultBytes = points.size() * sizeof(float32);
-        const BufferHandle results = MakeBuffer(nullptr, resultBytes, "Probe.Results");
-
-        DescriptorSetDesc setDesc{};
-        setDesc.layout = m_Layout;
-        setDesc.transient = true;
-        setDesc.debugName = "TerrainPageResolveProbe.Set";
-        const DescriptorSetHandle set = m_Device->CreateDescriptorSet(setDesc);
-        m_Device->UpdateCombinedImageSamplerBinding(set, 0, m_Texture, m_Sampler);
-        m_Device->UpdateStorageBufferBinding(set, 1, entries, 0, field.Table.Entries.size() * sizeof(uint32));
-        m_Device->UpdateStorageBufferBinding(set, 2, fades, 0, field.Table.SlotFade.size() * sizeof(float32));
-        m_Device->UpdateStorageBufferBinding(set, 3, shapes, 0, levels.size() * sizeof(GpuPageLevel));
-        m_Device->UpdateStorageBufferBinding(set, 4, query, 0, queries.size());
-        m_Device->UpdateStorageBufferBinding(set, 5, results, 0, resultBytes);
-
-        auto list = m_Device->CreateCommandList(IDevice::QueueType::Graphics);
-        list->Begin();
-        list->SetPipeline(m_Pipeline);
-        list->BindDescriptorSet(0, set, m_Pipeline);
-        list->Dispatch((uint32(points.size()) + 63u) / 64u, 1, 1);
-        list->End();
-        m_Device->ExecuteCommandLists({list.get()});
+        std::vector<uint32> words;
+        PackPageTableWords(field.Table, field.Geometry, words);
+        RenderGraph::RGResourcePool persistent(m_Device.get());
+        RenderGraph::RGTransientPool transient(m_Device.get());
+        RenderGraph::RGUploadRing ring(m_Device.get(), 2, 4096);
+        RenderGraph::RGFrame frame(m_Device.get(), &persistent, &transient, &ring);
+        frame.BeginFrame(0);
+        const BufferHandle result = m_Probe->Declare(frame, m_Texture, words, points);
+        frame.Execute();
         m_Device->WaitForIdle();
-
-        std::vector<float32> heights(points.size());
-        const void* mapped = m_Device->MapBuffer(results);
-        if (mapped != nullptr)
-            std::memcpy(heights.data(), mapped, resultBytes);
-        m_Device->UnmapBuffer(results);
-        return heights;
+        return m_Probe->Read(result, points.size());
     }
 
     std::unique_ptr<IDevice> m_Device;
-    DescriptorSetLayoutDesc m_Layout{};
-    PipelineHandle m_Pipeline{};
+    std::unique_ptr<TerrainPageGpuProbe> m_Probe;
     TextureHandle m_Texture{};
-    SamplerHandle m_Sampler{};
-    std::vector<BufferHandle> m_Buffers;
 };
 
 } // namespace
@@ -295,7 +196,8 @@ protected:
 TEST_P(TerrainPageResolveGpu, TheDeviceResolveIsTheMirrorWithinTheSubTexelQuantum)
 {
     const FieldShape shape = GetParam();
-    PagedField field(640, 0.4f, shape.SamplesX, shape.SamplesZ);
+    PagedField field(640, 0.4f, shape.SamplesX, shape.SamplesZ, shape.Budget);
+    ASSERT_EQ(field.Table.TierCount(), shape.Budget.DenseWords == 4u ? 2u : 0u);
     DriveToMixedResidency(field);
     ASSERT_NE(field.Cache.SlotOf(PagedField::Page(PageAddress{0, 0, 3, 2})), PageStreaming::kNoResidentSlot);
     ASSERT_LT(field.Cache.FadeOf(PagedField::Page(PageAddress{0, 1, 1, 1})), 1.0f) << "the fade chain is not mid-fade";
@@ -323,7 +225,20 @@ TEST_P(TerrainPageResolveGpu, TheDeviceResolveIsTheMirrorWithinTheSubTexelQuantu
     std::printf("[ %s ] %zu points, worst |device - mirror| %.6g, bound %.6g\n", shape.Name, points.size(), worst, bound);
 }
 
-INSTANTIATE_TEST_SUITE_P(FieldShapes, TerrainPageResolveGpu,
-                         ::testing::Values(FieldShape{"UnifiedTiled8193x2049", 8193u, 2049u},
-                                           FieldShape{"AtlasTiled16385x4097", 16385u, 4097u}),
+namespace
+{
+
+constexpr FieldShape kFieldShapes[] = {
+    {"UnifiedTiled8193x2049", 8193u, 2049u},
+    {"AtlasTiled16385x4097", 16385u, 4097u},
+    {"Tiered16385x4097", 16385u, 4097u, {4u, 640u, 640u}},
+#if defined(__APPLE__)
+    {"MetalDense16385x4097", 16385u, 4097u, {1ull << 21, 640u, 640u}, GraphicsAPI::Metal},
+    {"MetalTiered16385x4097", 16385u, 4097u, {4u, 640u, 640u}, GraphicsAPI::Metal},
+#endif
+};
+
+} // namespace
+
+INSTANTIATE_TEST_SUITE_P(FieldShapes, TerrainPageResolveGpu, ::testing::ValuesIn(kFieldShapes),
                          [](const ::testing::TestParamInfo<FieldShape>& info) { return std::string(info.param.Name); });

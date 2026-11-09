@@ -9,14 +9,14 @@
 // dominated EnqueueWork's publication cost (spec §1.3) — allocate = freelist
 // pop, free = freelist push, MPMC by construction.
 //
-// Closure-size audit (2026-07-10 — every envelope that flows through
-// EnqueueWork / EnqueueWorkBatch / Run / Submit(F&&) today):
-//   ParallelFor::Chunk          32B  (Fn* + 2×size_t + JobCounter*)
-//   ParallelForEach::Chunk     ≤48B  (Fn* + 2 iterators + JobCounter*)
-//   ParallelSort::Chunk         32B  (2 iterators + Compare* + JobCounter*)
-//   DispatchChunk               16B  (function* + JobCounter*)
-//   Run() pool stub              8B  (JobCounter::TaggedJobsRef)
-//   JobCounter::Job<F>          16B + sizeof(F); typical Run captures ≤64B
+// Closure-size audit (every envelope that flows through EnqueueWork /
+// EnqueueWorkBatch / Run / Submit(F&&)):
+//   ParallelFor helper          16B  (RunBlock* + the lane's unstarted counter*)
+//   ParallelFor run block      ≤128B (one slab; static_assert in ParallelForCore.cpp)
+//   Run() queue visit           16B  (TaggedQueueVisit: TaggedJobs* + the lane's unstarted counter*)
+//   JobCounter::Job<F>          16B + sizeof(F), and one bool more (padded to
+//                               F's alignment) under GE_DEBUG_INSTRUMENTATION;
+//                               typical Run captures ≤64B
 //   Submit(F&&) lambdas         typical captures ≤64B (previously verified)
 // Envelope bases are ≤40B (vptr + TaskId + flags [+ inline TaskData]), so
 // the 128-byte slab covers every real caller with headroom; oversized
@@ -63,10 +63,19 @@ void AcquireTaskSlabsBulk(void** slabs, size_t count);
 
 /**
  * @brief Return a slab to the freelist; falls back to ::operator delete when
- * the freelist is at capacity. Non-allocating (try_enqueue) and noexcept —
- * called from worker threads, including during static destruction.
+ * the freelist is at capacity. noexcept — called from worker threads,
+ * including during static destruction. A thread's first release builds its
+ * producer in the freelist, once per thread; every later release allocates
+ * nothing (try_enqueue).
  */
 void ReleaseTaskSlab(void* slab) noexcept;
+
+/**
+ * @brief Add `count` fresh heap slabs to the freelist, up to its retention
+ * cap. A pool provisions the slabs its ParallelFor helpers can hold at once,
+ * so its forks take no heap allocation once it exists.
+ */
+void ProvisionTaskSlabs(size_t count);
 
 /** Test hooks (PoolReuseChurn / microbench). Counters are process-global. */
 struct TaskSlabStatsSnapshot

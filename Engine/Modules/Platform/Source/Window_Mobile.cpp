@@ -203,6 +203,8 @@ void Window::PushGlobalCrosshairCursor() {}
 void Window::PopGlobalCursor() {}
 void Window::SetCursor(CursorType) {}
 void Window::ResetCursor() {}
+void Window::LockCursor(LockedCursorMotion) {}
+void Window::UnlockCursor() {}
 void Window::SetCursorLocked(bool locked) { m_CursorLocked = SDL_SetWindowRelativeMouseMode(Native(m_MobileHandle), locked) && locked; }
 void Window::SetFullscreen(bool) {}
 }

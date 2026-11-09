@@ -18,6 +18,7 @@
 #include "UI/Controls/FloatField.h"
 #include "UI/Controls/IntField.h"
 #include "UI/Controls/Label.h"
+#include "UI/Controls/PictureChoiceField.h"
 #include "UI/Controls/TextArea.h"
 #include "UI/Controls/TextField.h"
 #include "UI/Controls/Toggle.h"
@@ -196,6 +197,46 @@ inline TextField* AddTextRow(UIElement* parent, const std::string& labelText,
     auto* result = field.get();
     AddFieldContainer(row)->AddChild(std::move(field));
     return result;
+}
+
+// The nearest ancestor of `control` that is an inspector row (class "inspector-row"), or null when
+// `control` is null or sits in no row.
+inline UIElement* RowOfControl(UIElement* control)
+{
+    if (!control)
+        return nullptr;
+    for (UIElement* up = control->GetParent(); up; up = up->GetParent())
+    {
+        if (up->HasClass("inspector-row"))
+            return up;
+    }
+    return nullptr;
+}
+
+// A row with the label cell and `field` in its field cell, for a field the caller builds. Returns the
+// field, or null when `parent` is null.
+template <typename T>
+T* AddFieldRow(UIElement* parent, const std::string& labelText, std::unique_ptr<T> field,
+               const char* tooltip = nullptr)
+{
+    UIElement* row = AddRow(parent);
+    if (!row)
+        return nullptr;
+    AddLabel(row, labelText, tooltip);
+    T* raw = field.get();
+    AddFieldContainer(row)->AddChild(std::move(field));
+    return raw;
+}
+
+// A picture choice row keeps its label at the top of the tiles.
+inline EditorUI::PictureChoiceField* AddPictureChoiceRow(UIElement* parent, const std::string& labelText,
+                                                         std::unique_ptr<EditorUI::PictureChoiceField> field,
+                                                         const char* tooltip = nullptr)
+{
+    EditorUI::PictureChoiceField* raw = AddFieldRow(parent, labelText, std::move(field), tooltip);
+    if (raw)
+        RowOfControl(raw)->AddClass("inspector-guide-row");
+    return raw;
 }
 
 inline Dropdown* AddDropdownRow(UIElement* parent, const std::string& labelText,

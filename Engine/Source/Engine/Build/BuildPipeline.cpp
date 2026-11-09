@@ -22,6 +22,7 @@
 #include "Scripting/NativeAotScriptsLibrary.h"
 #include "Scripting/PathResolver.h"
 #include "Scripting/ScriptManager.h"
+#include "Scripting/ScriptPackageRestore.h"
 #include "NativeScripting/BuildCacheRecord.h" // ComputeEngineAbiDigest
 #include "NativeScripting/NativeBuildConfig.h"
 #include "NativeScripting/NativeScriptManager.h" // MsvcToolchain env for dotnet publish
@@ -1518,7 +1519,21 @@ bool BuildPipeline::CompileScriptsNativeAOT(const BuildSettings& s,
         project.ScriptSources = scriptSources;
         project.PackageModules = m_PackageRuntimeModules;
         project.PackageDefines = CollectAllPackageDefines(m_PackageResolution);
+        std::string engineBinDir = ScriptingPaths::ResolveEngineManagedDirectory().generic_string();
+        if (!engineBinDir.empty() && engineBinDir.back() != '/')
+            engineBinDir += '/';
+        const fs::path dependencies = aotDir / ScriptingPaths::kScriptDependenciesFolderName;
+        const ScriptPackageRestoreResult restored =
+            RestoreScriptPackages(scriptsProj, dependencies, engineBinDir, nullptr);
+        m_Progress.warnings.insert(m_Progress.warnings.end(), restored.Warnings.begin(), restored.Warnings.end());
+        if (!restored.Success)
+        {
+            m_Progress.errors.push_back(restored.Error);
+            return false;
+        }
         project.ReferenceDlls.assign(referenceDlls.begin(), referenceDlls.end());
+        project.ReferenceDlls.insert(project.ReferenceDlls.end(), restored.StagedAssemblies.begin(),
+                                     restored.StagedAssemblies.end());
         if (fs::exists(generatorDll, ec))
             project.GeneratorDll = generatorDll;
         f << GenerateNativeAotCsprojXml(project);

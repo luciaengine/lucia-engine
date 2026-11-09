@@ -21,6 +21,7 @@
 #include "SharedHeadlessDevice.h"
 #include "SplineECS/SplineService.h"
 #include "SplineRecipes/RecipeBuildStates.h"
+#include "SplineRecipes/SplineRecipesScriptApi.h"
 #include "SplineRecipes/RecipeControllers.h"
 #include "SplineRecipes/SplineSurfaceConform.h"
 #include "TerrainECS/TerrainService.h"
@@ -386,6 +387,24 @@ TEST_F(SplineRecipeBuildStateTests, AMaterialSwapRebindsTheChunkAndRunsNoRebuild
     EXPECT_GT(ChunkTop(chunk), builtTop + 10.0f)
         << "a geometry edit did not rebuild, so the check above proves nothing";
     EXPECT_EQ(m_World.GetComponent<Components::MeshRenderer>(chunk)->materialAssetGuid.ToGuid(), material);
+}
+
+TEST(SplineRecipesQuery, WithNoRecipeSystemOnlyAWorldWithNoRecipeIsSettled)
+{
+    ECS::World world;
+    const ECS::EntityHandle prop = world.CreateEntity();
+    world.AddComponentImmediate(prop, Components::WorldTransform{});
+    EXPECT_TRUE(IsSceneSettled(world));
+    EXPECT_EQ(StateOf(world, prop).State, BuildState::Built);
+
+    const ECS::EntityHandle road = world.CreateEntity();
+    world.AddComponentImmediate(road, Components::SplineComponent{});
+    world.AddComponentImmediate(road, Components::SplineExtrude{});
+    world.AddComponentImmediate(road, Components::WorldTransform{});
+    EXPECT_EQ(StateOf(world, road).State, BuildState::Pending);
+    EXPECT_FALSE(IsSceneSettled(world));
+    EXPECT_TRUE(ReasonOf(world, road).empty());
+    EXPECT_EQ(Failures(world, {}), 0);
 }
 
 } // namespace

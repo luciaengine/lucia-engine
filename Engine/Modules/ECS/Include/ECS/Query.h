@@ -2,6 +2,7 @@
 #include "ECS/ChunkCallAdapter.h"
 
 #include "ECS/ChangeFilter.h"
+#include "ECS/Archetype/ArchetypeMatchList.h"
 #include "ECS/ComponentConcepts.h"
 #include "ECS/ECS.h"
 #include "ECS/Entity.h"
@@ -12,9 +13,9 @@
 #include "JobSystem/JobCounter.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <memory>
-#include <shared_mutex>
 #include <span>
 #include <thread>
 #include <type_traits>
@@ -61,11 +62,25 @@ class Query
     template <std::size_t I>
     using NthType = Detail::NthTypeOf<I, Ts...>;
 
+    // One snapshot of the World's list for this query's filter, taken under the World's
+    // lock: how many of the list's archetypes it held, and the low 32 bits of the
+    // structural version they were current at. A count, not a span: a count read with
+    // another thread's list buffer still names entries that buffer holds
+    // (ArchetypeMatchList).
+    struct MatchSnapshot
+    {
+        std::uint32_t Count = 0;
+        std::uint32_t Version = 0;
+    };
+
     World* world;
-    mutable std::vector<Archetype*> m_CachedArchetypes;
-    mutable bool m_CacheValid = false;
-    mutable std::shared_mutex m_CacheMutex;
-    mutable std::size_t m_CachedStructuralVersion = 0;
+    // The World's list for this query's filter, found at the first iteration; a With, Without or IncludeDisabled
+    // call that changes the filter drops it. m_Snapshot is the last iteration's snapshot. Both are atomic so several
+    // threads may iterate one query; one atomic holds count and version, so they are read as one pair.
+    mutable std::atomic<const ArchetypeMatchList*> m_Matches{nullptr};
+    mutable std::atomic<MatchSnapshot> m_Snapshot{MatchSnapshot{}};
+    static_assert(std::atomic<MatchSnapshot>::is_always_lock_free,
+                  "a query's snapshot is read on every iteration: it must be one lock-free atomic");
 
     // Filters set by Without<>/With<>. Each names its types at the call site,
     // so both point at the shared signature of that pack (SignatureOf) rather
@@ -86,7 +101,7 @@ class Query
     uint64_t m_ChangedGate = 0;
     bool m_HasChangedGate = false;
 
-    void UpdateCache() const;
+    std::span<Archetype* const> MatchingArchetypes() const;
 
     // The three signatures the type list determines. Each is built once per
     // Query<Ts...> instantiation and read by every construction of it, so
@@ -116,6 +131,7 @@ class Query
     {
         ComponentSignature signature;
         ((IsOptional<Ts>::value ? void() : void(signature.Add(GetComponentTypeId<U<Ts>>()))), ...);
+        signature.Hash();
         return signature;
     }
 
@@ -163,6 +179,7 @@ class Query
          ...);
         for (ComponentTypeId id : RequiredSignature().GetComponents())
             signature.Remove(id);
+        signature.Hash();
         return signature;
     }
 
@@ -415,7 +432,7 @@ class Query
         assert((m_IncludeSignature == nullptr || *m_IncludeSignature == signature) &&
                "With<> replaces the include filter: name every included type in one call");
         m_IncludeSignature = &signature;
-        m_CacheValid = false;
+        m_Matches.store(nullptr, std::memory_order_relaxed);
         return *this;
     }
 
@@ -431,7 +448,7 @@ class Query
         assert((m_ExcludeSignature == nullptr || *m_ExcludeSignature == signature) &&
                "Without<> replaces the exclude filter: name every excluded type in one call");
         m_ExcludeSignature = &signature;
-        m_CacheValid = false;
+        m_Matches.store(nullptr, std::memory_order_relaxed);
         return *this;
     }
 
@@ -446,7 +463,7 @@ class Query
     Query<Ts...>& IncludeDisabled()
     {
         m_IncludeAllDisabled = true;
-        m_CacheValid = false;
+        m_Matches.store(nullptr, std::memory_order_relaxed);
         return *this;
     }
 
@@ -460,7 +477,7 @@ class Query
         assert((m_IncludeDisabledSignature == nullptr || *m_IncludeDisabledSignature == signature) &&
                "IncludeDisabled<> replaces the opt-in: name every type in one call");
         m_IncludeDisabledSignature = &signature;
-        m_CacheValid = false;
+        m_Matches.store(nullptr, std::memory_order_relaxed);
         return *this;
     }
 
@@ -496,20 +513,26 @@ class ExcludeQuery
 // ============================================================================
 
 template <QualifiedComponent... Ts>
-void Query<Ts...>::UpdateCache() const
+std::span<Archetype* const> Query<Ts...>::MatchingArchetypes() const
 {
-    std::shared_lock vlock(m_CacheMutex);
-    if (m_CacheValid && m_CachedStructuralVersion == world->structuralChangeVersion.load(std::memory_order_relaxed))
+    // Count and version share one atomic, so the pair read is one snapshot's; a version (low 32 bits) that is not
+    // current sends the call back to the lock. Every snapshot stores the same list; the pair is stored before the list
+    // and loaded after it, so a thread that sees the list reads a non-empty pair whose count the list's entries cover.
+    const ArchetypeMatchList* matches = m_Matches.load(std::memory_order_acquire);
+    if (matches != nullptr)
     {
-        return;
+        const MatchSnapshot snapshot = m_Snapshot.load(std::memory_order_acquire);
+        if (snapshot.Version ==
+            static_cast<std::uint32_t>(world->structuralChangeVersion.load(std::memory_order_relaxed)))
+            return matches->GetArchetypes().first(snapshot.Count);
     }
-    vlock.unlock();
 
-    std::unique_lock lock(m_CacheMutex);
-    world->CollectMatchingArchetypes(BuildArchetypeFilter(), m_CachedArchetypes);
-
-    m_CachedStructuralVersion = world->structuralChangeVersion.load(std::memory_order_relaxed);
-    m_CacheValid = true;
+    const World::MatchedArchetypes matched = world->MatchArchetypes(BuildArchetypeFilter());
+    m_Snapshot.store({static_cast<std::uint32_t>(matched.Archetypes.size()),
+                      static_cast<std::uint32_t>(matched.StructuralVersion)},
+                     std::memory_order_release);
+    m_Matches.store(matched.List, std::memory_order_release);
+    return matched.Archetypes;
 }
 
 // Sequential iteration — one loop per colocated chunk, all data in same 16KB block.
@@ -523,7 +546,7 @@ template <QualifiedComponent... Ts>
 template <typename Func>
 void Query<Ts...>::Each(Func&& func)
 {
-    UpdateCache();
+    const auto matchingArchetypes = MatchingArchetypes();
 
     using F = std::decay_t<Func>;
     // Shape hypothesis: entity-first wins when both arities match (existing
@@ -547,7 +570,7 @@ void Query<Ts...>::Each(Func&& func)
     const uint64_t stampVersion = (kWriteMask != 0u) ? world->NextGlobalSystemVersion() : 0u;
     const uint32_t disabledOptionalMask = DisabledOptionalMask();
 
-    for (auto* archetype : m_CachedArchetypes)
+    for (auto* archetype : matchingArchetypes)
     {
         if (archetype->GetEntityCount() == 0 || !archetype->HasTable())
             continue;
@@ -652,7 +675,7 @@ template <QualifiedComponent... Ts>
 template <typename Func>
 void Query<Ts...>::BatchEach(Func&& func)
 {
-    UpdateCache();
+    const auto matchingArchetypes = MatchingArchetypes();
 
     using F = std::decay_t<Func>;
     constexpr bool kWantsEntity =
@@ -669,7 +692,7 @@ void Query<Ts...>::BatchEach(Func&& func)
     const uint64_t stampVersion = (kWriteMask != 0u) ? world->NextGlobalSystemVersion() : 0u;
     const uint32_t disabledOptionalMask = DisabledOptionalMask();
 
-    for (auto* archetype : m_CachedArchetypes)
+    for (auto* archetype : matchingArchetypes)
     {
         if (archetype->GetEntityCount() == 0 || !archetype->HasTable())
             continue;
@@ -756,7 +779,7 @@ template <QualifiedComponent... Ts>
 template <typename Func>
 void Query<Ts...>::ParallelBatchEach(Func&& func, [[maybe_unused]] std::size_t minBatchSize)
 {
-    UpdateCache();
+    const auto matchingArchetypes = MatchingArchetypes();
 
     if (!world->jobSystem)
     {
@@ -804,7 +827,7 @@ void Query<Ts...>::ParallelBatchEach(Func&& func, [[maybe_unused]] std::size_t m
     const bool kHasGate = m_HasChangedGate;
     const uint64_t kGateVersion = m_ChangedGate;
 
-    for (auto* archetype : m_CachedArchetypes)
+    for (auto* archetype : matchingArchetypes)
     {
         if (archetype->GetEntityCount() == 0 || !archetype->HasTable())
             continue;
@@ -926,7 +949,7 @@ template <QualifiedComponent... Ts>
 template <typename Func>
 void Query<Ts...>::Parallel(Func&& func, [[maybe_unused]] std::size_t minBatchSize)
 {
-    UpdateCache();
+    const auto matchingArchetypes = MatchingArchetypes();
 
     if (!world->jobSystem)
     {
@@ -979,7 +1002,7 @@ void Query<Ts...>::Parallel(Func&& func, [[maybe_unused]] std::size_t minBatchSi
     const bool kHasGate = m_HasChangedGate;
     const uint64_t kGateVersion = m_ChangedGate;
 
-    for (auto* archetype : m_CachedArchetypes)
+    for (auto* archetype : matchingArchetypes)
     {
         if (archetype->GetEntityCount() == 0 || !archetype->HasTable())
             continue;
@@ -1122,7 +1145,7 @@ template <QualifiedComponent... Ts>
 template <typename Func>
 void Query<Ts...>::ForEachChunk(Func&& func)
 {
-    UpdateCache();
+    const auto matchingArchetypes = MatchingArchetypes();
 
     using F = std::decay_t<Func>;
     constexpr bool kWithCount = std::is_invocable_v<F, Detail::PlainPtrArg<Ts>..., std::size_t>;
@@ -1140,7 +1163,7 @@ void Query<Ts...>::ForEachChunk(Func&& func)
 
     auto adapter = Detail::ChunkCallAdapter<std::decay_t<Func>>{std::forward<Func>(func)};
 
-    for (auto* archetype : m_CachedArchetypes)
+    for (auto* archetype : matchingArchetypes)
     {
         if (archetype->GetEntityCount() == 0 || !archetype->HasTable())
             continue;
@@ -1202,7 +1225,7 @@ template <QualifiedComponent... Ts>
 template <typename Func>
 void Query<Ts...>::ParallelChunks(Func&& func)
 {
-    UpdateCache();
+    const auto matchingArchetypes = MatchingArchetypes();
 
     if (!world->jobSystem)
     {
@@ -1233,7 +1256,7 @@ void Query<Ts...>::ParallelChunks(Func&& func)
     const bool kHasGate = m_HasChangedGate;
     const uint64_t kGateVersion = m_ChangedGate;
 
-    for (auto* archetype : m_CachedArchetypes)
+    for (auto* archetype : matchingArchetypes)
     {
         if (archetype->GetEntityCount() == 0 || !archetype->HasTable())
             continue;
@@ -1310,10 +1333,10 @@ void Query<Ts...>::ParallelChunks(Func&& func)
 template <QualifiedComponent... Ts>
 std::size_t Query<Ts...>::Count() const
 {
-    UpdateCache();
+    const auto matchingArchetypes = MatchingArchetypes();
 
     std::size_t total = 0;
-    for (auto* archetype : m_CachedArchetypes)
+    for (auto* archetype : matchingArchetypes)
     {
         total += archetype->GetEntityCount();
     }

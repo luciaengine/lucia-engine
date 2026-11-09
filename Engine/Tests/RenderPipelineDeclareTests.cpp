@@ -3,6 +3,7 @@
 #include "ScopedPipelineFrame.h"
 #include "EngineLogCapture.h"
 #include <map>
+#include <bit>
 #include "WorldOnlyPipeline.h"
 #include "EngineTestShaderSetup.h"
 #include <gtest/gtest.h>
@@ -60,6 +61,8 @@
 #include "Rendering/Materials/MaterialBuildContext.h"
 #include "Terrain/Heightfield.h"
 #include "TerrainECS/TerrainUploadNode.h"
+#include "TerrainECS/TerrainHeightPageFeature.h"
+#include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "Logger/CallbackSink.h"
 #include "Logger/Logger.h"
 #include "TerrainECS/TerrainService.h"
@@ -10047,6 +10050,74 @@ bool ActivateCbtTerrain(TerrainFixture& f, TerrainECS::TerrainRenderFeature& ter
     return cbt.EnsureInitialized(*f.Device, *f.Rs);
 }
 
+std::vector<TerrainECS::HeightPageUpload> PublishCbtHeightPages(TerrainECS::TerrainHeightPages& pages,
+    TerrainECS::TerrainHeightPageFeature& publication, uint64 identity, uint64 firstFrame, float height)
+{
+    PageStreaming::GeneratedHeightLattice lattice;
+    lattice.Source = PageStreaming::GeneratedHeightSource::Flat;
+    lattice.TileWorldSize = 256.0f;
+    lattice.TileSamples = 257;
+    lattice.TilesX = 1;
+    lattice.TilesZ = 1;
+    TerrainECS::PagedTerrainRequest request;
+    request.Terrain = 3;
+    request.TerrainGeneration = 1;
+    request.SourceIdentity = identity;
+    request.Source.Generated = std::make_shared<const PageStreaming::GeneratedHeightPageProvider>(lattice);
+    request.Shape.Level0TexelX = 1.0f;
+    request.Shape.Level0TexelZ = 1.0f;
+    request.Shape.SamplesX = 257;
+    request.Shape.SamplesZ = 257;
+    const Mathematics::Vector3 camera{128.0f, 10.0f, 128.0f};
+    const auto view = TerrainECS::MakePageLevelView(TerrainECS::kPageLevelReferenceRows, 1.0f, 11.0f);
+    FlatMap<uint32, TerrainECS::HeightPageUpload> pending;
+    for (uint64 frameIndex = firstFrame; frameIndex < firstFrame + 90; ++frameIndex)
+    {
+        pages.Request(request, {&camera, 1}, view);
+        pages.Update(frameIndex, 1.0f / 60.0f, false, 2);
+        for (auto& upload : pages.Uploads())
+        {
+            std::fill(upload.Samples.begin(), upload.Samples.end(), height);
+            pending.InsertOrAssign(upload.Slot, std::move(upload));
+        }
+        pages.Uploads().clear();
+    }
+    for (auto& [slot, upload] : pending)
+        pages.Uploads().push_back(std::move(upload));
+    const auto payloads = pages.Uploads();
+    publication.Publish(pages);
+    return payloads;
+}
+
+void DeclareCbtPublicationView(TerrainFixture& fixture, RenderPipelineInstance& instance,
+                               RenderGraph::RGFrame& frame, ViewId view, uint32 width = 0, uint32 height = 0)
+{
+    auto colorDescription = ColorTargetDesc();
+    auto depthDescription = DepthTargetDesc();
+    if (width != 0)
+    {
+        colorDescription.width = depthDescription.width = width;
+        colorDescription.height = depthDescription.height = height;
+    }
+    const auto color = frame.ImportPersistentTexture(width == 0 ? "CbtPublication.Color" : "CbtPublication.FollowerColor", colorDescription);
+    const auto depth = frame.ImportPersistentTexture(width == 0 ? "CbtPublication.Depth" : "CbtPublication.FollowerDepth", depthDescription);
+    const std::vector<ViewTargetsRG> targets{{view, color, depth, {}}};
+    const std::vector<Rendering::ViewDesc> views(fixture.Rs->Views().GetViews().begin(), fixture.Rs->Views().GetViews().end());
+    instance.Declare(frame, targets, views);
+    frame.MarkOutput(color);
+}
+
+void ExpectCbtRootHeight(CBTTerrainECS::CBTRenderFeature& feature, float height)
+{
+    constexpr uint32 kWordsPerVertex = sizeof(CBTTerrain::CBTVertexData) / sizeof(uint32);
+    const auto words = feature.GetInstance().DebugReadWords(CBTTerrain::CBTBinding::CurrentVertex,
+                                                            CBTTerrain::kRootHalfedgeCount * kWordsPerVertex);
+    ASSERT_EQ(words.size(), CBTTerrain::kRootHalfedgeCount * kWordsPerVertex);
+    for (uint32 slot = 0; slot < CBTTerrain::kRootHalfedgeCount; ++slot)
+        for (uint32 corner = 0; corner < 3; ++corner)
+            EXPECT_NEAR(std::bit_cast<float>(words[slot * kWordsPerVertex + corner * 4u + 1u]), height, 0.001f);
+}
+
 // The terrain parameters ActivateCbtTerrain's terrain draws with, uploaded every frame.
 void UploadCbtTerrainParams(TerrainECS::TerrainRenderFeature& terrain, uint32 frameIndex)
 {
@@ -10057,6 +10128,43 @@ void UploadCbtTerrainParams(TerrainECS::TerrainRenderFeature& terrain, uint32 fr
     terrain.UploadTerrainParamsArray(&params, 1u, GameEngine::Terrain::kDefaultTerrainMaterials,
                                      GameEngine::Terrain::kTerrainLayerRoleCount, frameIndex);
 }
+struct CbtPublicationFrames
+{
+    TerrainFixture& Fixture;
+    TerrainECS::TerrainRenderFeature& Terrain;
+    CBTTerrainECS::CBTRenderFeature& Feature;
+    RenderPipelineInstance& Pipeline;
+    RenderGraph::RGFrame& Frame;
+    TerrainECS::TerrainUploadNode& Upload;
+    ViewDeclare& UploadDeclaration;
+    ViewId View;
+    uint32 FrameIndex = 0;
+
+    void Declare()
+    {
+        UploadCbtTerrainParams(Terrain, FrameIndex);
+        Frame.BeginFrame(FrameIndex++);
+        Fixture.Rs->BeginWorldDrawFrame();
+        Fixture.Rs->BuildWorldBatchKeys();
+        Upload.DeclareForView(UploadDeclaration);
+        DeclareCbtPublicationView(Fixture, Pipeline, Frame, View);
+    }
+
+    void Execute()
+    {
+        Frame.Execute();
+        Feature.OnFrameSubmittedRG(Frame, Frame.SubmissionToken());
+        Fixture.Device->WaitForIdle();
+    }
+};
+
+std::vector<uint32> SortedCbtLiveSlots(CBTTerrain::CBTInstance& instance, uint32 live)
+{
+    auto slots = instance.DebugReadWords(CBTTerrain::CBTBinding::IndicesAll, live);
+    std::sort(slots.begin(), slots.end());
+    return slots;
+}
+
 } // namespace
 
 namespace
@@ -10763,6 +10871,336 @@ TEST(RenderPipelineDeclareTests, CbtTerrainAtRestReportsARetireBeforeItsNextDecl
     f.Down();
 }
 
+TEST(RenderPipelineDeclareTests, RetiringCbtOwnerDropsItsIdentityAndPreservesTheClaimedFrameKey)
+{
+    CBTTerrainECS::CBTRenderFeature feature;
+    RenderGraph::RGFrame first(nullptr, nullptr, nullptr, nullptr);
+    RenderGraph::RGFrame second(nullptr, nullptr, nullptr, nullptr);
+    EXPECT_TRUE(feature.ClaimUpdate(&first, 7));
+    EXPECT_TRUE(feature.UpdateDeclaredInGraph(&first, 7));
+    feature.OnFrameStreamRetiredRG(first);
+    EXPECT_FALSE(feature.UpdateDeclaredInGraph(&first, 7));
+    EXPECT_FALSE(feature.ClaimUpdate(&first, 7));
+    EXPECT_FALSE(feature.ClaimUpdate(&second, 7));
+    EXPECT_TRUE(feature.ClaimUpdate(&second, 8));
+}
+
+TEST(RenderPipelineDeclareTests, RegionalPageRewriteMatchesFullEvaluationOfTheSameSnapshot)
+{
+    TerrainFixture fixture;
+    if (!fixture.Up(/*enableDebugLayer=*/true))
+        GTEST_SKIP() << "No Vulkan device available";
+    if (!fixture.Device->GetValidationStats().Enabled)
+        GTEST_SKIP() << "Vulkan validation layer unavailable";
+    auto& terrain = fixture.Rs->EnsureFeature<TerrainECS::TerrainRenderFeature>();
+    const ViewId view = fixture.AddView("CbtRegionalPublication", 1u);
+    if (!ActivateCbtTerrain(fixture, terrain))
+        GTEST_SKIP() << "staged shader sources or CBT kernels unavailable";
+    auto& cbt = fixture.Rs->EnsureFeature<CBTTerrainECS::CBTRenderFeature>();
+    CBTTerrain::CBTClassifyDesc classify{};
+    classify.TargetDepth = CBTTerrain::kDefaultBaseDepth + 6u;
+    cbt.SetActive(true, classify, 8.0f, Components::kNoTerrainSeaLevel,
+                  CBTTerrainECS::CBTRenderFeature::DomainConfig{}, 0u);
+    auto& publication = fixture.Rs->EnsureFeature<TerrainECS::TerrainHeightPageFeature>();
+    TerrainECS::TerrainHeightPages pages(nullptr, nullptr, {64, TerrainECS::kDesktopHeightPages.DenseTableWords});
+    pages.Update(1, 1.0f / 60.0f, false, 2);
+    const auto payloads = PublishCbtHeightPages(pages, publication, 11, 2, 0.25f);
+    ASSERT_FALSE(payloads.empty());
+    TerrainECS::TerrainUploadNode upload;
+    ASSERT_TRUE(upload.Initialize("Upload", "{}", nullptr));
+    const auto blueprint = CompileTestBlueprint(fixture, R"json({
+      "schemaVersion": 2, "pipelineName": "CbtRegionalPublication",
+      "passes": [ { "id": "Terrain", "type": "CBTRender" } ]
+    })json", "cbt_regional_publication.rendergraph");
+    RenderPipelineInstance pipeline(*fixture.Rs, fixture.Registry);
+    pipeline.SetBlueprint(blueprint);
+    FramePools pools(fixture.Device.get());
+    RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    GameEngine::Testing::ScopedPipelineFrame lifetime(fixture.Rs->Spine(), frame);
+    Rendering::ViewDesc uploadView{};
+    ViewDeclare uploadDeclaration(frame, uploadView, *fixture.Rs, "Upload");
+    CbtPublicationFrames sequence{fixture, terrain, cbt, pipeline, frame, upload, uploadDeclaration, view};
+    uint32& frameIndex = sequence.FrameIndex;
+    do
+    {
+        sequence.Declare();
+        sequence.Execute();
+    } while (frameIndex < 120 && cbt.WritesDynamicDepth());
+    ASSERT_FALSE(cbt.WritesDynamicDepth());
+    const uint32 live = cbt.GetInstance().ReadTessellationStats().LiveCount;
+    ASSERT_GT(live, 8u);
+    const auto indices = SortedCbtLiveSlots(cbt.GetInstance(), live);
+    ASSERT_EQ(indices.size(), live);
+    constexpr uint32 wordsPerVertex = sizeof(CBTTerrain::CBTVertexData) / sizeof(uint32);
+    const uint32 largestSlot = *std::max_element(indices.begin(), indices.end());
+    ASSERT_LT(largestSlot, cbt.GetInstance().GetResources().GetPoolSize());
+    const uint32 wordCount = (largestSlot + 1u) * wordsPerVertex;
+    const auto before = cbt.GetInstance().DebugReadWords(CBTTerrain::CBTBinding::CurrentVertex, wordCount);
+    ASSERT_EQ(before.size(), wordCount);
+
+    const auto& cache = pages.Residency().FieldCache(TerrainECS::kHeightPageField);
+    const auto fine = std::find_if(cache.Resident().begin(), cache.Resident().end(), [](const auto& page)
+    {
+        return page.Address.Level == 0 && page.Address.X == 0 && page.Address.Z == 0;
+    });
+    ASSERT_NE(fine, cache.Resident().end());
+    const uint32 slot = cache.SlotOf(*fine);
+    const auto payload = std::find_if(payloads.begin(), payloads.end(), [slot](const auto& item) { return item.Slot == slot; });
+    ASSERT_NE(payload, payloads.end());
+    pages.Uploads().push_back(*payload);
+    std::fill(pages.Uploads().front().Samples.begin(), pages.Uploads().front().Samples.end(), 0.75f);
+    pages.DirtyRects().clear();
+    const float footprint = static_cast<float>(PageStreaming::kPageOwnedSamples + 1u) / 256.0f;
+    pages.DirtyRects().push_back({3, 1, 0.0f, 0.0f, footprint, footprint});
+    publication.Publish(pages);
+    // A separate ordinary edit must survive union with the page's filter-apron bounds.
+    classify.DirtyMinU = classify.DirtyMinV = 0.75f;
+    classify.DirtyMaxU = classify.DirtyMaxV = 0.8f;
+    cbt.SetActive(true, classify, 8.0f, Components::kNoTerrainSeaLevel,
+                  CBTTerrainECS::CBTRenderFeature::DomainConfig{}, 0u);
+    sequence.Declare();
+    CBTTerrain::CBTClassifyDesc covered = classify;
+    ASSERT_TRUE(cbt.ApplyHeightPageDirtyRegion(covered));
+    EXPECT_FLOAT_EQ(covered.DirtyMinU, 0.0f);
+    EXPECT_FLOAT_EQ(covered.DirtyMaxU, 0.8f);
+    sequence.Execute();
+    const int32 evaluated = cbt.GetInstance().ReadVertexEvalCount();
+    EXPECT_GT(evaluated, 0);
+    EXPECT_LT(evaluated, static_cast<int32>(live)) << "the page rewrite must actually use regional evaluation";
+    const auto regional = cbt.GetInstance().DebugReadWords(CBTTerrain::CBTBinding::CurrentVertex, wordCount);
+    ASSERT_EQ(regional.size(), wordCount);
+    ASSERT_EQ(cbt.GetInstance().ReadTessellationStats().LiveCount, live);
+    ASSERT_EQ(SortedCbtLiveSlots(cbt.GetInstance(), live), indices);
+    EXPECT_NE(regional, before) << "the selected rewritten page must affect actual GPU vertices";
+    uint32 unaffected = 0;
+    for (const uint32 index : indices)
+        for (uint32 corner = 0; corner < 3; ++corner)
+        {
+            const uint32 base = index * wordsPerVertex + corner * 4u;
+            const float u = std::bit_cast<float>(regional[base + 3u]);
+            const float v = std::bit_cast<float>(regional[index * wordsPerVertex + 12u + corner]);
+            if (u > 0.8f || v > 0.8f)
+            {
+                EXPECT_EQ(regional[base + 1u], before[base + 1u]);
+                ++unaffected;
+            }
+        }
+    EXPECT_GT(unaffected, 0u);
+    classify.DirtyMinU = classify.DirtyMinV = classify.DirtyMaxU = classify.DirtyMaxV = 0.0f;
+    cbt.SetActive(true, classify, 8.0f, Components::kNoTerrainSeaLevel,
+                  CBTTerrainECS::CBTRenderFeature::DomainConfig{}, 0u);
+    cbt.RequestForceVertexEval();
+    sequence.Declare();
+    sequence.Execute();
+    const auto reference = cbt.GetInstance().DebugReadWords(CBTTerrain::CBTBinding::CurrentVertex, wordCount);
+    ASSERT_EQ(reference.size(), wordCount);
+    ASSERT_EQ(cbt.GetInstance().ReadTessellationStats().LiveCount, live);
+    ASSERT_EQ(SortedCbtLiveSlots(cbt.GetInstance(), live), indices);
+    for (const uint32 index : indices)
+        for (uint32 word = 0; word < wordsPerVertex; ++word)
+            EXPECT_EQ(regional[index * wordsPerVertex + word], reference[index * wordsPerVertex + word]);
+    // A delayed publication must invalidate the quiet readings of the old height snapshot,
+    // even when its generic edit notification was drained before these payloads landed.
+    classify.Mode = CBTTerrain::kClassifyScreenSpace;
+    cbt.SetActive(true, classify, 128.0f, Components::kNoTerrainSeaLevel,
+                  CBTTerrainECS::CBTRenderFeature::DomainConfig{}, 0u);
+    const uint32 screenSettleEnd = frameIndex + 120u;
+    do
+    {
+        sequence.Declare();
+        sequence.Execute();
+    } while (frameIndex < screenSettleEnd && cbt.WritesDynamicDepth());
+    ASSERT_FALSE(cbt.WritesDynamicDepth());
+    ASSERT_EQ(cbt.PendingForceVertexEval(), 0u);
+    const uint32 screenLive = cbt.GetInstance().ReadTessellationStats().LiveCount;
+    ASSERT_GT(screenLive, 0u);
+    const auto screenSlots = SortedCbtLiveSlots(cbt.GetInstance(), screenLive);
+    ASSERT_EQ(screenSlots.size(), screenLive);
+    const uint32 screenLargestSlot = screenSlots.back();
+    ASSERT_LT(screenLargestSlot, cbt.GetInstance().GetResources().GetPoolSize());
+    const uint32 screenWordCount = (screenLargestSlot + 1u) * wordsPerVertex;
+    const auto screenBefore = cbt.GetInstance().DebugReadWords(CBTTerrain::CBTBinding::CurrentVertex, screenWordCount);
+    ASSERT_EQ(screenBefore.size(), screenWordCount);
+    const auto screenHeapBefore = cbt.GetInstance().DebugReadWords(CBTTerrain::CBTBinding::HeapID,
+                                                                  (screenLargestSlot + 1u) * 2u);
+    ASSERT_EQ(screenHeapBefore.size(), (screenLargestSlot + 1u) * 2u);
+    const uint64 beforeScreenRewrite = cbt.GetUpdateSubmissionCount();
+    pages.Uploads() = payloads;
+    for (auto& uploadPayload : pages.Uploads())
+        std::fill(uploadPayload.Samples.begin(), uploadPayload.Samples.end(), 0.5f);
+    pages.DirtyRects().clear();
+    pages.DirtyRects().push_back({3, 1, 0.0f, 0.0f, 1.0f, 1.0f});
+    publication.Publish(pages);
+    sequence.Declare();
+    EXPECT_FALSE(cbt.InputsHeld()) << "new page heights reused the old snapshot's settle state";
+    sequence.Execute();
+    EXPECT_EQ(cbt.GetUpdateSubmissionCount(), beforeScreenRewrite + 1u);
+    const auto screenAfter = cbt.GetInstance().DebugReadWords(CBTTerrain::CBTBinding::CurrentVertex, screenWordCount);
+    ASSERT_EQ(screenAfter.size(), screenWordCount);
+    const uint32 screenLiveAfter = cbt.GetInstance().ReadTessellationStats().LiveCount;
+    const auto screenSlotsAfter = SortedCbtLiveSlots(cbt.GetInstance(), screenLiveAfter);
+    ASSERT_EQ(screenSlotsAfter.size(), screenLiveAfter);
+    const auto screenHeapAfter = cbt.GetInstance().DebugReadWords(CBTTerrain::CBTBinding::HeapID,
+                                                                 (screenLargestSlot + 1u) * 2u);
+    ASSERT_EQ(screenHeapAfter.size(), screenHeapBefore.size());
+    uint32 changedActiveCorners = 0;
+    for (const uint32 index : screenSlots)
+    {
+        if (!std::binary_search(screenSlotsAfter.begin(), screenSlotsAfter.end(), index) ||
+            screenHeapAfter[index * 2u] != screenHeapBefore[index * 2u] ||
+            screenHeapAfter[index * 2u + 1u] != screenHeapBefore[index * 2u + 1u])
+            continue;
+        for (uint32 corner = 0; corner < 3u; ++corner)
+        {
+            const uint32 heightWord = index * wordsPerVertex + corner * 4u + 1u;
+            changedActiveCorners += screenBefore[heightWord] != screenAfter[heightWord] ? 1u : 0u;
+        }
+    }
+    EXPECT_GT(changedActiveCorners, 0u);
+    EXPECT_FALSE(cbt.HasUnconsumedHeightPages());
+    sequence.Declare();
+    EXPECT_EQ(RGQuery::CountDeclared(frame.Graph(), RGQuery::Family{"CBT.Update"}), 1u)
+        << "Classify must run after regional VertexEval changes its input heights";
+    sequence.Execute();
+    const uint32 recoveryEnd = frameIndex + 120u;
+    while (frameIndex < recoveryEnd && cbt.WritesDynamicDepth())
+    {
+        sequence.Declare();
+        sequence.Execute();
+    }
+    EXPECT_FALSE(cbt.WritesDynamicDepth());
+    const auto validation = fixture.Device->GetValidationStats();
+    EXPECT_EQ(validation.ErrorCount, 0u);
+    for (const auto& entry : validation.Vuids)
+        EXPECT_FALSE(entry.IsError) << entry.Vuid << ": " << entry.FirstMessage
+                                   << " objects: " << entry.FirstObjects << " labels: " << entry.FirstLabels;
+}
+
+TEST(RenderPipelineDeclareTests, CbtPagePublicationKeepsOwnerBindingsAndRetriesUnsubmittedConsumption)
+{
+    TerrainFixture fixture;
+    if (!fixture.Up(/*enableDebugLayer=*/true))
+        GTEST_SKIP() << "No Vulkan device available";
+    if (!fixture.Device->GetValidationStats().Enabled)
+        GTEST_SKIP() << "Vulkan validation layer unavailable";
+    auto& terrain = fixture.Rs->EnsureFeature<TerrainECS::TerrainRenderFeature>();
+    const ViewId first = fixture.AddView("CbtPublication.Owner", 1u);
+    const ViewId second = fixture.AddView("CbtPublication.Follower", 1u);
+    if (!ActivateCbtTerrain(fixture, terrain))
+        GTEST_SKIP() << "staged shader sources or CBT kernels unavailable";
+    auto& cbt = fixture.Rs->EnsureFeature<CBTTerrainECS::CBTRenderFeature>();
+    auto& publication = fixture.Rs->EnsureFeature<TerrainECS::TerrainHeightPageFeature>();
+    TerrainECS::TerrainHeightPages pages(nullptr, nullptr, {64, TerrainECS::kDesktopHeightPages.DenseTableWords});
+    pages.Update(1, 1.0f / 60.0f, false, 2);
+    ASSERT_FALSE(PublishCbtHeightPages(pages, publication, 11, 2, 0.25f).empty());
+    TerrainECS::TerrainUploadNode upload;
+    ASSERT_TRUE(upload.Initialize("Upload", "{}", nullptr));
+    const auto blueprint = CompileTestBlueprint(fixture, R"json({
+      "schemaVersion": 2, "pipelineName": "CbtPublication",
+      "passes": [ { "id": "Terrain", "type": "CBTRender" } ]
+    })json", "cbt_publication.rendergraph");
+    RenderPipelineInstance instance(*fixture.Rs, fixture.Registry);
+    instance.SetBlueprint(blueprint);
+    FramePools pools(fixture.Device.get());
+    RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    GameEngine::Testing::ScopedPipelineFrame lifetime(fixture.Rs->Spine(), frame);
+    Rendering::ViewDesc uploadView{};
+    ViewDeclare uploadDeclaration(frame, uploadView, *fixture.Rs, "Upload");
+    frame.BeginFrame(0);
+    upload.DeclareForView(uploadDeclaration);
+    frame.Execute();
+    fixture.Device->WaitForIdle();
+    ASSERT_TRUE(publication.CacheTexture().IsValid());
+    fixture.Rs->BeginWorldDrawFrame();
+    fixture.Rs->BuildWorldBatchKeys();
+    UploadCbtTerrainParams(terrain, 1);
+    frame.BeginFrame(1);
+    DeclareCbtPublicationView(fixture, instance, frame, first);
+    const uint32 ownerRenderHeight = cbt.GetAppliedRenderHeightPx();
+    ASSERT_NE(ownerRenderHeight, 29u);
+    const auto payloads = PublishCbtHeightPages(pages, publication, 29, 100, 0.75f);
+    ASSERT_FALSE(payloads.empty());
+    upload.DeclareForView(uploadDeclaration);
+    DeclareCbtPublicationView(fixture, instance, frame, second, 37u, 29u);
+    EXPECT_EQ(cbt.GetAppliedRenderHeightPx(), ownerRenderHeight) << "a follower changed the owner snapshot";
+    EXPECT_EQ(RGQuery::CountDeclared(frame.Graph(), RGQuery::Family{"CBT.Update"}), 1u);
+    frame.Execute();
+    cbt.OnFrameSubmittedRG(frame, frame.SubmissionToken());
+    fixture.Device->WaitForIdle();
+    ExpectCbtRootHeight(cbt, 16.0f);
+    EXPECT_TRUE(cbt.WritesDynamicDepth()) << "the uploaded publication has not reached CBT yet";
+    const uint64 beforeAbort = cbt.GetUpdateSubmissionCount();
+    cbt.RequestForceVertexEval();
+    const uint64 abandonedTicket = cbt.PendingForceVertexEval();
+    ASSERT_NE(abandonedTicket, 0u);
+    frame.BeginFrame(2);
+    DeclareCbtPublicationView(fixture, instance, frame, first);
+    ASSERT_TRUE(cbt.HasUnconsumedHeightPages());
+    frame.AddPass("AbandonCbtPublication", 0,
+        [](RenderGraph::RGPassBuilder& pass)
+        {
+            pass.PreventCulling();
+            pass.Prepare([](RenderGraph::RGPrepareContext&) { return false; });
+        }, [](RenderGraph::RGContext&) {});
+    frame.Execute();
+    EXPECT_EQ(frame.Stats().SubmissionsMade, 0u);
+    EXPECT_EQ(cbt.GetUpdateSubmissionCount(), beforeAbort);
+    EXPECT_TRUE(cbt.HasUnconsumedHeightPages());
+    EXPECT_EQ(cbt.PendingForceVertexEval(), abandonedTicket);
+    frame.BeginFrame(3);
+    DeclareCbtPublicationView(fixture, instance, frame, first);
+    cbt.RequestForceVertexEval();
+    const uint64 newerTicket = cbt.PendingForceVertexEval();
+    ASSERT_GT(newerTicket, abandonedTicket);
+    frame.Execute();
+    cbt.OnFrameSubmittedRG(frame, frame.SubmissionToken());
+    fixture.Device->WaitForIdle();
+    EXPECT_EQ(cbt.GetUpdateSubmissionCount(), beforeAbort + 1u);
+    EXPECT_FALSE(cbt.HasUnconsumedHeightPages());
+    EXPECT_EQ(cbt.PendingForceVertexEval(), newerTicket) << "an older submission consumed a newer request";
+    ExpectCbtRootHeight(cbt, 48.0f);
+    uint32 frameIndex = 4;
+    for (; frameIndex < 120 && cbt.WritesDynamicDepth(); ++frameIndex)
+    {
+        frame.BeginFrame(frameIndex);
+        DeclareCbtPublicationView(fixture, instance, frame, first);
+        frame.Execute();
+        cbt.OnFrameSubmittedRG(frame, frame.SubmissionToken());
+        fixture.Device->WaitForIdle();
+    }
+    ASSERT_FALSE(cbt.WritesDynamicDepth()) << "terrain did not return to rest";
+    EXPECT_EQ(cbt.PendingForceVertexEval(), 0u);
+    pages.Uploads() = payloads;
+    for (auto& payload : pages.Uploads())
+        std::fill(payload.Samples.begin(), payload.Samples.end(), 0.5f);
+    publication.Publish(pages);
+    EXPECT_TRUE(cbt.WritesDynamicDepth()) << "pending rewritten payload must invalidate depth before declaration";
+    const uint64 beforeRewrite = cbt.GetUpdateSubmissionCount();
+    frame.BeginFrame(frameIndex++);
+    upload.DeclareForView(uploadDeclaration);
+    DeclareCbtPublicationView(fixture, instance, frame, first);
+    frame.Execute();
+    cbt.OnFrameSubmittedRG(frame, frame.SubmissionToken());
+    fixture.Device->WaitForIdle();
+    EXPECT_EQ(cbt.GetUpdateSubmissionCount(), beforeRewrite + 1u);
+    ExpectCbtRootHeight(cbt, 32.0f);
+    for (; frameIndex < 240 && cbt.WritesDynamicDepth(); ++frameIndex)
+    {
+        frame.BeginFrame(frameIndex);
+        DeclareCbtPublicationView(fixture, instance, frame, first);
+        frame.Execute();
+        cbt.OnFrameSubmittedRG(frame, frame.SubmissionToken());
+        fixture.Device->WaitForIdle();
+    }
+    EXPECT_FALSE(cbt.WritesDynamicDepth()) << "rewrite recovery left persistent GPU work";
+    fixture.Device->WaitForIdle();
+    const auto validation = fixture.Device->GetValidationStats();
+    EXPECT_EQ(validation.ErrorCount, 0u);
+    for (const auto& entry : validation.Vuids)
+        EXPECT_FALSE(entry.IsError) << entry.Vuid << ": " << entry.FirstMessage
+                                   << " objects: " << entry.FirstObjects << " labels: " << entry.FirstLabels;
+}
+
 namespace
 {
 // One frame of ActivateCbtTerrain's terrain through `instance`, with the view's depth target read back after
@@ -10830,8 +11268,10 @@ bool SameBits(const std::vector<float>& a, const std::vector<float>& b)
 TEST(RenderPipelineDeclareTests, CbtTerrainPrepassDepthIsTheDepthItsColourDrawWrites)
 {
     TerrainFixture f;
-    if (!f.Up())
+    if (!f.Up(/*enableDebugLayer=*/true))
         GTEST_SKIP() << "No Vulkan device available";
+    if (!f.Device->GetValidationStats().Enabled)
+        GTEST_SKIP() << "Vulkan validation layer unavailable";
     {
         auto& terrain = f.Rs->EnsureFeature<TerrainECS::TerrainRenderFeature>();
         const ViewId v = f.AddView("CbtDepthView", 1u);
@@ -10894,6 +11334,8 @@ TEST(RenderPipelineDeclareTests, CbtTerrainPrepassDepthIsTheDepthItsColourDrawWr
         EXPECT_GT(covered, prepass.Depth.size() / 4) << "the terrain covers the view";
         EXPECT_EQ(differing, 0u) << "of " << covered
                                  << " terrain pixels, these hold a prepass depth the colour draw does not write";
+        EXPECT_EQ(f.Device->GetValidationStats().ErrorCount, 0u)
+            << "CBT draws must bind initialized fallback textures before page publication";
     }
     f.Down();
 }

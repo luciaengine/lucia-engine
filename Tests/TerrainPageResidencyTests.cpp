@@ -8,6 +8,7 @@
 
 #include "PageStreaming/PageCache.h"
 #include "PageStreaming/PageStore/PageStoreFormat.h"
+#include "PageStreaming/PageTableEntry.h"
 
 #include <gtest/gtest.h>
 
@@ -15,9 +16,11 @@
 #include "TerrainPagedField.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <map>
 #include <numbers>
+#include <random>
 #include <set>
 #include <tuple>
 #include <vector>
@@ -503,20 +506,20 @@ Bound s_Bound;
 
 #include "PageResolveTypesExtracted.h"
 
-uint CBT_PageTableEntry(uint index)
+uint CBT_PageTableWord(uint index)
 {
-    return s_Bound.Table->Entries[index];
+    return s_Bound.Table->Words()[index];
 }
 
 float CBT_PageSlotFade(uint slot)
 {
-    return s_Bound.Table->SlotFade[slot];
+    return s_Bound.Table->SlotFades()[slot];
 }
 
 CBTPageLevel CBT_PageLevelShape(uint level)
 {
-    const PageStreaming::PageStoreLevel& shape = s_Bound.Table->Levels[level];
-    return CBTPageLevel{static_cast<uint32>(shape.FirstEntry), shape.PagesX, shape.PagesZ, 0u};
+    const PageStreaming::PageStoreLevel& shape = s_Bound.Table->Levels()[level];
+    return CBTPageLevel{s_Bound.Table->LevelOffsets()[level], shape.PagesX, shape.PagesZ, 0u};
 }
 
 float CBT_PageCacheBilinear(float texelX, float texelZ)
@@ -530,11 +533,24 @@ float32 Sample(const PagedField& field, float32 u, float32 v, float32 level)
 {
     s_Bound = Bound{&field.Table, field.Texels.data(), field.Geometry.CacheDim};
     CBTPageField shape{};
-    shape.Level0SamplesX = field.Table.Levels.front().SamplesX;
-    shape.Level0SamplesZ = field.Table.Levels.front().SamplesZ;
-    shape.LevelCount = uint32(field.Table.Levels.size());
+    shape.Level0SamplesX = field.Table.Levels().front().SamplesX;
+    shape.Level0SamplesZ = field.Table.Levels().front().SamplesZ;
+    shape.LevelCount = uint32(field.Table.Levels().size());
     shape.SlotsPerRow = field.Geometry.SlotsPerRow;
+    shape.FloorLevel = field.Table.FloorLevel();
+    shape.TierCount = field.Table.TierCount();
+    shape.DirectoryOffset = field.Table.DirectoryOffset();
     return CBT_PageSample(u, v, level, shape);
+}
+
+uint32 Entry(const PageTable& table, const PageAddress& page)
+{
+    s_Bound.Table = &table;
+    CBTPageField shape{};
+    shape.FloorLevel = table.FloorLevel();
+    shape.TierCount = table.TierCount();
+    shape.DirectoryOffset = table.DirectoryOffset();
+    return CBT_PageTableEntry(page.Level, page.Face, page.X, page.Z, shape);
 }
 
 } // namespace PageResolveGlsl
@@ -577,4 +593,202 @@ TEST(PagedHeightResolve, TheGlslResolveIsTheMirrorBitForBit)
                 ++compared;
             }
     EXPECT_EQ(compared, 9u * 65u * 49u);
+}
+
+namespace
+{
+
+// 16,385 x 1,025 samples: nine levels. A dense budget of 4 words keeps only the top level dense, so
+// the blocks take two tiers: six levels from the mid pool, then the last two from the leaf pool.
+constexpr uint32 kTieredX = 16385u;
+constexpr uint32 kTieredZ = 1025u;
+constexpr uint32 kTieredSlots = 96u;
+constexpr PageTableBudget kTwoTiers{4u, kTieredSlots, kTieredSlots};
+
+std::vector<PageAddress> ResidentOf(const PageTable& table)
+{
+    std::vector<PageAddress> pages;
+    table.AppendResident(pages);
+    std::sort(pages.begin(), pages.end());
+    return pages;
+}
+
+} // namespace
+
+TEST(PagedHeightResolve, TheTieredTableResolvesAsTheDenseTableOnRandomSets)
+{
+    PagedField dense(kTieredSlots, 0.4f, kTieredX, kTieredZ);
+    PagedField tiered(kTieredSlots, 0.4f, kTieredX, kTieredZ, kTwoTiers);
+    // Levels 8 to 5 dense (five floor pages), one tier of blocks below, and a pool far smaller than
+    // the cache: pages wait, blocks are taken again and again, and a floor page often has none.
+    PagedField crowded(kTieredSlots, 0.4f, kTieredX, kTieredZ, PageTableBudget{64u, 3u, 3u});
+    // Levels 8 and 7 dense (two floor pages), two tiers below, and one mid block: the second floor page
+    // waits, so its directory word stays empty while pages under it are wanted.
+    PagedField crowdedTwoTiers(kTieredSlots, 0.4f, kTieredX, kTieredZ, PageTableBudget{12u, 1u, 2u});
+    ASSERT_EQ(tiered.Table.Levels().size(), 9u);
+    ASSERT_EQ(tiered.Table.FloorLevel(), 8u);
+    ASSERT_EQ(tiered.Table.TierCount(), 2u);
+    ASSERT_EQ(crowded.Table.FloorLevel(), 5u);
+    ASSERT_EQ(crowded.Table.TierCount(), 1u);
+    ASSERT_EQ(crowdedTwoTiers.Table.FloorLevel(), 7u);
+    ASSERT_EQ(crowdedTwoTiers.Table.TierCount(), 2u);
+    const std::vector<PageAddress> all = dense.AllPages();
+    std::mt19937 random(4242u);
+    uint32 resident = 0;
+    uint32 waited = 0;
+    uint32 waitedTwoTiers = 0;
+    for (int frame = 0; frame < 60; ++frame)
+    {
+        // A random set each frame, larger than the cache now and then, so pages arrive, stay and leave
+        // and blocks are taken, freed and taken again under another root.
+        // Each with its ancestors: the cache takes a page only under a resident parent.
+        std::vector<PageAddress> wanted;
+        const uint32 count = 4u + random() % 24u;
+        for (uint32 i = 0; i < count; ++i)
+            for (PageAddress page = all[random() % all.size()]; page.Level < tiered.TopLevel(); page = page.Parent())
+                wanted.push_back(page);
+        wanted.push_back(PageAddress{0, uint8(tiered.TopLevel()), 0, 0});
+        dense.Step(wanted, 0.1f);
+        tiered.Step(wanted, 0.1f);
+        crowded.Step(wanted, 0.1f);
+        crowdedTwoTiers.Step(wanted, 0.1f);
+        for (const PageAddress& page : all)
+        {
+            const uint32 expected = dense.Table.Entry(page);
+            ASSERT_EQ(tiered.Table.Entry(page), expected)
+                << "frame " << frame << " L" << int(page.Level) << "(" << page.X << "," << page.Z << ")";
+            ASSERT_EQ(PageResolveGlsl::Entry(tiered.Table, page), expected)
+                << "the GLSL walk, frame " << frame << " L" << int(page.Level) << "(" << page.X << "," << page.Z << ")";
+            resident += expected != PageStreaming::kNoPage ? 1u : 0u;
+            ASSERT_EQ(PageResolveGlsl::Entry(crowded.Table, page), crowded.Table.Entry(page))
+                << "the GLSL walk over crowded pools, frame " << frame << " L" << int(page.Level) << "(" << page.X
+                << "," << page.Z << ")";
+            const uint32 crowdedEntry = crowded.Table.Entry(page);
+            ASSERT_TRUE(crowdedEntry == PageStreaming::kNoPage || crowdedEntry == expected)
+                << "a crowded table holds fewer pages, never another entry";
+            ASSERT_EQ(PageResolveGlsl::Entry(crowdedTwoTiers.Table, page), crowdedTwoTiers.Table.Entry(page))
+                << "the GLSL walk over two crowded tiers, frame " << frame << " L" << int(page.Level) << "("
+                << page.X << "," << page.Z << ")";
+            // A page resident in the cache whose table entry reads kNoPage waits for a block.
+            const bool cached = expected != PageStreaming::kNoPage;
+            waited += cached && crowdedEntry == PageStreaming::kNoPage ? 1u : 0u;
+            waitedTwoTiers +=
+                cached && crowdedTwoTiers.Table.Entry(page) == PageStreaming::kNoPage ? 1u : 0u;
+        }
+        ASSERT_EQ(ResidentOf(tiered.Table), ResidentOf(dense.Table)) << "frame " << frame;
+    }
+    EXPECT_GT(resident, 1000u) << "the sets left too few pages resident to compare";
+    EXPECT_GT(waited, 0u) << "the crowded pools never filled";
+    EXPECT_GT(waitedTwoTiers, 0u) << "the crowded two-tier pools never filled";
+
+    const PagedHeightSampler mirror = dense.Sampler();
+    const PagedHeightSampler tieredMirror = tiered.Sampler();
+    for (float32 level : {0.0f, 0.9f, 2.5f, 5.95f, 7.0f})
+        for (uint32 i = 0; i <= 256; ++i)
+            for (uint32 k = 0; k <= 16; ++k)
+            {
+                const float32 u = float32(i) / 256.0f;
+                const float32 v = float32(k) / 16.0f;
+                const float32 expected = mirror.Sample(u, v, level);
+                ASSERT_EQ(tieredMirror.Sample(u, v, level), expected) << "uv " << u << "," << v << " level " << level;
+                ASSERT_EQ(PageResolveGlsl::Sample(tiered, u, v, level), expected)
+                    << "uv " << u << "," << v << " level " << level;
+            }
+}
+
+TEST(PagedHeightResolve, APageWhoseBlockPoolIsFullWaitsForABlockThenTakesItsEntry)
+{
+    PageTable table;
+    table.Reset(kTieredX, kTieredZ, 1u, 8u, PageTableBudget{4u, 1u, 1u});
+    const uint32 first = PageStreaming::PackPageEntry(1, 0);
+    const uint32 second = PageStreaming::PackPageEntry(2, 0);
+    table.SetEntry(PageAddress{0, 0, 0, 0}, first);
+    table.SetEntry(PageAddress{0, 0, 100, 5}, second); // another level-1 root: the one leaf block is taken
+    EXPECT_EQ(table.Entry(PageAddress{0, 0, 0, 0}), first);
+    EXPECT_EQ(table.Entry(PageAddress{0, 0, 100, 5}), PageStreaming::kNoPage) << "it reads its ancestor while it waits";
+    std::vector<PageAddress> late;
+    table.TakeLateEntries(late);
+    EXPECT_TRUE(late.empty()) << "a waiting page has no late entry yet";
+
+    table.SetEntry(PageAddress{0, 0, 0, 0}, PageStreaming::kNoPage);
+    EXPECT_EQ(table.Entry(PageAddress{0, 0, 100, 5}), second) << "the freed block takes the waiting page";
+    table.TakeLateEntries(late);
+    ASSERT_EQ(late.size(), 1u);
+    EXPECT_EQ(late.front(), (PageAddress{0, 0, 100, 5}));
+
+    table.SetEntry(PageAddress{0, 0, 100, 5}, PageStreaming::kNoPage);
+    EXPECT_TRUE(ResidentOf(table).empty()) << "a block with nothing resident under it is freed";
+}
+
+TEST(PagedHeightResolve, TheSixFaceTableResolvesAsAOneFaceTablePerFaceOnRandomSets)
+{
+    // A planet's table holds six faces. Each face's entries must equal a one-face dense table that holds
+    // that face's pages alone, on the CPU and through the GLSL walk, dense and tiered.
+    constexpr uint32 kFaceSamples = 4097u; // six levels
+    constexpr uint32 kSlots = 4096u;
+    constexpr uint32 kFaces = PageStreaming::kPageStoreMaxFaces;
+    PageTable denseSix;
+    denseSix.Reset(kFaceSamples, kFaceSamples, kFaces, kSlots, PageTableBudget{1u << 21, 1u, 1u});
+    PageTable tieredSix;
+    // The floor holds more than one page a face, so the floor directory's face term is under test.
+    tieredSix.Reset(kFaceSamples, kFaceSamples, kFaces, kSlots, PageTableBudget{1024u, kSlots, kSlots});
+    ASSERT_EQ(denseSix.TierCount(), 0u);
+    ASSERT_GT(tieredSix.TierCount(), 0u);
+    ASSERT_GT(tieredSix.FloorLevel(), 0u);
+    ASSERT_GT(tieredSix.Levels()[tieredSix.FloorLevel()].PagesX, 1u);
+    std::array<PageTable, kFaces> perFace;
+    for (PageTable& face : perFace)
+        face.Reset(kFaceSamples, kFaceSamples, 1u, kSlots, PageTableBudget{1u << 21, 1u, 1u});
+
+    std::vector<PageAddress> all;
+    for (uint32 level = 0; level < perFace[0].Levels().size(); ++level)
+        for (uint32 z = 0; z < perFace[0].Levels()[level].PagesZ; ++z)
+            for (uint32 x = 0; x < perFace[0].Levels()[level].PagesX; ++x)
+                all.push_back(PageAddress{0, uint8(level), x, z});
+    std::mt19937 random(6060u);
+    uint32 resident = 0;
+    uint32 slot = 0;
+    for (int round = 0; round < 40; ++round)
+    {
+        for (uint32 i = 0; i < 64u; ++i)
+        {
+            PageAddress page = all[random() % all.size()];
+            const uint8 face = uint8(random() % kFaces);
+            const bool set = random() % 3u != 0u;
+            const uint32 entry =
+                set ? PageStreaming::PackPageEntry(slot++ % kSlots, page.Level) : PageStreaming::kNoPage;
+            perFace[face].SetEntry(page, entry);
+            page.Face = face;
+            denseSix.SetEntry(page, entry);
+            tieredSix.SetEntry(page, entry);
+        }
+        for (uint8 face = 0; face < kFaces; ++face)
+            for (PageAddress page : all)
+            {
+                const uint32 expected = perFace[face].Entry(page);
+                page.Face = face;
+                ASSERT_EQ(denseSix.Entry(page), expected) << "face " << int(face) << " L" << int(page.Level);
+                ASSERT_EQ(tieredSix.Entry(page), expected) << "face " << int(face) << " L" << int(page.Level);
+                ASSERT_EQ(PageResolveGlsl::Entry(denseSix, page), expected) << "the GLSL walk, dense";
+                ASSERT_EQ(PageResolveGlsl::Entry(tieredSix, page), expected) << "the GLSL walk, tiered";
+                resident += expected != PageStreaming::kNoPage ? 1u : 0u;
+            }
+    }
+    EXPECT_GT(resident, 1000u) << "the sets left too few pages resident to compare";
+    std::vector<PageAddress> sixResident;
+    tieredSix.AppendResident(sixResident);
+    std::vector<PageAddress> expectedResident;
+    for (uint8 face = 0; face < kFaces; ++face)
+    {
+        std::vector<PageAddress> pages;
+        perFace[face].AppendResident(pages);
+        for (PageAddress page : pages)
+        {
+            page.Face = face;
+            expectedResident.push_back(page);
+        }
+    }
+    std::sort(sixResident.begin(), sixResident.end());
+    std::sort(expectedResident.begin(), expectedResident.end());
+    EXPECT_EQ(sixResident, expectedResident);
 }

@@ -61,8 +61,16 @@ public:
     Vector3 GetCharacterGroundNormal(CharacterHandle) const override { return Vector3(0.0f, 1.0f, 0.0f); }
 
     bool RayCast(const RayCastQuery&, RayCastResult&) const override { return false; }
-    bool RayCastAll(const RayCastQuery&, std::vector<RayCastResult>&, uint32) const override { return false; }
-    bool BoxOverlap(const BoxOverlapQuery&, std::vector<OverlapResult>&, uint32) const override { return false; }
+    bool RayCastAll(const RayCastQuery&, std::vector<RayCastResult>& outResults, uint32) const override
+    {
+        outResults.clear();
+        return false;
+    }
+    bool BoxOverlap(const BoxOverlapQuery&, std::vector<OverlapResult>& outResults, uint32) const override
+    {
+        outResults.clear();
+        return false;
+    }
 
     void SetContactModifyCallback(ContactModifyCallback, void*) override {}
     void SetBodyContactFlags(BodyHandle, uint32) override {}
@@ -322,13 +330,21 @@ bool PhysicsWorld::RayCast(const RayCastQuery& query, RayCastResult& outResult) 
 
 bool PhysicsWorld::RayCastAll(const RayCastQuery& query, std::vector<RayCastResult>& outResults, uint32 maxResults) const
 {
-    return m_Backend ? m_Backend->RayCastAll(query, outResults, maxResults) : false;
+    if (!m_Backend)
+    {
+        outResults.clear();
+        return false;
+    }
+    return m_Backend->RayCastAll(query, outResults, maxResults);
 }
 
 bool PhysicsWorld::BoxOverlap(const BoxOverlapQuery& query, std::vector<OverlapResult>& outResults, uint32 maxResults) const
 {
     if (!m_Backend)
+    {
+        outResults.clear();
         return false;
+    }
     return m_Backend->BoxOverlap(query, outResults, maxResults);
 }
 

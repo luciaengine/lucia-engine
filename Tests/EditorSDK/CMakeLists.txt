@@ -65,6 +65,9 @@ add_executable(EditorSdkRegistryTests
     PerformanceSettingsPageTests.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Settings/PerformanceSettingsPage.cpp
     ScriptSettingsPageTests.cpp
+    ScriptPackagesSettingsPageTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Settings/ScriptPackages/ScriptPackagesSettingsPage.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Settings/ScriptPackages/ScriptPackagesList.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Settings/ScriptSettingsPage.cpp
     # The page's line-height row calls ScriptEditorSettings::SetLineHeight, which
     # lives in the Editor target with the script font stack it reads, so both cpps

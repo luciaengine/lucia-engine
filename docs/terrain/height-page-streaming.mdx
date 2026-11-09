@@ -1,0 +1,66 @@
+---
+title: Height page streaming
+description: Understand terrain page publication and inspect its readiness counters.
+---
+
+Paged terrains share a GPU height cache. Each terrain has a page table that maps
+its virtual pages into that cache. Coarser resident pages cover detail that is
+still loading.
+
+## Publication and retries
+
+An upload becomes available outside its render graph after its copy records
+and submits. Declaring the upload does not complete publication. If frame
+preparation cancels the graph, its payload stays pending for a later frame.
+
+Within one graph, a reader before an overwrite uses the committed table. A
+reader after the overwrite can use the planned table. Declared cache accesses
+order those readers around the copy. A graph whose staging has been replaced
+cancels before recording.
+
+The CBT owner view fixes the terrain bindings for that graph frame. Other views
+in the same graph use its generated vertices. Terrain rendering uses one owning
+stream. These cache dependencies do not synchronize independently executed graphs.
+
+A table change or a payload rewrite remains pending for CBT until an update
+that consumes it submits. This includes a rewrite that keeps the same page-table
+words. The pending publication invalidates depth reuse and requests vertex
+evaluation. Each publication retains conservative terrain UV bounds until that
+exact geometry update submits. Abandoned updates and newer publications keep
+those bounds pending. When they cover the consumer's entire publication
+interval, the update evaluates the affected bisectors and ordinary edit bounds.
+A missing interval, a changed terrain incarnation or a device reset requires
+full evaluation. A settled terrain can return to rest after that update completes.
+
+## Inspect readiness
+
+The editor debug request `get_terrain_debug` returns `heightPages`. A null value
+means that the height-page render feature has not been created. An empty
+`terrains` array means that no terrain currently publishes GPU page tables.
+
+Shared cache totals appear once in `heightPages`.
+
+| Field | Meaning |
+| --- | --- |
+| `slots`, `resident`, `deferred` | Cache capacity, resident pages, and pages deferred by the latest residency update |
+| `loadsStarted`, `cpuBytes` | Loads started in that update and decoded CPU page bytes |
+| `cacheBytes`, `cacheReady` | Cache texture texel bytes and whether its initialization has submitted |
+| `publishedUploads`, `latchedUploads` | Payloads waiting for a render latch and payloads waiting for submission |
+| `pendingBytes` | Sample bytes held by those two pending sets |
+| `retiringBytes` | Sample bytes in submitted staging retained until their GPU submission completes |
+| `stagingReady` | The latched payloads have an upload buffer |
+| `latchedFrame`, `submittedFrame` | Latest render latch and latest submitted page upload |
+
+A slot can occur in both pending sets before the next latch. That latch keeps
+only its latest payload. The counters describe retained sample bytes, not the
+allocator overhead of their containers. `cacheReady` does not mean that the GPU
+is idle.
+
+Each entry in `terrains` contains its render `terrainIndex`, requested and
+committed table versions, and requested and committed content generations.
+A content generation changes when payload bytes are published. It also changes
+for a rewrite that leaves the table version unchanged.
+
+Committed table words refer to submitted cache payloads. A table-only change
+can become available without another texture copy. These counters describe
+cache availability. They do not claim that CBT has consumed the latest table.

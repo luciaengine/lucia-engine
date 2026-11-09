@@ -64,7 +64,7 @@ void GraphNodeRegistry::RegisterAnimationTypes()
 
     Register(Graph::kKindIdAnimation,
              {"ClipPlayer", "Clip Player", "Pose", {PoseOut()},
-              {{"clipGuid", Graph::GraphValue::FromGuid("")},
+              {{.Id = "clipGuid", .Default = Graph::GraphValue::FromGuid(""), .AssetReference = AssetType::Animation},
                {"speed", Graph::GraphValue(1.0f)},
                {"looping", Graph::GraphValue(true)}}});
     Register(Graph::kKindIdAnimation,

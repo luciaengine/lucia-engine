@@ -1,11 +1,13 @@
 #pragma once
 
+#include <concepts>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <typeindex>
 #include <typeinfo>
 #include <unordered_map>
 #include <vector>
@@ -13,6 +15,7 @@
 #include <cmath>
 #include <sstream>
 
+#include "Types/FlatMap.h"
 #include "Types/StringId.h"
 #include "Types/StringUtils.h"
 #include "UI/UIElement.h"
@@ -192,6 +195,30 @@ public:
                          std::uint64_t owner = 0);
     std::unique_ptr<UIElement> Create(std::string_view tagLower) const;
 
+    /** Create a registered native type on the UI thread. An empty tag requires exactly
+     * one canonical registration for T. Explicit tags may name an alias. Returns null
+     * with a diagnostic for missing/ambiguous registrations or a mismatched factory.
+     */
+    template<class T> requires std::derived_from<T, UIElement>
+    std::unique_ptr<T> Create(std::string_view tag = {}) const
+    {
+        auto element = CreateTyped(typeid(T), tag);
+        // CreateTyped validates the exact dynamic type. Virtual bases still need
+        // RTTI to recover the derived pointer; other bases have a static offset.
+        if constexpr (requires(UIElement* base) { static_cast<T*>(base); })
+        {
+            return std::unique_ptr<T>(static_cast<T*>(element.release()));
+        }
+        else
+        {
+            T* typedElement = dynamic_cast<T*>(element.get());
+            if (!typedElement)
+                return nullptr;
+            element.release();
+            return std::unique_ptr<T>(typedElement);
+        }
+    }
+
     // Remove every factory, alias and attribute handler registered by one owner, and return
     // how many FACTORY keys went (canonical tags plus their aliases).
     //
@@ -279,6 +306,9 @@ public:
                          const std::string& innerText) const;
 
 private:
+    std::unique_ptr<UIElement> CreateTyped(const std::type_info& type, std::string_view tag) const;
+    void ForgetCanonicalTag(const std::string& key);
+
     // The two lookups above, taking a key the caller has ALREADY lowered. The public forms
     // lower and then delegate; a caller that needs both — Create, IsSameType — lowers once and
     // calls these, instead of paying a fresh allocation per lookup for a string it is holding.
@@ -304,6 +334,8 @@ private:
     std::unordered_map<const std::type_info*, std::string, TypeInfoPtrHash, TypeInfoPtrEqual> m_TagByTypeInfo;
     // Reverse: type_info -> StringId (cached at registration, avoids re-hashing at runtime).
     std::unordered_map<const std::type_info*, StringId, TypeInfoPtrHash, TypeInfoPtrEqual> m_TagIdByTypeInfo;
+    // Canonical tags per C++ type, for Element<T>() without a tag: one tag creates, several need an explicit tag.
+    FlatMap<std::type_index, std::vector<std::string>> m_CanonicalTagsByType;
     std::unordered_map<std::string, std::vector<std::shared_ptr<AttrHandler>>> m_HandlersByName; // nameLower -> handlers
     std::vector<std::shared_ptr<AttrHandler>> m_AllHandlers; // for defaults/text
 };

@@ -49,6 +49,7 @@ constexpr NodeIconStemEntry kGameLogicNodeIconStems[] = {
     {"CompareFloat", "compare"},
     {"CompareInt", "compare"},
     {"CreateEntity", "organization"},
+    {"SpawnPrefab", "organization"},
     {"Delay", "time"},
     {"DestroyEntity", "organization"},
     {"DrawDebugLine", "debug-line"},
@@ -397,7 +398,8 @@ void GraphNodeRegistry::RegisterGameLogicTypes()
             meta.Ports.push_back({port.Id, port.Direction, port.DataType, port.DisplayName});
         meta.Parameters.reserve(spec.Parameters.size());
         for (const GameLogicActionParameter& param : spec.Parameters)
-            meta.Parameters.push_back({param.Id, param.DefaultValue, param.Options});
+            meta.Parameters.push_back({.Id = param.Id, .Default = param.DefaultValue,
+                                       .Options = param.Options, .AssetReference = param.AssetReference});
         meta.IconStem = std::string(FindIconStem(kGameLogicNodeIconStems, meta.TypeId));
         Register(Graph::kKindIdGameLogic, std::move(meta));
     }
