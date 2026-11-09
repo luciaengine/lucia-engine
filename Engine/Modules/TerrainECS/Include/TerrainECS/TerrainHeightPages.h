@@ -123,6 +123,7 @@ struct HeightPageUpload
 {
     uint32 Slot = 0;
     std::vector<float32> Samples; ///< kPageSampleCount, row-major, apron included
+    uint32 Terrain = 0;
 };
 
 /// A terrain-UV rect whose height changed source this frame: the CBT re-evaluates the bisectors

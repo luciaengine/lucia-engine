@@ -205,7 +205,7 @@ void CBTUpdateSystem::Update(ECS::World& world, float32 /*deltaTime*/)
             CBTTerrain::SphereEditRegions regions{};
             if (service)
                 service->ConsumeSphereSculptDirtyRegions(regions); // drains the render dirty union
-            ConsumeSphereSculpt(version, feature.GetUpdateRecordCount(), regions, classify);
+            ConsumeSphereSculpt(version, feature.GetUpdateSubmissionCount(), regions, classify);
         }
         else
         {
@@ -219,12 +219,12 @@ void CBTUpdateSystem::Update(ECS::World& world, float32 /*deltaTime*/)
             {
                 auto* terrainFeature =
                     m_RenderServices->GetFeature<TerrainECS::TerrainRenderFeature>();
-                ConsumeUnifiedTiledDirtyRegion(terrainFeature, feature.GetUpdateRecordCount(),
+                ConsumeUnifiedTiledDirtyRegion(terrainFeature, feature.GetUpdateSubmissionCount(),
                                                tuning, classify);
             }
             else
             {
-                ConsumeDirtyRegion(world, feature.GetUpdateRecordCount(), classify);
+                ConsumeDirtyRegion(world, feature.GetUpdateSubmissionCount(), classify);
             }
         }
     }
@@ -534,28 +534,9 @@ void CBTUpdateSystem::ConsumeUnifiedDirtyRect(bool takenHasRect, float minU, flo
                                               float maxV, uint64 updateRecordCount,
                                               CBTTerrain::CBTClassifyDesc& classify)
 {
-    // Confirm: a CBT.Update recorded the rect we pushed last time (the feature's record
-    // count advanced past what we saw), so the streamed region reached the GPU — drop the
-    // pending union. Otherwise the update never ran (no scene view / instance not ready):
-    // hold the union and re-arm below.
-    //
-    // Confirmation keys off the update being DECLARED, not the region copy having landed.
-    // On a SINGLE-graph frame (the shipping game / editor-scene view) the copy (TerrainUpload)
-    // and VertexEval (CBT.Update) run in that one graph, and CBTRenderNode::DeclareForView adds
-    // an ordering edge from the copy's pass to the update's, so a committed rect is always
-    // sampled post-copy. The phase does not carry that: the copy declares no access the update
-    // shares, so it forms a scheduling component of one and without the edge the scheduler is
-    // free to emit the update's whole component ahead of it. The one hazard left is a MULTI-
-    // graph frame where TerrainUpload's once-per-frame flush is claimed by graph A while
-    // CBT.Update is claimed by graph B and B submits before A: VertexEval then samples pre-
-    // copy texels yet this commits the (one-shot streamed) rect -> frozen stale. The reviewer
-    // could not confirm that interleaving is reachable, it needs no new machinery for the
-    // shipping path, and the C5 edit path shares the exact same upload+read-edge machinery
-    // (self-healing there only because brush drags re-dirty every frame). The precondition —
-    // the upload flush and CBT.Update landing in different graphs — is now caught by a loud
-    // tripwire at the CBT.Update claim site (CBTRenderNode::DeclareForView, via
-    // TerrainRenderFeature::HeightmapUploadClaimedInOtherGraph), so a future change that
-    // splits them fails loudly instead of silently committing against pre-copy texels.
+    // Clear the pending union only after a recorded CBT.Update submits. Canceled work
+    // keeps the union armed. Paged copies share graph accesses with their consumers;
+    // legacy height copies use an explicit upload-to-update dependency.
     if (m_UnifiedInFlight && updateRecordCount != m_UnifiedInFlightRecordCount)
     {
         m_UnifiedInFlight = false;

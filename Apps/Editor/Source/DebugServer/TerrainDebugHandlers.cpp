@@ -23,6 +23,7 @@
 #include "SceneView/TerrainBrushTool.h"
 #include "SceneViewController.h"
 #include "TerrainECS/PlanarHeightQuery.h"
+#include "TerrainECS/TerrainHeightPageFeature.h"
 #include "TerrainECS/TerrainRenderFeature.h"
 #include "TerrainECS/TerrainRenderPublication.h"
 #include "TerrainECS/TerrainService.h"
@@ -46,6 +47,28 @@ using json = nlohmann::json;
 
 namespace
 {
+
+json HeightPageReadiness(const TerrainECS::TerrainHeightPageFeature* feature)
+{
+    if (feature == nullptr)
+        return nullptr;
+    const auto snapshot = feature->GetReadiness();
+    json terrains = json::array();
+    for (const auto& terrain : snapshot.Terrains)
+        terrains.push_back({{"terrainIndex", terrain.Terrain},
+                            {"requestedVersion", terrain.RequestedVersion},
+                            {"committedVersion", terrain.CommittedVersion},
+                            {"requestedContentGeneration", terrain.RequestedContentGeneration},
+                            {"committedContentGeneration", terrain.CommittedContentGeneration}});
+    return {{"slots", snapshot.Slots}, {"resident", snapshot.Resident}, {"deferred", snapshot.Deferred},
+            {"loadsStarted", snapshot.LoadsStarted}, {"cpuBytes", snapshot.CpuBytes},
+            {"cacheBytes", snapshot.CacheBytes}, {"publishedUploads", snapshot.PublishedUploads},
+            {"latchedUploads", snapshot.LatchedUploads}, {"pendingBytes", snapshot.PendingBytes},
+            {"retiringBytes", snapshot.RetiringBytes}, {"cacheReady", snapshot.CacheReady},
+            {"stagingReady", snapshot.StagingReady},
+            {"latchedFrame", snapshot.LatchedFrame == ~0ull ? json(nullptr) : json(snapshot.LatchedFrame)},
+            {"submittedFrame", snapshot.SubmittedFrame == ~0ull ? json(nullptr) : json(snapshot.SubmittedFrame)}, {"terrains", std::move(terrains)}};
+}
 
 std::string EntityNameFromWorld(ECS::World* world, ECS::EntityHandle entity)
 {
@@ -635,6 +658,7 @@ void RegisterTerrainDebugHandlers(EditorDebugServer& server, EditorApplication& 
             {"terrainServiceAvailable", terrainService != nullptr},
             {"terrainRenderFeatureAvailable", feature != nullptr},
             {"activeRenderTerrainCount", activeTerrains.size()},
+            {"heightPages", HeightPageReadiness(rs ? rs->GetFeature<TerrainECS::TerrainHeightPageFeature>() : nullptr)},
             {"terrains", std::move(terrains)},
             // Absent feature vs present-but-nothing-placed are different answers:
             // false means grass never declared in this process, an empty array
@@ -787,7 +811,7 @@ void RegisterTerrainDebugHandlers(EditorDebugServer& server, EditorApplication& 
         // Whether the planar pool-pressure controller is armed (GE_CBT_POOL_PRESSURE). Without it a
         // pressureStep of 0 below reads the same whether the controller is off or simply not engaged.
         out["poolPressure"] = cbt->GetClassify().PoolPressure != 0u;
-        out["updateRecordCount"] = static_cast<uint64_t>(cbt->GetUpdateRecordCount());
+        out["updateSubmissionCount"] = static_cast<uint64_t>(cbt->GetUpdateSubmissionCount());
         // Sphere sculpt store state (persistence verification: a loaded scene's restored
         // sculpt shows version > 0 and needsSave false without any dab).
         if (spherical)
