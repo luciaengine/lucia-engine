@@ -322,6 +322,7 @@ void PlayModeManager::EnterPlayMode()
 
     if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
         return;
+    m_ExitRequested = false;
     SetState(PlayModeState::EnteringPlay);
 
     // Isolate undo history for play mode.
