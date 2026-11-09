@@ -1,9 +1,10 @@
 #pragma once
 
-#include "PageStreaming/HeightStoreKey.h"
+#include "PageStreaming/Height/HeightStoreKey.h"
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <string>
 
 namespace JobSystem
@@ -14,6 +15,11 @@ class WorkStealingThreadPool;
 namespace GameEngine
 {
 class AssetIOService;
+}
+
+namespace GameEngine::Mathematics
+{
+struct Vector3;
 }
 
 namespace GameEngine::PageStreaming
@@ -46,11 +52,9 @@ struct HeightCookSource
 std::string ResolveHeightCookSource(const std::filesystem::path& file, uint32 samplesX, uint32 samplesZ,
                                     HeightCookSource& out);
 
-/// Reads the whole source once: the FNV-1a 64 of its bytes and, for an .r32 source, its range. An
-/// .r32 sample that is not a finite number is refused (nodata must be filled before export). The
-/// file is read through `io`'s reader threads a chunk ahead of the hashing, or on the calling
-/// thread when `io` is null. Blocks: call from a thread that is not a job-pool worker. Returns an
-/// empty string and fills `out`, else the reason worded as the fix.
+/// Reads the source hash and chooses each height level's step; non-finite samples are refused.
+/// Uses io read-ahead when available; blocks a caller outside the job pool.
+/// Fills out and returns an empty string on success, otherwise the required fix.
 std::string ScanHeightSource(const HeightCookSource& source, AssetIOService* io, HeightSourceIdentity& out,
                              const std::atomic<bool>* cancel = nullptr, HeightCookProgress* progress = nullptr);
 
@@ -84,13 +88,33 @@ struct HeightCookResult
     bool Patched = false;
 };
 
-/// Cooks a height store: level 0 from the source a band of rows at a time, each coarser level
-/// from the one below with the [1 2 1] / 4 tent as soon as its rows are complete, every page
-/// encoded in the store-wide encoding (NormalizedHeightEncoding for 16-bit sources,
-/// ChooseAbsoluteHeightEncoding of the source's range for .r32). Memory is bounded by a few page
-/// rows per level, never by the source. The editor and the build pipeline cook; the Player never
-/// does. Blocks the calling thread until the store is published or the cook fails: call it from a
-/// thread that is not a job-pool worker.
+/// Cooks a tent pyramid in bands, with each height encoded in its level's step.
+/// Memory holds a few page rows per level. The editor and export cook; the Player reads stores.
+/// Blocks a caller outside the job pool until publication or failure.
 HeightCookResult CookHeightPageStore(const HeightCookRequest& request);
+
+/// One cook of a planet's height store: six cube faces on the equal-angle lattice
+/// (PageFaceMap::EqualAngleCube).
+struct PlanetCookRequest
+{
+    /// The height above the reference radius (h = r - R, in meters) at sample (x, z) of `face`, whose
+    /// unit direction from the center is `direction`. An edge sample has an address on each of its
+    /// faces: return one height for one direction. Called from the pool's workers at once: thread-safe.
+    std::function<float32(uint8 face, uint32 x, uint32 z, const Mathematics::Vector3& direction)> Height;
+    float64 ReferenceRadius = 0.0; ///< R, in meters
+    /// Level-0 samples along a face's side, m x 2^k + 1 with m at most 128, so every level has a
+    /// sample on each of the face's edges.
+    uint32 FaceSamples = 0;
+    uint64 Key = 0;
+    std::filesystem::path Output;
+    /// Workers for the per-row and per-page work; null runs it on the calling thread.
+    JobSystem::WorkStealingThreadPool* Pool = nullptr;
+    const std::atomic<bool>* Cancel = nullptr;
+};
+
+/// Cooks a planet's height store: six faces on the equal-angle lattice, each edge page's apron from
+/// the neighbor face. Level 0 is written beside the store (4 bytes a sample) and read back. Blocks
+/// the calling thread: call it from a thread that is not a job-pool worker.
+HeightCookResult CookPlanetPageStore(const PlanetCookRequest& request);
 
 } // namespace GameEngine::PageStreaming

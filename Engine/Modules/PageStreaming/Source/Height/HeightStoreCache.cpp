@@ -1,8 +1,8 @@
-#include "PageStreaming/HeightStoreCache.h"
+#include "PageStreaming/Height/HeightStoreCache.h"
 
-#include "PageStreaming/HeightPageCooker.h"
-#include "PageStreaming/HeightStoreKey.h"
-#include "PageStreaming/PageStoreReader.h"
+#include "PageStreaming/Height/HeightPageCooker.h"
+#include "PageStreaming/Height/HeightStoreKey.h"
+#include "PageStreaming/PageStore/PageStoreReader.h"
 
 #include "FileSystem/FileSystem.h"
 
@@ -39,14 +39,15 @@ bool IsCurrentStore(const std::filesystem::path& store, uint64 key)
     if (!std::filesystem::exists(store, ec))
         return false;
     PageStoreReader reader;
-    return reader.Open(store).empty() && reader.Layout().Header.Key == key;
+    return reader.Open(store, PageFieldKind::Height).empty() && reader.Layout().Header.Key == key;
 }
 
 std::string ResolveIdentity(const std::filesystem::path& directory, const GUID& asset, const HeightCookSource& source,
                             AssetIOService* io, const std::atomic<bool>* cancel, HeightCookProgress* progress,
                             HeightSourceIdentity& out)
 {
-    if (const std::optional<HeightSourceIdentity> memo = ReadHeightSourceMemo(directory, asset, source.File))
+    const std::optional<HeightSourceIdentity> memo = ReadHeightSourceMemo(directory, asset, source.File);
+    if (memo && memo->SamplesX == source.SamplesX && memo->SamplesZ == source.SamplesZ)
     {
         out = *memo;
         return {};

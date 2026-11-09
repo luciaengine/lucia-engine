@@ -5,6 +5,7 @@ if(NOT GTest_FOUND)
 endif()
 
 add_executable(MathematicsTests
+    Vector3IntTests.cpp
     CurveEvaluationTests.cpp
     GeometryTests.cpp
     TriangulationTests.cpp
