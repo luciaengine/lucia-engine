@@ -208,6 +208,8 @@
 #include "Placement/RecipeEditorHooks.h"
 #include "SplineRecipes/SplineRecipeSystem.h"
 #include "PlayMode/PlayModeManager.h"
+#include "PlayMode/GameViewPointerLock.h"
+#include "PlayMode/WindowCursorLock.h"
 #include "PlayMode/RuntimeInputConnection.h"
 #include "Scene/SceneEditorController.h"
 #include "Scene/SceneThumbnailCapture.h"
@@ -1972,6 +1974,7 @@ void EditorApplication::CreateRuntimeInput()
     // the routing chain, so it takes only the input the game claims and lets the
     // rest keep travelling to the editor.
     m_RuntimeInput = std::make_unique<Input::InputSystem>(Input::SinkRole::Gameplay);
+    m_GameViewPointerLock = std::make_unique<Editor::GameViewPointerLock>();
     EngineCore::GetInstance().SetRuntimeInput(m_RuntimeInput.get());
 }
 
@@ -2027,6 +2030,7 @@ std::unique_ptr<EditorApplication::EditorWindowContext> EditorApplication::Creat
         Logger::Log::Error("Editor: Failed to create main window");
         return nullptr;
     }
+    mainCtx->cursorLock = std::make_unique<Editor::WindowCursorLock>(*mainCtx->window);
     {
         const auto monitors = Platform::EnumerateMonitors();
         Logger::Log::Info("Editor: detected {} monitor(s)", monitors.size());
@@ -2614,7 +2618,7 @@ void EditorApplication::CreateMainUiManager(EditorWindowContext* main)
         Editor::ApplySavedHiDpiPlatformSettings(main->uiPlatform.get());
 
         // Set cursor callback to change OS cursor based on hovered UI element's CSS cursor property.
-        SetupUICursorCallback(main->ui.get(), main->window.get());
+        SetupUICursorCallback(main->ui.get(), main->window.get(), main->cursorLock.get());
     }
 
     // Wire tooltip settings into UIManager so it respects user preferences.
@@ -2936,6 +2940,8 @@ bool EditorApplication::BuildDockingFromLayoutConfig(DockspaceElement* dockspace
 
 bool EditorApplication::HandleMainWindowKeyPre(EditorWindowContext* mainCtxRaw, int key, int action, int mods)
 {
+    if (m_GameViewPointerLock)
+        m_GameViewPointerLock->OnKey(key, action);
     if (key == Input::kKeyCode_Escape && action == Input::kKeyActionPress && m_PlayMode)
     {
         const auto state = m_PlayMode->GetState();
@@ -3336,7 +3342,7 @@ void EditorApplication::WireSceneAndGameViewPanels(const StartupPanels& panels, 
         // been undocked meanwhile — so it is the only handle on the controller
         // that still holds the gesture and has to be told the surface ended.
         gameViewPanel->SetPointerCallback(
-            [this, gameViewPanel, pointerWindowId = uint64_t{0}]
+            [this, gameViewPanel, pointerWindowId = uint64_t{0}, pointerDown = false]
             (bool over, float x, float y, bool down, int mods) mutable
             {
                 EditorWindowContext* destination = over ? FindWindowHostingGameView(gameViewPanel) : nullptr;
@@ -3346,6 +3352,9 @@ void EditorApplication::WireSceneAndGameViewPanels(const StartupPanels& panels, 
                         if (win && win->windowId == pointerWindowId && win->gameView)
                             win->gameView->HandleGameUiPointer(false, 0.0f, 0.0f, false, 0);
                 pointerWindowId = nextId;
+                if (destination && down && !pointerDown)
+                    m_GameViewPointerLock->OnGameViewPressed();
+                pointerDown = down;
                 if (destination)
                     destination->gameView->HandleGameUiPointer(true, x, y, down, mods);
             });
@@ -7331,6 +7340,10 @@ void EditorApplication::UpdateRuntimeInput(float64 deltaTime)
         if (!playingOrPaused && m_WasPlayModeActive && m_RuntimeInput)
             m_RuntimeInput->ClearRegistrations();
         m_WasPlayModeActive = playingOrPaused;
+        if (m_RuntimeInput)
+            m_GameViewPointerLock->Update(*m_RuntimeInput,
+                                          gameViewHost ? gameViewHost->cursorLock.get() : nullptr,
+                                          m_PlayMode && m_PlayMode->GetState() == Editor::PlayModeState::Play);
     }
 
     // Update runtime input before gameplay scripts tick.
@@ -8491,6 +8504,8 @@ void EditorApplication::Render()
             }
 
             auto& win = m_Windows[idx];
+            if (win && m_GameViewPointerLock)
+                m_GameViewPointerLock->ForgetCursorLock(win->cursorLock.get());
             // Drop tear-off tracking and any drag-state pointers into this window
             if (win)
                 m_DockDnd->OnFloatingWindowClosing(win.get());
@@ -8614,6 +8629,7 @@ WindowInputRouterConfig::PlaySurface EditorApplication::GetPlaySurface(Platform:
             return surface;
         surface.gameplaySink = m_RuntimeInput.get();
         surface.gameUi = win->gameView ? win->gameView->GetGameUI() : nullptr;
+        surface.pointerLocked = m_GameViewPointerLock->IsLockedTo(win->cursorLock.get());
         // The mapper maps from the context resolved here instead of finding the
         // window again. Holding it raw is safe because a surface is built and
         // spent inside one routing call (WindowInputRouter::RouteMouseMove), with
@@ -8891,6 +8907,8 @@ void EditorApplication::OnShutdown()
         auto& win = *it;
         if (!win)
             continue;
+        if (m_GameViewPointerLock)
+            m_GameViewPointerLock->ForgetCursorLock(win->cursorLock.get());
         // Quiesce ColorPicker integration first so no global callbacks survive
         // after window/UI teardown starts.
         ColorPickerEditorIntegration::Cleanup(win.get());

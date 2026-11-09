@@ -55,6 +55,21 @@ Mathematics::Vector2 GetMouseDelta(InputSystem& input)
     return input.GetMouseDelta();
 }
 
+void LockPointer(InputSystem& input)
+{
+    input.LockPointer();
+}
+
+void UnlockPointer(InputSystem& input)
+{
+    input.UnlockPointer();
+}
+
+PointerLockState GetPointerLockState(InputSystem& input)
+{
+    return input.GetPointerLockState();
+}
+
 ActionState GetActionState(InputSystem& input, StringId action)
 {
     return input.GetActionState(action);

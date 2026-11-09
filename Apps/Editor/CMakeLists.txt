@@ -237,6 +237,8 @@ set(EDITOR_SOURCES
     Source/MissingAssetTracker.cpp
     Source/Panels/WebPanel.cpp
     Source/PlayMode/PlayModeManager.cpp
+    Source/PlayMode/GameViewPointerLock.cpp
+    Source/PlayMode/WindowCursorLock.cpp
     Source/PlayMode/ModelAnimationPlayMode.cpp
     Source/PlayMode/AnimationPlayModeHelpers.cpp
     Source/PlayMode/RuntimeInputConnection.cpp

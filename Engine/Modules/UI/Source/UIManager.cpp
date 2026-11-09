@@ -1578,6 +1578,8 @@ UIManager::~UIManager()
     // gone: element destructors running during the rest of this destructor (m_Root.reset
     // below) must never call back into a partially destroyed UIManager.
     m_Lifetime.reset();
+    m_MouseCaptured = false;
+    SyncPointerLock();
 
     // Stage 5 Block A part 3e: clear InFocusChain bit on every chain
     // entry. Mount targets / portal-style elements may outlive this

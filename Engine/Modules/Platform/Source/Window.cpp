@@ -647,6 +647,8 @@ void Window::Destroy()
     glfwSetWindowCloseCallback(m_Handle, nullptr);
     glfwSetDropCallback(m_Handle, nullptr);
     glfwSetWindowUserPointer(m_Handle, nullptr);
+    UnlockCursor();
+    m_CursorHidden = false;
     // Clean up custom cursor
     if (m_Cursor)
     {
@@ -1693,13 +1695,11 @@ void Window::SetCursor(CursorType type)
         m_Cursor = nullptr;
     }
 
-    if (type == CursorType::Hidden)
-    {
-        glfwSetInputMode(m_Handle, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+    m_CursorHidden = type == CursorType::Hidden;
+    if (!m_CursorLocked)
+        glfwSetInputMode(m_Handle, GLFW_CURSOR, m_CursorHidden ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
+    if (m_CursorHidden)
         return;
-    }
-
-    glfwSetInputMode(m_Handle, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 
     int glfwShape = GLFW_ARROW_CURSOR;
     switch (type)
@@ -1748,8 +1748,40 @@ void Window::ResetCursor()
         m_Cursor = nullptr;
     }
 
-    glfwSetInputMode(m_Handle, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    m_CursorHidden = false;
+    if (!m_CursorLocked)
+        glfwSetInputMode(m_Handle, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
     glfwSetCursor(m_Handle, nullptr); // reset to default
+}
+
+void Window::LockCursor(LockedCursorMotion motion)
+{
+    if (!m_Handle)
+        return;
+
+#if defined(__EMSCRIPTEN__)
+    // A browser grants pointer lock only inside a user gesture, which this
+    // per-frame call is not.
+    (void)motion;
+    return;
+#endif
+
+    if (!m_CursorLocked)
+        glfwSetInputMode(m_Handle, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    m_CursorLocked = true;
+    if (glfwRawMouseMotionSupported())
+        glfwSetInputMode(m_Handle, GLFW_RAW_MOUSE_MOTION, motion == LockedCursorMotion::Raw ? GLFW_TRUE : GLFW_FALSE);
+}
+
+void Window::UnlockCursor()
+{
+    if (!m_Handle || !m_CursorLocked)
+        return;
+
+    m_CursorLocked = false;
+    if (glfwRawMouseMotionSupported())
+        glfwSetInputMode(m_Handle, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+    glfwSetInputMode(m_Handle, GLFW_CURSOR, m_CursorHidden ? GLFW_CURSOR_HIDDEN : GLFW_CURSOR_NORMAL);
 }
 
 } // namespace Platform

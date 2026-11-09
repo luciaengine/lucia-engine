@@ -10,3 +10,13 @@ description: Read input and bind actions through the Input module's script-facin
 Register an action with `RegisterAction`, then bind a key, mouse button, mouse axis, gamepad button, or gamepad axis. Keyboard and mouse-button bindings accept required and forbidden `ModifierFlags`. `PushContext`, `PopContext`, and `SetContextEnabled` control which registered actions are live. `GetActionState` returns pressed, just-pressed, just-released, and axis-value fields. `ClearBindings` and `RemoveAction` update an existing action's setup.
 
 The generated managed input surface is supplied with the managed bindings port. Native game code can use these APIs directly.
+
+## Pointer lock
+
+Call `Input::Script::LockPointer(input)` to request a hidden cursor and unbounded mouse movement. Call `UnlockPointer` to withdraw the request. `GetPointerLockState` returns `Unlocked`, `Pending`, or `Locked`. The host reports the actual grant. Clearing session registrations also clears the request.
+
+The Player grants a request while its window is focused. The editor grants it while unpaused play runs in the active Game View of a focused window. Escape or leaving that window releases the pointer to the editor. Click the Game View to return it to the game. Pausing, stopping, or withdrawing the request ends that handback state.
+
+Locked moves, button presses, and wheel events go to gameplay. Button releases still reach every stage that could have received a press. Locked movement bypasses the Game View coordinate mapping so editor UI scale does not change camera sensitivity. `GetMouseDelta` restarts when the lock changes to omit the cursor repositioning jump.
+
+The browser and mobile hosts do not grant this lock. The request stays pending until withdrawn.
