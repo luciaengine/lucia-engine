@@ -118,6 +118,15 @@ uint64 CountCoveredPageCells(std::span<const PageSampleRect> rects)
     return cells;
 }
 
+PageSampleRect Level0RectReach(std::span<const PageStoreLevel> levels, const PageSampleRect& level0Rect,
+                               uint32 level)
+{
+    PageSampleRect rect = level0Rect;
+    for (uint32 coarser = 1; coarser <= level; ++coarser)
+        rect = CoarserRect(rect, levels[coarser].SamplesX, levels[coarser].SamplesZ);
+    return rect;
+}
+
 } // namespace
 
 bool PageReadsLevel0Rect(const PageAddress& address, const PageSampleRect& level0Rect)
@@ -133,14 +142,6 @@ bool PageReadsLevel0Rect(const PageAddress& address, const PageSampleRect& level
            firstZ <= level0Rect.MaxZ;
 }
 
-PageSampleRect Level0RectReach(std::span<const PageStoreLevel> levels, const PageSampleRect& level0Rect,
-                               uint32 level)
-{
-    PageSampleRect rect = level0Rect;
-    for (uint32 coarser = 1; coarser <= level; ++coarser)
-        rect = CoarserRect(rect, levels[coarser].SamplesX, levels[coarser].SamplesZ);
-    return rect;
-}
 
 uint64 HeightPageLayerBytesOver(std::span<const PageStoreLevel> levels, std::span<const PageSampleRect> level0Rects)
 {
@@ -204,43 +205,6 @@ std::span<const float32> HeightPageLayer::PageDeltas(const PageAddress& address)
 {
     const std::vector<float32>* page = m_Pages.Find(address);
     return page ? std::span<const float32>(*page) : std::span<const float32>();
-}
-
-void HeightPageLayer::RefreshRects(uint8 face, const PageSampleRect& rect, std::vector<PageFaceRect>& out) const
-{
-    out.clear();
-    out.push_back(PageFaceRect{face, rect});
-    if (m_FaceCount != kPageStoreMaxFaces || m_Levels.empty())
-        return;
-    // Level L's reach on a side changes the neighbor's level-L pages past that side; their level-0
-    // band is the side's edge sample over the reach scaled to level 0.
-    const uint32 samples0 = m_Levels.front().SamplesX;
-    std::array<std::optional<PageFaceRect>, kPageFaceSides> bands;
-    for (uint32 level = 0; level < m_Levels.size(); ++level)
-    {
-        const uint32 samples = m_Levels[level].SamplesX;
-        const std::array<SideReach, kPageFaceSides> sides = SidesNear(Level0RectReach(m_Levels, rect, level), samples);
-        for (uint32 sideIndex = 0; sideIndex < kPageFaceSides; ++sideIndex)
-        {
-            const SideReach& side = sides[sideIndex];
-            if (!side.Near)
-                continue;
-            const PageFaceEdge edge = PageFaceNeighbor(face, side.Side);
-            uint32 first = 0, last = 0;
-            NeighborAlong(edge, side.AlongMin, side.AlongMax, samples, first, last);
-            first = std::min(first << level, samples0 - 1u);
-            last = std::min(last << level, samples0 - 1u);
-            const uint32 across =
-                edge.Side == PageFaceSide::MinX || edge.Side == PageFaceSide::MinZ ? 0u : samples0 - 1u;
-            const PageSampleRect band = IsColumnSide(edge.Side) ? PageSampleRect{across, first, across, last}
-                                                                : PageSampleRect{first, across, last, across};
-            std::optional<PageFaceRect>& held = bands[sideIndex];
-            held = held ? PageFaceRect{edge.Face, Union(held->Level0Rect, band)} : PageFaceRect{edge.Face, band};
-        }
-    }
-    for (const std::optional<PageFaceRect>& band : bands)
-        if (band)
-            out.push_back(*band);
 }
 
 bool HeightPageLayer::FitsLevels(std::span<const PageStoreLevel> levels) const

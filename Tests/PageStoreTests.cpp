@@ -3506,7 +3506,7 @@ TEST(HeightPageLayerTest, TwoFarWritesHoldOnlyThePagesUnderThem)
 
 // A write one sample in from face 0's side changes the pages of the neighbor face past that side: their
 // apron holds face 0's samples one in (PageCubeSampleAt), their own samples stay zero, and no other face
-// holds a page. RefreshRects names the neighbor's edge band.
+// holds a page.
 TEST(HeightPageLayerTest, AWriteNearAFaceSideChangesTheNeighborFacesApronOnly)
 {
     const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(257, 257);
@@ -3548,19 +3548,7 @@ TEST(HeightPageLayerTest, AWriteNearAFaceSideChangesTheNeighborFacesApronOnly)
                         }
                 }
     EXPECT_GT(neighborPages, 0u) << "the neighbor's apron past the shared side reads the write";
-    std::vector<PageFaceRect> rects;
-    layer.RefreshRects(0, rect, rects);
-    ASSERT_EQ(rects.size(), 2u);
-    EXPECT_EQ(rects[1].Face, edge.Face);
-    const uint32 last0 = levels.front().SamplesX - 1u;
-    const uint32 across = edge.Side == PageFaceSide::MinX || edge.Side == PageFaceSide::MinZ ? 0u : last0;
-    const bool column = edge.Side == PageFaceSide::MinX || edge.Side == PageFaceSide::MaxX;
-    const PageSampleRect& band = rects[1].Level0Rect;
-    const auto [acrossMin, acrossMax, alongMin, alongMax] =
-        column ? std::tie(band.MinX, band.MaxX, band.MinZ, band.MaxZ) : std::tie(band.MinZ, band.MaxZ, band.MinX, band.MaxX);
-    EXPECT_EQ(std::tie(acrossMin, acrossMax), std::tie(across, across)) << "the band is not the neighbor's edge sample";
-    EXPECT_LE(alongMin, edge.Reversed ? last0 - rect.MaxZ : rect.MinZ) << "the band misses rows the write reaches";
-    EXPECT_GE(alongMax, edge.Reversed ? last0 - rect.MinZ : rect.MaxZ) << "the band misses rows the write reaches";
+
 }
 
 TEST(HeightPageLayerTest, EstimatingTheMaximumLatticeCountsRectanglesWithoutAllocatingItsPageDirectory)
