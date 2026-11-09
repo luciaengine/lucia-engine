@@ -51,6 +51,7 @@ set(ECS_CORE_TEST_SOURCES
     OversizedChunkAllocationTest.cpp
     RegisterComponentsTest.cpp
     QueryInvalidationAndOverflowTest.cpp
+    ArchetypeMatchCacheTest.cpp
     CommandBufferRingTest.cpp
     ProcessCommandsBatchLimitTest.cpp
     DeferredRequiredComponentTest.cpp

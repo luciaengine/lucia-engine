@@ -6,6 +6,8 @@ project(ECS VERSION 1.0.0 LANGUAGES CXX)
 # Core ECS source files
 set(ECS_SOURCES
     Source/World.cpp
+    Source/Archetype/ArchetypeMatchCache.cpp
+    Source/Archetype/ArchetypeMatchList.cpp
     Source/SystemWaveTrace.cpp
     Source/Entity.cpp
     Source/ComponentRegistry.cpp
@@ -67,7 +69,7 @@ target_include_directories(ECS PUBLIC ${CMAKE_SOURCE_DIR}/Engine/Modules/Platfor
 
 # Dependencies
 # ECS module dependencies (target-based; avoid hardcoded include paths)
-target_link_libraries(ECS PUBLIC Logger JobSystem Types)
+target_link_libraries(ECS PUBLIC Logger JobSystem Types Memory)
 
 # Platform-specific definitions
 if(WIN32)

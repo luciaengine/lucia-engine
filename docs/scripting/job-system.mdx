@@ -75,3 +75,9 @@ Joined `Run` and `ParallelFor` work inherits the frame-memory scope of its calle
 Use the editor's `get_ecs_wave_trace` tool to record how scheduled ECS waves run. Pass `enabled: true` to arm the trace. Arming clears its fixed ring of 256 frames. The tool can summarize a recent `window` and include individual frames through the `frames` parameter.
 
 The report includes wave makespans, join waits, dispatch delays, system durations, worker placement, and job publications. It records joined work that a live pool snapshot between frames can miss. Tracing is off by default. On macOS, enabled tracing also emits system, wave, and join intervals for Instruments.
+
+## Shared query matches
+
+Each World keeps one archetype match list per query filter. Temporary and retained queries share that list. A query refreshes its snapshot after structural changes. New archetypes become available on the next iteration. `World::PruneEmptyArchetypes()` removes empty archetypes and refreshes query and creation caches. Call it only when no query iteration is active.
+
+Required-component schemas remain hidden until they are complete. Query writes use `Writable<T>` so only mutations through `Mutable()` or `Set()` stamp a written column. A `Changed<T>` gate must name a declared read column.

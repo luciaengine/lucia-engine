@@ -7,6 +7,7 @@
 #include "ECS/QueryPolicy.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/Logger.h"
+#include "Types/FlatSet.h"
 
 #include <optional>
 
@@ -196,6 +197,22 @@ class Archetype
     // Look up or build the outbound move-plan for a target archetype. Caller
     // must hold worldMutex exclusively — mutates m_MovePlans on first use.
     const std::vector<CopyStep>& GetOrBakeMovePlan(Archetype* target);
+
+    void EraseEdgesTo(const FlatSet<Archetype*>& pruned)
+    {
+        for (auto it = m_AddEdges.begin(); it != m_AddEdges.end();)
+            it = pruned.Contains(it->second) ? m_AddEdges.erase(it) : std::next(it);
+        for (auto it = m_RemoveEdges.begin(); it != m_RemoveEdges.end();)
+            it = pruned.Contains(it->second) ? m_RemoveEdges.erase(it) : std::next(it);
+        if (m_DisableEdge && pruned.Contains(m_DisableEdge))
+            m_DisableEdge = nullptr;
+        if (m_EnableEdge && pruned.Contains(m_EnableEdge))
+            m_EnableEdge = nullptr;
+        // Move plans are keyed on target archetype pointers — drop any plan
+        // whose target was pruned to avoid dangling keys.
+        for (auto it = m_MovePlans.begin(); it != m_MovePlans.end();)
+            it = pruned.Contains(it->first) ? m_MovePlans.erase(it) : std::next(it);
+    }
 
   private:
     // ------------------------------------------------------------------
