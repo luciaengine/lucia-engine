@@ -3401,12 +3401,12 @@ namespace
 
 // The pyramid sample a page of a one-face layer stores at stride (i, j): the clamped sample of its level.
 float32 StoredPyramidSample(const std::vector<std::vector<float32>>& pyramid, const std::vector<PageStoreLevel>& levels,
-                            const PageAddress& page, uint32 i, uint32 j)
+                            const PageAddress& page, uint32 strideX, uint32 strideZ)
 {
     const PageStoreLevel& level = levels[page.Level];
-    const int64 x = std::clamp<int64>(int64{page.X} * kPageOwnedSamples - kPageApronSamples + i, 0, level.SamplesX - 1);
-    const int64 z = std::clamp<int64>(int64{page.Z} * kPageOwnedSamples - kPageApronSamples + j, 0, level.SamplesZ - 1);
-    return pyramid[page.Level][static_cast<std::size_t>(z) * level.SamplesX + static_cast<std::size_t>(x)];
+    const int64 sampleX = std::clamp<int64>(int64{page.X} * kPageOwnedSamples - kPageApronSamples + strideX, 0, level.SamplesX - 1);
+    const int64 sampleZ = std::clamp<int64>(int64{page.Z} * kPageOwnedSamples - kPageApronSamples + strideZ, 0, level.SamplesZ - 1);
+    return pyramid[page.Level][static_cast<std::size_t>(sampleZ) * level.SamplesX + static_cast<std::size_t>(sampleX)];
 }
 
 // Every page of every level of `layer` holds the tent pyramid of `level0`, bit for bit, apron included; a
@@ -3417,22 +3417,22 @@ uint32 ExpectLayerIsThePyramidOf(const HeightPageLayer& layer, const std::vector
     const std::vector<std::vector<float32>> pyramid = TentPyramid(level0, levels);
     uint32 nonZero = 0;
     for (uint32 level = 0; level < levels.size(); ++level)
-        for (uint32 z = 0; z < levels[level].PagesZ; ++z)
-            for (uint32 x = 0; x < levels[level].PagesX; ++x)
+        for (uint32 sampleZ = 0; sampleZ < levels[level].PagesZ; ++sampleZ)
+            for (uint32 sampleX = 0; sampleX < levels[level].PagesX; ++sampleX)
             {
-                const PageAddress page{0, uint8(level), x, z};
+                const PageAddress page{0, static_cast<uint8>(level), sampleX, sampleZ};
                 const std::span<const float32> deltas = layer.PageDeltas(page);
                 bool any = false;
-                for (uint32 j = 0; j < kPageStrideSamples; ++j)
-                    for (uint32 i = 0; i < kPageStrideSamples; ++i)
+                for (uint32 strideZ = 0; strideZ < kPageStrideSamples; ++strideZ)
+                    for (uint32 strideX = 0; strideX < kPageStrideSamples; ++strideX)
                     {
-                        const float32 expected = StoredPyramidSample(pyramid, levels, page, i, j);
+                        const float32 expected = StoredPyramidSample(pyramid, levels, page, strideX, strideZ);
                         any = any || expected != 0.0f;
-                        const float32 held = deltas.empty() ? 0.0f : deltas[j * kPageStrideSamples + i];
+                        const float32 held = deltas.empty() ? 0.0f : deltas[strideZ * kPageStrideSamples + strideX];
                         if (held != expected)
                         {
-                            ADD_FAILURE() << "level " << level << " page (" << x << ", " << z << ") stride (" << i
-                                          << ", " << j << "): " << held << " held, " << expected << " expected";
+                            ADD_FAILURE() << "level " << level << " page (" << sampleX << ", " << sampleZ << ") stride (" << strideX
+                                          << ", " << strideZ << "): " << held << " held, " << expected << " expected";
                             return nonZero;
                         }
                     }
@@ -3444,10 +3444,10 @@ uint32 ExpectLayerIsThePyramidOf(const HeightPageLayer& layer, const std::vector
 void WriteDense(std::vector<float32>& level0, const PageStoreLevel& shape, const PageSampleRect& rect,
                 std::span<const float32> deltas)
 {
-    for (uint32 z = rect.MinZ; z <= rect.MaxZ; ++z)
-        for (uint32 x = rect.MinX; x <= rect.MaxX; ++x)
-            level0[static_cast<std::size_t>(z) * shape.SamplesX + x] =
-                deltas[static_cast<std::size_t>(z - rect.MinZ) * rect.Width() + (x - rect.MinX)];
+    for (uint32 sampleZ = rect.MinZ; sampleZ <= rect.MaxZ; ++sampleZ)
+        for (uint32 sampleX = rect.MinX; sampleX <= rect.MaxX; ++sampleX)
+            level0[static_cast<std::size_t>(sampleZ) * shape.SamplesX + sampleX] =
+                deltas[static_cast<std::size_t>(sampleZ - rect.MinZ) * rect.Width() + (sampleX - rect.MinX)];
 }
 
 } // namespace
@@ -3517,34 +3517,34 @@ TEST(HeightPageLayerTest, AWriteNearAFaceSideChangesTheNeighborFacesApronOnly)
     uint32 neighborPages = 0;
     for (uint8 face = 1; face < kPageStoreMaxFaces; ++face)
         for (uint32 level = 0; level < levels.size(); ++level)
-            for (uint32 z = 0; z < levels[level].PagesZ; ++z)
-                for (uint32 x = 0; x < levels[level].PagesX; ++x)
+            for (uint32 sampleZ = 0; sampleZ < levels[level].PagesZ; ++sampleZ)
+                for (uint32 sampleX = 0; sampleX < levels[level].PagesX; ++sampleX)
                 {
-                    const PageAddress page{face, uint8(level), x, z};
+                    const PageAddress page{face, static_cast<uint8>(level), sampleX, sampleZ};
                     const std::span<const float32> deltas = layer.PageDeltas(page);
                     if (deltas.empty())
                         continue;
                     ASSERT_EQ(face, edge.Face) << "a face that shares no side with the write holds a page";
                     ++neighborPages;
                     const uint32 samples = levels[level].SamplesX;
-                    for (uint32 j = 0; j < kPageStrideSamples; ++j)
-                        for (uint32 i = 0; i < kPageStrideSamples; ++i)
+                    for (uint32 strideZ = 0; strideZ < kPageStrideSamples; ++strideZ)
+                        for (uint32 strideX = 0; strideX < kPageStrideSamples; ++strideX)
                         {
-                            const int64 sx = int64{x} * kPageOwnedSamples - 1 + i;
-                            const int64 sz = int64{z} * kPageOwnedSamples - 1 + j;
-                            const PageFaceSample source = PageCubeSampleAt(face, sx, sz, samples);
+                            const int64 sourceX = int64{sampleX} * kPageOwnedSamples - 1 + strideX;
+                            const int64 sourceZ = int64{sampleZ} * kPageOwnedSamples - 1 + strideZ;
+                            const PageFaceSample source = PageCubeSampleAt(face, sourceX, sourceZ, samples);
                             float32 expected = 0.0f;
                             if (source.Face == 0)
                             {
                                 const std::span<const float32> own = layer.PageDeltas(PageAddress{
-                                    0, uint8(level), source.X / kPageOwnedSamples, source.Z / kPageOwnedSamples});
+                                    0, static_cast<uint8>(level), source.X / kPageOwnedSamples, source.Z / kPageOwnedSamples});
                                 if (!own.empty())
                                     expected = own[(source.Z % kPageOwnedSamples + 1u) * kPageStrideSamples +
                                                    source.X % kPageOwnedSamples + 1u];
                             }
-                            ASSERT_EQ(deltas[j * kPageStrideSamples + i], expected)
-                                << "face " << int(face) << " level " << level << " page (" << x << ", " << z
-                                << ") stride (" << i << ", " << j << ")";
+                            ASSERT_EQ(deltas[strideZ * kPageStrideSamples + strideX], expected)
+                                << "face " << static_cast<int>(face) << " level " << level << " page (" << sampleX << ", " << sampleZ
+                                << ") stride (" << strideX << ", " << strideZ << ")";
                         }
                 }
     EXPECT_GT(neighborPages, 0u) << "the neighbor's apron past the shared side reads the write";

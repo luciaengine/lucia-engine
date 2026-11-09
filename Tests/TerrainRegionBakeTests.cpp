@@ -7364,3 +7364,122 @@ TEST(TerrainRegionBake, ModifierMovedByLocalTransformEditRebakes)
     EXPECT_GT(data->HeightfieldVersion, idleVersion)
         << "a modifier moved by a local Transform edit (the inspector path) did not re-bake";
 }
+
+TEST(TerrainRegionBake, ADabThatGrowsTheHeightPageOverlayReportsOnlyTheDabsSamples)
+{
+    ScopedTerrainService scoped;
+    auto& service = TerrainService::Get();
+    const auto handle = CreateResidentTiledTerrain(service, 2);
+    const auto referenceHandle = CreateResidentTiledTerrain(service, 2);
+    auto* tiled = service.GetTiledTerrainData(handle);
+    auto* referenceTerrain = service.GetTiledTerrainData(referenceHandle);
+    ASSERT_NE(tiled, nullptr);
+    ASSERT_NE(referenceTerrain, nullptr);
+    tiled->PageOverlayByteCap = kDesktopHeightPages.OverlayByteCap;
+
+    ECS::World world;
+    RegisterModifierLifecycleEvents(world);
+    CreateTiledTerrainEntity(world, handle, 2);
+    CreateFlattenModifier(world, kTiledTileWorld, 500.0f, 35.0f, 20.0f);
+    TerrainModifierSystem system;
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect initialExtent = tiled->PageOverlay->Extent(0).value();
+    const uint64 version = tiled->PageOverlayVersion;
+
+    CreateFlattenModifier(world, kTiledTileWorld + 40.0f, 500.0f, 35.0f, 20.0f);
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect grown = tiled->PageOverlay->Extent(0).value();
+    ASSERT_GT(grown.MaxX, initialExtent.MaxX) << "the second dab grows the overlay";
+    EXPECT_EQ(tiled->PageOverlayChangedSince, version);
+
+    // The second dab alone, on a terrain of its own.
+    ECS::World referenceWorld;
+    RegisterModifierLifecycleEvents(referenceWorld);
+    CreateTiledTerrainEntity(referenceWorld, referenceHandle, 2);
+    CreateFlattenModifier(referenceWorld, kTiledTileWorld + 40.0f, 500.0f, 35.0f, 20.0f);
+    referenceTerrain->PageOverlayByteCap = kDesktopHeightPages.OverlayByteCap;
+    TerrainModifierSystem referenceSystem;
+    referenceSystem.Update(referenceWorld, 1.0f / 60.0f);
+    ASSERT_NE(referenceTerrain->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect dab = referenceTerrain->PageOverlay->Extent(0).value();
+
+    const PageStreaming::PageSampleRect& changed = tiled->PageOverlayChanged;
+    EXPECT_EQ(changed.MinX, dab.MinX);
+    EXPECT_EQ(changed.MinZ, dab.MinZ);
+    EXPECT_EQ(changed.MaxX, dab.MaxX);
+    EXPECT_EQ(changed.MaxZ, dab.MaxZ);
+    EXPECT_LT(changed.Width(), grown.Width()) << "the grown overlay reported its whole area";
+}
+
+// Deleting a modifier at the overlay's edge reports a rect that covers the deleted modifier's old
+// bounds, and its samples return to the base.
+TEST(TerrainRegionBake, DeletingAModifierAtTheHeightPageOverlaysEdgeReportsItsOldBounds)
+{
+    ScopedTerrainService scoped;
+    auto& service = TerrainService::Get();
+    const auto handle = CreateResidentTiledTerrain(service, 2);
+    auto* tiled = service.GetTiledTerrainData(handle);
+    ASSERT_NE(tiled, nullptr);
+    tiled->PageOverlayByteCap = kDesktopHeightPages.OverlayByteCap;
+
+    ECS::World world;
+    RegisterModifierLifecycleEvents(world);
+    CreateTiledTerrainEntity(world, handle, 2);
+    CreateFlattenModifier(world, kTiledTileWorld, 500.0f, 35.0f, 20.0f);
+    const auto edge = CreateFlattenModifier(world, kTiledTileWorld + 40.0f, 500.0f, 35.0f, 20.0f);
+    TerrainModifierSystem system;
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect previousExtent = tiled->PageOverlay->Extent(0).value();
+    // Each stamp (20 m radius) spans 59 level-0 samples: the first one starts at the overlay's MinX,
+    // the edge one ends at its MaxX.
+    constexpr uint32 kEdgeStampSamples = 59u;
+    const uint32 centerX = previousExtent.MaxX - 20u;
+    const uint32 centerZ = (previousExtent.MinZ + previousExtent.MaxZ) / 2u;
+    EXPECT_NE(LayerDelta(*tiled->PageOverlay, 0, centerX, centerZ), 0.0f);
+
+    world.DestroyEntityImmediate(edge);
+    world.SwapLifecycleEvents();
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect& changed = tiled->PageOverlayChanged;
+    EXPECT_GE(changed.MaxX, previousExtent.MaxX) << "the reported rect misses the deleted modifier's old bounds";
+    EXPECT_LE(changed.MinX, previousExtent.MaxX - (kEdgeStampSamples - 1u));
+    EXPECT_LE(changed.MinZ, centerZ);
+    EXPECT_GE(changed.MaxZ, centerZ);
+    for (uint32 sampleX = previousExtent.MinX + kEdgeStampSamples; sampleX <= previousExtent.MaxX; ++sampleX)
+        EXPECT_EQ(LayerDelta(*tiled->PageOverlay, 0, sampleX, centerZ), 0.0f) << "sample " << sampleX << " kept the deleted delta";
+}
+
+
+TEST(TerrainRegionBake, TwoDistantModifierFootprintsFitTheirSparsePageBudgetWithoutHoldingTheGap)
+{
+    ScopedTerrainService scoped;
+    auto& service = TerrainService::Get();
+    const auto handle = CreateResidentSquareTiledTerrain(service, 2);
+    auto* tiled = service.GetTiledTerrainData(handle);
+    ASSERT_NE(tiled, nullptr);
+    tiled->PageOverlayByteCap = kDesktopHeightPages.OverlayByteCap;
+    ECS::World world;
+    RegisterModifierLifecycleEvents(world);
+    CreateSquareTiledTerrainEntity(world, handle, 2);
+    CreateFlattenModifier(world, 200.0f, 200.0f, 35.0f, 20.0f);
+    TerrainModifierSystem system;
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const uint64 firstBytes = tiled->PageOverlay->Bytes();
+    ASSERT_GT(firstBytes, 0u);
+    tiled->PageOverlayByteCap = firstBytes * 3u;
+    CreateFlattenModifier(world, 1800.0f, 1800.0f, 35.0f, 20.0f);
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr) << "the empty gap consumed the sparse modifier budget";
+    EXPECT_TRUE(tiled->PageOverlayCurrent);
+    EXPECT_EQ(tiled->PageOverlayRefusedBytes, 0u);
+    EXPECT_LE(tiled->PageOverlay->Bytes(), tiled->PageOverlayByteCap);
+    EXPECT_NE(LayerDelta(*tiled->PageOverlay, 0, 200, 200), 0.0f);
+    EXPECT_NE(LayerDelta(*tiled->PageOverlay, 0, 1800, 1800), 0.0f);
+    EXPECT_TRUE(tiled->PageOverlay->PageDeltas(PageStreaming::PageAddress{0, 0, 7, 7}).empty());
+    EXPECT_EQ(LayerDelta(*tiled->PageOverlay, 0, 1000, 1000), 0.0f);
+}
