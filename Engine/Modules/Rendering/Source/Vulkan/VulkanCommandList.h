@@ -156,6 +156,7 @@ namespace Rendering {
         // Resource operations
         void CopyBuffer(BufferHandle src, BufferHandle dst, size_t size, size_t srcOffset = 0, size_t dstOffset = 0) override;
         void CopyTexture(TextureHandle src, TextureHandle dst) override;
+        bool CopyDepthArrayLayer(TextureHandle src, TextureHandle dst, uint32_t layer) override;
         void FillBuffer(BufferHandle dst, size_t offset, size_t size, uint32_t value) override;
 
 	        // Readback helper implementation
@@ -231,6 +232,7 @@ namespace Rendering {
         const std::vector<UsedResource>& GetUsedResources() const { return m_UsedResources; }
 
     private:
+        bool RecordTextureCopy(TextureHandle src, TextureHandle dst, uint32_t layer);
         // Single source of truth for vkCmdPushConstants stage flags — every push
         // path (SetConstants x4, by-name, by-id) resolves through here so the
         // flags exactly match the bound pipeline layout's declared range

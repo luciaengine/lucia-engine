@@ -10,6 +10,7 @@
 #pragma once
 
 #include "Engine/Rendering/DepthPassTypes.h" // DepthOnlyPassParamsRG (+ RGContext, GPUDrawStreamBuilder, IDevice, CullModeFlags)
+#include "Engine/Rendering/DepthProducerState.h"
 #include "Engine/Rendering/DrawCommand.h"
 #include "Rendering/Materials/MaterialAlphaMode.h"
 #include "Rendering/Materials/ShaderMeta.h"
@@ -40,6 +41,7 @@ class CpuDrawStreamBuilder;
 class WorldDrawBuilder;
 class MaterialSystem;
 class ViewRegistry;
+class TextureService;
 
 // Exec→declare under-draw feedback (cascade static-shadow cache correctness).
 // PrepareDepthOnlyPass has silent skip paths that drop draws the always-render
@@ -125,6 +127,7 @@ struct DepthDrawServices
     // one DrawIndexedIndirectCount per scatter-published range. Null on the
     // GPU-driven path.
     const CpuDrawStreamBuilder*      CpuDrawStream = nullptr;
+    const TextureService*            Textures = nullptr;
 };
 
 // Which depth pipeline ONE draw segment takes. The crossfade rule lives here
@@ -416,8 +419,21 @@ PreparedDepthOnlyPass* AllocatePreparedDepthOnlyPass(Rendering::RenderGraph::RGF
                                                     DepthOnlyPassParamsRG params);
 bool PrepareDepthOnlyPass(Rendering::RenderGraph::RGPrepareContext& c,
                           PreparedDepthOnlyPass& data, const DepthDrawServices& services);
+/** Read the current prepared producer; unsupported producers remain incomplete. */
+DepthProducerState GetPreparedDepthProducerState(const PreparedDepthOnlyPass& data,
+                                                CascadeCasters casters);
 void RecordPreparedDepthOnlyPass(Rendering::RenderGraph::RGContext& c,
                                   const PreparedDepthOnlyPass& data);
+// Primary command list, inside the cascade's Load pass. A failed rigid restore
+// clears the layer and replays all prepared casters instead of omitting rigids.
+void RecordPreparedCascadeDepth(Rendering::RenderGraph::RGContext& c,
+                                const PreparedDepthOnlyPass& data,
+                                Rendering::TextureHandle target, uint32_t layer,
+                                bool restoredRigidDepth);
+/** Clear the complete layer and record the prepared rigid subset on the primary list. */
+void RecordPreparedRigidCascadeDepth(Rendering::RenderGraph::RGContext& c,
+                                     const PreparedDepthOnlyPass& data,
+                                     Rendering::TextureHandle target, uint32_t layer);
 
 } // namespace Engine::Renderer
 } // namespace GameEngine
