@@ -209,9 +209,9 @@ float evalCubicHermite(float v0, float outTan, float outWt,
 // Keyframe sampling
 // ---------------------------------------------------------------------------
 
-// Keyframe layout: 28 floats (7 x vec4) per keyframe.
-// [0]=time, [1..3]=translation, [4..7]=rotation(xyzw), [8..10]=scale,
-// [11..14]=inTangent, [15..18]=outTangent, [19..22]=inWeight, [23..26]=outWeight, [27]=pad
+// Each key stores time, segment flags and the path's three or four values.
+// Tracks containing cubic segments append in/out tangents and in/out weights.
+// The descriptor supplies the word stride, so linear tracks need no tangents.
 
 // Samples one channel into the bone's translation, rotation or scale and
 // marks the bone as moved.
@@ -224,74 +224,61 @@ void sampleChannel(uint clipDataBase, uint channelDescBase, float time,
 
     if (kfCount == 0) return;
 
-    uint path   = pathInterp & 3u;       // 0=T, 1=R, 2=S
-    uint interp = (pathInterp >> 2) & 3u; // 0=step, 1=linear, 2=cubic
-
-    // Linear scan for the bracketing keyframes.
-    uint kfBase = clipDataBase + kfOffset;
-    uint lo = 0, hi = 0;
-    for (hi = 0; hi < kfCount; ++hi) {
-        float kTime = readClipFloat(kfBase + hi * 28);
-        if (kTime >= time) break;
+    uint path = pathInterp & 3u;
+    uint interp = (pathInterp >> 2u) & 3u; // Linear, Step, CubicSpline.
+    uint stride = pathInterp >> 8u;
+    uint components = path == 1u ? 4u : 3u;
+    uint keyBase = clipDataBase + kfOffset;
+    uint lower = 0u;
+    uint upper = kfCount;
+    while (lower < upper) {
+        uint middle = lower + (upper - lower) / 2u;
+        if (readClipFloat(keyBase + middle * stride) < time)
+            lower = middle + 1u;
+        else
+            upper = middle;
     }
-    if (hi >= kfCount) hi = kfCount - 1;
-    lo = (hi == 0) ? 0 : hi - 1;
-
-    // Read bracketing keyframes.
-    uint k0Base = kfBase + lo * 28;
-    uint k1Base = kfBase + hi * 28;
-    float t0 = readClipFloat(k0Base);
-    float t1 = readClipFloat(k1Base);
-    float dt = t1 - t0;
-    float alpha = (dt > 0.0) ? clamp((time - t0) / dt, 0.0, 1.0) : 0.0;
-    bool useStep = (interp == 0) || (dt <= 0.0);
-
-    if (path == 0) { // Translation
-        vec3 v0 = vec3(readClipFloat(k0Base+1), readClipFloat(k0Base+2), readClipFloat(k0Base+3));
-        if (useStep) {
-            translation = v0;
-        } else if (interp == 2) { // Cubic
-            vec3 v1 = vec3(readClipFloat(k1Base+1), readClipFloat(k1Base+2), readClipFloat(k1Base+3));
-            translation = vec3(
-                evalCubicHermite(v0.x, readClipFloat(k0Base+15), readClipFloat(k0Base+23), v1.x, readClipFloat(k1Base+11), readClipFloat(k1Base+19), dt, alpha),
-                evalCubicHermite(v0.y, readClipFloat(k0Base+16), readClipFloat(k0Base+24), v1.y, readClipFloat(k1Base+12), readClipFloat(k1Base+20), dt, alpha),
-                evalCubicHermite(v0.z, readClipFloat(k0Base+17), readClipFloat(k0Base+25), v1.z, readClipFloat(k1Base+13), readClipFloat(k1Base+21), dt, alpha));
-        } else { // Linear
-            vec3 v1 = vec3(readClipFloat(k1Base+1), readClipFloat(k1Base+2), readClipFloat(k1Base+3));
-            translation = mix(v0, v1, alpha);
+    uint first = lower == 0u ? 0u : lower - 1u;
+    uint second = min(lower, kfCount - 1u);
+    uint firstBase = keyBase + first * stride;
+    uint secondBase = keyBase + second * stride;
+    float start = readClipFloat(firstBase);
+    float duration = readClipFloat(secondBase) - start;
+    float alpha = duration > 0.0 ? clamp((time - start) / duration, 0.0, 1.0) : 0.0;
+    uint flags = clipData.data[firstBase + 1u];
+    if ((flags & 4u) != 0u)
+        interp = flags & 3u;
+    vec4 firstValue = vec4(0.0);
+    vec4 secondValue = vec4(0.0);
+    for (uint component = 0u; component < components; ++component) {
+        firstValue[component] = readClipFloat(firstBase + 2u + component);
+        secondValue[component] = readClipFloat(secondBase + 2u + component);
+    }
+    vec4 value;
+    if (interp == 1u || duration <= 0.0) {
+        value = firstValue;
+    } else if (interp == 2u) {
+        value = vec4(0.0);
+        for (uint component = 0u; component < components; ++component) {
+            value[component] = evalCubicHermite(firstValue[component],
+                readClipFloat(firstBase + 2u + components * 2u + component),
+                readClipFloat(firstBase + 2u + components * 4u + component), secondValue[component],
+                readClipFloat(secondBase + 2u + components + component),
+                readClipFloat(secondBase + 2u + components * 3u + component), duration, alpha);
         }
+        if (path == 1u)
+            value = normalize(value);
+    } else if (path == 1u) {
+        value = qslerp(firstValue, secondValue, alpha);
+    } else {
+        value = mix(firstValue, secondValue, alpha);
     }
-    else if (path == 1) { // Rotation (xyzw)
-        vec4 q0 = vec4(readClipFloat(k0Base+4), readClipFloat(k0Base+5), readClipFloat(k0Base+6), readClipFloat(k0Base+7));
-        if (useStep) {
-            rotation = q0;
-        } else if (interp == 2) { // Cubic — interpolate components, normalize
-            vec4 q1 = vec4(readClipFloat(k1Base+4), readClipFloat(k1Base+5), readClipFloat(k1Base+6), readClipFloat(k1Base+7));
-            rotation = normalize(vec4(
-                evalCubicHermite(q0.x, readClipFloat(k0Base+15), readClipFloat(k0Base+23), q1.x, readClipFloat(k1Base+11), readClipFloat(k1Base+19), dt, alpha),
-                evalCubicHermite(q0.y, readClipFloat(k0Base+16), readClipFloat(k0Base+24), q1.y, readClipFloat(k1Base+12), readClipFloat(k1Base+20), dt, alpha),
-                evalCubicHermite(q0.z, readClipFloat(k0Base+17), readClipFloat(k0Base+25), q1.z, readClipFloat(k1Base+13), readClipFloat(k1Base+21), dt, alpha),
-                evalCubicHermite(q0.w, readClipFloat(k0Base+18), readClipFloat(k0Base+26), q1.w, readClipFloat(k1Base+14), readClipFloat(k1Base+22), dt, alpha)));
-        } else { // Linear SLERP
-            vec4 q1 = vec4(readClipFloat(k1Base+4), readClipFloat(k1Base+5), readClipFloat(k1Base+6), readClipFloat(k1Base+7));
-            rotation = qslerp(q0, q1, alpha);
-        }
-    }
-    else { // Scale
-        vec3 v0 = vec3(readClipFloat(k0Base+8), readClipFloat(k0Base+9), readClipFloat(k0Base+10));
-        if (useStep) {
-            scale = v0;
-        } else if (interp == 2) { // Cubic
-            vec3 v1 = vec3(readClipFloat(k1Base+8), readClipFloat(k1Base+9), readClipFloat(k1Base+10));
-            scale = vec3(
-                evalCubicHermite(v0.x, readClipFloat(k0Base+15), readClipFloat(k0Base+23), v1.x, readClipFloat(k1Base+11), readClipFloat(k1Base+19), dt, alpha),
-                evalCubicHermite(v0.y, readClipFloat(k0Base+16), readClipFloat(k0Base+24), v1.y, readClipFloat(k1Base+12), readClipFloat(k1Base+20), dt, alpha),
-                evalCubicHermite(v0.z, readClipFloat(k0Base+17), readClipFloat(k0Base+25), v1.z, readClipFloat(k1Base+13), readClipFloat(k1Base+21), dt, alpha));
-        } else { // Linear
-            vec3 v1 = vec3(readClipFloat(k1Base+8), readClipFloat(k1Base+9), readClipFloat(k1Base+10));
-            scale = mix(v0, v1, alpha);
-        }
-    }
+    if (path == 0u)
+        translation = value.xyz;
+    else if (path == 1u)
+        rotation = value;
+    else
+        scale = value.xyz;
     moved = true;
 }
 
