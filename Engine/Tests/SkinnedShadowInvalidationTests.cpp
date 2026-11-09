@@ -65,4 +65,31 @@ TEST(SkinnedShadowInvalidation, PaletteChangeIsScopedToItsWorld)
         << "an animation in one world must not invalidate another world's shadows";
 }
 
+TEST(SkinnedShadowInvalidation, PaletteChangesPreserveRigidContent)
+{
+    RenderServices rs;
+    rs.NotifyShadowCasterContentChanged(kWorld, {}, true);
+    const uint64_t rigidBefore = rs.RigidShadowCasterContentVersion(kWorld);
+    const uint64_t allBefore = rs.ShadowCasterContentVersion(kWorld);
+    ASSERT_GT(rigidBefore, 0u);
+
+    for (int frame = 0; frame < 4; ++frame)
+        rs.NotifySkinPaletteContentChanged(kWorld);
+
+    EXPECT_GT(rs.ShadowCasterContentVersion(kWorld), allBefore);
+    EXPECT_EQ(rs.RigidShadowCasterContentVersion(kWorld), rigidBefore);
+}
+
+TEST(SkinnedShadowInvalidation, RigidChangeAdvancesOnlyItsWorld)
+{
+    RenderServices rs;
+    const uint64_t otherBefore = rs.RigidShadowCasterContentVersion(kOtherWorld);
+    const uint64_t before = rs.RigidShadowCasterContentVersion(kWorld);
+
+    rs.NotifyShadowCasterContentChanged(kWorld, {}, true);
+
+    EXPECT_GT(rs.RigidShadowCasterContentVersion(kWorld), before);
+    EXPECT_EQ(rs.RigidShadowCasterContentVersion(kOtherWorld), otherBefore);
+}
+
 } // namespace
