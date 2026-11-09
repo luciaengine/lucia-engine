@@ -136,6 +136,39 @@ class CBTUpdateNodeTest : public ::testing::Test
     CBTKernelSet m_KernelSet;
 };
 
+TEST_F(CBTUpdateNodeTest, PublicationAcknowledgementRequiresASubmittedUpdate)
+{
+    CBTInstance instance;
+    ASSERT_TRUE(instance.Initialize(*m_Device, m_KernelSet));
+    ASSERT_TRUE(instance.InitializeRoots());
+    FramePools pools(m_Device.get());
+    RGFrame frame(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+    const CBTClassifyDesc classify{kClassifyDepthTarget, 0u, kDefaultBaseDepth};
+    uint32_t acknowledgements = 0;
+    frame.BeginFrame(0);
+    CBTUpdateNode::DeclareUpdatePass(frame, instance, classify, CBTIdentityFrameParams(), 0, {}, {},
+                                     [&acknowledgements] { ++acknowledgements; });
+    frame.AddPass("AbandonUpdate", 0,
+        [](RGPassBuilder& pass)
+        {
+            pass.PreventCulling();
+            pass.Prepare([](RGPrepareContext&) { return false; });
+        }, [](RGContext&) {});
+    frame.Execute();
+    EXPECT_EQ(frame.Stats().PreparationFailures, 1u);
+    EXPECT_EQ(frame.Stats().SubmissionsMade, 0u);
+    EXPECT_EQ(acknowledgements, 0u);
+    frame.BeginFrame(1);
+    CBTUpdateNode::DeclareUpdatePass(frame, instance, classify, CBTIdentityFrameParams(), 1, {}, {},
+                                     [&acknowledgements] { ++acknowledgements; });
+    EXPECT_EQ(acknowledgements, 0u);
+    frame.Execute();
+    m_Device->WaitForIdle();
+    EXPECT_GT(frame.Stats().SubmissionsMade, 0u);
+    EXPECT_EQ(acknowledgements, 1u);
+    EXPECT_EQ(ReadbackDrawCount(*m_Device, instance), kRootHalfedgeCount * 3u);
+}
+
 TEST_F(CBTUpdateNodeTest, DeclaresAndRunsUpdatePassThroughRenderGraph)
 {
     CBTInstance instance;

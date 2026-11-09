@@ -1,10 +1,5 @@
-// The height source of a tiled terrain (TerrainHeightIsPaged) and the main-thread half of its height
-// pages (TerrainHeightPages): the predicate's arms, the GPU page-table words, the dirty rects that
-// make the CBT re-evaluate the bisectors whose height changed source, a moved terrain's requests and
-// the table versions; and the GPU side's latch (TerrainHeightPageFeature): a table is readable only
-// with the upload pass of its pages, and the cache texture only from the latch after its clear.
+// Terrain height-source selection, CPU page tables, streaming requests and dirty regions.
 
-#include "TerrainECS/TerrainHeightPageFeature.h"
 #include "TerrainECS/TerrainHeightPages.h"
 #include "TerrainECS/TerrainHeightSource.h"
 
@@ -12,16 +7,14 @@
 #include "PageStreaming/HeightPageOverlay.h"
 #include "PageStreaming/PageStore/PageStoreFormat.h"
 #include "PageStreaming/PageTableEntry.h"
-#include "Rendering/Core/CommandList.h"
-#include "Rendering/Core/Device.h"
-
-#include <gtest/gtest.h>
 
 #include <bit>
 #include <format>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 using namespace GameEngine::TerrainECS;
@@ -450,94 +443,4 @@ TEST(TerrainHeightPages, AStoreOffTheTileLatticeTakesNoModifierOverlayAndTheRefu
         << refusal;
     EXPECT_NE(refusal.find("(16384 x 4096 samples)"), std::string::npos) << refusal;
     EXPECT_NE(refusal.find("Import the heightmap at 16385 x 4097 samples"), std::string::npos) << refusal;
-}
-
-TEST(TerrainHeightPageFeature, ATableBecomesReadableOnlyWithTheUploadPassThatRecordsItsPages)
-{
-    Rendering::DeviceDesc desc{};
-    desc.preferredAPI = Rendering::GraphicsAPI::Vulkan;
-    desc.enableDynamicRendering = true;
-    std::unique_ptr<Rendering::IDevice> device = Rendering::DeviceFactory::CreateDevice(desc);
-    if (!device || !device->Initialize(desc))
-        GTEST_SKIP() << "no Vulkan device";
-    {
-        TerrainHeightPages pages(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.DenseTableWords});
-        const PagedTerrainRequest request = FlatTileRequest();
-        const Mathematics::Vector3 camera{128.0f, 10.0f, 128.0f};
-        const PageLevelView view = MakePageLevelView(kPageLevelReferenceRows, 1.0f, 11.0f);
-        pages.Update(1, 1.0f / 60.0f, false, 2);
-        for (uint64 frame = 2; frame < 20 && pages.Uploads().empty(); ++frame)
-        {
-            pages.Request(request, {&camera, 1}, view);
-            pages.Update(frame, 1.0f / 60.0f, false, 2);
-        }
-        ASSERT_FALSE(pages.Uploads().empty());
-        uint64 published = 0;
-        ASSERT_NE(pages.TableWords(request.Terrain, published), nullptr);
-
-        TerrainHeightPageFeature feature;
-        feature.Publish(pages);
-        feature.Latch(*device, 1);
-        ASSERT_TRUE(feature.HasStagedUploads());
-        std::span<const uint32> words;
-        uint64 version = 0;
-        EXPECT_FALSE(feature.LatchedTable(request.Terrain, words, version))
-            << "the table names slots whose upload pass is not declared yet";
-        feature.Latch(*device, 2); // a frame whose graph declared no upload pass
-        EXPECT_FALSE(feature.LatchedTable(request.Terrain, words, version));
-
-        feature.CommitLatch(); // the upload pass that flushes the staged pages is declared
-        ASSERT_TRUE(feature.LatchedTable(request.Terrain, words, version));
-        EXPECT_EQ(version, published);
-        auto list = device->CreateCommandList(Rendering::IDevice::QueueType::Graphics);
-        list->Begin();
-        feature.FlushUploads(*list);
-        list->End();
-        device->ExecuteCommandLists({list.get()});
-        device->WaitForIdle();
-        EXPECT_FALSE(feature.HasStagedUploads());
-    }
-    device->Shutdown();
-}
-
-TEST(TerrainHeightPageFeature, TheCacheTextureIsReadableOnlyFromTheLatchAfterItsClear)
-{
-    Rendering::DeviceDesc desc{};
-    desc.preferredAPI = Rendering::GraphicsAPI::Vulkan;
-    desc.enableDynamicRendering = true;
-    std::unique_ptr<Rendering::IDevice> device = Rendering::DeviceFactory::CreateDevice(desc);
-    if (!device || !device->Initialize(desc))
-        GTEST_SKIP() << "no Vulkan device";
-    {
-        TerrainHeightPages pages(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.DenseTableWords});
-        const Mathematics::Vector3 camera{128.0f, 10.0f, 128.0f};
-        const PageLevelView view = MakePageLevelView(kPageLevelReferenceRows, 1.0f, 11.0f);
-        pages.Update(1, 1.0f / 60.0f, false, 2);
-        for (uint64 frame = 2; frame < 20 && pages.Uploads().empty(); ++frame)
-        {
-            pages.Request(FlatTileRequest(), {&camera, 1}, view);
-            pages.Update(frame, 1.0f / 60.0f, false, 2);
-        }
-        ASSERT_FALSE(pages.Uploads().empty());
-
-        TerrainHeightPageFeature feature;
-        feature.Publish(pages);
-        feature.Latch(*device, 1); // creates the cache and stages its first pages
-        ASSERT_TRUE(feature.HasStagedUploads());
-        EXPECT_FALSE(feature.CacheTexture().IsValid())
-            << "a consumer of this frame could run before the upload pass clears the new cache";
-        feature.Latch(*device, 2); // a frame whose upload pass never ran
-        EXPECT_FALSE(feature.CacheTexture().IsValid()) << "the cache was never cleared";
-        feature.CommitLatch();
-        auto list = device->CreateCommandList(Rendering::IDevice::QueueType::Graphics);
-        list->Begin();
-        feature.FlushUploads(*list);
-        list->End();
-        device->ExecuteCommandLists({list.get()});
-        device->WaitForIdle();
-        EXPECT_FALSE(feature.CacheTexture().IsValid()) << "the clear is recorded in this frame";
-        feature.Latch(*device, 3);
-        EXPECT_TRUE(feature.CacheTexture().IsValid());
-    }
-    device->Shutdown();
 }

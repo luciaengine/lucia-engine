@@ -53,15 +53,9 @@ class CBTUpdateSystem : public ECS::ISystem
     const char* GetName() const override { return "CBTUpdateSystem"; }
     void Update(ECS::World& world, float32 deltaTime) override;
 
-    // Fills `classify`'s dirty UV rect from CBT's cursor into the first terrain's
-    // region-dirty log (E0). No-op (leaves the rect empty) when nothing new was
-    // logged since CBT last reclassified — that empty rect keeps Classify quiescent.
-    // `updateRecordCount` is CBTRenderFeature::GetUpdateRecordCount() this frame: the
-    // cursor only COMMITS (advances past a consumed edit) once that count advances,
-    // proving a CBT.Update pass recorded the pushed rect; otherwise the rect is
-    // re-armed so a frame that skipped the update (no scene view / instance not ready)
-    // does not silently drop the edit. Public so it is directly unit-testable with an
-    // ECS world + a real TerrainService terrain (no RenderServices needed).
+    // Fills the dirty UV rectangle from the first terrain's region log.
+    // The cursor advances only after GetUpdateSubmissionCount confirms a submitted update.
+    // An edit whose update did not submit stays pending.
     void ConsumeDirtyRegion(ECS::World& world, uint64 updateRecordCount,
                             CBTTerrain::CBTClassifyDesc& classify);
 
