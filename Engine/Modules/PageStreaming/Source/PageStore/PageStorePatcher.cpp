@@ -124,9 +124,9 @@ void CropSamples(std::span<const uint8> from, uint32 fromStride, uint32 toStride
     const uint32 inset = (fromStride - toStride) / 2u;
     const std::size_t rowBytes = static_cast<std::size_t>(toStride) * texelBytes;
     out.resize(rowBytes * toStride);
-    for (uint32 r = 0; r < toStride; ++r)
-        std::memcpy(out.data() + r * rowBytes,
-                    from.data() + (static_cast<std::size_t>(r + inset) * fromStride + inset) * texelBytes, rowBytes);
+    for (uint32 rowIndex = 0; rowIndex < toStride; ++rowIndex)
+        std::memcpy(out.data() + rowIndex * rowBytes,
+                    from.data() + (static_cast<std::size_t>(rowIndex + inset) * fromStride + inset) * texelBytes, rowBytes);
 }
 
 enum class PageRemake : uint8
@@ -178,19 +178,19 @@ bool FilterCoarserPage(const PageStoreLayout& layout, uint32 level, uint32 px, u
                       OwningPages(FinerSamplesRead(pz, apron, finer.SamplesZ))))
         return false;
     outSamples.resize(static_cast<std::size_t>(stride) * stride * window.TexelBytes);
-    for (uint32 r = 0; r < stride; ++r)
+    for (uint32 rowIndex = 0; rowIndex < stride; ++rowIndex)
     {
-        const int64 sampleZ = ClampIndex(static_cast<int64>(pz) * kPageOwnedSamples - apron + r, shape.SamplesZ);
-        for (uint32 c = 0; c < stride; ++c)
+        const int64 sampleZ = ClampIndex(static_cast<int64>(pz) * kPageOwnedSamples - apron + rowIndex, shape.SamplesZ);
+        for (uint32 columnIndex = 0; columnIndex < stride; ++columnIndex)
         {
-            const int64 sampleX = ClampIndex(static_cast<int64>(px) * kPageOwnedSamples - apron + c, shape.SamplesX);
+            const int64 sampleX = ClampIndex(static_cast<int64>(px) * kPageOwnedSamples - apron + columnIndex, shape.SamplesX);
             FilterTaps taps{};
             for (uint32 dz = 0; dz < 3u; ++dz)
                 for (uint32 dx = 0; dx < 3u; ++dx)
                     taps[dz * 3u + dx] = window.Texel(ClampIndex(2 * sampleX - 1 + dx, finer.SamplesX),
                                                       ClampIndex(2 * sampleZ - 1 + dz, finer.SamplesZ));
             FilterCoarserTexel(layout.Header.Filter, taps, window.TexelBytes,
-                               outSamples.data() + (static_cast<std::size_t>(r) * stride + c) * window.TexelBytes);
+                               outSamples.data() + (static_cast<std::size_t>(rowIndex) * stride + columnIndex) * window.TexelBytes);
         }
     }
     return true;
@@ -415,15 +415,15 @@ bool PageStorePatcher::RefilterLevel(uint32 level, const std::optional<PageSampl
     if (written)
         outChanged = GrownSamples(*written, apron, shape);
     // Written in address order, so the store's bytes do not depend on the workers.
-    for (std::size_t i = 0; i < remakeCount; ++i)
+    for (std::size_t pageIndex = 0; pageIndex < remakeCount; ++pageIndex)
     {
-        if (work.States[i] == PageRemake::Unchanged)
+        if (work.States[pageIndex] == PageRemake::Unchanged)
             m_PagesUnchanged.fetch_add(1);
-        if (work.States[i] != PageRemake::Changed)
+        if (work.States[pageIndex] != PageRemake::Changed)
             continue;
-        const PageAddress address{0, static_cast<uint8>(level), pagesX.First + static_cast<uint32>(i % pagesX.Count()),
-                                  pagesZ.First + static_cast<uint32>(i / pagesX.Count())};
-        if (!StorePage(address, work.Encoded[i], work.Unencoded[i]))
+        const PageAddress address{0, static_cast<uint8>(level), pagesX.First + static_cast<uint32>(pageIndex % pagesX.Count()),
+                                  pagesZ.First + static_cast<uint32>(pageIndex / pagesX.Count())};
+        if (!StorePage(address, work.Encoded[pageIndex], work.Unencoded[pageIndex]))
             return false;
         m_PagesWritten.fetch_add(1);
         const PageSampleRect stored = StoredSamples(address, apron, shape);

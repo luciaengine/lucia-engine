@@ -93,14 +93,14 @@ std::string ValidateHeader(const PageStoreHeader& header, uint32 levelCount)
 bool RangesAreValid(const PageStoreLayout& layout)
 {
     uint64 next = 0;
-    for (std::size_t r = 0; r < layout.Ranges.size(); ++r)
+    for (std::size_t rangeIndex = 0; rangeIndex < layout.Ranges.size(); ++rangeIndex)
     {
-        const PageStoreRange& range = layout.Ranges[r];
-        const PageStoreLevel& level = layout.Levels[r % layout.Levels.size()];
+        const PageStoreRange& range = layout.Ranges[rangeIndex];
+        const PageStoreLevel& level = layout.Levels[rangeIndex % layout.Levels.size()];
         if (range.First != next || range.Count > static_cast<uint64>(level.PagesX) * level.PagesZ)
             return false;
-        for (uint64 i = 1; i < range.Count; ++i)
-            if (layout.Entries[range.First + i - 1u].Morton >= layout.Entries[range.First + i].Morton)
+        for (uint64 entryIndex = 1; entryIndex < range.Count; ++entryIndex)
+            if (layout.Entries[range.First + entryIndex - 1u].Morton >= layout.Entries[range.First + entryIndex].Morton)
                 return false;
         next += range.Count;
     }

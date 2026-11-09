@@ -61,29 +61,29 @@ const float32* Heights(const uint8* row)
     return reinterpret_cast<const float32*>(row);
 }
 
-// The tent across a row at coarser sample `i`: [1 2 1] / 4 over the finer samples 2i - 1, 2i, 2i + 1.
-float32 TentAcross(const float32* row, uint32 i, uint32 width)
+// Horizontal [1 2 1] / 4 tent centered at twice the coarser sample index.
+float32 TentAcross(const float32* row, uint32 sampleIndex, uint32 width)
 {
-    const int64 center = 2 * static_cast<int64>(i);
+    const int64 center = 2 * static_cast<int64>(sampleIndex);
     return 0.25f * row[ClampIndex(center - 1, width)] + 0.5f * row[ClampIndex(center, width)] +
            0.25f * row[ClampIndex(center + 1, width)];
 }
 
 void HeightTentRow(const FinerRows& rows, uint32 finerWidth, float32* out, uint32 width)
 {
-    for (uint32 i = 0; i < width; ++i)
-        out[i] = 0.25f * TentAcross(Heights(rows[0]), i, finerWidth) +
-                 0.5f * TentAcross(Heights(rows[1]), i, finerWidth) +
-                 0.25f * TentAcross(Heights(rows[2]), i, finerWidth);
+    for (uint32 sampleIndex = 0; sampleIndex < width; ++sampleIndex)
+        out[sampleIndex] = 0.25f * TentAcross(Heights(rows[0]), sampleIndex, finerWidth) +
+                 0.5f * TentAcross(Heights(rows[1]), sampleIndex, finerWidth) +
+                 0.25f * TentAcross(Heights(rows[2]), sampleIndex, finerWidth);
 }
 
-FilterTaps GatherTaps(const FinerRows& rows, uint32 i, uint32 finerWidth, uint32 texelBytes)
+FilterTaps GatherTaps(const FinerRows& rows, uint32 sampleIndex, uint32 finerWidth, uint32 texelBytes)
 {
-    const int64 center = 2 * static_cast<int64>(i);
+    const int64 center = 2 * static_cast<int64>(sampleIndex);
     FilterTaps taps{};
-    for (uint32 r = 0; r < 3u; ++r)
-        for (uint32 c = 0; c < 3u; ++c)
-            taps[r * 3u + c] = rows[r] + static_cast<std::size_t>(ClampIndex(center - 1 + c, finerWidth)) * texelBytes;
+    for (uint32 rowIndex = 0; rowIndex < 3u; ++rowIndex)
+        for (uint32 columnIndex = 0; columnIndex < 3u; ++columnIndex)
+            taps[rowIndex * 3u + columnIndex] = rows[rowIndex] + static_cast<std::size_t>(ClampIndex(center - 1 + columnIndex, finerWidth)) * texelBytes;
     return taps;
 }
 
@@ -187,8 +187,8 @@ void PagePyramidBuilder::PushLevel0Rows(const uint8* rows, uint32 rowCount)
     const std::size_t rowBytes = static_cast<std::size_t>(level0.Shape.SamplesX) * m_TexelBytes;
     assert(level0.RowsReceived + rowCount <= level0.Shape.SamplesZ);
     const std::size_t firstNew = level0.Rows.size();
-    for (uint32 r = 0; r < rowCount; ++r)
-        level0.Rows.emplace_back(rows + r * rowBytes, rows + (r + 1u) * rowBytes);
+    for (uint32 rowIndex = 0; rowIndex < rowCount; ++rowIndex)
+        level0.Rows.emplace_back(rows + rowIndex * rowBytes, rows + (rowIndex + 1u) * rowBytes);
     if (IsHeight())
         RunParallel(rowCount, [this, &level0, firstNew](uint32 row) {
             Quantize(0, reinterpret_cast<float32*>(level0.Rows[firstNew + row].data()), level0.Shape.SamplesX);
@@ -266,14 +266,14 @@ void PagePyramidBuilder::EmitPageRow(uint32 levelIndex, uint32 pageRow)
         RunParallel(count, [this, &changed, &encoded, levelIndex, first, pageRow](uint32 index) {
             changed[index] = EncodePage(levelIndex, first + index, pageRow, encoded[index]) ? 1u : 0u;
         });
-        for (uint32 i = 0; i < count; ++i)
+        for (uint32 pageIndex = 0; pageIndex < count; ++pageIndex)
         {
-            if (changed[i] == 0)
+            if (changed[pageIndex] == 0)
             {
                 m_PagesUnchanged.fetch_add(1);
                 continue;
             }
-            if (!m_Writer.WritePage(PageAddress{m_Face, static_cast<uint8>(levelIndex), first + i, pageRow}, encoded[i]))
+            if (!m_Writer.WritePage(PageAddress{m_Face, static_cast<uint8>(levelIndex), first + pageIndex, pageRow}, encoded[pageIndex]))
             {
                 m_Failed.store(true);
                 return;
@@ -331,11 +331,11 @@ PageFootprint PagePyramidBuilder::BoundHeightPage(uint32 levelIndex, uint32 page
     // The footprint: the owned samples and the shared edge after them (stride indices 1 to 129).
     float32 lowest = std::numeric_limits<float32>::max();
     float32 highest = std::numeric_limits<float32>::lowest();
-    for (uint32 r = kPageApronSamples; r < kPageStrideSamples; ++r)
+    for (uint32 rowIndex = kPageApronSamples; rowIndex < kPageStrideSamples; ++rowIndex)
     {
-        for (uint32 c = kPageApronSamples; c < kPageStrideSamples; ++c)
+        for (uint32 columnIndex = kPageApronSamples; columnIndex < kPageStrideSamples; ++columnIndex)
         {
-            const float32 value = heights[static_cast<std::size_t>(r) * kPageStrideSamples + c];
+            const float32 value = heights[static_cast<std::size_t>(rowIndex) * kPageStrideSamples + columnIndex];
             lowest = std::min(lowest, value);
             highest = std::max(highest, value);
         }
@@ -394,9 +394,9 @@ void PagePyramidBuilder::MakeCoarserRow(uint32 levelIndex, uint32 row, std::vect
         Quantize(levelIndex + 1u, heights, width);
         return;
     }
-    for (uint32 i = 0; i < width; ++i)
-        FilterCoarserTexel(m_Filter, GatherTaps(rows, i, finerWidth, m_TexelBytes), m_TexelBytes,
-                           out.data() + static_cast<std::size_t>(i) * m_TexelBytes);
+    for (uint32 sampleIndex = 0; sampleIndex < width; ++sampleIndex)
+        FilterCoarserTexel(m_Filter, GatherTaps(rows, sampleIndex, finerWidth, m_TexelBytes), m_TexelBytes,
+                           out.data() + static_cast<std::size_t>(sampleIndex) * m_TexelBytes);
 }
 
 float32 PagePyramidBuilder::FaceSample(uint32 levelIndex, int64 x, int64 z) const
@@ -472,8 +472,8 @@ void PagePyramidBuilder::CaptureInnerLines(uint32 levelIndex, uint32 firstRow, u
 void PagePyramidBuilder::Quantize(uint32 levelIndex, float32* values, std::size_t count) const
 {
     const float32 step = m_Writer.Layout().Header.StepPerLevel[levelIndex];
-    for (std::size_t i = 0; i < count; ++i)
-        values[i] = QuantizeHeight(values[i], step);
+    for (std::size_t sampleIndex = 0; sampleIndex < count; ++sampleIndex)
+        values[sampleIndex] = QuantizeHeight(values[sampleIndex], step);
 }
 
 void PagePyramidBuilder::Discard(uint32 levelIndex)

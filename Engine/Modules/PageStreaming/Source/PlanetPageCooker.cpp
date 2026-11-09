@@ -37,8 +37,8 @@ public:
         : m_Request(request)
     {
         m_Gnomonic.resize(request.FaceSamples);
-        for (uint32 i = 0; i < request.FaceSamples; ++i)
-            m_Gnomonic[i] = GnomonicFaceCoordinate(EqualAngleSampleCoordinate(i, request.FaceSamples));
+        for (uint32 sampleIndex = 0; sampleIndex < request.FaceSamples; ++sampleIndex)
+            m_Gnomonic[sampleIndex] = GnomonicFaceCoordinate(EqualAngleSampleCoordinate(sampleIndex, request.FaceSamples));
     }
 
     // Rows [firstRow, firstRow + count) of `face`, row-major; false at a height that is not a number.

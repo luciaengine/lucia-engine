@@ -302,17 +302,29 @@ constexpr float64 kEqualAngleR0 = -0.2731202974275542;
 constexpr float64 kEqualAngleR1 = 0.1469790459925729;
 constexpr float64 kEqualAngleR2 = -0.07874229125948942;
 constexpr float64 kEqualAngleR3 = 0.023282467736952254;
-// Newton steps of GnomonicFaceCoordinate, from a = s: a fixed count, so every machine stops alike.
+// Fixed Newton iterations keep the inverse deterministic across platforms.
 constexpr uint32 kGnomonicNewtonSteps = 8u;
 
-float64 EqualAngleRemainder(float64 t)
+// One component of a cube-face point, before normalization in double precision.
+float64 CubeAxisCoordinate(const Mathematics::CubeFaceAxes& axes, uint8 coordinateAxis,
+                          float64 alongX, float64 alongZ)
 {
-    return kEqualAngleR0 + t * (kEqualAngleR1 + t * (kEqualAngleR2 + t * kEqualAngleR3));
+    if (coordinateAxis == axes.NormalAxis)
+        return axes.NormalSign;
+    if (coordinateAxis == axes.XAxis)
+        return axes.XSign * alongX;
+    return axes.ZSign * alongZ;
 }
 
-float64 EqualAngleRemainderSlope(float64 t)
+float64 EqualAngleRemainder(float64 squaredCoordinate)
 {
-    return kEqualAngleR1 + t * (2.0 * kEqualAngleR2 + t * 3.0 * kEqualAngleR3);
+    return kEqualAngleR0 + squaredCoordinate *
+           (kEqualAngleR1 + squaredCoordinate * (kEqualAngleR2 + squaredCoordinate * kEqualAngleR3));
+}
+
+float64 EqualAngleRemainderSlope(float64 squaredCoordinate)
+{
+    return kEqualAngleR1 + squaredCoordinate * (2.0 * kEqualAngleR2 + squaredCoordinate * 3.0 * kEqualAngleR3);
 }
 
 bool IsMinSide(PageFaceSide side)
@@ -361,43 +373,44 @@ PageFaceSample PageCubeSampleAt(uint8 face, int64 x, int64 z, uint32 samples)
                                        : (z < 0 ? PageFaceSide::MinZ : PageFaceSide::MaxZ);
     const int64 along = outsideX ? z : x;
     const PageFaceEdge edge = PageFaceNeighbor(face, side);
-    const uint32 t = static_cast<uint32>(edge.Reversed ? last - along : along);
+    const uint32 neighborCoordinate = static_cast<uint32>(edge.Reversed ? last - along : along);
     const uint32 inner = static_cast<uint32>(last - 1);
     switch (edge.Side)
     {
     case PageFaceSide::MinX:
-        return {edge.Face, 1u, t};
+        return {edge.Face, 1u, neighborCoordinate};
     case PageFaceSide::MaxX:
-        return {edge.Face, inner, t};
+        return {edge.Face, inner, neighborCoordinate};
     case PageFaceSide::MinZ:
-        return {edge.Face, t, 1u};
+        return {edge.Face, neighborCoordinate, 1u};
     case PageFaceSide::MaxZ:
-        return {edge.Face, t, inner};
+        return {edge.Face, neighborCoordinate, inner};
     }
     return {face, 0u, 0u};
 }
 
 float64 EqualAngleFaceCoordinate(float64 gnomonic)
 {
-    const float64 t = gnomonic * gnomonic;
-    return gnomonic + gnomonic * (t - 1.0) * EqualAngleRemainder(t);
+    const float64 squaredCoordinate = gnomonic * gnomonic;
+    return gnomonic + gnomonic * (squaredCoordinate - 1.0) * EqualAngleRemainder(squaredCoordinate);
 }
 
 float64 GnomonicFaceCoordinate(float64 equalAngle)
 {
-    // p increases (its slope is at least 0.63) and is concave on [0, 1], so Newton from a = s lands
-    // at or below the root after the first step and climbs to it: every step stays in [0, 1].
+    // The equal-angle map increases and is concave on [0, 1]. Newton starts at the target;
+    // each step remains in that interval.
     const float64 target = std::abs(equalAngle);
-    float64 a = target;
+    float64 gnomonic = target;
     for (uint32 step = 0; step < kGnomonicNewtonSteps; ++step)
     {
-        const float64 t = a * a;
-        const float64 slope = 1.0 + (3.0 * t - 1.0) * EqualAngleRemainder(t) + 2.0 * t * (t - 1.0) * EqualAngleRemainderSlope(t);
-        a -= (EqualAngleFaceCoordinate(a) - target) / slope;
+        const float64 squaredCoordinate = gnomonic * gnomonic;
+        const float64 slope = 1.0 + (3.0 * squaredCoordinate - 1.0) * EqualAngleRemainder(squaredCoordinate) +
+                              2.0 * squaredCoordinate * (squaredCoordinate - 1.0) * EqualAngleRemainderSlope(squaredCoordinate);
+        gnomonic -= (EqualAngleFaceCoordinate(gnomonic) - target) / slope;
     }
     if (target == 1.0)
-        a = 1.0;
-    return equalAngle < 0.0 ? -a : a;
+        gnomonic = 1.0;
+    return equalAngle < 0.0 ? -gnomonic : gnomonic;
 }
 
 float64 EqualAngleSampleCoordinate(uint32 index, uint32 samples)
@@ -415,13 +428,9 @@ Mathematics::Vector3 EqualAngleSampleDirection(uint8 face, uint32 x, uint32 z, u
 Mathematics::Vector3 GnomonicFaceDirection(uint8 face, float64 alongX, float64 alongZ)
 {
     const Mathematics::CubeFaceAxes& axes = Mathematics::kCubeFaceAxes[face];
-    float64 coordinates[3]{};
-    coordinates[axes.NormalAxis] = axes.NormalSign;
-    coordinates[axes.XAxis] = axes.XSign * alongX;
-    coordinates[axes.ZAxis] = axes.ZSign * alongZ;
-    const float64 cubeX = coordinates[0];
-    const float64 cubeY = coordinates[1];
-    const float64 cubeZ = coordinates[2];
+    const float64 cubeX = CubeAxisCoordinate(axes, 0u, alongX, alongZ);
+    const float64 cubeY = CubeAxisCoordinate(axes, 1u, alongX, alongZ);
+    const float64 cubeZ = CubeAxisCoordinate(axes, 2u, alongX, alongZ);
     const float64 inverseLength = 1.0 / std::sqrt(cubeX * cubeX + cubeY * cubeY + cubeZ * cubeZ);
     return Mathematics::Vector3(static_cast<float32>(cubeX * inverseLength), static_cast<float32>(cubeY * inverseLength),
                                 static_cast<float32>(cubeZ * inverseLength));

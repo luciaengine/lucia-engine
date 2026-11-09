@@ -34,8 +34,6 @@
 #include "Types/FlatMap.h"
 #include "Types/Fnv1a.h"
 
-#include <gtest/gtest.h>
-
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -56,6 +54,8 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+
+#include <gtest/gtest.h>
 
 using namespace GameEngine;
 using namespace GameEngine::PageStreaming;
@@ -290,30 +290,30 @@ std::vector<uint8> SplatWeights(uint32 width, uint32 height)
     return weights;
 }
 
-// The weights tent at coarser sample (i, j) of a level of `width` x `height` four-weight samples:
-// [1 2 1] x [1 2 1] around (2i, 2j), edges clamped; each weight the floor of its share of 255, the
-// remainder on the largest (the lowest channel on a tie).
-std::array<uint8, 4> ReferenceWeightsTent(const std::vector<uint8>& grid, uint32 width, uint32 height, uint32 i, uint32 j)
+// Separable [1 2 1] tent centered at twice the coarser sample coordinates; clamp edges.
+// Each weight takes the floor of its share of 255. The largest receives the remainder
+// (lowest channel on a tie).
+std::array<uint8, 4> ReferenceWeightsTent(const std::vector<uint8>& grid, uint32 width, uint32 height, uint32 sampleX, uint32 sampleZ)
 {
     std::array<uint32, 4> sums{};
-    for (int32 dz = -1; dz <= 1; ++dz)
-        for (int32 dx = -1; dx <= 1; ++dx)
+    for (int32 offsetZ = -1; offsetZ <= 1; ++offsetZ)
+        for (int32 offsetX = -1; offsetX <= 1; ++offsetX)
         {
-            const uint32 weight = static_cast<uint32>((2 - std::abs(dz)) * (2 - std::abs(dx)));
-            const uint32 x = ClampSample(2 * static_cast<int64>(i) + dx, width);
-            const uint32 z = ClampSample(2 * static_cast<int64>(j) + dz, height);
-            for (uint32 c = 0; c < 4u; ++c)
-                sums[c] += weight * grid[(static_cast<std::size_t>(z) * width + x) * 4u + c];
+            const uint32 weight = static_cast<uint32>((2 - std::abs(offsetZ)) * (2 - std::abs(offsetX)));
+            const uint32 x = ClampSample(2 * static_cast<int64>(sampleX) + offsetX, width);
+            const uint32 z = ClampSample(2 * static_cast<int64>(sampleZ) + offsetZ, height);
+            for (uint32 channel = 0; channel < 4u; ++channel)
+                sums[channel] += weight * grid[(static_cast<std::size_t>(z) * width + x) * 4u + channel];
         }
     const uint32 total = sums[0] + sums[1] + sums[2] + sums[3];
     std::array<uint8, 4> out{};
     uint32 assigned = 0;
     uint32 largest = 0;
-    for (uint32 c = 0; c < 4u; ++c)
+    for (uint32 channel = 0; channel < 4u; ++channel)
     {
-        out[c] = static_cast<uint8>(sums[c] * 255u / total);
-        assigned += out[c];
-        largest = sums[c] > sums[largest] ? c : largest;
+        out[channel] = static_cast<uint8>(sums[channel] * 255u / total);
+        assigned += out[channel];
+        largest = sums[channel] > sums[largest] ? channel : largest;
     }
     out[largest] = static_cast<uint8>(out[largest] + 255u - assigned);
     return out;
@@ -500,8 +500,8 @@ TEST(PageStoreFormatTest, PresentPageLookupEqualsTheDenseLookup)
     header.SamplesZ = 1700u;
     const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(header.SamplesX, header.SamplesZ);
     std::vector<uint8> present(static_cast<std::size_t>(DensePageCount(levels)));
-    for (std::size_t i = 0; i < present.size(); ++i)
-        present[i] = static_cast<uint8>(((i * 2654435761u) >> 7u) % 3u != 0u);
+    for (std::size_t entryIndex = 0; entryIndex < present.size(); ++entryIndex)
+        present[entryIndex] = static_cast<uint8>(((entryIndex * 2654435761u) >> 7u) % 3u != 0u);
     present.back() = 1u;
     const PageStoreLayout sparse = MakePageStoreLayout(header, present);
     std::size_t found = 0;
@@ -547,8 +547,8 @@ TEST_F(PageStoreTest, StoreRoundTripsHeaderIndexAndPagesWithTheIndexInMortonOrde
             for (uint32 px = 0; px < layout.Levels[level].PagesX; ++px)
             {
                 std::vector<float32> samples(kPageSampleCount);
-                for (uint32 i = 0; i < kPageSampleCount; ++i)
-                    samples[i] = static_cast<float32>(level * 1000000u + pz * 10000u + px * 100u) + 0.5f * i;
+                for (uint32 entryIndex = 0; entryIndex < kPageSampleCount; ++entryIndex)
+                    samples[entryIndex] = static_cast<float32>(level * 1000000u + pz * 10000u + px * 100u) + 0.5f * entryIndex;
                 EncodedPage page;
                 EncodeHeightPage(header, level, samples, samples.front(), samples.back(), page);
                 ASSERT_TRUE(writer.WritePage(PageAddress{0, level, px, pz}, page));
@@ -580,8 +580,8 @@ TEST_F(PageStoreTest, StoreRoundTripsHeaderIndexAndPagesWithTheIndexInMortonOrde
     ASSERT_EQ(level0.Count, 6u);
     const std::array<uint64, 6> morton{PageMortonCode(0, 0), PageMortonCode(1, 0), PageMortonCode(0, 1),
                                        PageMortonCode(1, 1), PageMortonCode(2, 0), PageMortonCode(2, 1)};
-    for (std::size_t i = 0; i < morton.size(); ++i)
-        EXPECT_EQ(reader.Layout().Entries[level0.First + i].Morton, morton[i]);
+    for (std::size_t entryIndex = 0; entryIndex < morton.size(); ++entryIndex)
+        EXPECT_EQ(reader.Layout().Entries[level0.First + entryIndex].Morton, morton[entryIndex]);
     const auto offset = [&](uint32 x, uint32 z) { return reader.Layout().FindPresent(PageAddress{0, 0, x, z})->Offset; };
     EXPECT_EQ(offset(0, 0), reader.Layout().DataOffset());
     EXPECT_LT(offset(0, 0), offset(1, 0));
@@ -778,8 +778,8 @@ TEST_F(PageStoreTest, APageReadHoldsThePageBytesOfTheFileAndAFailedReadHoldsNone
         for (uint32 pz = 0; pz < layout.Levels[level].PagesZ; ++pz)
             for (uint32 px = 0; px < layout.Levels[level].PagesX; ++px, ++pageIndex)
             {
-                for (std::size_t i = 0; i < samples.size(); ++i)
-                    samples[i] = static_cast<float32>((i * 7u + pageIndex) % 50u);
+                for (std::size_t sampleIndex = 0; sampleIndex < samples.size(); ++sampleIndex)
+                    samples[sampleIndex] = static_cast<float32>((sampleIndex * 7u + pageIndex) % 50u);
                 EncodeHeightPage(header, level, samples, 0.0f, 49.0f, page);
                 if (pageIndex == 0)
                     continue;
@@ -790,8 +790,8 @@ TEST_F(PageStoreTest, APageReadHoldsThePageBytesOfTheFileAndAFailedReadHoldsNone
     ASSERT_TRUE(writer.ReadPage(PageAddress{0, 0, 1, 0}, written, writtenEntry));
     EXPECT_FALSE(writer.ReadPage(PageAddress{0, 0, 0, 0}, written, writtenEntry));
     EXPECT_EQ(written.Size(), 0u) << "a page not written yet hands over no bytes";
-    for (std::size_t i = 0; i < samples.size(); ++i)
-        samples[i] = static_cast<float32>((i * 7u) % 50u);
+    for (std::size_t sampleIndex = 0; sampleIndex < samples.size(); ++sampleIndex)
+        samples[sampleIndex] = static_cast<float32>((sampleIndex * 7u) % 50u);
     EncodeHeightPage(header, 0, samples, 0.0f, 49.0f, page);
     ASSERT_TRUE(writer.WritePage(PageAddress{0, 0, 0, 0}, page));
     ASSERT_EQ(writer.Finish(), "");
@@ -947,19 +947,19 @@ TEST_F(PageStoreTest, CoarserLevelsAreTheTentOfTheStoredLevelBelow)
             return below[static_cast<std::size_t>(ClampSample(z, finer.SamplesZ)) * finer.SamplesX +
                          ClampSample(x, finer.SamplesX)];
         };
-        for (uint32 j = 0; j < coarser.SamplesZ; ++j)
+        for (uint32 sampleZ = 0; sampleZ < coarser.SamplesZ; ++sampleZ)
         {
-            for (uint32 i = 0; i < coarser.SamplesX; ++i)
+            for (uint32 sampleX = 0; sampleX < coarser.SamplesX; ++sampleX)
             {
                 const auto across = [&](int64 z) {
-                    return 0.25f * at(2 * int64(i) - 1, z) + 0.5f * at(2 * int64(i), z) + 0.25f * at(2 * int64(i) + 1, z);
+                    return 0.25f * at(2 * int64(sampleX) - 1, z) + 0.5f * at(2 * int64(sampleX), z) + 0.25f * at(2 * int64(sampleX) + 1, z);
                 };
-                const float32 tent = 0.25f * across(2 * int64(j) - 1) + 0.5f * across(2 * int64(j)) +
-                                     0.25f * across(2 * int64(j) + 1);
+                const float32 tent = 0.25f * across(2 * int64(sampleZ) - 1) + 0.5f * across(2 * int64(sampleZ)) +
+                                     0.25f * across(2 * int64(sampleZ) + 1);
                 // Each level is the tent of the level below in its own step, within half a step of it.
-                const float32 stored = grid[static_cast<std::size_t>(j) * coarser.SamplesX + i];
+                const float32 stored = grid[static_cast<std::size_t>(sampleZ) * coarser.SamplesX + sampleX];
                 ASSERT_EQ(stored, QuantizeHeight(tent, header.StepPerLevel[level]))
-                    << "level " << int(level) << " sample " << i << "," << j;
+                    << "level " << int(level) << " sample " << sampleX << "," << sampleZ;
                 ASSERT_LE(std::abs(stored - tent), 0.5f * header.StepPerLevel[level]);
             }
         }
@@ -1141,8 +1141,8 @@ TEST_F(PageStoreTest, LevelStepsComeFromTheDataAndOnlyTheSteepestPagesStoreThirt
             EXPECT_EQ(layout.Header.StepPerLevel[level], plainStep) << int(level);
         const PageStoreRange& range = layout.Ranges[level];
         uint64 wide = 0;
-        for (uint64 i = 0; i < range.Count; ++i)
-            wide += layout.Entries[range.First + i].HasWideWords() ? 1u : 0u;
+        for (uint64 entryIndex = 0; entryIndex < range.Count; ++entryIndex)
+            wide += layout.Entries[range.First + entryIndex].HasWideWords() ? 1u : 0u;
         EXPECT_EQ(wide, top ? 0u : 1u) << int(level);
     }
     EXPECT_TRUE(layout.FindPresent(PageAddress{0, 0, 5, 5})->HasWideWords());
@@ -1204,11 +1204,11 @@ TEST_F(PageStoreTest, ASplatStoreRoundTripsByteExactAtEveryLevel)
             const PageStoreLevel& finer = layout.Levels[level - 1u];
             const std::vector<uint8> below = SurfaceLevelGrid(reader, static_cast<uint8>(level - 1u));
             expected.assign(static_cast<std::size_t>(shape.SamplesX) * shape.SamplesZ * 4u, 0u);
-            for (uint32 j = 0; j < shape.SamplesZ; ++j)
-                for (uint32 i = 0; i < shape.SamplesX; ++i)
+            for (uint32 sampleZ = 0; sampleZ < shape.SamplesZ; ++sampleZ)
+                for (uint32 sampleX = 0; sampleX < shape.SamplesX; ++sampleX)
                 {
-                    const std::array<uint8, 4> texel = ReferenceWeightsTent(below, finer.SamplesX, finer.SamplesZ, i, j);
-                    std::memcpy(&expected[(static_cast<std::size_t>(j) * shape.SamplesX + i) * 4u], texel.data(), 4u);
+                    const std::array<uint8, 4> texel = ReferenceWeightsTent(below, finer.SamplesX, finer.SamplesZ, sampleX, sampleZ);
+                    std::memcpy(&expected[(static_cast<std::size_t>(sampleZ) * shape.SamplesX + sampleX) * 4u], texel.data(), 4u);
                 }
         }
         for (uint32 pz = 0; pz < shape.PagesZ; ++pz)
@@ -1385,8 +1385,8 @@ TEST_F(PageStoreTest, RefilteringTheAncestorsOfAPatchedRectGivesTheFullBuildAndR
         PageStoreReader original;
         ASSERT_EQ(original.Open(patched, PageFieldKind::Splat), "");
         layout = original.Layout();
-        for (std::size_t i = 0; i < layout.Entries.size(); ++i)
-            changedPages += layout.Entries[i].Hash != expected.Layout().Entries[i].Hash ? 1u : 0u;
+        for (std::size_t entryIndex = 0; entryIndex < layout.Entries.size(); ++entryIndex)
+            changedPages += layout.Entries[entryIndex].Hash != expected.Layout().Entries[entryIndex].Hash ? 1u : 0u;
     }
     ASSERT_GT(changedPages, 9u);
     ASSERT_LT(changedPages, layout.Entries.size());
@@ -1412,8 +1412,8 @@ TEST_F(PageStoreTest, ABc5StorePatchedAPageAtATimeIsTheFullBuildFilteredFromItsU
     // blocks, so the patched store holds the blocks of the full build, which filters unencoded rows.
     constexpr uint32 kSide = 600u;
     std::vector<uint8> normals(static_cast<std::size_t>(kSide) * kSide * 2u);
-    for (std::size_t i = 0; i < normals.size(); ++i)
-        normals[i] = static_cast<uint8>(64u + ((static_cast<uint32>(i) * 2654435761u) >> 25));
+    for (std::size_t byteIndex = 0; byteIndex < normals.size(); ++byteIndex)
+        normals[byteIndex] = static_cast<uint8>(64u + ((static_cast<uint32>(byteIndex) * 2654435761u) >> 25));
     const std::filesystem::path built = m_Dir / "built.gepage";
     BuildSurfaceStore(built, PageFieldFormat::Bc5, PageFieldFilter::NormalTent, kSide, kSide, normals);
     PageStoreReader expected;
@@ -1637,8 +1637,8 @@ TEST_F(PageStoreTest, ABc5PagesApronBlockIsItsNeighborsEdgeBlockBitForBit)
     // the samples of the next page's first owned block.
     constexpr uint32 kSide = 300u;
     std::vector<uint8> normals(static_cast<std::size_t>(kSide) * kSide * 2u);
-    for (std::size_t i = 0; i < normals.size(); ++i)
-        normals[i] = static_cast<uint8>(64u + ((static_cast<uint32>(i) * 2654435761u) >> 25));
+    for (std::size_t byteIndex = 0; byteIndex < normals.size(); ++byteIndex)
+        normals[byteIndex] = static_cast<uint8>(64u + ((static_cast<uint32>(byteIndex) * 2654435761u) >> 25));
     const std::filesystem::path file = m_Dir / "normal.gepage";
     BuildSurfaceStore(file, PageFieldFormat::Bc5, PageFieldFilter::NormalTent, kSide, kSide, normals);
     PageStoreReader reader;
@@ -1880,8 +1880,8 @@ TEST_P(PageStoreRelabelTest, AStoreWhoseFormatOrFilterByteChangedIsRefused)
     constexpr uint32 kSide = 260u;
     const std::vector<uint8> weights = SplatWeights(kSide, kSide);
     std::vector<uint8> level0(static_cast<std::size_t>(kSide) * kSide * PageTexelBytes(relabel.WrittenFormat));
-    for (std::size_t i = 0; i < level0.size(); ++i)
-        level0[i] = weights[i % weights.size()];
+    for (std::size_t sampleIndex = 0; sampleIndex < level0.size(); ++sampleIndex)
+        level0[sampleIndex] = weights[sampleIndex % weights.size()];
     const std::filesystem::path store = m_Dir / "written.gepage";
     BuildSurfaceStore(store, relabel.WrittenFormat, relabel.WrittenFilter, kSide, kSide, level0);
     // The format byte follows the store's magic and version; the filter byte follows the format.
@@ -1944,8 +1944,8 @@ TEST_F(PageStoreTest, NineteenPointNineKilometersOfReliefStoreSixteenBitPagesWit
     {
         const PageStoreRange& range = layout.Ranges[level];
         uint64 wide = 0;
-        for (uint64 i = 0; i < range.Count; ++i)
-            wide += layout.Entries[range.First + i].HasWideWords() ? 1u : 0u;
+        for (uint64 entryIndex = 0; entryIndex < range.Count; ++entryIndex)
+            wide += layout.Entries[range.First + entryIndex].HasWideWords() ? 1u : 0u;
         EXPECT_LE(wide, 1u) << int(level);
         wideTotal += wide;
     }
@@ -3203,16 +3203,16 @@ TEST(PageStoreFormatTest, TheEqualAngleCoordinateIsOddExactAtTheEdgesAndNewtonIn
     EXPECT_EQ(GnomonicFaceCoordinate(1.0), 1.0);
     EXPECT_EQ(GnomonicFaceCoordinate(-1.0), -1.0);
     float64 previous = -2.0;
-    for (int32 i = -1000; i <= 1000; ++i)
+    for (int32 sampleIndex = -1000; sampleIndex <= 1000; ++sampleIndex)
     {
-        const float64 a = i / 1000.0;
-        const float64 s = EqualAngleFaceCoordinate(a);
-        EXPECT_EQ(EqualAngleFaceCoordinate(-a), -s);
-        EXPECT_GT(s, previous);
-        EXPECT_NEAR(s, 4.0 / std::numbers::pi * std::atan(a), 3.7e-5);
-        EXPECT_NEAR(GnomonicFaceCoordinate(s), a, 1e-14);
-        EXPECT_EQ(GnomonicFaceCoordinate(-s), -GnomonicFaceCoordinate(s));
-        previous = s;
+        const float64 gnomonic = sampleIndex / 1000.0;
+        const float64 equalAngle = EqualAngleFaceCoordinate(gnomonic);
+        EXPECT_EQ(EqualAngleFaceCoordinate(-gnomonic), -equalAngle);
+        EXPECT_GT(equalAngle, previous);
+        EXPECT_NEAR(equalAngle, 4.0 / std::numbers::pi * std::atan(gnomonic), 3.7e-5);
+        EXPECT_NEAR(GnomonicFaceCoordinate(equalAngle), gnomonic, 1e-14);
+        EXPECT_EQ(GnomonicFaceCoordinate(-equalAngle), -GnomonicFaceCoordinate(equalAngle));
+        previous = equalAngle;
     }
     for (uint32 index = 0; index < 257u; ++index)
         EXPECT_EQ(EqualAngleSampleCoordinate(256u - index, 257u), -EqualAngleSampleCoordinate(index, 257u));

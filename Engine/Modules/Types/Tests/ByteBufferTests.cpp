@@ -1,11 +1,11 @@
 #include "Types/ByteBuffer.h"
 
-#include <gtest/gtest.h>
-
 #include <cstdint>
 #include <span>
 #include <type_traits>
 #include <utility>
+
+#include <gtest/gtest.h>
 
 using GameEngine::ByteBuffer;
 
@@ -23,14 +23,14 @@ std::size_t ViewedSize(std::span<const std::uint8_t> bytes)
 TEST(ByteBuffer, HoldsTheBytesItsOwnerWritesAndViewsAllOfThem)
 {
     ByteBuffer buffer(5);
-    for (std::size_t i = 0; i < buffer.Size(); ++i)
-        buffer.Data()[i] = static_cast<std::uint8_t>(10 + i);
+    for (std::size_t byteIndex = 0; byteIndex < buffer.Size(); ++byteIndex)
+        buffer.Data()[byteIndex] = static_cast<std::uint8_t>(10 + byteIndex);
 
     const std::span<const std::uint8_t> view = buffer;
     ASSERT_EQ(view.size(), 5u);
     EXPECT_EQ(view.data(), buffer.Data());
-    for (std::size_t i = 0; i < view.size(); ++i)
-        EXPECT_EQ(view[i], 10 + i);
+    for (std::size_t byteIndex = 0; byteIndex < view.size(); ++byteIndex)
+        EXPECT_EQ(view[byteIndex], 10 + byteIndex);
     EXPECT_EQ(ViewedSize(buffer), 5u);
 }
 
