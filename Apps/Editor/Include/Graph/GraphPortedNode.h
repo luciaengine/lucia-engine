@@ -13,6 +13,9 @@
 
 namespace GameEngine {
 
+enum class AssetType;
+class AssetField;
+
 class AssetRegistry;
 class Checkbox;
 class Dropdown;
@@ -198,6 +201,7 @@ private:
     void HideValueEditors(bool force = false);
     void EnsureValueEditorHost();
     void CommitParam(const std::string& key, Graph::GraphValue value);
+    void BindAssetField(AssetField& field, AssetType type, const std::string& portId, const std::string& guidText);
     /** Hand a still-dragging value to the host, which decides what reaches undo. */
     void EditLive(const std::string& key, Graph::GraphValue value);
     void EditLive(const std::function<void(Graph::Node&)>& write);
