@@ -34,8 +34,8 @@ void TentTexel(const Taps& taps, uint32 channels, uint8* out)
     for (uint32 channel = 0; channel < channels; ++channel)
     {
         uint32 sum = 0;
-        for (uint32 t = 0; t < kFilterTaps; ++t)
-            sum += kTapWeights[t] * taps[t][channel];
+        for (uint32 tapIndex = 0; tapIndex < kFilterTaps; ++tapIndex)
+            sum += kTapWeights[tapIndex] * taps[tapIndex][channel];
         out[channel] = static_cast<uint8>((sum + kTapWeightSum / 2u) / kTapWeightSum);
     }
 }
@@ -48,8 +48,8 @@ void WeightsTentTexel(const Taps& taps, uint8* out)
     uint32 total = 0;
     for (uint32 channel = 0; channel < kWeightChannels; ++channel)
     {
-        for (uint32 t = 0; t < kFilterTaps; ++t)
-            sums[channel] += kTapWeights[t] * taps[t][channel];
+        for (uint32 tapIndex = 0; tapIndex < kFilterTaps; ++tapIndex)
+            sums[channel] += kTapWeights[tapIndex] * taps[tapIndex][channel];
         total += sums[channel];
     }
     if (total == 0)
@@ -81,8 +81,8 @@ Mathematics::Vector3 DecodeNormal(const uint8* texel)
 void NormalTentTexel(const Taps& taps, uint8* out)
 {
     Mathematics::Vector3 sum;
-    for (uint32 t = 0; t < kFilterTaps; ++t)
-        sum = sum + DecodeNormal(taps[t]) * static_cast<float32>(kTapWeights[t]);
+    for (uint32 tapIndex = 0; tapIndex < kFilterTaps; ++tapIndex)
+        sum = sum + DecodeNormal(taps[tapIndex]) * static_cast<float32>(kTapWeights[tapIndex]);
     Mathematics::Vector3 normal = sum.NormalizeOrZero();
     if (normal.LengthSquared() == 0.0f)
         normal = Mathematics::Vector3(0.0f, 1.0f, 0.0f);
@@ -93,10 +93,10 @@ void NormalTentTexel(const Taps& taps, uint8* out)
 void PremultipliedTentTexel(const Taps& taps, uint8* out)
 {
     ColorLinear sum(0.0f, 0.0f, 0.0f, 0.0f);
-    for (uint32 t = 0; t < kFilterTaps; ++t)
+    for (uint32 tapIndex = 0; tapIndex < kFilterTaps; ++tapIndex)
     {
-        const ColorLinear tap = ColorSRGB::FromSRGB255(taps[t][0], taps[t][1], taps[t][2], taps[t][3]).ToLinear();
-        const float32 weight = static_cast<float32>(kTapWeights[t]) / static_cast<float32>(kTapWeightSum);
+        const ColorLinear tap = ColorSRGB::FromSRGB255(taps[tapIndex][0], taps[tapIndex][1], taps[tapIndex][2], taps[tapIndex][3]).ToLinear();
+        const float32 weight = static_cast<float32>(kTapWeights[tapIndex]) / static_cast<float32>(kTapWeightSum);
         sum.r += weight * tap.r;
         sum.g += weight * tap.g;
         sum.b += weight * tap.b;
