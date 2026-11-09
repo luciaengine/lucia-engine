@@ -4,10 +4,11 @@
 #include "TerrainECS/TerrainHeightSource.h"
 
 #include "PageStreaming/GeneratedHeightPageProvider.h"
-#include "PageStreaming/HeightPageOverlay.h"
+#include "PageStreaming/Height/HeightPageLayer.h"
 #include "PageStreaming/PageStore/PageStoreFormat.h"
 #include "PageStreaming/PageTableEntry.h"
 
+#include <array>
 #include <bit>
 #include <format>
 #include <memory>
@@ -223,8 +224,9 @@ TEST(TerrainHeightPages, AnOverlayOfRebuiltModifierDataRewritesEveryPageTheOldOv
     const std::vector<PageStreaming::PageStoreLevel> levels = PageStreaming::BuildPageStoreLevels(257, 257);
     const PageStreaming::PageSampleRect raised{240, 240, 256, 256}; // the far corner: nine pages read it
     PagedTerrainRequest modified = FlatTileRequest();
-    modified.Overlay = std::make_shared<const PageStreaming::HeightPageOverlay>(
-        levels, raised, std::vector<float32>(raised.Width() * raised.Height(), 5.0f));
+    auto layer = std::make_shared<PageStreaming::HeightPageLayer>(1u, levels);
+    layer->WriteLevel0(0, raised, std::vector<float32>(raised.Width() * raised.Height(), 5.0f));
+    modified.Overlay = std::move(layer);
     modified.OverlayVersion = 3;
     modified.OverlayChanged = raised;
 
@@ -381,12 +383,12 @@ TEST(TerrainHeightPages, A1KmSquareModifierOnAQuarterMeterTerrainFitsEveryOverla
 {
     const std::vector<PageStreaming::PageStoreLevel> levels = PageStreaming::BuildPageStoreLevels(240001, 60001);
     // 1 km x 1 km at 0.25 m: 4001 x 4001 samples and the bake's one-sample margin on each side.
-    const uint64 local = PageStreaming::HeightPageOverlay::Bytes(levels, {100000, 20000, 104002, 24002});
+    const uint64 local = PageStreaming::HeightPageLayerBytesOver(levels, std::array{PageStreaming::PageSampleRect{100000, 20000, 104002, 24002}});
     EXPECT_GT(local, 4003ull * 4003ull * sizeof(float32)) << "the coarser levels hold samples too";
     EXPECT_EQ(OverlayRefusal("Outer", local, kDesktopHeightPages), "");
     EXPECT_EQ(OverlayRefusal("Outer", local, kSteamDeckHeightPages), "");
     // A modifier over the whole 60 x 15 km terrain reaches all of its 14.4 G samples.
-    const uint64 wide = PageStreaming::HeightPageOverlay::Bytes(levels, {0, 0, 240000, 60000});
+    const uint64 wide = PageStreaming::HeightPageLayerBytesOver(levels, std::array{PageStreaming::PageSampleRect{0, 0, 240000, 60000}});
     const std::string refusal = OverlayRefusal("Outer", wide, kDesktopHeightPages);
     EXPECT_NE(refusal.find("Outer does not stream its height"), std::string::npos) << refusal;
     EXPECT_NE(refusal.find(std::format("needs {} bytes", wide)), std::string::npos) << refusal;

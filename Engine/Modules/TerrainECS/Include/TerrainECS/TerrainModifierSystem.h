@@ -742,14 +742,16 @@ private:
         }
     };
 
-    // Brings the tiled terrain's height page overlay (TiledTerrainData::PageOverlay) up to
-    // `modifiers` after a bake: the composed height minus the base over the lattice rect the
-    // height modifiers reach, recomputed only over `heightDirty` when the rect still holds it
-    // (TerrainModifierPageOverlay.cpp). Builds nothing for a terrain with no overlay cap (one that
-    // keeps its height texture) and refuses an overlay over the cap (TiledTerrainData::PageOverlayByteCap).
+    // Updates sparse modifier deltas on the tile lattice and refilters the affected ancestors.
+    // A zero overlay cap keeps the height texture; a layer over the cap is refused.
     void BakeHeightPageOverlay(TiledTerrainData& tiled, float32 heightScale, float32 terrainOriginY,
                                const std::vector<ResolvedModifier>& modifiers, bool fullBake,
                                const DirtyUnion& heightDirty);
+
+    void ComposeHeightPageDeltaBand(const TiledTerrainData& tiled, float32 heightScale, float32 terrainOriginY,
+                                    const std::vector<ResolvedModifier>& modifiers,
+                                    const PageStreaming::PageSampleRect& write, int32 firstX, int32 lastX,
+                                    int32 firstZ, int32 lastZ, std::span<float32> deltas);
 
     // BakeHeightPageOverlay for every tiled terrain that awaits its overlay
     // (TiledTerrainData::AwaitsPageOverlay) under an unchanged modifier set.
