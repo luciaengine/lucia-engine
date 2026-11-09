@@ -6861,7 +6861,7 @@ bool VulkanDevice::QueueSubmit(QueueType queue,
         }
     }
     if (cbs.empty())
-        return true;
+        return false;
 
     bool touchesSwapchainPath = false;
     if (queue == QueueType::Graphics && m_HasActiveWindowTarget && m_ActiveWindowTargetId != 0)
