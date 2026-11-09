@@ -2,6 +2,10 @@
 #include <utility>
 #include "JobSystem/JobChannel.h"
 #include "Scripting/ScriptTargetFramework.h"
+#include "Scripting/ScriptPackageRestore.h"
+#include "Scripting/ScriptsProjectFile.h"
+#include "ScriptPackageRestoreInternal.h"
+#include "Types/FlatSet.h"
 #include "Assets/Packages/PackageNativeCache.h"
 #include "AssetCore/SharedFileRead.h"
 #include "Assets/FileWatchingService.h"
@@ -599,6 +603,7 @@ bool ScriptManager::RebindProjectScripts(const ScriptsConfig& newConfig)
 
     // 1. Stop watching the old project scripts directory.
     m_ScriptsWatchSubscription.reset();
+    m_ScriptsProjectWatchSubscriptions.clear();
 
     // 2. Cancel any in-progress async hot reload.
     if (IsAsyncHotReloadInProgress())
@@ -647,6 +652,7 @@ bool ScriptManager::RebindProjectScripts(const ScriptsConfig& newConfig)
     if (m_HotReloadEnabled && !m_ScriptsDirectory.empty())
     {
         m_ScriptsWatchSubscription = WatchScriptDirectory(m_ScriptsDirectory);
+        m_ScriptsProjectWatchSubscriptions = WatchScriptsProjectFiles();
         Logger::Log::Info("ScriptManager: project script watcher restarted for '{}'", m_ScriptsDirectory.string());
     }
 
@@ -680,6 +686,7 @@ void ScriptManager::Shutdown()
 
     // Unsubscribe from file watching first so no new change starts a reload.
     m_ScriptsWatchSubscription.reset();
+    m_ScriptsProjectWatchSubscriptions.clear();
     m_EditorScriptsWatchSubscription.reset();
     m_PackageModuleWatchSubscriptions.clear();
 
@@ -973,6 +980,28 @@ ScriptCompilationResult ScriptManager::CompileProject(const std::filesystem::pat
             if (std::filesystem::exists(dll, ec))
                 desc.References.push_back(dll);
         }
+    }
+    // The project's NuGet packages: restored from the user's csproj and referenced from the
+    // Dependencies folder the scripts' dependency context loads.
+    if (projectPath.filename() == GeneratedProjectPathFor({}).filename())
+    {
+        std::string engineBinDir = desc.EngineBinDir.generic_string();
+        if (!engineBinDir.empty() && engineBinDir.back() != '/')
+            engineBinDir += '/';
+        const ScriptPackageRestoreResult packages = RestoreScriptPackages(
+            projectPath, outDir / ScriptingPaths::kScriptDependenciesFolderName, engineBinDir, cancelRequested);
+        for (const std::string& warning : packages.Warnings)
+            Logger::Log::Warning("{}", warning);
+        if (!packages.Success)
+        {
+            if (packages.Stopped)
+                Logger::Log::Info("{}", packages.Error);
+            else
+                Logger::Log::Error("{}", packages.Error);
+            return {false, "", packages.Error, {}};
+        }
+        desc.References.insert(desc.References.end(), packages.StagedAssemblies.begin(),
+                               packages.StagedAssemblies.end());
     }
 
     const std::string outDllName =
@@ -2057,11 +2086,13 @@ void ScriptManager::SetHotReloadEnabled(bool enabled)
     if (enabled && !m_ScriptsWatchSubscription)
     {
         m_ScriptsWatchSubscription = WatchScriptDirectory(m_ScriptsDirectory);
+        m_ScriptsProjectWatchSubscriptions = WatchScriptsProjectFiles();
         Logger::Log::Info("Script hot reloading enabled");
     }
     else if (!enabled && m_ScriptsWatchSubscription)
     {
         m_ScriptsWatchSubscription.reset();
+        m_ScriptsProjectWatchSubscriptions.clear();
         Logger::Log::Info("Script hot reloading disabled");
     }
 
@@ -2135,6 +2166,37 @@ UniquePtr<FileWatchSubscription> ScriptManager::WatchScriptDirectory(const std::
     FilePattern pattern(directory, ".*", {".cs", ".csproj"}, /*recursive*/ true);
     return MakeUnique<FileWatchSubscription>(FileWatchingService::GetInstance().Subscribe(
         pattern, [this](const FileChangeEvent& event) { OnFileChanged(event); }));
+}
+
+Vector<FileWatchSubscription> ScriptManager::WatchScriptsProjectFiles()
+{
+    Vector<FileWatchSubscription> subscriptions;
+    if (m_PackagedMode || !m_AutoProjectGenerationEnabled)
+        return subscriptions;
+    const std::filesystem::path projectPath = GeneratedProjectPath();
+    if (projectPath.parent_path().empty())
+        return subscriptions;
+    // The folders of the inputs that exist now; a new file in a folder above the csproj's is
+    // seen at the next compile, whose restore key covers it.
+    FlatSet<std::filesystem::path> folders;
+    folders.Insert(projectPath.parent_path());
+    for (const std::filesystem::path& input : ScriptRestoreInputFiles(projectPath))
+        folders.Insert(input.parent_path());
+    // The watcher folds file names to lower case on Windows, so OnScriptsProjectFileChanged
+    // matches the names rather than a pattern here.
+    for (const std::filesystem::path& folder : folders)
+    {
+        FilePattern pattern(folder, ".*", {".csproj", ".props", ".targets", ".config"}, /*recursive*/ false);
+        subscriptions.push_back(FileWatchingService::GetInstance().Subscribe(
+            pattern, [this](const FileChangeEvent& event) { OnScriptsProjectFileChanged(event); }));
+    }
+    return subscriptions;
+}
+
+void ScriptManager::OnScriptsProjectFileChanged(const FileChangeEvent& event)
+{
+    if (IsScriptRestoreInput(event.Path, GeneratedProjectPath()))
+        OnFileChanged(event);
 }
 
 size_t ScriptManager::ProcessMainThreadTasks()
@@ -2418,6 +2480,65 @@ void EmitEngineBinDirValidationTarget(std::ostringstream& xml, const char* requi
 // hand-written GameEngine.Scripts.csproj does not, so the stale-project
 // cleanup never deletes the user's own file.
 constexpr std::string_view kGeneratedScriptsProjectSignature = "<Target Name=\"DumpCompileItems\"";
+
+// Writes `content` unless the file already holds exactly that; false when the write fails.
+bool WriteTextIfChanged(const std::filesystem::path& path, const std::string& content)
+{
+    String existing;
+    if (std::filesystem::exists(path) && ReadFileTextShared(path, existing) && existing == content)
+        return true;
+    std::ofstream of(path, std::ios::binary | std::ios::trunc);
+    if (!of)
+    {
+        Logger::Log::Error("Failed to write the scripts project file '{}'", path.string());
+        return false;
+    }
+    of << content;
+    return static_cast<bool>(of);
+}
+
+// The user's csproj: created when absent, else only a missing engine import is put back.
+// `engineFilesExisted` means the editor wrote this project before, so an absent csproj was
+// deleted and its packages are gone with it.
+bool EnsureUserScriptsProject(const std::filesystem::path& projectPath, bool engineFilesExisted)
+{
+    if (!std::filesystem::exists(projectPath))
+    {
+        if (!WriteTextIfChanged(projectPath, ScriptsProjectFile::NewProjectText()))
+            return false;
+        if (engineFilesExisted)
+            Logger::Log::Warning("The scripts project '{}' was missing and is created again; add the project's NuGet "
+                                 "packages to it again (in the IDE or on the Script Packages settings page)",
+                                 projectPath.string());
+        else
+            Logger::Log::Info("Created the scripts project '{}'", projectPath.string());
+        return true;
+    }
+    String text;
+    if (!ReadFileTextShared(projectPath, text))
+    {
+        Logger::Log::Error("Could not read the scripts project '{}'", projectPath.string());
+        return false;
+    }
+    std::string edited(text);
+    const ScriptsProjectFile::ReconcileResult result = ScriptsProjectFile::ReconcileEngineImports(edited);
+    if (result.SdkMissing)
+        Logger::Log::Error("The scripts project '{}' has no Sdk=\"Microsoft.NET.Sdk\" on its Project element; IDE and "
+                           "command-line builds of it fail until it is put back",
+                           projectPath.string());
+    if (!result.PropsImportAdded && !result.TargetsImportAdded)
+        return true;
+    if (!WriteTextIfChanged(projectPath, edited))
+        return false;
+    Logger::Log::Warning("Put back the import of {} in the scripts project '{}'; the rest of the file is unchanged",
+                         result.PropsImportAdded && result.TargetsImportAdded
+                             ? std::string(ScriptsProjectFile::kEnginePropsFileName) + " and " +
+                                   std::string(ScriptsProjectFile::kEngineTargetsFileName)
+                             : std::string(result.PropsImportAdded ? ScriptsProjectFile::kEnginePropsFileName
+                                                                   : ScriptsProjectFile::kEngineTargetsFileName),
+                         projectPath.string());
+    return true;
+}
 } // namespace
 
 std::filesystem::path ScriptManager::GeneratedProjectPathFor(const std::filesystem::path& projectRoot)
@@ -2479,12 +2600,16 @@ bool ScriptManager::EnsureAutoProject(std::filesystem::path& outProjectPath) con
 
         outProjectPath = projectPath;
 
-        // If a project exists, read its content so we can decide whether regeneration is needed
+        // The engine's half of the project: rewritten whenever its content changes. The csproj
+        // itself belongs to the user (EnsureUserScriptsProject).
+        const std::filesystem::path propsPath = projectDir / ScriptsProjectFile::kEnginePropsFileName;
+        const std::filesystem::path targetsPath = projectDir / ScriptsProjectFile::kEngineTargetsFileName;
+        const bool engineFilesExisted = std::filesystem::exists(propsPath);
         String existingContent;
-        if (std::filesystem::exists(projectPath))
+        if (engineFilesExisted)
         {
             // Read errors leave existingContent empty; we'll rewrite below.
-            (void)ReadFileTextShared(projectPath, existingContent);
+            (void)ReadFileTextShared(propsPath, existingContent);
         }
 
         // The live engine location. Baked below only as a last-known-good fallback for
@@ -2496,9 +2621,9 @@ bool ScriptManager::EnsureAutoProject(std::filesystem::path& outProjectPath) con
             engineBinDirAbs.push_back('/');
         }
 
-        ReportStaleEngineBinDir(existingContent, projectPath, engineBinDirAbs);
+        ReportStaleEngineBinDir(existingContent, propsPath, engineBinDirAbs);
 
-        // Source glob anchored to the csproj: project-relative when the layout stays
+        // Source glob anchored to the project directory: project-relative when the layout stays
         // inside the workspace, absolute otherwise (never a climb into unrelated trees).
         const auto& scriptsRoot = m_ScriptsDirectory;
         bool includeIsRelative = false;
@@ -2518,9 +2643,10 @@ bool ScriptManager::EnsureAutoProject(std::filesystem::path& outProjectPath) con
                 ch = '\\';
         }
 
-        // Generate minimal SDK-style project that compiles the scripts root and outputs to assembliesRoot
+        // The engine props: compile the scripts root and output to assembliesRoot.
         std::ostringstream xml;
-        xml << "<Project Sdk=\"Microsoft.NET.Sdk\">\n";
+        xml << "<Project>\n";
+        xml << "  <!-- Written by the editor on every load: edit GameEngine.Scripts.csproj instead. -->\n";
         xml << "  <PropertyGroup>\n";
         xml << "    <TargetFramework>" << kScriptTargetFramework << "</TargetFramework>\n";
         xml << "    <OutputType>Library</OutputType>\n";
@@ -2578,8 +2704,7 @@ bool ScriptManager::EnsureAutoProject(std::filesystem::path& outProjectPath) con
                 if (!entry.is_regular_file())
                     continue;
                 auto fn = entry.path().filename().string();
-                if (fn.size() > 12 && fn.substr(0, 11) == "GameEngine." && fn.size() > 8 &&
-                    fn.substr(fn.size() - 8) == ".ABI.dll")
+                if (ScriptingPaths::IsScriptSurfaceAssembly(fn))
                 {
                     auto stem = fn.substr(0, fn.size() - 4); // remove .dll
                     xml << "    <Reference Include=\"" << stem << "\">\n";
@@ -2595,7 +2720,7 @@ bool ScriptManager::EnsureAutoProject(std::filesystem::path& outProjectPath) con
                 // Enumeration happens at generation time; an empty list means IDE builds of
                 // this project can never see the engine ABI until the next regeneration.
                 Logger::Log::Error(
-                    "No GameEngine.*.ABI.dll found in '{}' while generating '{}'; scripts will not resolve engine "
+                    "No engine script assembly (GameEngine.Scripting.Bindings.dll, GameEngine.*.ABI.dll) found in '{}' while generating '{}'; scripts will not resolve engine "
                     "APIs (broken or partially staged Editor directory)",
                     engineBinDirAbs, projectPath.string());
             }
@@ -2660,32 +2785,35 @@ bool ScriptManager::EnsureAutoProject(std::filesystem::path& outProjectPath) con
         xml << "  <ItemGroup Condition=\"Exists('$(EngineBinDir)SourceGenerators/EntitySystemGenerator.dll')\">\n";
         xml << "    <Analyzer Include=\"$(EngineBinDir)SourceGenerators/EntitySystemGenerator.dll\" />\n";
         xml << "  </ItemGroup>\n";
-        EmitEngineBinDirValidationTarget(xml, "GameEngine.Scripting.Runtime.dll");
-        // Diagnostics: dump which files are compiled and the C# compiler command line
-        xml << "  " << kGeneratedScriptsProjectSignature << " BeforeTargets=\"CoreCompile\">\n";
-        xml << "    <Message Importance=\"High\" Text=\"[Scripts.csproj] Compile items: @(Compile)\" />\n";
-        xml << "    <Message Importance=\"High\" Text=\"[Scripts.csproj] Csc args: @(CscCommandLineArgs)\" />\n";
-        xml << "  </Target>\n";
         xml << "</Project>\n";
 
-        const std::string newContent = xml.str();
-        if (std::filesystem::exists(projectPath) && existingContent == newContent)
-        {
-            Logger::Log::Info("Auto-generated Scripts project at {} is up to date (sources: {})", projectPath.string(), includeRoot);
-            return true;
-        }
+        // The engine targets: validation, diagnostics, and the package and reference assemblies an MSBuild
+        // build (the IDE, the CLI fallback, the export) stages beside the scripts assembly.
+        std::ostringstream targets;
+        targets << "<Project>\n";
+        targets << "  <!-- Written by the editor on every load: edit GameEngine.Scripts.csproj instead. -->\n";
+        EmitEngineBinDirValidationTarget(targets, "GameEngine.Scripting.Runtime.dll");
+        // Diagnostics: dump which files are compiled and the C# compiler command line
+        targets << "  " << kGeneratedScriptsProjectSignature << " BeforeTargets=\"CoreCompile\">\n";
+        targets << "    <Message Importance=\"High\" Text=\"[Scripts.csproj] Compile items: @(Compile)\" />\n";
+        targets << "    <Message Importance=\"High\" Text=\"[Scripts.csproj] Csc args: @(CscCommandLineArgs)\" />\n";
+        targets << "  </Target>\n";
+        // The package assemblies and the csproj's own Reference files.
+        targets << "  <Target Name=\"StageScriptDependencies\" AfterTargets=\"Build\">\n";
+        targets << "    <ItemGroup>\n";
+        targets << "      <_ScriptDependency Include=\"@(RuntimeCopyLocalItems);@(ReferenceCopyLocalPaths)\" "
+                   "Condition=\"'%(Extension)' == '.dll'\" KeepDuplicates=\"false\" />\n";
+        targets << "    </ItemGroup>\n";
+        targets << "    <Copy SourceFiles=\"@(_ScriptDependency)\" DestinationFolder=\"$(OutDir)"
+                << ScriptingPaths::kScriptDependenciesFolderName << "\" SkipUnchangedFiles=\"true\" />\n";
+        targets << "  </Target>\n";
+        targets << "</Project>\n";
 
-        std::ofstream of(projectPath, std::ios::trunc);
-        if (!of)
-        {
-            Logger::Log::Error("Failed to create auto-generated project file: {}", projectPath.string());
+        if (!WriteTextIfChanged(propsPath, xml.str()) || !WriteTextIfChanged(targetsPath, targets.str()))
             return false;
-        }
-        of << newContent;
-        of.close();
-
-        Logger::Log::Info("Auto-generated Scripts project at {} (sources: {})", projectPath.string(), includeRoot);
-        return true;
+        Logger::Log::Info("Scripts project engine files in {} are current (sources: {})", projectDir.string(),
+                          includeRoot);
+        return EnsureUserScriptsProject(projectPath, engineFilesExisted);
     }
     catch (const std::exception& e)
     {
@@ -2779,7 +2907,9 @@ bool ScriptManager::EnsureEditorAutoProject(std::filesystem::path& outProjectPat
             << includeRootWin << "**\\obj\\**;" << includeRootWin << "**\\bin\\**\" />\n";
         xml << "  </ItemGroup>\n";
         xml << "  <ItemGroup Condition=\"Exists('$(EngineBinDir)')\">\n";
-        xml << "    <GameEngineAbi Include=\"$(EngineBinDir)GameEngine.*.ABI.dll\" />\n";
+        for (std::string_view assembly : ScriptingPaths::kScriptSurfaceAssemblyFileNames)
+            xml << "    <GameEngineAbi Include=\"$(EngineBinDir)" << assembly << "\" Condition=\"Exists('$(EngineBinDir)" << assembly
+                << "')\" />\n";
         xml << "  </ItemGroup>\n";
         xml << "  <ItemGroup>\n";
         xml << "    <Reference Include=\"%(GameEngineAbi.Filename)\">\n";
@@ -2831,15 +2961,15 @@ void ScriptManager::OnFileChanged(const FileChangeEvent& event)
     }
 
     const auto ext = event.Path.extension();
-    if (ext != ".cs" && ext != ".csproj")
+    if (ext != ".cs" && ext != ".csproj" && !IsScriptRestoreInput(event.Path, GeneratedProjectPath()))
     {
         return;
     }
 
     Logger::Log::Debug("Script file changed: {} ({})", event.Path.string(), static_cast<int>(event.Type));
 
-    // Trigger recompile and reload for any C# file or project file changes
-    if (ext == ".cs" || ext == ".csproj")
+    // Recompile after a source, project, or restore input changes.
+
     {
         // RACE CONDITION FIX: Improved multiple hot-reload prevention with timeout
         static std::atomic<bool> hotReloadInProgress{false};

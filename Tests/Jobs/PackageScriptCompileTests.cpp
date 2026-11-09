@@ -7,7 +7,7 @@
 // and the prebuilt rule: a declared DLL stands in for a module with no sources.
 
 #include "CompileServerTestHost.h"
-#include "Core/Application.h" // PathUtils
+#include "Types/PathUtils.h"
 #include "Engine/Build/DotnetHost.h"
 #include "EngineLogCapture.h" // Engine/Tests
 #include "JobSystem/WorkStealingThreadPool.h"
@@ -18,8 +18,8 @@
 #include "Jobs/PipeTransport.h"
 #include "Jobs/ScopedHotReloadTestHooks.h"
 #include "Scripting/PackageScriptCompile.h"
+#include "Scripting/PathResolver.h"
 #include "Scripting/ScriptManager.h"
-#include "TestTempDir.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -39,9 +39,13 @@ namespace fs = std::filesystem;
 namespace
 {
 
-TestUtils::ScopedTempDir MakeTempDir(const char* tag)
+fs::path MakeTempDir(const char* tag)
 {
-    return TestUtils::ScopedTempDir(TestUtils::MakeUniqueTempDirectory(std::string("ge_pkgcs_") + tag));
+    const fs::path dir = fs::temp_directory_path() / (std::string("ge_pkgcs_") + tag);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    return dir;
 }
 
 void WriteFileAt(const fs::path& p, const std::string& text)
@@ -77,8 +81,7 @@ PackageCodeModule MakeCsModule(const fs::path& pkgRoot, bool editorKind = false)
 
 TEST(PackageCompileRequest, JsonCarriesAssemblyNameReferencesAndDefines)
 {
-    const TestUtils::ScopedTempDir scratch = MakeTempDir("req");
-    const fs::path root = scratch.Path();
+    const fs::path root = MakeTempDir("req");
     WriteFileAt(root / "src" / "Ocean.cs", "public class Ocean {}\n");
     // Filtered: generated trees + MSBuild-generated files never reach the server.
     WriteFileAt(root / "src" / "obj" / "Gen.cs", "class Gen {}\n");
@@ -132,10 +135,39 @@ TEST(PackageCompileRequest, OmitsOptionalFieldsWhenEmpty)
     EXPECT_EQ(json.find("\"Nullable\""), std::string::npos) << json;
 }
 
+// The engine owns the script surface: every request names exactly its assemblies, which the
+// server references from EngineBinDir and holds no list of its own for.
+TEST(PackageCompileRequest, JsonCarriesTheScriptSurfaceList)
+{
+    CompileServerRequestDesc desc;
+    desc.ProjectRoot = "X:/proj";
+    const nlohmann::json request = nlohmann::json::parse(BuildCompileServerRequestJson(desc));
+
+    std::vector<std::string> expected(ScriptingPaths::kScriptSurfaceAssemblyFileNames.begin(),
+                                      ScriptingPaths::kScriptSurfaceAssemblyFileNames.end());
+    EXPECT_EQ(request.at("ScriptSurface").get<std::vector<std::string>>(), expected);
+}
+
+// A package module's project references the script surface list and nothing else ABI-named: a
+// file an earlier build staged beside the engine is never referenced.
+TEST(PackageModuleCsproj, ReferencesOnlyTheScriptSurfaceList)
+{
+    const fs::path pkgRoot = MakeTempDir("csproj_surface");
+    const PackageCodeModule module = MakeCsModule(pkgRoot);
+    const fs::path engineBin = pkgRoot / "engine";
+    WriteFileAt(engineBin / "GameEngine.Scripting.Bindings.dll", "");
+    WriteFileAt(engineBin / "GameEngine.Stale.ABI.dll", "");
+
+    const std::string xml =
+        GeneratePackageModuleCsprojXml(module, pkgRoot / ".Cache" / "ScriptProjects", fs::path("X:/ws/out"), engineBin, {});
+
+    EXPECT_NE(xml.find("<Reference Include=\"GameEngine.Scripting.Bindings\">"), std::string::npos) << xml;
+    EXPECT_EQ(xml.find("GameEngine.Stale.ABI"), std::string::npos) << xml;
+}
+
 TEST(PackageModuleCsproj, RuntimeModuleShape)
 {
-    const TestUtils::ScopedTempDir scratch = MakeTempDir("csproj");
-    const fs::path pkgRoot = scratch.Path();
+    const fs::path pkgRoot = MakeTempDir("csproj");
     const PackageCodeModule module = MakeCsModule(pkgRoot);
     const fs::path projectDir = pkgRoot / ".Cache" / "ScriptProjects";
     const fs::path outDir = fs::path("X:/ws/ScriptAssemblies/Packages");
@@ -167,8 +199,7 @@ TEST(PackageModuleCsproj, RuntimeModuleShape)
 
 TEST(PackageModuleCsproj, EditorKindReferencesEditorAssembly)
 {
-    const TestUtils::ScopedTempDir scratch = MakeTempDir("csproj_ed");
-    const fs::path pkgRoot = scratch.Path();
+    const fs::path pkgRoot = MakeTempDir("csproj_ed");
     const PackageCodeModule module = MakeCsModule(pkgRoot, /*editorKind=*/true);
     const std::string xml = GeneratePackageModuleCsprojXml(
         module, pkgRoot / ".Cache" / "ScriptProjects", fs::path("X:/out/Packages/Editor"),
@@ -189,8 +220,7 @@ TEST(PackageCompileE2E, ReferencesAndDefinesFlowThroughCompileServer)
     const std::string pipeName = CompileServerTestHost::UniquePipeName("pkgp1");
     ASSERT_TRUE(CompileServerTestHost::StartTestCompileServer(pipeName));
 
-    const TestUtils::ScopedTempDir scratch = MakeTempDir("e2e");
-    const fs::path root = scratch.Path();
+    const fs::path root = MakeTempDir("e2e");
     WriteFileAt(root / "water" / "Waves.cs",
                 "namespace WaterCore { public static class Waves { public static int Depth() => 42; } }\n");
     WriteFileAt(root / "ocean" / "Ocean.cs",

@@ -115,6 +115,15 @@ if(ENABLE_SCRIPTING)
 
 endif()
 
+if(ENABLE_SCRIPTING)
+    add_executable(ScriptsProjectFileTests ScriptsProjectFileTests.cpp)
+    target_compile_features(ScriptsProjectFileTests PRIVATE cxx_std_20)
+    target_link_libraries(ScriptsProjectFileTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+    ge_set_output_tests(ScriptsProjectFileTests)
+    ge_stage_runtime_dependencies(ScriptsProjectFileTests)
+    add_test(NAME ScriptsProjectFileTests COMMAND ScriptsProjectFileTests)
+endif()
+
 # Engine-side hot-reload suites require the Windows host.
 if(NOT ENABLE_SCRIPTING OR NOT WIN32)
   return()

@@ -7,6 +7,8 @@ set(SCRIPTING_SOURCES
     Source/CoreCLRHost.cpp
     Source/ScriptManager.cpp
     Source/PackageScriptCompile.cpp
+    Source/ScriptPackageRestore.cpp
+    Source/ScriptsProjectFile.cpp
     Source/PathResolver.cpp
     Source/CompileServerClient.cpp
     Source/PipeTransport.cpp

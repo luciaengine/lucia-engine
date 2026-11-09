@@ -56,6 +56,8 @@ set(EDITOR_SOURCES
     Source/Editor/Settings/GizmoSettingsPage.cpp
     Source/Editor/Settings/PerformanceSettingsPage.cpp
     Source/Editor/Settings/ScriptSettingsPage.cpp
+    Source/Editor/Settings/ScriptPackages/ScriptPackagesSettingsPage.cpp
+    Source/Editor/Settings/ScriptPackages/ScriptPackagesList.cpp
     Source/Editor/Settings/AssetImportSettingsPage.cpp
     Source/Editor/Settings/SvgRasterSizeField.cpp
     Source/Editor/Settings/AnimationSettingsPage.cpp

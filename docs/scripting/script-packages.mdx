@@ -1,0 +1,22 @@
+---
+title: Script packages
+description: Add NuGet packages to C# scripts and ship their dependencies with a game.
+---
+
+Open **Project Settings > Script Packages** to add a NuGet package by ID and version, edit a version, or remove a package. The page edits `PackageReference` items in `GameEngine.Scripts.csproj` at the project root. Changes made in an IDE appear in the same list.
+
+The scripts project belongs to the project. Keep custom properties, references, package feeds, and conditions there. The editor writes its settings into `GameEngine.Scripts.Engine.props` and `GameEngine.Scripts.Engine.targets`, which the project imports. Reopening a project restores missing engine imports.
+
+For central package versions, the page writes versions into the nearest `Directory.Packages.props`. Restore also reads parent `Directory.Build.props`, `Directory.Build.targets`, and `nuget.config` files. Save a restore input to compile again.
+
+## Restore and loading
+
+The editor runs `dotnet restore` when restore inputs change or recorded outputs are missing. Runtime assemblies for the scripts' target framework and explicit assembly references are staged into `Dependencies/` beside `GameEngine.Scripts.dll`. Compilation references those staged files.
+
+Hot reload loads dependencies into a collectible context shared by script reloads while the staged set stays unchanged. Their static state survives a script reload. A changed set creates a new dependency context. Assemblies load from bytes so an active editor does not lock staged files.
+
+Dependencies use the engine's copies of engine and framework assemblies. A package that needs native libraries or files beside its assembly is not supported by this staging path. Restore diagnostics name unsupported assets.
+
+## Player builds
+
+Managed player builds stage the resolved assemblies under `Managed/Dependencies`. NativeAOT builds restore the same script packages and pass their assemblies to the publish project. Package code must support the selected runtime and NativeAOT restrictions.
