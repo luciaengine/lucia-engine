@@ -896,6 +896,90 @@ TEST_F(ExtractionFastPathTest, UnsubscribedWorldStaysOnFullLane)
 // composition's fast-frames clause: a "playing" skinned entity + an idle
 // morph carrier must sustain the fast path.
 // ---------------------------------------------------------------------------
+TEST_F(ExtractionFastPathTest, MovingSkinnedCasterPreservesRigidShadowContent)
+{
+    ExtractionHarness h;
+    ASSERT_TRUE(h.Initialize(m_Device.get(), true));
+    const MeshGPUHandle rigidMesh = h.meshHandle;
+
+    Mesh mesh{};
+    mesh.Name = "MovingSkinnedShadowTriangle";
+    mesh.Vertices.resize(3);
+    mesh.Vertices[0].Position[1] = 1.0f;
+    mesh.Vertices[1].Position[0] = -1.0f;
+    mesh.Vertices[2].Position[0] = 1.0f;
+    for (auto& vertex : mesh.Vertices)
+        vertex.Normal[2] = 1.0f;
+    mesh.Indices = {0, 1, 2};
+    mesh.Skinned = true;
+    mesh.Joints0.assign(12, 0u);
+    mesh.Weights0.assign(12, 0.0f);
+    for (size_t vertex = 0; vertex < mesh.Vertices.size(); ++vertex)
+        mesh.Weights0[vertex * 4] = 1.0f;
+    h.meshHandle = h.rs.GetMeshGPURegistry().RegisterSubmesh({FixedGuid(0x73), 0}, mesh);
+    const auto* entry = h.rs.GetMeshGPURegistry().Find(h.meshHandle);
+    ASSERT_NE(entry, nullptr);
+    ASSERT_TRUE(Rendering::IsSkinned(entry->vertexFlags));
+
+    auto& store = SkeletonStore::Instance();
+    const uint32 skeletonId = store.CreateSkeleton(1);
+    auto* skeleton = store.Get(skeletonId);
+    ASSERT_NE(skeleton, nullptr);
+    skeleton->Parent = {-1};
+    skeleton->InverseBind.resize(16);
+    SetIdentityMatrix(skeleton->InverseBind.data());
+    skeleton->BindPose.resize(16);
+    SetIdentityMatrix(skeleton->BindPose.data());
+    skeleton->RestTranslation = {0.0f, 0.0f, 0.0f};
+    skeleton->RestRotation = {0.0f, 0.0f, 0.0f, 1.0f};
+    skeleton->RestScale = {1.0f, 1.0f, 1.0f};
+    skeleton->SkinJointCount = 1;
+    skeleton->JointNodes = {0};
+    const uint32 runtimeId = store.CreateRuntime(skeletonId);
+    auto* runtime = store.GetRuntime(runtimeId);
+    ASSERT_NE(runtime, nullptr);
+    runtime->CompactSkinMatrices = {1.0f, 0.0f, 0.0f, 0.0f,
+                                    0.0f, 1.0f, 0.0f, 0.0f,
+                                    0.0f, 0.0f, 1.0f, 0.0f};
+    runtime->AtlasPaletteOffsetBones = 64u;
+    runtime->GraphPoseActive = true;
+
+    ECS::Entity skinned = h.SpawnRenderable(0.0f, 0.0f, 0.0f);
+    SkinnedMeshRenderer renderer{};
+    renderer.skeletonId = skeletonId;
+    skinned.Set(renderer);
+    SkeletonRef reference{};
+    reference.skeletonId = skeletonId;
+    reference.runtimeId = runtimeId;
+    skinned.Set(reference);
+    skinned.Set(AnimatorRef{});
+    h.meshHandle = rigidMesh;
+    ECS::Entity rigid = h.SpawnRenderable(2.0f, 0.0f, 0.0f);
+    ASSERT_TRUE(h.PrimeToFastPath());
+    const auto* gpuData = h.world->GetComponent<MeshGPUData>(skinned.GetHandle());
+    ASSERT_NE(gpuData, nullptr);
+    const uint32 instance = gpuData->instanceIndex;
+    const uint64 rigidBefore = h.rs.RigidShadowCasterContentVersion(h.worldId);
+    const uint64 allBefore = h.rs.ShadowCasterContentVersion(h.worldId);
+    const float positionBefore = h.rs.GetGPUScene()->GetInstances()[instance].boundingCenter.x;
+
+    skinned.Set(MakeTransformAt(3.0f, 0.0f, 0.0f));
+    h.StepFrame();
+
+    EXPECT_EQ(h.Stats().FastFrame, 1u);
+    EXPECT_GT(h.Stats().SubsetRefreshedCount, 0u);
+    EXPECT_FLOAT_EQ(h.rs.GetGPUScene()->GetInstances()[instance].boundingCenter.x,
+                    positionBefore + 3.0f);
+    EXPECT_GT(h.rs.ShadowCasterContentVersion(h.worldId), allBefore);
+    EXPECT_EQ(h.rs.RigidShadowCasterContentVersion(h.worldId), rigidBefore);
+
+    rigid.Set(MakeTransformAt(5.0f, 0.0f, 0.0f));
+    h.StepFrame();
+    EXPECT_EQ(h.Stats().FastFrame, 1u);
+    EXPECT_GT(h.rs.RigidShadowCasterContentVersion(h.worldId), rigidBefore)
+        << "a moving rigid caster must invalidate retained rigid depth";
+}
+
 TEST_F(ExtractionFastPathTest, SubsetRefreshesSkinnedStateAndMorphEditsEscalate)
 {
     ExtractionHarness h;

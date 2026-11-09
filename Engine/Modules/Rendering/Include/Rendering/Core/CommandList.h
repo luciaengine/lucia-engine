@@ -411,6 +411,10 @@ class CommandList
     virtual void CopyBuffer(BufferHandle src, BufferHandle dst, size_t size,
                             size_t srcOffset = 0, size_t dstOffset = 0) = 0;
     virtual void CopyTexture(TextureHandle src, TextureHandle dst) = 0;
+    // Copy mip zero of the same layer between matching single-sample D32 arrays.
+    // The graph declares CopySrc/CopyDst for this layer. Unsupported backends
+    // return false without recording work.
+    virtual bool CopyDepthArrayLayer(TextureHandle, TextureHandle, uint32_t) { return false; }
 
     // GPU-side buffer fill: writes `value` (a u32) across [offset, offset+size)
     // of `dst` in the GPU timeline, sequenced with subsequent commands. Use

@@ -163,7 +163,7 @@ private:
     uint32 PatchDirtyInstances(ECS::World& world, Rendering::GPUScene& scene);
     uint32 RefreshAlwaysRefreshSubset(ECS::World& world, Rendering::GPUScene& scene,
                                       Rendering::MeshGPURegistry& meshReg,
-                                      MaterialRegistry& matReg, uint64 worldId);
+                                      MaterialRegistry& matReg, uint64 worldId, bool& rigidCasterRefreshed);
     void RebuildAlwaysRefreshSubset(ECS::World& world);
     uint64 ComputeMaterialDigest() const;
     // E9 fingerprints. All covers every view matching the world and gates the
