@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Types/Utf8.h"
+
 #include <concepts>
 #include <ranges>
 
@@ -273,6 +275,45 @@ std::string Join(const Range& parts, std::string_view separator)
         first = false;
     }
     return text;
+}
+
+inline std::string ToUpperAscii(std::string_view sv)
+{
+    std::string s(sv);
+    std::transform(s.begin(), s.end(), s.begin(),
+        [](unsigned char c) { return static_cast<char>((c >= 'a' && c <= 'z') ? c - ('a' - 'A') : c); });
+    return s;
+}
+
+inline std::string ReplaceAll(std::string text, std::string_view from, std::string_view to)
+{
+    if (from.empty())
+        return text;
+    for (std::size_t at = text.find(from); at != std::string::npos; at = text.find(from, at + to.size()))
+        text.replace(at, from.size(), to);
+    return text;
+}
+
+inline std::size_t CountOccurrences(std::string_view haystack, std::string_view needle)
+{
+    if (needle.empty())
+        return 0;
+    std::size_t count = 0;
+    for (std::size_t at = haystack.find(needle); at != std::string_view::npos;
+         at = haystack.find(needle, at + needle.size()))
+        ++count;
+    return count;
+}
+
+inline std::string_view UnqualifiedName(std::string_view qualifiedName)
+{
+    const size_t scope = qualifiedName.rfind("::");
+    const size_t dot = qualifiedName.rfind('.');
+    if (scope != std::string_view::npos && (dot == std::string_view::npos || scope > dot))
+        return qualifiedName.substr(scope + 2);
+    if (dot != std::string_view::npos)
+        return qualifiedName.substr(dot + 1);
+    return qualifiedName;
 }
 
 } // namespace GameEngine

@@ -24,6 +24,7 @@ add_executable(TypesTests
     FormatNumberTests.cpp
     Fnv1aTests.cpp
     NearestNameTests.cpp
+    ParseIntegerTests.cpp
     ParseStrictDecimalTests.cpp
     PathUtilsTests.cpp
     StringUtilsTests.cpp
