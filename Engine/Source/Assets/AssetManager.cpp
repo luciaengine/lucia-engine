@@ -335,7 +335,7 @@ bool AssetManager::Initialize(JobSystem::WorkStealingThreadPool* jobSystem)
         if (std::shared_ptr<AssetDecodeGate> gate = m_IOService->GetDecodeGate())
             m_TextureCookWorkers = std::make_unique<TextureCookWorkers>(*m_JobSystem, std::move(gate));
 
-        m_BatchCoordinator = std::make_unique<AssetBatchCoordinator>(*this, *m_IOService);
+        m_BatchCoordinator = std::make_unique<AssetBatchCoordinator>(*this, *m_JobSystem, *m_IOService);
         Logger::Log::Info("Unified asset loading coordinator initialized");
     }
 
@@ -1751,8 +1751,7 @@ std::future<void> AssetManager::UnloadAssetAsync(const GUID& guid)
     auto promise = std::make_shared<std::promise<void>>();
     auto future = promise->get_future();
 
-    auto task = std::make_unique<AssetUnloadTask>(m_JobSystem, guid, *this);
-    m_JobSystem->Submit(std::move(task));
+    m_JobSystem->Submit(AssetUnloadTask(guid, *this));
 
     return future;
 }

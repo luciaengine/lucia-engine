@@ -1,28 +1,30 @@
 cmake_minimum_required(VERSION 3.20)
 
 # JobSystem Library - Task execution and dependency management
-project(JobSystem VERSION 1.0.0 LANGUAGES CXX)
+project(JobSystem LANGUAGES CXX)
 
 # Core Job System source files
 set(JOBSYSTEM_SOURCES
     Source/WorkStealingThreadPool.cpp
     Source/BlockingThreads.cpp
+    Source/ParallelForCore.cpp
     Source/JobChannel.cpp
     Source/JobChannelState.cpp
     Source/JobCounter.cpp
-    Source/Task.cpp
     Source/TaskHandle.cpp
     Source/TaskDependencyGraph.cpp
     Source/TaskSlabPool.cpp
-    Source/ParallelAlgorithms.cpp
 )
 
 # Core Job System header files
 set(JOBSYSTEM_HEADERS
     Include/JobSystem/WorkStealingThreadPool.h
+    Include/JobSystem/ConcurrentQueue.h
+    Include/JobSystem/ParallelForOptions.h
     Include/JobSystem/JobChannel.h
+    Include/JobSystem/JobSystemStatistics.h
     Include/JobSystem/JobCounter.h
-    Include/JobSystem/Task.h
+    Include/JobSystem/TaskBase.h
     Include/JobSystem/TaskEnvelopes.h
     Include/JobSystem/TaskHandle.h
     Include/JobSystem/TaskDependencyGraph.h
@@ -34,10 +36,6 @@ set(JOBSYSTEM_HEADERS
 
 # Create static library
 add_library(JobSystem OBJECT ${JOBSYSTEM_SOURCES} ${JOBSYSTEM_HEADERS})
-
-# GE_JOB_TOMBSTONE_STRICT reads through Platform's header-only environment switch.
-set_property(SOURCE Source/TaskDependencyGraph.cpp APPEND PROPERTY
-    INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/Engine/Modules/Platform/Include)
 
 # Set C++20 standard
 target_compile_features(JobSystem PUBLIC cxx_std_20)
@@ -52,8 +50,11 @@ target_include_directories(JobSystem PRIVATE Source ${CMAKE_SOURCE_DIR}/Engine/I
 find_package(concurrentqueue CONFIG REQUIRED)
 target_link_libraries(JobSystem PUBLIC concurrentqueue::concurrentqueue)
 
-# JobSystem module dependencies (target-based; avoid hardcoded include paths)
-target_link_libraries(JobSystem PUBLIC Logger Types)
+# JobSystem module dependencies (target-based; avoid hardcoded include paths).
+# Memory: the pool carries Memory's frame-joined bit to the units of a fork (Debug and DebugFast).
+# An executable that links JobSystem without Engine links Memory too: OBJECT objects reach only
+# the targets that link them directly.
+target_link_libraries(JobSystem PUBLIC Logger Memory Types)
 
 # Platform-specific definitions
 if(WIN32)

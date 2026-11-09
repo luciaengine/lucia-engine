@@ -351,6 +351,9 @@ bool ScriptManager::Initialize(const ScriptsConfig& config, JobSystem::WorkSteal
         return std::make_unique<ScriptManagerCompiler>(this, &m_ShuttingDown);
     });
 
+    m_HotReloadPipeline->SetRunCompletedCallback([this](const HotReloadPipeline::PipelineStats& stats)
+    { OnHotReloadRunCompleted(stats); });
+
     Logger::Log::Info("Async hot-reload infrastructure initialized");
 
     // Apply initial hot-reload configuration (never in packaged mode: nothing
@@ -1966,23 +1969,7 @@ bool ScriptManager::IsAsyncHotReloadInProgress() const
 
     try
     {
-        auto stats = completedFuture.get();
-        const bool cancelled = IsCancellation(stats.result);
-        Logger::Log::Info("🎯 Async hot-reload completed: {}",
-                          stats.success ? "SUCCESS" : (cancelled ? "CANCELLED" : "FAILED"));
-        if (!stats.success)
-        {
-            // A run superseded by a newer edit reports failure by design; during a
-            // rapid-edit storm every keystroke would otherwise log an error.
-            if (cancelled)
-            {
-                Logger::Log::Debug("Async hot-reload cancelled: {}", stats.errorMessage);
-            }
-            else
-            {
-                Logger::Log::Error("Hot-reload error: {}", stats.errorMessage);
-            }
-        }
+        (void)completedFuture.get();
     }
     catch (const std::exception& e)
     {
@@ -1990,6 +1977,26 @@ bool ScriptManager::IsAsyncHotReloadInProgress() const
     }
     // Future is consumed, no longer in progress
     return false;
+}
+
+void ScriptManager::OnHotReloadRunCompleted(const HotReloadPipeline::PipelineStats& stats)
+{
+    const bool cancelled = IsCancellation(stats.result);
+    Logger::Log::Info("🎯 Async hot-reload completed: {}",
+                      stats.success ? "SUCCESS" : (cancelled ? "CANCELLED" : "FAILED"));
+    if (!stats.success)
+    {
+        // A run superseded by a newer edit reports failure by design; during a
+        // rapid-edit storm every keystroke would otherwise log an error.
+        if (cancelled)
+        {
+            Logger::Log::Debug("Async hot-reload cancelled: {}", stats.errorMessage);
+        }
+        else
+        {
+            Logger::Log::Error("Hot-reload error: {}", stats.errorMessage);
+        }
+    }
 }
 
 void ScriptManager::SetCurrentAsyncFuture(std::future<HotReloadPipeline::PipelineStats> future)
@@ -2161,6 +2168,9 @@ size_t ScriptManager::ProcessMainThreadTasks()
             drain(1);
         }
     }
+
+    if (m_HotReloadPipeline && EngineCore::GetInstance().IsMainThread())
+        m_HotReloadPipeline->CancelOverdueRun(std::chrono::steady_clock::now());
 
     // RACE CONDITION FIX: Check if hot-reload is in progress and prioritize those tasks
     bool hotReloadInProgress = IsAsyncHotReloadInProgress();

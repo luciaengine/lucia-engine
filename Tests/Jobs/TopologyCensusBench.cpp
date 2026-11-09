@@ -29,6 +29,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <initializer_list>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -40,7 +42,7 @@ namespace {
 
 using JobSystem::WorkStealingThreadPool;
 using SteadyClock = std::chrono::steady_clock;
-using Census = WorkStealingThreadPool::TopologyCensus;
+using Census = JobSystem::JobSystemStatistics;
 
 double ElapsedUs(SteadyClock::time_point t0, SteadyClock::time_point t1)
 {
@@ -149,23 +151,13 @@ void LogTimerResolution()
 #endif
 }
 
-/** Pool-level graph task whose body is supplied by the bench. */
-class ScriptedTask : public JobSystem::Task {
-public:
-    ScriptedTask(WorkStealingThreadPool* pool, std::function<void()> body)
-        : Task(pool), m_Body(std::move(body)) {}
-
-    void Execute() override
-    {
-        if (m_Body)
-        {
-            m_Body();
-        }
-    }
-
-private:
-    std::function<void()> m_Body;
-};
+/** Submits `body` as a graph task that runs after `dependencies` (none: a graph root). */
+JobSystem::TaskHandle SubmitInGraph(WorkStealingThreadPool& pool, std::function<void()> body,
+                                    std::initializer_list<JobSystem::TaskHandle> dependencies = {})
+{
+    return pool.Submit(std::move(body),
+                       std::span<const JobSystem::TaskHandle>(dependencies.begin(), dependencies.size()));
+}
 
 // Warm the slab pool / queue blocks so census runs measure steady state.
 void Warmup(WorkStealingThreadPool& pool)
@@ -225,7 +217,7 @@ TEST(TopologyBench, BENCHMARK_MpmcContentionProfile)
     {
         WorkStealingThreadPool pool(cell.Workers);
         Warmup(pool);
-        const Census before = pool.GetTopologyCensusForTests();
+        const Census before = pool.GetStatistics();
 
         std::atomic<uint32_t> executed{0};
         const uint32_t bodyUs = cell.BodyUs;
@@ -287,7 +279,7 @@ TEST(TopologyBench, BENCHMARK_MpmcContentionProfile)
         // Idle-machinery attribution for the cell: when pool width exceeds
         // the offered load, the throughput loss should show up here (steal
         // scans, pred-true relaps, backstop wakes) — NOT as queue growth.
-        const Census d = Delta(pool.GetTopologyCensusForTests(), before);
+        const Census d = Delta(pool.GetStatistics(), before);
         std::printf("[mpmc]   idle-side: stealMisses=%llu emptyLoopsWithBacklog=%llu "
                     "backstopTimeouts=%llu\n",
                     static_cast<unsigned long long>(d.StealMisses),
@@ -314,7 +306,7 @@ TEST(TopologyBench, BENCHMARK_FeedCensus_EcsParallelStorm)
     constexpr uint32_t kBatchesPerWave = 64;
     std::atomic<uint64_t> executed{0};
 
-    const Census before = pool.GetTopologyCensusForTests();
+    const Census before = pool.GetStatistics();
     const auto t0 = SteadyClock::now();
     for (uint32_t wave = 0; wave < kWaves; ++wave)
     {
@@ -333,7 +325,7 @@ TEST(TopologyBench, BENCHMARK_FeedCensus_EcsParallelStorm)
     const double wallMs = ElapsedUs(t0, SteadyClock::now()) / 1000.0;
 
     EXPECT_EQ(executed.load(), uint64_t{kWaves} * kBatchesPerWave);
-    const Census d = Delta(pool.GetTopologyCensusForTests(), before);
+    const Census d = Delta(pool.GetStatistics(), before);
     PrintCensus("ECS parallel storm (2000 waves x 64 batches, 1us bodies)", d, wallMs);
     ExpectCensusConserved(d);
 }
@@ -360,28 +352,25 @@ TEST(TopologyBench, BENCHMARK_FeedCensus_GraphChainStorm)
     std::atomic<uint32_t> parentsRan{0};
     std::atomic<uint32_t> childrenRan{0};
 
-    const Census before = pool.GetTopologyCensusForTests();
+    const Census before = pool.GetStatistics();
     const auto t0 = SteadyClock::now();
     for (uint32_t i = 0; i < kPairs; ++i)
     {
-        auto parent = MakeUnique<ScriptedTask>(&pool, [&parentsRan] {
+        const JobSystem::TaskHandle parent = SubmitInGraph(pool, [&parentsRan] {
             BusyWaitUs(5);
             parentsRan.fetch_add(1, std::memory_order_relaxed);
         });
-        auto child = MakeUnique<ScriptedTask>(&pool, [&childrenRan] {
+        SubmitInGraph(pool, [&childrenRan] {
             BusyWaitUs(1);
             childrenRan.fetch_add(1, std::memory_order_relaxed);
-        });
-        child->AddDependency(parent->GetTaskId());
-        pool.Submit(std::move(parent));
-        pool.Submit(std::move(child));
+        }, {parent});
     }
     ASSERT_TRUE(WaitUntil([&] { return childrenRan.load(std::memory_order_relaxed) == kPairs; },
                           std::chrono::milliseconds(30000)));
     const double wallMs = ElapsedUs(t0, SteadyClock::now()) / 1000.0;
 
     EXPECT_EQ(parentsRan.load(), kPairs);
-    const Census d = Delta(pool.GetTopologyCensusForTests(), before);
+    const Census d = Delta(pool.GetStatistics(), before);
     PrintCensus("graph chain storm (10k dependent pairs)", d, wallMs);
     ExpectCensusConserved(d);
     std::printf("[census]   graph: children extracted on workers -> local = %.1f%% of pairs\n",
@@ -401,7 +390,7 @@ TEST(TopologyBench, BENCHMARK_FeedCensus_JobCounterWaveStorm)
     constexpr uint32_t kTasksPerWave = 8;
     std::atomic<uint64_t> executed{0};
 
-    const Census before = pool.GetTopologyCensusForTests();
+    const Census before = pool.GetStatistics();
     const auto t0 = SteadyClock::now();
     for (uint32_t wave = 0; wave < kWaves; ++wave)
     {
@@ -415,7 +404,11 @@ TEST(TopologyBench, BENCHMARK_FeedCensus_JobCounterWaveStorm)
     const double wallMs = ElapsedUs(t0, SteadyClock::now()) / 1000.0;
 
     EXPECT_EQ(executed.load(), uint64_t{kWaves} * kTasksPerWave);
-    const Census d = Delta(pool.GetTopologyCensusForTests(), before);
+    // The waiter runs its own jobs, so a Run's queue visit can still be queued
+    // when Wait returns; the census is read once every visit has run.
+    ASSERT_TRUE(WaitUntil([&pool] { return pool.GetPendingTasksApprox() == 0; },
+                          std::chrono::milliseconds(5000)));
+    const Census d = Delta(pool.GetStatistics(), before);
     PrintCensus("JobCounter wave storm (10k waves x Run(8)+Wait)", d, wallMs);
     ExpectCensusConserved(d);
 }
@@ -463,7 +456,7 @@ TEST(TopologyBench, BENCHMARK_StealReality_LocalHeavyFanout)
 
     std::atomic<uint32_t> childrenRan{0};
 
-    const Census before = pool.GetTopologyCensusForTests();
+    const Census before = pool.GetStatistics();
     double drainMs = 0.0; // sum of (gate release -> wave drained) windows
     const auto t0 = SteadyClock::now();
     for (uint32_t wave = 0; wave < kWaves; ++wave)
@@ -476,29 +469,24 @@ TEST(TopologyBench, BENCHMARK_StealReality_LocalHeavyFanout)
         // worker in a yield loop for the submission phase; that is the price
         // of a genuinely parked wave.
         std::atomic<bool> release{false};
-        auto gate = MakeUnique<ScriptedTask>(&pool, [&release] {
+        const JobSystem::TaskHandle gate = SubmitInGraph(pool, [&release] {
             while (!release.load(std::memory_order_acquire))
             {
                 std::this_thread::yield();
             }
         });
-        const JobSystem::TaskId gateId = gate->GetTaskId();
-        pool.Submit(std::move(gate));
 
         for (uint32_t p = 0; p < kParentsPerWave; ++p)
         {
-            auto parent = MakeUnique<ScriptedTask>(&pool, [] { BusyWaitUs(20); });
-            const JobSystem::TaskId parentId = parent->GetTaskId();
-            parent->AddDependency(gateId);
-            pool.Submit(std::move(parent)); // parks until the gate completes
+            // Parks until the gate completes.
+            const JobSystem::TaskHandle parent = SubmitInGraph(pool, [] { BusyWaitUs(20); }, {gate});
             for (uint32_t c = 0; c < kChildrenPerParent; ++c)
             {
-                auto child = MakeUnique<ScriptedTask>(&pool, [&childrenRan] {
+                // Parks until its parent completes.
+                SubmitInGraph(pool, [&childrenRan] {
                     BusyWaitUs(static_cast<int>(kChildBodyUs));
                     childrenRan.fetch_add(1, std::memory_order_relaxed);
-                });
-                child->AddDependency(parentId);
-                pool.Submit(std::move(child)); // parks until its parent completes
+                }, {parent});
             }
         }
 
@@ -511,7 +499,7 @@ TEST(TopologyBench, BENCHMARK_StealReality_LocalHeavyFanout)
     }
     const double wallMs = ElapsedUs(t0, SteadyClock::now()) / 1000.0;
 
-    const Census d = Delta(pool.GetTopologyCensusForTests(), before);
+    const Census d = Delta(pool.GetStatistics(), before);
     PrintCensus("steal reality (100 waves x 8 parents x 32 local children, 20us bodies, held gate)",
                 d, wallMs);
     ExpectCensusConserved(d);

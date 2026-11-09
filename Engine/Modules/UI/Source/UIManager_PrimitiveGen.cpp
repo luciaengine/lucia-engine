@@ -1490,7 +1490,7 @@ size_t UIManager::ComputeDrainTaskCount(size_t itemCount) const
     size_t numTasks = 1;
     if (sParallelDrainEnabled && m_JobSystem)
     {
-        // +1 lane: DispatchAndWait runs the first task on this thread.
+        // ParallelFor includes the calling thread as one lane.
         const size_t lanes = m_JobSystem->GetWorkerCount() + 1;
         numTasks = std::max<size_t>(
             1, std::min(lanes, (itemCount + sMinItemsPerTask - 1) / sMinItemsPerTask));
@@ -1521,7 +1521,7 @@ uint32_t UIManager::EmitDrainItems(std::vector<DrainItem>& items,
                                         /*offThread=*/true); });
         }
         forkedTasks = static_cast<uint32_t>(tasks.size());
-        JobSystem::DispatchAndWait(m_JobSystem, tasks.data(), forkedTasks);
+        JobSystem::ParallelFor(m_JobSystem, forkedTasks, [&](size_t task) { tasks[task](); });
     }
     else
     {

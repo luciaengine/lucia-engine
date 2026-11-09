@@ -3,7 +3,7 @@
 #include "AssetCore/Asset.h"
 #include "AssetCore/AssetTypes.h"
 #include "AssetCore/GUID.h"
-#include "JobSystem/Task.h"
+#include "JobSystem/TaskHandle.h"
 #include "Types/Types.h"
 #include <atomic>
 #include <memory>
@@ -22,28 +22,22 @@ class AssetManager;
 class AssetRegistry;
 
 /**
- * @brief Unified asset unload task for removing assets from memory
+ * @brief Removes one asset from the AssetManager: the job that
+ * WorkStealingThreadPool::Submit runs on a worker.
  *
- * Unloads an asset from the AssetManager.
- * No dependencies - can execute immediately.
- * Execution time: 1-5ms (cleanup operations)
+ * Throws when the unload fails, so the task handle reports Failed.
+ * Cancel it through the TaskHandle that Submit returns.
  */
-class AssetUnloadTask : public JobSystem::Task
+class AssetUnloadTask
 {
   public:
-    AssetUnloadTask(JobSystem::WorkStealingThreadPool* jobSystem,
-                    const GUID& assetGuid, AssetManager& assetManager);
+    AssetUnloadTask(const GUID& assetGuid, AssetManager& assetManager);
 
-    void Execute() override;
-    bool IsCancelled() const override { return m_Cancelled.load(); }
-    void Cancel() { m_Cancelled.store(true); }
-
-    const GUID& GetAssetGuid() const { return m_AssetGuid; }
+    void operator()() const;
 
   private:
     GUID m_AssetGuid;
     AssetManager& m_AssetManager;
-    std::atomic<bool> m_Cancelled{false};
 };
 
 /**
@@ -55,7 +49,8 @@ class AssetUnloadTask : public JobSystem::Task
 class AssetBatchCoordinator
 {
   public:
-    AssetBatchCoordinator(AssetManager& assetManager, AssetIOService& ioService);
+    AssetBatchCoordinator(AssetManager& assetManager, JobSystem::WorkStealingThreadPool& jobSystem,
+                          AssetIOService& ioService);
 
     /**
      * @brief Kick off the read -> Background-decode pipeline for one asset.
@@ -84,8 +79,16 @@ class AssetBatchCoordinator
                    Function<void(const JobSystem::TaskHandle&)> onComplete,
                    Function<void(const String&)> onFailure);
 
+    /**
+     * @brief Unload single asset
+     * @param assetGuid Asset to unload
+     * @return TaskHandle for tracking unload completion
+     */
+    JobSystem::TaskHandle UnloadAsset(const GUID& assetGuid);
+
   private:
     AssetManager& m_AssetManager;
+    JobSystem::WorkStealingThreadPool& m_JobSystem;
     AssetIOService& m_IOService;
 };
 

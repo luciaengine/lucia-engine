@@ -10,7 +10,7 @@ find_package(GTest REQUIRED)
 add_executable(EntityDestroyNotificationTests EntityDestroyNotificationTests.cpp EntityDestroyAllocationTests.cpp)
 set_target_properties(EntityDestroyNotificationTests PROPERTIES UNITY_BUILD OFF)
 target_compile_features(EntityDestroyNotificationTests PRIVATE cxx_std_20)
-target_link_libraries(EntityDestroyNotificationTests PRIVATE GTest::gtest_main Logger JobSystem ECS)
+target_link_libraries(EntityDestroyNotificationTests PRIVATE GTest::gtest_main Logger JobSystem Memory ECS)
 ge_set_output_tests(EntityDestroyNotificationTests)
 ge_stage_runtime_dependencies(EntityDestroyNotificationTests)
 add_test(NAME EntityDestroyNotificationTests COMMAND EntityDestroyNotificationTests)
@@ -21,7 +21,7 @@ add_executable(QueryAllocationTests QueryAllocationTests.cpp)
 set_target_properties(QueryAllocationTests PROPERTIES UNITY_BUILD OFF)
 target_compile_features(QueryAllocationTests PRIVATE cxx_std_20)
 target_include_directories(QueryAllocationTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(QueryAllocationTests PRIVATE GTest::gtest_main Logger JobSystem ECS)
+target_link_libraries(QueryAllocationTests PRIVATE GTest::gtest_main Logger JobSystem Memory ECS)
 ge_set_output_tests(QueryAllocationTests)
 ge_stage_runtime_dependencies(QueryAllocationTests)
 add_test(NAME QueryAllocationTests COMMAND QueryAllocationTests)
@@ -113,7 +113,7 @@ target_link_libraries(ECSCoreTests PRIVATE
     GTest::gtest
     GTest::gtest_main
     Logger
-    JobSystem
+    JobSystem Memory
     ECS
     # ComponentReflectionTests exercises the Mathematics field-type traits
     # (Components/MathReflectionTraits.h). Mathematics is INTERFACE/header-only, so
@@ -148,7 +148,7 @@ target_link_libraries(ECSAdvancedTests PRIVATE
     GTest::gtest
     GTest::gtest_main
     Logger
-    JobSystem
+    JobSystem Memory
     ECS
     # Lightweight component registration uses Components/MathReflectionTraits.h.
     Mathematics
@@ -173,7 +173,7 @@ target_link_libraries(ECSIntegrationTests PRIVATE
     GTest::gtest
     GTest::gtest_main
     Logger
-    JobSystem
+    JobSystem Memory
     ECS
 )
 
@@ -222,7 +222,7 @@ foreach(case IN LISTS ECS_COMPILE_FAIL_CASES)
         UNITY_BUILD OFF)
     target_compile_features(ECSCompileFail_${case} PUBLIC cxx_std_20)
     target_include_directories(ECSCompileFail_${case} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(ECSCompileFail_${case} PRIVATE Logger JobSystem ECS)
+    target_link_libraries(ECSCompileFail_${case} PRIVATE Logger JobSystem Memory ECS)
 
     add_test(NAME ECSCompileFail.${case}
              COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
@@ -242,7 +242,7 @@ set_target_properties(ECSCompileFail_Control PROPERTIES
     UNITY_BUILD OFF)
 target_compile_features(ECSCompileFail_Control PUBLIC cxx_std_20)
 target_include_directories(ECSCompileFail_Control PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ECSCompileFail_Control PRIVATE Logger JobSystem ECS)
+target_link_libraries(ECSCompileFail_Control PRIVATE Logger JobSystem Memory ECS)
 add_test(NAME ECSCompileFail.PositiveControl
          COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
                  --target ECSCompileFail_Control --config $<CONFIG>)

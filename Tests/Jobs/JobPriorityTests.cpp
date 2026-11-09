@@ -33,6 +33,8 @@
 #include <thread>
 #include <vector>
 
+#include "LatencyBudget.h"
+
 using namespace JobSystem;
 
 namespace GameEngine::Tests {
@@ -152,7 +154,7 @@ TEST(JobPriorityTest, BackgroundNeverEntersLocalQueuesOrStealRing)
     WorkStealingThreadPool pool(2);
     constexpr uint64_t kBackgroundTasks = 256;
 
-    const auto before = pool.GetTopologyCensusForTests();
+    const auto before = pool.GetStatistics();
 
     std::atomic<uint64_t> ran{0};
     std::atomic<bool> published{false};
@@ -173,7 +175,7 @@ TEST(JobPriorityTest, BackgroundNeverEntersLocalQueuesOrStealRing)
         },
         std::chrono::seconds(10)));
 
-    const auto after = pool.GetTopologyCensusForTests();
+    const auto after = pool.GetStatistics();
     EXPECT_EQ(after.BackgroundPushes - before.BackgroundPushes, kBackgroundTasks);
     EXPECT_EQ(after.BackgroundPops - before.BackgroundPops, kBackgroundTasks);
     // The lane invariant: zero worker-local traffic, zero steals — the only
@@ -269,7 +271,7 @@ TEST(JobPriorityTest, MixedClassConservationUnderMpmcMix)
     constexpr size_t kBatchSize = 64;
 
     WorkStealingThreadPool pool(4);
-    const auto before = pool.GetTopologyCensusForTests();
+    const auto before = pool.GetStatistics();
 
     std::atomic<uint64_t> normalRan{0};
     std::atomic<uint64_t> backgroundRan{0};
@@ -316,7 +318,7 @@ TEST(JobPriorityTest, MixedClassConservationUnderMpmcMix)
         << " queued=" << pool.GetApproximateQueueSize()
         << " bgQueued=" << pool.GetBackgroundQueuedForTests();
 
-    const auto after = pool.GetTopologyCensusForTests();
+    const auto after = pool.GetStatistics();
     EXPECT_EQ(after.BackgroundPushes - before.BackgroundPushes, kPerClass);
     EXPECT_EQ(after.BackgroundPops - before.BackgroundPops, kPerClass);
     EXPECT_EQ(after.GlobalPushes - before.GlobalPushes, kPerClass);
@@ -388,7 +390,8 @@ TEST(JobPriorityTest, BackgroundLostWakeupStressRescueDisabled)
     for (const bool spinOn : {true, false}) {
         WorkStealingThreadPool pool(4);
         pool.SetSpinConfigForTest(spinOn ? 100 : 0, spinOn ? 2 : 0);
-        pool.SetSleepBackstopForTest(500000);
+        pool.SetSleepBackstopForTest(kStressBackstopUs);
+        const LatencyBudget budget = ReadLatencyBudget();
 
         constexpr int kRounds = 2000;
         std::mt19937 rng(spinOn ? 0xA11CEu : 0xB0Bu);
@@ -413,9 +416,10 @@ TEST(JobPriorityTest, BackgroundLostWakeupStressRescueDisabled)
         }
         std::printf("[BackgroundLostWakeup] spin=%d rounds=%d worst=%.1fus over100ms=%d\n",
                     spinOn ? 1 : 0, kRounds, worstUs, over100ms);
-        EXPECT_EQ(over100ms, 0)
+        EXPECT_LT(worstUs, kLostWakeupLineUs)
             << "a background-only publish was not covered by the wake protocol (spin=" << spinOn
             << ")";
+        ExpectWithinBudget(worstUs, kStressLatencyLineUs, budget, "BackgroundLostWakeup worst round");
         pool.Shutdown();
     }
 }
@@ -583,6 +587,7 @@ TEST(JobSystemBench, BENCHMARK_NormalForkUnderBackgroundFlood)
     // Guards the ratio against a freak-fast basis sample; only engages when
     // the basis median dips below ~6.7us (typical warm-storm is ~8-13us).
     constexpr double kBudgetFloorUs = 20.0;
+    const LatencyBudget loadBudget = ReadLatencyBudget();
 
     WorkStealingThreadPool pool(8);
     pool.SetSpinConfigForTest(100, 2); // shipping spin config, deterministic vs env
@@ -598,7 +603,7 @@ TEST(JobSystemBench, BENCHMARK_NormalForkUnderBackgroundFlood)
             if (betweenSamples) {
                 betweenSamples();
             }
-            JobSystem::DispatchAndWait(&pool, tasks.data(), kFanout);
+            JobSystem::ParallelFor(&pool, kFanout, [&](size_t task) { tasks[task](); });
         }
         for (int i = 0; i < iterations; ++i) {
             if (betweenSamples) {
@@ -606,7 +611,7 @@ TEST(JobSystemBench, BENCHMARK_NormalForkUnderBackgroundFlood)
             }
             BusyWaitUs(gapUs(rng));
             const auto t0 = SteadyClock::now();
-            JobSystem::DispatchAndWait(&pool, tasks.data(), kFanout);
+            JobSystem::ParallelFor(&pool, kFanout, [&](size_t task) { tasks[task](); });
             samples.push_back(ElapsedUs(t0, SteadyClock::now()));
         }
         std::sort(samples.begin(), samples.end());
@@ -678,13 +683,10 @@ TEST(JobSystemBench, BENCHMARK_NormalForkUnderBackgroundFlood)
     // above reports the regime; a genuine starvation shows up orders of
     // magnitude out, not at 1.02x of budget.
 #if defined(_WIN32)
-    EXPECT_LE(floodedMedian, budget)
-        << "background flood starved normal forks: flooded=" << floodedMedian
-        << "us basis=" << basisMedian << "us";
+    ExpectWithinBudget(floodedMedian, budget, loadBudget, "background flood starved normal forks (flooded median)");
 #else
-    EXPECT_LE(floodedMedian, budget * 3.0)
-        << "background flood starved normal forks far beyond box noise: flooded="
-        << floodedMedian << "us basis=" << basisMedian << "us";
+    ExpectWithinBudget(floodedMedian, budget * 3.0, loadBudget,
+                       "background flood starved normal forks far beyond box noise (flooded median)");
 #endif
 
     // Conservation epilogue: Shutdown's drain executes the remaining bare

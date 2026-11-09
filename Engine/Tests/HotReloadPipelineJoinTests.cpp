@@ -94,7 +94,6 @@ std::unique_ptr<HotReloadPipeline> MakeGatedPipeline(JobSystem::WorkStealingThre
     pipeline->SetCompilerFactory([gate, compileCount]
                                  { return std::make_unique<GatedCompiler>(gate, compileCount->fetch_add(1) == 0); });
     pipeline->SetAssemblyLoaderFactory([] { return std::make_unique<Tests::MockAssemblyLoader>(); });
-    pipeline->SetSwapperFactory([] { return std::make_unique<Tests::MockAssemblySwapper>(true, 1); });
     return pipeline;
 }
 

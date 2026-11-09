@@ -283,7 +283,6 @@ namespace HybridTestProject {
         
         auto config = createConfig(strategy);
         auto task = CreateIncrementalCompilationTask(
-            threadPool.get(),
             *clrHost,
             config
         );
@@ -357,7 +356,6 @@ TEST_F(HybridCompilationIntegrationTest, FullWorkflowIntegration) {
     Logger::Log::Info("Step 4: Cache management test");
     auto config = createConfig();
     auto task = CreateIncrementalCompilationTask(
-        threadPool.get(),
         *clrHost,
         config
     );
@@ -445,7 +443,6 @@ TEST_F(HybridCompilationIntegrationTest, CacheSystemValidation) {
     
     auto config = createConfig();
     auto task = CreateIncrementalCompilationTask(
-        threadPool.get(),
         *clrHost,
         config
     );

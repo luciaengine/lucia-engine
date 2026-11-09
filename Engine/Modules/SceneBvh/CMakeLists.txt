@@ -35,7 +35,7 @@ if(BUILD_TESTING)
     )
     target_link_libraries(SceneBvhTests PRIVATE
         SceneBvh
-        JobSystem
+        JobSystem Memory
         Logger
         GTest::gtest
         GTest::gtest_main

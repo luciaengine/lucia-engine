@@ -373,6 +373,7 @@ class ScriptManager
      * @return Future fulfilled with the reload outcome, or the exception it threw
      */
     std::future<HotReloadPipeline::PipelineStats> SubmitSyncHotReload();
+    void OnHotReloadRunCompleted(const HotReloadPipeline::PipelineStats& stats);
     void RunSyncHotReload(std::promise<HotReloadPipeline::PipelineStats>& promise);
     void SetCurrentAsyncFuture(std::future<HotReloadPipeline::PipelineStats> future);
 

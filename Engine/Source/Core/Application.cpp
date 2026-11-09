@@ -1,5 +1,7 @@
 #include "Core/Application.h"
 #include "Core/Engine.h"
+#include "Memory/FrameJoinedScope.h"
+#include "Memory/FrameMemory.h"
 #include "Logger/Logger.h"
 #include "Logger/FileSink.h"
 #include "Input/GamepadEdgeTracker.h"
@@ -179,6 +181,9 @@ void Application::Shutdown() {
     }
 
     Logger::Log::Info("Shutting down application");
+#if GE_DEBUG_INSTRUMENTATION
+    Memory::Detail::StopFrameLoop();
+#endif
 
     // Clear the Engine-level non-owning pointer to application-owned input.
     EngineCore::GetInstance().SetInputSystem(nullptr);
@@ -253,6 +258,10 @@ bool Application::Tick() {
         // Optional CPU profiler: closes the frame that just finished — that is
         // the frame its readers see — and opens the one starting here.
         GameEngine::Profiling::CpuProfiler::Get().BeginFrame();
+        Memory::Detail::AdvanceFrameIndex();
+#if GE_DEBUG_INSTRUMENTATION
+        const Memory::Detail::FrameJoinedScope frameJoined(true);
+#endif
 
         // Capture coarse CPU timings for the main frame phases (stored for the next frame's UI).
         auto MsBetween = [](const auto& a, const auto& b) -> double
