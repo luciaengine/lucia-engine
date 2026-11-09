@@ -34,7 +34,7 @@ engine.run();
 
 | Call | What it does |
 |---|---|
-| `Engine.create({ canvas, threads })` | Loads the engine, starts WebGPU on the canvas, and makes a world with a camera, a sun and a sky. |
+| `Engine.create({ canvas, threads, maxDrawingBufferPixels })` | Starts the engine on the canvas. The drawing buffer follows its CSS size times the device pixel ratio, capped at 1,000,000 pixels on phones/tablets by default. Desktop has no default cap; `Infinity` removes it. |
 | `engine.run()` | Starts the frame loop (`engine.pause()` stops it). |
 | `scene.load(url)` | Fetches a glTF or GLB model and places it; resolves to its root entity. Each call places another copy; a URL is fetched once and later calls reuse it. |
 | `scene.create(name)` | Makes an empty entity; `scene.create({ name, mesh: 'plane' })` makes one that draws a built-in mesh (`'plane'`, `'cube'`, `'sphere'`, `'capsule'`, unit-sized, with the default material). |
@@ -54,6 +54,8 @@ Two views are written by hand rather than generated from a component: `entity.tr
 ## A floor and global illumination
 
 `scene.create({ name: 'Floor', mesh: 'plane' })` makes a 1 m plane facing up; scale it through its transform (`floor.transform.scale.set(100, 1, 100)`) and place it at the model's feet (`model.bounds.min.y`). Global illumination is a `DDGIVolume`: a box of light probes, sized and placed by its entity's transform, that lights everything inside it with the sunlight and skylight bouncing off the surfaces around it, so a model's underside picks up the floor's light. `scene.create('GI').set(DDGIVolume, {})` adds one at the engine's defaults; scale it to enclose the model and the floor near it, or set `fit: 'FollowCamera'` to keep it centred on the camera. It costs GPU time every frame. On the web it runs without probe depth for now, so creases and contact shadows can darken; the model viewer offers it as a preview, opened with `?gi=1`.
+
+Create the engine after the canvas is visible and has a nonzero CSS size. A hidden or zero-size canvas is refused; show and size it before calling `Engine.create`.
 
 ## Exposure and emission
 
