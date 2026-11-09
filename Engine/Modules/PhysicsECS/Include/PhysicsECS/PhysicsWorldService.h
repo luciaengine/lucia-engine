@@ -49,6 +49,10 @@ public:
     static uint32 GetLastCharactersComposed();
     static void SetLastCharactersComposed(uint32 count);
 
+    // Transform-driven bodies moved on the most recent simulated frame, excluding MovingPlatform.
+    static uint32 GetLastKinematicBodiesMoving();
+    static void SetLastKinematicBodiesMoving(uint32 count);
+
 private:
     static std::unique_ptr<Physics::PhysicsWorld> s_World;
     static Physics::PhysicsWorldSettings s_Settings;
@@ -57,6 +61,7 @@ private:
     static float32 s_LastStepMs;
     static uint32 s_LastBodiesComposed;
     static uint32 s_LastCharactersComposed;
+    static uint32 s_LastKinematicBodiesMoving;
 };
 
 } // namespace GameEngine::PhysicsECS

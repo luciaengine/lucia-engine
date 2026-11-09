@@ -13,6 +13,7 @@ std::uint64_t PhysicsWorldService::s_WorldGeneration = 0;
 float32 PhysicsWorldService::s_LastStepMs = 0.0f;
 uint32 PhysicsWorldService::s_LastBodiesComposed = 0;
 uint32 PhysicsWorldService::s_LastCharactersComposed = 0;
+uint32 PhysicsWorldService::s_LastKinematicBodiesMoving = 0;
 
 void PhysicsWorldService::Initialize(const Physics::PhysicsWorldSettings& settings)
 {
@@ -23,6 +24,7 @@ void PhysicsWorldService::Initialize(const Physics::PhysicsWorldSettings& settin
     s_LastStepMs = 0.0f;
     s_LastBodiesComposed = 0;
     s_LastCharactersComposed = 0;
+    s_LastKinematicBodiesMoving = 0;
     ++s_WorldGeneration;
     s_World = std::make_unique<Physics::PhysicsWorld>(settings);
     ContactSurfaceTable::Reset();
@@ -42,6 +44,7 @@ void PhysicsWorldService::Shutdown()
     s_LastStepMs = 0.0f;
     s_LastBodiesComposed = 0;
     s_LastCharactersComposed = 0;
+    s_LastKinematicBodiesMoving = 0;
     ++s_WorldGeneration;
     Logger::Log::Info("[PhysicsECS] PhysicsWorld shutdown");
 }
@@ -115,5 +118,14 @@ void PhysicsWorldService::SetLastCharactersComposed(uint32 count)
     s_LastCharactersComposed = count;
 }
 
+uint32 PhysicsWorldService::GetLastKinematicBodiesMoving()
+{
+    return s_LastKinematicBodiesMoving;
+}
+
+void PhysicsWorldService::SetLastKinematicBodiesMoving(uint32 count)
+{
+    s_LastKinematicBodiesMoving = count;
+}
 } // namespace GameEngine::PhysicsECS
 
