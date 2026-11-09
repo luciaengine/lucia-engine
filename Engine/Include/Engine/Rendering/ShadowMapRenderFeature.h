@@ -2,6 +2,7 @@
 
 #include "Engine/Rendering/CascadeMotionScheduler.h"
 #include "Engine/Rendering/CascadeShadowCache.h"
+#include "Engine/Rendering/DepthProducerState.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Engine/Rendering/ShadowMinMaxPyramid.h"
 #include "Engine/Rendering/ShadowReceiverMeasurement.h"
@@ -13,6 +14,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/PerViewReadbackRings.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h" // RGFrame, RGFrameStamp
+#include "Types/FlatMap.h"
 
 #include <algorithm>
 #include <array>
@@ -543,6 +545,9 @@ class ShadowMapRenderFeature : public IRenderFeature
                                                       RenderServices& rs,
                                                       const FeatureDeclareContext& ctx,
                                                       uint32_t cascadeIndex, const char* passName);
+    /// Whether rigid directional depth needs transfer-capable pooled attachments.
+    bool IsRigidCascadeCacheEnabled() const;
+
     Rendering::RenderGraph::RGPass DeclareTransmittancePass(Rendering::RenderGraph::RGFrame& frame,
                                                             RenderServices& rs,
                                                             const FeatureDeclareContext& ctx,
@@ -1223,6 +1228,25 @@ class ShadowMapRenderFeature : public IRenderFeature
     // pooled-physical adopt-change and device rebuild — content identity does
     // not track GPU lifetime.
     CascadeShadowCache m_CascadeShadowCache;
+    CascadeShadowCache m_RigidCascadeCache;
+    struct RigidCascadeCertificate
+    {
+        DepthProducerState Producer;
+        uint64_t WriteGeneration = 0;
+        uint64_t PhysicalId = 0;
+        bool Valid = false;
+    };
+    FlatMap<Rendering::ViewId,
+        std::array<RigidCascadeCertificate, CascadeShadowCache::kSlotsPerView>> m_RigidCascadeCertificates;
+    uint64_t m_RigidCascadeWriteGeneration = 0;
+    struct RigidCascadeFrame;
+    void ConfigureRigidCascadeDepth(RenderGraph::RGPassBuilder& builder, RigidCascadeFrame& pending,
+                                     RenderServices& services, const FeatureDeclareContext& context,
+                                     RenderGraph::RGTexture target);
+    bool PrepareRigidCascadeDepth(RenderGraph::RGPrepareContext& context,
+                                   RigidCascadeFrame& pending, RenderServices& services);
+    void RecordRigidCascadeDepth(RenderGraph::RGContext& context, RigidCascadeFrame& pending);
+    void SubmitRigidCascadeDepth(const RigidCascadeFrame& pending);
 
     // ── Camera-motion round-robin (GE_SHADOW_MOTION_CAP) ──
     // Content-fit invariant: receivers must transform by the fit of the depth
