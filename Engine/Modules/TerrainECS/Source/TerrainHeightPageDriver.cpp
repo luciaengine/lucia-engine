@@ -105,8 +105,8 @@ void RequestTiledTerrainHeightPages(TerrainService& service, const Rendering::ID
     const bool onLattice = samplesX == extent.UnifiedWidth && samplesZ == extent.UnifiedHeight;
     const std::string_view label = name.empty() ? std::string_view("A terrain") : name;
     const bool fitsLattice = samplesX > 1u && samplesZ > 1u && (!generated || onLattice);
-    std::string refusal = fitsLattice ? PageTableRefusal(label, samplesX, samplesZ, pages.Profile()) : std::string();
-    inputs.PagesOnLattice = fitsLattice;
+    std::string refusal = fitsLattice ? DenseDirectoryRefusal(label, samplesX, samplesZ) : std::string();
+    inputs.PagesOnLattice = fitsLattice && refusal.empty();
     inputs.PageTableFits = fitsLattice && refusal.empty();
     // The modifier system builds the overlay for every terrain with CPU pages: the CPU readers take
     // it on every GPU arm, and the GPU pages take it where they are drawn.
@@ -123,7 +123,7 @@ void RequestTiledTerrainHeightPages(TerrainService& service, const Rendering::ID
         refusal = OverlayGridRefusal(label, samplesX, samplesZ, extent.UnifiedWidth, extent.UnifiedHeight);
     // The GPU draws the pages only with a view to choose their levels for.
     request.GpuPages = TerrainHeightIsPaged(inputs) && focalScale > 0.0f;
-    if (!refusal.empty() && (gpuReadsPages || cpuPages))
+    if (!refusal.empty())
         pages.ReportRefusal(request.Terrain, refusal);
     if (!cpuPages)
         return; // not requested this frame: its pages are forgotten at the next update

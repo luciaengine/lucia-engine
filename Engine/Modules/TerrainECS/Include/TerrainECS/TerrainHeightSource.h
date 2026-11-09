@@ -23,8 +23,8 @@ struct TerrainHeightSourceInputs
     /// The terrain's pyramid lies on the tile lattice where the CBT and the modifier overlay need it
     /// (a cooked store on its own grid lies on it too, without an overlay: PageOverlayAllowance).
     bool PagesOnLattice = false;
-    /// The pages are on the lattice and the page table is within the platform's cap
-    /// (PageTableRefusal, HeightPageProfile).
+    /// The field is on the lattice and fits the CPU directory's indices (DenseDirectoryRefusal).
+    /// Its GPU table is dense or uses bounded block pools.
     bool PageTableFits = false;
     /// The device runs the wide CBT arm, the one that binds the page table and the page cache
     /// (bindings 22 and 23). The narrow arm (no 64-bit shader integers, WebGPU) has no storage
@@ -40,8 +40,8 @@ bool TerrainHeightIsPaged(const TerrainHeightSourceInputs& inputs);
 
 /// True when the terrain's CPU height (SurfaceHeightQuery: picks, placement, navigation, the skyline)
 /// is read from its height pages: a page source exists for it on the lattice. The GPU arm, the GPU
-/// page table's cap and pending modifiers do not matter: the CPU pages exist for every terrain that
-/// has a page source, and take its modifier overlay once it is baked.
+/// table's dense threshold and pending modifiers do not matter. A source within the CPU directory's
+/// indexing limit has CPU pages and takes its modifier overlay once it is baked.
 bool TerrainHeightHasCpuPages(const TerrainHeightSourceInputs& inputs);
 
 } // namespace GameEngine::TerrainECS

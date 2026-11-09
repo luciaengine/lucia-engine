@@ -716,7 +716,7 @@ float CBT_AtlasCoarseSample(vec2 uv, float coarseDim, uint frameSlot)
 // Binding 22: the page table, a host-visible ring of equal slots, one per frame slot, written whole
 // when the terrain's table changes (the binding-17 ring discipline); the words per slot ride this
 // frame's params (analyticParams lane CBT_PAGE_RING_WORDS_LANE), never a word of another slot.
-// Layout (mirror CBTLayout.h): [0, 4) CBTPageField, [4] the cache's slot count, [5, 8) zero,
+// Layout (mirror CBTLayout.h): [0, 4) field shape, [4] slot count, [5, 8) floor, tiers, directory,
 // [8, 8 + 4 * CBT_PAGE_MAX_LEVELS) one CBTPageLevel per
 // level, then one arrival fade per cache slot (float bits), then the entries.
 #define CBT_PAGE_HEADER_WORDS 8u
@@ -1025,7 +1025,7 @@ uint CBT_PageRingBase()
     return slot * uint(gParams.Params[slot].frame.analyticParams[CBT_PAGE_RING_WORDS_LANE]);
 }
 
-uint CBT_PageTableEntry(uint index)
+uint CBT_PageTableWord(uint index)
 {
     uint base = CBT_PageRingBase();
     return gPageTable.Words[base + CBT_PAGE_FADE_OFFSET + gPageTable.Words[base + 4u] + index];
@@ -1062,6 +1062,10 @@ CBTPageField CBT_PageFieldOfFrame()
     field.Level0SamplesZ = gPageTable.Words[base + 1u];
     field.LevelCount = gPageTable.Words[base + 2u];
     field.SlotsPerRow = gPageTable.Words[base + 3u];
+    field.FloorLevel = gPageTable.Words[base + 5u];
+    field.TierCount = gPageTable.Words[base + 6u];
+    field.DirectoryOffset = gPageTable.Words[base + 7u];
+    field.Pad = 0u;
     return field;
 }
 #endif
