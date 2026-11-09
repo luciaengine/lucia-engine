@@ -229,7 +229,7 @@ class CBTRenderFeature final : public Engine::Renderer::IRenderFeature
     // A retire also means the tree grew on a terrain that is gone, so it marks the tree for a
     // restart (EnsureSeeded). Called render-side before EnsureSeeded and BuildFrameParams. No-op
     // when nothing retired.
-    void ConsumeTerrainRetire(uint64_t retireGeneration);
+    bool ConsumeTerrainRetire(uint64_t retireGeneration);
 
     // Gathers this frame's camera (from the view) + terrain params (the first active
     // terrain from TerrainRenderFeature — the SAME heightmap/world-size CDLOD uses)

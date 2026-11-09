@@ -30,6 +30,41 @@
 using namespace GameEngine::Rendering;
 using GameEngine::Rendering::Tests::ScopedEnvVar;
 
+TEST(DeviceDiagnostics, NonReadyQueueBatchDoesNotReportSubmission)
+{
+    const ScopedEnvVar headless("GE_HEADLESS_TEST", "1");
+    DeviceDesc description{};
+    description.preferredAPI = GraphicsAPI::Vulkan;
+    description.enableDebugLayer = true;
+    description.enableSwapchain = false;
+    auto device = DeviceFactory::CreateDevice(description);
+    if (!device)
+        GTEST_SKIP() << "Vulkan device unavailable";
+    device->ResetValidationStats();
+    if (!device->Initialize(description))
+        GTEST_SKIP() << "headless Vulkan initialization unavailable";
+    auto commands = device->CreateCommandList(IDevice::QueueType::Graphics);
+    ASSERT_TRUE(commands);
+    const auto before = device->LastGraphicsSubmissionToken();
+    EXPECT_FALSE(device->QueueSubmit(IDevice::QueueType::Graphics, {commands.get()}, {}, {}));
+    const auto refused = device->LastGraphicsSubmissionToken();
+    EXPECT_EQ(refused.sem, before.sem);
+    EXPECT_EQ(refused.value, before.value);
+    EXPECT_TRUE(device->QueueSubmit(IDevice::QueueType::Graphics, {}, {}, {}));
+    commands->Begin();
+    commands->End();
+    ASSERT_TRUE(device->QueueSubmit(IDevice::QueueType::Graphics, {commands.get()}, {}, {}));
+    const auto submitted = device->LastGraphicsSubmissionToken();
+    ASSERT_TRUE(submitted.IsValid());
+    EXPECT_GT(submitted.value, before.value);
+    ASSERT_TRUE(device->WaitGpuSyncToken(submitted));
+    const auto validation = device->GetValidationStats();
+    RecordProperty("validation_enabled", validation.Enabled ? 1 : 0);
+    EXPECT_EQ(validation.ErrorCount, 0u);
+    for (const auto& entry : validation.Vuids)
+        EXPECT_FALSE(entry.IsError) << entry.Vuid << ": " << entry.FirstMessage;
+}
+
 TEST(DeviceDiagnostics, HdrModeParsingAndFallbacks)
 {
     EXPECT_EQ(HdrOutputModeFromString("HDR10 PQ"), HdrOutputMode::HDR10_PQ);
