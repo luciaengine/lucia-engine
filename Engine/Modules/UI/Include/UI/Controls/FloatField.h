@@ -101,6 +101,7 @@ private:
     void BeginDragToChange(float mouseX);
     void UpdateDragToChange(float mouseX);
     void EndDragToChange();
+    void CancelDragToChange();
 
     inline static bool m_BigNumberSpacingEnabled = true;
     bool m_UseCompactFormat = true;

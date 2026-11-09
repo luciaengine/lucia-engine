@@ -1,4 +1,5 @@
 #include "PhysicsECS/PhysicsWorldService.h"
+#include "PhysicsECS/PhysicsEntityEventCallbacks.h"
 
 #include "Logger/Logger.h"
 #include "Core/Engine.h"
@@ -37,6 +38,7 @@ void PhysicsWorldService::Initialize(const Physics::PhysicsWorldSettings& settin
 
 void PhysicsWorldService::Shutdown()
 {
+    PhysicsEntityEventCallbacks::ClearAll();
     s_World.reset();
     ContactSurfaceTable::UnsubscribeFromAssetChanges();
     ContactSurfaceTable::Reset();

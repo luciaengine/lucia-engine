@@ -74,6 +74,8 @@ class PlayModeManager
     // Explicit entrypoints
     void EnterPlayMode();
     void ExitPlayMode();
+    // Stop after running script callbacks return, at the next Tick.
+    void RequestExitPlayMode();
 
     // Change review (valid when state == ChangeReview)
     bool HasPendingChanges() const;
@@ -138,6 +140,7 @@ class PlayModeManager
 
   private:
     PlayModeState m_State = PlayModeState::Edit;
+    bool m_ExitRequested = false;
     ECS::World* m_World = nullptr; // not owned
     SceneEditorController* m_SceneEditor = nullptr; // not owned
     UndoRedoService* m_UndoRedo = nullptr; // not owned

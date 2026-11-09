@@ -71,6 +71,7 @@ private:
     void PollScreenshot();
     void RegisterManagedSystemBridge();
     void PollRuntimeDisplayControls();
+    void ApplyPointerLock();
     bool ToggleRuntimeHdrOutput();
     bool ApplyRuntimeHdrOutput(Rendering::HdrOutputMode mode);
 #if GE_PLAYER_MOVIE_RECORDER

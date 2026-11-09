@@ -667,6 +667,7 @@ if(BUILD_TESTING)
     # AbiNativeSmokeTest links the exports but has no host, so every call there
     # stops at not-found before a type is ever examined.
     ge_add_ui_test(UITests
+        ${CMAKE_CURRENT_SOURCE_DIR}/Tests/PointerLockTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ElementBuilderTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ModuleOwnedHandlerRevocationTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/Tests/ElementFactoryOwnershipTests.cpp

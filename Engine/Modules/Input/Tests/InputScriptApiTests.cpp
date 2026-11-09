@@ -138,3 +138,16 @@ TEST(InputScriptApiTests, KeysWithOppositeScalesMakeOneAxis)
     input.Update(0.016f);
     EXPECT_FLOAT_EQ(Script::GetActionState(input, move).value, 1.0f);
 }
+
+TEST(InputScriptApiTests, PointerLockFollowsTheRequestAndTheHostsGrant)
+{
+    InputSystem input{SinkRole::Gameplay};
+    IRawInputSink& host = input;
+
+    Script::LockPointer(input);
+    EXPECT_EQ(Script::GetPointerLockState(input), PointerLockState::Pending);
+    host.OnPointerLock(true);
+    EXPECT_EQ(Script::GetPointerLockState(input), PointerLockState::Locked);
+    Script::UnlockPointer(input);
+    EXPECT_EQ(Script::GetPointerLockState(input), PointerLockState::Unlocked);
+}

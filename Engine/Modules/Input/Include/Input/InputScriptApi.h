@@ -262,6 +262,18 @@ struct ActionBinding
     int forbiddenMods = 0;
 };
 
+/// Where the game's pointer lock stands.
+// @ge-script
+enum class PointerLockState : std::uint8_t
+{
+    // The game does not ask for the lock.
+    Unlocked,
+    // The game asks and the host has not granted it.
+    Pending,
+    // The host holds the pointer locked for the game.
+    Locked,
+};
+
 } // namespace GameEngine::Input
 
 namespace GameEngine::Input::Script
@@ -310,6 +322,20 @@ bool WasMouseButtonReleased(InputSystem& input, MouseButton button);
 /// as GetMousePosition. The value stays unchanged for the rest of that frame.
 // @ge-script @ge-context @ge-engine-thread
 Mathematics::Vector2 GetMouseDelta(InputSystem& input);
+
+/// Asks the host to hide the cursor and hold the pointer in the window, so the mouse steers
+/// the game. The request stays until UnlockPointer or the end of the session.
+// @ge-script @ge-context @ge-engine-thread
+void LockPointer(InputSystem& input);
+
+/// Withdraws the pointer lock request.
+// @ge-script @ge-context @ge-engine-thread
+void UnlockPointer(InputSystem& input);
+
+/// Where the pointer lock stands: Unlocked while the game does not ask, Pending while it
+/// asks and the host has not granted the lock, Locked while the host holds the pointer.
+// @ge-script @ge-context @ge-engine-thread
+PointerLockState GetPointerLockState(InputSystem& input);
 
 /// The state of an action this frame, from the enabled contexts that hold it.
 // @ge-script @ge-context @ge-engine-thread

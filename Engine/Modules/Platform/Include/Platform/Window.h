@@ -218,6 +218,26 @@ class Window
     void SetCursor(CursorType type);
     void ResetCursor(); // restore default arrow
 
+    // What a locked cursor reports as it moves.
+    enum class LockedCursorMotion
+    {
+        // Raw, unaccelerated device counts where the platform offers them
+        // (Windows, X11), otherwise the cursor's own motion. For a game that
+        // steers a camera with the mouse.
+        Raw,
+        // The cursor's own accelerated motion in window coordinates, the same
+        // motion an unlocked drag sees. For a UI drag that must not change feel
+        // when the lock begins.
+        Accelerated,
+    };
+
+    // Hides the cursor and holds it in this window: moves arrive as positions without bound, and
+    // UnlockCursor shows the cursor again where the lock began. Locking a locked window changes only
+    // its motion. The browser build does not lock.
+    void LockCursor(LockedCursorMotion motion);
+    void UnlockCursor();
+    bool IsCursorLocked() const { return m_CursorLocked; }
+
     // True fullscreen toggle backed by glfwSetWindowMonitor.
     void SetFullscreen(bool enable);
     bool IsFullscreen() const { return m_IsFullscreen; }
@@ -254,6 +274,8 @@ class Window
 #endif
     void* m_UserPtr = nullptr;
     struct GLFWcursor* m_Cursor = nullptr; // custom cursor (if set)
+    bool m_CursorLocked = false;
+    bool m_CursorHidden = false;
     float m_UiContentScale = 0.0f;         // 0 = unset; otherwise pushed by UI layer
 
     // Fullscreen bookkeeping for SetFullscreen.

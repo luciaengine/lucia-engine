@@ -11,10 +11,15 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace GameEngine
 {
+
+// Returning a view into a temporary string would outlive that string.
+template <class Text>
+concept TemporaryString = std::same_as<std::remove_cvref_t<Text>, std::string> && !std::is_lvalue_reference_v<Text>;
 
 // The text in a fixed char buffer up to its first null byte, or the whole buffer
 // when it holds none. Component string fields are such buffers, and a raw component
@@ -160,6 +165,9 @@ inline std::string_view TrimWhitespaceView(std::string_view s)
     return s;
 }
 
+template <TemporaryString Text>
+std::string_view TrimWhitespaceView(Text&& text) = delete;
+
 // Copies `value` into a fixed char array, truncated so the array always ends in a terminator,
 // and zero-fills every byte after the copied text.
 template <std::size_t Capacity>
@@ -258,6 +266,9 @@ inline std::vector<std::string_view> Split(std::string_view text, char delimiter
     fields.push_back(text.substr(start));
     return fields;
 }
+
+template <TemporaryString Text>
+std::vector<std::string_view> Split(Text&& text, char delimiter) = delete;
 
 /// The elements of `parts` (anything that converts to std::string_view) with `separator` between
 /// each pair: Join({"a", "b"}, ", ") is "a, b". An empty range gives an empty string.
