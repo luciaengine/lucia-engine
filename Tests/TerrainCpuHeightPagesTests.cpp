@@ -3,7 +3,7 @@
 #include "TerrainECS/TerrainService.h"
 
 #include "PageStreaming/GeneratedHeightPageProvider.h"
-#include "PageStreaming/HeightPageOverlay.h"
+#include "PageStreaming/Height/HeightPageLayer.h"
 #include "PageStreaming/Height/HeightStoreCache.h"
 #include "PageStreaming/PageResidency.h"
 #include "PageStreaming/PageStore/PageStoreFormat.h"
@@ -343,7 +343,7 @@ constexpr uint32 kGeneration = 2;
 // The noise terrain paged whole (120 pages, within a quarter of 512 slots: every level pinned), with
 // the overlay `overlay` at version `version`.
 PagedTerrainRequest PinnedNoiseRequest(const PageStreaming::PageSource& source,
-                                       std::shared_ptr<const PageStreaming::HeightPageOverlay> overlay, uint64 version)
+                                       std::shared_ptr<const PageStreaming::HeightPageLayer> overlay, uint64 version)
 {
     PagedTerrainRequest request;
     request.Terrain = kTerrain;
@@ -358,12 +358,13 @@ PagedTerrainRequest PinnedNoiseRequest(const PageStreaming::PageSource& source,
     return request;
 }
 
-std::shared_ptr<const PageStreaming::HeightPageOverlay> RaisedOverlay(const PageStreaming::PageSampleRect& rect,
+std::shared_ptr<const PageStreaming::HeightPageLayer> RaisedOverlay(const PageStreaming::PageSampleRect& rect,
                                                                       float32 delta)
 {
-    return std::make_shared<const PageStreaming::HeightPageOverlay>(
-        PageStreaming::BuildPageStoreLevels(kSamples, kSamples), rect,
-        std::vector<float32>(static_cast<std::size_t>(rect.Width()) * rect.Height(), delta));
+    auto layer = std::make_shared<PageStreaming::HeightPageLayer>(
+        1u, PageStreaming::BuildPageStoreLevels(kSamples, kSamples));
+    layer->WriteLevel0(0, rect, std::vector<float32>(static_cast<std::size_t>(rect.Width()) * rect.Height(), delta));
+    return layer;
 }
 
 // Runs `frames` frames of `request`, keeping the latest upload of every level-0 page.

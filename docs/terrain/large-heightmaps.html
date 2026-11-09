@@ -219,6 +219,12 @@ at 1 m</td></tr>
 0.25 m</td><td>128 MiB: about 1.5 km&sup2; at 0.25 m</td></tr>
 </tbody>
 </table>
+<p>Height modifiers use sparse delta pages. Separate modifier footprints keep only their affected pages,
+  including apron samples and coarser levels; the empty area between distant footprints consumes no
+  delta pages. Editing a footprint updates its pages and refilters its ancestors. Pages whose deltas
+  become zero are released. A move across a large gap rebuilds sparse footprints instead of allocating
+  a delta grid across the gap. The memory cap counts all stored pages. For example, a 1 km square footprint
+  with the bake margin on a 0.25 m lattice can require about 91 MiB, including its coarser pages.</p>
 <p>A terrain over one of these limits draws from its height texture, and the log states why, once, with the fix:</p>
 <ul>
   <li>Too large: <i>"&lt;terrain&gt; (X x Z samples) does not stream its height on this platform: its page
