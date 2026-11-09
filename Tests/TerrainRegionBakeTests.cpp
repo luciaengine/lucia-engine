@@ -19,7 +19,7 @@
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "PageStreaming/HeightPageOverlay.h"
-#include "PageStreaming/PageStoreFormat.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
 #include "Terrain/Heightfield.h"
 #include "TerrainECS/TerrainModifierComponents.h"
 #include "TerrainECS/TerrainModifierSystem.h"
@@ -3788,11 +3788,9 @@ TEST(TerrainRegionBake, ATiledBaseGoesStaleOnlyWhenTheAuthoredBaseChanges)
     }
 }
 
-// The extraction system's half of the fix. No suite runs TerrainExtractionSystem::Update's
-// tiled path (EditorTests' TerrainMaterialLibraryEditorScene runs Update against a device, on an
-// untiled scene). That path provisions every tiled terrain through BuildTiledTerrainConfig and
-// decides every re-provision with CompareTiledTerrainConfig and StepTiledReprovision, and the
-// three tests below hold those to the rule.
+// Tiled extraction carries the authored base through BuildTiledTerrainConfig.
+// CompareTiledTerrainConfig and StepTiledReprovision decide when that configuration is stale.
+// TerrainHeightmapExtractionTests also exercises this path against a graphics device.
 namespace
 {
 // The component a 2 x 1 tiled terrain (2048 x 1024 m at 1 sample/m) is authored with.

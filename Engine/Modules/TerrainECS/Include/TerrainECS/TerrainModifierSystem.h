@@ -11,6 +11,7 @@
 #include "ECS/ChangeFilter.h"
 #include "ECS/Systems.h"
 #include "ECS/ECS.h"
+#include "Mathematics/AnonymousStruct.h"
 #include "Mathematics/Vector3.h"
 #include "Spline/SplineData.h"
 #include "Types/StringId.h"
@@ -293,7 +294,9 @@ struct ResolvedEffect
         ModifierPaintLayerParams PaintLayer;
         ModifierSurfaceRulesParams Rules;
         ModifierGroundClaimParams GroundClaim;
+        GE_ANONYMOUS_STRUCT_BEGIN
         struct { float32 HeightScale; float32 DensityScale; } Grass;
+        GE_ANONYMOUS_STRUCT_END
     };
 
     ResolvedEffect() : Flatten{} {}

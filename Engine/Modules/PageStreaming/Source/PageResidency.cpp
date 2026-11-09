@@ -4,7 +4,7 @@
 
 #include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "PageStreaming/PageLoader.h"
-#include "PageStreaming/PageStoreReader.h"
+#include "PageStreaming/PageStore/PageStoreReader.h"
 
 #include "Logger/Logger.h"
 
