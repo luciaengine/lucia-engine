@@ -2539,21 +2539,6 @@ ViewActivation ActivateDockedView(EditorApplication& app,
 // Registration
 // ---------------------------------------------------------------------------
 
-inline bool ApplyMainSceneViewPose(EditorApplication& app, const SceneViewCameraPose& pose)
-{
-    if (app.m_Windows.empty() || !app.m_Windows[0]->scene)
-        return false;
-    app.m_Windows[0]->scene->SetCameraPose(pose);
-
-    // Push the new angles into the SceneViewPanel — see set_camera.
-    if (auto* root = app.m_Windows[0]->ui->GetRootElement())
-        if (auto* mount = dynamic_cast<Mount*>(root->FindById(EditorPanelIds::MountSceneView)))
-            if (auto* svPanel = dynamic_cast<SceneViewPanel*>(mount->GetTarget()))
-                svPanel->SetYawPitch(pose.YawDeg, pose.PitchDeg);
-    return true;
-}
-
-
     static constexpr const char* kRgNoFrameMsg =
         "No live render graph (headless, or no frame rendered yet)";
 
