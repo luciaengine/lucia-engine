@@ -117,6 +117,53 @@ TEST(AnimationClipCompression, FailedLoadsAndRebuildsRetainThePublishedClip)
     EXPECT_EQ(clip->GetRuntimeData(), original);
 }
 
+TEST(AnimationClipCompression, GltfLoadsRetainTheConfiguredSourceIdentity)
+{
+    const String source = R"({"asset":{"version":"2.0"},
+"buffers":[{"byteLength":32,"uri":"data:application/octet-stream;base64,AAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAA="}],
+"bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":8},{"buffer":0,"byteOffset":8,"byteLength":24}],
+"accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"SCALAR","min":[0],"max":[1]},
+{"bufferView":1,"componentType":5126,"count":2,"type":"VEC3"}],"nodes":[{"name":"Root"}],
+"animations":[
+{"samplers":[{"input":0,"output":1,"interpolation":"LINEAR"}],"channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}]},
+{"samplers":[{"input":0,"output":1,"interpolation":"LINEAR"}],"channels":[{"sampler":0,"target":{"node":0,"path":"translation"}}]}]})";
+    const Vector<uint8> bytes(source.begin(), source.end());
+    const std::filesystem::path container = "embedded-source.gltf";
+    AnimationClip clip(GUID::Generate(), container);
+    clip.SetSelectedAnimationIndex(1u);
+    clip.SetSourceInfo(container, 1u);
+    ASSERT_TRUE(clip.LoadFromData(bytes));
+    EXPECT_EQ(clip.GetSourcePath(), container);
+    EXPECT_EQ(clip.GetSourceAnimationIndex(), 1u);
+    ASSERT_TRUE(clip.LoadFromData(bytes));
+    EXPECT_EQ(clip.GetSourcePath(), container);
+    EXPECT_EQ(clip.GetSourceAnimationIndex(), 1u);
+    const auto accepted = clip.GetRuntimeData();
+    const Vector<uint8> invalid{'{', '?'};
+    EXPECT_FALSE(clip.LoadFromData(invalid));
+    EXPECT_EQ(clip.GetRuntimeData(), accepted);
+    EXPECT_EQ(clip.GetSourcePath(), container);
+    EXPECT_EQ(clip.GetSourceAnimationIndex(), 1u);
+}
+
+TEST(AnimationClipCompression, EditableSourceMetadataRemainsAuthoritative)
+{
+    const auto source = MakeClip();
+    Vector<uint8> bytes;
+    ASSERT_TRUE(source->SaveToData(bytes));
+    AnimationClip clip(GUID::Generate(), "editable.anim");
+    clip.SetSourceInfo("configured.glb", 1u);
+    ASSERT_TRUE(clip.LoadFromData(bytes));
+    EXPECT_TRUE(clip.GetSourcePath().empty());
+    EXPECT_EQ(clip.GetSourceAnimationIndex(), 0u);
+    const std::filesystem::path authored = "authored.glb";
+    source->SetSourceInfo(authored, 2u);
+    ASSERT_TRUE(source->SaveToData(bytes));
+    ASSERT_TRUE(clip.LoadFromData(bytes));
+    EXPECT_EQ(clip.GetSourcePath(), authored);
+    EXPECT_EQ(clip.GetSourceAnimationIndex(), 2u);
+}
+
 TEST(AnimationClipCompression, ConcurrentFirstAuthoringReadsShareOneMaterializedView)
 {
     const auto clip = MakeClip();
