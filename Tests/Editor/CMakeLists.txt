@@ -5,6 +5,8 @@
 # the new UI module via AssetRuntime's ParserRegistry (UILayoutAsset/UIStyleAsset
 # registration).
 set(EDITOR_TEST_SOURCES
+    JobSystemReportTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/JobSystem/JobSystemReport.cpp
     GameViewPointerLockTests.cpp
     InspectorLabelDragPointerLockTests.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/PlayMode/GameViewPointerLock.cpp

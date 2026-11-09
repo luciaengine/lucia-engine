@@ -9,7 +9,7 @@ An arena that still holds a destructor from a reloaded native module keeps that 
 
 `Memory::ObjectPool<T>` retains fixed-size slots for repeated object creation and destruction. `Memory::RangeAllocator` manages contiguous ranges and supports stamped releases. `Memory::TrackedBytes` records externally owned byte counts.
 
-`Memory::SnapshotStats()` copies allocator names, kinds, CPU/GPU residency, used bytes, retained bytes, high-water values, and block counts. Take snapshots for diagnostics rather than from a frame hot path.
+`Memory::SnapshotStats()` copies allocator names, kinds, CPU/GPU residency, used bytes, retained bytes, high-water values, and block counts. Take snapshots for diagnostics rather than from a frame hot path. The editor's `get_memory_stats` MCP tool and debug method returns allocator records, scratch totals, the frame number, and the resident process size where available. Scratch and frame records include OS thread IDs and names where the platform can read them.
 
 ## Scratch scopes
 

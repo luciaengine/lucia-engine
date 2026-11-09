@@ -66,6 +66,6 @@ Pool shutdown stops admission, cancels queued handle jobs, executes queued bare 
 
 ## Diagnostics and temporary storage
 
-`GetStatistics()` snapshots queue counts, executed tasks, and thread occupancy. It takes locks and allocates, so use it for diagnostics. `SnapshotOccupancy()` fills caller-owned storage when only occupancy is needed.
+`GetStatistics()` snapshots queue counts, executed tasks, and thread occupancy. It takes locks and allocates, so use it for diagnostics. The editor exposes this snapshot through the `get_job_system` MCP tool and debug method. `SnapshotOccupancy()` fills caller-owned storage when only occupancy is needed.
 
 Joined `Run` and `ParallelFor` work inherits the frame-memory scope of its caller. Asynchronous work does not. Follow the lifetime rules in [Native memory allocators](memory-allocators.mdx#frame-memory).
