@@ -9,7 +9,13 @@ If you want “tell me when **this sword** hits something” (or “when **this 
 - `PhysicsECS/PhysicsEntityEventCallbacks.h`
 - `GameEngine::PhysicsECS::PhysicsEntityEventCallbacks`
 
-This avoids iterating/buffering every collision each frame, and **only enables backend event generation when something is subscribed**.
+This routes events to the subscribed entities without requiring gameplay to buffer every collision.
+
+Callbacks run on the updating thread after simulation. A callback may subscribe or unsubscribe itself or another handler. A subscription that ends during delivery receives no further calls, including later calls in that delivery.
+
+Each subscription accepts an optional third callback, `ended`, which runs once when that subscription ends. `Unsubscribe`, `UnsubscribeAllForEntity`, and `ClearAll` end subscriptions. Shutting down the physics world also ends them. Use this callback to release resources held for the subscription.
+
+`EntityContactEvent::normal` points from `other` into `self` in world space. An object resting on ground receives an upward normal. The ground receives the opposite normal.
 
 ### Example: sword hit detection (solid contact Begin/End)
 
