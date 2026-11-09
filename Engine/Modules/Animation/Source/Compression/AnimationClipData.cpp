@@ -113,15 +113,8 @@ bool SampleTrack(std::span<const uint32> words, const AnimationClipData::Track& 
     if (track.KeyCount == 0u)
         return false;
     uint32 lower = 0u;
-    uint32 upper = track.KeyCount;
-    while (lower < upper)
-    {
-        const uint32 middle = lower + (upper - lower) / 2u;
-        if (ReadFloat(words, track.WordOffset + middle * track.WordsPerKey) < time)
-            lower = middle + 1u;
-        else
-            upper = middle;
-    }
+    while (lower < track.KeyCount && ReadFloat(words, track.WordOffset + lower * track.WordsPerKey) < time)
+        ++lower;
     const uint32 first = lower == 0u ? 0u : lower - 1u;
     const uint32 second = std::min(lower, track.KeyCount - 1u);
     const size_t firstOffset = track.WordOffset + first * track.WordsPerKey;
