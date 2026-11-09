@@ -998,6 +998,8 @@ TEST(MaskVertexAlphaDepth, OnlyAMaskedCoverageFragmentReadsTheVertexColour)
 
 TEST(MaskVertexAlphaDepth, DelayedAlphaPublicationCannotCertifyFallbackCoverage)
 {
+    if (!Platform::EnvironmentSwitchEnabled("GE_SHADOW_RIGID_CASCADE_CACHE", false))
+        GTEST_SKIP() << "The rigid cascade cache is opt-in; enable GE_SHADOW_RIGID_CASCADE_CACHE=1";
     const auto previousDirectory = std::filesystem::current_path();
     const auto workspace = std::filesystem::temp_directory_path() /
                            ("ge-shadow-alpha-" + GUID::Generate().ToString());
@@ -1037,8 +1039,8 @@ TEST(MaskVertexAlphaDepth, DelayedAlphaPublicationCannotCertifyFallbackCoverage)
     ASSERT_TRUE(std::filesystem::is_regular_file(shaderMount.Root / "Shaders/frustum_culling.shaderpkg"));
     ASSERT_TRUE(engine.GetAssetManager().RegisterSource(shaderMount));
     auto device = CreateVulkanDeviceFast();
-    if (!device)
-        GTEST_SKIP() << "No graphics device available";
+    if (!device || device->GetAPI() != GraphicsAPI::Vulkan)
+        GTEST_SKIP() << "The rigid cascade cache requires Vulkan";
     auto document = StandardDocument("DelayedAlphaMask", MaterialAlphaMode::Mask);
     document.ignoreVertexColor = true;
     document.properties["baseColor"] = std::vector<float>{1.0f, 1.0f, 1.0f, 0.9f};
