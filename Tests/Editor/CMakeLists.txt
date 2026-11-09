@@ -915,6 +915,7 @@ set(EDITOR_TEST_SOURCES
 	# loader + real TerrainExtractionSystem against a Vulkan device, asserting on the mapped
 	# table SSBO bytes. Fixture: Engine/Tests/Fixtures/TerrainMatlibScene (StageTestAssets).
 	TerrainMaterialLibraryEditorSceneTests.cpp
+	TerrainHeightmapExtractionTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Terrain/TerrainMaterialLibraryMint.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetCreation.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/EntityMaterialTextureAssign.cpp
