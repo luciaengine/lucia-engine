@@ -2010,6 +2010,15 @@ endif()
                 ${CMAKE_SOURCE_DIR}/Packages/eztree/Native)
             ge_stage_shader_graph_nodes(EngineMaterialTests)
 
+            # The material and declare suites share the CBT shader-source fixture.
+            add_custom_target(StageCBTTestShaders
+                COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+                        "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT"
+                        "$<TARGET_FILE_DIR:EngineMaterialTests>/Assets/Shaders/CBT"
+                COMMENT "Staging CBT shader sources for rendering tests"
+                VERBATIM)
+            add_dependencies(EngineMaterialTests StageCBTTestShaders)
+
             # Textures: the texture service and bindless indexing, alpha probes, the
             # import and package cooks, KTX2 loading, SVG rasterization, video textures.
             ge_add_render_services_test(EngineTextureTests
@@ -2752,6 +2761,7 @@ endif()
 			    )
 			    ge_set_output_tests(RenderPipelineDeclareTests)
 			    ge_stage_runtime_dependencies(RenderPipelineDeclareTests)
+			    add_dependencies(RenderPipelineDeclareTests StageCBTTestShaders)
 			    # The grass-placement device oracles compile terrain_grass_place.comp at runtime;
 			    # it #includes Includes/bindless_textures.glsl (IncludeRoot), cbt_atlas.glsl (CBT
 			    # dir) and grass_placement.glsl (its own dir). Stage all three next to the test exe so EnsureComputePipeline's exe-relative
@@ -2764,9 +2774,6 @@ endif()
 			        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
 			                "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Includes"
 			                "$<TARGET_FILE_DIR:RenderPipelineDeclareTests>/Assets/Shaders/Includes"
-			        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-			                "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT"
-			                "$<TARGET_FILE_DIR:RenderPipelineDeclareTests>/Assets/Shaders/CBT"
 			        COMMENT "Staging grass compact + atlas shaders for RenderPipelineDeclareTests device oracles"
 			        VERBATIM)
 			    # The CBT terrain declare tests bring up the CBT feature, which loads its compiled kernels
