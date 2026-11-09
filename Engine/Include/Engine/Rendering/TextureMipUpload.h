@@ -18,7 +18,8 @@ struct TextureCookSettings;
 // `srgb` selects the builder's sRGB, alpha-weighted filter; `gpuFormat` must be an
 // RGBA8 format. Returns an invalid handle when the device refuses the texture or an
 // alpha-coverage chain fails; `outLevels` reports the levels uploaded (1 when no
-// resampler is compiled in).
+// resampler is compiled in), or zero when preparation fails. A rejected upload
+// destroys the new texture and returns an invalid handle.
 Rendering::TextureHandle UploadRgba8WithMips(Rendering::IDevice* device,
                                              const uint8_t* rgba, uint32_t width, uint32_t height,
                                              Rendering::TextureFormat gpuFormat,
