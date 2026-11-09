@@ -1000,6 +1000,7 @@ target_include_directories(TerrainRegionBakeTests PRIVATE
   # GlslShim.h, and the generated headers the extraction above writes.
   ${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Tests
   ${CMAKE_CURRENT_BINARY_DIR}/generated
+  ${CMAKE_SOURCE_DIR}/Engine/Modules/Memory/Testing
 )
 ge_set_output_tests(TerrainRegionBakeTests)
 ge_stage_runtime_dependencies(TerrainRegionBakeTests)

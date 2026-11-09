@@ -17,6 +17,7 @@
 #include "ECS/World.h"
 #include "ECSModules/Rendering/Systems/TransformHierarchySystem.h"
 #include "JobSystem/WorkStealingThreadPool.h"
+#include "Memory/Testing/ScopedAllocationFault.h"
 #include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "PageStreaming/Height/HeightPageLayer.h"
 #include "PageStreaming/PageStore/PageStoreFormat.h"
@@ -7482,4 +7483,38 @@ TEST(TerrainRegionBake, TwoDistantModifierFootprintsFitTheirSparsePageBudgetWith
     EXPECT_NE(LayerDelta(*tiled->PageOverlay, 0, 1800, 1800), 0.0f);
     EXPECT_TRUE(tiled->PageOverlay->PageDeltas(PageStreaming::PageAddress{0, 0, 7, 7}).empty());
     EXPECT_EQ(LayerDelta(*tiled->PageOverlay, 0, 1000, 1000), 0.0f);
+}
+
+TEST(TerrainRegionBake, MovingAModifierAcrossADistantGapNeverAllocatesTheGapsDenseDeltaGrid)
+{
+    ScopedTerrainService scoped;
+    auto& service = TerrainService::Get();
+    const auto handle = CreateResidentSquareTiledTerrain(service, 2);
+    auto* tiled = service.GetTiledTerrainData(handle);
+    ASSERT_NE(tiled, nullptr);
+    tiled->PageOverlayByteCap = kDesktopHeightPages.OverlayByteCap;
+    ECS::World world;
+    RegisterModifierLifecycleEvents(world);
+    CreateSquareTiledTerrainEntity(world, handle, 2);
+    const auto modifier = CreateFlattenModifier(world, 200.0f, 200.0f, 35.0f, 20.0f);
+    TerrainModifierSystem system;
+    system.Update(world, 1.0f / 60.0f);
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    const PageStreaming::PageSampleRect initial = tiled->PageOverlay->Extent(0).value();
+    tiled->PageOverlayByteCap = tiled->PageOverlay->Bytes() * 3u;
+    constexpr uint32 kMoveSamples = 1600u;
+    auto* transform = world.GetComponentForWrite<Components::WorldTransform>(modifier);
+    transform->matrix[12] += static_cast<float32>(kMoveSamples);
+    transform->matrix[14] += static_cast<float32>(kMoveSamples);
+    const std::size_t denseBytes = static_cast<std::size_t>(initial.Width() + kMoveSamples) *
+                                   (initial.Height() + kMoveSamples) * sizeof(float32);
+    {
+        Memory::Testing::ScopedAllocationFault fault{denseBytes, 1, Memory::Testing::FaultRepeat::Once};
+        EXPECT_NO_THROW(system.Update(world, 1.0f / 60.0f));
+        EXPECT_FALSE(fault.Fired()) << "a sparse edit allocated the empty diagonal gap";
+    }
+    ASSERT_NE(tiled->PageOverlay, nullptr);
+    EXPECT_LE(tiled->PageOverlay->Bytes(), tiled->PageOverlayByteCap);
+    EXPECT_EQ(LayerDelta(*tiled->PageOverlay, 0, 200, 200), 0.0f);
+    EXPECT_NE(LayerDelta(*tiled->PageOverlay, 0, 1800, 1800), 0.0f);
 }
