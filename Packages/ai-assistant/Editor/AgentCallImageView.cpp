@@ -21,11 +21,6 @@ namespace
 // UIEvent::Button for the left mouse button.
 constexpr int kLeftButton = 0;
 
-// The size the image is asked for: the thumbnail service's largest cached image of a texture
-// file (TextureThumbnailHandler::kThumbLongEdge, its long edge), downscaled once off the UI
-// thread and kept on disk, never the capture itself.
-constexpr int kImageRequestPx = 512;
-
 bool SetPx(UIElement& element, const StyleProp<StyleLength>& property, float px)
 {
     const auto existing = element.Overrides().Get(property);
@@ -53,8 +48,10 @@ void AgentCallImageView::RequestPicture()
 {
     if (!m_Image || Overrides().Get(Style::BackgroundImage).has_value())
         return;
-    if (const auto& show = Editor::GetEditorAssetActions().ShowThumbnail)
-        show(*this, std::filesystem::path(std::u8string(m_Image->Path.begin(), m_Image->Path.end())), kImageRequestPx);
+    // The thumbnail service's copy at about the display size (up to 1024 px), downscaled once off
+    // the UI thread and kept on disk; the capture itself only when it is no larger.
+    if (const auto& show = Editor::GetEditorAssetActions().ShowImage)
+        show(*this, std::filesystem::path(std::u8string(m_Image->Path.begin(), m_Image->Path.end())));
 }
 
 void AgentCallImageView::ReleasePicture()

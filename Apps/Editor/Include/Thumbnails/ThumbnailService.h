@@ -65,6 +65,9 @@ class ThumbnailService : public IThumbnailProvider
                                     std::function<bool()> stillVisible,
                                     std::function<void(const std::string&)> onReady) override;
 
+    std::string GetOrRequestInlineImage(const std::filesystem::path& image,
+                                        std::function<void(const std::string& path)> onReady) override;
+
     // --- Editor integration helpers (not part of IThumbnailProvider) ---
     //
     // True when `engineName` resolves to a ready, UI-bound texture in this

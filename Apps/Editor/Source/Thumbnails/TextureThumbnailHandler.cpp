@@ -1,20 +1,19 @@
 #include "Thumbnails/TextureThumbnailHandler.h"
 
 #include "AssetCore/SharedFileRead.h"
-#include "Engine/Rendering/EmbeddedImageDecoder.h"
 #include "FileSystem/FileSystem.h"
+#include "Image/Decode.h"
+#include "Image/Encode.h"
+#include "Image/ImageHeader.h"
+#include "Image/Resample.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "Logger/Logger.h"
-#include "Types/StringUtils.h"
-
-#include <stb_image.h>
-#include <stb_image_resize2.h>
-#include <stb_image_write.h>
+#include "Types/PathUtils.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <exception>
+#include <string_view>
 #include <utility>
 
 namespace GameEngine
@@ -80,8 +79,7 @@ std::string TextureThumbnailHandler::MakeCacheFileName(const std::filesystem::pa
 
 bool TextureThumbnailHandler::IsDecodableSourceExtension(const std::filesystem::path& assetPath)
 {
-    const auto ext = ToLowerAscii(assetPath.has_extension() ? assetPath.extension().string()
-                                                            : std::string());
+    const auto ext = LowerCaseExtension(assetPath);
     return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
            ext == ".tga" || ext == ".hdr";
 }
@@ -102,6 +100,53 @@ std::string TextureThumbnailHandler::GetOrRequest(
     if (desiredSize > kThumbLongEdge)
         return {};
 
+    bool pending = false;
+    return RequestCachedImage(assetPath, kThumbLongEdge, std::move(onReady), &pending);
+}
+
+std::string TextureThumbnailHandler::GetOrRequestInlineImage(const std::filesystem::path& image,
+                                                             std::function<void(const std::string& path)> onReady)
+{
+    // An empty answer from the cache is the source itself when it is no larger than the copy
+    // would be, and no image otherwise.
+    auto answer = [this, image, onReady = std::move(onReady)](const std::string& cached) {
+        if (!onReady)
+            return;
+        if (!cached.empty())
+            onReady(cached);
+        else
+            onReady(IsSmallSource(image, kInlineImageLongEdge) ? image.generic_string() : std::string());
+    };
+    if (!IsDecodableSourceExtension(image))
+    {
+        answer({});
+        return {};
+    }
+    bool pending = false;
+    std::string cached = RequestCachedImage(image, kInlineImageLongEdge, answer, &pending);
+    if (cached.empty() && !pending)
+        answer({});
+    return cached;
+}
+
+std::string TextureThumbnailHandler::MakeJobKey(const std::filesystem::path& assetPath, int longEdge)
+{
+    // The tile image keeps the bare path as its key.
+    return longEdge == kThumbLongEdge ? assetPath.generic_string()
+                                      : assetPath.generic_string() + "|" + std::to_string(longEdge);
+}
+
+bool TextureThumbnailHandler::IsSmallSource(const std::filesystem::path& assetPath, int longEdge) const
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    const auto it = m_Declined.find(MakeJobKey(assetPath, longEdge));
+    return it != m_Declined.end() && it->second.Reason == DeclineReason::SmallSource;
+}
+
+std::string TextureThumbnailHandler::RequestCachedImage(const std::filesystem::path& assetPath, int longEdge,
+                                                        ReadyCallback onReady, bool* outPending)
+{
+    *outPending = false;
     std::filesystem::path cacheRoot;
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
@@ -122,7 +167,7 @@ std::string TextureThumbnailHandler::GetOrRequest(
     if (ec)
         return {};
 
-    const std::string key = assetPath.generic_string();
+    const std::string key = MakeJobKey(assetPath, longEdge);
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
         auto declined = m_Declined.find(key);
@@ -134,7 +179,10 @@ std::string TextureThumbnailHandler::GetOrRequest(
         }
     }
 
-    const std::filesystem::path cachePath = cacheRoot / MakeCacheFileName(assetPath);
+    std::string cacheName = MakeCacheFileName(assetPath);
+    if (longEdge != kThumbLongEdge)
+        cacheName.insert(cacheName.size() - std::string_view(".png").size(), "_" + std::to_string(longEdge));
+    const std::filesystem::path cachePath = cacheRoot / cacheName;
 
     const FileTime cacheTime = std::filesystem::last_write_time(cachePath, ec);
     if (!ec && cacheTime >= sourceTime)
@@ -160,6 +208,7 @@ std::string TextureThumbnailHandler::GetOrRequest(
             // source twice; the decode collects callbacks when it finishes.
             if (onReady)
                 it->second.Callbacks.push_back(std::move(onReady));
+            *outPending = true;
             return {};
         }
 
@@ -167,6 +216,7 @@ std::string TextureThumbnailHandler::GetOrRequest(
         job.SourcePath = assetPath;
         job.CachePath = cachePath;
         job.SourceTime = sourceTime;
+        job.LongEdge = longEdge;
         if (onReady)
             job.Callbacks.push_back(std::move(onReady));
         m_Jobs.emplace(key, std::move(job));
@@ -181,6 +231,7 @@ std::string TextureThumbnailHandler::GetOrRequest(
 
     // Published outside m_Mutex: in the pool's inline mode the job body runs
     // right here, and it takes that lock.
+    *outPending = true;
     if (dispatch)
         EnqueueDecodeJob();
 
@@ -222,6 +273,7 @@ void TextureThumbnailHandler::DecodeNextQueuedThumbnail()
     std::filesystem::path sourcePath;
     std::filesystem::path cachePath;
     FileTime sourceTime{};
+    int longEdge = kThumbLongEdge;
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
         bool found = false;
@@ -236,6 +288,7 @@ void TextureThumbnailHandler::DecodeNextQueuedThumbnail()
             sourcePath = it->second.SourcePath;
             cachePath = it->second.CachePath;
             sourceTime = it->second.SourceTime;
+            longEdge = it->second.LongEdge;
             found = true;
             break;
         }
@@ -250,7 +303,7 @@ void TextureThumbnailHandler::DecodeNextQueuedThumbnail()
     Outcome outcome = Outcome::Retry;
     try
     {
-        outcome = GenerateThumbnail(sourcePath, cachePath, &declineReason);
+        outcome = GenerateThumbnail(sourcePath, cachePath, longEdge, &declineReason);
     }
     catch (const std::exception& error)
     {
@@ -316,6 +369,7 @@ void TextureThumbnailHandler::DecodeNextQueuedThumbnail()
 TextureThumbnailHandler::Outcome TextureThumbnailHandler::GenerateThumbnail(
     const std::filesystem::path& sourcePath,
     const std::filesystem::path& cachePath,
+    int longEdge,
     DeclineReason* outDeclineReason)
 {
     Vector<uint8> bytes;
@@ -332,13 +386,9 @@ TextureThumbnailHandler::Outcome TextureThumbnailHandler::GenerateThumbnail(
     }
 
     // Header first: dimensions decide whether a full decode is worth its
-    // allocation, and both of the answers below cost nothing beyond this read.
-    int infoW = 0;
-    int infoH = 0;
-    int infoChannels = 0;
-    if (!stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()),
-                               &infoW, &infoH, &infoChannels) ||
-        infoW <= 0 || infoH <= 0)
+    // allocation, and both of the answers below cost one header read.
+    const Image::ImageHeader header = Image::ReadImageHeader(sourcePath);
+    if (!header.Valid)
     {
         Logger::Log::Debug("TextureThumbnailHandler: not a decodable image '{}'",
                            sourcePath.string());
@@ -346,13 +396,12 @@ TextureThumbnailHandler::Outcome TextureThumbnailHandler::GenerateThumbnail(
         return Outcome::Declined;
     }
 
-    const uint64_t sourcePixels =
-        static_cast<uint64_t>(infoW) * static_cast<uint64_t>(infoH);
+    const uint64_t sourcePixels = static_cast<uint64_t>(header.Width) * header.Height;
     if (sourcePixels > kMaxSourcePixels)
     {
         Logger::Log::Debug(
             "TextureThumbnailHandler: '{}' is {}x{}, past the {} pixel decode budget",
-            sourcePath.string(), infoW, infoH, kMaxSourcePixels);
+            sourcePath.string(), header.Width, header.Height, kMaxSourcePixels);
         *outDeclineReason = DeclineReason::TooLarge;
         return Outcome::Declined;
     }
@@ -360,15 +409,15 @@ TextureThumbnailHandler::Outcome TextureThumbnailHandler::GenerateThumbnail(
     // Already thumbnail-sized: re-encoding it at its own resolution would spend
     // a decode and a second copy on disk to produce a file no smaller than the
     // source. The service's fallback serves the source itself, for free.
-    if (std::max(infoW, infoH) <= kThumbLongEdge)
+    if (static_cast<int64_t>(std::max(header.Width, header.Height)) <= longEdge)
     {
         *outDeclineReason = DeclineReason::SmallSource;
         return Outcome::Declined;
     }
 
     g_DecodeAttempts.fetch_add(1, std::memory_order_relaxed);
-    const DecodedImage decoded = DecodeImageToRGBA(bytes.data(), bytes.size());
-    if (!decoded.valid || decoded.width == 0 || decoded.height == 0)
+    const Image::Image8 decoded = Image::Decode8(bytes, sourcePath.string(), Image::DecodeChannels::Rgba);
+    if (!decoded.Valid || decoded.Width == 0 || decoded.Height == 0)
     {
         Logger::Log::Debug("TextureThumbnailHandler: cannot decode '{}'", sourcePath.string());
         *outDeclineReason = DeclineReason::Undecodable;
@@ -380,21 +429,12 @@ TextureThumbnailHandler::Outcome TextureThumbnailHandler::GenerateThumbnail(
     bytes.clear();
     bytes.shrink_to_fit();
 
-    const int srcW = static_cast<int>(decoded.width);
-    const int srcH = static_cast<int>(decoded.height);
-
-    const int longEdge = std::max(srcW, srcH);
-    const double scale = static_cast<double>(kThumbLongEdge) / static_cast<double>(longEdge);
-    const int dstW = std::max(1, static_cast<int>(std::lround(srcW * scale)));
-    const int dstH = std::max(1, static_cast<int>(std::lround(srcH * scale)));
-
-    std::vector<uint8_t> resized(static_cast<size_t>(dstW) * static_cast<size_t>(dstH) * 4);
-    // sRGB-aware filtering: browsing is dominated by colour textures, and
-    // averaging those in gamma space darkens every thumbnail. Alpha rides
-    // STBIR_RGBA, which keeps coverage off the transfer curve.
-    if (stbir_resize_uint8_srgb(decoded.pixels.data(), srcW, srcH, 0,
-                                resized.data(), dstW, dstH, 0,
-                                STBIR_RGBA) == nullptr)
+    // sRGB-aware filtering: browsing is dominated by color textures, and
+    // averaging those in gamma space darkens every thumbnail. Alpha weights the
+    // color taps and stays off the transfer curve.
+    const Image::Image8 resized = Image::ResampleToLongEdge(decoded.Pixels, decoded.Width, decoded.Height,
+                                                            static_cast<uint32_t>(longEdge));
+    if (!resized.Valid)
     {
         Logger::Log::Warning("TextureThumbnailHandler: downscale failed for '{}'",
                              sourcePath.string());
@@ -408,7 +448,7 @@ TextureThumbnailHandler::Outcome TextureThumbnailHandler::GenerateThumbnail(
     // platform's publication semantics (atomic replacement where supported).
     const std::filesystem::path tempPath = FileSystem::MakeTemporarySiblingPath(cachePath);
 
-    if (!stbi_write_png(tempPath.string().c_str(), dstW, dstH, 4, resized.data(), dstW * 4))
+    if (!Image::WritePngFile(tempPath, resized.Pixels, resized.Width, resized.Height))
     {
         Logger::Log::Warning("TextureThumbnailHandler: failed to write '{}'", tempPath.string());
         std::filesystem::remove(tempPath, ec);
