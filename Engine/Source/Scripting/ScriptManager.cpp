@@ -5,6 +5,7 @@
 #include "Scripting/ScriptPackageRestore.h"
 #include "Scripting/ScriptsProjectFile.h"
 #include "ScriptPackageRestoreInternal.h"
+#include "ScriptsProjectFileInternal.h"
 #include "Types/FlatSet.h"
 #include "Assets/Packages/PackageNativeCache.h"
 #include "AssetCore/SharedFileRead.h"
@@ -2231,7 +2232,7 @@ size_t ScriptManager::ProcessMainThreadTasks()
         }
     }
 
-    if (m_HotReloadPipeline && EngineCore::GetInstance().IsMainThread())
+    if (m_HotReloadPipeline && IsMainThread())
         m_HotReloadPipeline->CancelOverdueRun(std::chrono::steady_clock::now());
 
     // RACE CONDITION FIX: Check if hot-reload is in progress and prioritize those tasks
