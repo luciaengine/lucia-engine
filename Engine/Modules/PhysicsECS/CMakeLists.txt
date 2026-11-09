@@ -6,6 +6,7 @@ add_library(PhysicsECS OBJECT
     Source/PhysicsComponentInstantiations.cpp
     Source/PhysicsECSModule.cpp
     Source/PhysicsEntityEventCallbacks.cpp
+    Source/PhysicsScriptApi.cpp
     Source/PhysicsWorldService.cpp
     Source/MeshColliderData.cpp
     Source/HeightFieldDataProvider.cpp

@@ -21,6 +21,8 @@
 #include "PhysicsECS/HeightFieldDataProvider.h"
 #include "PhysicsECS/PhysicsEntityEventCallbacks.h"
 #include "PhysicsECS/PhysicsWorldService.h"
+#include "PhysicsECS/PhysicsScriptApi.h"
+#include "PhysicsECS/Components/CharacterController.h"
 #include "PhysicsECS/Components/HeightFieldColliderShape.h"
 #include "PhysicsECS/Components/PhysicsBody.h"
 #include "PhysicsECS/Components/PhysicsCollider.h"
@@ -7039,4 +7041,124 @@ TEST(Physics, EntityCallbacks_ContactNormalPointsFromOtherIntoSelf)
 
     EXPECT_GT(ballNormalY, 0.5f) << "self is the ball: from the ground up into the ball";
     EXPECT_LT(groundNormalY, -0.5f) << "self is the ground: from the ball down into the ground";
+}
+
+TEST(Physics, NativeScriptVelocityQueriesRespectKinematicTransformOwnership)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+    ScopedPhysicsWorldService service(SmallDeterministicSettings());
+    auto& physics = PhysicsWorldService::Get();
+    ECS::World world;
+    const auto dynamic = AddBoxBody(world, physics, Physics::MotionType::Dynamic,
+                                   Physics::Vector3(0.5f, 0.5f, 0.5f), Physics::Vector3(0.0f, 10.0f, 0.0f));
+    const auto kinematic = AddBoxBody(world, physics, Physics::MotionType::Kinematic,
+                                     Physics::Vector3(0.5f, 0.5f, 0.5f), Physics::Vector3(10.0f, 10.0f, 0.0f));
+    Script::SetLinearVelocity(world, dynamic, Mathematics::Vector3(2.0f, 3.0f, 4.0f));
+    Script::SetAngularVelocity(world, dynamic, Mathematics::Vector3(0.0f, 1.0f, 0.0f));
+    Script::SetLinearVelocity(world, kinematic, Mathematics::Vector3(2.0f, 3.0f, 4.0f));
+    Script::SetAngularVelocity(world, kinematic, Mathematics::Vector3(0.0f, 1.0f, 0.0f));
+    EXPECT_FLOAT_EQ(Script::GetLinearVelocity(world, dynamic).x, 2.0f);
+    EXPECT_FLOAT_EQ(Script::GetAngularVelocity(world, dynamic).y, 1.0f);
+    EXPECT_FLOAT_EQ(Script::GetLinearVelocity(world, kinematic).x, 0.0f);
+    EXPECT_FLOAT_EQ(Script::GetAngularVelocity(world, kinematic).y, 0.0f);
+    EXPECT_FLOAT_EQ(Script::GetLinearVelocity(world, ECS::EntityHandle{}).x, 0.0f);
+}
+
+TEST(Physics, NativeScriptCharacterInputPreservesGroundedState)
+{
+    using namespace GameEngine;
+    ECS::World world;
+    const auto entity = world.CreateEntity();
+    Components::CharacterController controller{};
+    controller.grounded = true;
+    world.AddComponentImmediate(entity, controller);
+    PhysicsECS::Script::SetDesiredVelocity(world, entity, Mathematics::Vector3(2.0f, 3.0f, 4.0f));
+    EXPECT_FLOAT_EQ(PhysicsECS::Script::GetDesiredVelocity(world, entity).y, 3.0f);
+    EXPECT_TRUE(PhysicsECS::Script::IsGrounded(world, entity));
+    EXPECT_FALSE(PhysicsECS::Script::IsGrounded(world, ECS::EntityHandle{}));
+}
+
+TEST(Physics, NativeScriptContactCanEndItsOwnSubscription)
+{
+    using namespace GameEngine;
+    namespace Script = PhysicsECS::Script;
+    ScopedPhysicsWorldService service(SmallDeterministicSettings());
+    constexpr uint64 kGroundId = 9101;
+    constexpr uint64 kBallId = 9102;
+    struct CallbackState
+    {
+        SubscriptionId Id = 0;
+        int Calls = 0;
+        int Ended = 0;
+        ECS::EntityHandle Other{};
+    } state;
+    ScriptCallback<Script::ContactEvent> callback{};
+    callback.User = &state;
+    callback.Invoke = [](const Script::ContactEvent* event, void* user)
+    {
+        auto& state = *static_cast<CallbackState*>(user);
+        ++state.Calls;
+        state.Other = event->other;
+        Script::UnsubscribeContactBegin(state.Id);
+    };
+    callback.Ended = [](void* user) { ++static_cast<CallbackState*>(user)->Ended; };
+    state.Id = Script::SubscribeContactBegin(ECS::EntityHandle(static_cast<uint32>(kBallId)), callback);
+    ASSERT_NE(state.Id, 0u);
+    DropBallOnPlane(PhysicsECS::PhysicsWorldService::Get(), kGroundId, kBallId);
+    for (int frame = 0; frame < 600; ++frame)
+        PhysicsECS::PhysicsWorldService::Get().Step(1.0f / 60.0f, 1);
+    EXPECT_EQ(state.Calls, 1);
+    EXPECT_EQ(state.Ended, 1);
+    EXPECT_EQ(state.Other.id, kGroundId);
+    Script::UnsubscribeContactBegin(state.Id);
+    EXPECT_EQ(state.Ended, 1);
+}
+
+TEST(Physics, NativeScriptQueriesReportTotalCountAndWriteOnlyTheAvailableSpan)
+{
+    using namespace GameEngine;
+    namespace Script = PhysicsECS::Script;
+    ScopedPhysicsWorldService service(SmallDeterministicSettings());
+    auto& physics = PhysicsECS::PhysicsWorldService::Get();
+    Physics::BoxShapeDef box{};
+    box.halfExtents = Physics::Vector3(0.5f, 0.5f, 0.5f);
+    const auto shape = physics.CreateShape(box);
+    ASSERT_TRUE(shape.IsValid());
+    for (uint32 id : {1u, 2u})
+    {
+        Physics::BodySettings body{};
+        body.shape = shape;
+        body.motionType = Physics::MotionType::Static;
+        body.layer = Physics::Layers::Static;
+        body.position = Physics::Vector3(0.0f, 0.0f, 3.0f * id);
+        body.userData = id;
+        ASSERT_TRUE(physics.CreateBody(body).IsValid());
+    }
+    const Mathematics::Vector3 origin(0.0f, 0.0f, 0.0f);
+    const Mathematics::Vector3 direction(0.0f, 0.0f, 2.0f);
+    EXPECT_EQ(Script::RayCastAll(physics, origin, direction, {}), 2);
+    std::array<Script::RayHit, 1> hits{};
+    EXPECT_EQ(Script::RayCastAll(physics, origin, direction, hits), 2);
+    EXPECT_EQ(hits[0].entity.id, 1u);
+    EXPECT_NEAR(hits[0].distance, 2.5f, 0.001f);
+    Script::RayHit nearest{};
+    ASSERT_TRUE(Script::RayCast(physics, origin, direction, nearest));
+    EXPECT_EQ(nearest.entity.id, 1u);
+    EXPECT_EQ(Script::RayCastAll(physics, origin, origin, hits), 0);
+    EXPECT_EQ(Script::RayCastAll(physics, origin, direction, hits, -1.0f), 0);
+    std::array<ECS::EntityHandle, 1> bodies{};
+    EXPECT_EQ(Script::BoxOverlap(physics, Mathematics::Vector3(0.0f, 0.0f, 4.5f),
+                                Mathematics::Vector3(1.0f, 1.0f, 4.0f), Mathematics::Quaternion::Identity(), bodies), 2);
+}
+
+TEST(Physics, NativeScriptSubscriptionsRejectAnEmptyHandler)
+{
+    using namespace GameEngine;
+    namespace Script = PhysicsECS::Script;
+    const ECS::EntityHandle entity(static_cast<uint32>(1));
+    EXPECT_EQ(Script::SubscribeContactBegin(entity, {}), 0u);
+    EXPECT_EQ(Script::SubscribeContactEnd(entity, {}), 0u);
+    EXPECT_EQ(Script::SubscribeTriggerEnter(entity, {}), 0u);
+    EXPECT_EQ(Script::SubscribeTriggerExit(entity, {}), 0u);
 }

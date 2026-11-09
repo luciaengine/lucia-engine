@@ -5,3 +5,9 @@ Use `PhysicsWorld::RayCast` to find the nearest body along a ray. Use `RayCastAl
 Set `RayCastQuery::maxDistance` to a positive distance in meters. The direction does not need unit length. Set bits in `query.filter.layerMask` for the collision layers to include. Set `query.filter.ignoreSensors` to skip trigger bodies. Both single-hit and multi-hit queries apply these filters.
 
 `RayCastAll` writes at most `maxResults` nearest bodies into the result vector. A zero limit returns false and clears the vector. A query without a physics backend also clears its result list. Result entries contain the body handle, point, surface normal, distance, and body user data.
+
+## Native script queries
+
+`PhysicsECS/PhysicsScriptApi.h` exposes `PhysicsECS::Script::RayCast`, `RayCastAll`, and `BoxOverlap` for native gameplay. These functions return ECS entity handles from body user data, as assigned by the physics initialization system.
+
+`RayCastAll` and `BoxOverlap` accept a writable span and return the total matching count. If the span is smaller, only the results that fit are written. Pass an empty span to obtain the required count, then allocate a buffer of that size. Unlike `PhysicsWorld::RayCastAll`, the span length does not cap the reported count.

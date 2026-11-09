@@ -218,3 +218,7 @@ A body with `kContactFlagIgnoreOneWay` passes through one-way surfaces. Drop-thr
 - 2026-11-02: Clarified authored one-way tiles and native drop-through flags.
 
 - 2026-11-01: Added authored contact materials, combine rules and native contact modification.
+
+## Native script event callbacks
+
+`PhysicsECS/PhysicsScriptApi.h` provides the same entity-scoped subscriptions through `PhysicsECS::Script`. Pass a `ScriptCallback<ContactEvent>` or `ScriptCallback<TriggerEvent>` with an `Invoke` function, an optional `Ended` function, and a `User` pointer. An empty `Invoke` function rejects the subscription and returns zero. The payload is valid during `Invoke`. Keep `User` alive until `Ended` runs. End a subscription with its matching `UnsubscribeContactBegin`, `UnsubscribeContactEnd`, `UnsubscribeTriggerEnter`, or `UnsubscribeTriggerExit` function.
