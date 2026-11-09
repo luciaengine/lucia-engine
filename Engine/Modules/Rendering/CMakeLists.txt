@@ -1492,6 +1492,7 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
     _ge_add_shaderpkg_compute(runtime_visibility_aggregate runtime_visibility_aggregate.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter draw_command_scatter.comp)
     _ge_add_shaderpkg_compute(draw_stream_group_compact draw_stream_group_compact.comp)
+    _ge_add_shaderpkg_compute(draw_stream_instance_compact draw_stream_instance_compact.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter_compact draw_command_scatter_compact.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter_stats draw_command_scatter_stats.comp)
     _ge_add_shaderpkg_compute(draw_command_scatter_compact_stats draw_command_scatter_compact_stats.comp)

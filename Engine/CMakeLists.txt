@@ -2118,6 +2118,7 @@ endif()
                 Tests/GPUScenePrevVisibleResetTests.cpp
                 Tests/GPUSceneBufferCapacityTests.cpp
                 Tests/BatchScatterComputeTests.cpp
+                Tests/DrawStreamInstanceComputeTests.cpp
                 Tests/PropCoverageFloorTests.cpp
                 Tests/HzbBuildComputeTests.cpp
                 Tests/HzbSpdParityTests.cpp
