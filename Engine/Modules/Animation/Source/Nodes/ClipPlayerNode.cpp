@@ -141,11 +141,11 @@ PlaybackStep ClipPlayerNode::Advance(float deltaTime) const
     return {previousTime, nextTime, 0.0f, duration, stepKind};
 }
 
-void ClipPlayerNode::EvaluateStep(EvaluationContext& ctx, AnimationPose& outPose, const PlaybackStep& step)
+void ClipPlayerNode::EvaluateStep(EvaluationContext& context, AnimationPose& outPose, const PlaybackStep& step)
 {
     m_Time = step.To;
-    if (ctx.Events && ctx.Weight > 0.0f)
-        CollectCrossedEvents(m_Clip->GetEventTrack(), step, *ctx.Events);
+    if (context.Events && context.Weight > 0.0f)
+        CollectCrossedEvents(m_Clip->GetEventTrack(), step, *context.Events);
 
     const auto data = m_Clip->GetRuntimeData();
     if (!data)

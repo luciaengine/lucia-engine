@@ -195,9 +195,9 @@ void ApplyMorphAnimationChannels(ECS::World& world,
             channel.BoneIndex != static_cast<uint32>(mesh.SourceNodeIndex))
             continue;
 
-        for (uint32 i = 0; i < count; ++i)
+        for (uint32 targetIndex = 0; targetIndex < count; ++targetIndex)
         {
-            const MorphTarget& target = mesh.MorphTargets[i];
+            const MorphTarget& target = mesh.MorphTargets[targetIndex];
             if (channel.TargetNameId != 0)
             {
                 const StringId targetId = target.Name.empty() ? 0u : HashStringId(target.Name);
@@ -213,9 +213,9 @@ void ApplyMorphAnimationChannels(ECS::World& world,
             if (!data->Sample(channel, time, sampled))
                 break;
             const float value = sampled.x;
-            if (std::abs(morph->weights[i] - value) > 1e-6f)
+            if (std::abs(morph->weights[targetIndex] - value) > 1e-6f)
             {
-                morph->weights[i] = value;
+                morph->weights[targetIndex] = value;
                 changed = true;
             }
             break;
@@ -332,8 +332,8 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
     // collapse to one work item (last entity wins).
     {
         m_UniqueByRuntimeId.clear();
-        for (size_t i = 0; i < m_WorkItems.size(); ++i)
-            m_UniqueByRuntimeId[m_WorkItems[i].RuntimeId] = i;
+        for (size_t workItemIndex = 0; workItemIndex < m_WorkItems.size(); ++workItemIndex)
+            m_UniqueByRuntimeId[m_WorkItems[workItemIndex].RuntimeId] = workItemIndex;
 
         m_CompactedWorkItems.clear();
         m_CompactedWorkItems.reserve(m_UniqueByRuntimeId.size());
@@ -442,9 +442,9 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
         {
             constexpr AssetType types[] = {AssetType::SkeletonProfile, AssetType::HumanoidRig,
                                            AssetType::RetargetMap, AssetType::Model, AssetType::Animation};
-            for (size_t n = 0; n < m_BootstrapWatchers.size(); ++n)
-                m_BootstrapWatchers[n] = AssetReloadInvalidator(
-                    assetManager->GetEventDispatcher(), types[n],
+            for (size_t watcherIndex = 0; watcherIndex < m_BootstrapWatchers.size(); ++watcherIndex)
+                m_BootstrapWatchers[watcherIndex] = AssetReloadInvalidator(
+                    assetManager->GetEventDispatcher(), types[watcherIndex],
                     [dirty = m_BootstrapContentDirty](const GUID&)
                     {
                         // Watcher callbacks own only a signal, never the system.
@@ -476,9 +476,9 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
         std::unique_ptr<Animation::SkeletonProfile> profile;
         bool profileAttempted = false;
 
-        for (size_t i = 0; i < m_WorkItems.size(); ++i)
+        for (size_t workItemIndex = 0; workItemIndex < m_WorkItems.size(); ++workItemIndex)
         {
-            const auto& item = m_WorkItems[i];
+            const auto& item = m_WorkItems[workItemIndex];
             const uint64_t key = (static_cast<uint64_t>(item.SkeletonId) << 32)
                                   | static_cast<uint64_t>(item.ClipIndex);
             if (m_BootstrapAttempted.count(key)) continue;
@@ -819,10 +819,10 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
                     auto srcModelFut = assetManager->LoadAssetAsync(
                         srcModelGuid, AssetLoadPriority::High);
                     auto srcModelAsset = srcModelFut.get();
-                    if (auto* m = dynamic_cast<ModelAsset*>(srcModelAsset.get());
-                        m && m->IsLoaded())
+                    if (auto* sourceModel = dynamic_cast<ModelAsset*>(srcModelAsset.get());
+                        sourceModel && sourceModel->IsLoaded())
                     {
-                        sourceSkeletonId = m->GetSkeletonId();
+                        sourceSkeletonId = sourceModel->GetSkeletonId();
                     }
                 }
                 if (sourceSkeletonId == 0)
@@ -846,7 +846,7 @@ void AnimationSystem::Update(ECS::World& world, float32 deltaTime) {
             rc.Speed = 1.0f;
             rc.Loop = true;
             toAdd.push_back({item.Entity, rc});
-            dropIndices.push_back(i);
+            dropIndices.push_back(workItemIndex);
 
             Logger::Log::Info(
                 "[AnimationSystem] auto-bootstrap: cross-rig clip routed via HumanoidRetargetSystem "

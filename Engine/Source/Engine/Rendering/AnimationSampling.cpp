@@ -88,7 +88,7 @@ void SampleAnimationPose(const SkeletonData& skeleton,
                          float time,
                          std::vector<float>* outNodeWorldMatrices,
                          std::vector<float>* outCompactSkinMatrices,
-                         PoseSampleWorkspace& ws,
+                         PoseSampleWorkspace& workspace,
                          const Animation::BoneEvaluationPlan* plan)
 {
     const uint32 bones = skeleton.BoneCount;
@@ -103,33 +103,33 @@ void SampleAnimationPose(const SkeletonData& skeleton,
     }
 
     // Prepare workspace vectors (clear + resize retains capacity after first call).
-    ws.Pose.clear();
-    ws.Pose.resize(bones);
+    workspace.Pose.clear();
+    workspace.Pose.resize(bones);
     if (skeleton.RestTranslation.size() == bones * 3u &&
         skeleton.RestRotation.size() == bones * 4u &&
         skeleton.RestScale.size() == bones * 3u)
     {
-        for (uint32 i = 0; i < bones; ++i)
+        for (uint32 index = 0; index < bones; ++index)
         {
-            ws.Pose[i].t = glm::vec3(skeleton.RestTranslation[i * 3 + 0],
-                                     skeleton.RestTranslation[i * 3 + 1],
-                                     skeleton.RestTranslation[i * 3 + 2]);
-            ws.Pose[i].r = glm::quat(skeleton.RestRotation[i * 4 + 3],
-                                     skeleton.RestRotation[i * 4 + 0],
-                                     skeleton.RestRotation[i * 4 + 1],
-                                     skeleton.RestRotation[i * 4 + 2]);
-            ws.Pose[i].s = glm::vec3(skeleton.RestScale[i * 3 + 0],
-                                     skeleton.RestScale[i * 3 + 1],
-                                     skeleton.RestScale[i * 3 + 2]);
+            workspace.Pose[index].t = glm::vec3(skeleton.RestTranslation[index * 3 + 0],
+                                     skeleton.RestTranslation[index * 3 + 1],
+                                     skeleton.RestTranslation[index * 3 + 2]);
+            workspace.Pose[index].r = glm::quat(skeleton.RestRotation[index * 4 + 3],
+                                     skeleton.RestRotation[index * 4 + 0],
+                                     skeleton.RestRotation[index * 4 + 1],
+                                     skeleton.RestRotation[index * 4 + 2]);
+            workspace.Pose[index].s = glm::vec3(skeleton.RestScale[index * 3 + 0],
+                                     skeleton.RestScale[index * 3 + 1],
+                                     skeleton.RestScale[index * 3 + 2]);
         }
     }
 
-    ws.ChangedTranslation.clear();
-    ws.ChangedTranslation.resize(bones, 0u);
-    ws.ChangedRotation.clear();
-    ws.ChangedRotation.resize(bones, 0u);
-    ws.ChangedScale.clear();
-    ws.ChangedScale.resize(bones, 0u);
+    workspace.ChangedTranslation.clear();
+    workspace.ChangedTranslation.resize(bones, 0u);
+    workspace.ChangedRotation.clear();
+    workspace.ChangedRotation.resize(bones, 0u);
+    workspace.ChangedScale.clear();
+    workspace.ChangedScale.resize(bones, 0u);
 
     if (clip)
     {
@@ -182,18 +182,18 @@ void SampleAnimationPose(const SkeletonData& skeleton,
                 continue;
             if (channel.Path == AnimPath::Translation)
             {
-                ws.Pose[resolvedIndex].t = glm::vec3(value.x, value.y, value.z);
-                ws.ChangedTranslation[resolvedIndex] = 1u;
+                workspace.Pose[resolvedIndex].t = glm::vec3(value.x, value.y, value.z);
+                workspace.ChangedTranslation[resolvedIndex] = 1u;
             }
             else if (channel.Path == AnimPath::Scale)
             {
-                ws.Pose[resolvedIndex].s = glm::vec3(value.x, value.y, value.z);
-                ws.ChangedScale[resolvedIndex] = 1u;
+                workspace.Pose[resolvedIndex].s = glm::vec3(value.x, value.y, value.z);
+                workspace.ChangedScale[resolvedIndex] = 1u;
             }
             else
             {
-                ws.Pose[resolvedIndex].r = glm::quat(value.w, value.x, value.y, value.z);
-                ws.ChangedRotation[resolvedIndex] = 1u;
+                workspace.Pose[resolvedIndex].r = glm::quat(value.w, value.x, value.y, value.z);
+                workspace.ChangedRotation[resolvedIndex] = 1u;
             }
         }
 
@@ -205,32 +205,32 @@ void SampleAnimationPose(const SkeletonData& skeleton,
             s_LoggedPairs[pairKey] = true;
             Logger::Log::Info("AnimationSampling: skeletonBones={} clipChannels={} | resolvedByName={} dropped={}",
                               bones, channels.size(), resolvedByName, dropped);
-            std::string skelHead;
-            for (uint32 i = 0; i < std::min<uint32>(bones, 6u); ++i)
+            std::string skeletonHead;
+            for (uint32 index = 0; index < std::min<uint32>(bones, 6u); ++index)
             {
-                if (i < skeleton.BoneNames.size() && !skeleton.BoneNames[i].empty())
+                if (index < skeleton.BoneNames.size() && !skeleton.BoneNames[index].empty())
                 {
-                    if (!skelHead.empty()) skelHead += ", ";
-                    skelHead += skeleton.BoneNames[i];
+                    if (!skeletonHead.empty()) skeletonHead += ", ";
+                    skeletonHead += skeleton.BoneNames[index];
                 }
             }
             std::string clipHead;
-            for (size_t i = 0; i < std::min<size_t>(channels.size(), 6u); ++i)
+            for (size_t index = 0; index < std::min<size_t>(channels.size(), 6u); ++index)
             {
-                if (!channels[i].TargetName.empty())
+                if (!channels[index].TargetName.empty())
                 {
                     if (!clipHead.empty()) clipHead += ", ";
-                    clipHead += channels[i].TargetName;
+                    clipHead += channels[index].TargetName;
                 }
             }
-            Logger::Log::Info("AnimationSampling: skel head=[{}] | clip head=[{}]", skelHead, clipHead);
+            Logger::Log::Info("AnimationSampling: skel head=[{}] | clip head=[{}]", skeletonHead, clipHead);
             if (!unmatchedNames.empty())
             {
                 std::string unmatched;
-                for (size_t i = 0; i < std::min<size_t>(unmatchedNames.size(), 30u); ++i)
+                for (size_t index = 0; index < std::min<size_t>(unmatchedNames.size(), 30u); ++index)
                 {
                     if (!unmatched.empty()) unmatched += ", ";
-                    unmatched += unmatchedNames[i];
+                    unmatched += unmatchedNames[index];
                 }
                 Logger::Log::Info("AnimationSampling: unmatched clip bones (first 30 of {}): [{}]",
                                   unmatchedNames.size(), unmatched);
@@ -238,7 +238,7 @@ void SampleAnimationPose(const SkeletonData& skeleton,
         }
     }
 
-    ::GameEngine::Animation::BuildPoseToSkinMatrices(skeleton, outNodeWorldMatrices, outCompactSkinMatrices, ws, plan);
+    ::GameEngine::Animation::BuildPoseToSkinMatrices(skeleton, outNodeWorldMatrices, outCompactSkinMatrices, workspace, plan);
 }
 
 namespace
