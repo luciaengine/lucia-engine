@@ -877,16 +877,7 @@ bool TerrainExtractionSystem::ProvisionTiledTerrain(const TerrainEntityContext& 
         // named nothing, so provision fresh instead of stranding the entity.
         ClearUnresolvedTerrainHandles(TerrainForWrite(context));
 
-        TiledTerrainConfig tiledConfig{};
-        tiledConfig.WorldSizeX = terrain.SizeX;
-        tiledConfig.WorldSizeZ = terrain.SizeZ;
-        tiledConfig.HeightScale = terrain.HeightScale;
-        tiledConfig.SamplesPerMeter = terrain.SamplesPerMeter;
-        tiledConfig.PatchGridSize = Terrain::kDefaultGridSize;
-        tiledConfig.LODRangeScale = Terrain::kDefaultLODRangeScale;
-        tiledConfig.StreamingRadius = terrain.StreamingRadius;
-
-        const auto newHandle = terrainService->CreateTiledTerrain(tiledConfig);
+        const auto newHandle = terrainService->CreateTiledTerrain(terrainService->BuildTiledTerrainConfig(terrain));
         Components::Terrain& writable = TerrainForWrite(context);
         writable.TiledTerrainHandle = newHandle.Index;
         writable.TiledTerrainGeneration = newHandle.Generation;
