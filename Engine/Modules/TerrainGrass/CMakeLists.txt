@@ -149,8 +149,7 @@ if(BUILD_TESTING)
         # same) and provide the stb_image impl GameEngineRendering pulls in but
         # does not export.
         target_sources(TerrainGrassStatsTests PRIVATE $<TARGET_OBJECTS:Logger>)
-        target_sources(TerrainGrassStatsTests PRIVATE
-            ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+        target_link_libraries(TerrainGrassStatsTests PRIVATE Image)
         target_compile_definitions(TerrainGrassStatsTests PRIVATE GE_HAVE_STB)
         # GrassShaderSitePurity reads the shipped grass GLSL and fails on any seed path
         # that draws from the per-frame instance slot instead of the blade's site.

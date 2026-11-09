@@ -1123,7 +1123,7 @@ endif()
 # duplicate-state across the DLL boundary.
 set(GE_ENGINE_MODULES
     SceneLoadTracker
-    Logger AssetCore AssetDatabase JobSystem ECS FileWatcher AssetRuntime Audio Scripting NativeScripting
+    Logger Image AssetCore AssetDatabase JobSystem ECS FileWatcher AssetRuntime Audio Scripting NativeScripting
     Platform FileSystem FileSystemCore Memory GameEngineRendering RenderServices VolumetricFog HeightFog GPUFogParticles Particles ParticlesAuthoring ParticlesAssets ParticlesSystems ParticlesRendering Animation Sprite2D NumericExpression UI Physics PhysicsECS
     Pathfinding PathfindingECS Terrain PageStreaming TerrainECS TerrainGrass CBTTerrain CBTTerrainECS Ocean Spline SplineGeometry SplineLayout SplineECS SplineRecipes MeshPicking TileMap TileMapECS MarkupECS Graph
     GenerationalVector Scheduler Scene SceneBvh Text Localization Input PluginAPI
@@ -1294,7 +1294,6 @@ endif()
 if(TARGET stb::stb)
     target_link_libraries(Engine PRIVATE stb::stb)
     target_compile_definitions(Engine PRIVATE GE_HAVE_STB)
-    target_sources(Engine PRIVATE Source/ThirdParty/stb_image_impl.cpp)
 endif()
 
 # Fallback: detect headers directly if no CMake target is exported
@@ -1302,7 +1301,6 @@ find_path(STB_INCLUDE_DIRS "stb_image.h")
 if(STB_INCLUDE_DIRS)
     target_include_directories(Engine PRIVATE ${STB_INCLUDE_DIRS})
     target_compile_definitions(Engine PRIVATE GE_HAVE_STB)
-    target_sources(Engine PRIVATE Source/ThirdParty/stb_image_impl.cpp)
 endif()
 
 # Fold the stb_image_resize2 version into the texture-cook cache config hash: a
