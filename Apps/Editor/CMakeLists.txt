@@ -1976,6 +1976,7 @@ if(APPLE)
 	set_target_properties(Editor PROPERTIES
 	    MACOSX_BUNDLE TRUE
 	    MACOSX_BUNDLE_BUNDLE_NAME "Lucia Engine"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/EditorInfo.plist.in"
 	    MACOSX_BUNDLE_ICON_FILE AppIcon.icns
 	    MACOSX_BUNDLE_GUI_IDENTIFIER "com.gameengine.editor"
 	    MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"
