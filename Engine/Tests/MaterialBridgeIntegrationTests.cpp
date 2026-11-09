@@ -879,6 +879,15 @@ TEST_F(MaterialPipelineCompilationTest, RecompileMovesVersionOnlyAndParameterEdi
     ASSERT_NE(mat, nullptr);
     ASSERT_TRUE(mat->GetGraphicsPipelineId().IsValid());
 
+    auto& draws = m_rs->GetWorldDrawBuilder();
+    WorldSubmissionRecord caster{};
+    caster.viewId = 83u;
+    caster.material = mat;
+    caster.flags = kSubmissionFlagCastShadows;
+    draws.Submit(std::span<const WorldSubmissionRecord>(&caster, 1u));
+    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry());
+    const auto beforeRecompile = draws.GetShadowSubmissionStates(caster.viewId);
+
     const uint32_t versionBeforeRecompile = mat->GetVersion();
     const uint32_t revisionBeforeRecompile = mat->GetContentRevision();
     m_rs->Materials().RecompileMaterialPipeline(guid, doc);
@@ -888,6 +897,10 @@ TEST_F(MaterialPipelineCompilationTest, RecompileMovesVersionOnlyAndParameterEdi
         << "a recompile must bump the version so stale variant-cache rows retire";
     EXPECT_EQ(mat->GetContentRevision(), revisionBeforeRecompile)
         << "recompiling an unchanged document is not a content change";
+    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry());
+    const auto afterRecompile = draws.GetShadowSubmissionStates(caster.viewId);
+    EXPECT_NE(afterRecompile.All.MaterialContentKey, beforeRecompile.All.MaterialContentKey);
+    EXPECT_NE(afterRecompile.Rigid.MaterialContentKey, beforeRecompile.Rigid.MaterialContentKey);
 
     const uint32_t versionBeforeEdit = mat->GetVersion();
     const uint32_t revisionBeforeEdit = mat->GetContentRevision();
@@ -895,6 +908,10 @@ TEST_F(MaterialPipelineCompilationTest, RecompileMovesVersionOnlyAndParameterEdi
     EXPECT_GT(mat->GetContentRevision(), revisionBeforeEdit);
     EXPECT_EQ(mat->GetVersion(), versionBeforeEdit)
         << "a parameter edit must not read as a recompile";
+    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry());
+    const auto afterEdit = draws.GetShadowSubmissionStates(caster.viewId);
+    EXPECT_NE(afterEdit.All.MaterialContentKey, afterRecompile.All.MaterialContentKey);
+    EXPECT_NE(afterEdit.Rigid.MaterialContentKey, afterRecompile.Rigid.MaterialContentKey);
 }
 
 // User keywords: an in-place .material hot-reload that flips the keyword set must

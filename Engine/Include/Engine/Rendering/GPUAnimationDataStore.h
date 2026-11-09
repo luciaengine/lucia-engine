@@ -11,7 +11,7 @@
 #include <vector>
 
 namespace GameEngine { namespace Rendering { class IDevice; } }
-namespace GameEngine { namespace Animation { struct SkeletonData; class BoneEvaluationPlan; } }
+namespace GameEngine { namespace Animation { struct SkeletonData; class BoneEvaluationPlan; class AnimationClipData; } }
 
 namespace GameEngine { namespace Engine { namespace Renderer {
 
@@ -55,7 +55,8 @@ static_assert(sizeof(GPUClipHeader) == 64, "GPUClipHeader must be 64 bytes");
 // GPU-side channel descriptor. 16 bytes.
 struct GPUChannelDesc {
     uint32 boneIndex;
-    uint32 pathAndInterp;           // low 2 bits = path (0=T,1=R,2=S), bits 2-3 = interp (0=step,1=linear,2=cubic)
+    uint32 pathAndInterp;           // path bits 0-1; interpolation bits 2-3 (linear=0, step=1, cubic=2);
+                                   // cubic payload bit 4; words per key in bits 8-31
     uint32 keyframeOffset;          // relative to clip's keyframeDataOffset
     uint32 keyframeCount;
 };
@@ -154,6 +155,14 @@ public:
     size_t GetClipDataUsedBytes()       const { return m_ClipData.size() * sizeof(uint32); }
 
 private:
+    struct UploadedClip
+    {
+        uint32 GPUIndex;
+        SharedPtr<const Animation::AnimationClipData> Data;
+        float Duration;
+    };
+    bool PackClip(const UploadedClip& clip, std::vector<GPUClipHeader>& headers, std::vector<uint32>& words) const;
+    bool UploadClipBuffers(const std::vector<GPUClipHeader>& headers, const std::vector<uint32>& words);
     struct SkeletonVariant
     {
         uint32 GPUIndex;
@@ -178,7 +187,7 @@ private:
     GameEngine::Rendering::BufferHandle m_ClipDataBuf;
     std::vector<GPUClipHeader> m_ClipHeaders;
     std::vector<uint32> m_ClipData;                    // flat packed channels + keyframes
-    std::unordered_map<uint32, uint32> m_ClipIdToGPU;  // clipIndex → GPU header index
+    FlatMap<uint32, UploadedClip> m_ClipIdToGPU;
     size_t m_ClipHeaderCapacity = 0;
     size_t m_ClipDataCapacity = 0;
     bool m_ClipDirty = false;

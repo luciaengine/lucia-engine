@@ -13,6 +13,7 @@
 #include "Engine/Rendering/AnimationComputePass.h"
 #include "Engine/Rendering/BonePaletteLayout.h"
 #include "Engine/Rendering/GPUAnimationDataStore.h"
+#include "Engine/Rendering/RetargetGPUDataStore.h"
 #include "Engine/Rendering/AnimationSampling.h"
 #include "ECSModules/Rendering/SkeletonStore.h"
 #include "ECSModules/Rendering/ClipStore.h"
@@ -481,7 +482,7 @@ protected:
     std::vector<float> DispatchProductionPass(const Kernel& kernel, const Rig& rig, float time,
                                               bool retryAfterClearing = false,
                                               const SharedPtr<const Animation::BoneEvaluationPlan>& plan = {}, uint32 population = 1u,
-                                              float instanceTimeStep = kCrowdInstanceTimeStep)
+                                              float instanceTimeStep = kCrowdInstanceTimeStep, bool reviseAfterSubmission = false)
     {
         const bool frameOpen = BeginDeviceFrame();
         EXPECT_TRUE(frameOpen);
@@ -575,6 +576,26 @@ protected:
             else
             {
                 frame.Execute();
+                if (reviseAfterSubmission)
+                {
+                    const auto clip = ClipStore::Instance().Get(rig.ClipIndex);
+                    EXPECT_TRUE(clip->SetKeyframeComponentValue(0u, 1.0f, 0u, 8.0f));
+                    EXPECT_EQ(m_DataStore.EnsureClipUploaded(rig.ClipIndex), clipGpuIndex);
+                    m_Device->WaitForIdle();
+                    const auto* rows = static_cast<const float*>(m_Device->MapBuffer(atlas));
+                    EXPECT_NE(rows, nullptr);
+                    if (rows)
+                    {
+                        const std::vector<float> oldRows(rows, rows + packedRows.size());
+                        const auto oldPalette = UnpackAtlas(oldRows, rig.JointCount);
+                        EXPECT_NEAR(oldPalette[12u], 2.0f * time, kMatrixTolerance);
+                    }
+                    m_Device->UnmapBuffer(atlas);
+                    m_DataStore.BeginFrame(0u);
+                    AddTestInstances(m_DataStore, skeletonGpuIndex, clipGpuIndex, time, rig.JointCount, population,
+                        instanceTimeStep);
+                    frame.Execute();
+                }
                 m_Device->WaitForIdle();
             }
         }
@@ -596,6 +617,72 @@ class GPUAnimationComputeTest : public GPUAnimationComputeFixture,
                                 public ::testing::WithParamInterface<KernelCase>
 {
 };
+
+TEST_F(GPUAnimationComputeFixture, SubmittedClipGenerationSurvivesAnEditAndTheNextDispatchUsesNewKeys)
+{
+    ASSERT_TRUE(m_Device);
+    const Rig rig = CreateChainRig();
+    const auto actual = DispatchProductionPass(kDesktopKernel, rig, 0.25f, false, {}, 1u,
+        kCrowdInstanceTimeStep, true);
+    ASSERT_EQ(actual.size(), kChainJointCount * 16u);
+    EXPECT_NEAR(actual[12u], 2.0f, kMatrixTolerance);
+    const auto expected = SampleCpuReference(rig.SkeletonId, rig.ClipIndex, 0.25f);
+    for (size_t element = 0u; element < expected.size(); ++element)
+        EXPECT_NEAR(actual[element], expected[element], kMatrixTolerance);
+}
+
+TEST_F(GPUAnimationComputeFixture, ClipUploadStoresOnlyTheAnimatedPath)
+{
+    ASSERT_TRUE(m_Device);
+#if RENDERING_HAS_METAL
+    ASSERT_EQ(m_Device->GetAPI(), GraphicsAPI::Metal);
+#endif
+    ASSERT_TRUE(m_DataStore.Initialize(m_Device.get()));
+    const Rig rig = CreateChainRig();
+    ASSERT_NE(m_DataStore.EnsureClipUploaded(rig.ClipIndex), GPUAnimationDataStore::kNotUploaded);
+    constexpr uint64 kFullKeyBytes = 28u * sizeof(float);
+    constexpr uint64 kKeyCount = 2u;
+    EXPECT_LT(m_DataStore.GetClipDataUsedBytes(), kKeyCount * kFullKeyBytes)
+        << "A translation-only clip still uploads rotation, scale and unused curve data per key";
+}
+
+class GPUAnimationCompressedTrackTest : public GPUAnimationComputeFixture,
+    public testing::WithParamInterface<std::tuple<Kernel, float, AnimInterp>>
+{
+};
+
+TEST_P(GPUAnimationCompressedTrackTest, PackedKeysMatchCpuAndIndependentTranslation)
+{
+    ASSERT_TRUE(m_Device);
+    const auto [kernel, time, interpolation] = GetParam();
+    auto channel = TranslationChannel(0u, 2.0f);
+    channel.interp = interpolation;
+    if (interpolation == AnimInterp::CubicSpline)
+    {
+        // An override on a linear track must carry the cubic payload too.
+        channel.interp = AnimInterp::Linear;
+        channel.keys[0].hasSegmentInterpOverride = true;
+        channel.keys[0].segmentInterp = AnimInterp::CubicSpline;
+        channel.keys[0].outWeight[0] = channel.keys[1].inWeight[0] = 1.0f / 3.0f;
+        channel.keys[1].inTangent[0] = 4.0f;
+    }
+    const Rig rig{CreateTestSkeleton(), RegisterClip({channel}), kChainJointCount};
+    const auto expected = SampleCpuReference(rig.SkeletonId, rig.ClipIndex, time);
+    const auto actual = DispatchProductionPass(kernel, rig, time);
+    ASSERT_EQ(actual.size(), expected.size());
+    const float alpha = std::clamp(time, 0.0f, 1.0f);
+    const float position = interpolation == AnimInterp::Step ? (time > 1.0f ? 2.0f : 0.0f)
+        : interpolation == AnimInterp::CubicSpline ? 2.0f * alpha * alpha : 2.0f * alpha;
+    for (uint32 joint = 0u; joint < kChainJointCount; ++joint)
+        EXPECT_NEAR(actual[joint * 16u + 12u], position, kMatrixTolerance);
+    for (size_t element = 0u; element < expected.size(); ++element)
+        EXPECT_NEAR(actual[element], expected[element], kMatrixTolerance) << element;
+}
+
+INSTANTIATE_TEST_SUITE_P(Compression, GPUAnimationCompressedTrackTest,
+    testing::Combine(testing::Values(kDesktopKernel, kCompatKernel),
+        testing::Values(-0.25f, 0.0f, 0.25f, 0.5f, 1.0f, 1.25f),
+        testing::Values(AnimInterp::Linear, AnimInterp::Step, AnimInterp::CubicSpline)));
 
 class GPUAnimationLODTest : public GPUAnimationComputeFixture,
                             public ::testing::WithParamInterface<LODCase>
@@ -741,11 +828,18 @@ public:
     {
         const bool instanceBuffer = description.debugName
             && std::string_view(description.debugName).starts_with("GPUAnimInstances");
+        const bool clipBuffer = description.debugName
+            && (std::string_view(description.debugName).starts_with("GPUAnimClip")
+                || std::string_view(description.debugName).starts_with("RetargetClip"));
         if (instanceBuffer && RefuseInstanceCreation)
+            return {};
+        if (clipBuffer && RefuseClipCreation)
             return {};
         const BufferHandle buffer = NativeAnimationDevice::CreateBuffer(description);
         if (instanceBuffer && buffer.IsValid())
             m_InstanceBuffers.push_back(buffer);
+        if (clipBuffer && buffer.IsValid())
+            m_ClipBuffers.push_back(buffer);
         return buffer;
     }
 
@@ -753,6 +847,9 @@ public:
     {
         if (RefuseInstanceMapping
             && std::find(m_InstanceBuffers.begin(), m_InstanceBuffers.end(), buffer) != m_InstanceBuffers.end())
+            return nullptr;
+        if (RefuseClipMapping
+            && std::find(m_ClipBuffers.begin(), m_ClipBuffers.end(), buffer) != m_ClipBuffers.end())
             return nullptr;
         return NativeAnimationDevice::MapBuffer(buffer);
     }
@@ -772,9 +869,12 @@ public:
 
     bool RefuseInstanceCreation = false;
     bool RefuseInstanceMapping = false;
+    bool RefuseClipCreation = false;
+    bool RefuseClipMapping = false;
 
 private:
     std::vector<BufferHandle> m_InstanceBuffers;
+    std::vector<BufferHandle> m_ClipBuffers;
     RenderingDeviceCapabilities m_ReportedCapabilities;
     bool m_HasStorageBindingLimit = false;
 };
@@ -832,6 +932,141 @@ protected:
     }
 
 };
+
+TEST_F(GPUAnimationAdmissionTest, ClipRevisionsReplaceStorageAndFailedUploadsKeepThePriorGeneration)
+{
+    ASSERT_TRUE(m_DataStore.Initialize(m_Device.get()));
+    const Rig rig = CreateChainRig();
+    const auto clip = ClipStore::Instance().Get(rig.ClipIndex);
+    ASSERT_TRUE(clip);
+    const uint32 slot = m_DataStore.EnsureClipUploaded(rig.ClipIndex);
+    ASSERT_NE(slot, GPUAnimationDataStore::kNotUploaded);
+    const size_t bytes = m_DataStore.GetClipDataUsedBytes();
+#if RENDERING_HAS_METAL
+    const size_t initialAllocatedBytes = Device().GetMTLDevice()->currentAllocatedSize();
+#endif
+    for (uint32 edit = 0u; edit < 64u; ++edit)
+    {
+        ASSERT_TRUE(clip->SetKeyframeComponentValue(0u, 1.0f, 0u, 3.0f + static_cast<float>(edit)));
+        EXPECT_EQ(m_DataStore.EnsureClipUploaded(rig.ClipIndex), slot);
+        EXPECT_EQ(m_DataStore.GetClipDataUsedBytes(), bytes);
+        ASSERT_TRUE(BeginDeviceFrame());
+        FinishDeviceFrame();
+    }
+    for (uint32 frame = 0u; frame <= m_Device->GetFramesInFlight(); ++frame)
+    {
+        ASSERT_TRUE(BeginDeviceFrame());
+        FinishDeviceFrame();
+    }
+#if RENDERING_HAS_METAL
+    constexpr size_t kDriverAllocationMarginBytes = 64u * 1024u;
+    EXPECT_LE(Device().GetMTLDevice()->currentAllocatedSize(), initialAllocatedBytes + kDriverAllocationMarginBytes);
+#endif
+    const auto previousHeaders = m_DataStore.GetClipHeaderBuffer();
+    const auto previousData = m_DataStore.GetClipDataBuffer();
+    ASSERT_TRUE(clip->SetKeyframeComponentValue(0u, 1.0f, 0u, 100.0f));
+    for (bool mapping : {false, true})
+    {
+        Device().RefuseClipCreation = !mapping;
+        Device().RefuseClipMapping = mapping;
+        EXPECT_EQ(m_DataStore.EnsureClipUploaded(rig.ClipIndex), GPUAnimationDataStore::kNotUploaded);
+        EXPECT_EQ(m_DataStore.GetClipHeaderBuffer(), previousHeaders);
+        EXPECT_EQ(m_DataStore.GetClipDataBuffer(), previousData);
+        EXPECT_EQ(m_DataStore.GetClipDataUsedBytes(), bytes);
+    }
+    Device().RefuseClipCreation = Device().RefuseClipMapping = false;
+    EXPECT_EQ(m_DataStore.EnsureClipUploaded(rig.ClipIndex), slot);
+    EXPECT_NE(m_DataStore.GetClipDataBuffer(), previousData);
+}
+
+TEST_F(GPUAnimationAdmissionTest, RetargetClipUploadFailureRetainsStableSlotsAndCanRetry)
+{
+    RetargetGPUDataStore store;
+    ASSERT_TRUE(store.Initialize(m_Device.get()));
+    const auto first = ClipStore::Instance().Get(RegisterClip({TranslationChannel(0u, 2.0f)}));
+    const auto second = ClipStore::Instance().Get(RegisterClip({TranslationChannel(1u, 4.0f)}));
+    const auto firstSlot = store.EnsureClipUploaded(first->GetGUID(), *first);
+    const auto secondSlot = store.EnsureClipUploaded(second->GetGUID(), *second);
+    ASSERT_NE(firstSlot, kRetargetInvalidIndex);
+    ASSERT_NE(secondSlot, kRetargetInvalidIndex);
+    ASSERT_NE(firstSlot, secondSlot);
+    const auto previousBuffer = store.GetClipBuffer();
+    const size_t previousBytes = store.GetClipUsedBytes();
+    first->SetDuration(4.0f);
+    for (bool mapping : {false, true})
+    {
+        Device().RefuseClipCreation = !mapping;
+        Device().RefuseClipMapping = mapping;
+        EXPECT_EQ(store.EnsureClipUploaded(first->GetGUID(), *first), kRetargetInvalidIndex);
+        EXPECT_EQ(store.GetClipBuffer(), previousBuffer);
+        EXPECT_EQ(store.GetClipUsedBytes(), previousBytes);
+        EXPECT_EQ(store.ResolveClipIdx(first->GetGUID()), firstSlot);
+    }
+    Device().RefuseClipCreation = Device().RefuseClipMapping = false;
+    EXPECT_EQ(store.EnsureClipUploaded(first->GetGUID(), *first), firstSlot);
+    EXPECT_EQ(store.EnsureClipUploaded(second->GetGUID(), *second), secondSlot);
+    EXPECT_GT(store.GetClipUsedBytes(), previousBytes);
+    store.ReleaseClip(first->GetGUID());
+    EXPECT_EQ(store.ResolveClipIdx(second->GetGUID()), secondSlot);
+    store.ReleaseClip(second->GetGUID());
+    store.BeginFrame(1u);
+    EXPECT_EQ(store.GetClipUsedBytes(), 0u);
+    store.Shutdown();
+}
+
+TEST_F(GPUAnimationAdmissionTest, SparseClipNodeIndicesRefuseWithoutChangingThePriorUpload)
+{
+    ASSERT_TRUE(m_DataStore.Initialize(m_Device.get()));
+    const Rig rig = CreateChainRig();
+    ASSERT_NE(m_DataStore.EnsureClipUploaded(rig.ClipIndex), GPUAnimationDataStore::kNotUploaded);
+    const auto previous = m_DataStore.GetClipDataBuffer();
+    const size_t bytes = m_DataStore.GetClipDataUsedBytes();
+    for (uint32 node : {UINT32_MAX, UINT32_MAX - 1u})
+    {
+        const auto index = RegisterClip({TranslationChannel(node, 1.0f)});
+        EXPECT_EQ(m_DataStore.EnsureClipUploaded(index), GPUAnimationDataStore::kNotUploaded);
+        EXPECT_EQ(m_DataStore.GetClipDataBuffer(), previous);
+        EXPECT_EQ(m_DataStore.GetClipDataUsedBytes(), bytes);
+    }
+}
+
+TEST_F(GPUAnimationAdmissionTest, RefusedClipUploadLeavesCharacterOnCpuPlayback)
+{
+    RenderServices services;
+    ASSERT_TRUE(services.Initialize(m_Device.get()));
+    FramePools pools(m_Device.get());
+    RG::RGFrame frame(m_Device.get(), &pools.Persistent, &pools.Transient, &pools.Upload);
+    frame.BeginFrame(0);
+    services.GetPerFrameWritePool().BeginFrame(0);
+    services.GetSkinPaletteAtlas().BeginFrame(services.GetPerFrameWritePool());
+    auto& store = services.GetGPUAnimationDataStore();
+    store.BeginFrame(0);
+    services.ScheduleGpuSkinningAndRetarget(frame);
+    ASSERT_TRUE(services.IsComputeSkinningReady());
+    const Rig rig = CreateChainRig();
+    const uint32 runtimeId = SkeletonStore::Instance().CreateRuntime(rig.SkeletonId);
+    ECS::World world;
+    const auto entity = world.CreateEntity();
+    Components::AnimatorRef animator{};
+    animator.ClipIndex = rig.ClipIndex;
+    animator.Time = 0.375f;
+    animator.Flags = Components::AnimatorRef::kFlag_Paused;
+    Components::SkeletonRef skeleton{};
+    skeleton.skeletonId = rig.SkeletonId;
+    skeleton.runtimeId = runtimeId;
+    world.AddComponentImmediate(entity, animator);
+    world.AddComponentImmediate(entity, skeleton);
+    Device().RefuseClipCreation = true;
+    AnimationSystem animation(&services);
+    animation.Update(world, 0.0f);
+    EXPECT_EQ(store.GetInstanceCount(), 0u);
+    EXPECT_FALSE(store.IsGPUHandled(runtimeId));
+    const auto* runtime = SkeletonStore::Instance().GetRuntime(runtimeId);
+    ASSERT_TRUE(runtime);
+    ASSERT_EQ(runtime->CompactSkinMatrices.size(), 48u);
+    EXPECT_NEAR(runtime->CompactSkinMatrices[12], 0.75f, kMatrixTolerance);
+    Device().RefuseClipCreation = false;
+}
 
 TEST_F(GPUAnimationAdmissionTest, InvalidBufferInitializationLeavesNoCapacity)
 {

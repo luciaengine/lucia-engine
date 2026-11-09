@@ -42,6 +42,8 @@
 
 #include "Engine/Rendering/RetargetGPUDataStore.h"
 #include "Engine/Rendering/RetargetSubmission.h"
+#include "Rendering/Core/Device.h"
+#include "../../Tests/TestTempDir.h"
 
 #include "Assets/AnimationClip.h"
 #include "AssetCore/AssetEvents.h"
@@ -65,6 +67,36 @@ namespace
 {
 
 constexpr float kPi = 3.14159265358979323846f;
+
+#ifdef __APPLE__
+constexpr Rendering::GraphicsAPI kClipUploadAPI = Rendering::GraphicsAPI::Metal;
+#else
+constexpr Rendering::GraphicsAPI kClipUploadAPI = Rendering::GraphicsAPI::Vulkan;
+#endif
+
+struct NativeClipUpload
+{
+    bool Initialize()
+    {
+        Rendering::DeviceDesc description{};
+        description.preferredAPI = kClipUploadAPI;
+        description.enableSwapchain = false;
+        description.pipelineCacheDirectory = Cache.Path().string();
+        Device = Rendering::DeviceFactory::CreateDevice(description);
+        return Device && Device->Initialize(description) && Store.Initialize(Device.get());
+    }
+
+    ~NativeClipUpload()
+    {
+        Store.Shutdown();
+        if (Device)
+            Device->Shutdown();
+    }
+
+    TestUtils::ScopedTempDir Cache{TestUtils::MakeUniqueTempDirectory("retarget-clip-upload")};
+    std::unique_ptr<Rendering::IDevice> Device;
+    GERender::RetargetGPUDataStore Store;
+};
 
 // Build a 2-bone skeleton (Hips -> Spine) suitable for a synthetic
 // retarget test. Both bones identity-rest.
@@ -668,78 +700,78 @@ TEST_F(HumanoidRetargetSystemTest, GPUDataStore_ReleaseOnAssetUnload)
 {
     using namespace GameEngine::Engine::Renderer;
 
-    // Dispatcher MUST outlive the data store: the store holds two
-    // AssetReloadInvalidators that call dispatcher->RemoveCallback at
-    // destruction. Declaring dispatcher first makes it destruct last.
+    // The dispatcher outlives the upload store and its asset subscriptions.
     AssetEventDispatcher dispatcher;
 
-    // Headless data store — no IDevice, so all upload paths skip the GPU
-    // CreateBuffer call but still maintain the CPU mirror tables. That's
-    // what we exercise.
-    RetargetGPUDataStore store;
+    NativeClipUpload upload;
+    if (!upload.Initialize())
+        GTEST_SKIP() << "Native device unavailable for retarget clip upload lifecycle";
+    ASSERT_EQ(upload.Device->GetAPI(), kClipUploadAPI);
+    RecordProperty("native_metal", upload.Device->GetAPI() == Rendering::GraphicsAPI::Metal ? "true" : "false");
+    auto& store = upload.Store;
 
     // Synthetic clip with one channel so EnsureClipUploaded actually appends.
     GUID clipGuid = GUID::Generate();
-    AnimKeyframe k0{};
-    k0.time = 0.0f;
-    k0.rotation[3] = 1.0f;
-    k0.scale[0] = k0.scale[1] = k0.scale[2] = 1.0f;
-    AnimChannel ch{};
-    ch.boneIndex = 0;
-    ch.targetName = "Hips";
-    ch.path = AnimPath::Rotation;
-    ch.keys = { k0, k0 };
+    AnimKeyframe key{};
+    key.time = 0.0f;
+    key.rotation[3] = 1.0f;
+    key.scale[0] = key.scale[1] = key.scale[2] = 1.0f;
+    AnimChannel channel{};
+    channel.boneIndex = 0;
+    channel.targetName = "Hips";
+    channel.path = AnimPath::Rotation;
+    channel.keys = { key, key };
     auto clip = MakeShared<AnimationClip>(clipGuid, std::filesystem::path("synthetic://clip"));
-    clip->SetChannelsAndDurationForTest(std::vector<AnimChannel>{ch}, 1.0f);
+    clip->SetChannelsAndDurationForTest(std::vector<AnimChannel>{channel}, 1.0f);
 
     // Synthetic rig pair via a built RetargetNode.
-    auto& skStore = GERender::SkeletonStore::Instance();
-    uint32 srcSkelId = CreateSyntheticSkeleton();
-    uint32 tgtSkelId = CreateSyntheticSkeleton();
-    auto* srcSkel = skStore.Get(srcSkelId);
-    auto* tgtSkel = skStore.Get(tgtSkelId);
-    ASSERT_NE(srcSkel, nullptr);
-    ASSERT_NE(tgtSkel, nullptr);
-    HumanoidRig srcRig(GUID::Generate(), std::filesystem::path("test://srcRig.json"));
-    HumanoidRig tgtRig(GUID::Generate(), std::filesystem::path("test://tgtRig.json"));
-    PopulateMinimalRig(srcRig);
-    PopulateMinimalRig(tgtRig);
+    auto& skeletonStore = GERender::SkeletonStore::Instance();
+    uint32 sourceSkeletonId = CreateSyntheticSkeleton();
+    uint32 targetSkeletonId = CreateSyntheticSkeleton();
+    auto* sourceSkeleton = skeletonStore.Get(sourceSkeletonId);
+    auto* targetSkeleton = skeletonStore.Get(targetSkeletonId);
+    ASSERT_NE(sourceSkeleton, nullptr);
+    ASSERT_NE(targetSkeleton, nullptr);
+    HumanoidRig sourceRig(GUID::Generate(), std::filesystem::path("test://sourceRig.json"));
+    HumanoidRig targetRig(GUID::Generate(), std::filesystem::path("test://targetRig.json"));
+    PopulateMinimalRig(sourceRig);
+    PopulateMinimalRig(targetRig);
     GUID mapGuid = GUID::Generate();
     RetargetMap map(mapGuid, std::filesystem::path("test://map.json"));
-    map.SetSourceRigRef(srcRig.GetGUID());
-    map.SetTargetRigRef(tgtRig.GetGUID());
-    AutoCreateRetargetMap(srcRig, tgtRig, map);
+    map.SetSourceRigRef(sourceRig.GetGUID());
+    map.SetTargetRigRef(targetRig.GetGUID());
+    AutoCreateRetargetMap(sourceRig, targetRig, map);
 
     StoredPoseProvider provider;
     RetargetNode node;
-    node.Configure(&provider, &srcRig, &tgtRig, &map);
-    ASSERT_TRUE(node.Build(*srcSkel, *tgtSkel));
+    node.Configure(&provider, &sourceRig, &targetRig, &map);
+    ASSERT_TRUE(node.Build(*sourceSkeleton, *targetSkeleton));
 
     // AttachAssetEvents wires the store's two AssetReloadInvalidators
     // against the dispatcher declared at the top of the test scope.
     store.AttachAssetEvents(dispatcher);
 
     // Upload + verify lookup.
-    const uint32_t clipIdx = store.EnsureClipUploaded(clipGuid, *clip);
-    EXPECT_NE(clipIdx, kRetargetInvalidIndex);
-    EXPECT_EQ(store.ResolveClipIdx(clipGuid), clipIdx);
+    const uint32_t clipIndex = store.EnsureClipUploaded(clipGuid, *clip);
+    EXPECT_NE(clipIndex, kRetargetInvalidIndex);
+    EXPECT_EQ(store.ResolveClipIdx(clipGuid), clipIndex);
 
-    const uint32_t rigIdx = store.EnsureRigPairUploaded(mapGuid, node, *srcSkel, *tgtSkel,
-                                                         tgtSkel->SkinJointCount);
-    EXPECT_NE(rigIdx, kRetargetInvalidIndex);
-    EXPECT_EQ(store.ResolveRigPairIdx(mapGuid), rigIdx);
+    const uint32_t rigIndex = store.EnsureRigPairUploaded(mapGuid, node, *sourceSkeleton, *targetSkeleton,
+                                                         targetSkeleton->SkinJointCount);
+    EXPECT_NE(rigIndex, kRetargetInvalidIndex);
+    EXPECT_EQ(store.ResolveRigPairIdx(mapGuid), rigIndex);
 
     // Fire AssetUnloaded for the clip; the dispatch only queues the release.
     // BeginFrame is the drain site (matches the deferred-queue pattern in
     // HumanoidRetargetSystem) — without it, the table keeps the stale entry.
     dispatcher.DispatchEvent(GameEngine::AssetEvents::AssetUnloaded(
         clipGuid, AssetType::Animation, "synthetic://clip"));
-    EXPECT_EQ(store.ResolveClipIdx(clipGuid), clipIdx)
+    EXPECT_EQ(store.ResolveClipIdx(clipGuid), clipIndex)
         << "Release fired synchronously from the dispatcher callback — should be deferred";
     store.BeginFrame(0);
     EXPECT_EQ(store.ResolveClipIdx(clipGuid), kRetargetInvalidIndex)
         << "Clip header didn't release after BeginFrame drain";
-    EXPECT_EQ(store.ResolveRigPairIdx(mapGuid), rigIdx)
+    EXPECT_EQ(store.ResolveRigPairIdx(mapGuid), rigIndex)
         << "Rig header was wrongly released by a clip-typed event";
 
     // Fire AssetUnloaded for the map; queued, drained on next BeginFrame.
@@ -757,86 +789,90 @@ TEST_F(HumanoidRetargetSystemTest, GPUDataStore_SharedClip_NotReleasedByMapUnloa
     // Dispatcher must outlive the store (see ReleaseOnAssetUnload above).
     AssetEventDispatcher dispatcher;
 
-    RetargetGPUDataStore store;
+    NativeClipUpload upload;
+    if (!upload.Initialize())
+        GTEST_SKIP() << "Native device unavailable for shared retarget clip upload lifecycle";
+    ASSERT_EQ(upload.Device->GetAPI(), kClipUploadAPI);
+    RecordProperty("native_metal", upload.Device->GetAPI() == Rendering::GraphicsAPI::Metal ? "true" : "false");
+    auto& store = upload.Store;
 
-    auto& skStore = GERender::SkeletonStore::Instance();
-    uint32 srcSkelId = CreateSyntheticSkeleton();
-    uint32 tgtSkelId = CreateSyntheticSkeleton();
-    auto* srcSkel = skStore.Get(srcSkelId);
-    auto* tgtSkel = skStore.Get(tgtSkelId);
+    auto& skeletonStore = GERender::SkeletonStore::Instance();
+    uint32 sourceSkeletonId = CreateSyntheticSkeleton();
+    uint32 targetSkeletonId = CreateSyntheticSkeleton();
+    auto* sourceSkeleton = skeletonStore.Get(sourceSkeletonId);
+    auto* targetSkeleton = skeletonStore.Get(targetSkeletonId);
 
     // One clip, two rig pairs. Both characters share the same clip GUID;
     // independent map GUIDs.
     GUID clipGuid = GUID::Generate();
-    AnimKeyframe k0{};
-    k0.time = 0.0f;
-    k0.rotation[3] = 1.0f;
-    k0.scale[0] = k0.scale[1] = k0.scale[2] = 1.0f;
-    AnimChannel ch{};
-    ch.boneIndex = 0;
-    ch.targetName = "Hips";
-    ch.path = AnimPath::Rotation;
-    ch.keys = { k0, k0 };
+    AnimKeyframe key{};
+    key.time = 0.0f;
+    key.rotation[3] = 1.0f;
+    key.scale[0] = key.scale[1] = key.scale[2] = 1.0f;
+    AnimChannel channel{};
+    channel.boneIndex = 0;
+    channel.targetName = "Hips";
+    channel.path = AnimPath::Rotation;
+    channel.keys = { key, key };
     auto clip = MakeShared<AnimationClip>(clipGuid, std::filesystem::path("synthetic://clip"));
-    clip->SetChannelsAndDurationForTest(std::vector<AnimChannel>{ch}, 1.0f);
+    clip->SetChannelsAndDurationForTest(std::vector<AnimChannel>{channel}, 1.0f);
 
-    // Two independent rig pairs sharing the clip. HumanoidRig isn't readily
-    // movable/copyable for tuple return, so just inline both setups here.
-    GUID mapAGuid = GUID::Generate();
-    GUID mapBGuid = GUID::Generate();
-    StoredPoseProvider providerA;
-    StoredPoseProvider providerB;
+    // Two rig pairs share one clip and keep independent upload entries.
+    GUID firstMapGuid = GUID::Generate();
+    GUID secondMapGuid = GUID::Generate();
+    StoredPoseProvider firstProvider;
+    StoredPoseProvider secondProvider;
 
-    HumanoidRig srcRigA(GUID::Generate(), std::filesystem::path("test://srcRigA.json"));
-    HumanoidRig tgtRigA(GUID::Generate(), std::filesystem::path("test://tgtRigA.json"));
-    PopulateMinimalRig(srcRigA);
-    PopulateMinimalRig(tgtRigA);
-    RetargetMap mapA(mapAGuid, std::filesystem::path("test://mapA.json"));
-    mapA.SetSourceRigRef(srcRigA.GetGUID());
-    mapA.SetTargetRigRef(tgtRigA.GetGUID());
-    AutoCreateRetargetMap(srcRigA, tgtRigA, mapA);
-    RetargetNode nodeA;
-    nodeA.Configure(&providerA, &srcRigA, &tgtRigA, &mapA);
-    ASSERT_TRUE(nodeA.Build(*srcSkel, *tgtSkel));
+    HumanoidRig firstSourceRig(GUID::Generate(), std::filesystem::path("test://firstSourceRig.json"));
+    HumanoidRig firstTargetRig(GUID::Generate(), std::filesystem::path("test://firstTargetRig.json"));
+    PopulateMinimalRig(firstSourceRig);
+    PopulateMinimalRig(firstTargetRig);
+    RetargetMap firstMap(firstMapGuid, std::filesystem::path("test://firstMap.json"));
+    firstMap.SetSourceRigRef(firstSourceRig.GetGUID());
+    firstMap.SetTargetRigRef(firstTargetRig.GetGUID());
+    AutoCreateRetargetMap(firstSourceRig, firstTargetRig, firstMap);
+    RetargetNode firstNode;
+    firstNode.Configure(&firstProvider, &firstSourceRig, &firstTargetRig, &firstMap);
+    ASSERT_TRUE(firstNode.Build(*sourceSkeleton, *targetSkeleton));
 
-    HumanoidRig srcRigB(GUID::Generate(), std::filesystem::path("test://srcRigB.json"));
-    HumanoidRig tgtRigB(GUID::Generate(), std::filesystem::path("test://tgtRigB.json"));
-    PopulateMinimalRig(srcRigB);
-    PopulateMinimalRig(tgtRigB);
-    RetargetMap mapB(mapBGuid, std::filesystem::path("test://mapB.json"));
-    mapB.SetSourceRigRef(srcRigB.GetGUID());
-    mapB.SetTargetRigRef(tgtRigB.GetGUID());
-    AutoCreateRetargetMap(srcRigB, tgtRigB, mapB);
-    RetargetNode nodeB;
-    nodeB.Configure(&providerB, &srcRigB, &tgtRigB, &mapB);
-    ASSERT_TRUE(nodeB.Build(*srcSkel, *tgtSkel));
+    HumanoidRig secondSourceRig(GUID::Generate(), std::filesystem::path("test://secondSourceRig.json"));
+    HumanoidRig secondTargetRig(GUID::Generate(), std::filesystem::path("test://secondTargetRig.json"));
+    PopulateMinimalRig(secondSourceRig);
+    PopulateMinimalRig(secondTargetRig);
+    RetargetMap secondMap(secondMapGuid, std::filesystem::path("test://secondMap.json"));
+    secondMap.SetSourceRigRef(secondSourceRig.GetGUID());
+    secondMap.SetTargetRigRef(secondTargetRig.GetGUID());
+    AutoCreateRetargetMap(secondSourceRig, secondTargetRig, secondMap);
+    RetargetNode secondNode;
+    secondNode.Configure(&secondProvider, &secondSourceRig, &secondTargetRig, &secondMap);
+    ASSERT_TRUE(secondNode.Build(*sourceSkeleton, *targetSkeleton));
 
     store.AttachAssetEvents(dispatcher);
 
     // Both characters upload the same clip — second EnsureClipUploaded is
     // idempotent (returns the cached header index).
-    const uint32_t clipIdxA = store.EnsureClipUploaded(clipGuid, *clip);
-    const uint32_t clipIdxB = store.EnsureClipUploaded(clipGuid, *clip);
-    EXPECT_NE(clipIdxA, kRetargetInvalidIndex);
-    EXPECT_EQ(clipIdxA, clipIdxB);  // idempotent
+    const uint32_t firstClipIndex = store.EnsureClipUploaded(clipGuid, *clip);
+    const uint32_t secondClipIndex = store.EnsureClipUploaded(clipGuid, *clip);
+    EXPECT_NE(firstClipIndex, kRetargetInvalidIndex);
+    EXPECT_EQ(firstClipIndex, secondClipIndex);  // idempotent
 
-    const uint32_t rigIdxA = store.EnsureRigPairUploaded(mapAGuid, nodeA, *srcSkel, *tgtSkel,
-                                                          tgtSkel->SkinJointCount);
-    const uint32_t rigIdxB = store.EnsureRigPairUploaded(mapBGuid, nodeB, *srcSkel, *tgtSkel,
-                                                          tgtSkel->SkinJointCount);
-    EXPECT_NE(rigIdxA, kRetargetInvalidIndex);
-    EXPECT_NE(rigIdxB, kRetargetInvalidIndex);
-    EXPECT_NE(rigIdxA, rigIdxB);  // distinct slots
+    const uint32_t firstRigIndex = store.EnsureRigPairUploaded(firstMapGuid, firstNode, *sourceSkeleton, *targetSkeleton,
+                                                          targetSkeleton->SkinJointCount);
+    const uint32_t secondRigIndex = store.EnsureRigPairUploaded(secondMapGuid, secondNode, *sourceSkeleton, *targetSkeleton,
+                                                          targetSkeleton->SkinJointCount);
+    EXPECT_NE(firstRigIndex, kRetargetInvalidIndex);
+    EXPECT_NE(secondRigIndex, kRetargetInvalidIndex);
+    EXPECT_NE(firstRigIndex, secondRigIndex);  // distinct slots
 
     // Unloading map A must NOT release the shared clip — character B still
     // needs it. Release is deferred via the queue; drain it on BeginFrame.
     dispatcher.DispatchEvent(GameEngine::AssetEvents::AssetUnloaded(
-        mapAGuid, AssetType::RetargetMap, "test://mapA.json"));
+        firstMapGuid, AssetType::RetargetMap, "test://firstMap.json"));
     store.BeginFrame(0);
-    EXPECT_EQ(store.ResolveRigPairIdx(mapAGuid), kRetargetInvalidIndex);
-    EXPECT_EQ(store.ResolveRigPairIdx(mapBGuid), rigIdxB)
+    EXPECT_EQ(store.ResolveRigPairIdx(firstMapGuid), kRetargetInvalidIndex);
+    EXPECT_EQ(store.ResolveRigPairIdx(secondMapGuid), secondRigIndex)
         << "Map B rig pair was wrongly released by a sibling map's unload";
-    EXPECT_EQ(store.ResolveClipIdx(clipGuid), clipIdxA)
+    EXPECT_EQ(store.ResolveClipIdx(clipGuid), firstClipIndex)
         << "Shared clip was released when only the map unloaded";
 
     // Now unload the clip itself — character B's clip lookup must fail
@@ -845,5 +881,5 @@ TEST_F(HumanoidRetargetSystemTest, GPUDataStore_SharedClip_NotReleasedByMapUnloa
         clipGuid, AssetType::Animation, "synthetic://clip"));
     store.BeginFrame(0);
     EXPECT_EQ(store.ResolveClipIdx(clipGuid), kRetargetInvalidIndex);
-    EXPECT_EQ(store.ResolveRigPairIdx(mapBGuid), rigIdxB);
+    EXPECT_EQ(store.ResolveRigPairIdx(secondMapGuid), secondRigIndex);
 }
