@@ -1,6 +1,6 @@
 #include "PageStreaming/PageResidency.h"
 
-#include "PageStreaming/HeightPageOverlay.h"
+#include "PageStreaming/Height/HeightPageLayer.h"
 
 #include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "PageStreaming/PageLoader.h"

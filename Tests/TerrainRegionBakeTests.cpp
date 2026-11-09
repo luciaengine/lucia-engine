@@ -18,7 +18,7 @@
 #include "ECSModules/Rendering/Systems/TransformHierarchySystem.h"
 #include "JobSystem/WorkStealingThreadPool.h"
 #include "PageStreaming/GeneratedHeightPageProvider.h"
-#include "PageStreaming/HeightPageOverlay.h"
+#include "PageStreaming/Height/HeightPageLayer.h"
 #include "PageStreaming/PageStore/PageStoreFormat.h"
 #include "Terrain/Heightfield.h"
 #include "TerrainECS/TerrainModifierComponents.h"
@@ -2923,6 +2923,22 @@ TEST(TerrainRegionBake, TwoModifiersReachTheHeightPagesAsTheyReachTheBakedTiles)
 // The overlay is built only for a terrain that would page (the driver sets its cap), and a terrain
 // that starts to page under an unchanged modifier set (its cooked store opened) gets it at the next
 // update.
+namespace
+{
+
+float32 LayerDelta(const GameEngine::PageStreaming::HeightPageLayer& layer, uint32 level, uint32 sampleX, uint32 sampleZ)
+{
+    namespace Pages = GameEngine::PageStreaming;
+    const std::span<const float32> page = layer.PageDeltas(
+        Pages::PageAddress{0, static_cast<uint8>(level), sampleX / Pages::kPageOwnedSamples, sampleZ / Pages::kPageOwnedSamples});
+    if (page.empty())
+        return 0.0f;
+    return page[(sampleZ % Pages::kPageOwnedSamples + Pages::kPageApronSamples) * Pages::kPageStrideSamples +
+                sampleX % Pages::kPageOwnedSamples + Pages::kPageApronSamples];
+}
+
+} // namespace
+
 TEST(TerrainRegionBake, AHeightPageOverlayIsBuiltOnlyOnceTheTerrainWouldPage)
 {
     ScopedTerrainService scoped;
@@ -2966,8 +2982,8 @@ TEST(TerrainRegionBake, AnEditInsideTheHeightPageOverlayRebakesItInPlace)
     TerrainModifierSystem system;
     system.Update(world, 1.0f / 60.0f);
     ASSERT_NE(tiled->PageOverlay, nullptr);
-    const PageStreaming::HeightPageOverlay* before = tiled->PageOverlay.get();
-    const PageStreaming::PageSampleRect reach = before->Level0Rect();
+    const PageStreaming::HeightPageLayer* before = tiled->PageOverlay.get();
+    const PageStreaming::PageSampleRect reach = before->Extent(0).value();
     const uint64 version = tiled->PageOverlayVersion;
 
     world.GetComponentForWrite<Components::TerrainFlattenEffect>(dab)->TargetHeight = 40.0f;
@@ -2978,7 +2994,7 @@ TEST(TerrainRegionBake, AnEditInsideTheHeightPageOverlayRebakesItInPlace)
     const PageStreaming::PageSampleRect& changed = tiled->PageOverlayChanged;
     EXPECT_LT(changed.Width(), reach.Width());
     EXPECT_LT(changed.Height(), reach.Height());
-    EXPECT_NE(tiled->PageOverlay->Delta(0, changed.MinX + changed.Width() / 2u, changed.MinZ + changed.Height() / 2u),
+    EXPECT_NE(LayerDelta(*tiled->PageOverlay, 0, changed.MinX + changed.Width() / 2u, changed.MinZ + changed.Height() / 2u),
               0.0f);
 }
 
@@ -3004,19 +3020,19 @@ TEST(TerrainRegionBake, DraggingAModifierAtTheReachsEdgeComposesOnlyWhatItMoved)
     system.Update(world, 1.0f / 60.0f);
     ASSERT_NE(tiled->PageOverlay, nullptr);
     // The marker: one level-0 sample at the flatten's centre, far from the dragged stamp.
-    const PageStreaming::PageSampleRect before = tiled->PageOverlay->Level0Rect();
+    const PageStreaming::PageSampleRect before = tiled->PageOverlay->Extent(0).value();
     const uint32 markX = before.MinX + 40u;
     const uint32 markZ = (before.MinZ + before.MaxZ) / 2u;
     constexpr float32 kMarker = 999.0f;
-    tiled->PageOverlay->Rebake({markX, markZ, markX, markZ}, std::span<const float32>(&kMarker, 1));
+    tiled->PageOverlay->WriteLevel0(0, {markX, markZ, markX, markZ}, std::span<const float32>(&kMarker, 1));
 
     world.GetComponentForWrite<Components::WorldTransform>(edge)->matrix[12] = 1520.0f;
     system.Update(world, 1.0f / 60.0f);
     const auto dragged = tiled->PageOverlay;
     ASSERT_NE(dragged, nullptr);
-    const PageStreaming::PageSampleRect reach = dragged->Level0Rect();
+    const PageStreaming::PageSampleRect reach = dragged->Extent(0).value();
     EXPECT_GT(reach.MaxX, before.MaxX) << "the drag grows the reach";
-    EXPECT_EQ(dragged->Delta(0, markX, markZ), kMarker) << "a drag at the reach's edge recomposed the whole overlay";
+    EXPECT_EQ(LayerDelta(*dragged, 0, markX, markZ), kMarker) << "a drag at the reach's edge recomposed the whole overlay";
 
     // The same modifiers baked from scratch.
     tiled->PageOverlayCurrent = false;
@@ -3033,7 +3049,7 @@ TEST(TerrainRegionBake, DraggingAModifierAtTheReachsEdgeComposesOnlyWhatItMoved)
                                         (z + 2u >= (markZ >> level) && z <= (markZ >> level) + 2u);
                 if (nearMarker)
                     continue;
-                ASSERT_NEAR(dragged->Delta(level, x, z), tiled->PageOverlay->Delta(level, x, z), 1.0e-6f)
+                ASSERT_NEAR(LayerDelta(*dragged, level, x, z), LayerDelta(*tiled->PageOverlay, level, x, z), 1.0e-6f)
                     << "level " << level << " sample (" << x << ", " << z << ")";
             }
 }
@@ -3115,8 +3131,9 @@ TEST(TerrainRegionBake, AHeightPageOverlayOverTheCapIsRefused)
     CreateFlattenModifier(world, 0.0f, 0.0f, 20.0f, 4.0f * kTiledTileWorld);
     const uint32 samplesX = tiled->Config.TilesPerAxisX * (tiled->Config.TileConfig.HeightmapWidth - 1u) + 1u;
     const uint32 samplesZ = tiled->Config.TilesPerAxisZ * (tiled->Config.TileConfig.HeightmapHeight - 1u) + 1u;
-    const uint64 wholeTerrain = PageStreaming::HeightPageOverlay::Bytes(
-        PageStreaming::BuildPageStoreLevels(samplesX, samplesZ), {0, 0, samplesX - 1u, samplesZ - 1u});
+    const uint64 wholeTerrain = PageStreaming::HeightPageLayerBytesOver(
+        PageStreaming::BuildPageStoreLevels(samplesX, samplesZ),
+        std::array{PageStreaming::PageSampleRect{0, 0, samplesX - 1u, samplesZ - 1u}});
     tiled->PageOverlayByteCap = wholeTerrain - 1u;
     TerrainModifierSystem system;
     system.Update(world, 1.0f / 60.0f);

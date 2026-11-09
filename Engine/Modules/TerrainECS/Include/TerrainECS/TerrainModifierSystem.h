@@ -751,6 +751,11 @@ private:
                                const std::vector<ResolvedModifier>& modifiers, bool fullBake,
                                const DirtyUnion& heightDirty);
 
+    void ComposeHeightPageDeltaBand(const TiledTerrainData& tiled, float32 heightScale, float32 terrainOriginY,
+                                    const std::vector<ResolvedModifier>& modifiers,
+                                    const PageStreaming::PageSampleRect& write, int32 firstX, int32 lastX,
+                                    int32 firstZ, int32 lastZ, std::span<float32> deltas);
+
     // BakeHeightPageOverlay for every tiled terrain that awaits its overlay
     // (TiledTerrainData::AwaitsPageOverlay) under an unchanged modifier set.
     void BakeAwaitedPageOverlays(ECS::World& world, TerrainService& terrainService,

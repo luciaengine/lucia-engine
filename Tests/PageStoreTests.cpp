@@ -3,6 +3,7 @@
 
 #include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "PageStreaming/Height/HeightPageCooker.h"
+#include "PageStreaming/Height/HeightPageLayer.h"
 #include "PageStreaming/Height/HeightStoreCache.h"
 #include "PageStreaming/Height/HeightStoreKey.h"
 #include "PageStreaming/PageLoader.h"
@@ -2986,13 +2987,24 @@ std::vector<float32> Dense(const PageSampleRect& rect, const std::vector<float32
     return dense;
 }
 
-void ExpectOverlayIsThePyramidOf(const HeightPageOverlay& overlay, const std::vector<std::vector<float32>>& pyramid,
+float32 LayerDelta(const GameEngine::PageStreaming::HeightPageLayer& layer, uint32 level, uint32 sampleX, uint32 sampleZ)
+{
+    namespace Pages = GameEngine::PageStreaming;
+    const std::span<const float32> page = layer.PageDeltas(
+        Pages::PageAddress{0, static_cast<uint8>(level), sampleX / Pages::kPageOwnedSamples, sampleZ / Pages::kPageOwnedSamples});
+    if (page.empty())
+        return 0.0f;
+    return page[(sampleZ % Pages::kPageOwnedSamples + Pages::kPageApronSamples) * Pages::kPageStrideSamples +
+                sampleX % Pages::kPageOwnedSamples + Pages::kPageApronSamples];
+}
+
+void ExpectOverlayIsThePyramidOf(const HeightPageLayer& overlay, const std::vector<std::vector<float32>>& pyramid,
                                  const std::vector<PageStoreLevel>& levels)
 {
     for (uint32 level = 0; level < levels.size(); ++level)
         for (uint32 z = 0; z < levels[level].SamplesZ; ++z)
             for (uint32 x = 0; x < levels[level].SamplesX; ++x)
-                ASSERT_NEAR(overlay.Delta(level, x, z),
+                ASSERT_NEAR(LayerDelta(overlay, level, x, z),
                             pyramid[level][static_cast<std::size_t>(z) * levels[level].SamplesX + x], 1.0e-6f)
                     << "level " << level << " sample (" << x << ", " << z << ")";
 }
@@ -3004,7 +3016,8 @@ TEST(HeightPageOverlayTest, EachLevelIsTheStoresTentOfTheBakedMinusTheBase)
     const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(601, 300);
     const PageSampleRect rect{100, 40, 250, 170};
     const std::vector<float32> delta = RectDelta(rect, 0.5f);
-    const HeightPageOverlay overlay(levels, rect, delta);
+    HeightPageLayer overlay(1u, levels);
+    overlay.WriteLevel0(0, rect, delta);
     ExpectOverlayIsThePyramidOf(overlay, TentPyramid(Dense(rect, delta, levels.front()), levels), levels);
 }
 
@@ -3013,10 +3026,11 @@ TEST(HeightPageOverlayTest, AnEditRebakesOnlyItsRectAndEqualsAFreshOverlay)
     const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(601, 300);
     const PageSampleRect rect{100, 40, 250, 170};
     std::vector<float32> delta = RectDelta(rect, 0.5f);
-    HeightPageOverlay after(levels, rect, delta);
+    HeightPageLayer after(1u, levels);
+    after.WriteLevel0(0, rect, delta);
     const PageSampleRect edit{180, 90, 210, 140};
     const std::vector<float32> edited = RectDelta(edit, 2.0f);
-    after.Rebake(edit, edited);
+    after.WriteLevel0(0, edit, edited);
     for (uint32 z = edit.MinZ; z <= edit.MaxZ; ++z)
         for (uint32 x = edit.MinX; x <= edit.MaxX; ++x)
             delta[static_cast<std::size_t>(z - rect.MinZ) * rect.Width() + (x - rect.MinX)] =
@@ -3031,7 +3045,8 @@ TEST(HeightPageOverlayTest, APageGainsItsLevelsDeltaUnderEveryStoredSampleApronI
     // the edge between (1, 0) and (1, 1), so page (1, 0)'s first apron column (x 127) and last apron
     // row (z 128) lie inside the overlay.
     const PageSampleRect rect{120, 120, 140, 140};
-    const HeightPageOverlay overlay(levels, rect, RectDelta(rect, 0.5f));
+    HeightPageLayer overlay(1u, levels);
+    overlay.WriteLevel0(0, rect, RectDelta(rect, 0.5f));
     const uint32 pageX = 1u;
     const PageAddress page{0, 0, pageX, 0};
     std::vector<float32> samples(kPageSampleCount, 1.0f);
@@ -3044,14 +3059,14 @@ TEST(HeightPageOverlayTest, APageGainsItsLevelsDeltaUnderEveryStoredSampleApronI
         {
             const uint32 x = sampleAt(i, pageX * kPageOwnedSamples, levels[0].SamplesX);
             const uint32 z = sampleAt(row, 0u, levels[0].SamplesZ);
-            ASSERT_FLOAT_EQ(samples[row * kPageStrideSamples + i], 1.0f + overlay.Delta(0, x, z));
+            ASSERT_FLOAT_EQ(samples[row * kPageStrideSamples + i], 1.0f + LayerDelta(overlay, 0, x, z));
         }
     const uint32 lastRow = kPageStrideSamples - 1u;
     // Stored row r holds level-0 row r - 1 on this page (z 124 is row 125); stored column i holds
     // x = 127 + i.
-    EXPECT_NE(overlay.Delta(0, pageX * kPageOwnedSamples - 1u, 124u), 0.0f) << "the first apron column is reached";
+    EXPECT_NE(LayerDelta(overlay, 0, pageX * kPageOwnedSamples - 1u, 124u), 0.0f) << "the first apron column is reached";
     EXPECT_NE(samples[125u * kPageStrideSamples + 0u], 1.0f) << "the first apron column gains its delta";
-    EXPECT_NE(overlay.Delta(0, 130u, kPageOwnedSamples), 0.0f) << "the last apron row is reached";
+    EXPECT_NE(LayerDelta(overlay, 0, 130u, kPageOwnedSamples), 0.0f) << "the last apron row is reached";
     EXPECT_NE(samples[lastRow * kPageStrideSamples + (130u - pageX * kPageOwnedSamples + 1u)], 1.0f)
         << "the last apron row gains its delta";
     std::vector<float32> far(kPageSampleCount, 1.0f);
@@ -3377,4 +3392,185 @@ TEST_F(PageStoreTest, APlanetCookRethrowsTheSourceErrorAfterJoiningItsWorkerBatc
     };
     EXPECT_THROW(CookPlanetPageStore(request), std::runtime_error);
     EXPECT_TRUE(std::filesystem::is_empty(m_Dir)) << "a failed source published a store or leaked its scratch file";
+}
+
+// Sparse modifier delta pages and cube-face apron propagation.
+
+namespace
+{
+
+// The pyramid sample a page of a one-face layer stores at stride (i, j): the clamped sample of its level.
+float32 StoredPyramidSample(const std::vector<std::vector<float32>>& pyramid, const std::vector<PageStoreLevel>& levels,
+                            const PageAddress& page, uint32 i, uint32 j)
+{
+    const PageStoreLevel& level = levels[page.Level];
+    const int64 x = std::clamp<int64>(int64{page.X} * kPageOwnedSamples - kPageApronSamples + i, 0, level.SamplesX - 1);
+    const int64 z = std::clamp<int64>(int64{page.Z} * kPageOwnedSamples - kPageApronSamples + j, 0, level.SamplesZ - 1);
+    return pyramid[page.Level][static_cast<std::size_t>(z) * level.SamplesX + static_cast<std::size_t>(x)];
+}
+
+// Every page of every level of `layer` holds the tent pyramid of `level0`, bit for bit, apron included; a
+// page it does not hold is zero there. Returns the pages that hold a non-zero sample.
+uint32 ExpectLayerIsThePyramidOf(const HeightPageLayer& layer, const std::vector<float32>& level0,
+                                 const std::vector<PageStoreLevel>& levels)
+{
+    const std::vector<std::vector<float32>> pyramid = TentPyramid(level0, levels);
+    uint32 nonZero = 0;
+    for (uint32 level = 0; level < levels.size(); ++level)
+        for (uint32 z = 0; z < levels[level].PagesZ; ++z)
+            for (uint32 x = 0; x < levels[level].PagesX; ++x)
+            {
+                const PageAddress page{0, uint8(level), x, z};
+                const std::span<const float32> deltas = layer.PageDeltas(page);
+                bool any = false;
+                for (uint32 j = 0; j < kPageStrideSamples; ++j)
+                    for (uint32 i = 0; i < kPageStrideSamples; ++i)
+                    {
+                        const float32 expected = StoredPyramidSample(pyramid, levels, page, i, j);
+                        any = any || expected != 0.0f;
+                        const float32 held = deltas.empty() ? 0.0f : deltas[j * kPageStrideSamples + i];
+                        if (held != expected)
+                        {
+                            ADD_FAILURE() << "level " << level << " page (" << x << ", " << z << ") stride (" << i
+                                          << ", " << j << "): " << held << " held, " << expected << " expected";
+                            return nonZero;
+                        }
+                    }
+                nonZero += any ? 1u : 0u;
+            }
+    return nonZero;
+}
+
+void WriteDense(std::vector<float32>& level0, const PageStoreLevel& shape, const PageSampleRect& rect,
+                std::span<const float32> deltas)
+{
+    for (uint32 z = rect.MinZ; z <= rect.MaxZ; ++z)
+        for (uint32 x = rect.MinX; x <= rect.MaxX; ++x)
+            level0[static_cast<std::size_t>(z) * shape.SamplesX + x] =
+                deltas[static_cast<std::size_t>(z - rect.MinZ) * rect.Width() + (x - rect.MinX)];
+}
+
+} // namespace
+
+// A random sequence of writes, some of zeros: after each, every level is the tent pyramid of the written
+// level 0 (the closed form), and the layer holds only the pages with a non-zero sample.
+TEST(HeightPageLayerTest, EveryLevelIsTheTentPyramidOfTheWritesAndOnlyNonZeroPagesAreHeld)
+{
+    const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(601, 300);
+    const PageSampleRect whole{0, 0, levels[0].SamplesX - 1u, levels[0].SamplesZ - 1u};
+    std::vector<float32> level0(static_cast<std::size_t>(levels[0].SamplesX) * levels[0].SamplesZ, 0.0f);
+    HeightPageLayer layer(1, levels);
+    std::mt19937 random(5);
+    for (int write = 0; write < 24; ++write)
+    {
+        const uint32 x0 = random() % levels[0].SamplesX;
+        const uint32 z0 = random() % levels[0].SamplesZ;
+        const PageSampleRect rect{x0, z0, std::min(x0 + static_cast<uint32>(random() % 200u), whole.MaxX),
+                                  std::min(z0 + static_cast<uint32>(random() % 150u), whole.MaxZ)};
+        std::vector<float32> deltas = RectDelta(rect, static_cast<float32>(write));
+        if (write % 4 == 3)
+            std::fill(deltas.begin(), deltas.end(), 0.0f);
+        layer.WriteLevel0(0, rect, deltas);
+        WriteDense(level0, levels[0], rect, deltas);
+        const uint32 nonZero = ExpectLayerIsThePyramidOf(layer, level0, levels);
+        EXPECT_EQ(layer.Bytes(), uint64{nonZero} * kPageSampleCount * sizeof(float32))
+            << "write " << write << ": a page of zeros is held";
+    }
+}
+
+TEST(HeightPageLayerTest, AWriteOfZerosOverEveryWrittenSampleLeavesNoPage)
+{
+    const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(601, 300);
+    HeightPageLayer layer(1, levels);
+    const PageSampleRect rect{100, 40, 250, 170};
+    layer.WriteLevel0(0, rect, RectDelta(rect, 0.5f));
+    EXPECT_GT(layer.Bytes(), 0u);
+    EXPECT_LE(layer.Bytes(), HeightPageLayerBytesOver(levels, std::span(&rect, 1))) << "the estimate bounds the pages";
+    layer.WriteLevel0(0, rect, std::vector<float32>(rect.Width() * rect.Height(), 0.0f));
+    EXPECT_EQ(layer.Bytes(), 0u);
+}
+
+// Two small writes at opposite corners of a large terrain hold the pages under them, not the rect between.
+TEST(HeightPageLayerTest, TwoFarWritesHoldOnlyThePagesUnderThem)
+{
+    const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(32769, 32769);
+    const std::array<PageSampleRect, 2> rects{PageSampleRect{10, 10, 200, 200}, PageSampleRect{32500, 32500, 32700, 32700}};
+    HeightPageLayer layer(1, levels);
+    for (const PageSampleRect& rect : rects)
+        layer.WriteLevel0(0, rect, std::vector<float32>(rect.Width() * rect.Height(), 1.0f));
+    const uint64 estimate = HeightPageLayerBytesOver(levels, rects);
+    EXPECT_LE(layer.Bytes(), estimate);
+    EXPECT_LT(estimate, 64ull << 20) << "under an eighth of the 512 MiB desktop cap";
+    EXPECT_GT(layer.Bytes(), 0u);
+}
+
+// A write one sample in from face 0's side changes the pages of the neighbor face past that side: their
+// apron holds face 0's samples one in (PageCubeSampleAt), their own samples stay zero, and no other face
+// holds a page. RefreshRects names the neighbor's edge band.
+TEST(HeightPageLayerTest, AWriteNearAFaceSideChangesTheNeighborFacesApronOnly)
+{
+    const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(257, 257);
+    HeightPageLayer layer(kPageStoreMaxFaces, levels);
+    const PageSampleRect rect{0, 100, 6, 140};
+    layer.WriteLevel0(0, rect, std::vector<float32>(rect.Width() * rect.Height(), 2.0f));
+    const PageFaceEdge edge = PageFaceNeighbor(0, PageFaceSide::MinX);
+    uint32 neighborPages = 0;
+    for (uint8 face = 1; face < kPageStoreMaxFaces; ++face)
+        for (uint32 level = 0; level < levels.size(); ++level)
+            for (uint32 z = 0; z < levels[level].PagesZ; ++z)
+                for (uint32 x = 0; x < levels[level].PagesX; ++x)
+                {
+                    const PageAddress page{face, uint8(level), x, z};
+                    const std::span<const float32> deltas = layer.PageDeltas(page);
+                    if (deltas.empty())
+                        continue;
+                    ASSERT_EQ(face, edge.Face) << "a face that shares no side with the write holds a page";
+                    ++neighborPages;
+                    const uint32 samples = levels[level].SamplesX;
+                    for (uint32 j = 0; j < kPageStrideSamples; ++j)
+                        for (uint32 i = 0; i < kPageStrideSamples; ++i)
+                        {
+                            const int64 sx = int64{x} * kPageOwnedSamples - 1 + i;
+                            const int64 sz = int64{z} * kPageOwnedSamples - 1 + j;
+                            const PageFaceSample source = PageCubeSampleAt(face, sx, sz, samples);
+                            float32 expected = 0.0f;
+                            if (source.Face == 0)
+                            {
+                                const std::span<const float32> own = layer.PageDeltas(PageAddress{
+                                    0, uint8(level), source.X / kPageOwnedSamples, source.Z / kPageOwnedSamples});
+                                if (!own.empty())
+                                    expected = own[(source.Z % kPageOwnedSamples + 1u) * kPageStrideSamples +
+                                                   source.X % kPageOwnedSamples + 1u];
+                            }
+                            ASSERT_EQ(deltas[j * kPageStrideSamples + i], expected)
+                                << "face " << int(face) << " level " << level << " page (" << x << ", " << z
+                                << ") stride (" << i << ", " << j << ")";
+                        }
+                }
+    EXPECT_GT(neighborPages, 0u) << "the neighbor's apron past the shared side reads the write";
+    std::vector<PageFaceRect> rects;
+    layer.RefreshRects(0, rect, rects);
+    ASSERT_EQ(rects.size(), 2u);
+    EXPECT_EQ(rects[1].Face, edge.Face);
+    const uint32 last0 = levels.front().SamplesX - 1u;
+    const uint32 across = edge.Side == PageFaceSide::MinX || edge.Side == PageFaceSide::MinZ ? 0u : last0;
+    const bool column = edge.Side == PageFaceSide::MinX || edge.Side == PageFaceSide::MaxX;
+    const PageSampleRect& band = rects[1].Level0Rect;
+    const auto [acrossMin, acrossMax, alongMin, alongMax] =
+        column ? std::tie(band.MinX, band.MaxX, band.MinZ, band.MaxZ) : std::tie(band.MinZ, band.MaxZ, band.MinX, band.MaxX);
+    EXPECT_EQ(std::tie(acrossMin, acrossMax), std::tie(across, across)) << "the band is not the neighbor's edge sample";
+    EXPECT_LE(alongMin, edge.Reversed ? last0 - rect.MaxZ : rect.MinZ) << "the band misses rows the write reaches";
+    EXPECT_GE(alongMax, edge.Reversed ? last0 - rect.MinZ : rect.MaxZ) << "the band misses rows the write reaches";
+}
+
+TEST(HeightPageLayerTest, EstimatingTheMaximumLatticeCountsRectanglesWithoutAllocatingItsPageDirectory)
+{
+    const uint32 samples = kPageStoreMaxSamplesPerAxis;
+    const std::vector<PageStoreLevel> levels = BuildPageStoreLevels(samples, samples);
+    const PageSampleRect whole{0, 0, samples - 1u, samples - 1u};
+    const std::array rects{whole, whole, PageSampleRect{1, 1, 200, 200}};
+    uint64 pages = 0;
+    for (const PageStoreLevel& level : levels)
+        pages += static_cast<uint64>(level.PagesX) * level.PagesZ;
+    EXPECT_EQ(HeightPageLayerBytesOver(levels, rects), pages * kPageSampleCount * sizeof(float32));
 }

@@ -333,9 +333,9 @@ void TerrainHeightPages::Request(const PagedTerrainRequest& request, std::span<c
         else
         {
             if (terrain.Overlay)
-                m_Residency.Refresh(terrain.Stream, terrain.Overlay->Level0Rect());
+                m_Residency.Refresh(terrain.Stream, terrain.Overlay->Extent(0).value_or(PageStreaming::PageSampleRect{}));
             if (request.Overlay)
-                m_Residency.Refresh(terrain.Stream, request.Overlay->Level0Rect());
+                m_Residency.Refresh(terrain.Stream, request.Overlay->Extent(0).value_or(PageStreaming::PageSampleRect{}));
         }
         terrain.Overlay = request.Overlay;
         terrain.OverlayVersion = request.OverlayVersion;
