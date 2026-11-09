@@ -2166,6 +2166,7 @@ endif()
                 Tests/CascadeMotionSchedulerTests.cpp
                 Tests/CascadeShadowCacheTests.cpp
                 Tests/SkinnedShadowInvalidationTests.cpp
+                Tests/RigidCascadeRestoreTests.cpp
                 Tests/VertexModifierContentInvalidationTests.cpp
                 Tests/ShadowSamplingFitTests.cpp
                 Tests/ShadowSamplingShaderContractTests.cpp

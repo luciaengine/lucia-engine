@@ -17,6 +17,7 @@
 #include "Rendering/CameraTypes.h"
 #include "Rendering/Materials/MaterialDocument.h"
 #include "AssetCore/GUID.h"
+#include "Assets/ModelAsset.h"
 #include "Mathematics/Matrix4x4.h"
 #include "Types/StringId.h"
 #include "PerFrameWritePoolRotation.h"
@@ -765,6 +766,55 @@ TEST(RenderServicesRGPassTests, AbortedPreparationKeepsTheRenderedCascadeFit)
         // Aborted B must not replace retained A.
         cascadeFrame.ExpectSamplingFit(cascadeFrame.BuildSamplingData(fitA), fitA);
         cascadeFrame.Execute();
+    }
+    fixture.Down();
+}
+
+TEST(RenderServicesRGPassTests, InPlaceGeometryReplacementInvalidatesRetainedCascadeDepth)
+{
+    RsFixture fixture;
+    if (!fixture.Up())
+        GTEST_SKIP() << "No Vulkan device available";
+    {
+        Mesh mesh{};
+        mesh.Vertices.resize(3);
+        mesh.Vertices[0].Position[0] = -0.5f;
+        mesh.Vertices[1].Position[0] = 0.5f;
+        mesh.Vertices[2].Position[1] = 0.5f;
+        mesh.Indices = {0, 1, 2};
+        const MeshGPUKey key{GUID::Generate(), 0};
+        const auto handle = fixture.Rs.GetMeshGPURegistry().RegisterSubmesh(key, mesh);
+        ASSERT_TRUE(handle.IsValid());
+        const uint64_t geometryBefore = fixture.Rs.GetMeshGPURegistry().GetContentRevision();
+        const uint64_t casterBefore = fixture.Rs.ShadowCasterContentVersion(0u);
+
+        FramePools pools(fixture.Device.get());
+        RenderGraph::RGFrame frame(fixture.Device.get(), &pools.Persistent, &pools.Transient, &pools.Ring);
+        auto& feature = fixture.Rs.EnsureFeature<ShadowMapRenderFeature>();
+        CascadedShadowConfig config{};
+        config.NumCascades = 1;
+        config.Resolution = 128;
+        ASSERT_TRUE(feature.Initialize(fixture.Device.get(), config));
+        feature.SetMotionCap(0);
+        CascadeFrameData fit{};
+        fit.NumCascades = 1;
+        fit.LightVP[0] = Mathematics::Matrix4x4::Identity();
+        fit.LightVPRel[0] = Mathematics::Matrix4x4::Identity();
+        CascadeFitFrame cascade(fixture, frame, feature, config.Resolution);
+        ASSERT_TRUE(cascade.Declare(0u, fit).IsValid());
+        cascade.Execute();
+        ASSERT_TRUE(cascade.Declare(1u, fit).IsValid());
+        cascade.Execute();
+        ASSERT_FALSE(cascade.Declare(2u, fit).IsValid()) << "the unchanged layer must be cached";
+        cascade.Execute();
+
+        mesh.Vertices[2].Position[1] = 0.75f;
+        ASSERT_EQ(fixture.Rs.GetMeshGPURegistry().RegisterSubmesh(key, mesh), handle);
+        ASSERT_GT(fixture.Rs.GetMeshGPURegistry().GetContentRevision(), geometryBefore);
+        ASSERT_EQ(fixture.Rs.ShadowCasterContentVersion(0u), casterBefore);
+        EXPECT_TRUE(cascade.Declare(3u, fit).IsValid())
+            << "replacing geometry in a stable handle must invalidate retained depth";
+        cascade.Execute();
     }
     fixture.Down();
 }
