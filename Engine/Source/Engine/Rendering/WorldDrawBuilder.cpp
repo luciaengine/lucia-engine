@@ -6,7 +6,9 @@
 #include "Engine/Rendering/MaterialVertexAnimation.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "JobSystem/WorkStealingThreadPool.h"
+#include "Rendering/Core/HashUtils.h"
 #include "Rendering/Core/ThreadingUtils.h"
+#include "Types/FlatMap.h"
 
 #include <algorithm>
 
@@ -15,6 +17,18 @@ namespace GameEngine
 namespace Engine::Renderer
 {
 using namespace ::GameEngine::Rendering;
+
+namespace
+{
+void AddShadowMembership(WorldDrawBuilder::ShadowSubmissionState& state,
+                         uint64_t identity, bool drawable)
+{
+    // Addition preserves order independence and multiplicity, unlike XOR.
+    state.MembershipKey += HashUtils::HashValue(identity, drawable);
+    ++state.MembershipCount;
+    state.Complete = state.Complete && drawable;
+}
+} // namespace
 
 WorldDrawBuilder::WorldDrawBuilder(const JobSystem::WorkStealingThreadPool* jobSystem)
     : m_JobSystem(jobSystem),
@@ -25,6 +39,8 @@ WorldDrawBuilder::WorldDrawBuilder(const JobSystem::WorkStealingThreadPool* jobS
 
 void WorldDrawBuilder::BeginFrame()
 {
+    for (auto& [viewId, submissions] : m_ShadowSubmissionsByView)
+        submissions = {};
     // Each submitting thread owns one buffer; buffers on separate lines keep
     // the threads from invalidating each other's records.
     static_assert(alignof(decltype(m_ThreadBuffers)::value_type) == kFalseSharingSeparation);
@@ -102,6 +118,7 @@ void WorldDrawBuilder::BuildBatchKeysForView(Rendering::ViewId viewId,
     auto itSub = m_SubmissionsByView.find(viewId);
     if (itSub == m_SubmissionsByView.end())
     {
+        m_ShadowSubmissionsByView.Erase(viewId);
         m_BatchKeysByView.erase(viewId);
         m_ShadowCasterByView.erase(viewId);
         m_TransmissiveCasterByView.erase(viewId);
@@ -179,21 +196,39 @@ void WorldDrawBuilder::DeriveBatchKeysForView(
     bool transmissiveCaster = false;
     bool animatedVertexModifier = false;
     bool animatedVertexModifierCaster = false;
+    ShadowSubmissionStates shadowSubmissions{};
+    shadowSubmissions.All.Complete = true;
+    shadowSubmissions.Rigid.Complete = true;
+    FlatMap<const Material*, bool> shadowMaterialKinds;
 
     for (const auto& rec : submissions)
     {
+        const auto* entry = meshRegistry.Find(rec.meshHandle);
+        const bool drawable = rec.material && rec.material->GetGraphicsPipelineId().IsValid() &&
+                              entry && entry->gpuMeshIndex != ~0u && entry->indexCount != 0u;
         // A census of submitted casters, ahead of every drawability filter.
         shadowCaster = shadowCaster || (rec.flags & kSubmissionFlagCastShadows) != 0u;
+        if ((rec.flags & kSubmissionFlagCastShadows) != 0u)
+        {
+            uint64_t identity = HashUtils::HashValue(0u, static_cast<uint64_t>(rec.meshHandle));
+            identity = HashUtils::HashValue(identity, rec.instanceIndex);
+            identity = HashUtils::HashValue(identity, rec.renderLayerMask);
+            if (rec.material)
+            {
+                const auto& guid = rec.material->GetGuid().GetData();
+                identity = HashUtils::Fnv1a64(guid.data(), guid.size(), identity);
+            }
+            const bool rigid = !entry || !Rendering::IsSkinned(entry->vertexFlags);
+            AddShadowMembership(shadowSubmissions.All, identity, drawable);
+            if (rigid)
+                AddShadowMembership(shadowSubmissions.Rigid, identity, drawable);
+            if (rec.material)
+                shadowMaterialKinds.GetOrInsert(rec.material) |= rigid;
+        }
         if (!rec.material)
             continue;
-        // Ahead of the pipeline and mesh-residency filters on purpose: this is a
-        // census of what was submitted, not of what is drawable this frame. A
-        // deforming caster whose mesh or pipeline is still pending invalidates
-        // the caches from its first submitted frame, a re-render on frames that
-        // already pay for the upload, rather than from the frame it first draws.
-        // Either way the caches never hold a layer rasterized without a drawn
-        // caster, because this derivation precedes every reader in the frame.
-        // A caster implies a renderable, so the first one found ends the search.
+        // Deformation is a property of submitted content, including pending draws.
+        // The prepared depth producer separately proves that every caster drew.
         if (!animatedVertexModifierCaster && MaterialDeformsVertices(*rec.material))
         {
             animatedVertexModifier = true;
@@ -201,7 +236,6 @@ void WorldDrawBuilder::DeriveBatchKeysForView(
         }
         if (!rec.material->GetGraphicsPipelineId().IsValid())
             continue;
-        const auto* entry = meshRegistry.Find(rec.meshHandle);
         if (!entry || entry->gpuMeshIndex == ~0u || entry->indexCount == 0u)
             continue;
         // bit 0 == castsShadows (ComputeInstanceFlags), the same bit the shadow
@@ -224,6 +258,20 @@ void WorldDrawBuilder::DeriveBatchKeysForView(
             entry->gpuMeshIndex,
             colorClassId});
     }
+
+    for (const auto& [material, rigid] : shadowMaterialKinds)
+    {
+        const auto& identity = material->GetGuid().GetData();
+        uint64_t stamp = HashUtils::Fnv1a64(identity.data(), identity.size());
+        stamp = HashUtils::HashValue(stamp, material->GetContentRevision());
+        stamp = HashUtils::HashValue(stamp, material->GetVersion());
+        shadowSubmissions.All.MaterialContentKey =
+            HashUtils::HashCombine(shadowSubmissions.All.MaterialContentKey, stamp);
+        if (rigid)
+            shadowSubmissions.Rigid.MaterialContentKey =
+                HashUtils::HashCombine(shadowSubmissions.Rigid.MaterialContentKey, stamp);
+    }
+    m_ShadowSubmissionsByView.GetOrInsert(viewId) = shadowSubmissions;
 
     // Sort by (colorClassId, meshIndex, materialIndex): grouping by
     // (colorClassId, meshIndex) makes the merge members contiguous for the
@@ -296,6 +344,7 @@ void WorldDrawBuilder::DeriveBatchKeysForView(
 
 void WorldDrawBuilder::ClearView(Rendering::ViewId viewId)
 {
+    m_ShadowSubmissionsByView.Erase(viewId);
     m_SubmissionsByView.erase(viewId);
     m_BatchKeysByView.erase(viewId);
     m_DeformingKeysByView.erase(viewId);
@@ -307,6 +356,7 @@ void WorldDrawBuilder::ClearView(Rendering::ViewId viewId)
 
 void WorldDrawBuilder::Clear()
 {
+    m_ShadowSubmissionsByView.Clear();
     m_SubmissionsByView.clear();
     m_BatchKeysByView.clear();
     m_DeformingKeysByView.clear();
@@ -314,6 +364,13 @@ void WorldDrawBuilder::Clear()
     m_TransmissiveCasterByView.clear();
     m_AnimatedVertexModifierByView.clear();
     m_AnimatedVertexModifierCasterByView.clear();
+}
+
+WorldDrawBuilder::ShadowSubmissionStates WorldDrawBuilder::GetShadowSubmissionStates(
+    Rendering::ViewId viewId) const
+{
+    const auto* found = m_ShadowSubmissionsByView.Find(viewId);
+    return found ? *found : ShadowSubmissionStates{};
 }
 
 } // namespace Engine::Renderer
