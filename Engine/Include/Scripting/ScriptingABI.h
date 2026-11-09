@@ -454,6 +454,8 @@ GE_API GE_Result GE_CDECL GE_GameUI_FindElement(uint64_t entityId, const char* i
 
 GE_API GE_Result GE_CDECL GE_UIElement_SetWidthPercent(uint64_t instanceId, float pct);
 GE_API GE_Result GE_CDECL GE_UIElement_SetLabelText(uint64_t instanceId, const char* text);
+/// Sets Markdown text on the main thread. A null or empty string clears the control.
+GE_API GE_Result GE_CDECL GE_UIElement_SetMarkdownText(uint64_t instanceId, const char* text);
 GE_API GE_Result GE_CDECL GE_UIElement_SetClass(uint64_t instanceId, const char* className, int32_t on);
 // Liveness as a QUERY, not as a failure: Ok with *outAlive 0 or 1. A caller asking
 // "is this still there" is not making a mistake when the answer is no.
