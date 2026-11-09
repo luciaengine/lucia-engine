@@ -889,6 +889,12 @@ set_tests_properties(PhysicsSmokeTests PROPERTIES
 )
 
 if(GE_PHYSICS_BACKEND_JOLT)
+  add_executable(PhysicsRayCastTests PhysicsRayCastTests.cpp)
+  target_link_libraries(PhysicsRayCastTests PRIVATE Engine GTest::gtest)
+  ge_set_output_tests(PhysicsRayCastTests)
+  ge_stage_runtime_dependencies(PhysicsRayCastTests)
+  add_test(NAME PhysicsRayCastTests COMMAND $<TARGET_FILE:PhysicsRayCastTests>)
+  set_tests_properties(PhysicsRayCastTests PROPERTIES WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
   add_executable(PhysicsBoxOverlapTests PhysicsBoxOverlapTests.cpp)
   target_link_libraries(PhysicsBoxOverlapTests PRIVATE Engine GTest::gtest)
   ge_set_output_tests(PhysicsBoxOverlapTests)
