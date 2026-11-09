@@ -1,0 +1,103 @@
+#version 450
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct BatchTableEntry {
+    uint materialIndex;
+    uint meshIndex;
+    uint recordOffset;
+    uint capacity;
+};
+
+struct DrawCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+
+layout(set = 0, binding = 0, std430) readonly buffer BatchTableBuffer {
+    BatchTableEntry batchTable[];
+};
+layout(set = 0, binding = 2, std430) buffer CursorBuffer {
+    uint cursors[];
+};
+layout(set = 0, binding = 3, std430) buffer CommandBuffer {
+    DrawCommand commands[];
+};
+layout(set = 0, binding = 4, std430) buffer IndirectionBuffer {
+    uint indirection[];
+};
+
+// Shared with group compaction; countBase names destination row counters here.
+layout(push_constant) uniform PushConstants {
+    uint recordCount;
+    uint rowCount;
+    uint cursorBase;
+    uint countBase;
+    uint srcRecordBase;
+    uint dstRecordBase;
+    uint pairedRecords;
+    uint instancedRecords;
+} pc;
+
+shared uvec4 geometry[64];
+shared uint live[64];
+
+void main() {
+    uint slot = gl_GlobalInvocationID.x;
+    uint lane = gl_LocalInvocationID.x;
+    uint row = 0u;
+    bool isLive = slot < pc.recordCount && pc.rowCount != 0u;
+    if (isLive) {
+        uint lower = 0u;
+        uint upper = pc.rowCount;
+        while (lower < upper) {
+            uint middle = lower + (upper - lower) / 2u;
+            if (batchTable[middle].recordOffset <= slot)
+                lower = middle + 1u;
+            else
+                upper = middle;
+        }
+        row = lower - 1u;
+        uint count = min(cursors[pc.cursorBase + row], batchTable[row].capacity);
+        if (pc.pairedRecords != 0u)
+            count &= ~1u;
+        isLive = slot - batchTable[row].recordOffset < count;
+    }
+
+    DrawCommand command;
+    if (isLive) {
+        command = commands[pc.srcRecordBase + slot];
+        geometry[lane] = uvec4(command.indexCount, command.firstIndex,
+                               uint(command.vertexOffset), row);
+        indirection[pc.dstRecordBase + slot] = indirection[pc.srcRecordBase + slot];
+    } else {
+        geometry[lane] = uvec4(0u);
+    }
+    live[lane] = isLive ? 1u : 0u;
+    barrier();
+
+    if (!isLive)
+        return;
+    bool head = lane == 0u;
+    if (lane != 0u)
+        head = live[lane - 1u] == 0u
+               || any(notEqual(geometry[lane], geometry[lane - 1u]));
+    if (!head)
+        return;
+
+    uint count = 1u;
+    while (lane + count < 64u) {
+        if (live[lane + count] == 0u
+            || any(notEqual(geometry[lane], geometry[lane + count])))
+            break;
+        ++count;
+    }
+
+    uint destination = atomicAdd(cursors[pc.countBase + row], 1u);
+    command.instanceCount = count;
+    command.firstInstance = pc.dstRecordBase + slot;
+    commands[pc.dstRecordBase + batchTable[row].recordOffset + destination] = command;
+}

@@ -1,33 +1,8 @@
 #version 450
 
-// Mesh-coherent group compaction (draw consolidation, pass 2 of 2).
-//
-// The scatter pass writes each slice's records into per-(class, mesh) rows of
-// a STAGING block (per-row cursors -> dense within a row, mesh-pure by
-// construction). This pass copies the live records into the slice's DRAW
-// block, packing every (class, group, parity) RUN of consecutive rows densely
-// from the run's CPU-known base — so a merged DrawIndexedIndirectCount
-// executes long same-mesh record runs instead of scatter-arrival interleave
-// (the measured GPU-busy regression was vertex/index fetch locality) — and
-// writes the run's total live count
-// into its per-run count slot.
-//
-// One thread per CAPACITY slot of the slice (the scatter's staging domain).
-// A thread maps its slot to a table row by binary search over the row
-// recordOffsets (exclusive capacity prefix, strictly increasing), then:
-//   - the run's FIRST capacity slot (dead or alive) also sums the run's live
-//     counts into the run count slot — cursors are stable post-barrier, so
-//     this needs no atomic;
-//   - live slots (t < row live count) copy record + indirection to
-//     dstBase(row) + t, rewriting firstInstance to the destination slot (the
-//     VS indexes the shared indirection buffer with gl_InstanceIndex).
-// Cursor values can exceed a row's capacity when the captured-snapshot
-// invariant breaks (the overflow tripwire fired at scatter time); min() keeps
-// this pass inside the snapshot domain — same self-healing one-frame-drop.
-//
-// Per-thread cost: O(log rows) search + O(run position) cached cursor reads.
-// Runs average ~11 rows on city content; a degenerate mega-run costs its
-// records a linear cursor walk (L2-resident, latency-hidden) — accepted.
+// Pack each mesh-major run of rows into a dense indirect-command range.
+// Single-instance records move their indirection entry with the command.
+// Instanced records retain firstInstance and their prepacked indirection span.
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
@@ -58,9 +33,8 @@ layout(set = 0, binding = 1, std430) restrict readonly buffer RowRunBuffer {
     uvec2 rowRun[];
 };
 
-// Shared cursor arena: [cursorBase, cursorBase+rowCount) = the slice's
-// scatter row cursors (read); [countBase, countBase+runCount) = the per-run
-// draw counts this pass writes (the DrawIndexedIndirectCount count slots).
+// Row cursors count source commands, not instances. Each run count slot
+// receives the sum of its member rows for DrawIndexedIndirectCount.
 layout(set = 0, binding = 2, std430) restrict coherent buffer BatchCursorsBuffer {
     uint cursors[];
 };
@@ -78,15 +52,12 @@ layout(push_constant) uniform PushConstants {
     uint rowCount;       // slice table rows
     uint cursorBase;     // arena-absolute base of the slice's row cursors
     uint countBase;      // arena-absolute base of the slice's run count slots
-    uint srcRecordBase;  // arena-absolute staging block base (scatter output)
-    uint dstRecordBase;  // arena-absolute draw block base (consumer input)
-    // != 0 for a crossfade TAIL region. The tail has the same row layout as the
-    // head — same table, same recordOffsets, same runs — so it compacts through
-    // this same shader, with one difference: its records are claimed in PAIRS,
-    // so the written prefix is always even. A row whose capacity is odd and
-    // whose tail filled would otherwise report one slot the scatter refused to
-    // write, and that unwritten record would compact into the draw block.
+    uint srcRecordBase;  // arena-absolute source command block
+    uint dstRecordBase;  // arena-absolute published command block
+    // Raw crossfade records are claimed in pairs. Clamp their live prefix to
+    // even before copying; an instanced source has already applied this rule.
     uint pairedRecords;
+    uint instancedRecords; // instance indirection already resides in the source block
 } pc;
 
 uint RowLive(uint row) {
@@ -142,7 +113,9 @@ void main() {
     uint src = pc.srcRecordBase + s;
     uint dst = pc.dstRecordBase + dstLocal;
     VkDrawIndexedIndirectCommand cmd = drawCommands[src];
-    cmd.firstInstance = dst; // arena-global slot: VS reads indirection[dst]
+    if (pc.instancedRecords == 0u) {
+        cmd.firstInstance = dst;
+        indirection[dst] = indirection[src];
+    }
     drawCommands[dst] = cmd;
-    indirection[dst]  = indirection[src];
 }
