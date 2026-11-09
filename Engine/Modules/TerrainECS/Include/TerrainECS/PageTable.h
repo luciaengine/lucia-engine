@@ -7,25 +7,8 @@
 #include <span>
 #include <vector>
 
-// The page table of one field (design page-streaming-planets 3.4): the cache slot of every resident
-// page of every level, in the words the GPU reads at binding 22 (CBTLayout.h) and the CPU mirror
-// walks (PagedHeightSampler).
-//
-// A field has one face (a planar terrain) or six (a planet, PageStoreFormat.h's face order). A field
-// whose dense table fits the budget keeps one tier: an entry for every page of every level and face,
-// level-major, then face-major, then row-major. A larger field keeps that dense tier only from its top level
-// down to the floor level whose cumulative entries over every face fit a quarter of the budget. Below the
-// floor, blocks hold one page's descendants for up to six levels, from a mid pool and a leaf pool,
-// and exist only while a page under them is resident. A lookup reads the floor's directory, then
-// each tier's block (its entries, or its directory of the next tier's blocks): at most three
-// dependent reads to 12 levels below the floor. cbt_page.glsl's CBT_PageTableEntry is the same walk.
-//
-// The words: one descriptor of four words per tier (the root level, the block's levels, the block's
-// words, the pool's first word), the dense levels, the floor directory (one block index per floor
-// page of each face, face-major, kNoPageBlock in PageTable.cpp when none), then the pools. A block holds
-// its levels' entries, level k below its root at ((4^k - 4) / 3) on a 2^k x 2^k grid, then, when a tier follows, a
-// directory of 4^levels block indices, one per page of its deepest level. A dense table has no
-// descriptor, directory or pool: its words are the entries alone.
+// Maps resident height pages to cache slots. Small fields use dense words; larger fields allocate
+// bounded blocks below a dense floor. The CPU mirror and cbt_page.glsl walk the same packed words.
 namespace GameEngine::TerrainECS
 {
 

@@ -37,7 +37,8 @@ TerrainHeightSourceInputs BakedPageable()
     inputs.ModifiersPending = false;
     inputs.GeneratedBase = false;
     inputs.CookedStoreOpen = true;
-    inputs.PageTableFits = true;
+    inputs.PagesOnLattice = true;
+    inputs.CpuDirectoryFits = true;
     inputs.GpuReadsPages = true;
     return inputs;
 }
@@ -86,8 +87,28 @@ TEST(TerrainHeightSource, AHeightmapWithoutAnOpenStoreKeepsItsTexture)
     inputs.CookedStoreOpen = false;
     EXPECT_FALSE(TerrainHeightIsPaged(inputs));
     inputs.CookedStoreOpen = true;
-    inputs.PageTableFits = false;
-    EXPECT_FALSE(TerrainHeightIsPaged(inputs)) << "a table past the GPU ring slot keeps the texture";
+    inputs.CpuDirectoryFits = false;
+    EXPECT_FALSE(TerrainHeightIsPaged(inputs)) << "an unindexable CPU directory keeps the texture";
+}
+
+TEST(TerrainHeightSource, AnUnindexableDirectoryDisablesCpuAndGpuPagesWithoutChangingTheLattice)
+{
+    TerrainHeightSourceInputs inputs = BakedPageable();
+    inputs.CpuDirectoryFits = false;
+    EXPECT_TRUE(inputs.PagesOnLattice);
+    EXPECT_FALSE(TerrainHeightHasCpuPages(inputs));
+    EXPECT_FALSE(TerrainHeightIsPaged(inputs));
+}
+
+TEST(TerrainHeightSource, CpuPagesIgnoreTheGpuArmAndPendingModifiersButRequireTheLattice)
+{
+    TerrainHeightSourceInputs inputs = BakedPageable();
+    inputs.GpuReadsPages = false;
+    inputs.ModifiersPending = true;
+    EXPECT_TRUE(TerrainHeightHasCpuPages(inputs));
+    inputs.PagesOnLattice = false;
+    EXPECT_FALSE(TerrainHeightHasCpuPages(inputs));
+    EXPECT_FALSE(TerrainHeightIsPaged(inputs));
 }
 
 TEST(TerrainHeightSource, TheNarrowCbtArmKeepsTheTexture)

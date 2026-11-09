@@ -106,8 +106,8 @@ void RequestTiledTerrainHeightPages(TerrainService& service, const Rendering::ID
     const std::string_view label = name.empty() ? std::string_view("A terrain") : name;
     const bool fitsLattice = samplesX > 1u && samplesZ > 1u && (!generated || onLattice);
     std::string refusal = fitsLattice ? DenseDirectoryRefusal(label, samplesX, samplesZ) : std::string();
-    inputs.PagesOnLattice = fitsLattice && refusal.empty();
-    inputs.PageTableFits = fitsLattice && refusal.empty();
+    inputs.PagesOnLattice = fitsLattice;
+    inputs.CpuDirectoryFits = refusal.empty();
     // The modifier system builds the overlay for every terrain with CPU pages: the CPU readers take
     // it on every GPU arm, and the GPU pages take it where they are drawn.
     const bool cpuPages = TerrainHeightHasCpuPages(inputs);
