@@ -5,7 +5,7 @@
 #include "TerrainECS/TerrainModifierSystem.h"
 
 #include "PageStreaming/HeightPageOverlay.h"
-#include "PageStreaming/PageStoreFormat.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
 
 #include <algorithm>
 #include <atomic>
@@ -67,12 +67,6 @@ std::optional<PageSampleRect> LatticeRect(const TileLattice& lattice, float32 mi
     rect.MaxX = static_cast<uint32>(std::min(lastX, lattice.SamplesX - 1.0));
     rect.MaxZ = static_cast<uint32>(std::min(lastZ, lattice.SamplesZ - 1.0));
     return rect;
-}
-
-PageSampleRect Union(const PageSampleRect& a, const PageSampleRect& b)
-{
-    return PageSampleRect{std::min(a.MinX, b.MinX), std::min(a.MinZ, b.MinZ), std::max(a.MaxX, b.MaxX),
-                          std::max(a.MaxZ, b.MaxZ)};
 }
 
 std::optional<PageSampleRect> Intersect(const PageSampleRect& a, const PageSampleRect& b)

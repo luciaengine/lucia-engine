@@ -10,7 +10,7 @@
 
 #include "PageStreaming/GeneratedHeightPageProvider.h"
 #include "PageStreaming/HeightPageOverlay.h"
-#include "PageStreaming/PageStoreFormat.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
 #include "PageStreaming/PageTableEntry.h"
 #include "Rendering/Core/CommandList.h"
 #include "Rendering/Core/Device.h"

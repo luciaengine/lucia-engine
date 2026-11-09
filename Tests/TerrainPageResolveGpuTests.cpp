@@ -237,7 +237,7 @@ protected:
     {
         std::vector<GpuPageLevel> levels;
         for (const PageStreaming::PageStoreLevel& level : field.Table.Levels)
-            levels.push_back({level.FirstEntry, level.PagesX, level.PagesZ, 0u});
+            levels.push_back({static_cast<uint32>(level.FirstEntry), level.PagesX, level.PagesZ, 0u});
         const GpuPageField shape{field.Table.Levels.front().SamplesX, field.Table.Levels.front().SamplesZ,
                                  uint32(field.Table.Levels.size()), field.Geometry.SlotsPerRow};
         std::vector<uint8_t> queries(sizeof(GpuPageField) + 16u + points.size() * sizeof(QueryPoint));

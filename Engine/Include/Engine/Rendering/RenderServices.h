@@ -466,7 +466,12 @@ class RenderServices
     // layers; the RT mask continues to consume the scalar version.
     void NotifyShadowCasterContentChanged(
         uint64 worldId, std::span<const ShadowCasterChangeSphere> changedCasterSpheres,
-        bool unattributed);
+        bool unattributed, bool affectsRigidCasters = true);
+    uint64_t RigidShadowCasterContentVersion(uint64 worldId) const
+    {
+        const auto it = m_ShadowCasterChanges.find(worldId);
+        return it != m_ShadowCasterChanges.end() ? it->second.RigidVersion : 0u;
+    }
     uint64_t ShadowCasterContentVersion(uint64 worldId) const
     {
         const auto it = m_ShadowCasterChanges.find(worldId);
@@ -522,7 +527,8 @@ class RenderServices
     {
         m_SkinPaletteContentChanged = true;
         NotifyShadowCasterContentChanged(
-            worldId, std::span<const ShadowCasterChangeSphere>{}, /*unattributed=*/true);
+            worldId, std::span<const ShadowCasterChangeSphere>{}, /*unattributed=*/true,
+            /*affectsRigidCasters=*/false);
     }
     // Per-world light-list version: FinalizeWorldLights bumps it whenever the
     // finalized (sorted) list's bytes differ from the previous frame's. Exact
@@ -2387,6 +2393,7 @@ class RenderServices
     struct ShadowCasterChanges
     {
         uint64_t Version = 0;
+        uint64_t RigidVersion = 0;
         bool Unattributed = true;
         std::vector<ShadowCasterChangeSphere> Spheres;
     };

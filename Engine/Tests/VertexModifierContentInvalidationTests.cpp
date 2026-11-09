@@ -74,6 +74,7 @@ TEST(VertexModifierContentInvalidation, DeformingCasterAdvancesBothVersions)
         const WorldSubmissionRecord rec = MakeRecord(view, deformer, /*castsShadows=*/true);
 
         const uint64_t casterBefore = rs.ShadowCasterContentVersion(kWorld);
+        const uint64_t rigidBefore = rs.RigidShadowCasterContentVersion(kWorld);
         const uint64_t renderBefore = rs.RenderContentVersion(kWorld);
 
         // A foliage scene reaches the frame as many submitted batches, and the
@@ -85,6 +86,8 @@ TEST(VertexModifierContentInvalidation, DeformingCasterAdvancesBothVersions)
 
         EXPECT_EQ(rs.ShadowCasterContentVersion(kWorld), casterBefore + 1u)
             << "a deforming caster must invalidate the shadow caches, once for the frame";
+        EXPECT_EQ(rs.RigidShadowCasterContentVersion(kWorld), rigidBefore + 1u)
+            << "a vertex modifier can move non-skinned caster geometry";
         EXPECT_EQ(rs.RenderContentVersion(kWorld), renderBefore + 1u)
             << "a deforming renderable must invalidate the depth-derived elision families";
 
@@ -93,6 +96,7 @@ TEST(VertexModifierContentInvalidation, DeformingCasterAdvancesBothVersions)
         rs.BuildWorldBatchKeysForView(view);
         EXPECT_EQ(rs.ShadowCasterContentVersion(kWorld), casterBefore + 1u)
             << "one advance per world per frame, not one per derivation";
+        EXPECT_EQ(rs.RigidShadowCasterContentVersion(kWorld), rigidBefore + 1u);
     }
 }
 

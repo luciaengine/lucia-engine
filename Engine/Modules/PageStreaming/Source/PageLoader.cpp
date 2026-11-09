@@ -1,9 +1,9 @@
 #include "PageStreaming/PageLoader.h"
 
 #include "PageStreaming/GeneratedHeightPageProvider.h"
-#include "PageStreaming/HeightPageCodec.h"
-#include "PageStreaming/PageStoreFormat.h"
-#include "PageStreaming/PageStoreReader.h"
+#include "Height/HeightPageCodec.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
+#include "PageStreaming/PageStore/PageStoreReader.h"
 
 #include "AssetCore/Asset.h"
 #include "Assets/AssetIOService.h"
@@ -64,7 +64,9 @@ SharedPtr<Asset> DecodeLoadedPage(PendingPageLoad& load, Vector<uint8> bytes)
         return nullptr;
     }
     std::vector<float32> samples(kPageSampleCount);
-    DecodeHeightPage(load.Request().Store->Layout().Header, bytes, samples);
+    const auto& request = load.Request();
+    const auto& layout = request.Store->Layout();
+    DecodeHeightPage(layout.Header, request.Address.Level, *layout.FindPresent(request.Address), bytes, samples);
     load.Load(std::move(samples));
     return nullptr;
 }
@@ -87,7 +89,7 @@ void SubmitHeightPageLoad(AssetIOService& io, PageLoadRequest request)
     read.Metadata.Path = pending.Store->File();
     read.Priority = pending.Priority;
     read.RangeOffset = pending.Store->BaseOffset() + entry->Offset;
-    read.RangeBytes = entry->Size;
+    read.RangeBytes = pending.Store->Layout().StoredBytes(*entry);
     read.CancelRequested = pending.Cancel;
     read.ProcessData = [load](Vector<uint8> bytes) { return DecodeLoadedPage(*load, std::move(bytes)); };
     read.OnFailure = [load](const String& error) { load->Fail(error); };
@@ -118,7 +120,7 @@ PageFetchOutcome FetchPage(const PageSource& source, const PageAddress& address)
             outcome.Absent = true; // outside the generated pyramid
         return outcome;
     }
-    if (source.Store && source.Store->ReadHeightPage(address, *samples))
+    if (source.Store && source.Store->ReadPageSamples(address, {reinterpret_cast<uint8*>(samples->data()), samples->size() * sizeof(float32)}))
         outcome.Samples = std::move(samples);
     else
         outcome.Error = "the page store could not be read";

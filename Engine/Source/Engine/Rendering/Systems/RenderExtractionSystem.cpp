@@ -2078,7 +2078,7 @@ void RenderExtractionSystem::RebuildAlwaysRefreshSubset(ECS::World& world)
 uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPUScene& scene,
                                                           MeshGPURegistry& meshReg,
                                                           MaterialRegistry& matReg,
-                                                          uint64 worldId)
+                                                          uint64 worldId, bool& rigidCasterRefreshed)
 {
     uint32 refreshed = 0;
     if (m_AlwaysRefresh.empty())
@@ -2118,7 +2118,10 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
             if (mgRead->meshIndex != 0xFFFFFFFFu)
             {
                 if (auto* meshGpu = world.GetComponentForWrite<Components::MeshGPUData>(e))
+                {
+                    rigidCasterRefreshed = true;
                     ClearMeshGpuInstance(scene, *meshGpu);
+                }
             }
             continue;
         }
@@ -2150,6 +2153,7 @@ uint32 RenderExtractionSystem::RefreshAlwaysRefreshSubset(ECS::World& world, GPU
         const float lodBias = lodGroup ? lodGroup->Bias : 0.0f;
 
         const bool castShadows = mr->castShadows && (!hasBounds || lb->CastShadows);
+        rigidCasterRefreshed |= castShadows && !Rendering::IsSkinned(meshEntry->vertexFlags);
         const uint32 flags =
             ComputeInstanceFlags(castShadows, mr->receiveShadows,
                                  m_RenderServices->Materials().GetMaterialDepthClass(matIdx),
@@ -2308,6 +2312,7 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
     bool fastFrame = false;
     uint32_t feedPatchedCount = 0;
     uint32_t subsetRefreshedCount = 0;
+    bool rigidCasterRefreshed = false;
     // L1b: fresh caster-change attribution each frame (the published set explains
     // exactly this frame's caster content-version bump, if one happens). A frame
     // that ends without overflow closes the log episode, so a persistent crowd
@@ -2499,7 +2504,7 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
                 const auto processStart = ExtractionClock::now();
                 feedPatchedCount = PatchDirtyInstances(world, *scene);
                 subsetRefreshedCount =
-                    RefreshAlwaysRefreshSubset(world, *scene, meshReg, matReg, worldId);
+                    RefreshAlwaysRefreshSubset(world, *scene, meshReg, matReg, worldId, rigidCasterRefreshed);
                 processMs = elapsedMs(processStart, ExtractionClock::now());
 
                 // Counters describe the last full pass on fast frames (D8).
@@ -2826,7 +2831,8 @@ void RenderExtractionSystem::Update(ECS::World& world, float32 deltaTime)
             worldId,
             unattributed ? std::span<const ShadowCasterChangeSphere>{}
                          : std::span<const ShadowCasterChangeSphere>(m_ChangedCasterSpheres),
-            unattributed);
+            unattributed,
+            !fastFrame || feedPatchedCount > 0 || rigidCasterRefreshed);
     }
     // Idle-recompute-elision content version: the same lane verdict. The
     // animated-vertex term that also belongs here is raised by the batch-key

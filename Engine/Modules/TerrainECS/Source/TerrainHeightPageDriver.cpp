@@ -9,7 +9,7 @@
 #include "CBTTerrain/CBTLayout.h"
 #include "Components/Terrain/Terrain.h"
 #include "PageStreaming/GeneratedHeightPageProvider.h"
-#include "PageStreaming/PageStoreReader.h"
+#include "PageStreaming/PageStore/PageStoreReader.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/HashUtils.h"
 

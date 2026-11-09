@@ -20,11 +20,12 @@
 // CBTSphereRootsTests assert reciprocity, twin-across-cube-edge, outward winding, and
 // (via the real-device cross-face conformity oracle) that refinement stays conforming.
 
+#include "CBTTerrain/CBTLayout.h"
+#include "Mathematics/CubeFaces.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
-
-#include "CBTTerrain/CBTLayout.h"
 
 namespace GameEngine::CBTTerrain
 {
@@ -32,7 +33,7 @@ namespace GameEngine::CBTTerrain
 // 6 faces x 4 pie slices. baseDepth = ceil(log2(24)) = 5 (2^5 = 32 >= 24); roots at
 // heapID 32 + rootIndex, all at depth 5 (uniform). Slots for heapIDs 56..63 stay unused
 // (no root maps there; CBT_RootOf still recovers each root exactly).
-inline constexpr uint32_t kCubeFaceCount = 6u;
+using Mathematics::kCubeFaceCount;
 inline constexpr uint32_t kSlicesPerFace = 4u; // a face quad split into 4 pie slices
 static_assert(kSlicesPerFace == 4u, "the (idx & 3u) edge-wrap below assumes 4 slices per face");
 inline constexpr uint32_t kSphereRootCount = kCubeFaceCount * kSlicesPerFace; // 24
@@ -44,17 +45,7 @@ static_assert((1u << kSphereBaseDepth) >= kSphereRootCount,
               "heapID at uniform depth = kSphereBaseDepth");
 static_assert(kSphereRootCount <= kDefaultBisectorPoolSize, "roots must fit the bisector pool");
 
-// 6 faces, 4 cube-corner indices each, wound CCW as seen from OUTSIDE (outward normal by
-// the right-hand rule). MUST match CBT_CUBE_FACES in cbt_domain.glsl exactly. Corner
-// index bits: bit0 = +x, bit1 = +y, bit2 = +z (corner i at ((i&1)?+1:-1, ...)).
-inline constexpr int kCubeFaces[24] = {
-    1, 3, 7, 5, // +X
-    0, 4, 6, 2, // -X
-    2, 6, 7, 3, // +Y
-    0, 1, 5, 4, // -Y
-    4, 5, 7, 6, // +Z
-    0, 2, 3, 1  // -Z
-};
+using Mathematics::kCubeFaces;
 
 // One root bisector of the cube-sphere base mesh.
 struct CBTSphereRoot
@@ -69,9 +60,10 @@ struct CBTSphereRoot
     std::array<int32_t, 3> V2{};
 };
 
-inline std::array<int32_t, 3> CBTCubeCorner(int idx)
+inline std::array<int32_t, 3> CBTCubeCorner(int index)
 {
-    return {(idx & 1) ? 1 : -1, (idx & 2) ? 1 : -1, (idx & 4) ? 1 : -1};
+    const Mathematics::Vector3Int corner = Mathematics::CubeCorner(index);
+    return {corner.X, corner.Y, corner.Z};
 }
 
 // Builds all 24 roots: HeapIDs, neighbor links (n0/n1 within-face legs, twin across the

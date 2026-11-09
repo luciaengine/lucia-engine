@@ -493,6 +493,45 @@ TEST_F(BoneLODPolicyTest, PausedModelAdoptionRefreshesSelectionAndContentIdentit
     EXPECT_GT(Services.ShadowCasterContentVersion(World.GetWorldId()), version);
 }
 
+TEST_F(BoneLODPolicyTest, PausedClipEditRefreshesPoseAndShadowContentOnce)
+{
+    World.GetComponentForWrite<Components::BoneLOD>(Owner)->FullDetailOverride = true;
+    System->Update(World, 0.0f);
+    EXPECT_FLOAT_EQ(OmittedTranslation(), 2.0f);
+    const auto initialVersion = Services.ShadowCasterContentVersion(World.GetWorldId());
+    System->Update(World, 0.0f);
+    EXPECT_EQ(Services.ShadowCasterContentVersion(World.GetWorldId()), initialVersion);
+    const auto clip = Renderer::ClipStore::Instance().Get(ClipIndex);
+    ASSERT_TRUE(clip);
+    ASSERT_TRUE(clip->SetKeyframeComponentValue(0u, 1.0f, 0u, 8.0f));
+    System->Update(World, 0.0f);
+    EXPECT_FLOAT_EQ(OmittedTranslation(), 4.0f);
+    const auto editedVersion = Services.ShadowCasterContentVersion(World.GetWorldId());
+    EXPECT_GT(editedVersion, initialVersion);
+    System->Update(World, 0.0f);
+    EXPECT_EQ(Services.ShadowCasterContentVersion(World.GetWorldId()), editedVersion);
+}
+
+TEST_F(BoneLODPolicyTest, PausedOutgoingClipEditRefreshesTheCrossfadePose)
+{
+    World.GetComponentForWrite<Components::BoneLOD>(Owner)->FullDetailOverride = true;
+    const uint32 previousIndex = RegisterClip(8.0f);
+    auto* animator = World.GetComponentForWrite<Components::AnimatorRef>(Body);
+    animator->PrevClipIndex = previousIndex;
+    animator->PrevTime = 0.5f;
+    animator->BlendDuration = 1.0f;
+    animator->BlendTime = 0.5f;
+    System->Update(World, 0.0f);
+    EXPECT_FLOAT_EQ(OmittedTranslation(), 3.0f);
+    const auto initialVersion = Services.ShadowCasterContentVersion(World.GetWorldId());
+    const auto previous = Renderer::ClipStore::Instance().Get(previousIndex);
+    ASSERT_TRUE(previous);
+    ASSERT_TRUE(previous->SetKeyframeComponentValue(0u, 1.0f, 0u, 12.0f));
+    System->Update(World, 0.0f);
+    EXPECT_FLOAT_EQ(OmittedTranslation(), 4.0f);
+    EXPECT_GT(Services.ShadowCasterContentVersion(World.GetWorldId()), initialVersion);
+}
+
 TEST_F(BoneLODPolicyTest, KernelLimitCacheDoesNotPoisonFullToReducedRouting)
 {
     auto& store = Renderer::SkeletonStore::Instance();
