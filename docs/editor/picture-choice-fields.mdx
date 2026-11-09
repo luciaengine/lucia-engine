@@ -1,0 +1,9 @@
+# Picture choice fields
+
+Use `EditorUI::PictureChoiceField` from `UI/Controls/PictureChoiceField.h` for a small set of choices with a picture, name, and description. Pass a vector of `Choice` values and the initial selected index to its constructor. Each choice supplies a label, description, and CSS class for its picture.
+
+The field loads each tile from its XML layout and requests its stylesheet. Define the picture classes in a stylesheet attached to its host. Tiles wrap into a column in a narrow inspector.
+
+Use `SetOnSelected` to receive the selected index when it changes. A left click selects a tile. Arrow keys select the previous or next tile and wrap at the ends. The group has one Tab stop. Selecting the active tile does not call the callback again.
+
+Use `InspectorUI::AddPictureChoiceRow` from `Inspectors/InspectorUIHelpers.h` to place the field in an inspector row with its label aligned to the top.

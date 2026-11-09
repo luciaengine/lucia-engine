@@ -12,6 +12,7 @@ MonitorInfo GetPrimaryMonitorInfo()
     return info;
 }
 std::vector<MonitorInfo> EnumerateMonitors() { return {GetPrimaryMonitorInfo()}; }
+void InvalidateMonitors() {}
 void GetPrimaryMonitorWorkArea(int& x, int& y, int& w, int& h) { auto info = GetPrimaryMonitorInfo(); x = y = 0; w = info.width; h = info.height; }
 int GetActiveMonitorIndexForWindow(GLFWwindow*) { return 0; }
 MonitorInfo GetMonitorInfoForWindow(GLFWwindow*) { return GetPrimaryMonitorInfo(); }

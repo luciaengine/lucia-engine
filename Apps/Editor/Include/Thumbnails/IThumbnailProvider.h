@@ -53,6 +53,19 @@ public:
         return GetOrRequest(assetPath, desiredSize, std::move(onReady));
     }
 
+    // An image file shown inline at about its display size (the AI Assistant's
+    // captures): a cached copy at most 1024 px on its long edge, apart from the
+    // tile images GetOrRequest serves. Returns the copy's path when it is
+    // current (and calls onReady with it); otherwise answers once through
+    // onReady, possibly on a background thread: the copy, the file itself when
+    // it is no larger, or empty when there is none.
+    virtual std::string GetOrRequestInlineImage(const std::filesystem::path& /*image*/,
+                                                std::function<void(const std::string& path)> onReady)
+    {
+        if (onReady)
+            onReady({});
+        return {};
+    }
     // Returns true once the live-rendered thumbnail backing `engineName`
     // (e.g. `engine:editor_material_thumb_<guid>`) has produced a frame and
     // is currently bound for UI sampling in the given window. Default

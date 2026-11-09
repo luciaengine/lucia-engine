@@ -3,8 +3,29 @@
 #include "Types/StringUtils.h"
 
 #include <cstring>
+#include <string>
+#include <string_view>
+#include <utility>
 
 using namespace GameEngine;
+
+namespace
+{
+
+template <class Text>
+concept CanSplit = requires(Text&& text) { Split(std::forward<Text>(text), ','); };
+
+template <class Text>
+concept CanTrimToView = requires(Text&& text) { TrimWhitespaceView(std::forward<Text>(text)); };
+
+// A view into a temporary std::string dangles once the full expression ends, so the helpers that
+// return views refuse one at compile time; a named string, a view and a literal are accepted.
+static_assert(CanSplit<const std::string&> && CanSplit<std::string&> && CanSplit<std::string_view> && CanSplit<const char*>);
+static_assert(!CanSplit<std::string> && !CanSplit<std::string&&> && !CanSplit<const std::string&&>);
+static_assert(CanTrimToView<const std::string&> && CanTrimToView<std::string_view> && CanTrimToView<const char*>);
+static_assert(!CanTrimToView<std::string> && !CanTrimToView<std::string&&>);
+
+} // namespace
 
 TEST(StringUtilsTests, TrimRemovesEveryAsciiWhitespaceKindFromBothEnds)
 {
@@ -140,4 +161,52 @@ TEST(StringUtilsTests, IdentifierToWordsReadsIdentifiersAsWords)
     };
     for (const Case& c : cases)
         EXPECT_EQ(IdentifierToWords(c.Identifier), c.Words) << c.Identifier;
+}
+
+TEST(StringUtilsTests, IsValidUtf8TakesWellFormedTextOnly)
+{
+    EXPECT_TRUE(IsValidUtf8(""));
+    EXPECT_TRUE(IsValidUtf8("readme.txt"));
+    EXPECT_TRUE(IsValidUtf8("caf\xC3\xA9/\xE6\x97\xA5\xE6\x9C\xAC/\xF0\x9F\x98\x80.png")) << "two, three and four bytes";
+    EXPECT_TRUE(IsValidUtf8("\xF4\x8F\xBF\xBF")) << "U+10FFFF";
+    EXPECT_FALSE(IsValidUtf8("caf\x82.txt")) << "code page 437";
+    EXPECT_FALSE(IsValidUtf8("\xC0\xAF")) << "overlong '/'";
+    EXPECT_FALSE(IsValidUtf8("\xE0\x80\xAF")) << "overlong '/'";
+    EXPECT_FALSE(IsValidUtf8("a\x80" "b")) << "lone continuation byte";
+    EXPECT_FALSE(IsValidUtf8("caf\xC3")) << "truncated at the end";
+    EXPECT_FALSE(IsValidUtf8("\xE6\x97.txt")) << "truncated before ASCII";
+    EXPECT_FALSE(IsValidUtf8("\xED\xA0\x80")) << "surrogate half";
+    EXPECT_FALSE(IsValidUtf8("\xF4\x90\x80\x80")) << "past U+10FFFF";
+}
+
+TEST(StringUtilsTests, UnqualifiedNameKeepsTheNameAfterTheLastQualifier)
+{
+    EXPECT_EQ(UnqualifiedName("GameEngine::Components::Light"), "Light");
+    EXPECT_EQ(UnqualifiedName("MyGame.Combat.HealthPool"), "HealthPool");
+    EXPECT_EQ(UnqualifiedName("Light"), "Light");
+    EXPECT_EQ(UnqualifiedName(""), "");
+}
+
+TEST(StringUtilsTests, ToUpperAsciiRaisesOnlyAsciiLetters)
+{
+    EXPECT_EQ(ToUpperAscii("abc-Def_9"), "ABC-DEF_9");
+    EXPECT_EQ(ToUpperAscii(""), "");
+}
+
+TEST(StringUtilsTests, ReplaceAllReplacesEveryOccurrenceOnce)
+{
+    EXPECT_EQ(ReplaceAll("@NAME@ and @NAME@", "@NAME@", "Game"), "Game and Game");
+    EXPECT_EQ(ReplaceAll("aa", "a", "aa"), "aaaa") << "a replacement is not scanned again";
+    EXPECT_EQ(ReplaceAll("abc", "", "x"), "abc") << "an empty pattern changes nothing";
+    EXPECT_EQ(ReplaceAll("abc", "d", "x"), "abc");
+    EXPECT_EQ(ReplaceAll("a.b.c", ".", ""), "abc");
+}
+
+TEST(StringUtilsTests, CountOccurrencesCountsWithoutOverlap)
+{
+    EXPECT_EQ(CountOccurrences("abc", "d"), 0u);
+    EXPECT_EQ(CountOccurrences("abc", "b"), 1u);
+    EXPECT_EQ(CountOccurrences("<path/><path/><path/>", "<path"), 3u);
+    EXPECT_EQ(CountOccurrences("aaaa", "aa"), 2u) << "a match does not overlap the one before it";
+    EXPECT_EQ(CountOccurrences("abc", ""), 0u) << "an empty needle counts nothing";
 }

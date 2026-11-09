@@ -1,16 +1,20 @@
 #include "Assets/AnimationClip.h"
+#include "Animation/Compression/AnimationClipArchive.h"
+#include "Animation/Compression/AnimationClipData.h"
 
 #include "AnimationClipSchema.h"
 #include "AssetCore/SharedFileRead.h"
 #include "Logger/Logger.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -405,6 +409,28 @@ bool AnimationClip::Load()
 
 bool AnimationClip::LoadFromData(const Vector<uint8>& data)
 {
+    AnimationClip loaded(GetGUID(), GetPath());
+    loaded.m_SelectedAnimation = m_SelectedAnimation;
+    loaded.SetSourceInfo(m_SourcePath, m_SourceAnimationIndex);
+    if (!loaded.LoadSourceData(data))
+    {
+        if (GetState() != AssetState::Loaded)
+            SetState(AssetState::Failed);
+        return false;
+    }
+    auto runtime = AnimationClipData::Build(loaded.m_Channels);
+    if (!runtime)
+    {
+        if (GetState() != AssetState::Loaded)
+            SetState(AssetState::Failed);
+        return false;
+    }
+    AdoptLoadedData(loaded, std::move(runtime));
+    return true;
+}
+
+bool AnimationClip::LoadSourceData(const Vector<uint8>& input)
+{
     if (GetState() == AssetState::Loaded)
         return true;
 
@@ -414,10 +440,15 @@ bool AnimationClip::LoadFromData(const Vector<uint8>& data)
     m_Settings = {};
     m_EventTrack = {};
 
+    Vector<uint8> decoded;
+    const bool cooked = AnimationClipArchive::IsArchive(input);
+    if (cooked && !AnimationClipArchive::Decode(input, decoded))
+        return false;
+    const Vector<uint8>& data = cooked ? decoded : input;
     const std::string extension = NormalizeExtension(GetExtension());
     bool success = false;
 
-    if (extension == ".anim" || extension == ".animation")
+    if (cooked || extension == ".anim" || extension == ".animation")
     {
         success = LoadEditableData(data);
     }
@@ -748,63 +779,63 @@ bool AnimationClip::LoadFromData(const Vector<uint8>& data)
 
                     const StringId nameId = targetName.empty() ? 0u : HashStringId(targetName);
 
-                    AnimChannel transChan{}, rotChan{}, scaleChan{};
-                    transChan.boneIndex = rotChan.boneIndex = scaleChan.boneIndex = boneIndex;
-                    transChan.targetName = rotChan.targetName = scaleChan.targetName = targetName;
-                    transChan.targetNameId = rotChan.targetNameId = scaleChan.targetNameId = nameId;
-                    transChan.path = AnimPath::Translation;
-                    rotChan.path   = AnimPath::Rotation;
-                    scaleChan.path = AnimPath::Scale;
-                    transChan.interp = rotChan.interp = scaleChan.interp = AnimInterp::Linear;
+                    AnimChannel translationChannel{}, rotationChannel{}, scaleChannel{};
+                    translationChannel.boneIndex = rotationChannel.boneIndex = scaleChannel.boneIndex = boneIndex;
+                    translationChannel.targetName = rotationChannel.targetName = scaleChannel.targetName = targetName;
+                    translationChannel.targetNameId = rotationChannel.targetNameId = scaleChannel.targetNameId = nameId;
+                    translationChannel.path = AnimPath::Translation;
+                    rotationChannel.path   = AnimPath::Rotation;
+                    scaleChannel.path = AnimPath::Scale;
+                    translationChannel.interp = rotationChannel.interp = scaleChannel.interp = AnimInterp::Linear;
 
-                    transChan.keys.reserve(bakedNode.translation_keys.count);
-                    rotChan.keys.reserve(bakedNode.rotation_keys.count);
-                    scaleChan.keys.reserve(bakedNode.scale_keys.count);
+                    translationChannel.keys.reserve(bakedNode.translation_keys.count);
+                    rotationChannel.keys.reserve(bakedNode.rotation_keys.count);
+                    scaleChannel.keys.reserve(bakedNode.scale_keys.count);
 
-                    for (const ufbx_baked_vec3& tk : bakedNode.translation_keys)
+                    for (const ufbx_baked_vec3& translationKey : bakedNode.translation_keys)
                     {
-                        AnimKeyframe k{};
-                        InitializeDefaultKeyframe(k);
-                        k.time = static_cast<float32>(tk.time);
-                        const ufbx_vec3 convertedT =
-                            FbxImport::ConvertVec3(tk.value, axisConversion, unitScale);
-                        k.translation[0] = static_cast<float32>(convertedT.x);
-                        k.translation[1] = static_cast<float32>(convertedT.y);
-                        k.translation[2] = static_cast<float32>(convertedT.z);
-                        transChan.keys.push_back(k);
+                        AnimKeyframe keyframe{};
+                        InitializeDefaultKeyframe(keyframe);
+                        keyframe.time = static_cast<float32>(translationKey.time);
+                        const ufbx_vec3 convertedTranslation =
+                            FbxImport::ConvertVec3(translationKey.value, axisConversion, unitScale);
+                        keyframe.translation[0] = static_cast<float32>(convertedTranslation.x);
+                        keyframe.translation[1] = static_cast<float32>(convertedTranslation.y);
+                        keyframe.translation[2] = static_cast<float32>(convertedTranslation.z);
+                        translationChannel.keys.push_back(keyframe);
                     }
-                    for (const ufbx_baked_quat& rk : bakedNode.rotation_keys)
+                    for (const ufbx_baked_quat& rotationKey : bakedNode.rotation_keys)
                     {
-                        AnimKeyframe k{};
-                        InitializeDefaultKeyframe(k);
-                        k.time = static_cast<float32>(rk.time);
-                        const ufbx_quat convertedR =
-                            FbxImport::ConvertQuat(rk.value, axisConversion);
-                        k.rotation[0] = static_cast<float32>(convertedR.x);
-                        k.rotation[1] = static_cast<float32>(convertedR.y);
-                        k.rotation[2] = static_cast<float32>(convertedR.z);
-                        k.rotation[3] = static_cast<float32>(convertedR.w);
-                        UfbxAnim::NormalizeQuaternionInPlace(k.rotation);
-                        if (!rotChan.keys.empty())
-                            UfbxAnim::MakeQuaternionSignContinuous(rotChan.keys.back(), k);
-                        rotChan.keys.push_back(k);
+                        AnimKeyframe keyframe{};
+                        InitializeDefaultKeyframe(keyframe);
+                        keyframe.time = static_cast<float32>(rotationKey.time);
+                        const ufbx_quat convertedRotation =
+                            FbxImport::ConvertQuat(rotationKey.value, axisConversion);
+                        keyframe.rotation[0] = static_cast<float32>(convertedRotation.x);
+                        keyframe.rotation[1] = static_cast<float32>(convertedRotation.y);
+                        keyframe.rotation[2] = static_cast<float32>(convertedRotation.z);
+                        keyframe.rotation[3] = static_cast<float32>(convertedRotation.w);
+                        UfbxAnim::NormalizeQuaternionInPlace(keyframe.rotation);
+                        if (!rotationChannel.keys.empty())
+                            UfbxAnim::MakeQuaternionSignContinuous(rotationChannel.keys.back(), keyframe);
+                        rotationChannel.keys.push_back(keyframe);
                     }
-                    for (const ufbx_baked_vec3& sk : bakedNode.scale_keys)
+                    for (const ufbx_baked_vec3& scaleKey : bakedNode.scale_keys)
                     {
-                        AnimKeyframe k{};
-                        InitializeDefaultKeyframe(k);
-                        k.time = static_cast<float32>(sk.time);
-                        const ufbx_vec3 convertedS =
-                            FbxImport::ConvertScale(sk.value, axisConversion);
-                        k.scale[0] = static_cast<float32>(convertedS.x);
-                        k.scale[1] = static_cast<float32>(convertedS.y);
-                        k.scale[2] = static_cast<float32>(convertedS.z);
-                        scaleChan.keys.push_back(k);
+                        AnimKeyframe keyframe{};
+                        InitializeDefaultKeyframe(keyframe);
+                        keyframe.time = static_cast<float32>(scaleKey.time);
+                        const ufbx_vec3 convertedScale =
+                            FbxImport::ConvertScale(scaleKey.value, axisConversion);
+                        keyframe.scale[0] = static_cast<float32>(convertedScale.x);
+                        keyframe.scale[1] = static_cast<float32>(convertedScale.y);
+                        keyframe.scale[2] = static_cast<float32>(convertedScale.z);
+                        scaleChannel.keys.push_back(keyframe);
                     }
 
-                    if (!transChan.keys.empty()) m_Channels.push_back(std::move(transChan));
-                    if (!rotChan.keys.empty())   m_Channels.push_back(std::move(rotChan));
-                    if (!scaleChan.keys.empty()) m_Channels.push_back(std::move(scaleChan));
+                    if (!translationChannel.keys.empty()) m_Channels.push_back(std::move(translationChannel));
+                    if (!rotationChannel.keys.empty())   m_Channels.push_back(std::move(rotationChannel));
+                    if (!scaleChannel.keys.empty()) m_Channels.push_back(std::move(scaleChannel));
                 }
                 for (const ufbx_baked_element& bakedElement : baked->elements)
                 {
@@ -826,23 +857,23 @@ bool AnimationClip::LoadFromData(const Vector<uint8>& data)
                         if (propName != UFBX_DeformPercent || bakedProp.keys.count == 0)
                             continue;
 
-                        AnimChannel morphChan{};
-                        morphChan.boneIndex = bindingIt->second.nodeIndex;
-                        morphChan.targetName = bindingIt->second.name;
-                        morphChan.targetNameId = morphChan.targetName.empty() ? 0u : HashStringId(morphChan.targetName);
-                        morphChan.path = AnimPath::MorphWeight;
-                        morphChan.interp = AnimInterp::Linear;
-                        morphChan.keys.reserve(bakedProp.keys.count);
+                        AnimChannel morphChannel{};
+                        morphChannel.boneIndex = bindingIt->second.nodeIndex;
+                        morphChannel.targetName = bindingIt->second.name;
+                        morphChannel.targetNameId = morphChannel.targetName.empty() ? 0u : HashStringId(morphChannel.targetName);
+                        morphChannel.path = AnimPath::MorphWeight;
+                        morphChannel.interp = AnimInterp::Linear;
+                        morphChannel.keys.reserve(bakedProp.keys.count);
                         for (const ufbx_baked_vec3& key : bakedProp.keys)
                         {
                             AnimKeyframe outKey{};
                             InitializeDefaultKeyframe(outKey);
                             outKey.time = static_cast<float32>(key.time);
                             outKey.translation[0] = static_cast<float32>(key.value.x / 100.0);
-                            morphChan.keys.push_back(outKey);
+                            morphChannel.keys.push_back(outKey);
                         }
-                        if (!morphChan.keys.empty())
-                            m_Channels.push_back(std::move(morphChan));
+                        if (!morphChannel.keys.empty())
+                            m_Channels.push_back(std::move(morphChannel));
                     }
                 }
                 ufbx_free_baked_anim(baked);
@@ -856,31 +887,31 @@ bool AnimationClip::LoadFromData(const Vector<uint8>& data)
             // arc, collapsing apparent motion at sample time.
             uint32 totalNegPairs = 0;
             uint32 channelsWithNegPairs = 0;
-            for (const AnimChannel& ch : m_Channels)
+            for (const AnimChannel& channel : m_Channels)
             {
-                if (ch.path != AnimPath::Rotation || ch.keys.size() < 2) continue;
+                if (channel.path != AnimPath::Rotation || channel.keys.size() < 2) continue;
                 float maxAngle = 0.0f;
-                const auto& k0 = ch.keys.front();
+                const auto& k0 = channel.keys.front();
                 const float w0_ = k0.rotation[3];
                 const float x0_ = k0.rotation[0];
                 const float y0_ = k0.rotation[1];
                 const float z0_ = k0.rotation[2];
                 float minConsecDot = 1.0f;
                 uint32 negPairs = 0;
-                for (size_t i = 0; i < ch.keys.size(); ++i)
+                for (size_t keyIndex = 0; keyIndex < channel.keys.size(); ++keyIndex)
                 {
-                    const auto& k = ch.keys[i];
+                    const auto& keyframe = channel.keys[keyIndex];
                     // q = inv(k0) * k. Quaternion conjugate inv: (-x,-y,-z,w)
-                    const float w_ = w0_*k.rotation[3] + x0_*k.rotation[0] + y0_*k.rotation[1] + z0_*k.rotation[2];
+                    const float w_ = w0_*keyframe.rotation[3] + x0_*keyframe.rotation[0] + y0_*keyframe.rotation[1] + z0_*keyframe.rotation[2];
                     const float w_clamped = std::min(std::max(std::abs(w_), 0.0f), 1.0f);
                     const float ang = 2.0f * std::acos(w_clamped) * 57.29577951f;
                     if (ang > maxAngle) maxAngle = ang;
 
-                    if (i > 0)
+                    if (keyIndex > 0)
                     {
-                        const auto& kp = ch.keys[i - 1];
-                        const float d = kp.rotation[0]*k.rotation[0] + kp.rotation[1]*k.rotation[1]
-                                      + kp.rotation[2]*k.rotation[2] + kp.rotation[3]*k.rotation[3];
+                        const auto& kp = channel.keys[keyIndex - 1];
+                        const float d = kp.rotation[0]*keyframe.rotation[0] + kp.rotation[1]*keyframe.rotation[1]
+                                      + kp.rotation[2]*keyframe.rotation[2] + kp.rotation[3]*keyframe.rotation[3];
                         if (d < minConsecDot) minConsecDot = d;
                         if (d < 0.0f) ++negPairs;
                     }
@@ -889,7 +920,7 @@ bool AnimationClip::LoadFromData(const Vector<uint8>& data)
                 {
                     Logger::Log::Info("  ImportRange '{}' rot maxAngle={:.1f}deg over {} keys | "
                                       "minConsecDot={:.4f} negPairs={}{}",
-                                      ch.targetName, maxAngle, ch.keys.size(),
+                                      channel.targetName, maxAngle, channel.keys.size(),
                                       minConsecDot, negPairs,
                                       negPairs > 0 ? "  <<< SIGN DISCONTINUITY >>>" : "");
                 }
@@ -1055,11 +1086,16 @@ void AnimationClip::SetSourceInfo(const std::filesystem::path& sourcePath, uint3
 
 void AnimationClip::CopyFrom(const AnimationClip& other)
 {
+    if (this == &other)
+        return;
+    std::scoped_lock lock(m_AuthoringMutex, other.m_AuthoringMutex);
     m_SelectedAnimation = other.m_SelectedAnimation;
     m_SourcePath = other.m_SourcePath;
     m_SourceAnimationIndex = other.m_SourceAnimationIndex;
     m_Duration = other.m_Duration;
-    m_Channels = other.m_Channels;
+    std::vector<AnimChannel>().swap(m_Channels);
+    std::atomic_store_explicit(&m_RuntimeData, other.GetRuntimeData(), std::memory_order_release);
+    m_PublishedDuration = m_Duration;
     m_Settings = {};
     m_EventTrack = {};
     SetState(other.GetState());
@@ -1067,13 +1103,20 @@ void AnimationClip::CopyFrom(const AnimationClip& other)
 
 void AnimationClip::SetChannelsAndDurationForTest(const std::vector<AnimChannel>& channels, float32 duration)
 {
-    m_Channels = channels;
+    auto runtime = AnimationClipData::Build(channels);
+    if (!runtime)
+        return;
+    std::lock_guard lock(m_AuthoringMutex);
+    std::vector<AnimChannel>().swap(m_Channels);
+    std::atomic_store_explicit(&m_RuntimeData, std::move(runtime), std::memory_order_release);
     m_Duration = duration;
+    m_PublishedDuration = duration;
     SetState(AssetState::Loaded);
 }
 
 bool AnimationClip::SetKeyframeTime(size_t channelIndex, float currentTime, float newTime)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1089,11 +1132,12 @@ bool AnimationClip::SetKeyframeTime(size_t channelIndex, float currentTime, floa
                   return left.time < right.time;
               });
     RecomputeDuration();
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetKeyframeComponentValue(size_t channelIndex, float currentTime, uint32 componentIndex, float value)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1124,11 +1168,12 @@ bool AnimationClip::SetKeyframeComponentValue(size_t channelIndex, float current
         }
     }
 
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetKeyframeTangent(size_t channelIndex, float currentTime, uint32 componentIndex, bool incoming, float tangent, float weight)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1151,11 +1196,12 @@ bool AnimationClip::SetKeyframeTangent(size_t channelIndex, float currentTime, u
         channel.keys[keyIndex].outWeight[componentIndex] = ClampTangentWeight(weight);
     }
 
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::AddKeyframe(size_t channelIndex, float time)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1209,11 +1255,12 @@ bool AnimationClip::AddKeyframe(size_t channelIndex, float time)
     }
 
     RecomputeDuration();
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::AddKeyframeWithData(size_t channelIndex, const AnimKeyframe& keyframe)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1228,11 +1275,12 @@ bool AnimationClip::AddKeyframeWithData(size_t channelIndex, const AnimKeyframe&
                   return left.time < right.time;
               });
     RecomputeDuration();
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::DuplicateKeyframe(size_t channelIndex, float currentTime, float newTime)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1250,11 +1298,12 @@ bool AnimationClip::DuplicateKeyframe(size_t channelIndex, float currentTime, fl
                   return left.time < right.time;
               });
     RecomputeDuration();
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::RemoveKeyframe(size_t channelIndex, float currentTime)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1265,30 +1314,33 @@ bool AnimationClip::RemoveKeyframe(size_t channelIndex, float currentTime)
 
     channel.keys.erase(channel.keys.begin() + static_cast<std::ptrdiff_t>(keyIndex));
     RecomputeDuration();
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetChannelInterpolation(size_t channelIndex, AnimInterp interpolation)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
     m_Channels[channelIndex].interp = interpolation;
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetChannelExtrapolation(size_t channelIndex, AnimExtrapolation pre, AnimExtrapolation post)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
     m_Channels[channelIndex].preInfinity  = pre;
     m_Channels[channelIndex].postInfinity = post;
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetKeyframeTangentType(size_t channelIndex, float keyTime, uint32 componentIndex, bool incoming, AnimTangentType type)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1304,11 +1356,12 @@ bool AnimationClip::SetKeyframeTangentType(size_t channelIndex, float keyTime, u
         channel.keys[keyIndex].inTangentType[componentIndex] = type;
     else
         channel.keys[keyIndex].outTangentType[componentIndex] = type;
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetKeyframeTangentBroken(size_t channelIndex, float keyTime, uint32 componentIndex, bool broken)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1325,11 +1378,12 @@ bool AnimationClip::SetKeyframeTangentBroken(size_t channelIndex, float keyTime,
         channel.keys[keyIndex].tangentBroken |= bit;
     else
         channel.keys[keyIndex].tangentBroken &= static_cast<uint8>(~bit);
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::SetKeyframeSegmentInterp(size_t channelIndex, float keyTime, AnimInterp interp)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
     AnimChannel& channel = m_Channels[channelIndex];
@@ -1338,11 +1392,12 @@ bool AnimationClip::SetKeyframeSegmentInterp(size_t channelIndex, float keyTime,
         return false;
     channel.keys[keyIndex].segmentInterp = interp;
     channel.keys[keyIndex].hasSegmentInterpOverride = true;
-    return true;
+    return RebuildRuntimeData();
 }
 
 bool AnimationClip::ResampleBakedChannelToCurve(size_t channelIndex)
 {
+    GetChannels();
     if (channelIndex >= m_Channels.size())
         return false;
 
@@ -1360,7 +1415,7 @@ bool AnimationClip::ResampleBakedChannelToCurve(size_t channelIndex)
 
         channel.interp = AnimInterp::Linear;
         RecomputeDuration();
-        return true;
+        return RebuildRuntimeData();
     }
 
     if (channel.interp != AnimInterp::Step && channel.interp != AnimInterp::Linear)
@@ -1409,11 +1464,12 @@ bool AnimationClip::ResampleBakedChannelToCurve(size_t channelIndex)
     }
 
     RecomputeDuration();
-    return true;
+    return RebuildRuntimeData();
 }
 
 size_t AnimationClip::FindOrAddChannel(uint32 boneIndex, const String& targetName, AnimPath path)
 {
+    GetChannels();
     for (size_t index = 0; index < m_Channels.size(); ++index)
     {
         if (m_Channels[index].boneIndex == boneIndex && m_Channels[index].path == path)
@@ -1422,6 +1478,8 @@ size_t AnimationClip::FindOrAddChannel(uint32 boneIndex, const String& targetNam
             {
                 m_Channels[index].targetName = targetName;
                 m_Channels[index].targetNameId = HashStringId(targetName);
+                if (!RebuildRuntimeData())
+                    return std::numeric_limits<size_t>::max();
             }
             return index;
         }
@@ -1434,7 +1492,7 @@ size_t AnimationClip::FindOrAddChannel(uint32 boneIndex, const String& targetNam
     channel.path = path;
     channel.interp = AnimInterp::Linear;
     m_Channels.push_back(std::move(channel));
-    return m_Channels.size() - 1u;
+    return RebuildRuntimeData() ? m_Channels.size() - 1u : std::numeric_limits<size_t>::max();
 }
 
 bool AnimationClip::SaveToPath(const std::filesystem::path& path) const
@@ -1476,7 +1534,7 @@ bool AnimationClip::SaveToData(Vector<uint8>& outData) const
         }
 
         json channels = json::array();
-        for (const AnimChannel& channel : m_Channels)
+        for (const AnimChannel& channel : GetChannels())
         {
             json keys = json::array();
             for (const AnimKeyframe& keyframe : channel.keys)
@@ -1510,15 +1568,13 @@ bool AnimationClip::SaveToData(Vector<uint8>& outData) const
 
 bool AnimationClip::RestoreFromData(const Vector<uint8>& data)
 {
-    const AssetState previousState = GetState();
-    SetState(AssetState::Loading);
-    if (!LoadEditableData(data))
-    {
-        SetState(previousState);
+    AnimationClip loaded(GetGUID(), GetPath());
+    if (!loaded.LoadEditableData(data))
         return false;
-    }
-
-    SetState(AssetState::Loaded);
+    auto runtime = AnimationClipData::Build(loaded.m_Channels);
+    if (!runtime)
+        return false;
+    AdoptLoadedData(loaded, std::move(runtime));
     return true;
 }
 
@@ -1537,8 +1593,11 @@ void AnimationClip::RecomputeDuration()
 
 void AnimationClip::Unload()
 {
-    m_Channels.clear();
+    std::lock_guard lock(m_AuthoringMutex);
+    std::vector<AnimChannel>().swap(m_Channels);
+    std::atomic_store_explicit(&m_RuntimeData, SharedPtr<const AnimationClipData>{}, std::memory_order_release);
     m_Duration = 0.0f;
+    m_PublishedDuration = 0.0f;
     m_Settings = {};
     m_EventTrack = {};
     SetState(AssetState::Unloaded);

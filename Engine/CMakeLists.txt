@@ -526,6 +526,8 @@ target_link_libraries(RenderServices
 		# unique_ptr) reach ECS World/Entity/EntityHandle. PRIVATE: compile-time
 		# usage requirements only; ECS objects link once into Engine as elsewhere.
 		ECS
+		# Decode, encode, and resample usage; Image objects link once into Engine.
+		Image
 )
 # GetPipelineOutputSpaceRG returns UI::UITextureSpace (#767): compile-time
 # include only, the same shim Engine itself uses for UI asset integration;
@@ -1123,7 +1125,7 @@ endif()
 # duplicate-state across the DLL boundary.
 set(GE_ENGINE_MODULES
     SceneLoadTracker
-    Logger AssetCore AssetDatabase JobSystem ECS FileWatcher AssetRuntime Audio Scripting NativeScripting
+    Logger Image AssetCore AssetDatabase JobSystem ECS FileWatcher AssetRuntime Audio Scripting NativeScripting
     Platform FileSystem FileSystemCore Memory GameEngineRendering RenderServices VolumetricFog HeightFog GPUFogParticles Particles ParticlesAuthoring ParticlesAssets ParticlesSystems ParticlesRendering Animation Sprite2D NumericExpression UI Physics PhysicsECS
     Pathfinding PathfindingECS Terrain PageStreaming TerrainECS TerrainGrass CBTTerrain CBTTerrainECS Ocean Spline SplineGeometry SplineLayout SplineECS SplineRecipes MeshPicking TileMap TileMapECS MarkupECS Graph
     GenerationalVector Scheduler Scene SceneBvh Text Localization Input PluginAPI
@@ -1294,7 +1296,6 @@ endif()
 if(TARGET stb::stb)
     target_link_libraries(Engine PRIVATE stb::stb)
     target_compile_definitions(Engine PRIVATE GE_HAVE_STB)
-    target_sources(Engine PRIVATE Source/ThirdParty/stb_image_impl.cpp)
 endif()
 
 # Fallback: detect headers directly if no CMake target is exported
@@ -1302,7 +1303,6 @@ find_path(STB_INCLUDE_DIRS "stb_image.h")
 if(STB_INCLUDE_DIRS)
     target_include_directories(Engine PRIVATE ${STB_INCLUDE_DIRS})
     target_compile_definitions(Engine PRIVATE GE_HAVE_STB)
-    target_sources(Engine PRIVATE Source/ThirdParty/stb_image_impl.cpp)
 endif()
 
 # Fold the stb_image_resize2 version into the texture-cook cache config hash: a
@@ -1569,8 +1569,24 @@ if(BUILD_TESTING)
     find_package(GTest CONFIG QUIET)
 endif()
 if(BUILD_TESTING AND (GTest_FOUND OR TARGET GTest::gtest))
+    # The output an engine opens from the default ApplicationConfig: Silent,
+    # so no audio device opens unless an application asks for one.
+    add_executable(EngineAudioOutputTests Tests/EngineAudioOutputTests.cpp
+        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp)
+    target_link_libraries(EngineAudioOutputTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+    target_include_directories(EngineAudioOutputTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+    set_target_properties(EngineAudioOutputTests PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        FOLDER "Engine/Tests"
+    )
+    ge_set_output_tests(EngineAudioOutputTests)
+    ge_stage_runtime_dependencies(EngineAudioOutputTests)
+    add_test(NAME EngineAudioOutputTests COMMAND $<TARGET_FILE:EngineAudioOutputTests>)
+
     # The scene-build pump's shader-source read owns an EngineCore lifecycle (job
     # system + AssetManager), so it stays out of the EngineCore-free material aggregate.
+
     add_executable(EngineMaterialSourcePrefetchTests Tests/MaterialSourcePrefetchTests.cpp)
     target_link_libraries(EngineMaterialSourcePrefetchTests PRIVATE Engine GTest::gtest GTest::gtest_main)
     target_compile_features(EngineMaterialSourcePrefetchTests PRIVATE cxx_std_20)
@@ -2009,6 +2025,15 @@ endif()
                 ${CMAKE_SOURCE_DIR}/Tests # TestTempDir.h
                 ${CMAKE_SOURCE_DIR}/Packages/eztree/Native)
             ge_stage_shader_graph_nodes(EngineMaterialTests)
+
+            # The material and declare suites share the CBT shader-source fixture.
+            add_custom_target(StageCBTTestShaders
+                COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+                        "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT"
+                        "$<TARGET_FILE_DIR:EngineMaterialTests>/Assets/Shaders/CBT"
+                COMMENT "Staging CBT shader sources for rendering tests"
+                VERBATIM)
+            add_dependencies(EngineMaterialTests StageCBTTestShaders)
 
             # Textures: the texture service and bindless indexing, alpha probes, the
             # import and package cooks, KTX2 loading, SVG rasterization, video textures.
@@ -2753,6 +2778,7 @@ endif()
 			    )
 			    ge_set_output_tests(RenderPipelineDeclareTests)
 			    ge_stage_runtime_dependencies(RenderPipelineDeclareTests)
+			    add_dependencies(RenderPipelineDeclareTests StageCBTTestShaders)
 			    # The grass-placement device oracles compile terrain_grass_place.comp at runtime;
 			    # it #includes Includes/bindless_textures.glsl (IncludeRoot), cbt_atlas.glsl (CBT
 			    # dir) and grass_placement.glsl (its own dir). Stage all three next to the test exe so EnsureComputePipeline's exe-relative
@@ -2765,9 +2791,6 @@ endif()
 			        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
 			                "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Includes"
 			                "$<TARGET_FILE_DIR:RenderPipelineDeclareTests>/Assets/Shaders/Includes"
-			        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-			                "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT"
-			                "$<TARGET_FILE_DIR:RenderPipelineDeclareTests>/Assets/Shaders/CBT"
 			        COMMENT "Staging grass compact + atlas shaders for RenderPipelineDeclareTests device oracles"
 			        VERBATIM)
 			    # The CBT terrain declare tests bring up the CBT feature, which loads its compiled kernels
@@ -3080,7 +3103,7 @@ endif()
 
 	# Engine tests: Phase 6 ECS bridge — HumanoidRetargetSystem end-to-end,
 	# auto-bootstrap, layered-blend integration, hot-reload race, same-rig
-	# coexistence. Runs in pure CPU mode (no GPU device required).
+	# coexistence. Clip-upload lifecycle cases use a native headless device.
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(HumanoidRetargetSystemTests
 	        Tests/HumanoidRetargetSystemTests.cpp

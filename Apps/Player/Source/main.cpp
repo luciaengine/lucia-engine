@@ -1,3 +1,4 @@
+#include "Audio/AudioTypes.h"
 #if defined(GE_PLATFORM_MOBILE)
 #include <SDL3/SDL_main.h>
 #endif
@@ -403,6 +404,21 @@ std::optional<GameEngine::Video::VideoWriterOptions> ParseMovieOptions(int argc,
 }
 #endif // GE_PLAYER_MOVIE_RECORDER
 
+// --silent-audio, else GE_AUDIO_OUTPUT, else the device.
+GameEngine::Audio::AudioOutput ResolveAudioOutput(int argc, char** argv, const char* environment)
+{
+    if (HasFlag(argc, argv, "--silent-audio"))
+        return GameEngine::Audio::AudioOutput::Silent;
+    if (!environment || environment[0] == '\0')
+        return GameEngine::Audio::AudioOutput::Device;
+    if (const std::optional<GameEngine::Audio::AudioOutput> output = GameEngine::Audio::TryParseAudioOutput(environment))
+        return *output;
+    Logger::Log::Warning("Player: GE_AUDIO_OUTPUT='{}' is not an audio output; ignoring it and playing on the "
+                         "device. Recognized values: silent, device.",
+                         environment);
+    return GameEngine::Audio::AudioOutput::Device;
+}
+
 } // namespace
 
 static int PlayerMainImpl(int argc, char** argv)
@@ -517,6 +533,7 @@ static int PlayerMainImpl(int argc, char** argv)
     appConfig.WindowHeight = gameConfig.windowHeight;
     appConfig.Fullscreen = (gameConfig.windowMode != GameEngine::WindowMode::Windowed);
     appConfig.Headless = headless;
+    appConfig.AudioOutput = ResolveAudioOutput(argc, argv, std::getenv("GE_AUDIO_OUTPUT"));
     // Resolve the asset root to an absolute path. A relative value from the
     // command line resolves against the LAUNCH cwd (where the user ran the
     // command); without one, the root is the Assets/ the build staged.

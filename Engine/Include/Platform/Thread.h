@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdint>
+#include <string>
+
 #if defined(__EMSCRIPTEN__)
 #  include <emscripten/threading.h>
 #elif defined(_WIN32)
@@ -51,5 +54,8 @@ inline void SetCurrentThreadName([[maybe_unused]] const char* name)
     }
 #endif
 }
+
+/// Read a process thread name by OS thread ID. Empty if unavailable or the thread has exited.
+std::string GetThreadName(std::uint64_t osThreadId);
 
 } // namespace GameEngine::Platform

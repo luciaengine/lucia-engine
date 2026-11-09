@@ -327,7 +327,7 @@ if(BUILD_TESTING)
         # and provide the stb_image impl that SkyRenderer pulls into
         # GameEngineRendering but does not export.
         target_sources(CBTTerrainTests PRIVATE $<TARGET_OBJECTS:Logger>)
-        target_sources(CBTTerrainTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+        target_link_libraries(CBTTerrainTests PRIVATE Image)
         target_compile_definitions(CBTTerrainTests PRIVATE GE_HAVE_STB)
         if(TARGET stb::stb)
             target_link_libraries(CBTTerrainTests PRIVATE stb::stb)

@@ -215,4 +215,29 @@ export const tools: ToolDef[] = [
       enable: z.coerce.boolean().optional().describe("true to show, false to hide. Omit to toggle."),
     },
   }),
+  proxyTool({
+    name: "get_job_system",
+    category: "profiling",
+    description: "Read the engine job system right now: computeWorkers and blockingThreads; lanes.normal and lanes.background as {queued, running} (jobs waiting in the lane, compute workers running a job of that class); channels[] as {name, queued, running, cap, jobs, queueWaitMs} for every JobChannel (jobs waiting past the cap, jobs holding a slot, cumulative jobs that took a slot, cumulative time jobs waited for one); threads[] with one row per pool thread named as the OS names it ('Job Worker #3', 'Job Blocking #0'), running = 'Normal' | 'Background' | the channel's name | null when idle, and runningForMs for Background and channel jobs only (Normal jobs carry no start time); tasksExecuted (compute-lane dequeues plus channel jobs run) and census (the cumulative queue-topology counters). Gauges are relaxed reads of a running pool, so fields can describe slightly different moments; counters only grow, so read twice and subtract for a rate. Use it to see which thread holds a long job, whether a lane or a channel is backed up, and how many blocking threads exist.",
+    schema: {},
+  }),
+
+  proxyTool({
+    name: "get_memory_stats",
+    category: "profiling",
+    description: "Read the Memory module's stats registry right now: frame (the editor's frame count), entries[] newest first as {name, kind, residency, bytes} where kind is TrackedBytes (bytes its owner reported), Arena, Scratch, FrameMemory, ObjectPool or RangeAllocator (bytes in use plus reservedBytes, highWaterBytes, blocks; an ObjectPool counts slot bytes as of its last block acquisition; a RangeAllocator counts its live ranges' bytes, reservedBytes is the end of its highest range ever handed out and blocks its outstanding ranges); a Scratch entry is one thread's ScratchScope arena and adds threadId (OS id), threadName, outOfOrder (allocations through a scope that was not the innermost, served from the heap) and shrinks (retained blocks released by the hysteresis); a FrameMemory entry is one of a thread's two FrameMemory arenas (one per frame parity) and adds threadId, threadName and shrinks, written at each rewind of that arena (every other frame the thread allocates in). scratch sums the Scratch entries {threads, bytes, reservedBytes, outOfOrder, shrinks}; a thread writes its scratch counts when it acquires a block and at every 64th outermost close, so bytes lags: compare reservedBytes and highWaterBytes across reads. processResidentBytes is the process's resident size now, where the platform reports it.",
+    schema: {},
+  }),
+
+  proxyTool({
+    name: "get_ecs_wave_trace",
+    category: "profiling",
+    description: "Read how the ECS system waves ran, frame by frame, from a ring of the newest 256 SystemManager updates recorded while the trace is armed (pass enabled: true first; arming clears the ring). Unlike get_job_system, which polls between frames, it sees every fork after the fact. summary: ecsMs (the ECS part of the frame), framePeriodMs, joinWaitMs (time the main thread waited in wave joins), inlineMs (bodies the main thread ran in single-system and exclusive waves), helpMs (forked bodies the main thread ran while joining, its own wave's jobs), gapsMs (ECS time outside any wave), forkedWaves, forks, joins, and publishes: waveForks (pool tasks the waves' publish loops published, at most one per fork), inSystems (jobs system bodies published on their own thread), duringUpdate (every thread's publishes during the ECS update), perFrame (every thread's publishes from one frame's start to the next) and outsideSystems (perFrame minus the two attributed counts). waves[] per plan wave: systems, forks, makespanMs, gapBeforeMs, joinWaitMs, criticalPathMs (slowest forked body), dispatchMs (fork publish to body start). systems[] per system, slowest first: ms, updates, forked, onWorker, onCaller, publishesPerUpdate. Distributions are {median, p95, max} in milliseconds. frames[] describes the newest N frames system by system. On macOS the same waves, joins and bodies are os_signpost intervals (subsystem com.gameengine.ecs, category SystemWaves) for an Instruments recording while armed.",
+    schema: {
+      enabled: z.boolean().optional().describe("Arm (true, clears the ring) or disarm (false) the trace. Omit to leave it as it is."),
+      window: z.coerce.number().int().optional().describe("Summarise the newest N recorded frames (default and maximum 256)"),
+      frames: z.coerce.number().int().optional().describe("Also describe the newest N frames one by one (default 0)"),
+    },
+  }),
+
 ];

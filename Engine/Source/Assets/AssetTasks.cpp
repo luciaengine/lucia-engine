@@ -438,19 +438,13 @@ SharedPtr<Asset> DecodeAssetPayload(AssetManager& assetManager, const GUID& asse
 // UNIFIED ASSET UNLOAD TASK
 // ========================================
 
-AssetUnloadTask::AssetUnloadTask(JobSystem::WorkStealingThreadPool* jobSystem,
-                                 const GUID& assetGuid, AssetManager& assetManager)
-    : JobSystem::Task(jobSystem), m_AssetGuid(assetGuid), m_AssetManager(assetManager)
+AssetUnloadTask::AssetUnloadTask(const GUID& assetGuid, AssetManager& assetManager)
+    : m_AssetGuid(assetGuid), m_AssetManager(assetManager)
 {
 }
 
-void AssetUnloadTask::Execute()
+void AssetUnloadTask::operator()() const
 {
-    if (m_Cancelled.load())
-    {
-        throw std::runtime_error("Task was cancelled");
-    }
-
     auto startTime = std::chrono::high_resolution_clock::now();
 
     try
@@ -493,8 +487,10 @@ void AssetUnloadTask::Execute()
 // UNIFIED ASSET BATCH COORDINATOR
 // ========================================
 
-AssetBatchCoordinator::AssetBatchCoordinator(AssetManager& assetManager, AssetIOService& ioService)
-    : m_AssetManager(assetManager), m_IOService(ioService)
+AssetBatchCoordinator::AssetBatchCoordinator(AssetManager& assetManager,
+                                             JobSystem::WorkStealingThreadPool& jobSystem,
+                                             AssetIOService& ioService)
+    : m_AssetManager(assetManager), m_JobSystem(jobSystem), m_IOService(ioService)
 {
 }
 
@@ -542,6 +538,11 @@ void AssetBatchCoordinator::LoadAsset(const AssetMetadata& metadata, AssetLoadPr
     request.OnFailure = std::move(onFailure);
 
     m_IOService.SubmitRead(std::move(request));
+}
+
+JobSystem::TaskHandle AssetBatchCoordinator::UnloadAsset(const GUID& assetGuid)
+{
+    return m_JobSystem.Submit(AssetUnloadTask(assetGuid, m_AssetManager));
 }
 
 // ========================================

@@ -1,5 +1,7 @@
 #include "Core/Application.h"
 #include "Core/Engine.h"
+#include "Memory/FrameJoinedScope.h"
+#include "Memory/FrameMemory.h"
 #include "Logger/Logger.h"
 #include "Logger/FileSink.h"
 #include "Input/GamepadEdgeTracker.h"
@@ -7,6 +9,7 @@
 #include "Input/GamepadPolling.h"
 #include "Input/InputSystem.h"
 #include "Platform/Environment.h"
+#include "Platform/ApplicationScriptApi.h"
 #include "Platform/Window.h"
 #include "Core/CpuProfiler.h"
 #include "Core/DebugMetrics.h"
@@ -139,6 +142,20 @@ int Application::Run() {
     return m_ExitCode;
 }
 
+void Application::RequestGameExit(int exitCode)
+{
+    SetExitCode(exitCode);
+    RequestExit();
+}
+
+// The script API's body (Platform/ApplicationScriptApi.h): the running application decides what a game's
+// exit request means.
+void Platform::Script::RequestExit(std::int32_t exitCode)
+{
+    if (Application* application = Application::Get())
+        application->RequestGameExit(exitCode);
+}
+
 void Application::RunPlatformLoop() {
     while (PollEventsAndTick()) {
     }
@@ -164,6 +181,9 @@ void Application::Shutdown() {
     }
 
     Logger::Log::Info("Shutting down application");
+#if GE_DEBUG_INSTRUMENTATION
+    Memory::Detail::StopFrameLoop();
+#endif
 
     // Clear the Engine-level non-owning pointer to application-owned input.
     EngineCore::GetInstance().SetInputSystem(nullptr);
@@ -238,6 +258,10 @@ bool Application::Tick() {
         // Optional CPU profiler: closes the frame that just finished — that is
         // the frame its readers see — and opens the one starting here.
         GameEngine::Profiling::CpuProfiler::Get().BeginFrame();
+        Memory::Detail::AdvanceFrameIndex();
+#if GE_DEBUG_INSTRUMENTATION
+        const Memory::Detail::FrameJoinedScope frameJoined(true);
+#endif
 
         // Capture coarse CPU timings for the main frame phases (stored for the next frame's UI).
         auto MsBetween = [](const auto& a, const auto& b) -> double

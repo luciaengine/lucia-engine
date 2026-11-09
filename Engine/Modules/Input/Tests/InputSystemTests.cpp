@@ -2013,3 +2013,131 @@ TEST(InputSystemTests, ResetStateForgetsEveryPad)
     EXPECT_FALSE(input.IsGamepadConnected(kSecondPad));
     EXPECT_FLOAT_EQ(input.GetGamepadAxis(kFirstPad, GamepadAxis::LeftX), 0.0f);
 }
+
+TEST(InputSystemTests, MouseDeltaIsTheMovementDeliveredBeforeTheFramesUpdate)
+{
+    InputSystem input;
+    input.OnMouseMove({100.0f, 100.0f});
+    input.OnMouseMove({103.0f, 98.0f});
+    input.OnMouseMove({110.0f, 95.0f});
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(10.0f, -5.0f));
+
+    // A move after the Update belongs to the next frame.
+    input.OnMouseMove({111.0f, 95.0f});
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(10.0f, -5.0f));
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(1.0f, 0.0f));
+
+    // A frame with no movement reads none.
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(0.0f, 0.0f));
+}
+
+TEST(InputSystemTests, MouseDeltaKeepsCountingPastTheWindowEdge)
+{
+    InputSystem input;
+    input.OnMouseMove({1270.0f, 400.0f});
+    input.OnMouseMove({1900.0f, 400.0f});
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(630.0f, 0.0f));
+}
+
+TEST(InputSystemTests, MouseDeltaIgnoresTheJumpOfAPointerEnteringTheWindow)
+{
+    InputSystem input;
+    input.OnMouseMove({10.0f, 10.0f});
+    input.OnMouseLeave();
+    input.OnMouseMove({500.0f, 300.0f});
+    input.OnMouseMove({502.0f, 300.0f});
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(2.0f, 0.0f));
+}
+
+// The game asks, the host answers: the state reads Pending from the request to
+// the grant, Locked while the grant holds, and Pending again when the host
+// takes the pointer back while the game still asks.
+TEST(InputSystemTests, PointerLockIsPendingUntilTheHostGrantsIt)
+{
+    InputSystem input{SinkRole::Gameplay};
+    IRawInputSink& host = input;
+    EXPECT_EQ(input.GetPointerLockState(), PointerLockState::Unlocked);
+
+    input.LockPointer();
+    EXPECT_EQ(input.GetPointerLockState(), PointerLockState::Pending);
+    host.OnPointerLock(true);
+    EXPECT_EQ(input.GetPointerLockState(), PointerLockState::Locked);
+    host.OnPointerLock(false);
+    EXPECT_EQ(input.GetPointerLockState(), PointerLockState::Pending);
+
+    input.UnlockPointer();
+    EXPECT_EQ(input.GetPointerLockState(), PointerLockState::Unlocked);
+}
+
+// The state follows the game's request first: a grant the host still reports
+// after UnlockPointer, until its next frame, or one it reports with no request,
+// is no lock the game holds.
+TEST(InputSystemTests, PointerLockGrantWithoutARequestReadsUnlocked)
+{
+    InputSystem input{SinkRole::Gameplay};
+    IRawInputSink& host = input;
+
+    input.LockPointer();
+    host.OnPointerLock(true);
+    input.UnlockPointer();
+    EXPECT_EQ(input.GetPointerLockState(), PointerLockState::Unlocked);
+
+    InputSystem unrequested{SinkRole::Gameplay};
+    IRawInputSink& unrequestedHost = unrequested;
+    unrequestedHost.OnPointerLock(true);
+    EXPECT_EQ(unrequested.GetPointerLockState(), PointerLockState::Unlocked);
+}
+
+// The request stands until the game withdraws it, and ending the session
+// withdraws it so the next one starts unlocked.
+TEST(InputSystemTests, PointerLockRequestStandsUntilWithdrawnOrTheSessionEnds)
+{
+    InputSystem input{SinkRole::Gameplay};
+    input.LockPointer();
+
+    // Frames, focus loss and a state reset leave the request alone.
+    input.Update(0.016f);
+    input.OnWindowFocus(false);
+    input.ResetState();
+    EXPECT_EQ(input.GetPointerLockState(), PointerLockState::Pending);
+
+    input.UnlockPointer();
+    EXPECT_EQ(input.GetPointerLockState(), PointerLockState::Unlocked);
+
+    input.LockPointer();
+    input.ClearRegistrations();
+    EXPECT_EQ(input.GetPointerLockState(), PointerLockState::Unlocked);
+}
+
+// The platform moves the cursor when the lock changes: to the window's centre
+// when it begins, back to where it began when it ends. That move is no mouse
+// travel, so a change of the lock starts the count again; the same grant
+// reported again the next frame is no change and the count runs on.
+TEST(InputSystemTests, MouseDeltaStartsAgainWhenThePointerLockChanges)
+{
+    InputSystem input{SinkRole::Gameplay};
+    IRawInputSink& host = input;
+    input.OnMouseMove({100.0f, 100.0f});
+    input.OnMouseMove({110.0f, 100.0f});
+    host.OnPointerLock(true);
+    input.OnMouseMove({640.0f, 360.0f});
+    input.OnMouseMove({645.0f, 362.0f});
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(5.0f, 2.0f));
+
+    input.OnMouseMove({700.0f, 380.0f});
+    host.OnPointerLock(false);
+    input.OnMouseMove({110.0f, 100.0f});
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(0.0f, 0.0f));
+
+    host.OnPointerLock(false);
+    input.OnMouseMove({113.0f, 100.0f});
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(3.0f, 0.0f));
+}

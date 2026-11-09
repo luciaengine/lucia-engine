@@ -292,6 +292,7 @@ void PlayModeManager::EnterPlayMode()
 
     if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
         return;
+    m_ExitRequested = false;
     SetState(PlayModeState::EnteringPlay);
 
     // Isolate undo history for play mode.
@@ -415,6 +416,7 @@ void PlayModeManager::ExitPlayMode()
 
     if (m_UndoRedo && !m_UndoRedo->CommitPendingEdit())
         m_UndoRedo->DiscardPendingEdit();
+    m_ExitRequested = false;
     SetState(PlayModeState::ExitingPlay);
 
     // Best-effort managed play-mode exit hook (called before tearing down runtime systems).
@@ -601,8 +603,20 @@ void PlayModeManager::DiscardPendingChanges()
         SetState(PlayModeState::Edit);
 }
 
+void PlayModeManager::RequestExitPlayMode()
+{
+    // A script's OnCreate runs while play is entered, before the state becomes Play.
+    if (IsPlayingOrPaused() || m_State == PlayModeState::EnteringPlay)
+        m_ExitRequested = true;
+}
+
 void PlayModeManager::Tick(float deltaSeconds)
 {
+    if (m_ExitRequested && IsPlayingOrPaused())
+    {
+        ExitPlayMode();
+        return;
+    }
     if (m_State != PlayModeState::Play)
         return;
 

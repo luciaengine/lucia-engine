@@ -740,10 +740,10 @@ inline constexpr uint32_t kCBTHeightRangeBinding = 21; // StorageBuffer: uint[kC
 // binding-17 ring discipline). A slot holds at least kCBTPageTableMinRingWords words and grows to
 // the bound terrain's table (CBTResources::ProvisionPageTableWords). Words, mirror cbt_layout.glsl
 // CBT_PAGE_*:
-//   [0, 4)   CBTPageField (level-0 samples X, Z, level count, cache slots per row)
-//   [4]      the cache's slot count; [5, 8) zero
+//   [0, 4)   level-0 samples X, Z, level count, cache slots per row
+//   [4]      the cache's slot count; [5, 8) floor level, tier count, directory offset
 //   [8, 8 + 4 * kCBTPageMaxLevels) CBTPageLevel per level (first entry, pages X, Z, 0)
-//   then one arrival fade per cache slot (float bits), then the entries (level-major, row-major).
+//   then one arrival fade per cache slot (float bits), then PageTable::Words (dense or tiered).
 // The ring's words per slot are not in the table: they ride the frame's own params
 // (CBTFrameParams::AnalyticParams[kCBTPageRingWordsLane], written by UploadFrameParams), so a frame
 // finds its slot without reading a slot another frame's upload may be rewriting.

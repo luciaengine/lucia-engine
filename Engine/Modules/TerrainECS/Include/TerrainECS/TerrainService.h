@@ -14,7 +14,7 @@
 #include "Terrain/CDLODQuadtree.h"
 #include "AssetCore/AssetReloadInvalidator.h"
 #include "AssetCore/GUID.h"
-#include "PageStreaming/HeightPageOverlay.h"
+#include "PageStreaming/Height/HeightPageLayer.h"
 #include "TerrainECS/SurfaceHeightQuery.h"
 #include "GenerationalVector/GenerationalVector.h"
 
@@ -462,7 +462,7 @@ struct TiledTerrainData
     // on the tile lattice the overlay is baked on; PageOverlayRefusedOffGrid is set when a height
     // modifier reaches such a terrain: it keeps its texture and the driver logs OverlayGridRefusal.
     // The modifier system owns PageOverlay and rebakes it in place; the height pages hold it read-only.
-    std::shared_ptr<PageStreaming::HeightPageOverlay> PageOverlay;
+    std::shared_ptr<PageStreaming::HeightPageLayer> PageOverlay;
     uint64 PageOverlayVersion = 0;
     PageStreaming::PageSampleRect PageOverlayChanged;
     uint64 PageOverlayChangedSince = 0;

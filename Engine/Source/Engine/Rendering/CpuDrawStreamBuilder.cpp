@@ -151,7 +151,7 @@ void CpuDrawStreamBuilder::BuildView(Rendering::ViewId viewId, const WorldDrawBu
                 out.State |= kCasterBit;
         }
     };
-    JobSystem::ParallelFor(pool, 0, submissions.size(), resolveRange, kCullMinBatchSize);
+    JobSystem::ParallelFor(pool, submissions.size(), resolveRange, kCullMinBatchSize);
 
     m_CameraEntries.clear();
     m_ShadowEntries.clear();

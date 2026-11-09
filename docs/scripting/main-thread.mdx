@@ -1,0 +1,20 @@
+---
+title: Posting work to the main thread
+description: Send work from a background task to the engine frame thread.
+---
+
+`MainThread.Post` queues an action from a background task, timer, or socket callback. The main thread runs posted actions in order at its next pump. It runs a batch once per pump, so an action that posts another action leaves that work for the next pump. Exceptions are reported without escaping into the engine frame.
+
+```csharp title="GameEngine.Scripting.MainThread"
+MainThread.Post(() =>
+{
+    if (Ui.FindElement("notes") is Ui.MarkdownText notes)
+        notes.SetText("**Download complete.**");
+});
+```
+
+Posting returns immediately. It has no waiting or result-returning form: waiting from an engine system could deadlock the frame. Send results back through state that the receiving thread owns.
+
+Queued actions belonging to a script assembly are discarded when that assembly unloads. Shutdown discards queued work; later posts are dropped and logged until an engine initializes again. A standalone managed host with no frame loop, or an engine configured without scripting, runs an action immediately on the posting thread.
+
+The native scripting protocol uses `GE_MainThread_SetDrain` to install one process-wide drain and `GE_MainThread_RequestPump` to request it. The request answers queued, run inline, or dropped. A caller holds its queue lock across the request and append, then releases that lock before executing an inline action.

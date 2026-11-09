@@ -4,6 +4,7 @@ project(Platform VERSION 1.0.0 LANGUAGES CXX)
 
 set(PLATFORM_SOURCES
 	Source/Capabilities.cpp
+	Source/Thread.cpp
 )
 
 # Desktop-only implementations: GLFW clipboard and gamepad mapping, OS shell
@@ -29,6 +30,22 @@ list(APPEND PLATFORM_SOURCES Source/HttpHeaderRules.cpp)
 
 # A child process's environment, built from this process's: every platform.
 list(APPEND PLATFORM_SOURCES Source/Process.cpp)
+
+# Speech capture is available on the macOS desktop only.
+if(APPLE AND NOT GE_MOBILE)
+    list(APPEND PLATFORM_SOURCES Source/SpeechInput_mac.mm)
+    set_source_files_properties(Source/SpeechInput_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+else()
+    list(APPEND PLATFORM_SOURCES Source/SpeechInput_Stub.cpp)
+endif()
+
+if(NOT GE_MOBILE AND NOT EMSCRIPTEN)
+    if(WIN32)
+        list(APPEND PLATFORM_SOURCES Source/Display/DisplayChangeListener_Win32.cpp)
+    elseif(APPLE)
+        list(APPEND PLATFORM_SOURCES Source/Display/DisplayChangeListener_mac.mm)
+    endif()
+endif()
 
 # Platform-specific sources
 if(GE_MOBILE)
@@ -139,7 +156,8 @@ endif()
  endif()
 
 if (APPLE AND NOT GE_MOBILE)
-    target_link_libraries(Platform PRIVATE "-framework CoreText" "-framework CoreFoundation" "-framework Cocoa" "-framework WebKit")
+    target_link_libraries(Platform PRIVATE "-framework CoreText" "-framework CoreFoundation" "-framework Cocoa" "-framework WebKit"
+        "-framework AVFoundation" "-framework Speech")
 endif()
 
 # Emscripten sets UNIX; keep it out of the Linux desktop-integration probes.
@@ -269,6 +287,26 @@ if(BUILD_TESTING)
             VERBATIM)
     endif()
 
+    # The kept monitor list: a frame does not read the OS again; a display change does.
+    # Linux has no display-change listener and reads the list every frame, so no suite.
+    if ((WIN32 OR APPLE) AND NOT GE_MOBILE AND NOT EMSCRIPTEN)
+        add_executable(PlatformDisplayTests Tests/MonitorCacheTests.cpp)
+        target_include_directories(PlatformDisplayTests PRIVATE Source)
+        target_link_libraries(PlatformDisplayTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+        if (WIN32)
+            target_sources(PlatformDisplayTests PRIVATE Tests/MonitorCacheTests_Win32.cpp)
+            target_link_libraries(PlatformDisplayTests PRIVATE User32)
+        else()
+            target_sources(PlatformDisplayTests PRIVATE Tests/MonitorCacheTests_mac.mm)
+            set_target_properties(PlatformDisplayTests PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
+            target_link_libraries(PlatformDisplayTests PRIVATE "-framework Cocoa")
+        endif()
+        ge_set_output_tests(PlatformDisplayTests)
+        ge_stage_runtime_dependencies(PlatformDisplayTests)
+        add_test(NAME PlatformDisplayTests COMMAND PlatformDisplayTests)
+        set_tests_properties(PlatformDisplayTests PROPERTIES RUN_SERIAL TRUE)
+    endif()
+
     ge_set_output_tests(PlatformContextMenuTests)
     ge_stage_runtime_dependencies(PlatformContextMenuTests)
     add_test(NAME PlatformContextMenuTests COMMAND PlatformContextMenuTests)
@@ -290,6 +328,8 @@ if(BUILD_TESTING)
 
     add_executable(PlatformCapabilitiesTests
         Tests/CapabilitiesTests.cpp
+        Tests/ThreadNameTests.cpp
+        Tests/SpeechInputTests.cpp
     )
 
     target_link_libraries(PlatformCapabilitiesTests

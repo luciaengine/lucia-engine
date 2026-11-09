@@ -1,0 +1,12 @@
+---
+title: CPU image processing
+description: Decode, inspect, resample, and encode images with the Image module.
+---
+
+The `Image` module provides CPU image operations through `Image/Decode.h`, `Image/ImageHeader.h`, `Image/Resample.h`, and `Image/Encode.h`. Decoded images own their pixels and record width, height, channel count, and a `Valid` flag. Rows start at the top.
+
+`Image::Decode8`, `Decode16`, and `DecodeFloat` take compressed file bytes, a source name used in diagnostics, and a `DecodeChannels` choice. Choose `FromFile`, `Gray`, `Rgb`, or `Rgba`. Read `Valid` before using the result. Float color samples are linear; 8-bit color samples are sRGB unless the producer says otherwise.
+
+`Image::ReadImageHeader` inspects dimensions and decoder limits without decoding the whole image. Decode refuses inputs and results beyond the decoder's integer allocation limits and logs the source name. For a terrain PNG that exceeds those limits, export the heightmap as `.r32`.
+
+`Image::EncodePng` returns encoded PNG bytes from RGBA8 pixels. `Image::WritePngFile` writes those bytes to a path. A caller publishing a file to concurrent readers writes a temporary sibling and then replaces the destination atomically.

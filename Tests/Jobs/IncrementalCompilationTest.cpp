@@ -125,7 +125,6 @@ TEST_F(IncrementalCompilationTest, BasicIncrementalCompilation) {
     
     // Create incremental compilation task
     auto task = CreateIncrementalCompilationTask(
-        threadPool.get(),
         *clrHost,
         config
     );
@@ -157,7 +156,6 @@ TEST_F(IncrementalCompilationTest, BasicIncrementalCompilation) {
     
     // Create new task for incremental compilation
     auto incrementalTask = CreateIncrementalCompilationTask(
-        threadPool.get(),
         *clrHost,
         config
     );
@@ -226,7 +224,6 @@ TEST_F(IncrementalCompilationTest, FallbackToFullCompilation) {
     
     // Create task
     auto task = CreateIncrementalCompilationTask(
-        threadPool.get(),
         *clrHost,
         config
     );
@@ -260,7 +257,6 @@ TEST_F(IncrementalCompilationTest, CacheManagement) {
     
     // Create task
     auto task = CreateIncrementalCompilationTask(
-        threadPool.get(),
         *clrHost,
         config
     );

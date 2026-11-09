@@ -1,3 +1,4 @@
+#include "Audio/AudioTypes.h"
 #include "EditorApplication.h"
 #include "Diagnostics/MainThreadHangWatchdog.h"
 #include "Logger/Logger.h"
@@ -47,6 +48,20 @@
 #endif
 
 namespace {
+
+static GameEngine::Audio::AudioOutput ReadAudioOutputOverride()
+{
+    const char* value = std::getenv("GE_AUDIO_OUTPUT");
+    if (!value || value[0] == '\0')
+        return GameEngine::Audio::AudioOutput::Device;
+    if (const std::optional<GameEngine::Audio::AudioOutput> output = GameEngine::Audio::TryParseAudioOutput(value))
+        return *output;
+    Logger::Log::Warning("Editor: GE_AUDIO_OUTPUT='{}' is not an audio output; ignoring it and playing on the "
+                         "device. Recognized values: silent, device.",
+                         value);
+    return GameEngine::Audio::AudioOutput::Device;
+}
+
 #ifdef _WIN32
     // Crash evidence must exist in EVERY Windows config. The SEH filter below
     // swallows the exception before WER sees it, so there is no event-log entry
@@ -617,6 +632,7 @@ static int EditorMainImpl(int argc, char** argv) {
 
     GameEngine::ApplicationConfig config =
         GameEngine::Editor::Startup::BuildEditorApplicationConfig(editorArgs, engineArgs);
+    config.AudioOutput = ReadAudioOutputOverride();
 
     if (editorArgs.projectRoot.has_value())
     {

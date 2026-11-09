@@ -43,6 +43,8 @@ struct GameConfig
     std::string gameName = "My Game";
     std::string startupScene;       // asset-relative, e.g. "Scenes/Main.scene"
     std::string renderPipeline;     // asset-relative, e.g. "RenderPipelines/ForwardPlus.rendergraph"
+    // The Player waits for startup spline recipes before its ready line and screenshot.
+    bool waitForSplineRecipes = true;
 
     LodImportConfig lod;
 

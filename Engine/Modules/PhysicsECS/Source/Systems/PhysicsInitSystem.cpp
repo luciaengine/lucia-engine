@@ -4,6 +4,7 @@
 #include "PhysicsECS/PhysicsWorldService.h"
 #include "PhysicsECS/Systems/PhysicsWorldHooks.h"
 
+#include "PhysicsECS/Components/KinematicBody.h"
 #include "PhysicsECS/Components/PhysicsBody.h"
 #include "PhysicsECS/Components/PhysicsCollider.h"
 #include "PhysicsECS/Components/BoxColliderShape.h"
@@ -123,6 +124,28 @@ static Physics::AABB HeightFieldRegionWorldBox(const GameEngine::Components::Wor
 bool HoldsBackendObjects(const GameEngine::Components::PhysicsBody& body)
 {
     return body.body.IsValid() || body.shape.IsValid() || body.childShapeCount > 0;
+}
+
+// A body built this update and whether its backend body is kinematic.
+struct BuiltBody
+{
+    ECS::EntityHandle entity{};
+    bool kinematic = false;
+};
+
+// The KinematicBody tag follows the motion type of the backend body that was just built. The change is
+// deferred, because other systems may run in the same wave; the world applies it at its next
+// ProcessCommands.
+void MarkKinematicBodies(ECS::World& world, const std::vector<BuiltBody>& builtBodies)
+{
+    for (const BuiltBody& built : builtBodies)
+    {
+        const bool tagged = world.HasComponent<GameEngine::Components::KinematicBody>(built.entity);
+        if (built.kinematic && !tagged)
+            world.AddComponent(built.entity, GameEngine::Components::KinematicBody{});
+        else if (!built.kinematic && tagged)
+            world.RemoveComponent<GameEngine::Components::KinematicBody>(built.entity);
+    }
 }
 
 } // namespace
@@ -482,6 +505,8 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
         }
     }
 
+    std::vector<BuiltBody> builtBodies;
+
     // Build bodies from gathered colliders.
     {
         // A disabled body is not visited: ReleaseDisabledBodies tore its backend
@@ -674,7 +699,10 @@ void PhysicsInitSystem::Update(ECS::World& world, float32 deltaTime)
 
             body.body = pw->CreateBody(bs);
             body.initialized = body.body.IsValid();
+            if (body.initialized)
+                builtBodies.push_back({e, body.motionType == Physics::MotionType::Kinematic});
         });
+        MarkKinematicBodies(world, builtBodies);
     }
 
     // Wake sleeping dynamics over every heightfield footprint that was

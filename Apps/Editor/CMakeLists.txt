@@ -56,6 +56,8 @@ set(EDITOR_SOURCES
     Source/Editor/Settings/GizmoSettingsPage.cpp
     Source/Editor/Settings/PerformanceSettingsPage.cpp
     Source/Editor/Settings/ScriptSettingsPage.cpp
+    Source/Editor/Settings/ScriptPackages/ScriptPackagesSettingsPage.cpp
+    Source/Editor/Settings/ScriptPackages/ScriptPackagesList.cpp
     Source/Editor/Settings/AssetImportSettingsPage.cpp
     Source/Editor/Settings/SvgRasterSizeField.cpp
     Source/Editor/Settings/AnimationSettingsPage.cpp
@@ -237,6 +239,8 @@ set(EDITOR_SOURCES
     Source/MissingAssetTracker.cpp
     Source/Panels/WebPanel.cpp
     Source/PlayMode/PlayModeManager.cpp
+    Source/PlayMode/GameViewPointerLock.cpp
+    Source/PlayMode/WindowCursorLock.cpp
     Source/PlayMode/ModelAnimationPlayMode.cpp
     Source/PlayMode/AnimationPlayModeHelpers.cpp
     Source/PlayMode/RuntimeInputConnection.cpp
@@ -639,6 +643,10 @@ set(EDITOR_SOURCES
 	Source/EditorApplication_Windows.cpp
 	Source/EditorApplication_Shortcuts.cpp
 	Source/EditorInputActions.cpp
+	Source/DebugServer/MemoryDebugHandlers.cpp
+	Source/DebugServer/SystemWaveTraceReport.cpp
+	Source/DebugServer/JobSystem/JobSystemDebugHandlers.cpp
+	Source/DebugServer/JobSystem/JobSystemReport.cpp
 	Source/DebugServer/EditorDebugServer.cpp
 	Source/DebugServer/AssetDebugHandlers.cpp
 	Source/DebugServer/BenchSceneHandlers.cpp
@@ -1060,6 +1068,8 @@ set(EDITOR_SDK_SOURCES
 	Source/SettingsStore.cpp
 	Source/InspectorRegistry.cpp
     Source/UI/ControlLayoutLoader.cpp
+    Source/UI/Controls/TransientNotice.cpp
+    Source/UI/Controls/PictureChoiceField.cpp
 	Source/Picking/EditorPickProviders.cpp
 	Source/Assets/AssetSearchProvider.cpp
 	Source/UI/AssetBoundDockPanel.cpp
@@ -1869,7 +1879,7 @@ endif()
 
 # Winsock2 for EditorDebugServer (MCP debug server)
 if(WIN32)
-    target_link_libraries(Editor PRIVATE ws2_32 $<$<CONFIG:Debug>:dbghelp>)
+    target_link_libraries(Editor PRIVATE ws2_32 psapi $<$<CONFIG:Debug>:dbghelp>)
 endif()
 
 # stb_image for reading image dimensions in asset browser
@@ -1976,6 +1986,7 @@ if(APPLE)
 	set_target_properties(Editor PROPERTIES
 	    MACOSX_BUNDLE TRUE
 	    MACOSX_BUNDLE_BUNDLE_NAME "Lucia Engine"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/EditorInfo.plist.in"
 	    MACOSX_BUNDLE_ICON_FILE AppIcon.icns
 	    MACOSX_BUNDLE_GUI_IDENTIFIER "com.gameengine.editor"
 	    MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0"

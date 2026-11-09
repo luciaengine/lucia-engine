@@ -5,6 +5,11 @@ if(NOT GTest_FOUND)
 endif()
 
 add_executable(MathematicsTests
+    AngleTests.cpp
+    MathInterpolationTests.cpp
+    Matrix3x3AffineTests.cpp
+    QuaternionTests.cpp
+    RectIntTests.cpp
     Vector3IntTests.cpp
     CurveEvaluationTests.cpp
     GeometryTests.cpp

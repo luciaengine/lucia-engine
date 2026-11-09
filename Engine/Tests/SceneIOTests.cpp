@@ -1,3 +1,4 @@
+#include "Components/Audio/AudioEmitter.h"
 #include "Components/Animation/ValueCurve.h"
 #include "Components/Rendering/PostProcessEffects/RainSettingsEffect.h"
 #include "Components/Rendering/WindVolume.h"
@@ -11411,4 +11412,42 @@ TEST(SceneIO, DepthPixelationEffectRoundTrip)
             EXPECT_EQ(a.DistanceMode, b.DistanceMode);
             EXPECT_EQ(a.DebugRanges, b.DebugRanges);
         });
+}
+
+TEST(SceneIO, SaveThenLoad_RoundTripAudioEmitterFalloff)
+{
+    const auto scenePath = MakeTempPath("audio_emitter_falloff.scene");
+
+    ECS::World w1;
+    const ECS::EntityHandle authoredEntity = w1.CreateEntity();
+    const ECS::EntityHandle defaultEntity = w1.CreateEntity();
+    ASSERT_TRUE(authoredEntity.IsValid());
+    ASSERT_TRUE(defaultEntity.IsValid());
+    w1.AddComponentImmediate(authoredEntity, Components::SceneEntityTag{{'a', 'u', 't', 'h', '\0'}});
+    w1.AddComponentImmediate(defaultEntity, Components::SceneEntityTag{{'d', 'e', 'f', '\0'}});
+
+    Components::AudioEmitter authored{};
+    authored.attenuation = Components::AudioEmitterAttenuation::Linear;
+    authored.minDistance = 50.0f;
+    authored.maxDistance = 2000.0f;
+    authored.rolloff = 0.75f;
+    w1.AddComponentImmediate(authoredEntity, authored);
+    w1.AddComponentImmediate(defaultEntity, Components::AudioEmitter{});
+
+    ASSERT_TRUE(Scene::SaveSceneToFile(w1, scenePath, Scene::SaveOptions{}));
+
+    ECS::World w2;
+    ASSERT_TRUE(Scene::LoadSceneFromFile(w2, scenePath, Scene::LoadOptions{}));
+    const auto* a2 = w2.GetComponent<Components::AudioEmitter>(FindByTag(w2, "auth"));
+    const auto* d2 = w2.GetComponent<Components::AudioEmitter>(FindByTag(w2, "def"));
+    ASSERT_NE(a2, nullptr);
+    ASSERT_NE(d2, nullptr);
+    EXPECT_EQ(a2->attenuation, Components::AudioEmitterAttenuation::Linear);
+    EXPECT_EQ(a2->minDistance, 50.0f);
+    EXPECT_EQ(a2->maxDistance, 2000.0f);
+    EXPECT_EQ(a2->rolloff, 0.75f);
+    EXPECT_EQ(d2->attenuation, Components::AudioEmitterAttenuation::Inverse);
+    EXPECT_EQ(d2->minDistance, 1.0f);
+    EXPECT_EQ(d2->maxDistance, 10000.0f);
+    EXPECT_EQ(d2->rolloff, 1.0f);
 }

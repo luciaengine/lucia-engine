@@ -78,7 +78,7 @@ if(BUILD_TESTING)
     target_link_libraries(PathfindingTests PRIVATE
         Pathfinding
         Logger
-        JobSystem
+        JobSystem Memory
         AssetCore
         FileSystemObjects
         GTest::gtest

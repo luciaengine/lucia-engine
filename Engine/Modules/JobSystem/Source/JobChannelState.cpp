@@ -28,10 +28,11 @@ JobChannelState::Admission JobChannelState::Admit(UniquePtr<TaskBase>& envelope,
     if (m_Running < m_MaxRunning)
     {
         ++m_Running;
+        ++m_Jobs;
         slot.MarkDispatched();
         return Admission::Dispatch;
     }
-    m_Queued.push_back({std::move(envelope), &slot});
+    m_Queued.push_back({std::move(envelope), &slot, WorkStealingThreadPool::SteadyClockNs()});
     return Admission::Queued;
 }
 
@@ -51,20 +52,35 @@ void JobChannelState::ReleaseSlot()
         QueuedJob head = std::move(m_Queued.front());
         m_Queued.pop_front();
         ++m_Running;
+        ++m_Jobs;
+        m_QueueWaitNs += WorkStealingThreadPool::SteadyClockNs() - head.QueuedAtNs;
         head.Slot->MarkDispatched();
         next = std::move(head.Envelope);
     }
-    m_Pool.DispatchToBlockingThreads(std::move(next));
+    m_Pool.DispatchToBlockingThreads(std::move(next), m_Name);
 }
 
-void JobChannelState::TakeQueued(Vector<UniquePtr<TaskBase>>& out)
+void JobChannelState::TakeQueued(Vector<ChannelJob>& out)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);
     for (QueuedJob& job : m_Queued)
     {
-        out.push_back(std::move(job.Envelope));
+        out.push_back({std::move(job.Envelope), m_Name});
     }
     m_Queued.clear();
+}
+
+JobSystemStatistics::Channel JobChannelState::Statistics()
+{
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    JobSystemStatistics::Channel row;
+    row.Name = m_Name;
+    row.Queued = static_cast<uint32>(m_Queued.size());
+    row.Running = m_Running;
+    row.Cap = m_MaxRunning;
+    row.QueueWaitNs = m_QueueWaitNs;
+    row.Jobs = m_Jobs;
+    return row;
 }
 
 void JobChannelState::SetBeforeDispatchHook(std::function<void()> hook)

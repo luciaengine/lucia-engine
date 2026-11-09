@@ -26,6 +26,8 @@ namespace ECS {
 
 // Forward declarations
 class World;
+class ArchetypeMatchCache;
+class ArchetypeMatchList;
 class ClonePlan;
 class EntityRemap;
 class UnresolvedComponentStore; // ECS/UnresolvedComponentStore.h
@@ -244,6 +246,7 @@ private:
     // Archetype storage (sorted-vector signatures, hash-keyed for O(1) lookup)
     std::unordered_map<ComponentSignature, std::unique_ptr<Archetype>, ComponentSignatureHash> archetypes;
     std::unordered_map<ComponentTypeId, std::size_t> componentSizes;
+    std::unique_ptr<ArchetypeMatchCache> m_ArchetypeMatches;
 
     // Thread-local command buffers: per-thread map keyed by monotonic WorldId.
     // Keying on uint64 WorldId (not raw World*) avoids the ABA hazard where a
@@ -848,11 +851,22 @@ public:
 	    // Required and Include, shares no component with Exclude, and carries
 	    // none of DisabledExclude except the tags DisabledInclude names back in.
 	    // A null member is no filter at all. `out` is cleared and reserved once,
-	    // so a buffer reused across calls stops allocating. Queries iterate this
-	    // copy rather than the archetype map: an archetype created while a query
-	    // iterates cannot invalidate it.
+	    // so a buffer reused across calls stops allocating. The copied pointers
+	    // remain valid until the World clears or prunes their archetypes.
 	    void CollectMatchingArchetypes(const ArchetypeFilter& filter,
 	                                   std::vector<Archetype*>& out) const;
+    /// A World-owned match list and its structural-version snapshot.
+    struct MatchedArchetypes
+    {
+        const ArchetypeMatchList* List = nullptr;
+        std::span<Archetype* const> Archetypes;
+        std::size_t StructuralVersion = 0;
+    };
+    /// Register a filter once, then share its matches between query instances.
+    MatchedArchetypes MatchArchetypes(const ArchetypeFilter& filter);
+    /// Remove empty archetypes and invalidate cached creation paths. Requires no active query iteration.
+    size_t PruneEmptyArchetypes();
+
 	    void SetJobSystem(JobSystem::WorkStealingThreadPool* js) { jobSystem = js; }
 	    JobSystem::WorkStealingThreadPool* GetJobSystem() const { return jobSystem; }
             void SetQueryPolicy(const QueryPolicy& p) { queryPolicy = p; }

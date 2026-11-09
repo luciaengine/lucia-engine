@@ -12,6 +12,10 @@ namespace ScriptingPaths
 /// in a packaged build's Managed/ directory.
 inline constexpr std::string_view kScriptsAssemblyFileName = "GameEngine.Scripts.dll";
 
+/// The folder beside the scripts assembly that holds the runtime assemblies of the project's
+/// NuGet packages. The scripts' dependency context loads it; the export ships it.
+inline constexpr std::string_view kScriptDependenciesFolderName = "Dependencies";
+
 /// Engine assemblies native code loads by file name from the engine managed directory:
 /// CoreBridge (the CLR entry point, ResolveCoreBridgeDll), HotReload (its runtimeconfig.json
 /// boots the CLR, ResolveHotReloadDll) and Scripting.Runtime (the GameSystem runner
@@ -22,6 +26,28 @@ inline constexpr std::string_view kHotReloadAssemblyFileName = "GameEngine.HotRe
 inline constexpr std::string_view kScriptingRuntimeAssemblyFileName = "GameEngine.Scripting.Runtime.dll";
 inline constexpr std::array<std::string_view, 3> kHostLoadedEngineAssemblyFileNames = {
     kCoreBridgeAssemblyFileName, kHotReloadAssemblyFileName, kScriptingRuntimeAssemblyFileName};
+
+/// The generated C# bindings of the engine's script API (Managed/Scripting.Bindings).
+inline constexpr std::string_view kScriptBindingsAssemblyFileName = "GameEngine.Scripting.Bindings.dll";
+
+/// The assemblies scripts compile against, by file name: the generated bindings and the
+/// hand-written engine ABI surfaces, the editor's own (GameEngine.Editor.Scripting.ABI.dll)
+/// included. A list, not a pattern: a file the build no longer stages, left in an existing
+/// output folder, is never referenced or shipped. Compile-server requests carry it
+/// (ScriptSurfaceRequestField), so the server holds no copy.
+inline constexpr std::array<std::string_view, 8> kScriptSurfaceAssemblyFileNames = {
+    kScriptBindingsAssemblyFileName, "GameEngine.Scripting.ABI.dll", "GameEngine.ECS.ABI.dll",
+    "GameEngine.Platform.ABI.dll", "GameEngine.Editor.Scripting.ABI.dll",
+    "GameEngine.Input.ABI.dll", "GameEngine.Physics.ABI.dll", "GameEngine.TileMap.ABI.dll"};
+
+/// True for an assembly of kScriptSurfaceAssemblyFileNames.
+inline bool IsScriptSurfaceAssembly(std::string_view fileName)
+{
+    for (std::string_view name : kScriptSurfaceAssemblyFileNames)
+        if (name == fileName)
+            return true;
+    return false;
+}
 
 /**
  * @brief Directory holding the engine's managed assemblies.

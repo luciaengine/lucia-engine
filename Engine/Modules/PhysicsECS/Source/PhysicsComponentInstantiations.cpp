@@ -12,6 +12,7 @@
 #include "PhysicsECS/Components/HeightFieldColliderShape.h"
 #include "PhysicsECS/Components/MeshColliderShape.h"
 #include "PhysicsECS/Components/MovingPlatform.h"
+#include "PhysicsECS/Components/KinematicBody.h"
 #include "PhysicsECS/Components/PhysicsBody.h"
 #include "PhysicsECS/Components/PhysicsCollider.h"
 #include "PhysicsECS/Components/PhysicsColliderOwner.h"
@@ -29,6 +30,7 @@ namespace GameEngine::ECS
     GE_INSTANTIATE_ENGINE_COMPONENT(Components::HeightFieldColliderShape);
     GE_INSTANTIATE_ENGINE_COMPONENT(Components::MeshColliderShape);
     GE_INSTANTIATE_ENGINE_COMPONENT(Components::MovingPlatform);
+    GE_INSTANTIATE_ENGINE_COMPONENT(Components::KinematicBody);
     GE_INSTANTIATE_ENGINE_COMPONENT(Components::PhysicsBody);
     GE_INSTANTIATE_ENGINE_COMPONENT(Components::PhysicsCollider);
     GE_INSTANTIATE_ENGINE_COMPONENT(Components::PhysicsColliderOwner);

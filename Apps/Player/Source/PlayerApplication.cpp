@@ -11,6 +11,8 @@
 #include "Assets/Packages/PackageResolver.h"
 #include "Assets/Packages/PackagesIndex.h"
 #include "Audio/AudioSystem.h"
+#include "Components/Name.h"
+#include "SplineRecipes/SplineRecipesScriptApi.h"
 #include "Core/Engine.h"
 #include "ECSModules/Rendering/RenderingLoop.h"
 #include "Engine/Build/PackagedGameLayout.h"
@@ -46,6 +48,8 @@
 #include "Video/AsyncVideoRecorder.h"
 #endif
 
+#include <array>
+#include <span>
 #include <cstdlib>
 #include <algorithm>
 #include <memory>
@@ -61,6 +65,8 @@ bool PlayerApplication::HasInputFocus() const
 
 namespace
 {
+constexpr size_t kStartupFailuresLogged = 16;
+
 #if GE_PLAYER_MOVIE_RECORDER
 constexpr size_t kMaxPendingMovieReadbacks = 4;
 constexpr uint32_t kMovieStartupWarmupFrames = 4;
@@ -474,6 +480,8 @@ bool PlayerApplication::Initialize()
         Logger::Log::Warning("Player: No startup scene specified in game config");
     else if (!m_Host->OpenScene(m_GameConfig.startupScene))
         return false;
+    else
+        m_StartupScene.Begin(m_GameConfig.waitForSplineRecipes);
 
     m_StartupResolve = m_Host->GetSceneResolveBatch();
     m_StartupResolvePending = m_StartupResolve != Engine::Renderer::SceneResolveBatch::None;
@@ -563,6 +571,24 @@ void PlayerApplication::PollRuntimeDisplayControls()
         (void)ToggleRuntimeHdrOutput();
 }
 
+// The game's pointer lock request, applied in the frame it was made. The window
+// is the whole play surface, so the game holds the lock for as long as it asks;
+// the platform lets the cursor go while the window is unfocused, and the game
+// is told it is locked only while it actually is.
+void PlayerApplication::ApplyPointerLock()
+{
+    Platform::Window* window = m_Host->GetWindow();
+    Input::InputSystem* input = GetInputSystem();
+    if (!window || !input)
+        return;
+    if (input->GetPointerLockState() == Input::PointerLockState::Unlocked)
+        window->UnlockCursor();
+    else
+        window->LockCursor(Platform::Window::LockedCursorMotion::Raw);
+    Input::IRawInputSink& sink = *input;
+    sink.OnPointerLock(window->IsCursorLocked() && window->IsFocused());
+}
+
 bool PlayerApplication::ToggleRuntimeHdrOutput()
 {
     Engine::Renderer::RenderDeviceContext* renderCtx = m_Host->GetRenderDeviceContext();
@@ -613,7 +639,17 @@ bool PlayerApplication::ApplyRuntimeHdrOutput(Rendering::HdrOutputMode mode)
     return true;
 }
 
-void PlayerApplication::FinishStartupResolve(ECS::World& world)
+void PlayerApplication::FinishStartupResolve(ECS::World& world, float64 deltaTime)
+{
+    if (!m_StartupScene.IsPending() && !m_StartupResolvePending)
+        return;
+    FinishStartupBatch(world);
+    // A run with no render device has no batch, so its batch term reads as complete.
+    if (m_StartupScene.Update(!m_StartupResolvePending, SplineRecipes::IsSceneSettled(world), deltaTime))
+        LogStartupSceneReady(world);
+}
+
+void PlayerApplication::FinishStartupBatch(ECS::World& world)
 {
     if (!m_StartupResolvePending)
         return;
@@ -641,6 +677,21 @@ void PlayerApplication::FinishStartupResolve(ECS::World& world)
     Engine::Renderer::BootstrapSceneAnimators(world);
 }
 
+void PlayerApplication::LogStartupSceneReady(ECS::World& world)
+{
+    std::array<SplineRecipes::RecipeStatus, kStartupFailuresLogged> failures{};
+    const int32_t failed = SplineRecipes::Failures(world, failures);
+    Logger::Log::Info("Player: startup scene ready in {:.2f} s over {} frame(s); {} spline recipe(s) failed",
+                      m_StartupScene.Seconds(), m_StartupScene.Frames(), failed);
+    for (const SplineRecipes::RecipeStatus& failure :
+         std::span(failures).first(std::min<size_t>(failures.size(), static_cast<size_t>(failed))))
+    {
+        const auto* name = world.GetComponent<Components::Name>(failure.Recipe);
+        Logger::Log::Warning("Player: spline recipe '{}' failed: {}", name ? name->View() : std::string_view(),
+                             SplineRecipes::ReasonOf(world, failure.Recipe));
+    }
+}
+
 void PlayerApplication::Update(float64 deltaTime)
 {
     m_LastRenderDeltaTime = static_cast<float>(deltaTime);
@@ -652,13 +703,15 @@ void PlayerApplication::Update(float64 deltaTime)
 #endif
 
     if (auto* world = EngineCore::GetInstance().GetPrimaryWorld())
-        FinishStartupResolve(*world);
+        FinishStartupResolve(*world, deltaTime);
 
     // Tick user C++ systems each frame (the Player runs them for the whole session).
     if (auto* world = EngineCore::GetInstance().GetPrimaryWorld())
     {
         GameEngine::NativeScripting::TickUserSystems(*world, static_cast<float>(deltaTime));
     }
+
+    ApplyPointerLock();
 
     // Check for window close request (GLFW polling model).
     if (Platform::Window* window = m_Host->GetWindow(); window && window->ShouldClose())
@@ -726,9 +779,9 @@ void PlayerApplication::OnFrameComposited(RuntimeFrameReadback& readback)
 void PlayerApplication::DeclareScreenshot(RuntimeFrameReadback& readback)
 {
     // --screenshot: declare a one-shot readback of the composited frame after a
-    // short warmup, counted from the frame the startup scene finished resolving.
+    // short warmup, counted from the frame the startup scene is ready.
     // Declared pre-Execute; the host stamps the frame's readbacks after submit.
-    if (m_ScreenshotPath.empty() || m_ScreenshotWritten || m_ScreenshotTicket || m_StartupResolvePending)
+    if (m_ScreenshotPath.empty() || m_ScreenshotWritten || m_ScreenshotTicket || m_StartupScene.IsPending())
         return;
     if (m_ScreenshotWarmupFrames > 0)
     {

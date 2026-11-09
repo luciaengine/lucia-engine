@@ -68,42 +68,6 @@ double Percentile(const std::vector<double>& sorted, double p)
     return sorted[static_cast<size_t>(idx + 0.5)];
 }
 
-// Ambient-load bracket (measurement law: every perf number ships with the
-// whole-box CPU busy%% over its own window). Windows: GetSystemTimes, whose
-// kernel time INCLUDES idle time; busy = (kernel - idle + user) /
-// (kernel + user). Other hosts report 0% — "unmeasured", not "idle".
-struct AmbientCpuSample
-{
-    uint64_t Idle = 0;
-    uint64_t Kernel = 0;
-    uint64_t User = 0;
-};
-
-AmbientCpuSample SampleSystemCpu()
-{
-    AmbientCpuSample s;
-#if GE_TEST_HAS_WIN_TIMERS
-    FILETIME idle{}, kernel{}, user{};
-    GetSystemTimes(&idle, &kernel, &user);
-    const auto pack = [](const FILETIME& ft) {
-        return (static_cast<uint64_t>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
-    };
-    s.Idle = pack(idle);
-    s.Kernel = pack(kernel);
-    s.User = pack(user);
-#endif
-    return s;
-}
-
-double AmbientBusyPercent(const AmbientCpuSample& a, const AmbientCpuSample& b)
-{
-    const double idle = static_cast<double>(b.Idle - a.Idle);
-    const double kernel = static_cast<double>(b.Kernel - a.Kernel);
-    const double user = static_cast<double>(b.User - a.User);
-    const double total = kernel + user;
-    return total > 0.0 ? 100.0 * (total - idle) / total : 0.0;
-}
-
 void LogTimerPeriod()
 {
 #if GE_TEST_HAS_WIN_TIMERS

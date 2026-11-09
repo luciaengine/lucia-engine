@@ -12,6 +12,7 @@
       "$wasm-note": "nothreads is defined by cmake/triplets/wasm32-emscripten-nothreads.cmake (VCPKG_DEP_INFO_OVERRIDE_VARS): harfbuzz's meson build mixes -pthread across subtargets on that ABI and fails to link; Text falls back to GE_HAVE_HARFBUZZ=0 there."
     },
     "miniaudio",
+    "libvorbis",
     { "name": "sdl2", "default-features": false, "platform": "!wasm32" },
     "nlohmann-json",
     "zlib",

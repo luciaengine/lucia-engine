@@ -5,6 +5,7 @@
 #include "Types/Types.h"
 #include "Types/StringId.h"
 #include <algorithm>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -13,6 +14,8 @@ namespace GameEngine
 {
 namespace Animation
 {
+
+class AnimationClipData;
 
 enum class AnimPath
 {
@@ -137,14 +140,13 @@ class AnimationClip : public ::GameEngine::Asset
     {
         return m_Duration;
     }
-    void SetDuration(float32 duration)
-    {
-        m_Duration = std::max(0.0f, duration);
-    }
-    const std::vector<AnimChannel>& GetChannels() const
-    {
-        return m_Channels;
-    }
+    void SetDuration(float32 duration);
+    /// Authoring view, materialized from the lossless archive. Edits, loads and
+    /// borrowed authoring views must be externally serialized. First reads are synchronized.
+    const std::vector<AnimChannel>& GetChannels() const;
+    /// Immutable playback snapshot. Retain it through sampling or GPU upload.
+    SharedPtr<const AnimationClipData> GetRuntimeData() const;
+    size_t GetMemoryUsage() const override;
     uint32 GetSelectedAnimationIndex() const
     {
         return m_SelectedAnimation;
@@ -208,7 +210,10 @@ class AnimationClip : public ::GameEngine::Asset
     std::vector<std::string> EnumerateAnimationNames() const;
 
   private:
+    bool LoadSourceData(const Vector<uint8>& input);
     bool LoadEditableData(const Vector<uint8>& data);
+    bool RebuildRuntimeData();
+    void AdoptLoadedData(AnimationClip& loaded, SharedPtr<const AnimationClipData> runtime);
     void RecomputeDuration();
 
     uint32 m_SelectedAnimation = 0u;
@@ -216,7 +221,10 @@ class AnimationClip : public ::GameEngine::Asset
     uint32 m_SourceAnimationIndex = 0u;
 
     float32 m_Duration = 0.0f;
-    std::vector<AnimChannel> m_Channels;
+    mutable std::vector<AnimChannel> m_Channels;
+    mutable std::mutex m_AuthoringMutex;
+    SharedPtr<const AnimationClipData> m_RuntimeData;
+    float32 m_PublishedDuration = 0.0f;
     AnimationClipSettings m_Settings;
     AnimationEventTrack m_EventTrack;
 

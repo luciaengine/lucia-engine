@@ -1118,7 +1118,6 @@ bool CookTexture(const uint8* srcBytes, size_t srcSize, const std::string& extLo
 
     // Decode the source to tightly-packed RGBA (8-bit or float).
     int width = 0, height = 0, channels = 0;
-    stbi_set_flip_vertically_on_load(false);
     TextureCookMipLevel base;
     if (isFloat)
     {

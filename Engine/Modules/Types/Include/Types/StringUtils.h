@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Types/Utf8.h"
+
 #include <concepts>
 #include <ranges>
 
@@ -9,10 +11,15 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace GameEngine
 {
+
+// Returning a view into a temporary string would outlive that string.
+template <class Text>
+concept TemporaryString = std::same_as<std::remove_cvref_t<Text>, std::string> && !std::is_lvalue_reference_v<Text>;
 
 // The text in a fixed char buffer up to its first null byte, or the whole buffer
 // when it holds none. Component string fields are such buffers, and a raw component
@@ -158,6 +165,9 @@ inline std::string_view TrimWhitespaceView(std::string_view s)
     return s;
 }
 
+template <TemporaryString Text>
+std::string_view TrimWhitespaceView(Text&& text) = delete;
+
 // Copies `value` into a fixed char array, truncated so the array always ends in a terminator,
 // and zero-fills every byte after the copied text.
 template <std::size_t Capacity>
@@ -257,6 +267,9 @@ inline std::vector<std::string_view> Split(std::string_view text, char delimiter
     return fields;
 }
 
+template <TemporaryString Text>
+std::vector<std::string_view> Split(Text&& text, char delimiter) = delete;
+
 /// The elements of `parts` (anything that converts to std::string_view) with `separator` between
 /// each pair: Join({"a", "b"}, ", ") is "a, b". An empty range gives an empty string.
 template <std::ranges::input_range Range>
@@ -273,6 +286,45 @@ std::string Join(const Range& parts, std::string_view separator)
         first = false;
     }
     return text;
+}
+
+inline std::string ToUpperAscii(std::string_view sv)
+{
+    std::string s(sv);
+    std::transform(s.begin(), s.end(), s.begin(),
+        [](unsigned char c) { return static_cast<char>((c >= 'a' && c <= 'z') ? c - ('a' - 'A') : c); });
+    return s;
+}
+
+inline std::string ReplaceAll(std::string text, std::string_view from, std::string_view to)
+{
+    if (from.empty())
+        return text;
+    for (std::size_t at = text.find(from); at != std::string::npos; at = text.find(from, at + to.size()))
+        text.replace(at, from.size(), to);
+    return text;
+}
+
+inline std::size_t CountOccurrences(std::string_view haystack, std::string_view needle)
+{
+    if (needle.empty())
+        return 0;
+    std::size_t count = 0;
+    for (std::size_t at = haystack.find(needle); at != std::string_view::npos;
+         at = haystack.find(needle, at + needle.size()))
+        ++count;
+    return count;
+}
+
+inline std::string_view UnqualifiedName(std::string_view qualifiedName)
+{
+    const size_t scope = qualifiedName.rfind("::");
+    const size_t dot = qualifiedName.rfind('.');
+    if (scope != std::string_view::npos && (dot == std::string_view::npos || scope > dot))
+        return qualifiedName.substr(scope + 2);
+    if (dot != std::string_view::npos)
+        return qualifiedName.substr(dot + 1);
+    return qualifiedName;
 }
 
 } // namespace GameEngine

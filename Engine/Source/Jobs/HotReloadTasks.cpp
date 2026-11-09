@@ -4,8 +4,8 @@
 #include "Engine/Build/CancellableShellProcess.h"
 #include "Engine/Build/DotnetHost.h"
 #include "Logger/Logger.h"
-#include "Platform/Environment.h"
 #include "Scripting/CoreCLRHost.h"
+#include "Platform/Environment.h"
 #include "Scripting/PathResolver.h"
 #include "Scripting/ScriptManager.h"
 #include "Scripting/ScriptTargetFramework.h"
@@ -114,12 +114,6 @@ bool WasLastDefaultCompilerServer()
 namespace GameEngine
 {
 
-// How long the swap stage waits for the main thread to run the swap before it
-// reports SwapTimeout; Cancel ends the wait early.
-constexpr std::chrono::milliseconds kMainThreadSwapTimeout{5000};
-// Extra wait after a standalone host pumped the main-thread queue inline.
-constexpr std::chrono::milliseconds kInlinePumpGrace{100};
-
 // Live engine bin dir for -p:EngineBinDir= (trailing separator required: the generated
 // csproj concatenates HintPaths as $(EngineBinDir)GameEngine.*.dll). Passed per
 // invocation so dotnet-CLI builds never depend on the last-known-good value baked into
@@ -209,175 +203,99 @@ void CompilationTask::Execute()
 }
 
 // ============================================================================
-// FileLoadingTask Implementation
+// ReadAssemblyBytes Implementation
 // ============================================================================
 
-void FileLoadingTask::Execute()
+std::vector<uint8_t> ReadAssemblyBytes(const String& assemblyPath, Jobs::IAssemblyLoader* loader,
+                                       const std::atomic<bool>* cancelToken)
 {
-    try
+    const auto cancelled = [cancelToken] { return cancelToken && cancelToken->load(std::memory_order_relaxed); };
+    if (cancelled())
     {
-        Logger::Log::Info("[HotReload] Stage 2: Starting async file loading for {}", m_AssemblyPath);
-        CheckCancellation();
-
-        if (m_Loader)
-        {
-            m_AssemblyBytes = m_Loader->loadAssemblyBytes(m_AssemblyPath);
-            PublishResult(m_AssemblyBytes);
-            SetResult(HotReloadResult::Success);
-            Logger::Log::Info("[HotReload] Stage 2: File loading completed ({} bytes)", m_AssemblyBytes.size());
-            return;
-        }
-
-        if (!LoadFileAsync())
-        {
-            SetResult(HotReloadResult::FileLoadFailed, "Failed to load assembly file");
-            return;
-        }
-
-        CheckCancellation();
-
-        if (!ValidateAssemblyFormat())
-        {
-            SetResult(HotReloadResult::FileLoadFailed, "Invalid assembly format");
-            return;
-        }
-
-        // Store the assembly bytes in the task result for the next task to access
-        Logger::Log::Debug("[HotReload] FileLoadingTask storing result for task ID: {}", GetTaskId());
-        PublishResult(m_AssemblyBytes);
-        Logger::Log::Debug("[HotReload] FileLoadingTask stored {} bytes in task result", m_AssemblyBytes.size());
-
-        SetResult(HotReloadResult::Success);
-        Logger::Log::Info("[HotReload] Stage 2: File loading completed ({} bytes)", m_AssemblyBytes.size());
+        return {};
     }
-    catch (const HotReloadTask::CancellationException&)
+    if (loader)
     {
-        SetResult(HotReloadResult::Cancelled, "File loading was cancelled");
-        Logger::Log::Info("[HotReload] Stage 2: File loading cancelled");
-    }
-    catch (const std::exception& e)
-    {
-        SetResult(HotReloadResult::FileLoadFailed, e.what());
-        Logger::Log::Error("[HotReload] Stage 2: File loading failed: {}", e.what());
-    }
-}
-
-bool FileLoadingTask::LoadFileAsync()
-{
-    std::filesystem::path filePath(m_AssemblyPath);
-
-    if (!std::filesystem::exists(filePath))
-    {
-        m_ErrorMessage = "Assembly file does not exist: " + m_AssemblyPath;
-        return false;
+        std::vector<uint8_t> bytes = loader->loadAssemblyBytes(assemblyPath);
+        Logger::Log::Info("[HotReload] Read the assembly ({} bytes)", bytes.size());
+        return bytes;
     }
 
-    // Get file timestamp
-    m_FileTimestamp = std::filesystem::last_write_time(filePath);
+    std::error_code ec;
+    const std::filesystem::path filePath(assemblyPath);
+    const auto fileSize = std::filesystem::file_size(filePath, ec);
+    if (ec)
+    {
+        Logger::Log::Warning("[HotReload] Cannot read the assembly {}: {}", assemblyPath, ec.message());
+        return {};
+    }
 
-    // Get file size
-    size_t fileSize = std::filesystem::file_size(filePath);
-    Logger::Log::Debug("[HotReload] Loading assembly file: {} bytes", fileSize);
-
-    // Read file in chunks to allow cancellation (do not lock writer on Windows)
+    std::vector<uint8_t> bytes;
+    bytes.reserve(static_cast<size_t>(fileSize));
+    // Read in chunks so a cancel stops the read; never lock out the writer on Windows.
 #ifdef _WIN32
-    HANDLE h = CreateFileW(filePath.wstring().c_str(), GENERIC_READ,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
-    if (h == INVALID_HANDLE_VALUE)
+    HANDLE fileHandle = CreateFileW(filePath.wstring().c_str(), GENERIC_READ,
+                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (fileHandle == INVALID_HANDLE_VALUE)
     {
-        m_ErrorMessage = "Failed to open assembly file (shared): " + m_AssemblyPath;
-        return false;
+        Logger::Log::Warning("[HotReload] Cannot open the assembly {}", assemblyPath);
+        return {};
     }
-
-    LARGE_INTEGER li{};
-    if (!GetFileSizeEx(h, &li) || li.QuadPart <= 0)
-    {
-        CloseHandle(h);
-        m_ErrorMessage = "Failed to query assembly file size";
-        return false;
-    }
-
-    m_AssemblyBytes.clear();
-    m_AssemblyBytes.reserve(static_cast<size_t>(li.QuadPart));
-
-    const DWORD chunkSize = 64 * 1024; // 64KB
-    std::vector<uint8_t> buffer(chunkSize);
+    constexpr DWORD kChunkBytes = 64 * 1024;
+    std::vector<uint8_t> buffer(kChunkBytes);
     DWORD bytesRead = 0;
-
     for (;;)
     {
-        CheckCancellation();
-        if (!ReadFile(h, buffer.data(), chunkSize, &bytesRead, nullptr))
+        if (cancelled())
         {
-            CloseHandle(h);
-            m_ErrorMessage = "ReadFile failed during assembly load";
-            return false;
+            CloseHandle(fileHandle);
+            return {};
+        }
+        if (!ReadFile(fileHandle, buffer.data(), kChunkBytes, &bytesRead, nullptr))
+        {
+            const DWORD error = GetLastError();
+            CloseHandle(fileHandle);
+            Logger::Log::Error("[HotReload] Cannot read the assembly {}: Windows error {}", assemblyPath, error);
+            return {};
         }
         if (bytesRead == 0)
-            break; // EOF
-        size_t oldSize = m_AssemblyBytes.size();
-        m_AssemblyBytes.resize(oldSize + bytesRead);
-        std::memcpy(m_AssemblyBytes.data() + oldSize, buffer.data(), bytesRead);
+            break;
+        bytes.insert(bytes.end(), buffer.data(), buffer.data() + bytesRead);
     }
-
-    CloseHandle(h);
+    CloseHandle(fileHandle);
 #else
     std::ifstream file(filePath, std::ios::binary);
     if (!file.is_open())
     {
-        m_ErrorMessage = "Failed to open assembly file: " + m_AssemblyPath;
-        return false;
+        Logger::Log::Warning("[HotReload] Cannot open the assembly {}", assemblyPath);
+        return {};
     }
-
-    m_AssemblyBytes.reserve(fileSize);
-
-    const size_t chunkSize = 64 * 1024; // 64KB chunks
-    std::vector<char> buffer(chunkSize);
-
-    while (file.good() && !file.eof())
+    constexpr size_t kChunkBytes = 64 * 1024;
+    std::vector<char> buffer(kChunkBytes);
+    while (file.good())
     {
-        CheckCancellation();
-
-        file.read(buffer.data(), chunkSize);
-        size_t bytesRead = file.gcount();
-
-        if (bytesRead > 0)
+        if (cancelled())
         {
-            size_t oldSize = m_AssemblyBytes.size();
-            m_AssemblyBytes.resize(oldSize + bytesRead);
-            std::memcpy(m_AssemblyBytes.data() + oldSize, buffer.data(), bytesRead);
+            return {};
         }
+        file.read(buffer.data(), static_cast<std::streamsize>(kChunkBytes));
+        const auto bytesRead = static_cast<size_t>(file.gcount());
+        bytes.insert(bytes.end(), buffer.data(), buffer.data() + bytesRead);
     }
-
-    file.close();
 #endif
-
-    if (m_AssemblyBytes.size() != fileSize)
+    if (bytes.size() != fileSize)
     {
-        m_ErrorMessage = "File size mismatch during loading";
-        return false;
+        Logger::Log::Warning("[HotReload] The assembly {} changed size while it was read", assemblyPath);
+        return {};
     }
-
-    return true;
-}
-
-bool FileLoadingTask::ValidateAssemblyFormat() const
-{
-    if (m_AssemblyBytes.size() < 4)
+    if (bytes.size() < 4 || bytes[0] != 'M' || bytes[1] != 'Z')
     {
-        return false;
+        Logger::Log::Warning("[HotReload] {} is not an assembly (no PE signature)", assemblyPath);
+        return {};
     }
-
-    // Check for PE header signature (MZ)
-    if (m_AssemblyBytes[0] != 'M' || m_AssemblyBytes[1] != 'Z')
-    {
-        return false;
-    }
-
-    // Basic validation - in real implementation, this would be more thorough
-    Logger::Log::Debug("[HotReload] Assembly format validation passed");
-    return true;
+    Logger::Log::Info("[HotReload] Read the assembly ({} bytes)", bytes.size());
+    return bytes;
 }
 
 // ============================================================================
@@ -388,47 +306,13 @@ void AssemblyPrepTask::Execute()
 {
     try
     {
-        Logger::Log::Info("[HotReload] Stage 3: Starting background assembly preparation");
+        Logger::Log::Info("[HotReload] Stage 2: Starting background assembly preparation");
         CheckCancellation();
 
-        // Get assembly bytes from the completed FileLoadingTask with retry mechanism
-        Logger::Log::Debug("[HotReload] AssemblyPrepTask trying to get result from TaskHandle with ID: {}", m_FileLoadTaskHandle.GetId());
-
-        // Wait for the FileLoadingTask to complete and have a result available
-        const int maxRetries = 50; // 50 * 10ms = 500ms max wait
-        int retryCount = 0;
-        bool resultObtained = false;
-
-        while (retryCount < maxRetries && !resultObtained)
+        if (m_AssemblyBytes.empty())
         {
-            if (retryCount == 0)
-            {
-                Logger::Log::Debug("[HotReload] Waiting for file loader result...");
-            }
-
-            if (m_FileLoadTaskHandle.HasFailed())
-            {
-                SetResult(HotReloadResult::AssemblyPrepFailed, "FileLoadingTask failed: " + m_FileLoadTaskHandle.GetErrorMessage());
-                return;
-            }
-
-            if (m_FileLoadTaskHandle.TryGetResult(m_AssemblyBytes))
-            {
-                resultObtained = true;
-                break;
-            }
-
-            // Check for cancellation during wait
-            CheckCancellation();
-
-            // Wait a bit before retrying
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            retryCount++;
-        }
-
-        if (!resultObtained)
-        {
-            // In test mode, try to load the file directly as a fallback
+            // The compile job's read failed: read the file directly.
+            bool fileRead = false;
             try
             {
                 std::ifstream file(m_AssemblyPath, std::ios::binary);
@@ -443,7 +327,7 @@ void AssemblyPrepTask::Execute()
                     file.close();
 
                     Logger::Log::Info("[HotReload] Test mode fallback: Loaded {} bytes directly from file", m_AssemblyBytes.size());
-                    resultObtained = true;
+                    fileRead = true;
                 }
             }
             catch (const std::exception& e)
@@ -451,14 +335,14 @@ void AssemblyPrepTask::Execute()
                 Logger::Log::Warning("[HotReload] Test mode fallback failed: {}", e.what());
             }
 
-            if (!resultObtained)
+            if (!fileRead)
             {
-                SetResult(HotReloadResult::AssemblyPrepFailed, "Timeout waiting for assembly bytes from file loading task");
+                SetResult(HotReloadResult::AssemblyPrepFailed, "The assembly bytes could not be read");
                 return;
             }
         }
 
-        Logger::Log::Debug("[HotReload] Retrieved {} bytes from FileLoadingTask", m_AssemblyBytes.size());
+        Logger::Log::Debug("[HotReload] Preparing {} assembly bytes", m_AssemblyBytes.size());
 
         if (!CreateCollectibleContext())
         {
@@ -492,17 +376,17 @@ void AssemblyPrepTask::Execute()
 
         ExtractAssemblyMetadata();
         SetResult(HotReloadResult::Success);
-        Logger::Log::Info("[HotReload] Stage 3: Assembly preparation completed");
+        Logger::Log::Info("[HotReload] Stage 2: Assembly preparation completed");
     }
     catch (const HotReloadTask::CancellationException&)
     {
         SetResult(HotReloadResult::Cancelled, "Assembly preparation was cancelled");
-        Logger::Log::Info("[HotReload] Stage 3: Assembly preparation cancelled");
+        Logger::Log::Info("[HotReload] Stage 2: Assembly preparation cancelled");
     }
     catch (const std::exception& e)
     {
         SetResult(HotReloadResult::AssemblyPrepFailed, e.what());
-        Logger::Log::Error("[HotReload] Stage 3: Assembly preparation failed: {}", e.what());
+        Logger::Log::Error("[HotReload] Stage 2: Assembly preparation failed: {}", e.what());
     }
 }
 
@@ -891,250 +775,72 @@ void AssemblyPrepTask::ExtractAssemblyMetadata()
 }
 
 // ============================================================================
-// MainThreadSwapTask Implementation
+// AssemblySwapTask Implementation
 // ============================================================================
 
-void MainThreadSwapTask::Execute()
+void AssemblySwapTask::Execute()
 {
     try
     {
-        Logger::Log::Info("[HotReload] Stage 4: Queuing assembly swap for main thread execution");
-
         CheckCancellation();
 
-        // Queue the actual swap operation for main-thread execution.
-        // This task executes in the thread pool but defers the swap itself to the main thread.
-
-        // Check if Engine is available and CoreCLR is working (for production use)
-        bool engineAvailable = false;
-        bool clrWorking = false;
-        try
+        auto& engine = EngineCore::GetInstance();
+        if (!engine.IsInitialized())
         {
-            auto& engine = EngineCore::GetInstance();
-            if (!engine.IsInitialized())
+            // Test mode: no engine, so the swap is simulated.
+            Logger::Log::Info("[HotReload] Test mode: Engine not available, simulating assembly swap");
+            m_SwapDuration = std::chrono::milliseconds(0);
+            SetResult(HotReloadResult::Success);
+            Logger::Log::Info("[HotReload] Stage 3: Test mode assembly swap completed in {}ms", m_SwapDuration.count());
+            return;
+        }
+
+        auto& scriptManager = engine.GetScriptManager();
+        scriptManager.EnterHotReloadCriticalSection();
+        struct CriticalSectionGuard
+        {
+            ScriptManager& manager;
+            ~CriticalSectionGuard() { manager.ExitHotReloadCriticalSection(); }
+        };
+        CriticalSectionGuard guard{scriptManager};
+
+        Logger::Log::Info("[HotReload] Executing assembly swap");
+
+        if (PerformAtomicSwap())
+        {
+            UpdateAssemblyReferences();
+            SetResult(HotReloadResult::Success);
+            if (MetPerformanceTarget())
             {
-                // Test mode: treat as engine not available for unit tests
-                engineAvailable = false;
-                clrWorking = false;
+                Logger::Log::Info("[HotReload] Stage 3: Assembly swap completed in {}ms ✅", m_SwapDuration.count());
             }
             else
             {
-
-                auto& scriptManager = engine.GetScriptManager();
-                auto& clrHost = scriptManager.GetCLRHost();
-
-                (void)clrHost;
-
-                // Quick test to see if CoreCLR is working properly
-                // If ComponentEntryPoint is failing, we should use test mode for better performance
-                try
-                {
-                    std::string testCommand = "TEST_CONNECTION";
-                    int testResult = 0; // sanity default; no-op test path
-                    clrWorking = (testResult == 0);
-                }
-                catch (const std::exception&)
-                {
-                    clrWorking = false;
-                }
-
-                engineAvailable = true;
+                Logger::Log::Warning("[HotReload] Stage 3: Assembly swap took {}ms (target: <1ms) ⚠️", m_SwapDuration.count());
             }
         }
-        catch (const std::exception&)
+        else if (m_ErrorMessage.find("Engine not initialized") != std::string::npos)
         {
-            // Engine not available - this is OK for testing
-            Logger::Log::Debug("[HotReload] Engine not available - using test mode for assembly swap");
-            engineAvailable = false;
-            clrWorking = false;
-        }
-
-        if (engineAvailable && clrWorking)
-        {
-            auto& engine = EngineCore::GetInstance();
-            auto& scriptManager = engine.GetScriptManager();
-
-            // The swap publish enters the CLR: it promotes the new assembly's
-            // load level and runs its [ModuleInitializer]s while coreclr holds
-            // that assembly's file-load lock. Executing that on a JobSystem
-            // worker while the main thread ticks managed play code deadlocks
-            // (M1b storm wedge): the worker blocks on a managed monitor
-            // (GameSystemRunner registration lock) whose holder — the ticking
-            // main thread — is JIT-compiling freshly published script code and
-            // blocked on the same file-load lock via EnsureInstanceActive.
-            // Dispatching to the main thread serializes every CLR-entering
-            // swap step with the play tick, so the cycle cannot form.
-            Logger::Log::Info("[HotReload] Stage 4: Dispatching assembly swap to main thread");
-
-            // Set by the queued lambda when it has finished with `this`;
-            // waited on through m_Cancellation, which Cancel wakes.
-            auto swapDone = std::make_shared<std::atomic<bool>>(false);
-            auto cancellation = m_Cancellation;
-
-            // Claim token: exactly one of {queued swap lambda, timed-out or
-            // cancelled worker} may own this task's result. A lambda that
-            // loses the claim must not touch `this` — after the worker
-            // returns, the thread pool may destroy the task while the lambda
-            // still sits in the main-thread queue.
-            auto claimed = std::make_shared<std::atomic<bool>>(false);
-
-            scriptManager.QueueMainThreadTask([this, swapDone, cancellation, claimed, &scriptManager]()
-            {
-                if (claimed->exchange(true))
-                {
-                    return; // abandoned by the worker; `this` may be gone
-                }
-                // Destroyed last, after every use of `this` below.
-                struct DoneSignal
-                {
-                    std::atomic<bool>& done;
-                    HotReloadCancellation& waiters;
-                    ~DoneSignal()
-                    {
-                        done.store(true);
-                        waiters.NotifyWaiters();
-                    }
-                };
-                DoneSignal doneSignal{*swapDone, *cancellation};
-                try
-                {
-                    scriptManager.EnterHotReloadCriticalSection();
-                    struct CriticalSectionGuard
-                    {
-                        ScriptManager& manager;
-                        ~CriticalSectionGuard() { manager.ExitHotReloadCriticalSection(); }
-                    };
-                    CriticalSectionGuard guard{scriptManager};
-
-                    Logger::Log::Info("[HotReload] Executing assembly swap on main thread");
-
-                    if (PerformAtomicSwap())
-                    {
-                        UpdateAssemblyReferences();
-
-                        SetResult(HotReloadResult::Success);
-
-                        // Store swap duration in the task result for pipeline monitoring
-                        PublishResult(m_SwapDuration);
-
-                        if (MetPerformanceTarget())
-                        {
-                            Logger::Log::Info("[HotReload] Stage 4: Assembly swap completed in {}ms ✅", m_SwapDuration.count());
-                        }
-                        else
-                        {
-                            Logger::Log::Warning("[HotReload] Stage 4: Assembly swap took {}ms (target: <1ms) ⚠️", m_SwapDuration.count());
-                        }
-                    }
-                    else
-                    {
-                        if (m_ErrorMessage.find("Engine not initialized") != std::string::npos)
-                        {
-                            SetResult(HotReloadResult::SystemResourcesUnavailable, m_ErrorMessage);
-                        }
-                        else
-                        {
-                            SetResult(HotReloadResult::SwapFailed, "Atomic swap failed");
-                        }
-                    }
-                }
-                catch (const HotReloadTask::CancellationException&)
-                {
-                    SetResult(HotReloadResult::Cancelled, "Assembly swap was cancelled");
-                    Logger::Log::Info("[HotReload] Stage 4: Assembly swap cancelled (superseded before main-thread pump)");
-                }
-                catch (const std::exception& e)
-                {
-                    SetResult(HotReloadResult::SwapFailed, e.what());
-                    Logger::Log::Error("[HotReload] Stage 4: Assembly swap failed: {}", e.what());
-                }
-            });
-
-            const auto isSwapDone = [&swapDone] { return swapDone->load(); };
-
-            Logger::Log::Info("[HotReload] Waiting for main thread assembly swap to complete...");
-            bool finished = m_Cancellation->WaitForOrCancel(kMainThreadSwapTimeout, isSwapDone);
-
-            if (!finished && !m_Cancellation->IsCancelled() && !scriptManager.HasMarkedMainThread())
-            {
-                // Standalone host without a frame loop (gtest hosting): no
-                // main thread ever pumps the queue — and none ticks managed
-                // code either, so pumping inline here is deadlock-free.
-                Logger::Log::Warning("[HotReload] Stage 4: No marked main thread - pumping queue inline (standalone host)");
-                try
-                {
-                    size_t tasksProcessed = scriptManager.ProcessMainThreadTasks();
-                    if (tasksProcessed > 0)
-                    {
-                        finished = m_Cancellation->WaitForOrCancel(kInlinePumpGrace, isSwapDone);
-                    }
-                }
-                catch (const std::exception& e)
-                {
-                    Logger::Log::Warning("[HotReload] Stage 4: Inline pump failed: {}", e.what());
-                }
-            }
-
-            if (!finished)
-            {
-                if (!claimed->exchange(true))
-                {
-                    // The queued lambda never ran and now never will act on
-                    // this task; the result is ours to report.
-                    if (m_Cancellation->IsCancelled())
-                    {
-                        SetResult(HotReloadResult::Cancelled, "Assembly swap was cancelled before the main thread ran it");
-                        Logger::Log::Info("[HotReload] Stage 4: Assembly swap cancelled while waiting for the main thread");
-                        return;
-                    }
-                    SetResult(HotReloadResult::SwapTimeout, "Main-thread swap was not pumped within timeout");
-                    Logger::Log::Error("[HotReload] Stage 4: Main thread swap timeout - check if Engine::Update() is pumping ProcessMainThreadTasks");
-                    return;
-                }
-                // The lambda claimed the task first: it is mid-execution on
-                // the main thread. Block until it finishes so `this` stays
-                // valid for the duration; cancellation cannot shorten this.
-                m_Cancellation->Wait(isSwapDone);
-            }
-
-            Logger::Log::Info("[HotReload] Stage 4: Main thread assembly swap operation completed");
+            SetResult(HotReloadResult::SystemResourcesUnavailable, m_ErrorMessage);
         }
         else
         {
-            // Test mode - simulate assembly swap without engine or with non-working CoreCLR
-            if (engineAvailable)
-            {
-                Logger::Log::Info("[HotReload] Test mode: CoreCLR not working, simulating assembly swap");
-            }
-            else
-            {
-                Logger::Log::Info("[HotReload] Test mode: Engine not available, simulating assembly swap");
-            }
-
-            // Test mode - simulate minimal swap duration
-            m_SwapDuration = std::chrono::milliseconds(0); // Test mode has no duration
-
-            SetResult(HotReloadResult::Success);
-
-            // Store swap duration in the task result for pipeline monitoring
-            PublishResult(m_SwapDuration);
-
-            Logger::Log::Info("[HotReload] Stage 4: Test mode assembly swap completed in {}ms", m_SwapDuration.count());
+            SetResult(HotReloadResult::SwapFailed, "Atomic swap failed");
         }
     }
     catch (const HotReloadTask::CancellationException&)
     {
         SetResult(HotReloadResult::Cancelled, "Assembly swap was cancelled");
-        Logger::Log::Info("[HotReload] Stage 4: Assembly swap cancelled");
+        Logger::Log::Info("[HotReload] Stage 3: Assembly swap cancelled");
     }
     catch (const std::exception& e)
     {
         SetResult(HotReloadResult::SwapFailed, e.what());
-        Logger::Log::Error("[HotReload] Stage 4: Assembly swap failed: {}", e.what());
+        Logger::Log::Error("[HotReload] Stage 3: Assembly swap failed: {}", e.what());
     }
 }
 
-bool MainThreadSwapTask::PerformAtomicSwap()
+bool AssemblySwapTask::PerformAtomicSwap()
 {
     CheckCancellation();
 
@@ -1179,31 +885,20 @@ bool MainThreadSwapTask::PerformAtomicSwap()
 
             (void)clrHost;
 
-            // EVENT-DRIVEN WAIT: Wait for AssemblyPrepTask to signal preloaded context is ready
-            // This eliminates the race condition and polling overhead
+            // The preparation stage ended before the swap started, so the
+            // preloaded context is ready now or never will be.
             {
                 if (!m_PreloadSync)
                 {
                     throw std::runtime_error("Preload sync not initialized");
                 }
-                std::unique_lock<std::mutex> lock(m_PreloadSync->m);
-
-                // Wait for preloaded context to be ready with timeout
-                const auto timeout = std::chrono::milliseconds(2000); // wait up to 2s before giving up (off-main-thread)
-                auto preloadWaitStart = std::chrono::high_resolution_clock::now();
-                bool preloadReady = m_PreloadSync->cv.wait_for(lock, timeout, [&]()
-                                                               { return m_PreloadSync->ready.load(); });
-                auto preloadWaitEnd = std::chrono::high_resolution_clock::now();
-                auto preloadWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(preloadWaitEnd - preloadWaitStart).count();
-
-                Logger::Log::Debug("[HotReload] Preload wait: {}ms (ready={})", preloadWaitMs, preloadReady);
-                if (!preloadReady)
+                if (!m_PreloadSync->ready.load())
                 {
-                    Logger::Log::Warning("[HotReload] Timeout waiting for preloaded context, proceeding with fallback");
+                    Logger::Log::Warning("[HotReload] No preloaded context, proceeding with fallback");
                 }
             }
 
-            // Re-check cancellation after preload wait to avoid swapping with a cancelled/older pipeline
+            // Re-check cancellation to avoid swapping with a cancelled/older pipeline
             CheckCancellation();
 
             // CRITICAL SECTION: This is the actual main thread blocking operation that must be <1ms
@@ -1272,13 +967,13 @@ bool MainThreadSwapTask::PerformAtomicSwap()
     }
 }
 
-void MainThreadSwapTask::ScheduleOldContextCleanup(void* oldContext)
+void AssemblySwapTask::ScheduleOldContextCleanup(void* oldContext)
 {
     Logger::Log::Debug("[HotReload] Scheduling old context cleanup on WorkStealingThreadPool");
 
     // FIXED: Use WorkStealingThreadPool instead of detached thread to prevent test hanging
     // Submit cleanup task to the thread pool for proper lifecycle management
-    if (GetJobSystem())
+    if (m_JobSystem)
     {
         // Capture a by-value string to avoid any shared lifetime issues
         auto cleanupTask = [oldContext, pathString = m_AssemblyPath]()
@@ -1301,7 +996,7 @@ void MainThreadSwapTask::ScheduleOldContextCleanup(void* oldContext)
         };
 
         // Submit to thread pool instead of creating detached thread
-        GetJobSystem()->Submit(std::move(cleanupTask));
+        m_JobSystem->Submit(std::move(cleanupTask));
     }
     else
     {
@@ -1310,7 +1005,7 @@ void MainThreadSwapTask::ScheduleOldContextCleanup(void* oldContext)
     }
 }
 
-void MainThreadSwapTask::UpdateAssemblyReferences()
+void AssemblySwapTask::UpdateAssemblyReferences()
 {
     Logger::Log::Debug("[HotReload] Updating assembly references in engine systems");
 

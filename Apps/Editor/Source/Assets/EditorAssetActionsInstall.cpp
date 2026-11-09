@@ -152,6 +152,29 @@ void ShowThumbnail(IThumbnailProvider& thumbnails, uint64_t windowId, UIElement&
         Receive(thumbnails, windowId, element, asset, sizePx, immediate);
 }
 
+// The service's answer for an inline image, on the element's UI thread.
+void ReceiveImage(UIElement& element, const std::string& image)
+{
+    element.RemoveClass(kThumbnailPendingClass);
+    if (image.empty())
+    {
+        element.AddClass(kThumbnailUnavailableClass);
+        return;
+    }
+    ApplyThumbnailImage(element, image);
+}
+
+void ShowImage(IThumbnailProvider& thumbnails, UIElement& element, const std::filesystem::path& image)
+{
+    element.AddClass(kThumbnailPendingClass);
+    // Every answer, a cached one included, comes back through the element's post handle, which
+    // drops it when the element is gone.
+    thumbnails.GetOrRequestInlineImage(
+        image, [post = element.GetPostHandle(), element = &element](const std::string& picture) {
+            post.Post([element, picture]() { ReceiveImage(*element, picture); });
+        });
+}
+
 void Preview(const EditorAssetActionsHost& host, const std::filesystem::path& image)
 {
     if (!host.AssetView)
@@ -171,6 +194,9 @@ void InstallEditorAssetActions(EditorAssetActionsHost host)
         actions.ShowThumbnail = [thumbnails, windowId = host.ThumbnailWindowId](
                                     UIElement& element, const std::filesystem::path& asset, int sizePx) {
             ShowThumbnail(*thumbnails, windowId, element, asset, sizePx);
+        };
+        actions.ShowImage = [thumbnails](UIElement& element, const std::filesystem::path& image) {
+            ShowImage(*thumbnails, element, image);
         };
     }
     actions.Open = host.Open;

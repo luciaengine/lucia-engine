@@ -183,6 +183,12 @@ class ScriptManager
      */
     size_t ProcessMainThreadTasks();
 
+    /// Request one managed batch before the next task loop.
+    void RequestManagedPostDrain();
+    using ManagedPostDrain = void (*)(int32_t run);
+    /// Install the process drain once. Later installations are refused.
+    static bool InstallManagedPostDrain(ManagedPostDrain drain);
+
     /**
      * @brief Record the calling thread as the main thread. Used to diagnose
      *        main-thread tasks executing on a fallback thread.
@@ -342,6 +348,8 @@ class ScriptManager
      * @return The subscription, or null when the directory is empty
      */
     UniquePtr<FileWatchSubscription> WatchScriptDirectory(const std::filesystem::path& directory);
+    Vector<FileWatchSubscription> WatchScriptsProjectFiles();
+    void OnScriptsProjectFileChanged(const FileChangeEvent& event);
 
     /**
      * @brief Replace the package module subscriptions with one per C# module
@@ -367,6 +375,7 @@ class ScriptManager
      * @return Future fulfilled with the reload outcome, or the exception it threw
      */
     std::future<HotReloadPipeline::PipelineStats> SubmitSyncHotReload();
+    void OnHotReloadRunCompleted(const HotReloadPipeline::PipelineStats& stats);
     void RunSyncHotReload(std::promise<HotReloadPipeline::PipelineStats>& promise);
     void SetCurrentAsyncFuture(std::future<HotReloadPipeline::PipelineStats> future);
 
@@ -478,6 +487,7 @@ class ScriptManager
     CoreCLRHost m_ClrHost;
     // FileWatchingService subscriptions for .cs/.csproj changes; held only while hot reload is enabled.
     UniquePtr<FileWatchSubscription> m_ScriptsWatchSubscription;
+    Vector<FileWatchSubscription> m_ScriptsProjectWatchSubscriptions;
     UniquePtr<FileWatchSubscription> m_EditorScriptsWatchSubscription;
     // One per watched package C# module root, rebuilt from the module set by
     // SetPackageCodeModules; same lifetime rule as the two handles above.
@@ -543,6 +553,8 @@ class ScriptManager
     // the same thread; consumers try-lock and bail if another thread is pumping
     // (rationale in ProcessMainThreadTasks). Producers use the queue mutex above.
     std::recursive_mutex m_MainThreadTaskProcessingMutex;
+    // Guarded by m_MainThreadTasksMutex.
+    bool m_ManagedPostDrainRequested = false;
     // Set once by MarkMainThread; empty id means unknown (standalone test hosts).
     std::atomic<std::thread::id> m_MainThreadId{};
     std::atomic<bool> m_WarnedOffMainThreadPump{false};

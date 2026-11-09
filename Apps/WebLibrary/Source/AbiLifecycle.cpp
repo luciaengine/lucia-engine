@@ -1,3 +1,4 @@
+#include "Audio/AudioTypes.h"
 // The engine's lifecycle as a page drives it: ge_create, ge_tick, ge_update_assets, ge_resize
 // and ge_shutdown (Apps/WebLibrary/ts/src/abi.ts).
 
@@ -165,6 +166,7 @@ ApplicationConfig MakeApplicationConfig()
 {
     ApplicationConfig config;
     config.Name = "Web page";
+    config.AudioOutput = Audio::AudioOutput::Device;
     // The canvas is the window; its CSS size, not this, sizes the drawing buffer.
     config.Fullscreen = false;
     config.AssetDirectory = std::string(kContentRoot) + "Assets";
@@ -288,7 +290,8 @@ EMSCRIPTEN_KEEPALIVE int32_t ge_update_assets()
     return kOk;
 }
 
-/// Sizes the drawing buffer to the canvas's CSS size times the device pixel ratio.
+/// Sizes the drawing buffer to the canvas's CSS size times `devicePixelRatio`: the page passes
+/// the browser's ratio, or a lower one to cap the drawing buffer's pixels.
 EMSCRIPTEN_KEEPALIVE int32_t ge_resize(int32_t width, int32_t height, double devicePixelRatio)
 {
     const AbiCallScope scope("ge_resize");
@@ -302,7 +305,7 @@ EMSCRIPTEN_KEEPALIVE int32_t ge_resize(int32_t width, int32_t height, double dev
                      devicePixelRatio);
         return kFailed;
     }
-    g_Application->Resize(width, height);
+    g_Application->Resize(width, height, devicePixelRatio);
     return kOk;
 }
 

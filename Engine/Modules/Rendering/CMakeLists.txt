@@ -1610,17 +1610,10 @@ function(rendering_test_link_logger target)
 	target_sources(${target} PRIVATE $<TARGET_OBJECTS:Logger>)
 endfunction()
 
-# Helper: supply the OBJECT-library object files plus the stb_image impl that
-# GameEngineRendering's consumers need but do not receive transitively.
-#
-# In addition to Logger (see rendering_test_link_logger), SkyRenderer.cpp pulls
-# in stb_image; the implementation TU lives in the Engine target for app builds,
-# so provide the private-copy impl here. Targets that already compile their own
-# stb_image_impl.cpp must call rendering_test_link_logger instead to avoid an
-# LNK2005 duplicate-symbol on stbi_*.
+# Standalone consumers link Image objects for the shared image implementation.
 function(rendering_test_link_stb target)
 	rendering_test_link_logger(${target})
-	target_sources(${target} PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+	target_link_libraries(${target} PRIVATE Image)
 	target_compile_definitions(${target} PRIVATE GE_HAVE_STB)
 	if(TARGET stb::stb)
 		target_link_libraries(${target} PRIVATE stb::stb)
@@ -2146,12 +2139,8 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     # Runtime-gated — skip when the device or env flag are not available.
     add_executable(DescriptorBufferTests Tests/DescriptorBufferTests.cpp)
     set_target_properties(DescriptorBufferTests PROPERTIES FOLDER "Rendering/Tests")
-    # Same rationale as ShaderReflect above: the rendering unity build pulls
-    # SkyRenderer.cpp's LoadSkyTexture2D into GameEngineRendering.lib, which
-    # references stbi_* symbols defined only in Engine.lib's stb_image_impl.cpp.
-    # Tests that link GameEngineRendering but not Engine must compile a private
-    # copy to resolve the symbols.
-    target_sources(DescriptorBufferTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+    # Standalone consumers link Image objects for the shared image implementation.
+    target_link_libraries(DescriptorBufferTests PRIVATE Image)
     target_compile_definitions(DescriptorBufferTests PRIVATE GE_HAVE_STB)
     if(TARGET stb::stb)
         target_link_libraries(DescriptorBufferTests PRIVATE stb::stb)
@@ -2164,7 +2153,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         GTest::gtest
         GTest::gtest_main
     )
-    # Already compiles stb_image_impl.cpp above; only the Logger object splice is needed.
+    # Standalone consumers link Image objects for the shared image implementation.
     rendering_test_link_logger(DescriptorBufferTests)
     rendering_test_shader_paths(DescriptorBufferTests)
     target_include_directories(DescriptorBufferTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -2695,12 +2684,8 @@ if(GTest_FOUND)
         add_executable(PipelineDescHashTests
             Tests/PipelineDescHashTests.cpp
             Tests/SpecializationConstantsTest.cpp)
-        # Same rationale as DescriptorBufferTests below: the rendering unity build
-        # pulls SkyRenderer.cpp's LoadSkyTexture2D into GameEngineRendering.lib,
-        # which references stbi_* symbols defined only in Engine.lib's
-        # stb_image_impl.cpp. Tests that link GameEngineRendering without Engine
-        # must compile a private copy to resolve the symbols.
-        target_sources(PipelineDescHashTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+        # Standalone consumers link Image objects for the shared image implementation.
+        target_link_libraries(PipelineDescHashTests PRIVATE Image)
         target_compile_definitions(PipelineDescHashTests PRIVATE GE_HAVE_STB)
         if(TARGET stb::stb)
             target_link_libraries(PipelineDescHashTests PRIVATE stb::stb)
@@ -2708,7 +2693,7 @@ if(GTest_FOUND)
             target_include_directories(PipelineDescHashTests PRIVATE ${STB_INCLUDE_DIRS})
         endif()
         target_link_libraries(PipelineDescHashTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
-        # Already compiles stb_image_impl.cpp above; only the Logger object splice is needed.
+        # Standalone consumers link Image objects for the shared image implementation.
         rendering_test_link_logger(PipelineDescHashTests)
         rendering_test_shader_paths(PipelineDescHashTests)
         add_test(NAME PipelineDescHashTests COMMAND $<TARGET_FILE:PipelineDescHashTests>)
@@ -3469,10 +3454,8 @@ endif()
 if(GTest_FOUND OR TARGET GTest::gtest)
 
   add_executable(TextureViewTests Tests/TextureViewTests.cpp)
-  # GameEngineRendering's unity build pulls SkyRenderer.cpp's LoadSkyTexture2D,
-  # which references stbi_* symbols defined only in Engine.lib's stb_image_impl.cpp.
-  # Tests that link GameEngineRendering but not Engine must compile a private copy.
-  target_sources(TextureViewTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Source/ThirdParty/stb_image_impl.cpp)
+  # Standalone consumers link Image objects for the shared image implementation.
+  target_link_libraries(TextureViewTests PRIVATE Image)
   target_compile_definitions(TextureViewTests PRIVATE GE_HAVE_STB)
   if(TARGET stb::stb)
     target_link_libraries(TextureViewTests PRIVATE stb::stb)
@@ -3480,7 +3463,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     target_include_directories(TextureViewTests PRIVATE ${STB_INCLUDE_DIRS})
   endif()
   target_link_libraries(TextureViewTests PRIVATE GameEngineRendering FileSystemObjects GTest::gtest GTest::gtest_main)
-  # Already compiles stb_image_impl.cpp above; only the Logger object splice is needed.
+  # Standalone consumers link Image objects for the shared image implementation.
   rendering_test_link_logger(TextureViewTests)
   rendering_test_shader_paths(TextureViewTests)
   set_target_properties(TextureViewTests PROPERTIES
@@ -3592,15 +3575,7 @@ endif()
 # UI Shapes demo example (offscreen) and Shape Geometry tests
 # -----------------------------------------------------------------------------
 
-# Every executable that links the GameEngineRendering OBJECT library directly hits
-# the same latent rot: OBJECT->OBJECT object files (Logger) and the stb_image impl
-# pulled in by SkyRenderer are not spliced transitively on the VS generator, so
-# they come up as unresolved externals at link time. Rather than hand-maintain a
-# rendering_test_link_stb call next to each of the ~150 test targets above, sweep
-# this directory's executables once: any that link GameEngineRendering and have
-# not already been spliced (no Logger objects in their SOURCES yet — i.e. the
-# targets that compile their own stb_image_impl.cpp call rendering_test_link_logger
-# explicitly above) get the full helper here.
+# Standalone consumers link Image objects for the shared image implementation.
 get_property(_GE_RENDERING_DIR_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(_tgt IN LISTS _GE_RENDERING_DIR_TARGETS)
 	get_target_property(_tgt_type ${_tgt} TYPE)

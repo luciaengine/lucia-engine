@@ -1,6 +1,6 @@
 #pragma once
 
-#include "PageStreaming/HeightPageOverlay.h"
+#include "PageStreaming/Height/HeightPageLayer.h"
 #include "PageStreaming/PageResidency.h"
 #include "TerrainECS/PageLevelRule.h"
 #include "TerrainECS/PagedHeightSampler.h"
@@ -40,39 +40,25 @@ namespace GameEngine::TerrainECS
 
 struct TerrainHandle;
 
-/// What a platform spends on height pages (design D5): the height cache's slots, the largest
-/// page table one GPU page-table ring slot may hold, the largest modifier overlay
-/// (PageStreaming::HeightPageOverlay, in system memory) a terrain may hold, and the CPU height
-/// pages' bytes (the residency's one CPU budget, design D5) and synchronous window fetches a frame
-/// (design D3, PageResidencyBudget). The CBT sizes its ring
-/// slots to the bound terrain's table, up to the table cap (CBTResources::ProvisionPageTableWords),
-/// so the cap costs memory only where a terrain needs it; the overlay is built only for a terrain
-/// that pages, over the rect its height modifiers reach. GE_TERRAIN_PAGE_SLOTS overrides the slots
-/// for soaks.
+/// Budgets for the shared height cache, each terrain's bounded GPU table, modifier deltas and
+/// decoded CPU pages. GE_TERRAIN_PAGE_SLOTS overrides the cache slots for validation soaks.
 struct HeightPageProfile
 {
     uint32 Slots = 0;
-    uint32 TableWordCap = 0;
+    uint32 DenseTableWords = 0; ///< tables within this threshold remain dense; larger tables use bounded blocks
     uint64 OverlayByteCap = 0;
     uint64 CpuBytes = 0;
     uint32 CpuSyncFetchPages = 0;
+    uint32 TableMidBlocks = 0;
+    uint32 TableLeafBlocks = 0;
 };
 
-/// Desktop: 512 slots (33 MiB); tables up to 2^21 words (8 MiB a ring slot), so the 60 x 15 km
-/// terrain at 0.25 m (1,174,877 words) pages; an overlay up to 512 MiB, about 6 km^2 of
-/// modifiers on a 0.25 m terrain (about 5.3 B per level-0 sample), a few percent of a 16 GiB
-/// machine's memory: a 1 km^2 stamp at 0.25 m holds about 82 MiB. Decoded pages on the CPU: 64 MiB
-/// (about 990 pages, the uploads waiting and the CPU readers' pages together; the 512 drawn pages
-/// fit with room for the windows) and up to 4 synchronous window fetches a frame inside the 0.5 ms
-/// deadline: a store page from the file cache takes about 8 us, so 4; a generated page about
-/// 0.36 ms, so 1 (Release, measured in slice 1c-iii); an SSD read that misses the file cache is not
-/// measured (0.1 to 0.3 ms assumed).
-inline constexpr HeightPageProfile kDesktopHeightPages{512u, 1u << 21, 512ull << 20, 64ull << 20, 4u};
-/// Steam Deck: half the desktop slots (256, 16.5 MiB) and a quarter of its table cap (2^19 words,
-/// 2 MiB a ring slot): about 24 x 6 km at 0.5 m, or 60 x 15 km at 1 m; a quarter of the desktop
-/// overlay (128 MiB of its 16 GiB shared with the GPU), which still holds 1 km^2 at 0.25 m. CPU height
-/// pages: 32 MiB and 1 synchronous window fetch a frame (a microSD's random read takes milliseconds).
-inline constexpr HeightPageProfile kSteamDeckHeightPages{256u, 1u << 19, 128ull << 20, 32ull << 20, 1u};
+/// Desktop: 512 cache slots, 2^21 dense-table words, 10 mid blocks and 160 leaf blocks.
+/// Modifier pages may hold 512 MiB; decoded CPU pages have 64 MiB and four synchronous fetches a frame.
+inline constexpr HeightPageProfile kDesktopHeightPages{512u, 1u << 21, 512ull << 20, 64ull << 20, 4u, 10u, 160u};
+/// Steam Deck: 256 cache slots, 2^19 dense-table words, five mid blocks and 80 leaf blocks.
+/// Modifier pages may hold 128 MiB; decoded CPU pages have 32 MiB and one synchronous fetch a frame.
+inline constexpr HeightPageProfile kSteamDeckHeightPages{256u, 1u << 19, 128ull << 20, 32ull << 20, 1u, 5u, 80u};
 
 /// The profile of the platform this build targets.
 HeightPageProfile PlatformHeightPageProfile();
@@ -80,14 +66,9 @@ HeightPageProfile PlatformHeightPageProfile();
 /// The field id of the height pages in the residency manager.
 inline constexpr uint32 kHeightPageField = 0u;
 
-/// The words of a field's GPU page table (CBTLayout.h binding-22 layout) for a field of
-/// samplesX x samplesZ level-0 samples and a cache of slotCount slots.
-uint64 PageTableWordCount(uint32 samplesX, uint32 samplesZ, uint32 slotCount);
-
-/// Why a terrain of samplesX x samplesZ level-0 samples does not page under `profile` (its page
-/// table is over the profile's cap), worded with the fix, naming the terrain `name`; empty when
-/// it fits.
-std::string PageTableRefusal(std::string_view name, uint32 samplesX, uint32 samplesZ, const HeightPageProfile& profile);
+/// Why a field exceeds the CPU directory's indexing limit, naming the terrain and its resolution
+/// fix. Empty when both axes fit; GPU tables remain bounded through their block pools.
+std::string DenseDirectoryRefusal(std::string_view name, uint32 samplesX, uint32 samplesZ);
 
 /// Why a terrain whose modifier overlay needs `overlayBytes` does not page under `profile` (over
 /// the profile's overlay cap), worded with the fix, naming the terrain `name`; empty when it fits.
@@ -123,6 +104,7 @@ struct HeightPageUpload
 {
     uint32 Slot = 0;
     std::vector<float32> Samples; ///< kPageSampleCount, row-major, apron included
+    uint32 Terrain = 0;
 };
 
 /// A terrain-UV rect whose height changed source this frame: the CBT re-evaluates the bisectors
@@ -145,7 +127,7 @@ struct PagedTerrainRequest
     uint64 SourceIdentity = 0;  ///< changes when the source or the pyramid changes (restarts the stream)
     std::string_view Name;      ///< the terrain entity's name, for the log lines (empty: its render index)
     /// The GPU draws the terrain's pages (TerrainHeightIsPaged, with a view). False streams its CPU
-    /// pages only (the narrow CBT arm, pending modifiers, a page table over the GPU cap, no view): no
+    /// pages only (the narrow CBT arm, pending modifiers, or no view): no
     /// GPU page, page table or dirty rect.
     bool GpuPages = true;
     PageStreaming::PageSource Source;
@@ -155,7 +137,7 @@ struct PagedTerrainRequest
     /// What the terrain's modifiers add to its source's pages (null: nothing), applied to every page
     /// as it is uploaded. A new version rewrites the resident pages that read OverlayChanged when
     /// the pages hold version OverlayChangedSince, else every page either overlay reaches.
-    std::shared_ptr<const PageStreaming::HeightPageOverlay> Overlay;
+    std::shared_ptr<const PageStreaming::HeightPageLayer> Overlay;
     uint64 OverlayVersion = 0;
     PageStreaming::PageSampleRect OverlayChanged; ///< level-0 samples the version changed from OverlayChangedSince
     uint64 OverlayChangedSince = 0;
@@ -211,7 +193,7 @@ public:
     /// empties the cache and every page table, so every page is assigned and uploaded again.
     void RestartOnDeviceEpoch(uint64 deviceEpoch);
 
-    /// Logs `refusal` (PageTableRefusal) once for `terrain` until the terrain pages or its refusal
+    /// Logs `refusal` (DenseDirectoryRefusal) once for `terrain` until the terrain pages or its refusal
     /// changes: the terrain keeps its height texture meanwhile.
     void ReportRefusal(uint32 terrain, const std::string& refusal);
 
@@ -245,7 +227,7 @@ private:
         PageRequestTerrain Shape; ///< the placement its requester is configured with
         HeightPageRequester Requester;
         PageTable Table;
-        std::shared_ptr<const PageStreaming::HeightPageOverlay> Overlay;
+        std::shared_ptr<const PageStreaming::HeightPageLayer> Overlay;
         uint64 OverlayVersion = 0;
         PageStreaming::PageSampleRect OverlayChanged; ///< what OverlayVersion changed from OverlayChangedSince
         uint64 OverlayChangedSince = 0;
@@ -285,6 +267,7 @@ private:
     bool m_BodiesOverBound = false;                       // the bound was logged and still holds
     std::vector<HeightPageUpload> m_Uploads;
     std::vector<HeightPageDirtyRect> m_DirtyRects;
+    std::vector<PageStreaming::PageAddress> m_LateEntries; // waiting table entries assigned this update
     std::vector<uint32> m_Forgotten; // reused per Update
     FlatMap<uint32, std::string> m_Refusals; // per terrain, the refusal last logged
 };

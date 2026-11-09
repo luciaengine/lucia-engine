@@ -328,4 +328,81 @@ TEST_F(PlayModeChangeReviewTests, ApplySelectedDeletionLeavesUnselectedEntityUnt
     EXPECT_EQ(world->GetComponent<Name>(selected)->View(), "Selected");
 }
 
+TEST_F(PlayModeChangeReviewTests, StopRequestsInOneFrameStopPlayOnceIntoOneReview)
+{
+    UndoRedoService undo;
+    PlayModeManager pm;
+    pm.SetUndoRedo(&undo);
+    auto* world = EngineCore::GetInstance().EnsurePrimaryWorld();
+    ASSERT_NE(world, nullptr);
+    world->Clear();
+    (void)world->CreateEntity();
+    world->ProcessCommands();
+    pm.SetWorld(world);
+
+    pm.EnterPlayMode();
+    ASSERT_EQ(pm.GetState(), PlayModeState::Play);
+    int v = 0;
+    undo.Execute(std::make_unique<SetIntCommand>(&v, 123, "Set V"));
+
+    pm.RequestExitPlayMode();
+    pm.RequestExitPlayMode();
+    EXPECT_EQ(pm.GetState(), PlayModeState::Play);
+    pm.Tick(0.016f);
+    ASSERT_EQ(pm.GetState(), PlayModeState::ChangeReview);
+    EXPECT_EQ(pm.GetPendingChangeNames(), std::vector<std::string>{"Set V"});
+
+    // A request and the toolbar's Stop in one frame are one stop: the next session keeps playing.
+    pm.DiscardPendingChanges();
+    pm.EnterPlayMode();
+    pm.RequestExitPlayMode();
+    pm.ExitPlayMode();
+    pm.DiscardPendingChanges();
+    pm.EnterPlayMode();
+    pm.Tick(0.016f);
+    EXPECT_EQ(pm.GetState(), PlayModeState::Play);
+    pm.ExitPlayMode();
+}
+
+TEST_F(PlayModeChangeReviewTests, StopRequestWhilePlayStartsStopsPlayAtTheFirstTick)
+{
+    PlayModeManager pm;
+    auto* world = EngineCore::GetInstance().EnsurePrimaryWorld();
+    ASSERT_NE(world, nullptr);
+    world->Clear();
+    (void)world->CreateEntity();
+    world->ProcessCommands();
+    pm.SetWorld(world);
+
+    // A script's OnCreate runs while play starts.
+    pm.SetOnStateChanged(
+        [&pm](PlayModeState state)
+        {
+            if (state == PlayModeState::EnteringPlay)
+                pm.RequestExitPlayMode();
+        });
+    pm.EnterPlayMode();
+    ASSERT_EQ(pm.GetState(), PlayModeState::Play);
+    pm.Tick(0.016f);
+    EXPECT_EQ(pm.GetState(), PlayModeState::Edit);
+}
+
+TEST_F(PlayModeChangeReviewTests, StopRequestOutsidePlayIsIgnored)
+{
+    PlayModeManager pm;
+    auto* world = EngineCore::GetInstance().EnsurePrimaryWorld();
+    ASSERT_NE(world, nullptr);
+    world->Clear();
+    (void)world->CreateEntity();
+    world->ProcessCommands();
+    pm.SetWorld(world);
+
+    pm.RequestExitPlayMode();
+    pm.EnterPlayMode();
+    ASSERT_EQ(pm.GetState(), PlayModeState::Play);
+    pm.Tick(0.016f);
+    EXPECT_EQ(pm.GetState(), PlayModeState::Play);
+    pm.ExitPlayMode();
+}
+
 } // namespace
