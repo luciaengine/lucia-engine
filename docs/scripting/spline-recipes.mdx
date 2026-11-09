@@ -1,0 +1,12 @@
+---
+title: Spline recipe readiness
+description: Wait for spline recipe output and inspect build failures.
+---
+
+The native `SplineRecipes` API reports whether authored spline recipes have built. Call it on the main thread outside a job. Off-thread calls are refused and logged.
+
+`StateOf(world, entity)` returns Pending, Held, Built, or Failed. `ReasonOf` explains a hold, failure, or an intentionally empty result. `IsSceneSettled(world)` is true when every recipe is Built or Failed; an edit or a late asset can make it false again. A world with no recipes is settled. Without a running recipe system, a recipe remains Pending.
+
+`Failures(world, buffer)` writes failed recipe statuses into a span and returns the total number, including entries that do not fit. Each status contains its recipe entity and build state. The managed generated binding is added with the scripting bindings port.
+
+The Player's startup ready message and `--screenshot` capture wait for both the scene resolve batch and spline recipes by default. Set `waitForSplineRecipes` to `false` in `game.config` to wait only for the resolve batch. Recipe hold budgets bound individual waits; readiness has no independent timer.

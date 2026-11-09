@@ -46,6 +46,8 @@ if(BUILD_TESTING)
     add_executable(PlayerTests
         PlayerHdrOptionsTests.cpp
         PlayerLogTests.cpp
+        PlayerStartupReadinessTests.cpp
+        ${CMAKE_SOURCE_DIR}/Apps/Player/Source/PlayerStartupReadiness.cpp
         ${CMAKE_SOURCE_DIR}/Apps/Player/Source/PlayerHdrOptions.cpp
         ${CMAKE_SOURCE_DIR}/Apps/Player/Source/PlayerLog.cpp
     )

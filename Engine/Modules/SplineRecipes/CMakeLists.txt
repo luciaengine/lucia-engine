@@ -38,6 +38,7 @@ add_library(SplineRecipes OBJECT
     Source/SplinePlacementController.cpp
     Source/SplineRebuildGate.cpp
     Source/SplineRecipeSystem.cpp
+    Source/SplineRecipesScriptApi.cpp
     Source/SplineSurfaceConform.cpp
     Source/SplineSweepStations.cpp
     Source/SplineWall/SplineWallBuild.cpp
@@ -73,6 +74,7 @@ target_link_libraries(SplineRecipes
 # the controllers. Headers only, no link: Engine is SHARED and links this module
 # privately, so the symbols resolve inside Engine.dll (the CBTTerrainECS pattern).
 target_include_directories(SplineRecipes PRIVATE
+    ${CMAKE_SOURCE_DIR}/Engine/Source
     $<TARGET_PROPERTY:Engine,INTERFACE_INCLUDE_DIRECTORIES>
     $<TARGET_PROPERTY:TerrainECS,INTERFACE_INCLUDE_DIRECTORIES>
 )
