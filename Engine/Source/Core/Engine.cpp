@@ -309,12 +309,13 @@ void ShutdownWorldServices()
     }
 }
 
-// Opens the audio device. False (audio disabled) when the init fails or throws.
-bool InitializeAudio(Audio::AudioSystem& audio)
+// Initializes the selected audio output. False when initialization fails or throws.
+bool InitializeAudio(Audio::AudioSystem& audio, Audio::AudioOutput output)
 {
     try
     {
         Audio::AudioSystemConfig audioCfg{};
+        audioCfg.output = output;
         if (!audio.Initialize(audioCfg))
         {
             Logger::Log::Warning("AudioSystem init failed; audio disabled");
@@ -858,7 +859,8 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
         if (Platform::SupportsTransientThreads())
         {
             Audio::AudioSystem* audioRaw = m_AudioSystem.get();
-            m_AudioInit = m_StartupChannel->Submit([audioRaw]() -> bool { return InitializeAudio(*audioRaw); });
+            const Audio::AudioOutput output = config.AudioOutput;
+            m_AudioInit = m_StartupChannel->Submit([audioRaw, output]() -> bool { return InitializeAudio(*audioRaw, output); });
         }
         else
         {
@@ -976,7 +978,7 @@ bool EngineCore::JoinAudioInitLocked()
     if (m_AudioInitDeferred)
     {
         m_AudioInitDeferred = false;
-        return m_AudioSystem && InitializeAudio(*m_AudioSystem);
+        return m_AudioSystem && InitializeAudio(*m_AudioSystem, m_Config.AudioOutput);
     }
     if (!m_AudioInit.IsValid())
         return true;

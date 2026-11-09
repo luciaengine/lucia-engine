@@ -1569,8 +1569,24 @@ if(BUILD_TESTING)
     find_package(GTest CONFIG QUIET)
 endif()
 if(BUILD_TESTING AND (GTest_FOUND OR TARGET GTest::gtest))
+    # The output an engine opens from the default ApplicationConfig: Silent,
+    # so no audio device opens unless an application asks for one.
+    add_executable(EngineAudioOutputTests Tests/EngineAudioOutputTests.cpp
+        ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp)
+    target_link_libraries(EngineAudioOutputTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+    target_include_directories(EngineAudioOutputTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+    set_target_properties(EngineAudioOutputTests PROPERTIES
+        CXX_STANDARD 20
+        CXX_STANDARD_REQUIRED ON
+        FOLDER "Engine/Tests"
+    )
+    ge_set_output_tests(EngineAudioOutputTests)
+    ge_stage_runtime_dependencies(EngineAudioOutputTests)
+    add_test(NAME EngineAudioOutputTests COMMAND $<TARGET_FILE:EngineAudioOutputTests>)
+
     # The scene-build pump's shader-source read owns an EngineCore lifecycle (job
     # system + AssetManager), so it stays out of the EngineCore-free material aggregate.
+
     add_executable(EngineMaterialSourcePrefetchTests Tests/MaterialSourcePrefetchTests.cpp)
     target_link_libraries(EngineMaterialSourcePrefetchTests PRIVATE Engine GTest::gtest GTest::gtest_main)
     target_compile_features(EngineMaterialSourcePrefetchTests PRIVATE cxx_std_20)
