@@ -642,6 +642,7 @@ set(EDITOR_SOURCES
 	Source/EditorApplication_Shortcuts.cpp
 	Source/EditorInputActions.cpp
 	Source/DebugServer/MemoryDebugHandlers.cpp
+	Source/DebugServer/SystemWaveTraceReport.cpp
 	Source/DebugServer/JobSystem/JobSystemDebugHandlers.cpp
 	Source/DebugServer/JobSystem/JobSystemReport.cpp
 	Source/DebugServer/EditorDebugServer.cpp

@@ -6,6 +6,8 @@
 # registration).
 set(EDITOR_TEST_SOURCES
     JobSystemReportTests.cpp
+    SystemWaveTraceReportTests.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/SystemWaveTraceReport.cpp
     ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DebugServer/JobSystem/JobSystemReport.cpp
     GameViewPointerLockTests.cpp
     InspectorLabelDragPointerLockTests.cpp

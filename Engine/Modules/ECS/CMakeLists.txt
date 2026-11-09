@@ -6,6 +6,7 @@ project(ECS VERSION 1.0.0 LANGUAGES CXX)
 # Core ECS source files
 set(ECS_SOURCES
     Source/World.cpp
+    Source/SystemWaveTrace.cpp
     Source/Entity.cpp
     Source/ComponentRegistry.cpp
     Source/ComponentHandler.cpp

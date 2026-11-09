@@ -69,3 +69,9 @@ Pool shutdown stops admission, cancels queued handle jobs, executes queued bare 
 `GetStatistics()` snapshots queue counts, executed tasks, and thread occupancy. It takes locks and allocates, so use it for diagnostics. The editor exposes this snapshot through the `get_job_system` MCP tool and debug method. `SnapshotOccupancy()` fills caller-owned storage when only occupancy is needed.
 
 Joined `Run` and `ParallelFor` work inherits the frame-memory scope of its caller. Asynchronous work does not. Follow the lifetime rules in [Native memory allocators](memory-allocators.mdx#frame-memory).
+
+## ECS wave tracing
+
+Use the editor's `get_ecs_wave_trace` tool to record how scheduled ECS waves run. Pass `enabled: true` to arm the trace. Arming clears its fixed ring of 256 frames. The tool can summarize a recent `window` and include individual frames through the `frames` parameter.
+
+The report includes wave makespans, join waits, dispatch delays, system durations, worker placement, and job publications. It records joined work that a live pool snapshot between frames can miss. Tracing is off by default. On macOS, enabled tracing also emits system, wave, and join intervals for Instruments.

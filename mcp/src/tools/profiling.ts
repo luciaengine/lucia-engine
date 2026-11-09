@@ -229,4 +229,15 @@ export const tools: ToolDef[] = [
     schema: {},
   }),
 
+  proxyTool({
+    name: "get_ecs_wave_trace",
+    category: "profiling",
+    description: "Read how the ECS system waves ran, frame by frame, from a ring of the newest 256 SystemManager updates recorded while the trace is armed (pass enabled: true first; arming clears the ring). Unlike get_job_system, which polls between frames, it sees every fork after the fact. summary: ecsMs (the ECS part of the frame), framePeriodMs, joinWaitMs (time the main thread waited in wave joins), inlineMs (bodies the main thread ran in single-system and exclusive waves), helpMs (forked bodies the main thread ran while joining, its own wave's jobs), gapsMs (ECS time outside any wave), forkedWaves, forks, joins, and publishes: waveForks (pool tasks the waves' publish loops published, at most one per fork), inSystems (jobs system bodies published on their own thread), duringUpdate (every thread's publishes during the ECS update), perFrame (every thread's publishes from one frame's start to the next) and outsideSystems (perFrame minus the two attributed counts). waves[] per plan wave: systems, forks, makespanMs, gapBeforeMs, joinWaitMs, criticalPathMs (slowest forked body), dispatchMs (fork publish to body start). systems[] per system, slowest first: ms, updates, forked, onWorker, onCaller, publishesPerUpdate. Distributions are {median, p95, max} in milliseconds. frames[] describes the newest N frames system by system. On macOS the same waves, joins and bodies are os_signpost intervals (subsystem com.gameengine.ecs, category SystemWaves) for an Instruments recording while armed.",
+    schema: {
+      enabled: z.boolean().optional().describe("Arm (true, clears the ring) or disarm (false) the trace. Omit to leave it as it is."),
+      window: z.coerce.number().int().optional().describe("Summarise the newest N recorded frames (default and maximum 256)"),
+      frames: z.coerce.number().int().optional().describe("Also describe the newest N frames one by one (default 0)"),
+    },
+  }),
+
 ];
