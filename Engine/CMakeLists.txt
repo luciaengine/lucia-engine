@@ -526,6 +526,8 @@ target_link_libraries(RenderServices
 		# unique_ptr) reach ECS World/Entity/EntityHandle. PRIVATE: compile-time
 		# usage requirements only; ECS objects link once into Engine as elsewhere.
 		ECS
+		# Decode, encode, and resample usage; Image objects link once into Engine.
+		Image
 )
 # GetPipelineOutputSpaceRG returns UI::UITextureSpace (#767): compile-time
 # include only, the same shim Engine itself uses for UI asset integration;
