@@ -1,6 +1,6 @@
 #pragma once
 
-#include "PageStreaming/HeightPageOverlay.h"
+#include "PageStreaming/Height/HeightPageLayer.h"
 #include "PageStreaming/PageResidency.h"
 #include "TerrainECS/PageLevelRule.h"
 #include "TerrainECS/PagedHeightSampler.h"
@@ -137,7 +137,7 @@ struct PagedTerrainRequest
     /// What the terrain's modifiers add to its source's pages (null: nothing), applied to every page
     /// as it is uploaded. A new version rewrites the resident pages that read OverlayChanged when
     /// the pages hold version OverlayChangedSince, else every page either overlay reaches.
-    std::shared_ptr<const PageStreaming::HeightPageOverlay> Overlay;
+    std::shared_ptr<const PageStreaming::HeightPageLayer> Overlay;
     uint64 OverlayVersion = 0;
     PageStreaming::PageSampleRect OverlayChanged; ///< level-0 samples the version changed from OverlayChangedSince
     uint64 OverlayChangedSince = 0;
@@ -227,7 +227,7 @@ private:
         PageRequestTerrain Shape; ///< the placement its requester is configured with
         HeightPageRequester Requester;
         PageTable Table;
-        std::shared_ptr<const PageStreaming::HeightPageOverlay> Overlay;
+        std::shared_ptr<const PageStreaming::HeightPageLayer> Overlay;
         uint64 OverlayVersion = 0;
         PageStreaming::PageSampleRect OverlayChanged; ///< what OverlayVersion changed from OverlayChangedSince
         uint64 OverlayChangedSince = 0;

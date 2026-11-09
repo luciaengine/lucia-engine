@@ -17,7 +17,7 @@ add_library(PageStreaming OBJECT
     Source/Height/HeightStepPlanner.cpp
     Source/Height/HeightStoreCache.cpp
     Source/Height/HeightStoreKey.cpp
-    Source/HeightPageOverlay.cpp
+    Source/Height/HeightPageLayer.cpp
     Source/NonInheritedFile.cpp
     Source/PageAddress.cpp
     Source/PageCache.cpp
