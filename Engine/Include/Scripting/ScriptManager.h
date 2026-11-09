@@ -183,6 +183,12 @@ class ScriptManager
      */
     size_t ProcessMainThreadTasks();
 
+    /// Request one managed batch before the next task loop.
+    void RequestManagedPostDrain();
+    using ManagedPostDrain = void (*)(int32_t run);
+    /// Install the process drain once. Later installations are refused.
+    static bool InstallManagedPostDrain(ManagedPostDrain drain);
+
     /**
      * @brief Record the calling thread as the main thread. Used to diagnose
      *        main-thread tasks executing on a fallback thread.
@@ -543,6 +549,8 @@ class ScriptManager
     // the same thread; consumers try-lock and bail if another thread is pumping
     // (rationale in ProcessMainThreadTasks). Producers use the queue mutex above.
     std::recursive_mutex m_MainThreadTaskProcessingMutex;
+    // Guarded by m_MainThreadTasksMutex.
+    bool m_ManagedPostDrainRequested = false;
     // Set once by MarkMainThread; empty id means unknown (standalone test hosts).
     std::atomic<std::thread::id> m_MainThreadId{};
     std::atomic<bool> m_WarnedOffMainThreadPump{false};

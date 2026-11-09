@@ -470,6 +470,7 @@ endfunction()
 add_executable(AbiNativeSmokeTest
     Integration/AbiNativeSmokeTest.cpp
     Integration/ScriptManagerMainThreadTaskTests.cpp
+    Integration/MainThreadPostTests.cpp
     Integration/ScriptingAbiDomainTests.cpp
     Integration/ScriptingAbiLoggerBridgeTests.cpp
     ${CMAKE_SOURCE_DIR}/Tests/EngineShutdownTestEnvironment.cpp

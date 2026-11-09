@@ -34,6 +34,9 @@ struct ScriptsConfig
     // fall back to the dev compile pipeline).
     bool packagedMode = false;
 
+    // NativeAOT scripts still need the main-thread queue with the CLR disabled.
+    bool nativeAot = false;
+
     bool disableClr = false;                 // Skip CoreCLR initialization entirely
     bool enableHotReload = true;             // Enable file watching + hot-reload
     bool enableAsyncHotReload = false;       // Use async hot-reload pipeline (Editor sets true)
