@@ -80,87 +80,91 @@ def Run(argv: list[str | Path]) -> subprocess.CompletedProcess:
 # (set, binding) with an image variable", so that collision is the test.
 kSamplerBindingOffset = 64
 
-kOpDecorate = 71
+kSpirvHeaderWordCount = 5
+kStorageClassUniformConstant = 0
+
+kOpUndef = 1
 kOpTypeImage = 25
 kOpTypeSampler = 26
 kOpTypeSampledImage = 27
+kOpTypeArray = 28
+kOpTypeRuntimeArray = 29
+kOpTypeStruct = 30
 kOpTypePointer = 32
+kOpTypeFunction = 33
 kOpVariable = 59
-kOpFunction = 54
+kOpDecorate = 71
 kDecorationBinding = 33
 kDecorationDescriptorSet = 34
 
-# Instructions that legally reference a type id BEFORE the types section:
-# the debug and annotation sections (opcodes below OpTypeVoid, plus the
-# decoration family). Only references at or after the types section decide
-# where a type definition has to sit.
-kOpTypeVoid = 19
-kDecorationOpcodes = frozenset({71, 72, 73, 74, 75})
+def HoistDescriptorTypes(spv: bytes) -> bytes:
+    """Place split descriptor definitions before their type uses.
 
-
-def HoistSamplerTypes(spv: bytes) -> bytes:
-    """Move OpTypeSampler and its UniformConstant pointer ahead of their uses.
-
-    spirv-opt --split-combined-image-sampler emits the sampler variable it
-    creates next to the image it split, and reuses any OpTypeSampler the module
-    already had. When that existing type was declared late — a shader whose only
-    separate sampler is the IBL one, declared after the combined samplers — the
-    generated variables forward-reference their own pointer type and the module
-    fails spirv-val ("ID '<n>' has not been defined"). naga's "invalid id" is
-    downstream of that and correct.
-
-    Sampler types have no operands of their own, so hoisting them to the first
-    use is always legal.
+    Split declarations can precede a reused sampler or pointer type.
+    Move each required definition separately, after its own dependencies.
     """
     words = memoryview(spv).cast("I")
     total = len(words)
-
-    instructions: list[tuple[int, int, int]] = []  # (start word, word count, opcode)
-    index = 5  # past the SPIR-V header
+    instructions: list[tuple[int, int, int]] = []
+    index = kSpirvHeaderWordCount
+    minimumCounts = {kOpTypeImage: 9, kOpTypeSampler: 2, kOpTypeArray: 4,
+                     kOpTypeRuntimeArray: 3, kOpTypeStruct: 2, kOpTypeFunction: 3,
+                     kOpTypePointer: 4, kOpVariable: 4, kOpUndef: 3}
     while index < total:
         count = words[index] >> 16
-        if count == 0:
-            return spv
-        instructions.append((index, count, words[index] & 0xFFFF))
+        opcode = words[index] & 0xFFFF
+        if count < minimumCounts.get(opcode, 1) or index + count > total:
+            raise CookError("Invalid SPIR-V instruction in descriptor type repair")
+        instructions.append((index, count, opcode))
         index += count
 
-    sampler_types = {words[start + 1] for start, _, opcode in instructions
-                     if opcode == kOpTypeSampler}
-    if not sampler_types:
-        return spv
-    hoisted = set(sampler_types)
-    for start, count, opcode in instructions:
-        if opcode == kOpTypePointer and count >= 4 and words[start + 3] in sampler_types:
-            hoisted.add(words[start + 1])
-
-    def Defines(instruction) -> bool:
+    imageTypes = {words[start + 1] for start, _, opcode in instructions
+                  if opcode == kOpTypeImage}
+    samplerTypes = {words[start + 1] for start, _, opcode in instructions
+                    if opcode == kOpTypeSampler}
+    descriptorTypes = imageTypes | samplerTypes
+    definitions = {}
+    for instruction in instructions:
         start, _, opcode = instruction
-        return opcode in (kOpTypeSampler, kOpTypePointer) and words[start + 1] in hoisted
-
-    def References(instruction) -> bool:
-        start, count, opcode = instruction
-        if opcode < kOpTypeVoid or opcode in kDecorationOpcodes:
-            return False
-        return any(words[start + offset] in hoisted for offset in range(1, count))
-
-    definitions = [i for i, ins in enumerate(instructions) if Defines(ins)]
-    body = next((i for i, ins in enumerate(instructions) if ins[2] == kOpFunction), len(instructions))
-    first_use = next((i for i, ins in enumerate(instructions)
-                      if i not in definitions and i < body and References(ins)), None)
-    if first_use is None or first_use > definitions[0]:
+        if opcode == kOpTypeSampler or (
+                opcode == kOpTypePointer and words[start + 2] == kStorageClassUniformConstant
+                and words[start + 3] in descriptorTypes):
+            definitions[words[start + 1]] = instruction
+    if not definitions:
         return spv
 
-    # Definitions land as a block at the first use, OpTypeSampler ahead of the
-    # pointers that point at it; everything else keeps its order.
-    reordered = sorted(range(len(instructions)),
-                       key=lambda i: (2, i) if i >= first_use and i not in definitions
-                       else (0, i) if i < first_use and i not in definitions
-                       else (1, instructions[i][2] != kOpTypeSampler, i))
+    emitted = set()
+    emittedImages = set()
+    out = bytearray(spv[:kSpirvHeaderWordCount * 4])
 
-    out = bytearray(spv[:5 * 4])
-    for i in reordered:
-        start, count, _ = instructions[i]
-        out += spv[start * 4:(start + count) * 4]
+    def EmitDefinition(typeId: int) -> None:
+        if typeId not in definitions or typeId in emitted:
+            return
+        start, count, opcode = definitions[typeId]
+        if opcode == kOpTypePointer:
+            pointee = words[start + 3]
+            if pointee in imageTypes and pointee not in emittedImages:
+                raise CookError("Descriptor use precedes its SPIR-V image type")
+            EmitDefinition(pointee)
+        out.extend(spv[start * 4:(start + count) * 4])
+        emitted.add(typeId)
+
+    for start, count, opcode in instructions:
+        if opcode in (kOpTypeFunction, kOpTypeStruct):
+            for offset in range(2, count):
+                EmitDefinition(words[start + offset])
+        elif opcode in (kOpTypeArray, kOpTypeRuntimeArray):
+            EmitDefinition(words[start + 2])
+        elif opcode == kOpTypePointer:
+            EmitDefinition(words[start + 3])
+        elif opcode in (kOpVariable, kOpUndef):
+            EmitDefinition(words[start + 1])
+        if opcode in (kOpTypeSampler, kOpTypePointer) and words[start + 1] in definitions:
+            EmitDefinition(words[start + 1])
+            continue
+        if opcode == kOpTypeImage:
+            emittedImages.add(words[start + 1])
+        out.extend(spv[start * 4:(start + count) * 4])
     return bytes(out)
 
 
@@ -281,37 +285,37 @@ def Preprocess(source: Path, stage: str, glslc: Path, defines: list[str],
 
 
 def CookFile(source: Path, stage: str, glslc: Path, naga: Path, tint: Path | None,
-             validate: bool, defines: list[str], include_dirs: list[Path],
-             out_wgsl: Path, scratch: Path) -> None:
+             validate: bool, defines: list[str], includeDirs: list[Path],
+             outWgsl: Path, scratch: Path) -> None:
     flattened = scratch / (source.stem + ".pp" + source.suffix)
-    Preprocess(source, stage, glslc, defines, include_dirs, flattened)
-    compile_source = scratch / (source.stem + ".rewritten" + source.suffix)
-    compile_source.write_text(RewritePushConstants(flattened.read_text()))
+    Preprocess(source, stage, glslc, defines, includeDirs, flattened)
+    compileSource = scratch / (source.stem + ".rewritten" + source.suffix)
+    compileSource.write_text(RewritePushConstants(flattened.read_text()))
 
     spv = scratch / (source.stem + ".spv")
-    cmd = [glslc, "--target-env=vulkan1.1", f"-fshader-stage={stage}", "-O",
-           compile_source, "-o", spv]
-    result = Run(cmd)
+    command = [glslc, "--target-env=vulkan1.1", f"-fshader-stage={stage}", "-O",
+           compileSource, "-o", spv]
+    result = Run(command)
     if result.returncode != 0:
         raise CookError(f"glslc failed for {source}:\n{result.stderr}")
 
     split = scratch / (source.stem + ".split.spv")
-    spirv_opt = FindTool("spirv-opt", None)
-    if spirv_opt is None:
+    spirvOptimizer = FindTool("spirv-opt", None)
+    if spirvOptimizer is None:
         raise CookError("spirv-opt not found (Vulkan SDK) - required for the "
                         "combined-image-sampler split")
-    result = Run([spirv_opt, "--split-combined-image-sampler", spv, "-o", split])
+    result = Run([spirvOptimizer, "--split-combined-image-sampler", spv, "-o", split])
     if result.returncode != 0:
         raise CookError(f"spirv-opt split failed for {source}:\n{result.stderr}")
 
-    patched, remap = RenumberSamplerBindings(HoistSamplerTypes(split.read_bytes()))
+    patched, remap = RenumberSamplerBindings(HoistDescriptorTypes(split.read_bytes()))
     split.write_bytes(patched)
     if remap:
-        (out_wgsl.with_suffix(".remap.json")).write_text(
+        (outWgsl.with_suffix(".remap.json")).write_text(
             __import__("json").dumps({"samplerBindingOffset": kSamplerBindingOffset,
                                       "samplers": remap}, indent=1))
 
-    result = Run([naga, "--keep-coordinate-space", split, out_wgsl])
+    result = Run([naga, "--keep-coordinate-space", split, outWgsl])
     if result.returncode != 0:
         raise CookError(f"naga failed for {source}:\n{result.stderr or result.stdout}")
 
@@ -322,9 +326,9 @@ def CookFile(source: Path, stage: str, glslc: Path, naga: Path, tint: Path | Non
                 "WGSL validation is required by default because unvalidated WGSL is exactly "
                 "what browsers reject at runtime. Pass --no-validate to cook unvalidated "
                 "WGSL at your own risk.")
-        result = Run([tint, "--format", "wgsl", out_wgsl])
+        result = Run([tint, "--format", "wgsl", outWgsl])
         if result.returncode != 0:
-            raise CookError(f"tint rejected {out_wgsl}:\n{result.stderr or result.stdout}")
+            raise CookError(f"tint rejected {outWgsl}:\n{result.stderr or result.stdout}")
 
 
 def SelfTest(glslc: Path, naga: Path, tint: Path | None, validate: bool) -> int:
