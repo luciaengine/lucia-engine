@@ -1,5 +1,6 @@
 #include "EngineShaderPath.h"
 #include "Core/Engine.h"
+#include "Memory/ImagePins.h"
 #include "Scene/PrefabLibrary.h"
 
 #include "SceneLoadTracker/SceneLoadTracker.h"
@@ -328,6 +329,20 @@ bool InitializeAudio(Audio::AudioSystem& audio, Audio::AudioOutput output)
         Logger::Log::Warning("AudioSystem init threw: {}", e.what());
         return false;
     }
+}
+
+std::string DescribeArenaImagePins(uint64 base, uint64 size)
+{
+    const std::vector<std::string> arenas = Memory::Detail::DescribeArenasPinningImage(base, size);
+    if (arenas.empty())
+        return {};
+    std::string pins = std::to_string(arenas.size()) + " arena(s) holding destructors:";
+    for (std::size_t index = 0; index < arenas.size(); ++index)
+    {
+        pins += index == 0 ? " " : ", ";
+        pins += arenas[index];
+    }
+    return pins;
 }
 
 } // namespace
@@ -712,6 +727,13 @@ bool EngineCore::Initialize(const ApplicationConfig& config)
                 if (!pins.empty())
                     pins += ", ";
                 pins += std::to_string(hooks) + " ECS component hook(s)";
+            }
+            const std::string arenas = DescribeArenaImagePins(base, size);
+            if (!arenas.empty())
+            {
+                if (!pins.empty())
+                    pins += ", ";
+                pins += arenas;
             }
             return pins;
         };

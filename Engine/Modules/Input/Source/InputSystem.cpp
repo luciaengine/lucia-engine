@@ -118,6 +118,7 @@ public:
     // Accumulates only between two positions inside the window: a pointer
     // arriving from outside has not travelled from anywhere this sink saw.
     Mathematics::Vector2 m_MouseDelta;
+    Mathematics::Vector2 m_FrameMouseDelta;
     Mathematics::Vector2 m_Scroll;
 
     struct GamepadState
@@ -285,6 +286,7 @@ void InputSystem::Update(float /*deltaTime*/) {
     m_Impl->m_DirtyMouseButtons.clear();
 
     // Clear per-frame mouse deltas and scroll accumulators after actions have been computed.
+    m_Impl->m_FrameMouseDelta = m_Impl->m_MouseDelta;
     m_Impl->m_MouseDelta = {};
     m_Impl->m_Scroll     = {};
 
@@ -395,6 +397,11 @@ Mathematics::Vector2 InputSystem::GetMousePosition() const {
 
 bool InputSystem::IsPointerInWindow() const {
     return m_Impl->m_PointerInWindow;
+}
+
+Mathematics::Vector2 InputSystem::GetMouseDelta() const
+{
+    return m_Impl->m_FrameMouseDelta;
 }
 
 bool InputSystem::IsWindowFocused() const {

@@ -30,6 +30,14 @@ list(APPEND PLATFORM_SOURCES Source/HttpHeaderRules.cpp)
 # A child process's environment, built from this process's: every platform.
 list(APPEND PLATFORM_SOURCES Source/Process.cpp)
 
+# Speech capture is available on the macOS desktop only.
+if(APPLE AND NOT GE_MOBILE)
+    list(APPEND PLATFORM_SOURCES Source/SpeechInput_mac.mm)
+    set_source_files_properties(Source/SpeechInput_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+else()
+    list(APPEND PLATFORM_SOURCES Source/SpeechInput_Stub.cpp)
+endif()
+
 # Platform-specific sources
 if(GE_MOBILE)
     include(Mobile.cmake)
@@ -139,7 +147,8 @@ endif()
  endif()
 
 if (APPLE AND NOT GE_MOBILE)
-    target_link_libraries(Platform PRIVATE "-framework CoreText" "-framework CoreFoundation" "-framework Cocoa" "-framework WebKit")
+    target_link_libraries(Platform PRIVATE "-framework CoreText" "-framework CoreFoundation" "-framework Cocoa" "-framework WebKit"
+        "-framework AVFoundation" "-framework Speech")
 endif()
 
 # Emscripten sets UNIX; keep it out of the Linux desktop-integration probes.
@@ -290,6 +299,7 @@ if(BUILD_TESTING)
 
     add_executable(PlatformCapabilitiesTests
         Tests/CapabilitiesTests.cpp
+        Tests/SpeechInputTests.cpp
     )
 
     target_link_libraries(PlatformCapabilitiesTests

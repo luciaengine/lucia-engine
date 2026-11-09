@@ -1,0 +1,12 @@
+---
+title: Native speech input
+description: Capture dictated text through the macOS Speech framework.
+---
+
+`Platform::SpeechInput` provides speech-to-text input from the default microphone on macOS. `IsAvailable()` returns false on other platforms. Start a session with transcript, listening-state, and optional level callbacks; transcript updates replace the session's previous text. Callbacks run on the main thread.
+
+`Finish()` stops listening and lets the final words arrive. `Cancel()` ends the session without further callbacks. A new `Start()` cancels the previous session. Destroying an idle session, finishing it, and canceling it do not request permissions.
+
+An app that starts capture must provide `NSMicrophoneUsageDescription` and `NSSpeechRecognitionUsageDescription` in its macOS Info.plist. The Editor bundle includes both descriptions. The operating system asks for access the first time capture starts.
+
+The speech session, recognition output, and permission flow require a macOS verification run. Linux tests exercise the unavailable-platform implementation and idle lifecycle only.

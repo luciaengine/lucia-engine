@@ -1,0 +1,14 @@
+---
+title: Native memory allocators
+description: Use arenas, object pools, and range allocators from native game code.
+---
+
+`Memory::Arena` allocates from chained blocks with a bump cursor. `AllocateArray<T>` returns typed storage, and `New<T>` records the object's destructor. `Rewind` returns to a marker; `Reset` releases all current allocations and runs recorded destructors. Its `Resource()` supports PMR containers. Serialize changes to one arena through a lock or join, or give each concurrent owner its own arena.
+
+An arena that still holds a destructor from a reloaded native module keeps that module mapped until the destructor runs. `Reset` or destroy the arena when its work is complete.
+
+`Memory::ObjectPool<T>` retains fixed-size slots for repeated object creation and destruction. `Memory::RangeAllocator` manages contiguous ranges and supports stamped releases. `Memory::TrackedBytes` records externally owned byte counts.
+
+`Memory::SnapshotStats()` copies allocator names, kinds, CPU/GPU residency, used bytes, retained bytes, high-water values, and block counts. Take snapshots for diagnostics rather than from a frame hot path.
+
+Scratch scopes, frame memory, and frame-joined job propagation are separate parts of the allocator integration.

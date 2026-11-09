@@ -5,6 +5,8 @@
 # the new UI module via AssetRuntime's ParserRegistry (UILayoutAsset/UIStyleAsset
 # registration).
 set(EDITOR_TEST_SOURCES
+    TransientNoticeTests.cpp
+    PictureChoiceFieldTests.cpp
     PrefabPlaceTests.cpp
     PrefabPropagationTests.cpp
     PrefabHierarchyTests.cpp
@@ -1827,6 +1829,14 @@ if(TARGET EditorTests)
 	ge_stage_test_asset(EditorTests
 	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/Graph/graph-ported-node.uxml"
 	    "Assets/UI/Graph/graph-ported-node.uxml")
+
+	ge_stage_test_asset(EditorTests
+	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/TransientNotice/TransientNotice.uxml"
+	    "Assets/UI/controls/TransientNotice/TransientNotice.uxml")
+
+	ge_stage_test_asset(EditorTests
+	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/PictureChoiceField/PictureChoiceField.uxml"
+	    "Assets/UI/controls/PictureChoiceField/PictureChoiceField.uxml")
 
 	# InspectorNotice builds its plate, text and action from its layout, read
 	# from the same install-assets root.

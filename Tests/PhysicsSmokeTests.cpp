@@ -28,6 +28,9 @@
 #include "PhysicsECS/Systems/PhysicsInitSystem.h"
 #include "PhysicsECS/Systems/PhysicsWorldHooks.h"
 #include "PhysicsECS/Systems/PhysicsWritebackSystem.h"
+#include "PhysicsECS/Systems/PhysicsStepSystem.h"
+#include "PhysicsECS/Components/KinematicBody.h"
+#include "ECS/ChangeFilter.h"
 #include "PhysicsECS/Systems/RegisterPhysicsSystems.h"
 
 #include "TerrainECS/TerrainService.h"
@@ -6497,4 +6500,313 @@ TEST(MovingPlatformSchedule, PlatformMotionIsScheduledBetweenProvisioningAndTheS
     EXPECT_LT(platformWave, stepWave)
         << "MovingPlatform sets the velocity PhysicsStep integrates — same-wave "
            "systems execute in parallel, so this must be a declared edge";
+}
+
+// A box body with its Transform and WorldTransform at `position`, for the kinematic tests below.
+static GameEngine::ECS::EntityHandle AddBoxBody(GameEngine::ECS::World& world,
+                                                GameEngine::Physics::PhysicsWorld& pw,
+                                                GameEngine::Physics::MotionType motionType,
+                                                const GameEngine::Physics::Vector3& halfExtents,
+                                                const GameEngine::Physics::Vector3& position)
+{
+    using namespace GameEngine::Physics;
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::Transform;
+    using GameEngine::Components::WorldTransform;
+
+    BoxShapeDef boxDef{};
+    boxDef.halfExtents = halfExtents;
+    BodySettings bs{};
+    bs.shape = pw.CreateShape(boxDef);
+    bs.motionType = motionType;
+    bs.layer = motionType == MotionType::Kinematic ? Layers::Kinematic : Layers::Dynamic;
+    bs.mass = 1.0f;
+    bs.position = position;
+    PhysicsBody pb{};
+    pb.motionType = motionType;
+    pb.body = pw.CreateBody(bs);
+    pb.initialized = true;
+
+    const auto e = world.CreateEntity();
+    world.AddComponentImmediate<Transform>(e, Transform::FromTRS(position, Quaternion::Identity(), Vector3(1.0f, 1.0f, 1.0f)));
+    WorldTransform wt{};
+    std::memcpy(wt.matrix, world.GetComponent<Transform>(e)->matrix, sizeof(wt.matrix));
+    world.AddComponentImmediate<WorldTransform>(e, wt);
+    world.AddComponentImmediate<PhysicsBody>(e, pb);
+    if (motionType == MotionType::Kinematic)
+        world.AddComponentImmediate(e, GameEngine::Components::KinematicBody{});
+    return e;
+}
+
+static void SetTransformHeight(GameEngine::ECS::World& world, GameEngine::ECS::EntityHandle e, GameEngine::float32 y)
+{
+    auto* transform = world.GetComponentForWrite<GameEngine::Components::Transform>(e);
+    transform->matrix[13] = y;
+    std::memcpy(world.GetComponentForWrite<GameEngine::Components::WorldTransform>(e)->matrix, transform->matrix,
+                sizeof(transform->matrix));
+}
+
+// A kinematic platform that the game raises through its Transform moves with a velocity, so a dynamic box
+// resting on it is carried at the platform's speed and stays on top. When the Transform stops, the platform
+// stops on it.
+TEST(Physics, KinematicPlatformMovedThroughItsTransformCarriesADynamicBoxAndStops)
+{
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Physics::MotionType;
+    using GameEngine::Physics::Vector3;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    constexpr GameEngine::float32 kPlatformHalfHeight = 0.1f;
+    constexpr GameEngine::float32 kBoxHalfSize = 0.25f;
+    const auto platform =
+        AddBoxBody(world, pw, MotionType::Kinematic, Vector3(1.0f, kPlatformHalfHeight, 1.0f), Vector3(0.0f, 0.0f, 0.0f));
+    const auto box = AddBoxBody(world, pw, MotionType::Dynamic, Vector3(kBoxHalfSize, kBoxHalfSize, kBoxHalfSize),
+                                Vector3(0.0f, kPlatformHalfHeight + kBoxHalfSize, 0.0f));
+    const auto platformBody = world.GetComponent<PhysicsBody>(platform)->body;
+    const auto boxBody = world.GetComponent<PhysicsBody>(box)->body;
+    ASSERT_TRUE(pw.IsBodyValid(platformBody));
+    ASSERT_TRUE(pw.IsBodyValid(boxBody));
+
+    GameEngine::PhysicsECS::PhysicsStepSystem step;
+    GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
+    constexpr GameEngine::float32 kFrame = 1.0f / 60.0f;
+    for (int frame = 0; frame < 60; ++frame)
+    {
+        step.Update(world, kFrame);
+        writeback.Update(world, kFrame);
+    }
+
+    constexpr GameEngine::float32 kSpeed = 6.0f;
+    GameEngine::float32 height = 0.0f;
+    for (int frame = 0; frame < 60; ++frame)
+    {
+        height += kSpeed * kFrame;
+        SetTransformHeight(world, platform, height);
+        step.Update(world, kFrame);
+        writeback.Update(world, kFrame);
+    }
+
+    const GameEngine::float32 platformTop = pw.GetBodyTransform(platformBody).position.y + kPlatformHalfHeight;
+    const GameEngine::float32 boxBottom = pw.GetBodyTransform(boxBody).position.y - kBoxHalfSize;
+    constexpr GameEngine::float32 kContactSlop = 0.02f;
+    EXPECT_NEAR(boxBottom, platformTop, kContactSlop) << "the box left the top of the platform";
+    EXPECT_NEAR(pw.GetLinearVelocity(boxBody).y, kSpeed, 0.1f * kSpeed) << "the platform did not carry the box";
+
+    for (int frame = 0; frame < 30; ++frame)
+    {
+        step.Update(world, kFrame);
+        writeback.Update(world, kFrame);
+    }
+    EXPECT_FLOAT_EQ(pw.GetBodyTransform(platformBody).position.y, height) << "the platform drifted off its Transform";
+    EXPECT_EQ(pw.GetLinearVelocity(platformBody).y, 0.0f) << "the platform kept moving";
+}
+
+// A frame shorter than the fixed step runs no step, and the writeback still blends the last two steps.
+// A kinematic Transform the game moved on that frame stays where the game put it.
+TEST(Physics, KinematicTransformHoldsOnAFrameWithNoStep)
+{
+    using GameEngine::Components::Transform;
+    using GameEngine::Physics::MotionType;
+    using GameEngine::Physics::Vector3;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    const auto e = AddBoxBody(world, pw, MotionType::Kinematic, Vector3(0.5f, 0.5f, 0.5f), Vector3(1.0f, 5.0f, -2.0f));
+    ASSERT_TRUE(pw.IsBodyValid(world.GetComponent<GameEngine::Components::PhysicsBody>(e)->body));
+
+    GameEngine::PhysicsECS::PhysicsStepSystem step;
+    GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
+    step.Update(world, 1.0f / 60.0f);
+    writeback.Update(world, 1.0f / 60.0f);
+    SetTransformHeight(world, e, 9.0f);
+    step.Update(world, 1.0f / 120.0f);
+    writeback.Update(world, 1.0f / 120.0f);
+
+    EXPECT_FLOAT_EQ(world.GetComponent<Transform>(e)->GetPosition().y, 9.0f)
+        << "the writeback moved the kinematic Transform";
+}
+
+// A kinematic body that stops is placed on its exact pose with no velocity. On the frames after that the
+// step does not move it and the writeback does not stamp its chunk, so a resting body costs nothing.
+TEST(Physics, KinematicBodyThatStopsIsPlacedOnItsPoseAndLeftAlone)
+{
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::Transform;
+    using GameEngine::Components::WorldTransform;
+    using GameEngine::Physics::MotionType;
+    using GameEngine::Physics::Quaternion;
+    using GameEngine::Physics::Vector3;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    const Vector3 start(1.0f, 5.0f, -2.0f);
+    const auto e = AddBoxBody(world, pw, MotionType::Kinematic, Vector3(0.5f, 0.5f, 0.5f), start);
+    const auto body = world.GetComponent<PhysicsBody>(e)->body;
+    ASSERT_TRUE(pw.IsBodyValid(body));
+
+    GameEngine::PhysicsECS::PhysicsStepSystem step;
+    GameEngine::PhysicsECS::PhysicsWritebackSystem writeback;
+    constexpr GameEngine::float32 kFrame = 1.0f / 60.0f;
+    const auto runFrame = [&]
+    {
+        step.Update(world, kFrame);
+        writeback.Update(world, kFrame);
+    };
+    for (int frame = 1; frame <= 10; ++frame)
+    {
+        auto* transform = world.GetComponentForWrite<Transform>(e);
+        *transform = Transform::FromTRS(start + Vector3(0.1f * frame, 0.0f, 0.0f),
+                                        Quaternion::FromAxisAngle(Vector3(0.0f, 1.0f, 0.0f), 0.05f * frame),
+                                        Vector3(1.0f, 1.0f, 1.0f));
+        std::memcpy(world.GetComponentForWrite<WorldTransform>(e)->matrix, transform->matrix, sizeof(transform->matrix));
+        runFrame();
+    }
+    EXPECT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 1u);
+    runFrame();
+
+    const Transform* transform = world.GetComponent<Transform>(e);
+    const auto position = transform->GetPosition();
+    const auto rotation = transform->GetRotation().GetGLM();
+    const GameEngine::Physics::Transform pose = pw.GetBodyTransform(body);
+    EXPECT_EQ(pose.position.x, position.x) << "the stopped body is not on its pose";
+    EXPECT_EQ(pose.position.y, position.y);
+    EXPECT_EQ(pose.position.z, position.z);
+    EXPECT_EQ(pose.rotation.GetGLM().w, rotation.w) << "the stopped body is not on its rotation";
+    EXPECT_EQ(pose.rotation.GetGLM().x, rotation.x);
+    EXPECT_EQ(pose.rotation.GetGLM().y, rotation.y);
+    EXPECT_EQ(pose.rotation.GetGLM().z, rotation.z);
+    const Vector3 linear = pw.GetLinearVelocity(body);
+    const Vector3 angular = pw.GetAngularVelocity(body);
+    EXPECT_EQ(linear.x, 0.0f) << "the stopped body kept a velocity";
+    EXPECT_EQ(linear.y, 0.0f);
+    EXPECT_EQ(linear.z, 0.0f);
+    EXPECT_EQ(angular.x, 0.0f) << "the stopped body kept a spin";
+    EXPECT_EQ(angular.y, 0.0f);
+    EXPECT_EQ(angular.z, 0.0f);
+    EXPECT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 0u) << "the stopped body is still moving";
+
+    GameEngine::ECS::ChangeGate gate{};
+    gate.LastRunVersion = world.GetGlobalSystemVersion();
+    runFrame();
+    int stampedChunks = 0;
+    auto stamped = world.Query<GameEngine::ECS::Read<WorldTransform>>();
+    stamped.Changed<WorldTransform>(gate);
+    stamped.Each([&](const WorldTransform&) { ++stampedChunks; });
+    EXPECT_EQ(stampedChunks, 0) << "an idle frame stamped the resting kinematic body's WorldTransform";
+    EXPECT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 0u);
+}
+
+// The step keeps the kinematic bodies it moved on the last step frame. A new physics world reuses body
+// handles, so that list is dropped when the world changes: a dynamic body in the new world that takes an
+// old moving body's handle is not placed on the old body's target.
+TEST(Physics, KinematicMovedListIsDroppedWhenThePhysicsWorldChanges)
+{
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Physics::MotionType;
+    using GameEngine::Physics::Vector3;
+    using GameEngine::PhysicsECS::PhysicsWorldService;
+
+    GameEngine::PhysicsECS::PhysicsStepSystem step;
+    constexpr GameEngine::float32 kFrame = 1.0f / 60.0f;
+    const Vector3 halfExtents(0.5f, 0.5f, 0.5f);
+    GameEngine::Physics::BodyHandle oldBody;
+    {
+        ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+        auto& pw = PhysicsWorldService::Get();
+        GameEngine::ECS::World world;
+        const auto e = AddBoxBody(world, pw, MotionType::Kinematic, halfExtents, Vector3(0.0f, 0.0f, 0.0f));
+        oldBody = world.GetComponent<PhysicsBody>(e)->body;
+        step.Update(world, kFrame);
+        for (int frame = 1; frame <= 3; ++frame)
+        {
+            SetTransformHeight(world, e, 5.0f * static_cast<GameEngine::float32>(frame));
+            step.Update(world, kFrame);
+        }
+        ASSERT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 1u);
+    }
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    auto& pw = PhysicsWorldService::Get();
+    GameEngine::ECS::World world;
+    const Vector3 start(0.0f, 50.0f, 0.0f);
+    const auto e = AddBoxBody(world, pw, MotionType::Dynamic, halfExtents, start);
+    const auto body = world.GetComponent<PhysicsBody>(e)->body;
+    ASSERT_EQ(body.Value(), oldBody.Value()) << "the new world did not reuse the handle, so the test proves nothing";
+    step.Update(world, kFrame);
+    step.Update(world, kFrame);
+
+    EXPECT_NEAR(pw.GetBodyTransform(body).position.y, start.y, 0.1f) << "the old world's target moved a body in the new world";
+}
+
+
+TEST(Physics, PhysicsInitTagsAKinematicBodyAndUntagsItWhenItsMotionTypeChanges)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+    using GameEngine::Components::KinematicBody;
+    using GameEngine::Components::PhysicsBody;
+    using GameEngine::Components::PhysicsCollider;
+    using GameEngine::Components::SphereColliderShape;
+    using GameEngine::Components::Transform;
+    using GameEngine::Components::WorldTransform;
+
+    ScopedPhysicsWorldService svc(SmallDeterministicSettings());
+    ECS::World world;
+    RegisterPhysicsWorldHooks(world);
+    const ECS::EntityHandle e = world.CreateEntity();
+    world.AddComponentImmediate(e, Transform{});
+    world.AddComponentImmediate(e, WorldTransform{});
+    PhysicsBody authored{};
+    authored.motionType = Physics::MotionType::Kinematic;
+    world.AddComponentImmediate(e, authored);
+    world.AddComponentImmediate(e, PhysicsCollider{});
+    world.AddComponentImmediate(e, SphereColliderShape{});
+
+    PhysicsInitSystem init;
+    RunPhysicsInitFrame(world, init);
+    world.ProcessCommands();
+    ASSERT_TRUE(world.GetComponent<PhysicsBody>(e)->initialized);
+    EXPECT_TRUE(world.HasComponent<KinematicBody>(e)) << "a kinematic body was built without the tag";
+
+    auto* body = world.GetComponentForWrite<PhysicsBody>(e);
+    body->motionType = Physics::MotionType::Dynamic;
+    body->initialized = false;
+    RunPhysicsInitFrame(world, init);
+    world.ProcessCommands();
+    ASSERT_TRUE(world.GetComponent<PhysicsBody>(e)->initialized);
+    EXPECT_FALSE(world.HasComponent<KinematicBody>(e)) << "a dynamic body kept the kinematic tag";
+}
+
+TEST(Physics, TransformDrivenKinematicsPreserveMovingPlatformBackendMotion)
+{
+    using namespace GameEngine;
+    using namespace GameEngine::PhysicsECS;
+    ScopedPhysicsWorldService service(SmallDeterministicSettings());
+    auto& physics = PhysicsWorldService::Get();
+    ECS::World world;
+    const auto entity = AddBoxBody(world, physics, Physics::MotionType::Kinematic,
+                                   Physics::Vector3(0.5f, 0.5f, 0.5f), Physics::Vector3(0.0f, 0.0f, 0.0f));
+    const auto body = world.GetComponent<Components::PhysicsBody>(entity)->body;
+    PhysicsStepSystem step;
+    SetTransformHeight(world, entity, 1.0f);
+    step.Update(world, 1.0f / 60.0f);
+    ASSERT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 1u);
+
+    world.AddComponentImmediate(entity, Components::MovingPlatform{});
+    physics.SetLinearVelocity(body, Physics::Vector3(3.0f, 0.0f, 0.0f));
+    step.Update(world, 1.0f / 60.0f);
+    PhysicsWritebackSystem writeback;
+    writeback.Update(world, 1.0f / 60.0f);
+
+    EXPECT_FLOAT_EQ(physics.GetLinearVelocity(body).x, 3.0f);
+    EXPECT_GT(physics.GetBodyTransform(body).position.x, 0.0f);
+    EXPECT_GT(world.GetComponent<Components::Transform>(entity)->GetPosition().x, 0.0f);
+    EXPECT_EQ(PhysicsWorldService::GetLastKinematicBodiesMoving(), 0u);
 }

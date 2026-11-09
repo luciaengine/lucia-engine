@@ -1,0 +1,12 @@
+---
+title: Typed native input queries
+description: Read input and bind actions through the Input module's script-facing API.
+---
+
+`Input/InputScriptApi.h` declares typed keyboard keys, mouse buttons and axes, gamepad buttons and axes, and modifier flags. Its `Input::Script` functions read the same `InputSystem` that receives host events. Call them from engine-scheduled work.
+
+`IsKeyDown`, `WasKeyPressed`, and `WasKeyReleased` report held and frame-transition state. The mouse-button queries use the same rules. `GetMousePosition`, `IsPointerInWindow`, and `IsWindowFocused` report pointer and focus state. `GetMouseDelta` returns the movement accumulated before the frame's input update and retains that value throughout the frame.
+
+Register an action with `RegisterAction`, then bind a key, mouse button, mouse axis, gamepad button, or gamepad axis. Keyboard and mouse-button bindings accept required and forbidden `ModifierFlags`. `PushContext`, `PopContext`, and `SetContextEnabled` control which registered actions are live. `GetActionState` returns pressed, just-pressed, just-released, and axis-value fields. `ClearBindings` and `RemoveAction` update an existing action's setup.
+
+The generated managed input surface is supplied with the managed bindings port. Native game code can use these APIs directly.

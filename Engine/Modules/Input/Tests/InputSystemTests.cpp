@@ -2013,3 +2013,43 @@ TEST(InputSystemTests, ResetStateForgetsEveryPad)
     EXPECT_FALSE(input.IsGamepadConnected(kSecondPad));
     EXPECT_FLOAT_EQ(input.GetGamepadAxis(kFirstPad, GamepadAxis::LeftX), 0.0f);
 }
+
+TEST(InputSystemTests, MouseDeltaIsTheMovementDeliveredBeforeTheFramesUpdate)
+{
+    InputSystem input;
+    input.OnMouseMove({100.0f, 100.0f});
+    input.OnMouseMove({103.0f, 98.0f});
+    input.OnMouseMove({110.0f, 95.0f});
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(10.0f, -5.0f));
+
+    // A move after the Update belongs to the next frame.
+    input.OnMouseMove({111.0f, 95.0f});
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(10.0f, -5.0f));
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(1.0f, 0.0f));
+
+    // A frame with no movement reads none.
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(0.0f, 0.0f));
+}
+
+TEST(InputSystemTests, MouseDeltaKeepsCountingPastTheWindowEdge)
+{
+    InputSystem input;
+    input.OnMouseMove({1270.0f, 400.0f});
+    input.OnMouseMove({1900.0f, 400.0f});
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(630.0f, 0.0f));
+}
+
+TEST(InputSystemTests, MouseDeltaIgnoresTheJumpOfAPointerEnteringTheWindow)
+{
+    InputSystem input;
+    input.OnMouseMove({10.0f, 10.0f});
+    input.OnMouseLeave();
+    input.OnMouseMove({500.0f, 300.0f});
+    input.OnMouseMove({502.0f, 300.0f});
+    input.Update(0.016f);
+    EXPECT_EQ(input.GetMouseDelta(), Vector2(2.0f, 0.0f));
+}

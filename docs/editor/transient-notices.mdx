@@ -1,0 +1,7 @@
+# Transient notices
+
+Use `EditorUI::TransientNotice` from `UI/Controls/TransientNotice.h` to confirm an action whose result is otherwise hidden, such as copying text. Add the control to a positioned host and call `Show(text, now)` on the UI thread. Call `Tick(now)` from the host update. The notice hides 1.6 seconds after the latest call to `Show`.
+
+The notice requests its stylesheet and loads its XML layout from the editor asset mount. It does not take pointer input. Its default position is the bottom center of its host. Pass a logical pixel offset as the optional third argument to `Show` to place its top edge beside the confirmed action. Omit the offset on the next call to restore the default position.
+
+Set `--ui_transient_notice_align` to `flex-end` in the host stylesheet to align the notice at the right edge. Set `--ui_transient_notice_inset` to control its horizontal inset.
