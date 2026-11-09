@@ -15,6 +15,10 @@
 #include <emscripten/html5.h>
 #endif
 
+#if defined(_WIN32) || defined(__APPLE__)
+#include "Display/DisplayChangeListener.h"
+#endif
+
 #if defined(_WIN32)
 #ifndef OEMRESOURCE
 #define OEMRESOURCE
@@ -167,12 +171,24 @@ namespace {
 #endif
     }
 
+    static bool s_DisplayConfigurationChanged = false;
+#if defined(_WIN32) || defined(__APPLE__)
+    static GameEngine::Platform::DisplayChangeListener s_DisplayChangeListener;
+#endif
+
+    void OnDisplayConfigurationChanged()
+    {
+        GameEngine::Platform::InvalidateMonitors();
+        s_DisplayConfigurationChanged = true;
+    }
+
     void MonitorConfigThunk(GLFWmonitor* monitor, int event)
     {
         const char* name = monitor ? glfwGetMonitorName(monitor) : nullptr;
         Logger::Log::Info("Window: monitor {} '{}'",
                           event == GLFW_CONNECTED ? "connected" : "disconnected",
                           name ? name : "");
+        OnDisplayConfigurationChanged();
     }
 
 #if defined(_WIN32)
@@ -281,6 +297,9 @@ bool Window::Initialize()
     }
 
     glfwSetMonitorCallback(&MonitorConfigThunk);
+#if defined(_WIN32) || defined(__APPLE__)
+    s_DisplayChangeListener.Create(&OnDisplayConfigurationChanged);
+#endif
     s_GlfwInitialized = true;
     return true;
 }
@@ -939,11 +958,18 @@ void Window::PollEvents()
         PollScope() { pollingWindowEvents = true; }
         ~PollScope() { pollingWindowEvents = false; }
     } scope;
+#if !defined(_WIN32) && !defined(__APPLE__)
+    OnDisplayConfigurationChanged();
+#endif
     glfwPollEvents();
-    for (Window* window : s_Windows)
+    if (s_DisplayConfigurationChanged)
     {
-        if (window)
-            window->CheckMonitorChanged();
+        s_DisplayConfigurationChanged = false;
+        for (Window* window : s_Windows)
+        {
+            if (window)
+                window->CheckMonitorChanged();
+        }
     }
 #if defined(__EMSCRIPTEN__)
     for (Window* window : s_Windows)
@@ -991,7 +1017,11 @@ void Window::Terminate()
     if (!s_GlfwInitialized)
         return;
 
+#if defined(_WIN32) || defined(__APPLE__)
+    s_DisplayChangeListener.Destroy();
+#endif
     glfwTerminate();
+    InvalidateMonitors();
     s_GlfwInitialized = false;
 }
 

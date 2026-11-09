@@ -1,0 +1,7 @@
+# Display information
+
+Use `Platform/Display.h` to read monitor information on the main thread. `EnumerateMonitors` returns the monitor list, `GetPrimaryMonitorInfo` returns the primary display, and `GetMonitorInfoForWindow` resolves the display that contains a window.
+
+Windows and macOS keep the monitor list until the operating system reports a display change. The window event pump refreshes window-to-monitor assignments after that change. Linux and the web invalidate the list each frame. Mobile reads the current primary display directly.
+
+Call `InvalidateMonitors` before reading a setting that can change without a display notification, such as the Windows SDR white level. An empty operating-system enumeration retains the last nonempty list and retries on the next query. Terminating the window system invalidates the cache before a later initialization.

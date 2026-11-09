@@ -38,6 +38,14 @@ else()
     list(APPEND PLATFORM_SOURCES Source/SpeechInput_Stub.cpp)
 endif()
 
+if(NOT GE_MOBILE AND NOT EMSCRIPTEN)
+    if(WIN32)
+        list(APPEND PLATFORM_SOURCES Source/Display/DisplayChangeListener_Win32.cpp)
+    elseif(APPLE)
+        list(APPEND PLATFORM_SOURCES Source/Display/DisplayChangeListener_mac.mm)
+    endif()
+endif()
+
 # Platform-specific sources
 if(GE_MOBILE)
     include(Mobile.cmake)
@@ -276,6 +284,26 @@ if(BUILD_TESTING)
                 "$<TARGET_FILE_DIR:PlatformContextMenuTests>/Assets/Icons/"
             COMMENT "Staging menu icon fixtures for PlatformContextMenuTests"
             VERBATIM)
+    endif()
+
+    # The kept monitor list: a frame does not read the OS again; a display change does.
+    # Linux has no display-change listener and reads the list every frame, so no suite.
+    if ((WIN32 OR APPLE) AND NOT GE_MOBILE AND NOT EMSCRIPTEN)
+        add_executable(PlatformDisplayTests Tests/MonitorCacheTests.cpp)
+        target_include_directories(PlatformDisplayTests PRIVATE Source)
+        target_link_libraries(PlatformDisplayTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+        if (WIN32)
+            target_sources(PlatformDisplayTests PRIVATE Tests/MonitorCacheTests_Win32.cpp)
+            target_link_libraries(PlatformDisplayTests PRIVATE User32)
+        else()
+            target_sources(PlatformDisplayTests PRIVATE Tests/MonitorCacheTests_mac.mm)
+            set_target_properties(PlatformDisplayTests PROPERTIES OBJCXX_STANDARD 20 OBJCXX_STANDARD_REQUIRED YES)
+            target_link_libraries(PlatformDisplayTests PRIVATE "-framework Cocoa")
+        endif()
+        ge_set_output_tests(PlatformDisplayTests)
+        ge_stage_runtime_dependencies(PlatformDisplayTests)
+        add_test(NAME PlatformDisplayTests COMMAND PlatformDisplayTests)
+        set_tests_properties(PlatformDisplayTests PROPERTIES RUN_SERIAL TRUE)
     endif()
 
     ge_set_output_tests(PlatformContextMenuTests)
