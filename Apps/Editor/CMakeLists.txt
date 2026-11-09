@@ -1061,6 +1061,7 @@ set(EDITOR_SDK_SOURCES
 	Source/InspectorRegistry.cpp
     Source/UI/ControlLayoutLoader.cpp
     Source/UI/Controls/TransientNotice.cpp
+    Source/UI/Controls/PictureChoiceField.cpp
 	Source/Picking/EditorPickProviders.cpp
 	Source/Assets/AssetSearchProvider.cpp
 	Source/UI/AssetBoundDockPanel.cpp
