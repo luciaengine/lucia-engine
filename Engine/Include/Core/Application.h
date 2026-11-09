@@ -300,6 +300,8 @@ public:
      * @brief Request application exit
      */
     void RequestExit() { m_ShouldExit = true; }
+    // The host can end a game session while keeping its application open.
+    virtual void RequestGameExit(int exitCode);
 
     /**
      * @brief Set process exit code returned by Run()

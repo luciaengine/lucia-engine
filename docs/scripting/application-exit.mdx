@@ -1,0 +1,5 @@
+# Request game exit
+
+Include `Platform/ApplicationScriptApi.h` and call `Platform::Script::RequestExit(exitCode)` from native gameplay on the main thread. A standalone application finishes its current frame and follows its normal shutdown path. Its `Run()` result is the last requested exit code.
+
+In the editor, the request stops play after running script callbacks return. It uses the same change review as the Stop button and keeps the editor open. Requests outside play do nothing. An application host can override `Application::RequestGameExit` to define its own game-session exit policy.

@@ -10,6 +10,7 @@
 #include "Core/Application.h"
 #include "Core/Engine.h"
 #include "Platform/Environment.h"
+#include "Platform/ApplicationScriptApi.h"
 #include "Scripting/ScriptsConfig.h"
 
 #include "EngineLogCapture.h"
@@ -274,4 +275,44 @@ TEST(ApplicationTick, FrameCapSwitchHoldsTheFrame)
     ScopedFrameCapEnv frameCap("30");
     EXPECT_GT(CountFramesHeldByTheLimiter("TickContract.FrameCapSwitch", 5), 0)
         << "GE_FRAME_CAP=30 must hold frames that do no work";
+}
+
+TEST(ApplicationTick, GameExitRequestUsesTheApplicationsExitCode)
+{
+    GameEngine::ApplicationConfig config{};
+    CountingApp application(config);
+    GameEngine::Platform::Script::RequestExit(-7);
+    EXPECT_TRUE(application.ShouldExit());
+    EXPECT_EQ(application.GetExitCode(), -7);
+    EXPECT_FALSE(application.Tick());
+    EXPECT_EQ(application.UpdateCalls, 0);
+    GameEngine::Platform::Script::RequestExit(0);
+    EXPECT_EQ(application.GetExitCode(), 0);
+}
+
+namespace
+{
+class EmbeddedExitApp : public CountingApp
+{
+public:
+    using CountingApp::CountingApp;
+    int ExitRequests = 0;
+    int RequestedCode = 0;
+    void RequestGameExit(int code) override
+    {
+        ++ExitRequests;
+        RequestedCode = code;
+    }
+};
+}
+
+TEST(ApplicationTick, GameExitRequestUsesTheHostPolicy)
+{
+    GameEngine::ApplicationConfig config{};
+    EmbeddedExitApp application(config);
+    GameEngine::Platform::Script::RequestExit(23);
+    EXPECT_EQ(application.ExitRequests, 1);
+    EXPECT_EQ(application.RequestedCode, 23);
+    EXPECT_FALSE(application.ShouldExit());
+    EXPECT_EQ(application.GetExitCode(), 0);
 }

@@ -159,6 +159,7 @@ class EditorApplication : public Application
 
     explicit EditorApplication(const ApplicationConfig& config);
     ~EditorApplication() override;
+    void RequestGameExit(int exitCode) override;
 
     // Configure Editor-specific command line options after construction but before Initialize().
     void ConfigureFromCommandLine(const Editor::Startup::EditorCommandLineArgs& args);

@@ -1968,6 +1968,12 @@ void EditorApplication::CreateColorPickerPresenter()
     }
 }
 
+void EditorApplication::RequestGameExit(int)
+{
+    if (m_PlayMode)
+        m_PlayMode->RequestExitPlayMode();
+}
+
 void EditorApplication::CreateRuntimeInput()
 {
     // The game's sink sits ahead of editor focus navigation and editor actions in
