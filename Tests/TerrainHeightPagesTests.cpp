@@ -187,6 +187,41 @@ TEST(TerrainHeightPages, ATerrainDirtiesItsRectWhenItsSourceSwitchesOrItsPagesCh
     EXPECT_EQ(pages.TableWords(request.Terrain, version), nullptr);
 }
 
+TEST(TerrainHeightPages, ReturningFromCpuOnlyPagingRestoresTheTableOfRetainedGpuPages)
+{
+    TerrainHeightPages pages(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.TableWordCap});
+    PagedTerrainRequest request = FlatTileRequest();
+    const Mathematics::Vector3 camera{128.0f, 10.0f, 128.0f};
+    const PageLevelView view = MakePageLevelView(kPageLevelReferenceRows, 1.0f, 11.0f);
+    pages.Update(1, 1.0f / 60.0f, false, 2);
+    uint32 uploads = 0;
+    for (uint64 frame = 2; frame < 62; ++frame)
+    {
+        pages.Request(request, {&camera, 1}, view);
+        pages.Update(frame, 1.0f / 60.0f, false, 2);
+        uploads += static_cast<uint32>(pages.Uploads().size());
+    }
+    ASSERT_EQ(uploads, 14u) << "the pinned pyramid is resident and its arrival fades have settled";
+    uint64 version = 0;
+    const auto* words = pages.TableWords(request.Terrain, version);
+    ASSERT_NE(words, nullptr);
+    const std::vector<uint32> residentTable = *words;
+
+    // A reopened terrain waits for its modifiers on the CPU before drawing its pages again.
+    ++request.TerrainGeneration;
+    request.GpuPages = false;
+    pages.Request(request, {&camera, 1}, view);
+    pages.Update(62, 1.0f / 60.0f, false, 2);
+    EXPECT_EQ(pages.TableWords(request.Terrain, version), nullptr);
+    request.GpuPages = true;
+    pages.Request(request, {&camera, 1}, view);
+    pages.Update(63, 1.0f / 60.0f, false, 2);
+    EXPECT_TRUE(pages.Uploads().empty()) << "retained pages need no upload or residency transition";
+    words = pages.TableWords(request.Terrain, version);
+    ASSERT_NE(words, nullptr);
+    EXPECT_EQ(*words, residentTable) << "every retained page and settled fade must return to the GPU table";
+}
+
 TEST(TerrainHeightPages, AnOverlayOfRebuiltModifierDataRewritesEveryPageTheOldOverlayReached)
 {
     TerrainHeightPages pages(nullptr, nullptr, HeightPageProfile{64, kDesktopHeightPages.TableWordCap});
