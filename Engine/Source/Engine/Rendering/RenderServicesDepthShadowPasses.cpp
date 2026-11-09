@@ -222,6 +222,12 @@ FeatureDeclareContext RenderServices::MakeFeatureDeclareContext(
     ctx.WorldAlreadyDeclared = ViewFrameRGFor(frame, viewId).WorldDeclared;
     ctx.ViewNeedsCascades = ViewNeedsShadowCascadePasses(viewId);
     ctx.HasTransmissiveCaster = HasTransmissiveCasterInView(viewId);
+    if (ctx.ViewNeedsCascades && cascadeCount != 0u)
+    {
+        const auto submissions = m_WorldDrawBuilder.GetShadowSubmissionStates(viewId);
+        ctx.CascadeMaterialContentKey = submissions.All.MaterialContentKey;
+        ctx.RigidCascadeMaterialContentKey = submissions.Rigid.MaterialContentKey;
+    }
 
     // Punctual (area/spot/point) snapshots resolved ONCE per view and frame.
     // Present only under the gate: active render layers + shadow casters + a
@@ -338,6 +344,8 @@ Rendering::RenderGraph::RGTexture RenderServices::ImportShadowMapArrayRG(
     td.format = static_cast<uint32_t>(Rendering::TextureFormat::D32_FLOAT);
     td.usage = static_cast<uint32_t>(Rendering::TextureUsage::DepthStencil)
              | static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource);
+    if (feature->IsRigidCascadeCacheEnabled())
+        td.usage |= static_cast<uint32_t>(Rendering::TextureUsage::TransferDst);
     td.sampleCount = 1;
     td.flags = Rendering::TextureCreateFlags::ForceArrayView;
     const std::string name =
@@ -477,10 +485,12 @@ void RenderServices::SetPointShadowBudget(uint32_t budget)
 
 void RenderServices::NotifyShadowCasterContentChanged(
     uint64 worldId, std::span<const ShadowCasterChangeSphere> changedCasterSpheres,
-    bool unattributed)
+    bool unattributed, bool affectsRigidCasters)
 {
     ShadowCasterChanges& changes = m_ShadowCasterChanges[worldId];
     ++changes.Version;
+    if (affectsRigidCasters)
+        ++changes.RigidVersion;
     changes.Unattributed = unattributed;
     // The stored set explains exactly the advance to `Version`; the planner
     // applies it only across that single step (any gap globalizes there).
@@ -667,7 +677,7 @@ DepthDrawServices RenderServices::MakeDepthDrawServices()
         m_WorldDrawBuilder, m_ViewRegistry, m_GpuScene.get(), m_MeshGPURegistry,
         m_DrawStreamBuilder.get(), m_MaterialSystem, m_Device, m_CullMode, m_FrontFace,
         MeshPoolGroupSpanForDraws(), &DepthUnderDraw(),
-        m_Profile.IsCompat() ? &m_CpuDrawStream : nullptr};
+        m_Profile.IsCompat() ? &m_CpuDrawStream : nullptr, m_Textures.get()};
 }
 
 DepthUnderDrawTracker& RenderServices::DepthUnderDraw()

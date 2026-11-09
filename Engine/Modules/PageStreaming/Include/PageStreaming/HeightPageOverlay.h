@@ -1,7 +1,8 @@
 #pragma once
 
 #include "PageStreaming/PageAddress.h"
-#include "PageStreaming/PageStoreFormat.h"
+#include "PageStreaming/PageSampleRect.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
 #include "Types/Types.h"
 
 #include <span>
@@ -9,19 +10,6 @@
 
 namespace GameEngine::PageStreaming
 {
-
-/// An inclusive rect of one level's samples.
-struct PageSampleRect
-{
-    uint32 MinX = 0;
-    uint32 MinZ = 0;
-    uint32 MaxX = 0;
-    uint32 MaxZ = 0;
-
-    uint32 Width() const { return MaxX - MinX + 1u; }
-    uint32 Height() const { return MaxZ - MinZ + 1u; }
-    bool Contains(uint32 x, uint32 z) const { return x >= MinX && x <= MaxX && z >= MinZ && z <= MaxZ; }
-};
 
 /// True when page `address` (its apron included) reads a level-0 sample of `level0Rect`.
 bool PageReadsLevel0Rect(const PageAddress& address, const PageSampleRect& level0Rect);

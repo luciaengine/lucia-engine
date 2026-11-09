@@ -396,6 +396,8 @@ void ShadowMapRenderFeature::OnDeviceRebuilt(Rendering::IDevice* device)
     m_PyramidBindlessByView.clear();
     m_MinMaxPyramid.OnDeviceRebuilt();
     m_CascadeShadowCache.Reset();
+    m_RigidCascadeCache.Reset();
+    m_RigidCascadeCertificates.Clear();
     // Retained cascade layers died with the device; the motion round-robin
     // must not defer against (or upload fits for) content that no longer
     // exists.
@@ -1756,6 +1758,8 @@ void ShadowMapRenderFeature::WriteTerrainShadowMap(ViewId viewId, RenderServices
     out.terrainShadowSource[1] = map.HeightBindlessIndex;
     out.terrainShadowSource[2] = 1u;
     out.terrainShadowSource[3] = map.MapSide;
+    out.terrainShadowField[0] = map.FieldLitBindlessIndex;
+    out.terrainShadowField[1] = map.FieldLitLevels;
 }
 
 Rendering::TextureHandle ShadowMapRenderFeature::GetShadowMapTexture(
@@ -1807,6 +1811,8 @@ void ShadowMapRenderFeature::AdoptPooledShadowMap(Rendering::ViewId viewId,
         // array can realloc on the same config-change frames; clearing the
         // whole view covers both slot families.)
         m_CascadeShadowCache.InvalidateView(viewId);
+        m_RigidCascadeCache.InvalidateView(viewId);
+        m_RigidCascadeCertificates.Erase(viewId);
         // Same for the motion round-robin: no content fits to sample or defer
         // against — the fresh image renders (FirstRender) and reseeds.
         m_CascadeContentFit.erase(viewId);

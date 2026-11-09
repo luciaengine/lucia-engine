@@ -22,6 +22,7 @@
 #include "Engine/Rendering/Material.h"
 #include "Engine/Rendering/MaterialRegistry.h"
 #include "Engine/Rendering/MaterialSystem.h"
+#include "ScopedShaderCompileTarget.h"
 #include "Engine/Rendering/PipelineVariantCache.h"
 #include "Engine/Rendering/RenderServices.h"
 #include "Rendering/Core/Device.h"
@@ -703,6 +704,41 @@ TEST_F(MaterialPipelineCompilationTest, AsyncPublish_FailedCompileDoesNotClobber
            "something newer already published";
 }
 
+TEST_F(MaterialPipelineCompilationTest, FailedBasePublicationCannotRestoreAnotherTarget)
+{
+    TestSupport::ScopedShaderCompileTarget restore{CurrentShaderCompileTarget()};
+    const ShaderCompileTarget originalTarget = CurrentShaderCompileTarget();
+    for (const bool flipBeforeAdmission : {false, true})
+    {
+        ApplyShaderCompileProfile(originalTarget);
+        MaterialDocument document{};
+        document.materialName = "FailedBaseTarget";
+        document.lightingModel = "StandardPBR";
+        document.surfaceShader = "Surfaces/standard_pbr.glsl";
+        const GUID guid = GUID::Generate();
+        Material* material = m_rs->Materials().RegisterMaterialFromDocument(guid, document);
+        ASSERT_NE(material, nullptr);
+        const auto lastGood = material->GetGraphicsPipelineId();
+        ASSERT_TRUE(lastGood.IsValid());
+        ShaderCacheKey captured{};
+        captured.VariantKey = material->GetVariantKey();
+        captured.Source.SurfaceShaderPath = document.surfaceShader;
+        captured.Source.MaterialAssetPath = material->GetMaterialAssetPath();
+        Material::TestFactory::SetGraphicsPipelineId(*material, {});
+        ShaderCompileTarget later = captured.Target;
+        later.Compatibility = !later.Compatibility;
+        if (flipBeforeAdmission)
+        {
+            ApplyShaderCompileProfile(later);
+            captured.Target = later;
+        }
+        m_rs->Materials().EnqueueBasePipelinePublishForTesting(guid, {}, nullptr, captured, lastGood);
+        ApplyShaderCompileProfile(later);
+        m_rs->Materials().FlushAsyncMaterialCompiles();
+        EXPECT_FALSE(material->GetGraphicsPipelineId().IsValid());
+    }
+}
+
 namespace
 {
 // A throwaway project root holding one declared surface, "declared.glsl",
@@ -843,6 +879,15 @@ TEST_F(MaterialPipelineCompilationTest, RecompileMovesVersionOnlyAndParameterEdi
     ASSERT_NE(mat, nullptr);
     ASSERT_TRUE(mat->GetGraphicsPipelineId().IsValid());
 
+    auto& draws = m_rs->GetWorldDrawBuilder();
+    WorldSubmissionRecord caster{};
+    caster.viewId = 83u;
+    caster.material = mat;
+    caster.flags = kSubmissionFlagCastShadows;
+    draws.Submit(std::span<const WorldSubmissionRecord>(&caster, 1u));
+    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry());
+    const auto beforeRecompile = draws.GetShadowSubmissionStates(caster.viewId);
+
     const uint32_t versionBeforeRecompile = mat->GetVersion();
     const uint32_t revisionBeforeRecompile = mat->GetContentRevision();
     m_rs->Materials().RecompileMaterialPipeline(guid, doc);
@@ -852,6 +897,10 @@ TEST_F(MaterialPipelineCompilationTest, RecompileMovesVersionOnlyAndParameterEdi
         << "a recompile must bump the version so stale variant-cache rows retire";
     EXPECT_EQ(mat->GetContentRevision(), revisionBeforeRecompile)
         << "recompiling an unchanged document is not a content change";
+    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry());
+    const auto afterRecompile = draws.GetShadowSubmissionStates(caster.viewId);
+    EXPECT_NE(afterRecompile.All.MaterialContentKey, beforeRecompile.All.MaterialContentKey);
+    EXPECT_NE(afterRecompile.Rigid.MaterialContentKey, beforeRecompile.Rigid.MaterialContentKey);
 
     const uint32_t versionBeforeEdit = mat->GetVersion();
     const uint32_t revisionBeforeEdit = mat->GetContentRevision();
@@ -859,6 +908,10 @@ TEST_F(MaterialPipelineCompilationTest, RecompileMovesVersionOnlyAndParameterEdi
     EXPECT_GT(mat->GetContentRevision(), revisionBeforeEdit);
     EXPECT_EQ(mat->GetVersion(), versionBeforeEdit)
         << "a parameter edit must not read as a recompile";
+    draws.BuildBatchKeys(m_rs->GetMeshGPURegistry());
+    const auto afterEdit = draws.GetShadowSubmissionStates(caster.viewId);
+    EXPECT_NE(afterEdit.All.MaterialContentKey, afterRecompile.All.MaterialContentKey);
+    EXPECT_NE(afterEdit.Rigid.MaterialContentKey, afterRecompile.Rigid.MaterialContentKey);
 }
 
 // User keywords: an in-place .material hot-reload that flips the keyword set must
@@ -2679,7 +2732,9 @@ TEST_F(MaterialPipelineCompilationTest, ConcreteColdPreparationDefersBackendBuil
         EXPECT_FALSE(variants.ServedGeneration(materialIndex, ServedPassClass::Color).has_value());
         EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
         if (held)
+        {
             EXPECT_TRUE(held->Jobs.empty()) << "preparation must only enqueue for the frame-begin drain";
+        }
         variants.PruneSettledConcreteWarmWaits();
         if (held)
         {
@@ -2820,7 +2875,9 @@ TEST_F(MaterialPipelineCompilationTest, SpecializedColdPreparationDefersBothBack
         EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(specialized, format).IsValid());
         EXPECT_FALSE(m_device->TryGetWarmGraphicsPipeline(published.CurrentPipelineId, format).IsValid());
         if (held)
+        {
             EXPECT_TRUE(held->Jobs.empty());
+        }
 
         variants.PruneSettledConcreteWarmWaits();
         if (held)
@@ -3010,6 +3067,22 @@ TEST_F(MaterialPipelineCompilationTest, SpecializedPreviousFallbackKeepsItsMetad
         EXPECT_TRUE(held.Jobs.empty());
         EXPECT_FALSE(variants.ServedGeneration(materialIndex, ServedPassClass::Color).has_value());
     }
+    const ShaderCompileTarget originalTarget = CurrentShaderCompileTarget();
+    ShaderCompileTarget otherTarget = originalTarget;
+    otherTarget.Compatibility = !originalTarget.Compatibility;
+    {
+        TestSupport::ScopedShaderCompileTarget changedTarget{otherTarget};
+        frame.Execute();
+        EXPECT_FALSE(preparation.SelectedPipeline.IsValid());
+        EXPECT_FALSE(preparation.HasSelectedUnit);
+        EXPECT_TRUE(held.Jobs.empty());
+    }
+    frame.Execute();
+    EXPECT_TRUE(preparation.HasSelectedUnit);
+    EXPECT_EQ(preparation.SelectedPipeline, warmPrevious);
+    EXPECT_EQ(preparation.SelectedUnit.PipelineId, republished.PreviousPipelineId);
+    EXPECT_EQ(preparation.SelectedUnit.VariantMeta, originalUnit.VariantMeta);
+
 }
 
 TEST_F(MaterialPipelineCompilationTest, ConcreteWarm_MaterialWaitsWhileItsBackendBuildIsPending)

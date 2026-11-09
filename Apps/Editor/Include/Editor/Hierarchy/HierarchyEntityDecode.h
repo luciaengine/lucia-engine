@@ -6,9 +6,23 @@
 #include "UI/Interaction/Payload.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace GameEngine::Editor
 {
+
+/// Decodes every packed entity handle carried by a hierarchy drag.
+inline std::vector<ECS::EntityHandle> DecodeHierarchyEntities(const UI::Interaction::DropRequest& request)
+{
+    std::vector<ECS::EntityHandle> entities;
+    const auto* payload = request.payload.TryGet<HierarchyEntityDragPayload>();
+    if (!payload)
+        return entities;
+    entities.reserve(payload->treeIds.size());
+    for (const auto treeId : payload->treeIds)
+        entities.emplace_back(static_cast<std::uint32_t>(treeId));
+    return entities;
+}
 
 // Decode the first entity of a HierarchyEntityDragPayload. Mirrors
 // HierarchyDataProvider::Encode: raw = index | (version << kEntityIndexBits).

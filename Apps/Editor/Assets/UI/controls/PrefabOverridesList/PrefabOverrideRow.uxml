@@ -1,0 +1,19 @@
+<!-- One override of the Overrides list (PrefabOverridesList.uxml): the icon of its kind, its label, the pill, the
+     prefab's value with a swatch for a color, and its actions in fixed slots: Revert, Apply, then Discard on a stale
+     row. Each action stays hidden until PrefabOverridesList.cpp gives it a use; the ids are the contract with it. -->
+<UIElement class="prefab-override-row">
+  <UIElement id="prefab-override-icon" class="prefab-override-icon" />
+  <Label id="prefab-override-label" class="prefab-override-label" />
+  <Label id="prefab-override-pill" class="inspector-section-header-badge inspector-section-header-badge-override prefab-override-pill" />
+  <Label id="prefab-override-value" class="prefab-override-value" />
+  <UIElement id="prefab-override-swatch" class="prefab-override-swatch hidden" />
+  <UIElement class="prefab-override-actions">
+    <Button id="prefab-override-revert" class="icon-button hidden">
+      <UIElement class="prefab-override-action-icon prefab-override-action-icon-revert" />
+    </Button>
+    <Button id="prefab-override-apply" class="icon-button hidden">
+      <UIElement class="prefab-override-action-icon prefab-override-action-icon-apply" />
+    </Button>
+    <Button id="prefab-override-discard" class="small secondary prefab-override-discard hidden" text="Discard" />
+  </UIElement>
+</UIElement>

@@ -2,7 +2,7 @@
 
 #include "Engine/Build/AssetCollector.h"
 
-#include "PageStreaming/HeightStoreCache.h"
+#include "PageStreaming/Height/HeightStoreCache.h"
 #include "PageStreaming/TerrainPageContainer.h"
 #include "TerrainECS/RawHeightmap.h"
 

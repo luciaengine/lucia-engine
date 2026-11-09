@@ -1,29 +1,24 @@
-// CBT vertex output modifier (graphics side of the CBT/LEB terrain renderer).
-// Included by adapter_vertex.glsl via GE_VERTEX_MODIFIER_PATH when the material's
-// customVertexShader=true (which the clamp turns into HAS_VERTEX_OUTPUT_MODIFIER +
-// CUSTOM_VERTEX_SHADER). There is NO vertex buffer: geometry is decoded entirely
-// from the CBT SSBOs the compute update wrote this frame.
-//
-// Draw contract (plan §8 C3/C6): the camera forward pass issues DrawIndexedIndirectCount
-// over the VISIBLE bisector stream (Classify frustum-culls into it) with an identity
-// index buffer, so gl_VertexIndex walks 0..(3*visibleBisectors-1). Each run of three
-// consecutive vertex ids is one bisector triangle:
-//   triangle = gl_VertexIndex / 3     -> bisector slot via IndicesVisible[triangle]
-//   corner   = gl_VertexIndex % 3     -> which of the LEB corners (0,1,2)
-//
-// C4: the compute VertexEval already displaced each corner to its real WORLD
-// position (height sampled from the SAME terrain heightmap CDLOD samples) and stored
-// the terrain UV alongside. We read those positions directly — no per-draw params on
-// the graphics side (plan §8 C4). We TRUST VertexEval (do not re-derive the LEB or
-// re-sample height here).
-//
-// Set 2 (the DrawBindings route terrain uses): CBT_DESCRIPTOR_SET=2 puts the two
-// SSBOs on set 2, resolved by the MaterialBinder from DrawBindings by instance
-// name (gIdxVis / gVertex). CBT_GRAPHICS_INCLUDE keeps the include int64-free and
-// strips every compute-only write/atomic helper (plan §9 silent-null-variant trap).
+// The vertex modifier reads evaluated positions/UVs from CBT storage buffers; no vertex buffer is bound.
+// Each three vertex indices address one visible bisector and its three corners.
+// Set 2 binds those streams plus the draw-level/height chain; far planar corners filter by distance, near corners retain cached bits.
 #define CBT_GRAPHICS_INCLUDE
 #define CBT_DESCRIPTOR_SET 2
 #include "cbt_layout.glsl"
+
+#if defined(CBT_DRAW_HEIGHT_CHAIN)
+// Choose the corner height from its distance-filtered chain level, or retain its cached Y if disabled or mismatched.
+// The rule depends only on shared UV, cached position and frame eye, so neighboring facets share one height.
+float CBT_DrawnCornerHeight(vec3 pos, vec2 uv)
+{
+    CBTDrawLevelParamsData p = gCbtDrawLevel.Params;
+    if (!(p.eye.w > 0.0) || gCbtChain.Words[0] != p.lattice.x)
+        return pos.y;
+    precise float d = distance(pos, p.eye.xyz);
+    float lambda = CBT_ChainLevel(d, p.eye.w);
+    return CBT_ChainDrawnHeight(uv.x, uv.y, pos.y, lambda, p.lattice.x & 0xFFFFu, p.lattice.x >> 16u,
+                                gCbtChain.Words[1], p.height.x, p.height.y);
+}
+#endif
 
 void ModifyVertex(inout VertexOutput v, InstanceData inst)
 {
@@ -57,6 +52,12 @@ void ModifyVertex(inout VertexOutput v, InstanceData inst)
         v.sector = CBT_UnpackCornerSector(packedSector);
         v.useSector = true;
     }
+#if defined(CBT_DRAW_HEIGHT_CHAIN)
+    else
+    {
+        v.position.y = CBT_DrawnCornerHeight(pos, uv);
+    }
+#endif
     v.normal = vec3(0.0, 1.0, 0.0);              // placeholder; the surface samples the normalmap
     v.uv0 = uv;                                  // terrain UV: normalmap + future splat lookups
     v.custom0 = vec4(float(slot), 0.0, 0.0, vd.meta.w); // .x = slot (debug), .w = normalmap index

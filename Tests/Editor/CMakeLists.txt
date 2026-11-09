@@ -5,6 +5,30 @@
 # the new UI module via AssetRuntime's ParserRegistry (UILayoutAsset/UIStyleAsset
 # registration).
 set(EDITOR_TEST_SOURCES
+    PrefabPlaceTests.cpp
+    PrefabPropagationTests.cpp
+    PrefabHierarchyTests.cpp
+    ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests/SharedHeadlessDevice.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/DefaultComponentInspector.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Editor/Hierarchy/HierarchyEntityIcon.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabBar.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabEditorRegistration.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabHierarchyRows.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabInstanceDescriptions.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabRemovedComponents.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabService.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabThumbnailHandler.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/UnpackPrefabCommand.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/ApplyRevert/ApplyPrefabOverrideCommand.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/ApplyRevert/PrefabOverrideMenu.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/CreatePrefab/CreatePrefabCommand.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/CreatePrefab/CreatePrefabDialog.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabOverridesList/DiscardStaleOverrideCommand.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabOverridesList/PrefabOverridesList.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Prefabs/PrefabOverridesList/PrefabOverridesListModel.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetsFolderDropRegistry.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetPlacementRegistry.cpp
+    ${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UndoRedo/SceneViewDropUndoCommand.cpp
     LogPanelTests.cpp
     TopToolbarIconTests.cpp
     ${CMAKE_SOURCE_DIR}/Engine/Modules/UI/Tests/UITestShaderSetup.cpp
@@ -263,6 +287,10 @@ set(EDITOR_TEST_SOURCES
 	# so the rule an author reads is checkable without a running editor.
 	SubmeshLodProvenanceTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/SubmeshLodProvenance.cpp
+	BoneLODTreeProviderTests.cpp
+	ModelBoneLODSectionTests.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/BoneLOD/BoneLODTreeProvider.cpp
+	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/BoneLOD/ModelBoneLODSection.cpp
 	# The sky's Day of year field: a typed date reads as the day it falls on.
 	DayOfYearTextTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Inspectors/DayOfYearText.cpp
@@ -850,6 +878,7 @@ set(EDITOR_TEST_SOURCES
 	# sub-heading its height, which no structural check can see. Lays the real widgets out over
 	# the real editor stylesheets, so the section widget is compiled in rather than scanned.
 	InspectorSectionHeaderLayoutTests.cpp
+	InspectorEntityHeaderLayoutTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/UI/InspectorSection.cpp
 	# The material inspector's row rhythm, measured the same way: every section bar, row and line
 	# one row gap below the last, open or closed, in the entity inspector and the asset view.
@@ -886,6 +915,7 @@ set(EDITOR_TEST_SOURCES
 	# loader + real TerrainExtractionSystem against a Vulkan device, asserting on the mapped
 	# table SSBO bytes. Fixture: Engine/Tests/Fixtures/TerrainMatlibScene (StageTestAssets).
 	TerrainMaterialLibraryEditorSceneTests.cpp
+	TerrainHeightmapExtractionTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Terrain/TerrainMaterialLibraryMint.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/AssetCreation.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/Assets/EntityMaterialTextureAssign.cpp
@@ -1803,6 +1833,9 @@ if(TARGET EditorTests)
 	ge_stage_test_asset(EditorTests
 	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/InspectorNotice/InspectorNotice.uxml"
 	    "Assets/UI/controls/InspectorNotice/InspectorNotice.uxml")
+	ge_stage_test_asset(EditorTests
+	    "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/inspectors/BoneLOD/ModelBoneLODSection.uxml"
+	    "Assets/UI/inspectors/BoneLOD/ModelBoneLODSection.uxml")
 
 	# Undo History reads its layouts from the editor install-assets root.
 	foreach(layout UndoHistory HistoryRevision HistoryLane)
@@ -2113,6 +2146,18 @@ set_property(TARGET EditorTests APPEND PROPERTY LINK_DEPENDS
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/EditorTopToolbar.css"
     "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/controls/EditorTopToolbar.uxml")
 
+# Prefab controls load their layouts from the editor's staged asset mount.
+foreach(layout
+    controls/CreatePrefabDialog/CreatePrefabDialog
+    controls/PrefabBar/PrefabBar
+    controls/PrefabOverridesList/PrefabOverridesList
+    controls/PrefabOverridesList/PrefabOverrideGroup
+    controls/PrefabOverridesList/PrefabOverrideRow
+    inspectors/EntityHeader/EntityHeader)
+    ge_stage_test_asset(EditorTests
+        "${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/${layout}.uxml"
+        "Assets/UI/${layout}.uxml")
+endforeach()
 # Profile authoring, shared working copies and nonpersistent sky scrubbing.
 add_executable(DayCycleEditorTests
 	DayCycleWindowBindingTests.cpp

@@ -23,7 +23,6 @@ namespace
 {
 
 using ComponentBytes = std::vector<std::uint8_t>;
-using EntityComponentBytes = std::vector<std::pair<ECS::ComponentTypeId, ComponentBytes>>;
 
 // One component the edit touched: its bytes before and after, absent on the side where the
 // entity did not carry it.
@@ -169,6 +168,8 @@ private:
     std::vector<ComponentChange> m_Changes;
 };
 
+} // namespace
+
 EntityComponentBytes CaptureEntityComponents(const ECS::World& world, ECS::EntityHandle entity)
 {
     EntityComponentBytes components;
@@ -186,7 +187,12 @@ EntityComponentBytes CaptureEntityComponents(const ECS::World& world, ECS::Entit
     return components;
 }
 
-} // namespace
+void RestoreEntityComponents(ECS::World& world, ECS::EntityHandle entity, const EntityComponentBytes& captured,
+                             EditorChangeNotifications* notifications)
+{
+    const auto changes = DiffEntityComponents(CaptureEntityComponents(world, entity), captured);
+    ApplyComponentChanges(world, entity, changes, &ComponentChange::After, notifications);
+}
 
 bool CommitEntityComponentsEdit(ECS::World& world, ECS::EntityHandle entity, UndoRedoService* undo,
                                 EditorChangeNotifications* notifications, const std::string& label,

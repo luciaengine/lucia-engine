@@ -3099,9 +3099,29 @@ void VulkanCommandList::FillBuffer(BufferHandle dst, size_t offset, size_t size,
 
 void VulkanCommandList::CopyTexture(TextureHandle src, TextureHandle dst)
 {
+    RecordTextureCopy(src, dst, 0);
+}
+
+bool VulkanCommandList::CopyDepthArrayLayer(TextureHandle src, TextureHandle dst, uint32_t layer)
+{
+    if (src == dst || m_Device->GetTextureFormat(src) != TextureFormat::D32_FLOAT ||
+        m_Device->GetTextureFormat(dst) != TextureFormat::D32_FLOAT ||
+        m_Device->GetTextureSampleCount(src) != 1u || m_Device->GetTextureSampleCount(dst) != 1u ||
+        layer >= m_Device->GetTextureArrayLayers(src) || layer >= m_Device->GetTextureArrayLayers(dst))
+        return false;
+    const VkExtent3D srcExtent = m_Device->GetVkImageExtent(src);
+    const VkExtent3D dstExtent = m_Device->GetVkImageExtent(dst);
+    if (srcExtent.width != dstExtent.width || srcExtent.height != dstExtent.height ||
+        srcExtent.depth != 1u || dstExtent.depth != 1u)
+        return false;
+    return RecordTextureCopy(src, dst, layer);
+}
+
+bool VulkanCommandList::RecordTextureCopy(TextureHandle src, TextureHandle dst, uint32_t layer)
+{
     if (m_CommandBuffer == VK_NULL_HANDLE || !m_IsRecording)
     {
-        return;
+        return false;
     }
 
     VkImage srcImage = m_Device->GetVkImage(src);
@@ -3118,13 +3138,13 @@ void VulkanCommandList::CopyTexture(TextureHandle src, TextureHandle dst)
         VkImageCopy copyRegion{};
         copyRegion.srcSubresource.aspectMask = GetVkImageAspectFlags(src);
         copyRegion.srcSubresource.mipLevel = 0;
-        copyRegion.srcSubresource.baseArrayLayer = 0;
+        copyRegion.srcSubresource.baseArrayLayer = layer;
         copyRegion.srcSubresource.layerCount = 1;
         copyRegion.srcOffset = {0, 0, 0};
 
         copyRegion.dstSubresource.aspectMask = GetVkImageAspectFlags(dst);
         copyRegion.dstSubresource.mipLevel = 0;
-        copyRegion.dstSubresource.baseArrayLayer = 0;
+        copyRegion.dstSubresource.baseArrayLayer = layer;
         copyRegion.dstSubresource.layerCount = 1;
         copyRegion.dstOffset = {0, 0, 0};
 
@@ -3151,7 +3171,7 @@ void VulkanCommandList::CopyTexture(TextureHandle src, TextureHandle dst)
         u.Layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         u.BaseMip = 0;
         u.LevelCount = 1;
-        u.BaseLayer = 0;
+        u.BaseLayer = layer;
         u.LayerCount = 1;
         u.AspectMask = GetVkImageAspectFlags(src);
         m_UsedResources.push_back(u);
@@ -3167,11 +3187,12 @@ void VulkanCommandList::CopyTexture(TextureHandle src, TextureHandle dst)
         u.Layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         u.BaseMip = 0;
         u.LevelCount = 1;
-        u.BaseLayer = 0;
+        u.BaseLayer = layer;
         u.LayerCount = 1;
         u.AspectMask = GetVkImageAspectFlags(dst);
         m_UsedResources.push_back(u);
     }
+    return srcImage != VK_NULL_HANDLE && dstImage != VK_NULL_HANDLE;
 }
 
 void VulkanCommandList::BeginEvent(const char* name)
@@ -4660,7 +4681,7 @@ void VulkanCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, T
     // command-list-local tracking, which for a fresh list means UNDEFINED — correct only
     // for whole-subresource rewrites.
     VkImageSubresourceRange range{};
-    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    range.aspectMask = GetVkImageAspectFlags(dstTexture);
     range.baseMipLevel = mip;
     range.levelCount = 1;
     range.baseArrayLayer = is3DTexture ? 0 : layer;
@@ -4721,7 +4742,9 @@ void VulkanCommandList::CopyBufferToTextureSubresource(BufferHandle srcBuffer, T
     region.bufferOffset = srcOffsetBytes;
     region.bufferRowLength = (srcRowPitchBytes && bpp) ? static_cast<uint32_t>(srcRowPitchBytes / bpp) : 0;
     region.bufferImageHeight = (srcSlicePitchBytes && srcRowPitchBytes) ? static_cast<uint32_t>(srcSlicePitchBytes / srcRowPitchBytes) : 0;
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    // Buffer copies name one aspect; combined depth/stencil uploads carry depth.
+    region.imageSubresource.aspectMask = (range.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT)
+        ? static_cast<VkImageAspectFlags>(VK_IMAGE_ASPECT_DEPTH_BIT) : range.aspectMask;
     region.imageSubresource.mipLevel = mip;
     region.imageSubresource.baseArrayLayer = is3DTexture ? 0 : layer;
     region.imageSubresource.layerCount = 1;

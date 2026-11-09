@@ -10,6 +10,7 @@
 #include "Engine/Rendering/MaterialSystem.h"
 #include "Engine/Rendering/MeshGPURegistry.h"
 #include "Engine/Rendering/PipelineVariantCache.h"
+#include "Engine/Rendering/TextureService.h"
 #include "Engine/Rendering/ViewRegistry.h"
 #include "Engine/Rendering/WorldDrawBuilder.h"
 #include "Platform/Environment.h"
@@ -17,6 +18,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/GPUDrawStreamBuilder.h"
 #include "Rendering/Core/GPUScene.h"
+#include "Rendering/Core/HashUtils.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 #include "Rendering/Geometry/VertexAttributeFlags.h"
 
@@ -172,6 +174,8 @@ struct PreparedDepthOnlyPass
     bool Walked = false;
     size_t EntityBatchCount = 0;
     bool Consolidated = false;
+    DepthProducerState AllProducer;
+    DepthProducerState RigidProducer;
 };
 
 PreparedDepthOnlyPass* AllocatePreparedDepthOnlyPass(Rendering::RenderGraph::RGFrame& frame,
@@ -214,6 +218,13 @@ class DepthPassPreparation
         m_Data.Walked = false;
         m_Data.EntityBatchCount = 0;
         m_Data.Consolidated = false;
+        const auto submissions = m_Services.DrawBuilder.GetShadowSubmissionStates(m_Data.Params.ViewId);
+        m_Data.AllProducer = SeedProducer(submissions.All);
+        m_Data.RigidProducer = SeedProducer(submissions.Rigid);
+        if (m_Data.Params.Casters != CascadeCasters::All)
+            m_Data.AllProducer.Complete = false;
+        if (m_Data.Params.Casters == CascadeCasters::Skinned)
+            m_Data.RigidProducer.Complete = false;
         // The deforming-motion producer draws one subset of the same keys: the
         // materials whose vertex modifier the composed motion variant can evaluate
         // at two endpoints. Every other pass type draws the view's whole set.
@@ -231,6 +242,10 @@ class DepthPassPreparation
         const auto* passView = m_Services.Views.FindPerView(m_Data.Params.ViewId);
         m_PassKeywords =
             DepthPassKeywords(passView ? passView->WorldPassKeywords : std::nullopt);
+        m_Data.AllProducer.ServedContentKey =
+            HashUtils::HashValue(m_Data.AllProducer.ServedContentKey, m_PassKeywords);
+        m_Data.RigidProducer.ServedContentKey =
+            HashUtils::HashValue(m_Data.RigidProducer.ServedContentKey, m_PassKeywords);
 
         // bits so the prepass doesn't collide with cascade 0 in MaterialBinder's
         // per-pass descriptor cache (the terrain-flickers-black bug class).
@@ -255,6 +270,12 @@ class DepthPassPreparation
              !passView->NonOccludingPrepassDeclared)
                 ? NonOccludingPrepassHeads(m_Services.Views, m_Data.Params.ViewId)
                 : std::span<const DrawCommand>{};
+        if (!depthCommands.empty() || !fallbackHeads.empty() || m_Services.CpuDrawStream ||
+            m_Data.Params.PassType != DepthPassType::ShadowCascade)
+        {
+            m_Data.AllProducer.Complete = false;
+            m_Data.RigidProducer.Complete = false;
+        }
         LogMeshPassDiagnostic(
             "depth", "pass-enter", m_Data.Params.ViewId,
             entityKeys.size(), depthCommands.size(),
@@ -349,7 +370,7 @@ class DepthPassPreparation
                              : m_Services.Materials.GetMaterialDepthClass(key.materialIndex));
                 if (!m_Services.MeshPoolGroups.empty() && lookup.meshKey == Rendering::MeshPoolGroupPlan::kAbsentGroup)
                 {
-                    MarkUnderDraw(); // absent row under a live key — heals next frames
+                    MarkUnderDraw(m_Services.Meshes.Find(key.mesh)); // missing current geometry group
                     continue;
                 }
                 if (!ClaimStreamRange(lookup))
@@ -362,11 +383,22 @@ class DepthPassPreparation
             std::unordered_set<uint64_t> drawnEligible; // (meshIndex << 1) | doubleSidedBit
             for (const auto& key : entityKeys)
             {
+                if (m_Data.Params.Casters != CascadeCasters::All)
+                {
+                    // Consolidated ranges share the mesh stream layout, so
+                    // skinned and rigid batches never claim the same range.
+                    if (const auto* entry = m_Services.Meshes.Find(key.mesh))
+                    {
+                        if (Rendering::IsSkinned(entry->vertexFlags) !=
+                            (m_Data.Params.Casters == CascadeCasters::Skinned))
+                            continue;
+                    }
+                }
                 const Rendering::MaterialDepthClass depthClass = m_Services.Materials.GetMaterialDepthClass(key.materialIndex);
                 const DrawStreamLookupKey lookup = Lookup(key, depthClass);
                 if (!m_Services.MeshPoolGroups.empty() && lookup.meshKey == Rendering::MeshPoolGroupPlan::kAbsentGroup)
                 {
-                    MarkUnderDraw(); // absent row under a live key — heals next frames
+                    MarkUnderDraw(m_Services.Meshes.Find(key.mesh)); // missing current geometry group
                     continue;
                 }
                 if (depthClass == Rendering::MaterialDepthClass::MaterialDependent)
@@ -402,6 +434,19 @@ class DepthPassPreparation
     }
 
   private:
+    DepthProducerState SeedProducer(const WorldDrawBuilder::ShadowSubmissionState& submissions) const
+    {
+        const auto& params = m_Data.Params;
+        uint64_t content = HashUtils::HashValue(submissions.MaterialContentKey, params.PassType);
+        content = HashUtils::HashValue(content, params.CascadeIndex);
+        content = HashUtils::HashValue(content, params.DepthBiasEnable);
+        content = HashUtils::HashValue(content, params.DepthClampEnable);
+        content = HashUtils::HashValue(content, params.RasterizationSamples);
+        content = HashUtils::HashValue(content, m_Services.CullMode);
+        content = HashUtils::HashValue(content, m_Services.FrontFace);
+        return {submissions.MembershipKey, submissions.MembershipCount, content, submissions.Complete};
+    }
+
     struct ResolvedDepthPipeline
     {
         PipelineHandle Pipeline{};
@@ -414,8 +459,11 @@ class DepthPassPreparation
         std::optional<uint32_t> ServedVersion;
     };
 
-    void MarkUnderDraw()
+    void MarkUnderDraw(const Rendering::MeshGPUEntry* mesh = nullptr)
     {
+        m_Data.AllProducer.Complete = false;
+        if (!mesh || !Rendering::IsSkinned(mesh->vertexFlags))
+            m_Data.RigidProducer.Complete = false;
         if (m_TrackUnderDraw)
             m_Data.UnderDrew = true;
     }
@@ -431,10 +479,22 @@ class DepthPassPreparation
         m_Data.PushConstants.insert(m_Data.PushConstants.end(), bytes.begin(), bytes.end());
         m_Data.Draws.push_back({command, bindings, geometry, vertexFlags, offset, bytes.size(),
                                 version, materialIndex, diagnosticMaterialIndex, entity, meshIndex, maxDrawCount, rangeCount});
+        uint64_t served = HashUtils::HashValue(0u, static_cast<uint64_t>(bindings.Pipeline));
+        served = HashUtils::HashValue(served, vertexFlags);
+        served = HashUtils::HashValue(served, materialIndex);
+        served = HashUtils::HashValue(served, version.has_value());
+        if (version)
+            served = HashUtils::HashValue(served, *version);
+        m_Data.AllProducer.ServedContentKey =
+            HashUtils::HashCombine(m_Data.AllProducer.ServedContentKey, served);
+        if (!Rendering::IsSkinned(vertexFlags))
+            m_Data.RigidProducer.ServedContentKey =
+                HashUtils::HashCombine(m_Data.RigidProducer.ServedContentKey, served);
     }
 
     void PrepareEntityBatch(const WorldDrawBuilder::BatchKey& key, const DrawStreamLookupKey& lookup)
     {
+        const auto* entry = m_Services.Meshes.Find(key.mesh);
         ComposedPCInstanced instanceConstants{};
 
         const Material* material = key.material;
@@ -447,10 +507,9 @@ class DepthPassPreparation
                 false, 0ull, m_InstanceAddress,
                 m_Services.Device ? m_Services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 m_Services.Streams ? m_Services.Streams->GetRangeCount() : 0u);
-            MarkUnderDraw(); // async material publish gap — heals next frames
+            MarkUnderDraw(entry); // async material publish gap — heals next frames
             return;
         }
-        const auto* entry = m_Services.Meshes.Find(key.mesh);
         if (!entry)
         {
             LogMeshDrawSkipDiagnostic(
@@ -460,7 +519,7 @@ class DepthPassPreparation
                 false, 0ull, m_InstanceAddress,
                 m_Services.Device ? m_Services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 m_Services.Streams ? m_Services.Streams->GetRangeCount() : 0u);
-            MarkUnderDraw(); // mesh upload in flight — heals next frames
+            MarkUnderDraw(entry); // mesh upload in flight — heals next frames
             return;
         }
         Rendering::MeshGPUEntryBindings entryBindings{};
@@ -474,7 +533,7 @@ class DepthPassPreparation
                 false, 0ull, m_InstanceAddress,
                 m_Services.Device ? m_Services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 m_Services.Streams ? m_Services.Streams->GetRangeCount() : 0u);
-            MarkUnderDraw(); // buffer not resident yet — heals next frames
+            MarkUnderDraw(entry); // buffer not resident yet — heals next frames
             return;
         }
         const DepthPassMaterialFilter filter = FilterDepthPassMaterial(
@@ -514,6 +573,9 @@ class DepthPassPreparation
                                   Rendering::MaterialKeyword::HasVertexMod) ||
             Rendering::HasKeyword(material->GetVariantKey().materialKeywords,
                                   Rendering::MaterialKeyword::HasVertexOutputMod);
+        if ((material->GetAlphaMode() == MaterialAlphaMode::Mask || vertexModified) &&
+            (!m_Services.Textures || !m_Services.Textures->IsMaterialTextureBindingComplete(material->GetGuid())))
+            MarkUnderDraw(entry);
         const DepthSegmentPipelineChoice head = ChooseDepthHeadPipeline(
             m_PassKeywords, m_Data.Params.PassType,
             material->GetAlphaMode() == MaterialAlphaMode::Mask, vertexModified,
@@ -525,7 +587,7 @@ class DepthPassPreparation
             DepthPassReadsVertexColor(m_Data.Params.PassType, material->GetAlphaMode()),
             head.Keywords);
         const Rendering::CullModeFlags depthCullMode = material->IsDoubleSided()
-                                                           ? Rendering::CullModeFlagBits::None
+                                                           ? static_cast<Rendering::CullModeFlags>(Rendering::CullModeFlagBits::None)
                                                            : m_Services.CullMode;
         const bool isSkinnedDepth = Rendering::HasFlag(
             depthVertexFlags,
@@ -557,7 +619,7 @@ class DepthPassPreparation
                     "depth", "depth-pipeline-invalid", m_Data.Params.ViewId,
                     key.materialIndex, key.meshIndex, false, false, 0ull,
                     m_InstanceAddress, false, 0u);
-                MarkUnderDraw(); // async depth-variant publish gate — heals on publish
+                MarkUnderDraw(entry); // async depth-variant publish gate — heals on publish
                 return;
             }
 
@@ -575,7 +637,7 @@ class DepthPassPreparation
                     "depth", "material-bind-invalid", m_Data.Params.ViewId,
                     key.materialIndex, key.meshIndex, false, false, 0ull,
                     m_InstanceAddress, false, 0u);
-                MarkUnderDraw(); // bind-time publish gate — heals on publish
+                MarkUnderDraw(entry); // bind-time publish gate — heals on publish
                 return;
             }
 
@@ -599,7 +661,7 @@ class DepthPassPreparation
                 false, false, 0ull, m_InstanceAddress,
                 m_Services.Device ? m_Services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 m_Services.Streams ? m_Services.Streams->GetRangeCount() : 0u);
-            MarkUnderDraw(); // scatter pipeline still compiling — heals next frames
+            MarkUnderDraw(entry); // scatter pipeline still compiling — heals next frames
             return;
         }
         const Rendering::GPUDrawStreamBuilder::BatchDrawRange drawRange =
@@ -614,6 +676,7 @@ class DepthPassPreparation
                 true, drawRange.IsValid(), 0ull, m_InstanceAddress,
                 m_Services.Device ? m_Services.Device->GetCapabilities().supportsBufferDeviceAddress : false,
                 m_Services.Streams->GetRangeCount());
+            MarkUnderDraw(entry);
             return;
         }
         // Shared indirection buffer: arena-global firstInstance → one BDA for
@@ -628,6 +691,7 @@ class DepthPassPreparation
                 true, true, slotIndirectionBda, m_InstanceAddress,
                 m_Services.Device->GetCapabilities().supportsBufferDeviceAddress,
                 m_Services.Streams->GetRangeCount());
+            MarkUnderDraw(entry);
             return;
         }
 
@@ -706,7 +770,7 @@ class DepthPassPreparation
                 true, true, slotIndirectionBda, m_InstanceAddress,
                 m_Services.Device->GetCapabilities().supportsBufferDeviceAddress,
                 m_Services.Streams->GetRangeCount());
-            MarkUnderDraw(); // async depth-variant publish gate — heals on publish
+            MarkUnderDraw(batch.Mesh); // async depth-variant publish gate — heals on publish
             return;
         }
         const auto preparedBindings = m_Services.Materials.Binder().PrepareMaterialForDraw(
@@ -719,7 +783,7 @@ class DepthPassPreparation
                 true, true, slotIndirectionBda, m_InstanceAddress,
                 m_Services.Device->GetCapabilities().supportsBufferDeviceAddress,
                 m_Services.Streams->GetRangeCount());
-            MarkUnderDraw(); // bind-time publish gate — heals on publish
+            MarkUnderDraw(batch.Mesh); // bind-time publish gate — heals on publish
             return;
         }
         DrawCommand command{};
@@ -792,8 +856,18 @@ bool PrepareDepthOnlyPass(RenderGraph::RGPrepareContext& context,
     return DepthPassPreparation(context, data, services).Prepare();
 }
 
-void RecordPreparedDepthOnlyPass(Rendering::RenderGraph::RGContext& context,
-                                 const PreparedDepthOnlyPass& data)
+DepthProducerState GetPreparedDepthProducerState(const PreparedDepthOnlyPass& data,
+                                                CascadeCasters casters)
+{
+    if (casters == CascadeCasters::Rigid)
+        return data.RigidProducer;
+    return casters == CascadeCasters::All ? data.AllProducer : DepthProducerState{};
+}
+
+namespace
+{
+void RecordPreparedDepthDraws(Rendering::RenderGraph::RGContext& context,
+                              const PreparedDepthOnlyPass& data, CascadeCasters casters)
 {
     auto* commands = context.Cmd;
     if (!commands)
@@ -809,7 +883,7 @@ void RecordPreparedDepthOnlyPass(Rendering::RenderGraph::RGContext& context,
                              params.ViewportWidth, params.ViewportHeight);
     }
 
-    if (data.UnderDrew && data.UnderDraw)
+    if (data.UnderDrew && data.UnderDraw && casters != CascadeCasters::Rigid)
         data.UnderDraw->Mark(static_cast<uint32_t>(params.ViewId),
                              static_cast<uint8_t>(params.PassType), params.CascadeIndex);
     if (!data.Walked)
@@ -822,6 +896,9 @@ void RecordPreparedDepthOnlyPass(Rendering::RenderGraph::RGContext& context,
 
     for (const auto& draw : data.Draws)
     {
+        if (casters != CascadeCasters::All &&
+            Rendering::IsSkinned(draw.VertexFlags) != (casters == CascadeCasters::Skinned))
+            continue;
         const auto& geometry = draw.Geometry;
         geometryBindings.BindVertexBuffer(geometry.coreVB, 0);
         const auto optionalStreams = CollectOptionalStreamBinds(draw.VertexFlags, geometry);
@@ -885,6 +962,63 @@ void RecordPreparedDepthOnlyPass(Rendering::RenderGraph::RGContext& context,
     }
 
     binder.EndPass(pass);
+}
+} // namespace
+
+void RecordPreparedDepthOnlyPass(Rendering::RenderGraph::RGContext& context,
+                                 const PreparedDepthOnlyPass& data)
+{
+    RecordPreparedDepthDraws(context, data, data.Params.Casters);
+}
+
+namespace
+{
+void ClearDepthLayer(Rendering::RenderGraph::RGContext& context,
+                     Rendering::TextureHandle target, uint32_t layer)
+{
+    constexpr float kReverseZFarDepth = 0.0f;
+    context.Cmd->EndRenderPass();
+    context.Cmd->Barrier(Rendering::ResourceBarrier::CreateTextureBarrier(
+        target, Rendering::ResourceState::DepthWrite, Rendering::ResourceState::DepthWrite,
+        0u, 1u, layer, 1u));
+    Rendering::RenderPassDesc pass{};
+    pass.depthTarget = target;
+    pass.clearColor[0] = false;
+    pass.clearDepth = true;
+    pass.clearDepthValue = kReverseZFarDepth;
+    pass.depthLoadOp = Rendering::RenderPassDesc::LoadOp::Clear;
+    pass.depthStoreOp = Rendering::RenderPassDesc::StoreOp::Store;
+    pass.useDepthView = true;
+    pass.depthViewDesc.aspect = Rendering::TextureAspect::Depth;
+    pass.depthViewDesc.viewType = Rendering::TextureViewType::View2D;
+    pass.depthViewDesc.baseLayer = layer;
+    pass.depthViewDesc.layerCount = 1u;
+    pass.depthViewDesc.levelCount = 1u;
+    context.Cmd->BeginRenderPass(pass);
+}
+} // namespace
+
+void RecordPreparedCascadeDepth(Rendering::RenderGraph::RGContext& context,
+                                const PreparedDepthOnlyPass& data,
+                                Rendering::TextureHandle target, uint32_t layer,
+                                bool restoredRigidDepth)
+{
+    if (!context.Cmd)
+        return;
+    if (!restoredRigidDepth)
+        ClearDepthLayer(context, target, layer);
+    RecordPreparedDepthDraws(context, data,
+        restoredRigidDepth ? CascadeCasters::Skinned : CascadeCasters::All);
+}
+
+void RecordPreparedRigidCascadeDepth(Rendering::RenderGraph::RGContext& context,
+                                     const PreparedDepthOnlyPass& data,
+                                     Rendering::TextureHandle target, uint32_t layer)
+{
+    if (!context.Cmd)
+        return;
+    ClearDepthLayer(context, target, layer);
+    RecordPreparedDepthDraws(context, data, CascadeCasters::Rigid);
 }
 
 } // namespace Engine::Renderer

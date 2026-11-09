@@ -1,6 +1,6 @@
 #pragma once
 
-#include "PageStreaming/PageStoreFormat.h"
+#include "PageStreaming/PageStore/PageStoreFormat.h"
 
 #include <filesystem>
 #include <span>
@@ -28,8 +28,8 @@ struct TerrainContainerField
 /// published by rename. Returns an empty string, else the reason.
 std::string WriteTerrainContainer(const std::filesystem::path& target, std::span<const TerrainContainerField> fields);
 
-/// Opens the `kind` field of the container at `container` into `out`. Returns an empty string,
-/// else the reason (a container without that field names the field).
+/// Opens the requested field into out, validating its store kind.
+/// Returns an empty string on success; a refusal states the fix and leaves out closed.
 std::string OpenTerrainContainerField(const std::filesystem::path& container, PageFieldKind kind,
                                       PageStoreReader& out);
 

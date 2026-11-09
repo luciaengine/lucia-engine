@@ -1,6 +1,7 @@
 # Engine library
 set(ENGINE_SOURCES
     Source/Engine/Rendering/SortingLayers.cpp
+    Source/Engine/Rendering/BoneLOD/BoneLODPolicy.cpp
     Source/Engine/Rendering/RenderSorting.cpp
 	Source/Core/Application.cpp
     Source/Core/Time.cpp
@@ -55,6 +56,9 @@ set(ENGINE_SOURCES
     Source/Assets/LodAssetSettings.cpp
     Source/Assets/ProjectLodReimport.cpp
     Source/Assets/ModelAssetSettings.cpp
+    Source/Assets/BoneLOD/BoneLODAssetSettings.cpp
+    Source/Assets/BoneLOD/ModelBoneLOD.cpp
+    Source/Assets/BoneLOD/ModelAssetBoneLOD.cpp
     Source/Assets/AuthoredLodImport.cpp
     Source/Assets/HlodClustering.cpp
     Source/Assets/HlodBenefit.cpp
@@ -93,6 +97,18 @@ set(ENGINE_SOURCES
     Source/Components/Rendering/SkySunIlluminance.cpp
     Source/Components/Rendering/SkySunPath.cpp
     Source/Scene/SceneIO.cpp
+    Source/Scene/PrefabPlacement.h
+    Source/Scene/PrefabAuthoring.cpp
+    Source/Scene/PrefabOverrideEdits.cpp
+    Source/Scene/PrefabOverrideWriter.h
+    Source/Scene/PrefabOverrideWriter.cpp
+    Source/Scene/PrefabSpawn.cpp
+    Source/Scene/PrefabLibrary.cpp
+    Source/Scene/PrefabPlacement.cpp
+    Source/Scene/PrefabLibrary.h
+    Source/Scene/AssetManagerSceneResolver.cpp
+    Source/Scene/SceneDoc.h
+
     Source/Scene/SceneRaycast.cpp
     Source/Scene/TerrainPicking.cpp
     Source/Scene/MeshBvhCache.cpp
@@ -301,6 +317,10 @@ set(ENGINE_HEADERS
     # Scene authoring/persistence components
     Include/Components/SceneEntityTag.h
     Include/Components/SceneBlueprintInstance.h
+    Include/Components/PrefabInstance.h
+    Include/Scene/PrefabAuthoring.h
+    Include/Scene/PrefabSpawn.h
+    Include/Scene/AssetManagerSceneResolver.h
     Include/Components/SceneSubsceneInstance.h
 
 	# Rendering hot-reload bridge header
@@ -1739,6 +1759,8 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         Tests/MeshLODGeneratorTests.cpp
         Tests/MeshLODGeometryTests.cpp
         Tests/LodAssetSettingsTests.cpp
+        Tests/BoneLODAssetSettingsTests.cpp
+        Tests/ModelBoneLODTests.cpp
         Tests/MeshLODCacheTests.cpp
         Tests/PackagedModelLodTests.cpp
         Tests/AuthoredLODColorTests.cpp
@@ -1988,6 +2010,15 @@ endif()
                 ${CMAKE_SOURCE_DIR}/Packages/eztree/Native)
             ge_stage_shader_graph_nodes(EngineMaterialTests)
 
+            # The material and declare suites share the CBT shader-source fixture.
+            add_custom_target(StageCBTTestShaders
+                COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+                        "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT"
+                        "$<TARGET_FILE_DIR:EngineMaterialTests>/Assets/Shaders/CBT"
+                COMMENT "Staging CBT shader sources for rendering tests"
+                VERBATIM)
+            add_dependencies(EngineMaterialTests StageCBTTestShaders)
+
             # Textures: the texture service and bindless indexing, alpha probes, the
             # import and package cooks, KTX2 loading, SVG rasterization, video textures.
             ge_add_render_services_test(EngineTextureTests
@@ -2144,6 +2175,7 @@ endif()
                 Tests/CascadeMotionSchedulerTests.cpp
                 Tests/CascadeShadowCacheTests.cpp
                 Tests/SkinnedShadowInvalidationTests.cpp
+                Tests/RigidCascadeRestoreTests.cpp
                 Tests/VertexModifierContentInvalidationTests.cpp
                 Tests/ShadowSamplingFitTests.cpp
                 Tests/ShadowSamplingShaderContractTests.cpp
@@ -2730,6 +2762,7 @@ endif()
 			    )
 			    ge_set_output_tests(RenderPipelineDeclareTests)
 			    ge_stage_runtime_dependencies(RenderPipelineDeclareTests)
+			    add_dependencies(RenderPipelineDeclareTests StageCBTTestShaders)
 			    # The grass-placement device oracles compile terrain_grass_place.comp at runtime;
 			    # it #includes Includes/bindless_textures.glsl (IncludeRoot), cbt_atlas.glsl (CBT
 			    # dir) and grass_placement.glsl (its own dir). Stage all three next to the test exe so EnsureComputePipeline's exe-relative
@@ -2742,9 +2775,6 @@ endif()
 			        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
 			                "${CMAKE_SOURCE_DIR}/Engine/Modules/Rendering/Shaders/Includes"
 			                "$<TARGET_FILE_DIR:RenderPipelineDeclareTests>/Assets/Shaders/Includes"
-			        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
-			                "${CMAKE_SOURCE_DIR}/Engine/Modules/CBTTerrain/Shaders/CBT"
-			                "$<TARGET_FILE_DIR:RenderPipelineDeclareTests>/Assets/Shaders/CBT"
 			        COMMENT "Staging grass compact + atlas shaders for RenderPipelineDeclareTests device oracles"
 			        VERBATIM)
 			    # The CBT terrain declare tests bring up the CBT feature, which loads its compiled kernels
@@ -2984,10 +3014,18 @@ endif()
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(GPUAnimationComputeTests
 	        Tests/GPUAnimationComputeTests.cpp
+	        Tests/EngineTestShaderSetup.cpp
 	        )
 	    target_link_libraries(GPUAnimationComputeTests PRIVATE
 	        Engine GameEngine.Native
 	        GTest::gtest GTest::gtest_main)
+	    if(APPLE)
+	        # Native fault injection derives from MetalDevice, which includes metal-cpp.
+	        target_include_directories(GPUAnimationComputeTests SYSTEM PRIVATE
+	            ${CMAKE_SOURCE_DIR}/ThirdParty/metal-cpp)
+	    endif()
+	    target_compile_definitions(GPUAnimationComputeTests PRIVATE
+	        ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
 	    set_target_properties(GPUAnimationComputeTests PROPERTIES
 	        CXX_STANDARD 20
 	        CXX_STANDARD_REQUIRED ON
@@ -3049,7 +3087,7 @@ endif()
 
 	# Engine tests: Phase 6 ECS bridge — HumanoidRetargetSystem end-to-end,
 	# auto-bootstrap, layered-blend integration, hot-reload race, same-rig
-	# coexistence. Runs in pure CPU mode (no GPU device required).
+	# coexistence. Clip-upload lifecycle cases use a native headless device.
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(HumanoidRetargetSystemTests
 	        Tests/HumanoidRetargetSystemTests.cpp
@@ -3542,6 +3580,9 @@ endif()
 	    add_executable(EngineSceneIOTests
 	        Tests/WeatherWindTests.cpp
 	        Tests/SceneIOTests.cpp
+	        Tests/PrefabLibraryTests.cpp
+	        Tests/PrefabFormatTests.cpp
+	        Tests/PrefabSpawnTests.cpp
 	        Tests/EmbeddedAnimationPersistenceTests.cpp
 	        Tests/SceneIntegerTests.cpp
 	        Tests/SceneStructArrayTests.cpp
@@ -3552,7 +3593,7 @@ endif()
 	        Modules/TerrainGrass/Tests/TerrainGrassClampsTests.cpp
         Modules/TerrainGrass/Tests/TerrainGrassPresetTests.cpp)
 	    target_link_libraries(EngineSceneIOTests PRIVATE Engine GTest::gtest GTest::gtest_main)
-	    target_include_directories(EngineSceneIOTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
+	    target_include_directories(EngineSceneIOTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests ${CMAKE_CURRENT_SOURCE_DIR}/Source)
 	    # TerrainGrassClamps.SceneSchemaCarriesNoInlineClampCall reads the scene schema and fails on
 	    # any field bound written inline there instead of in the shared clamp pass.
 	    target_compile_definitions(EngineSceneIOTests PRIVATE

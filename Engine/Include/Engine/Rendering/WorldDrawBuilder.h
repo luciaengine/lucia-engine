@@ -6,6 +6,7 @@
 #include "Engine/Rendering/WorldDrawTypes.h"
 #include "Rendering/CameraTypes.h"
 #include "Types/FalseSharing.h"
+#include "Types/FlatMap.h"
 #include "Types/Types.h"
 
 #include <cstddef>
@@ -101,6 +102,21 @@ class WorldDrawBuilder
         uint32_t colorClassId;
     };
     std::span<const BatchKey> GetBatchKeys(Rendering::ViewId viewId) const;
+    struct ShadowSubmissionState
+    {
+        uint64_t MembershipKey = 0;
+        uint64_t MembershipCount = 0;
+        uint64_t MaterialContentKey = 0;
+        bool Complete = false;
+    };
+    struct ShadowSubmissionStates
+    {
+        ShadowSubmissionState All;
+        ShadowSubmissionState Rigid;
+    };
+    /** Read this frame's caster census after BuildBatchKeys, on the render thread.
+     *  Completeness covers submission filters; depth preparation must refine it. */
+    ShadowSubmissionStates GetShadowSubmissionStates(Rendering::ViewId viewId) const;
     // The subset of GetBatchKeys whose material is in the deforming-motion
     // lane (MaterialDeformationClassify.h). Derived in the same pass as the
     // keys, so it costs one predicate per surviving key and carries identical
@@ -181,6 +197,7 @@ class WorldDrawBuilder
     std::unordered_map<Rendering::ViewId, std::vector<WorldSubmissionRecord>> m_SubmissionsByView;
     // Unique batch keys per view, derived from m_SubmissionsByView.
     std::unordered_map<Rendering::ViewId, std::vector<BatchKey>> m_BatchKeysByView;
+    FlatMap<Rendering::ViewId, ShadowSubmissionStates> m_ShadowSubmissionsByView;
     // Shadow-caster and transmissive-caster presence per view, derived in the
     // same pass as the batch keys and therefore carrying identical staleness.
     std::unordered_map<Rendering::ViewId, bool> m_ShadowCasterByView;

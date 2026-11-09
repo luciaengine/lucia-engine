@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rendering/Materials/MaterialAlphaMode.h"
+#include "Rendering/Materials/ShaderCompileTarget.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -88,6 +89,7 @@ std::string DescribeParallaxRefusal(ParallaxRefusal refusal, const std::string& 
 /// view on recompiles the parallax variants alone and every other material keeps the variant it
 /// already draws. The compatibility profile never carries the relief's depth: WGSL has no conservative
 /// depth, and a depth-writing fragment there would lose early depth testing.
-MaterialKeyword NarrowColorPassKeywords(MaterialKeyword materialKeywords, MaterialKeyword passKeywords);
+MaterialKeyword NarrowColorPassKeywords(MaterialKeyword materialKeywords, MaterialKeyword passKeywords,
+                                        const ShaderCompileTarget& target);
 
 } // namespace GameEngine::Rendering

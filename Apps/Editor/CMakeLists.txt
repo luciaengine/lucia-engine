@@ -98,11 +98,29 @@ set(EDITOR_SOURCES
 	Source/Automation/UiReplayRunner.cpp
 	Source/Telemetry/RGCsvSidecar.cpp
     Source/Assets/AssetCreation.cpp
+    Source/Assets/AssetsFolderDropRegistry.cpp
+    Source/Assets/AssetPlacementRegistry.cpp
+    Source/UndoRedo/SceneViewDropUndoCommand.cpp
     Source/Assets/AssetPipelineCommands.cpp
     Source/Assets/AssetRename.cpp
     Source/Assets/AssetRenameController.cpp
     Source/UndoRedo/GenericEditUndo.cpp
     Source/UndoRedo/EntityComponentsEdit.cpp
+    Source/Prefabs/PrefabHierarchyRows.cpp
+    Source/Prefabs/PrefabInstanceDescriptions.cpp
+    Source/Prefabs/PrefabEditorRegistration.cpp
+    Source/Prefabs/PrefabRemovedComponents.cpp
+    Source/Prefabs/PrefabThumbnailHandler.cpp
+    Source/Prefabs/UnpackPrefabCommand.cpp
+    Source/Prefabs/PrefabBar.cpp
+    Source/Prefabs/PrefabService.cpp
+    Source/Prefabs/ApplyRevert/PrefabOverrideMenu.cpp
+    Source/Prefabs/ApplyRevert/ApplyPrefabOverrideCommand.cpp
+    Source/Prefabs/PrefabOverridesList/PrefabOverridesList.cpp
+    Source/Prefabs/PrefabOverridesList/PrefabOverridesListModel.cpp
+    Source/Prefabs/PrefabOverridesList/DiscardStaleOverrideCommand.cpp
+    Source/Prefabs/CreatePrefab/CreatePrefabCommand.cpp
+    Source/Prefabs/CreatePrefab/CreatePrefabDialog.cpp
     Source/UndoRedo/RenameAssetFileCommand.cpp
     Source/UndoRedo/SetAssetMetaValueCommand.cpp
     Source/UndoRedo/SplinePointEdits.cpp
@@ -340,6 +358,8 @@ set(EDITOR_SOURCES
 	Source/Inspectors/DeclaredPropertyRowModel.cpp
 	Source/Inspectors/UndeclaredKeysNotice.cpp
 	Source/Inspectors/ModelInspector.cpp
+	Source/Inspectors/BoneLOD/BoneLODTreeProvider.cpp
+	Source/Inspectors/BoneLOD/ModelBoneLODSection.cpp
 	Source/Inspectors/ModelSettingsReload.cpp
 	Source/Inspectors/SubmeshLodProvenance.cpp
 	Source/Inspectors/TextureCoveragePolicyNotice.cpp
@@ -1039,6 +1059,7 @@ set(EDITOR_SDK_SOURCES
 	Source/EditorPaths.cpp
 	Source/SettingsStore.cpp
 	Source/InspectorRegistry.cpp
+    Source/UI/ControlLayoutLoader.cpp
 	Source/Picking/EditorPickProviders.cpp
 	Source/Assets/AssetSearchProvider.cpp
 	Source/UI/AssetBoundDockPanel.cpp

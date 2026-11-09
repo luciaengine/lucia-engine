@@ -10,6 +10,8 @@
 #include "Rendering/Core/PassPhase.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h"
 
+#include <algorithm>
+
 namespace GameEngine::CBTTerrain
 {
 
@@ -44,6 +46,13 @@ CBTUpdateOutputs CBTUpdateNode::ImportOutputs(RGFrame& frame, CBTInstance& insta
     out.IndicesAll = importSized("CBT.IndicesAll", CBTBinding::IndicesAll);
     out.IndicesVisible = importSized("CBT.IndicesVisible", CBTBinding::IndicesVisible);
     out.CurrentVertex = importSized("CBT.CurrentVertex", CBTBinding::CurrentVertex);
+    out.HeightChain = frame.ImportExternalBuffer(
+        "CBT.HeightChain", res.GetHeightChainBuffer(),
+        static_cast<uint64_t>(res.GetHeightChainWords()) * sizeof(uint32_t));
+    // Storage and sampled descriptors share GENERAL throughout the chain's lifetime.
+    out.NormalChain = frame.ImportExternalTexture("CBT.NormalChain", res.GetNormalChainTexture(),
+                                                  ResourceState::UnorderedAccess, TextureFormat::R16G16_FLOAT,
+                                                  std::max(res.GetNormalChainMips(), 1u));
     return out;
 }
 
@@ -71,13 +80,9 @@ CBTUpdateOutputs CBTUpdateNode::DeclareUpdatePass(RGFrame& frame, CBTInstance& i
         heightRG = frame.ImportExternalTexture("CBT.HeightSource", heightSource,
                                                ResourceState::ShaderResource);
 
-    // Declare the draw ARGS (indirect count) plus the DATA the draw reads (the
-    // all/visible index streams and the per-bisector vertex buffer) as Storage
-    // writes + MarkOutput. The forward pass re-imports these (idempotent) and
-    // declares its reads against them, forming the cross-pass barriers for both
-    // the args and the data. Every other CBT buffer stays graph-invisible and is
-    // manually barriered inside the pass (the Ocean single-pass-owns-its-barriers
-    // model).
+    // Publish storage writes for draw arguments, index/vertex streams and the filtered height chain.
+    // Forward-pass imports declare their reads, forming graph barriers for both arguments and data.
+    // Other CBT buffers remain private to the pass and use explicit internal barriers.
     CBTInstance* inst = &instance;
     const CBTClassifyDesc desc = classify;
     const CBTFrameParams frameParams = params;
@@ -89,6 +94,8 @@ CBTUpdateOutputs CBTUpdateNode::DeclareUpdatePass(RGFrame& frame, CBTInstance& i
             p.Write(out.IndicesAll, RGBufferWrite::Storage);
             p.Write(out.IndicesVisible, RGBufferWrite::Storage);
             p.Write(out.CurrentVertex, RGBufferWrite::Storage);
+            p.Write(out.HeightChain, RGBufferWrite::Storage);
+            p.Write(out.NormalChain, RGTextureWrite::Storage);
             if (haveHeight)
                 p.Read(heightRG, RGTextureRead::SampledCompute);
         },
@@ -107,6 +114,7 @@ CBTUpdateOutputs CBTUpdateNode::DeclareUpdatePass(RGFrame& frame, CBTInstance& i
     frame.MarkOutput(out.IndicesAll);
     frame.MarkOutput(out.IndicesVisible);
     frame.MarkOutput(out.CurrentVertex);
+    frame.MarkOutput(out.HeightChain);
     return out;
 }
 

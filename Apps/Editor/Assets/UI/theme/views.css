@@ -1341,3 +1341,65 @@ ListView {
 .hierarchy-entity-animated-sprite {
     background-image: url("editor:Icons/sprite.svg");
 }
+
+/* Registered prefab glyphs and row roles. */
+.hierarchy-entity-prefab {
+    background-image: url("editor:Icons/Cube.svg");
+    background-image-tint: var(--ui_color_prefab);
+}
+
+.hierarchy-prefab-root {
+    --ui_color_text_dim: var(--ui_color_prefab);
+    --ui_asset_icon_tint: var(--ui_color_prefab);
+}
+
+.hierarchy-prefab-member {
+    --ui_color_text_dim: var(--ui_color_prefab);
+    --ui_color_text_bright: var(--ui_color_prefab);
+}
+
+.hierarchy-prefab-missing {
+    --ui_color_text_dim: var(--ui_color_error_text);
+    --ui_asset_icon_tint: var(--ui_color_error_text);
+}
+
+.hierarchy-prefab-missing-icon {
+    background-image: url("editor:Icons/help.svg");
+    background-image-tint: var(--ui_color_error_text);
+}
+
+.hierarchy-prefab-badge-host {
+    position: relative;
+    overflow: visible;
+}
+
+/* The badge overlaps the glyph's lower-right corner and stays out of the name's gap. */
+.hierarchy-prefab-member-badge {
+    position: absolute;
+    right: -4px;
+    bottom: 0;
+    width: var(--ui_tree_icon_badge_size);
+    height: var(--ui_tree_icon_badge_size);
+    background-image: url("editor:Icons/prefab-member-badge.svg");
+    background-size: contain;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-image-tint: var(--ui_color_prefab);
+    pointer-events: none;
+}
+
+.hierarchy-prefab-overridden {
+    background-image: url("editor:Icons/dot.png");
+    background-size: 6px 6px;
+    background-position: 3px center;
+    background-repeat: no-repeat;
+    background-image-tint: var(--ui_color_prefab);
+}
+
+.hierarchy-prefab-added {
+    background-image: url("editor:Icons/plus.png");
+    background-size: 10px 10px;
+    background-position: 1px center;
+    background-repeat: no-repeat;
+    background-image-tint: var(--ui_color_accent_green);
+}

@@ -2,12 +2,14 @@
 
 #include "Components/Hierarchy.h"
 #include "Components/Name.h"
+#include "Components/PrefabInstance.h"
 #include "Components/RuntimeOnlyEntity.h"
 #include "Components/SceneEntityTag.h"
 #include "ECS/Entity.h"
 #include "ECS/Query.h"
 #include "ECS/World.h"
 #include "Editor/Entities/CopiedEntityRuntimeRefs.h"
+#include "Scene/PrefabAuthoring.h"
 
 #include <cctype>
 #include <cstdint>
@@ -141,6 +143,8 @@ inline EntityDuplicateResult DuplicateEntitySubtreeRoots(ECS::World& world,
     // runtime-owned resource keep sharing one, even across separately selected
     // roots that belong to the same model instance.
     CopiedEntityRuntimeRefs runtimeRefs;
+    std::vector<ECS::EntityHandle> copies;
+    bool copiedPrefab = false;
 
     for (ECS::EntityHandle root : topRoots)
     {
@@ -165,12 +169,8 @@ inline EntityDuplicateResult DuplicateEntitySubtreeRoots(ECS::World& world,
             if (!clonedH.IsValid())
                 continue;
 
-            // Clone() copies every component, including the SceneEntityTag that holds the scene
-            // "id". A duplicate must not inherit the original's id — that produces two
-            // [entity id="..."] blocks on save and a scene that fails to reload. Drop it so the
-            // clone is treated like a fresh entity and gets a unique id assigned on save.
-            if (world.HasComponent<Components::SceneEntityTag>(clonedH))
-                world.RemoveComponentImmediate<Components::SceneEntityTag>(clonedH);
+            copies.push_back(clonedH);
+            copiedPrefab = copiedPrefab || world.HasComponent<Components::PrefabInstance>(clonedH);
 
             if (idx == 1)
                 clonedRoot = clonedH;
@@ -202,6 +202,14 @@ inline EntityDuplicateResult DuplicateEntitySubtreeRoots(ECS::World& world,
         }
     }
     runtimeRefs.RepairPayloadReferences(world);
+    if (copiedPrefab)
+        Scene::GiveCopySceneIdentities(world, result.NewRoots);
+    else
+    {
+        for (const ECS::EntityHandle copy : copies)
+            world.RemoveComponentImmediate<Components::SceneEntityTag>(copy);
+    }
+
 
     return result;
 }

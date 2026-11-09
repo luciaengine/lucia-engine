@@ -97,7 +97,8 @@ std::string DescribeParallaxRefusal(ParallaxRefusal refusal, const std::string& 
     return {};
 }
 
-MaterialKeyword NarrowColorPassKeywords(MaterialKeyword materialKeywords, MaterialKeyword passKeywords)
+MaterialKeyword NarrowColorPassKeywords(MaterialKeyword materialKeywords, MaterialKeyword passKeywords,
+                                        const ShaderCompileTarget& target)
 {
     constexpr MaterialKeyword parallaxDepth = MaterialKeyword::ParallaxDepthOffset |
                                               MaterialKeyword::ParallaxDepthFromPrepass |
@@ -105,7 +106,7 @@ MaterialKeyword NarrowColorPassKeywords(MaterialKeyword materialKeywords, Materi
                                               MaterialKeyword::ParallaxDepthTolerance;
     if (!HasKeyword(materialKeywords, MaterialKeyword::Parallax))
         passKeywords = passKeywords & ~(MaterialKeyword::ParallaxStepsView | parallaxDepth);
-    if (IsCompatShaderProfile())
+    if (target.Compatibility)
         passKeywords = passKeywords & ~parallaxDepth;
     return passKeywords;
 }

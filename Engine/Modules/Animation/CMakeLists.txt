@@ -18,7 +18,11 @@ set(ANIMATION_SOURCES
     Source/AnimationPlayer.cpp
     Source/AnimationPose.cpp
     Source/AnimationTimeline.cpp
+    Source/BoneEvaluationPlan.cpp
     Source/BoneMask.cpp
+    Source/Compression/AnimationClipArchive.cpp
+    Source/Compression/AnimationClipData.cpp
+    Source/Compression/AnimationClipStorage.cpp
     Source/HumanBone.cpp
     Source/HumanoidImport.cpp
     Source/HumanoidNameMatcher.cpp
@@ -74,6 +78,7 @@ target_include_directories(Animation
 )
 
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(ZLIB REQUIRED)
 
 target_link_libraries(Animation
     PUBLIC
@@ -83,6 +88,7 @@ target_link_libraries(Animation
         GenerationalVector
         nlohmann_json::nlohmann_json
     PRIVATE
+        ZLIB::ZLIB
         Logger
 )
 

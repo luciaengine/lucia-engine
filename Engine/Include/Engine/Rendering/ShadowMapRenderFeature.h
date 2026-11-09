@@ -2,6 +2,7 @@
 
 #include "Engine/Rendering/CascadeMotionScheduler.h"
 #include "Engine/Rendering/CascadeShadowCache.h"
+#include "Engine/Rendering/DepthProducerState.h"
 #include "Engine/Rendering/IRenderFeature.h"
 #include "Engine/Rendering/ShadowMinMaxPyramid.h"
 #include "Engine/Rendering/ShadowReceiverMeasurement.h"
@@ -13,6 +14,7 @@
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RenderGraph/PerViewReadbackRings.h"
 #include "Rendering/Core/RenderGraph/RGFrame.h" // RGFrame, RGFrameStamp
+#include "Types/FlatMap.h"
 
 #include <algorithm>
 #include <array>
@@ -339,26 +341,18 @@ struct alignas(16) ShadowDataGPU
     // basis does not vary by cascade, and a per-cascade home for it would read
     // as a bug to anyone who found it later.
     float shadowFilterParams[4];
-    // The terrain's sun-space clearance map (TerrainShadowMap, terrain_shadow.glsl), zero when
-    // none is published. Positions relative to the view's render origin, heights relative to the
-    // terrain's base:
-    //   terrainShadowGrid0: x, y = grid centre X, Z; z, w = terrain corner X, Z
-    //   terrainShadowGrid1: x, y = terrain extent X, Z; z, w = sun horizontal direction X, Z
-    //   terrainShadowGrid2: x = tan(elevation); y = texel (m); z, w = u of sample 0, v of line 0
-    //   terrainShadowGrid3: x = samples per line; y = lines; z = the terrain's base height;
-    //                       w = metres per normalized height
-    //   terrainShadowSource: x = map bindless index; y = height texture bindless index;
-    //                        z = 1 when present; w = map side (texels)
-    float terrainShadowGrid0[4];
-    float terrainShadowGrid1[4];
-    float terrainShadowGrid2[4];
-    float terrainShadowGrid3[4];
-    uint32_t terrainShadowSource[4];
+    // Sun-space terrain clearance grid. XZ is view-relative; heights are terrain-relative.
+    float terrainShadowGrid0[4]; // xy: grid center XZ; zw: terrain corner XZ, view-relative
+    float terrainShadowGrid1[4]; // xy: terrain extent XZ; zw: horizontal sun direction XZ
+    float terrainShadowGrid2[4]; // x: elevation tangent; y: texel meters; zw: first u/v sample
+    float terrainShadowGrid3[4]; // xy: grid dimensions; z: base height; w: meters per normalized height
+    uint32_t terrainShadowSource[4]; // xy: map/height indices; z: present; w: map side in texels
     // Optional source-camera depth plane in receiver-relative world space.
     // Zero xyz selects the ordinary receiver camera depth.
     float ShadowReferenceDepth[4];
+    uint32_t terrainShadowField[4]; // x: lit-field index (0 absent); y: mip levels; zw: zero
 };
-static_assert(sizeof(ShadowDataGPU) == 560, "ShadowDataGPU must be 560 bytes");
+static_assert(sizeof(ShadowDataGPU) == 576, "ShadowDataGPU must be 576 bytes");
 
 /// Rebase shared directional cascades, terrain coordinates and source-view depth.
 void RebaseDirectionalShadowData(ShadowDataGPU& data, const Rendering::CameraData& source,
@@ -551,6 +545,9 @@ class ShadowMapRenderFeature : public IRenderFeature
                                                       RenderServices& rs,
                                                       const FeatureDeclareContext& ctx,
                                                       uint32_t cascadeIndex, const char* passName);
+    /// Whether rigid directional depth needs transfer-capable pooled attachments.
+    bool IsRigidCascadeCacheEnabled() const;
+
     Rendering::RenderGraph::RGPass DeclareTransmittancePass(Rendering::RenderGraph::RGFrame& frame,
                                                             RenderServices& rs,
                                                             const FeatureDeclareContext& ctx,
@@ -1231,6 +1228,25 @@ class ShadowMapRenderFeature : public IRenderFeature
     // pooled-physical adopt-change and device rebuild — content identity does
     // not track GPU lifetime.
     CascadeShadowCache m_CascadeShadowCache;
+    CascadeShadowCache m_RigidCascadeCache;
+    struct RigidCascadeCertificate
+    {
+        DepthProducerState Producer;
+        uint64_t WriteGeneration = 0;
+        uint64_t PhysicalId = 0;
+        bool Valid = false;
+    };
+    FlatMap<Rendering::ViewId,
+        std::array<RigidCascadeCertificate, CascadeShadowCache::kSlotsPerView>> m_RigidCascadeCertificates;
+    uint64_t m_RigidCascadeWriteGeneration = 0;
+    struct RigidCascadeFrame;
+    void ConfigureRigidCascadeDepth(RenderGraph::RGPassBuilder& builder, RigidCascadeFrame& pending,
+                                     RenderServices& services, const FeatureDeclareContext& context,
+                                     RenderGraph::RGTexture target);
+    bool PrepareRigidCascadeDepth(RenderGraph::RGPrepareContext& context,
+                                   RigidCascadeFrame& pending, RenderServices& services);
+    void RecordRigidCascadeDepth(RenderGraph::RGContext& context, RigidCascadeFrame& pending);
+    void SubmitRigidCascadeDepth(const RigidCascadeFrame& pending);
 
     // ── Camera-motion round-robin (GE_SHADOW_MOTION_CAP) ──
     // Content-fit invariant: receivers must transform by the fit of the depth

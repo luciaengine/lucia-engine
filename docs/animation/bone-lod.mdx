@@ -1,0 +1,42 @@
+---
+title: Bone LOD
+description: Reduce distant character animation work while keeping required bones animated.
+---
+
+Bone LOD reduces the bones evaluated for a distant model instance. A model owns one reduced tier. Instances reuse that tier as cameras move. Models keep full detail unless an instance has an enabled **Bone LOD** component.
+
+## Set up a model
+
+1. Select a skinned model asset and open its **LOD** tab.
+2. Set **Bone budget**. The default is 32 skin-evaluation bones. Zero keeps full detail.
+3. Under **Mandatory bones**, search the hierarchy and check **Keep** for bones used by attachments or gameplay.
+4. Add **Bone LOD** to the model instance in the scene. Imported children inherit the instance owner's settings.
+
+The model inspector shows the requested budget, required count, and evaluated count for the reduced tier. Required bones and their ancestors can exceed the budget. The remaining budget favors bones that affect the model's skinned geometry. This ranking uses every skinned mesh, up to eight influences per vertex, and morph extents. It is a selection heuristic, not a bound on visible animation error. Check representative poses before using a reduced tier in a game.
+
+Mandatory paths store each node name as a separate segment. Names containing slashes and unnamed nodes remain distinct path segments. When several nodes share the same complete path, every match is retained. A missing mandatory path disables reduction and reports an error. Use **Clear mandatory bones** to remove obsolete paths, then select their replacements. **Reset invalid settings** replaces malformed stored settings with the defaults.
+
+## Control an instance
+
+| Field | Behavior |
+|---|---|
+| Switch Coverage | Approximate projected bounding-sphere diameter divided by the viewport height at the tier boundary. The default is `0.05`. A larger value allows reduction closer to the camera. |
+| Full Detail Override | Keep every bone animated for an action that reads arbitrary pose data or needs close-up quality. |
+
+Selection uses the instance's unreduced bounds. Every participating camera and every consumer sharing its runtime contributes demand. A nearby consumer keeps the shared runtime at full detail. A 25% hysteresis band prevents repeated changes near the boundary. Camera movement can change the tier while playback is paused.
+
+An owner's full-detail override applies to all its imported children. A shared consumer can also request full detail. Missing view information, invalid bounds, an unavailable model tier, or a consumer without applicable settings keeps the runtime at full detail.
+
+An imported node attachment that needs an omitted bone keeps the shared runtime at full detail. Mark that bone as mandatory to allow reduction while preserving it. Other gameplay code that reads arbitrary bones must enable **Full Detail Override** while it needs a full pose.
+
+## Supported animation paths
+
+Same-rig clip playback and crossfades use the selected tier on the CPU. The GPU animation path uses the same reduced hierarchy and rest-chain corrections. Animation graphs and humanoid retargeting keep full detail because their pose dependencies are not declared by this tier.
+
+Omitted bones retain their imported rest transforms relative to the nearest evaluated ancestor. The original joint palette order and size remain unchanged. The reduced tier saves sampling and hierarchy evaluation work. It does not reduce vertex skinning work or palette bandwidth.
+
+Model reloads rebuild the tier. Budget and mandatory-bone settings are retained in packaged asset metadata. The instance's component settings are saved in its scene.
+
+## Inspect a running instance
+
+The existing `get_skeleton_store_state` debug response includes `boneLOD` for each runtime. It reports whether a selection is known, its full or reduced tier, requested budget, required bones, evaluated bones, and model diagnostics. `atlasOwner` identifies CPU or GPU ownership. A GPU-owned palette's CPU probe is stale, so use a render capture to assess the displayed pose.

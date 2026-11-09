@@ -7638,6 +7638,55 @@ TEST(SceneIO, BlueprintInstance_InstantiatesWithPrefixAndOverrides)
     EXPECT_EQ(p->parent.id, inst.id);
 }
 
+TEST(SceneIO, LegacyBlueprintAndLinkedPrefabRoundTripTogether)
+{
+    const auto dir = SceneTestDirectory();
+    const auto input = dir / "mixed-prefab.scene";
+    const auto output = dir / "mixed-prefab-out.scene";
+    ASSERT_TRUE(WriteFile(dir / "mixed-legacy.blueprint",
+                         "[blueprint name=\"Legacy\" version=1]\n"
+                         "[entity id=\"root\"]\nName.value = \"Legacy\"\n"
+                         "[entity id=\"child\" parent=\"root\"]\nName.value = \"Legacy child\"\n"));
+    ASSERT_TRUE(WriteFile(dir / "mixed-linked.prefab",
+                         "[prefab version=1]\n"
+                         "[entity id=\"root\"]\nName.value = \"Linked\"\n"
+                         "[entity id=\"child\" parent=\"root\"]\nName.value = \"Linked child\"\n"));
+    ASSERT_TRUE(WriteFile(input,
+                         "[scene name=\"Mixed\" version=1]\n"
+                         "[resource id=\"bp\" path=\"mixed-legacy.blueprint\"]\n"
+                         "[resource id=\"pf\" path=\"mixed-linked.prefab\"]\n"
+                         "[entity id=\"old.tag\"]\nName.value = \"Plain entity\"\n"
+                         "[blueprint id=\"legacy\" source=\"bp\"]\n"
+                         "[prefab id=\"linked\" source=\"pf\"]\n"));
+    FakeAssetResolver resolver;
+    resolver.SetRoot(dir);
+    resolver.Bind(GUID::Generate(), "mixed-linked.prefab", AssetType::Prefab);
+    Scene::LoadOptions load{};
+    load.assetResolver = &resolver;
+    ECS::World world;
+    ASSERT_TRUE(Scene::LoadSceneFromFile(world, input, load)) << Scene::GetLastSceneIOError().message;
+    ASSERT_TRUE(FindByTag(world, "legacy.child").IsValid());
+    const auto linked = FindByTag(world, "linked.child");
+    ASSERT_TRUE(linked.IsValid());
+    world.AddComponentImmediate(linked, Components::Name{"Child override"});
+
+    Scene::SaveOptions save{};
+    save.assetResolver = &resolver;
+    ASSERT_TRUE(Scene::SaveSceneToFile(world, output, save)) << Scene::GetLastSceneIOError().message;
+    std::string serialized;
+    ASSERT_TRUE(ReadFile(output, serialized));
+    EXPECT_NE(serialized.find("[blueprint id=\"legacy\""), std::string::npos);
+    EXPECT_NE(serialized.find("[prefab id=\"linked\""), std::string::npos);
+
+    ECS::World reloaded;
+    ASSERT_TRUE(Scene::LoadSceneFromFile(reloaded, output, load)) << Scene::GetLastSceneIOError().message;
+    ASSERT_TRUE(FindByTag(reloaded, "legacy.child").IsValid());
+    EXPECT_TRUE(FindByTag(reloaded, "old.tag").IsValid());
+    const auto* name = reloaded.GetComponent<Components::Name>(FindByTag(reloaded, "linked.child"));
+    ASSERT_NE(name, nullptr);
+    EXPECT_EQ(name->View(), "Child override");
+}
+
 TEST(SceneIO, Save_PreservesBlueprintInstanceAndRemovalDirectives)
 {
     const auto dir = SceneTestDirectory();
