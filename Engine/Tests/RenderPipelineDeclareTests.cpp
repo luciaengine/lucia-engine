@@ -10902,7 +10902,7 @@ TEST(RenderPipelineDeclareTests, RegionalPageRewriteMatchesFullEvaluationOfTheSa
     cbt.SetActive(true, classify, 8.0f, Components::kNoTerrainSeaLevel,
                   CBTTerrainECS::CBTRenderFeature::DomainConfig{}, 0u);
     auto& publication = fixture.Rs->EnsureFeature<TerrainECS::TerrainHeightPageFeature>();
-    TerrainECS::TerrainHeightPages pages(nullptr, nullptr, {64, TerrainECS::kDesktopHeightPages.TableWordCap});
+    TerrainECS::TerrainHeightPages pages(nullptr, nullptr, {64, TerrainECS::kDesktopHeightPages.DenseTableWords});
     pages.Update(1, 1.0f / 60.0f, false, 2);
     const auto payloads = PublishCbtHeightPages(pages, publication, 11, 2, 0.25f);
     ASSERT_FALSE(payloads.empty());
@@ -11090,7 +11090,7 @@ TEST(RenderPipelineDeclareTests, CbtPagePublicationKeepsOwnerBindingsAndRetriesU
         GTEST_SKIP() << "staged shader sources or CBT kernels unavailable";
     auto& cbt = fixture.Rs->EnsureFeature<CBTTerrainECS::CBTRenderFeature>();
     auto& publication = fixture.Rs->EnsureFeature<TerrainECS::TerrainHeightPageFeature>();
-    TerrainECS::TerrainHeightPages pages(nullptr, nullptr, {64, TerrainECS::kDesktopHeightPages.TableWordCap});
+    TerrainECS::TerrainHeightPages pages(nullptr, nullptr, {64, TerrainECS::kDesktopHeightPages.DenseTableWords});
     pages.Update(1, 1.0f / 60.0f, false, 2);
     ASSERT_FALSE(PublishCbtHeightPages(pages, publication, 11, 2, 0.25f).empty());
     TerrainECS::TerrainUploadNode upload;
