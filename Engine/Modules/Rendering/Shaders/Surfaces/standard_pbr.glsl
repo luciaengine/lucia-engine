@@ -106,18 +106,35 @@ vec4 GE_StandardSampleAt(GE_MaterialTexture map, vec4 st, vec4 st2, vec2 uv0, ve
 // The branch reads one flat material value for each primitive.
 vec4 GE_StandardSampleBlend(GE_MaterialTexture map, vec2 uvA, vec2 uvB, float blend)
 {
+#ifdef GE_WGSL_COOK
+    // Derivatives must precede the material feature branch.
+    vec2 uvPerPixelX = dFdx(uvB);
+    vec2 uvPerPixelY = dFdy(uvB);
+#endif
     vec4 first = texture(map, uvA);
     if (!GE_FORWARD_HEX_TILING || Mat.uParams0.z < 0.5)
         return first;
+#ifdef GE_WGSL_COOK
+    return mix(first, textureGrad(map, uvB, uvPerPixelX, uvPerPixelY), blend);
+#else
     return mix(first, texture(map, uvB), blend);
+#endif
 }
 
 vec3 GE_StandardSampleNormalBlend(GE_MaterialTexture map, vec2 uvA, vec2 uvB, float blend)
 {
+#ifdef GE_WGSL_COOK
+    vec2 uvPerPixelX = dFdx(uvB);
+    vec2 uvPerPixelY = dFdy(uvB);
+#endif
     vec3 first = GE_DecodeTangentNormal(texture(map, uvA));
     if (!GE_FORWARD_HEX_TILING || Mat.uParams0.z < 0.5)
         return first;
+#ifdef GE_WGSL_COOK
+    return mix(first, GE_DecodeTangentNormal(textureGrad(map, uvB, uvPerPixelX, uvPerPixelY)), blend);
+#else
     return mix(first, GE_DecodeTangentNormal(texture(map, uvB)), blend);
+#endif
 }
 #endif
 

@@ -411,6 +411,7 @@ bool AnimationClip::LoadFromData(const Vector<uint8>& data)
 {
     AnimationClip loaded(GetGUID(), GetPath());
     loaded.m_SelectedAnimation = m_SelectedAnimation;
+    loaded.SetSourceInfo(m_SourcePath, m_SourceAnimationIndex);
     if (!loaded.LoadSourceData(data))
     {
         if (GetState() != AssetState::Loaded)
