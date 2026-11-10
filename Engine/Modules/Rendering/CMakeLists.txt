@@ -247,6 +247,11 @@ endif()
 
 if(GLSLC_EXECUTABLE)
     message(STATUS "✅ Found glslc: ${GLSLC_EXECUTABLE}")
+    if(CMAKE_GENERATOR MATCHES "Makefiles" AND CMAKE_VERSION VERSION_LESS "4.0")
+        message(WARNING
+            "CMake ${CMAKE_VERSION} with ${CMAKE_GENERATOR} retains removed shader include dependencies, "
+            "which can cause repeated rebuilds. Use Ninja or CMake 4.0+ for precise incremental shader builds.")
+    endif()
 elseif(NOT EMSCRIPTEN)
     message(WARNING "⚠️ glslc not found - shader compilation will be skipped; install Vulkan SDK or ensure vcpkg shaderc is available")
 endif()
