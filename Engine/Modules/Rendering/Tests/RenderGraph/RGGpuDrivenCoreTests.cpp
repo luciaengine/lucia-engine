@@ -29,6 +29,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -860,9 +861,11 @@ void CheckCoreCullingPreparation(GraphicsAPI graphicsAPI)
                   {
                       ++recordCallbacks;
                       if (graphicsAPI == GraphicsAPI::Vulkan)
+                      {
                           EXPECT_EQ(device->GetDescriptorAllocatorStats().TransientAllocated,
                                     firstRecordAllocations)
                               << "core culling must not allocate descriptors during Record";
+                      }
                   });
     frame.MarkOutput(readbackRG);
     const uint32_t allocatedBeforeAbort = device->GetDescriptorAllocatorStats().TransientAllocated;
@@ -874,8 +877,10 @@ void CheckCoreCullingPreparation(GraphicsAPI graphicsAPI)
     EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
     constexpr uint32_t kPreparedDispatches = 7u; // Five production dispatches and two copy controls.
     if (graphicsAPI == GraphicsAPI::Vulkan)
+    {
         EXPECT_GE(device->GetDescriptorAllocatorStats().TransientAllocated,
                   allocatedBeforeAbort + kPreparedDispatches);
+    }
 
     // Keep the declared graph and its upload slices; preparation resolves resources again.
     allowRecording = true;
@@ -886,8 +891,10 @@ void CheckCoreCullingPreparation(GraphicsAPI graphicsAPI)
     EXPECT_EQ(recordCallbacks, 2u);
     EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
     if (graphicsAPI == GraphicsAPI::Vulkan)
+    {
         EXPECT_GE(firstRecordAllocations, allocatedBeforeRetry + kPreparedDispatches)
             << "all production and control descriptors must exist before the first Record callback";
+    }
     EXPECT_GE(PosOf(frame.Graph(), RGQuery::Exact{"GPUCulling.View10.C255"}), 0);
     EXPECT_EQ(PosOf(frame.Graph(), RGQuery::Exact{"CorePrepare.FirstRecord"}), 0);
     EXPECT_EQ(PosOf(frame.Graph(), RGQuery::Exact{"CorePrepare.LastRecord"}),
@@ -1384,10 +1391,10 @@ TEST(RGGpuDriven, ColorSlicesOfOneViewScatterTheirOwnVisibilitySets)
 
     // Two disjoint visibility slices in one buffer, laid out exactly as
     // GPUCullingPipeline lays out a fused group's slices.
-    const size_t alignBytes =
-        std::max<size_t>(dev->GetCapabilities().minStorageBufferOffsetAlignment, sizeof(uint32_t));
+    const size_t sliceStrideBytes = std::max<size_t>(
+        dev->GetCapabilities().minStorageBufferOffsetAlignment, kInstances * sizeof(uint32_t));
     const uint32_t sliceAOffsetBytes = 0u;
-    const uint32_t sliceBOffsetBytes = static_cast<uint32_t>(alignBytes);
+    const uint32_t sliceBOffsetBytes = static_cast<uint32_t>(sliceStrideBytes);
     BufferDesc vd;
     vd.size        = sliceBOffsetBytes + kInstances * sizeof(uint32_t);
     vd.usage       = static_cast<uint32_t>(BufferUsage::Storage);
@@ -3107,29 +3114,42 @@ void CheckScatterProbeSegment(const uint32_t* words, const ScatterProbeOutput& o
 {
     const size_t cursor = segment.countByteOffset / sizeof(uint32_t);
     ASSERT_LT(cursor, output.CursorWords);
-    ASSERT_EQ(words[cursor], expected.size());
+    const uint32_t commandCount = words[cursor];
+    ASSERT_LE(commandCount, expected.size());
     const size_t firstRecord = segment.cmdByteOffset / (kScatterProbeCommandWords * sizeof(uint32_t));
-    uint32_t ordinal = 0;
+    using InstanceGeometry = std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>;
+    std::vector<InstanceGeometry> expectedInstances;
     for (const auto& record : expected)
+        expectedInstances.emplace_back(record.Instance, record.IndexCount,
+                                       record.FirstIndex, record.VertexOffset);
+    std::vector<InstanceGeometry> actualInstances;
+    for (uint32_t ordinal = 0; ordinal < commandCount; ++ordinal)
     {
-        const size_t index = firstRecord + ordinal++;
-        ASSERT_LT(index, output.IndirectionWords);
+        const size_t index = firstRecord + ordinal;
+        ASSERT_LT(index, output.RecordWords / kScatterProbeCommandWords);
         const uint32_t* command = words + output.CursorWords + index * kScatterProbeCommandWords;
-        EXPECT_EQ(command[0], record.IndexCount);
-        EXPECT_EQ(command[1], 1u);
-        EXPECT_EQ(command[2], record.FirstIndex);
-        EXPECT_EQ(command[3], record.VertexOffset);
-        EXPECT_EQ(command[4], index) << "compaction must rewrite firstInstance to the published slot";
-        const uint32_t indirect = words[output.CursorWords + output.RecordWords + index];
-        EXPECT_EQ(indirect & ScatterBuilder::kLodFadeIndexMask, record.Instance);
-        const uint32_t weight = (indirect >> ScatterBuilder::kLodFadeWeightShift)
-                               & ScatterBuilder::kLodFadeWeightMask;
-        EXPECT_EQ(weight != 0u, fading);
+        ASSERT_GT(command[1], 0u);
+        ASSERT_LE(command[1], expected.size());
+        ASSERT_LE(uint64_t{command[4]} + command[1], output.IndirectionWords);
+        for (uint32_t instance = 0; instance < command[1]; ++instance)
+        {
+            const uint32_t indirect = words[output.CursorWords + output.RecordWords
+                                             + command[4] + instance];
+            actualInstances.emplace_back(indirect & ScatterBuilder::kLodFadeIndexMask,
+                                         command[0], command[2], command[3]);
+            const uint32_t weight = (indirect >> ScatterBuilder::kLodFadeWeightShift)
+                                   & ScatterBuilder::kLodFadeWeightMask;
+            EXPECT_EQ(weight != 0u, fading);
+        }
     }
+    std::sort(actualInstances.begin(), actualInstances.end());
+    std::sort(expectedInstances.begin(), expectedInstances.end());
+    EXPECT_EQ(actualInstances, expectedInstances);
 }
 
 void CheckScatterProbeOutputs(IDevice& device, const ScatterProbeRanges& ranges,
-                               const ScatterProbeOutput& output, bool transition)
+                               const ScatterProbeOutput& output, bool transition,
+                               bool instanceCompaction)
 {
     const auto* words = static_cast<const uint32_t*>(device.MapBuffer(output.Readback));
     ASSERT_NE(words, nullptr);
@@ -3152,7 +3172,12 @@ void CheckScatterProbeOutputs(IDevice& device, const ScatterProbeRanges& ranges,
         }
     }
     CheckScatterProbeSegment(words, output, ranges.Ranges[1].even,
-        {{1u, 12u, 130u, 7u}, {2u, 6u, 260u, 19u}});
+        {{0u, 12u, 130u, 7u}, {1u, 12u, 130u, 7u}});
+    const size_t shadowCursor = ranges.Ranges[1].even.countByteOffset / sizeof(uint32_t);
+    if (shadowCursor < output.CursorWords)
+    {
+        EXPECT_EQ(words[shadowCursor], instanceCompaction ? 1u : 2u);
+    }
     CheckScatterProbeSegment(words, output, ranges.Ranges[3].even, {{0u, 30u, 100u, 7u}});
     CheckScatterProbeSegment(words, output, ranges.Ranges[4].even, {{2u, 60u, 200u, 19u}});
     device.UnmapBuffer(output.Readback);
@@ -3193,13 +3218,17 @@ void AddScatterPreparationWitness(RGFrame& frame, ScatterPreparationWitness& wit
                   {
                       ++witness.RecordCallbacks;
                       if (witness.Vulkan)
+                      {
                           EXPECT_EQ(witness.Device->GetDescriptorAllocatorStats().TransientAllocated,
                                     witness.FirstRecordAllocations);
+                      }
                   });
 }
 
-void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI)
+void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI, bool instanceCompaction)
 {
+    SCOPED_TRACE(instanceCompaction ? "instance compaction enabled" : "instance compaction disabled");
+    ScopedEnvVar instanceEnvironment("GE_DRAW_STREAM_INSTANCING", instanceCompaction ? "1" : "0");
     ScopedEnvVar statsEnvironment("GE_SCATTER_STATS", "1");
     GameEngine::TestUtils::ScopedTempDir cache(
         GameEngine::TestUtils::MakeUniqueTempDirectory("prepared-unified-scatter"));
@@ -3237,8 +3266,8 @@ void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI)
     ASSERT_TRUE(visibilityBuffer.IsValid());
     std::vector<uint32_t> visibilityWords(visibilityDesc.size / sizeof(uint32_t), 0u);
     visibilityWords[0] = visibilityWords[2] = 1u;
+    visibilityWords[stride / sizeof(uint32_t)] = 1u;
     visibilityWords[stride / sizeof(uint32_t) + 1u] = 1u;
-    visibilityWords[stride / sizeof(uint32_t) + 2u] = 1u;
     visibilityWords[2u * stride / sizeof(uint32_t) + 1u] = 1u;
     visibilityWords[2u * stride / sizeof(uint32_t) + 3u] = 1u;
     device->UpdateBuffer(visibilityBuffer, 0, visibilityDesc.size, visibilityWords.data());
@@ -3264,11 +3293,13 @@ void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI)
             ASSERT_TRUE(range.IsValid());
         constexpr size_t kBlockBytes = kScatterProbeInstances * kScatterProbeCommandWords
                                       * sizeof(uint32_t);
-        EXPECT_EQ(ranges.Ranges[0].even.cmdByteOffset, 3u * kBlockBytes);
-        EXPECT_EQ(ranges.Ranges[1].even.cmdByteOffset, 4u * kBlockBytes);
-        EXPECT_EQ(ranges.Ranges[2].even.cmdByteOffset, 5u * kBlockBytes);
-        EXPECT_EQ(ranges.Ranges[0].evenTail.cmdByteOffset, 8u * kBlockBytes);
-        EXPECT_EQ(ranges.Ranges[2].evenTail.cmdByteOffset, 9u * kBlockBytes);
+        const uint32_t headBlock = instanceCompaction ? 0u : 3u;
+        const uint32_t tailBlock = instanceCompaction ? 6u : 8u;
+        EXPECT_EQ(ranges.Ranges[0].even.cmdByteOffset, headBlock * kBlockBytes);
+        EXPECT_EQ(ranges.Ranges[1].even.cmdByteOffset, (headBlock + 1u) * kBlockBytes);
+        EXPECT_EQ(ranges.Ranges[2].even.cmdByteOffset, (headBlock + 2u) * kBlockBytes);
+        EXPECT_EQ(ranges.Ranges[0].evenTail.cmdByteOffset, tailBlock * kBlockBytes);
+        EXPECT_EQ(ranges.Ranges[2].evenTail.cmdByteOffset, (tailBlock + 1u) * kBlockBytes);
         EXPECT_EQ(ranges.Ranges[1].evenTail.maxDrawCount, 0u);
         EXPECT_EQ(ranges.Ranges[3].even.cmdByteOffset, 10u * kBlockBytes);
         const auto output = AddScatterProbeOutput(frame, *device, builder, ranges, copyPipeline);
@@ -3285,7 +3316,9 @@ void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI)
             EXPECT_EQ(frame.SubmittedFrameCount(), 0u);
             EXPECT_EQ(builder.IntrospectScatter().RenderedHistoryRotations, rotations);
             if (witness.Vulkan)
+            {
                 EXPECT_GE(device->GetDescriptorAllocatorStats().TransientAllocated, before + 9u);
+            }
         }
         witness.AllowRecording = true;
         const uint32_t before = device->GetDescriptorAllocatorStats().TransientAllocated;
@@ -3295,9 +3328,11 @@ void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI)
         EXPECT_EQ(witness.RecordCallbacks, 2u);
         EXPECT_EQ(frame.SubmittedFrameCount(), 1u);
         if (witness.Vulkan)
+        {
             EXPECT_GE(witness.FirstRecordAllocations, before + 9u)
                 << "seven production sets and two copy controls must be ready before recording";
-        CheckScatterProbeOutputs(*device, ranges, output, frameIndex != 0u);
+        }
+        CheckScatterProbeOutputs(*device, ranges, output, frameIndex != 0u, instanceCompaction);
         device->DestroyBuffer(output.Readback);
     }
     builder.BeginArenaFrame();
@@ -3312,7 +3347,7 @@ void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI)
         else if (stats.viewId == 2u)
         {
             EXPECT_EQ(stats.passedCasters, 2u);
-            EXPECT_EQ(stats.drawnTriangles, 6u);
+            EXPECT_EQ(stats.drawnTriangles, 8u);
         }
         else if (stats.viewId == 4u)
         {
@@ -3330,11 +3365,13 @@ void CheckUnifiedScatterPreparation(GraphicsAPI graphicsAPI)
 
 TEST(RGGpuDriven, UnifiedScatterPreparesBindingsAndPreservesInterleavedHeadAndTailSlices)
 {
-    CheckUnifiedScatterPreparation(GraphicsAPI::Vulkan);
+    CheckUnifiedScatterPreparation(GraphicsAPI::Vulkan, false);
+    CheckUnifiedScatterPreparation(GraphicsAPI::Vulkan, true);
 }
 #if defined(__APPLE__)
 TEST(RGGpuDriven, MetalUnifiedScatterPreparesBindingsAndPreservesInterleavedHeadAndTailSlices)
 {
-    CheckUnifiedScatterPreparation(GraphicsAPI::Metal);
+    CheckUnifiedScatterPreparation(GraphicsAPI::Metal, false);
+    CheckUnifiedScatterPreparation(GraphicsAPI::Metal, true);
 }
 #endif
