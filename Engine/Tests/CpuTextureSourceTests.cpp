@@ -38,6 +38,8 @@ using namespace GameEngine::Engine::Renderer;
 
 namespace
 {
+using GameEngine::Rendering::TextureFormat;
+
 TEST(CpuTexturePipeline, AuthoredOutputsResolveForFullscreenConsumers)
 {
     using namespace Pipeline;
