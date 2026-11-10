@@ -17,6 +17,7 @@ Rendering::TextureHandle UploadRgba8WithMips(Rendering::IDevice* device,
                                              bool srgb, const char* debugName,
                                              const char* stagingName, uint32_t& outLevels)
 {
+    outLevels = 0;
     std::vector<TextureCookMipLevel> mipChain;
     {
         TextureCookMipLevel level0;
@@ -36,28 +37,33 @@ Rendering::TextureHandle UploadRgba8WithMips(Rendering::IDevice* device,
         }
         mipChain.resize(1);
     }
-    outLevels = static_cast<uint32_t>(mipChain.size());
+    const uint32_t mipLevels = static_cast<uint32_t>(mipChain.size());
 
-    Rendering::TextureDesc td{};
-    td.width = width;
-    td.height = height;
-    td.mipLevels = outLevels;
-    td.arrayLayers = 1;
-    td.format = static_cast<uint32_t>(gpuFormat);
-    td.usage = static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource)
+    Rendering::TextureDesc textureDescription{};
+    textureDescription.width = width;
+    textureDescription.height = height;
+    textureDescription.mipLevels = mipLevels;
+    textureDescription.arrayLayers = 1;
+    textureDescription.format = static_cast<uint32_t>(gpuFormat);
+    textureDescription.usage = static_cast<uint32_t>(Rendering::TextureUsage::ShaderResource)
              | static_cast<uint32_t>(Rendering::TextureUsage::TransferDst);
-    td.persistent = true;
-    td.debugName = debugName;
-    Rendering::TextureHandle tex = device->CreateTexture(td);
-    if (!tex.IsValid())
+    textureDescription.persistent = true;
+    textureDescription.debugName = debugName;
+    Rendering::TextureHandle texture = device->CreateTexture(textureDescription);
+    if (!texture.IsValid())
         return {};
     std::vector<Rendering::TextureMipUploadEntry> mipEntries(mipChain.size());
     for (size_t level = 0; level < mipChain.size(); ++level)
         mipEntries[level] = {mipChain[level].Bytes.data(), mipChain[level].Bytes.size(),
                              mipChain[level].Width, mipChain[level].Height};
-    Rendering::UploadTextureMips(device, tex, mipEntries.data(),
-                                 static_cast<uint32_t>(mipEntries.size()), gpuFormat, stagingName);
-    return tex;
+    if (!Rendering::UploadTextureMips(device, texture, mipEntries.data(),
+                                      mipLevels, gpuFormat, stagingName))
+    {
+        device->DestroyTexture(texture);
+        return {};
+    }
+    outLevels = mipLevels;
+    return texture;
 }
 
 } // namespace GameEngine
