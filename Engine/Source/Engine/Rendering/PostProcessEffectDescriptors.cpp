@@ -1573,8 +1573,8 @@ void RegisterBuiltInPostProcessEffectDescriptors()
         .Type = RegisterEffectComponent<RainSettingsEffect>(),
         .ComponentName = "RainSettingsEffect",
         .DisplayName = "Rain & Water",
-        .IconPath = "Icons/PostFX/RainWater.svg",
         .Description = "Global water drop size and ripple animation; wind volumes drive local wind",
+        .IconPath = "Icons/PostFX/RainWater.svg",
         .FieldIO = kRainSettingsIO,
         .SettingsFields = kRainSettingsSettings,
         .Extract =
