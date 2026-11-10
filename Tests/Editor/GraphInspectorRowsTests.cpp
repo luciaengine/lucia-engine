@@ -288,7 +288,7 @@ TEST(GraphInspectorRowsTests, ClipGuidSchemaPlansAssetRow)
     NodeTypeMeta schema;
     schema.TypeId = "ClipPlayer";
     schema.Parameters = {
-        {"clipGuid", Graph::GraphValue::FromGuid("")},
+        {.Id = "clipGuid", .Default = Graph::GraphValue::FromGuid(""), .AssetReference = AssetType::Animation},
         {"speed", 1.0f},
         {"looping", true},
     };
