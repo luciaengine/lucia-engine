@@ -146,7 +146,7 @@ class SystemWaveTrace
         BodyInterval& operator=(const BodyInterval&) = delete;
 
       private:
-        uint64 m_Id = 0;
+        [[maybe_unused]] uint64 m_Id = 0;
     };
 
     /// The os_signpost interval of one wave's join.
@@ -159,7 +159,7 @@ class SystemWaveTrace
         JoinInterval& operator=(const JoinInterval&) = delete;
 
       private:
-        uint64 m_Id = 0;
+        [[maybe_unused]] uint64 m_Id = 0;
     };
 
   private:
@@ -168,7 +168,7 @@ class SystemWaveTrace
     uint64 m_FramesRecorded = 0;
     bool m_ClearPending = false;
     // The os_signpost id of the wave in flight; 0 when none is open.
-    uint64 m_WaveSignpost = 0;
+    [[maybe_unused]] uint64 m_WaveSignpost = 0;
 };
 
 } // namespace GameEngine::ECS
