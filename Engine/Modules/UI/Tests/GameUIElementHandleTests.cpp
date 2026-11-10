@@ -1224,8 +1224,8 @@ TEST(GameUIElementHandleTests, MarkdownTextSetterUsesTheControlAndRejectsInvalid
     HudFixture hud(device.get(), "gameui_handle_markdown",
                    "<uielement class='hud-root'><MarkdownText id='notes' /><label id='plain' /></uielement>");
     ASSERT_TRUE(hud.Ok);
-    auto* notes = dynamic_cast<MarkdownText*>(hud.Find("notes"_sid));
-    UIElement* plain = hud.Find("plain"_sid);
+    auto* notes = dynamic_cast<MarkdownText*>(hud.Find("notes"));
+    UIElement* plain = hud.Find("plain");
     ASSERT_NE(notes, nullptr);
     ASSERT_NE(plain, nullptr);
     uint64_t instanceId = 0;
@@ -1259,7 +1259,7 @@ TEST(GameUIElementHandleTests, MarkdownTextSetterUsesTheControlAndRejectsInvalid
 
     hud.HotReload("<uielement class='hud-root'><label id='notes' /></uielement>");
     EXPECT_EQ(GE_UIElement_SetMarkdownText(instanceId, "stale handle"), GE_Result_NotFound);
-    UIElement* replacement = hud.Find("notes"_sid);
+    UIElement* replacement = hud.Find("notes");
     ASSERT_NE(replacement, nullptr);
     const uint64_t replacementId = replacement->GetInstanceId();
     EXPECT_EQ(GE_UIElement_SetMarkdownText(replacementId, "wrong type"), GE_Result_InvalidArg);
