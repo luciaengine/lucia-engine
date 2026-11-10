@@ -175,10 +175,32 @@ float GE_SamplePointShadowSlot(int slot, vec3 lightPosition, vec3 position, vec3
 
     float tileResolution = max(tileParameters.x, 1.0);
     vec2 rotation = GE_PointShadowRotation(faceUV, float(face), tileResolution);
+    const int kTapCount = 12;
+    float interiorMargin = abs(filterRadius) + 0.5 / tileResolution;
+    if (all(greaterThanEqual(faceUV, vec2(interiorMargin))) &&
+        all(lessThanEqual(faceUV, vec2(1.0 - interiorMargin))))
+    {
+        // A complete interior footprint keeps the original atlas arithmetic and
+        // clamped hardware comparisons. Only boundary footprints need remapping.
+        float tileScale = tileParameters.w;
+        float atlasResolution = tileResolution / max(tileScale, 1e-6);
+        float halfAtlasTexel = 0.5 / atlasResolution;
+        vec2 subLo = vec2(halfAtlasTexel);
+        vec2 subHi = vec2(tileScale - halfAtlasTexel);
+        float layer = parameters.y + float(face);
+        float shadow = 0.0;
+        for (int tapIndex = 0; tapIndex < kTapCount; ++tapIndex)
+        {
+            vec2 offset = GE_VogelDisk(tapIndex, kTapCount, rotation) * filterRadius;
+            vec2 atlasUV = clamp((faceUV + offset) * tileScale, subLo, subHi);
+            shadow += GE_SHADOW_TAP(ge_pointShadowMap, vec4(atlasUV, layer, referenceDepth));
+        }
+        return shadow / float(kTapCount);
+    }
+
     vec3 right = vec3(faceVP[0].x, faceVP[1].x, faceVP[2].x);
     vec3 up = vec3(faceVP[0].y, faceVP[1].y, faceVP[2].y);
     float shadow = 0.0;
-    const int kTapCount = 12;
     for (int tapIndex = 0; tapIndex < kTapCount; ++tapIndex)
     {
         vec2 offset = GE_VogelDisk(tapIndex, kTapCount, rotation) * filterRadius;
