@@ -35,6 +35,7 @@ class PointShadowFilterComputeTest : public ::testing::Test
     };
     static_assert(sizeof(Query) == 48);
     static constexpr uint32_t kAtlasResolution = 64;
+    static constexpr uint32_t kWorkgroupSize = 64; // Matches point_shadow_filter_test.comp.
     static constexpr uint32_t kFaceCount = Renderer::kPointShadowFaceCount;
     static constexpr uint32_t kLayerCount = kFaceCount * kFaceCount;
 
@@ -251,7 +252,7 @@ class PointShadowFilterComputeTest : public ::testing::Test
             Rendering::ResourceState::CopyDest, Rendering::ResourceState::ShaderResource));
         commands->SetPipeline(m_Pipeline);
         commands->BindDescriptorSet(0, set, m_Pipeline);
-        commands->Dispatch((static_cast<uint32_t>(queries.size()) + 63) / 64, 1, 1);
+        commands->Dispatch((static_cast<uint32_t>(queries.size()) + kWorkgroupSize - 1) / kWorkgroupSize, 1, 1);
         commands->End();
         m_Device->ExecuteCommandLists({commands.get()});
         m_Device->WaitForIdle();

@@ -180,19 +180,19 @@ float GE_SamplePointShadowSlot(int slot, vec3 lightPosition, vec3 position, vec3
     if (all(greaterThanEqual(faceUV, vec2(interiorMargin))) &&
         all(lessThanEqual(faceUV, vec2(1.0 - interiorMargin))))
     {
-        // A complete interior footprint keeps the original atlas arithmetic and
-        // clamped hardware comparisons. Only boundary footprints need remapping.
+        // Interior footprints use clamped hardware comparisons in atlas coordinates.
+        // Boundary footprints need remapping.
         float tileScale = tileParameters.w;
         float atlasResolution = tileResolution / max(tileScale, 1e-6);
         float halfAtlasTexel = 0.5 / atlasResolution;
-        vec2 subLo = vec2(halfAtlasTexel);
-        vec2 subHi = vec2(tileScale - halfAtlasTexel);
+        vec2 atlasMinimum = vec2(halfAtlasTexel);
+        vec2 atlasMaximum = vec2(tileScale - halfAtlasTexel);
         float layer = parameters.y + float(face);
         float shadow = 0.0;
         for (int tapIndex = 0; tapIndex < kTapCount; ++tapIndex)
         {
             vec2 offset = GE_VogelDisk(tapIndex, kTapCount, rotation) * filterRadius;
-            vec2 atlasUV = clamp((faceUV + offset) * tileScale, subLo, subHi);
+            vec2 atlasUV = clamp((faceUV + offset) * tileScale, atlasMinimum, atlasMaximum);
             shadow += GE_SHADOW_TAP(ge_pointShadowMap, vec4(atlasUV, layer, referenceDepth));
         }
         return shadow / float(kTapCount);
