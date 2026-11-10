@@ -247,6 +247,11 @@ endif()
 
 if(GLSLC_EXECUTABLE)
     message(STATUS "✅ Found glslc: ${GLSLC_EXECUTABLE}")
+    if(CMAKE_GENERATOR MATCHES "Makefiles" AND CMAKE_VERSION VERSION_LESS "4.0")
+        message(WARNING
+            "CMake ${CMAKE_VERSION} with ${CMAKE_GENERATOR} retains removed shader include dependencies, "
+            "which can cause repeated rebuilds. Use Ninja or CMake 4.0+ for precise incremental shader builds.")
+    endif()
 elseif(NOT EMSCRIPTEN)
     message(WARNING "⚠️ glslc not found - shader compilation will be skipped; install Vulkan SDK or ensure vcpkg shaderc is available")
 endif()
@@ -295,7 +300,6 @@ if(GLSLC_EXECUTABLE)
     if(BUILD_TESTING AND EXISTS "${CMAKE_SOURCE_DIR}/Engine/Tests/Shaders")
         list(APPEND GE_SHADER_SOURCE_DIRS "${CMAKE_SOURCE_DIR}/Engine/Tests/Shaders")
     endif()
-    file(GLOB GE_SHADER_COMMON_INCLUDES "${SHADER_SOURCE_DIR}/Includes/*.glsl")
     set(GE_VOLUMETRIC_FOG_SHADER_DIR "${CMAKE_SOURCE_DIR}/Engine/Modules/VolumetricFog/Shaders")
     if(EXISTS "${GE_VOLUMETRIC_FOG_SHADER_DIR}")
         list(APPEND GE_SHADER_SOURCE_DIRS "${GE_VOLUMETRIC_FOG_SHADER_DIR}")
@@ -323,24 +327,18 @@ if(GLSLC_EXECUTABLE)
     set(GE_AMBIENT_OCCLUSION_SHADER_DIR "${SHADER_SOURCE_DIR}/AmbientOcclusion")
     if(EXISTS "${GE_AMBIENT_OCCLUSION_SHADER_DIR}")
         list(APPEND GE_SHADER_SOURCE_DIRS "${GE_AMBIENT_OCCLUSION_SHADER_DIR}")
-        file(GLOB GE_AMBIENT_OCCLUSION_INCLUDES "${GE_AMBIENT_OCCLUSION_SHADER_DIR}/*.glsl")
-        list(APPEND GE_SHADER_COMMON_INCLUDES ${GE_AMBIENT_OCCLUSION_INCLUDES})
     endif()
     # Screen-space reflections own a subdirectory of the shader root for the same
     # reason ambient occlusion does, and the auto-glob below is not recursive.
     set(GE_SCREEN_SPACE_REFLECTIONS_SHADER_DIR "${SHADER_SOURCE_DIR}/ScreenSpaceReflections")
     if(EXISTS "${GE_SCREEN_SPACE_REFLECTIONS_SHADER_DIR}")
         list(APPEND GE_SHADER_SOURCE_DIRS "${GE_SCREEN_SPACE_REFLECTIONS_SHADER_DIR}")
-        file(GLOB GE_SCREEN_SPACE_REFLECTIONS_INCLUDES "${GE_SCREEN_SPACE_REFLECTIONS_SHADER_DIR}/*.glsl")
-        list(APPEND GE_SHADER_COMMON_INCLUDES ${GE_SCREEN_SPACE_REFLECTIONS_INCLUDES})
     endif()
     # Screen-space shadows own a subdirectory of the shader root for the same
     # reason ambient occlusion does, and the auto-glob below is not recursive.
     set(GE_SCREEN_SPACE_SHADOWS_SHADER_DIR "${SHADER_SOURCE_DIR}/ScreenSpaceShadows")
     if(EXISTS "${GE_SCREEN_SPACE_SHADOWS_SHADER_DIR}")
         list(APPEND GE_SHADER_SOURCE_DIRS "${GE_SCREEN_SPACE_SHADOWS_SHADER_DIR}")
-        file(GLOB GE_SCREEN_SPACE_SHADOWS_INCLUDES "${GE_SCREEN_SPACE_SHADOWS_SHADER_DIR}/*.glsl")
-        list(APPEND GE_SHADER_COMMON_INCLUDES ${GE_SCREEN_SPACE_SHADOWS_INCLUDES})
     endif()
     set(GE_VOLUMETRIC_CLOUDS_SHADER_DIR "${CMAKE_SOURCE_DIR}/Engine/Modules/VolumetricClouds/Shaders")
     if(EXISTS "${GE_VOLUMETRIC_CLOUDS_SHADER_DIR}")
@@ -426,10 +424,8 @@ if(GLSLC_EXECUTABLE)
     # fails only on a root-relative one, so an omission stays invisible until a
     # shader gains an include or moves directory.
     #
-    # glslc writes the include set it actually opened to a depfile, which is the
-    # only exact record of it: the DEPENDS globs cover Includes/ and UI/, and
-    # every shader that includes across a module directory - the ocean cascade
-    # and FFT headers, the fog and cloud commons - falls outside them.
+    # The compiler depfile tracks the includes opened by this stage and variant.
+    # Explicit dependencies retain generated-input and tool ordering.
     function(ge_compile_shader)
         cmake_parse_arguments(ARG "VULKAN13" "OUTPUT;SOURCE;COMMENT" "DEFINES;DEPENDS" ${ARGN})
         set(_ge_flags -I${SHADER_SOURCE_DIR})
@@ -441,7 +437,7 @@ if(GLSLC_EXECUTABLE)
             OUTPUT ${ARG_OUTPUT}
             COMMAND ${GLSLC_EXECUTABLE} ${_ge_flags} ${ARG_DEFINES} ${ARG_SOURCE}
                     -o ${ARG_OUTPUT} -MD -MF ${ARG_OUTPUT}.d
-            DEPENDS ${ARG_SOURCE} ${ARG_DEPENDS}
+            DEPENDS ${ARG_SOURCE} ${GLSLC_EXECUTABLE} ${ARG_DEPENDS}
             DEPFILE ${ARG_OUTPUT}.d
             COMMENT "${ARG_COMMENT}"
             VERBATIM
@@ -451,8 +447,7 @@ if(GLSLC_EXECUTABLE)
 
     # UI SDF shaders. One table of (output stem, stage, defines) rather than a
     # block per variant: the profile axis alone would otherwise double six
-    # copies. Include dependencies are listed explicitly so an edit to any
-    # UI/*.glsl recompiles every variant.
+    # copies. Each variant tracks only the includes its compiler opens.
     #
     #   (none)   the Vulkan/Metal default
     #   subpixel dual-source blending: per-channel text coverage in a second
@@ -463,7 +458,6 @@ if(GLSLC_EXECUTABLE)
     #   compat   GE_COMPAT_PROFILE — fixed texture slots, hoisted derivatives and
     #            a per-run draw base, for the WebGPU-class target. Selected at
     #            load time by UIManager from the resolved RendererProfile
-    file(GLOB UI_SDF_INCLUDES "${SHADER_SOURCE_DIR}/UI/*.glsl")
     set(UI_SDF_VARIANTS
         "ui_sdf|"
         "ui_sdf_subpixel|-DUI_SUBPIXEL_DUAL_SRC"
@@ -489,7 +483,6 @@ if(GLSLC_EXECUTABLE)
         ge_compile_shader(
             OUTPUT ${SHADER_OUTPUT} SOURCE ${SHADER_SOURCE}
             DEFINES ${_defineList}
-            DEPENDS ${UI_SDF_INCLUDES}
             COMMENT "Compiling UI shader: ${_stem}.${_stage}")
         set(GE_ALL_SHADER_SPV_OUTPUTS ${GE_ALL_SHADER_SPV_OUTPUTS} PARENT_SCOPE)
     endfunction()
@@ -568,7 +561,6 @@ if(GLSLC_EXECUTABLE)
         if(EXISTS "${SHADER_SOURCE}")
             ge_compile_shader(
                 OUTPUT ${SHADER_OUTPUT} SOURCE ${SHADER_SOURCE}
-                DEPENDS ${GE_SHADER_COMMON_INCLUDES}
                 COMMENT "Compiling vertex shader: ${SHADER}")
         endif()
     endforeach()
@@ -585,7 +577,6 @@ if(GLSLC_EXECUTABLE)
         if(EXISTS "${SHADER_SOURCE}")
             ge_compile_shader(
                 OUTPUT ${SHADER_OUTPUT} SOURCE ${SHADER_SOURCE}
-                DEPENDS ${GE_SHADER_COMMON_INCLUDES}
                 COMMENT "Compiling fragment shader: ${SHADER}")
         endif()
     endforeach()
@@ -602,7 +593,6 @@ if(GLSLC_EXECUTABLE)
         if(EXISTS "${SHADER_SOURCE}")
             ge_compile_shader(
                 OUTPUT ${SHADER_OUTPUT} SOURCE ${SHADER_SOURCE}
-                DEPENDS ${GE_SHADER_COMMON_INCLUDES}
                 COMMENT "Compiling compute shader: ${SHADER}")
         endif()
     endforeach()
@@ -616,7 +606,6 @@ if(GLSLC_EXECUTABLE)
         OUTPUT ${SHADER_OUTPUT_DIR}/Tests/animation_skinning_compat.comp.spv
         SOURCE ${SHADER_SOURCE_DIR}/animation_skinning.comp
         DEFINES -DGE_COMPAT_PROFILE
-        DEPENDS ${GE_SHADER_COMMON_INCLUDES}
         COMMENT "Compiling compute shader: animation_skinning.comp (compat profile arm)")
     # The SDSM receiver reduce's GE_COMPAT_PROFILE arm (its depth flush), on the same
     # terms, for ShadowReceiverReduceComputeTests.
@@ -624,7 +613,6 @@ if(GLSLC_EXECUTABLE)
         OUTPUT ${SHADER_OUTPUT_DIR}/Tests/depth_reduce_compat.comp.spv
         SOURCE ${SHADER_SOURCE_DIR}/depth_reduce.comp
         DEFINES -DGE_COMPAT_PROFILE
-        DEPENDS ${GE_SHADER_COMMON_INCLUDES}
         COMMENT "Compiling compute shader: depth_reduce.comp (compat profile arm)")
 
     # draw_command_scatter.comp: dedicated vulkan1.3/spv1.6 command (subgroup
@@ -642,7 +630,6 @@ if(GLSLC_EXECUTABLE)
         set(SCATTER_COMP_SPV ${SHADER_OUTPUT_DIR}/draw_command_scatter.comp.spv)
         ge_compile_shader(VULKAN13
             OUTPUT ${SCATTER_COMP_SPV} SOURCE ${SCATTER_COMP_SRC}
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): draw_command_scatter.comp")
 
         # Coalesced scatter-hot variant (-DSCATTER_COMPACT): same source, binds
@@ -652,7 +639,6 @@ if(GLSLC_EXECUTABLE)
         ge_compile_shader(VULKAN13
             OUTPUT ${SCATTER_COMPACT_COMP_SPV} SOURCE ${SCATTER_COMP_SRC}
             DEFINES -DSCATTER_COMPACT
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): draw_command_scatter.comp [SCATTER_COMPACT]")
 
         # Instrumentation variants (-DSCATTER_STATS): identical scatter, plus the
@@ -666,14 +652,12 @@ if(GLSLC_EXECUTABLE)
         ge_compile_shader(VULKAN13
             OUTPUT ${SCATTER_STATS_COMP_SPV} SOURCE ${SCATTER_COMP_SRC}
             DEFINES -DSCATTER_STATS
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): draw_command_scatter.comp [SCATTER_STATS]")
 
         set(SCATTER_COMPACT_STATS_COMP_SPV ${SHADER_OUTPUT_DIR}/draw_command_scatter_compact_stats.comp.spv)
         ge_compile_shader(VULKAN13
             OUTPUT ${SCATTER_COMPACT_STATS_COMP_SPV} SOURCE ${SCATTER_COMP_SRC}
             DEFINES -DSCATTER_COMPACT -DSCATTER_STATS
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): draw_command_scatter.comp [SCATTER_COMPACT SCATTER_STATS]")
     endif()
 
@@ -691,7 +675,6 @@ if(GLSLC_EXECUTABLE)
         set(RT_SHADOW_MASK_COMP_SPV ${SHADER_OUTPUT_DIR}/rt_shadow_mask.comp.spv)
         ge_compile_shader(VULKAN13
             OUTPUT ${RT_SHADOW_MASK_COMP_SPV} SOURCE ${RT_SHADOW_MASK_COMP_SRC}
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): rt_shadow_mask.comp")
     endif()
 
@@ -708,7 +691,6 @@ if(GLSLC_EXECUTABLE)
         set(DDGI_TRACE_HW_COMP_SPV ${SHADER_OUTPUT_DIR}/ddgi_trace_hw.comp.spv)
         ge_compile_shader(VULKAN13
             OUTPUT ${DDGI_TRACE_HW_COMP_SPV} SOURCE ${DDGI_TRACE_HW_COMP_SRC}
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): ddgi_trace_hw.comp")
     endif()
 
@@ -726,7 +708,6 @@ if(GLSLC_EXECUTABLE)
         set(DDGI_CLASSIFY_COMP_SPV ${SHADER_OUTPUT_DIR}/ddgi_classify.comp.spv)
         ge_compile_shader(VULKAN13
             OUTPUT ${DDGI_CLASSIFY_COMP_SPV} SOURCE ${DDGI_CLASSIFY_COMP_SRC}
-            DEPENDS ${GE_SHADER_COMMON_INCLUDES}
             COMMENT "Compiling compute shader (vulkan1.3): ddgi_classify.comp")
     endif()
 
@@ -1268,7 +1249,7 @@ endif()
 if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTABLE))
     if(GE_SHADERREFLECT_EXECUTABLE)
         set(_GE_SHADERREFLECT_CMD "${GE_SHADERREFLECT_EXECUTABLE}")
-        set(_GE_SHADERREFLECT_TOOL_DEP "")
+        set(_GE_SHADERREFLECT_TOOL_DEP "${GE_SHADERREFLECT_EXECUTABLE}")
     else()
         set(_GE_SHADERREFLECT_CMD "$<TARGET_FILE:ShaderReflect>")
         set(_GE_SHADERREFLECT_TOOL_DEP ShaderReflect)
@@ -1332,7 +1313,6 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
         OUTPUT ${SHADER_OUTPUT_DIR}/markup_glow_ms.frag.spv
         SOURCE ${SHADER_SOURCE_DIR}/markup_glow.frag
         DEFINES -DGE_MARKUP_GLOW_MS_DEPTH
-        DEPENDS ${GE_SHADER_COMMON_INCLUDES}
         COMMENT "Compiling fragment shader: markup_glow_ms.frag")
     _ge_add_shaderpkg_graphics(markup_glow_ms markup_glow.vert markup_glow_ms.frag)
     # A region's display: its walls and lid from a vertex buffer, the glow's fragment stage.
@@ -1389,7 +1369,6 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
         OUTPUT ${SHADER_OUTPUT_DIR}/ocean_underwater_shadowed.frag.spv
         SOURCE ${GE_OCEAN_SHADER_DIR}/ocean_underwater.frag
         DEFINES -DOCEAN_UNDERWATER_SHADOWS
-        DEPENDS ${GE_SHADER_COMMON_INCLUDES}
         COMMENT "Compiling fragment shader: ocean_underwater_shadowed.frag")
     _ge_add_shaderpkg_graphics(ocean_underwater_shadowed ocean_fullscreen.vert ocean_underwater_shadowed.frag)
     _ge_add_shaderpkg_compute(volumetric_fog_media volumetric_fog_media.comp)
@@ -1575,7 +1554,7 @@ if (TARGET CompileShaders AND (TARGET ShaderReflect OR GE_SHADERREFLECT_EXECUTAB
         DEPENDS ${_GE_SHADERPKG_OUTPUTS} ${_GE_SLANG_LANE_STAGED}
         COMMENT "Packaging shaders into .shaderpkg"
     )
-    if(_GE_SHADERREFLECT_TOOL_DEP)
+    if(NOT GE_SHADERREFLECT_EXECUTABLE)
         add_dependencies(CompileShaderPkgs CompileShaders ShaderReflect)
     else()
         add_dependencies(CompileShaderPkgs CompileShaders)
