@@ -64,15 +64,15 @@ file(MAKE_DIRECTORY ${CBT_SHADER_OUTPUT_DIR})
 if(CBT_GLSLC_EXECUTABLE)
     set(CBT_KERNELS_SRC ${CBT_SHADER_DIR}/cbt_kernels.comp)
     set(CBT_KERNELS_SPV ${CBT_SHADER_OUTPUT_DIR}/cbt_kernels.comp.spv)
-    set(CBT_KERNELS_INCLUDES ${CBT_SHADER_DIR}/cbt_layout.glsl ${CBT_SHADER_DIR}/cbt_domain.glsl
-        ${CBT_SHADER_DIR}/cbt_atlas.glsl ${CBT_SHADER_DIR}/cbt_sculpt.glsl
-        ${CBT_SHADER_DIR}/cbt_analytic.glsl ${CBT_SHADER_DIR}/cbt_deep_decode.glsl
-        ${CBT_SHADER_DIR}/cbt_page.glsl ${CBT_SHADER_DIR}/cbt_height_chain.glsl
-        ${CBT_SHADER_DIR}/cbt_planar_demand.glsl)
+    set(_CBT_SHADER_TOOLS ${CBT_GLSLC_EXECUTABLE})
+    if(CBT_SPIRV_VAL_EXECUTABLE)
+        list(APPEND _CBT_SHADER_TOOLS ${CBT_SPIRV_VAL_EXECUTABLE})
+    endif()
 
     set(_CBT_COMPILE_COMMANDS
         COMMAND ${CBT_GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.6
-                -I ${CBT_SHADER_DIR} ${CBT_KERNELS_SRC} -o ${CBT_KERNELS_SPV})
+                -I ${CBT_SHADER_DIR} ${CBT_KERNELS_SRC} -o ${CBT_KERNELS_SPV}
+                -MD -MF ${CBT_KERNELS_SPV}.d)
     if(CBT_SPIRV_VAL_EXECUTABLE)
         list(APPEND _CBT_COMPILE_COMMANDS
             COMMAND ${CBT_SPIRV_VAL_EXECUTABLE} --target-env vulkan1.3 ${CBT_KERNELS_SPV})
@@ -83,8 +83,9 @@ if(CBT_GLSLC_EXECUTABLE)
 
     add_custom_command(
         OUTPUT ${CBT_KERNELS_SPV}
+        DEPFILE ${CBT_KERNELS_SPV}.d
         ${_CBT_COMPILE_COMMANDS}
-        DEPENDS ${CBT_KERNELS_SRC} ${CBT_KERNELS_INCLUDES}
+        DEPENDS ${CBT_KERNELS_SRC} ${_CBT_SHADER_TOOLS}
         COMMENT "Compiling + validating CBT compute kernels: cbt_kernels.comp"
         VERBATIM
     )
@@ -96,15 +97,16 @@ if(CBT_GLSLC_EXECUTABLE)
     set(_CBT_COMPILE_HEAP32_COMMANDS
         COMMAND ${CBT_GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.6
                 -DGE_CBT_HEAP32 -I ${CBT_SHADER_DIR} ${CBT_KERNELS_SRC}
-                -o ${CBT_KERNELS_HEAP32_SPV})
+                -o ${CBT_KERNELS_HEAP32_SPV} -MD -MF ${CBT_KERNELS_HEAP32_SPV}.d)
     if(CBT_SPIRV_VAL_EXECUTABLE)
         list(APPEND _CBT_COMPILE_HEAP32_COMMANDS
             COMMAND ${CBT_SPIRV_VAL_EXECUTABLE} --target-env vulkan1.3 ${CBT_KERNELS_HEAP32_SPV})
     endif()
     add_custom_command(
         OUTPUT ${CBT_KERNELS_HEAP32_SPV}
+        DEPFILE ${CBT_KERNELS_HEAP32_SPV}.d
         ${_CBT_COMPILE_HEAP32_COMMANDS}
-        DEPENDS ${CBT_KERNELS_SRC} ${CBT_KERNELS_INCLUDES}
+        DEPENDS ${CBT_KERNELS_SRC} ${_CBT_SHADER_TOOLS}
         COMMENT "Compiling + validating CBT compute kernels (heap32 arm): cbt_kernels.comp"
         VERBATIM
     )
