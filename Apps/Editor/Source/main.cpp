@@ -664,18 +664,14 @@ static int EditorMainImpl(int argc, char** argv) {
     }
     GameEngine::EngineCore::GetInstance().SetScriptsConfig(scriptsConfig);
 
-    // Unify the DLL-local logger with this module's state (same fix as the
-    // exe<->Engine.dll split): without it, GameEngine.Native.dll logs vanish.
+#if GE_ENABLE_SCRIPTING
+    // Share the host logger and component registry with the scripting library.
     GE_SetHostLoggerState(GameEngine::GetEngineLoggerState());
-
-    // Share the host's ComponentRegistry with the DLL. Without this, the DLL's
-    // copy of Engine.lib has separate handler maps, so blob-component metadata
-    // registered by the host isn't visible to managed code in the DLL.
-    // (ComponentTypeId is consteval post-Phase-1b — no allocator state to share.)
     GE_SetHostEcsState(
         GameEngine::ECS::ComponentRegistry::GetComponentsPtr(),
         GameEngine::ECS::ComponentRegistry::GetNameToTypeIdPtr(),
         GameEngine::ECS::ComponentRegistry::GetHandlersPtr());
+#endif
 
     #if defined(GE_ENABLE_MIMALLOC) && GE_ENABLE_MIMALLOC
     Logger::Log::Info("mimalloc version {}", mimallocVersion);

@@ -2,6 +2,20 @@
 
 namespace GameEngine
 {
+bool ApplyMainSceneViewPose(EditorApplication& app, const SceneViewCameraPose& pose)
+{
+    if (app.m_Windows.empty() || !app.m_Windows[0]->scene)
+        return false;
+    app.m_Windows[0]->scene->SetCameraPose(pose);
+
+    // Keep the panel's navigation angles aligned with the camera pose.
+    if (auto* root = app.m_Windows[0]->ui->GetRootElement())
+        if (auto* mount = dynamic_cast<Mount*>(root->FindById(EditorPanelIds::MountSceneView)))
+            if (auto* sceneViewPanel = dynamic_cast<SceneViewPanel*>(mount->GetTarget()))
+                sceneViewPanel->SetYawPitch(pose.YawDeg, pose.PitchDeg);
+    return true;
+}
+
 void RegisterCameraDebugHandlers(EditorDebugServer& server, EditorApplication& app)
 {
 server.RegisterHandler("get_camera", [&app](const EditorDebugServer::RequestContext& ctx) -> json
