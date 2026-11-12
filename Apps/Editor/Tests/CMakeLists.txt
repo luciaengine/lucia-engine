@@ -82,6 +82,7 @@ add_test(NAME EditorCaptureOutputDirectoryTests COMMAND EditorCaptureOutputDirec
 
 add_executable(EditorScreenshotCaptureWaitTests
     ScreenshotCaptureWaitTests.cpp
+    WindowRenderCallbackQueueTests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../Source/DebugServer/ScreenshotCaptureWait.cpp
 )
 

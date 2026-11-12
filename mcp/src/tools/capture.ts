@@ -25,6 +25,8 @@ export const tools: ToolDef[] = [
       "Poll get_editor_state until it reports 0 before capturing anything you intend to measure or A/B. " +
       "The capture is the render graph's own frame (`method: \"rendergraph\"`). When the editor cannot produce one — the scene view's tab is behind another, the window is minimized, the frame loop is starved — the call fails with the reason rather than substituting a picture of the window; pass allowWindowCapture=true if a window picture is what you want.",
     schema: {
+      windowIndex: z.coerce.number().int().nonnegative().optional()
+        .describe("Editor window to capture (default 0). Resolved to a stable window identity when requested. Secondary windows support target='window' only."),
       target: z.enum(["window", "viewport", "panel", "element", "rect", "asset_preview"]).optional()
         .describe("What to capture: 'window' (full editor, default), 'viewport' (scene view only), 'panel' (a docked panel), 'element' (a UI element by id), 'rect' (custom rectangle in window pixels), or 'asset_preview' (live GPU video frame from Asset View — works on macOS when UI composite readback is unavailable)."),
       panelId: z.string().optional().describe("Required when target='panel'. Dock panel ID: 'Assets', 'AssetView', 'Hierarchy', 'Inspector', etc. Use get_panel_tree to discover bounds."),

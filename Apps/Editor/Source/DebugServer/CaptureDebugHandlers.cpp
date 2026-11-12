@@ -2,6 +2,16 @@
 
 namespace GameEngine
 {
+namespace
+{
+EditorApplication::EditorWindowContext* FindCaptureWindow(EditorApplication& app, uint64_t windowId)
+{
+    for (const auto& window : app.m_Windows)
+        if (window && window->windowId == windowId)
+            return window.get();
+    return nullptr;
+}
+} // namespace
 void RegisterCaptureDebugHandlers(EditorDebugServer& server, EditorApplication& app)
 {
 server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServer::RequestContext& ctx) -> json
@@ -9,10 +19,16 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
         if (app.m_Windows.empty())
             return Editor::RefuseRequest("No editor window");
 
+        const int windowIndex = ctx.params.value("windowIndex", 0);
+        if (windowIndex < 0 || static_cast<size_t>(windowIndex) >= app.m_Windows.size())
+            return Editor::RefuseRequest("windowIndex out of range");
+        const uint64_t windowId = app.m_Windows[static_cast<size_t>(windowIndex)]->windowId;
         std::string requestId = ctx.id;
 
         // Parse parameters up-front (before scheduling render callback).
         const std::string target = ctx.params.value("target", std::string("window"));
+        if (windowIndex != 0 && target != "window")
+            return Editor::RefuseRequest("Secondary windows support target='window'");
         const std::string panelId = ctx.params.value("panelId", std::string());
         const std::string elementId = ctx.params.value("elementId", std::string());
         const int32_t rectX = ctx.params.value("x", 0);
@@ -98,10 +114,10 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
         // attempt per tick would make a starved frame loop spend the whole
         // refusal budget inside a single rendered frame.
         auto attemptQueued = std::make_shared<bool>(false);
-        auto attempt = std::make_shared<std::function<void()>>();
+        auto attempt = std::make_shared<EditorDebugServer::RenderCallback>();
         *attempt = [&app, wait, attemptQueued, ticketHolder, cropHolder, sourceSpaceHolder,
                     assetPreviewPathHolder, frameIndexHolder, encodeFilterStateHolder, target,
-                    panelId, elementId, rectX, rectY, rectW, rectH, coords]()
+                    panelId, elementId, rectX, rectY, rectW, rectH, coords](uint64_t declaringWindowId)
         {
             *attemptQueued = false;
             // The poll can end the wait with this attempt still queued, and the
@@ -113,13 +129,13 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
             // frame must never ride along with this frame's pixels.
             *cropHolder = ScreenshotCropDesc{};
 
-            if (app.m_Windows.empty())
+            auto* wndCtx = FindCaptureWindow(app, declaringWindowId);
+            if (!wndCtx)
             {
                 wait->RecordBlocked("the editor has no window");
                 return;
             }
 
-            auto* wndCtx = app.m_Windows[0].get();
             if (!wndCtx->renderCtx)
             {
                 wait->RecordBlocked("the editor window has no render context");
@@ -335,7 +351,7 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
                       cropHolder->label, cropHolder->x, cropHolder->y, cropHolder->w, cropHolder->h);
         };
         *attemptQueued = true;
-        server.EnqueueRenderCallback([attempt]() { (*attempt)(); });
+        server.EnqueueRenderCallback(windowId, attempt);
 
         // Deferred poll: each frame, re-arm the attempt until the readback is
         // declared, then wait for the GPU copy. The wait decides when to stop and
@@ -354,7 +370,7 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
              sourceSpaceHolder,
              assetPreviewPathHolder, frameIndexHolder, encodeFilterStateHolder, encodeHolder, target,
              panelId, elementId, rectX, rectY, rectW, rectH, coords, dither, deband,
-             offerWindowCaptureHint, requestId](json& outResult) -> bool
+             offerWindowCaptureHint, requestId, windowId](json& outResult) -> bool
             {
                 auto reportFailure = [&](const std::string& reason,
                                          bool offerWindowCapture = false) -> bool
@@ -365,6 +381,10 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
                                               json{{"fallbackReason", reason}});
                     return true;
                 };
+
+                auto* liveWindow = FindCaptureWindow(app, windowId);
+                if (!liveWindow || !liveWindow->window)
+                    return reportFailure("the requested editor window was closed");
 
                 // The readback has been handed to the encode job: wait for its line.
                 if (encodeHolder->IsValid())
@@ -383,9 +403,9 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
                     // substitute for — it fails whatever the caller allowed.
                     if (target == "asset_preview")
                         return reportFailure(reason + "; asset_preview has no window-capture substitute");
-                    if (app.m_Windows.empty() || !app.m_Windows[0] || !app.m_Windows[0]->window)
+                    if (!liveWindow->window)
                         return reportFailure(reason + "; no window to capture either");
-                    auto* wndCtx = app.m_Windows[0].get();
+                    auto* wndCtx = liveWindow;
                     std::vector<uint8_t> rgba8;
                     uint32_t srcW = 0;
                     uint32_t srcH = 0;
@@ -490,12 +510,11 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
                     // The same condition the render loop skips a window on: with no
                     // framebuffer there is no frame to declare a readback into, and
                     // no later frame changes that on its own.
-                    if (!*ticketHolder && !app.m_Windows.empty() && app.m_Windows[0] &&
-                        app.m_Windows[0]->window)
+                    if (!*ticketHolder && liveWindow->window)
                     {
                         int fbW = 0;
                         int fbH = 0;
-                        app.m_Windows[0]->window->GetFramebufferSize(fbW, fbH);
+                        liveWindow->window->GetFramebufferSize(fbW, fbH);
                         if (fbW <= 0 || fbH <= 0)
                             wait->RecordBlocked("the editor window has no framebuffer (minimized "
                                                 "or hidden), so it renders no frame to capture");
@@ -512,7 +531,7 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
                     if (!*ticketHolder && !*attemptQueued)
                     {
                         *attemptQueued = true;
-                        server.EnqueueRenderCallback([attempt]() { (*attempt)(); });
+                        server.EnqueueRenderCallback(windowId, attempt);
                     }
                     return false;
                 }
@@ -534,7 +553,7 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
                      dither, deband,
                      filterState = encodeFilterStateHolder->value_or(CaptureEncodeFilterState{
                          Rendering::Passes::GetBackbufferOutputDebandThresholdLsb()}),
-                     crop = *cropHolder, target,
+                     crop = *cropHolder, target, windowId,
                      frameIndex = *frameIndexHolder, previewPath = *assetPreviewPathHolder,
                      pendingBinds = PendingMaterialTextureBinds()]() -> json
                     {
@@ -547,6 +566,7 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
                         if (!Editor::IsRefusal(reply))
                         {
                             reply["frameIndex"] = frameIndex;
+                            reply["windowId"] = windowId;
                             if (target == "asset_preview" && !previewPath.empty())
                                 reply["previewPath"] = previewPath;
                         }
@@ -606,14 +626,23 @@ server.RegisterHandler("capture_shadow_diagnostics", [&app, &server](const Edito
         };
         auto state = std::make_shared<CaptureState>();
 
-        server.EnqueueRenderCallback([&app, state, requestedViewId, requestedCascade, maxStreams, maxRecords]()
+        if (app.m_Windows.empty())
+            return Editor::RefuseRequest("No editor window");
+        const uint64_t windowId = app.m_Windows.front()->windowId;
+        auto declaration = std::make_shared<EditorDebugServer::RenderCallback>(
+            [&app, state, requestedViewId, requestedCascade, maxStreams, maxRecords](uint64_t declaringWindowId)
         {
             if (app.m_Windows.empty())
             {
                 state->setupError = "No editor window";
                 return;
             }
-            auto* wndCtx = app.m_Windows[0].get();
+            auto* wndCtx = FindCaptureWindow(app, declaringWindowId);
+            if (!wndCtx)
+            {
+                state->setupError = "The requested editor window was closed";
+                return;
+            }
             auto* renderServices = app.m_EditorContext ? app.m_EditorContext->RenderServices : nullptr;
             if (!renderServices)
             {
@@ -761,10 +790,12 @@ server.RegisterHandler("capture_shadow_diagnostics", [&app, &server](const Edito
             }
         });
 
+        server.EnqueueRenderCallback(windowId, declaration);
         auto pollCount = std::make_shared<int>(0);
         server.EnqueueDeferredResponse(requestId,
-            [state, pollCount](json& outResult) -> bool
+            [state, pollCount, declaration](json& outResult) -> bool
             {
+                (void)declaration; // Keep the queued declaration alive until this response ends.
                 ++(*pollCount);
                 if (!state->setupError.empty())
                 {
@@ -974,12 +1005,14 @@ server.RegisterHandler("capture_resource", [&app, &server](const EditorDebugServ
         state->raw = ctx.params.value("raw", false);
 
         // Declaration phase: runs on the render thread at the RenderGraph capture seam.
-        server.EnqueueRenderCallback([&app, state]()
+        const uint64_t windowId = app.m_Windows.front()->windowId;
+        auto declaration = std::make_shared<EditorDebugServer::RenderCallback>(
+            [&app, state](uint64_t declaringWindowId)
         {
             if (state->resolved || app.m_Windows.empty())
                 return;
 
-            auto* wndCtx = app.m_Windows[0].get();
+            auto* wndCtx = FindCaptureWindow(app, declaringWindowId);
             auto* device = (wndCtx && wndCtx->renderCtx) ? wndCtx->renderCtx->GetDevice() : nullptr;
             auto* frame = wndCtx ? wndCtx->rg2Capture.frame : nullptr;
             if (!device || !frame || wndCtx->rg2Capture.frameIndex != frame->FrameIndex())
@@ -1122,9 +1155,11 @@ server.RegisterHandler("capture_resource", [&app, &server](const EditorDebugServ
         });
 
         // Resolution phase: poll until the declaring frame's copy has completed.
+        server.EnqueueRenderCallback(windowId, declaration);
         server.EnqueueDeferredResponse(ctx.id,
-            [state, requestId = ctx.id](json& outResult) -> bool
+            [state, declaration, requestId = ctx.id](json& outResult) -> bool
             {
+                (void)declaration; // Keep the queued declaration alive until this response ends.
                 if (state->encodeJob.IsValid())
                 {
                     std::string jobError;
