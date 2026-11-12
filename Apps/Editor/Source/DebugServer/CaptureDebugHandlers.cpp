@@ -481,6 +481,7 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
                     FinishScreenshotResult(outResult, std::move(rgba8), srcW, srcH, crop, target,
                                            "printwindow", PendingMaterialTextureBinds());
                     outResult["fallbackReason"] = reason;
+                    outResult["windowId"] = windowId;
                     return true;
                 };
 
