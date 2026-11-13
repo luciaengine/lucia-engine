@@ -48,7 +48,7 @@ void main()
     tail.xz -= wind.xz * (remaining + (tail.y - tip.y) / (height * rate)) * 0.18;
     vec4 tipClip = Project(tip);
     vec4 tailClip = Project(tail);
-    if (min(tipClip.w, tailClip.w) <= max(ViewParams.ge_nearFar.x, 0.025))
+    if (min(tipClip.w, tailClip.w) <= max(ViewParams.ge_viewRanges.x, 0.025))
         return;
     vec2 tipNdc = tipClip.xy / tipClip.w;
     vec2 tailNdc = tailClip.xy / tailClip.w;
