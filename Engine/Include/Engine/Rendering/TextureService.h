@@ -17,6 +17,8 @@
 #include "Rendering/Core/BindlessResourceManager.h"
 #include "Rendering/Core/Device.h"
 #include "Rendering/Core/RendererProfile.h"
+#include "Types/FlatMap.h"
+#include "Types/FlatSet.h"
 #include "Types/Types.h"
 
 #include <atomic>
@@ -233,6 +235,11 @@ class TextureService
     // samples its default meanwhile and asks again next frame. DDS, KTX2 and SVG, and every
     // texture when no engine runs, upload synchronously on the calling thread.
     TextureHandle GetOrUpload(const GUID& textureGuid);
+
+    /// Owner-thread preload/poll: returns only a resident full-resolution image, never uploads inline.
+    /// A miss requests the async pipeline. Pump FlushPendingUploads each frame; pending or failed
+    /// requests return an invalid handle. Failures remain cached until Evict.
+    TextureHandle GetOrRequestTexture(const GUID& textureGuid);
 
     // True when this texture's sampled alpha is provably 1.0 over every texel, so a consumer's
     // alpha path (cutout, screen-door, alpha-to-coverage) has nothing to resolve and can be
@@ -500,6 +507,20 @@ class TextureService
     // The CPU half of a texture upload (TextureService.cpp): an adopted cooked container, or a
     // raw decode with its mip chain built. Built off the render thread for the async paths.
     struct PreparedTextureUpload;
+    struct MaterialMipData;
+    struct MaterialMipStream
+    {
+        std::shared_ptr<const MaterialMipData> Data;
+        TextureGPUCache::Entry Resident;
+        uint32_t FirstMip = 0;
+        uint32_t Epoch = 0;
+    };
+    bool TryGetMaterialTextureLocked(const GUID& guid, TextureGPUCache::Entry& out) const;
+    std::shared_ptr<const MaterialMipData> PrepareMaterialMipStream(const GUID& guid,
+                                                                  const PreparedTextureUpload& prepared);
+    void AdvanceMaterialMipStreams();
+    TextureGPUCache::Entry RemoveMaterialMipStreamLocked(const GUID& guid);
+
     struct PendingGpuUpload
     {
         GUID TextureGuid;
@@ -724,6 +745,11 @@ class TextureService
     // m_PendingTexturesMutex guards all queues + ref maps below; mutable so
     // const queries (IsMaterialTextureBindingComplete) can lock.
     mutable std::mutex m_PendingTexturesMutex;
+    // Material images have a separate lifetime from full-resolution handles returned to callers.
+    uint64_t m_MaterialMipBudgetBytes = 0;
+    FlatMap<GUID, MaterialMipStream> m_MaterialMipStreams;
+    FlatSet<GUID> m_FullTextureRequests;
+    FlatSet<GUID> m_HotSwapTextureRequests;
     std::vector<PendingGpuUpload> m_PendingGpuUploads;
     std::vector<PendingTextureBind> m_PendingTextureBinds;
     // The render.texture-upload gate; null until ReportLoadingWork. It reads the binds
