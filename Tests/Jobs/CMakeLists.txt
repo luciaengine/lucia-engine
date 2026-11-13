@@ -84,38 +84,6 @@ set_tests_properties(JobSystemUnitTests PROPERTIES
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
-# The managed UI binding tests use this test double on every desktop platform.
-if(ENABLE_SCRIPTING)
-  # GameEngineNativeShimUi.cpp is a TEST DOUBLE for the game-UI element ABI, so the managed
-  # binding's own bookkeeping (wrapper identity, one native subscription per event, listener
-  # isolation, ALC revocation) can be driven from a dotnet-test host that has no engine. The
-  # engine-side contract stays pinned in UITests and ScriptingAbiIntegrationTests.
-  add_library(GameEngine.NativeShim SHARED
-      ../NativeShim/GameEngineNativeShim.cpp
-      ../NativeShim/GameEngineNativeShimUi.cpp)
-  # OUTPUT_NAME collides with the real GameEngine.Native target, so the shim
-  # must build into its own directory or it clobbers the real DLL/.lib in the
-  # shared output dirs (consumers copy it via $<TARGET_FILE:...>, which follows).
-  set_target_properties(GameEngine.NativeShim PROPERTIES OUTPUT_NAME "GameEngine.Native")
-  set_target_properties(GameEngine.NativeShim PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/NativeShim"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/NativeShim"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/NativeShim")
-  # Per-config variants required: the top-level CMAKE_*_OUTPUT_DIRECTORY_<CONFIG>
-  # globals initialize per-config target properties, which override the generic ones.
-  foreach(cfg ${CMAKE_CONFIGURATION_TYPES})
-    string(TOUPPER "${cfg}" cfgUpper)
-    set_target_properties(GameEngine.NativeShim PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY_${cfgUpper} "${CMAKE_CURRENT_BINARY_DIR}/NativeShim/${cfg}"
-      LIBRARY_OUTPUT_DIRECTORY_${cfgUpper} "${CMAKE_CURRENT_BINARY_DIR}/NativeShim/${cfg}"
-      ARCHIVE_OUTPUT_DIRECTORY_${cfgUpper} "${CMAKE_CURRENT_BINARY_DIR}/NativeShim/${cfg}"
-      PDB_OUTPUT_DIRECTORY_${cfgUpper} "${CMAKE_CURRENT_BINARY_DIR}/NativeShim/${cfg}")
-  endforeach()
-  # Include Engine public headers so the shim can include ScriptingABI.h
-  target_include_directories(GameEngine.NativeShim PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Include)
-
-endif()
-
 if(ENABLE_SCRIPTING)
     add_executable(ScriptsProjectFileTests ScriptsProjectFileTests.cpp)
     target_compile_features(ScriptsProjectFileTests PRIVATE cxx_std_20)

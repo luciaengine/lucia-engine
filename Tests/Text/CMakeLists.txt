@@ -12,15 +12,12 @@ add_executable(FontAtlasShapingTests
 
 target_link_libraries(FontAtlasCoreTests
     PRIVATE
-    Text
     GTest::gtest
     GTest::gtest_main
 )
 
 target_link_libraries(FontAtlasShapingTests
     PRIVATE
-    Text
-    Logger
     GTest::gtest
     GTest::gtest_main
 )
