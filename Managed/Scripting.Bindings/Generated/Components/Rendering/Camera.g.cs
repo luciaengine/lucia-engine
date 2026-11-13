@@ -34,7 +34,7 @@ namespace GameEngine.Scripting
         ArriAlexa65 = 18,
     }
 
-    [StructLayout(LayoutKind.Explicit, Size = 804)]
+    [StructLayout(LayoutKind.Explicit, Size = 808)]
     [BuiltInComponent("GameEngine::Components::Camera")]
     public partial struct Camera : IComponent
     {
@@ -80,6 +80,9 @@ namespace GameEngine.Scripting
         public RenderLayerMask VolumeLayers;
 
         [FieldOffset(44)]
+        public bool IncludeUIInPostProcessing;
+
+        [FieldOffset(48)]
         private ExposureMode m_ExposureControl;
         public ExposureMode ExposureControl
         {
@@ -89,46 +92,46 @@ namespace GameEngine.Scripting
                 : throw new ArgumentOutOfRangeException(nameof(value), value, "Camera.ExposureControl is Fixed, Manual, Physical or Auto.");
         }
 
-        [FieldOffset(48)]
+        [FieldOffset(52)]
         public float Exposure;
 
-        [FieldOffset(52)]
+        [FieldOffset(56)]
         public float ManualExposureEV;
 
-        [FieldOffset(56)]
+        [FieldOffset(60)]
         public float ExposureCompensation;
 
-        [FieldOffset(60)]
+        [FieldOffset(64)]
         public float Aperture;
 
-        [FieldOffset(64)]
+        [FieldOffset(68)]
         public float ShutterTime;
 
-        [FieldOffset(68)]
+        [FieldOffset(72)]
         public float Iso;
 
-        [FieldOffset(72)]
+        [FieldOffset(76)]
         public float FocusDistance;
 
-        [FieldOffset(76)]
+        [FieldOffset(80)]
         public int FocusDebugMode;
 
-        [FieldOffset(80)]
+        [FieldOffset(84)]
         public float FocusDebugAlpha;
 
-        [FieldOffset(84)]
+        [FieldOffset(88)]
         public uint ApertureBladeCount;
 
-        [FieldOffset(88)]
+        [FieldOffset(92)]
         public float ApertureRoundness;
 
-        [FieldOffset(92)]
+        [FieldOffset(96)]
         public float ApertureRotation;
 
-        [FieldOffset(96)]
+        [FieldOffset(100)]
         public float AnamorphicSqueeze;
 
-        [FieldOffset(100)]
+        [FieldOffset(104)]
         private CameraSensorPreset m_SensorPreset;
         public CameraSensorPreset SensorPreset
         {
@@ -138,22 +141,22 @@ namespace GameEngine.Scripting
                 : throw new ArgumentOutOfRangeException(nameof(value), value, "Camera.SensorPreset is Custom, Standard8, Super8, Film16, Super16, Film35TwoPerf, Film35ThreePerf, Film35Academy, Super35, Film65FivePerf, Imax15Perf, MicroFourThirds, ApsC, FullFrame, MediumFormat4433, MediumFormat5440, ArriAlexa35, ArriAlexaLF or ArriAlexa65.");
         }
 
-        [FieldOffset(104)]
+        [FieldOffset(108)]
         public float SensorHeightMm;
 
-        [FieldOffset(108)]
+        [FieldOffset(112)]
         public float AutoExposureMinEv;
 
-        [FieldOffset(112)]
+        [FieldOffset(116)]
         public float AutoExposureMaxEv;
 
-        [FieldOffset(116)]
+        [FieldOffset(120)]
         public float AutoExposureSpeedUp;
 
-        [FieldOffset(120)]
+        [FieldOffset(124)]
         public float AutoExposureSpeedDown;
 
-        [FieldOffset(124)]
+        [FieldOffset(128)]
         private ExposureMeter m_AutoExposureMeter;
         public ExposureMeter AutoExposureMeter
         {
@@ -163,37 +166,37 @@ namespace GameEngine.Scripting
                 : throw new ArgumentOutOfRangeException(nameof(value), value, "Camera.AutoExposureMeter is Picture or Lights.");
         }
 
-        [FieldOffset(128)]
+        [FieldOffset(132)]
         public Curve AutoExposureCompensationCurve;
 
-        [FieldOffset(772)]
+        [FieldOffset(776)]
         public uint AspectPreset;
 
-        [FieldOffset(776)]
+        [FieldOffset(780)]
         public float CustomAspectWidth;
 
-        [FieldOffset(780)]
+        [FieldOffset(784)]
         public float CustomAspectHeight;
 
-        [FieldOffset(784)]
+        [FieldOffset(788)]
         public bool PixelPerfect;
 
-        [FieldOffset(788)]
+        [FieldOffset(792)]
         public uint PixelPerfectPixelsPerUnit;
 
-        [FieldOffset(792)]
+        [FieldOffset(796)]
         public uint PixelPerfectReferenceWidth;
 
-        [FieldOffset(796)]
+        [FieldOffset(800)]
         public uint PixelPerfectReferenceHeight;
 
-        [FieldOffset(800)]
+        [FieldOffset(804)]
         public bool PixelPerfectPixelSnap;
 
-        [FieldOffset(801)]
+        [FieldOffset(805)]
         public bool PixelPerfectExpand;
 
-        [FieldOffset(802)]
+        [FieldOffset(806)]
         public bool WorldDrawingPaused;
     }
 }
