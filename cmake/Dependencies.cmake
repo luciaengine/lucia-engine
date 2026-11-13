@@ -406,6 +406,49 @@ function(setup_vcpkg)
     endif()
 endfunction()
 
+# Each manifest installer uses the root checked by VcpkgInstallGuard and the
+# same ordered policy arguments as the vcpkg toolchain's manifest install.
+function(z_ge_vcpkg_manifest_install_arguments outVar)
+    if(DEFINED VCPKG_INSTALLED_DIR AND NOT VCPKG_INSTALLED_DIR STREQUAL "")
+        set(installRoot "${VCPKG_INSTALLED_DIR}")
+    elseif(DEFINED _VCPKG_INSTALLED_DIR AND NOT _VCPKG_INSTALLED_DIR STREQUAL "")
+        set(installRoot "${_VCPKG_INSTALLED_DIR}")
+    else()
+        set(installRoot "${CMAKE_BINARY_DIR}/vcpkg_installed")
+    endif()
+
+    set(arguments install --triplet "${VCPKG_TARGET_TRIPLET}"
+        "--vcpkg-root=${VCPKG_DIR}" --x-wait-for-lock
+        "--x-manifest-root=${VCPKG_MANIFEST_DIR}"
+        "--x-install-root=${installRoot}"
+        --clean-buildtrees-after-build --clean-packages-after-build)
+    if(DEFINED VCPKG_FEATURE_FLAGS OR DEFINED CACHE{VCPKG_FEATURE_FLAGS})
+        list(JOIN VCPKG_FEATURE_FLAGS "," featureFlags)
+        list(APPEND arguments "--feature-flags=${featureFlags}")
+    endif()
+    if(DEFINED VCPKG_HOST_TRIPLET AND NOT VCPKG_HOST_TRIPLET STREQUAL "")
+        list(APPEND arguments "--host-triplet=${VCPKG_HOST_TRIPLET}")
+    endif()
+    if(VCPKG_OVERLAY_PORTS)
+        foreach(overlay IN LISTS VCPKG_OVERLAY_PORTS)
+            list(APPEND arguments "--overlay-ports=${overlay}")
+        endforeach()
+    endif()
+    if(VCPKG_OVERLAY_TRIPLETS)
+        foreach(overlay IN LISTS VCPKG_OVERLAY_TRIPLETS)
+            list(APPEND arguments "--overlay-triplets=${overlay}")
+        endforeach()
+    endif()
+    foreach(feature IN LISTS VCPKG_MANIFEST_FEATURES)
+        list(APPEND arguments "--x-feature=${feature}")
+    endforeach()
+    if(VCPKG_MANIFEST_NO_DEFAULT_FEATURES)
+        list(APPEND arguments --x-no-default-features)
+    endif()
+    list(APPEND arguments ${VCPKG_INSTALL_OPTIONS})
+    set(${outVar} "${arguments}" PARENT_SCOPE)
+endfunction()
+
 # Function to install required packages.
 # vcpkg's stdout/stderr stream live to the parent terminal so the user can see
 # build progress (this can take 30+ minutes on a fresh clone). We deliberately
@@ -415,34 +458,11 @@ endfunction()
 function(install_required_packages)
     message(STATUS "Installing vcpkg manifest dependencies for ${VCPKG_ARCH} (this can take 30+ minutes on a fresh clone)...")
 
-    # Install into the same root the vcpkg toolchain uses at project(), so it
-    # sees the manifest as satisfied and skips its own install. Without an
-    # explicit --x-install-root this manifest-mode run defaults to
-    # <repo>/vcpkg_installed, leaving a full duplicate tree at the repo root
-    # that nothing reads.
-    #
-    # VCPKG_INSTALLED_DIR wins when it is set. It is the same variable the
-    # toolchain honours, so pinning it here keeps the two in agreement, and on
-    # every reconfigure it is the toolchain's own cached value — this build
-    # tree's own root. A value pointing outside this build directory is refused
-    # before any installer runs (cmake/VcpkgInstallGuard.cmake): each tree keeps
-    # its own install, and what the trees share is the ABI-keyed binary cache.
-    if(DEFINED VCPKG_INSTALLED_DIR AND NOT VCPKG_INSTALLED_DIR STREQUAL "")
-        set(_ge_vcpkg_install_root "${VCPKG_INSTALLED_DIR}")
-        message(STATUS "  vcpkg install root: ${_ge_vcpkg_install_root} (from VCPKG_INSTALLED_DIR)")
-    else()
-        set(_ge_vcpkg_install_root "${CMAKE_BINARY_DIR}/vcpkg_installed")
-    endif()
-
-    # The clean flags drop per-port buildtrees/packages once each port is
-    # installed and its binary-cache archive written (measured residue of a
-    # full from-source configure: buildtrees ~10.4 GB, packages ~3.1 GB); a
-    # FAILED port keeps its buildtree, so the install-*.log diagnostics below
-    # stay reachable.
+    z_ge_vcpkg_manifest_install_arguments(_ge_vcpkg_arguments)
+    ge_vcpkg_host_compiler_env(_ge_vcpkg_compiler_env)
     execute_process(
-        COMMAND ${VCPKG_EXECUTABLE_PATH} install --triplet ${VCPKG_ARCH}
-                --x-install-root=${_ge_vcpkg_install_root}
-                --clean-buildtrees-after-build --clean-packages-after-build
+        COMMAND ${CMAKE_COMMAND} -E env ${_ge_vcpkg_compiler_env}
+                ${VCPKG_EXECUTABLE_PATH} ${_ge_vcpkg_arguments}
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         RESULT_VARIABLE MANIFEST_INSTALL_RESULT
     )
@@ -517,33 +537,19 @@ function(verify_dependencies)
     if(_GE_VCPKG_FRESH)
         message(STATUS "✓ vcpkg manifest dependencies just installed by setup_dependencies(); skipping duplicate install")
     else()
-        # Ensure all manifest dependencies are installed for this triplet before proceeding.
-        # Stream output live so users see progress and any failure detail directly.
-        # Same install root and cleanup flags as install_required_packages() —
-        # and it must resolve the root the SAME way, or the two disagree and this
-        # "verify" step silently builds a second copy of everything.
-        if(DEFINED VCPKG_INSTALLED_DIR AND NOT VCPKG_INSTALLED_DIR STREQUAL "")
-            set(_ge_vcpkg_install_root "${VCPKG_INSTALLED_DIR}")
-        else()
-            set(_ge_vcpkg_install_root "${CMAKE_BINARY_DIR}/vcpkg_installed")
-        endif()
         message(STATUS "Ensuring vcpkg manifest dependencies are installed (triplet: ${VCPKG_ARCH})")
         # Hand vcpkg the held compilers (cmake/VcpkgHostCompiler.cmake), not
         # this process's CC/CXX: a cross-toolchain configure (Emscripten)
         # exports the cross compiler into the process env, and vcpkg's
         # HOST-triplet detect_compiler would inherit it and try to build
         # arm64-osx tool ports with emcc.
+        z_ge_vcpkg_manifest_install_arguments(_ge_vcpkg_arguments)
         ge_vcpkg_host_compiler_env(_ge_vcpkg_compiler_env)
         execute_process(
             COMMAND ${CMAKE_COMMAND} -E env ${_ge_vcpkg_compiler_env}
-                    ${VCPKG_EXECUTABLE_PATH} install --triplet ${VCPKG_ARCH}
-                    --x-install-root=${_ge_vcpkg_install_root}
-                    --clean-buildtrees-after-build --clean-packages-after-build
+                    ${VCPKG_EXECUTABLE_PATH} ${_ge_vcpkg_arguments}
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             RESULT_VARIABLE MANIFEST_VERIFY_RESULT
-            # Prevent CI/test harnesses from hanging indefinitely on a held vcpkg lock;
-            # treat long waits as a hard error instead.
-            TIMEOUT 900
         )
         if(NOT MANIFEST_VERIFY_RESULT EQUAL 0)
             message(FATAL_ERROR
@@ -554,8 +560,7 @@ function(verify_dependencies)
                 "    - Network failure while downloading sources.\n"
                 "    - A specific port failed to build — check the per-port logs in\n"
                 "        ${VCPKG_DIR}/buildtrees/<port-name>/install-*.log\n"
-                "    - Held vcpkg lock from a concurrent process (timed out after 900s).\n"
-                "  To skip this verify step entirely, configure with -DGE_SKIP_VCPKG_VERIFY=ON.")
+                "    - Held vcpkg lock from a concurrent process.\n")
         endif()
         message(STATUS "✓ vcpkg manifest dependencies verified for ${VCPKG_ARCH}")
     endif()
@@ -583,42 +588,16 @@ function(verify_dependencies)
         message(WARNING "concurrentqueue (moodycamel) not found - high-performance queues may not be available")
     endif()
 
-    # Try to find nlohmann_json and install if missing
-    find_package(nlohmann_json CONFIG QUIET)
-    if(nlohmann_json_FOUND)
-        message(STATUS "✓ nlohmann_json found and ready")
-    else()
-        message(STATUS "nlohmann_json not found - installing via vcpkg...")
-        execute_process(
-            COMMAND ${VCPKG_EXECUTABLE_PATH} install nlohmann-json:${VCPKG_ARCH}
-            WORKING_DIRECTORY ${VCPKG_DIR}
-            RESULT_VARIABLE NLOHMANN_INSTALL_RESULT
-            OUTPUT_VARIABLE NLOHMANN_INSTALL_OUTPUT
-            ERROR_VARIABLE NLOHMANN_INSTALL_ERROR
-        )
-        if(NOT NLOHMANN_INSTALL_RESULT EQUAL 0)
-            message(FATAL_ERROR "Failed to install nlohmann_json via vcpkg: ${NLOHMANN_INSTALL_ERROR}")
+    find_package(nlohmann_json CONFIG REQUIRED)
+    message(STATUS "✓ nlohmann_json found and ready")
+    if(BUILD_TESTING OR BUILD_BENCHMARKS)
+        find_package(benchmark CONFIG QUIET)
+        if(NOT benchmark_FOUND AND NOT TARGET benchmark::benchmark)
+            message(FATAL_ERROR
+                "Google Benchmark was not found after the vcpkg manifest install. "
+                "Enable the tests manifest feature and check the configured toolchain and install root.")
         endif()
-        message(STATUS "✓ nlohmann_json installed via vcpkg")
-    endif()
-
-    # Try to find Google Benchmark and install if missing
-    find_package(benchmark CONFIG QUIET)
-    if(benchmark_FOUND OR TARGET benchmark::benchmark)
         message(STATUS "✓ Google Benchmark found and ready")
-    else()
-        message(STATUS "Google Benchmark not found - installing via vcpkg...")
-        execute_process(
-            COMMAND ${VCPKG_EXECUTABLE_PATH} install benchmark:${VCPKG_ARCH}
-            WORKING_DIRECTORY ${VCPKG_DIR}
-            RESULT_VARIABLE BENCHMARK_INSTALL_RESULT
-            OUTPUT_VARIABLE BENCHMARK_INSTALL_OUTPUT
-            ERROR_VARIABLE BENCHMARK_INSTALL_ERROR
-        )
-        if(NOT BENCHMARK_INSTALL_RESULT EQUAL 0)
-            message(FATAL_ERROR "Failed to install Google Benchmark via vcpkg: ${BENCHMARK_INSTALL_ERROR}")
-        endif()
-        message(STATUS "✓ Google Benchmark installed via vcpkg")
     endif()
 endfunction()
 
