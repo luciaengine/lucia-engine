@@ -19,8 +19,15 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
         if (app.m_Windows.empty())
             return Editor::RefuseRequest("No editor window");
 
-        const int windowIndex = ctx.params.value("windowIndex", 0);
-        if (windowIndex < 0 || static_cast<size_t>(windowIndex) >= app.m_Windows.size())
+        uint64_t windowIndex = 0;
+        if (const auto index = ctx.params.find("windowIndex"); index != ctx.params.end())
+        {
+            if (!index->is_number_integer() ||
+                (!index->is_number_unsigned() && index->get<int64_t>() < 0))
+                return Editor::RefuseRequest("windowIndex must be a non-negative integer");
+            windowIndex = index->get<uint64_t>();
+        }
+        if (windowIndex >= app.m_Windows.size())
             return Editor::RefuseRequest("windowIndex out of range");
         const uint64_t windowId = app.m_Windows[static_cast<size_t>(windowIndex)]->windowId;
         std::string requestId = ctx.id;
@@ -110,9 +117,8 @@ server.RegisterHandler("take_screenshot", [&app, &server](const EditorDebugServe
         // is a retry rather than a failed capture.
         //
         // At most one attempt is in flight: the poll runs once per tick and the
-        // render phase drains the whole callback queue at once, so queuing an
-        // attempt per tick would make a starved frame loop spend the whole
-        // refusal budget inside a single rendered frame.
+        // target window dispatches it at its next pre-execute render seam.
+        // Keep one queued attempt while that window waits for a frame.
         auto attemptQueued = std::make_shared<bool>(false);
         auto attempt = std::make_shared<EditorDebugServer::RenderCallback>();
         *attempt = [&app, wait, attemptQueued, ticketHolder, cropHolder, sourceSpaceHolder,
