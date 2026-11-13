@@ -65,7 +65,8 @@ one mip level per frame. It adds detail while the resident payload fits the
 budget and removes detail when new textures push it over. If the tails alone
 exceed the budget, the tails stay available.
 
-The budget counts resident streamed mip bytes. Replacement images can coexist
+Normal maps stream their normal-variance companion at the matching mip offset.
+The budget counts resident streamed mip bytes for both images. Replacement images can coexist
 with their predecessors until GPU work finishes. Staging memory, other textures,
 and the CPU copy of the decoded mip chain are separate costs. This mode uses a
 shared budget across material textures and loads the prepared chain up front.

@@ -75,8 +75,8 @@ struct TextureCoverageUploadTestAccess
     static TextureHandle StreamedHandle(TextureService& service, const GUID& guid)
     {
         std::lock_guard lock(service.m_PendingTexturesMutex);
-        const auto stream = service.m_MaterialMipStreams.find(guid);
-        return stream == service.m_MaterialMipStreams.end() ? TextureHandle{} : stream->second.Handle;
+        const auto* stream = service.m_MaterialMipStreams.Find(guid);
+        return !stream ? TextureHandle{} : stream->Resident.Texture;
     }
     static bool Uploaded(TextureService& service, const GUID& texture)
     {
