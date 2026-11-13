@@ -57,6 +57,12 @@ endif()
 # call below resolves `CMAKE_TOOLCHAIN_FILE`).
 set(VCPKG_APPLOCAL_DEPS OFF CACHE BOOL "vcpkg redundant — we stage runtime DLLs ourselves via ge_stage_runtime_dependencies" FORCE)
 
+# Keep the native macOS deployment floor equal to the dependency triplets.
+# An explicit deployment target takes precedence over this default.
+if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS version the binaries run on" FORCE)
+endif()
+
 # Include automated dependency management
 include(cmake/Dependencies.cmake)
 

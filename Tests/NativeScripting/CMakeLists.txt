@@ -18,6 +18,15 @@ ge_set_output_tests(NativePostSimulationTests)
 ge_stage_runtime_dependencies(NativePostSimulationTests)
 add_test(NAME NativePostSimulationTests COMMAND $<TARGET_FILE:NativePostSimulationTests>)
 
+add_executable(UserSystemOrderTests UserSystemOrderTests.cpp)
+target_link_libraries(UserSystemOrderTests PRIVATE Engine Mathematics Types GTest::gtest GTest::gtest_main)
+target_include_directories(UserSystemOrderTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/Engine/Include
+    ${CMAKE_SOURCE_DIR}/Engine/Modules/NativeScripting/GameSDK/Include)
+ge_set_output_tests(UserSystemOrderTests)
+ge_stage_runtime_dependencies(UserSystemOrderTests)
+add_test(NAME UserSystemOrderTests COMMAND $<TARGET_FILE:UserSystemOrderTests>)
+
 # dotnet + the ComponentScanner DLL feed the C10 scan-path test (a macro-free
 # fixture auto-detected by the scanner). DOTNET_EXECUTABLE is already cached by the
 # engine build (the scanner is mandatory there); re-find defensively in case this
@@ -169,6 +178,27 @@ if(WIN32)
             $<TARGET_FILE_DIR:NativeModuleLoggerTests>/$<TARGET_FILE_NAME:NativeLoggerModuleProbe>)
     add_test(NAME NativeModuleLoggerTests COMMAND $<TARGET_FILE:NativeModuleLoggerTests>)
     set_tests_properties(NativeModuleLoggerTests PROPERTIES TIMEOUT 60 LABELS "Logger;NativeScripting;DLL")
+
+    # Values built by a module, through the real loader: the probe DLL returns a
+    # value from a job or cancels a job with continuations, NativeScriptManager
+    # rejects and unmaps it, then the pool is destroyed; once through EngineCore.
+    add_library(JobResultModuleProbe SHARED JobResultModuleProbe.cpp)
+    set_target_properties(JobResultModuleProbe PROPERTIES UNITY_BUILD OFF)
+    target_link_libraries(JobResultModuleProbe PRIVATE Engine)
+
+    add_executable(NativeModuleJobResultTests NativeModuleJobResultTests.cpp)
+    set_target_properties(NativeModuleJobResultTests PROPERTIES UNITY_BUILD OFF)
+    target_link_libraries(NativeModuleJobResultTests PRIVATE Engine Types GTest::gtest_main)
+    target_include_directories(NativeModuleJobResultTests PRIVATE ${CMAKE_SOURCE_DIR}/Engine/Include
+        ${CMAKE_SOURCE_DIR}/Engine/Tests)  # EngineLogCapture.h
+    ge_set_output_tests(NativeModuleJobResultTests)
+    ge_stage_runtime_dependencies(NativeModuleJobResultTests)
+    add_dependencies(NativeModuleJobResultTests JobResultModuleProbe)
+    add_custom_command(TARGET NativeModuleJobResultTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:JobResultModuleProbe>
+            $<TARGET_FILE_DIR:NativeModuleJobResultTests>/$<TARGET_FILE_NAME:JobResultModuleProbe>)
+    add_test(NAME NativeModuleJobResultTests COMMAND $<TARGET_FILE:NativeModuleJobResultTests>)
+    set_tests_properties(NativeModuleJobResultTests PROPERTIES TIMEOUT 60 LABELS "JobSystem;NativeScripting;DLL")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -287,7 +317,8 @@ target_include_directories(NativeScriptManagerTests PRIVATE
 # through the same exports; AnimatorEventsAbiTests the event poll AnimatorApi.PollEvents uses.
 if(TARGET GameEngine.Native)
     target_sources(NativeScriptManagerTests PRIVATE BlobComponentSchemaAbiTests.cpp EnableStateAbiTests.cpp
-        AnimatorEventsAbiTests.cpp AnimatorInputAbiTests.cpp)
+        AnimatorEventsAbiTests.cpp AnimatorInputAbiTests.cpp UiElementTypeThreadRuleAbiTests.cpp
+        ScriptComponentWriteAbiTests.cpp)
     target_link_libraries(NativeScriptManagerTests PRIVATE GameEngine.Native)
 endif()
 

@@ -29,6 +29,7 @@ gtest_discover_tests(AnimationMontageTests)
 
 add_executable(AnimationCoreTests
     AnimationCoreTests.cpp
+    BoneEvaluationPlanTests.cpp
 )
 target_compile_features(AnimationCoreTests PUBLIC cxx_std_20)
 target_link_libraries(AnimationCoreTests PRIVATE GTest::gtest GTest::gtest_main Animation AssetCore Logger GenerationalVector)

@@ -1851,6 +1851,8 @@ if(GTest_FOUND OR TARGET GTest::gtest)
         Tests/MeshLODVisibleErrorTests.cpp
         Tests/MeshLODGeometryTests.cpp
         Tests/LodAssetSettingsTests.cpp
+        Tests/BoneLODAssetSettingsTests.cpp
+        Tests/ModelBoneLODTests.cpp
         Tests/MeshLODCacheTests.cpp
         Tests/PackagedModelLodTests.cpp
         Tests/AuthoredLODColorTests.cpp
@@ -1919,7 +1921,7 @@ if(GTest_FOUND OR TARGET GTest::gtest)
     ge_stage_runtime_dependencies(EngineCompileServerUtilTests)
     # Multi-config name baked in so the test resolves the exact staged host path.
     target_compile_definitions(EngineCompileServerUtilTests PRIVATE GE_TEST_CONFIG_NAME="$<CONFIG>")
-    if(WIN32 AND ENABLE_SCRIPTING)
+    if(ENABLE_SCRIPTING)
         # The spoof-version suites launch GameEngine.CompileServerHost.dll
         # themselves. Stage it beside the exe in the same layout the Editor
         # stages (and CompileServerClient::FindHostPath probes) so the test
@@ -2192,6 +2194,7 @@ endif()
                 Tests/PropCoverageFloorTests.cpp
                 Tests/HzbBuildComputeTests.cpp
                 Tests/HzbSpdParityTests.cpp
+                Tests/HzbSpdMinMaxParityTests.cpp
                 Tests/ClusterDepthMinMaxParityTests.cpp
                 Tests/HzbCullingComputeTests.cpp
                 Tests/VertexModifierEnvelopeSampledTests.cpp
@@ -2203,8 +2206,10 @@ endif()
                 Tests/SceneResolveFrameTests.cpp
                 Tests/CompileLoadReportTests.cpp
                 Tests/SceneResolveServiceTests.cpp
+                Tests/SortedTransparentPixelTests.cpp
                 Tests/SortedTransparentCullTests.cpp
                 Tests/SortedTransparentRunTests.cpp
+                Tests/RenderSortingTests.cpp
                 Tests/GPUSortTests.cpp
                 Tests/SortedTransparentDeciderTests.cpp
                 Tests/SortedTransparentBuildAllocationTests.cpp
@@ -2222,7 +2227,9 @@ endif()
                 Tests/LodCrossfadeShaderContractTests.cpp)
             # Engine/Source: the private headers the world-draw tests reach (ECS/SceneViewHiddenInHierarchySystem.h,
             # Engine/Rendering/MaterialSystemTesting.h).
-            target_include_directories(EngineWorldDrawTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Source")
+            target_include_directories(EngineWorldDrawTests PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/Source"
+                ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
             # Modules/Rendering: the shader source cache's read counter (Source/Materials/Shader/ShaderSourceCache.h).
             target_include_directories(EngineWorldDrawTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Modules/Rendering")
 
@@ -2337,6 +2344,9 @@ endif()
                 Tests/DDGIRelocationComputeTests.cpp
                 Tests/DDGIResolveBlurComputeTests.cpp
                 Tests/OceanCascadeLayoutTests.cpp
+                Tests/OceanPreparedDispatchTests.cpp
+                Tests/OceanSprayPreparationTests.cpp
+                Tests/OceanRasterCapturePreparationTests.cpp
                 Tests/OceanSeabedDepthShaderTests.cpp
                 Tests/OceanRingLayoutShaderTests.cpp
                 Tests/OceanShallowClarityShaderTests.cpp
@@ -2353,6 +2363,7 @@ endif()
                 Tests/BrdfLutTableTests.cpp
                 Tests/GlassTransmissionShaderContractTests.cpp
                 Tests/SkyGroundBounceContractTests.cpp
+                Tests/SkyLutRestingLayoutTests.cpp
                 Tests/SkySunColorTests.cpp
                 Tests/SkySunAnchorTests.cpp
                 Tests/SkySunIlluminanceTests.cpp
@@ -2381,7 +2392,8 @@ endif()
                 Tests/ReadbackSourceSpaceTests.cpp
                 Tests/ShaderAnimationClockContractTests.cpp)
             target_include_directories(EngineRenderServicesTests PRIVATE
-                ${CMAKE_CURRENT_SOURCE_DIR}/Modules/Ocean/Source) # OceanRingMesh.h
+                ${CMAKE_CURRENT_SOURCE_DIR}/Modules/Ocean/Source # OceanRingMesh.h
+                ${CMAKE_SOURCE_DIR}/Tests) # TestTempDir.h
             # The screen-space shadow tests dispatch these compiled kernels; without
             # glslc the commands below would compile nothing and the tests would
             # read missing files.
@@ -3161,6 +3173,26 @@ endif()
 		    add_test(NAME TerrainRenderFeatureTests COMMAND $<TARGET_FILE:TerrainRenderFeatureTests>)
 	endif()
 
+	if(GTest_FOUND OR TARGET GTest::gtest)
+	    add_executable(TileMapECSTests
+	        Tests/TileMapRenderFeatureTests.cpp
+	        Tests/EngineTestShaderSetup.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TransparentArtworkOrderTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileChunkInstancesTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapCollisionSystemTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapParallaxTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapPixelGridTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileMapRuntimeStoreTests.cpp
+	        ${CMAKE_SOURCE_DIR}/Engine/Modules/TileMapECS/Tests/TileSetGpuTablesTests.cpp)
+	    target_link_libraries(TileMapECSTests PRIVATE Engine GTest::gtest GTest::gtest_main)
+	    target_compile_definitions(TileMapECSTests PRIVATE ENGINE_TEST_BUILD_DIR="${CMAKE_BINARY_DIR}")
+	    add_dependencies(TileMapECSTests CompileShaderPkgs)
+	    set_target_properties(TileMapECSTests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON FOLDER "Engine/Tests/TileMap")
+	    ge_set_output_tests(TileMapECSTests)
+	    ge_stage_runtime_dependencies(TileMapECSTests)
+	    add_test(NAME TileMapECSTests COMMAND $<TARGET_FILE:TileMapECSTests>)
+	endif()
+
 	# Engine tests: GPU compute skinning validation (requires Vulkan device)
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(GPUAnimationComputeTests
@@ -3854,8 +3886,7 @@ if(BUILD_TESTING)
 	# Header-only math, so it links no Engine target.
 	if(GTest_FOUND OR TARGET GTest::gtest)
 	    add_executable(SpriteQuadTests Tests/SpriteQuadTests.cpp)
-	    target_link_libraries(SpriteQuadTests PRIVATE Types GTest::gtest GTest::gtest_main)
-	    target_include_directories(SpriteQuadTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Include)
+	    target_link_libraries(SpriteQuadTests PRIVATE ECSComponents Mathematics GTest::gtest GTest::gtest_main)
 	    set_target_properties(SpriteQuadTests PROPERTIES
 	        CXX_STANDARD 20
 	        CXX_STANDARD_REQUIRED ON

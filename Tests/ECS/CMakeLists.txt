@@ -57,6 +57,7 @@ set(ECS_CORE_TEST_SOURCES
     CommandBufferRingTest.cpp
     ProcessCommandsBatchLimitTest.cpp
     DeferredRequiredComponentTest.cpp
+    RequiredComponentPlacementTest.cpp
     ViewAliasSmokeTest.cpp
     ViewWithoutTest.cpp
     QuerySignatureTest.cpp

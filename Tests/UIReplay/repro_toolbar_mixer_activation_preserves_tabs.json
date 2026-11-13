@@ -1,0 +1,29 @@
+{
+  "name": "repro_toolbar_mixer_activation_preserves_tabs",
+  "windowIndex": 0,
+  "minFrames": 330,
+  "probe": { "elementId": "inspector-tab-lock" },
+  "asserts": [
+    {"kind": "elementVisible", "elementId": "inspector-tab-lock", "frameStart": 90, "frameEnd": 320},
+    {"kind": "elementInstanceUnchanged", "elementId": "inspector-tab-lock", "frameStart": 130, "frameEnd": 220},
+    {"kind": "elementInstanceUnchanged", "elementId": "tab:Hierarchy", "frameStart": 130, "frameEnd": 220},
+    {"kind": "elementInstanceUnchanged", "elementId": "mount:Hierarchy", "frameStart": 130, "frameEnd": 220}
+  ],
+  "events": [
+    {"frame": 100, "type": "mouseMove", "target": {"kind": "elementId", "id": "TopToolbarMixer"}},
+    {"frame": 101, "type": "mouseDown", "button": 0},
+    {"frame": 102, "type": "mouseUp", "button": 0},
+    {"frame": 140, "type": "mouseMove", "target": {"kind": "elementId", "id": "TopToolbarMixer"}},
+    {"frame": 141, "type": "mouseDown", "button": 0},
+    {"frame": 142, "type": "mouseUp", "button": 0},
+    {"frame": 180, "type": "mouseMove", "target": {"kind": "elementId", "id": "TopToolbarMixer"}},
+    {"frame": 181, "type": "mouseDown", "button": 0},
+    {"frame": 182, "type": "mouseUp", "button": 0},
+    {"frame": 240, "type": "mouseMove", "target": {"kind": "elementId", "id": "tab:Mixer"}},
+    {"frame": 241, "type": "mouseDown", "button": 2},
+    {"frame": 242, "type": "mouseUp", "button": 2},
+    {"frame": 280, "type": "mouseMove", "target": {"kind": "elementId", "id": "TopToolbarMixer"}},
+    {"frame": 281, "type": "mouseDown", "button": 0},
+    {"frame": 282, "type": "mouseUp", "button": 0}
+  ]
+}

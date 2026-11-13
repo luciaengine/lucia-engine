@@ -1206,6 +1206,24 @@ add_executable(EditorTests ${EDITOR_TEST_SOURCES})
 # Find Google Test
 find_package(GTest REQUIRED)
 
+# Prompt attachments share the assistant panel's production UI, device support and package fixtures.
+if(TARGET AiAssistantPanelTests)
+	target_sources(AiAssistantPanelTests PRIVATE
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/PromptFilesTests.cpp
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Tests/PromptFileTrayTests.cpp
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFiles.cpp
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFileTray.cpp
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFileItem.cpp
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFileThumbnail.cpp
+		${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Editor/PromptFileDropZone.cpp
+	)
+	target_include_directories(AiAssistantPanelTests PRIVATE ${CMAKE_SOURCE_DIR}/Tests)
+	ge_stage_test_asset(AiAssistantPanelTests
+		"${CMAKE_SOURCE_DIR}/Packages/ai-assistant/Assets/Editor/UI/controls/PromptFileItem.uxml"
+		"AiAssistantPanelFixtures/ai-assistant/Editor/UI/controls/PromptFileItem.uxml"
+	)
+endif()
+
 # Pure editing algorithms, independent of UI initialization and engine fixtures.
 add_executable(AnimationEditingTests AnimationEditingTests.cpp)
 target_include_directories(AnimationEditingTests PRIVATE ${CMAKE_SOURCE_DIR}/Apps/Editor/Include)
@@ -1424,6 +1442,7 @@ add_executable(DayCycleEditorTests
 	DayCycleProfileSaveTests.cpp
 	DayCycleProfileInspectorTests.cpp
 	DayCycleWindowTests.cpp
+	DayCycleWindowBindingTests.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleAxis.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleDescriptionField.cpp
 	${CMAKE_SOURCE_DIR}/Apps/Editor/Source/DayCycle/DayCycleEditorServices.cpp
@@ -1476,6 +1495,10 @@ ge_stage_test_asset(DayCycleEditorTests
 ge_stage_test_asset(DayCycleEditorTests
 	"${CMAKE_SOURCE_DIR}/Engine/Assets/DayCycles/ClearDay.daycycle.json"
 	"Assets/DayCycles/ClearDay.daycycle.json"
+)
+ge_stage_test_asset(DayCycleEditorTests
+	"${CMAKE_SOURCE_DIR}/Apps/Editor/Assets/UI/panels/DayCycleWindow.uxml"
+	"Assets/UI/panels/DayCycleWindow.uxml"
 )
 add_test(NAME DayCycleEditorTests
 	COMMAND "${CMAKE_COMMAND}"
