@@ -338,6 +338,12 @@ add_test(NAME VcpkgPin.PinsAndReportsTheVcpkgCheckout
           -DWORK=${CMAKE_BINARY_DIR}/Tests/VcpkgPinScratch
           -P ${CMAKE_SOURCE_DIR}/cmake/Tests/VcpkgPinTest.cmake)
 
+add_test(NAME VcpkgManifestInstall.PreservesTheToolchainsInstallPolicy
+  COMMAND ${CMAKE_COMMAND}
+          -DSCRIPT=${CMAKE_SOURCE_DIR}/cmake/Dependencies.cmake
+          -DWORK=${CMAKE_BINARY_DIR}/Tests/VcpkgManifestInstallScratch
+          -P ${CMAKE_SOURCE_DIR}/cmake/Tests/VcpkgManifestInstallTest.cmake)
+
 # The nethost and hostfxr the build stages come from the newest installed .NET;
 # this exercises the version ordering against scratch pack paths, without a build.
 add_test(NAME DotnetHostVersions.NewestVersionFirst
