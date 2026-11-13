@@ -26,6 +26,7 @@
 #include "Components/Terrain/TerrainModifiers.h"
 #include "Components/Terrain/TerrainPlanetRelief.h"
 #include "Components/Transform.h"
+#include "Mathematics/WorldPosition.h"
 #include "Core/CpuProfiler.h"
 #include "Core/DebugMetrics.h"
 #include "Core/Engine.h"
@@ -585,31 +586,31 @@ struct ComponentApplyResult
         // Merge onto the existing transform: a partial write ({position} only)
         // must not reset rotation/scale to defaults — a scale reset silently
         // collapses scale-derived volumes (reflection-probe influence boxes).
-        Mathematics::Vector3 pos{};
-        Mathematics::Quaternion rot{};
-        Mathematics::Vector3 scl{1.0f, 1.0f, 1.0f};
+        Mathematics::WorldPosition position{};
+        Mathematics::Quaternion rotation{};
+        Mathematics::Vector3 scale{1.0f, 1.0f, 1.0f};
         if (const auto* existing = world->GetComponent<Components::Transform>(entity))
         {
-            pos = existing->GetPosition();
-            rot = existing->GetRotation();
-            scl = existing->GetScale();
+            position = existing->GetPosition();
+            rotation = existing->GetRotation();
+            scale = existing->GetScale();
         }
         if (fields.Has("position"))
         {
             auto& p = fields["position"];
-            pos = Mathematics::Vector3(p.value("x", 0.0f), p.value("y", 0.0f), p.value("z", 0.0f));
+            position = Mathematics::WorldPosition{p.value("x", 0.0), p.value("y", 0.0), p.value("z", 0.0)};
         }
         if (fields.Has("rotation"))
         {
             auto& r = fields["rotation"];
-            rot = Mathematics::Quaternion(r.value("w", 1.0f), r.value("x", 0.0f), r.value("y", 0.0f), r.value("z", 0.0f));
+            rotation = Mathematics::Quaternion(r.value("w", 1.0f), r.value("x", 0.0f), r.value("y", 0.0f), r.value("z", 0.0f));
         }
         if (fields.Has("scale"))
         {
             auto& s = fields["scale"];
-            scl = Mathematics::Vector3(s.value("x", 1.0f), s.value("y", 1.0f), s.value("z", 1.0f));
+            scale = Mathematics::Vector3(s.value("x", 1.0f), s.value("y", 1.0f), s.value("z", 1.0f));
         }
-        auto xf = Components::Transform::FromTRS(pos, rot, scl);
+        auto xf = Components::Transform::FromTRS(position, rotation, scale);
         if (!world->GetComponent<Components::Transform>(entity))
             world->AddComponentImmediate(entity, xf);
         else
@@ -953,25 +954,25 @@ struct ComponentApplyResult
     }
 
     // Always add a Transform. Top-level position/rotation/scale default to identity.
-    Mathematics::Vector3 pos{};
-    Mathematics::Quaternion rot{};
-    Mathematics::Vector3 scl{1.0f, 1.0f, 1.0f};
+    Mathematics::WorldPosition position{};
+    Mathematics::Quaternion rotation{};
+    Mathematics::Vector3 scale{1.0f, 1.0f, 1.0f};
     if (params.contains("position") && params["position"].is_object())
     {
         auto& p = params["position"];
-        pos = Mathematics::Vector3(p.value("x", 0.0f), p.value("y", 0.0f), p.value("z", 0.0f));
+        position = Mathematics::WorldPosition{p.value("x", 0.0), p.value("y", 0.0), p.value("z", 0.0)};
     }
     if (params.contains("rotation") && params["rotation"].is_object())
     {
         auto& r = params["rotation"];
-        rot = Mathematics::Quaternion(r.value("w", 1.0f), r.value("x", 0.0f), r.value("y", 0.0f), r.value("z", 0.0f));
+        rotation = Mathematics::Quaternion(r.value("w", 1.0f), r.value("x", 0.0f), r.value("y", 0.0f), r.value("z", 0.0f));
     }
     if (params.contains("scale") && params["scale"].is_object())
     {
         auto& s = params["scale"];
-        scl = Mathematics::Vector3(s.value("x", 1.0f), s.value("y", 1.0f), s.value("z", 1.0f));
+        scale = Mathematics::Vector3(s.value("x", 1.0f), s.value("y", 1.0f), s.value("z", 1.0f));
     }
-    world->AddComponentImmediate(entity.GetHandle(), Components::Transform::FromTRS(pos, rot, scl));
+    world->AddComponentImmediate(entity.GetHandle(), Components::Transform::FromTRS(position, rotation, scale));
 
     if (parentHandle.IsValid())
         world->AddComponentImmediate(entity.GetHandle(), Components::Parent{parentHandle});
@@ -2019,15 +2020,15 @@ using ComponentChecker = std::function<bool(ECS::World*, ECS::EntityHandle)>;
 
     if (world->HasComponent<Components::Transform>(entity))
     {
-        auto* c = world->GetComponent<Components::Transform>(entity);
-        auto pos = c->GetPosition();
-        auto rot = c->GetRotation();
-        auto scl = c->GetScale();
-        const auto& rq = rot.GetGLM();
+        auto* transform = world->GetComponent<Components::Transform>(entity);
+        auto position = transform->GetPosition();
+        auto rotation = transform->GetRotation();
+        auto scale = transform->GetScale();
+        const auto& rotationValue = rotation.GetGLM();
         components["Transform"] = {
-            {"position", {{"x", pos.x}, {"y", pos.y}, {"z", pos.z}}},
-            {"rotation", {{"x", rq.x}, {"y", rq.y}, {"z", rq.z}, {"w", rq.w}}},
-            {"scale", {{"x", scl.x}, {"y", scl.y}, {"z", scl.z}}}};
+            {"position", {{"x", position.X}, {"y", position.Y}, {"z", position.Z}}},
+            {"rotation", {{"x", rotationValue.x}, {"y", rotationValue.y}, {"z", rotationValue.z}, {"w", rotationValue.w}}},
+            {"scale", {{"x", scale.x}, {"y", scale.y}, {"z", scale.z}}}};
         serialized.insert(ECS::GetComponentTypeId<Components::Transform>());
     }
 
