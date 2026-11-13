@@ -1,0 +1,29 @@
+#version 450
+#include "Includes/point_shadow_sampling.glsl"
+
+layout(local_size_x = 64) in;
+struct Query
+{
+    vec4 positionSlot;
+    vec4 uvFaceDepth;
+    vec4 lightPositionMode;
+};
+layout(std430, set = 0, binding = 0) readonly buffer Queries { Query queries[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer Results { float results[]; };
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= queries.length())
+        return;
+    Query query = queries[index];
+    int slot = int(query.positionSlot.w);
+    vec3 position = query.positionSlot.xyz;
+    vec3 lightPosition = query.lightPositionMode.xyz;
+    if (query.lightPositionMode.w > 0.5)
+        results[index] = GE_SamplePointShadowSlot(slot, lightPosition, position,
+            normalize(position - lightPosition), 1.5 / 1024.0);
+    else
+        results[index] = GE_PointShadowTap(slot, int(query.uvFaceDepth.z), position,
+            position - lightPosition, query.uvFaceDepth.xy, query.uvFaceDepth.w);
+}

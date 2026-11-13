@@ -37,6 +37,7 @@
 
 #ifdef HAS_SHADOWS
 #include "shadow_sampling.glsl"
+#include "point_shadow_sampling.glsl"
 layout(set = 0, binding = 14, std140) uniform AreaShadowData
 {
     mat4 ge_areaShadowVP;
@@ -59,18 +60,6 @@ layout(set = 0, binding = 23, std140) uniform SpotShadowData
     vec4 ge_spotShadowParams2; // x=resolution, y=near plane, z=far plane, w=unused
 };
 layout(set = 0, binding = 24) uniform sampler2DShadow ge_spotShadowMap;
-// M1: one entry per atlas slot (mirrors RenderServices.h PointShadowSlotGPU, 416 B).
-struct PointShadowSlot
-{
-    mat4 faceVP[6];
-    vec4 params;  // x=enabled, y=baseLayer (slot*6), z=depthBias, w=normalBias
-    vec4 params2; // x=tileResolution, y=near, z=far, w=tileScale (tileRes/atlasRes)
-};
-layout(set = 0, binding = 25, std430) readonly buffer PointShadowData
-{
-    PointShadowSlot ge_pointShadowSlots[];
-};
-layout(set = 0, binding = 26) uniform sampler2DArrayShadow ge_pointShadowMap;
 #endif
 
 // Light data matching the CPU-side ExtractedLight / LightUploadNode layout.
@@ -439,97 +428,11 @@ float GE_SampleSpotShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 n
     return shadow / float(taps);
 }
 
-int GE_PointShadowFace(vec3 dir)
-{
-    vec3 a = abs(dir);
-    if (a.x >= a.y && a.x >= a.z)
-        return dir.x >= 0.0 ? 0 : 1;
-    if (a.y >= a.x && a.y >= a.z)
-        return dir.y >= 0.0 ? 2 : 3;
-    return dir.z >= 0.0 ? 4 : 5;
-}
-
-vec2 GE_PointShadowRotation(vec2 shadowUV, float face, float tileRes)
-{
-    // Per-texel Vogel rotation seed. tileRes (this slot's tile resolution) sets the
-    // grid frequency so the noise scales with the tile, not a global resolution.
-    vec2 shadowTexel = floor(clamp(shadowUV, vec2(0.0), vec2(0.999999)) * max(tileRes, 1.0));
-    shadowTexel += vec2(face * 17.0, face * 31.0);
-    float angle = fract(52.9829189 * fract(dot(shadowTexel, vec2(0.06711056, 0.00583715)))) * 6.2831853;
-    return vec2(cos(angle), sin(angle));
-}
-
 float GE_SamplePointShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 normalWS)
 {
     if (lp.meta.y == 0u)
-        return 1.0; // light casts no shadow
-    int slot = lp.shadowSlots.x;
-    // Out of range (unshadowed, or the fallback 1-slot buffer is bound because this
-    // view published no atlas this frame): lit. .length() reflects the bound range.
-    if (slot < 0 || slot >= int(ge_pointShadowSlots.length()))
         return 1.0;
-    PointShadowSlot ps = ge_pointShadowSlots[slot];
-    if (ps.params.x < 0.5)
-        return 1.0; // slot disabled (defensive)
-
-    float farPlane = ps.params2.z;
-    vec3 lightToFrag = posWS - lp.posRange.xyz;
-    float dist = length(lightToFrag);
-    if (dist <= 1e-6 || dist > farPlane)
-        return 1.0;
-
-    vec3 lightToFragN = lightToFrag / dist;
-    vec3 n = normalize(normalWS);
-    float normalBias = ps.params.w * (1.0 - abs(dot(n, lightToFragN)));
-    vec3 biasedPos = posWS + n * normalBias;
-    vec3 biasedLightToFrag = biasedPos - lp.posRange.xyz;
-    float biasedDist = length(biasedLightToFrag);
-    if (biasedDist <= 1e-6 || biasedDist > farPlane)
-        return 1.0;
-
-    vec3 sampleDir = biasedLightToFrag / biasedDist;
-    int face = GE_PointShadowFace(sampleDir);
-    vec4 shadowClip = ps.faceVP[face] * vec4(biasedPos, 1.0);
-    if (shadowClip.w <= 1e-6)
-        return 1.0;
-
-    vec3 shadowNDC = shadowClip.xyz / shadowClip.w;
-    vec2 faceUV = shadowNDC.xy * 0.5 + 0.5;
-    faceUV.y = 1.0 - faceUV.y; // negative-viewport Y-flip, tile-local (tile at layer origin)
-    float refDepth = shadowNDC.z + ps.params.z;
-
-    if (faceUV.x < 0.0 || faceUV.x > 1.0 ||
-        faceUV.y < 0.0 || faceUV.y > 1.0 ||
-        refDepth < 0.0 || refDepth > 1.0)
-        return 1.0;
-
-    // The tile occupies the [0, tileScale]^2 sub-rect of its layer at origin; a full
-    // (High/Inherit) tile has tileScale 1.0 and this reduces to the full-layer path.
-    float tileRes = max(ps.params2.x, 1.0);
-    float tileScale = ps.params2.w;
-    float atlasRes = tileRes / max(tileScale, 1e-6); // == kPointAtlasTileResolution
-    float halfAtlasTexel = 0.5 / atlasRes;
-    vec2 subLo = vec2(halfAtlasTexel);
-    vec2 subHi = vec2(tileScale - halfAtlasTexel);
-    float layer = ps.params.y + float(face); // baseLayer + face
-
-    vec2 sc = GE_PointShadowRotation(faceUV, float(face), tileRes);
-    float shadow = 0.0;
-    const int taps = 12;
-    for (int i = 0; i < taps; ++i)
-    {
-        // Constant radius in FACE UV, which is already tile-normalized — the
-        // atlas mapping below scales it by tileScale, so no separate
-        // tile-fraction correction is needed. Being tile-texel-relative was the
-        // defect: tileRes moves at runtime with the coverage tier, so the blur
-        // changed size mid-scene as a light dollied across a tier boundary.
-        vec2 offset = GE_VogelDisk(i, taps, sc) * kLocalFilterRadiusUV;
-        // Map the tap into the tile sub-rect and clamp (+half-texel gutter) so its
-        // PCF comparison footprint can never bleed into the cleared-far border.
-        vec2 atlasUV = clamp((faceUV + offset) * tileScale, subLo, subHi);
-        shadow += GE_SHADOW_TAP(ge_pointShadowMap, vec4(atlasUV, layer, refDepth));
-    }
-    return shadow / float(taps);
+    return GE_SamplePointShadowSlot(lp.shadowSlots.x, lp.posRange.xyz, posWS, normalWS, kLocalFilterRadiusUV);
 }
 #else
 float GE_SampleAreaShadow(GE_LightPacked lp, uint lightIndex, vec3 posWS, vec3 normalWS)
